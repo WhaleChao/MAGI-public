@@ -42,13 +42,13 @@ PROVIDERS: dict[str, dict[str, Any]] = {
 # ── Feature → Provider 路由 ────────────────────────────
 
 FEATURE_ROUTING: dict[str, dict[str, str | None]] = {
-    "intent":     {"primary": "omlx", "fallback": None},
-    "translate":  {"primary": "omlx", "fallback": None},
-    "summary":    {"primary": "omlx", "fallback": None},
+    "intent":     {"primary": "omlx", "fallback": None},        # 輕量，不值得花錢
+    "translate":  {"primary": "omlx", "fallback": "claude"},     # oMLX 夠用，失敗才 fallback
+    "summary":    {"primary": "omlx", "fallback": "claude"},
     "transcript": {"primary": "omlx", "fallback": None},
-    "vision":     {"primary": "omlx", "fallback": None},
-    "general":    {"primary": "omlx", "fallback": None},
-    "react":      {"primary": "omlx", "fallback": None},
+    "vision":     {"primary": "omlx", "fallback": "claude"},
+    "general":    {"primary": "omlx", "fallback": "claude"},
+    "react":      {"primary": "claude", "fallback": "omlx"},     # ReAct 需要強推理 → Claude 優先
 }
 
 DEFAULT_TIMEOUT = 90
