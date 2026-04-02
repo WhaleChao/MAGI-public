@@ -80,6 +80,36 @@ def _fetch_json(url: str) -> Optional[Dict]:
             logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 79, exc_info=True)
     return None
 
+
+def _extract_model_labels(payload) -> List[str]:
+    """Normalize oMLX /v1/models payloads across old and new schemas."""
+    labels: List[str] = []
+    if isinstance(payload, list):
+        items = payload
+    elif isinstance(payload, dict):
+        items = payload.get("data")
+        if not isinstance(items, list):
+            items = payload.get("models")
+        if not isinstance(items, list):
+            items = []
+    else:
+        items = []
+
+    for item in items:
+        if isinstance(item, str):
+            label = item.strip()
+        elif isinstance(item, dict):
+            label = (
+                str(item.get("id") or "").strip()
+                or str(item.get("name") or "").strip()
+                or str(item.get("model") or "").strip()
+            )
+        else:
+            label = str(item or "").strip()
+        if label and label not in labels:
+            labels.append(label)
+    return labels
+
 # ---------------------------------------------------------------------------
 # RSS parsing
 # ---------------------------------------------------------------------------
@@ -106,9 +136,10 @@ def _parse_rss(raw: bytes, max_items: int = 8) -> List[Dict]:
 # ---------------------------------------------------------------------------
 # Data collectors
 # ---------------------------------------------------------------------------
-def collect_news() -> List[Dict]:
-    """Collect news from public RSS feeds."""
+def collect_news() -> tuple[List[Dict], List[Dict]]:
+    """Collect news from public RSS feeds and track per-source health."""
     all_news = []
+    source_statuses = []
     for name, url in RSS_FEEDS.items():
         logger.info(f"📰 Fetching {name}...")
         raw = _fetch(url)
@@ -117,18 +148,41 @@ def collect_news() -> List[Dict]:
             for item in items:
                 item["source"] = name
             all_news.extend(items)
+            source_statuses.append({
+                "source": name,
+                "url": url,
+                "ok": True,
+                "count": len(items),
+                "error": "",
+            })
             logger.info(f"  ✓ {len(items)} articles from {name}")
         else:
+            source_statuses.append({
+                "source": name,
+                "url": url,
+                "ok": False,
+                "count": 0,
+                "error": "fetch failed",
+            })
             logger.warning(f"  ✗ Failed to fetch {name}")
-    return all_news
+    return all_news, source_statuses
 
-def collect_markets() -> Dict:
-    """Collect market data from Finnhub."""
+def collect_markets() -> tuple[Dict, Dict]:
+    """Collect market data from Finnhub with a light-weight health summary."""
+    status = {
+        "ok": False,
+        "quotes_ok": 0,
+        "quotes_total": len(FINNHUB_MARKET_SYMBOLS),
+        "news_ok": 0,
+        "detail": "",
+    }
     if not FINNHUB_KEY:
         logger.warning("No Finnhub API key, skipping markets")
-        return {}
+        status["detail"] = "FINNHUB_API_KEY 未設定，市場行情已停用"
+        return {}, status
     
     market_data = {}
+    quotes_ok = 0
     for symbol in FINNHUB_MARKET_SYMBOLS:
         url = f"https://finnhub.io/api/v1/quote?symbol={symbol}&token={FINNHUB_KEY}"
         data = _fetch_json(url)
@@ -140,6 +194,7 @@ def collect_markets() -> Dict:
                 "high": data.get("h", 0),
                 "low": data.get("l", 0),
             }
+            quotes_ok += 1
             logger.info(f"  📊 {symbol}: ${data.get('c', 0):.2f} ({data.get('dp', 0):+.2f}%)")
     
     # Market news
@@ -150,9 +205,16 @@ def collect_markets() -> Dict:
             {"title": n.get("headline", ""), "source": n.get("source", ""), "summary": n.get("summary", "")[:200]}
             for n in news[:5]
         ]
+        status["news_ok"] = len(market_data["_news"])
         logger.info(f"  📊 {len(market_data['_news'])} market news items")
-    
-    return market_data
+    status["quotes_ok"] = quotes_ok
+    status["ok"] = quotes_ok > 0 or status["news_ok"] > 0
+    status["detail"] = f"{quotes_ok}/{len(FINNHUB_MARKET_SYMBOLS)} 檔行情成功"
+    if status["news_ok"]:
+        status["detail"] += f"，{status['news_ok']} 則市場新聞"
+    elif not status["ok"]:
+        status["detail"] = "未取得任何市場行情或新聞"
+    return market_data, status
 
 # ---------------------------------------------------------------------------
 # Melchior reasoning
@@ -194,14 +256,14 @@ def _reason_with_melchior(prompt: str, max_tokens: int = 2048) -> str:
 def _store_to_memory(content: str, metadata: Dict = None):
     try:
         from skills.memory import mem_bridge
-        tags = ["worldmonitor", "intel", datetime.now().strftime("%Y-%m-%d")]
+        source_bits = ["worldmonitor-intel"]
         if metadata:
-            tags.extend(metadata.get("tags", []))
-        mem_bridge.remember(content=content, tags=tags, metadata={
-            "source": "worldmonitor-intel",
-            "timestamp": datetime.now().isoformat(),
-            **(metadata or {})
-        })
+            news_count = metadata.get("news_count")
+            if news_count is not None:
+                source_bits.append(f"news={news_count}")
+            market_symbols = metadata.get("market_symbols") or []
+            source_bits.append(f"markets={len(market_symbols)}")
+        mem_bridge.remember(content, source="|".join(source_bits))
         logger.info(f"✅ Stored to MAGI memory ({len(content)} chars)")
         return True
     except Exception as e:
@@ -216,6 +278,21 @@ def _store_to_memory(content: str, metadata: Dict = None):
     logger.info(f"📁 Saved report to {filepath}")
     return True
 
+
+def _render_source_health(news_statuses: List[Dict], market_status: Dict) -> str:
+    lines = ["## 🩺 來源健康狀態"]
+    total_sources = len(news_statuses)
+    healthy_sources = sum(1 for item in news_statuses if item.get("ok"))
+    lines.append(f"- 新聞來源：{healthy_sources}/{total_sources} 成功")
+    for item in news_statuses:
+        state = "OK" if item.get("ok") else "FAIL"
+        detail = f"{item.get('count', 0)} 篇" if item.get("ok") else item.get("error") or "fetch failed"
+        lines.append(f"- {item.get('source', 'unknown')}: {state} ({detail})")
+    lines.append(
+        f"- 市場資料：{'OK' if market_status.get('ok') else 'DEGRADED'} ({market_status.get('detail') or '未提供'})"
+    )
+    return "\n".join(lines)
+
 # ---------------------------------------------------------------------------
 # Main pipeline
 # ---------------------------------------------------------------------------
@@ -225,13 +302,31 @@ def collect_and_analyze(use_melchior: bool = True) -> str:
     logger.info("=" * 60)
 
     # 1. Collect
-    news = collect_news()
-    markets = collect_markets()
+    news, news_statuses = collect_news()
+    markets, market_status = collect_markets()
+    source_health = _render_source_health(news_statuses, market_status)
 
     if not news and not markets:
-        msg = "⚠️ 未收集到任何資料。"
-        logger.warning(msg)
-        return msg
+        final = f"""# 🌐 MAGI 全球情報摘要
+**時間**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+**狀態**: 降級模式（未收集到可分析資料）
+**分析**: 無
+
+---
+
+{source_health}
+
+---
+<details><summary>原始資料</summary>
+
+⚠️ 未收集到任何可用資料，但仍保留來源健康狀態與降級報告。
+</details>"""
+        _store_to_memory(final, metadata={
+            "news_count": 0,
+            "market_symbols": [],
+            "tags": ["daily-intel", "degraded", "news", "markets"]
+        })
+        return final
 
     # 2. Format for Melchior
     parts = []
@@ -252,6 +347,8 @@ def collect_and_analyze(use_melchior: bool = True) -> str:
                 parts.append(f"- [{n['source']}] {n['title']}")
 
     raw_report = "\n".join(parts)
+    if source_health:
+        raw_report = f"{raw_report}\n\n{source_health}" if raw_report else source_health
 
     # 3. Melchior analysis
     if use_melchior:
@@ -263,11 +360,15 @@ def collect_and_analyze(use_melchior: bool = True) -> str:
 4. 風險評估（低/中/高）
 
 收集時間：{datetime.now().strftime('%Y-%m-%d %H:%M')}
+來源健康：
+{source_health}
+
 {raw_report}"""
         analysis = _reason_with_melchior(prompt)
         final = f"""# 🌐 MAGI 全球情報摘要
 **時間**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 **新聞來源**: {len(news)} 篇 | **市場**: {len([k for k in markets if not k.startswith('_')])} 檔
+**資料可用性**: {'正常' if news or markets else '降級'}
 **分析**: Melchior
 
 ---
@@ -275,12 +376,23 @@ def collect_and_analyze(use_melchior: bool = True) -> str:
 {analysis}
 
 ---
+{source_health}
+
+---
 <details><summary>原始資料</summary>
 
 {raw_report[:3000]}
 </details>"""
     else:
-        final = f"# 🌐 原始報告\n**時間**: {datetime.now().strftime('%Y-%m-%d %H:%M')}\n\n{raw_report}"
+        final = f"""# 🌐 原始報告
+**時間**: {datetime.now().strftime('%Y-%m-%d %H:%M')}
+**資料可用性**: {'正常' if news or markets else '降級'}
+
+{source_health}
+
+---
+
+{raw_report}"""
 
     # 4. Store
     _store_to_memory(final, metadata={
@@ -322,8 +434,11 @@ def main():
         # Check Ollama
         data = _fetch_json(os.environ.get("OLLAMA_URL", "http://127.0.0.1:8080") + "/v1/models")
         if data:
-            models = [m["name"] for m in data.get("models", [])]
-            print(f"✅ Melchior 可用 ({len(models)} models: {', '.join(models[:3])})")
+            models = _extract_model_labels(data)
+            if models:
+                print(f"✅ Melchior 可用 ({len(models)} models: {', '.join(models[:3])})")
+            else:
+                print("✅ Melchior 可用 (models schema returned, but no labels could be extracted)")
         else:
             print("❌ Ollama 不可用")
         print(f"📊 Finnhub key: {'已設定' if FINNHUB_KEY else '未設定'}")

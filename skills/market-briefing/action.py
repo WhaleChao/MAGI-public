@@ -41,6 +41,11 @@ def _tz_now() -> datetime:
     return datetime.now()
 
 
+def _skill_python() -> str:
+    """Return the interpreter used to run this skill, with a safe fallback."""
+    return (os.environ.get("MAGI_SKILL_PYTHON") or sys.executable or "python3").strip() or "python3"
+
+
 _DEFAULT_MAGI_ROOT = Path(__file__).resolve().parents[2]
 MAGI_ROOT = Path(os.environ.get("MAGI_ROOT", str(_DEFAULT_MAGI_ROOT)))
 if str(MAGI_ROOT) not in sys.path:
@@ -1248,7 +1253,7 @@ def _register_financial_crawl_targets(items: List["WatchItem"]) -> None:
         crawler_script = str(MAGI_ROOT / "skills" / "crawler-targets" / "action.py")
         if not os.path.exists(crawler_script):
             return
-        py = os.environ.get("MAGI_SKILL_PYTHON", "") or "python3"
+        py = _skill_python()
         for item in items:
             sym = item.symbol.upper().split(".")[0]
             if item.market == "US":
@@ -2027,7 +2032,7 @@ def _cmd_export(state: Dict[str, Any], mode: str = "deep") -> str:
     try:
         import subprocess as _sp
         xlsx_skill = str(MAGI_ROOT / "skills" / "xlsx" / "action.py")
-        py = os.environ.get("MAGI_SKILL_PYTHON", "") or "python3"
+        py = _skill_python()
         if os.path.exists(xlsx_skill):
             # Build JSON payload for xlsx skill
             payload = {

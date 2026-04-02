@@ -18,14 +18,17 @@ import subprocess
 import sys
 import time
 from datetime import datetime
+from pathlib import Path
 try:
     from dotenv import load_dotenv
 except Exception:  # pragma: no cover
     load_dotenv = None
 
-MAGI_DIR = os.environ.get("MAGI_ROOT_DIR", os.path.expanduser("~/Desktop/MAGI"))
+MAGI_DIR = str(Path(__file__).resolve().parents[2])
 if MAGI_DIR not in sys.path:
     sys.path.insert(0, MAGI_DIR)
+
+from skills.ops import health_probes as _health_probes
 
 REPORT_PATH = os.path.join(MAGI_DIR, "static", "doctor_report.json")
 SKILLS_DIR = os.path.join(MAGI_DIR, "skills")
@@ -148,17 +151,36 @@ def _http_get(url, timeout=5):
 
 def _probe_omlx_chat(timeout_sec: int = 8) -> dict:
     """Probe oMLX via GET /v1/models (no inference, avoids blocking the single inference slot)."""
-    omlx_port = int(os.environ.get("MAGI_OMLX_PORT", "8080"))
-    try:
-        r = requests.get(f"http://127.0.0.1:{omlx_port}/v1/models", timeout=min(timeout_sec, 5))
-        if r.status_code == 200:
-            models = [m.get("id", "") for m in r.json().get("data", [])]
-            if models:
-                return {"pass": True, "detail": f"推理引擎正常 — {len(models)} models: {', '.join(models[:3])}"}
+    probe = _health_probes.probe_omlx_models(timeout_sec=timeout_sec)
+    models = list(probe.get("models") or [])
+    if probe.get("pass"):
+        return {"pass": True, "detail": f"推理引擎正常 — {len(models)} models: {', '.join(models[:3])}"}
+    if int(probe.get("status_code") or 0) == 200:
+        return {"pass": False, "detail": "oMLX /v1/models 回傳空模型清單"}
+    if probe.get("error"):
+        return {"pass": False, "detail": str(probe.get("error"))}
+    return {"pass": False, "detail": f"oMLX HTTP {probe.get('status_code') or 0}"}
+
+
+def _probe_local_llm_inference(timeout_sec: int = 30, retries: int = 2, backoff_sec: float = 1.5) -> dict:
+    """Probe local TAIDE inference with one bounded retry when oMLX is briefly saturated."""
+    probe = _health_probes.probe_local_chat(
+        timeout_sec=timeout_sec,
+        retries=retries,
+        backoff_sec=backoff_sec,
+        default_model="TAIDE-12b-Chat-mlx-4bit",
+        models_timeout_sec=8,
+    )
+    if not probe.get("pass"):
+        models_probe = probe.get("models_probe") or {}
+        if int(models_probe.get("status_code") or 0) == 200 and not models_probe.get("models"):
             return {"pass": False, "detail": "oMLX /v1/models 回傳空模型清單"}
-        return {"pass": False, "detail": f"oMLX HTTP {r.status_code}"}
-    except Exception as e:
-        return {"pass": False, "detail": str(e)}
+        return {"pass": False, "detail": str(probe.get("error") or models_probe.get("error") or "oMLX unavailable")}
+
+    detail = f"推理正常 (model={probe.get('model')})"
+    if int(probe.get("attempt") or 1) > 1:
+        detail += f" [retry={probe.get('attempt')}]"
+    return {"pass": True, "detail": detail}
 
 
 def _tcp_connect(host: str, port: int, timeout_sec: float = 3.0) -> bool:
@@ -200,25 +222,7 @@ def _load_db_profile(profile_name: str = "Studio_VPN_Remote") -> dict:
 
 
 def _resolve_omlx_model() -> str:
-    code, data = _http_get("http://127.0.0.1:8080/v1/models", timeout=5)
-    requested = (os.environ.get("CASPER_LOCAL_MODEL") or "TAIDE-12b-Chat-mlx-4bit").strip()
-    if code != 200 or not isinstance(data, dict):
-        return requested or "TAIDE-12b-Chat-mlx-4bit"
-    models = [str((m or {}).get("id") or "").strip() for m in (data.get("data") or []) if isinstance(m, dict)]
-    models = [m for m in models if m]
-    if not models:
-        return requested or "TAIDE-12b-Chat-mlx-4bit"
-    if requested in models:
-        return requested
-    req_low = requested.lower()
-    for model in models:
-        low = model.lower()
-        if req_low and (req_low == low or req_low in low or low.startswith(req_low)):
-            return model
-    for model in models:
-        if "taide" in model.lower():
-            return model
-    return models[0]
+    return _health_probes.resolve_omlx_model("TAIDE-12b-Chat-mlx-4bit")
 
 
 def _ping(ip, timeout_ms=3000):
@@ -395,40 +399,12 @@ def check_infrastructure():
         checks.append({"id": "autopilot_schedule", "label": "夜間排程", "pass": False, "detail": str(e)})
 
     # -- TAIDE LLM (oMLX) --
-    # Step 1: fast /v1/models ping (5s) — checks if process is alive without waiting for inference
-    # Step 2: short inference check (30s) — only if step 1 passes
-    try:
-        import requests
-        omlx_base = os.environ.get("OMLX_URL", "http://127.0.0.1:8080")
-        _models_r = requests.get(f"{omlx_base}/v1/models", timeout=5)
-        if _models_r.status_code != 200:
-            checks.append({"id": "local_llm", "label": "本機 TAIDE (oMLX)", "pass": False,
-                            "detail": f"/v1/models 回 HTTP {_models_r.status_code}"})
-        else:
-            resolved_model = _resolve_omlx_model()
-            payload = {
-                "model": resolved_model,
-                "messages": [{"role": "user", "content": "1+1="}],
-                "max_tokens": 3,
-                "stream": False,
-            }
-            _infer_timeout = int(os.environ.get("MAGI_DOCTOR_OMLX_TIMEOUT", "30"))
-            r = requests.post(f"{omlx_base}/v1/chat/completions", json=payload, timeout=_infer_timeout)
-            if r.status_code == 200:
-                choices = r.json().get("choices") or []
-                resp = (choices[0].get("message", {}).get("content", "") if choices else "")
-                if resp.strip():
-                    checks.append({"id": "local_llm", "label": "本機 TAIDE (oMLX)", "pass": True,
-                                    "detail": f"推理正常 (model={resolved_model})"})
-                else:
-                    checks.append({"id": "local_llm", "label": "本機 TAIDE (oMLX)", "pass": False,
-                                    "detail": f"回覆為空 (model={resolved_model})"})
-            else:
-                checks.append({"id": "local_llm", "label": "本機 TAIDE (oMLX)", "pass": False,
-                                "detail": f"HTTP {r.status_code} (model={resolved_model})"})
-    except Exception as e:
-        checks.append({"id": "local_llm", "label": "本機 TAIDE (oMLX)", "pass": False,
-                        "detail": str(e)})
+    llm_probe = _probe_local_llm_inference(
+        timeout_sec=int(os.environ.get("MAGI_DOCTOR_OMLX_TIMEOUT", "30")),
+        retries=int(os.environ.get("MAGI_DOCTOR_OMLX_RETRIES", "2")),
+    )
+    checks.append({"id": "local_llm", "label": "本機 TAIDE (oMLX)", "pass": bool(llm_probe.get("pass")),
+                    "detail": str(llm_probe.get("detail") or "unknown")})
 
     passed = sum(1 for c in checks if c["pass"])
     return {

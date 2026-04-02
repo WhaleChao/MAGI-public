@@ -83,14 +83,18 @@ from skills.ops.structured_log import JSONFormatter, HybridFormatter, RequestCon
 _root = logging.getLogger()
 _root.setLevel(logging.INFO)
 _root.addFilter(RequestContextFilter())
+_SERVER_STARTUP_HOOKS_DISABLED = (
+    os.environ.get("MAGI_DISABLE_SERVER_STARTUP_HOOKS", "").strip().lower() in {"1", "true", "yes", "on"}
+)
 
 _file = RotatingFileHandler(_server_log_path, maxBytes=2 * 1024 * 1024, backupCount=5, encoding="utf-8")
 _file.setFormatter(JSONFormatter())
 _root.addHandler(_file)
 
-_console = logging.StreamHandler()
-_console.setFormatter(HybridFormatter())
-_root.addHandler(_console)
+if not _SERVER_STARTUP_HOOKS_DISABLED:
+    _console = logging.StreamHandler()
+    _console.setFormatter(HybridFormatter())
+    _root.addHandler(_console)
 
 logger = logging.getLogger("Server")
 from api.thread_pools import channel_pool as _CHANNEL_BG_EXECUTOR, io_pool as _ATTACHMENT_BG_EXECUTOR
@@ -488,6 +492,20 @@ except Exception as e:
 @app.route('/static/worldmonitor_reports/')
 def legacy_worldmonitor_redirect():
     return redirect("/intel")
+
+
+@app.route('/worldmonitor')
+@app.route('/worldmonitor/')
+def worldmonitor_entry():
+    """Human-friendly alias for the worldmonitor report panel."""
+    return redirect("/intel")
+
+
+@app.route('/openclaw')
+@app.route('/openclaw-gateway')
+def openclaw_entry():
+    """Local OpenClaw alias that lands on the real NERV management page."""
+    return redirect(url_for('dashboard_nerv'))
 
 
 @app.route('/intel')
@@ -10339,8 +10357,12 @@ def transcribe_audio():
             return jsonify({"error": str(e)}), 500
 
 # Start Telegram polling fallback after all helpers are defined.
-_resume_pending_attachment_jobs()
-_start_telegram_polling_fallback()
+_STARTUP_HOOKS_ENABLED = str(os.environ.get("MAGI_DISABLE_SERVER_STARTUP_HOOKS", "0")).strip().lower() not in {"1", "true", "yes", "on"}
+if _STARTUP_HOOKS_ENABLED:
+    _resume_pending_attachment_jobs()
+    _start_telegram_polling_fallback()
+else:
+    logger.info("⏭️ Server startup hooks disabled by MAGI_DISABLE_SERVER_STARTUP_HOOKS")
 
 # Pre-load FAISS index in background so first chat doesn't pay 30s+ penalty
 def _preload_faiss():
@@ -10352,7 +10374,8 @@ def _preload_faiss():
     except Exception as e:
         logger.warning("⚠️ FAISS pre-load failed (non-fatal): %s", e)
 
-threading.Thread(target=_preload_faiss, daemon=True, name="faiss-preload").start()
+if _STARTUP_HOOKS_ENABLED:
+    threading.Thread(target=_preload_faiss, daemon=True, name="faiss-preload").start()
 
 # Startup cleanup: remove old export files (>30 days)
 try:
@@ -10381,7 +10404,8 @@ def _warmup_omlx():
     except Exception as e:
         logger.warning("⚠️ oMLX warmup failed (non-fatal): %s", e)
 
-threading.Thread(target=_warmup_omlx, daemon=True, name="omlx-warmup").start()
+if _STARTUP_HOOKS_ENABLED:
+    threading.Thread(target=_warmup_omlx, daemon=True, name="omlx-warmup").start()
 
 # --- Cloudflare Quick Tunnel for LINE webhook ---
 def _is_cloudflared_alive() -> bool:
@@ -10572,10 +10596,11 @@ def _ensure_cloudflared():
     except Exception as e:
         logger.warning(f"☁️ cloudflared startup failed: {e}")
 
-try:
-    _ensure_cloudflared()
-except Exception:
-    logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 10433, exc_info=True)
+if _STARTUP_HOOKS_ENABLED:
+    try:
+        _ensure_cloudflared()
+    except Exception:
+        logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 10433, exc_info=True)
 
 # ─── Cloudflared 定期健康檢查（每 90 秒偵測，死掉自動重啟 + 重新註冊 LINE webhook）───
 def _cloudflared_watchdog():
@@ -10592,14 +10617,16 @@ def _cloudflared_watchdog():
         _time.sleep(_INTERVAL)
 
 import threading
-threading.Thread(target=_cloudflared_watchdog, daemon=True, name="cloudflared-watchdog").start()
+if _STARTUP_HOOKS_ENABLED:
+    threading.Thread(target=_cloudflared_watchdog, daemon=True, name="cloudflared-watchdog").start()
 
 # ─── NAS SMB 自動掛載守衛 ────────────────────────────────────
-try:
-    from api.nas_mount_guard import start_nas_mount_guard
-    start_nas_mount_guard(interval=120)
-except Exception as e:
-    logger.warning(f"NAS mount guard 啟動失敗: {e}")
+if _STARTUP_HOOKS_ENABLED:
+    try:
+        from api.nas_mount_guard import start_nas_mount_guard
+        start_nas_mount_guard(interval=120)
+    except Exception as e:
+        logger.warning(f"NAS mount guard 啟動失敗: {e}")
 
 # ─── LAF Gmail 背景監控 ───────────────────────────────────────
 def _start_laf_gmail_monitor():
@@ -10618,16 +10645,17 @@ def _start_laf_gmail_monitor():
     except Exception as e:
         logger.warning(f"📧 LAF Gmail Monitor 啟動失敗: {e}")
 
-try:
-    _laf_gmail_thread = threading.Thread(
-        target=_start_laf_gmail_monitor,
-        daemon=True,
-        name="laf-gmail-monitor",
-    )
-    _laf_gmail_thread.start()
-    logger.info("📧 LAF Gmail Monitor 背景執行緒已啟動")
-except Exception as e:
-    logger.warning(f"📧 LAF Gmail Monitor 啟動失敗: {e}")
+if _STARTUP_HOOKS_ENABLED:
+    try:
+        _laf_gmail_thread = threading.Thread(
+            target=_start_laf_gmail_monitor,
+            daemon=True,
+            name="laf-gmail-monitor",
+        )
+        _laf_gmail_thread.start()
+        logger.info("📧 LAF Gmail Monitor 背景執行緒已啟動")
+    except Exception as e:
+        logger.warning(f"📧 LAF Gmail Monitor 啟動失敗: {e}")
 
 if __name__ == "__main__":
     import signal as _sig

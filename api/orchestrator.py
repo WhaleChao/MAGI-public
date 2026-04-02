@@ -244,8 +244,18 @@ class Orchestrator:
         logger.warning(f"📨 [Notification lost — no callback] user={user_id} platform={platform} text={text[:120]}")
 
     # ── Heavy task tracking ──────────────────────────────────────────
+    def _ensure_heavy_task_primitives(self) -> None:
+        """Lazily initialize heavy-task primitives for partial/test instances."""
+        if not hasattr(self, "_heavy_task_lock") or self._heavy_task_lock is None:
+            self._heavy_task_lock = threading.Lock()
+        if not hasattr(self, "_heavy_tasks") or self._heavy_tasks is None:
+            self._heavy_tasks = {}
+        if not hasattr(self, "_heavy_task_done_event") or self._heavy_task_done_event is None:
+            self._heavy_task_done_event = threading.Event()
+
     def register_heavy_task(self, task_id: str, label: str, user_id: str = "") -> None:
         """Register a heavy LLM task (translation, summary, transcription) so chat can detect it."""
+        self._ensure_heavy_task_primitives()
         with self._heavy_task_lock:
             self._heavy_tasks[task_id] = {
                 "label": label,
@@ -256,6 +266,7 @@ class Orchestrator:
 
     def unregister_heavy_task(self, task_id: str) -> None:
         """Remove a completed heavy task. Signals waiting chat handlers if all tasks cleared."""
+        self._ensure_heavy_task_primitives()
         with self._heavy_task_lock:
             removed = self._heavy_tasks.pop(task_id, None)
             all_clear = len(self._heavy_tasks) == 0
@@ -267,6 +278,7 @@ class Orchestrator:
 
     def get_active_heavy_tasks(self) -> list[dict]:
         """Return list of currently running heavy tasks."""
+        self._ensure_heavy_task_primitives()
         with self._heavy_task_lock:
             now = time.time()
             # Auto-expire tasks older than 30 minutes (safety net)
@@ -3173,7 +3185,10 @@ class Orchestrator:
                 handler="api/orchestrator.py:process_message(status fast-path)",
             )
 
-        if any(kw in msg_lower for kw in ["行程", "schedule", "日曆", "會議", "meeting", "本週", "這週"]):
+        if (
+            msg_lower.strip() in {"今天", "明天"}
+            or any(kw in msg_lower for kw in ["行程", "schedule", "日曆", "會議", "meeting", "本週", "這週"])
+        ):
             return _res(
                 action="schedule_query",
                 matched="schedule_keywords",
@@ -4600,7 +4615,10 @@ class Orchestrator:
             return f"{node_status}\n\n{brain_status}\n\n{collab_status}"
 
         # 2.7. Schedule/Meeting Query (High Priority) - Check before LLM
-        if any(kw in msg_lower for kw in ["行程", "schedule", "日曆", "會議", "meeting", "本週", "這週"]):
+        if (
+            msg_lower.strip() in {"今天", "明天"}
+            or any(kw in msg_lower for kw in ["行程", "schedule", "日曆", "會議", "meeting", "本週", "這週"])
+        ):
             return self._get_schedule()
 
         # 2.7.0a Council Core Approval Commands (High Priority — must run before
@@ -7337,7 +7355,7 @@ class Orchestrator:
 "• `/抓取 [網址]` — 讀取網頁\n"
 "\n"
 "━━━━━━━━━━━━━━━━━━━━\n"
-"⚖️ **法律工具**\n"
+"⚖️ **法扶作業 / 法律工具**\n"
 "━━━━━━━━━━━━━━━━━━━━\n"
 "• `/查判決 [關鍵字]` — 搜尋判決\n"
 "• `/法規搜尋 [查詢]` — 查詢法規\n"
@@ -7384,7 +7402,7 @@ class Orchestrator:
 "🤖 **MAGI 功能總覽**\n"
 "\n"
 "━━━━━━━━━━━━━━━━━━━━\n"
-"📝 **文件處理**\n"
+"📝 **文件產生 / 處理**\n"
 "━━━━━━━━━━━━━━━━━━━━\n"
 "• `/翻譯 [文字/網址]` — 翻譯文件或網頁\n"
 "• `/摘要 [文字/網址]` — 產生文件摘要（精簡/普通/詳細三級）\n"
@@ -7403,7 +7421,7 @@ class Orchestrator:
 "• `/搜尋 [關鍵字]` — 聯網搜尋\n"
 "\n"
 "━━━━━━━━━━━━━━━━━━━━\n"
-"⚖️ **法律工具**\n"
+"⚖️ **法扶作業 / 法律工具**\n"
 "━━━━━━━━━━━━━━━━━━━━\n"
 "• `/查判決 [關鍵字]` — 搜尋判決\n"
 "• `/法規搜尋 [查詢]` — 查詢法規\n"

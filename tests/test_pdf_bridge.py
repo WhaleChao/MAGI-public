@@ -254,7 +254,8 @@ def test_ultra_final_summary_trusts_explicit_segment_titles():
         "【頁 97-120】主題：毒品法庭與處遇爭議\n- 毒品法庭試圖從懲罰轉向治療。\n- 修復式司法後段才出現。",
     ]
 
-    out = _ultra_final_summary_with_model(notes, reduce_batch=4, reduce_timeout=30, final_timeout=30)
+    with patch.dict("os.environ", {"MAGI_PDF_ULTRA_FINAL_MODE": "deterministic"}, clear=False):
+        out = _ultra_final_summary_with_model(notes, reduce_batch=4, reduce_timeout=30, final_timeout=30)
 
     assert "【刑事政策之定義與沿革】" in out
     assert "【毒品法庭與處遇爭議】" in out

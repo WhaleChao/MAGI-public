@@ -713,6 +713,7 @@ class InferenceGateway:
             return self._result(success=False, route="failed_all", degraded=True, error="missing_prompt", task_type=task_type)
 
         errors: List[str] = []
+        allow_synthetic_fallback = bool(kwargs.get("allow_synthetic_fallback", True))
 
         # Try oMLX first for tasks that have an oMLX model configured
         # (except tc_review/classify which must stay on Ollama/taide-12b)
@@ -760,7 +761,7 @@ class InferenceGateway:
 
         # ── Codex OAuth fallback: when oMLX is down, try Codex before giving up ──
         codex_chat_fallback_enabled = _env_bool("MAGI_CODEX_CHAT_FALLBACK", True)
-        if codex_chat_fallback_enabled and errors and task_type not in ("tc_review", "captcha"):
+        if codex_chat_fallback_enabled and allow_synthetic_fallback and errors and task_type not in ("tc_review", "captcha"):
             try:
                 from skills.bridge.llm_direct import (
                     feature_enabled as _codex_feat,
@@ -824,7 +825,6 @@ class InferenceGateway:
         errors.append(f"local_ollama:{local.get('error','')}")
 
         merged_error = " | ".join([e for e in errors if e])[:1200] or "all_routes_failed"
-        allow_synthetic_fallback = bool(kwargs.get("allow_synthetic_fallback", True))
         allow_text_fallback = (_env_bool("INFERENCE_ALLOW_TEXT_FALLBACK", True) or self._force_local()) and allow_synthetic_fallback
         if allow_text_fallback:
             return self._result(

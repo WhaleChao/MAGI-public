@@ -14,6 +14,7 @@ def mock_env_vars(monkeypatch):
     defaults = {
         "MAGI_LINE_CHANNEL_ACCESS_TOKEN": "test_token",
         "MAGI_LINE_CHANNEL_SECRET": "test_secret",
+        "MAGI_DISABLE_SERVER_STARTUP_HOOKS": "1",
         "DB_HOST": "127.0.0.1",
         "DB_USER": "test_user",
         "DB_PASSWORD": "test_pass",

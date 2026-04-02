@@ -68,12 +68,14 @@ class TestSummarizeDirect:
     """Short text should go through balthasar_bridge.summarize_text direct path."""
 
     def test_direct_summary_success(self):
+        import skills.bridge.llm_direct as _direct
         orc = _make_orchestrator()
-        with _mock_bt_summarize({
-            "success": True,
-            "text": "1. 第一點重點：本案涉及勞動基準法適用問題\n2. 第二點重點：原告主張資遣費請求權\n3. 第三點重點：被告抗辯解僱合法\n4. 第四點重點：法院認定原告勝訴",
-            "provider": "omlx_direct",
-        }):
+        with patch.object(_direct, "feature_enabled", return_value=False), \
+             _mock_bt_summarize({
+                 "success": True,
+                 "text": "1. 第一點重點：本案涉及勞動基準法適用問題\n2. 第二點重點：原告主張資遣費請求權\n3. 第三點重點：被告抗辯解僱合法\n4. 第四點重點：法院認定原告勝訴",
+                 "provider": "omlx_direct",
+             }):
             result = orc._summarize_text_resilient("這是一段需要摘要的法律文件內容。" * 50)
         assert result["success"] is True
         assert "第一點重點" in result["text"]
@@ -82,6 +84,7 @@ class TestSummarizeDirect:
     @patch("api.handlers.summary_handler.InferenceGateway")
     def test_direct_fail_falls_to_gateway(self, mock_gw_cls):
         """When direct summary fails, should fall through to gateway fallback."""
+        import skills.bridge.llm_direct as _direct
         mock_gw = MagicMock()
         mock_gw.chat.return_value = _make_gateway_response(
             "1. 摘要要點一\n2. 摘要要點二\n3. 摘要要點三\n4. 摘要要點四"
@@ -89,12 +92,14 @@ class TestSummarizeDirect:
         mock_gw_cls.return_value = mock_gw
 
         orc = _make_orchestrator()
-        with _mock_bt_summarize({"success": False, "error": "timeout"}):
+        with patch.object(_direct, "feature_enabled", return_value=False), \
+             _mock_bt_summarize({"success": False, "error": "timeout"}):
             result = orc._summarize_text_resilient("短文件摘要。" * 50)
         assert result["success"] is True
 
     def test_direct_summary_short_seed_uses_shorter_timeout(self):
         import skills.bridge.balthasar_bridge as _bt
+        import skills.bridge.llm_direct as _direct
 
         calls = []
 
@@ -102,12 +107,16 @@ class TestSummarizeDirect:
             calls.append(timeout_sec)
             return {
                 "success": True,
-                "text": "1. 種子摘要重寫完成\n2. 條列化輸出",
+                "text": (
+                    "1. 種子摘要重寫完成，系統已整理核心爭點、關鍵事實與主要結論。\n"
+                    "2. 條列化輸出保留法條脈絡、請求基礎與裁判方向，避免再落回 gateway fallback。"
+                ),
                 "provider": "omlx_direct",
             }
 
         orc = _make_orchestrator()
-        with patch.object(_bt, "summarize_text", side_effect=_fake_summarize), \
+        with patch.object(_direct, "feature_enabled", return_value=False), \
+             patch.object(_bt, "summarize_text", side_effect=_fake_summarize), \
              patch.dict("os.environ", {"MAGI_FILE_SUMMARY_TIMEOUT_SEC": "120"}):
             result = orc._summarize_text_resilient("短摘要種子。" * 80)
 
@@ -123,6 +132,7 @@ class TestSummarizeMapReduce:
     @patch("skills.bridge.melchior_client._omlx_available", return_value=False)
     def test_map_reduce_long_text(self, mock_omlx_avail, mock_gw_cls):
         """Text > direct_max_chars should use map-reduce."""
+        import skills.bridge.llm_direct as _direct
         call_idx = [0]
 
         def _mock_chat(prompt, **kwargs):
@@ -142,7 +152,8 @@ class TestSummarizeMapReduce:
                      "原告主張被告未依法給付資遣費及預告工資。" * 200 + "\n\n" +
                      "法院審酌兩造主張及證據後認定如下。" * 200)
 
-        with _mock_bt_summarize({"success": False, "error": "too_long"}), \
+        with patch.object(_direct, "feature_enabled", return_value=False), \
+             _mock_bt_summarize({"success": False, "error": "too_long"}), \
              patch.dict("os.environ", {"MAGI_FILE_SUMMARY_DIRECT_MAX_CHARS": "2000"}):
             result = orc._summarize_text_resilient(long_text)
 
@@ -154,6 +165,7 @@ class TestSummarizeMapReduce:
     @patch("skills.bridge.melchior_client._omlx_available", return_value=False)
     def test_map_reduce_retries_synthetic_timeout_chunks(self, mock_omlx_avail, mock_gw_cls):
         """Synthetic timeout placeholders should be retried instead of leaking into the final summary."""
+        import skills.bridge.llm_direct as _direct
         attempts = {}
 
         def _mock_chat(prompt, **kwargs):
@@ -188,7 +200,8 @@ class TestSummarizeMapReduce:
                      "原告主張被告未依法給付資遣費及預告工資。" * 220 + "\n\n" +
                      "法院審酌兩造主張及證據後認定如下。" * 220)
 
-        with _mock_bt_summarize({"success": False, "error": "too_long"}), \
+        with patch.object(_direct, "feature_enabled", return_value=False), \
+             _mock_bt_summarize({"success": False, "error": "too_long"}), \
              patch.dict("os.environ", {"MAGI_FILE_SUMMARY_DIRECT_MAX_CHARS": "2000"}):
             result = orc._summarize_text_resilient(long_text)
 
@@ -198,6 +211,7 @@ class TestSummarizeMapReduce:
 
     @patch("skills.documents.pdf_bridge.summarize_ultra_large_text")
     def test_ultra_large_text_uses_hierarchical_path(self, mock_ultra):
+        import skills.bridge.llm_direct as _direct
         mock_ultra.return_value = (
             "【文件概況】\n"
             "- 可辨識頁數：約 520 頁\n"
@@ -210,7 +224,8 @@ class TestSummarizeMapReduce:
         orc = _make_orchestrator()
         huge_text = ("本案涉及刑事政策與量刑理論。" * 6000).strip()
 
-        with _mock_bt_summarize({"success": False, "error": "too_long"}), \
+        with patch.object(_direct, "feature_enabled", return_value=False), \
+             _mock_bt_summarize({"success": False, "error": "too_long"}), \
              patch.dict("os.environ", {
                  "MAGI_FILE_SUMMARY_DIRECT_MAX_CHARS": "2000",
                  "MAGI_FILE_SUMMARY_ULTRA_THRESHOLD_CHARS": "20000",
@@ -234,7 +249,7 @@ class TestSummarizeLengthModes:
     def test_medium_length_prompt(self):
         orc = _make_orchestrator()
         chunk_hint, reduce_hint = orc._summary_length_prompt("medium")
-        assert "4-8" in chunk_hint
+        assert "5-8" in chunk_hint
 
     def test_long_length_prompt(self):
         orc = _make_orchestrator()
@@ -248,6 +263,7 @@ class TestSummarizeExtractiveFallback:
     @patch("api.handlers.summary_handler.InferenceGateway")
     @patch("skills.bridge.melchior_client._omlx_available", return_value=False)
     def test_extractive_fallback(self, mock_omlx_avail, mock_gw_cls):
+        import skills.bridge.llm_direct as _direct
         mock_gw = MagicMock()
         mock_gw.chat.return_value = _make_gateway_response("", success=False)
         mock_gw_cls.return_value = mock_gw
@@ -264,7 +280,8 @@ class TestSummarizeExtractiveFallback:
             "法院審理後認定，申請人已充分履行前置程序義務，本案構成公約第三十六條所稱之爭端。\n"
         ) * 5
 
-        with _mock_bt_summarize({"success": False}):
+        with patch.object(_direct, "feature_enabled", return_value=False), \
+             _mock_bt_summarize({"success": False}):
             result = orc._summarize_text_resilient(text)
         # Should either succeed with extractive or fail — either way it's a dict
         assert isinstance(result, dict)
@@ -275,21 +292,23 @@ class TestSummarizeProgressCallback:
     """progress_callback should be called during processing."""
 
     def test_callback_receives_updates(self):
+        import skills.bridge.llm_direct as _direct
         callbacks = []
 
         def _cb(msg):
             callbacks.append(msg)
 
         orc = _make_orchestrator()
-        with _mock_bt_summarize({
-            "success": True,
-            "text": (
-                "1. 法院認定原告之訴有理由，並確認勞動契約終止存在違法爭議。\n"
-                "2. 被告應給付資遣費、預告工資與相關損害賠償。\n"
-                "3. 判決同時整理雙方主要爭點、證據採信理由與法律適用基礎。"
-            ),
-            "provider": "omlx_direct",
-        }):
+        with patch.object(_direct, "feature_enabled", return_value=False), \
+             _mock_bt_summarize({
+                 "success": True,
+                 "text": (
+                     "1. 法院認定原告之訴有理由，並確認勞動契約終止存在違法爭議。\n"
+                     "2. 被告應給付資遣費、預告工資與相關損害賠償。\n"
+                     "3. 判決同時整理雙方主要爭點、證據採信理由與法律適用基礎。"
+                 ),
+                 "provider": "omlx_direct",
+             }):
             result = orc._summarize_text_resilient("短文件內容。" * 50, progress_callback=_cb)
         assert result["success"] is True
         # progress_callback may or may not be called for direct path — just verify no crash

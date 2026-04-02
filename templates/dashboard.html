@@ -937,7 +937,7 @@
 
             <!-- LOCAL CASPER (3) -->
             <a href="javascript:void(0)" onclick="openOpenClaw(); return false;" class="node-card node-casper" id="card-local-casper"
-                style="text-decoration: none; cursor: pointer;" title="僅限本機進入 OpenClaw 設定">
+                style="text-decoration: none; cursor: pointer;" title="僅限本機進入 OpenClaw / NERV 管理頁">
                 <span class="sub-label">CASPER-3</span>
                 <h2>主控核心</h2>
                 <div class="status" id="status-local-casper">連線中...</div>
@@ -1657,7 +1657,7 @@
                 alert('OpenClaw 介面僅開放本機存取，外網已封鎖。');
                 return;
             }
-            window.open('http://localhost:18789', '_blank', 'noopener,noreferrer');
+            window.open('/openclaw', '_blank', 'noopener,noreferrer');
         }
 
         // Sidebar section toggle

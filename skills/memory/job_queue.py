@@ -14,7 +14,6 @@ import sqlite3
 import threading
 import time
 import uuid
-from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
@@ -55,33 +54,41 @@ CREATE INDEX IF NOT EXISTS idx_jobs_created ON jobs (created_at);
 """
 
 _init_lock = threading.Lock()
-_db_initialized = False
+_local = threading.local()
+
+
+class _ConnectionProxy:
+    """Proxy that behaves like a SQLite connection and a context manager."""
+
+    def __init__(self, conn: sqlite3.Connection):
+        self._conn = conn
+
+    def __getattr__(self, name: str):
+        return getattr(self._conn, name)
+
+    def __enter__(self) -> sqlite3.Connection:
+        return self._conn
+
+    def __exit__(self, exc_type, exc, tb) -> bool:
+        self._conn.close()
+        return False
 
 
 def _open_conn() -> sqlite3.Connection:
     """Open a fresh SQLite connection (caller MUST close it)."""
-    global _db_initialized
     os.makedirs(_DB_DIR, exist_ok=True)
     conn = sqlite3.connect(_DB_PATH, timeout=10)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA busy_timeout=5000")
     conn.row_factory = sqlite3.Row
-    if not _db_initialized:
-        with _init_lock:
-            if not _db_initialized:
-                conn.executescript(_CREATE_TABLE)
-                _db_initialized = True
+    with _init_lock:
+        conn.executescript(_CREATE_TABLE)
     return conn
 
 
-@contextmanager
 def _get_conn():
-    """Context manager that opens and closes a SQLite connection."""
-    conn = _open_conn()
-    try:
-        yield conn
-    finally:
-        conn.close()
+    """Return a connection proxy usable both directly and with `with`."""
+    return _ConnectionProxy(_open_conn())
 
 
 def _now() -> float:

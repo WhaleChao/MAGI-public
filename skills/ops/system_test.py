@@ -8,14 +8,23 @@ Returns a structured JSON report of all subsystem statuses.
 """
 
 import json
+import logging
 import os
 import subprocess
 import sys
 import time
 import socket
 from datetime import datetime
+from pathlib import Path
 
-MAGI_DIR = os.environ.get("MAGI_ROOT_DIR", os.path.expanduser("~/Desktop/MAGI"))
+_MAGI_ROOT = Path(__file__).resolve().parents[2]
+if str(_MAGI_ROOT) not in sys.path:
+    sys.path.insert(0, str(_MAGI_ROOT))
+
+from api.runtime_paths import get_magi_root_dir
+from skills.ops import health_probes as _health_probes
+
+MAGI_DIR = str(get_magi_root_dir())
 if MAGI_DIR not in sys.path:
     sys.path.insert(0, MAGI_DIR)
 
@@ -87,18 +96,15 @@ def _http_get(url, timeout=5):
 
 def _probe_omlx_chat(timeout: int = 8) -> dict:
     """Probe oMLX via GET /v1/models (no inference, avoids blocking the single inference slot)."""
-    import requests as _requests
-    omlx_port = int(os.environ.get("MAGI_OMLX_PORT", "8080"))
-    try:
-        r = _requests.get(f"http://127.0.0.1:{omlx_port}/v1/models", timeout=min(timeout, 5))
-        if r.status_code == 200:
-            models = [m.get("id", "") for m in r.json().get("data", [])]
-            if models:
-                return {"pass": True, "detail": f"oMLX 正常 — {len(models)} models: {', '.join(models[:3])}"}
-            return {"pass": False, "detail": "oMLX /v1/models 回傳空模型清單"}
-        return {"pass": False, "detail": f"oMLX HTTP {r.status_code}"}
-    except Exception as e:
-        return {"pass": False, "detail": f"oMLX 無法連線: {e}"}
+    probe = _health_probes.probe_omlx_models(timeout_sec=timeout)
+    models = list(probe.get("models") or [])
+    if probe.get("pass"):
+        return {"pass": True, "detail": f"oMLX 正常 — {len(models)} models: {', '.join(models[:3])}"}
+    if int(probe.get("status_code") or 0) == 200:
+        return {"pass": False, "detail": "oMLX /v1/models 回傳空模型清單"}
+    if probe.get("error"):
+        return {"pass": False, "detail": f"oMLX 無法連線: {probe.get('error')}"}
+    return {"pass": False, "detail": f"oMLX HTTP {probe.get('status_code') or 0}"}
 
 
 def test_casper_ollama():
@@ -250,27 +256,43 @@ def test_daily_reflection():
     return {"pass": False, "detail": "daily_reflection.py 未找到"}
 
 
+def _resolve_omlx_model_label() -> str:
+    default_model = (os.environ.get("CASPER_LOCAL_MODEL") or "taide-12b").strip() or "taide-12b"
+    return _health_probes.resolve_omlx_model(default_model)
+
+
+def _probe_local_llm_inference(timeout: int = 30, retries: int = 2, backoff_sec: float = 1.5) -> dict:
+    """Run a bounded local TAIDE probe and retry once when oMLX is briefly saturated."""
+    probe = _health_probes.probe_local_chat(
+        timeout_sec=timeout,
+        retries=retries,
+        backoff_sec=backoff_sec,
+        default_model=(os.environ.get("CASPER_LOCAL_MODEL") or "taide-12b").strip() or "taide-12b",
+        models_timeout_sec=5,
+    )
+    if not probe.get("pass"):
+        models_probe = probe.get("models_probe") or {}
+        if int(models_probe.get("status_code") or 0) == 200 and not models_probe.get("models"):
+            return {"pass": False, "detail": "oMLX /v1/models 回傳空模型清單"}
+        return {"pass": False, "detail": f"TAIDE 無有效回覆: {probe.get('error') or models_probe.get('error') or 'oMLX unavailable'}"}
+
+    detail = (
+        f"TAIDE 推理正常 (omlx_direct, "
+        f"model={probe.get('model')}): "
+        f"'{str(probe.get('response') or '').strip()[:30]}...'"
+    )
+    if int(probe.get("attempt") or 1) > 1:
+        detail += f" [retry={probe.get('attempt')}]"
+    return {"pass": True, "detail": detail}
+
+
 def test_local_llm_inference():
     """Test local TAIDE inference with a short prompt via oMLX."""
     try:
-        from skills.bridge import melchior_client
-
-        result = melchior_client.quick_local_chat(
-            "請只回答 OK",
-            timeout=20,
-            model_hint="taide-12b",
-            num_predict=8,
+        return _probe_local_llm_inference(
+            timeout=int(os.environ.get("MAGI_SYSTEM_TEST_LOCAL_LLM_TIMEOUT", "30")),
+            retries=int(os.environ.get("MAGI_SYSTEM_TEST_LOCAL_LLM_RETRIES", "2")),
         )
-        if result.get("success") and str(result.get("response") or "").strip():
-            return {
-                "pass": True,
-                "detail": (
-                    f"TAIDE 推理正常 ({result.get('route')}, "
-                    f"model={result.get('model') or 'auto'}): "
-                    f"'{str(result.get('response') or '').strip()[:30]}...'"
-                ),
-            }
-        return {"pass": False, "detail": f"TAIDE 無有效回覆: {result.get('error') or 'empty response'}"}
     except Exception as e:
         return {"pass": False, "detail": f"TAIDE 推理失敗: {e}"}
 
@@ -349,7 +371,8 @@ def run_all_tests():
 
     # Save report
     report_path = os.path.join(MAGI_DIR, "static", "system_test_report.json")
-    with open(report_path, "w") as f:
+    os.makedirs(os.path.dirname(report_path), exist_ok=True)
+    with open(report_path, "w", encoding="utf-8") as f:
         json.dump(report, f, ensure_ascii=False, indent=2)
 
     return report

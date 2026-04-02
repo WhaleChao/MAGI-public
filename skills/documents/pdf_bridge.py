@@ -1449,8 +1449,16 @@ def _ultra_segment_note_with_model(
         return base_note
     if crosslingual:
         translated_note = _translate_note_to_traditional_chinese(base_note or source_text[:1200])
-        # Don't short-circuit with translated note — it's often fragmentary.
-        # Use it as a seed input for the LLM path below for better quality.
+        # If translation fallback already returned a properly structured note,
+        # trust it and skip the slower model pass.
+        if (
+            translated_note
+            and _summary_text_usable(translated_note)
+            and translated_note.startswith(f"【{label}】主題：")
+            and translated_note.count("\n- ") >= 1
+        ):
+            return translated_note
+        # Otherwise keep using it as a seed for the model path below.
         if translated_note and _summary_text_usable(translated_note):
             base_note = translated_note  # feed to LLM below as seed
     seed = _build_ultra_segment_seed(
@@ -1818,14 +1826,32 @@ def _ultra_final_summary_with_model(
     usable_notes = [str(note or "").strip() for note in notes if _summary_text_usable(note)]
     if not usable_notes:
         return ""
+    parsed_notes = [_parse_note(part) for part in usable_notes if str(part or "").strip()]
     final_mode = str(os.environ.get("MAGI_PDF_ULTRA_FINAL_MODE", "model") or "model").strip().lower()
     crosslingual = _needs_crosslingual_polish("\n".join(usable_notes[:3]))
     deterministic = _deterministic_merge(usable_notes) or "\n\n".join(usable_notes)
+    noisy_note_markers = ("可能案名/主題", "【可能章節】", "【文件概況】", "【重點摘要】")
+    has_noisy_notes = any(marker in note for note in usable_notes for marker in noisy_note_markers)
+    small_structured_batch = (
+        parsed_notes
+        and len(parsed_notes) <= max(3, int(reduce_batch or 0))
+        and all(
+            title
+            and title != "未命名段落"
+            and bullets
+            and _score_title_candidate(title)[0] >= 2
+            for title, bullets in parsed_notes
+        )
+    )
     if crosslingual:
         translated_final = _translate_note_to_traditional_chinese(deterministic)
         if _final_output_usable(translated_final):
             return translated_final
     if final_mode in {"deterministic", "structured"} and not crosslingual:
+        return deterministic
+    if has_noisy_notes and deterministic:
+        return deterministic
+    if small_structured_batch and _final_output_usable(deterministic):
         return deterministic
     seed = "\n\n".join(usable_notes)
     # NOTE: 跳過 summarize_text_resilient（會 spawn openclaw-agent 佔 oMLX slot）。
@@ -1981,7 +2007,8 @@ def summarize_ultra_large_text(
         # Quality gate: reject cached summaries that are suspiciously short
         # relative to source text (likely from a previous degraded run).
         min_final_len = max(200, min(800, len(body) // 200))
-        if cached_final and len(cached_final) >= min_final_len:
+        structured_cached_final = "【文件概況】" in cached_final or "【重點摘要】" in cached_final or "【主題總覽】" in cached_final
+        if cached_final and (len(cached_final) >= min_final_len or structured_cached_final):
             return cached_final
     manifest = {
         "version": note_version,
@@ -2022,7 +2049,10 @@ def summarize_ultra_large_text(
             seg_text_len = len(str(segment.get("text") or ""))
             min_note_len = max(80, min(200, seg_text_len // 50))
             note_quality_ok = len(cached_note) >= min_note_len
-            if cached_note and note_quality_ok and int(cached.get("note_version") or 0) == note_version and cached_source != "seed":
+            cached_version_ok = int(cached.get("note_version") or 0) == note_version
+            can_reuse_model_note = cached_note and cached_version_ok and cached_source == "model"
+            can_reuse_other_note = cached_note and cached_version_ok and note_quality_ok and cached_source != "seed"
+            if can_reuse_model_note or can_reuse_other_note:
                 notes[idx - 1] = cached_note
                 completed += 1
                 _persist_summary_state(
