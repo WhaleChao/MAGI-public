@@ -30,12 +30,12 @@ pip3 install requests mysql-connector-python
 ### 2. 複製審計腳本
 從 Casper 複製 Watcher 專用腳本：
 ```bash
-scp -r casper@100.97.29.92:/Users/ai/Desktop/MAGI/skills/watcher ~/Desktop/watcher
+scp -r casper@100.97.29.92:/Users/ai/Desktop/MAGI_v2/skills/watcher ~/Desktop/watcher
 ```
 
 或建立新目錄：
 ```bash
-mkdir -p ~/Desktop/MAGI/watcher
+mkdir -p ~/Desktop/MAGI_v2/watcher
 ```
 
 ### 3. 建立審計腳本 (audit_notary.py)
@@ -96,7 +96,7 @@ if __name__ == "__main__":
 crontab -e
 
 # 加入
-5 3 * * * /usr/bin/python3 ~/Desktop/MAGI/watcher/audit_notary.py >> ~/Desktop/MAGI/watcher/notary.log 2>&1
+5 3 * * * /usr/bin/python3 ~/Desktop/MAGI_v2/watcher/audit_notary.py >> ~/Desktop/MAGI_v2/watcher/notary.log 2>&1
 ```
 
 ### 5. 驗證 Keeper 連線

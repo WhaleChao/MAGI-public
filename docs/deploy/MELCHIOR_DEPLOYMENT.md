@@ -9,7 +9,7 @@
 
 ### 1. iron_dome_sync.py (新增)
 
-**來源:** Casper `/Users/ai/Desktop/MAGI/skills/ops/iron_dome_sync.py`  
+**來源:** Casper `/Users/ai/Desktop/MAGI_v2/skills/ops/iron_dome_sync.py`  
 **目標:** Melchior `D:\MAGI\skills\ops\iron_dome_sync.py`
 
 複製整個檔案過去即可。

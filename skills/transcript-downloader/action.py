@@ -60,7 +60,7 @@ ORCH_DIR = str(get_orch_dir())
 CODE_DIR = ORCH_DIR
 VENV_PY = str(get_skill_python())
 CONFIG_PATH = str(get_config_path("config.json"))
-DEFAULT_DOWNLOAD_FOLDER = os.path.expanduser("~/Desktop/MAGI/筆錄下載")
+DEFAULT_DOWNLOAD_FOLDER = os.path.expanduser("~/Desktop/MAGI_v2/筆錄下載")
 MANUAL_QUEUE_PATH = Path(
     os.environ.get(
         "MAGI_TRANSCRIPT_MANUAL_QUEUE_PATH",

@@ -60,7 +60,7 @@ ollama pull llama-3-taiwan-8b-instruct # Local Culture/Language
 ```
 
 ## 3. Configuration (.env)
-Create `~/Desktop/MAGI/MAGI/.env` (This configures the **NanoClaw Engine**):
+Create `~/Desktop/MAGI_v2/MAGI/.env` (This configures the **NanoClaw Engine**):
 
 ```env
 # --- NanoClaw Kernel Settings ---
@@ -87,7 +87,7 @@ Casper is the "Clock Tower". He must wake up every 15 minutes.
 1.  Type `crontab -e`
 2.  Add this line:
     ```bash
-    */15 * * * * /Users/<USER>/Desktop/MAGI/venv/bin/python /Users/<USER>/Desktop/MAGI/core/casper_heartbeat.py >> /tmp/magi_heartbeat.log 2>&1
+    */15 * * * * /Users/<USER>/Desktop/MAGI_v2/venv/bin/python /Users/<USER>/Desktop/MAGI_v2/core/casper_heartbeat.py >> /tmp/magi_heartbeat.log 2>&1
     ```
 
 ## 5. First Contact (Admin Binding)

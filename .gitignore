@@ -249,3 +249,26 @@ skills/legal_attest/generator/res/*.pdf
 
 # Metrics data (auto-generated)
 _metrics/
+
+# Test/validation reports (auto-generated)
+static/full_validation_*
+static/integration_smoke_*
+static/product_validation_*
+static/repair_report.*
+static/skills_purify_*
+static/smoke_three_channels_*
+
+# Non-MAGI documents
+刑事政策.pdf
+LAF_結案修復驗證指南.md
+MAGI_重構部署指南.md
+
+# OpenClaw check scripts (deprecated)
+check_codex_distributed_health.sh
+check_openclaw_*.sh
+toggle_codex_distributed_mode.sh
+
+# Runtime state (not source)
+.brain_ngl_hint.json
+magi_status.json
+Caddyfile_openclaw

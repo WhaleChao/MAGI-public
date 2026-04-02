@@ -18,7 +18,7 @@ metadata:
 - 多步驟對話流程：依序詢問寄件人姓名/地址、收件人姓名/地址、信函內文
 - 支援分段輸入長篇內文，回覆「OK」後合併產出
 - 自動排版至郵局存證信函格式（使用台灣楷體字型）
-- PDF 輸出至 `/Users/ai/Desktop/MAGI/exports/` 並產生下載連結
+- PDF 輸出至 `/Users/ai/Desktop/MAGI_v2/exports/` 並產生下載連結
 - 每位使用者獨立對話狀態，支援多人同時使用
 - 狀態持久化至 `.agent/legal_attest_state.json`
 

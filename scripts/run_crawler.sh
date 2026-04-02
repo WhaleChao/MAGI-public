@@ -10,10 +10,10 @@ echo "🕷️ MAGI 爬蟲啟動 - $(date '+%Y-%m-%d %H:%M:%S')" >> "$LOG_FILE"
 echo "========================================" >> "$LOG_FILE"
 
 # 確保 Python 環境
-source /Users/ai/Desktop/MAGI/venv/bin/activate 2>/dev/null || true
+source /Users/ai/Desktop/MAGI_v2/venv/bin/activate 2>/dev/null || true
 
 # 透過 wrapper 執行（含反爬保護 + 實務見解更新 + 判決收集）
-cd /Users/ai/Desktop/MAGI/skills/law_firm
+cd /Users/ai/Desktop/MAGI_v2/skills/law_firm
 python3 legal_crawler_wrapper.py --task run_sync >> "$LOG_FILE" 2>&1
 
 echo "" >> "$LOG_FILE"

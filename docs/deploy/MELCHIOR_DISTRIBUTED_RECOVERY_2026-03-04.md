@@ -51,11 +51,11 @@ curl -X POST http://127.0.0.1:5002/api/warmup -H "Content-Type: application/json
 ## 自測 / 自修復指令
 - 自測：
 ```
-python3 /Users/ai/Desktop/MAGI/scripts/ops/selftest_big_brain.py
+python3 /Users/ai/Desktop/MAGI_v2/scripts/ops/selftest_big_brain.py
 ```
 - 自我修復（強制重啟 distributed）：
 ```
-python3 /Users/ai/Desktop/MAGI/scripts/ops/repair_big_brain.py
+python3 /Users/ai/Desktop/MAGI_v2/scripts/ops/repair_big_brain.py
 ```
 
 ## 成功標準

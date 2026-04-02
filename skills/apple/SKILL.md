@@ -55,7 +55,7 @@ stt = transcribe_audio("/path/to/audio.aiff", engine="apple_intelligence")
 ## Smoke Test
 
 ```bash
-/Users/ai/Desktop/MAGI/venv/bin/python3 /Users/ai/Desktop/MAGI/scripts/tests/apple_intelligence_smoke_test.py
+/Users/ai/Desktop/MAGI_v2/venv/bin/python3 /Users/ai/Desktop/MAGI_v2/scripts/tests/apple_intelligence_smoke_test.py
 ```
 
 ## Files

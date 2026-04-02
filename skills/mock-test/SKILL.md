@@ -50,6 +50,6 @@ python action.py --task notify
 
 ## Dependencies
 
-- `/Users/ai/Desktop/MAGI/skills/file-review-orchestrator/` — 閱卷技能
-- `/Users/ai/Desktop/MAGI/skills/laf-orchestrator/` — 法扶技能
-- `/Users/ai/Desktop/MAGI/skills/laf-portal-automation/` — Portal 自動化
+- `/Users/ai/Desktop/MAGI_v2/skills/file-review-orchestrator/` — 閱卷技能
+- `/Users/ai/Desktop/MAGI_v2/skills/laf-orchestrator/` — 法扶技能
+- `/Users/ai/Desktop/MAGI_v2/skills/laf-portal-automation/` — Portal 自動化

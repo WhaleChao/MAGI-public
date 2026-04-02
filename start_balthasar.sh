@@ -6,7 +6,7 @@ export PATH="/opt/homebrew/opt/node@22/bin:$PATH"
 export ASSISTANT_NAME="Balthasar"
 
 # 2. Go to Directory
-cd ~/Desktop/MAGI/nanoclaw
+cd ~/Desktop/MAGI_v2/nanoclaw
 
 # 3. Check for Auth
 if [ ! -d "store/auth" ]; then

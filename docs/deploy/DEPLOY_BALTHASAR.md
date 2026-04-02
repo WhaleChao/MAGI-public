@@ -37,7 +37,7 @@ npm install -g openclaw
 ### 4. 複製設定檔
 從 Casper 複製 BALTHASAR 專屬設定：
 ```bash
-scp casper@100.97.29.92:/Users/ai/Desktop/MAGI/SOUL_BALTHASAR.md ~/Desktop/
+scp casper@100.97.29.92:/Users/ai/Desktop/MAGI_v2/SOUL_BALTHASAR.md ~/Desktop/
 ```
 
 ### 5. 設定 OpenClaw Agent

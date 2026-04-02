@@ -6,7 +6,7 @@ export PATH="/opt/homebrew/opt/node@22/bin:$PATH"
 export ASSISTANT_NAME="Melchior"
 
 # 2. Go to Directory
-cd ~/Desktop/MAGI/nanoclaw
+cd ~/Desktop/MAGI_v2/nanoclaw
 
 # 3. Check for Auth (Optional for non-primary nodes, but kept for consistency)
 if [ ! -d "store/auth" ]; then

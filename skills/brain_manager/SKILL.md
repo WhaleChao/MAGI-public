@@ -81,6 +81,6 @@ print(status)
 ## 📂 Implementation Details
 
 -   **Controller**: `skills/brain_manager/action.py`
--   **RPC Binary**: `~/Desktop/MAGI/bin/rpc-server`
--   **Startup Script**: `~/Desktop/MAGI/start_rpc.sh`
+-   **RPC Binary**: `~/Desktop/MAGI_v2/bin/rpc-server`
+-   **Startup Script**: `~/Desktop/MAGI_v2/start_rpc.sh`
 -   **Remote API**: `http://100.116.54.16:8080/v1`

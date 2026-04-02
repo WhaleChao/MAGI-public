@@ -12,7 +12,7 @@ metadata:
 
 # laf-orchestrator
 
-MAGI 法扶自動化核心技能。法扶六大流程的正式正本位於 `/Users/ai/Desktop/MAGI/casper_ecosystem/law_firm_orchestrators/laf_orchestrator.py`，並透過 `/Users/ai/Desktop/MAGI/skills/laf-orchestrator/action.py` 封裝執行。
+MAGI 法扶自動化核心技能。法扶六大流程的正式正本位於 `/Users/ai/Desktop/MAGI_v2/casper_ecosystem/law_firm_orchestrators/laf_orchestrator.py`，並透過 `/Users/ai/Desktop/MAGI_v2/skills/laf-orchestrator/action.py` 封裝執行。
 
 ## 指令
 
@@ -454,9 +454,9 @@ python action.py --task self_test
 
 ## Dependencies
 
-- `/Users/ai/Desktop/MAGI/casper_ecosystem/law_firm_orchestrators/laf_orchestrator.py` — 六大流程正式正本（開案 / 撤案 / 疑義 / 費用 / 二階段 / 報結）
-- `/Users/ai/Desktop/MAGI/casper_ecosystem/law_firm_orchestrators/laf_automation_v2.py` — 法扶網站 Selenium 自動化
-- `/Users/ai/Desktop/MAGI/skills/legal/laf.py` — Gmail monitor、專員來信附件下載與一般法扶郵件處理
+- `/Users/ai/Desktop/MAGI_v2/casper_ecosystem/law_firm_orchestrators/laf_orchestrator.py` — 六大流程正式正本（開案 / 撤案 / 疑義 / 費用 / 二階段 / 報結）
+- `/Users/ai/Desktop/MAGI_v2/casper_ecosystem/law_firm_orchestrators/laf_automation_v2.py` — 法扶網站 Selenium 自動化
+- `/Users/ai/Desktop/MAGI_v2/skills/legal/laf.py` — Gmail monitor、專員來信附件下載與一般法扶郵件處理
 - `calendar_events` DB 表 — Google Calendar 事件
 - `cases` DB 表 — 案件資料（含 `start_date` 開辦日期）
 - `case_todos` DB 表 — 待辦事項

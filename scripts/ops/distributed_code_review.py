@@ -19,7 +19,7 @@ sys.path.append(project_root)
 
 from skills.casper.code_review import review_skill
 
-TARGET_DIR = os.path.expanduser("~/Desktop/MAGI/skills")
+TARGET_DIR = os.path.expanduser("~/Desktop/MAGI_v2/skills")
 
 if __name__ == "__main__":
     review_skill.run_review(TARGET_DIR)

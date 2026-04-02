@@ -46,7 +46,7 @@ This skill allows CASPER to automate reporting tasks on the LAF Portal by readin
   - `python3 /Users/ai/Desktop/code/laf_training_simulator/train_casper_from_snapshots.py`
 - Training payload for CASPER:
   - `/Users/ai/Desktop/code/laf_training_simulator/snapshot_data/casper_laf_training.json`
-  - `/Users/ai/Desktop/MAGI/skills/laf-portal-automation/references/snapshot_training.json`
+  - `/Users/ai/Desktop/MAGI_v2/skills/laf-portal-automation/references/snapshot_training.json`
 
 ## Natural Language Commands (zh-TW)
 
@@ -69,9 +69,9 @@ This skill allows CASPER to automate reporting tasks on the LAF Portal by readin
 ## Router CLI（訓練匹配）
 
 - 列出已載入樣本：
-  - `python /Users/ai/Desktop/MAGI/skills/laf-portal-automation/action.py --list`
+  - `python /Users/ai/Desktop/MAGI_v2/skills/laf-portal-automation/action.py --list`
 - 以自然語言匹配回報流程：
-  - `python /Users/ai/Desktop/MAGI/skills/laf-portal-automation/action.py --query "幫我做開案回報，當事人是蕭仁俊（只填寫不送出）"`
+  - `python /Users/ai/Desktop/MAGI_v2/skills/laf-portal-automation/action.py --query "幫我做開案回報，當事人是蕭仁俊（只填寫不送出）"`
 
 ## Capability: Case Type & Document Validation
 - **Input**: Case Directory in `01_案件/法扶案件/`.

@@ -31,11 +31,11 @@ Use `backup_restore.py` for safe rotating backups and explicit restores.
 
 ```bash
 # backup remote + local, keep 30 days
-/Users/ai/Desktop/code/.venv/bin/python /Users/ai/Desktop/MAGI/skills/ops/database/backup_restore.py --task backup --target both --keep-days 30
+/Users/ai/Desktop/code/.venv/bin/python /Users/ai/Desktop/MAGI_v2/skills/ops/database/backup_restore.py --task backup --target both --keep-days 30
 
 # list recent backups
-/Users/ai/Desktop/code/.venv/bin/python /Users/ai/Desktop/MAGI/skills/ops/database/backup_restore.py --task list --limit 20
+/Users/ai/Desktop/code/.venv/bin/python /Users/ai/Desktop/MAGI_v2/skills/ops/database/backup_restore.py --task list --limit 20
 
 # restore a backup to remote (requires explicit confirmation flag)
-/Users/ai/Desktop/code/.venv/bin/python /Users/ai/Desktop/MAGI/skills/ops/database/backup_restore.py --task restore --file /abs/path/to/backup.sql.gz --restore-target remote --yes-i-understand
+/Users/ai/Desktop/code/.venv/bin/python /Users/ai/Desktop/MAGI_v2/skills/ops/database/backup_restore.py --task restore --file /abs/path/to/backup.sql.gz --restore-target remote --yes-i-understand
 ```
