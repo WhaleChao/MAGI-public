@@ -216,22 +216,28 @@ def test_iron_dome():
 
 
 def test_autopilot_schedule():
-    """Test nightly schedule (OpenClaw Cron) is running."""
+    """Test nightly schedule: cron_jobs.json exists and Discord bot cron scheduler is running."""
     import subprocess
     try:
-        cron_alive = subprocess.run(
-            ["pgrep", "-f", "skills/ops/openclaw_cron_runner.py"],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-        ).returncode == 0
-        
-        if cron_alive:
-            return {"pass": True, "detail": "OpenClaw 排程器運行中"}
-            
-        legacy_plist = os.path.expanduser("~/Library/LaunchAgents/com.magi.autopilot.nightly.plist")
-        if os.path.exists(legacy_plist):
-            return {"pass": True, "detail": "legacy plist 存在"}
-            
-        return {"pass": False, "detail": "找不到排程器或 plist"}
+        # 1. 檢查 cron_jobs.json 是否存在且有任務
+        cron_path = os.path.join(os.environ.get("MAGI_ROOT_DIR", ""), "cron_jobs.json")
+        if not os.path.exists(cron_path):
+            cron_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "cron_jobs.json")
+        if os.path.exists(cron_path):
+            import json
+            with open(cron_path, encoding="utf-8") as f:
+                jobs = json.load(f)
+            enabled = [j for j in jobs if j.get("enabled", True)]
+            if enabled:
+                # 2. 檢查 discord_bot.py（內建 cron scheduler）是否在跑
+                bot_alive = subprocess.run(
+                    ["pgrep", "-f", "discord_bot.py"],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+                ).returncode == 0
+                if bot_alive:
+                    return {"pass": True, "detail": f"Discord cron scheduler 運行中，{len(enabled)} 個任務啟用"}
+                return {"pass": False, "detail": f"cron_jobs.json 有 {len(enabled)} 個任務，但 discord_bot.py 未運行"}
+        return {"pass": False, "detail": "cron_jobs.json 不存在"}
     except Exception as e:
         return {"pass": False, "detail": str(e)}
 

@@ -489,6 +489,29 @@ except Exception as e:
 def legacy_worldmonitor_redirect():
     return redirect("/intel")
 
+
+@app.route('/intel')
+@login_required
+def intel_panel():
+    """全球情報面板 — 列出最新的 worldmonitor 報告。"""
+    report_dir = os.path.join(_MAGI_ROOT, "static", "worldmonitor_reports")
+    reports = []
+    if os.path.isdir(report_dir):
+        for f in sorted(os.listdir(report_dir), reverse=True)[:20]:
+            if f.endswith(".md"):
+                fpath = os.path.join(report_dir, f)
+                try:
+                    content = open(fpath, encoding="utf-8").read()[:5000]
+                    reports.append({"name": f, "content": content})
+                except Exception:
+                    reports.append({"name": f, "content": "(讀取失敗)"})
+    if not reports:
+        return "<h2>🌐 全球情報面板</h2><p>尚無報告。</p>", 200
+    html_parts = ["<h2>🌐 全球情報面板</h2>"]
+    for r in reports:
+        html_parts.append(f"<h3>{r['name']}</h3><pre>{r['content']}</pre><hr>")
+    return "\n".join(html_parts), 200
+
 @app.route('/dashboard')
 @login_required
 def dashboard():

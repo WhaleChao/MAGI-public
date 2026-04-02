@@ -1,35 +1,38 @@
 ---
 name: worldmonitor-intel
-description: 全球情報監控 — 透過 worldmonitor 儀表板收集、分析、記憶國際情勢。
+description: 全球情報監控 — 收集、分析國際情勢並產出報告。
 ---
 
-# worldmonitor-intel — 全球情報監控 MAGI 技能
+# worldmonitor-intel — 全球情報監控
 
 ## 基本資訊
 - **技能名稱**: worldmonitor-intel
-- **功能**: 透過 worldmonitor 全球情報儀表板收集、分析、記憶國際情勢
-- **觸發方式**: 排程 (cron) + 手動指令
-- **依賴**: worldmonitor API, MAGI mem_bridge (記憶), melchior_client (推理)
+- **功能**: 收集全球情報（新聞、地緣政治、市場動態），分析後產出摘要報告
+- **觸發方式**: cron_jobs.json 排程（每 6 小時）+ 手動指令
+- **依賴**: MAGI mem_bridge (記憶), oMLX/TAIDE (推理)
 
 ## 使用方式
 
 ### 自動排程
-每 6 小時自動抓取一次全球情報摘要，儲存到 MAGI 記憶系統。
+每 6 小時由 Discord cron scheduler 觸發 `@MAGI 執行全球情報收集`。
 
-### 手動指令
-```
-/worldmonitor           # 取得最新全球情報摘要
-/worldmonitor <region>  # 取得特定區域情報
-/worldmonitor threats   # 取得威脅警報
-```
+### 手動
+在 TG/DC 輸入：`執行全球情報收集` 或 `全球情報`
 
 ## 技術架構
 ```
-worldmonitor (vercel dev :3000)
-    ↓ API calls
-worldmonitor-intel skill (action.py)
-    ↓ 推理分析
-Melchior (Ollama/MoE)
-    ↓ 記憶儲存
-MAGI mem_bridge → LanceDB Pro
+cron_jobs.json (每 6 小時)
+    ↓ Discord cron scheduler
+orchestrator → embedding router → worldmonitor-intel/action.py
+    ↓ 網路抓取 + 推理分析
+oMLX / TAIDE-12b
+    ↓ 報告輸出
+static/worldmonitor_reports/intel_YYYYMMDD_HHMMSS.md
+    ↓ Web 存取
+/intel (dashboard 內嵌面板)
 ```
+
+## 輸出
+- 報告存放：`static/worldmonitor_reports/`
+- Web 面板：`/intel`（需登入）
+- 純本地執行，不依賴外部雲端服務或 edge functions
