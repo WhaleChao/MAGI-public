@@ -1,0 +1,920 @@
+import logging
+import os
+import re
+import sys
+
+import requests
+
+from skills.bridge.http_pool import get_session as _get_session
+
+# Add project root
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
+
+from skills.memory.mem_bridge import recall, remember, _embedding_cache, _cosine_similarity
+from skills.bridge import melchior_client
+
+# Configuration
+LOCAL_OLLAMA_GENERATE_URL = os.environ.get("CASPER_LOCAL_OLLAMA_URL", "http://127.0.0.1:8080/v1/chat/completions")
+LOCAL_MODEL_NAME = os.environ.get("CASPER_LOCAL_MODEL", "TAIDE-12b-Chat-mlx-4bit")
+DISTRIBUTED_MODEL_NAME = os.environ.get("CASPER_DISTRIBUTED_MODEL", "taide-12b")
+ENABLE_SELF_CHECK = os.environ.get("CASPER_SELF_CHECK", "0") != "0"
+ENABLE_CHAT_SELF_CHECK = os.environ.get("CASPER_CHAT_SELF_CHECK", "0") != "0"
+CASPER_LOCAL_FIRST_DEFAULT = os.environ.get("CASPER_LOCAL_FIRST_DEFAULT", "1").strip().lower() in {"1", "true", "yes", "on"}
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("GroundedAI")
+
+# Auto-memorize config
+ENABLE_AUTO_MEMORIZE = os.environ.get("CASPER_AUTO_MEMORIZE", "1") != "0"
+_AUTO_MEM_MAX_LEN = 800  # max chars per memory entry (compress long answers)
+
+# ── 角色設定幻覺偵測 ──────────────────────────────────────────────
+# LLM 有時不回答問題，反而自行生成一大段「CASPER 角色描述」。
+# 這些內容若存入記憶會形成正回饋循環，必須攔截。
+_PERSONA_HALLUCINATION_KEYWORDS: list[str] = [
+    "你扮演",
+    "扮演 CASPER",
+    "CASPER 角色",
+    "法律事務說明",
+    "核心工作項目",
+    "夜間巡邏",
+    "確保事務所",
+    "運作核心",
+    "CASPER 法律事務",
+    "流程總覽",
+    "安全第一",
+    "法律規範及服務",
+    # ── prompt leak patterns: LLM 原封不動吐出 system prompt ──
+    "你是 CASPER（MAGI-01）",
+    "記憶優先於網路摘要",
+    "[長期記憶]",
+    "[網路研究]",
+    "[近期對話]",
+    "[規則]",
+    "不可硬猜",
+    "寫入長期記憶",
+    "MAGI-01），請以繁體中文",
+    "承接上下文",
+    "覆誦正確的資訊",
+    # ── task hallucination: LLM 假裝正在執行任務而非真正回答 ──
+    "正在為",
+    "正在尋求",
+    "尋求法律援助",
+    "法律緊急服務",
+    "正在搜尋相關",
+    "正在查詢相關",
+    "正在連接",
+    "正在聯繫",
+]
+_PERSONA_HALLUCINATION_THRESHOLD = 2  # 命中 >= 2 個即判定（降低門檻防止 prompt 洩漏）
+
+
+def _is_persona_hallucination(text: str) -> bool:
+    """偵測 LLM 回覆是否為角色設定幻覺（非正常回答）。"""
+    if not text:
+        return False
+    hits = sum(1 for kw in _PERSONA_HALLUCINATION_KEYWORDS if kw in text)
+    return hits >= _PERSONA_HALLUCINATION_THRESHOLD
+
+
+def _is_garbage_output(text: str) -> bool:
+    """偵測 LLM 回覆是否為亂碼/垃圾輸出。
+    典型特徵：大量無意義數字、重複標點、極低中文/英文字元比例。
+    """
+    if not text or len(text) < 20:
+        return False
+    # 移除空白後檢查
+    stripped = text.replace(" ", "").replace("\n", "")
+    if not stripped:
+        return True
+    # 計算有意義字元比例（中文 + ASCII 字母）
+    meaningful = sum(1 for c in stripped if '\u4e00' <= c <= '\u9fff' or c.isalpha())
+    ratio = meaningful / len(stripped)
+    # 正常中文回覆 meaningful ratio 通常 > 0.4
+    # 亂碼如 "03. - 032. - 0034) 0。-00。" ratio 極低
+    if ratio < 0.15 and len(stripped) > 30:
+        return True
+    # 重複片段偵測：將文本分成 10 字元的 chunk，若超過 60% 重複則為垃圾
+    if len(stripped) > 60:
+        chunks = [stripped[i:i+10] for i in range(0, len(stripped)-9, 10)]
+        if chunks and len(set(chunks)) / len(chunks) < 0.4:
+            return True
+    return False
+
+
+def _is_parrot_response(query: str, answer: str) -> bool:
+    """偵測 LLM 是否只是複述問題而非真正回答（鸚鵡式回覆）。
+    只攔截明顯的「照抄問題 + 空殼模板」，避免誤殺正常對話。
+    """
+    if not query or not answer:
+        return False
+    q = query.strip()
+    a = answer.strip()
+    # 回答夠長就不是鸚鵡（超過問題長度 3 倍以上）
+    if len(a) > len(q) * 3:
+        return False
+    # 回答必須幾乎完全由問題原文組成才算鸚鵡
+    # 移除問題原文後，檢查剩餘是否只剩模板碎片
+    if q not in a:
+        return False
+    remainder = a.replace(q, "", 1).strip()
+    # 移除常見模板碎片
+    for frag in ("記憶依據：", "記憶依據：...", "...", "？", "。", "！", "\n", "："):
+        remainder = remainder.replace(frag, "")
+    remainder = remainder.strip()
+    # 只有剩餘內容極少（幾乎沒有新資訊）才判定為鸚鵡
+    if len(remainder) < 10:
+        return True
+    return False
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# 三層反幻覺系統 (Three-Layer Anti-Hallucination)
+# Layer 3: Query Tier Classification
+# Layer 1: Statute / Context Noise Filtering
+# Layer 2: Semantic Coherence Check
+# ══════════════════════════════════════════════════════════════════════════
+
+_GREETING_PATTERNS: list[str] = [
+    "你好", "早安", "午安", "晚安", "嗨", "hi", "hello", "hey",
+    "good morning", "good afternoon", "good evening", "good night",
+    "哈囉", "安安", "嘿", "yo", "哈嘍", "您好",
+]
+
+_GREETING_RESPONSES: list[str] = [
+    "你好！有什麼我能幫你的嗎？",
+    "嗨！今天過得如何？有什麼需要協助的嗎？",
+    "你好！我是 CASPER，隨時為你服務。",
+    "哈囉！需要我幫忙什麼嗎？",
+]
+
+# ── Embedding-based tier classification ──────────────────────────────
+# Anchor sentences for each tier. The classifier embeds the query and
+# computes cosine similarity against these anchors, picking the tier
+# with the highest max-similarity. This avoids keyword false positives
+# like "解釋為什麼天空是藍的" being misclassified as COMPLEX.
+_TIER_ANCHORS: dict[str, list[str]] = {
+    "COMPLEX": [
+        # 法律實體
+        "民法第184條侵權行為損害賠償",
+        "刑法詐欺罪構成要件",
+        "請分析這份判決的法律見解",
+        "這個案件的訴訟策略是什麼",
+        "法扶開辦結案報結流程",
+        "強制執行聲請裁定抗告",
+        "契約違約損害賠償請求權",
+        "被告原告上訴理由",
+        "法條適用與法院實務見解",
+        "律師委任狀收文遞狀",
+        "消費者債務清理更生方案",
+        "離婚監護權扶養費",
+    ],
+    "SIMPLE": [
+        # 日常對話、生活問題
+        "今天天氣如何",
+        "晚餐吃什麼好",
+        "幫我比較這兩家餐廳",
+        "解釋為什麼天空是藍的",
+        "推薦一部好看的電影",
+        "這個週末有什麼活動",
+        "我的行程是什麼",
+        "幫我翻譯這段英文",
+        "你覺得怎麼樣",
+        "提醒我明天開會",
+        "最近有什麼新聞",
+        "幫我算一下這個數字",
+        "今天有什麼行程安排",
+        "這個文件幫我翻譯一下",
+        "明天幾點要開會",
+        "幫我查一下地址",
+    ],
+}
+
+# Lazy cache for tier anchor embeddings (computed once on first call)
+_tier_anchor_embeddings: dict[str, list[tuple]] = {}
+_TIER_ANCHOR_LOCK = __import__("threading").Lock()
+
+# Threshold: query must score >= this against COMPLEX anchors to be COMPLEX.
+# Below this → SIMPLE. This prevents borderline queries from triggering full pipeline.
+_COMPLEX_TIER_THRESHOLD = 0.55
+# Margin: COMPLEX max-similarity must exceed SIMPLE max-similarity by this amount.
+# Prevents borderline queries like "幫我翻譯" (C=0.64 vs S=0.63) from being COMPLEX.
+_COMPLEX_MARGIN = 0.05
+
+
+def _get_tier_anchor_embeddings() -> dict[str, list[tuple]]:
+    """Lazy-init: embed all tier anchors once and cache."""
+    if _tier_anchor_embeddings:
+        return _tier_anchor_embeddings
+    with _TIER_ANCHOR_LOCK:
+        if _tier_anchor_embeddings:
+            return _tier_anchor_embeddings
+        for tier, anchors in _TIER_ANCHORS.items():
+            embs = []
+            for anchor in anchors:
+                try:
+                    emb = _embedding_cache(anchor)
+                    if any(v != 0.0 for v in emb[:5]):
+                        embs.append(emb)
+                except Exception:
+                    pass
+            _tier_anchor_embeddings[tier] = embs
+        logger.info("🏷️ Tier anchor embeddings cached: %s",
+                     {k: len(v) for k, v in _tier_anchor_embeddings.items()})
+        return _tier_anchor_embeddings
+
+
+def _classify_query_tier(message: str) -> str:
+    """Layer 3: 將查詢分類為 GREETING / SIMPLE / COMPLEX 三級。
+    GREETING → 模板回覆（不呼叫 LLM）
+    SIMPLE   → 輕量推理（top_k=1, temp=0.3, 不載入法條記憶）
+    COMPLEX  → 完整管線（top_k=4, temp=0.25, 法條需 score≥0.65）
+
+    分級策略：
+    1. GREETING: 短文 + 招呼詞命中 → 直接判定（不需 embedding）
+    2. COMPLEX vs SIMPLE: embedding cosine similarity 比對 anchor vectors
+       取 max similarity，COMPLEX 需 ≥ _COMPLEX_TIER_THRESHOLD 才成立
+    """
+    msg = (message or "").strip().lower()
+
+    # ── Fast path: GREETING（短問候不需 embedding）──
+    if len(msg) < 15 and any(g in msg for g in _GREETING_PATTERNS):
+        return "GREETING"
+
+    # ── Embedding-based classification ──
+    try:
+        q_emb = _embedding_cache(msg[:200])
+        # Check if embedding is valid (non-zero)
+        if not any(v != 0.0 for v in q_emb[:5]):
+            # Embedding server down — fallback to SIMPLE (safe default)
+            logger.debug("Tier classification: embedding zero, defaulting to SIMPLE")
+            return "SIMPLE"
+
+        anchors = _get_tier_anchor_embeddings()
+        # Compute max similarity for each tier
+        tier_scores: dict[str, float] = {}
+        for tier, embs in anchors.items():
+            tier_scores[tier] = max(
+                (_cosine_similarity(q_emb, emb) for emb in embs),
+                default=0.0,
+            )
+
+        c_score = tier_scores.get("COMPLEX", 0.0)
+        s_score = tier_scores.get("SIMPLE", 0.0)
+
+        # COMPLEX must: (1) clear absolute threshold, (2) win by margin over SIMPLE
+        if c_score >= _COMPLEX_TIER_THRESHOLD and c_score > s_score + _COMPLEX_MARGIN:
+            logger.debug("🏷️ Tier: COMPLEX (C=%.3f, S=%.3f, margin=%.3f)",
+                         c_score, s_score, c_score - s_score)
+            return "COMPLEX"
+
+        logger.debug("🏷️ Tier: SIMPLE (C=%.3f, S=%.3f)", c_score, s_score)
+        return "SIMPLE"
+
+    except Exception as e:
+        logger.warning("Tier classification failed, defaulting to SIMPLE: %s", e)
+        return "SIMPLE"
+
+
+def _filter_statute_memories(memories: list[dict], tier: str) -> list[dict]:
+    """Layer 1: 依查詢等級過濾法條 / 噪音記憶。
+    - GREETING/SIMPLE: 移除所有 statute 來源
+    - COMPLEX: 保留 statute 但要求 score ≥ 0.65
+    """
+    if tier in ("GREETING", "SIMPLE"):
+        return [m for m in memories
+                if "statute" not in str(m.get("source") or "").lower()]
+    # COMPLEX: keep statute only if score is high enough
+    filtered = []
+    for m in memories:
+        src = str(m.get("source") or "").lower()
+        if "statute" in src:
+            if (m.get("score") or 0) >= 0.65:
+                filtered.append(m)
+        else:
+            filtered.append(m)
+    return filtered
+
+
+def _is_incoherent_response(query: str, answer: str, threshold: float = 0.25) -> bool:
+    """Layer 2: 語義一致性檢查 — 用 cosine similarity 比對 query↔answer。
+    若相似度低於 threshold，判定為不連貫回覆（LLM 跑題）。
+    """
+    if not query or not answer or len(answer.strip()) < 20:
+        return False
+    try:
+        q_emb = _embedding_cache(query[:200])
+        a_emb = _embedding_cache(answer[:500])
+        sim = _cosine_similarity(q_emb, a_emb)
+        if sim < threshold:
+            logger.warning("⚠️ Incoherent response (cosine=%.3f < %.2f)", sim, threshold)
+            return True
+        return False
+    except Exception as e:
+        logger.debug("Coherence check skipped: %s", e)
+        return False
+
+
+# ── 實體幻覺偵測（Entity Hallucination Detection）──────────────────
+# 檢查 LLM 回覆中提到的法條編號、案號是否真的出現在輸入 context 裡。
+# 如果回覆憑空捏造法條，這裡會攔截。
+_RE_LAW_ARTICLE = re.compile(
+    r"(?:民法|刑法|民事訴訟法|刑事訴訟法|行政訴訟法|公司法|勞基法|勞動基準法|"
+    r"消費者保護法|消保法|家事事件法|強制執行法|土地法|所得稅法|"
+    r"道路交通管理處罰條例|社會救助法|性別平等工作法|個人資料保護法|個資法)"
+    r"第\s*(\d+(?:-\d+)?)\s*條",
+)
+_RE_CASE_NUMBER = re.compile(
+    r"\d{2,3}\s*年度?\s*[\u4e00-\u9fff]{1,4}\s*字\s*第?\s*\d+\s*號",
+)
+
+
+def _has_entity_hallucination(answer: str, context: str) -> bool:
+    """檢查回覆中的法條/案號是否存在於 context（記憶 + query）。
+    只在回覆中出現法律實體但 context 完全沒有對應時才判定幻覺。
+    """
+    if not answer:
+        return False
+    # 抽取回覆中的法條引用
+    answer_articles = set(_RE_LAW_ARTICLE.findall(answer))
+    answer_cases = set(_RE_CASE_NUMBER.findall(answer))
+
+    # 沒有引用法律實體 → 不需檢查
+    if not answer_articles and not answer_cases:
+        return False
+
+    # context = query + memory_context 合併
+    ctx = context or ""
+
+    # 檢查法條：回覆提到的法條是否至少部分出現在 context 裡
+    if answer_articles:
+        ctx_articles = set(_RE_LAW_ARTICLE.findall(ctx))
+        fabricated = answer_articles - ctx_articles
+        if fabricated and not ctx_articles:
+            # context 完全沒有法條，但回覆憑空引用 → 高度疑似幻覺
+            logger.warning("⚠️ Entity hallucination: fabricated articles %s (no articles in context)", fabricated)
+            return True
+        # context 有一些法條但回覆多引了 → 只在比例很高時才判定
+        if fabricated and len(fabricated) > len(ctx_articles) + 1:
+            logger.warning("⚠️ Entity hallucination: fabricated articles %s exceeds context %s", fabricated, ctx_articles)
+            return True
+
+    # 檢查案號：回覆提到案號但 context 完全沒有
+    if answer_cases:
+        ctx_cases = set(_RE_CASE_NUMBER.findall(ctx))
+        fabricated_cases = answer_cases - ctx_cases
+        if fabricated_cases and not ctx_cases:
+            logger.warning("⚠️ Entity hallucination: fabricated case numbers %s", fabricated_cases)
+            return True
+
+    return False
+
+
+def _auto_remember(query: str, answer: str, mode: str = "chat"):
+    """
+    Asynchronously store a Q+A pair into the vector DB.
+    Runs in a background thread to avoid blocking the response.
+    """
+    if not ENABLE_AUTO_MEMORIZE:
+        return
+    if not query or not answer or len(answer.strip()) < 10:
+        return
+    # 攔截角色設定幻覺，避免污染記憶庫
+    if _is_persona_hallucination(answer):
+        logger.warning("⛔ Auto-memorize blocked: persona hallucination detected")
+        return
+    # 攔截亂碼/垃圾輸出，避免污染記憶庫形成回饋迴圈
+    if _is_garbage_output(answer):
+        logger.warning("⛔ Auto-memorize blocked: garbage output detected")
+        return
+    # 攔截鸚鵡式回覆：LLM 只是複述問題而非真正回答
+    if _is_parrot_response(query, answer):
+        logger.warning("⛔ Auto-memorize blocked: parrot response detected")
+        return
+    # 攔截 codebase-ingest 殘留污染：回答中包含自動內化標記
+    if "codebase-ingest" in answer or "[CODE內化]" in answer:
+        logger.warning("⛔ Auto-memorize blocked: codebase-ingest leak in answer")
+        return
+    # 攔截系統通知/制式輸出：這些不是有意義的對話，不需存入記憶
+    _sys_noise = ["殭屍巡邏報告", "Zombie Patrol", "Image Generated", "已輸出排版良好的翻譯",
+                  "已輸出 PDF 摘要", "已輸出雙語對照", "重試摘要佇列"]
+    if any(n in answer for n in _sys_noise):
+        logger.debug("Auto-memorize skipped: system notification output")
+        return
+
+    import threading
+    from datetime import datetime
+
+    def _do_remember():
+        try:
+            ts = datetime.now().strftime("%Y%m%d_%H%M")
+            # Compress: keep query + truncated answer
+            q_short = query[:200].strip()
+            a_short = answer[:_AUTO_MEM_MAX_LEN].strip()
+            content = f"[Q] {q_short}\n[A] {a_short}"
+            source = f"chatlog|mode={mode}|ts={ts}"
+            ok = remember(content, source=source)
+            if ok:
+                logger.debug(f"Auto-memorized: {q_short[:50]}...")
+        except Exception as e:
+            logger.warning(f"Auto-memorize failed (non-blocking): {e}")
+
+    threading.Thread(target=_do_remember, daemon=True).start()
+
+
+def _format_memories(memories):
+    if not memories:
+        return "無相關記憶。"
+    lines = []
+    for idx, m in enumerate(memories, 1):
+        score = m.get("score")
+        score_str = f"{score:.4f}" if isinstance(score, (int, float)) else "n/a"
+        lines.append(f"{idx}. {m.get('content', '')} (來源: {m.get('source', 'unknown')}, 相關度: {score_str})")
+    return "\n".join(lines)
+
+
+def _estimate_tokens(text: str) -> int:
+    """
+    Estimate token count for mixed CJK / Latin text.
+    CJK characters ≈ 1.5 tokens each; Latin ≈ 1 token per ~4 chars.
+    """
+    if not text:
+        return 0
+    cjk = 0
+    latin_chars = 0
+    for ch in text:
+        cp = ord(ch)
+        if (0x4E00 <= cp <= 0x9FFF or 0x3400 <= cp <= 0x4DBF
+                or 0xF900 <= cp <= 0xFAFF or 0x3000 <= cp <= 0x303F
+                or 0xFF00 <= cp <= 0xFFEF):
+            cjk += 1
+        else:
+            latin_chars += 1
+    return int(cjk * 1.5) + (latin_chars // 4) + 1
+
+
+def _summarize_memories_if_needed(query: str, memories: list, max_tokens: int = 1200) -> str:
+    """
+    If the combined memory text exceeds the token budget, truncate by recall
+    score order.  Uses token estimation instead of raw character count for
+    better accuracy with mixed CJK/Latin text.
+
+    Memories are already sorted by relevance (recall score), so we just take
+    the top entries that fit within max_tokens.  No LLM needed — saves ~15s
+    and frees the inference slot for actual conversation.
+    """
+    if not memories:
+        return "無相關記憶。"
+
+    raw_text = _format_memories(memories)
+    if _estimate_tokens(raw_text) <= max_tokens:
+        return raw_text
+
+    logger.info(
+        "Memory context too long (~%d tokens, budget %d). Truncating by relevance...",
+        _estimate_tokens(raw_text), max_tokens,
+    )
+    # Memories are already ranked by recall score — take top N that fit
+    truncated = []
+    tokens_used = 0
+    for idx, m in enumerate(memories, 1):
+        content = m.get("content", "")
+        score = m.get("score")
+        score_str = f"{score:.4f}" if isinstance(score, (int, float)) else "n/a"
+        entry = f"{idx}. {content} (來源: {m.get('source', 'unknown')}, 相關度: {score_str})"
+        entry_tokens = _estimate_tokens(entry)
+        if tokens_used + entry_tokens > max_tokens:
+            break
+        truncated.append(entry)
+        tokens_used += entry_tokens
+    return "\n".join(truncated) or "無相關記憶。"
+
+
+def _wants_chatlog(query: str) -> bool:
+    q = (query or "").lower()
+    markers = [
+        "回顧", "回憶", "之前說", "你記得", "對話記錄", "聊天紀錄", "聊天記錄",
+        "what did i say", "remember what i said", "conversation log",
+    ]
+    return any(m.lower() in q for m in markers)
+
+
+def _filter_chatlog_memories(query: str, memories: list[dict]) -> list[dict]:
+    """
+    Chatlog is useful only when the user explicitly asks to recall past conversation.
+    By default, suppress it to avoid polluting long-term knowledge retrieval.
+    """
+    mems = [m for m in (memories or []) if isinstance(m, dict)]
+    # 過濾垃圾記憶，避免污染 context
+    mems = [m for m in mems if not _is_garbage_output(str(m.get("content") or ""))]
+    if _wants_chatlog(query):
+        return mems
+    non_chat = [m for m in mems if "chatlog|" not in str(m.get("source") or "")]
+    # Filter out codebase-ingest memories for casual/non-technical queries
+    _tech_markers = ["code", "程式", "函數", "function", "class", "module", "import", "bug", "error", "api"]
+    _q_lower = query.lower()
+    if not any(t in _q_lower for t in _tech_markers):
+        non_chat = [m for m in non_chat
+                    if "codebase-ingest" not in str(m.get("source") or "")
+                    and "codebase-ingest" not in str(m.get("context") or "")]
+    return non_chat or mems
+
+
+def _needs_research(text):
+    lowered = (text or "").lower()
+
+    # 使用者明確要求上網查詢 → 一律觸發
+    explicit_web = ["上網", "幫我搜", "google", "網路上", "搜尋一下", "查一下最新"]
+    if any(k in lowered for k in explicit_web):
+        return True
+
+    # Tightened: only trigger web research for clearly external/dynamic queries.
+    # Removed overly broad "是什麼", "how to", "查詢" which cause false positives on casual chat.
+    dynamic_keywords = [
+        "最新", "news", "today", "recent", "價格", "匯率", "股價",
+        "誰是", "what is", "who is", "搜尋",
+        "最近發生", "最新新聞", "今日",
+        "天氣", "氣溫", "溫度", "weather", "forecast",
+        "上網", "網路查", "幫我查", "查一下",
+        "現在", "目前",
+    ]
+    return any(k in lowered for k in dynamic_keywords)
+
+
+def _is_factual_question(text: str) -> bool:
+    """判斷是否為需要事實回答的問題（而非閒聊）。
+    用於在記憶不足時決定是否上網搜尋。"""
+    factual_signals = [
+        "什麼", "多少", "幾", "哪", "怎麼", "如何", "為什麼",
+        "是否", "有沒有", "能不能",
+        "天氣", "溫度", "新聞", "價格", "時間",
+        "誰是", "what", "how", "who", "when", "where", "why",
+    ]
+    lowered = (text or "").lower()
+    return any(k in lowered for k in factual_signals)
+
+
+def _generate_local(prompt, temperature=0.4, timeout=90, num_ctx=6144):
+    # Try oMLX first (faster on Apple Silicon, TAIDE-12b primary)
+    try:
+        omlx_chat = getattr(melchior_client, "_chat_omlx", None)
+        omlx_avail = getattr(melchior_client, "_omlx_available", None)
+        if callable(omlx_chat) and callable(omlx_avail) and omlx_avail():
+            r = omlx_chat(prompt=prompt, temperature=temperature, timeout=max(10, timeout), max_tokens=2048)
+            if r.get("success") and r.get("response"):
+                return r["response"].strip()
+    except Exception as e:
+        logger.debug("oMLX fallthrough: %s", e)
+
+    # Fallback: call oMLX /v1/chat/completions directly (OpenAI-compatible format)
+    payload = {
+        "model": LOCAL_MODEL_NAME,
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": temperature,
+        "max_tokens": 2048,
+        "stream": False,
+    }
+    response = _get_session().post(LOCAL_OLLAMA_GENERATE_URL, json=payload, timeout=timeout)
+    if response.status_code != 200:
+        logger.warning(f"LLM Error {response.status_code}: {response.text[:200]}")
+        raise RuntimeError(f"LLM Error {response.status_code}")
+    data = response.json()
+    # OpenAI-compatible response format
+    choices = data.get("choices") or []
+    if choices:
+        return (choices[0].get("message") or {}).get("content", "").strip()
+    # Legacy Ollama format fallback
+    return data.get("response", "").strip()
+
+
+def _generate_remote(prompt, timeout=90):
+    # Dynamic routing: prefer Melchior /v1 (distributed) when reachable, otherwise fall back.
+    result = melchior_client.smart_chat(prompt, model_hint=DISTRIBUTED_MODEL_NAME, timeout=max(45, timeout), quality="high")
+    if result.get("success") and result.get("response"):
+        return result.get("response", "").strip()
+    raise RuntimeError(result.get("error") or "Distributed backend returned empty response")
+
+
+def _generate(prompt, temperature=0.4, timeout=90, num_ctx=6144):
+    """
+    Hybrid generation path:
+    - Default: local first, then remote fallback.
+    - If local-first disabled and mode is distributed: remote first.
+    """
+    mode = "unknown"
+    try:
+        from skills.brain_manager.action import get_brain_mode
+        mode = get_brain_mode()
+    except Exception:
+        logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 313, exc_info=True)
+
+    errors = []
+    remote_first = (mode == "distributed") and (not CASPER_LOCAL_FIRST_DEFAULT)
+
+    if remote_first:
+        try:
+            return _generate_remote(prompt, timeout=timeout)
+        except Exception as e:
+            errors.append(f"remote={e}")
+            logger.warning(f"Distributed backend failed, falling back to local: {e}")
+
+    try:
+        return _generate_local(prompt, temperature=temperature, timeout=timeout, num_ctx=num_ctx)
+    except Exception as e:
+        errors.append(f"local={e}")
+
+    try:
+        return _generate_remote(prompt, timeout=timeout)
+    except Exception as e:
+        errors.append(f"remote={e}")
+
+    raise RuntimeError(" ; ".join(errors) if errors else "No backend available")
+
+
+def _self_check_answer(query, answer, memory_context, web_context, conversation_history=""):
+    """
+    Lightweight second-pass validator for factual coherence.
+    Returns revised answer if needed, otherwise original.
+    """
+    if not ENABLE_SELF_CHECK:
+        return answer
+
+    # Skip self-check for short, low-risk answers
+    if not answer or len(answer) < 80:
+        return answer
+
+    # Compress contexts to save tokens — self-check only needs key facts
+    # Token-aware truncation: ~250 tokens for memory, ~150 for web
+    _mem = memory_context or "無"
+    _web = web_context or "無"
+    mem_brief = _mem[:500] if _estimate_tokens(_mem) <= 250 else _mem[:350]
+    web_brief = _web[:300] if _estimate_tokens(_web) <= 150 else _web[:200]
+
+    check_prompt = f"""檢查回答是否超出可用上下文。
+
+[記憶] {mem_brief}
+[研究] {web_brief}
+[問題] {query[:200]}
+[回答] {answer[:400]}
+
+一致 → OK。有幻覺 → REVISE + 修正版（繁體中文純文字）。
+"""
+    try:
+        verdict = _generate(check_prompt, temperature=0.1, timeout=35, num_ctx=4096)
+        if verdict.strip().upper().startswith("OK"):
+            return answer
+        if verdict.strip().upper().startswith("REVISE"):
+            parts = verdict.split("\n", 1)
+            if len(parts) > 1 and parts[1].strip():
+                return parts[1].strip()
+        return answer
+    except Exception as e:
+        logger.warning(f"Self-check skipped due to error: {e}")
+        return answer
+
+
+def ask_casper(query, conversation_history="", force_research=False):
+    """
+    Grounded response generation with memory-first context + anti-hallucination layers.
+    """
+    logger.info(f"🤔 Thinking about: {query}")
+
+    # ── Layer 3: Query Classification ──
+    tier = _classify_query_tier(query)
+    logger.info("🏷️ ask_casper tier: %s", tier)
+
+    _top_k = 2 if tier == "SIMPLE" else 4
+    memories = _filter_chatlog_memories(query, recall(query, top_k=_top_k))
+    # ── Layer 1: Statute / Noise Filter ──
+    memories = _filter_statute_memories(memories, tier)
+    # Compress context if too large to avoid LLM context overflow
+    memory_context = _summarize_memories_if_needed(query, memories, max_tokens=1200)
+
+    web_context = "無。"
+    # 智慧搜尋觸發：明確關鍵字、force、或「記憶不足 + 事實問題」才上網
+    memories_insufficient = len(memories) == 0
+    should_research = (
+        force_research
+        or _needs_research(query)
+        or (memories_insufficient and _is_factual_question(query))
+    )
+    if should_research:
+        try:
+            from skills.research.web_research import research_topic
+
+            reason = "force" if force_research else ("factual+no_mem" if memories_insufficient else "keyword")
+            logger.info(f"🌐 ask_casper auto-research ({reason})")
+            search_res = research_topic(query, depth=2)
+            if search_res.get("sources"):
+                web_context = search_res.get("combined_content", "")[:3500]
+        except Exception as e:
+            logger.warning(f"Web research failed in ask_casper: {e}")
+
+    prompt = f"""
+你是 CASPER（MAGI-01），負責穩定、可追溯、低幻覺的回答。
+
+[回答規則]
+1. 優先使用「長期記憶」；若不足再使用「網路研究」。
+2. 如果資訊不足，直接說「目前記憶與資料不足」，並指出缺口。
+3. 禁止編造細節。
+4. 回覆語言必須是繁體中文。
+5. 若使用者糾正您的錯誤或補充新資訊，請【務必明確總結並覆誦正確的資訊】，這會幫助系統將正確知識寫入長期記憶。
+
+[長期記憶]
+{memory_context}
+
+[網路研究]
+{web_context}
+
+[近期對話]
+{conversation_history or "無"}
+
+[使用者問題]
+{query}
+
+[輸出格式]
+- 先給 2-6 句直接回答。
+- 如有引用記憶，最後補一行「記憶依據：...」。
+- 不要使用 Markdown 語法（**粗體**、`程式碼`、### 標題等）。純文字即可。
+"""
+
+    try:
+        answer = _generate(prompt, temperature=0.25, timeout=180, num_ctx=6144)
+        answer = answer or "目前暫時無法產生可靠回覆。"
+        # 攔截鸚鵡式回覆
+        if _is_parrot_response(query, answer):
+            logger.warning("⛔ ask_casper: parrot response detected, retrying once")
+            answer = _generate(prompt, temperature=0.3, timeout=120, num_ctx=6144)
+            if not answer or _is_parrot_response(query, answer):
+                return "目前記憶與資料不足，無法回答這個問題。請提供更多細節。"
+        # ── Layer 2: Semantic Coherence Check ──
+        if _is_incoherent_response(query, answer):
+            logger.warning("⛔ ask_casper: incoherent response, retrying with lower temp")
+            answer = _generate(prompt, temperature=0.15, timeout=120, num_ctx=6144)
+            if not answer or _is_incoherent_response(query, answer):
+                return "目前記憶與資料不足，無法提供與問題相關的回答。請提供更多細節。"
+        # ── Entity Hallucination Check ──
+        _entity_ctx = f"{query}\n{memory_context}"
+        if _has_entity_hallucination(answer, _entity_ctx):
+            logger.warning("⛔ ask_casper: entity hallucination (fabricated law articles/case numbers)")
+            answer = _generate(prompt, temperature=0.1, timeout=120, num_ctx=6144)
+            if not answer or _has_entity_hallucination(answer, _entity_ctx):
+                return "我的回覆中引用了無法確認的法條或案號，為避免誤導，請您確認具體法條後再詢問。"
+        final = _self_check_answer(
+            query=query,
+            answer=answer,
+            memory_context=memory_context,
+            web_context=web_context,
+            conversation_history=conversation_history,
+        )
+        _auto_remember(query, final, mode="ask")
+        return final
+    except Exception as e:
+        logger.error(f"❌ LLM Error: {e}")
+        return "系統忙碌中，暫時無法完成推理。"
+
+
+def chat_casper(message, conversation_history=""):
+    """
+    General conversational interface with 3-layer anti-hallucination.
+    Layer 3: Query tier → GREETING / SIMPLE / COMPLEX
+    Layer 1: Statute / noise memory filter per tier
+    Layer 2: Semantic coherence check on LLM output
+    """
+    logger.info(f"💬 Chatting: {message}")
+
+    # ── Layer 3: Query Classification ──
+    tier = _classify_query_tier(message)
+    logger.info("🏷️ Query tier: %s", tier)
+
+    # GREETING → 直接模板回覆，不走 LLM（零延遲、零幻覺風險）
+    if tier == "GREETING":
+        import random as _rng
+        greeting = _rng.choice(_GREETING_RESPONSES)
+        _auto_remember(message, greeting, mode="chat")
+        return greeting
+
+    # ── Tier-aware recall parameters ──
+    _top_k = 1 if tier == "SIMPLE" else 4
+    _temperature = 0.3 if tier == "SIMPLE" else 0.55
+
+    memories = _filter_chatlog_memories(message, recall(message, top_k=_top_k))
+    # ── Layer 1: Statute / Noise Filter ──
+    memories = _filter_statute_memories(memories, tier)
+    # Compress context if too large to avoid LLM context overflow
+    memory_context = _summarize_memories_if_needed(message, memories, max_tokens=1200)
+
+    web_context = "無。"
+    # 智慧搜尋觸發：明確關鍵字觸發，或「記憶不足 + 事實問題」才上網
+    # SIMPLE 級閒聊即使沒記憶也不搜尋，避免無謂延遲
+    memories_insufficient = len(memories) == 0
+    should_research = (
+        _needs_research(message)  # 明確關鍵字（天氣、最新、上網...）
+        or (memories_insufficient and _is_factual_question(message))  # 沒記憶 + 事實問題
+    )
+    if should_research:
+        try:
+            from skills.research.web_research import research_topic
+
+            reason = "factual+no_mem" if memories_insufficient else "keyword match"
+            logger.info(f"🌐 chat_casper auto-research ({reason}): {message}")
+            search_res = research_topic(message, depth=2)
+            if search_res.get("sources"):
+                web_context = search_res.get("combined_content", "")[:2800]
+        except Exception as e:
+            logger.warning(f"Web research failed in chat_casper: {e}")
+
+    prompt = f"""你是 CASPER（MAGI-01），請以繁體中文回答。
+你需要同時參考記憶與近期對話，保持前後一致。
+
+[規則]
+- 記憶優先於網路摘要。
+- 若資訊不足，直接承認不足，不可硬猜。
+- 若使用者在延續上一題，請承接上下文。
+- 若使用者糾正您的錯誤或補充新資訊，請【務必明確總結並覆誦正確的資訊】，這會幫助系統將正確知識寫入長期記憶。
+- 不要使用 Markdown 語法（**粗體**、`程式碼`、### 標題等）。純文字即可。
+
+[長期記憶]
+{memory_context}
+
+[網路研究]
+{web_context}
+
+[近期對話]
+{conversation_history or "無"}
+
+---
+
+{message}
+"""
+    try:
+        answer = _generate(prompt, temperature=_temperature, timeout=180, num_ctx=6144)
+        if answer:
+            # 攔截亂碼輸出：LLM 產出垃圾時重試一次
+            if _is_garbage_output(answer):
+                logger.warning("⛔ chat_casper: garbage output detected, retrying once")
+                answer = _generate(prompt, temperature=0.3, timeout=120, num_ctx=6144)
+                if not answer or _is_garbage_output(answer):
+                    return "抱歉，我剛才產生了異常輸出。請再試一次。"
+            # 攔截鸚鵡式回覆：LLM 只是複述問題而非真正回答
+            if _is_parrot_response(message, answer):
+                logger.warning("⛔ chat_casper: parrot response detected, retrying once")
+                answer = _generate(prompt, temperature=0.3, timeout=120, num_ctx=6144)
+                if not answer or _is_parrot_response(message, answer):
+                    return "抱歉，我目前無法提供有意義的回答。請換個方式再問一次。"
+            # 攔截角色設定幻覺：LLM 自行生成 CASPER 職責描述而非回答問題
+            if _is_persona_hallucination(answer):
+                logger.warning("⛔ chat_casper: persona hallucination detected, retrying once")
+                answer = _generate(prompt, temperature=0.3, timeout=120, num_ctx=6144)
+                if not answer or _is_persona_hallucination(answer):
+                    return "抱歉，我剛才跑題了。請再說一次你的問題，我會直接回答。"
+            # ── Layer 2: Semantic Coherence Check ──
+            if _is_incoherent_response(message, answer):
+                logger.warning("⛔ chat_casper: incoherent response, retrying with lower temp")
+                answer = _generate(prompt, temperature=0.2, timeout=120, num_ctx=6144)
+                if not answer or _is_incoherent_response(message, answer):
+                    return "抱歉，我剛才的回覆偏離了你的問題。請再說一次，我會更專注回答。"
+            # ── Entity Hallucination Check ──
+            _entity_ctx = f"{message}\n{memory_context}"
+            if _has_entity_hallucination(answer, _entity_ctx):
+                logger.warning("⛔ chat_casper: entity hallucination detected")
+                answer = _generate(prompt, temperature=0.15, timeout=120, num_ctx=6144)
+                if not answer or _has_entity_hallucination(answer, _entity_ctx):
+                    return "我的回覆中引用了無法確認的法條或案號，為避免誤導，建議您查閱原始法規。"
+            # Self-check disabled for chat by default (CASPER_CHAT_SELF_CHECK=0)
+            # to reduce latency from ~90s to ~25s. Only query mode keeps self-check.
+            if ENABLE_CHAT_SELF_CHECK and _needs_research(message):
+                answer = _self_check_answer(
+                    query=message,
+                    answer=answer,
+                    memory_context=memory_context,
+                    web_context=web_context,
+                    conversation_history=conversation_history,
+                )
+            _auto_remember(message, answer, mode="chat")
+            return answer
+    except Exception as e:
+        logger.error(f"Chat Error: {e}")
+        return "我目前有點忙碌，請稍後再試一次。"
+    return "目前沒有足夠資訊可以穩定回答。"
+
+def analyze_content(prompt, timeout=300):
+    """
+    Dedicated function for content analysis (Code, Documents) without persona/search overhead.
+    """
+    try:
+        logger.info(f"🧠 Analyzing content (Timeout={timeout}s)...")
+        # Use the same hybrid path as CASPER generation:
+        # - distributed mode: Melchior first (better quality/speed on GPU), then local fallback
+        # - local mode: local first, then Melchior fallback
+        return _generate(prompt, temperature=0.2, timeout=timeout, num_ctx=8192)
+    except Exception as e:
+        logger.error(f"Analysis Error: {e}")
+        return f"System functionality limited: {e}"
+
+if __name__ == "__main__":
+    if len(sys.argv) > 1:
+        q = sys.argv[1]
+        print(ask_casper(q))
+    else:
+        print("Usage: python grounded_ai.py 'Question'")

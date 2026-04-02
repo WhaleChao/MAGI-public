@@ -1,0 +1,240 @@
+{% extends "base.html" %}
+
+{% block progress %}
+<div class="progress-bar">
+    <div class="progress-step done"><div class="progress-dot"></div> 歡迎</div>
+    <div class="progress-line"></div>
+    <div class="progress-step done"><div class="progress-dot"></div> 硬體</div>
+    <div class="progress-line"></div>
+    <div class="progress-step done"><div class="progress-dot"></div> 模型</div>
+    <div class="progress-line"></div>
+    <div class="progress-step active"><div class="progress-dot"></div> 設定</div>
+    <div class="progress-line"></div>
+    <div class="progress-step"><div class="progress-dot"></div> 完成</div>
+</div>
+{% endblock %}
+
+{% block content %}
+<form action="/review" method="POST">
+
+<!-- Section: Admin -->
+<div class="card">
+    <h2>管理員身分</h2>
+    <p>設定 MAGI 的管理員資訊。只有管理員可以操控 MAGI 的核心功能。</p>
+
+    <div class="form-group">
+        <label>管理員顯示名稱</label>
+        <input type="text" name="admin_name" placeholder="例：王大明" required>
+    </div>
+    <div class="form-group">
+        <label>管理員 LINE User ID</label>
+        <div class="hint">在 LINE Developers Console 的 Your user ID，格式為 Uxxxxxxxx...</div>
+        <input type="text" name="admin_line_id" placeholder="Uxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx">
+    </div>
+</div>
+
+<!-- Section: LINE -->
+<div class="card">
+    <h2>LINE Messaging API</h2>
+    <p>MAGI 透過 LINE 與您溝通。請至 <a href="https://developers.line.biz/" target="_blank" style="color: var(--accent);">LINE Developers</a> 建立 Messaging API channel。</p>
+
+    <div class="form-group">
+        <label>Channel Access Token</label>
+        <div class="hint">在 Messaging API 頁籤下的 Channel access token (long-lived)</div>
+        <input type="password" name="line_token" placeholder="Channel Access Token" required>
+    </div>
+    <div class="form-group">
+        <label>Channel Secret</label>
+        <div class="hint">在 Basic Settings 頁籤下的 Channel secret</div>
+        <input type="password" name="line_secret" placeholder="Channel Secret" required>
+    </div>
+    <div class="form-group">
+        <label>公開 URL（Webhook 用）</label>
+        <div class="hint">Tailscale URL 或 Cloudflare Tunnel URL，留空則自動使用 Cloudflare Quick Tunnel</div>
+        <input type="text" name="public_url" placeholder="https://your-node.ts.net">
+    </div>
+
+    <button type="button" class="btn btn-sm btn-secondary" onclick="testLine()">測試 LINE 連線</button>
+    <span id="line-result" style="margin-left: 8px; font-size: 13px;"></span>
+</div>
+
+<!-- Section: Database -->
+<div class="card">
+    <h2>資料庫設定</h2>
+    <p>MAGI 使用 MariaDB 儲存向量記憶。</p>
+
+    <div class="form-row">
+        <div class="form-group">
+            <label>資料庫主機</label>
+            <input type="text" name="db_host" value="127.0.0.1" required>
+        </div>
+        <div class="form-group">
+            <label>連接埠</label>
+            <input type="number" name="db_port" value="3306">
+        </div>
+    </div>
+    <div class="form-row">
+        <div class="form-group">
+            <label>使用者名稱</label>
+            <input type="text" name="db_user" placeholder="magi" required>
+        </div>
+        <div class="form-group">
+            <label>密碼</label>
+            <input type="password" name="db_password" placeholder="資料庫密碼" required>
+        </div>
+    </div>
+
+    <button type="button" class="btn btn-sm btn-secondary" onclick="testDb()">測試資料庫連線</button>
+    <span id="db-result" style="margin-left: 8px; font-size: 13px;"></span>
+
+    <details style="margin-top: 16px;">
+        <summary>遠端資料庫（選用）</summary>
+        <p style="font-size: 13px; color: var(--muted); margin: 8px 0;">如有遠端 Windows 資料庫用於案件管理（OSC），請在此填寫。</p>
+        <div class="form-row">
+            <div class="form-group">
+                <label>遠端主機</label>
+                <input type="text" name="remote_db_host" placeholder="100.x.x.x">
+            </div>
+            <div class="form-group">
+                <label>遠端連接埠</label>
+                <input type="number" name="remote_db_port" value="3306">
+            </div>
+        </div>
+        <div class="form-row">
+            <div class="form-group">
+                <label>遠端使用者</label>
+                <input type="text" name="remote_db_user" placeholder="">
+            </div>
+            <div class="form-group">
+                <label>遠端密碼</label>
+                <input type="password" name="remote_db_password" placeholder="">
+            </div>
+        </div>
+    </details>
+</div>
+
+<!-- Section: LLM Config -->
+<div class="card">
+    <h2>AI 模型設定</h2>
+
+    <div class="form-group">
+        <label>推理引擎</label>
+        <select name="inference_engine">
+            {% if hw.metal_support and hw.has_omlx %}
+                <option value="omlx" selected>oMLX (Apple Silicon MLX)</option>
+                <option value="ollama">Ollama (GGUF)</option>
+            {% elif hw.has_ollama %}
+                <option value="ollama" selected>Ollama (GGUF)</option>
+                <option value="omlx">oMLX (Apple Silicon MLX)</option>
+            {% else %}
+                <option value="ollama" selected>Ollama (GGUF)</option>
+            {% endif %}
+        </select>
+    </div>
+
+    <div class="form-group">
+        <label>主要對話模型</label>
+        <div class="hint">用於日常對話、法律諮詢、文件處理</div>
+        <input type="text" name="main_model" value="{% if hw.metal_support %}taide-12b{% else %}taide-lx-7b-chat{% endif %}">
+    </div>
+
+    <div class="form-row">
+        <div class="form-group">
+            <label>分類器模型</label>
+            <input type="text" name="classifier_model" value="{% if hw.metal_support %}taide-12b{% else %}qwen2.5:7b{% endif %}">
+        </div>
+        <div class="form-group">
+            <label>備援模型</label>
+            <input type="text" name="fallback_model" value="{% if hw.metal_support %}Qwen3.5-9B-4bit{% else %}qwen2.5:7b{% endif %}">
+        </div>
+    </div>
+
+    {% if hw.metal_support %}
+    <div class="form-group">
+        <label>摘要模型 (oMLX)</label>
+        <input type="text" name="summary_model" value="TAIDE-12b-Chat-mlx-4bit">
+    </div>
+    <div class="form-row">
+        <div class="form-group">
+            <label>視覺模型</label>
+            <input type="text" name="vision_model" value="GLM-OCR-bf16">
+        </div>
+        <div class="form-group">
+            <label>OCR 模型</label>
+            <input type="text" name="ocr_model" value="GLM-OCR-bf16">
+        </div>
+    </div>
+    {% endif %}
+</div>
+
+<!-- Section: Optional Services -->
+<div class="card">
+    <h2>選用服務</h2>
+    <p>以下服務為選用，可稍後在 .env 中手動補充。</p>
+
+    <details>
+        <summary>Discord Bot</summary>
+        <div class="form-group">
+            <label>Bot Token</label>
+            <input type="password" name="discord_token" placeholder="">
+        </div>
+        <div class="form-group">
+            <label>管理員 User ID</label>
+            <input type="text" name="discord_admin_id" placeholder="">
+        </div>
+    </details>
+
+    <details>
+        <summary>Telegram Bot</summary>
+        <div class="form-group">
+            <label>Bot Token</label>
+            <input type="password" name="telegram_token" placeholder="">
+        </div>
+        <div class="form-group">
+            <label>管理員 ID</label>
+            <input type="text" name="telegram_admin_id" placeholder="">
+        </div>
+    </details>
+</div>
+
+<div class="btn-bar">
+    <a href="/models" class="btn btn-secondary">&larr; 上一步</a>
+    <button type="submit" class="btn btn-primary">檢視設定 &rarr;</button>
+</div>
+
+</form>
+{% endblock %}
+
+{% block scripts %}
+<script>
+async function testLine() {
+    const token = document.querySelector('input[name="line_token"]').value;
+    const el = document.getElementById('line-result');
+    el.textContent = '測試中...';
+    try {
+        const r = await apiPost('/api/test-line', {token});
+        el.textContent = r.ok ? r.message : r.error;
+        el.style.color = r.ok ? 'var(--green)' : 'var(--red)';
+    } catch (e) {
+        el.textContent = e.message;
+        el.style.color = 'var(--red)';
+    }
+}
+async function testDb() {
+    const host = document.querySelector('input[name="db_host"]').value;
+    const port = document.querySelector('input[name="db_port"]').value;
+    const user = document.querySelector('input[name="db_user"]').value;
+    const pw = document.querySelector('input[name="db_password"]').value;
+    const el = document.getElementById('db-result');
+    el.textContent = '測試中...';
+    try {
+        const r = await apiPost('/api/test-db', {host, port, user, password: pw});
+        el.textContent = r.ok ? r.message : r.error;
+        el.style.color = r.ok ? 'var(--green)' : 'var(--red)';
+    } catch (e) {
+        el.textContent = e.message;
+        el.style.color = 'var(--red)';
+    }
+}
+</script>
+{% endblock %}

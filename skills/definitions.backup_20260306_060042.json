@@ -1,0 +1,1943 @@
+{
+  "_meta": {
+    "version": "1.0.0",
+    "description": "MAGI Skill Definitions for OpenClaw Integration",
+    "updated": "2026-02-18",
+    "api_base": "http://localhost:5003"
+  },
+  "tools": [
+    {
+      "name": "web_search",
+      "description": "Search the web for information. Use when user asks to find, look up, or search for current information, news, or general knowledge.",
+      "endpoint": "/search",
+      "method": "POST",
+      "sage": "casper",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "The search query to look up"
+          },
+          "num_results": {
+            "type": "integer",
+            "description": "Number of results to return (default: 5)"
+          }
+        },
+        "required": [
+          "query"
+        ]
+      }
+    },
+    {
+      "name": "deep_research",
+      "description": "Conduct in-depth research on a topic by aggregating multiple sources. Use for complex topics requiring comprehensive analysis.",
+      "endpoint": "/research",
+      "method": "POST",
+      "sage": "casper",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "topic": {
+            "type": "string",
+            "description": "The topic to research thoroughly"
+          },
+          "depth": {
+            "type": "integer",
+            "description": "Depth of research (1-5, default: 3)"
+          }
+        },
+        "required": [
+          "topic"
+        ]
+      }
+    },
+    {
+      "name": "fetch_url",
+      "description": "Fetch and extract content from a specific URL. Use when user provides a URL to read or analyze.",
+      "endpoint": "/fetch",
+      "method": "POST",
+      "sage": "casper",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "url": {
+            "type": "string",
+            "description": "The URL to fetch content from"
+          }
+        },
+        "required": [
+          "url"
+        ]
+      }
+    },
+    {
+      "name": "analyze_image",
+      "description": "Analyze and describe an image using Melchior's vision capabilities. Use when user asks about image content, OCR, or visual analysis.",
+      "endpoint": "/vision",
+      "method": "POST",
+      "sage": "melchior",
+      "requires_gpu": true,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "image_path": {
+            "type": "string",
+            "description": "Absolute path to the image file"
+          },
+          "prompt": {
+            "type": "string",
+            "description": "Specific question or instruction for image analysis (default: 'Describe this image in detail')"
+          }
+        },
+        "required": [
+          "image_path"
+        ]
+      }
+    },
+    {
+      "name": "summarize_text",
+      "description": "Summarize long text content using Balthasar. Use for condensing articles, documents, or lengthy responses.",
+      "endpoint": "/summarize",
+      "method": "POST",
+      "sage": "balthasar",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string",
+            "description": "The text content to summarize"
+          }
+        },
+        "required": [
+          "text"
+        ]
+      }
+    },
+    {
+      "name": "save_memory",
+      "description": "Save important information to long-term vector memory. Use when user explicitly asks to remember something or when important facts should be stored.",
+      "endpoint": "/remember",
+      "method": "POST",
+      "sage": "keeper",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "content": {
+            "type": "string",
+            "description": "The content to remember"
+          },
+          "source": {
+            "type": "string",
+            "description": "Source identifier (default: 'openclaw')"
+          }
+        },
+        "required": [
+          "content"
+        ]
+      }
+    },
+    {
+      "name": "recall_memory",
+      "description": "Recall relevant memories from vector database. Use when user asks 'what did I say about...' or to retrieve previously stored context.",
+      "endpoint": "/recall",
+      "method": "POST",
+      "sage": "keeper",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "Query to search memories"
+          },
+          "top_k": {
+            "type": "integer",
+            "description": "Number of memories to retrieve (default: 3)"
+          }
+        },
+        "required": [
+          "query"
+        ]
+      }
+    },
+    {
+      "name": "query_clients",
+      "description": "Search law firm clients by keyword. Use when user asks about clients, cases, or client information.",
+      "endpoint": "/clients",
+      "method": "GET",
+      "sage": "casper",
+      "category": "law_firm",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "q": {
+            "type": "string",
+            "description": "Keyword to search clients"
+          }
+        },
+        "required": [
+          "q"
+        ]
+      }
+    },
+    {
+      "name": "add_client",
+      "description": "Add a new client to the law firm database. Use when user wants to register a new client.",
+      "endpoint": "/clients",
+      "method": "POST",
+      "sage": "casper",
+      "category": "law_firm",
+      "iron_dome": true,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string",
+            "description": "Client code (e.g., 'C2026-001')"
+          },
+          "name": {
+            "type": "string",
+            "description": "Client name"
+          },
+          "contact": {
+            "type": "string",
+            "description": "Contact person"
+          },
+          "phone": {
+            "type": "string",
+            "description": "Phone number"
+          },
+          "address": {
+            "type": "string",
+            "description": "Address"
+          }
+        },
+        "required": [
+          "code",
+          "name"
+        ]
+      }
+    },
+    {
+      "name": "list_meetings",
+      "description": "List upcoming meetings from calendar. Use when user asks about schedule, appointments, or upcoming events.",
+      "endpoint": "/meetings",
+      "method": "GET",
+      "sage": "casper",
+      "category": "law_firm",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "date": {
+            "type": "string",
+            "description": "Date filter in YYYY-MM-DD format (optional)"
+          }
+        },
+        "required": []
+      }
+    },
+    {
+      "name": "book_meeting",
+      "description": "Book a new meeting or appointment. Use when user wants to schedule a meeting.",
+      "endpoint": "/meetings",
+      "method": "POST",
+      "sage": "casper",
+      "category": "law_firm",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string",
+            "description": "Meeting title/subject"
+          },
+          "start": {
+            "type": "string",
+            "description": "Start time in ISO format (e.g., '2026-02-08T14:00:00')"
+          },
+          "duration": {
+            "type": "integer",
+            "description": "Duration in minutes (default: 60)"
+          },
+          "client": {
+            "type": "string",
+            "description": "Client code (optional)"
+          },
+          "location": {
+            "type": "string",
+            "description": "Meeting location (default: '事務所')"
+          }
+        },
+        "required": [
+          "title",
+          "start"
+        ]
+      }
+    },
+    {
+      "name": "legal_automation",
+      "description": "Execute legacy legal automation scripts (judgment search, court filing, etc.). Use for specialized legal tasks.",
+      "endpoint": "/legal/{skill_name}",
+      "method": "POST",
+      "sage": "melchior",
+      "category": "legal",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "skill_name": {
+            "type": "string",
+            "description": "Name of the legal skill to execute (e.g., 'search_judgment', 'court_filing')"
+          },
+          "args": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Arguments to pass to the skill"
+          }
+        },
+        "required": [
+          "skill_name"
+        ]
+      }
+    },
+    {
+      "name": "send_alert",
+      "description": "Send emergency alert via Red Phone (LINE + Discord). Use for critical notifications or when admin must be contacted immediately.",
+      "endpoint": "/alert",
+      "method": "POST",
+      "sage": "casper",
+      "category": "ops",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "message": {
+            "type": "string",
+            "description": "Alert message content"
+          },
+          "severity": {
+            "type": "string",
+            "enum": [
+              "info",
+              "warning",
+              "critical"
+            ],
+            "description": "Alert severity level (default: 'warning')"
+          }
+        },
+        "required": [
+          "message"
+        ]
+      }
+    },
+    {
+      "name": "create_skill",
+      "description": "Generate a new MAGI skill from description. Use when user wants to create a new automation or tool.",
+      "endpoint": "/skills",
+      "method": "POST",
+      "sage": "melchior",
+      "category": "evolution",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Skill name (snake_case)"
+          },
+          "description": {
+            "type": "string",
+            "description": "What the skill does"
+          },
+          "instructions": {
+            "type": "string",
+            "description": "Detailed instructions for skill implementation"
+          }
+        },
+        "required": [
+          "name",
+          "description",
+          "instructions"
+        ]
+      }
+    },
+    {
+      "name": "melchior_search",
+      "description": "Perform web search via Melchior with Iron Dome security filtering. Use for safe, filtered search results.",
+      "endpoint": "bridge:melchior_bridge.melchior_search",
+      "method": "BRIDGE",
+      "sage": "melchior",
+      "requires_gpu": true,
+      "iron_dome": true,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "The search query"
+          },
+          "num_results": {
+            "type": "integer",
+            "description": "Number of results (default: 5)"
+          }
+        },
+        "required": [
+          "query"
+        ]
+      }
+    },
+    {
+      "name": "acquire_skill",
+      "description": "Automatically acquire a new skill: searches GitHub, downloads, analyzes with Iron Dome, installs if safe, or generates with MELCHIOR if not found. Use when user needs a new capability.",
+      "endpoint": "/skills/acquire",
+      "method": "POST",
+      "sage": "casper",
+      "iron_dome": true,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "need": {
+            "type": "string",
+            "description": "Description of the capability needed (e.g., 'process PDF files', 'manage calendar')"
+          },
+          "auto_generate": {
+            "type": "boolean",
+            "description": "If true, generate skill with MELCHIOR when not found (default: true)"
+          }
+        },
+        "required": [
+          "need"
+        ]
+      }
+    },
+    {
+      "name": "autofix_codebase",
+      "description": "Autonomously scan and repair Python syntax issues in allowed code roots, then verify compilation. Use when user asks to auto-fix code.",
+      "endpoint": "/code/autofix",
+      "method": "POST",
+      "sage": "casper",
+      "iron_dome": true,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "target": {
+            "type": "string",
+            "description": "Target root alias or path (default: code). Allowed aliases: code, magi"
+          },
+          "max_files": {
+            "type": "integer",
+            "description": "Maximum Python files to scan (default: 80)"
+          },
+          "max_rounds": {
+            "type": "integer",
+            "description": "Maximum repair rounds per failing file (default: 2)"
+          },
+          "dry_run": {
+            "type": "boolean",
+            "description": "If true, analyze and propose fixes without writing files"
+          },
+          "internalize_skill": {
+            "type": "boolean",
+            "description": "If true, convert learned fixes into an internalized skill"
+          }
+        },
+        "required": []
+      }
+    },
+    {
+      "name": "teach_casper",
+      "description": "Teach CASPER a new experience/tip and store it in AutoSkill knowledge base.",
+      "endpoint": "/skills/teach",
+      "method": "POST",
+      "sage": "casper",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "lesson": {
+            "type": "string",
+            "description": "Lesson text to teach CASPER"
+          },
+          "keywords": {
+            "type": "array",
+            "description": "Optional keyword list for retrieval precision",
+            "items": {
+              "type": "string"
+            }
+          },
+          "context": {
+            "type": "string",
+            "description": "Context label (default: api-teach)"
+          }
+        },
+        "required": [
+          "lesson"
+        ]
+      }
+    },
+    {
+      "name": "teach_casper_from_file",
+      "description": "Teach CASPER from a local file (line-based ingestion) to scale user-provided knowledge.",
+      "endpoint": "/skills/teach/file",
+      "method": "POST",
+      "sage": "casper",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "file_path": {
+            "type": "string",
+            "description": "Absolute path to training file under allowed roots"
+          },
+          "max_lines": {
+            "type": "integer",
+            "description": "Maximum lines to ingest (default: 200)"
+          }
+        },
+        "required": [
+          "file_path"
+        ]
+      }
+    },
+    {
+      "name": "internalize_skill_knowledge",
+      "description": "Convert CASPER's learned knowledge into a runnable skill with action.py and SKILL.md.",
+      "endpoint": "/skills/internalize",
+      "method": "POST",
+      "sage": "casper",
+      "iron_dome": true,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "skill_name": {
+            "type": "string",
+            "description": "Target skill folder name"
+          },
+          "description": {
+            "type": "string",
+            "description": "Skill description"
+          },
+          "keywords": {
+            "type": "array",
+            "description": "Optional keyword filter for which memories to internalize",
+            "items": {
+              "type": "string"
+            }
+          },
+          "max_tips": {
+            "type": "integer",
+            "description": "Maximum tips to package (default: 40)"
+          }
+        },
+        "required": []
+      }
+    },
+    {
+      "name": "list_core_change_pending",
+      "description": "List nightly council pending core changes that require admin approval.",
+      "endpoint": "/council/core/pending",
+      "method": "GET",
+      "sage": "casper",
+      "category": "governance",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "description": "Maximum pending items to return (default: 20)"
+          }
+        },
+        "required": []
+      }
+    },
+    {
+      "name": "approve_core_change",
+      "description": "Approve a pending core change raised by nightly council.",
+      "endpoint": "/council/core/approve",
+      "method": "POST",
+      "sage": "casper",
+      "category": "governance",
+      "iron_dome": true,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "approval_id": {
+            "type": "string",
+            "description": "Pending approval ID, e.g., ccr-20260213094500"
+          },
+          "approver": {
+            "type": "string",
+            "description": "Approver identity"
+          },
+          "note": {
+            "type": "string",
+            "description": "Optional approval note"
+          }
+        },
+        "required": [
+          "approval_id"
+        ]
+      }
+    },
+    {
+      "name": "reject_core_change",
+      "description": "Reject a pending core change raised by nightly council.",
+      "endpoint": "/council/core/reject",
+      "method": "POST",
+      "sage": "casper",
+      "category": "governance",
+      "iron_dome": true,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "approval_id": {
+            "type": "string",
+            "description": "Pending approval ID, e.g., ccr-20260213094500"
+          },
+          "approver": {
+            "type": "string",
+            "description": "Approver identity"
+          },
+          "note": {
+            "type": "string",
+            "description": "Optional rejection reason"
+          }
+        },
+        "required": [
+          "approval_id"
+        ]
+      }
+    },
+    {
+      "name": "internalize_codebase_skills",
+      "description": "Convert CODE folder Python modules into functional skills with CI and auto stable/canary release.",
+      "endpoint": "/skills/internalize/codebase",
+      "method": "POST",
+      "sage": "casper",
+      "iron_dome": true,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "source_dir": {
+            "type": "string",
+            "description": "Source directory, default /Users/ai/Desktop/code"
+          },
+          "max_files": {
+            "type": "integer",
+            "description": "Maximum Python files to scan (default: 50)"
+          },
+          "force": {
+            "type": "boolean",
+            "description": "Rebuild even if file hash unchanged"
+          },
+          "enable_release": {
+            "type": "boolean",
+            "description": "Enable CI and release workflow (default: true)"
+          },
+          "canary_percent": {
+            "type": "integer",
+            "description": "Canary traffic percent (default: 20)"
+          }
+        },
+        "required": []
+      }
+    },
+    {
+      "name": "run_code_skill_cycle",
+      "description": "Execute automatic code maintenance cycle: auto-fix and codebase skill internalization.",
+      "endpoint": "/code/skill-cycle",
+      "method": "POST",
+      "sage": "casper",
+      "iron_dome": true,
+      "parameters": {
+        "type": "object",
+        "properties": {},
+        "required": []
+      }
+    },
+    {
+      "name": "import_toolsai_auto_skill",
+      "description": "Import Toolsai auto-skill knowledge/experience into CASPER AutoSkill memory.",
+      "endpoint": "/skills/import/toolsai-auto-skill",
+      "method": "POST",
+      "sage": "casper",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "repo_url": {
+            "type": "string",
+            "description": "Git repository URL (default Toolsai/auto-skill)"
+          },
+          "local_path": {
+            "type": "string",
+            "description": "Optional existing local repo path"
+          }
+        },
+        "required": []
+      }
+    },
+    {
+      "name": "tri_sage_translate",
+      "description": "Translate text via distributed tri-sage pipeline, preferring Melchior Qwen models.",
+      "endpoint": "/collab/translate",
+      "method": "POST",
+      "sage": "casper",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string",
+            "description": "Text to translate"
+          },
+          "target_lang": {
+            "type": "string",
+            "description": "Target language (default: 繁體中文)"
+          },
+          "source_lang": {
+            "type": "string",
+            "description": "Source language hint (default: auto)"
+          },
+          "mode": {
+            "type": "string",
+            "description": "Translation mode: auto|full (default: auto). Use full for '不要摘要/完整翻譯'."
+          }
+        },
+        "required": [
+          "text"
+        ]
+      }
+    },
+    {
+      "name": "tri_sage_generate_music",
+      "description": "Generate music track by Melchior-first pipeline, with Casper fallback audio synthesis.",
+      "endpoint": "/collab/music",
+      "method": "POST",
+      "sage": "casper",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "prompt": {
+            "type": "string",
+            "description": "Music style and intent prompt"
+          },
+          "duration_sec": {
+            "type": "integer",
+            "description": "Desired duration in seconds (default: 30)"
+          }
+        },
+        "required": [
+          "prompt"
+        ]
+      }
+    },
+    {
+      "name": "tri_sage_transcribe",
+      "description": "Transcribe an audio file using tri-sage transcription route.",
+      "endpoint": "/collab/transcribe",
+      "method": "POST",
+      "sage": "casper",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "audio_path": {
+            "type": "string",
+            "description": "Absolute local path to audio file"
+          }
+        },
+        "required": [
+          "audio_path"
+        ]
+      }
+    },
+    {
+      "name": "run_code_file_review_automation",
+      "description": "Functional skill generated from CODE file `file_review_automation.py`. Supports function-call mode, module execution mode, and self-test mode.",
+      "endpoint": "/skills/run",
+      "method": "POST",
+      "sage": "casper",
+      "iron_dome": true,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "skill": {
+            "type": "string",
+            "description": "Skill folder name (default: code-file_review_automation)"
+          },
+          "task": {
+            "type": "string",
+            "description": "Task text to pass into action.py"
+          }
+        },
+        "required": [
+          "task"
+        ]
+      }
+    },
+    {
+      "name": "run_code_judicial_automation_v2",
+      "description": "Functional skill generated from CODE file `judicial_automation_v2.py`. Supports function-call mode, module execution mode, and self-test mode.",
+      "endpoint": "/skills/run",
+      "method": "POST",
+      "sage": "casper",
+      "iron_dome": true,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "skill": {
+            "type": "string",
+            "description": "Skill folder name (default: code-judicial_automation_v2)"
+          },
+          "task": {
+            "type": "string",
+            "description": "Task text to pass into action.py"
+          }
+        },
+        "required": [
+          "task"
+        ]
+      }
+    },
+    {
+      "name": "run_code_laf_automation_v2",
+      "description": "Functional skill generated from CODE file `laf_automation_v2.py`. Supports function-call mode, module execution mode, and self-test mode.",
+      "endpoint": "/skills/run",
+      "method": "POST",
+      "sage": "casper",
+      "iron_dome": true,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "skill": {
+            "type": "string",
+            "description": "Skill folder name (default: code-laf_automation_v2)"
+          },
+          "task": {
+            "type": "string",
+            "description": "Task text to pass into action.py"
+          }
+        },
+        "required": [
+          "task"
+        ]
+      }
+    },
+    {
+      "name": "laf_login_smoke",
+      "description": "法扶正式站登入冒煙測試：只登入驗證（不送出、不回報、不做案件操作）。回傳成功與截圖路徑。",
+      "endpoint": "/laf/smoke_login",
+      "method": "POST",
+      "sage": "casper",
+      "iron_dome": true,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "headless": {
+            "type": "boolean",
+            "description": "是否使用無頭模式（預設 true）"
+          },
+          "base_url": {
+            "type": "string",
+            "description": "指定入口網址（預設正式站 https://lawyer.laf.org.tw）"
+          },
+          "mock_mode": {
+            "type": "boolean",
+            "description": "測試模式（避免卡在驗證碼；僅用於離線模擬站）"
+          },
+          "timeout_sec": {
+            "type": "integer",
+            "description": "整體技能執行 timeout（預設 180 秒）"
+          }
+        }
+      }
+    },
+    {
+      "name": "run_code_legalbridge_core",
+      "description": "Functional skill generated from CODE file `legalbridge_core.py`. Supports function-call mode, module execution mode, and self-test mode.",
+      "endpoint": "/skills/run",
+      "method": "POST",
+      "sage": "casper",
+      "iron_dome": true,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "skill": {
+            "type": "string",
+            "description": "Skill folder name (default: code-legalbridge_core)"
+          },
+          "task": {
+            "type": "string",
+            "description": "Task text to pass into action.py"
+          }
+        },
+        "required": [
+          "task"
+        ]
+      }
+    },
+    {
+      "name": "run_code_legalbridge_gui",
+      "description": "Functional skill generated from CODE file `legalbridge_gui.py`. Supports function-call mode, module execution mode, and self-test mode.",
+      "endpoint": "/skills/run",
+      "method": "POST",
+      "sage": "casper",
+      "iron_dome": true,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "skill": {
+            "type": "string",
+            "description": "Skill folder name (default: code-legalbridge_gui)"
+          },
+          "task": {
+            "type": "string",
+            "description": "Task text to pass into action.py"
+          }
+        },
+        "required": [
+          "task"
+        ]
+      }
+    },
+    {
+      "name": "run_code_pdf_processor",
+      "description": "Functional skill generated from CODE file `pdf_processor.py`. Supports function-call mode, module execution mode, and self-test mode.",
+      "endpoint": "/skills/run",
+      "method": "POST",
+      "sage": "casper",
+      "iron_dome": true,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "skill": {
+            "type": "string",
+            "description": "Skill folder name (default: code-pdf_processor)"
+          },
+          "task": {
+            "type": "string",
+            "description": "Task text to pass into action.py"
+          }
+        },
+        "required": [
+          "task"
+        ]
+      }
+    },
+    {
+      "name": "run_code_insight_updater",
+      "description": "Functional skill generated from CODE file `insight_updater.py`. Supports function-call mode, module execution mode, and self-test mode.",
+      "endpoint": "/skills/run",
+      "method": "POST",
+      "sage": "casper",
+      "iron_dome": true,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "skill": {
+            "type": "string",
+            "description": "Skill folder name (default: code-insight_updater)"
+          },
+          "task": {
+            "type": "string",
+            "description": "Task text to pass into action.py"
+          }
+        },
+        "required": [
+          "task"
+        ]
+      }
+    },
+    {
+      "name": "run_code_osc",
+      "description": "Functional skill generated from CODE file `osc.py`. Supports function-call mode, module execution mode, and self-test mode.",
+      "endpoint": "/skills/run",
+      "method": "POST",
+      "sage": "casper",
+      "iron_dome": true,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "skill": {
+            "type": "string",
+            "description": "Skill folder name (default: code-osc)"
+          },
+          "task": {
+            "type": "string",
+            "description": "Task text to pass into action.py"
+          }
+        },
+        "required": [
+          "task"
+        ]
+      }
+    },
+    {
+      "name": "osc_case_status",
+      "description": "案件進度總覽（流程型技能）：盤點案件資料夾的書狀/通知/近期檔案，讀取 PDF（含掃描檔 OCR），並用「PDF 開庭通知 + DB calendar_events」彙整近期待開庭期；另可抓 legal_insights 實務見解。輸出會落地成 report.txt/manifest.json。",
+      "endpoint": "/skills/run",
+      "method": "POST",
+      "sage": "casper",
+      "iron_dome": true,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "skill": {
+            "type": "string",
+            "description": "Skill folder name (default: osc-flow-case-status)"
+          },
+          "task": {
+            "type": "string",
+            "description": "Task text to pass into action.py (e.g. 案件進度 陳明宗 詐欺)"
+          }
+        },
+        "required": [
+          "task"
+        ]
+      }
+    },
+    {
+      "name": "run_code_casper_llm_proxy",
+      "description": "Functional skill generated from CODE file `casper_llm_proxy.py`. Supports function-call mode, module execution mode, and self-test mode.",
+      "endpoint": "/skills/run",
+      "method": "POST",
+      "sage": "casper",
+      "iron_dome": true,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "skill": {
+            "type": "string",
+            "description": "Skill folder name (default: code-casper_llm_proxy)"
+          },
+          "task": {
+            "type": "string",
+            "description": "Task text to pass into action.py"
+          }
+        },
+        "required": [
+          "task"
+        ]
+      }
+    },
+    {
+      "name": "run_code_casper_tools_client",
+      "description": "Functional skill generated from CODE file `casper_tools_client.py`. Supports function-call mode, module execution mode, and self-test mode.",
+      "endpoint": "/skills/run",
+      "method": "POST",
+      "sage": "casper",
+      "iron_dome": true,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "skill": {
+            "type": "string",
+            "description": "Skill folder name (default: code-casper_tools_client)"
+          },
+          "task": {
+            "type": "string",
+            "description": "Task text to pass into action.py"
+          }
+        },
+        "required": [
+          "task"
+        ]
+      }
+    },
+    {
+      "name": "run_code_insight_core___init__",
+      "description": "Functional skill generated from CODE file `insight_core/__init__.py`. Supports function-call mode, module execution mode, and self-test mode.",
+      "endpoint": "/skills/run",
+      "method": "POST",
+      "sage": "casper",
+      "iron_dome": true,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "skill": {
+            "type": "string",
+            "description": "Skill folder name (default: code-insight_core-__init__)"
+          },
+          "task": {
+            "type": "string",
+            "description": "Task text to pass into action.py"
+          }
+        },
+        "required": [
+          "task"
+        ]
+      }
+    },
+    {
+      "name": "run_code_insight_core_case_number",
+      "description": "Functional skill generated from CODE file `insight_core/case_number.py`. Supports function-call mode, module execution mode, and self-test mode.",
+      "endpoint": "/skills/run",
+      "method": "POST",
+      "sage": "casper",
+      "iron_dome": true,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "skill": {
+            "type": "string",
+            "description": "Skill folder name (default: code-insight_core-case_number)"
+          },
+          "task": {
+            "type": "string",
+            "description": "Task text to pass into action.py"
+          }
+        },
+        "required": [
+          "task"
+        ]
+      }
+    },
+    {
+      "name": "run_code_insight_core_courts",
+      "description": "Functional skill generated from CODE file `insight_core/courts.py`. Supports function-call mode, module execution mode, and self-test mode.",
+      "endpoint": "/skills/run",
+      "method": "POST",
+      "sage": "casper",
+      "iron_dome": true,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "skill": {
+            "type": "string",
+            "description": "Skill folder name (default: code-insight_core-courts)"
+          },
+          "task": {
+            "type": "string",
+            "description": "Task text to pass into action.py"
+          }
+        },
+        "required": [
+          "task"
+        ]
+      }
+    },
+    {
+      "name": "run_code_insight_core_query",
+      "description": "Functional skill generated from CODE file `insight_core/query.py`. Supports function-call mode, module execution mode, and self-test mode.",
+      "endpoint": "/skills/run",
+      "method": "POST",
+      "sage": "casper",
+      "iron_dome": true,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "skill": {
+            "type": "string",
+            "description": "Skill folder name (default: code-insight_core-query)"
+          },
+          "task": {
+            "type": "string",
+            "description": "Task text to pass into action.py"
+          }
+        },
+        "required": [
+          "task"
+        ]
+      }
+    },
+    {
+      "name": "run_code_judicial_tools_judicial_smoke_file_review_case_probe",
+      "description": "Functional skill generated from CODE file `judicial_tools/judicial_smoke_file_review_case_probe.py`. Supports function-call mode, module execution mode, and self-test mode.",
+      "endpoint": "/skills/run",
+      "method": "POST",
+      "sage": "casper",
+      "iron_dome": true,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "skill": {
+            "type": "string",
+            "description": "Skill folder name (default: code-judicial_tools-judicial_smoke_file_review_case_probe)"
+          },
+          "task": {
+            "type": "string",
+            "description": "Task text to pass into action.py"
+          }
+        },
+        "required": [
+          "task"
+        ]
+      }
+    },
+    {
+      "name": "run_code_judicial_tools_judicial_smoke_file_review_login",
+      "description": "Functional skill generated from CODE file `judicial_tools/judicial_smoke_file_review_login.py`. Supports function-call mode, module execution mode, and self-test mode.",
+      "endpoint": "/skills/run",
+      "method": "POST",
+      "sage": "casper",
+      "iron_dome": true,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "skill": {
+            "type": "string",
+            "description": "Skill folder name (default: code-judicial_tools-judicial_smoke_file_review_login)"
+          },
+          "task": {
+            "type": "string",
+            "description": "Task text to pass into action.py"
+          }
+        },
+        "required": [
+          "task"
+        ]
+      }
+    },
+    {
+      "name": "run_code_judicial_tools_judicial_smoke_transcript_login",
+      "description": "Functional skill generated from CODE file `judicial_tools/judicial_smoke_transcript_login.py`. Supports function-call mode, module execution mode, and self-test mode.",
+      "endpoint": "/skills/run",
+      "method": "POST",
+      "sage": "casper",
+      "iron_dome": true,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "skill": {
+            "type": "string",
+            "description": "Skill folder name (default: code-judicial_tools-judicial_smoke_transcript_login)"
+          },
+          "task": {
+            "type": "string",
+            "description": "Task text to pass into action.py"
+          }
+        },
+        "required": [
+          "task"
+        ]
+      }
+    },
+    {
+      "name": "run_code_laf_folder_builder",
+      "description": "Functional skill generated from CODE file `laf_folder_builder.py`. Supports function-call mode, module execution mode, and self-test mode.",
+      "endpoint": "/skills/run",
+      "method": "POST",
+      "sage": "casper",
+      "iron_dome": true,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "skill": {
+            "type": "string",
+            "description": "Skill folder name (default: code-laf_folder_builder)"
+          },
+          "task": {
+            "type": "string",
+            "description": "Task text to pass into action.py"
+          }
+        },
+        "required": [
+          "task"
+        ]
+      }
+    },
+    {
+      "name": "run_code_laf_orchestrator",
+      "description": "Functional skill generated from CODE file `laf_orchestrator.py`. Supports function-call mode, module execution mode, and self-test mode.",
+      "endpoint": "/skills/run",
+      "method": "POST",
+      "sage": "casper",
+      "iron_dome": true,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "skill": {
+            "type": "string",
+            "description": "Skill folder name (default: code-laf_orchestrator)"
+          },
+          "task": {
+            "type": "string",
+            "description": "Task text to pass into action.py"
+          }
+        },
+        "required": [
+          "task"
+        ]
+      }
+    },
+    {
+      "name": "run_code_laf_training_simulator_server",
+      "description": "Functional skill generated from CODE file `laf_training_simulator/server.py`. Supports function-call mode, module execution mode, and self-test mode.",
+      "endpoint": "/skills/run",
+      "method": "POST",
+      "sage": "casper",
+      "iron_dome": true,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "skill": {
+            "type": "string",
+            "description": "Skill folder name (default: code-laf_training_simulator-server)"
+          },
+          "task": {
+            "type": "string",
+            "description": "Task text to pass into action.py"
+          }
+        },
+        "required": [
+          "task"
+        ]
+      }
+    },
+    {
+      "name": "run_code_legacy_pdf_processor",
+      "description": "Functional skill generated from CODE file `legacy/pdf_processor.py`. Supports function-call mode, module execution mode, and self-test mode.",
+      "endpoint": "/skills/run",
+      "method": "POST",
+      "sage": "casper",
+      "iron_dome": true,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "skill": {
+            "type": "string",
+            "description": "Skill folder name (default: code-legacy-pdf_processor)"
+          },
+          "task": {
+            "type": "string",
+            "description": "Task text to pass into action.py"
+          }
+        },
+        "required": [
+          "task"
+        ]
+      }
+    },
+    {
+      "name": "run_code_line_notifier",
+      "description": "Functional skill generated from CODE file `line_notifier.py`. Supports function-call mode, module execution mode, and self-test mode.",
+      "endpoint": "/skills/run",
+      "method": "POST",
+      "sage": "casper",
+      "iron_dome": true,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "skill": {
+            "type": "string",
+            "description": "Skill folder name (default: code-line_notifier)"
+          },
+          "task": {
+            "type": "string",
+            "description": "Task text to pass into action.py"
+          }
+        },
+        "required": [
+          "task"
+        ]
+      }
+    },
+    {
+      "name": "run_code_magi_human_captcha",
+      "description": "Functional skill generated from CODE file `magi_human_captcha.py`. Supports function-call mode, module execution mode, and self-test mode.",
+      "endpoint": "/skills/run",
+      "method": "POST",
+      "sage": "casper",
+      "iron_dome": true,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "skill": {
+            "type": "string",
+            "description": "Skill folder name (default: code-magi_human_captcha)"
+          },
+          "task": {
+            "type": "string",
+            "description": "Task text to pass into action.py"
+          }
+        },
+        "required": [
+          "task"
+        ]
+      }
+    },
+    {
+      "name": "run_code_osc_core___init__",
+      "description": "Functional skill generated from CODE file `osc_core/__init__.py`. Supports function-call mode, module execution mode, and self-test mode.",
+      "endpoint": "/skills/run",
+      "method": "POST",
+      "sage": "casper",
+      "iron_dome": true,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "skill": {
+            "type": "string",
+            "description": "Skill folder name (default: code-osc_core-__init__)"
+          },
+          "task": {
+            "type": "string",
+            "description": "Task text to pass into action.py"
+          }
+        },
+        "required": [
+          "task"
+        ]
+      }
+    },
+    {
+      "name": "run_code_osc_core_paths",
+      "description": "Functional skill generated from CODE file `osc_core/paths.py`. Supports function-call mode, module execution mode, and self-test mode.",
+      "endpoint": "/skills/run",
+      "method": "POST",
+      "sage": "casper",
+      "iron_dome": true,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "skill": {
+            "type": "string",
+            "description": "Skill folder name (default: code-osc_core-paths)"
+          },
+          "task": {
+            "type": "string",
+            "description": "Task text to pass into action.py"
+          }
+        },
+        "required": [
+          "task"
+        ]
+      }
+    },
+    {
+      "name": "run_code_run_laf_sandbox",
+      "description": "Functional skill generated from CODE file `run_laf_sandbox.py`. Supports function-call mode, module execution mode, and self-test mode.",
+      "endpoint": "/skills/run",
+      "method": "POST",
+      "sage": "casper",
+      "iron_dome": true,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "skill": {
+            "type": "string",
+            "description": "Skill folder name (default: code-run_laf_sandbox)"
+          },
+          "task": {
+            "type": "string",
+            "description": "Task text to pass into action.py"
+          }
+        },
+        "required": [
+          "task"
+        ]
+      }
+    },
+    {
+      "name": "run_code_safe_fs",
+      "description": "Functional skill generated from CODE file `safe_fs.py`. Supports function-call mode, module execution mode, and self-test mode.",
+      "endpoint": "/skills/run",
+      "method": "POST",
+      "sage": "casper",
+      "iron_dome": true,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "skill": {
+            "type": "string",
+            "description": "Skill folder name (default: code-safe_fs)"
+          },
+          "task": {
+            "type": "string",
+            "description": "Task text to pass into action.py"
+          }
+        },
+        "required": [
+          "task"
+        ]
+      }
+    },
+    {
+      "name": "run_statutes_vdb",
+      "description": "Update case-related statutes into vector DB for CASPER recall",
+      "endpoint": "/skills/run",
+      "method": "POST",
+      "sage": "casper",
+      "iron_dome": true,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "skill": {
+            "type": "string",
+            "description": "Skill folder name (default: statutes-vdb)"
+          },
+          "task": {
+            "type": "string",
+            "description": "Task text to pass into action.py"
+          }
+        },
+        "required": [
+          "task",
+          "skill"
+        ]
+      }
+    },
+    {
+      "name": "run_iron_dome",
+      "description": "Iron Dome security scan and sync operations",
+      "endpoint": "/skills/run",
+      "method": "POST",
+      "sage": "casper",
+      "iron_dome": true,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "skill": {
+            "type": "string",
+            "description": "Skill folder name (default: iron-dome)"
+          },
+          "task": {
+            "type": "string",
+            "description": "Task text to pass into action.py"
+          }
+        },
+        "required": [
+          "task",
+          "skill"
+        ]
+      }
+    },
+    {
+      "name": "run_osc_scan_cases",
+      "description": "OSC 拆分技能：掃描案件待辦（scan_cases），寫入 DB 或降級 queue；不刪檔。",
+      "endpoint": "/skills/run",
+      "method": "POST",
+      "sage": "casper",
+      "iron_dome": true,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "skill": {
+            "type": "string",
+            "description": "Skill folder name (default: osc-scan-cases)"
+          },
+          "task": {
+            "type": "string",
+            "description": "Task text to pass into action.py"
+          }
+        },
+        "required": [
+          "task"
+        ]
+      }
+    },
+    {
+      "name": "run_osc_queue_flush",
+      "description": "OSC 拆分技能：佇列補寫（queue_flush），把 pending queue 寫回 DB；不刪檔。",
+      "endpoint": "/skills/run",
+      "method": "POST",
+      "sage": "casper",
+      "iron_dome": true,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "skill": {
+            "type": "string",
+            "description": "Skill folder name (default: osc-queue-flush)"
+          },
+          "task": {
+            "type": "string",
+            "description": "Task text to pass into action.py"
+          }
+        },
+        "required": [
+          "task"
+        ]
+      }
+    },
+    {
+      "name": "run_osc_index_cases",
+      "description": "OSC 拆分技能：建立/更新案件索引（index_cases），供降級/模糊搜尋使用。",
+      "endpoint": "/skills/run",
+      "method": "POST",
+      "sage": "casper",
+      "iron_dome": true,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "skill": {
+            "type": "string",
+            "description": "Skill folder name (default: osc-index-cases)"
+          },
+          "task": {
+            "type": "string",
+            "description": "Task text to pass into action.py"
+          }
+        },
+        "required": [
+          "task"
+        ]
+      }
+    },
+    {
+      "name": "run_osc_db_smoke",
+      "description": "OSC 拆分技能：DB 冒煙測試（db_smoke），用於排查 OSC DB/schema 連線。",
+      "endpoint": "/skills/run",
+      "method": "POST",
+      "sage": "casper",
+      "iron_dome": true,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "skill": {
+            "type": "string",
+            "description": "Skill folder name (default: osc-db-smoke)"
+          },
+          "task": {
+            "type": "string",
+            "description": "Task text to pass into action.py"
+          }
+        },
+        "required": [
+          "task"
+        ]
+      }
+    },
+    {
+      "name": "run_osc_orchestrator",
+      "description": "OSC 核心自動化（headless）：待辦解析/入庫/掃描/佇列；不刪檔，可降級。",
+      "endpoint": "/skills/run",
+      "method": "POST",
+      "sage": "casper",
+      "iron_dome": true,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "skill": {
+            "type": "string",
+            "description": "Skill folder name (default: osc-orchestrator)"
+          },
+          "task": {
+            "type": "string",
+            "description": "Task text to pass into action.py"
+          }
+        },
+        "required": [
+          "task",
+          "skill"
+        ]
+      }
+    },
+    {
+      "name": "run_translator",
+      "description": "完整翻譯（預設不摘要）並可自動輸出 TXT 到 /static/exports，方便用 LINE/DC 回傳。",
+      "endpoint": "/skills/run",
+      "method": "POST",
+      "sage": "casper",
+      "iron_dome": true,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "skill": {
+            "type": "string",
+            "description": "Skill folder name (default: translator)"
+          },
+          "task": {
+            "type": "string",
+            "description": "Task text to pass into action.py (e.g., translate {..json..})"
+          }
+        },
+        "required": [
+          "task",
+          "skill"
+        ]
+      }
+    },
+    {
+      "name": "run_crawler_targets",
+      "description": "管理每日爬蟲 URL 清單（持久化），並可寫入向量資料庫（run_daily）。",
+      "endpoint": "/skills/run",
+      "method": "POST",
+      "sage": "casper",
+      "iron_dome": true,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "skill": {
+            "type": "string",
+            "description": "Skill folder name (default: crawler-targets)"
+          },
+          "task": {
+            "type": "string",
+            "description": "Task text to pass into action.py (list|add|remove|run_daily)"
+          }
+        },
+        "required": [
+          "task",
+          "skill"
+        ]
+      }
+    },
+    {
+      "name": "run_gmail_drafts",
+      "description": "用 Gmail API 建立草稿（只存草稿、不寄出），供非 LAF 信件回覆流程使用。",
+      "endpoint": "/skills/run",
+      "method": "POST",
+      "sage": "casper",
+      "iron_dome": true,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "skill": {
+            "type": "string",
+            "description": "Skill folder name (default: gmail-drafts)"
+          },
+          "task": {
+            "type": "string",
+            "description": "Task text to pass into action.py (create {..json..})"
+          }
+        },
+        "required": [
+          "task",
+          "skill"
+        ]
+      }
+    },
+    {
+      "name": "run_file_review_orchestrator",
+      "description": "閱卷流程技能：信件檢查/可下載判定/下載與歸檔（分段執行，降低 timeout 風險）。",
+      "endpoint": "/skills/run",
+      "method": "POST",
+      "sage": "casper",
+      "iron_dome": true,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "skill": {
+            "type": "string",
+            "description": "Skill folder name (default: file-review-orchestrator)"
+          },
+          "task": {
+            "type": "string",
+            "description": "Task text to pass into action.py"
+          }
+        },
+        "required": [
+          "task",
+          "skill"
+        ]
+      }
+    },
+    {
+      "name": "run_transcript_downloader",
+      "description": "筆錄同步技能：免驗證碼優先登入、下載新筆錄、重命名、歸檔與去重。",
+      "endpoint": "/skills/run",
+      "method": "POST",
+      "sage": "casper",
+      "iron_dome": true,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "skill": {
+            "type": "string",
+            "description": "Skill folder name (default: transcript-downloader)"
+          },
+          "task": {
+            "type": "string",
+            "description": "Task text to pass into action.py"
+          }
+        },
+        "required": [
+          "task",
+          "skill"
+        ]
+      }
+    },
+    {
+      "name": "run_pdf_namer",
+      "description": "掃描檔命名與歸檔技能：OCR+視覺判讀收文章日期，寫入案件資料夾並回報路徑。",
+      "endpoint": "/skills/run",
+      "method": "POST",
+      "sage": "casper",
+      "iron_dome": true,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "skill": {
+            "type": "string",
+            "description": "Skill folder name (default: pdf-namer)"
+          },
+          "task": {
+            "type": "string",
+            "description": "Task text to pass into action.py"
+          }
+        },
+        "required": [
+          "task",
+          "skill"
+        ]
+      }
+    },
+    {
+      "name": "run_magi_autopilot",
+      "description": "自動巡檢/夜間任務主流程技能（tick/nightly），整合 LAF/閱卷/筆錄/PDF/待辦/爬蟲。",
+      "endpoint": "/skills/run",
+      "method": "POST",
+      "sage": "casper",
+      "iron_dome": true,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "skill": {
+            "type": "string",
+            "description": "Skill folder name (default: magi-autopilot)"
+          },
+          "task": {
+            "type": "string",
+            "description": "Task text to pass into action.py"
+          }
+        },
+        "required": [
+          "task",
+          "skill"
+        ]
+      }
+    },
+    {
+      "name": "run_judgment_collector",
+      "description": "判決與法規爬取技能：優先 Lawsnote，必要時回退司法院，並更新向量資料庫。",
+      "endpoint": "/skills/run",
+      "method": "POST",
+      "sage": "casper",
+      "iron_dome": true,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "skill": {
+            "type": "string",
+            "description": "Skill folder name (default: judgment-collector)"
+          },
+          "task": {
+            "type": "string",
+            "description": "Task text to pass into action.py"
+          }
+        },
+        "required": [
+          "task",
+          "skill"
+        ]
+      }
+    },
+    {
+      "name": "run_laf_portal_automation",
+      "description": "法扶入口流程技能：登入、查案、只暫存（不送出）回報流程。",
+      "endpoint": "/skills/run",
+      "method": "POST",
+      "sage": "casper",
+      "iron_dome": true,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "skill": {
+            "type": "string",
+            "description": "Skill folder name (default: laf-portal-automation)"
+          },
+          "task": {
+            "type": "string",
+            "description": "Task text to pass into action.py"
+          }
+        },
+        "required": [
+          "task",
+          "skill"
+        ]
+      }
+    },
+    {
+      "name": "run_laf_refine_case",
+      "description": "法扶案件精煉技能：清理重複案件、補齊欄位、標準化案件對應。",
+      "endpoint": "/skills/run",
+      "method": "POST",
+      "sage": "casper",
+      "iron_dome": true,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "skill": {
+            "type": "string",
+            "description": "Skill folder name (default: laf-refine-case)"
+          },
+          "task": {
+            "type": "string",
+            "description": "Task text to pass into action.py"
+          }
+        },
+        "required": [
+          "task",
+          "skill"
+        ]
+      }
+    },
+    {
+      "name": "run_file_review_sso",
+      "description": "閱卷 SSO 登入技能：驗證登入狀態與 session 可用性。",
+      "endpoint": "/skills/run",
+      "method": "POST",
+      "sage": "casper",
+      "iron_dome": true,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "skill": {
+            "type": "string",
+            "description": "Skill folder name (default: file-review-sso)"
+          },
+          "task": {
+            "type": "string",
+            "description": "Task text to pass into action.py"
+          }
+        },
+        "required": [
+          "task"
+        ]
+      }
+    },
+    {
+      "name": "run_file_review_email_parse",
+      "description": "閱卷 Gmail 解析技能：解析可下載/繳費/通知信件並產生預覽。",
+      "endpoint": "/skills/run",
+      "method": "POST",
+      "sage": "casper",
+      "iron_dome": true,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "skill": {
+            "type": "string",
+            "description": "Skill folder name (default: file-review-email-parse)"
+          },
+          "task": {
+            "type": "string",
+            "description": "Task text to pass into action.py"
+          }
+        },
+        "required": [
+          "task"
+        ]
+      }
+    },
+    {
+      "name": "run_file_review_captcha",
+      "description": "閱卷驗證碼技能：本地 OCR 辨識與重試策略（必要時才人工介入）。",
+      "endpoint": "/skills/run",
+      "method": "POST",
+      "sage": "casper",
+      "iron_dome": true,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "skill": {
+            "type": "string",
+            "description": "Skill folder name (default: file-review-captcha)"
+          },
+          "task": {
+            "type": "string",
+            "description": "Task text to pass into action.py"
+          }
+        },
+        "required": [
+          "task"
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,2264 @@
+[
+  {
+    "doc_type": "吳榮林-信件",
+    "filename_template": "{date} 吳榮林-信件",
+    "archive_destination_type": "信件往返",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "致陳賜聰信件",
+    "filename_template": "{date} {doc_type}",
+    "archive_destination_type": "信件往返",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "陳賜聰-信件",
+    "filename_template": "{date} {doc_type} ({client_name}；{action_item})",
+    "archive_destination_type": "信件往返",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "114,司票,251,20250826,",
+    "filename_template": "{doc_type}",
+    "archive_destination_type": "判決書",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "不起訴處分書",
+    "filename_template": "{date} {doc_type}({client_name}；{action_item})",
+    "archive_destination_type": "判決書",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "刑事判決",
+    "filename_template": "{date} {doc_title}{case_no}{doc_type}（{client_name}；{action_item}）",
+    "archive_destination_type": "判決書",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "刑事簡易判決",
+    "filename_template": "{date} {doc_title}{case_no}{doc_type} ({client_name}；{action_item})",
+    "archive_destination_type": "判決書",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "判決",
+    "filename_template": "{date} {doc_title}{case_no}{doc_type}（{client_name}；{action_item}）",
+    "archive_destination_type": "判決書",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "台北地方法院判決",
+    "filename_template": "{date}{doc_type}({client_name}；{action_item})",
+    "archive_destination_type": "判決書",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "基隆地檢署檢察官不起訴處分書",
+    "filename_template": "{date} {doc_type}({client_name}；{action_item})",
+    "archive_destination_type": "判決書",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "宣示判決筆錄",
+    "filename_template": "{date} {doc_title}{case_no}{doc_type}({client_name}；{action_item})",
+    "archive_destination_type": "判決書",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "檢察官不起訴處分書",
+    "filename_template": "{date} {doc_title}{case_no} {doc_type}({client_name}；{action_item})",
+    "archive_destination_type": "判決書",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "檢察官起訴書、不起訴處分書",
+    "filename_template": "{date} {doc_title}{case_no} {doc_type} ({client_name}；{action_item})",
+    "archive_destination_type": "判決書",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "民事簡易判決",
+    "filename_template": "{date} {doc_title}{case_no}{doc_type}({client_name}；{action_item})",
+    "archive_destination_type": "判決書",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "花蓮縣吉安鄉調解委員會調解筆錄",
+    "filename_template": "{date} {doc_type}({client_name})",
+    "archive_destination_type": "判決書",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "調解筆錄正本掛號郵件收件回執",
+    "filename_template": "{date} {doc_title}{case_no}調解筆錄({client_name})正本掛號郵件收件回執",
+    "archive_destination_type": "判決書",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "調解筆錄翻拍",
+    "filename_template": "{doc_type}_{date}_{doc_title}_{case_no}_({client_name}；{action_item})",
+    "archive_destination_type": "判決書",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "1140623-W-001郵件收件回執",
+    "filename_template": "{date} 1140623-W-001({client_name}；{action_item})郵件收件回執",
+    "archive_destination_type": "回執",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "1140715-A-024郵件收件回執",
+    "filename_template": "{date} {case_no} ({client_name}；{action_item}) {doc_type}",
+    "archive_destination_type": "回執",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "1140917-U-031郵件收件回執",
+    "filename_template": "{date} 1140917-U-031({client_name}；{action_item})郵件收件回執",
+    "archive_destination_type": "回執",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "刑事抗告理由續狀郵件收件回執",
+    "filename_template": "{date}_刑事抗告理由續狀({client_name}；{action_item})郵件收件回執",
+    "archive_destination_type": "回執",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "刑事答辯狀郵件收件回執",
+    "filename_template": "{date} 刑事答辯狀郵件收件回執 ({client_name}；{action_item})",
+    "archive_destination_type": "回執",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "刑事聲請不行國民法官程序狀郵件收件回執",
+    "filename_template": "{date} {doc_title} {case_no} ({client_name}；{action_item}) {doc_type}",
+    "archive_destination_type": "回執",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "刑事陳報狀郵件收件回執",
+    "filename_template": "{date} {doc_type} ({client_name}；{action_item})",
+    "archive_destination_type": "回執",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "存證信函、律師函郵件收件回執",
+    "filename_template": "{date} {doc_type} ({client_name})",
+    "archive_destination_type": "回執",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "存證信函、律師函郵件收件回執_李麗梅",
+    "filename_template": "{date} 存證信函、律師函({client_name}；)郵件收件回執_李麗梅",
+    "archive_destination_type": "回執",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "消費者債務清理事件聲請改期狀郵件收件回執",
+    "filename_template": "{date} 消費者債務清理事件聲請改期狀({client_name}；{action_item})郵件收件回執",
+    "archive_destination_type": "回執",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "消費者債務清理更生陳報狀郵件收件回執",
+    "filename_template": "{date}_消費者債務清理更生陳報狀({client_name}；{action_item})郵件收件回執",
+    "archive_destination_type": "回執",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "消費者債務清理陳報三狀郵件收件回執",
+    "filename_template": "{date} 消費者債務清理陳報三狀郵件收件回執({client_name})",
+    "archive_destination_type": "回執",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "消費者債務清理陳報二狀郵件收件回執",
+    "filename_template": "{date} {doc_type} ({client_name}；{action_item})",
+    "archive_destination_type": "回執",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "行政答辯狀郵件收件回執",
+    "filename_template": "{date} 行政答辯狀郵件收件回執 ({client_name}；{action_item})",
+    "archive_destination_type": "回執",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "行政答辯狀郵件收件回執(北高行)",
+    "filename_template": "{date} {doc_title} {doc_type} ({client_name}；{action_item})",
+    "archive_destination_type": "回執",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "郵件收件回執",
+    "filename_template": "{date} {doc_title}{case_no} {doc_type}({client_name}；{action_item})",
+    "archive_destination_type": "回執",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "中國信託商業銀行更生方案繳款通知函",
+    "filename_template": "{date} 中國信託商業銀行更生方案繳款通知函({client_name}；)",
+    "archive_destination_type": "對方歷次書狀",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "九龍國際企業股份有限公司郵局存證信函",
+    "filename_template": "{date} 九龍國際企業股份有限公司郵局存證信函 ({client_name}；{action_item})",
+    "archive_destination_type": "對方歷次書狀",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "刑事附帶民事追加聲明狀",
+    "filename_template": "{date} {doc_type}",
+    "archive_destination_type": "對方歷次書狀",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "原告補正狀",
+    "filename_template": "{date} {case_no}({client_name}；{action_item}){doc_type}繕本",
+    "archive_destination_type": "對方歷次書狀",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "台北地檢署檢察官補充理由書",
+    "filename_template": "{date} {doc_type}({client_name}；{action_item})",
+    "archive_destination_type": "對方歷次書狀",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "對造民事更正訴之聲明狀",
+    "filename_template": "{date} {case_no}({client_name}){doc_type}繕本",
+    "archive_destination_type": "對方歷次書狀",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "檢察官起訴書",
+    "filename_template": "{date} {doc_title}{case_no}{doc_type}({client_name}；{action_item})",
+    "archive_destination_type": "對方歷次書狀",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "民事上訴理由狀(被告：[當事人K])",
+    "filename_template": "{doc_type}({client_name}；{action_item})",
+    "archive_destination_type": "對方歷次書狀",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "民事更正起訴狀",
+    "filename_template": "{date} {doc_title} {case_no} ({client_name}；{action_item}) {doc_type}",
+    "archive_destination_type": "對方歷次書狀",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "民事爭點整理暨答辯三狀_林黃阿姐等人_114.3.",
+    "filename_template": "{doc_type}_({client_name})_{date}",
+    "archive_destination_type": "對方歷次書狀",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "民事答辯二狀",
+    "filename_template": "{doc_type}({client_name})",
+    "archive_destination_type": "對方歷次書狀",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "民事答辯四狀_林黃阿姐_114.6.",
+    "filename_template": "{doc_type}{date}",
+    "archive_destination_type": "對方歷次書狀",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "民事答辯狀",
+    "filename_template": "{date} {case_no}{doc_type}繕本（{client_name}；{action_item}）",
+    "archive_destination_type": "對方歷次書狀",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "民事答辯狀_林黃阿姐_113.12.",
+    "filename_template": "{doc_type}_({client_name})_{date}",
+    "archive_destination_type": "對方歷次書狀",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "民事答辯狀（BS000-A112071；洪嘉吟律師）",
+    "filename_template": "{date} {case_no} {doc_type}",
+    "archive_destination_type": "對方歷次書狀",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "民事調查證據狀",
+    "filename_template": "{date} {case_no}{doc_type}繕本({client_name}；{action_item})",
+    "archive_destination_type": "對方歷次書狀",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "民事辯論意旨狀_林黃阿姐_114.4.",
+    "filename_template": "{doc_type}{date}({client_name}；{action_item})",
+    "archive_destination_type": "對方歷次書狀",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "法務部矯正署函",
+    "filename_template": "{date} {case_no}{doc_type} ({client_name}；{action_item})",
+    "archive_destination_type": "對方歷次書狀",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "法務部矯正署函文_113.11.",
+    "filename_template": "{doc_type}{date}",
+    "archive_destination_type": "對方歷次書狀",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "法務部矯正署函文_吳哲銘_113.11.",
+    "filename_template": "{doc_type}.{date}",
+    "archive_destination_type": "對方歷次書狀",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "法務部矯正署函文_吳哲銘_113.12.",
+    "filename_template": "{doc_title}({client_name}；{action_item})_{date}",
+    "archive_destination_type": "對方歷次書狀",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "法務部矯正署函文_吳哲銘_114.3.",
+    "filename_template": "{doc_title}{doc_type}_({client_name}；)_{date}",
+    "archive_destination_type": "對方歷次書狀",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "法務部矯正署屏東監獄函",
+    "filename_template": "{date} {case_no} {doc_type}（{client_name}；{action_item}）",
+    "archive_destination_type": "對方歷次書狀",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "游秀鈴_1141003台北地檢檢察官補充理由書",
+    "filename_template": "({client_name}；{action_item})_{date}{doc_title}{doc_type}",
+    "archive_destination_type": "對方歷次書狀",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "玉山商業銀行股份有限公司民事起訴狀",
+    "filename_template": "{doc_type}繕本({client_name}；{action_item})",
+    "archive_destination_type": "對方歷次書狀",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "玉山商業銀行股份有限公司民事陳報狀",
+    "filename_template": "{date} {doc_type}繕本({client_name}；{action_item})",
+    "archive_destination_type": "對方歷次書狀",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "答辯狀",
+    "filename_template": "{doc_type}({client_name})",
+    "archive_destination_type": "對方歷次書狀",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "聲請接續羈押理由書",
+    "filename_template": "{date}_{doc_type}（{client_name}；{action_item}）",
+    "archive_destination_type": "對方歷次書狀",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "花蓮縣秀林鄉公所復審答辯狀",
+    "filename_template": "{date} {doc_type} ({client_name}；{action_item})",
+    "archive_destination_type": "對方歷次書狀",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "行政答辯狀",
+    "filename_template": "{date}{doc_type}（{doc_title}）",
+    "archive_destination_type": "對方歷次書狀",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "行政訴訟準備狀",
+    "filename_template": "{date} {case_no} {doc_type}繕本 ({client_name}；{action_item})",
+    "archive_destination_type": "對方歷次書狀",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "行政訴訟補充起訴狀",
+    "filename_template": "{date} {doc_title} {case_no} 行政訴訟補充起訴狀 ({client_name}；{action_item})",
+    "archive_destination_type": "對方歷次書狀",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "訴願書市府回覆",
+    "filename_template": "{date} {doc_type}",
+    "archive_destination_type": "對方歷次書狀",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "起訴書",
+    "filename_template": "{date}_{doc_type}（{client_name}）",
+    "archive_destination_type": "對方歷次書狀",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "起訴狀及附件",
+    "filename_template": "{date} {doc_title} {case_no} 起訴狀及附件 ({client_name}；{action_item})",
+    "archive_destination_type": "對方歷次書狀",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "0320AI討論",
+    "filename_template": "{date}_{doc_title}_{case_no}_{doc_type}_({client_name}；{action_item})",
+    "archive_destination_type": "我方歷次書狀",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "1131119-W-008原民中心委任狀存底",
+    "filename_template": "{date} {case_no}({client_name}；{action_item}){doc_type}",
+    "archive_destination_type": "我方歷次書狀",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "1140911-K-001郵件收件回執",
+    "filename_template": "{date} {doc_type} ({client_name}；{action_item})",
+    "archive_destination_type": "我方歷次書狀",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "刑事準備二狀",
+    "filename_template": "{date}_{doc_type}({client_name}；{action_item})_{case_no}",
+    "archive_destination_type": "我方歷次書狀",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "刑事準備暨聲請調解狀",
+    "filename_template": "{date}_{doc_type}({client_name}；{action_item})_{case_no}",
+    "archive_destination_type": "我方歷次書狀",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "刑事準備暨聲請調解狀存底",
+    "filename_template": "{date}_{doc_type}({client_name})_{case_no}",
+    "archive_destination_type": "我方歷次書狀",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "刑事答辯暨聲請狀",
+    "filename_template": "{date}_{case_no}_{doc_type}（{client_name}；{action_item}）",
+    "archive_destination_type": "我方歷次書狀",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "刑事答辯暨聲請狀v",
+    "filename_template": "{date}_{case_no}_刑事答辯暨聲請狀v",
+    "archive_destination_type": "我方歷次書狀",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "刑事答辯暨聲請狀存底",
+    "filename_template": "{date}_{case_no}_刑事答辯暨聲請狀({client_name}；{action_item})",
+    "archive_destination_type": "我方歷次書狀",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "刑事聲明上訴暨上訴理由狀",
+    "filename_template": "{date}_{doc_type}({client_name}；{action_item})_{case_no}",
+    "archive_destination_type": "我方歷次書狀",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "刑事聲明上訴暨上訴理由狀存底",
+    "filename_template": "{date}_{doc_type}({client_name})_{case_no}",
+    "archive_destination_type": "我方歷次書狀",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "刑事聲明上訴暨上訴理由狀存底(當事人自行遞出)",
+    "filename_template": "{date}_{doc_type}_{case_no}({client_name}；{action_item})",
+    "archive_destination_type": "我方歷次書狀",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "刑事聲請上訴狀",
+    "filename_template": "{date}_刑事聲請上訴狀(；{action_item})",
+    "archive_destination_type": "我方歷次書狀",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "刑事聲請錄音光碟狀存底",
+    "filename_template": "{date}刑事聲請錄音光碟狀存底",
+    "archive_destination_type": "我方歷次書狀",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "刑事補充告訴理由暨請求調查證據狀存底",
+    "filename_template": "{date} {doc_type} ({client_name}；{action_item})",
+    "archive_destination_type": "我方歷次書狀",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "刑事調查證據聲請狀",
+    "filename_template": "{date}_{doc_type}",
+    "archive_destination_type": "我方歷次書狀",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "刑事陳報狀",
+    "filename_template": "{date}刑事陳報狀(；)",
+    "archive_destination_type": "我方歷次書狀",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "基地文化出版有限公司勞動契約",
+    "filename_template": "{doc_type} ({client_name}；{action_item})",
+    "archive_destination_type": "我方歷次書狀",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "基地文化出版有限公司工作規則",
+    "filename_template": "{doc_type}(；{action_item})",
+    "archive_destination_type": "我方歷次書狀",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "存證信函、律師函副本",
+    "filename_template": "{date} {doc_type}({client_name}；{action_item})",
+    "archive_destination_type": "我方歷次書狀",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "存證信函、律師函存底",
+    "filename_template": "{date} {doc_type}({client_name})",
+    "archive_destination_type": "我方歷次書狀",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "新竹文化館館舍地圖插畫委託製作契約書基地x小桌子文史影像工作室_ver1",
+    "filename_template": "{doc_type}({date})",
+    "archive_destination_type": "我方歷次書狀",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "民事強制執行聲請狀存底",
+    "filename_template": "{date} 民事強制執行聲請狀({client_name}；{action_item})存底",
+    "archive_destination_type": "我方歷次書狀",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "民事強制執行聲請狀存底-",
+    "filename_template": "{date} 民事強制執行聲請狀({client_name})存底-",
+    "archive_destination_type": "我方歷次書狀",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "民事聲請公示送達狀",
+    "filename_template": "{date} {doc_type}({client_name}；{action_item})",
+    "archive_destination_type": "我方歷次書狀",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "民事起訴狀",
+    "filename_template": "{doc_type}({client_name}；{action_item})_{date}",
+    "archive_destination_type": "我方歷次書狀",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "民事起訴狀_20231215",
+    "filename_template": "{doc_type}({client_name}；)_{date}",
+    "archive_destination_type": "我方歷次書狀",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "民事起訴狀_20231215修",
+    "filename_template": "{doc_title}{case_no}{doc_type}({client_name}；{action_item})_{date}修",
+    "archive_destination_type": "我方歷次書狀",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "民事陳報三狀v",
+    "filename_template": "{date} {doc_type}({client_name}；{action_item})",
+    "archive_destination_type": "我方歷次書狀",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "民事陳報三狀郵件收件回執",
+    "filename_template": "{date} {doc_type} ({client_name})",
+    "archive_destination_type": "我方歷次書狀",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "民事陳報二狀",
+    "filename_template": "{date} {doc_type}({client_name}；{action_item})",
+    "archive_destination_type": "我方歷次書狀",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "民事陳報狀",
+    "filename_template": "{date} {case_no} 民事陳報狀 ({client_name}；{action_item})",
+    "archive_destination_type": "我方歷次書狀",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "民事陳報狀_桃園",
+    "filename_template": "{date} {doc_type} ({client_name}；{action_item})",
+    "archive_destination_type": "我方歷次書狀",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "民事陳報狀存底",
+    "filename_template": "{date} {doc_type}({client_name})",
+    "archive_destination_type": "我方歷次書狀",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "民事陳報狀存底_桃園",
+    "filename_template": "{date} {doc_type}({client_name})存底_{doc_title}",
+    "archive_destination_type": "我方歷次書狀",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "消費者債務清理聲請狀v",
+    "filename_template": "{date} {doc_title} {case_no} {doc_type} ({client_name}；{action_item})",
+    "archive_destination_type": "我方歷次書狀",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "消費者債務清理聲請狀清稿",
+    "filename_template": "{date} {doc_title} ({client_name}；{action_item}) {doc_type}",
+    "archive_destination_type": "我方歷次書狀",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "牛犁協會法律顧問會議速記",
+    "filename_template": "{date} {doc_type}",
+    "archive_destination_type": "我方歷次書狀",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "附件一：投保紀錄",
+    "filename_template": "{date} {doc_title} {case_no} 附件一：投保紀錄 ({client_name}；{action_item})",
+    "archive_destination_type": "我方歷次書狀",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "附件三：土地謄本",
+    "filename_template": "{date} {doc_title} {case_no} 附件三：土地謄本 ({client_name}；{action_item})",
+    "archive_destination_type": "我方歷次書狀",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "附件二：集保公司紀錄",
+    "filename_template": "{doc_type}",
+    "archive_destination_type": "我方歷次書狀",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "黃泰澄復審書",
+    "filename_template": "{date} {doc_type} ({client_name}；{action_item})",
+    "archive_destination_type": "我方歷次書狀",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "黃泰澄復審書v",
+    "filename_template": "{date} {doc_type}",
+    "archive_destination_type": "我方歷次書狀",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "黃泰澄復審書暨附件一至三v",
+    "filename_template": "{date} {doc_type}",
+    "archive_destination_type": "我方歷次書狀",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "113消債清344裁定",
+    "filename_template": "{date}_{doc_type}",
+    "archive_destination_type": "法院通知或程序裁定",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "公務人員保障暨培訓委員會函",
+    "filename_template": "{date} {doc_title}{doc_type} ({client_name}；{action_item})",
+    "archive_destination_type": "法院通知或程序裁定",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "函",
+    "filename_template": "{date} {doc_title}{case_no}函({client_name}；{action_item})",
+    "archive_destination_type": "法院通知或程序裁定",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "函、執行命令",
+    "filename_template": "{date} {doc_title}{case_no}{doc_type}（{client_name}；{action_item}）",
+    "archive_destination_type": "法院通知或程序裁定",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "函、民事庭通知（主旨：請於本通知送達翌日起10日內補正後列事項）",
+    "filename_template": "{date} {doc_title}{case_no}函({client_name}；{action_item})、民事庭通知（主旨：請於本通知送達翌日起10日內補正後列事項）",
+    "archive_destination_type": "法院通知或程序裁定",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "函(王台銘；主文：請辦理債務人王台銘所有自小客車之清算登記）",
+    "filename_template": "{date} {doc_title}{case_no}函({client_name}；{action_item})",
+    "archive_destination_type": "法院通知或程序裁定",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "函(王張光；主旨：檢送告訴人刑事聲請上訴狀）",
+    "filename_template": "{date} {doc_title}{case_no}{doc_type}({client_name}；{action_item})",
+    "archive_destination_type": "法院通知或程序裁定",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "函暨民事庭通知",
+    "filename_template": "{date} {doc_title}{case_no}函暨民事庭通知({client_name}；{action_item})",
+    "archive_destination_type": "法院通知或程序裁定",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "刑事傳票",
+    "filename_template": "{date} {doc_title}{case_no}{doc_type}({client_name}；{action_item})",
+    "archive_destination_type": "法院通知或程序裁定",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "刑事庭傳票",
+    "filename_template": "{date} {doc_title}{case_no}{doc_type} ({client_name}；{action_item})",
+    "archive_destination_type": "法院通知或程序裁定",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "刑事庭通知",
+    "filename_template": "{date} {doc_title}{case_no}{doc_type}({client_name}；{action_item})",
+    "archive_destination_type": "法院通知或程序裁定",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "刑事庭通知書",
+    "filename_template": "{date} {doc_title}{case_no}刑事庭通知書({client_name}；{action_item})",
+    "archive_destination_type": "法院通知或程序裁定",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "刑事裁定",
+    "filename_template": "{date} {doc_title}{case_no}{doc_type}（{client_name}；{action_item}）",
+    "archive_destination_type": "法院通知或程序裁定",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "北高行行政訴訟庭通知_吳哲銘_114.1.",
+    "filename_template": "{doc_title}{doc_type}_({client_name}；{action_item})_{date}",
+    "archive_destination_type": "法院通知或程序裁定",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "北高行行政訴訟通知_吳哲銘113.11.",
+    "filename_template": "{doc_title}{doc_type}_({client_name}；{action_item}){date}.{case_no}",
+    "archive_destination_type": "法院通知或程序裁定",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "台北地院民事庭通知_林黃阿姐_113.11.",
+    "filename_template": "{doc_title}_({client_name}；{action_item})_{doc_type}_{date}",
+    "archive_destination_type": "法院通知或程序裁定",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "台北地院民事庭通知_林黃阿姐_114.2.",
+    "filename_template": "{doc_title}_({client_name}；{action_item})_{date}",
+    "archive_destination_type": "法院通知或程序裁定",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "台北地院民事裁定_林黃阿姐_113.11.",
+    "filename_template": "{date}_{doc_title}_{case_no}_{doc_type}_({client_name}；{action_item})",
+    "archive_destination_type": "法院通知或程序裁定",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "[當事人K]-民事調解庭通知書",
+    "filename_template": "{doc_title}-{case_no}-{doc_type}({client_name}；{action_item})",
+    "archive_destination_type": "法院通知或程序裁定",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "地方行政訴訟庭暨行政訴訟聲明承受訴訟狀",
+    "filename_template": "{date} {doc_title}{case_no}地方行政訴訟庭（{client_name}；{action_item}）暨行政訴訟聲明承受訴訟狀繕本",
+    "archive_destination_type": "法院通知或程序裁定",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "地方行政訴訟庭通知書",
+    "filename_template": "{date} {doc_title}{case_no}地方行政訴訟庭通知書（{client_name}；{action_item}）",
+    "archive_destination_type": "法院通知或程序裁定",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "執行命令",
+    "filename_template": "{date} {doc_title}{case_no}{doc_type}({client_name}；{action_item})",
+    "archive_destination_type": "法院通知或程序裁定",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "士林地方法院裁定",
+    "filename_template": "{date}_{doc_type}({client_name})",
+    "archive_destination_type": "法院通知或程序裁定",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "士林地院民事庭_陳秀儀_113.8.",
+    "filename_template": "{doc_type}.{date}",
+    "archive_destination_type": "法院通知或程序裁定",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "士林地院民事庭函文_陳秀儀_113.10.",
+    "filename_template": "{doc_title}{doc_type}_({client_name})_{date}",
+    "archive_destination_type": "法院通知或程序裁定",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "士林地院民事庭函文_陳秀儀_113.7.",
+    "filename_template": "{doc_title}{doc_type}_({client_name})_{date}",
+    "archive_destination_type": "法院通知或程序裁定",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "士林地院民事庭函文_陳金龍_114.7.",
+    "filename_template": "{doc_title}{doc_type} ({client_name}；{action_item})_{date}",
+    "archive_destination_type": "法院通知或程序裁定",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "士林地院民事庭通知_陳秀儀_114.7.",
+    "filename_template": "{doc_type}{date}",
+    "archive_destination_type": "法院通知或程序裁定",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "士林地院民事裁定_陳秀儀_113.8.",
+    "filename_template": "{doc_type}{date}.",
+    "archive_destination_type": "法院通知或程序裁定",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "士林地院民事裁定_陳金龍_113.6.",
+    "filename_template": "{doc_type}{date}",
+    "archive_destination_type": "法院通知或程序裁定",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "士林地院裁定確定證明書_陳金龍_114.4.",
+    "filename_template": "{doc_title}{doc_type}_({client_name}；{action_item})_{date}",
+    "archive_destination_type": "法院通知或程序裁定",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "士林地院調解不成立證明書_羅伊辰_113.5.",
+    "filename_template": "{doc_title}{doc_type}_({client_name}；{action_item})_{date}",
+    "archive_destination_type": "法院通知或程序裁定",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "宜蘭地院民事庭函文_楊佳綺_114.7.",
+    "filename_template": "{doc_title}{doc_type}_({client_name}；{action_item})_{date}",
+    "archive_destination_type": "法院通知或程序裁定",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "家事法庭通知書",
+    "filename_template": "{date} {doc_title}{case_no}{doc_type}({client_name}；{action_item})",
+    "archive_destination_type": "法院通知或程序裁定",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "張裕勝完成繳納裁判費",
+    "filename_template": "{date} 張裕勝完成繳納裁判費({client_name}；{action_item})",
+    "archive_destination_type": "法院通知或程序裁定",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "張裕勝完成繳納裁判費_已標記密文",
+    "filename_template": "{date} 張裕勝完成繳納裁判費({client_name}；{action_item})_已標記密文",
+    "archive_destination_type": "法院通知或程序裁定",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "押票",
+    "filename_template": "{date} {doc_title}{case_no}{doc_type}({client_name}；{action_item})",
+    "archive_destination_type": "法院通知或程序裁定",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "新北地院函文_[當事人R]_114.9.",
+    "filename_template": "新北地院函文_[當事人R]_114.9.{date}",
+    "archive_destination_type": "法院通知或程序裁定",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "新北地院刑事不行國審裁定",
+    "filename_template": "{date}{doc_type}({client_name})",
+    "archive_destination_type": "法院通知或程序裁定",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "新北地院刑事裁定_黃日霖_113.10.",
+    "filename_template": "{doc_title}{doc_type}_({client_name}；{action_item})_{date}",
+    "archive_destination_type": "法院通知或程序裁定",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "新北地院民事執行處_[當事人R]_113.10.",
+    "filename_template": "{doc_type}.{date}",
+    "archive_destination_type": "法院通知或程序裁定",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "新北地院民事執行處_[當事人D]_113.10.",
+    "filename_template": "{doc_title}_({client_name}；)_{date}",
+    "archive_destination_type": "法院通知或程序裁定",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "新北地院民事執行處函文_[當事人R]_113.10.",
+    "filename_template": "{date}_{doc_title}_{doc_type}_({client_name}；{action_item})",
+    "archive_destination_type": "法院通知或程序裁定",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "新北地院民事執行處函文_[當事人R]_113.7.",
+    "filename_template": "{doc_type}{date}",
+    "archive_destination_type": "法院通知或程序裁定",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "新北地院民事執行處函文_蔡旭欽_113.12.",
+    "filename_template": "{date}_{doc_title}_新北地院民事執行處函文_蔡旭欽_113.12._({client_name}；)",
+    "archive_destination_type": "法院通知或程序裁定",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "新北地院民事執行處函文_蔡旭欽_114.3.",
+    "filename_template": "{doc_title}{doc_type}_({client_name}；{action_item})_{date}",
+    "archive_destination_type": "法院通知或程序裁定",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "新北地院民事執行處函文_郭麗卿_113.7.",
+    "filename_template": "{date}_{doc_title}_{doc_type}_({client_name}；{action_item})",
+    "archive_destination_type": "法院通知或程序裁定",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "新北地院民事執行處函文_郭麗卿_114.3.",
+    "filename_template": "{doc_title}{doc_type}_({client_name})_{date}",
+    "archive_destination_type": "法院通知或程序裁定",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "新北地院民事執行處函文_[當事人D]_113.7.",
+    "filename_template": "新北地院民事執行處函文_[當事人D]_113.7.{date}",
+    "archive_destination_type": "法院通知或程序裁定",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "新北地院民事執行處開庭通知_蔡旭欽113.5.",
+    "filename_template": "{doc_title}{doc_type}{case_no}_({client_name}；{action_item}){date}",
+    "archive_destination_type": "法院通知或程序裁定",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "新北地院民事執行處開庭通知_郭麗卿_113.5.",
+    "filename_template": "{doc_type}{date}",
+    "archive_destination_type": "法院通知或程序裁定",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "新北地院民事裁定_[當事人R]_114.9.",
+    "filename_template": "{doc_title}{doc_type}_{client_name}_{date}",
+    "archive_destination_type": "法院通知或程序裁定",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "新北地院民事裁定_蔡旭欽_113.12.",
+    "filename_template": "{doc_type}.{date}",
+    "archive_destination_type": "法院通知或程序裁定",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "新北地院民事裁定_蔡旭欽_113.9.",
+    "filename_template": "{doc_title}{doc_type}_{client_name}_{date}",
+    "archive_destination_type": "法院通知或程序裁定",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "新北地院民事裁定_[當事人D]_113.12.",
+    "filename_template": "{doc_title}{doc_type}_({client_name}；{action_item})_{date}",
+    "archive_destination_type": "法院通知或程序裁定",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "新北地院聲請停止羈押駁回裁定 - 簽名同意不抗告",
+    "filename_template": "{date}新北地院聲請停止羈押駁回裁定({client_name}；{action_item})",
+    "archive_destination_type": "法院通知或程序裁定",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "桃園地方法院函_受送達人：趙弘泰",
+    "filename_template": "{date} {case_no} {doc_type} ({client_name}；{action_item})",
+    "archive_destination_type": "法院通知或程序裁定",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "桃園地方法院函_受送達人：趙弘耀",
+    "filename_template": "{date} {doc_title}{doc_type} ({client_name}；{case_no}{action_item})_受送達人：{client_name}",
+    "archive_destination_type": "法院通知或程序裁定",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "桃園地院執行命令_王禎嫻_114.9.",
+    "filename_template": "{doc_title}{doc_type}_({client_name}；)_{date}",
+    "archive_destination_type": "法院通知或程序裁定",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "民事執行處函",
+    "filename_template": "{date} {doc_title}{case_no}{doc_type}({client_name}；{action_item})",
+    "archive_destination_type": "法院通知或程序裁定",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "民事執行處函-",
+    "filename_template": "{date} {doc_title}{case_no}{doc_type}（{client_name}；{action_item}）",
+    "archive_destination_type": "法院通知或程序裁定",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "民事執行處函、調解不成立證明書",
+    "filename_template": "{date} {doc_title}{case_no}{doc_type}（{client_name}；{action_item}）",
+    "archive_destination_type": "法院通知或程序裁定",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "民事執行處函(呂幸春；主旨：請本件當事人於民國114年8月27日上午10時30分到院進行調解）",
+    "filename_template": "{date} {doc_title}{case_no}{doc_type}({client_name}；{action_item})",
+    "archive_destination_type": "法院通知或程序裁定",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "民事執行處函(王台銘；主文：請於文到10日內，補正如說明所示事項；檢送開始清算之公告及債權人清冊）",
+    "filename_template": "{date} {doc_title}{case_no}民事執行處函({client_name}；{action_item})",
+    "archive_destination_type": "法院通知或程序裁定",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "民事執行處函([當事人D]；主旨：檢送債務人黃彩~人清冊；檢送開始更生程序公告，請債務人於文到二十日內依說明三至七提出相關資料到院）",
+    "filename_template": "{date} {doc_title}{case_no}民事執行處函({client_name}；{action_item})",
+    "archive_destination_type": "法院通知或程序裁定",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "民事庭函",
+    "filename_template": "{date} {doc_title}{case_no}{doc_type} ({client_name}；{action_item})",
+    "archive_destination_type": "法院通知或程序裁定",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "民事庭函(武氏金仙案；請於114年9月18日庭期前提出許榮昌於111年12月至113年1月係居住在花蓮之舉證）",
+    "filename_template": "{date} {doc_title}{case_no}民事庭函({client_name}；{action_item})",
+    "archive_destination_type": "法院通知或程序裁定",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "民事庭通知",
+    "filename_template": "{date} {doc_title}{case_no}{doc_type}（{client_name}；{action_item}）",
+    "archive_destination_type": "法院通知或程序裁定",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "民事庭通知_補正5日內",
+    "filename_template": "{date}_{doc_type}({client_name}；{action_item})",
+    "archive_destination_type": "法院通知或程序裁定",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "民事庭通知書",
+    "filename_template": "{date} {doc_title}{case_no}{doc_type}({client_name}；{action_item})",
+    "archive_destination_type": "法院通知或程序裁定",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "民事庭通知書；民事裁定（主文：聲請人應於本裁定送達後14日內補正資料到院，逾期未補正即駁回聲請）",
+    "filename_template": "{date} {doc_title}{case_no}{doc_type}({action_item})",
+    "archive_destination_type": "法院通知或程序裁定",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "民事庭通知書(武氏金仙-侵害配偶權；訂3月18日下午3時20分進行準備程序）",
+    "filename_template": "{date} {doc_title}{case_no}{doc_type}({client_name}；{action_item})",
+    "archive_destination_type": "法院通知或程序裁定",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "民事庭通知書(武氏金仙-侵害配偶權；訂5月1日上午11時10分進行準備程序）",
+    "filename_template": "{date} {doc_title}{case_no}民事庭通知書({client_name}；{action_item})",
+    "archive_destination_type": "法院通知或程序裁定",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "民事庭通知書(武氏金仙-給付簽帳卡消費款；訂3月6日下午2時30分進行準備程序）",
+    "filename_template": "{date} {doc_title}{case_no}{doc_type}({client_name}；{action_item})",
+    "archive_destination_type": "法院通知或程序裁定",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "民事庭通知書(武氏金仙案；訂114年1月21日下午3時40分進行準備程序、送達翌日起14日內，提出原證5光碟影像之截圖到院）",
+    "filename_template": "{date} {doc_title}{case_no}民事庭通知書({client_name}；{action_item})",
+    "archive_destination_type": "法院通知或程序裁定",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "民事庭通知書暨自行收納款項收據（複製電子卷證費）",
+    "filename_template": "{date} {doc_title}{case_no}民事庭通知書（{client_name}；{action_item}）暨自行收納款項收據（複製電子卷證費）",
+    "archive_destination_type": "法院通知或程序裁定",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "民事裁定",
+    "filename_template": "{date} {doc_title}{case_no}民事裁定 ({client_name}；{action_item})",
+    "archive_destination_type": "法院通知或程序裁定",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "民事裁定 (1)",
+    "filename_template": "{date} {doc_title}{case_no}{doc_type}（{client_name}；{action_item}）",
+    "archive_destination_type": "法院通知或程序裁定",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "民事裁定(李婉菁；主文：聲請人李婉菁自民國114年6月9日下午17時起開始更生程序）",
+    "filename_template": "{date} {doc_title}{case_no}{doc_type}({client_name}；{action_item})",
+    "archive_destination_type": "法院通知或程序裁定",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "民事裁定(王台銘；主文：債務人王台銘自民國114年8月12日下午4時起開始清算程序。命司法事務官進行本件清算程序）",
+    "filename_template": "{date} {doc_title}{case_no}{doc_type}({client_name}；{action_item})",
+    "archive_destination_type": "法院通知或程序裁定",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "民事裁定(謝廷延；主文：訴訟救助聲請駁回）",
+    "filename_template": "{date} {doc_title}{case_no}{doc_type}({client_name}；{action_item})",
+    "archive_destination_type": "法院通知或程序裁定",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "民事通知書",
+    "filename_template": "{date} {doc_title}{case_no}{doc_type}（{client_name}；{action_item}）",
+    "archive_destination_type": "法院通知或程序裁定",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "法院調解通知",
+    "filename_template": "{date}_{doc_type}",
+    "archive_destination_type": "法院通知或程序裁定",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "清算終結裁定",
+    "filename_template": "{date}{doc_type}",
+    "archive_destination_type": "法院通知或程序裁定",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "清算裁定",
+    "filename_template": "{date}_{doc_type}({client_name})",
+    "archive_destination_type": "法院通知或程序裁定",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "臺北地方檢察署通知",
+    "filename_template": "{date} {doc_type} ({client_name}；{action_item})",
+    "archive_destination_type": "法院通知或程序裁定",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "臺北地方法院函",
+    "filename_template": "{date} {doc_type} ({client_name}；{action_item})",
+    "archive_destination_type": "法院通知或程序裁定",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "臺北高院來函及附件",
+    "filename_template": "{date} {doc_title} {case_no} {doc_type} ({client_name}；{action_item})",
+    "archive_destination_type": "法院通知或程序裁定",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "臺灣新竹地方法院刑事庭傳票",
+    "filename_template": "{date}_{case_no}_{doc_type}_({client_name}；{action_item})",
+    "archive_destination_type": "法院通知或程序裁定",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "臺灣臺北地方法院臺北簡易庭通知書",
+    "filename_template": "{date} {doc_type}（{client_name}；{action_item}）",
+    "archive_destination_type": "法院通知或程序裁定",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "花蓮地方法院 函",
+    "filename_template": "{date} {case_no} {doc_type} ({client_name}；{action_item})",
+    "archive_destination_type": "法院通知或程序裁定",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "花蓮地檢署112年度偵字第5876、、113年度偵字第2102號函",
+    "filename_template": "{date} {doc_title}{case_no}{doc_type} ({client_name}；{action_item})",
+    "archive_destination_type": "法院通知或程序裁定",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "花蓮地院裁判費繳納證明",
+    "filename_template": "{date} {doc_type}({client_name})",
+    "archive_destination_type": "法院通知或程序裁定",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "花蓮簡易庭函，逾期不補正即駁回本件起訴）",
+    "filename_template": "{date} {doc_title}{case_no}{doc_type}({client_name}；{action_item})",
+    "archive_destination_type": "法院通知或程序裁定",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "花蓮簡易庭通知書",
+    "filename_template": "{date} {doc_title}{case_no}{doc_type}（{client_name}；{action_item}）",
+    "archive_destination_type": "法院通知或程序裁定",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "花蓮縣壽豐鄉調解委員會調解通知書",
+    "filename_template": "{date} {doc_title}{doc_type}({client_name}；{action_item})",
+    "archive_destination_type": "法院通知或程序裁定",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "花蓮縣警察局吉安分局書函",
+    "filename_template": "{date}-{doc_title}-{case_no}-{doc_type} ({client_name}；{action_item})",
+    "archive_destination_type": "法院通知或程序裁定",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "花蓮縣警察局花蓮分局通知書",
+    "filename_template": "{date} {case_no}{doc_type} ({client_name}；{action_item})",
+    "archive_destination_type": "法院通知或程序裁定",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "裁定",
+    "filename_template": "{date} {doc_title}{case_no}裁定({client_name}；{action_item})",
+    "archive_destination_type": "法院通知或程序裁定",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "裁定確定證明書",
+    "filename_template": "{date} {doc_title}{case_no}{doc_type}({client_name})",
+    "archive_destination_type": "法院通知或程序裁定",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "補件函文",
+    "filename_template": "{date}{doc_title}{case_no}{doc_type}({client_name}；{action_item})",
+    "archive_destination_type": "法院通知或程序裁定",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "調解不成立證明書",
+    "filename_template": "{date} {doc_title}{case_no} 調解不成立證明書({client_name}；{action_item})",
+    "archive_destination_type": "法院通知或程序裁定",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "調解不成立證明書、民事執行處函",
+    "filename_template": "{date} {doc_title}{case_no}調解不成立證明書、民事執行處函({client_name}；{action_item})",
+    "archive_destination_type": "法院通知或程序裁定",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "謝光明完成繳納裁判費",
+    "filename_template": "{date} ({client_name}；{action_item})",
+    "archive_destination_type": "法院通知或程序裁定",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "通知",
+    "filename_template": "{date} {doc_title}{case_no}{doc_type}({client_name}；{action_item})",
+    "archive_destination_type": "法院通知或程序裁定",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "通知書",
+    "filename_template": "{date} {doc_title}{case_no}{doc_type}（{client_name}；{action_item}）",
+    "archive_destination_type": "法院通知或程序裁定",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "通知書、民事裁定",
+    "filename_template": "{date} {doc_title}{case_no}{doc_type}（{client_name}；{action_item}）",
+    "archive_destination_type": "法院通知或程序裁定",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "開庭通知書",
+    "filename_template": "{date} {doc_title}{case_no}{doc_type}({client_name}；{action_item})",
+    "archive_destination_type": "法院通知或程序裁定",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "高等行政訴訟庭函(中央選舉委員會；請於文到10日內提出原處分卷）",
+    "filename_template": "{date} {doc_title}{case_no}{doc_type}({client_name}；{action_item})",
+    "archive_destination_type": "法院通知或程序裁定",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "高等行政訴訟庭通知書",
+    "filename_template": "{date} {doc_title}{case_no}{doc_type}({client_name}；{action_item})",
+    "archive_destination_type": "法院通知或程序裁定",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "高等行政訴訟庭通知書_喬政翔律師",
+    "filename_template": "{date} {doc_title}{case_no}{doc_type}({client_name}；{action_item})",
+    "archive_destination_type": "法院通知或程序裁定",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "高等行政訴訟庭通知書_林俊俊儒律師",
+    "filename_template": "{date} {doc_title}{case_no}{doc_type}({client_name}；{action_item})",
+    "archive_destination_type": "法院通知或程序裁定",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "高等行政訴訟庭通知書暨自行收納款項收據",
+    "filename_template": "{date} {doc_title}{case_no}{doc_type}({client_name}；{action_item})暨自行收納款項收據",
+    "archive_destination_type": "法院通知或程序裁定",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "高院0507開庭通知",
+    "filename_template": "{date}{doc_type}({client_name})",
+    "archive_destination_type": "法院通知或程序裁定",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "黃雲龍訴訟案-裁定-移轉管轄",
+    "filename_template": "{date}-({client_name}；{action_item})-{doc_title}{case_no}",
+    "archive_destination_type": "法院通知或程序裁定",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "110年綜所稅單",
+    "filename_template": "{date}{doc_type}({client_name}；{action_item})",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "112-113綜所稅清單、財產清單",
+    "filename_template": "{date} 112-113綜所稅清單、財產清單",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "112年綜合所得稅各類所得資料清單",
+    "filename_template": "{date}{doc_type}",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "113、112綜所稅清單；財產清單",
+    "filename_template": "{date} {doc_title} {case_no} {doc_type} ({client_name}；{action_item})",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "2025-05-13-10-37-01-",
+    "filename_template": "{date}-{doc_type}",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "Covid-19疫苗接種紀錄卡",
+    "filename_template": "Covid-19疫苗接種紀錄卡({client_name})",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "LINE對話截圖",
+    "filename_template": "{date} {doc_type}",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "Screenshot 2025-01-23 at 6.46.00 AM",
+    "filename_template": "{date}_{doc_title}_{case_no}_{doc_type}({client_name}；{action_item})",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "中華民國刑法",
+    "filename_template": "{doc_type}",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "中華電信-付款通知單",
+    "filename_template": "{date}_{doc_title}_{case_no}_{doc_type}_({client_name}；{action_item})",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "住宅租賃契約書",
+    "filename_template": "{date} {doc_title} {case_no} {doc_type} ({client_name}；{action_item})",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "保單及存摺影本",
+    "filename_template": "{date}_{doc_type}",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "保單查詢資料",
+    "filename_template": "{date}{doc_title}{case_no}保單查詢資料({client_name}；{action_item})",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "保險業通報作業資訊系統資料查詢結果回報書",
+    "filename_template": "{doc_type}",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "信用報告",
+    "filename_template": "{date} {doc_title} {case_no} 信用報告 ({client_name}；{action_item})",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "健保資料",
+    "filename_template": "{doc_type}",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "全國財產稅總歸戶財產所得清單",
+    "filename_template": "{date} {doc_title} {case_no} 全國財產稅總歸戶財產所得清單 ({client_name}；{action_item})",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "切結書",
+    "filename_template": "{date} {doc_type}({client_name})",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "勞保投保資料",
+    "filename_template": "{date} {doc_title} {case_no} {doc_type} ({client_name}；{action_item})",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "勞保資料",
+    "filename_template": "勞保資料",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "古厲生友人來所提供",
+    "filename_template": "{date} 古厲生友人來所提供",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "告證四：不動產估價資料",
+    "filename_template": "{date} {doc_title} {case_no} 告證四：不動產估價資料 ({client_name}；{action_item})",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "國軍東部地區財務處函",
+    "filename_template": "{date} {doc_title} {case_no} {doc_type} ({client_name}；{action_item})",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "土地登記第一類謄本",
+    "filename_template": "{doc_type} ({client_name}；{action_item})",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "土地登記第一類謄本等",
+    "filename_template": "{doc_type}",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "基隆市警察局第二分局八斗子分駐所受理案件證明單(莊國勳；內容：吳兆玹領用公款)",
+    "filename_template": "{date} {doc_title}{doc_type}({client_name}；{action_item})",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "壽險公會資料查詢結果回覆書",
+    "filename_template": "{date}{doc_title}{case_no}壽險公會資料查詢結果回覆書({client_name}；{action_item})",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "宜蘭地院執行命令",
+    "filename_template": "{date} {doc_title} {case_no} {doc_type} ({client_name}；{action_item})",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "居住同意書",
+    "filename_template": "{date}_{doc_title}{case_no}_{doc_type}_({client_name}；{action_item})",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "層級化法律保留",
+    "filename_template": "{date}_{doc_title}_{case_no}_{doc_type} ({client_name}；{action_item})",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "工程結算表及物調概算表_最終版",
+    "filename_template": "{date}{doc_type}",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "張成功案警詢資料",
+    "filename_template": "({client_name}；{action_item})",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "張裕文戶籍謄本",
+    "filename_template": "{date} {doc_type}",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "徐珠玉、范昭盛除戶謄本",
+    "filename_template": "{date} {doc_title} {case_no} ({client_name}；{action_item})",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "應備資料 古惠茹",
+    "filename_template": "{date} ({client_name}；{action_item})",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "戶口名簿",
+    "filename_template": "{date}-{doc_title}-{case_no}-{doc_type}-({client_name}；{action_item})",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "戶籍謄本",
+    "filename_template": "{date} {doc_type} (；{action_item})",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "戶籍謄本、戶政規費收據",
+    "filename_template": "{date} {doc_type} ({client_name})",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "所得資料清單、全國財產稅總歸戶清單",
+    "filename_template": "{date} {doc_title} {case_no} 所得資料清單、全國財產稅總歸戶清單 ({client_name}；{action_item})",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "扶助律師接案通知書_1130402-T-030",
+    "filename_template": "{doc_type}_{date}",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "投資人開立帳戶明細表",
+    "filename_template": "{doc_type}",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "授權書",
+    "filename_template": "{doc_type}({client_name})",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "支出明細表",
+    "filename_template": "{date} {doc_title} {case_no} {doc_type} ({client_name}；{action_item})",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "收入證明切結書",
+    "filename_template": "{date} {doc_type}({client_name}；{action_item})",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "李思瑾112、113綜所稅清單、財產查詢清單",
+    "filename_template": "{date} {doc_title} {case_no} {doc_type} ({client_name}；{action_item})",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "李承勳112、113綜所稅清單、財產查詢清單",
+    "filename_template": "({client_name}；{action_item})",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "林芸瑄案件諮詢",
+    "filename_template": "{date} ({client_name}；{action_item})",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "案件概述單",
+    "filename_template": "{date}_{doc_title}_{case_no}_{doc_type}_({client_name}；{action_item})",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "楊溱玉行動電話",
+    "filename_template": "{date}_{doc_title}_{case_no}_{doc_type}({client_name}；{action_item})",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "武氏金仙存戶交易明細、聲明書",
+    "filename_template": "{doc_type}({action_item})",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "法院函附件",
+    "filename_template": "{date} {doc_title} {case_no} {doc_type} ({client_name}；{action_item})",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "消債所需資料表",
+    "filename_template": "{date}_{doc_type}（{client_name}）",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "理賠證明書",
+    "filename_template": "{date}_{doc_title}_{case_no}_{doc_type}_({client_name}；{action_item})",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "監獄行刑法",
+    "filename_template": "{date} {doc_title} {case_no} {doc_type} ({client_name}；{action_item})",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "監獄行刑法施行細則",
+    "filename_template": "{date} {doc_title} {doc_type} ({client_name}；{action_item})",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "筆記",
+    "filename_template": "{date} {doc_type}",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "結案回報書_1130402-T-030",
+    "filename_template": "{date}_{doc_type}",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "綜所稅、財產清單",
+    "filename_template": "{date}-{doc_title}-{case_no}-{doc_type}({client_name}；{action_item})",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "羅上儀諮詢",
+    "filename_template": "{doc_type}{date}",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "羅上儀諮詢文字",
+    "filename_template": "{doc_type} ({client_name}；{action_item})",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "聯徵中心-債清前置協商專用債權人清冊",
+    "filename_template": "{date} {doc_title} {case_no} {doc_type} ({client_name}；{action_item})",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "聯徵中心-當事人綜合信用報告回覆書",
+    "filename_template": "{date} {doc_title} {case_no} 聯徵中心-當事人綜合信用報告回覆書 ({client_name}；{action_item})",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "聯徵中心債權人清冊",
+    "filename_template": "{date} {doc_type}({client_name}；{action_item})",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "聯徵中心查詢當事人綜合信用報告回覆書",
+    "filename_template": "{doc_type}({client_name}；{action_item})",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "臺北高等行政法院 函",
+    "filename_template": "{date} {case_no} {doc_type} ({client_name}；{action_item})",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "與劉秀緞老師聯繫訊息",
+    "filename_template": "{date} {doc_type}",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "花蓮縣地方稅務局113年全期使用牌照稅繳款書",
+    "filename_template": "{doc_type}",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "花蓮縣秀林鄉公所函",
+    "filename_template": "{date} {doc_type}({client_name}；{action_item})",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "花蓮縣花蓮地政事務所土地所有權狀",
+    "filename_template": "{doc_type}({client_name}；{action_item})",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "花蓮縣花蓮地政事務所地政規費徵收聯單",
+    "filename_template": "{doc_type}（{client_name}）",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "花蓮縣花蓮地政事務所建物所有權狀",
+    "filename_template": "{doc_type}({client_name}；{action_item})",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "范夏妹除戶謄本",
+    "filename_template": "{doc_type}",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "范夏玉除戶謄本；姜美秀、范姜瑪莉現戶謄本",
+    "filename_template": "{date}{doc_title}{case_no}{doc_type}({client_name}；{action_item})",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "范對妹、謝清山除戶謄本；謝連清、謝德清、謝清榮現戶謄本",
+    "filename_template": "{date} {doc_title} {case_no} {doc_type} ({client_name}；{action_item})",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "范正助、范一郎、范元進、范元望除戶謄本",
+    "filename_template": "{date} {doc_title} {case_no} {doc_type} ({client_name}；{action_item})",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "莊國勳身分證",
+    "filename_template": "{doc_type} ({client_name}；{action_item})",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "莊國勳郵局存摺封面",
+    "filename_template": "{date} {doc_title} {case_no} ({client_name}；{action_item}) 莊國勳郵局存摺封面",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "蔡文芳告訴狀",
+    "filename_template": "{date} {doc_title} {case_no} ({client_name}；{action_item}) 蔡文芳告訴狀",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "薪資明細",
+    "filename_template": "{date} {doc_title} {case_no} 薪資明細 ({client_name}；{action_item})",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "薪資證明",
+    "filename_template": "{date}_{doc_title}_{case_no}_{doc_type}({client_name}；{action_item})",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "螢幕擷取畫面 2024-05-08",
+    "filename_template": "{doc_type}",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "螢幕擷取畫面 2024-12-05",
+    "filename_template": "{doc_type}",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "行刑累進處遇施行細則",
+    "filename_template": "{doc_type}",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "行刑累進處遇條例",
+    "filename_template": "{date} {doc_title} {case_no} {doc_type} ({client_name}；{action_item})",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "行政程序法",
+    "filename_template": "{date}_{doc_title}_{case_no}_{doc_type}_({client_name}；{action_item})",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "診斷證明書",
+    "filename_template": "{date} {doc_title} {case_no} 診斷證明書 ({client_name}；{action_item})",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "詹文傑投保資料",
+    "filename_template": "詹文傑投保資料 (詹文傑；投保資料)",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "謝文仲除戶謄本；謝嘉倫現戶謄本",
+    "filename_template": "{date} {doc_title} {case_no} ({client_name}；{action_item}) {doc_type}",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "謝文明除戶謄本",
+    "filename_template": "({client_name}；{action_item})",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "謝瑞祥除戶謄本；劉樹維、劉素雯、呂苙菻、商樹德現戶謄本",
+    "filename_template": "{doc_type}",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "謝瑞芳、蔡偉德除戶謄本",
+    "filename_template": "({client_name}；{action_item})",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "謝金水、謝文生除戶謄本；彭甄琳、謝怡君、謝皓任、謝皓成、謝正元現戶謄本",
+    "filename_template": "{doc_type}",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "證物",
+    "filename_template": "{date} {doc_title} {case_no} {doc_type} ({client_name}；{action_item})",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "證物_114.2.",
+    "filename_template": "{doc_type}",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "證物_林洋宇_114.3.",
+    "filename_template": "({client_name}；{action_item})_{doc_type}{date}",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "證物_林洋宇_114.9.",
+    "filename_template": "{doc_type}({client_name}；)_{date}",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "證物_柯淳文_114.7.",
+    "filename_template": "{doc_type}({client_name}；{action_item})_{date}",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "證物_[當事人R]_113.11.",
+    "filename_template": "{doc_type}.{date}",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "證物_[當事人R]_113.12.",
+    "filename_template": "{doc_type}{date}",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "證物_[當事人R]_114.2.",
+    "filename_template": "{date}_{doc_title}_{case_no}_{doc_type}_({client_name}；{action_item})",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "證物_蕭月玲_114.8.",
+    "filename_template": "證物_蕭月玲_114.8.{date}",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "證物_郭麗卿_114.3.",
+    "filename_template": "{doc_type}{date}",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "證物_陳宇頡_114.2.",
+    "filename_template": "{doc_type}{date}",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "財政部北區國稅局遺產稅免稅證明書",
+    "filename_template": "{doc_type}",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "貴社承攬本營運處辦理之「花蓮機務段日檢庫新建工程",
+    "filename_template": "{doc_type}",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "資料",
+    "filename_template": "{date} {doc_title} {case_no} {doc_type} ({client_name}；{action_item})",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "資料準備檢核表",
+    "filename_template": "{date}_{doc_title}_{case_no}_資料準備檢核表({client_name}；{action_item})",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "趙初梅除戶謄本；周建榮、周家瑞、周家祥、周家豪現戶謄本",
+    "filename_template": "{doc_type}",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "趙惠玲、趙珮絨現戶謄本",
+    "filename_template": "{date}-{doc_title}-{case_no}-{doc_type}({client_name}；{action_item})",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "趙榮辛、趙文星、趙明生、趙太榮、趙明光除戶謄本",
+    "filename_template": "({client_name}；{action_item})",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "趙清榮、趙志強除戶謄本",
+    "filename_template": "{doc_type}",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "趙秀妹、鍾志凱除戶謄本；鍾志榮、鍾志偉現戶謄本",
+    "filename_template": "{doc_type}",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "趙秋妹除戶謄本；葛秋華、葛芸、葛治軒、葛邵元現戶謄本",
+    "filename_template": "{date}_{doc_title}_{case_no}_{doc_type}({client_name}；{action_item})",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "身分證正反面",
+    "filename_template": "{date} {doc_title} {case_no} 身分證正反面 ({client_name}；{action_item})",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "輕鬆付繳款紀錄",
+    "filename_template": "{date}_{case_no}_輕鬆付繳款紀錄({client_name}；{action_item})",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "郭麗卿-存摺凱基銀行",
+    "filename_template": "({client_name}；{action_item})",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "郭麗卿-存摺國泰銀行",
+    "filename_template": "{doc_type}",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "郭麗卿-存摺永豐銀行",
+    "filename_template": "({client_name}；{action_item})",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "郭麗卿-存摺聯邦銀行",
+    "filename_template": "({client_name}；{action_item})",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "郭麗卿-存摺華南銀行",
+    "filename_template": "({client_name}；{action_item})",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "郭麗卿-存摺遠東銀行",
+    "filename_template": "({client_name}；{action_item})",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "郭麗卿合作金庫交易明細",
+    "filename_template": "{doc_type} ({client_name}；{action_item})",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "郭麗卿合作金庫存摺",
+    "filename_template": "{doc_type} ({client_name}；{action_item})",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "郭麗卿新光存摺",
+    "filename_template": "{doc_type}",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "郭麗卿玉山銀行交易明細",
+    "filename_template": "{doc_type}",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "郭麗卿玉山銀行存摺",
+    "filename_template": "{date}{doc_title}{case_no}{doc_type}({client_name}；{action_item})",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "附件三：R011627_薪資明細",
+    "filename_template": "{doc_type}({client_name}；{action_item})",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "陳宇頡 起訴書113.12.13收",
+    "filename_template": "({client_name}；{action_item}){date}",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "集保明細表",
+    "filename_template": "{doc_type}",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "零散資料",
+    "filename_template": "{doc_type}",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "黃雲龍訴訟案卷",
+    "filename_template": "{doc_type} ({client_name}；{action_item})",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "黃雲龍訴願案-訴願答辯書",
+    "filename_template": "{doc_type}({action_item})",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "黃雲龍訴願案-訴願駁回決定書",
+    "filename_template": "{doc_type}",
+    "archive_destination_type": "證據資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "《中央選舉委員會案》臺北高等行政法院規費繳款單",
+    "filename_template": "{date} {case_no}{doc_type}(；{action_item})",
+    "archive_destination_type": "閱卷資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "《王張光案》高等法院規費繳款單",
+    "filename_template": "{date} {case_no} 《{client_name}案》{doc_title}{doc_type} ({client_name}；{action_item})",
+    "archive_destination_type": "閱卷資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "《王淑婷案》花蓮地方法院規費繳款單",
+    "filename_template": "{date} {case_no} {doc_type} ({client_name}；{action_item})",
+    "archive_destination_type": "閱卷資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "《高健祐案》高雄高等行政法院自行收納款項收據",
+    "filename_template": "{date} {case_no} ({client_name}；{action_item}){doc_title}{doc_type}",
+    "archive_destination_type": "閱卷資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "《高健祐案》高雄高等行政法院規費繳款單",
+    "filename_template": "{date} {case_no} {doc_type} ({client_name}；{action_item})",
+    "archive_destination_type": "閱卷資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "113_偵_005157_DOC_001_1140703135134_OCR",
+    "filename_template": "{doc_title}_{case_no}_{doc_type}_{date}({client_name}；{action_item})",
+    "archive_destination_type": "閱卷資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "113_偵_005157_DOC_002_1140703135209_OCR",
+    "filename_template": "{doc_type}",
+    "archive_destination_type": "閱卷資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "114_偵_003805_DOC_001_1140618191951_OCR",
+    "filename_template": "{date}_{case_no}_{doc_type}",
+    "archive_destination_type": "閱卷資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "北高行行政_114訴228卷1_P1-",
+    "filename_template": "{doc_title}_{case_no}{doc_type}",
+    "archive_destination_type": "閱卷資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "卷宗",
+    "filename_template": "{date} {doc_title} {case_no} {doc_type} ({client_name}；{action_item})",
+    "archive_destination_type": "閱卷資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "原處分卷",
+    "filename_template": "{date}{doc_type}({client_name}；{action_item})",
+    "archive_destination_type": "閱卷資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "宜蘭刑事_114原易32卷_P1-20_OCR",
+    "filename_template": "{date}_{doc_title}_{case_no}_{doc_type} ({client_name}；{action_item})",
+    "archive_destination_type": "閱卷資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "自行收納款項收據",
+    "filename_template": "{date} {doc_title}{case_no}自行收納款項收據 ({client_name}；{action_item})",
+    "archive_destination_type": "閱卷資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "花蓮刑事_114原金訴166卷_P1-32_OCR",
+    "filename_template": "{doc_type}",
+    "archive_destination_type": "閱卷資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "謝廷延20250519卷",
+    "filename_template": "({client_name}；{action_item}){date}{doc_type}",
+    "archive_destination_type": "閱卷資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "閱卷資料",
+    "filename_template": "{date} {doc_type}",
+    "archive_destination_type": "閱卷資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  },
+  {
+    "doc_type": "高高行行政_114監簡29卷1_P1-381_OCR",
+    "filename_template": "{doc_type}",
+    "archive_destination_type": "閱卷資料",
+    "description": "由 AI 範本學習 (任務 B) 自動建立"
+  }
+]

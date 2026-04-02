@@ -1,0 +1,206 @@
+# -*- coding: utf-8 -*-
+"""
+OSC headless todo extraction.
+
+This intentionally focuses on filename-based parsing because:
+- The OSC workflow relies on correct "收文日/文到日" for relative deadlines.
+- pdf-namer already normalizes filenames to include YYYYMMDD.
+"""
+
+from __future__ import annotations
+import logging
+
+import os
+import re
+from dataclasses import dataclass
+from datetime import date, datetime, timedelta
+from typing import Dict, List, Optional
+
+import holidays
+
+
+def extract_document_date_from_filename(filename: str, file_path: str = "") -> Optional[datetime]:
+    """
+    Extract "document received date" from filename.
+    Priority:
+    - Prefix YYYYMMDD
+    - Prefix YYYY-MM-DD / YYYY.MM.DD
+    """
+    name = os.path.basename(filename or "")
+    m = re.match(r"^(\d{4})(\d{2})(\d{2})", name)
+    if m:
+        try:
+            return datetime(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+        except Exception:
+            logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 33, exc_info=True)
+
+    m = re.match(r"^(\d{4})[-\.](\d{2})[-\.](\d{2})", name)
+    if m:
+        try:
+            return datetime(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+        except Exception:
+            logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 40, exc_info=True)
+
+    # Fallback: try file mtime (only if exists)
+    if file_path and os.path.exists(file_path):
+        try:
+            return datetime.fromtimestamp(os.path.getmtime(file_path))
+        except Exception:
+            return None
+    return None
+
+
+def chinese_to_number(chinese_str: str) -> Optional[int]:
+    """Chinese number → int (supports simple forms like 十五/二十五/三十)."""
+    s = (chinese_str or "").strip()
+    if not s:
+        return None
+    if s.isdigit():
+        return int(s)
+    chinese_map = {
+        "零": 0, "一": 1, "二": 2, "三": 3, "四": 4,
+        "五": 5, "六": 6, "七": 7, "八": 8, "九": 9,
+        "十": 10,
+    }
+    if s in chinese_map:
+        return chinese_map[s]
+    if "十" in s:
+        a, b = s.split("十", 1)
+        tens = 10 if a == "" else (chinese_map.get(a, 1) * 10)
+        ones = 0 if b == "" else chinese_map.get(b, 0)
+        return tens + ones
+    return None
+
+
+def is_tw_holiday(d: date, tw: holidays.Taiwan) -> bool:
+    name = tw.get(d)
+    if name:
+        if "補行上班日" in str(name):
+            return False
+        return True
+    return (d.weekday() >= 5)
+
+
+def next_workday(dt: datetime, tw: holidays.Taiwan) -> datetime:
+    d = dt.date()
+    while is_tw_holiday(d, tw):
+        d = d + timedelta(days=1)
+    return datetime.combine(d, dt.time())
+
+
+def get_default_patterns() -> Dict[str, List[Dict]]:
+    return {
+        "補正": [
+            {"pattern": r"應於本裁定送達後(\d+)日內補正", "pattern_type": "relative", "days": None},
+            {"pattern": r"請於文到(\d+)日內補正", "pattern_type": "relative", "days": None},
+            {"pattern": r"文到(\d+)日內.*?補正", "pattern_type": "relative", "days": None},
+            {"pattern": r"(\d+)日內補正", "pattern_type": "relative", "days": None},
+        ],
+        "陳述意見": [
+            {"pattern": r"文到(\d+)日內陳述意見", "pattern_type": "relative", "days": None},
+            {"pattern": r"(\d+)日內陳述意見", "pattern_type": "relative", "days": None},
+        ],
+        "開庭": [
+            {"pattern": r"(\d{1,2})月(\d{1,2})日([上下])午(\d{1,2})時(\d*)分?.*?(開庭|準備程序)", "pattern_type": "absolute_time", "days": None},
+        ],
+    }
+
+
+def extract_todos_from_filename(
+    filename: str,
+    file_path: str = "",
+    *,
+    patterns: Optional[Dict[str, List[Dict]]] = None,
+) -> List[Dict]:
+    """
+    OSC-compatible todo extraction from filename (headless).
+    """
+    todos: List[Dict] = []
+
+    document_date = extract_document_date_from_filename(filename, file_path)
+    if not document_date:
+        # As a last resort, treat as "today" to avoid crashing; caller can override by renaming.
+        document_date = datetime.now()
+
+    base_year = document_date.year
+    tw = holidays.Taiwan(years=range(base_year - 1, base_year + 3))
+
+    all_patterns = patterns or get_default_patterns()
+    type_priority = [
+        "繳費", "補正", "開庭", "準備程序", "審理程序", "言詞辯論",
+        "陳報", "提出資料", "陳述意見", "閱卷", "答辯", "訊問",
+        "異議", "抗告", "上訴", "再抗告",
+    ]
+
+    matched = False
+    for todo_type in type_priority:
+        if matched:
+            break
+        if todo_type not in all_patterns:
+            continue
+
+        for pattern_data in all_patterns[todo_type]:
+            pattern = pattern_data["pattern"]
+            try:
+                m = re.search(pattern, filename, re.IGNORECASE)
+                if not m:
+                    continue
+                matched = True
+
+                todo: Dict = {"type": todo_type, "file": filename, "source_file": filename}
+                pattern_type = pattern_data.get("pattern_type", "")
+                preset_days = pattern_data.get("days")
+
+                if pattern_type in ("relative", "relative_chinese"):
+                    if preset_days is not None:
+                        days = int(preset_days)
+                    else:
+                        if pattern_type == "relative_chinese":
+                            days = int(chinese_to_number(m.group(1)) or 0)
+                        else:
+                            days = int(m.group(1))
+                    deadline = document_date + timedelta(days=days)
+                    adjusted = next_workday(deadline, tw)
+                    todo["date"] = adjusted.strftime("%Y-%m-%d")
+                    todo["datetime"] = adjusted
+                    todo["time"] = ""
+                    todo["description"] = f"📝 {days}日內{todo_type} ({document_date.strftime('%m/%d')}文到)"
+                    todos.append(todo)
+
+                elif pattern_type in ("absolute", "absolute_time"):
+                    month, day = int(m.group(1)), int(m.group(2))
+                    year_to_use = base_year
+
+                    roc_match = re.search(r"(\d{3})年度?", filename)
+                    if roc_match:
+                        explicit_year = int(roc_match.group(1)) + 1911
+                        if abs(explicit_year - year_to_use) < 2:
+                            year_to_use = explicit_year
+
+                    dt = datetime(year_to_use, month, day, 9, 0)
+
+                    if pattern_type == "absolute_time" and len(m.groups()) >= 4:
+                        period = m.group(3)
+                        hour_str = m.group(4)
+                        minute_str = m.group(5) if len(m.groups()) >= 5 and m.group(5) else "0"
+                        hour, minute = int(hour_str), int(minute_str)
+                        original_hour = hour
+                        if period == "下" and hour != 12:
+                            hour += 12
+                        elif period == "上" and hour == 12:
+                            hour = 0
+                        dt = dt.replace(hour=hour, minute=minute)
+                        todo["description"] = f"⚖️ {month}月{day}日 {period}午{original_hour}時{minute:02d}分 {todo_type}"
+                    else:
+                        todo["description"] = f"⚖️ {month}月{day}日 {todo_type}"
+
+                    todo["date"] = dt.strftime("%Y-%m-%d")
+                    todo["time"] = dt.strftime("%H:%M")
+                    todo["datetime"] = dt
+                    todos.append(todo)
+
+                break
+            except (re.error, ValueError, IndexError):
+                continue
+
+    return todos

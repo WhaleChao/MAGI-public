@@ -1,0 +1,824 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MAGI SYSTEM CONSOLE</title>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Libre+Baskerville:wght@700&family=Noto+Serif+JP:wght@900&display=swap');
+
+        :root {
+            --bg-color: #000000;
+            --magi-orange: #ff6b00;
+            /* EVA Orange */
+            --magi-red: #ff0000;
+            /* Alert Red */
+            --magi-green: #2ecc71;
+            /* Normal Green */
+            --magi-blue: #0984e3;
+            /* Data Blue */
+            --text-main: #ffffff;
+            --font-main: 'Libre Baskerville', 'Noto Serif JP', serif;
+        }
+
+        body {
+            background-color: var(--bg-color);
+            color: var(--text-main);
+            font-family: var(--font-main);
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            /* Full screen app feel */
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            text-transform: uppercase;
+        }
+
+        /* SCANLINES OVERLAY */
+        .scanlines {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: linear-gradient(rgba(18, 16, 16, 0) 50%, rgba(0, 0, 0, 0.25) 50%), linear-gradient(90deg, rgba(255, 0, 0, 0.06), rgba(0, 255, 0, 0.02), rgba(0, 0, 255, 0.06));
+            background-size: 100% 2px, 3px 100%;
+            pointer-events: none;
+            z-index: 1000;
+        }
+
+        /* HEADER */
+        .header {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            border-bottom: 4px solid var(--magi-orange);
+            width: 95%;
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-end;
+            padding-bottom: 5px;
+        }
+
+        .header h1 {
+            font-size: 3rem;
+            margin: 0;
+            color: var(--magi-orange);
+            letter-spacing: 0.1em;
+            text-shadow: 0 0 10px var(--magi-orange);
+        }
+
+        .header .code {
+            font-size: 1.2rem;
+            color: var(--magi-orange);
+        }
+
+        /* MAIN CONTAINER (Trefoil / Triangle) */
+        .magi-container {
+            position: relative;
+            width: 800px;
+            height: 700px;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            /* scale down for smaller screens */
+            transform-origin: center;
+            transform: scale(0.7);
+            /* Shrunk to preventing overlapping */
+        }
+
+        @media (max-width: 900px) {
+            .magi-container {
+                transform: scale(0.6);
+            }
+        }
+
+        /* CENTER HUB */
+        .center-hub {
+            position: absolute;
+            width: 150px;
+            height: 150px;
+            background: var(--bg-color);
+            border: 4px solid var(--text-main);
+            border-radius: 50%;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            z-index: 10;
+            box-shadow: 0 0 20px rgba(255, 255, 255, 0.2);
+        }
+
+        .center-hub .code-label {
+            font-size: 0.8rem;
+            margin-bottom: 5px;
+        }
+
+        .center-hub .vote-count {
+            font-size: 3rem;
+            font-weight: 900;
+        }
+
+        /* NODE CARD (Hexagon-ish Rectangles) */
+        .node-card {
+            position: absolute;
+            width: 320px;
+            height: 160px;
+            background-color: var(--bg-color);
+            border: 6px solid var(--magi-orange);
+            color: var(--text-main);
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            transition: all 0.3s ease;
+            clip-path: polygon(10% 0, 100% 0, 100% 90%, 90% 100%, 0 100%, 0 10%);
+            z-index: 2000;
+            /* Ensure above scanlines */
+        }
+
+        .node-card.error {
+            border-color: var(--magi-red);
+            box-shadow: 0 0 20px var(--magi-red);
+        }
+
+        .node-card.active {
+            border-color: var(--magi-green);
+            box-shadow: 0 0 15px var(--magi-green);
+        }
+
+        /* POSITIONS */
+        /* MELCHIOR (Top) */
+        .node-melchior {
+            top: 50px;
+            left: 50%;
+            transform: translateX(-50%);
+        }
+
+        /* BALTHASAR (Bottom Left) */
+        .node-balthasar {
+            bottom: 100px;
+            left: 0;
+            transform: rotate(-0deg);
+            /* Design simplicity: keep horizontal text */
+        }
+
+        /* CASPER (Bottom Right) */
+        .node-casper {
+            bottom: 100px;
+            right: 0;
+        }
+
+        /* CONNECTION LINES */
+        .line {
+            position: absolute;
+            background-color: var(--text-main);
+            z-index: 1;
+        }
+
+        /* Center to Top */
+        .line-top {
+            top: 210px;
+            left: 50%;
+            width: 4px;
+            height: 150px;
+            transform: translateX(-50%);
+        }
+
+        /* Center to Left */
+        .line-left {
+            bottom: 250px;
+            left: 240px;
+            width: 160px;
+            height: 4px;
+            transform: rotate(30deg);
+        }
+
+        /* Center to Right */
+        .line-right {
+            bottom: 250px;
+            right: 240px;
+            width: 160px;
+            height: 4px;
+            transform: rotate(-30deg);
+        }
+
+
+        /* TEXT STYLES inside CARD */
+        .node-card h2 {
+            font-size: 2.5rem;
+            margin: 0;
+            line-height: 1;
+        }
+
+        .node-card .sub-label {
+            font-size: 0.9rem;
+            background: var(--text-main);
+            color: var(--bg-color);
+            padding: 2px 8px;
+            margin-bottom: 5px;
+            font-weight: bold;
+        }
+
+        .node-card .status {
+            font-size: 1.5rem;
+            margin-top: 10px;
+            border-top: 2px solid currentColor;
+            padding-top: 5px;
+            width: 80%;
+            text-align: center;
+        }
+
+        /* AUX SYSTEMS (Keeper / Watcher) as smaller panels */
+        .aux-panel {
+            position: absolute;
+            bottom: 20px;
+            width: 90%;
+            display: flex;
+            justify-content: space-between;
+            font-family: monospace;
+            font-size: 0.9rem;
+            color: var(--magi-blue);
+        }
+
+        .aux-item {
+            border: 1px solid var(--magi-blue);
+            padding: 10px;
+            width: 200px;
+            background: rgba(9, 132, 227, 0.1);
+        }
+
+        #tactical-panel,
+        #control-ui-btn {
+            z-index: 10;
+        }
+
+        /* BLINK ANIMATION */
+        .blink {
+            animation: blinker 1s linear infinite;
+        }
+
+        @keyframes blinker {
+            50% {
+                opacity: 0;
+            }
+        }
+
+        @media (max-width: 1100px) {
+            .header {
+                width: calc(100% - 40px);
+            }
+
+            #tactical-panel,
+            #audit-panel,
+            #task-panel {
+                width: 280px !important;
+            }
+
+            .aux-panel {
+                width: calc(100% - 40px);
+                gap: 10px;
+                flex-wrap: wrap;
+            }
+
+            .aux-item {
+                width: calc(50% - 10px);
+            }
+        }
+
+        @media (max-width: 720px) {
+            body {
+                display: block;
+                min-height: 100vh;
+                height: auto;
+                padding: 18px 14px 32px;
+                overflow-x: hidden;
+                overflow-y: auto;
+            }
+
+            .header {
+                position: relative;
+                top: auto;
+                left: auto;
+                width: 100%;
+                flex-direction: column;
+                align-items: flex-start;
+                gap: 10px;
+                margin-bottom: 16px;
+            }
+
+            .header h1 {
+                font-size: 2rem;
+            }
+
+            .header .code {
+                font-size: 0.95rem;
+            }
+
+            .magi-container {
+                width: 800px;
+                height: 700px;
+                margin: 12px auto 24px;
+                transform: scale(0.42);
+            }
+
+            #tactical-panel,
+            #audit-panel,
+            #task-panel {
+                position: relative !important;
+                top: auto !important;
+                right: auto !important;
+                left: auto !important;
+                bottom: auto !important;
+                width: 100% !important;
+                max-width: 100% !important;
+                margin: 0 0 16px !important;
+                text-align: left !important;
+            }
+
+            #tactical-panel > div,
+            #audit-panel > div,
+            #task-panel > div:first-child {
+                padding-right: 0 !important;
+                padding-left: 12px !important;
+                border-right: 0 !important;
+                border-left-width: 4px !important;
+                border-left-style: solid !important;
+            }
+
+            #tactical-panel h3,
+            #audit-panel h3,
+            #task-panel h3 {
+                font-size: 1rem !important;
+            }
+
+            #tactical-panel ul li {
+                justify-content: space-between !important;
+                flex-wrap: wrap;
+            }
+
+            #audit-log-container {
+                max-height: 240px !important;
+            }
+
+            #task-list-container {
+                padding-left: 12px !important;
+            }
+
+            #control-ui-btn {
+                position: relative !important;
+                left: auto !important;
+                bottom: auto !important;
+                transform: none !important;
+                display: block;
+                width: 100%;
+                max-width: 420px;
+                margin: 0 auto 18px;
+                padding: 14px 18px !important;
+                text-align: center;
+                box-sizing: border-box;
+            }
+
+            .aux-panel {
+                position: relative;
+                bottom: auto;
+                width: 100%;
+                flex-wrap: wrap;
+                gap: 10px;
+                margin-top: 8px;
+            }
+
+            .aux-item {
+                width: calc(50% - 5px);
+                min-width: 0;
+                box-sizing: border-box;
+                font-size: 0.8rem;
+            }
+        }
+
+        @media (max-width: 480px) {
+            body {
+                padding: 14px 10px 28px;
+            }
+
+            .header {
+                margin-bottom: 8px;
+            }
+
+            .header h1 {
+                font-size: 1.5rem;
+                letter-spacing: 0.06em;
+            }
+
+            .magi-container {
+                transform: scale(0.32);
+                margin: -70px auto -20px;
+            }
+
+            .center-hub {
+                box-shadow: 0 0 14px rgba(255, 255, 255, 0.16);
+            }
+
+            #tactical-panel,
+            #audit-panel,
+            #task-panel {
+                font-size: 0.9rem !important;
+            }
+
+            #control-ui-btn {
+                font-size: 0.95rem !important;
+                letter-spacing: 1px !important;
+            }
+
+            .aux-panel {
+                gap: 8px;
+            }
+
+            .aux-item {
+                width: 100%;
+                font-size: 0.75rem;
+                padding: 8px;
+            }
+        }
+    </style>
+</head>
+
+<body>
+
+    <div class="scanlines"></div>
+
+    <div class="header">
+        <h1>MAGI SYSTEM</h1>
+        <div class="code">
+            CODE: 666<br>
+            <span id="timestamp">00:00:00</span>
+        </div>
+    </div>
+
+    <!-- TACTICAL MONITOR (Right Side) -->
+    <div id="tactical-panel"
+        style="position: absolute; top: 100px; right: 20px; width: 300px; font-family: sans-serif; text-align: right; z-index: 10;">
+
+        <!-- IRON DOME -->
+        <div style="border-right: 4px solid var(--magi-orange); padding-right: 15px; margin-bottom: 30px;">
+            <h3 style="margin: 0; color: var(--magi-orange); font-size: 1.5rem;">IRON DOME</h3>
+            <div style="font-size: 2rem; font-weight: 900; color: var(--magi-orange); text-shadow: 0 0 10px var(--magi-orange);"
+                class="blink">
+                ACTIVE
+            </div>
+            <div style="font-size: 0.8rem; color: var(--magi-blue);">THREAT LEVEL: LOW</div>
+        </div>
+
+        <!-- TASKS -->
+        <div style="border-right: 4px solid var(--magi-green); padding-right: 15px;">
+            <h3 style="margin: 0; color: var(--magi-green); font-size: 1.2rem;">CURRENT OBJECTIVES</h3>
+            <ul style="list-style: none; padding: 0; margin-top: 10px; font-size: 0.9rem;">
+                <li
+                    style="margin-bottom: 8px; display: flex; justify-content: flex-end; align-items: center; gap: 10px;">
+                    UI OPTIMIZATION (PHASE 8)
+                    <span
+                        style="background: var(--magi-green); color: black; padding: 2px 5px; font-weight: bold; width: 60px; text-align: center;">DONE</span>
+                </li>
+                <li
+                    style="margin-bottom: 8px; display: flex; justify-content: flex-end; align-items: center; gap: 10px;">
+                    LINE LOCALIZATION
+                    <span
+                        style="background: var(--magi-green); color: black; padding: 2px 5px; font-weight: bold; width: 60px; text-align: center;">DONE</span>
+                </li>
+                <li
+                    style="margin-bottom: 8px; display: flex; justify-content: flex-end; align-items: center; gap: 10px;">
+                    MAGI FEDERATION
+                    <span
+                        style="border: 1px solid var(--magi-blue); color: var(--magi-blue); padding: 2px 5px; width: 60px; text-align: center;">ACTIVE</span>
+                </li>
+                <li
+                    style="margin-bottom: 8px; display: flex; justify-content: flex-end; align-items: center; gap: 10px;">
+                    SYSTEM INDEPENDENCE
+                    <span
+                        style="border: 1px solid var(--magi-blue); color: var(--magi-blue); padding: 2px 5px; width: 60px; text-align: center;">ACTIVE</span>
+                </li>
+            </ul>
+        </div>
+
+    </div>
+
+    <div class="magi-container">
+        <!-- Lines -->
+        <div class="line line-top"></div>
+        <div class="line line-left"></div>
+        <div class="line line-right"></div>
+
+        <!-- CENTER -->
+        <div class="center-hub">
+            <span class="code-label">PROPOSAL</span>
+            <span class="vote-count">3</span>
+            <span class="code-label">AGREEMENT</span>
+        </div>
+
+        <!-- MELCHIOR (1) -->
+        <div class="node-card node-melchior" id="card-melchior">
+            <span class="sub-label">MELCHIOR-1</span>
+            <h2>SCIENTIST</h2>
+            <div class="status" id="status-melchior">Loading...</div>
+        </div>
+
+        <!-- BALTHASAR (2) -->
+        <div class="node-card node-balthasar" id="card-balthasar">
+            <span class="sub-label">BALTHASAR-2</span>
+            <h2>MOTHER</h2>
+            <div class="status" id="status-balthasar">Loading...</div>
+        </div>
+
+        <!-- CASPER (3) -->
+        <a href="http://localhost:18789" target="_blank" class="node-card node-casper" id="card-casper"
+            style="text-decoration: none; cursor: pointer;" title="Click to Open Control UI">
+            <span class="sub-label">CASPER-3</span>
+            <h2>WOMAN</h2>
+            <div class="status" id="status-casper">Loading...</div>
+        </a>
+    </div>
+
+    <!-- CONTROL BUTTON -->
+    <a id="control-ui-btn" href="http://localhost:18789" target="_blank" style="position: fixed; bottom: 80px; left: 50%; transform: translateX(-50%); z-index: 9999; 
+              background: var(--magi-orange); color: var(--bg-color); padding: 15px 30px; 
+              font-weight: 900; text-decoration: none; border: 2px solid var(--magi-orange); 
+              font-family: sans-serif; letter-spacing: 2px; box-shadow: 0 0 20px var(--magi-orange);">
+        [ OPEN CONTROL UI ]
+    </a>
+
+    <!-- AUDIT LOG PANEL (Left Side) -->
+    <div id="audit-panel" style="position: absolute; top: 100px; left: 20px; width: 350px; max-height: 400px; 
+                                  font-family: monospace; z-index: 10; overflow: hidden;">
+        <div style="border-left: 4px solid var(--magi-red); padding-left: 15px; margin-bottom: 10px;">
+            <h3
+                style="margin: 0; color: var(--magi-red); font-size: 1.2rem; display: flex; align-items: center; gap: 10px;">
+                IRON DOME - AUDIT LOG
+                <span id="audit-count" style="font-size: 0.8rem; color: var(--magi-blue);">(0)</span>
+            </h3>
+        </div>
+        <div id="audit-log-container" style="max-height: 340px; overflow-y: auto; padding-right: 10px;">
+            <table style="width: 100%; font-size: 0.75rem; border-collapse: collapse;">
+                <thead>
+                    <tr style="color: var(--magi-blue); border-bottom: 1px solid var(--magi-blue);">
+                        <th style="padding: 5px; text-align: left;">TIME</th>
+                        <th style="padding: 5px; text-align: left;">AGENT</th>
+                        <th style="padding: 5px; text-align: left;">OP</th>
+                        <th style="padding: 5px; text-align: left;">TABLE</th>
+                        <th style="padding: 5px; text-align: center;">ACT</th>
+                    </tr>
+                </thead>
+                <tbody id="audit-log-body">
+                    <tr>
+                        <td colspan="5" style="padding: 10px; color: var(--magi-blue);">Loading...</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- TASK MONITOR PANEL (Left Side - Below Audit) -->
+    <div id="task-panel" style="position: absolute; top: 520px; left: 20px; width: 350px; 
+                                font-family: monospace; z-index: 10;">
+        <div style="border-left: 4px solid var(--magi-blue); padding-left: 15px; margin-bottom: 10px;">
+            <h3 style="margin: 0; color: var(--magi-blue); font-size: 1.2rem;">TASK MONITOR</h3>
+        </div>
+        <div id="task-list-container" style="padding-left: 15px;">
+            <div style="color: var(--magi-blue); font-size: 0.8rem;">Checking...</div>
+        </div>
+    </div>
+
+    <div class="aux-panel">
+        <div class="aux-item" id="panel-keeper">
+            <strong>KEEPER:</strong> <span class="val">CHECKING</span>
+        </div>
+        <div class="aux-item" id="panel-watcher">
+            <strong>WATCHER:</strong> <span class="val">CHECKING</span>
+        </div>
+        <!-- Skills -->
+        <div class="aux-item" id="panel-memory"
+            style="border-color: var(--magi-green); background: rgba(46, 204, 113, 0.1);">
+            <strong>MEMORY:</strong> <span class="val">---</span>
+        </div>
+        <div class="aux-item" id="panel-research"
+            style="border-color: var(--magi-green); background: rgba(46, 204, 113, 0.1);">
+            <strong>RESEARCH:</strong> <span class="val">---</span>
+        </div>
+        <div class="aux-item" id="panel-genesis"
+            style="border-color: var(--magi-green); background: rgba(46, 204, 113, 0.1);">
+            <strong>GENESIS:</strong> <span class="val">---</span>
+        </div>
+    </div>
+
+    <script>
+        // Update Clock
+        setInterval(() => {
+            const now = new Date();
+            document.getElementById('timestamp').innerText = now.toLocaleTimeString();
+        }, 1000);
+
+        // Fetch Data
+        async function fetchStatus() {
+            try {
+                // Try absolute path first (Server)
+                let url = '/static/magi_status.json?t=' + new Date().getTime();
+
+                // Fallback for local file usage
+                if (window.location.protocol === 'file:') {
+                    url = 'static/magi_status.json?t=' + new Date().getTime();
+                }
+
+                const response = await fetch(url);
+                if (!response.ok) throw new Error("Status file not found");
+                const data = await response.json();
+
+                updateNode('melchior', data.nodes.melchior);
+                updateNode('balthasar', data.nodes.balthasar);
+                updateNode('casper', data.nodes.casper);
+
+                updateAux('keeper', data.nodes.keeper);
+                updateAux('watcher', data.nodes.watcher);
+
+                // Skills
+                if (data.skills) {
+                    updateSkill('memory', data.skills.memory);
+                    updateSkill('research', data.skills.research);
+                    updateSkill('genesis', data.skills.genesis);
+                }
+
+                // Calculate SYNC RATIO based on online nodes
+                const nodes = data.nodes;
+                const total = 5; // melchior, balthasar, casper, keeper, watcher
+                let online = 0;
+                if (nodes.melchior?.online) online++;
+                if (nodes.balthasar?.online) online++;
+                if (nodes.casper?.online) online++;
+                if (nodes.keeper?.online) online++;
+                if (nodes.watcher?.online) online++;
+
+                const ratio = ((online / total) * 100).toFixed(1);
+                if (data.tasks) {
+                    renderTasks(data.tasks);
+                }
+
+                if (data.tasks) {
+                    renderTasks(data.tasks);
+                }
+
+            } catch (e) {
+                console.error("Fetch failed", e);
+            }
+        }
+
+        function renderTasks(tasks) {
+            const container = document.getElementById('task-list-container');
+            if (!container) return;
+
+            const taskKeys = Object.keys(tasks);
+
+            if (taskKeys.length === 0) {
+                container.innerHTML = '<div style="color: var(--magi-blue); font-size: 0.8rem; opacity: 0.5;">NO ACTIVE TASKS</div>';
+                return;
+            }
+
+            container.innerHTML = taskKeys.map(key => {
+                const task = tasks[key];
+                const width = task.progress + '%';
+                let barColor = 'var(--magi-blue)';
+                if (task.progress >= 100) barColor = 'var(--magi-green)';
+
+                return `
+                <div style="margin-bottom: 15px;">
+                    <div style="display: flex; justify-content: space-between; font-size: 0.8rem; color: var(--text-main); margin-bottom: 3px;">
+                        <span>${task.name}</span>
+                        <span>${task.progress}%</span>
+                    </div>
+                    <div style="background: rgba(255, 255, 255, 0.1); height: 6px; width: 100%;">
+                        <div style="background: ${barColor}; height: 100%; width: ${width}; transition: width 0.5s ease;"></div>
+                    </div>
+                    <div style="font-size: 0.7rem; color: var(--magi-blue); margin-top: 2px;">
+                        ${task.status}
+                    </div>
+                </div>`;
+            }).join('');
+        }
+
+
+        function updateNode(id, nodeData) {
+            const card = document.getElementById('card-' + id);
+            const statusEl = document.getElementById('status-' + id);
+
+            if (nodeData.online) {
+                card.classList.add('active');
+                card.classList.remove('error');
+                statusEl.innerText = "NORMAL"; // EVA Terminology
+                statusEl.style.color = "inherit";
+            } else {
+                card.classList.add('error');
+                card.classList.remove('active');
+                statusEl.innerText = "ERROR";
+                statusEl.style.color = "var(--magi-red)";
+                statusEl.classList.add('blink');
+            }
+        }
+
+        function updateAux(id, nodeData) {
+            const panel = document.getElementById('panel-' + id);
+            const val = panel.querySelector('.val');
+            val.innerText = nodeData.online ? "ACTIVE" : "LOST";
+            val.style.color = nodeData.online ? "var(--magi-blue)" : "var(--magi-red)";
+        }
+
+        function updateSkill(id, skillData) {
+            const panel = document.getElementById('panel-' + id);
+            if (!panel) return;
+            const val = panel.querySelector('.val');
+
+            if (skillData && skillData.status === "ACTIVE") {
+                val.innerText = "ONLINE";
+                val.style.color = "var(--magi-green)";
+                panel.style.borderColor = "var(--magi-green)";
+            } else {
+                val.innerText = "ERROR";
+                val.style.color = "var(--magi-red)";
+                panel.style.borderColor = "var(--magi-red)";
+                val.classList.add('blink');
+            }
+        }
+
+        setInterval(fetchStatus, 3000);
+        fetchStatus();
+
+        // ============== AUDIT LOG FUNCTIONS ==============
+        const TOOLS_API = 'http://localhost:5003';
+
+        async function fetchAuditLog() {
+            try {
+                const response = await fetch(`${TOOLS_API}/api/audit_log?limit=20&days=7`);
+                if (!response.ok) throw new Error('API Error');
+                const data = await response.json();
+                renderAuditLog(data.entries || []);
+                document.getElementById('audit-count').innerText = `(${data.count || 0})`;
+            } catch (e) {
+                console.error('Audit fetch failed:', e);
+                document.getElementById('audit-log-body').innerHTML =
+                    '<tr><td colspan="5" style="color: var(--magi-red);">API OFFLINE</td></tr>';
+            }
+        }
+
+        function renderAuditLog(entries) {
+            const tbody = document.getElementById('audit-log-body');
+            if (!entries.length) {
+                tbody.innerHTML = '<tr><td colspan="5" style="color: var(--magi-green);">NO ENTRIES - SYSTEM CLEAN</td></tr>';
+                return;
+            }
+            tbody.innerHTML = entries.map(entry => {
+                const time = entry.executed_at ? new Date(entry.executed_at).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }) : '--:--';
+                const opColor = entry.operation === 'INSERT' ? 'var(--magi-green)' : 'var(--magi-orange)';
+                const hasRestore = entry.old_value && Object.keys(entry.old_value).length > 0;
+                const restoreBtn = hasRestore
+                    ? `<button onclick="restoreFromAudit(${entry.id}, '${entry.table_name}#${entry.record_id}')" 
+                              style="background: var(--magi-blue); border: none; color: white; padding: 2px 6px; 
+                                     cursor: pointer; font-size: 0.65rem; font-family: monospace;">UNDO</button>`
+                    : '<span style="color: var(--magi-blue); font-size: 0.65rem;">N/A</span>';
+                return `<tr style="border-bottom: 1px solid rgba(9,132,227,0.3);">
+                    <td style="padding: 5px; color: var(--magi-blue);">${time}</td>
+                    <td style="padding: 5px;">${entry.agent_name || '-'}</td>
+                    <td style="padding: 5px; color: ${opColor};">${entry.operation}</td>
+                    <td style="padding: 5px;">${entry.table_name}#${entry.record_id}</td>
+                    <td style="padding: 5px; text-align: center;">${restoreBtn}</td>
+                </tr>`;
+            }).join('');
+        }
+
+        async function restoreFromAudit(logId, targetName) {
+            if (!confirm(`還原 ${targetName} 至修改前狀態？\n\nRestore ${targetName} to previous state?`)) return;
+
+            try {
+                const response = await fetch(`${TOOLS_API}/api/audit_log/restore/${logId}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' }
+                });
+                const result = await response.json();
+
+                if (result.success) {
+                    alert(`✅ 還原成功！\n${result.message}`);
+                    fetchAuditLog(); // Refresh list
+                } else {
+                    alert(`❌ 還原失敗: ${result.error}`);
+                }
+            } catch (e) {
+                alert(`❌ 還原失敗: ${e.message}`);
+            }
+        }
+
+        // Load audit log on page load and refresh every 30s
+        fetchAuditLog();
+        setInterval(fetchAuditLog, 30000);
+    </script>
+</body>
+
+</html>

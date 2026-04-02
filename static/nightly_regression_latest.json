@@ -1,0 +1,55 @@
+{
+  "generated_at": "2026-03-21T02:34:07.254686",
+  "elapsed_sec": 223.4,
+  "overall_ok": false,
+  "suites": [
+    {
+      "suite": "system",
+      "label": "System Health",
+      "passed": 8,
+      "failed": 4,
+      "total": 12,
+      "failures": [
+        "oMLX 本地推理",
+        "Melchior 遠端主機",
+        "本機 LLM 推理 (TAIDE)",
+        "本機 Embedding 推理"
+      ],
+      "ok": false
+    },
+    {
+      "suite": "channels",
+      "label": "TG/DC/LINE Smoke",
+      "passed": 13,
+      "warned": 3,
+      "failed": 1,
+      "total": 17,
+      "failures": [
+        "[DISCORD] Bot process: discord bot process not running"
+      ],
+      "ok": false,
+      "rc": 2
+    },
+    {
+      "suite": "mock",
+      "label": "Mock Skills (eefile+laf)",
+      "passed": 18,
+      "failed": 0,
+      "skipped": 0,
+      "total": 18,
+      "failures": [],
+      "ok": true,
+      "rc": 0
+    },
+    {
+      "suite": "coreroutes",
+      "label": "Core Routes Smoke",
+      "passed": 7,
+      "failed": 0,
+      "total": 7,
+      "failures": [],
+      "ok": true,
+      "rc": 0
+    }
+  ]
+}

@@ -1,0 +1,299 @@
+[
+  {
+    "timestamp": "2026-02-16T17:13:39.367259",
+    "dry_run": true,
+    "filed": [],
+    "failed": [],
+    "unnamed": [
+      {
+        "original": "test_scan.pdf",
+        "error": "無法產生建議檔名"
+      }
+    ],
+    "skipped": []
+  },
+  {
+    "timestamp": "2026-03-05T14:13:42.032171",
+    "dry_run": false,
+    "filed": [],
+    "failed": [],
+    "unnamed": [
+      {
+        "original": "頁面擷取自-Scan-2.pdf",
+        "error": "無法產生建議檔名"
+      },
+      {
+        "original": "頁面擷取自-Scan-3.pdf",
+        "error": "無法產生建議檔名"
+      },
+      {
+        "original": "頁面擷取自-Scan-4.pdf",
+        "error": "無法產生建議檔名"
+      },
+      {
+        "original": "頁面擷取自-Scan.pdf",
+        "error": "無法產生建議檔名"
+      }
+    ],
+    "skipped": []
+  },
+  {
+    "timestamp": "2026-03-05T14:13:20.236571",
+    "dry_run": false,
+    "filed": [],
+    "failed": [],
+    "unnamed": [
+      {
+        "original": "頁面擷取自-Scan-2.pdf",
+        "error": "無法產生建議檔名"
+      },
+      {
+        "original": "頁面擷取自-Scan-3.pdf",
+        "error": "File not found"
+      },
+      {
+        "original": "頁面擷取自-Scan-4.pdf",
+        "error": "File not found"
+      },
+      {
+        "original": "頁面擷取自-Scan.pdf",
+        "error": "File not found"
+      }
+    ],
+    "skipped": []
+  },
+  {
+    "timestamp": "2026-03-06T15:08:36.175118",
+    "dry_run": false,
+    "filed": [],
+    "failed": [],
+    "unnamed": [
+      {
+        "original": "20260306 檢察官補充理由書五(游秀鈴).pdf",
+        "error": "無法產生建議檔名"
+      },
+      {
+        "original": "20260306 消費者債務清理更生聲請狀存底(林里).pdf",
+        "error": "無法產生建議檔名"
+      },
+      {
+        "original": "20260306 消費者債務清理更生聲請狀存底(許柏恩).pdf",
+        "error": "無法產生建議檔名"
+      },
+      {
+        "original": "20260306 無償委任證明書(黃宥茹).pdf",
+        "error": "File not found"
+      },
+      {
+        "original": "20260306 繳費收據(陳偉傑).pdf",
+        "error": "File not found"
+      },
+      {
+        "original": "20260306 調解不成立證明書([當事人L]).pdf",
+        "error": "File not found"
+      }
+    ],
+    "skipped": [],
+    "workers": 3
+  },
+  {
+    "timestamp": "2026-03-20T13:15:45.275849",
+    "dry_run": true,
+    "filed": [],
+    "failed": [
+      {
+        "original": "文件_2026-03-20_113751 page 1-4.pdf",
+        "new_name": "20260320 花蓮地方法院114年度花補字第664號法院_通知(文件).pdf",
+        "doc_type": "法院_通知",
+        "confidence": 0,
+        "reason": "無法比對到任何案件",
+        "status": "preview_fail"
+      },
+      {
+        "original": "文件_2026-03-20_113751 page 5-8_copy.pdf",
+        "new_name": "20260320 士林地方法院115年度司促字第1781號法院_通知(文件).pdf",
+        "doc_type": "法院_通知",
+        "confidence": 0,
+        "reason": "無法比對到任何案件",
+        "status": "preview_fail"
+      }
+    ],
+    "unnamed": [],
+    "skipped": [],
+    "workers": 2
+  },
+  {
+    "timestamp": "2026-03-20T13:18:11.453637",
+    "dry_run": true,
+    "filed": [
+      {
+        "original": "文件_2026-03-20_113751 page 1-4.pdf",
+        "new_name": "20260320 花蓮地方法院114年度花補字第664號法院_通知(文件).pdf",
+        "doc_type": "法院_通知",
+        "destination": "/Users/ai/Library/CloudStorage/SynologyDrive-homes/01_案件/一般案件/民事/2025-0032-陳曉菁-一審-拆屋還地/07_法院通知或程序裁定",
+        "case": "2025-0032-陳曉菁-一審-拆屋還地",
+        "subfolder": "07_法院通知或程序裁定",
+        "confidence": 0.92,
+        "method": "當事人唯一匹配(陳曉菁)",
+        "status": "preview"
+      }
+    ],
+    "failed": [
+      {
+        "original": "文件_2026-03-20_113751 page 5-8_copy.pdf",
+        "new_name": "20260320 士林地方法院115年度司促字第1781號法院_通知(文件).pdf",
+        "doc_type": "法院_通知",
+        "confidence": 0,
+        "reason": "無法比對到任何案件",
+        "status": "preview_fail"
+      }
+    ],
+    "unnamed": [],
+    "skipped": [],
+    "workers": 2
+  },
+  {
+    "timestamp": "2026-03-20T13:19:40.660172",
+    "dry_run": false,
+    "filed": [
+      {
+        "original": "文件_2026-03-20_113751 page 1-4.pdf",
+        "new_name": "20260320 花蓮地方法院114年度花補字第664號法院_通知(文件).pdf",
+        "doc_type": "法院_通知",
+        "destination": "/Users/ai/Library/CloudStorage/SynologyDrive-homes/01_案件/一般案件/民事/2025-0032-陳曉菁-一審-拆屋還地/07_法院通知或程序裁定",
+        "case": "2025-0032-陳曉菁-一審-拆屋還地",
+        "subfolder": "07_法院通知或程序裁定",
+        "confidence": 0.92,
+        "method": "當事人唯一匹配(陳曉菁)",
+        "status": "filed"
+      }
+    ],
+    "failed": [
+      {
+        "original": "文件_2026-03-20_113751 page 5-8_copy.pdf",
+        "new_name": "20260320 士林地方法院115年度司促字第1781號法院_通知(文件).pdf",
+        "doc_type": "法院_通知",
+        "confidence": 0,
+        "reason": "無法比對到任何案件",
+        "status": "moved_to_fail"
+      }
+    ],
+    "unnamed": [],
+    "skipped": [],
+    "workers": 2
+  },
+  {
+    "timestamp": "2026-03-20T13:23:41.743681",
+    "dry_run": false,
+    "filed": [],
+    "failed": [
+      {
+        "original": "20260320 士林地方法院115年度司促字第1781號支付命令.pdf",
+        "new_name": "20260320 士林地方法院115年度司促字第1781號法院_通知(號支付命令).pdf",
+        "doc_type": "法院_通知",
+        "confidence": 0,
+        "reason": "無法比對到任何案件",
+        "status": "moved_to_fail"
+      }
+    ],
+    "unnamed": [],
+    "skipped": [],
+    "workers": 1
+  },
+  {
+    "timestamp": "2026-03-20T13:35:23.909464",
+    "dry_run": false,
+    "filed": [],
+    "failed": [
+      {
+        "original": "20260320 士林地方法院115年度司促字第1781號法院_通知(號支付命令).pdf",
+        "new_name": "20260320 法院通知(號支付命令).pdf",
+        "doc_type": "法院通知",
+        "confidence": 0,
+        "reason": "無法比對到任何案件",
+        "status": "moved_to_fail"
+      }
+    ],
+    "unnamed": [],
+    "skipped": [],
+    "workers": 1
+  },
+  {
+    "timestamp": "2026-03-20T15:03:44.855648",
+    "dry_run": true,
+    "filed": [],
+    "failed": [
+      {
+        "original": "20260320 法院通知(號支付命令).pdf",
+        "new_name": "20260320 法院通知(號支付命令).pdf",
+        "doc_type": "法院通知",
+        "confidence": 0,
+        "reason": "無法比對到任何案件",
+        "status": "preview_fail"
+      }
+    ],
+    "unnamed": [],
+    "skipped": [],
+    "workers": 1
+  },
+  {
+    "timestamp": "2026-03-20T15:06:50.006202",
+    "dry_run": true,
+    "filed": [],
+    "failed": [
+      {
+        "original": "20260320 法院通知(號支付命令).pdf",
+        "new_name": "20260320 臺灣士林地方法院115年度司促字第1781號支付命令（聯鋒國際有限公司）.pdf",
+        "doc_type": "法",
+        "confidence": 0,
+        "reason": "無法比對到任何案件",
+        "status": "preview_fail"
+      }
+    ],
+    "unnamed": [],
+    "skipped": [],
+    "workers": 1
+  },
+  {
+    "timestamp": "2026-03-20T15:10:40.122227",
+    "dry_run": true,
+    "filed": [
+      {
+        "original": "20260320 法院通知(號支付命令).pdf",
+        "new_name": "20260320 臺灣士林地方法院115年度司促字第1781號支付命令（聯鋒國際有限公司）.pdf",
+        "doc_type": "支付命令",
+        "destination": "/Users/ai/Library/CloudStorage/SynologyDrive-homes/01_案件/一般案件/民事/2025-0136-聯鋒國際有限公司-一審-支付命令/07_法院通知或程序裁定",
+        "case": "2025-0136-聯鋒國際有限公司-一審-支付命令",
+        "subfolder": "07_法院通知或程序裁定",
+        "confidence": 0.9,
+        "method": "命名分析當事人(聯鋒國際有限公司)",
+        "status": "preview"
+      }
+    ],
+    "failed": [],
+    "unnamed": [],
+    "skipped": [],
+    "workers": 1
+  },
+  {
+    "timestamp": "2026-03-20T15:31:09.597045",
+    "dry_run": false,
+    "filed": [
+      {
+        "original": "20260320 法院通知(號支付命令).pdf",
+        "new_name": "20260320 臺灣士林地方法院115年度司促字第1781號支付命令（聯鋒國際有限公司）.pdf",
+        "doc_type": "支付命令",
+        "destination": "/Users/ai/Library/CloudStorage/SynologyDrive-homes/01_案件/一般案件/民事/2025-0136-聯鋒國際有限公司-一審-支付命令/07_法院通知或程序裁定",
+        "case": "2025-0136-聯鋒國際有限公司-一審-支付命令",
+        "subfolder": "07_法院通知或程序裁定",
+        "confidence": 0.9,
+        "method": "命名分析當事人(聯鋒國際有限公司)",
+        "status": "filed"
+      }
+    ],
+    "failed": [],
+    "unnamed": [],
+    "skipped": [],
+    "workers": 1
+  }
+]

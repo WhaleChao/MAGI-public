@@ -1,0 +1,122 @@
+{
+  "generated_at": 1772714906,
+  "summary": {
+    "pass": 15,
+    "warn": 1,
+    "fail": 0
+  },
+  "checks": [
+    {
+      "channel": "INFRA",
+      "name": "tools_api health",
+      "status": "PASS",
+      "detail": "tools_api online",
+      "latency_ms": 24
+    },
+    {
+      "channel": "LINE",
+      "name": "Local webhook server",
+      "status": "PASS",
+      "detail": "GET /health => 200 (MAGI System: Operational)",
+      "latency_ms": 11
+    },
+    {
+      "channel": "LINE",
+      "name": "Credentials",
+      "status": "PASS",
+      "detail": "token=**********************************************************************************************************************************************************************yilFU= secret=**************************7092e8",
+      "latency_ms": null
+    },
+    {
+      "channel": "LINE",
+      "name": "Official API auth",
+      "status": "PASS",
+      "detail": "displayName=Magi userId=***************************fc53c0",
+      "latency_ms": 189
+    },
+    {
+      "channel": "LINE",
+      "name": "Webhook endpoint query",
+      "status": "PASS",
+      "detail": "active=True endpoint=https://aimac-mini.tail6738b7.ts.net/line/webhook",
+      "latency_ms": 156
+    },
+    {
+      "channel": "LINE",
+      "name": "Webhook test",
+      "status": "WARN",
+      "detail": "private endpoint not externally verifiable by LINE test API (https://aimac-mini.tail6738b7.ts.net/line/webhook)",
+      "latency_ms": 344
+    },
+    {
+      "channel": "LINE",
+      "name": "Recent callback",
+      "status": "PASS",
+      "detail": "last callback age=2531s path=/callback",
+      "latency_ms": null
+    },
+    {
+      "channel": "DISCORD",
+      "name": "Bot process",
+      "status": "PASS",
+      "detail": "running pid=34014",
+      "latency_ms": null
+    },
+    {
+      "channel": "DISCORD",
+      "name": "Bot token",
+      "status": "PASS",
+      "detail": "token=******************************************************************QVI1ZI",
+      "latency_ms": null
+    },
+    {
+      "channel": "DISCORD",
+      "name": "Official API auth",
+      "status": "PASS",
+      "detail": "bot=MAGI#9705 id=*************615266",
+      "latency_ms": 430
+    },
+    {
+      "channel": "DISCORD",
+      "name": "Notify target channel",
+      "status": "PASS",
+      "detail": "channel_id=1471272028333015190",
+      "latency_ms": null
+    },
+    {
+      "channel": "DISCORD",
+      "name": "Webhook route",
+      "status": "PASS",
+      "detail": "webhook_id=*************762773 name=Everyday",
+      "latency_ms": 689
+    },
+    {
+      "channel": "TELEGRAM",
+      "name": "Bot token",
+      "status": "PASS",
+      "detail": "token=****************************************OhM39A",
+      "latency_ms": null
+    },
+    {
+      "channel": "TELEGRAM",
+      "name": "Official API auth",
+      "status": "PASS",
+      "detail": "bot=@MAGI_CASPER_01_666_BOT id=****497154",
+      "latency_ms": 911
+    },
+    {
+      "channel": "TELEGRAM",
+      "name": "Admin allowlist",
+      "status": "PASS",
+      "detail": "allowFrom count=1",
+      "latency_ms": null
+    },
+    {
+      "channel": "TELEGRAM",
+      "name": "Admin reachability",
+      "status": "PASS",
+      "detail": "1/1 getChat success",
+      "latency_ms": 1092
+    }
+  ]
+}

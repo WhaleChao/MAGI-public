@@ -1,0 +1,432 @@
+#!/usr/bin/env python3
+"""
+MAGI 選單列狀態監控
+在 macOS 選單列顯示 MAGI 系統健康狀態。
+"""
+
+import os
+import subprocess
+import json
+import threading
+import urllib.request
+import urllib.error
+
+import rumps
+
+# PyObjC: 強制上色 + 隱藏 Dock 圖示
+try:
+    from AppKit import (
+        NSAttributedString,
+        NSForegroundColorAttributeName,
+        NSColor,
+        NSFont,
+        NSFontAttributeName,
+        NSApplication,
+        NSApplicationActivationPolicyAccessory,
+    )
+    _HAS_APPKIT = True
+    # 設為 Accessory app：不出現在 Dock、不出現在 App Switcher
+    NSApplication.sharedApplication().setActivationPolicy_(
+        NSApplicationActivationPolicyAccessory
+    )
+except ImportError:
+    _HAS_APPKIT = False
+
+# ── 設定 ──────────────────────────────────────────────────────────
+MAGI_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+CHECK_INTERVAL = 3  # 秒
+
+SERVICES = [
+    ("守護程序",       "daemon.py"),
+    ("主伺服器",       "api/server.py"),
+    ("Discord 機器人", "api/discord_bot.py"),
+    ("工具 API",       "api/tools_api.py"),
+]
+
+OMLX_ENGINES = [
+    ("文字推理 TAIDE",  8080),
+    ("向量嵌入 BERT",   8081),
+    ("視覺辨識 GLM",    8082),
+]
+
+# ── 顏色 ──
+if _HAS_APPKIT:
+    _GREEN  = NSColor.colorWithSRGBRed_green_blue_alpha_(0.0, 1.0, 0.5, 1.0)
+    _YELLOW = NSColor.colorWithSRGBRed_green_blue_alpha_(1.0, 0.75, 0.0, 1.0)
+    _RED    = NSColor.colorWithSRGBRed_green_blue_alpha_(1.0, 0.3, 0.3, 1.0)
+    _GRAY   = NSColor.colorWithSRGBRed_green_blue_alpha_(0.6, 0.6, 0.6, 1.0)
+    _FONT   = NSFont.menuFontOfSize_(13.0)
+else:
+    _GREEN = _YELLOW = _RED = _GRAY = _FONT = None
+
+
+def _set_colored_title(menu_item, text: str, color=None):
+    """Set menu item title with explicit color via NSAttributedString."""
+    if _HAS_APPKIT and color and hasattr(menu_item, '_menuitem'):
+        attrs = {
+            NSForegroundColorAttributeName: color,
+            NSFontAttributeName: _FONT,
+        }
+        astr = NSAttributedString.alloc().initWithString_attributes_(text, attrs)
+        menu_item._menuitem.setAttributedTitle_(astr)
+    else:
+        menu_item.title = text
+
+
+def _pgrep(pattern: str) -> str:
+    try:
+        r = subprocess.run(
+            ["pgrep", "-f", pattern],
+            capture_output=True, text=True, timeout=3,
+        )
+        pids = r.stdout.strip().split("\n")
+        return pids[0] if pids[0] else ""
+    except Exception:
+        return ""
+
+
+def _check_omlx(port: int) -> str:
+    """Query oMLX /v1/models — returns model name if loaded, '' if not."""
+    try:
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{port}/v1/models",
+            headers={"User-Agent": "MAGI-MenuBar/1.0"},
+        )
+        with urllib.request.urlopen(req, timeout=2) as resp:
+            data = json.loads(resp.read())
+            models = data.get("data", [])
+            if models:
+                # 主推理 port (8080)：優先顯示 TAIDE（主對話模型），Qwen 只負責 code
+                if port == 8080:
+                    main_kw = os.environ.get("MAGI_MAIN_MODEL", "TAIDE").lower().split("-")[0]
+                    for m in models:
+                        if main_kw in m.get("id", "").lower():
+                            return m["id"]
+                return models[0].get("id", "")
+    except Exception:
+        pass
+    return ""
+
+
+def _count_zombies() -> int:
+    try:
+        r = subprocess.run(
+            ["ps", "-eo", "stat="], capture_output=True, text=True, timeout=3,
+        )
+        return sum(1 for line in r.stdout.splitlines() if line.strip().startswith("Z"))
+    except Exception:
+        return 0
+
+
+# ── 記憶體佔用 ──────────────────────────────────────────────────
+_MEM_MODULES = [
+    ("Server",        "api/server.py"),
+    ("Discord Bot",   "api/discord_bot.py"),
+    ("Tools API",     "api/tools_api.py"),
+    ("oMLX Infer",    "omlx serve.*--port 8080"),
+    ("oMLX Embed",    "omlx serve.*--port 8081"),
+    ("oMLX Vision",   "omlx serve.*--port 8082"),
+    ("FAISS Rebuild", "MEMORY_ENABLE_FAISS"),
+    ("File Review",   "file_review_auto_worker\\.py|file-review-orchestrator/action\\.py"),
+    ("LAF Orch",      "laf_orchestrator\\.py|laf-portal-automation/action\\.py"),
+    ("OC Gateway",    "openclaw-gateway|openclaw.*gateway"),
+    ("OC Cron",       "openclaw_cron_runner\\.py"),
+    ("Autopilot",     "magi-autopilot/action\\.py"),
+    ("Selenium",      "chromedriver"),
+    ("Chrome Headless","Google Chrome.*/MacOS/Google Chrome --.*headless|Google Chrome Helper"),
+]
+
+
+def _get_module_memory() -> list[tuple[str, int, int]]:
+    """Return [(module_name, rss_mb, process_count), ...] sorted by RSS desc."""
+    import re
+    results = []
+    try:
+        r = subprocess.run(
+            ["ps", "-eo", "pid,rss,command"],
+            capture_output=True, text=True, timeout=5,
+        )
+        lines = r.stdout.strip().splitlines()[1:]  # skip header
+        for mod_name, pattern in _MEM_MODULES:
+            total_rss = 0
+            count = 0
+            regex = re.compile(pattern)
+            for line in lines:
+                parts = line.strip().split(None, 2)
+                if len(parts) < 3:
+                    continue
+                try:
+                    rss_kb = int(parts[1])
+                except ValueError:
+                    continue
+                cmd = parts[2]
+                if regex.search(cmd):
+                    total_rss += rss_kb
+                    count += 1
+            if count > 0:
+                results.append((mod_name, total_rss // 1024, count))
+    except Exception:
+        pass
+    results.sort(key=lambda x: x[1], reverse=True)
+    return results
+
+
+def _get_system_memory() -> tuple[float, float, float]:
+    """Return (total_gb, available_gb, percent_used)."""
+    try:
+        import psutil
+        m = psutil.virtual_memory()
+        return m.total / (1024**3), m.available / (1024**3), m.percent
+    except ImportError:
+        return 0, 0, 0
+
+
+# ── 動作轉圈動畫 ──
+_SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+
+
+class MAGIMenuBar(rumps.App):
+    def __init__(self):
+        super().__init__("Ⓜ", quit_button=None)
+        self.icon = None
+        self._action_lock = threading.Lock()
+
+        # ── 選單項目 ──
+        self.menu_header = rumps.MenuItem("MAGI 系統狀態", callback=None)
+        self.menu_header.set_callback(None)
+        self.menu_sep1 = rumps.separator
+
+        self.service_items = {}
+        for name, _ in SERVICES:
+            item = rumps.MenuItem(f"  ◻ {name}  檢查中...")
+            item.set_callback(None)
+            self.service_items[name] = item
+
+        self.menu_sep2 = rumps.separator
+        self.omlx_header = rumps.MenuItem("oMLX 推理引擎", callback=None)
+        self.omlx_header.set_callback(None)
+
+        self.omlx_items = {}
+        for name, _ in OMLX_ENGINES:
+            item = rumps.MenuItem(f"  ◻ {name}  檢查中...")
+            item.set_callback(None)
+            self.omlx_items[name] = item
+
+        self.menu_sep3 = rumps.separator
+
+        # ── 記憶體區塊 ──
+        self.mem_header = rumps.MenuItem("記憶體佔用", callback=None)
+        self.mem_header.set_callback(None)
+        self.mem_system_item = rumps.MenuItem("  系統  檢查中...")
+        self.mem_system_item.set_callback(None)
+        self.mem_module_items = []
+        for i in range(len(_MEM_MODULES)):
+            item = rumps.MenuItem(f"  -")
+            item.set_callback(None)
+            self.mem_module_items.append(item)
+        self.mem_total_item = rumps.MenuItem("  MAGI 合計  --")
+        self.mem_total_item.set_callback(None)
+
+        self.menu_sep3b = rumps.separator
+        self.zombie_item = rumps.MenuItem("殭屍程序  檢查中...")
+        self.zombie_item.set_callback(None)
+
+        self.menu_sep4 = rumps.separator
+        self.start_item = rumps.MenuItem("▶  啟動 MAGI", callback=self.on_start)
+        self.stop_item = rumps.MenuItem("■  停止 MAGI", callback=self.on_stop)
+        self.restart_item = rumps.MenuItem("↻  重新啟動", callback=self.on_restart)
+        self.clean_zombie_item = rumps.MenuItem("🧹 清除殭屍程序", callback=self.on_clean_zombies)
+
+        self.menu_sep5 = rumps.separator
+        self.quit_item = rumps.MenuItem("結束狀態監控", callback=self.on_quit)
+
+        # 建構選單
+        self.menu = [
+            self.menu_header,
+            self.menu_sep1,
+            *self.service_items.values(),
+            self.menu_sep2,
+            self.omlx_header,
+            *self.omlx_items.values(),
+            self.menu_sep3,
+            self.mem_header,
+            self.mem_system_item,
+            *self.mem_module_items,
+            self.mem_total_item,
+            self.menu_sep3b,
+            self.zombie_item,
+            self.menu_sep4,
+            self.start_item,
+            self.stop_item,
+            self.restart_item,
+            self.clean_zombie_item,
+            self.menu_sep5,
+            self.quit_item,
+        ]
+
+    # ── 用 rumps.timer 在主執行緒定時更新（避免 AppKit 背景執行緒 crash）──
+    @rumps.timer(CHECK_INTERVAL)
+    def _periodic_check(self, _sender):
+        try:
+            self._update_status()
+        except Exception:
+            pass
+
+    def _update_status(self):
+        core_up = 0
+
+        for name, pattern in SERVICES:
+            pid = _pgrep(pattern)
+            if pid:
+                _set_colored_title(
+                    self.service_items[name],
+                    f"  ● {name}    PID {pid}",
+                    _GREEN,
+                )
+                core_up += 1
+            else:
+                _set_colored_title(
+                    self.service_items[name],
+                    f"  ✗ {name}    停止",
+                    _RED,
+                )
+
+        omlx_up = 0
+        for name, port in OMLX_ENGINES:
+            model = _check_omlx(port)
+            if model:
+                _set_colored_title(
+                    self.omlx_items[name],
+                    f"  ● {name} :{port}    [{model}]",
+                    _GREEN,
+                )
+                omlx_up += 1
+            else:
+                _set_colored_title(
+                    self.omlx_items[name],
+                    f"  ✗ {name} :{port}    停止",
+                    _RED,
+                )
+
+        # ── 記憶體佔用 ──
+        total_gb, avail_gb, pct = _get_system_memory()
+        if pct > 0:
+            mem_color = _GREEN if pct < 70 else (_YELLOW if pct < 85 else _RED)
+            _set_colored_title(
+                self.mem_system_item,
+                f"  系統  {pct:.0f}%  ({avail_gb:.1f}GB 可用 / {total_gb:.0f}GB)",
+                mem_color,
+            )
+        modules = _get_module_memory()
+        magi_total_mb = 0
+        for i, item in enumerate(self.mem_module_items):
+            if i < len(modules):
+                mod_name, rss_mb, count = modules[i]
+                magi_total_mb += rss_mb
+                suffix = f" x{count}" if count > 1 else ""
+                warn_color = _RED if (count > 1 and mod_name == "FAISS Rebuild") else (_YELLOW if rss_mb > 500 else _GRAY)
+                _set_colored_title(item, f"  {mod_name:<14s} {rss_mb:>5d} MB{suffix}", warn_color)
+            else:
+                _set_colored_title(item, "", None)
+                item.title = ""
+        _set_colored_title(
+            self.mem_total_item,
+            f"  MAGI 合計      {magi_total_mb:>5d} MB",
+            _YELLOW if magi_total_mb > 2000 else _GREEN,
+        )
+
+        zombies = _count_zombies()
+        if zombies == 0:
+            _set_colored_title(self.zombie_item, "殭屍程序  0", _GREEN)
+        else:
+            _set_colored_title(self.zombie_item, f"⚠ 殭屍程序  {zombies} 個", _RED)
+
+        # 更新選單列圖示
+        total = core_up + omlx_up
+        expected = len(SERVICES) + len(OMLX_ENGINES)
+        if total == expected and zombies == 0:
+            self.title = "Ⓜ"   # 全部正常
+        elif core_up >= 2:
+            self.title = "Ⓜ!"  # 部分異常
+        else:
+            self.title = "Ⓜ✕"  # 停止
+
+    # ── 動作按鈕（帶進度 + 完成回饋）──
+    def _run_action(self, menu_item, label, command, original_callback):
+        """在背景執行 command，menu_item 顯示進度 → 完成/失敗 → 恢復。"""
+        if not self._action_lock.acquire(blocking=False):
+            return  # 已有動作在跑，忽略
+
+        original_title = menu_item.title
+
+        def _worker():
+            try:
+                _set_colored_title(menu_item, f"  ⏳ {label} 執行中...", _YELLOW)
+                proc = subprocess.run(
+                    command,
+                    capture_output=True, text=True, timeout=120,
+                )
+                if proc.returncode == 0:
+                    _set_colored_title(menu_item, f"  ✅ {label} 完成", _GREEN)
+                else:
+                    _set_colored_title(menu_item, f"  ⚠ {label} 異常 (exit {proc.returncode})", _RED)
+            except subprocess.TimeoutExpired:
+                _set_colored_title(menu_item, f"  ⚠ {label} 逾時", _RED)
+            except Exception:
+                _set_colored_title(menu_item, f"  ⚠ {label} 錯誤", _RED)
+            finally:
+                import time
+                time.sleep(3)
+                _set_colored_title(menu_item, original_title, None)
+                menu_item.set_callback(original_callback)
+                self._action_lock.release()
+
+        t = threading.Thread(target=_worker, daemon=True)
+        t.start()
+
+    def on_start(self, _):
+        self._run_action(
+            self.start_item, "啟動 MAGI",
+            ["/opt/homebrew/bin/magi", "start"],
+            self.on_start,
+        )
+
+    def on_stop(self, _):
+        self._run_action(
+            self.stop_item, "停止 MAGI",
+            ["/opt/homebrew/bin/magi", "stop"],
+            self.on_stop,
+        )
+
+    def on_restart(self, _):
+        self._run_action(
+            self.restart_item, "重新啟動",
+            ["/opt/homebrew/bin/magi", "restart"],
+            self.on_restart,
+        )
+
+    def on_clean_zombies(self, _):
+        self._run_action(
+            self.clean_zombie_item, "清除殭屍",
+            ["/opt/homebrew/bin/magi", "zombie"],
+            self.on_clean_zombies,
+        )
+
+    def on_quit(self, _):
+        rumps.quit_application()
+
+
+if __name__ == "__main__":
+    # 取代舊實例：殺掉已在跑的 magi_menubar，讓新版生效
+    try:
+        _r = subprocess.run(
+            ["pgrep", "-f", "magi_menubar.py"],
+            capture_output=True, text=True, timeout=5,
+        )
+        for _pid in _r.stdout.strip().split("\n"):
+            if _pid and _pid != str(os.getpid()):
+                os.kill(int(_pid), 15)  # SIGTERM
+    except Exception:
+        pass
+
+    MAGIMenuBar().run()

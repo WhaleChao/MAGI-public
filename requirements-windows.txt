@@ -1,0 +1,13 @@
+# MAGI — Windows-Specific Dependencies
+# Install after: pip install -r requirements.txt
+#
+# These packages provide Windows equivalents for macOS-specific features.
+
+# Windows file locking (built-in msvcrt — no extra install needed)
+# Windows COM automation for Outlook calendar
+pywin32>=306
+
+# llama-cpp-python for GGUF model inference (alternative to oMLX)
+# Install with CUDA support if you have NVIDIA GPU:
+#   CMAKE_ARGS="-DGGML_CUDA=on" pip install llama-cpp-python
+llama-cpp-python>=0.3.0

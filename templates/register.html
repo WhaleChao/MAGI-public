@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MAGI Registration</title>
+    <style>
+        body {
+            background-color: #0d0d0d;
+            color: #e0e0e0;
+            font-family: monospace;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            margin: 0;
+            padding: 20px 14px;
+        }
+
+        .container {
+            background: #1e272e;
+            padding: 40px;
+            border-radius: 8px;
+            border: 1px solid #2d3436;
+            width: min(360px, 100%);
+        }
+
+        input {
+            width: 100%;
+            padding: 10px;
+            margin: 10px 0;
+            background: #000;
+            border: 1px solid #555;
+            color: white;
+            box-sizing: border-box;
+        }
+
+        button {
+            width: 100%;
+            padding: 10px;
+            background: #00b894;
+            color: white;
+            border: none;
+            cursor: pointer;
+            margin-top: 10px;
+        }
+
+        h2 {
+            text-align: center;
+            color: #55efc4;
+        }
+
+        .flash {
+            color: #feca57;
+            text-align: center;
+            font-size: 0.9em;
+            margin-bottom: 15px;
+        }
+
+        a {
+            color: #74b9ff;
+            text-decoration: none;
+            font-size: 0.8em;
+            display: block;
+            text-align: center;
+            margin-top: 15px;
+        }
+
+        p {
+            font-size: 0.8em;
+            color: #aaa;
+            text-align: center;
+        }
+        @media (max-width: 480px) {
+            body {
+                align-items: flex-start;
+                padding: 14px;
+            }
+            .container {
+                padding: 24px 18px;
+                border-radius: 12px;
+            }
+            h2 {
+                font-size: 1.2rem;
+            }
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <h2>NEW USER</h2>
+        <p>First user becomes ADMIN.<br>Others are RESTRICTED.</p>
+        {% with messages = get_flashed_messages() %}
+        {% if messages %}
+        <div class="flash">{{ messages[0] }}</div>
+        {% endif %}
+        {% endwith %}
+        <form method="post">
+            <input type="text" name="username" placeholder="Choose Username" required>
+            <input type="password" name="password" placeholder="Choose Password" required>
+            <button type="submit">REGISTER</button>
+        </form>
+        <a href="{{ url_for('login') }}">Back to Login</a>
+    </div>
+</body>
+
+</html>

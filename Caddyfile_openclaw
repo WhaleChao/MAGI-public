@@ -1,0 +1,65 @@
+:18790 {
+	# ── OSC / case-management security headers ──
+	@osc_secure {
+		path /osc*
+		path /api/osc*
+	}
+	header @osc_secure {
+		Cache-Control "no-store, no-cache, must-revalidate, private"
+		Pragma "no-cache"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "SAMEORIGIN"
+		Referrer-Policy "same-origin"
+	}
+
+	# ── OpenClaw gateway webhooks ──
+	handle /api/webhook* {
+		reverse_proxy localhost:18789
+	}
+	handle /api/messages* {
+		reverse_proxy localhost:18789
+	}
+	handle /telegram-webhook {
+		reverse_proxy localhost:18789
+	}
+
+	# ── World Monitor (Intel Dashboard) ──
+	handle /intel* {
+		uri strip_prefix /intel
+		reverse_proxy localhost:4000
+	}
+
+	# ── ACE-Step Music Studio ──
+	handle /music* {
+		reverse_proxy localhost:7860
+	}
+
+	# ── OpenClaw / Stone Office UI stays local-only ──
+	handle /office* {
+		respond "Forbidden" 403
+	}
+
+	# ── Block sensitive internals (blacklist) ──
+	@blocked_static {
+		path /static/iron_dome_patterns/*
+		path /static/logs/*
+		path /static/*.log
+		path /static/*.lock
+		path /static/*_state.json
+		path /static/guardian_control.json
+		path /static/openclaw_cron_runner*
+	}
+	respond @blocked_static "Forbidden" 403
+
+	@blocked_toolsapi {
+		path /toolsapi/*
+		not path /toolsapi/health
+		not path /toolsapi/api/audit_log*
+	}
+	respond @blocked_toolsapi "Forbidden" 403
+
+	# ── Everything else → MAGI Dashboard (server.py on 5002) ──
+	handle {
+		reverse_proxy localhost:5002
+	}
+}

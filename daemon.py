@@ -1,0 +1,1233 @@
+import subprocess
+import shutil
+import threading
+import time
+import sys
+import logging
+import signal
+import os
+import shlex
+import re
+import urllib.request
+import urllib.error
+import json
+import atexit
+from pathlib import Path
+from typing import Dict, Any
+
+# Cross-platform file locking
+_MAGI_ROOT = os.path.dirname(os.path.abspath(__file__))
+if _MAGI_ROOT not in sys.path:
+    sys.path.insert(0, _MAGI_ROOT)
+try:
+    from skills.ops.platform_utils import (
+        file_lock, file_unlock, get_venv_python,
+        IS_WINDOWS, IS_MACOS, get_magi_root,
+    )
+except ImportError:
+    # Fallback if platform_utils not yet available
+    import fcntl
+    IS_WINDOWS = False
+    IS_MACOS = sys.platform == "darwin"
+    def file_lock(fh, exclusive=True, blocking=True):
+        flags = fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH
+        if not blocking:
+            flags |= fcntl.LOCK_NB
+        fcntl.flock(fh.fileno(), flags)
+    def file_unlock(fh):
+        try: fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+        except Exception: pass
+    def get_venv_python():
+        return os.path.join(_MAGI_ROOT, "venv", "bin", "python3")
+    def get_magi_root():
+        return Path(_MAGI_ROOT)
+
+# Global stability defaults for child processes.
+os.environ.setdefault("MAGI_MYSQL_USE_PURE", "1")
+os.environ.setdefault("MYSQL_USE_PURE", "1")
+os.environ.setdefault("MAGI_AVOID_DISTRIBUTED", "1")
+
+# Configure Logging with RotatingFileHandler
+from logging.handlers import RotatingFileHandler as _RotatingFileHandler
+_daemon_log_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".agent", "daemon.log")
+os.makedirs(os.path.dirname(_daemon_log_path), exist_ok=True)
+_log_fmt = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+_file_handler = _RotatingFileHandler(_daemon_log_path, maxBytes=5*1024*1024, backupCount=3)
+_file_handler.setFormatter(_log_fmt)
+_console_handler = logging.StreamHandler()
+_console_handler.setFormatter(_log_fmt)
+logging.basicConfig(level=logging.INFO, handlers=[_file_handler, _console_handler])
+logger = logging.getLogger("Daemon")
+
+# Processes
+# name -> {"proc": Popen, "command": str}
+processes = {}
+
+# ═══════════════════════════════════════════════════════════════════════
+# Unified Reaper Configuration (統一殭屍清理設定)
+# ─── 這是 MAGI 唯一的進程清理規則來源 ────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════
+
+_LAST_REAP_AT = 0.0
+_LAST_DEDUP_AT = 0.0
+_REAP_INTERVAL_SEC = int(os.environ.get("MAGI_REAP_INTERVAL_SEC", "45") or "45")
+_ORPHAN_GRACE_SEC = int(os.environ.get("MAGI_ORPHAN_GRACE_SEC", "300") or "300")
+
+# ── 永不殺清單：reaper 絕對不碰這些進程 ──
+REAPER_NEVER_KILL = (
+    "daemon.py",
+    "api/server.py",
+    "api/discord_bot.py",
+    "api/line_bot.py",
+    "api/telegram_bot.py",
+    "skills/ops/cron_scheduler.py",
+    "skills/ops/heartbeat.py",
+    "rpc-server",
+    "weekend_resummary.py",
+    "nightly_distill_train.py",
+    "worldmonitor",
+    "run_nightly_guardian.sh",
+    "run_db_sync.sh",
+    "rename_watcher.py",
+    "db_sync_to_remote.py",
+    "ingest_raw_judgments.py",
+    "resummary_batch.py",
+)
+
+# ── 每個 worker 的 grace period（秒）──
+REAPER_GRACE_PERIODS = {
+    # Judicial / crawl
+    "skills/judgment-collector/action.py": int(os.environ.get("MAGI_ORPHAN_GRACE_JC_SEC", "420") or "420"),
+    # File review
+    "skills/file-review-orchestrator/action.py": int(os.environ.get("MAGI_ORPHAN_GRACE_FR_SEC", "1800") or "1800"),
+    "skills/file-review-orchestrator/action.py --task download": int(os.environ.get("MAGI_ORPHAN_GRACE_FR_DOWNLOAD_SEC", "2400") or "2400"),
+    # Transcript
+    "skills/transcript-downloader/action.py": int(os.environ.get("MAGI_ORPHAN_GRACE_TR_SEC", "1800") or "1800"),
+    "skills/transcript-downloader/action.py --task sync": int(os.environ.get("MAGI_ORPHAN_GRACE_TR_SYNC_SEC", "2400") or "2400"),
+    "skills/transcript-downloader/action.py --task download_all": int(os.environ.get("MAGI_ORPHAN_GRACE_TR_ALL_SEC", "3000") or "3000"),
+    # LAF
+    "skills/laf-portal-automation/action.py": int(os.environ.get("MAGI_ORPHAN_GRACE_LAF_SEC", "2400") or "2400"),
+    "skills/laf-orchestrator/action.py": int(os.environ.get("MAGI_ORPHAN_GRACE_LAF_ORCH_SEC", "2400") or "2400"),
+    "skills/laf-withdrawal-report/action.py": int(os.environ.get("MAGI_ORPHAN_GRACE_LAF_WD_SEC", "1800") or "1800"),
+    "skills/laf-refine-case/action.py": int(os.environ.get("MAGI_ORPHAN_GRACE_LAF_REFINE_SEC", "1200") or "1200"),
+    # OSC / naming / vdb
+    "skills/osc-orchestrator/action.py": int(os.environ.get("MAGI_ORPHAN_GRACE_OSC_ORCH_SEC", "2400") or "2400"),
+    "skills/osc-scan-folder/action.py": int(os.environ.get("MAGI_ORPHAN_GRACE_OSC_SCAN_SEC", "1800") or "1800"),
+    "skills/pdf-namer/action.py": int(os.environ.get("MAGI_ORPHAN_GRACE_PDF_NAMER_SEC", "1500") or "1500"),
+    "skills/crawler-targets/action.py": int(os.environ.get("MAGI_ORPHAN_GRACE_CRAWLER_TARGETS_SEC", "1800") or "1800"),
+    "skills/statutes-vdb/action.py": int(os.environ.get("MAGI_ORPHAN_GRACE_STATUTES_VDB_SEC", "1800") or "1800"),
+    # Coordinator
+    "skills/magi-autopilot/action.py": int(os.environ.get("MAGI_ORPHAN_GRACE_AUTOPILOT_SEC", "2400") or "2400"),
+    # Background subprocesses (fire-and-forget)
+    "MEMORY_ENABLE_FAISS": 300,            # FAISS rebuild — ~32萬 vectors, 通常 30-90s, 留 5min grace
+    "build_from_db": 300,                   # same, alternative marker
+    "weekend_resummary.py": 50400,          # weekly task — 14hr, 700+ judgments @ ~1min each
+    "nightly_distill_train.py": 10800,      # LoRA training — 3hr
+    "laf_nightly_audit.py": 1200,           # nightly LAF audit
+    # Selenium / Chrome (LAF automation spawns headless Chrome)
+    "chromedriver": 2700,                   # 45min grace — LAF automation can be slow
+}
+
+# ── 已知殭屍模式：不論 age 都直接殺 ──
+REAPER_ZOMBIE_PATTERNS = (
+    "test_nl_intent", "test_trans_orc",
+    "/tmp/test_", "/tmp/debug_", "/tmp/scratch_",
+    "quick_test", "quick_t",
+)
+
+# ── 安全工具：即使 stale 也永不殺 ──
+REAPER_SAFE_UTILITIES = (
+    "jedi", "pylsp", "language-server", "pyright",
+    "pip", "venv", "certifi", "npm",
+)
+
+# ── 向後相容別名（供 server.py 等 import）──
+_ORPHAN_GRACE_BY_MARKER = REAPER_GRACE_PERIODS
+_WORKER_MARKERS = tuple(REAPER_GRACE_PERIODS.keys())
+_CORE_ALLOW_MARKERS = REAPER_NEVER_KILL
+_STATE_PATH = Path(os.environ.get("MAGI_PROCESS_GUARDIAN_STATE",
+                                   str(get_magi_root() / "static" / "process_guardian_state.json")))
+_DAEMON_LOCK_PATH = Path(os.environ.get("MAGI_DAEMON_LOCK_PATH",
+                                         str(get_magi_root() / "static" / "daemon.lock")))
+_STATE: Dict[str, Any] = {
+    "updated_at": "",
+    "reap": {
+        "total_killed": 0,
+        "last_reap_at": "",
+        "last_reap_killed": 0,
+        "last_reap_force": False,
+        "last_reaped": [],
+    },
+}
+_DAEMON_LOCK_HANDLE = None
+
+# ── Training lock: distill training 寫入此檔時，daemon/watchdog 跳過 oMLX 檢查 ──
+TRAINING_LOCK_PATH = Path(os.environ.get(
+    "MAGI_TRAINING_LOCK_PATH",
+    str(get_magi_root() / "static" / "training.lock"),
+))
+
+
+def _is_training_locked() -> bool:
+    """Check if a training job holds the lock (lock file exists and is < 6h old)."""
+    try:
+        if not TRAINING_LOCK_PATH.exists():
+            return False
+        age = time.time() - TRAINING_LOCK_PATH.stat().st_mtime
+        if age > 6 * 3600:
+            # Stale lock — training probably crashed; clean up
+            TRAINING_LOCK_PATH.unlink(missing_ok=True)
+            logger.warning("🔒 Stale training lock removed (age=%ds)", int(age))
+            return False
+        return True
+    except Exception:
+        return False
+
+
+def _is_night_window() -> bool:
+    """02:00-07:00 為夜間任務密集時段。"""
+    import datetime
+    return 2 <= datetime.datetime.now().hour < 7
+
+
+# ---------------------------------------------------------------------------
+# Auto-reap zombie children via SIGCHLD
+# ---------------------------------------------------------------------------
+def _sigchld_handler(signum, frame):
+    """Reap all finished child processes to prevent zombies."""
+    while True:
+        try:
+            pid, status = os.waitpid(-1, os.WNOHANG)
+            if pid == 0:
+                break
+        except ChildProcessError:
+            break
+
+if not IS_WINDOWS:
+    signal.signal(signal.SIGCHLD, _sigchld_handler)
+
+# ---------------------------------------------------------------------------
+# Launchd-managed infrastructure services
+# ---------------------------------------------------------------------------
+_LAUNCHD_SERVICES = [
+    {
+        "label": "com.magi.omlx",
+        "name": "oMLX Inference",
+        "probe_url": "http://127.0.0.1:8080/v1/models",
+        "probe_timeout": 60,
+    },
+    {
+        "label": "com.magi.omlx-embed",
+        "name": "oMLX Embed",
+        "probe_url": None,
+        "probe_timeout": 15,
+    },
+    {
+        "label": "com.magi.omlx-watchdog",
+        "name": "oMLX Watchdog",
+        "probe_url": None,
+        "probe_timeout": 10,
+    },
+    # OpenClaw gateway + Caddy proxy removed (Phase 0)
+]
+_LAUNCHD_CHECK_INTERVAL = 45  # seconds between periodic launchd health checks (was 120, shortened for faster oMLX recovery)
+_LAST_LAUNCHD_CHECK_AT = 0.0
+
+
+def _acquire_singleton_lock():
+    """
+    Ensure only one daemon instance runs at a time.
+    Prevents duplicate service startup and port conflicts.
+    """
+    global _DAEMON_LOCK_HANDLE
+    try:
+        _DAEMON_LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
+        fh = _DAEMON_LOCK_PATH.open("w", encoding="utf-8")
+        file_lock(fh, exclusive=True, blocking=False)
+        fh.seek(0)
+        fh.truncate(0)
+        fh.write(str(os.getpid()))
+        fh.flush()
+        _DAEMON_LOCK_HANDLE = fh
+
+        def _cleanup_lock() -> None:
+            try:
+                file_unlock(fh)
+            except Exception:
+                pass
+            try:
+                fh.close()
+            except Exception:
+                pass
+
+        atexit.register(_cleanup_lock)
+        return True
+    except BlockingIOError:
+        # Check if the lock holder is actually alive
+        try:
+            old_pid = int(_DAEMON_LOCK_PATH.read_text().strip())
+            os.kill(old_pid, 0)  # Check if process exists
+            logger.warning("⚠️ Another daemon instance is already active (PID %d). Exiting.", old_pid)
+            return False
+        except (ProcessLookupError, ValueError, PermissionError, FileNotFoundError):
+            # Old daemon is dead but lock file remains — clean up and retry
+            logger.warning("🧹 Stale daemon lock found — previous daemon is dead. Cleaning up...")
+            try:
+                _DAEMON_LOCK_PATH.unlink(missing_ok=True)
+            except Exception:
+                pass
+            # Retry lock acquisition
+            try:
+                fh = _DAEMON_LOCK_PATH.open("w", encoding="utf-8")
+                file_lock(fh, exclusive=True, blocking=False)
+                fh.seek(0); fh.truncate(0); fh.write(str(os.getpid())); fh.flush()
+                _DAEMON_LOCK_HANDLE = fh
+                atexit.register(lambda: (file_unlock(fh), fh.close()))
+                logger.info("✅ Daemon lock acquired after cleanup.")
+                return True
+            except Exception:
+                logger.warning("⚠️ Cannot acquire lock even after cleanup. Exiting.")
+                return False
+    except Exception as e:
+        logger.warning(f"⚠️ Failed to acquire daemon singleton lock: {e}")
+        return True
+
+def _load_dotenv(dotenv_path: str, *, override: bool = True) -> None:
+    """
+    Load key=value pairs from a .env file into os.environ so child processes inherit.
+    Keep it dependency-free (no python-dotenv).
+    """
+    p = Path(dotenv_path).expanduser().resolve()
+    if not p.exists():
+        return
+    try:
+        for raw in p.read_text(encoding="utf-8", errors="ignore").splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#"):
+                continue
+            if line.lower().startswith("export "):
+                line = line[7:].strip()
+            if "=" not in line:
+                continue
+            k, v = line.split("=", 1)
+            k = (k or "").strip()
+            if not k:
+                continue
+            v = (v or "").strip()
+            if (len(v) >= 2) and ((v[0] == v[-1]) and v[0] in {"'", '"'}):
+                v = v[1:-1]
+            if (not override) and (k in os.environ):
+                continue
+            os.environ[k] = v
+    except Exception as e:
+        logger.warning(f"⚠️ Failed to load .env: {e}")
+
+def _script_target_from_command(command: str) -> str:
+    c = (command or "").strip()
+    targets = [
+        "api/server.py",
+        "api/discord_bot.py",
+        "api/tools_api.py",
+        "skills/ops/heartbeat.py",
+    ]
+    for t in targets:
+        if t in c:
+            return t
+    return ""
+
+
+_SERVICE_PORT_MAP = {
+    "Server": 5002,
+    "ToolsAPI": 5003,
+}
+
+def _kill_port_occupier(port):
+    """Kill any process occupying the given port."""
+    try:
+        result = subprocess.run(["lsof", "-ti", f":{port}"],
+                                capture_output=True, text=True, timeout=5)
+        pids = [p.strip() for p in result.stdout.strip().split("\n") if p.strip().isdigit()]
+        for pid in pids:
+            try:
+                os.kill(int(pid), signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
+        if pids:
+            time.sleep(0.5)
+        return bool(pids)
+    except Exception:
+        return False
+
+def start_process(name, command):
+    """Starts a subprocess and tracks it."""
+    logger.info(f"🚀 Starting {name}...")
+    try:
+        # 如果是重啟（processes 裡已有此 name），先正常停掉舊的
+        if name in processes:
+            stop_process(name)
+            time.sleep(0.5)
+
+        # 確認 port 沒被佔用（只檢查，不盲殺）
+        port = _SERVICE_PORT_MAP.get(name)
+        if port:
+            try:
+                result = subprocess.run(["lsof", "-ti", f":{port}"],
+                                        capture_output=True, text=True, timeout=3)
+                pids = [p.strip() for p in result.stdout.strip().split("\n") if p.strip().isdigit()]
+                # 只殺不是我們自己子程序的
+                our_pids = {str(info["proc"].pid) for info in processes.values() if info.get("proc")}
+                alien_pids = [p for p in pids if p not in our_pids]
+                if alien_pids:
+                    for pid in alien_pids:
+                        try:
+                            os.kill(int(pid), signal.SIGKILL)
+                        except (ProcessLookupError, PermissionError):
+                            pass
+                    time.sleep(0.5)
+                    logger.info(f"🧹 Cleared port {port} (alien PIDs: {alien_pids})")
+            except Exception:
+                pass
+
+        # Pre-clean same script to enforce single instance.
+        try:
+            sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+            from skills.ops.process_guardian import force_kill_all
+            target = _script_target_from_command(command)
+            if target:
+                force_kill_all(target)
+        except Exception as e:
+            logger.debug(f"Process Guardian pre-clean skipped for {name}: {e}")
+
+        # Avoid shell wrapper process; track the real child process for stable monitoring.
+        argv = shlex.split(command) if isinstance(command, str) else command
+        proc = subprocess.Popen(
+            argv,
+            shell=False,
+            start_new_session=True,
+            cwd=os.path.dirname(os.path.abspath(__file__)),
+        )
+        processes[name] = {"proc": proc, "command": command, "started": time.time()}
+        logger.info(f"✅ {name} started with PID {proc.pid}")
+    except Exception as e:
+        logger.error(f"❌ Failed to start {name}: {e}")
+
+def _write_autopilot_kill_reason(pid: int, reason: str) -> None:
+    """寫入 kill reason 檔，讓 autopilot _term_handler 可以讀取中斷原因。"""
+    try:
+        reason_path = os.path.join(_MAGI_ROOT, f"_autopilot_kill_reason_{pid}")
+        with open(reason_path, "w", encoding="utf-8") as f:
+            f.write(reason)
+    except Exception:
+        pass
+
+def stop_process(name):
+    """Stops a tracked subprocess."""
+    if name in processes:
+        logger.info(f"🛑 Stopping {name}...")
+        try:
+            proc = processes[name]["proc"]
+            _write_autopilot_kill_reason(proc.pid, f"daemon stop_process({name})：daemon 正在關閉或重啟程序")
+            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+            try:
+                proc.wait(timeout=15)
+            except subprocess.TimeoutExpired:
+                logger.warning(f"⚠️ {name} did not exit after SIGTERM, sending SIGKILL")
+                try:
+                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                    proc.wait(timeout=5)
+                except Exception:
+                    pass
+            del processes[name]
+        except Exception as e:
+            logger.error(f"⚠️ Error stopping {name}: {e}")
+
+_restart_failures: Dict[str, int] = {}        # consecutive failure count
+_restart_last_exit: Dict[str, float] = {}     # timestamp of last exit
+_BACKOFF_BASE = 10          # initial backoff seconds
+_BACKOFF_MAX  = 300         # cap at 5 minutes
+_HEALTHY_THRESHOLD = 60     # if process ran > 60s, reset failure count
+
+
+# ── Coordinated restart: processes sharing the same Orchestrator module ──
+# When ANY of these dies/restarts, ALL must restart to avoid stale module caches.
+# (Each has its own Orchestrator() instance loaded from the same .py files.)
+_ORCHESTRATOR_GROUP = {"Server", "Discord", "ToolsAPI"}
+
+_last_coordinated_restart: float = 0.0
+_COORDINATED_RESTART_COOLDOWN = 30.0       # 日間 cooldown
+_COORDINATED_RESTART_COOLDOWN_NIGHT = 180.0  # 夜間 cooldown（保護夜間任務）
+
+
+def _clear_pycache():
+    """Clear __pycache__ directories under api/ and skills/bridge/ to avoid stale .pyc."""
+    import shutil
+    for subdir in ("api", "api/handlers", "skills/bridge", "skills/memory",
+                   "skills/ops", "casper_ecosystem/law_firm_orchestrators"):
+        cache_dir = os.path.join(_MAGI_ROOT, subdir, "__pycache__")
+        if os.path.isdir(cache_dir):
+            try:
+                shutil.rmtree(cache_dir)
+            except Exception:
+                pass
+
+
+def _coordinated_restart(trigger_name: str):
+    """Restart all Orchestrator-group processes together.
+
+    夜間 (02:00-07:00) 行為改變：
+    - cooldown 拉長到 180 秒（避免連鎖重啟干擾夜間任務）
+    - 只重啟掛掉的那個服務，不連帶殺其他服務
+    """
+    global _last_coordinated_restart
+    now = time.time()
+    night = _is_night_window()
+    cooldown = _COORDINATED_RESTART_COOLDOWN_NIGHT if night else _COORDINATED_RESTART_COOLDOWN
+
+    if now - _last_coordinated_restart < cooldown:
+        logger.info(f"⏳ Coordinated restart cooldown — skipping (triggered by {trigger_name})")
+        return
+    _last_coordinated_restart = now
+
+    if night:
+        # ── 夜間模式：只重啟掛掉的服務，不連帶殺其他 ──
+        logger.info(f"🌙 Night mode: restarting only {trigger_name} (not full group)")
+        rec = processes.get(trigger_name)
+        cmd = rec.get("command") if rec else None
+        if cmd:
+            start_process(trigger_name, cmd)
+        return
+
+    # ── 日間模式：完整協調重啟 ──
+    logger.info(f"🔄 Coordinated restart triggered by {trigger_name} — restarting {_ORCHESTRATOR_GROUP}")
+    _clear_pycache()
+
+    # Save commands BEFORE stopping (stop_process deletes from processes dict)
+    saved_commands: Dict[str, str] = {}
+    for name in _ORCHESTRATOR_GROUP:
+        rec = processes.get(name)
+        if rec and rec.get("command"):
+            saved_commands[name] = rec["command"]
+
+    # Stop all group members (except the trigger, which is already dead)
+    for name in _ORCHESTRATOR_GROUP:
+        if name == trigger_name:
+            continue
+        if name in processes and processes[name].get("proc"):
+            try:
+                stop_process(name)
+            except Exception as e:
+                logger.warning(f"⚠️ Coordinated stop {name} failed: {e}")
+    time.sleep(1)
+
+    # Start all group members using saved commands
+    for name in _ORCHESTRATOR_GROUP:
+        cmd = saved_commands.get(name)
+        if cmd:
+            start_process(name, cmd)
+            time.sleep(1)  # stagger to avoid port race
+
+
+def monitor_processes():
+    """Checks if processes are alive and restarts them with exponential backoff."""
+    now = time.time()
+    for name, rec in list(processes.items()):
+        proc = rec.get("proc")
+        command = rec.get("command")
+        if not proc:
+            continue
+        if proc.poll() is not None:
+            if not command:
+                continue
+
+            # Calculate how long the process was alive
+            started = rec.get("started", 0)
+            uptime = now - started if started else 0
+
+            if uptime > _HEALTHY_THRESHOLD:
+                # Process ran long enough — was healthy, reset counter
+                _restart_failures[name] = 0
+            else:
+                _restart_failures[name] = _restart_failures.get(name, 0) + 1
+
+            failures = _restart_failures[name]
+            backoff = min(_BACKOFF_BASE * (2 ** (failures - 1)), _BACKOFF_MAX) if failures > 0 else 0
+            last_exit = _restart_last_exit.get(name, 0)
+            wait_until = last_exit + backoff
+
+            _restart_last_exit[name] = now
+
+            if now < wait_until:
+                remaining = int(wait_until - now)
+                logger.warning(
+                    f"⏳ {name} died (exit={proc.returncode}, "
+                    f"failures={failures}). Backoff {remaining}s remaining."
+                )
+                continue
+
+            logger.warning(
+                f"⚠️ {name} has died (exit={proc.returncode}, "
+                f"failures={failures}, backoff={int(backoff)}s). Restarting..."
+            )
+
+            # Orchestrator-group: coordinated restart to keep modules in sync
+            if name in _ORCHESTRATOR_GROUP:
+                _coordinated_restart(name)
+            else:
+                start_process(name, command)
+
+
+def _iter_ps_rows() -> list[Dict[str, Any]]:
+    rows: list[Dict[str, Any]] = []
+
+    def _parse_etime_to_sec(s: str) -> int:
+        """
+        macOS ps etime formats:
+        - MM:SS
+        - HH:MM:SS
+        - DD-HH:MM:SS
+        """
+        t = (s or "").strip()
+        if not t:
+            return 0
+        m = re.match(r"^(?:(\d+)-)?(?:(\d+):)?(\d+):(\d+)$", t)
+        if not m:
+            return 0
+        dd = int(m.group(1) or 0)
+        hh = int(m.group(2) or 0)
+        mm = int(m.group(3) or 0)
+        ss = int(m.group(4) or 0)
+        return (dd * 86400) + (hh * 3600) + (mm * 60) + ss
+
+    try:
+        out = subprocess.run(
+            ["ps", "-axo", "pid=,ppid=,etime=,command="],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=8,
+        ).stdout or ""
+    except Exception:
+        return rows
+
+    for raw in out.splitlines():
+        line = (raw or "").strip()
+        if not line:
+            continue
+        parts = line.split(None, 3)
+        if len(parts) < 4:
+            continue
+        try:
+            pid = int(parts[0])
+            ppid = int(parts[1])
+            etimes = _parse_etime_to_sec(parts[2])
+        except Exception:
+            continue
+        rows.append({"pid": pid, "ppid": ppid, "etimes": etimes, "cmd": parts[3]})
+    return rows
+
+
+def _is_worker_cmd(cmd: str) -> bool:
+    s = (cmd or "")
+    return any(m in s for m in _WORKER_MARKERS)
+
+
+def _is_core_allowed_cmd(cmd: str) -> bool:
+    s = (cmd or "")
+    return any(m in s for m in _CORE_ALLOW_MARKERS)
+
+
+def _grace_for_cmd(cmd: str) -> int:
+    s = (cmd or "")
+    for marker, sec in _ORPHAN_GRACE_BY_MARKER.items():
+        if marker in s:
+            return max(60, int(sec))
+    return max(60, _ORPHAN_GRACE_SEC)
+
+
+def _kill_pid_tree(pid: int) -> bool:
+    """Kill a process and all its descendants (important for chromedriver → Chrome trees)."""
+    try:
+        import psutil
+        parent = psutil.Process(pid)
+        children = parent.children(recursive=True)
+        for child in children:
+            try:
+                child.terminate()
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
+        parent.terminate()
+        # Wait briefly then force kill survivors
+        _, alive = psutil.wait_procs(children + [parent], timeout=3)
+        for p in alive:
+            try:
+                p.kill()
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
+        return True
+    except ImportError:
+        # Fallback: process group kill
+        try:
+            pgid = os.getpgid(pid)
+            os.killpg(pgid, signal.SIGTERM)
+            return True
+        except Exception:
+            pass
+    except Exception:
+        pass
+    try:
+        os.kill(pid, signal.SIGTERM)
+        return True
+    except Exception:
+        return False
+
+
+def _write_state(extra: Dict[str, Any] | None = None) -> None:
+    try:
+        payload = dict(_STATE)
+        payload["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+        if extra:
+            payload.update(extra)
+        _STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        tmp = _STATE_PATH.with_suffix(_STATE_PATH.suffix + ".tmp")
+        tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.replace(_STATE_PATH)
+    except Exception:
+        pass
+
+
+def _snapshot_counts() -> Dict[str, int]:
+    rows = _iter_ps_rows()
+    core = 0
+    worker = 0
+    orphan = 0
+    for r in rows:
+        cmd = str(r.get("cmd") or "")
+        ppid = int(r.get("ppid") or 0)
+        if _is_core_allowed_cmd(cmd):
+            core += 1
+        if _is_worker_cmd(cmd):
+            worker += 1
+            if ppid == 1:
+                orphan += 1
+    return {"core_count": core, "worker_count": worker, "orphan_worker_count": orphan}
+
+
+def reap_orphan_workers(*, force: bool = False, dry_run: bool = False) -> str:
+    """
+    統一殭屍清理（Unified Process Reaper）。
+    這是 MAGI 唯一的進程清理入口（oMLX watchdog 和 port cleanup 除外）。
+
+    清理四大類：
+    1. OS-level zombie（STATUS_ZOMBIE）→ SIGKILL
+    2. 已知殭屍模式（test scripts 等）→ SIGTERM
+    3. 孤兒 worker（PPID=1, 超過 grace）→ kill tree
+    4. Stale 非保護 Python 進程（>30min）→ SIGTERM
+
+    Args:
+        force: True = 啟動時強制掃描（不等 interval、不限 PPID）
+        dry_run: True = 只報告不殺
+    Returns:
+        格式化報告字串
+    """
+    global _LAST_REAP_AT
+    now = time.time()
+    if (not force) and (not dry_run) and (now - _LAST_REAP_AT < max(10, _REAP_INTERVAL_SEC)):
+        return ""
+    _LAST_REAP_AT = now
+
+    try:
+        ctrl_path = Path(f"{_MAGI_ROOT}/static/guardian_control.json")
+        if ctrl_path.exists():
+            ctrl = json.loads(ctrl_path.read_text(encoding="utf-8"))
+            if not ctrl.get("enabled", True) and not force:
+                _STATE["reap"]["status"] = "已透過網頁介面停用 (Disabled)"
+                _write_state(_snapshot_counts())
+                return "⏸️ Reaper 已停用"
+    except Exception:
+        pass
+
+    _STATE["reap"]["status"] = "運作中 (Enabled)"
+
+    managed_pids = {os.getpid()}
+    try:
+        managed_pids.add(os.getppid())
+    except Exception:
+        pass
+    for rec in processes.values():
+        p = rec.get("proc")
+        if p and getattr(p, "pid", None):
+            managed_pids.add(int(p.pid))
+
+    killed: list[tuple[int, int, int, str, str]] = []  # (pid, ppid, age, cmd, reason)
+    spared: list[str] = []
+
+    # ── Phase 1: OS-level zombies (psutil) ──
+    try:
+        import psutil
+        for proc in psutil.process_iter(["pid", "status"]):
+            try:
+                if proc.info["status"] == psutil.STATUS_ZOMBIE:
+                    zpid = proc.info["pid"]
+                    if zpid in managed_pids:
+                        continue
+                    if not dry_run:
+                        try:
+                            os.kill(zpid, signal.SIGKILL)
+                            killed.append((zpid, 0, 0, "(zombie)", "OS_ZOMBIE"))
+                        except OSError:
+                            pass
+                    else:
+                        spared.append(f"🧟 OS zombie PID {zpid}")
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                continue
+    except ImportError:
+        pass
+
+    # ── Phase 2-4: ps-based scan ──
+    for row in _iter_ps_rows():
+        pid = int(row["pid"])
+        ppid = int(row["ppid"])
+        etimes = int(row["etimes"])
+        cmd = str(row["cmd"])
+
+        if pid in managed_pids:
+            continue
+
+        # Never-kill check (統一白名單)
+        if _is_core_allowed_cmd(cmd):
+            continue
+
+        # Phase 2: 已知殭屍模式 — 不論 age 直接殺
+        if any(pat in cmd for pat in REAPER_ZOMBIE_PATTERNS):
+            reason = "ZOMBIE_PATTERN"
+            if not dry_run:
+                _write_autopilot_kill_reason(pid, f"reaper: 匹配殭屍模式")
+                if _kill_pid_tree(pid):
+                    killed.append((pid, ppid, etimes, cmd, reason))
+            else:
+                spared.append(f"🔪 {reason} PID {pid} age={etimes}s — {cmd[:60]}")
+            continue
+
+        # Phase 3: 孤兒 worker（原有邏輯）
+        if _is_worker_cmd(cmd):
+            if (not force) and ppid != 1:
+                continue
+            if (not force) and etimes < _grace_for_cmd(cmd):
+                continue
+            reason = "ORPHAN_EXPIRED"
+            if not dry_run:
+                _write_autopilot_kill_reason(
+                    pid,
+                    f"reaper: 孤兒程序(PPID={ppid})已執行 {etimes}s，超過寬限期 {_grace_for_cmd(cmd)}s",
+                )
+                if _kill_pid_tree(pid):
+                    killed.append((pid, ppid, etimes, cmd, reason))
+            else:
+                spared.append(f"⏰ {reason} PID {pid} age={etimes}s — {cmd[:60]}")
+            continue
+
+        # Phase 4: Stale 非保護 Python 進程（>30min, PPID=1）
+        is_python = "python" in cmd.lower()
+        if is_python and ppid == 1 and etimes > 1800:
+            # 安全工具排除
+            if any(safe in cmd for safe in REAPER_SAFE_UTILITIES):
+                continue
+            reason = "STALE_UNPROTECTED"
+            if not dry_run:
+                _write_autopilot_kill_reason(pid, f"reaper: stale Python 進程已執行 {etimes}s")
+                try:
+                    os.kill(pid, signal.SIGTERM)
+                    killed.append((pid, ppid, etimes, cmd, reason))
+                except OSError:
+                    pass
+            else:
+                spared.append(f"⏰ {reason} PID {pid} age={etimes}s — {cmd[:60]}")
+
+    # ── Logging & State ──
+    if killed:
+        for pid, ppid, etimes, cmd, reason in killed[:10]:
+            logger.warning(
+                "🧹 REAPER kill pid=%s reason=%s age=%ss ppid=%s cmd=%s",
+                pid, reason, etimes, ppid, cmd[:220]
+            )
+        if len(killed) > 10:
+            logger.warning("🧹 REAPER total killed=%s", len(killed))
+    _STATE["reap"]["total_killed"] = int(_STATE["reap"].get("total_killed") or 0) + len(killed)
+    _STATE["reap"]["last_reap_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+    _STATE["reap"]["last_reap_killed"] = len(killed)
+    _STATE["reap"]["last_reap_force"] = bool(force)
+    _STATE["reap"]["last_reaped"] = [
+        {"pid": int(pid), "ppid": int(ppid), "age_sec": int(etimes), "cmd": str(cmd)[:240], "reason": reason}
+        for pid, ppid, etimes, cmd, reason in killed[:20]
+    ]
+    _write_state(_snapshot_counts())
+
+    # ── Build report ──
+    return _build_reap_report(killed, spared, dry_run)
+
+
+def _build_reap_report(
+    killed: list[tuple[int, int, int, str, str]],
+    spared: list[str],
+    dry_run: bool,
+) -> str:
+    """格式化 reaper 報告。"""
+    if not killed and not spared:
+        return "✅ **殭屍巡邏完成** — 系統乾淨。"
+
+    lines = ["🛡️ **殭屍巡邏報告** (Unified Reaper)"]
+    if dry_run:
+        lines.append("⚠️ *模擬模式 — 未實際清除*\n")
+
+    if killed:
+        lines.append(f"🔪 **已清除 {len(killed)} 個程序：**")
+        for pid, ppid, etimes, cmd, reason in killed[:15]:
+            lines.append(f"   ⏰ [{reason}] PID {pid} (age: {etimes // 60}m) - {cmd[:60]}")
+
+    if spared:
+        lines.append(f"\n⚠️ **偵測到 {len(spared)} 個可疑程序（未清除）：**")
+        for s in spared[:10]:
+            lines.append(f"   {s}")
+
+    lines.append(f"\n✅ 巡邏完成。共清除 {len(killed)} 個程序。")
+    return "\n".join(lines)
+
+
+def get_reap_report() -> str:
+    """取得最近一次 reaper 的狀態報告。"""
+    reap = _STATE.get("reap", {})
+    reaped = reap.get("last_reaped", [])
+    total = reap.get("total_killed", 0)
+    last_at = reap.get("last_reap_at", "N/A")
+    last_n = reap.get("last_reap_killed", 0)
+    status = reap.get("status", "unknown")
+
+    if last_n == 0 and not reaped:
+        return f"✅ **殭屍巡邏完成** — 系統乾淨。\n狀態：{status} | 累計清除：{total} | 最後巡邏：{last_at}"
+
+    lines = [f"🛡️ **殭屍巡邏報告** (Unified Reaper)"]
+    if reaped:
+        lines.append(f"🔪 **本次清除 {last_n} 個程序：**")
+        for r in reaped[:10]:
+            reason = r.get("reason", "UNKNOWN")
+            lines.append(f"   ⏰ [{reason}] PID {r['pid']} (age: {r['age_sec'] // 60}m) - {r['cmd'][:60]}")
+    lines.append(f"\n狀態：{status} | 累計清除：{total} | 最後巡邏：{last_at}")
+    return "\n".join(lines)
+
+
+def request_kill(marker: str, reason: str, *, max_age_sec: int = 0) -> list[int]:
+    """
+    供其他模組呼叫的統一 kill 介面。
+    掃描匹配 marker 的進程，尊重 REAPER_NEVER_KILL。
+
+    Args:
+        marker: 在 command line 中搜尋的字串
+        reason: 殺掉原因（寫入 log）
+        max_age_sec: >0 時只殺超過此秒數的進程
+
+    Returns:
+        被殺的 PID 列表
+    """
+    killed_pids: list[int] = []
+    my_pid = os.getpid()
+    for row in _iter_ps_rows():
+        pid = int(row["pid"])
+        cmd = str(row["cmd"])
+        etimes = int(row["etimes"])
+        if pid == my_pid:
+            continue
+        if marker not in cmd:
+            continue
+        if _is_core_allowed_cmd(cmd):
+            continue
+        if max_age_sec > 0 and etimes < max_age_sec:
+            continue
+        _write_autopilot_kill_reason(pid, f"reaper request_kill: {reason}")
+        if _kill_pid_tree(pid):
+            killed_pids.append(pid)
+            logger.warning(
+                "🧹 REAPER kill pid=%s reason=LOCAL_REQUEST(%s) age=%ss cmd=%s",
+                pid, reason, etimes, cmd[:200],
+            )
+    return killed_pids
+
+def _launchd_target(label: str) -> str:
+    """Build launchd target path: gui/<uid>/<label>."""
+    return f"gui/{os.getuid()}/{label}"
+
+
+def _is_launchd_service_running(label: str) -> bool:
+    """Check if a launchd service is currently loaded and running."""
+    try:
+        result = subprocess.run(
+            ["launchctl", "print", _launchd_target(label)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=5,
+        )
+        return result.returncode == 0
+    except Exception:
+        return False
+
+
+def _kickstart_launchd_service(label: str) -> bool:
+    """Kickstart a launchd service if it's not running."""
+    try:
+        result = subprocess.run(
+            ["launchctl", "kickstart", "-k", _launchd_target(label)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=10,
+        )
+        return result.returncode == 0
+    except Exception as e:
+        logger.warning(f"⚠️ launchctl kickstart failed for {label}: {e}")
+        return False
+
+
+def _probe_url(url: str, timeout: float = 3.0) -> bool:
+    """Quick HTTP probe — returns True if we get any 2xx/3xx response."""
+    try:
+        req = urllib.request.Request(url, method="GET")
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return 200 <= resp.status < 400
+    except Exception:
+        return False
+
+
+def _ensure_launchd_services(*, startup: bool = False) -> None:
+    """
+    Ensure all launchd-managed infrastructure services are running.
+    On startup: kickstart + wait with health probe.
+    Periodic: quick check + kickstart if needed.
+    """
+    for svc in _LAUNCHD_SERVICES:
+        label = svc["label"]
+        name = svc["name"]
+        probe_url = svc.get("probe_url")
+        probe_timeout = svc.get("probe_timeout", 30)
+
+        # Training lock: 訓練進行中跳過 oMLX 相關服務檢查
+        if _is_training_locked() and label in ("com.magi.omlx", "com.magi.omlx-watchdog"):
+            if startup:
+                logger.info(f"🔒 {name} skipped — training lock active")
+            continue
+
+        running = _is_launchd_service_running(label)
+
+        if running and not startup:
+            # Periodic check: service is there, quick HTTP probe if configured
+            if probe_url and not _probe_url(probe_url, timeout=4.0):
+                logger.warning(f"⚠️ {name} ({label}) launchd ok but HTTP probe failed — kickstarting")
+                if not _kickstart_launchd_service(label):
+                    logger.warning(f"⚠️ {name} ({label}) kickstart after probe failure also failed")
+            continue
+
+        if not running:
+            logger.info(f"🔧 {name} ({label}) not running — kickstarting...")
+            if not _kickstart_launchd_service(label):
+                logger.warning(f"⚠️ {name} ({label}) kickstart failed")
+                # For oMLX inference: attempt direct restart via omlx serve as last resort
+                if label == "com.magi.omlx":
+                    logger.info("🔄 Attempting direct oMLX restart via subprocess...")
+                    try:
+                        _omlx_bin = shutil.which("omlx") or "/opt/homebrew/bin/omlx"
+                        if os.path.isfile(_omlx_bin):
+                            _omlx_proc = subprocess.Popen(
+                                [_omlx_bin, "serve", "--port", "8080"],
+                                stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL,
+                                start_new_session=True,
+                            )
+                            threading.Thread(target=_omlx_proc.wait, daemon=True).start()
+                            logger.info("🔄 oMLX direct restart initiated (pid detached)")
+                        else:
+                            logger.warning(f"⚠️ omlx binary not found at {_omlx_bin}")
+                    except Exception as omlx_err:
+                        logger.warning(f"⚠️ oMLX direct restart failed: {omlx_err}")
+                continue
+
+        # If startup mode and there's a probe URL, wait for the service to be ready
+        if startup and probe_url:
+            deadline = time.time() + probe_timeout
+            ready = False
+            while time.time() < deadline:
+                if _probe_url(probe_url, timeout=3.0):
+                    ready = True
+                    break
+                time.sleep(2)
+            if ready:
+                logger.info(f"✅ {name} — ready")
+            else:
+                logger.warning(f"⏳ {name} — not reachable after {probe_timeout}s (will keep trying in background)")
+        elif startup:
+            # No probe URL — just check the process is there after a short grace period
+            time.sleep(2)
+            if _is_launchd_service_running(label):
+                logger.info(f"✅ {name} — running")
+            else:
+                logger.warning(f"⚠️ {name} — process not detected after kickstart")
+
+
+def _periodic_launchd_check() -> None:
+    """Periodically verify launchd services are still alive (called from monitor loop)."""
+    global _LAST_LAUNCHD_CHECK_AT
+    now = time.time()
+    if now - _LAST_LAUNCHD_CHECK_AT < _LAUNCHD_CHECK_INTERVAL:
+        return
+    _LAST_LAUNCHD_CHECK_AT = now
+    try:
+        _ensure_launchd_services(startup=False)
+    except Exception as e:
+        logger.warning(f"⚠️ Periodic launchd check failed: {e}")
+
+
+def cleanup(signum, frame):
+    """Graceful shutdown."""
+    logger.info("🔻 Daemon shutting down...")
+    for name in list(processes.keys()):
+        stop_process(name)
+    sys.exit(0)
+
+if __name__ == "__main__":
+    signal.signal(signal.SIGTERM, cleanup)
+    signal.signal(signal.SIGINT, cleanup)
+
+    if not _acquire_singleton_lock():
+        sys.exit(0)
+    
+    logger.info("👿 MAGI Daemon Started.")
+
+    # ── First-run detection: launch Setup Wizard if .env is missing/incomplete ──
+    _env_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+    _needs_setup = False
+    if not os.path.exists(_env_file):
+        _needs_setup = True
+    else:
+        # Quick check: are required vars actually filled in?
+        # P0-05: 只檢查核心必填，通道 credentials 不阻止啟動
+        _required_keys = ["DB_HOST", "DB_USER", "DB_PASSWORD", "FLASK_SECRET_KEY"]
+        with open(_env_file, encoding="utf-8") as _ef:
+            _env_text = _ef.read()
+        for _k in _required_keys:
+            import re as _re_mod
+            _m = _re_mod.search(rf'^{_k}=(.*)$', _env_text, _re_mod.MULTILINE)
+            if not _m or not _m.group(1).strip() or _m.group(1).strip().startswith("your_"):
+                _needs_setup = True
+                break
+    if _needs_setup:
+        logger.info("🧙 First-time setup detected — launching Setup Wizard...")
+        print("\n" + "=" * 50)
+        print("  MAGI 首次啟動 — 正在開啟設定精靈...")
+        print("  Opening Setup Wizard in your browser...")
+        print("=" * 50 + "\n")
+        _wizard_proc = subprocess.Popen(
+            [sys.executable, os.path.join(os.path.dirname(os.path.abspath(__file__)), "setup_wizard.py")],
+            cwd=os.path.dirname(os.path.abspath(__file__)),
+        )
+        _wizard_proc.wait()
+        # Re-check after wizard
+        if not os.path.exists(_env_file):
+            logger.error("❌ Setup Wizard completed but .env not found. Cannot start MAGI.")
+            sys.exit(1)
+        logger.info("✅ Setup Wizard completed — continuing startup.")
+
+    # Load MAGI .env so admin allowlist + tokens are available to all subprocesses.
+    _load_dotenv(_env_file, override=True)
+
+    # 0. Clean __pycache__ to ensure fresh bytecode for all processes
+    _clear_pycache()
+    logger.info("🧹 Cleared __pycache__ for fresh startup")
+
+    # 0. Process Guardian: Clean up orphans before starting
+    try:
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        from skills.ops.process_guardian import force_kill_all
+        logger.info("🛡️ Process Guardian: Cleaning up orphans...")
+        force_kill_all("api/server.py")
+        force_kill_all("api/discord_bot.py")
+        force_kill_all("api/tools_api.py")
+        # openclaw_cron_runner removed (Phase 0)
+        force_kill_all("skills/ops/file_review_auto_worker.py")
+        force_kill_all("skills/ops/heartbeat.py")
+        # Kill orphaned FAISS rebuild subprocesses (leak from previous server runs)
+        force_kill_all("MEMORY_ENABLE_FAISS")
+        # Kill orphaned Selenium/Chrome sessions
+        force_kill_all("chromedriver")
+    except Exception as e:
+        logger.warning(f"⚠️ Process Guardian cleanup failed: {e}")
+    # 0.5 Runtime hygiene: reap stale/orphan worker tasks from old runs.
+    try:
+        reap_orphan_workers(force=True)
+    except Exception as e:
+        logger.warning(f"⚠️ Initial stale-worker reap failed: {e}")
+
+    # 0.7 Infrastructure services: ensure oMLX, OpenClaw Gateway, Caddy are alive
+    if IS_MACOS:
+        logger.info("🔌 Ensuring launchd infrastructure services are running...")
+        try:
+            _ensure_launchd_services(startup=True)
+        except Exception as e:
+            logger.warning(f"⚠️ Launchd infrastructure check failed (non-fatal): {e}")
+    
+    # Resolve venv python path dynamically (cross-platform)
+    _PYTHON = get_venv_python()
+
+    # 0.9 Port cleanup: kill any process occupying our ports before starting services.
+    #     This prevents "Address already in use" cascading failures.
+    _SERVICE_PORTS = [5002, 5003]
+    for _port in _SERVICE_PORTS:
+        try:
+            result = subprocess.run(
+                ["lsof", "-ti", f":{_port}"],
+                capture_output=True, text=True, timeout=5,
+            )
+            pids = [p.strip() for p in result.stdout.strip().split("\n") if p.strip().isdigit()]
+            if pids:
+                logger.warning(f"🧹 Port {_port} occupied by PID(s) {pids} — killing before startup")
+                for pid in pids:
+                    try:
+                        os.kill(int(pid), signal.SIGKILL)
+                    except (ProcessLookupError, PermissionError):
+                        pass
+                time.sleep(0.5)
+        except Exception as e:
+            logger.debug(f"Port {_port} cleanup skipped: {e}")
+
+    # 1. Start Server (LINE API)
+    start_process("Server", f"{_PYTHON} api/server.py")
+
+    # 2. Start Discord Bot
+    start_process("Discord", f"{_PYTHON} api/discord_bot.py")
+
+    # 2.5 Start Tools API (external routes / connections checks)
+    start_process("ToolsAPI", f"{_PYTHON} api/tools_api.py")
+
+    # 2.6 OpenClaw cron bridge (排程來源在 OpenClaw；本機執行允許清單命令)
+    # OpenClawCron removed (Phase 0)
+
+    # 2.7 File review background worker (auto scan -> download -> archive)
+    start_process("FileReviewAuto", f"{_PYTHON} skills/ops/file_review_auto_worker.py")
+
+    # 2.8 Heartbeat monitor (node health + Tailscale serve guard)
+    start_process("Heartbeat", f"{_PYTHON} skills/ops/heartbeat.py")
+    
+    # 3. Start Keeper Sync Daemon (as background thread)
+    try:
+        from skills.memory.keeper_sync import start_sync_daemon
+        start_sync_daemon()
+        logger.info("✅ Keeper Sync Daemon thread started")
+    except Exception as e:
+        logger.warning(f"⚠️ Keeper Sync not started: {e}")
+    
+    # Monitor Loop
+    try:
+        while True:
+            monitor_processes()
+            reap_orphan_workers(force=False)
+            if IS_MACOS:
+                _periodic_launchd_check()
+            time.sleep(10)
+    except KeyboardInterrupt:
+        cleanup(None, None)

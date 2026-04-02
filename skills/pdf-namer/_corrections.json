@@ -1,0 +1,38 @@
+[
+  {
+    "timestamp": "2026-03-06T15:34:07.799370",
+    "filename": "/Users/ai/Library/CloudStorage/SynologyDrive-homes/01_案件/法扶案件/刑事/2025-0002-游秀鈴-一審-傷害致死/05_對方歷次書狀/20260306 檢察官補充理由書五(游秀鈴).pdf",
+    "case": "2025-0002-游秀鈴-一審-傷害致死",
+    "subfolder": "05_對方歷次書狀",
+    "parties": [
+      "游秀鈴"
+    ]
+  },
+  {
+    "timestamp": "2026-03-06T15:34:10.000935",
+    "filename": "/Users/ai/Library/CloudStorage/SynologyDrive-homes/01_案件/無償案件/刑事/2026-0020-黃宥茹-偵查-恐嚇等/01_無償委任資料/20260306 無償委任證明書(黃宥茹).pdf",
+    "case": "2026-0020-黃宥茹-偵查-恐嚇等",
+    "subfolder": "01_無償委任資料",
+    "parties": [
+      "黃宥茹"
+    ]
+  },
+  {
+    "timestamp": "2026-03-06T15:34:12.172765",
+    "filename": "/Users/ai/Library/CloudStorage/SynologyDrive-homes/01_案件/法扶案件/刑事/2026-0005-陳偉傑-一審-傷害/06_閱卷資料/20260306 繳費收據(陳偉傑).pdf",
+    "case": "2026-0005-陳偉傑-一審-傷害",
+    "subfolder": "06_閱卷資料",
+    "parties": [
+      "陳偉傑"
+    ]
+  },
+  {
+    "timestamp": "2026-03-06T15:34:18.408398",
+    "filename": "/Users/ai/Library/CloudStorage/SynologyDrive-homes/01_案件/法扶案件/消費者債務清理/2025-0087-[當事人L]-消費者債務清理-更生/09_法院通知或程序裁定/20260306 調解不成立證明書([當事人L]).pdf",
+    "case": "2025-0087-[當事人L]-消費者債務清理-更生",
+    "subfolder": "09_法院通知或程序裁定",
+    "parties": [
+      "[當事人L]"
+    ]
+  }
+]

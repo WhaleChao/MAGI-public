@@ -1,0 +1,520 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MAGI OFFICE</title>
+<style>
+  @font-face {
+    font-family: 'ArkPixel';
+    src: url('/static/star-office/fonts/ark-pixel-12px-proportional-zh_cn.ttf.woff2') format('woff2');
+    font-weight: normal;
+    font-style: normal;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  html,body{height:100%;overflow:hidden;background:#0a0a0a;font-family:'ArkPixel','Press Start 2P',monospace;color:#d8d0b8}
+
+  /* ===== MAIN LAYOUT ===== */
+  .main{display:flex;height:100%;width:100%}
+  .game-col{flex:1;display:flex;flex-direction:column;min-width:0}
+  .sidebar-col{width:300px;max-width:300px;min-width:240px;background:#1a1428;border-left:4px solid #382860;overflow-y:auto;display:flex;flex-direction:column;flex-shrink:0}
+
+  /* ===== TOP HEADER ===== */
+  .top-bar{
+    height:36px;background:#181020;border-bottom:3px solid #382860;
+    display:flex;align-items:center;padding:0 14px;flex-shrink:0;
+  }
+  .top-title{font-size:13px;color:#e8c040;letter-spacing:3px;text-shadow:1px 1px 0 #604000;font-weight:bold}
+  .top-clock{font-size:11px;color:#80d880;margin-left:auto;margin-right:12px}
+  .top-btn{
+    font-family:'ArkPixel','Press Start 2P',monospace;font-size:9px;
+    padding:4px 10px;border:2px solid #504078;background:#2a2044;color:#c8c0e0;
+    cursor:pointer;border-radius:2px;text-decoration:none;
+  }
+  .top-btn:hover{background:#403068;color:#fff;border-color:#7060a0}
+
+  /* ===== GAME AREA ===== */
+  .canvas-wrap{flex:1;display:flex;align-items:center;justify-content:center;background:#0a0a0a;position:relative;overflow:hidden}
+  #game-container{
+    position:relative;border:0;image-rendering:pixelated;
+    width:1280px;height:720px;max-width:100%;
+    overflow:hidden;
+  }
+  #game-container canvas{
+    width:100%!important;height:100%!important;
+    image-rendering:pixelated;object-fit:contain;
+    box-shadow:inset 0 0 0 4px #64477d;
+    position:relative;z-index:10;
+  }
+
+  /* ===== LOADING OVERLAY ===== */
+  #loading-overlay{
+    position:fixed;top:0;left:0;width:100%;height:100%;
+    background:#0a0a0a;z-index:9999;
+    display:flex;flex-direction:column;align-items:center;justify-content:center;
+  }
+  #loading-text{
+    font-family:'ArkPixel',monospace;font-size:14px;color:#d8d0b8;
+    margin-bottom:20px;letter-spacing:1px;
+  }
+  #loading-progress-container{
+    width:320px;height:16px;background:#282040;border:2px solid #504078;border-radius:2px;overflow:hidden;
+  }
+  #loading-progress-bar{
+    height:100%;width:0%;background:linear-gradient(90deg,#50d858,#80e880);
+    transition:width 0.3s ease;border-radius:1px;
+  }
+
+  /* ===== STATUS TEXT ===== */
+  #status-text{
+    position:absolute;bottom:8px;left:50%;transform:translateX(-50%);
+    font-family:'ArkPixel',monospace;font-size:13px;color:#ffd700;
+    text-shadow:1px 1px 2px rgba(0,0,0,0.8);
+    z-index:20;pointer-events:none;white-space:nowrap;
+  }
+
+  /* ===== BOTTOM STATUS BAR ===== */
+  .statusbar{
+    height:48px;background:#181020;border-top:3px solid #382860;
+    display:flex;align-items:center;padding:0 10px;gap:8px;flex-shrink:0;overflow-x:auto;
+  }
+  .hp-card{display:flex;flex-direction:column;gap:2px;min-width:90px}
+  .hp-label{font-size:8px;color:#a098b0;letter-spacing:1px}
+  .hp-bar-wrap{display:flex;align-items:center;gap:4px}
+  .hp-tag{font-size:7px;color:#807098;width:18px}
+  .hp-bar-bg{flex:1;height:6px;background:#282040;border:1px solid #403060;border-radius:1px;overflow:hidden}
+  .hp-bar{height:100%;transition:width 0.8s ease,background 0.3s;border-radius:1px}
+  .hp-bar.full{background:#50d858}
+  .hp-bar.warn{background:#d8b830}
+  .hp-bar.crit{background:#e04040}
+  .hp-bar.off{background:#403060;width:0%!important}
+  .hp-text{font-size:7px}
+  .hp-text.online{color:#50d858}
+  .hp-text.idle{color:#d8b830}
+  .hp-text.offline{color:#e04040}
+  .stat-divider{width:1px;height:28px;background:#302848;flex-shrink:0}
+
+  /* ===== SIDEBAR ===== */
+  .sb-header{
+    padding:10px 12px;background:#241c38;border-bottom:2px solid #382860;
+    display:flex;align-items:center;justify-content:space-between;flex-shrink:0;
+  }
+  .sb-header h1{font-size:11px;color:#e8c040;letter-spacing:2px;text-shadow:1px 1px 0 #604000}
+  .sb-clock{font-size:9px;color:#80d880}
+  .sb-section{border-bottom:1px solid #2a2044}
+  .sb-toggle{
+    width:100%;text-align:left;background:none;border:none;
+    font-family:'ArkPixel','Press Start 2P',monospace;font-size:11px;color:#b0a8c8;
+    padding:8px 12px;cursor:pointer;display:flex;align-items:center;gap:6px;
+    transition:background 0.15s;
+  }
+  .sb-toggle:hover{background:#241c38}
+  .sb-arrow{font-size:8px;transition:transform 0.2s;display:inline-block;width:10px}
+  .sb-toggle.collapsed .sb-arrow{transform:rotate(-90deg)}
+  .sb-body{padding:4px 12px 10px 28px;display:block}
+  .sb-toggle.collapsed+.sb-body{display:none}
+
+  /* Buttons row */
+  .sb-btns{display:flex;flex-wrap:wrap;gap:4px}
+  .sb-btn{
+    font-family:'ArkPixel','Press Start 2P',monospace;font-size:9px;
+    padding:5px 8px;border:2px solid #504078;background:#2a2044;color:#c8c0e0;
+    cursor:pointer;letter-spacing:0.5px;border-radius:2px;text-decoration:none;
+    display:inline-block;text-align:center;
+  }
+  .sb-btn:hover{background:#403068;color:#fff;border-color:#7060a0}
+
+  /* Node status rows */
+  .sb-node{display:flex;align-items:center;gap:6px;padding:3px 0;font-size:8px}
+  .sb-node-name{width:72px;letter-spacing:1px}
+  .sb-node-bar{flex:1;height:5px;background:#282040;border-radius:1px;overflow:hidden}
+  .sb-node-fill{height:100%;border-radius:1px;transition:width 0.6s}
+  .sb-node-fill.active{background:#50d858;width:80%}
+  .sb-node-fill.idle{background:#d8b830;width:50%}
+  .sb-node-fill.error{background:#e04040;width:25%}
+  .sb-node-fill.offline{background:#403060;width:0%}
+  .sb-node-tag{font-size:8px;width:48px;text-align:right}
+  .sb-node-tag.active{color:#50d858}
+  .sb-node-tag.idle{color:#d8b830}
+  .sb-node-tag.error{color:#e04040}
+  .sb-node-tag.offline{color:#605878}
+
+  /* Links */
+  .sb-link{
+    display:block;font-size:9px;color:#8888d0;padding:3px 0;
+    text-decoration:none;cursor:pointer;
+  }
+  .sb-link:hover{color:#c0b0f0;text-decoration:underline}
+
+  /* Skill rows */
+  .sb-skill{display:flex;align-items:center;gap:6px;padding:2px 0;font-size:8px}
+  .sb-skill-name{width:64px;color:#a098b0}
+  .sb-skill-tag{font-size:8px;padding:2px 5px;border-radius:2px;border:1px solid}
+  .sb-skill-tag.on{color:#50d858;border-color:#306038}
+  .sb-skill-tag.idx{color:#d8b830;border-color:#605020}
+  .sb-skill-tag.off{color:#605878;border-color:#403060}
+
+  /* Admin link at sidebar bottom */
+  .sb-footer{margin-top:auto;padding:8px 12px;border-top:1px solid #2a2044;flex-shrink:0}
+  .sb-footer a{font-size:9px;color:#706090;text-decoration:none}
+  .sb-footer a:hover{color:#b0a8d0}
+  @media (max-width: 900px), (pointer: coarse) {
+    html,body{height:auto;min-height:100%;overflow:auto}
+    .main{flex-direction:column;min-height:100vh}
+    .game-col{min-height:100dvh}
+    .sidebar-col{
+      width:100%;
+      max-width:none;
+      min-width:0;
+      border-left:none;
+      border-top:4px solid #382860;
+      max-height:none;
+    }
+    .top-bar{
+      height:auto;
+      padding:8px 10px;
+      flex-wrap:wrap;
+      gap:8px;
+    }
+    .top-title{font-size:11px;letter-spacing:2px}
+    .top-clock{
+      margin-left:0;
+      margin-right:0;
+      width:100%;
+      order:3;
+      text-align:left;
+    }
+    .canvas-wrap{padding:8px}
+    #game-container{
+      width:100%;
+      height:auto;
+      aspect-ratio:16 / 9;
+    }
+    #status-text{
+      bottom:6px;
+      max-width:calc(100% - 20px);
+      white-space:normal;
+      text-align:center;
+      font-size:11px;
+      line-height:1.5;
+    }
+    .statusbar{
+      height:auto;
+      padding:8px;
+      align-items:stretch;
+      gap:6px;
+    }
+    .hp-card{min-width:72px}
+    .sb-header{
+      position:sticky;
+      top:0;
+      z-index:4;
+    }
+    .sb-body{padding:4px 12px 10px 16px}
+    .sb-node-name{width:64px}
+  }
+  @media (max-width: 520px) {
+    .top-btn{
+      width:100%;
+      text-align:center;
+    }
+    .statusbar{
+      display:grid;
+      grid-template-columns:repeat(2, minmax(0, 1fr));
+    }
+    .stat-divider{display:none}
+    .hp-card{
+      border:1px solid #302848;
+      padding:6px;
+      min-width:0;
+    }
+    .sb-btn{
+      width:100%;
+    }
+  }
+</style>
+</head>
+<body>
+
+<!-- LOADING OVERLAY -->
+<div id="loading-overlay">
+  <div id="loading-text">正在載入 MAGI 像素辦公室... 0%</div>
+  <div id="loading-progress-container">
+    <div id="loading-progress-bar"></div>
+  </div>
+</div>
+
+<div class="main">
+
+<!-- ===== LEFT: GAME VIEWPORT ===== -->
+<div class="game-col">
+  <!-- TOP BAR -->
+  <div class="top-bar">
+    <span class="top-title">MAGI OFFICE</span>
+    <span class="top-clock" id="clock">00:00:00</span>
+    <a class="top-btn" href="/dashboard">&#9656; 管理儀表板</a>
+  </div>
+
+  <!-- GAME CANVAS -->
+  <div class="canvas-wrap">
+    <div id="game-container">
+      <div id="status-text"></div>
+    </div>
+  </div>
+
+  <!-- BOTTOM STATUS BAR -->
+  <div class="statusbar">
+    <div class="hp-card">
+      <span class="hp-label">CASPER</span>
+      <div class="hp-bar-wrap"><span class="hp-tag">HP</span><div class="hp-bar-bg"><div class="hp-bar full" id="hp-casper" style="width:100%"></div></div></div>
+      <span class="hp-text online" id="hptxt-casper">ONLINE</span>
+    </div>
+    <div class="stat-divider"></div>
+    <div class="hp-card">
+      <span class="hp-label">MELCHIOR</span>
+      <div class="hp-bar-wrap"><span class="hp-tag">HP</span><div class="hp-bar-bg"><div class="hp-bar full" id="hp-melchior" style="width:100%"></div></div></div>
+      <span class="hp-text online" id="hptxt-melchior">ONLINE</span>
+    </div>
+    <div class="stat-divider"></div>
+    <div class="hp-card">
+      <span class="hp-label">BALTHASAR</span>
+      <div class="hp-bar-wrap"><span class="hp-tag">HP</span><div class="hp-bar-bg"><div class="hp-bar full" id="hp-balthasar" style="width:100%"></div></div></div>
+      <span class="hp-text online" id="hptxt-balthasar">ONLINE</span>
+    </div>
+    <div class="stat-divider"></div>
+    <div class="hp-card">
+      <span class="hp-label">KEEPER</span>
+      <div class="hp-bar-wrap"><span class="hp-tag">HP</span><div class="hp-bar-bg"><div class="hp-bar full" id="hp-keeper" style="width:100%"></div></div></div>
+      <span class="hp-text online" id="hptxt-keeper">ONLINE</span>
+    </div>
+    <div class="stat-divider"></div>
+    <div class="hp-card">
+      <span class="hp-label">WATCHER</span>
+      <div class="hp-bar-wrap"><span class="hp-tag">HP</span><div class="hp-bar-bg"><div class="hp-bar off" id="hp-watcher" style="width:0%"></div></div></div>
+      <span class="hp-text offline" id="hptxt-watcher">OFFLINE</span>
+    </div>
+    <div class="stat-divider"></div>
+    <div class="hp-card">
+      <span class="hp-label">SKILLS</span>
+      <div class="hp-bar-wrap"><span class="hp-tag">HP</span><div class="hp-bar-bg"><div class="hp-bar full" id="hp-skills" style="width:100%"></div></div></div>
+      <span class="hp-text online" id="hptxt-skills">3/3</span>
+    </div>
+  </div>
+</div>
+
+<!-- ===== RIGHT: SIDEBAR ===== -->
+<div class="sidebar-col">
+  <div class="sb-header">
+    <h1>MAGI SYSTEM</h1>
+    <span class="sb-clock" id="sb-clock">00:00:00</span>
+  </div>
+
+  <!-- 系統操作 -->
+  <div class="sb-section">
+    <button class="sb-toggle" onclick="toggleSection(this)"><span class="sb-arrow">&#9660;</span>系統操作</button>
+    <div class="sb-body">
+      <div class="sb-btns">
+        <button class="sb-btn" id="btn-test" onclick="runSystemTest()">全部功能測試</button>
+        <a class="sb-btn" href="/osc">案件管理</a>
+        <a class="sb-btn" href="/ops/process-monitor">程序監控</a>
+        <a class="sb-btn" href="javascript:void(0)" onclick="openVectorModal()">向量記憶</a>
+        <button class="sb-btn" onclick="openIntelPanel()">外部資訊看板</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 節點狀態 -->
+  <div class="sb-section">
+    <button class="sb-toggle" onclick="toggleSection(this)"><span class="sb-arrow">&#9660;</span>節點狀態</button>
+    <div class="sb-body">
+      <div class="sb-node"><span class="sb-node-name" style="color:#e07040">CASPER</span><div class="sb-node-bar"><div class="sb-node-fill active" id="sbn-casper"></div></div><span class="sb-node-tag active" id="sbt-casper">ACTIVE</span></div>
+      <div class="sb-node"><span class="sb-node-name" style="color:#50a8e0">MELCHIOR</span><div class="sb-node-bar"><div class="sb-node-fill active" id="sbn-melchior"></div></div><span class="sb-node-tag active" id="sbt-melchior">ACTIVE</span></div>
+      <div class="sb-node"><span class="sb-node-name" style="color:#58c058">BALTHASAR</span><div class="sb-node-bar"><div class="sb-node-fill active" id="sbn-balthasar"></div></div><span class="sb-node-tag active" id="sbt-balthasar">ACTIVE</span></div>
+      <div class="sb-node"><span class="sb-node-name" style="color:#8090a0">KEEPER</span><div class="sb-node-bar"><div class="sb-node-fill active" id="sbn-keeper"></div></div><span class="sb-node-tag active" id="sbt-keeper">ONLINE</span></div>
+      <div class="sb-node"><span class="sb-node-name" style="color:#a070c0">WATCHER</span><div class="sb-node-bar"><div class="sb-node-fill offline" id="sbn-watcher"></div></div><span class="sb-node-tag offline" id="sbt-watcher">OFFLINE</span></div>
+    </div>
+  </div>
+
+  <!-- 法務助手 -->
+  <div class="sb-section">
+    <button class="sb-toggle" onclick="toggleSection(this)"><span class="sb-arrow">&#9660;</span>法務助手</button>
+    <div class="sb-body">
+      <div class="sb-skill"><span class="sb-skill-name">法扶自動化</span><span class="sb-skill-tag on" id="sk-laf">運作中</span></div>
+      <div class="sb-skill"><span class="sb-skill-name">筆錄處理</span><span class="sb-skill-tag on" id="sk-record">0</span></div>
+      <div class="sb-skill"><span class="sb-skill-name">閱卷聲請</span><span class="sb-skill-tag on" id="sk-review">0</span></div>
+    </div>
+  </div>
+
+  <!-- 外部連結 (預設折疊) -->
+  <div class="sb-section">
+    <button class="sb-toggle collapsed" onclick="toggleSection(this)"><span class="sb-arrow">&#9660;</span>外部連結</button>
+    <div class="sb-body">
+      <a class="sb-link" href="https://portal.ezlawyer.com.tw/" target="_blank">&#9656; 律師單一登入 (ezlawyer)</a>
+      <a class="sb-link" href="https://record.ezlawyer.com.tw/" target="_blank">&#9656; 筆錄調閱系統</a>
+      <a class="sb-link" href="https://www.laf.org.tw/" target="_blank">&#9656; 法扶基金會</a>
+      <a class="sb-link" href="https://law.moj.gov.tw/" target="_blank">&#9656; 全國法規資料庫</a>
+      <a class="sb-link" href="https://judgment.judicial.gov.tw/FJUD/default.aspx" target="_blank">&#9656; 司法院裁判書查詢</a>
+    </div>
+  </div>
+
+  <!-- 技能模組 (預設折疊) -->
+  <div class="sb-section">
+    <button class="sb-toggle collapsed" onclick="toggleSection(this)"><span class="sb-arrow">&#9660;</span>技能模組</button>
+    <div class="sb-body" id="skills-body">
+      <div class="sb-skill"><span class="sb-skill-name">MEMORY</span><span class="sb-skill-tag on" id="sk-memory">上線中</span></div>
+      <div class="sb-skill"><span class="sb-skill-name">RESEARCH</span><span class="sb-skill-tag on" id="sk-research">上線中</span></div>
+      <div class="sb-skill"><span class="sb-skill-name">GENESIS</span><span class="sb-skill-tag on" id="sk-genesis">上線中</span></div>
+      <div class="sb-skill"><span class="sb-skill-name">VECTOR</span><span class="sb-skill-tag on" id="sk-vector">運作中</span></div>
+      <div class="sb-skill"><span class="sb-skill-name">OBSIDIAN</span><span class="sb-skill-tag idx" id="sk-obsidian">-- 筆</span></div>
+    </div>
+  </div>
+
+  <div class="sb-footer">
+    <a href="/dashboard">&#9656; 切換到管理儀表板</a>
+  </div>
+</div>
+
+</div><!-- /main -->
+
+<script>
+// ============================================================
+// SIDEBAR LOGIC
+// ============================================================
+function toggleSection(btn) {
+  btn.classList.toggle('collapsed');
+}
+
+function runSystemTest() {
+  const btn = document.getElementById('btn-test');
+  btn.textContent = '測試中...';
+  btn.disabled = true;
+  fetch('/api/system-test', {method:'POST'}).then(r=>r.json()).then(d=>{
+    btn.textContent = '全部功能測試';
+    btn.disabled = false;
+  }).catch(()=>{
+    btn.textContent = '全部功能測試';
+    btn.disabled = false;
+  });
+}
+
+function openIntelPanel() {
+  window.open('/intel', '_blank');
+}
+
+function openVectorModal() {
+  // placeholder
+}
+
+// Clock
+setInterval(() => {
+  const t = new Date().toLocaleTimeString('en-GB');
+  document.getElementById('clock').textContent = t;
+  document.getElementById('sb-clock').textContent = t;
+}, 1000);
+
+// ============================================================
+// HP BAR + SIDEBAR NODE STATUS (updated by status fetch)
+// ============================================================
+function setHPBar(name, pct, cls, text) {
+  const bar = document.getElementById('hp-' + name);
+  const txt = document.getElementById('hptxt-' + name);
+  if (bar) { bar.style.width = pct + '%'; bar.className = 'hp-bar ' + cls; }
+  if (txt) {
+    txt.textContent = text;
+    txt.className = 'hp-text ' + (cls==='off'||cls==='crit' ? 'offline' : cls==='warn' ? 'idle' : 'online');
+  }
+}
+
+function setSidebarNode(name, status) {
+  const fill = document.getElementById('sbn-' + name);
+  const tag = document.getElementById('sbt-' + name);
+  if (fill) { fill.className = 'sb-node-fill ' + status; }
+  if (tag) {
+    tag.className = 'sb-node-tag ' + status;
+    const labels = {active:'ACTIVE', idle:'IDLE', error:'ERROR', offline:'OFFLINE', online:'ONLINE'};
+    tag.textContent = labels[status] || status.toUpperCase();
+  }
+}
+
+// ============================================================
+// STATUS FETCH (for HP bars & sidebar nodes)
+// ============================================================
+async function fetchSidebarStatus() {
+  try {
+    const url = '/static/magi_status.json?t=' + Date.now();
+    const r = await fetch(url);
+    if (!r.ok) return;
+    const data = await r.json();
+    const nodes = data.nodes || {};
+
+    // Update each node HP bar
+    const nodeList = ['casper','melchior','balthasar','keeper','watcher'];
+    nodeList.forEach(name => {
+      const node = nodes[name];
+      if (!node) {
+        setHPBar(name, 0, 'off', 'OFFLINE');
+        setSidebarNode(name, 'offline');
+        return;
+      }
+      const online = node.online;
+      const model = (node.model || '').toLowerCase();
+      if (!online) {
+        setHPBar(name, 0, 'off', 'OFFLINE');
+        setSidebarNode(name, 'offline');
+      } else if (model.includes('error')) {
+        setHPBar(name, 20, 'crit', 'ERROR');
+        setSidebarNode(name, 'error');
+      } else if (model.includes('down') || model.includes('idle') || model === '' || model === 'audit only') {
+        setHPBar(name, 60, 'warn', 'STANDBY');
+        setSidebarNode(name, 'idle');
+      } else {
+        setHPBar(name, 100, 'full', 'ACTIVE');
+        setSidebarNode(name, 'active');
+      }
+    });
+
+    // Skills
+    if (data.skills) {
+      let active = 0, total = 0;
+      for (const [k,v] of Object.entries(data.skills)) {
+        total++;
+        if (v && v.status === 'ACTIVE') active++;
+        const el = document.getElementById('sk-' + k);
+        if (el) {
+          el.textContent = (v && v.status === 'ACTIVE') ? '上線中' : '離線';
+          el.className = 'sb-skill-tag ' + ((v && v.status === 'ACTIVE') ? 'on' : 'off');
+        }
+      }
+      const pct = total > 0 ? Math.round(active/total*100) : 0;
+      const cls = active===total ? 'full' : active > 0 ? 'warn' : 'crit';
+      setHPBar('skills', pct, cls, active+'/'+total);
+    }
+
+    // Obsidian
+    if (data.obsidian) {
+      const el = document.getElementById('sk-obsidian');
+      if (el) {
+        const n = data.obsidian.notes_indexed || 0;
+        el.textContent = n + ' 筆已索引';
+        el.className = 'sb-skill-tag ' + (n > 0 ? 'idx' : 'off');
+      }
+    }
+  } catch(e) {
+    console.error('Sidebar status fetch error:', e);
+  }
+}
+
+// Initial fetch + interval
+fetchSidebarStatus();
+setInterval(fetchSidebarStatus, 3000);
+</script>
+
+<!-- Phaser 3 Engine -->
+<script src="/static/star-office/vendor/phaser-3.80.1.min.js"></script>
+<!-- Layout config -->
+<script src="/static/star-office/layout.js?v=20260310f"></script>
+<!-- MAGI Game Logic -->
+<script src="/static/star-office/magi-game.js?v=20260310f"></script>
+
+</body>
+</html>

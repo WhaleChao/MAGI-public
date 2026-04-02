@@ -1,0 +1,13 @@
+{
+  "timestamp": 1772215734.510515,
+  "target_gb": 8.0,
+  "tolerance_gb": 0.5,
+  "recommended_ngl": 10,
+  "success": false,
+  "note": "endpoint_may_ignore_ngl",
+  "best_delta_gb": 3.358,
+  "rounds": 4,
+  "gpu_used_mb": 11638.0,
+  "gpu_total_mb": 12288.0,
+  "model": "qwen3-30b-instruct.Q4_K_M.gguf"
+}

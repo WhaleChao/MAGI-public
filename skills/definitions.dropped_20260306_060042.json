@@ -1,0 +1,148 @@
+{
+  "dropped": [
+    {
+      "name": "run_code_file_review_automation",
+      "reason": "unrunnable_skill"
+    },
+    {
+      "name": "run_code_judicial_automation_v2",
+      "reason": "unrunnable_skill"
+    },
+    {
+      "name": "run_code_laf_automation_v2",
+      "reason": "unrunnable_skill"
+    },
+    {
+      "name": "laf_login_smoke",
+      "reason": "missing_dependency_skill:code-laf_automation_v2"
+    },
+    {
+      "name": "run_code_legalbridge_core",
+      "reason": "unrunnable_skill"
+    },
+    {
+      "name": "run_code_legalbridge_gui",
+      "reason": "unrunnable_skill"
+    },
+    {
+      "name": "run_code_pdf_processor",
+      "reason": "unrunnable_skill"
+    },
+    {
+      "name": "run_code_insight_updater",
+      "reason": "unrunnable_skill"
+    },
+    {
+      "name": "run_code_osc",
+      "reason": "unrunnable_skill"
+    },
+    {
+      "name": "osc_case_status",
+      "reason": "unrunnable_skill"
+    },
+    {
+      "name": "run_code_casper_llm_proxy",
+      "reason": "unrunnable_skill"
+    },
+    {
+      "name": "run_code_casper_tools_client",
+      "reason": "unrunnable_skill"
+    },
+    {
+      "name": "run_code_insight_core___init__",
+      "reason": "unrunnable_skill"
+    },
+    {
+      "name": "run_code_insight_core_case_number",
+      "reason": "unrunnable_skill"
+    },
+    {
+      "name": "run_code_insight_core_courts",
+      "reason": "unrunnable_skill"
+    },
+    {
+      "name": "run_code_insight_core_query",
+      "reason": "unrunnable_skill"
+    },
+    {
+      "name": "run_code_judicial_tools_judicial_smoke_file_review_case_probe",
+      "reason": "unrunnable_skill"
+    },
+    {
+      "name": "run_code_judicial_tools_judicial_smoke_file_review_login",
+      "reason": "unrunnable_skill"
+    },
+    {
+      "name": "run_code_judicial_tools_judicial_smoke_transcript_login",
+      "reason": "unrunnable_skill"
+    },
+    {
+      "name": "run_code_laf_folder_builder",
+      "reason": "unrunnable_skill"
+    },
+    {
+      "name": "run_code_laf_orchestrator",
+      "reason": "unrunnable_skill"
+    },
+    {
+      "name": "run_code_laf_training_simulator_server",
+      "reason": "unrunnable_skill"
+    },
+    {
+      "name": "run_code_legacy_pdf_processor",
+      "reason": "unrunnable_skill"
+    },
+    {
+      "name": "run_code_line_notifier",
+      "reason": "unrunnable_skill"
+    },
+    {
+      "name": "run_code_magi_human_captcha",
+      "reason": "unrunnable_skill"
+    },
+    {
+      "name": "run_code_osc_core___init__",
+      "reason": "unrunnable_skill"
+    },
+    {
+      "name": "run_code_osc_core_paths",
+      "reason": "unrunnable_skill"
+    },
+    {
+      "name": "run_code_run_laf_sandbox",
+      "reason": "unrunnable_skill"
+    },
+    {
+      "name": "run_code_safe_fs",
+      "reason": "unrunnable_skill"
+    },
+    {
+      "name": "run_osc_scan_cases",
+      "reason": "unrunnable_skill"
+    },
+    {
+      "name": "run_osc_queue_flush",
+      "reason": "unrunnable_skill"
+    },
+    {
+      "name": "run_osc_index_cases",
+      "reason": "unrunnable_skill"
+    },
+    {
+      "name": "run_osc_db_smoke",
+      "reason": "unrunnable_skill"
+    },
+    {
+      "name": "run_file_review_sso",
+      "reason": "unrunnable_skill"
+    },
+    {
+      "name": "run_file_review_email_parse",
+      "reason": "unrunnable_skill"
+    },
+    {
+      "name": "run_file_review_captcha",
+      "reason": "unrunnable_skill"
+    }
+  ]
+}

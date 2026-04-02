@@ -1,0 +1,45 @@
+{
+  "updated_at": "2026-02-13T10:31:31.604465",
+  "patterns": [
+    {
+      "id": "dyn_128837c12ec8",
+      "pattern": "rm\\s+\\-rf\\s+/",
+      "reason": "auto-harden from incident",
+      "source": "tools_api",
+      "enabled": true,
+      "hits": 0,
+      "created_at": "2026-02-13T10:31:31.604340",
+      "last_hit": ""
+    },
+    {
+      "id": "dyn_no_delete_os_remove",
+      "pattern": "os\\.(remove|unlink|rmdir)\\s*\\(",
+      "reason": "no-delete policy (CASPER must not delete any files)",
+      "source": "admin_policy",
+      "enabled": true,
+      "hits": 0,
+      "created_at": "2026-02-14T16:04:50",
+      "last_hit": ""
+    },
+    {
+      "id": "dyn_no_delete_shutil_rmtree",
+      "pattern": "shutil\\.rmtree\\s*\\(",
+      "reason": "no-delete policy (CASPER must not delete directories)",
+      "source": "admin_policy",
+      "enabled": true,
+      "hits": 0,
+      "created_at": "2026-02-14T16:04:50",
+      "last_hit": ""
+    },
+    {
+      "id": "dyn_no_delete_path_unlink",
+      "pattern": "pathlib\\.Path\\([^\\)]*\\)\\.unlink\\s*\\(",
+      "reason": "no-delete policy (CASPER must not delete via Path.unlink)",
+      "source": "admin_policy",
+      "enabled": true,
+      "hits": 0,
+      "created_at": "2026-02-14T16:04:50",
+      "last_hit": ""
+    }
+  ]
+}

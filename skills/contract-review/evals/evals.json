@@ -1,0 +1,55 @@
+{
+  "_meta": {
+    "skill": "contract-review",
+    "generated_by": "manual",
+    "eval_format": "v1",
+    "instructions": "Run: python action.py --task <task> --text '<text>' and verify output contains expected_contains."
+  },
+  "evals": [
+    {
+      "id": "review_basic",
+      "description": "合約審閱基本功能",
+      "task": "review",
+      "input_text": "甲方（買方）與乙方（賣方）簽訂本採購合約。乙方應於簽約後30日內交貨。付款條件：驗收後180天內付款。本合約適用中華民國法律。",
+      "expected_contains": ["risk_level", "flagged_clauses", "recommendations"],
+      "expected_not_contains": ["Traceback", "\"error\""],
+      "tags": ["smoke", "happy"]
+    },
+    {
+      "id": "nda_basic",
+      "description": "NDA 分流基本功能",
+      "task": "nda",
+      "input_text": "保密合約：甲方將向乙方揭露商業機密。乙方應永久保密，不得揭露予任何第三人。違反時賠償100萬元。",
+      "expected_contains": ["verdict", "risk_items", "risk_level"],
+      "expected_not_contains": ["Traceback"],
+      "tags": ["smoke"]
+    },
+    {
+      "id": "summarize_basic",
+      "description": "法律文件摘要基本功能",
+      "task": "summarize",
+      "input_text": "租賃合約：出租人李大明（甲方）與承租人王小華（乙方）就台北市信義區某房屋簽訂租賃合約，租期1年，每月租金3萬元，押金6萬元，到期後乙方得優先續租。",
+      "expected_contains": ["doc_type", "parties", "key_terms"],
+      "expected_not_contains": ["Traceback"],
+      "tags": ["smoke"]
+    },
+    {
+      "id": "vendor_check_basic",
+      "description": "供應商查核基本功能",
+      "task": "vendor_check",
+      "input_text": "採購合約：供應商A公司應於下單後14日交貨，付款條件月結60天，品質問題由供應商負責，不含保固條款、爭議解決條款及智慧財產權歸屬。",
+      "expected_contains": ["missing_clauses", "risk_level", "recommendations"],
+      "expected_not_contains": ["Traceback"],
+      "tags": ["smoke"]
+    },
+    {
+      "id": "help",
+      "description": "help 任務輸出說明",
+      "task": "help",
+      "input_text": "",
+      "expected_contains": ["review", "nda", "summarize", "vendor_check"],
+      "expected_not_contains": ["Traceback"],
+      "tags": ["info"]
+    }
+  ]
+}
