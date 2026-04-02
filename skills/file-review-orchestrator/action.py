@@ -2653,7 +2653,8 @@ def cmd_check_emails(notify: bool = True, notify_empty: bool = True) -> dict:
                 pay_hits > 0
                 or pay_notified > 0
                 or (portal_pending > 0 and _portal_pending_changed)
-                or recent_payment_activity
+                # recent_payment_activity 不再單獨觸發摘要推送
+                # 避免每小時重複推送同一份「最近繳費處理」清單
             )
             review_signal = bool(
                 dl_hits > 0
