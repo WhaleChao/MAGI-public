@@ -214,6 +214,18 @@ class MAGIMenuBar(rumps.App):
 
         self.menu_sep3 = rumps.separator
 
+        # ── 夜間排程區塊 ──
+        self.cron_header = rumps.MenuItem("夜間排程", callback=None)
+        self.cron_header.set_callback(None)
+        self.cron_status_item = rumps.MenuItem("  ◻ 排程器  檢查中...")
+        self.cron_status_item.set_callback(None)
+        self.cron_next_item = rumps.MenuItem("  ◻ 下次任務  --")
+        self.cron_next_item.set_callback(None)
+        self.cron_last_item = rumps.MenuItem("  ◻ 上次執行  --")
+        self.cron_last_item.set_callback(None)
+
+        self.menu_sep3_cron = rumps.separator
+
         # ── 記憶體區塊 ──
         self.mem_header = rumps.MenuItem("記憶體佔用", callback=None)
         self.mem_header.set_callback(None)
@@ -249,6 +261,11 @@ class MAGIMenuBar(rumps.App):
             self.omlx_header,
             *self.omlx_items.values(),
             self.menu_sep3,
+            self.cron_header,
+            self.cron_status_item,
+            self.cron_next_item,
+            self.cron_last_item,
+            self.menu_sep3_cron,
             self.mem_header,
             self.mem_system_item,
             *self.mem_module_items,
@@ -308,6 +325,9 @@ class MAGIMenuBar(rumps.App):
                     _RED,
                 )
 
+        # ── 夜間排程狀態 ──
+        self._update_cron_status()
+
         # ── 記憶體佔用 ──
         total_gb, avail_gb, pct = _get_system_memory()
         if pct > 0:
@@ -350,6 +370,85 @@ class MAGIMenuBar(rumps.App):
             self.title = "Ⓜ!"  # 部分異常
         else:
             self.title = "Ⓜ✕"  # 停止
+
+    def _update_cron_status(self):
+        """檢查夜間排程狀態：scheduler 是否在跑、下次任務、上次執行。"""
+        try:
+            cron_path = os.path.join(MAGI_ROOT, "cron_jobs.json")
+            if not os.path.exists(cron_path):
+                _set_colored_title(self.cron_status_item, "  ✗ cron_jobs.json 不存在", _RED)
+                return
+
+            with open(cron_path, "r", encoding="utf-8") as f:
+                jobs = json.load(f)
+
+            enabled = [j for j in jobs if j.get("enabled", True)]
+            bot_pid = _pgrep("discord_bot.py")
+
+            if bot_pid and enabled:
+                _set_colored_title(
+                    self.cron_status_item,
+                    f"  ● 排程器運行中  {len(enabled)} 個任務",
+                    _GREEN,
+                )
+            elif enabled:
+                _set_colored_title(
+                    self.cron_status_item,
+                    f"  ✗ discord_bot 停止  {len(enabled)} 個任務待執行",
+                    _RED,
+                )
+            else:
+                _set_colored_title(self.cron_status_item, "  ⚠ 無啟用任務", _YELLOW)
+
+            # 找下次要執行的任務
+            from datetime import datetime
+            now = datetime.now()
+            next_jobs = []
+            for j in enabled:
+                cron_expr = j.get("cron", "")
+                desc = j.get("desc", j.get("command", "")[:30])
+                try:
+                    parts = cron_expr.split()
+                    if len(parts) != 5:
+                        continue
+                    m, h = parts[0], parts[1]
+                    # 簡單解析：找今天或明天最近的執行時間
+                    if m == "*" or h == "*" or "/" in m or "/" in h:
+                        next_jobs.append((desc, "循環"))
+                    else:
+                        hour = int(h) if h.isdigit() else 0
+                        minute = int(m) if m.isdigit() else 0
+                        if hour > now.hour or (hour == now.hour and minute > now.minute):
+                            next_jobs.append((desc, f"今天 {hour:02d}:{minute:02d}"))
+                        else:
+                            next_jobs.append((desc, f"明天 {hour:02d}:{minute:02d}"))
+                except Exception:
+                    pass
+
+            if next_jobs:
+                # 找最近的非循環任務
+                fixed = [n for n in next_jobs if n[1] != "循環"]
+                if fixed:
+                    fixed.sort(key=lambda x: x[1])
+                    _set_colored_title(self.cron_next_item, f"  ▸ 下次: {fixed[0][0]} ({fixed[0][1]})", _GRAY)
+                else:
+                    _set_colored_title(self.cron_next_item, f"  ▸ {len(next_jobs)} 個循環任務", _GRAY)
+
+            # 找最近一次執行
+            last_runs = [(j.get("desc", j["id"]), j.get("last_run", "")) for j in enabled if j.get("last_run")]
+            if last_runs:
+                last_runs.sort(key=lambda x: x[1], reverse=True)
+                last_desc, last_ts = last_runs[0]
+                try:
+                    ts_short = last_ts[11:16]  # HH:MM
+                    _set_colored_title(self.cron_last_item, f"  ▸ 上次: {last_desc} ({ts_short})", _GRAY)
+                except Exception:
+                    _set_colored_title(self.cron_last_item, f"  ▸ 上次: {last_desc}", _GRAY)
+            else:
+                _set_colored_title(self.cron_last_item, "  ▸ 尚無執行紀錄", _GRAY)
+
+        except Exception:
+            _set_colored_title(self.cron_status_item, "  ⚠ 排程檢查失敗", _YELLOW)
 
     # ── 動作按鈕（帶進度 + 完成回饋）──
     def _run_action(self, menu_item, label, command, original_callback):
