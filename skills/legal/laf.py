@@ -1989,27 +1989,29 @@ class LAFGmailMonitor:
         if suffix:
             base, ext = os.path.splitext(file_path)
             file_path = f"{base}{suffix}{ext}"
-        
+
+        result: set = set()
         if os.path.exists(file_path):
             try:
                 with open(file_path, 'r', encoding='utf-8') as f:
                     data = json.load(f)
                     self.log(f"  📂 已載入 {len(data)} 個已處理的信件 ID ({os.path.basename(file_path)})")
-                    return set(data)
+                    result = set(data)
             except Exception as e:
                 self.log(f"  ⚠️ 載入已處理信件記錄失敗: {e}")
-        return set()
+        return result
 
     def _save_processed_ids(self, suffix: str = ''):
         """儲存已處理的 Email ID 記錄"""
         file_path = self._processed_ids_file
         ids_to_save = self._processed_ids
-        
+        _db_category = "email_laf"
+
         if suffix:
             base, ext = os.path.splitext(file_path)
             file_path = f"{base}{suffix}{ext}"
             ids_to_save = self._general_processed_ids
-        
+
         try:
             # 確保目錄存在
             os.makedirs(os.path.dirname(file_path) or '.', exist_ok=True)
@@ -2017,6 +2019,13 @@ class LAFGmailMonitor:
                 json.dump(list(ids_to_save), f)
         except Exception as e:
             self.log(f"  ⚠️ 儲存已處理信件記錄失敗: {e}")
+        # DB dedup sync
+        try:
+            from skills.ops.dedup_db import mark_done as _dd_mark
+            for mid in ids_to_save:
+                _dd_mark(_db_category, str(mid), metadata={"source": "laf._save_processed_ids", "suffix": suffix})
+        except Exception:
+            pass
     
     def authenticate(self) -> bool:
         """進行 Gmail API 認證"""
@@ -2100,15 +2109,24 @@ class LAFGmailMonitor:
             
             for msg in messages:
                 msg_id = msg['id']
-                
-                if msg_id in self._processed_ids:
+
+                # DB 優先，JSON fallback
+                _email_already = False
+                try:
+                    from skills.ops.dedup_db import is_done as _dd_is_done
+                    _email_already = _dd_is_done("email_laf", msg_id)
+                except Exception:
+                    pass
+                if not _email_already:
+                    _email_already = msg_id in self._processed_ids
+                if _email_already:
                     continue
-                
+
                 # 取得完整信件
                 full_msg = self.service.users().messages().get(
                     userId='me', id=msg_id
                 ).execute()
-                
+
                 # 嘗試取得主旨以便顯示
                 subject = "未知主旨"
                 try:
@@ -2119,11 +2137,11 @@ class LAFGmailMonitor:
                             break
                 except Exception as _bare_e:
                     _log.debug("laf skipped: %s", _bare_e)
-                
+
                 self.log(f"🔍 [掃描] 檢查信件: {subject} (ID: {msg_id[-6:]}...)")
-                
+
                 case_info = self._process_message(msg_id, full_msg)
-                
+
                 if case_info:
                     results.append(case_info)
                     self._processed_ids.add(msg_id)
@@ -2164,12 +2182,16 @@ class LAFGmailMonitor:
                 for msg in messages:
                     msg_id = msg['id']
 
-                    # 若此信件已被「法扶信件」流程成功解析處理，避免在一般信件流程重複處理
-                    if msg_id in self._processed_ids:
-                        continue
-                    
-                    # 檢查是否處理過 (使用獨立的 set)
-                    if msg_id in self._general_processed_ids:
+                    # DB 優先，JSON fallback
+                    _gen_already = False
+                    try:
+                        from skills.ops.dedup_db import is_done as _dd_is_done
+                        _gen_already = _dd_is_done("email_laf", msg_id)
+                    except Exception:
+                        pass
+                    if not _gen_already:
+                        _gen_already = msg_id in self._processed_ids or msg_id in self._general_processed_ids
+                    if _gen_already:
                         continue
                     
                     # 取得完整信件
@@ -2459,8 +2481,16 @@ class LAFGmailMonitor:
                     self._save_processed_ids()  # ★ 持久化
                     continue
                 
-                # 2. 檢查記憶體快取
-                if msg_id in self._processed_ids:
+                # 2. DB 優先，JSON fallback
+                _scan_already = False
+                try:
+                    from skills.ops.dedup_db import is_done as _dd_is_done
+                    _scan_already = _dd_is_done("email_laf", msg_id)
+                except Exception:
+                    pass
+                if not _scan_already:
+                    _scan_already = msg_id in self._processed_ids
+                if _scan_already:
                     continue
                 
                 # 3. 處理信件
@@ -3793,16 +3823,17 @@ class LAFAutomationManager:
     
     def _load_notified_cases(self) -> set:
         """載入已通知的案件記錄"""
+        result: set = set()
         if os.path.exists(self._notified_cases_file):
             try:
                 with open(self._notified_cases_file, 'r', encoding='utf-8') as f:
                     data = json.load(f)
                     self.log(f"  📂 已載入 {len(data)} 個已通知的案件記錄")
-                    return set(data)
+                    result = set(data)
             except Exception as e:
                 self.log(f"  ⚠️ 載入已通知案件記錄失敗: {e}")
-        return set()
-    
+        return result
+
     def _save_notified_cases(self):
         """儲存已通知的案件記錄"""
         try:
@@ -3811,6 +3842,13 @@ class LAFAutomationManager:
                 json.dump(list(self._notified_cases), f)
         except Exception as e:
             self.log(f"  ⚠️ 儲存已通知案件記錄失敗: {e}")
+        # DB dedup sync: write all current notified keys
+        try:
+            from skills.ops.dedup_db import mark_done as _dd_mark
+            for key in self._notified_cases:
+                _dd_mark("payment_notify", str(key), metadata={"source": "laf._save_notified_cases"})
+        except Exception:
+            pass
     
     @property
     def is_running(self) -> bool:
@@ -4039,8 +4077,16 @@ class LAFAutomationManager:
             # ★ 生成唯一識別碼 (用於追蹤是否已通知)
             notification_key = case_info.message_id or f"{case_info.laf_case_number}_{case_info.client_name}"
             
-            # ★ 檢查是否已通知過 (避免重複發送 Discord)
-            if notification_key in self._notified_cases:
+            # ★ 檢查是否已通知過 — DB 優先，JSON fallback
+            _already_notified = False
+            try:
+                from skills.ops.dedup_db import is_done as _dd_is_done
+                _already_notified = _dd_is_done("payment_notify", notification_key)
+            except Exception:
+                pass
+            if not _already_notified:
+                _already_notified = notification_key in self._notified_cases
+            if _already_notified:
                 self.log(f"  ⏭️ 案件已通知過，跳過 Discord: {case_info.client_name} ({notification_key[-8:]}...)")
                 return
             
@@ -4071,6 +4117,16 @@ class LAFAutomationManager:
                 # ★ 標記為已通知
                 self._notified_cases.add(notification_key)
                 self._save_notified_cases()
+                # DB dedup sync
+                try:
+                    from skills.ops.dedup_db import mark_done as _dd_mark
+                    _dd_mark("payment_notify", notification_key, metadata={
+                        "client": case_info.client_name,
+                        "laf_case": case_info.laf_case_number,
+                        "source": "laf._on_new_case",
+                    })
+                except Exception:
+                    pass
             
             # 如果需要下載且設定了自動處理
             auto_create = self.config.get('laf', {}).get('auto_create_case')

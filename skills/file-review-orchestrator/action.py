@@ -1011,8 +1011,17 @@ def cmd_upload_payment_proof(court_code: str, year: str, case_type: str,
                 proof_registry = json.load(_rf)
         except Exception:
             logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 1011, exc_info=True)
-    if raw_case_id in proof_registry:
-        msg = f"ℹ️ {raw_case_id} 繳費憑證已上傳過 ({proof_registry[raw_case_id].get('uploaded_at', '?')})，跳過"
+
+    # DB-backed dedup (primary), JSON fallback
+    _proof_already_done = raw_case_id in proof_registry
+    if not _proof_already_done:
+        try:
+            from skills.ops.dedup_db import is_done as _dd_is_done
+            _proof_already_done = _dd_is_done("payment_proof", raw_case_id)
+        except Exception:
+            pass
+    if _proof_already_done:
+        msg = f"ℹ️ {raw_case_id} 繳費憑證已上傳過 ({proof_registry.get(raw_case_id, {}).get('uploaded_at', '?')})，跳過"
         logger.info(msg)
         _notify(msg, notify)
         return {"success": True, "result": "Skipped", "message": msg}
@@ -1073,6 +1082,15 @@ def cmd_upload_payment_proof(court_code: str, year: str, case_type: str,
                         json.dump(proof_registry, _wf, ensure_ascii=False, indent=2)
                 except Exception:
                     logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 1073, exc_info=True)
+                # DB dedup sync
+                try:
+                    from skills.ops.dedup_db import mark_done as _dd_mark
+                    _dd_mark("payment_proof", raw_case_id, metadata={
+                        "court_code": court_code, "file": os.path.basename(file_path),
+                        "source": "cmd_upload_payment_proof",
+                    })
+                except Exception:
+                    pass
             elif result == "NotFound":
                 msg = f"⚠️ 找不到案件 — {label}"
             else:
@@ -1165,12 +1183,19 @@ def cmd_upload_payment_proofs_batch(screenshot_dir: str = "",
         except Exception:
             logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 1164, exc_info=True)
 
-    # 過濾已上傳的案件
+    # 過濾已上傳的案件 (DB primary, JSON fallback)
     new_list = []
     for p in parsed_list:
         key = p.get("raw_case_id", "")
-        if key in proof_registry:
-            logger.info("  ⏭ 跳過已上傳: %s (上傳於 %s)", key, proof_registry[key].get("uploaded_at", "?"))
+        _already = key in proof_registry
+        if not _already and key:
+            try:
+                from skills.ops.dedup_db import is_done as _dd_is_done
+                _already = _dd_is_done("payment_proof", key)
+            except Exception:
+                pass
+        if _already:
+            logger.info("  ⏭ 跳過已上傳: %s (上傳於 %s)", key, proof_registry.get(key, {}).get("uploaded_at", "?"))
         else:
             new_list.append(p)
 
@@ -1262,6 +1287,16 @@ def cmd_upload_payment_proofs_batch(screenshot_dir: str = "",
                         json.dump(proof_registry, _wf, ensure_ascii=False, indent=2)
                 except Exception:
                     logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 1262, exc_info=True)
+                # DB dedup sync
+                try:
+                    from skills.ops.dedup_db import mark_done as _dd_mark
+                    _dd_mark("payment_proof", p["raw_case_id"], metadata={
+                        "court_code": p["court_code"], "court_name": p["court_name"],
+                        "file": os.path.basename(p["file_path"]),
+                        "source": "cmd_upload_payment_proofs_batch",
+                    })
+                except Exception:
+                    pass
             elif result == "NotFound":
                 _notify(f"⚠️ 找不到案件 — {label}", notify)
             else:
@@ -1959,28 +1994,49 @@ def _portal_item_priority(item: dict) -> tuple:
 
 
 def _filter_not_yet_downloaded(dl_items: list, download_folder: str) -> list:
-    """Filter out portal items whose case_number already exists in downloaded_registry.json."""
+    """Filter out portal items whose case_number already exists in downloaded_registry.json or dedup DB."""
     if not dl_items:
         return []
-    registry_path = os.path.join(download_folder, "downloaded_registry.json") if download_folder else ""
-    if not registry_path or not os.path.exists(registry_path):
-        return dl_items  # no registry → show all
+
+    # ── DB-backed dedup (primary) ──
+    db_downloaded: set[str] = set()
     try:
-        with open(registry_path, "r", encoding="utf-8") as f:
-            registry = json.load(f) or {}
-        downloaded_cases = set()
-        for v in registry.values():
-            y = (v.get("yyidno") or "").strip()
-            if y:
-                downloaded_cases.add(y)
-        if not downloaded_cases:
-            return dl_items
-        return [
-            it for it in dl_items
-            if (it.get("case_number") or "").strip() not in downloaded_cases
-        ]
+        from skills.ops.dedup_db import is_done as _dd_is_done
+        _db_available = True
     except Exception:
-        return dl_items
+        _db_available = False
+
+    # ── JSON fallback ──
+    registry_path = os.path.join(download_folder, "downloaded_registry.json") if download_folder else ""
+    json_downloaded: set[str] = set()
+    if registry_path and os.path.exists(registry_path):
+        try:
+            with open(registry_path, "r", encoding="utf-8") as f:
+                registry = json.load(f) or {}
+            for v in registry.values():
+                y = (v.get("yyidno") or "").strip()
+                if y:
+                    json_downloaded.add(y)
+        except Exception:
+            pass
+
+    result = []
+    for it in dl_items:
+        case_num = (it.get("case_number") or "").strip()
+        if not case_num:
+            result.append(it)
+            continue
+        # Check DB first, then JSON
+        if _db_available:
+            try:
+                if _dd_is_done("download", case_num):
+                    continue
+            except Exception:
+                pass
+        if case_num in json_downloaded:
+            continue
+        result.append(it)
+    return result
 
 
 def _collapse_portal_items(items: list) -> dict:
@@ -2124,12 +2180,26 @@ def _filter_unnotified_recent_activity(records: list[dict], download_folder: str
     state[bucket_name] = bucket
     now_iso = datetime.now().isoformat()
 
+    # DB dedup helper
+    try:
+        from skills.ops.dedup_db import is_done as _dd_is_done
+        _db_avail = True
+    except Exception:
+        _db_avail = False
+
     # First run after deployment: seed the current backlog to avoid replaying old activity.
     if is_new_state:
         for item in records:
             fp = _recent_activity_fingerprint(item)
             if fp:
                 bucket[fp] = now_iso
+                # Also seed DB
+                if _db_avail:
+                    try:
+                        from skills.ops.dedup_db import mark_done as _dd_mark
+                        _dd_mark("recent_activity", fp, metadata={"bucket": bucket_name, "seeded": True})
+                    except Exception:
+                        pass
         state["initialized_at"] = now_iso
         _save_recent_activity_state(download_folder, state)
         return []
@@ -2137,7 +2207,19 @@ def _filter_unnotified_recent_activity(records: list[dict], download_folder: str
     fresh = []
     for item in records:
         fp = _recent_activity_fingerprint(item)
-        if not fp or fp in bucket:
+        if not fp:
+            continue
+        # DB 優先
+        _already = False
+        if _db_avail:
+            try:
+                _already = _dd_is_done("recent_activity", fp)
+            except Exception:
+                pass
+        # JSON fallback
+        if not _already:
+            _already = fp in bucket
+        if _already:
             continue
         fresh.append(item)
     return fresh
@@ -2153,6 +2235,16 @@ def _mark_recent_activity_notified(records: list[dict], download_folder: str, bu
         fp = _recent_activity_fingerprint(item)
         if fp:
             bucket[fp] = now_iso
+            # DB dedup sync
+            try:
+                from skills.ops.dedup_db import mark_done as _dd_mark
+                _dd_mark("recent_activity", fp, metadata={
+                    "bucket": bucket_name,
+                    "source": item.get("source", ""),
+                    "case_number": item.get("case_number", ""),
+                })
+            except Exception:
+                pass
     state[bucket_name] = bucket
     state["updated_at"] = now_iso
     _save_recent_activity_state(download_folder, state)

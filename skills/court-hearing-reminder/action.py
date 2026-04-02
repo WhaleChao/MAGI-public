@@ -110,6 +110,18 @@ def _load_remind_state() -> Dict[str, Any]:
             return {}
 
 
+def _is_remind_key_sent(key: str, sent_keys: set) -> bool:
+    """Check if a remind key was already sent — DB 優先，JSON fallback。"""
+    try:
+        from skills.ops.dedup_db import is_done as _dd_is_done
+        if _dd_is_done("hearing_remind", key):
+            sent_keys.add(key)  # 同步到 JSON set
+            return True
+    except Exception:
+        pass
+    return key in sent_keys
+
+
 def _save_remind_state(state: Dict[str, Any]):
     try:
         from skills.ops.safe_state import safe_save_json
@@ -127,6 +139,13 @@ def _save_remind_state(state: Dict[str, Any]):
             if os.path.exists(tmp):
                 os.unlink(tmp)
             raise
+    # DB dedup sync: write all sent keys
+    try:
+        from skills.ops.dedup_db import mark_done as _dd_mark
+        for key in (state.get("sent") or []):
+            _dd_mark("hearing_remind", str(key), metadata={"source": "court_hearing_reminder"})
+    except Exception:
+        pass
 
 
 # ── 通知 ────────────────────────────────────────────────────────────
@@ -328,7 +347,7 @@ def task_remind(notify: bool = True) -> Dict[str, Any]:
             # ── 繳費/補正：每天推播，從入庫到截止日（含當天）──
             today_str = today.isoformat()
             key = f"daily_{todo_id}_{today_str}"
-            if key not in sent_keys and days_until >= 0:
+            if not _is_remind_key_sent(key, sent_keys) and days_until >= 0:
                 prep = _generate_prep_summary(h)
                 if days_until == 0:
                     header = f"🚨 今日{todo_type}截止"
@@ -351,7 +370,7 @@ def task_remind(notify: bool = True) -> Dict[str, Any]:
             # ── 開庭：前一天 + 當天提醒 ──
             if days_until == 1:
                 key = f"eve_{todo_id}_{h_date_str}"
-                if key not in sent_keys:
+                if not _is_remind_key_sent(key, sent_keys):
                     prep = _generate_prep_summary(h)
                     msg = f"⏰ 明天開庭提醒\n\n{prep}"
                     if notify:
@@ -361,7 +380,7 @@ def task_remind(notify: bool = True) -> Dict[str, Any]:
 
             if days_until == 0:
                 key = f"day_{todo_id}_{h_date_str}"
-                if key not in sent_keys:
+                if not _is_remind_key_sent(key, sent_keys):
                     prep = _generate_prep_summary(h)
                     msg = f"🔔 今日開庭提醒\n\n{prep}"
                     if notify:

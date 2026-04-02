@@ -94,11 +94,34 @@ def _load_index() -> Dict[str, Any]:
     return {"indexed": {}, "stats": {"total_chunks": 0, "total_files": 0}}
 
 
+def _is_transcript_indexed(pdf_key: str, mtime: str, indexed_map: Dict) -> bool:
+    """Check if a transcript PDF is already indexed — DB 優先，JSON fallback。"""
+    try:
+        from skills.ops.dedup_db import is_done as _dd_is_done
+        if _dd_is_done("transcript", pdf_key):
+            return True
+    except Exception:
+        pass
+    return indexed_map.get(pdf_key, {}).get("mtime") == mtime
+
+
 def _save_index(idx: Dict[str, Any]) -> None:
     INDEX_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     tmp = INDEX_DB_PATH.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(idx, ensure_ascii=False, indent=2), "utf-8")
     tmp.replace(INDEX_DB_PATH)
+    # DB dedup sync: write all indexed keys
+    try:
+        from skills.ops.dedup_db import mark_done as _dd_mark
+        for pdf_key, info in (idx.get("indexed") or {}).items():
+            _dd_mark("transcript", pdf_key, metadata={
+                "case_name": info.get("case_name", ""),
+                "file_name": info.get("file_name", ""),
+                "chunks": info.get("chunks", 0),
+                "source": "transcript_indexer",
+            })
+    except Exception:
+        pass
 
 
 # ── Case folder traversal ─────────────────────────────────────────────────────
@@ -300,7 +323,7 @@ def cmd_index(force: bool = False) -> str:
     for pdf_path, case_name, subdir_name in _iter_transcript_pdfs():
         pdf_key = str(pdf_path)
         mtime = str(pdf_path.stat().st_mtime) if pdf_path.exists() else ""
-        if not force and indexed_map.get(pdf_key, {}).get("mtime") == mtime:
+        if not force and _is_transcript_indexed(pdf_key, mtime, indexed_map):
             total_skipped += 1
             continue
 
