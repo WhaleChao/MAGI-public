@@ -24,6 +24,10 @@ import tempfile
 from typing import Optional, Tuple
 from datetime import datetime, timedelta
 
+_MAGI_ROOT = Path(__file__).resolve().parents[2]
+if str(_MAGI_ROOT) not in sys.path:
+    sys.path.insert(0, str(_MAGI_ROOT))
+
 from api.case_path_mapper import default_case_roots, preferred_case_roots
 from skills.bridge.shared_utils.case_number_utils import extract_case_number as _extract_case_number, RE_CASE_NUMBER
 from skills.bridge.shared_utils.court_utils import extract_court_name as _extract_court_name, RE_COURT_NAME

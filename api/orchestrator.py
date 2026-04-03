@@ -46,7 +46,19 @@ for venv_site_pkgs in _venv_candidates:
 
 # Add project root to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from api.events import TaskLifecycleEvent
+from api.hooks import HookBus
+from api.permissions import (
+    PermissionEnforcer,
+    PermissionMode,
+    PermissionPolicy,
+    deny_command,
+    deny_path,
+)
+from api.orchestrator_core import RuntimeFoundations
 from api.runtime_paths import get_laf_script, get_legacy_code_root, get_magi_root_dir, get_orch_dir, get_skill_python
+from api.session import SessionContextBuilder, SessionStore
+from api.tasks import TaskRuntime, TaskStatus
 
 from skills.bridge.intention_classifier import IntentionClassifier
 from skills.ops.red_phone import alert_iron_dome_violation
@@ -143,10 +155,14 @@ try:
     from api.tw_output_guard import (
         normalize_output_text as _normalize_output_text,
         detect_output_guard_issues as _detect_output_guard_issues,
+        mark_non_authoritative_context as _mark_non_authoritative_context,
+        mark_unverified_reply as _mark_unverified_reply,
     )
 except Exception:
     _normalize_output_text = None
     _detect_output_guard_issues = None
+    _mark_non_authoritative_context = None
+    _mark_unverified_reply = None
 
 
 
@@ -193,6 +209,16 @@ class Orchestrator:
             os.chmod(self._agent_dir, 0o700)
         except OSError:
             pass
+        self._runtime_events_file = os.path.join(self._agent_dir, "runtime_events.jsonl")
+        self._runtime_events_sink_registered = False
+        self._hook_bus = None
+        self._task_runtime = None
+        self._session_store = None
+        self._session_context_builder = None
+        self._permission_enforcer = None
+        self._tool_registry = None
+        self._agent_coordinator = None
+        self._runtime_foundations = None
         self._memory_pending_file = os.path.join(self._agent_dir, "memory_pending.json")
         self._skill_interview_pending_file = os.path.join(self._agent_dir, "skill_interview_pending.json")
         self._laf_submit_pending_file = os.path.join(self._agent_dir, "laf_submit_pending.json")
@@ -209,6 +235,7 @@ class Orchestrator:
         from api.thread_pools import inference_pool, io_pool
         self._timeout_pool = inference_pool
         self._bg_task_pool = io_pool
+        self._ensure_runtime_foundations()
         # Non-blocking oMLX health check at startup
         try:
             import urllib.request
@@ -243,6 +270,127 @@ class Orchestrator:
         """Fallback notification: log instead of sending if no real callback is set."""
         logger.warning(f"📨 [Notification lost — no callback] user={user_id} platform={platform} text={text[:120]}")
 
+    @staticmethod
+    def _default_permission_rules(root_dir: str, agent_dir: str) -> list:
+        return [
+            deny_command(
+                name="deny-rm-rf",
+                commands=("rm -rf", "rm -fr"),
+                reason="destructive recursive deletion is blocked",
+                priority=1,
+            ),
+            deny_command(
+                name="deny-system-destruction",
+                commands=("mkfs", "shutdown", "reboot", "diskutil eraseDisk"),
+                reason="destructive system commands are blocked",
+                priority=1,
+            ),
+            deny_path(
+                name="deny-agent-state",
+                paths=(agent_dir,),
+                reason="agent runtime state is not a valid execution target",
+                priority=5,
+            ),
+            deny_path(
+                name="deny-env-secrets",
+                paths=(os.path.join(root_dir, ".env"), os.path.expanduser("~/.ssh")),
+                reason="secret-bearing paths remain blocked",
+                priority=5,
+            ),
+            deny_path(
+                name="deny-static-secrets",
+                paths=(os.path.join(root_dir, "static", "secrets"),),
+                reason="static secret artifacts remain blocked",
+                priority=5,
+            ),
+        ]
+
+    def _build_permission_enforcer(self) -> PermissionEnforcer:
+        root_dir = get_magi_root_dir()
+        policy = PermissionPolicy.from_rules(
+            self._default_permission_rules(root_dir, getattr(self, "_agent_dir", os.path.join(root_dir, ".agent"))),
+            mode=PermissionMode.PERMISSIVE,
+        )
+        return PermissionEnforcer(policy=policy)
+
+    @staticmethod
+    def _current_correlation_id() -> str:
+        return str(getattr(_orchestrator_tls, "correlation_id", "") or "")
+
+    def _ensure_runtime_foundations(self) -> None:
+        if not hasattr(self, "_task_runtime") or self._task_runtime is None:
+            self._task_runtime = TaskRuntime()
+        if not hasattr(self, "_session_store") or self._session_store is None:
+            self._session_store = SessionStore()
+        if not hasattr(self, "_session_context_builder") or self._session_context_builder is None:
+            self._session_context_builder = SessionContextBuilder(self._session_store)
+        if not hasattr(self, "_permission_enforcer") or self._permission_enforcer is None:
+            self._permission_enforcer = self._build_permission_enforcer()
+        if not hasattr(self, "_hook_bus") or self._hook_bus is None:
+            self._hook_bus = HookBus(source="magi.orchestrator")
+        if not hasattr(self, "_tool_registry") or self._tool_registry is None:
+            try:
+                from api.tools import get_global_tool_registry
+
+                self._tool_registry = get_global_tool_registry()
+            except Exception:
+                self._tool_registry = None
+        if not hasattr(self, "_agent_coordinator") or self._agent_coordinator is None:
+            try:
+                from api.coordinator import AgentCoordinator
+
+                self._agent_coordinator = AgentCoordinator(name="magi")
+            except Exception:
+                self._agent_coordinator = None
+        try:
+            self._runtime_foundations = RuntimeFoundations(
+                task_runtime=self._task_runtime,
+                session_store=self._session_store,
+                session_context_builder=self._session_context_builder,
+                permission_enforcer=self._permission_enforcer,
+                hook_bus=self._hook_bus,
+                tool_registry=self._tool_registry,
+                agent_coordinator=self._agent_coordinator,
+            )
+        except Exception:
+            self._runtime_foundations = None
+        if (
+            getattr(self, "_runtime_events_file", "")
+            and not getattr(self, "_runtime_events_sink_registered", False)
+        ):
+            try:
+                self._hook_bus.add_jsonl_sink(self._runtime_events_file)
+                self._runtime_events_sink_registered = True
+            except Exception:
+                logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 295, exc_info=True)
+
+    def _emit_task_lifecycle(
+        self,
+        task_id: str,
+        task_name: str,
+        status: str,
+        *,
+        progress: float | None = None,
+        user_id: str = "",
+        detail: dict | None = None,
+    ) -> None:
+        self._ensure_runtime_foundations()
+        try:
+            self._hook_bus.emitter.emit(
+                TaskLifecycleEvent(
+                    task_id=str(task_id or ""),
+                    task_name=str(task_name or ""),
+                    status=str(status or ""),
+                    progress=progress,
+                    user_id=str(user_id or ""),
+                    detail=dict(detail or {}),
+                    source="magi.orchestrator",
+                    correlation_id=self._current_correlation_id(),
+                )
+            )
+        except Exception:
+            logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 319, exc_info=True)
+
     # ── Heavy task tracking ──────────────────────────────────────────
     def _ensure_heavy_task_primitives(self) -> None:
         """Lazily initialize heavy-task primitives for partial/test instances."""
@@ -256,22 +404,64 @@ class Orchestrator:
     def register_heavy_task(self, task_id: str, label: str, user_id: str = "") -> None:
         """Register a heavy LLM task (translation, summary, transcription) so chat can detect it."""
         self._ensure_heavy_task_primitives()
+        self._ensure_runtime_foundations()
         with self._heavy_task_lock:
             self._heavy_tasks[task_id] = {
                 "label": label,
                 "user_id": user_id,
                 "start_ts": time.time(),
             }
+        try:
+            self._task_runtime.register(
+                task_id,
+                label,
+                description=f"heavy task: {label}",
+                metadata={"kind": "heavy", "user_id": str(user_id or "")},
+            )
+            self._task_runtime.update(
+                task_id,
+                status=TaskStatus.RUNNING,
+                progress=0.0,
+                metadata={"kind": "heavy", "user_id": str(user_id or ""), "label": str(label or "")},
+            )
+        except Exception:
+            logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 335, exc_info=True)
+        self._emit_task_lifecycle(
+            task_id,
+            label,
+            TaskStatus.RUNNING.value,
+            progress=0.0,
+            user_id=user_id,
+            detail={"kind": "heavy"},
+        )
         logger.info(f"🏋️ Heavy task started: {label} (id={task_id})")
 
     def unregister_heavy_task(self, task_id: str) -> None:
         """Remove a completed heavy task. Signals waiting chat handlers if all tasks cleared."""
         self._ensure_heavy_task_primitives()
+        self._ensure_runtime_foundations()
         with self._heavy_task_lock:
             removed = self._heavy_tasks.pop(task_id, None)
             all_clear = len(self._heavy_tasks) == 0
         if removed:
             elapsed = time.time() - removed.get("start_ts", 0)
+            try:
+                self._task_runtime.complete(
+                    task_id,
+                    result={"elapsed_sec": round(elapsed, 3)},
+                    metadata={"kind": "heavy", "user_id": str(removed.get("user_id") or "")},
+                    progress=1.0,
+                )
+            except Exception:
+                logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 356, exc_info=True)
+            self._emit_task_lifecycle(
+                task_id,
+                str(removed.get("label") or ""),
+                TaskStatus.COMPLETED.value,
+                progress=1.0,
+                user_id=str(removed.get("user_id") or ""),
+                detail={"elapsed_sec": round(elapsed, 3), "kind": "heavy"},
+            )
             logger.info(f"🏋️ Heavy task done: {removed['label']} ({elapsed:.0f}s)")
         if all_clear:
             self._heavy_task_done_event.set()
@@ -279,16 +469,34 @@ class Orchestrator:
     def get_active_heavy_tasks(self) -> list[dict]:
         """Return list of currently running heavy tasks."""
         self._ensure_heavy_task_primitives()
+        self._ensure_runtime_foundations()
         with self._heavy_task_lock:
             now = time.time()
             # Auto-expire tasks older than 30 minutes (safety net)
             expired = [k for k, v in self._heavy_tasks.items() if now - v.get("start_ts", 0) > 1800]
             for k in expired:
-                self._heavy_tasks.pop(k, None)
+                removed = self._heavy_tasks.pop(k, None)
+                if removed:
+                    try:
+                        self._task_runtime.cancel(
+                            k,
+                            reason="expired safety net",
+                            metadata={"kind": "heavy", "user_id": str(removed.get("user_id") or "")},
+                        )
+                    except Exception:
+                        logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 377, exc_info=True)
+                    self._emit_task_lifecycle(
+                        k,
+                        str(removed.get("label") or ""),
+                        TaskStatus.CANCELLED.value,
+                        user_id=str(removed.get("user_id") or ""),
+                        detail={"reason": "expired safety net", "kind": "heavy"},
+                    )
             return list(self._heavy_tasks.values())
     # ─────────────────────────────────────────────────────────────────
 
     def _append_route_trace(self, user_id: str, platform: str, stage: str, route: str, detail: dict | None = None) -> None:
+        self._ensure_runtime_foundations()
         payload = {
             "ts": time.time(),
             "user_id": str(user_id or ""),
@@ -323,6 +531,29 @@ class Orchestrator:
                     logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 310, exc_info=True)
         except Exception:
             logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 312, exc_info=True)
+        try:
+            route_detail = dict(detail or {})
+            confidence = route_detail.get("confidence")
+            try:
+                confidence_value = float(confidence) if confidence is not None else 0.0
+            except Exception:
+                confidence_value = 0.0
+            self._hook_bus.route_decision(
+                str(route or ""),
+                confidence=confidence_value,
+                reason=str(route_detail.get("reason") or stage or ""),
+                message=str(route_detail.get("message") or ""),
+                candidates=list(route_detail.get("candidates") or []),
+                correlation_id=self._current_correlation_id(),
+                metadata={
+                    "stage": str(stage or ""),
+                    "platform": str(platform or ""),
+                    "user_id": str(user_id or ""),
+                    **route_detail,
+                },
+            )
+        except Exception:
+            logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 334, exc_info=True)
 
     def _sanitize_incoming_message(self, message: str) -> str:
         return _get_handler("tp").sanitize_incoming_message(message)
@@ -1302,6 +1533,41 @@ class Orchestrator:
             return False, ""
 
         logger.info(f"🔧 Generic skill dispatch: {skill} → {found_dir}")
+        self._ensure_runtime_foundations()
+        started = time.perf_counter()
+        action_path = os.path.join(os.path.dirname(__file__), "..", "skills", found_dir, "action.py")
+        self._hook_bus.pre_tool(
+            f"skill:{skill}",
+            input_data={"message_preview": (message or "")[:200]},
+            correlation_id=self._current_correlation_id(),
+            metadata={"dispatch_mode": "generic_subprocess", "skill_name": skill},
+        )
+        command_decision = self._permission_enforcer.evaluate_command(f"skill:{skill}")
+        if not command_decision.allowed:
+            blocked = f"⚠️ 權限策略已阻擋技能執行：{command_decision.reason}"
+            self._hook_bus.post_tool(
+                f"skill:{skill}",
+                ok=False,
+                status="denied",
+                duration_ms=round((time.perf_counter() - started) * 1000, 3),
+                error=blocked,
+                correlation_id=self._current_correlation_id(),
+                metadata={"dispatch_mode": "generic_subprocess", "skill_name": skill},
+            )
+            return True, blocked
+        path_decision = self._permission_enforcer.evaluate_path(action_path)
+        if not path_decision.allowed:
+            blocked = f"⚠️ 權限策略已阻擋技能執行：{path_decision.reason}"
+            self._hook_bus.post_tool(
+                f"skill:{skill}",
+                ok=False,
+                status="denied",
+                duration_ms=round((time.perf_counter() - started) * 1000, 3),
+                error=blocked,
+                correlation_id=self._current_correlation_id(),
+                metadata={"dispatch_mode": "generic_subprocess", "skill_name": skill},
+            )
+            return True, blocked
         try:
             result = run_skill_action(
                 found_dir,
@@ -1313,15 +1579,51 @@ class Orchestrator:
             if result.get("success"):
                 output = result.get("output", "").strip()
                 if not output:
+                    self._hook_bus.post_tool(
+                        f"skill:{skill}",
+                        output_data="✅ 技能執行完成。",
+                        ok=True,
+                        status="handled",
+                        duration_ms=round((time.perf_counter() - started) * 1000, 3),
+                        correlation_id=self._current_correlation_id(),
+                        metadata={"dispatch_mode": "generic_subprocess", "skill_name": skill},
+                    )
                     return True, "✅ 技能執行完成。"
                 polished = self._polish_skill_output(skill, message, output)
+                self._hook_bus.post_tool(
+                    f"skill:{skill}",
+                    output_data=polished,
+                    ok=True,
+                    status="handled",
+                    duration_ms=round((time.perf_counter() - started) * 1000, 3),
+                    correlation_id=self._current_correlation_id(),
+                    metadata={"dispatch_mode": "generic_subprocess", "skill_name": skill},
+                )
                 return True, polished
             else:
                 err = result.get("error", "unknown")
                 logger.warning(f"generic dispatch failed for {skill}: {err}")
+                self._hook_bus.post_tool(
+                    f"skill:{skill}",
+                    ok=False,
+                    status="not_handled",
+                    duration_ms=round((time.perf_counter() - started) * 1000, 3),
+                    error=str(err),
+                    correlation_id=self._current_correlation_id(),
+                    metadata={"dispatch_mode": "generic_subprocess", "skill_name": skill},
+                )
                 return False, ""
         except Exception as e:
             logger.warning(f"generic dispatch error for {skill}: {e}")
+            self._hook_bus.post_tool(
+                f"skill:{skill}",
+                ok=False,
+                status="error",
+                duration_ms=round((time.perf_counter() - started) * 1000, 3),
+                error=str(e),
+                correlation_id=self._current_correlation_id(),
+                metadata={"dispatch_mode": "generic_subprocess", "skill_name": skill},
+            )
             return False, ""
 
     def _polish_skill_output(self, skill: str, user_message: str, raw_output: str) -> str:
@@ -2901,13 +3203,19 @@ class Orchestrator:
         Persist chat turns for ALL users.
         Stored with a 'chatlog|' source marker so retrieval can be gated later.
         """
+        self._ensure_runtime_foundations()
         if os.environ.get("MAGI_CAPTURE_CHATLOG", "1").strip().lower() in {"0", "false", "no", "off"}:
             return
+        role_name = str(role or "").strip().lower()
+        if role_name and role_name != "user":
+            capture_assistant = os.environ.get("MAGI_CAPTURE_ASSISTANT_CHATLOG", "0").strip().lower()
+            if capture_assistant not in {"1", "true", "yes", "on"}:
+                return
         text = (content or "").strip()
         if not text:
             return
         now = time.time()
-        key = (str(user_id or ""), str(platform or ""), str(role or ""))
+        key = (str(user_id or ""), str(platform or ""), role_name)
         with self._chatlog_last_write_lock:
             last = float(self._chatlog_last_write.get(key, 0.0) or 0.0)
             if now - last < float(os.environ.get("MAGI_CHATLOG_MIN_INTERVAL_SEC", "25")):
@@ -2926,10 +3234,44 @@ class Orchestrator:
             safe = safe[:1200]
             ok, _violations = validate_skill_safety(safe)
             if not ok:
+                self._hook_bus.memory_write(
+                    "chatlog",
+                    content=safe,
+                    accepted=False,
+                    user_id=str(user_id or ""),
+                    platform=str(platform or ""),
+                    source_signature="chatlog|rejected",
+                    correlation_id=self._current_correlation_id(),
+                    metadata={"reason": "validate_skill_safety_failed", "role": role_name},
+                )
                 return
             src = f"chatlog|platform={platform}|user={user_id}|role={role}|ts={datetime.now(timezone.utc).isoformat()}"
             remember(safe, source=src)
+            self._hook_bus.memory_write(
+                "chatlog",
+                content=safe,
+                accepted=True,
+                user_id=str(user_id or ""),
+                platform=str(platform or ""),
+                source_signature=src,
+                memory_key="chatlog",
+                correlation_id=self._current_correlation_id(),
+                metadata={"role": role_name},
+            )
         except Exception as e:
+            try:
+                self._hook_bus.memory_write(
+                    "chatlog",
+                    content=(content or "").strip()[:1200],
+                    accepted=False,
+                    user_id=str(user_id or ""),
+                    platform=str(platform or ""),
+                    source_signature="chatlog|error",
+                    correlation_id=self._current_correlation_id(),
+                    metadata={"error": str(e)[:200], "role": role_name},
+                )
+            except Exception:
+                logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 2974, exc_info=True)
             logger.warning(f"Chatlog memory capture skipped: {e}")
 
     def _is_verified_admin_sender(self, user_id: str, platform: str) -> bool:
@@ -3991,6 +4333,7 @@ class Orchestrator:
         return int(cjk * 1.5) + (latin_chars // 4) + 1
 
     def _append_history(self, user_id, role, content):
+        self._ensure_runtime_foundations()
         text = (content or "").strip()
         if not text:
             return
@@ -4001,13 +4344,18 @@ class Orchestrator:
             last = user_hist[-1]
             if last.get("role") == role and last.get("content") == text:
                 return
-        user_hist.append(
-            {
-                "role": role,
-                "content": text,
-                "ts": datetime.now(timezone.utc).isoformat(),
-            }
-        )
+        ts = datetime.now(timezone.utc).isoformat()
+        user_hist.append({"role": role, "content": text, "ts": ts})
+        try:
+            self._session_store.append_message(
+                str(user_id or ""),
+                str(role or ""),
+                text,
+                source="raw_history",
+                metadata={"ts": ts},
+            )
+        except Exception:
+            logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 4249, exc_info=True)
         # Auto-compress: by message count OR by token budget overflow
         if len(user_hist) >= self._HISTORY_COMPRESS_AT:
             self._compress_history(user_id)
@@ -4060,14 +4408,16 @@ class Orchestrator:
             prev_summary = self._history_summaries.get(user_id, "")
 
         summary_prompt = (
-            "你是對話摘要引擎。請將以下對話壓縮為結構化摘要（繁體中文），"
+            "你是對話背景摘要引擎。請將以下對話壓縮為結構化背景摘要（繁體中文，非原文、僅供延續上下文），"
+            "不得補寫原文沒有的細節，也不要把推論寫成事實。"
             "格式如下：\n"
-            "<summary>\n"
+            "<summary provenance=\"derived\">\n"
             "【主題】一句話描述對話主題\n"
             "【關鍵決策】條列重要的指令、決策或結論\n"
             "【待辦/未完成】如有未完成事項請列出\n"
             "</summary>\n\n"
-            "規則：忽略客套話和重複內容，只保留有意義的資訊。"
+            "規則：忽略客套話和重複內容，只保留有意義的資訊；"
+            "如果資訊不確定，請明確保留不確定性。"
             f"{f'（先前對話摘要：{prev_summary[:400]}）' if prev_summary else ''}"
             f"\n\n對話內容：\n{raw_text}"
         )
@@ -4097,7 +4447,8 @@ class Orchestrator:
                     topics.append(content[:60])
             topic_str = "；".join(topics[:5]) if topics else "（多輪對話）"
             new_summary = (
-                "<summary>\n"
+                "<summary provenance=\"derived\">\n"
+                "【注意】此為非原文背景摘要，僅供延續上下文，不可視為逐字紀錄。\n"
                 f"【主題】{topic_str}\n"
                 f"【訊息數】已壓縮 {len(to_compress)} 則對話\n"
                 f"{'【先前摘要】' + prev_summary[:200] if prev_summary else ''}\n"
@@ -4111,6 +4462,17 @@ class Orchestrator:
                 oldest_keys = list(self._history_summaries.keys())[:len(self._history_summaries) // 5]
                 for k in oldest_keys:
                     self._history_summaries.pop(k, None)
+        try:
+            self._ensure_runtime_foundations()
+            self._session_store.add_summary(
+                str(user_id or ""),
+                new_summary,
+                source="history_compression",
+                authoritative=False,
+                metadata={"compressed_count": len(to_compress)},
+            )
+        except Exception:
+            logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 4362, exc_info=True)
 
         # Rebuild the deque with only the recent messages
         user_hist.clear()
@@ -4125,9 +4487,12 @@ class Orchestrator:
             return
         normalized = str(content).replace("|||IMAGE_PATH|||", " [IMAGE] ")
         self._append_history(user_id, "assistant", normalized)
-        # Assistant replies should also be persisted as part of chatlog.
+        # Assistant replies stay in short-term history by default and are not
+        # promoted into long-term chatlog memory unless explicitly enabled.
         try:
-            self._maybe_capture_chatlog(str(user_id or ""), "unknown", "assistant", normalized)
+            capture_assistant = os.environ.get("MAGI_CAPTURE_ASSISTANT_CHATLOG", "0").strip().lower()
+            if capture_assistant in {"1", "true", "yes", "on"}:
+                self._maybe_capture_chatlog(str(user_id or ""), "unknown", "assistant", normalized)
         except Exception:
             logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 3858, exc_info=True)
 
@@ -4147,10 +4512,17 @@ class Orchestrator:
 
         # 1. Continuation message + summary (if compressed history exists)
         if summary:
+            marked_summary = summary
+            if _mark_non_authoritative_context:
+                marked_summary = _mark_non_authoritative_context(
+                    summary,
+                    label="歷史摘要",
+                    source="模型壓縮",
+                )
             continuation = (
-                "[系統] 以下對話延續自先前的交談。較早的對話已壓縮為摘要，"
-                "最近的訊息保留原文。請直接延續對話，不要重複摘要內容。\n"
-                f"{summary}"
+                "以下內容是延續用的背景摘要，不是逐字原文；"
+                "它的權重低於最近的原文訊息，若與原文衝突，以原文為準。\n"
+                f"{marked_summary}"
             )
             parts.append(continuation)
             token_used += self._estimate_tokens(continuation)
@@ -7086,16 +7458,17 @@ class Orchestrator:
         if not msg_lower:
             return False
         skill_kws = [
-            "learn to", "build skill", "create skill", "build a skill to",
-            "學會", "學習", "建立技能", "建立skill", "製作技能", "幫我寫一個", "寫工具",
-            "打造一個", "做一個技能", "做個技能", "做一個工具", "做個工具",
+            "learn to", "build skill", "create skill", "build a skill", "write a skill",
+            "學會", "學習", "建立技能", "新增技能", "製作技能", "幫我寫一個技能",
+            "打造一個技能", "做一個技能", "做個技能", "寫一個技能",
+            "做一個工具", "做個工具",
             "建立一個工具", "建立一個流程", "做一個流程", "做個流程",
         ]
         if any(kw in msg_lower for kw in skill_kws):
             return True
         return bool(
             re.search(
-                r"(幫我|請|麻煩|我要|我想要).{0,8}(做|建立|打造|規劃).{0,24}(工具|技能|skill|流程|agent|機器人|功能)",
+                r"(幫我|請|麻煩|我要|我想要).{0,8}(做|建立|打造|規劃|撰寫|寫).{0,24}(工具|技能|skill|流程|agent|機器人|功能)",
                 text,
                 re.IGNORECASE,
             )
@@ -7103,33 +7476,11 @@ class Orchestrator:
 
     def _should_start_skill_interview_from_gap(self, message: str, role: str, intent: str = "", er_result=None) -> bool:
         text = str(message or "").strip()
-        msg_lower = text.lower()
         if role != "admin":
             return False
         if not text or self._looks_like_capability_question(text):
             return False
-        if self._looks_like_skill_creation_request(text):
-            return True
-        if intent and intent not in {"CMD", "QUERY", "CHAT"}:
-            return False
-        if not self._should_attempt_auto_acquire(text, msg_lower):
-            return False
-        if er_result:
-            try:
-                _skill, _score, _tier = er_result
-                if str(_tier) != "LOW" or float(_score) >= 0.50:
-                    return False
-            except Exception:
-                logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 6746, exc_info=True)
-        try:
-            from skills.bridge.semantic_router import route as _semantic_route
-
-            sr = _semantic_route(text)
-            if sr and float(sr.get("confidence") or 0.0) >= 0.20:
-                return False
-        except Exception:
-            logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 6754, exc_info=True)
-        return True
+        return self._looks_like_skill_creation_request(text)
 
     _FORGE_MAX_RETRIES = 3
     _FORGE_TIMEOUT_SCHEDULE = (300, 420, 600)  # 5min, 7min, 10min — escalating
@@ -9412,6 +9763,7 @@ class Orchestrator:
         Dynamically lists available skills by parsing SKILL.md frontmatter.
         """
         import os
+        from skills.catalog import iter_top_level_skill_dirs
 
         skill_roots = [
             (f"{_MAGI_ROOT}/skills", "magi"),
@@ -9424,30 +9776,29 @@ class Orchestrator:
             for skills_dir, source in skill_roots:
                 if not os.path.isdir(skills_dir):
                     continue
-                for root, dirs, files in os.walk(skills_dir):
-                    if "SKILL.md" in files:
-                        skill_path = os.path.join(root, "SKILL.md")
-                        try:
-                            with open(skill_path, "r", encoding="utf-8") as f:
-                                content = f.read()
-                            # Simple frontmatter parsing (no yaml dependency)
-                            name = os.path.basename(root)
-                            desc = "No description"
-                            if content.startswith("---"):
-                                parts = content.split("---", 2)
-                                if len(parts) >= 3:
-                                    for line in parts[1].strip().split("\n"):
-                                        line = line.strip()
-                                        if line.startswith("name:"):
-                                            name = line.split(":", 1)[1].strip().strip("'\"")
-                                        elif line.startswith("description:"):
-                                            desc = line.split(":", 1)[1].strip().strip("'\"")
-                            # Truncate long descriptions
-                            if len(desc) > 80:
-                                desc = desc[:77] + "..."
-                            skills_found.append({"name": name, "desc": desc, "source": source})
-                        except Exception:
-                            skills_found.append({"name": os.path.basename(root), "desc": "(Unable to parse)", "source": source})
+                for entry in iter_top_level_skill_dirs(skills_dir):
+                    skill_path = os.path.join(entry.path, "SKILL.md")
+                    try:
+                        with open(skill_path, "r", encoding="utf-8") as f:
+                            content = f.read()
+                        # Simple frontmatter parsing (no yaml dependency)
+                        name = entry.name
+                        desc = "No description"
+                        if content.startswith("---"):
+                            parts = content.split("---", 2)
+                            if len(parts) >= 3:
+                                for line in parts[1].strip().split("\n"):
+                                    line = line.strip()
+                                    if line.startswith("name:"):
+                                        name = line.split(":", 1)[1].strip().strip("'\"")
+                                    elif line.startswith("description:"):
+                                        desc = line.split(":", 1)[1].strip().strip("'\"")
+                        # Truncate long descriptions
+                        if len(desc) > 80:
+                            desc = desc[:77] + "..."
+                        skills_found.append({"name": name, "desc": desc, "source": source})
+                    except Exception:
+                        skills_found.append({"name": entry.name, "desc": "(Unable to parse)", "source": source})
         except Exception as e:
             logger.error(f"Error scanning skills: {e}")
             return "❌ 無法讀取技能列表。"
@@ -9500,12 +9851,37 @@ class Orchestrator:
                     reply = self._call_with_timeout(
                         lambda: ask_casper(message, conversation_history=history, force_research=force_research),
                         async_timeout_sec,
-                        f"⚠️ 查詢逾時（>{async_timeout_sec}s）。",
+                        f"⚠️ 查詢逾時（>{async_timeout_sec}s），目前沒有可驗證結果。",
                         "query-async",
                     )
                     final_text = str(reply or "").strip() or "⚠️ 查詢完成，但沒有可用輸出。"
+                    if "查詢逾時（>" in final_text:
+                        self._ensure_runtime_foundations()
+                        self._hook_bus.fallback(
+                            "query-timeout",
+                            stage="query_async",
+                            reason=f"查詢逾時（>{async_timeout_sec}s）",
+                            detail={"user_id": uid, "platform": platform_name},
+                            correlation_id=self._current_correlation_id(),
+                        )
+                        safe_reply = "目前沒有可驗證結果，請稍後重試，或把問題縮小成更具體的一個事實點。"
+                        if _mark_unverified_reply:
+                            final_text = _mark_unverified_reply(
+                                safe_reply,
+                                reason=f"查詢逾時（>{async_timeout_sec}s）",
+                            )
+                        else:
+                            final_text = f"⚠️ 查詢逾時（>{async_timeout_sec}s）\n{safe_reply}"
                     final_text = f"{mode_banner}\n{final_text}"
                 except Exception as e:
+                    self._ensure_runtime_foundations()
+                    self._hook_bus.fallback(
+                        "query-exception",
+                        stage="query_async",
+                        reason=str(e)[:200],
+                        detail={"user_id": uid, "platform": platform_name},
+                        correlation_id=self._current_correlation_id(),
+                    )
                     final_text = f"{mode_banner}\n❌ 查詢失敗：{e}"
                 try:
                     self.notification_callback(uid, final_text, platform_name)
@@ -9518,27 +9894,27 @@ class Orchestrator:
         reply = self._call_with_timeout(
             lambda: ask_casper(message, conversation_history=history, force_research=force_research),
             timeout_sec,
-            f"⚠️ 查詢逾時（>{timeout_sec}s），我先記錄這個請求，稍後再補回完整結果。",
+            f"⚠️ 查詢逾時（>{timeout_sec}s），目前沒有可驗證結果。",
             "query",
         )
         reply = str(reply or "").strip() or "⚠️ 查詢完成，但目前沒有可用輸出。"
         if "查詢逾時（>" in reply:
-            try:
-                _gw = self._inference_gw
-                quick = _gw.chat(
-                    f"請用繁體中文直接回答這個問題，內容精簡且可執行：\n\n{message}",
-                    task_type="general",
-                    timeout=max(8, min(16, timeout_sec // 5)),
+            self._ensure_runtime_foundations()
+            self._hook_bus.fallback(
+                "query-timeout",
+                stage="query",
+                reason=f"查詢逾時（>{timeout_sec}s）",
+                detail={"user_id": str(user_id or ""), "platform": str(platform_hint or "LINE")},
+                correlation_id=self._current_correlation_id(),
+            )
+            safe_reply = "目前沒有可驗證結果，請稍後重試，或把問題縮小成更具體的一個事實點。"
+            if _mark_unverified_reply:
+                reply = _mark_unverified_reply(
+                    safe_reply,
+                    reason=f"查詢逾時（>{timeout_sec}s）",
                 )
-                qtxt = str((quick or {}).get("response") or "").strip()
-                _degraded_markers = ("系統降級回覆", "本機模型逾時", "請稍後重試")
-                if quick.get("success") and qtxt and not any(m in qtxt for m in _degraded_markers):
-                    reply = f"⚠️ 查詢逾時，先提供快速回覆：\n{qtxt}"
-                else:
-                    reply = "⚠️ 目前模型忙碌中，請稍後再試一次。"
-            except Exception as quick_err:
-                logger.warning(f"Query timeout quick fallback failed: {quick_err}")
-                reply = "⚠️ 目前模型忙碌中，請稍後再試一次。"
+            else:
+                reply = f"⚠️ 查詢逾時（>{timeout_sec}s）\n{safe_reply}"
         return f"{mode_banner}\n{reply}"
 
     def _handle_chat_async(self, user_id, message, platform_hint="LINE"):

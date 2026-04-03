@@ -10,7 +10,13 @@ from skills.bridge.http_pool import get_session as _get_session
 # Add project root
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
-from skills.memory.mem_bridge import recall, remember, _embedding_cache, _cosine_similarity
+from skills.memory.mem_bridge import (
+    recall,
+    remember,
+    _embedding_cache,
+    _cosine_similarity,
+    _source_trust_weight,
+)
 from skills.bridge import melchior_client
 
 # Configuration
@@ -25,7 +31,9 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("GroundedAI")
 
 # Auto-memorize config
-ENABLE_AUTO_MEMORIZE = os.environ.get("CASPER_AUTO_MEMORIZE", "1") != "0"
+# Default off: assistant replies should not silently become long-term memory.
+ENABLE_AUTO_MEMORIZE = os.environ.get("CASPER_AUTO_MEMORIZE", "0") != "0"
+_AUTO_MEM_ALLOWED_MODES = {"manual", "explicit"}
 _AUTO_MEM_MAX_LEN = 800  # max chars per memory entry (compress long answers)
 
 # ── 角色設定幻覺偵測 ──────────────────────────────────────────────
@@ -377,6 +385,8 @@ def _auto_remember(query: str, answer: str, mode: str = "chat"):
     """
     if not ENABLE_AUTO_MEMORIZE:
         return
+    if mode not in _AUTO_MEM_ALLOWED_MODES:
+        return
     if not query or not answer or len(answer.strip()) < 10:
         return
     # 攔截角色設定幻覺，避免污染記憶庫
@@ -412,7 +422,7 @@ def _auto_remember(query: str, answer: str, mode: str = "chat"):
             q_short = query[:200].strip()
             a_short = answer[:_AUTO_MEM_MAX_LEN].strip()
             content = f"[Q] {q_short}\n[A] {a_short}"
-            source = f"chatlog|mode={mode}|ts={ts}"
+            source = f"assistant_generated|mode={mode}|ts={ts}"
             ok = remember(content, source=source)
             if ok:
                 logger.debug(f"Auto-memorized: {q_short[:50]}...")
@@ -509,7 +519,7 @@ def _filter_chatlog_memories(query: str, memories: list[dict]) -> list[dict]:
     mems = [m for m in mems if not _is_garbage_output(str(m.get("content") or ""))]
     if _wants_chatlog(query):
         return mems
-    non_chat = [m for m in mems if "chatlog|" not in str(m.get("source") or "")]
+    non_chat = [m for m in mems if "chatlog|" not in str(m.get("source") or "").lower()]
     # Filter out codebase-ingest memories for casual/non-technical queries
     _tech_markers = ["code", "程式", "函數", "function", "class", "module", "import", "bug", "error", "api"]
     _q_lower = query.lower()
@@ -517,7 +527,8 @@ def _filter_chatlog_memories(query: str, memories: list[dict]) -> list[dict]:
         non_chat = [m for m in non_chat
                     if "codebase-ingest" not in str(m.get("source") or "")
                     and "codebase-ingest" not in str(m.get("context") or "")]
-    return non_chat or mems
+    trusted = [m for m in non_chat if _source_trust_weight(str(m.get("source") or ""), query=query) >= 0.5]
+    return trusted or non_chat or mems
 
 
 def _needs_research(text):
@@ -767,7 +778,6 @@ def ask_casper(query, conversation_history="", force_research=False):
             web_context=web_context,
             conversation_history=conversation_history,
         )
-        _auto_remember(query, final, mode="ask")
         return final
     except Exception as e:
         logger.error(f"❌ LLM Error: {e}")
@@ -791,7 +801,6 @@ def chat_casper(message, conversation_history=""):
     if tier == "GREETING":
         import random as _rng
         greeting = _rng.choice(_GREETING_RESPONSES)
-        _auto_remember(message, greeting, mode="chat")
         return greeting
 
     # ── Tier-aware recall parameters ──
@@ -891,7 +900,6 @@ def chat_casper(message, conversation_history=""):
                     web_context=web_context,
                     conversation_history=conversation_history,
                 )
-            _auto_remember(message, answer, mode="chat")
             return answer
     except Exception as e:
         logger.error(f"Chat Error: {e}")

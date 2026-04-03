@@ -18,10 +18,27 @@ import logging
 import os
 import threading
 import time
+import warnings
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-import faiss
+with warnings.catch_warnings():
+    warnings.filterwarnings(
+        "ignore",
+        message=r"builtin type SwigPyPacked has no __module__ attribute",
+        category=DeprecationWarning,
+    )
+    warnings.filterwarnings(
+        "ignore",
+        message=r"builtin type SwigPyObject has no __module__ attribute",
+        category=DeprecationWarning,
+    )
+    warnings.filterwarnings(
+        "ignore",
+        message=r"builtin type swigvarlink has no __module__ attribute",
+        category=DeprecationWarning,
+    )
+    import faiss
 import numpy as np
 
 logger = logging.getLogger("FAISSIndex")
@@ -338,6 +355,7 @@ class FAISSMemoryIndex:
     def save_to_disk(self) -> bool:
         """Save index + id map to disk (atomic: write tmp then rename)."""
         try:
+            os.makedirs(INDEX_DIR, exist_ok=True)
             idx_path = os.path.join(INDEX_DIR, INDEX_FILE)
             map_path = os.path.join(INDEX_DIR, IDMAP_FILE)
             meta_path = os.path.join(INDEX_DIR, "meta.json")

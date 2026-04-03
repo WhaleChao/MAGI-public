@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import random
+import re
 import sys
 import threading
 import time
@@ -59,6 +60,111 @@ GENERATE_MODEL = os.environ.get("MEM_QUERY_EXPAND_MODEL", "TAIDE-12b-Chat-mlx-4b
 
 MAX_VECTOR_SCAN = int(os.environ.get("MEMORY_MAX_VECTOR_SCAN", "5000"))
 ENABLE_QUERY_EXPANSION = os.environ.get("MEMORY_ENABLE_QUERY_EXPANSION", "0") != "0"  # V3: disabled by default (saves ~5s)
+
+_MEMORY_RECALL_CHATLOG_MARKERS = (
+    "回顧",
+    "回憶",
+    "之前說",
+    "你記得",
+    "對話記錄",
+    "聊天紀錄",
+    "聊天記錄",
+    "what did i say",
+    "remember what i said",
+    "conversation log",
+)
+
+_MEMORY_LOW_TRUST_MARKERS = (
+    "chatlog|",
+    "assistant_generated",
+    "summary_derived",
+    "generated_summary",
+    "llm_summary",
+)
+
+_MEMORY_HIGH_TRUST_MARKERS = (
+    "user_rule",
+    "user_profile",
+    "user_confirmed",
+    "manual",
+    "statute",
+    "official",
+    "verified",
+    "judicial_api",
+    "case_statutes",
+    "legal_crawler_judgment",
+    "legal_crawler_news",
+)
+
+
+def _normalize_source_text(source: str) -> str:
+    return str(source or "").strip().lower()
+
+
+def _query_prefers_chatlog(query: str) -> bool:
+    q = _normalize_source_text(query)
+    return any(marker in q for marker in _MEMORY_RECALL_CHATLOG_MARKERS)
+
+
+def _query_terms(text: str) -> list[str]:
+    raw = _normalize_source_text(text)
+    if not raw:
+        return []
+    terms = re.findall(r"[a-z0-9]+|[\u4e00-\u9fff]", raw)
+    return [t for t in terms if t]
+
+
+def _source_trust_weight(source: str, query: str = "") -> float:
+    src = _normalize_source_text(source)
+    if not src:
+        return 0.60
+
+    wants_chatlog = _query_prefers_chatlog(query)
+
+    if any(marker in src for marker in _MEMORY_LOW_TRUST_MARKERS):
+        if "chatlog|" in src:
+            return 0.85 if wants_chatlog else 0.28
+        return 0.45 if wants_chatlog else 0.18
+
+    if any(marker in src for marker in _MEMORY_HIGH_TRUST_MARKERS):
+        return 1.00
+
+    if "user_chat_" in src:
+        return 0.90 if wants_chatlog else 0.78
+
+    if "crawler" in src or "research" in src or "web" in src or "news" in src or "briefing" in src:
+        return 0.72
+
+    if "codebase-ingest" in src:
+        return 0.15
+
+    return 0.65
+
+
+def _rank_recall_results(query: str, results: list[dict]) -> list[dict]:
+    ranked: list[dict] = []
+    for item in results or []:
+        if not isinstance(item, dict):
+            continue
+        src = str(item.get("source") or "")
+        base_score = _safe_float(item.get("score"))
+        trust_weight = _source_trust_weight(src, query=query)
+        adjusted_score = base_score * trust_weight
+        enriched = dict(item)
+        enriched["base_score"] = base_score
+        enriched["trust_weight"] = trust_weight
+        enriched["score"] = adjusted_score
+        ranked.append(enriched)
+
+    ranked.sort(
+        key=lambda x: (
+            _safe_float(x.get("score")),
+            _safe_float(x.get("trust_weight")),
+            _safe_float(x.get("base_score")),
+        ),
+        reverse=True,
+    )
+    return ranked
 
 # FAISS index (lazy init)
 _FAISS_INDEX = None
@@ -315,6 +421,12 @@ def expand_query(query):
     """
     if not ENABLE_QUERY_EXPANSION:
         return [query]
+    if _query_prefers_chatlog(query):
+        return [query]
+
+    query_text = str(query or "").strip()
+    if len(query_text) < 10:
+        return [query_text or query]
 
     prompt = f"""<|begin_of_text|><|start_header_id|>system<|end_header_id|>
 You are a search optimization AI.
@@ -340,12 +452,27 @@ Query: {query}<|eot_id|><|start_header_id|>assistant<|end_header_id|>
             choices = data.get("choices") or []
             raw = (choices[0].get("message") or {}).get("content", "").strip() if choices else data.get("response", "").strip()
             lines = raw.split("\n")
-            variations = [v.strip() for v in lines if v.strip()]
-            return [query] + variations[:3]
+            variations = []
+            base_tokens = set(_query_terms(query_text))
+            for v in lines:
+                cand = " ".join(v.strip().split())
+                if not cand or cand == query_text:
+                    continue
+                if len(cand) > max(120, len(query_text) * 2):
+                    continue
+                cand_tokens = set(_query_terms(cand))
+                if base_tokens:
+                    overlap = len(base_tokens & cand_tokens) / max(1, len(base_tokens))
+                    if overlap < 0.45:
+                        continue
+                variations.append(cand)
+                if len(variations) >= 2:
+                    break
+            return [query_text] + variations
     except Exception:
         logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 344, exc_info=True)
 
-    return [query]
+    return [query_text]
 
 
 def search_fulltext(cursor, query_variations):
@@ -752,6 +879,11 @@ def recall(query, top_k=3, source_contains: str = "",
         data = _fallback_local_search(query, want * 30, source_contains=source_contains)
         if source_contains:
             data = [x for x in data if source_contains in (x.get("source") or "")]
+        data = _rank_recall_results(query, data)
+        if not _query_prefers_chatlog(query) and not source_contains:
+            trusted = [x for x in data if _safe_float(x.get("trust_weight")) >= 0.5]
+            untrusted = [x for x in data if _safe_float(x.get("trust_weight")) < 0.5]
+            data = trusted + untrusted
         return data[:want]
 
     try:
@@ -904,6 +1036,12 @@ def recall(query, top_k=3, source_contains: str = "",
             if len(results_data) >= want:
                 break
 
+        results_data = _rank_recall_results(query, results_data)
+        if not _query_prefers_chatlog(query) and not source_contains:
+            trusted = [x for x in results_data if _safe_float(x.get("trust_weight")) >= 0.5]
+            untrusted = [x for x in results_data if _safe_float(x.get("trust_weight")) < 0.5]
+            results_data = trusted + untrusted
+
         return results_data
 
     except mysql.connector.Error as e:
@@ -912,6 +1050,11 @@ def recall(query, top_k=3, source_contains: str = "",
         data = _fallback_local_search(query, want * 30, source_contains=source_contains)
         if source_contains:
             data = [x for x in data if source_contains in (x.get("source") or "")]
+        data = _rank_recall_results(query, data)
+        if not _query_prefers_chatlog(query) and not source_contains:
+            trusted = [x for x in data if _safe_float(x.get("trust_weight")) >= 0.5]
+            untrusted = [x for x in data if _safe_float(x.get("trust_weight")) < 0.5]
+            data = trusted + untrusted
         return data[:want]
 
     except Exception as e:
@@ -919,6 +1062,11 @@ def recall(query, top_k=3, source_contains: str = "",
         data = _fallback_local_search(query, want * 30, source_contains=source_contains)
         if source_contains:
             data = [x for x in data if source_contains in (x.get("source") or "")]
+        data = _rank_recall_results(query, data)
+        if not _query_prefers_chatlog(query) and not source_contains:
+            trusted = [x for x in data if _safe_float(x.get("trust_weight")) >= 0.5]
+            untrusted = [x for x in data if _safe_float(x.get("trust_weight")) < 0.5]
+            data = trusted + untrusted
         return data[:want]
 
     finally:

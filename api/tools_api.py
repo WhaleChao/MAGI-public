@@ -61,6 +61,14 @@ def _sigchld_handler(_signum, _frame):
             break
 _signal.signal(_signal.SIGCHLD, _sigchld_handler)
 
+from api.hooks import HookBus
+from api.permissions import (
+    PermissionEnforcer,
+    PermissionMode,
+    PermissionPolicy,
+    deny_command,
+    deny_path,
+)
 from api.runtime_paths import get_metrics_dir, get_orch_dir
 
 
@@ -664,6 +672,172 @@ def _check_external_api_key():
         return True, ""
     return False, "unauthorized: invalid api key"
 
+
+def _default_tools_permission_rules() -> list:
+    root_dir = str(_MAGI_ROOT)
+    agent_dir = str(get_orch_dir())
+    return [
+        deny_command(
+            name="deny-rm-rf",
+            commands=("rm -rf", "rm -fr"),
+            reason="destructive recursive deletion is blocked",
+            priority=1,
+        ),
+        deny_command(
+            name="deny-system-destruction",
+            commands=("mkfs", "shutdown", "reboot", "diskutil eraseDisk"),
+            reason="destructive system commands are blocked",
+            priority=1,
+        ),
+        deny_path(
+            name="deny-agent-state",
+            paths=(agent_dir,),
+            reason="agent runtime state is not a valid tool target",
+            priority=5,
+        ),
+        deny_path(
+            name="deny-env-secrets",
+            paths=(os.path.join(root_dir, ".env"), os.path.expanduser("~/.ssh")),
+            reason="secret-bearing paths remain blocked",
+            priority=5,
+        ),
+        deny_path(
+            name="deny-static-secrets",
+            paths=(os.path.join(root_dir, "static", "secrets"),),
+            reason="static secret artifacts remain blocked",
+            priority=5,
+        ),
+    ]
+
+
+_TOOLS_EVENTS_PATH = str(get_orch_dir() / "tools_runtime_events.jsonl")
+_TOOLS_HOOK_BUS = HookBus(source="magi.tools_api")
+_TOOLS_HOOK_BUS.add_jsonl_sink(_TOOLS_EVENTS_PATH)
+_TOOLS_PERMISSION_ENFORCER = PermissionEnforcer(
+    policy=PermissionPolicy.from_rules(
+        _default_tools_permission_rules(),
+        mode=PermissionMode.PERMISSIVE,
+    )
+)
+
+
+def _tool_correlation_id() -> str:
+    return (
+        (request.headers.get("X-Request-ID") or "").strip()
+        or (request.headers.get("X-Correlation-ID") or "").strip()
+    )
+
+
+def _tool_preview(payload, limit: int = 240):
+    text = ""
+    try:
+        if isinstance(payload, dict):
+            text = json.dumps(payload, ensure_ascii=False, default=str)
+        else:
+            text = str(payload)
+    except Exception:
+        text = str(payload)
+    text = " ".join(text.split())
+    return text[:limit] + ("…" if len(text) > limit else "")
+
+
+def _resolve_skill_action_path(skill_name: str) -> str:
+    candidates = [
+        str(skill_name or "").strip(),
+        str(skill_name or "").replace("_", "-").strip(),
+        str(skill_name or "").replace("-", "_").strip(),
+        re.sub(r"^run[_-]+", "", str(skill_name or "").replace("_", "-")).strip(),
+        re.sub(r"^run[_-]+", "", str(skill_name or "")).strip(),
+    ]
+    seen: set[str] = set()
+    for candidate in candidates:
+        if not candidate or candidate in seen:
+            continue
+        seen.add(candidate)
+        action_path = os.path.join(_SKILLS_ROOT, candidate, "action.py")
+        if os.path.exists(action_path):
+            return action_path
+    return ""
+
+
+def _check_tool_access(tool_name: str, *, command_subject: str = "", path_subject: str = ""):
+    command_target = command_subject or f"tool:{tool_name}"
+    command_decision = _TOOLS_PERMISSION_ENFORCER.evaluate_command(command_target)
+    if not command_decision.allowed:
+        return False, command_decision
+    if path_subject:
+        path_decision = _TOOLS_PERMISSION_ENFORCER.evaluate_path(path_subject)
+        if not path_decision.allowed:
+            return False, path_decision
+    return True, None
+
+
+def _start_tool_event(tool_name: str, input_data=None, metadata: dict | None = None) -> float:
+    _TOOLS_HOOK_BUS.pre_tool(
+        tool_name,
+        input_data=dict(input_data or {}),
+        user_id=str(request.headers.get("X-User-ID") or ""),
+        platform=_infer_external_platform(request.headers.get("X-Platform"), user_id=request.headers.get("X-User-ID", "")),
+        correlation_id=_tool_correlation_id(),
+        metadata=dict(metadata or {}),
+    )
+    return time.perf_counter()
+
+
+def _finish_tool_event(
+    tool_name: str,
+    started_at: float,
+    *,
+    ok: bool,
+    status: str,
+    output_data=None,
+    error: str = "",
+    metadata: dict | None = None,
+) -> None:
+    _TOOLS_HOOK_BUS.post_tool(
+        tool_name,
+        output_data=output_data,
+        ok=ok,
+        status=status,
+        duration_ms=round((time.perf_counter() - started_at) * 1000, 3),
+        error=str(error or ""),
+        correlation_id=_tool_correlation_id(),
+        metadata=dict(metadata or {}),
+    )
+
+
+def _tool_denied_response(tool_name: str, started_at: float, decision, metadata: dict | None = None):
+    message = f"permission_denied: {decision.reason}"
+    _finish_tool_event(
+        tool_name,
+        started_at,
+        ok=False,
+        status="denied",
+        error=message,
+        metadata=metadata,
+    )
+    return jsonify({"error": message}), 403
+
+
+def _tool_exception_response(
+    tool_name: str,
+    started_at: float,
+    error,
+    *,
+    metadata: dict | None = None,
+    status_code: int = 500,
+):
+    message = str(error or "internal_error")
+    _finish_tool_event(
+        tool_name,
+        started_at,
+        ok=False,
+        status="error",
+        error=message,
+        metadata=metadata,
+    )
+    return jsonify({"error": message}), status_code
+
 @app.route('/health', methods=['GET'])
 def health():
     return jsonify({"status": "ok", "service": "MAGI Tools API (三哲人)"})
@@ -869,15 +1043,40 @@ def external_osc_case_status():
         "summary_only": bool(data.get("summary_only", True)),
     }
     task = "status " + json.dumps(payload, ensure_ascii=False)
-
-    result = run_skill_action(
-        "osc-flow-case-status",
-        task,
-        timeout_sec=timeout_sec,
-        auto_repair=True,
-        rollback_on_fail=True,
-        auto_install_deps=True,
-        route_key="osc:external:case_status",
+    tool_name = "skill:osc-flow-case-status"
+    started = _start_tool_event(tool_name, {"task": task}, {"route": "osc_external_case_status"})
+    allowed, decision = _check_tool_access(
+        tool_name,
+        command_subject="skill:osc-flow-case-status",
+        path_subject=_resolve_skill_action_path("osc-flow-case-status"),
+    )
+    if not allowed:
+        return _tool_denied_response(tool_name, started, decision, {"route": "osc_external_case_status"})
+    try:
+        result = run_skill_action(
+            "osc-flow-case-status",
+            task,
+            timeout_sec=timeout_sec,
+            auto_repair=True,
+            rollback_on_fail=True,
+            auto_install_deps=True,
+            route_key="osc:external:case_status",
+        )
+    except Exception as exc:
+        return _tool_exception_response(
+            tool_name,
+            started,
+            f"osc_external_case_status_exception: {exc}",
+            metadata={"route": "osc_external_case_status"},
+        )
+    _finish_tool_event(
+        tool_name,
+        started,
+        ok=bool(result.get("success")),
+        status="handled" if result.get("success") else "error",
+        output_data=_tool_preview(result),
+        error=str(result.get("error") or ""),
+        metadata={"route": "osc_external_case_status"},
     )
     return jsonify(_guard_payload_fields(result)), (200 if result.get("success") else 400)
 
@@ -1008,8 +1207,16 @@ def api_search():
     
     if not query:
         return jsonify({"error": "Missing 'query' parameter"}), 400
-    
-    result = search_web(query, num_results)
+
+    started = _start_tool_event("search", {"query": query, "num_results": num_results})
+    allowed, decision = _check_tool_access("search", command_subject="tool:search")
+    if not allowed:
+        return _tool_denied_response("search", started, decision)
+    try:
+        result = search_web(query, num_results)
+    except Exception as exc:
+        return _tool_exception_response("search", started, f"search_exception: {exc}")
+    _finish_tool_event("search", started, ok=True, status="handled", output_data=_tool_preview(result))
     return jsonify(result)
 
 @app.route('/research', methods=['POST'])
@@ -1021,8 +1228,21 @@ def api_research():
     
     if not topic:
         return jsonify({"error": "Missing 'topic' parameter"}), 400
-    
-    result = research_topic(topic, depth)
+
+    started = _start_tool_event("research", {"topic": topic, "depth": depth})
+    allowed, decision = _check_tool_access("research", command_subject="tool:research")
+    if not allowed:
+        return _tool_denied_response("research", started, decision)
+    try:
+        result = research_topic(topic, depth)
+    except Exception as exc:
+        return _tool_exception_response("research", started, f"research_exception: {exc}")
+    payload = {
+        "topic": result["topic"],
+        "sources": [{"title": s["title"], "url": s["url"]} for s in result.get("sources", [])],
+        "content_preview": result.get("combined_content", "")[:5000]
+    }
+    _finish_tool_event("research", started, ok=True, status="handled", output_data=_tool_preview(payload))
     return jsonify({
         "topic": result["topic"],
         "sources": [{"title": s["title"], "url": s["url"]} for s in result.get("sources", [])],
@@ -1037,8 +1257,16 @@ def api_fetch():
     
     if not url:
         return jsonify({"error": "Missing 'url' parameter"}), 400
-    
-    result = fetch_url_content(url)
+
+    started = _start_tool_event("fetch", {"url": url})
+    allowed, decision = _check_tool_access("fetch", command_subject="tool:fetch")
+    if not allowed:
+        return _tool_denied_response("fetch", started, decision)
+    try:
+        result = fetch_url_content(url)
+    except Exception as exc:
+        return _tool_exception_response("fetch", started, f"fetch_exception: {exc}")
+    _finish_tool_event("fetch", started, ok=True, status="handled", output_data=_tool_preview(result))
     return jsonify(result)
 
 # ============== MELCHIOR (視覺分析) ==============
@@ -1052,9 +1280,21 @@ def api_vision():
     
     if not image_path:
         return jsonify({"error": "Missing 'image_path' parameter"}), 400
-    
+
     if not os.path.exists(image_path):
         return jsonify({"error": f"Image not found: {image_path}"}), 404
+
+    started = _start_tool_event(
+        "vision",
+        {"image_path": image_path, "prompt": prompt, "task_type": task_type},
+    )
+    allowed, decision = _check_tool_access(
+        "vision",
+        command_subject="tool:vision",
+        path_subject=image_path,
+    )
+    if not allowed:
+        return _tool_denied_response("vision", started, decision)
 
     prompt_l = str(prompt or "").lower()
     is_ocr = (
@@ -1100,6 +1340,15 @@ def api_vision():
         }
 
     description = str(result.get("analysis") or result.get("response") or "").strip()
+    _finish_tool_event(
+        "vision",
+        started,
+        ok=bool(result.get("success")),
+        status="handled" if result.get("success") else "error",
+        output_data=_tool_preview(description),
+        error=str(result.get("error") or ""),
+        metadata={"route": str(result.get("route") or ""), "task_type": effective_task},
+    )
     return jsonify({
         "success": bool(result.get("success")),
         "sage": "vision_gateway",
@@ -1148,6 +1397,14 @@ def api_summarize():
     if not text:
         return jsonify({"error": "Missing 'text' parameter"}), 400
 
+    started = _start_tool_event(
+        "summarize",
+        {"text_preview": _tool_preview(text), "engine": metric_engine},
+    )
+    allowed, decision = _check_tool_access("summarize", command_subject="tool:summarize")
+    if not allowed:
+        return _tool_denied_response("summarize", started, decision)
+
     default_engine = metric_engine or "balthasar"
     auto_prefers_apple = _to_bool(os.environ.get("MAGI_SUMMARIZE_AUTO_APPLE", "0"), False)
     allow_apple = _to_bool(data.get("allow_apple"), auto_prefers_apple)
@@ -1179,7 +1436,7 @@ def api_summarize():
             apple_tried=metric_apple_tried,
             error="circuit_open",
         )
-        return jsonify({
+        response = jsonify({
             "sage": "balthasar",
             "served_by": "casper",
             "engine": "balthasar",
@@ -1194,6 +1451,15 @@ def api_summarize():
                 "text": _degraded_summary(text),
             }
         })
+        _finish_tool_event(
+            "summarize",
+            started,
+            ok=True,
+            status="degraded",
+            output_data=_tool_preview(response.get_json()),
+            error="circuit_open",
+        )
+        return response
 
     # 1) Apple Intelligence via Shortcuts (requires user-created shortcut "MAGI 摘要")
     if allow_apple and engine in {"apple", "apple_intelligence", "shortcuts"}:
@@ -1233,12 +1499,14 @@ def api_summarize():
                 apple_tried=metric_apple_tried,
                 error="",
             )
-            return jsonify({
+            response = jsonify({
                 "sage": "apple_intelligence",
                 "served_by": "casper",
                 "engine": "shortcuts",
                 "result": (apple_result.get("text") or "").strip(),
             })
+            _finish_tool_event("summarize", started, ok=True, status="handled", output_data=_tool_preview(response.get_json()))
+            return response
         # If user explicitly forced apple, do not block on LLM fallback.
         if engine in {"apple", "apple_intelligence", "shortcuts"}:
             metric_route = "apple_shortcuts_forced"
@@ -1254,14 +1522,23 @@ def api_summarize():
                 apple_tried=metric_apple_tried,
                 error=metric_error,
             )
-            return jsonify({
+            response = jsonify({
                 "sage": "apple_intelligence",
                 "served_by": "casper",
                 "engine": "shortcuts",
                 "success": False,
                 "error": (apple_result.get("error") if isinstance(apple_result, dict) else "apple summarize failed"),
                 "note": "請先在捷徑 App 建立捷徑「MAGI 摘要」（Apple Intelligence）。建立後再重試。",
-            }), 400
+            })
+            _finish_tool_event(
+                "summarize",
+                started,
+                ok=False,
+                status="error",
+                output_data=_tool_preview(response.get_json()),
+                error=(apple_result.get("error") if isinstance(apple_result, dict) else "apple summarize failed"),
+            )
+            return response, 400
 
     # 2) Fallback: Balthasar summarization
     ok, result = _run_with_timeout(summarize_text, primary_timeout_sec + 1, text, primary_timeout_sec)
@@ -1282,7 +1559,7 @@ def api_summarize():
             error="",
         )
         _summarize_cb_note_success()
-        return jsonify({
+        response = jsonify({
             "sage": "balthasar",
             "served_by": "casper",
             "engine": "balthasar",
@@ -1291,6 +1568,8 @@ def api_summarize():
             "note": "若要啟用 Apple Intelligence 摘要，需先在捷徑 App 建立捷徑「MAGI 摘要」。",
             "result": result
         })
+        _finish_tool_event("summarize", started, ok=True, status="handled", output_data=_tool_preview(response.get_json()))
+        return response
 
     if not ok:
         result = {"success": False, "error": result.get("error", "summarize_timeout")}
@@ -1313,7 +1592,7 @@ def api_summarize():
         apple_tried=metric_apple_tried,
         error=metric_error,
     )
-    return jsonify({
+    response = jsonify({
         "sage": "balthasar",
         "served_by": "casper",
         "engine": "balthasar",
@@ -1328,6 +1607,15 @@ def api_summarize():
             "text": fallback_text,
         }
     })
+    _finish_tool_event(
+        "summarize",
+        started,
+        ok=True,
+        status="degraded",
+        output_data=_tool_preview(response.get_json()),
+        error=metric_error[:240],
+    )
+    return response
 
 
 @app.route('/summarize/health', methods=['GET'])
@@ -1418,14 +1706,40 @@ def api_run_skill():
         return jsonify({"error": "Missing 'task' parameter"}), 400
     if not skill:
         return jsonify({"error": "Missing 'skill' parameter"}), 400
-    result = run_skill_action(
-        skill,
-        task,
-        timeout_sec=timeout_sec,
-        auto_repair=auto_repair,
-        rollback_on_fail=rollback_on_fail,
-        auto_install_deps=auto_install_deps,
-        route_key=route_key,
+    tool_name = f"skill:{skill}"
+    started = _start_tool_event(tool_name, {"task": task}, {"route": "skills_run"})
+    allowed, decision = _check_tool_access(
+        tool_name,
+        command_subject=tool_name,
+        path_subject=_resolve_skill_action_path(skill),
+    )
+    if not allowed:
+        return _tool_denied_response(tool_name, started, decision, {"route": "skills_run"})
+    try:
+        result = run_skill_action(
+            skill,
+            task,
+            timeout_sec=timeout_sec,
+            auto_repair=auto_repair,
+            rollback_on_fail=rollback_on_fail,
+            auto_install_deps=auto_install_deps,
+            route_key=route_key,
+        )
+    except Exception as exc:
+        return _tool_exception_response(
+            tool_name,
+            started,
+            f"skills_run_exception: {exc}",
+            metadata={"route": "skills_run"},
+        )
+    _finish_tool_event(
+        tool_name,
+        started,
+        ok=bool(result.get("success")),
+        status="handled" if result.get("success") else "error",
+        output_data=_tool_preview(result),
+        error=str(result.get("error") or ""),
+        metadata={"route": "skills_run"},
     )
     return jsonify(result), (200 if result.get("success") else 400)
 
@@ -1958,7 +2272,21 @@ def api_legal_skill(skill_name):
     from skills.bridge.legal_bridge import execute_skill
     data = request.get_json() or {}
     args = data.get('args', [])
-    result = execute_skill(skill_name, args)
+    tool_name = f"legal:{skill_name}"
+    started = _start_tool_event(tool_name, {"args": args}, {"route": "legal_skill"})
+    allowed, decision = _check_tool_access(tool_name, command_subject=tool_name)
+    if not allowed:
+        return _tool_denied_response(tool_name, started, decision, {"route": "legal_skill"})
+    try:
+        result = execute_skill(skill_name, args)
+    except Exception as exc:
+        return _tool_exception_response(
+            tool_name,
+            started,
+            f"legal_skill_exception: {exc}",
+            metadata={"route": "legal_skill"},
+        )
+    _finish_tool_event(tool_name, started, ok=True, status="handled", output_data=_tool_preview(result), metadata={"route": "legal_skill"})
     return jsonify({"result": result})
 
 @app.route('/legal', methods=['GET'])
@@ -2015,14 +2343,40 @@ def api_laf_smoke_login():
         "timeout_sec": int(data.get("fn_timeout_sec", 90) or 90),
     }
     task = "call smoke_login " + json.dumps(payload, ensure_ascii=False)
-    result = run_skill_action(
-        "code-laf_automation_v2",
-        task,
-        timeout_sec=timeout_sec,
-        auto_repair=True,
-        rollback_on_fail=True,
-        auto_install_deps=True,
-        route_key="laf:smoke_login",
+    tool_name = "skill:code-laf_automation_v2"
+    started = _start_tool_event(tool_name, {"task": task}, {"route": "laf_smoke_login"})
+    allowed, decision = _check_tool_access(
+        tool_name,
+        command_subject=tool_name,
+        path_subject=_resolve_skill_action_path("code-laf_automation_v2"),
+    )
+    if not allowed:
+        return _tool_denied_response(tool_name, started, decision, {"route": "laf_smoke_login"})
+    try:
+        result = run_skill_action(
+            "code-laf_automation_v2",
+            task,
+            timeout_sec=timeout_sec,
+            auto_repair=True,
+            rollback_on_fail=True,
+            auto_install_deps=True,
+            route_key="laf:smoke_login",
+        )
+    except Exception as exc:
+        return _tool_exception_response(
+            tool_name,
+            started,
+            f"laf_smoke_login_exception: {exc}",
+            metadata={"route": "laf_smoke_login"},
+        )
+    _finish_tool_event(
+        tool_name,
+        started,
+        ok=bool(result.get("success")),
+        status="handled" if result.get("success") else "error",
+        output_data=_tool_preview(result),
+        error=str(result.get("error") or ""),
+        metadata={"route": "laf_smoke_login"},
     )
     return jsonify(result), (200 if result.get("success") else 400)
 
@@ -2171,6 +2525,84 @@ def api_restore_from_audit(log_id):
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+def _tool_registry_search(query: str = "", num_results: int = 5, **_) -> dict:
+    return search_web(query, num_results)
+
+
+def _tool_registry_research(topic: str = "", depth: int = 3, **_) -> dict:
+    return research_topic(topic, depth)
+
+
+def _tool_registry_fetch(url: str = "", **_) -> dict:
+    return fetch_url_content(url)
+
+
+def _tool_registry_summarize(text: str = "", **kwargs) -> dict:
+    return summarize_text(text, **kwargs)
+
+
+def _tool_registry_vision(image_path: str = "", prompt: str = "Describe this image in detail", **kwargs) -> dict:
+    return analyze_image(image_path, prompt)
+
+
+def _bootstrap_tool_registry() -> None:
+    try:
+        from api.tools import get_global_tool_registry
+
+        registry = get_global_tool_registry()
+        globals()["TOOL_REGISTRY"] = registry
+        if not registry.get("search"):
+            registry.register_callable(
+                "search",
+                _tool_registry_search,
+                description="Web search",
+                permission_tag="tool:search",
+                timeout_sec=30,
+                metadata={"route": "/search"},
+            )
+        if not registry.get("research"):
+            registry.register_callable(
+                "research",
+                _tool_registry_research,
+                description="Deep web research",
+                permission_tag="tool:research",
+                timeout_sec=60,
+                metadata={"route": "/research"},
+            )
+        if not registry.get("fetch"):
+            registry.register_callable(
+                "fetch",
+                _tool_registry_fetch,
+                description="Fetch URL content",
+                permission_tag="tool:fetch",
+                timeout_sec=30,
+                metadata={"route": "/fetch"},
+            )
+        if not registry.get("summarize"):
+            registry.register_callable(
+                "summarize",
+                _tool_registry_summarize,
+                description="Summarize text",
+                permission_tag="tool:summarize",
+                timeout_sec=90,
+                metadata={"route": "/summarize"},
+            )
+        if not registry.get("vision"):
+            registry.register_callable(
+                "vision",
+                _tool_registry_vision,
+                description="Vision analysis",
+                permission_tag="tool:vision",
+                timeout_sec=90,
+                metadata={"route": "/vision"},
+            )
+    except Exception:
+        logging.getLogger("tools_api").debug("tool registry bootstrap skipped", exc_info=True)
+
+
+_bootstrap_tool_registry()
 
 if __name__ == '__main__':
     logging.getLogger("tools_api").info("MAGI Tools API starting on http://localhost:5003")

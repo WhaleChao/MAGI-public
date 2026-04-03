@@ -2,7 +2,7 @@
 
 [繁體中文版](README.zh-TW.md)
 
-MAGI is a locally-deployed AI operations platform built for a Taiwanese law firm. It runs entirely on a single node, combining a Flask control plane, 57+ modular skill runners, scheduled workers, local LLM inference, and deep legal workflow automation in one repository.
+MAGI v2 is a locally-deployed AI operations platform built for a Taiwanese law firm. This is a ground-up rewrite of MAGI v1, adding enterprise-grade infrastructure (permissions, events, hooks, tasks, sessions, tool registry, multi-agent runtime, provider abstraction) and a low-hallucination architecture. It runs entirely on a single node, combining a Flask control plane, 57+ modular skill runners, scheduled workers, local LLM inference, and deep legal workflow automation in one repository.
 
 **Cross-platform**: Runs on **macOS** (Apple Silicon via oMLX) and **Windows** (NVIDIA/CPU via Ollama). A built-in Setup Wizard detects your hardware, recommends models, and generates configuration automatically.
 

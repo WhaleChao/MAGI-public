@@ -31,8 +31,11 @@ import logging
 import os
 _MAGI_ROOT = os.path.abspath(os.path.dirname(os.path.dirname(__file__)))
 import re
+import time
 from dataclasses import dataclass, field
 from typing import Optional
+
+from skills.catalog import iter_top_level_skill_dirs
 
 logger = logging.getLogger("SkillPlugin")
 
@@ -150,6 +153,103 @@ class SkillRegistry:
         for alias in (aliases or []):
             self._capability_guides[alias] = guide
 
+    @staticmethod
+    def _get_hook_bus(orchestrator: object):
+        ensure = getattr(orchestrator, "_ensure_runtime_foundations", None)
+        if callable(ensure):
+            try:
+                ensure()
+            except Exception:
+                logger.debug("runtime foundation bootstrap failed", exc_info=True)
+        return getattr(orchestrator, "_hook_bus", None)
+
+    @staticmethod
+    def _get_permission_enforcer(orchestrator: object):
+        ensure = getattr(orchestrator, "_ensure_runtime_foundations", None)
+        if callable(ensure):
+            try:
+                ensure()
+            except Exception:
+                logger.debug("runtime foundation bootstrap failed", exc_info=True)
+        return getattr(orchestrator, "_permission_enforcer", None)
+
+    @staticmethod
+    def _get_correlation_id(orchestrator: object) -> str:
+        getter = getattr(orchestrator, "_current_correlation_id", None)
+        if callable(getter):
+            try:
+                return str(getter() or "")
+            except Exception:
+                logger.debug("correlation lookup failed", exc_info=True)
+        return ""
+
+    def _emit_pre_dispatch(
+        self,
+        skill_name: str,
+        *,
+        dispatch_mode: str,
+        message: str,
+        user_id: str,
+        platform: str,
+        orchestrator: object,
+    ) -> None:
+        hook_bus = self._get_hook_bus(orchestrator)
+        if hook_bus is None:
+            return
+        hook_bus.pre_tool(
+            f"skill:{skill_name}",
+            input_data={"message_preview": (message or "")[:200]},
+            user_id=str(user_id or ""),
+            platform=str(platform or ""),
+            correlation_id=self._get_correlation_id(orchestrator),
+            metadata={"dispatch_mode": dispatch_mode, "skill_name": skill_name},
+        )
+
+    def _emit_post_dispatch(
+        self,
+        skill_name: str,
+        *,
+        dispatch_mode: str,
+        orchestrator: object,
+        started_at: float,
+        ok: bool,
+        status: str,
+        output_data=None,
+        error: str = "",
+    ) -> None:
+        hook_bus = self._get_hook_bus(orchestrator)
+        if hook_bus is None:
+            return
+        hook_bus.post_tool(
+            f"skill:{skill_name}",
+            output_data=output_data,
+            ok=ok,
+            status=status,
+            duration_ms=round((time.perf_counter() - started_at) * 1000, 3),
+            error=str(error or ""),
+            correlation_id=self._get_correlation_id(orchestrator),
+            metadata={"dispatch_mode": dispatch_mode, "skill_name": skill_name},
+        )
+
+    def _check_dispatch_permission(
+        self,
+        skill_name: str,
+        *,
+        action_path: str = "",
+        orchestrator: object = None,
+    ) -> tuple[bool, str]:
+        enforcer = self._get_permission_enforcer(orchestrator)
+        if enforcer is None:
+            return True, ""
+        command_decision = enforcer.evaluate_command(f"skill:{skill_name}")
+        if not command_decision.allowed:
+            return False, f"⚠️ 權限策略已阻擋技能執行：{command_decision.reason}"
+        if action_path:
+            path_decision = enforcer.evaluate_path(action_path)
+            if not path_decision.allowed:
+                return False, f"⚠️ 權限策略已阻擋技能執行：{path_decision.reason}"
+        return True, ""
+
     # ── Discovery ─────────────────────────────────────────────────
 
     def discover(self, force: bool = False) -> int:
@@ -167,16 +267,9 @@ class SkillRegistry:
                 continue
             source = "openclaw" if "openclaw" in skills_dir else "magi"
             try:
-                for entry in os.scandir(skills_dir):
-                    if not entry.is_dir():
-                        continue
+                for entry in iter_top_level_skill_dirs(skills_dir):
                     folder = entry.name
-                    # Skip internal/infrastructure dirs
-                    if folder.startswith((".", "__")) or folder in ("bridge", "evolution", "__pycache__"):
-                        continue
-                    skill_md = os.path.join(entry.path, "SKILL.md")
-                    if not os.path.exists(skill_md):
-                        continue
+                    skill_md = os.path.join(str(entry), "SKILL.md")
                     meta = self._parse_skill_md(skill_md, folder, source)
                     if meta:
                         # Check dispatch mode
@@ -256,30 +349,136 @@ class SkillRegistry:
         # 1. Try registered plugin
         plugin = self._plugins.get(skill_name)
         if plugin:
+            started = time.perf_counter()
+            self._emit_pre_dispatch(
+                skill_name,
+                dispatch_mode="plugin",
+                message=message,
+                user_id=user_id,
+                platform=platform,
+                orchestrator=orchestrator,
+            )
+            allowed, blocked_reason = self._check_dispatch_permission(
+                skill_name,
+                orchestrator=orchestrator,
+            )
+            if not allowed:
+                self._emit_post_dispatch(
+                    skill_name,
+                    dispatch_mode="plugin",
+                    orchestrator=orchestrator,
+                    started_at=started,
+                    ok=False,
+                    status="denied",
+                    error=blocked_reason,
+                )
+                return True, blocked_reason
             try:
                 result = plugin.execute(
                     message, user_id=user_id, role=role,
                     platform=platform, orchestrator=orchestrator,
                 )
                 if result is not None:
+                    self._emit_post_dispatch(
+                        skill_name,
+                        dispatch_mode="plugin",
+                        orchestrator=orchestrator,
+                        started_at=started,
+                        ok=True,
+                        status="handled",
+                        output_data=result,
+                    )
                     return True, result
+                self._emit_post_dispatch(
+                    skill_name,
+                    dispatch_mode="plugin",
+                    orchestrator=orchestrator,
+                    started_at=started,
+                    ok=False,
+                    status="not_handled",
+                )
             except Exception as e:
                 logger.error("Plugin '%s' failed: %s", skill_name, e)
+                self._emit_post_dispatch(
+                    skill_name,
+                    dispatch_mode="plugin",
+                    orchestrator=orchestrator,
+                    started_at=started,
+                    ok=False,
+                    status="error",
+                    error=str(e),
+                )
                 return True, f"⚠️ 技能執行失敗：{e}"
 
         # 2. Try registered direct handler
         handler = self._direct_handlers.get(skill_name)
         if handler:
+            started = time.perf_counter()
+            self._emit_pre_dispatch(
+                skill_name,
+                dispatch_mode="direct",
+                message=message,
+                user_id=user_id,
+                platform=platform,
+                orchestrator=orchestrator,
+            )
+            allowed, blocked_reason = self._check_dispatch_permission(
+                skill_name,
+                orchestrator=orchestrator,
+            )
+            if not allowed:
+                self._emit_post_dispatch(
+                    skill_name,
+                    dispatch_mode="direct",
+                    orchestrator=orchestrator,
+                    started_at=started,
+                    ok=False,
+                    status="denied",
+                    error=blocked_reason,
+                )
+                return True, blocked_reason
             try:
                 result = handler()
                 if result:
+                    self._emit_post_dispatch(
+                        skill_name,
+                        dispatch_mode="direct",
+                        orchestrator=orchestrator,
+                        started_at=started,
+                        ok=True,
+                        status="handled",
+                        output_data=result,
+                    )
                     return True, result
+                self._emit_post_dispatch(
+                    skill_name,
+                    dispatch_mode="direct",
+                    orchestrator=orchestrator,
+                    started_at=started,
+                    ok=False,
+                    status="not_handled",
+                )
             except Exception as e:
                 logger.warning("Direct handler '%s' failed: %s", skill_name, e)
+                self._emit_post_dispatch(
+                    skill_name,
+                    dispatch_mode="direct",
+                    orchestrator=orchestrator,
+                    started_at=started,
+                    ok=False,
+                    status="error",
+                    error=str(e),
+                )
                 return False, ""
 
         # 3. Subprocess fallback (via skill_genesis)
-        return self._subprocess_dispatch(skill_name, message)
+        return self._subprocess_dispatch(
+            skill_name,
+            message,
+            user_id=user_id,
+            platform=platform,
+            orchestrator=orchestrator,
+        )
 
     def get_capability_guide(self, skill_name: str) -> Optional[str]:
         """Get capability guide for a skill (if registered)."""
@@ -310,7 +509,15 @@ class SkillRegistry:
 
     # ── Subprocess fallback ───────────────────────────────────────
 
-    def _subprocess_dispatch(self, skill_name: str, message: str) -> tuple[bool, str]:
+    def _subprocess_dispatch(
+        self,
+        skill_name: str,
+        message: str,
+        *,
+        user_id: str = "",
+        platform: str = "",
+        orchestrator: object = None,
+    ) -> tuple[bool, str]:
         """Run skill via action.py subprocess (backward compat)."""
         try:
             from skills.evolution.skill_genesis import run_skill_action
@@ -322,6 +529,33 @@ class SkillRegistry:
         if not folder:
             return False, ""
 
+        started = time.perf_counter()
+        self._emit_pre_dispatch(
+            skill_name,
+            dispatch_mode="subprocess",
+            message=message,
+            user_id=user_id,
+            platform=platform,
+            orchestrator=orchestrator,
+        )
+        action_path = self._resolve_action_path(folder)
+        allowed, blocked_reason = self._check_dispatch_permission(
+            skill_name,
+            action_path=action_path,
+            orchestrator=orchestrator,
+        )
+        if not allowed:
+            self._emit_post_dispatch(
+                skill_name,
+                dispatch_mode="subprocess",
+                orchestrator=orchestrator,
+                started_at=started,
+                ok=False,
+                status="denied",
+                error=blocked_reason,
+            )
+            return True, blocked_reason
+
         logger.info("Subprocess dispatch: %s → %s", skill_name, folder)
         try:
             result = run_skill_action(
@@ -332,10 +566,37 @@ class SkillRegistry:
             )
             if result.get("success"):
                 output = (result.get("output") or "").strip()
+                self._emit_post_dispatch(
+                    skill_name,
+                    dispatch_mode="subprocess",
+                    orchestrator=orchestrator,
+                    started_at=started,
+                    ok=True,
+                    status="handled",
+                    output_data=output or "✅ 技能執行完成。",
+                )
                 return True, output or "✅ 技能執行完成。"
+            self._emit_post_dispatch(
+                skill_name,
+                dispatch_mode="subprocess",
+                orchestrator=orchestrator,
+                started_at=started,
+                ok=False,
+                status="not_handled",
+                error=str(result.get("error") or ""),
+            )
             return False, ""
         except Exception as e:
             logger.warning("Subprocess dispatch error for %s: %s", skill_name, e)
+            self._emit_post_dispatch(
+                skill_name,
+                dispatch_mode="subprocess",
+                orchestrator=orchestrator,
+                started_at=started,
+                ok=False,
+                status="error",
+                error=str(e),
+            )
             return False, ""
 
     def _resolve_folder(self, skill_name: str) -> Optional[str]:
@@ -358,6 +619,13 @@ class SkillRegistry:
                 if os.path.isdir(d) and os.path.exists(os.path.join(d, "action.py")):
                     return candidate
         return None
+
+    def _resolve_action_path(self, folder: str) -> str:
+        for skills_dir in self._skills_dirs:
+            action_path = os.path.join(skills_dir, folder, "action.py")
+            if os.path.exists(action_path):
+                return action_path
+        return ""
 
     # ── Introspection ─────────────────────────────────────────────
 

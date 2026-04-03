@@ -14,12 +14,17 @@ import argparse
 import json
 import os
 import re
+import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-
 ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from skills.catalog import iter_top_level_skill_dirs
+
 SKILLS_ROOT = ROOT / "skills"
 DEFINITIONS_PATH = SKILLS_ROOT / "definitions.json"
 DEFAULT_SKILL_RE = re.compile(r"default:\s*([A-Za-z0-9._-]+)")
@@ -32,16 +37,7 @@ TOOL_ENDPOINT_SKILL_DEPENDENCIES = {
 
 
 def _discover_runnable_skill_dirs() -> set[str]:
-    out: set[str] = set()
-    for entry in os.scandir(SKILLS_ROOT):
-        if not entry.is_dir():
-            continue
-        name = entry.name
-        if name.startswith(".") or name == "__pycache__":
-            continue
-        if os.path.exists(os.path.join(entry.path, "action.py")):
-            out.add(name)
-    return out
+    return {entry.name for entry in iter_top_level_skill_dirs(SKILLS_ROOT, runnable_only=True)}
 
 
 def _extract_default_skill_from_tool(tool: dict[str, Any]) -> str:

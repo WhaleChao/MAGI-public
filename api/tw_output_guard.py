@@ -545,6 +545,28 @@ def detect_output_guard_issues(text: str, mode: str = "general") -> List[str]:
     return issues
 
 
+def mark_non_authoritative_context(text: str, *, label: str = "背景摘要", source: str = "模型壓縮") -> str:
+    """
+    Prefix derived context so downstream prompts do not treat it as source truth.
+    """
+    body = str(text or "").strip()
+    if not body:
+        return ""
+    header = f"【{label}｜非原文｜僅供延續上下文】"
+    if source:
+        header = f"{header} 來源：{source}"
+    return f"{header}\n{body}"
+
+
+def mark_unverified_reply(text: str, *, reason: str = "未驗證") -> str:
+    """
+    Prefix fallback replies that must not be presented as verified facts.
+    """
+    body = str(text or "").strip()
+    header = f"【未驗證回覆｜{reason}】"
+    return f"{header}\n{body}" if body else header
+
+
 def strip_markdown_for_chat(text: str) -> str:
     """Strip Markdown formatting that doesn't render on LINE/chat platforms.
     Preserves emoji and plain text structure. Saves tokens on LLM output."""

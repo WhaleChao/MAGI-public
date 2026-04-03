@@ -590,6 +590,22 @@ def translate_text_complete(text: str, source_lang: str = "auto", target_lang: s
     checkpoint_path = _translation_checkpoint_state_path(text, source_lang, target_lang) if checkpoint_active else None
     result_buffer = [None] * total
 
+    def _rebuild_translated_text_from_cached_results(cached_results) -> str:
+        if not isinstance(cached_results, list):
+            return ""
+        rebuilt_parts = []
+        for result in cached_results:
+            if not isinstance(result, dict):
+                continue
+            cached_text = str(result.get("text") or "").strip()
+            if not cached_text or bool(result.get("timed_out")) or int(result.get("failed") or 0) > 0:
+                continue
+            rebuilt_parts.append(_dh.polish_translated_document_text(cached_text) or cached_text)
+        rebuilt = "\n\n".join(rebuilt_parts).strip()
+        if not rebuilt:
+            return ""
+        return _dh.polish_translated_document_text(rebuilt) or rebuilt
+
     if checkpoint_path is not None:
         cached = _read_json(checkpoint_path)
         if isinstance(cached, dict):
@@ -598,9 +614,11 @@ def translate_text_complete(text: str, source_lang: str = "auto", target_lang: s
             cached_source = str(cached.get("source_lang") or "")
             cached_target = str(cached.get("target_lang") or "")
             cached_results = cached.get("results") or []
-            if cached_version in {2, checkpoint_version} and cached_total == total and cached_source == str(source_lang or "auto") and cached_target == str(target_lang or ""):
+            if cached_version in {2, checkpoint_version} and cached_source == str(source_lang or "auto") and cached_target == str(target_lang or ""):
                 cached_final = str(cached.get("final_text") or "").strip()
                 cached_translated = str(cached.get("translated_text") or "").strip()
+                if not cached_translated and isinstance(cached_results, list) and cached_results:
+                    cached_translated = _rebuild_translated_text_from_cached_results(cached_results)
                 cache_has_plain_translation = bool(cached_translated)
                 if bool(cached.get("complete")) and cached_final and ((not bilingual_table_active) or cache_has_plain_translation):
                     return {
@@ -609,7 +627,7 @@ def translate_text_complete(text: str, source_lang: str = "auto", target_lang: s
                         "translated_text": cached_translated or cached_final,
                         "provider": "melchior_chunk_complete",
                         "model": str(cached.get("model") or ""),
-                        "chunks_total": total,
+                        "chunks_total": int(cached.get("chunks_total") or total or 0),
                         "chunks_failed": int(cached.get("chunks_failed") or 0),
                     }
                 if isinstance(cached_results, list) and len(cached_results) == total:

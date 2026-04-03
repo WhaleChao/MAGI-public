@@ -1,12 +1,22 @@
 #!/usr/bin/env python3
 import argparse
 import json
+import os
 import sys
+from pathlib import Path
 
 
-CODE_DIR = "/Users/ai/Desktop/code"
-if CODE_DIR not in sys.path:
-    sys.path.insert(0, CODE_DIR)
+MAGI_ROOT = Path(
+    os.environ.get("MAGI_ROOT_DIR")
+    or os.environ.get("MAGI_ROOT")
+    or Path(__file__).resolve().parents[2]
+)
+CASPER_CLIENT_DIR = MAGI_ROOT / "skills" / "casper-client"
+
+for _path in (MAGI_ROOT, CASPER_CLIENT_DIR):
+    _text = str(_path)
+    if _text not in sys.path:
+        sys.path.insert(0, _text)
 
 
 DEFAULT_PROMPT = """你是台灣法律實務見解整理助理，請將下列「原始文字」整理成可直接存入資料庫的實務見解。
@@ -59,8 +69,6 @@ def _build_prompt(p: dict) -> str:
 
 
 def main() -> int:
-    from casper_tools_client import casper_chat
-
     ap = argparse.ArgumentParser(description="insight-refine skill")
     ap.add_argument("--task", default="help", help="task text")
     args = ap.parse_args()
@@ -68,6 +76,8 @@ def main() -> int:
 
     if task in {"help", "summary", "list"}:
         return _ok({"success": True, "commands": ["help", "self_test", "refine {..json..}"]})
+
+    from casper_tools_client import casper_chat
 
     if task == "self_test":
         prompt = "請用繁體中文回覆：OK（只要輸出 OK）"
@@ -96,4 +106,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

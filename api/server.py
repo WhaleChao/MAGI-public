@@ -165,9 +165,11 @@ except Exception as _csrf_err:
 from api.blueprints.osc_settings import osc_settings_bp
 from api.blueprints.osc_accounting import osc_accounting_bp
 from api.blueprints.osc_debt import osc_debt_bp
+from api.blueprints.dashboard_pages import dashboard_pages_bp
 app.register_blueprint(osc_settings_bp)
 app.register_blueprint(osc_accounting_bp)
 app.register_blueprint(osc_debt_bp)
+app.register_blueprint(dashboard_pages_bp)
 try:
     app.secret_key = os.environ["FLASK_SECRET_KEY"]
 except KeyError:
@@ -483,69 +485,6 @@ try:
     logger.info("🧠 Auto-Skill Engine Online")
 except Exception as e:
     logger.error(f"❌ Auto-Skill Init Failed: {e}")
-
-# --- Auth Routes ---
-# KEEP: Internal-only redirect. Caddy blocks /intel* externally (see Caddyfile_openclaw).
-# Used by internal tools and worldmonitor skill that writes to static/worldmonitor_reports.
-# Dashboard openIntelPanel() also references /intel for local access.
-@app.route('/static/worldmonitor_reports')
-@app.route('/static/worldmonitor_reports/')
-def legacy_worldmonitor_redirect():
-    return redirect("/intel")
-
-
-@app.route('/worldmonitor')
-@app.route('/worldmonitor/')
-def worldmonitor_entry():
-    """Human-friendly alias for the worldmonitor report panel."""
-    return redirect("/intel")
-
-
-@app.route('/openclaw')
-@app.route('/openclaw-gateway')
-def openclaw_entry():
-    """Local OpenClaw alias that lands on the real NERV management page."""
-    return redirect(url_for('dashboard_nerv'))
-
-
-@app.route('/intel')
-@login_required
-def intel_panel():
-    """全球情報面板 — 列出最新的 worldmonitor 報告。"""
-    report_dir = os.path.join(_MAGI_ROOT, "static", "worldmonitor_reports")
-    reports = []
-    if os.path.isdir(report_dir):
-        for f in sorted(os.listdir(report_dir), reverse=True)[:20]:
-            if f.endswith(".md"):
-                fpath = os.path.join(report_dir, f)
-                try:
-                    content = open(fpath, encoding="utf-8").read()[:5000]
-                    reports.append({"name": f, "content": content})
-                except Exception:
-                    reports.append({"name": f, "content": "(讀取失敗)"})
-    if not reports:
-        return "<h2>🌐 全球情報面板</h2><p>尚無報告。</p>", 200
-    html_parts = ["<h2>🌐 全球情報面板</h2>"]
-    for r in reports:
-        html_parts.append(f"<h3>{r['name']}</h3><pre>{r['content']}</pre><hr>")
-    return "\n".join(html_parts), 200
-
-@app.route('/dashboard')
-@login_required
-def dashboard():
-    return render_template('dashboard.html', user=current_user)
-
-@app.route('/dashboard/pixel')
-@login_required
-def dashboard_pixel():
-    return render_template('dashboard_pixel.html', user=current_user)
-
-
-@app.route('/dashboard/nerv')
-@login_required
-def dashboard_nerv():
-    return render_template('dashboard_nerv.html', user=current_user)
-
 
 @app.route('/dashboard/nerv/api/health')
 @login_required

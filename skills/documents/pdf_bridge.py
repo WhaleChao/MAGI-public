@@ -1,7 +1,6 @@
 # PDF Bridge for MAGI
 # Provides PDF text extraction and summarization
 
-import fitz  # PyMuPDF
 import hashlib
 import json
 import logging
@@ -13,8 +12,27 @@ import threading
 import time
 import urllib.parse
 import urllib.request
+import warnings
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, as_completed, wait
 from pathlib import Path
+
+with warnings.catch_warnings():
+    warnings.filterwarnings(
+        "ignore",
+        message=r"builtin type SwigPyPacked has no __module__ attribute",
+        category=DeprecationWarning,
+    )
+    warnings.filterwarnings(
+        "ignore",
+        message=r"builtin type SwigPyObject has no __module__ attribute",
+        category=DeprecationWarning,
+    )
+    warnings.filterwarnings(
+        "ignore",
+        message=r"builtin type swigvarlink has no __module__ attribute",
+        category=DeprecationWarning,
+    )
+    import fitz  # PyMuPDF
 
 from skills.bridge.shared_utils.text_utils import normalize_segment_fragment as _normalize_segment_fragment
 

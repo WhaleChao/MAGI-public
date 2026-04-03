@@ -27,6 +27,9 @@ _CACHE_PERSIST_PATH = os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
     ".agent", "intent_classifier_cache.json",
 )
+_CACHE_SCHEMA_VERSION = 2
+_CACHE_POLICY_VERSION = 2
+_PERSISTABLE_INTENTS = {"CHAT"}
 
 
 class IntentionClassifier:
@@ -40,9 +43,12 @@ class IntentionClassifier:
         self._cache_order = deque()
         self._llm_cooldown_until = 0.0
         self._last_llm_error = ""
-        self._cache_dirty_count = 0
         self._load_persistent_cache()
         logger.info(f"🔮 Intention Classifier Initialized (LLM={use_llm}, cached={len(self._cache)})")
+
+    @staticmethod
+    def _is_persistable_intent(value) -> bool:
+        return str(value or "").strip().upper() in _PERSISTABLE_INTENTS
 
     def _load_persistent_cache(self):
         """Load cached intent results from disk on startup."""
@@ -51,22 +57,29 @@ class IntentionClassifier:
                 import json
                 with open(_CACHE_PERSIST_PATH, "r", encoding="utf-8") as f:
                     data = json.load(f)
-                if isinstance(data, dict):
-                    items = data.get("items", {})
-                    if isinstance(items, dict):
-                        # Only load up to cache_size items
-                        for key, value in list(items.items())[:self.cache_size]:
-                            self._cache[key] = value
-                            self._cache_order.append(key)
+                if not isinstance(data, dict):
+                    return
+                if int(data.get("schema_version") or 0) != _CACHE_SCHEMA_VERSION:
+                    return
+                if int(data.get("policy_version") or 0) != _CACHE_POLICY_VERSION:
+                    return
+                if str(data.get("model") or "") != MODEL_NAME:
+                    return
+                if bool(data.get("use_llm")) != bool(self.use_llm):
+                    return
+                items = data.get("items", {})
+                if isinstance(items, dict):
+                    # Only load low-risk intents that remain valid under this policy.
+                    for key, value in list(items.items())[:self.cache_size]:
+                        if not self._is_persistable_intent(value):
+                            continue
+                        self._cache[key] = value
+                        self._cache_order.append(key)
         except Exception as e:
             logger.debug("Intent classifier cache load skipped: %s", e)
 
     def _save_persistent_cache(self):
-        """Save cache to disk periodically (every 20 new entries)."""
-        self._cache_dirty_count += 1
-        if self._cache_dirty_count < 20:
-            return
-        self._cache_dirty_count = 0
+        """Persist safe cache entries immediately to avoid fossilizing bad routes."""
         self._flush_cache()
 
     def _flush_cache(self):
@@ -74,9 +87,18 @@ class IntentionClassifier:
         try:
             import json
             os.makedirs(os.path.dirname(_CACHE_PERSIST_PATH), exist_ok=True)
+            items = {
+                key: value
+                for key, value in self._cache.items()
+                if self._is_persistable_intent(value)
+            }
             payload = {
+                "schema_version": _CACHE_SCHEMA_VERSION,
+                "policy_version": _CACHE_POLICY_VERSION,
+                "model": MODEL_NAME,
+                "use_llm": bool(self.use_llm),
                 "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
-                "items": dict(self._cache),
+                "items": items,
             }
             import tempfile
             fd, tmp = tempfile.mkstemp(
@@ -92,8 +114,17 @@ class IntentionClassifier:
         return self._cache.get(key)
 
     def _cache_set(self, key, value):
-        if key in self._cache:
-            self._cache[key] = value
+        value = str(value or "").strip().upper()
+        if not self._is_persistable_intent(value):
+            if key in self._cache:
+                self._cache.pop(key, None)
+                try:
+                    self._cache_order.remove(key)
+                except ValueError:
+                    pass
+                self._save_persistent_cache()
+            return
+        if key in self._cache and self._cache[key] == value:
             return
         self._cache[key] = value
         self._cache_order.append(key)

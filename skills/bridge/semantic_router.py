@@ -16,8 +16,8 @@ Algorithm:
   5. Optionally use LLM dispatch for ambiguous scores
 
 Environment variables:
-  SEMANTIC_ROUTER_THRESHOLD   float 0-1, min confidence to fire  (default 0.15)
-  SEMANTIC_ROUTER_LLM_THRESH  float 0-1, threshold to use LLM    (default 0.10)
+  SEMANTIC_ROUTER_THRESHOLD   float 0-1, min confidence to fire  (default 0.22)
+  SEMANTIC_ROUTER_LLM_THRESH  float 0-1, threshold to use LLM    (default 0.18)
   SEMANTIC_ROUTER_LLM_ENABLED 0/1 enable LLM fallback            (default 1)
   SEMANTIC_ROUTER_MAX_LLM_SEC timeout for LLM skill dispatch      (default 8)
 """
@@ -40,10 +40,11 @@ _DEFINITIONS_PATH = os.path.join(
 )
 
 # Tunable thresholds
-_ROUTE_THRESHOLD = float(os.environ.get("SEMANTIC_ROUTER_THRESHOLD", "0.15") or "0.15")
-_LLM_THRESHOLD   = float(os.environ.get("SEMANTIC_ROUTER_LLM_THRESH", "0.10") or "0.10")
+_ROUTE_THRESHOLD = float(os.environ.get("SEMANTIC_ROUTER_THRESHOLD", "0.22") or "0.22")
+_LLM_THRESHOLD   = float(os.environ.get("SEMANTIC_ROUTER_LLM_THRESH", "0.18") or "0.18")
 _LLM_ENABLED     = os.environ.get("SEMANTIC_ROUTER_LLM_ENABLED", "1").strip() in {"1", "true", "yes"}
 _LLM_TIMEOUT     = int(os.environ.get("SEMANTIC_ROUTER_MAX_LLM_SEC", "8") or "8")
+_PHRASE_BONUS_SCALE = float(os.environ.get("SEMANTIC_ROUTER_PHRASE_BONUS_SCALE", "0.25") or "0.25")
 
 # Chinese/English stopwords to down-weight
 _STOPWORDS = {
@@ -83,6 +84,8 @@ _PHRASE_HINTS: List[Tuple[str, str, float]] = [
     ("法院判決",       "run_judgment_collector", 0.50),
     ("判決書",         "run_judgment_collector", 0.48),
     ("判決",           "run_judgment_collector", 0.40),
+    ("幫我摘要",       "summarize_text",         0.46),
+    ("幫我翻譯",       "tri_sage_translate",     0.46),
     ("開庭時間",       "list_meetings",          0.50),
     ("今天開庭",       "list_meetings",          0.50),
     ("有沒有開庭",     "list_meetings",          0.48),
@@ -171,6 +174,31 @@ _PHRASE_HINTS: List[Tuple[str, str, float]] = [
 ]
 # Sort by phrase length descending so longer (more specific) phrases are checked first
 _PHRASE_HINTS.sort(key=lambda x: -len(x[0]))
+_SOFT_PHRASE_HINTS = {
+    # Broad terms should influence scoring only; they must not hard-dispatch.
+    "摘要",
+    "翻譯",
+    "記得",
+    "記住",
+    "案件",
+    "客戶",
+    "當事人",
+    "搜尋",
+    "搜索",
+    "查詢",
+    "行程",
+    "開庭",
+    "筆錄",
+    "證詞",
+    "訂閱",
+    "translate",
+    "summarize",
+    "summarise",
+    "search for",
+    "look up",
+    "recall",
+    "remember this",
+}
 
 
 def _load_skills() -> List[Dict]:
@@ -333,6 +361,7 @@ def route(message: str) -> Optional[Dict]:
 
     # --- Phase 1: Phrase hint matching (bridges Chinese ↔ English vocabulary gap) ---
     phrase_bonus: Dict[str, float] = {}  # skill_name → best bonus score
+    hard_phrase_bonus: Dict[str, float] = {}
     for phrase, skill_name, bonus in _PHRASE_HINTS:
         if skill_name in _BLACKLISTED_SKILLS:
             continue
@@ -340,11 +369,14 @@ def route(message: str) -> Optional[Dict]:
             # Only record the best (longest/highest) bonus per skill
             if bonus > phrase_bonus.get(skill_name, 0.0):
                 phrase_bonus[skill_name] = bonus
+            if phrase not in _SOFT_PHRASE_HINTS and bonus > hard_phrase_bonus.get(skill_name, 0.0):
+                hard_phrase_bonus[skill_name] = bonus
 
-    # If any phrase hint fired with sufficient confidence, return immediately
-    if phrase_bonus:
-        best_phrase_skill = max(phrase_bonus, key=lambda k: phrase_bonus[k])
-        best_phrase_conf = phrase_bonus[best_phrase_skill]
+    # Only hard phrases may short-circuit directly. Broad phrases must go through
+    # the token scorer so they do not hijack generic chat or ambiguous requests.
+    if hard_phrase_bonus:
+        best_phrase_skill = max(hard_phrase_bonus, key=lambda k: hard_phrase_bonus[k])
+        best_phrase_conf = hard_phrase_bonus[best_phrase_skill]
         if best_phrase_conf >= _ROUTE_THRESHOLD:
             logger.debug(
                 f"SemanticRouter[phrase]: '{message[:60]}' → {best_phrase_skill} ({best_phrase_conf:.3f})"
@@ -356,7 +388,7 @@ def route(message: str) -> Optional[Dict]:
     for s in skills:
         sc = _score(msg_tokens, s["tokens"], msg_text, s["text"])
         # Blend in any phrase bonus for this skill
-        sc += phrase_bonus.get(s["name"], 0.0) * 0.4
+        sc += phrase_bonus.get(s["name"], 0.0) * _PHRASE_BONUS_SCALE
         scores.append((sc, s["name"]))
 
     scores.sort(reverse=True)

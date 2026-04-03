@@ -23,6 +23,11 @@ from typing import List, Optional, Tuple
 
 import requests
 
+try:
+    from providers import build_provider_registry as _build_provider_registry
+except Exception:
+    _build_provider_registry = None
+
 # ---------------------------------------------------------------------------
 # Local Ollama concurrency guard — prevent 503 "maximum pending requests"
 # ---------------------------------------------------------------------------
@@ -190,6 +195,19 @@ class InferenceGateway:
             os.environ.get("INFERENCE_LOCAL_VISION_MODELS", "taide-12b")
         )
 
+        try:
+            from providers import AnthropicProvider, OllamaProvider, OmlxProvider, OpenAIProvider
+
+            self.provider_adapters = {
+                "omlx": OmlxProvider(base_url=self.local_ollama, model=self.local_chat_models[0] if self.local_chat_models else "taide-12b"),
+                "ollama": OllamaProvider(base_url=self.local_ollama, model=self.local_chat_models[0] if self.local_chat_models else "taide-12b"),
+                "openai": OpenAIProvider(model="gpt-4.1-mini"),
+                "anthropic": AnthropicProvider(model="claude-3-5-sonnet-latest"),
+            }
+        except Exception:
+            self.provider_adapters = {}
+        self.provider_registry = self._build_provider_registry()
+
     def classify_intent(self, prompt: str, image_path: str = "", explicit_task_type: str = "") -> str:
         return classify_intent(prompt=prompt, image_path=image_path, explicit_task_type=explicit_task_type)
 
@@ -204,6 +222,34 @@ class InferenceGateway:
             if m and m not in out:
                 out.append(m)
         return out
+
+    def _build_provider_registry(self) -> dict[str, object]:
+        if callable(_build_provider_registry):
+            try:
+                return _build_provider_registry(session=self.session)
+            except Exception:
+                logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 211, exc_info=True)
+        return {}
+
+    def list_provider_adapters(self) -> list[str]:
+        return sorted(str(name) for name in getattr(self, "provider_registry", {}).keys())
+
+    def get_provider_adapter(self, name: str):
+        return getattr(self, "provider_registry", {}).get(str(name or "").strip().lower())
+
+    def provider_health_snapshot(self, *, timeout: int = 3) -> dict[str, dict]:
+        snapshot: dict[str, dict] = {}
+        for name, adapter in getattr(self, "provider_registry", {}).items():
+            health = getattr(adapter, "health_check", None)
+            if callable(health):
+                try:
+                    snapshot[name] = health(timeout=timeout).to_dict()
+                    continue
+                except Exception as exc:
+                    snapshot[name] = {"provider": name, "available": False, "detail": str(exc)}
+                    continue
+            snapshot[name] = {"provider": name, "available": False, "detail": "no_health_check"}
+        return snapshot
 
     @staticmethod
     def _result(

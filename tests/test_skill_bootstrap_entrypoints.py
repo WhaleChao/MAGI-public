@@ -87,3 +87,37 @@ def test_pdf_annotator_help_bootstraps(monkeypatch: pytest.MonkeyPatch, tmp_path
     )
     assert exit_code == 0
     assert "usage:" in capsys.readouterr().out.lower()
+
+
+def test_pdf_namer_help_bootstraps(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]):
+    exit_code = _run_skill_script(
+        "skills/pdf-namer/action.py",
+        ["--help"],
+        monkeypatch,
+        tmp_path,
+        patch_case_roots=True,
+    )
+    assert exit_code == 0
+    assert "usage:" in capsys.readouterr().out.lower()
+
+
+def test_legal_attest_help_bootstraps(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]):
+    exit_code = _run_skill_script(
+        "skills/legal_attest/action.py",
+        ["--task", "help"],
+        monkeypatch,
+        tmp_path,
+    )
+    assert exit_code == 0
+    assert "legal_attest" in capsys.readouterr().out
+
+
+def test_insight_refine_help_bootstraps(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]):
+    exit_code = _run_skill_script(
+        "skills/insight-refine/action.py",
+        ["--help"],
+        monkeypatch,
+        tmp_path,
+    )
+    assert exit_code == 0
+    assert "usage:" in capsys.readouterr().out.lower()

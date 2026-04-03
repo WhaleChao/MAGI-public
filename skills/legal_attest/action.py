@@ -8,9 +8,10 @@ import argparse
 from pathlib import Path
 
 # Provide access to MAGI paths (env-configurable, no hardcoded user path)
-_MAGI_ROOT = os.environ.get("MAGI_ROOT_DIR", os.path.expanduser("~/Desktop/MAGI"))
-sys.path.insert(0, os.path.abspath(_MAGI_ROOT))
-from skills.legal_attest.generator import core
+_MAGI_ROOT = os.environ.get("MAGI_ROOT_DIR") or os.environ.get("MAGI_ROOT") or str(Path(__file__).resolve().parents[2])
+_MAGI_ROOT = os.path.abspath(_MAGI_ROOT)
+if _MAGI_ROOT not in sys.path:
+    sys.path.insert(0, _MAGI_ROOT)
 
 logger = logging.getLogger(__name__)
 
@@ -18,6 +19,12 @@ _BASE_URL = os.environ.get("MAGI_EXPORT_BASE_URL", "").rstrip("/")
 
 AGENT_DIR = Path(_MAGI_ROOT) / ".agent"
 STATE_PATH = AGENT_DIR / "legal_attest_state.json"
+
+
+def _get_core():
+    from skills.legal_attest.generator import core
+
+    return core
 
 def _load_state():
     if STATE_PATH.exists():
@@ -93,6 +100,7 @@ def handle_chat(user_id: str, message: str) -> str:
                 sender_addr_list = [user_state["sender_addr"]]
                 receiver_name_list = [[user_state["receiver_name"]]]
                 receiver_addr_list = [user_state["receiver_addr"]]
+                core = _get_core()
                 
                 core.generate_text_and_letter(
                     sender_name_list, sender_addr_list,

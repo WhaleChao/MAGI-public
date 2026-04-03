@@ -1,0 +1,47 @@
+from __future__ import annotations
+
+import requests
+
+from .base import OpenAICompatibleProvider, ProviderHealth
+
+
+class OmlxProvider(OpenAICompatibleProvider):
+    name = "omlx"
+    default_base_url = "http://127.0.0.1:8080/v1"
+    base_url_env = "OMLX_BASE_URL"
+    api_key_env = "OMLX_API_KEY"
+    model_env = "OMLX_MODEL"
+    default_model = "TAIDE-12b-Chat-mlx-4bit"
+    health_path = "/models"
+    requires_api_key = False
+
+    def build_headers(self) -> dict[str, str]:
+        headers = super().build_headers()
+        headers["Authorization"] = f"Bearer {self.api_key or 'omlx-local'}"
+        return headers
+
+    def healthcheck(self, *, timeout: float = 5.0):
+        try:
+            resp = requests.get(self.build_url(self.health_path), headers=self.build_headers(), timeout=float(timeout))
+            resp.raise_for_status()
+            payload = resp.json() or {}
+            models = payload.get("data") or []
+            count = len(models)
+            return ProviderHealth(
+                provider=self.name,
+                available=True,
+                base_url=self.base_url,
+                model=self.model,
+                status_code=getattr(resp, "status_code", 200),
+                detail=f"{count} models",
+                payload={"models": models},
+            )
+        except Exception as exc:
+            return ProviderHealth(
+                provider=self.name,
+                available=False,
+                base_url=self.base_url,
+                model=self.model,
+                detail=str(exc),
+                payload={"url": self.build_url(self.health_path)},
+            )

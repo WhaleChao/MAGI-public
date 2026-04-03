@@ -1,5 +1,6 @@
-"""Tests for Orchestrator._explain_routing() — pure routing transparency."""
+"""Tests for routing hardening and routing transparency."""
 
+import json
 import pytest
 from unittest.mock import MagicMock, patch
 
@@ -135,3 +136,72 @@ class TestExplainRouting:
         for msg in ["/help", "狀態", "行程", "翻譯 hi", "系統狀態"]:
             result = self.orc._explain_routing(msg)
             assert result["success"] is True
+
+
+class TestRoutingHardening:
+    @pytest.mark.parametrize("msg", ["摘要", "翻譯", "記得", "案件", "查詢", "搜尋", "開庭"])
+    def test_generic_terms_do_not_hard_dispatch(self, msg):
+        from skills.bridge.semantic_router import route
+
+        result = route(msg)
+        if result is not None:
+            assert result["method"] != "phrase"
+
+    @pytest.mark.parametrize(
+        "msg,expected_skill",
+        [
+            ("法院判決全文", "run_judgment_collector"),
+            ("幫我翻譯這份文件成英文", "tri_sage_translate"),
+            ("今天開庭時間是什麼時候", "list_meetings"),
+        ],
+    )
+    def test_specific_requests_still_route(self, msg, expected_skill):
+        from skills.bridge.semantic_router import route
+
+        result = route(msg)
+        assert result is not None
+        assert result["skill"] == expected_skill
+        assert result["confidence"] >= 0.22
+
+    def test_persistent_cache_skips_high_risk_intents(self, tmp_path, monkeypatch):
+        from skills.bridge import intention_classifier as ic
+
+        cache_path = tmp_path / "intent_classifier_cache.json"
+        monkeypatch.setattr(ic, "_CACHE_PERSIST_PATH", str(cache_path))
+        monkeypatch.setattr(ic.IntentionClassifier, "_ask_llm", lambda self, text: "")
+
+        clf = ic.IntentionClassifier(use_llm=False, cache_size=8)
+        assert clf.classify("哈囉你好") == "CHAT"
+        assert clf.classify("台北天氣如何") == "QUERY"
+        assert clf.classify("幫我翻譯這份文件") in {"QUERY", "CMD"}
+
+        payload = json.loads(cache_path.read_text(encoding="utf-8"))
+        assert payload["schema_version"] == 2
+        assert payload["policy_version"] == 2
+        assert payload["model"]
+        assert payload["use_llm"] is False
+        assert payload["items"] == {"哈囉你好": "CHAT"}
+
+    def test_old_cache_payload_is_ignored(self, tmp_path, monkeypatch):
+        from skills.bridge import intention_classifier as ic
+
+        cache_path = tmp_path / "intent_classifier_cache.json"
+        cache_path.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "policy_version": 1,
+                    "model": "legacy-model",
+                    "use_llm": True,
+                    "items": {"台北天氣如何": "CHAT"},
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(ic, "_CACHE_PERSIST_PATH", str(cache_path))
+        monkeypatch.setattr(ic.IntentionClassifier, "_ask_llm", lambda self, text: "")
+
+        clf = ic.IntentionClassifier(use_llm=False, cache_size=8)
+        assert clf._cache_get("台北天氣如何") is None
+        assert clf.classify("台北天氣如何") == "QUERY"
