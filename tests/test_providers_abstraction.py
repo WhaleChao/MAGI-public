@@ -32,11 +32,12 @@ def test_provider_registry_lists_all_known_adapters():
 
 
 def test_omlx_provider_builds_openai_style_payload_and_health_url():
+    from api.model_config import TEXT_PRIMARY_MODEL
     from providers.omlx import OmlxProvider
 
     provider = OmlxProvider()
     payload = provider.build_chat_payload("hello world", temperature=0.2, max_tokens=32)
-    assert payload["model"] == "TAIDE-12b-Chat-mlx-4bit"
+    assert payload["model"] == TEXT_PRIMARY_MODEL
     assert payload["messages"] == [{"role": "user", "content": "hello world"}]
     assert payload["stream"] is False
     assert payload["temperature"] == 0.2
@@ -122,4 +123,3 @@ def test_ollama_provider_builds_payload_and_health_check():
 
     assert health.available is True
     assert health.status_code == 200
-

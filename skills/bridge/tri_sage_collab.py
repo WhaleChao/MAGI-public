@@ -11,6 +11,7 @@ from datetime import datetime
 
 import requests
 
+from api.model_config import TEXT_PRIMARY_MODEL
 from skills.bridge.http_pool import get_session as _get_session
 from skills.bridge import balthasar_bridge, melchior_bridge, melchior_client
 from skills.documents.vector_pipeline import ingest_sections_to_vector_memory, ingest_text_to_vector_memory
@@ -134,7 +135,7 @@ def _translate_llm_call(prompt: str, timeout_sec: int) -> dict:
     import logging as _logging
     _log = _logging.getLogger("tri_sage_translate")
     t = max(8, int(timeout_sec or 0))
-    quick_model = (os.environ.get("TRI_SAGE_TRANSLATE_LOCAL_MODEL") or "taide-12b").strip() or "taide-12b"
+    quick_model = (os.environ.get("TRI_SAGE_TRANSLATE_LOCAL_MODEL") or TEXT_PRIMARY_MODEL).strip() or TEXT_PRIMARY_MODEL
     max_retries = int(os.environ.get("MAGI_TRANSLATE_RETRY_ATTEMPTS", "3") or "3")
 
     from skills.bridge.inference_gateway import InferenceGateway

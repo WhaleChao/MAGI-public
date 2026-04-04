@@ -81,6 +81,13 @@ class TestCircuitBreaker(unittest.TestCase):
         self.assertIn("status", status)
         self.assertFalse(status["open"])
 
+    def test_resolve_omlx_chat_model_falls_back_to_available_local_model(self):
+        resolved = self.mc._resolve_omlx_chat_model(
+            "TAIDE-12b-Chat-mlx-4bit",
+            available_models=["Qwen2.5-Coder-14B-Instruct-4bit"],
+        )
+        self.assertEqual(resolved, "Qwen2.5-Coder-14B-Instruct-4bit")
+
 
 if __name__ == "__main__":
     unittest.main()

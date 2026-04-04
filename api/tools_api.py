@@ -48,6 +48,7 @@ from flask import Flask, request, jsonify, send_from_directory, Response
 _MAGI_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if _MAGI_ROOT not in sys.path:
     sys.path.insert(0, _MAGI_ROOT)
+from api.model_config import TEXT_PRIMARY_MODEL
 
 # Auto-reap zombie children (skill subprocesses, etc.)
 import signal as _signal
@@ -896,8 +897,8 @@ def external_osc_chat():
         ]
     )
     if quick_model_or_mode:
-        target_main = (os.environ.get("MAGI_MAIN_MODEL") or "taide-12b").strip() or "taide-12b"
-        target_sub = (os.environ.get("CASPER_LOCAL_MODEL") or "taide-12b").strip() or "taide-12b"
+        target_main = (os.environ.get("MAGI_MAIN_MODEL") or TEXT_PRIMARY_MODEL).strip() or TEXT_PRIMARY_MODEL
+        target_sub = (os.environ.get("CASPER_LOCAL_MODEL") or TEXT_PRIMARY_MODEL).strip() or TEXT_PRIMARY_MODEL
         active = target_main
         mode = "unknown"
         try:
@@ -2095,7 +2096,7 @@ def api_collab_chat():
     allow_template_fallback = _to_bool(data.get("allow_template_fallback", True), True)
     if not prompt:
         return jsonify({"error": "Missing 'prompt'"}), 400
-    primary_model = (data.get("model") or os.environ.get("MAGI_COLLAB_CHAT_MODEL") or "taide-12b").strip() or "taide-12b"
+    primary_model = (data.get("model") or os.environ.get("MAGI_COLLAB_CHAT_MODEL") or TEXT_PRIMARY_MODEL).strip() or TEXT_PRIMARY_MODEL
     # Use InferenceGateway — handles oMLX/Ollama/remote fallback internally
     try:
         from skills.bridge.inference_gateway import InferenceGateway

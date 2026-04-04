@@ -81,7 +81,7 @@ def test_build_release_bundle_excludes_sensitive_and_runtime_files(tmp_path):
     assert (bundle / "json" / "config.example.json").exists()
     assert not (bundle / "json" / "token.pickle").exists()
     assert not (bundle / "skills" / "pdf-namer" / "training_data.json").exists()
-    assert (bundle / "static" / "star-office" / "index.html").exists()
+    assert not (bundle / "static" / "star-office").exists()
     assert (bundle / "static" / "exports").is_dir()
     assert not any((bundle / "static" / "exports").iterdir())
     assert (bundle / "casper_ecosystem" / "law_firm_orchestrators" / "laf_orchestrator.py").exists()

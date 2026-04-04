@@ -3,6 +3,7 @@ from __future__ import annotations
 import requests
 
 from .base import OpenAICompatibleProvider, ProviderHealth
+from api.model_config import TEXT_PRIMARY_MODEL
 
 
 class OmlxProvider(OpenAICompatibleProvider):
@@ -11,7 +12,7 @@ class OmlxProvider(OpenAICompatibleProvider):
     base_url_env = "OMLX_BASE_URL"
     api_key_env = "OMLX_API_KEY"
     model_env = "OMLX_MODEL"
-    default_model = "TAIDE-12b-Chat-mlx-4bit"
+    default_model = TEXT_PRIMARY_MODEL
     health_path = "/models"
     requires_api_key = False
 

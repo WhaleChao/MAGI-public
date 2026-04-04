@@ -146,6 +146,7 @@ def main():
     # 1. 閱卷下載
     total += migrate_json_file(conn, dl / "downloaded_registry.json", "download")
     total += migrate_json_file(conn, dl / "notified_cases.json", "payment_notify")
+    total += migrate_json_file(conn, dl / "dismissed_payments.json", "payment_dismissed")
     total += migrate_json_file(conn, dl / "payment_registry.json", "payment_track")
     total += migrate_json_file(conn, dl / "payment_proof_registry.json", "payment_proof")
     total += migrate_json_file(conn, dl / ".recent_activity_notified.json", "recent_activity")

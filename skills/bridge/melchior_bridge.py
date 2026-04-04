@@ -4,6 +4,7 @@ import base64
 import os
 import sys
 import re
+from api.model_config import TEXT_PRIMARY_MODEL
 from skills.bridge.http_pool import get_session as _get_session
 from skills.bridge import melchior_client
 from skills.bridge.inference_gateway import InferenceGateway
@@ -14,12 +15,12 @@ _MAGI_ROOT = os.path.abspath(os.path.dirname(os.path.dirname(os.path.dirname(__f
 MELCHIOR_HOST = os.environ.get("MELCHIOR_HOST", "100.116.54.16")
 MELCHIOR_PORT = os.environ.get("MELCHIOR_PORT", "5002")
 MELCHIOR_URL = f"http://{MELCHIOR_HOST}:{MELCHIOR_PORT}/api/generate"
-VISION_MODEL = "taide-12b"  # Ollama text-only fallback (oMLX is primary for vision)
+VISION_MODEL = TEXT_PRIMARY_MODEL  # text-model fallback when vision-specific route is unavailable
 
 # Local fallback (oMLX)
 LOCAL_OLLAMA_URL = "http://127.0.0.1:8080/v1/chat/completions"
-LOCAL_VISION_MODEL = "taide-12b"  # oMLX Gemma-3 is primary for vision
-REMOTE_TEXT_MODEL = "taide-12b" # Best local reasoning model
+LOCAL_VISION_MODEL = TEXT_PRIMARY_MODEL
+REMOTE_TEXT_MODEL = TEXT_PRIMARY_MODEL
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("MelchiorBridge")
@@ -89,7 +90,7 @@ def analyze_image_local(image_path, prompt="Describe this image"):
         logger.debug(f"oMLX vision failed: {e}, falling back...")
 
     # ── Fallback: oMLX vision via OpenAI-compatible API ──
-    vision_chain = ["TAIDE-12b-Chat-mlx-4bit"]
+    vision_chain = [TEXT_PRIMARY_MODEL]
 
     for model in vision_chain:
         logger.info(f"💾 [LOCAL] Trying vision model: {model}...")

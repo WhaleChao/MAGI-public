@@ -23,6 +23,20 @@ from typing import List, Optional, Tuple
 
 import requests
 
+from api.model_config import (
+    CODE_MODEL as DEFAULT_CODE_MODEL,
+    EMBED_MODEL as DEFAULT_EMBED_MODEL,
+    GENERAL_MODEL as DEFAULT_GENERAL_MODEL,
+    OCR_MODEL as DEFAULT_OCR_MODEL,
+    SUMMARY_MODEL as DEFAULT_SUMMARY_MODEL,
+    TEXT_PRIMARY_MODEL,
+    TEXT_REVIEW_MODEL,
+    VISION_MODEL as DEFAULT_VISION_MODEL,
+    default_local_chat_models,
+    default_local_vision_models,
+    resolve_text_model,
+)
+
 try:
     from providers import build_provider_registry as _build_provider_registry
 except Exception:
@@ -130,21 +144,21 @@ def classify_intent(prompt: str, image_path: str = "", explicit_task_type: str =
 # Model Roster: task_type → {day_model, night_model, local_model}
 # ---------------------------------------------------------------------------
 _MODEL_ROSTER = {
-    "general":        {"day": "taide-12b", "night": "taide-12b", "local": "taide-12b", "omlx": "TAIDE-12b-Chat-mlx-4bit"},
-    "summary":        {"day": "taide-12b", "night": "taide-12b", "local": "taide-12b", "omlx": "TAIDE-12b-Chat-mlx-4bit"},
-    "translate":      {"day": "taide-12b", "night": "taide-12b", "local": "taide-12b", "omlx": "TAIDE-12b-Chat-mlx-4bit"},
-    "transcribe":     {"day": "taide-12b", "night": "taide-12b", "local": "taide-12b", "omlx": "TAIDE-12b-Chat-mlx-4bit"},
-    "captcha":        {"day": "taide-12b", "night": "taide-12b", "local": "taide-12b", "omlx": "TAIDE-12b-Chat-mlx-4bit"},
-    "vision":         {"day": "taide-12b", "night": "taide-12b", "local": "taide-12b", "omlx": "GLM-OCR-bf16"},
-    "ocr":            {"day": "taide-12b", "night": "taide-12b", "local": "taide-12b", "omlx": "GLM-OCR-bf16"},
-    "coding":         {"day": "taide-12b", "night": "taide-12b", "local": "taide-12b", "omlx": "Qwen2.5-Coder-14B-Instruct-4bit"},
-    "tc_review":      {"day": "taide-12b", "night": "taide-12b", "local": "taide-12b", "omlx": "TAIDE-12b-Chat-mlx-4bit"},
-    "legal_analysis": {"day": "taide-12b", "night": "taide-12b", "local": "taide-12b", "omlx": "TAIDE-12b-Chat-mlx-4bit"},
-    "repair_insight_summary": {"day": "taide-12b", "night": "taide-12b", "local": "taide-12b", "omlx": "TAIDE-12b-Chat-mlx-4bit"},
-    "reflection":     {"day": "taide-12b", "night": "taide-12b", "local": "taide-12b", "omlx": "TAIDE-12b-Chat-mlx-4bit"},
-    "night_talk":     {"day": "taide-12b", "night": "taide-12b", "local": "taide-12b", "omlx": "TAIDE-12b-Chat-mlx-4bit"},
-    "date_extract":   {"day": "",          "night": "",          "local": "taide-12b", "omlx": "TAIDE-12b-Chat-mlx-4bit"},
-    "embedding":      {"day": "",          "night": "",          "local": "nomic-embed-text", "omlx": "modernbert-embed-4bit"},
+    "general":        {"day": TEXT_PRIMARY_MODEL, "night": TEXT_PRIMARY_MODEL, "local": TEXT_PRIMARY_MODEL, "omlx": DEFAULT_GENERAL_MODEL},
+    "summary":        {"day": TEXT_PRIMARY_MODEL, "night": TEXT_PRIMARY_MODEL, "local": TEXT_PRIMARY_MODEL, "omlx": DEFAULT_SUMMARY_MODEL},
+    "translate":      {"day": TEXT_PRIMARY_MODEL, "night": TEXT_PRIMARY_MODEL, "local": TEXT_PRIMARY_MODEL, "omlx": DEFAULT_GENERAL_MODEL},
+    "transcribe":     {"day": TEXT_PRIMARY_MODEL, "night": TEXT_PRIMARY_MODEL, "local": TEXT_PRIMARY_MODEL, "omlx": DEFAULT_GENERAL_MODEL},
+    "captcha":        {"day": TEXT_PRIMARY_MODEL, "night": TEXT_PRIMARY_MODEL, "local": TEXT_PRIMARY_MODEL, "omlx": DEFAULT_GENERAL_MODEL},
+    "vision":         {"day": TEXT_PRIMARY_MODEL, "night": TEXT_PRIMARY_MODEL, "local": TEXT_PRIMARY_MODEL, "omlx": DEFAULT_VISION_MODEL},
+    "ocr":            {"day": TEXT_PRIMARY_MODEL, "night": TEXT_PRIMARY_MODEL, "local": TEXT_PRIMARY_MODEL, "omlx": DEFAULT_OCR_MODEL},
+    "coding":         {"day": TEXT_PRIMARY_MODEL, "night": TEXT_PRIMARY_MODEL, "local": TEXT_PRIMARY_MODEL, "omlx": DEFAULT_CODE_MODEL},
+    "tc_review":      {"day": TEXT_PRIMARY_MODEL, "night": TEXT_PRIMARY_MODEL, "local": TEXT_PRIMARY_MODEL, "omlx": TEXT_REVIEW_MODEL},
+    "legal_analysis": {"day": TEXT_PRIMARY_MODEL, "night": TEXT_PRIMARY_MODEL, "local": TEXT_PRIMARY_MODEL, "omlx": DEFAULT_GENERAL_MODEL},
+    "repair_insight_summary": {"day": TEXT_PRIMARY_MODEL, "night": TEXT_PRIMARY_MODEL, "local": TEXT_PRIMARY_MODEL, "omlx": DEFAULT_GENERAL_MODEL},
+    "reflection":     {"day": TEXT_PRIMARY_MODEL, "night": TEXT_PRIMARY_MODEL, "local": TEXT_PRIMARY_MODEL, "omlx": DEFAULT_GENERAL_MODEL},
+    "night_talk":     {"day": TEXT_PRIMARY_MODEL, "night": TEXT_PRIMARY_MODEL, "local": TEXT_PRIMARY_MODEL, "omlx": DEFAULT_GENERAL_MODEL},
+    "date_extract":   {"day": "", "night": "", "local": TEXT_PRIMARY_MODEL, "omlx": DEFAULT_OCR_MODEL},
+    "embedding":      {"day": "", "night": "", "local": "nomic-embed-text", "omlx": DEFAULT_EMBED_MODEL},
 }
 
 # Tasks that benefit from cross-validation (CAPTCHA, date extraction)
@@ -158,8 +172,8 @@ def select_model_for_task(task_type: str, force_quality: bool = False) -> str:
     """Pick the best local model for a task based on time of day."""
     entry = _MODEL_ROSTER.get(task_type, _MODEL_ROSTER.get("general", {}))
     if force_quality or _is_night():
-        return entry.get("night", "") or entry.get("local", "taide-12b")
-    return entry.get("day", "") or entry.get("local", "taide-12b")
+        return entry.get("night", "") or entry.get("local", TEXT_PRIMARY_MODEL)
+    return entry.get("day", "") or entry.get("local", TEXT_PRIMARY_MODEL)
 
 
 class InferenceGateway:
@@ -183,24 +197,21 @@ class InferenceGateway:
 
         self.local_ollama = (os.environ.get("INFERENCE_LOCAL_OLLAMA_BASE", "http://127.0.0.1:8080") or "http://127.0.0.1:8080").rstrip("/")
 
-        self.melchior_models = self._split_models(os.environ.get("INFERENCE_MELCHIOR_MODELS", "taide-12b"))
-        self.balthasar_models = self._split_models(os.environ.get("INFERENCE_BALTHASAR_MODELS", "taide-12b"))
+        self.melchior_models = self._split_models(os.environ.get("INFERENCE_MELCHIOR_MODELS", TEXT_PRIMARY_MODEL))
+        self.balthasar_models = self._split_models(os.environ.get("INFERENCE_BALTHASAR_MODELS", TEXT_PRIMARY_MODEL))
         self.local_chat_models = self._split_models(
-            os.environ.get(
-                "INFERENCE_LOCAL_CHAT_MODELS",
-                "taide-12b",
-            )
+            os.environ.get("INFERENCE_LOCAL_CHAT_MODELS", ",".join(default_local_chat_models()))
         )
         self.local_vision_models = self._split_models(
-            os.environ.get("INFERENCE_LOCAL_VISION_MODELS", "taide-12b")
+            os.environ.get("INFERENCE_LOCAL_VISION_MODELS", ",".join(default_local_vision_models()))
         )
 
         try:
             from providers import AnthropicProvider, OllamaProvider, OmlxProvider, OpenAIProvider
 
             self.provider_adapters = {
-                "omlx": OmlxProvider(base_url=self.local_ollama, model=self.local_chat_models[0] if self.local_chat_models else "taide-12b"),
-                "ollama": OllamaProvider(base_url=self.local_ollama, model=self.local_chat_models[0] if self.local_chat_models else "taide-12b"),
+                "omlx": OmlxProvider(base_url=self.local_ollama, model=self.local_chat_models[0] if self.local_chat_models else TEXT_PRIMARY_MODEL),
+                "ollama": OllamaProvider(base_url=self.local_ollama, model=self.local_chat_models[0] if self.local_chat_models else TEXT_PRIMARY_MODEL),
                 "openai": OpenAIProvider(model="gpt-4.1-mini"),
                 "anthropic": AnthropicProvider(model="claude-3-5-sonnet-latest"),
             }
@@ -290,8 +301,8 @@ class InferenceGateway:
             _route = out.get("route", "unknown")
             logger.warning(
                 "🚨 [MODEL-MIGRATION] gpt-oss:20b was invoked! "
-                "task_type=%s route=%s model=%s — this model should have been replaced by taide-12b",
-                _caller, _route, _used_model,
+                "task_type=%s route=%s model=%s — this model should have been replaced by %s",
+                _caller, _route, _used_model, TEXT_PRIMARY_MODEL,
             )
             try:
                 import json as _json
@@ -416,7 +427,7 @@ class InferenceGateway:
             return None, str(e)
 
     def _remote_chat_melchior(self, prompt: str, timeout: int, model: str = "") -> dict:
-        candidates = [model] if model else (self.melchior_models or ["taide-12b"])
+        candidates = [model] if model else (self.melchior_models or [TEXT_PRIMARY_MODEL])
         errors: List[str] = []
         for m in candidates:
             payload = {
@@ -468,7 +479,7 @@ class InferenceGateway:
         return self._result(success=True, route="remote_melchior", degraded=False, analysis=text)
 
     def _remote_chat_balthasar(self, prompt: str, timeout: int, model: str = "") -> dict:
-        candidates = [model] if model else (self.balthasar_models or ["taide-12b"])
+        candidates = [model] if model else (self.balthasar_models or [TEXT_PRIMARY_MODEL])
         errors: List[str] = []
         for m in candidates:
             ok, data, err = self._post_json(
@@ -524,7 +535,7 @@ class InferenceGateway:
             {
                 "prompt": prompt,
                 "images": [image_b64],
-                "model": "taide-12b",
+                "model": TEXT_PRIMARY_MODEL,
                 "stream": False,
             },
             timeout=max(8, int(timeout)),
@@ -574,7 +585,7 @@ class InferenceGateway:
         if not image_b64:
             return self._result(success=False, route="omlx", degraded=False, error=read_err)
 
-        use_model = _MODEL_ROSTER.get(task_type, {}).get("omlx", "") or "TAIDE-12b-Chat-mlx-4bit"
+        use_model = _MODEL_ROSTER.get(task_type, {}).get("omlx", "") or TEXT_PRIMARY_MODEL
         # Route GLM-OCR to dedicated vision port (8082), TAIDE/others to main port (8080)
         kwargs = {}
         if "glm-ocr" in use_model.lower() or "GLM-OCR" in use_model:
@@ -596,7 +607,7 @@ class InferenceGateway:
             x = str(m or "").strip()
             if x and x not in candidates:
                 candidates.append(x)
-        # Resolve model aliases (e.g. taide-12b → TAIDE-12b-Chat-mlx-4bit)
+        # Resolve legacy aliases (taide / gemma shorthand) to the configured local text model.
         alias_map = getattr(melchior_client, "_OMLX_MODEL_ALIAS", {})
         candidates = [alias_map.get(m, m) for m in candidates]
         if models:
@@ -672,7 +683,7 @@ class InferenceGateway:
             if filtered:
                 candidates = filtered
         if not candidates:
-            candidates = ["TAIDE-12b-Chat-mlx-4bit"]
+            candidates = [TEXT_PRIMARY_MODEL]
 
         # For OCR-specific tasks, prefer glm-ocr first (per MODEL_RECOMMENDATIONS)
         if task_type in ("ocr", "date_extract", "stamp", "captcha", "receipt"):
@@ -762,7 +773,7 @@ class InferenceGateway:
         allow_synthetic_fallback = bool(kwargs.get("allow_synthetic_fallback", True))
 
         # Try oMLX first for tasks that have an oMLX model configured
-        # (except tc_review/classify which must stay on Ollama/taide-12b)
+        # OCR/date extraction stay on OCR model; review/classify still use the configured local text model.
         omlx_model = _MODEL_ROSTER.get(task_type, {}).get("omlx", "")
         if omlx_model and task_type not in ("tc_review", "captcha", "date_extract"):
             r = self._omlx_chat(prompt, timeout=max(10, int(timeout)), model=omlx_model, task_type=task_type)

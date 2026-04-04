@@ -9,6 +9,7 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
+from api.model_config import TEXT_PRIMARY_MODEL, TEXT_REVIEW_MODEL
 from skills.bridge.inference_gateway import InferenceGateway
 
 logger = logging.getLogger(__name__)
@@ -186,8 +187,8 @@ def translate_text_complete(text: str, source_lang: str = "auto", target_lang: s
     fallback_model = (
         os.environ.get("MAGI_TRANSLATE_LOCAL_MODEL")
         or os.environ.get("MAGI_TIMEOUT_FAST_MODEL")
-        or "taide-12b"
-    ).strip() or "taide-12b"
+        or TEXT_PRIMARY_MODEL
+    ).strip() or TEXT_PRIMARY_MODEL
 
     translated = []
     failed_chunks = 0
@@ -428,7 +429,7 @@ def translate_text_complete(text: str, source_lang: str = "auto", target_lang: s
                                 f"【機器翻譯初稿】\n{gtx_piece[:2000]}"
                             )
                             _pe_r = melchior_client._chat_omlx(
-                                prompt=_pe_prompt, model="TAIDE-12b-Chat-mlx-4bit",
+                                prompt=_pe_prompt, model=TEXT_REVIEW_MODEL,
                                 timeout=45, temperature=0.1, max_tokens=min(1024, len(gtx_piece)),
                             )
                             _pe_out = str((_pe_r or {}).get("response") or "").strip()
@@ -489,7 +490,7 @@ def translate_text_complete(text: str, source_lang: str = "auto", target_lang: s
                         f"譯文（前300字）：{piece[:300]}"
                     )
                     _vr = InferenceGateway().chat(
-                        _verify_prompt, task_type="tc_review", timeout=12, model="taide-12b",
+                        _verify_prompt, task_type="tc_review", timeout=12, model=TEXT_REVIEW_MODEL,
                         num_ctx=2048, num_predict=100,
                         allow_synthetic_fallback=False,
                     )

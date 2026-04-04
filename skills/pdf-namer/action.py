@@ -1151,28 +1151,38 @@ def generate_name_proposal(pdf_path: str, case_name: str = None, return_structur
     # ── Step 1: Get content page (page 3, index 2) ──
     content_page = None
     content_text = ""
+    content_text_native = ""
     start_idx = min(2, doc.page_count)  # Skip envelope pages (index 0, 1)
     for i in range(start_idx, min(start_idx + 3, doc.page_count)):
         page = doc[i]
-        text = page.get_text() or ""
+        native_text = page.get_text() or ""
+        text = native_text
         if len(text.strip()) < 50 and HAS_OCR:
             logger.info(f"Page {i+1}: OCR scanning...")
             text = _ocr_page_rapid(page)
         if len(text.strip()) < 20:
             continue
         content_page = page
+        content_text_native = native_text
         content_text = text
         break
 
     # Fallback for single/short-page docs
     if content_page is None and doc.page_count > 0:
         content_page = doc[0]
-        content_text = content_page.get_text() or ""
+        content_text_native = content_page.get_text() or ""
+        content_text = content_text_native
         if len(content_text.strip()) < 50 and HAS_OCR:
             content_text = _ocr_page_rapid(content_page)
 
     if content_page is None:
         return empty_result if return_structured else None
+
+    fast_text = "\n".join(part for part in [content_text_native, content_text] if part)
+    fast_result = _maybe_fast_text_name_result(fast_text, case_name=case_name)
+    if fast_result:
+        logger.info("Fast text path hit for %s", pdf_path)
+        return fast_result if return_structured else fast_result["filename"]
 
     # ── Step 2: Parallel — Vision analysis + stamp extraction ──
     # Run Vision and stamp extraction concurrently to save ~30-60s
@@ -1281,36 +1291,18 @@ def generate_name_proposal(pdf_path: str, case_name: str = None, return_structur
         logger.warning("Could not extract date from %s", pdf_path)
         return empty_result if return_structured else None
 
-    # ── Step 5: Build filename ──
-    # Format: {YYYYMMDD} {法院}{案號}{文件類型}（{當事人}）.pdf
-    body = ""
-    if found_court:
-        body += found_court
-    if found_case_no:
-        body += found_case_no
-    if found_type:
-        body += found_type
-    if not body:
-        body = "文件"
-
-    suffix = ""
-    if found_party and found_party != "Unknown":
-        suffix = f"（{found_party}）"
-
-    new_name = f"{found_date} {body}{suffix}.pdf"
-    new_name = re.sub(r'[/\\:*?"<>|]', '', new_name)
+    result = _build_name_result(
+        found_date=found_date,
+        found_court=found_court,
+        found_case_no=found_case_no,
+        found_type=found_type,
+        found_party=found_party,
+        date_method=date_method,
+    )
 
     if return_structured:
-        return {
-            "filename": new_name,
-            "date": found_date,
-            "date_method": date_method,
-            "court": found_court or "",
-            "case_number": found_case_no or "",
-            "doc_type": found_type or "",
-            "party": found_party or "",
-        }
-    return new_name
+        return result
+    return result["filename"]
 
 
 def _vision_analyze_for_naming(content_page) -> dict:
@@ -1611,6 +1603,85 @@ def _task_analyze_fast_receipt(pdf_path: str, bn: str) -> str:
         "db_template_used": False,
     }
     return json.dumps(res, ensure_ascii=False)
+
+
+def _build_name_result(
+    *,
+    found_date: Optional[str],
+    found_court: Optional[str] = "",
+    found_case_no: Optional[str] = "",
+    found_type: Optional[str] = "",
+    found_party: Optional[str] = "",
+    date_method: str = "",
+) -> dict:
+    result = {
+        "filename": None,
+        "date": found_date,
+        "date_method": date_method,
+        "court": found_court or "",
+        "case_number": found_case_no or "",
+        "doc_type": found_type or "",
+        "party": found_party or "",
+    }
+    if not found_date:
+        return result
+
+    body = ""
+    if found_court:
+        body += found_court
+    if found_case_no:
+        body += found_case_no
+    if found_type:
+        body += found_type
+    if not body:
+        body = "文件"
+
+    suffix = ""
+    if found_party and found_party != "Unknown":
+        suffix = f"（{found_party}）"
+
+    new_name = f"{found_date} {body}{suffix}.pdf"
+    new_name = re.sub(r'[/\\:*?"<>|]', "", new_name)
+    result["filename"] = new_name
+    return result
+
+
+def _maybe_fast_text_name_result(content_text: str, *, case_name: Optional[str] = None) -> Optional[dict]:
+    """
+    Fast path for searchable PDFs.
+
+    When the page already contains enough native text, OCR/Vision adds latency and
+    can hallucinate unrelated court/case metadata. Prefer deterministic parsing.
+    """
+    text = (content_text or "").strip()
+    if len(text) < 30:
+        return None
+
+    found_date = _extract_any_date(text) or _extract_roc_date(text)
+    found_court = _extract_court_name(text)
+    found_case_no = _extract_case_number(text)
+    found_type = _extract_doc_type(text)
+    found_party = case_name or _extract_name(text, default_name=None)
+
+    if found_party:
+        try:
+            import opencc
+
+            found_party = opencc.OpenCC("s2t").convert(found_party)
+        except Exception:
+            logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 1664, exc_info=True)
+
+    if not found_date or not (found_court or found_case_no or found_type):
+        return None
+
+    return _build_name_result(
+        found_date=found_date,
+        found_court=found_court,
+        found_case_no=found_case_no,
+        found_type=found_type,
+        found_party=found_party,
+        date_method="ocr_fast_path",
+    )
 
 
 def task_self_train(case_root: str = CASE_ROOT) -> str:

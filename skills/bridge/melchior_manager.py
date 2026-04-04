@@ -12,6 +12,7 @@ from typing import Dict, List, Tuple
 
 import requests
 
+from api.model_config import TEXT_PRIMARY_MODEL
 from skills.bridge.http_pool import get_session as _get_session
 from skills.bridge import melchior_bridge, melchior_client
 _MAGI_ROOT = os.path.abspath(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
@@ -35,7 +36,7 @@ MELCHIOR_OLLAMA_PORT = int(os.environ.get("MELCHIOR_OLLAMA_PORT", "11434"))
 MELCHIOR_BASE = f"http://{MELCHIOR_HOST}:{MELCHIOR_PORT}"
 MELCHIOR_OLLAMA_BASE = f"http://{MELCHIOR_HOST}:{MELCHIOR_OLLAMA_PORT}"
 
-QWEN_MAIN_MODEL = os.environ.get("MAGI_MAIN_MODEL", "taide-12b").strip() or "taide-12b"
+QWEN_MAIN_MODEL = os.environ.get("MAGI_MAIN_MODEL", TEXT_PRIMARY_MODEL).strip() or TEXT_PRIMARY_MODEL
 
 
 def _now_iso() -> str:

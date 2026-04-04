@@ -21,9 +21,13 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-_MAGI_ROOT = os.environ.get("MAGI_ROOT_DIR", os.path.expanduser("~/Desktop/MAGI"))
-if _MAGI_ROOT not in sys.path:
-    sys.path.insert(0, _MAGI_ROOT)
+_MAGI_ROOT = Path(
+    os.environ.get("MAGI_ROOT_DIR")
+    or os.environ.get("MAGI_ROOT")
+    or Path(__file__).resolve().parents[2]
+).resolve()
+if str(_MAGI_ROOT) not in sys.path:
+    sys.path.insert(0, str(_MAGI_ROOT))
 
 logger = logging.getLogger("contract_review")
 
@@ -104,6 +108,295 @@ def _llm_json(prompt: str, fallback: dict) -> dict:
         return fallback
 
 
+def _sentences(text: str) -> list[str]:
+    raw = re.split(r"[\n。！？!?；;]+", str(text or ""))
+    return [part.strip() for part in raw if part and part.strip()]
+
+
+def _shorten(text: str, limit: int = 40) -> str:
+    value = re.sub(r"\s+", " ", str(text or "").strip())
+    if len(value) <= limit:
+        return value
+    return value[: limit - 1].rstrip() + "…"
+
+
+def _detect_doc_type(text: str) -> str:
+    checks = [
+        ("保密", "保密協議"),
+        ("NDA", "保密協議"),
+        ("供應商", "供應商合約"),
+        ("採購", "採購合約"),
+        ("顧問", "顧問服務合約"),
+        ("租賃", "租賃合約"),
+        ("授權", "授權合約"),
+        ("合約", "一般合約"),
+        ("契約", "一般契約"),
+    ]
+    for needle, label in checks:
+        if needle.lower() in str(text or "").lower():
+            return label
+    return "法律文件"
+
+
+def _extract_parties(text: str) -> list[str]:
+    parties: list[str] = []
+    for label in ("甲方", "乙方", "丙方", "立約人", "委託人", "受任人"):
+        match = re.search(rf"{label}[：:\s]*([^\n，。,；;（）(){{}}]{2,24})", text)
+        if match:
+            parties.append(f"{label} {match.group(1).strip()}")
+    if not parties and "雙方" in text:
+        parties = ["甲方", "乙方"]
+    deduped: list[str] = []
+    for party in parties:
+        if party not in deduped:
+            deduped.append(party)
+    return deduped[:4]
+
+
+def _find_sentence(text: str, keywords: list[str]) -> str:
+    for sentence in _sentences(text):
+        if all(keyword in sentence for keyword in keywords):
+            return _shorten(sentence, 80)
+    for sentence in _sentences(text):
+        if any(keyword in sentence for keyword in keywords):
+            return _shorten(sentence, 80)
+    return ""
+
+
+def _extract_obligations(text: str, party_markers: list[str]) -> list[str]:
+    obligations: list[str] = []
+    for sentence in _sentences(text):
+        if not any(marker in sentence for marker in party_markers):
+            continue
+        if any(marker in sentence for marker in ["應", "須", "不得", "負責", "提供", "支付", "保密"]):
+            obligations.append(_shorten(sentence, 48))
+        if len(obligations) >= 4:
+            break
+    return obligations
+
+
+def _extract_dates(text: str) -> list[str]:
+    hits = re.findall(r"(?:19|20)?\d{2}年\d{1,2}月\d{1,2}日", text)
+    unique: list[str] = []
+    for hit in hits:
+        if hit not in unique:
+            unique.append(hit)
+    return unique[:3]
+
+
+def _risk_candidates(text: str) -> list[dict]:
+    catalog = [
+        ("違約金", "違約責任條款可能過重或需明確上限", "高", "確認違約金計算方式與是否過高"),
+        ("損害賠償", "損害賠償責任範圍需確認是否無上限", "高", "建議增列合理賠償上限"),
+        ("保密", "保密義務需確認範圍、期限與例外", "中", "補足例外情形與保密期限"),
+        ("自動續約", "自動續約條款可能造成長期綁約", "中", "加上提前終止或通知機制"),
+        ("單方", "片面權利義務安排可能失衡", "高", "改成雙方對等條件"),
+        ("片面", "片面條款需檢查是否對一方過度不利", "高", "調整為雙方對等權利義務"),
+        ("終止", "終止條款需確認通知期與已履約部分如何處理", "中", "補足通知期與清算方式"),
+        ("管轄", "管轄法院與準據法需明確", "中", "確認是否採中華民國法律與合理法院"),
+        ("準據法", "準據法未明確可能增加爭議", "中", "補列適用法律"),
+    ]
+    results: list[dict] = []
+    for keyword, issue, severity, suggestion in catalog:
+        sentence = _find_sentence(text, [keyword])
+        if not sentence:
+            continue
+        results.append(
+            {
+                "clause_text": sentence,
+                "issue": issue,
+                "risk": severity,
+                "severity": severity,
+                "point": issue,
+                "suggestion": suggestion,
+            }
+        )
+    return results
+
+
+def _risk_level_from_items(items: list[dict]) -> str:
+    severities = [str(item.get("severity") or item.get("risk") or "") for item in items]
+    if any(level == "高" for level in severities):
+        return "高"
+    if any(level == "中" for level in severities):
+        return "中"
+    return "低"
+
+
+def _missing_clause_entries(text: str, names: list[tuple[str, str]]) -> list[dict]:
+    lowered = str(text or "")
+    missing: list[dict] = []
+    for keyword, reason in names:
+        if keyword not in lowered:
+            missing.append({"clause": keyword, "reason": reason})
+    return missing
+
+
+def _fallback_summary(text: str) -> dict:
+    risks = _risk_candidates(text)
+    dates = _extract_dates(text)
+    dispute_resolution = _find_sentence(text, ["管轄"]) or _find_sentence(text, ["仲裁"]) or "文件中未明確辨識爭議解決條款。"
+    governing_law = _find_sentence(text, ["準據法"]) or _find_sentence(text, ["適用法律"]) or "文件中未明確辨識準據法。"
+    payment_terms = _find_sentence(text, ["付款"]) or _find_sentence(text, ["匯款"]) or "文件中未明確辨識付款條件。"
+
+    return {
+        "doc_type": _detect_doc_type(text),
+        "parties": _extract_parties(text),
+        "effective_date": dates[0] if dates else "",
+        "expiry_date": dates[1] if len(dates) > 1 else "",
+        "key_terms": [
+            {"term": "文件主題", "content": _shorten(_sentences(text)[0] if _sentences(text) else str(text), 40)},
+            {"term": "保密或義務", "content": _shorten(_find_sentence(text, ["保密"]) or _find_sentence(text, ["應"]), 40)},
+        ],
+        "obligations": {
+            "party_a": _extract_obligations(text, ["甲方", "委託人", "買方"]),
+            "party_b": _extract_obligations(text, ["乙方", "受任人", "供應商", "賣方"]),
+        },
+        "payment_terms": payment_terms,
+        "risk_points": [
+            {"point": item["point"], "severity": item["severity"]}
+            for item in risks[:4]
+        ],
+        "dispute_resolution": dispute_resolution,
+        "governing_law": governing_law,
+        "summary": _shorten("；".join(_sentences(text)[:3]) or str(text), 120),
+        "fallback_used": True,
+        "fallback_reason": "llm_unavailable",
+    }
+
+
+def _fallback_review(text: str) -> dict:
+    risks = _risk_candidates(text)
+    missing = _missing_clause_entries(
+        text,
+        [
+            ("保密", "合約常需界定保密義務與例外情形。"),
+            ("終止", "應明確約定終止條件、通知期與效果。"),
+            ("管轄", "應約定爭議解決法院或仲裁方式。"),
+            ("準據法", "應明確約定適用法律。"),
+        ],
+    )
+    one_sided_terms = [
+        _shorten(sentence, 48)
+        for sentence in _sentences(text)
+        if ("乙方" in sentence and "應" in sentence) or "單方" in sentence or "片面" in sentence
+    ][:4]
+    recommendations = [item["suggestion"] for item in risks[:3]]
+    recommendations.extend(f"補列「{item['clause']}」條款。" for item in missing[:2])
+
+    return {
+        "doc_type": _detect_doc_type(text),
+        "parties": _extract_parties(text),
+        "risk_level": _risk_level_from_items(risks),
+        "flagged_clauses": [
+            {
+                "clause_text": item["clause_text"],
+                "issue": item["issue"],
+                "risk": item["risk"],
+                "suggestion": item["suggestion"],
+            }
+            for item in risks[:4]
+        ],
+        "missing_clauses": missing[:4],
+        "one_sided_terms": one_sided_terms,
+        "penalty_liability": _find_sentence(text, ["違約"]) or _find_sentence(text, ["損害賠償"]) or "未明確辨識違約責任條款。",
+        "termination_terms": _find_sentence(text, ["終止"]) or "未明確辨識終止條款。",
+        "recommendations": recommendations[:5],
+        "summary": _shorten("；".join(_sentences(text)[:3]) or str(text), 100),
+        "fallback_used": True,
+        "fallback_reason": "llm_unavailable",
+    }
+
+
+def _fallback_nda(text: str) -> dict:
+    risks = _risk_candidates(text)
+    confidentiality_scope = "過廣" if any(token in text for token in ["所有資訊", "任何資訊", "一切資訊"]) else "清楚"
+    exclusions = "是" if any(token in text for token in ["公開資訊", "已知資訊", "第三方", "法令要求"]) else "否"
+    duration = _find_sentence(text, ["保密", "年"]) or _find_sentence(text, ["期間"]) or ""
+    return_obligation = "是" if any(token in text for token in ["銷毀", "歸還"]) else "否"
+    penalty_clause = "過重" if "違約金" in text else ("是" if "違約" in text else "否")
+    verdict = "可簽"
+    risk_level = _risk_level_from_items(risks)
+    if risk_level == "中":
+        verdict = "需修改"
+    elif risk_level == "高":
+        verdict = "建議拒絕"
+
+    missing_protections = [
+        item
+        for item in [
+            "公開資訊/既有資訊例外" if exclusions == "否" else "",
+            "資料返還或銷毀機制" if return_obligation == "否" else "",
+        ]
+        if item
+    ]
+    return {
+        "is_nda": any(token.lower() in text.lower() for token in ["nda", "保密"]),
+        "nda_type": "雙向" if "雙方" in text or "互相" in text else "單向",
+        "verdict": verdict,
+        "verdict_reason": _shorten("；".join(item["issue"] for item in risks[:2]) or "未發現明顯重大異常，但仍建議人工複核。", 50),
+        "risk_level": risk_level,
+        "confidentiality_scope": confidentiality_scope,
+        "duration": duration,
+        "exclusions": exclusions,
+        "return_obligation": return_obligation,
+        "penalty_clause": penalty_clause,
+        "jurisdiction": _find_sentence(text, ["管轄"]) or "未明確辨識管轄條款。",
+        "risk_items": [
+            {"item": item["issue"], "severity": item["severity"], "suggestion": item["suggestion"]}
+            for item in risks[:4]
+        ],
+        "missing_protections": missing_protections,
+        "summary": _shorten("；".join(_sentences(text)[:3]) or str(text), 80),
+        "fallback_used": True,
+        "fallback_reason": "llm_unavailable",
+    }
+
+
+def _fallback_vendor_check(contract_text: str, standard_text: str) -> dict:
+    risks = _risk_candidates(contract_text)
+    missing = _missing_clause_entries(
+        contract_text,
+        [
+            ("驗收", "建議加入驗收程序與不合格處理機制。"),
+            ("保固", "建議明確保固期間與責任範圍。"),
+            ("智慧財產", "建議約定智財歸屬與授權範圍。"),
+            ("保密", "建議加入保密義務。"),
+        ],
+    )
+    recommendations = [item["suggestion"] for item in risks[:3]]
+    recommendations.extend(f"補列「{item['clause']}」條款。" for item in missing[:2])
+    return {
+        "doc_type": _detect_doc_type(contract_text),
+        "vendor": _extract_parties(contract_text)[0] if _extract_parties(contract_text) else "",
+        "risk_level": _risk_level_from_items(risks),
+        "present_clauses": [
+            keyword
+            for keyword in ["交貨", "付款", "保密", "保固", "終止", "智財"]
+            if keyword in contract_text
+        ],
+        "missing_clauses": [
+            {"clause": item["clause"], "importance": "中", "suggestion": item["reason"]}
+            for item in missing[:4]
+        ],
+        "unfavorable_deviations": [
+            {"clause": item["clause_text"], "issue": item["issue"], "risk": item["risk"]}
+            for item in risks[:4]
+        ],
+        "payment_terms": {
+            "payment_days": _find_sentence(contract_text, ["付款"]) or "",
+            "assessment": "不明確" if "付款" not in contract_text else "合理",
+        },
+        "termination_notice": _find_sentence(contract_text, ["終止"]) or "未明確辨識終止通知期。",
+        "liability_cap": _find_sentence(contract_text, ["損害賠償"]) or "未明確辨識賠償上限。",
+        "ip_ownership": _find_sentence(contract_text, ["智慧財產"]) or "未明確辨識智財歸屬。",
+        "recommendations": recommendations[:5],
+        "summary": _shorten(_shorten(standard_text, 40) + "；" + "；".join(_sentences(contract_text)[:2]), 100),
+        "fallback_used": True,
+        "fallback_reason": "llm_unavailable",
+    }
+
+
 # ---------------------------------------------------------------------------
 # Task 1 — 合約審閱 (Contract Review)
 # ---------------------------------------------------------------------------
@@ -143,6 +436,8 @@ def review(text: str) -> dict:
     text = _truncate(text)
     fallback = {"error": "LLM 無回應", "risk_level": "未知", "flagged_clauses": [], "missing_clauses": []}
     result = _llm_json(_REVIEW_PROMPT.format(text=text), fallback)
+    if result.get("error"):
+        result = _fallback_review(text)
     result["task"] = "review"
     return result
 
@@ -184,6 +479,8 @@ def nda(text: str) -> dict:
     text = _truncate(text)
     fallback = {"error": "LLM 無回應", "verdict": "未知", "risk_level": "未知", "risk_items": []}
     result = _llm_json(_NDA_PROMPT.format(text=text), fallback)
+    if result.get("error"):
+        result = _fallback_nda(text)
     result["task"] = "nda"
     return result
 
@@ -223,6 +520,8 @@ def summarize(text: str) -> dict:
     text = _truncate(text)
     fallback = {"error": "LLM 無回應", "key_terms": [], "risk_points": []}
     result = _llm_json(_SUMMARY_PROMPT.format(text=text), fallback)
+    if result.get("error"):
+        result = _fallback_summary(text)
     result["task"] = "summarize"
     return result
 
@@ -300,6 +599,8 @@ def vendor_check(contract_text: str, template_path: Optional[str] = None) -> dic
         contract_text=contract_text,
         standard_text=standard_text,
     ), fallback)
+    if result.get("error"):
+        result = _fallback_vendor_check(contract_text, standard_text)
     result["task"] = "vendor_check"
     return result
 

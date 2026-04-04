@@ -2767,7 +2767,7 @@ def cmd_check_emails(notify: bool = True, notify_empty: bool = True) -> dict:
                     "portal_pending_payment_count": portal_pending,
                     "portal_probe_ok": bool(portal_summary.get("success")),
                     "portal_probe_module": str(portal_summary.get("probe_module") or ""),
-                    "recent_processed_count": len(recent_activity),
+                    "recent_processed_count": len(recent_activity_all),
                 },
             )
             return out

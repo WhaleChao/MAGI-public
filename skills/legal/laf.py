@@ -1130,7 +1130,8 @@ class LAFWebAutomation:
                 return None
 
         chrome_options = Options()
-        
+        chrome_options.page_load_strategy = 'eager'  # Chrome 146+ renderer timeout 修正
+
         if self.headless:
             chrome_options.add_argument('--headless=new')
 

@@ -423,9 +423,10 @@ class LawyerSSO:
             from selenium.common.exceptions import TimeoutException, NoSuchElementException
             
         options = Options()
+        options.page_load_strategy = 'eager'  # Chrome 146+ renderer timeout 修正
         if self.headless:
             options.add_argument('--headless=new')
-        
+
         options.add_argument('--no-sandbox')
         options.add_argument('--disable-dev-shm-usage')
         options.add_argument('--disable-gpu')
@@ -771,11 +772,12 @@ class CourtRecordDownloader:
                 from selenium.common.exceptions import TimeoutException, NoSuchElementException
             
             options = Options()
-            
+            options.page_load_strategy = 'eager'  # Chrome 146+ renderer timeout 修正
+
             # 啟用 headless 模式
             if self.headless:
                 options.add_argument('--headless=new')
-            
+
             # 反爬蟲：使用真實的 User-Agent (macOS)
             user_agents = [
                 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',

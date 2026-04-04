@@ -115,10 +115,15 @@ def test_casper_ollama():
 def test_melchior_remote():
     """Melchior is now local oMLX — verify embedding service (port 8081)."""
     from skills.bridge import melchior_client
-    ok = melchior_client._omlx_embed_available()
-    if ok:
-        return {"pass": True, "detail": f"Melchior (oMLX Embedding) 正常 ({melchior_client.OMLX_EMBED_BASE})"}
-    return {"pass": False, "detail": f"Melchior (oMLX Embedding) 無回應 ({melchior_client.OMLX_EMBED_BASE})"}
+    try:
+        import requests
+
+        r = requests.get(f"{melchior_client.OMLX_EMBED_BASE}/v1/models", timeout=5)
+        if int(getattr(r, "status_code", 0) or 0) == 200:
+            return {"pass": True, "detail": f"Melchior (oMLX Embedding) 正常 ({melchior_client.OMLX_EMBED_BASE})"}
+        return {"pass": False, "detail": f"Melchior (oMLX Embedding) HTTP {r.status_code} ({melchior_client.OMLX_EMBED_BASE})"}
+    except Exception as e:
+        return {"pass": False, "detail": f"Melchior (oMLX Embedding) 無回應 ({melchior_client.OMLX_EMBED_BASE}): {e}"}
 
 
 def test_balthasar_remote():
@@ -261,23 +266,23 @@ def _resolve_omlx_model_label() -> str:
     return _health_probes.resolve_omlx_model(default_model)
 
 
-def _probe_local_llm_inference(timeout: int = 30, retries: int = 2, backoff_sec: float = 1.5) -> dict:
-    """Run a bounded local TAIDE probe and retry once when oMLX is briefly saturated."""
+def _probe_local_llm_inference(timeout: int = 60, retries: int = 3, backoff_sec: float = 2.0) -> dict:
+    """Run a bounded local LLM probe and retry when model is loading."""
     probe = _health_probes.probe_local_chat(
         timeout_sec=timeout,
         retries=retries,
         backoff_sec=backoff_sec,
-        default_model=(os.environ.get("CASPER_LOCAL_MODEL") or "taide-12b").strip() or "taide-12b",
+        default_model=(os.environ.get("CASPER_LOCAL_MODEL") or "gemma4:26b").strip() or "gemma4:26b",
         models_timeout_sec=5,
     )
     if not probe.get("pass"):
         models_probe = probe.get("models_probe") or {}
         if int(models_probe.get("status_code") or 0) == 200 and not models_probe.get("models"):
             return {"pass": False, "detail": "oMLX /v1/models 回傳空模型清單"}
-        return {"pass": False, "detail": f"TAIDE 無有效回覆: {probe.get('error') or models_probe.get('error') or 'oMLX unavailable'}"}
+        return {"pass": False, "detail": f"本地 LLM 無有效回覆: {probe.get('error') or models_probe.get('error') or 'inference unavailable'}"}
 
     detail = (
-        f"TAIDE 推理正常 (omlx_direct, "
+        f"本地 LLM 推理正常 (local_direct, "
         f"model={probe.get('model')}): "
         f"'{str(probe.get('response') or '').strip()[:30]}...'"
     )
@@ -302,10 +307,18 @@ def test_local_embedding_inference():
     try:
         from skills.bridge import melchior_client
 
-        if not melchior_client._omlx_embed_available():
-            return {"pass": False, "detail": "oMLX embedding service disabled or circuit open"}
+        import requests
 
-        vec = melchior_client.embed_omlx("請輸出這段文字的向量表示。", retries=1)
+        r = requests.post(
+            f"{melchior_client.OMLX_EMBED_BASE}/v1/embeddings",
+            json={"model": melchior_client.OMLX_EMBED_MODEL, "input": "請輸出這段文字的向量表示。"},
+            timeout=60,
+        )
+        if int(getattr(r, "status_code", 0) or 0) != 200:
+            return {"pass": False, "detail": f"Embedding HTTP {r.status_code} ({melchior_client.OMLX_EMBED_BASE})"}
+        data = r.json() if hasattr(r, "json") else {}
+        emb_data = (data or {}).get("data", [])
+        vec = emb_data[0].get("embedding", []) if emb_data and isinstance(emb_data, list) else []
         if isinstance(vec, list) and len(vec) >= 256:
             return {
                 "pass": True,

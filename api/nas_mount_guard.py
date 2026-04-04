@@ -22,8 +22,70 @@ import time
 logger = logging.getLogger("magi.nas_mount_guard")
 
 # ── NAS 連線設定 ─────────────────────────────────────────────
-NAS_HOST = os.getenv("MAGI_NAS_HOST", "192.168.1.3")
+_NAS_LAN_HOST = os.getenv("MAGI_NAS_HOST", "192.168.1.3")
+_NAS_TS_HOST = os.getenv("MAGI_NAS_TAILSCALE_HOST", "100.111.10.126")
 NAS_USER = os.getenv("MAGI_NAS_USER", "lumi63181107")
+
+# 動態解析結果快取（host, expiry_time）
+_resolved_host: str | None = None
+_resolved_expiry: float = 0.0
+_RESOLVE_TTL = 120  # 快取 120 秒
+
+
+def _ping_ok(host: str, timeout: int = 2) -> bool:
+    """檢查主機是否可達：優先用 TCP 445 (SMB)，fallback 到 ICMP ping。
+    Synology NAS 可能擋 ICMP，所以 TCP port check 更可靠。"""
+    import socket
+    try:
+        sock = socket.create_connection((host, 445), timeout=timeout)
+        sock.close()
+        return True
+    except (OSError, socket.timeout):
+        pass
+    # fallback: ICMP ping
+    try:
+        r = subprocess.run(
+            ["ping", "-c", "1", "-W", str(timeout), host],
+            capture_output=True, timeout=timeout + 2,
+        )
+        return r.returncode == 0
+    except Exception:
+        return False
+
+
+def resolve_nas_host() -> str:
+    """動態解析 NAS IP：LAN 優先，不通走 Tailscale。結果快取 120 秒。"""
+    global _resolved_host, _resolved_expiry, NAS_HOST
+
+    now = time.time()
+    if _resolved_host and now < _resolved_expiry:
+        return _resolved_host
+
+    # 強制離線模式
+    if os.getenv("MAGI_FORCE_NAS_OFFLINE"):
+        _resolved_host = _NAS_LAN_HOST
+        _resolved_expiry = now + _RESOLVE_TTL
+        NAS_HOST = _resolved_host
+        return _resolved_host
+
+    # 優先嘗試 LAN（2s timeout），不通走 Tailscale（3s timeout, relay 延遲較高）
+    if _ping_ok(_NAS_LAN_HOST, timeout=2):
+        chosen = _NAS_LAN_HOST
+    elif _ping_ok(_NAS_TS_HOST, timeout=3):
+        chosen = _NAS_TS_HOST
+        logger.info("NAS LAN %s 不可達，切換 Tailscale %s", _NAS_LAN_HOST, _NAS_TS_HOST)
+    else:
+        chosen = _NAS_LAN_HOST  # 兩個都不通，保持預設讓後續報錯
+        logger.warning("NAS LAN %s 和 Tailscale %s 皆不可達", _NAS_LAN_HOST, _NAS_TS_HOST)
+
+    _resolved_host = chosen
+    _resolved_expiry = now + _RESOLVE_TTL
+    NAS_HOST = chosen
+    return chosen
+
+
+# 初始化時立即解析
+NAS_HOST = _NAS_LAN_HOST  # 先設預設，啟動時由 resolve_nas_host() 覆蓋
 
 # (share_name, expected_volume_path)
 _SHARES: list[tuple[str, str]] = [
@@ -34,14 +96,15 @@ _SHARES: list[tuple[str, str]] = [
 # ── 掛載邏輯 ─────────────────────────────────────────────────
 
 def _is_mounted(volume_path: str) -> bool:
-    """檢查 volume 是否已掛載且可存取。"""
-    if not os.path.ismount(volume_path):
-        return False
-    try:
-        os.listdir(volume_path)
-        return True
-    except OSError:
-        return False
+    """檢查 volume 是否已掛載且可存取（含 macOS automount 後綴 -1）。"""
+    for path in (volume_path, f"{volume_path}-1"):
+        if os.path.ismount(path):
+            try:
+                os.listdir(path)
+                return True
+            except OSError:
+                continue
+    return False
 
 
 def _is_correct_host(volume_path: str) -> bool:
@@ -129,17 +192,11 @@ def ensure_nas_mounts() -> dict[str, bool]:
     """檢查並掛載所有 NAS share，回傳各 share 狀態。"""
     results: dict[str, bool] = {}
 
-    # 先確認 NAS 可達
-    try:
-        ping = subprocess.run(
-            ["ping", "-c", "1", "-W", "2", NAS_HOST],
-            capture_output=True, timeout=5,
-        )
-        if ping.returncode != 0:
-            logger.warning("NAS %s 不可達（ping 失敗），跳過掛載", NAS_HOST)
-            return {vol: False for _, vol in _SHARES}
-    except Exception:
-        logger.warning("NAS ping 檢查異常，仍嘗試掛載")
+    # 動態解析 NAS IP（LAN → Tailscale fallback）
+    host = resolve_nas_host()
+    if not _ping_ok(host):
+        logger.warning("NAS %s 不可達（ping 失敗），跳過掛載", host)
+        return {vol: False for _, vol in _SHARES}
 
     # 清理舊 IP 或重複 mount
     _cleanup_wrong_host_mounts()

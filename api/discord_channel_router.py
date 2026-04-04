@@ -195,6 +195,56 @@ def _load_channel_map() -> dict[str, str]:
     return merged
 
 
+def _load_all_routed_channel_ids() -> set[str]:
+    """
+    回傳所有已路由的頻道 ID（含 production + _mirror）。
+    用於 discord_bot on_message 過濾：mirror 頻道的訊息也應被處理。
+    """
+    ids: set[str] = set()
+    # production channels
+    for v in _load_channel_map().values():
+        if v:
+            ids.add(str(v))
+    # mirror channels from .agent/discord_channel_map.json
+    try:
+        if os.path.exists(_CHANNEL_MAP_FILE):
+            with open(_CHANNEL_MAP_FILE, "r", encoding="utf-8") as f:
+                raw = json.load(f) or {}
+            mirror = raw.get("_mirror")
+            if isinstance(mirror, dict):
+                for v in mirror.values():
+                    if v:
+                        ids.add(str(v))
+    except Exception:
+        logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, "_load_all_routed_channel_ids", exc_info=True)
+    return ids
+
+
+def _reverse_lookup_channel(channel_id: str) -> str:
+    """
+    從頻道 ID 反查 sub_topic key（含 production + _mirror）。
+    回傳 sub_topic（如 'filereview_payment'），找不到回空字串。
+    """
+    ch = str(channel_id)
+    # 1. production channel map
+    for k, v in _load_channel_map().items():
+        if str(v) == ch:
+            return k
+    # 2. mirror channels
+    try:
+        if os.path.exists(_CHANNEL_MAP_FILE):
+            with open(_CHANNEL_MAP_FILE, "r", encoding="utf-8") as f:
+                raw = json.load(f) or {}
+            mirror = raw.get("_mirror")
+            if isinstance(mirror, dict):
+                for k, v in mirror.items():
+                    if str(v) == ch:
+                        return k
+    except Exception:
+        pass
+    return ""
+
+
 def save_channel_map(channel_map: dict[str, str]) -> str:
     """儲存頻道映射到 .agent/discord_channel_map.json。"""
     os.makedirs(_AGENT_DIR, exist_ok=True)

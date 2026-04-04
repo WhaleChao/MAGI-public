@@ -32,7 +32,7 @@ def _make_app(template_dir: Path):
 def test_redirect_routes_point_to_existing_page_targets(tmp_path, monkeypatch):
     template_dir = tmp_path / "templates"
     template_dir.mkdir()
-    for name in ("dashboard.html", "dashboard_pixel.html", "dashboard_nerv.html"):
+    for name in ("dashboard.html", "dashboard_nerv.html"):
         (template_dir / name).write_text("{{ user.id }}", encoding="utf-8")
 
     app = _make_app(template_dir)
@@ -55,7 +55,6 @@ def test_dashboard_pages_render_with_login_required(tmp_path, monkeypatch):
     template_dir = tmp_path / "templates"
     template_dir.mkdir()
     (template_dir / "dashboard.html").write_text("dashboard {{ user.id }}", encoding="utf-8")
-    (template_dir / "dashboard_pixel.html").write_text("pixel {{ user.id }}", encoding="utf-8")
     (template_dir / "dashboard_nerv.html").write_text("nerv {{ user.id }}", encoding="utf-8")
 
     app = _make_app(template_dir)
@@ -65,19 +64,28 @@ def test_dashboard_pages_render_with_login_required(tmp_path, monkeypatch):
     assert response.status_code == 200
     assert b"dashboard u1" in response.data
 
-    response = client.get("/dashboard/pixel", headers={"X-User-ID": "u1"})
-    assert response.status_code == 200
-    assert b"pixel u1" in response.data
-
     response = client.get("/dashboard/nerv", headers={"X-User-ID": "u1"})
     assert response.status_code == 200
     assert b"nerv u1" in response.data
 
 
+def test_pixel_dashboard_route_is_removed(tmp_path):
+    template_dir = tmp_path / "templates"
+    template_dir.mkdir()
+    for name in ("dashboard.html", "dashboard_nerv.html"):
+        (template_dir / name).write_text("{{ user.id }}", encoding="utf-8")
+
+    app = _make_app(template_dir)
+    client = app.test_client()
+
+    response = client.get("/dashboard/pixel", headers={"X-User-ID": "u1"}, follow_redirects=False)
+    assert response.status_code == 404
+
+
 def test_intel_page_lists_recent_reports(tmp_path, monkeypatch):
     template_dir = tmp_path / "templates"
     template_dir.mkdir()
-    for name in ("dashboard.html", "dashboard_pixel.html", "dashboard_nerv.html"):
+    for name in ("dashboard.html", "dashboard_nerv.html"):
         (template_dir / name).write_text("{{ user.id }}", encoding="utf-8")
 
     from api.blueprints import dashboard_pages as mod

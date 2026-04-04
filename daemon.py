@@ -213,7 +213,7 @@ _LAUNCHD_SERVICES = [
     {
         "label": "com.magi.omlx",
         "name": "oMLX Inference",
-        "probe_url": "http://127.0.0.1:8080/v1/models",
+        "probe_url": f"http://127.0.0.1:{os.environ.get('MAGI_OMLX_PORT', '8080')}/v1/models",
         "probe_timeout": 60,
     },
     {
@@ -1194,6 +1194,14 @@ if __name__ == "__main__":
                 time.sleep(0.5)
         except Exception as e:
             logger.debug(f"Port {_port} cleanup skipped: {e}")
+
+    # 0.5 DB Failover Monitor（遠端 DB 不通自動切本機）
+    try:
+        from api.db_failover import start_failover_monitor
+        start_failover_monitor()
+        logger.info("✅ DB Failover Monitor started")
+    except Exception as e:
+        logger.warning(f"⚠️ DB Failover Monitor not started: {e}")
 
     # 1. Start Server (LINE API)
     start_process("Server", f"{_PYTHON} api/server.py")

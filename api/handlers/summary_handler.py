@@ -12,6 +12,7 @@ import os
 import re
 import time
 
+from api.model_config import SUMMARY_MODEL, TEXT_PRIMARY_MODEL
 from skills.bridge.inference_gateway import InferenceGateway
 
 logger = logging.getLogger("SummaryHandler")
@@ -515,7 +516,7 @@ def summarize_text_resilient(text: str, summary_length: str = "medium", *, progr
                     if callable(_omlx_chat) and callable(_omlx_avail) and _omlx_avail():
                         q = _omlx_chat(
                             prompt=prompt,
-                            model=os.environ.get("MAGI_OMLX_SUMMARY_MODEL", "TAIDE-12b-Chat-mlx-4bit"),
+                            model=os.environ.get("MAGI_OMLX_SUMMARY_MODEL", SUMMARY_MODEL),
                             timeout=timeout_sec,
                             temperature=0.2,
                             max_tokens=max_tokens,
@@ -529,7 +530,7 @@ def summarize_text_resilient(text: str, summary_length: str = "medium", *, progr
                         prompt,
                         task_type="summary",
                         timeout=timeout_sec,
-                        model="taide-12b",
+                        model=TEXT_PRIMARY_MODEL,
                         num_ctx=_chunk_ctx,
                         num_predict=max_tokens,
                         allow_synthetic_fallback=False,
@@ -743,7 +744,7 @@ def summarize_text_resilient(text: str, summary_length: str = "medium", *, progr
         q = InferenceGateway().chat(
             prompt, task_type="summary",
             timeout=max(summary_timeout, 90),
-            model=os.environ.get("MAGI_SUMMARIZE_LOCAL_MODEL", "taide-12b"),
+            model=os.environ.get("MAGI_SUMMARIZE_LOCAL_MODEL", TEXT_PRIMARY_MODEL),
             num_ctx=_fb_ctx, num_predict=2048,
             allow_synthetic_fallback=False,
         )

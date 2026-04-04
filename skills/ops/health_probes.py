@@ -77,7 +77,7 @@ def probe_omlx_models(timeout_sec: int = 8, *, base_url: str | None = None, port
 
 
 def resolve_omlx_model(
-    default_model: str = "TAIDE-12b-Chat-mlx-4bit",
+    default_model: str = "gemma4:26b",
     *,
     base_url: str | None = None,
     timeout_sec: int = 5,
@@ -109,11 +109,11 @@ def probe_local_chat(
     backoff_sec: float = 1.5,
     *,
     base_url: str | None = None,
-    default_model: str = "TAIDE-12b-Chat-mlx-4bit",
+    default_model: str = "gemma4:26b",
     models_timeout_sec: int = 8,
     requested_env: str = "CASPER_LOCAL_MODEL",
     prompt: str = "請只回答 OK",
-    max_tokens: int = 4,
+    max_tokens: int = 128,
 ) -> dict:
     """Run a bounded TAIDE chat probe with retry/backoff."""
     try:
@@ -152,10 +152,10 @@ def probe_local_chat(
         base_timeout = 30
     max_retries = max(1, int(retries))
     last_error = f"empty response (model={resolved_model})"
-    retryable_markers = ("timeout", "timed out", "temporarily unavailable", "connection aborted")
+    retryable_markers = ("timeout", "timed out", "temporarily unavailable", "connection aborted", "empty response")
 
     for attempt in range(1, max_retries + 1):
-        attempt_timeout = min(60, base_timeout + max(0, attempt - 1) * 15)
+        attempt_timeout = min(120, base_timeout + max(0, attempt - 1) * 30)
         try:
             r = requests.post(f"{omlx_base}/v1/chat/completions", json=payload, timeout=attempt_timeout)
             status_code = int(getattr(r, "status_code", 0) or 0)

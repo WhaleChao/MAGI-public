@@ -5,6 +5,9 @@ import sys
 
 import requests
 
+from api.model_config import TEXT_PRIMARY_MODEL
+from api.session.provenance import parse_source_provenance, render_provenance_badge
+from api.verification import run_tri_agent_verification, verify_answer
 from skills.bridge.http_pool import get_session as _get_session
 
 # Add project root
@@ -21,8 +24,8 @@ from skills.bridge import melchior_client
 
 # Configuration
 LOCAL_OLLAMA_GENERATE_URL = os.environ.get("CASPER_LOCAL_OLLAMA_URL", "http://127.0.0.1:8080/v1/chat/completions")
-LOCAL_MODEL_NAME = os.environ.get("CASPER_LOCAL_MODEL", "TAIDE-12b-Chat-mlx-4bit")
-DISTRIBUTED_MODEL_NAME = os.environ.get("CASPER_DISTRIBUTED_MODEL", "taide-12b")
+LOCAL_MODEL_NAME = os.environ.get("CASPER_LOCAL_MODEL", TEXT_PRIMARY_MODEL)
+DISTRIBUTED_MODEL_NAME = os.environ.get("CASPER_DISTRIBUTED_MODEL", TEXT_PRIMARY_MODEL)
 ENABLE_SELF_CHECK = os.environ.get("CASPER_SELF_CHECK", "0") != "0"
 ENABLE_CHAT_SELF_CHECK = os.environ.get("CASPER_CHAT_SELF_CHECK", "0") != "0"
 CASPER_LOCAL_FIRST_DEFAULT = os.environ.get("CASPER_LOCAL_FIRST_DEFAULT", "1").strip().lower() in {"1", "true", "yes", "on"}
@@ -423,7 +426,16 @@ def _auto_remember(query: str, answer: str, mode: str = "chat"):
             a_short = answer[:_AUTO_MEM_MAX_LEN].strip()
             content = f"[Q] {q_short}\n[A] {a_short}"
             source = f"assistant_generated|mode={mode}|ts={ts}"
-            ok = remember(content, source=source)
+            ok = remember(
+                content,
+                source=source,
+                metadata={
+                    "verified": False,
+                    "confidence": 0.10,
+                    "derived_from": "assistant_reply",
+                    "role": "assistant",
+                },
+            )
             if ok:
                 logger.debug(f"Auto-memorized: {q_short[:50]}...")
         except Exception as e:
@@ -432,14 +444,20 @@ def _auto_remember(query: str, answer: str, mode: str = "chat"):
     threading.Thread(target=_do_remember, daemon=True).start()
 
 
-def _format_memories(memories):
+def _format_memories(memories, *, query: str = ""):
     if not memories:
         return "無相關記憶。"
     lines = []
     for idx, m in enumerate(memories, 1):
         score = m.get("score")
         score_str = f"{score:.4f}" if isinstance(score, (int, float)) else "n/a"
-        lines.append(f"{idx}. {m.get('content', '')} (來源: {m.get('source', 'unknown')}, 相關度: {score_str})")
+        source = str(m.get("source", "unknown"))
+        prov = parse_source_provenance(source)
+        badge = render_provenance_badge(source)
+        lines.append(
+            f"{idx}. {m.get('content', '')} "
+            f"(來源: {source}, 證據等級: {badge}, 相關度: {score_str})"
+        )
     return "\n".join(lines)
 
 
@@ -476,7 +494,7 @@ def _summarize_memories_if_needed(query: str, memories: list, max_tokens: int = 
     if not memories:
         return "無相關記憶。"
 
-    raw_text = _format_memories(memories)
+    raw_text = _format_memories(memories, query=query)
     if _estimate_tokens(raw_text) <= max_tokens:
         return raw_text
 
@@ -491,7 +509,11 @@ def _summarize_memories_if_needed(query: str, memories: list, max_tokens: int = 
         content = m.get("content", "")
         score = m.get("score")
         score_str = f"{score:.4f}" if isinstance(score, (int, float)) else "n/a"
-        entry = f"{idx}. {content} (來源: {m.get('source', 'unknown')}, 相關度: {score_str})"
+        source = str(m.get("source", "unknown"))
+        entry = (
+            f"{idx}. {content} "
+            f"(來源: {source}, 證據等級: {render_provenance_badge(source)}, 相關度: {score_str})"
+        )
         entry_tokens = _estimate_tokens(entry)
         if tokens_used + entry_tokens > max_tokens:
             break
@@ -684,6 +706,60 @@ def _self_check_answer(query, answer, memory_context, web_context, conversation_
         return answer
 
 
+def _verify_and_repair_answer(
+    *,
+    query: str,
+    answer: str,
+    prompt: str,
+    memories: list[dict],
+    memory_context: str,
+    web_context: str,
+    conversation_history: str,
+    entity_context: str,
+) -> str:
+    report = run_tri_agent_verification(
+        query=query,
+        draft_answer=answer,
+        memories=memories,
+        memory_context=memory_context,
+        web_context=web_context,
+        conversation_history=conversation_history,
+        generate=lambda repair_prompt: _generate(repair_prompt, temperature=0.12, timeout=90, num_ctx=6144),
+    )
+    if report.passed:
+        return report.final_answer
+
+    logger.warning("⛔ verification rejected answer: %s", report.critic_reason)
+    repair_prompt = (
+        f"{prompt}\n\n"
+        "[回答修正要求]\n"
+        f"- 上一版回答已被判定不可靠，原因：{report.critic_reason}\n"
+        "- 若無法驗證，直接說目前沒有可驗證結果。\n"
+        "- 不要聲稱使用者以前給過、說過、提供過任何目前上下文裡不存在的內容。\n"
+        "- 不要把未驗證記憶或摘要寫成確定事實。\n"
+        "- 直接輸出修正版繁體中文回答。\n"
+    )
+    try:
+        repaired = _generate(repair_prompt, temperature=0.12, timeout=90, num_ctx=6144)
+        repaired = str(repaired or "").strip()
+        if repaired and not _is_parrot_response(query, repaired) and not _is_persona_hallucination(repaired):
+            if not _has_entity_hallucination(repaired, entity_context):
+                repaired_check = verify_answer(
+                    query=query,
+                    answer=repaired,
+                    memories=memories,
+                    memory_context=memory_context,
+                    web_context=web_context,
+                    conversation_history=conversation_history,
+                )
+                if repaired_check.passed:
+                    return repaired
+    except Exception as exc:
+        logger.warning("Repair pass skipped: %s", exc)
+
+    return report.final_answer
+
+
 def ask_casper(query, conversation_history="", force_research=False):
     """
     Grounded response generation with memory-first context + anti-hallucination layers.
@@ -730,6 +806,7 @@ def ask_casper(query, conversation_history="", force_research=False):
 3. 禁止編造細節。
 4. 回覆語言必須是繁體中文。
 5. 若使用者糾正您的錯誤或補充新資訊，請【務必明確總結並覆誦正確的資訊】，這會幫助系統將正確知識寫入長期記憶。
+6. 記憶中的「證據等級」若是「已驗證」才能當成事實；「原始對話」與「衍生線索」只能當線索，不可硬寫成確定事實。
 
 [長期記憶]
 {memory_context}
@@ -778,7 +855,16 @@ def ask_casper(query, conversation_history="", force_research=False):
             web_context=web_context,
             conversation_history=conversation_history,
         )
-        return final
+        return _verify_and_repair_answer(
+            query=query,
+            answer=final,
+            prompt=prompt,
+            memories=memories,
+            memory_context=memory_context,
+            web_context=web_context,
+            conversation_history=conversation_history,
+            entity_context=_entity_ctx,
+        )
     except Exception as e:
         logger.error(f"❌ LLM Error: {e}")
         return "系統忙碌中，暫時無法完成推理。"
@@ -841,6 +927,7 @@ def chat_casper(message, conversation_history=""):
 - 若資訊不足，直接承認不足，不可硬猜。
 - 若使用者在延續上一題，請承接上下文。
 - 若使用者糾正您的錯誤或補充新資訊，請【務必明確總結並覆誦正確的資訊】，這會幫助系統將正確知識寫入長期記憶。
+- 只有「證據等級：已驗證」的記憶能直接當成事實；其他記憶只能當線索。
 - 不要使用 Markdown 語法（**粗體**、`程式碼`、### 標題等）。純文字即可。
 
 [長期記憶]
@@ -900,7 +987,16 @@ def chat_casper(message, conversation_history=""):
                     web_context=web_context,
                     conversation_history=conversation_history,
                 )
-            return answer
+            return _verify_and_repair_answer(
+                query=message,
+                answer=answer,
+                prompt=prompt,
+                memories=memories,
+                memory_context=memory_context,
+                web_context=web_context,
+                conversation_history=conversation_history,
+                entity_context=_entity_ctx,
+            )
     except Exception as e:
         logger.error(f"Chat Error: {e}")
         return "我目前有點忙碌，請稍後再試一次。"

@@ -15,6 +15,18 @@ from typing import Dict, List, Tuple
 
 import requests
 
+from api.model_config import (
+    CODE_MODEL as DEFAULT_CODE_MODEL,
+    EMBED_MODEL as DEFAULT_EMBED_MODEL,
+    GENERAL_MODEL as DEFAULT_GENERAL_MODEL,
+    OCR_MODEL as DEFAULT_OCR_MODEL,
+    SUMMARY_MODEL as DEFAULT_SUMMARY_MODEL,
+    TEXT_PRIMARY_MODEL,
+    TEXT_REVIEW_MODEL,
+    VISION_MODEL as DEFAULT_VISION_MODEL,
+    resolve_text_model,
+)
+
 _logger = logging.getLogger("melchior_client")
 logger = _logger  # backward compat: some callsites use 'logger'
 _AUDIT_MARKER_20260310 = True  # marker for code-version verification
@@ -35,13 +47,13 @@ OMLX_VISION_BASE = (os.environ.get("MAGI_OMLX_VISION_URL") or f"http://{OMLX_VIS
 OMLX_HOST = OMLX_CHAT_HOST
 OMLX_PORT = OMLX_CHAT_PORT
 OMLX_BASE = OMLX_CHAT_BASE
-OMLX_SUMMARY_MODEL = os.environ.get("MAGI_OMLX_SUMMARY_MODEL", "TAIDE-12b-Chat-mlx-4bit")
-OMLX_VISION_MODEL = os.environ.get("MAGI_OMLX_VISION_MODEL", "GLM-OCR-bf16")
-OMLX_OCR_MODEL = os.environ.get("MAGI_OMLX_OCR_MODEL", "GLM-OCR-bf16")
-OMLX_CODE_MODEL = os.environ.get("MAGI_OMLX_CODE_MODEL", "TAIDE-12b-Chat-mlx-4bit")
-OMLX_EMBED_MODEL = os.environ.get("MAGI_OMLX_EMBED_MODEL", "modernbert-embed-4bit")
-OMLX_GENERAL_MODEL = os.environ.get("MAGI_OMLX_GENERAL_MODEL", "TAIDE-12b-Chat-mlx-4bit")
-OMLX_TAIDE_MODEL = os.environ.get("MAGI_OMLX_TAIDE_MODEL", "TAIDE-12b-Chat-mlx-4bit")
+OMLX_SUMMARY_MODEL = os.environ.get("MAGI_OMLX_SUMMARY_MODEL", DEFAULT_SUMMARY_MODEL)
+OMLX_VISION_MODEL = os.environ.get("MAGI_OMLX_VISION_MODEL", DEFAULT_VISION_MODEL)
+OMLX_OCR_MODEL = os.environ.get("MAGI_OMLX_OCR_MODEL", DEFAULT_OCR_MODEL)
+OMLX_CODE_MODEL = os.environ.get("MAGI_OMLX_CODE_MODEL", DEFAULT_CODE_MODEL)
+OMLX_EMBED_MODEL = os.environ.get("MAGI_OMLX_EMBED_MODEL", DEFAULT_EMBED_MODEL)
+OMLX_GENERAL_MODEL = os.environ.get("MAGI_OMLX_GENERAL_MODEL", DEFAULT_GENERAL_MODEL)
+OMLX_TAIDE_MODEL = os.environ.get("MAGI_OMLX_TAIDE_MODEL", TEXT_REVIEW_MODEL)
 MAGI_RUNTIME_DIR = os.environ.get(
     "MAGI_RUNTIME_DIR",
     os.path.join(os.path.expanduser("~"), "Library", "Application Support", "MAGI"),
@@ -57,11 +69,22 @@ _OMLX_WATCHDOG_CACHE = {"ts": 0.0, "data": {}}
 
 # Model alias: Ollama names → oMLX names (for seamless migration)
 _OMLX_MODEL_ALIAS = {
-    "taide-12b": OMLX_TAIDE_MODEL,
+    "taide-12b": TEXT_PRIMARY_MODEL,
+    "taide": TEXT_PRIMARY_MODEL,
+    "TAIDE-12b-Chat-mlx-4bit": TEXT_PRIMARY_MODEL,
     "nomic-embed-text": OMLX_EMBED_MODEL,
-    "Qwen3.5-9B-4bit": "TAIDE-12b-Chat-mlx-4bit",
-    "qwen3.5-9b-4bit": "TAIDE-12b-Chat-mlx-4bit",
-    "Qwen3.5-9B-Uncensored-mxfp4": "TAIDE-12b-Chat-mlx-4bit",
+    "Qwen2.5-Coder-14B-Instruct-4bit": TEXT_PRIMARY_MODEL,
+    "Qwen3.5-9B-4bit": TEXT_PRIMARY_MODEL,
+    "qwen3.5-9b-4bit": TEXT_PRIMARY_MODEL,
+    "Qwen3.5-9B-Uncensored-mxfp4": TEXT_PRIMARY_MODEL,
+    "gemma-4": TEXT_PRIMARY_MODEL,
+    "gemma4": TEXT_PRIMARY_MODEL,
+    "gemma-4-26b": TEXT_PRIMARY_MODEL,
+    "gemma-4-26b-a4b": TEXT_PRIMARY_MODEL,
+    "gemma-4-26b-a4b-it-4bit": TEXT_PRIMARY_MODEL,
+    "gemma-4-e2b-it-local-bf16": TEXT_PRIMARY_MODEL,
+    "gemma-4-e4b-it-bf16": TEXT_PRIMARY_MODEL,
+    "gemma4:26b": TEXT_PRIMARY_MODEL,
     "gemma-3-12b": "gemma-3-12b-it-4bit",
     "gemma3-12b": "gemma-3-12b-it-4bit",
 }
@@ -100,7 +123,7 @@ PREFERRED_DISTRIBUTED_MODELS = [
     x.strip()
     for x in os.environ.get(
         "MELCHIOR_PREFERRED_MODELS",
-        "taide-12b",
+        TEXT_PRIMARY_MODEL,
     ).split(",")
     if x.strip()
 ]
@@ -139,7 +162,7 @@ DEGRADED_FALLBACK_MODELS = [
     x.strip()
     for x in os.environ.get(
         "MELCHIOR_DEGRADED_MODELS",
-        "taide-12b",
+        TEXT_PRIMARY_MODEL,
     ).split(",")
     if x.strip()
 ]
@@ -317,6 +340,40 @@ def list_omlx_models(force_refresh: bool = False) -> List[str]:
         return []
 
 
+def _resolve_omlx_chat_model(raw_model: str, *, available_models: List[str] | None = None) -> str:
+    """Resolve requested chat model to an actually available local oMLX model."""
+    requested = _OMLX_MODEL_ALIAS.get((raw_model or "").strip(), (raw_model or "").strip())
+    requested = resolve_text_model(requested, available=available_models)
+    if not requested:
+        requested = OMLX_GENERAL_MODEL
+
+    models = list(available_models or list_omlx_models())
+    if not models:
+        return requested
+    if requested in models:
+        return requested
+
+    requested_lower = requested.lower()
+    for model_name in models:
+        lower = model_name.lower()
+        if requested_lower and (requested_lower == lower or requested_lower in lower or lower.startswith(requested_lower)):
+            return model_name
+
+    # When the configured TAIDE model is absent, use the best available local chat model
+    # instead of triggering a guaranteed 404 and falling straight into fallback mode.
+    if "taide" in requested_lower or "gemma" in requested_lower:
+        for model_name in models:
+            lower = model_name.lower()
+            if "gemma-4" in lower:
+                return model_name
+        for model_name in models:
+            lower = model_name.lower()
+            if any(token in lower for token in ("qwen", "gemma", "coder")):
+                return model_name
+
+    return models[0]
+
+
 def _ensure_alternating_roles(messages: list) -> list:
     """Ensure messages follow user/assistant alternation required by strict chat templates.
 
@@ -394,7 +451,7 @@ def _chat_omlx(
         return _result(False, "", "omlx_chat_disabled_or_circuit_open")
 
     raw_model = (model or OMLX_GENERAL_MODEL).strip()
-    use_model = _OMLX_MODEL_ALIAS.get(raw_model, raw_model)
+    use_model = _resolve_omlx_chat_model(raw_model)
     messages = []
     if system_prompt:
         messages.append({"role": "system", "content": system_prompt})
@@ -419,9 +476,11 @@ def _chat_omlx(
         "temperature": float(temperature),
         "max_tokens": int(max_tokens),
         "top_p": 0.88,
-        "repetition_penalty": 1.1,
         "stream": False,
     }
+    # repetition_penalty: oMLX supports it, Ollama /v1/ does not
+    if OMLX_CHAT_PORT != 11434:
+        payload["repetition_penalty"] = 1.1
     # Qwen3.5 needs thinking mode disabled
     if "qwen" in use_model.lower() and "3.5" in use_model:
         payload["chat_template_kwargs"] = {"enable_thinking": False}
@@ -719,7 +778,7 @@ def warmup(model: str = "", timeout: int = 60) -> dict:
     """
     Ask Melchior agent to warm up an Ollama model (best-effort).
     """
-    use_model = (model or "").strip() or (PREFERRED_DISTRIBUTED_MODELS[0] if PREFERRED_DISTRIBUTED_MODELS else "taide-12b")
+    use_model = (model or "").strip() or (PREFERRED_DISTRIBUTED_MODELS[0] if PREFERRED_DISTRIBUTED_MODELS else TEXT_PRIMARY_MODEL)
     try:
         data = _post_json(ENDPOINTS["warmup"], {"model": use_model, "timeout": int(timeout)}, timeout=max(5, int(timeout) + 5))
         return {"success": bool(data.get("success")), "model": use_model, "ms": data.get("ms"), "error": data.get("error", "")}
@@ -803,7 +862,7 @@ def _local_openai_v1_models(timeout: int = 3) -> List[str]:
 
 def _local_openai_v1_chat(prompt: str, model: str = "", timeout: int = 20) -> dict:
     models = _local_openai_v1_models(timeout=min(4, max(2, int(timeout // 4) or 2)))
-    use = _pick_openai_model(model or os.environ.get("LOCAL_MAIN_MODEL", "taide-12b"), models) if models else ""
+    use = _pick_openai_model(model or os.environ.get("LOCAL_MAIN_MODEL", TEXT_PRIMARY_MODEL), models) if models else ""
     if not use:
         return _result(False, "", "local_openai_v1_model_unavailable")
     payload = {
@@ -836,7 +895,7 @@ def _resolve_remote_model(requested_model: str) -> str:
     requested = (requested_model or "").strip()
     available = _list_ollama_models(MELCHIOR_HOST, MELCHIOR_OLLAMA_PORT)
     if not available:
-        return requested or (PREFERRED_DISTRIBUTED_MODELS[0] if PREFERRED_DISTRIBUTED_MODELS else "taide-12b")
+        return requested or (PREFERRED_DISTRIBUTED_MODELS[0] if PREFERRED_DISTRIBUTED_MODELS else TEXT_PRIMARY_MODEL)
 
     if requested and requested in available:
         return requested
@@ -926,7 +985,7 @@ def _chat_ollama(
             else:
                 # No specific model requested — pick a lightweight local model.
                 picked = ""
-                for cand in ["TAIDE-12b-Chat-mlx-4bit", "taide-12b", "gemma-3-12b-it-4bit"]:
+                for cand in [TEXT_PRIMARY_MODEL, "gemma-3-12b-it-4bit"]:
                     if cand in local_models:
                         picked = cand
                         break
@@ -961,7 +1020,7 @@ def _chat_ollama(
         return _result(False, "", f"Ollama ({host}) failed: {e}")
 
 
-def quick_local_chat(prompt: str, timeout: int = 14, model_hint: str = "taide-12b",
+def quick_local_chat(prompt: str, timeout: int = 14, model_hint: str = TEXT_PRIMARY_MODEL,
                      num_ctx: int = 0, num_predict: int = 0) -> dict:
     """
     Fast degraded-response path on local Ollama.
@@ -996,9 +1055,9 @@ def quick_local_chat(prompt: str, timeout: int = 14, model_hint: str = "taide-12
     # ── Primary: oMLX (replaces Ollama for all local inference) ──
     if _omlx_available():
         omlx_model = _OMLX_MODEL_ALIAS.get(model_hint, model_hint)
-        # If the hint is an Ollama name not in alias, try TAIDE as default
+        # If the hint is not available, fall back to configured primary text model.
         if omlx_model == model_hint and model_hint not in list_omlx_models():
-            omlx_model = OMLX_TAIDE_MODEL
+            omlx_model = TEXT_PRIMARY_MODEL
         r = _chat_omlx(
             prompt=prompt,
             model=omlx_model,
@@ -1061,7 +1120,7 @@ def generate_code(prompt: str, language: str = "python") -> dict:
 
         local = _chat_ollama(
             f"Write code in {language}: {prompt}",
-            "taide-12b",
+            TEXT_PRIMARY_MODEL,
             min(max(12, MELCHIOR_LOCAL_FALLBACK_TIMEOUT_SEC), TIMEOUT),
             host="localhost",
             port=11434,
@@ -1074,13 +1133,13 @@ def generate_code(prompt: str, language: str = "python") -> dict:
         }
 
 
-def chat(prompt: str, model: str = "taide-12b", timeout: int = TIMEOUT) -> dict:
+def chat(prompt: str, model: str = TEXT_PRIMARY_MODEL, timeout: int = TIMEOUT) -> dict:
     """
     Send chat prompt to Melchior agent with layered fallback.
     Returns: {"success": bool, "response": str, "error": str}
     """
     if "gpt-oss" in (model or "").lower():
-        logger.warning("🚨 [MODEL-MIGRATION] melchior_client.chat() called with gpt-oss model: %s — should be taide-12b", model)
+        logger.warning("🚨 [MODEL-MIGRATION] melchior_client.chat() called with gpt-oss model: %s — should be %s", model, TEXT_PRIMARY_MODEL)
     budget_sec = max(8, int(timeout))
     deadline = _start_deadline(budget_sec)
     errors = []
@@ -1108,7 +1167,7 @@ def chat(prompt: str, model: str = "taide-12b", timeout: int = TIMEOUT) -> dict:
         if _step_timeout >= 4:
             local_v1_primary = _local_openai_v1_chat(
                 prompt,
-                model=os.environ.get("LOCAL_MAIN_MODEL", model or "taide-12b"),
+                model=os.environ.get("LOCAL_MAIN_MODEL", model or TEXT_PRIMARY_MODEL),
                 timeout=_step_timeout,
             )
             if local_v1_primary.get("success"):
@@ -1154,7 +1213,7 @@ def chat(prompt: str, model: str = "taide-12b", timeout: int = TIMEOUT) -> dict:
         quick = quick_local_chat(
             prompt=prompt,
             timeout=max(10, min(20, _remaining(deadline, floor=10))),
-            model_hint=(os.environ.get("MELCHIOR_SHORT_TIMEOUT_MODEL", "taide-12b") or "taide-12b"),
+            model_hint=(os.environ.get("MELCHIOR_SHORT_TIMEOUT_MODEL", TEXT_PRIMARY_MODEL) or TEXT_PRIMARY_MODEL),
         )
         if quick.get("success"):
             quick["timeout_budget_sec"] = budget_sec
@@ -1269,7 +1328,7 @@ def chat(prompt: str, model: str = "taide-12b", timeout: int = TIMEOUT) -> dict:
     # Fallback 2: local llama-server OpenAI /v1 (taide-12b stack) if available.
     local_v1 = _local_openai_v1_chat(
         prompt,
-        model=os.environ.get("LOCAL_MAIN_MODEL", "taide-12b"),
+        model=os.environ.get("LOCAL_MAIN_MODEL", TEXT_PRIMARY_MODEL),
         timeout=_local_fallback_timeout(_remaining(deadline, floor=10), floor=10),
     )
     if local_v1.get("success"):
@@ -1284,11 +1343,11 @@ def chat(prompt: str, model: str = "taide-12b", timeout: int = TIMEOUT) -> dict:
 
 def distributed_chat(prompt: str, timeout: int = TIMEOUT) -> dict:
     """
-    Chat helper that routes to best available local model (taide-12b preferred).
+    Chat helper that routes to the configured local primary text model.
     Distributed inference is disabled; uses local-first routing.
     Returns route/model metadata for observability.
     """
-    preferred = PREFERRED_DISTRIBUTED_MODELS[0] if PREFERRED_DISTRIBUTED_MODELS else "taide-12b"
+    preferred = PREFERRED_DISTRIBUTED_MODELS[0] if PREFERRED_DISTRIBUTED_MODELS else TEXT_PRIMARY_MODEL
     timeout_i = max(8, int(timeout))
     timeout_cap = max(20, int(MELCHIOR_DISTRIBUTED_TIMEOUT_CAP_SEC))
     timeout_i = min(timeout_i, timeout_cap)
@@ -1310,7 +1369,7 @@ def smart_chat(prompt: str, model_hint: str = "", timeout: int = TIMEOUT, qualit
     q = (quality or "auto").strip().lower()
     timeout_i = max(8, int(timeout))
     want_high = q in {"high", "reasoning", "quality", "best", "auto"}
-    requested = (model_hint or "").strip() or (PREFERRED_DISTRIBUTED_MODELS[0] if PREFERRED_DISTRIBUTED_MODELS else "taide-12b")
+    requested = (model_hint or "").strip() or (PREFERRED_DISTRIBUTED_MODELS[0] if PREFERRED_DISTRIBUTED_MODELS else TEXT_PRIMARY_MODEL)
     if _avoid_distributed():
         out = chat(prompt=prompt, model=requested, timeout=timeout_i)
         if isinstance(out, dict):
@@ -1321,7 +1380,7 @@ def smart_chat(prompt: str, model_hint: str = "", timeout: int = TIMEOUT, qualit
     # For short request budgets, prefer a smaller model to avoid "no reply" experiences.
     # Explicit high/reasoning quality keeps large-model preference.
     if q == "auto" and timeout_i <= 90:
-        requested = (os.environ.get("MELCHIOR_SHORT_TIMEOUT_MODEL", "taide-12b") or "taide-12b").strip()
+        requested = (os.environ.get("MELCHIOR_SHORT_TIMEOUT_MODEL", TEXT_PRIMARY_MODEL) or TEXT_PRIMARY_MODEL).strip()
         want_high = False
 
     deadline = _start_deadline(timeout_i)

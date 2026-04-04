@@ -10,6 +10,7 @@ import subprocess
 import tempfile
 from typing import List
 
+from api.model_config import SUMMARY_MODEL, TEXT_REVIEW_MODEL
 from skills.bridge.http_pool import get_session as _get_session
 
 # Configuration
@@ -357,7 +358,7 @@ def _tc_review_pass(text: str, timeout: int = 30) -> str:
         # Primary: oMLX TAIDE-12b MLX for 繁體校正
         _chat_omlx = getattr(melchior_client, "_chat_omlx", None)
         _omlx_avail = getattr(melchior_client, "_omlx_available", None)
-        _taide_model = getattr(melchior_client, "OMLX_TAIDE_MODEL", "TAIDE-12b-Chat-mlx-4bit")
+        _taide_model = getattr(melchior_client, "OMLX_TAIDE_MODEL", TEXT_REVIEW_MODEL)
         if callable(_chat_omlx) and callable(_omlx_avail) and _omlx_avail():
             r = _chat_omlx(
                 prompt=prompt,
@@ -370,7 +371,7 @@ def _tc_review_pass(text: str, timeout: int = 30) -> str:
             # Fallback via InferenceGateway
             from skills.bridge.inference_gateway import InferenceGateway
             _gw = InferenceGateway()
-            r = _gw.chat(prompt, task_type="tc_review", timeout=max(15, timeout), model="taide-12b")
+            r = _gw.chat(prompt, task_type="tc_review", timeout=max(15, timeout), model=TEXT_REVIEW_MODEL)
         if r.get("success") and r.get("response") and len(r["response"].strip()) > len(text) * 0.5:
             return r["response"].strip()
     except Exception as e:
@@ -515,7 +516,7 @@ def summarize_text(text, timeout_sec=None, summary_length="medium"):
         _omlx_chat = getattr(melchior_client, "_chat_omlx", None)
         _omlx_avail = getattr(melchior_client, "_omlx_available", None)
         if callable(_omlx_chat) and callable(_omlx_avail) and _omlx_avail():
-            _omlx_model = os.environ.get("MAGI_OMLX_SUMMARY_MODEL", "TAIDE-12b-Chat-mlx-4bit")
+            _omlx_model = os.environ.get("MAGI_OMLX_SUMMARY_MODEL", SUMMARY_MODEL)
             q = _omlx_chat(
                 prompt=prompt,
                 model=_omlx_model,

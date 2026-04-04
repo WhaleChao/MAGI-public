@@ -338,6 +338,18 @@ def _score(msg_tokens: Dict[str, float], skill_tokens: Dict[str, float],
     return 0.65 * jaccard + 0.25 * tg + 0.10 * name_bonus
 
 
+def _is_soft_ambiguous_message(message: str) -> bool:
+    raw = str(message or "").strip().lower()
+    if not raw:
+        return True
+    compact = re.sub(r"\s+", "", raw)
+    if compact in {p.lower() for p in _SOFT_PHRASE_HINTS}:
+        return True
+    if len(compact) <= 4 and any(p.lower() == compact for p in _SOFT_PHRASE_HINTS):
+        return True
+    return False
+
+
 def route(message: str) -> Optional[Dict]:
     """
     Route a user message to the best-matching skill.
@@ -362,6 +374,7 @@ def route(message: str) -> Optional[Dict]:
     # --- Phase 1: Phrase hint matching (bridges Chinese ↔ English vocabulary gap) ---
     phrase_bonus: Dict[str, float] = {}  # skill_name → best bonus score
     hard_phrase_bonus: Dict[str, float] = {}
+    matched_hard_phrase: Dict[str, str] = {}
     for phrase, skill_name, bonus in _PHRASE_HINTS:
         if skill_name in _BLACKLISTED_SKILLS:
             continue
@@ -371,6 +384,7 @@ def route(message: str) -> Optional[Dict]:
                 phrase_bonus[skill_name] = bonus
             if phrase not in _SOFT_PHRASE_HINTS and bonus > hard_phrase_bonus.get(skill_name, 0.0):
                 hard_phrase_bonus[skill_name] = bonus
+                matched_hard_phrase[skill_name] = phrase
 
     # Only hard phrases may short-circuit directly. Broad phrases must go through
     # the token scorer so they do not hijack generic chat or ambiguous requests.
@@ -381,7 +395,14 @@ def route(message: str) -> Optional[Dict]:
             logger.debug(
                 f"SemanticRouter[phrase]: '{message[:60]}' → {best_phrase_skill} ({best_phrase_conf:.3f})"
             )
-            return {"skill": best_phrase_skill, "confidence": round(best_phrase_conf, 3), "method": "phrase"}
+            return {
+                "skill": best_phrase_skill,
+                "confidence": round(best_phrase_conf, 3),
+                "method": "phrase",
+                "reason": "hard_phrase_match",
+                "matched_phrase": matched_hard_phrase.get(best_phrase_skill, ""),
+                "candidates": [{"skill": best_phrase_skill, "score": round(best_phrase_conf, 3), "method": "phrase"}],
+            }
 
     # --- Phase 2: Token overlap scoring ---
     scores: List[Tuple[float, str]] = []
@@ -398,15 +419,28 @@ def route(message: str) -> Optional[Dict]:
     # Only route if the top score is meaningfully above second place
     gap = best_score - second_score
     effective_score = best_score * (1 + 0.5 * min(gap / (best_score + 1e-9), 1.0))
+    top_candidates = [
+        {"skill": name, "score": round(score, 3), "method": "semantic"}
+        for score, name in scores[:3]
+    ]
+    if _is_soft_ambiguous_message(message) and effective_score < (_ROUTE_THRESHOLD + 0.12):
+        return None
 
     if effective_score >= _ROUTE_THRESHOLD:
         logger.debug(f"SemanticRouter: '{message[:60]}' → {best_name} ({effective_score:.3f})")
-        return {"skill": best_name, "confidence": round(effective_score, 3), "method": "semantic"}
+        return {
+            "skill": best_name,
+            "confidence": round(effective_score, 3),
+            "method": "semantic",
+            "reason": f"top_score={best_score:.3f};gap={gap:.3f}",
+            "candidates": top_candidates,
+        }
 
     # --- Phase 3: LLM fallback for ambiguous mid-range scores ---
     if _LLM_ENABLED and best_score >= _LLM_THRESHOLD:
         result = _llm_route(message, [s["name"] for s in skills])
         if result:
+            result.setdefault("candidates", top_candidates)
             return result
 
     return None
@@ -437,7 +471,12 @@ def _llm_route(message: str, skill_names: List[str]) -> Optional[Dict]:
             answer = (resp.json().get("choices", [{}])[0].get("message", {}).get("content") or "").strip().lower()
             for s in skill_names:
                 if s.lower() == answer or s.lower() in answer:
-                    return {"skill": s, "confidence": 0.55, "method": "llm"}
+                    return {
+                        "skill": s,
+                        "confidence": 0.55,
+                        "method": "llm",
+                        "reason": "llm_disambiguation",
+                    }
     except Exception as e:
         logger.debug(f"SemanticRouter LLM failed: {e}")
     return None

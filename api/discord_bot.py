@@ -540,12 +540,18 @@ async def bg_scheduler_loop():
                     # Non-@MAGI command: execute as subprocess via /bin/sh -c
                     # (cron commands may contain cd/pipes; validate they start with known safe prefixes)
                     import subprocess as _sp
-                    _SAFE_PREFIXES = ("cd ", "/Users/", "./venv/", "python3 ")
+                    _SAFE_PREFIXES = ("cd ", "/Users/", "./venv/", "python3 ", "MAGI_", "JUDICIAL_")
                     if not any(command.strip().startswith(p) for p in _SAFE_PREFIXES):
                         logger.warning("⚠️ Blocked suspicious cron command: %s", command[:100])
                     else:
+                        # Per-job timeout: long-running tasks get more time
+                        _LONG_JOBS = {"job_nightly_regression", "job_distill_train", "job_weekend_resummary",
+                                      "job_pdf_namer_nightly", "job_reprocess_insights", "job_obsidian_ingest",
+                                      "job_laf_nightly_audit", "job_nightly_autopilot", "job_judicial_api_night_pull",
+                                      "job_judicial_api_morning", "job_weekly_legal_crawl"}
+                        _timeout = 7200 if job.get("id") in _LONG_JOBS else 600
                         try:
-                            _result = _sp.run(["/bin/sh", "-c", command], capture_output=True, text=True, timeout=300,
+                            _result = _sp.run(["/bin/sh", "-c", command], capture_output=True, text=True, timeout=_timeout,
                                               cwd=_MAGI_ROOT,
                                               env={**os.environ, "MAGI_PREFER_LOCAL_DB": "0", "MAGI_NO_DELETE": "1"})
                             if _result.returncode != 0:
@@ -553,7 +559,7 @@ async def bg_scheduler_loop():
                             else:
                                 logger.info("✅ Shell job %s completed OK", job.get("id"))
                         except _sp.TimeoutExpired:
-                            logger.warning("⚠️ Shell job %s timed out (300s)", job.get("id"))
+                            logger.warning("⚠️ Shell job %s timed out (%ds)", job.get("id"), _timeout)
                         except Exception as _se:
                             logger.warning("⚠️ Shell job %s error: %s", job.get("id"), _se)
                     # Shell job results go to logs only — not to Discord general channel.
@@ -990,8 +996,8 @@ async def on_message(message):
         _is_routed_channel = False
         if not _is_main_channel:
             try:
-                from api.discord_channel_router import _load_channel_map
-                _routed_ids = set(str(v) for v in _load_channel_map().values() if v)
+                from api.discord_channel_router import _load_all_routed_channel_ids
+                _routed_ids = _load_all_routed_channel_ids()
                 _is_routed_channel = _current_ch_id in _routed_ids
             except Exception:
                 logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 915, exc_info=True)
@@ -1185,14 +1191,11 @@ async def on_message(message):
                 _dc_topic_key = ""
                 _dc_ch_id = str(message.channel.id)
                 try:
-                    from api.discord_channel_router import _load_channel_map
-                    _dc_cmap = _load_channel_map()
-                    # Reverse lookup: channel_id → sub_topic → base topic
-                    for _sub_topic, _cid_val in _dc_cmap.items():
-                        if str(_cid_val) == _dc_ch_id:
-                            # Strip suffix: "laf_dispatch" → "laf", "filereview_payment" → "filereview"
-                            _dc_topic_key = _sub_topic.split("_")[0] if "_" in _sub_topic else _sub_topic
-                            break
+                    from api.discord_channel_router import _reverse_lookup_channel
+                    _sub_topic = _reverse_lookup_channel(_dc_ch_id)
+                    if _sub_topic:
+                        # Strip suffix: "laf_dispatch" → "laf", "filereview_payment" → "filereview"
+                        _dc_topic_key = _sub_topic.split("_")[0] if "_" in _sub_topic else _sub_topic
                 except Exception:
                     logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 1115, exc_info=True)
                 _dc_channel_ctx = {

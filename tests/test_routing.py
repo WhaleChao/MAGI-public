@@ -17,6 +17,13 @@ def _make_orchestrator():
         orc._bg_task_pool = MagicMock()
         orc._route_traces = {}
         orc.classifier = MagicMock()
+        orc.classifier.classify_detailed.return_value = {
+            "intent": "CHAT",
+            "confidence": 0.55,
+            "reason": "fixture_default",
+            "candidates": [{"intent": "CHAT", "score": 0.55}],
+        }
+        orc.classifier.classify.return_value = "CHAT"
         return orc
 
 
@@ -97,40 +104,78 @@ class TestExplainRouting:
 
     # ---- 10. Classifier fallback ----
     def test_classifier_fallback_cmd(self):
-        self.orc.classifier.classify.return_value = "CMD"
+        self.orc.classifier.classify_detailed.return_value = {
+            "intent": "CMD",
+            "confidence": 0.91,
+            "reason": "llm_classifier",
+            "candidates": [{"intent": "CMD", "score": 0.91}],
+        }
         result = self.orc._explain_routing("請幫我關燈")
         assert result["action"] == "command_handler"
         assert result["matched"] == "intent_classifier"
         assert result["intent"] == "CMD"
+        assert result["confidence"] == pytest.approx(0.91)
+        assert result["reason"] == "llm_classifier"
 
     def test_classifier_fallback_chat(self):
-        self.orc.classifier.classify.return_value = "CHAT"
+        self.orc.classifier.classify_detailed.return_value = {
+            "intent": "CHAT",
+            "confidence": 0.62,
+            "reason": "heuristic_fallback",
+            "candidates": [{"intent": "CHAT", "score": 0.62}],
+        }
         result = self.orc._explain_routing("你好嗎")
         assert result["action"] == "chat_handler"
         assert result["matched"] == "intent_classifier"
+        assert result["reason"] == "heuristic_fallback"
 
     def test_classifier_fallback_query(self):
-        self.orc.classifier.classify.return_value = "QUERY"
+        self.orc.classifier.classify_detailed.return_value = {
+            "intent": "QUERY",
+            "confidence": 0.88,
+            "reason": "embedding_high_confidence",
+            "candidates": [{"intent": "QUERY", "score": 0.88}],
+        }
         result = self.orc._explain_routing("台北天氣如何")
         assert result["action"] == "query_handler"
         assert result["intent"] == "QUERY"
 
     def test_classifier_fallback_danger(self):
-        self.orc.classifier.classify.return_value = "DANGER"
+        self.orc.classifier.classify_detailed.return_value = {
+            "intent": "DANGER",
+            "confidence": 1.0,
+            "reason": "regex_danger",
+            "candidates": [{"intent": "DANGER", "score": 1.0}],
+        }
         result = self.orc._explain_routing("delete everything")
         assert result["action"] == "danger_handler"
 
     def test_classifier_exception_returns_unknown(self):
-        self.orc.classifier.classify.side_effect = RuntimeError("boom")
+        self.orc.classifier.classify_detailed.side_effect = RuntimeError("boom")
         result = self.orc._explain_routing("random gibberish xyz")
         assert result["action"] == "unknown"
         assert result["intent"] == "UNKNOWN"
 
     # ---- Edge cases ----
     def test_empty_message_falls_to_classifier(self):
-        self.orc.classifier.classify.return_value = "CHAT"
+        self.orc.classifier.classify_detailed.return_value = {
+            "intent": "CHAT",
+            "confidence": 0.55,
+            "reason": "heuristic_fallback",
+            "candidates": [],
+        }
         result = self.orc._explain_routing("")
         assert result["matched"] == "intent_classifier"
+
+    def test_legacy_classifier_output_is_still_supported(self):
+        self.orc.classifier.classify_detailed.return_value = "QUERY"
+        self.orc.classifier.classify.return_value = "QUERY"
+
+        result = self.orc._explain_routing("legacy classifier path")
+
+        assert result["action"] == "query_handler"
+        assert result["intent"] == "QUERY"
+        assert result["reason"] == "legacy_classifier_fallback"
 
     def test_all_results_have_success_true(self):
         for msg in ["/help", "狀態", "行程", "翻譯 hi", "系統狀態"]:
@@ -162,6 +207,7 @@ class TestRoutingHardening:
         assert result is not None
         assert result["skill"] == expected_skill
         assert result["confidence"] >= 0.22
+        assert result["candidates"]
 
     def test_persistent_cache_skips_high_risk_intents(self, tmp_path, monkeypatch):
         from skills.bridge import intention_classifier as ic
@@ -205,3 +251,8 @@ class TestRoutingHardening:
         clf = ic.IntentionClassifier(use_llm=False, cache_size=8)
         assert clf._cache_get("台北天氣如何") is None
         assert clf.classify("台北天氣如何") == "QUERY"
+
+    def test_soft_ambiguous_term_returns_none(self):
+        from skills.bridge.semantic_router import route
+
+        assert route("案件") is None

@@ -11,7 +11,6 @@ This blueprint keeps the existing behavior for:
   - /openclaw -> /dashboard/nerv
   - /intel -> worldmonitor report index
   - /dashboard
-  - /dashboard/pixel
   - /dashboard/nerv
 
 The module is intentionally dependency-light and does not import server.py.
@@ -88,12 +87,6 @@ def intel_panel():
 @login_required
 def dashboard():
     return render_template("dashboard.html", user=current_user)
-
-
-@dashboard_pages_bp.route("/dashboard/pixel")
-@login_required
-def dashboard_pixel():
-    return render_template("dashboard_pixel.html", user=current_user)
 
 
 @dashboard_pages_bp.route("/dashboard/nerv")

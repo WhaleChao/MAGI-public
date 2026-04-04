@@ -10,6 +10,12 @@ import time
 from datetime import datetime
 from functools import lru_cache  # kept for any external consumers that may import it
 
+from api.session.provenance import (
+    build_source_signature,
+    parse_source_provenance,
+    render_provenance_badge,
+)
+
 try:
     from api.mysql_connector_guard import patch_mysql_connector_for_stability
 except Exception:
@@ -115,11 +121,23 @@ def _query_terms(text: str) -> list[str]:
 
 
 def _source_trust_weight(source: str, query: str = "") -> float:
-    src = _normalize_source_text(source)
+    prov = parse_source_provenance(source)
+    src = _normalize_source_text(prov.raw_source)
     if not src:
         return 0.60
 
     wants_chatlog = _query_prefers_chatlog(query)
+
+    if prov.source_type in {"chatlog", "user_chat"}:
+        if prov.role == "assistant":
+            return 0.45 if wants_chatlog else 0.18
+        return 0.85 if wants_chatlog else 0.28
+
+    if prov.verified:
+        return max(0.90, prov.confidence or 0.90)
+
+    if prov.derived_from:
+        return min(0.35, prov.confidence or 0.35)
 
     if any(marker in src for marker in _MEMORY_LOW_TRUST_MARKERS):
         if "chatlog|" in src:
@@ -138,6 +156,9 @@ def _source_trust_weight(source: str, query: str = "") -> float:
     if "codebase-ingest" in src:
         return 0.15
 
+    if prov.confidence > 0.0:
+        return prov.confidence
+
     return 0.65
 
 
@@ -154,6 +175,7 @@ def _rank_recall_results(query: str, results: list[dict]) -> list[dict]:
         enriched["base_score"] = base_score
         enriched["trust_weight"] = trust_weight
         enriched["score"] = adjusted_score
+        enriched["provenance"] = parse_source_provenance(src).as_dict()
         ranked.append(enriched)
 
     ranked.sort(
@@ -542,12 +564,12 @@ def _content_exists(cursor, content: str) -> bool:
     return cursor.fetchone() is not None
 
 
-def remember(content, source="manual"):
+def remember(content, source="manual", metadata: dict | None = None):
     """Store memory to Keeper; fallback to local backup if offline."""
     embedding = get_embedding(content)
 
     # Safe truncate for MySQL VARCHAR limits on 'source' column
-    safe_source = str(source)[:250] if source else "unknown"
+    safe_source = build_source_signature(str(source or "manual"), metadata=metadata)[:250]
 
     if _keeper_offline():
         return _save_local_backup(content, safe_source, embedding, is_synced=False)
@@ -587,11 +609,11 @@ def remember(content, source="manual"):
 
     except mysql.connector.Error as e:
         _mark_keeper_offline(str(e)[:180])
-        return _save_local_backup(content, source, embedding, is_synced=False)
+        return _save_local_backup(content, safe_source, embedding, is_synced=False)
 
     except Exception as e:
         logger.error(f"Remember error: {e}")
-        return _save_local_backup(content, source, embedding, is_synced=False)
+        return _save_local_backup(content, safe_source, embedding, is_synced=False)
 
     finally:
         if "conn" in locals() and conn.is_connected():
@@ -614,7 +636,10 @@ def remember_batch(items):
         return {"ok": True, "inserted": 0, "failed": 0, "total": 0}
 
     texts = [it.get("content", "") for it in items]
-    sources = [str(it.get("source", "batch"))[:250] for it in items]
+    sources = [
+        build_source_signature(str(it.get("source", "batch")), metadata=it.get("metadata"))[:250]
+        for it in items
+    ]
 
     # Batch embed
     embeddings = get_embeddings_batch(texts)

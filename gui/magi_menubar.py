@@ -44,9 +44,9 @@ SERVICES = [
 ]
 
 OMLX_ENGINES = [
-    ("文字推理 TAIDE",  8080),
-    ("向量嵌入 BERT",   8081),
-    ("視覺辨識 GLM",    8082),
+    ("文字推理 Gemma4",  int(os.environ.get("MAGI_OMLX_PORT", "8080"))),
+    ("向量嵌入 BERT",    8081),
+    ("視覺辨識 GLM",     8082),
 ]
 
 # ── 顏色 ──
@@ -97,7 +97,7 @@ def _check_omlx(port: int) -> str:
             models = data.get("data", [])
             if models:
                 # 主推理 port (8080)：優先顯示 TAIDE（主對話模型），Qwen 只負責 code
-                if port == 8080:
+                if port in (8080, 11434):
                     main_kw = os.environ.get("MAGI_MAIN_MODEL", "TAIDE").lower().split("-")[0]
                     for m in models:
                         if main_kw in m.get("id", "").lower():
@@ -108,14 +108,53 @@ def _check_omlx(port: int) -> str:
     return ""
 
 
-def _count_zombies() -> int:
+_MAGI_ZOMBIE_PARENTS = {
+    "daemon.py", "server.py", "discord_bot.py", "tools_api.py",
+    "action.py", "heartbeat.py", "Python", "python3", "python3.14",
+    "omlx", "chromedriver", "caddy", "socat", "bash",
+}
+
+
+def _count_zombies() -> tuple[int, str]:
+    """只計算 MAGI 相關的殭屍程序，回傳 (count, detail)。"""
     try:
         r = subprocess.run(
-            ["ps", "-eo", "stat="], capture_output=True, text=True, timeout=3,
+            ["ps", "-eo", "pid=,ppid=,stat=,command="],
+            capture_output=True, text=True, timeout=3,
         )
-        return sum(1 for line in r.stdout.splitlines() if line.strip().startswith("Z"))
+        magi_zombies = 0
+        parent_names = []
+        for line in r.stdout.splitlines():
+            parts = line.split(None, 3)
+            if len(parts) < 3:
+                continue
+            if not parts[2].startswith("Z"):
+                continue
+            # 找父程序，判斷是否 MAGI 相關
+            ppid = parts[1]
+            try:
+                r2 = subprocess.run(
+                    ["ps", "-p", ppid, "-o", "command="],
+                    capture_output=True, text=True, timeout=2,
+                )
+                pcmd = r2.stdout.strip()
+            except Exception:
+                pcmd = ""
+            is_magi = (
+                "MAGI" in pcmd or "magi" in pcmd
+                or "Desktop/MAGI" in pcmd
+                or any(kw in pcmd for kw in _MAGI_ZOMBIE_PARENTS)
+            )
+            if is_magi:
+                magi_zombies += 1
+                name = pcmd.split("/")[-1].split()[0][:20] if pcmd else "?"
+                if name and name not in parent_names:
+                    parent_names.append(name)
+
+        detail = f"(父: {', '.join(parent_names[:3])})" if parent_names else ""
+        return magi_zombies, detail
     except Exception:
-        return 0
+        return 0, ""
 
 
 # ── 記憶體佔用 ──────────────────────────────────────────────────
@@ -196,6 +235,10 @@ class MAGIMenuBar(rumps.App):
         self.menu_header.set_callback(None)
         self.menu_sep1 = rumps.separator
 
+        # ── 服務狀態 ──
+        self.svc_header = rumps.MenuItem("— 核心服務 —", callback=None)
+        self.svc_header.set_callback(None)
+
         self.service_items = {}
         for name, _ in SERVICES:
             item = rumps.MenuItem(f"  ◻ {name}  檢查中...")
@@ -203,7 +246,7 @@ class MAGIMenuBar(rumps.App):
             self.service_items[name] = item
 
         self.menu_sep2 = rumps.separator
-        self.omlx_header = rumps.MenuItem("oMLX 推理引擎", callback=None)
+        self.omlx_header = rumps.MenuItem("— 推理引擎 —", callback=None)
         self.omlx_header.set_callback(None)
 
         self.omlx_items = {}
@@ -214,33 +257,30 @@ class MAGIMenuBar(rumps.App):
 
         self.menu_sep3 = rumps.separator
 
-        # ── 夜間排程區塊 ──
-        self.cron_header = rumps.MenuItem("夜間排程", callback=None)
-        self.cron_header.set_callback(None)
-        self.cron_status_item = rumps.MenuItem("  ◻ 排程器  檢查中...")
+        # ── 排程（精簡一行）──
+        self.cron_status_item = rumps.MenuItem("  排程  檢查中...")
         self.cron_status_item.set_callback(None)
-        self.cron_next_item = rumps.MenuItem("  ◻ 下次任務  --")
-        self.cron_next_item.set_callback(None)
-        self.cron_last_item = rumps.MenuItem("  ◻ 上次執行  --")
-        self.cron_last_item.set_callback(None)
 
         self.menu_sep3_cron = rumps.separator
 
-        # ── 記憶體區塊 ──
-        self.mem_header = rumps.MenuItem("記憶體佔用", callback=None)
-        self.mem_header.set_callback(None)
-        self.mem_system_item = rumps.MenuItem("  系統  檢查中...")
-        self.mem_system_item.set_callback(None)
-        self.mem_module_items = []
-        for i in range(len(_MEM_MODULES)):
-            item = rumps.MenuItem(f"  -")
-            item.set_callback(None)
-            self.mem_module_items.append(item)
-        self.mem_total_item = rumps.MenuItem("  MAGI 合計  --")
-        self.mem_total_item.set_callback(None)
+        # ── 連線狀態（NAS + DB 合併）──
+        self.conn_header = rumps.MenuItem("— 連線 —", callback=None)
+        self.conn_header.set_callback(None)
+        self.nas_status_item = rumps.MenuItem("  ◻ NAS  檢查中...")
+        self.nas_status_item.set_callback(None)
+        self.db_status_item = rumps.MenuItem("  ◻ DB  檢查中...")
+        self.db_status_item.set_callback(None)
 
-        self.menu_sep3b = rumps.separator
-        self.zombie_item = rumps.MenuItem("殭屍程序  檢查中...")
+        self.menu_sep3_conn = rumps.separator
+
+        # ── 系統資源 ──
+        self.res_header = rumps.MenuItem("— 系統 —", callback=None)
+        self.res_header.set_callback(None)
+        self.mem_system_item = rumps.MenuItem("  記憶體  檢查中...")
+        self.mem_system_item.set_callback(None)
+        self.mem_total_item = rumps.MenuItem("  MAGI 佔用  --")
+        self.mem_total_item.set_callback(None)
+        self.zombie_item = rumps.MenuItem("  殭屍  0")
         self.zombie_item.set_callback(None)
 
         self.menu_sep4 = rumps.separator
@@ -256,21 +296,21 @@ class MAGIMenuBar(rumps.App):
         self.menu = [
             self.menu_header,
             self.menu_sep1,
+            self.svc_header,
             *self.service_items.values(),
             self.menu_sep2,
             self.omlx_header,
             *self.omlx_items.values(),
             self.menu_sep3,
-            self.cron_header,
             self.cron_status_item,
-            self.cron_next_item,
-            self.cron_last_item,
             self.menu_sep3_cron,
-            self.mem_header,
+            self.conn_header,
+            self.nas_status_item,
+            self.db_status_item,
+            self.menu_sep3_conn,
+            self.res_header,
             self.mem_system_item,
-            *self.mem_module_items,
             self.mem_total_item,
-            self.menu_sep3b,
             self.zombie_item,
             self.menu_sep4,
             self.start_item,
@@ -328,38 +368,29 @@ class MAGIMenuBar(rumps.App):
         # ── 夜間排程狀態 ──
         self._update_cron_status()
 
-        # ── 記憶體佔用 ──
+        # ── NAS 連線狀態 ──
+        self._update_nas_status()
+
+        # ── DB 連線狀態 ──
+        self._update_db_status()
+
+        # ── 系統資源（精簡）──
         total_gb, avail_gb, pct = _get_system_memory()
         if pct > 0:
             mem_color = _GREEN if pct < 70 else (_YELLOW if pct < 85 else _RED)
-            _set_colored_title(
-                self.mem_system_item,
-                f"  系統  {pct:.0f}%  ({avail_gb:.1f}GB 可用 / {total_gb:.0f}GB)",
-                mem_color,
-            )
+            _set_colored_title(self.mem_system_item,
+                               f"  記憶體  {pct:.0f}% ({avail_gb:.1f}GB 可用)", mem_color)
         modules = _get_module_memory()
-        magi_total_mb = 0
-        for i, item in enumerate(self.mem_module_items):
-            if i < len(modules):
-                mod_name, rss_mb, count = modules[i]
-                magi_total_mb += rss_mb
-                suffix = f" x{count}" if count > 1 else ""
-                warn_color = _RED if (count > 1 and mod_name == "FAISS Rebuild") else (_YELLOW if rss_mb > 500 else _GRAY)
-                _set_colored_title(item, f"  {mod_name:<14s} {rss_mb:>5d} MB{suffix}", warn_color)
-            else:
-                _set_colored_title(item, "", None)
-                item.title = ""
-        _set_colored_title(
-            self.mem_total_item,
-            f"  MAGI 合計      {magi_total_mb:>5d} MB",
-            _YELLOW if magi_total_mb > 2000 else _GREEN,
-        )
+        magi_total_mb = sum(m[1] for m in modules)
+        _set_colored_title(self.mem_total_item,
+                           f"  MAGI 佔用  {magi_total_mb} MB",
+                           _YELLOW if magi_total_mb > 2000 else _GREEN)
 
-        zombies = _count_zombies()
+        zombies, z_detail = _count_zombies()
         if zombies == 0:
-            _set_colored_title(self.zombie_item, "殭屍程序  0", _GREEN)
+            _set_colored_title(self.zombie_item, "  殭屍  0", _GREEN)
         else:
-            _set_colored_title(self.zombie_item, f"⚠ 殭屍程序  {zombies} 個", _RED)
+            _set_colored_title(self.zombie_item, f"  ⚠ 殭屍  {zombies} 個  {z_detail}", _RED)
 
         # 更新選單列圖示
         total = core_up + omlx_up
@@ -372,83 +403,97 @@ class MAGIMenuBar(rumps.App):
             self.title = "Ⓜ✕"  # 停止
 
     def _update_cron_status(self):
-        """檢查夜間排程狀態：scheduler 是否在跑、下次任務、上次執行。"""
+        """排程狀態（精簡一行）。"""
         try:
             cron_path = os.path.join(MAGI_ROOT, "cron_jobs.json")
             if not os.path.exists(cron_path):
-                _set_colored_title(self.cron_status_item, "  ✗ cron_jobs.json 不存在", _RED)
+                _set_colored_title(self.cron_status_item, "  ✗ 排程  設定檔遺失", _RED)
                 return
-
             with open(cron_path, "r", encoding="utf-8") as f:
                 jobs = json.load(f)
-
             enabled = [j for j in jobs if j.get("enabled", True)]
             bot_pid = _pgrep("discord_bot.py")
-
             if bot_pid and enabled:
-                _set_colored_title(
-                    self.cron_status_item,
-                    f"  ● 排程器運行中  {len(enabled)} 個任務",
-                    _GREEN,
-                )
+                _set_colored_title(self.cron_status_item,
+                                   f"  ● 排程  {len(enabled)} 個任務運行中", _GREEN)
             elif enabled:
-                _set_colored_title(
-                    self.cron_status_item,
-                    f"  ✗ discord_bot 停止  {len(enabled)} 個任務待執行",
-                    _RED,
-                )
+                _set_colored_title(self.cron_status_item,
+                                   f"  ✗ 排程  Bot 停止（{len(enabled)} 個待執行）", _RED)
             else:
-                _set_colored_title(self.cron_status_item, "  ⚠ 無啟用任務", _YELLOW)
-
-            # 找下次要執行的任務
-            from datetime import datetime
-            now = datetime.now()
-            next_jobs = []
-            for j in enabled:
-                cron_expr = j.get("cron", "")
-                desc = j.get("desc", j.get("command", "")[:30])
-                try:
-                    parts = cron_expr.split()
-                    if len(parts) != 5:
-                        continue
-                    m, h = parts[0], parts[1]
-                    # 簡單解析：找今天或明天最近的執行時間
-                    if m == "*" or h == "*" or "/" in m or "/" in h:
-                        next_jobs.append((desc, "循環"))
-                    else:
-                        hour = int(h) if h.isdigit() else 0
-                        minute = int(m) if m.isdigit() else 0
-                        if hour > now.hour or (hour == now.hour and minute > now.minute):
-                            next_jobs.append((desc, f"今天 {hour:02d}:{minute:02d}"))
-                        else:
-                            next_jobs.append((desc, f"明天 {hour:02d}:{minute:02d}"))
-                except Exception:
-                    pass
-
-            if next_jobs:
-                # 找最近的非循環任務
-                fixed = [n for n in next_jobs if n[1] != "循環"]
-                if fixed:
-                    fixed.sort(key=lambda x: x[1])
-                    _set_colored_title(self.cron_next_item, f"  ▸ 下次: {fixed[0][0]} ({fixed[0][1]})", _GRAY)
-                else:
-                    _set_colored_title(self.cron_next_item, f"  ▸ {len(next_jobs)} 個循環任務", _GRAY)
-
-            # 找最近一次執行
-            last_runs = [(j.get("desc", j["id"]), j.get("last_run", "")) for j in enabled if j.get("last_run")]
-            if last_runs:
-                last_runs.sort(key=lambda x: x[1], reverse=True)
-                last_desc, last_ts = last_runs[0]
-                try:
-                    ts_short = last_ts[11:16]  # HH:MM
-                    _set_colored_title(self.cron_last_item, f"  ▸ 上次: {last_desc} ({ts_short})", _GRAY)
-                except Exception:
-                    _set_colored_title(self.cron_last_item, f"  ▸ 上次: {last_desc}", _GRAY)
-            else:
-                _set_colored_title(self.cron_last_item, "  ▸ 尚無執行紀錄", _GRAY)
-
+                _set_colored_title(self.cron_status_item, "  ⚠ 排程  無任務", _YELLOW)
         except Exception:
-            _set_colored_title(self.cron_status_item, "  ⚠ 排程檢查失敗", _YELLOW)
+            _set_colored_title(self.cron_status_item, "  ⚠ 排程  檢查失敗", _YELLOW)
+
+    def _update_nas_status(self):
+        """NAS 連線（合併為一行：模式 + 掛載）。"""
+        import socket
+
+        def _tcp_ok(host, port=445, timeout=2):
+            try:
+                s = socket.create_connection((host, port), timeout=timeout)
+                s.close()
+                return True
+            except Exception:
+                return False
+
+        try:
+            lan_ip = os.environ.get("MAGI_NAS_HOST", "192.168.1.3")
+            ts_ip = os.environ.get("MAGI_NAS_TAILSCALE_HOST", "100.111.10.126")
+            mounted = os.path.ismount("/Volumes/homes") and (
+                os.path.ismount("/Volumes/lumi") or os.path.ismount("/Volumes/lumi-1")
+            )
+            mount_tag = " 已掛載" if mounted else " 未掛載"
+
+            if _tcp_ok(lan_ip, timeout=1):
+                _set_colored_title(self.nas_status_item,
+                                   f"  ● NAS  LAN {lan_ip}{mount_tag}",
+                                   _GREEN if mounted else _YELLOW)
+            elif _tcp_ok(ts_ip, timeout=3):
+                _set_colored_title(self.nas_status_item,
+                                   f"  ● NAS  Tailscale {ts_ip}{mount_tag}",
+                                   _YELLOW)
+            else:
+                _set_colored_title(self.nas_status_item,
+                                   "  ✗ NAS  離線", _RED)
+        except Exception:
+            _set_colored_title(self.nas_status_item, "  ⚠ NAS  檢查失敗", _YELLOW)
+
+    def _update_db_status(self):
+        """DB 連線（合併為一行：模式 + 狀態）。"""
+        import socket
+
+        def _db_ok(host, port):
+            try:
+                s = socket.create_connection((host, port), timeout=3)
+                s.close()
+                return True
+            except Exception:
+                return False
+
+        try:
+            remote_host = os.environ.get("MAGI_REMOTE_DB_HOST", "100.121.61.74")
+            remote_ok = _db_ok(remote_host, 3306)
+            active = os.environ.get("OSC_DB_HOST", remote_host)
+            is_local = active in ("127.0.0.1", "localhost")
+
+            local_ok = _db_ok("127.0.0.1", 3306)
+            if remote_ok and not is_local:
+                _set_colored_title(self.db_status_item,
+                                   f"  ● DB   遠端直連 {remote_host}", _GREEN)
+            elif is_local and local_ok and not remote_ok:
+                _set_colored_title(self.db_status_item,
+                                   f"  ⚠ DB   本機墊檔中（遠端離線）", _YELLOW)
+            elif is_local and local_ok and remote_ok:
+                _set_colored_title(self.db_status_item,
+                                   f"  ↻ DB   本機墊檔（遠端恢復，待同步）", _YELLOW)
+            elif not remote_ok and local_ok:
+                _set_colored_title(self.db_status_item,
+                                   f"  ⚠ DB   本機運作中（遠端離線）", _YELLOW)
+            else:
+                _set_colored_title(self.db_status_item,
+                                   f"  ✗ DB   本機和遠端皆異常", _RED)
+        except Exception:
+            _set_colored_title(self.db_status_item, "  ⚠ DB   檢查失敗", _YELLOW)
 
     # ── 動作按鈕（帶進度 + 完成回饋）──
     def _run_action(self, menu_item, label, command, original_callback):

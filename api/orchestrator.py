@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 import threading as _threading
 
+from api.model_config import TEXT_PRIMARY_MODEL
 # Thread-local storage for per-request correlation ID.
 _orchestrator_tls = _threading.local()
 
@@ -662,7 +663,7 @@ class Orchestrator:
                     "━━ 法扶 ━━\n"
                     "• 幫[姓名]做開辦草稿 ⚡ ｜ 法扶監控 🔄\n"
                     "• 疑義/撤回/費用/二階段/結案草稿 ⚡\n"
-                    "• 正式送出開辦/結案 ⚡ (需確認)\n"
+                    "• 正式送出開辦/結案 ⚡（需確認）\n"
                     "• 自動報結掃描 🔄 ｜ 二階段批次 🔄\n\n"
                     "━━ 閱卷 ━━\n"
                     "• 檢查閱卷信箱 🔄 ｜ 閱卷信件預覽 ⚡\n"
@@ -697,25 +698,54 @@ class Orchestrator:
             else:
                 return (
                     "🛠️ **MAGI 指令總表**\n\n"
-                    "━━ 查詢 ━━\n"
-                    "• 系統狀態 ⚡ ｜ 目前模型 ⚡ ｜ 技能狀態 ⚡\n\n"
-                    "━━ 法扶與閱卷 ━━\n"
-                    "• 檢查閱卷 🔄 ｜ 閱卷下載 🔄 ｜ 法扶監控 🔄\n"
-                    "• 同步筆錄 🔄 ｜ 找判決 [關鍵字] 🔄\n\n"
-                    "━━ 文件處理 ━━\n"
+                    "━━ 系統 ━━\n"
+                    "• 系統狀態 ⚡ ｜ 目前模型 ⚡ ｜ 技能狀態 ⚡\n"
+                    "• 健康檢查 ⚡\n\n"
+                    "━━ 法扶 ━━\n"
+                    "• 幫[姓名]做開辦草稿 ⚡ ｜ 法扶監控 🔄\n"
+                    "• 疑義/撤回/費用/二階段/結案草稿 ⚡\n"
+                    "• 正式送出開辦/結案 ⚡（需確認）\n"
+                    "• 法扶回報指令 ⚡ ｜ 自動報結掃描 🔄\n\n"
+                    "━━ 閱卷 ━━\n"
+                    "• 檢查閱卷信箱 🔄 ｜ 閱卷信件預覽 ⚡\n"
+                    "• 可下載案件 ⚡ ｜ 下載閱卷 [案號] 🔄\n"
+                    "• 閱卷查核 [法院] [案號] ⚡ ｜ 閱卷聲請 [法院] [案號] 🔄\n\n"
+                    "━━ 筆錄 ━━\n"
+                    "• 同步筆錄 🔄 ｜ 重命名筆錄 🔄\n"
+                    "• 下載全部筆錄 🔄 ｜ 下載筆錄 [案號] 🔄\n\n"
+                    "━━ 摘要 ━━\n"
+                    "• 摘要 [文字/網址] 🔄 ｜ 精簡摘要 / 詳細摘要\n"
+                    "• 上傳 PDF 自動摘要 🔄\n\n"
+                    "━━ 逐字稿 ━━\n"
+                    "• 逐字稿 [音檔] 🔄 ｜ 上傳音檔自動轉寫 🔄\n\n"
+                    "━━ 翻譯 ━━\n"
                     "• 完整翻譯 [文字] 🔄 ｜ 翻譯檔案 [路徑] 🔄\n"
-                    "• 逐字稿 [音檔] 🔄 ｜ 去AI味 [文字] ⚡\n\n"
-                    "━━ 知識庫 ━━\n"
-                    "• 法規搜尋 [查詢] ⚡ ｜ 爬蟲清單 ⚡\n"
-                    "• 記住 [內容] ⚡\n\n"
+                    "• 去AI味 [文字] ⚡\n\n"
+                    "━━ 文件產生 ━━\n"
+                    "• 委任狀 ⚡ ｜ 契約書 ⚡ ｜ 收據 ⚡ ｜ 存證信函 ⚡\n\n"
+                    "━━ 案件 (OSC) ━━\n"
+                    "• 掃描案件待辦 🔄 ｜ 待辦佇列狀態 ⚡\n"
+                    "• 日曆同步 🔄 ｜ [姓名]已繳費 ⚡\n\n"
+                    "━━ PDF ━━\n"
+                    "• 單檔命名 [路徑] ⚡ ｜ 批次命名 🔄\n\n"
+                    "━━ 爬蟲／判決／法規 ━━\n"
+                    "• 爬蟲清單 ⚡ ｜ 新增爬蟲 [url] 🔄 ｜ 移除爬蟲 ⚡\n"
+                    "• 找判決 [關鍵字] 🔄 ｜ 判決趨勢 [案由] 🔄\n"
+                    "• 法規搜尋 [查詢] ⚡ ｜ 加班費 ⚡\n\n"
+                    "━━ 搜尋 ━━\n"
+                    "• /搜尋 [關鍵字] 🔄 ｜ /抓取 [網址] 🔄\n\n"
+                    "━━ 助理 ━━\n"
+                    "• 記住 [內容] ⚡ ｜ 深度思考 [問題] 🔄\n"
+                    "• 行程 ⚡ ｜ 庭期 ⚡ ｜ 股市晨報 🔄\n"
+                    "• 備份資料庫 🔄 ｜ 備份清單 ⚡\n\n"
                     "⚡ = 即時回覆　🔄 = 背景執行\n"
                     "💡 直接用自然語言下達即可，如「找關於詐欺的判決」\n"
-                    "🔒 部分管理指令需通知管理員核准後執行"
+                    "🔒 大腦管理、鐵穹、技能進化等需管理員權限"
                 )
 
         if re.search(r"(你現在使用模型|現在使用模型|目前模型|模型為何|模型是什麼|使用什麼模型|what model)", t):
             primary = self._read_openclaw_primary_model()
-            target_main = (os.environ.get("MAGI_MAIN_MODEL") or "taide-12b").strip() or "taide-12b"
+            target_main = (os.environ.get("MAGI_MAIN_MODEL") or TEXT_PRIMARY_MODEL).strip() or TEXT_PRIMARY_MODEL
             # Query oMLX for active models
             omlx_models = []
             try:
@@ -1752,7 +1782,13 @@ class Orchestrator:
             str(platform or ""),
             "semantic_primary",
             skill,
-            {"confidence": confidence, "method": method, "route_mode": route_mode},
+            {
+                "confidence": confidence,
+                "method": method,
+                "route_mode": route_mode,
+                "reason": str(sr.get("reason") or ""),
+                "candidates": list(sr.get("candidates") or []),
+            },
         )
         handled, direct_reply = self._dispatch_safe_semantic_skill(user_id, text, skill, role, platform)
         if handled:
@@ -3193,7 +3229,16 @@ class Orchestrator:
                 # Don't store yet; we will ask for confirmation in the main flow.
                 return "ASK_CONFIRM"
             src = f"user_rule|platform={platform}|user={user_id}|ts={datetime.now(timezone.utc).isoformat()}"
-            remember(content, source=src)
+            remember(
+                content,
+                source=src,
+                metadata={
+                    "verified": True,
+                    "confidence": 0.98,
+                    "source_type": "user_rule",
+                    "role": "user",
+                },
+            )
         except Exception as e:
             logger.warning(f"Rule memory capture skipped: {e}")
         return
@@ -3246,7 +3291,17 @@ class Orchestrator:
                 )
                 return
             src = f"chatlog|platform={platform}|user={user_id}|role={role}|ts={datetime.now(timezone.utc).isoformat()}"
-            remember(safe, source=src)
+            remember(
+                safe,
+                source=src,
+                metadata={
+                    "verified": role_name == "user",
+                    "confidence": 0.82 if role_name == "user" else 0.18,
+                    "source_type": "chatlog",
+                    "role": role_name,
+                    "derived_from": "" if role_name == "user" else "assistant_reply",
+                },
+            )
             self._hook_bus.memory_write(
                 "chatlog",
                 content=safe,
@@ -3486,17 +3541,32 @@ class Orchestrator:
         IMPORTANT: This must not execute side effects. It's used for transparency/debugging.
         The returned dict may include admin-only details; callers must redact for non-admin.
         """
+        from api.routing import build_route_decision
+
         msg = (message or "").strip()
         msg_lower = msg.lower()
 
-        def _res(action: str, matched: str, requires_admin: bool = False, handler: str = "") -> dict:
-            return {
-                "success": True,
-                "matched": matched,
-                "action": action,
-                "requires_admin": bool(requires_admin),
-                "handler": handler,
-            }
+        def _res(
+            action: str,
+            matched: str,
+            requires_admin: bool = False,
+            handler: str = "",
+            *,
+            confidence: float = 1.0,
+            reason: str = "",
+            candidates: list[dict] | None = None,
+            intent: str = "",
+        ) -> dict:
+            return build_route_decision(
+                action=action,
+                matched=matched,
+                requires_admin=requires_admin,
+                handler=handler,
+                confidence=confidence,
+                reason=reason or matched,
+                candidates=candidates,
+                intent=intent,
+            )
 
         # Mirror the high-priority routing checks (subset) without executing.
         if ("codex" in msg_lower or "sidecar" in msg_lower or "分散式" in msg) and any(
@@ -3588,29 +3658,49 @@ class Orchestrator:
 
         # Fall back to classifier-based routing.
         try:
-            intent = self.classifier.classify(msg)
+            detail: dict | str | None
+            classify_detailed = getattr(self.classifier, "classify_detailed", None)
+            if callable(classify_detailed):
+                detail = classify_detailed(msg)
+            else:
+                detail = None
+
+            if isinstance(detail, dict):
+                intent = str(detail.get("intent") or "UNKNOWN")
+            else:
+                legacy_intent = getattr(self.classifier, "classify", lambda _msg: "UNKNOWN")(msg)
+                intent = str(legacy_intent or "UNKNOWN")
+                detail = {
+                    "intent": intent,
+                    "confidence": 0.0,
+                    "reason": "legacy_classifier_fallback",
+                    "candidates": [],
+                }
         except Exception:
+            detail = {"intent": "UNKNOWN", "confidence": 0.0, "reason": "classifier_exception", "candidates": []}
             intent = "UNKNOWN"
-        return {
-            "success": True,
-            "matched": "intent_classifier",
-            "intent": intent,
-            "action": (
+        return _res(
+            action=(
                 "command_handler" if intent == "CMD" else
                 "query_handler" if intent == "QUERY" else
                 "chat_handler" if intent == "CHAT" else
                 "danger_handler" if intent == "DANGER" else
                 "unknown"
             ),
-            "requires_admin": False,
-            "handler": (
+            matched="intent_classifier",
+            requires_admin=False,
+            handler=(
                 "api/orchestrator.py:_handle_command" if intent == "CMD" else
                 "api/orchestrator.py:_handle_query" if intent == "QUERY" else
                 "api/orchestrator.py:_handle_chat_async" if intent == "CHAT" else
                 "api/orchestrator.py:(danger path)" if intent == "DANGER" else
                 ""
             ),
-        }
+            confidence=float(detail.get("confidence") or 0.0),
+            reason=str(detail.get("reason") or "intent_classifier"),
+            candidates=list(detail.get("candidates") or []),
+            intent=intent,
+        )
 
     # ════════════════════════════════════════════════════════════════
     # Topic Fast Path — specialized channel handlers
@@ -4082,7 +4172,7 @@ class Orchestrator:
              r"案件時程|時程總覽|全部排程|所有案件.{0,3}排程|"
              r"補正期限|繳費期限|補正提醒|繳費提醒|"
              r"什麼時候.{0,3}(?:補正|繳費)|"
-             r".{1,8}(?:繳了|交了|繳費了|補正了|已繳|已補正|已交)|"
+             r".{1,8}(?:繳了|交了|繳費了|補正了|已繳|已補正|已交)(?:嗎|呢|沒|了沒|[？?])|"
              r"關掉.{1,8}(?:提醒|警報|通知)|"
              r"開庭提醒|hearing)", "court_hearing",
              "✅ **我可以幫您查排程！**\n\n"
@@ -4570,7 +4660,16 @@ class Orchestrator:
         try:
             from skills.memory.mem_bridge import remember
 
-            remember(text, source=f"user_profile_{user_id}")
+            remember(
+                text,
+                source=f"user_profile_{user_id}",
+                metadata={
+                    "verified": True,
+                    "confidence": 0.96,
+                    "source_type": "user_profile",
+                    "role": "user",
+                },
+            )
             self.profile_fact_cache.add(fingerprint)
             if len(self.profile_fact_cache) > self._profile_fact_cache_maxsize:
                 # Evict ~20% oldest entries (set is unordered, so random eviction)
@@ -5186,7 +5285,16 @@ class Orchestrator:
                 if len(content) < 2:
                     return "🧠 請告訴我要記住什麼？例如：`記住我的車牌是 ABC-1234`"
                 from skills.memory.mem_bridge import remember
-                remember(content, source=f"user_chat_{user_id}")
+                remember(
+                    content,
+                    source=f"user_chat_{user_id}",
+                    metadata={
+                        "verified": True,
+                        "confidence": 0.94,
+                        "source_type": "user_confirmed",
+                        "role": "user",
+                    },
+                )
                 return "🧠 已記住。"
             except Exception as e:
                 return f"❌ 記憶寫入失敗: {e}"
@@ -5824,7 +5932,7 @@ class Orchestrator:
                     if not blocks:
                         return f"❌ 分頁內容皆為空或被擋下（來源: {url}）"
 
-                    model = (os.environ.get("MAGI_MAIN_MODEL") or os.environ.get("MAGI_MAIN_LLM") or "taide-12b").strip()
+                    model = (os.environ.get("MAGI_MAIN_MODEL") or os.environ.get("MAGI_MAIN_LLM") or TEXT_PRIMARY_MODEL).strip()
 
                     if wants_translate and (not wants_summary):
                         # Full translation mode: preserve structure, do NOT summarize.
@@ -6445,7 +6553,7 @@ class Orchestrator:
             if not clean_prompt:
                 return "❓ 請輸入深度思考的內容。"
 
-            logger.info("🚀 Routing to deep think (taide-12b)...")
+            logger.info("🚀 Routing to deep think (%s)...", TEXT_PRIMARY_MODEL)
             response = generate_text(clean_prompt)
             
             if response:
@@ -6800,7 +6908,7 @@ class Orchestrator:
                         )
                         _pp_ctx = min(16384, max(4096, len(transcript) * 2))
                         _pp = _pp_mc.quick_local_chat(
-                            _pp_prompt, timeout=30, model_hint="taide-12b",
+                            _pp_prompt, timeout=30, model_hint=TEXT_PRIMARY_MODEL,
                             num_ctx=_pp_ctx, num_predict=min(4096, max(1024, len(transcript) + 200)),
                         )
                         if _pp.get("success") and _pp.get("response"):
@@ -7244,7 +7352,7 @@ class Orchestrator:
             mh = melchior_health()
             if mh.get("online"):
                 models = mh.get("models") or []
-                has_main20 = any("taide-12b" in str(m).lower() for m in models)
+                has_main20 = any(TEXT_PRIMARY_MODEL.lower() in str(m).lower() for m in models)
                 lines.append(
                     f"🟢 Melchior: {mh.get('mode', 'unknown')} / v{mh.get('ollama_version', 'n/a')} / "
                     f"Main20B={'yes' if has_main20 else 'no'}"
@@ -7753,16 +7861,41 @@ class Orchestrator:
 "🤖 **MAGI 功能總覽**\n"
 "\n"
 "━━━━━━━━━━━━━━━━━━━━\n"
+"⚖️ **法扶作業**\n"
+"━━━━━━━━━━━━━━━━━━━━\n"
+"• `法扶回報指令` — 顯示回報指令集\n"
+"• `幫我做[姓名]開辦回報` — 自然語言回報\n"
+"• `正式送出開辦/結案` — 送出（需確認）\n"
+"• `法扶監控` — 法扶案件狀態\n"
+"• `自動報結掃描` / `二階段批次` — 報結作業\n"
+"• `/閱卷查核 <法院> <案號>` — 查核卷宗狀態\n"
+"• `/閱卷聲請 <法院> <案號>` — 聲請閱卷\n"
+"• `/下載閱卷 [案號]` — 下載卷宗\n"
+"• `/下載筆錄 <案號>` — 下載筆錄並歸檔\n"
+"• `同步筆錄` / `重命名筆錄` — 筆錄管理\n"
+"\n"
+"━━━━━━━━━━━━━━━━━━━━\n"
 "📝 **文件產生 / 處理**\n"
 "━━━━━━━━━━━━━━━━━━━━\n"
 "• `/翻譯 [文字/網址]` — 翻譯文件或網頁\n"
 "• `/摘要 [文字/網址]` — 產生文件摘要（精簡/普通/詳細三級）\n"
 "  ↳ `精簡摘要` 3-5點 ∣ `摘要` 5-8點 ∣ `詳細摘要` 12-15點\n"
 "• 上傳音檔 — 自動產生逐字稿\n"
+"• `去AI味 [文字]` — 去除 AI 痕跡\n"
 "• `/委任狀` — 製作委任狀\n"
 "• `/契約書` — 製作委任契約書\n"
 "• `/收據` — 開收據\n"
 "• `/存證信函` — 草擬存證信函\n"
+"\n"
+"━━━━━━━━━━━━━━━━━━━━\n"
+"⚖️ **法律工具**\n"
+"━━━━━━━━━━━━━━━━━━━━\n"
+"• `/查判決 [關鍵字]` — 搜尋判決\n"
+"• `/判決趨勢 [案由]` — 判決趨勢分析\n"
+"• `/法規搜尋 [查詢]` — 查詢法規\n"
+"• `/加班費` — 勞基法試算\n"
+"• `/庭期` — 開庭排程與提醒\n"
+"• `/司法工具` — 規費/折舊/刑度試算\n"
 "\n"
 "━━━━━━━━━━━━━━━━━━━━\n"
 "🖼️ **視覺 & 搜尋**\n"
@@ -7770,28 +7903,30 @@ class Orchestrator:
 "• `/draw [描述]` — 生成圖片\n"
 "• 上傳圖片 — 自動分析內容\n"
 "• `/搜尋 [關鍵字]` — 聯網搜尋\n"
+"• `/抓取 [網址]` — 讀取網頁\n"
 "\n"
 "━━━━━━━━━━━━━━━━━━━━\n"
-"⚖️ **法扶作業 / 法律工具**\n"
+"📊 **案件 & PDF**\n"
 "━━━━━━━━━━━━━━━━━━━━\n"
-"• `/查判決 [關鍵字]` — 搜尋判決\n"
-"• `/法規搜尋 [查詢]` — 查詢法規\n"
-"• `/加班費` — 勞基法試算\n"
-"• `/庭期` — 開庭排程與提醒\n"
-"• `/司法工具` — 規費/折舊/刑度試算\n"
+"• `掃描案件待辦` / `待辦佇列狀態` — 案件待辦管理\n"
+"• `日曆同步` — 庭期同步 Google Calendar\n"
+"• `單檔命名 [路徑]` / `批次命名` — PDF 自動命名\n"
+"• `[姓名]已繳費` — 標記繳費完成\n"
 "\n"
 "━━━━━━━━━━━━━━━━━━━━\n"
-"📅 **助理功能**\n"
+"📅 **助理 & 記憶**\n"
 "━━━━━━━━━━━━━━━━━━━━\n"
 "• `/行程` — 查詢本週會議\n"
 "• `/狀態` — 系統狀態\n"
 "• `/股市晨報` — 股票追蹤與分析\n"
+"• `/爬蟲 [指令]` — 爬蟲目標管理\n"
 "• `/記住 [內容]` — 存入長期記憶\n"
-"• `/深度思考 [問題]` — 深度分析\n"
+"• `/深度思考 [問題]` — 深度分析模式\n"
+"• `備份資料庫` / `備份清單` — 資料庫備份\n"
 "• 直接對話 — 一般問答\n"
 "\n"
 "💡 用 `/指令` 確保觸發功能，或在專屬頻道直接用自然語言\n"
-"🔒 部分管理指令需管理員權限"
+"🔒 大腦管理、鐵穹、技能進化等需管理員權限"
 )
         
         # Image Generation (Enhanced Natural Language)
@@ -8130,7 +8265,16 @@ class Orchestrator:
                 return "🧠 請告訴我要記住什麼？例如：'記住我的車牌是 ABC-1234'"
                 
             from skills.memory.mem_bridge import remember
-            remember(content, source=f"user_chat_{user_id}")
+            remember(
+                content,
+                source=f"user_chat_{user_id}",
+                metadata={
+                    "verified": True,
+                    "confidence": 0.94,
+                    "source_type": "user_confirmed",
+                    "role": "user",
+                },
+            )
             return f"🧠 **已存入記憶庫**\n內容: {content}"
 
         # Memory Command (Forget)
@@ -8704,8 +8848,6 @@ class Orchestrator:
         laf_payload = self._parse_laf_report_payload(message)
         if laf_payload:
             logger.info("📋 LAF report payload: %s (from message: %r)", laf_payload, message[:80])
-            if role != "admin":
-                return "⛔ 抱歉，只有管理員可以執行法扶回報流程。"
 
             if not any([laf_payload.get("laf_case_no"), laf_payload.get("case_number"), laf_payload.get("client_name")]):
                 return (

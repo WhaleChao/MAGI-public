@@ -26,6 +26,7 @@ from dotenv import load_dotenv
 
 # Ensure MAGI root is in sys.path (needed before importing skills.*)
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+from api.model_config import TEXT_PRIMARY_MODEL
 from api.runtime_paths import ensure_path_on_sys_path, get_config_path, get_orch_dir
 from api.product_runtime import PRODUCT_RUNTIME_PATH, product_profile_report, update_product_runtime
 from api.case_path_mapper import (
@@ -57,7 +58,7 @@ validate_config()
 
 import logging
 from logging.handlers import RotatingFileHandler
-from flask import Flask, request, abort, render_template, redirect, url_for, flash, jsonify, Response, send_file, send_from_directory
+from flask import request, abort, render_template, redirect, url_for, flash, jsonify, Response, send_file, send_from_directory
 from api.line_compat import (
     AudioMessage,
     FileMessage,
@@ -72,6 +73,16 @@ from api.line_compat import (
     build_line_clients,
     line_feature_enabled,
 )
+from api.app_factory import (
+    create_base_app,
+    init_login_manager,
+    install_csrf,
+    install_security_headers,
+    register_core_blueprints,
+)
+from api.blueprints.web_runtime import create_web_runtime_blueprint
+from api.blueprints.admin_runtime import create_admin_runtime_blueprint
+from api.request_guards import install_request_guards
 
 # Initialize Logger — structured JSON for file, human-readable for console
 _agent_dir_for_logs = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".agent"))
@@ -114,7 +125,7 @@ except Exception:
 # Auth Modules
 import mysql.connector
 from api.mysql_connector_guard import patch_mysql_connector_for_stability
-from flask_login import LoginManager, UserMixin, login_user, login_required, logout_user, current_user
+from flask_login import UserMixin, login_user, login_required, logout_user, current_user
 from werkzeug.security import generate_password_hash, check_password_hash
 
 # DB connector stability guard:
@@ -125,60 +136,12 @@ if patch_mysql_connector_for_stability():
 
 # Configuration
 _SERVER_START_TIME = time.time()
-app = Flask(__name__, template_folder='../templates', static_folder='../static')
-app.config['TEMPLATES_AUTO_RELOAD'] = True
-
-# P0-13 / P1-04: Session cookie hardening & security headers
-app.config['SESSION_COOKIE_HTTPONLY'] = True
-app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
-# 若部署在 HTTPS 後方，啟用 Secure cookie:
-if os.environ.get("MAGI_FORCE_HTTPS", "").strip().lower() in {"1", "true", "yes"}:
-    app.config['SESSION_COOKIE_SECURE'] = True
-
-
-@app.after_request
-def _add_security_headers(response):
-    """補齊安全標頭基線。"""
-    response.headers.setdefault("X-Content-Type-Options", "nosniff")
-    response.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
-    response.headers.setdefault("X-XSS-Protection", "1; mode=block")
-    response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
-    response.headers.setdefault(
-        "Content-Security-Policy",
-        "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:;",
-    )
-    response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
-    # 不對 static 資源設 no-store，僅對 API/HTML response
-    if not request.path.startswith("/static/"):
-        response.headers.setdefault("Cache-Control", "no-store")
-    return response
-
-# ── CSRF Protection ──
-try:
-    from api.csrf_guard import middleware_apply_csrf
-    middleware_apply_csrf(app)
-    logger.info("CSRF protection enabled")
-except Exception as _csrf_err:
-    logger.warning("CSRF protection not loaded: %s", _csrf_err)
-
-# ── Blueprints ───────────────────────────────────────────────────────
-from api.blueprints.osc_settings import osc_settings_bp
-from api.blueprints.osc_accounting import osc_accounting_bp
-from api.blueprints.osc_debt import osc_debt_bp
-from api.blueprints.dashboard_pages import dashboard_pages_bp
-app.register_blueprint(osc_settings_bp)
-app.register_blueprint(osc_accounting_bp)
-app.register_blueprint(osc_debt_bp)
-app.register_blueprint(dashboard_pages_bp)
-try:
-    app.secret_key = os.environ["FLASK_SECRET_KEY"]
-except KeyError:
-    raise RuntimeError("Missing required env var: FLASK_SECRET_KEY. Set it in .env")
-
-# Initialize Login Manager
-login_manager = LoginManager()
-login_manager.init_app(app)
-login_manager.login_view = 'login'
+app = create_base_app()
+install_security_headers(app)
+install_csrf(app, logger=logger)
+install_request_guards(app, logger=logger)
+register_core_blueprints(app)
+login_manager = init_login_manager(app)
 
 # ── Lightweight rate limiter (no external dependency) ──────────────────
 _rate_limit_store: dict = {}  # key -> (count, window_start)
@@ -213,75 +176,6 @@ def _check_rate_limit(category: str = "webhook") -> bool:
         for k in stale:
             _rate_limit_store.pop(k, None)
     return False
-
-
-# Public hardening: never expose OpenClaw control surface via public hostname.
-OPENCLAW_BLOCKED_PREFIXES = (
-    "/openclaw",
-    "/openclaw-gateway",
-)
-
-
-def _is_local_host(host: str) -> bool:
-    h = (host or "").strip().split(",")[0].strip()
-    if ":" in h:
-        h = h.split(":", 1)[0]
-    h = h.lower()
-    return h in {"localhost", "127.0.0.1", "::1"}
-
-
-def _is_cloudflare_tunnel_request() -> bool:
-    host = (
-        request.headers.get("X-Forwarded-Host")
-        or request.host
-        or ""
-    ).lower()
-    if host.endswith(".trycloudflare.com"):
-        return True
-    return bool(
-        request.headers.get("Cf-Connecting-Ip")
-        or request.headers.get("Cf-Ray")
-    )
-
-
-@app.before_request
-def _block_public_openclaw_routes():
-    path = (request.path or "").strip().lower()
-    if not path:
-        return None
-    blocked = any(path == p or path.startswith(p + "/") for p in OPENCLAW_BLOCKED_PREFIXES)
-    if not blocked:
-        return None
-
-    host = (
-        request.headers.get("X-Forwarded-Host")
-        or request.host
-        or ""
-    )
-    if _is_local_host(host):
-        return None
-
-    logger.warning("Blocked public request to OpenClaw route: host=%s path=%s", host, path)
-    abort(404)
-
-
-@app.before_request
-def _limit_cloudflare_tunnel_surface():
-    if not _is_cloudflare_tunnel_request():
-        return None
-
-    path = (request.path or "").strip().lower()
-    allowed_prefixes = ("/line/webhook", "/telegram/webhook", "/callback", "/health")
-    allowed = any(path == p or path.startswith(p + "/") for p in allowed_prefixes)
-    if allowed:
-        return None
-
-    logger.warning(
-        "Blocked Cloudflare tunnel request outside LINE surface: host=%s path=%s",
-        request.headers.get("X-Forwarded-Host") or request.host or "",
-        path,
-    )
-    abort(403)
 
 # Database Config
 DB_CONFIG = {
@@ -470,6 +364,16 @@ orchestrator = Orchestrator()
 # Web Notifications Buffer
 WEB_NOTIFICATIONS = defaultdict(list)
 
+app.register_blueprint(
+    create_web_runtime_blueprint(
+        orchestrator=orchestrator,
+        logger=logger,
+        web_notifications=WEB_NOTIFICATIONS,
+        normalize_output_text=_normalize_output_text,
+        magi_root=_MAGI_ROOT,
+    )
+)
+
 # Register Iron Dome Sync Routes
 try:
     from skills.ops.iron_dome_sync import register_iron_dome_routes
@@ -485,234 +389,6 @@ try:
     logger.info("🧠 Auto-Skill Engine Online")
 except Exception as e:
     logger.error(f"❌ Auto-Skill Init Failed: {e}")
-
-@app.route('/dashboard/nerv/api/health')
-@login_required
-def nerv_api_health():
-    """Real-time health check for all MAGI subsystems."""
-    import requests as _rq
-    results = {}
-
-    def _check(name, fn):
-        try:
-            results[name] = fn()
-        except Exception as e:
-            results[name] = {"status": "error", "detail": str(e)[:120]}
-
-    def _omlx():
-        try:
-            r = _rq.get("http://127.0.0.1:8080/v1/models", timeout=3)
-            if r.status_code == 200:
-                models = [m.get("id", "?") for m in (r.json().get("data") or [])]
-                return {"status": "online", "models": models, "count": len(models)}
-        except Exception:
-            logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 528, exc_info=True)
-        return {"status": "error", "detail": "unreachable"}
-
-    def _ollama():
-        # Ollama 已退役 (2026-03-11)，保留檢查供監控確認已關閉
-        try:
-            r = _rq.get("http://127.0.0.1:11434/api/tags", timeout=2)
-            if r.status_code == 200:
-                models = [m.get("name", "?") for m in (r.json().get("models") or [])]
-                return {"status": "online", "models": models, "count": len(models)}
-        except Exception:
-            logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 539, exc_info=True)
-        return {"status": "retired", "detail": "已退役，推理走 oMLX"}
-
-    def _melchior():
-        # MELCHIOR 已整併為本地邏輯模組，不再是獨立遠端節點
-        return {"status": "local", "detail": "oMLX 本地推理"}
-
-    def _balthasar():
-        # BALTHASAR 已整併為本地邏輯模組
-        return {"status": "local", "detail": "oMLX 本地摘要"}
-
-    def _watcher():
-        # Watcher 功能由 worldmonitor 取代
-        return {"status": "retired", "detail": "由 Worldmonitor 取代"}
-
-    def _mysql():
-        try:
-            import mysql.connector as _mc
-            c = _mc.connect(
-                host=os.environ.get("DB_HOST", "100.121.61.74"),
-                port=int(os.environ.get("DB_PORT", "3306")),
-                user=os.environ.get("DB_USER", "casper_service"),
-                password=os.environ.get("DB_PASSWORD") or os.environ.get("MAGI_REMOTE_DB_PASSWORD", ""),
-                connection_timeout=4,
-                use_pure=True,
-            )
-            c.close()
-            return {"status": "online"}
-        except Exception as e:
-            return {"status": "error", "detail": str(e)[:80]}
-
-    def _cloudflared():
-        try:
-            if _is_cloudflared_alive():
-                return {"status": "online"}
-            return {"status": "offline"}
-        except Exception:
-            return {"status": "error", "detail": "check failed"}
-
-    def _line_webhook():
-        try:
-            wh = os.environ.get("MAGI_LINE_WEBHOOK_ENDPOINT", "")
-            if not wh:
-                return {"status": "offline", "detail": "no endpoint configured"}
-            r = _rq.get(wh.replace("/line/webhook", "/health"), timeout=5)
-            return {"status": "online" if r.status_code == 200 else "error"}
-        except Exception:
-            return {"status": "error", "detail": "unreachable"}
-
-    def _worldmonitor():
-        try:
-            import subprocess as _sp
-            r = _sp.run(["pgrep", "-f", "worldmonitor"], capture_output=True, timeout=3)
-            return {"status": "online" if r.returncode == 0 else "offline"}
-        except Exception:
-            return {"status": "error"}
-
-    def _office_app():
-        try:
-            r = _rq.get("http://127.0.0.1:4200/office", timeout=4)
-            return {"status": "online" if r.status_code == 200 else "error", "detail": f"HTTP {r.status_code}"}
-        except Exception as e:
-            return {"status": "error", "detail": str(e)[:80]}
-
-    def _caddy_proxy():
-        # Caddy proxy removed (Phase 0: OpenClaw migration). Cloudflared now connects directly to port 5002.
-        return {"status": "skipped", "detail": "removed (direct cloudflared→5002)"}
-
-    def _skills():
-        docs = _list_skill_docs()
-        found = [
-            item["name"]
-            for item in docs
-            if not item["name"].startswith(("_", "."))
-            and item["name"] not in {"bridge", "ops", "memory", "evolution", "brain_manager"}
-        ]
-        return {"status": "online", "skills": found, "count": len(found)}
-
-    # Run checks in parallel
-    from concurrent.futures import ThreadPoolExecutor as _TP
-    checks = {
-        "omlx": _omlx,
-        "ollama": _ollama,
-        "melchior": _melchior,
-        "balthasar": _balthasar,
-        "watcher": _watcher,
-        "mysql": _mysql,
-        "cloudflared": _cloudflared,
-        "line_webhook": _line_webhook,
-        "worldmonitor": _worldmonitor,
-        "office_app": _office_app,
-        "caddy_proxy": _caddy_proxy,
-        "skills": _skills,
-    }
-    with _TP(max_workers=10) as pool:
-        futs = {name: pool.submit(fn) for name, fn in checks.items()}
-        for name, fut in futs.items():
-            try:
-                results[name] = fut.result(timeout=8)
-            except Exception as e:
-                results[name] = {"status": "error", "detail": str(e)[:80]}
-
-    results["magi_server"] = {"status": "online", "pid": os.getpid()}
-    results["timestamp"] = datetime.now().isoformat()
-    return jsonify(results)
-
-@app.route('/dashboard/pixel/api/status')
-@login_required
-def pixel_api_status():
-    """將 MAGI 狀態轉譯為 Star-Office-UI 格式"""
-    import json as _json
-    status_file = os.path.join(os.path.dirname(app.root_path), 'static', 'magi_status.json')
-    try:
-        with open(status_file) as f:
-            magi = _json.load(f)
-
-        casper = magi.get('nodes', {}).get('casper', {})
-        tasks = magi.get('tasks', {})
-
-        if not casper.get('online'):
-            state, detail = 'error', '系統離線'
-        elif tasks:
-            first_task = list(tasks.values())[0]
-            state = 'executing'
-            detail = first_task.get('name', '執行任務中')
-        else:
-            model = (casper.get('model') or '').strip()
-            if model.lower() in ('idle', '', 'service down'):
-                state, detail = 'idle', '待命中'
-            elif 'llama' in model.lower() or 'ollama' in model.lower():
-                state, detail = 'writing', f'模型運作中: {model}'
-            else:
-                state, detail = 'writing', model
-
-        return jsonify({
-            'state': state,
-            'detail': detail,
-            'progress': 0,
-            'updated_at': magi.get('timestamp', '')
-        })
-    except Exception:
-        return jsonify({'state': 'error', 'detail': '無法讀取狀態', 'progress': 0})
-
-@app.route('/dashboard/pixel/api/agents')
-@login_required
-def pixel_api_agents():
-    """將 MAGI 節點轉譯為 Star-Office-UI agents"""
-    import json as _json
-    status_file = os.path.join(os.path.dirname(app.root_path), 'static', 'magi_status.json')
-    try:
-        with open(status_file) as f:
-            magi = _json.load(f)
-
-        agents = []
-        node_configs = {
-            'melchior': {'name': 'Melchior', 'emoji': '\U0001f52c'},
-            'balthasar': {'name': 'Balthasar', 'emoji': '\U0001f469'},
-            'keeper': {'name': 'Keeper', 'emoji': '\U0001f5c4\ufe0f'},
-            'watcher': {'name': 'Watcher', 'emoji': '\U0001f441\ufe0f'},
-        }
-
-        for node_id, cfg in node_configs.items():
-            node = magi.get('nodes', {}).get(node_id)
-            if not node:
-                continue
-
-            online = node.get('online', False)
-            model = (node.get('model') or '').strip()
-
-            if not online:
-                state, auth = 'idle', 'offline'
-            elif model in ('Service Down',):
-                state, auth = 'idle', 'approved'  # 在線但服務待機
-            elif model in ('Audit Only', ''):
-                state, auth = 'idle', 'pending'
-            elif model == 'Idle':
-                state, auth = 'idle', 'approved'
-            else:
-                state, auth = 'writing', 'approved'
-
-            area_map = {'idle': 'breakroom', 'writing': 'writing', 'error': 'error'}
-
-            agents.append({
-                'agentId': node_id,
-                'name': cfg['name'],
-                'isMain': False,
-                'state': state,
-                'detail': model or '---',
-                'area': area_map.get(state, 'breakroom'),
-                'authStatus': auth,
-                'updated_at': node.get('last_check', '')
-            })
-
-        return jsonify(agents)
-    except Exception:
-        return jsonify([])
 
 @app.route('/osc')
 @login_required
@@ -856,348 +532,6 @@ def _fallback_to_tools_api(error):
         logger.warning("tools_api fallback proxy failed: %s", e)
         return jsonify({"success": False, "error": f"tools_api_unreachable: {type(e).__name__}"}), 502
 
-
-PROCESS_MONITOR_STATE_PATH = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), "..", "static", "process_guardian_state.json")
-)
-PROCESS_MONITOR_WORKER_MARKERS = [
-    "skills/judgment-collector/action.py",
-    "skills/file-review-orchestrator/action.py",
-    "skills/transcript-downloader/action.py",
-    "skills/laf-portal-automation/action.py",
-    "skills/laf-orchestrator/action.py",
-    "skills/laf-withdrawal-report/action.py",
-    "skills/laf-refine-case/action.py",
-    "skills/osc-orchestrator/action.py",
-    "skills/osc-scan-folder/action.py",
-    "skills/pdf-namer/action.py",
-    "skills/crawler-targets/action.py",
-    "skills/statutes-vdb/action.py",
-    "skills/magi-autopilot/action.py",
-]
-try:
-    from daemon import REAPER_NEVER_KILL as _DAEMON_NEVER_KILL
-    PROCESS_MONITOR_CORE_MARKERS = list(_DAEMON_NEVER_KILL)
-except ImportError:
-    PROCESS_MONITOR_CORE_MARKERS = [
-        f"{_MAGI_ROOT}/daemon.py",
-        "api/server.py",
-        "api/discord_bot.py",
-        "skills/ops/openclaw_cron_runner.py",
-        "openclaw-gateway",
-        "rpc-server",
-    ]
-PROCESS_MONITOR_CORE_LABELS = {
-    f"{_MAGI_ROOT}/daemon.py": "Daemon",
-    "api/server.py": "API/LINE Webhook",
-    "api/discord_bot.py": "Discord Bot",
-    "skills/ops/openclaw_cron_runner.py": "OpenClaw Cron Bridge",
-    "openclaw-gateway": "OpenClaw Gateway",
-    "rpc-server": "RPC Worker",
-}
-
-
-def _parse_etime_to_sec(s: str) -> int:
-    t = (s or "").strip()
-    if not t:
-        return 0
-    m = re.match(r"^(?:(\d+)-)?(?:(\d+):)?(\d+):(\d+)$", t)
-    if not m:
-        return 0
-    dd = int(m.group(1) or 0)
-    hh = int(m.group(2) or 0)
-    mm = int(m.group(3) or 0)
-    ss = int(m.group(4) or 0)
-    return (dd * 86400) + (hh * 3600) + (mm * 60) + ss
-
-
-def _collect_process_monitor():
-    rows = []
-    try:
-        out = subprocess.run(
-            ["ps", "-axo", "pid=,ppid=,etime=,command="],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            text=True,
-            timeout=8,
-        ).stdout or ""
-        for raw in out.splitlines():
-            line = (raw or "").strip()
-            if not line:
-                continue
-            parts = line.split(None, 3)
-            if len(parts) < 4:
-                continue
-            try:
-                pid = int(parts[0]); ppid = int(parts[1])
-            except Exception:
-                continue
-            rows.append(
-                {
-                    "pid": pid,
-                    "ppid": ppid,
-                    "age_sec": _parse_etime_to_sec(parts[2]),
-                    "age": parts[2],
-                    "cmd": parts[3],
-                }
-            )
-    except Exception as e:
-        return {"ok": False, "error": str(e), "summary": {}, "core": [], "workers": [], "orphans": [], "duplicates": []}
-
-    core = []
-    workers = []
-    orphans = []
-    grouped = defaultdict(list)
-    for r in rows:
-        cmd = str(r.get("cmd") or "")
-        label = None
-        for m in PROCESS_MONITOR_CORE_MARKERS:
-            if m in cmd:
-                label = PROCESS_MONITOR_CORE_LABELS.get(m, m)
-                break
-        if label:
-            x = dict(r)
-            x["label"] = label
-            core.append(x)
-        is_worker = any(m in cmd for m in PROCESS_MONITOR_WORKER_MARKERS)
-        if is_worker:
-            workers.append(r)
-            key = cmd
-            grouped[key].append(r)
-            if int(r.get("ppid") or 0) == 1:
-                orphans.append(r)
-
-    duplicates = []
-    for key, items in grouped.items():
-        if len(items) <= 1:
-            continue
-        duplicates.append(
-            {
-                "count": len(items),
-                "pids": [int(it["pid"]) for it in items],
-                "cmd": key[:320],
-            }
-        )
-
-    guardian_state = {}
-    try:
-        if os.path.exists(PROCESS_MONITOR_STATE_PATH):
-            with open(PROCESS_MONITOR_STATE_PATH, "r", encoding="utf-8") as f:
-                guardian_state = json.load(f) or {}
-    except Exception:
-        guardian_state = {}
-
-    return {
-        "ok": True,
-        "ts": datetime.now().isoformat(timespec="seconds"),
-        "summary": {
-            "core_count": len(core),
-            "worker_count": len(workers),
-            "orphan_count": len(orphans),
-            "duplicate_groups": len(duplicates),
-        },
-        "core": sorted(core, key=lambda x: (x.get("label", ""), x.get("pid", 0))),
-        "workers": sorted(workers, key=lambda x: (x.get("age_sec", 0), x.get("pid", 0)), reverse=True),
-        "orphans": sorted(orphans, key=lambda x: (x.get("age_sec", 0), x.get("pid", 0)), reverse=True),
-        "duplicates": sorted(duplicates, key=lambda x: x.get("count", 0), reverse=True),
-        "guardian_state": guardian_state,
-    }
-
-
-@app.route('/ops/process-monitor')
-@login_required
-def process_monitor_page():
-    return render_template('process_monitor.html', user=current_user)
-
-
-# ============== Vector Memory API (Dashboard) ==============
-
-@app.route('/api/memory/stats', methods=['GET'])
-@login_required
-def api_memory_stats():
-    """Return vector memory + obsidian statistics."""
-    import json as _json
-    stats = {"doc_count": 0, "last_ingest": None, "obsidian": {}, "faiss_size": 0}
-    try:
-        idx_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".agent", "doc_vector_index.json")
-        if os.path.exists(idx_path):
-            with open(idx_path, "r") as f:
-                idx = _json.load(f)
-            entries = idx if isinstance(idx, list) else list(idx.values()) if isinstance(idx, dict) else []
-            stats["doc_count"] = len(entries)
-            dates = [e.get("updated_at") or e.get("created_at", "") for e in entries if isinstance(e, dict)]
-            dates = sorted([d for d in dates if d], reverse=True)
-            if dates:
-                stats["last_ingest"] = dates[0]
-    except Exception as e:
-        stats["doc_index_error"] = str(e)
-    try:
-        obs_cfg = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".agent", "obsidian_vault_config.json")
-        obs_idx = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".agent", "obsidian_index.json")
-        if os.path.exists(obs_cfg):
-            with open(obs_cfg, "r") as f:
-                cfg = _json.load(f)
-            stats["obsidian"]["vault_path"] = cfg.get("vault_path", "")
-            stats["obsidian"]["vault_name"] = cfg.get("vault_name", "")
-        if os.path.exists(obs_idx):
-            with open(obs_idx, "r") as f:
-                oidx = _json.load(f)
-            stats["obsidian"]["notes_indexed"] = len(oidx.get("notes", {}))
-            stats["obsidian"]["last_update"] = oidx.get("updated_at", "")
-    except Exception as e:
-        stats["obsidian_error"] = str(e)
-    try:
-        faiss_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "skills", "memory", "index_cache", "mem_index.faiss")
-        if os.path.exists(faiss_path):
-            stats["faiss_size"] = os.path.getsize(faiss_path)
-    except Exception:
-        logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 1004, exc_info=True)
-    return jsonify(stats)
-
-
-@app.route('/api/memory/recall', methods=['POST'])
-@login_required
-def api_memory_recall():
-    """Search vector memory from dashboard."""
-    data = request.get_json() or {}
-    query = str(data.get("query", "")).strip()
-    top_k = min(20, max(1, int(data.get("top_k", 5))))
-    source_filter = str(data.get("source", "")).strip() or None
-    if not query:
-        return jsonify({"error": "請輸入搜尋關鍵字"}), 400
-    try:
-        from skills.memory.mem_bridge import recall
-        results = recall(query, top_k=top_k, source_contains=source_filter)
-        return jsonify({"memories": results or [], "query": query})
-    except Exception as e:
-        logger.error(f"Memory recall error: {e}")
-        return jsonify({"error": str(e)}), 500
-
-
-@app.route('/api/memory/remember', methods=['POST'])
-@login_required
-def api_memory_remember():
-    """Store content into vector memory from dashboard."""
-    data = request.get_json() or {}
-    content = str(data.get("content", "")).strip()
-    source = str(data.get("source", "dashboard-manual")).strip() or "dashboard-manual"
-    if not content:
-        return jsonify({"error": "請輸入要記憶的內容"}), 400
-    if len(content) > 50000:
-        return jsonify({"error": "內容過長（上限 50,000 字元）"}), 400
-    try:
-        from skills.memory.mem_bridge import remember
-        remember(content, source)
-        return jsonify({"success": True, "message": f"已儲存 {len(content)} 字元至向量記憶庫"})
-    except Exception as e:
-        logger.error(f"Memory remember error: {e}")
-        return jsonify({"error": str(e)}), 500
-
-
-@app.route('/api/memory/obsidian-sync', methods=['POST'])
-@login_required
-def api_memory_obsidian_sync():
-    """Trigger Obsidian vault re-index."""
-    import threading
-    def _run_ingest():
-        try:
-            from skills.obsidian.action import task_ingest
-            task_ingest({})
-        except Exception as e:
-            logger.error(f"Obsidian ingest error: {e}")
-    t = threading.Thread(target=_run_ingest, daemon=True)
-    t.start()
-    return jsonify({"success": True, "message": "Obsidian 重新索引已啟動（背景執行中）"})
-
-
-@app.route('/api/ops/process-monitor', methods=['GET'])
-@login_required
-def process_monitor_api():
-    data = _collect_process_monitor()
-    
-    # Also attach the active control state so UI knows what the intended state is
-    ctrl_path = os.path.join(os.path.dirname(__file__), "..", "static", "guardian_control.json")
-    ctrl_enabled = True
-    if os.path.exists(ctrl_path):
-        try:
-            with open(ctrl_path, "r", encoding="utf-8") as f:
-                ctrl_enabled = json.load(f).get("enabled", True)
-        except Exception:
-            logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 1076, exc_info=True)
-    data["guardian_control_enabled"] = ctrl_enabled
-    
-    code = 200 if data.get("ok") else 500
-    return jsonify(data), code
-
-@app.route('/api/ops/process-guardian/toggle', methods=['POST'])
-@login_required
-def process_guardian_toggle_api():
-    ctrl_path = os.path.join(os.path.dirname(__file__), "..", "static", "guardian_control.json")
-    try:
-        ctrl = {"enabled": True}
-        if os.path.exists(ctrl_path):
-            with open(ctrl_path, "r", encoding="utf-8") as f:
-                ctrl = json.load(f)
-        
-        ctrl["enabled"] = not ctrl.get("enabled", True)
-        
-        with open(ctrl_path, "w", encoding="utf-8") as f:
-            json.dump(ctrl, f, ensure_ascii=False, indent=2)
-            
-        return jsonify({"ok": True, "enabled": ctrl["enabled"]})
-    except Exception as e:
-        return jsonify({"ok": False, "error": str(e)}), 500
-
-@app.route('/api/osc/chat', methods=['POST'])
-@login_required
-def osc_chat_api():
-    data = request.get_json() or {}
-    msg = (data.get("message") or "").strip()
-    if not msg:
-        return jsonify({"error": "Empty message"}), 400
-    
-    # Process synchronously (or return initial ack if async)
-    reply = orchestrator.process_message(
-        user_id=str(current_user.id),
-        message=msg,
-        platform="WEB",
-        role=current_user.role
-    )
-    try:
-        if _normalize_output_text:
-            reply = _normalize_output_text(str(reply or ""), platform="WEB")
-    except Exception:
-        logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 1120, exc_info=True)
-    return jsonify({"reply": reply})
-
-@app.route('/api/osc/poll', methods=['GET'])
-@login_required
-def osc_poll_api():
-    uid = str(current_user.id)
-    msgs = []
-    if uid in WEB_NOTIFICATIONS:
-        msgs = list(WEB_NOTIFICATIONS[uid])
-        WEB_NOTIFICATIONS[uid].clear()
-    return jsonify({"messages": msgs})
-
-# DEPRECATED: No frontend callers found. Superseded by /api/osc/judgments (osc_judgments_compat_api)
-# which merges DB insights + judgments.json. Remove after confirming no external consumers (2026-Q2).
-@app.route('/api/osc/judgments_legacy', methods=['GET'])
-@login_required
-def osc_judgments_api():
-    try:
-        # Path to judgments.json in skills/judgment-collector
-        json_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "skills", "judgment-collector", "judgments.json"))
-        if os.path.exists(json_path):
-            with open(json_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            return jsonify(data)
-        return jsonify([])
-    except Exception as e:
-        logger.error(f"Error serving judgments: {e}")
-        return jsonify([])
-
-
 # -----------------------------------------------------------------------------
 # OSC Web API (law_firm_data CRUD + insights merge)
 # -----------------------------------------------------------------------------
@@ -1293,6 +627,12 @@ def _osc_web_db_candidates():
 
 
 def _osc_web_connect():
+    # 讓 failover 模組動態更新 env，確保候選列表反映最新狀態
+    try:
+        from api.db_failover import probe_remote
+        probe_remote()  # 更新 os.environ["OSC_DB_HOST"] if needed
+    except Exception:
+        pass
     last_err = None
     for cfg in _osc_web_db_candidates():
         try:
@@ -1530,7 +870,11 @@ def _osc_smb_candidates(path_str: str) -> list[str]:
     """
     Return ordered SMB candidate URLs for NAS.
     """
-    host = (os.environ.get("MAGI_NAS_HOST") or "192.168.1.3").strip()
+    try:
+        from api.nas_mount_guard import resolve_nas_host
+        host = resolve_nas_host()
+    except Exception:
+        host = (os.environ.get("MAGI_NAS_HOST") or "192.168.1.3").strip()
     p = _osc_norm_path(path_str).replace("\\", "/")
     if p.startswith("/Users/") or p.startswith("/Volumes/"):
         p = translate_local_path_to_canonical(p).replace("\\", "/")
@@ -2942,10 +2286,10 @@ def _osc_generate_draft_with_casper(prompt: str) -> str:
 
 def _osc_generate_draft_with_ollama(prompt: str, model: str, ollama_url: str) -> str:
     """透過 oMLX (OpenAI-compatible API) 生成草稿。保留函式名以相容既有呼叫端。"""
-    base = (ollama_url or "http://127.0.0.1:8080").rstrip("/")
+    base = (ollama_url or os.environ.get("MAGI_OMLX_CHAT_URL", "http://127.0.0.1:11434")).rstrip("/")
     url = base + "/v1/chat/completions"
     body = {
-        "model": model or "TAIDE-12b-Chat-mlx-4bit",
+        "model": model or TEXT_PRIMARY_MODEL,
         "messages": [{"role": "user", "content": prompt}],
         "temperature": 0.3,
         "max_tokens": 2048,
@@ -4724,8 +4068,9 @@ def osc_pdf_generation_log_detail_api(row_id):
 @login_required
 def osc_drafts_meta_api():
     provider = _osc_get_setting_value("ai_draft_provider", "casper") or "casper"
-    model = _osc_get_setting_value("ai_draft_ollama_model", "taide-12b") or "taide-12b"
-    ollama_url = _osc_get_setting_value("ollama_url", "http://127.0.0.1:8080") or "http://127.0.0.1:8080"
+    model = _osc_get_setting_value("ai_draft_ollama_model", TEXT_PRIMARY_MODEL) or TEXT_PRIMARY_MODEL
+    _default_chat_url = os.environ.get("MAGI_OMLX_CHAT_URL", "http://127.0.0.1:11434")
+    ollama_url = _osc_get_setting_value("ollama_url", _default_chat_url) or _default_chat_url
     custom_template = _osc_get_setting_value("draft_prompt_template", "")
     allow_cloud_models = str(os.environ.get("MAGI_ALLOW_CLOUD_MODELS", "0") or "").strip().lower() in {"1", "true", "yes", "on"}
     effective_provider = provider
@@ -4764,8 +4109,9 @@ def osc_drafts_generate_api():
 
     prompt = str(ctx.get("prompt") or "").strip()
     provider = str(payload.get("provider") or _osc_get_setting_value("ai_draft_provider", "casper") or "casper").strip().lower()
-    ollama_model = str(payload.get("ollama_model") or _osc_get_setting_value("ai_draft_ollama_model", "taide-12b") or "taide-12b").strip()
-    ollama_url = str(payload.get("ollama_url") or _osc_get_setting_value("ollama_url", "http://127.0.0.1:8080") or "http://127.0.0.1:8080").strip()
+    ollama_model = str(payload.get("ollama_model") or _osc_get_setting_value("ai_draft_ollama_model", TEXT_PRIMARY_MODEL) or TEXT_PRIMARY_MODEL).strip()
+    _default_chat = os.environ.get("MAGI_OMLX_CHAT_URL", "http://127.0.0.1:11434")
+    ollama_url = str(payload.get("ollama_url") or _osc_get_setting_value("ollama_url", _default_chat) or _default_chat).strip()
     dry_run = _osc_truthy(payload.get("dry_run") or payload.get("preview_only"))
 
     if dry_run:
@@ -6731,404 +6077,6 @@ def register():
 def logout():
     logout_user()
     return redirect(url_for('login'))
-
-# --- System Test & Self-Repair API ---
-
-@app.route('/api/system-test', methods=['POST'])
-@login_required
-def api_system_test():
-    """Run comprehensive system health check."""
-    try:
-        from skills.ops.system_test import run_all_tests
-        report = run_all_tests()
-        return jsonify(report)
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-@app.route('/api/self-repair', methods=['POST'])
-@login_required
-def api_self_repair():
-    """Trigger self-repair for failed test items."""
-    try:
-        data = request.get_json() or {}
-        targets = data.get("targets")  # optional list of IDs
-        import importlib.util
-        base_dir = os.path.join(os.path.dirname(__file__), "..", "skills")
-        candidates = [
-            os.path.join(base_dir, "magi-self-repair", "action.py"),
-            os.path.join(base_dir, "magi-doctor", "action.py"),
-        ]
-        repair_mod = None
-        for action_path in candidates:
-            if not os.path.exists(action_path):
-                continue
-            spec = importlib.util.spec_from_file_location("magi_self_repair", action_path)
-            if spec is None or spec.loader is None:
-                continue
-            repair_mod = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(repair_mod)
-            break
-        if repair_mod is None:
-            raise FileNotFoundError(
-                "No self-repair module found. Tried: " + ", ".join(candidates)
-            )
-        if not hasattr(repair_mod, "repair_targets"):
-            raise AttributeError("self-repair module missing repair_targets()")
-        report = repair_mod.repair_targets(targets)
-        return jsonify(report)
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-
-@app.route('/api/nerv/skill-interview', methods=['GET'])
-def api_nerv_skill_interview_status():
-    auth_error = _require_json_auth()
-    if auth_error:
-        return auth_error
-    try:
-        state = orchestrator.get_skill_interview_state(_nerv_skill_interview_user_id(), "NERV")
-        return jsonify({
-            "ok": True,
-            "can_edit": bool(getattr(current_user, "is_admin", False)),
-            "interview": state,
-        })
-    except Exception as e:
-        logger.error("NERV skill interview status failed: %s", e, exc_info=True)
-        return jsonify({"ok": False, "error": str(e)}), 500
-
-
-@app.route('/api/nerv/skill-interview/start', methods=['POST'])
-def api_nerv_skill_interview_start():
-    auth_error = _require_json_auth(admin=True)
-    if auth_error:
-        return auth_error
-    payload = request.get_json(silent=True) or {}
-    initial_request = str(payload.get("request") or "").strip()
-    if not initial_request:
-        return jsonify({"ok": False, "error": "empty_request"}), 400
-    try:
-        message = orchestrator.start_skill_interview(
-            _nerv_skill_interview_user_id(),
-            "NERV",
-            getattr(current_user, "role", "user"),
-            initial_request,
-            trigger_reason="manual",
-        )
-        state = orchestrator.get_skill_interview_state(_nerv_skill_interview_user_id(), "NERV")
-        return jsonify({
-            "ok": True,
-            "message": message,
-            "interview": state,
-        })
-    except Exception as e:
-        logger.error("NERV skill interview start failed: %s", e, exc_info=True)
-        return jsonify({"ok": False, "error": str(e)}), 500
-
-
-@app.route('/api/nerv/skill-interview/reply', methods=['POST'])
-def api_nerv_skill_interview_reply():
-    auth_error = _require_json_auth(admin=True)
-    if auth_error:
-        return auth_error
-    payload = request.get_json(silent=True) or {}
-    reply_text = str(payload.get("message") or "").strip()
-    if not reply_text:
-        return jsonify({"ok": False, "error": "empty_message"}), 400
-    try:
-        handled, message = orchestrator.reply_skill_interview(
-            _nerv_skill_interview_user_id(),
-            "NERV",
-            getattr(current_user, "role", "user"),
-            reply_text,
-        )
-        if not handled:
-            return jsonify({"ok": False, "error": "no_active_interview"}), 400
-        state = orchestrator.get_skill_interview_state(_nerv_skill_interview_user_id(), "NERV")
-        finalized = (not state.get("active")) and ("新 SKILL 已建立並啟用" in str(message or ""))
-        cancelled = (not state.get("active")) and ("已取消這次 SKILL 訪談" in str(message or ""))
-        return jsonify({
-            "ok": True,
-            "message": message,
-            "interview": state,
-            "finalized": finalized,
-            "cancelled": cancelled,
-            "skill_name": _extract_interview_skill_name(message),
-        })
-    except Exception as e:
-        logger.error("NERV skill interview reply failed: %s", e, exc_info=True)
-        return jsonify({"ok": False, "error": str(e)}), 500
-
-
-@app.route('/api/skills/interview-history', methods=['GET'])
-def api_skill_interview_history():
-    auth_error = _require_json_auth()
-    if auth_error:
-        return auth_error
-    limit = request.args.get('limit', default=10, type=int) or 10
-    limit = max(1, min(limit, 50))
-    try:
-        from skills.management.skill_interview import list_interview_history
-
-        return jsonify({"ok": True, "history": list_interview_history(limit=limit)})
-    except Exception as e:
-        logger.error("Skill interview history failed: %s", e, exc_info=True)
-        return jsonify({"ok": False, "error": str(e)}), 500
-
-
-@app.route('/api/skills/<skill_name>/versions', methods=['GET'])
-def api_skill_versions(skill_name):
-    auth_error = _require_json_auth()
-    if auth_error:
-        return auth_error
-    try:
-        _skill_doc_path(skill_name)
-    except ValueError as e:
-        return jsonify({"ok": False, "error": str(e)}), 400
-    try:
-        from skills.evolution.skill_genesis import list_skill_versions
-
-        result = list_skill_versions(str(skill_name).strip())
-        if not result.get("success"):
-            return jsonify({"ok": False, "error": result.get("error") or "versions_unavailable"}), 404
-        return jsonify({"ok": True, "versions": result.get("versions") or []})
-    except Exception as e:
-        logger.error("Skill versions failed for %s: %s", skill_name, e, exc_info=True)
-        return jsonify({"ok": False, "error": str(e)}), 500
-
-
-@app.route('/api/skills/<skill_name>/rollback', methods=['POST'])
-def api_skill_rollback(skill_name):
-    auth_error = _require_json_auth(admin=True)
-    if auth_error:
-        return auth_error
-    try:
-        _skill_doc_path(skill_name)
-    except ValueError as e:
-        return jsonify({"ok": False, "error": str(e)}), 400
-    payload = request.get_json(silent=True) or {}
-    version_id = str(payload.get("version_id") or "").strip()
-    try:
-        from skills.evolution.skill_genesis import rollback_skill_version
-        from skills.bridge.embedding_router import get_router
-        import skills.bridge.semantic_router as semantic_router
-
-        result = rollback_skill_version(str(skill_name).strip(), version_id=version_id)
-        if not result.get("success"):
-            return jsonify({"ok": False, "error": result.get("error") or "rollback_failed"}), 400
-        try:
-            router = get_router()
-            if router.is_ready:
-                router.rebuild_cache()
-            else:
-                router.initialize()
-        except Exception:
-            logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 6855, exc_info=True)
-        try:
-            semantic_router._SKILLS_CACHE = None
-            semantic_router._SKILLS_CACHE_TS = 0.0
-        except Exception:
-            logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 6860, exc_info=True)
-        return jsonify({"ok": True, "result": result})
-    except Exception as e:
-        logger.error("Skill rollback failed for %s: %s", skill_name, e, exc_info=True)
-        return jsonify({"ok": False, "error": str(e)}), 500
-
-
-@app.route('/api/nerv/skills', methods=['GET'])
-def api_nerv_skills():
-    auth_error = _require_json_auth()
-    if auth_error:
-        return auth_error
-    try:
-        return jsonify({"ok": True, "skills": _list_skill_docs()})
-    except Exception as e:
-        logger.error("NERV skill list failed: %s", e, exc_info=True)
-        return jsonify({"ok": False, "error": str(e)}), 500
-
-
-@app.route('/api/nerv/product-runtime', methods=['GET', 'POST'])
-def api_nerv_product_runtime():
-    auth_error = _require_json_auth(admin=request.method == 'POST')
-    if auth_error:
-        return auth_error
-
-    if request.method == 'GET':
-        try:
-            return jsonify(_nerv_product_runtime_payload())
-        except Exception as e:
-            logger.error("NERV product runtime load failed: %s", e, exc_info=True)
-            return jsonify({"ok": False, "error": str(e)}), 500
-
-    payload = request.get_json(silent=True) or {}
-    product = str(payload.get("product") or "").strip().lower()
-    if product not in NERV_PRODUCT_NAMES:
-        return jsonify({"ok": False, "error": "unsupported_product"}), 400
-
-    allowed_keys = {"codex_mode"}
-    if product == "laf":
-        allowed_keys |= {"portal_env", "prod_base_url", "test_base_url", "compare_base_url"}
-
-    updates = {}
-    for key in allowed_keys:
-        value = payload.get(key)
-        if value is None:
-            continue
-        text = str(value).strip()
-        if not text:
-            continue
-        updates[key] = text
-
-    if not updates:
-        return jsonify({"ok": False, "error": "empty_updates"}), 400
-
-    try:
-        updated = update_product_runtime(product, **updates)
-        response = _nerv_product_runtime_payload()
-        response["updated_product"] = product
-        response["updated_profile"] = updated
-        return jsonify(response)
-    except Exception as e:
-        logger.error("NERV product runtime save failed: %s", e, exc_info=True)
-        return jsonify({"ok": False, "error": str(e)}), 500
-
-
-@app.route('/api/nerv/skills/<skill_name>', methods=['GET', 'POST'])
-def api_nerv_skill_detail(skill_name):
-    auth_error = _require_json_auth(admin=request.method != 'GET')
-    if auth_error:
-        return auth_error
-
-    try:
-        skill_doc = _skill_doc_path(skill_name)
-        action_file = _skill_action_path(skill_name)
-    except ValueError as e:
-        return jsonify({"ok": False, "error": str(e)}), 400
-
-    if request.method == 'GET':
-        exists = skill_doc.exists()
-        content = ""
-        if exists:
-            try:
-                content = skill_doc.read_text(encoding="utf-8")
-            except Exception as e:
-                return jsonify({"ok": False, "error": f"read_failed: {e}"}), 500
-        updated_at = ""
-        stat_target = skill_doc if exists else action_file
-        if stat_target.exists():
-            try:
-                updated_at = datetime.fromtimestamp(stat_target.stat().st_mtime).isoformat()
-            except Exception:
-                updated_at = ""
-        return jsonify(
-            {
-                "ok": True,
-                "skill": {
-                    "name": str(skill_name).strip(),
-                    "content": content,
-                    "has_skill_doc": exists,
-                    "has_action": action_file.exists(),
-                    "updated_at": updated_at,
-                    "summary": _skill_summary(content),
-                },
-            }
-        )
-
-    payload = request.get_json(silent=True) or {}
-    content = str(payload.get("content") or "")
-    if not content.strip():
-        return jsonify({"ok": False, "error": "empty_skill_content"}), 400
-
-    try:
-        skill_doc.parent.mkdir(parents=True, exist_ok=True)
-        normalized = content.replace("\r\n", "\n")
-        if not normalized.endswith("\n"):
-            normalized += "\n"
-        skill_doc.write_text(normalized, encoding="utf-8")
-    except Exception as e:
-        logger.error("NERV skill save failed for %s: %s", skill_name, e, exc_info=True)
-        return jsonify({"ok": False, "error": f"save_failed: {e}"}), 500
-
-    return jsonify(
-        {
-            "ok": True,
-            "saved": True,
-            "skill": {
-                "name": str(skill_name).strip(),
-                "content": normalized,
-                "has_skill_doc": True,
-                "has_action": action_file.exists(),
-                "updated_at": datetime.now().isoformat(),
-                "summary": _skill_summary(normalized),
-            },
-        }
-    )
-
-
-@app.route('/api/codex-distributed/status', methods=['GET'])
-def api_codex_distributed_status():
-    auth_error = _require_json_auth()
-    if auth_error:
-        return auth_error
-    try:
-        from skills.bridge.llm_direct import public_status_report
-
-        return jsonify({"status": public_status_report(), "can_toggle": current_user.is_admin()})
-    except Exception as e:
-        logger.error("Codex distributed status failed: %s", e, exc_info=True)
-        return jsonify({"ok": False, "error": str(e)}), 500
-
-
-@app.route('/api/codex-distributed/toggle', methods=['POST'])
-def api_codex_distributed_toggle():
-    auth_error = _require_json_auth(admin=True)
-    if auth_error:
-        return auth_error
-    try:
-        from skills.bridge.llm_direct import apply_manual_command, public_status_report
-
-        payload = request.get_json(silent=True) or {}
-        command = str(payload.get("command") or "").strip().lower()
-        features = payload.get("features")
-        apply_manual_command(command, features=features)
-        return jsonify({"status": public_status_report(), "can_toggle": True})
-    except ValueError as e:
-        return jsonify({"ok": False, "error": str(e)}), 400
-    except Exception as e:
-        logger.error("Codex distributed toggle failed: %s", e, exc_info=True)
-        return jsonify({"ok": False, "error": str(e)}), 500
-
-
-# --- Status API ---
-@app.route('/api/status')
-def api_status():
-    """Returns MAGI node status as JSON for dashboard polling."""
-    status_file = os.path.join(os.path.dirname(__file__), '..', 'static', 'magi_status.json')
-    try:
-        with open(status_file, 'r') as f:
-            data = json.load(f)
-        return data
-    except Exception as e:
-        return {"error": str(e)}, 500
-
-@app.route('/api/live-log')
-@login_required
-def api_live_log():
-    """Return recent server log lines for dashboard live-log panel."""
-    limit = min(int(request.args.get('limit', 40)), 100)
-    log_path = os.path.join(os.path.dirname(__file__), '..', '.agent', 'server.log')
-    lines = []
-    try:
-        with open(log_path, 'rb') as f:
-            f.seek(0, 2)
-            size = f.tell()
-            read_size = min(size, 32768)
-            f.seek(size - read_size)
-            raw = f.read().decode('utf-8', errors='replace')
-            all_lines = raw.strip().splitlines()
-            lines = all_lines[-limit:]
-    except Exception as e:
-        lines = [f"[LOG READ ERROR] {e}"]
-    return jsonify({'lines': lines})
 
 @app.route("/callback", methods=['GET', 'POST'])
 @app.route("/line/webhook", methods=['GET', 'POST'])
@@ -10169,132 +9117,6 @@ def handle_content(event):
     
     _line_send_text(event, user_id, reply_text, prefer_push=False)
 
-@app.route("/health", methods=['GET'])
-def health():
-    """System health check with component diagnostics."""
-    import time as _time
-    from skills.bridge.http_pool import get_session as _get_sess
-    _rq = _get_sess()
-    checks = {"status": "operational", "timestamp": _time.time()}
-
-    # oMLX (primary inference engine)
-    try:
-        _r = _rq.get("http://127.0.0.1:8080/v1/models", timeout=3)
-        _models = [m.get("id", "") for m in (_r.json() or {}).get("data", [])]
-        checks["omlx"] = {"ok": _r.status_code == 200, "models": _models}
-    except Exception:
-        checks["omlx"] = {"ok": False}
-
-    # MariaDB
-    _conn = None
-    try:
-        _conn = mysql.connector.connect(**DB_CONFIG, connection_timeout=3, use_pure=True)
-        checks["db"] = {"ok": _conn.is_connected()}
-    except Exception as _e:
-        checks["db"] = {"ok": False, "detail": str(_e)[:80]}
-    finally:
-        if _conn:
-            try:
-                _conn.close()
-            except Exception:
-                logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 10152, exc_info=True)
-
-    # System resources
-    try:
-        import psutil
-        _vm = psutil.virtual_memory()
-        _du = psutil.disk_usage("/")
-        checks["system"] = {
-            "cpu_percent": psutil.cpu_percent(interval=0.1),
-            "memory_percent": _vm.percent,
-            "memory_available_gb": round(_vm.available / (1024**3), 1),
-            "disk_percent": _du.percent,
-            "disk_free_gb": round(_du.free / (1024**3), 1),
-        }
-    except Exception:
-        logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 10167, exc_info=True)
-
-    # FAISS vector index — defer loading during startup to avoid OOM
-    _uptime = _time.time() - _SERVER_START_TIME
-    if _uptime < 60:
-        checks["faiss"] = {"ok": True, "deferred": True, "reason": "startup_grace_period"}
-    else:
-        try:
-            from skills.memory.faiss_index import FAISSMemoryIndex
-            _idx = FAISSMemoryIndex.get_instance()
-            checks["faiss"] = {"ok": True, "vectors": getattr(_idx, 'total', getattr(_idx, 'ntotal', 0))}
-        except Exception:
-            checks["faiss"] = {"ok": False}
-
-    # Attachment jobs
-    try:
-        if _jq:
-            checks["attachment_jobs"] = _jq.stats()
-        else:
-            job_ids = _list_attachment_job_ids()
-            pending = sum(1 for jid in job_ids if _read_attachment_job(jid).get("status") in ("queued", "running"))
-            checks["attachment_jobs"] = {"total": len(job_ids), "active": pending}
-    except Exception:
-        logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 10190, exc_info=True)
-
-    # NAS mounts
-    try:
-        from api.nas_mount_guard import _is_mounted, _SHARES
-        checks["nas"] = {vol.split("/")[-1]: _is_mounted(vol) for _, vol in _SHARES}
-    except Exception:
-        logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 10197, exc_info=True)
-
-    # Uptime
-    try:
-        checks["uptime_seconds"] = round(_time.time() - _SERVER_START_TIME, 0)
-    except Exception:
-        logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 10203, exc_info=True)
-
-    checks["status"] = "operational" if checks.get("omlx", {}).get("ok") else "degraded"
-    return jsonify(checks), 200
-
-@app.route('/api/transcribe', methods=['POST'])
-def transcribe_audio():
-    """Endpoint for audio transcription (Balthasar)."""
-    # API Key Authentication (Bypass login for nodes)
-    api_key = (request.headers.get("X-MAGI-API-KEY") or "").strip()
-    api_key_ok = bool(EXPECTED_MAGI_API_KEY) and hmac.compare_digest(api_key, EXPECTED_MAGI_API_KEY)
-    if not api_key_ok and not current_user.is_authenticated:
-        return jsonify({"error": "Unauthorized"}), 401
-            
-    if 'file' not in request.files:
-        return jsonify({"error": "No file part"}), 400
-        
-    file = request.files['file']
-    if file.filename == '':
-        return jsonify({"error": "No selected file"}), 400
-        
-    if file:
-        try:
-            # Save temp file
-            safe_filename = "".join([c for c in file.filename if c.isalnum() or c in "._-"]) or "audio.wav"
-            filename = f"audio_{int(time.time())}_{safe_filename}" 
-            filepath = os.path.join("/tmp", filename)
-            file.save(filepath)
-            
-            logger.info(f"🎤 Received audio for transcription: {filepath}")
-            
-            from skills.bridge.balthasar_bridge import transcribe
-            language = str(request.form.get("language") or "").strip() or None
-            taigi_hint_raw = str(request.form.get("taigi_hint") or "").strip().lower()
-            taigi_hint = taigi_hint_raw in {"1", "true", "yes", "on"}
-            result = transcribe(filepath, language=language, taigi_hint=taigi_hint)
-            
-            # Clean up
-            if os.path.exists(filepath):
-                _safe_remove_tmp(filepath)
-                
-            return jsonify(result)
-            
-        except Exception as e:
-            logger.error(f"❌ Transcription endpoint error: {e}")
-            return jsonify({"error": str(e)}), 500
-
 # Start Telegram polling fallback after all helpers are defined.
 _STARTUP_HOOKS_ENABLED = str(os.environ.get("MAGI_DISABLE_SERVER_STARTUP_HOOKS", "0")).strip().lower() not in {"1", "true", "yes", "on"}
 if _STARTUP_HOOKS_ENABLED:
@@ -10324,24 +9146,25 @@ try:
 except Exception:
     pass
 
-# Warm up TAIDE model on oMLX so first chat doesn't pay model-load penalty
+# Warm up local LLM so first chat doesn't pay model-load penalty
 def _warmup_omlx():
     try:
         import time as _t
-        _t.sleep(2)  # let oMLX finish its own startup
+        _t.sleep(5)  # let Ollama/oMLX finish startup
         from skills.bridge.http_pool import get_session
-        _model = os.environ.get("CASPER_LOCAL_MODEL", "TAIDE-12b-Chat-mlx-4bit")
-        r = get_session().post("http://127.0.0.1:8080/v1/chat/completions", json={
+        _model = os.environ.get("CASPER_LOCAL_MODEL", TEXT_PRIMARY_MODEL)
+        _chat_url = os.environ.get("MAGI_OMLX_CHAT_URL", "http://127.0.0.1:11434")
+        r = get_session().post(f"{_chat_url}/v1/chat/completions", json={
             "model": _model,
             "messages": [{"role": "user", "content": "ping"}],
             "max_tokens": 1, "temperature": 0,
-        }, timeout=60)
+        }, timeout=120)
         if r.status_code == 200:
-            logger.info("✅ oMLX TAIDE model warmed up")
+            logger.info("✅ Local LLM (%s) warmed up", _model)
         else:
-            logger.warning("⚠️ oMLX warmup got %d", r.status_code)
+            logger.warning("⚠️ LLM warmup got %d", r.status_code)
     except Exception as e:
-        logger.warning("⚠️ oMLX warmup failed (non-fatal): %s", e)
+        logger.warning("⚠️ LLM warmup failed (non-fatal): %s", e)
 
 if _STARTUP_HOOKS_ENABLED:
     threading.Thread(target=_warmup_omlx, daemon=True, name="omlx-warmup").start()
@@ -10358,6 +9181,34 @@ def _is_cloudflared_alive() -> bool:
         return result.returncode == 0
     except Exception:
         return False
+
+
+app.register_blueprint(
+    create_admin_runtime_blueprint(
+        logger=logger,
+        orchestrator=orchestrator,
+        require_json_auth=_require_json_auth,
+        list_skill_docs=_list_skill_docs,
+        nerv_skill_interview_user_id=_nerv_skill_interview_user_id,
+        extract_interview_skill_name=_extract_interview_skill_name,
+        skill_doc_path=_skill_doc_path,
+        skill_action_path=_skill_action_path,
+        skill_summary=_skill_summary,
+        nerv_product_runtime_payload=_nerv_product_runtime_payload,
+        nerv_product_names=NERV_PRODUCT_NAMES,
+        update_product_runtime=update_product_runtime,
+        cloudflared_alive=_is_cloudflared_alive,
+        server_start_time=_SERVER_START_TIME,
+        attachment_job_queue=_jq,
+        list_attachment_job_ids=_list_attachment_job_ids,
+        read_attachment_job=_read_attachment_job,
+        expected_magi_api_key=EXPECTED_MAGI_API_KEY,
+        db_config=DB_CONFIG,
+        mysql_connector=mysql.connector,
+        safe_remove_tmp=_safe_remove_tmp,
+        magi_root=_MAGI_ROOT,
+    )
+)
 
 
 def _ensure_cloudflared():

@@ -18,6 +18,8 @@ import os
 import time
 from typing import Any
 
+from api.model_config import TEXT_PRIMARY_MODEL
+
 logger = logging.getLogger("LLMDirect")
 
 # ── Provider 設定 ──────────────────────────────────────
@@ -26,7 +28,7 @@ PROVIDERS: dict[str, dict[str, Any]] = {
     "omlx": {
         "base_url": os.environ.get("OMLX_BASE_URL", "http://127.0.0.1:8080/v1"),
         "api_key": os.environ.get("OMLX_API_KEY", "omlx-local"),
-        "default_model": os.environ.get("MAGI_DEFAULT_MODEL", "TAIDE-12b-Chat-mlx-4bit"),
+        "default_model": os.environ.get("MAGI_DEFAULT_MODEL", TEXT_PRIMARY_MODEL),
         "api_format": "openai",
         "max_context": 32768,
     },

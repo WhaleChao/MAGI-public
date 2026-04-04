@@ -39,6 +39,8 @@ def test_memory_ranking_prioritizes_trusted_sources_for_fact_queries():
     ranked = mem_bridge._rank_recall_results("請回答這個事實", items)
     assert ranked[0]["source"] in {"user_rule|platform=LINE|user=2", "user_profile_3"}
     assert ranked[-1]["source"].startswith("assistant_generated") or ranked[-1]["source"].startswith("chatlog|")
+    assert ranked[0]["provenance"]["trust_label"] in {"已驗證", "未驗證"}
+    assert ranked[-1]["provenance"]["source_type"] in {"assistant_generated", "chatlog"}
     assert mem_bridge._source_trust_weight("user_rule|platform=LINE|user=2") > mem_bridge._source_trust_weight("chatlog|platform=Discord|user=1")
     assert mem_bridge._source_trust_weight("chatlog|platform=Discord|user=1") > mem_bridge._source_trust_weight("assistant_generated|mode=chat")
 
@@ -53,6 +55,7 @@ def test_memory_ranking_keeps_chatlog_available_for_explicit_recall():
     ranked = mem_bridge._rank_recall_results("你還記得我之前說過什麼嗎", items)
     assert ranked[0]["source"].startswith("chatlog|")
     assert ranked[0]["trust_weight"] > ranked[-1]["trust_weight"]
+    assert ranked[0]["provenance"]["trust_label"] == "原始對話"
 
 
 def test_expand_query_skips_memory_recall_queries(monkeypatch):
@@ -108,3 +111,24 @@ def test_expand_query_filters_far_variations(monkeypatch):
     assert expanded[0] == query
     assert "法院判決摘要重點" in expanded
     assert "banana" not in expanded
+
+
+def test_verify_and_repair_answer_rewrites_false_memory_claim(monkeypatch):
+    monkeypatch.setattr(
+        grounded_ai,
+        "_generate",
+        lambda *args, **kwargs: "目前沒有可驗證結果，我不能把未出現在當前上下文的內容當成既有記憶。",
+    )
+
+    repaired = grounded_ai._verify_and_repair_answer(
+        query="那篇文章是什麼？",
+        answer="你之前給過我一篇文章，我直接幫你整理。",
+        prompt="test prompt",
+        memories=[],
+        memory_context="無相關記憶。",
+        web_context="無。",
+        conversation_history="",
+        entity_context="那篇文章是什麼？",
+    )
+
+    assert repaired == "目前沒有可驗證結果，我不能把未出現在當前上下文的內容當成既有記憶。"

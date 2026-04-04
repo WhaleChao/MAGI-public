@@ -45,14 +45,14 @@ class TestToolsAPICors:
 
 
 class TestServerSecurityHeaders:
-    """Tests for server.py security headers."""
+    """Tests for Flask bootstrap security headers."""
 
-    def test_server_has_security_headers_middleware(self):
-        """server.py should have security headers middleware."""
+    def test_app_factory_has_security_headers_middleware(self):
+        """app_factory.py should define security headers middleware."""
         from pathlib import Path
 
-        server_path = Path(__file__).parent.parent / "api" / "server.py"
-        source = server_path.read_text(encoding="utf-8")
+        app_factory_path = Path(__file__).parent.parent / "api" / "app_factory.py"
+        source = app_factory_path.read_text(encoding="utf-8")
 
         # Check for security headers
         assert "X-Content-Type-Options" in source
@@ -65,8 +65,8 @@ class TestServerSecurityHeaders:
         """Security headers should have secure default values."""
         from pathlib import Path
 
-        server_path = Path(__file__).parent.parent / "api" / "server.py"
-        source = server_path.read_text(encoding="utf-8")
+        app_factory_path = Path(__file__).parent.parent / "api" / "app_factory.py"
+        source = app_factory_path.read_text(encoding="utf-8")
 
         # Check for nosniff
         assert "nosniff" in source
@@ -75,16 +75,34 @@ class TestServerSecurityHeaders:
         # Check for strict-origin or similar
         assert "strict-origin" in source or "SAMEORIGIN" in source
 
+    def test_security_headers_apply_to_runtime_response(self, monkeypatch):
+        from api import app_factory
+
+        monkeypatch.setenv("FLASK_SECRET_KEY", "test-secret")
+        app = app_factory.create_base_app()
+        app_factory.install_security_headers(app)
+
+        @app.route("/ping")
+        def _ping():
+            return "ok"
+
+        client = app.test_client()
+        response = client.get("/ping")
+
+        assert response.headers["X-Content-Type-Options"] == "nosniff"
+        assert response.headers["X-Frame-Options"] == "SAMEORIGIN"
+        assert response.headers["Referrer-Policy"] == "strict-origin-when-cross-origin"
+
 
 class TestServerSessionCookie:
-    """Tests for server.py session cookie hardening."""
+    """Tests for session cookie hardening."""
 
     def test_session_cookie_httponly_enabled(self):
         """Session cookie should have HttpOnly flag."""
         from pathlib import Path
 
-        server_path = Path(__file__).parent.parent / "api" / "server.py"
-        source = server_path.read_text(encoding="utf-8")
+        app_factory_path = Path(__file__).parent.parent / "api" / "app_factory.py"
+        source = app_factory_path.read_text(encoding="utf-8")
 
         assert "SESSION_COOKIE_HTTPONLY" in source
         assert (
@@ -99,8 +117,8 @@ class TestServerSessionCookie:
         """Session cookie SameSite should be Lax."""
         from pathlib import Path
 
-        server_path = Path(__file__).parent.parent / "api" / "server.py"
-        source = server_path.read_text(encoding="utf-8")
+        app_factory_path = Path(__file__).parent.parent / "api" / "app_factory.py"
+        source = app_factory_path.read_text(encoding="utf-8")
 
         assert "SESSION_COOKIE_SAMESITE" in source
         assert "'Lax'" in source or '"Lax"' in source
@@ -110,12 +128,22 @@ class TestServerSessionCookie:
         """Flask app should have session cookie config section."""
         from pathlib import Path
 
-        server_path = Path(__file__).parent.parent / "api" / "server.py"
-        source = server_path.read_text(encoding="utf-8")
+        app_factory_path = Path(__file__).parent.parent / "api" / "app_factory.py"
+        source = app_factory_path.read_text(encoding="utf-8")
 
         # Look for session cookie hardening config
         lines_with_session = [line for line in source.split('\n') if 'SESSION_COOKIE' in line]
         assert len(lines_with_session) >= 2, "Should have at least SESSION_COOKIE_HTTPONLY and SESSION_COOKIE_SAMESITE"
+
+
+    def test_session_cookie_flags_exist_at_runtime(self, monkeypatch):
+        from api import app_factory
+
+        monkeypatch.setenv("FLASK_SECRET_KEY", "test-secret")
+        app = app_factory.create_base_app()
+
+        assert app.config["SESSION_COOKIE_HTTPONLY"] is True
+        assert app.config["SESSION_COOKIE_SAMESITE"] == "Lax"
 
 
 class TestJudgmentCollectorSecurity:
@@ -194,8 +222,8 @@ class TestSecurityHeadersNotWildcard:
         """All security headers should be present."""
         from pathlib import Path
 
-        server_path = Path(__file__).parent.parent / "api" / "server.py"
-        source = server_path.read_text(encoding="utf-8")
+        app_factory_path = Path(__file__).parent.parent / "api" / "app_factory.py"
+        source = app_factory_path.read_text(encoding="utf-8")
 
         required_headers = [
             "X-Content-Type-Options",

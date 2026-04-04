@@ -5,6 +5,7 @@ import time
 from collections import deque
 
 import requests
+from api.model_config import TEXT_PRIMARY_MODEL
 try:
     from skills.bridge.http_pool import get_session as _get_session
     _http = _get_session()
@@ -18,7 +19,7 @@ logger = logging.getLogger("IntentionClassifier")
 # Inference Configuration (oMLX primary, InferenceGateway fallback)
 _OMLX_BASE = os.environ.get("CASPER_CLASSIFIER_OMLX_URL", "http://127.0.0.1:8080")
 _OMLX_CHAT_URL = _OMLX_BASE.rstrip("/") + "/v1/chat/completions"
-MODEL_NAME = os.environ.get("CASPER_CLASSIFIER_MODEL", "TAIDE-12b-Chat-mlx-4bit")
+MODEL_NAME = os.environ.get("CASPER_CLASSIFIER_MODEL", TEXT_PRIMARY_MODEL)
 LLM_TIMEOUT_SEC = max(2, int(os.environ.get("CASPER_CLASSIFIER_TIMEOUT_SEC", "15") or "15"))
 LLM_COOLDOWN_SEC = max(5, int(os.environ.get("CASPER_CLASSIFIER_COOLDOWN_SEC", "30") or "30"))
 
@@ -277,10 +278,10 @@ class IntentionClassifier:
             logger.debug(f"EmbeddingRouter classify fallback: {e}")
             return (None, 0.0)
 
-    def classify(self, text):
+    def classify_detailed(self, text) -> dict:
         """
         Determines the intent of the message.
-        Returns: 'CHAT', 'QUERY', 'CMD', 'DANGER'
+        Returns routing metadata with intent/confidence/method.
 
         Pipeline (ensemble, no LLM):
           1. Cache hit → return immediately
@@ -291,16 +292,30 @@ class IntentionClassifier:
         key = (text or "").strip().lower()
         cached = self._cache_get(key)
         if cached:
-            return cached
+            return {
+                "intent": cached,
+                "confidence": 0.99,
+                "method": "cache",
+                "reason": "cache_hit",
+                "candidates": [{"method": "cache", "intent": cached, "confidence": 0.99}],
+            }
 
         # --- Layer 1: Regex (high confidence but not absolute) ---
         regex_intent = self._check_regex_rules(text)
+        candidates = []
         if regex_intent:
+            candidates.append({"method": "regex", "intent": regex_intent, "confidence": 0.90})
             # DANGER from regex is always authoritative
             if regex_intent == "DANGER":
                 logger.info(f"⚡ Regex Matched: DANGER")
                 self._cache_set(key, "DANGER")
-                return "DANGER"
+                return {
+                    "intent": "DANGER",
+                    "confidence": 1.0,
+                    "method": "regex",
+                    "reason": "regex_danger",
+                    "candidates": candidates,
+                }
             # For non-DANGER, regex is a strong signal but check embedding too
             regex_conf = 0.9
         else:
@@ -313,28 +328,60 @@ class IntentionClassifier:
             # LLM 成功 → 直接採用（LLM 是最聰明的分類器）
             logger.info(f"🧠 LLM Classified: {llm_intent}")
             self._cache_set(key, llm_intent)
-            return llm_intent
+            candidates.append({"method": "llm", "intent": llm_intent, "confidence": 0.96})
+            return {
+                "intent": llm_intent,
+                "confidence": 0.96,
+                "method": "llm",
+                "reason": "llm_classifier",
+                "candidates": candidates,
+            }
 
         # --- Layer 3: Embedding + Heuristic fallback（LLM 失敗時）---
         embed_intent, embed_conf = self._embedding_classify(text)
         heuristic_intent = self._heuristic_classify(text)
+        if embed_intent:
+            candidates.append({"method": "embedding", "intent": embed_intent, "confidence": round(float(embed_conf), 3)})
+        candidates.append({"method": "heuristic", "intent": heuristic_intent, "confidence": 0.55})
 
         # 高信心 regex
         if regex_conf >= 0.9 and regex_intent:
             logger.info(f"⚡ Regex Matched: {regex_intent}")
             self._cache_set(key, regex_intent)
-            return regex_intent
+            return {
+                "intent": regex_intent,
+                "confidence": regex_conf,
+                "method": "regex",
+                "reason": "regex_high_confidence",
+                "candidates": candidates,
+            }
 
         # 高信心 embedding（≥ 0.8 DIRECT）
         if embed_intent and embed_conf >= 0.8:
             logger.info(f"🧭 Embedding High: {embed_intent} (conf={embed_conf:.2f})")
             self._cache_set(key, embed_intent)
-            return embed_intent
+            return {
+                "intent": embed_intent,
+                "confidence": float(embed_conf),
+                "method": "embedding",
+                "reason": "embedding_high_confidence",
+                "candidates": candidates,
+            }
 
         # Heuristic fallback
         logger.info(f"📊 Heuristic Fallback: {heuristic_intent}")
         self._cache_set(key, heuristic_intent)
-        return heuristic_intent
+        return {
+            "intent": heuristic_intent,
+            "confidence": 0.55,
+            "method": "heuristic",
+            "reason": "heuristic_fallback",
+            "candidates": candidates,
+        }
+
+    def classify(self, text):
+        result = self.classify_detailed(text)
+        return str(result.get("intent") or "CHAT")
 
     def _ask_llm(self, text):
         """
