@@ -186,7 +186,7 @@ def run_test():
         print()
 
     # Save full results
-    out_path = "/Users/ai/Desktop/MAGI_v2/scripts/gemma4_test_results.json"
+    out_path = os.path.join(os.path.dirname(__file__), "gemma4_test_results.json")
     with open(out_path, "w", encoding="utf-8") as f:
         json.dump(results, f, ensure_ascii=False, indent=2)
     print(f"\n💾 完整結果已儲存: {out_path}")

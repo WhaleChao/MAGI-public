@@ -565,7 +565,27 @@ def _content_exists(cursor, content: str) -> bool:
 
 
 def remember(content, source="manual", metadata: dict | None = None):
-    """Store memory to Keeper; fallback to local backup if offline."""
+    """Store memory to Keeper; fallback to local backup if offline.
+
+    Runs through the centralized memory policy before persisting.
+    Returns True if stored (or skipped as duplicate), False if rejected.
+    """
+    # --- Memory write policy gate ---
+    try:
+        from api.session.memory_policy import evaluate_memory_write
+
+        decision = evaluate_memory_write(content, source, metadata)
+        if not decision.allowed:
+            logger.info(
+                "Memory write blocked by policy: %s (source_type=%s, conf=%.2f)",
+                decision.reason,
+                decision.effective_source_type,
+                decision.effective_confidence,
+            )
+            return False
+    except ImportError:
+        pass  # Graceful degradation if session module unavailable
+
     embedding = get_embedding(content)
 
     # Safe truncate for MySQL VARCHAR limits on 'source' column
@@ -635,10 +655,36 @@ def remember_batch(items):
     if not items:
         return {"ok": True, "inserted": 0, "failed": 0, "total": 0}
 
-    texts = [it.get("content", "") for it in items]
+    # --- Memory write policy gate (filter items before embedding) ---
+    filtered_items = items
+    try:
+        from api.session.memory_policy import evaluate_memory_write
+
+        accepted: list[dict] = []
+        for it in items:
+            decision = evaluate_memory_write(
+                it.get("content", ""),
+                it.get("source", "batch"),
+                it.get("metadata"),
+            )
+            if decision.allowed:
+                accepted.append(it)
+            else:
+                logger.info(
+                    "Batch memory write blocked: %s (type=%s)",
+                    decision.reason,
+                    decision.effective_source_type,
+                )
+        filtered_items = accepted
+        if not filtered_items:
+            return {"ok": True, "inserted": 0, "failed": 0, "total": len(items), "blocked": len(items)}
+    except ImportError:
+        pass  # Graceful degradation
+
+    texts = [it.get("content", "") for it in filtered_items]
     sources = [
         build_source_signature(str(it.get("source", "batch")), metadata=it.get("metadata"))[:250]
-        for it in items
+        for it in filtered_items
     ]
 
     # Batch embed

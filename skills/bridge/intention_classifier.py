@@ -114,7 +114,7 @@ class IntentionClassifier:
     def _cache_get(self, key):
         return self._cache.get(key)
 
-    def _cache_set(self, key, value):
+    def _cache_set(self, key, value, confidence: float = 1.0):
         value = str(value or "").strip().upper()
         if not self._is_persistable_intent(value):
             if key in self._cache:
@@ -125,6 +125,13 @@ class IntentionClassifier:
                     pass
                 self._save_persistent_cache()
             return
+        # Only cache high-confidence results to prevent persistent misrouting
+        try:
+            from api.routing.route_policy import should_cache_intent
+            if not should_cache_intent(value, confidence):
+                return
+        except ImportError:
+            pass
         if key in self._cache and self._cache[key] == value:
             return
         self._cache[key] = value
@@ -327,7 +334,7 @@ class IntentionClassifier:
         if llm_intent and llm_intent in ("CHAT", "QUERY", "CMD", "DANGER"):
             # LLM 成功 → 直接採用（LLM 是最聰明的分類器）
             logger.info(f"🧠 LLM Classified: {llm_intent}")
-            self._cache_set(key, llm_intent)
+            self._cache_set(key, llm_intent, confidence=0.96)
             candidates.append({"method": "llm", "intent": llm_intent, "confidence": 0.96})
             return {
                 "intent": llm_intent,
@@ -347,7 +354,7 @@ class IntentionClassifier:
         # 高信心 regex
         if regex_conf >= 0.9 and regex_intent:
             logger.info(f"⚡ Regex Matched: {regex_intent}")
-            self._cache_set(key, regex_intent)
+            self._cache_set(key, regex_intent, confidence=0.90)
             return {
                 "intent": regex_intent,
                 "confidence": regex_conf,
@@ -359,7 +366,7 @@ class IntentionClassifier:
         # 高信心 embedding（≥ 0.8 DIRECT）
         if embed_intent and embed_conf >= 0.8:
             logger.info(f"🧭 Embedding High: {embed_intent} (conf={embed_conf:.2f})")
-            self._cache_set(key, embed_intent)
+            self._cache_set(key, embed_intent, confidence=float(embed_conf))
             return {
                 "intent": embed_intent,
                 "confidence": float(embed_conf),
@@ -368,9 +375,9 @@ class IntentionClassifier:
                 "candidates": candidates,
             }
 
-        # Heuristic fallback
+        # Heuristic fallback (low confidence — not cached to prevent persistent misrouting)
         logger.info(f"📊 Heuristic Fallback: {heuristic_intent}")
-        self._cache_set(key, heuristic_intent)
+        self._cache_set(key, heuristic_intent, confidence=0.55)
         return {
             "intent": heuristic_intent,
             "confidence": 0.55,

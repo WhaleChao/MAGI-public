@@ -6,8 +6,9 @@ import sys
 import requests
 
 from api.model_config import TEXT_PRIMARY_MODEL
+from api.session.context_labels import classify_trust_tier, build_trust_system_instruction
 from api.session.provenance import parse_source_provenance, render_provenance_badge
-from api.verification import run_tri_agent_verification, verify_answer
+from api.verification import format_verification_footer, run_tri_agent_verification, should_trigger_tri_agent, verify_answer
 from skills.bridge.http_pool import get_session as _get_session
 
 # Add project root
@@ -453,10 +454,16 @@ def _format_memories(memories, *, query: str = ""):
         score_str = f"{score:.4f}" if isinstance(score, (int, float)) else "n/a"
         source = str(m.get("source", "unknown"))
         prov = parse_source_provenance(source)
-        badge = render_provenance_badge(source)
+        tier = classify_trust_tier(
+            source_type=prov.source_type,
+            verified=prov.verified,
+            confidence=prov.confidence,
+            derived_from=prov.derived_from,
+            role=prov.role,
+        )
         lines.append(
-            f"{idx}. {m.get('content', '')} "
-            f"(來源: {source}, 證據等級: {badge}, 相關度: {score_str})"
+            f"{idx}. {tier.badge} {m.get('content', '')} "
+            f"(信心: {prov.confidence:.2f}, 相關度: {score_str})"
         )
     return "\n".join(lines)
 
@@ -510,9 +517,17 @@ def _summarize_memories_if_needed(query: str, memories: list, max_tokens: int = 
         score = m.get("score")
         score_str = f"{score:.4f}" if isinstance(score, (int, float)) else "n/a"
         source = str(m.get("source", "unknown"))
+        prov = parse_source_provenance(source)
+        tier = classify_trust_tier(
+            source_type=prov.source_type,
+            verified=prov.verified,
+            confidence=prov.confidence,
+            derived_from=prov.derived_from,
+            role=prov.role,
+        )
         entry = (
-            f"{idx}. {content} "
-            f"(來源: {source}, 證據等級: {render_provenance_badge(source)}, 相關度: {score_str})"
+            f"{idx}. {tier.badge} {content} "
+            f"(信心: {prov.confidence:.2f}, 相關度: {score_str})"
         )
         entry_tokens = _estimate_tokens(entry)
         if tokens_used + entry_tokens > max_tokens:
@@ -919,6 +934,7 @@ def chat_casper(message, conversation_history=""):
         except Exception as e:
             logger.warning(f"Web research failed in chat_casper: {e}")
 
+    _trust_rules = build_trust_system_instruction()
     prompt = f"""你是 CASPER（MAGI-01），請以繁體中文回答。
 你需要同時參考記憶與近期對話，保持前後一致。
 
@@ -927,8 +943,9 @@ def chat_casper(message, conversation_history=""):
 - 若資訊不足，直接承認不足，不可硬猜。
 - 若使用者在延續上一題，請承接上下文。
 - 若使用者糾正您的錯誤或補充新資訊，請【務必明確總結並覆誦正確的資訊】，這會幫助系統將正確知識寫入長期記憶。
-- 只有「證據等級：已驗證」的記憶能直接當成事實；其他記憶只能當線索。
 - 不要使用 Markdown 語法（**粗體**、`程式碼`、### 標題等）。純文字即可。
+
+{_trust_rules}
 
 [長期記憶]
 {memory_context}

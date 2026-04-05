@@ -3891,7 +3891,7 @@ class Orchestrator:
              "✅ **我可以幫您翻譯！**\n\n"
              "• 翻譯文字：直接輸入 `翻譯 [文字/網址]`\n"
              "• 翻譯檔案：上傳 PDF/TXT/DOCX 後在留言打 `翻譯`\n"
-             "• 支援中英日韓等多語系，透過 TAIDE 引擎處理！", True),
+             "• 支援中英日韓等多語系，透過本地 LLM 引擎處理！", True),
 
             # ── Image Generation ──
             (r"(?:畫圖|畫畫|畫一|畫個|畫張|畫幅|生成圖|產生圖|做圖|出圖|弄圖|"
@@ -8342,7 +8342,7 @@ class Orchestrator:
         if any(kw in msg_lower for kw in ["switch to", "big brain", "distributed", "分散式", "最強模式", "activate big brain"]):
              if role != "admin":
                  return "⛔ 抱歉，只有管理員可以切換推理模式（系統改動指令）。"
-             return "ℹ️ 目前使用本地 oMLX 推理（TAIDE-12b 摘要/通用/視覺辨識）。"
+             return "ℹ️ 目前使用本地 oMLX 推理（摘要/通用/視覺辨識）。"
         
         if any(kw in msg_lower for kw in ["local mode", "go local", "independent", "本地模式", "切回本地", "release engineer"]):
              if role != "admin":

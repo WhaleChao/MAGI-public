@@ -164,8 +164,8 @@ _MODEL_ROSTER = {
 # Tasks that benefit from cross-validation (CAPTCHA, date extraction)
 _CROSS_VALIDATE_TASKS = {"captcha", "date_extract"}
 
-# Tasks that should get TAIDE review pass
-_TAIDE_REVIEW_TASKS = {"summary", "translate", "transcribe", "legal_analysis", "reflection"}
+# Tasks that should get Traditional Chinese review pass (繁中校正)
+_TC_REVIEW_TASKS = {"summary", "translate", "transcribe", "legal_analysis", "reflection"}
 
 
 def select_model_for_task(task_type: str, force_quality: bool = False) -> str:
@@ -1283,24 +1283,21 @@ class InferenceGateway:
         result["intent"] = detected
         result["model_hint"] = model_hint
 
-        # Step 5: TAIDE review pass
-        do_tc = tc_review if tc_review is not None else (detected in _TAIDE_REVIEW_TASKS)
+        # Step 5: Traditional Chinese review pass (繁中校正)
+        do_tc = tc_review if tc_review is not None else (detected in _TC_REVIEW_TASKS)
         if do_tc and result.get("success"):
-            result = self._apply_taide_review(result)
+            result = self._apply_tc_review(result)
 
         return result
 
-    def _apply_taide_review(self, result: dict, timeout: int = 60) -> dict:
-        """
-        Post-process: send the output through TAIDE to correct
-        Traditional Chinese (Taiwan) terminology.
-        """
+    def _apply_tc_review(self, result: dict, timeout: int = 60) -> dict:
+        """繁體中文校正 — 用 tc_review 角色模型修正簡體/中國用語/法律術語。"""
         raw_text = str(result.get("response") or result.get("text") or "").strip()
         if not raw_text or len(raw_text) < 10:
             result["tc_reviewed"] = False
             return result
 
-        taide_model = self.select_model_for_task("tc_review")
+        review_model = self.select_model_for_task("tc_review")
         review_prompt = (
             "你是台灣繁體中文校正助理。請檢查以下文字的用語是否符合台灣正體中文習慣，"
             "修正：簡體字→正體字、中國用語→台灣用語（如 信息→資訊、軟件→軟體、數據→資料）、"
@@ -1310,19 +1307,18 @@ class InferenceGateway:
         )
 
         try:
-            reviewed = self._local_chat(review_prompt, timeout=timeout, model_hint=taide_model)
+            reviewed = self._local_chat(review_prompt, timeout=timeout, model_hint=review_model)
             if reviewed.get("success"):
                 corrected = str(reviewed.get("response") or "").strip()
-                # Sanity check: corrected text should be similar length
                 if corrected and len(corrected) > len(raw_text) * 0.3:
                     result["response"] = corrected
                     result["summary"] = corrected
                     result["text"] = corrected
                     result["tc_reviewed"] = True
-                    result["tc_model"] = taide_model
+                    result["tc_model"] = review_model
                     return result
         except Exception as e:
-            logger.warning("TAIDE review failed (non-fatal): %s", e)
+            logger.warning("TC review failed (non-fatal): %s", e)
 
         result["tc_reviewed"] = False
         return result
