@@ -2485,7 +2485,7 @@ function render(data) {
   document.getElementById('data-nodes').innerHTML = [
     nodeHTML('MySQL (Keeper)', data.mysql?.status, ''),
     nodeHTML('LanceDB (Memory)', 'online', 'local'),
-    nodeHTML('FAISS (Embed)', 'online', 'local'),
+    nodeHTML('FAISS (Embed)', 'online', data.faiss?.vectors ? Number(data.faiss.vectors).toLocaleString() + ' vectors' : 'local'),
   ].join('');
 
   // oMLX models

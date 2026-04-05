@@ -2348,8 +2348,9 @@
                     <div id="mem-stat-docs" style="font-size:1.5rem; color:#7c3aed; font-weight:bold;">--</div>
                 </div>
                 <div style="border:1px solid #7c3aed; padding:10px 15px; min-width:140px; text-align:center;">
-                    <div style="font-size:0.7rem; color:var(--magi-blue);">FAISS 索引</div>
+                    <div style="font-size:0.7rem; color:var(--magi-blue);">FAISS 向量數</div>
                     <div id="mem-stat-faiss" style="font-size:1.5rem; color:#7c3aed; font-weight:bold;">--</div>
+                    <div id="mem-stat-faiss-size" style="font-size:0.65rem; color:var(--magi-blue); margin-top:2px;">--</div>
                 </div>
                 <div style="border:1px solid #7c3aed; padding:10px 15px; min-width:140px; text-align:center;">
                     <div style="font-size:0.7rem; color:var(--magi-blue);">Obsidian 筆記</div>
@@ -2468,7 +2469,9 @@
                 const r = await fetch('/api/memory/stats');
                 const s = await r.json();
                 document.getElementById('mem-stat-docs').innerText = s.doc_count || 0;
-                document.getElementById('mem-stat-faiss').innerText = s.faiss_size ? (s.faiss_size / 1024 / 1024).toFixed(1) + ' MB' : 'N/A';
+                const vc = s.faiss_vector_count;
+                document.getElementById('mem-stat-faiss').innerText = vc ? Number(vc).toLocaleString() : (s.faiss_size ? (s.faiss_size / 1024 / 1024).toFixed(1) + ' MB' : 'N/A');
+                document.getElementById('mem-stat-faiss-size').innerText = s.faiss_size ? (s.faiss_size / 1024 / 1024).toFixed(1) + ' MB' + (s.faiss_index_type ? ' · ' + s.faiss_index_type : '') : '';
                 const obs = s.obsidian || {};
                 document.getElementById('mem-stat-obsidian').innerText = obs.notes_indexed || 0;
                 document.getElementById('mem-stat-updated').innerText = s.last_ingest ? s.last_ingest.replace('T', ' ').substring(0, 19) : '--';

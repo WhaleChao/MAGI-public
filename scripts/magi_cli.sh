@@ -105,6 +105,25 @@ cmd_status() {
         printf "Zombies: ${GREEN}0${NC}\n"
     fi
 
+    # FAISS Vector DB
+    echo ""
+    echo "Vector DB:"
+    local magi_root faiss_meta faiss_vectors
+    magi_root="$HOME/Desktop/MAGI_v2"
+    faiss_meta="$magi_root/skills/memory/index_cache/meta.json"
+    if [ -f "$faiss_meta" ]; then
+        faiss_vectors=$(python3 -c "import json; d=json.load(open('$faiss_meta')); print(d.get('total',0))" 2>/dev/null || echo "")
+        if [ -n "$faiss_vectors" ] && [ "$faiss_vectors" != "0" ]; then
+            local faiss_fmt
+            faiss_fmt=$(python3 -c "print(f'{int($faiss_vectors):,}')" 2>/dev/null || echo "$faiss_vectors")
+            printf "  ${GREEN}●${NC} FAISS  %s vectors\n" "$faiss_fmt"
+        else
+            printf "  ${YELLOW}⚠${NC} FAISS  索引為空\n"
+        fi
+    else
+        printf "  ${YELLOW}⚠${NC} FAISS  meta.json 不存在\n"
+    fi
+
     # Memory
     local mem_used
     mem_used=$(ps -eo rss,comm 2>/dev/null | grep -E "omlx|daemon.py|server.py|discord_bot|tools_api" | awk '{sum+=$1} END {printf "%.1f", sum/1024/1024}' 2>/dev/null || echo "?")
