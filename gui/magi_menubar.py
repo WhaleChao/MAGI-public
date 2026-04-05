@@ -44,9 +44,8 @@ SERVICES = [
 ]
 
 OMLX_ENGINES = [
-    ("文字推理 Gemma4",  int(os.environ.get("MAGI_OMLX_PORT", "8080"))),
+    ("文字+視覺 Gemma4", int(os.environ.get("MAGI_OMLX_PORT", "8080"))),
     ("向量嵌入 BERT",    8081),
-    ("視覺辨識 GLM",     8082),
 ]
 
 # ── 顏色 ──
@@ -162,9 +161,8 @@ _MEM_MODULES = [
     ("Server",        "api/server.py"),
     ("Discord Bot",   "api/discord_bot.py"),
     ("Tools API",     "api/tools_api.py"),
-    ("oMLX Infer",    "omlx serve.*--port 8080"),
+    ("oMLX Text+Vis", "omlx serve.*--port 8080"),
     ("oMLX Embed",    "omlx serve.*--port 8081"),
-    ("oMLX Vision",   "omlx serve.*--port 8082"),
     ("FAISS Rebuild", "MEMORY_ENABLE_FAISS"),
     ("File Review",   "file_review_auto_worker\\.py|file-review-orchestrator/action\\.py"),
     ("LAF Orch",      "laf_orchestrator\\.py|laf-portal-automation/action\\.py"),

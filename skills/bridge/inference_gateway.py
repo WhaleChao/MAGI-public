@@ -586,10 +586,10 @@ class InferenceGateway:
             return self._result(success=False, route="omlx", degraded=False, error=read_err)
 
         use_model = _MODEL_ROSTER.get(task_type, {}).get("omlx", "") or TEXT_PRIMARY_MODEL
-        # Route GLM-OCR to dedicated vision port (8082), TAIDE/others to main port (8080)
+        # Vision now uses the same 26B model on port 8080 (GLM-OCR retired)
         kwargs = {}
-        if "glm-ocr" in use_model.lower() or "GLM-OCR" in use_model:
-            vision_base = getattr(melchior_client, "OMLX_VISION_BASE", "http://127.0.0.1:8082")
+        vision_base = getattr(melchior_client, "OMLX_VISION_BASE", None)
+        if vision_base and vision_base != getattr(melchior_client, "OMLX_CHAT_BASE", ""):
             kwargs["base_url"] = vision_base
         r = chat_omlx(prompt=prompt, model=use_model, timeout=max(10, int(timeout)), temperature=0.3, max_tokens=2048, images=[image_b64], **kwargs)
         if r.get("success"):

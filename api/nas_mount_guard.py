@@ -107,15 +107,21 @@ def _is_mounted(volume_path: str) -> bool:
     return False
 
 
+def _known_nas_hosts() -> set:
+    """所有已知的 NAS IP（LAN + Tailscale），任一都算合法掛載。"""
+    return {_NAS_LAN_HOST, _NAS_TS_HOST}
+
+
 def _is_correct_host(volume_path: str) -> bool:
-    """檢查掛載是否指向正確的 NAS_HOST（而非舊 IP）。"""
+    """檢查掛載是否指向任一已知 NAS IP（LAN 或 Tailscale 都算正確）。"""
+    known = _known_nas_hosts()
     try:
         result = subprocess.run(
-            ["mount"], capture_output=True, text=True, timeout=5,
+            ["/sbin/mount"], capture_output=True, text=True, timeout=5,
         )
         for line in result.stdout.splitlines():
             if f"on {volume_path} " in line:
-                return NAS_HOST in line
+                return any(ip in line for ip in known)
     except Exception:
         logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 56, exc_info=True)
     return False
@@ -148,7 +154,7 @@ def _unmount_path(volume_path: str) -> None:
     """卸載指定路徑。"""
     try:
         subprocess.run(
-            ["diskutil", "unmount", "force", volume_path],
+            ["/usr/sbin/diskutil", "unmount", "force", volume_path],
             capture_output=True, text=True, timeout=10,
         )
         logger.info("已卸載: %s", volume_path)
@@ -157,10 +163,11 @@ def _unmount_path(volume_path: str) -> None:
 
 
 def _cleanup_wrong_host_mounts() -> None:
-    """卸載所有非 NAS_HOST 的 SMB mount 和 -N 後綴的重複 mount。"""
+    """卸載指向未知 IP 的 SMB mount；已知 IP（LAN/Tailscale）的掛載一律保留。"""
+    known = _known_nas_hosts()
     try:
         result = subprocess.run(
-            ["mount"], capture_output=True, text=True, timeout=5,
+            ["/sbin/mount"], capture_output=True, text=True, timeout=5,
         )
     except Exception:
         return
@@ -174,16 +181,23 @@ def _cleanup_wrong_host_mounts() -> None:
         vol = m.group(1)
         base_name = vol.split("/")[-1]
 
-        # 清理 -1, -2 等重複 mount
-        if re.match(r"^(homes|lumi)-\d+$", base_name):
-            logger.info("清理重複 mount: %s", vol)
-            _unmount_path(vol)
+        # 只處理 homes/lumi 相關的 mount
+        if not re.match(r"^(homes|lumi)(-\d+)?$", base_name):
             continue
 
-        # 清理指向錯誤 IP 的 mount
-        if base_name in ("homes", "lumi") and NAS_HOST not in line:
-            logger.info("清理舊 IP mount: %s", vol)
-            _unmount_path(vol)
+        # 掛載指向已知 IP → 保留（無論是 LAN 或 Tailscale）
+        if any(ip in line for ip in known):
+            # 但如果是 -N 後綴且正名掛載也存在且可用，清理重複
+            if re.match(r"^(homes|lumi)-\d+$", base_name):
+                canonical = f"/Volumes/{base_name.split('-')[0]}"
+                if _is_mounted(canonical) and _is_correct_host(canonical):
+                    logger.info("清理重複 mount（正名已可用）: %s", vol)
+                    _unmount_path(vol)
+            continue
+
+        # 掛載指向未知 IP → 清理
+        logger.info("清理未知 IP mount: %s", vol)
+        _unmount_path(vol)
 
 
 # ── 公開 API ─────────────────────────────────────────────────
@@ -204,18 +218,19 @@ def ensure_nas_mounts() -> dict[str, bool]:
     for share_name, volume_path in _SHARES:
         short_name = volume_path.split("/")[-1]
 
-        # 已掛載且指向正確 host → OK
-        if _is_mounted(volume_path) and _is_correct_host(volume_path):
+        # 檢查正名和 -N 後綴是否有可用掛載
+        effective_path = volume_path
+        for candidate in (volume_path, f"{volume_path}-1", f"{volume_path}-2"):
+            if _is_mounted(candidate) and _is_correct_host(candidate):
+                effective_path = candidate
+                break
+
+        # 已掛載且指向已知 NAS IP → 不動（無論 LAN 或 Tailscale）
+        if _is_mounted(effective_path) and _is_correct_host(effective_path):
             results[short_name] = True
             continue
 
-        # 掛載了但 IP 不對或 stale → 先卸載
-        if os.path.exists(volume_path):
-            if os.path.ismount(volume_path):
-                logger.info("掛載 IP 不正確或 stale: %s，重新掛載", volume_path)
-            _unmount_path(volume_path)
-            time.sleep(2)
-
+        # 沒有可用掛載 → 需要掛載
         logger.info("掛載 NAS share: %s → %s", share_name, volume_path)
         ok = _mount_share(share_name, volume_path)
         results[short_name] = ok

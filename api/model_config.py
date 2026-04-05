@@ -5,7 +5,7 @@ from typing import Iterable
 
 
 DEFAULT_TEXT_MODEL = "gemma-4-26b-a4b-it-4bit"
-DEFAULT_VISION_MODEL = "GLM-OCR-bf16"
+DEFAULT_VISION_MODEL = "gemma-4-26b-a4b-it-4bit"
 DEFAULT_EMBED_MODEL = "modernbert-embed-4bit"
 
 

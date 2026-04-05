@@ -11,40 +11,48 @@ from api.runtime_paths import get_config_path
 _logger = logging.getLogger("magi.case_path_mapper")
 
 _HOME = Path.home()
-_DEFAULT_ACTIVE_SHARE_ROOTS = [
-    "/Volumes/homes/lumi63181107",
-    str(_HOME / "Library/CloudStorage/SynologyDrive-homes"),
-    str(_HOME / "SynologyDrive/homes"),
-    str(_HOME / "SynologyDrive"),
-]
-
-
-def _discover_lumi_volume() -> str:
-    """動態偵測結案磁碟掛載路徑（macOS 可能掛成 /Volumes/lumi-1 等）。"""
-    canonical = "/Volumes/lumi/lumi"
-    if _is_dir_accessible(canonical):
-        return canonical
-    # 檢查 -N 後綴掛載
-    for candidate in sorted(_glob.glob("/Volumes/lumi-*/lumi")):
-        if _is_dir_accessible(candidate):
-            _logger.debug("結案磁碟使用替代路徑: %s", candidate)
-            return candidate
-    return canonical  # 回傳預設路徑供上層判斷
 
 
 def _is_dir_accessible(path: str) -> bool:
-    """檢查路徑是否真正可存取（防止 stale mount 誤判）。"""
+    """檢查路徑是否真正可存取（防止 stale mount 誤判）。
+
+    用 os.stat 而非 os.listdir — SMB over Tailscale 的 listdir 可能要 10-30 秒，
+    stat 通常 <0.1 秒。stat 失敗代表掛載已 stale。
+    """
     try:
-        if not os.path.isdir(path):
-            return False
-        os.listdir(path)
-        return True
+        st = os.stat(path)
+        return st.st_mode & 0o40000 != 0  # S_ISDIR
     except OSError:
         return False
 
 
+def _discover_volume(base: str, subdir: str = "") -> str:
+    """動態偵測 SMB 掛載路徑（macOS 可能掛成 -1, -2 等後綴）。
+
+    Args:
+        base: 預設掛載名稱，如 "homes" 或 "lumi"
+        subdir: 掛載點下的子目錄，如 "lumi63181107" 或 "lumi"
+    Returns:
+        實際可存取的完整路徑，或 canonical 路徑供上層判斷
+    """
+    canonical = f"/Volumes/{base}/{subdir}" if subdir else f"/Volumes/{base}"
+    if _is_dir_accessible(canonical):
+        return canonical
+    for candidate in sorted(_glob.glob(f"/Volumes/{base}-*/{subdir}" if subdir else f"/Volumes/{base}-*")):
+        if _is_dir_accessible(candidate):
+            _logger.debug("SMB 掛載使用替代路徑: %s（原 %s）", candidate, canonical)
+            return candidate
+    return canonical
+
+
+_DEFAULT_ACTIVE_SHARE_ROOTS = [
+    _discover_volume("homes", "lumi63181107"),
+    str(_HOME / "Library/CloudStorage/SynologyDrive-homes"),
+    str(_HOME / "SynologyDrive/homes"),
+    str(_HOME / "SynologyDrive"),
+]
 _DEFAULT_CLOSED_SHARE_ROOTS = [
-    _discover_lumi_volume(),
+    _discover_volume("lumi", "lumi"),
     str(_HOME / "Library/CloudStorage/SynologyDrive-homes/lumi"),
 ]
 _DEFAULT_ACTIVE_ROOTS = [
@@ -280,12 +288,14 @@ def local_synology_path_candidates(path: str, cfg: dict | None = None) -> list[s
     candidates.extend(_expand_from_prefix(s, _ACTIVE_SHARE_PREFIXES, active_roots))
     candidates.extend(_expand_from_prefix(s, _CLOSED_SHARE_PREFIXES, closed_roots))
 
-    if s.startswith("/Volumes/homes/lumi63181107/"):
-        rel = s[len("/Volumes/homes/lumi63181107/"):].lstrip("/")
+    import re as _re
+    # 支援 /Volumes/homes/lumi63181107/ 和 /Volumes/homes-N/lumi63181107/
+    _homes_match = _re.match(r"^/Volumes/homes(?:-\d+)?/lumi63181107/(.*)$", s)
+    if _homes_match:
+        rel = _homes_match.group(1).lstrip("/")
         for root in _DEFAULT_ACTIVE_SHARE_ROOTS[1:]:
             candidates.append(_join_root_rel(root, rel))
     # 支援 /Volumes/lumi/lumi/ 和 /Volumes/lumi-N/lumi/ 結案路徑
-    import re as _re
     _lumi_match = _re.match(r"^/Volumes/lumi(?:-\d+)?/lumi/(.*)$", s)
     if _lumi_match:
         rel = _lumi_match.group(1).lstrip("/")
