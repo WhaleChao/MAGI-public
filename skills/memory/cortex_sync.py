@@ -25,11 +25,20 @@ logger = logging.getLogger("CortexSync")
 # STATE FILE to track last synced IDs
 STATE_FILE = f"{_MAGI_ROOT}/cortex_sync_state.json"
 
-# DB CONFIG (Source: law_firm_data — 在遠端 Keeper DB)
+# DB CONFIG (Source: law_firm_data — 透過 db_failover 動態切換遠端/本機)
+def _resolve_osc_host() -> str:
+    try:
+        from api.db_failover import probe_remote, get_osc_host, _switch_to_local
+        if not probe_remote():
+            _switch_to_local()
+        return get_osc_host()
+    except Exception:
+        return os.environ.get("OSC_DB_HOST", os.environ.get("MAGI_REMOTE_DB_HOST", "127.0.0.1"))
+
 SOURCE_DB_CONFIG = {
     'user': os.environ.get("OSC_DB_USER", os.environ.get("DB_USER", "casper_service")),
     'password': os.environ.get("OSC_DB_PASSWORD", os.environ.get("DB_PASSWORD", "")),
-    'host': os.environ.get("OSC_DB_HOST", os.environ.get("MAGI_REMOTE_DB_HOST", "100.121.61.74")),
+    'host': _resolve_osc_host(),
     'port': int(os.environ.get("OSC_DB_PORT", "3306")),
     'database': 'law_firm_data',
 }

@@ -44,6 +44,17 @@ class DBConfig:
     connection_timeout: int = 5
 
 
+def _failover_host() -> str:
+    """透過 db_failover 動態取得目前可用的 DB host。"""
+    try:
+        from api.db_failover import probe_remote, get_osc_host, _switch_to_local
+        if not probe_remote():
+            _switch_to_local()
+        return get_osc_host()
+    except Exception:
+        return os.environ.get("OSC_DB_HOST", "127.0.0.1")
+
+
 def _has_explicit_env(prefix: str = "OSC_DB_") -> bool:
     keys = ["HOST", "PORT", "USER", "PASSWORD", "NAME"]
     for k in keys:
@@ -127,7 +138,7 @@ def db_config_from_env(prefix: str = "OSC_DB_") -> DBConfig:
     # If caller explicitly sets OSC_DB_* env vars, honor them.
     if _has_explicit_env(prefix):
         return DBConfig(
-            host=_get("HOST", "100.121.61.74"),
+            host=_get("HOST", _failover_host()),
             port=int(_get("PORT", "3306")),
             user=_get("USER", "python_user"),
             password=_get("PASSWORD", ""),
@@ -149,9 +160,9 @@ def db_config_from_env(prefix: str = "OSC_DB_") -> DBConfig:
             connection_timeout=c0.connection_timeout,
         )
 
-    # Hard fallback (still remote-first).
+    # Hard fallback — 透過 db_failover 動態取得 host.
     return DBConfig(
-        host=_get("HOST", "100.121.61.74"),
+        host=_get("HOST", _failover_host()),
         port=int(_get("PORT", "3306")),
         user=_get("USER", "python_user"),
         password=_get("PASSWORD", ""),

@@ -48,6 +48,23 @@ logging.basicConfig(
 )
 logger = logging.getLogger("LAFNightlyAudit")
 
+# ── DB Failover: 獨立 process 需自行偵測，daemon 的 monitor 不會跑在這裡 ──
+try:
+    from api.db_failover import probe_remote, _switch_to_local
+    if not probe_remote(force=True):
+        _switch_to_local()
+        logger.info("DB Failover: 遠端 DB 不可達，已切換至本機")
+except Exception as _e:
+    logger.warning("DB Failover 初始化跳過: %s", _e)
+
+# ── NAS Mount: 獨立 process 需自行確保掛載 ──
+try:
+    from api.nas_mount_guard import ensure_nas_mounts
+    _nas_status = ensure_nas_mounts()
+    logger.info("NAS mount 狀態: %s", _nas_status)
+except Exception as _e:
+    logger.warning("NAS mount guard 跳過: %s", _e)
+
 # NAS case root paths (macOS local mount)
 _CASE_ROOTS = preferred_case_roots(include_closed=True)
 _FALLBACK_CASE_ROOTS = default_case_roots(include_closed=True)
@@ -699,6 +716,17 @@ def scan_laf_reporting_status(db) -> dict:
     }
 
 
+def _is_dir_ok(path: str) -> bool:
+    """os.path.isdir + 實際 listdir 測試，防 stale SMB mount 誤判。"""
+    try:
+        if not os.path.isdir(path):
+            return False
+        os.listdir(path)
+        return True
+    except OSError:
+        return False
+
+
 def _to_mac_path(folder: str) -> str:
     """Convert Windows Z:/Y: path to macOS local path.
 
@@ -714,12 +742,12 @@ def _to_mac_path(folder: str) -> str:
         for i, p in enumerate(parts):
             if p == "01_案件":
                 active_path = os.path.join(NAS_CASE_ROOT, *parts[i + 1:])
-                if os.path.isdir(active_path):
+                if _is_dir_ok(active_path):
                     return active_path
                 # 案件已移至結案資料夾：嘗試 Y_DRIVE_ROOT 下同一相對路徑
                 if Y_DRIVE_ROOT:
                     closed_path = os.path.join(Y_DRIVE_ROOT, *parts[i + 1:])
-                    if os.path.isdir(closed_path):
+                    if _is_dir_ok(closed_path):
                         logger.debug("_to_mac_path: 案件已在結案資料夾: %s", closed_path)
                         return closed_path
                 return active_path  # 回傳原路徑供上層判斷（不靜默丟棄）
@@ -728,7 +756,7 @@ def _to_mac_path(folder: str) -> str:
         # Canonical closed-case path -> local closed-case root
         rel = re.sub(r"^[Yy]:/lumi/03_工作資料/10_結案/", "", f)
         return os.path.join(Y_DRIVE_ROOT, rel)
-    if os.path.isdir(f):
+    if _is_dir_ok(f):
         return f
     return ""
 

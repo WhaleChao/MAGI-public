@@ -596,6 +596,50 @@ class InferenceGateway:
             return self._result(success=True, route="omlx", degraded=False, analysis=r.get("response", ""), model=use_model)
         return self._result(success=False, route="omlx", degraded=False, error=r.get("error", "omlx_vision_failed"))
 
+    def _ollama_26b_chat(self, prompt: str, timeout: int, task_type: str = "general",
+                         progress_fn=None) -> dict:
+        """Route to Ollama Gemma4:26B for heavy tasks."""
+        from skills.bridge.tier_router import ensure_26b_ready, OLLAMA_BASE, OLLAMA_MODEL, OLLAMA_KEEP_ALIVE
+        try:
+            from skills.bridge.http_pool import get_session
+        except Exception:
+            import requests as _rq
+            get_session = _rq.Session
+
+        if not ensure_26b_ready(progress_fn):
+            return self._result(success=False, route="ollama_26b", degraded=False, error="26b_load_failed")
+
+        payload = {
+            "model": OLLAMA_MODEL,
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": 4096,
+            "temperature": 0.3,
+            "top_p": 0.88,
+            "stream": False,
+            "keep_alive": OLLAMA_KEEP_ALIVE,
+        }
+        try:
+            r = get_session().post(
+                f"{OLLAMA_BASE}/v1/chat/completions",
+                json=payload,
+                timeout=max(30, int(timeout)),
+            )
+            if r.status_code == 200:
+                data = r.json()
+                choices = data.get("choices") or []
+                text = ""
+                if choices:
+                    msg = choices[0].get("message") or {}
+                    text = (msg.get("content") or "").strip()
+                if text:
+                    return self._result(success=True, route="ollama_26b", degraded=False,
+                                        response=text, model=OLLAMA_MODEL, task_type=task_type)
+            return self._result(success=False, route="ollama_26b", degraded=False,
+                                error=f"ollama_26b_http_{r.status_code}")
+        except Exception as e:
+            logger.warning("ollama_26b_chat failed: %s", e)
+            return self._result(success=False, route="ollama_26b", degraded=False, error=str(e)[:200])
+
     def _local_chat(self, prompt: str, timeout: int, model_hint: str = "",
                     num_ctx: int = 0, num_predict: int = 0) -> dict:
         ok, models, err = self._local_ollama_online()
@@ -771,6 +815,23 @@ class InferenceGateway:
 
         errors: List[str] = []
         allow_synthetic_fallback = bool(kwargs.get("allow_synthetic_fallback", True))
+
+        # ── Tier routing: heavy tasks → Ollama 26B ──
+        try:
+            from skills.bridge.tier_router import resolve_tier
+            tier = resolve_tier(task_type, prompt)
+        except Exception:
+            tier = "e4b"
+        if tier == "26b":
+            progress_fn = kwargs.get("progress_callback")
+            r = self._ollama_26b_chat(prompt, timeout=max(60, int(timeout)),
+                                       task_type=task_type, progress_fn=progress_fn)
+            if r.get("success"):
+                r["task_type"] = task_type
+                r["tier"] = "26b"
+                return r
+            errors.append(f"ollama_26b:{r.get('error', '')}")
+            # Fall through to E4B as graceful degradation
 
         # Try oMLX first for tasks that have an oMLX model configured
         # OCR/date extraction stay on OCR model; review/classify still use the configured local text model.

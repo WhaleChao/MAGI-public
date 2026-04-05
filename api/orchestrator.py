@@ -6566,6 +6566,12 @@ class Orchestrator:
             self._append_history(user_id, "assistant", reply)
             return reply
 
+        # 4.5 Tier Router Commands (模型切換，不限管理員)
+        tier_reply = _handle_tier_command(message)
+        if tier_reply:
+            self._append_history(user_id, "assistant", tier_reply)
+            return tier_reply
+
         # 5. Intent Classification
         # Hard override: LAF report commands should always enter CMD path.
         forced_cmd = False
@@ -10179,6 +10185,39 @@ def _cmd_brain_status(ctx: CommandContext) -> str | None:
         return f"🧠 目前大腦模式：`{mode}`\n模型：`{model}`"
     except Exception as e:
         return f"⚠️ 無法取得大腦狀態：{e}"
+
+
+def _handle_tier_command(message: str):
+    """攔截模型切換指令（不限管理員）。回傳 str 或 None。"""
+    import re as _re
+    msg = (message or "").strip()
+    msg_lower = msg.lower()
+
+    if _re.search(r"(?:切換|switch\s*(?:to\s*)?)(?:26[bB]|重型)", msg):
+        from skills.bridge.tier_router import set_mode
+        return set_mode("26b")
+
+    if _re.search(r"(?:切換|switch\s*(?:to\s*)?)(?:[eE]4[bB]|輕型)", msg):
+        from skills.bridge.tier_router import set_mode
+        return set_mode("e4b")
+
+    if _re.search(r"自動模式|auto\s*mode", msg_lower):
+        from skills.bridge.tier_router import set_mode
+        return set_mode("auto")
+
+    m = _re.search(r"/model\s+(26b|e4b|auto|status)", msg_lower)
+    if m:
+        from skills.bridge.tier_router import set_mode, format_status
+        arg = m.group(1)
+        if arg == "status":
+            return format_status()
+        return set_mode(arg)
+
+    if _re.search(r"模型狀態|model\s*status|推理狀態", msg_lower):
+        from skills.bridge.tier_router import format_status
+        return format_status()
+
+    return None
 
 
 @_cmd_registry.command(

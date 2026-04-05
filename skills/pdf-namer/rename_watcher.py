@@ -33,11 +33,21 @@ TRAINING_DATA_PATH = os.path.join(SKILL_DIR, "training_data.json")
 SNAPSHOT_PATH = os.path.join(SKILL_DIR, "_rename_snapshot.json")
 RENAME_LOG_PATH = os.path.join(SKILL_DIR, "_rename_log.json")
 
-# 案件資料夾根目錄
-CASE_ROOTS = [
-    "/Users/ai/Library/CloudStorage/SynologyDrive-homes/01_案件",
-    "/Volumes/homes/lumi63181107/01_案件",
-]
+# 案件資料夾根目錄（動態解析，含 stale mount 防護）
+def _init_case_roots() -> list:
+    try:
+        from api.case_path_mapper import preferred_case_roots
+        roots = preferred_case_roots(include_closed=False)
+        if roots:
+            return roots
+    except Exception:
+        pass
+    return [
+        "/Users/ai/Library/CloudStorage/SynologyDrive-homes/01_案件",
+        "/Volumes/homes/lumi63181107/01_案件",
+    ]
+
+CASE_ROOTS = _init_case_roots()
 
 # PDF 命名格式
 DATE_PREFIX_RE = re.compile(r"^(20\d{6})\s")
@@ -49,10 +59,14 @@ SCAN_INTERVAL = 300  # 5 分鐘掃描一次
 
 
 def _get_case_root() -> Optional[str]:
-    """找到可用的案件資料夾"""
+    """找到可用的案件資料夾（含 stale mount 檢查）"""
     for root in CASE_ROOTS:
-        if os.path.isdir(root):
-            return root
+        try:
+            if os.path.isdir(root):
+                os.listdir(root)
+                return root
+        except OSError:
+            continue
     return None
 
 

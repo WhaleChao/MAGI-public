@@ -21,7 +21,18 @@ logger = logging.getLogger("NightlyCouncil")
 # Configuration
 LOG_FILE = f"{_MAGI_ROOT}/daemon.log"
 STATUS_FILE = f"{_MAGI_ROOT}/static/magi_status.json"
-SYNOLOGY_SYNC_PATH = "/Volumes/SynologyDrive/04_Robot/MAGI_SYNC"
+def _resolve_sync_path() -> str:
+    candidates = [
+        "/Volumes/SynologyDrive/04_Robot/MAGI_SYNC",
+        os.path.expanduser("~/Library/CloudStorage/SynologyDrive-homes/04_Robot/MAGI_SYNC"),
+        os.path.expanduser("~/SynologyDrive/04_Robot/MAGI_SYNC"),
+    ]
+    for c in candidates:
+        if os.path.isdir(c):
+            return c
+    return candidates[0]
+
+SYNOLOGY_SYNC_PATH = _resolve_sync_path()
 
 # Import Brain Manager for Independence Protocol
 try:

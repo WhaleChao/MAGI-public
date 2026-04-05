@@ -26,10 +26,20 @@ _MAGI_ROOT = Path(os.environ.get("MAGI_ROOT", str(Path(__file__).resolve().paren
 if str(_MAGI_ROOT) not in sys.path:
     sys.path.insert(0, str(_MAGI_ROOT))
 
-CASE_BASE = Path(os.environ.get(
-    "MAGI_CASE_BASE",
-    "/Users/ai/Library/CloudStorage/SynologyDrive-homes/01_案件",
-))
+def _resolve_case_base() -> str:
+    explicit = os.environ.get("MAGI_CASE_BASE", "").strip()
+    if explicit:
+        return explicit
+    try:
+        from api.case_path_mapper import preferred_case_roots
+        roots = preferred_case_roots(include_closed=False)
+        if roots:
+            return roots[0]
+    except Exception:
+        pass
+    return "/Users/ai/Library/CloudStorage/SynologyDrive-homes/01_案件"
+
+CASE_BASE = Path(_resolve_case_base())
 
 # ── 書狀範本定義 ──────────────────────────────────────────────────
 

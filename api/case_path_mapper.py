@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import glob as _glob
 import json
+import logging
 import os
 from pathlib import Path
 
 from api.runtime_paths import get_config_path
 
+_logger = logging.getLogger("magi.case_path_mapper")
 
 _HOME = Path.home()
 _DEFAULT_ACTIVE_SHARE_ROOTS = [
@@ -14,8 +17,34 @@ _DEFAULT_ACTIVE_SHARE_ROOTS = [
     str(_HOME / "SynologyDrive/homes"),
     str(_HOME / "SynologyDrive"),
 ]
+
+
+def _discover_lumi_volume() -> str:
+    """動態偵測結案磁碟掛載路徑（macOS 可能掛成 /Volumes/lumi-1 等）。"""
+    canonical = "/Volumes/lumi/lumi"
+    if _is_dir_accessible(canonical):
+        return canonical
+    # 檢查 -N 後綴掛載
+    for candidate in sorted(_glob.glob("/Volumes/lumi-*/lumi")):
+        if _is_dir_accessible(candidate):
+            _logger.debug("結案磁碟使用替代路徑: %s", candidate)
+            return candidate
+    return canonical  # 回傳預設路徑供上層判斷
+
+
+def _is_dir_accessible(path: str) -> bool:
+    """檢查路徑是否真正可存取（防止 stale mount 誤判）。"""
+    try:
+        if not os.path.isdir(path):
+            return False
+        os.listdir(path)
+        return True
+    except OSError:
+        return False
+
+
 _DEFAULT_CLOSED_SHARE_ROOTS = [
-    "/Volumes/lumi/lumi",
+    _discover_lumi_volume(),
     str(_HOME / "Library/CloudStorage/SynologyDrive-homes/lumi"),
 ]
 _DEFAULT_ACTIVE_ROOTS = [
@@ -156,9 +185,10 @@ def preferred_synology_share_roots(*, include_closed: bool = False, cfg: dict | 
     closed_roots = all_roots[len(active_roots) :]
     out: list[str] = []
     if active_roots:
-        out.append(next((p for p in active_roots if os.path.isdir(p)), active_roots[0]))
+        # _is_dir_accessible: 實際 listdir 測試，防止 stale SMB mount 誤判
+        out.append(next((p for p in active_roots if _is_dir_accessible(p)), active_roots[0]))
     if include_closed and closed_roots:
-        out.append(next((p for p in closed_roots if os.path.isdir(p)), closed_roots[0]))
+        out.append(next((p for p in closed_roots if _is_dir_accessible(p)), closed_roots[0]))
     return _dedupe_keep_order(out)
 
 
@@ -254,8 +284,11 @@ def local_synology_path_candidates(path: str, cfg: dict | None = None) -> list[s
         rel = s[len("/Volumes/homes/lumi63181107/"):].lstrip("/")
         for root in _DEFAULT_ACTIVE_SHARE_ROOTS[1:]:
             candidates.append(_join_root_rel(root, rel))
-    if s.startswith("/Volumes/lumi/lumi/"):
-        rel = s[len("/Volumes/lumi/lumi/"):].lstrip("/")
+    # 支援 /Volumes/lumi/lumi/ 和 /Volumes/lumi-N/lumi/ 結案路徑
+    import re as _re
+    _lumi_match = _re.match(r"^/Volumes/lumi(?:-\d+)?/lumi/(.*)$", s)
+    if _lumi_match:
+        rel = _lumi_match.group(1).lstrip("/")
         for root in _DEFAULT_CLOSED_SHARE_ROOTS[1:]:
             candidates.append(_join_root_rel(root, rel))
 

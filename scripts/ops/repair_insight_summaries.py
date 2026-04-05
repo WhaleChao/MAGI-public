@@ -38,6 +38,13 @@ logger = logging.getLogger("repair-insights")
 # DB connection (reuse judgment-collector's config resolution)
 # ---------------------------------------------------------------------------
 
+try:
+    from api.db_failover import probe_remote as _probe_remote, _switch_to_local as _db_switch_local
+    if not _probe_remote(force=True):
+        _db_switch_local()
+except Exception:
+    pass
+
 def _get_db():
     import pymysql
     host = os.environ.get("OSC_DB_HOST") or os.environ.get("MAGI_DB_HOST") or "localhost"

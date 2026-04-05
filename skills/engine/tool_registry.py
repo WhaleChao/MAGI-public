@@ -162,10 +162,16 @@ def _read_file(path: str = "", max_chars: int = 3000, **_) -> str:
     if not path:
         return "錯誤: 沒有提供檔案路徑。"
 
-    # Iron Dome: 限制可讀路徑
+    # Iron Dome: 限制可讀路徑（動態解析 NAS 路徑）
+    _extra_roots = []
+    try:
+        from api.case_path_mapper import default_case_roots
+        _extra_roots = default_case_roots(include_closed=True)
+    except Exception:
+        _extra_roots = ["/Users/ai/Library/CloudStorage/SynologyDrive-homes/01_案件"]
     allowed_prefixes = [
         str(MAGI_ROOT),
-        "/Users/ai/Library/CloudStorage/SynologyDrive-homes/01_案件",
+        *_extra_roots,
         "/tmp/",
     ]
     resolved = str(Path(path).resolve())

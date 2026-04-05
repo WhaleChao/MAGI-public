@@ -12,8 +12,18 @@ import sys
 
 from skills.bridge.http_pool import get_session as _get_session
 
-# Configuration
-WATCHER_HOST = os.environ.get("WATCHER_HOST", "192.168.1.3")
+# Configuration — Watcher 跑在 NAS 上，需動態解析 IP（LAN → Tailscale fallback）
+def _resolve_watcher_host() -> str:
+    explicit = os.environ.get("WATCHER_HOST", "").strip()
+    if explicit:
+        return explicit
+    try:
+        from api.nas_mount_guard import resolve_nas_host
+        return resolve_nas_host()
+    except Exception:
+        return "192.168.1.3"
+
+WATCHER_HOST = _resolve_watcher_host()
 WATCHER_API_PORT = int(os.environ.get("WATCHER_PORT", "5010"))
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')

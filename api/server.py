@@ -562,7 +562,7 @@ def _load_code_db_profile(profile_name: str = "Studio_VPN_Remote"):
                     continue
                 c = (it.get("config") or {}) if isinstance(it.get("config"), dict) else {}
                 return {
-                    "host": str(c.get("host") or "100.121.61.74"),
+                    "host": str(c.get("host") or os.environ.get("OSC_DB_HOST", "127.0.0.1")),
                     "port": int(c.get("port") or 3306),
                     "user": str(c.get("user") or os.environ.get("OSC_DB_USER", "python_user")),
                     "password": str(c.get("password") or os.environ.get("OSC_DB_PASSWORD", "")),
@@ -578,7 +578,7 @@ def _resolve_osc_web_db_config():
     explicit = any((os.environ.get(k, "") or "").strip() for k in ["OSC_WEB_DB_HOST", "OSC_WEB_DB_PORT", "OSC_WEB_DB_USER", "OSC_WEB_DB_PASSWORD", "OSC_WEB_DB_NAME"])
     if explicit:
         return {
-            "host": os.environ.get("OSC_WEB_DB_HOST") or "100.121.61.74",
+            "host": os.environ.get("OSC_WEB_DB_HOST") or os.environ.get("OSC_DB_HOST", "127.0.0.1"),
             "port": int((os.environ.get("OSC_WEB_DB_PORT") or "3306").strip()),
             "user": os.environ.get("OSC_WEB_DB_USER") or "python_user",
             "password": os.environ.get("OSC_WEB_DB_PASSWORD") or "",
@@ -594,7 +594,7 @@ def _resolve_osc_web_db_config():
 
     # Fallback to existing MAGI env chain.
     return {
-        "host": os.environ.get("OSC_DB_HOST") or os.environ.get("MAGI_REMOTE_DB_HOST") or "100.121.61.74",
+        "host": os.environ.get("OSC_DB_HOST") or os.environ.get("MAGI_REMOTE_DB_HOST") or "127.0.0.1",
         "port": int((os.environ.get("OSC_DB_PORT") or os.environ.get("MAGI_REMOTE_DB_PORT") or "3306").strip()),
         "user": os.environ.get("OSC_DB_USER") or os.environ.get("MAGI_REMOTE_DB_USER") or "python_user",
         "password": os.environ.get("OSC_DB_PASSWORD") or os.environ.get("MAGI_REMOTE_DB_PASSWORD") or "",

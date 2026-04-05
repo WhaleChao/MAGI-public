@@ -255,6 +255,9 @@ class MAGIMenuBar(rumps.App):
             item.set_callback(None)
             self.omlx_items[name] = item
 
+        self._tier_item = rumps.MenuItem("  🧠 分層: 檢查中...")
+        self._tier_item.set_callback(None)
+
         self.menu_sep3 = rumps.separator
 
         # ── 排程（精簡一行）──
@@ -301,6 +304,7 @@ class MAGIMenuBar(rumps.App):
             self.menu_sep2,
             self.omlx_header,
             *self.omlx_items.values(),
+            self._tier_item,
             self.menu_sep3,
             self.cron_status_item,
             self.menu_sep3_cron,
@@ -364,6 +368,18 @@ class MAGIMenuBar(rumps.App):
                     f"  ✗ {name} :{port}    停止",
                     _RED,
                 )
+
+        # ── Tier Router 狀態 ──
+        try:
+            from skills.bridge.tier_router import get_status as _tier_status
+            ts = _tier_status()
+            mode_label = {"auto": "自動", "e4b": "E4B固定", "26b": "26B固定"}.get(ts["mode"], ts["mode"])
+            loaded = "🟢" if ts.get("model_26b_loaded") else "🟡"
+            tier_text = f"  🧠 分層: {mode_label} | 26B {loaded}"
+            if hasattr(self, "_tier_item"):
+                _set_colored_title(self._tier_item, tier_text, _GREEN if ts["mode"] == "auto" else _YELLOW)
+        except Exception:
+            pass
 
         # ── 夜間排程狀態 ──
         self._update_cron_status()

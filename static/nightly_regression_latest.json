@@ -1,19 +1,17 @@
 {
-  "generated_at": "2026-03-21T02:34:07.254686",
-  "elapsed_sec": 223.4,
+  "generated_at": "2026-04-05T02:39:16.374558",
+  "elapsed_sec": 534.9,
   "overall_ok": false,
   "suites": [
     {
       "suite": "system",
       "label": "System Health",
-      "passed": 8,
-      "failed": 4,
+      "passed": 10,
+      "failed": 2,
       "total": 12,
       "failures": [
-        "oMLX 本地推理",
-        "Melchior 遠端主機",
-        "本機 LLM 推理 (TAIDE)",
-        "本機 Embedding 推理"
+        "Keeper 資料庫",
+        "夜間排程 (AUTOPILOT)"
       ],
       "ok": false
     },
@@ -33,13 +31,13 @@
     {
       "suite": "mock",
       "label": "Mock Skills (eefile+laf)",
-      "passed": 18,
+      "passed": 0,
       "failed": 0,
       "skipped": 0,
-      "total": 18,
+      "total": 0,
       "failures": [],
       "ok": true,
-      "rc": 0
+      "rc": -1
     },
     {
       "suite": "coreroutes",
