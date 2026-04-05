@@ -45,7 +45,7 @@ DAEMON_LOG = os.path.join(PROJECT_ROOT, "daemon.log")
 REPORTS_DIR = os.path.join(PROJECT_ROOT, "reports")
 PROPOSALS_FILE = os.path.join(PROJECT_ROOT, ".agent", "pending_proposals.json")
 OMLX_URL = os.environ.get("OMLX_URL", os.environ.get("OLLAMA_URL", "http://127.0.0.1:8080"))
-OMLX_MODEL = os.environ.get("CASPER_LOCAL_MODEL", "TAIDE-12b-Chat-mlx-4bit")
+OMLX_MODEL = os.environ.get("CASPER_LOCAL_MODEL", os.environ.get("MAGI_TEXT_PRIMARY_MODEL", ""))
 
 
 # ─── 1. 日誌審查 ───────────────────────────────────────────────

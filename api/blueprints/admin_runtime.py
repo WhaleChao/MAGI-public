@@ -102,7 +102,7 @@ def create_admin_runtime_blueprint(
         def _mysql():
             try:
                 conn = mysql_connector.connect(
-                    host=os.environ.get("DB_HOST", "100.121.61.74"),
+                    host=os.environ.get("DB_HOST", "127.0.0.1"),
                     port=int(os.environ.get("DB_PORT", "3306")),
                     user=os.environ.get("DB_USER", "casper_service"),
                     password=os.environ.get("DB_PASSWORD") or os.environ.get("MAGI_REMOTE_DB_PASSWORD", ""),

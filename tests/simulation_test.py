@@ -140,7 +140,7 @@ def run_test():
         import mysql.connector
 
         conn = mysql.connector.connect(
-            host=os.environ.get("DB_HOST", "100.121.61.74"),
+            host=os.environ.get("DB_HOST", "127.0.0.1"),
             user=os.environ.get("DB_USER", "casper_service"),
             password=os.environ.get("DB_PASSWORD", ""),
             database="magi_brain",

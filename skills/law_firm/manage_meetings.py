@@ -19,7 +19,7 @@ except Exception:
 DB_CONFIG = {
     'user': os.environ.get('DB_USER', ''),
     'password': os.environ.get('DB_PASSWORD', ''),
-    'host': os.environ.get('OSC_DB_HOST', os.environ.get('MAGI_REMOTE_DB_HOST', '100.121.61.74')),
+    'host': os.environ.get('OSC_DB_HOST', os.environ.get('MAGI_REMOTE_DB_HOST', '127.0.0.1')),
     'database': os.environ.get('MAGI_REMOTE_DB_NAME', 'law_firm_data'),
 }
 

@@ -14,7 +14,7 @@ _LOCK_FILE = TARGET_FILE + ".lock"
 
 # LLM Config (oMLX)
 OMLX_URL = "http://127.0.0.1:8080/v1/chat/completions"
-MODEL = "taide-12b"
+MODEL = os.environ.get("MAGI_MAIN_MODEL", "")
 
 logger = logging.getLogger("CrawlerArchitect")
 

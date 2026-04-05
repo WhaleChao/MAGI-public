@@ -47,7 +47,7 @@ def extract_events_from_pdf(pdf_path: str, timeout_sec: int = 60) -> list:
                 }
             })
             
-        model = os.environ.get("MAGI_VISION_MODEL", "gpt-4o")
+        model = os.environ.get("MAGI_VISION_MODEL", os.environ.get("MAGI_OMLX_VISION_MODEL", ""))
         url = "http://localhost:18789/v1/chat/completions"
         
         prompt = '''請分析這幾張台灣法院/機關文件圖片（通常是開庭通知、裁定、補正函等）。

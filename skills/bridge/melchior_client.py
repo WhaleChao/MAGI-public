@@ -84,6 +84,7 @@ _OMLX_MODEL_ALIAS = {
     "gemma-4-26b-a4b-it-4bit": TEXT_PRIMARY_MODEL,
     "gemma-4-e2b-it-local-bf16": TEXT_PRIMARY_MODEL,
     "gemma-4-e4b-it-bf16": TEXT_PRIMARY_MODEL,
+    "gemma-4-26b-a4b-it-4bit": TEXT_PRIMARY_MODEL,
     "gemma4:26b": TEXT_PRIMARY_MODEL,
     "gemma-3-12b": "gemma-3-12b-it-4bit",
     "gemma3-12b": "gemma-3-12b-it-4bit",

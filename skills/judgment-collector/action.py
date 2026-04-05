@@ -2008,7 +2008,7 @@ def _omlx_inference_ok(timeout: int = 15) -> bool:
         logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 1995, exc_info=True)
 
     omlx_url = os.environ.get("MAGI_OMLX_CHAT_URL", "http://127.0.0.1:8080")
-    model = os.environ.get("MAGI_OMLX_GENERAL_MODEL", "TAIDE-12b-Chat-mlx-4bit")
+    model = os.environ.get("MAGI_OMLX_GENERAL_MODEL", os.environ.get("MAGI_TEXT_PRIMARY_MODEL", ""))
     payload = json.dumps({
         "model": model,
         "messages": [{"role": "user", "content": "ping"}],

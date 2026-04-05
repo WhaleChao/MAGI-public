@@ -262,7 +262,7 @@ def test_daily_reflection():
 
 
 def _resolve_omlx_model_label() -> str:
-    default_model = (os.environ.get("CASPER_LOCAL_MODEL") or "taide-12b").strip() or "taide-12b"
+    default_model = (os.environ.get("CASPER_LOCAL_MODEL") or "").strip() or ""
     return _health_probes.resolve_omlx_model(default_model)
 
 

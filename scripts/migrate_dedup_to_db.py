@@ -25,19 +25,22 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
 logger = logging.getLogger("MigrateDedup")
 
 # Load .env
-for line in Path("/Users/ai/Desktop/MAGI_v2/.env").read_text().splitlines():
-    line = line.strip()
-    if line and not line.startswith("#") and "=" in line:
-        k, _, v = line.partition("=")
-        os.environ.setdefault(k.strip(), v.strip())
+_SCRIPT_ROOT = Path(__file__).resolve().parents[1]
+_env_file = _SCRIPT_ROOT / ".env"
+if _env_file.exists():
+    for line in _env_file.read_text().splitlines():
+        line = line.strip()
+        if line and not line.startswith("#") and "=" in line:
+            k, _, v = line.partition("=")
+            os.environ.setdefault(k.strip(), v.strip())
 
-MAGI_ROOT = Path(os.environ.get("MAGI_ROOT_DIR", "/Users/ai/Desktop/MAGI_v2"))
+MAGI_ROOT = Path(os.environ.get("MAGI_ROOT_DIR", str(_SCRIPT_ROOT)))
 
 
 def get_conn():
     import mysql.connector
     return mysql.connector.connect(
-        host=os.environ.get("OSC_DB_HOST", "100.121.61.74"),
+        host=os.environ.get("OSC_DB_HOST", "127.0.0.1"),
         port=int(os.environ.get("OSC_DB_PORT", 3306)),
         user=os.environ.get("OSC_DB_USER", "casper_service"),
         password=os.environ.get("OSC_DB_PASSWORD", ""),

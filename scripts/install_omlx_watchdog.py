@@ -54,7 +54,7 @@ def main() -> int:
             "MAGI_ROOT_DIR": str(project_root),
             "MAGI_RUNTIME_DIR": str(runtime_root),
             "MAGI_OMLX_WATCHDOG_STATE_PATH": str(state_dir / "omlx_watchdog_state.json"),
-            "MAGI_OMLX_WATCHDOG_MODEL": os.environ.get("MAGI_OMLX_WATCHDOG_MODEL", "TAIDE-12b-Chat-mlx-4bit"),
+            "MAGI_OMLX_WATCHDOG_MODEL": os.environ.get("MAGI_OMLX_WATCHDOG_MODEL", os.environ.get("MAGI_TEXT_PRIMARY_MODEL", "")),
         },
         "StandardOutPath": str(log_dir / "omlx_watchdog.launchd.log"),
         "StandardErrorPath": str(log_dir / "omlx_watchdog.launchd.log"),

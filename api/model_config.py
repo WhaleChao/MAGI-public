@@ -4,7 +4,7 @@ import os
 from typing import Iterable
 
 
-DEFAULT_TEXT_MODEL = "gemma-4-e4b-it-bf16"
+DEFAULT_TEXT_MODEL = "gemma-4-26b-a4b-it-4bit"
 DEFAULT_VISION_MODEL = "GLM-OCR-bf16"
 DEFAULT_EMBED_MODEL = "modernbert-embed-4bit"
 
@@ -44,6 +44,7 @@ TEXT_MODEL_ALIASES = {
     "gemma4:26b",
     "gemma4:26b-a4b-it-q4_K_M",
     "gemma-4-e4b-it-bf16",
+    "gemma-4-26b-a4b-it-4bit",
 }
 
 

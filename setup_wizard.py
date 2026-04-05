@@ -31,6 +31,8 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
+from api.model_config import DEFAULT_TEXT_MODEL, DEFAULT_VISION_MODEL
+
 # ---------------------------------------------------------------------------
 # Flask (bundled with MAGI dependencies)
 # ---------------------------------------------------------------------------
@@ -460,7 +462,7 @@ def generate_env(config: dict[str, Any]) -> str:
     ]
 
     # LLM Model config
-    main_model = config.get("main_model", "taide-12b")
+    main_model = config.get("main_model", "")
     inference = config.get("inference_engine", "omlx")
     lines += [
         "# ── LLM Configuration ─────────────────────────────────────────",
@@ -478,10 +480,10 @@ def generate_env(config: dict[str, Any]) -> str:
             "MAGI_OMLX_ENABLED=1",
             "MAGI_OMLX_HOST=127.0.0.1",
             "MAGI_OMLX_PORT=8080",
-            f"MAGI_OMLX_SUMMARY_MODEL={config.get('summary_model', 'TAIDE-12b-Chat-mlx-4bit')}",
-            f"MAGI_OMLX_VISION_MODEL={config.get('vision_model', 'GLM-OCR-bf16')}",
-            f"MAGI_OMLX_OCR_MODEL={config.get('ocr_model', 'GLM-OCR-bf16')}",
-            f"MAGI_OPENCLAW_PRIMARY_MODEL=omlx/{config.get('summary_model', 'TAIDE-12b-Chat-mlx-4bit')}",
+            f"MAGI_OMLX_SUMMARY_MODEL={config.get('summary_model', DEFAULT_TEXT_MODEL)}",
+            f"MAGI_OMLX_VISION_MODEL={config.get('vision_model', DEFAULT_VISION_MODEL)}",
+            f"MAGI_OMLX_OCR_MODEL={config.get('ocr_model', DEFAULT_VISION_MODEL)}",
+            f"MAGI_OPENCLAW_PRIMARY_MODEL=omlx/{config.get('summary_model', DEFAULT_TEXT_MODEL)}",
             "",
         ]
     else:

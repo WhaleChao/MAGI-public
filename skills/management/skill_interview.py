@@ -7,6 +7,7 @@ import json
 import os
 import re
 from datetime import datetime
+from pathlib import Path
 
 from skills.evolution.skill_genesis import (
     _register_skill_tool_definition,
@@ -17,7 +18,7 @@ from skills.evolution.skill_genesis import (
     validate_skill_safety,
 )
 
-_MAGI_ROOT = os.environ.get("MAGI_ROOT_DIR", os.path.expanduser("~/Desktop/MAGI"))
+_MAGI_ROOT = os.environ.get("MAGI_ROOT_DIR", str(Path(__file__).resolve().parents[2]))
 SKILLS_DIR = os.path.join(_MAGI_ROOT, "skills")
 INTERVIEW_HISTORY_FILE = os.path.join(_MAGI_ROOT, "logs", "skill_interview_history.jsonl")
 

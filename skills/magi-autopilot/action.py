@@ -1778,7 +1778,7 @@ def _big_brain_health_probe() -> Dict[str, Any]:
         probe_prompt = (os.environ.get("MAGI_BIG_BRAIN_PROBE_PROMPT", "") or "").strip()
         if not probe_prompt:
             probe_prompt = "健康探測，請只回覆：OK"
-        model_hint = (os.environ.get("MAGI_MAIN_MODEL", "taide-12b") or "taide-12b").strip()
+        model_hint = (os.environ.get("MAGI_MAIN_MODEL", "") or "").strip()
         t0 = time.monotonic()
         use_timeout = max(20, int(timeout_sec))
         errors = []
@@ -1990,7 +1990,7 @@ def _big_brain_health_probe() -> Dict[str, Any]:
     loading_detected = "loading model" in str(remote_msg or "").lower()
     out["melchior_mode_after_switch"] = _fetch_melchior_mode()
 
-    model_hint = (os.environ.get("MAGI_MAIN_MODEL", "taide-12b") or "taide-12b").strip()
+    model_hint = (os.environ.get("MAGI_MAIN_MODEL", "") or "").strip()
     # 先做一次 warmup，降低主模型冷啟動 timeout 機率。
     try:
         warmup_timeout = int(os.environ.get("MAGI_BIG_BRAIN_WARMUP_TIMEOUT_SEC", "45") or "45")
@@ -3663,7 +3663,7 @@ def run_tick(run_dir: str, *, emit_step_events: bool = True) -> Dict[str, Any]:
                 results.setdefault("warnings", []).append("big_brain: degraded_local")
                 results.setdefault("notes", []).append("Big Brain 分散式推理不可用，已自動降級 local（不阻斷）")
             elif status == "distributed_degraded_model":
-                target_model = str(bb.get("main_model_target") or os.environ.get("MAGI_MAIN_MODEL", "taide-12b")).strip()
+                target_model = str(bb.get("main_model_target") or os.environ.get("MAGI_MAIN_MODEL", "")).strip()
                 results.setdefault("warnings", []).append("big_brain: distributed_degraded_model")
                 results.setdefault("notes", []).append(
                     f"Big Brain 主模型尚未就緒（目前非 {target_model}），已使用降級路徑（不阻斷）"

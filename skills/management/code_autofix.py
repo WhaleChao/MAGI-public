@@ -169,7 +169,7 @@ def _llm_repair_code(path: str, source: str, error_message: str, task_hint: str,
             (
                 f"{MELCHIOR_HOST}/api/generate",
                 {
-                    "model": get_available_melchior_model(["qwen2.5-coder:7b", "taide-12b"]),
+                    "model": get_available_melchior_model([os.environ.get("MAGI_OMLX_CODE_MODEL", ""), os.environ.get("MAGI_MAIN_MODEL", "")]),
                     "prompt": prompt,
                     "stream": False,
                     "options": {"temperature": 0.0, "num_ctx": 8192},

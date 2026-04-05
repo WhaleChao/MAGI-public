@@ -1081,7 +1081,7 @@ Return ONLY corrected Python code.
         (
             "http://localhost:8080/v1/chat/completions",
             {
-                "model": "taide-12b",
+                "model": os.environ.get("MAGI_MAIN_MODEL", ""),
                 "messages": [
                     {"role": "system", "content": "You are a precise Python debugger."},
                     {"role": "user", "content": prompt},
@@ -1657,7 +1657,7 @@ def auto_install_skill(skill_name_or_url: str) -> dict:
 # =============================================================================
 
 OMLX_HOST = "http://127.0.0.1:8080"
-PREFERRED_MODELS = ["taide-12b", "TAIDE-12b-Chat-mlx-4bit", "Qwen2.5-Coder-14B-Instruct-4bit"]
+PREFERRED_MODELS = [os.environ.get("MAGI_MAIN_MODEL", ""), os.environ.get("MAGI_TEXT_PRIMARY_MODEL", ""), os.environ.get("MAGI_OMLX_CODE_MODEL", "")]
 
 def get_available_melchior_model(preferred: list = PREFERRED_MODELS) -> str:
     """Get an available model from oMLX."""
@@ -1669,12 +1669,12 @@ def get_available_melchior_model(preferred: list = PREFERRED_MODELS) -> str:
                 for avail in available:
                     if model.lower() in avail.lower():
                         return avail
-        return preferred[0] if preferred else "taide-12b"
+        return preferred[0] if preferred else os.environ.get("MAGI_MAIN_MODEL", "")
     except Exception:
-        return preferred[0] if preferred else "taide-12b"
+        return preferred[0] if preferred else os.environ.get("MAGI_MAIN_MODEL", "")
 
 
-def request_local_skill_generation(prompt: str, model: str = "taide-12b") -> dict:
+def request_local_skill_generation(prompt: str, model: str = os.environ.get("MAGI_MAIN_MODEL", "")) -> dict:
     """
     Uses CASPER's Local Compute (Mac M4) to generate skills.
     This is preferred when Casper is in 'Local Mode' (Engineer Priority).
@@ -1875,13 +1875,13 @@ def list_skills() -> list[dict]:
 # Known safe models (High efficiency, low VRAM)
 SAFE_MODELS = [
     "mistral-nemo:12b",
-    "taide-12b",
+    os.environ.get("MAGI_MAIN_MODEL", ""),
     "gemma2:9b",
     "qwen2.5-coder:7b",
     "phi3.5:3.8b",
     "gemma-3-12b-it-4bit",
     "deepseek-r1:14b",
-    "taide-12b"
+    os.environ.get("MAGI_MAIN_MODEL", "")
 ]
 
 # Explicitly blocked heavy models
@@ -2004,7 +2004,7 @@ def request_distributed_skill_generation(prompt: str) -> dict:
         response = requests.post(
             CASPER_URL,
             json={
-                "model": "taide-12b", # Model name is often just a placeholder for llama-server, but we set it anyway
+                "model": os.environ.get("MAGI_MAIN_MODEL", ""), # Model name is often just a placeholder for llama-server, but we set it anyway
                 "messages": [
                     {"role": "system", "content": "You are the MAGI System's Primary Intelligence (Casper + Melchior)."},
                     {"role": "user", "content": f"""Generate a SKILL.md file and an executable Python script (action.py) for the following request:

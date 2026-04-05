@@ -119,7 +119,7 @@ Task:
 """
     
     print("Sending diagnostic request to Melchior...")
-    response = chat(prompt, model="taide-12b") # diagnostic fallback — local model
+    response = chat(prompt, model=os.environ.get("MAGI_MAIN_MODEL", "")) # diagnostic fallback — local model
     suggestion = response.get("response", "")
     
     print("\n--- Melchior's Diagnosis ---")

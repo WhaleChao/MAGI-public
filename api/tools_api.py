@@ -1309,7 +1309,7 @@ def api_vision():
     effective_task = "captcha" if is_captcha else "vision"
     model_hint = (
         str(data.get("model") or "").strip()
-        or (os.environ.get("MAGI_VISION_OCR_MODEL", "GLM-OCR-bf16") if is_ocr else os.environ.get("MAGI_VISION_MODEL", "GLM-OCR-bf16"))
+        or (os.environ.get("MAGI_VISION_OCR_MODEL", os.environ.get("MAGI_OMLX_OCR_MODEL", "")) if is_ocr else os.environ.get("MAGI_VISION_MODEL", os.environ.get("MAGI_OMLX_OCR_MODEL", "")))
     )
     force_local = _to_bool(data.get("force_local"), _to_bool(os.environ.get("MAGI_VISION_FORCE_LOCAL", "1"), True))
     timeout_sec = int(data.get("timeout_sec") or os.environ.get("MAGI_VISION_TIMEOUT_SEC", "90") or "90")
@@ -2393,7 +2393,7 @@ def api_list_audit_log():
 
     try:
         _audit_db_cfg = {
-            "host": os.environ.get("DB_HOST", "100.121.61.74"),
+            "host": os.environ.get("DB_HOST", "127.0.0.1"),
             "user": os.environ.get("DB_USER", "casper_service"),
             "password": os.environ.get("DB_PASSWORD", ""),
             "database": "magi_brain",
@@ -2441,7 +2441,7 @@ def api_restore_from_audit(log_id):
     from api.db_helper import get_cursor
 
     _restore_db_cfg = {
-        "host": os.environ.get("DB_HOST", "100.121.61.74"),
+        "host": os.environ.get("DB_HOST", "127.0.0.1"),
         "user": os.environ.get("DB_USER", "casper_service"),
         "password": os.environ.get("DB_PASSWORD", ""),
         "database": "magi_brain",

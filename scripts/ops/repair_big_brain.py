@@ -19,7 +19,7 @@ def main() -> int:
     ap.add_argument("--timeout", type=int, default=240, help="max repair time in seconds")
     args = ap.parse_args()
 
-    model = (args.model or os.environ.get("MAGI_MAIN_MODEL") or "taide-12b").strip()
+    model = (args.model or os.environ.get("MAGI_MAIN_MODEL") or "").strip()
     timeout = max(30, int(args.timeout))
 
     out = {

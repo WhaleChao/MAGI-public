@@ -116,7 +116,7 @@ def summarize_conversations(messages):
         response = requests.post(
             "http://127.0.0.1:8080/v1/chat/completions",
             json={
-                "model": "TAIDE-12b-Chat-mlx-4bit",
+                "model": os.environ.get("MAGI_TEXT_PRIMARY_MODEL", ""),
                 "messages": [{"role": "user", "content": prompt}],
                 "temperature": 0.3,
                 "max_tokens": 1024,

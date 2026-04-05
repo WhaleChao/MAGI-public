@@ -135,6 +135,6 @@ def health():
     })
 
 if __name__ == '__main__':
-    # Run on all interfaces, port 5002
-    print("🤖 Melchior Agent Listening on Port 5002...")
-    app.run(host='0.0.0.0', port=5002)
+    _port = int(os.environ.get("MELCHIOR_PORT", "5002"))
+    print(f"🤖 Melchior Agent Listening on Port {_port}...")
+    app.run(host='0.0.0.0', port=_port)

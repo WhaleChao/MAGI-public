@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-MAGI_ROOT="/Users/ai/Desktop/MAGI"
+MAGI_ROOT="${MAGI_ROOT:-$(cd "$(dirname "$0")/../.." && pwd)}"
 PY="$MAGI_ROOT/venv/bin/python3"
 RUN_TS="$(date +%Y%m%d_%H%M%S)"
 RUN_BASE="${MAGI_AUTOPILOT_RUNS_DIR:-$MAGI_ROOT/_autopilot_runs}"
@@ -95,7 +95,7 @@ text = (
 )
 try:
     import sys, os
-    root='/Users/ai/Desktop/MAGI'
+    root='$MAGI_ROOT'
     if root not in sys.path:
         sys.path.insert(0, root)
     from skills.ops.red_phone import notify_all

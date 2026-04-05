@@ -41,7 +41,7 @@ if not logging.getLogger().handlers:
 # Configuration
 # ---------------------------------------------------------------------------
 OLLAMA_BASE = os.environ.get("MAGI_COUNCIL_OLLAMA_BASE", os.environ.get("OMLX_URL", "http://127.0.0.1:8080")).rstrip("/")
-COUNCIL_MODEL = os.environ.get("MAGI_COUNCIL_MODEL", "TAIDE-12b-Chat-mlx-4bit")
+COUNCIL_MODEL = os.environ.get("MAGI_COUNCIL_MODEL", os.environ.get("MAGI_TEXT_PRIMARY_MODEL", ""))
 COUNCIL_TIMEOUT = int(os.environ.get("MAGI_COUNCIL_TIMEOUT", "120"))
 COUNCIL_NUM_CTX = int(os.environ.get("MAGI_COUNCIL_NUM_CTX", "4096"))
 COUNCIL_MAX_TOKENS = int(os.environ.get("MAGI_COUNCIL_MAX_TOKENS", "800"))

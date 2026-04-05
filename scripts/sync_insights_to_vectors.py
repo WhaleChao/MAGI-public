@@ -36,7 +36,7 @@ logger = logging.getLogger("insight_sync")
 
 # ---------- DB configs ----------
 REMOTE_DB = {
-    "host": os.environ.get("OSC_DB_HOST", "100.121.61.74"),
+    "host": os.environ.get("OSC_DB_HOST", "127.0.0.1"),
     "port": int(os.environ.get("OSC_DB_PORT", "3306")),
     "user": os.environ.get("OSC_DB_USER", "python_user"),
     "password": os.environ.get("OSC_DB_PASSWORD", ""),
@@ -52,7 +52,7 @@ LOCAL_DB = {
 }
 
 OMLX_URL = os.environ.get("OMLX_EMBED_URL", "http://127.0.0.1:8081/v1/embeddings")
-EMBED_MODEL = os.environ.get("OMLX_EMBED_MODEL", "modernbert-embed-4bit")
+EMBED_MODEL = os.environ.get("OMLX_EMBED_MODEL", os.environ.get("MAGI_OMLX_EMBED_MODEL", ""))
 SOURCE_PREFIX = "legal_insight"
 
 

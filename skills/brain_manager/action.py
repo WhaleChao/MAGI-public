@@ -567,7 +567,7 @@ def calibrate_distributed_ngl(
         # warmup + wait
         try:
             step["warmup"] = melchior_client.warmup(
-                model=os.environ.get("MAGI_MAIN_MODEL", "taide-12b"),
+                model=os.environ.get("MAGI_MAIN_MODEL", ""),
                 timeout=int(os.environ.get("MAGI_NGL_CAL_WARMUP_TIMEOUT_SEC", "90") or "90"),
             )
         except Exception as e:
@@ -684,7 +684,7 @@ def repair_big_brain(
         "mode_after": "",
     }
     ok_rr, rr_payload = remote_repair_distributed(
-        model=model or os.environ.get("MAGI_MAIN_MODEL", "taide-12b"),
+        model=model or os.environ.get("MAGI_MAIN_MODEL", ""),
         timeout_sec=timeout_sec,
         force_cycle=force_cycle,
     )
@@ -722,7 +722,7 @@ def remote_repair_distributed(
     Prefer dedicated endpoint /api/brain/recover.
     If endpoint is missing, fallback to existing engineer->distributed sequence.
     """
-    use_model = (model or os.environ.get("MAGI_MAIN_MODEL", "taide-12b") or "taide-12b").strip()
+    use_model = (model or os.environ.get("MAGI_MAIN_MODEL", "") or "").strip()
     wait_sec = max(30, min(int(timeout_sec or 240), 900))
 
     payload = {
@@ -895,7 +895,7 @@ def restart_inference_engine(mode: str, force: bool = False):
                 from skills.bridge import melchior_client
 
                 melchior_client.list_openai_v1_models(force_refresh=True)
-                melchior_client.warmup(model=os.environ.get("MAGI_MAIN_MODEL", "taide-12b"), timeout=45)
+                melchior_client.warmup(model=os.environ.get("MAGI_MAIN_MODEL", ""), timeout=45)
             except Exception:
                 logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 894, exc_info=True)
             return True, MELCHIOR_API_ENDPOINT

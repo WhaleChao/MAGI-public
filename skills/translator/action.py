@@ -453,7 +453,7 @@ def _translate_chunks_local(
                 if not piece:
                     from skills.bridge import melchior_client as _mcr  # type: ignore
                     prompt2 = f"請把下列內容完整翻譯成{target_lang}，不要摘要，不要補充：\n\n{c}"
-                    qr = _mcr.quick_local_chat(prompt2, timeout=max(20, int(timeout_per_chunk * 1.5)), model_hint="TAIDE-12b-Chat-mlx-4bit")
+                    qr = _mcr.quick_local_chat(prompt2, timeout=max(20, int(timeout_per_chunk * 1.5)), model_hint=os.environ.get("MAGI_TEXT_PRIMARY_MODEL", ""))
                     piece = _strip_translation_preamble((qr.get("response") or "").strip()) if isinstance(qr, dict) else ""
                     if _is_degraded_response(piece):
                         piece = ""
@@ -538,7 +538,7 @@ def _translate_inner(payload: dict) -> dict:
                         "doc_key": "",
                         "tabs": [],
                         "provider": "casper_chunk_local_direct",
-                        "model": os.environ.get("CASPER_LOCAL_MODEL", "TAIDE-12b-Chat-mlx-4bit"),
+                        "model": os.environ.get("CASPER_LOCAL_MODEL", os.environ.get("MAGI_TEXT_PRIMARY_MODEL", "")),
                     }
             return {
                 "success": True,
@@ -550,7 +550,7 @@ def _translate_inner(payload: dict) -> dict:
                 "doc_key": "",
                 "tabs": [],
                 "provider": "casper_chunk_local_direct",
-                "model": os.environ.get("CASPER_LOCAL_MODEL", "TAIDE-12b-Chat-mlx-4bit"),
+                "model": os.environ.get("CASPER_LOCAL_MODEL", os.environ.get("MAGI_TEXT_PRIMARY_MODEL", "")),
             }
 
     def _looks_refusal(s: str) -> bool:
@@ -607,7 +607,7 @@ def _translate_inner(payload: dict) -> dict:
                             "doc_key": "",
                             "tabs": [],
                             "provider": "casper_local_ollama",
-                            "model": os.environ.get("CASPER_LOCAL_MODEL", "TAIDE-12b-Chat-mlx-4bit"),
+                            "model": os.environ.get("CASPER_LOCAL_MODEL", os.environ.get("MAGI_TEXT_PRIMARY_MODEL", "")),
                             "fast_path": True,
                         }
                 return {
@@ -620,7 +620,7 @@ def _translate_inner(payload: dict) -> dict:
                     "doc_key": "",
                     "tabs": [],
                     "provider": "casper_local_ollama",
-                    "model": os.environ.get("CASPER_LOCAL_MODEL", "TAIDE-12b-Chat-mlx-4bit"),
+                    "model": os.environ.get("CASPER_LOCAL_MODEL", os.environ.get("MAGI_TEXT_PRIMARY_MODEL", "")),
                     "fast_path": True,
                 }
         except Exception:
@@ -653,7 +653,7 @@ def _translate_inner(payload: dict) -> dict:
                             "doc_key": "",
                             "tabs": [],
                             "provider": "casper_quick_local_fallback",
-                            "model": str(qr.get("model") or "TAIDE-12b-Chat-mlx-4bit"),
+                            "model": str(qr.get("model") or os.environ.get("MAGI_TEXT_PRIMARY_MODEL", "")),
                             "fast_path": True,
                         }
                 return {
@@ -666,7 +666,7 @@ def _translate_inner(payload: dict) -> dict:
                     "doc_key": "",
                     "tabs": [],
                     "provider": "casper_quick_local_fallback",
-                    "model": str(qr.get("model") or "TAIDE-12b-Chat-mlx-4bit"),
+                    "model": str(qr.get("model") or os.environ.get("MAGI_TEXT_PRIMARY_MODEL", "")),
                     "fast_path": True,
                 }
         except Exception:

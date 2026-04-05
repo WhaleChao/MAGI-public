@@ -265,7 +265,7 @@ def main() -> int:
 
     ok, status, embed_body, err = _http_post_json(
         f"{OMLX_EMBED_BASE}/v1/embeddings",
-        {"model": os.environ.get("MAGI_OMLX_EMBED_MODEL", "modernbert-embed-4bit"), "input": "MAGI embedding smoke"},
+        {"model": os.environ.get("MAGI_OMLX_EMBED_MODEL", os.environ.get("MAGI_OMLX_EMBED_MODEL", "")), "input": "MAGI embedding smoke"},
         timeout=45,
     )
     embed_data = (embed_body or {}).get("data", [])

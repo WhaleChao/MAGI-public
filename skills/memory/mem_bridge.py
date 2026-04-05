@@ -51,7 +51,7 @@ if patch_mysql_connector_for_stability:
 DB_CONFIG = {
     "user": os.environ.get("DB_USER", "casper_service"),
     "password": os.environ.get("DB_PASSWORD", ""),
-    "host": os.environ.get("DB_HOST", "100.121.61.74"),
+    "host": os.environ.get("DB_HOST", "127.0.0.1"),
     "database": os.environ.get("DB_NAME", "magi_brain"),
 }
 
@@ -62,7 +62,7 @@ OLLAMA_BATCH_URL = os.environ.get("OLLAMA_EMBED_BATCH_URL", f"{_OMLX_EMBED_BASE}
 MODEL = os.environ.get("MEM_EMBED_MODEL", "modernbert-embed-4bit")
 
 OLLAMA_GENERATE_URL = os.environ.get("OLLAMA_GENERATE_URL", "http://127.0.0.1:8080/v1/chat/completions")
-GENERATE_MODEL = os.environ.get("MEM_QUERY_EXPAND_MODEL", "TAIDE-12b-Chat-mlx-4bit")
+GENERATE_MODEL = os.environ.get("MEM_QUERY_EXPAND_MODEL", os.environ.get("MAGI_TEXT_PRIMARY_MODEL", ""))
 
 MAX_VECTOR_SCAN = int(os.environ.get("MEMORY_MAX_VECTOR_SCAN", "5000"))
 ENABLE_QUERY_EXPANSION = os.environ.get("MEMORY_ENABLE_QUERY_EXPANSION", "0") != "0"  # V3: disabled by default (saves ~5s)

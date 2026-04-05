@@ -321,7 +321,7 @@ def collect_connectivity() -> Dict[str, Any]:
             )
         )
 
-    db_host = str(os.environ.get("MAGI_REMOTE_DB_HOST", "100.121.61.74") or "100.121.61.74").strip()
+    db_host = str(os.environ.get("MAGI_REMOTE_DB_HOST", "127.0.0.1") or "127.0.0.1").strip()
     db_port = int(os.environ.get("MAGI_REMOTE_DB_PORT", "3306") or "3306")
     probes.append(_tcp_probe("remote_db_tcp", db_host, db_port, timeout_sec=1.8))
 

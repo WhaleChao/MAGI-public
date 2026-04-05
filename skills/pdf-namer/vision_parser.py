@@ -23,8 +23,8 @@ def _get_omlx_chat():
         _omlx_chat = {
             "chat": getattr(_mc, "_chat_omlx", None),
             "avail": getattr(_mc, "_omlx_available", None),
-            "vision_model": getattr(_mc, "OMLX_VISION_MODEL", "TAIDE-12b-Chat-mlx-4bit"),
-            "ocr_model": getattr(_mc, "OMLX_OCR_MODEL", "GLM-OCR-bf16"),
+            "vision_model": getattr(_mc, "OMLX_VISION_MODEL", None) or os.environ.get("MAGI_OMLX_VISION_MODEL", ""),
+            "ocr_model": getattr(_mc, "OMLX_OCR_MODEL", None) or os.environ.get("MAGI_OMLX_OCR_MODEL", ""),
         }
     except Exception:
         _omlx_chat = {}
@@ -114,7 +114,7 @@ def _vision_models() -> list[str]:
         os.environ.get("MAGI_PDF_NAMER_VISION_MODELS")
         or os.environ.get("MAGI_PDF_NAMER_VISION_MODEL")
         or os.environ.get("MAGI_VISION_MODEL")
-        or "taide-12b"
+        or os.environ.get("MAGI_OMLX_VISION_MODEL", "")
     )
     models: list[str] = []
     for raw in str(chain or "").split(","):
@@ -132,7 +132,7 @@ def _vision_models() -> list[str]:
         nm = str(it.get("name") or "")
         if _is_vision_model(nm) and nm not in fallback:
             fallback.append(nm)
-    return fallback or ["taide-12b"]
+    return fallback or [os.environ.get("MAGI_TEXT_PRIMARY_MODEL", "")]
 
 
 def _ask_openai_compatible(messages: list, timeout_sec: int) -> Optional[str]:
@@ -143,7 +143,7 @@ def _ask_openai_compatible(messages: list, timeout_sec: int) -> Optional[str]:
     url = (os.environ.get("MAGI_VISION_URL") or "").strip()
     if not url:
         return None
-    model = os.environ.get("MAGI_VISION_MODEL", "gpt-4o")
+    model = os.environ.get("MAGI_VISION_MODEL", os.environ.get("MAGI_OMLX_VISION_MODEL", ""))
     payload = {"model": model, "messages": messages, "temperature": 0.1}
     try:
         r = requests.post(url, json=payload, timeout=timeout_sec)

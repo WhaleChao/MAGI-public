@@ -33,7 +33,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 WATCHER_DB = os.path.expanduser("~/watcher_evidence.db")
 LOG_FILE = os.path.expanduser("~/watcher_daemon.log")
 PULL_INTERVAL = 300  # 5 minutes
-KEEPER_HOST = os.environ.get("KEEPER_HOST", "100.121.61.74")
+KEEPER_HOST = os.environ.get("KEEPER_HOST", "127.0.0.1")
 
 logging.basicConfig(
     level=logging.INFO,

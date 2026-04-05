@@ -1518,7 +1518,7 @@ def _ultra_segment_note_with_model(
                 prompt,
                 task_type="summary",
                 timeout=max(20, min(timeout_sec + attempt * 20, 180)),
-                model="taide-12b",
+                model=os.environ.get("MAGI_MAIN_MODEL", ""),
                 allow_synthetic_fallback=False,
             )
             out = str((q or {}).get("response") or "").strip()
@@ -1899,7 +1899,7 @@ def _ultra_final_summary_with_model(
             prompt,
             task_type="summary",
             timeout=max(30, min(final_timeout, 180)),
-            model="taide-12b",
+            model=os.environ.get("MAGI_MAIN_MODEL", ""),
             allow_synthetic_fallback=False,
         )
         out = str((q or {}).get("response") or "").strip()
@@ -2265,7 +2265,7 @@ def _mr_summarize_one_chunk(
         if callable(_omlx_chat) and callable(_omlx_avail) and _omlx_avail():
             q = _omlx_chat(
                 prompt=prompt,
-                model=os.environ.get("MAGI_OMLX_SUMMARY_MODEL", "TAIDE-12b-Chat-mlx-4bit"),
+                model=os.environ.get("MAGI_OMLX_SUMMARY_MODEL", os.environ.get("MAGI_TEXT_PRIMARY_MODEL", "")),
                 timeout=timeout_sec,
                 temperature=0.2,
                 max_tokens=max_tokens,
@@ -2281,7 +2281,7 @@ def _mr_summarize_one_chunk(
                 prompt,
                 task_type="summary",
                 timeout=timeout_sec,
-                model="taide-12b",
+                model=os.environ.get("MAGI_MAIN_MODEL", ""),
                 allow_synthetic_fallback=False,
             )
             out = str((q or {}).get("response") or "").strip()

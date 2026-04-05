@@ -223,7 +223,7 @@ def _reason_with_melchior(prompt: str, max_tokens: int = 2048) -> str:
     try:
         import urllib.request
         omlx_url = (os.environ.get("OMLX_URL") or os.environ.get("OLLAMA_URL") or "http://127.0.0.1:8080").rstrip("/")
-        model = os.environ.get("MELCHIOR_MODEL", "TAIDE-12b-Chat-mlx-4bit")
+        model = os.environ.get("MELCHIOR_MODEL", os.environ.get("MAGI_TEXT_PRIMARY_MODEL", ""))
 
         payload = json.dumps({
             "model": model,

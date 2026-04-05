@@ -1,7 +1,8 @@
 #!/bin/bash
 # 司法院 API 夜間拉取守護：每天 00:00-06:00 自動拉取
 export PATH="/opt/homebrew/bin:$PATH"
-cd /Users/ai/Desktop/MAGI
+MAGI_ROOT="${MAGI_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
+cd "$MAGI_ROOT"
 
 while true; do
     HOUR=$(date +%H)

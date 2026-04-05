@@ -30,12 +30,12 @@ except Exception:
 DB_CONFIG = {
     'user': os.environ.get("DB_USER", "casper_service"),
     'password': os.environ.get("DB_PASSWORD", ""),
-    'host': os.environ.get("DB_HOST", "100.121.61.74"),
+    'host': os.environ.get("DB_HOST", "127.0.0.1"),
     'database': 'magi_brain',
 }
 
 OLLAMA_URL = os.environ.get("OLLAMA_EMBED_URL", "http://127.0.0.1:8081/v1/embeddings")
-EMBED_MODEL = os.environ.get("MAGI_OMLX_EMBED_MODEL", "modernbert-embed-4bit")
+EMBED_MODEL = os.environ.get("MAGI_OMLX_EMBED_MODEL", os.environ.get("MAGI_OMLX_EMBED_MODEL", ""))
 SYNC_INTERVAL = 300  # 5 minutes
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')

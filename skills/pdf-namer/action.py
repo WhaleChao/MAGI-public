@@ -828,7 +828,7 @@ def _llava_extract_receipt_date(png_bytes: bytes, *, timeout_sec: int = 14) -> O
             _chat_omlx = getattr(_mc, "_chat_omlx", None)
             _omlx_avail = getattr(_mc, "_omlx_available", None)
             if callable(_chat_omlx) and callable(_omlx_avail) and _omlx_avail():
-                ocr_model = getattr(_mc, "OMLX_OCR_MODEL", "GLM-OCR-bf16")
+                ocr_model = getattr(_mc, "OMLX_OCR_MODEL", os.environ.get("MAGI_OMLX_OCR_MODEL", ""))
                 r = _chat_omlx(
                     prompt=prompt, model=ocr_model,
                     timeout=max(8, int(timeout_sec)),
@@ -845,8 +845,8 @@ def _llava_extract_receipt_date(png_bytes: bytes, *, timeout_sec: int = 14) -> O
         chain = (os.environ.get("MAGI_PDF_NAMER_VISION_MODELS") or "").strip()
         if not chain:
             chain = (
-                os.environ.get("MAGI_PDF_NAMER_VISION_MODEL", "taide-12b")
-                or "taide-12b"
+                os.environ.get("MAGI_PDF_NAMER_VISION_MODEL", os.environ.get("MAGI_MAIN_MODEL", ""))
+                or os.environ.get("MAGI_MAIN_MODEL", "")
             ).strip()
         models = [m.strip() for m in chain.split(",") if m.strip()]
 
@@ -1335,7 +1335,7 @@ def _vision_analyze_for_naming(content_page) -> dict:
             "無法辨識的項目寫「無」。"
         )
 
-        vision_model = getattr(_mc, "OMLX_VISION_MODEL", "TAIDE-12b-Chat-mlx-4bit")
+        vision_model = getattr(_mc, "OMLX_VISION_MODEL", os.environ.get("MAGI_TEXT_PRIMARY_MODEL", ""))
         vision_timeout = int(os.environ.get("MAGI_PDF_NAMER_VISION_NAMING_TIMEOUT", "90"))
         r = _chat_omlx(
             prompt=prompt, model=vision_model,

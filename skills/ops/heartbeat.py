@@ -55,7 +55,7 @@ def guard_tailscale_serve():
 
 # ── TAIDE Model Resident Guard ──
 # Ollama retired — TAIDE now runs on oMLX as TAIDE-12b-Chat-mlx-4bit.
-TAIDE_MODEL = "TAIDE-12b-Chat-mlx-4bit"
+TAIDE_MODEL = os.environ.get("MAGI_TEXT_PRIMARY_MODEL", "")
 
 def guard_taide_resident():
     """No-op: Ollama retired. TAIDE runs on oMLX (managed by launchd)."""

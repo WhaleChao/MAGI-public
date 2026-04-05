@@ -168,7 +168,7 @@ def _probe_local_llm_inference(timeout_sec: int = 30, retries: int = 2, backoff_
         timeout_sec=timeout_sec,
         retries=retries,
         backoff_sec=backoff_sec,
-        default_model="TAIDE-12b-Chat-mlx-4bit",
+        default_model=os.environ.get("MAGI_TEXT_PRIMARY_MODEL", ""),
         models_timeout_sec=8,
     )
     if not probe.get("pass"):
@@ -222,7 +222,7 @@ def _load_db_profile(profile_name: str = "Studio_VPN_Remote") -> dict:
 
 
 def _resolve_omlx_model() -> str:
-    return _health_probes.resolve_omlx_model("TAIDE-12b-Chat-mlx-4bit")
+    return _health_probes.resolve_omlx_model(os.environ.get("MAGI_TEXT_PRIMARY_MODEL", ""))
 
 
 def _ping(ip, timeout_ms=3000):
@@ -524,7 +524,7 @@ def _repair_local_llm():
     try:
         import requests
         r = requests.post("http://127.0.0.1:8080/v1/chat/completions",
-                          json={"model": "taide-12b",
+                          json={"model": os.environ.get("MAGI_MAIN_MODEL", ""),
                                 "messages": [{"role": "user", "content": "test"}],
                                 "max_tokens": 5, "stream": False}, timeout=60)
         if r.status_code == 200:

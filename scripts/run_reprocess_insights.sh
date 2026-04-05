@@ -6,7 +6,8 @@
 # 4. 自我刪除 LaunchAgent（一次性任務）
 
 set -e
-cd /Users/ai/Desktop/MAGI
+MAGI_ROOT="${MAGI_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
+cd "$MAGI_ROOT"
 source venv/bin/activate
 
 LOG="/tmp/reprocess_insights_overnight.log"

@@ -293,7 +293,7 @@ def post_deploy_test(num_tests: int = 3) -> bool:
     for i, prompt in enumerate(test_prompts[:num_tests]):
         try:
             payload = json.dumps({
-                "model": "TAIDE-12b-Chat-mlx-4bit",
+                "model": os.environ.get("MAGI_TEXT_PRIMARY_MODEL", ""),
                 "messages": [{"role": "user", "content": prompt}],
                 "max_tokens": 128,
                 "temperature": 0.1,

@@ -68,10 +68,11 @@ def analyze_image_local(image_path, prompt="Describe this image"):
         _chat_omlx = getattr(melchior_client, "_chat_omlx", None)
         _vision_avail = getattr(melchior_client, "_omlx_vision_available", None)
         if callable(_chat_omlx) and callable(_vision_avail) and _vision_avail():
+            _default_vm = os.environ.get("MAGI_OMLX_VISION_MODEL", "")
             omlx_model = (
-                getattr(melchior_client, "OMLX_OCR_MODEL", "GLM-OCR-bf16")
+                getattr(melchior_client, "OMLX_OCR_MODEL", _default_vm)
                 if is_ocr
-                else getattr(melchior_client, "OMLX_VISION_MODEL", "GLM-OCR-bf16")
+                else getattr(melchior_client, "OMLX_VISION_MODEL", _default_vm)
             )
             vision_base = getattr(melchior_client, "OMLX_VISION_BASE", "http://127.0.0.1:8082")
             vision_circuit = getattr(melchior_client, "_OMLX_VISION_CIRCUIT", None)
@@ -134,10 +135,11 @@ def analyze_image(image_path, prompt="Describe this image"):
     is_captcha = bool(re.search(r"(captcha|驗證碼|digits|characters)", p_low, re.IGNORECASE))
     task_type = "captcha" if is_captcha else "vision"
     force_local = str(os.environ.get("MAGI_VISION_FORCE_LOCAL", "1") or "1").strip().lower() in {"1", "true", "yes", "on"}
+    _default_ocr = os.environ.get("MAGI_OMLX_OCR_MODEL", os.environ.get("MAGI_OMLX_VISION_MODEL", ""))
     model_hint = (
-        os.environ.get("MAGI_VISION_OCR_MODEL", "GLM-OCR-bf16")
+        os.environ.get("MAGI_VISION_OCR_MODEL", _default_ocr)
         if is_ocr
-        else os.environ.get("MAGI_VISION_MODEL", "GLM-OCR-bf16")
+        else os.environ.get("MAGI_VISION_MODEL", _default_ocr)
     )
     try:
         timeout_sec = int(os.environ.get("MAGI_VISION_TIMEOUT_SEC", "90") or "90")

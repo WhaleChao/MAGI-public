@@ -3,12 +3,13 @@
 # Starts cloudflared, extracts the URL, and registers it with LINE.
 set -euo pipefail
 
-LOG="/Users/ai/Desktop/MAGI_v2/logs/cloudflared.log"
+MAGI_ROOT="${MAGI_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
+LOG="$MAGI_ROOT/logs/cloudflared.log"
 LINE_TOKEN="${MAGI_LINE_CHANNEL_ACCESS_TOKEN:-}"
 LOCAL_PORT="${1:-18790}"
 
 if [ -z "$LINE_TOKEN" ]; then
-  source /Users/ai/Desktop/MAGI_v2/.env 2>/dev/null || true
+  source "$MAGI_ROOT/.env" 2>/dev/null || true
   LINE_TOKEN="${MAGI_LINE_CHANNEL_ACCESS_TOKEN:-}"
 fi
 
@@ -64,8 +65,8 @@ TEST=$(curl -s \
 echo "Webhook test: $TEST"
 
 # Save URL for health monitoring
-echo "$WEBHOOK_URL" > /Users/ai/Desktop/MAGI_v2/.agent/line_webhook_url.txt
-echo "$CF_URL" > /Users/ai/Desktop/MAGI_v2/.agent/cloudflare_tunnel_url.txt
+echo "$WEBHOOK_URL" > "$MAGI_ROOT/.agent/line_webhook_url.txt"
+echo "$CF_URL" > "$MAGI_ROOT/.agent/cloudflare_tunnel_url.txt"
 
 # Wait for tunnel process
 wait $CF_PID

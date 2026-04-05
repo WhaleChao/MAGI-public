@@ -44,7 +44,7 @@ logger = logging.getLogger("clean-degraded-memories")
 DB_CONFIG = {
     "user": os.environ.get("DB_USER", "casper_service"),
     "password": os.environ.get("DB_PASSWORD", ""),
-    "host": os.environ.get("DB_HOST", "100.121.61.74"),
+    "host": os.environ.get("DB_HOST", "127.0.0.1"),
     "database": os.environ.get("DB_NAME", "magi_brain"),
 }
 

@@ -39,7 +39,7 @@ def _get_conn():
 
     import mysql.connector
     conn = mysql.connector.connect(
-        host=os.environ.get("OSC_DB_HOST", "100.121.61.74"),
+        host=os.environ.get("OSC_DB_HOST", "127.0.0.1"),
         port=int(os.environ.get("OSC_DB_PORT", 3306)),
         user=os.environ.get("OSC_DB_USER", "casper_service"),
         password=os.environ.get("OSC_DB_PASSWORD", ""),

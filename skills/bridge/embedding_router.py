@@ -54,7 +54,7 @@ _OMLX_BASE = (
     or "http://127.0.0.1:8081"
 )
 _OMLX_EMBED_URL = _OMLX_BASE.rstrip("/") + "/v1/embeddings"
-_EMBED_MODEL = os.environ.get("EMBEDDING_ROUTER_MODEL", "modernbert-embed-4bit")
+_EMBED_MODEL = os.environ.get("EMBEDDING_ROUTER_MODEL", os.environ.get("MAGI_OMLX_EMBED_MODEL", ""))
 _DIRECT_THRESH = float(os.environ.get("EMBEDDING_ROUTER_DIRECT_THRESH", "0.75") or "0.75")
 _GUIDED_THRESH = float(os.environ.get("EMBEDDING_ROUTER_GUIDED_THRESH", "0.55") or "0.55")
 _EMBED_TIMEOUT = 4  # seconds per embedding request
