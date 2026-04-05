@@ -1,10 +1,10 @@
 # MAGI Architecture Overview
 
-版本：v1.0 | 日期：2026-03-19
+版本：v2.0 | 日期：2026-04-05
 
 ---
 
-## System Architecture
+## System Architecture (v2 Modular)
 
 ```
                     ┌─────────────────────────────────────────┐
@@ -16,27 +16,46 @@
                     ┌──────▼────────────▼────────────▼────────┐
                     │           CASPER (Port 5002)             │
                     │   ┌──────────────────────────────────┐  │
-                    │   │  Flask App (api/server.py)        │  │
-                    │   │  ├─ LINE Webhook Handler          │  │
-                    │   │  ├─ Discord Bot                   │  │
-                    │   │  ├─ Telegram Handler              │  │
-                    │   │  ├─ Web Dashboard                 │  │
+                    │   │  Flask App (api/server.py — 802)  │  │
+                    │   │  ├─ blueprints/admin_runtime.py   │  │
+                    │   │  ├─ blueprints/dashboard_pages.py │  │
+                    │   │  ├─ blueprints/osc_cases.py       │  │
+                    │   │  ├─ blueprints/web_runtime.py     │  │
+                    │   │  ├─ webhooks/line.py               │  │
+                    │   │  ├─ webhooks/telegram.py           │  │
                     │   │  ├─ Auth (Flask-Login + API Key)  │  │
                     │   │  ├─ CSRF Guard                    │  │
                     │   │  └─ Security Headers              │  │
                     │   └──────────┬───────────────────────┘  │
                     │              │                           │
                     │   ┌──────────▼───────────────────────┐  │
-                    │   │  Orchestrator                     │  │
-                    │   │  (api/orchestrator.py)            │  │
-                    │   │  ├─ NL Router (意圖分類)          │  │
-                    │   │  ├─ Skill Dispatcher              │  │
-                    │   │  ├─ Job Queue                     │  │
-                    │   │  └─ Inference Gateway             │  │
+                    │   │  Orchestrator (2335 lines)        │  │
+                    │   │  Delegates to:                    │  │
+                    │   │  ├─ pipelines/message_pipeline    │  │
+                    │   │  ├─ pipelines/command_pipeline    │  │
+                    │   │  ├─ pipelines/chat_pipeline       │  │
+                    │   │  ├─ pipelines/command_dispatch    │  │
+                    │   │  ├─ pipelines/skill_dispatch      │  │
+                    │   │  ├─ pipelines/message_router      │  │
+                    │   │  ├─ domains/judgment_flow         │  │
+                    │   │  ├─ domains/laf_flow              │  │
+                    │   │  ├─ domains/market_flow           │  │
+                    │   │  └─ domains/memory_flow           │  │
                     │   └──────────┬───────────────────────┘  │
                     │              │                           │
                     │   ┌──────────▼───────────────────────┐  │
-                    │   │  Skills (skills/*)                │  │
+                    │   │  Routing Layer (api/routing/)     │  │
+                    │   │  ├─ service_registry.py           │  │
+                    │   │  ├─ model_registry.py             │  │
+                    │   │  ├─ node_registry.py              │  │
+                    │   │  ├─ datastore_registry.py         │  │
+                    │   │  ├─ policy_engine.py              │  │
+                    │   │  ├─ request_router.py             │  │
+                    │   │  └─ inference_router.py           │  │
+                    │   └──────────┬───────────────────────┘  │
+                    │              │                           │
+                    │   ┌──────────▼───────────────────────┐  │
+                    │   │  Skills (skills/*)  — 67+         │  │
                     │   │  ├─ pdf-namer        (PDF 命名)   │  │
                     │   │  ├─ judgment-collector (裁判收集)  │  │
                     │   │  ├─ memory           (RAG 記憶)   │  │
@@ -44,30 +63,79 @@
                     │   │  ├─ market-briefing  (股市晨報)   │  │
                     │   │  ├─ magi-autopilot   (自動巡檢)   │  │
                     │   │  ├─ magi-doctor      (自我診斷)   │  │
-                    │   │  └─ ... (20+ skills)              │  │
+                    │   │  └─ ... (60+ skills)              │  │
                     │   └──────────────────────────────────┘  │
                     └──────────────────┬──────────────────────┘
                                        │
             ┌──────────────────────────┼──────────────────────────┐
             │                          │                          │
      ┌──────▼──────┐           ┌───────▼──────┐          ┌───────▼──────┐
-     │  Tools API  │           │   MariaDB    │          │   Ollama     │
+     │  Tools API  │           │   MariaDB    │          │  oMLX/Ollama │
      │ (Port 5003) │           │ (magi_brain) │          │  (LLM Host)  │
      │  ├─ /search │           │ ├─ users     │          │ ├─ taide-12b │
-     │  ├─ /vision │           │ ├─ cases     │          │ ├─ llama3.1  │
-     │  ├─ /fetch  │           │ ├─ memories  │          │ └─ minicpm-v │
+     │  ├─ /vision │           │ ├─ cases     │          │ ├─ coder-14b │
+     │  ├─ /fetch  │           │ ├─ memories  │          │ └─ bert-embed│
      │  └─ /skills │           │ └─ judgments │          └──────────────┘
      └─────────────┘           └──────────────┘
 
-            ┌──────────────────────────────────────────────────────┐
-            │               Federation (Optional)                  │
-            │  ┌─────────┐  ┌───────────┐  ┌─────────────────┐   │
-            │  │BALTHASAR│  │ MELCHIOR  │  │    WATCHER      │   │
-            │  │(Summary)│  │ (Vision)  │  │ (Security Audit)│   │
-            │  │Apple AI │  │ GPU Node  │  │ Audit Node      │   │
-            │  └─────────┘  └───────────┘  └─────────────────┘   │
-            └──────────────────────────────────────────────────────┘
+     ┌──────────────────────────────────────────────────────┐
+     │              Registry System (json/)                  │
+     │  ┌──────────────┐  ┌────────────┐  ┌──────────────┐ │
+     │  │services.json │  │models.json │  │ nodes.json   │ │
+     │  │(endpoints)   │  │(aliases)   │  │ (IPs/roles)  │ │
+     │  └──────────────┘  └────────────┘  └──────────────┘ │
+     │  ┌──────────────┐                                    │
+     │  │datastores.json│                                   │
+     │  │(connections) │                                    │
+     │  └──────────────┘                                    │
+     └──────────────────────────────────────────────────────┘
+
+     ┌──────────────────────────────────────────────────────┐
+     │               Federation (Optional)                  │
+     │  ┌─────────┐  ┌───────────┐  ┌─────────────────┐   │
+     │  │BALTHASAR│  │ MELCHIOR  │  │    KEEPER       │   │
+     │  │(Summary)│  │ (Vision)  │  │ (Remote DB)     │   │
+     │  │Apple AI │  │ GPU Node  │  │ MariaDB Node    │   │
+     │  └─────────┘  └───────────┘  └─────────────────┘   │
+     └──────────────────────────────────────────────────────┘
 ```
+
+---
+
+## Modular Split Summary
+
+### server.py (9,463 → 802 lines)
+
+| Module | Lines | Responsibility |
+|--------|-------|---------------|
+| `blueprints/admin_runtime.py` | ~800 | Admin dashboard routes |
+| `blueprints/dashboard_pages.py` | ~300 | Dashboard page routes |
+| `blueprints/osc_cases.py` | ~4500 | Case management CRUD |
+| `blueprints/osc_accounting.py` | ~600 | Accounting routes |
+| `blueprints/osc_debt.py` | ~400 | Debt case routes |
+| `blueprints/osc_settings.py` | ~300 | Settings routes |
+| `blueprints/web_runtime.py` | ~400 | Web app routes |
+| `webhooks/line.py` | ~1900 | LINE webhook handler |
+| `webhooks/telegram.py` | ~1700 | Telegram webhook handler |
+
+### orchestrator.py (10,269 → 2,335 lines)
+
+| Module | Lines | Responsibility |
+|--------|-------|---------------|
+| `pipelines/message_pipeline.py` | ~3200 | Message intake & sanitization |
+| `pipelines/command_pipeline.py` | ~1500 | Command parsing |
+| `pipelines/chat_pipeline.py` | ~1200 | Conversational AI |
+| `pipelines/command_dispatch.py` | ~3600 | Skill invocation |
+| `pipelines/skill_dispatch.py` | ~800 | Skill resolution |
+| `pipelines/message_router.py` | ~1600 | Intent routing |
+| `pipelines/attachment_pipeline.py` | ~500 | File handling |
+| `pipelines/specialized_commands.py` | ~600 | Domain commands |
+| `domains/judgment_flow.py` | ~400 | Judicial queries |
+| `domains/laf_flow.py` | ~400 | LAF operations |
+| `domains/market_flow.py` | ~300 | Market analysis |
+| `domains/memory_flow.py` | ~300 | Memory operations |
+| `domains/codex_flow.py` | ~200 | Code analysis |
+| `domains/skill_interview_flow.py` | ~200 | Skill queries |
 
 ---
 
@@ -78,35 +146,62 @@
 | CASPER (server.py) | 5002 | Main app: channels, web UI, orchestration | Yes |
 | Tools API (tools_api.py) | 5003 | HTTP API for external callers | Yes |
 | MariaDB | 3306 | Persistent storage | Yes |
-| Ollama | 11434 | Local LLM inference | Yes |
+| oMLX / Ollama | 8080 | Local LLM inference | Yes |
+| ModernBERT | 8081 | Embedding service | Yes |
 | BALTHASAR | 5002 | Apple Intelligence summarization | No |
-| MELCHIOR | 5002 | GPU vision/code analysis | No |
-| WATCHER | 5010 | Security audit monitoring | No |
+| MELCHIOR | 8080 | GPU vision/code analysis | No |
+| KEEPER | 3306 | Remote MariaDB (law_firm_data) | No |
 
 ---
 
 ## Data Flow
 
 ```
-User Message → Channel Handler → Orchestrator → NL Router
-                                                    │
-                                    ┌───────────────┼───────────────┐
-                                    ▼               ▼               ▼
-                               Skill Action    Inference       Direct Response
-                                    │           Gateway              │
-                                    ▼               │                │
-                               DB / File            ▼                │
-                               Operations      LLM (Ollama)         │
-                                    │               │                │
-                                    └───────┬───────┘                │
-                                            ▼                        │
-                                    Response Formatter               │
-                                            │                        │
-                                            ▼                        │
-                                    Channel Delivery ◄───────────────┘
-                                            │
-                                            ▼
-                                     User Response
+User Message → Channel Handler → Orchestrator
+                                      │
+              ┌───────────────────────┤
+              ▼                       ▼
+    message_pipeline.py        command_pipeline.py
+    (sanitize, context)        (parse prefix)
+              │                       │
+              ▼                       ▼
+    message_router.py          command_dispatch.py
+    (intent classification)    (skill resolution)
+              │                       │
+              ├───────────────────────┤
+              ▼                       ▼
+    chat_pipeline.py           skill_dispatch.py
+    (LLM + memory RAG)        (action.py invocation)
+              │                       │
+              └───────┬───────────────┘
+                      ▼
+              Response Formatter
+                      │
+                      ▼
+              Channel Delivery
+                      │
+                      ▼
+               User Response
+```
+
+---
+
+## Registry System Flow
+
+```
+Code needs a value (e.g., Melchior's IP)
+    │
+    ▼
+api/routing/node_registry.get_node_ip("melchior")
+    │
+    ├─ Check: env var MAGI_MELCHIOR_IP?
+    │     └─ Yes → return env value
+    │
+    ├─ Check: json/nodes.json["melchior"]["ip"]?
+    │     └─ Yes → return JSON value
+    │
+    └─ Fallback: hardcoded default in registry module
+          └─ return "100.116.54.16"
 ```
 
 ---
@@ -127,6 +222,10 @@ Request → Rate Limiter → CORS Check → CSRF Validation
           @require_api_key)
               │
               ▼
+         Iron Dome
+         (SQL/shell/injection filter)
+              │
+              ▼
          Route Handler
 ```
 
@@ -137,47 +236,45 @@ Request → Rate Limiter → CORS Check → CSRF Validation
 ```
 MAGI/
 ├── api/                    # Core API layer
-│   ├── server.py           # Main Flask app (5002)
+│   ├── server.py           # Flask app entry (802 lines)
 │   ├── tools_api.py        # Tools API (5003)
-│   ├── orchestrator.py     # NL routing engine
+│   ├── orchestrator.py     # Routing hub (2335 lines)
+│   ├── db_failover.py      # DB failover controller
 │   ├── runtime_paths.py    # Path abstraction layer
 │   ├── authz.py            # Unified authorization
 │   ├── csrf_guard.py       # CSRF protection
-│   ├── blueprints/         # Modular route groups
-│   └── thread_pools.py     # Shared executors
-├── bin/                    # Standard entry points
-│   ├── bootstrap           # First-time install
-│   ├── start               # Start services
-│   ├── check               # Health diagnostics
-│   ├── release             # Build release
-│   ├── upgrade             # Upgrade to new version
-│   └── rollback            # Rollback to previous
-├── skills/                 # Pluggable skill modules
-│   ├── ops/                # Operations (config, cron, logging)
-│   ├── pdf-namer/          # PDF classification & naming
-│   ├── judgment-collector/  # Judicial data collection
-│   ├── memory/             # RAG memory system
-│   ├── research/           # Web search & research
-│   ├── bridge/             # Federation bridges
-│   └── ...
+│   ├── blueprints/         # Flask Blueprint modules (7)
+│   ├── webhooks/           # Channel webhook handlers (2)
+│   ├── pipelines/          # Processing pipelines (8)
+│   ├── domains/            # Domain-specific flows (6)
+│   ├── routing/            # Registry + routing system (14)
+│   ├── handlers/           # Request handlers
+│   ├── agents/             # Multi-agent runtime
+│   ├── coordinator/        # Task coordination
+│   ├── events/             # Event system
+│   ├── hooks/              # Hook bus
+│   ├── permissions/        # RBAC authorization
+│   ├── session/            # Session management
+│   ├── tasks/              # Task runtime
+│   ├── tools/              # Tool registry
+│   └── verification/       # Response verification
+├── json/                   # Declarative config (Registry)
+│   ├── services.json       # Service endpoints
+│   ├── models.json         # Model definitions
+│   ├── nodes.json          # Node definitions
+│   └── datastores.json     # DB connections
+├── gui/                    # GUI (macOS menubar)
+├── skills/                 # 67+ pluggable skill modules
+├── providers/              # LLM provider abstraction
+├── scripts/                # Operational scripts (60+)
 ├── migrations/             # DB schema management
-│   ├── migrate.py          # Migration runner
-│   └── versions/           # Ordered SQL migrations
 ├── casper_ecosystem/       # LAF automation subsystem
-├── tests/                  # Test suite
+├── tests/                  # 90+ test files
 ├── docs/                   # Documentation
-│   ├── OPERATOR_RUNBOOK.md
-│   ├── API_CONTRACT.md
-│   ├── ARCHITECTURE.md
-│   ├── THIRD_PARTY_BOM.md
-│   ├── PRIVACY_POLICY.md
-│   └── DATA_RETENTION_POLICY.md
 ├── templates/              # Web UI (Jinja2)
 ├── static/                 # Static assets
 ├── .github/workflows/      # CI pipeline
-├── pyproject.toml          # Package metadata
-├── .env.example            # Config template
-└── LICENSE                 # Commercial license
+└── CONSTITUTION.md         # Governance rules
 ```
 
 ---
@@ -188,7 +285,7 @@ MAGI/
 |------|-------------|-------|
 | Single-node dev | All on one machine | Current |
 | Single-tenant managed | Dedicated host per customer | Phase 1 target |
-| Multi-node federation | CASPER + BALTHASAR + MELCHIOR | Supported |
+| Multi-node federation | CASPER + BALTHASAR + MELCHIOR + KEEPER | Supported |
 | Multi-tenant SaaS | Shared infrastructure | Future (not Phase 1) |
 
 ---
@@ -201,11 +298,12 @@ MAGI/
 | Discord Bot channel | Production | v0.5 |
 | Telegram Bot channel | Production | v0.8 |
 | Web Dashboard | Production | v0.3 |
-| PDF naming (pdf-namer) | Production | v0.2 |
-| Judicial data collection | Production | v0.4 |
-| RAG memory | Production | v0.6 |
-| Market briefing | Production | v0.7 |
+| Modular Architecture | Production | v2.0 |
+| Registry System | Production | v2.0 |
+| Unified Routing | Production | v2.0 |
+| DB Failover | Production | v2.0 |
+| macOS Status Bar | Production | v2.0 |
+| `magi` CLI | Production | v2.0 |
 | Federation (multi-node) | Beta | v0.9 |
 | MCP Server | Beta | v1.0 |
 | Browser automation (LAF) | Controlled | v0.5 |
-| Insecure SSL fallback | Opt-in only | v1.0 |

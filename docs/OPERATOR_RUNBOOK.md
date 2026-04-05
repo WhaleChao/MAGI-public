@@ -1,6 +1,6 @@
-# MAGI Operator Runbook v1
+# MAGI Operator Runbook v2
 
-版本：v1.0 | 日期：2026-03-19
+版本：v2.0 | 日期：2026-04-05
 
 ---
 
@@ -10,9 +10,12 @@ MAGI（Multi-Agent Governance Infrastructure）是一套多代理治理基礎設
 
 - **CASPER** — 主決策與協調節點（Flask 後端，port 5002）
 - **Tools API** — 外部工具 HTTP API（Flask，port 5003）
-- **Orchestrator** — 自然語言路由與任務編排引擎
-- **Skills** — 可插拔技能模組（pdf-namer、judgment-collector、magi-doctor 等）
-- **Channels** — LINE Bot、Discord Bot、Telegram Bot（可選）
+- **Orchestrator** — 自然語言路由與任務編排引擎（委派至 pipelines/ + domains/）
+- **Routing Layer** — 統一路由層（api/routing/，含 Registry 系統）
+- **Skills** — 67+ 可插拔技能模組
+- **Channels** — LINE Bot、Discord Bot、Telegram Bot
+- **Status Bar** — macOS 選單列即時監控（gui/magi_menubar.py）
+- **CLI** — `magi` 命令列管理工具（scripts/magi_cli.sh）
 
 ---
 
@@ -32,7 +35,7 @@ MAGI（Multi-Agent Governance Infrastructure）是一套多代理治理基礎設
 
 ```bash
 # 1. Clone repo
-git clone <repo-url> MAGI && cd MAGI
+git clone https://github.com/WhaleChao/MAGI.git && cd MAGI
 
 # 2. Bootstrap（自動建立 venv、安裝依賴、引導設定）
 bin/bootstrap
@@ -42,49 +45,97 @@ bin/bootstrap
 #    通道 credentials 依需求填寫
 
 # 4. 初始化資料庫
-#    方式一：手動匯入
 mysql -u <user> -p <dbname> < setup_magi_brain.sql
 mysql -u <user> -p <dbname> < init_auth.sql
-#    方式二：使用 migration
-python migrations/migrate.py upgrade
 
 # 5. 啟動
 bin/start
+
+# 6. 安裝 CLI 工具（建議）
+cp scripts/magi_cli.sh /opt/homebrew/bin/magi && chmod +x /opt/homebrew/bin/magi
 ```
 
 ---
 
 ## 4. 日常操作
 
-### 啟動
+### `magi` CLI（建議方式）
+
 ```bash
-bin/start           # 前台啟動
-bin/start &         # 背景啟動
+magi                    # 顯示完整系統狀態（預設）
+magi status             # 同上
+magi start              # 啟動 daemon + 狀態列
+magi stop               # 停止 daemon + 所有服務 + 狀態列
+magi restart            # 完整重啟
+magi menubar            # 僅重啟 macOS 狀態列
+magi zombie             # 偵測並清理殭屍進程
 ```
 
-### 停止
+### 傳統方式
+
 ```bash
-# 如果用 daemon.py 啟動：
+# 啟動
+bin/start               # 前台啟動
+bin/start &             # 背景啟動
+
+# 停止
 kill $(cat rpc_server.pid 2>/dev/null)
 # 或直接 Ctrl-C（前台模式）
 ```
 
 ### 健康檢查
+
 ```bash
-bin/check           # 完整環境診斷
-curl http://127.0.0.1:5002/health   # Server health
-curl http://127.0.0.1:5003/health   # Tools API health
+magi status                             # 完整系統儀表板
+curl http://127.0.0.1:5002/health       # Server health
+curl http://127.0.0.1:5003/health       # Tools API health
+python3 skills/ops/system_test.py       # 12 項系統測試
+python3 skills/magi-doctor/action.py --task diagnose  # 完整診斷
 ```
 
 ### 查看 Logs
+
 ```bash
-tail -f .agent/server.log           # 主伺服器 log（JSON 格式）
-tail -f .agent/channel_delivery_audit.jsonl  # 通道投遞審計
+tail -f .agent/server.log                      # 主伺服器 log（JSON 格式）
+tail -f .agent/channel_delivery_audit.jsonl     # 通道投遞審計
 ```
 
 ---
 
-## 5. 設定管理
+## 5. LaunchAgent 管理
+
+MAGI 使用 macOS LaunchAgents 管理程序生命週期。所有 plist 位於 `~/Library/LaunchAgents/`。
+
+### 已註冊的 LaunchAgents
+
+| Label | 用途 | 狀態 |
+|-------|------|------|
+| `com.magi.daemon` | 主程序 daemon（啟動 server、discord、tools_api） | 常駐 |
+| `com.magi.menubar` | macOS 選單列健康監控 | 常駐 |
+| `com.magi.omlx` | TAIDE-12b 推理引擎（port 8080） | 常駐 |
+| `com.magi.omlx-embed` | ModernBERT embedding（port 8081） | 常駐 |
+| `com.magi.db-proxy` | SSH tunnel 至遠端 MariaDB | 常駐 |
+| `com.magi.smb-reconnect` | NAS 網路中斷自動重連 | 常駐 |
+| `com.magi.caddy-openclaw` | Caddy 反向代理 | 常駐 |
+| `com.magi.nightly-*` | 夜間排程任務（多個） | 按排程 |
+
+### 手動管理
+
+```bash
+# 查看已載入的 MAGI agents
+launchctl list | grep magi
+
+# 重新載入特定 agent
+launchctl bootout gui/$(id -u)/com.magi.menubar
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.magi.menubar.plist
+
+# 強制重啟
+launchctl kickstart -k gui/$(id -u)/com.magi.menubar
+```
+
+---
+
+## 6. 設定管理
 
 ### 環境變數分層
 
@@ -94,7 +145,21 @@ tail -f .agent/channel_delivery_audit.jsonl  # 通道投遞審計
 | Feature-scoped | `MAGI_LINE_*`, `DISCORD_BOT_TOKEN`, `OPENCLAW_TELEGRAM_BOT_TOKEN` | 僅該通道不可用 |
 | Recommended | `MAGI_CLOUDFLARED_PATH`, `MAGI_OMLX_SUMMARY_MODEL` | Warning |
 
+### Registry 系統
+
+v2 將所有硬編碼值外部化為 JSON + Python Registry：
+
+| JSON 設定檔 | Python Registry | 用途 |
+|-------------|----------------|------|
+| `json/services.json` | `api/routing/service_registry.py` | 服務端點 |
+| `json/models.json` | `api/routing/model_registry.py` | 模型別名 |
+| `json/nodes.json` | `api/routing/node_registry.py` | 節點 IP |
+| `json/datastores.json` | `api/routing/datastore_registry.py` | 資料庫連線 |
+
+覆寫優先級：環境變數 → JSON 設定 → 硬編碼後備
+
 ### Feature Enable Flags
+
 ```bash
 MAGI_ENABLE_LINE=1       # 啟用 LINE Bot
 MAGI_ENABLE_DISCORD=0    # 停用 Discord Bot
@@ -103,6 +168,7 @@ MAGI_ENABLE_REMOTE_DB=0  # 停用遠端 DB 同步
 ```
 
 ### 安全相關
+
 ```bash
 MAGI_CORS_ORIGINS=https://your-frontend.com   # CORS 白名單
 JUDICIAL_API_ALLOW_INSECURE_SSL=0              # 預設關閉
@@ -111,19 +177,40 @@ MAGI_FORCE_HTTPS=1                             # 啟用 Secure cookie
 
 ---
 
-## 6. 資料庫操作
+## 7. 資料庫操作
+
+### DB 容錯機制
+
+MAGI v2 支援遠端/本地雙活資料庫容錯：
+
+```
+遠端 DB (Keeper: 100.121.61.74:3306)
+    │
+    ├─ 正常：遠端直連
+    ├─ 斷線：自動切換至本地 DB
+    └─ 恢復：自動 mysqldump 同步回本地
+```
+
+檢查容錯狀態：
+```bash
+magi status                    # 看 Database 段
+curl http://127.0.0.1:5002/health  # 看 db_failover 段
+```
 
 ### 備份
+
 ```bash
 mysqldump -u <user> -p <dbname> > backup_$(date +%Y%m%d).sql
 ```
 
 ### 還原
+
 ```bash
-mysql -u <user> -p <dbname> < backup_20260319.sql
+mysql -u <user> -p <dbname> < backup_20260405.sql
 ```
 
 ### Schema Migration
+
 ```bash
 python migrations/migrate.py status    # 查看版本
 python migrations/migrate.py upgrade   # 升級
@@ -132,37 +219,45 @@ python migrations/migrate.py rollback  # 回滾上一個
 
 ---
 
-## 7. 升級流程
+## 8. 升級流程
 
 ```bash
 # 1. 備份
 mysqldump -u <user> -p <dbname> > pre_upgrade_$(date +%Y%m%d).sql
 cp .env .env.bak
 
-# 2. 拉取新版本
+# 2. 停止服務
+magi stop
+
+# 3. 拉取新版本
 git pull origin main
 
-# 3. 更新依賴
+# 4. 更新依賴
 venv/bin/pip install -r requirements.txt
 
-# 4. 執行 migration
+# 5. 執行 migration
 python migrations/migrate.py upgrade
 
-# 5. 重啟
-bin/start
+# 6. 更新 CLI
+cp scripts/magi_cli.sh /opt/homebrew/bin/magi
+
+# 7. 重啟
+magi start
 ```
 
 ### 回滾
+
 ```bash
+magi stop
 git checkout <previous-tag>
 python migrations/migrate.py rollback
-mysql -u <user> -p <dbname> < pre_upgrade_20260319.sql
-bin/start
+mysql -u <user> -p <dbname> < pre_upgrade_20260405.sql
+magi start
 ```
 
 ---
 
-## 8. 故障排除
+## 9. 故障排除
 
 ### MAGI 無法啟動
 
@@ -178,30 +273,63 @@ bin/start
 1. 檢查 `MAGI_ENABLE_LINE=1` 且 credentials 已設定
 2. 檢查 webhook URL 是否正確指向 MAGI
 3. 查看 `.agent/server.log` 中的 LINE 相關 error
-4. 執行 `bin/check` 查看通道狀態
+4. 執行 `magi status` 查看服務狀態
 
 ### 推理卡死 / 回應過慢
 
-1. 檢查 Ollama 是否正常: `curl http://localhost:11434/api/tags`
-2. 檢查模型是否載入: 看 log 中的 inference timeout
-3. 嘗試重啟 Ollama: `systemctl restart ollama`
-4. 降級模型: 修改 `MAGI_MAIN_MODEL` 為較小模型
+1. 檢查 oMLX 是否正常: `magi status` 看 oMLX Inference 段
+2. 直接測試: `curl http://localhost:8080/v1/models`
+3. 檢查模型是否載入: 看 log 中的 inference timeout
+4. 重啟 oMLX: `launchctl kickstart -k gui/$(id -u)/com.magi.omlx`
+
+### 狀態列不更新
+
+1. `magi menubar` — 重啟狀態列
+2. 檢查 log: `tail -f ~/Library/Logs/magi_menubar.log`
+3. 手動啟動: `python3 gui/magi_menubar.py`
+
+### 殭屍進程
+
+```bash
+magi zombie              # 自動偵測並清理
+```
+
+清理流程：
+1. 掃描所有 Z 狀態進程
+2. 向父進程發送 SIGCHLD
+3. 若仍存在，SIGTERM 殺死不響應的父進程
+4. 報告最終狀態
 
 ---
 
-## 9. 監控要點
+## 10. 監控要點
 
 | 指標 | 檢查方式 | 告警門檻 |
 |------|---------|---------|
-| Server 存活 | `curl /health` | 連續 3 次失敗 |
-| DB 連線 | `bin/check` DB 段 | 連線失敗 |
+| Server 存活 | `magi status` 或 `curl /health` | 連續 3 次失敗 |
+| DB 連線 | `magi status` Database 段 | 容錯切換時 |
+| NAS 掛載 | `magi status` NAS Mounts 段 | NOT MOUNTED |
+| 遠端節點 | `magi status` Remote Nodes 段 | DOWN |
 | 磁碟空間 | `df -h` | < 10% 可用 |
 | Log 大小 | `du -sh .agent/` | > 500 MB |
 | 推理延遲 | Log 中的 inference_ms | > 30s 平均 |
+| 排程任務 | 狀態列 Cron Jobs 子選單 | 超過 25 小時未執行 |
+| 殭屍進程 | `magi zombie` | > 0 |
+
+### macOS 狀態列監控
+
+狀態列（`gui/magi_menubar.py`）每 5 秒自動收集以下資訊：
+
+- 所有核心服務 PID 狀態
+- 遠端節點 TCP + HTTP 健康
+- 每個排程任務的最後執行時間
+- NAS 掛載狀態 + 磁碟用量
+- 資料庫容錯詳情
+- oMLX 推理引擎狀態
 
 ---
 
-## 10. 安全注意事項
+## 11. 安全注意事項
 
 - `.env` 不得進入 git（已在 .gitignore）
 - CORS 僅允許白名單來源（`MAGI_CORS_ORIGINS`）
@@ -209,28 +337,49 @@ bin/start
 - 所有 API 端點需要認證（dashboard session 或 API key）
 - Session cookie 啟用 HttpOnly + SameSite=Lax
 - 定期輪換 `FLASK_SECRET_KEY` 和 `MAGI_API_KEY`
+- Registry JSON 檔案不含密碼（僅端點資訊）
 
 ---
 
-## 11. 檔案結構
+## 12. 檔案結構
 
 ```
 MAGI/
-├── api/                 # 核心 API 模組
-│   ├── server.py        # 主 Flask 應用
-│   ├── tools_api.py     # Tools HTTP API
-│   ├── orchestrator.py  # NL 路由引擎
-│   └── runtime_paths.py # 路徑抽象層
-├── bin/                 # 標準化入口
-│   ├── bootstrap        # 首次安裝
-│   ├── start            # 啟動服務
-│   └── check            # 健康檢查
-├── skills/              # 可插拔技能
-├── migrations/          # DB schema migration
-├── templates/           # Web UI 模板
-├── static/              # 靜態資源
-├── .env                 # 環境設定（不進 git）
-├── .env.example         # 設定範本
-├── pyproject.toml       # 專案元資料
-└── start_magi.sh        # 傳統啟動腳本
+├── api/                     # 核心 API 層
+│   ├── server.py            # Flask 入口（802 行）
+│   ├── orchestrator.py      # 路由中樞（2,335 行）
+│   ├── tools_api.py         # Tools HTTP API
+│   ├── discord_bot.py       # Discord 整合 + 排程
+│   ├── db_failover.py       # DB 容錯控制器
+│   ├── blueprints/          # Flask Blueprint（7 模組）
+│   ├── webhooks/            # 頻道 Webhook（2 模組）
+│   ├── pipelines/           # 處理管線（8 模組）
+│   ├── domains/             # 領域流程（6 模組）
+│   ├── routing/             # Registry + 路由（14 模組）
+│   ├── permissions/         # RBAC 權限
+│   ├── events/              # 事件系統
+│   ├── hooks/               # 鉤子匯流排
+│   ├── tasks/               # 任務運行時
+│   ├── session/             # 會話管理
+│   ├── tools/               # 工具登錄
+│   └── agents/              # 多代理運行時
+├── json/                    # 宣告式設定
+│   ├── services.json        # 服務端點
+│   ├── models.json          # 模型定義
+│   ├── nodes.json           # 節點定義
+│   └── datastores.json      # 資料庫連線
+├── gui/                     # macOS 狀態列
+│   └── magi_menubar.py
+├── scripts/                 # 操作腳本
+│   ├── magi_cli.sh          # `magi` CLI
+│   └── ops/                 # 操作腳本
+├── skills/                  # 67+ 可插拔技能
+├── providers/               # LLM 供應商抽象
+├── migrations/              # DB schema migration
+├── tests/                   # 90+ 測試檔
+├── templates/               # Web UI 模板
+├── static/                  # 靜態資源
+├── .env                     # 環境設定（不進 git）
+├── .env.example             # 設定範本
+└── CONSTITUTION.md          # 治理規則
 ```
