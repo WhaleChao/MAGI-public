@@ -3096,6 +3096,64 @@
                     "skill"
                 ]
             }
+        },
+        {
+            "name": "run_code_melchior_agent",
+            "description": "Functional skill generated from CODE file `melchior_agent.py`. Supports function-call mode, module execution mode, and self-test mode.",
+            "endpoint": "/skills/run",
+            "method": "POST",
+            "sage": "casper",
+            "iron_dome": true,
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "skill": {
+                        "type": "string",
+                        "default": "code-melchior_agent",
+                        "enum": [
+                            "code-melchior_agent"
+                        ],
+                        "description": "Skill folder name (default: code-melchior_agent)"
+                    },
+                    "task": {
+                        "type": "string",
+                        "description": "Task text to pass into action.py"
+                    }
+                },
+                "required": [
+                    "task",
+                    "skill"
+                ]
+            }
+        },
+        {
+            "name": "run_code_setup_wizard",
+            "description": "Functional skill generated from CODE file `setup_wizard.py`. Supports function-call mode, module execution mode, and self-test mode.",
+            "endpoint": "/skills/run",
+            "method": "POST",
+            "sage": "casper",
+            "iron_dome": true,
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "skill": {
+                        "type": "string",
+                        "default": "code-setup_wizard",
+                        "enum": [
+                            "code-setup_wizard"
+                        ],
+                        "description": "Skill folder name (default: code-setup_wizard)"
+                    },
+                    "task": {
+                        "type": "string",
+                        "description": "Task text to pass into action.py"
+                    }
+                },
+                "required": [
+                    "task",
+                    "skill"
+                ]
+            }
         }
     ]
 }
