@@ -5489,6 +5489,18 @@ def main() -> int:
                 return reason
         except Exception:
             logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 5481, exc_info=True)
+        # Clean up stale per-PID files (orphans whose target process is long gone)
+        try:
+            import glob as _glob
+            for stale in _glob.glob(os.path.join(MAGI_ROOT_DIR, "_autopilot_kill_reason_*")):
+                try:
+                    mtime = os.path.getmtime(stale)
+                    if time.time() - mtime > 3600:  # older than 1 hour
+                        os.unlink(stale)
+                except Exception:
+                    pass
+        except Exception:
+            pass
         return ""
 
     def _term_handler(signum, frame):

@@ -112,7 +112,7 @@ MAGI 使用 macOS LaunchAgents 管理程序生命週期。所有 plist 位於 `~
 |-------|------|------|
 | `com.magi.daemon` | 主程序 daemon（啟動 server、discord、tools_api） | 常駐 |
 | `com.magi.menubar` | macOS 選單列健康監控 | 常駐 |
-| `com.magi.omlx` | TAIDE-12b 推理引擎（port 8080） | 常駐 |
+| `com.magi.omlx` | Gemma-4 26B 推理引擎（port 8080） | 常駐 |
 | `com.magi.omlx-embed` | ModernBERT embedding（port 8081） | 常駐 |
 | `com.magi.db-proxy` | SSH tunnel 至遠端 MariaDB | 常駐 |
 | `com.magi.smb-reconnect` | NAS 網路中斷自動重連 | 常駐 |

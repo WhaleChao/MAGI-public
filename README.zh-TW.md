@@ -316,17 +316,16 @@ v2 將原本的巨型檔案拆分為專責模組：
 
 | 模型 | 用途 | 量化 |
 |------|------|------|
-| **TAIDE-12b-Chat** | 中文法律推理、翻譯、視覺辨識、一般對話 | MLX 4-bit |
-| **Qwen2.5-Coder-14B** | 程式碼產生、技能演化 | MLX 4-bit |
+| **Gemma-4-26B** | 文字生成、法律推理、視覺、OCR、程式碼 — 全部角色 | MLX 4-bit |
 | **ModernBERT-embed** | Embedding 路由、語意搜尋 | MLX 4-bit |
-| **GLM-OCR** | 文件 OCR（PDF、圖片） | MLX bf16 |
+
+所有文字角色（primary、review、summary、code、vision、OCR）皆對應同一個 **Gemma-4 26B** 模型。可透過環境變數覆寫個別角色 — 詳見 `json/models.json`。
 
 #### Windows / Linux（Ollama + GGUF）
 
 | 模型 | 用途 | 量化 |
 |------|------|------|
-| **TAIDE-8b-Chat** | 中文法律推理 | GGUF Q4 |
-| **Qwen2.5-7b** | 一般對話、分類 | GGUF Q4 |
+| **Gemma-4**（或相容模型） | 文字生成、法律推理 | GGUF Q4 |
 | **Nomic-embed-text** | Embedding 路由、語意搜尋 | GGUF |
 
 ---
@@ -370,7 +369,7 @@ UI:
   ● Status Bar         PID 4275
 
 oMLX Inference:
-  ● Text (TAIDE)       port 8080  PID 1234
+  ● Text (Gemma-4)     port 8080  PID 1234
   ● Embed (BERT)       port 8081  PID 1235
 
 Remote Nodes:
@@ -408,7 +407,7 @@ MAGI 使用 macOS LaunchAgents 管理程序生命週期：
 |------|-------|------|
 | Daemon | `com.magi.daemon` | 主程序（啟動 server、discord、tools_api） |
 | 狀態列 | `com.magi.menubar` | macOS menu bar 健康監控 |
-| oMLX Text | `com.magi.omlx` | TAIDE-12b 推理（port 8080） |
+| oMLX Text | `com.magi.omlx` | Gemma-4 26B 推理（port 8080） |
 | oMLX Embed | `com.magi.omlx-embed` | ModernBERT embedding（port 8081） |
 | DB Proxy | `com.magi.db-proxy` | SSH tunnel 至遠端 MariaDB |
 | SMB 重連 | `com.magi.smb-reconnect` | NAS 網路中斷自動重連 |
@@ -686,7 +685,7 @@ python3 setup_wizard.py
 | **Discord** | `DISCORD_BOT_TOKEN`, `DISCORD_NOTIFY_CHANNEL_ID` | Discord Bot |
 | **Telegram** | `OPENCLAW_TELEGRAM_BOT_TOKEN`, `MAGI_TG_ADMIN_CHAT_ID` | Telegram Bot |
 | **管理員** | `MAGI_ADMIN_DISPLAY_NAME`, `MAGI_ADMIN_LINE_IDS` | LINE user ID |
-| **模型** | `MAGI_MAIN_MODEL` | `TAIDE-12b-Chat-mlx-4bit`（macOS） |
+| **模型** | `MAGI_MAIN_MODEL` | `gemma-4-26b-a4b-it-4bit`（macOS） |
 | **推理** | `MAGI_OMLX_ENABLED` | `1` 用 oMLX（macOS），`0` 用 Ollama |
 
 完整設定見 [.env.example](.env.example)。

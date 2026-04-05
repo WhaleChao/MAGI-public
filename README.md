@@ -107,8 +107,8 @@ First-time users are guided through a web-based setup wizard that:
 1. **Hardware Detection** — auto-detects CPU, GPU (Metal/CUDA), RAM, disk space
 2. **Engine Check** — verifies oMLX (macOS) or Ollama (Windows/Linux) installation
 3. **Model Recommendation** — suggests optimal models based on your hardware:
-   - Apple Silicon (>=16 GB): TAIDE-12b (text+vision) + Coder-14B + ModernBERT + GLM-OCR
-   - NVIDIA GPU (>=8 GB): TAIDE-8b GGUF + Qwen2.5-7b + Nomic-embed
+   - Apple Silicon (>=16 GB): Gemma-4 26B (text+vision+OCR) + ModernBERT
+   - NVIDIA GPU (>=8 GB): Gemma-4 GGUF + Nomic-embed
    - CPU-only (>=8 GB): Lightweight GGUF models
 4. **Configuration** — collects LINE API tokens, database credentials, admin identity
 5. **Connection Test** — validates LINE API and database connectivity
@@ -226,17 +226,16 @@ The v2 architecture splits the original monolith files into focused modules:
 
 | Model | Purpose | Quantization |
 |-------|---------|-------------|
-| **TAIDE-12b-Chat** | Chinese legal reasoning, translation, vision, general chat | MLX 4-bit |
-| **Qwen2.5-Coder-14B** | Code generation, skill evolution | MLX 4-bit |
+| **Gemma-4-26B** | Text generation, legal reasoning, vision, OCR, code — all roles | MLX 4-bit |
 | **ModernBERT-embed** | Embedding router, semantic search | MLX 4-bit |
-| **GLM-OCR** | Document OCR (PDF, images) | MLX bf16 |
+
+All text roles (primary, review, summary, code, vision, OCR) map to a single **Gemma-4 26B** model. Per-role overrides are available via environment variables — see `json/models.json`.
 
 #### Windows / Linux (Ollama + GGUF)
 
 | Model | Purpose | Quantization |
 |-------|---------|-------------|
-| **TAIDE-8b-Chat** | Chinese legal reasoning | GGUF Q4 |
-| **Qwen2.5-7b** | General chat, classification | GGUF Q4 |
+| **Gemma-4** (or compatible) | Text generation, legal reasoning | GGUF Q4 |
 | **Nomic-embed-text** | Embedding router, semantic search | GGUF |
 
 ---
@@ -280,7 +279,7 @@ UI:
   ● Status Bar         PID 4275
 
 oMLX Inference:
-  ● Text (TAIDE)       port 8080  PID 1234
+  ● Text (Gemma-4)     port 8080  PID 1234
   ● Embed (BERT)       port 8081  PID 1235
 
 Remote Nodes:
@@ -318,7 +317,7 @@ MAGI uses macOS LaunchAgents for process lifecycle:
 |-------|-------|---------|
 | Daemon | `com.magi.daemon` | Master process (spawns server, discord, tools_api) |
 | Status Bar | `com.magi.menubar` | macOS menu bar health monitor |
-| oMLX Text | `com.magi.omlx` | TAIDE-12b inference (port 8080) |
+| oMLX Text | `com.magi.omlx` | Gemma-4 26B inference (port 8080) |
 | oMLX Embed | `com.magi.omlx-embed` | ModernBERT embedding (port 8081) |
 | DB Proxy | `com.magi.db-proxy` | SSH tunnel to remote MariaDB |
 | SMB Reconnect | `com.magi.smb-reconnect` | NAS auto-reconnect on network change |
@@ -354,7 +353,7 @@ skills/{skill-name}/
 | **`legal_attest`** | Registered mail letter generator — interactive questionnaire, outputs Taiwan postal PDF format | `generate`, `preview` |
 | **`statutes-vdb`** | Statute vector database — auto-infers relevant laws by case type. FAISS-indexed semantic search | `search`, `index`, `info` |
 | **`labor-law-calculator`** | Taiwan Labor Standards Act calculator: overtime pay, annual leave, severance. Pure statutory math | `overtime`, `leave`, `severance`, `verify` |
-| **`law_review`** | Legal terminology review using TAIDE model — checks Taiwan legal conventions and formal style | `review` |
+| **`law_review`** | Legal terminology review — checks Taiwan legal conventions and formal style | `review` |
 
 ### Document Processing (7 skills)
 
@@ -528,7 +527,7 @@ MAGI v2 externalizes all hardcoded values (IPs, ports, model names, connection s
 | File | Purpose | Example Entry |
 |------|---------|---------------|
 | `services.json` | Service endpoints (host, port, path) | `{"casper": {"host": "127.0.0.1", "port": 5002}}` |
-| `models.json` | Model aliases, providers, parameters | `{"taide-12b": {"provider": "omlx", "ctx": 4096}}` |
+| `models.json` | Model aliases, providers, parameters | `{"text_primary": "gemma-4-26b-a4b-it-4bit"}` |
 | `nodes.json` | Execution nodes (IP, role, health URL) | `{"melchior": {"ip": "100.116.54.16", "role": "vision"}}` |
 | `datastores.json` | Database and storage connections | `{"magi_brain": {"host": "127.0.0.1", "port": 3306}}` |
 
@@ -606,7 +605,7 @@ Copy `.env.example` to `.env` and configure:
 | **Database** | `DB_HOST`, `DB_USER`, `DB_PASSWORD` | `magi_brain` — vector memory |
 | **LINE** | `MAGI_LINE_CHANNEL_ACCESS_TOKEN`, `MAGI_LINE_CHANNEL_SECRET` | LINE Messaging API |
 | **Admin** | `MAGI_ADMIN_DISPLAY_NAME`, `MAGI_ADMIN_LINE_IDS` | LINE user IDs |
-| **Models** | `MAGI_MAIN_MODEL` | `taide-12b` (macOS) / `taide-lx-7b-chat` (Windows) |
+| **Models** | `MAGI_MAIN_MODEL` | `gemma-4-26b-a4b-it-4bit` (macOS) / per env (Windows) |
 | **Inference** | `MAGI_OMLX_ENABLED` | `1` for oMLX (macOS), `0` for Ollama |
 
 See [.env.example](.env.example) for the complete list.

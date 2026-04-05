@@ -51,7 +51,7 @@ cmd_status() {
     _check "Status Bar"   "gui/magi_menubar.py"
     echo ""
     echo "oMLX Inference:"
-    _check_port "Text (TAIDE)"   8080
+    _check_port "Text (Gemma-4)" 8080
     _check_port "Embed (BERT)"   8081
     echo ""
 

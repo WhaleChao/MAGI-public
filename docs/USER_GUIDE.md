@@ -500,7 +500,7 @@ MAGI 會在背景自動執行以下排程任務，你不需要手動操作：
 點擊狀態列圖示，會展開以下子選單：
 
 - **Core Services** — Daemon、Server、Discord Bot、Tools API 的 PID 及狀態
-- **oMLX** — 文字推理（TAIDE）及 Embedding（BERT）引擎狀態
+- **oMLX** — 文字推理（Gemma-4）及 Embedding（BERT）引擎狀態
 - **Remote Nodes** — Melchior、Balthasar、Keeper 連線狀態
 - **Cron Jobs** — 每個排程任務的最後執行時間（超過 25 小時未執行會標記為過期）
 - **NAS** — homes 和 lumi 掛載狀態及磁碟用量
@@ -537,7 +537,7 @@ UI:
   ● Status Bar         PID 4275
 
 oMLX Inference:
-  ● Text (TAIDE)       port 8080  PID 1234
+  ● Text (Gemma-4)     port 8080  PID 1234
   ● Embed (BERT)       port 8081  PID 1235
 
 Remote Nodes:

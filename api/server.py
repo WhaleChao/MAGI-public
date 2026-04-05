@@ -678,7 +678,7 @@ def _fallback_to_tools_api(error):
 def index():
     if request.method == "POST":
         return callback()
-    return redirect(url_for("dashboard"))
+    return redirect(url_for("dashboard_pages.dashboard"))
 
 
 @app.route("/login", methods=["GET", "POST"])
@@ -694,7 +694,7 @@ def login():
                 if user_data and check_password_hash(user_data["password_hash"], password):
                     user = User(user_data["id"], user_data["username"], user_data["role"])
                     login_user(user)
-                    return redirect(url_for("dashboard"))
+                    return redirect(url_for("dashboard_pages.dashboard"))
                 else:
                     flash("Invalid username or password")
         except Exception as e:

@@ -272,3 +272,4 @@ toggle_codex_distributed_mode.sh
 .brain_ngl_hint.json
 magi_status.json
 Caddyfile_openclaw
+_autopilot_kill_log.jsonl

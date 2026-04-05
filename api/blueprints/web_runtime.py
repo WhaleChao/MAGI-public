@@ -237,8 +237,21 @@ def create_web_runtime_blueprint(
             faiss_path = root / "skills" / "memory" / "index_cache" / "mem_index.faiss"
             if faiss_path.exists():
                 stats["faiss_size"] = faiss_path.stat().st_size
+            meta_path = root / "skills" / "memory" / "index_cache" / "meta.json"
+            if meta_path.exists():
+                meta = json.loads(meta_path.read_text(encoding="utf-8"))
+                stats["faiss_vector_count"] = meta.get("total", 0)
+                stats["faiss_index_type"] = meta.get("index_type", "unknown")
+                stats["faiss_last_updated"] = meta.get("updated", "")
         except Exception:
             logger.debug("silent-catch in api_memory_stats", exc_info=True)
+        try:
+            from skills.memory.faiss_index import FAISSMemoryIndex
+            idx = FAISSMemoryIndex.get_instance()
+            stats["faiss_vector_count"] = idx.total
+            stats["faiss_index_type"] = idx.index_type
+        except Exception:
+            pass
         return jsonify(stats)
 
     @bp.route("/api/memory/recall", methods=["POST"])

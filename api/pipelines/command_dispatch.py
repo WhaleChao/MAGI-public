@@ -449,6 +449,10 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
     if message.startswith("翻譯 ") or message.lower().startswith("translate "):
         return orch._run_inline_translation_command(user_id, message)
 
+    if any(message.startswith(p) for p in ["摘要 ", "摘要\n", "精簡摘要 ", "精簡摘要\n", "詳細摘要 ", "詳細摘要\n", "短摘要 ", "長摘要 "]) or msg_lower.startswith("summarize ") or msg_lower.startswith("summary "):
+        from api.pipelines.specialized_commands import run_inline_summary_command
+        return run_inline_summary_command(orch, message)
+
     if message.startswith("製作音樂 ") or message.startswith("生成音樂 ") or message.lower().startswith("make music "):
         try:
             from skills.bridge.tri_sage_collab import generate_music
