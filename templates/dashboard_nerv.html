@@ -1174,13 +1174,13 @@ body::after {
       <div class="nerv-fold-body">
         <div class="routing-section">
           <div id="routing-table">
-            <div class="route-row"><span class="task">摘要產生</span><span class="path"><span class="engine omlx">oMLX</span></span><span class="model">TAIDE-12b</span></div>
-            <div class="route-row"><span class="task">影像辨識</span><span class="path"><span class="engine omlx">oMLX</span></span><span class="model">gemma-3-12b + GLM-OCR</span></div>
-            <div class="route-row"><span class="task">文字辨識 OCR</span><span class="path"><span class="engine omlx">oMLX</span></span><span class="model">GLM-OCR-bf16</span></div>
-            <div class="route-row"><span class="task">程式產生</span><span class="path"><span class="engine omlx">oMLX</span></span><span class="model">Coder-14B</span></div>
+            <div class="route-row"><span class="task">摘要產生</span><span class="path"><span class="engine omlx">oMLX</span></span><span class="model">Gemma-4 26B</span></div>
+            <div class="route-row"><span class="task">影像辨識</span><span class="path"><span class="engine omlx">oMLX</span></span><span class="model">Gemma-4 26B (multimodal)</span></div>
+            <div class="route-row"><span class="task">文字辨識 OCR</span><span class="path"><span class="engine omlx">oMLX</span></span><span class="model">Gemma-4 26B (vision)</span></div>
+            <div class="route-row"><span class="task">程式產生</span><span class="path"><span class="engine omlx">oMLX</span></span><span class="model">Gemma-4 26B</span></div>
             <div class="route-row"><span class="task">向量嵌入</span><span class="path"><span class="engine omlx">oMLX</span></span><span class="model">ModernBERT</span></div>
-            <div class="route-row"><span class="task">意圖/通用</span><span class="path"><span class="engine omlx">oMLX</span></span><span class="model">TAIDE-12b</span></div>
-            <div class="route-row"><span class="task">法律分析</span><span class="path"><span class="engine omlx">oMLX</span></span><span class="model">TAIDE-12b</span></div>
+            <div class="route-row"><span class="task">意圖/通用</span><span class="path"><span class="engine omlx">oMLX</span></span><span class="model">Gemma-4 26B</span></div>
+            <div class="route-row"><span class="task">法律分析</span><span class="path"><span class="engine omlx">oMLX</span></span><span class="model">Gemma-4 26B</span></div>
           </div>
         </div>
       </div>
@@ -1365,14 +1365,14 @@ const PRODUCT_RUNTIME_LABELS = {
   laf: { title: '法扶 LAF', subtitle: '法扶 workflow 與 portal test/prod 切換' },
 };
 const ROUTING_ROWS = [
-  { task: '摘要產生', feature: 'summary', localModel: 'TAIDE-12b', codexModel: 'Codex 摘要鏈路' },
-  { task: '影像辨識', feature: 'vision', localModel: 'gemma-3-12b + GLM-OCR', codexModel: 'Codex Vision/OCR' },
-  { task: '文字辨識 OCR', feature: 'vision', localModel: 'GLM-OCR-bf16', codexModel: 'Codex OCR route' },
-  { task: '筆錄整理', feature: 'transcript', localModel: 'Whisper + OCR pipeline', codexModel: 'Codex Transcript route' },
-  { task: '程式產生', localModel: 'Coder-14B' },
+  { task: '摘要產生', feature: 'summary', localModel: 'Gemma-4 26B', codexModel: 'Codex 摘要鏈路' },
+  { task: '影像辨識', feature: 'vision', localModel: 'Gemma-4 26B (multimodal)', codexModel: 'Codex Vision/OCR' },
+  { task: '文字辨識 OCR', feature: 'vision', localModel: 'Gemma-4 26B (vision)', codexModel: 'Codex OCR route' },
+  { task: '筆錄整理', feature: 'transcript', localModel: 'Whisper + Gemma-4 26B', codexModel: 'Codex Transcript route' },
+  { task: '程式產生', localModel: 'Gemma-4 26B' },
   { task: '向量嵌入', localModel: 'ModernBERT' },
-  { task: '意圖/通用', feature: 'intent', localModel: 'TAIDE-12b', codexModel: 'Codex Router' },
-  { task: '法律分析', localModel: 'TAIDE-12b' },
+  { task: '意圖/通用', feature: 'intent', localModel: 'Gemma-4 26B', codexModel: 'Codex Router' },
+  { task: '法律分析', localModel: 'Gemma-4 26B' },
 ];
 
 function escapeHtml(value) {
@@ -1609,7 +1609,7 @@ function renderOfficeNodes(data) {
   const proxy = data.caddy_proxy || {};
   panel.innerHTML = [
     nodeHTML('Office App :4200 (本機)', app.status || 'error', app.detail || ''),
-    nodeHTML('Tailscale Caddy :18790', proxy.status || 'error', proxy.detail || ''),
+    nodeHTML('Cloudflared → :5002', proxy.status === 'skipped' ? 'online' : (proxy.status || 'error'), proxy.detail || 'direct tunnel'),
     '',
   ].join('');
 }

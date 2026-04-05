@@ -135,33 +135,33 @@
     <div class="form-group">
         <label>主要對話模型</label>
         <div class="hint">用於日常對話、法律諮詢、文件處理</div>
-        <input type="text" name="main_model" value="{% if hw.metal_support %}taide-12b{% else %}taide-lx-7b-chat{% endif %}">
+        <input type="text" name="main_model" value="{% if hw.metal_support %}gemma-4-26b-a4b-it-4bit{% else %}gemma-4-26b-a4b-it-4bit{% endif %}">
     </div>
 
     <div class="form-row">
         <div class="form-group">
             <label>分類器模型</label>
-            <input type="text" name="classifier_model" value="{% if hw.metal_support %}taide-12b{% else %}qwen2.5:7b{% endif %}">
+            <input type="text" name="classifier_model" value="{% if hw.metal_support %}gemma-4-26b-a4b-it-4bit{% else %}gemma-4-26b-a4b-it-4bit{% endif %}">
         </div>
         <div class="form-group">
             <label>備援模型</label>
-            <input type="text" name="fallback_model" value="{% if hw.metal_support %}Qwen3.5-9B-4bit{% else %}qwen2.5:7b{% endif %}">
+            <input type="text" name="fallback_model" value="gemma-4-26b-a4b-it-4bit">
         </div>
     </div>
 
     {% if hw.metal_support %}
     <div class="form-group">
         <label>摘要模型 (oMLX)</label>
-        <input type="text" name="summary_model" value="TAIDE-12b-Chat-mlx-4bit">
+        <input type="text" name="summary_model" value="gemma-4-26b-a4b-it-4bit">
     </div>
     <div class="form-row">
         <div class="form-group">
             <label>視覺模型</label>
-            <input type="text" name="vision_model" value="GLM-OCR-bf16">
+            <input type="text" name="vision_model" value="gemma-4-26b-a4b-it-4bit">
         </div>
         <div class="form-group">
             <label>OCR 模型</label>
-            <input type="text" name="ocr_model" value="GLM-OCR-bf16">
+            <input type="text" name="ocr_model" value="gemma-4-26b-a4b-it-4bit">
         </div>
     </div>
     {% endif %}

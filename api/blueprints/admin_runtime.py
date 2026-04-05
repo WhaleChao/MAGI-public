@@ -185,6 +185,22 @@ def create_admin_runtime_blueprint(
 
         results["magi_server"] = {"status": "online", "pid": os.getpid()}
         results["timestamp"] = datetime.now().isoformat()
+
+        # FAISS vector DB stats
+        try:
+            from skills.memory.faiss_index import FAISSMemoryIndex
+            idx = FAISSMemoryIndex.get_instance()
+            results["faiss"] = {"ok": True, "vectors": getattr(idx, "total", 0), "index_type": getattr(idx, "index_type", "unknown")}
+        except Exception:
+            _meta_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "..", "skills", "memory", "index_cache", "meta.json")
+            try:
+                import json as _json
+                with open(_meta_path, "r", encoding="utf-8") as _f:
+                    _meta = _json.load(_f)
+                results["faiss"] = {"ok": True, "vectors": _meta.get("total", 0), "index_type": _meta.get("index_type", "unknown")}
+            except Exception:
+                results["faiss"] = {"ok": False, "vectors": 0}
+
         return jsonify(results)
 
     @bp.route("/api/system-test", methods=["POST"])
