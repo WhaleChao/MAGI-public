@@ -33,7 +33,7 @@ except ImportError:
 
 # ── 設定 ──────────────────────────────────────────────────────────
 MAGI_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-CHECK_INTERVAL = 3
+CHECK_INTERVAL = 5  # 拉長間隔減少主執行緒阻塞
 
 SERVICES = [
     ("守護程序", "daemon.py"),
@@ -192,6 +192,7 @@ class MAGIMenuBar(rumps.App):
         super().__init__(" MAGI ", quit_button=None)
         self.icon = None
         self._action_lock = threading.Lock()
+        self._status_cache = {}  # 背景執行緒寫，主執行緒讀
 
         # ── Header ──
         self.menu_header = rumps.MenuItem("  MAGI v2", callback=None)
@@ -277,55 +278,138 @@ class MAGIMenuBar(rumps.App):
 
     @rumps.timer(CHECK_INTERVAL)
     def _periodic_check(self, _sender):
-        try:
-            self._update_status()
-        except Exception:
-            pass
+        # 主執行緒只讀 cache 做 UI 更新（不 block）
+        if self._status_cache:
+            try:
+                self._apply_status(self._status_cache)
+            except Exception:
+                pass
+        # 背景執行緒收集資料（I/O 不阻塞選單點擊）
+        threading.Thread(target=self._collect_status, daemon=True).start()
 
-    def _update_status(self):
-        core_up = 0
+    def _collect_status(self):
+        """背景執行緒：收集所有 I/O 資料，存入 cache。"""
+        import socket
+        cache = {}
+        # 服務
+        svcs = {}
         for name, pattern in SERVICES:
-            pid = _pgrep(pattern)
-            if pid:
+            svcs[name] = bool(_pgrep(pattern))
+        cache["services"] = svcs
+        # 推理
+        engines = {}
+        for name, port in OMLX_ENGINES:
+            engines[name] = _check_omlx(port)
+        cache["engines"] = engines
+        # Tier
+        try:
+            from skills.bridge.tier_router import get_status as _ts
+            cache["tier"] = _ts()
+        except Exception:
+            cache["tier"] = None
+        # 排程
+        try:
+            cron_path = os.path.join(MAGI_ROOT, "cron_jobs.json")
+            with open(cron_path, "r", encoding="utf-8") as f:
+                jobs = json.load(f)
+            cache["cron_enabled"] = len([j for j in jobs if j.get("enabled", True)])
+            cache["cron_bot"] = bool(_pgrep("discord_bot.py"))
+        except Exception:
+            cache["cron_enabled"] = -1
+            cache["cron_bot"] = False
+        # NAS
+        def _tcp(host, port=445, timeout=2):
+            try:
+                s = socket.create_connection((host, port), timeout=timeout)
+                s.close()
+                return True
+            except Exception:
+                return False
+        lan_ip = os.environ.get("MAGI_NAS_HOST", "192.168.1.3")
+        ts_ip = os.environ.get("MAGI_NAS_TAILSCALE_HOST", "100.111.10.126")
+        mounted = os.path.ismount("/Volumes/homes") and (
+            os.path.ismount("/Volumes/lumi") or os.path.ismount("/Volumes/lumi-1")
+        )
+        cache["nas"] = {"lan": _tcp(lan_ip, timeout=1), "vpn": _tcp(ts_ip, timeout=2), "mounted": mounted}
+        # DB
+        remote_host = os.environ.get("MAGI_REMOTE_DB_HOST", "100.121.61.74")
+        cache["db"] = {"remote": _tcp(remote_host, 3306, 2), "local": _tcp("127.0.0.1", 3306, 2)}
+        # Memory
+        cache["mem"] = _get_system_memory()
+        cache["magi_mb"] = sum(m[1] for m in _get_module_memory())
+        cache["zombies"] = _count_zombies()
+        self._status_cache = cache
+
+    def _apply_status(self, c):
+        """主執行緒：用 cache 更新 UI（無 I/O）。"""
+        core_up = 0
+        svcs = c.get("services", {})
+        for name, _ in SERVICES:
+            if svcs.get(name):
                 _set_colored_title(self.service_items[name], f"  ● {name}  運行中", _GREEN)
                 core_up += 1
             else:
                 _set_colored_title(self.service_items[name], f"  ✗ {name}  已停止", _RED)
 
         omlx_up = 0
-        for name, port in OMLX_ENGINES:
-            model = _check_omlx(port)
-            if model:
+        engines = c.get("engines", {})
+        for name, _ in OMLX_ENGINES:
+            if engines.get(name):
                 _set_colored_title(self.omlx_items[name], f"  ● {name}  就緒", _GREEN)
                 omlx_up += 1
             else:
                 _set_colored_title(self.omlx_items[name], f"  ✗ {name}  離線", _RED)
 
-        # ── Tier Router ──
-        try:
-            from skills.bridge.tier_router import get_status as _tier_status
-            ts = _tier_status()
-            mode_label = {"auto": "自動分層", "e4b": "輕型固定", "26b": "重型固定"}.get(ts["mode"], ts["mode"])
+        # ── Tier ──
+        ts = c.get("tier")
+        if ts:
+            mode_label = {"auto": "自動分層", "e4b": "輕型固定", "26b": "重型固定"}.get(ts.get("mode", ""), "")
             _set_colored_title(self._tier_item, f"  ● 推理分層  {mode_label}", _CYAN)
-        except Exception:
+        else:
             _set_colored_title(self._tier_item, f"  ◻ 推理分層  --", _GRAY)
 
-        self._update_cron_status()
-        self._update_nas_status()
-        self._update_db_status()
+        # ── 排程 ──
+        cron_n = c.get("cron_enabled", -1)
+        if cron_n >= 0 and c.get("cron_bot"):
+            _set_colored_title(self.cron_status_item, f"  ● 定時排程  {cron_n}個運行", _GREEN)
+        elif cron_n > 0:
+            _set_colored_title(self.cron_status_item, f"  ✗ 定時排程  Bot停止", _RED)
+        else:
+            _set_colored_title(self.cron_status_item, "  ⚠ 定時排程  錯誤", _YELLOW)
+
+        # ── NAS ──
+        nas = c.get("nas", {})
+        if nas.get("lan") and nas.get("mounted"):
+            _set_colored_title(self.nas_status_item, f"  ● 網路硬碟  區網掛載", _GREEN)
+        elif nas.get("vpn") and nas.get("mounted"):
+            _set_colored_title(self.nas_status_item, f"  ● 網路硬碟  VPN掛載", _GREEN)
+        elif nas.get("mounted"):
+            _set_colored_title(self.nas_status_item, f"  ⚠ 網路硬碟  連線不穩", _YELLOW)
+        else:
+            _set_colored_title(self.nas_status_item, "  ✗ 網路硬碟  未掛載", _RED)
+
+        # ── DB ──
+        db = c.get("db", {})
+        if db.get("remote") and db.get("local"):
+            _set_colored_title(self.db_status_item, f"  ● 資料庫群  雙活同步", _GREEN)
+        elif db.get("local"):
+            _set_colored_title(self.db_status_item, f"  ⚠ 資料庫群  使用備份", _YELLOW)
+        elif db.get("remote"):
+            _set_colored_title(self.db_status_item, f"  ● 資料庫群  遠端直連", _GREEN)
+        else:
+            _set_colored_title(self.db_status_item, f"  ✗ 資料庫群  全部離線", _RED)
 
         # ── 記憶體 ──
-        total_gb, avail_gb, pct = _get_system_memory()
+        _, avail_gb, pct = c.get("mem", (0, 0, 0))
         if pct > 0:
             bar = _mem_bar(pct)
             mem_color = _GREEN if pct < 70 else (_YELLOW if pct < 85 else _RED)
             _set_colored_title(self.mem_system_item, f"  {bar} 系統記憶  {pct:.0f}% {avail_gb:.1f}G餘", mem_color)
 
-        modules = _get_module_memory()
-        magi_mb = sum(m[1] for m in modules)
+        magi_mb = c.get("magi_mb", 0)
         _set_colored_title(self.mem_total_item, f"  ● 程序佔用  {magi_mb}MB", _YELLOW if magi_mb > 2000 else _GREEN)
 
-        zombies, z_detail = _count_zombies()
+        zombies, z_detail = c.get("zombies", (0, ""))
         if zombies == 0:
             _set_colored_title(self.zombie_item, "  ● 殭屍程序  無", _GREEN)
         else:
@@ -340,75 +424,6 @@ class MAGIMenuBar(rumps.App):
             self.title = " MAGI ⚠"
         else:
             self.title = " MAGI ✕"
-
-    def _update_cron_status(self):
-        try:
-            cron_path = os.path.join(MAGI_ROOT, "cron_jobs.json")
-            if not os.path.exists(cron_path):
-                _set_colored_title(self.cron_status_item, "  ✗ 排程  設定遺失", _RED)
-                return
-            with open(cron_path, "r", encoding="utf-8") as f:
-                jobs = json.load(f)
-            enabled = [j for j in jobs if j.get("enabled", True)]
-            bot_pid = _pgrep("discord_bot.py")
-            if bot_pid and enabled:
-                _set_colored_title(self.cron_status_item, f"  ● 定時排程  {len(enabled)}個運行", _GREEN)
-            elif enabled:
-                _set_colored_title(self.cron_status_item, f"  ✗ 定時排程  Bot停止", _RED)
-            else:
-                _set_colored_title(self.cron_status_item, "  ⚠ 定時排程  無任務", _YELLOW)
-        except Exception:
-            _set_colored_title(self.cron_status_item, "  ⚠ 定時排程  錯誤", _YELLOW)
-
-    def _update_nas_status(self):
-        import socket
-        def _tcp_ok(host, port=445, timeout=2):
-            try:
-                s = socket.create_connection((host, port), timeout=timeout)
-                s.close()
-                return True
-            except Exception:
-                return False
-        try:
-            lan_ip = os.environ.get("MAGI_NAS_HOST", "192.168.1.3")
-            ts_ip = os.environ.get("MAGI_NAS_TAILSCALE_HOST", "100.111.10.126")
-            mounted = os.path.ismount("/Volumes/homes") and (
-                os.path.ismount("/Volumes/lumi") or os.path.ismount("/Volumes/lumi-1")
-            )
-            if _tcp_ok(lan_ip, timeout=1) and mounted:
-                _set_colored_title(self.nas_status_item, f"  ● 網路硬碟  區網掛載", _GREEN)
-            elif _tcp_ok(ts_ip, timeout=3) and mounted:
-                _set_colored_title(self.nas_status_item, f"  ● 網路硬碟  VPN掛載", _GREEN)
-            elif mounted:
-                _set_colored_title(self.nas_status_item, f"  ⚠ 網路硬碟  連線不穩", _YELLOW)
-            else:
-                _set_colored_title(self.nas_status_item, "  ✗ 網路硬碟  未掛載", _RED)
-        except Exception:
-            _set_colored_title(self.nas_status_item, "  ⚠ 網路硬碟  錯誤", _YELLOW)
-
-    def _update_db_status(self):
-        import socket
-        def _db_ok(host, port):
-            try:
-                s = socket.create_connection((host, port), timeout=3)
-                s.close()
-                return True
-            except Exception:
-                return False
-        try:
-            remote_host = os.environ.get("MAGI_REMOTE_DB_HOST", "100.121.61.74")
-            remote_ok = _db_ok(remote_host, 3306)
-            local_ok = _db_ok("127.0.0.1", 3306)
-            if remote_ok and local_ok:
-                _set_colored_title(self.db_status_item, f"  ● 資料庫群  雙活同步", _GREEN)
-            elif local_ok and not remote_ok:
-                _set_colored_title(self.db_status_item, f"  ⚠ 資料庫群  本機墊檔", _YELLOW)
-            elif remote_ok:
-                _set_colored_title(self.db_status_item, f"  ● 資料庫群  遠端直連", _GREEN)
-            else:
-                _set_colored_title(self.db_status_item, f"  ✗ 資料庫群  全部離線", _RED)
-        except Exception:
-            _set_colored_title(self.db_status_item, "  ⚠ 資料庫群  錯誤", _YELLOW)
 
     def _run_action(self, menu_item, label, command, original_callback):
         if not self._action_lock.acquire(blocking=False):
