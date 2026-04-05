@@ -36,7 +36,8 @@ except ImportError:
         fcntl.flock(fh.fileno(), flags)
     def file_unlock(fh):
         try: fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
-        except Exception: pass
+        except Exception as e:
+            logging.getLogger("Daemon").warning("Failed to release file lock: %s", e)
     def get_venv_python():
         return os.path.join(_MAGI_ROOT, "venv", "bin", "python3")
     def get_magi_root():

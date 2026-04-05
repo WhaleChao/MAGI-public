@@ -56,11 +56,8 @@ OMLX_ENGINES = [
 ]
 
 # 遠端節點定義（名稱, registry key, 角色, 檢測 port, 檢測類型）
-REMOTE_NODES = [
-    ("Melchior",  "melchior",  "推理節點", 8080, "api"),
-    ("Balthasar", "balthasar", "推理節點", 5002, "flask"),
-    ("Keeper",    "nas",       "資料庫",   3306, "tcp"),
-]
+# Melchior/Balthasar/Keeper 已停用（推理走本機 oMLX，DB 走本機 MariaDB）
+REMOTE_NODES = []
 
 # NAS 掛載卷
 NAS_SHARES = [
@@ -407,10 +404,6 @@ class MAGIMenuBar(rumps.App):
             self.omlx_header,
             *self.omlx_items.values(),
             rumps.separator,
-            # ── 遠端節點 ──
-            self.nodes_header,
-            *self.node_items.values(),
-            rumps.separator,
             # ── 排程 ──
             self.cron_header,
             self.cron_summary_item,
@@ -742,7 +735,8 @@ class MAGIMenuBar(rumps.App):
         # ── 選單列圖示 ──
         total = core_up + omlx_up
         expected = len(SERVICES) + len(OMLX_ENGINES)
-        if total == expected and zombies == 0 and nodes_up >= 1:
+        nodes_ok = nodes_up >= 1 if REMOTE_NODES else True
+        if total == expected and zombies == 0 and nodes_ok:
             self.title = " MAGI "
         elif core_up >= 2:
             self.title = " MAGI ⚠"

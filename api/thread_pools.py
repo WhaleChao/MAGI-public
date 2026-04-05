@@ -36,10 +36,17 @@ channel_pool = ThreadPoolExecutor(
     thread_name_prefix="magi-channel",
 )
 
+# Dedicated pool for cron/scheduled jobs so they never starve interactive
+# message handling on channel_pool.
+cron_pool = ThreadPoolExecutor(
+    max_workers=_pool_size("MAGI_CRON_POOL_WORKERS", 4, 2, 8),
+    thread_name_prefix="magi-cron",
+)
+
 
 def shutdown_all(wait: bool = False) -> None:
     """Shut down all shared thread pools (call on process exit)."""
-    for pool in (io_pool, inference_pool, channel_pool):
+    for pool in (io_pool, inference_pool, channel_pool, cron_pool):
         try:
             pool.shutdown(wait=wait)
         except Exception:

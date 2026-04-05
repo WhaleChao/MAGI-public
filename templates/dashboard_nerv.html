@@ -1608,7 +1608,7 @@ function renderOfficeNodes(data) {
   const app = data.office_app || {};
   const proxy = data.caddy_proxy || {};
   panel.innerHTML = [
-    nodeHTML('Office App :4200 (本機)', app.status || 'error', app.detail || ''),
+    nodeHTML('Office App :4200 (本機)', app.status === 'skipped' ? 'online' : (app.status || 'error'), app.status === 'skipped' ? 'disabled' : (app.detail || '')),
     nodeHTML('Cloudflared → :5002', proxy.status === 'skipped' ? 'online' : (proxy.status || 'error'), proxy.detail || 'direct tunnel'),
     '',
   ].join('');

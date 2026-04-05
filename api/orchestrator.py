@@ -1524,7 +1524,7 @@ class Orchestrator:
 
                     # Collect translation result.
                     try:
-                        rr = _tr_future.result()
+                        rr = _tr_future.result(timeout=300)
                         if isinstance(rr, dict) and rr.get("success"):
                             t = str(rr.get("text") or "").strip()
                             if t:
@@ -1537,7 +1537,7 @@ class Orchestrator:
                     summary_text = ""
                     summary_source_label = "逐字稿原文"
                     try:
-                        summary_res = _sm_future.result()
+                        summary_res = _sm_future.result(timeout=300)
                         if isinstance(summary_res, dict) and summary_res.get("success"):
                             summary_text = str(summary_res.get("text") or summary_res.get("summary") or "").strip()
                     except Exception as summarize_err:
@@ -1685,11 +1685,11 @@ class Orchestrator:
                             summary_length, progress_callback=getattr(self, '_progress_callback', None),
                         )
                     try:
-                        rr = _translate_future.result()
+                        rr = _translate_future.result(timeout=300)
                     except Exception as e:
                         rr = {"success": False, "error": str(e)}
                     try:
-                        sr = _summary_future.result()
+                        sr = _summary_future.result(timeout=300)
                     except Exception as e:
                         sr = {"success": False, "error": str(e)}
                 else:
@@ -2254,7 +2254,12 @@ class Orchestrator:
                 lock.release()
 
         import threading
-        threading.Thread(target=_run_forge_with_lock, daemon=True, name="forge-bg").start()
+        try:
+            threading.Thread(target=_run_forge_with_lock, daemon=True, name="forge-bg").start()
+        except Exception as _thread_err:
+            lock.release()
+            logger.error(f"Failed to start forge thread: {_thread_err}")
+            return f"❌ 技能生成啟動失敗：{_thread_err}"
         return "🧬 正在自動生成新技能中，請稍候（約 1-5 分鐘）。完成後我會主動回報，若超時會自動重試。"
 
     def _laf_report_command_help(self) -> str:

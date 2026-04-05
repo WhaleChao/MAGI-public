@@ -1034,7 +1034,7 @@ def external_osc_case_status():
     from skills.evolution.skill_genesis import run_skill_action
 
     data = request.get_json() or {}
-    timeout_sec = int(data.get("timeout_sec", 180))
+    timeout_sec = min(180, max(10, int(data.get("timeout_sec", 180))))  # cap 10-180s
     query = (data.get("query") or "").strip()
     payload = {
         "query": query or str(data.get("case_query") or data.get("case_number") or "").strip(),
@@ -1702,7 +1702,7 @@ def api_run_skill():
     data = request.get_json() or {}
     skill = data.get('skill', '')
     task = data.get('task', '')
-    timeout_sec = int(data.get('timeout_sec', 30))
+    timeout_sec = min(180, max(5, int(data.get('timeout_sec', 30))))  # cap 5-180s
     auto_repair = _to_bool(data.get('auto_repair', True), True)
     rollback_on_fail = _to_bool(data.get('rollback_on_fail', True), True)
     auto_install_deps = _to_bool(data.get('auto_install_deps', True), True)
@@ -2339,7 +2339,7 @@ def api_laf_smoke_login():
     headless = _to_bool(data.get("headless", True), True)
     mock_mode = _to_bool(data.get("mock_mode", False), False)
     base_url = (data.get("base_url") or "").strip()
-    timeout_sec = int(data.get("timeout_sec", 180))
+    timeout_sec = min(180, max(10, int(data.get("timeout_sec", 180))))  # cap 10-180s
 
     payload = {
         "headless": bool(headless),

@@ -100,6 +100,7 @@ if not DISCORD_BOT_TOKEN:
     logger.critical("No Discord Bot Token found in Config!")
     sys.exit(1)
 from api.thread_pools import channel_pool as _DISCORD_BG_EXECUTOR
+from api.thread_pools import cron_pool as _CRON_EXECUTOR
 
 
 def _normalize_discord_output_text(text: str) -> str:
@@ -443,8 +444,9 @@ async def bg_scheduler_loop():
     
     while not client.is_closed():
         try:
-            # 1. Check due jobs
-            due_jobs = scheduler.check_due_jobs()
+            # 1. Check due jobs (run in dedicated cron executor to avoid blocking event loop / heartbeat)
+            loop = asyncio.get_event_loop()
+            due_jobs = await loop.run_in_executor(_CRON_EXECUTOR, scheduler.check_due_jobs)
             
             for job in due_jobs:
                 command = job["command"]
@@ -480,10 +482,9 @@ async def bg_scheduler_loop():
                     # Clean command
                     clean_cmd = command.replace("@MAGI", "").strip()
 
-                    # Let Orchestrator handle it
-                    loop = asyncio.get_event_loop()
+                    # Let Orchestrator handle it (use cron_pool, not channel_pool)
                     response = await loop.run_in_executor(
-                        _DISCORD_BG_EXECUTOR,
+                        _CRON_EXECUTOR,
                         lambda: orchestrator.process_message(
                             "SYSTEM_CRON",
                             clean_cmd,
@@ -494,7 +495,10 @@ async def bg_scheduler_loop():
 
                     if response:
                         try:
-                            orchestrator.record_assistant_reply("SYSTEM_CRON", response)
+                            await loop.run_in_executor(
+                                _CRON_EXECUTOR,
+                                lambda: orchestrator.record_assistant_reply("SYSTEM_CRON", response),
+                            )
                         except Exception:
                             logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 466, exc_info=True)
 
@@ -537,31 +541,46 @@ async def bg_scheduler_loop():
                     elif response and not channel:
                         logger.info("📋 Job %s executed OK (no Discord channel to send response, len=%d)", job.get("id"), len(response))
                 else:
-                    # Non-@MAGI command: execute as subprocess via /bin/sh -c
-                    # (cron commands may contain cd/pipes; validate they start with known safe prefixes)
-                    import subprocess as _sp
+                    # Non-@MAGI command: execute as async subprocess via asyncio
+                    # (native async — does NOT consume any thread pool workers)
                     _SAFE_PREFIXES = ("cd ", "/Users/", "./venv/", "python3 ", "MAGI_", "JUDICIAL_")
                     if not any(command.strip().startswith(p) for p in _SAFE_PREFIXES):
                         logger.warning("⚠️ Blocked suspicious cron command: %s", command[:100])
                     else:
-                        # Per-job timeout: long-running tasks get more time
                         _LONG_JOBS = {"job_nightly_regression", "job_distill_train", "job_weekend_resummary",
                                       "job_pdf_namer_nightly", "job_reprocess_insights", "job_obsidian_ingest",
                                       "job_laf_nightly_audit", "job_nightly_autopilot", "job_judicial_api_night_pull",
                                       "job_judicial_api_morning", "job_weekly_legal_crawl"}
                         _timeout = 7200 if job.get("id") in _LONG_JOBS else 600
+                        _job_id = job.get("id", "?")
+                        _shell_env = {**os.environ, "MAGI_PREFER_LOCAL_DB": "0", "MAGI_NO_DELETE": "1"}
                         try:
-                            _result = _sp.run(["/bin/sh", "-c", command], capture_output=True, text=True, timeout=_timeout,
-                                              cwd=_MAGI_ROOT,
-                                              env={**os.environ, "MAGI_PREFER_LOCAL_DB": "0", "MAGI_NO_DELETE": "1"})
-                            if _result.returncode != 0:
-                                logger.warning("⚠️ Shell job %s exited %d: %s", job.get("id"), _result.returncode, _result.stderr[:500])
+                            _proc = await asyncio.create_subprocess_shell(
+                                command,
+                                stdout=asyncio.subprocess.PIPE,
+                                stderr=asyncio.subprocess.PIPE,
+                                cwd=_MAGI_ROOT,
+                                env=_shell_env,
+                            )
+                            try:
+                                _stdout, _stderr = await asyncio.wait_for(
+                                    _proc.communicate(), timeout=_timeout,
+                                )
+                            except asyncio.TimeoutError:
+                                try:
+                                    _proc.kill()
+                                except Exception:
+                                    pass
+                                logger.warning("⚠️ Shell job %s timed out (%ds)", _job_id, _timeout)
+                                _stdout = _stderr = None
                             else:
-                                logger.info("✅ Shell job %s completed OK", job.get("id"))
-                        except _sp.TimeoutExpired:
-                            logger.warning("⚠️ Shell job %s timed out (%ds)", job.get("id"), _timeout)
+                                if _proc.returncode != 0:
+                                    _err_text = (_stderr or b"").decode("utf-8", "ignore")[:500]
+                                    logger.warning("⚠️ Shell job %s exited %d: %s", _job_id, _proc.returncode, _err_text)
+                                else:
+                                    logger.info("✅ Shell job %s completed OK", _job_id)
                         except Exception as _se:
-                            logger.warning("⚠️ Shell job %s error: %s", job.get("id"), _se)
+                            logger.warning("⚠️ Shell job %s error: %s", _job_id, _se)
                     # Shell job results go to logs only — not to Discord general channel.
                     # (Individual scripts handle their own notifications via red_phone with proper topic_key routing.)
             
@@ -575,7 +594,7 @@ async def bg_scheduler_loop():
             if now.hour == 3 and now.minute == 0:
                  logger.info("🌙 3 AM Protocol: Initiating Night Talk...")
                  # Trigger via Orchestrator
-                 await asyncio.get_event_loop().run_in_executor(_DISCORD_BG_EXECUTOR, 
+                 await loop.run_in_executor(_CRON_EXECUTOR,
                      lambda: orchestrator.process_message("SYSTEM", "開始夜議", platform="DISCORD_CRON", role="admin")
                  )
 
@@ -1223,10 +1242,15 @@ async def on_message(message):
             if response:
                 response = _normalize_discord_output_text(response)
                 try:
-                    orchestrator.record_assistant_reply(user_id, response)
+                    _uid_for_reply = user_id
+                    _resp_for_reply = response
+                    await loop.run_in_executor(
+                        _DISCORD_BG_EXECUTOR,
+                        lambda: orchestrator.record_assistant_reply(_uid_for_reply, _resp_for_reply),
+                    )
                 except Exception:
                     logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 1143, exc_info=True)
-        
+
         if response:
             # Check for Image Path Protocol
             if "|||IMAGE_PATH|||" in response:

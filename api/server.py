@@ -646,7 +646,7 @@ def _fallback_to_tools_api(error):
     data = request.get_data() if request.method in {"POST", "PUT", "PATCH", "DELETE"} else None
     req_obj = urllib.request.Request(url, data=data or None, headers=fwd_headers, method=request.method)
     try:
-        with urllib.request.urlopen(req_obj, timeout=300) as resp:
+        with urllib.request.urlopen(req_obj, timeout=30) as resp:
             body = resp.read()
             status = int(getattr(resp, "status", 200))
             resp_ct = resp.headers.get("Content-Type", "application/json; charset=utf-8")

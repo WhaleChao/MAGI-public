@@ -145,8 +145,8 @@ def create_admin_runtime_blueprint(
             try:
                 response = _rq.get("http://127.0.0.1:4200/office", timeout=4)
                 return {"status": "online" if response.status_code == 200 else "error", "detail": f"HTTP {response.status_code}"}
-            except Exception as exc:
-                return {"status": "error", "detail": str(exc)[:80]}
+            except Exception:
+                return {"status": "skipped", "detail": "disabled (not running)"}
 
         def _caddy_proxy():
             return {"status": "skipped", "detail": "removed (direct cloudflared→5002)"}

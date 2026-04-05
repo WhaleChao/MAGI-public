@@ -11,6 +11,11 @@ sys.path.insert(0, _MAGI_ROOT)
 
 import mysql.connector
 
+_db_password = os.environ.get("MAGI_DB_PASSWORD")
+if not _db_password:
+    print("ERROR: environment variable MAGI_DB_PASSWORD is not set. Exiting.", file=sys.stderr)
+    sys.exit(1)
+
 try:
     from api.routing.datastore_registry import get_connection_params as _get_conn
     _ds = _get_conn("remote_mariadb")
@@ -18,7 +23,7 @@ try:
         "host": _ds.get("host", "100.121.61.74"),
         "port": _ds.get("port", 3306),
         "user": _ds.get("user", "root"),
-        "password": _ds.get("password", "63181107"),
+        "password": _ds.get("password", _db_password),
         "database": _ds.get("database", "law_firm_data"),
         "charset": "utf8mb4",
     }
@@ -27,7 +32,7 @@ except Exception:
         "host": "100.121.61.74",
         "port": 3306,
         "user": "root",
-        "password": "63181107",
+        "password": _db_password,
         "database": "law_firm_data",
         "charset": "utf8mb4",
     }

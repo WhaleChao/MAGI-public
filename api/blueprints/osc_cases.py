@@ -2911,7 +2911,7 @@ def osc_insights_fetch_full_api():
     fallback_source = ""
     fetch_error = ""
     if url:
-        fetched = _osc_fetch_url_text(url, timeout=30)
+        fetched = _osc_fetch_url_text(url, timeout=15)
         if fetched.get("ok"):
             full_text = (fetched.get("text") or "").strip()
         else:
@@ -2926,7 +2926,7 @@ def osc_insights_fetch_full_api():
             title=title,
             case_number=case_number or "",
             case_reason=case_reason or "",
-            timeout_sec=600,
+            timeout_sec=120,
         )
         if jy.get("ok"):
             full_text = (jy.get("text") or "").strip()
