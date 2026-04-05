@@ -55,16 +55,6 @@ cmd_status() {
     _check_port "Embed (BERT)"   8081
     echo ""
 
-    # Remote nodes
-    echo "Remote Nodes:"
-    for node_info in "Melchior:100.116.54.16:8080" "Balthasar:100.118.235.126:5002" "Keeper:100.121.61.74:3306"; do
-        IFS=':' read -r name ip port <<< "$node_info"
-        if nc -z -w2 "$ip" "$port" 2>/dev/null; then
-            printf "  ${GREEN}●${NC} %-18s %s:%s\n" "$name" "$ip" "$port"
-        else
-            printf "  ${RED}○${NC} %-18s %s:%s ${RED}DOWN${NC}\n" "$name" "$ip" "$port"
-        fi
-    done
     echo ""
 
     # NAS mounts
@@ -82,17 +72,12 @@ cmd_status() {
 
     # DB
     echo "Database:"
-    local db_remote db_local
-    db_remote=$(nc -z -w2 100.121.61.74 3306 2>/dev/null && echo "UP" || echo "DOWN")
+    local db_local
     db_local=$(nc -z -w2 127.0.0.1 3306 2>/dev/null && echo "UP" || echo "DOWN")
-    if [ "$db_remote" = "UP" ] && [ "$db_local" = "UP" ]; then
-        printf "  ${GREEN}●${NC} 雙活同步 (remote+local)\n"
-    elif [ "$db_local" = "UP" ]; then
-        printf "  ${YELLOW}⚠${NC} 使用備份 (local only)\n"
-    elif [ "$db_remote" = "UP" ]; then
-        printf "  ${GREEN}●${NC} 遠端直連 (remote only)\n"
+    if [ "$db_local" = "UP" ]; then
+        printf "  ${GREEN}●${NC} MariaDB (local)\n"
     else
-        printf "  ${RED}○${NC} ${RED}全部離線${NC}\n"
+        printf "  ${RED}○${NC} ${RED}MariaDB 離線${NC}\n"
     fi
     echo ""
 
