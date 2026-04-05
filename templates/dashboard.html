@@ -2344,12 +2344,12 @@
             <!-- Stats Bar -->
             <div id="mem-stats" style="display:flex; gap:15px; margin-bottom:20px; flex-wrap:wrap;">
                 <div style="border:1px solid #7c3aed; padding:10px 15px; min-width:140px; text-align:center;">
-                    <div style="font-size:0.7rem; color:var(--magi-blue);">向量總數</div>
+                    <div style="font-size:0.7rem; color:var(--magi-blue);">文件總數</div>
                     <div id="mem-stat-vectors" style="font-size:1.5rem; color:#7c3aed; font-weight:bold;">--</div>
                     <div id="mem-stat-docs-sub" style="font-size:0.65rem; color:var(--magi-blue); margin-top:2px;">--</div>
                 </div>
                 <div style="border:1px solid #7c3aed; padding:10px 15px; min-width:140px; text-align:center;">
-                    <div style="font-size:0.7rem; color:var(--magi-blue);">FAISS 向量數</div>
+                    <div style="font-size:0.7rem; color:var(--magi-blue);">FAISS 向量</div>
                     <div id="mem-stat-faiss" style="font-size:1.5rem; color:#7c3aed; font-weight:bold;">--</div>
                     <div id="mem-stat-faiss-size" style="font-size:0.65rem; color:var(--magi-blue); margin-top:2px;">--</div>
                 </div>
@@ -2469,11 +2469,15 @@
             try {
                 const r = await fetch('/api/memory/stats');
                 const s = await r.json();
-                const vc = s.faiss_vector_count || 0;
-                document.getElementById('mem-stat-vectors').innerText = vc ? Number(vc).toLocaleString() : '--';
-                document.getElementById('mem-stat-docs-sub').innerText = (s.doc_count || 0) + ' 份文件來源';
-                document.getElementById('mem-stat-faiss').innerText = s.faiss_size ? (s.faiss_size / 1024 / 1024).toFixed(1) + ' MB' : 'N/A';
-                document.getElementById('mem-stat-faiss-size').innerText = s.faiss_index_type ? s.faiss_index_type : '';
+                const dc = s.doc_count || 0;
+                document.getElementById('mem-stat-vectors').innerText = dc ? Number(dc).toLocaleString() : '--';
+                const srcCount = s.source_count || 0;
+                document.getElementById('mem-stat-docs-sub').innerText = srcCount ? srcCount.toLocaleString() + ' 種來源' : '';
+                const fvc = s.faiss_vector_count || 0;
+                document.getElementById('mem-stat-faiss').innerText = fvc ? Number(fvc).toLocaleString() : (s.faiss_size ? (s.faiss_size / 1024 / 1024).toFixed(1) + ' MB' : 'N/A');
+                const fSizeMB = s.faiss_size ? (s.faiss_size / 1024 / 1024).toFixed(0) + ' MB' : '';
+                const fType = s.faiss_index_type || '';
+                document.getElementById('mem-stat-faiss-size').innerText = [fSizeMB, fType].filter(Boolean).join(' · ');
                 const obs = s.obsidian || {};
                 document.getElementById('mem-stat-obsidian').innerText = obs.notes_indexed || 0;
                 document.getElementById('mem-stat-updated').innerText = s.last_ingest ? s.last_ingest.replace('T', ' ').substring(0, 19) : '--';

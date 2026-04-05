@@ -207,19 +207,35 @@ def create_web_runtime_blueprint(
     @bp.route("/api/memory/stats", methods=["GET"])
     @login_required
     def api_memory_stats():
-        stats: dict[str, Any] = {"doc_count": 0, "last_ingest": None, "obsidian": {}, "faiss_size": 0}
+        stats: dict[str, Any] = {"doc_count": 0, "source_count": 0, "last_ingest": None, "obsidian": {}, "faiss_size": 0}
+        # Primary: get real document count from MariaDB
         try:
-            idx_path = agent_dir / "doc_vector_index.json"
-            if idx_path.exists():
-                idx = json.loads(idx_path.read_text(encoding="utf-8"))
-                entries = idx if isinstance(idx, list) else list(idx.values()) if isinstance(idx, dict) else []
-                stats["doc_count"] = len(entries)
-                dates = [entry.get("updated_at") or entry.get("created_at", "") for entry in entries if isinstance(entry, dict)]
-                dates = sorted([item for item in dates if item], reverse=True)
-                if dates:
-                    stats["last_ingest"] = dates[0]
-        except Exception as exc:
-            stats["doc_index_error"] = str(exc)
+            from skills.memory.mem_bridge import _get_conn
+            _conn = _get_conn()
+            _cur = _conn.cursor()
+            _cur.execute("SELECT COUNT(*) FROM documents")
+            stats["doc_count"] = _cur.fetchone()[0]
+            _cur.execute("SELECT COUNT(DISTINCT source) FROM documents")
+            stats["source_count"] = _cur.fetchone()[0]
+            _cur.execute("SELECT MAX(created_at) FROM documents")
+            _last = _cur.fetchone()[0]
+            if _last:
+                stats["last_ingest"] = str(_last)
+            _conn.close()
+        except Exception:
+            # Fallback: read from doc_vector_index.json (attachment tracker only)
+            try:
+                idx_path = agent_dir / "doc_vector_index.json"
+                if idx_path.exists():
+                    idx = json.loads(idx_path.read_text(encoding="utf-8"))
+                    entries = idx if isinstance(idx, list) else list(idx.values()) if isinstance(idx, dict) else []
+                    stats["doc_count"] = len(entries)
+                    dates = [entry.get("updated_at") or entry.get("created_at", "") for entry in entries if isinstance(entry, dict)]
+                    dates = sorted([item for item in dates if item], reverse=True)
+                    if dates:
+                        stats["last_ingest"] = dates[0]
+            except Exception as exc:
+                stats["doc_index_error"] = str(exc)
         try:
             obs_cfg = agent_dir / "obsidian_vault_config.json"
             obs_idx = agent_dir / "obsidian_index.json"
