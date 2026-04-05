@@ -1,0 +1,49 @@
+{
+  "_schema_version": "1.0.0",
+  "_description": "MAGI datastore connection registry.",
+  "datastores": {
+    "local_mariadb": {
+      "description": "Local MariaDB (Docker)",
+      "driver": "mariadb",
+      "host": "127.0.0.1",
+      "port": 3307,
+      "database": "magi_brain",
+      "env_override": {
+        "host": "MAGI_DB_HOST",
+        "port": "MAGI_DB_PORT",
+        "user": "MAGI_DB_USER",
+        "password": "MAGI_DB_PASSWORD",
+        "database": "MAGI_DB_NAME"
+      }
+    },
+    "remote_mariadb": {
+      "description": "Remote MariaDB on NAS/server",
+      "driver": "mariadb",
+      "host": "100.121.61.74",
+      "port": 3306,
+      "database": "magi_brain",
+      "env_override": {
+        "host": "MAGI_REMOTE_DB_HOST",
+        "port": "MAGI_REMOTE_DB_PORT",
+        "user": "MAGI_REMOTE_DB_USER",
+        "password": "MAGI_REMOTE_DB_PASSWORD",
+        "database": "MAGI_REMOTE_DB_NAME"
+      }
+    },
+    "osc_db": {
+      "description": "OSC case management database",
+      "driver": "mariadb",
+      "host": null,
+      "port": null,
+      "database": null,
+      "note": "Resolved from config.json code_db_profile at runtime",
+      "env_override": {
+        "host": "OSC_DB_HOST",
+        "port": "OSC_DB_PORT",
+        "user": "OSC_DB_USER",
+        "password": "OSC_DB_PASSWORD",
+        "database": "OSC_DB_NAME"
+      }
+    }
+  }
+}

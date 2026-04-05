@@ -40,7 +40,12 @@ if not logging.getLogger().handlers:
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
-OLLAMA_BASE = os.environ.get("MAGI_COUNCIL_OLLAMA_BASE", os.environ.get("OMLX_URL", "http://127.0.0.1:8080")).rstrip("/")
+try:
+    from api.routing.service_registry import get_service_url as _get_svc_url
+    _omlx_default = _get_svc_url("omlx_inference")
+except Exception:
+    _omlx_default = "http://127.0.0.1:8080"
+OLLAMA_BASE = os.environ.get("MAGI_COUNCIL_OLLAMA_BASE", os.environ.get("OMLX_URL", _omlx_default)).rstrip("/")
 COUNCIL_MODEL = os.environ.get("MAGI_COUNCIL_MODEL", os.environ.get("MAGI_TEXT_PRIMARY_MODEL", ""))
 COUNCIL_TIMEOUT = int(os.environ.get("MAGI_COUNCIL_TIMEOUT", "120"))
 COUNCIL_NUM_CTX = int(os.environ.get("MAGI_COUNCIL_NUM_CTX", "4096"))

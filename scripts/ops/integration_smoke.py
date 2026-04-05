@@ -24,7 +24,12 @@ if str(ROOT) not in sys.path:
 from api.runtime_paths import get_config_path, get_json_dir, get_laf_script, get_orch_dir
 
 
-TOOLS_API = os.environ.get("MAGI_TOOLS_API", "http://127.0.0.1:5003").rstrip("/")
+try:
+    from api.routing.service_registry import get_service_url as _get_svc_url
+    _tools_default = _get_svc_url("tools_api")
+except Exception:
+    _tools_default = "http://127.0.0.1:5003"
+TOOLS_API = os.environ.get("MAGI_TOOLS_API", _tools_default).rstrip("/")
 MAIN_API = os.environ.get("MAGI_MAIN_API", "http://127.0.0.1:5002").rstrip("/")
 OMLX_EMBED_BASE = os.environ.get("MAGI_OMLX_EMBED_URL", "http://127.0.0.1:8081").rstrip("/")
 REPORT_DIR = ROOT / "static"

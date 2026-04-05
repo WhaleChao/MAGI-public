@@ -11,14 +11,26 @@ sys.path.insert(0, _MAGI_ROOT)
 
 import mysql.connector
 
-DB_CONFIG = {
-    "host": "100.121.61.74",
-    "port": 3306,
-    "user": "root",
-    "password": "63181107",
-    "database": "law_firm_data",
-    "charset": "utf8mb4",
-}
+try:
+    from api.routing.datastore_registry import get_connection_params as _get_conn
+    _ds = _get_conn("remote_mariadb")
+    DB_CONFIG = {
+        "host": _ds.get("host", "100.121.61.74"),
+        "port": _ds.get("port", 3306),
+        "user": _ds.get("user", "root"),
+        "password": _ds.get("password", "63181107"),
+        "database": _ds.get("database", "law_firm_data"),
+        "charset": "utf8mb4",
+    }
+except Exception:
+    DB_CONFIG = {
+        "host": "100.121.61.74",
+        "port": 3306,
+        "user": "root",
+        "password": "63181107",
+        "database": "law_firm_data",
+        "charset": "utf8mb4",
+    }
 
 RAW_ROOT = "/Users/ai/.cache/judgment_collector/judicial_api/raw"
 PROCESS_STATE = "/Users/ai/.cache/judgment_collector/judicial_api/process_state.json"

@@ -24,6 +24,12 @@ if str(_MAGI_ROOT) not in sys.path:
 from api.runtime_paths import get_magi_root_dir
 from skills.ops import health_probes as _health_probes
 
+try:
+    from api.routing.node_registry import get_node_ip as _get_node_ip
+    _REMOTE_DB_FALLBACK_IP = _get_node_ip("nas") or "100.121.61.74"
+except Exception:
+    _REMOTE_DB_FALLBACK_IP = "100.121.61.74"
+
 MAGI_DIR = str(get_magi_root_dir())
 if MAGI_DIR not in sys.path:
     sys.path.insert(0, MAGI_DIR)
@@ -49,7 +55,7 @@ def _load_db_profile(profile_name: str = "Studio_VPN_Remote") -> dict:
                     continue
                 cfg = item.get("config") or {}
                 return {
-                    "host": str(cfg.get("host") or "100.121.61.74"),
+                    "host": str(cfg.get("host") or _REMOTE_DB_FALLBACK_IP),
                     "port": int(cfg.get("port") or 3306),
                     "user": str(cfg.get("user") or os.environ.get("OSC_DB_USER", "python_user")),
                     "password": str(cfg.get("password") or os.environ.get("OSC_DB_PASSWORD", "")),
@@ -58,7 +64,7 @@ def _load_db_profile(profile_name: str = "Studio_VPN_Remote") -> dict:
     except Exception:
         logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 49, exc_info=True)
     return {
-        "host": os.environ.get("OSC_WEB_DB_HOST") or os.environ.get("OSC_DB_HOST") or "100.121.61.74",
+        "host": os.environ.get("OSC_WEB_DB_HOST") or os.environ.get("OSC_DB_HOST") or _REMOTE_DB_FALLBACK_IP,
         "port": int((os.environ.get("OSC_WEB_DB_PORT") or os.environ.get("OSC_DB_PORT") or "3306").strip()),
         "user": os.environ.get("OSC_WEB_DB_USER") or os.environ.get("OSC_DB_USER") or "python_user",
         "password": os.environ.get("OSC_WEB_DB_PASSWORD") or os.environ.get("OSC_DB_PASSWORD") or os.environ.get("DB_PASSWORD") or "",
@@ -149,7 +155,7 @@ def test_balthasar_remote():
 def test_keeper_db():
     """Test Keeper (MariaDB) connectivity."""
     cfg = _load_db_profile("Studio_VPN_Remote")
-    ip = str(cfg.get("host") or "100.121.61.74")
+    ip = str(cfg.get("host") or _REMOTE_DB_FALLBACK_IP)
     if not _ping(ip, 3000):
         return {"pass": False, "detail": f"Keeper ({ip}) 無法 ping 到"}
     try:

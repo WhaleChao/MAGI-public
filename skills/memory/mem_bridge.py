@@ -61,7 +61,12 @@ OLLAMA_URL = os.environ.get("OLLAMA_EMBED_URL", f"{_OMLX_EMBED_BASE}/v1/embeddin
 OLLAMA_BATCH_URL = os.environ.get("OLLAMA_EMBED_BATCH_URL", f"{_OMLX_EMBED_BASE}/v1/embeddings")
 MODEL = os.environ.get("MEM_EMBED_MODEL", "modernbert-embed-4bit")
 
-OLLAMA_GENERATE_URL = os.environ.get("OLLAMA_GENERATE_URL", "http://127.0.0.1:8080/v1/chat/completions")
+try:
+    from api.routing.service_registry import get_service_url as _get_svc_url
+    _omlx_chat_default = _get_svc_url("omlx_inference") + "/v1/chat/completions"
+except Exception:
+    _omlx_chat_default = "http://127.0.0.1:8080/v1/chat/completions"
+OLLAMA_GENERATE_URL = os.environ.get("OLLAMA_GENERATE_URL", _omlx_chat_default)
 GENERATE_MODEL = os.environ.get("MEM_QUERY_EXPAND_MODEL", os.environ.get("MAGI_TEXT_PRIMARY_MODEL", ""))
 
 MAX_VECTOR_SCAN = int(os.environ.get("MEMORY_MAX_VECTOR_SCAN", "5000"))

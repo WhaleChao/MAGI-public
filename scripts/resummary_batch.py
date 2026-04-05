@@ -13,7 +13,11 @@ import importlib
 import action as jc
 importlib.reload(jc)
 
-OMLX_URL = "http://127.0.0.1:8080/v1/models"
+try:
+    from api.routing.service_registry import get_service_url as _get_svc_url
+    OMLX_URL = _get_svc_url("omlx_inference") + "/v1/models"
+except Exception:
+    OMLX_URL = "http://127.0.0.1:8080/v1/models"
 MAX_WAIT = 600  # 最多等 10 分鐘
 
 

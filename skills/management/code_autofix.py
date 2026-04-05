@@ -10,6 +10,14 @@ logger = logging.getLogger("CodeAutoFix")
 
 from api.runtime_paths import get_legacy_code_root, get_magi_root_dir, legacy_code_enabled
 
+
+def _omlx_chat_url() -> str:
+    try:
+        from api.routing.service_registry import get_service_url
+        return get_service_url("omlx_inference") + "/v1/chat/completions"
+    except Exception:
+        return "http://localhost:8080/v1/chat/completions"
+
 MAGI_ROOT = str(get_magi_root_dir())
 LEGACY_CODE_ROOT = str(get_legacy_code_root())
 ALLOWED_ROOTS = [MAGI_ROOT]
@@ -148,7 +156,7 @@ def _llm_repair_code(path: str, source: str, error_message: str, task_hint: str,
 
     candidates = [
         (
-            "http://localhost:8080/v1/chat/completions",
+            _omlx_chat_url(),
             {
                 "model": "qwen2.5-coder:7b",
                 "messages": [

@@ -222,7 +222,12 @@ def collect_markets() -> tuple[Dict, Dict]:
 def _reason_with_melchior(prompt: str, max_tokens: int = 2048) -> str:
     try:
         import urllib.request
-        omlx_url = (os.environ.get("OMLX_URL") or os.environ.get("OLLAMA_URL") or "http://127.0.0.1:8080").rstrip("/")
+        try:
+            from api.routing.service_registry import get_service_url as _gsurl
+            _omlx_def = _gsurl("omlx_inference")
+        except Exception:
+            _omlx_def = "http://127.0.0.1:8080"
+        omlx_url = (os.environ.get("OMLX_URL") or os.environ.get("OLLAMA_URL") or _omlx_def).rstrip("/")
         model = os.environ.get("MELCHIOR_MODEL", os.environ.get("MAGI_TEXT_PRIMARY_MODEL", ""))
 
         payload = json.dumps({
@@ -432,7 +437,12 @@ def main():
             print(f"⚠️ {e}")
     elif args.task == "status":
         # Check Ollama
-        data = _fetch_json(os.environ.get("OLLAMA_URL", "http://127.0.0.1:8080") + "/v1/models")
+        try:
+            from api.routing.service_registry import get_service_url as _gsurl2
+            _omlx_def2 = _gsurl2("omlx_inference")
+        except Exception:
+            _omlx_def2 = "http://127.0.0.1:8080"
+        data = _fetch_json(os.environ.get("OLLAMA_URL", _omlx_def2) + "/v1/models")
         if data:
             models = _extract_model_labels(data)
             if models:

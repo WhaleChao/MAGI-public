@@ -62,11 +62,19 @@ def _advertise_ip() -> str:
     return str(info.get("ip") or "")
 
 
+def _node_ip_or(name: str, fallback: str) -> str:
+    try:
+        from api.routing.node_registry import get_node_ip
+        return get_node_ip(name) or fallback
+    except Exception:
+        return fallback
+
+
 # Node Registry (Tailscale IPs)
 MAGI_NODES = {
     "casper": {"ip": _env_str("MAGI_CASPER_IP", "127.0.0.1"), "port": _env_int("MAGI_CASPER_PORT", 5002), "role": "Governor"},
-    "melchior": {"ip": _env_str("MAGI_MELCHIOR_IP", "100.116.54.16"), "port": _env_int("MAGI_MELCHIOR_PORT", 5002), "role": "Scientist"},
-    "balthasar": {"ip": _env_str("MAGI_BALTHASAR_IP", "100.118.235.126"), "port": _env_int("MAGI_BALTHASAR_PORT", 5002), "role": "Coordinator"},
+    "melchior": {"ip": _env_str("MAGI_MELCHIOR_IP", _node_ip_or("melchior", "100.116.54.16")), "port": _env_int("MAGI_MELCHIOR_PORT", 5002), "role": "Scientist"},
+    "balthasar": {"ip": _env_str("MAGI_BALTHASAR_IP", _node_ip_or("balthasar", "100.118.235.126")), "port": _env_int("MAGI_BALTHASAR_PORT", 5002), "role": "Coordinator"},
 }
 
 CURRENT_NODE = os.environ.get("MAGI_NODE", "casper")

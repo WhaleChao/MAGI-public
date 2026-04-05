@@ -450,7 +450,12 @@ def _llm_route(message: str, skill_names: List[str]) -> Optional[Dict]:
     """Use Casper LLM to pick the best skill from a short list."""
     try:
         import requests as _req
-        casper_url = os.environ.get("CASPER_LOCAL_URL", "http://localhost:8080/v1/chat/completions")
+        try:
+            from api.routing.service_registry import get_service_url as _gsurl
+            _omlx_chat = _gsurl("omlx_inference") + "/v1/chat/completions"
+        except Exception:
+            _omlx_chat = "http://localhost:8080/v1/chat/completions"
+        casper_url = os.environ.get("CASPER_LOCAL_URL", _omlx_chat)
         skill_list = "\n".join(f"- {s}" for s in skill_names[:30])
         prompt = (
             f"Available skills:\n{skill_list}\n\n"

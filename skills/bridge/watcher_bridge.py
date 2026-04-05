@@ -21,7 +21,12 @@ def _resolve_watcher_host() -> str:
         from api.nas_mount_guard import resolve_nas_host
         return resolve_nas_host()
     except Exception:
-        return "192.168.1.3"
+        try:
+            from api.routing.node_registry import get_node as _gn
+            _nas = _gn("nas")
+            return (_nas.lan_ip if _nas else None) or "192.168.1.3"
+        except Exception:
+            return "192.168.1.3"
 
 WATCHER_HOST = _resolve_watcher_host()
 WATCHER_API_PORT = int(os.environ.get("WATCHER_PORT", "5010"))

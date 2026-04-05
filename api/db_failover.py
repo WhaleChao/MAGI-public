@@ -24,7 +24,11 @@ from pathlib import Path
 logger = logging.getLogger("magi.db_failover")
 
 # ── 設定 ──────────────────────────────────────────────────────
-_REMOTE_HOST = os.getenv("MAGI_REMOTE_DB_HOST", "100.121.61.74")
+try:
+    from api.routing.node_registry import get_node_ip as _get_node_ip
+    _REMOTE_HOST = os.getenv("MAGI_REMOTE_DB_HOST") or _get_node_ip("nas") or "100.121.61.74"
+except Exception:
+    _REMOTE_HOST = os.getenv("MAGI_REMOTE_DB_HOST", "100.121.61.74")
 _REMOTE_PORT = int(os.getenv("MAGI_REMOTE_DB_PORT", "3306"))
 _LOCAL_HOST = "127.0.0.1"
 _LOCAL_PORT = 3306

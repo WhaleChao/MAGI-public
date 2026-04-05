@@ -93,7 +93,11 @@ _OMLX_MODEL_ALIAS = {
 # =============================================================================
 # Configuration
 # =============================================================================
-MELCHIOR_HOST = os.environ.get("MELCHIOR_HOST", "100.116.54.16")
+try:
+    from api.routing.node_registry import get_node_ip as _get_node_ip
+    MELCHIOR_HOST = os.environ.get("MELCHIOR_HOST") or _get_node_ip("melchior") or "100.116.54.16"
+except Exception:
+    MELCHIOR_HOST = os.environ.get("MELCHIOR_HOST", "100.116.54.16")
 MELCHIOR_PORT = int(os.environ.get("MELCHIOR_PORT", "5002"))
 MELCHIOR_OLLAMA_PORT = int(os.environ.get("MELCHIOR_OLLAMA_PORT", "11434"))
 MELCHIOR_API_PORT = int(os.environ.get("MELCHIOR_API_PORT", "8080"))
@@ -1489,7 +1493,12 @@ def check_health() -> dict:
 
     # 2) Local fallback oMLX
     try:
-        resp = SESSION.get("http://127.0.0.1:8080/v1/models", timeout=3)
+        try:
+            from api.routing.service_registry import get_service_url as _gsurl
+            _omlx_base = _gsurl("omlx_inference")
+        except Exception:
+            _omlx_base = "http://127.0.0.1:8080"
+        resp = SESSION.get(f"{_omlx_base}/v1/models", timeout=3)
         if resp.status_code == 200:
             result["online"] = True
             result["mode"] = "local_omlx"

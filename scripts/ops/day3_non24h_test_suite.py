@@ -30,7 +30,12 @@ from api.runtime_paths import get_metrics_dir, get_skill_python
 
 METRICS_DIR = get_metrics_dir()
 VENV_PY = get_skill_python()
-TOOLS_URL = os.environ.get("MAGI_TOOLS_URL", "http://127.0.0.1:5003").rstrip("/")
+try:
+    from api.routing.service_registry import get_service_url as _get_svc_url
+    _tools_default = _get_svc_url("tools_api")
+except Exception:
+    _tools_default = "http://127.0.0.1:5003"
+TOOLS_URL = os.environ.get("MAGI_TOOLS_URL", _tools_default).rstrip("/")
 AUTOPILOT = MAGI_ROOT / "skills" / "magi-autopilot" / "action.py"
 DAY3_REPORT = MAGI_ROOT / "scripts" / "ops" / "day3_stability_report.py"
 EXPORT_MOD = MAGI_ROOT / "skills" / "ops" / "export_text.py"

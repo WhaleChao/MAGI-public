@@ -7,6 +7,15 @@ import requests
 from datetime import datetime
 _MAGI_ROOT = os.path.abspath(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
+
+def _node_ip_or(name: str, fallback: str) -> str:
+    try:
+        from api.routing.node_registry import get_node_ip
+        return get_node_ip(name) or fallback
+    except Exception:
+        return fallback
+
+
 # Node Configuration
 NODES = {
     "casper": {
@@ -18,14 +27,14 @@ NODES = {
         "openclaw_config": "/Users/ai/.openclaw/openclaw.json"
     },
     "balthasar": {
-        "ip": "100.118.235.126", 
+        "ip": _node_ip_or("balthasar", "100.118.235.126"),
         "name": "Balthasar",
         "role": "Coordinator (Mobile)",
         "type": "flask",
         "port": 5002
     },
     "keeper": {
-        "ip": "100.121.61.74",
+        "ip": _node_ip_or("nas", "100.121.61.74"),
         "name": "Keeper",
         "role": "Database (Iron Dome)",
         "type": "db",
@@ -33,7 +42,7 @@ NODES = {
         "model": "MariaDB 10.11"
     },
     "melchior": {
-        "ip": "100.116.54.16",
+        "ip": _node_ip_or("melchior", "100.116.54.16"),
         "name": "Melchior",
         "role": "Scientist (Code)",
         "type": "api",

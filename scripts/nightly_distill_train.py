@@ -58,7 +58,12 @@ STATE_PATH = DISTILL_DIR / "collector_state.json"
 
 OMLX_LABEL = "com.magi.omlx"
 WATCHDOG_LABEL = "com.magi.omlx-watchdog"
-OMLX_URL = os.environ.get("OMLX_URL", "http://127.0.0.1:8080")
+try:
+    from api.routing.service_registry import get_service_url as _get_svc_url
+    _omlx_default = _get_svc_url("omlx_inference")
+except Exception:
+    _omlx_default = "http://127.0.0.1:8080"
+OMLX_URL = os.environ.get("OMLX_URL", _omlx_default)
 LOCK_PATH = DISTILL_DIR / "nightly_distill.pid"
 # Training lock — daemon + watchdog 看到此檔會跳過 oMLX 監控
 TRAINING_LOCK_PATH = Path(os.environ.get(

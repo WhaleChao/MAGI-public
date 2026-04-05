@@ -21,7 +21,14 @@ logger = logging.getLogger("MemoryConsolidation")
 
 # Configuration
 OPENCLAW_SESSIONS_DIR = "/Users/ai/.openclaw/agents/main/sessions"
-MAGI_API = os.environ.get("MAGI_API", "http://localhost:5003")
+try:
+    from api.routing.service_registry import get_service_url as _get_svc_url
+    _tools_default = _get_svc_url("tools_api")
+    _omlx_chat_url = _get_svc_url("omlx_inference") + "/v1/chat/completions"
+except Exception:
+    _tools_default = "http://localhost:5003"
+    _omlx_chat_url = "http://127.0.0.1:8080/v1/chat/completions"
+MAGI_API = os.environ.get("MAGI_API", _tools_default)
 MEMORY_CATEGORIES = [
     "user_preferences",   # 用戶偏好
     "task_learned",       # 學到的任務方法
@@ -114,7 +121,7 @@ def summarize_conversations(messages):
     try:
         # Using oMLX TAIDE model for summarization (OpenAI-compatible format)
         response = requests.post(
-            "http://127.0.0.1:8080/v1/chat/completions",
+            _omlx_chat_url,
             json={
                 "model": os.environ.get("MAGI_TEXT_PRIMARY_MODEL", ""),
                 "messages": [{"role": "user", "content": prompt}],

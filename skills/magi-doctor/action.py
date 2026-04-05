@@ -28,6 +28,12 @@ MAGI_DIR = str(Path(__file__).resolve().parents[2])
 if MAGI_DIR not in sys.path:
     sys.path.insert(0, MAGI_DIR)
 
+try:
+    from api.routing.node_registry import get_node_ip as _get_node_ip
+    _REMOTE_DB_FALLBACK_IP = _get_node_ip("nas") or "100.121.61.74"
+except Exception:
+    _REMOTE_DB_FALLBACK_IP = "100.121.61.74"
+
 from skills.ops import health_probes as _health_probes
 
 REPORT_PATH = os.path.join(MAGI_DIR, "static", "doctor_report.json")
@@ -204,7 +210,7 @@ def _load_db_profile(profile_name: str = "Studio_VPN_Remote") -> dict:
                     continue
                 cfg = item.get("config") or {}
                 return {
-                    "host": str(cfg.get("host") or "100.121.61.74"),
+                    "host": str(cfg.get("host") or _REMOTE_DB_FALLBACK_IP),
                     "port": int(cfg.get("port") or 3306),
                     "user": str(cfg.get("user") or os.environ.get("OSC_DB_USER", "python_user")),
                     "password": str(cfg.get("password") or os.environ.get("OSC_DB_PASSWORD", "")),
@@ -213,7 +219,7 @@ def _load_db_profile(profile_name: str = "Studio_VPN_Remote") -> dict:
     except Exception:
         logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 190, exc_info=True)
     return {
-        "host": os.environ.get("OSC_DB_HOST") or "100.121.61.74",
+        "host": os.environ.get("OSC_DB_HOST") or _REMOTE_DB_FALLBACK_IP,
         "port": int((os.environ.get("OSC_DB_PORT") or "3306").strip()),
         "user": os.environ.get("OSC_DB_USER") or "python_user",
         "password": os.environ.get("OSC_DB_PASSWORD") or "",
@@ -261,7 +267,7 @@ def check_infrastructure():
 
     # -- Keeper DB --
     keeper_cfg = _load_db_profile("Studio_VPN_Remote")
-    keeper_ip = str(keeper_cfg.get("host") or "100.121.61.74")
+    keeper_ip = str(keeper_cfg.get("host") or _REMOTE_DB_FALLBACK_IP)
     keeper_port = int(keeper_cfg.get("port") or 3306)
     keeper_user = str(keeper_cfg.get("user") or "python_user")
     keeper_password = str(keeper_cfg.get("password") or os.environ.get("OSC_DB_PASSWORD", ""))
@@ -523,7 +529,12 @@ def _repair_plist():
 def _repair_local_llm():
     try:
         import requests
-        r = requests.post("http://127.0.0.1:8080/v1/chat/completions",
+        try:
+            from api.routing.service_registry import get_service_url as _gsurl
+            _omlx_chat = _gsurl("omlx_inference") + "/v1/chat/completions"
+        except Exception:
+            _omlx_chat = "http://127.0.0.1:8080/v1/chat/completions"
+        r = requests.post(_omlx_chat,
                           json={"model": os.environ.get("MAGI_MAIN_MODEL", ""),
                                 "messages": [{"role": "user", "content": "test"}],
                                 "max_tokens": 5, "stream": False}, timeout=60)

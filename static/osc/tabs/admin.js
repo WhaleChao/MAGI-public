@@ -1,0 +1,354 @@
+/* tabs/admin.js – Admin panel CRUD functions */
+async function loadAdminData() {
+    await Promise.all([
+        loadAdminSettings(),
+        loadAdminCaseReasons(),
+        loadAdminCourts(),
+        loadAdminBranches(),
+        loadAdminUserSettings(),
+        loadAdminMemoryKeywords(),
+        loadAdminOpponents(),
+        loadAdminPdfLogs(),
+        loadAdminActivityLogs(),
+    ]);
+}
+
+async function loadAdminSettings() {
+    const q = encodeURIComponent((document.getElementById("adminSettingsQ").value || "").trim());
+    const data = await api(`/api/osc/settings?limit=200&q=${q}`);
+    state.adminSettings = data.items || [];
+    renderSimpleRows(
+        "adminSettingsBody",
+        state.adminSettings.map(r => `<tr><td>${esc(r.key)}</td><td>${esc(shortText(r.value, 60))}</td><td>${esc(shortText(r.description, 60))}</td><td>${esc(r.updated_date || "")}</td><td class="actions"><button class="btn" data-act="admin-setting-edit" data-key="${esc(r.key)}">編輯</button><button class="btn danger" data-act="admin-setting-del" data-key="${esc(r.key)}">刪除</button></td></tr>`),
+        5,
+        "沒有 settings 資料"
+    );
+}
+
+async function editAdminSetting(key) {
+    const data = await api(`/api/osc/settings/${encodeURIComponent(key)}`);
+    const x = data.item || {};
+    document.getElementById("adminSettingKey").value = x.key || "";
+    document.getElementById("adminSettingValue").value = x.value || "";
+    document.getElementById("adminSettingDescription").value = x.description || "";
+}
+
+async function saveAdminSetting() {
+    const body = {
+        key: (document.getElementById("adminSettingKey").value || "").trim(),
+        value: (document.getElementById("adminSettingValue").value || "").trim(),
+        description: (document.getElementById("adminSettingDescription").value || "").trim(),
+    };
+    if (!body.key) return alert("請輸入 key");
+    await api("/api/osc/settings", "POST", body);
+    clearFields(["adminSettingKey", "adminSettingValue", "adminSettingDescription"]);
+    await loadAdminSettings();
+    await loadMeta();
+}
+
+async function delAdminSetting(key) {
+    if (!confirm(`確定刪除設定 ${key}？`)) return;
+    await api(`/api/osc/settings/${encodeURIComponent(key)}`, "DELETE");
+    await loadAdminSettings();
+    await loadMeta();
+}
+
+async function loadAdminCaseReasons() {
+    const q = encodeURIComponent((document.getElementById("adminReasonQ").value || "").trim());
+    const caseType = encodeURIComponent((document.getElementById("adminReasonTypeFilter").value || "").trim());
+    const data = await api(`/api/osc/case-reason-templates?limit=200&q=${q}&case_type=${caseType}`);
+    state.adminCaseReasons = data.items || [];
+    renderSimpleRows(
+        "adminReasonBody",
+        state.adminCaseReasons.map(r => `<tr><td>${esc(r.id)}</td><td>${esc(r.case_type)}</td><td>${esc(r.reason)}</td><td>${esc(r.is_common)}</td><td class="actions"><button class="btn" data-act="admin-reason-edit" data-id="${Number(r.id)}">編輯</button><button class="btn danger" data-act="admin-reason-del" data-id="${Number(r.id)}">刪除</button></td></tr>`),
+        5,
+        "沒有案由模板資料"
+    );
+}
+
+async function editAdminCaseReason(id) {
+    const data = await api(`/api/osc/case-reason-templates/${Number(id)}`);
+    const x = data.item || {};
+    document.getElementById("adminReasonId").value = x.id || "";
+    document.getElementById("adminReasonType").value = x.case_type || "";
+    document.getElementById("adminReasonText").value = x.reason || "";
+    document.getElementById("adminReasonCommon").value = x.is_common ?? 0;
+}
+
+async function saveAdminCaseReason() {
+    const body = {
+        case_type: (document.getElementById("adminReasonType").value || "").trim(),
+        reason: (document.getElementById("adminReasonText").value || "").trim(),
+        is_common: (document.getElementById("adminReasonCommon").value || "0").trim(),
+    };
+    const id = (document.getElementById("adminReasonId").value || "").trim();
+    if (!body.case_type || !body.reason) return alert("請輸入案型與案由");
+    if (id) await api(`/api/osc/case-reason-templates/${Number(id)}`, "PUT", body);
+    else await api(`/api/osc/case-reason-templates`, "POST", body);
+    clearFields(["adminReasonId", "adminReasonType", "adminReasonText", "adminReasonCommon"]);
+    await loadAdminCaseReasons();
+    await loadMeta();
+}
+
+async function delAdminCaseReason(id) {
+    if (!confirm(`確定刪除案由模板 ${id}？`)) return;
+    await api(`/api/osc/case-reason-templates/${Number(id)}`, "DELETE");
+    await loadAdminCaseReasons();
+    await loadMeta();
+}
+
+async function loadAdminCourts() {
+    const q = encodeURIComponent((document.getElementById("adminCourtsQ").value || "").trim());
+    const data = await api(`/api/osc/courts?limit=200&q=${q}`);
+    state.adminCourts = data.items || [];
+    renderSimpleRows(
+        "adminCourtsBody",
+        state.adminCourts.map(r => `<tr><td>${esc(r.name)}</td><td>${esc(r.type || "")}</td><td>${esc(shortText(r.address, 80))}</td><td class="actions"><button class="btn" data-act="admin-court-edit" data-id="${Number(r.id)}">編輯</button><button class="btn danger" data-act="admin-court-del" data-id="${Number(r.id)}">刪除</button></td></tr>`),
+        4,
+        "沒有法院資料"
+    );
+}
+
+async function editAdminCourt(id) {
+    const data = await api(`/api/osc/courts/${Number(id)}`);
+    const x = data.item || {};
+    document.getElementById("adminCourtId").value = x.id || "";
+    document.getElementById("adminCourtName").value = x.name || "";
+    document.getElementById("adminCourtType").value = x.type || "";
+    document.getElementById("adminCourtAddress").value = x.address || "";
+}
+
+async function saveAdminCourt() {
+    const body = {
+        name: (document.getElementById("adminCourtName").value || "").trim(),
+        type: (document.getElementById("adminCourtType").value || "").trim(),
+        address: (document.getElementById("adminCourtAddress").value || "").trim(),
+    };
+    const id = (document.getElementById("adminCourtId").value || "").trim();
+    if (!body.name || !body.address) return alert("請輸入法院名稱與地址");
+    if (id) await api(`/api/osc/courts/${Number(id)}`, "PUT", body);
+    else await api(`/api/osc/courts`, "POST", body);
+    clearFields(["adminCourtId", "adminCourtName", "adminCourtType", "adminCourtAddress"]);
+    await loadAdminCourts();
+    await loadMeta();
+}
+
+async function delAdminCourt(id) {
+    if (!confirm(`確定刪除法院 ${id}？`)) return;
+    await api(`/api/osc/courts/${Number(id)}`, "DELETE");
+    await loadAdminCourts();
+    await loadMeta();
+}
+
+async function loadAdminBranches() {
+    const q = encodeURIComponent((document.getElementById("adminBranchesQ").value || "").trim());
+    const data = await api(`/api/osc/legal-aid-branches?limit=200&q=${q}`);
+    state.adminBranches = data.items || [];
+    renderSimpleRows(
+        "adminBranchesBody",
+        state.adminBranches.map(r => `<tr><td>${esc(r.name)}</td><td>${esc(shortText(r.address, 80))}</td><td class="actions"><button class="btn" data-act="admin-branch-edit" data-id="${Number(r.id)}">編輯</button><button class="btn danger" data-act="admin-branch-del" data-id="${Number(r.id)}">刪除</button></td></tr>`),
+        3,
+        "沒有法扶分會資料"
+    );
+}
+
+async function editAdminBranch(id) {
+    const data = await api(`/api/osc/legal-aid-branches/${Number(id)}`);
+    const x = data.item || {};
+    document.getElementById("adminBranchId").value = x.id || "";
+    document.getElementById("adminBranchName").value = x.name || "";
+    document.getElementById("adminBranchAddress").value = x.address || "";
+}
+
+async function saveAdminBranch() {
+    const body = {
+        name: (document.getElementById("adminBranchName").value || "").trim(),
+        address: (document.getElementById("adminBranchAddress").value || "").trim(),
+    };
+    const id = (document.getElementById("adminBranchId").value || "").trim();
+    if (!body.name || !body.address) return alert("請輸入分會名稱與地址");
+    if (id) await api(`/api/osc/legal-aid-branches/${Number(id)}`, "PUT", body);
+    else await api(`/api/osc/legal-aid-branches`, "POST", body);
+    clearFields(["adminBranchId", "adminBranchName", "adminBranchAddress"]);
+    await loadAdminBranches();
+    await loadMeta();
+}
+
+async function delAdminBranch(id) {
+    if (!confirm(`確定刪除分會 ${id}？`)) return;
+    await api(`/api/osc/legal-aid-branches/${Number(id)}`, "DELETE");
+    await loadAdminBranches();
+    await loadMeta();
+}
+
+async function loadAdminUserSettings() {
+    const q = encodeURIComponent((document.getElementById("adminUserSettingsQ").value || "").trim());
+    const data = await api(`/api/osc/user-settings?limit=200&q=${q}`);
+    state.adminUserSettings = data.items || [];
+    renderSimpleRows(
+        "adminUserSettingsBody",
+        state.adminUserSettings.map(r => `<tr><td>${esc(r.hostname)}</td><td>${esc(r.setting_key)}</td><td>${esc(shortText(r.setting_value, 80))}</td><td class="actions"><button class="btn" data-act="admin-user-setting-edit" data-id="${Number(r.id)}">編輯</button><button class="btn danger" data-act="admin-user-setting-del" data-id="${Number(r.id)}">刪除</button></td></tr>`),
+        4,
+        "沒有使用者設定資料"
+    );
+}
+
+async function editAdminUserSetting(id) {
+    const data = await api(`/api/osc/user-settings/${Number(id)}`);
+    const x = data.item || {};
+    document.getElementById("adminUserSettingId").value = x.id || "";
+    document.getElementById("adminUserSettingHost").value = x.hostname || "";
+    document.getElementById("adminUserSettingKey").value = x.setting_key || "";
+    document.getElementById("adminUserSettingValue").value = x.setting_value || "";
+}
+
+async function saveAdminUserSetting() {
+    const body = {
+        hostname: (document.getElementById("adminUserSettingHost").value || "").trim(),
+        setting_key: (document.getElementById("adminUserSettingKey").value || "").trim(),
+        setting_value: (document.getElementById("adminUserSettingValue").value || "").trim(),
+    };
+    const id = (document.getElementById("adminUserSettingId").value || "").trim();
+    if (!body.hostname || !body.setting_key) return alert("請輸入 hostname 與 setting_key");
+    if (id) await api(`/api/osc/user-settings/${Number(id)}`, "PUT", body);
+    else await api(`/api/osc/user-settings`, "POST", body);
+    clearFields(["adminUserSettingId", "adminUserSettingHost", "adminUserSettingKey", "adminUserSettingValue"]);
+    await loadAdminUserSettings();
+    await loadMeta();
+}
+
+async function delAdminUserSetting(id) {
+    if (!confirm(`確定刪除使用者設定 ${id}？`)) return;
+    await api(`/api/osc/user-settings/${Number(id)}`, "DELETE");
+    await loadAdminUserSettings();
+    await loadMeta();
+}
+
+async function loadAdminMemoryKeywords() {
+    const q = encodeURIComponent((document.getElementById("adminMemoryKeywordsQ").value || "").trim());
+    const caseNumber = encodeURIComponent((document.getElementById("adminMemoryCaseFilter").value || "").trim());
+    const data = await api(`/api/osc/memory-keywords?limit=200&q=${q}&case_number=${caseNumber}`);
+    state.adminMemoryKeywords = data.items || [];
+    renderSimpleRows(
+        "adminMemoryKeywordsBody",
+        state.adminMemoryKeywords.map(r => `<tr><td>${esc(r.case_number)}</td><td>${esc(r.hotkey)}</td><td>${esc(r.name || "")}</td><td>${esc(shortText(r.value, 80))}</td><td class="actions"><button class="btn" data-act="admin-memory-edit" data-case="${esc(r.case_number)}" data-hotkey="${esc(r.hotkey)}">編輯</button><button class="btn danger" data-act="admin-memory-del" data-case="${esc(r.case_number)}" data-hotkey="${esc(r.hotkey)}">刪除</button></td></tr>`),
+        5,
+        "沒有案件熱鍵資料"
+    );
+}
+
+async function editAdminMemoryKeyword(caseNumber, hotkey) {
+    const data = await api(`/api/osc/memory-keywords/${encodeURIComponent(caseNumber)}/${encodeURIComponent(hotkey)}`);
+    const x = data.item || {};
+    document.getElementById("adminMemoryCaseNumber").value = x.case_number || "";
+    document.getElementById("adminMemoryHotkey").value = x.hotkey || "";
+    document.getElementById("adminMemoryName").value = x.name || "";
+    document.getElementById("adminMemoryValue").value = x.value || "";
+}
+
+async function saveAdminMemoryKeyword() {
+    const body = {
+        case_number: (document.getElementById("adminMemoryCaseNumber").value || "").trim(),
+        hotkey: (document.getElementById("adminMemoryHotkey").value || "").trim(),
+        name: (document.getElementById("adminMemoryName").value || "").trim(),
+        value: (document.getElementById("adminMemoryValue").value || "").trim(),
+    };
+    if (!body.case_number || !body.hotkey) return alert("請輸入案件編號與 hotkey");
+    await api("/api/osc/memory-keywords", "POST", body);
+    clearFields(["adminMemoryCaseNumber", "adminMemoryHotkey", "adminMemoryName", "adminMemoryValue"]);
+    await loadAdminMemoryKeywords();
+    await loadMeta();
+}
+
+async function delAdminMemoryKeyword(caseNumber, hotkey) {
+    if (!confirm(`確定刪除熱鍵 ${caseNumber}/${hotkey}？`)) return;
+    await api(`/api/osc/memory-keywords/${encodeURIComponent(caseNumber)}/${encodeURIComponent(hotkey)}`, "DELETE");
+    await loadAdminMemoryKeywords();
+    await loadMeta();
+}
+
+async function loadAdminOpponents() {
+    const q = encodeURIComponent((document.getElementById("adminOpponentsQ").value || "").trim());
+    const caseNumber = encodeURIComponent((document.getElementById("adminOpponentsCaseFilter").value || "").trim());
+    const data = await api(`/api/osc/opponents?limit=200&q=${q}&case_number=${caseNumber}`);
+    state.adminOpponents = data.items || [];
+    renderSimpleRows(
+        "adminOpponentsBody",
+        state.adminOpponents.map(r => `<tr><td>${esc(r.case_number)}</td><td>${esc(r.name)}</td><td>${esc(shortText(r.address, 80))}</td><td>${esc(r.is_active)}</td><td class="actions"><button class="btn" data-act="admin-opponent-edit" data-id="${Number(r.id)}">編輯</button><button class="btn danger" data-act="admin-opponent-del" data-id="${Number(r.id)}">刪除</button></td></tr>`),
+        5,
+        "沒有對造資料"
+    );
+}
+
+async function editAdminOpponent(id) {
+    const data = await api(`/api/osc/opponents/${Number(id)}`);
+    const x = data.item || {};
+    document.getElementById("adminOpponentId").value = x.id || "";
+    document.getElementById("adminOpponentCaseNumber").value = x.case_number || "";
+    document.getElementById("adminOpponentName").value = x.name || "";
+    document.getElementById("adminOpponentAddress").value = x.address || "";
+    document.getElementById("adminOpponentActive").value = x.is_active ?? 1;
+}
+
+async function saveAdminOpponent() {
+    const body = {
+        case_number: (document.getElementById("adminOpponentCaseNumber").value || "").trim(),
+        name: (document.getElementById("adminOpponentName").value || "").trim(),
+        address: (document.getElementById("adminOpponentAddress").value || "").trim(),
+        is_active: (document.getElementById("adminOpponentActive").value || "1").trim(),
+    };
+    const id = (document.getElementById("adminOpponentId").value || "").trim();
+    if (!body.case_number || !body.name) return alert("請輸入案件編號與對造姓名");
+    if (id) await api(`/api/osc/opponents/${Number(id)}`, "PUT", body);
+    else await api(`/api/osc/opponents`, "POST", body);
+    clearFields(["adminOpponentId", "adminOpponentCaseNumber", "adminOpponentName", "adminOpponentAddress", "adminOpponentActive"]);
+    await loadAdminOpponents();
+    await loadMeta();
+}
+
+async function delAdminOpponent(id) {
+    if (!confirm(`確定刪除對造 ${id}？`)) return;
+    await api(`/api/osc/opponents/${Number(id)}`, "DELETE");
+    await loadAdminOpponents();
+    await loadMeta();
+}
+
+async function loadAdminPdfLogs() {
+    const q = encodeURIComponent((document.getElementById("adminPdfLogsQ").value || "").trim());
+    const caseNumber = encodeURIComponent((document.getElementById("adminPdfLogsCaseFilter").value || "").trim());
+    const data = await api(`/api/osc/pdf-generation-log?limit=200&q=${q}&case_number=${caseNumber}`);
+    state.adminPdfLogs = data.items || [];
+    renderSimpleRows(
+        "adminPdfLogsBody",
+        state.adminPdfLogs.map(r => `<tr><td>${esc(r.log_timestamp)}</td><td>${esc(r.case_number)}</td><td>${esc(r.file_name || "")}</td><td>${esc(r.status || "")}</td><td>${esc(shortText(r.error_message, 80))}</td><td class="actions"><button class="btn danger" data-act="admin-pdf-log-del" data-id="${Number(r.id)}">刪除</button></td></tr>`),
+        6,
+        "沒有 PDF 生成紀錄"
+    );
+}
+
+async function delAdminPdfLog(id) {
+    if (!confirm(`確定刪除 PDF log ${id}？`)) return;
+    await api(`/api/osc/pdf-generation-log/${Number(id)}`, "DELETE");
+    await loadAdminPdfLogs();
+    await loadMeta();
+}
+
+async function loadAdminActivityLogs() {
+    const q = encodeURIComponent((document.getElementById("adminActivityLogsQ").value || "").trim());
+    const entityType = encodeURIComponent((document.getElementById("adminActivityTypeFilter").value || "").trim());
+    const data = await api(`/api/osc/activity-logs?limit=200&q=${q}&entity_type=${entityType}`);
+    state.adminActivityLogs = data.items || [];
+    renderSimpleRows(
+        "adminActivityLogsBody",
+        state.adminActivityLogs.map(r => `<tr><td>${esc(r.timestamp)}</td><td>${esc(r.action)}</td><td>${esc(r.entity_type || "")}</td><td>${esc(r.entity_id || "")}</td><td>${esc(r.user || "")}</td><td>${esc(shortText(r.details, 100))}</td><td class="actions"><button class="btn danger" data-act="admin-activity-del" data-id="${Number(r.id)}">刪除</button></td></tr>`),
+        7,
+        "沒有活動紀錄"
+    );
+}
+
+async function delAdminActivityLog(id) {
+    if (!confirm(`確定刪除活動紀錄 ${id}？`)) return;
+    await api(`/api/osc/activity-logs/${Number(id)}`, "DELETE");
+    await loadAdminActivityLogs();
+    await loadMeta();
+}

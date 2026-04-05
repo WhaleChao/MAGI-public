@@ -38,6 +38,14 @@ if str(_MAGI_ROOT) not in sys.path:
 
 from api.runtime_paths import config_candidates, get_magi_root_dir
 
+
+def _remote_db_ip_or(fallback: str) -> str:
+    try:
+        from api.routing.node_registry import get_node_ip
+        return get_node_ip("nas") or fallback
+    except Exception:
+        return fallback
+
 # --- Load .env for subprocess/cron credential access ---
 try:
     from dotenv import load_dotenv as _load_dotenv
@@ -111,7 +119,7 @@ def _choose_remote_profile(profiles: Dict[str, DBProfile]) -> DBProfile:
         return p
     return DBProfile(
         name="Studio_VPN_Remote",
-        host=_q(os.environ.get("MAGI_REMOTE_DB_HOST"), "100.121.61.74"),
+        host=_q(os.environ.get("MAGI_REMOTE_DB_HOST"), _remote_db_ip_or("100.121.61.74")),
         port=int(os.environ.get("MAGI_REMOTE_DB_PORT") or 3306),
         user=_q(os.environ.get("MAGI_REMOTE_DB_USER"), "casper_service"),
         password=_q(os.environ.get("MAGI_REMOTE_DB_PASSWORD"), ""),

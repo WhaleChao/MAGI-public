@@ -30,7 +30,11 @@ SYNC_MAX_DELTA_BYTES = int(os.environ.get("MELCHIOR_SYNC_MAX_DELTA_BYTES", str(2
 # "auto" will pick delta unless deletions detected or delta too large.
 DEFAULT_SYNC_MODE = os.environ.get("MELCHIOR_SYNC_MODE", "auto").strip().lower() or "auto"
 
-MELCHIOR_HOST = os.environ.get("MELCHIOR_HOST", "100.116.54.16")
+try:
+    from api.routing.node_registry import get_node_ip as _get_node_ip
+    MELCHIOR_HOST = os.environ.get("MELCHIOR_HOST") or _get_node_ip("melchior") or "100.116.54.16"
+except Exception:
+    MELCHIOR_HOST = os.environ.get("MELCHIOR_HOST", "100.116.54.16")
 MELCHIOR_PORT = int(os.environ.get("MELCHIOR_PORT", "5002"))
 MELCHIOR_OLLAMA_PORT = int(os.environ.get("MELCHIOR_OLLAMA_PORT", "11434"))
 MELCHIOR_BASE = f"http://{MELCHIOR_HOST}:{MELCHIOR_PORT}"

@@ -13,7 +13,11 @@ BACKUP_FILE = os.path.expanduser("~/.openclaw/skills/law-office/legal_crawler.py
 _LOCK_FILE = TARGET_FILE + ".lock"
 
 # LLM Config (oMLX)
-OMLX_URL = "http://127.0.0.1:8080/v1/chat/completions"
+try:
+    from api.routing.service_registry import get_service_url as _get_svc_url
+    OMLX_URL = _get_svc_url("omlx_inference") + "/v1/chat/completions"
+except Exception:
+    OMLX_URL = "http://127.0.0.1:8080/v1/chat/completions"
 MODEL = os.environ.get("MAGI_MAIN_MODEL", "")
 
 logger = logging.getLogger("CrawlerArchitect")

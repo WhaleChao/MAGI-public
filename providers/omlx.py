@@ -8,7 +8,11 @@ from api.model_config import TEXT_PRIMARY_MODEL
 
 class OmlxProvider(OpenAICompatibleProvider):
     name = "omlx"
-    default_base_url = "http://127.0.0.1:8080/v1"
+    try:
+        from api.routing.service_registry import get_service_url as _get_svc_url
+        default_base_url = _get_svc_url("omlx_inference") + "/v1"
+    except Exception:
+        default_base_url = "http://127.0.0.1:8080/v1"
     base_url_env = "OMLX_BASE_URL"
     api_key_env = "OMLX_API_KEY"
     model_env = "OMLX_MODEL"

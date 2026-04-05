@@ -43,7 +43,12 @@ TRAIN_DATA_DIR = Path(os.environ.get(
     "TRAIN_DATA_DIR",
     os.path.expanduser("~/.omlx/training/taide-vision"),
 ))
-OMLX_URL = os.environ.get("MAGI_OMLX_CHAT_URL", "http://127.0.0.1:8080")
+try:
+    from api.routing.service_registry import get_service_url as _get_svc_url
+    _omlx_default = _get_svc_url("omlx_inference")
+except Exception:
+    _omlx_default = "http://127.0.0.1:8080"
+OMLX_URL = os.environ.get("MAGI_OMLX_CHAT_URL", _omlx_default)
 
 
 # ═══════════════════════════════════════════════════════════════════════════

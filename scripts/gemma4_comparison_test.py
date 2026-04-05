@@ -11,7 +11,11 @@ import time
 import requests
 import sys
 
-OMLX_BASE = "http://127.0.0.1:8080"
+try:
+    from api.routing.service_registry import get_service_url as _get_svc_url
+    OMLX_BASE = _get_svc_url("omlx_inference")
+except Exception:
+    OMLX_BASE = "http://127.0.0.1:8080"
 CHAT_URL = f"{OMLX_BASE}/v1/chat/completions"
 
 MODEL_A = "TAIDE-12b-Chat-mlx-4bit"

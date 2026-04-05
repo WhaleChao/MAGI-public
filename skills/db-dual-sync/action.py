@@ -161,7 +161,12 @@ def _status() -> Dict[str, Any]:
             }
         )
 
-    remote_ok = any(x.get("ok") and str(x.get("host")) == "100.121.61.74" for x in conns)
+    try:
+        from api.routing.node_registry import get_node_ip as _get_node_ip
+        _remote_db_ip = _get_node_ip("nas") or "100.121.61.74"
+    except Exception:
+        _remote_db_ip = "100.121.61.74"
+    remote_ok = any(x.get("ok") and str(x.get("host")) == _remote_db_ip for x in conns)
     local_ok = any(x.get("ok") and str(x.get("host")) in {"127.0.0.1", "localhost"} for x in conns)
     return {
         "success": True,

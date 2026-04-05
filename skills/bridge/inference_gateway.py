@@ -187,15 +187,29 @@ class InferenceGateway:
 
         self.melchior_url = (getattr(melchior_client, "MELCHIOR_BASE_URL", "") or "").rstrip("/")
         if not self.melchior_url:
-            host = os.environ.get("MELCHIOR_HOST", "100.116.54.16")
+            try:
+                from api.routing.node_registry import get_node_ip as _get_node_ip
+                host = os.environ.get("MELCHIOR_HOST") or _get_node_ip("melchior") or "100.116.54.16"
+            except Exception:
+                host = os.environ.get("MELCHIOR_HOST", "100.116.54.16")
             port = int(os.environ.get("MELCHIOR_PORT", "5002"))
             self.melchior_url = f"http://{host}:{port}"
 
-        b_host = (os.environ.get("BALTHASAR_HOST") or str(getattr(balthasar_bridge, "BALTHASAR_HOST", "100.118.235.126"))).strip()
+        try:
+            from api.routing.node_registry import get_node_ip as _get_node_ip2
+            _b_fallback = _get_node_ip2("balthasar") or "100.118.235.126"
+        except Exception:
+            _b_fallback = "100.118.235.126"
+        b_host = (os.environ.get("BALTHASAR_HOST") or str(getattr(balthasar_bridge, "BALTHASAR_HOST", _b_fallback))).strip()
         b_port = int(os.environ.get("BALTHASAR_PORT") or str(getattr(balthasar_bridge, "BALTHASAR_PORT", "5002")) or "5002")
         self.balthasar_url = f"http://{b_host}:{b_port}"
 
-        self.local_ollama = (os.environ.get("INFERENCE_LOCAL_OLLAMA_BASE", "http://127.0.0.1:8080") or "http://127.0.0.1:8080").rstrip("/")
+        try:
+            from api.routing.service_registry import get_service_url as _get_svc_url
+            _omlx_fallback = _get_svc_url("omlx_inference")
+        except Exception:
+            _omlx_fallback = "http://127.0.0.1:8080"
+        self.local_ollama = (os.environ.get("INFERENCE_LOCAL_OLLAMA_BASE") or _omlx_fallback).rstrip("/")
 
         self.melchior_models = self._split_models(os.environ.get("INFERENCE_MELCHIOR_MODELS", TEXT_PRIMARY_MODEL))
         self.balthasar_models = self._split_models(os.environ.get("INFERENCE_BALTHASAR_MODELS", TEXT_PRIMARY_MODEL))

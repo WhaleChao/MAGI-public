@@ -5,7 +5,12 @@ from typing import Any
 import requests
 
 
-DEFAULT_BASE = os.environ.get("CASPER_TOOLS_API_BASE", "http://127.0.0.1:5003").rstrip("/")
+try:
+    from api.routing.service_registry import get_service_url as _get_svc_url
+    _tools_default = _get_svc_url("tools_api")
+except Exception:
+    _tools_default = "http://127.0.0.1:5003"
+DEFAULT_BASE = os.environ.get("CASPER_TOOLS_API_BASE", _tools_default).rstrip("/")
 
 
 def _post_json(path: str, payload: dict, timeout_sec: int = 60) -> dict:

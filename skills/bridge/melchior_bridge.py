@@ -12,13 +12,21 @@ _MAGI_ROOT = os.path.abspath(os.path.dirname(os.path.dirname(os.path.dirname(__f
 
 # Configuration
 # MELCHIOR_HOST should be the Tailscale IP of the Windows machine
-MELCHIOR_HOST = os.environ.get("MELCHIOR_HOST", "100.116.54.16")
+try:
+    from api.routing.node_registry import get_node_ip as _get_node_ip
+    MELCHIOR_HOST = os.environ.get("MELCHIOR_HOST") or _get_node_ip("melchior") or "100.116.54.16"
+except Exception:
+    MELCHIOR_HOST = os.environ.get("MELCHIOR_HOST", "100.116.54.16")
 MELCHIOR_PORT = os.environ.get("MELCHIOR_PORT", "5002")
 MELCHIOR_URL = f"http://{MELCHIOR_HOST}:{MELCHIOR_PORT}/api/generate"
 VISION_MODEL = TEXT_PRIMARY_MODEL  # text-model fallback when vision-specific route is unavailable
 
 # Local fallback (oMLX)
-LOCAL_OLLAMA_URL = "http://127.0.0.1:8080/v1/chat/completions"
+try:
+    from api.routing.service_registry import get_service_url as _get_svc_url
+    LOCAL_OLLAMA_URL = _get_svc_url("omlx_inference") + "/v1/chat/completions"
+except Exception:
+    LOCAL_OLLAMA_URL = "http://127.0.0.1:8080/v1/chat/completions"
 LOCAL_VISION_MODEL = TEXT_PRIMARY_MODEL
 REMOTE_TEXT_MODEL = TEXT_PRIMARY_MODEL
 

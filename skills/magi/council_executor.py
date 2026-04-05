@@ -380,8 +380,13 @@ def _llm_generate_patch(rel_path: str, current_source: str, proposal: str, issue
 
     for model_name in models_to_try:
         try:
+            try:
+                from api.routing.service_registry import get_service_url as _gsurl
+                _omlx_chat = _gsurl("omlx_inference") + "/v1/chat/completions"
+            except Exception:
+                _omlx_chat = "http://127.0.0.1:8080/v1/chat/completions"
             resp = requests.post(
-                "http://127.0.0.1:8080/v1/chat/completions",
+                _omlx_chat,
                 json={
                     "model": model_name,
                     "messages": [

@@ -13,6 +13,14 @@ import time
 from pathlib import Path
 from typing import Any
 
+
+def _tools_api_url() -> str:
+    try:
+        from api.routing.service_registry import get_service_url
+        return get_service_url("tools_api")
+    except Exception:
+        return "http://localhost:5003"
+
 logger = logging.getLogger("ToolRegistry")
 
 MAGI_ROOT = Path(os.environ.get("MAGI_ROOT_DIR", str(Path(__file__).resolve().parents[2])))
@@ -56,7 +64,7 @@ def _web_search(query: str = "", num_results: int = 5, **_) -> str:
         from skills.bridge.http_pool import get_session
         session = get_session()
         resp = session.post(
-            "http://localhost:5003/search",
+            _tools_api_url() + "/search",
             json={"query": query, "num_results": min(num_results, 10)},
             timeout=30,
         )
@@ -212,7 +220,7 @@ def _run_skill(skill_name: str = "", args: str = "", **_) -> str:
         from skills.bridge.http_pool import get_session
         session = get_session()
         resp = session.post(
-            f"http://localhost:5003/skill/{skill_name}",
+            f"{_tools_api_url()}/skill/{skill_name}",
             json={"args": args} if args else {},
             timeout=60,
         )

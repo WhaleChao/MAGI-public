@@ -186,7 +186,11 @@ def _resolve_remote_db_endpoint() -> Tuple[str, int]:
                 continue
 
     if not host:
-        host = "100.121.61.74"
+        try:
+            from api.routing.node_registry import get_node_ip as _get_node_ip
+            host = _get_node_ip("nas") or "100.121.61.74"
+        except Exception:
+            host = "100.121.61.74"
     try:
         port = int(port_raw or "3306")
     except Exception:

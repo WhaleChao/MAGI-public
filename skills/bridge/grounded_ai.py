@@ -24,7 +24,12 @@ from skills.memory.mem_bridge import (
 from skills.bridge import melchior_client
 
 # Configuration
-LOCAL_OLLAMA_GENERATE_URL = os.environ.get("CASPER_LOCAL_OLLAMA_URL", "http://127.0.0.1:8080/v1/chat/completions")
+try:
+    from api.routing.service_registry import get_service_url as _get_svc_url
+    _omlx_chat_default = _get_svc_url("omlx_inference") + "/v1/chat/completions"
+except Exception:
+    _omlx_chat_default = "http://127.0.0.1:8080/v1/chat/completions"
+LOCAL_OLLAMA_GENERATE_URL = os.environ.get("CASPER_LOCAL_OLLAMA_URL", _omlx_chat_default)
 LOCAL_MODEL_NAME = os.environ.get("CASPER_LOCAL_MODEL", TEXT_PRIMARY_MODEL)
 DISTRIBUTED_MODEL_NAME = os.environ.get("CASPER_DISTRIBUTED_MODEL", TEXT_PRIMARY_MODEL)
 ENABLE_SELF_CHECK = os.environ.get("CASPER_SELF_CHECK", "0") != "0"

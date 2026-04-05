@@ -29,6 +29,14 @@ except Exception:
 # Add MAGI to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
+def _tools_api_url() -> str:
+    try:
+        from api.routing.service_registry import get_service_url
+        return get_service_url("tools_api")
+    except Exception:
+        return "http://localhost:5003"
+
+
 # Configuration
 WATCHER_DB = os.path.expanduser("~/watcher_evidence.db")
 LOG_FILE = os.path.expanduser("~/watcher_daemon.log")
@@ -244,7 +252,7 @@ def send_alert(message, severity="warning"):
         try:
             import requests
             requests.post(
-                "http://localhost:5003/alert",
+                _tools_api_url() + "/alert",
                 json={"message": f"🔍 WATCHER: {message}", "severity": severity},
                 timeout=5
             )

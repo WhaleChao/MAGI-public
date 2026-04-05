@@ -1079,7 +1079,7 @@ Return ONLY corrected Python code.
 """
     candidates = [
         (
-            "http://localhost:8080/v1/chat/completions",
+            OMLX_HOST + "/v1/chat/completions",
             {
                 "model": os.environ.get("MAGI_MAIN_MODEL", ""),
                 "messages": [
@@ -1656,7 +1656,11 @@ def auto_install_skill(skill_name_or_url: str) -> dict:
 # Melchior Fallback (For Complex Generation)
 # =============================================================================
 
-OMLX_HOST = "http://127.0.0.1:8080"
+try:
+    from api.routing.service_registry import get_service_url as _get_svc_url
+    OMLX_HOST = _get_svc_url("omlx_inference")
+except Exception:
+    OMLX_HOST = "http://127.0.0.1:8080"
 PREFERRED_MODELS = [os.environ.get("MAGI_MAIN_MODEL", ""), os.environ.get("MAGI_TEXT_PRIMARY_MODEL", ""), os.environ.get("MAGI_OMLX_CODE_MODEL", "")]
 
 def get_available_melchior_model(preferred: list = PREFERRED_MODELS) -> str:
@@ -1997,8 +2001,8 @@ def request_distributed_skill_generation(prompt: str) -> dict:
     This provides the highest intelligence.
     """
     try:
-        # Distributed model is hosted on Casper (localhost:8080) which connects to Melchior via RPC
-        CASPER_URL = "http://localhost:8080/v1/chat/completions"
+        # Distributed model is hosted on Casper (oMLX) which connects to Melchior via RPC
+        CASPER_URL = OMLX_HOST + "/v1/chat/completions"
         
         # We use chat completions for the big model as it might be an instruction-tuned model (e.g., GLM-4, Llama-3-70B-Instruct)
         response = requests.post(

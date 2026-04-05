@@ -17,7 +17,12 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("IntentionClassifier")
 
 # Inference Configuration (oMLX primary, InferenceGateway fallback)
-_OMLX_BASE = os.environ.get("CASPER_CLASSIFIER_OMLX_URL", "http://127.0.0.1:8080")
+try:
+    from api.routing.service_registry import get_service_url as _get_svc_url
+    _omlx_default = _get_svc_url("omlx_inference")
+except Exception:
+    _omlx_default = "http://127.0.0.1:8080"
+_OMLX_BASE = os.environ.get("CASPER_CLASSIFIER_OMLX_URL", _omlx_default)
 _OMLX_CHAT_URL = _OMLX_BASE.rstrip("/") + "/v1/chat/completions"
 MODEL_NAME = os.environ.get("CASPER_CLASSIFIER_MODEL", TEXT_PRIMARY_MODEL)
 LLM_TIMEOUT_SEC = max(2, int(os.environ.get("CASPER_CLASSIFIER_TIMEOUT_SEC", "15") or "15"))

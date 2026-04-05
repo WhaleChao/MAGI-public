@@ -14,7 +14,11 @@ from api.model_config import SUMMARY_MODEL, TEXT_REVIEW_MODEL
 from skills.bridge.http_pool import get_session as _get_session
 
 # Configuration
-BALTHASAR_HOST = os.environ.get("BALTHASAR_HOST", "100.118.235.126")
+try:
+    from api.routing.node_registry import get_node_ip as _get_node_ip
+    BALTHASAR_HOST = os.environ.get("BALTHASAR_HOST") or _get_node_ip("balthasar") or "100.118.235.126"
+except Exception:
+    BALTHASAR_HOST = os.environ.get("BALTHASAR_HOST", "100.118.235.126")
 BALTHASAR_PORT = os.environ.get("BALTHASAR_PORT", "5002")
 BALTHASAR_URL = f"http://{BALTHASAR_HOST}:{BALTHASAR_PORT}"
 _fallback_hosts_raw = os.environ.get("BALTHASAR_FALLBACK_HOSTS", "")

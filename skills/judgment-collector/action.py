@@ -2007,7 +2007,12 @@ def _omlx_inference_ok(timeout: int = 15) -> bool:
     except Exception:
         logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 1995, exc_info=True)
 
-    omlx_url = os.environ.get("MAGI_OMLX_CHAT_URL", "http://127.0.0.1:8080")
+    try:
+        from api.routing.service_registry import get_service_url as _gsurl
+        _omlx_def = _gsurl("omlx_inference")
+    except Exception:
+        _omlx_def = "http://127.0.0.1:8080"
+    omlx_url = os.environ.get("MAGI_OMLX_CHAT_URL", _omlx_def)
     model = os.environ.get("MAGI_OMLX_GENERAL_MODEL", os.environ.get("MAGI_TEXT_PRIMARY_MODEL", ""))
     payload = json.dumps({
         "model": model,
@@ -2040,7 +2045,12 @@ def _run_skill(skill: str, task: str, timeout_sec: int = 120, route_key: str = "
     import urllib.request
     import urllib.error
 
-    tools_api = os.environ.get("MAGI_TOOLS_API", "http://127.0.0.1:5003").rstrip("/")
+    try:
+        from api.routing.service_registry import get_service_url as _gsurl2
+        _tools_def = _gsurl2("tools_api")
+    except Exception:
+        _tools_def = "http://127.0.0.1:5003"
+    tools_api = os.environ.get("MAGI_TOOLS_API", _tools_def).rstrip("/")
     payload = {
         "skill": skill,
         "task": task,

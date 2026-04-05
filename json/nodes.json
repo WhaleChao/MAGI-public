@@ -1,0 +1,50 @@
+{
+  "_schema_version": "1.0.0",
+  "_description": "MAGI node topology. Defines all known compute/storage nodes.",
+  "nodes": {
+    "casper": {
+      "description": "Local primary node (this machine)",
+      "role": "primary",
+      "tailscale_ip": null,
+      "lan_ip": "127.0.0.1",
+      "env_override": null
+    },
+    "melchior": {
+      "description": "Remote inference node (Mac Studio)",
+      "role": "inference",
+      "tailscale_ip": "100.116.54.16",
+      "lan_ip": null,
+      "services": {
+        "inference": {"port": 5002, "protocol": "http"},
+        "rpc": {"port": 5010, "protocol": "http"}
+      },
+      "env_override": {
+        "tailscale_ip": "MAGI_MELCHIOR_IP",
+        "port": "MAGI_MELCHIOR_PORT"
+      }
+    },
+    "balthasar": {
+      "description": "Remote inference node (secondary)",
+      "role": "inference",
+      "tailscale_ip": "100.118.235.126",
+      "lan_ip": null,
+      "services": {
+        "inference": {"port": 5002, "protocol": "http"}
+      },
+      "env_override": {
+        "tailscale_ip": "MAGI_BALTHASAR_IP",
+        "port": "MAGI_BALTHASAR_PORT"
+      }
+    },
+    "nas": {
+      "description": "Synology NAS storage",
+      "role": "storage",
+      "tailscale_ip": "100.111.10.126",
+      "lan_ip": "192.168.1.3",
+      "env_override": {
+        "tailscale_ip": "MAGI_NAS_TAILSCALE_IP",
+        "lan_ip": "MAGI_NAS_LAN_IP"
+      }
+    }
+  }
+}

@@ -297,12 +297,22 @@ def _tcp_probe(name: str, host: str, port: int, timeout_sec: float = 1.8) -> Htt
 
 def collect_connectivity() -> Dict[str, Any]:
     probes: List[HttpProbe] = []
-    tools_url = str(os.environ.get("MAGI_TOOLS_URL", "http://127.0.0.1:5003")).rstrip("/")
+    try:
+        from api.routing.service_registry import get_service_url as _gsurl
+        _tools_default = _gsurl("tools_api")
+    except Exception:
+        _tools_default = "http://127.0.0.1:5003"
+    tools_url = str(os.environ.get("MAGI_TOOLS_URL", _tools_default)).rstrip("/")
     probes.append(_http_probe("tools_api_health", f"{tools_url}/health", timeout_sec=5))
 
     b_remote_enabled = str(os.environ.get("BALTHASAR_REMOTE_ENABLED", "0")).strip().lower() in {"1", "true", "yes", "on"}
     if b_remote_enabled:
-        b_host = str(os.environ.get("BALTHASAR_HOST", "100.118.235.126")).strip()
+        try:
+            from api.routing.node_registry import get_node_ip as _get_node_ip
+            _b_default = _get_node_ip("balthasar") or "100.118.235.126"
+        except Exception:
+            _b_default = "100.118.235.126"
+        b_host = str(os.environ.get("BALTHASAR_HOST", _b_default)).strip()
         b_port = int(os.environ.get("BALTHASAR_PORT", "5002") or "5002")
         fallbacks = [x.strip() for x in str(os.environ.get("BALTHASAR_FALLBACK_HOSTS", "") or "").split(",") if x.strip()]
         checked = []

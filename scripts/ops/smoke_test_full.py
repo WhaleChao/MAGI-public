@@ -227,7 +227,12 @@ def test_server_health():
     return code == 200, f"HTTP {code}"
 
 def test_tools_api_health():
-    code, body = _http_get("http://127.0.0.1:5003/health")
+    try:
+        from api.routing.service_registry import get_service_url as _gsurl
+        _tools_url = _gsurl("tools_api")
+    except Exception:
+        _tools_url = "http://127.0.0.1:5003"
+    code, body = _http_get(f"{_tools_url}/health")
     return code == 200, f"HTTP {code}"
 
 def test_server_security_headers():
@@ -247,7 +252,12 @@ def test_server_security_headers():
 
 def test_tools_api_cors():
     import urllib.request
-    req = urllib.request.Request("http://127.0.0.1:5003/health",
+    try:
+        from api.routing.service_registry import get_service_url as _gsurl2
+        _tools_url2 = _gsurl2("tools_api")
+    except Exception:
+        _tools_url2 = "http://127.0.0.1:5003"
+    req = urllib.request.Request(f"{_tools_url2}/health",
                                 headers={"Origin": "http://evil.com", "User-Agent": "MAGI-Smoke/1.0"})
     with urllib.request.urlopen(req, timeout=5) as resp:
         acao = resp.headers.get("Access-Control-Allow-Origin", "")

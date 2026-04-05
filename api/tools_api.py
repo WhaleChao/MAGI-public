@@ -1168,7 +1168,11 @@ def sages_status():
     from skills.bridge.http_pool import get_session as _get_session
 
     # Check Melchior (via /v1/models API)
-    melchior_host = os.environ.get("MELCHIOR_HOST", "100.116.54.16")
+    try:
+        from api.routing.node_registry import get_node_ip
+        melchior_host = os.environ.get("MELCHIOR_HOST") or get_node_ip("melchior") or "100.116.54.16"
+    except Exception:
+        melchior_host = os.environ.get("MELCHIOR_HOST", "100.116.54.16")
     melchior_api_port = os.environ.get("MELCHIOR_API_PORT", "8080")
     try:
         r = _get_session().get(f"http://{melchior_host}:{melchior_api_port}/v1/models", timeout=3)

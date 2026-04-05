@@ -727,7 +727,12 @@ def _run_skill(skill: str, task: str, timeout_sec: int = 120, route_key: str = "
     import urllib.request
     import urllib.error
 
-    tools_api = os.environ.get("MAGI_TOOLS_API", "http://127.0.0.1:5003").rstrip("/")
+    try:
+        from api.routing.service_registry import get_service_url as _gsurl
+        _tools_def = _gsurl("tools_api")
+    except Exception:
+        _tools_def = "http://127.0.0.1:5003"
+    tools_api = os.environ.get("MAGI_TOOLS_API", _tools_def).rstrip("/")
     payload = {
         "skill": skill,
         "task": task,

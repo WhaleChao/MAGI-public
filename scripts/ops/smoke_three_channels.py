@@ -551,7 +551,12 @@ def _print_report(checks: list[Check]) -> tuple[int, int, int]:
 def main() -> int:
     parser = argparse.ArgumentParser(description="MAGI 3-channel smoke checks (LINE/DC/TG)")
     parser.add_argument("--server-url", default="http://127.0.0.1:5002", help="MAGI server base URL")
-    parser.add_argument("--tools-url", default="http://127.0.0.1:5003", help="MAGI tools API base URL")
+    try:
+        from api.routing.service_registry import get_service_url as _gsurl
+        _tools_def = _gsurl("tools_api")
+    except Exception:
+        _tools_def = "http://127.0.0.1:5003"
+    parser.add_argument("--tools-url", default=_tools_def, help="MAGI tools API base URL")
     parser.add_argument("--timeout-sec", type=int, default=8, help="HTTP timeout in seconds")
     parser.add_argument("--json-out", default="", help="Optional path to save JSON report")
     parser.add_argument("--strict-warn", action="store_true", help="Treat WARN as non-zero exit")

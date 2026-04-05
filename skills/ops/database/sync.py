@@ -16,7 +16,12 @@ except Exception:
 logger = logging.getLogger("KeeperDBSync")
 
 # Config
-REMOTE_HOST = os.environ.get("DB_HOST", "100.121.61.74")
+try:
+    from api.routing.node_registry import get_node_ip as _get_node_ip
+    _db_fallback = _get_node_ip("nas") or "100.121.61.74"
+except Exception:
+    _db_fallback = "100.121.61.74"
+REMOTE_HOST = os.environ.get("DB_HOST", _db_fallback)
 REMOTE_USER = os.environ.get("DB_USER", "casper_service")
 REMOTE_PASS = os.environ.get("DB_PASSWORD", "")
 DB_NAME = "law_firm_data"

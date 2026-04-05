@@ -52,7 +52,12 @@ def wait_for_casper(timeout=60):
             logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 51, exc_info=True)
         try:
             # Fallback: check Ollama
-            resp = requests.get("http://127.0.0.1:8080/v1/models", timeout=2)
+            try:
+                from api.routing.service_registry import get_service_url as _gsurl
+                _omlx_base = _gsurl("omlx_inference")
+            except Exception:
+                _omlx_base = "http://127.0.0.1:8080"
+            resp = requests.get(f"{_omlx_base}/v1/models", timeout=2)
             if resp.status_code == 200:
                 return True
         except Exception:

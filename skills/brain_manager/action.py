@@ -43,14 +43,22 @@ RPC_START_SCRIPT = os.environ.get(
     f"{_MAGI_ROOT}/start_rpc.sh",
 )
 
-MELCHIOR_IP = os.environ.get("MELCHIOR_HOST", "100.116.54.16")
+try:
+    from api.routing.node_registry import get_node_ip as _get_node_ip
+    MELCHIOR_IP = os.environ.get("MELCHIOR_HOST") or _get_node_ip("melchior") or "100.116.54.16"
+except Exception:
+    MELCHIOR_IP = os.environ.get("MELCHIOR_HOST", "100.116.54.16")
 MELCHIOR_API_PORT = int(os.environ.get("MELCHIOR_API_PORT", "8080"))
 MELCHIOR_AGENT_PORT = int(os.environ.get("MELCHIOR_AGENT_PORT") or os.environ.get("MELCHIOR_PORT", "5002"))
 MELCHIOR_OLLAMA_PORT = int(os.environ.get("MELCHIOR_OLLAMA_PORT", "11434"))
 
 MELCHIOR_API_ENDPOINT = f"http://{MELCHIOR_IP}:{MELCHIOR_API_PORT}/v1"
 MELCHIOR_AGENT_ENDPOINT = f"http://{MELCHIOR_IP}:{MELCHIOR_AGENT_PORT}"
-LOCAL_API_ENDPOINT = "http://localhost:8080/v1"
+try:
+    from api.routing.service_registry import get_service_url as _get_svc_url2
+    LOCAL_API_ENDPOINT = _get_svc_url2("omlx_inference") + "/v1"
+except Exception:
+    LOCAL_API_ENDPOINT = "http://localhost:8080/v1"
 
 STATE_FILE = os.environ.get("MAGI_BRAIN_STATE_FILE", f"{_MAGI_ROOT}/.brain_state.json")
 NGL_HINT_FILE = os.environ.get("MAGI_BRAIN_NGL_HINT_FILE", f"{_MAGI_ROOT}/.brain_ngl_hint.json")
@@ -282,7 +290,12 @@ def check_remote_health() -> Tuple[bool, str]:
 
 def check_local_health() -> Tuple[bool, str]:
     """Checks if local inference API is online."""
-    ok, msg = _check_http("http://localhost:8080/v1/models", timeout_sec=2, allow_loading=True)
+    try:
+        from api.routing.service_registry import get_service_url as _gsurl3
+        _local_models = _gsurl3("omlx_inference") + "/v1/models"
+    except Exception:
+        _local_models = "http://localhost:8080/v1/models"
+    ok, msg = _check_http(_local_models, timeout_sec=2, allow_loading=True)
     if ok:
         return True, "Local API online" if msg == "OK" else f"Local API {msg}"
     if _is_process_running("llama-server"):

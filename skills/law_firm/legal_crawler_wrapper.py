@@ -26,6 +26,14 @@ if str(_MAGI_ROOT) not in sys.path:
 
 from api.runtime_paths import config_candidates
 
+
+def _tools_api_default() -> str:
+    try:
+        from api.routing.service_registry import get_service_url
+        return get_service_url("tools_api")
+    except Exception:
+        return "http://127.0.0.1:5003"
+
 # --- Load .env for subprocess/cron credential access ---
 try:
     from dotenv import load_dotenv as _load_dotenv
@@ -199,7 +207,7 @@ def _run_osc_index_cases() -> str:
     This avoids false "no active cases" skips when Synology is slow.
     """
     import requests
-    tools_api = os.environ.get("MAGI_TOOLS_API", "http://127.0.0.1:5003").rstrip("/")
+    tools_api = os.environ.get("MAGI_TOOLS_API", _tools_api_default()).rstrip("/")
     payload = {
         "max_cases": int(os.environ.get("MAGI_CASE_INDEX_MAX_CASES", "220") or "220"),
         "max_files_per_case": int(os.environ.get("MAGI_CASE_INDEX_MAX_FILES_PER_CASE", "200") or "200"),
@@ -465,7 +473,7 @@ def _run_judgment_collector_daily() -> str:
     """
     import requests
 
-    tools_api = os.environ.get("MAGI_TOOLS_API", "http://127.0.0.1:5003").rstrip("/")
+    tools_api = os.environ.get("MAGI_TOOLS_API", _tools_api_default()).rstrip("/")
     try:
         r = requests.post(
             f"{tools_api}/skills/run",
@@ -501,7 +509,7 @@ def _run_transcript_sync() -> str:
     """
     import requests
 
-    tools_api = os.environ.get("MAGI_TOOLS_API", "http://127.0.0.1:5003").rstrip("/")
+    tools_api = os.environ.get("MAGI_TOOLS_API", _tools_api_default()).rstrip("/")
     try:
         r = requests.post(
             f"{tools_api}/skills/run",
@@ -531,7 +539,7 @@ def _run_file_review_check() -> str:
     """
     import requests
 
-    tools_api = os.environ.get("MAGI_TOOLS_API", "http://127.0.0.1:5003").rstrip("/")
+    tools_api = os.environ.get("MAGI_TOOLS_API", _tools_api_default()).rstrip("/")
     results = []
     for task_name in ("check_emails", "download"):
         try:
@@ -733,7 +741,7 @@ def refresh_active_case_insights() -> str:
     # Call Tools API to run existing ingest skill (so Iron Dome & skill versioning apply).
     import requests
 
-    tools_api = os.environ.get("MAGI_TOOLS_API", "http://127.0.0.1:5003").rstrip("/")
+    tools_api = os.environ.get("MAGI_TOOLS_API", _tools_api_default()).rstrip("/")
     profile_name = os.environ.get("MAGI_INSIGHT_DB_PROFILE", "").strip()
     max_results = int(os.environ.get("MAGI_ACTIVE_CASES_REFRESH_MAX_RESULTS", "2"))
 

@@ -1,0 +1,131 @@
+@media (max-width: 1200px) {
+    .grid-4 {
+        grid-template-columns: 1fr 1fr;
+    }
+
+    .stat-grid {
+        grid-template-columns: 1fr 1fr 1fr;
+    }
+
+    .field-grid.cols-4 {
+        grid-template-columns: 1fr 1fr;
+    }
+
+    .draft-main-grid {
+        grid-template-columns: 1fr;
+    }
+}
+
+@media (max-width: 980px) {
+
+    .grid-2,
+    .grid-3,
+    .grid-4 {
+        grid-template-columns: 1fr;
+    }
+
+    .stat-grid {
+        grid-template-columns: 1fr 1fr;
+    }
+
+    .field-grid.cols-2,
+    .field-grid.cols-3,
+    .field-grid.cols-4 {
+        grid-template-columns: 1fr;
+    }
+
+    .title {
+        font-size: 18px;
+    }
+
+    .layout-sidebar {
+        width: 56px;
+        overflow: hidden;
+    }
+
+    .layout-sidebar > div:first-child {
+        padding: 12px 8px 6px;
+    }
+
+    .layout-sidebar .title {
+        font-size: 14px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    .sidebar-group summary,
+    .layout-sidebar .muted {
+        display: none;
+    }
+
+    .tab-btn {
+        font-size: 0;
+        padding: 10px 8px;
+        justify-content: center;
+        color: var(--sidebar-text);
+    }
+
+    .tab-btn::first-letter {
+        font-size: 14px;
+    }
+
+    .view {
+        padding: 12px;
+    }
+}
+@media (max-width: 640px) {
+    body {
+        overflow: auto;
+        display: block;
+    }
+    .layout-sidebar {
+        width: 100%;
+        border-right: none;
+        overflow: visible;
+    }
+    .layout-main {
+        height: auto;
+        min-height: 100vh;
+    }
+    header {
+        padding: 12px;
+        flex-direction: column;
+        align-items: stretch;
+    }
+    .meta {
+        justify-content: flex-start;
+    }
+    .global-search {
+        max-width: none;
+        width: 100%;
+    }
+    .tabs {
+        flex-direction: row;
+        flex-wrap: wrap;
+        gap: 6px;
+        padding: 10px;
+    }
+    .sidebar-group {
+        min-width: 100%;
+    }
+    .tab-btn {
+        font-size: 12px;
+        padding: 8px 10px;
+        border: 1px solid rgba(255,255,255,0.08);
+        border-radius: 8px;
+    }
+    .tab-btn::first-letter {
+        font-size: inherit;
+    }
+    .view {
+        padding: 10px;
+    }
+    .card,
+    .panel,
+    .table-wrap,
+    .calendar-wrap {
+        overflow-x: auto;
+    }
+}
+    </style>

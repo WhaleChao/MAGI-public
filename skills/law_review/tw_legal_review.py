@@ -15,7 +15,11 @@ import requests
 from typing import Optional
 
 # ── 設定 ──────────────────────────────────────────────
-OLLAMA_URL = "http://127.0.0.1:8080/v1/chat/completions"
+try:
+    from api.routing.service_registry import get_service_url as _get_svc_url
+    OLLAMA_URL = _get_svc_url("omlx_inference") + "/v1/chat/completions"
+except Exception:
+    OLLAMA_URL = "http://127.0.0.1:8080/v1/chat/completions"
 MODEL_NAME = os.environ.get("MAGI_TEXT_PRIMARY_MODEL", "")
 
 SYSTEM_PROMPT = """你是臺灣法律用語校正專家。請檢查以下文字，將不符合臺灣法規慣用語的部分修正。

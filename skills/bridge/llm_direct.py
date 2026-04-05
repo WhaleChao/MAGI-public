@@ -22,11 +22,17 @@ from api.model_config import TEXT_PRIMARY_MODEL
 
 logger = logging.getLogger("LLMDirect")
 
+try:
+    from api.routing.service_registry import get_service_url as _get_svc_url
+    _omlx_v1_default = _get_svc_url("omlx_inference") + "/v1"
+except Exception:
+    _omlx_v1_default = "http://127.0.0.1:8080/v1"
+
 # ── Provider 設定 ──────────────────────────────────────
 
 PROVIDERS: dict[str, dict[str, Any]] = {
     "omlx": {
-        "base_url": os.environ.get("OMLX_BASE_URL", "http://127.0.0.1:8080/v1"),
+        "base_url": os.environ.get("OMLX_BASE_URL", _omlx_v1_default),
         "api_key": os.environ.get("OMLX_API_KEY", "omlx-local"),
         "default_model": os.environ.get("MAGI_DEFAULT_MODEL", TEXT_PRIMARY_MODEL),
         "api_format": "openai",
