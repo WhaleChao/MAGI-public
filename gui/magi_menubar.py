@@ -36,15 +36,15 @@ MAGI_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CHECK_INTERVAL = 3
 
 SERVICES = [
-    ("守護程序",       "daemon.py"),
-    ("主伺服器",       "api/server.py"),
-    ("Discord Bot",    "api/discord_bot.py"),
-    ("工具 API",       "api/tools_api.py"),
+    ("守護程序", "daemon.py"),
+    ("主伺服器", "api/server.py"),
+    ("通訊機器", "api/discord_bot.py"),
+    ("工具接口", "api/tools_api.py"),
 ]
 
 OMLX_ENGINES = [
-    ("Gemma4 26B", int(os.environ.get("MAGI_OMLX_PORT", "8080"))),
-    ("ModernBERT",  8081),
+    ("文字視覺", int(os.environ.get("MAGI_OMLX_PORT", "8080"))),
+    ("向量嵌入", 8081),
 ]
 
 # ── 顏色 ──
@@ -189,16 +189,16 @@ def _get_system_memory() -> tuple[float, float, float]:
 
 class MAGIMenuBar(rumps.App):
     def __init__(self):
-        super().__init__("Ⓜ", quit_button=None)
+        super().__init__(" MAGI ", quit_button=None)
         self.icon = None
         self._action_lock = threading.Lock()
 
         # ── Header ──
-        self.menu_header = rumps.MenuItem("  MAGI SYSTEM v2", callback=None)
+        self.menu_header = rumps.MenuItem("  MAGI v2", callback=None)
         self.menu_header.set_callback(None)
 
         # ── 核心服務 ──
-        self.svc_header = rumps.MenuItem("━━ 核心服務 ━━", callback=None)
+        self.svc_header = rumps.MenuItem("── 核心服務 ──", callback=None)
         self.svc_header.set_callback(None)
         self.service_items = {}
         for name, _ in SERVICES:
@@ -207,44 +207,44 @@ class MAGIMenuBar(rumps.App):
             self.service_items[name] = item
 
         # ── 推理引擎 ──
-        self.omlx_header = rumps.MenuItem("━━ 推理引擎 ━━", callback=None)
+        self.omlx_header = rumps.MenuItem("── 推理引擎 ──", callback=None)
         self.omlx_header.set_callback(None)
         self.omlx_items = {}
         for name, _ in OMLX_ENGINES:
             item = rumps.MenuItem(f"  ◻ {name}")
             item.set_callback(None)
             self.omlx_items[name] = item
-        self._tier_item = rumps.MenuItem("  ◻ 分層路由")
+        self._tier_item = rumps.MenuItem("  ◻ 推理分層")
         self._tier_item.set_callback(None)
 
         # ── 排程 ──
-        self.cron_status_item = rumps.MenuItem("  ◻ 排程")
+        self.cron_status_item = rumps.MenuItem("  ◻ 定時排程")
         self.cron_status_item.set_callback(None)
 
         # ── 連線 ──
-        self.conn_header = rumps.MenuItem("━━ 連線狀態 ━━", callback=None)
+        self.conn_header = rumps.MenuItem("── 外部連線 ──", callback=None)
         self.conn_header.set_callback(None)
-        self.nas_status_item = rumps.MenuItem("  ◻ NAS")
+        self.nas_status_item = rumps.MenuItem("  ◻ 網路硬碟")
         self.nas_status_item.set_callback(None)
-        self.db_status_item = rumps.MenuItem("  ◻ DB")
+        self.db_status_item = rumps.MenuItem("  ◻ 資料庫群")
         self.db_status_item.set_callback(None)
 
         # ── 系統 ──
-        self.res_header = rumps.MenuItem("━━ 系統資源 ━━", callback=None)
+        self.res_header = rumps.MenuItem("── 系統資源 ──", callback=None)
         self.res_header.set_callback(None)
-        self.mem_system_item = rumps.MenuItem("  ◻ 記憶體")
+        self.mem_system_item = rumps.MenuItem("  ◻ 系統記憶")
         self.mem_system_item.set_callback(None)
-        self.mem_total_item = rumps.MenuItem("  ◻ MAGI 佔用")
+        self.mem_total_item = rumps.MenuItem("  ◻ 程序佔用")
         self.mem_total_item.set_callback(None)
         self.zombie_item = rumps.MenuItem("  ◻ 殭屍程序")
         self.zombie_item.set_callback(None)
 
         # ── 操作 ──
-        self.start_item = rumps.MenuItem("▶  啟動 MAGI", callback=self.on_start)
-        self.stop_item = rumps.MenuItem("■  停止 MAGI", callback=self.on_stop)
-        self.restart_item = rumps.MenuItem("↻  重新啟動", callback=self.on_restart)
-        self.clean_zombie_item = rumps.MenuItem("🧹 清除殭屍", callback=self.on_clean_zombies)
-        self.quit_item = rumps.MenuItem("結束監控", callback=self.on_quit)
+        self.start_item = rumps.MenuItem("  ▶ 啟動系統", callback=self.on_start)
+        self.stop_item = rumps.MenuItem("  ■ 停止系統", callback=self.on_stop)
+        self.restart_item = rumps.MenuItem("  ↻ 重新啟動", callback=self.on_restart)
+        self.clean_zombie_item = rumps.MenuItem("  ♻ 清除殭屍", callback=self.on_clean_zombies)
+        self.quit_item = rumps.MenuItem("  ✕ 結束監控", callback=self.on_quit)
 
         self.menu = [
             self.menu_header,
@@ -287,17 +287,16 @@ class MAGIMenuBar(rumps.App):
         for name, pattern in SERVICES:
             pid = _pgrep(pattern)
             if pid:
-                _set_colored_title(self.service_items[name], f"  ● {name}", _GREEN)
+                _set_colored_title(self.service_items[name], f"  ● {name}  運行中", _GREEN)
                 core_up += 1
             else:
-                _set_colored_title(self.service_items[name], f"  ✗ {name}  停止", _RED)
+                _set_colored_title(self.service_items[name], f"  ✗ {name}  已停止", _RED)
 
         omlx_up = 0
         for name, port in OMLX_ENGINES:
             model = _check_omlx(port)
             if model:
-                short = model.split("/")[-1][:25]
-                _set_colored_title(self.omlx_items[name], f"  ● {name}  {short}", _GREEN)
+                _set_colored_title(self.omlx_items[name], f"  ● {name}  就緒", _GREEN)
                 omlx_up += 1
             else:
                 _set_colored_title(self.omlx_items[name], f"  ✗ {name}  離線", _RED)
@@ -306,11 +305,10 @@ class MAGIMenuBar(rumps.App):
         try:
             from skills.bridge.tier_router import get_status as _tier_status
             ts = _tier_status()
-            mode_icon = {"auto": "🔄", "e4b": "⚡", "26b": "🧠"}.get(ts["mode"], "?")
-            mode_label = {"auto": "自動", "e4b": "E4B", "26b": "26B"}.get(ts["mode"], ts["mode"])
-            _set_colored_title(self._tier_item, f"  {mode_icon} 分層  {mode_label}", _CYAN)
+            mode_label = {"auto": "自動分層", "e4b": "輕型固定", "26b": "重型固定"}.get(ts["mode"], ts["mode"])
+            _set_colored_title(self._tier_item, f"  ● 推理分層  {mode_label}", _CYAN)
         except Exception:
-            _set_colored_title(self._tier_item, f"  ◻ 分層  --", _GRAY)
+            _set_colored_title(self._tier_item, f"  ◻ 推理分層  --", _GRAY)
 
         self._update_cron_status()
         self._update_nas_status()
@@ -321,27 +319,27 @@ class MAGIMenuBar(rumps.App):
         if pct > 0:
             bar = _mem_bar(pct)
             mem_color = _GREEN if pct < 70 else (_YELLOW if pct < 85 else _RED)
-            _set_colored_title(self.mem_system_item, f"  {bar}  {pct:.0f}%  {avail_gb:.1f}G 可用", mem_color)
+            _set_colored_title(self.mem_system_item, f"  {bar} 系統記憶  {pct:.0f}% {avail_gb:.1f}G餘", mem_color)
 
         modules = _get_module_memory()
         magi_mb = sum(m[1] for m in modules)
-        _set_colored_title(self.mem_total_item, f"  ● MAGI  {magi_mb} MB", _YELLOW if magi_mb > 2000 else _GREEN)
+        _set_colored_title(self.mem_total_item, f"  ● 程序佔用  {magi_mb}MB", _YELLOW if magi_mb > 2000 else _GREEN)
 
         zombies, z_detail = _count_zombies()
         if zombies == 0:
-            _set_colored_title(self.zombie_item, "  ● 殭屍  0", _GREEN)
+            _set_colored_title(self.zombie_item, "  ● 殭屍程序  無", _GREEN)
         else:
-            _set_colored_title(self.zombie_item, f"  ⚠ 殭屍  {zombies} 個 {z_detail}", _RED)
+            _set_colored_title(self.zombie_item, f"  ⚠ 殭屍程序  {zombies}個", _RED)
 
         # ── 選單列圖示 ──
         total = core_up + omlx_up
         expected = len(SERVICES) + len(OMLX_ENGINES)
         if total == expected and zombies == 0:
-            self.title = "Ⓜ"
+            self.title = " MAGI "
         elif core_up >= 2:
-            self.title = "Ⓜ!"
+            self.title = " MAGI ⚠"
         else:
-            self.title = "Ⓜ✕"
+            self.title = " MAGI ✕"
 
     def _update_cron_status(self):
         try:
@@ -354,13 +352,13 @@ class MAGIMenuBar(rumps.App):
             enabled = [j for j in jobs if j.get("enabled", True)]
             bot_pid = _pgrep("discord_bot.py")
             if bot_pid and enabled:
-                _set_colored_title(self.cron_status_item, f"  ● 排程  {len(enabled)} 個任務", _GREEN)
+                _set_colored_title(self.cron_status_item, f"  ● 定時排程  {len(enabled)}個運行", _GREEN)
             elif enabled:
-                _set_colored_title(self.cron_status_item, f"  ✗ 排程  Bot 停止", _RED)
+                _set_colored_title(self.cron_status_item, f"  ✗ 定時排程  Bot停止", _RED)
             else:
-                _set_colored_title(self.cron_status_item, "  ⚠ 排程  無任務", _YELLOW)
+                _set_colored_title(self.cron_status_item, "  ⚠ 定時排程  無任務", _YELLOW)
         except Exception:
-            _set_colored_title(self.cron_status_item, "  ⚠ 排程  錯誤", _YELLOW)
+            _set_colored_title(self.cron_status_item, "  ⚠ 定時排程  錯誤", _YELLOW)
 
     def _update_nas_status(self):
         import socket
@@ -378,15 +376,15 @@ class MAGIMenuBar(rumps.App):
                 os.path.ismount("/Volumes/lumi") or os.path.ismount("/Volumes/lumi-1")
             )
             if _tcp_ok(lan_ip, timeout=1) and mounted:
-                _set_colored_title(self.nas_status_item, f"  ● NAS  LAN 已掛載", _GREEN)
+                _set_colored_title(self.nas_status_item, f"  ● 網路硬碟  區網掛載", _GREEN)
             elif _tcp_ok(ts_ip, timeout=3) and mounted:
-                _set_colored_title(self.nas_status_item, f"  ● NAS  VPN 已掛載", _GREEN)
+                _set_colored_title(self.nas_status_item, f"  ● 網路硬碟  VPN掛載", _GREEN)
             elif mounted:
-                _set_colored_title(self.nas_status_item, f"  ⚠ NAS  已掛載（連線不穩）", _YELLOW)
+                _set_colored_title(self.nas_status_item, f"  ⚠ 網路硬碟  連線不穩", _YELLOW)
             else:
-                _set_colored_title(self.nas_status_item, "  ✗ NAS  未掛載", _RED)
+                _set_colored_title(self.nas_status_item, "  ✗ 網路硬碟  未掛載", _RED)
         except Exception:
-            _set_colored_title(self.nas_status_item, "  ⚠ NAS  錯誤", _YELLOW)
+            _set_colored_title(self.nas_status_item, "  ⚠ 網路硬碟  錯誤", _YELLOW)
 
     def _update_db_status(self):
         import socket
@@ -402,15 +400,15 @@ class MAGIMenuBar(rumps.App):
             remote_ok = _db_ok(remote_host, 3306)
             local_ok = _db_ok("127.0.0.1", 3306)
             if remote_ok and local_ok:
-                _set_colored_title(self.db_status_item, f"  ● DB   雙活同步", _GREEN)
+                _set_colored_title(self.db_status_item, f"  ● 資料庫群  雙活同步", _GREEN)
             elif local_ok and not remote_ok:
-                _set_colored_title(self.db_status_item, f"  ⚠ DB   本機運作（遠端離線）", _YELLOW)
+                _set_colored_title(self.db_status_item, f"  ⚠ 資料庫群  本機墊檔", _YELLOW)
             elif remote_ok:
-                _set_colored_title(self.db_status_item, f"  ● DB   遠端直連", _GREEN)
+                _set_colored_title(self.db_status_item, f"  ● 資料庫群  遠端直連", _GREEN)
             else:
-                _set_colored_title(self.db_status_item, f"  ✗ DB   全部離線", _RED)
+                _set_colored_title(self.db_status_item, f"  ✗ 資料庫群  全部離線", _RED)
         except Exception:
-            _set_colored_title(self.db_status_item, "  ⚠ DB   錯誤", _YELLOW)
+            _set_colored_title(self.db_status_item, "  ⚠ 資料庫群  錯誤", _YELLOW)
 
     def _run_action(self, menu_item, label, command, original_callback):
         if not self._action_lock.acquire(blocking=False):
