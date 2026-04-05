@@ -215,8 +215,6 @@ class MAGIMenuBar(rumps.App):
             item = rumps.MenuItem(f"  ◻ {name}")
             item.set_callback(None)
             self.omlx_items[name] = item
-        self._tier_item = rumps.MenuItem("  ◻ 推理分層")
-        self._tier_item.set_callback(None)
 
         # ── 排程 ──
         self.cron_status_item = rumps.MenuItem("  ◻ 定時排程")
@@ -255,7 +253,6 @@ class MAGIMenuBar(rumps.App):
             rumps.separator,
             self.omlx_header,
             *self.omlx_items.values(),
-            self._tier_item,
             rumps.separator,
             self.cron_status_item,
             rumps.separator,
@@ -301,12 +298,6 @@ class MAGIMenuBar(rumps.App):
         for name, port in OMLX_ENGINES:
             engines[name] = _check_omlx(port)
         cache["engines"] = engines
-        # Tier
-        try:
-            from skills.bridge.tier_router import get_status as _ts
-            cache["tier"] = _ts()
-        except Exception:
-            cache["tier"] = None
         # 排程
         try:
             cron_path = os.path.join(MAGI_ROOT, "cron_jobs.json")

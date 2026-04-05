@@ -6566,12 +6566,6 @@ class Orchestrator:
             self._append_history(user_id, "assistant", reply)
             return reply
 
-        # 4.5 Tier Router Commands (模型切換，不限管理員)
-        tier_reply = _handle_tier_command(message)
-        if tier_reply:
-            self._append_history(user_id, "assistant", tier_reply)
-            return tier_reply
-
         # 5. Intent Classification
         # Hard override: LAF report commands should always enter CMD path.
         forced_cmd = False
@@ -7864,14 +7858,6 @@ class Orchestrator:
 "• `日曆同步` — 庭期同步 Google Calendar\n"
 "\n"
 "━━━━━━━━━━━━━━━━━━━━\n"
-"🧠 **模型管理**\n"
-"━━━━━━━━━━━━━━━━━━━━\n"
-"• `模型狀態` 或 `/model status` — 查看推理分層\n"
-"• `切換26B` — 強制重型模型\n"
-"• `切換E4B` — 強制輕型模型\n"
-"• `自動模式` — 恢復自動分層\n"
-"\n"
-"━━━━━━━━━━━━━━━━━━━━\n"
 "🧬 **技能進化 (管理員)**\n"
 "━━━━━━━━━━━━━━━━━━━━\n"
 "• 自動生成／驗證／上線新技能\n"
@@ -7955,14 +7941,6 @@ class Orchestrator:
 "• `/深度思考 [問題]` — 深度分析模式\n"
 "• `備份資料庫` / `備份清單` — 資料庫備份\n"
 "• 直接對話 — 一般問答\n"
-"\n"
-"━━━━━━━━━━━━━━━━━━━━\n"
-"🧠 **模型管理**\n"
-"━━━━━━━━━━━━━━━━━━━━\n"
-"• `模型狀態` — 查看推理分層\n"
-"• `切換26B` — 強制重型模型\n"
-"• `切換E4B` — 強制輕型模型\n"
-"• `自動模式` — 恢復自動分層\n"
 "\n"
 "💡 用 `/指令` 確保觸發功能，或在專屬頻道直接用自然語言\n"
 "🔒 大腦管理、鐵穹、技能進化等需管理員權限"

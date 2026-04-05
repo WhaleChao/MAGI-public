@@ -628,12 +628,6 @@ def create_admin_runtime_blueprint(
         except Exception:
             logger.debug("silent-catch in health uptime", exc_info=True)
 
-        try:
-            from skills.bridge.tier_router import get_status as _tier_st
-            checks["tier"] = _tier_st()
-        except Exception:
-            pass
-
         checks["status"] = "operational" if checks.get("omlx", {}).get("ok") else "degraded"
         return jsonify(checks), 200
 

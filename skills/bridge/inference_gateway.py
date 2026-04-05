@@ -816,23 +816,6 @@ class InferenceGateway:
         errors: List[str] = []
         allow_synthetic_fallback = bool(kwargs.get("allow_synthetic_fallback", True))
 
-        # ── Tier routing: heavy tasks → Ollama 26B ──
-        try:
-            from skills.bridge.tier_router import resolve_tier
-            tier = resolve_tier(task_type, prompt)
-        except Exception:
-            tier = "e4b"
-        if tier == "26b":
-            progress_fn = kwargs.get("progress_callback")
-            r = self._ollama_26b_chat(prompt, timeout=max(60, int(timeout)),
-                                       task_type=task_type, progress_fn=progress_fn)
-            if r.get("success"):
-                r["task_type"] = task_type
-                r["tier"] = "26b"
-                return r
-            errors.append(f"ollama_26b:{r.get('error', '')}")
-            # Fall through to E4B as graceful degradation
-
         # Try oMLX first for tasks that have an oMLX model configured
         # OCR/date extraction stay on OCR model; review/classify still use the configured local text model.
         omlx_model = _MODEL_ROSTER.get(task_type, {}).get("omlx", "")
