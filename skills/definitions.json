@@ -2,7 +2,7 @@
     "_meta": {
         "version": "1.0.0",
         "description": "MAGI Skill Definitions for OpenClaw Integration",
-        "updated": "2026-04-05",
+        "updated": "2026-04-06",
         "api_base": "http://localhost:5003",
         "sanitized_by": "scripts/ops/sanitize_definitions.py",
         "sanitized_at": "2026-04-03T08:21:05",
@@ -3143,6 +3143,412 @@
                             "code-setup_wizard"
                         ],
                         "description": "Skill folder name (default: code-setup_wizard)"
+                    },
+                    "task": {
+                        "type": "string",
+                        "description": "Task text to pass into action.py"
+                    }
+                },
+                "required": [
+                    "task",
+                    "skill"
+                ]
+            }
+        },
+        {
+            "name": "run_code_tests_test_context_labels",
+            "description": "Functional skill generated from CODE file `tests/test_context_labels.py`. Supports function-call mode, module execution mode, and self-test mode.",
+            "endpoint": "/skills/run",
+            "method": "POST",
+            "sage": "casper",
+            "iron_dome": true,
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "skill": {
+                        "type": "string",
+                        "default": "code-tests-test_context_labels",
+                        "enum": [
+                            "code-tests-test_context_labels"
+                        ],
+                        "description": "Skill folder name (default: code-tests-test_context_labels)"
+                    },
+                    "task": {
+                        "type": "string",
+                        "description": "Task text to pass into action.py"
+                    }
+                },
+                "required": [
+                    "task",
+                    "skill"
+                ]
+            }
+        },
+        {
+            "name": "run_code_tests_test_memory_no_assistant_promotion",
+            "description": "Functional skill generated from CODE file `tests/test_memory_no_assistant_promotion.py`. Supports function-call mode, module execution mode, and self-test mode.",
+            "endpoint": "/skills/run",
+            "method": "POST",
+            "sage": "casper",
+            "iron_dome": true,
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "skill": {
+                        "type": "string",
+                        "default": "code-tests-test_memory_no_assistant_promotion",
+                        "enum": [
+                            "code-tests-test_memory_no_assistant_promotion"
+                        ],
+                        "description": "Skill folder name (default: code-tests-test_memory_no_assistant_promotion)"
+                    },
+                    "task": {
+                        "type": "string",
+                        "description": "Task text to pass into action.py"
+                    }
+                },
+                "required": [
+                    "task",
+                    "skill"
+                ]
+            }
+        },
+        {
+            "name": "run_code_tests_test_memory_policy",
+            "description": "Functional skill generated from CODE file `tests/test_memory_policy.py`. Supports function-call mode, module execution mode, and self-test mode.",
+            "endpoint": "/skills/run",
+            "method": "POST",
+            "sage": "casper",
+            "iron_dome": true,
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "skill": {
+                        "type": "string",
+                        "default": "code-tests-test_memory_policy",
+                        "enum": [
+                            "code-tests-test_memory_policy"
+                        ],
+                        "description": "Skill folder name (default: code-tests-test_memory_policy)"
+                    },
+                    "task": {
+                        "type": "string",
+                        "description": "Task text to pass into action.py"
+                    }
+                },
+                "required": [
+                    "task",
+                    "skill"
+                ]
+            }
+        },
+        {
+            "name": "run_code_tests_test_route_explanations",
+            "description": "Functional skill generated from CODE file `tests/test_route_explanations.py`. Supports function-call mode, module execution mode, and self-test mode.",
+            "endpoint": "/skills/run",
+            "method": "POST",
+            "sage": "casper",
+            "iron_dome": true,
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "skill": {
+                        "type": "string",
+                        "default": "code-tests-test_route_explanations",
+                        "enum": [
+                            "code-tests-test_route_explanations"
+                        ],
+                        "description": "Skill folder name (default: code-tests-test_route_explanations)"
+                    },
+                    "task": {
+                        "type": "string",
+                        "description": "Task text to pass into action.py"
+                    }
+                },
+                "required": [
+                    "task",
+                    "skill"
+                ]
+            }
+        },
+        {
+            "name": "run_code_tests_test_route_policy",
+            "description": "Functional skill generated from CODE file `tests/test_route_policy.py`. Supports function-call mode, module execution mode, and self-test mode.",
+            "endpoint": "/skills/run",
+            "method": "POST",
+            "sage": "casper",
+            "iron_dome": true,
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "skill": {
+                        "type": "string",
+                        "default": "code-tests-test_route_policy",
+                        "enum": [
+                            "code-tests-test_route_policy"
+                        ],
+                        "description": "Skill folder name (default: code-tests-test_route_policy)"
+                    },
+                    "task": {
+                        "type": "string",
+                        "description": "Task text to pass into action.py"
+                    }
+                },
+                "required": [
+                    "task",
+                    "skill"
+                ]
+            }
+        },
+        {
+            "name": "run_code_tests_test_tool_first_pipeline",
+            "description": "Functional skill generated from CODE file `tests/test_tool_first_pipeline.py`. Supports function-call mode, module execution mode, and self-test mode.",
+            "endpoint": "/skills/run",
+            "method": "POST",
+            "sage": "casper",
+            "iron_dome": true,
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "skill": {
+                        "type": "string",
+                        "default": "code-tests-test_tool_first_pipeline",
+                        "enum": [
+                            "code-tests-test_tool_first_pipeline"
+                        ],
+                        "description": "Skill folder name (default: code-tests-test_tool_first_pipeline)"
+                    },
+                    "task": {
+                        "type": "string",
+                        "description": "Task text to pass into action.py"
+                    }
+                },
+                "required": [
+                    "task",
+                    "skill"
+                ]
+            }
+        },
+        {
+            "name": "run_code_tests_test_ci_gates",
+            "description": "Functional skill generated from CODE file `tests/test_ci_gates.py`. Supports function-call mode, module execution mode, and self-test mode.",
+            "endpoint": "/skills/run",
+            "method": "POST",
+            "sage": "casper",
+            "iron_dome": true,
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "skill": {
+                        "type": "string",
+                        "default": "code-tests-test_ci_gates",
+                        "enum": [
+                            "code-tests-test_ci_gates"
+                        ],
+                        "description": "Skill folder name (default: code-tests-test_ci_gates)"
+                    },
+                    "task": {
+                        "type": "string",
+                        "description": "Task text to pass into action.py"
+                    }
+                },
+                "required": [
+                    "task",
+                    "skill"
+                ]
+            }
+        },
+        {
+            "name": "run_code_tests_test_registry_foundation",
+            "description": "Functional skill generated from CODE file `tests/test_registry_foundation.py`. Supports function-call mode, module execution mode, and self-test mode.",
+            "endpoint": "/skills/run",
+            "method": "POST",
+            "sage": "casper",
+            "iron_dome": true,
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "skill": {
+                        "type": "string",
+                        "default": "code-tests-test_registry_foundation",
+                        "enum": [
+                            "code-tests-test_registry_foundation"
+                        ],
+                        "description": "Skill folder name (default: code-tests-test_registry_foundation)"
+                    },
+                    "task": {
+                        "type": "string",
+                        "description": "Task text to pass into action.py"
+                    }
+                },
+                "required": [
+                    "task",
+                    "skill"
+                ]
+            }
+        },
+        {
+            "name": "run_code_tests_test_routing_unified",
+            "description": "Functional skill generated from CODE file `tests/test_routing_unified.py`. Supports function-call mode, module execution mode, and self-test mode.",
+            "endpoint": "/skills/run",
+            "method": "POST",
+            "sage": "casper",
+            "iron_dome": true,
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "skill": {
+                        "type": "string",
+                        "default": "code-tests-test_routing_unified",
+                        "enum": [
+                            "code-tests-test_routing_unified"
+                        ],
+                        "description": "Skill folder name (default: code-tests-test_routing_unified)"
+                    },
+                    "task": {
+                        "type": "string",
+                        "description": "Task text to pass into action.py"
+                    }
+                },
+                "required": [
+                    "task",
+                    "skill"
+                ]
+            }
+        },
+        {
+            "name": "run_code_tests_test_skill_contract_contract_review",
+            "description": "Functional skill generated from CODE file `tests/test_skill_contract_contract_review.py`. Supports function-call mode, module execution mode, and self-test mode.",
+            "endpoint": "/skills/run",
+            "method": "POST",
+            "sage": "casper",
+            "iron_dome": true,
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "skill": {
+                        "type": "string",
+                        "default": "code-tests-test_skill_contract_contract_review",
+                        "enum": [
+                            "code-tests-test_skill_contract_contract_review"
+                        ],
+                        "description": "Skill folder name (default: code-tests-test_skill_contract_contract_review)"
+                    },
+                    "task": {
+                        "type": "string",
+                        "description": "Task text to pass into action.py"
+                    }
+                },
+                "required": [
+                    "task",
+                    "skill"
+                ]
+            }
+        },
+        {
+            "name": "run_code_tests_test_skill_contract_market_briefing",
+            "description": "Functional skill generated from CODE file `tests/test_skill_contract_market_briefing.py`. Supports function-call mode, module execution mode, and self-test mode.",
+            "endpoint": "/skills/run",
+            "method": "POST",
+            "sage": "casper",
+            "iron_dome": true,
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "skill": {
+                        "type": "string",
+                        "default": "code-tests-test_skill_contract_market_briefing",
+                        "enum": [
+                            "code-tests-test_skill_contract_market_briefing"
+                        ],
+                        "description": "Skill folder name (default: code-tests-test_skill_contract_market_briefing)"
+                    },
+                    "task": {
+                        "type": "string",
+                        "description": "Task text to pass into action.py"
+                    }
+                },
+                "required": [
+                    "task",
+                    "skill"
+                ]
+            }
+        },
+        {
+            "name": "run_code_tests_test_skill_contract_pdf_bookmarker",
+            "description": "Functional skill generated from CODE file `tests/test_skill_contract_pdf_bookmarker.py`. Supports function-call mode, module execution mode, and self-test mode.",
+            "endpoint": "/skills/run",
+            "method": "POST",
+            "sage": "casper",
+            "iron_dome": true,
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "skill": {
+                        "type": "string",
+                        "default": "code-tests-test_skill_contract_pdf_bookmarker",
+                        "enum": [
+                            "code-tests-test_skill_contract_pdf_bookmarker"
+                        ],
+                        "description": "Skill folder name (default: code-tests-test_skill_contract_pdf_bookmarker)"
+                    },
+                    "task": {
+                        "type": "string",
+                        "description": "Task text to pass into action.py"
+                    }
+                },
+                "required": [
+                    "task",
+                    "skill"
+                ]
+            }
+        },
+        {
+            "name": "run_code_tests_test_skill_contract_pdf_namer",
+            "description": "Functional skill generated from CODE file `tests/test_skill_contract_pdf_namer.py`. Supports function-call mode, module execution mode, and self-test mode.",
+            "endpoint": "/skills/run",
+            "method": "POST",
+            "sage": "casper",
+            "iron_dome": true,
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "skill": {
+                        "type": "string",
+                        "default": "code-tests-test_skill_contract_pdf_namer",
+                        "enum": [
+                            "code-tests-test_skill_contract_pdf_namer"
+                        ],
+                        "description": "Skill folder name (default: code-tests-test_skill_contract_pdf_namer)"
+                    },
+                    "task": {
+                        "type": "string",
+                        "description": "Task text to pass into action.py"
+                    }
+                },
+                "required": [
+                    "task",
+                    "skill"
+                ]
+            }
+        },
+        {
+            "name": "run_code_tests_test_skill_contract_trial_prep",
+            "description": "Functional skill generated from CODE file `tests/test_skill_contract_trial_prep.py`. Supports function-call mode, module execution mode, and self-test mode.",
+            "endpoint": "/skills/run",
+            "method": "POST",
+            "sage": "casper",
+            "iron_dome": true,
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "skill": {
+                        "type": "string",
+                        "default": "code-tests-test_skill_contract_trial_prep",
+                        "enum": [
+                            "code-tests-test_skill_contract_trial_prep"
+                        ],
+                        "description": "Skill folder name (default: code-tests-test_skill_contract_trial_prep)"
                     },
                     "task": {
                         "type": "string",
