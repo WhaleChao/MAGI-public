@@ -76,7 +76,7 @@ _RE_TARGET_GB = re.compile(r"(\d+(?:\.\d+)?)\s*gb")
 _RE_TOLERANCE_GB = re.compile(r"[±\+\-]\s*(\d+(?:\.\d+)?)\s*gb")
 _RE_JSON_TAIL = re.compile(r"(\{[\s\S]*\})\s*$")
 _RE_PAYMENT_DISMISS = re.compile(r"^(.+?)\s*(?:已繳費|已經繳費|繳費完畢|繳費了)\s*$")
-_RE_CASE_NUMBER = re.compile(r"(\d{2,3})\s*(?:年度)?\s*(?!年|月)([^\d\s]+)\s*(?:字)?\s*(?:第)?\s*(\d+)\s*(?:號)?")
+_RE_CASE_NUMBER = re.compile(r"(\d{2,3})\s*(?:年度?)?\s*([^\d\s年月日]+)\s*(?:字)?\s*(?:第)?\s*(\d+)\s*(?:號)?")
 _RE_CASE_TYPE_STRIP = re.compile(r"(字第|字|第)")
 _RE_COURT = re.compile(r'\bcourt\b')
 _RE_SCHEDULE = re.compile(r'\bschedule\b')
@@ -1594,7 +1594,10 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
                 if getattr(orch, "notification_callback", None) and not _screenshot_sent:
                     # 截圖已帶 caption 送出時不再重複發送文字（避免同頻道收到兩次）
                     _cb_topic = {"go_live": "laf_go_live", "closing": "laf_closing"}.get(action, "laf_dispatch")
-                    orch.notification_callback(uid, result_text, platform_name, topic_key=_cb_topic)
+                    try:
+                        orch.notification_callback(uid, result_text, platform_name, topic_key=_cb_topic)
+                    except TypeError:
+                        orch.notification_callback(uid, result_text, platform_name)
             except Exception as notify_err:
                 logger.warning(f"LAF report callback failed: {notify_err}")
 
@@ -1652,6 +1655,13 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
             logger.warning("dismiss_payment failed: %s", _e)
             return f"❌ 標記繳費狀態失敗：{type(_e).__name__}"
 
+    # --- Helper: insert space between Chinese court name and digits when missing ---
+    def _insert_spaces_if_needed(text: str) -> str:
+        """Insert space between court name and case number if missing.
+        e.g. '基隆114訴123' -> '基隆 114訴123'
+        """
+        return re.sub(r'([\u4e00-\u9fff])(\d)', r'\1 \2', text, count=1)
+
     # File Review Probe (chat-callable formal skill command)
     probe_aliases = ["閱卷查核", "查核閱卷", "卷宗查核", "查核卷宗", "卷宗檢核", "檢核卷宗"]
     if any(msg_lower.startswith(alias) for alias in probe_aliases) or any(msg_stripped.startswith(alias) for alias in probe_aliases):
@@ -1673,6 +1683,7 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
                     return None
 
             # Natural phrase mode: <法院> <案號>
+            remainder = _insert_spaces_if_needed(remainder)
             parts = remainder.split()
             if len(parts) < 2:
                 return None
@@ -1815,6 +1826,7 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
                     return None
 
             # Natural phrase mode: <法院> <案號> [當事人]
+            remainder = _insert_spaces_if_needed(remainder)
             parts = remainder.split()
             if len(parts) < 2:
                 return None
@@ -1939,7 +1951,8 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
 
         if any(msg_lower.startswith(x) for x in ["下載筆錄", "筆錄下載", "調閱筆錄", "筆錄調閱"]):
             # Require case number for direct download command.
-            parts = message.strip().split(maxsplit=1)
+            _transcript_msg = _insert_spaces_if_needed(message.strip())
+            parts = _transcript_msg.split(maxsplit=1)
             if len(parts) < 2:
                 return "❓ 指令格式：`下載筆錄 <案號>`，例如：`下載筆錄 114年度訴字第123號`"
 
@@ -2096,7 +2109,7 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
         if not os.path.exists(review_script):
             return f"❌ 找不到 skill 腳本：{review_script}"
 
-        task_text = message.strip()
+        task_text = _insert_spaces_if_needed(message.strip())
         platform_hint = "Discord" if str(user_id).startswith("discord_") else "LINE"
         timeout_sec = int(os.environ.get("MAGI_FILE_REVIEW_TASK_TIMEOUT_SEC", "2400"))
 

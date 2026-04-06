@@ -1117,6 +1117,8 @@ async def on_message(message):
     if not DISCORD_CHANNEL_IDS:
         _save_last_channel_id(str(message.channel.id))
     
+    correlation_id = ""
+    _start_ts = time.monotonic()
     try:
         # Send quick ACK for likely long tasks so users don't feel the bot is stuck.
         long_task = _likely_long_task(user_text, None)

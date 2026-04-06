@@ -785,19 +785,21 @@ COURT_ALIASES = {
 }
 
 
+_ALL_COURT_CODES = {
+    "TPD", "PCD", "SLD", "TYD", "SCD", "MLD", "TCD",
+    "CHD", "NTD", "ULD", "CYD", "TND", "KSD", "PTD",
+    "HLD", "TTD", "ILD", "KLD", "PHD", "KMD", "LCD",
+    "CTD", "TPH", "KSH", "TCH", "TNH", "HLH",
+    "TPAA", "TCAA", "KSAA", "TPA", "TPS", "IPC", "KJF",
+}
+
+
 def _resolve_court_code(text: str) -> str:
     """Resolve court name alias to code, with suffix stripping and 台→臺 normalization."""
     text = text.strip()
     # Direct code match
     up = text.upper()
-    _ALL_CODES = {
-        "TPD", "PCD", "SLD", "TYD", "SCD", "MLD", "TCD",
-        "CHD", "NTD", "ULD", "CYD", "TND", "KSD", "PTD",
-        "HLD", "TTD", "ILD", "KLD", "PHD", "KMD", "LCD",
-        "CTD", "TPH", "KSH", "TCH", "TNH", "HLH",
-        "TPAA", "TCAA", "KSAA", "TPA", "TPS", "IPC", "KJF",
-    }
-    if up in _ALL_CODES:
+    if up in _ALL_COURT_CODES:
         return up
     # Exact alias match
     if text in COURT_ALIASES:
@@ -830,6 +832,8 @@ def cmd_apply(court_code: str, year: str, case_type: str,
         return {"success": False, "error": "missing required fields: court_code, year, case_type, case_number"}
 
     court_code = _resolve_court_code(court_code)
+    if court_code.upper() not in _ALL_COURT_CODES:
+        return {"success": False, "error": f"無法識別法院名稱「{court_code}」，請使用如：基隆、台北、TPD 等格式"}
     cfg = _load_config()
     creds = _get_credentials(cfg)
     if not creds["username"] or not creds["password"]:
@@ -946,6 +950,8 @@ def cmd_upload_attachment(court_code: str, year: str, case_type: str,
         return {"success": False, "error": "missing required fields"}
 
     court_code = _resolve_court_code(court_code)
+    if court_code.upper() not in _ALL_COURT_CODES:
+        return {"success": False, "error": f"無法識別法院名稱「{court_code}」，請使用如：基隆、台北、TPD 等格式"}
 
     # Auto-find the attachment file if not specified
     if not file_path:
@@ -1025,6 +1031,8 @@ def cmd_upload_payment_proof(court_code: str, year: str, case_type: str,
         return {"success": False, "error": "missing required fields"}
 
     court_code = _resolve_court_code(court_code)
+    if court_code.upper() not in _ALL_COURT_CODES:
+        return {"success": False, "error": f"無法識別法院名稱「{court_code}」，請使用如：基隆、台北、TPD 等格式"}
 
     if not file_path or not os.path.exists(file_path):
         return {"success": False, "error": f"file not found: {file_path}"}

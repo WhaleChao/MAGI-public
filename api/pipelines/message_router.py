@@ -507,8 +507,10 @@ def explain_routing(orch, message: str, role: str = "user") -> dict:
         return _res(action="status_report", matched="status_keywords",
                      requires_admin=False, handler="api/orchestrator.py:process_message(status fast-path)")
 
+    _sched_re = re.compile(r'\b(?:schedule|meeting)\b')
     if (msg_lower.strip() in {"今天", "明天"}
-        or any(kw in msg_lower for kw in ["行程", "schedule", "日曆", "會議", "meeting", "本週", "這週"])):
+        or (len(msg_lower) <= 20 and any(kw in msg_lower for kw in ["行程", "日曆", "會議", "本週", "這週"]))
+        or _sched_re.search(msg_lower)):
         return _res(action="schedule_query", matched="schedule_keywords",
                      requires_admin=False, handler="api/orchestrator.py:_get_schedule")
 

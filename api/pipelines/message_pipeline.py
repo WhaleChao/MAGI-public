@@ -641,7 +641,8 @@ def process_message_inner(orch, user_id, message, platform="LINE", role="user", 
         except Exception as e:
             return f"❌ 記憶寫入失敗: {e}"
 
-    if any(msg_lower.startswith(k) for k in ["忘記", "forget", "刪除記憶", "delete memory"]):
+    if any(msg_lower.startswith(k) for k in ["forget", "刪除記憶", "delete memory"]) or \
+       (msg_lower.startswith("忘記") and not any(exc in msg_lower for exc in ["忘記密碼", "忘記帶", "忘記了"])):
         try:
             content = message
             for kw in ["forget", "刪除記憶", "忘記", "delete memory", "把這段記憶刪掉", "請把這段記憶刪掉", "這是錯的"]:
@@ -831,7 +832,7 @@ def process_message_inner(orch, user_id, message, platform="LINE", role="user", 
 
     # 2.8. Image Generation (High Priority) - Check before LLM
     # Matches: "/draw xxx", "draw a cat", "幫我畫一隻貓", "請畫圖", "生成圖片: sunset"
-    draw_pattern = re.compile(r"(?:/draw\b|畫[圖一個張幅]|\bdraw\b|generate image|產生圖片|绘[图画]|画[圖图一])", re.IGNORECASE)
+    draw_pattern = re.compile(r"(?:/draw\b|畫[圖一個張幅]|\bdraw\b|generate image|產生圖片|绘[图画製]|画[圖图一])", re.IGNORECASE)
 
     if draw_pattern.search(msg_lower):
         # Extract prompt by removing common command words
@@ -1155,9 +1156,10 @@ def process_message_inner(orch, user_id, message, platform="LINE", role="user", 
             # Fetch
             fetch_result = fetch_url_content(url, max_length=6000, exempt_iron_dome=True)
 
-            if fetch_result['success']:
-                content = fetch_result['content']
-                prompt = f"User sent this URL: {url}\n\nPlease summarize the content in Traditional Chinese (繁體中文). Focus on the key points.\n\nTitle: {fetch_result['title']}\n\nContent:\n{content}"
+            if fetch_result.get('success'):
+                content = fetch_result.get('content', '')
+                title = fetch_result.get('title', url)
+                prompt = f"User sent this URL: {url}\n\nPlease summarize the content in Traditional Chinese (繁體中文). Focus on the key points.\n\nTitle: {title}\n\nContent:\n{content}"
 
                 # Summarize via InferenceGateway (oMLX → remote → local fallback)
                 _gw = orch._inference_gw
@@ -1167,9 +1169,9 @@ def process_message_inner(orch, user_id, message, platform="LINE", role="user", 
                 if "error" in resp and resp["error"]:
                     summary += f"\n(Error: {resp['error']})"
 
-                return f"🌐 **{fetch_result['title']}**\n(來源: {url})\n\n{summary}"
+                return f"🌐 **{title}**\n(來源: {url})\n\n{summary}"
             else:
-                return f"❌ 無法讀取網頁: {fetch_result['error']}"
+                return f"❌ 無法讀取網頁: {fetch_result.get('error', '未知錯誤')}"
         except Exception as e:
             logger.error(f"Web Fetch Error: {e}")
             return f"❌ 網頁讀取發生錯誤: {e}"

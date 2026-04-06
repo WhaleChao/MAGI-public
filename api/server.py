@@ -78,7 +78,7 @@ from api.line_compat import (
 )
 from api.app_factory import (
     create_base_app, init_login_manager, install_csrf,
-    install_security_headers, register_core_blueprints,
+    install_error_handlers, install_security_headers, register_core_blueprints,
 )
 from api.blueprints.web_runtime import create_web_runtime_blueprint
 from api.blueprints.admin_runtime import create_admin_runtime_blueprint
@@ -148,6 +148,7 @@ if patch_mysql_connector_for_stability():
 # ---------------------------------------------------------------------------
 _SERVER_START_TIME = time.time()
 app = create_base_app()
+install_error_handlers(app)
 install_security_headers(app)
 install_csrf(app, logger=logger)
 install_request_guards(app, logger=logger)
@@ -684,8 +685,11 @@ def index():
 @app.route("/login", methods=["GET", "POST"])
 def login():
     if request.method == "POST":
-        username = request.form["username"]
-        password = request.form["password"]
+        username = request.form.get("username", "")
+        password = request.form.get("password", "")
+        if not username or not password:
+            flash("Please enter username and password")
+            return render_template("login.html")
         try:
             from api.db_helper import get_cursor
             with get_cursor(config=DB_CONFIG, dictionary=True) as (_conn, cursor):
@@ -705,8 +709,11 @@ def login():
 @app.route("/register", methods=["GET", "POST"])
 def register():
     if request.method == "POST":
-        username = request.form["username"]
-        password = request.form["password"]
+        username = request.form.get("username", "")
+        password = request.form.get("password", "")
+        if not username or not password:
+            flash("Please enter username and password")
+            return render_template("register.html")
         hashed_pw = generate_password_hash(password)
         try:
             from api.db_helper import get_cursor

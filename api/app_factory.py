@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import os
 
-from flask import Flask, request
+from flask import Flask, jsonify, request
 from flask_login import LoginManager
 
 from api.blueprints.dashboard_pages import dashboard_pages_bp
@@ -24,6 +24,14 @@ def create_base_app() -> Flask:
         app.secret_key = os.environ["FLASK_SECRET_KEY"]
     except KeyError as exc:
         raise RuntimeError("Missing required env var: FLASK_SECRET_KEY. Set it in .env") from exc
+    return app
+
+
+def install_error_handlers(app: Flask) -> Flask:
+    @app.errorhandler(500)
+    def handle_500(e):
+        return jsonify({"error": "internal_server_error", "message": "系統暫時忙碌，請稍後再試"}), 500
+
     return app
 
 

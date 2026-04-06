@@ -2731,6 +2731,7 @@ def _pdftotext_extract(pdf_path: str, max_pages: int = 2, timeout_sec: int = 40)
         return ""
     if not os.path.exists(PDFTOTEXT_BIN):
         return ""
+    tmp_txt = ""
     try:
         tmp_dir = os.path.join(tempfile.gettempdir(), "magi_laf_pdftotext")
         os.makedirs(tmp_dir, exist_ok=True)
@@ -2746,6 +2747,9 @@ def _pdftotext_extract(pdf_path: str, max_pages: int = 2, timeout_sec: int = 40)
             return ""
     except Exception:
         return ""
+    finally:
+        if tmp_txt:
+            _safe_remove(tmp_txt)
 
 
 

@@ -597,6 +597,10 @@ def cmd_download(case_number: str, out_folder: str = "", headless: bool = True,
     if not case_number:
         return {"success": False, "error": "missing case_number"}
 
+    # Resolve short court alias (e.g. "花蓮", "TPD") to full name
+    if court_name:
+        court_name = _resolve_court_name(court_name)
+
     _eventlog(
         "transcript:download:start",
         ok=None,
@@ -1000,6 +1004,55 @@ def parse_line_command(text: str) -> Optional[dict]:
     return None
 
 
+_COURT_ALIAS_TO_FULL: dict[str, str] = {
+    "基隆": "臺灣基隆地方法院", "臺北": "臺灣臺北地方法院", "台北": "臺灣臺北地方法院",
+    "新北": "臺灣新北地方法院", "桃園": "臺灣桃園地方法院", "新竹": "臺灣新竹地方法院",
+    "苗栗": "臺灣苗栗地方法院", "臺中": "臺灣臺中地方法院", "台中": "臺灣臺中地方法院",
+    "彰化": "臺灣彰化地方法院", "南投": "臺灣南投地方法院", "雲林": "臺灣雲林地方法院",
+    "嘉義": "臺灣嘉義地方法院", "臺南": "臺灣臺南地方法院", "台南": "臺灣臺南地方法院",
+    "高雄": "臺灣高雄地方法院", "屏東": "臺灣屏東地方法院", "花蓮": "臺灣花蓮地方法院",
+    "臺東": "臺灣臺東地方法院", "台東": "臺灣臺東地方法院", "宜蘭": "臺灣宜蘭地方法院",
+    "澎湖": "臺灣澎湖地方法院", "金門": "福建金門地方法院", "連江": "福建連江地方法院",
+    "士林": "臺灣士林地方法院", "橋頭": "臺灣橋頭地方法院",
+    # 高等法院
+    "高等法院": "臺灣高等法院", "臺灣高等法院": "臺灣高等法院",
+    "高雄高分院": "臺灣高等法院高雄分院", "臺中高分院": "臺灣高等法院臺中分院",
+    "臺南高分院": "臺灣高等法院臺南分院", "花蓮高分院": "臺灣高等法院花蓮分院",
+    # Codes
+    "TPD": "臺灣臺北地方法院", "PCD": "臺灣新北地方法院", "SLD": "臺灣士林地方法院",
+    "TYD": "臺灣桃園地方法院", "SCD": "臺灣新竹地方法院", "MLD": "臺灣苗栗地方法院",
+    "TCD": "臺灣臺中地方法院", "CHD": "臺灣彰化地方法院", "NTD": "臺灣南投地方法院",
+    "ULD": "臺灣雲林地方法院", "CYD": "臺灣嘉義地方法院", "TND": "臺灣臺南地方法院",
+    "KSD": "臺灣高雄地方法院", "PTD": "臺灣屏東地方法院", "HLD": "臺灣花蓮地方法院",
+    "TTD": "臺灣臺東地方法院", "ILD": "臺灣宜蘭地方法院", "KLD": "臺灣基隆地方法院",
+    "PHD": "臺灣澎湖地方法院", "KMD": "福建金門地方法院", "LCD": "福建連江地方法院",
+    "CTD": "臺灣橋頭地方法院",
+}
+
+
+def _resolve_court_name(text: str) -> str:
+    """Resolve a short court alias or code to the full official court name."""
+    text = text.strip()
+    if not text:
+        return text
+    # Already a full court name (contains "法院")
+    if "法院" in text:
+        return text.replace("台", "臺")
+    # Lookup by alias / code
+    resolved = _COURT_ALIAS_TO_FULL.get(text)
+    if resolved:
+        return resolved
+    normalized = text.replace("台", "臺")
+    resolved = _COURT_ALIAS_TO_FULL.get(normalized)
+    if resolved:
+        return resolved
+    up = text.upper()
+    resolved = _COURT_ALIAS_TO_FULL.get(up)
+    if resolved:
+        return resolved
+    return text
+
+
 def _parse_download_args(text: str) -> Optional[dict]:
     """
     Parse natural language download args.
@@ -1014,7 +1067,8 @@ def _parse_download_args(text: str) -> Optional[dict]:
     if len(parts) == 1:
         return {"case_number": parts[0]}
     if len(parts) >= 2:
-        return {"court_name": parts[0], "case_number": parts[1]}
+        court_name = _resolve_court_name(parts[0])
+        return {"court_name": court_name, "case_number": parts[1]}
     return None
 
 

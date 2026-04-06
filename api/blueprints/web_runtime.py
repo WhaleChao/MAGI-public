@@ -273,9 +273,12 @@ def create_web_runtime_blueprint(
     @bp.route("/api/memory/recall", methods=["POST"])
     @login_required
     def api_memory_recall():
-        data = request.get_json() or {}
+        data = request.get_json(silent=True) or {}
         query = str(data.get("query", "")).strip()
-        top_k = min(20, max(1, int(data.get("top_k", 5))))
+        try:
+            top_k = min(20, max(1, int(data.get("top_k", 5))))
+        except (ValueError, TypeError):
+            top_k = 5
         source_filter = str(data.get("source", "")).strip() or None
         if not query:
             return jsonify({"error": "請輸入搜尋關鍵字"}), 400
@@ -291,7 +294,7 @@ def create_web_runtime_blueprint(
     @bp.route("/api/memory/remember", methods=["POST"])
     @login_required
     def api_memory_remember():
-        data = request.get_json() or {}
+        data = request.get_json(silent=True) or {}
         content = str(data.get("content", "")).strip()
         source = str(data.get("source", "dashboard-manual")).strip() or "dashboard-manual"
         if not content:
@@ -354,7 +357,7 @@ def create_web_runtime_blueprint(
     @bp.route("/api/osc/chat", methods=["POST"])
     @login_required
     def osc_chat_api():
-        data = request.get_json() or {}
+        data = request.get_json(silent=True) or {}
         msg = (data.get("message") or "").strip()
         if not msg:
             return jsonify({"error": "Empty message"}), 400
