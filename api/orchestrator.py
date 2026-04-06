@@ -213,6 +213,7 @@ class Orchestrator:
         self.classifier = IntentionClassifier()
         self._inference_gw = InferenceGateway()  # shared instance — avoids per-call re-init
         self._cmd_registry = _cmd_registry
+        self._TOPIC_HANDLERS = {}  # topic_key -> handler function (populated by channel plugins)
         self.notification_callback = self._default_notification_callback
         self.user_history = defaultdict(lambda: deque(maxlen=40))
         self._history_summaries: dict = {}  # user_id -> latest rolling summary str

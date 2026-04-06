@@ -572,7 +572,7 @@ def explain_routing(orch, message: str, role: str = "user") -> dict:
 # ── Topic Fast Path ────────────────────────────────────────────────
 
 def topic_fast_path(orch, topic_key: str, user_id, message: str, role: str, platform: str, attachment=None):
-    handler = orch._TOPIC_HANDLERS.get(topic_key)
+    handler = getattr(orch, "_TOPIC_HANDLERS", {}).get(topic_key)
     if handler is None:
         return None
     try:
