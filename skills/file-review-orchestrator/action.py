@@ -1553,6 +1553,11 @@ def cmd_download(case_number: str = "", notify: bool = True) -> dict:
             review_items = [it for it in items if isinstance(it, dict) and _activity_artifact_kind(it) != "payment_slip"]
             payment_downloaded = [fp for fp in (downloaded or []) if os.path.basename(str(fp)).startswith("繳費單_")]
             review_downloaded = [fp for fp in (downloaded or []) if fp not in payment_downloaded]
+
+            # ── Post-download: auto-bookmark downloaded PDFs ──
+            if review_downloaded:
+                _auto_bookmark_pdfs(review_downloaded)
+
             payment_count = len(payment_downloaded)
             review_count = len(review_downloaded)
             unresolved_review_items = [it for it in unresolved_items if _activity_artifact_kind(it) != "payment_slip"]
@@ -2297,6 +2302,42 @@ def _load_recent_payment_activity(download_folder: str, days: int = 7) -> list[d
         if prev is None or dt > prev["processed_at"]:
             chosen[rec_key] = record
     return list(chosen.values())
+
+
+def _auto_bookmark_pdfs(pdf_paths: list[str]) -> None:
+    """Post-download hook: auto-add bookmarks to downloaded court PDFs."""
+    try:
+        import importlib.util
+        bm_path = os.path.join(os.path.dirname(__file__), "..", "pdf-bookmarker", "action.py")
+        bm_path = os.path.normpath(bm_path)
+        if not os.path.exists(bm_path):
+            logger.debug("pdf-bookmarker not found, skipping auto-bookmark")
+            return
+        spec = importlib.util.spec_from_file_location("pdf_bookmarker_action", bm_path)
+        bm_mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(bm_mod)
+        scan_fn = getattr(bm_mod, "scan_and_bookmark", None)
+        if not scan_fn:
+            return
+    except Exception as e:
+        logger.warning(f"⚠ pdf-bookmarker import failed: {e}")
+        return
+
+    bookmarked = 0
+    for fp in pdf_paths:
+        if not str(fp).lower().endswith(".pdf"):
+            continue
+        try:
+            result = scan_fn(str(fp), output_path=None, dry_run=False)
+            if result.get("success") and result.get("bookmarks", 0) > 0:
+                bookmarked += 1
+                logger.info(f"📑 Auto-bookmarked: {os.path.basename(fp)} ({result['bookmarks']} bookmarks)")
+            else:
+                logger.debug(f"Bookmark skipped {os.path.basename(fp)}: {result.get('message', '')}")
+        except Exception as e:
+            logger.warning(f"⚠ Bookmark error for {os.path.basename(fp)}: {e}")
+    if bookmarked:
+        logger.info(f"📑 Auto-bookmark complete: {bookmarked}/{len(pdf_paths)} files bookmarked")
 
 
 def _activity_artifact_kind(item: dict) -> str:
