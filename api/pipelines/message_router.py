@@ -107,13 +107,22 @@ def quick_fixed_reply(orch, message: str, role: str = "user") -> str | None:
     if not t:
         return None
 
-    if re.search(r"(下一步|接下來|下一個步驟|後續怎麼做|next step)", t):
+    # ── Guard: only match exact short phrases to avoid false positives on natural language ──
+    if t in ("下一步", "接下來", "後續怎麼做", "next step"):
         return "下一步建議：1) 先確認 LINE/DC/TG 通道都正常 2) 跑一次自我測試 3) 針對失敗項目自動修復。"
 
-    if re.search(r"(為什麼.*繁體中文|為何.*繁體中文|不是繁體中文|請用繁體中文|traditional chinese)", t):
+    if t in ("請用繁體中文", "不是繁體中文"):
         return "收到，後續我會固定使用繁體中文（臺灣用語）回覆。"
 
-    if re.search(r"(^help$|^/help$|有.{0,4}功能|可以做.{0,2}什麼|^��什麼$|功能列表|技能清單|有.{0,4}skill|^指令$|^幫助$|^說明$|^功能$)", t):
+    # Help/command list: ONLY match exact short phrases.
+    # Never intercept conversational messages that happen to contain keywords.
+    _HELP_EXACT = {
+        "help", "/help", "功能", "指令", "幫助", "說明", "做什麼",
+        "功能列表", "技能清單", "指令清單", "指令列表",
+        "有什麼功能", "有哪些功能", "可以做什麼", "你可以做什麼",
+        "你能做什麼", "你會什麼", "有什麼skill", "有哪些skill",
+    }
+    if t in _HELP_EXACT:
         if role == "admin":
             return (
                 "🛠️ **MAGI 指令總表 (管理員)**\n\n"
