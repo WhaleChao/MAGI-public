@@ -73,6 +73,50 @@ def _extract_plaintext(path: Path) -> Dict:
     return {"success": True, "text": text[:MAX_TEXT_CHARS], "pages": 1, "method": "plaintext/replace"}
 
 
+# ── Multimodal extraction (RAG-Anything inspired) ─────────────────
+
+def extract_text_multimodal(path: Path, *, case_number: str = "") -> Dict:
+    """
+    多模態文件提取 — 除了純文字外，也提取表格結構和圖片描述。
+    使用 multimodal_parser 模組（靈感來自 RAG-Anything）。
+
+    Returns:
+        {"success": True, "text": structured_text, "pages": N,
+         "method": "multimodal", "tables": N, "images": N,
+         "parse_result": {...}}
+    """
+    if path.suffix.lower() != ".pdf":
+        return extract_text(path)  # 非 PDF 走原始流程
+
+    try:
+        from skills.documents.multimodal_parser import parse_document
+        result = parse_document(str(path), enable_llm_summary=True)
+
+        if result.errors and not result.blocks:
+            logger.debug("Multimodal parse failed for %s: %s, falling back", path, result.errors)
+            return _extract_pdf(path)  # Fallback to standard extraction
+
+        structured = result.structured_text
+        if not structured or len(structured.strip()) < 20:
+            return _extract_pdf(path)
+
+        return {
+            "success": True,
+            "text": structured[:MAX_TEXT_CHARS],
+            "pages": result.total_pages,
+            "method": f"multimodal/{result.parser_used}",
+            "tables": len(result.table_blocks),
+            "images": len(result.image_blocks),
+            "parse_result": result.to_dict(),
+        }
+    except ImportError:
+        logger.debug("multimodal_parser not available, falling back to standard PDF extraction")
+        return _extract_pdf(path)
+    except Exception as e:
+        logger.debug("Multimodal extraction failed for %s: %s, falling back", path, e)
+        return _extract_pdf(path)
+
+
 # ── PDF extraction (pdfplumber > PyMuPDF > PyPDF2 > OCR fallback) ──
 
 _OCR_MIN_CHARS = 20          # below this threshold, text-layer is considered empty

@@ -948,8 +948,31 @@ def _batch_fetch_docs(cursor, doc_ids):
     return {row[0]: row for row in rows}
 
 
+# Sources that are operational logs, not knowledge — excluded from recall by default
+_OPS_LOG_SOURCES = (
+    "codebase-ingest",
+    "laf_orchestrator",
+    "laf_automation_v2",
+    "magi_autopilot_step",
+    "magi_autopilot_step_synced",
+    "magi_autopilot_synced",
+    "osc_orchestrator_synced",
+    "file_review_orchestrator_synced",
+    "laf_automation_v2_synced",
+    "audit_script",
+    "pdf_namer",
+    "smoke_synced",
+    "dedup_test",
+    "batch_test",
+    "migration_test",
+    "healthcheck",
+    "system_test",
+    "verification_script",
+)
+
+
 def recall(query, top_k=3, source_contains: str = "",
-           exclude_sources: tuple = ("codebase-ingest",)):
+           exclude_sources: tuple = _OPS_LOG_SOURCES):
     want = max(1, int(top_k))
     if _keeper_offline():
         data = _fallback_local_search(query, want * 30, source_contains=source_contains)

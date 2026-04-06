@@ -371,6 +371,25 @@ def start_night_talk():
         except Exception:
             logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 366, exc_info=True)
 
+        # Knowledge lint report (知識品質掃描)
+        try:
+            _lint_report = os.path.join(_MAGI_ROOT, "static", "knowledge_lint_latest.json")
+            if os.path.exists(_lint_report):
+                import json as _json_mod
+                with open(_lint_report, "r", encoding="utf-8") as _f:
+                    _lint = _json_mod.load(_f)
+                _lint_summary = _lint.get("summary", {})
+                _lint_warns = _lint_summary.get("warn", 0)
+                if _lint_warns > 0:
+                    _kaizen_ctx.append(f"知識品質掃描: {_lint_warns} 項警告")
+                    for _chk in _lint.get("checks", []):
+                        if _chk.get("status") == "warn":
+                            _kaizen_ctx.append(f"  - {_chk.get('check', '?')}: {_json_mod.dumps({k:v for k,v in _chk.items() if k not in ('check','status','top_dupes','details','sample_unindexed','sample_orphaned')}, ensure_ascii=False)[:200]}")
+                else:
+                    _kaizen_ctx.append("知識品質掃描: 全部正常 ✅")
+        except Exception:
+            logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, "knowledge_lint", exc_info=True)
+
         _kaizen_prompt += "\n".join(_kaizen_ctx)
         _kaizen_prompt += (
             "\n\n請用以下格式回覆（每個提案一行）：\n"
@@ -527,6 +546,20 @@ def start_night_talk():
         logger.info("✅ Night Talk Concluded & Recorded.")
     except Exception as e:
         logger.error(f"❌ Failed to archive: {e}")
+
+    # --- PHASE 4.5: SKILL LEARNING (Hermes-style) ---
+    try:
+        from skills.magi.skill_learner import night_review_skills
+        _skill_result = night_review_skills(council_minutes=minutes_text, quiet=True)
+        if _skill_result.get("learned"):
+            _sname = _skill_result.get("skill_name", "?")
+            _sact = _skill_result.get("action", "created")
+            minutes_text += f"\n📚 **Skill Learning**: {_sact} skill `{_sname}`\n"
+            logger.info("📚 Skill learned from night talk: %s (%s)", _sname, _sact)
+        else:
+            logger.info("📚 Skill review: nothing to learn from this session")
+    except Exception as _sl_e:
+        logger.warning("📚 Skill learning failed (non-fatal): %s", _sl_e)
 
     # --- PHASE 5: RECOVERY ---
     logger.info("🌅 Sunrise Protocol Initiated. Restoring Distributed Brain...")

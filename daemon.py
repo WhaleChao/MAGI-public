@@ -236,12 +236,86 @@ _LAUNCHD_CHECK_INTERVAL = 45  # seconds between periodic launchd health checks (
 _LAST_LAUNCHD_CHECK_AT = 0.0
 
 
+def _kill_existing_daemons() -> int:
+    """
+    Kill ALL other daemon.py processes before starting.
+    Returns the number of processes killed.
+    This is the nuclear option — ensures no zombie daemons survive.
+    """
+    my_pid = os.getpid()
+    killed = 0
+    try:
+        result = subprocess.run(
+            ["pgrep", "-f", "daemon\\.py"],
+            capture_output=True, text=True, timeout=5,
+        )
+        for line in result.stdout.strip().split("\n"):
+            pid_str = line.strip()
+            if not pid_str.isdigit():
+                continue
+            pid = int(pid_str)
+            if pid == my_pid:
+                continue
+            # Verify it's actually a daemon.py process (not some other script matching the pattern)
+            try:
+                cmd_result = subprocess.run(
+                    ["ps", "-p", str(pid), "-o", "args="],
+                    capture_output=True, text=True, timeout=3,
+                )
+                cmdline = cmd_result.stdout.strip()
+                if "daemon.py" not in cmdline:
+                    continue
+                # Don't kill Claude Code or other tools that might have "daemon.py" in args
+                if "claude" in cmdline.lower() or "grep" in cmdline.lower() or "pgrep" in cmdline.lower():
+                    continue
+            except Exception:
+                continue  # Skip if we can't verify
+
+            logger.warning("🔪 Killing existing daemon.py process PID %d", pid)
+            try:
+                os.kill(pid, signal.SIGTERM)
+                # Give it 2 seconds to clean up gracefully
+                for _ in range(20):
+                    time.sleep(0.1)
+                    try:
+                        os.kill(pid, 0)
+                    except ProcessLookupError:
+                        break
+                else:
+                    # Still alive after 2s — force kill
+                    try:
+                        os.kill(pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                killed += 1
+            except ProcessLookupError:
+                pass
+            except PermissionError:
+                logger.warning("⚠️ No permission to kill PID %d", pid)
+    except Exception as e:
+        logger.warning("⚠️ _kill_existing_daemons failed: %s", e)
+    return killed
+
+
 def _acquire_singleton_lock():
     """
     Ensure only one daemon instance runs at a time.
     Prevents duplicate service startup and port conflicts.
+
+    Strategy (belt-and-suspenders):
+    1. Kill ALL other daemon.py processes first (nuclear option)
+    2. Acquire flock on lock file
+    3. Write our PID to the lock file
     """
     global _DAEMON_LOCK_HANDLE
+
+    # Step 1: Kill any existing daemon.py processes unconditionally
+    n_killed = _kill_existing_daemons()
+    if n_killed:
+        logger.info("🧹 Killed %d existing daemon process(es) before starting.", n_killed)
+        time.sleep(1)  # Allow ports/resources to be released
+
+    # Step 2: Acquire file lock
     try:
         _DAEMON_LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
         fh = _DAEMON_LOCK_PATH.open("w", encoding="utf-8")
@@ -265,20 +339,20 @@ def _acquire_singleton_lock():
         atexit.register(_cleanup_lock)
         return True
     except BlockingIOError:
-        # Check if the lock holder is actually alive
+        # This should be extremely rare now since we killed all daemons above.
+        # But handle it defensively.
         try:
             old_pid = int(_DAEMON_LOCK_PATH.read_text().strip())
-            os.kill(old_pid, 0)  # Check if process exists
-            logger.warning("⚠️ Another daemon instance is already active (PID %d). Exiting.", old_pid)
+            os.kill(old_pid, 0)
+            logger.warning("⚠️ Another daemon instance is STILL active (PID %d) after kill attempt. Exiting.", old_pid)
             return False
         except (ProcessLookupError, ValueError, PermissionError, FileNotFoundError):
-            # Old daemon is dead but lock file remains — clean up and retry
-            logger.warning("🧹 Stale daemon lock found — previous daemon is dead. Cleaning up...")
+            # Stale lock — delete and retry
+            logger.warning("🧹 Stale daemon lock found — cleaning up...")
             try:
                 _DAEMON_LOCK_PATH.unlink(missing_ok=True)
             except Exception:
                 pass
-            # Retry lock acquisition
             try:
                 fh = _DAEMON_LOCK_PATH.open("w", encoding="utf-8")
                 file_lock(fh, exclusive=True, blocking=False)
@@ -291,8 +365,9 @@ def _acquire_singleton_lock():
                 logger.warning("⚠️ Cannot acquire lock even after cleanup. Exiting.")
                 return False
     except Exception as e:
-        logger.warning(f"⚠️ Failed to acquire daemon singleton lock: {e}")
-        return True
+        # CRITICAL FIX: Previously this returned True, allowing duplicate daemons!
+        logger.error("❌ Failed to acquire daemon singleton lock: %s — refusing to start.", e)
+        return False
 
 def _load_dotenv(dotenv_path: str, *, override: bool = True) -> None:
     """
@@ -460,6 +535,7 @@ _restart_last_exit: Dict[str, float] = {}     # timestamp of last exit
 _BACKOFF_BASE = 10          # initial backoff seconds
 _BACKOFF_MAX  = 300         # cap at 5 minutes
 _HEALTHY_THRESHOLD = 60     # if process ran > 60s, reset failure count
+_MAX_CONSECUTIVE_FAILURES = 10  # stop restarting after this many rapid failures
 
 
 # ── Coordinated restart: processes sharing the same Orchestrator module ──
@@ -564,6 +640,15 @@ def monitor_processes():
                 _restart_failures[name] = _restart_failures.get(name, 0) + 1
 
             failures = _restart_failures[name]
+
+            if failures >= _MAX_CONSECUTIVE_FAILURES:
+                logger.critical(
+                    f"🛑 {name} failed {failures} times consecutively — "
+                    f"giving up auto-restart. Fix the issue and restart manually."
+                )
+                rec["proc"] = None  # stop monitoring
+                continue
+
             backoff = min(_BACKOFF_BASE * (2 ** (failures - 1)), _BACKOFF_MAX) if failures > 0 else 0
             last_exit = _restart_last_exit.get(name, 0)
             wait_until = last_exit + backoff
@@ -1240,7 +1325,13 @@ if __name__ == "__main__":
 
     # 2.8 Heartbeat monitor (node health + Tailscale serve guard)
     start_process("Heartbeat", f"{_PYTHON} skills/ops/heartbeat.py")
-    
+
+    # 2.9 Personal website admin server (port 8088, for Tailscale remote management)
+    _website_admin = os.path.expanduser("~/Desktop/whalechao.github.io/admin/admin_server.py")
+    if os.path.exists(_website_admin):
+        start_process("WebsiteAdmin", f"{_PYTHON} {_website_admin} --port 8088 --password whalelawyer")
+        logger.info("✅ Website Admin Server started on port 8088")
+
     # 3. Start Keeper Sync Daemon (as background thread)
     try:
         from skills.memory.keeper_sync import start_sync_daemon

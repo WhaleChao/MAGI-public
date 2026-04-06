@@ -254,6 +254,12 @@ def _classify_query_tier(message: str) -> str:
     """
     msg = (message or "").strip().lower()
 
+    # ── 強制三哲人模式：使用者加上「三哲人」「深度」「驗證」觸發詞 → COMPLEX ──
+    _force_complex_triggers = ("三哲人", "深度分析", "深度驗證", "完整驗證", "仔細想")
+    if any(t in msg for t in _force_complex_triggers):
+        logger.info("🏷️ Tier: COMPLEX (forced by trigger word)")
+        return "COMPLEX"
+
     # ── Fast path: GREETING（短問候不需 embedding）──
     if len(msg) < 15 and any(g in msg for g in _GREETING_PATTERNS):
         return "GREETING"
@@ -868,6 +874,10 @@ def ask_casper(query, conversation_history="", force_research=False):
             answer = _generate(prompt, temperature=0.1, timeout=120, num_ctx=6144)
             if not answer or _has_entity_hallucination(answer, _entity_ctx):
                 return "我的回覆中引用了無法確認的法條或案號，為避免誤導，請您確認具體法條後再詢問。"
+        # SIMPLE tier: skip heavy verification to reduce latency (~60s → ~10s)
+        # Only COMPLEX queries (legal analysis, case strategy) need Tri-Agent
+        if tier == "SIMPLE":
+            return answer
         final = _self_check_answer(
             query=query,
             answer=answer,
@@ -1009,6 +1019,11 @@ def chat_casper(message, conversation_history=""):
                     web_context=web_context,
                     conversation_history=conversation_history,
                 )
+            # SIMPLE tier: skip Tri-Agent verification to reduce latency
+            # (recall=1, no research, low hallucination risk → verification overkill)
+            # COMPLEX tier: full verification pipeline
+            if tier == "SIMPLE":
+                return answer
             return _verify_and_repair_answer(
                 query=message,
                 answer=answer,

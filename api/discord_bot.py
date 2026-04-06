@@ -1411,5 +1411,6 @@ if __name__ == "__main__":
     if not DISCORD_BOT_TOKEN:
         print("❌ Fatal: No Discord Bot Token found in Config!")
         sys.exit(1)
-    
-    run_bot()
+
+    if not run_bot():
+        sys.exit(2)  # non-zero so daemon knows it's a startup failure

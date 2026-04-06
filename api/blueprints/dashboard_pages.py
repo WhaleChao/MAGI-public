@@ -21,8 +21,10 @@ from __future__ import annotations
 import html
 from pathlib import Path
 
-from flask import Blueprint, redirect, render_template, url_for
+from flask import Blueprint, Response, redirect, render_template, request, url_for
 from flask_login import current_user, login_required
+
+import requests as _requests
 
 dashboard_pages_bp = Blueprint("dashboard_pages", __name__)
 
@@ -93,3 +95,45 @@ def dashboard():
 @login_required
 def dashboard_nerv():
     return render_template("dashboard_nerv.html", user=current_user)
+
+
+@dashboard_pages_bp.route("/dashboard/website")
+@login_required
+def dashboard_website():
+    """個人網站後台管理（反向代理到 localhost:8088）"""
+    return render_template("dashboard_website.html", user=current_user)
+
+
+# --- Website admin reverse proxy ---
+_ADMIN_BASE = "http://127.0.0.1:8088"
+_PROXY_PREFIX = "/wa"
+
+
+@dashboard_pages_bp.route(f"{_PROXY_PREFIX}/", defaults={"path": ""})
+@dashboard_pages_bp.route(f"{_PROXY_PREFIX}/<path:path>", methods=["GET", "POST"])
+def website_admin_proxy(path):
+    """Reverse-proxy website admin server so it works over Tailscale funnel."""
+    url = f"{_ADMIN_BASE}/{path}"
+    try:
+        if request.method == "POST":
+            resp = _requests.post(
+                url,
+                data=request.get_data(),
+                headers={k: v for k, v in request.headers if k.lower() not in ("host", "content-length")},
+                cookies=request.cookies,
+                timeout=30,
+                allow_redirects=False,
+            )
+        else:
+            resp = _requests.get(
+                url,
+                headers={k: v for k, v in request.headers if k.lower() not in ("host",)},
+                cookies=request.cookies,
+                timeout=15,
+                allow_redirects=False,
+            )
+        excluded = {"transfer-encoding", "content-encoding", "content-length", "connection"}
+        headers = [(k, v) for k, v in resp.raw.headers.items() if k.lower() not in excluded]
+        return Response(resp.content, status=resp.status_code, headers=headers)
+    except _requests.ConnectionError:
+        return Response("後台伺服器未啟動", status=503, content_type="text/plain; charset=utf-8")

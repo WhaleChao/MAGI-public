@@ -196,13 +196,79 @@ def sync(dry_run: bool = False, quiet: bool = False):
     local_cur.close()
     local_conn.close()
 
+    # 4. Semantic dedup: flag near-duplicate insights within same case_reason
+    dedup_flagged = _flag_semantic_dupes(insights, quiet=quiet)
+
     elapsed = time.time() - t0
     if not quiet:
         print(f"\n✅ 同步完成！寫入 {inserted} / {len(new_insights)} 筆")
+        if dedup_flagged:
+            print(f"   ⚠️  標記 {dedup_flagged} 筆疑似重複見解")
         print(f"   耗時: {elapsed:.1f} 秒")
     else:
-        if inserted > 0:
-            print(f"insight_sync: {inserted} new vectors ({elapsed:.1f}s)")
+        parts = [f"insight_sync: {inserted} new vectors"]
+        if dedup_flagged:
+            parts.append(f"{dedup_flagged} dupes flagged")
+        parts.append(f"({elapsed:.1f}s)")
+        print(" ".join(parts))
+
+
+def _flag_semantic_dupes(insights: list, quiet: bool = False) -> int:
+    """
+    Detect near-duplicate insights within same case_reason.
+    Flags pairs where insight_text is >80% similar (Jaccard on char trigrams).
+    Returns count of flagged duplicates.
+    """
+    from collections import defaultdict
+
+    # Group by case_reason
+    by_reason = defaultdict(list)
+    for ins in insights:
+        reason = (ins.get("case_reason") or "").strip()
+        if reason and ins.get("insight_text"):
+            by_reason[reason].append(ins)
+
+    flagged = 0
+    dupe_log_path = Path(os.path.dirname(__file__)).parent / ".agent" / "insight_dedup_log.jsonl"
+
+    for reason, group in by_reason.items():
+        if len(group) < 2:
+            continue
+
+        # Compute trigram sets for each
+        trigrams = []
+        for ins in group:
+            text = ins.get("insight_text", "")[:2000]
+            tg = {text[i:i+3] for i in range(len(text) - 2)} if len(text) >= 3 else set()
+            trigrams.append(tg)
+
+        # Pairwise comparison
+        for i in range(len(group)):
+            for j in range(i + 1, len(group)):
+                if not trigrams[i] or not trigrams[j]:
+                    continue
+                intersection = len(trigrams[i] & trigrams[j])
+                union = len(trigrams[i] | trigrams[j])
+                jaccard = intersection / union if union else 0
+
+                if jaccard > 0.80:
+                    flagged += 1
+                    # Log for review
+                    try:
+                        with open(dupe_log_path, "a", encoding="utf-8") as f:
+                            f.write(json.dumps({
+                                "ts": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                                "reason": reason[:50],
+                                "id_a": group[i]["id"],
+                                "id_b": group[j]["id"],
+                                "jaccard": round(jaccard, 3),
+                                "ref_a": (group[i].get("court_reference") or "")[:40],
+                                "ref_b": (group[j].get("court_reference") or "")[:40],
+                            }, ensure_ascii=False) + "\n")
+                    except Exception:
+                        pass
+
+    return flagged
 
 
 def main():

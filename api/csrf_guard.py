@@ -45,6 +45,7 @@ CSRF_EXEMPT_PATTERNS = (
     "/mcp/",
     "/login",
     "/register",
+    "/wa/",
 )
 
 # ── API endpoints exempt from CSRF (rely on API key auth) ────────────
