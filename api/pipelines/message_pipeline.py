@@ -406,13 +406,16 @@ def process_message_inner(orch, user_id, message, platform="LINE", role="user", 
     msg_lower = message.lower()
     # Capture explicit personal facts into long-term memory for all users.
     orch._maybe_capture_profile_fact(user_id, message)
-    if msg_lower in ["/help", "help", "指令", "說明", "功能", "menu", "helps", "/start"]:
+    # Help: exact match only (same whitelist as message_router.py)
+    _HELP_EXACT_MP = {"help", "/help", "指令", "說明", "功能", "menu", "helps", "/start",
+                      "幫助", "做什麼", "功能列表", "技能清單", "有什麼功能", "可以做什麼"}
+    if msg_lower in _HELP_EXACT_MP:
          return orch._handle_command(user_id, "/help", role=role, platform=platform) # Force route to command handler
 
-    # 2.6. Status Command (High Priority) - Check before LLM
-    if any(kw in msg_lower for kw in ["狀態", "status", "運作狀態", "節點狀態", "機器狀態", "大腦", "brain"]) or (
-        ("模型" in message) and any(kw in msg_lower for kw in ["目前", "現在", "使用", "模式", "為何", "是什麼"])
-    ):
+    # 2.6. Status Command (High Priority) - exact match only, no bare "狀態"
+    _STATUS_EXACT_MP = {"系統狀態", "運作狀態", "節點狀態", "機器狀態", "magi狀態",
+                        "magi status", "status", "大腦狀態", "目前模型", "現在模型", "使用什麼模型"}
+    if msg_lower in _STATUS_EXACT_MP:
         # Combine Node Status (Heartbeat) + Brain Status (Manager)
         node_status = orch._get_magi_status()
         brain_status = get_brain_status()
@@ -420,10 +423,15 @@ def process_message_inner(orch, user_id, message, platform="LINE", role="user", 
         return f"{node_status}\n\n{brain_status}\n\n{collab_status}"
 
     # 2.7. Schedule/Meeting Query (High Priority) - Check before LLM
-    if (
+    # Use exact set for shortest phrases; longer ones use startswith/contains but with length guard
+    _SCHEDULE_EXACT = {"今天行程", "明天行程", "本週行程", "這週行程", "今天會議", "明天會議",
+                       "行程表", "會議表", "日曆", "schedule", "my schedule", "meeting"}
+    _schedule_triggered = (
         msg_lower.strip() in {"今天", "明天"}
-        or any(kw in msg_lower for kw in ["行程", "schedule", "日曆", "會議", "meeting", "本週", "這週"])
-    ):
+        or msg_lower in _SCHEDULE_EXACT
+        or (len(msg_lower) <= 20 and any(kw in msg_lower for kw in ["行程", "會議", "本週", "這週"]))
+    )
+    if _schedule_triggered:
         return orch._get_schedule()
 
     # 2.7.0a Council Core Approval Commands (High Priority — must run before
@@ -761,7 +769,9 @@ def process_message_inner(orch, user_id, message, platform="LINE", role="user", 
 
     # 2.7.5. Intent Forge Debug Continuation (High Priority)
     # If CASPER previously asked a blocker question, treat the next message as feedback unless user issues another command.
-    if any(kw in msg_lower for kw in ["清除除錯", "clear feedback", "取消除錯", "取消", "算了", "放棄"]):
+    # Only trigger debug-clear for specific phrases, NOT bare "取消"/"算了"/"放棄"
+    _DEBUG_CLEAR_EXACT = {"清除除錯", "clear feedback", "取消除錯", "取消修復", "取消debug", "放棄修復", "放棄除錯"}
+    if msg_lower in _DEBUG_CLEAR_EXACT:
         try:
             from skills.evolution.intent_forge import clear_pending_issue
 
@@ -1081,8 +1091,14 @@ def process_message_inner(orch, user_id, message, platform="LINE", role="user", 
     if any(kw in msg_lower for kw in skill_kws) and any(w in msg_lower for w in ["表", "列", "list", "哪些", "什麼", "告訴", "功能", "show", "help"]):
         return orch._list_skills()
 
-    # 2.11. System Monitor (系統監控)
-    if any(kw in msg_lower for kw in ["系統狀態", "system status", "cpu", "ram", "記憶體", "磁碟", "系統監控", "健康檢查", "service health"]):
+    # 2.11. System Monitor (系統監控) — require multi-word context for short keywords
+    _sysmon_exact = {"系統狀態", "system status", "系統監控", "健康檢查", "service health"}
+    _sysmon_trigger = (
+        msg_lower in _sysmon_exact
+        or (len(msg_lower) <= 20 and any(kw in msg_lower for kw in ["cpu使用", "ram使用", "記憶體使用", "磁碟空間", "磁碟使用"]))
+        or (any(kw in msg_lower for kw in ["系統狀態", "系統監控", "健康檢查", "service health"]))
+    )
+    if _sysmon_trigger:
         try:
             from skills.ops.system_monitor import get_system_status, check_service_health
             if any(kw in msg_lower for kw in ["服務", "service", "健康"]):
@@ -1488,30 +1504,33 @@ def process_message_inner(orch, user_id, message, platform="LINE", role="user", 
             logger.error(f"Webpage translate/summarize error: {e}")
             return f"❌ 網頁翻譯/摘要發生錯誤: {e}"
 
-    # 2.12. Browser Automation (瀏覽器)
-    if any(kw in msg_lower for kw in ["打開", "瀏覽", "browse", "open url", "截圖", "screenshot", "網頁"]):
+    # 2.12. Browser Automation (瀏覽器) — only trigger when a URL/domain is present
+    _has_url = bool(re.search(r'https?://[^\s]+', message))
+    _has_domain = bool(re.search(r'(?:打開|瀏覽|open|browse)\s+([a-zA-Z0-9][\w\-]*\.[a-zA-Z]{2,})', message, re.IGNORECASE))
+    if (_has_url or _has_domain) and any(kw in msg_lower for kw in ["打開", "瀏覽", "browse", "open url", "截圖", "screenshot", "網頁"]):
         try:
             from skills.browser.browser_control import browse_url, take_screenshot
-            # Extract URL
             url_match = re.search(r'https?://[^\s]+', message)
             if url_match:
                 url = url_match.group()
                 if "截圖" in msg_lower or "screenshot" in msg_lower:
                     return take_screenshot(url)
                 return browse_url(url)
-            # Check for domain-like text
             domain_match = re.search(r'(?:打開|瀏覽|open|browse)\s+([a-zA-Z0-9][\w\-]*\.[a-zA-Z]{2,}(?:/\S*)?)', message, re.IGNORECASE)
             if domain_match:
                 url = f"https://{domain_match.group(1)}"
                 return browse_url(url)
-            return "🌐 請提供要開啟的 URL，例如: `打開 https://google.com`"
         except Exception as e:
             from skills.management.issue_tracker import log_issue
             log_issue(message, str(e), "Browser Skill")
             return f"❌ 瀏覽器操作失敗，已加入夜議檢討: {e}"
 
-    # 2.13. File Manager (檔案管理)
-    if any(kw in msg_lower for kw in ["檔案", "file", "搜尋檔", "列出", "目錄"]) and any(w in msg_lower for w in ["列", "搜", "找", "list", "search", "info"]):
+    # 2.13. File Manager (檔案管理) — require explicit action verbs, not just "檔案"+"找"
+    _filemgr_trigger = (
+        any(kw in msg_lower for kw in ["搜尋檔案", "列出檔案", "列出目錄", "搜尋檔", "search file", "list file", "list directory"])
+        or (msg_lower.startswith("檔案") and any(w in msg_lower for w in ["列表", "搜尋", "list", "search"]))
+    )
+    if _filemgr_trigger:
         try:
             from skills.ops.file_manager import list_directory, search_files
             if any(kw in msg_lower for kw in ["搜尋", "search", "找"]):
@@ -1524,7 +1543,13 @@ def process_message_inner(orch, user_id, message, platform="LINE", role="user", 
             return f"❌ 檔案管理失敗，已加入夜議檢討: {e}"
 
     # 2.14. RSS Reader (RSS 閱讀器)
-    if any(kw in msg_lower for kw in ["rss", "訂閱", "subscribe", "news", "新聞"]) and any(w in msg_lower for w in ["讀", "read", "訂", "sub", "add"]):
+    # RSS — require "rss" keyword or explicit subscribe+URL pattern
+    _rss_trigger = (
+        "rss" in msg_lower
+        or ("subscribe" in msg_lower and re.search(r'https?://', message))
+        or (any(kw in msg_lower for kw in ["訂閱rss", "rss訂閱", "新聞訂閱", "訂閱新聞", "讀新聞", "read news"]))
+    )
+    if _rss_trigger:
         try:
             from skills.research.rss_reader import RSSReader
             reader = RSSReader()
@@ -1614,14 +1639,22 @@ def process_message_inner(orch, user_id, message, platform="LINE", role="user", 
         except Exception as e:
             return f"❌ 摘要補跑流程失敗: {e}"
 
-    # 2.17. Smart Summary (智能摘要)
-    if any(kw in msg_lower for kw in ["摘要", "summarize", "summary", "重點"]):
+    # 2.17. Smart Summary (智能摘要) — require explicit intent phrases, not bare "重點"
+    _summary_has_url = bool(re.search(r'https?://[^\s]+', message))
+    _summary_trigger = (
+        _summary_has_url and any(kw in msg_lower for kw in ["摘要", "summarize", "summary", "重點"])
+    ) or (
+        any(kw in msg_lower for kw in ["摘要", "summarize", "summary"])
+        and (msg_lower.startswith("摘要") or msg_lower.startswith("summarize") or msg_lower.startswith("summary") or len(msg_lower) <= 30)
+    ) or (
+        msg_lower.startswith("重點整理") or msg_lower.startswith("重點摘要")
+    )
+    if _summary_trigger:
         try:
             from skills.ops.smart_summary import summarize_url, extract_key_points
             url_match = re.search(r'https?://[^\s]+', message)
             if url_match:
                 return summarize_url(url_match.group())
-            # Summarize the message itself
             return extract_key_points(message)
         except Exception as e:
             from skills.management.issue_tracker import log_issue
@@ -1903,7 +1936,7 @@ def process_message_inner(orch, user_id, message, platform="LINE", role="user", 
     # 5. Intent Classification
     # Hard override: LAF report commands should always enter CMD path.
     forced_cmd = False
-    if any(k in msg_lower for k in ["法扶回報指令", "法扶指令", "回報指令", "開辦回報", "開辦"]):
+    if any(k in msg_lower for k in ["法扶回報指令", "法扶指令", "回報指令", "開辦回報", "開辦案件"]):
         forced_cmd = True
     elif orch._parse_laf_report_payload(message):
         forced_cmd = True
