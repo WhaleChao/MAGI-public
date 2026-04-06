@@ -57,12 +57,18 @@ calibrate_distributed_ngl = _lazy_brain("calibrate_distributed_ngl")
 from skills.bridge.legal_bridge import execute_skill
 
 # ── Pre-compiled regex patterns ──────────────────────────────────────────────
-_RE_DRAW = re.compile(r"(?:/draw\b|畫|draw|generate image|產生圖片|绘|画圖|畫一|画一)", re.IGNORECASE)
+_RE_DRAW = re.compile(r"(?:/draw\b|畫[圖一個張幅]|\bdraw\b|generate image|產生圖片|绘[图画製]|画[圖图一])", re.IGNORECASE)
 _RE_WEB_SEARCH_EXPLICIT = re.compile(
     r"^(?:搜尋|search|research|/search|查一下|找一下|搜一下|google|幫我搜|幫我查一下|執行網路研究|進行網路研究|網路研究|網路搜尋|幫我查詢|請幫我查詢)\s*[:：]?\s*"
 )
 _RE_COLON_PREFIX = re.compile(r"^[:：]\s*")
 _RE_FILLER_PREFIX = re.compile(r"^(?:請|幫我|能不能|可以|一下|幫忙)\s*")
+_RE_CMD_PREFIX = re.compile(r'^(?:請幫我|可以幫我|麻煩幫我|麻煩|請|幫我|幫忙)\s*')
+
+def _strip_cmd_prefix(text: str) -> str:
+    """Strip common Chinese filler prefixes for command matching."""
+    return _RE_CMD_PREFIX.sub('', text)
+
 _RE_HTTP_URL = re.compile(r'https?://')
 _RE_HTTP_URL_FULL = re.compile(r'https?://[^\s]+')
 _RE_TIMEOUT_SEC = re.compile(r"(\d{2,4})\s*(?:秒|sec|s)")
@@ -70,11 +76,11 @@ _RE_TARGET_GB = re.compile(r"(\d+(?:\.\d+)?)\s*gb")
 _RE_TOLERANCE_GB = re.compile(r"[±\+\-]\s*(\d+(?:\.\d+)?)\s*gb")
 _RE_JSON_TAIL = re.compile(r"(\{[\s\S]*\})\s*$")
 _RE_PAYMENT_DISMISS = re.compile(r"^(.+?)\s*(?:已繳費|已經繳費|繳費完畢|繳費了)\s*$")
-_RE_CASE_NUMBER = re.compile(r"(\d{2,3})\s*(?:年度)?\s*([^\d\s]+)\s*(?:字)?\s*(?:第)?\s*(\d+)\s*(?:號)?")
+_RE_CASE_NUMBER = re.compile(r"(\d{2,3})\s*(?:年度)?\s*(?!年|月)([^\d\s]+)\s*(?:字)?\s*(?:第)?\s*(\d+)\s*(?:號)?")
 _RE_CASE_TYPE_STRIP = re.compile(r"(字第|字|第)")
 _RE_COURT = re.compile(r'\bcourt\b')
 _RE_SCHEDULE = re.compile(r'\bschedule\b')
-_RE_LAF = re.compile(r'\blaf\b')
+_RE_LAF = re.compile(r'\blaf\b', re.IGNORECASE)
 _RE_MEETING = re.compile(r'\bmeeting\b')
 _RE_SUMMARIZ = re.compile(r'\bsummariz')
 _RE_SUMMARY = re.compile(r'\bsummary\b')
@@ -86,6 +92,7 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
     Uses CommandRegistry for extensible dispatch, falls back to legacy if-elif.
     """
     msg_lower = message.lower()
+    msg_stripped = _strip_cmd_prefix(msg_lower)
 
     # Try registry-based dispatch first
     ctx = CommandContext(
@@ -341,19 +348,7 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
 "🔒 系統管理、技能進化等需管理員權限"
 )
 
-    # Image Generation (Enhanced Natural Language)
-    # Matches: "/draw xxx", "draw a cat", "幫我畫一隻貓", "請畫圖", "生成圖片: sunset"
-    if _RE_DRAW.search(msg_lower) and len(message) > 2:
-        # Extract prompt by removing common command words
-        prompt = message
-        for kw in ["/draw", "幫我", "請", "畫圖", "一張", "一個", "draw", "generate image", "產生圖片", "畫", "画", "a picture of", "an image of"]:
-            prompt = re.sub(re.escape(kw), "", prompt, flags=re.IGNORECASE).strip()
-
-        # If prompt became empty but message was long enough, use original message minus strict command
-        if len(prompt) < 2:
-             return "🎨 請描述您想要的圖片內容。例如：'畫一隻可愛的貓咪'"
-
-        return orch._generate_image(prompt, user_id)
+    # (Draw handler moved to ~line 730 with better exclusion logic)
 
     # Web Research (Below help command content)
     help_extra = """
@@ -553,10 +548,10 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
             )
         return orch._run_judgment_collector_command(message, notify=False)
 
-    if message.startswith("翻譯 ") or message.lower().startswith("translate "):
+    if message.startswith("翻譯 ") or message.lower().startswith("translate ") or msg_stripped.startswith("翻譯 "):
         return orch._run_inline_translation_command(user_id, message)
 
-    if any(message.startswith(p) for p in ["摘要 ", "摘要\n", "精簡摘要 ", "精簡摘要\n", "詳細摘要 ", "詳細摘要\n", "短摘要 ", "長摘要 "]) or msg_lower.startswith("summarize ") or msg_lower.startswith("summary "):
+    if any(message.startswith(p) for p in ["摘要 ", "摘要\n", "精簡摘要 ", "精簡摘要\n", "詳細摘要 ", "詳細摘要\n", "短摘要 ", "長摘要 "]) or msg_lower.startswith("summarize ") or msg_lower.startswith("summary ") or any(msg_stripped.startswith(p) for p in ["摘要 ", "摘要\n", "精簡摘要 ", "精簡摘要\n", "詳細摘要 ", "詳細摘要\n", "短摘要 ", "長摘要 "]):
         from api.pipelines.specialized_commands import run_inline_summary_command
         return run_inline_summary_command(orch, message)
 
@@ -707,7 +702,8 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
         return f"🧠 **已存入記憶庫**\n內容: {content}"
 
     # Memory Command (Forget)
-    if any(kw in msg_lower for kw in ["forget", "刪除記憶", "忘記", "delete memory"]):
+    if any(kw in msg_lower for kw in ["forget", "刪除記憶", "delete memory"]) or \
+       (msg_lower.startswith("忘記") and not any(exc in msg_lower for exc in ["忘記密碼", "忘記帶", "忘記了"])):
         if role != "admin":
             return "⛔ 抱歉，只有管理員可以刪除記憶（系統改動指令）。"
         content = message
@@ -1251,7 +1247,12 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
         return orch._laf_report_command_help()
 
     # 法扶狀態手動更新：「[當事人E] 已開辦」「[當事人N] 已報結」
-    try:
+    # Keyword gate: only attempt expensive parse when message contains LAF-related keywords
+    _LAF_STATUS_KEYWORDS = {"已開辦", "已報結", "已結案", "已撤回", "已撤案",
+                            "已經開辦", "已經報結", "已經結案", "已經撤回", "已經撤案",
+                            "標記", "法扶"}
+    if any(kw in message for kw in _LAF_STATUS_KEYWORDS):
+      try:
         from api.handlers.laf_handler import parse_laf_status_update
         _status_upd = parse_laf_status_update(message)
         if _status_upd and role == "admin":
@@ -1274,7 +1275,7 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
                     return _hint
                 _target = _status_upd.get("client_name") or _status_upd.get("case_number") or _status_upd.get("laf_case_no")
                 return f"❌ 找不到 {_target} 的案件，無法更新狀態。請確認姓名或案號是否正確。"
-    except Exception as _su_err:
+      except Exception as _su_err:
         logger.debug("LAF status update parse skipped: %s", _su_err)
 
     laf_payload = orch._parse_laf_report_payload(message)
@@ -1653,7 +1654,7 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
 
     # File Review Probe (chat-callable formal skill command)
     probe_aliases = ["閱卷查核", "查核閱卷", "卷宗查核", "查核卷宗", "卷宗檢核", "檢核卷宗"]
-    if any(msg_lower.startswith(alias) for alias in probe_aliases):
+    if any(msg_lower.startswith(alias) for alias in probe_aliases) or any(msg_stripped.startswith(alias) for alias in probe_aliases):
 
         def _parse_probe_payload(raw_text: str):
             raw = (raw_text or "").strip()
@@ -1795,7 +1796,7 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
 
     # File Review Apply — 閱卷聲請 (chat-callable formal skill command)
     apply_aliases = ["閱卷聲請", "聲請閱卷", "申請閱卷", "聲請閱覽"]
-    if any(msg_lower.startswith(alias) for alias in apply_aliases):
+    if any(msg_lower.startswith(alias) for alias in apply_aliases) or any(msg_stripped.startswith(alias) for alias in apply_aliases):
 
         def _parse_apply_payload(raw_text: str):
             raw = (raw_text or "").strip()
@@ -1930,7 +1931,7 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
 
     # Transcript downloader (chat-callable formal skill command)
     transcript_aliases = ["下載筆錄", "筆錄下載", "調閱筆錄", "筆錄調閱", "筆錄同步", "同步筆錄", "筆錄全同步", "筆錄更名", "更名筆錄"]
-    if any(msg_lower.startswith(alias) for alias in transcript_aliases):
+    if any(msg_lower.startswith(alias) for alias in transcript_aliases) or any(msg_stripped.startswith(alias) for alias in transcript_aliases):
 
         transcript_script = f"{_MAGI_ROOT}/skills/transcript-downloader/action.py"
         if not os.path.exists(transcript_script):
@@ -2089,7 +2090,7 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
 
     # File-review download/check commands (chat-callable formal skill command)
     review_dl_aliases = ["下載閱卷", "閱卷下載", "檢查閱卷信箱", "閱卷到期檢查", "閱卷到期", "閱卷期限"]
-    if any(msg_lower.startswith(alias) for alias in review_dl_aliases):
+    if any(msg_lower.startswith(alias) for alias in review_dl_aliases) or any(msg_stripped.startswith(alias) for alias in review_dl_aliases):
 
         review_script = f"{_MAGI_ROOT}/skills/file-review-orchestrator/action.py"
         if not os.path.exists(review_script):
@@ -2236,7 +2237,7 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
          return execute_skill("laf-monitor", [message])
     elif _RE_MEETING.search(msg_lower):
          return execute_skill("meetings", ["list"])
-    elif _RE_SUMMARIZ.search(msg_lower) or _RE_SUMMARY.search(msg_lower) or "balthasar" in msg_lower:
+    elif _RE_SUMMARIZ.search(msg_lower) or _RE_SUMMARY.search(msg_lower) or msg_lower.startswith("balthasar"):
          try:
              summary_result = summarize_text(message)
              if summary_result and summary_result.get("success", True):

@@ -136,7 +136,10 @@ def _telegram_mark_seen_update(update_id: int | None) -> bool:
         if ts < stale_before:
             _TELEGRAM_SEEN_UPDATES.pop(k, None)
     if len(_TELEGRAM_SEEN_UPDATES) > 5000:
-        _TELEGRAM_SEEN_UPDATES.clear()
+        # Keep newest 2500 entries
+        sorted_items = sorted(_TELEGRAM_SEEN_UPDATES.items(), key=lambda x: x[1])
+        for uid, _ in sorted_items[:len(sorted_items) // 2]:
+            del _TELEGRAM_SEEN_UPDATES[uid]
     if update_id in _TELEGRAM_SEEN_UPDATES:
         return True
     _TELEGRAM_SEEN_UPDATES[update_id] = now
@@ -542,6 +545,12 @@ def _telegram_process_async(
                 channel_context=channel_context,
             )
         _telegram_send_orchestrator_response(chat_id, str(response_text or ""), reply_to_message_id=reply_to_message_id)
+        # Record assistant reply for conversation history (matches Discord/LINE pattern)
+        if response_text:
+            try:
+                orchestrator.record_assistant_reply(user_id, str(response_text), channel_id=str(chat_id), platform="telegram")
+            except Exception:
+                _log.debug("silent-catch at %s:%s", __name__, "_telegram_process_async/record_reply", exc_info=True)
         # Message-queue: mark success
         if _mq_inst and _mq_msg_id:
             try:

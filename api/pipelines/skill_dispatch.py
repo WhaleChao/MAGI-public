@@ -32,11 +32,14 @@ def looks_like_capability_question(message: str) -> bool:
     # Must contain ability-asking keywords
     if not re.search(r"(可以|可不可以|能不能|會不會|如何|怎麼|有沒有辦法|能否|可否)", text, re.IGNORECASE):
         return False
-    # If message contains concrete objects/context, it's an ACTION request, not a capability question
+    # If message contains concrete objects/context, it's an ACTION request, not a capability question.
+    # Only match true object nouns and demonstratives that point to actual content.
+    # Action verbs (摘要, 翻譯, etc.) and request phrases (幫我, 給我, etc.) are
+    # intentionally excluded — "可以幫我摘要嗎" with no content is a capability question.
     _has_concrete_object = bool(re.search(
-        r"(案件|案號|文件|檔案|判決|合約|契約|信件|郵件|這個|這份|這段|那個|那份|那段|"
-        r"幫我|給我|替我|告訴我|查一下|看一下|處理|需求|問題|做到|辦到|"
-        r"摘要|翻譯|搜尋|備份|下載|上傳|分析|整理|統計|計算)",
+        r"(案件|案號|文件|檔案|判決|合約|契約|信件|郵件|"
+        r"這個|這份|這段|那個|那份|那段|"
+        r"查一下|看一下|處理|需求|問題)",
         text
     ))
     if _has_concrete_object:
@@ -68,7 +71,7 @@ def dispatch_safe_semantic_skill(orch, user_id, message: str, skill: str, role: 
         if handled and reply:
             return True, reply
         if handled:
-            return False, ""
+            return handled, reply
 
     return generic_skill_dispatch(orch, skill, message)
 

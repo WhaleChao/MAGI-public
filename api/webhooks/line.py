@@ -10,6 +10,7 @@ import logging
 import os
 import re
 import shutil
+import threading
 import time
 import uuid
 from collections import defaultdict, deque
@@ -102,6 +103,7 @@ if not EXPECTED_MAGI_API_KEY:
 # Context Buffer (Simple in-memory for now)
 # { user_id: { "type": "image|audio|file", "path": "/tmp/...", "timestamp": ... } }
 user_context = {}
+_user_context_lock = threading.Lock()
 CONTEXT_TTL_SECONDS = int(os.environ.get("LINE_CONTEXT_TTL_SECONDS", "900"))
 
 # Push budget
@@ -301,15 +303,18 @@ def _safe_remove_tmp(path: str) -> None:
 def _cleanup_user_context():
     now = time.time()
     expired = []
-    for uid, ctx in user_context.items():
-        ts = float(ctx.get("timestamp", 0) or 0)
-        if ts and (now - ts > CONTEXT_TTL_SECONDS):
-            expired.append((uid, ctx))
+    with _user_context_lock:
+        for uid, ctx in user_context.items():
+            ts = float(ctx.get("timestamp", 0) or 0)
+            if ts and (now - ts > CONTEXT_TTL_SECONDS):
+                expired.append((uid, ctx))
+        for uid, ctx in expired:
+            user_context.pop(uid, None)
+    # File I/O outside the lock
     for uid, ctx in expired:
         path = ctx.get("path")
         if path and os.path.exists(path):
             _safe_remove_tmp(path)
-        user_context.pop(uid, None)
 
 
 def cleanup_old_exports(days: int = 30) -> int:
@@ -1389,7 +1394,10 @@ def _register_handler_callbacks():
             role = "admin"
 
         # Check Context
-        attachment = user_context.get(user_id)
+        with _user_context_lock:
+            attachment = user_context.get(user_id)
+            if attachment:
+                user_context.pop(user_id, None)
         if attachment:
             ts = float(attachment.get("timestamp", 0) or 0)
             if ts and (time.time() - ts > CONTEXT_TTL_SECONDS):
@@ -1397,7 +1405,6 @@ def _register_handler_callbacks():
                 if stale_path and os.path.exists(stale_path):
                     _safe_remove_tmp(stale_path)
                 attachment = None
-            user_context.pop(user_id, None)
 
         recent_followup = False
         try:
@@ -1519,7 +1526,8 @@ def _register_handler_callbacks():
             "filename": file_name,
             "timestamp": time.time(),
         }
-        user_context[user_id] = attachment_payload
+        with _user_context_lock:
+            user_context[user_id] = attachment_payload
         if msg_type in {"image", "file"}:
             try:
                 durable_recent = _persist_attachment_payload(attachment_payload, prefix=f"line_recent_{message_id}")
@@ -1582,7 +1590,8 @@ def _register_handler_callbacks():
                                 _safe_remove_tmp(temp_path)
                         except Exception:
                             _log.debug("silent-catch at %s:%s", __name__, "handle_content/voice_cleanup", exc_info=True)
-                        user_context.pop(user_id, None)
+                        with _user_context_lock:
+                            user_context.pop(user_id, None)
 
                 _CHANNEL_BG_EXECUTOR.submit(_run_voice_fallback)
             else:
@@ -1591,7 +1600,8 @@ def _register_handler_callbacks():
                         _safe_remove_tmp(temp_path)
                 except Exception:
                     _log.debug("silent-catch at %s:%s", __name__, "handle_content/voice_ok_cleanup", exc_info=True)
-                user_context.pop(user_id, None)
+                with _user_context_lock:
+                    user_context.pop(user_id, None)
             return
 
         else:

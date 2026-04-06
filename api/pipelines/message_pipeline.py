@@ -504,7 +504,7 @@ def process_message_inner(orch, user_id, message, platform="LINE", role="user", 
             if not os.path.exists(skill_script):
                 return "❌ 找不到 crawler-targets skill。"
 
-            url_match = re.search(r"(https?://\\S+)", message)
+            url_match = re.search(r"(https?://\S+)", message)
             url = (url_match.group(1).strip() if url_match else "").rstrip(").,")
 
             if any(k in msg_lower for k in ["列出", "list", "查看"]):
@@ -831,7 +831,7 @@ def process_message_inner(orch, user_id, message, platform="LINE", role="user", 
 
     # 2.8. Image Generation (High Priority) - Check before LLM
     # Matches: "/draw xxx", "draw a cat", "幫我畫一隻貓", "請畫圖", "生成圖片: sunset"
-    draw_pattern = re.compile(r"(?:/draw\b|畫|draw|generate image|產生圖片|绘|画圖|畫一|画一)", re.IGNORECASE)
+    draw_pattern = re.compile(r"(?:/draw\b|畫[圖一個張幅]|\bdraw\b|generate image|產生圖片|绘[图画]|画[圖图一])", re.IGNORECASE)
 
     if draw_pattern.search(msg_lower):
         # Extract prompt by removing common command words
@@ -2015,7 +2015,7 @@ def process_message_inner(orch, user_id, message, platform="LINE", role="user", 
             try:
                 from skills.bridge.semantic_router import route as _semantic_route, suggest_trigger
                 sr = _semantic_route(message)
-                if sr and sr.get("confidence", 0) >= 0.20:
+                if sr and sr.get("confidence", 0) >= 0.45:
                     synthetic = suggest_trigger(sr["skill"], message)
                     logger.info(f"SemanticRouter fallback: {sr['skill']} ({sr['confidence']:.2f}) → '{synthetic[:60]}'")
                     orch._append_route_trace(

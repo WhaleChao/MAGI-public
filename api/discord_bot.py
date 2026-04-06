@@ -1194,7 +1194,7 @@ async def on_message(message):
                 temp_attachment_path = await _download_discord_attachment(att)
                 ext = (os.path.splitext(att.filename or "")[1] or "").lower()
                 msg_type = "file"
-                if ext in {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif"}:
+                if ext in {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif", ".heic", ".heif", ".tiff", ".tif"}:
                     msg_type = "image"
                 elif ext in {".mp3", ".wav", ".m4a", ".ogg", ".flac", ".aac"}:
                     msg_type = "audio"
