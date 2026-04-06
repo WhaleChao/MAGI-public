@@ -217,14 +217,7 @@ _EXTRA_PHRASES: Dict[str, List[str]] = {
         "合約檢查", "契約檢視", "合約分析", "contract review", "review contract",
         "檢視契約", "看合約", "看契約",
     ],
-    "run_pdf_annotator": [
-        "PDF註解", "PDF標註", "標註PDF", "PDF畫線", "PDF螢光筆",
-        "annotate PDF", "PDF annotation", "標記重點",
-    ],
-    "run_pdf_bookmarker": [
-        "PDF書籤", "加書籤", "PDF目錄", "建立書籤", "PDF bookmark",
-        "add bookmark", "PDF大綱",
-    ],
+    # pdf-annotator / pdf-bookmarker: 工具型技能，需指定路徑，由自動化流程觸發，不適合語意路由
     "run_transcript_indexer": [
         "筆錄索引", "建立筆錄索引", "筆錄搜尋", "索引筆錄",
         "transcript index", "index transcript",
