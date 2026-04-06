@@ -113,7 +113,7 @@ def quick_fixed_reply(orch, message: str, role: str = "user") -> str | None:
     if re.search(r"(為什麼.*繁體中文|為何.*繁體中文|不是繁體中文|請用繁體中文|traditional chinese)", t):
         return "收到，後續我會固定使用繁體中文（臺灣用語）回覆。"
 
-    if re.search(r"(help|有.*功能|可以.*什麼|做什麼|功能列表|技能清單|有.*skill|指令|幫助|說明|^功能$)", t):
+    if re.search(r"(^help$|^/help$|有.{0,4}功能|可以做.{0,2}什麼|^��什麼$|功能列表|技能清單|有.{0,4}skill|^指令$|^幫助$|^說明$|^功能$)", t):
         if role == "admin":
             return (
                 "🛠️ **MAGI 指令總表 (管理員)**\n\n"
