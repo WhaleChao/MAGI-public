@@ -630,7 +630,7 @@ async def check_line_health(client):
     try:
         # 1. Check Local Server
         async with aiohttp.ClientSession() as session:
-            async with session.get('http://localhost:5002/health') as resp:
+            async with session.get('http://localhost:5002/health', timeout=aiohttp.ClientTimeout(total=10)) as resp:
                 if resp.status != 200:
                     raise Exception(f"Local Server (Port 5002) returned {resp.status}")
 
@@ -987,8 +987,9 @@ async def on_ready():
 
         # Schedule the coroutine in the main loop
         if client.loop:
-            asyncio.run_coroutine_threadsafe(_send(), client.loop)
-            
+            _fut = asyncio.run_coroutine_threadsafe(_send(), client.loop)
+            _fut.add_done_callback(lambda f: f.exception() and logger.warning("async notification failed: %s", f.exception()))
+
     orchestrator.register_callback(send_async_notification)
     logger.info("🔗 Registered Orchestrator Callback for Async Notifications")
 
@@ -1200,7 +1201,8 @@ async def on_message(message):
                     return
                 _dc_last_progress[0] = now
                 try:
-                    asyncio.run_coroutine_threadsafe(_dc_channel.send(str(msg_text or "")), loop)
+                    _fut = asyncio.run_coroutine_threadsafe(_dc_channel.send(str(msg_text or "")), loop)
+                    _fut.add_done_callback(lambda f: f.exception() and logging.getLogger(__name__).warning("async progress callback failed: %s", f.exception()))
                 except Exception:
                     logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 1098, exc_info=True)
 

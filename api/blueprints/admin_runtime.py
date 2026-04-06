@@ -601,7 +601,7 @@ def create_admin_runtime_blueprint(
             vm = psutil.virtual_memory()
             du = psutil.disk_usage("/")
             checks["system"] = {
-                "cpu_percent": psutil.cpu_percent(interval=0.1),
+                "cpu_percent": psutil.cpu_percent(interval=0.05),
                 "memory_percent": vm.percent,
                 "memory_available_gb": round(vm.available / (1024**3), 1),
                 "disk_percent": du.percent,

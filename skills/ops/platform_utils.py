@@ -312,26 +312,26 @@ class LaunchAgentManager(ServiceManager):
         with open(plist_path, "wb") as f:
             plistlib.dump(plist_data, f)
 
-        subprocess.run(["launchctl", "load", str(plist_path)], check=False)
+        subprocess.run(["launchctl", "load", str(plist_path)], check=False, timeout=30)
         return True
 
     def uninstall(self, name: str) -> bool:
         plist_path = self._plist_path(name)
         if plist_path.exists():
-            subprocess.run(["launchctl", "unload", str(plist_path)], check=False)
+            subprocess.run(["launchctl", "unload", str(plist_path)], check=False, timeout=30)
             plist_path.unlink(missing_ok=True)
         return True
 
     def start(self, name: str) -> bool:
         try:
-            subprocess.run(["launchctl", "start", name], check=True)
+            subprocess.run(["launchctl", "start", name], check=True, timeout=30)
             return True
         except Exception:
             return False
 
     def stop(self, name: str) -> bool:
         try:
-            subprocess.run(["launchctl", "stop", name], check=True)
+            subprocess.run(["launchctl", "stop", name], check=True, timeout=30)
             return True
         except Exception:
             return False
@@ -340,7 +340,7 @@ class LaunchAgentManager(ServiceManager):
         try:
             r = subprocess.run(
                 ["launchctl", "print", f"gui/{os.getuid()}/{name}"],
-                capture_output=True, text=True,
+                capture_output=True, text=True, timeout=30,
             )
             return r.returncode == 0
         except Exception:
@@ -360,7 +360,7 @@ class WindowsServiceManager(ServiceManager):
                 "/sc", "onlogon",
                 "/rl", "highest",
                 "/f",
-            ], check=True, capture_output=True)
+            ], check=True, capture_output=True, timeout=30)
             return True
         except Exception as e:
             logger.warning("Failed to install Windows task %s: %s", name, e)
@@ -370,7 +370,7 @@ class WindowsServiceManager(ServiceManager):
         try:
             subprocess.run(
                 ["schtasks", "/delete", "/tn", name, "/f"],
-                check=True, capture_output=True,
+                check=True, capture_output=True, timeout=30,
             )
             return True
         except Exception:
@@ -380,7 +380,7 @@ class WindowsServiceManager(ServiceManager):
         try:
             subprocess.run(
                 ["schtasks", "/run", "/tn", name],
-                check=True, capture_output=True,
+                check=True, capture_output=True, timeout=30,
             )
             return True
         except Exception:
@@ -390,7 +390,7 @@ class WindowsServiceManager(ServiceManager):
         try:
             subprocess.run(
                 ["schtasks", "/end", "/tn", name],
-                check=True, capture_output=True,
+                check=True, capture_output=True, timeout=30,
             )
             return True
         except Exception:
@@ -400,7 +400,7 @@ class WindowsServiceManager(ServiceManager):
         try:
             r = subprocess.run(
                 ["schtasks", "/query", "/tn", name, "/fo", "csv"],
-                capture_output=True, text=True,
+                capture_output=True, text=True, timeout=30,
             )
             return "Running" in r.stdout
         except Exception:
@@ -422,26 +422,26 @@ class SystemdManager(ServiceManager):
             f"[Install]\nWantedBy=default.target\n",
             encoding="utf-8",
         )
-        subprocess.run(["systemctl", "--user", "daemon-reload"], check=False)
-        subprocess.run(["systemctl", "--user", "enable", name], check=False)
+        subprocess.run(["systemctl", "--user", "daemon-reload"], check=False, timeout=30)
+        subprocess.run(["systemctl", "--user", "enable", name], check=False, timeout=30)
         return True
 
     def uninstall(self, name: str) -> bool:
-        subprocess.run(["systemctl", "--user", "disable", name], check=False)
+        subprocess.run(["systemctl", "--user", "disable", name], check=False, timeout=30)
         self._service_path(name).unlink(missing_ok=True)
-        subprocess.run(["systemctl", "--user", "daemon-reload"], check=False)
+        subprocess.run(["systemctl", "--user", "daemon-reload"], check=False, timeout=30)
         return True
 
     def start(self, name: str) -> bool:
         try:
-            subprocess.run(["systemctl", "--user", "start", name], check=True)
+            subprocess.run(["systemctl", "--user", "start", name], check=True, timeout=30)
             return True
         except Exception:
             return False
 
     def stop(self, name: str) -> bool:
         try:
-            subprocess.run(["systemctl", "--user", "stop", name], check=True)
+            subprocess.run(["systemctl", "--user", "stop", name], check=True, timeout=30)
             return True
         except Exception:
             return False
@@ -450,7 +450,7 @@ class SystemdManager(ServiceManager):
         try:
             r = subprocess.run(
                 ["systemctl", "--user", "is-active", name],
-                capture_output=True, text=True,
+                capture_output=True, text=True, timeout=30,
             )
             return r.stdout.strip() == "active"
         except Exception:
@@ -477,13 +477,13 @@ def get_cpu_name() -> str:
         if IS_MACOS:
             name = subprocess.check_output(
                 ["sysctl", "-n", "machdep.cpu.brand_string"],
-                text=True, stderr=subprocess.DEVNULL,
+                text=True, stderr=subprocess.DEVNULL, timeout=30,
             ).strip()
             if not name:
                 # Apple Silicon
                 name = subprocess.check_output(
                     ["sysctl", "-n", "hw.chip"],
-                    text=True, stderr=subprocess.DEVNULL,
+                    text=True, stderr=subprocess.DEVNULL, timeout=30,
                 ).strip()
             return name or "Apple Silicon"
         elif IS_WINDOWS:
@@ -508,13 +508,13 @@ def get_total_ram_gb() -> float:
     try:
         if IS_MACOS:
             raw = subprocess.check_output(
-                ["sysctl", "-n", "hw.memsize"], text=True
+                ["sysctl", "-n", "hw.memsize"], text=True, timeout=30,
             ).strip()
             return round(int(raw) / (1024 ** 3), 1)
         elif IS_WINDOWS:
             raw = subprocess.check_output(
                 ["wmic", "computersystem", "get", "TotalPhysicalMemory"],
-                text=True,
+                text=True, timeout=30,
             )
             for line in raw.strip().split("\n"):
                 line = line.strip()
@@ -547,7 +547,7 @@ def get_gpu_info() -> dict[str, Any]:
         nv = subprocess.check_output(
             ["nvidia-smi", "--query-gpu=name,memory.total",
              "--format=csv,noheader,nounits"],
-            text=True, stderr=subprocess.DEVNULL,
+            text=True, stderr=subprocess.DEVNULL, timeout=30,
         ).strip()
         if nv:
             parts = nv.split(",")

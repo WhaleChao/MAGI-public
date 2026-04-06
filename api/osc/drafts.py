@@ -314,7 +314,7 @@ def _osc_generate_draft_with_casper(prompt: str) -> str:
     except Exception as e:
         raise RuntimeError(f"CASPER 客戶端載入失敗: {e}")
 
-    result = casper_chat(prompt, timeout_sec=300)
+    result = casper_chat(prompt, timeout_sec=90)
     if not isinstance(result, dict) or not result.get("success"):
         err = (result.get("error") if isinstance(result, dict) else "") or "unknown_error"
         raise RuntimeError(f"CASPER 生成失敗: {err}")
@@ -338,7 +338,7 @@ def _osc_generate_draft_with_ollama(prompt: str, model: str, ollama_url: str) ->
     payload = json.dumps(body).encode("utf-8")
     req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"}, method="POST")
     try:
-        with urllib.request.urlopen(req, timeout=300) as resp:
+        with urllib.request.urlopen(req, timeout=90) as resp:
             raw = resp.read().decode("utf-8", errors="ignore")
     except urllib.error.URLError as e:
         raise RuntimeError(f"oMLX 連線失敗: {e}")

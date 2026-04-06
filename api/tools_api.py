@@ -1218,7 +1218,9 @@ def api_search():
     if not allowed:
         return _tool_denied_response("search", started, decision)
     try:
-        result = search_web(query, num_results)
+        ok, result = _run_with_timeout(search_web, 30, query, num_results)
+        if not ok:
+            return _tool_exception_response("search", started, f"search_timeout: {result.get('error', 'timeout')}")
     except Exception as exc:
         return _tool_exception_response("search", started, f"search_exception: {exc}")
     _finish_tool_event("search", started, ok=True, status="handled", output_data=_tool_preview(result))
@@ -1239,7 +1241,9 @@ def api_research():
     if not allowed:
         return _tool_denied_response("research", started, decision)
     try:
-        result = research_topic(topic, depth)
+        ok, result = _run_with_timeout(research_topic, 60, topic, depth)
+        if not ok:
+            return _tool_exception_response("research", started, f"research_timeout: {result.get('error', 'timeout')}")
     except Exception as exc:
         return _tool_exception_response("research", started, f"research_exception: {exc}")
     payload = {
@@ -1268,7 +1272,9 @@ def api_fetch():
     if not allowed:
         return _tool_denied_response("fetch", started, decision)
     try:
-        result = fetch_url_content(url)
+        ok, result = _run_with_timeout(fetch_url_content, 30, url)
+        if not ok:
+            return _tool_exception_response("fetch", started, f"fetch_timeout: {result.get('error', 'timeout')}")
     except Exception as exc:
         return _tool_exception_response("fetch", started, f"fetch_exception: {exc}")
     _finish_tool_event("fetch", started, ok=True, status="handled", output_data=_tool_preview(result))
@@ -1334,14 +1340,15 @@ def api_vision():
         # KEEP: Last-resort vision fallback via melchior_bridge.analyze_image().
         # Not a separate endpoint -- inline resilience when vision_gateway fails.
         # Provides degraded-mode results rather than returning an error to callers.
-        description = analyze_image(image_path, prompt)
+        fb_ok, fb_val = _run_with_timeout(analyze_image, 60, image_path, prompt)
+        description = fb_val if fb_ok else None
         result = {
-            "success": bool(description and not str(description).lower().startswith("error")),
-            "analysis": str(description or ""),
+            "success": bool(fb_ok and description and not str(description).lower().startswith("error")),
+            "analysis": str(description or "") if fb_ok else "",
             "route": "compat_melchior_bridge",
             "degraded": True,
             "model": "",
-            "error": str(result.get("error") or ""),
+            "error": str(result.get("error") or "") if fb_ok else f"vision_fallback_timeout: {fb_val.get('error', 'timeout')}",
         }
 
     description = str(result.get("analysis") or result.get("response") or "").strip()

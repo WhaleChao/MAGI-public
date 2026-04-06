@@ -130,9 +130,8 @@ def _check_omlx(port: int) -> str:
 def _tcp(host: str, port: int = 445, timeout: float = 2) -> bool:
     import socket
     try:
-        s = socket.create_connection((host, port), timeout=timeout)
-        s.close()
-        return True
+        with socket.create_connection((host, port), timeout=timeout) as s:
+            return True
     except Exception:
         return False
 
@@ -319,6 +318,7 @@ class MAGIMenuBar(rumps.App):
         super().__init__(" MAGI ", quit_button=None)
         self.icon = None
         self._action_lock = threading.Lock()
+        self._cache_lock = threading.Lock()
         self._status_cache = {}
 
         # ── Header ──
@@ -434,9 +434,11 @@ class MAGIMenuBar(rumps.App):
 
     @rumps.timer(CHECK_INTERVAL)
     def _periodic_check(self, _sender):
-        if self._status_cache:
+        with self._cache_lock:
+            cache_snapshot = dict(self._status_cache) if self._status_cache else {}
+        if cache_snapshot:
             try:
-                self._apply_status(self._status_cache)
+                self._apply_status(cache_snapshot)
             except Exception:
                 pass
         threading.Thread(target=self._collect_status, daemon=True).start()
@@ -574,7 +576,8 @@ class MAGIMenuBar(rumps.App):
         cache["magi_mb"] = sum(m[1] for m in _get_module_memory())
         cache["zombies"] = _count_zombies()
 
-        self._status_cache = cache
+        with self._cache_lock:
+            self._status_cache = cache
 
     # ── UI 更新（主執行緒）───────────────���─────────────────────
 

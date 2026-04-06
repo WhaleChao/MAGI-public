@@ -1785,6 +1785,13 @@ def osc_file_content_api():
     inline = str(request.args.get("inline") or "").strip() in {"1", "true", "yes"}
     mime, _ = mimetypes.guess_type(local_file)
     import io
+    # --- size guard: reject files > 50 MB to avoid unbounded memory usage ---
+    try:
+        file_size = os.path.getsize(local_file)
+    except OSError:
+        file_size = 0
+    if file_size > 50 * 1024 * 1024:  # 50 MB limit
+        return jsonify({"ok": False, "error": "File too large", "size_mb": round(file_size / 1024 / 1024, 1)}), 413
     try:
         with open(local_file, "rb") as f:
             buf = io.BytesIO(f.read())
@@ -1824,6 +1831,10 @@ def osc_file_text_api():
             return jsonify({"ok": False, "error": "file_not_found"}), 404
         if not _osc_is_safe_local_path(local_file):
             return jsonify({"ok": False, "error": "path_not_allowed"}), 403
+        _MAX_TEXT_SIZE = 10 * 1024 * 1024  # 10 MB
+        file_size = os.path.getsize(local_file)
+        if file_size > _MAX_TEXT_SIZE:
+            return jsonify({"ok": False, "error": f"file too large ({file_size} bytes, max {_MAX_TEXT_SIZE})"}), 413
         try:
             content, encoding = _osc_read_text_file(local_file)
         except ValueError as e:
@@ -1854,6 +1865,9 @@ def osc_file_text_api():
     if not _osc_is_safe_local_path(local_file):
         return jsonify({"ok": False, "error": "path_not_allowed"}), 403
     text = str(content)
+    _MAX_TEXT_SIZE = 10 * 1024 * 1024  # 10 MB
+    if len(text.encode("utf-8")) > _MAX_TEXT_SIZE:
+        return jsonify({"ok": False, "error": f"content too large (max {_MAX_TEXT_SIZE} bytes)"}), 413
     Path(local_file).write_text(text, encoding="utf-8")
     return jsonify({"ok": True, "path": raw, "local_path": local_file, "size": len(text.encode('utf-8'))})
 
@@ -1879,7 +1893,12 @@ def osc_file_upload_api():
     if not uploads:
         return jsonify({"ok": False, "error": "file required"}), 400
 
+    # --- upload size limits ---
+    _MAX_PER_FILE = 50 * 1024 * 1024   # 50 MB per file
+    _MAX_TOTAL    = 200 * 1024 * 1024   # 200 MB total
+
     saved = []
+    total_saved = 0
     for uploaded in uploads:
         name = os.path.basename(str(uploaded.filename or "").strip())
         if not name:
@@ -1888,11 +1907,21 @@ def osc_file_upload_api():
         if os.path.exists(dest) and not overwrite:
             return jsonify({"ok": False, "error": "file_exists", "file_name": name, "target_path": dest}), 409
         uploaded.save(dest)
+        fsize = os.path.getsize(dest)
+        if fsize > _MAX_PER_FILE:
+            os.remove(dest)
+            return jsonify({"ok": False, "error": "file_too_large", "file_name": name,
+                            "size_mb": round(fsize / 1024 / 1024, 1), "limit_mb": 50}), 413
+        total_saved += fsize
+        if total_saved > _MAX_TOTAL:
+            os.remove(dest)
+            return jsonify({"ok": False, "error": "total_upload_too_large",
+                            "total_mb": round(total_saved / 1024 / 1024, 1), "limit_mb": 200}), 413
         saved.append(
             {
                 "file_name": name,
                 "target_path": dest,
-                "size": os.path.getsize(dest),
+                "size": fsize,
             }
         )
     if not saved:
@@ -2926,7 +2955,7 @@ def osc_insights_fetch_full_api():
             title=title,
             case_number=case_number or "",
             case_reason=case_reason or "",
-            timeout_sec=120,
+            timeout_sec=45,
         )
         if jy.get("ok"):
             full_text = (jy.get("text") or "").strip()
@@ -3369,8 +3398,13 @@ def osc_labor_law_calc():
         kwargs["file_paths"] = uploaded_paths
         kwargs.setdefault("mode", "calc_file")
 
+    from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
     try:
-        result_text = mod.run(task, **kwargs)
+        with ThreadPoolExecutor(max_workers=1) as _pool:
+            _future = _pool.submit(mod.run, task, **kwargs)
+            result_text = _future.result(timeout=120)  # 120s hard cap
+    except FuturesTimeoutError:
+        return jsonify({"ok": False, "error": "skill execution timed out (120s)"}), 504
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
 

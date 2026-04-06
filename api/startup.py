@@ -564,13 +564,28 @@ def _ensure_cloudflared():
                 ["/opt/homebrew/bin/cloudflared", "tunnel", "--url", "http://127.0.0.1:5002", "--no-autoupdate"],
                 stdout=subprocess.DEVNULL, stderr=_cf_log_fh,
             )
+            # Safety net: register atexit handler to close file handle
+            import atexit
+            def _atexit_close_cf_log(fh=_cf_log_fh):
+                try:
+                    if fh and not fh.closed:
+                        fh.close()
+                except Exception:
+                    pass
+            atexit.register(_atexit_close_cf_log)
+
             # Cleanup: close log file handle when cloudflared exits
             def _cleanup_cf_log(proc=_cf_proc, fh=_cf_log_fh):
                 try:
-                    proc.wait()
+                    proc.wait(timeout=3600)  # don't block forever
+                except subprocess.TimeoutExpired:
+                    logger.warning("cloudflared cleanup wait timed out after 1h")
+                except Exception as e:
+                    logger.debug("cloudflared wait error: %s", e)
                 finally:
                     try:
-                        fh.close()
+                        if fh and not fh.closed:
+                            fh.close()
                     except Exception:
                         logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, "_cleanup_cf_log", exc_info=True)
             threading.Thread(target=_cleanup_cf_log, daemon=True, name="cf-log-cleanup").start()

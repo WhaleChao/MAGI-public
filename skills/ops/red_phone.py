@@ -1316,6 +1316,11 @@ def send_file_admin(
     acked = []
     errors = []
 
+    file_size = os.path.getsize(file_path)
+    if file_size > 50 * 1024 * 1024:  # 50MB
+        logger.warning("File too large to send: %s (%d MB)", file_path, file_size // (1024 * 1024))
+        return {"ok": False, "error": f"File too large: {file_size // (1024*1024)} MB (limit 50 MB)"}
+
     with open(file_path, "rb") as fh:
         file_bytes = fh.read()
 

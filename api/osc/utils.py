@@ -21,6 +21,7 @@ from decimal import Decimal
 from pathlib import Path
 
 import mysql.connector
+import mysql.connector.pooling
 
 from flask_login import current_user
 
@@ -133,32 +134,125 @@ def _osc_web_db_candidates():
     return cands
 
 
-def _osc_web_connect():
-    # 讓 failover 模組動態更新 env，確保候選列表反映最新狀態
-    try:
-        from api.db_failover import probe_remote
-        probe_remote()  # 更新 os.environ["OSC_DB_HOST"] if needed
-    except Exception:
-        pass
-    last_err = None
-    for cfg in _osc_web_db_candidates():
+# ---------------------------------------------------------------------------
+# Connection pool management
+# ---------------------------------------------------------------------------
+_pool = None          # MySQLConnectionPool instance (lazily created)
+_pool_cfg = None      # The db config dict that the pool was created with
+_pool_lock = __import__("threading").Lock()
+
+_logger = logging.getLogger(__name__)
+
+
+def _get_pool():
+    """Return (pool, cfg) – create the pool lazily on first call.
+
+    The pool is bound to whichever candidate config succeeds first.  If the
+    pool later becomes unusable (e.g. remote host goes down) callers should
+    call ``_reset_pool()`` and retry so a new pool is built against the next
+    viable candidate.
+    """
+    global _pool, _pool_cfg
+    if _pool is not None:
+        return _pool, _pool_cfg
+
+    with _pool_lock:
+        # Double-check after acquiring lock
+        if _pool is not None:
+            return _pool, _pool_cfg
+
+        # Let failover module update env before we pick candidates
         try:
-            conn = mysql.connector.connect(
-                host=cfg["host"],
-                port=int(cfg["port"]),
-                user=cfg["user"],
-                password=cfg["password"],
-                database=cfg["database"],
-                autocommit=False,
-                charset="utf8mb4",
-                collation="utf8mb4_unicode_ci",
-                connection_timeout=5,
-            )
-            return conn, cfg
-        except Exception as e:
-            last_err = e
-            continue
-    raise last_err or RuntimeError("osc_web_db_connect_failed")
+            from api.db_failover import probe_remote
+            probe_remote()
+        except Exception:
+            pass
+
+        last_err = None
+        for cfg in _osc_web_db_candidates():
+            try:
+                pool = mysql.connector.pooling.MySQLConnectionPool(
+                    pool_name="osc_pool",
+                    pool_size=5,
+                    pool_reset_session=True,
+                    host=cfg["host"],
+                    port=int(cfg["port"]),
+                    user=cfg["user"],
+                    password=cfg["password"],
+                    database=cfg["database"],
+                    autocommit=False,
+                    charset="utf8mb4",
+                    collation="utf8mb4_unicode_ci",
+                    connection_timeout=5,
+                )
+                _pool = pool
+                _pool_cfg = cfg
+                _logger.info("OSC connection pool created: host=%s port=%s db=%s",
+                             cfg["host"], cfg["port"], cfg["database"])
+                return _pool, _pool_cfg
+            except Exception as e:
+                last_err = e
+                continue
+        raise last_err or RuntimeError("osc_web_db_connect_failed")
+
+
+def _reset_pool():
+    """Discard the current pool so the next call to ``_get_pool`` rebuilds it."""
+    global _pool, _pool_cfg
+    with _pool_lock:
+        _pool = None
+        _pool_cfg = None
+
+
+def _osc_web_connect():
+    """Get a connection from the pool, falling back to direct connect."""
+    try:
+        pool, cfg = _get_pool()
+        conn = pool.get_connection()
+        return conn, cfg
+    except mysql.connector.errors.PoolError:
+        # Pool exhausted – fall back to a direct connection using the same cfg
+        _, cfg = _get_pool()
+        conn = mysql.connector.connect(
+            host=cfg["host"],
+            port=int(cfg["port"]),
+            user=cfg["user"],
+            password=cfg["password"],
+            database=cfg["database"],
+            autocommit=False,
+            charset="utf8mb4",
+            collation="utf8mb4_unicode_ci",
+            connection_timeout=5,
+        )
+        return conn, cfg
+    except Exception:
+        # Pool creation or connection failed – reset and try fresh
+        _reset_pool()
+        # 讓 failover 模組動態更新 env，確保候選列表反映最新狀態
+        try:
+            from api.db_failover import probe_remote
+            probe_remote()
+        except Exception:
+            pass
+        last_err = None
+        for cfg in _osc_web_db_candidates():
+            try:
+                conn = mysql.connector.connect(
+                    host=cfg["host"],
+                    port=int(cfg["port"]),
+                    user=cfg["user"],
+                    password=cfg["password"],
+                    database=cfg["database"],
+                    autocommit=False,
+                    charset="utf8mb4",
+                    collation="utf8mb4_unicode_ci",
+                    connection_timeout=5,
+                )
+                return conn, cfg
+            except Exception as e:
+                last_err = e
+                continue
+        raise last_err or RuntimeError("osc_web_db_connect_failed")
 
 
 # ---------------------------------------------------------------------------
@@ -730,7 +824,7 @@ def _osc_run_skill(skill: str, task: str, timeout_sec: int = 180, route_key: str
         headers={"Content-Type": "application/json"},
     )
     try:
-        with urllib.request.urlopen(req, timeout=max(20, int(timeout_sec) + 30)) as resp:
+        with urllib.request.urlopen(req, timeout=min(90, max(20, int(timeout_sec) + 30))) as resp:
             raw = resp.read().decode("utf-8", errors="replace")
             return json.loads(raw or "{}")
     except urllib.error.HTTPError as e:

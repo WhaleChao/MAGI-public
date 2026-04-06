@@ -552,12 +552,16 @@ class Orchestrator:
                 # Auto-prune: keep last 50K lines (~5MB) when file exceeds 10MB
                 try:
                     if os.path.getsize(self._route_trace_file) > 10 * 1024 * 1024:
+                        # Stream line count + tail without loading entire file into memory
+                        import collections as _col
+                        tail_buf = _col.deque(maxlen=50000)
                         with open(self._route_trace_file, "r", encoding="utf-8") as f:
-                            lines = f.readlines()
+                            for line in f:
+                                tail_buf.append(line)
                         import tempfile as _tf
                         fd, tmp = _tf.mkstemp(dir=self._agent_dir, suffix=".tmp")
                         with os.fdopen(fd, "w", encoding="utf-8") as f:
-                            f.writelines(lines[-50000:])
+                            f.writelines(tail_buf)
                         os.replace(tmp, self._route_trace_file)
                 except Exception:
                     logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 310, exc_info=True)
@@ -1221,7 +1225,7 @@ class Orchestrator:
                 self._admin_allowlist_cache["ts"] = now
                 self._admin_allowlist_cache["line_admin_ids"] = set()
                 return set()
-            conn = sqlite3.connect(db_path)
+            conn = sqlite3.connect(db_path, timeout=5)
             try:
                 cur = conn.cursor()
                 cur.execute("SELECT line_user_id FROM users WHERE role = 'admin' AND line_user_id IS NOT NULL")
@@ -2151,6 +2155,7 @@ class Orchestrator:
 
     _FORGE_MAX_RETRIES = 3
     _FORGE_TIMEOUT_SCHEDULE = (300, 420, 600)  # 5min, 7min, 10min — escalating
+    _FORGE_LOCK_TIMEOUT = 600  # Safety: force-release lock after 600s
 
     def _auto_acquire_and_execute(self, user_id, message, platform: str = "LINE"):
         """
@@ -2161,8 +2166,20 @@ class Orchestrator:
         # Concurrency guard: prevent duplicate forge for same user
         uid = str(user_id)
         lock = self._forge_locks.setdefault(uid, threading.Lock())
+
+        # Safety: if lock has been held longer than _FORGE_LOCK_TIMEOUT, force release it
+        lock_ts_key = f"_forge_lock_ts_{uid}"
+        lock_acquired_at = getattr(self, lock_ts_key, 0)
+        if lock_acquired_at and (time.time() - lock_acquired_at) > self._FORGE_LOCK_TIMEOUT:
+            try:
+                lock.release()
+                logger.warning("Force-released stale forge lock for uid=%s (held %.0fs)", uid, time.time() - lock_acquired_at)
+            except RuntimeError:
+                pass  # already unlocked
+
         if not lock.acquire(blocking=False):
             return "⏳ 技能生成已在進行中，請稍候上一個完成…"
+        setattr(self, lock_ts_key, time.time())
 
         def _notify(text: str):
             try:
@@ -2250,8 +2267,18 @@ class Orchestrator:
         def _run_forge_with_lock():
             try:
                 _run_forge_with_retry()
+            except Exception as e:
+                logger.error("Forge background thread crashed: %s", e)
             finally:
-                lock.release()
+                try:
+                    lock.release()
+                except RuntimeError:
+                    pass  # already released
+                # Clear the lock timestamp
+                try:
+                    setattr(self, f"_forge_lock_ts_{uid}", 0)
+                except Exception:
+                    pass
 
         import threading
         try:
@@ -2295,15 +2322,19 @@ class Orchestrator:
         logger.info("💰 Calling action.py for payment proof: %s", image_path)
 
         try:
-            proc = subprocess.run(
-                [py, action_script, "--json-cmd"],
-                input=cmd_json,
-                capture_output=True,
-                text=True,
-                timeout=180,
-                cwd=os.path.dirname(action_script),
-            )
-        except subprocess.TimeoutExpired:
+            import concurrent.futures as _cf
+            with _cf.ThreadPoolExecutor(max_workers=1, thread_name_prefix="payment-proof") as _pool:
+                def _run_payment_subprocess():
+                    return subprocess.run(
+                        [py, action_script, "--json-cmd"],
+                        input=cmd_json,
+                        capture_output=True,
+                        text=True,
+                        timeout=180,
+                        cwd=os.path.dirname(action_script),
+                    )
+                proc = _pool.submit(_run_payment_subprocess).result(timeout=190)
+        except (subprocess.TimeoutExpired, _cf.TimeoutError):
             return "❌ 繳費憑證上傳逾時（超過 3 分鐘）"
 
         stdout = (proc.stdout or "").strip()

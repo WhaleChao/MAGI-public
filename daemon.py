@@ -71,6 +71,7 @@ processes = {}
 
 _LAST_REAP_AT = 0.0
 _LAST_DEDUP_AT = 0.0
+_timing_lock = threading.Lock()
 _REAP_INTERVAL_SEC = int(os.environ.get("MAGI_REAP_INTERVAL_SEC", "45") or "45")
 _ORPHAN_GRACE_SEC = int(os.environ.get("MAGI_ORPHAN_GRACE_SEC", "300") or "300")
 
@@ -436,16 +437,20 @@ def stop_process(name):
         try:
             proc = processes[name]["proc"]
             _write_autopilot_kill_reason(proc.pid, f"daemon stop_process({name})：daemon 正在關閉或重啟程序")
-            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
             try:
-                proc.wait(timeout=15)
-            except subprocess.TimeoutExpired:
-                logger.warning(f"⚠️ {name} did not exit after SIGTERM, sending SIGKILL")
+                os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+            except ProcessLookupError:
+                logger.info(f"ℹ️ {name} process already exited before SIGTERM")
+            else:
                 try:
-                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-                    proc.wait(timeout=5)
-                except Exception:
-                    pass
+                    proc.wait(timeout=15)
+                except subprocess.TimeoutExpired:
+                    logger.warning(f"⚠️ {name} did not exit after SIGTERM, sending SIGKILL")
+                    try:
+                        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                        proc.wait(timeout=5)
+                    except (ProcessLookupError, Exception):
+                        pass
             del processes[name]
         except Exception as e:
             logger.error(f"⚠️ Error stopping {name}: {e}")
@@ -740,9 +745,10 @@ def reap_orphan_workers(*, force: bool = False, dry_run: bool = False) -> str:
     """
     global _LAST_REAP_AT
     now = time.time()
-    if (not force) and (not dry_run) and (now - _LAST_REAP_AT < max(10, _REAP_INTERVAL_SEC)):
-        return ""
-    _LAST_REAP_AT = now
+    with _timing_lock:
+        if (not force) and (not dry_run) and (now - _LAST_REAP_AT < max(10, _REAP_INTERVAL_SEC)):
+            return ""
+        _LAST_REAP_AT = now
 
     try:
         ctrl_path = Path(f"{_MAGI_ROOT}/static/guardian_control.json")
@@ -1135,7 +1141,12 @@ if __name__ == "__main__":
             [sys.executable, os.path.join(os.path.dirname(os.path.abspath(__file__)), "setup_wizard.py")],
             cwd=os.path.dirname(os.path.abspath(__file__)),
         )
-        _wizard_proc.wait()
+        try:
+            _wizard_proc.wait(timeout=300)
+        except subprocess.TimeoutExpired:
+            logger.warning("⏰ Setup Wizard timed out after 5 minutes — killing it.")
+            _wizard_proc.kill()
+            _wizard_proc.wait()
         # Re-check after wizard
         if not os.path.exists(_env_file):
             logger.error("❌ Setup Wizard completed but .env not found. Cannot start MAGI.")

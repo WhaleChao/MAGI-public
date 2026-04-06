@@ -212,6 +212,7 @@ def _backup_one(profile: DBProfile, target: str, out_dir: Path) -> Dict[str, Any
     env["MYSQL_PWD"] = profile.password
 
     t0 = time.time()
+    max_duration = 300  # 5 minutes total deadline for backup
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
     stderr_raw = b""
     bytes_written = 0
@@ -219,13 +220,17 @@ def _backup_one(profile: DBProfile, target: str, out_dir: Path) -> Dict[str, Any
         assert proc.stdout is not None
         with gzip.open(tmp_path, "wb", compresslevel=6) as gz:
             while True:
+                if time.time() - t0 > max_duration:
+                    proc.kill()
+                    raise TimeoutError(f"mysqldump exceeded {max_duration}s deadline")
                 chunk = proc.stdout.read(1024 * 1024)
                 if not chunk:
                     break
                 gz.write(chunk)
                 bytes_written += len(chunk)
         stderr_raw = (proc.stderr.read() if proc.stderr is not None else b"")
-        rc = proc.wait(timeout=60)
+        remaining = max(1, max_duration - int(time.time() - t0))
+        rc = proc.wait(timeout=remaining)
     except Exception:
         proc.kill()
         raise
