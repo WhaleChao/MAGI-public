@@ -205,7 +205,7 @@ def _search_impl(
             # Return a small HTML hint for debugging (no full dump).
             try:
                 html_hint = page.content()
-                html_hint = re.sub(r"\\s+", " ", html_hint)[:800]
+                html_hint = re.sub(r"\s+", " ", html_hint)[:800]
             except Exception:
                 html_hint = ""
             return {"success": False, "error": f"iframe-data not found: {last_err}", "html_hint": html_hint}

@@ -652,12 +652,12 @@ def _osc_strip_html_to_text(html: str) -> str:
     s = re.sub(r"(?is)<script[^>]*>.*?</script>", " ", s)
     s = re.sub(r"(?is)<style[^>]*>.*?</style>", " ", s)
     s = re.sub(r"(?is)<noscript[^>]*>.*?</noscript>", " ", s)
-    s = re.sub(r"(?is)<br\\s*/?>", "\n", s)
+    s = re.sub(r"(?is)<br\s*/?>", "\n", s)
     s = re.sub(r"(?is)</p>", "\n", s)
     s = re.sub(r"(?is)<[^>]+>", " ", s)
     s = ihtml.unescape(s)
     s = re.sub(r"[ \t\r\f\v]+", " ", s)
-    s = re.sub(r"\n\\s*\n+", "\n\n", s)
+    s = re.sub(r"\n\s*\n+", "\n\n", s)
     return s.strip()
 
 

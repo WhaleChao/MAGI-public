@@ -132,7 +132,7 @@ def debt_scan_evidence(case_id):
 
     # 從 DB 查案件資料
     try:
-        from api.server import _osc_exec
+        from api.osc.utils import _osc_exec
         row, _ = _osc_exec(
             "SELECT id, case_number, client_name, case_category, case_type, folder_path FROM cases WHERE id=%s",
             (case_id,), fetch="one"
@@ -192,7 +192,7 @@ def debt_cases_list():
     取得消費者債務清理類型的案件列表（供陳報狀選擇案件用）。
     """
     try:
-        from api.server import _osc_exec
+        from api.osc.utils import _osc_exec
         rows, _ = _osc_exec(
             """
             SELECT id, case_number, client_name, case_category, case_type, court_case_no, folder_path

@@ -538,7 +538,7 @@ def process_message_inner(orch, user_id, message, platform="LINE", role="user", 
             try:
                 data = json.loads(out) if out else {}
             except Exception:
-                m = re.search(r"(\\{[\\s\\S]*\\})\\s*$", out or "")
+                m = re.search(r"(\{[\s\S]*\})\s*$", out or "")
                 if m:
                     try:
                         data = json.loads(m.group(1))
@@ -1430,7 +1430,7 @@ def process_message_inner(orch, user_id, message, platform="LINE", role="user", 
                         if _re.search(r"[\u0400-\u04ff\uac00-\ud7af]", s):
                             return True
                         # Too many latin words (ignore URLs)
-                        no_urls = _re.sub(r"https?://\\S+", "", s)
+                        no_urls = _re.sub(r"https?://\S+", "", s)
                         if len(_re.findall(r"[A-Za-z]{4,}", no_urls)) >= 8:
                             return True
                         return False
@@ -1465,7 +1465,7 @@ def process_message_inner(orch, user_id, message, platform="LINE", role="user", 
                     text = _re.sub(r"[\u3040-\u30ff\u0400-\u04ff\uac00-\ud7af]", "", text)
                     # Common bad translations / normalization.
                     text = text.replace("應徵者", "申請人")
-                    text = _re.sub(r"文章\\s*8", "第8條", text)
+                    text = _re.sub(r"文章\s*8", "第8條", text)
                     text = _re.sub(r"[ \t]{2,}", " ", text).strip()
                 except Exception:
                     logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 5267, exc_info=True)

@@ -92,22 +92,22 @@ def _get_translate_local_path_to_canonical():
 
 
 def _osc_fetch_url_text(url: str, timeout: int = 20) -> dict:
-    from api.server import _osc_fetch_url_text as _impl
+    from api.osc.utils import _osc_fetch_url_text as _impl
     return _impl(url, timeout=timeout)
 
 
 def _osc_lookup_fulltext_fallback(title: str = "", case_number: str = "", url: str = "") -> dict:
-    from api.server import _osc_lookup_fulltext_fallback as _impl
+    from api.osc.utils import _osc_lookup_fulltext_fallback as _impl
     return _impl(title=title, case_number=case_number, url=url)
 
 
 def _export_osc_form_files(title: str, preview_text: str, suggested_filename: str = "") -> dict:
-    from api.server import _export_osc_form_files as _impl
+    from api.startup import _export_osc_form_files as _impl
     return _impl(title, preview_text, suggested_filename)
 
 
 def _export_file_meta(path: str) -> dict:
-    from api.server import _export_file_meta as _impl
+    from api.startup import _export_file_meta as _impl
     return _impl(path)
 
 

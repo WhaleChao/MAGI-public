@@ -17,7 +17,7 @@ osc_settings_bp = Blueprint("osc_settings", __name__)
 
 def _get_osc_helpers():
     """Lazy import OSC helpers from server.py to avoid circular imports."""
-    from api.server import _osc_exec, _osc_text, _osc_log_activity
+    from api.osc.utils import _osc_exec, _osc_text, _osc_log_activity
     return _osc_exec, _osc_text, _osc_log_activity
 
 

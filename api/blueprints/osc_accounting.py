@@ -15,7 +15,7 @@ osc_accounting_bp = Blueprint("osc_accounting", __name__)
 
 def _get_osc_helpers():
     """Lazy import OSC helpers from server.py to avoid circular imports."""
-    from api.server import _osc_exec, _osc_text, _osc_log_activity, _osc_resolve_case_id, _osc_safe_int
+    from api.osc.utils import _osc_exec, _osc_text, _osc_log_activity, _osc_resolve_case_id, _osc_safe_int
     return _osc_exec, _osc_text, _osc_log_activity, _osc_resolve_case_id, _osc_safe_int
 
 
