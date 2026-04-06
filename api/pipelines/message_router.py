@@ -215,7 +215,11 @@ def quick_fixed_reply(orch, message: str, role: str = "user") -> str | None:
                 "🔒 大腦管理、鐵穹、技能進化等需管理員權限"
             )
 
-    if re.search(r"(你現在使用模型|現在使用模型|目前模型|模型為何|模型是什麼|使用什麼模型|what model)", t):
+    _MODEL_EXACT = {
+        "目前模型", "現在模型", "使用什麼模型", "模型是什麼", "模型為何",
+        "what model", "你現在使用什麼模型", "現在使用什麼模型",
+    }
+    if t in _MODEL_EXACT:
         from api.model_config import TEXT_PRIMARY_MODEL
         primary = read_openclaw_primary_model()
         target_main = (os.environ.get("MAGI_MAIN_MODEL") or TEXT_PRIMARY_MODEL).strip() or TEXT_PRIMARY_MODEL
@@ -498,8 +502,11 @@ def explain_routing(orch, message: str, role: str = "user") -> dict:
         return _res(action="help_menu", matched="universal_help",
                      requires_admin=True, handler="api/orchestrator.py:_handle_command('/help')")
 
-    if any(kw in msg_lower for kw in ["狀態", "status", "運作狀態", "節點狀態", "機器狀態", "大腦", "brain"]) or (
-        ("模型" in msg) and any(kw in msg_lower for kw in ["目前", "現在", "使用", "模式", "為何", "是什麼"])
+    # Status: require MAGI/system context, not just bare "狀態" which hits case-status questions
+    _STATUS_EXACT = {"系統狀態", "運作狀態", "節點狀態", "機器狀態", "magi狀態", "magi status",
+                     "大腦狀態", "brain status", "status", "目前模型", "現在模型", "使用什麼模型"}
+    if msg_lower in _STATUS_EXACT or (
+        ("模型" in msg) and len(t) <= 12 and any(kw in msg_lower for kw in ["目前", "現在", "使用", "模式"])
     ):
         return _res(action="status_report", matched="status_keywords",
                      requires_admin=False, handler="api/orchestrator.py:process_message(status fast-path)")
@@ -631,12 +638,13 @@ def try_conversational_intent(orch, message: str, msg_lower: str, user_id, role:
         return None
 
     patterns = [
-        (r"(?:翻譯|翻成|翻一下|幫翻|翻個|翻書|翻文|翻這|翻那|翻英|翻中|翻日|翻韓|"
-         r"translate|translation|翻一篇|翻成中文|翻成英文|翻成日文|"
-         r"中翻英|英翻中|日翻中|中翻日|韓翻中|多國語|多語|"
-         r"看不懂.{0,6}(?:英文|日文|韓文|外文|這篇)|"
+        # Translation: require clear translation intent, not just bare "翻" which matches "翻開/翻頁"
+        (r"(?:翻譯|翻成|翻一下|幫翻|翻成中文|翻成英文|翻成日文|"
+         r"translate|translation|翻一篇|"
+         r"中翻英|英翻中|日翻中|中翻日|韓翻中|"
+         r"看不懂.{0,6}(?:英文|日文|韓文|外文)|"
          r"這篇.{0,4}(?:外文|英文|日文)|"
-         r"pdf.{0,6}翻|翻.{0,6}pdf)", "translate",
+         r"pdf.{0,6}翻譯|翻譯.{0,6}pdf)", "translate",
          "✅ **我可以幫您翻譯！**\n\n"
          "• 翻譯文字：直接輸入 `翻譯 [文字/網址]`\n"
          "• 翻譯檔案：上傳 PDF/TXT/DOCX 後在留言打 `翻譯`\n"
@@ -664,14 +672,15 @@ def try_conversational_intent(orch, message: str, msg_lower: str, user_id, role:
          "• `製作音樂 溫暖鋼琴、30秒`\n"
          "• `生成音樂 cyberpunk EDM 60s`"),
 
+        # Status: require system/MAGI context prefix to avoid matching "案件狀態" etc.
         (r"(?:系統狀態|系統健康|伺服器狀態|server\s*status|system\s*status|"
-         r"cpu|ram|記憶體|磁碟|硬碟|disk|"
+         r"cpu使用|ram使用|記憶體使用|磁碟空間|硬碟空間|disk\s*usage|"
          r"機器怎樣|電腦怎樣|機器還好嗎|系統還好嗎|"
-         r"跑得動嗎|有沒有問題|有沒有異常|"
-         r"系統正常嗎|是否正常|系統負載|load|"
+         r"系統.*有沒有問題|系統.*有沒有異常|"
+         r"系統正常嗎|系統是否正常|系統負載|system\s*load|"
          r"node\s*status|magi.*狀態|casper.*狀態|melchior.*狀態|"
-         r"目前狀態|現在狀態|各節點|節點狀態|"
-         r"大腦|brain|運作狀態|看一下狀態)", "status", None, True),
+         r"各節點|節點狀態|"
+         r"大腦狀態|brain\s*status|運作狀態|看一下系統狀態)", "status", None, True),
 
         (r"(?:行程|日曆|會議|開會|schedule|calendar|meeting|"
          r"今天有什麼|明天有什麼|這週|本週|下週|"

@@ -276,9 +276,11 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
 - `laf` : 法扶信件監控 (Laf Monitor)
 """
 
-    # MAGI Status Command - Real status from heartbeat
-    if any(kw in msg_lower for kw in ["狀態", "status", "運作狀態", "節點狀態", "機器狀態"]) or (
-        ("模型" in message) and any(kw in msg_lower for kw in ["目前", "現在", "使用", "模式", "為何", "是什麼"])
+    # MAGI Status Command - require system-context prefix, not bare "狀態"
+    _STATUS_CMD_EXACT = {"系統狀態", "運作狀態", "節點狀態", "機器狀態", "magi狀態", "magi status",
+                         "status", "大腦狀態", "目前模型", "現在模型", "使用什麼模型"}
+    if msg_lower in _STATUS_CMD_EXACT or (
+        ("模型" in message) and len(msg_lower) <= 12 and any(kw in msg_lower for kw in ["目前", "現在", "使用", "模式"])
     ):
         node_status = orch._get_magi_status()
         brain_status = get_brain_status()
@@ -559,8 +561,8 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
         else:
             return f"🔍 找不到關於「{topic}」的資訊。"
 
-    # URL Fetch Command
-    if any(kw in msg_lower for kw in ["fetch", "抓取", "讀取網頁"]):
+    # URL Fetch Command — only trigger when message contains a URL
+    if any(kw in msg_lower for kw in ["fetch", "抓取", "讀取網頁"]) and re.search(r'https?://', message):
         import re
         urls = re.findall(r'https?://[^\s]+', message)
         if urls:
@@ -571,8 +573,16 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
                 return f"❌ 無法抓取網頁: {result['error']}"
         return "🔗 請提供要抓取的網址。"
 
-    # Memory Command (Remember)
-    if any(kw in msg_lower for kw in ["remember", "記住", "save memory", "memorize"]):
+    # Memory Command (Remember) — require keyword followed by content to memorize (space or specific content)
+    # "記住 XXX" = memory write; "記住不要忘了" = natural language, not a memory write
+    _is_memory_cmd = any(msg_lower.startswith(kw) for kw in ["remember ", "save memory ", "memorize "])
+    if not _is_memory_cmd and msg_lower.startswith("記住"):
+        # Chinese: require "記住 " (with space) or "記住我/車牌/密碼/..." (concrete object after 記住)
+        _after = message[2:].strip()
+        _is_memory_cmd = bool(_after) and not _after.startswith(("不", "別", "千萬", "要", "這"))
+    if not _is_memory_cmd:
+        _is_memory_cmd = any(msg_lower.startswith(kw) for kw in ["請記住 ", "幫我記住 "])
+    if _is_memory_cmd:
         if role != "admin":
             return "⛔ 抱歉，只有管理員可以寫入記憶（系統改動指令）。"
         content = message
@@ -616,9 +626,12 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
         else:
             return f"⚠️ **刪除失敗**: {result_msg}"
 
-    # Image Generation Command
-    # Triggered by: "/draw", "畫", "draw", "產生圖片", "generate image"
-    if any(kw in msg_lower for kw in ["/draw", "畫", "draw", "產生圖片", "generate image", "畫圖", "畫一"]):
+    # Image Generation Command — require drawing-specific prefix
+    # Exclude "畫面" (screen/picture), "畫成" (turn into) which are not drawing requests
+    _draw_starts = ["畫圖", "畫一", "畫個", "畫張", "畫幅", "幫我畫", "請畫", "draw ", "/draw"]
+    _draw_kw = ["/draw", "generate image", "產生圖片"]
+    if (any(kw in msg_lower for kw in _draw_kw) or any(msg_lower.startswith(p) for p in _draw_starts)) and \
+       not msg_lower.startswith("畫面") and not msg_lower.startswith("畫成"):
         # Extract the prompt
         prompt = message
         for kw in ["/draw", "畫", "draw", "產生圖片", "generate image", "幫我", "請", "畫圖", "一張", "一個"]:

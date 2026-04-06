@@ -212,10 +212,11 @@ def run_embedding_web_search(orch, message: str) -> str:
     from skills.bridge.web_research import research_topic
 
     topic = str(message or "").strip()
+    # Only strip search-specific prefixes, NOT generic words like 請/幫我/可以/一下
     for kw in ["搜尋", "search", "research", "/search", "查一下", "找一下", "搜一下",
                 "google", "幫我搜", "幫我查一下", "執行網路研究", "進行網路研究",
                 "網路研究", "網路搜尋", "幫我查詢", "請幫我查詢", "幫我查", "幫我找",
-                "請", "幫我", "能不能", "可以", "一下", "幫忙", "@MAGI", "@magi"]:
+                "@MAGI", "@magi"]:
         topic = re.sub(re.escape(kw), "", topic, flags=re.IGNORECASE).strip()
     topic = re.sub(r"^[:：]\s*", "", topic).strip()
     if len(topic) < 2:

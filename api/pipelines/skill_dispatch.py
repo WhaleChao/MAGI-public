@@ -22,12 +22,24 @@ def run_transcribe_guidance(message: str) -> str:
 
 
 def looks_like_capability_question(message: str) -> bool:
+    """Detect pure capability questions like '可以翻譯嗎' but NOT action requests like '可以幫我翻譯這段嗎'."""
     text = str(message or "").strip()
     if not text:
         return False
+    # Must end with question particle
     if not re.search(r"[嗎嘛呢？\?]$", text):
         return False
-    if not re.search(r"(可以|可不可以|能不能|會不會|會|如何|怎麼|有沒有辦法|能否|可否)", text, re.IGNORECASE):
+    # Must contain ability-asking keywords
+    if not re.search(r"(可以|可不可以|能不能|會不會|如何|怎麼|有沒有辦法|能否|可否)", text, re.IGNORECASE):
+        return False
+    # If message contains concrete objects/context, it's an ACTION request, not a capability question
+    _has_concrete_object = bool(re.search(
+        r"(案件|案號|文件|檔案|判決|合約|契約|信件|郵件|這個|這份|這段|那個|那份|那段|"
+        r"幫我|給我|替我|告訴我|查一下|看一下|處理|需求|問題|做到|辦到|"
+        r"摘要|翻譯|搜尋|備份|下載|上傳|分析|整理|統計|計算)",
+        text
+    ))
+    if _has_concrete_object:
         return False
     has_payload = bool(
         re.search(r"https?://", text, re.IGNORECASE)
