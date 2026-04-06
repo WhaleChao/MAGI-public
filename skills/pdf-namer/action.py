@@ -829,8 +829,10 @@ def _llava_extract_receipt_date(png_bytes: bytes, *, timeout_sec: int = 14) -> O
             _omlx_avail = getattr(_mc, "_omlx_available", None)
             if callable(_chat_omlx) and callable(_omlx_avail) and _omlx_avail():
                 ocr_model = getattr(_mc, "OMLX_OCR_MODEL", os.environ.get("MAGI_OMLX_OCR_MODEL", ""))
+                from skills.bridge.melchior_client import OMLX_VISION_BASE
                 r = _chat_omlx(
                     prompt=prompt, model=ocr_model,
+                    base_url=OMLX_VISION_BASE,
                     timeout=max(8, int(timeout_sec)),
                     temperature=0.0, max_tokens=1024, images=[b64],
                 )
@@ -1337,8 +1339,10 @@ def _vision_analyze_for_naming(content_page) -> dict:
 
         vision_model = getattr(_mc, "OMLX_VISION_MODEL", os.environ.get("MAGI_TEXT_PRIMARY_MODEL", ""))
         vision_timeout = int(os.environ.get("MAGI_PDF_NAMER_VISION_NAMING_TIMEOUT", "90"))
+        from skills.bridge.melchior_client import OMLX_VISION_BASE
         r = _chat_omlx(
             prompt=prompt, model=vision_model,
+            base_url=OMLX_VISION_BASE,
             timeout=max(60, vision_timeout),
             temperature=0.0, max_tokens=512, images=[b64],
         )

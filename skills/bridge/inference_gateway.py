@@ -80,6 +80,17 @@ def _is_night() -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Default Traditional Chinese system prompt for local LLMs (Gemma 4 etc.)
+# ---------------------------------------------------------------------------
+_DEFAULT_SYSTEM_PROMPT_ZH = (
+    "你是 MAGI 系統的 AI 助理，服務對象為台灣的律師事務所。"
+    "請全程使用台灣繁體中文（正體中文）回覆。"
+    "使用台灣慣用的法律術語，例如「被告」而非「被告人」、「起訴書」而非「起诉书」。"
+    "不要使用簡體中文或中國大陸用語。"
+)
+
+
+# ---------------------------------------------------------------------------
 # Intent Classification
 # ---------------------------------------------------------------------------
 _INTENT_RULES: List[Tuple[str, List[str], Optional[re.Pattern]]] = [
@@ -148,7 +159,7 @@ _MODEL_ROSTER = {
     "summary":        {"day": TEXT_PRIMARY_MODEL, "night": TEXT_PRIMARY_MODEL, "local": TEXT_PRIMARY_MODEL, "omlx": DEFAULT_SUMMARY_MODEL},
     "translate":      {"day": TEXT_PRIMARY_MODEL, "night": TEXT_PRIMARY_MODEL, "local": TEXT_PRIMARY_MODEL, "omlx": DEFAULT_GENERAL_MODEL},
     "transcribe":     {"day": TEXT_PRIMARY_MODEL, "night": TEXT_PRIMARY_MODEL, "local": TEXT_PRIMARY_MODEL, "omlx": DEFAULT_GENERAL_MODEL},
-    "captcha":        {"day": TEXT_PRIMARY_MODEL, "night": TEXT_PRIMARY_MODEL, "local": TEXT_PRIMARY_MODEL, "omlx": DEFAULT_GENERAL_MODEL},
+    "captcha":        {"day": TEXT_PRIMARY_MODEL, "night": TEXT_PRIMARY_MODEL, "local": TEXT_PRIMARY_MODEL, "omlx": DEFAULT_VISION_MODEL},
     "vision":         {"day": TEXT_PRIMARY_MODEL, "night": TEXT_PRIMARY_MODEL, "local": TEXT_PRIMARY_MODEL, "omlx": DEFAULT_VISION_MODEL},
     "ocr":            {"day": TEXT_PRIMARY_MODEL, "night": TEXT_PRIMARY_MODEL, "local": TEXT_PRIMARY_MODEL, "omlx": DEFAULT_OCR_MODEL},
     "coding":         {"day": TEXT_PRIMARY_MODEL, "night": TEXT_PRIMARY_MODEL, "local": TEXT_PRIMARY_MODEL, "omlx": DEFAULT_CODE_MODEL},
@@ -583,7 +594,9 @@ class InferenceGateway:
             return self._result(success=False, route="omlx", degraded=False, error="no_omlx_model_for_task")
 
         temp = self._TASK_TEMPERATURE.get(task_type, 0.3)
-        r = chat_omlx(prompt=prompt, model=use_model, timeout=max(10, int(timeout)), temperature=temp, max_tokens=2048)
+        r = chat_omlx(prompt=prompt, model=use_model, timeout=max(10, int(timeout)),
+                       temperature=temp, max_tokens=2048,
+                       system_prompt=_DEFAULT_SYSTEM_PROMPT_ZH)
         if r.get("success"):
             return self._result(success=True, route="omlx", degraded=False, response=r.get("response", ""), model=use_model)
         return self._result(success=False, route="omlx", degraded=False, error=r.get("error", "omlx_failed"))
@@ -629,7 +642,10 @@ class InferenceGateway:
 
         payload = {
             "model": OLLAMA_MODEL,
-            "messages": [{"role": "user", "content": prompt}],
+            "messages": [
+                {"role": "system", "content": _DEFAULT_SYSTEM_PROMPT_ZH},
+                {"role": "user", "content": prompt},
+            ],
             "max_tokens": 4096,
             "temperature": 0.3,
             "top_p": 0.88,

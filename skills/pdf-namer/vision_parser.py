@@ -106,7 +106,7 @@ def _is_vision_model(model_name: str) -> bool:
         return False
     low = m.lower()
     # Fast-path by common vision model naming.
-    if any(k in low for k in ("llava", "minicpm-v", "glm-ocr", "gemma3", "qwen", "taide")):
+    if any(k in low for k in ("llava", "minicpm-v", "glm-ocr", "gemma3", "gemma-4", "gemma4", "qwen", "taide")):
         return True
     meta = _load_ollama_meta()
     for it in (meta.get("models") or []):

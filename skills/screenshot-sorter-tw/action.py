@@ -50,7 +50,7 @@ def analyze_screenshot(image_path: str) -> dict[str, Any]:
             "只回傳 JSON，不要解釋。"
         )
 
-        result = gw.chat(prompt=prompt, task_type="vision", timeout=60)
+        result = gw.vision(image_path=image_path, prompt=prompt, task_type="ocr", timeout=60)
         text = result.get("text", "")
 
         # 嘗試解析 JSON
