@@ -2503,19 +2503,64 @@ def _load_recent_processed_activity(download_folder: str, days: int = 7, limit: 
     return out
 
 
-def _filter_urgent_pending_payments(items: list, days: int = 7) -> dict:
+def _is_portal_item_dismissed(item: dict, dismissed_payments: dict) -> bool:
+    """Check if a portal item matches any entry in dismissed_payments.
+
+    Dismissed keys follow the format ``web_payment:case:{norm_case}:{party}``.
+    We also do a fuzzy check: if any dismissed entry's *keyword* appears in
+    the item's case number or party, treat it as dismissed.
+    """
+    caseno_raw = item.get("court_case_no") or item.get("case_number") or ""
+    party_raw = item.get("party") or ""
+    norm_case = _normalize_case_token(caseno_raw)
+    party = party_raw.strip()
+
+    # 1. Exact key match  (most common path)
+    if norm_case and party:
+        exact_key = f"web_payment:case:{norm_case}:{party}"
+        if exact_key in dismissed_payments:
+            return True
+
+    # 2. Fuzzy: check if any dismissed keyword appears in norm_case or party
+    for _dk, dv in dismissed_payments.items():
+        kw = (dv.get("keyword", "") if isinstance(dv, dict) else "").strip()
+        if not kw:
+            continue
+        if norm_case and kw in norm_case:
+            return True
+        if party and kw in party:
+            return True
+        # Also check the dismissed key itself against our item tokens
+        if norm_case and norm_case in _dk:
+            return True
+        if party and party in _dk:
+            return True
+
+    return False
+
+
+def _filter_urgent_pending_payments(items: list, days: int = 7,
+                                    dismissed_payments: dict | None = None) -> dict:
     """
     過濾未繳費案件，分為三組：
     - overdue: 已逾期（繳費期限在今天之前）
     - urgent: N 天內到期
     - unknown: 無期限資料
     回傳 dict: {"overdue": [...], "urgent": [...], "unknown": [...]}
+    會跳過已在 dismissed_payments 中標記為已處理的案件。
     """
     from datetime import datetime as _dt, date as _date
+    _dismissed = dismissed_payments or {}
     overdue, urgent, unknown = [], [], []
     today = _date.today()
     for it in (items or []):
         if not _portal_item_is_actionable_pending(it):
+            continue
+        # ── 跳過已標記為已繳費（dismissed）的案件 ──
+        if _dismissed and _is_portal_item_dismissed(it, _dismissed):
+            logger.debug("skip dismissed portal item: %s | %s",
+                         it.get("court_case_no") or it.get("case_number") or "-",
+                         it.get("party") or "?")
             continue
         raw = it.get("pay_deadline") or it.get("deadline") or ""
         iso = _roc_to_iso(raw) if raw else ""
@@ -2666,7 +2711,9 @@ def cmd_check_emails(notify: bool = True, notify_empty: bool = True) -> dict:
                     )
                     # 列出未繳費案件明細（分逾期/即將到期/無期限）
                     portal_items = portal_effective.get("items") or []
-                    groups = _filter_urgent_pending_payments(portal_items, days=14)
+                    _dismissed_map = getattr(mgr, "dismissed_payments", None) or {}
+                    groups = _filter_urgent_pending_payments(portal_items, days=14,
+                                                            dismissed_payments=_dismissed_map)
                     overdue = groups.get("overdue", [])
                     urgent = groups.get("urgent", [])
                     unknown = groups.get("unknown", [])

@@ -240,7 +240,7 @@ def polish_skill_output(skill: str, user_message: str, raw_output: str) -> str:
 def output_looks_messy(text: str) -> bool:
     if re.search(r"<[a-zA-Z][^>]*>", text):
         return True
-    if re.search(r"\\n{3,}", text):
+    if re.search(r"\n{3,}", text):
         return True
     if text.count("\n") > 15:
         return True
