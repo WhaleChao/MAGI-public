@@ -211,6 +211,32 @@ _EXTRA_PHRASES: Dict[str, List[str]] = {
         "按照時間排", "重新命名截圖", "截圖浮水印", "iMessage截圖",
         "sort screenshots", "screenshot sort", "chat screenshots",
     ],
+    # 2026-04-06: Added missing user-facing skills
+    "run_contract_review": [
+        "審閱契約", "合約審查", "契約審閱", "合約風險", "審閱合約",
+        "合約檢查", "契約檢視", "合約分析", "contract review", "review contract",
+        "檢視契約", "看合約", "看契約",
+    ],
+    "run_pdf_annotator": [
+        "PDF註解", "PDF標註", "標註PDF", "PDF畫線", "PDF螢光筆",
+        "annotate PDF", "PDF annotation", "標記重點",
+    ],
+    "run_pdf_bookmarker": [
+        "PDF書籤", "加書籤", "PDF目錄", "建立書籤", "PDF bookmark",
+        "add bookmark", "PDF大綱",
+    ],
+    "run_transcript_indexer": [
+        "筆錄索引", "建立筆錄索引", "筆錄搜尋", "索引筆錄",
+        "transcript index", "index transcript",
+    ],
+    "run_market_briefing": [
+        "股市晨報", "股市分析", "股票追蹤", "市場報告", "股市報告",
+        "stock briefing", "market briefing", "今日股市",
+    ],
+    "run_statutes_vdb": [
+        "法規搜尋", "查法規", "查法條", "法規查詢", "搜尋法規",
+        "法條搜尋", "法律查詢", "statutes search", "search statutes",
+    ],
 }
 
 

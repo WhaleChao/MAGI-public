@@ -272,6 +272,10 @@ def try_safe_semantic_skill_route(orch, user_id: str, message: str, role: str, p
         "court_hearing": "command", "judgment_trend": "command",
         "labor_law_calc": "command", "tri_sage_translate": "command",
         "summarize_text": "command", "tri_sage_transcribe": "command",
+        # 2026-04-06: Added missing user-facing skills
+        "run_contract_review": "command", "run_pdf_annotator": "command",
+        "run_pdf_bookmarker": "command", "run_transcript_indexer": "command",
+        "run_market_briefing": "command", "run_statutes_vdb": "command",
     }
     min_conf = {"phrase": 0.30, "semantic": 0.36, "llm": 0.46}
 
