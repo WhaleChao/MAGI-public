@@ -24,8 +24,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-from api.case_path_mapper import default_case_roots, preferred_case_roots
-
 # ── Setup paths ──
 SKILL_DIR = os.path.dirname(os.path.abspath(__file__))
 MAGI_ROOT = os.path.abspath(os.path.join(SKILL_DIR, "..", ".."))
@@ -33,6 +31,8 @@ if MAGI_ROOT not in sys.path:
     sys.path.insert(0, MAGI_ROOT)
 if SKILL_DIR not in sys.path:
     sys.path.insert(0, SKILL_DIR)
+
+from api.case_path_mapper import default_case_roots, preferred_case_roots
 
 # Load .env
 _env_path = os.path.join(MAGI_ROOT, ".env")

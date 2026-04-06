@@ -561,7 +561,7 @@ def _ensure_cloudflared():
             logger.info("Starting cloudflared tunnel...")
             _cf_log_fh = open(log_path, "w")  # kept open for cloudflared's lifetime
             _cf_proc = subprocess.Popen(
-                ["/opt/homebrew/bin/cloudflared", "tunnel", "--url", "http://127.0.0.1:5002", "--no-autoupdate"],
+                ["/opt/homebrew/bin/cloudflared", "tunnel", "--url", "http://127.0.0.1:18790", "--no-autoupdate"],
                 stdout=subprocess.DEVNULL, stderr=_cf_log_fh,
             )
             # Safety net: register atexit handler to close file handle
