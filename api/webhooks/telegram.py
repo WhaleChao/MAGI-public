@@ -46,6 +46,7 @@ _channel_audit_lock = threading.Lock()
 # ---------------------------------------------------------------------------
 TELEGRAM_CONTEXT_TTL_SECONDS = int(os.environ.get("MAGI_TELEGRAM_CONTEXT_TTL_SECONDS", "300") or "300")
 _TELEGRAM_SEEN_UPDATES: dict[int, int] = {}
+_telegram_seen_lock = threading.Lock()
 
 # ---------------------------------------------------------------------------
 # LINE_QUOTA_ALERT_FILE — reused by _notify_admin_telegram_once
@@ -130,19 +131,20 @@ def _telegram_mark_seen_update(update_id: int | None) -> bool:
     if update_id is None:
         return False
     now = int(time.time())
-    # prune old ids
-    stale_before = now - 3600
-    for k, ts in list(_TELEGRAM_SEEN_UPDATES.items()):
-        if ts < stale_before:
-            _TELEGRAM_SEEN_UPDATES.pop(k, None)
-    if len(_TELEGRAM_SEEN_UPDATES) > 5000:
-        # Keep newest 2500 entries
-        sorted_items = sorted(_TELEGRAM_SEEN_UPDATES.items(), key=lambda x: x[1])
-        for uid, _ in sorted_items[:len(sorted_items) // 2]:
-            del _TELEGRAM_SEEN_UPDATES[uid]
-    if update_id in _TELEGRAM_SEEN_UPDATES:
-        return True
-    _TELEGRAM_SEEN_UPDATES[update_id] = now
+    with _telegram_seen_lock:
+        # prune old ids
+        stale_before = now - 3600
+        for k, ts in list(_TELEGRAM_SEEN_UPDATES.items()):
+            if ts < stale_before:
+                _TELEGRAM_SEEN_UPDATES.pop(k, None)
+        if len(_TELEGRAM_SEEN_UPDATES) > 5000:
+            # Keep newest 2500 entries
+            sorted_items = sorted(_TELEGRAM_SEEN_UPDATES.items(), key=lambda x: x[1])
+            for uid, _ in sorted_items[:len(sorted_items) // 2]:
+                del _TELEGRAM_SEEN_UPDATES[uid]
+        if update_id in _TELEGRAM_SEEN_UPDATES:
+            return True
+        _TELEGRAM_SEEN_UPDATES[update_id] = now
     return False
 
 
@@ -633,12 +635,9 @@ def _save_telegram_channel_state(state: dict) -> bool:
 
 def _telegram_handle_update(update: dict, from_poll: bool = False) -> dict:
     # Lazy imports for server globals
-    from api.server import (
-        _check_rate_limit,
-        _record_last_public_base_url,
-        _likely_long_task,
-        _enqueue_attachment_job,
-    )
+    from api.server import _check_rate_limit
+    from api.startup import _record_last_public_base_url
+    from api.webhooks.line import _likely_long_task, _enqueue_attachment_job
     from api.thread_pools import channel_pool as _CHANNEL_BG_EXECUTOR
 
     orchestrator = _get_orchestrator()
@@ -926,7 +925,8 @@ def telegram_webhook():
     if request.method == "GET":
         return "OK", 200
 
-    from api.server import _check_rate_limit, _record_last_public_base_url
+    from api.server import _check_rate_limit
+    from api.startup import _record_last_public_base_url
 
     if _check_rate_limit("webhook"):
         return jsonify({"ok": False, "error": "rate limited"}), 429

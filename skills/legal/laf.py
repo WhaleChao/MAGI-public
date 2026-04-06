@@ -3013,7 +3013,7 @@ def _discover_existing_case_folder(final_root: str, client_name: str, case_reaso
                 score += 2.0
             if cs and cs in name:
                 score += 1.0
-            m = re.match(r"^(20\\d{2}-\\d{4})-", name)
+            m = re.match(r"^(20\d{2}-\d{4})-", name)
             case_no = m.group(1) if m else ""
             if case_no:
                 score += 0.6
@@ -3027,7 +3027,7 @@ def _discover_existing_case_folder(final_root: str, client_name: str, case_reaso
     return {}
 
 
-_LAF_CASE_NO_RE = re.compile(r"(\\d{7}-[A-Z]-\\d{3})")
+_LAF_CASE_NO_RE = re.compile(r"(\d{7}-[A-Z]-\d{3})")
 
 
 class OSCCaseCreator:

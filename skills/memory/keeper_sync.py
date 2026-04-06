@@ -53,14 +53,16 @@ def get_embedding(text):
                 return emb
     except Exception:
         logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 54, exc_info=True)
-    # Fallback to Ollama
+    # Fallback to Ollama (OpenAI-compatible /v1/embeddings format)
     try:
         response = requests.post(OLLAMA_URL, json={
             "model": EMBED_MODEL,
-            "prompt": text
+            "input": text
         }, timeout=10)
         if response.status_code == 200:
-            return response.json()['embedding']
+            data = response.json().get("data", [])
+            if data and isinstance(data, list):
+                return data[0].get("embedding", [0.0] * 768)
     except Exception:
         logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 64, exc_info=True)
     return [0.0] * 768
@@ -105,54 +107,60 @@ def sync_to_keeper():
 
     logger.info(f"🔄 Found {len(pending)} records to sync...")
 
+    conn = None
     try:
         conn = mysql.connector.connect(**DB_CONFIG)
         _ensure_schema(conn)
         cursor = conn.cursor()
-        
+
         synced_ids = []
-        
+
         for record in pending:
             try:
                 content = record['content']
                 source = str(record['source'] or "")
-                
+
                 # Generate embedding
                 embedding = get_embedding(content)
-                
+
                 # Insert document
                 cursor.execute(
                     "INSERT INTO documents (content, source) VALUES (%s, %s)",
                     (content, source)
                 )
                 doc_id = cursor.lastrowid
-                
+
                 # Insert vector
                 cursor.execute(
                     "INSERT INTO vectors (doc_id, embedding) VALUES (%s, %s)",
                     (doc_id, json.dumps(embedding))
                 )
-                
+
                 synced_ids.append(record['id'])
                 logger.debug(f"Synced record {record['id']} → doc_id {doc_id}")
-                
+
             except Exception as e:
                 logger.error(f"❌ Failed to sync record {record['id']}: {e}")
-        
+
         conn.commit()
         cursor.close()
-        conn.close()
-        
+
         # Mark as synced in SQLite
         if synced_ids:
             mark_synced(synced_ids)
             logger.info(f"Synced {len(synced_ids)} records to Keeper")
 
         return len(synced_ids)
-        
+
     except mysql.connector.Error as e:
         logger.error(f"❌ Keeper connection error: {e}")
         return 0
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 def sync_loop():

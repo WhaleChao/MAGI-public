@@ -159,6 +159,7 @@ login_manager = init_login_manager(app)
 # Rate Limiter
 # ---------------------------------------------------------------------------
 _rate_limit_store: dict = {}
+_rate_limit_lock = threading.Lock()
 _RATE_LIMIT_WINDOW = 60
 _RATE_LIMIT_MAX = {"webhook": 120, "api": 60}
 
@@ -169,22 +170,23 @@ def _check_rate_limit(category: str = "webhook") -> bool:
     key = f"{category}:{ip}"
     now = time.time()
     limit = _RATE_LIMIT_MAX.get(category, 60)
-    entry = _rate_limit_store.get(key)
-    if entry:
-        count, window_start = entry
-        if now - window_start < _RATE_LIMIT_WINDOW:
-            if count >= limit:
-                return True
-            _rate_limit_store[key] = (count + 1, window_start)
+    with _rate_limit_lock:
+        entry = _rate_limit_store.get(key)
+        if entry:
+            count, window_start = entry
+            if now - window_start < _RATE_LIMIT_WINDOW:
+                if count >= limit:
+                    return True
+                _rate_limit_store[key] = (count + 1, window_start)
+            else:
+                _rate_limit_store[key] = (1, now)
         else:
             _rate_limit_store[key] = (1, now)
-    else:
-        _rate_limit_store[key] = (1, now)
-    if len(_rate_limit_store) > 500:
-        cutoff = now - _RATE_LIMIT_WINDOW * 2
-        stale = [k for k, (_, ws) in _rate_limit_store.items() if ws < cutoff]
-        for k in stale:
-            _rate_limit_store.pop(k, None)
+        if len(_rate_limit_store) > 500:
+            cutoff = now - _RATE_LIMIT_WINDOW * 2
+            stale = [k for k, (_, ws) in _rate_limit_store.items() if ws < cutoff]
+            for k in stale:
+                _rate_limit_store.pop(k, None)
     return False
 
 

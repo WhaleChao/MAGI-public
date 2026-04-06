@@ -604,8 +604,8 @@ class InferenceGateway:
     def _omlx_vision(self, image_path: str, prompt: str, timeout: int, task_type: str = "vision") -> dict:
         """Try oMLX for vision inference. Routes GLM-OCR to vision port (8082), others to main port (8080)."""
         chat_omlx = getattr(melchior_client, "_chat_omlx", None)
-        omlx_avail = getattr(melchior_client, "_omlx_available", None)
-        if not callable(chat_omlx) or not callable(omlx_avail) or not omlx_avail():
+        omlx_vision_avail = getattr(melchior_client, "_omlx_vision_available", None)
+        if not callable(chat_omlx) or not callable(omlx_vision_avail) or not omlx_vision_avail():
             return self._result(success=False, route="omlx", degraded=False, error="omlx_unavailable")
 
         image_b64, read_err = self._read_image_b64(image_path)
@@ -707,7 +707,10 @@ class InferenceGateway:
                     f"{self.local_ollama}/v1/chat/completions",
                     {
                         "model": m,
-                        "messages": [{"role": "user", "content": prompt}],
+                        "messages": [
+                            {"role": "system", "content": _DEFAULT_SYSTEM_PROMPT_ZH},
+                            {"role": "user", "content": prompt},
+                        ],
                         "stream": False,
                         "temperature": temperature,
                         "max_tokens": max_tokens,
