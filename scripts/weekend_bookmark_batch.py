@@ -82,6 +82,29 @@ def find_target_folders(roots: list[str]) -> list[Path]:
     return folders
 
 
+def _pause_omlx_text():
+    """Stop oMLX text inference to free ~15GB RAM during batch processing."""
+    import subprocess as _sp
+    try:
+        _sp.run(["launchctl", "stop", "com.magi.omlx"], capture_output=True, timeout=30)
+        # Also kill any direct-launched omlx on port 8080
+        _sp.run(["pkill", "-f", "omlx.*--port.*8080"], capture_output=True, timeout=10)
+        logger.info("⏸️ Paused oMLX text inference to free RAM")
+        time.sleep(3)
+    except Exception as e:
+        logger.warning(f"Could not pause oMLX: {e}")
+
+
+def _resume_omlx_text():
+    """Restart oMLX text inference after batch processing."""
+    import subprocess as _sp
+    try:
+        _sp.run(["launchctl", "start", "com.magi.omlx"], capture_output=True, timeout=30)
+        logger.info("▶️ Resumed oMLX text inference")
+    except Exception as e:
+        logger.warning(f"Could not resume oMLX: {e}")
+
+
 def main():
     started = time.time()
     roots = preferred_case_roots(include_closed=False)
@@ -93,6 +116,9 @@ def main():
     if not folders:
         logger.info("No folders to process — done")
         return
+
+    # Free ~15GB RAM by pausing oMLX during batch (24GB Mac mini can't handle both)
+    _pause_omlx_text()
 
     total_processed = 0
     total_bookmarks = 0
@@ -127,6 +153,9 @@ def main():
         except Exception as e:
             logger.warning(f"  Error: {e}")
             total_errors += 1
+
+    # Resume oMLX text inference
+    _resume_omlx_text()
 
     elapsed = time.time() - started
     summary = (
