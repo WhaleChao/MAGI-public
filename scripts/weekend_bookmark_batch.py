@@ -1,20 +1,29 @@
 #!/usr/bin/env python3
 """
-weekend_bookmark_batch.py — 週六批次自動書籤
+weekend_bookmark_batch.py — 週六批次自動書籤（兩階段）
 
-掃描所有案件根目錄下的 06_閱卷資料，
-對沒有（或書籤不足的）PDF 自動建立書籤目錄。
-已有書籤的 PDF 會自動跳過。
+Stage 1: regex (pdf-bookmarker) 快速掃描，建立基本導覽書籤
+Stage 2: vision (oMLX gemma-4) 逐頁補漏，修正 regex 辨識不到的頁面
 
-排程：每週六 03:00（與週日蒸餾/resummary 錯開）
+已完成的 PDF 記錄在 state file 中，下次跑自動跳過。
+首次全量可能需要 2-3 個週末，之後增量每週 ~1 小時。
+
+排程：每週六 03:00
 """
 from __future__ import annotations
 
+import importlib.util
+import json
 import logging
 import os
+import re
+import subprocess
 import sys
+import tempfile
 import time
+from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 MAGI_ROOT = Path(__file__).resolve().parents[1]
 if str(MAGI_ROOT) not in sys.path:
@@ -27,148 +36,399 @@ logging.basicConfig(
 )
 logger = logging.getLogger("weekend-bookmark")
 
-# ── 匯入 ──────────────────────────────────────────────────────────────────────
+# ── State persistence ─────────────────────────────────────────────────────────
+STATE_FILE = MAGI_ROOT / ".agent" / "bookmark_batch_state.json"
+
+# ── Config ────────────────────────────────────────────────────────────────────
+VISION_BUDGET_SECONDS = int(os.environ.get("BOOKMARK_VISION_BUDGET_SEC", "28800"))  # 8 hours default
+VISION_PER_PAGE_TIMEOUT = 30  # seconds per vision call
+TARGET_SUBDIRS = ["06_閱卷資料"]
+
+# ── Imports ───────────────────────────────────────────────────────────────────
 try:
     from api.case_path_mapper import preferred_case_roots
 except ImportError:
     logger.error("Cannot import case_path_mapper — aborting")
     sys.exit(1)
 
-try:
-    from skills.pdf_bookmarker_action import batch_process  # type: ignore
-except ImportError:
-    # Direct import via importlib
-    import importlib.util
-    _bm_path = MAGI_ROOT / "skills" / "pdf-bookmarker" / "action.py"
-    if not _bm_path.exists():
-        logger.error(f"pdf-bookmarker not found at {_bm_path}")
+
+def _load_bookmarker():
+    """Import pdf-bookmarker's scan_and_bookmark function."""
+    bm_path = MAGI_ROOT / "skills" / "pdf-bookmarker" / "action.py"
+    if not bm_path.exists():
+        logger.error(f"pdf-bookmarker not found at {bm_path}")
         sys.exit(1)
-    _spec = importlib.util.spec_from_file_location("pdf_bookmarker_action", str(_bm_path))
-    _mod = importlib.util.module_from_spec(_spec)
-    _spec.loader.exec_module(_mod)
-    batch_process = _mod.batch_process
-
-# ── 目標子目錄 ─────────────────────────────────────────────────────────────────
-TARGET_SUBDIRS = ["06_閱卷資料"]
+    spec = importlib.util.spec_from_file_location("pdf_bookmarker_action", str(bm_path))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod.scan_and_bookmark
 
 
-def find_target_folders(roots: list[str]) -> list[Path]:
-    """Find all 06_閱卷資料 folders under case roots."""
-    folders = []
+def _load_vision_gateway():
+    """Import InferenceGateway for vision calls."""
+    try:
+        from skills.bridge.inference_gateway import InferenceGateway
+        return InferenceGateway()
+    except Exception as e:
+        logger.warning(f"Cannot load InferenceGateway: {e}")
+        return None
+
+
+def _load_state() -> dict:
+    try:
+        if STATE_FILE.exists():
+            return json.loads(STATE_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        pass
+    return {"completed": {}, "vision_done": {}, "last_run": None}
+
+
+def _save_state(state: dict):
+    STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    state["last_run"] = datetime.now().isoformat()
+    STATE_FILE.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+# ── Path discovery ────────────────────────────────────────────────────────────
+
+def find_all_pdfs(roots: list[str]) -> list[Path]:
+    """Find all PDFs in 06_閱卷資料 under case roots (prefers NAS mount)."""
+    pdfs = []
     for root in roots:
         root_path = Path(root)
         if not root_path.is_dir():
             logger.warning(f"Case root not mounted: {root}")
             continue
-        # Walk 3 levels: root / case_type / case_name / 06_閱卷資料
+        logger.info(f"Scanning root: {root}")
         for case_type_dir in sorted(root_path.iterdir()):
             if not case_type_dir.is_dir() or case_type_dir.name.startswith("."):
                 continue
             for case_dir in sorted(case_type_dir.iterdir()):
                 if not case_dir.is_dir() or case_dir.name.startswith("."):
                     continue
-                for sub in TARGET_SUBDIRS:
-                    target = case_dir / sub
-                    if target.is_dir():
-                        folders.append(target)
-                # Also check one level deeper (e.g. 法扶案件/刑事/case_name)
-                for sub_case_dir in sorted(case_dir.iterdir()):
-                    if not sub_case_dir.is_dir() or sub_case_dir.name.startswith("."):
+                _collect_pdfs_from(case_dir, pdfs)
+                # One level deeper (e.g. 法扶案件/刑事/case_name)
+                for sub_dir in sorted(case_dir.iterdir()):
+                    if not sub_dir.is_dir() or sub_dir.name.startswith("."):
                         continue
-                    for sub in TARGET_SUBDIRS:
-                        target = sub_case_dir / sub
-                        if target.is_dir():
-                            folders.append(target)
-    return folders
+                    _collect_pdfs_from(sub_dir, pdfs)
+    return pdfs
 
 
-def _pause_omlx_text():
-    """Stop oMLX text inference to free ~15GB RAM during batch processing."""
-    import subprocess as _sp
+def _collect_pdfs_from(case_dir: Path, out: list[Path]):
+    for sub in TARGET_SUBDIRS:
+        target = case_dir / sub
+        if not target.is_dir():
+            continue
+        for pdf in sorted(target.rglob("*.pdf")):
+            if not pdf.name.startswith("."):
+                out.append(pdf)
+
+
+# ── oMLX management ──────────────────────────────────────────────────────────
+
+def _stop_omlx():
+    """Stop oMLX to free RAM for regex stage."""
     try:
-        _sp.run(["launchctl", "stop", "com.magi.omlx"], capture_output=True, timeout=30)
-        # Also kill any direct-launched omlx on port 8080
-        _sp.run(["pkill", "-f", "omlx.*--port.*8080"], capture_output=True, timeout=10)
-        logger.info("⏸️ Paused oMLX text inference to free RAM")
+        subprocess.run(["launchctl", "stop", "com.magi.omlx"], capture_output=True, timeout=30)
+        subprocess.run(["pkill", "-f", "omlx.*--port.*8080"], capture_output=True, timeout=10)
+        logger.info("⏸️ Stopped oMLX text inference")
         time.sleep(3)
     except Exception as e:
-        logger.warning(f"Could not pause oMLX: {e}")
+        logger.warning(f"Could not stop oMLX: {e}")
 
 
-def _resume_omlx_text():
-    """Restart oMLX text inference after batch processing."""
-    import subprocess as _sp
+def _start_omlx():
+    """Start oMLX for vision stage (or restore after completion)."""
     try:
-        _sp.run(["launchctl", "start", "com.magi.omlx"], capture_output=True, timeout=30)
-        logger.info("▶️ Resumed oMLX text inference")
+        subprocess.run(["launchctl", "start", "com.magi.omlx"], capture_output=True, timeout=30)
+        logger.info("▶️ Starting oMLX text inference...")
+        # Wait for model to load
+        for _ in range(30):
+            time.sleep(5)
+            try:
+                import urllib.request
+                port = os.environ.get("MAGI_OMLX_PORT", "8080")
+                resp = urllib.request.urlopen(f"http://127.0.0.1:{port}/v1/models", timeout=5)
+                if resp.status == 200:
+                    logger.info("✅ oMLX ready")
+                    return True
+            except Exception:
+                pass
+        logger.warning("oMLX did not become ready in 150s")
+        return False
     except Exception as e:
-        logger.warning(f"Could not resume oMLX: {e}")
+        logger.warning(f"Could not start oMLX: {e}")
+        return False
 
+
+# ── Stage 1: Regex bookmarks ─────────────────────────────────────────────────
+
+def stage1_regex(pdfs: list[Path], state: dict, scan_fn) -> dict:
+    """Fast regex-based bookmark pass. Returns stats dict."""
+    import fitz
+
+    stats = {"processed": 0, "bookmarks": 0, "skipped": 0, "errors": 0}
+    completed = state.setdefault("completed", {})
+
+    for i, pdf in enumerate(pdfs, 1):
+        key = str(pdf)
+        try:
+            mtime = str(pdf.stat().st_mtime)
+        except Exception:
+            continue
+
+        # Skip if already processed with same mtime
+        prev = completed.get(key, {})
+        if prev.get("mtime") == mtime and prev.get("stage1"):
+            stats["skipped"] += 1
+            continue
+
+        # Skip if already has enough bookmarks
+        try:
+            doc = fitz.open(str(pdf))
+            existing = doc.get_toc() or []
+            page_count = doc.page_count
+            doc.close()
+            if len(existing) >= max(3, page_count // 15):
+                completed[key] = {
+                    "mtime": mtime, "stage1": True,
+                    "stage1_bookmarks": len(existing),
+                    "pages": page_count,
+                }
+                stats["skipped"] += 1
+                continue
+        except Exception:
+            stats["errors"] += 1
+            continue
+
+        if i % 50 == 0:
+            logger.info(f"  Stage 1 progress: {i}/{len(pdfs)}")
+
+        try:
+            result = scan_fn(str(pdf), output_path=None, dry_run=False)
+            if result.get("success"):
+                bm_count = result.get("bookmarks", 0)
+                stats["processed"] += 1
+                stats["bookmarks"] += bm_count
+                completed[key] = {
+                    "mtime": mtime, "stage1": True,
+                    "stage1_bookmarks": bm_count,
+                    "pages": page_count,
+                }
+            else:
+                stats["errors"] += 1
+        except Exception as e:
+            logger.debug(f"  Stage 1 error {pdf.name}: {e}")
+            stats["errors"] += 1
+
+        # Save state periodically
+        if i % 100 == 0:
+            _save_state(state)
+
+    _save_state(state)
+    return stats
+
+
+# ── Stage 2: Vision refinement ───────────────────────────────────────────────
+
+def stage2_vision(pdfs: list[Path], state: dict, gw) -> dict:
+    """Vision-based bookmark refinement for pages regex missed."""
+    import fitz
+
+    stats = {"pages_checked": 0, "bookmarks_added": 0, "files_refined": 0, "errors": 0}
+    completed = state.get("completed", {})
+    vision_done = state.setdefault("vision_done", {})
+    budget_start = time.time()
+
+    # Sort by fewest existing bookmarks first (most benefit from vision)
+    candidates = []
+    for pdf in pdfs:
+        key = str(pdf)
+        info = completed.get(key, {})
+        if not info.get("stage1"):
+            continue
+        mtime = info.get("mtime", "")
+        if vision_done.get(key, {}).get("mtime") == mtime:
+            continue  # Already vision-processed with same mtime
+        pages = info.get("pages", 0)
+        bm_count = info.get("stage1_bookmarks", 0)
+        if pages < 5:
+            continue
+        # Priority: fewer bookmarks relative to pages = more benefit
+        ratio = bm_count / max(pages, 1)
+        candidates.append((ratio, pdf, pages))
+    candidates.sort()  # Lowest ratio first
+
+    if not candidates:
+        logger.info("Stage 2: No files need vision refinement")
+        return stats
+
+    logger.info(f"Stage 2: {len(candidates)} files to refine with vision")
+
+    prompt_template = (
+        "這是台灣法院卷宗的第 {page} 頁。\n"
+        "請判斷此頁的文件類型。\n"
+        "回傳 JSON：{{\"type\": \"文件類型\", \"date\": \"民國年月日\", \"title\": \"書籤標題(20字內)\"}}\n"
+        "文件類型包括：起訴書、判決、裁定、聲請狀、答辯狀、筆錄、鑑定報告、\n"
+        "搜索票、通訊監察、診斷證明、財產資料、戶籍謄本、送達證書、債權人清冊、\n"
+        "陳報狀、委任狀、報到單、照片截圖、票據契約、收發文函等。\n"
+        "書籤標題格式：「日期 文件類型 當事人」，如「114.09.18 調查筆錄 陳OO」\n"
+        "若此頁不值得加書籤（空白頁、浮水印頁、前一文件的續頁），回傳 {{\"type\": null}}\n"
+        "只輸出 JSON。"
+    )
+
+    for _, pdf, page_count in candidates:
+        if time.time() - budget_start > VISION_BUDGET_SECONDS:
+            logger.info(f"⏰ Vision budget exhausted ({VISION_BUDGET_SECONDS}s)")
+            break
+
+        key = str(pdf)
+        try:
+            doc = fitz.open(str(pdf))
+            existing_toc = doc.get_toc() or []
+            # Build set of pages already bookmarked (by regex)
+            bookmarked_pages = {pg for _, _, pg in existing_toc}
+            new_bookmarks = []
+
+            for pg_idx in range(page_count):
+                pg_num = pg_idx + 1
+                if pg_num in bookmarked_pages:
+                    continue  # Regex already handled this page
+
+                if time.time() - budget_start > VISION_BUDGET_SECONDS:
+                    break
+
+                page = doc[pg_idx]
+                text = page.get_text().strip()
+                # Skip pages with very little content
+                if len(text) < 20:
+                    continue
+
+                # Render page to image
+                try:
+                    pix = page.get_pixmap(dpi=150)
+                    img_path = tempfile.mktemp(suffix=".png")
+                    pix.save(img_path)
+                except Exception:
+                    continue
+
+                try:
+                    prompt = prompt_template.format(page=pg_num)
+                    result = gw.vision(img_path, prompt, timeout=VISION_PER_PAGE_TIMEOUT, task_type="vision")
+                    stats["pages_checked"] += 1
+
+                    if result.get("success"):
+                        raw = str(result.get("text") or result.get("content") or "")
+                        parsed = _parse_vision_response(raw)
+                        if parsed and parsed.get("type") and parsed.get("title"):
+                            title = str(parsed["title"])[:30].strip()
+                            if title and len(title) >= 3:
+                                new_bookmarks.append([1, title, pg_num])
+                                stats["bookmarks_added"] += 1
+                finally:
+                    try:
+                        os.unlink(img_path)
+                    except Exception:
+                        pass
+
+            # Write new bookmarks to PDF
+            if new_bookmarks:
+                merged_toc = list(existing_toc) + new_bookmarks
+                # Sort by page number
+                merged_toc.sort(key=lambda x: (x[2], x[0]))
+                doc.set_toc(merged_toc)
+                doc.saveIncr()
+                stats["files_refined"] += 1
+                logger.info(f"  📑 Vision: +{len(new_bookmarks)} bookmarks → {pdf.name}")
+
+            doc.close()
+            mtime = str(pdf.stat().st_mtime)
+            vision_done[key] = {"mtime": mtime, "added": len(new_bookmarks)}
+
+        except Exception as e:
+            logger.warning(f"  Vision error {pdf.name}: {e}")
+            stats["errors"] += 1
+
+        # Save state after each file
+        _save_state(state)
+
+    _save_state(state)
+    return stats
+
+
+def _parse_vision_response(raw: str) -> dict | None:
+    """Parse JSON from vision model response."""
+    try:
+        # Find JSON in response
+        m = re.search(r"\{[^{}]*\}", raw)
+        if m:
+            data = json.loads(m.group(0))
+            if isinstance(data, dict):
+                return data
+    except Exception:
+        pass
+    return None
+
+
+# ── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
     started = time.time()
+    state = _load_state()
+
+    # preferred_case_roots already prefers NAS SMB over Synology Drive
     roots = preferred_case_roots(include_closed=False)
-    logger.info(f"📑 Weekend Bookmark Batch — scanning {len(roots)} case roots")
+    logger.info(f"📑 Weekend Bookmark Batch — roots: {roots}")
 
-    folders = find_target_folders(roots)
-    logger.info(f"Found {len(folders)} target folders with 06_閱卷資料")
+    pdfs = find_all_pdfs(roots)
+    logger.info(f"Found {len(pdfs)} PDFs across all case folders")
 
-    if not folders:
-        logger.info("No folders to process — done")
+    if not pdfs:
+        logger.info("No PDFs to process — done")
         return
 
-    # Free ~15GB RAM by pausing oMLX during batch (24GB Mac mini can't handle both)
-    _pause_omlx_text()
+    # ── Stage 1: Regex (fast, no LLM needed) ──
+    logger.info("═══ Stage 1: Regex bookmarks ═══")
+    _stop_omlx()  # Free RAM for faster I/O
 
-    total_processed = 0
-    total_bookmarks = 0
-    total_skipped = 0
-    total_errors = 0
+    scan_fn = _load_bookmarker()
+    s1 = stage1_regex(pdfs, state, scan_fn)
+    logger.info(
+        f"Stage 1 done: {s1['processed']} processed, "
+        f"{s1['bookmarks']} bookmarks, {s1['skipped']} skipped, "
+        f"{s1['errors']} errors ({time.time() - started:.0f}s)"
+    )
 
-    for i, folder in enumerate(folders, 1):
-        case_name = folder.parent.name
-        logger.info(f"[{i}/{len(folders)}] {case_name} / {folder.name}")
-        try:
-            result = batch_process(str(folder), recursive=True, dry_run=False)
-            logger.info(f"  {result}")
-            # Parse result for summary
-            for line in result.splitlines():
-                line = line.strip()
-                if line.startswith("處理："):
-                    import re
-                    m = re.search(r"(\d+)\s*份.*?(\d+)\s*個書籤", line)
-                    if m:
-                        total_processed += int(m.group(1))
-                        total_bookmarks += int(m.group(2))
-                elif line.startswith("跳過："):
-                    import re
-                    m = re.search(r"(\d+)", line)
-                    if m:
-                        total_skipped += int(m.group(1))
-                elif line.startswith("錯誤："):
-                    import re
-                    m = re.search(r"(\d+)", line)
-                    if m:
-                        total_errors += int(m.group(1))
-        except Exception as e:
-            logger.warning(f"  Error: {e}")
-            total_errors += 1
-
-    # Resume oMLX text inference
-    _resume_omlx_text()
+    # ── Stage 2: Vision refinement (needs oMLX) ──
+    logger.info("═══ Stage 2: Vision refinement ═══")
+    omlx_ok = _start_omlx()
+    if not omlx_ok:
+        logger.warning("oMLX not available — skipping vision stage")
+        s2 = {"pages_checked": 0, "bookmarks_added": 0, "files_refined": 0, "errors": 0}
+    else:
+        gw = _load_vision_gateway()
+        if gw:
+            s2 = stage2_vision(pdfs, state, gw)
+        else:
+            s2 = {"pages_checked": 0, "bookmarks_added": 0, "files_refined": 0, "errors": 0}
 
     elapsed = time.time() - started
     summary = (
         f"📑 Weekend Bookmark Batch 完成\n"
-        f"  資料夾：{len(folders)} 個\n"
-        f"  處理：{total_processed} 份 PDF / {total_bookmarks} 個書籤\n"
-        f"  跳過（已有書籤）：{total_skipped} 份\n"
-        f"  錯誤：{total_errors} 筆\n"
-        f"  耗時：{elapsed:.0f} 秒"
+        f"  PDF 數量：{len(pdfs)} 個\n"
+        f"  ── Stage 1 (regex) ──\n"
+        f"  處理：{s1['processed']} 份 / {s1['bookmarks']} 個書籤\n"
+        f"  跳過：{s1['skipped']} 份\n"
+        f"  ── Stage 2 (vision) ──\n"
+        f"  視覺檢查：{s2['pages_checked']} 頁\n"
+        f"  補充書籤：{s2['bookmarks_added']} 個 / {s2['files_refined']} 份\n"
+        f"  錯誤：{s1['errors'] + s2['errors']} 筆\n"
+        f"  耗時：{elapsed:.0f} 秒（{elapsed / 3600:.1f} 小時）"
     )
     logger.info(summary)
 
-    # Notify via red_phone if available
+    # Notify
     try:
         from api.red_phone import notify
         notify(summary, channel="system")
