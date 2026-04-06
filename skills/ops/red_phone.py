@@ -242,7 +242,7 @@ def _send_discord_webhook(message: str, webhook_url: str, severity: str) -> bool
         "title": "MAGI ALERT",
         "description": safe_message,
         "color": colors.get(severity, 0xF39C12),
-        "timestamp": datetime.utcnow().isoformat(),
+        "timestamp": datetime.now(datetime.timezone.utc).isoformat(),
         "footer": {"text": "MAGI Iron Dome"},
     }
     payload = {"embeds": [embed]}

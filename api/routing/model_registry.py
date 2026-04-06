@@ -9,7 +9,7 @@ Usage::
     from api.routing.model_registry import resolve_model, get_role_model
 
     model = resolve_model("taide")                 # → "gemma-4-26b-a4b-it-4bit"
-    model = get_role_model("vision")               # → "gemma-4-26b-a4b-it-4bit"
+    model = get_role_model("vision")               # → "GLM-OCR-bf16"
 """
 
 from __future__ import annotations

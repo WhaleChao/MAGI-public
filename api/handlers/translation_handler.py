@@ -585,7 +585,8 @@ def translate_text_complete(text: str, source_lang: str = "auto", target_lang: s
     except Exception:
         translate_idle_timeout = max(90, min(600, max(remote_timeout, quick_timeout) + 30))
 
-    from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+    from concurrent.futures import FIRST_COMPLETED, wait
+    from api.thread_pools import inference_pool
     checkpoint_version = 3
     checkpoint_active = checkpoint_enabled and total >= checkpoint_threshold
     checkpoint_path = _translation_checkpoint_state_path(text, source_lang, target_lang) if checkpoint_active else None
@@ -687,9 +688,8 @@ def translate_text_complete(text: str, source_lang: str = "auto", target_lang: s
 
     pending_indices = [i for i, result in enumerate(result_buffer) if not isinstance(result, dict)]
 
-    executor = ThreadPoolExecutor(max_workers=translate_workers)
     try:
-        fut_map = {executor.submit(_process_chunk, i + 1, chunks[i]): i for i in pending_indices}
+        fut_map = {inference_pool.submit(_process_chunk, i + 1, chunks[i]): i for i in pending_indices}
         pending = set(fut_map.keys())
         last_progress = time.monotonic()
         while pending:
@@ -747,7 +747,7 @@ def translate_text_complete(text: str, source_lang: str = "auto", target_lang: s
                     }
         _persist_checkpoint(model=last_model)
     finally:
-        executor.shutdown(wait=False, cancel_futures=True)
+        pass  # shared inference_pool — do not shut down
 
     failed_indices = [
         i for i, result in enumerate(result_buffer)

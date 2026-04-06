@@ -132,10 +132,10 @@ def run_channel_smoke() -> dict:
         for line in stdout.splitlines():
             if "PASS:" in line:
                 try: passed = int(line.split(":")[-1].strip())
-                except: pass
+                except Exception: pass
             elif "FAIL:" in line:
                 try: failed = int(line.split(":")[-1].strip())
-                except: pass
+                except Exception: pass
         total = passed + warned + failed
 
     total = passed + warned + failed

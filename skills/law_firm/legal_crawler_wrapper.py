@@ -604,7 +604,7 @@ def _get_db_config_local_first() -> dict:
                     "database": c.get("database"),
                     "connection_timeout": int(c.get("connection_timeout") or 3),
                 }
-    return {"host": "127.0.0.1", "port": 3307, "user": "python_user", "password": "", "database": "law_firm_data", "connection_timeout": 3}
+    return {"host": "127.0.0.1", "port": int(os.environ.get("MAGI_LOCAL_DB_PORT", "3306")), "user": os.environ.get("OSC_DB_USER", "casper_service"), "password": os.environ.get("OSC_DB_PASSWORD", ""), "database": "law_firm_data", "connection_timeout": 3}
 
 
 def _scan_active_cases_from_db(max_cases: int = 10) -> list[dict]:

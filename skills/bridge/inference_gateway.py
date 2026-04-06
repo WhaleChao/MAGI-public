@@ -599,11 +599,15 @@ class InferenceGateway:
         if not image_b64:
             return self._result(success=False, route="omlx", degraded=False, error=read_err)
 
-        use_model = _MODEL_ROSTER.get(task_type, {}).get("omlx", "") or TEXT_PRIMARY_MODEL
-        # Vision now uses the same 26B model on port 8080 (GLM-OCR retired)
+        use_model = _MODEL_ROSTER.get(task_type, {}).get("omlx", "") or DEFAULT_VISION_MODEL
+        # GLM-OCR on port 8082 for Chinese OCR; Gemma 4 on port 8080 as fallback
         kwargs = {}
+        _model_lower = (use_model or "").lower()
         vision_base = getattr(melchior_client, "OMLX_VISION_BASE", None)
-        if vision_base and vision_base != getattr(melchior_client, "OMLX_CHAT_BASE", ""):
+        if vision_base and ("glm" in _model_lower or "ocr" in _model_lower):
+            # GLM-OCR → dedicated vision server (port 8082)
+            kwargs["base_url"] = vision_base
+        elif vision_base and vision_base != getattr(melchior_client, "OMLX_CHAT_BASE", ""):
             kwargs["base_url"] = vision_base
         r = chat_omlx(prompt=prompt, model=use_model, timeout=max(10, int(timeout)), temperature=0.3, max_tokens=2048, images=[image_b64], **kwargs)
         if r.get("success"):

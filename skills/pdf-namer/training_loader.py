@@ -21,9 +21,9 @@ if _MAGI_ROOT not in sys.path:
 from api.runtime_paths import get_orch_dir
 
 # ── DB Config ──
-DB_HOST = "localhost"
-DB_USER = "ai"
-DB_PASS = ""  # Socket auth
+DB_HOST = os.environ.get("OSC_DB_HOST", os.environ.get("MAGI_REMOTE_DB_HOST", "127.0.0.1"))
+DB_USER = os.environ.get("OSC_DB_USER", os.environ.get("DB_USER", "casper_service"))
+DB_PASS = os.environ.get("OSC_DB_PASSWORD", os.environ.get("DB_PASSWORD", ""))
 DB_NAME = "law_firm_data"
 
 # Target archive types (matching user's 4 folder spec)
@@ -42,12 +42,32 @@ SKILL_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
 def _get_db_connection():
-    """Get MariaDB connection."""
+    """Get MariaDB connection with failover: remote → local socket → local TCP."""
+    import mysql.connector
+
+    # Try TCP connection (remote or local via env)
+    hosts = [DB_HOST]
+    if DB_HOST != "127.0.0.1":
+        hosts.append("127.0.0.1")
+    for host in hosts:
+        try:
+            conn = mysql.connector.connect(
+                host=host,
+                user=DB_USER,
+                password=DB_PASS,
+                database=DB_NAME,
+                connect_timeout=5,
+            )
+            if host != DB_HOST:
+                logger.info("pdf-namer DB failover: using local DB (127.0.0.1)")
+            return conn
+        except Exception:
+            continue
+
+    # Final fallback: local unix socket (for dev/localhost)
     try:
-        import mysql.connector
         conn = mysql.connector.connect(
-            host=DB_HOST,
-            user=DB_USER,
+            user=DB_USER or "ai",
             password=DB_PASS,
             database=DB_NAME,
             unix_socket="/tmp/mysql.sock",
@@ -55,7 +75,7 @@ def _get_db_connection():
         )
         return conn
     except Exception as e:
-        logger.warning(f"⚠️ MariaDB 連線失敗: {e}")
+        logger.warning(f"⚠️ MariaDB 連線失敗 (all hosts): {e}")
         return None
 
 

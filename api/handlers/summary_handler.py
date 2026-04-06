@@ -466,7 +466,8 @@ def summarize_text_resilient(text: str, summary_length: str = "medium", *, progr
         if len(chunks) >= 2:
             try:
                 from skills.bridge import melchior_client
-                from concurrent.futures import ThreadPoolExecutor, wait
+                from concurrent.futures import wait
+                from api.thread_pools import inference_pool
 
                 # Large documents: process ALL chunks (map-reduce).
                 # Short documents: sample evenly (existing behavior).
@@ -603,10 +604,9 @@ def summarize_text_resilient(text: str, summary_length: str = "medium", *, progr
                         return idx, out
                     return idx, f"（第 {idx}/{total_chunks} 段摘要失敗，先略過）"
 
-                executor = ThreadPoolExecutor(max_workers=min(summary_workers, len(sampled_chunks)))
                 try:
                     fut_map = {
-                        executor.submit(_summ_chunk, chunk_idx, len(chunks), chunk): sample_idx
+                        inference_pool.submit(_summ_chunk, chunk_idx, len(chunks), chunk): sample_idx
                         for sample_idx, (chunk_idx, chunk) in enumerate(sampled_chunks)
                     }
                     rounds = max(1, (len(sampled_chunks) + max(1, summary_workers) - 1) // max(1, summary_workers))
@@ -654,7 +654,7 @@ def summarize_text_resilient(text: str, summary_length: str = "medium", *, progr
                             fut.cancel()
                             summaries[i] = f"（第 {chunk_idx}/{len(chunks)} 段摘要逾時，先略過）"
                 finally:
-                    executor.shutdown(wait=False, cancel_futures=True)
+                    pass  # shared inference_pool — do not shut down
 
                 usable_summaries = [str(part).strip() for part in summaries if _summary_chunk_usable(part)]
                 merged_source = "\n\n".join(

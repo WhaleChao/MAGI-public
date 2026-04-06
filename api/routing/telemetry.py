@@ -174,10 +174,17 @@ class RoutingTelemetry:
         }
 
     def _write_line(self, entry: dict[str, Any]) -> None:
-        """Append a single JSON line to the telemetry file."""
+        """Append a single JSON line to the telemetry file (with rotation)."""
         try:
             self._dir.mkdir(parents=True, exist_ok=True)
             with open(self._path, "a", encoding="utf-8") as f:
                 f.write(json.dumps(entry, ensure_ascii=False, default=str) + "\n")
+            # Size-based rotation: check every 500 writes
+            if self._count % 500 == 0:
+                try:
+                    from api.events.sinks import rotate_jsonl
+                    rotate_jsonl(self._path)
+                except Exception:
+                    pass
         except Exception:
             _log.warning("Failed to write telemetry to %s", self._path, exc_info=True)

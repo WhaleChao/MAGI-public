@@ -47,8 +47,9 @@ def extract_events_from_pdf(pdf_path: str, timeout_sec: int = 60) -> list:
                 }
             })
             
-        model = os.environ.get("MAGI_VISION_MODEL", os.environ.get("MAGI_OMLX_VISION_MODEL", ""))
-        url = "http://localhost:18789/v1/chat/completions"
+        model = os.environ.get("MAGI_OMLX_VISION_MODEL", os.environ.get("MAGI_VISION_MODEL", "GLM-OCR-bf16"))
+        _vision_base = os.environ.get("MAGI_OMLX_VISION_URL", "http://127.0.0.1:8082").rstrip("/")
+        url = f"{_vision_base}/v1/chat/completions"
         
         prompt = '''請分析這幾張台灣法院/機關文件圖片（通常是開庭通知、裁定、補正函等）。
 請萃取「必須記錄在行事曆上」的待辦事項。通常包含：

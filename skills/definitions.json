@@ -3560,6 +3560,35 @@
                     "skill"
                 ]
             }
+        },
+        {
+            "name": "run_code_migrations_migrate",
+            "description": "Functional skill generated from CODE file `migrations/migrate.py`. Supports function-call mode, module execution mode, and self-test mode.",
+            "endpoint": "/skills/run",
+            "method": "POST",
+            "sage": "casper",
+            "iron_dome": true,
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "skill": {
+                        "type": "string",
+                        "default": "code-migrations-migrate",
+                        "enum": [
+                            "code-migrations-migrate"
+                        ],
+                        "description": "Skill folder name (default: code-migrations-migrate)"
+                    },
+                    "task": {
+                        "type": "string",
+                        "description": "Task text to pass into action.py"
+                    }
+                },
+                "required": [
+                    "task",
+                    "skill"
+                ]
+            }
         }
     ]
 }

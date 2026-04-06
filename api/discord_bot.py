@@ -445,7 +445,7 @@ async def bg_scheduler_loop():
     while not client.is_closed():
         try:
             # 1. Check due jobs (run in dedicated cron executor to avoid blocking event loop / heartbeat)
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             due_jobs = await loop.run_in_executor(_CRON_EXECUTOR, scheduler.check_due_jobs)
             
             for job in due_jobs:
@@ -767,6 +767,11 @@ async def _download_discord_attachment(att):
     Download a Discord attachment to /tmp and return local path.
     """
     suffix = os.path.splitext(att.filename or "")[1] or ".bin"
+    if suffix in (".bin", "") and hasattr(att, "content_type") and att.content_type:
+        _ct_map = {"image/png": ".png", "image/jpeg": ".jpg", "image/gif": ".gif", "image/webp": ".webp",
+                   "audio/mpeg": ".mp3", "audio/wav": ".wav", "audio/x-m4a": ".m4a", "audio/ogg": ".ogg",
+                   "application/pdf": ".pdf"}
+        suffix = _ct_map.get(att.content_type, suffix)
     temp_name = f"discord_{uuid.uuid4().hex}{suffix}"
     temp_path = os.path.join(tempfile.gettempdir(), temp_name)
     await att.save(temp_path)
@@ -1042,7 +1047,7 @@ async def on_message(message):
     if not user_text and not message.attachments:
         return
 
-    if user_text and (user_text.startswith("/") and not user_text.lower().startswith(("/help", "/draw", "/img", "/start", "/search"))):
+    if user_text and (user_text.startswith("/") and not user_text.lower().startswith(("/help", "/draw", "/img", "/start", "/search", "/setup_channels", "/setup"))):
         return
 
     # ── Skip replies to MAGI notification messages ───────────────────
@@ -1122,7 +1127,23 @@ async def on_message(message):
                 if message.attachments:
                     att0 = message.attachments[0]
                     try:
-                        real_fname = getattr(att0, "title", None) or att0.filename or ""
+                        # Prefer filename (has extension) over title (may lack extension)
+                        real_fname = att0.filename or getattr(att0, "title", None) or ""
+                        # If filename still has no extension, try to infer from content_type
+                        if real_fname and not os.path.splitext(real_fname)[1]:
+                            ct = getattr(att0, "content_type", "") or ""
+                            _ct_ext_map = {
+                                "image/png": ".png", "image/jpeg": ".jpg",
+                                "image/gif": ".gif", "image/webp": ".webp",
+                                "image/bmp": ".bmp", "image/heic": ".heic",
+                                "audio/mpeg": ".mp3", "audio/wav": ".wav",
+                                "audio/x-m4a": ".m4a", "audio/ogg": ".ogg",
+                                "audio/flac": ".flac", "audio/aac": ".aac",
+                                "audio/mp4": ".m4a",
+                            }
+                            _inferred = _ct_ext_map.get(ct.split(";")[0].strip().lower(), "")
+                            if _inferred:
+                                real_fname = real_fname + _inferred
                         ack_msg = orchestrator.estimate_file_processing_time(
                             file_size_bytes=getattr(att0, "size", 0) or 0,
                             filename=real_fname,
@@ -1175,7 +1196,7 @@ async def on_message(message):
                 msg_type = "file"
                 if ext in {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif"}:
                     msg_type = "image"
-                elif ext in {".mp3", ".wav", ".m4a", ".ogg", ".flac"}:
+                elif ext in {".mp3", ".wav", ".m4a", ".ogg", ".flac", ".aac"}:
                     msg_type = "audio"
                 attachment_info = {
                     "type": msg_type,
@@ -1188,7 +1209,7 @@ async def on_message(message):
                     else:
                         user_text = "請分析這個附件並用繁體中文回覆重點。"
             # Process through Orchestrator (run in thread to avoid blocking)
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             _cid = correlation_id  # capture for lambda closure
 
             # Progress callback — push intermediate status to Discord during long tasks.
@@ -1228,18 +1249,59 @@ async def on_message(message):
             except Exception:
                 logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 1123, exc_info=True)
 
+            # Persist to message queue (at-least-once delivery)
+            _dc_mq_msg_id = None
+            _dc_mq_inst = None
+            try:
+                from skills.memory.message_queue import get_queue as _get_mq
+                _dc_mq_inst = _get_mq()
+                _dc_mq_msg_id = _dc_mq_inst.enqueue(
+                    platform="Discord",
+                    user_id=user_id,
+                    user_text=user_text,
+                    role=role,
+                    channel_id=str(getattr(message.channel, "id", "") or ""),
+                    attachment=json.dumps(attachment_info) if attachment_info else "{}",
+                )
+            except Exception as _mq_err:
+                logging.getLogger(__name__).warning("MQ enqueue failed (non-fatal): %s", _mq_err)
+
+            def _dc_mq_wrapped_process():
+                _mq_i = _dc_mq_inst
+                _mq_id = _dc_mq_msg_id
+                if _mq_i and _mq_id:
+                    try:
+                        _mq_i.claim(_mq_id)
+                    except Exception:
+                        logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, "dc_mq_claim", exc_info=True)
+                try:
+                    result = orchestrator.process_message(
+                        user_id,
+                        user_text,
+                        platform="Discord",
+                        role=role,
+                        attachment=attachment_info,
+                        correlation_id=_cid,
+                        progress_callback=_dc_progress_cb,
+                        channel_context=_dc_channel_ctx,
+                    )
+                    if _mq_i and _mq_id:
+                        try:
+                            _mq_i.complete(_mq_id)
+                        except Exception:
+                            logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, "dc_mq_complete", exc_info=True)
+                    return result
+                except Exception as _proc_err:
+                    if _mq_i and _mq_id:
+                        try:
+                            _mq_i.fail(_mq_id, str(_proc_err))
+                        except Exception:
+                            logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, "dc_mq_fail", exc_info=True)
+                    raise
+
             response = await loop.run_in_executor(
                 _DISCORD_BG_EXECUTOR,
-                lambda: orchestrator.process_message(
-                    user_id,
-                    user_text,
-                    platform="Discord",
-                    role=role,
-                    attachment=attachment_info,
-                    correlation_id=_cid,
-                    progress_callback=_dc_progress_cb,
-                    channel_context=_dc_channel_ctx,
-                )
+                _dc_mq_wrapped_process,
             )
             if response:
                 response = _normalize_discord_output_text(response)
@@ -1257,7 +1319,7 @@ async def on_message(message):
             # Check for Image Path Protocol
             if "|||IMAGE_PATH|||" in response:
                 try:
-                    text_part, image_path = response.split("|||IMAGE_PATH|||")
+                    text_part, image_path = response.split("|||IMAGE_PATH|||", 1)
                     
                     if os.path.exists(image_path.strip()):
                         file_to_send = discord.File(image_path.strip())

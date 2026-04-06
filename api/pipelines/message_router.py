@@ -79,6 +79,12 @@ def handle_gibberish_report(orch, user_id, message: str, platform: str = "") -> 
         }
         with _GIBBERISH_LOG_PATH.open("a", encoding="utf-8") as f:
             f.write(_json.dumps(record, ensure_ascii=False) + "\n")
+        # Size-based rotation
+        try:
+            from api.events.sinks import rotate_jsonl
+            rotate_jsonl(_GIBBERISH_LOG_PATH)
+        except Exception:
+            pass
     except Exception as e:
         logger.warning(f"亂碼回報寫入失敗: {e}")
         return "⚠️ 記錄失敗，請稍後重試。"

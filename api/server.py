@@ -21,7 +21,7 @@ import threading
 import logging
 import urllib.request
 import urllib.error
-from collections import defaultdict
+from collections import defaultdict, deque
 from datetime import datetime
 from pathlib import Path
 
@@ -387,7 +387,7 @@ if not LINE_BOT_ENABLED:
 orchestrator = Orchestrator()
 
 # Web Notifications Buffer
-WEB_NOTIFICATIONS = defaultdict(list)
+WEB_NOTIFICATIONS = defaultdict(lambda: deque(maxlen=200))
 
 # ---------------------------------------------------------------------------
 # Blueprint Registration

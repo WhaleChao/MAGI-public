@@ -11,6 +11,7 @@ import threading
 import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
+from api.thread_pools import io_pool, inference_pool
 from collections import defaultdict, deque
 from datetime import datetime, timezone
 from pathlib import Path
@@ -1352,19 +1353,26 @@ class Orchestrator:
         """
         msg_type = attachment['type']
         path = attachment['path']
-        
+
         if msg_type == "image":
             # --- Payment proof intercept: detect 繳費 keywords in prompt ---
             prompt_lower = (prompt or "").lower()
             _payment_kw = ["繳費", "繳款", "繳費憑證", "繳費單", "繳費截圖", "payment proof",
-                           "上傳繳費", "銷帳", "入帳"]
+                           "上傳繳費", "銷帳", "入帳", "收據", "裁判費", "上傳閱卷",
+                           "上傳收據", "費用憑證"]
             if any(kw in prompt_lower for kw in _payment_kw):
-                logger.info(f"💰 Payment proof detected via channel image: {path}")
+                logger.info(f"💰 Payment proof detected via keyword in prompt: {path}")
                 try:
                     return self._handle_payment_proof_from_channel(path)
                 except Exception as pay_err:
                     logger.error(f"Payment proof upload from channel failed: {pay_err}")
                     return f"❌ 繳費憑證上傳失敗：{str(pay_err)[:200]}"
+
+            # --- Vision-based smart routing: classify image with Gemma 4 ---
+            # When no explicit keywords, use VLM to detect payment receipts
+            _vision_routed = self._vision_classify_and_route_image(user_id, path, prompt)
+            if _vision_routed is not None:
+                return _vision_routed
 
             logger.info(f"👁️ Routing Image to Melchior: {path}")
             # Use Melchior Bridge
@@ -1513,19 +1521,18 @@ class Orchestrator:
                 _audio_can_parallel = wants_translate and wants_summary and summary_pref != "translated"
 
                 if _audio_can_parallel:
-                    with ThreadPoolExecutor(max_workers=2, thread_name_prefix="audio_ts") as _ats_pool:
-                        _tr_future = _ats_pool.submit(
-                            self._translate_text_complete,
-                            transcript,
-                            source_lang="auto",
-                            target_lang="繁體中文",
-                        )
-                        _sm_future = _ats_pool.submit(
-                            self._summarize_text_resilient,
-                            transcript,
-                            summary_length=summary_length,
-                            progress_callback=getattr(self, "_progress_callback", None),
-                        )
+                    _tr_future = inference_pool.submit(
+                        self._translate_text_complete,
+                        transcript,
+                        source_lang="auto",
+                        target_lang="繁體中文",
+                    )
+                    _sm_future = inference_pool.submit(
+                        self._summarize_text_resilient,
+                        transcript,
+                        summary_length=summary_length,
+                        progress_callback=getattr(self, "_progress_callback", None),
+                    )
 
                     # Collect translation result.
                     try:
@@ -1680,15 +1687,14 @@ class Orchestrator:
 
                 if _can_parallel_summary:
                     # Run translation and summary in parallel on independent inputs.
-                    with ThreadPoolExecutor(max_workers=2, thread_name_prefix="file_ts") as _ts_pool:
-                        _translate_future = _ts_pool.submit(
-                            self._translate_text_complete, src_text,
-                            source_lang="auto", target_lang="繁體中文",
-                        )
-                        _summary_future = _ts_pool.submit(
-                            self._summarize_text_resilient, src_text,
-                            summary_length, progress_callback=getattr(self, '_progress_callback', None),
-                        )
+                    _translate_future = inference_pool.submit(
+                        self._translate_text_complete, src_text,
+                        source_lang="auto", target_lang="繁體中文",
+                    )
+                    _summary_future = inference_pool.submit(
+                        self._summarize_text_resilient, src_text,
+                        summary_length, progress_callback=getattr(self, '_progress_callback', None),
+                    )
                     try:
                         rr = _translate_future.result(timeout=300)
                     except Exception as e:
@@ -1948,6 +1954,19 @@ class Orchestrator:
             lines.append(f"{'🟢' if ok else '🔴'} Watcher: {msg}")
         except Exception as e:
             lines.append(f"🟡 Watcher: status unavailable ({e})")
+
+        # GLM-OCR Vision Server (port 8082)
+        try:
+            from skills.bridge.http_pool import get_session as _get_sess
+            _vision_url = os.environ.get("MAGI_OMLX_VISION_URL", "http://127.0.0.1:8082")
+            vr = _get_sess().get(f"{_vision_url.rstrip('/')}/v1/models", timeout=3)
+            if vr.status_code == 200:
+                vmodels = [m.get("id", "?") for m in (vr.json().get("data") or [])]
+                lines.append(f"🟢 GLM-OCR: {', '.join(vmodels) or 'ready'} (port 8082)")
+            else:
+                lines.append("🔴 GLM-OCR: offline (port 8082)")
+        except Exception:
+            lines.append("🔴 GLM-OCR: offline (port 8082)")
 
         return "\n".join(lines)
 
@@ -2214,13 +2233,10 @@ class Orchestrator:
                 logger.info(f"🧬 Forge attempt {attempt}/{max_retries}, timeout={timeout}s")
 
                 try:
-                    with concurrent.futures.ThreadPoolExecutor(
-                        max_workers=1, thread_name_prefix=f"forge-r{attempt}"
-                    ) as pool:
-                        future = pool.submit(
-                            forge_execute, str(user_id), message, "", "orchestrator_auto"
-                        )
-                        reply = future.result(timeout=timeout)
+                    future = io_pool.submit(
+                        forge_execute, str(user_id), message, "", "orchestrator_auto"
+                    )
+                    reply = future.result(timeout=timeout)
 
                     # Success
                     msg = reply.get("reply", "ℹ️ 自主演化流程完成。") if isinstance(reply, dict) else str(reply)
@@ -2299,6 +2315,77 @@ class Orchestrator:
     def _parse_laf_report_payload(self, raw_text: str):
         return _get_handler("laf").parse_laf_report_payload(raw_text)
 
+    # ── Vision-based smart routing for images ──────────────────────────
+
+    def _vision_classify_and_route_image(self, user_id, image_path: str, prompt: str | None) -> str | None:
+        """
+        Use GLM-OCR (port 8082) to classify the image content.
+        If it looks like a payment receipt, route to payment upload automatically.
+        Returns a response string if handled, or None to fall through to default.
+        """
+        import base64
+        try:
+            if not os.path.isfile(image_path):
+                return None
+
+            with open(image_path, "rb") as f:
+                img_b64 = base64.b64encode(f.read()).decode()
+
+            # Quick classification prompt — keep it short for speed
+            classify_prompt = (
+                "請判斷這張圖片的類型，只回答一個類別：\n"
+                "A) 法院繳費收據/繳費憑證/繳費截圖\n"
+                "B) 法律文件（判決書、裁定、起訴狀等）\n"
+                "C) 其他圖片\n"
+                "只回答 A、B 或 C，不要其他文字。"
+            )
+
+            from skills.bridge.http_pool import get_session as _get_session
+            # Use GLM-OCR on vision server (port 8082) — it can actually read Chinese text
+            _vision_base = os.environ.get("MAGI_OMLX_VISION_URL", "http://127.0.0.1:8082")
+
+            payload = {
+                "model": "GLM-OCR-bf16",
+                "messages": [{
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": classify_prompt},
+                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}},
+                    ],
+                }],
+                "max_tokens": 20,
+                "temperature": 0.1,
+                "stream": False,
+            }
+
+            resp = _get_session().post(
+                f"{_vision_base.rstrip('/')}/v1/chat/completions",
+                json=payload, timeout=30,
+            )
+            if resp.status_code != 200:
+                logger.debug(f"Vision classify returned {resp.status_code}, falling through")
+                return None
+
+            choices = resp.json().get("choices") or []
+            answer = (choices[0].get("message", {}).get("content", "") if choices else "").strip().upper()
+            logger.info(f"🔍 Vision classify result: '{answer}' for {image_path}")
+
+            # If classified as payment receipt → auto-route to payment upload
+            if answer.strip().upper() == "A":
+                logger.info(f"💰 Payment proof detected via vision classification: {image_path}")
+                try:
+                    return self._handle_payment_proof_from_channel(image_path)
+                except Exception as pay_err:
+                    logger.error(f"Payment proof upload (vision-routed) failed: {pay_err}")
+                    return f"❌ 繳費憑證上傳失敗：{str(pay_err)[:200]}"
+
+            # Other categories fall through to default image analysis
+            return None
+
+        except Exception as e:
+            logger.debug(f"Vision classify failed: {e}, falling through to default")
+            return None
+
     # ── Payment proof upload from channel images (LINE/DC/TG) ──────────
 
     def _handle_payment_proof_from_channel(self, image_path: str) -> str:
@@ -2323,19 +2410,17 @@ class Orchestrator:
         logger.info("💰 Calling action.py for payment proof: %s", image_path)
 
         try:
-            import concurrent.futures as _cf
-            with _cf.ThreadPoolExecutor(max_workers=1, thread_name_prefix="payment-proof") as _pool:
-                def _run_payment_subprocess():
-                    return subprocess.run(
-                        [py, action_script, "--json-cmd"],
-                        input=cmd_json,
-                        capture_output=True,
-                        text=True,
-                        timeout=180,
-                        cwd=os.path.dirname(action_script),
-                    )
-                proc = _pool.submit(_run_payment_subprocess).result(timeout=190)
-        except (subprocess.TimeoutExpired, _cf.TimeoutError):
+            def _run_payment_subprocess():
+                return subprocess.run(
+                    [py, action_script, "--json-cmd"],
+                    input=cmd_json,
+                    capture_output=True,
+                    text=True,
+                    timeout=180,
+                    cwd=os.path.dirname(action_script),
+                )
+            proc = io_pool.submit(_run_payment_subprocess).result(timeout=190)
+        except (subprocess.TimeoutExpired, FuturesTimeoutError):
             return "❌ 繳費憑證上傳逾時（超過 3 分鐘）"
 
         stdout = (proc.stdout or "").strip()
@@ -2346,7 +2431,7 @@ class Orchestrator:
             result = json.loads(stdout)
             return result.get("message") or str(result)
         except Exception:
-            logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 6917, exc_info=True)
+            logger.warning("Payment subprocess returned non-JSON stdout: %s", stdout[:200], exc_info=True)
 
         # 如果不是 JSON，直接回傳 stdout
         if stdout:

@@ -356,6 +356,12 @@ def _append_jsonl(path: str, row: dict) -> None:
         p.parent.mkdir(parents=True, exist_ok=True)
         with p.open("a", encoding="utf-8") as f:
             f.write(json.dumps(row, ensure_ascii=False) + "\n")
+        # Size-based rotation (10 MB, keep 5)
+        try:
+            from api.events.sinks import rotate_jsonl
+            rotate_jsonl(p)
+        except Exception:
+            pass
     except Exception:
         return
 

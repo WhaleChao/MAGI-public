@@ -1175,8 +1175,8 @@ body::after {
         <div class="routing-section">
           <div id="routing-table">
             <div class="route-row"><span class="task">摘要產生</span><span class="path"><span class="engine omlx">oMLX</span></span><span class="model">Gemma-4 26B</span></div>
-            <div class="route-row"><span class="task">影像辨識</span><span class="path"><span class="engine omlx">oMLX</span></span><span class="model">Gemma-4 26B (multimodal)</span></div>
-            <div class="route-row"><span class="task">文字辨識 OCR</span><span class="path"><span class="engine omlx">oMLX</span></span><span class="model">Gemma-4 26B (vision)</span></div>
+            <div class="route-row"><span class="task">影像辨識</span><span class="path"><span class="engine omlx">oMLX:8082</span></span><span class="model">GLM-OCR-bf16</span></div>
+            <div class="route-row"><span class="task">文字辨識 OCR</span><span class="path"><span class="engine omlx">oMLX:8082</span></span><span class="model">GLM-OCR-bf16</span></div>
             <div class="route-row"><span class="task">程式產生</span><span class="path"><span class="engine omlx">oMLX</span></span><span class="model">Gemma-4 26B</span></div>
             <div class="route-row"><span class="task">向量嵌入</span><span class="path"><span class="engine omlx">oMLX</span></span><span class="model">ModernBERT</span></div>
             <div class="route-row"><span class="task">意圖/通用</span><span class="path"><span class="engine omlx">oMLX</span></span><span class="model">Gemma-4 26B</span></div>
@@ -1366,8 +1366,8 @@ const PRODUCT_RUNTIME_LABELS = {
 };
 const ROUTING_ROWS = [
   { task: '摘要產生', feature: 'summary', localModel: 'Gemma-4 26B', codexModel: 'Codex 摘要鏈路' },
-  { task: '影像辨識', feature: 'vision', localModel: 'Gemma-4 26B (multimodal)', codexModel: 'Codex Vision/OCR' },
-  { task: '文字辨識 OCR', feature: 'vision', localModel: 'Gemma-4 26B (vision)', codexModel: 'Codex OCR route' },
+  { task: '影像辨識', feature: 'vision', localModel: 'GLM-OCR-bf16 (port 8082)', codexModel: 'Codex Vision/OCR' },
+  { task: '文字辨識 OCR', feature: 'vision', localModel: 'GLM-OCR-bf16 (port 8082)', codexModel: 'Codex OCR route' },
   { task: '筆錄整理', feature: 'transcript', localModel: 'Whisper + Gemma-4 26B', codexModel: 'Codex Transcript route' },
   { task: '程式產生', localModel: 'Gemma-4 26B' },
   { task: '向量嵌入', localModel: 'ModernBERT' },

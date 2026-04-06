@@ -56,6 +56,29 @@ calibrate_distributed_ngl = _lazy_brain("calibrate_distributed_ngl")
 
 from skills.bridge.legal_bridge import execute_skill
 
+# ── Pre-compiled regex patterns ──────────────────────────────────────────────
+_RE_DRAW = re.compile(r"(?:/draw\b|畫|draw|generate image|產生圖片|绘|画圖|畫一|画一)", re.IGNORECASE)
+_RE_WEB_SEARCH_EXPLICIT = re.compile(
+    r"^(?:搜尋|search|research|/search|查一下|找一下|搜一下|google|幫我搜|幫我查一下|執行網路研究|進行網路研究|網路研究|網路搜尋|幫我查詢|請幫我查詢)\s*[:：]?\s*"
+)
+_RE_COLON_PREFIX = re.compile(r"^[:：]\s*")
+_RE_FILLER_PREFIX = re.compile(r"^(?:請|幫我|能不能|可以|一下|幫忙)\s*")
+_RE_HTTP_URL = re.compile(r'https?://')
+_RE_HTTP_URL_FULL = re.compile(r'https?://[^\s]+')
+_RE_TIMEOUT_SEC = re.compile(r"(\d{2,4})\s*(?:秒|sec|s)")
+_RE_TARGET_GB = re.compile(r"(\d+(?:\.\d+)?)\s*gb")
+_RE_TOLERANCE_GB = re.compile(r"[±\+\-]\s*(\d+(?:\.\d+)?)\s*gb")
+_RE_JSON_TAIL = re.compile(r"(\{[\s\S]*\})\s*$")
+_RE_PAYMENT_DISMISS = re.compile(r"^(.+?)\s*(?:已繳費|已經繳費|繳費完畢|繳費了)\s*$")
+_RE_CASE_NUMBER = re.compile(r"(\d{2,3})\s*(?:年度)?\s*([^\d\s]+)\s*(?:字)?\s*(?:第)?\s*(\d+)\s*(?:號)?")
+_RE_CASE_TYPE_STRIP = re.compile(r"(字第|字|第)")
+_RE_COURT = re.compile(r'\bcourt\b')
+_RE_SCHEDULE = re.compile(r'\bschedule\b')
+_RE_LAF = re.compile(r'\blaf\b')
+_RE_MEETING = re.compile(r'\bmeeting\b')
+_RE_SUMMARIZ = re.compile(r'\bsummariz')
+_RE_SUMMARY = re.compile(r'\bsummary\b')
+
 
 def handle_command(orch, user_id, message, role="user", platform="LINE"):
     """
@@ -78,6 +101,37 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
         registry_result = registry.dispatch(ctx)
         if registry_result is not None:
             return registry_result
+
+    # ── Fuzzy typo correction for Chinese commands ──────────────────────
+    # Only attempt if this is NOT already a recursive fuzzy-corrected call.
+    if not getattr(orch, "_fuzzy_recursion_guard", False):
+        try:
+            from api.pipelines.fuzzy_match import fuzzy_correct
+            corrected, confidence = fuzzy_correct(message)
+            if corrected and corrected != message:
+                if confidence >= 0.85:
+                    # High confidence — auto-correct and re-dispatch
+                    logger.info("Fuzzy auto-correct (%.2f): %r -> %r", confidence, message[:40], corrected[:40])
+                    orch._fuzzy_recursion_guard = True
+                    orch._fuzzy_fell_through_to_llm = False
+                    try:
+                        result = handle_command(orch, user_id, corrected, role=role, platform=platform)
+                    finally:
+                        orch._fuzzy_recursion_guard = False
+                    # Only prepend the correction notice if the corrected command
+                    # actually matched a specific handler (not LLM fallback chat).
+                    if orch._fuzzy_fell_through_to_llm:
+                        # Corrected text didn't match any command either —
+                        # return the LLM response without the misleading notice.
+                        return result
+                    notice = f"\U0001f4a1 已自動修正「{message[:20]}」\u2192「{corrected[:20]}」\n"
+                    return notice + result
+                elif confidence >= 0.65:
+                    # Medium confidence — suggest only, don't auto-execute
+                    logger.info("Fuzzy suggest (%.2f): %r -> %r", confidence, message[:40], corrected[:40])
+                    return f"\U0001f914 你是不是要輸入「{corrected[:30]}」？請確認後重新輸入。"
+        except Exception as _fuzzy_err:
+            logger.debug("Fuzzy match skipped: %s", _fuzzy_err)
 
     # Help Command — role-aware
     _HELP_CMD_EXACT = {"/help", "help", "指���", "說明", "功能", "menu", "helps", "/start",
@@ -289,10 +343,7 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
 
     # Image Generation (Enhanced Natural Language)
     # Matches: "/draw xxx", "draw a cat", "幫我畫一隻貓", "請畫圖", "生成圖片: sunset"
-    import re
-    draw_pattern = re.compile(r"(?:/draw\b|畫|draw|generate image|產生圖片|绘|画圖|畫一|画一)", re.IGNORECASE)
-
-    if draw_pattern.search(msg_lower) and len(message) > 2:
+    if _RE_DRAW.search(msg_lower) and len(message) > 2:
         # Extract prompt by removing common command words
         prompt = message
         for kw in ["/draw", "幫我", "請", "畫圖", "一張", "一個", "draw", "generate image", "產生圖片", "畫", "画", "a picture of", "an image of"]:
@@ -334,6 +385,16 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
         models = rt.get("models") if isinstance(rt.get("models"), list) else []
         if models:
             model_line = f"目前主要模型：`{models[0]}`"
+        # Check GLM-OCR vision model
+        try:
+            from skills.bridge.http_pool import get_session as _gs
+            _vr = _gs().get("http://127.0.0.1:8082/v1/models", timeout=2)
+            if _vr.status_code == 200:
+                _vm = [m.get("id", "?") for m in (_vr.json().get("data") or [])]
+                if _vm:
+                    model_line += f"\n視覺模型：`{_vm[0]}`"
+        except Exception:
+            pass
         gpu_line = ""
         if rt.get("gpu_used_mb") is not None and rt.get("gpu_total_mb") is not None:
             gpu_line = f"\nMelchior GPU：{float(rt['gpu_used_mb'])/1024.0:.2f}/{float(rt['gpu_total_mb'])/1024.0:.2f} GB"
@@ -578,10 +639,7 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
             return f"❌ 內化技能失敗: {e}"
 
     # Web Research Commands — only trigger on explicit search intent
-    _web_search_explicit = re.search(
-        r"^(?:搜尋|search|research|/search|查一下|找一下|搜一下|google|幫我搜|幫我查一下|執行網路研究|進行網路研究|網路研究|網路搜尋|幫我查詢|請幫我查詢)\s*[:：]?\s*",
-        msg_lower,
-    )
+    _web_search_explicit = _RE_WEB_SEARCH_EXPLICIT.search(msg_lower)
     if _web_search_explicit:
         # Extract the topic (remove command keywords)
         topic = message
@@ -590,9 +648,9 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
                     "網路研究", "網路搜尋", "幫我查詢", "請幫我查詢", "@MAGI", "@magi"]:
             topic = re.sub(re.escape(kw), "", topic, flags=re.IGNORECASE).strip()
         # Strip colon separators
-        topic = re.sub(r"^[:：]\s*", "", topic).strip()
+        topic = _RE_COLON_PREFIX.sub("", topic).strip()
         # Also strip filler words
-        topic = re.sub(r"^(?:請|幫我|能不能|可以|一下|幫忙)\s*", "", topic).strip()
+        topic = _RE_FILLER_PREFIX.sub("", topic).strip()
 
         if len(topic) < 2:
             return "🔍 請告訴我要搜尋什麼主題。例如：'搜尋 AI agent 2024'"
@@ -606,9 +664,8 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
             return f"🔍 找不到關於「{topic}」的資訊。"
 
     # URL Fetch Command — only trigger when message contains a URL
-    if any(kw in msg_lower for kw in ["fetch", "抓取", "讀取網頁"]) and re.search(r'https?://', message):
-        import re
-        urls = re.findall(r'https?://[^\s]+', message)
+    if any(kw in msg_lower for kw in ["fetch", "抓取", "讀取網頁"]) and _RE_HTTP_URL.search(message):
+        urls = _RE_HTTP_URL_FULL.findall(message)
         if urls:
             result = fetch_url_content(urls[0])
             if result["success"]:
@@ -713,7 +770,7 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
             return "⛔ 抱歉，只有管理員可以修復推理叢集（系統改動指令）。"
         try:
             timeout = 300
-            m = re.search(r"(\d{2,4})\s*(?:秒|sec|s)", msg_lower)
+            m = _RE_TIMEOUT_SEC.search(msg_lower)
             if m:
                 timeout = max(60, min(int(m.group(1)), 900))
             repaired = repair_big_brain(timeout_sec=timeout, force_cycle=True)
@@ -734,10 +791,10 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
         try:
             target = 8.0
             tol = 0.5
-            m_target = re.search(r"(\d+(?:\.\d+)?)\s*gb", msg_lower)
+            m_target = _RE_TARGET_GB.search(msg_lower)
             if m_target:
                 target = max(2.0, min(float(m_target.group(1)), 24.0))
-            m_tol = re.search(r"[±\+\-]\s*(\d+(?:\.\d+)?)\s*gb", msg_lower)
+            m_tol = _RE_TOLERANCE_GB.search(msg_lower)
             if m_tol:
                 tol = max(0.1, min(float(m_tol.group(1)), 4.0))
             cal = calibrate_distributed_ngl(target_gb=target, tolerance_gb=tol, max_rounds=4, min_ngl=8, max_ngl=80)
@@ -1269,7 +1326,7 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
                         try:
                             data = json.loads(stdout_text)
                         except Exception:
-                            m2 = re.search(r"(\{[\s\S]*\})\s*$", stdout_text)
+                            m2 = _RE_JSON_TAIL.search(stdout_text)
                             if m2:
                                 try:
                                     data = json.loads(m2.group(1))
@@ -1557,7 +1614,7 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
 
     # ── 繳費通知手動標記已繳費 / 跳過 ──
     _dismiss_payment_kw = ""
-    _dismiss_m = re.search(r"^(.+?)\s*(?:已繳費|已經繳費|繳費完畢|繳費了)\s*$", message.strip())
+    _dismiss_m = _RE_PAYMENT_DISMISS.search(message.strip())
     if _dismiss_m:
         _dismiss_payment_kw = _dismiss_m.group(1).strip()
     else:
@@ -1620,10 +1677,10 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
                 return None
             court = parts[0].strip()
             case_text = parts[1].strip()
-            m = re.match(r"(\d{2,3})\s*(?:年度)?\s*([^\d\s]+)\s*(?:字)?\s*(?:第)?\s*(\d+)\s*(?:號)?", case_text)
+            m = _RE_CASE_NUMBER.match(case_text)
             if not m:
                 return None
-            case_type = re.sub(r"(字第|字|第)", "", (m.group(2) or "")).strip()
+            case_type = _RE_CASE_TYPE_STRIP.sub("", (m.group(2) or "")).strip()
             return {
                 "court_code": court,
                 "year": m.group(1),
@@ -1688,7 +1745,7 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
                         try:
                             data = json.loads(stdout_text)
                         except Exception:
-                            m2 = re.search(r"(\{[\s\S]*\})\s*$", stdout_text)
+                            m2 = _RE_JSON_TAIL.search(stdout_text)
                             if m2:
                                 try:
                                     data = json.loads(m2.group(1))
@@ -1762,10 +1819,10 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
                 return None
             court = parts[0].strip()
             case_text = parts[1].strip()
-            m = re.match(r"(\d{2,3})\s*(?:年度)?\s*([^\d\s]+)\s*(?:字)?\s*(?:第)?\s*(\d+)\s*(?:號)?", case_text)
+            m = _RE_CASE_NUMBER.match(case_text)
             if not m:
                 return None
-            case_type = re.sub(r"(字第|字|第)", "", (m.group(2) or "")).strip()
+            case_type = _RE_CASE_TYPE_STRIP.sub("", (m.group(2) or "")).strip()
             result = {
                 "court_code": court,
                 "year": m.group(1),
@@ -1828,7 +1885,7 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
                         try:
                             data = json.loads(stdout_text)
                         except Exception:
-                            m2 = re.search(r"(\{[\s\S]*\})\s*$", stdout_text)
+                            m2 = _RE_JSON_TAIL.search(stdout_text)
                             if m2:
                                 try:
                                     data = json.loads(m2.group(1))
@@ -1946,7 +2003,7 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
                         try:
                             data = json.loads(stdout_text)
                         except Exception:
-                            m2 = re.search(r"(\{[\s\S]*\})\s*$", stdout_text)
+                            m2 = _RE_JSON_TAIL.search(stdout_text)
                             if m2:
                                 try:
                                     data = json.loads(m2.group(1))
@@ -2132,7 +2189,7 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
                         try:
                             data = json.loads(stdout_text)
                         except Exception:
-                            m2 = re.search(r"(\{[\s\S]*\})\s*$", stdout_text)
+                            m2 = _RE_JSON_TAIL.search(stdout_text)
                             if m2:
                                 try:
                                     data = json.loads(m2.group(1))
@@ -2172,14 +2229,14 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
 
         return "⏳ 已啟動閱卷流程，完成後會主動回報。"
 
-    # Existing commands
-    if "court" in msg_lower or "schedule" in msg_lower:
+    # Existing commands  (use word-boundary regex to avoid false positives like "discount", "courteous")
+    if _RE_COURT.search(msg_lower) or _RE_SCHEDULE.search(msg_lower):
          return execute_skill("paperclip-control", [message])
-    elif "laf" in msg_lower:
+    elif _RE_LAF.search(msg_lower):
          return execute_skill("laf-monitor", [message])
-    elif "meeting" in msg_lower:
+    elif _RE_MEETING.search(msg_lower):
          return execute_skill("meetings", ["list"])
-    elif "summarize" in msg_lower or "summary" in msg_lower or "balthasar" in msg_lower:
+    elif _RE_SUMMARIZ.search(msg_lower) or _RE_SUMMARY.search(msg_lower) or "balthasar" in msg_lower:
          try:
              summary_result = summarize_text(message)
              if summary_result and summary_result.get("success", True):
@@ -2273,6 +2330,10 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
 
     # Everything else: let LLM handle it conversationally.
     logger.info("💬 No command matched, routing to LLM chat")
+    # Signal to fuzzy-correction caller that we fell through to LLM chat
+    # (so it knows NOT to prepend the "auto-corrected" notice).
+    if getattr(orch, "_fuzzy_recursion_guard", False):
+        orch._fuzzy_fell_through_to_llm = True
     return orch._handle_chat_async(user_id, message, platform_hint=platform)
 
 

@@ -3358,7 +3358,10 @@ def osc_labor_law_calc():
     except Exception as e:
         return jsonify({"ok": False, "error": f"無法載入 skill：{e}"}), 500
 
+    from werkzeug.utils import secure_filename as _secure_filename
+
     uploaded_paths: list = []
+    temp_dir = None
     if request.content_type and "multipart" in request.content_type:
         task = request.form.get("task", "")
         try:
@@ -3368,7 +3371,7 @@ def osc_labor_law_calc():
         wage_by_year_raw = request.form.get("monthly_wage_by_year")
         temp_dir = tempfile.mkdtemp(prefix="labor_law_")
         for f in request.files.getlist("files[]") + request.files.getlist("file"):
-            dest = os.path.join(temp_dir, f.filename)
+            dest = os.path.join(temp_dir, _secure_filename(f.filename))
             f.save(dest)
             uploaded_paths.append(dest)
     else:
@@ -3398,15 +3401,18 @@ def osc_labor_law_calc():
         kwargs["file_paths"] = uploaded_paths
         kwargs.setdefault("mode", "calc_file")
 
-    from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
+    from concurrent.futures import TimeoutError as FuturesTimeoutError
+    from api.thread_pools import io_pool
     try:
-        with ThreadPoolExecutor(max_workers=1) as _pool:
-            _future = _pool.submit(mod.run, task, **kwargs)
-            result_text = _future.result(timeout=120)  # 120s hard cap
+        _future = io_pool.submit(mod.run, task, **kwargs)
+        result_text = _future.result(timeout=120)  # 120s hard cap
     except FuturesTimeoutError:
         return jsonify({"ok": False, "error": "skill execution timed out (120s)"}), 504
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
+    finally:
+        if temp_dir:
+            shutil.rmtree(temp_dir, ignore_errors=True)
 
     return jsonify({"ok": True, "result": result_text})
 

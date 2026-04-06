@@ -99,6 +99,35 @@ _REMIND_STATE_PATH = os.environ.get(
 
 
 def _load_remind_state() -> Dict[str, Any]:
+    """載入提醒狀態 — DB 為權威來源，JSON 僅在 DB 不可用時作為 fallback。"""
+    # Try DB first (authoritative)
+    db_sent_keys: list | None = None
+    try:
+        from skills.ops.dedup_db import list_done as _dd_list
+        rows = _dd_list("hearing_remind", limit=5000)
+        db_sent_keys = [r.get("item_key", "") for r in rows if r.get("item_key")]
+    except Exception:
+        pass
+
+    if db_sent_keys is not None:
+        # DB available — load JSON for non-sent state fields, but override sent keys from DB
+        state: Dict[str, Any] = {}
+        try:
+            from skills.ops.safe_state import safe_load_json
+            state = safe_load_json(_REMIND_STATE_PATH, default={})
+        except ImportError:
+            try:
+                with open(_REMIND_STATE_PATH, "r", encoding="utf-8") as f:
+                    state = json.load(f)
+            except Exception:
+                state = {}
+        # DB sent keys are authoritative — merge with any JSON-only keys
+        json_sent = set(state.get("sent") or [])
+        state["sent"] = list(set(db_sent_keys) | json_sent)
+        return state
+
+    # DB unreachable — fallback to JSON
+    logger.warning("hearing_remind: DB unavailable, falling back to JSON state")
     try:
         from skills.ops.safe_state import safe_load_json
         return safe_load_json(_REMIND_STATE_PATH, default={})
@@ -123,6 +152,15 @@ def _is_remind_key_sent(key: str, sent_keys: set) -> bool:
 
 
 def _save_remind_state(state: Dict[str, Any]):
+    """儲存提醒狀態 — DB 為權威寫入，JSON 為 cache（失敗不阻斷）。"""
+    # DB (authoritative): write all sent keys
+    try:
+        from skills.ops.dedup_db import mark_done as _dd_mark
+        for key in (state.get("sent") or []):
+            _dd_mark("hearing_remind", str(key), metadata={"source": "court_hearing_reminder"})
+    except Exception as e:
+        logger.error("hearing_remind: DB write failed: %s", e)
+    # JSON cache (best-effort, failure is non-fatal)
     try:
         from skills.ops.safe_state import safe_save_json
         safe_save_json(_REMIND_STATE_PATH, state, default=str)
@@ -138,14 +176,9 @@ def _save_remind_state(state: Dict[str, Any]):
         except Exception:
             if os.path.exists(tmp):
                 os.unlink(tmp)
-            raise
-    # DB dedup sync: write all sent keys
-    try:
-        from skills.ops.dedup_db import mark_done as _dd_mark
-        for key in (state.get("sent") or []):
-            _dd_mark("hearing_remind", str(key), metadata={"source": "court_hearing_reminder"})
-    except Exception:
-        pass
+            logger.warning("hearing_remind: JSON cache write failed (non-fatal)")
+    except Exception as e:
+        logger.warning("hearing_remind: JSON cache write failed (non-fatal): %s", e)
 
 
 # ── 通知 ────────────────────────────────────────────────────────────

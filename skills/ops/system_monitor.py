@@ -125,11 +125,11 @@ def check_service_health():
         "OpenClaw Cron Runner": "skills/ops/openclaw_cron_runner.py",
         "File Review Worker": "skills/ops/file_review_auto_worker.py",
         "Ollama (LLM)": "ollama",
-        "Dashboard": "http.server"
+        "Dashboard": "http.server",
     }
-    
+
     report = "🏥 **服務健康檢查**\n\n"
-    
+
     for name, keyword in services.items():
         try:
             # simple pgrep check
@@ -154,7 +154,20 @@ def check_service_health():
                 report += f"❌ {name}: 未運行\n"
         except Exception as e:
             report += f"⚠️ {name}: 無法檢測 ({e})\n"
-    
+
+    # --- GLM-OCR Vision Server (port 8082) ---
+    try:
+        import requests as _req
+        _vision_port = os.environ.get("MAGI_OMLX_VISION_PORT", "8082")
+        _vr = _req.get(f"http://127.0.0.1:{_vision_port}/v1/models", timeout=3)
+        if _vr.status_code == 200:
+            _models = [m.get("id", "?") for m in _vr.json().get("data", [])]
+            report += f"✅ GLM-OCR Vision Server (:{_vision_port}): 運行中 — {', '.join(_models)}\n"
+        else:
+            report += f"❌ GLM-OCR Vision Server (:{_vision_port}): HTTP {_vr.status_code}\n"
+    except Exception:
+        report += f"❌ GLM-OCR Vision Server (:{_vision_port}): 未運行\n"
+
     return report.strip()
 
 

@@ -63,6 +63,7 @@ logger = logging.getLogger("Daemon")
 # Processes
 # name -> {"proc": Popen, "command": str}
 processes = {}
+_processes_lock = threading.Lock()
 
 # ═══════════════════════════════════════════════════════════════════════
 # Unified Reaper Configuration (統一殭屍清理設定)
@@ -234,6 +235,7 @@ _LAUNCHD_SERVICES = [
 ]
 _LAUNCHD_CHECK_INTERVAL = 45  # seconds between periodic launchd health checks (was 120, shortened for faster oMLX recovery)
 _LAST_LAUNCHD_CHECK_AT = 0.0
+_prev_svc_status: dict = {}  # label -> bool(running); only log on state change
 
 
 def _kill_existing_daemons() -> int:
@@ -440,7 +442,9 @@ def start_process(name, command):
     logger.info(f"🚀 Starting {name}...")
     try:
         # 如果是重啟（processes 裡已有此 name），先正常停掉舊的
-        if name in processes:
+        with _processes_lock:
+            already_exists = name in processes
+        if already_exists:
             stop_process(name)
             time.sleep(0.5)
 
@@ -452,7 +456,8 @@ def start_process(name, command):
                                         capture_output=True, text=True, timeout=3)
                 pids = [p.strip() for p in result.stdout.strip().split("\n") if p.strip().isdigit()]
                 # 只殺不是我們自己子程序的
-                our_pids = {str(info["proc"].pid) for info in processes.values() if info.get("proc")}
+                with _processes_lock:
+                    our_pids = {str(info["proc"].pid) for info in processes.values() if info.get("proc")}
                 alien_pids = [p for p in pids if p not in our_pids]
                 if alien_pids:
                     for pid in alien_pids:
@@ -483,7 +488,8 @@ def start_process(name, command):
             start_new_session=True,
             cwd=os.path.dirname(os.path.abspath(__file__)),
         )
-        processes[name] = {"proc": proc, "command": command, "started": time.time()}
+        with _processes_lock:
+            processes[name] = {"proc": proc, "command": command, "started": time.time()}
         logger.info(f"✅ {name} started with PID {proc.pid}")
     except Exception as e:
         logger.error(f"❌ Failed to start {name}: {e}")
@@ -495,40 +501,50 @@ def _write_autopilot_kill_reason(pid: int, reason: str) -> None:
         reason_path = os.path.join(_MAGI_ROOT, f"_autopilot_kill_reason_{pid}")
         with open(reason_path, "w", encoding="utf-8") as f:
             f.write(reason)
-        # Consolidated log (append-only, periodic cleanup by autopilot)
+        # Consolidated log (append-only, with size-based rotation)
         import datetime as _dt
         log_path = os.path.join(_MAGI_ROOT, "_autopilot_kill_log.jsonl")
         import json as _json
         entry = _json.dumps({"ts": _dt.datetime.now().isoformat(), "pid": pid, "reason": reason}, ensure_ascii=False)
         with open(log_path, "a", encoding="utf-8") as f:
             f.write(entry + "\n")
+        # Rotate if exceeds 10 MB
+        try:
+            from api.events.sinks import rotate_jsonl
+            rotate_jsonl(log_path)
+        except Exception:
+            pass
     except Exception:
         pass
 
 def stop_process(name):
     """Stops a tracked subprocess."""
-    if name in processes:
-        logger.info(f"🛑 Stopping {name}...")
+    with _processes_lock:
+        rec = processes.get(name)
+        if not rec:
+            return
+        proc = rec["proc"]
+    logger.info(f"🛑 Stopping {name}...")
+    try:
+        _write_autopilot_kill_reason(proc.pid, f"daemon stop_process({name})：daemon 正在關閉或重啟程序")
         try:
-            proc = processes[name]["proc"]
-            _write_autopilot_kill_reason(proc.pid, f"daemon stop_process({name})：daemon 正在關閉或重啟程序")
+            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+        except ProcessLookupError:
+            logger.info(f"ℹ️ {name} process already exited before SIGTERM")
+        else:
             try:
-                os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-            except ProcessLookupError:
-                logger.info(f"ℹ️ {name} process already exited before SIGTERM")
-            else:
+                proc.wait(timeout=15)
+            except subprocess.TimeoutExpired:
+                logger.warning(f"⚠️ {name} did not exit after SIGTERM, sending SIGKILL")
                 try:
-                    proc.wait(timeout=15)
-                except subprocess.TimeoutExpired:
-                    logger.warning(f"⚠️ {name} did not exit after SIGTERM, sending SIGKILL")
-                    try:
-                        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-                        proc.wait(timeout=5)
-                    except (ProcessLookupError, Exception):
-                        pass
-            del processes[name]
-        except Exception as e:
-            logger.error(f"⚠️ Error stopping {name}: {e}")
+                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                    proc.wait(timeout=5)
+                except (ProcessLookupError, Exception):
+                    pass
+        with _processes_lock:
+            processes.pop(name, None)
+    except Exception as e:
+        logger.error(f"⚠️ Error stopping {name}: {e}")
 
 _restart_failures: Dict[str, int] = {}        # consecutive failure count
 _restart_last_exit: Dict[str, float] = {}     # timestamp of last exit
@@ -581,8 +597,9 @@ def _coordinated_restart(trigger_name: str):
     if night:
         # ── 夜間模式：只重啟掛掉的服務，不連帶殺其他 ──
         logger.info(f"🌙 Night mode: restarting only {trigger_name} (not full group)")
-        rec = processes.get(trigger_name)
-        cmd = rec.get("command") if rec else None
+        with _processes_lock:
+            rec = processes.get(trigger_name)
+            cmd = rec.get("command") if rec else None
         if cmd:
             start_process(trigger_name, cmd)
         return
@@ -593,16 +610,19 @@ def _coordinated_restart(trigger_name: str):
 
     # Save commands BEFORE stopping (stop_process deletes from processes dict)
     saved_commands: Dict[str, str] = {}
-    for name in _ORCHESTRATOR_GROUP:
-        rec = processes.get(name)
-        if rec and rec.get("command"):
-            saved_commands[name] = rec["command"]
+    with _processes_lock:
+        for name in _ORCHESTRATOR_GROUP:
+            rec = processes.get(name)
+            if rec and rec.get("command"):
+                saved_commands[name] = rec["command"]
 
     # Stop all group members (except the trigger, which is already dead)
     for name in _ORCHESTRATOR_GROUP:
         if name == trigger_name:
             continue
-        if name in processes and processes[name].get("proc"):
+        with _processes_lock:
+            has_proc = name in processes and processes[name].get("proc")
+        if has_proc:
             try:
                 stop_process(name)
             except Exception as e:
@@ -620,7 +640,9 @@ def _coordinated_restart(trigger_name: str):
 def monitor_processes():
     """Checks if processes are alive and restarts them with exponential backoff."""
     now = time.time()
-    for name, rec in list(processes.items()):
+    with _processes_lock:
+        snapshot = list(processes.items())
+    for name, rec in snapshot:
         proc = rec.get("proc")
         command = rec.get("command")
         if not proc:
@@ -633,27 +655,31 @@ def monitor_processes():
             started = rec.get("started", 0)
             uptime = now - started if started else 0
 
-            if uptime > _HEALTHY_THRESHOLD:
-                # Process ran long enough — was healthy, reset counter
-                _restart_failures[name] = 0
-            else:
-                _restart_failures[name] = _restart_failures.get(name, 0) + 1
+            with _processes_lock:
+                if uptime > _HEALTHY_THRESHOLD:
+                    # Process ran long enough — was healthy, reset counter
+                    _restart_failures[name] = 0
+                else:
+                    _restart_failures[name] = _restart_failures.get(name, 0) + 1
 
-            failures = _restart_failures[name]
+                failures = _restart_failures[name]
 
             if failures >= _MAX_CONSECUTIVE_FAILURES:
                 logger.critical(
                     f"🛑 {name} failed {failures} times consecutively — "
                     f"giving up auto-restart. Fix the issue and restart manually."
                 )
-                rec["proc"] = None  # stop monitoring
+                with _processes_lock:
+                    cur = processes.get(name)
+                    if cur is rec:
+                        rec["proc"] = None  # stop monitoring
                 continue
 
-            backoff = min(_BACKOFF_BASE * (2 ** (failures - 1)), _BACKOFF_MAX) if failures > 0 else 0
-            last_exit = _restart_last_exit.get(name, 0)
-            wait_until = last_exit + backoff
-
-            _restart_last_exit[name] = now
+            with _processes_lock:
+                backoff = min(_BACKOFF_BASE * (2 ** (failures - 1)), _BACKOFF_MAX) if failures > 0 else 0
+                last_exit = _restart_last_exit.get(name, 0)
+                wait_until = last_exit + backoff
+                _restart_last_exit[name] = now
 
             if now < wait_until:
                 remaining = int(wait_until - now)
@@ -667,6 +693,24 @@ def monitor_processes():
                 f"⚠️ {name} has died (exit={proc.returncode}, "
                 f"failures={failures}, backoff={int(backoff)}s). Restarting..."
             )
+
+            # WebsiteAdmin special guard: skip restart if port already bound
+            # (orphan child from previous daemon still alive)
+            if name == "WebsiteAdmin":
+                import socket as _sock
+                _wa_p = int(os.environ.get("WEBSITE_ADMIN_PORT", "8088"))
+                try:
+                    with _sock.socket(_sock.AF_INET, _sock.SOCK_STREAM) as _s:
+                        _s.settimeout(0.3)
+                        if _s.connect_ex(("127.0.0.1", _wa_p)) == 0:
+                            logger.info(f"ℹ️ {name} port {_wa_p} still bound — skip restart")
+                            with _processes_lock:
+                                cur = processes.get(name)
+                                if cur is rec:
+                                    rec["proc"] = None
+                            continue
+                except Exception:
+                    pass
 
             # Orchestrator-group: coordinated restart to keep modules in sync
             if name in _ORCHESTRATOR_GROUP:
@@ -794,8 +838,9 @@ def _write_state(extra: Dict[str, Any] | None = None) -> None:
         pass
 
 
-def _snapshot_counts() -> Dict[str, int]:
-    rows = _iter_ps_rows()
+def _snapshot_counts(rows: list[Dict[str, Any]] | None = None) -> Dict[str, int]:
+    if rows is None:
+        rows = _iter_ps_rows()
     core = 0
     worker = 0
     orphan = 0
@@ -841,7 +886,7 @@ def reap_orphan_workers(*, force: bool = False, dry_run: bool = False) -> str:
             ctrl = json.loads(ctrl_path.read_text(encoding="utf-8"))
             if not ctrl.get("enabled", True) and not force:
                 _STATE["reap"]["status"] = "已透過網頁介面停用 (Disabled)"
-                _write_state(_snapshot_counts())
+                _write_state(_snapshot_counts())  # no rows yet, let it fetch
                 return "⏸️ Reaper 已停用"
     except Exception:
         pass
@@ -853,10 +898,11 @@ def reap_orphan_workers(*, force: bool = False, dry_run: bool = False) -> str:
         managed_pids.add(os.getppid())
     except Exception:
         pass
-    for rec in processes.values():
-        p = rec.get("proc")
-        if p and getattr(p, "pid", None):
-            managed_pids.add(int(p.pid))
+    with _processes_lock:
+        for rec in processes.values():
+            p = rec.get("proc")
+            if p and getattr(p, "pid", None):
+                managed_pids.add(int(p.pid))
 
     killed: list[tuple[int, int, int, str, str]] = []  # (pid, ppid, age, cmd, reason)
     spared: list[str] = []
@@ -884,7 +930,8 @@ def reap_orphan_workers(*, force: bool = False, dry_run: bool = False) -> str:
         pass
 
     # ── Phase 2-4: ps-based scan ──
-    for row in _iter_ps_rows():
+    ps_rows = _iter_ps_rows()
+    for row in ps_rows:
         pid = int(row["pid"])
         ppid = int(row["ppid"])
         etimes = int(row["etimes"])
@@ -960,7 +1007,7 @@ def reap_orphan_workers(*, force: bool = False, dry_run: bool = False) -> str:
         {"pid": int(pid), "ppid": int(ppid), "age_sec": int(etimes), "cmd": str(cmd)[:240], "reason": reason}
         for pid, ppid, etimes, cmd, reason in killed[:20]
     ]
-    _write_state(_snapshot_counts())
+    _write_state(_snapshot_counts(rows=ps_rows))
 
     # ── Build report ──
     return _build_reap_report(killed, spared, dry_run)
@@ -1102,6 +1149,7 @@ def _ensure_launchd_services(*, startup: bool = False) -> None:
     On startup: kickstart + wait with health probe.
     Periodic: quick check + kickstart if needed.
     """
+    global _prev_svc_status
     for svc in _LAUNCHD_SERVICES:
         label = svc["label"]
         name = svc["name"]
@@ -1115,6 +1163,9 @@ def _ensure_launchd_services(*, startup: bool = False) -> None:
             continue
 
         running = _is_launchd_service_running(label)
+        prev_running = _prev_svc_status.get(label)
+        state_changed = (prev_running is None) or (prev_running != running)
+        _prev_svc_status[label] = running
 
         if running and not startup:
             # Periodic check: service is there, quick HTTP probe if configured
@@ -1122,10 +1173,15 @@ def _ensure_launchd_services(*, startup: bool = False) -> None:
                 logger.warning(f"⚠️ {name} ({label}) launchd ok but HTTP probe failed — kickstarting")
                 if not _kickstart_launchd_service(label):
                     logger.warning(f"⚠️ {name} ({label}) kickstart after probe failure also failed")
+            elif state_changed:
+                logger.info(f"✅ {name} ({label}) recovered — now running")
             continue
 
         if not running:
-            logger.info(f"🔧 {name} ({label}) not running — kickstarting...")
+            if state_changed or startup:
+                logger.info(f"🔧 {name} ({label}) not running — kickstarting...")
+            else:
+                logger.debug(f"🔧 {name} ({label}) still not running — kickstarting...")
             if not _kickstart_launchd_service(label):
                 logger.warning(f"⚠️ {name} ({label}) kickstart failed")
                 # For oMLX inference: attempt direct restart via omlx serve as last resort
@@ -1186,7 +1242,9 @@ def _periodic_launchd_check() -> None:
 def cleanup(signum, frame):
     """Graceful shutdown."""
     logger.info("🔻 Daemon shutting down...")
-    for name in list(processes.keys()):
+    with _processes_lock:
+        names = list(processes.keys())
+    for name in names:
         stop_process(name)
     sys.exit(0)
 
@@ -1268,6 +1326,17 @@ if __name__ == "__main__":
     except Exception as e:
         logger.warning(f"⚠️ Initial stale-worker reap failed: {e}")
 
+    # 0.6 Message queue: recover stale messages from previous crash & cleanup old
+    try:
+        from skills.memory.message_queue import get_queue as _get_mq
+        _mq = _get_mq()
+        _mq_recovered = _mq.recover_stale(stale_seconds=300)
+        if _mq_recovered:
+            logger.info("Message queue: recovered %d stale messages", _mq_recovered)
+        _mq.cleanup_old(days=7)
+    except Exception as _mq_err:
+        logger.warning(f"⚠️ Message queue startup recovery failed: {_mq_err}")
+
     # 0.7 Infrastructure services: ensure oMLX, OpenClaw Gateway, Caddy are alive
     if IS_MACOS:
         logger.info("🔌 Ensuring launchd infrastructure services are running...")
@@ -1281,7 +1350,7 @@ if __name__ == "__main__":
 
     # 0.9 Port cleanup: kill any process occupying our ports before starting services.
     #     This prevents "Address already in use" cascading failures.
-    _SERVICE_PORTS = [5002, 5003]
+    _SERVICE_PORTS = [5002, 5003, 8088]
     for _port in _SERVICE_PORTS:
         try:
             result = subprocess.run(
@@ -1328,9 +1397,22 @@ if __name__ == "__main__":
 
     # 2.9 Personal website admin server (port 8088, for Tailscale remote management)
     _website_admin = os.path.expanduser("~/Desktop/whalechao.github.io/admin/admin_server.py")
+    _wa_port = int(os.environ.get("WEBSITE_ADMIN_PORT", "8088"))
     if os.path.exists(_website_admin):
-        start_process("WebsiteAdmin", f"{_PYTHON} {_website_admin} --port 8088 --password whalelawyer")
-        logger.info("✅ Website Admin Server started on port 8088")
+        # Guard: skip if port already bound (e.g. previous daemon's child survived)
+        _wa_busy = False
+        try:
+            import socket as _sock
+            with _sock.socket(_sock.AF_INET, _sock.SOCK_STREAM) as _s:
+                _s.settimeout(0.3)
+                _wa_busy = _s.connect_ex(("127.0.0.1", _wa_port)) == 0
+        except Exception:
+            pass
+        if _wa_busy:
+            logger.info(f"ℹ️ WebsiteAdmin port {_wa_port} already in use — skipping (likely surviving child)")
+        else:
+            start_process("WebsiteAdmin", f"{_PYTHON} {_website_admin} --port {_wa_port} --password whalelawyer")
+            logger.info(f"✅ Website Admin Server started on port {_wa_port}")
 
     # 3. Start Keeper Sync Daemon (as background thread)
     try:
@@ -1347,6 +1429,6 @@ if __name__ == "__main__":
             reap_orphan_workers(force=False)
             if IS_MACOS:
                 _periodic_launchd_check()
-            time.sleep(10)
+            time.sleep(5)
     except KeyboardInterrupt:
         cleanup(None, None)

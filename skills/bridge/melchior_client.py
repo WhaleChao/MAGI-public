@@ -66,6 +66,7 @@ OMLX_WATCHDOG_CACHE_TTL_SEC = float(os.environ.get("MAGI_OMLX_WATCHDOG_CACHE_TTL
 OMLX_WATCHDOG_STALE_SEC = int(os.environ.get("MAGI_OMLX_WATCHDOG_STALE_SEC", "900"))
 _OMLX_MODELS_CACHE = {"ts": 0.0, "models": []}
 _OMLX_WATCHDOG_CACHE = {"ts": 0.0, "data": {}}
+_MODEL_CACHE_LOCK = threading.Lock()  # guards _MODEL_CACHE, _OMLX_MODELS_CACHE, _OPENAI_MODELS_CACHE
 
 # Model alias: Ollama names → oMLX names (for seamless migration)
 _OMLX_MODEL_ALIAS = {
@@ -148,6 +149,7 @@ _CIRCUIT_BREAKER = {
 }
 CIRCUIT_BREAKER_THRESHOLD = int(os.environ.get("MELCHIOR_CB_THRESHOLD", "3"))
 CIRCUIT_BREAKER_COOLDOWN_SEC = int(os.environ.get("MELCHIOR_CB_COOLDOWN_SEC", "180"))
+_CB_LOCK = threading.Lock()  # guards _CIRCUIT_BREAKER state
 _CB_COOLDOWN_BASE_SEC = 30  # exponential backoff: 30s → 90s → 180s (capped)
 _OLLAMA_PROBE_TIMEOUT_SEC = float(os.environ.get("MELCHIOR_OLLAMA_PROBE_TIMEOUT_SEC", "2.0"))
 CAP_CACHE_TTL_SEC = int(os.environ.get("MELCHIOR_CAP_CACHE_TTL_SEC", "10"))
@@ -246,9 +248,9 @@ def _get_json(url: str, timeout: int = 3) -> dict:
 _OMLX_CHAT_CIRCUIT = {"failures": 0, "tripped_at": 0.0}
 _OMLX_EMBED_CIRCUIT = {"failures": 0, "tripped_at": 0.0}
 _OMLX_VISION_CIRCUIT = {"failures": 0, "tripped_at": 0.0}
-_OMLX_CHAT_LOCK = threading.Lock()
-_OMLX_EMBED_LOCK = threading.Lock()
-_OMLX_VISION_LOCK = threading.Lock()
+_OMLX_CHAT_LOCK = threading.Lock()    # guards _OMLX_CHAT_CIRCUIT state
+_OMLX_EMBED_LOCK = threading.Lock()   # guards _OMLX_EMBED_CIRCUIT state
+_OMLX_VISION_LOCK = threading.Lock()  # guards _OMLX_VISION_CIRCUIT state
 
 
 def _get_omlx_watchdog_state(force_refresh: bool = False) -> dict:
@@ -288,41 +290,47 @@ def _omlx_watchdog_blocks_service() -> bool:
     status = str(state.get("status") or "").strip().lower()
     return suspend_until > now and status in {"restarting", "cooldown", "blocked", "recovering"}
 
-def _omlx_service_available(circuit: dict) -> bool:
+def _omlx_service_available(circuit: dict, lock: threading.Lock = None) -> bool:
     if not OMLX_ENABLED:
         return False
     if _omlx_watchdog_blocks_service():
         return False
-    if circuit["failures"] >= 3:
-        if time.monotonic() - circuit["tripped_at"] < 120:
-            return False
-        circuit["failures"] = 0
-        circuit["tripped_at"] = 0.0
+    _lk = lock or _OMLX_CHAT_LOCK
+    with _lk:
+        if circuit["failures"] >= 3:
+            if time.monotonic() - circuit["tripped_at"] < 120:
+                return False
+            circuit["failures"] = 0
+            circuit["tripped_at"] = 0.0
     return True
 
 
 def _omlx_available() -> bool:
     """Backward-compatible chat availability check."""
-    return _omlx_service_available(_OMLX_CHAT_CIRCUIT)
+    return _omlx_service_available(_OMLX_CHAT_CIRCUIT, _OMLX_CHAT_LOCK)
 
 
 def _omlx_embed_available() -> bool:
-    return _omlx_service_available(_OMLX_EMBED_CIRCUIT)
+    return _omlx_service_available(_OMLX_EMBED_CIRCUIT, _OMLX_EMBED_LOCK)
 
 
 def _omlx_vision_available() -> bool:
-    return _omlx_service_available(_OMLX_VISION_CIRCUIT)
+    return _omlx_service_available(_OMLX_VISION_CIRCUIT, _OMLX_VISION_LOCK)
 
 
-def _omlx_ok(circuit: dict):
-    circuit["failures"] = 0
-    circuit["tripped_at"] = 0.0
+def _omlx_ok(circuit: dict, lock: threading.Lock = None):
+    _lk = lock or _OMLX_CHAT_LOCK
+    with _lk:
+        circuit["failures"] = 0
+        circuit["tripped_at"] = 0.0
 
 
-def _omlx_fail(circuit: dict):
-    circuit["failures"] = circuit.get("failures", 0) + 1
-    if circuit["failures"] >= 3:
-        circuit["tripped_at"] = time.monotonic()
+def _omlx_fail(circuit: dict, lock: threading.Lock = None):
+    _lk = lock or _OMLX_CHAT_LOCK
+    with _lk:
+        circuit["failures"] = circuit.get("failures", 0) + 1
+        if circuit["failures"] >= 3:
+            circuit["tripped_at"] = time.monotonic()
 
 
 def list_omlx_models(force_refresh: bool = False) -> List[str]:
@@ -330,17 +338,19 @@ def list_omlx_models(force_refresh: bool = False) -> List[str]:
     if not OMLX_ENABLED:
         return []
     now = time.time()
-    if not force_refresh and _OMLX_MODELS_CACHE["models"] and (now - _OMLX_MODELS_CACHE["ts"]) < 30:
-        return list(_OMLX_MODELS_CACHE["models"])
+    with _MODEL_CACHE_LOCK:
+        if not force_refresh and _OMLX_MODELS_CACHE["models"] and (now - _OMLX_MODELS_CACHE["ts"]) < 30:
+            return list(_OMLX_MODELS_CACHE["models"])
     try:
         data = _get_json(f"{OMLX_CHAT_BASE}/v1/models", timeout=3)
         models = []
         for it in (data or {}).get("data", []):
             if isinstance(it, dict) and it.get("id"):
                 models.append(str(it["id"]).strip())
-        _OMLX_MODELS_CACHE["ts"] = now
-        _OMLX_MODELS_CACHE["models"] = sorted(set(models))
-        return list(_OMLX_MODELS_CACHE["models"])
+        with _MODEL_CACHE_LOCK:
+            _OMLX_MODELS_CACHE["ts"] = now
+            _OMLX_MODELS_CACHE["models"] = sorted(set(models))
+            return list(_OMLX_MODELS_CACHE["models"])
     except Exception:
         return []
 
@@ -452,11 +462,18 @@ def _chat_omlx(
     _lock = lock or _OMLX_CHAT_LOCK
     _base = (base_url or OMLX_CHAT_BASE).rstrip("/")
 
-    if not _omlx_service_available(_circuit):
+    if not _omlx_service_available(_circuit, _lock):
         return _result(False, "", "omlx_chat_disabled_or_circuit_open")
 
     raw_model = (model or OMLX_GENERAL_MODEL).strip()
-    use_model = _resolve_omlx_chat_model(raw_model)
+    # When routing to a non-chat oMLX server (e.g. vision on port 8082),
+    # skip model resolution — it queries port 8080's model list, causing
+    # the resolved model to be "gemma-4-..." which triggers 404 on the
+    # vision server that only serves GLM-OCR.
+    if base_url and base_url.rstrip("/") != OMLX_CHAT_BASE:
+        use_model = raw_model
+    else:
+        use_model = _resolve_omlx_chat_model(raw_model)
     messages = []
     if system_prompt:
         messages.append({"role": "system", "content": system_prompt})
@@ -491,8 +508,7 @@ def _chat_omlx(
         payload["chat_template_kwargs"] = {"enable_thinking": False}
 
     try:
-        with _lock:
-            data = _post_json(f"{_base}/v1/chat/completions", payload, timeout=max(10, int(timeout)))
+        data = _post_json(f"{_base}/v1/chat/completions", payload, timeout=max(10, int(timeout)))
         choices = data.get("choices") or []
         text = ""
         if choices and isinstance(choices, list):
@@ -500,15 +516,15 @@ def _chat_omlx(
             msg = (c0.get("message") or {}) if isinstance(c0.get("message"), dict) else {}
             text = (msg.get("content") or "").strip()
         if not text:
-            _omlx_fail(_circuit)
+            _omlx_fail(_circuit, _lock)
             return _result(False, "", "empty_omlx_response")
-        _omlx_ok(_circuit)
+        _omlx_ok(_circuit, _lock)
         ok = _result(True, text, "")
         ok["model"] = use_model
         ok["route"] = "omlx"
         return ok
     except Exception as e:
-        _omlx_fail(_circuit)
+        _omlx_fail(_circuit, _lock)
         return _result(False, "", f"omlx_failed: {e}")
 
 
@@ -524,22 +540,21 @@ def embed_omlx(text: str, model: str = "", retries: int = 2) -> list:
     last_err = None
     for attempt in range(1, retries + 1):
         try:
-            with _OMLX_EMBED_LOCK:
-                data = _post_json(
-                    f"{OMLX_EMBED_BASE}/v1/embeddings",
-                    {"model": use_model, "input": text},
-                    timeout=60,
-                )
+            data = _post_json(
+                f"{OMLX_EMBED_BASE}/v1/embeddings",
+                {"model": use_model, "input": text},
+                timeout=60,
+            )
             emb_data = (data or {}).get("data", [])
             if emb_data and isinstance(emb_data, list):
-                _omlx_ok(_OMLX_EMBED_CIRCUIT)
+                _omlx_ok(_OMLX_EMBED_CIRCUIT, _OMLX_EMBED_LOCK)
                 return emb_data[0].get("embedding", [])
             return []
         except Exception as e:
             last_err = e
             if attempt < retries:
                 time.sleep(1.0 * attempt)
-    _omlx_fail(_OMLX_EMBED_CIRCUIT)
+    _omlx_fail(_OMLX_EMBED_CIRCUIT, _OMLX_EMBED_LOCK)
     _logger.warning("omlx embed failed after %d attempts: %s", retries, last_err)
     return []
 
@@ -558,22 +573,21 @@ def embed_omlx_batch(texts: List[str], model: str = "", retries: int = 2) -> Lis
     last_err = None
     for attempt in range(1, retries + 1):
         try:
-            with _OMLX_EMBED_LOCK:
-                data = _post_json(
-                    f"{OMLX_EMBED_BASE}/v1/embeddings",
-                    {"model": use_model, "input": texts},
-                    timeout=90,
-                )
+            data = _post_json(
+                f"{OMLX_EMBED_BASE}/v1/embeddings",
+                {"model": use_model, "input": texts},
+                timeout=90,
+            )
             emb_data = (data or {}).get("data", [])
             if emb_data and isinstance(emb_data, list) and len(emb_data) == len(texts):
-                _omlx_ok(_OMLX_EMBED_CIRCUIT)
+                _omlx_ok(_OMLX_EMBED_CIRCUIT, _OMLX_EMBED_LOCK)
                 return [item.get("embedding", []) for item in emb_data]
             return [[] for _ in texts]
         except Exception as e:
             last_err = e
             if attempt < retries:
                 time.sleep(1.5 * attempt)
-    _omlx_fail(_OMLX_EMBED_CIRCUIT)
+    _omlx_fail(_OMLX_EMBED_CIRCUIT, _OMLX_EMBED_LOCK)
     _logger.warning("omlx batch embed failed after %d attempts: %s", retries, last_err)
     return [[] for _ in texts]
 
@@ -581,29 +595,31 @@ def embed_omlx_batch(texts: List[str], model: str = "", retries: int = 2) -> Lis
 def _cb_trip(reason: str = "") -> None:
     """Trip the circuit breaker after a remote failure."""
     import random
-    _CIRCUIT_BREAKER["consecutive_failures"] = _CIRCUIT_BREAKER.get("consecutive_failures", 0) + 1
-    if _CIRCUIT_BREAKER["consecutive_failures"] >= CIRCUIT_BREAKER_THRESHOLD:
-        level = _CIRCUIT_BREAKER.get("cooldown_level", 0)
-        # Exponential backoff with jitter: 30s → 90s → 180s (capped)
-        raw_cooldown = min(_CB_COOLDOWN_BASE_SEC * (3 ** level), CIRCUIT_BREAKER_COOLDOWN_SEC)
-        jitter = random.uniform(0.8, 1.2)
-        _CIRCUIT_BREAKER["tripped_at"] = time.monotonic()
-        _CIRCUIT_BREAKER["effective_cooldown"] = raw_cooldown * jitter
-        _CIRCUIT_BREAKER["cooldown_level"] = level + 1
-        _CIRCUIT_BREAKER["last_failure_reason"] = (reason or "unknown")[:200]
+    with _CB_LOCK:
+        _CIRCUIT_BREAKER["consecutive_failures"] = _CIRCUIT_BREAKER.get("consecutive_failures", 0) + 1
+        if _CIRCUIT_BREAKER["consecutive_failures"] >= CIRCUIT_BREAKER_THRESHOLD:
+            level = _CIRCUIT_BREAKER.get("cooldown_level", 0)
+            # Exponential backoff with jitter: 30s → 90s → 180s (capped)
+            raw_cooldown = min(_CB_COOLDOWN_BASE_SEC * (3 ** level), CIRCUIT_BREAKER_COOLDOWN_SEC)
+            jitter = random.uniform(0.8, 1.2)
+            _CIRCUIT_BREAKER["tripped_at"] = time.monotonic()
+            _CIRCUIT_BREAKER["effective_cooldown"] = raw_cooldown * jitter
+            _CIRCUIT_BREAKER["cooldown_level"] = level + 1
+            _CIRCUIT_BREAKER["last_failure_reason"] = (reason or "unknown")[:200]
 
 
 def _cb_reset() -> None:
     """Reset circuit breaker after a successful remote call."""
-    _CIRCUIT_BREAKER["consecutive_failures"] = 0
-    _CIRCUIT_BREAKER["tripped_at"] = 0.0
-    _CIRCUIT_BREAKER["last_failure_reason"] = ""
-    _CIRCUIT_BREAKER["cooldown_level"] = 0
-    _CIRCUIT_BREAKER.pop("effective_cooldown", None)
+    with _CB_LOCK:
+        _CIRCUIT_BREAKER["consecutive_failures"] = 0
+        _CIRCUIT_BREAKER["tripped_at"] = 0.0
+        _CIRCUIT_BREAKER["last_failure_reason"] = ""
+        _CIRCUIT_BREAKER["cooldown_level"] = 0
+        _CIRCUIT_BREAKER.pop("effective_cooldown", None)
 
 
-def _cb_is_open() -> bool:
-    """Check if circuit breaker is currently open (should skip remote)."""
+def _cb_is_open_unlocked() -> bool:
+    """Check if circuit breaker is open. Caller MUST hold _CB_LOCK."""
     if _CIRCUIT_BREAKER.get("consecutive_failures", 0) < CIRCUIT_BREAKER_THRESHOLD:
         return False
     tripped = _CIRCUIT_BREAKER.get("tripped_at", 0.0)
@@ -617,17 +633,24 @@ def _cb_is_open() -> bool:
     return True
 
 
+def _cb_is_open() -> bool:
+    """Check if circuit breaker is currently open (should skip remote)."""
+    with _CB_LOCK:
+        return _cb_is_open_unlocked()
+
+
 def get_circuit_breaker_status() -> dict:
     """Public API to check circuit breaker state (for monitoring/patrol)."""
-    is_open = _cb_is_open()
-    return {
-        "open": is_open,
-        "consecutive_failures": _CIRCUIT_BREAKER.get("consecutive_failures", 0),
-        "threshold": CIRCUIT_BREAKER_THRESHOLD,
-        "cooldown_sec": CIRCUIT_BREAKER_COOLDOWN_SEC,
-        "last_failure_reason": _CIRCUIT_BREAKER.get("last_failure_reason", ""),
-        "status": "OPEN (degraded to local)" if is_open else "CLOSED (remote OK)",
-    }
+    with _CB_LOCK:
+        is_open = _cb_is_open_unlocked()
+        return {
+            "open": is_open,
+            "consecutive_failures": _CIRCUIT_BREAKER.get("consecutive_failures", 0),
+            "threshold": CIRCUIT_BREAKER_THRESHOLD,
+            "cooldown_sec": CIRCUIT_BREAKER_COOLDOWN_SEC,
+            "last_failure_reason": _CIRCUIT_BREAKER.get("last_failure_reason", ""),
+            "status": "OPEN (degraded to local)" if is_open else "CLOSED (remote OK)",
+        }
 
 
 def _remote_online_quick() -> bool:
@@ -680,13 +703,14 @@ def _remote_online_quick() -> bool:
 
 def _list_ollama_models(host: str = "localhost", port: int = 11434, force_refresh: bool = False) -> List[str]:
     now = time.time()
-    if (
-        host == MELCHIOR_HOST
-        and (not force_refresh)
-        and _MODEL_CACHE["models"]
-        and (now - float(_MODEL_CACHE["ts"])) < MODEL_CACHE_TTL_SEC
-    ):
-        return list(_MODEL_CACHE["models"])
+    with _MODEL_CACHE_LOCK:
+        if (
+            host == MELCHIOR_HOST
+            and (not force_refresh)
+            and _MODEL_CACHE["models"]
+            and (now - float(_MODEL_CACHE["ts"])) < MODEL_CACHE_TTL_SEC
+        ):
+            return list(_MODEL_CACHE["models"])
 
     try:
         resp = SESSION.get(f"http://{host}:{port}/api/tags", timeout=5)
@@ -703,8 +727,9 @@ def _list_ollama_models(host: str = "localhost", port: int = 11434, force_refres
                     models.append(short)
         models = sorted(set(models))
         if host == MELCHIOR_HOST:
-            _MODEL_CACHE["ts"] = now
-            _MODEL_CACHE["models"] = list(models)
+            with _MODEL_CACHE_LOCK:
+                _MODEL_CACHE["ts"] = now
+                _MODEL_CACHE["models"] = list(models)
         return models
     except Exception:
         return []
@@ -717,8 +742,9 @@ def list_openai_v1_models(force_refresh: bool = False) -> List[str]:
         return []
     
     now = time.time()
-    if (not force_refresh) and _OPENAI_MODELS_CACHE.get("models") and (now - float(_OPENAI_MODELS_CACHE.get("ts") or 0.0)) < OPENAI_MODELS_CACHE_TTL_SEC:
-        return list(_OPENAI_MODELS_CACHE["models"])
+    with _MODEL_CACHE_LOCK:
+        if (not force_refresh) and _OPENAI_MODELS_CACHE.get("models") and (now - float(_OPENAI_MODELS_CACHE.get("ts") or 0.0)) < OPENAI_MODELS_CACHE_TTL_SEC:
+            return list(_OPENAI_MODELS_CACHE["models"])
     def _parse(data: dict) -> List[str]:
         items = (data or {}).get("data") or []
         models = []
@@ -733,10 +759,11 @@ def list_openai_v1_models(force_refresh: bool = False) -> List[str]:
             data = _get_json(f"{base}/models", timeout=4)
             models = _parse(data)
             if models:
-                _OPENAI_MODELS_CACHE["ts"] = now
-                _OPENAI_MODELS_CACHE["models"] = list(models)
-                # Store last-good base for chat calls.
-                _OPENAI_MODELS_CACHE["base"] = base
+                with _MODEL_CACHE_LOCK:
+                    _OPENAI_MODELS_CACHE["ts"] = now
+                    _OPENAI_MODELS_CACHE["models"] = list(models)
+                    # Store last-good base for chat calls.
+                    _OPENAI_MODELS_CACHE["base"] = base
                 return models
         except Exception:
             continue

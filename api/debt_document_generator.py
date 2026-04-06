@@ -40,12 +40,22 @@ _TEMPLATE_DIR = os.path.join(_MAGI_ROOT, "templates", "debt_templates")
 # ═══════════════════════════════════════════════════════════════
 
 COURT_OPTIONS = [
+    # 地方法院
     "臺灣臺北地方法院", "臺灣新北地方法院", "臺灣士林地方法院", "臺灣桃園地方法院",
     "臺灣新竹地方法院", "臺灣苗栗地方法院", "臺灣臺中地方法院", "臺灣南投地方法院",
     "臺灣彰化地方法院", "臺灣雲林地方法院", "臺灣嘉義地方法院", "臺灣臺南地方法院",
     "臺灣高雄地方法院", "臺灣橋頭地方法院", "臺灣屏東地方法院", "臺灣臺東地方法院",
     "臺灣花蓮地方法院", "臺灣宜蘭地方法院", "臺灣基隆地方法院", "臺灣澎湖地方法院",
-    "臺灣高雄少年及家事法院", "福建金門地方法院", "福建連江地方法院",
+    "福建金門地方法院", "福建連江地方法院",
+    # 專業法院
+    "臺灣高雄少年及家事法院", "智慧財產及商業法院",
+    # 高等法院
+    "臺灣高等法院", "臺灣高等法院臺中分院", "臺灣高等法院臺南分院",
+    "臺灣高等法院高雄分院", "臺灣高等法院花蓮分院",
+    # 高等行政法院
+    "臺北高等行政法院", "臺中高等行政法院", "高雄高等行政法院",
+    # 最高法院
+    "最高法院", "最高行政法院",
 ]
 
 EXPENSE_CATEGORIES = [
@@ -602,7 +612,7 @@ def save_address_to_csv(creditor_name: str, address: str, csv_type: str = "bank"
                 writer.writerow(header)
             writer.writerows(existing_rows)
 
-        logger.info("地址已保存: %s -> %s", creditor_name, address)
+        logger.info("地址已保存: %s -> [REDACTED]", creditor_name[:1] + "**")
         return True
     except Exception as e:
         logger.error("保存地址到 CSV 失敗: %s", e)

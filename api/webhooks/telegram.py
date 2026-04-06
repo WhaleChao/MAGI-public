@@ -135,6 +135,8 @@ def _telegram_mark_seen_update(update_id: int | None) -> bool:
     for k, ts in list(_TELEGRAM_SEEN_UPDATES.items()):
         if ts < stale_before:
             _TELEGRAM_SEEN_UPDATES.pop(k, None)
+    if len(_TELEGRAM_SEEN_UPDATES) > 5000:
+        _TELEGRAM_SEEN_UPDATES.clear()
     if update_id in _TELEGRAM_SEEN_UPDATES:
         return True
     _TELEGRAM_SEEN_UPDATES[update_id] = now
@@ -502,11 +504,21 @@ def _telegram_process_async(
     attachment: dict | None = None,
     reply_to_message_id: int | None = None,
     channel_context: dict | None = None,
+    _mq_msg_id: str | None = None,
 ) -> None:
     orchestrator = _get_orchestrator()
     # OBS-1: correlation ID  /  OBS-2: latency tracking
     correlation_id = f"magi-{uuid.uuid4().hex[:12]}"
     _start_ts = time.monotonic()
+    # Message-queue: claim
+    _mq_inst = None
+    if _mq_msg_id:
+        try:
+            from skills.memory.message_queue import get_queue as _get_mq
+            _mq_inst = _get_mq()
+            _mq_inst.claim(_mq_msg_id)
+        except Exception:
+            _log.debug("silent-catch at %s:%s", __name__, "_telegram_process_async/mq_claim", exc_info=True)
     tmp_path = ""
     try:
         if attachment:
@@ -530,8 +542,20 @@ def _telegram_process_async(
                 channel_context=channel_context,
             )
         _telegram_send_orchestrator_response(chat_id, str(response_text or ""), reply_to_message_id=reply_to_message_id)
+        # Message-queue: mark success
+        if _mq_inst and _mq_msg_id:
+            try:
+                _mq_inst.complete(_mq_msg_id)
+            except Exception:
+                _log.debug("silent-catch at %s:%s", __name__, "_telegram_process_async/mq_complete", exc_info=True)
     except Exception as e:
         logger.error(f"❌ Telegram processing error: {e}")
+        # Message-queue: mark failure (may retry)
+        if _mq_inst and _mq_msg_id:
+            try:
+                _mq_inst.fail(_mq_msg_id, str(e))
+            except Exception:
+                _log.debug("silent-catch at %s:%s", __name__, "_telegram_process_async/mq_fail", exc_info=True)
         _telegram_send_text_to(chat_id, "⚠️ 系統暫時忙碌中，請稍後再試一次。")
     finally:
         if tmp_path and os.path.exists(tmp_path):
@@ -797,15 +821,16 @@ def _telegram_handle_update(update: dict, from_poll: bool = False) -> dict:
     long_task = _likely_long_task(user_text, attachment) or recent_followup
     if long_task:
         ack_msg = "⏳ 已收到，正在處理中。完成後我會回覆結果。"
-        if attachment and attachment.get("type") in ("file", "audio"):
+        if attachment and attachment.get("type") in ("file", "audio", "image"):
             try:
                 att_path = attachment.get("path", "")
                 att_size = os.path.getsize(att_path) if att_path and os.path.exists(att_path) else 0
+                att_fname = attachment.get("filename") or os.path.basename(att_path) or "附件"
                 if att_size > 0:
                     from api.orchestrator import Orchestrator
                     ack_msg = Orchestrator.estimate_file_processing_time(
                         file_size_bytes=att_size,
-                        filename=attachment.get("filename", ""),
+                        filename=att_fname,
                         prompt=user_text or "",
                         file_path=att_path,
                     )
@@ -853,6 +878,22 @@ def _telegram_handle_update(update: dict, from_poll: bool = False) -> dict:
     except Exception as _ctx_err:
         logger.debug(f"Telegram channel_context build skipped: {_ctx_err}")
 
+    # Persist to message queue before returning OK (at-least-once delivery)
+    _mq_msg_id = None
+    try:
+        from skills.memory.message_queue import get_queue as _get_mq
+        _mq = _get_mq()
+        _mq_msg_id = _mq.enqueue(
+            platform="Telegram",
+            user_id=user_id,
+            user_text=user_text,
+            role=role,
+            chat_id=str(chat_id or ""),
+            attachment=json.dumps(attachment) if attachment else "{}",
+        )
+    except Exception as _mq_err:
+        logger.warning(f"⚠️ MQ enqueue failed (non-fatal): {_mq_err}")
+
     _CHANNEL_BG_EXECUTOR.submit(
         _telegram_process_async,
         chat_id,
@@ -862,6 +903,7 @@ def _telegram_handle_update(update: dict, from_poll: bool = False) -> dict:
         attachment,
         msg.get("message_id"),
         _tg_channel_ctx,
+        _mq_msg_id,
     )
     return {"ok": True}
 

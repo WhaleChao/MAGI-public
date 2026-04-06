@@ -60,9 +60,9 @@ def encode_image(image_path):
 
 def analyze_image_local(image_path, prompt="Describe this image"):
     """
-    Local vision analysis: oMLX first, then Ollama fallback chain.
-    General vision: oMLX/Gemma-3 → taide-12b (text-only fallback)
-    OCR-specific:   oMLX/GLM-OCR → taide-12b (text-only fallback)
+    Local vision analysis chain:
+    Primary: GLM-OCR on vision server (port 8082) — best for Chinese OCR
+    Fallback: Gemma 4 on text server (port 8080)
     """
     base64_image = encode_image(image_path)
     if not base64_image:
@@ -71,7 +71,9 @@ def analyze_image_local(image_path, prompt="Describe this image"):
     p_low = (prompt or "").lower()
     is_ocr = bool(re.search(r"(ocr|辨識|文字|讀取|transcribe)", p_low, re.IGNORECASE))
 
-    # ── Primary: oMLX vision server (port 8082) ──
+    # ── Primary: GLM-OCR on vision server (port 8082) ──
+    # GLM-OCR bf16 is specialized for Chinese document OCR, far superior
+    # to quantized Gemma 4 for reading text from screenshots.
     try:
         _chat_omlx = getattr(melchior_client, "_chat_omlx", None)
         _vision_avail = getattr(melchior_client, "_omlx_vision_available", None)
@@ -85,47 +87,46 @@ def analyze_image_local(image_path, prompt="Describe this image"):
             vision_base = getattr(melchior_client, "OMLX_VISION_BASE", "http://127.0.0.1:8082")
             vision_circuit = getattr(melchior_client, "_OMLX_VISION_CIRCUIT", None)
             vision_lock = getattr(melchior_client, "_OMLX_VISION_LOCK", None)
-            logger.info(f"💾 [oMLX-vision] Trying vision model: {omlx_model} on {vision_base}...")
+            logger.info(f"💾 [GLM-OCR] Trying vision model: {omlx_model} on {vision_base}...")
             r = _chat_omlx(
                 prompt=prompt, model=omlx_model, timeout=60,
                 temperature=0.3, max_tokens=2048, images=[base64_image],
                 base_url=vision_base, circuit=vision_circuit, lock=vision_lock,
             )
             if r.get("success") and r.get("response"):
-                logger.info(f"✅ oMLX Vision Response from {omlx_model}.")
+                logger.info(f"✅ GLM-OCR Vision Response from {omlx_model}.")
                 return f"[oMLX/{omlx_model}] {r['response'].strip()}"
-            logger.debug("oMLX vision returned empty, falling back...")
+            logger.debug("GLM-OCR vision returned empty, falling back to Gemma 4...")
     except Exception as e:
-        logger.debug(f"oMLX vision failed: {e}, falling back...")
+        logger.debug(f"GLM-OCR vision failed: {e}, falling back to Gemma 4...")
 
-    # ── Fallback: oMLX vision via OpenAI-compatible API ──
-    vision_chain = [TEXT_PRIMARY_MODEL]
-
-    for model in vision_chain:
-        logger.info(f"💾 [LOCAL] Trying vision model: {model}...")
-        payload = {
-            "model": model,
-            "messages": [{
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": prompt},
-                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}},
-                ],
-            }],
-            "stream": False,
-            "max_tokens": 2048,
-        }
-        try:
-            response = _get_session().post(LOCAL_OLLAMA_URL, json=payload, timeout=120)
-            if response.status_code == 200:
-                choices = response.json().get("choices") or []
-                description = (choices[0].get("message", {}).get("content", "") if choices else "").strip()
-                if description:
-                    logger.info(f"✅ Local Vision Response from {model}.")
-                    return f"[Local Casper/{model}] {description}"
-            logger.warning(f"⚠️ {model} returned empty or error ({response.status_code}), trying next...")
-        except Exception as e:
-            logger.warning(f"⚠️ {model} failed: {e}, trying next...")
+    # ── Fallback: Gemma 4 on text server (port 8080) ──
+    # Note: Gemma 4 4-bit has weak Chinese OCR but can describe image structure.
+    logger.info(f"💾 [Gemma4] Trying fallback vision on text server: {TEXT_PRIMARY_MODEL}...")
+    payload = {
+        "model": TEXT_PRIMARY_MODEL,
+        "messages": [{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": prompt},
+                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}},
+            ],
+        }],
+        "stream": False,
+        "max_tokens": 2048,
+        "temperature": 0.3,
+    }
+    try:
+        response = _get_session().post(LOCAL_OLLAMA_URL, json=payload, timeout=120)
+        if response.status_code == 200:
+            choices = response.json().get("choices") or []
+            description = (choices[0].get("message", {}).get("content", "") if choices else "").strip()
+            if description:
+                logger.info(f"✅ Gemma4 fallback vision response.")
+                return f"[Gemma4/{TEXT_PRIMARY_MODEL}] {description}"
+        logger.warning(f"⚠️ Gemma4 returned empty or error ({response.status_code})")
+    except Exception as e:
+        logger.warning(f"⚠️ Gemma4 vision failed: {e}")
 
     return "Local Vision Error: all vision models failed"
 
@@ -133,8 +134,8 @@ def analyze_image_local(image_path, prompt="Describe this image"):
 def analyze_image(image_path, prompt="Describe this image"):
     """
     Sends an image for analysis using local vision chain.
-    Primary: oMLX (Gemma-3 vision / GLM-OCR)
-    Fallback: taide-12b (text-only, no image support)
+    Primary: GLM-OCR on vision server (port 8082, best for Chinese OCR)
+    Fallback: Gemma 4 on text server (port 8080)
     """
     logger.info(f"👁️ Vision request: {image_path}")
     p = str(prompt or "").strip() or "Describe this image in detail"

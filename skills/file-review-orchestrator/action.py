@@ -770,18 +770,52 @@ COURT_ALIASES = {
     "台中高分院": "TCH",
     "台南高分院": "TNH",
     "花蓮高分院": "HLH",
+    # 橋頭地院
+    "橋頭": "CTD",
+    # 高等行政法院
+    "臺北高等行政法院": "TPAA", "台北高等行政法院": "TPAA",
+    "臺中高等行政法院": "TCAA", "台中高等行政法院": "TCAA",
+    "高雄高等行政法院": "KSAA",
+    # 專業法院
+    "智慧財產及商業法院": "IPC", "智財法院": "IPC",
+    "少年及家事法院": "KJF", "高雄少家法院": "KJF",
+    # 最高法院
+    "最高法院": "TPS",
+    "最高行政法院": "TPA",
 }
 
 
 def _resolve_court_code(text: str) -> str:
-    """Resolve court name alias to code."""
+    """Resolve court name alias to code, with suffix stripping and 台→臺 normalization."""
     text = text.strip()
-    if text.upper() in ("TPD", "PCD", "SLD", "TYD", "SCD", "MLD", "TCD",
-                         "CHD", "NTD", "ULD", "CYD", "TND", "KSD", "PTD",
-                         "HLD", "TTD", "ILD", "KLD", "PHD", "KMD", "LCD",
-                         "TPH", "KSH", "TCH", "TNH", "HLH"):
-        return text.upper()
-    return COURT_ALIASES.get(text, text)
+    # Direct code match
+    up = text.upper()
+    _ALL_CODES = {
+        "TPD", "PCD", "SLD", "TYD", "SCD", "MLD", "TCD",
+        "CHD", "NTD", "ULD", "CYD", "TND", "KSD", "PTD",
+        "HLD", "TTD", "ILD", "KLD", "PHD", "KMD", "LCD",
+        "CTD", "TPH", "KSH", "TCH", "TNH", "HLH",
+        "TPAA", "TCAA", "KSAA", "TPA", "TPS", "IPC", "KJF",
+    }
+    if up in _ALL_CODES:
+        return up
+    # Exact alias match
+    if text in COURT_ALIASES:
+        return COURT_ALIASES[text]
+    # 台→臺 normalization then retry
+    normalized = text.replace("台", "臺")
+    if normalized in COURT_ALIASES:
+        return COURT_ALIASES[normalized]
+    # Strip common suffixes: "基隆地院" → "基隆" → KLD
+    for suffix in ("地方法院", "地院", "法院", "高分院", "高等法院"):
+        if text.endswith(suffix):
+            core = text[:-len(suffix)]
+            if core in COURT_ALIASES:
+                return COURT_ALIASES[core]
+            core_n = core.replace("台", "臺")
+            if core_n in COURT_ALIASES:
+                return COURT_ALIASES[core_n]
+    return text
 
 
 # ---------------------------------------------------------------------------

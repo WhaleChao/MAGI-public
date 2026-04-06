@@ -12,7 +12,7 @@ import re
 import shutil
 import time
 import uuid
-from collections import defaultdict
+from collections import defaultdict, deque
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
@@ -42,7 +42,7 @@ _telegram_send_orchestrator_response = None
 _append_channel_delivery_audit = None
 _maybe_handle_laf_captcha_reply = None
 _maybe_handle_generic_captcha_reply = None
-WEB_NOTIFICATIONS = defaultdict(list)
+WEB_NOTIFICATIONS = defaultdict(lambda: deque(maxlen=200))
 
 # Thread pools — imported from server at init time
 _CHANNEL_BG_EXECUTOR = None
@@ -1154,26 +1154,37 @@ def _line_send_messages(event, user_id: str, messages, prefer_push: bool = False
 # 12. Message processing (process_message_async)
 # ===================================================================
 
-def process_message_async(event, user_id, user_text, attachment, role="user", long_task: bool | None = None, already_acked: bool = False):
+def process_message_async(event, user_id, user_text, attachment, role="user", long_task: bool | None = None, already_acked: bool = False, _mq_msg_id: str | None = None):
     # OBS-1: correlation ID  /  OBS-2: latency tracking
     correlation_id = f"magi-{uuid.uuid4().hex[:12]}"
     _start_ts = time.monotonic()
+    # Message-queue: claim
+    _mq_inst = None
+    if _mq_msg_id:
+        try:
+            from skills.memory.message_queue import get_queue as _get_mq
+            _mq_inst = _get_mq()
+            _mq_inst.claim(_mq_msg_id)
+        except Exception:
+            _log.debug("silent-catch at %s:%s", __name__, "process_message_async/mq_claim", exc_info=True)
     try:
         if long_task is None:
             long_task = _likely_long_task(user_text, attachment)
         if long_task and not already_acked:
             # Reply quickly (within reply_token lifetime), then push final result.
             ack_msg = "⏳ 已收到，正在處理中。完成後我會用推播回覆結果。"
-            if attachment and attachment.get("type") in ("file", "audio"):
+            if attachment and attachment.get("type") in ("file", "audio", "image"):
                 try:
                     att_path = attachment.get("path", "")
                     att_size = os.path.getsize(att_path) if att_path and os.path.exists(att_path) else 0
+                    att_fname = attachment.get("filename") or os.path.basename(att_path) or "附件"
                     if att_size > 0:
                         from api.orchestrator import Orchestrator
                         ack_msg = Orchestrator.estimate_file_processing_time(
                             file_size_bytes=att_size,
-                            filename=attachment.get("filename", ""),
+                            filename=att_fname,
                             prompt=user_text or "",
+                            file_path=att_path,
                         )
                 except Exception:
                     _log.debug("silent-catch at %s:%s", __name__, "process_message_async/ack_est", exc_info=True)
@@ -1262,14 +1273,35 @@ def process_message_async(event, user_id, user_text, attachment, role="user", lo
                 # Static system responses (command tables, status) don't need LLM review.
                 _skip = response_text.lstrip().startswith(("🛠️", "📊", "✅ 系統", "⚡", "🔧", "📋"))
                 _line_send_text(event, user_id, response_text, prefer_push=long_task, skip_llm=_skip)
+        # Message-queue: mark success
+        if _mq_inst and _mq_msg_id:
+            try:
+                _mq_inst.complete(_mq_msg_id)
+            except Exception:
+                _log.debug("silent-catch at %s:%s", __name__, "process_message_async/mq_complete", exc_info=True)
     except Exception as e:
         logger.error(f"❌ Async Processing Error: {e}")
+        # Message-queue: mark failure (may retry)
+        if _mq_inst and _mq_msg_id:
+            try:
+                _mq_inst.fail(_mq_msg_id, str(e))
+            except Exception:
+                _log.debug("silent-catch at %s:%s", __name__, "process_message_async/mq_fail", exc_info=True)
         try:
             # Best effort: reply if possible, otherwise push.
             _line_send_text(event, user_id, "❌ 系統暫時忙碌，請稍後再試。", prefer_push=False)
         except Exception:
             _log.debug("silent-catch at %s:%s", __name__, "process_message_async/err_reply", exc_info=True)
     finally:
+        # Clean up attachment temp file after processing completes (success or failure)
+        if attachment:
+            att_path = str(attachment.get("path") or "").strip()
+            if att_path and att_path.startswith("/tmp/"):
+                try:
+                    if os.path.exists(att_path):
+                        _safe_remove_tmp(att_path)
+                except Exception:
+                    _log.debug("silent-catch at %s:%s", __name__, "process_message_async/att_cleanup", exc_info=True)
         # OBS-2: record processing latency
         elapsed_ms = int((time.monotonic() - _start_ts) * 1000)
         if _append_channel_delivery_audit:
@@ -1419,8 +1451,23 @@ def _register_handler_callbacks():
             except Exception as enqueue_err:
                 logger.error(f"❌ LINE attachment job enqueue failed: {enqueue_err}")
 
+        # Persist to message queue before returning OK (at-least-once delivery)
+        _mq_msg_id = None
+        try:
+            from skills.memory.message_queue import get_queue as _get_mq
+            _mq = _get_mq()
+            _mq_msg_id = _mq.enqueue(
+                platform="LINE",
+                user_id=user_id,
+                user_text=user_text,
+                role=role,
+                attachment=json.dumps(attachment) if attachment else "{}",
+            )
+        except Exception as _mq_err:
+            logger.warning(f"⚠️ MQ enqueue failed (non-fatal): {_mq_err}")
+
         # Run in bounded background pool
-        _CHANNEL_BG_EXECUTOR.submit(process_message_async, event, user_id, user_text, attachment, role, long_task, True)
+        _CHANNEL_BG_EXECUTOR.submit(process_message_async, event, user_id, user_text, attachment, role, long_task, True, _mq_msg_id)
 
         # Return immediately to avoid LINE timeout
         return 'OK'
@@ -1451,9 +1498,18 @@ def _register_handler_callbacks():
 
         temp_path = f"/tmp/{message_id}.{ext}"
 
-        with open(temp_path, 'wb') as fd:
-            for chunk in message_content.iter_content():
-                fd.write(chunk)
+        try:
+            with open(temp_path, 'wb') as fd:
+                for chunk in message_content.iter_content():
+                    fd.write(chunk)
+        except Exception:
+            # Clean up partially-written temp file on download failure
+            try:
+                if os.path.exists(temp_path):
+                    _safe_remove_tmp(temp_path)
+            except Exception:
+                _log.debug("silent-catch at %s:%s", __name__, "handle_content/download_cleanup", exc_info=True)
+            raise
 
         logger.info(f"💾 Saved to {temp_path}")
 

@@ -28,27 +28,45 @@ _conn_local = threading.local()
 
 
 def _get_conn():
-    """取得 thread-local DB 連線。"""
+    """取得 thread-local DB 連線，支援 failover（遠端→本地）。"""
     conn = getattr(_conn_local, "conn", None)
     if conn is not None:
         try:
             conn.ping(reconnect=True)
             return conn
         except Exception:
-            pass
+            _conn_local.conn = None
 
     import mysql.connector
-    conn = mysql.connector.connect(
-        host=os.environ.get("OSC_DB_HOST", "127.0.0.1"),
-        port=int(os.environ.get("OSC_DB_PORT", 3306)),
-        user=os.environ.get("OSC_DB_USER", "casper_service"),
-        password=os.environ.get("OSC_DB_PASSWORD", ""),
-        database="law_firm_data",
-        connect_timeout=10,
-        autocommit=True,
-    )
-    _conn_local.conn = conn
-    return conn
+
+    primary_host = os.environ.get("OSC_DB_HOST", "127.0.0.1")
+    port = int(os.environ.get("OSC_DB_PORT", 3306))
+    user = os.environ.get("OSC_DB_USER", "casper_service")
+    password = os.environ.get("OSC_DB_PASSWORD", "")
+
+    hosts = [primary_host]
+    if primary_host != "127.0.0.1":
+        hosts.append("127.0.0.1")
+
+    for host in hosts:
+        try:
+            conn = mysql.connector.connect(
+                host=host,
+                port=port,
+                user=user,
+                password=password,
+                database="law_firm_data",
+                connect_timeout=5,
+                autocommit=True,
+            )
+            if host != primary_host:
+                logger.info("dedup DB failover: using local DB (127.0.0.1)")
+            _conn_local.conn = conn
+            return conn
+        except Exception:
+            continue
+
+    raise ConnectionError("dedup DB: all hosts unreachable")
 
 
 def is_done(category: str, item_key: str) -> bool:

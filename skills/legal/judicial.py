@@ -1096,7 +1096,8 @@ class CourtRecordDownloader:
             year, word, number = self._parse_case_number(case.court_case_number)
             
             if not all([year, word, number]):
-                self.log(f"  ⚠️ 無法解析案號: {case.court_case_number}")
+                self.log(f"  ❌ 無法識別案號格式，請確認格式是否正確（例：115年度訴字第123號、115.訴.000123）")
+                self.log(f"     原始案號: {case.court_case_number}")
                 return False
             
             # 導航到搜尋頁面
@@ -1340,7 +1341,7 @@ class CourtRecordDownloader:
                                     if case.court_name in opt.text or opt.text in case.court_name:
                                         select_court.select_by_visible_text(opt.text)
                                         break
-                                    
+
                                 Select(self.driver.find_element(By.ID, "sys_id")).select_by_visible_text(case.case_type)
                                 self.driver.find_element(By.ID, "eb_year").clear()
                                 self.driver.find_element(By.ID, "eb_year").send_keys(yy)
@@ -1354,6 +1355,9 @@ class CourtRecordDownloader:
                             except Exception as e:
                                 self.log(f"  ❌ 重新搜尋失敗: {e}")
                                 break
+                        else:
+                            self.log(f"  ❌ 無法識別案號格式，請確認格式是否正確（例：115年度訴字第123號、115.訴.000123）")
+                            break
                     else:
                         # 沒有案件資訊，無法重新搜尋
                         self.log(f"  ❌ 無法重新搜尋（缺少案件資訊）")
@@ -1396,7 +1400,7 @@ class CourtRecordDownloader:
                         # 解析案號
                         yy, id_word, num = self._parse_case_number(case.court_case_number)
                         if yy and id_word and num:
-                            
+
                             # 1. 選擇法院 (模糊比對)
                             select_court = Select(self.driver.find_element(By.ID, "jud_name"))
                             court_found = False
@@ -1412,21 +1416,24 @@ class CourtRecordDownloader:
                                 except Exception as _bare_e:
                                     _log.debug("judicial skipped: %s", _bare_e)
                             time.sleep(0.5)
-                            
+
                             # 2. 選擇類別
                             sys_type = "刑事" if "刑" in case.case_type else "民事"
                             Select(self.driver.find_element(By.ID, "sys_id")).select_by_visible_text(sys_type)
                             time.sleep(0.5)
-                            
+
                             # 3. 填寫案號
                             self.driver.find_element(By.ID, "eb_year").send_keys(yy)
                             self.driver.find_element(By.ID, "eb_id").send_keys(id_word)
                             self.driver.find_element(By.ID, "eb_num").send_keys(num)
-                            
+
                             # 查詢
                             self.driver.find_element(By.ID, "queryBtn").click()
                             time.sleep(3)
                             self._handle_alert()
+                        else:
+                            self.log(f"  ❌ 無法識別案號格式，請確認格式是否正確（例：115年度訴字第123號、115.訴.000123）")
+                            continue
 
                     # 重新全局搜尋按鈕
                     current_buttons = self.driver.find_elements(By.XPATH, "//input[@type='button' and @value='立即調閱']")

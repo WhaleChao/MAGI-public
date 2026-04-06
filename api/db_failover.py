@@ -112,68 +112,93 @@ def _switch_to_remote():
 # ── 同步 ──────────────────────────────────────────────────────
 
 def _sync_local_to_remote() -> bool:
-    """本機 → 遠端同步（用 mysqldump + mysql push）。"""
+    """Bidirectional sync using table-aware merge instead of dump-and-restore."""
     global _syncing
     if _syncing:
         return False
     _syncing = True
 
+    import json
+    import mysql.connector
+    from api.db_sync import sync_bidirectional
+
     db_user = os.getenv("OSC_DB_USER", os.getenv("MAGI_REMOTE_DB_USER", "casper_service"))
     db_pass = os.getenv("OSC_DB_PASSWORD", os.getenv("MAGI_REMOTE_DB_PASSWORD", ""))
     db_name = os.getenv("OSC_DB_NAME", "law_firm_data")
-    dump_path = "/tmp/law_firm_data_local_to_remote.sql"
 
+    # Pre-sync backup (safety net): dump remote before merge
+    backup_path = "/tmp/law_firm_data_pre_sync_backup.sql"
     try:
-        logger.info("🔄 DB SYNC: 開始本機 → 遠端同步 (%s → %s)", _LOCAL_HOST, _REMOTE_HOST)
-
-        # Step 1: Dump local
         dump_cmd = [
             "mysqldump",
-            "-h", _LOCAL_HOST, "-P", str(_LOCAL_PORT),
+            "-h", _REMOTE_HOST, "-P", str(_REMOTE_PORT),
             "-u", db_user, f"-p{db_pass}",
             "--single-transaction", "--skip-triggers", "--skip-routines",
             "--set-gtid-purged=OFF",
             db_name,
         ]
-        with open(dump_path, "w") as f:
+        with open(backup_path, "w") as f:
             r = subprocess.run(dump_cmd, stdout=f, stderr=subprocess.PIPE,
                                text=True, timeout=300)
-        if r.returncode != 0:
-            logger.error("DB SYNC: mysqldump 失敗: %s", r.stderr[:300])
-            return False
-
-        dump_size = os.path.getsize(dump_path)
-        logger.info("DB SYNC: 本機 dump 完成 (%.1f MB)", dump_size / 1024 / 1024)
-
-        # Step 2: Push to remote
-        push_cmd = [
-            "mysql",
-            "-h", _REMOTE_HOST, "-P", str(_REMOTE_PORT),
-            "-u", db_user, f"-p{db_pass}",
-            db_name,
-        ]
-        with open(dump_path, "r") as f:
-            r = subprocess.run(push_cmd, stdin=f, capture_output=True,
-                               text=True, timeout=600)
-        if r.returncode != 0:
-            logger.error("DB SYNC: push 到遠端失敗: %s", r.stderr[:300])
-            return False
-
-        logger.info("✅ DB SYNC: 本機 → 遠端同步完成 (%.1f MB)", dump_size / 1024 / 1024)
-        return True
-
-    except subprocess.TimeoutExpired:
-        logger.error("DB SYNC: 同步逾時")
-        return False
+        if r.returncode == 0:
+            sz = os.path.getsize(backup_path)
+            logger.info("DB SYNC: pre-sync remote backup saved (%.1f MB)", sz / 1024 / 1024)
+        else:
+            logger.warning("DB SYNC: pre-sync backup failed: %s (continuing anyway)",
+                           r.stderr[:300])
     except Exception as e:
-        logger.error("DB SYNC: 同步異常: %s", e)
+        logger.warning("DB SYNC: pre-sync backup failed: %s (continuing anyway)", e)
+
+    local_conn = None
+    remote_conn = None
+    try:
+        logger.info("DB SYNC: starting bidirectional sync (%s <-> %s)",
+                     _LOCAL_HOST, _REMOTE_HOST)
+
+        local_conn = mysql.connector.connect(
+            host=_LOCAL_HOST, port=_LOCAL_PORT,
+            user=db_user, password=db_pass,
+            database=db_name,
+        )
+        remote_conn = mysql.connector.connect(
+            host=_REMOTE_HOST, port=_REMOTE_PORT,
+            user=db_user, password=db_pass,
+            database=db_name,
+        )
+
+        report = sync_bidirectional(local_conn, remote_conn, database=db_name)
+
+        # Save report
+        report_path = os.path.join(os.path.dirname(__file__), "..", ".agent",
+                                   "db_sync_report.json")
+        os.makedirs(os.path.dirname(report_path), exist_ok=True)
+        with open(report_path, "w") as f:
+            json.dump(report, f, indent=2, ensure_ascii=False, default=str)
+
+        if report["errors"]:
+            logger.warning("DB SYNC: completed with %d errors: %s",
+                           len(report["errors"]), report["errors"][:3])
+            return False
+        else:
+            logger.info("DB SYNC: completed successfully: %s",
+                        {t: r.get("status") for t, r in report["tables"].items()})
+            return True
+
+    except Exception as e:
+        logger.error("DB SYNC: sync failed: %s", e)
         return False
     finally:
         _syncing = False
-        try:
-            os.unlink(dump_path)
-        except OSError:
-            pass
+        if local_conn:
+            try:
+                local_conn.close()
+            except Exception:
+                pass
+        if remote_conn:
+            try:
+                remote_conn.close()
+            except Exception:
+                pass
 
 
 # ── 監控迴圈 ──────────────────────────────────────────────────

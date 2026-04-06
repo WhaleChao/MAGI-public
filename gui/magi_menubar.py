@@ -51,8 +51,9 @@ SERVICES = [
 ]
 
 OMLX_ENGINES = [
-    ("文字視覺", int(os.environ.get("MAGI_OMLX_PORT", "8080"))),
+    ("文字推理", int(os.environ.get("MAGI_OMLX_PORT", "8080"))),
     ("向量嵌入", 8081),
+    ("視覺OCR", int(os.environ.get("MAGI_OMLX_VISION_PORT", "8082"))),
 ]
 
 # 遠端節點定義（名稱, registry key, 角色, 檢測 port, 檢測類型）
@@ -191,8 +192,9 @@ _MEM_MODULES = [
     ("Server",        "api/server.py"),
     ("Discord Bot",   "api/discord_bot.py"),
     ("Tools API",     "api/tools_api.py"),
-    ("oMLX Text+Vis", "omlx serve.*--port 8080"),
+    ("oMLX Text",     "omlx serve.*--port 8080"),
     ("oMLX Embed",    "omlx serve.*--port 8081"),
+    ("oMLX Vision",   "omlx serve.*--port 8082"),
     ("FAISS Rebuild", "MEMORY_ENABLE_FAISS"),
     ("File Review",   "file_review_auto_worker\\.py|file-review-orchestrator/action\\.py"),
     ("LAF Orch",      "laf_orchestrator\\.py|laf-portal-automation/action\\.py"),

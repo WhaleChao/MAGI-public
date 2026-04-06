@@ -1345,11 +1345,11 @@ def process_message_inner(orch, user_id, message, platform="LINE", role="user", 
                                 return idx, f"（⚠️ 此段翻譯失敗：{err}）\n{_truncate(ch, 1200)}"
                             return idx, t
 
-                        from concurrent.futures import ThreadPoolExecutor, as_completed
+                        from concurrent.futures import as_completed
+                        from api.thread_pools import inference_pool
                         translated_buf = [None] * len(chunks)
-                        with ThreadPoolExecutor(max_workers=3) as tab_executor:
-                            tab_futs = {tab_executor.submit(_translate_tab_chunk, i+1, ch, len(chunks)): i for i, ch in enumerate(chunks)}
-                            for f in as_completed(tab_futs):
+                        tab_futs = {inference_pool.submit(_translate_tab_chunk, i+1, ch, len(chunks)): i for i, ch in enumerate(chunks)}
+                        for f in as_completed(tab_futs):
                                 fi = tab_futs[f]
                                 try:
                                     _, txt = f.result()

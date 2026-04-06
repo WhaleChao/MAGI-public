@@ -262,7 +262,8 @@ def _update_case_laf_number(db, case: dict, laf_no: str) -> bool:
     try:
         db.execute_write(update_sql, (laf_no, laf_no, laf_no, case_id))
         if force_overwrite:
-            logger.info("🔧 修正截斷案號: %s -> %s (%s)", existing, laf_no, case.get("client_name"))
+            _cn = case.get("client_name", "")
+            logger.info("🔧 修正截斷案號: %s -> %s (%s)", existing, laf_no, _cn[:1] + "**" if _cn else "?")
         case["legal_aid_number"] = laf_no if (force_overwrite or not existing) else existing
         case["laf_case_no"] = case.get("laf_case_no") or laf_no
         case["application_no"] = case.get("application_no") or laf_no
@@ -923,30 +924,30 @@ def verify_portal_closing_status(pending_cases: List[dict], db=None) -> dict:
 
                 if found_status == "已轉入":
                     result["approved"].append(entry)
-                    logger.info("✅ %s %s → 已轉入（%s）", laf_no, case.get("client_name"), found_type)
+                    logger.info("✅ %s %s → 已轉入（%s）", laf_no, (case.get("client_name", "")[:1] + "**"), found_type)
                     # 自動回寫 DB：已轉入 → 已報結
                     if db and case.get("id"):
                         _update_laf_status(db, case, "已報結")
                 elif found_status == "待轉入":
                     # 已送件，法扶審核處理中，不需再操作
                     result["pending_transfer"].append(entry)
-                    logger.info("⏳ %s %s → 待轉入（%s）", laf_no, case.get("client_name"), found_type)
+                    logger.info("⏳ %s %s → 待轉入（%s）", laf_no, (case.get("client_name", "")[:1] + "**"), found_type)
                     # 自動回寫 DB：待轉入 → 已報結（待轉入）
                     if db and case.get("id"):
                         _update_laf_status(db, case, "已報結（待轉入）")
                 elif found_status == "暫存":
                     result["drafted"].append(entry)
-                    logger.info("📝 %s %s → 暫存（%s），需人工確認送出", laf_no, case.get("client_name"), found_type)
+                    logger.info("📝 %s %s → 暫存（%s），需人工確認送出", laf_no, (case.get("client_name", "")[:1] + "**"), found_type)
                     # 自動回寫 DB：暫存 → 已結案，待送出（提醒律師上網確認送出）
                     if db and case.get("id"):
                         _update_laf_status(db, case, "已結案，待送出")
                 elif found_status:
                     # "有紀錄" 但狀態不明 — 保守起見列為需確認
                     result["drafted"].append(entry)
-                    logger.info("📝 %s %s → %s（%s，需確認）", laf_no, case.get("client_name"), found_status, found_type)
+                    logger.info("📝 %s %s → %s（%s，需確認）", laf_no, (case.get("client_name", "")[:1] + "**"), found_status, found_type)
                 else:
                     result["unreported"].append(entry)
-                    logger.info("⚠️ %s %s → 確認未報結", laf_no, case.get("client_name"))
+                    logger.info("⚠️ %s %s → 確認未報結", laf_no, (case.get("client_name", "")[:1] + "**"))
 
             except Exception as e:
                 logger.error("查詢 %s 狀態失敗: %s", laf_no, e)

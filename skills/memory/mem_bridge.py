@@ -886,13 +886,17 @@ def _launch_faiss_rebuild_bg():
     try:
         _log_path = os.path.join(_magi_root, ".agent", "faiss_rebuild.log")
         _log_f = open(_log_path, "w")
-        proc = subprocess.Popen(
-            [_venv_py, "-c", _script],
-            cwd=_magi_root,
-            stdout=_log_f,
-            stderr=_log_f,
-            env={**os.environ, "MAGI_ROOT": _magi_root},
-        )
+        try:
+            proc = subprocess.Popen(
+                [_venv_py, "-c", _script],
+                cwd=_magi_root,
+                stdout=_log_f,
+                stderr=_log_f,
+                env={**os.environ, "MAGI_ROOT": _magi_root},
+            )
+        except Exception:
+            _log_f.close()
+            raise
         _FAISS_REBUILD_PID = proc.pid
         threading.Thread(target=proc.wait, daemon=True).start()
         logger.info("FAISS background rebuild subprocess launched (PID %s, log: %s)", proc.pid, _log_path)

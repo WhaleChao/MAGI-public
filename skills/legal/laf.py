@@ -59,7 +59,7 @@ try:
     from dotenv import load_dotenv as _load_dotenv
     _load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 except Exception:
-    logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 61, exc_info=True)
+    _logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 61, exc_info=True)
 _log = _logging.getLogger("laf")
 
 # ==============================================================================

@@ -191,7 +191,7 @@ def generic_skill_dispatch(orch, skill: str, message: str) -> tuple[bool, str]:
                 correlation_id=orch._current_correlation_id(),
                 metadata={"dispatch_mode": "generic_subprocess", "skill_name": skill},
             )
-            return False, ""
+            return False, f"⚠️ 技能 {skill} 執行失敗：{err}"
     except Exception as e:
         logger.warning(f"generic dispatch error for {skill}: {e}")
         orch._hook_bus.post_tool(
@@ -200,7 +200,7 @@ def generic_skill_dispatch(orch, skill: str, message: str) -> tuple[bool, str]:
             correlation_id=orch._current_correlation_id(),
             metadata={"dispatch_mode": "generic_subprocess", "skill_name": skill},
         )
-        return False, ""
+        return False, f"⚠️ 技能 {skill} 發生錯誤，請稍後再試。"
 
 
 def polish_skill_output(skill: str, user_message: str, raw_output: str) -> str:

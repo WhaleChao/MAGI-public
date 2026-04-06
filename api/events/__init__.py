@@ -8,7 +8,7 @@ from api.events.models import (
     RouteDecisionEvent,
     TaskLifecycleEvent,
 )
-from api.events.sinks import JsonlSink, append_jsonl, jsonl_sink
+from api.events.sinks import JsonlSink, append_jsonl, jsonl_sink, rotate_jsonl
 
 __all__ = [
     "EventModel",
@@ -23,4 +23,5 @@ __all__ = [
     "JsonlSink",
     "append_jsonl",
     "jsonl_sink",
+    "rotate_jsonl",
 ]

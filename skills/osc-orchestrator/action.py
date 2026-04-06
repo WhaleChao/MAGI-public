@@ -1656,7 +1656,7 @@ def task_gcal_import(payload: Dict[str, Any]) -> Dict[str, Any]:
 
     # Build time window
     import datetime as _dt
-    now = _dt.datetime.utcnow()
+    now = _dt.datetime.now(_dt.timezone.utc)
     time_min = (now - _dt.timedelta(days=lookback_days)).strftime("%Y-%m-%dT%H:%M:%SZ")
     time_max = (now + _dt.timedelta(days=lookahead_days)).strftime("%Y-%m-%dT%H:%M:%SZ")
 

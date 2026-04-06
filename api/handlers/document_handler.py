@@ -724,8 +724,20 @@ def split_translate_chunks(text: str, chunk_chars: int = 4000) -> list[str]:
 def estimate_file_processing_time(file_size_bytes: int, filename: str = "", prompt: str = "", file_path: str = "") -> str:
     size_kb = max(1, file_size_bytes / 1024)
     size_mb = size_kb / 1024
+    size_str = f"{size_mb:.1f}MB" if size_mb >= 1 else f"{int(size_kb)}KB"
     ext = os.path.splitext((filename or "").lower())[1]
     prompt_lower = (prompt or "").lower()
+
+    # Known image/document extensions
+    _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".heic"}
+    _KNOWN_EXTS = _IMAGE_EXTS | {".mp3", ".m4a", ".wav", ".mp4", ".mov", ".mkv", ".ogg",
+                                  ".aac", ".pdf", ".txt", ".md", ".log", ".csv", ".docx",
+                                  ".epub", ".html", ".htm", ".json", ".xml", ".xlsx", ".pptx"}
+    # Fallback: if ext is not a known type and filename looks like a screenshot, treat as image
+    if ext not in _KNOWN_EXTS and filename:
+        _fn_lower = filename.lower()
+        if any(kw in _fn_lower for kw in ["截圖", "screenshot", "img_", "image", "photo"]):
+            ext = ".png"  # assume PNG for screenshots
 
     if ext in (".mp3", ".m4a", ".wav", ".mp4", ".mov", ".mkv", ".ogg", ".aac"):
         task_label = "語音辨識 (逐字稿)"
@@ -774,6 +786,24 @@ def estimate_file_processing_time(file_size_bytes: int, filename: str = "", prom
                 est_seconds += (n_chunks / 5) * 3 + 5
 
     else:
+        # ── Payment proof detection: show correct label in ACK ──
+        _payment_kw = ["繳費", "繳款", "繳費憑證", "繳費單", "繳費截圖", "payment proof",
+                       "上傳繳費", "銷帳", "入帳", "收據", "裁判費", "上傳閱卷",
+                       "上傳收據", "費用憑證"]
+        _is_image_ext = ext in _IMAGE_EXTS
+        if _is_image_ext and any(kw in prompt_lower for kw in _payment_kw):
+            return (
+                f"⏳ 已收到截圖 `{filename or '附件'}` ({size_str})，"
+                f"正在進行 **繳費憑證辨識與上傳**，預估需要 **約 30 秒**。\n"
+                f"處理中請耐心等候，完成後我會回覆結果。"
+            )
+        if _is_image_ext and not any(k in prompt_lower for k in ["翻譯", "translate", "摘要", "summary"]):
+            return (
+                f"⏳ 已收到截圖 `{filename or '附件'}` ({size_str})，"
+                f"正在進行 **圖片辨識**，預估需要 **約 15-30 秒**。\n"
+                f"處理中請耐心等候，完成後我會回覆結果。"
+            )
+
         if ext == ".pdf":
             est_chars = file_size_bytes * 0.08
         elif ext in (".txt", ".md", ".log", ".csv"):
@@ -835,8 +865,6 @@ def estimate_file_processing_time(file_size_bytes: int, filename: str = "", prom
         time_str = f"約 {int(est_seconds / 60)}-{int(est_seconds / 60) + 3} 分鐘"
     else:
         time_str = f"大於 {int(est_seconds / 60)} 分鐘"
-
-    size_str = f"{size_mb:.1f}MB" if size_mb >= 1 else f"{int(size_kb)}KB"
 
     if ext in (".mp3", ".m4a", ".wav", ".mp4", ".mov", ".mkv", ".ogg", ".aac"):
         chars_str = "音訊/影片檔"

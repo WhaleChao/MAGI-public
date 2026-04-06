@@ -43,13 +43,17 @@ def restart_discord_bot():
     print(f"Starting: discord_bot.py → {log_path}")
 
     log_fh = open(log_path, "a")
-    _p = subprocess.Popen(
-        [os.path.join(_MAGI_ROOT, "venv", "bin", "python3"),
-         os.path.join(_MAGI_ROOT, "api", "discord_bot.py")],
-        stdout=log_fh, stderr=log_fh,
-        cwd=_MAGI_ROOT,
-        start_new_session=True,  # detach from parent (replaces nohup + &)
-    )
+    try:
+        _p = subprocess.Popen(
+            [os.path.join(_MAGI_ROOT, "venv", "bin", "python3"),
+             os.path.join(_MAGI_ROOT, "api", "discord_bot.py")],
+            stdout=log_fh, stderr=log_fh,
+            cwd=_MAGI_ROOT,
+            start_new_session=True,  # detach from parent (replaces nohup + &)
+        )
+    except Exception:
+        log_fh.close()
+        raise
     threading.Thread(target=_p.wait, daemon=True).start()
     
     print("✅ Discord Bot Restarted.")

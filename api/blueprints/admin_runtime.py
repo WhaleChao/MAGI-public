@@ -12,7 +12,7 @@ import importlib.util
 import json
 import os
 import time
-from concurrent.futures import ThreadPoolExecutor
+from api.thread_pools import io_pool
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -79,6 +79,17 @@ def create_admin_runtime_blueprint(
             except Exception:
                 logger.debug("silent-catch in nerv_api_health omlx", exc_info=True)
             return {"status": "error", "detail": "unreachable"}
+
+        def _glm_ocr():
+            try:
+                _vision_url = os.environ.get("MAGI_OMLX_VISION_URL", "http://127.0.0.1:8082")
+                response = _rq.get(f"{_vision_url.rstrip('/')}/v1/models", timeout=3)
+                if response.status_code == 200:
+                    models = [item.get("id", "?") for item in (response.json().get("data") or [])]
+                    return {"status": "online", "models": models, "count": len(models), "port": 8082}
+            except Exception:
+                logger.debug("silent-catch in nerv_api_health glm_ocr", exc_info=True)
+            return {"status": "error", "detail": "vision server unreachable (port 8082)"}
 
         def _ollama():
             try:
@@ -163,6 +174,7 @@ def create_admin_runtime_blueprint(
 
         checks = {
             "omlx": _omlx,
+            "glm_ocr": _glm_ocr,
             "ollama": _ollama,
             "melchior": _melchior,
             "balthasar": _balthasar,
@@ -175,13 +187,12 @@ def create_admin_runtime_blueprint(
             "caddy_proxy": _caddy_proxy,
             "skills": _skills,
         }
-        with ThreadPoolExecutor(max_workers=10) as pool:
-            futures = {name: pool.submit(fn) for name, fn in checks.items()}
-            for name, future in futures.items():
-                try:
-                    results[name] = future.result(timeout=8)
-                except Exception as exc:
-                    results[name] = {"status": "error", "detail": str(exc)[:80]}
+        futures = {name: io_pool.submit(fn) for name, fn in checks.items()}
+        for name, future in futures.items():
+            try:
+                results[name] = future.result(timeout=8)
+            except Exception as exc:
+                results[name] = {"status": "error", "detail": str(exc)[:80]}
 
         results["magi_server"] = {"status": "online", "pid": os.getpid()}
         results["timestamp"] = datetime.now().isoformat()
@@ -581,6 +592,14 @@ def create_admin_runtime_blueprint(
             checks["omlx"] = {"ok": response.status_code == 200, "models": models}
         except Exception:
             checks["omlx"] = {"ok": False}
+
+        try:
+            _vision_url = os.environ.get("MAGI_OMLX_VISION_URL", "http://127.0.0.1:8082")
+            vr = sess.get(f"{_vision_url.rstrip('/')}/v1/models", timeout=3)
+            vmodels = [item.get("id", "") for item in (vr.json() or {}).get("data", [])]
+            checks["glm_ocr"] = {"ok": vr.status_code == 200, "models": vmodels, "port": 8082}
+        except Exception:
+            checks["glm_ocr"] = {"ok": False, "port": 8082}
 
         conn = None
         try:

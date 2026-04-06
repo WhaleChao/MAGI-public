@@ -3,9 +3,9 @@
   "_description": "MAGI model role registry. Maps logical roles to concrete model identifiers.",
   "defaults": {
     "text_primary": "gemma-4-26b-a4b-it-4bit",
-    "vision": "gemma-4-26b-a4b-it-4bit",
+    "vision": "GLM-OCR-bf16",
     "embedding": "modernbert-embed-4bit",
-    "ocr": "gemma-4-26b-a4b-it-4bit"
+    "ocr": "GLM-OCR-bf16"
   },
   "roles": {
     "text_primary": {
@@ -39,14 +39,13 @@
       "env_override": "MAGI_OMLX_CODE_MODEL"
     },
     "vision": {
-      "description": "Vision/multimodal tasks",
-      "model": "gemma-4-26b-a4b-it-4bit",
+      "description": "Vision/multimodal tasks (GLM-OCR on port 8082)",
+      "model": "GLM-OCR-bf16",
       "env_override": "MAGI_OMLX_VISION_MODEL"
     },
     "ocr": {
-      "description": "OCR document extraction",
-      "model": null,
-      "fallback_role": "vision",
+      "description": "OCR document extraction (GLM-OCR on port 8082)",
+      "model": "GLM-OCR-bf16",
       "env_override": "MAGI_OMLX_OCR_MODEL"
     },
     "embedding": {

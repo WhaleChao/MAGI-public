@@ -134,7 +134,7 @@ def sync_to_keeper():
                 )
                 
                 synced_ids.append(record['id'])
-                logger.info(f"✅ Synced record {record['id']} → doc_id {doc_id}")
+                logger.debug(f"Synced record {record['id']} → doc_id {doc_id}")
                 
             except Exception as e:
                 logger.error(f"❌ Failed to sync record {record['id']}: {e}")
@@ -146,7 +146,8 @@ def sync_to_keeper():
         # Mark as synced in SQLite
         if synced_ids:
             mark_synced(synced_ids)
-            
+            logger.info(f"Synced {len(synced_ids)} records to Keeper")
+
         return len(synced_ids)
         
     except mysql.connector.Error as e:

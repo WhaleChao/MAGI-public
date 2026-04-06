@@ -21,7 +21,12 @@ def roc_to_date(roc_str: str) -> date:
         y += 100 if y < 50 else 0  # 兩位數民國年
     else:
         raise ValueError(f"無法解析民國年日期: {roc_str!r}")
-    return date(y + 1911, m, d)
+    try:
+        return date(y + 1911, m, d)
+    except ValueError:
+        raise ValueError(
+            f"無效的民國年日期: {roc_str!r} → 西元 {y + 1911}/{m}/{d} 不存在"
+        )
 
 
 def date_to_roc(d: date) -> str:
@@ -34,37 +39,64 @@ def date_to_roc_display(d: date) -> str:
     return f"{d.year - 1911}/{d.month:02d}/{d.day:02d}"
 
 
-# ─── 假日判定 ─────────────────────────────────────────────────────────────────
+# ─── 假日判定（使用 holidays.Taiwan，含農曆新年、端午、中秋、補行上班日）────
 
-# 中華民國固定國定假日 (月, 日)
-_FIXED_HOLIDAYS = [
-    (1, 1),   # 元旦
-    (2, 28),  # 和平紀念日
-    (4, 4),   # 兒童節
-    (4, 5),   # 清明節 (近似, 實際依天文計算)
-    (5, 1),   # 勞動節
-    (10, 10), # 國慶日
-]
+try:
+    import holidays as _holidays_mod
 
+    from functools import lru_cache
 
-def is_weekend(d: date) -> bool:
-    return d.weekday() >= 5
+    @lru_cache(maxsize=8)
+    def _tw_holidays(year: int) -> _holidays_mod.Taiwan:
+        return _holidays_mod.Taiwan(years=range(year - 1, year + 2))
 
+    def is_weekend(d: date) -> bool:
+        return d.weekday() >= 5
 
-def is_holiday(d: date) -> bool:
-    """簡易假日判定（週末 + 固定國定假日）"""
-    if is_weekend(d):
-        return True
-    if (d.month, d.day) in _FIXED_HOLIDAYS:
-        return True
-    return False
+    def is_holiday(d: date) -> bool:
+        """完整假日判定：週末 + 所有國定假日（含農曆），排除補行上班日"""
+        tw = _tw_holidays(d.year)
+        name = tw.get(d)
+        if name:
+            if "補行上班日" in str(name):
+                return False  # 補班日不算假日
+            return True
+        return d.weekday() >= 5
 
+    def next_business_day(d: date) -> date:
+        """若 d 為假日，順延至下一個工作日"""
+        while is_holiday(d):
+            d += timedelta(days=1)
+        return d
 
-def next_business_day(d: date) -> date:
-    """若 d 為假日，順延至下一個工作日"""
-    while is_holiday(d):
-        d += timedelta(days=1)
-    return d
+except ImportError:
+    # fallback: holidays 套件未安裝時，僅用固定清單（精確度較低）
+    import logging as _logging
+    _logging.getLogger(__name__).warning(
+        "holidays 套件未安裝，假日判定僅含固定假日（缺農曆新年等）。"
+        "請執行: pip install holidays"
+    )
+
+    _FIXED_HOLIDAYS = {
+        (1, 1), (2, 28), (4, 4), (4, 5), (5, 1), (10, 10),
+    }
+
+    def is_weekend(d: date) -> bool:
+        return d.weekday() >= 5
+
+    def is_holiday(d: date) -> bool:
+        """簡易假日判定（週末 + 固定國定假日，缺農曆假日）"""
+        if is_weekend(d):
+            return True
+        if (d.month, d.day) in _FIXED_HOLIDAYS:
+            return True
+        return False
+
+    def next_business_day(d: date) -> date:
+        """若 d 為假日，順延至下一個工作日"""
+        while is_holiday(d):
+            d += timedelta(days=1)
+        return d
 
 
 # ─── 經過時間計算 ─────────────────────────────────────────────────────────────

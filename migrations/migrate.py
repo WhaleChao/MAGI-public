@@ -40,7 +40,7 @@ VERSIONS_DIR = Path(__file__).resolve().parent / "versions"
 # Schema version tracking table
 _SCHEMA_VERSION_TABLE = "magi_schema_versions"
 _CREATE_VERSION_TABLE = f"""
-CREATE TABLE IF NOT EXISTS {_SCHEMA_VERSION_TABLE} (
+CREATE TABLE IF NOT EXISTS `{_SCHEMA_VERSION_TABLE}` (
     id INT AUTO_INCREMENT PRIMARY KEY,
     version VARCHAR(10) NOT NULL,
     description VARCHAR(255) NOT NULL,
@@ -101,7 +101,7 @@ def _discover_migrations() -> list[dict]:
 def _applied_versions(cursor) -> set[str]:
     """Get the set of already-applied migration versions."""
     _ensure_version_table(cursor)
-    cursor.execute(f"SELECT version FROM {_SCHEMA_VERSION_TABLE} ORDER BY version")
+    cursor.execute(f"SELECT version FROM `{_SCHEMA_VERSION_TABLE}` ORDER BY version")
     return {row[0] for row in cursor.fetchall()}
 
 
@@ -148,7 +148,7 @@ def cmd_upgrade():
             import hashlib
             checksum = hashlib.sha256(m["up"].encode()).hexdigest()[:16]
             cursor.execute(
-                f"INSERT INTO {_SCHEMA_VERSION_TABLE} (version, description, applied_at, checksum) VALUES (%s, %s, %s, %s)",
+                f"INSERT INTO `{_SCHEMA_VERSION_TABLE}` (version, description, applied_at, checksum) VALUES (%s, %s, %s, %s)",
                 (m["version"], m["description"][:255], datetime.now(), checksum),
             )
             conn.commit()
@@ -189,7 +189,7 @@ def cmd_rollback():
         for stmt in statements:
             cursor.execute(stmt)
 
-        cursor.execute(f"DELETE FROM {_SCHEMA_VERSION_TABLE} WHERE version = %s", (last["version"],))
+        cursor.execute(f"DELETE FROM `{_SCHEMA_VERSION_TABLE}` WHERE version = %s", (last["version"],))
         conn.commit()
         logger.info("  Rolled back %s OK", last["version"])
     except Exception:
