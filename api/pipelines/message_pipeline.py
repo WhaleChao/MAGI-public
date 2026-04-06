@@ -617,6 +617,21 @@ def process_message_inner(orch, user_id, message, platform="LINE", role="user", 
             )
         return orch._run_judgment_collector_command(message, notify=False)
 
+    # 2.7.79 Payment dismiss early intercept (bypass intent classification)
+    # Messages like "張偉銘已繳費" get misclassified as CHAT; force into CMD path.
+    _RE_PAYMENT_DISMISS_EARLY = re.compile(
+        r"^(.+?)\s*(?:已經繳費了|已經繳費|繳費完畢了|已繳費|繳費完畢|繳費了)\s*$"
+    )
+    _payment_early_match = _RE_PAYMENT_DISMISS_EARLY.search(message.strip())
+    if not _payment_early_match:
+        # Also check prefix forms: "已繳費 XXX", "跳過繳費 XXX"
+        for _ptrig in ("已繳費", "跳過繳費", "繳費跳過"):
+            if message.strip().startswith(_ptrig):
+                _payment_early_match = True
+                break
+    if _payment_early_match:
+        return orch._handle_command(user_id, message, role=role, platform=platform)
+
     # 2.7.8 Memory Commands (High Priority) - Avoid LLM classification
     if any(msg_lower.startswith(k) for k in ["記住", "remember", "save memory", "memorize", "@magi 記住", "@magi learn"]):
         # 記憶寫入開放給所有使用者 (2026-03-01)
@@ -642,7 +657,7 @@ def process_message_inner(orch, user_id, message, platform="LINE", role="user", 
             return f"❌ 記憶寫入失敗: {e}"
 
     if any(msg_lower.startswith(k) for k in ["forget", "刪除記憶", "delete memory"]) or \
-       (msg_lower.startswith("忘記") and not any(exc in msg_lower for exc in ["忘記密碼", "忘記帶", "忘記了"])):
+       (msg_lower.startswith("忘記") and not any(exc in msg_lower for exc in ["忘記密碼", "忘記帳號", "忘記帶", "忘記了", "忘記怎麼"])):
         try:
             content = message
             for kw in ["forget", "刪除記憶", "忘記", "delete memory", "把這段記憶刪掉", "請把這段記憶刪掉", "這是錯的"]:

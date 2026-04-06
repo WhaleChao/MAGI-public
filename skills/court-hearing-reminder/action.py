@@ -334,8 +334,10 @@ def task_scan(days_ahead: int = 7) -> Dict[str, Any]:
     """掃描未來 N 天開庭排程，回傳 JSON。"""
     try:
         conn = _get_conn()
-        hearings = _fetch_upcoming_hearings(conn, days_ahead=days_ahead)
-        conn.close()
+        try:
+            hearings = _fetch_upcoming_hearings(conn, days_ahead=days_ahead)
+        finally:
+            conn.close()
         return {
             "success": True,
             "count": len(hearings),
@@ -355,8 +357,10 @@ def task_remind(notify: bool = True) -> Dict[str, Any]:
 
     try:
         conn = _get_conn()
-        hearings = _fetch_upcoming_hearings(conn, days_ahead=7)
-        conn.close()
+        try:
+            hearings = _fetch_upcoming_hearings(conn, days_ahead=7)
+        finally:
+            conn.close()
     except Exception as e:
         return {"success": False, "error": str(e), "sent": 0}
 
@@ -435,8 +439,10 @@ def task_prep(case_number: str) -> str:
     """生成特定案件的庭前準備摘要。"""
     try:
         conn = _get_conn()
-        hearings = _fetch_upcoming_hearings(conn, days_ahead=30)
-        conn.close()
+        try:
+            hearings = _fetch_upcoming_hearings(conn, days_ahead=30)
+        finally:
+            conn.close()
     except Exception as e:
         return f"❌ 資料庫連線失敗：{e}"
 
@@ -529,8 +535,10 @@ def _match_pending_todos(query: str, todo_types: Optional[tuple] = None) -> List
     """從 DB 撈 pending 狀態的 todos，用 query 模糊比對案號/當事人/法院案號/案由。"""
     try:
         conn = _get_conn()
-        hearings = _fetch_upcoming_hearings(conn, days_ahead=90, todo_types=todo_types)
-        conn.close()
+        try:
+            hearings = _fetch_upcoming_hearings(conn, days_ahead=90, todo_types=todo_types)
+        finally:
+            conn.close()
     except Exception:
         return []
     q = query.lower()
@@ -581,8 +589,10 @@ def task_done(query: str, notify: bool = True) -> str:
         todo_id = h.get("id", 0)
         try:
             conn = _get_conn()
-            ok = _mark_todo_completed(conn, todo_id)
-            conn.close()
+            try:
+                ok = _mark_todo_completed(conn, todo_id)
+            finally:
+                conn.close()
         except Exception as e:
             return f"❌ 資料庫更新失敗：{e}"
         if ok:
@@ -626,20 +636,22 @@ def task_patterns(query: str = "") -> str:
     """
     try:
         conn = _get_conn()
-        cur = conn.cursor(dictionary=True)
-        cur.execute(
-            """
-            SELECT case_number, client_name, case_type, case_reason,
-                   court_name, status, opponent_name,
-                   COALESCE(NULLIF(court_case_no, ''), court_case_number, '') AS court_case_number
-            FROM cases
-            ORDER BY case_number DESC
-            LIMIT 500
-            """,
-        )
-        cases = cur.fetchall() or []
-        cur.close()
-        conn.close()
+        try:
+            cur = conn.cursor(dictionary=True)
+            cur.execute(
+                """
+                SELECT case_number, client_name, case_type, case_reason,
+                       court_name, status, opponent_name,
+                       COALESCE(NULLIF(court_case_no, ''), court_case_number, '') AS court_case_number
+                FROM cases
+                ORDER BY case_number DESC
+                LIMIT 500
+                """,
+            )
+            cases = cur.fetchall() or []
+            cur.close()
+        finally:
+            conn.close()
     except Exception as e:
         return f"❌ 資料庫連線失敗：{e}"
 
@@ -759,29 +771,31 @@ def task_dashboard() -> str:
     """一次看所有案件的下次期日、補正期限、繳費期限，按日期排序。"""
     try:
         conn = _get_conn()
-        cur = conn.cursor(dictionary=True)
-        # 取得所有未完成的 case_todos，不限天數
-        cur.execute(
-            """
-            SELECT
-                ct.id, ct.case_number, ct.client_name, ct.todo_type,
-                ct.todo_date, ct.todo_time, ct.description, ct.status,
-                COALESCE(c.court_name, '') AS court_name,
-                COALESCE(c.case_reason, '') AS case_reason,
-                COALESCE(NULLIF(c.court_case_no, ''), c.court_case_number, '') AS court_case_number
-            FROM case_todos ct
-            LEFT JOIN cases c
-              ON c.case_number COLLATE utf8mb4_unicode_ci
-               = ct.case_number COLLATE utf8mb4_unicode_ci
-            WHERE (ct.status IS NULL OR ct.status IN ('', 'pending'))
-              AND ct.todo_date >= %s
-            ORDER BY ct.todo_date ASC, ct.todo_time ASC
-            """,
-            (date.today().isoformat(),),
-        )
-        rows = cur.fetchall() or []
-        cur.close()
-        conn.close()
+        try:
+            cur = conn.cursor(dictionary=True)
+            # 取得所有未完成的 case_todos，不限天數
+            cur.execute(
+                """
+                SELECT
+                    ct.id, ct.case_number, ct.client_name, ct.todo_type,
+                    ct.todo_date, ct.todo_time, ct.description, ct.status,
+                    COALESCE(c.court_name, '') AS court_name,
+                    COALESCE(c.case_reason, '') AS case_reason,
+                    COALESCE(NULLIF(c.court_case_no, ''), c.court_case_number, '') AS court_case_number
+                FROM case_todos ct
+                LEFT JOIN cases c
+                  ON c.case_number COLLATE utf8mb4_unicode_ci
+                   = ct.case_number COLLATE utf8mb4_unicode_ci
+                WHERE (ct.status IS NULL OR ct.status IN ('', 'pending'))
+                  AND ct.todo_date >= %s
+                ORDER BY ct.todo_date ASC, ct.todo_time ASC
+                """,
+                (date.today().isoformat(),),
+            )
+            rows = cur.fetchall() or []
+            cur.close()
+        finally:
+            conn.close()
     except Exception as e:
         return f"❌ 資料庫連線失敗：{e}"
 
@@ -954,8 +968,10 @@ def task_checklist(case_number: str = "") -> str:
     """依案件類型自動生成庭前準備 checklist。"""
     try:
         conn = _get_conn()
-        hearings = _fetch_upcoming_hearings(conn, days_ahead=30)
-        conn.close()
+        try:
+            hearings = _fetch_upcoming_hearings(conn, days_ahead=30)
+        finally:
+            conn.close()
     except Exception as e:
         return f"❌ 資料庫連線失敗：{e}"
 

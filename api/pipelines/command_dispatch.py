@@ -75,7 +75,7 @@ _RE_TIMEOUT_SEC = re.compile(r"(\d{2,4})\s*(?:秒|sec|s)")
 _RE_TARGET_GB = re.compile(r"(\d+(?:\.\d+)?)\s*gb")
 _RE_TOLERANCE_GB = re.compile(r"[±\+\-]\s*(\d+(?:\.\d+)?)\s*gb")
 _RE_JSON_TAIL = re.compile(r"(\{[\s\S]*\})\s*$")
-_RE_PAYMENT_DISMISS = re.compile(r"^(.+?)\s*(?:已繳費|已經繳費|繳費完畢|繳費了)\s*$")
+_RE_PAYMENT_DISMISS = re.compile(r"^(.+?)\s*(?:已經繳費了|已經繳費|繳費完畢了|已繳費|繳費完畢|繳費了)\s*$")
 _RE_CASE_NUMBER = re.compile(r"(\d{2,3})\s*(?:年度?)?\s*([^\d\s年月日]+)\s*(?:字)?\s*(?:第)?\s*(\d+)\s*(?:號)?")
 _RE_CASE_TYPE_STRIP = re.compile(r"(字第|字|第)")
 _RE_COURT = re.compile(r'\bcourt\b')
@@ -703,7 +703,7 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
 
     # Memory Command (Forget)
     if any(kw in msg_lower for kw in ["forget", "刪除記憶", "delete memory"]) or \
-       (msg_lower.startswith("忘記") and not any(exc in msg_lower for exc in ["忘記密碼", "忘記帶", "忘記了"])):
+       (msg_lower.startswith("忘記") and not any(exc in msg_lower for exc in ["忘記密碼", "忘記帳號", "忘記帶", "忘記了", "忘記怎麼"])):
         if role != "admin":
             return "⛔ 抱歉，只有管理員可以刪除記憶（系統改動指令）。"
         content = message

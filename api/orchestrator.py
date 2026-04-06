@@ -300,7 +300,7 @@ class Orchestrator:
         logger.info("🎹 Orchestrator Initialized: Ready to conduct.")
 
     @staticmethod
-    def _default_notification_callback(user_id: str, text: str, platform: str):
+    def _default_notification_callback(user_id: str, text: str, platform: str, *, topic_key: str = "", **kwargs):
         """Fallback notification: log instead of sending if no real callback is set."""
         logger.warning(f"📨 [Notification lost — no callback] user={user_id} platform={platform} text={text[:120]}")
 

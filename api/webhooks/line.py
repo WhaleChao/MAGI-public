@@ -1045,7 +1045,7 @@ def _register_orchestrator_notifications():
     provide progress updates (without depending on reply_token).
     """
     try:
-        def _cb(uid: str, msg: str, platform: str = "LINE"):
+        def _cb(uid: str, msg: str, platform: str = "LINE", *, topic_key: str = "", **kwargs):
             if (platform or "").upper() == "WEB":
                 WEB_NOTIFICATIONS[str(uid)].append(msg)
                 return
