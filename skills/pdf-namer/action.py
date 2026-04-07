@@ -1312,6 +1312,7 @@ def generate_name_proposal(pdf_path: str, case_name: str = None, return_structur
     found_case_no = vision_info.get("case_number") or ocr_case_no
     found_type = vision_info.get("doc_type") or ocr_type
     found_party = vision_info.get("party") or ocr_name
+    found_doc_subtype = vision_info.get("doc_subtype", "") or ""
 
     # ── Step 4a: Targeted stamp-area vision OCR ──
     # When full-page vision missed the stamp, crop stamp regions and OCR them.
@@ -1468,6 +1469,7 @@ def generate_name_proposal(pdf_path: str, case_name: str = None, return_structur
         found_type=found_type,
         found_party=found_party,
         date_method=date_method,
+        doc_subtype=found_doc_subtype,
     )
 
     if return_structured:
@@ -1567,6 +1569,24 @@ def _vision_analyze_for_naming(content_page) -> dict:
         v_name = _extract_name(ocr_text, default_name=None)
         if v_name:
             result["party"] = v_name
+
+        # Extract full document title (doc_subtype) from first lines
+        # Only match actual document title lines, not boilerplate
+        _TITLE_RE = re.compile(
+            r"^((?:刑事|民事|行政|消費者債務清理)?(?:[\u4e00-\u9fff]*)"
+            r"(?:狀|書|筆錄|裁定|判決|契約|收據|委任|方案|清冊|聲請))"
+        )
+        for line in ocr_text.split("\n"):
+            line = line.strip()
+            if len(line) < 4 or len(line) > 30:
+                continue
+            # Skip boilerplate
+            if any(k in line for k in ("法院文件", "無法依", "規定投遞", "送達通知", "郵局")):
+                continue
+            tm = _TITLE_RE.search(line)
+            if tm:
+                result["doc_subtype"] = re.sub(r"\s+", "", tm.group(1))
+                break
 
         return result
 
@@ -1853,6 +1873,53 @@ def _task_analyze_fast_receipt(pdf_path: str, bn: str) -> str:
     return json.dumps(res, ensure_ascii=False)
 
 
+def _shorten_court(court: str) -> str:
+    """Remove 臺灣 prefix from court name for brevity:
+    臺灣花蓮地方法院 → 花蓮地方法院"""
+    c = (court or "").strip()
+    if c.startswith("臺灣") and "地方法院" in c:
+        c = c[len("臺灣"):]
+    return c
+
+
+def _resolve_doc_category(doc_type: str) -> Optional[str]:
+    """Map extracted doc_type to a DOC_CATEGORIES key from naming_rules."""
+    dt = (doc_type or "").strip()
+    if not dt:
+        return None
+    # Direct match on internal type names (from DOC_TYPE_MAP values)
+    _TYPE_TO_CATEGORY = {
+        "判決": "判決",
+        "裁定": "裁定",
+        "法院_通知": "法院通知", "法院_傳票": "法院通知",
+        "庭通知書": "庭通知書", "法院通知": "法院通知",
+        "函文": "函文",
+        "起訴書": "書狀_對造", "不起訴處分書": "書狀_對造",
+        "聲請簡易判決處刑書": "書狀_對造",
+        "對造_書狀": "書狀_對造",
+        "書狀_我方": "書狀_我方", "書狀_對造": "書狀_對造",
+        "陳報狀": "書狀_我方", "答辯狀": "書狀_我方",
+        "聲請書": "書狀_我方", "抗告狀": "書狀_我方", "上訴狀": "書狀_我方",
+        "委任狀": "委任相關",
+        "訊問筆錄": "筆錄", "調查筆錄": "筆錄", "準備程序筆錄": "筆錄",
+        "審判筆錄": "筆錄", "勘驗筆錄": "筆錄",
+        "收據": "收據",
+        "債清_書狀": "債清_書狀",
+    }
+    if dt in _TYPE_TO_CATEGORY:
+        return _TYPE_TO_CATEGORY[dt]
+    # Fallback: keyword scan
+    for kw, cat in [("判決", "判決"), ("裁定", "裁定"), ("庭通知", "庭通知書"),
+                    ("函", "函文"), ("筆錄", "筆錄"), ("書狀", "書狀_我方"),
+                    ("陳報", "書狀_我方"), ("答辯", "書狀_我方"),
+                    ("聲請", "書狀_我方"), ("上訴", "書狀_我方"),
+                    ("債清", "債清_書狀"), ("委任", "委任相關"),
+                    ("通知", "法院通知"), ("傳票", "法院通知")]:
+        if kw in dt:
+            return cat
+    return None
+
+
 def _build_name_result(
     *,
     found_date: Optional[str],
@@ -1861,8 +1928,21 @@ def _build_name_result(
     found_type: Optional[str] = "",
     found_party: Optional[str] = "",
     date_method: str = "",
+    doc_subtype: Optional[str] = "",
+    summary: Optional[str] = "",
+    suffix: Optional[str] = "",
 ) -> dict:
-    # Validate date range — reject dates outside 2000-2030
+    """Build filename following naming_rules.DOC_CATEGORIES templates.
+
+    Template patterns:
+      判決/裁定:    {date} {court}{case_no}判決（{party}；{summary}）
+      庭通知書:     {date} {court}{case_no}庭通知書（{party}；{summary}）
+      函文:         {date} {court}{case_no}函（{party}；主旨：{summary}）
+      書狀_我方:    {date} {doc_subtype}({party}){suffix}
+      法院通知:     {date} {court}{case_no}{doc_subtype}
+      其他:         {date} {doc_subtype}
+    """
+    # Validate date range
     if found_date and len(found_date) == 8:
         try:
             year = int(found_date[:4])
@@ -1884,21 +1964,84 @@ def _build_name_result(
     if not found_date:
         return result
 
-    body = ""
-    if found_court:
-        body += found_court
-    if found_case_no:
-        body += found_case_no
-    if found_type:
-        body += found_type
-    if not body:
-        body = "文件"
+    court = _shorten_court(found_court)
+    case_no = found_case_no or ""
+    party = found_party or ""
+    dt = found_type or ""
+    sub = doc_subtype or dt or ""
+    sfx = suffix or ""
 
-    suffix = ""
-    if found_party and found_party != "Unknown":
-        suffix = f"（{found_party}）"
+    category = _resolve_doc_category(dt)
 
-    new_name = f"{found_date} {body}{suffix}.pdf"
+    if category == "判決":
+        body = f"{court}{case_no}判決"
+        if party:
+            paren = f"（{party}；{summary}）" if summary else f"（{party}）"
+            body += paren
+    elif category == "裁定":
+        body = f"{court}{case_no}裁定"
+        if party:
+            paren = f"({party}；{summary})" if summary else f"({party})"
+            body += paren
+    elif category == "庭通知書":
+        body = f"{court}{case_no}庭通知書"
+        if party:
+            paren = f"（{party}；{summary}）" if summary else f"（{party}）"
+            body += paren
+    elif category == "函文":
+        body = f"{court}{case_no}函"
+        if party:
+            paren = f"（{party}；主旨：{summary}）" if summary else f"（{party}）"
+            body += paren
+    elif category in ("書狀_我方", "債清_書狀"):
+        # Template: {date} {doc_subtype}({party}){suffix}
+        body = sub or "書狀"
+        if party:
+            body += f"({party})"
+        if sfx:
+            body += sfx
+    elif category == "書狀_對造":
+        body = f"對造{sub}" if sub else "對造書狀"
+    elif category == "法院通知":
+        # Template: {date} {court}{case_no}通知/函/傳票
+        body = f"{court}{case_no}"
+        if "傳票" in dt or "傳票" in sub:
+            body += "傳票"
+        elif "函" in sub and len(sub) <= 4:
+            body += "函"
+        else:
+            body += "通知"
+    elif category == "委任相關":
+        body = sub or "委任狀"
+        if party:
+            body += f"({party})"
+        if sfx:
+            body += sfx
+    elif category == "收據":
+        body = sub or "收據"
+        if summary:
+            body += f"（{summary}）"
+    elif category == "筆錄":
+        body = sub or dt or "筆錄"
+        if summary:
+            body += f"({summary})"
+    else:
+        # Fallback: generic format
+        body = ""
+        if court:
+            body += court
+        if case_no:
+            body += case_no
+        if sub:
+            body += sub
+        elif dt:
+            body += dt
+        if not body:
+            body = "文件"
+        if party and party != "Unknown":
+            body += f"（{party}）"
+
+    new_name = f"{found_date} {body}.pdf"
     new_name = re.sub(r'[/\\:*?"<>|]', "", new_name)
     result["filename"] = new_name
     return result
