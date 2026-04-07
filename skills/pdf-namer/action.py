@@ -554,7 +554,9 @@ def _extract_name(text: str, default_name: str = "Unknown"):
     if _is_envelope_page(text):
         return default_name
     # Use finditer to skip template/instruction matches (e.g. "原告或被告聲請人或相對人")
-    _bad_fragments = {"或被告", "或相對人", "聲請人或", "證人", "定人用", "或定人"}
+    _bad_fragments = {"或被告", "或相對人", "聲請人或", "證人", "定人用", "或定人",
+                       "經本院", "本院於", "謄本", "乙份", "正本", "影本",
+                       "附件", "清單", "資料", "保險", "全戶"}
     for m in RE_DEFENDANT.finditer(text[:1500]):
         name = m.group(1).strip()
         name = re.sub(r"[，,。;；].*", "", name)
@@ -1154,6 +1156,7 @@ def generate_name_proposal(pdf_path: str, case_name: str = None, return_structur
     content_page = None
     content_text = ""
     content_text_native = ""
+    _vision_only_page = None  # page with garbled/no text — only useful for vision
     start_idx = min(2, doc.page_count)  # Skip envelope pages (index 0, 1)
     for i in range(start_idx, min(start_idx + 3, doc.page_count)):
         page = doc[i]
@@ -1163,19 +1166,45 @@ def generate_name_proposal(pdf_path: str, case_name: str = None, return_structur
             logger.info(f"Page {i+1}: OCR scanning...")
             text = _ocr_page_rapid(page)
         if len(text.strip()) < 20:
+            # Image-only page: keep for vision but not text parsing
+            if _vision_only_page is None:
+                _vision_only_page = page
+            continue
+        if _is_garbled_text(text):
+            logger.info(f"Page {i+1}: garbled embedded text, will use vision only")
+            if _vision_only_page is None:
+                _vision_only_page = page
             continue
         content_page = page
         content_text_native = native_text
         content_text = text
         break
 
-    # Fallback for single/short-page docs
+    # Fallback: try page 0 (envelope or single-page doc)
     if content_page is None and doc.page_count > 0:
-        content_page = doc[0]
-        content_text_native = content_page.get_text() or ""
-        content_text = content_text_native
-        if len(content_text.strip()) < 50 and HAS_OCR:
-            content_text = _ocr_page_rapid(content_page)
+        page0 = doc[0]
+        p0_text = page0.get_text() or ""
+        if len(p0_text.strip()) < 50 and HAS_OCR:
+            p0_text = _ocr_page_rapid(page0)
+        if p0_text.strip() and not _is_garbled_text(p0_text):
+            content_page = page0
+            content_text_native = page0.get_text() or ""
+            content_text = p0_text
+        elif _vision_only_page is None:
+            # Page 0 has garbled/no text but still has image content for vision
+            _vision_only_page = page0
+
+    # If no clean text page found, use vision-only page.
+    # Prefer page 0 for vision (cover/envelope has stamps + metadata) over
+    # later pages (which might be appendices).
+    if content_page is None and _vision_only_page is not None:
+        if doc.page_count > 2 and _vision_only_page != doc[0]:
+            # For multi-page docs, page 0 is more likely to have useful metadata
+            content_page = doc[0]
+        else:
+            content_page = _vision_only_page
+        content_text = ""
+        content_text_native = ""
 
     if content_page is None:
         return empty_result if return_structured else None
@@ -1289,6 +1318,51 @@ def generate_name_proposal(pdf_path: str, case_name: str = None, return_structur
     if case_name:
         found_party = case_name
 
+    # ── Step 4b: Date fallback — scan last page for 具狀人 date, then filing date ──
+    if not found_date and doc.page_count > 0:
+        last_page = doc[doc.page_count - 1]
+        last_text = last_page.get_text() or ""
+        if _is_garbled_text(last_text) or len(last_text.strip()) < 20:
+            # Try vision OCR on last page for the filing date
+            try:
+                from skills.bridge import melchior_client as _mc2
+                _chat2 = getattr(_mc2, "_chat_omlx", None)
+                _avail2 = getattr(_mc2, "_omlx_available", None)
+                if callable(_chat2) and callable(_avail2) and _avail2():
+                    pix_last = last_page.get_pixmap(dpi=150)
+                    png_last = pix_last.tobytes("png")
+                    b64_last = base64.b64encode(png_last).decode("utf-8")
+                    from skills.bridge.melchior_client import (
+                        OMLX_VISION_BASE as _VB2,
+                        OMLX_VISION_MODEL as _VM2,
+                        _OMLX_VISION_CIRCUIT as _VC2,
+                        _OMLX_VISION_LOCK as _VL2,
+                    )
+                    r_last = _chat2(
+                        prompt="這是文件的最後一頁。請找出文件的簽署日期或具狀日期。只回覆民國年.月.日或西元YYYYMMDD格式的日期，看不到就回覆NONE。",
+                        model=_VM2, base_url=_VB2, timeout=60,
+                        temperature=0.0, max_tokens=128, images=[b64_last],
+                        circuit=_VC2, lock=_VL2,
+                    )
+                    if r_last.get("success") and r_last.get("response"):
+                        from vision_parser import _parse_date_from_text
+                        last_date_raw = r_last["response"].strip()
+                        if "NONE" not in last_date_raw.upper():
+                            last_date = _parse_date_from_text(last_date_raw)
+                            if last_date:
+                                found_date = last_date
+                                date_method = "vision_last_page"
+                                logger.info("Date from last page vision: %s", found_date)
+            except Exception as e:
+                logger.debug("Last page date fallback failed: %s", e)
+        else:
+            # Try extracting date from last page text
+            last_date = _extract_any_date(last_text) or _extract_roc_date(last_text)
+            if last_date:
+                found_date = last_date
+                date_method = "ocr_last_page"
+                logger.info("Date from last page text: %s", found_date)
+
     if not found_date:
         logger.warning("Could not extract date from %s", pdf_path)
         return empty_result if return_structured else None
@@ -1308,10 +1382,16 @@ def generate_name_proposal(pdf_path: str, case_name: str = None, return_structur
 
 
 def _vision_analyze_for_naming(content_page) -> dict:
-    """Use oMLX Vision to analyze a content page for naming metadata.
-    Returns dict with keys: date, court, case_number, doc_type, party."""
+    """Use oMLX Vision (GLM-OCR) to analyze a content page for naming metadata.
+    Returns dict with keys: date, court, case_number, doc_type, party.
+
+    Strategy: Two-step OCR-then-parse.
+      GLM-OCR is an OCR model — good at text transcription, bad at structured
+      analysis. So we ask it to transcribe, then parse with proven regex extractors.
+    """
     if os.environ.get("MAGI_PDF_NAMER_USE_VISION", "1").strip() in {"0", "false", "no", "off"}:
         return {}
+
     try:
         from skills.bridge import melchior_client as _mc
         _chat_omlx = getattr(_mc, "_chat_omlx", None)
@@ -1323,39 +1403,98 @@ def _vision_analyze_for_naming(content_page) -> dict:
         return {}
 
     try:
-        pix = content_page.get_pixmap(dpi=150)
+        pix = content_page.get_pixmap(dpi=200)
         png = pix.tobytes("png")
         b64 = base64.b64encode(png).decode("utf-8")
 
-        prompt = (
-            "這是一份臺灣法院文件的掃描頁面。請辨識並以以下格式回覆（每行一項）：\n"
-            "日期: YYYYMMDD (民國年轉西元，如115年3月20日→20260320)\n"
-            "法院: (完整法院名，如臺灣士林地方法院)\n"
-            "案號: (完整案號，如115年度司促字第1781號)\n"
-            "文件類型: (支付命令、庭通知書、判決、裁定、傳票等)\n"
-            "當事人: (債權人/原告/聲請人的姓名或公司名)\n"
-            "無法辨識的項目寫「無」。"
+        # Step 1: Ask GLM-OCR to transcribe the image (its strength)
+        prompt_transcribe = (
+            "請逐字轉錄這張文件圖片中所有可見的文字與數字。"
+            "包括章戳內的文字、信封上的地址、案號、法院名稱、當事人姓名等。"
+            "民國年日期格式如 115.3.20 或 115年3月20日 請原樣轉錄。"
+            "只轉錄看到的文字，不要推論、不要解釋、不要添加格式。"
+            "若完全看不到任何文字回覆 NONE。"
         )
 
         vision_model = getattr(_mc, "OMLX_VISION_MODEL", os.environ.get("MAGI_TEXT_PRIMARY_MODEL", ""))
         vision_timeout = int(os.environ.get("MAGI_PDF_NAMER_VISION_NAMING_TIMEOUT", "90"))
-        from skills.bridge.melchior_client import OMLX_VISION_BASE
+        from skills.bridge.melchior_client import (
+            OMLX_VISION_BASE, _OMLX_VISION_CIRCUIT, _OMLX_VISION_LOCK,
+        )
         r = _chat_omlx(
-            prompt=prompt, model=vision_model,
+            prompt=prompt_transcribe, model=vision_model,
             base_url=OMLX_VISION_BASE,
             timeout=max(60, vision_timeout),
-            temperature=0.0, max_tokens=512, images=[b64],
+            temperature=0.0, max_tokens=2048, images=[b64],
+            circuit=_OMLX_VISION_CIRCUIT,
+            lock=_OMLX_VISION_LOCK,
         )
         if not (r.get("success") and r.get("response")):
-            logger.info("Vision: no response.")
+            logger.info("Vision OCR: no response.")
             return {}
 
-        logger.info("Vision result: %s", r["response"][:300])
-        return _parse_naming_response(r["response"])
+        ocr_text = (r.get("response") or "").strip()
+        if not ocr_text or "NONE" in ocr_text.upper():
+            logger.info("Vision OCR: no text found in image.")
+            return {}
+
+        # Detect hallucination: repetitive text (same char repeated 20+ times)
+        if re.search(r"(.)\1{19,}", ocr_text):
+            logger.warning("Vision OCR: hallucination detected (repetitive chars), truncating")
+            # Try to salvage the non-repetitive part
+            ocr_text = re.sub(r"(.)\1{9,}", r"\1\1\1", ocr_text)
+
+        # Detect hallucination: same short phrase repeated many times
+        if len(ocr_text) > 200:
+            # Check if any 10-char substring repeats 5+ times
+            for i in range(0, min(len(ocr_text), 100), 10):
+                chunk = ocr_text[i:i + 10]
+                if len(chunk) >= 8 and ocr_text.count(chunk) >= 5:
+                    logger.warning("Vision OCR: repetitive pattern detected, truncating to first 300 chars")
+                    ocr_text = ocr_text[:300]
+                    break
+
+        logger.info("Vision OCR transcription (%d chars): %s", len(ocr_text), ocr_text[:200])
+
+        # Step 2: Parse the transcribed text with existing extractors
+        result = {}
+        v_date = _extract_any_date(ocr_text) or _extract_roc_date(ocr_text)
+        if v_date:
+            result["date"] = v_date
+        v_court = _extract_court_name(ocr_text)
+        if v_court:
+            result["court"] = v_court
+        v_case_no = _extract_case_number(ocr_text)
+        if v_case_no:
+            result["case_number"] = v_case_no
+        v_type = _extract_doc_type(ocr_text)
+        if v_type:
+            result["doc_type"] = v_type
+        v_name = _extract_name(ocr_text, default_name=None)
+        if v_name:
+            result["party"] = v_name
+
+        return result
 
     except Exception as e:
         logger.error("Vision naming failed: %s", e)
         return {}
+
+
+_PARROTED_PATTERNS = re.compile(
+    r"[\(（].*[\)）]"  # Values wrapped in parens like "(完整法院名"
+    r"|完整法院名|完整案號|債權人/原告|聲請人的姓名|YYYYMMDD"
+    r"|如臺灣|如115年|法院名，如",
+    re.IGNORECASE,
+)
+
+
+def _is_parroted(value: str) -> bool:
+    """Detect if a value is parroted from the prompt template."""
+    v = (value or "").strip()
+    if not v:
+        return True
+    return bool(_PARROTED_PATTERNS.search(v))
 
 
 def _parse_naming_response(text: str) -> dict:
@@ -1367,6 +1506,11 @@ def _parse_naming_response(text: str) -> dict:
     normalized = re.sub(r"\*\*([^*]+)\*\*", r"\1", text)
     # Remove markdown list markers
     normalized = re.sub(r"^\s*[*·•\-]\s+", "", normalized, flags=re.MULTILINE)
+
+    # Detect wholesale parroting: if the response contains format placeholders
+    if "(完整法院名" in normalized or "(完整案號" in normalized or "YYYYMMDD" in normalized:
+        logger.warning("Vision response is parroting the prompt — discarding")
+        return {}
 
     # Parse date
     dm = re.search(r"日期\s*[:：]\s*(20\d{6})", normalized)
@@ -1404,7 +1548,7 @@ def _parse_naming_response(text: str) -> dict:
     cm = re.search(r"法院\s*[:：]\s*(.+)", normalized)
     if cm:
         court = cm.group(1).strip().rstrip("。，,")
-        if court != "無" and len(court) >= 4:
+        if court != "無" and len(court) >= 4 and not _is_parroted(court):
             court = re.sub(r"[，,。;；\n].*", "", court).strip()
             if "法院" in court:
                 result["court"] = court
@@ -1413,16 +1557,20 @@ def _parse_naming_response(text: str) -> dict:
     cn = re.search(r"案號\s*[:：]\s*(.+)", normalized)
     if cn:
         case_no = cn.group(1).strip().rstrip("。，,")
-        if case_no != "無" and "年" in case_no and "字" in case_no:
+        if case_no != "無" and "年" in case_no and "字" in case_no and not _is_parroted(case_no):
             case_no = re.sub(r"[，,。;；\n].*", "", case_no).strip()
             result["case_number"] = case_no
 
-    # Parse doc type
+    # Parse doc type — must be a single type, not a comma-separated list
     tm = re.search(r"文件類型\s*[:：]\s*(.+)", normalized)
     if tm:
         raw_type = tm.group(1).strip().rstrip("。，,")
         raw_type = re.sub(r"[，,。;；\n].*", "", raw_type).strip()
-        if raw_type != "無" and raw_type != "公文封" and len(raw_type) >= 2:
+        # Reject multi-value lists (sign of parroting from prompt)
+        if "、" in raw_type and raw_type.count("、") >= 2:
+            logger.debug("Rejecting multi-value doc_type (likely parroted): %s", raw_type)
+            raw_type = ""
+        if raw_type and raw_type != "無" and raw_type != "公文封" and len(raw_type) >= 2 and not _is_parroted(raw_type):
             result["doc_type"] = raw_type
 
     # Parse party name
@@ -1430,7 +1578,7 @@ def _parse_naming_response(text: str) -> dict:
     if pm:
         name = pm.group(1).strip().rstrip("。，,")
         name = re.sub(r"^[\s*·•\-]+", "", name).strip()
-        if name != "無" and len(name) >= 2:
+        if name != "無" and len(name) >= 2 and not _is_parroted(name):
             name = re.sub(r"^(原告|被告|聲請人|債權人|債務人)\s*[:：]?\s*", "", name)
             name = re.sub(r"[，,。;；\n].*", "", name).strip()
             if len(name) >= 2 and len(name) <= 20:
@@ -1441,8 +1589,10 @@ def _parse_naming_response(text: str) -> dict:
         for label in ["債權人", "原告", "聲請人"]:
             pm2 = re.search(rf"{label}\s*[:：]\s*([\u4e00-\u9fffA-Za-z·\-]{{2,20}})", normalized)
             if pm2:
-                result["party"] = pm2.group(1).strip()
-                break
+                candidate = pm2.group(1).strip()
+                if not _is_parroted(candidate):
+                    result["party"] = candidate
+                    break
 
     return result
 
@@ -1618,6 +1768,16 @@ def _build_name_result(
     found_party: Optional[str] = "",
     date_method: str = "",
 ) -> dict:
+    # Validate date range — reject dates outside 2000-2030
+    if found_date and len(found_date) == 8:
+        try:
+            year = int(found_date[:4])
+            if year < 2000 or year > 2030:
+                logger.warning("Rejecting implausible date %s (year %d)", found_date, year)
+                found_date = None
+        except ValueError:
+            found_date = None
+
     result = {
         "filename": None,
         "date": found_date,
@@ -1650,6 +1810,27 @@ def _build_name_result(
     return result
 
 
+def _is_garbled_text(text: str) -> bool:
+    """Detect garbled OCR text (e.g. embedded bad OCR layers producing
+    mixed Japanese katakana/symbols with Chinese characters).
+    Real Chinese legal documents contain zero Japanese kana."""
+    if not text or len(text) < 30:
+        return True
+    # Count Japanese-specific characters (katakana + hiragana)
+    jp_chars = len(re.findall(r'[\u30A0-\u30FF\u3040-\u309F\uFF65-\uFF9F]', text))
+    # Any meaningful presence of Japanese kana in a Chinese legal doc = garbled
+    if jp_chars >= 5:
+        return True
+    # Count fullwidth latin that shouldn't appear in Chinese legal docs
+    fw_junk = len(re.findall(r'[\uFF10-\uFF5A]', text))
+    total_cjk = len(re.findall(r'[\u4e00-\u9fff]', text))
+    if total_cjk == 0:
+        return True
+    if fw_junk > 0 and (fw_junk / total_cjk) > 0.05:
+        return True
+    return False
+
+
 def _maybe_fast_text_name_result(content_text: str, *, case_name: Optional[str] = None) -> Optional[dict]:
     """
     Fast path for searchable PDFs.
@@ -1659,6 +1840,10 @@ def _maybe_fast_text_name_result(content_text: str, *, case_name: Optional[str] 
     """
     text = (content_text or "").strip()
     if len(text) < 30:
+        return None
+    # Reject garbled OCR text (bad embedded OCR layers from scanners)
+    if _is_garbled_text(text):
+        logger.debug("Fast text path: garbled text detected, skipping")
         return None
 
     found_date = _extract_any_date(text) or _extract_roc_date(text)

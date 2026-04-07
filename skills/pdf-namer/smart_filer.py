@@ -753,7 +753,9 @@ def process_scan_folder(dry_run: bool = True, notify: bool = True, max_workers: 
 
     env_workers = int(os.environ.get("MAGI_PDF_NAMER_FILE_WORKERS", "0") or "0")
     if max_workers is None:
-        max_workers = env_workers if env_workers > 0 else 3
+        # Default to 1 worker: GLM-OCR vision model can only handle 1 request
+        # at a time; parallel workers cause cascading timeouts.
+        max_workers = env_workers if env_workers > 0 else 1
     worker_count = max(1, min(int(max_workers), 5, len(pdfs)))
     report["workers"] = worker_count
     logger.info(f"🧵 pdf-namer worker_count={worker_count}")

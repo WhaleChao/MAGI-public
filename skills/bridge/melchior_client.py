@@ -11,7 +11,7 @@ import logging
 import os
 import threading
 import time
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import requests
 
@@ -327,9 +327,11 @@ def _omlx_ok(circuit: dict, lock: threading.Lock = None):
 
 def _omlx_fail(circuit: dict, lock: threading.Lock = None):
     _lk = lock or _OMLX_CHAT_LOCK
+    # Vision circuit uses higher threshold (timeouts ≠ real failures)
+    threshold = 8 if circuit is _OMLX_VISION_CIRCUIT else 3
     with _lk:
         circuit["failures"] = circuit.get("failures", 0) + 1
-        if circuit["failures"] >= 3:
+        if circuit["failures"] >= threshold:
             circuit["tripped_at"] = time.monotonic()
 
 
@@ -355,7 +357,7 @@ def list_omlx_models(force_refresh: bool = False) -> List[str]:
         return []
 
 
-def _resolve_omlx_chat_model(raw_model: str, *, available_models: List[str] | None = None) -> str:
+def _resolve_omlx_chat_model(raw_model: str, *, available_models: Optional[List[str]] = None) -> str:
     """Resolve requested chat model to an actually available local oMLX model."""
     requested = _OMLX_MODEL_ALIAS.get((raw_model or "").strip(), (raw_model or "").strip())
     requested = resolve_text_model(requested, available=available_models)
