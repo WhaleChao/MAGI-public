@@ -1296,8 +1296,8 @@ def generate_name_proposal(pdf_path: str, case_name: str = None, return_structur
     # Prefer envelope for: date, court, case_number (envelope has stamps + sender info)
     for key in ("date", "court", "case_number"):
         vision_info[key] = envelope_vision.get(key) or content_vision.get(key) or ""
-    # Prefer content for: doc_type, party, doc_subtype (actual document info)
-    for key in ("doc_type", "party", "doc_subtype"):
+    # Prefer content for: doc_type, party, doc_subtype, summary (actual document info)
+    for key in ("doc_type", "party", "doc_subtype", "summary"):
         vision_info[key] = content_vision.get(key) or envelope_vision.get(key) or ""
     # Remove empty values
     vision_info = {k: v for k, v in vision_info.items() if v}
@@ -1342,6 +1342,19 @@ def generate_name_proposal(pdf_path: str, case_name: str = None, return_structur
     found_type = vision_info.get("doc_type") or ocr_type
     found_party = vision_info.get("party") or ocr_name
     found_doc_subtype = vision_info.get("doc_subtype", "") or ""
+    found_summary = vision_info.get("summary", "") or ""
+
+    # ── Step 3b: Extract summary from ALL pages' native text (even garbled) ──
+    # Garbled text still contains recognizable keywords for 主文 extraction
+    if not found_summary and found_type:
+        all_pages_text = ""
+        for pi in range(min(doc.page_count, 6)):
+            all_pages_text += (doc[pi].get_text() or "") + "\n"
+        if all_pages_text.strip():
+            all_summary = _extract_summary_from_ocr(all_pages_text, found_type)
+            if all_summary:
+                found_summary = all_summary
+                logger.info("Summary from native text (all pages): %s", found_summary[:60])
 
     # ── Step 4a: Targeted stamp-area vision OCR ──
     # When full-page vision missed the stamp, crop stamp regions and OCR them.
@@ -1499,11 +1512,104 @@ def generate_name_proposal(pdf_path: str, case_name: str = None, return_structur
         found_party=found_party,
         date_method=date_method,
         doc_subtype=found_doc_subtype,
+        summary=found_summary,
     )
 
     if return_structured:
         return result
     return result["filename"]
+
+
+def _extract_summary_from_ocr(ocr_text: str, doc_type: str = "") -> str:
+    """Extract summary/主文 from OCR text for OSC calendar integration.
+
+    For different doc types:
+    - 裁定: 主文 section (e.g. 延長羈押2月、准予停止羈押、應於N日內補正)
+    - 判決: 主文 section (e.g. 有期徒刑7月、上訴駁回)
+    - 庭通知書: hearing schedule (訂X月X日X時 開庭)
+    - 函文: 主旨 section or action items (應於N日內...)
+    """
+    text = (ocr_text or "")
+    dt = (doc_type or "")
+
+    # ── 庭通知書: extract hearing date/time ──
+    if "庭通知" in dt or "傳票" in dt:
+        m = re.search(
+            r"(?:定|訂)\s*(?:於\s*)?(?:民國\s*)?"
+            r"(\d{2,3})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日\s*"
+            r"([上下]午)\s*(\d{1,2})\s*時\s*(\d{0,2})\s*分?"
+            r".*?(?:行|進行|為)?\s*(審[理判]|準備|調[解查]|[宣言]詞辯論|開庭)?",
+            text,
+        )
+        if m:
+            y = int(m.group(1)) + 1911 if int(m.group(1)) < 1911 else int(m.group(1))
+            mo, d = m.group(2), m.group(3)
+            ampm, hr, mi = m.group(4), m.group(5), m.group(6) or "0"
+            proc = m.group(7) or "開庭"
+            return f"訂{y}年{mo}月{d}日{ampm}{hr}時{mi}分{proc}程序"
+        # Simpler pattern
+        m2 = re.search(r"(?:定|訂)\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日\s*([上下]午)\s*(\d{1,2})\s*時\s*(\d{0,2})\s*分?", text)
+        if m2:
+            return f"訂{m2.group(1)}月{m2.group(2)}日{m2.group(3)}{m2.group(4)}時{(m2.group(5) or '整')}開庭"
+
+    # ── 裁定/判決: extract 主文 ──
+    if "裁定" in dt or "判決" in dt:
+        # Key ruling phrases — check these first for clean, structured summaries
+        # Build composite summary from multiple matching phrases
+        parts = []
+        for pat, label in [
+            (r"(?:自|自民國)\s*(?:民國\s*)?(\d{2,3})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日起\s*[，,]?\s*(?:延長羈押|延長覊押)\s*(\d+)\s*月",
+             "自民國{0}年{1}月{2}日起，延長羈押{3}月"),
+            (r"(?:延長羈押|延長覊押)\s*(?:貳|參|壹|肆|伍)?\s*月", None),  # handled by above
+            (r"(?:延長羈押|延長覊押|延長轟押|延長義押)\s*(?:貳|參|壹|肆|伍|式)?\s*月", None),  # handled by pattern above
+            (r"(?:延長羈押|延長覊押|延長轟押|延長義押)\s*(\d+)\s*月", "延長羈押{0}月"),
+            (r"提出\s*(?:新[臺台]幣|新豊幣)?\s*([\d,萬參拾]+)\s*(?:萬\s*)?(?:え{0,2}\s*)?元?\s*(?:之?\s*)?保證金.*?(?:准[予子]停止[羈覊轟義]押)", "於提出{0}元保證金後，准予停止羈押"),
+            (r"准[予子]停止[羈覊轟義]押", "准予停止羈押"),
+            (r"禁止接見\s*(?:、\s*)?通信\s*(?:及\s*收受物件)?", "並禁止接見通信及收受物件"),
+            (r"禁[止上]\s*接\s*見", "並禁止接見通信及收受物件"),
+            (r"上訴駁回", "上訴駁回"),
+            (r"(\d+)\s*日\s*內\s*補正", "{0}日內補正"),
+        ]:
+            if label is None:
+                continue
+            pm = re.search(pat, text)
+            if pm:
+                groups = pm.groups()
+                try:
+                    s = label.format(*groups) if groups else label
+                except (IndexError, KeyError):
+                    s = label
+                if s and s not in " ".join(parts):
+                    parts.append(s)
+        if parts:
+            return "；".join(parts)[:80]
+
+        # Fallback: 主文 section (between 主文 and 理由)
+        m = re.search(r"主\s*文[：:\s]*\n?(.*?)(?:\n\s*(?:理\s*由|事\s*實|犯罪事實)|$)", text, re.DOTALL)
+        if m:
+            raw = re.sub(r"\s+", "", m.group(1).strip())[:60]
+            if raw and len(raw) > 4:
+                return raw
+
+    # ── 函文: extract 主旨 or action items ──
+    if "函" in dt or "通知" in dt:
+        m = re.search(r"主\s*旨[：:\s]*(.+?)(?:\n|。|$)", text)
+        if m:
+            raw = re.sub(r"\s+", "", m.group(1).strip())[:60]
+            if raw:
+                return raw
+        # Action item patterns
+        m2 = re.search(r"(?:應於|文到)\s*(\d+)\s*日\s*內\s*([\u4e00-\u9fff]+)", text)
+        if m2:
+            return f"應於文到{m2.group(1)}日內{m2.group(2)}"
+
+    # ── 起訴書: brief description ──
+    if "起訴" in dt:
+        m = re.search(r"犯\s*([\u4e00-\u9fff]+(?:罪|法))", text)
+        if m:
+            return m.group(1)
+
+    return ""
 
 
 def _vision_analyze_for_naming(content_page) -> dict:
@@ -1600,22 +1706,23 @@ def _vision_analyze_for_naming(content_page) -> dict:
             result["party"] = v_name
 
         # Extract full document title (doc_subtype) from first lines
-        # Only match actual document title lines, not boilerplate
         _TITLE_RE = re.compile(
             r"^((?:刑事|民事|行政|消費者債務清理)?(?:[\u4e00-\u9fff]*)"
-            r"(?:狀|書|筆錄|裁定|判決|契約|收據|委任|方案|清冊|聲請))"
+            r"(?:狀|書|筆錄|裁定|判決|契約|收據|委任|方案|清冊|聲請|通知書|起訴書))"
         )
         for line in ocr_text.split("\n"):
             line = line.strip()
             if len(line) < 4 or len(line) > 30:
                 continue
-            # Skip boilerplate
             if any(k in line for k in ("法院文件", "無法依", "規定投遞", "送達通知", "郵局")):
                 continue
             tm = _TITLE_RE.search(line)
             if tm:
                 result["doc_subtype"] = re.sub(r"\s+", "", tm.group(1))
                 break
+
+        # ── Extract summary (主文/摘要) for OSC calendar/todo integration ──
+        result["summary"] = _extract_summary_from_ocr(ocr_text, v_type)
 
         return result
 
