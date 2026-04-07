@@ -1301,8 +1301,8 @@ def generate_name_proposal(pdf_path: str, case_name: str = None, return_structur
     # Prefer envelope for: date, court, case_number (envelope has stamps + sender info)
     for key in ("date", "court", "case_number"):
         vision_info[key] = envelope_vision.get(key) or content_vision.get(key) or ""
-    # Prefer content for: doc_type, party, doc_subtype, summary (actual document info)
-    for key in ("doc_type", "party", "doc_subtype", "summary"):
+    # Prefer content for: doc_type, party, doc_subtype, summary, case_type
+    for key in ("doc_type", "party", "doc_subtype", "summary", "case_type"):
         vision_info[key] = content_vision.get(key) or envelope_vision.get(key) or ""
     # Remove empty values
     vision_info = {k: v for k, v in vision_info.items() if v}
@@ -1366,6 +1366,7 @@ def generate_name_proposal(pdf_path: str, case_name: str = None, return_structur
     found_party = vision_info.get("party") or ocr_name
     found_doc_subtype = vision_info.get("doc_subtype", "") or ""
     found_summary = vision_info.get("summary", "") or ""
+    found_case_type = vision_info.get("case_type", "") or ""  # 刑事/民事/行政
 
     # ── Step 3b: Extract summary from ALL pages' native text (even garbled) ──
     # Garbled text still contains recognizable keywords for 主文 extraction
@@ -1536,6 +1537,7 @@ def generate_name_proposal(pdf_path: str, case_name: str = None, return_structur
         date_method=date_method,
         doc_subtype=found_doc_subtype,
         summary=found_summary,
+        case_type_hint=found_case_type,
     )
 
     if return_structured:
@@ -1636,12 +1638,14 @@ def _extract_summary_from_ocr(ocr_text: str, doc_type: str = "") -> str:
 
 
 def _vision_analyze_for_naming(content_page) -> dict:
-    """Use oMLX Vision (GLM-OCR) to analyze a content page for naming metadata.
-    Returns dict with keys: date, court, case_number, doc_type, party.
+    """Analyze a page using two-stage pipeline: GLM-OCR → Gemma 4.
 
-    Strategy: Two-step OCR-then-parse.
-      GLM-OCR is an OCR model — good at text transcription, bad at structured
-      analysis. So we ask it to transcribe, then parse with proven regex extractors.
+    Stage 1: GLM-OCR (port 8082) transcribes image to text.
+    Stage 2: Gemma 4 (port 8080) analyzes the transcription for structured fields.
+    Fallback: regex extractors parse the OCR text directly.
+
+    Returns dict with keys: date, court, case_number, doc_type, doc_subtype,
+    party, summary, case_type.
     """
     if os.environ.get("MAGI_PDF_NAMER_USE_VISION", "1").strip() in {"0", "false", "no", "off"}:
         return {}
@@ -1661,7 +1665,7 @@ def _vision_analyze_for_naming(content_page) -> dict:
         png = pix.tobytes("png")
         b64 = base64.b64encode(png).decode("utf-8")
 
-        # Step 1: Ask GLM-OCR to transcribe the image (its strength)
+        # ── Stage 1: GLM-OCR transcription ──
         prompt_transcribe = (
             "請逐字轉錄這張文件圖片中所有可見的文字與數字。"
             "包括章戳內的文字、信封上的地址、案號、法院名稱、當事人姓名等。"
@@ -1692,65 +1696,144 @@ def _vision_analyze_for_naming(content_page) -> dict:
             logger.info("Vision OCR: no text found in image.")
             return {}
 
-        # Detect hallucination: repetitive text (same char repeated 20+ times)
+        # Detect hallucination: repetitive patterns
         if re.search(r"(.)\1{19,}", ocr_text):
-            logger.warning("Vision OCR: hallucination detected (repetitive chars), truncating")
-            # Try to salvage the non-repetitive part
             ocr_text = re.sub(r"(.)\1{9,}", r"\1\1\1", ocr_text)
-
-        # Detect hallucination: same short phrase repeated many times
         if len(ocr_text) > 200:
-            # Check if any 10-char substring repeats 5+ times
             for i in range(0, min(len(ocr_text), 100), 10):
                 chunk = ocr_text[i:i + 10]
                 if len(chunk) >= 8 and ocr_text.count(chunk) >= 5:
-                    logger.warning("Vision OCR: repetitive pattern detected, truncating to first 300 chars")
                     ocr_text = ocr_text[:300]
                     break
 
         logger.info("Vision OCR transcription (%d chars): %s", len(ocr_text), ocr_text[:200])
 
-        # Step 2: Parse the transcribed text with existing extractors
-        result = {}
-        v_date = _extract_any_date(ocr_text) or _extract_roc_date(ocr_text)
-        if v_date:
-            result["date"] = v_date
-        v_court = _extract_court_name(ocr_text)
-        if v_court:
-            result["court"] = v_court
-        v_case_no = _extract_case_number(ocr_text)
-        if v_case_no:
-            result["case_number"] = v_case_no
-        v_type = _extract_doc_type(ocr_text)
-        if v_type:
-            result["doc_type"] = v_type
-        v_name = _extract_name(ocr_text, default_name=None)
-        if v_name:
-            result["party"] = v_name
+        # ── Stage 2: Gemma 4 structured analysis ──
+        result = _gemma4_analyze_ocr_text(ocr_text, _chat_omlx)
 
-        # Extract full document title (doc_subtype) from first lines
-        _TITLE_RE = re.compile(
-            r"^((?:刑事|民事|行政|消費者債務清理)?(?:[\u4e00-\u9fff]*)"
-            r"(?:狀|書|筆錄|裁定|判決|契約|收據|委任|方案|清冊|聲請|通知書|起訴書))"
-        )
-        for line in ocr_text.split("\n"):
-            line = line.strip()
-            if len(line) < 4 or len(line) > 30:
-                continue
-            if any(k in line for k in ("法院文件", "無法依", "規定投遞", "送達通知", "郵局")):
-                continue
-            tm = _TITLE_RE.search(line)
-            if tm:
-                result["doc_subtype"] = re.sub(r"\s+", "", tm.group(1))
-                break
+        # ── Fallback: regex extractors if Gemma 4 failed ──
+        if not result.get("court") and not result.get("case_number"):
+            v_date = _extract_any_date(ocr_text) or _extract_roc_date(ocr_text)
+            if v_date:
+                result.setdefault("date", v_date)
+            v_court = _extract_court_name(ocr_text)
+            if v_court:
+                result.setdefault("court", v_court)
+            v_case_no = _extract_case_number(ocr_text)
+            if v_case_no:
+                result.setdefault("case_number", v_case_no)
+            v_type = _extract_doc_type(ocr_text)
+            if v_type:
+                result.setdefault("doc_type", v_type)
+            v_name = _extract_name(ocr_text, default_name=None)
+            if v_name:
+                result.setdefault("party", v_name)
 
-        # ── Extract summary (主文/摘要) for OSC calendar/todo integration ──
-        result["summary"] = _extract_summary_from_ocr(ocr_text, v_type)
+        # Extract summary from OCR text if Gemma didn't provide one
+        if not result.get("summary"):
+            result["summary"] = _extract_summary_from_ocr(ocr_text, result.get("doc_type", ""))
 
         return result
 
     except Exception as e:
         logger.error("Vision naming failed: %s", e)
+        return {}
+
+
+def _gemma4_analyze_ocr_text(ocr_text: str, _chat_fn=None) -> dict:
+    """Use Gemma 4 (text LLM on port 8080) to extract structured fields from OCR text.
+
+    This is a text-only call — no image. Gemma 4 excels at understanding
+    Chinese legal documents when given clean(ish) OCR text.
+    """
+    if not ocr_text or len(ocr_text.strip()) < 20:
+        return {}
+
+    prompt = (
+        "你是法律事務所文件管理助手。根據以下法院文件的OCR文字提取命名欄位。\n\n"
+        f"文件內容：\n{ocr_text[:1500]}\n\n"
+        "回覆JSON（不要markdown符號、不要其他文字）：\n"
+        '{"court":"法院或檢察署全名(null=找不到)",'
+        '"case_no":"完整案號如115年度原侵重訴字第1號(null=找不到)",'
+        '"case_type":"刑事或民事或行政(null=無法判斷)",'
+        '"doc_type":"裁定/判決/庭通知書/函/起訴書/不起訴處分書/聲請書/陳報狀/答辯狀/委任狀/筆錄/其他",'
+        '"doc_subtype":"完整文件標題如臺灣花蓮地方法院刑事裁定(null=找不到)",'
+        '"party":"被告或原告或聲請人姓名(null=找不到)",'
+        '"summary":"主文或主旨摘要60字以內(null=找不到)"}'
+    )
+
+    try:
+        from skills.bridge.melchior_client import OMLX_CHAT_BASE
+        if _chat_fn and callable(_chat_fn):
+            r = _chat_fn(
+                prompt=prompt,
+                model="",  # use default model on chat port
+                base_url=OMLX_CHAT_BASE,
+                timeout=60,
+                temperature=0.0,
+                max_tokens=512,
+            )
+        else:
+            import requests as _req
+            base = (os.environ.get("MAGI_OMLX_CHAT_URL") or "http://127.0.0.1:8080").rstrip("/")
+            resp = _req.post(f"{base}/v1/chat/completions", json={
+                "model": "",
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": 0.0,
+                "max_tokens": 512,
+                "stream": False,
+            }, timeout=60)
+            if resp.status_code != 200:
+                return {}
+            r = {"success": True, "response": resp.json().get("choices", [{}])[0].get("message", {}).get("content", "")}
+
+        if not r.get("success") or not r.get("response"):
+            return {}
+
+        raw = r["response"].strip()
+        # Strip markdown code fences
+        raw = re.sub(r"```json\s*", "", raw)
+        raw = re.sub(r"```\s*$", "", raw)
+        raw = raw.strip()
+
+        try:
+            obj = json.loads(raw)
+        except json.JSONDecodeError:
+            m = re.search(r"\{[\s\S]*\}", raw)
+            if m:
+                try:
+                    obj = json.loads(m.group(0))
+                except json.JSONDecodeError:
+                    return {}
+            else:
+                return {}
+
+        if not isinstance(obj, dict):
+            return {}
+
+        # Map to our internal field names
+        result = {}
+        if obj.get("court") and obj["court"] != "null":
+            result["court"] = str(obj["court"])
+        if obj.get("case_no") and obj["case_no"] != "null":
+            result["case_number"] = str(obj["case_no"])
+        if obj.get("case_type") and obj["case_type"] != "null":
+            result["case_type"] = str(obj["case_type"])
+        if obj.get("doc_type") and obj["doc_type"] != "null":
+            result["doc_type"] = str(obj["doc_type"])
+        if obj.get("doc_subtype") and obj["doc_subtype"] != "null":
+            result["doc_subtype"] = str(obj["doc_subtype"])
+        if obj.get("party") and obj["party"] != "null":
+            result["party"] = str(obj["party"])
+        if obj.get("summary") and obj["summary"] != "null":
+            result["summary"] = str(obj["summary"])[:80]
+
+        logger.info("Gemma4 analysis: %s", {k: v[:30] if isinstance(v, str) and len(v) > 30 else v
+                                              for k, v in result.items()})
+        return result
+
+    except Exception as e:
+        logger.debug("Gemma4 analysis failed: %s", e)
         return {}
 
 
@@ -2088,6 +2171,7 @@ def _build_name_result(
     doc_subtype: Optional[str] = "",
     summary: Optional[str] = "",
     suffix: Optional[str] = "",
+    case_type_hint: Optional[str] = "",
 ) -> dict:
     """Build filename following naming_rules.DOC_CATEGORIES templates.
 
@@ -2137,8 +2221,8 @@ def _build_name_result(
     # Receipts:        {date} {回執type}（{party}）
     # Opponent docs:   {date} {court}{case_no}{case_type}{doc_type}繕本（{party}；{summary}）
 
-    case_type = ""  # 刑事/民事/行政 prefix
-    if sub:
+    case_type = (case_type_hint or "").strip()  # 刑事/民事/行政 prefix
+    if not case_type and sub:
         for ct in ("刑事", "民事", "行政"):
             if ct in sub:
                 case_type = ct
