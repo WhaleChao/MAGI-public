@@ -1242,9 +1242,15 @@ def generate_name_proposal(pdf_path: str, case_name: str = None, return_structur
             # Single-page: stamp is on same page as content
             stamp_pages = [content_page]
 
+        # Use file mtime as reference date for stamp plausibility check
+        try:
+            _file_mtime = datetime.fromtimestamp(os.path.getmtime(pdf_path))
+        except Exception:
+            _file_mtime = datetime.now()
+
         for sp in stamp_pages:
             try:
-                stamp_result = _extract_receipt_date_from_stamp(sp)
+                stamp_result = _extract_receipt_date_from_stamp(sp, ref_dt=_file_mtime)
                 if stamp_result and stamp_result[0]:
                     stamp_dates.append(stamp_result[0])
                     logger.info("Receipt stamp date: %s (method: %s)", stamp_result[0], stamp_result[1])
@@ -1306,6 +1312,94 @@ def generate_name_proposal(pdf_path: str, case_name: str = None, return_structur
     found_case_no = vision_info.get("case_number") or ocr_case_no
     found_type = vision_info.get("doc_type") or ocr_type
     found_party = vision_info.get("party") or ocr_name
+
+    # ── Step 4a: Targeted stamp-area vision OCR ──
+    # When full-page vision missed the stamp, crop stamp regions and OCR them.
+    if not found_date:
+        _stamp_crop_regions = [
+            ("top_right", (0.55, 0.00, 1.00, 0.35)),
+            ("right_strip", (0.72, 0.00, 1.00, 0.55)),
+            ("top_left", (0.00, 0.00, 0.45, 0.35)),
+            ("bottom_right", (0.55, 0.70, 1.00, 1.00)),
+        ]
+        # Try stamp on envelope page first, then content page
+        _stamp_scan_pages = []
+        if doc.page_count > 2:
+            _stamp_scan_pages.append(doc[0])
+        if content_page is not None and content_page not in _stamp_scan_pages:
+            _stamp_scan_pages.append(content_page)
+
+        try:
+            from skills.bridge import melchior_client as _mc_s
+            _chat_s = getattr(_mc_s, "_chat_omlx", None)
+            _avail_s = getattr(_mc_s, "_omlx_available", None)
+            if callable(_chat_s) and callable(_avail_s) and _avail_s():
+                from skills.bridge.melchior_client import (
+                    OMLX_VISION_BASE as _VBS,
+                    OMLX_VISION_MODEL as _VMS,
+                    _OMLX_VISION_CIRCUIT as _VCS,
+                    _OMLX_VISION_LOCK as _VLS,
+                )
+                stamp_prompt = (
+                    "這張圖片是文件角落的裁切區域。請找出收文章（藍色圓形章）上的日期。"
+                    "收文章格式通常為民國年.月.日（如115.4.02代表民國115年4月2日=西元2026年4月2日）。"
+                    "只回覆日期數字（民國年.月.日格式），看不到收文章就回覆NONE。"
+                )
+                for sp in _stamp_scan_pages:
+                    if found_date:
+                        break
+                    try:
+                        sp_pix = sp.get_pixmap(dpi=220)
+                        sp_png = sp_pix.tobytes("png")
+                    except Exception:
+                        continue
+                    for crop_name, (cx0, cy0, cx1, cy1) in _stamp_crop_regions:
+                        if found_date:
+                            break
+                        crop_png = _crop_png_bytes(sp_png, x0=cx0, y0=cy0, x1=cx1, y1=cy1)
+                        if not crop_png:
+                            continue
+                        # Enhance for small stamp text
+                        if HAS_PIL:
+                            try:
+                                from PIL import ImageOps, ImageEnhance
+                                im = Image.open(io.BytesIO(crop_png)).convert("L")
+                                im = ImageOps.autocontrast(im)
+                                w, h = im.size
+                                im = im.resize((int(w * 2.0), int(h * 2.0)))
+                                im = ImageEnhance.Sharpness(im).enhance(1.6)
+                                im = ImageEnhance.Contrast(im).enhance(1.4)
+                                buf = io.BytesIO()
+                                im.save(buf, format="PNG")
+                                crop_png = buf.getvalue()
+                            except Exception:
+                                pass
+                        b64_crop = base64.b64encode(crop_png).decode("utf-8")
+                        try:
+                            r_stamp = _chat_s(
+                                prompt=stamp_prompt, model=_VMS,
+                                base_url=_VBS, timeout=45,
+                                temperature=0.0, max_tokens=64, images=[b64_crop],
+                                circuit=_VCS, lock=_VLS,
+                            )
+                            if r_stamp.get("success") and r_stamp.get("response"):
+                                raw = r_stamp["response"].strip()
+                                if "NONE" not in raw.upper():
+                                    from vision_parser import _parse_date_from_text
+                                    sd = _parse_date_from_text(raw)
+                                    if sd:
+                                        try:
+                                            yr = int(sd[:4])
+                                            if 2000 <= yr <= 2030:
+                                                found_date = sd
+                                                date_method = f"vision_stamp_crop:{crop_name}"
+                                                logger.info("Stamp date from crop %s: %s (raw: %s)", crop_name, sd, raw[:40])
+                                        except ValueError:
+                                            pass
+                        except Exception as e:
+                            logger.debug("Stamp crop vision failed (%s): %s", crop_name, e)
+        except Exception as e:
+            logger.debug("Stamp crop vision setup failed: %s", e)
 
     # Normalize simplified → traditional Chinese
     if found_party:
