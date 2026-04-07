@@ -1191,9 +1191,13 @@ def generate_name_proposal(pdf_path: str, case_name: str = None, return_structur
             envelope_page = p0
             logger.info("Page 1: detected as envelope (text markers)")
         elif _is_garbled_text(p0_text) and doc.page_count <= 8:
-            # Small multi-page docs with garbled text: likely court-sent with envelope
-            envelope_page = p0
-            logger.info("Page 1: assumed envelope (garbled text, small doc)")
+            # Garbled text: check if it has envelope-like keywords even in garbled form
+            _env_kw = ("公文封", "公丈封", "公支封", "受送達", "受送:ミ", "受送逹",
+                        "郵務送達", "寄存送達", "送達人住居所", "送達人居住所")
+            if any(k in p0_text for k in _env_kw):
+                envelope_page = p0
+                logger.info("Page 1: detected as envelope (garbled text with envelope keywords)")
+            # Else: garbled text but no envelope markers → NOT an envelope
         # Else: large doc or clean text on page 0 → no envelope, content starts at p0
 
     # Find content page — skip envelope pages
@@ -1209,6 +1213,10 @@ def generate_name_proposal(pdf_path: str, case_name: str = None, return_structur
             if any(m in p1_text for m in _ENVELOPE_BACK_MARKERS) or _is_garbled_text(p1_text):
                 start_idx = 2
                 logger.info("Page 2: also envelope back (instructions), content starts at page 3")
+    # For no-envelope docs, page 0 is always the primary content page for vision,
+    # even if its embedded text is garbled (vision reads the image, not the text).
+    _vision_primary_page = doc[0] if (not envelope_page and doc.page_count > 0) else None
+
     for i in range(start_idx, min(start_idx + 3, doc.page_count)):
         page, native, text = _get_page_text(i)
         if len(text.strip()) < 20:
@@ -1216,7 +1224,7 @@ def generate_name_proposal(pdf_path: str, case_name: str = None, return_structur
         if _is_garbled_text(text):
             logger.info(f"Page {i+1}: garbled embedded text, will use vision only")
             if content_page is None:
-                content_page = page  # keep for vision even if text is bad
+                content_page = page
                 content_text = ""
                 content_text_native = ""
             continue
@@ -1224,6 +1232,14 @@ def generate_name_proposal(pdf_path: str, case_name: str = None, return_structur
         content_text_native = native
         content_text = text
         break
+
+    # For no-envelope docs, prefer page 0 for vision when content_text is empty
+    # (page 0 = document title/header, most important for naming)
+    if _vision_primary_page is not None and not content_text.strip() and content_page != _vision_primary_page:
+        content_page = _vision_primary_page
+        content_text = ""
+        content_text_native = ""
+        logger.info("Overriding content page to page 0 (no-envelope doc, primary for vision)")
 
     # If no content page found yet and we have an envelope, page 0 IS the content
     if content_page is None and envelope_page is None and doc.page_count > 0:
@@ -1260,9 +1276,15 @@ def generate_name_proposal(pdf_path: str, case_name: str = None, return_structur
 
     def _run_envelope_vision():
         nonlocal envelope_vision
-        if envelope_page is None:
+        page_to_scan = envelope_page
+        # For no-envelope multi-page docs, scan page 0 as "title page"
+        # to get case_no/party/doc_type from the document header
+        if page_to_scan is None and _vision_primary_page is not None and content_page != _vision_primary_page:
+            page_to_scan = _vision_primary_page
+            logger.info("No envelope: scanning page 0 as title page for metadata")
+        if page_to_scan is None:
             return
-        envelope_vision = _vision_analyze_for_naming(envelope_page)
+        envelope_vision = _vision_analyze_for_naming(page_to_scan)
         logger.info("Envelope vision: %s", {k: v[:30] if isinstance(v, str) and len(v) > 30 else v
                                               for k, v in envelope_vision.items()})
 
@@ -1307,12 +1329,19 @@ def generate_name_proposal(pdf_path: str, case_name: str = None, return_structur
 
     # ── Merge: envelope provides court/case/date, content provides type/party ──
     vision_info = {}
-    # Prefer envelope for: date, court, case_number (envelope has stamps + sender info)
-    for key in ("date", "court", "case_number"):
-        vision_info[key] = envelope_vision.get(key) or content_vision.get(key) or ""
-    # Prefer content for: doc_type, party, doc_subtype, summary, case_type
-    for key in ("doc_type", "party", "doc_subtype", "summary", "case_type"):
-        vision_info[key] = content_vision.get(key) or envelope_vision.get(key) or ""
+    if envelope_page is not None:
+        # True envelope doc: envelope has court/case/date, content has type/party
+        for key in ("date", "court", "case_number"):
+            vision_info[key] = envelope_vision.get(key) or content_vision.get(key) or ""
+        for key in ("doc_type", "party", "doc_subtype", "summary", "case_type"):
+            vision_info[key] = content_vision.get(key) or envelope_vision.get(key) or ""
+    else:
+        # No envelope: "envelope vision" = page 0 title page (most authoritative)
+        # Page 0 has doc title, case_no, party; later pages have body/details
+        for key in ("case_number", "party", "doc_subtype"):
+            vision_info[key] = envelope_vision.get(key) or content_vision.get(key) or ""
+        for key in ("date", "court", "doc_type", "summary", "case_type"):
+            vision_info[key] = content_vision.get(key) or envelope_vision.get(key) or ""
     # Remove empty values
     vision_info = {k: v for k, v in vision_info.items() if v}
     logger.info("Merged vision: %s", {k: v[:30] if isinstance(v, str) and len(v) > 30 else v
