@@ -1157,102 +1157,119 @@ def generate_name_proposal(pdf_path: str, case_name: str = None, return_structur
 
     is_single_page = doc.page_count <= 2
 
-    # ── Step 1: Get content page (page 3, index 2) ──
-    content_page = None
+    # ── Step 1: Identify envelope page and content page ──
+    # Convention: page 0-1 = envelope, page 2+ = actual content.
+    # Exception: some docs have no envelope (content starts at page 0).
+    envelope_page = None   # page 0 if it looks like an envelope
+    content_page = None    # first actual content page (page 2+ or page 0)
     content_text = ""
     content_text_native = ""
-    _vision_only_page = None  # page with garbled/no text — only useful for vision
-    start_idx = min(2, doc.page_count)  # Skip envelope pages (index 0, 1)
-    for i in range(start_idx, min(start_idx + 3, doc.page_count)):
-        page = doc[i]
-        native_text = page.get_text() or ""
-        text = native_text
+
+    def _get_page_text(page_idx):
+        """Get text from a page, with RapidOCR fallback."""
+        page = doc[page_idx]
+        native = page.get_text() or ""
+        text = native
         if len(text.strip()) < 50 and HAS_OCR:
-            logger.info(f"Page {i+1}: OCR scanning...")
             text = _ocr_page_rapid(page)
+        return page, native, text
+
+    # Check if page 0 is an envelope (公文封)
+    # Only positively detect envelope from text markers; garbled/empty text alone
+    # is NOT sufficient (image-only docs may have no envelope at all).
+    if doc.page_count > 2:
+        p0 = doc[0]
+        p0_text = p0.get_text() or ""
+        if len(p0_text.strip()) < 50 and HAS_OCR:
+            p0_text = _ocr_page_rapid(p0)
+        if _is_envelope_page(p0_text):
+            envelope_page = p0
+            logger.info("Page 1: detected as envelope (text markers)")
+        elif _is_garbled_text(p0_text) and doc.page_count <= 8:
+            # Small multi-page docs with garbled text: likely court-sent with envelope
+            envelope_page = p0
+            logger.info("Page 1: assumed envelope (garbled text, small doc)")
+        # Else: large doc or clean text on page 0 → no envelope, content starts at p0
+
+    # Find content page — skip envelope page only
+    # Convention: page 0 = envelope (公文封), page 1+ = actual content
+    # Some docs have 2 envelope pages (envelope + instructions), but most have 1
+    start_idx = 1 if envelope_page else 0
+    for i in range(start_idx, min(start_idx + 3, doc.page_count)):
+        page, native, text = _get_page_text(i)
         if len(text.strip()) < 20:
-            # Image-only page: keep for vision but not text parsing
-            if _vision_only_page is None:
-                _vision_only_page = page
             continue
         if _is_garbled_text(text):
             logger.info(f"Page {i+1}: garbled embedded text, will use vision only")
-            if _vision_only_page is None:
-                _vision_only_page = page
+            if content_page is None:
+                content_page = page  # keep for vision even if text is bad
+                content_text = ""
+                content_text_native = ""
             continue
         content_page = page
-        content_text_native = native_text
+        content_text_native = native
         content_text = text
         break
 
-    # Fallback: try page 0 (envelope or single-page doc)
-    if content_page is None and doc.page_count > 0:
-        page0 = doc[0]
-        p0_text = page0.get_text() or ""
-        if len(p0_text.strip()) < 50 and HAS_OCR:
-            p0_text = _ocr_page_rapid(page0)
-        if p0_text.strip() and not _is_garbled_text(p0_text):
-            content_page = page0
-            content_text_native = page0.get_text() or ""
-            content_text = p0_text
-        elif _vision_only_page is None:
-            # Page 0 has garbled/no text but still has image content for vision
-            _vision_only_page = page0
-
-    # If no clean text page found, use vision-only page.
-    # Prefer page 0 for vision (cover/envelope has stamps + metadata) over
-    # later pages (which might be appendices).
-    if content_page is None and _vision_only_page is not None:
-        if doc.page_count > 2 and _vision_only_page != doc[0]:
-            # For multi-page docs, page 0 is more likely to have useful metadata
-            content_page = doc[0]
+    # If no content page found yet and we have an envelope, page 0 IS the content
+    if content_page is None and envelope_page is None and doc.page_count > 0:
+        content_page = doc[0]
+        content_text_native = doc[0].get_text() or ""
+        content_text = content_text_native
+        if len(content_text.strip()) < 50 and HAS_OCR:
+            content_text = _ocr_page_rapid(content_page)
+    elif content_page is None and doc.page_count > 0:
+        # Envelope exists but no content page — use page 2 for vision if available
+        if doc.page_count > 2:
+            content_page = doc[2]
         else:
-            content_page = _vision_only_page
+            content_page = doc[min(1, doc.page_count - 1)]
         content_text = ""
         content_text_native = ""
 
     if content_page is None:
         return empty_result if return_structured else None
 
+    # ── Step 1b: Fast text path (only for clean text) ──
     fast_text = "\n".join(part for part in [content_text_native, content_text] if part)
-    fast_result = _maybe_fast_text_name_result(fast_text, case_name=case_name)
-    if fast_result:
-        logger.info("Fast text path hit for %s", pdf_path)
-        return fast_result if return_structured else fast_result["filename"]
+    if fast_text.strip() and not _is_garbled_text(fast_text):
+        fast_result = _maybe_fast_text_name_result(fast_text, case_name=case_name)
+        if fast_result:
+            logger.info("Fast text path hit for %s", pdf_path)
+            return fast_result if return_structured else fast_result["filename"]
 
-    # ── Step 2: Parallel — Vision analysis + stamp extraction ──
-    # Run Vision and stamp extraction concurrently to save ~30-60s
-    vision_info = {}
+    # ── Step 2: Dual-page Vision OCR ──
+    # Scan BOTH envelope (stamp/court/case) and content (doc_type/party/summary)
+    envelope_vision = {}
+    content_vision = {}
     stamp_dates = []
-    env_text_cache = {"text": None}  # shared cache for envelope OCR
 
-    def _run_vision():
-        nonlocal vision_info
-        vision_info = _vision_analyze_for_naming(content_page)
+    def _run_envelope_vision():
+        nonlocal envelope_vision
+        if envelope_page is None:
+            return
+        envelope_vision = _vision_analyze_for_naming(envelope_page)
+        logger.info("Envelope vision: %s", {k: v[:30] if isinstance(v, str) and len(v) > 30 else v
+                                              for k, v in envelope_vision.items()})
 
-    def _run_stamp_and_envelope():
+    def _run_content_vision():
+        nonlocal content_vision
+        content_vision = _vision_analyze_for_naming(content_page)
+        logger.info("Content vision: %s", {k: v[:30] if isinstance(v, str) and len(v) > 30 else v
+                                             for k, v in content_vision.items()})
+
+    def _run_stamp():
         nonlocal stamp_dates
-        # Skip VLM fallback in stamp extraction — Vision thread handles date
         os.environ["_MAGI_STAMP_SKIP_VLM"] = "1"
-        # Stamp pages: envelope first (if multi-page), then content page
-        stamp_pages = [content_page]
-        if doc.page_count > 2 and content_page != doc[0]:
-            stamp_pages.insert(0, doc[0])
-            # Cache envelope OCR for later party extraction
-            env_text = doc[0].get_text() or ""
-            if len(env_text.strip()) < 50 and HAS_OCR:
-                env_text = _ocr_page_rapid(doc[0])
-            env_text_cache["text"] = env_text
-        elif is_single_page:
-            # Single-page: stamp is on same page as content
-            stamp_pages = [content_page]
-
-        # Use file mtime as reference date for stamp plausibility check
         try:
             _file_mtime = datetime.fromtimestamp(os.path.getmtime(pdf_path))
         except Exception:
             _file_mtime = datetime.now()
-
+        # Stamp on envelope first, then content page
+        stamp_pages = []
+        if envelope_page is not None:
+            stamp_pages.append(envelope_page)
+        stamp_pages.append(content_page)
         for sp in stamp_pages:
             try:
                 stamp_result = _extract_receipt_date_from_stamp(sp, ref_dt=_file_mtime)
@@ -1262,16 +1279,30 @@ def generate_name_proposal(pdf_path: str, case_name: str = None, return_structur
             except Exception as e:
                 logger.debug("Stamp date extraction failed: %s", e)
 
-    # Run in parallel threads
+    # Run envelope+content vision sequentially (single GPU), stamp in parallel
     import concurrent.futures
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
-        f_vision = pool.submit(_run_vision)
-        f_stamp = pool.submit(_run_stamp_and_envelope)
-        concurrent.futures.wait([f_vision, f_stamp], timeout=120)
+        def _run_all_vision():
+            _run_envelope_vision()
+            _run_content_vision()
+        f_vision = pool.submit(_run_all_vision)
+        f_stamp = pool.submit(_run_stamp)
+        concurrent.futures.wait([f_vision, f_stamp], timeout=240)
 
     os.environ.pop("_MAGI_STAMP_SKIP_VLM", None)
-    logger.info("Vision info: %s", {k: v[:30] if isinstance(v, str) and len(v) > 30 else v
-                                     for k, v in vision_info.items()})
+
+    # ── Merge: envelope provides court/case/date, content provides type/party ──
+    vision_info = {}
+    # Prefer envelope for: date, court, case_number (envelope has stamps + sender info)
+    for key in ("date", "court", "case_number"):
+        vision_info[key] = envelope_vision.get(key) or content_vision.get(key) or ""
+    # Prefer content for: doc_type, party, doc_subtype (actual document info)
+    for key in ("doc_type", "party", "doc_subtype"):
+        vision_info[key] = content_vision.get(key) or envelope_vision.get(key) or ""
+    # Remove empty values
+    vision_info = {k: v for k, v in vision_info.items() if v}
+    logger.info("Merged vision: %s", {k: v[:30] if isinstance(v, str) and len(v) > 30 else v
+                                        for k, v in vision_info.items()})
 
     # Cross-verify stamp dates
     stamp_date = None
@@ -1292,18 +1323,11 @@ def generate_name_proposal(pdf_path: str, case_name: str = None, return_structur
     ocr_type = _extract_doc_type(content_text)
     ocr_name = _extract_name(content_text, default_name=None)
 
-    # Use cached envelope text for party extraction (no redundant OCR)
-    if not ocr_name and env_text_cache["text"]:
-        env_name_m = re.search(r"受送達人\S*[：:\s]+\d?([\u4e00-\u9fffA-Za-z·\-]{2,20})", env_text_cache["text"])
-        if env_name_m:
-            ocr_name = env_name_m.group(1).strip()
-            logger.info("Party from envelope (cached): %s", ocr_name)
-    elif not ocr_name and doc.page_count > 2:
-        # Envelope not yet OCR'd — do it now
-        env_page = doc[0]
-        env_text = env_page.get_text() or ""
+    # Try envelope text for party extraction
+    if not ocr_name and envelope_page is not None:
+        env_text = envelope_page.get_text() or ""
         if len(env_text.strip()) < 50 and HAS_OCR:
-            env_text = _ocr_page_rapid(env_page)
+            env_text = _ocr_page_rapid(envelope_page)
         env_name_m = re.search(r"受送達人\S*[：:\s]+\d?([\u4e00-\u9fffA-Za-z·\-]{2,20})", env_text)
         if env_name_m:
             ocr_name = env_name_m.group(1).strip()
