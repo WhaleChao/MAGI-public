@@ -96,8 +96,8 @@ RE_ANY_ROC_DATE = re.compile(r"(\d{2,3})\s*([年\.\-/])\s*([01]?\d)\s*([月\.\-/
 DOC_TYPES = [
     # 筆錄
     "訊問筆錄", "讯问笔录", "調查筆錄", "调查笔录", "準備程序筆錄", "审判笔录", "勘驗筆錄",
-    # 法院通知 (Court Notices)
-    "庭通知書", "法院通知", "開庭通知", "期日通知", "傳票", "通知書",
+    # 法院通知 (Court Notices) — 庭函 before 通知 to avoid false match
+    "庭通知書", "庭函", "開庭通知", "期日通知", "傳票", "法院通知", "通知書",
     # 法院裁判 / 命令 — must precede 對造/相對人 to avoid false match
     "支付命令", "判決", "判决", "裁定",
     "起訴書", "起诉书", "不起訴處分書", "不起诉处分书", "聲請簡易判決處刑書", "声请简易判决处刑书",
@@ -124,7 +124,7 @@ DOC_TYPE_MAP = {
     "對造書狀": "對造_書狀", "對造": "對造_書狀", "相對人": "對造_書狀", 
     "原告書狀": "對造_書狀", "被告訴狀": "對造_書狀",
     # 法院通知
-    "庭通知書": "法院_通知", "法院通知": "法院_通知", "開庭通知": "法院_通知", "期日通知": "法院_通知", "傳票": "法院_傳票", "通知書": "法院_通知",
+    "庭通知書": "法院_通知", "庭函": "函文", "法院通知": "法院_通知", "開庭通知": "法院_通知", "期日通知": "法院_通知", "傳票": "法院_傳票", "通知書": "法院_通知",
     # 書狀
     "起訴書": "起訴書", "起诉书": "起訴書",
     "不起訴處分書": "不起訴處分書", "不起诉处分书": "不起訴處分書",
@@ -514,10 +514,15 @@ def _extract_any_date(text: str) -> Optional[str]:
 
 def _extract_doc_type(text: str):
     """Identify document type keyword from text"""
-    header_text = text[:1000] 
+    header_text = text[:1000]
+    # Check for 函 pattern first: "主旨" + no other specific doc type = 函文
+    has_zhi = "主旨" in header_text or "主　旨" in header_text
     for keyword in DOC_TYPES:
         if keyword in header_text:
             return DOC_TYPE_MAP.get(keyword, keyword)
+    # Fallback: 主旨 without other type markers = 函文
+    if has_zhi:
+        return "函文"
     return None
 
 def _is_envelope_page(text: str) -> bool:
@@ -1333,10 +1338,28 @@ def generate_name_proposal(pdf_path: str, case_name: str = None, return_structur
             ocr_name = env_name_m.group(1).strip()
             logger.info("Party from envelope: %s", ocr_name)
 
-    # ── Step 4: Merge — stamp date > OCR date > Vision date ──
-    found_date = stamp_date or ocr_date or vision_info.get("date")
+    # ── Step 4: Merge — stamp date > OCR date > envelope vision date > content vision date ──
+    # Content vision date is least reliable (may contain birthdates or irrelevant dates)
+    _env_vision_date = envelope_vision.get("date", "")
+    _content_vision_date = content_vision.get("date", "")
+    # Reject content vision date if it's too old (likely a birthdate from 被告 bio)
+    if _content_vision_date:
+        try:
+            _cv_year = int(_content_vision_date[:4])
+            if _cv_year < 2020:
+                logger.info("Rejecting content vision date %s (likely birthdate/old ref)", _content_vision_date)
+                _content_vision_date = ""
+        except (ValueError, IndexError):
+            pass
+    _vision_date = _env_vision_date or _content_vision_date
+    found_date = stamp_date or ocr_date or _vision_date
     if not date_method:
-        date_method = "ocr" if (found_date == ocr_date) else "vision"
+        if found_date == stamp_date:
+            date_method = "stamp"
+        elif found_date == ocr_date:
+            date_method = "ocr"
+        else:
+            date_method = "vision"
     found_court = vision_info.get("court") or ocr_court
     found_case_no = vision_info.get("case_number") or ocr_case_no
     found_type = vision_info.get("doc_type") or ocr_type
