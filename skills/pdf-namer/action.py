@@ -1196,10 +1196,19 @@ def generate_name_proposal(pdf_path: str, case_name: str = None, return_structur
             logger.info("Page 1: assumed envelope (garbled text, small doc)")
         # Else: large doc or clean text on page 0 → no envelope, content starts at p0
 
-    # Find content page — skip envelope page only
-    # Convention: page 0 = envelope (公文封), page 1+ = actual content
-    # Some docs have 2 envelope pages (envelope + instructions), but most have 1
-    start_idx = 1 if envelope_page else 0
+    # Find content page — skip envelope pages
+    # Convention: page 0 = envelope front (公文封), page 1 = may be envelope back
+    # (訴訟當事人注意事項 / instructions), page 2+ = actual content
+    _ENVELOPE_BACK_MARKERS = ("注意事項", "訴訟當事人", "訴訟權益", "行賄", "信任法院", "送達方式")
+    start_idx = 0
+    if envelope_page:
+        start_idx = 1
+        # Check if page 1 is also envelope (back side / instructions)
+        if doc.page_count > 2:
+            p1_text = doc[1].get_text() or ""
+            if any(m in p1_text for m in _ENVELOPE_BACK_MARKERS) or _is_garbled_text(p1_text):
+                start_idx = 2
+                logger.info("Page 2: also envelope back (instructions), content starts at page 3")
     for i in range(start_idx, min(start_idx + 3, doc.page_count)):
         page, native, text = _get_page_text(i)
         if len(text.strip()) < 20:
@@ -2221,6 +2230,20 @@ def _build_name_result(
     # Receipts:        {date} {回執type}（{party}）
     # Opponent docs:   {date} {court}{case_no}{case_type}{doc_type}繕本（{party}；{summary}）
 
+    # Clean up summary — remove "被告XXX" prefix, convert 大寫數字 to 阿拉伯數字
+    smry = (summary or "").strip()
+    if smry and party:
+        # Remove "被告XXX" / "聲請人XXX" prefix from summary
+        smry = re.sub(r"^(?:被告|原告|聲請人|上訴人|抗告人)\s*" + re.escape(party) + r"\s*", "", smry)
+    # Convert 壹貳參肆伍陸柒捌玖拾 → 1-10
+    _NUM_MAP = {"壹": "1", "貳": "2", "參": "3", "肆": "4", "伍": "5",
+                "陸": "6", "柒": "7", "捌": "8", "玖": "9", "拾": "10",
+                "佰": "百", "仟": "千"}
+    for k, v in _NUM_MAP.items():
+        smry = smry.replace(k, v)
+    # Truncate to 80 chars
+    smry = smry[:80].rstrip("。，、；")
+
     case_type = (case_type_hint or "").strip()  # 刑事/民事/行政 prefix
     if not case_type and sub:
         for ct in ("刑事", "民事", "行政"):
@@ -2231,21 +2254,21 @@ def _build_name_result(
     if category == "判決":
         body = f"{court}{case_no}{case_type}判決"
         if party:
-            body += f"（{party}；{summary}）" if summary else f"（{party}）"
+            body += f"（{party}；{smry}）" if smry else f"（{party}）"
     elif category == "裁定":
         body = f"{court}{case_no}{case_type}裁定"
         if party:
-            body += f"（{party}；{summary}）" if summary else f"（{party}）"
+            body += f"（{party}；{smry}）" if smry else f"（{party}）"
     elif category == "庭通知書":
         body = f"{court}{case_no}{case_type}庭通知書"
         if party:
-            body += f"（{party}；{summary}）" if summary else f"（{party}）"
+            body += f"（{party}；{smry}）" if smry else f"（{party}）"
     elif category == "函文":
         body = f"{court}{case_no}{case_type}函" if case_type else f"{court}{case_no}函"
         if "庭" in (sub or ""):
             body = f"{court}{case_no}{case_type}庭函"
         if party:
-            body += f"（{party}；{summary}）" if summary else f"（{party}）"
+            body += f"（{party}；{smry}）" if smry else f"（{party}）"
     elif category == "起訴書":
         # {date} {court/署}{case_no}起訴書（{party}）
         body = f"{court}{case_no}起訴書"
@@ -2269,7 +2292,7 @@ def _build_name_result(
             body += case_no
         body += (sub or "書狀") + "繕本"
         if party:
-            body += f"（{party}；{summary}）" if summary else f"（{party}）"
+            body += f"（{party}；{smry}）" if smry else f"（{party}）"
     elif category == "法院通知":
         body = f"{court}{case_no}"
         if "傳票" in dt or "傳票" in sub:
@@ -2281,7 +2304,7 @@ def _build_name_result(
         else:
             body += "通知"
         if party:
-            body += f"（{party}；{summary}）" if summary else f"（{party}）"
+            body += f"（{party}；{smry}）" if smry else f"（{party}）"
     elif category == "委任相關":
         body = sub or "委任狀"
         if sfx:
@@ -2295,7 +2318,7 @@ def _build_name_result(
     elif category == "筆錄":
         body = sub or dt or "筆錄"
         if summary:
-            body += f"（{summary}）"
+            body += f"（{smry}）"
     else:
         # Fallback: generic
         body = ""
