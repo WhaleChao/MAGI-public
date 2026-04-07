@@ -109,7 +109,9 @@ DOC_TYPES = [
     # 證物等
     "扣押物品目錄表", "扣押物品目录表", "扣押物品收據", "贓證物品清單", "赃证物品清单",
     "委任狀", "委任书", "選任辯護人委任書", "选任辩护人委任书",
-    "驗傷診斷書", "相驗屍體證明書"
+    "驗傷診斷書", "相驗屍體證明書",
+    # 回執
+    "預酬回執", "委任狀回執", "回執", "掛號郵件收件回執",
 ]
 
 DOC_TYPE_MAP = {
@@ -143,7 +145,10 @@ DOC_TYPE_MAP = {
     "贓證物品清單": "贓證物品清單", "赃证物品清单": "贓證物品清單",
     "委任狀": "委任狀", "委任书": "委任狀",
     "選任辯護人委任書": "委任狀", "选任辩护人委任书": "委任狀",
-    "驗傷診斷書": "驗傷診斷書", "相驗屍體證明書": "相驗屍體證明書"
+    "驗傷診斷書": "驗傷診斷書", "相驗屍體證明書": "相驗屍體證明書",
+    # 回執
+    "預酬回執": "預酬回執", "委任狀回執": "委任狀回執",
+    "回執": "回執", "掛號郵件收件回執": "回執",
 }
 
 _CASE_ROOTS = preferred_case_roots(include_closed=False)
@@ -1874,12 +1879,8 @@ def _task_analyze_fast_receipt(pdf_path: str, bn: str) -> str:
 
 
 def _shorten_court(court: str) -> str:
-    """Remove 臺灣 prefix from court name for brevity:
-    臺灣花蓮地方法院 → 花蓮地方法院"""
-    c = (court or "").strip()
-    if c.startswith("臺灣") and "地方法院" in c:
-        c = c[len("臺灣"):]
-    return c
+    """Keep court name as-is (users expect full name including 臺灣 prefix)."""
+    return (court or "").strip()
 
 
 def _resolve_doc_category(doc_type: str) -> Optional[str]:
@@ -1894,8 +1895,9 @@ def _resolve_doc_category(doc_type: str) -> Optional[str]:
         "法院_通知": "法院通知", "法院_傳票": "法院通知",
         "庭通知書": "庭通知書", "法院通知": "法院通知",
         "函文": "函文",
-        "起訴書": "書狀_對造", "不起訴處分書": "書狀_對造",
+        "起訴書": "起訴書", "不起訴處分書": "書狀_對造",
         "聲請簡易判決處刑書": "書狀_對造",
+        "預酬回執": "收據", "委任狀回執": "收據", "回執": "收據",
         "對造_書狀": "書狀_對造",
         "書狀_我方": "書狀_我方", "書狀_對造": "書狀_對造",
         "陳報狀": "書狀_我方", "答辯狀": "書狀_我方",
@@ -1910,6 +1912,7 @@ def _resolve_doc_category(doc_type: str) -> Optional[str]:
         return _TYPE_TO_CATEGORY[dt]
     # Fallback: keyword scan
     for kw, cat in [("判決", "判決"), ("裁定", "裁定"), ("庭通知", "庭通知書"),
+                    ("起訴書", "起訴書"), ("回執", "收據"),
                     ("函", "函文"), ("筆錄", "筆錄"), ("書狀", "書狀_我方"),
                     ("陳報", "書狀_我方"), ("答辯", "書狀_我方"),
                     ("聲請", "書狀_我方"), ("上訴", "書狀_我方"),
@@ -1973,60 +1976,90 @@ def _build_name_result(
 
     category = _resolve_doc_category(dt)
 
+    # ── Naming templates (derived from actual user-named files) ──
+    # All parens are full-width （）
+    # Court documents: {date} {court}{case_no}{case_type}{doc_type}（{party}；{summary}）
+    # Our statements:  {date} {doc_subtype}存底（{party}）
+    # Receipts:        {date} {回執type}（{party}）
+    # Opponent docs:   {date} {court}{case_no}{case_type}{doc_type}繕本（{party}；{summary}）
+
+    case_type = ""  # 刑事/民事/行政 prefix
+    if sub:
+        for ct in ("刑事", "民事", "行政"):
+            if ct in sub:
+                case_type = ct
+                break
+
     if category == "判決":
-        body = f"{court}{case_no}判決"
+        body = f"{court}{case_no}{case_type}判決"
         if party:
-            paren = f"（{party}；{summary}）" if summary else f"（{party}）"
-            body += paren
+            body += f"（{party}；{summary}）" if summary else f"（{party}）"
     elif category == "裁定":
-        body = f"{court}{case_no}裁定"
+        body = f"{court}{case_no}{case_type}裁定"
         if party:
-            paren = f"({party}；{summary})" if summary else f"({party})"
-            body += paren
+            body += f"（{party}；{summary}）" if summary else f"（{party}）"
     elif category == "庭通知書":
-        body = f"{court}{case_no}庭通知書"
+        body = f"{court}{case_no}{case_type}庭通知書"
         if party:
-            paren = f"（{party}；{summary}）" if summary else f"（{party}）"
-            body += paren
+            body += f"（{party}；{summary}）" if summary else f"（{party}）"
     elif category == "函文":
-        body = f"{court}{case_no}函"
+        body = f"{court}{case_no}{case_type}函" if case_type else f"{court}{case_no}函"
+        if "庭" in (sub or ""):
+            body = f"{court}{case_no}{case_type}庭函"
         if party:
-            paren = f"（{party}；主旨：{summary}）" if summary else f"（{party}）"
-            body += paren
+            body += f"（{party}；{summary}）" if summary else f"（{party}）"
+    elif category == "起訴書":
+        # {date} {court/署}{case_no}起訴書（{party}）
+        body = f"{court}{case_no}起訴書"
+        if party:
+            body += f"（{party}）"
     elif category in ("書狀_我方", "債清_書狀"):
-        # Template: {date} {doc_subtype}({party}){suffix}
+        # {date} {doc_subtype}存底（{party}）
         body = sub or "書狀"
-        if party:
-            body += f"({party})"
         if sfx:
             body += sfx
+        else:
+            body += "存底"
+        if party:
+            body += f"（{party}）"
     elif category == "書狀_對造":
-        body = f"對造{sub}" if sub else "對造書狀"
+        # Opponent docs: {court}{case_no}{doc_subtype}繕本（{party}；{summary}）
+        body = ""
+        if court:
+            body += court
+        if case_no:
+            body += case_no
+        body += (sub or "書狀") + "繕本"
+        if party:
+            body += f"（{party}；{summary}）" if summary else f"（{party}）"
     elif category == "法院通知":
-        # Template: {date} {court}{case_no}通知/函/傳票
         body = f"{court}{case_no}"
         if "傳票" in dt or "傳票" in sub:
             body += "傳票"
-        elif "函" in sub and len(sub) <= 4:
-            body += "函"
+        elif "庭函" in sub or ("函" in sub and "庭" in sub):
+            body += f"{case_type}庭函" if case_type else "函"
+        elif "函" in dt or "函" in sub:
+            body += f"{case_type}函" if case_type else "函"
         else:
             body += "通知"
+        if party:
+            body += f"（{party}；{summary}）" if summary else f"（{party}）"
     elif category == "委任相關":
         body = sub or "委任狀"
-        if party:
-            body += f"({party})"
         if sfx:
             body += sfx
+        if party:
+            body += f"（{party}）"
     elif category == "收據":
-        body = sub or "收據"
-        if summary:
-            body += f"（{summary}）"
+        body = sub or "回執"
+        if party:
+            body += f"（{party}）"
     elif category == "筆錄":
         body = sub or dt or "筆錄"
         if summary:
-            body += f"({summary})"
+            body += f"（{summary}）"
     else:
-        # Fallback: generic format
+        # Fallback: generic
         body = ""
         if court:
             body += court
