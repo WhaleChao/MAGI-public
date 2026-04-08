@@ -2571,6 +2571,42 @@ def batch_analyze_texts(ocr_results: dict) -> dict:
         info["pages"] = ocr_data.get("pages", {})
         _BATCH_ANALYSIS_CACHE[pdf_path] = info
 
+    # ── Phase 2b: Infer receipt context from batch neighbors ──
+    # Postal receipts (掛號回執) often can't be OCR'd. Infer their content from
+    # neighboring PDFs in the same batch (scanned together = same mailing).
+    sorted_paths = sorted(results.keys())
+    for i, pdf_path in enumerate(sorted_paths):
+        info = results[pdf_path]
+        merged = info.get("merged", {})
+        # Detect unreadable receipt: no doc_type, no party, very little OCR
+        total_ocr = len(info.get("envelope_ocr", "")) + len(info.get("content_ocr", ""))
+        if total_ocr < 50 and not merged.get("doc_type"):
+            # Check page count — receipts are usually 2 pages (front + back)
+            doc = ocr_results.get(pdf_path, {}).get("doc")
+            page_count = doc.page_count if doc else 0
+            if page_count <= 2:
+                # This is likely a postal receipt. Find the nearest document
+                # with content to infer what was mailed.
+                for offset in [-1, -2, 1, 2]:
+                    neighbor_idx = i + offset
+                    if 0 <= neighbor_idx < len(sorted_paths):
+                        neighbor = results[sorted_paths[neighbor_idx]].get("merged", {})
+                        if neighbor.get("doc_type") and neighbor.get("party"):
+                            # Build receipt name from neighbor context
+                            n_sub = neighbor.get("doc_subtype", neighbor.get("doc_type", ""))
+                            n_party = neighbor.get("party", "")
+                            merged["doc_type"] = "回執"
+                            merged["doc_subtype"] = n_sub
+                            merged["party"] = n_party
+                            # Use neighbor's date or file modification date
+                            if not merged.get("date"):
+                                merged["date"] = neighbor.get("date", "")
+                            info["merged"] = merged
+                            logger.info("[batch-receipt] %s inferred as receipt for '%s(%s)' from neighbor %s",
+                                        os.path.basename(pdf_path), n_sub, n_party,
+                                        os.path.basename(sorted_paths[neighbor_idx]))
+                            break
+
     logger.info("[batch-analyze] Phase 2 complete: %d PDFs analyzed and cached", len(results))
     return results
 
@@ -2845,7 +2881,17 @@ def _build_name_result(
         if party:
             body += f"（{party}）"
     elif category == "收據":
-        body = sub or "回執"
+        # 回執命名格式: {寄出文件名}({當事人})掛號郵件收件回執
+        # 或: 預酬回執（{當事人}）  / 委任狀回執（{當事人}）
+        if "預付酬金" in sub or "預酬" in sub or "領款單" in sub:
+            body = "預酬回執"
+        elif "委任" in sub:
+            body = "委任狀回執"
+        elif sub and "掛號" not in sub and "回執" not in sub:
+            # The sub is the mailed document name — append 掛號郵件收件回執
+            body = f"{sub}掛號郵件收件回執"
+        else:
+            body = sub or "掛號郵件收件回執"
         if party:
             body += f"（{party}）"
     elif category == "筆錄":
