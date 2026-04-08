@@ -2747,9 +2747,11 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         candidates: List[str] = []
         if current_folder and os.path.isdir(current_folder):
             candidates.append(current_folder)
-        for p in self._fallback_find_case_folders(client_name=client_name, laf_case_number=laf_case_number, limit=40):
-            if p not in candidates:
-                candidates.append(p)
+        # Only do expensive NAS directory scan if DB didn't give us a folder
+        if not candidates:
+            for p in self._fallback_find_case_folders(client_name=client_name, laf_case_number=laf_case_number, limit=5):
+                if p not in candidates:
+                    candidates.append(p)
 
         if not candidates:
             return "", {
@@ -3659,12 +3661,19 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                     "docs": {"opening_notice": open_doc, "poa": poa_doc},
                 }
             fields.setdefault("sel_result", "1")
-            if _is_consumer_debt:
+            # 生成自然語言 remark — 與 email 自動流程使用同一套邏輯
+            submission_info = self._detect_poa_submission_info(case_folder, _is_consumer_debt)
+            if submission_info.get("date_roc"):
+                default_remark = self._compose_go_live_remark(submission_info, cname, _is_consumer_debt)
+            elif _is_consumer_debt:
                 default_remark = f"已簽署開辦通知書（開辦日期 {open_date}）。"
             else:
-                default_remark = (
-                    f"CASPER 開辦資料判讀：開辦日期 {open_date}；委任狀遞出日期 {poa_date}。"
-                )
+                # fallback: 用委任狀遞出日期
+                poa_roc = self._iso_to_roc(poa_date) if poa_date else ""
+                if poa_roc:
+                    default_remark = f"已於民國{poa_roc}遞送委任狀至法院。"
+                else:
+                    default_remark = f"已簽署開辦通知書（開辦日期 {open_date}）。"
             fields.setdefault("remark", default_remark)
             # 找出要上傳的檔案（開辦通知書、消債不需委任狀）
             go_live_upload = self._find_go_live_upload_files(case_folder, is_consumer_debt=_is_consumer_debt)
