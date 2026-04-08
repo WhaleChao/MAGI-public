@@ -2,7 +2,7 @@
     "_meta": {
         "version": "1.0.0",
         "description": "MAGI Skill Definitions for OpenClaw Integration",
-        "updated": "2026-04-06",
+        "updated": "2026-04-08",
         "api_base": "http://localhost:5003",
         "sanitized_by": "scripts/ops/sanitize_definitions.py",
         "sanitized_at": "2026-04-03T08:21:05",
@@ -3578,6 +3578,64 @@
                             "code-migrations-migrate"
                         ],
                         "description": "Skill folder name (default: code-migrations-migrate)"
+                    },
+                    "task": {
+                        "type": "string",
+                        "description": "Task text to pass into action.py"
+                    }
+                },
+                "required": [
+                    "task",
+                    "skill"
+                ]
+            }
+        },
+        {
+            "name": "run_code_test_trigger_comprehensive",
+            "description": "Functional skill generated from CODE file `test_trigger_comprehensive.py`. Supports function-call mode, module execution mode, and self-test mode.",
+            "endpoint": "/skills/run",
+            "method": "POST",
+            "sage": "casper",
+            "iron_dome": true,
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "skill": {
+                        "type": "string",
+                        "default": "code-test_trigger_comprehensive",
+                        "enum": [
+                            "code-test_trigger_comprehensive"
+                        ],
+                        "description": "Skill folder name (default: code-test_trigger_comprehensive)"
+                    },
+                    "task": {
+                        "type": "string",
+                        "description": "Task text to pass into action.py"
+                    }
+                },
+                "required": [
+                    "task",
+                    "skill"
+                ]
+            }
+        },
+        {
+            "name": "run_code_tests_test_dispatch_patterns",
+            "description": "Functional skill generated from CODE file `tests/test_dispatch_patterns.py`. Supports function-call mode, module execution mode, and self-test mode.",
+            "endpoint": "/skills/run",
+            "method": "POST",
+            "sage": "casper",
+            "iron_dome": true,
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "skill": {
+                        "type": "string",
+                        "default": "code-tests-test_dispatch_patterns",
+                        "enum": [
+                            "code-tests-test_dispatch_patterns"
+                        ],
+                        "description": "Skill folder name (default: code-tests-test_dispatch_patterns)"
                     },
                     "task": {
                         "type": "string",

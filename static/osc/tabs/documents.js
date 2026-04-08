@@ -61,6 +61,7 @@ async function loadLaf() {
         </tr>
     `).join("");
     }
+}
 
 async function loadDocuments() {
     const q = encodeURIComponent((document.getElementById("docsQ").value || "").trim());

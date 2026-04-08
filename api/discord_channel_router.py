@@ -46,8 +46,18 @@ _CHANNEL_MAP_FILE = os.path.join(_AGENT_DIR, "discord_channel_map.json")
 try:
     from skills.ops.red_phone import _canonical_topic_key
 except ImportError:
+    _ZH_TOPIC_MAP = {
+        "法扶": "laf", "法律扶助": "laf",
+        "閱卷": "filereview", "筆錄": "transcript",
+        "翻譯": "translation", "摘要": "summary",
+        "判決": "judgment", "逐字稿": "verbatim",
+        "通知": "alert", "巡檢": "nightly", "夜間": "nightly",
+        "市場": "market", "系統": "check",
+    }
+
     def _canonical_topic_key(key: str) -> str:
-        return str(key or "").strip().lower()
+        k = str(key or "").strip().lower()
+        return _ZH_TOPIC_MAP.get(k, k)
 
 
 # ───────── 訊息內容 → 細分 sub_topic ─────────
@@ -282,11 +292,18 @@ def resolve_discord_channel(
 
     # 嘗試 sub_topic → fallback chain
     if sub_topic in cmap:
-        return sub_topic, cmap[sub_topic]
+        val = cmap[sub_topic]
+        # 空字串 = 靜默（不發 DC）
+        if val == "":
+            return sub_topic, "__SILENT__"
+        return sub_topic, val
 
     for fb in _FALLBACK_CHAIN.get(sub_topic, []):
         if fb in cmap:
-            return sub_topic, cmap[fb]
+            val = cmap[fb]
+            if val == "":
+                return sub_topic, "__SILENT__"
+            return sub_topic, val
 
     return sub_topic, cmap.get("general", fallback_channel_id)
 

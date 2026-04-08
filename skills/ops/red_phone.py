@@ -284,6 +284,8 @@ def _send_discord_bot_message(
             source=source,
             fallback_channel_id=default_channel_id,
         )
+        if routed_id == "__SILENT__":
+            return True  # 靜默：不發 DC
         if routed_id:
             channel_id = routed_id
     except Exception:
@@ -364,6 +366,8 @@ def send_discord_bot_file(
             source=source,
             fallback_channel_id=default_channel_id,
         )
+        if routed_id == "__SILENT__":
+            return True  # 靜默：不發 DC
         if routed_id:
             channel_id = routed_id
     except Exception:

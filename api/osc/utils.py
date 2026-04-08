@@ -114,14 +114,38 @@ OSC_WEB_DB_CONFIG = _resolve_osc_web_db_config()
 
 
 def _osc_web_db_candidates():
-    primary = dict(OSC_WEB_DB_CONFIG)
-    cands = [primary]
+    """Build ordered candidate list, respecting db_failover's active host."""
+    base = dict(OSC_WEB_DB_CONFIG)
+
+    # Consult failover module for the *current* active host so the candidate
+    # list is not frozen to whatever was resolved at import time.
+    try:
+        from api.db_failover import get_failover_status
+        status = get_failover_status()
+        if status.get("failover_active"):
+            # Failover is active → local DB should be tried first.
+            local_host = (os.environ.get("MAGI_LOCAL_DB_HOST") or "127.0.0.1").strip()
+            local_port = int((os.environ.get("MAGI_LOCAL_DB_PORT") or "3306").strip())
+            local_cfg = {
+                "host": local_host,
+                "port": local_port,
+                "user": (os.environ.get("MAGI_LOCAL_DB_USER") or base["user"]).strip(),
+                "password": os.environ.get("MAGI_LOCAL_DB_PASSWORD") or base["password"],
+                "database": (os.environ.get("MAGI_LOCAL_DB_NAME") or base["database"]).strip(),
+            }
+            # Local first, then remote as fallback.
+            return [local_cfg, base]
+    except Exception:
+        pass
+
+    # Normal path: remote (from config profile) first, local as fallback.
+    cands = [base]
     local_host = (os.environ.get("MAGI_LOCAL_DB_HOST") or "127.0.0.1").strip()
-    local_port = int((os.environ.get("MAGI_LOCAL_DB_PORT") or "3307").strip())
-    local_user = (os.environ.get("MAGI_LOCAL_DB_USER") or primary["user"]).strip()
-    local_pass = os.environ.get("MAGI_LOCAL_DB_PASSWORD") or primary["password"]
-    local_name = (os.environ.get("MAGI_LOCAL_DB_NAME") or primary["database"]).strip()
-    if (local_host, local_port, local_name, local_user) != (primary["host"], primary["port"], primary["database"], primary["user"]):
+    local_port = int((os.environ.get("MAGI_LOCAL_DB_PORT") or "3306").strip())
+    local_user = (os.environ.get("MAGI_LOCAL_DB_USER") or base["user"]).strip()
+    local_pass = os.environ.get("MAGI_LOCAL_DB_PASSWORD") or base["password"]
+    local_name = (os.environ.get("MAGI_LOCAL_DB_NAME") or base["database"]).strip()
+    if (local_host, local_port, local_name, local_user) != (base["host"], base["port"], base["database"], base["user"]):
         cands.append(
             {
                 "host": local_host,
@@ -140,26 +164,47 @@ def _osc_web_db_candidates():
 _pool = None          # MySQLConnectionPool instance (lazily created)
 _pool_cfg = None      # The db config dict that the pool was created with
 _pool_lock = __import__("threading").Lock()
+_pool_failover_active = None   # Track failover state when pool was created
+_pool_seq = 0                  # Monotonic counter to generate unique pool names
 
 _logger = logging.getLogger(__name__)
+
+
+def _current_failover_active():
+    """Return db_failover's current failover_active flag, or None if unavailable."""
+    try:
+        from api.db_failover import get_failover_status
+        return get_failover_status().get("failover_active")
+    except Exception:
+        return None
 
 
 def _get_pool():
     """Return (pool, cfg) – create the pool lazily on first call.
 
-    The pool is bound to whichever candidate config succeeds first.  If the
-    pool later becomes unusable (e.g. remote host goes down) callers should
-    call ``_reset_pool()`` and retry so a new pool is built against the next
-    viable candidate.
+    Automatically resets the pool when the failover state has changed since the
+    pool was created (e.g. switched from remote to local or vice-versa).
     """
-    global _pool, _pool_cfg
+    global _pool, _pool_cfg, _pool_failover_active, _pool_seq
+
+    # Fast path: pool exists AND failover state hasn't changed.
     if _pool is not None:
-        return _pool, _pool_cfg
+        current_fo = _current_failover_active()
+        if current_fo == _pool_failover_active:
+            return _pool, _pool_cfg
+        # Failover state changed → discard stale pool.
+        _logger.info("Failover state changed (%s → %s), resetting OSC pool",
+                      _pool_failover_active, current_fo)
+        _reset_pool()
 
     with _pool_lock:
         # Double-check after acquiring lock
         if _pool is not None:
-            return _pool, _pool_cfg
+            current_fo = _current_failover_active()
+            if current_fo == _pool_failover_active:
+                return _pool, _pool_cfg
+            _pool = None
+            _pool_cfg = None
 
         # Let failover module update env before we pick candidates
         try:
@@ -168,11 +213,13 @@ def _get_pool():
         except Exception:
             pass
 
+        fo_state = _current_failover_active()
         last_err = None
         for cfg in _osc_web_db_candidates():
             try:
+                _pool_seq += 1
                 pool = mysql.connector.pooling.MySQLConnectionPool(
-                    pool_name="osc_pool",
+                    pool_name=f"osc_pool_{_pool_seq}",
                     pool_size=5,
                     pool_reset_session=True,
                     host=cfg["host"],
@@ -187,8 +234,9 @@ def _get_pool():
                 )
                 _pool = pool
                 _pool_cfg = cfg
-                _logger.info("OSC connection pool created: host=%s port=%s db=%s",
-                             cfg["host"], cfg["port"], cfg["database"])
+                _pool_failover_active = fo_state
+                _logger.info("OSC connection pool created: host=%s port=%s db=%s (failover=%s)",
+                             cfg["host"], cfg["port"], cfg["database"], fo_state)
                 return _pool, _pool_cfg
             except Exception as e:
                 last_err = e
@@ -198,10 +246,11 @@ def _get_pool():
 
 def _reset_pool():
     """Discard the current pool so the next call to ``_get_pool`` rebuilds it."""
-    global _pool, _pool_cfg
+    global _pool, _pool_cfg, _pool_failover_active
     with _pool_lock:
         _pool = None
         _pool_cfg = None
+        _pool_failover_active = None
 
 
 def _osc_web_connect():

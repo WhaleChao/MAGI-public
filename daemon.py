@@ -19,6 +19,13 @@ from typing import Dict, Any
 _MAGI_ROOT = os.path.dirname(os.path.abspath(__file__))
 if _MAGI_ROOT not in sys.path:
     sys.path.insert(0, _MAGI_ROOT)
+
+# Load .env so all child processes inherit environment variables
+try:
+    from dotenv import load_dotenv
+    load_dotenv(os.path.join(_MAGI_ROOT, ".env"))
+except Exception:
+    pass
 try:
     from skills.ops.platform_utils import (
         file_lock, file_unlock, get_venv_python,

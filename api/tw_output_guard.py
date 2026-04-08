@@ -531,9 +531,11 @@ def detect_output_guard_issues(text: str, mode: str = "general") -> List[str]:
     issues: List[str] = []
     checks: List[Tuple[str, List[str]]] = [
         ("customer_service", _CUSTOMER_SERVICE_PATTERNS),
-        ("generic_refusal", _GENERIC_REFUSAL_PATTERNS),
         ("internal_leak", INTERNAL_LEAK_PATTERNS),
     ]
+    # generic_refusal: 翻譯/摘要模式不檢查，因為原文可能包含「一般性建議」等合法法律用語
+    if mode.lower() not in {"translation", "summary"}:
+        checks.append(("generic_refusal", _GENERIC_REFUSAL_PATTERNS))
     if mode.lower() in {"translation", "summary"}:
         checks.append(("translation_drift", _TRANSLATION_DRIFT_PATTERNS))
 

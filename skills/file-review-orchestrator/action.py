@@ -941,6 +941,130 @@ def cmd_apply(court_code: str, year: str, case_type: str,
         return {"success": False, "error": error_msg, "traceback": traceback.format_exc()[-500:]}
 
 
+def cmd_paper_apply(court_code: str, year: str, case_type: str,
+                    case_number: str, client_name: str = "",
+                    appointment_date: str = "", appointment_time: str = "下午",
+                    court_division: str = "",
+                    appointment_slots: list = None,
+                    auto_submit: bool = True, notify: bool = True,
+                    folder_path: str = "") -> dict:
+    """Apply for paper file review (紙本閱卷聲請)."""
+    if not all([court_code, year, case_type, case_number]):
+        return {"success": False, "error": "missing required fields: court_code, year, case_type, case_number"}
+
+    court_code = _resolve_court_code(court_code)
+    if court_code.upper() not in _ALL_COURT_CODES:
+        return {"success": False, "error": f"無法識別法院名稱「{court_code}」，請使用如：基隆、台北、TPD 等格式"}
+    cfg = _load_config()
+    creds = _get_credentials(cfg)
+    if not creds["username"] or not creds["password"]:
+        return {"success": False, "error": "missing credentials — set MAGI_JUDICIAL_EEFILE_USERNAME/PASSWORD in .env"}
+
+    try:
+        mod = _ensure_imports()
+        db = _get_db_manager(cfg)
+
+        # 當事人自動補齊
+        if not client_name and db:
+            court_case_no = f"{year}年度{case_type}字第{case_number}號"
+            try:
+                row = db.execute(
+                    "SELECT client_name FROM cases "
+                    "WHERE court_case_number LIKE %s LIMIT 1",
+                    (f"%{year}%{case_type}%{case_number}%",),
+                    fetch="one",
+                )
+                if row and row.get("client_name"):
+                    client_name = row["client_name"].strip()
+                    logger.info("自動從 DB 補齊當事人：%s（%s）", client_name, court_case_no)
+            except Exception as db_e:
+                logger.debug("DB 查詢當事人失敗（不影響聲請）：%s", db_e)
+        if not client_name:
+            logger.warning("⚠️ 未提供當事人姓名，閱卷系統可能拒絕聲請。")
+
+        mgr = mod.FileReviewManager(
+            username=creds["username"],
+            password=creds["password"],
+            download_folder=creds["download_folder"],
+            db_manager=db,
+            headless=True,
+            log_callback=lambda msg: logger.info(msg),
+        )
+
+        try:
+            logger.info("Logging into SSO for paper file review...")
+            if not mgr.login():
+                msg = "❌ 紙本閱卷登入失敗，可能驗證碼連錯或系統維護。"
+                logger.error(msg)
+                _notify(msg, notify)
+                return {"success": False, "error": "sso_login_failed"}
+
+            mgr.navigate_to_file_review()
+
+            case_info = {
+                "court_code": court_code,
+                "year": str(year),
+                "case_type": case_type,
+                "case_number": str(case_number),
+                "client_name": client_name,
+                "appointment_date": appointment_date,
+                "appointment_time": appointment_time,
+                "court_division": court_division,
+            }
+            if appointment_slots:
+                case_info["appointment_slots"] = appointment_slots
+            if folder_path:
+                case_info["folder_path"] = folder_path
+            logger.info("Applying for paper review: %s", case_info)
+            result = mgr.apply_for_review(case_info, auto_submit=auto_submit, paper_review=True)
+
+            label = f"{court_code} {year}年{case_type}字第{case_number}號 (紙本)"
+            if appointment_slots and len(appointment_slots) > 1:
+                _slot_strs = [f"{s['date']} {s['time']}" for s in appointment_slots]
+                appt_label = f"\n預約：{', '.join(_slot_strs)}"
+            elif appointment_date:
+                appt_label = f"\n預約：{appointment_date} {appointment_time}"
+            else:
+                appt_label = ""
+
+            evidence = {}
+            result_key = result
+            if isinstance(result, str) and "|" in result:
+                result_key, _, evidence_str = result.partition("|")
+                try:
+                    evidence = json.loads(evidence_str)
+                except Exception:
+                    pass
+
+            if result_key == "Applied":
+                app_no = evidence.get("application_number", "")
+                msg = f"📋 紙本閱卷聲請已送出 — {label}{appt_label}"
+                if app_no:
+                    msg += f"\n收件編號：{app_no}"
+            elif result_key == "Ready":
+                msg = f"✅ 紙本閱卷已填寫完成（待確認送出） — {label}{appt_label}"
+            else:
+                msg = f"⚠️ 紙本閱卷聲請結果: {result_key} — {label}"
+
+            _notify(msg, notify)
+
+            screenshot = evidence.get("screenshot", "")
+            if screenshot and os.path.isfile(screenshot):
+                _notify_file(screenshot, caption=f"紙本閱卷截圖 — {label}", flag=notify)
+
+            return {"success": True, "result": result_key, "case": label,
+                    "message": msg, "evidence": evidence}
+
+        finally:
+            mgr.close()
+
+    except Exception as e:
+        error_msg = str(e)[:200]
+        logger.error("Paper apply failed: %s", error_msg)
+        _notify("❌ 紙本閱卷聲請失敗: " + error_msg, notify)
+        return {"success": False, "error": error_msg, "traceback": traceback.format_exc()[-500:]}
+
+
 def cmd_upload_attachment(court_code: str, year: str, case_type: str,
                          case_number: str, client_name: str = "",
                          file_path: str = "", file_remark: str = "委任狀",
@@ -3486,6 +3610,7 @@ def main() -> int:
                 "db_smoke",
                 'probe {"court_code":"TPD","year":"114","case_type":"訴","case_number":"123"}',
                 'apply {"court_code":"TPD","year":"114","case_type":"訴","case_number":"123"}',
+                'paper_apply {"court_code":"HLD","year":"114","case_type":"花補","case_number":"502","client_name":"謝廷延","appointment_date":"2026-04-07","appointment_time":"下午"}',
                 "download",
                 "download_sync",
                 'download {"case_number":"..."}',
@@ -3499,6 +3624,7 @@ def main() -> int:
                 'downloadable_probe {"days":30}',
                 "check_stale",
                 "reauth_gmail",
+                'paper_apply {"court_code":"花蓮","year":"114","case_type":"花補","case_number":"502","client_name":"謝廷延","appointment_slots":[{"date":"2026-04-07","time":"下午"}],"court_division":"簡易"}',
                 'dismiss_payment {"case_keyword":"114原金訴4"}',
                 'undismiss_payment {"case_keyword":"114原金訴4"}',
                 "list_dismissed_payments",
@@ -3506,6 +3632,7 @@ def main() -> int:
             "line_triggers": [
                 "閱卷查核 <法院> <案號>",
                 "閱卷聲請 <法院> <案號>",
+                "紙本閱卷 <法院> <案號> <當事人> <MMDD時段> ...（如 0407下午 0408上午）",
                 "下載閱卷",
                 "下載閱卷 <案號>",
                 "下載繳費單",
@@ -3554,6 +3681,23 @@ def main() -> int:
             case_type=payload.get("case_type", ""),
             case_number=payload.get("case_number", ""),
             client_name=payload.get("client_name", ""),
+        )
+        return _ok(r)
+
+    if task.startswith("paper_apply"):
+        payload = _load_jsonish(task[len("paper_apply"):].strip())
+        r = cmd_paper_apply(
+            court_code=payload.get("court_code", ""),
+            year=payload.get("year", ""),
+            case_type=payload.get("case_type", ""),
+            case_number=payload.get("case_number", ""),
+            client_name=payload.get("client_name", ""),
+            appointment_date=payload.get("appointment_date", ""),
+            appointment_time=payload.get("appointment_time", "下午"),
+            court_division=payload.get("court_division", ""),
+            appointment_slots=payload.get("appointment_slots"),
+            auto_submit=bool(payload.get("auto_submit", True)),
+            folder_path=payload.get("folder_path", ""),
         )
         return _ok(r)
 

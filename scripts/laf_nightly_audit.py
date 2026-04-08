@@ -1468,7 +1468,7 @@ def send_report(report_text: str, has_issues: bool = False):
             message=report_text,
             severity=severity,
             source="laf_nightly_audit",
-            topic_key="法扶",
+            topic_key="laf",
         )
         logger.info("Telegram notification sent: %s", result.get("telegram", False))
     except Exception as e:

@@ -580,14 +580,55 @@ def explain_routing(orch, message: str, role: str = "user") -> dict:
 # ── Topic Fast Path ────────────────────────────────────────────────
 
 def topic_fast_path(orch, topic_key: str, user_id, message: str, role: str, platform: str, attachment=None):
-    handler = getattr(orch, "_TOPIC_HANDLERS", {}).get(topic_key)
-    if handler is None:
-        return None
+    """
+    頻道命令綁定：特定頻道引導使用者執行對應命令。
+
+    若使用者在法扶-開辦頻道發了結案指令，引導到結案頻道。
+    若使用者在法扶-開辦頻道發了開辦指令，直接執行（不阻擋）。
+    """
+    # 頻道→允許的動作映射
+    _CHANNEL_ACTION_MAP = {
+        "laf_go_live": {"allowed": ("go_live",), "label": "法扶-開辦", "hint": "這個頻道用來執行**開辦回報**"},
+        "laf_closing": {"allowed": ("closing",), "label": "法扶-結案", "hint": "這個頻道用來執行**結案回報**"},
+        "laf_dispatch": {"allowed": (), "label": "法扶-派案", "hint": "這個頻道顯示**派案通知**，有新信件時 MAGI 會自動通知"},
+        "laf": {"allowed": ("inquiry", "fee", "condition", "withdrawal", "closing", "go_live"), "label": "法扶-一般", "hint": "這個頻道用來執行疑義、費用、二階段、撤回等法扶作業"},
+    }
+
+    conf = _CHANNEL_ACTION_MAP.get(topic_key)
+    if not conf:
+        # 非法扶頻道：走原有邏輯
+        handler = getattr(orch, "_TOPIC_HANDLERS", {}).get(topic_key)
+        if handler is None:
+            return None
+        try:
+            return handler(orch, user_id, message, role, platform, attachment)
+        except Exception as e:
+            logger.error(f"❌ Topic fast path '{topic_key}' error: {e}", exc_info=True)
+            return None
+
+    # 檢查是否為法扶指令
     try:
-        return handler(orch, user_id, message, role, platform, attachment)
-    except Exception as e:
-        logger.error(f"❌ Topic fast path '{topic_key}' error: {e}", exc_info=True)
-        return None
+        from api.handlers.laf_handler import parse_laf_report_payload, detect_laf_report_action
+        payload = parse_laf_report_payload(message)
+        if payload:
+            action = payload.get("action", "")
+            allowed = conf.get("allowed", ())
+            if allowed and action not in allowed:
+                # 指令不屬於這個頻道 → 引導
+                _action_channel = {
+                    "go_live": "法扶-開辦", "closing": "法扶-結案",
+                    "inquiry": "法扶-一般", "fee": "法扶-一般",
+                    "condition": "法扶-一般", "withdrawal": "法扶-一般",
+                }
+                target = _action_channel.get(action, "法扶-一般")
+                return f"📍 這個指令請到 **#{target}** 頻道執行。\n（此頻道是 **{conf['label']}**：{conf['hint']}）"
+            # 指令屬於這個頻道 → return None 讓正常流程處理
+            return None
+    except Exception:
+        pass
+
+    # 非法扶指令（一般對話）→ return None 讓正常流程處理
+    return None
 
 
 # ── Conversational Intent ──────────────────────────────────────────

@@ -51,12 +51,31 @@ _monitor_thread: threading.Thread | None = None
 # ── 探測 ──────────────────────────────────────────────────────
 
 def _tcp_check(host: str, port: int, timeout: int = _PROBE_TIMEOUT) -> bool:
-    """TCP connect 檢查 DB 可達性。"""
+    """TCP connect + MySQL handshake 檢查 DB 可達性。
+
+    僅 TCP 連通不代表 MariaDB 可用（例如 max_connections 已滿、認證問題）。
+    先做 TCP 檢查，成功後嘗試一個輕量 MySQL 連線以驗證真正可用。
+    """
     try:
         s = socket.create_connection((host, port), timeout=timeout)
         s.close()
-        return True
     except (OSError, socket.timeout):
+        return False
+
+    # TCP 通了，再做真正的 MySQL handshake 驗證
+    try:
+        import mysql.connector
+        db_user = os.getenv("OSC_DB_USER", os.getenv("MAGI_REMOTE_DB_USER", "casper_service"))
+        db_pass = os.getenv("OSC_DB_PASSWORD", os.getenv("MAGI_REMOTE_DB_PASSWORD", ""))
+        conn = mysql.connector.connect(
+            host=host, port=port,
+            user=db_user, password=db_pass,
+            connection_timeout=timeout,
+        )
+        conn.close()
+        return True
+    except Exception as exc:
+        logger.debug("TCP ok but MySQL handshake failed for %s:%s: %s", host, port, exc)
         return False
 
 

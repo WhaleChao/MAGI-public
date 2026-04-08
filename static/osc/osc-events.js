@@ -423,6 +423,7 @@ function bindEvents() {
     ].forEach(({ inputs, buttonId, fn, actionLabel }) => bindEnterSubmit(inputs, buttonId, fn, { actionLabel }));
 
     bindGlobalDelegates();
+}
 
 // ── Sort bar controls ──
 function initSortBars() {

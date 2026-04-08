@@ -210,25 +210,40 @@ def _local_fallback_timeout(remaining_sec: int, floor: int = 6) -> int:
 def _post_json(url: str, payload: dict, timeout: int):
     # Use a short connect timeout so unreachable Melchior won't stall the whole workflow.
     ct = max(1, min(int(CONNECT_TIMEOUT_SEC), int(timeout)))
-    try:
-        resp = SESSION.post(url, json=payload, timeout=(ct, int(timeout)))
-        # --- DEBUG: log role alternation issues for chat/completions 400 ---
-        if resp.status_code == 400 and "chat/completions" in url:
-            import traceback
-            msgs = payload.get("messages") or []
-            roles = [m.get("role", "?") for m in msgs if isinstance(m, dict)]
-            _logger.warning(
-                "🔴 _post_json 400 on chat/completions: roles=%s model=%s caller=%s",
-                roles, payload.get("model", "?"),
-                "".join(traceback.format_stack()[-4:-1]).strip(),
-            )
-        # --- END DEBUG ---
-        resp.raise_for_status()
-        data = resp.json()
-        return data if isinstance(data, dict) else {"raw": data}
-    except Exception as e:
-        logger.warning("_post_json failed: %s %s", url[:80], e)
-        return {"error": str(e)[:300], "_failed": True}
+    _CONNECTION_ERRORS = (
+        ConnectionError, ConnectionResetError, ConnectionRefusedError,
+    )
+    max_retries = 1  # 1 retry on connection errors (GPU crash recovery)
+    for attempt in range(max_retries + 1):
+        try:
+            resp = SESSION.post(url, json=payload, timeout=(ct, int(timeout)))
+            # --- DEBUG: log role alternation issues for chat/completions 400 ---
+            if resp.status_code == 400 and "chat/completions" in url:
+                import traceback
+                msgs = payload.get("messages") or []
+                roles = [m.get("role", "?") for m in msgs if isinstance(m, dict)]
+                _logger.warning(
+                    "🔴 _post_json 400 on chat/completions: roles=%s model=%s caller=%s",
+                    roles, payload.get("model", "?"),
+                    "".join(traceback.format_stack()[-4:-1]).strip(),
+                )
+            # --- END DEBUG ---
+            resp.raise_for_status()
+            data = resp.json()
+            return data if isinstance(data, dict) else {"raw": data}
+        except _CONNECTION_ERRORS as e:
+            if attempt < max_retries:
+                logger.info("_post_json connection error (retry %d): %s %s", attempt + 1, url[:60], type(e).__name__)
+                import time as _time
+                _time.sleep(5)  # wait for oMLX launchd restart (~3-5s)
+                continue
+            logger.warning("_post_json failed after retry: %s %s", url[:80], e)
+            return {"error": str(e)[:300], "_failed": True}
+        except Exception as e:
+            # Non-connection errors (timeout, HTTP errors): don't retry
+            logger.warning("_post_json failed: %s %s", url[:80], e)
+            return {"error": str(e)[:300], "_failed": True}
+    return {"error": "max_retries_exhausted", "_failed": True}
 
 def _get_json(url: str, timeout: int = 3) -> dict:
     ct = max(1, min(int(CONNECT_TIMEOUT_SEC), int(timeout)))
@@ -1003,9 +1018,8 @@ def _chat_ollama(
     """
     Direct Ollama API access (remote or local fallback).
     """
-    # Ollama on localhost is retired — oMLX replaces it entirely.
-    if host == "localhost" and port == 11434:
-        return _result(False, "", "local_ollama_retired")
+    # Ollama on localhost:11434 serves as fallback when oMLX crashes.
+    # Uses lightweight model (gemma4:e4b) to avoid GPU contention with oMLX.
     try:
         if host == "localhost":
             local_models = _list_ollama_models("localhost", port)
@@ -1197,8 +1211,10 @@ def chat(prompt: str, model: str = TEXT_PRIMARY_MODEL, timeout: int = TIMEOUT) -
             errors.append(f"omlx_primary={omlx_r.get('error','')}")
 
         # Step 2: oMLX via OpenAI-compatible endpoint (port 8080)
+        # Skip if Step 1 oMLX already failed with connection error (GPU crash → port 8080 also down)
+        _omlx_conn_failed = any("Connection" in e or "Refused" in e or "Disconnect" in e for e in errors)
         _step_timeout = min(local_try_timeout, _remaining(deadline, floor=4))
-        if _step_timeout >= 4:
+        if _step_timeout >= 4 and not _omlx_conn_failed:
             local_v1_primary = _local_openai_v1_chat(
                 prompt,
                 model=os.environ.get("LOCAL_MAIN_MODEL", model or TEXT_PRIMARY_MODEL),
@@ -1211,12 +1227,13 @@ def chat(prompt: str, model: str = TEXT_PRIMARY_MODEL, timeout: int = TIMEOUT) -
                 return local_v1_primary
             errors.append(f"local_v1_primary={local_v1_primary.get('error','')}")
 
-        # Step 3: Ollama fallback (if still running)
+        # Step 3: Ollama fallback (lightweight model only — avoid loading 26B and competing with oMLX for GPU)
         _step_timeout = min(local_try_timeout, _remaining(deadline, floor=4))
+        _ollama_fallback_model = os.environ.get("MAGI_OLLAMA_FALLBACK_MODEL", "gemma4:e4b").strip() or "gemma4:e4b"
         if _step_timeout >= 4:
             local_primary = _chat_ollama(
                 prompt,
-                model,
+                _ollama_fallback_model,
                 _step_timeout,
                 host="localhost",
                 port=11434,

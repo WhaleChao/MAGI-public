@@ -2025,15 +2025,36 @@ class Orchestrator:
                     now = datetime.now(tz)
                     today_start = now.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
                     today_end = (now + timedelta(days=7)).replace(hour=23, minute=59, second=59, microsecond=0).isoformat()
-                    events_result = service.events().list(
-                        calendarId='primary',
-                        timeMin=today_start,
-                        timeMax=today_end,
-                        singleEvents=True,
-                        orderBy='startTime',
-                        maxResults=20,
-                    ).execute()
-                    for ev in events_result.get('items', []):
+                    # 查所有日曆（不只 primary）
+                    try:
+                        _cal_list = service.calendarList().list().execute().get("items", [])
+                        _cal_ids = [c["id"] for c in _cal_list if c.get("id")]
+                    except Exception:
+                        _cal_ids = ["primary"]
+                    if not _cal_ids:
+                        _cal_ids = ["primary"]
+                    _all_events = []
+                    _seen_ids = set()
+                    for _cid in _cal_ids:
+                        try:
+                            _r = service.events().list(
+                                calendarId=_cid,
+                                timeMin=today_start,
+                                timeMax=today_end,
+                                singleEvents=True,
+                                orderBy='startTime',
+                                maxResults=20,
+                            ).execute()
+                            for _ev in _r.get('items', []):
+                                _eid = _ev.get('id', '')
+                                if _eid not in _seen_ids:
+                                    _seen_ids.add(_eid)
+                                    _all_events.append(_ev)
+                        except Exception:
+                            pass
+                    # 按開始時間排序
+                    _all_events.sort(key=lambda e: e.get('start', {}).get('dateTime', e.get('start', {}).get('date', '')))
+                    for ev in _all_events:
                         start_raw = ev['start'].get('dateTime', ev['start'].get('date', ''))
                         summary = ev.get('summary', '(無標題)')
                         ev_location = ev.get('location', '')

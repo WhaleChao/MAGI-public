@@ -588,15 +588,7 @@ async def bg_scheduler_loop():
             if _LINE_HEALTH_MONITORING_ENABLED and loop_counter % _LINE_HEALTH_CHECK_EVERY_LOOPS == 0:
                 await check_line_health(client)
 
-            # Night Talk (3 AM Daily)
-            from datetime import datetime
-            now = datetime.now()
-            if now.hour == 3 and now.minute == 0:
-                 logger.info("🌙 3 AM Protocol: Initiating Night Talk...")
-                 # Trigger via Orchestrator
-                 await loop.run_in_executor(_CRON_EXECUTOR,
-                     lambda: orchestrator.process_message("SYSTEM", "開始夜議", platform="DISCORD_CRON", role="admin")
-                 )
+            # Night Talk scheduling is handled by cron_jobs.json — no hardcoded trigger here.
 
             # Wait for next minute check
             await asyncio.sleep(60)
@@ -843,6 +835,9 @@ async def on_ready():
                         source=source or "",
                         fallback_channel_id=default_channel_id,
                     )
+                    if routed_channel_id == "__SILENT__":
+                        logger.debug("Discord notification silenced for topic '%s'", routed_sub_topic)
+                        return
                     if not routed_channel_id:
                         routed_channel_id = default_channel_id
                 except Exception as _route_err:
@@ -1238,8 +1233,8 @@ async def on_message(message):
                     from api.discord_channel_router import _reverse_lookup_channel
                     _sub_topic = _reverse_lookup_channel(_dc_ch_id)
                     if _sub_topic:
-                        # Strip suffix: "laf_dispatch" → "laf", "filereview_payment" → "filereview"
-                        _dc_topic_key = _sub_topic.split("_")[0] if "_" in _sub_topic else _sub_topic
+                        # 保留完整 sub_topic 供頻道命令綁定使用
+                        _dc_topic_key = _sub_topic
                 except Exception:
                     logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 1115, exc_info=True)
                 _dc_channel_ctx = {

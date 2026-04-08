@@ -1631,7 +1631,7 @@ def task_gcal_import(payload: Dict[str, Any]) -> Dict[str, Any]:
         return {"ok": False, "error": f"missing_db_helpers:{type(e).__name__}"}
 
     p = payload or {}
-    calendar_id = p.get("calendar_id") or "primary"
+    calendar_id = p.get("calendar_id") or ""  # 空字串 → 查所有日曆
     tz = p.get("time_zone") or os.environ.get("MAGI_TIME_ZONE") or "Asia/Taipei"
     lookback_days = int(p.get("lookback_days") or 30)
     lookahead_days = int(p.get("lookahead_days") or 180)
@@ -1660,18 +1660,50 @@ def task_gcal_import(payload: Dict[str, Any]) -> Dict[str, Any]:
     time_min = (now - _dt.timedelta(days=lookback_days)).strftime("%Y-%m-%dT%H:%M:%SZ")
     time_max = (now + _dt.timedelta(days=lookahead_days)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
-    try:
-        events_result = service.events().list(
-            calendarId=calendar_id,
-            timeMin=time_min,
-            timeMax=time_max,
-            maxResults=limit,
-            singleEvents=True,
-            orderBy="startTime",
-        ).execute()
-        events = events_result.get("items", [])
-    except Exception as e:
-        return {"ok": False, "error": f"gcal_list_failed:{type(e).__name__}:{e}"}
+    # 查所有日曆（除非指定了特定 calendar_id）
+    if calendar_id:
+        cal_ids = [calendar_id]
+    else:
+        try:
+            cal_list = service.calendarList().list().execute().get("items", [])
+            cal_ids = [c["id"] for c in cal_list if c.get("id")]
+        except Exception:
+            cal_ids = ["primary"]
+        if not cal_ids:
+            cal_ids = ["primary"]
+
+    events = []
+    for _cid in cal_ids:
+        try:
+            events_result = service.events().list(
+                calendarId=_cid,
+                timeMin=time_min,
+                timeMax=time_max,
+                maxResults=limit,
+                singleEvents=True,
+                orderBy="startTime",
+            ).execute()
+            _items = events_result.get("items", [])
+            if _items:
+                logger.info("gcal_import: calendar '%s' → %d events", _cid[:40], len(_items))
+                events.extend(_items)
+        except Exception as e:
+            logger.debug("gcal_import: calendar '%s' failed: %s", _cid[:30], e)
+
+    if not events:
+        try:
+            # 向下相容：fallback 到 primary
+            events_result = service.events().list(
+                calendarId="primary",
+                timeMin=time_min,
+                timeMax=time_max,
+                maxResults=limit,
+                singleEvents=True,
+                orderBy="startTime",
+            ).execute()
+            events = events_result.get("items", [])
+        except Exception as e:
+            return {"ok": False, "error": f"gcal_list_failed:{type(e).__name__}:{e}"}
 
     if not events:
         return {"ok": True, "imported": 0, "skipped": 0, "message": "calendar_empty_or_no_events_in_range"}

@@ -230,6 +230,21 @@ def _osc_auto_create_folder_for_case(row_id: str, payload: dict, case_category: 
 @osc_bp.route("/api/osc/meta", methods=["GET"])
 @login_required
 def osc_meta_api():
+    # Gather failover status regardless of DB connectivity.
+    failover_info = {}
+    try:
+        from api.db_failover import get_failover_status
+        fs = get_failover_status()
+        failover_info = {
+            "failover_active": fs.get("failover_active", False),
+            "syncing": fs.get("syncing", False),
+            "remote_ok": fs.get("remote_ok"),
+            "active_host": fs.get("active_host", ""),
+            "active_port": fs.get("active_port", 0),
+        }
+    except Exception:
+        pass
+
     try:
         conn, cfg = _osc_web_connect()
         cur = conn.cursor(dictionary=True)
@@ -273,6 +288,7 @@ def osc_meta_api():
                         "user": cfg["user"],
                         "current_user": who.get("current_user_name") or "",
                     },
+                    "failover": failover_info,
                     "counts": counts,
                 }
             )
@@ -286,7 +302,7 @@ def osc_meta_api():
             except Exception:
                 _log.debug("silent-catch conn.close()", exc_info=True)
     except Exception as e:
-        return jsonify({"ok": False, "error": str(e)}), 500
+        return jsonify({"ok": False, "error": str(e), "failover": failover_info}), 500
 
 
 # ══════════════════════════════════════════════════════════════════════════════

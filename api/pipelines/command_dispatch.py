@@ -113,30 +113,35 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
     # Only attempt if this is NOT already a recursive fuzzy-corrected call.
     if not getattr(orch, "_fuzzy_recursion_guard", False):
         try:
-            from api.pipelines.fuzzy_match import fuzzy_correct
-            corrected, confidence = fuzzy_correct(message)
-            if corrected and corrected != message:
-                if confidence >= 0.85:
-                    # High confidence — auto-correct and re-dispatch
-                    logger.info("Fuzzy auto-correct (%.2f): %r -> %r", confidence, message[:40], corrected[:40])
-                    orch._fuzzy_recursion_guard = True
-                    orch._fuzzy_fell_through_to_llm = False
-                    try:
-                        result = handle_command(orch, user_id, corrected, role=role, platform=platform)
-                    finally:
-                        orch._fuzzy_recursion_guard = False
-                    # Only prepend the correction notice if the corrected command
-                    # actually matched a specific handler (not LLM fallback chat).
-                    if orch._fuzzy_fell_through_to_llm:
-                        # Corrected text didn't match any command either —
-                        # return the LLM response without the misleading notice.
-                        return result
-                    notice = f"\U0001f4a1 已自動修正「{message[:20]}」\u2192「{corrected[:20]}」\n"
-                    return notice + result
-                elif confidence >= 0.65:
-                    # Medium confidence — suggest only, don't auto-execute
-                    logger.info("Fuzzy suggest (%.2f): %r -> %r", confidence, message[:40], corrected[:40])
-                    return f"\U0001f914 你是不是要輸入「{corrected[:30]}」？請確認後重新輸入。"
+            # 先檢查是否為有效的法扶回報指令，是的話跳過 fuzzy match 以免誤攔
+            # （「[當事人B] 開辦」會被 fuzzy 誤修正為「[當事人B] 已開辦」）
+            from api.handlers.laf_handler import parse_laf_report_payload as _quick_laf_parse
+            _is_laf_cmd = bool(_quick_laf_parse(message))
+            if not _is_laf_cmd:
+                from api.pipelines.fuzzy_match import fuzzy_correct
+                corrected, confidence = fuzzy_correct(message)
+                if corrected and corrected != message:
+                    if confidence >= 0.85:
+                        # High confidence — auto-correct and re-dispatch
+                        logger.info("Fuzzy auto-correct (%.2f): %r -> %r", confidence, message[:40], corrected[:40])
+                        orch._fuzzy_recursion_guard = True
+                        orch._fuzzy_fell_through_to_llm = False
+                        try:
+                            result = handle_command(orch, user_id, corrected, role=role, platform=platform)
+                        finally:
+                            orch._fuzzy_recursion_guard = False
+                        # Only prepend the correction notice if the corrected command
+                        # actually matched a specific handler (not LLM fallback chat).
+                        if orch._fuzzy_fell_through_to_llm:
+                            # Corrected text didn't match any command either —
+                            # return the LLM response without the misleading notice.
+                            return result
+                        notice = f"\U0001f4a1 已自動修正「{message[:20]}」\u2192「{corrected[:20]}」\n"
+                        return notice + result
+                    elif confidence >= 0.65:
+                        # Medium confidence — suggest only, don't auto-execute
+                        logger.info("Fuzzy suggest (%.2f): %r -> %r", confidence, message[:40], corrected[:40])
+                        return f"\U0001f914 你是不是要輸入「{corrected[:30]}」？請確認後重新輸入。"
         except Exception as _fuzzy_err:
             logger.debug("Fuzzy match skipped: %s", _fuzzy_err)
 
@@ -181,7 +186,9 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
 "📂 **閱卷 & 筆錄**\n"
 "━━━━━━━━━━━━━━━━━━━━\n"
 "• `閱卷查核 <法院> <案號>` — 查核卷宗狀態（如：閱卷查核 基隆 114訴1）\n"
-"• `閱卷聲請 <法院> <案號> <當事人>` — 聲請閱卷\n"
+"• `閱卷聲請 <法院> <案號> <當事人>` — 聲請電子閱卷\n"
+"• `紙本閱卷 <法院> <案號> <當事人> <MMDD時段> ...` — 聲請紙本閱卷\n"
+"  如：`紙本閱卷 花蓮簡易 114花補502 謝廷延 0407下午 0408上午`\n"
 "• `檢查閱卷信箱` — 檢查閱卷通知信\n"
 "• `下載閱卷 [案號]` — 下載卷宗檔案\n"
 "• `下載筆錄 <案號>` — 下載指定案號筆錄\n"
@@ -279,7 +286,9 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
 "📂 **閱卷 & 筆錄**\n"
 "━━━━━━━━━━━━━━━━━━━━\n"
 "• `閱卷查核 <法院> <案號>` — 查核卷宗（如：閱卷查核 基隆 114訴1）\n"
-"• `閱卷聲請 <法院> <案號> <當事人>` — 聲請閱卷\n"
+"• `閱卷聲請 <法院> <案號> <當事人>` — 聲請電子閱卷\n"
+"• `紙本閱卷 <法院> <案號> <當事人> <MMDD時段> ...` — 聲請紙本閱卷\n"
+"  如：`紙本閱卷 花蓮簡易 114花補502 謝廷延 0407下午 0408上午`\n"
 "• `檢查閱卷信箱` — 檢查閱卷通知信\n"
 "• `下載閱卷 [案號]` — 下載卷宗\n"
 "• `下載筆錄 <案號>` — 下載筆錄\n"
@@ -1543,6 +1552,7 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
                                     "court_count": "開庭",
                                     "document_count": "書狀",
                                     "review_count": "閱卷",
+                                    "disc_times": "研討案情（面談+電話+詢問）",
                                 }
                                 lows = data.get("low_fields") if isinstance(data.get("low_fields"), list) else []
                                 low_txt = "、".join(label_map.get(str(x), str(x)) for x in lows) if lows else "低值欄位"

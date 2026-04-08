@@ -44,10 +44,20 @@ async function loadMeta() {
     const dbBadge = document.getElementById("dbBadge");
     const countBadge = document.getElementById("countBadge");
     try {
-        const data = await api("/api/osc/meta");
+        const res = await fetch("/api/osc/meta");
+        const data = await res.json().catch(() => ({ ok: false, error: res.statusText }));
+        const fo = data.failover || {};
+        const foTag = (fo.failover_active ? " [本機備援]" : "") + (fo.syncing ? " [同步中]" : "");
+        if (!res.ok || !data.ok) {
+            dbBadge.classList.remove("ok");
+            let hint = "";
+            if (fo.remote_ok === false) hint = " [遠端不可達]";
+            dbBadge.textContent = `DB: 連線失敗 (${data.error || res.statusText})${foTag}${hint}`;
+            return;
+        }
         const db = data.db || {};
         dbBadge.classList.add("ok");
-        dbBadge.textContent = `DB: ${db.host}:${db.port}/${db.database} (${db.user})`;
+        dbBadge.textContent = `DB: ${db.host}:${db.port}/${db.database} (${db.user})${foTag}`;
         const c = data.counts || {};
         countBadge.textContent = `案件 ${c.cases ?? "-"} | 當事人 ${c.clients ?? "-"} | 會議 ${c.meetings ?? "-"} | 行事曆 ${c.calendar_events ?? "-"} | 待辦 ${c.case_todos ?? "-"} | 法扶清單 ${c.legal_aid_checklists ?? "-"} | 法扶流程 ${c.laf_lifecycle_log ?? "-"} | 法扶信件 ${c.laf_email_records ?? "-"} | 見解 ${c.legal_insights ?? "-"} | 裁判 ${c.court_judgments ?? "-"} | 帳務 ${c.case_transactions ?? "-"} | 文件 ${c.document_index ?? "-"} | 書狀模板 ${c.document_templates ?? "-"} | 關鍵字 ${c.document_keywords ?? "-"} | 固定支出 ${c.recurring_expenses ?? "-"} | 報價 ${c.quotations ?? "-"} | 報價模板 ${c.quotation_templates ?? "-"}`;
     } catch (e) {
@@ -278,6 +288,7 @@ function getDelegatedActionFeedback(act, button) {
     }
     meta.successText = buildActionSuccessText(label, meta.successLabel);
     return meta;
+}
 
 function setDraftModeIndicator(mode) {
     const el = document.getElementById("draftModeIndicator");

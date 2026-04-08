@@ -114,32 +114,36 @@ def translate_text_complete(text: str, source_lang: str = "auto", target_lang: s
     chunks = _dh.split_translate_chunks(source_text, chunk_chars=translate_chunk_chars)
     if not chunks:
         return {"success": False, "error": "empty text"}
-    try:
-        from api.handlers import text_processing_handler as _tp
-        from skills.bridge.llm_direct import feature_enabled as _codex_feature_enabled, translate_with_codex
+    # Codex route disabled: Gemma 4 (256K context) handles all translation locally.
+    # Keeping code for reference but skipping execution.
+    # To re-enable: set MAGI_CODEX_TRANSLATE_ENABLED=1
+    if os.environ.get("MAGI_CODEX_TRANSLATE_ENABLED", "").strip().lower() in {"1", "true", "yes", "on"}:
+        try:
+            from api.handlers import text_processing_handler as _tp
+            from skills.bridge.llm_direct import feature_enabled as _codex_feature_enabled, translate_with_codex
 
-        codex_max_chars = int(os.environ.get("MAGI_CODEX_TRANSLATE_MAX_CHARS", "12000") or "12000")
-        if _codex_feature_enabled("translate") and len((text or "").strip()) <= max(800, codex_max_chars):
-            codex_res = translate_with_codex(
-                text,
-                source_lang=source_lang,
-                target_lang=target_lang,
-                timeout_sec=int(os.environ.get("MAGI_CODEX_TRANSLATE_TIMEOUT_SEC", "240") or "240"),
-            )
-            codex_text = str(codex_res.get("text") or "").strip()
-            if codex_res.get("success") and codex_text and (not _tp.output_guard_issues(codex_text, mode="translation")):
-                return {
-                    "success": True,
-                    "text": codex_text,
-                    "provider": "openclaw_codex",
-                    "route": "openclaw_codex",
-                    "model": codex_res.get("model", "gpt-5.4"),
-                    "agent": codex_res.get("agent_id", "codex-distributed"),
-                }
-            if codex_res.get("error"):
-                logger.warning("translate_text_complete: codex route failed: %s", codex_res.get("error"))
-    except Exception as codex_err:
-        logger.warning("translate_text_complete: codex route skipped: %s", codex_err)
+            codex_max_chars = int(os.environ.get("MAGI_CODEX_TRANSLATE_MAX_CHARS", "12000") or "12000")
+            if _codex_feature_enabled("translate") and len((text or "").strip()) <= max(800, codex_max_chars):
+                codex_res = translate_with_codex(
+                    text,
+                    source_lang=source_lang,
+                    target_lang=target_lang,
+                    timeout_sec=int(os.environ.get("MAGI_CODEX_TRANSLATE_TIMEOUT_SEC", "240") or "240"),
+                )
+                codex_text = str(codex_res.get("text") or "").strip()
+                if codex_res.get("success") and codex_text and (not _tp.output_guard_issues(codex_text, mode="translation")):
+                    return {
+                        "success": True,
+                        "text": codex_text,
+                        "provider": "openclaw_codex",
+                        "route": "openclaw_codex",
+                        "model": codex_res.get("model", "gpt-5.4"),
+                        "agent": codex_res.get("agent_id", "codex-distributed"),
+                    }
+                if codex_res.get("error"):
+                    logger.warning("translate_text_complete: codex route failed: %s", codex_res.get("error"))
+        except Exception as codex_err:
+            logger.warning("translate_text_complete: codex route skipped: %s", codex_err)
 
     # 建立 document-level glossary（確保全文術語一致）
     doc_glossary = _build_document_glossary(source_text, target_lang)
