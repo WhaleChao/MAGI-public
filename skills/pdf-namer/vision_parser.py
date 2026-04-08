@@ -283,9 +283,15 @@ def _parse_date_from_text(raw: str) -> Optional[str]:
         if 1 <= mo <= 12 and 1 <= d <= 31:
             return f"{y:04d}{mo:02d}{d:02d}"
     # ROC stamp format: 114.9.04 or 115.1.30 or 115. 4，-3 (dot/comma/dash, OCR artifacts)
-    m = re.search(r"(1\d{2})\s*[.\s，,]+\s*(\d{1,2})\s*[.\s，,\-]+\s*(\d{1,2})", txt)
+    # Also handle OCR misreads: 175→115, 145→115 (digit confusion on stamp ink)
+    m = re.search(r"(\d{3})\s*[.\s，,]+\s*(\d{1,2})\s*[.\s，,\-]+\s*(\d{1,2})", txt)
     if m:
         ry, mo, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        # Fix common OCR misreads of ROC year on stamps (blurry blue ink)
+        if 170 <= ry <= 179:  # 17x → 11x (7 misread from 1)
+            ry = ry - 60
+        elif 140 <= ry <= 149:  # 14x → 11x (4 misread from 1)
+            ry = ry - 30
         y = ry + 1911
         if 1 <= mo <= 12 and 1 <= d <= 31 and 2000 <= y <= 2099:
             return f"{y:04d}{mo:02d}{d:02d}"
