@@ -2984,18 +2984,43 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                     if full not in receipt_candidates:
                         receipt_candidates.append(full)
 
+        # 回執的檔名日期 = 收到回執的日期（不是寄出日期），不能當寄出日期用。
+        # 只有 VLM 讀到的郵戳日期（stamp）才是實際寄出日期。
+        # 所以回執要反過來：先用 VLM 讀郵戳，filename 日期不可用。
         for receipt_path in receipt_candidates[:3]:
-            date_iso, src = _try_filename_then_vision(receipt_path)
-            if date_iso:
+            # 直接用 VLM 讀郵戳日期（不走 _try_filename_then_vision）
+            stamp_date_str = self._extract_date_with_vision(receipt_path)
+            if stamp_date_str:
+                date_iso = self._normalize_date_text(stamp_date_str) or stamp_date_str
                 date_roc = self._iso_to_roc(date_iso)
-                # 回執的檔名日期 = 寄出日期
-                logger.info("  🎯 回執日期: %s (%s, from %s)", date_roc, src, os.path.basename(receipt_path))
+                logger.info("  🎯 回執郵戳日期: %s (stamp, from %s)", date_roc, os.path.basename(receipt_path))
                 return {
                     "date_roc": date_roc, "date_iso": date_iso,
                     "source": "receipt", "source_file": receipt_path,
                     "source_doc_type": "回執",
-                    "confidence": "high" if src == "stamp" else "medium",
+                    "confidence": "high",
                 }
+
+        # 回執只有檔名日期（無法讀到郵戳）→ 不能用檔名日期當寄出日期。
+        # 回退方案：找同案件 02_開辦資料 裡的委任狀存底，其檔名日期較可能是寄出日期。
+        if receipt_candidates and os.path.isdir(go_live_dir):
+            poa_fallback = []
+            for fn in os.listdir(go_live_dir):
+                if "委任狀" in fn and fn.lower().endswith(".pdf") and "回執" not in fn:
+                    poa_fallback.append(os.path.join(go_live_dir, fn))
+            poa_fallback.sort(key=lambda p: ("存底" not in os.path.basename(p), p))
+            for fb_path in poa_fallback:
+                fn_date = self._extract_date_from_filename(fb_path)
+                if fn_date:
+                    date_roc = self._iso_to_roc(fn_date)
+                    logger.info("  🎯 回執無郵戳，改用委任狀存底日期: %s (filename, from %s)",
+                                date_roc, os.path.basename(fb_path))
+                    return {
+                        "date_roc": date_roc, "date_iso": fn_date,
+                        "source": "filename", "source_file": fb_path,
+                        "source_doc_type": "委任狀",
+                        "confidence": "medium",
+                    }
 
         return {"confidence": "low"}
 
@@ -4164,7 +4189,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
             try:
                 _upd_case = identity.get("case_number") or ""
                 if _upd_case and self.db:
-                    self.db.execute(
+                    self.db.execute_write(
                         "UPDATE cases SET legal_aid_status = %s, status = %s WHERE case_number = %s",
                         ("已結案，待送出", "已結案，待送出", _upd_case)
                     )
