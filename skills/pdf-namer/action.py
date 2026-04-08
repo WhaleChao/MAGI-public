@@ -1566,6 +1566,36 @@ def generate_name_proposal(pdf_path: str, case_name: str = None, return_structur
         logger.warning("Could not extract date from %s", pdf_path)
         return empty_result if return_structured else None
 
+    # ── Step 5: Refine with learned rules + DB templates ──
+    # The nightly training system has 2,075 samples and 226 rules — use them!
+    _suggested_name_for_learning = found_doc_subtype or found_type or ""
+    if _suggested_name_for_learning:
+        # 5a: Refine doc_type from learned rules (token-based matching)
+        if not found_type or found_type in ("其他", "文件"):
+            learned_type = _infer_doc_type_from_learning(_suggested_name_for_learning)
+            if learned_type:
+                logger.info("Learned rules refined doc_type: %s → %s", found_type, learned_type)
+                found_type = learned_type
+        # Also try with full filename context (party + subtype)
+        if not found_type or found_type in ("其他", "文件"):
+            _ctx = f"{found_doc_subtype or ''} {found_party or ''}"
+            learned_type = _infer_doc_type_from_learning(_ctx)
+            if learned_type:
+                logger.info("Learned rules (context) refined doc_type: %s", learned_type)
+                found_type = learned_type
+
+    # 5b: Consult DB doc_rules for archive destination + template
+    _db_archive_dest = ""
+    try:
+        from training_loader import get_template_for_doc_type
+        db_rule = get_template_for_doc_type(found_type or found_doc_subtype or "")
+        if db_rule:
+            if db_rule.get("archive_destination_type"):
+                _db_archive_dest = db_rule["archive_destination_type"]
+                logger.info("DB rule archive dest: %s (for %s)", _db_archive_dest, found_type)
+    except Exception:
+        pass
+
     result = _build_name_result(
         found_date=found_date,
         found_court=found_court,

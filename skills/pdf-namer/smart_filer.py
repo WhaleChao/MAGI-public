@@ -62,7 +62,7 @@ INDEX_PATH = os.path.join(SKILL_DIR, "_case_index.json")
 FILING_LOG_PATH = os.path.join(SKILL_DIR, "_filing_log.json")
 
 # Filing confidence threshold — anything below goes to failure zone
-FILING_CONFIDENCE_THRESHOLD = 0.88
+FILING_CONFIDENCE_THRESHOLD = 0.82  # Lowered from 0.88: learned rules + vision improve matching
 
 OSC_ORCH_PATH = f"{_MAGI_ROOT}/skills/osc-orchestrator/action.py"
 OSC_ORCH_PY = os.environ.get("MAGI_SKILL_PYTHON", f"{_MAGI_ROOT}/venv/bin/python3")

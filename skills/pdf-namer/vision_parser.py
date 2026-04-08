@@ -184,8 +184,8 @@ def _ask_ollama_vision(
     """
     base_url = (os.environ.get("MAGI_OMLX_VISION_URL") or os.environ.get("MAGI_OLLAMA_API_URL") or os.environ.get("OMLX_URL") or "http://127.0.0.1:8082").strip().rstrip("/")
     url = f"{base_url}/v1/chat/completions"
-    max_retries = max(1, int(os.environ.get("MAGI_OLLAMA_BUSY_RETRIES", "2") or "2"))
-    retry_sleep = float(os.environ.get("MAGI_OLLAMA_BUSY_RETRY_SEC", "0.8") or "0.8")
+    max_retries = max(1, int(os.environ.get("MAGI_OLLAMA_BUSY_RETRIES", "3") or "3"))
+    retry_sleep_base = float(os.environ.get("MAGI_OLLAMA_BUSY_RETRY_SEC", "0.8") or "0.8")
 
     best_candidate: Optional[str] = None
 
@@ -228,15 +228,17 @@ def _ask_ollama_vision(
                     break
                 txt = (r.text or "")
                 if (r.status_code == 503) and ("server busy" in txt.lower() or "maximum pending requests exceeded" in txt.lower()):
+                    import time, random
+                    # Exponential backoff with jitter to avoid thundering herd
+                    backoff = retry_sleep_base * (2 ** attempt) * (0.8 + 0.4 * random.random())
                     logger.warning(
                         "oMLX busy for model=%s (attempt %d/%d), backing off %.1fs",
                         model,
                         attempt + 1,
                         max_retries,
-                        retry_sleep,
+                        backoff,
                     )
-                    import time
-                    time.sleep(retry_sleep)
+                    time.sleep(backoff)
                     continue
                 break
             except Exception:
