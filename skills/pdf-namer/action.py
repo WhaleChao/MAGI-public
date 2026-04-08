@@ -1249,12 +1249,35 @@ def generate_name_proposal(pdf_path: str, case_name: str = None, return_structur
 
         stamp_date = None
         date_method = ""
+
+        # Try extracting stamp date directly from OCR text (收文章 pattern)
+        # Combine all OCR texts and look for stamp markers + nearby dates
+        _all_ocr = "\n".join(filter(None, [cached.get("envelope_ocr", ""), cached.get("content_ocr", "")]))
+        if _all_ocr and ("收文" in _all_ocr or "收件" in _all_ocr or "法警" in _all_ocr):
+            from vision_parser import _parse_date_from_text
+            # Try every short line that contains digits
+            for line in _all_ocr.split("\n"):
+                line = line.strip()
+                if not line or len(line) > 30 or not any(c.isdigit() for c in line):
+                    continue
+                d = _parse_date_from_text(line)
+                if d:
+                    try:
+                        yr = int(d[:4])
+                        if 2020 <= yr <= 2030:
+                            stamp_date = d
+                            date_method = "ocr_stamp_text"
+                            logger.info("[batch-cache] Stamp date from OCR: %s (line: %s)", d, line[:30])
+                            break
+                    except ValueError:
+                        pass
+
         try:
             _file_mtime = datetime.fromtimestamp(os.path.getmtime(pdf_path))
         except Exception:
             _file_mtime = datetime.now()
 
-        # Try stamp on page 0 and content page
+        # Fallback: stamp extraction from page images
         pages_info = cached.get("pages") or {}
         for sp_idx in [0, pages_info.get("content_idx", 0)]:
             if sp_idx < 0 or sp_idx >= doc.page_count:
@@ -1869,10 +1892,31 @@ def _extract_summary_from_ocr(ocr_text: str, doc_type: str = "") -> str:
     return ""
 
 
+_VISION_OCR_BIN = os.path.expanduser("~/Library/Application Support/MAGI/bin/vision_ocr")
+
+
+def _macos_vision_ocr_page(pdf_path: str, page_num: int = 0) -> str:
+    """Use macOS Vision framework for OCR — high quality, free, no GPU needed.
+    This is the primary OCR engine. Falls back to GLM-OCR if unavailable."""
+    if not os.path.exists(_VISION_OCR_BIN):
+        return ""
+    try:
+        r = subprocess.run(
+            [_VISION_OCR_BIN, pdf_path, str(page_num)],
+            capture_output=True, text=True, timeout=30,
+        )
+        if r.returncode == 0 and r.stdout.strip():
+            text = r.stdout.strip()
+            logger.info("[macOS-Vision] page %d: %d chars", page_num, len(text))
+            return text
+    except Exception as e:
+        logger.debug("[macOS-Vision] failed: %s", e)
+    return ""
+
+
 def _glm_ocr_page(page, dpi: int = 200) -> str:
-    """Stage 1 only: Use GLM-OCR to transcribe a page image to text.
-    Separated from analysis so batch processing can OCR all pages first,
-    then switch model once to Gemma 4 for all analysis."""
+    """Stage 1 fallback: Use GLM-OCR to transcribe a page image to text.
+    Used when macOS Vision OCR is unavailable."""
     try:
         from skills.bridge import melchior_client as _mc
         _chat_omlx = getattr(_mc, "_chat_omlx", None)
@@ -2395,26 +2439,32 @@ def batch_ocr_pages(pdf_paths: list) -> dict:
             envelope_ocr = ""
             content_ocr = ""
 
+            # Primary OCR: macOS Vision framework (fast, high quality, no GPU)
+            # Fallback: GLM-OCR (GPU-based, slower but handles edge cases)
+            def _ocr_page(page_idx: int) -> str:
+                text = _macos_vision_ocr_page(pdf_path, page_idx)
+                if not text and page_idx < doc.page_count:
+                    text = _glm_ocr_page(doc[page_idx], dpi=200)
+                return text
+
             if pages["envelope"]:
-                envelope_ocr = _glm_ocr_page(pages["envelope"], dpi=200)
+                envelope_ocr = _ocr_page(pages["envelope_idx"])
                 if envelope_ocr:
                     logger.info("[batch-ocr] %s env(%d): %d chars",
                                 os.path.basename(pdf_path), pages["envelope_idx"], len(envelope_ocr))
 
             if pages["content"]:
-                content_ocr = _glm_ocr_page(pages["content"], dpi=200)
+                content_ocr = _ocr_page(pages["content_idx"])
                 if content_ocr:
                     logger.info("[batch-ocr] %s content(%d): %d chars",
                                 os.path.basename(pdf_path), pages["content_idx"], len(content_ocr))
 
             # For no-envelope docs: also OCR page 0 if it wasn't the content page
-            # Page 0 is the title page — most important for doc_type/party/case_no
             if not pages["envelope"] and pages["content_idx"] != 0 and doc.page_count > 1:
-                p0_ocr = _glm_ocr_page(doc[0], dpi=200)
+                p0_ocr = _ocr_page(0)
                 if p0_ocr:
                     logger.info("[batch-ocr] %s page0-title: %d chars",
                                 os.path.basename(pdf_path), len(p0_ocr))
-                    # Use page 0 as envelope_ocr (title page metadata)
                     envelope_ocr = p0_ocr
 
             results[pdf_path] = {
@@ -2488,17 +2538,20 @@ def batch_analyze_texts(ocr_results: dict) -> dict:
 
         # Merge: envelope provides date/court/case_no; content provides type/party/summary
         merged = {}
-        has_envelope = bool(ocr.get("envelope_ocr"))
-        if has_envelope:
+        # Distinguish true envelope (公文封) from title page (page 0 of no-envelope doc)
+        pages_info = ocr.get("pages") or {}
+        has_real_envelope = pages_info.get("envelope_idx", -1) >= 0
+        if has_real_envelope:
             for key in ("date", "court", "case_number"):
                 merged[key] = envelope_info.get(key) or content_info.get(key) or ""
             for key in ("doc_type", "party", "doc_subtype", "summary", "case_type"):
                 merged[key] = content_info.get(key) or envelope_info.get(key) or ""
         else:
-            # No envelope: "envelope_info" = title page, trust it for party/case_no
-            for key in ("case_number", "party", "doc_subtype"):
+            # No envelope: "envelope_info" = title page (page 0), most authoritative
+            # Trust title page for case_number, party, doc_type, doc_subtype
+            for key in ("case_number", "party", "doc_subtype", "doc_type"):
                 merged[key] = envelope_info.get(key) or content_info.get(key) or ""
-            for key in ("date", "court", "doc_type", "summary", "case_type"):
+            for key in ("date", "court", "summary", "case_type"):
                 merged[key] = content_info.get(key) or envelope_info.get(key) or ""
 
         merged = {k: v for k, v in merged.items() if v}
@@ -2508,9 +2561,14 @@ def batch_analyze_texts(ocr_results: dict) -> dict:
             "merged": merged,
         }
 
-    # Cache results so generate_name_proposal() can skip its own OCR+analysis
+    # Cache results + original OCR text so generate_name_proposal() can use both
     global _BATCH_ANALYSIS_CACHE
     for pdf_path, info in results.items():
+        # Include original OCR text from ocr_results for stamp date extraction
+        ocr_data = ocr_results.get(pdf_path, {})
+        info["envelope_ocr"] = ocr_data.get("envelope_ocr", "")
+        info["content_ocr"] = ocr_data.get("content_ocr", "")
+        info["pages"] = ocr_data.get("pages", {})
         _BATCH_ANALYSIS_CACHE[pdf_path] = info
 
     logger.info("[batch-analyze] Phase 2 complete: %d PDFs analyzed and cached", len(results))

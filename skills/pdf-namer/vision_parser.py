@@ -282,8 +282,8 @@ def _parse_date_from_text(raw: str) -> Optional[str]:
         y, mo, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
         if 1 <= mo <= 12 and 1 <= d <= 31:
             return f"{y:04d}{mo:02d}{d:02d}"
-    # ROC stamp format: 114.9.04 or 115.1.30 (dot-separated, common on 收文章)
-    m = re.search(r"\b(1\d{2})\s*[.,]\s*(\d{1,2})\s*[.,]\s*(\d{1,2})\b", txt)
+    # ROC stamp format: 114.9.04 or 115.1.30 or 115. 4，-3 (dot/comma/dash, OCR artifacts)
+    m = re.search(r"(1\d{2})\s*[.\s，,]+\s*(\d{1,2})\s*[.\s，,\-]+\s*(\d{1,2})", txt)
     if m:
         ry, mo, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
         y = ry + 1911
