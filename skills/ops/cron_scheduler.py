@@ -22,6 +22,7 @@ JOB_FILE = f"{_MAGI_ROOT}/cron_jobs.json"
 class CronScheduler:
     def __init__(self):
         self.jobs = []
+        self._last_file_mtime = 0.0
         self._load_jobs()
 
     def _new_job_id(self) -> str:
@@ -58,6 +59,7 @@ class CronScheduler:
         """Load jobs from JSON file."""
         if os.path.exists(JOB_FILE):
             try:
+                self._last_file_mtime = os.path.getmtime(JOB_FILE)
                 with open(JOB_FILE, 'r', encoding='utf-8') as f:
                     self.jobs = json.load(f)
                 if not isinstance(self.jobs, list):
@@ -68,6 +70,24 @@ class CronScheduler:
         else:
             self.jobs = []
         self._normalize_jobs()
+
+    def _hot_reload_if_changed(self):
+        """Reload jobs from disk if the file was modified externally."""
+        try:
+            if not os.path.exists(JOB_FILE):
+                return
+            mtime = os.path.getmtime(JOB_FILE)
+            if mtime > self._last_file_mtime:
+                old_count = len(self.jobs)
+                old_ids = {j["id"] for j in self.jobs}
+                self._load_jobs()
+                new_ids = {j["id"] for j in self.jobs}
+                added = new_ids - old_ids
+                if added:
+                    logger.info("🔄 Hot-reloaded cron_jobs.json: %d→%d jobs (+%s)",
+                                old_count, len(self.jobs), ", ".join(added))
+        except Exception as e:
+            logger.warning("Hot-reload check failed: %s", e)
 
     def _save_jobs(self):
         """Save jobs to JSON file."""
@@ -234,6 +254,7 @@ class CronScheduler:
         Returns a list of due jobs.
         Updates last_run timestamp.
         """
+        self._hot_reload_if_changed()
         now = datetime.now()
         due_jobs = []
         current_minute_str = now.strftime("%Y-%m-%d %H:%M")

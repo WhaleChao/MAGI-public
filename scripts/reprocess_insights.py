@@ -33,7 +33,7 @@ from pathlib import Path
 from typing import Any, Optional
 from urllib import request as _urlrequest, error as _urlerror
 
-MAGI_ROOT = Path(os.environ.get("MAGI_ROOT_DIR", str(Path.home() / "Desktop/MAGI")))
+MAGI_ROOT = Path(os.environ.get("MAGI_ROOT_DIR", os.environ.get("MAGI_ROOT", str(Path.home() / "Desktop/MAGI_v2"))))
 sys.path.insert(0, str(MAGI_ROOT))
 
 # Load .env
