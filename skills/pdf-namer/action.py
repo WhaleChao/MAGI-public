@@ -2365,6 +2365,22 @@ def batch_ocr_pages(pdf_paths: list) -> dict:
 
     Returns {pdf_path: {"envelope_ocr": str, "content_ocr": str, "pages": dict}}
     """
+    # Pre-warm GLM-OCR: force model load before batch starts
+    # This ensures all OCR requests hit a loaded model (no swap delays)
+    try:
+        import requests as _req
+        from skills.bridge.melchior_client import OMLX_VISION_BASE, OMLX_VISION_MODEL
+        _req.post(
+            f"{OMLX_VISION_BASE}/v1/chat/completions",
+            json={"model": OMLX_VISION_MODEL or "GLM-OCR-bf16",
+                  "messages": [{"role": "user", "content": "test"}],
+                  "max_tokens": 1, "stream": False},
+            timeout=30,
+        )
+        logger.info("[batch-ocr] GLM-OCR pre-warmed")
+    except Exception as e:
+        logger.debug("[batch-ocr] Pre-warm failed (OK if model already loaded): %s", e)
+
     results = {}
     for pdf_path in pdf_paths:
         try:
@@ -2439,6 +2455,20 @@ def batch_analyze_texts(ocr_results: dict) -> dict:
 
     Returns {pdf_path: {"envelope_info": dict, "content_info": dict, "merged": dict}}
     """
+    # Pre-warm Gemma 4: force model swap from GLM-OCR
+    try:
+        import requests as _req
+        from skills.bridge.melchior_client import OMLX_CHAT_BASE
+        _req.post(
+            f"{OMLX_CHAT_BASE}/v1/chat/completions",
+            json={"model": "gemma-4-26b-a4b-it-4bit",
+                  "messages": [{"role": "user", "content": "test"}],
+                  "max_tokens": 1, "stream": False},
+            timeout=60,
+        )
+        logger.info("[batch-analyze] Gemma 4 pre-warmed")
+    except Exception as e:
+        logger.debug("[batch-analyze] Pre-warm note: %s", e)
     results = {}
     for pdf_path, ocr in ocr_results.items():
         envelope_info = {}
