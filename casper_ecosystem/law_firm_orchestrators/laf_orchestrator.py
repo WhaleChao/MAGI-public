@@ -3005,6 +3005,39 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         y, mo, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
         return f"{y - 1911}.{mo}.{d}"
 
+    @staticmethod
+    def _extract_doc_name_from_filename(filename: str) -> str:
+        """從檔名中提取文件種類名稱（如「委任狀」「上訴狀」「聲請狀」等）。
+
+        例如：
+          "20260407 委任狀回執.pdf" → "委任狀"
+          "20260320 上訴狀存底.pdf" → "上訴狀"
+          "20260315 民事答辯狀.pdf" → "答辯狀"
+          "20260401 開辦通知書.pdf" → "" (開辦通知書不算寄出文件)
+        """
+        import re
+        base = os.path.splitext(os.path.basename(filename or ""))[0]
+        # 移除日期前綴和常見後綴
+        base = re.sub(r"^\d{4,8}\s*", "", base)
+        base = re.sub(r"(存底|回執|收件回執|掃描|影本|正本|副本)$", "", base).strip()
+        # 匹配已知的法律文件種類
+        # 長名稱在前，避免「聲請狀」先於「家事聲請狀」匹配
+        known = [
+            "民事聲請狀", "刑事聲請狀", "家事聲請狀",
+            "民事答辯狀", "民事起訴狀", "補充理由狀",
+            "委任狀", "上訴狀", "抗告狀", "聲請狀", "答辯狀", "準備狀",
+            "起訴狀", "告訴狀", "自訴狀", "陳報狀", "異議狀", "反訴狀",
+            "追加狀", "辯護狀",
+        ]
+        for k in known:
+            if k in base:
+                return k
+        # 如果檔名含「狀」但不在已知列表，嘗試擷取 X狀
+        m = re.search(r"[\u4e00-\u9fff]{1,4}狀", base)
+        if m:
+            return m.group(0)
+        return ""
+
     def _compose_go_live_remark(self, submission_info: dict, client_name: str = "",
                                 is_consumer_debt: bool = False) -> str:
         """根據遞狀日期資訊生成自然語言 selRemark。"""
@@ -3014,22 +3047,25 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
 
         source = submission_info.get("source", "")
         doc_type = submission_info.get("source_doc_type", "委任狀")
+        src_file = submission_info.get("source_file", "")
 
         # 消費者債務清理 — 不需要委任狀，只有開辦通知書
         if is_consumer_debt:
             return f"已於民國{date_roc}遞送聲請狀至法院。"
 
+        # 從檔名提取實際文件種類（如「委任狀」「上訴狀」等）
+        doc_name = self._extract_doc_name_from_filename(src_file) or "委任狀"
+
         # 根據文件來源生成不同措辭
         if doc_type == "回執":
-            return f"已於民國{date_roc}以掛號郵寄委任狀，詳見附件回執。"
+            return f"已於民國{date_roc}以掛號郵寄{doc_name}，詳見附件回執。"
         elif doc_type == "書狀":
-            src_file = os.path.basename(submission_info.get("source_file", ""))
-            return f"已於民國{date_roc}遞送書狀至法院。"
+            return f"已於民國{date_roc}遞送{doc_name}至法院。"
         else:
             # 委任狀（預設）
             if source == "receipt":
-                return f"已於民國{date_roc}以掛號郵寄委任狀至法院。"
-            return f"已於民國{date_roc}遞送委任狀至法院。"
+                return f"已於民國{date_roc}以掛號郵寄{doc_name}至法院。"
+            return f"已於民國{date_roc}遞送{doc_name}至法院。"
 
     def _find_go_live_upload_files(self, case_folder: str, is_consumer_debt: bool = False) -> list:
         """找開辦上傳檔案。
