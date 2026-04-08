@@ -2965,11 +2965,12 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                     "confidence": "high" if src == "stamp" else "medium",
                 }
 
-        # ── 3) 11_回執：回執（郵寄） ──
+        # ── 3) 11_回執：回執資料夾中所有 PDF 都是遞出證明 ──
+        #   包括：郵局回執、書狀存底、委任狀存底等
         receipt_candidates = []
         if os.path.isdir(receipt_dir):
             for fn in sorted(os.listdir(receipt_dir), reverse=True):
-                if fn.lower().endswith(".pdf") and ("回執" in fn or "收件回執" in fn):
+                if fn.lower().endswith(".pdf"):
                     receipt_candidates.append(os.path.join(receipt_dir, fn))
         # 也看 02_開辦資料 裡的回執
         if os.path.isdir(go_live_dir):
@@ -3090,10 +3091,11 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                 if proof_file:
                     break
 
-        # 3) 找不到書狀 → 11_回執
+        # 3) 找不到書狀 → 11_回執（資料夾中所有 PDF 都是遞出證明：
+        #    回執、書狀存底、委任狀存底等）
         if not proof_file and os.path.isdir(receipt_dir):
             for fn in sorted(os.listdir(receipt_dir), reverse=True):
-                if fn.lower().endswith(".pdf") and ("回執" in fn or "收件回執" in fn):
+                if fn.lower().endswith(".pdf"):
                     proof_file = os.path.join(receipt_dir, fn)
                     break
 
