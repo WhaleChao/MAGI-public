@@ -2317,6 +2317,12 @@ def _select_pages_scored(doc) -> dict:
     _CONTENT_MARKERS = ["案號", "被告", "原告", "主文", "主旨", "聲請人", "犯罪事實",
                          "理由", "當事人", "上訴人", "抗告人", "裁定", "判決"]
 
+    # Also detect garbled versions of content markers
+    _GARBLED_CONTENT_MARKERS = [
+        "案", "琥", "股", "聾", "彗", "債務", "清理", "陳報", "答辯",
+        "聲請", "起訴", "裁定", "判決", "通知", "函",
+    ]
+
     for i in range(min(5, doc.page_count)):
         text = doc[i].get_text() or ""
         score = 0
@@ -2326,6 +2332,14 @@ def _select_pages_scored(doc) -> dict:
         for m in _CONTENT_MARKERS:
             if m in text:
                 score += 2
+        # Garbled markers (partial matches from bad OCR layers)
+        garbled_hits = sum(1 for m in _GARBLED_CONTENT_MARKERS if m in text)
+        if garbled_hits >= 3:
+            score += 1  # Moderate boost for garbled title pages
+        # Page 0 bonus: first page is most likely the title/header
+        # (court docs: title page; our docs: 聲請狀/陳報狀 first page)
+        if i == 0:
+            score += 2
         # Text density bonus
         score += min(len(text.strip()) / 200, 3)
         scores.append((score, i))
@@ -2376,6 +2390,16 @@ def batch_ocr_pages(pdf_paths: list) -> dict:
                 if content_ocr:
                     logger.info("[batch-ocr] %s content(%d): %d chars",
                                 os.path.basename(pdf_path), pages["content_idx"], len(content_ocr))
+
+            # For no-envelope docs: also OCR page 0 if it wasn't the content page
+            # Page 0 is the title page — most important for doc_type/party/case_no
+            if not pages["envelope"] and pages["content_idx"] != 0 and doc.page_count > 1:
+                p0_ocr = _glm_ocr_page(doc[0], dpi=200)
+                if p0_ocr:
+                    logger.info("[batch-ocr] %s page0-title: %d chars",
+                                os.path.basename(pdf_path), len(p0_ocr))
+                    # Use page 0 as envelope_ocr (title page metadata)
+                    envelope_ocr = p0_ocr
 
             results[pdf_path] = {
                 "envelope_ocr": envelope_ocr,
