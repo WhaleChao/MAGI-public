@@ -315,7 +315,8 @@ def _omlx_service_available(circuit: dict, lock: threading.Lock = None) -> bool:
         return False
     _lk = lock or _OMLX_CHAT_LOCK
     with _lk:
-        if circuit["failures"] >= 3:
+        threshold = 10 if circuit is _OMLX_VISION_CIRCUIT else 6
+        if circuit["failures"] >= threshold:
             if time.monotonic() - circuit["tripped_at"] < 120:
                 return False
             circuit["failures"] = 0
@@ -345,8 +346,9 @@ def _omlx_ok(circuit: dict, lock: threading.Lock = None):
 
 def _omlx_fail(circuit: dict, lock: threading.Lock = None):
     _lk = lock or _OMLX_CHAT_LOCK
-    # Vision circuit uses higher threshold (timeouts ≠ real failures)
-    threshold = 8 if circuit is _OMLX_VISION_CIRCUIT else 3
+    # Unified oMLX server: model LRU swaps cause transient 507/503 errors
+    # that are NOT real failures. Use higher threshold for all circuits.
+    threshold = 10 if circuit is _OMLX_VISION_CIRCUIT else 6
     with _lk:
         circuit["failures"] = circuit.get("failures", 0) + 1
         if circuit["failures"] >= threshold:
