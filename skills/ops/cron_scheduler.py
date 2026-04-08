@@ -90,8 +90,34 @@ class CronScheduler:
             logger.warning("Hot-reload check failed: %s", e)
 
     def _save_jobs(self):
-        """Save jobs to JSON file."""
+        """Save jobs to JSON file (merge-safe: preserves externally-added jobs)."""
         try:
+            # Merge: read disk first to preserve jobs added externally since last load
+            disk_jobs = []
+            if os.path.exists(JOB_FILE):
+                try:
+                    with open(JOB_FILE, 'r', encoding='utf-8') as f:
+                        disk_jobs = json.load(f)
+                    if not isinstance(disk_jobs, list):
+                        disk_jobs = []
+                except Exception:
+                    disk_jobs = []
+
+            # Build lookup of our in-memory jobs (authoritative for last_run etc.)
+            mem_by_id = {j["id"]: j for j in self.jobs if j.get("id")}
+
+            # Merge: start with in-memory state, then append any disk-only jobs
+            merged = list(self.jobs)
+            merged_ids = {j["id"] for j in merged if j.get("id")}
+            for dj in disk_jobs:
+                djid = (dj.get("id") or "").strip()
+                if djid and djid not in merged_ids:
+                    merged.append(dj)
+                    merged_ids.add(djid)
+                    logger.info("🔄 Preserved externally-added job: %s", djid)
+
+            self.jobs = merged
+
             with open(JOB_FILE, 'w', encoding='utf-8') as f:
                 json.dump(self.jobs, f, indent=2, ensure_ascii=False)
         except Exception as e:

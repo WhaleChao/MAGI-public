@@ -550,7 +550,10 @@ async def bg_scheduler_loop():
                         _LONG_JOBS = {"job_nightly_regression", "job_distill_train", "job_weekend_resummary",
                                       "job_pdf_namer_nightly", "job_reprocess_insights", "job_obsidian_ingest",
                                       "job_laf_nightly_audit", "job_nightly_autopilot", "job_judicial_api_night_pull",
-                                      "job_judicial_api_morning", "job_weekly_legal_crawl"}
+                                      "job_judicial_api_morning", "job_weekly_legal_crawl",
+                                      "job_transcript_sync", "job_file_review_check",
+                                      "job_weekend_bookmark", "job_market_briefing_script",
+                                      "job_wiki_synthesizer", "job_knowledge_lint"}
                         _timeout = 7200 if job.get("id") in _LONG_JOBS else 600
                         _job_id = job.get("id", "?")
                         _shell_env = {**os.environ, "MAGI_PREFER_LOCAL_DB": "0", "MAGI_NO_DELETE": "1"}
