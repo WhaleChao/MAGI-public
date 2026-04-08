@@ -162,6 +162,7 @@ LEARNED_RULES_PATH = os.path.join(SKILL_DIR, "_learned_filename_rules.json")
 CORRECTIONS_PATH = os.path.join(SKILL_DIR, "_corrections.json")
 
 _LEARNED_RULES_CACHE: Optional[dict] = None
+_BATCH_ANALYSIS_CACHE = {}  # type: dict[str, dict] — Pre-computed by batch_analyze_texts
 
 _DOC_TYPE_HINTS = [
     ("預付酬金領款單掛號郵件收件回執", "收據"),
@@ -1136,6 +1137,89 @@ def _extract_receipt_date_from_stamp(page, ref_dt: Optional[object] = None) -> T
 
     return None, "not_found"
 
+def _try_stamp_crop_vision(doc, pages_info: dict = None) -> Tuple[Optional[str], str]:
+    """Try to find receipt stamp date by cropping page corners and OCR'ing them."""
+    _stamp_crop_regions = [
+        ("top_right", (0.55, 0.00, 1.00, 0.35)),
+        ("right_strip", (0.72, 0.00, 1.00, 0.55)),
+        ("top_left", (0.00, 0.00, 0.45, 0.35)),
+        ("bottom_right", (0.55, 0.70, 1.00, 1.00)),
+    ]
+    scan_page_idxs = [0]
+    if pages_info:
+        ci = pages_info.get("content_idx", 0)
+        if ci > 0 and ci not in scan_page_idxs:
+            scan_page_idxs.append(ci)
+
+    try:
+        from skills.bridge import melchior_client as _mc_s
+        _chat_s = getattr(_mc_s, "_chat_omlx", None)
+        _avail_s = getattr(_mc_s, "_omlx_available", None)
+        if not (callable(_chat_s) and callable(_avail_s) and _avail_s()):
+            return None, ""
+        from skills.bridge.melchior_client import (
+            OMLX_VISION_BASE as _VBS, OMLX_VISION_MODEL as _VMS,
+            _OMLX_VISION_CIRCUIT as _VCS, _OMLX_VISION_LOCK as _VLS,
+        )
+        stamp_prompt = (
+            "這張圖片是文件角落的裁切區域。請找出收文章（藍色圓形章）上的日期。"
+            "收文章格式通常為民國年.月.日（如115.4.02代表民國115年4月2日=西元2026年4月2日）。"
+            "只回覆日期數字（民國年.月.日格式），看不到收文章就回覆NONE。"
+        )
+        for sp_idx in scan_page_idxs:
+            if sp_idx < 0 or sp_idx >= doc.page_count:
+                continue
+            try:
+                sp_pix = doc[sp_idx].get_pixmap(dpi=220)
+                sp_png = sp_pix.tobytes("png")
+            except Exception:
+                continue
+            for crop_name, (cx0, cy0, cx1, cy1) in _stamp_crop_regions:
+                crop_png = _crop_png_bytes(sp_png, x0=cx0, y0=cy0, x1=cx1, y1=cy1)
+                if not crop_png:
+                    continue
+                if HAS_PIL:
+                    try:
+                        from PIL import ImageOps, ImageEnhance
+                        im = Image.open(io.BytesIO(crop_png)).convert("L")
+                        im = ImageOps.autocontrast(im)
+                        w, h = im.size
+                        im = im.resize((int(w * 2.0), int(h * 2.0)))
+                        im = ImageEnhance.Sharpness(im).enhance(1.6)
+                        im = ImageEnhance.Contrast(im).enhance(1.4)
+                        buf = io.BytesIO()
+                        im.save(buf, format="PNG")
+                        crop_png = buf.getvalue()
+                    except Exception:
+                        pass
+                b64_crop = base64.b64encode(crop_png).decode("utf-8")
+                try:
+                    r_stamp = _chat_s(
+                        prompt=stamp_prompt, model=_VMS,
+                        base_url=_VBS, timeout=45,
+                        temperature=0.0, max_tokens=64, images=[b64_crop],
+                        circuit=_VCS, lock=_VLS,
+                    )
+                    if r_stamp.get("success") and r_stamp.get("response"):
+                        raw = r_stamp["response"].strip()
+                        if "NONE" not in raw.upper():
+                            from vision_parser import _parse_date_from_text
+                            sd = _parse_date_from_text(raw)
+                            if sd:
+                                try:
+                                    yr = int(sd[:4])
+                                    if 2000 <= yr <= 2030:
+                                        logger.info("Stamp date from crop %s: %s", crop_name, sd)
+                                        return sd, f"vision_stamp_crop:{crop_name}"
+                                except ValueError:
+                                    pass
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    return None, ""
+
+
 def generate_name_proposal(pdf_path: str, case_name: str = None, return_structured: bool = False):
     """Propose a filename following the standard convention:
     {YYYYMMDD} {法院全名}{案號}{文件類型}（{當事人}）.pdf
@@ -1149,6 +1233,90 @@ def generate_name_proposal(pdf_path: str, case_name: str = None, return_structur
     """
     empty_result = {"filename": None, "date": None, "court": "", "case_number": "",
                     "doc_type": "", "party": "", "date_method": ""}
+
+    # ── Check batch cache (pre-computed by batch_ocr_pages + batch_analyze_texts) ──
+    cached = _BATCH_ANALYSIS_CACHE.get(pdf_path)
+    if cached and cached.get("merged"):
+        logger.info("[batch-cache] Using pre-computed analysis for %s", os.path.basename(pdf_path))
+        vision_info = dict(cached["merged"])
+        # Still need stamp date — do stamp extraction only
+        doc = fitz.open(pdf_path)
+        if doc.needs_pass:
+            try:
+                doc.authenticate("3800")
+            except Exception:
+                pass
+
+        stamp_date = None
+        date_method = ""
+        try:
+            _file_mtime = datetime.fromtimestamp(os.path.getmtime(pdf_path))
+        except Exception:
+            _file_mtime = datetime.now()
+
+        # Try stamp on page 0 and content page
+        pages_info = cached.get("pages") or {}
+        for sp_idx in [0, pages_info.get("content_idx", 0)]:
+            if sp_idx < 0 or sp_idx >= doc.page_count:
+                continue
+            try:
+                sr = _extract_receipt_date_from_stamp(doc[sp_idx], ref_dt=_file_mtime)
+                if sr and sr[0]:
+                    stamp_date = sr[0]
+                    date_method = sr[1]
+                    break
+            except Exception:
+                pass
+
+        # If no stamp found, try crop-based vision stamp
+        if not stamp_date:
+            stamp_date, date_method = _try_stamp_crop_vision(doc, pages_info)
+
+        found_date = stamp_date or vision_info.get("date")
+        if stamp_date:
+            date_method = date_method or "stamp"
+        elif vision_info.get("date"):
+            date_method = "vision"
+
+        found_court = vision_info.get("court", "")
+        found_case_no = vision_info.get("case_number", "")
+        found_type = vision_info.get("doc_type", "")
+        found_party = vision_info.get("party", "")
+        found_doc_subtype = vision_info.get("doc_subtype", "")
+        found_summary = vision_info.get("summary", "")
+        found_case_type = vision_info.get("case_type", "")
+
+        if case_name:
+            found_party = case_name
+
+        # Extract summary from all pages' native text as fallback
+        if not found_summary and found_type:
+            all_text = ""
+            for pi in range(min(doc.page_count, 6)):
+                all_text += (doc[pi].get_text() or "") + "\n"
+            if all_text.strip():
+                found_summary = _extract_summary_from_ocr(all_text, found_type)
+
+        if not found_date:
+            logger.warning("Could not extract date from %s", pdf_path)
+            return empty_result if return_structured else None
+
+        # Refine with learned rules
+        if not found_type or found_type in ("其他", "文件"):
+            lt = _infer_doc_type_from_learning(found_doc_subtype or found_type or "")
+            if lt:
+                found_type = lt
+
+        result = _build_name_result(
+            found_date=found_date, found_court=found_court,
+            found_case_no=found_case_no, found_type=found_type,
+            found_party=found_party, date_method=date_method,
+            doc_subtype=found_doc_subtype, summary=found_summary,
+            case_type_hint=found_case_type,
+        )
+        if return_structured:
+            return result
+        return result["filename"]
 
     if not os.path.exists(pdf_path):
         return empty_result if return_structured else None
@@ -1701,66 +1869,47 @@ def _extract_summary_from_ocr(ocr_text: str, doc_type: str = "") -> str:
     return ""
 
 
-def _vision_analyze_for_naming(content_page) -> dict:
-    """Analyze a page using two-stage pipeline: GLM-OCR → Gemma 4.
-
-    Stage 1: GLM-OCR (port 8082) transcribes image to text.
-    Stage 2: Gemma 4 (port 8080) analyzes the transcription for structured fields.
-    Fallback: regex extractors parse the OCR text directly.
-
-    Returns dict with keys: date, court, case_number, doc_type, doc_subtype,
-    party, summary, case_type.
-    """
-    if os.environ.get("MAGI_PDF_NAMER_USE_VISION", "1").strip() in {"0", "false", "no", "off"}:
-        return {}
-
+def _glm_ocr_page(page, dpi: int = 200) -> str:
+    """Stage 1 only: Use GLM-OCR to transcribe a page image to text.
+    Separated from analysis so batch processing can OCR all pages first,
+    then switch model once to Gemma 4 for all analysis."""
     try:
         from skills.bridge import melchior_client as _mc
         _chat_omlx = getattr(_mc, "_chat_omlx", None)
         _omlx_avail = getattr(_mc, "_omlx_available", None)
         if not (callable(_chat_omlx) and callable(_omlx_avail) and _omlx_avail()):
-            logger.info("Vision: oMLX not available.")
-            return {}
+            return ""
     except Exception:
-        return {}
+        return ""
 
     try:
-        pix = content_page.get_pixmap(dpi=200)
+        pix = page.get_pixmap(dpi=dpi)
         png = pix.tobytes("png")
         b64 = base64.b64encode(png).decode("utf-8")
 
-        # ── Stage 1: GLM-OCR transcription ──
-        prompt_transcribe = (
+        prompt = (
             "請逐字轉錄這張文件圖片中所有可見的文字與數字。"
             "包括章戳內的文字、信封上的地址、案號、法院名稱、當事人姓名等。"
             "民國年日期格式如 115.3.20 或 115年3月20日 請原樣轉錄。"
             "只轉錄看到的文字，不要推論、不要解釋、不要添加格式。"
-            "若完全看不到任何文字回覆 NONE。"
+            "若完全��不到任何文字回覆 NONE。"
         )
-
         vision_model = getattr(_mc, "OMLX_VISION_MODEL", os.environ.get("MAGI_TEXT_PRIMARY_MODEL", ""))
-        vision_timeout = int(os.environ.get("MAGI_PDF_NAMER_VISION_NAMING_TIMEOUT", "90"))
         from skills.bridge.melchior_client import (
             OMLX_VISION_BASE, _OMLX_VISION_CIRCUIT, _OMLX_VISION_LOCK,
         )
         r = _chat_omlx(
-            prompt=prompt_transcribe, model=vision_model,
+            prompt=prompt, model=vision_model,
             base_url=OMLX_VISION_BASE,
-            timeout=max(60, vision_timeout),
-            temperature=0.0, max_tokens=2048, images=[b64],
-            circuit=_OMLX_VISION_CIRCUIT,
-            lock=_OMLX_VISION_LOCK,
+            timeout=90, temperature=0.0, max_tokens=2048, images=[b64],
+            circuit=_OMLX_VISION_CIRCUIT, lock=_OMLX_VISION_LOCK,
         )
         if not (r.get("success") and r.get("response")):
-            logger.info("Vision OCR: no response.")
-            return {}
-
+            return ""
         ocr_text = (r.get("response") or "").strip()
-        if not ocr_text or "NONE" in ocr_text.upper():
-            logger.info("Vision OCR: no text found in image.")
-            return {}
-
-        # Detect hallucination: repetitive patterns
+        if "NONE" in ocr_text.upper():
+            return ""
+        # Clean hallucination
         if re.search(r"(.)\1{19,}", ocr_text):
             ocr_text = re.sub(r"(.)\1{9,}", r"\1\1\1", ocr_text)
         if len(ocr_text) > 200:
@@ -1769,52 +1918,86 @@ def _vision_analyze_for_naming(content_page) -> dict:
                 if len(chunk) >= 8 and ocr_text.count(chunk) >= 5:
                     ocr_text = ocr_text[:300]
                     break
+        return ocr_text
+    except Exception as e:
+        logger.debug("GLM-OCR failed: %s", e)
+        return ""
 
+
+def _analyze_ocr_text(ocr_text: str) -> dict:
+    """Stage 2 only: Use Gemma 4 to analyze OCR text, with regex fallback.
+    Separated from OCR so batch processing can analyze all texts at once
+    without model switching."""
+    if not ocr_text or len(ocr_text.strip()) < 10:
+        return {}
+
+    # Try Gemma 4 first
+    try:
+        from skills.bridge import melchior_client as _mc
+        _chat_fn = getattr(_mc, "_chat_omlx", None)
+        result = _gemma4_analyze_ocr_text(ocr_text, _chat_fn)
+    except Exception:
+        result = {}
+
+    # Regex fallback for missing fields
+    if not result.get("court") and not result.get("case_number"):
+        v_date = _extract_any_date(ocr_text) or _extract_roc_date(ocr_text)
+        if v_date:
+            result.setdefault("date", v_date)
+        v_court = _extract_court_name(ocr_text)
+        if v_court:
+            result.setdefault("court", v_court)
+        v_case_no = _extract_case_number(ocr_text)
+        if v_case_no:
+            result.setdefault("case_number", v_case_no)
+        v_type = _extract_doc_type(ocr_text)
+        if v_type:
+            result.setdefault("doc_type", v_type)
+        v_name = _extract_name(ocr_text, default_name=None)
+        if v_name:
+            result.setdefault("party", v_name)
+
+    # Extract doc_subtype from first line
+    if not result.get("doc_subtype"):
+        _TITLE_RE = re.compile(
+            r"^((?:刑事|民事|行政|消費者債務清理)?(?:[\u4e00-\u9fff]*)"
+            r"(?:狀|書|筆錄|裁定|判決|契約|收據|委任|方案|清冊|聲請|通知書|起訴書))"
+        )
+        for line in ocr_text.split("\n"):
+            line = line.strip()
+            if len(line) < 4 or len(line) > 30:
+                continue
+            if any(k in line for k in ("法院文件", "無法依", "規定投遞", "送達通知", "郵局")):
+                continue
+            tm = _TITLE_RE.search(line)
+            if tm:
+                result["doc_subtype"] = re.sub(r"\s+", "", tm.group(1))
+                break
+
+    # Extract summary
+    if not result.get("summary"):
+        result["summary"] = _extract_summary_from_ocr(ocr_text, result.get("doc_type", ""))
+
+    return result
+
+
+def _vision_analyze_for_naming(content_page) -> dict:
+    """Analyze a page using two-stage pipeline: GLM-OCR → Gemma 4.
+    For single-file mode. Batch mode uses _glm_ocr_page + _analyze_ocr_text directly.
+    """
+    if os.environ.get("MAGI_PDF_NAMER_USE_VISION", "1").strip() in {"0", "false", "no", "off"}:
+        return {}
+
+    try:
+        # Stage 1: GLM-OCR
+        ocr_text = _glm_ocr_page(content_page, dpi=200)
+        if not ocr_text:
+            logger.info("Vision OCR: no text from page.")
+            return {}
         logger.info("Vision OCR transcription (%d chars): %s", len(ocr_text), ocr_text[:200])
 
-        # ── Stage 2: Gemma 4 structured analysis ──
-        result = _gemma4_analyze_ocr_text(ocr_text, _chat_omlx)
-
-        # ── Fallback: regex extractors if Gemma 4 failed ──
-        if not result.get("court") and not result.get("case_number"):
-            v_date = _extract_any_date(ocr_text) or _extract_roc_date(ocr_text)
-            if v_date:
-                result.setdefault("date", v_date)
-            v_court = _extract_court_name(ocr_text)
-            if v_court:
-                result.setdefault("court", v_court)
-            v_case_no = _extract_case_number(ocr_text)
-            if v_case_no:
-                result.setdefault("case_number", v_case_no)
-            v_type = _extract_doc_type(ocr_text)
-            if v_type:
-                result.setdefault("doc_type", v_type)
-            v_name = _extract_name(ocr_text, default_name=None)
-            if v_name:
-                result.setdefault("party", v_name)
-
-        # Extract doc_subtype from OCR text first line (most reliable source)
-        if not result.get("doc_subtype"):
-            _TITLE_RE = re.compile(
-                r"^((?:刑事|民事|行政|消費者債務清理)?(?:[\u4e00-\u9fff]*)"
-                r"(?:狀|書|筆錄|裁定|判決|契約|收據|委任|方案|清冊|聲請|通知書|起訴書))"
-            )
-            for line in ocr_text.split("\n"):
-                line = line.strip()
-                if len(line) < 4 or len(line) > 30:
-                    continue
-                if any(k in line for k in ("法院文件", "無法依", "規定投遞", "送達通知", "郵局")):
-                    continue
-                tm = _TITLE_RE.search(line)
-                if tm:
-                    result["doc_subtype"] = re.sub(r"\s+", "", tm.group(1))
-                    break
-
-        # Extract summary from OCR text if Gemma didn't provide one
-        if not result.get("summary"):
-            result["summary"] = _extract_summary_from_ocr(ocr_text, result.get("doc_type", ""))
-
-        return result
+        # Stage 2: Analysis (Gemma 4 + regex fallback)
+        return _analyze_ocr_text(ocr_text)
 
     except Exception as e:
         logger.error("Vision naming failed: %s", e)
@@ -2113,6 +2296,145 @@ def extract_text_quick(pdf_path: str, max_pages: int = 1) -> Tuple[str, bool]:
         return text, True
     except Exception:
         return "", False
+
+def _select_pages_scored(doc) -> dict:
+    """Content-based page selection using scoring.
+    Returns {"envelope": page_or_None, "content": page, "envelope_idx": int, "content_idx": int}"""
+    if doc.page_count == 0:
+        return {"envelope": None, "content": None, "envelope_idx": -1, "content_idx": -1}
+
+    scores = []
+    _ENV_MARKERS = ["受送達人", "公文封", "公丈封", "公支封", "郵務送達", "寄存送達",
+                     "送達人住居所", "送達人居住所", "訴訟當事人注意事項", "訴訟權益"]
+    _CONTENT_MARKERS = ["案號", "被告", "原告", "主文", "主旨", "聲請人", "犯罪事實",
+                         "理由", "當事人", "上訴人", "抗告人", "裁定", "判決"]
+
+    for i in range(min(5, doc.page_count)):
+        text = doc[i].get_text() or ""
+        score = 0
+        for m in _ENV_MARKERS:
+            if m in text:
+                score -= 10
+        for m in _CONTENT_MARKERS:
+            if m in text:
+                score += 2
+        # Text density bonus
+        score += min(len(text.strip()) / 200, 3)
+        scores.append((score, i))
+
+    scores.sort(key=lambda x: x[0])
+    # Lowest score = most likely envelope, highest = most likely content
+    envelope_idx = scores[0][1] if scores[0][0] < -5 else -1
+    content_idx = scores[-1][1]
+
+    # If envelope == content, pick next best for content
+    if envelope_idx == content_idx and len(scores) > 1:
+        content_idx = scores[-2][1]
+
+    envelope = doc[envelope_idx] if envelope_idx >= 0 else None
+    content = doc[content_idx] if content_idx >= 0 else doc[0]
+
+    return {"envelope": envelope, "content": content,
+            "envelope_idx": envelope_idx, "content_idx": content_idx}
+
+
+def batch_ocr_pages(pdf_paths: list) -> dict:
+    """Phase 1: Batch OCR all pages using GLM-OCR (stays loaded throughout).
+
+    Returns {pdf_path: {"envelope_ocr": str, "content_ocr": str, "pages": dict}}
+    """
+    results = {}
+    for pdf_path in pdf_paths:
+        try:
+            doc = fitz.open(pdf_path)
+            if doc.needs_pass:
+                try:
+                    doc.authenticate("3800")
+                except Exception:
+                    pass
+
+            pages = _select_pages_scored(doc)
+            envelope_ocr = ""
+            content_ocr = ""
+
+            if pages["envelope"]:
+                envelope_ocr = _glm_ocr_page(pages["envelope"], dpi=200)
+                if envelope_ocr:
+                    logger.info("[batch-ocr] %s env(%d): %d chars",
+                                os.path.basename(pdf_path), pages["envelope_idx"], len(envelope_ocr))
+
+            if pages["content"]:
+                content_ocr = _glm_ocr_page(pages["content"], dpi=200)
+                if content_ocr:
+                    logger.info("[batch-ocr] %s content(%d): %d chars",
+                                os.path.basename(pdf_path), pages["content_idx"], len(content_ocr))
+
+            results[pdf_path] = {
+                "envelope_ocr": envelope_ocr,
+                "content_ocr": content_ocr,
+                "pages": pages,
+                "doc": doc,
+            }
+        except Exception as e:
+            logger.error("[batch-ocr] %s failed: %s", os.path.basename(pdf_path), e)
+            results[pdf_path] = {"envelope_ocr": "", "content_ocr": "", "pages": {}, "doc": None}
+
+    logger.info("[batch-ocr] Phase 1 complete: %d PDFs OCR'd", len(results))
+    return results
+
+
+def batch_analyze_texts(ocr_results: dict) -> dict:
+    """Phase 2: Batch analyze all OCR texts using Gemma 4 (stays loaded throughout).
+
+    Returns {pdf_path: {"envelope_info": dict, "content_info": dict, "merged": dict}}
+    """
+    results = {}
+    for pdf_path, ocr in ocr_results.items():
+        envelope_info = {}
+        content_info = {}
+
+        if ocr.get("envelope_ocr"):
+            envelope_info = _analyze_ocr_text(ocr["envelope_ocr"])
+            logger.info("[batch-analyze] %s envelope: %s",
+                        os.path.basename(pdf_path),
+                        {k: str(v)[:25] for k, v in envelope_info.items() if v})
+
+        if ocr.get("content_ocr"):
+            content_info = _analyze_ocr_text(ocr["content_ocr"])
+            logger.info("[batch-analyze] %s content: %s",
+                        os.path.basename(pdf_path),
+                        {k: str(v)[:25] for k, v in content_info.items() if v})
+
+        # Merge: envelope provides date/court/case_no; content provides type/party/summary
+        merged = {}
+        has_envelope = bool(ocr.get("envelope_ocr"))
+        if has_envelope:
+            for key in ("date", "court", "case_number"):
+                merged[key] = envelope_info.get(key) or content_info.get(key) or ""
+            for key in ("doc_type", "party", "doc_subtype", "summary", "case_type"):
+                merged[key] = content_info.get(key) or envelope_info.get(key) or ""
+        else:
+            # No envelope: "envelope_info" = title page, trust it for party/case_no
+            for key in ("case_number", "party", "doc_subtype"):
+                merged[key] = envelope_info.get(key) or content_info.get(key) or ""
+            for key in ("date", "court", "doc_type", "summary", "case_type"):
+                merged[key] = content_info.get(key) or envelope_info.get(key) or ""
+
+        merged = {k: v for k, v in merged.items() if v}
+        results[pdf_path] = {
+            "envelope_info": envelope_info,
+            "content_info": content_info,
+            "merged": merged,
+        }
+
+    # Cache results so generate_name_proposal() can skip its own OCR+analysis
+    global _BATCH_ANALYSIS_CACHE
+    for pdf_path, info in results.items():
+        _BATCH_ANALYSIS_CACHE[pdf_path] = info
+
+    logger.info("[batch-analyze] Phase 2 complete: %d PDFs analyzed and cached", len(results))
+    return results
+
 
 def task_analyze(pdf_path: str) -> str:
     """Analyze PDF and return JSON string for smart_filer.

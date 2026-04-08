@@ -694,7 +694,12 @@ def _process_single_pdf(
 def process_scan_folder(dry_run: bool = True, notify: bool = True, max_workers: Optional[int] = None) -> Dict:
     """
     Main entry: process all PDFs in 01_掃描檔放置區.
-    
+
+    Uses batch architecture to minimize model switching:
+      Phase 1: GLM-OCR batch — OCR all pages (model loaded once)
+      Phase 2: Gemma 4 batch — analyze all OCR texts (model loaded once)
+      Phase 3: Filing — match to cases and file
+
     Returns a filing report with results for each file.
     """
     from action import task_analyze, extract_text
@@ -751,44 +756,26 @@ def process_scan_folder(dry_run: bool = True, notify: bool = True, max_workers: 
     # Build case index
     case_index = build_case_index()
 
-    env_workers = int(os.environ.get("MAGI_PDF_NAMER_FILE_WORKERS", "0") or "0")
-    if max_workers is None:
-        # Default to 1 worker: GLM-OCR vision model can only handle 1 request
-        # at a time; parallel workers cause cascading timeouts.
-        max_workers = env_workers if env_workers > 0 else 1
-    worker_count = max(1, min(int(max_workers), 5, len(pdfs)))
-    report["workers"] = worker_count
-    logger.info(f"🧵 pdf-namer worker_count={worker_count}")
+    logger.info(f"🧵 pdf-namer batch mode (GLM-OCR → Gemma 4)")
 
+    # ── Batch Phase 1: OCR all pages with GLM-OCR (model loaded once) ──
+    from action import batch_ocr_pages, batch_analyze_texts
+    pdf_paths = [os.path.join(SCAN_INBOX, f) for f in pdfs]
+    ocr_results = batch_ocr_pages(pdf_paths)
+
+    # ── Batch Phase 2: Analyze all OCR texts with Gemma 4 (model loaded once) ──
+    analysis_results = batch_analyze_texts(ocr_results)
+
+    # ── Phase 3: Filing — use pre-computed analysis for each PDF ──
     ordered_results: Dict[int, Tuple[str, Dict]] = {}
-    if worker_count <= 1:
-        for idx, fname in enumerate(pdfs):
-            ordered_results[idx] = _process_single_pdf(
-                fname,
-                dry_run=dry_run,
-                case_index=case_index,
-                task_analyze_fn=task_analyze,
-                extract_text_fn=extract_text,
-            )
-    else:
-        with ThreadPoolExecutor(max_workers=worker_count) as pool:
-            futures = {
-                pool.submit(
-                    _process_single_pdf,
-                    fname,
-                    dry_run=dry_run,
-                    case_index=case_index,
-                    task_analyze_fn=task_analyze,
-                    extract_text_fn=extract_text,
-                ): idx
-                for idx, fname in enumerate(pdfs)
-            }
-            for fut in as_completed(futures):
-                idx = futures[fut]
-                try:
-                    ordered_results[idx] = fut.result()
-                except Exception as e:
-                    ordered_results[idx] = ("skipped", {"original": pdfs[idx], "error": str(e)})
+    for idx, fname in enumerate(pdfs):
+        ordered_results[idx] = _process_single_pdf(
+            fname,
+            dry_run=dry_run,
+            case_index=case_index,
+            task_analyze_fn=task_analyze,
+            extract_text_fn=extract_text,
+        )
 
     for idx in sorted(ordered_results):
         bucket, record = ordered_results[idx]
