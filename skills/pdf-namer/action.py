@@ -1898,12 +1898,20 @@ def _glm_ocr_page(page, dpi: int = 200) -> str:
         from skills.bridge.melchior_client import (
             OMLX_VISION_BASE, _OMLX_VISION_CIRCUIT, _OMLX_VISION_LOCK,
         )
-        r = _chat_omlx(
-            prompt=prompt, model=vision_model,
-            base_url=OMLX_VISION_BASE,
-            timeout=90, temperature=0.0, max_tokens=2048, images=[b64],
-            circuit=_OMLX_VISION_CIRCUIT, lock=_OMLX_VISION_LOCK,
-        )
+        # Retry once on failure (model loading delay causes first request to fail)
+        for _attempt in range(2):
+            r = _chat_omlx(
+                prompt=prompt, model=vision_model,
+                base_url=OMLX_VISION_BASE,
+                timeout=90, temperature=0.0, max_tokens=2048, images=[b64],
+                circuit=_OMLX_VISION_CIRCUIT, lock=_OMLX_VISION_LOCK,
+            )
+            if r.get("success") and r.get("response"):
+                break
+            if _attempt == 0:
+                import time
+                logger.info("GLM-OCR: retrying after model load delay...")
+                time.sleep(8)  # Wait for LRU model swap
         if not (r.get("success") and r.get("response")):
             return ""
         ocr_text = (r.get("response") or "").strip()
@@ -2378,6 +2386,25 @@ def batch_ocr_pages(pdf_paths: list) -> dict:
         except Exception as e:
             logger.error("[batch-ocr] %s failed: %s", os.path.basename(pdf_path), e)
             results[pdf_path] = {"envelope_ocr": "", "content_ocr": "", "pages": {}, "doc": None}
+
+    # Retry pass: re-OCR pages that returned empty (model swap may have caused timeout)
+    retry_needed = [(p, r) for p, r in results.items()
+                    if not r.get("envelope_ocr") and not r.get("content_ocr") and r.get("pages")]
+    if retry_needed:
+        logger.info("[batch-ocr] Retrying %d PDFs with empty OCR results...", len(retry_needed))
+        import time
+        time.sleep(5)  # Allow model to stabilize
+        for pdf_path, r in retry_needed:
+            pages = r["pages"]
+            if pages.get("content"):
+                content_ocr = _glm_ocr_page(pages["content"], dpi=200)
+                if content_ocr:
+                    r["content_ocr"] = content_ocr
+                    logger.info("[batch-ocr-retry] %s content: %d chars", os.path.basename(pdf_path), len(content_ocr))
+            if pages.get("envelope"):
+                envelope_ocr = _glm_ocr_page(pages["envelope"], dpi=200)
+                if envelope_ocr:
+                    r["envelope_ocr"] = envelope_ocr
 
     logger.info("[batch-ocr] Phase 1 complete: %d PDFs OCR'd", len(results))
     return results

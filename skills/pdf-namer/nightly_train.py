@@ -445,9 +445,30 @@ def run_training(
         except Exception as e:
             logger.warning("DB 同步失敗: %s", e)
 
+        # Step 4b: Auto-adjust filing confidence threshold based on accuracy
+        # Closed feedback loop: if accuracy improves → lower threshold (more auto-filing)
+        # If accuracy drops → raise threshold (more manual review)
+        try:
+            _auto_adjust_filing_threshold(report)
+        except Exception as e:
+            logger.warning("門檻自動調整失敗: %s", e)
+
     # Step 5: Send Discord notification
     if not report_only:
         _notify_discord(report)
+
+    # Step 4c: Log what nightly_train produces vs what naming pipeline actually uses
+    # This helps diagnose the feedback loop disconnect
+    report["feedback_loop_status"] = {
+        "learned_rules_path": os.path.join(SKILL_DIR, "_learned_filename_rules.json"),
+        "learned_rules_exist": os.path.exists(os.path.join(SKILL_DIR, "_learned_filename_rules.json")),
+        "corrections_path": os.path.join(SKILL_DIR, "_corrections.json"),
+        "corrections_exist": os.path.exists(os.path.join(SKILL_DIR, "_corrections.json")),
+        "db_rules_cache_path": os.path.join(SKILL_DIR, "db_rules_cache.json"),
+        "db_rules_cache_exist": os.path.exists(os.path.join(SKILL_DIR, "db_rules_cache.json")),
+        "pipeline_uses_learned_rules": True,  # Connected in Phase 1A
+        "pipeline_uses_db_templates": True,   # Connected in Phase 1B
+    }
 
     # Save report
     try:
@@ -458,6 +479,80 @@ def run_training(
         logger.warning("報告儲存失敗: %s", e)
 
     return report
+
+
+_THRESHOLD_STATE_PATH = os.path.join(SKILL_DIR, "_threshold_state.json")
+
+
+def _auto_adjust_filing_threshold(report: dict):
+    """Closed feedback loop: adjust FILING_CONFIDENCE_THRESHOLD based on nightly accuracy.
+
+    Rules:
+    - date_accuracy >= 80% AND party_accuracy >= 60%: lower threshold by 0.01 (min 0.78)
+    - date_accuracy < 50% OR party_accuracy < 30%: raise threshold by 0.02 (max 0.92)
+    - Otherwise: no change
+    """
+    metrics = report.get("metrics", {})
+    date_acc = metrics.get("date_accuracy_pct", 0)
+    party_acc = metrics.get("party_accuracy_pct", 0)
+    total = metrics.get("date_total", 0)
+
+    if total < 5:
+        logger.info("門檻調整: 樣本數不足 (%d < 5), 跳過", total)
+        return
+
+    # Load current state
+    state = {}
+    if os.path.exists(_THRESHOLD_STATE_PATH):
+        try:
+            state = json.loads(Path(_THRESHOLD_STATE_PATH).read_text(encoding="utf-8") or "{}")
+        except Exception:
+            pass
+
+    current = float(state.get("threshold", 0.82))
+    new_threshold = current
+
+    if date_acc >= 80 and party_acc >= 60:
+        new_threshold = max(0.78, current - 0.01)
+        reason = f"accuracy good (date={date_acc}% party={party_acc}%): lower"
+    elif date_acc < 50 or party_acc < 30:
+        new_threshold = min(0.92, current + 0.02)
+        reason = f"accuracy poor (date={date_acc}% party={party_acc}%): raise"
+    else:
+        reason = f"accuracy moderate (date={date_acc}% party={party_acc}%): hold"
+
+    logger.info("門檻調整: %.2f → %.2f (%s)", current, new_threshold, reason)
+
+    state["threshold"] = round(new_threshold, 3)
+    state["last_adjusted"] = datetime.now().isoformat()
+    state["reason"] = reason
+    state["date_accuracy"] = date_acc
+    state["party_accuracy"] = party_acc
+    state["history"] = (state.get("history") or [])[-19:]  # Keep last 20
+    state["history"].append({
+        "date": datetime.now().strftime("%Y-%m-%d"),
+        "threshold": state["threshold"],
+        "date_acc": date_acc,
+        "party_acc": party_acc,
+    })
+
+    Path(_THRESHOLD_STATE_PATH).write_text(
+        json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+
+    # Also update smart_filer at runtime (if imported)
+    try:
+        import smart_filer
+        smart_filer.FILING_CONFIDENCE_THRESHOLD = new_threshold
+        logger.info("smart_filer.FILING_CONFIDENCE_THRESHOLD 已更新為 %.3f", new_threshold)
+    except Exception:
+        pass
+
+    report["threshold_adjustment"] = {
+        "previous": current,
+        "new": new_threshold,
+        "reason": reason,
+    }
 
 
 def _notify_discord(report: dict):

@@ -62,7 +62,16 @@ INDEX_PATH = os.path.join(SKILL_DIR, "_case_index.json")
 FILING_LOG_PATH = os.path.join(SKILL_DIR, "_filing_log.json")
 
 # Filing confidence threshold — anything below goes to failure zone
-FILING_CONFIDENCE_THRESHOLD = 0.82  # Lowered from 0.88: learned rules + vision improve matching
+# Load threshold from nightly training auto-adjustment (closed feedback loop)
+_THRESHOLD_STATE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_threshold_state.json")
+FILING_CONFIDENCE_THRESHOLD = 0.82  # Default; overridden by nightly training state
+try:
+    import json as _json_t
+    _ts = _json_t.loads(open(_THRESHOLD_STATE_PATH, encoding="utf-8").read() or "{}")
+    if _ts.get("threshold"):
+        FILING_CONFIDENCE_THRESHOLD = float(_ts["threshold"])
+except Exception:
+    pass
 
 OSC_ORCH_PATH = f"{_MAGI_ROOT}/skills/osc-orchestrator/action.py"
 OSC_ORCH_PY = os.environ.get("MAGI_SKILL_PYTHON", f"{_MAGI_ROOT}/venv/bin/python3")
