@@ -2688,13 +2688,15 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                         elif cname and (cname in d):
                             score += 2
                         if score <= 0 and laf_no:
-                            # filename fallback (best-effort)
+                            # Shallow filename check (top-level + 01_法扶資料 only)
+                            # Avoid os.walk — NAS directories with many files cause I/O hang.
                             try:
                                 found = False
-                                for _b, _dirs, files in os.walk(case_path):
-                                    if any(laf_no in f for f in files):
-                                        found = True
-                                        break
+                                for _check_dir in [case_path, os.path.join(case_path, "01_法扶資料")]:
+                                    if os.path.isdir(_check_dir):
+                                        if any(laf_no in f for f in os.listdir(_check_dir)):
+                                            found = True
+                                            break
                                 if found:
                                     score += 1
                             except Exception:
@@ -3160,33 +3162,66 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         if not root or (not os.path.isdir(root)):
             return out
 
+        # Only scan known sub-directories (shallow), NOT os.walk the entire tree.
+        # This avoids NAS I/O hang on folders with many files (e.g. 專員來信).
+        _SCAN_SUBDIRS = [
+            "",                  # root level
+            "01_法扶資料",
+            "02_開辦資料",
+            "03_對造資料",
+            "04_我方歷次書狀",
+            "05_證據資料",
+            "06_法院函文",
+            "07_對造書狀",
+            "11_回執",
+        ]
         allowed = {".pdf", ".jpg", ".jpeg", ".png", ".tif", ".tiff", ".webp"}
-        for base, _dirs, files in os.walk(root):
-            for fn in files:
+
+        for subdir in _SCAN_SUBDIRS:
+            scan_path = os.path.join(root, subdir) if subdir else root
+            if not os.path.isdir(scan_path):
+                continue
+            try:
+                entries = os.listdir(scan_path)
+            except OSError:
+                continue
+            for fn in entries:
                 ext = Path(fn).suffix.lower()
                 if ext not in allowed:
+                    # Check one level deeper for dated sub-folders (e.g. "20260320 聲請狀/")
+                    sub_sub = os.path.join(scan_path, fn)
+                    if os.path.isdir(sub_sub):
+                        try:
+                            for fn2 in os.listdir(sub_sub):
+                                if Path(fn2).suffix.lower() in allowed:
+                                    self._classify_doc_file(fn2, os.path.join(sub_sub, fn2), out)
+                        except OSError:
+                            pass
                     continue
-                full = os.path.join(base, fn)
-                low = fn.lower()
-
-                if any(k in fn for k in ("開辦通知書", "接案通知書", "准予扶助證明書")):
-                    out["opening_notice_files"].append(full)
-                if "委任狀" in fn:
-                    out["poa_files"].append(full)
-                if any(k in fn for k in ("調解不成立證明書", "調解不成立")):
-                    out["mediation_failure_files"].append(full)
-                # 調解/和解成立證明（排除「不成立」）
-                if any(k in fn for k in ("調解筆錄", "調解成立", "和解筆錄", "和解成立", "調解書")):
-                    if "不成立" not in fn:
-                        out["mediation_success_files"].append(full)
-                if ("收據" in fn) or ("裁判費" in fn) or ("粉紅" in fn) or ("pink" in low):
-                    out["pink_receipt_files"].append(full)
-                if "回執" in fn or "收件回執" in fn:
-                    out.setdefault("receipt_files", []).append(full)
+                full = os.path.join(scan_path, fn)
+                self._classify_doc_file(fn, full, out)
 
         for k in out:
             out[k] = sorted(out[k])
         return out
+
+    @staticmethod
+    def _classify_doc_file(fn: str, full_path: str, out: dict) -> None:
+        """Classify a single document file into the appropriate category."""
+        if any(k in fn for k in ("開辦通知書", "接案通知書", "准予扶助證明書")):
+            out["opening_notice_files"].append(full_path)
+        if "委任狀" in fn:
+            out["poa_files"].append(full_path)
+        if any(k in fn for k in ("調解不成立證明書", "調解不成立")):
+            out["mediation_failure_files"].append(full_path)
+        if any(k in fn for k in ("調解筆錄", "調解成立", "和解筆錄", "和解成立", "調解書")):
+            if "不成立" not in fn:
+                out["mediation_success_files"].append(full_path)
+        low = fn.lower()
+        if ("收據" in fn) or ("裁判費" in fn) or ("粉紅" in fn) or ("pink" in low):
+            out["pink_receipt_files"].append(full_path)
+        if "回執" in fn or "收件回執" in fn:
+            out.setdefault("receipt_files", []).append(full_path)
 
     @staticmethod
     def _find_first_existing(paths: List[str]) -> str:
