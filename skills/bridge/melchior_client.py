@@ -42,7 +42,10 @@ OMLX_EMBED_HOST = os.environ.get("MAGI_OMLX_EMBED_HOST", OMLX_CHAT_HOST)
 OMLX_EMBED_PORT = int(os.environ.get("MAGI_OMLX_EMBED_PORT", "8081"))
 OMLX_EMBED_BASE = (os.environ.get("MAGI_OMLX_EMBED_URL") or f"http://{OMLX_EMBED_HOST}:{OMLX_EMBED_PORT}").rstrip("/")
 OMLX_VISION_HOST = os.environ.get("MAGI_OMLX_VISION_HOST", OMLX_CHAT_HOST)
-OMLX_VISION_PORT = int(os.environ.get("MAGI_OMLX_VISION_PORT", "8082"))
+# Unified server: GLM-OCR + Gemma 4 share one oMLX instance (port 8080)
+# with LRU memory management — only one model loaded at a time.
+# Legacy port 8082 kept as fallback via MAGI_OMLX_VISION_PORT env var.
+OMLX_VISION_PORT = int(os.environ.get("MAGI_OMLX_VISION_PORT", str(OMLX_CHAT_PORT)))
 OMLX_VISION_BASE = (os.environ.get("MAGI_OMLX_VISION_URL") or f"http://{OMLX_VISION_HOST}:{OMLX_VISION_PORT}").rstrip("/")
 OMLX_HOST = OMLX_CHAT_HOST
 OMLX_PORT = OMLX_CHAT_PORT

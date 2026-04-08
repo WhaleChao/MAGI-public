@@ -1233,13 +1233,9 @@ def generate_name_proposal(pdf_path: str, case_name: str = None, return_structur
         content_text = text
         break
 
-    # For no-envelope docs, prefer page 0 for vision when content_text is empty
-    # (page 0 = document title/header, most important for naming)
-    if _vision_primary_page is not None and not content_text.strip() and content_page != _vision_primary_page:
-        content_page = _vision_primary_page
-        content_text = ""
-        content_text_native = ""
-        logger.info("Overriding content page to page 0 (no-envelope doc, primary for vision)")
+    # For no-envelope docs: page 0 is always scanned as "title page" in
+    # _run_envelope_vision regardless of content_page selection.
+    # This ensures doc title/case_no/party come from page 0 header.
 
     # If no content page found yet and we have an envelope, page 0 IS the content
     if content_page is None and envelope_page is None and doc.page_count > 0:
@@ -1796,6 +1792,23 @@ def _vision_analyze_for_naming(content_page) -> dict:
             v_name = _extract_name(ocr_text, default_name=None)
             if v_name:
                 result.setdefault("party", v_name)
+
+        # Extract doc_subtype from OCR text first line (most reliable source)
+        if not result.get("doc_subtype"):
+            _TITLE_RE = re.compile(
+                r"^((?:刑事|民事|行政|消費者債務清理)?(?:[\u4e00-\u9fff]*)"
+                r"(?:狀|書|筆錄|裁定|判決|契約|收據|委任|方案|清冊|聲請|通知書|起訴書))"
+            )
+            for line in ocr_text.split("\n"):
+                line = line.strip()
+                if len(line) < 4 or len(line) > 30:
+                    continue
+                if any(k in line for k in ("法院文件", "無法依", "規定投遞", "送達通知", "郵局")):
+                    continue
+                tm = _TITLE_RE.search(line)
+                if tm:
+                    result["doc_subtype"] = re.sub(r"\s+", "", tm.group(1))
+                    break
 
         # Extract summary from OCR text if Gemma didn't provide one
         if not result.get("summary"):
