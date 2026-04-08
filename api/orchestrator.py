@@ -195,21 +195,17 @@ from api.pipelines import chat_pipeline as _chat_pipeline
 from api.pipelines import attachment_pipeline as _attachment_pipeline
 
 # Configure Logging
-log_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+# Use a dedicated "Orchestrator" logger with its own file handler for casper.log.
+# Do NOT add handlers to the root logger — server.py owns root logging config.
 from logging.handlers import RotatingFileHandler as _RotatingFileHandler
-file_handler = _RotatingFileHandler(f'{_MAGI_ROOT}/casper.log', maxBytes=5*1024*1024, backupCount=3)
-file_handler.setFormatter(log_formatter)
-console_handler = logging.StreamHandler()
-console_handler.setFormatter(log_formatter)
-
-# Only configure if root logger has no handlers yet (avoid duplicating
-# handlers when imported by server.py which sets up its own root handlers).
-if not logging.getLogger().handlers:
-    logging.basicConfig(level=logging.INFO, handlers=[file_handler, console_handler])
-else:
-    # Still add file handler for casper.log, but skip console (already exists)
-    logging.getLogger().addHandler(file_handler)
+_orch_log_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("Orchestrator")
+if not logger.handlers:
+    _orch_file_handler = _RotatingFileHandler(f'{_MAGI_ROOT}/casper.log', maxBytes=5*1024*1024, backupCount=3)
+    _orch_file_handler.setFormatter(_orch_log_formatter)
+    logger.addHandler(_orch_file_handler)
+    logger.setLevel(logging.INFO)
+    logger.propagate = True  # Also propagate to root for server.log aggregation
 
 from api.command_registry import CommandRegistry, CommandContext
 # Global command registry — commands registered below after class definition

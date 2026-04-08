@@ -54,6 +54,7 @@ except ImportError:
 os.environ.setdefault("MAGI_MYSQL_USE_PURE", "1")
 os.environ.setdefault("MYSQL_USE_PURE", "1")
 os.environ.setdefault("MAGI_AVOID_DISTRIBUTED", "1")
+os.environ["MAGI_DAEMON"] = "1"  # Signal to child processes (server.py) to skip console StreamHandler
 
 # Configure Logging with RotatingFileHandler
 from logging.handlers import RotatingFileHandler as _RotatingFileHandler
@@ -62,9 +63,15 @@ os.makedirs(os.path.dirname(_daemon_log_path), exist_ok=True)
 _log_fmt = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 _file_handler = _RotatingFileHandler(_daemon_log_path, maxBytes=5*1024*1024, backupCount=3)
 _file_handler.setFormatter(_log_fmt)
-_console_handler = logging.StreamHandler()
-_console_handler.setFormatter(_log_fmt)
-logging.basicConfig(level=logging.INFO, handlers=[_file_handler, _console_handler])
+# Under launchd, stderr is captured to /tmp/magi-daemon.log — adding a StreamHandler
+# would duplicate every line (once via handler, once via launchd stderr capture).
+# Only add console handler for interactive debugging.
+_daemon_handlers = [_file_handler]
+if sys.stderr.isatty():
+    _console_handler = logging.StreamHandler()
+    _console_handler.setFormatter(_log_fmt)
+    _daemon_handlers.append(_console_handler)
+logging.basicConfig(level=logging.INFO, handlers=_daemon_handlers)
 logger = logging.getLogger("Daemon")
 
 # Processes

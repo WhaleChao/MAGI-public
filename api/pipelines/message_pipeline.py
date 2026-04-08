@@ -2047,7 +2047,7 @@ def process_message_inner(orch, user_id, message, platform="LINE", role="user", 
                         response = orch._handle_query(user_id, message, platform_hint=platform)
             except Exception as _sr_err:
                 logger.debug(f"SemanticRouter error: {_sr_err}")
-            # Fix #1: Log when CMD falls through all routers
+            # Fix #1: When CMD falls through all routers, fall back to LLM chat with prefix
             if not response:
                 logger.warning(f"⚠️ CMD fell through all routers: '{message[:80]}' → defaulting to LLM chat")
                 orch._append_route_trace(
@@ -2055,6 +2055,11 @@ def process_message_inner(orch, user_id, message, platform="LINE", role="user", 
                     "cmd_fallthrough", "llm_chat",
                     {"message_preview": message[:60]},
                 )
+                _chat_fallback = orch._handle_chat_async(user_id, message, platform_hint=platform)
+                if _chat_fallback:
+                    response = f"⚠️ 找不到對應的指令，以對話方式回覆：\n\n{_chat_fallback}"
+                else:
+                    response = "⚠️ 找不到對應的指令，也無法產生回覆。請嘗試用 /help 查看可用指令。"
     elif not _embed_dispatched and intent == "QUERY":
         # 6b. Before pure QUERY, check if semantic router suggests a concrete skill action
         _sr_fired = False

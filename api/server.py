@@ -101,13 +101,27 @@ _SERVER_STARTUP_HOOKS_DISABLED = (
     in {"1", "true", "yes", "on"}
 )
 
+# Clear pre-existing root handlers to prevent duplication when imported
+# by daemon.py (which sets up its own handlers on the root logger).
+# server.py owns the root logging config for the server process.
+for _h in _root.handlers[:]:
+    _root.removeHandler(_h)
+    try:
+        _h.close()
+    except Exception:
+        pass
+
 _file = RotatingFileHandler(
     _server_log_path, maxBytes=2 * 1024 * 1024, backupCount=5, encoding="utf-8",
 )
 _file.setFormatter(JSONFormatter())
 _root.addHandler(_file)
 
-if not _SERVER_STARTUP_HOOKS_DISABLED:
+# Only add a console (stderr) StreamHandler when NOT running under launchd/daemon,
+# since launchd already captures stderr to a log file — adding a StreamHandler
+# would cause every line to appear twice (once via handler, once via launchd capture).
+_RUNNING_UNDER_DAEMON = os.environ.get("MAGI_DAEMON", "").strip().lower() in {"1", "true", "yes"}
+if not _SERVER_STARTUP_HOOKS_DISABLED and not _RUNNING_UNDER_DAEMON:
     _console = logging.StreamHandler()
     _console.setFormatter(HybridFormatter())
     _root.addHandler(_console)

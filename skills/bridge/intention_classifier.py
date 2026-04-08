@@ -194,11 +194,11 @@ class IntentionClassifier:
             return "CMD"
         if self._RE_CN_RESEARCH.search(text):
             return "CMD"
+        if self._RE_LEGAL_OPS.search(text):
+            return "CMD"
         if self._RE_HELP_CMD.search(text):
             if self._RE_QUESTION_END.search(text.strip()):
                 return "QUERY"
-            return "CMD"
-        if self._RE_LEGAL_OPS.search(text):
             return "CMD"
         if self._RE_MODEL_Q.search(text):
             return "QUERY"
@@ -483,6 +483,16 @@ class IntentionClassifier:
         logger.error(f"❌ Classification Failed: oMLX and InferenceGateway both unavailable")
         self._last_llm_error = "all_routes_failed"
         self._llm_cooldown_until = time.monotonic() + LLM_COOLDOWN_SEC
+        # Emit admin warning so the operator knows LLM classifier is down
+        try:
+            from line_notifier import LAFNotifier
+            LAFNotifier().notify_admin(
+                f"⚠️ Intent Classifier 降級警報：oMLX 及 InferenceGateway 均無回應，"
+                f"已進入 {LLM_COOLDOWN_SEC}s cooldown，期間使用 heuristic 分類。",
+                topic_key="system_health", source="intent_classifier",
+            )
+        except Exception:
+            pass
         return ""
 
 

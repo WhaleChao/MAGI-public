@@ -3021,7 +3021,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
 
         # 根據文件來源生成不同措辭
         if doc_type == "回執":
-            return f"已於民國{date_roc}以掛號郵寄相關書狀，詳見附件回執。"
+            return f"已於民國{date_roc}以掛號郵寄委任狀，詳見附件回執。"
         elif doc_type == "書狀":
             src_file = os.path.basename(submission_info.get("source_file", ""))
             return f"已於民國{date_roc}遞送書狀至法院。"
