@@ -202,7 +202,13 @@ file_handler.setFormatter(log_formatter)
 console_handler = logging.StreamHandler()
 console_handler.setFormatter(log_formatter)
 
-logging.basicConfig(level=logging.INFO, handlers=[file_handler, console_handler])
+# Only configure if root logger has no handlers yet (avoid duplicating
+# handlers when imported by server.py which sets up its own root handlers).
+if not logging.getLogger().handlers:
+    logging.basicConfig(level=logging.INFO, handlers=[file_handler, console_handler])
+else:
+    # Still add file handler for casper.log, but skip console (already exists)
+    logging.getLogger().addHandler(file_handler)
 logger = logging.getLogger("Orchestrator")
 
 from api.command_registry import CommandRegistry, CommandContext

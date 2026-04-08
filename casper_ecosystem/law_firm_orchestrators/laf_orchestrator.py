@@ -995,6 +995,10 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
             # Default: treat as new case dispatch
             self.handle_go_live(case_info)
 
+    # In-memory dedup for go_live to prevent duplicate notifications when
+    # multiple emails arrive for the same case (e.g., 派案通知 + 附加檔案).
+    _go_live_dedup: set = set()
+
     def handle_go_live(self, case_info):
         """
         開辦 flow:
@@ -1008,6 +1012,13 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         case_type = getattr(case_info, 'case_type', '')
         case_reason = getattr(case_info, 'case_reason', '')
         laf_number = getattr(case_info, 'laf_case_number', '')
+
+        # Dedup: skip if same laf_number already processed in this session
+        if laf_number and laf_number in self._go_live_dedup:
+            logger.info("⏭️ Go-Live dedup: %s (%s) already processed this session", client_name, laf_number)
+            return
+        if laf_number:
+            self._go_live_dedup.add(laf_number)
 
         logger.info("🏁 Go-Live: %s (%s)", client_name, laf_number)
         _eventlog(
