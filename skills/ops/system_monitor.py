@@ -155,18 +155,15 @@ def check_service_health():
         except Exception as e:
             report += f"⚠️ {name}: 無法檢測 ({e})\n"
 
-    # --- GLM-OCR Vision Server (port 8082) ---
+    # --- OCR Engine (macOS Vision — GLM-OCR retired) ---
     try:
-        import requests as _req
-        _vision_port = os.environ.get("MAGI_OMLX_VISION_PORT", "8082")
-        _vr = _req.get(f"http://127.0.0.1:{_vision_port}/v1/models", timeout=3)
-        if _vr.status_code == 200:
-            _models = [m.get("id", "?") for m in _vr.json().get("data", [])]
-            report += f"✅ GLM-OCR Vision Server (:{_vision_port}): 運行中 — {', '.join(_models)}\n"
+        from skills.apple.apple_intelligence import VISION_AVAILABLE
+        if VISION_AVAILABLE:
+            report += "✅ OCR 引擎: macOS Vision Framework（零 GPU、零額外記憶體）\n"
         else:
-            report += f"❌ GLM-OCR Vision Server (:{_vision_port}): HTTP {_vr.status_code}\n"
+            report += "⚠️ OCR 引擎: macOS Vision 不可用（PyObjC 未安裝）\n"
     except Exception:
-        report += f"❌ GLM-OCR Vision Server (:{_vision_port}): 未運行\n"
+        report += "⚠️ OCR 引擎: macOS Vision 無法載入\n"
 
     return report.strip()
 

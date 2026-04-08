@@ -243,8 +243,18 @@ def ensure_nas_mounts() -> dict[str, bool]:
 
         if ok:
             logger.info("NAS share 掛載成功: %s", volume_path)
+            try:
+                from skills.ops.macos_notify import notify_nas_status
+                notify_nas_status(connected=True, share_name=short_name)
+            except Exception:
+                pass
         else:
             logger.error("NAS share 掛載失敗: %s", volume_path)
+            try:
+                from skills.ops.macos_notify import notify_nas_status
+                notify_nas_status(connected=False, share_name=short_name)
+            except Exception:
+                pass
 
     return results
 

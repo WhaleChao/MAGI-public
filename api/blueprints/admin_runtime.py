@@ -81,15 +81,14 @@ def create_admin_runtime_blueprint(
             return {"status": "error", "detail": "unreachable"}
 
         def _glm_ocr():
+            # GLM-OCR retired — report macOS Vision OCR status instead
             try:
-                _vision_url = os.environ.get("MAGI_OMLX_VISION_URL", "http://127.0.0.1:8082")
-                response = _rq.get(f"{_vision_url.rstrip('/')}/v1/models", timeout=3)
-                if response.status_code == 200:
-                    models = [item.get("id", "?") for item in (response.json().get("data") or [])]
-                    return {"status": "online", "models": models, "count": len(models), "port": 8082}
+                from skills.apple.apple_intelligence import VISION_AVAILABLE
+                if VISION_AVAILABLE:
+                    return {"status": "online", "engine": "macOS Vision", "models": ["VNRecognizeTextRequest"], "count": 1}
             except Exception:
-                logger.debug("silent-catch in nerv_api_health glm_ocr", exc_info=True)
-            return {"status": "error", "detail": "vision server unreachable (port 8082)"}
+                pass
+            return {"status": "offline", "detail": "macOS Vision OCR unavailable (GLM-OCR retired)"}
 
         def _ollama():
             try:
@@ -593,13 +592,12 @@ def create_admin_runtime_blueprint(
         except Exception:
             checks["omlx"] = {"ok": False}
 
+        # GLM-OCR retired — check macOS Vision OCR availability instead
         try:
-            _vision_url = os.environ.get("MAGI_OMLX_VISION_URL", "http://127.0.0.1:8082")
-            vr = sess.get(f"{_vision_url.rstrip('/')}/v1/models", timeout=3)
-            vmodels = [item.get("id", "") for item in (vr.json() or {}).get("data", [])]
-            checks["glm_ocr"] = {"ok": vr.status_code == 200, "models": vmodels, "port": 8082}
+            from skills.apple.apple_intelligence import VISION_AVAILABLE
+            checks["ocr"] = {"ok": VISION_AVAILABLE, "engine": "macOS Vision", "note": "GLM-OCR retired"}
         except Exception:
-            checks["glm_ocr"] = {"ok": False, "port": 8082}
+            checks["ocr"] = {"ok": False, "engine": "macOS Vision", "note": "import failed"}
 
         conn = None
         try:

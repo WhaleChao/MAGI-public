@@ -389,14 +389,11 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
         models = rt.get("models") if isinstance(rt.get("models"), list) else []
         if models:
             model_line = f"目前主要模型：`{models[0]}`"
-        # Check GLM-OCR vision model
+        # OCR engine status (macOS Vision — GLM-OCR retired)
         try:
-            from skills.bridge.http_pool import get_session as _gs
-            _vr = _gs().get("http://127.0.0.1:8082/v1/models", timeout=2)
-            if _vr.status_code == 200:
-                _vm = [m.get("id", "?") for m in (_vr.json().get("data") or [])]
-                if _vm:
-                    model_line += f"\n視覺模型：`{_vm[0]}`"
+            from skills.apple.apple_intelligence import VISION_AVAILABLE
+            if VISION_AVAILABLE:
+                model_line += "\nOCR 引擎：`macOS Vision`（零 GPU）"
         except Exception:
             pass
         gpu_line = ""

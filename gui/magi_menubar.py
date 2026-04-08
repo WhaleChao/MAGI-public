@@ -53,7 +53,6 @@ SERVICES = [
 OMLX_ENGINES = [
     ("文字推理", int(os.environ.get("MAGI_OMLX_PORT", "8080"))),
     ("向量嵌入", 8081),
-    ("視覺OCR", int(os.environ.get("MAGI_OMLX_VISION_PORT", "8082"))),
 ]
 
 # 遠端節點定義（名稱, registry key, 角色, 檢測 port, 檢測類型）
@@ -194,7 +193,6 @@ _MEM_MODULES = [
     ("Tools API",     "api/tools_api.py"),
     ("oMLX Text",     "omlx serve.*--port 8080"),
     ("oMLX Embed",    "omlx serve.*--port 8081"),
-    ("oMLX Vision",   "omlx serve.*--port 8082"),
     ("FAISS Rebuild", "MEMORY_ENABLE_FAISS"),
     ("File Review",   "file_review_auto_worker\\.py|file-review-orchestrator/action\\.py"),
     ("LAF Orch",      "laf_orchestrator\\.py|laf-portal-automation/action\\.py"),
@@ -344,6 +342,9 @@ class MAGIMenuBar(rumps.App):
             item = rumps.MenuItem(f"  ◻ {name}")
             item.set_callback(None)
             self.omlx_items[name] = item
+        # macOS Vision OCR (non-port-based, always-on if PyObjC installed)
+        self.ocr_item = rumps.MenuItem("  ◻ OCR引擎")
+        self.ocr_item.set_callback(None)
 
         # ── 遠端節點 ──
         self.nodes_header = rumps.MenuItem("── 遠端節點 ──", callback=None)
@@ -405,6 +406,7 @@ class MAGIMenuBar(rumps.App):
             # ── 推理引擎 ──
             self.omlx_header,
             *self.omlx_items.values(),
+            self.ocr_item,
             rumps.separator,
             # ── 排程 ──
             self.cron_header,
@@ -607,6 +609,15 @@ class MAGIMenuBar(rumps.App):
                 omlx_up += 1
             else:
                 _set_colored_title(self.omlx_items[name], f"  ✗ {name}  離線", _RED)
+        # macOS Vision OCR status
+        try:
+            from skills.apple.apple_intelligence import VISION_AVAILABLE
+            if VISION_AVAILABLE:
+                _set_colored_title(self.ocr_item, "  ● OCR引擎  macOS Vision", _GREEN)
+            else:
+                _set_colored_title(self.ocr_item, "  ✗ OCR引擎  未安裝", _GRAY)
+        except Exception:
+            _set_colored_title(self.ocr_item, "  ✗ OCR引擎  未安裝", _GRAY)
 
         # ── 遠端節點 ──
         nodes_up = 0
