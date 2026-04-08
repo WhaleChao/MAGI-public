@@ -3662,7 +3662,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                 }
             fields.setdefault("sel_result", "1")
             # 生成自然語言 remark — 與 email 自動流程使用同一套邏輯
-            submission_info = self._detect_poa_submission_info(case_folder, _is_consumer_debt)
+            submission_info = self._detect_poa_submission_info(case_folder)
             if submission_info.get("date_roc"):
                 default_remark = self._compose_go_live_remark(submission_info, cname, _is_consumer_debt)
             elif _is_consumer_debt:
