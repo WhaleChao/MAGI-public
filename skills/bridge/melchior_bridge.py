@@ -61,8 +61,9 @@ def encode_image(image_path):
 def analyze_image_local(image_path, prompt="Describe this image"):
     """
     Local vision analysis chain:
-    Primary: GLM-OCR on vision server (port 8082) — best for Chinese OCR
-    Fallback: Gemma 4 on text server (port 8080)
+    Primary: Gemma 4 multimodal on text server (port 8080)
+    For OCR: prefer macOS Vision OCR (skills.apple.apple_intelligence) if available.
+    GLM-OCR retired 2026-04-08 — macOS Vision is primary OCR engine.
     """
     base64_image = encode_image(image_path)
     if not base64_image:
@@ -71,38 +72,19 @@ def analyze_image_local(image_path, prompt="Describe this image"):
     p_low = (prompt or "").lower()
     is_ocr = bool(re.search(r"(ocr|辨識|文字|讀取|transcribe)", p_low, re.IGNORECASE))
 
-    # ── Primary: GLM-OCR on vision server (port 8082) ──
-    # GLM-OCR bf16 is specialized for Chinese document OCR, far superior
-    # to quantized Gemma 4 for reading text from screenshots.
-    try:
-        _chat_omlx = getattr(melchior_client, "_chat_omlx", None)
-        _vision_avail = getattr(melchior_client, "_omlx_vision_available", None)
-        if callable(_chat_omlx) and callable(_vision_avail) and _vision_avail():
-            _default_vm = os.environ.get("MAGI_OMLX_VISION_MODEL", "")
-            omlx_model = (
-                getattr(melchior_client, "OMLX_OCR_MODEL", _default_vm)
-                if is_ocr
-                else getattr(melchior_client, "OMLX_VISION_MODEL", _default_vm)
-            )
-            vision_base = getattr(melchior_client, "OMLX_VISION_BASE", "http://127.0.0.1:8082")
-            vision_circuit = getattr(melchior_client, "_OMLX_VISION_CIRCUIT", None)
-            vision_lock = getattr(melchior_client, "_OMLX_VISION_LOCK", None)
-            logger.info(f"💾 [GLM-OCR] Trying vision model: {omlx_model} on {vision_base}...")
-            r = _chat_omlx(
-                prompt=prompt, model=omlx_model, timeout=60,
-                temperature=0.3, max_tokens=2048, images=[base64_image],
-                base_url=vision_base, circuit=vision_circuit, lock=vision_lock,
-            )
-            if r.get("success") and r.get("response"):
-                logger.info(f"✅ GLM-OCR Vision Response from {omlx_model}.")
-                return f"[oMLX/{omlx_model}] {r['response'].strip()}"
-            logger.debug("GLM-OCR vision returned empty, falling back to Gemma 4...")
-    except Exception as e:
-        logger.debug(f"GLM-OCR vision failed: {e}, falling back to Gemma 4...")
+    # ── For OCR tasks: try macOS Vision first (zero GPU) ──
+    if is_ocr and os.path.isfile(image_path):
+        try:
+            from skills.apple.apple_intelligence import ocr_image_vision
+            result = ocr_image_vision(image_path)
+            if result.get("success") and result.get("text", "").strip():
+                logger.info("✅ macOS Vision OCR succeeded for %s", os.path.basename(image_path))
+                return f"[macOS-Vision] {result['text'].strip()}"
+        except Exception as e:
+            logger.debug("macOS Vision OCR unavailable: %s, falling back to Gemma 4...", e)
 
-    # ── Fallback: Gemma 4 on text server (port 8080) ──
-    # Note: Gemma 4 4-bit has weak Chinese OCR but can describe image structure.
-    logger.info(f"💾 [Gemma4] Trying fallback vision on text server: {TEXT_PRIMARY_MODEL}...")
+    # ── Primary: Gemma 4 multimodal on text server (port 8080) ──
+    logger.info(f"💾 [Gemma4] Trying vision on text server: {TEXT_PRIMARY_MODEL}...")
     payload = {
         "model": TEXT_PRIMARY_MODEL,
         "messages": [{
@@ -134,8 +116,8 @@ def analyze_image_local(image_path, prompt="Describe this image"):
 def analyze_image(image_path, prompt="Describe this image"):
     """
     Sends an image for analysis using local vision chain.
-    Primary: GLM-OCR on vision server (port 8082, best for Chinese OCR)
-    Fallback: Gemma 4 on text server (port 8080)
+    Primary: macOS Vision (for OCR) or Gemma 4 multimodal (for image analysis)
+    GLM-OCR retired 2026-04-08.
     """
     logger.info(f"👁️ Vision request: {image_path}")
     p = str(prompt or "").strip() or "Describe this image in detail"

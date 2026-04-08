@@ -26,7 +26,7 @@ def _get_omlx_chat():
             "vision_avail": getattr(_mc, "_omlx_vision_available", None),
             "vision_model": getattr(_mc, "OMLX_VISION_MODEL", None) or os.environ.get("MAGI_OMLX_VISION_MODEL", ""),
             "ocr_model": getattr(_mc, "OMLX_OCR_MODEL", None) or os.environ.get("MAGI_OMLX_OCR_MODEL", ""),
-            "vision_base": getattr(_mc, "OMLX_VISION_BASE", None) or os.environ.get("MAGI_OMLX_VISION_URL", "http://127.0.0.1:8082"),
+            "vision_base": getattr(_mc, "OMLX_VISION_BASE", None) or getattr(_mc, "OMLX_CHAT_BASE", None) or os.environ.get("MAGI_OMLX_VISION_URL", "http://127.0.0.1:8080"),
             "vision_circuit": getattr(_mc, "_OMLX_VISION_CIRCUIT", None),
             "vision_lock": getattr(_mc, "_OMLX_VISION_LOCK", None),
         }
@@ -43,14 +43,14 @@ def _ask_omlx_vision(
     validate_fn=None,
     prefer_ocr: bool = False,
 ) -> Optional[str]:
-    """Try oMLX vision (GLM-OCR on port 8082) before Ollama."""
+    """Try oMLX vision (Gemma 4 on port 8080) for vision analysis."""
     ctx = _get_omlx_chat()
     chat_fn = ctx.get("chat")
     avail_fn = ctx.get("avail")
     if not callable(chat_fn) or not callable(avail_fn) or not avail_fn():
         return None
     model = ctx.get("ocr_model") if prefer_ocr else ctx.get("vision_model")
-    # Route to vision server (port 8082) for GLM-OCR
+    # Route to Gemma 4 on main port (GLM-OCR retired)
     vision_base = ctx.get("vision_base", "")
     vision_circuit = ctx.get("vision_circuit")
     vision_lock = ctx.get("vision_lock")
@@ -87,7 +87,7 @@ def _load_ollama_meta() -> dict:
     global _OLLAMA_META_CACHE
     if _OLLAMA_META_CACHE is not None:
         return _OLLAMA_META_CACHE
-    _vision_base = (os.environ.get("MAGI_OMLX_VISION_URL") or "http://127.0.0.1:8082").rstrip("/")
+    _vision_base = (os.environ.get("MAGI_OMLX_VISION_URL") or os.environ.get("MAGI_OMLX_CHAT_URL") or "http://127.0.0.1:8080").rstrip("/")
     tags_url = (os.environ.get("MAGI_OLLAMA_TAGS_URL") or f"{_vision_base}/v1/models").strip()
     try:
         r = requests.get(tags_url, timeout=8)
@@ -182,7 +182,7 @@ def _ask_ollama_vision(
     fallback candidate and the next model is tried.  If no model passes
     validation, the best (first) non-empty candidate is returned.
     """
-    base_url = (os.environ.get("MAGI_OMLX_VISION_URL") or os.environ.get("MAGI_OLLAMA_API_URL") or os.environ.get("OMLX_URL") or "http://127.0.0.1:8082").strip().rstrip("/")
+    base_url = (os.environ.get("MAGI_OMLX_VISION_URL") or os.environ.get("MAGI_OLLAMA_API_URL") or os.environ.get("OMLX_URL") or "http://127.0.0.1:8080").strip().rstrip("/")
     url = f"{base_url}/v1/chat/completions"
     max_retries = max(1, int(os.environ.get("MAGI_OLLAMA_BUSY_RETRIES", "3") or "3"))
     retry_sleep_base = float(os.environ.get("MAGI_OLLAMA_BUSY_RETRY_SEC", "0.8") or "0.8")

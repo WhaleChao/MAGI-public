@@ -42,9 +42,9 @@ OMLX_EMBED_HOST = os.environ.get("MAGI_OMLX_EMBED_HOST", OMLX_CHAT_HOST)
 OMLX_EMBED_PORT = int(os.environ.get("MAGI_OMLX_EMBED_PORT", "8081"))
 OMLX_EMBED_BASE = (os.environ.get("MAGI_OMLX_EMBED_URL") or f"http://{OMLX_EMBED_HOST}:{OMLX_EMBED_PORT}").rstrip("/")
 OMLX_VISION_HOST = os.environ.get("MAGI_OMLX_VISION_HOST", OMLX_CHAT_HOST)
-# Separated servers: GLM-OCR on 8082, Gemma 4 on 8080
-# Each model in its own process — no LRU swap delays, more stable
-OMLX_VISION_PORT = int(os.environ.get("MAGI_OMLX_VISION_PORT", "8082"))
+# GLM-OCR retired (2026-04-08): macOS Vision OCR is now primary OCR engine.
+# Vision/multimodal tasks route to Gemma 4 on main port (8080).
+OMLX_VISION_PORT = int(os.environ.get("MAGI_OMLX_VISION_PORT", str(OMLX_CHAT_PORT)))
 OMLX_VISION_BASE = (os.environ.get("MAGI_OMLX_VISION_URL") or f"http://{OMLX_VISION_HOST}:{OMLX_VISION_PORT}").rstrip("/")
 OMLX_HOST = OMLX_CHAT_HOST
 OMLX_PORT = OMLX_CHAT_PORT

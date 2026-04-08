@@ -270,6 +270,17 @@ _ts_guard_counter = 0
 _TS_GUARD_EVERY_N = 6    # Check Tailscale every ~60s (6 × 10s)
 _TAIDE_GUARD_EVERY_N = 30  # Check TAIDE every ~5min (30 × 10s)
 
+# ── macOS Desktop Notification (lazy load) ──
+_omlx_was_healthy = True  # track state transitions to avoid spamming
+
+def _desktop_notify(title: str, message: str, **kwargs):
+    """Send macOS desktop notification (best-effort, never raises)."""
+    try:
+        from skills.ops.macos_notify import send_notification
+        send_notification(title, message, **kwargs)
+    except Exception:
+        pass  # notification is best-effort
+
 if __name__ == "__main__":
     print("💗 MAGI Heartbeat Monitor Started (v5 - Dual Engine: Ollama + oMLX)")
     # Initial guards on startup
@@ -287,5 +298,21 @@ if __name__ == "__main__":
         if _taide_guard_counter >= _TAIDE_GUARD_EVERY_N:
             _taide_guard_counter = 0
             guard_taide_resident()
-            check_omlx_health()
+            omlx_ok = check_omlx_health()
+            # Desktop notification on oMLX state transition
+            if not omlx_ok and _omlx_was_healthy:
+                _desktop_notify(
+                    "MAGI ⚠ oMLX 異常",
+                    "推理引擎無回應，請檢查 oMLX 服務狀態。",
+                    sound="Basso",
+                    group_id="magi.omlx",
+                )
+            elif omlx_ok and not _omlx_was_healthy:
+                _desktop_notify(
+                    "MAGI oMLX 恢復",
+                    "推理引擎已恢復正常。",
+                    sound="Glass",
+                    group_id="magi.omlx",
+                )
+            _omlx_was_healthy = omlx_ok
         time.sleep(10)  # Update every 10 seconds

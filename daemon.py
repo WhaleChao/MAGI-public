@@ -1306,6 +1306,16 @@ if __name__ == "__main__":
     # Load MAGI .env so admin allowlist + tokens are available to all subprocesses.
     _load_dotenv(_env_file, override=True)
 
+    # 0-pre. Resolve keychain: prefixed env vars (macOS Keychain integration)
+    if IS_MACOS:
+        try:
+            from skills.ops.keychain_manager import resolve_env_keychain
+            _kc_resolved = resolve_env_keychain()
+            if _kc_resolved:
+                logger.info("🔑 Keychain: resolved %d env vars", len(_kc_resolved))
+        except Exception as e:
+            logger.debug("Keychain resolution skipped: %s", e)
+
     # 0. Clean __pycache__ to ensure fresh bytecode for all processes
     _clear_pycache()
     logger.info("🧹 Cleared __pycache__ for fresh startup")
@@ -1429,6 +1439,48 @@ if __name__ == "__main__":
     except Exception as e:
         logger.warning(f"⚠️ Keeper Sync not started: {e}")
     
+    # 3.5 FSEvents file watcher (macOS only — auto-process new PDFs in case folders)
+    _fs_watcher = None
+    if IS_MACOS:
+        try:
+            from skills.ops.fs_watcher import start_watcher as _start_fs_watcher
+
+            def _on_new_file(event_data):
+                """Callback for FSEvents: trigger pdf-namer on new PDF files."""
+                path = event_data.get("path", "")
+                ext = event_data.get("extension", "")
+                if ext == ".pdf":
+                    logger.info("FSWatcher: new PDF detected, queueing for pdf-namer: %s",
+                                os.path.basename(path))
+                    try:
+                        from skills.ops.macos_notify import notify_pdf_processed
+                        notify_pdf_processed(os.path.basename(path), "處理中...")
+                    except Exception:
+                        pass
+
+            _watch_folders = []
+            # NAS case folders
+            _nas_cases = "/Volumes/homes/lumi63181107/01_案件"
+            if os.path.isdir(_nas_cases):
+                _watch_folders.append(_nas_cases)
+            # Local scan staging area
+            _local_scan = os.path.join(_MAGI_ROOT, "閱卷下載")
+            if os.path.isdir(_local_scan):
+                _watch_folders.append(_local_scan)
+
+            if _watch_folders:
+                _fs_watcher = _start_fs_watcher(_watch_folders, callback=_on_new_file)
+                if _fs_watcher:
+                    logger.info("✅ FSEvents watcher started for %d folders", len(_watch_folders))
+                else:
+                    logger.warning("⚠️ FSEvents watcher failed to start")
+            else:
+                logger.info("ℹ️ FSEvents watcher: no watch folders available")
+        except ImportError:
+            logger.info("ℹ️ FSEvents watcher: watchdog not installed (pip install watchdog)")
+        except Exception as e:
+            logger.warning(f"⚠️ FSEvents watcher not started: {e}")
+
     # Monitor Loop
     try:
         while True:
@@ -1438,4 +1490,6 @@ if __name__ == "__main__":
                 _periodic_launchd_check()
             time.sleep(5)
     except KeyboardInterrupt:
+        if _fs_watcher:
+            _fs_watcher.stop()
         cleanup(None, None)

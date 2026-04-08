@@ -868,7 +868,7 @@ def _llava_extract_receipt_date(png_bytes: bytes, *, timeout_sec: int = 14) -> O
         def _try(mname: str) -> Optional[str]:
             retries = max(1, int(os.environ.get("MAGI_OLLAMA_BUSY_RETRIES", "2") or "2"))
             retry_sleep = float(os.environ.get("MAGI_OLLAMA_BUSY_RETRY_SEC", "0.8") or "0.8")
-            omlx_base = (os.environ.get("MAGI_OMLX_VISION_URL") or os.environ.get("OMLX_URL") or "http://127.0.0.1:8082").rstrip("/")
+            omlx_base = (os.environ.get("MAGI_OMLX_VISION_URL") or os.environ.get("OMLX_URL") or "http://127.0.0.1:8080").rstrip("/")
             for attempt in range(retries):
                 r = requests.post(
                     f"{omlx_base}/v1/chat/completions",
@@ -2416,7 +2416,7 @@ def batch_ocr_pages(pdf_paths: list) -> dict:
         from skills.bridge.melchior_client import OMLX_VISION_BASE, OMLX_VISION_MODEL
         _req.post(
             f"{OMLX_VISION_BASE}/v1/chat/completions",
-            json={"model": OMLX_VISION_MODEL or "GLM-OCR-bf16",
+            json={"model": OMLX_VISION_MODEL or "gemma-4-26b-a4b-it-4bit",
                   "messages": [{"role": "user", "content": "test"}],
                   "max_tokens": 1, "stream": False},
             timeout=30,

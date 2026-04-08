@@ -215,6 +215,13 @@ from api.command_registry import CommandRegistry, CommandContext
 # Global command registry — commands registered below after class definition
 _cmd_registry = CommandRegistry()
 
+# Register Apple-native commands (Spotlight, EventKit, notifications)
+try:
+    from api.commands.apple_commands import register_apple_commands
+    register_apple_commands(_cmd_registry)
+except Exception:
+    pass  # Apple commands are optional — fail silently on non-macOS
+
 class Orchestrator:
     def __init__(self):
         self.classifier = IntentionClassifier()
@@ -1961,18 +1968,15 @@ class Orchestrator:
         except Exception as e:
             lines.append(f"🟡 Watcher: status unavailable ({e})")
 
-        # GLM-OCR Vision Server (port 8082)
+        # OCR Engine Status (macOS Vision — GLM-OCR retired)
         try:
-            from skills.bridge.http_pool import get_session as _get_sess
-            _vision_url = os.environ.get("MAGI_OMLX_VISION_URL", "http://127.0.0.1:8082")
-            vr = _get_sess().get(f"{_vision_url.rstrip('/')}/v1/models", timeout=3)
-            if vr.status_code == 200:
-                vmodels = [m.get("id", "?") for m in (vr.json().get("data") or [])]
-                lines.append(f"🟢 GLM-OCR: {', '.join(vmodels) or 'ready'} (port 8082)")
+            from skills.apple.apple_intelligence import VISION_AVAILABLE
+            if VISION_AVAILABLE:
+                lines.append("🟢 OCR: macOS Vision (零 GPU)")
             else:
-                lines.append("🔴 GLM-OCR: offline (port 8082)")
+                lines.append("🟡 OCR: macOS Vision 不可用（PyObjC 未安裝）")
         except Exception:
-            lines.append("🔴 GLM-OCR: offline (port 8082)")
+            lines.append("🟡 OCR: macOS Vision 不可用")
 
         return "\n".join(lines)
 
@@ -2346,7 +2350,7 @@ class Orchestrator:
 
     def _vision_classify_and_route_image(self, user_id, image_path: str, prompt: str | None) -> str | None:
         """
-        Use GLM-OCR (port 8082) to classify the image content.
+        Use Gemma 4 multimodal to classify the image content.
         If it looks like a payment receipt, route to payment upload automatically.
         Returns a response string if handled, or None to fall through to default.
         """
@@ -2368,11 +2372,11 @@ class Orchestrator:
             )
 
             from skills.bridge.http_pool import get_session as _get_session
-            # Use GLM-OCR on vision server (port 8082) — it can actually read Chinese text
-            _vision_base = os.environ.get("MAGI_OMLX_VISION_URL", "http://127.0.0.1:8082")
+            # Use Gemma 4 multimodal on main port (GLM-OCR retired)
+            _vision_base = os.environ.get("MAGI_OMLX_VISION_URL", os.environ.get("MAGI_OMLX_CHAT_URL", "http://127.0.0.1:8080"))
 
             payload = {
-                "model": "GLM-OCR-bf16",
+                "model": os.environ.get("MAGI_OMLX_VISION_MODEL", "gemma-4-26b-a4b-it-4bit"),
                 "messages": [{
                     "role": "user",
                     "content": [

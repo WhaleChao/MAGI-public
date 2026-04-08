@@ -602,7 +602,8 @@ class InferenceGateway:
         return self._result(success=False, route="omlx", degraded=False, error=r.get("error", "omlx_failed"))
 
     def _omlx_vision(self, image_path: str, prompt: str, timeout: int, task_type: str = "vision") -> dict:
-        """Try oMLX for vision inference. Routes GLM-OCR to vision port (8082), others to main port (8080)."""
+        """Try oMLX for vision inference. All vision routes go to Gemma 4 on main port (8080).
+        GLM-OCR retired 2026-04-08 — macOS Vision is primary OCR engine."""
         chat_omlx = getattr(melchior_client, "_chat_omlx", None)
         omlx_vision_avail = getattr(melchior_client, "_omlx_vision_available", None)
         if not callable(chat_omlx) or not callable(omlx_vision_avail) or not omlx_vision_avail():
@@ -613,15 +614,8 @@ class InferenceGateway:
             return self._result(success=False, route="omlx", degraded=False, error=read_err)
 
         use_model = _MODEL_ROSTER.get(task_type, {}).get("omlx", "") or DEFAULT_VISION_MODEL
-        # GLM-OCR on port 8082 for Chinese OCR; Gemma 4 on port 8080 as fallback
+        # All vision now goes to Gemma 4 on main port (8080)
         kwargs = {}
-        _model_lower = (use_model or "").lower()
-        vision_base = getattr(melchior_client, "OMLX_VISION_BASE", None)
-        if vision_base and ("glm" in _model_lower or "ocr" in _model_lower):
-            # GLM-OCR → dedicated vision server (port 8082)
-            kwargs["base_url"] = vision_base
-        elif vision_base and vision_base != getattr(melchior_client, "OMLX_CHAT_BASE", ""):
-            kwargs["base_url"] = vision_base
         r = chat_omlx(prompt=prompt, model=use_model, timeout=max(10, int(timeout)), temperature=0.3, max_tokens=2048, images=[image_b64], **kwargs)
         if r.get("success"):
             return self._result(success=True, route="omlx", degraded=False, analysis=r.get("response", ""), model=use_model)
@@ -766,11 +760,11 @@ class InferenceGateway:
         if not candidates:
             candidates = [TEXT_PRIMARY_MODEL]
 
-        # For OCR-specific tasks, prefer glm-ocr first (per MODEL_RECOMMENDATIONS)
+        # GLM-OCR retired — OCR tasks handled by macOS Vision (zero GPU).
+        # For remaining vision tasks, Gemma 4 is the primary model.
         if task_type in ("ocr", "date_extract", "stamp", "captcha", "receipt"):
-            ocr_first = [m for m in candidates if "glm-ocr" in m.lower() or "GLM-OCR" in m]
-            rest = [m for m in candidates if m not in ocr_first]
-            candidates = ocr_first + rest
+            # Filter out retired GLM-OCR model references
+            candidates = [m for m in candidates if "glm-ocr" not in m.lower()]
 
         per_try_timeout = max(25, min(40, int(timeout)))
         errors: List[str] = []
@@ -1029,7 +1023,7 @@ class InferenceGateway:
             ocr_r = self._omlx_vision(image_path, "Extract all text from this image exactly as shown.", timeout=min(20, max(8, int(timeout) // 2)), task_type="ocr")
             if ocr_r.get("success") and ocr_r.get("analysis", "").strip():
                 ocr_context = ocr_r["analysis"].strip()
-                logger.info("vision: GLM-OCR pre-scan extracted %d chars", len(ocr_context))
+                logger.info("vision: OCR pre-scan extracted %d chars", len(ocr_context))
 
         try:
             from skills.bridge.llm_direct import (
