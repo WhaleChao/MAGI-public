@@ -7,6 +7,7 @@ PDF 自動命名技能 (PyMuPDF + RapidOCR)
 
 import argparse
 import fitz  # PyMuPDF
+import math
 import os
 import re
 import sys
@@ -21,7 +22,7 @@ import subprocess
 import threading
 import uuid
 import tempfile
-from typing import Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 from datetime import datetime, timedelta
 
 _MAGI_ROOT = Path(__file__).resolve().parents[2]
@@ -1220,6 +1221,72 @@ def _try_stamp_crop_vision(doc, pages_info: dict = None) -> Tuple[Optional[str],
     return None, ""
 
 
+def _ai_generate_structured_name(ocr_text: str, already_extracted: dict) -> Optional[dict]:
+    """Use Gemma 4 + SYSTEM_PROMPT to generate a structured filename proposal.
+
+    Called when doc_type is still uncertain (「其他」/「文件」/empty) after Step 5.
+    Returns parsed JSON dict with keys: doc_type, suggested_filename, confidence, date, party,
+    case_number, reasoning — or None on failure.
+    """
+    if not ocr_text or len(ocr_text.strip()) < 30:
+        return None
+
+    ai_timeout_sec = int(os.environ.get("MAGI_PDF_AI_NAME_TIMEOUT", "45"))
+
+    try:
+        from naming_rules import SYSTEM_PROMPT
+        import json as _json
+        import requests as _req
+
+        base = (os.environ.get("MAGI_OMLX_CHAT_URL") or "http://127.0.0.1:8080").rstrip("/")
+        from skills.bridge.melchior_client import TEXT_PRIMARY_MODEL as _tpm
+
+        # Provide already-extracted context as hint
+        hint_parts = []
+        if already_extracted.get("date"):
+            hint_parts.append(f"已知日期：{already_extracted['date']}")
+        if already_extracted.get("court"):
+            hint_parts.append(f"已知法院：{already_extracted['court']}")
+        if already_extracted.get("case_no"):
+            hint_parts.append(f"已知案號：{already_extracted['case_no']}")
+        if already_extracted.get("party"):
+            hint_parts.append(f"已知當事人：{already_extracted['party']}")
+        hint = ("【已提取欄位】\n" + "\n".join(hint_parts) + "\n\n") if hint_parts else ""
+
+        user_msg = f"{hint}【OCR 文字】\n{ocr_text[:3000]}"
+
+        resp = _req.post(
+            f"{base}/v1/chat/completions",
+            json={
+                "model": _tpm,
+                "messages": [
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user", "content": user_msg},
+                ],
+                "temperature": 0.0,
+                "max_tokens": 300,
+                "stream": False,
+            },
+            timeout=ai_timeout_sec,
+        )
+        if resp.status_code != 200:
+            return None
+
+        raw = resp.json().get("choices", [{}])[0].get("message", {}).get("content", "").strip()
+        # Extract JSON from response
+        start = raw.find("{")
+        end = raw.rfind("}") + 1
+        if start < 0 or end <= start:
+            return None
+        parsed = _json.loads(raw[start:end])
+        if not isinstance(parsed, dict) or not parsed.get("doc_type"):
+            return None
+        return parsed
+    except Exception as _e:
+        logger.debug("[ai_name] structured naming failed: %s", _e)
+        return None
+
+
 def generate_name_proposal(pdf_path: str, case_name: str = None, return_structured: bool = False):
     """Propose a filename following the standard convention:
     {YYYYMMDD} {法院全名}{案號}{文件類型}（{當事人}）.pdf
@@ -1362,12 +1429,16 @@ def generate_name_proposal(pdf_path: str, case_name: str = None, return_structur
     content_text_native = ""
 
     def _get_page_text(page_idx):
-        """Get text from a page, with RapidOCR fallback."""
+        """Get text from a page, with RapidOCR fallback (or consensus when enabled)."""
         page = doc[page_idx]
         native = page.get_text() or ""
         text = native
-        if len(text.strip()) < 50 and HAS_OCR:
-            text = _ocr_page_rapid(page)
+        if len(text.strip()) < 50:
+            if _PDF_OCR_CONSENSUS:
+                # Phase 2B: multi-engine consensus
+                text = _ocr_consensus(page, pdf_path=pdf_path, page_idx=page_idx)
+            elif HAS_OCR:
+                text = _ocr_page_rapid(page)
         return page, native, text
 
     # Check if page 0 is an envelope (公文封)
@@ -1783,6 +1854,36 @@ def generate_name_proposal(pdf_path: str, case_name: str = None, return_structur
     except Exception:
         pass
 
+    # 5c: AI-assisted structured naming (Gemma 4 + SYSTEM_PROMPT)
+    # Only trigger when doc_type is still uncertain to avoid unnecessary GPU calls
+    _ai_enabled = os.environ.get("MAGI_PDF_AI_NAME_ENABLED", "1").strip() not in {"0", "false", "no"}
+    _type_uncertain = not found_type or found_type in ("其他", "文件", "")
+    _ocr_for_ai = content_text or content_text_native or ""
+    if _ai_enabled and _type_uncertain and _ocr_for_ai:
+        _ai_result = _ai_generate_structured_name(
+            ocr_text=_ocr_for_ai,
+            already_extracted={
+                "date": found_date,
+                "court": found_court,
+                "case_no": found_case_no,
+                "party": found_party,
+            },
+        )
+        if _ai_result and float(_ai_result.get("confidence", 0)) >= 0.70:
+            ai_doc_type = _ai_result.get("doc_type", "")
+            if ai_doc_type and ai_doc_type not in ("其他", "文件"):
+                logger.info("[ai_name] refined doc_type: %s → %s (conf=%.2f)",
+                            found_type, ai_doc_type, _ai_result.get("confidence", 0))
+                found_type = ai_doc_type
+                # Also accept AI-suggested fields if our extraction missed them
+                if not found_date and _ai_result.get("date"):
+                    found_date = _ai_result["date"]
+                    date_method = "ai_structured"
+                if not found_party and _ai_result.get("party"):
+                    found_party = _ai_result["party"]
+                if not found_case_no and _ai_result.get("case_number"):
+                    found_case_no = _ai_result["case_number"]
+
     result = _build_name_result(
         found_date=found_date,
         found_court=found_court,
@@ -1912,6 +2013,175 @@ def _macos_vision_ocr_page(pdf_path: str, page_num: int = 0) -> str:
     except Exception as e:
         logger.debug("[macOS-Vision] failed: %s", e)
     return ""
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Phase 2B: Multi-OCR Consensus Mechanism
+# Enable with env: MAGI_PDF_OCR_CONSENSUS=1
+# Engines: RapidOCR (300 DPI) + Tesseract (PSM4 + PSM6) + macOS Vision
+# ─────────────────────────────────────────────────────────────────────────────
+
+_PDF_OCR_CONSENSUS = os.environ.get("MAGI_PDF_OCR_CONSENSUS", "0").strip() in ("1", "true", "yes")
+
+
+def _score_ocr_text(text: str) -> float:
+    """Score OCR result quality.  Higher = better.
+    Factors: Chinese character density, total length, non-garbage ratio.
+    """
+    if not text or not text.strip():
+        return 0.0
+    s = text.strip()
+    total = len(s)
+    if total == 0:
+        return 0.0
+    # Count CJK characters (繁體常見字範圍)
+    cjk = sum(1 for c in s if "\u4e00" <= c <= "\u9fff" or "\u3400" <= c <= "\u4dbf")
+    # Count obvious garbage: replacement chars, lone punctuation runs
+    garbage = s.count("\ufffd") + len(re.findall(r"[□■▪▫]{2,}", s))
+    cjk_ratio = cjk / total
+    garbage_penalty = min(garbage / max(total, 1), 1.0)
+    # Reward longer texts (log scale), penalise garbage
+    length_bonus = min(math.log1p(total) / 8.0, 1.0)
+    score = (cjk_ratio * 0.6 + length_bonus * 0.4) * (1.0 - garbage_penalty)
+    return round(score, 4)
+
+
+def _preprocess_receipt_image(img_bytes: bytes, scale: int = 4) -> bytes:
+    """Preprocess postal receipt images for better OCR:
+    4x magnification + high contrast + binarization.
+    Falls back to original bytes if PIL/Pillow not available.
+    """
+    try:
+        from PIL import Image, ImageEnhance, ImageFilter
+        import io
+        img = Image.open(io.BytesIO(img_bytes)).convert("L")
+        new_w = img.width * scale
+        new_h = img.height * scale
+        img = img.resize((new_w, new_h), Image.LANCZOS)
+        # Enhance contrast significantly for stamp/small text
+        img = ImageEnhance.Contrast(img).enhance(2.5)
+        img = ImageEnhance.Sharpness(img).enhance(2.0)
+        # Binarize with threshold
+        img = img.point(lambda p: 255 if p > 128 else 0, "1").convert("L")
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        return buf.getvalue()
+    except Exception:
+        return img_bytes
+
+
+def _ocr_page_rapid_dpi(page, dpi: int = 300) -> str:
+    """RapidOCR at configurable DPI (Phase 2B: use 300 DPI for better accuracy)."""
+    if not ocr_engine:
+        return ""
+    try:
+        pix = page.get_pixmap(dpi=dpi)
+        img_bytes = pix.tobytes("png")
+        result, _ = ocr_engine(img_bytes)
+        if not result:
+            return ""
+        return "\n".join(line[1] for line in result if isinstance(line, (list, tuple)) and len(line) >= 2)
+    except Exception as e:
+        logger.debug("RapidOCR %ddpi failed: %s", dpi, e)
+        return ""
+
+
+def _ocr_image_bytes_tesseract_dual(img_bytes: bytes, timeout_sec: int = 8) -> str:
+    """Run Tesseract in both PSM-4 (single column) and PSM-6 (block) modes.
+    Returns the higher-scoring result.
+    """
+    if not HAS_TESSERACT or not img_bytes:
+        return ""
+    t4 = _ocr_image_bytes_tesseract(img_bytes, timeout_sec=timeout_sec, psm=4)
+    t6 = _ocr_image_bytes_tesseract(img_bytes, timeout_sec=timeout_sec, psm=6)
+    s4, s6 = _score_ocr_text(t4), _score_ocr_text(t6)
+    return t4 if s4 >= s6 else t6
+
+
+def _extract_date_consensus(texts: List[str]) -> Optional[str]:
+    """Majority vote on date extraction from multiple OCR texts.
+    Returns the date string that appears most frequently, or the best single hit.
+    """
+    date_votes: Dict[str, int] = {}
+    for text in texts:
+        if not text:
+            continue
+        d = _extract_any_date(text)
+        if d:
+            date_votes[d] = date_votes.get(d, 0) + 1
+    if not date_votes:
+        return None
+    # Return the date with the most votes; tie-break by more recent date
+    best = max(date_votes, key=lambda k: (date_votes[k], k))
+    return best
+
+
+def _ocr_consensus(page, pdf_path: str = "", page_idx: int = 0) -> str:
+    """Run multiple OCR engines on a page and return the best-quality result.
+
+    Engines (run in parallel where possible):
+      1. macOS Vision (via binary) — highest quality for Traditional Chinese
+      2. RapidOCR at 300 DPI
+      3. Tesseract dual PSM (4 + 6)
+
+    Scoring: `_score_ocr_text()` selects the winner.
+    Date consensus: `_extract_date_consensus()` used for date fields.
+
+    Returns: str (text of the winning engine)
+    """
+    import concurrent.futures as _cf
+
+    results: Dict[str, str] = {}
+
+    def _run_macos():
+        if pdf_path and os.path.exists(_VISION_OCR_BIN):
+            return _macos_vision_ocr_page(pdf_path, page_idx)
+        return ""
+
+    def _run_rapid():
+        if ocr_engine and page is not None:
+            return _ocr_page_rapid_dpi(page, dpi=300)
+        return ""
+
+    def _run_tess():
+        if HAS_TESSERACT and page is not None:
+            try:
+                pix = page.get_pixmap(dpi=200)
+                img_bytes = pix.tobytes("png")
+                return _ocr_image_bytes_tesseract_dual(img_bytes)
+            except Exception:
+                return ""
+        return ""
+
+    with _cf.ThreadPoolExecutor(max_workers=3) as pool:
+        futs = {
+            "macos": pool.submit(_run_macos),
+            "rapid": pool.submit(_run_rapid),
+            "tess": pool.submit(_run_tess),
+        }
+        for name, fut in futs.items():
+            try:
+                results[name] = fut.result(timeout=30) or ""
+            except Exception as exc:
+                logger.debug("[ocr-consensus] %s failed: %s", name, exc)
+                results[name] = ""
+
+    scores = {name: _score_ocr_text(text) for name, text in results.items()}
+    logger.info("[ocr-consensus] page %d scores: %s", page_idx,
+                {k: f"{v:.3f}(len={len(results[k])})" for k, v in scores.items()})
+
+    # Pick winner
+    best_engine = max(scores, key=lambda k: scores[k])
+    best_text = results[best_engine]
+
+    if not best_text.strip():
+        # All engines failed: fall back to basic RapidOCR
+        if page is not None:
+            return _ocr_page_rapid(page)
+        return ""
+
+    logger.info("[ocr-consensus] winner=%s score=%.3f len=%d", best_engine, scores[best_engine], len(best_text))
+    return best_text
 
 
 def _glm_ocr_page(page, dpi: int = 200) -> str:
@@ -2442,6 +2712,10 @@ def batch_ocr_pages(pdf_paths: list) -> dict:
             # Primary OCR: macOS Vision framework (fast, high quality, no GPU)
             # Fallback: GLM-OCR (GPU-based, slower but handles edge cases)
             def _ocr_page(page_idx: int) -> str:
+                # Phase 2B: multi-engine consensus when MAGI_PDF_OCR_CONSENSUS=1
+                if _PDF_OCR_CONSENSUS and page_idx < doc.page_count:
+                    return _ocr_consensus(doc[page_idx], pdf_path=pdf_path, page_idx=page_idx)
+                # Default: macOS Vision primary → GLM-OCR fallback
                 text = _macos_vision_ocr_page(pdf_path, page_idx)
                 if not text and page_idx < doc.page_count:
                     text = _glm_ocr_page(doc[page_idx], dpi=200)
@@ -2508,10 +2782,10 @@ def batch_analyze_texts(ocr_results: dict) -> dict:
     # Pre-warm Gemma 4: force model swap from GLM-OCR
     try:
         import requests as _req
-        from skills.bridge.melchior_client import OMLX_CHAT_BASE
+        from skills.bridge.melchior_client import OMLX_CHAT_BASE, TEXT_PRIMARY_MODEL as _TEXT_MODEL
         _req.post(
             f"{OMLX_CHAT_BASE}/v1/chat/completions",
-            json={"model": "gemma-4-26b-a4b-it-4bit",
+            json={"model": _TEXT_MODEL,
                   "messages": [{"role": "user", "content": "test"}],
                   "max_tokens": 1, "stream": False},
             timeout=60,
