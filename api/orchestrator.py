@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 import threading as _threading
 
-from api.model_config import TEXT_PRIMARY_MODEL
+from api.model_config import TEXT_PRIMARY_MODEL, VISION_MODEL as _VISION_MODEL
 # Thread-local storage for per-request correlation ID.
 _orchestrator_tls = _threading.local()
 
@@ -413,9 +413,9 @@ class Orchestrator:
         task_name: str,
         status: str,
         *,
-        progress: float | None = None,
+        progress: Optional[float] = None,
         user_id: str = "",
-        detail: dict | None = None,
+        detail: Optional[dict] = None,
     ) -> None:
         self._ensure_runtime_foundations()
         try:
@@ -538,7 +538,7 @@ class Orchestrator:
             return list(self._heavy_tasks.values())
     # ─────────────────────────────────────────────────────────────────
 
-    def _append_route_trace(self, user_id: str, platform: str, stage: str, route: str, detail: dict | None = None) -> None:
+    def _append_route_trace(self, user_id: str, platform: str, stage: str, route: str, detail: Optional[dict] = None) -> None:
         self._ensure_runtime_foundations()
         payload = {
             "ts": time.time(),
@@ -608,10 +608,10 @@ class Orchestrator:
     def _read_openclaw_primary_model(self) -> str:
         return _message_router.read_openclaw_primary_model()
 
-    def _handle_gibberish_report(self, user_id, message: str, platform: str = "") -> str | None:
+    def _handle_gibberish_report(self, user_id, message: str, platform: str = "") -> Optional[str]:
         return _message_router.handle_gibberish_report(self, user_id, message, platform)
 
-    def _quick_fixed_reply(self, message: str, role: str = "user") -> str | None:
+    def _quick_fixed_reply(self, message: str, role: str = "user") -> Optional[str]:
         return _message_router.quick_fixed_reply(self, message, role)
 
     def _brain_runtime_banner(self) -> str:
@@ -672,7 +672,7 @@ class Orchestrator:
     def _try_market_watchlist_quick_set(self, message: str, platform: str = "") -> tuple[bool, str]:
         return _market_flow.try_market_watchlist_quick_set(self, message, platform=platform)
 
-    def _extract_judgment_collect_payload(self, message: str) -> tuple[dict | None, str]:
+    def _extract_judgment_collect_payload(self, message: str) -> tuple[Optional[dict], str]:
         return _judgment_flow.extract_judgment_collect_payload(message)
 
     def _format_judgment_collect_result(self, payload: dict) -> str:
@@ -775,120 +775,21 @@ class Orchestrator:
     def _is_file_protocol_user(self, user_id: str) -> bool:
         return _get_handler("dh").is_file_protocol_user(user_id)
 
-    def _export_translation_txt(self, *, translated_text: str, source: str, provider: str, mode: str, prefix: str, user_id: str) -> str | None:
+    def _export_translation_txt(self, *, translated_text: str, source: str, provider: str, mode: str, prefix: str, user_id: str) -> Optional[str]:
         return _get_handler("dh").export_translation_txt(translated_text=translated_text, source=source, provider=provider, mode=mode, prefix=prefix, user_id=user_id)
 
-    def _export_translation_docx(self, *, source_text: str, translated_text: str, source_chunks: list | None = None, translated_chunks: list | None = None, title: str = "", subtitle: str = "", prefix: str = "translate", user_id: str) -> str | None:
+    def _export_translation_docx(self, *, source_text: str, translated_text: str, source_chunks: Optional[list] = None, translated_chunks: Optional[list] = None, title: str = "", subtitle: str = "", prefix: str = "translate", user_id: str) -> Optional[str]:
         return _get_handler("dh").export_translation_docx(source_text=source_text, translated_text=translated_text, source_chunks=source_chunks, translated_chunks=translated_chunks, title=title, subtitle=subtitle, prefix=prefix, user_id=user_id)
 
-    def _export_plain_txt(self, *, content: str, prefix: str, user_id: str, title: str = "📄 已輸出 TXT 檔案。") -> str | None:
+    def _export_plain_txt(self, *, content: str, prefix: str, user_id: str, title: str = "📄 已輸出 TXT 檔案。") -> Optional[str]:
         return _get_handler("dh").export_plain_txt(content=content, prefix=prefix, user_id=user_id, title=title)
 
-    def _export_plain_docx(self, *, segments: list, mode: str = "transcript", title: str = "", case_info: str = "", prefix: str = "export", user_id: str) -> str | None:
+    def _export_plain_docx(self, *, segments: list, mode: str = "transcript", title: str = "", case_info: str = "", prefix: str = "export", user_id: str) -> Optional[str]:
         return _get_handler("dh").export_plain_docx(segments=segments, mode=mode, title=title, case_info=case_info, prefix=prefix, user_id=user_id)
 
-    def _export_summary_docx_or_txt(self, summary_text: str, *, prefix: str, title: str, user_id: str, source_path: str = "") -> str | None:
-        """摘要輸出：優先 DOCX 原文／摘要對照表格，fallback TXT。"""
-        import re as _re
-        # 嘗試提取原文，與摘要做對照表格（bilingual 模式，左原文右摘要）
-        src_text = ""
-        if source_path:
-            try:
-                extracted = self._extract_text_from_uploaded_file(source_path)
-                if extracted.get("success"):
-                    src_text = str(extracted.get("text") or "").strip()
-            except Exception:
-                logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 1681, exc_info=True)
-        if src_text and summary_text:
-            try:
-                from skills.ops.export_docx import export_bilingual_docx
-                from api.handlers.document_handler import is_file_protocol_user
-                # 原文：依頁面標記 (--- 第 X 頁 ---) 或大段落分段
-                _page_pattern = r"---\s*第\s*\d+\s*頁\s*---"
-                if _re.search(_page_pattern, src_text):
-                    # 有頁面標記 → 以頁為單位
-                    _raw_pages = _re.split(_page_pattern, src_text)
-                    src_chunks = [p.strip() for p in _raw_pages if p.strip()]
-                else:
-                    # 無頁面標記 → 依雙換行分段，再合併短段落（每段至少 800 字）
-                    _raw = [p.strip() for p in _re.split(r"\n{2,}", src_text) if p.strip()]
-                    src_chunks = []
-                    _buf = []
-                    _buf_len = 0
-                    for p in _raw:
-                        _buf.append(p)
-                        _buf_len += len(p)
-                        if _buf_len >= 800:
-                            src_chunks.append("\n\n".join(_buf))
-                            _buf, _buf_len = [], 0
-                    if _buf:
-                        src_chunks.append("\n\n".join(_buf))
-                # 摘要：依 markdown 標題 / 數字編號 / 項目符號 / 雙換行分段
-                sum_chunks = [p.strip() for p in _re.split(
-                    r"\n(?=#{1,3}\s|(?:\d+[\.\、])|(?:[-\*]\s))|(?:\n{2,})",
-                    summary_text.strip(),
-                ) if p.strip()]
-                # 去掉摘要開頭的純標題行（如 "📄 **PDF 摘要**"）
-                while sum_chunks and _re.match(r"^[📄📚🌐\*#\s]+$", sum_chunks[0].strip().replace("*", "")):
-                    sum_chunks.pop(0)
-                # 配對：較長的一方決定行數
-                max_rows = max(len(src_chunks), len(sum_chunks), 1)
-                while len(src_chunks) < max_rows:
-                    src_chunks.append("")
-                while len(sum_chunks) < max_rows:
-                    sum_chunks.append("")
-                pages = [
-                    {"page": i + 1, "source": s, "target": t}
-                    for i, (s, t) in enumerate(zip(src_chunks, sum_chunks))
-                    if s.strip() or t.strip()
-                ]
-                if pages:
-                    ex = export_bilingual_docx(
-                        pages, title=title, header_text=title,
-                        prefix=prefix,
-                        col_labels={"col1": "段落", "col2": "原文", "col3": "摘要"},
-                    )
-                    if isinstance(ex, dict) and ex.get("success"):
-                        path = str(ex.get("path") or "").strip()
-                        url = str(ex.get("url") or "").strip()
-                        head = "📄 已輸出原文／摘要對照 DOCX 表格檔案。"
-                        if url:
-                            head = f"{head}\n{url}"
-                        if is_file_protocol_user(user_id) and path:
-                            return f"{head}|||FILE_PATH|||{path}"
-                        return f"{head}\n{path}".strip()
-            except Exception:
-                logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 1741, exc_info=True)
-        # Fallback: summary-only DOCX table
-        sections = []
-        parts = _re.split(r"\n(?=#{1,3}\s|(?:\d+[\.\、]))", summary_text.strip())
-        for i, part in enumerate(parts):
-            part = part.strip()
-            if not part:
-                continue
-            heading_match = _re.match(r"^#{1,3}\s*(.+?)$", part, _re.MULTILINE)
-            num_match = _re.match(r"^(\d+[\.\、])\s*(.+?)$", part, _re.MULTILINE)
-            if heading_match:
-                heading = heading_match.group(1).strip()
-                body = part[heading_match.end():].strip()
-            elif num_match:
-                heading = num_match.group(0).split("\n")[0].strip()
-                body = "\n".join(part.split("\n")[1:]).strip() or part.strip()
-            else:
-                heading = f"段落 {i + 1}" if len(parts) > 1 else ""
-                body = part
-            sections.append({"heading": heading, "summary": body, "excerpt": ""})
-        if sections:
-            exported = self._export_plain_docx(
-                segments=sections, mode="summary",
-                title=title, prefix=prefix, user_id=user_id,
-            )
-            if exported:
-                return exported
-        return self._export_plain_txt(
-            content=summary_text, prefix=prefix,
-            user_id=user_id, title=f"📄 已輸出{title}摘要 TXT 檔案。",
-        )
+    def _export_summary_docx_or_txt(self, summary_text: str, *, prefix: str, title: str, user_id: str, source_path: str = "") -> Optional[str]:
+        from api.domains.export_flow import export_summary_docx_or_txt
+        return export_summary_docx_or_txt(self, summary_text, prefix=prefix, title=title, user_id=user_id, source_path=source_path)
 
     @staticmethod
     def estimate_file_processing_time(file_size_bytes: int, filename: str = "", prompt: str = "", file_path: str = "") -> str:
@@ -1108,7 +1009,7 @@ class Orchestrator:
         return _attachment_pipeline.has_recent_attachment_followup(self, user_id, platform, message)
 
 
-    def _maybe_reuse_recent_attachment(self, user_id: str, platform: str, message: str) -> dict | None:
+    def _maybe_reuse_recent_attachment(self, user_id: str, platform: str, message: str) -> Optional[dict]:
         return _attachment_pipeline.maybe_reuse_recent_attachment(self, user_id, platform, message)
 
 
@@ -1326,7 +1227,7 @@ class Orchestrator:
         return _chat_pipeline.maybe_capture_profile_fact(self, user_id, message) if hasattr(_chat_pipeline, "maybe_capture_profile_fact") else None
 
 
-    def process_message(self, user_id, message, platform="LINE", role="user", attachment=None, correlation_id: str | None = None, progress_callback=None, channel_context=None):
+    def process_message(self, user_id, message, platform="LINE", role="user", attachment=None, correlation_id: Optional[str] = None, progress_callback=None, channel_context=None):
         """
         Main Event Loop for processing a single message.
 
@@ -1357,526 +1258,8 @@ class Orchestrator:
         return process_message_inner(self, user_id, message, platform=platform, role=role, attachment=attachment, correlation_id=correlation_id, progress_callback=progress_callback, channel_context=channel_context)
 
     def _handle_multimedia(self, user_id, prompt, attachment):
-        """
-        Routes file attachments to appropriate skills.
-        """
-        msg_type = attachment['type']
-        path = attachment['path']
-
-        if msg_type == "image":
-            # --- Payment proof intercept: detect 繳費 keywords in prompt ---
-            prompt_lower = (prompt or "").lower()
-            _payment_kw = ["繳費", "繳款", "繳費憑證", "繳費單", "繳費截圖", "payment proof",
-                           "上傳繳費", "銷帳", "入帳", "收據", "裁判費", "上傳閱卷",
-                           "上傳收據", "費用憑證"]
-            if any(kw in prompt_lower for kw in _payment_kw):
-                logger.info(f"💰 Payment proof detected via keyword in prompt: {path}")
-                try:
-                    return self._handle_payment_proof_from_channel(path)
-                except Exception as pay_err:
-                    logger.error(f"Payment proof upload from channel failed: {pay_err}")
-                    return f"❌ 繳費憑證上傳失敗：{str(pay_err)[:200]}"
-
-            # --- Vision-based smart routing: classify image with Gemma 4 ---
-            # When no explicit keywords, use VLM to detect payment receipts
-            _vision_routed = self._vision_classify_and_route_image(user_id, path, prompt)
-            if _vision_routed is not None:
-                return _vision_routed
-
-            logger.info(f"👁️ Routing Image to Melchior: {path}")
-            # Use Melchior Bridge
-            description = analyze_image(path, prompt=prompt)
-            return f"👁️ Melchior: {description}"
-            
-        elif msg_type == "audio":
-            logger.info(f"🎙️ Routing Audio to unified transcription pipeline: {path}")
-            _transcribe_task_id = f"transcribe_{id(path)}_{time.time():.0f}"
-            self.register_heavy_task(_transcribe_task_id, "逐字稿")
-            try:
-                prompt_lower = (prompt or "").lower()
-                wants_translate = any(k in prompt_lower for k in ["translate", "翻譯", "翻成"])
-                wants_summary = any(k in prompt_lower for k in ["summary", "摘要", "重點"])
-                no_summary = any(k in prompt_lower for k in ["不要摘要", "不用摘要", "不需要摘要", "不要總結", "不用總結", "不需要總結"])
-                if no_summary:
-                    wants_summary = False
-                summary_length = self._detect_summary_length(prompt or "")
-                summary_pref = self._detect_summary_target_pref(prompt_lower)
-                disable_txt = any(k in prompt_lower for k in ["不要txt", "不需要txt", "no txt", "no file"])
-                disable_timestamps = any(k in prompt_lower for k in ["不要時間戳", "不要時間碼", "no timestamp", "without timestamp", "純文字"])
-                # Audio transcription defaults to timestamp + TXT, unless user explicitly disables.
-                wants_txt = not disable_txt
-                wants_timestamps = not disable_timestamps
-                taigi_hint = any(k in prompt_lower for k in ["台語", "臺語", "閩南語", "hokkien", "taigi", "tai-gi"])
-                force_non_zh = any(k in prompt_lower for k in [" english", "英文", "en-us", "en-uk", "日文", "japanese", "日本語"])
-                has_cjk_prompt = bool(re.search(r"[\u4e00-\u9fff]", prompt or ""))
-                language_hint = None if force_non_zh else ("zh" if (taigi_hint or has_cjk_prompt or not prompt_lower.strip()) else None)
-                initial_prompt_hint = ""
-                if language_hint == "zh":
-                    initial_prompt_hint = (
-                        "這段音訊可能包含華語與臺灣口語，請盡量以繁體中文準確轉寫，必要時保留台語詞彙。"
-                        "常見用語：原告、被告、聲請人、相對人、法院、法官、檢察官、律師、"
-                        "委任狀、起訴狀、答辯狀、準備書狀、調解、和解、判決、裁定、"
-                        "民事、刑事、行政訴訟、強制執行、假扣押、假處分、"
-                        "勞動基準法、民法、刑法、公司法、著作權法、"
-                        "當事人、證人、鑑定人、書記官、庭期、開庭、筆錄、"
-                        "損害賠償、違約金、利息、遲延利息、訴訟費用。"
-                    )
-                if taigi_hint:
-                    initial_prompt_hint = (
-                        "這段音訊可能包含台語（臺灣閩南語）與華語，請盡量以繁體中文準確轉寫。"
-                        "常見用語：原告、被告、法院、律師、判決、調解、和解。"
-                    )
-
-                from skills.bridge.balthasar_bridge import transcribe as transcribe_audio
-                tr = transcribe_audio(
-                    path,
-                    language=language_hint,
-                    initial_prompt=initial_prompt_hint or None,
-                    taigi_hint=taigi_hint,
-                )
-                transcript = str((tr or {}).get("text") or "").strip()
-                if not transcript:
-                    err = str((tr or {}).get("error") or "transcription_failed").strip()[:300]
-                    logger.warning(f"Audio transcription failed: {err}")
-                    return "⚠️ 語音已接收，但目前無法完成轉錄。請稍後再試，或在訊息加上「台語」再重試。"
-                force_txt = (
-                    "full translation without summary" in prompt_lower
-                    or "完整翻譯不摘要" in prompt_lower
-                    or wants_txt
-                )
-
-                segments = tr.get("segments") if isinstance(tr, dict) else []
-                timestamp_text = str((tr or {}).get("timestamp_text") or "").strip()
-                if (not timestamp_text) and isinstance(segments, list) and segments:
-                    def _normalize_ts_sec(v: float) -> float:
-                        try:
-                            x = float(v)
-                        except Exception:
-                            return 0.0
-                        if x >= 20000.0:
-                            x = x / 1000.0
-                        return max(0.0, x)
-
-                    def _fmt_hhmmss(sec: float) -> str:
-                        try:
-                            total = int(_normalize_ts_sec(sec))
-                        except Exception:
-                            total = 0
-                        hh = total // 3600
-                        mm = (total % 3600) // 60
-                        ss = total % 60
-                        return f"{hh:02d}:{mm:02d}:{ss:02d}"
-                    lines = []
-                    for seg in segments:
-                        if not isinstance(seg, dict):
-                            continue
-                        st = _normalize_ts_sec(seg.get("start", 0.0))
-                        txt = str(seg.get("text") or "").strip()
-                        if txt:
-                            lines.append(f"[{_fmt_hhmmss(st)}] {txt}")
-                    timestamp_text = "\n".join(lines).strip()
-
-                # --- Post-process: punctuation correction for Chinese transcripts ---
-                if language_hint == "zh" and len(transcript) > 30:
-                    try:
-                        from skills.bridge import melchior_client as _pp_mc
-                        _pp_prompt = (
-                            "你是中文標點修正工具。請修正以下逐字稿的標點符號與斷句，"
-                            "只修標點和段落分隔，不要更改任何用詞或內容。"
-                            "直接輸出修正後的全文，不要加任何說明。\n\n"
-                            f"{transcript}"
-                        )
-                        _pp_ctx = min(16384, max(4096, len(transcript) * 2))
-                        _pp = _pp_mc.quick_local_chat(
-                            _pp_prompt, timeout=30, model_hint=TEXT_PRIMARY_MODEL,
-                            num_ctx=_pp_ctx, num_predict=min(4096, max(1024, len(transcript) + 200)),
-                        )
-                        if _pp.get("success") and _pp.get("response"):
-                            _pp_out = str(_pp["response"]).strip()
-                            # Only use if output is reasonably similar length (not hallucinated)
-                            if 0.7 < len(_pp_out) / max(1, len(transcript)) < 1.4:
-                                transcript = _pp_out
-                                logger.info("Transcript punctuation corrected by taide-12b")
-                    except Exception as _pp_err:
-                        logger.debug("Transcript punctuation correction skipped: %s", _pp_err)
-
-                if len(transcript) > 30:
-                    try:
-                        from skills.bridge.openclaw_codex_bridge import feature_enabled as _codex_feature_enabled, polish_transcript_with_codex
-
-                        codex_max_chars = int(os.environ.get("MAGI_CODEX_TRANSCRIPT_MAX_CHARS", "14000") or "14000")
-                        if _codex_feature_enabled("transcript") and len(transcript) <= max(1200, codex_max_chars):
-                            codex_res = polish_transcript_with_codex(
-                                transcript,
-                                timeout_sec=int(os.environ.get("MAGI_CODEX_TRANSCRIPT_TIMEOUT_SEC", "240") or "240"),
-                            )
-                            codex_text = str(codex_res.get("text") or "").strip()
-                            if codex_res.get("success") and codex_text:
-                                ratio = len(codex_text) / max(1, len(transcript))
-                                if 0.7 < ratio < 1.6:
-                                    transcript = codex_text
-                                    logger.info("Transcript polished by Codex")
-                            elif codex_res.get("error"):
-                                logger.warning("Transcript Codex polish failed: %s", codex_res.get("error"))
-                    except Exception as codex_err:
-                        logger.debug("Transcript Codex polish skipped: %s", codex_err)
-
-                final_text = transcript
-                title = "🎙️ 語音逐字稿"
-
-                # --- Parallel execution: run translation & summary concurrently when possible ---
-                # When both translate and summary are requested and the summary does not
-                # depend on the translated output, run them in parallel to halve wait time.
-                _audio_can_parallel = wants_translate and wants_summary and summary_pref != "translated"
-
-                if _audio_can_parallel:
-                    _tr_future = inference_pool.submit(
-                        self._translate_text_complete,
-                        transcript,
-                        source_lang="auto",
-                        target_lang="繁體中文",
-                    )
-                    _sm_future = inference_pool.submit(
-                        self._summarize_text_resilient,
-                        transcript,
-                        summary_length=summary_length,
-                        progress_callback=getattr(self, "_progress_callback", None),
-                    )
-
-                    # Collect translation result.
-                    try:
-                        rr = _tr_future.result(timeout=300)
-                        if isinstance(rr, dict) and rr.get("success"):
-                            t = str(rr.get("text") or "").strip()
-                            if t:
-                                final_text = t
-                                title = "🌐 語音翻譯結果"
-                    except Exception as translate_err:
-                        logger.warning(f"Audio translation skipped due to error: {translate_err}")
-
-                    # Collect summary result (ran on transcript / source).
-                    summary_text = ""
-                    summary_source_label = "逐字稿原文"
-                    try:
-                        summary_res = _sm_future.result(timeout=300)
-                        if isinstance(summary_res, dict) and summary_res.get("success"):
-                            summary_text = str(summary_res.get("text") or summary_res.get("summary") or "").strip()
-                    except Exception as summarize_err:
-                        logger.warning(f"Audio summary fallback due to error: {summarize_err}")
-                else:
-                    # Sequential path (original behaviour).
-                    if wants_translate:
-                        try:
-                            rr = self._translate_text_complete(
-                                transcript,
-                                source_lang="auto",
-                                target_lang="繁體中文",
-                            )
-                            if isinstance(rr, dict) and rr.get("success"):
-                                t = str(rr.get("text") or "").strip()
-                                if t:
-                                    final_text = t
-                                    title = "🌐 語音翻譯結果"
-                        except Exception as translate_err:
-                            logger.warning(f"Audio translation skipped due to error: {translate_err}")
-
-                    summary_text = ""
-                    summary_source_label = ""
-                    if wants_summary:
-                        try:
-                            summary_target_text = final_text
-                            if summary_pref == "source":
-                                summary_target_text = transcript
-                                summary_source_label = "逐字稿原文"
-                            elif summary_pref == "translated":
-                                summary_target_text = final_text
-                                summary_source_label = "翻譯結果" if wants_translate else "逐字稿原文"
-                            else:
-                                summary_source_label = "翻譯結果" if wants_translate else "逐字稿原文"
-                            summary_res = self._summarize_text_resilient(
-                                summary_target_text,
-                                summary_length=summary_length,
-                                progress_callback=getattr(self, "_progress_callback", None),
-                            )
-                            if summary_res.get("success"):
-                                summary_text = str(summary_res.get("text") or summary_res.get("summary") or "").strip()
-                        except Exception as summarize_err:
-                            logger.warning(f"Audio summary fallback due to error: {summarize_err}")
-
-                export_text = final_text
-                if wants_timestamps and timestamp_text:
-                    export_text = f"【時間戳記】\n{timestamp_text}\n\n【全文】\n{final_text}".strip()
-
-                if force_txt or len(export_text) > 2500:
-                    try:
-                        from skills.ops.export_text import export_txt
-                        exported = export_txt(export_text, prefix="audio_transcription")
-                        if exported.get("success"):
-                            path_out = str(exported.get("path") or "").strip()
-                            url_out = str(exported.get("url") or "").strip()
-                            head = "📄 已輸出逐字稿 TXT 檔案。"
-                            if wants_timestamps:
-                                head = "📄 已輸出含時間戳記的逐字稿 TXT 檔案。"
-                            if url_out:
-                                head = f"{head}\n{url_out}"
-                            if summary_text:
-                                head = f"📝 語音重點摘要（來源：{summary_source_label}）：\n{summary_text}\n\n{head}"
-                            if self._is_file_protocol_user(str(user_id or "")) and path_out:
-                                return f"{head}|||FILE_PATH|||{path_out}"
-                            return f"{head}\n{path_out}".strip()
-                    except Exception as e:
-                        logger.error(f"TXT Export error in orchestrator audio: {e}")
-                if summary_text:
-                    return f"📝 語音重點摘要（來源：{summary_source_label}）：\n{summary_text}\n\n{title}：\n{final_text[:1200]}"
-
-                if wants_timestamps and timestamp_text:
-                    preview_lines = timestamp_text.splitlines()
-                    preview = "\n".join(preview_lines[:24]).strip()
-                    if len(preview_lines) > 24:
-                        preview += "\n…（其餘內容可加上「請給我TXT」取得完整檔案）"
-                    return f"{title}（含時間戳記）：\n{preview}"
-
-                return f"{title}：\n{final_text}"
-            except Exception as e:
-                logger.error(f"❌ Audio routing error: {e}")
-                return "❌ 語音處理失敗：音訊模組執行異常（已記錄）。請稍後再試。"
-            finally:
-                self.unregister_heavy_task(_transcribe_task_id)
-
-        elif msg_type == "file":
-            filename = attachment.get('filename', '')
-            logger.info(f"📄 Routing File: {filename}")
-            prompt_lower = (prompt or "").lower()
-            wants_translate = any(k in prompt_lower for k in ["翻譯", "translate", "翻成"])
-            wants_summary = any(k in prompt_lower for k in ["摘要", "總結", "重點", "summary", "summarize"])
-            no_summary = any(k in prompt_lower for k in ["不要摘要", "不用摘要", "不需要摘要", "不要總結", "不用總結", "不需要總結"])
-            if no_summary:
-                wants_summary = False
-            summary_length = self._detect_summary_length(prompt or "")
-            summary_pref = self._detect_summary_target_pref(prompt_lower)
-            disable_txt = any(k in prompt_lower for k in ["不要txt", "不需要txt", "no txt", "inline", "直接貼上"])
-            explicit_txt = any(k in prompt_lower for k in ["txt", "文字檔", "檔案", "download", "下載"])
-            try:
-                summary_txt_default = os.environ.get("MAGI_FILE_SUMMARY_EXPORT_TXT_DEFAULT", "1").strip().lower() in {"1", "true", "yes", "on"}
-            except Exception:
-                summary_txt_default = True
-            summary_force_txt = (not disable_txt) and (explicit_txt or summary_txt_default)
-
-            if wants_translate:
-                extracted = self._extract_text_from_uploaded_file(path, filename=filename)
-                if not extracted.get("success"):
-                    return (
-                        f"📄 檔案 `{filename or os.path.basename(path)}` 已接收，但目前無法做全文翻譯：{extracted.get('error')}\n"
-                        "已支援：PDF、EPUB、TXT、MD、LOG、CSV、JSON、DOCX。"
-                    )
-
-                src_text = self._prepare_document_text_for_llm(str(extracted.get("text") or ""))
-                src_text, was_capped = self._cap_translation_source_text(src_text)
-                if not src_text:
-                    return "⚠️ 檔案內容為空，無法翻譯。"
-
-                try:
-                    auto_ingest = os.environ.get("MAGI_DOC_AUTO_INGEST", "1").strip().lower() in {"1", "true", "yes", "on"}
-                except Exception:
-                    auto_ingest = True
-                ingest_queued = False
-                if auto_ingest:
-                    ingest_queued = self._ingest_uploaded_text_async(
-                        kind=str(extracted.get("kind") or "file"),
-                        primary=path,
-                        title=str(extracted.get("title") or filename or os.path.basename(path)),
-                        text=src_text,
-                    )
-
-                # --- Parallel execution: run translation & summary concurrently when possible ---
-                # When summary_pref is "translated", summary depends on translation output,
-                # so they must stay sequential. Otherwise (source / auto), summary can use
-                # src_text directly and run in parallel with translation.
-                _can_parallel_summary = wants_summary and summary_pref != "translated"
-
-                if _can_parallel_summary:
-                    # Run translation and summary in parallel on independent inputs.
-                    _translate_future = inference_pool.submit(
-                        self._translate_text_complete, src_text,
-                        source_lang="auto", target_lang="繁體中文",
-                    )
-                    _summary_future = inference_pool.submit(
-                        self._summarize_text_resilient, src_text,
-                        summary_length, progress_callback=getattr(self, '_progress_callback', None),
-                    )
-                    try:
-                        rr = _translate_future.result(timeout=300)
-                    except Exception as e:
-                        rr = {"success": False, "error": str(e)}
-                    try:
-                        sr = _summary_future.result(timeout=300)
-                    except Exception as e:
-                        sr = {"success": False, "error": str(e)}
-                else:
-                    # Sequential: translate first (summary may depend on result).
-                    try:
-                        rr = self._translate_text_complete(src_text, source_lang="auto", target_lang="繁體中文")
-                    except Exception as e:
-                        rr = {"success": False, "error": str(e)}
-                    sr = None  # will be computed below if needed
-
-                if not rr.get("success"):
-                    err = str(rr.get("error") or "translate_failed").strip()[:260]
-                    if err.startswith("translation_off_topic:"):
-                        err = "偵測到翻譯結果偏題，已中止回傳以避免送出錯誤內容"
-                    base = f"❌ 檔案翻譯失敗：{err}"
-                    if ingest_queued:
-                        base += "\n🧠 文件內容已排入背景吸收。"
-                    return base
-
-                # Use plain translated text (not markdown table) for exports
-                _plain_translated = str(rr.get("translated_text") or rr.get("text") or "").strip()
-                translated_text = self._polish_translated_document_text(_plain_translated)
-                if not translated_text:
-                    return "⚠️ 檔案翻譯結果為空。請稍後再試。"
-                # Chunk-level source/target pairs for DOCX bilingual table
-                _src_chunks = rr.get("source_chunks") or []
-                _tgt_chunks = rr.get("translated_chunks") or []
-                summary_text = ""
-                summary_note = ""
-                summary_source_label = "翻譯結果"
-                if wants_summary:
-                    if _can_parallel_summary:
-                        # Summary already computed in parallel on src_text.
-                        summary_source_label = "原文"
-                        if sr.get("success"):
-                            summary_text = str(sr.get("text") or "").strip()
-                        else:
-                            summary_note = f"⚠️ 摘要產生失敗：{str(sr.get('error') or 'summary_failed')[:120]}"
-                    else:
-                        # Sequential path: summary_pref == "translated", use translated_text.
-                        summary_target_text = translated_text
-                        summary_source_label = "翻譯結果"
-                        sr = self._summarize_text_resilient(summary_target_text, summary_length=summary_length, progress_callback=getattr(self, '_progress_callback', None))
-                        if sr.get("success"):
-                            summary_text = str(sr.get("text") or "").strip()
-                        else:
-                            summary_note = f"⚠️ 摘要產生失敗：{str(sr.get('error') or 'summary_failed')[:120]}"
-
-                ingest_note = ""
-                if ingest_queued:
-                    ingest_note = "🧠 文件內容已排入背景吸收。"
-                fail_cnt = int(rr.get("chunks_failed") or 0)
-                fail_note = ""
-                if fail_cnt > 0:
-                    fail_note = f"⚠️ 有 {fail_cnt} 個段落翻譯失敗，已先保留原文，稍後可針對該段重跑。"
-                export_body = translated_text
-                if summary_text:
-                    _sl_label = {"short": "精簡", "long": "詳細"}.get(summary_length, "")
-                    _sl_tag = f"{_sl_label}摘要" if _sl_label else "摘要"
-                    export_body = f"【{_sl_tag}（來源：{summary_source_label}）】\n{summary_text}\n\n【全文翻譯】\n{translated_text}".strip()
-
-                if not disable_txt:
-                    # Prefer DOCX bilingual table, fallback to TXT
-                    exported_reply = self._export_translation_docx(
-                        source_text=locals().get("src_text", ""),
-                        translated_text=translated_text,
-                        source_chunks=_src_chunks,
-                        translated_chunks=_tgt_chunks,
-                        title=(filename or os.path.basename(path)),
-                        prefix="file_translate",
-                        user_id=str(user_id or ""),
-                    )
-                    if not exported_reply:
-                        exported_reply = self._export_translation_txt(
-                            translated_text=export_body,
-                            source=(filename or os.path.basename(path)),
-                            provider=str(rr.get("provider") or "tri-sage"),
-                            mode="file_translate_with_summary" if wants_summary else "file_full_translation",
-                            prefix="file_translate",
-                            user_id=str(user_id or ""),
-                        )
-                    if exported_reply:
-                        extra_notes = "\n".join([n for n in [summary_note, fail_note, ingest_note] if n]).strip()
-                        if "|||FILE_PATH|||" in exported_reply:
-                            if extra_notes:
-                                head, tail = exported_reply.split("|||FILE_PATH|||", 1)
-                                return f"{head}\n{extra_notes}|||FILE_PATH|||{tail}"
-                            return exported_reply
-                        if extra_notes:
-                            return f"{exported_reply}\n{extra_notes}"
-                        return exported_reply
-
-                prefix = "🌐 檔案翻譯結果：\n"
-                if was_capped:
-                    prefix = "🌐 檔案翻譯結果（內容過長，已截斷後翻譯）：\n"
-                out = prefix + export_body
-                if summary_note:
-                    out += f"\n\n{summary_note}"
-                if fail_note:
-                    out += f"\n\n{fail_note}"
-                if ingest_note:
-                    out += f"\n\n{ingest_note}"
-                return out
-            
-            # PDF Processing
-            if filename.lower().endswith('.pdf'):
-                logger.info(f"📄 Processing PDF: {path}")
-                # Go directly to pdf_bridge.summarize_pdf which has map-reduce
-                # for large docs. Avoids wasting 120s on _summarize_text_resilient
-                # single-shot attempt that always times out on large PDFs.
-                from skills.documents.pdf_bridge import summarize_pdf
-                out = str(
-                    summarize_pdf(
-                        path,
-                        progress_callback=getattr(self, '_progress_callback', None),
-                        summary_length=summary_length,
-                    )
-                    or ""
-                ).strip()
-                if summary_force_txt and out:
-                    exported_reply = self._export_summary_docx_or_txt(
-                        out, prefix="pdf_summary", title=(filename or "PDF 摘要"),
-                        user_id=str(user_id or ""), source_path=path,
-                    )
-                    if exported_reply:
-                        return exported_reply
-                return out
-
-            # EPUB Processing
-            elif filename.lower().endswith('.epub'):
-                logger.info(f"📚 Processing EPUB: {path}")
-                from skills.documents.epub_bridge import summarize_epub
-                out = str(summarize_epub(path) or "").strip()
-                if summary_force_txt and out:
-                    exported_reply = self._export_summary_docx_or_txt(
-                        out, prefix="epub_summary", title=(filename or "EPUB 摘要"),
-                        user_id=str(user_id or ""), source_path=path,
-                    )
-                    if exported_reply:
-                        return exported_reply
-                return out
-
-            # Common text/office docs
-            elif any(filename.lower().endswith(ext) for ext in [".txt", ".md", ".log", ".csv", ".json", ".docx"]):
-                from skills.documents.file_bridge import summarize_file
-                out = str(summarize_file(path, filename=filename) or "").strip()
-                if summary_force_txt and out:
-                    exported_reply = self._export_summary_docx_or_txt(
-                        out, prefix="doc_summary", title=(filename or "檔案摘要"),
-                        user_id=str(user_id or ""), source_path=path,
-                    )
-                    if exported_reply:
-                        return exported_reply
-                return out
-            
-            # Other files
-            else:
-                return (
-                    f"📄 檔案 '{filename}' 已接收，但目前不支援此格式摘要。\n"
-                    "已支援：PDF、EPUB、TXT、MD、LOG、CSV、JSON、DOCX。"
-                )
-            
-        return (
-            "⚠️ 不支援此附件類型。\n"
-            "目前支援的格式：PDF、EPUB、TXT、MD、LOG、CSV、JSON、DOCX。\n"
-            "圖片（PNG/JPG）請直接傳送，不要以檔案方式上傳。"
-        )
+        from api.domains.multimedia_flow import handle_multimedia
+        return handle_multimedia(self, user_id, prompt, attachment)
 
 
     def process_image(self, user_id, image_path, platform="LINE"):
@@ -1920,178 +1303,13 @@ class Orchestrator:
             return f"❌ 無法讀取狀態: {e}"
 
     def _get_collaboration_status(self):
-        """
-        Cross-node collaboration health summary (Melchior / Balthasar / Watcher).
-        """
-        lines = ["🤝 **協作鏈路健康度**"]
-
-        # Melchior
-        try:
-            from skills.bridge.melchior_client import check_health as melchior_health
-            mh = melchior_health()
-            if mh.get("online"):
-                models = mh.get("models") or []
-                has_main20 = any(TEXT_PRIMARY_MODEL.lower() in str(m).lower() for m in models)
-                lines.append(
-                    f"🟢 Melchior: {mh.get('mode', 'unknown')} / v{mh.get('ollama_version', 'n/a')} / "
-                    f"Main20B={'yes' if has_main20 else 'no'}"
-                )
-            else:
-                lines.append("🔴 Melchior: offline")
-        except Exception as e:
-            lines.append(f"🟡 Melchior: status unavailable ({e})")
-
-        # Balthasar
-        try:
-            from skills.bridge.balthasar_bridge import check_health as balthasar_health
-            ok, msg = balthasar_health()
-            if ok:
-                lines.append(f"🟢 Balthasar: {msg}")
-            else:
-                # In normal operations, Balthasar is council-only; Casper provides proxy capabilities.
-                if "council-only" in str(msg).lower():
-                    lines.append("🟣 Balthasar: council-only (proxy on Casper for summarize/transcribe)")
-                else:
-                    lines.append(f"🔴 Balthasar: {msg}")
-        except Exception as e:
-            lines.append(f"🟡 Balthasar: status unavailable ({e})")
-
-        # Watcher
-        try:
-            from skills.bridge.watcher_bridge import check_health as watcher_health
-            ok, msg = watcher_health()
-            lines.append(f"{'🟢' if ok else '🔴'} Watcher: {msg}")
-        except Exception as e:
-            lines.append(f"🟡 Watcher: status unavailable ({e})")
-
-        # OCR Engine Status (macOS Vision — GLM-OCR retired)
-        try:
-            from skills.apple.apple_intelligence import VISION_AVAILABLE
-            if VISION_AVAILABLE:
-                lines.append("🟢 OCR: macOS Vision (零 GPU)")
-            else:
-                lines.append("🟡 OCR: macOS Vision 不可用（PyObjC 未安裝）")
-        except Exception:
-            lines.append("🟡 OCR: macOS Vision 不可用")
-
-        return "\n".join(lines)
+        from api.domains.collab_flow import get_collaboration_status
+        return get_collaboration_status(self)
 
     def _get_schedule(self):
-        """Get upcoming meetings from law_firm_data database."""
-        try:
-            from skills.law_firm.manage_meetings import list_meetings
-            from datetime import datetime, timedelta
-            
-            result = list_meetings()
-            
-            db_items = []
-            if result.get("success") and result.get("data"):
-                meetings = result["data"]
-                for m in meetings[:7]:  # Limit to 7 entries
-                    dt_str = m.get('datetime', '')
-                    if dt_str:
-                        try:
-                            dt = datetime.fromisoformat(dt_str)
-                            date_fmt = dt.strftime("%m/%d %H:%M")
-                        except Exception:
-                            date_fmt = dt_str[:16]
-                    else:
-                        date_fmt = "待定"
+        from api.domains.schedule_flow import get_schedule
+        return get_schedule(self)
 
-                    meeting_type = m.get('type', '會議')
-                    client = m.get('client_name', '')
-                    location = m.get('location', '')
-
-                    line = f"• **{date_fmt}** - {meeting_type}"
-                    if client:
-                        line += f" ({client})"
-                    if location:
-                        line += f" @ {location}"
-                    db_items.append(line)
-
-            # ── Google Calendar 查詢 ──
-            gcal_items = []
-            try:
-                import importlib, importlib.util
-                from api.runtime_paths import get_config_path
-                credentials_path = str(get_config_path("credentials.json"))
-                token_path = str(get_config_path("google_calendar_token.json"))
-                # osc-orchestrator uses hyphen — must use importlib
-                spec = importlib.util.spec_from_file_location(
-                    "osc_orchestrator_action",
-                    os.path.join(os.environ.get("MAGI_ROOT_DIR", ""), "skills", "osc-orchestrator", "action.py"),
-                )
-                mod = importlib.util.module_from_spec(spec)
-                spec.loader.exec_module(mod)
-                svc = mod._build_google_calendar_service(credentials_path, token_path, interactive=False)
-                if svc.get("ok") and svc.get("service"):
-                    service = svc["service"]
-                    from datetime import timezone
-                    tz = timezone(timedelta(hours=8))
-                    now = datetime.now(tz)
-                    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
-                    today_end = (now + timedelta(days=7)).replace(hour=23, minute=59, second=59, microsecond=0).isoformat()
-                    # 查所有日曆（不只 primary）
-                    try:
-                        _cal_list = service.calendarList().list().execute().get("items", [])
-                        _cal_ids = [c["id"] for c in _cal_list if c.get("id")]
-                    except Exception:
-                        _cal_ids = ["primary"]
-                    if not _cal_ids:
-                        _cal_ids = ["primary"]
-                    _all_events = []
-                    _seen_ids = set()
-                    for _cid in _cal_ids:
-                        try:
-                            _r = service.events().list(
-                                calendarId=_cid,
-                                timeMin=today_start,
-                                timeMax=today_end,
-                                singleEvents=True,
-                                orderBy='startTime',
-                                maxResults=20,
-                            ).execute()
-                            for _ev in _r.get('items', []):
-                                _eid = _ev.get('id', '')
-                                if _eid not in _seen_ids:
-                                    _seen_ids.add(_eid)
-                                    _all_events.append(_ev)
-                        except Exception:
-                            pass
-                    # 按開始時間排序
-                    _all_events.sort(key=lambda e: e.get('start', {}).get('dateTime', e.get('start', {}).get('date', '')))
-                    for ev in _all_events:
-                        start_raw = ev['start'].get('dateTime', ev['start'].get('date', ''))
-                        summary = ev.get('summary', '(無標題)')
-                        ev_location = ev.get('location', '')
-                        try:
-                            dt_ev = datetime.fromisoformat(start_raw)
-                            date_fmt = dt_ev.strftime("%m/%d %H:%M")
-                        except Exception:
-                            date_fmt = start_raw[:16] if start_raw else "待定"
-                        line = f"• **{date_fmt}** - {summary}"
-                        if ev_location:
-                            line += f" @ {ev_location}"
-                        gcal_items.append(line)
-            except Exception as e:
-                logger.warning(f"Google Calendar query failed: {e}")
-
-            # ── 合併結果 ──
-            all_items = db_items + gcal_items
-            if all_items:
-                response = "📅 **近期行程**\n\n"
-                response += "\n".join(all_items) + "\n"
-                if gcal_items:
-                    response += f"\n_(含 {len(gcal_items)} 筆 Google 日曆行程)_"
-                return response
-            else:
-                return "📅 目前沒有排定的行程。"
-
-        except Exception as e:
-            logger.error(f"❌ Schedule query error: {e}")
-            return f"⚠️ 無法讀取行程: {e}"
-
-    @staticmethod
     def _translate_prompt_to_english(prompt: str) -> str:
         """Translate non-ASCII prompt to English for Stable Diffusion."""
         import urllib.parse, urllib.request
@@ -2205,133 +1423,8 @@ class Orchestrator:
     _FORGE_LOCK_TIMEOUT = 600  # Safety: force-release lock after 600s
 
     def _auto_acquire_and_execute(self, user_id, message, platform: str = "LINE"):
-        """
-        Autonomous capability upgrade with auto-retry:
-        acquire skill -> validate/activate -> optionally execute action.py.
-        ★ 背景執行緒跑（不卡 reply_token），超時自動重試（最多 3 次），每次通知使用者。
-        """
-        # Concurrency guard: prevent duplicate forge for same user
-        uid = str(user_id)
-        lock = self._forge_locks.setdefault(uid, threading.Lock())
-
-        # Safety: if lock has been held longer than _FORGE_LOCK_TIMEOUT, force release it
-        lock_ts_key = f"_forge_lock_ts_{uid}"
-        lock_acquired_at = getattr(self, lock_ts_key, 0)
-        if lock_acquired_at and (time.time() - lock_acquired_at) > self._FORGE_LOCK_TIMEOUT:
-            try:
-                lock.release()
-                logger.warning("Force-released stale forge lock for uid=%s (held %.0fs)", uid, time.time() - lock_acquired_at)
-            except RuntimeError:
-                pass  # already unlocked
-
-        if not lock.acquire(blocking=False):
-            return "⏳ 技能生成已在進行中，請稍候上一個完成…"
-        setattr(self, lock_ts_key, time.time())
-
-        def _notify(text: str):
-            try:
-                cb = getattr(self, "notification_callback", None)
-                if cb:
-                    cb(str(user_id), text, platform)
-                else:
-                    logger.warning("No notification_callback set, forge notification lost")
-            except Exception as e:
-                logger.warning(f"Forge notification callback failed: {e}")
-
-        def _rebuild_embed_cache():
-            try:
-                from skills.bridge.embedding_router import get_router as _get_embed_router
-                _er = _get_embed_router()
-                if _er.is_ready:
-                    _er.rebuild_cache()
-                    logger.info("🔄 Embedding router cache rebuilt after skill genesis")
-            except Exception as e:
-                logger.debug(f"Embedding router rebuild after genesis: {e}")
-
-        def _run_forge_with_retry():
-            import concurrent.futures
-            from skills.evolution.intent_forge import forge_execute
-
-            max_retries = self._FORGE_MAX_RETRIES
-            timeouts = self._FORGE_TIMEOUT_SCHEDULE
-
-            for attempt in range(1, max_retries + 1):
-                timeout = timeouts[min(attempt - 1, len(timeouts) - 1)]
-                logger.info(f"🧬 Forge attempt {attempt}/{max_retries}, timeout={timeout}s")
-
-                try:
-                    future = io_pool.submit(
-                        forge_execute, str(user_id), message, "", "orchestrator_auto"
-                    )
-                    reply = future.result(timeout=timeout)
-
-                    # Success
-                    msg = reply.get("reply", "ℹ️ 自主演化流程完成。") if isinstance(reply, dict) else str(reply)
-                    success = reply.get("success", False) if isinstance(reply, dict) else bool(msg)
-
-                    if success or attempt == max_retries:
-                        _notify(msg)
-                        _rebuild_embed_cache()
-                        return
-
-                    # forge_execute returned but reported failure — retry
-                    logger.warning(f"Forge attempt {attempt} failed (non-success): {msg[:200]}")
-                    if attempt < max_retries:
-                        _notify(
-                            f"⏳ 技能生成第 {attempt} 次未成功，MAGI 正在自動重試"
-                            f"（第 {attempt + 1}/{max_retries} 次）…"
-                        )
-
-                except concurrent.futures.TimeoutError:
-                    logger.warning(f"Forge attempt {attempt} timed out after {timeout}s")
-                    if attempt < max_retries:
-                        _notify(
-                            f"⏳ 技能生成第 {attempt} 次超時（{timeout}s），MAGI 正在自動接續"
-                            f"（第 {attempt + 1}/{max_retries} 次，上限 {timeouts[min(attempt, len(timeouts) - 1)]}s）…"
-                        )
-                    else:
-                        _notify(
-                            f"❌ 技能生成經過 {max_retries} 次嘗試仍未完成。\n"
-                            f"累計等待約 {sum(timeouts[:max_retries]) // 60} 分鐘。\n"
-                            "建議：簡化指令再試一次，或手動建立技能。"
-                        )
-                        return
-
-                except Exception as e:
-                    logger.error(f"Forge attempt {attempt} error: {e}")
-                    if attempt < max_retries:
-                        _notify(
-                            f"⚠️ 技能生成第 {attempt} 次遇到錯誤：{str(e)[:100]}\n"
-                            f"MAGI 正在自動重試（第 {attempt + 1}/{max_retries} 次）…"
-                        )
-                    else:
-                        _notify(f"❌ 技能生成失敗（{max_retries} 次嘗試）：{str(e)[:200]}")
-                        return
-
-        def _run_forge_with_lock():
-            try:
-                _run_forge_with_retry()
-            except Exception as e:
-                logger.error("Forge background thread crashed: %s", e)
-            finally:
-                try:
-                    lock.release()
-                except RuntimeError:
-                    pass  # already released
-                # Clear the lock timestamp
-                try:
-                    setattr(self, f"_forge_lock_ts_{uid}", 0)
-                except Exception:
-                    pass
-
-        import threading
-        try:
-            threading.Thread(target=_run_forge_with_lock, daemon=True, name="forge-bg").start()
-        except Exception as _thread_err:
-            lock.release()
-            logger.error(f"Failed to start forge thread: {_thread_err}")
-            return f"❌ 技能生成啟動失敗：{_thread_err}"
-        return "🧬 正在自動生成新技能中，請稍候（約 1-5 分鐘）。完成後我會主動回報，若超時會自動重試。"
+        from api.domains.acquisition_flow import auto_acquire_and_execute
+        return auto_acquire_and_execute(self, user_id, message, platform)
 
     def _laf_report_command_help(self) -> str:
         return _get_handler("laf").laf_report_command_help()
@@ -2344,129 +1437,13 @@ class Orchestrator:
 
     # ── Vision-based smart routing for images ──────────────────────────
 
-    def _vision_classify_and_route_image(self, user_id, image_path: str, prompt: str | None) -> str | None:
-        """
-        Use Gemma 4 multimodal to classify the image content.
-        If it looks like a payment receipt, route to payment upload automatically.
-        Returns a response string if handled, or None to fall through to default.
-        """
-        import base64
-        try:
-            if not os.path.isfile(image_path):
-                return None
-
-            with open(image_path, "rb") as f:
-                img_b64 = base64.b64encode(f.read()).decode()
-
-            # Quick classification prompt — keep it short for speed
-            classify_prompt = (
-                "請判斷這張圖片的類型，只回答一個類別：\n"
-                "A) 法院繳費收據/繳費憑證/繳費截圖\n"
-                "B) 法律文件（判決書、裁定、起訴狀等）\n"
-                "C) 其他圖片\n"
-                "只回答 A、B 或 C，不要其他文字。"
-            )
-
-            from skills.bridge.http_pool import get_session as _get_session
-            # Use Gemma 4 multimodal on main port (GLM-OCR retired)
-            _vision_base = os.environ.get("MAGI_OMLX_VISION_URL", os.environ.get("MAGI_OMLX_CHAT_URL", "http://127.0.0.1:8080"))
-
-            payload = {
-                "model": os.environ.get("MAGI_OMLX_VISION_MODEL", "gemma-4-26b-a4b-it-4bit"),
-                "messages": [{
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": classify_prompt},
-                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}},
-                    ],
-                }],
-                "max_tokens": 20,
-                "temperature": 0.1,
-                "stream": False,
-            }
-
-            resp = _get_session().post(
-                f"{_vision_base.rstrip('/')}/v1/chat/completions",
-                json=payload, timeout=30,
-            )
-            if resp.status_code != 200:
-                logger.debug(f"Vision classify returned {resp.status_code}, falling through")
-                return None
-
-            choices = resp.json().get("choices") or []
-            answer = (choices[0].get("message", {}).get("content", "") if choices else "").strip().upper()
-            logger.info(f"🔍 Vision classify result: '{answer}' for {image_path}")
-
-            # If classified as payment receipt → auto-route to payment upload
-            if answer.strip().upper() == "A":
-                logger.info(f"💰 Payment proof detected via vision classification: {image_path}")
-                try:
-                    return self._handle_payment_proof_from_channel(image_path)
-                except Exception as pay_err:
-                    logger.error(f"Payment proof upload (vision-routed) failed: {pay_err}")
-                    return f"❌ 繳費憑證上傳失敗：{str(pay_err)[:200]}"
-
-            # Other categories fall through to default image analysis
-            return None
-
-        except Exception as e:
-            logger.debug(f"Vision classify failed: {e}, falling through to default")
-            return None
-
-    # ── Payment proof upload from channel images (LINE/DC/TG) ──────────
+    def _vision_classify_and_route_image(self, user_id, image_path: str, prompt):
+        from api.domains.multimedia_flow import vision_classify_and_route_image
+        return vision_classify_and_route_image(self, user_id, image_path, prompt)
 
     def _handle_payment_proof_from_channel(self, image_path: str) -> str:
-        """
-        接收從 LINE/Discord/Telegram 傳來的繳費截圖，
-        自動解析案號並上傳至 OLA。
-        使用 subprocess 呼叫 action.py，避免重型 import 阻塞主進程。
-        """
-        action_script = os.path.abspath(os.path.join(
-            os.path.dirname(__file__), "..", "skills",
-            "file-review-orchestrator", "action.py",
-        ))
-        if not os.path.exists(action_script):
-            return "❌ 找不到閱卷模組 action.py"
-
-        py = os.environ.get("MAGI_SKILL_PYTHON", "").strip()
-        if not py or not os.path.exists(py):
-            py = sys.executable or "python3"
-
-        # 呼叫 action.py 的 cmd_upload_payment_proof_from_image
-        cmd_json = json.dumps({"cmd": "upload_payment_proof_from_image", "image_path": image_path})
-        logger.info("💰 Calling action.py for payment proof: %s", image_path)
-
-        try:
-            def _run_payment_subprocess():
-                return subprocess.run(
-                    [py, action_script, "--json-cmd"],
-                    input=cmd_json,
-                    capture_output=True,
-                    text=True,
-                    timeout=180,
-                    cwd=os.path.dirname(action_script),
-                )
-            proc = io_pool.submit(_run_payment_subprocess).result(timeout=190)
-        except (subprocess.TimeoutExpired, FuturesTimeoutError):
-            return "❌ 繳費憑證上傳逾時（超過 3 分鐘）"
-
-        stdout = (proc.stdout or "").strip()
-        stderr = (proc.stderr or "").strip()
-
-        # 嘗試解析 JSON 結果
-        try:
-            result = json.loads(stdout)
-            return result.get("message") or str(result)
-        except Exception:
-            logger.warning("Payment subprocess returned non-JSON stdout: %s", stdout[:200], exc_info=True)
-
-        # 如果不是 JSON，直接回傳 stdout
-        if stdout:
-            return stdout
-        if proc.returncode != 0:
-            err = stderr[:200] if stderr else f"exit code {proc.returncode}"
-            return f"❌ 繳費憑證上傳失敗：{err}"
-        return "⚠️ 繳費憑證上傳完成但無回傳結果"
+        from api.domains.multimedia_flow import handle_payment_proof_from_channel
+        return handle_payment_proof_from_channel(self, image_path)
 
     def _handle_command(self, user_id, message, role="user", platform="LINE"):
         from api.pipelines.command_dispatch import handle_command
