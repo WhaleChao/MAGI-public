@@ -40,6 +40,27 @@ except Exception:
 
 logger = logging.getLogger("MemBridge")
 
+# ── Recall TTL cache ─────────────────────────────────────────────────
+_RECALL_CACHE = {}       # type: dict  # {cache_key: (results, timestamp)}
+_RECALL_CACHE_TTL = 300   # 5 minutes
+_RECALL_CACHE_MAX = 100
+_RECALL_CACHE_STATS = {"hits": 0, "misses": 0}
+_RECALL_CACHE_LOCK = threading.Lock()
+
+
+def _recall_cache_store(key, results):
+    """Store recall results in the TTL cache."""
+    with _RECALL_CACHE_LOCK:
+        _RECALL_CACHE_STATS["misses"] += 1
+        _RECALL_CACHE[key] = (list(results), time.time())
+        if len(_RECALL_CACHE) > _RECALL_CACHE_MAX:
+            sorted_keys = sorted(
+                _RECALL_CACHE.keys(),
+                key=lambda k: _RECALL_CACHE[k][1],
+            )
+            for old_key in sorted_keys[:20]:
+                del _RECALL_CACHE[old_key]
+
 if patch_mysql_connector_for_stability:
     os.environ.setdefault("MAGI_MYSQL_USE_PURE", "1")
     try:
@@ -59,7 +80,11 @@ _OMLX_EMBED_BASE = os.environ.get("MAGI_OMLX_EMBED_URL", "http://127.0.0.1:8081"
 # Legacy names (OLLAMA_*) kept for backward compat; MAGI_OMLX_EMBED_URL is canonical
 OLLAMA_URL = os.environ.get("OLLAMA_EMBED_URL", f"{_OMLX_EMBED_BASE}/v1/embeddings")
 OLLAMA_BATCH_URL = os.environ.get("OLLAMA_EMBED_BATCH_URL", f"{_OMLX_EMBED_BASE}/v1/embeddings")
-MODEL = os.environ.get("MEM_EMBED_MODEL", "modernbert-embed-4bit")
+try:
+    from api.model_config import EMBED_MODEL as _DEFAULT_EMBED_MODEL
+except Exception:
+    _DEFAULT_EMBED_MODEL = "modernbert-embed-4bit"
+MODEL = os.environ.get("MEM_EMBED_MODEL", _DEFAULT_EMBED_MODEL)
 
 try:
     from api.routing.service_registry import get_service_url as _get_svc_url
@@ -71,6 +96,7 @@ GENERATE_MODEL = os.environ.get("MEM_QUERY_EXPAND_MODEL", os.environ.get("MAGI_T
 
 MAX_VECTOR_SCAN = int(os.environ.get("MEMORY_MAX_VECTOR_SCAN", "5000"))
 ENABLE_QUERY_EXPANSION = os.environ.get("MEMORY_ENABLE_QUERY_EXPANSION", "0") != "0"  # V3: disabled by default (saves ~5s)
+ENABLE_GRAPH_RAG = os.environ.get("MEMORY_ENABLE_GRAPH_RAG", "1") != "0"
 
 _MEMORY_RECALL_CHATLOG_MARKERS = (
     "回顧",
@@ -442,6 +468,80 @@ def get_embeddings_batch(texts, batch_size=32):
     return all_embeddings
 
 
+def _augment_query_for_retrieval(query: str, max_keywords: int = 5) -> str:
+    query_text = str(query or "").strip()
+    if not query_text or _query_prefers_chatlog(query_text):
+        return query_text
+    if not re.search(r"[\u3400-\u9fff]", query_text):
+        return query_text
+
+    try:
+        from skills.engine.chinese_nlp import extract_keywords
+
+        keywords = extract_keywords(query_text, max_keywords=max_keywords)
+        extra = [kw for kw in keywords if kw and kw not in query_text]
+        if extra:
+            return query_text + " " + " ".join(extra[: max(1, int(max_keywords))])
+    except Exception:
+        logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 445, exc_info=True)
+    return query_text
+
+
+def _graph_context_results(query: str, want: int, source_contains: str = "") -> list[dict]:
+    if (not ENABLE_GRAPH_RAG) or source_contains:
+        return []
+        
+    # --- Phase E: Graph-RAG Budget Guard ---
+    try:
+        from skills.bridge.grounded_ai import _classify_query_tier
+        if _classify_query_tier(query) == "SIMPLE":
+            logging.getLogger(__name__).info("💡 Graph-RAG skipped for SIMPLE tier query (Budget Guard).")
+            return []
+    except Exception:
+        pass
+
+    try:
+        from skills.engine.knowledge_graph import graph_context
+        items = graph_context(query, top_k=max(1, min(int(want), 5)))
+    except Exception:
+        logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 463, exc_info=True)
+        return []
+
+    results = []
+    for idx, item in enumerate(items or []):
+        if not isinstance(item, dict):
+            continue
+        content = str(item.get("content") or "").strip()
+        source = str(item.get("source") or "graph_rag").strip() or "graph_rag"
+        if not content:
+            continue
+        results.append(
+            {
+                "id": f"graph:{idx}:{hashlib.md5((source + '|' + content).encode('utf-8', errors='replace')).hexdigest()[:12]}",
+                "content": content,
+                "source": source,
+                "score": 0.18,
+            }
+        )
+    return results
+
+
+def _merge_graph_context(query: str, results: list[dict], want: int, source_contains: str = "") -> list[dict]:
+    merged = list(results or [])
+    seen = {
+        (str(item.get("source") or "").strip(), str(item.get("content") or "").strip())
+        for item in merged
+        if isinstance(item, dict)
+    }
+    for item in _graph_context_results(query, want, source_contains=source_contains):
+        key = (str(item.get("source") or "").strip(), str(item.get("content") or "").strip())
+        if key in seen:
+            continue
+        merged.append(item)
+        seen.add(key)
+    return merged
+
+
 def expand_query(query):
     """
     Query expansion for retrieval coverage.
@@ -569,12 +669,17 @@ def _content_exists(cursor, content: str) -> bool:
     return cursor.fetchone() is not None
 
 
-def remember(content, source="manual", metadata: dict | None = None):
+from typing import Any, Dict, List, Optional, Tuple, Union
+
+def remember(content, source="manual", metadata: Optional[dict] = None, embedding_input: Optional[str] = None):
     """Store memory to Keeper; fallback to local backup if offline.
 
     Runs through the centralized memory policy before persisting.
     Returns True if stored (or skipped as duplicate), False if rejected.
     """
+    # Invalidate recall cache on write
+    _RECALL_CACHE.clear()
+
     # --- Memory write policy gate ---
     try:
         from api.session.memory_policy import evaluate_memory_write
@@ -591,7 +696,8 @@ def remember(content, source="manual", metadata: dict | None = None):
     except ImportError:
         pass  # Graceful degradation if session module unavailable
 
-    embedding = get_embedding(content)
+    embedding_source = str(embedding_input or content or "")
+    embedding = get_embedding(embedding_source)
 
     # Safe truncate for MySQL VARCHAR limits on 'source' column
     safe_source = build_source_signature(str(source or "manual"), metadata=metadata)[:250]
@@ -657,6 +763,9 @@ def remember_batch(items):
     Returns:
         dict with 'ok', 'inserted', 'failed', 'total' counts.
     """
+    # Invalidate recall cache on write
+    _RECALL_CACHE.clear()
+
     if not items:
         return {"ok": True, "inserted": 0, "failed": 0, "total": 0}
 
@@ -687,13 +796,14 @@ def remember_batch(items):
         pass  # Graceful degradation
 
     texts = [it.get("content", "") for it in filtered_items]
+    embedding_texts = [it.get("embedding_input") or it.get("content", "") for it in filtered_items]
     sources = [
         build_source_signature(str(it.get("source", "batch")), metadata=it.get("metadata"))[:250]
         for it in filtered_items
     ]
 
     # Batch embed
-    embeddings = get_embeddings_batch(texts)
+    embeddings = get_embeddings_batch(embedding_texts)
 
     inserted = 0
     failed = 0
@@ -807,7 +917,7 @@ def _fallback_local_search(query, top_k, source_contains: str = ""):
 
 
 _FAISS_REBUILD_LAUNCHED = False
-_FAISS_REBUILD_PID: int | None = None
+_FAISS_REBUILD_PID: Optional[int] = None
 
 _FAISS_REBUILD_SCRIPT_MARKER = "MEMORY_ENABLE_FAISS"
 
@@ -870,7 +980,8 @@ def _launch_faiss_rebuild_bg():
     _kill_stale_faiss_rebuilds()
 
     import subprocess
-    _magi_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    # Go up 3 levels: skills/memory/mem_bridge.py -> skills/memory -> skills -> MAGI_v2
+    _magi_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     _venv_py = os.path.join(_magi_root, "venv", "bin", "python3")
     if not os.path.exists(_venv_py):
         _venv_py = sys.executable
@@ -972,151 +1083,348 @@ _OPS_LOG_SOURCES = (
     "healthcheck",
     "system_test",
     "verification_script",
+    "chatlog|",
 )
 
 
 def recall(query, top_k=3, source_contains: str = "",
            exclude_sources: tuple = _OPS_LOG_SOURCES):
     want = max(1, int(top_k))
+
+    # ── Recall cache lookup ──────────────────────────────────────────
+    _rc_key = (query.strip().lower(), top_k, source_contains or "")
+    _rc_now = time.time()
+    with _RECALL_CACHE_LOCK:
+        _rc_cached = _RECALL_CACHE.get(_rc_key)
+        if _rc_cached is not None:
+            _rc_results, _rc_ts = _rc_cached
+            if _rc_now - _rc_ts < _RECALL_CACHE_TTL:
+                _RECALL_CACHE_STATS["hits"] += 1
+                return list(_rc_results)
+            else:
+                del _RECALL_CACHE[_rc_key]
+
+    retrieval_query = _augment_query_for_retrieval(query)
     if _keeper_offline():
         data = _fallback_local_search(query, want * 30, source_contains=source_contains)
         if source_contains:
             data = [x for x in data if source_contains in (x.get("source") or "")]
+        data = _merge_graph_context(query, data, want, source_contains=source_contains)
         data = _rank_recall_results(query, data)
         if not _query_prefers_chatlog(query) and not source_contains:
             trusted = [x for x in data if _safe_float(x.get("trust_weight")) >= 0.5]
             untrusted = [x for x in data if _safe_float(x.get("trust_weight")) < 0.5]
             data = trusted + untrusted
-        return data[:want]
+        _recall_result = data[:want]
+        _recall_cache_store(_rc_key, _recall_result)
+        return _recall_result
 
     try:
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
         conn = _get_conn()
         cursor = conn.cursor()
 
-        query_embedding = list(_embedding_cache(query))
-        _embedding_ok = any(abs(v) > 1e-12 for v in query_embedding[:10])
-        if not _embedding_ok:
-            logger.warning("Query embedding is zero (Ollama timeout?); falling back to fulltext-only recall")
+        # ====================================================================
+        # Phase 1 — parallel: embed+FAISS (Thread 1) | fulltext (Thread 2)
+        # ====================================================================
+        # Fulltext gets its own DB connection (cursor is NOT thread-safe).
+        # If either thread fails, fall back to sequential execution.
 
-        # ---------- FAISS fast path ----------
-        faiss_idx = _get_faiss_index() if ENABLE_FAISS else None
+        def _phase1_vector(rq, want_k, src_filter, main_cursor):
+            """Embed query, then FAISS / brute-force vector search."""
+            query_embedding = list(_embedding_cache(rq))
+            _embedding_ok = any(abs(v) > 1e-12 for v in query_embedding[:10])
+            if not _embedding_ok:
+                logger.warning("Query embedding is zero (Ollama timeout?); falling back to fulltext-only recall")
+                return query_embedding, _embedding_ok, []
 
-        if _embedding_ok and faiss_idx is not None and faiss_idx.total > 0 and not source_contains:
-            # FAISS global KNN — only when no source filter.
-            _faiss_k = max(want * 6, 40)
-            faiss_results = faiss_idx.search(query_embedding, top_k=_faiss_k)
-            _MIN_SIM = 0.50  # discard low-relevance cosine hits (anti memory pollution)
-            top_vectors = [(doc_id, score) for doc_id, score in faiss_results if score >= _MIN_SIM]
-        elif _embedding_ok and faiss_idx is not None and faiss_idx.total > 0 and source_contains:
-            # Source-filtered: use FAISS to pre-filter candidates, then
-            # intersect with source filter in DB.  Much faster than brute-force
-            # scanning all matching vectors from DB.
-            _faiss_k = max(want * 20, 200)
-            faiss_results = faiss_idx.search(query_embedding, top_k=_faiss_k)
-            _candidate_ids = [doc_id for doc_id, score in faiss_results if score >= 0.40]
-            if _candidate_ids:
-                _ph = ",".join(["%s"] * len(_candidate_ids))
-                cursor.execute(
-                    f"SELECT v.doc_id, v.embedding FROM vectors v "
-                    f"JOIN documents d ON v.doc_id = d.id "
-                    f"WHERE v.doc_id IN ({_ph}) AND d.source LIKE %s",
-                    (*_candidate_ids, f"%{source_contains}%"),
-                )
-                _filtered_rows = cursor.fetchall()
-                import numpy as _np
+            faiss_idx = _get_faiss_index() if ENABLE_FAISS else None
+
+            if faiss_idx is not None and faiss_idx.total > 0 and not src_filter:
+                _faiss_k = max(want_k * 6, 40)
+                faiss_results = faiss_idx.search(query_embedding, top_k=_faiss_k)
                 _MIN_SIM = 0.50
-                top_vectors = []
-                _q = _np.array(query_embedding, dtype=_np.float32)
-                _q_norm = _np.linalg.norm(_q)
-                for doc_id, vec_json in _filtered_rows:
-                    try:
-                        _v = _np.array(json.loads(vec_json), dtype=_np.float32)
-                        _v_norm = _np.linalg.norm(_v)
-                        if _q_norm > 1e-12 and _v_norm > 1e-12:
-                            _sim = float(_np.dot(_v, _q) / (_v_norm * _q_norm))
-                            if _sim >= _MIN_SIM:
-                                top_vectors.append((doc_id, _sim))
-                    except Exception:
-                        continue
-                top_vectors.sort(key=lambda x: x[1], reverse=True)
-            else:
-                top_vectors = []
-        elif _embedding_ok:
-            # FAISS unavailable: brute-force scan with LIMIT protection.
-            if source_contains:
-                cursor.execute(
-                    "SELECT v.doc_id, v.embedding FROM vectors v "
-                    "JOIN documents d ON v.doc_id = d.id "
-                    "WHERE d.source LIKE %s LIMIT %s",
-                    (f"%{source_contains}%", MAX_VECTOR_SCAN),
-                )
-            else:
-                cursor.execute(
-                    "SELECT doc_id, embedding FROM vectors ORDER BY doc_id DESC LIMIT %s",
-                    (MAX_VECTOR_SCAN,),
-                )
-            vec_rows = cursor.fetchall()
-
-            # Batch cosine similarity with numpy for speed
-            try:
-                import numpy as _np
-                _doc_ids = []
-                _vecs = []
-                for doc_id, vec_json in vec_rows:
-                    try:
-                        _vecs.append(json.loads(vec_json))
-                        _doc_ids.append(doc_id)
-                    except Exception:
-                        continue
-                if _vecs:
-                    _q = _np.array(query_embedding, dtype=_np.float32)
-                    _m = _np.array(_vecs, dtype=_np.float32)
-                    _q_norm = _np.linalg.norm(_q)
-                    _m_norms = _np.linalg.norm(_m, axis=1)
-                    _valid = (_q_norm > 1e-12) & (_m_norms > 1e-12)
-                    _scores = _np.zeros(len(_vecs), dtype=_np.float32)
-                    if _q_norm > 1e-12:
-                        _scores[_valid] = (_m[_valid] @ _q) / (_m_norms[_valid] * _q_norm)
-                    _top_idx = _np.argsort(-_scores)[:max(want * 20, 200)]
+                top_vectors = [(doc_id, score) for doc_id, score in faiss_results if score >= _MIN_SIM]
+            elif faiss_idx is not None and faiss_idx.total > 0 and src_filter:
+                _faiss_k = max(want_k * 20, 200)
+                faiss_results = faiss_idx.search(query_embedding, top_k=_faiss_k)
+                _candidate_ids = [doc_id for doc_id, score in faiss_results if score >= 0.40]
+                if _candidate_ids:
+                    _ph = ",".join(["%s"] * len(_candidate_ids))
+                    main_cursor.execute(
+                        f"SELECT v.doc_id, v.embedding FROM vectors v "
+                        f"JOIN documents d ON v.doc_id = d.id "
+                        f"WHERE v.doc_id IN ({_ph}) AND d.source LIKE %s",
+                        (*_candidate_ids, f"%{src_filter}%"),
+                    )
+                    _filtered_rows = main_cursor.fetchall()
+                    import numpy as _np
                     _MIN_SIM = 0.50
-                    top_vectors = [(_doc_ids[i], float(_scores[i])) for i in _top_idx if _scores[i] >= _MIN_SIM]
+                    top_vectors = []
+                    _q = _np.array(query_embedding, dtype=_np.float32)
+                    _q_norm = _np.linalg.norm(_q)
+                    for doc_id, vec_json in _filtered_rows:
+                        try:
+                            _v = _np.array(json.loads(vec_json), dtype=_np.float32)
+                            _v_norm = _np.linalg.norm(_v)
+                            if _q_norm > 1e-12 and _v_norm > 1e-12:
+                                _sim = float(_np.dot(_v, _q) / (_v_norm * _q_norm))
+                                if _sim >= _MIN_SIM:
+                                    top_vectors.append((doc_id, _sim))
+                        except Exception:
+                            continue
+                    top_vectors.sort(key=lambda x: x[1], reverse=True)
                 else:
                     top_vectors = []
-                logger.info("Brute-force numpy scan: %d vecs → %d candidates (source=%s)",
-                            len(vec_rows), len(top_vectors), source_contains or "all")
-            except ImportError:
-                # numpy unavailable — fall back to per-row computation
-                vector_candidates = []
-                for doc_id, vec_json in vec_rows:
+            else:
+                # FAISS unavailable: brute-force scan with LIMIT protection.
+                if src_filter:
+                    main_cursor.execute(
+                        "SELECT v.doc_id, v.embedding FROM vectors v "
+                        "JOIN documents d ON v.doc_id = d.id "
+                        "WHERE d.source LIKE %s LIMIT %s",
+                        (f"%{src_filter}%", MAX_VECTOR_SCAN),
+                    )
+                else:
+                    main_cursor.execute(
+                        "SELECT doc_id, embedding FROM vectors ORDER BY doc_id DESC LIMIT %s",
+                        (MAX_VECTOR_SCAN,),
+                    )
+                vec_rows = main_cursor.fetchall()
+
+                try:
+                    import numpy as _np
+                    _doc_ids = []
+                    _vecs = []
+                    for doc_id, vec_json in vec_rows:
+                        try:
+                            _vecs.append(json.loads(vec_json))
+                            _doc_ids.append(doc_id)
+                        except Exception:
+                            continue
+                    if _vecs:
+                        _q = _np.array(query_embedding, dtype=_np.float32)
+                        _m = _np.array(_vecs, dtype=_np.float32)
+                        _q_norm = _np.linalg.norm(_q)
+                        _m_norms = _np.linalg.norm(_m, axis=1)
+                        _valid = (_q_norm > 1e-12) & (_m_norms > 1e-12)
+                        _scores = _np.zeros(len(_vecs), dtype=_np.float32)
+                        if _q_norm > 1e-12:
+                            _scores[_valid] = (_m[_valid] @ _q) / (_m_norms[_valid] * _q_norm)
+                        _top_idx = _np.argsort(-_scores)[:max(want_k * 20, 200)]
+                        _MIN_SIM = 0.50
+                        top_vectors = [(_doc_ids[i], float(_scores[i])) for i in _top_idx if _scores[i] >= _MIN_SIM]
+                    else:
+                        top_vectors = []
+                    logger.info("Brute-force numpy scan: %d vecs → %d candidates (source=%s)",
+                                len(vec_rows), len(top_vectors), src_filter or "all")
+                except ImportError:
+                    vector_candidates = []
+                    for doc_id, vec_json in vec_rows:
+                        try:
+                            vec = json.loads(vec_json)
+                        except Exception:
+                            continue
+                        score = _cosine_similarity(query_embedding, vec)
+                        if score >= 0.50:
+                            vector_candidates.append((doc_id, score))
+                    vector_candidates.sort(key=lambda x: x[1], reverse=True)
+                    _bf_limit = 40 if not src_filter else max(want_k * 20, 200)
+                    top_vectors = vector_candidates[:_bf_limit]
+
+            return query_embedding, _embedding_ok, top_vectors
+
+        def _phase1_fulltext(rq):
+            """Expand query + fulltext search on a dedicated DB connection."""
+            ft_conn = None
+            ft_cursor = None
+            try:
+                variations = expand_query(rq)
+                ft_conn = _get_conn()
+                ft_cursor = ft_conn.cursor()
+                return search_fulltext(ft_cursor, variations)
+            finally:
+                if ft_cursor is not None:
                     try:
-                        vec = json.loads(vec_json)
+                        ft_cursor.close()
                     except Exception:
-                        continue
-                    score = _cosine_similarity(query_embedding, vec)
-                    if score >= 0.50:
-                        vector_candidates.append((doc_id, score))
-                vector_candidates.sort(key=lambda x: x[1], reverse=True)
-                _bf_limit = 40 if not source_contains else max(want * 20, 200)
-                top_vectors = vector_candidates[:_bf_limit]
-        else:
-            # Embedding failed — skip vector search, rely on fulltext only
-            top_vectors = []
+                        pass
+                if ft_conn is not None:
+                    try:
+                        ft_conn.close()
+                    except Exception:
+                        pass
 
-        # ---------- Fulltext search ----------
-        variations = expand_query(query)
-        fulltext_scores = search_fulltext(cursor, variations)
+        # Determine if vector search needs the main cursor (source-filtered or
+        # brute-force paths).  When it does NOT, both threads are fully
+        # independent and can run concurrently.  When it does, we must run
+        # vector search first (occupies main cursor), then fulltext in
+        # parallel with nothing (still benefits from expand_query overlap).
+        faiss_idx_probe = _get_faiss_index() if ENABLE_FAISS else None
+        _vector_needs_cursor = bool(source_contains) or (faiss_idx_probe is None or faiss_idx_probe.total == 0)
 
-        # ---------- RRF Fusion ----------
+        _t_phase1 = time.time()
+        _parallel_ok = True
+        try:
+            if not _vector_needs_cursor:
+                # Both threads are fully independent — run in parallel
+                with ThreadPoolExecutor(max_workers=2) as pool:
+                    fut_vec = pool.submit(_phase1_vector, retrieval_query, want, source_contains, cursor)
+                    fut_ft = pool.submit(_phase1_fulltext, retrieval_query)
+                    query_embedding, _embedding_ok, top_vectors = fut_vec.result(timeout=30)
+                    fulltext_scores = fut_ft.result(timeout=30)
+            else:
+                # Vector search needs main cursor — run it first, overlap
+                # fulltext (on its own connection) with the tail end.
+                with ThreadPoolExecutor(max_workers=2) as pool:
+                    fut_vec = pool.submit(_phase1_vector, retrieval_query, want, source_contains, cursor)
+                    fut_ft = pool.submit(_phase1_fulltext, retrieval_query)
+                    query_embedding, _embedding_ok, top_vectors = fut_vec.result(timeout=30)
+                    fulltext_scores = fut_ft.result(timeout=30)
+        except Exception as exc:
+            logger.warning("Phase 1 parallel recall failed (%s); falling back to sequential", exc)
+            _parallel_ok = False
+            # Sequential fallback — mirrors original code exactly
+            query_embedding = list(_embedding_cache(retrieval_query))
+            _embedding_ok = any(abs(v) > 1e-12 for v in query_embedding[:10])
+            if not _embedding_ok:
+                logger.warning("Query embedding is zero; falling back to fulltext-only recall")
+
+            faiss_idx = _get_faiss_index() if ENABLE_FAISS else None
+            if _embedding_ok and faiss_idx is not None and faiss_idx.total > 0 and not source_contains:
+                _faiss_k = max(want * 6, 40)
+                faiss_results = faiss_idx.search(query_embedding, top_k=_faiss_k)
+                _MIN_SIM = 0.50
+                top_vectors = [(doc_id, score) for doc_id, score in faiss_results if score >= _MIN_SIM]
+            elif _embedding_ok and faiss_idx is not None and faiss_idx.total > 0 and source_contains:
+                _faiss_k = max(want * 20, 200)
+                faiss_results = faiss_idx.search(query_embedding, top_k=_faiss_k)
+                _candidate_ids = [doc_id for doc_id, score in faiss_results if score >= 0.40]
+                if _candidate_ids:
+                    _ph = ",".join(["%s"] * len(_candidate_ids))
+                    cursor.execute(
+                        f"SELECT v.doc_id, v.embedding FROM vectors v "
+                        f"JOIN documents d ON v.doc_id = d.id "
+                        f"WHERE v.doc_id IN ({_ph}) AND d.source LIKE %s",
+                        (*_candidate_ids, f"%{source_contains}%"),
+                    )
+                    _filtered_rows = cursor.fetchall()
+                    import numpy as _np
+                    _MIN_SIM = 0.50
+                    top_vectors = []
+                    _q = _np.array(query_embedding, dtype=_np.float32)
+                    _q_norm = _np.linalg.norm(_q)
+                    for doc_id, vec_json in _filtered_rows:
+                        try:
+                            _v = _np.array(json.loads(vec_json), dtype=_np.float32)
+                            _v_norm = _np.linalg.norm(_v)
+                            if _q_norm > 1e-12 and _v_norm > 1e-12:
+                                _sim = float(_np.dot(_v, _q) / (_v_norm * _q_norm))
+                                if _sim >= _MIN_SIM:
+                                    top_vectors.append((doc_id, _sim))
+                        except Exception:
+                            continue
+                    top_vectors.sort(key=lambda x: x[1], reverse=True)
+                else:
+                    top_vectors = []
+            elif _embedding_ok:
+                if source_contains:
+                    cursor.execute(
+                        "SELECT v.doc_id, v.embedding FROM vectors v "
+                        "JOIN documents d ON v.doc_id = d.id "
+                        "WHERE d.source LIKE %s LIMIT %s",
+                        (f"%{source_contains}%", MAX_VECTOR_SCAN),
+                    )
+                else:
+                    cursor.execute(
+                        "SELECT doc_id, embedding FROM vectors ORDER BY doc_id DESC LIMIT %s",
+                        (MAX_VECTOR_SCAN,),
+                    )
+                vec_rows = cursor.fetchall()
+                try:
+                    import numpy as _np
+                    _doc_ids = []
+                    _vecs = []
+                    for doc_id, vec_json in vec_rows:
+                        try:
+                            _vecs.append(json.loads(vec_json))
+                            _doc_ids.append(doc_id)
+                        except Exception:
+                            continue
+                    if _vecs:
+                        _q = _np.array(query_embedding, dtype=_np.float32)
+                        _m = _np.array(_vecs, dtype=_np.float32)
+                        _q_norm = _np.linalg.norm(_q)
+                        _m_norms = _np.linalg.norm(_m, axis=1)
+                        _valid = (_q_norm > 1e-12) & (_m_norms > 1e-12)
+                        _scores = _np.zeros(len(_vecs), dtype=_np.float32)
+                        if _q_norm > 1e-12:
+                            _scores[_valid] = (_m[_valid] @ _q) / (_m_norms[_valid] * _q_norm)
+                        _top_idx = _np.argsort(-_scores)[:max(want * 20, 200)]
+                        _MIN_SIM = 0.50
+                        top_vectors = [(_doc_ids[i], float(_scores[i])) for i in _top_idx if _scores[i] >= _MIN_SIM]
+                    else:
+                        top_vectors = []
+                except ImportError:
+                    vector_candidates = []
+                    for doc_id, vec_json in vec_rows:
+                        try:
+                            vec = json.loads(vec_json)
+                        except Exception:
+                            continue
+                        score = _cosine_similarity(query_embedding, vec)
+                        if score >= 0.50:
+                            vector_candidates.append((doc_id, score))
+                    vector_candidates.sort(key=lambda x: x[1], reverse=True)
+                    _bf_limit = 40 if not source_contains else max(want * 20, 200)
+                    top_vectors = vector_candidates[:_bf_limit]
+            else:
+                top_vectors = []
+
+            variations = expand_query(retrieval_query)
+            fulltext_scores = search_fulltext(cursor, variations)
+
+        logger.debug("Phase 1 recall: %.0fms (parallel=%s)",
+                     (time.time() - _t_phase1) * 1000, _parallel_ok)
+
+        # ====================================================================
+        # Phase 2 — sequential: RRF fusion (needs both Phase 1 results)
+        # ====================================================================
         fused_results = reciprocal_rank_fusion(top_vectors, fulltext_scores)
         source_contains = (source_contains or "").strip()
-        # When source filter is active, keep more candidates before filtering
         _fused_limit = max(want * 12, 60) if not source_contains else max(want * 30, 300)
         top_fused = fused_results[:_fused_limit]
 
-        # ---------- Batch fetch results ----------
+        # ====================================================================
+        # Phase 3 — parallel: batch fetch (Thread 3) | Graph-RAG (Thread 4)
+        # ====================================================================
         candidate_ids = [doc_id for doc_id, _ in top_fused]
-        docs_map = _batch_fetch_docs(cursor, candidate_ids)
 
+        def _phase3_fetch(cur, ids):
+            return _batch_fetch_docs(cur, ids)
+
+        def _phase3_graph(q, w, src):
+            # Build an empty interim results_data so graph context can merge
+            # with it later; we just need the graph results themselves.
+            return _merge_graph_context(q, [], w, source_contains=src)
+
+        _t_phase3 = time.time()
+        try:
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                fut_fetch = pool.submit(_phase3_fetch, cursor, candidate_ids)
+                fut_graph = pool.submit(_phase3_graph, query, want, source_contains)
+                docs_map = fut_fetch.result(timeout=30)
+                graph_extra = fut_graph.result(timeout=30)
+        except Exception as exc:
+            logger.warning("Phase 3 parallel recall failed (%s); falling back to sequential", exc)
+            docs_map = _batch_fetch_docs(cursor, candidate_ids)
+            graph_extra = _merge_graph_context(query, [], want, source_contains=source_contains)
+        logger.debug("Phase 3 recall: %.0fms", (time.time() - _t_phase3) * 1000)
+
+        # ====================================================================
+        # Phase 4 — sequential: assemble, rank, trust-weight, return
+        # ====================================================================
         results_data = []
         for doc_id, rrf_score in top_fused:
             doc = docs_map.get(doc_id)
@@ -1125,7 +1433,6 @@ def recall(query, top_k=3, source_contains: str = "",
             src = doc[2] or ""
             if source_contains and (source_contains not in src):
                 continue
-            # 排除指定 source namespace（預設排除 codebase-ingest）
             if exclude_sources and any(ex in src for ex in exclude_sources):
                 continue
             results_data.append(
@@ -1139,12 +1446,33 @@ def recall(query, top_k=3, source_contains: str = "",
             if len(results_data) >= want:
                 break
 
+        # Merge Graph-RAG results that were fetched in parallel
+        _seen_ids = {r.get("id") for r in results_data if r.get("id")}
+        _seen_keys = {
+            (str(r.get("source") or "").strip(), str(r.get("content") or "").strip())
+            for r in results_data
+        }
+        for item in graph_extra:
+            if not isinstance(item, dict):
+                continue
+            _iid = item.get("id")
+            if _iid and _iid in _seen_ids:
+                continue
+            _key = (str(item.get("source") or "").strip(), str(item.get("content") or "").strip())
+            if _key in _seen_keys:
+                continue
+            results_data.append(item)
+            if _iid:
+                _seen_ids.add(_iid)
+            _seen_keys.add(_key)
+
         results_data = _rank_recall_results(query, results_data)
         if not _query_prefers_chatlog(query) and not source_contains:
             trusted = [x for x in results_data if _safe_float(x.get("trust_weight")) >= 0.5]
             untrusted = [x for x in results_data if _safe_float(x.get("trust_weight")) < 0.5]
             results_data = trusted + untrusted
 
+        _recall_cache_store(_rc_key, results_data)
         return results_data
 
     except mysql.connector.Error as e:
@@ -1153,24 +1481,30 @@ def recall(query, top_k=3, source_contains: str = "",
         data = _fallback_local_search(query, want * 30, source_contains=source_contains)
         if source_contains:
             data = [x for x in data if source_contains in (x.get("source") or "")]
+        data = _merge_graph_context(query, data, want, source_contains=source_contains)
         data = _rank_recall_results(query, data)
         if not _query_prefers_chatlog(query) and not source_contains:
             trusted = [x for x in data if _safe_float(x.get("trust_weight")) >= 0.5]
             untrusted = [x for x in data if _safe_float(x.get("trust_weight")) < 0.5]
             data = trusted + untrusted
-        return data[:want]
+        _recall_result = data[:want]
+        _recall_cache_store(_rc_key, _recall_result)
+        return _recall_result
 
     except Exception as e:
         logger.error(f"Recall error: {e}")
         data = _fallback_local_search(query, want * 30, source_contains=source_contains)
         if source_contains:
             data = [x for x in data if source_contains in (x.get("source") or "")]
+        data = _merge_graph_context(query, data, want, source_contains=source_contains)
         data = _rank_recall_results(query, data)
         if not _query_prefers_chatlog(query) and not source_contains:
             trusted = [x for x in data if _safe_float(x.get("trust_weight")) >= 0.5]
             untrusted = [x for x in data if _safe_float(x.get("trust_weight")) < 0.5]
             data = trusted + untrusted
-        return data[:want]
+        _recall_result = data[:want]
+        _recall_cache_store(_rc_key, _recall_result)
+        return _recall_result
 
     finally:
         if "conn" in locals() and conn.is_connected():

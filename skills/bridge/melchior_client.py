@@ -549,12 +549,34 @@ def _chat_omlx(
         return _result(False, "", f"omlx_failed: {e}")
 
 
+# ── Embedding TTL cache ──────────────────────────────────────────────
+_EMBED_CACHE = {}       # type: dict  # {text_hash: (vector, timestamp)}
+_EMBED_CACHE_TTL = 3600  # 1 hour
+_EMBED_CACHE_MAX = 500
+_EMBED_CACHE_STATS = {"hits": 0, "misses": 0}
+_EMBED_CACHE_LOCK = threading.Lock()
+
+
 def embed_omlx(text: str, model: str = "", retries: int = 2) -> list:
     """
     Get embedding vector from oMLX /v1/embeddings endpoint.
     Returns list of floats, or empty list on failure.
     Retries on timeout (oMLX max_num_seqs=1 may queue requests).
+    Results are cached with a 1-hour TTL (max 500 entries).
     """
+    # --- TTL cache lookup ---
+    cache_key = hash(text)
+    now = time.time()
+    with _EMBED_CACHE_LOCK:
+        cached = _EMBED_CACHE.get(cache_key)
+        if cached is not None:
+            vec, ts = cached
+            if now - ts < _EMBED_CACHE_TTL:
+                _EMBED_CACHE_STATS["hits"] += 1
+                return list(vec)
+            else:
+                del _EMBED_CACHE[cache_key]
+
     if not _omlx_embed_available():
         return []
     use_model = (model or OMLX_EMBED_MODEL).strip()
@@ -569,7 +591,20 @@ def embed_omlx(text: str, model: str = "", retries: int = 2) -> list:
             emb_data = (data or {}).get("data", [])
             if emb_data and isinstance(emb_data, list):
                 _omlx_ok(_OMLX_EMBED_CIRCUIT, _OMLX_EMBED_LOCK)
-                return emb_data[0].get("embedding", [])
+                result_vec = emb_data[0].get("embedding", [])
+                # --- Store in cache ---
+                with _EMBED_CACHE_LOCK:
+                    _EMBED_CACHE_STATS["misses"] += 1
+                    _EMBED_CACHE[cache_key] = (result_vec, time.time())
+                    # Evict oldest 100 if cache exceeds max
+                    if len(_EMBED_CACHE) > _EMBED_CACHE_MAX:
+                        sorted_keys = sorted(
+                            _EMBED_CACHE.keys(),
+                            key=lambda k: _EMBED_CACHE[k][1],
+                        )
+                        for old_key in sorted_keys[:100]:
+                            del _EMBED_CACHE[old_key]
+                return result_vec
             return []
         except Exception as e:
             last_err = e
@@ -1183,6 +1218,72 @@ def generate_code(prompt: str, language: str = "python") -> dict:
             "error": local.get("error", remote.get("error", "fallback failed")),
             "route": "local_ollama",
         }
+
+
+def chat_stream(prompt, model=TEXT_PRIMARY_MODEL, timeout=TIMEOUT):
+    # type: (str, str, int) -> ...
+    """Streaming version of chat(). Yields text chunks as they arrive.
+
+    Usage:
+        for chunk in chat_stream("你好"):
+            print(chunk, end="", flush=True)
+    """
+    budget_sec = max(8, int(timeout))
+
+    # Resolve model alias (same logic as chat())
+    omlx_model = _OMLX_MODEL_ALIAS.get(model, model)
+    if omlx_model == model and model not in list_omlx_models():
+        omlx_model = OMLX_TAIDE_MODEL
+
+    messages = [{"role": "user", "content": prompt}]
+    messages = _ensure_alternating_roles(messages)
+
+    payload = {
+        "model": omlx_model,
+        "messages": messages,
+        "temperature": 0.7,
+        "max_tokens": 2048,
+        "top_p": 0.88,
+        "stream": True,
+    }
+    if OMLX_CHAT_PORT != 11434:
+        payload["repetition_penalty"] = 1.1
+
+    url = "{}/v1/chat/completions".format(OMLX_CHAT_BASE)
+
+    try:
+        sess = requests.Session()
+        resp = sess.post(url, json=payload, stream=True, timeout=budget_sec)
+        resp.raise_for_status()
+
+        for raw_line in resp.iter_lines(decode_unicode=True):
+            if not raw_line:
+                continue
+            line = raw_line.strip()
+            if line == "data: [DONE]":
+                break
+            if not line.startswith("data: "):
+                continue
+            json_str = line[len("data: "):]
+            try:
+                chunk_data = json.loads(json_str)
+            except (json.JSONDecodeError, ValueError):
+                continue
+            choices = chunk_data.get("choices") or []
+            if not choices:
+                continue
+            delta = choices[0].get("delta") or {}
+            content = delta.get("content")
+            if content:
+                yield content
+        return
+    except Exception as e:
+        _logger.warning("chat_stream failed (%s), falling back to non-streaming chat()", e)
+
+    # Fallback: non-streaming chat(), yield full result at once
+    result = chat(prompt, model=model, timeout=timeout)
+    if result.get("success") and result.get("response"):
+        yield result["response"]
 
 
 def chat(prompt: str, model: str = TEXT_PRIMARY_MODEL, timeout: int = TIMEOUT) -> dict:

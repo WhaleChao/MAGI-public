@@ -994,12 +994,32 @@ def external_osc_chat():
         )
 
     timeout_sec = max(10, min(300, max(requested_timeout_sec, min_timeout_sec)))
-    
+
     # Expose cold_start / timeout via request context for downstream (Trace metrics later in C)
     from flask import g
     g.chat_tier = msg_tier
     g.timeout_floor_applied = min_timeout_sec
     g.effective_timeout_sec = timeout_sec
+
+    # ── SSE streaming path ──────────────────────────────────────────
+    if data.get("stream"):
+        def _sse_generate():
+            try:
+                orch = _get_osc_orchestrator()
+                # Pre-processing: intent classification + recall (non-streaming part)
+                # Then stream the LLM tokens via melchior_client.chat_stream()
+                from skills.bridge.grounded_ai import _generate_local
+                gen = _generate_local(message, timeout=timeout_sec, stream=True)
+                for chunk in gen:
+                    escaped = json.dumps({"choices": [{"delta": {"content": chunk}}]})
+                    yield "data: {}\n\n".format(escaped)
+                yield "data: [DONE]\n\n"
+            except Exception as exc:
+                err_payload = json.dumps({"error": str(exc)})
+                yield "data: {}\n\n".format(err_payload)
+                yield "data: [DONE]\n\n"
+        return Response(_sse_generate(), mimetype="text/event-stream")
+
     async_enabled = _to_bool(data.get("async"), _to_bool(os.environ.get("MAGI_EXTERNAL_CHAT_ASYNC", "1"), True))
 
     if async_enabled and _looks_long_task(message):

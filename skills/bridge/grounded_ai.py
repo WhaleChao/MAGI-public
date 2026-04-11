@@ -681,7 +681,24 @@ def _is_factual_question(text: str) -> bool:
     return any(k in lowered for k in factual_signals)
 
 
-def _generate_local(prompt, temperature=0.4, timeout=90, num_ctx=6144):
+def _generate_local(prompt, temperature=0.4, timeout=90, num_ctx=6144, stream=False):
+    """Generate text locally via oMLX.
+
+    Args:
+        stream: If True, return a generator that yields text chunks instead of
+                a single string. Default False preserves original behavior.
+    """
+    if stream:
+        # Streaming path: delegate to melchior_client.chat_stream()
+        chat_stream_fn = getattr(melchior_client, "chat_stream", None)
+        if callable(chat_stream_fn):
+            return chat_stream_fn(prompt, model=LOCAL_MODEL_NAME, timeout=max(10, timeout))
+        # If chat_stream not available, fall back to non-streaming and wrap
+        result = _generate_local(prompt, temperature=temperature, timeout=timeout, num_ctx=num_ctx, stream=False)
+        def _single_yield(text):
+            yield text
+        return _single_yield(result)
+
     # Try oMLX first (faster on Apple Silicon, TAIDE-12b primary)
     try:
         omlx_chat = getattr(melchior_client, "_chat_omlx", None)
@@ -999,7 +1016,9 @@ def chat_casper(message, conversation_history=""):
     # ── Layer 1: Statute / Noise Filter ──
     memories = _filter_statute_memories(memories, tier)
     # Compress context if too large to avoid LLM context overflow
-    memory_context = _summarize_memories_if_needed(message, memories, max_tokens=1200)
+    # SIMPLE tier: shorter context = faster prefill = lower latency
+    _ctx_budget = 600 if tier == "SIMPLE" else 1200
+    memory_context = _summarize_memories_if_needed(message, memories, max_tokens=_ctx_budget)
 
     web_context = "無。"
     # 智慧搜尋觸發：明確關鍵字觸發，或「記憶不足 + 事實問題」才上網
