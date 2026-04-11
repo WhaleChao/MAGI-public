@@ -74,6 +74,8 @@ if sys.stderr.isatty():
 logging.basicConfig(level=logging.INFO, handlers=_daemon_handlers)
 logger = logging.getLogger("Daemon")
 
+from api.autopilot_artifacts import write_kill_reason as _store_autopilot_kill_reason
+
 # Processes
 # name -> {"proc": Popen, "command": str}
 processes = {}
@@ -156,6 +158,13 @@ REAPER_ZOMBIE_PATTERNS = (
 REAPER_SAFE_UTILITIES = (
     "jedi", "pylsp", "language-server", "pyright",
     "pip", "venv", "certifi", "npm",
+    # Long-running services managed by launchd / daemon — NOT stale orphans
+    "omlx serve", "omlx-magi-start",       # oMLX inference servers (port 8080/8081)
+    "magi_menubar.py",                       # Status Bar (macOS menu bar)
+    "admin_server.py",                       # Website Admin (port 8088)
+    "benchmark_",                            # benchmark scripts (may run >30min)
+    "nas_pdf_ocr_worker",                    # NAS PDF OCR background worker
+    "pkuseg_py311",                          # PKUSeg sidecar interpreter
 )
 
 # ── 向後相容別名（供 server.py 等 import）──
@@ -511,23 +520,7 @@ def start_process(name, command):
 def _write_autopilot_kill_reason(pid: int, reason: str) -> None:
     """寫入 kill reason — 同時寫入統一日誌及 per-PID 檔（供 autopilot 讀取後刪除）。"""
     try:
-        # Per-PID file for autopilot signal handler to read
-        reason_path = os.path.join(_MAGI_ROOT, f"_autopilot_kill_reason_{pid}")
-        with open(reason_path, "w", encoding="utf-8") as f:
-            f.write(reason)
-        # Consolidated log (append-only, with size-based rotation)
-        import datetime as _dt
-        log_path = os.path.join(_MAGI_ROOT, "_autopilot_kill_log.jsonl")
-        import json as _json
-        entry = _json.dumps({"ts": _dt.datetime.now().isoformat(), "pid": pid, "reason": reason}, ensure_ascii=False)
-        with open(log_path, "a", encoding="utf-8") as f:
-            f.write(entry + "\n")
-        # Rotate if exceeds 10 MB
-        try:
-            from api.events.sinks import rotate_jsonl
-            rotate_jsonl(log_path)
-        except Exception:
-            pass
+        _store_autopilot_kill_reason(pid, reason, root=_MAGI_ROOT)
     except Exception:
         pass
 
@@ -566,6 +559,83 @@ _BACKOFF_BASE = 10          # initial backoff seconds
 _BACKOFF_MAX  = 300         # cap at 5 minutes
 _HEALTHY_THRESHOLD = 60     # if process ran > 60s, reset failure count
 _MAX_CONSECUTIVE_FAILURES = 10  # stop restarting after this many rapid failures
+
+# ── CronScheduler Fallback ──
+# When Discord Bot is unavailable, daemon runs CronScheduler independently.
+_cron_fallback_running = False
+_cron_fallback_lock = threading.Lock()
+
+def _start_cron_fallback() -> None:
+    """Start CronScheduler as a daemon thread if not already running.
+    This is activated when Discord Bot fails to start after MAX_CONSECUTIVE_FAILURES."""
+    global _cron_fallback_running
+    with _cron_fallback_lock:
+        if _cron_fallback_running:
+            return
+        cron_enabled = os.environ.get("MAGI_INTERNAL_CRON_ENABLED", "").strip().lower() in {"1", "true", "yes", "on"}
+        if not cron_enabled:
+            logger.info("⏸️ CronScheduler fallback skipped (MAGI_INTERNAL_CRON_ENABLED not set)")
+            return
+        _cron_fallback_running = True
+
+    def _cron_loop():
+        logger.info("⏰ CronScheduler fallback starting (Discord Bot unavailable)...")
+        try:
+            sys.path.insert(0, os.path.join(_MAGI_ROOT))
+            from skills.ops.cron_scheduler import CronScheduler
+            from api.orchestrator import Orchestrator
+            scheduler = CronScheduler()
+            orchestrator = Orchestrator()
+            logger.info("⏰ CronScheduler fallback ready — executing jobs every 60s")
+        except Exception as e:
+            logger.error("❌ CronScheduler fallback init failed: %s", e)
+            return
+
+        while True:
+            try:
+                due_jobs = scheduler.check_due_jobs()
+                for job in due_jobs:
+                    command = job.get("command", "")
+                    job_id = job.get("id", "?")
+                    logger.info("⏰ [CronFallback] Executing job: %s", job_id)
+                    try:
+                        if command.startswith("@MAGI"):
+                            clean_cmd = command.replace("@MAGI", "").strip()
+                            response = orchestrator.process_message(
+                                "SYSTEM_CRON", clean_cmd,
+                                platform="DAEMON_CRON", role="admin",
+                            )
+                            if response:
+                                try:
+                                    orchestrator.record_assistant_reply("SYSTEM_CRON", response)
+                                except Exception:
+                                    pass
+                                logger.info("⏰ [CronFallback] Job %s result (%d chars): %.200s",
+                                            job_id, len(response), response)
+                        else:
+                            _SAFE_PREFIXES = ("cd ", "/Users/", "./venv/", "python3 ", "MAGI_", "JUDICIAL_")
+                            if any(command.strip().startswith(p) for p in _SAFE_PREFIXES):
+                                _shell_env = {**os.environ, "MAGI_PREFER_LOCAL_DB": "0", "MAGI_NO_DELETE": "1"}
+                                result = subprocess.run(
+                                    command, shell=True, capture_output=True, text=True,
+                                    cwd=_MAGI_ROOT, env=_shell_env, timeout=600,
+                                )
+                                if result.returncode != 0:
+                                    logger.warning("⚠️ [CronFallback] Shell job %s exited %d: %s",
+                                                   job_id, result.returncode, (result.stderr or "")[:300])
+                                else:
+                                    logger.info("✅ [CronFallback] Shell job %s completed OK", job_id)
+                            else:
+                                logger.warning("⚠️ [CronFallback] Blocked suspicious command: %s", command[:80])
+                    except Exception as je:
+                        logger.error("⚠️ [CronFallback] Job %s failed: %s", job_id, je)
+            except Exception as loop_err:
+                logger.error("⚠️ [CronFallback] Loop error: %s", loop_err)
+            time.sleep(60)
+
+    t = threading.Thread(target=_cron_loop, name="CronFallback", daemon=True)
+    t.start()
+    logger.info("⏰ CronScheduler fallback thread started")
 
 
 # ── Coordinated restart: processes sharing the same Orchestrator module ──
@@ -687,6 +757,12 @@ def monitor_processes():
                     cur = processes.get(name)
                     if cur is rec:
                         rec["proc"] = None  # stop monitoring
+                # If Discord Bot gave up, activate CronScheduler fallback
+                if name == "Discord":
+                    try:
+                        _start_cron_fallback()
+                    except Exception as cron_err:
+                        logger.error("❌ CronScheduler fallback activation failed: %s", cron_err)
                 continue
 
             with _processes_lock:
@@ -1420,7 +1496,7 @@ if __name__ == "__main__":
     start_process("Heartbeat", f"{_PYTHON} skills/ops/heartbeat.py")
 
     # 2.9 Personal website admin server (port 8088, for Tailscale remote management)
-    _website_admin = os.path.expanduser("~/Desktop/whalechao.github.io/admin/admin_server.py")
+    _website_admin = os.path.join(_MAGI_ROOT, "whalechao.github.io/admin/admin_server.py")
     _wa_port = int(os.environ.get("WEBSITE_ADMIN_PORT", "8088"))
     if os.path.exists(_website_admin):
         # Guard: skip if port already bound (e.g. previous daemon's child survived)

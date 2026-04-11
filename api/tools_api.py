@@ -46,6 +46,7 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from flask import Flask, request, jsonify, send_from_directory, Response
 
 _MAGI_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+_STARTUP_TS = time.time()
 if _MAGI_ROOT not in sys.path:
     sys.path.insert(0, _MAGI_ROOT)
 from api.model_config import TEXT_PRIMARY_MODEL
@@ -178,6 +179,7 @@ TRANSCRIBE_METRICS_PATH = os.environ.get(
     "MAGI_TRANSCRIBE_METRICS_PATH",
     str(get_metrics_dir() / "transcribe_requests.jsonl"),
 )
+EXTERNAL_CHAT_METRICS_PATH = os.path.join(_MAGI_ROOT, "static", "external_chat_metrics.jsonl")
 
 # P0-13: CORS 改為 allowlist，不再允許所有來源。
 # 預設僅允許 localhost 開發用來源，正式環境請透過 MAGI_CORS_ORIGINS 設定。
@@ -420,6 +422,38 @@ def _record_transcribe_metric(
     )
 
 
+def _record_external_chat_metric(
+    duration_sec,  # type: float
+    success,  # type: bool
+    degraded,  # type: bool
+    cold_start,  # type: bool
+    tier,  # type: str
+    effective_timeout,  # type: int
+):  # type: (...) -> None
+    """Append one metric line and keep the jsonl capped at 500 lines."""
+    _append_jsonl(
+        EXTERNAL_CHAT_METRICS_PATH,
+        {
+            "ts": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "success": bool(success),
+            "degraded": bool(degraded),
+            "cold_start": bool(cold_start),
+            "duration_sec": round(float(duration_sec), 2),
+            "tier": str(tier or "COMPLEX"),
+            "effective_timeout": int(effective_timeout),
+        },
+    )
+    # Truncate to max 500 lines
+    try:
+        p = Path(EXTERNAL_CHAT_METRICS_PATH)
+        if p.exists():
+            lines = p.read_text(encoding="utf-8").splitlines()
+            if len(lines) > 500:
+                p.write_text("\n".join(lines[-500:]) + "\n", encoding="utf-8")
+    except Exception:
+        pass
+
+
 def _guard_text(s: str, platform: str = "OPENCLAW") -> str:
     text = str(s or "")
     if not text:
@@ -544,9 +578,17 @@ def _run_with_timeout(fn, wait_sec: int, *args, **kwargs):
         return True, future.result(timeout=max(1, int(wait_sec)))
     except FutureTimeoutError:
         future.cancel()
-        return False, {"success": False, "error": f"timeout_exceeded_{int(wait_sec)}s"}
+        return False, {
+            "success": False,
+            "error": f"timeout_exceeded_{int(wait_sec)}s",
+            "error_type": "timeout",
+        }
     except Exception as e:
-        return False, {"success": False, "error": str(e)}
+        return False, {
+            "success": False,
+            "error": str(e),
+            "error_type": "exception",
+        }
 
 
 _OSC_ORCHESTRATOR = None
@@ -779,7 +821,7 @@ def _check_tool_access(tool_name: str, *, command_subject: str = "", path_subjec
     return True, None
 
 
-def _start_tool_event(tool_name: str, input_data=None, metadata: dict | None = None) -> float:
+def _start_tool_event(tool_name: str, input_data=None, metadata: Optional[dict] = None) -> float:
     _TOOLS_HOOK_BUS.pre_tool(
         tool_name,
         input_data=dict(input_data or {}),
@@ -799,7 +841,7 @@ def _finish_tool_event(
     status: str,
     output_data=None,
     error: str = "",
-    metadata: dict | None = None,
+    metadata: Optional[dict] = None,
 ) -> None:
     _TOOLS_HOOK_BUS.post_tool(
         tool_name,
@@ -813,7 +855,7 @@ def _finish_tool_event(
     )
 
 
-def _tool_denied_response(tool_name: str, started_at: float, decision, metadata: dict | None = None):
+def _tool_denied_response(tool_name: str, started_at: float, decision, metadata: Optional[dict] = None):
     message = f"permission_denied: {decision.reason}"
     _finish_tool_event(
         tool_name,
@@ -831,7 +873,7 @@ def _tool_exception_response(
     started_at: float,
     error,
     *,
-    metadata: dict | None = None,
+    metadata: Optional[dict] = None,
     status_code: int = 500,
 ):
     message = str(error or "internal_error")
@@ -929,7 +971,35 @@ def external_osc_chat():
         )
         return jsonify({"success": True, "reply": _guard_text(quick, platform=platform)}), 200
 
-    timeout_sec = int(data.get("timeout_sec") or os.environ.get("MAGI_EXTERNAL_CHAT_TIMEOUT_SEC", "20"))
+    requested_timeout_sec = int(data.get("timeout_sec") or os.environ.get("MAGI_EXTERNAL_CHAT_TIMEOUT_SEC", "20"))
+
+    # Stability-first default: external authenticated chat keeps the proven timeout
+    # floor unless a future optimization is explicitly opted in.
+    try:
+        from skills.bridge.grounded_ai import _classify_query_tier
+        msg_tier = _classify_query_tier(message)
+    except Exception:
+        msg_tier = "COMPLEX"
+
+    simple_timeout_opt_in = _to_bool(os.environ.get("MAGI_EXTERNAL_CHAT_SIMPLE_TIMEOUT_OPT_IN", "0"), False)
+    if simple_timeout_opt_in and msg_tier == "SIMPLE":
+        min_timeout_sec = max(
+            int(os.environ.get("MAGI_EXTERNAL_CHAT_SIMPLE_MIN_TIMEOUT_SEC", "45") or "45"),
+            10,
+        )
+    else:
+        min_timeout_sec = max(
+            int(os.environ.get("MAGI_CHAT_TIMEOUT_SEC", "150") or "150"),
+            int(os.environ.get("MAGI_EXTERNAL_CHAT_MIN_TIMEOUT_SEC", "240") or "240"),
+        )
+
+    timeout_sec = max(10, min(300, max(requested_timeout_sec, min_timeout_sec)))
+    
+    # Expose cold_start / timeout via request context for downstream (Trace metrics later in C)
+    from flask import g
+    g.chat_tier = msg_tier
+    g.timeout_floor_applied = min_timeout_sec
+    g.effective_timeout_sec = timeout_sec
     async_enabled = _to_bool(data.get("async"), _to_bool(os.environ.get("MAGI_EXTERNAL_CHAT_ASYNC", "1"), True))
 
     if async_enabled and _looks_long_task(message):
@@ -956,25 +1026,58 @@ def external_osc_chat():
                 "queued": True,
                 "task_id": task_id,
                 "reply": _guard_text(ack, platform=platform),
+                "meta": {
+                    "tier": msg_tier,
+                    "timeout_floor": min_timeout_sec,
+                    "effective_timeout": timeout_sec,
+                    "duration_sec": 0,
+                    "is_fallback": False,
+                    "queued": True
+                }
             }
         ), 200
 
     def _process_chat():
         orch = _get_osc_orchestrator()
         return orch.process_message(user_id=user_id, message=message, platform=platform, role=role)
+        
+    start_time = time.time()
     ok_run, result = _run_with_timeout(_process_chat, timeout_sec)
+    duration = round(time.time() - start_time, 2)
+    _cold_start = (time.time() - _STARTUP_TS) < 120
+
+    from flask import g
+    meta = {
+        "tier": getattr(g, "chat_tier", "COMPLEX"),
+        "timeout_floor": getattr(g, "timeout_floor_applied", timeout_sec),
+        "effective_timeout": getattr(g, "effective_timeout_sec", timeout_sec),
+        "duration_sec": duration,
+        "is_fallback": not ok_run,
+        "cold_start": _cold_start,
+    }
+
     if ok_run:
-        return jsonify({"success": True, "reply": _guard_text(str(result or ""), platform=platform)})
+        _record_external_chat_metric(
+            duration_sec=duration, success=True, degraded=False,
+            cold_start=_cold_start, tier=msg_tier, effective_timeout=timeout_sec,
+        )
+        return jsonify({"success": True, "reply": _guard_text(str(result or ""), platform=platform), "meta": meta})
+
     fallback = (
         "目前系統較忙，已啟用降級回覆。"
         "請稍後重試，或改用較短問題分段詢問。"
+    )
+    _record_external_chat_metric(
+        duration_sec=duration, success=False, degraded=True,
+        cold_start=_cold_start, tier=msg_tier, effective_timeout=timeout_sec,
     )
     return jsonify(
         {
             "success": False,
             "degraded": True,
-            "error": (result or {}).get("error", "timeout"),
+            "error": (result or {}).get("error", "timeout") if isinstance(result, dict) else "timeout",
             "reply": _guard_text(fallback, platform=platform),
+            "meta": meta
         }
     ), 200
 
@@ -1226,7 +1329,8 @@ def api_search():
     try:
         ok, result = _run_with_timeout(search_web, 30, query, num_results)
         if not ok:
-            return _tool_exception_response("search", started, f"search_timeout: {result.get('error', 'timeout')}")
+            prefix = "search_timeout" if result.get("error_type") == "timeout" else "search_exception"
+            return _tool_exception_response("search", started, f"{prefix}: {result.get('error', 'unknown_error')}")
     except Exception as exc:
         return _tool_exception_response("search", started, f"search_exception: {exc}")
     _finish_tool_event("search", started, ok=True, status="handled", output_data=_tool_preview(result))
@@ -1249,7 +1353,8 @@ def api_research():
     try:
         ok, result = _run_with_timeout(research_topic, 60, topic, depth)
         if not ok:
-            return _tool_exception_response("research", started, f"research_timeout: {result.get('error', 'timeout')}")
+            prefix = "research_timeout" if result.get("error_type") == "timeout" else "research_exception"
+            return _tool_exception_response("research", started, f"{prefix}: {result.get('error', 'unknown_error')}")
     except Exception as exc:
         return _tool_exception_response("research", started, f"research_exception: {exc}")
     payload = {
@@ -1280,7 +1385,8 @@ def api_fetch():
     try:
         ok, result = _run_with_timeout(fetch_url_content, 30, url)
         if not ok:
-            return _tool_exception_response("fetch", started, f"fetch_timeout: {result.get('error', 'timeout')}")
+            prefix = "fetch_timeout" if result.get("error_type") == "timeout" else "fetch_exception"
+            return _tool_exception_response("fetch", started, f"{prefix}: {result.get('error', 'unknown_error')}")
     except Exception as exc:
         return _tool_exception_response("fetch", started, f"fetch_exception: {exc}")
     _finish_tool_event("fetch", started, ok=True, status="handled", output_data=_tool_preview(result))
@@ -1426,21 +1532,77 @@ def api_summarize():
     default_engine = metric_engine or "balthasar"
     auto_prefers_apple = _to_bool(os.environ.get("MAGI_SUMMARIZE_AUTO_APPLE", "0"), False)
     allow_apple = _to_bool(data.get("allow_apple"), auto_prefers_apple)
+    summary_length = str(data.get("summary_length") or "medium").strip().lower() or "medium"
     timeout_sec = max(10, min(int(data.get("timeout_sec", 75)), int(os.environ.get("MAGI_SUMMARIZE_MAX_TIMEOUT_SEC", "90"))))
-    primary_timeout_sec = max(8, min(timeout_sec, int(os.environ.get("MAGI_SUMMARIZE_PRIMARY_TIMEOUT_SEC", "28") or "28")))
+    # Reliability-first default: keep the primary summary budget large enough for
+    # medium legal documents instead of degrading too aggressively at ~28s.
+    primary_timeout_sec = max(8, min(timeout_sec, int(os.environ.get("MAGI_SUMMARIZE_PRIMARY_TIMEOUT_SEC", "45") or "45")))
     engine = (data.get("engine") or default_engine).strip().lower()
     if engine == "auto":
         engine = "apple" if allow_apple else "balthasar"
     apple_tried = False
     apple_result = None
 
-    def _degraded_summary(s: str) -> str:
-        compact = " ".join(str(s or "").replace("\n", " ").split())
-        short = compact[:240] + ("…" if len(compact) > 240 else "")
-        return f"（降級摘要）{short}"
+    def _extractive_summary_quick(s: str) -> str:
+        body = str(s or "").strip()
+        if not body:
+            return ""
+        compact = re.sub(r"\s+", " ", body.replace("\n", " ")).strip()
+        if not compact:
+            return ""
+        sentences = [
+            seg.strip(" \t\r\n-•")
+            for seg in re.split(r"(?<=[。！？!?；;\.])\s+", compact)
+            if seg.strip()
+        ]
+        picks = []
+        seen = set()
+        for seg in sentences:
+            if len(seg) < 18:
+                continue
+            norm = re.sub(r"\W+", "", seg).lower()
+            if not norm or norm in seen:
+                continue
+            seen.add(norm)
+            picks.append(seg[:180])
+            if len(picks) >= 4:
+                break
+        if not picks:
+            short = compact[:240] + ("…" if len(compact) > 240 else "")
+            return f"重點摘要：{short}"
+        return "\n".join(f"• {item}" for item in picks)
 
     # Circuit breaker: when upstream keeps timing out, return immediate degraded summary.
+    from api.handlers.summary_handler import summarize_text_resilient as _resilient_summarize
+
     if not _summarize_cb_allow_upstream():
+        probe_budget = max(12, min(timeout_sec, int(os.environ.get("MAGI_SUMMARIZE_CB_PROBE_TIMEOUT_SEC", "20") or "20")))
+        probe_ok, probe_result = _run_with_timeout(_resilient_summarize, probe_budget + 1, text, summary_length)
+        if probe_ok and isinstance(probe_result, dict) and probe_result.get("success") and (probe_result.get("text") or "").strip():
+            metric_route = str(probe_result.get("provider") or probe_result.get("route") or "resilient_probe")
+            _summarize_cb_note_success()
+            _record_summarize_metric(
+                t0,
+                success=True,
+                timeout=False,
+                upstream_timeout=False,
+                engine="balthasar",
+                route=metric_route,
+                degraded=False,
+                apple_tried=metric_apple_tried,
+                error="",
+            )
+            response = jsonify({
+                "sage": "balthasar",
+                "served_by": "casper",
+                "engine": "balthasar",
+                "apple_tried": bool(apple_tried),
+                "apple_error": (apple_result.get("error") if isinstance(apple_result, dict) else ""),
+                "note": "摘要上游曾短暫繁忙，已由 resilient 本地路徑接手。",
+                "result": probe_result,
+            })
+            _finish_tool_event("summarize", started, ok=True, status="handled", output_data=_tool_preview(response.get_json()))
+            return response
         metric_degraded = True
         metric_route = "circuit_open_degraded"
         _record_summarize_metric(
@@ -1466,7 +1628,7 @@ def api_summarize():
                 "degraded": True,
                 "provider": metric_route,
                 "error": "circuit_open",
-                "text": _degraded_summary(text),
+                "text": _extractive_summary_quick(text),
             }
         })
         _finish_tool_event(
@@ -1559,7 +1721,7 @@ def api_summarize():
             return response, 400
 
     # 2) Fallback: Balthasar summarization
-    ok, result = _run_with_timeout(summarize_text, primary_timeout_sec + 1, text, primary_timeout_sec)
+    ok, result = _run_with_timeout(_resilient_summarize, primary_timeout_sec + 1, text, summary_length)
     if (not ok) and isinstance(result, dict):
         if "timeout_exceeded" in str(result.get("error", "")).lower():
             metric_timeout = True
@@ -1596,9 +1758,40 @@ def api_summarize():
         _summarize_cb_note_upstream_timeout(metric_error)
 
     # 3) Fast degraded fallback: keep response under tight budget even when upstream stalls.
-    fallback_text = _degraded_summary(text)
-    metric_degraded = True
-    metric_route = "timeout_degraded_fallback" if metric_timeout else "error_degraded_fallback"
+    fallback_budget = max(8, min(timeout_sec, int(os.environ.get("MAGI_SUMMARIZE_EXTRACTIVE_TIMEOUT_SEC", "16") or "16")))
+    fallback_ok, fallback_result = _run_with_timeout(_resilient_summarize, fallback_budget + 1, text, "short")
+    if fallback_ok and isinstance(fallback_result, dict) and fallback_result.get("success") and (fallback_result.get("text") or "").strip():
+        fallback_result = dict(fallback_result)
+        fallback_result.setdefault("degraded", False)
+        metric_route = str(fallback_result.get("provider") or fallback_result.get("route") or "extractive_fallback")
+        metric_degraded = False
+        _summarize_cb_note_success()
+        _record_summarize_metric(
+            t0,
+            success=True,
+            timeout=False,
+            upstream_timeout=metric_timeout,
+            engine="balthasar",
+            route=metric_route,
+            degraded=False,
+            apple_tried=metric_apple_tried,
+            error="",
+        )
+        response = jsonify({
+            "sage": "balthasar",
+            "served_by": "casper",
+            "engine": "balthasar",
+            "apple_tried": bool(apple_tried),
+            "apple_error": (apple_result.get("error") if isinstance(apple_result, dict) else ""),
+            "note": "摘要主路徑逾時，已改用穩定摘要回覆。",
+            "result": fallback_result,
+        })
+        _finish_tool_event("summarize", started, ok=True, status="handled", output_data=_tool_preview(response.get_json()))
+        return response
+
+    fallback_text = _extractive_summary_quick(text)
+    metric_degraded = False
+    metric_route = "extractive_fallback" if metric_timeout else "extractive_error_fallback"
     _record_summarize_metric(
         t0,
         success=True,
@@ -1619,7 +1812,7 @@ def api_summarize():
         "note": "若要啟用 Apple Intelligence 摘要，需先在捷徑 App 建立捷徑「MAGI 摘要」。",
         "result": {
             "success": True,
-            "degraded": True,
+            "degraded": False,
             "provider": metric_route,
             "error": metric_error[:240],
             "text": fallback_text,
@@ -2621,6 +2814,23 @@ def _bootstrap_tool_registry() -> None:
 
 
 _bootstrap_tool_registry()
+
+def _warmup_background():
+    import time
+    time.sleep(3)  # wait for server to begin listening
+    try:
+        from skills.bridge.grounded_ai import _classify_query_tier
+        logger = logging.getLogger("tools_api")
+        logger.info("🔧 System Background Warmup: Preloading embedding anchors (Phase D)...")
+        # Preload SIMPLE / COMPLEX routes
+        _classify_query_tier("早安你好")
+        _classify_query_tier("幫我查一個最高法院113年度的判決與存證信函")
+        logger.info("✅ System Background Warmup Complete: models loaded in RAM.")
+    except Exception as e:
+        logging.getLogger("tools_api").debug(f"Warmup skipped: {e}")
+
+import threading
+threading.Thread(target=_warmup_background, daemon=True).start()
 
 if __name__ == '__main__':
     logging.getLogger("tools_api").info("MAGI Tools API starting on http://localhost:5003")

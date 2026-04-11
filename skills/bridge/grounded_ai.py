@@ -45,6 +45,14 @@ ENABLE_AUTO_MEMORIZE = os.environ.get("CASPER_AUTO_MEMORIZE", "0") != "0"
 _AUTO_MEM_ALLOWED_MODES = {"manual", "explicit"}
 _AUTO_MEM_MAX_LEN = 800  # max chars per memory entry (compress long answers)
 
+# ── 閒聊風格提示 ──────────────────────────────────────────────────
+_SMALL_TALK_STYLE_HINT = (
+    "回答閒聊時，不要用「我沒有味覺」「我是 AI 沒有感受」這類制式否認開頭。"
+    "改用自然的轉換語氣，例如：「綠茶確實很受歡迎，清爽回甘的口感讓人放鬆。」"
+    "不要假裝有感受，但也不要每次都先聲明自己沒有。"
+    "直接回應對方的話題，像朋友聊天一樣自然。"
+)
+
 # ── 角色設定幻覺偵測 ──────────────────────────────────────────────
 # LLM 有時不回答問題，反而自行生成一大段「CASPER 角色描述」。
 # 這些內容若存入記憶會形成正回饋循環，必須攔截。
@@ -84,12 +92,27 @@ _PERSONA_HALLUCINATION_KEYWORDS: list[str] = [
     "正在聯繫",
 ]
 _PERSONA_HALLUCINATION_THRESHOLD = 2  # 命中 >= 2 個即判定（降低門檻防止 prompt 洩漏）
+_INTERNAL_BADGE_LEAK_PATTERNS: list[str] = [
+    r"\[(?:使用者陳述|已驗證事實|檢索線索|衍生推論)\]",
+    r"根據(?:您|你)的?\s*\[(?:使用者陳述|已驗證事實|檢索線索|衍生推論)\]",
+    r"關於(?:您|你)的問題，?\s*身為\s*CAS(?:PER)?\b",
+    r"身為\s*CAS(?:PER)?\b",
+]
+
+
+def _has_internal_badge_leak(text: str) -> bool:
+    s = text or ""
+    if not s:
+        return False
+    return any(re.search(pat, s) for pat in _INTERNAL_BADGE_LEAK_PATTERNS)
 
 
 def _is_persona_hallucination(text: str) -> bool:
     """偵測 LLM 回覆是否為角色設定幻覺（非正常回答）。"""
     if not text:
         return False
+    if _has_internal_badge_leak(text):
+        return True
     hits = sum(1 for kw in _PERSONA_HALLUCINATION_KEYWORDS if kw in text)
     return hits >= _PERSONA_HALLUCINATION_THRESHOLD
 
@@ -579,6 +602,51 @@ def _filter_chatlog_memories(query: str, memories: list[dict]) -> list[dict]:
     return trusted or non_chat or mems
 
 
+def _should_skip_recall_for_chat(query: str, tier: str) -> bool:
+    """
+    SIMPLE tier casual chat should not pay the full FAISS/memory cost.
+    Keep recall only when the user explicitly asks to remember past messages
+    or asks a factual question that may benefit from memory grounding.
+    """
+    if str(tier or "").upper() != "SIMPLE":
+        return False
+    if _wants_chatlog(query):
+        return False
+    if _needs_research(query) or _is_factual_question(query):
+        return False
+    return True
+
+
+def is_small_talk_intent(query: str, tier: str) -> bool:
+    """
+    Check if query is purely casual small talk without tasks or tool requirements.
+    Used to skip both semantic routing and memory grounding for maximum latency reduction.
+    """
+    if str(tier or "").upper() != "SIMPLE":
+        return False
+        
+    query_lower = (query or "").lower()
+    
+    # Check for task verbs / tool commands
+    task_verbs = [
+        "翻譯", "幫我", "列出", "搜尋", "查詢", "追蹤", "整理", "分析",
+        "總結", "摘要", "找一下", "寫", "生成", "做", "建立"
+    ]
+    if any(v in query_lower for v in task_verbs):
+        return False
+        
+    # Check for legal entities (law articles / case numbers)
+    if _RE_LAW_ARTICLE.search(query) or _RE_CASE_NUMBER.search(query):
+        return False
+        
+    # Check if factual/research
+    if _needs_research(query) or _is_factual_question(query):
+        return False
+        
+    return True
+
+
+
 def _needs_research(text):
     lowered = (text or "").lower()
 
@@ -923,7 +991,11 @@ def chat_casper(message, conversation_history=""):
     _top_k = 1 if tier == "SIMPLE" else 4
     _temperature = 0.3 if tier == "SIMPLE" else 0.55
 
-    memories = _filter_chatlog_memories(message, recall(message, top_k=_top_k))
+    if _should_skip_recall_for_chat(message, tier):
+        memories = []
+        logger.info("💬 SIMPLE chat recall skipped for low-risk casual query")
+    else:
+        memories = _filter_chatlog_memories(message, recall(message, top_k=_top_k))
     # ── Layer 1: Statute / Noise Filter ──
     memories = _filter_statute_memories(memories, tier)
     # Compress context if too large to avoid LLM context overflow
@@ -950,6 +1022,12 @@ def chat_casper(message, conversation_history=""):
             logger.warning(f"Web research failed in chat_casper: {e}")
 
     _trust_rules = build_trust_system_instruction()
+    _style_rule = ""
+    if tier == "SIMPLE":
+        _style_rule = "- 【閒聊模式】回答請簡短（1~3句）、自然、口語化。不要像客服那樣過度道歉或解釋，就像朋友一樣對話即可。"
+    if is_small_talk_intent(message, tier):
+        _style_rule = _style_rule + "\n" + _SMALL_TALK_STYLE_HINT if _style_rule else _SMALL_TALK_STYLE_HINT
+
     prompt = f"""你是 CASPER（MAGI-01），請以繁體中文回答。
 你需要同時參考記憶與近期對話，保持前後一致。
 
@@ -959,6 +1037,9 @@ def chat_casper(message, conversation_history=""):
 - 若使用者在延續上一題，請承接上下文。
 - 若使用者糾正您的錯誤或補充新資訊，請【務必明確總結並覆誦正確的資訊】，這會幫助系統將正確知識寫入長期記憶。
 - 不要使用 Markdown 語法（**粗體**、`程式碼`、### 標題等）。純文字即可。
+- 內部信任標記僅供你判斷，回答時不得直接說出 [使用者陳述]、[已驗證事實]、[檢索線索]、[衍生推論] 或「身為 CASPER」這類內部提示字樣。
+{_style_rule}
+
 
 {_trust_rules}
 

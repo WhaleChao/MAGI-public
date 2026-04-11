@@ -1,0 +1,3 @@
+{"ts": "2026-04-12T05:52:07", "success": true, "degraded": false, "cold_start": true, "duration_sec": 0.0, "tier": "SIMPLE", "effective_timeout": 240}
+{"ts": "2026-04-12T05:52:07", "success": true, "degraded": false, "cold_start": true, "duration_sec": 0.0, "tier": "SIMPLE", "effective_timeout": 45}
+{"ts": "2026-04-12T05:58:12", "success": true, "degraded": false, "cold_start": true, "duration_sec": 66.66, "tier": "SIMPLE", "effective_timeout": 240}

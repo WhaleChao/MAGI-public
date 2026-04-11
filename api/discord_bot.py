@@ -412,7 +412,7 @@ def _safe_remove_tmp(path: str) -> None:
         logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 378, exc_info=True)
 
 
-def _likely_long_task(user_text: str, attachment: dict | None) -> bool:
+def _likely_long_task(user_text: str, attachment: Optional[dict]) -> bool:
     if attachment:
         return True
     t = (user_text or "").lower()
@@ -553,7 +553,8 @@ async def bg_scheduler_loop():
                                       "job_judicial_api_morning", "job_weekly_legal_crawl",
                                       "job_transcript_sync", "job_file_review_check",
                                       "job_weekend_bookmark", "job_market_briefing_script",
-                                      "job_wiki_synthesizer", "job_knowledge_lint"}
+                                      "job_wiki_synthesizer", "job_knowledge_lint",
+                                      "job_smoke_external_chat"}
                         _timeout = 7200 if job.get("id") in _LONG_JOBS else 600
                         _job_id = job.get("id", "?")
                         _shell_env = {**os.environ, "MAGI_PREFER_LOCAL_DB": "0", "MAGI_NO_DELETE": "1"}
