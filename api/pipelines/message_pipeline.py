@@ -15,7 +15,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from api.model_config import TEXT_PRIMARY_MODEL
-from api.runtime_paths import get_legacy_code_root, get_magi_root_dir
+from api.runtime_paths import get_legacy_code_root, get_magi_root_dir, legacy_code_enabled
 from skills.ops.red_phone import alert_iron_dome_violation
 
 logger = logging.getLogger("Orchestrator")
@@ -182,6 +182,23 @@ def process_message_inner(orch, user_id, message, platform="LINE", role="user", 
             return handle_chat(str(user_id), cmd)
     except Exception as e:
         logger.error(f"Legal attest flow check failed: {e}")
+
+    # --- 書狀製作 Intercept (DOCX→PDF, 正本/副本/繕本) ---
+    try:
+        msg_lower_dp = (message or "").lower()
+        _DOC_PRODUCER_KWS = [
+            "轉pdf", "轉換pdf", "轉成pdf",
+            "做正本", "做副本", "做繕本",
+            "標正本", "標副本", "標繕本",
+            "合併pdf", "書狀製作", "製作書狀",
+        ]
+        if any(kw in msg_lower_dp for kw in _DOC_PRODUCER_KWS):
+            from api.pipelines.skill_dispatch import dispatch_doc_producer
+            dp_reply = dispatch_doc_producer(orch, user_id, message, platform=platform)
+            if dp_reply:
+                return dp_reply
+    except Exception as e:
+        logger.error(f"doc-producer intercept failed: {e}")
 
     # --- 文件產生 Intercept (委任狀/委託書/委任契約書/收據) ---
     try:
@@ -350,6 +367,22 @@ def process_message_inner(orch, user_id, message, platform="LINE", role="user", 
     # EmbeddingRouter (≥0.85), or topic fast path in specialized channels.
     # NL Router is ONLY active in specialized topic channels as a secondary route.
     _nl_router_enabled = bool(_topic_key and _topic_key not in ("general", ""))
+    
+    # ── Phase A: Casual Fast-Path Bypass ──
+    try:
+        from skills.bridge.grounded_ai import is_small_talk_intent, _classify_query_tier
+        _msg_tier = _classify_query_tier(message)
+        if is_small_talk_intent(message, _msg_tier):
+            orch._append_route_trace(
+                str(user_id or ""), str(platform or ""),
+                "top_level", "chat_fast_path",
+                {"tier": _msg_tier, "router_suppressed": True, "reason": "small_talk_intent"}
+            )
+            logger.info("⚡ Casual fast path activated: bypassing all routers for small-talk.")
+            return orch._handle_chat_async(user_id, message, platform_hint=platform)
+    except Exception as _st_err:
+        logger.debug(f"Small-talk fast path check skipped: {_st_err}")
+        
     _skip_nl_for_laf = False
     if _nl_router_enabled:
         try:
@@ -608,12 +641,13 @@ def process_message_inner(orch, user_id, message, platform="LINE", role="user", 
             return f"❌ OpenClaw 更新流程錯誤: {e}"
 
     # 2.7.75 Judgment Collector / Search
-    if any(k in msg_lower for k in ["查判決", "找判決", "判決搜尋", "搜尋判決"]):
+    if any(k in msg_lower for k in ["查判決", "找判決", "判決搜尋", "搜尋判決", "實務見解", "法律見解", "法院見解"]):
         if orch._looks_like_capability_question(message):
             return (
                 "✅ **我可以幫您查判決！**\n\n"
                 "• 直接輸入：`查判決 傷害`\n"
-                "• 也可提供案號：`查判決 113年度上訴字第12號`"
+                "• 也可提供案號：`查判決 113年度上訴字第12號`\n"
+                "• 實務見解整理：`實務見解 預售屋遲延交屋`"
             )
         return orch._run_judgment_collector_command(message, notify=False)
 
@@ -916,7 +950,7 @@ def process_message_inner(orch, user_id, message, platform="LINE", role="user", 
 
             autoskill = AutoSkill()
             source_dir = str(get_magi_root_dir())
-            if "legacy" in msg_lower or "archive" in msg_lower:
+            if ("legacy" in msg_lower or "archive" in msg_lower) and legacy_code_enabled():
                 source_dir = str(get_legacy_code_root())
             force = any(k in msg_lower for k in ["force", "重建", "重新內化"])
             result = autoskill.internalize_codebase_as_skills(
@@ -2171,4 +2205,3 @@ def process_message_inner(orch, user_id, message, platform="LINE", role="user", 
 
     orch._append_history(user_id, "assistant", response)
     return response
-

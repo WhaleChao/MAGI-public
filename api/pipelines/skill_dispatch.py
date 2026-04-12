@@ -323,3 +323,129 @@ def try_safe_semantic_skill_route(orch, user_id: str, message: str, role: str, p
 
     reply = orch._handle_command(user_id, synthetic, role=role, platform=platform)
     return (bool(reply), reply or "")
+
+
+# ── doc-producer dispatch ──
+
+def dispatch_doc_producer(orch, user_id, message, platform="LINE"):
+    # type: (object, object, str, str) -> Optional[str]
+    """Parse a doc-producer intent from the user message and run the skill."""
+    import subprocess as _sp
+    import sys as _sys
+
+    text = (message or "").strip()
+    text_lower = text.lower()
+
+    # Determine task and payload
+    payload = {}  # type: dict
+
+    # Detect copy_type
+    copy_type = None  # type: Optional[str]
+    for ct in ("正本", "副本", "繕本"):
+        if ct in text:
+            copy_type = ct
+            break
+
+    # Detect options
+    add_poa = any(kw in text for kw in ("附委任狀", "委任狀"))
+    add_sent = any(kw in text for kw in ("繕本已送對造", "已送對造", "送對造"))
+
+    # Extract file path (look for absolute path or quoted path)
+    import re as _re
+    path_match = _re.search(r'["\']?(/[^\s"\']+\.\w+)["\']?', text)
+    file_path = path_match.group(1) if path_match else ""
+
+    # Route to appropriate task
+    if any(kw in text_lower for kw in ("合併pdf", "合併 pdf")):
+        # Merge: extract multiple paths
+        paths = _re.findall(r'(/[^\s"\']+\.pdf)', text)
+        if len(paths) < 2:
+            return "請提供至少兩個 PDF 檔案路徑來合併。"
+        output_path = paths[-1].replace(".pdf", "_合併.pdf")
+        task = "merge"
+        payload = {"inputs": paths, "output": output_path}
+
+    elif any(kw in text_lower for kw in ("轉pdf", "轉換pdf", "轉成pdf")):
+        if not file_path:
+            return "請提供要轉換的 DOCX 檔案路徑。例如：轉PDF /path/to/file.docx"
+        task = "convert"
+        payload = {"input": file_path}
+
+    elif any(kw in text_lower for kw in ("做正本", "做副本", "做繕本", "標正本", "標副本", "標繕本")):
+        if not file_path:
+            return "請提供 PDF 檔案路徑。例如：做正本 /path/to/file.pdf"
+        task = "mark"
+        payload = {
+            "input": file_path,
+            "copy_type": copy_type or "正本",
+            "add_poa": add_poa,
+            "add_sent_to_opponent": add_sent,
+        }
+
+    elif any(kw in text_lower for kw in ("書狀製作", "製作書狀")):
+        if not file_path:
+            return "請提供書狀檔案路徑（DOCX 或 PDF）。例如：書狀製作 /path/to/file.docx 正本"
+        task = "produce"
+        payload = {
+            "input": file_path,
+            "copy_type": copy_type or "正本",
+            "add_poa": add_poa,
+            "add_sent_to_opponent": add_sent,
+        }
+
+    else:
+        return None
+
+    # Run the skill
+    skill_script = os.path.join(_MAGI_ROOT, "skills", "doc-producer", "action.py")
+    if not os.path.isfile(skill_script):
+        return "doc-producer skill 腳本不存在。"
+
+    from api.runtime_paths import get_skill_python
+    skill_python = str(get_skill_python())
+    task_arg = "%s %s" % (task, json.dumps(payload, ensure_ascii=False))
+
+    try:
+        proc = _sp.run(
+            [skill_python, skill_script, "--task", task_arg],
+            capture_output=True,
+            text=True,
+            timeout=180,
+        )
+        output = (proc.stdout or "").strip()
+        if not output:
+            return "doc-producer 執行完成但無輸出。stderr: %s" % (proc.stderr or "")[:300]
+
+        try:
+            result = json.loads(output)
+        except json.JSONDecodeError:
+            return "doc-producer 輸出解析失敗: %s" % output[:500]
+
+        if result.get("success"):
+            # Format success response
+            out_file = result.get("output", "")
+            outputs = result.get("outputs", {})
+            if outputs:
+                parts = []
+                if outputs.get("pdf"):
+                    parts.append("PDF: %s" % outputs["pdf"])
+                if outputs.get("marked"):
+                    parts.append("標記: %s" % outputs["marked"])
+                if outputs.get("merged"):
+                    parts.append("合併: %s" % outputs["merged"])
+                return "書狀製作完成：\n" + "\n".join(parts)
+            elif out_file:
+                page_info = ""
+                if result.get("page_count"):
+                    page_info = "（共 %d 頁）" % result["page_count"]
+                return "完成%s：%s" % (page_info, out_file)
+            else:
+                return "書狀製作完成。"
+        else:
+            return "書狀製作失敗：%s" % result.get("error", "未知錯誤")
+
+    except _sp.TimeoutExpired:
+        return "書狀製作逾時（180 秒）。"
+    except Exception as e:
+        logger.error("doc-producer dispatch error: %s", e)
+        return "書狀製作發生錯誤：%s" % str(e)
