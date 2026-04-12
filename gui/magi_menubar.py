@@ -41,6 +41,10 @@ except ImportError:
 
 # ── 設定 ──────────────────────────────────────────────────────────
 MAGI_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+import sys
+if MAGI_ROOT not in sys.path:
+    sys.path.insert(0, MAGI_ROOT)
+
 CHECK_INTERVAL = 5  # 秒
 
 SERVICES = [
@@ -616,8 +620,8 @@ class MAGIMenuBar(rumps.App):
                 _set_colored_title(self.ocr_item, "  ● OCR引擎  macOS Vision", _GREEN)
             else:
                 _set_colored_title(self.ocr_item, "  ✗ OCR引擎  未安裝", _GRAY)
-        except Exception:
-            _set_colored_title(self.ocr_item, "  ✗ OCR引擎  未安裝", _GRAY)
+        except Exception as e:
+            _set_colored_title(self.ocr_item, f"  ✗ OCR引擎  未安裝 ({e})", _GRAY)
 
         # ── 遠端節點 ──
         nodes_up = 0

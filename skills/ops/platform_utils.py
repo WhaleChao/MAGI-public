@@ -227,7 +227,7 @@ _TOOL_HINTS: dict[str, dict[str, list[str]]] = {
 }
 
 
-def find_executable(name: str) -> str | None:
+def find_executable(name: str) -> Optional[str]:
     """Find an executable by name, checking platform-specific paths first."""
     # 1. Check PATH via shutil.which
     found = shutil.which(name)

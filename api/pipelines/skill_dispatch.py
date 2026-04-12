@@ -997,7 +997,7 @@ def dispatch_calendar_event(message, user_id="", platform=""):
 
     # ── 偵測 Google Calendar 憑證是否存在 ──
     import os as _os_gcal
-    _magi_root = _os_gcal.path.dirname(_os_gcal.path.dirname(_os_gcal.path.abspath(__file__)))
+    _magi_root = _os_gcal.path.dirname(_os_gcal.path.dirname(_os_gcal.path.dirname(_os_gcal.path.abspath(__file__))))
     _cred_path = (
         _os_gcal.environ.get("MAGI_GOOGLE_CREDENTIALS_PATH")
         or _os_gcal.path.join(_magi_root, "json", "credentials.json")

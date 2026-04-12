@@ -10,7 +10,7 @@ _DEFAULT_SESSION_STORE = SessionStore()
 
 def _resolve_store_and_args(
     args: tuple[Any, ...],
-    store: SessionStore | None,
+    store: Optional[SessionStore],
 ) -> tuple[SessionStore, tuple[Any, ...]]:
     if store is not None:
         return store, args
@@ -20,7 +20,7 @@ def _resolve_store_and_args(
 
 
 class SessionSummaryManager:
-    def __init__(self, store: SessionStore | None = None) -> None:
+    def __init__(self, store: Optional[SessionStore] = None) -> None:
         self.store = store or SessionStore()
 
     def add(
@@ -44,11 +44,11 @@ class SessionSummaryManager:
 
 def add_summary(
     *args: Any,
-    text: str | None = None,
+    text: Optional[str] = None,
     source: str = "derived",
     authoritative: bool = False,
     metadata: dict[str, Any] | None = None,
-    store: SessionStore | None = None,
+    store: Optional[SessionStore] = None,
 ):
     resolved_store, remaining = _resolve_store_and_args(args, store)
     if not remaining:
@@ -67,14 +67,14 @@ def add_summary(
     )
 
 
-def list_summaries(*args: Any, store: SessionStore | None = None):
+def list_summaries(*args: Any, store: Optional[SessionStore] = None):
     resolved_store, remaining = _resolve_store_and_args(args, store)
     if not remaining:
         raise TypeError("list_summaries() missing session_id")
     return resolved_store.list_summaries(remaining[0])
 
 
-def latest_summary(*args: Any, store: SessionStore | None = None):
+def latest_summary(*args: Any, store: Optional[SessionStore] = None):
     resolved_store, remaining = _resolve_store_and_args(args, store)
     if not remaining:
         raise TypeError("latest_summary() missing session_id")

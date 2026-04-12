@@ -116,7 +116,7 @@ class RequestRouter:
     def __init__(
         self,
         *,
-        policy_engine: PolicyEngine | None = None,
+        policy_engine: Optional[PolicyEngine] = None,
         stages: list[RoutingStage] | None = None,
     ) -> None:
         self._engine = policy_engine or PolicyEngine()

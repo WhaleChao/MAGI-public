@@ -169,7 +169,7 @@ def translate_text(
     target_lang: str = "繁體中文",
     source_lang: str = "auto",
     mode: str = "auto",
-    timeout: int | None = None,
+    timeout: Optional[int] = None,
 ) -> dict:
     content = (text or "").strip()
     if not content:
@@ -739,12 +739,16 @@ def transcribe_audio(audio_path: str) -> dict:
         return {"success": False, "error": f"file not found: {path}"}
 
     engine = (os.environ.get("MAGI_TRANSCRIBE_ENGINE") or "auto").strip().lower()
+    auto_prefers_apple = str(
+        os.environ.get("MAGI_TRANSCRIBE_AUTO_PREFERS_APPLE", "0") or "0"
+    ).strip().lower() in {"1", "true", "yes", "on"}
+    auto_cli_model = (os.environ.get("MAGI_TRANSCRIBE_AUTO_CLI_MODEL") or "tiny").strip() or "tiny"
     max_retries = int(os.environ.get("MAGI_TRANSCRIBE_RETRY_ATTEMPTS", "3") or "3")
     last_err = ""
 
     for attempt in range(1, max_retries + 1):
-        # 1) Apple Intelligence / on-device Speech (best-effort)
-        if engine in {"auto", "apple", "apple_intelligence", "speech"}:
+        apple_first = engine in {"apple", "apple_intelligence", "speech"} or (engine == "auto" and auto_prefers_apple)
+        if apple_first:
             try:
                 from skills.apple.apple_intelligence import transcribe_audio as apple_transcribe
 
@@ -765,7 +769,35 @@ def transcribe_audio(audio_path: str) -> dict:
                     time.sleep(min(8, 2 ** attempt))
                 continue
 
-        # 2) Existing default: Balthasar (mlx-whisper)
+        # 1/2) Stability-first auto mode: use a small whisper CLI model first so
+        # short live transcribe requests return quickly instead of hanging on MLX.
+        if engine == "auto":
+            previous_model = os.environ.get("MAGI_WHISPER_MODEL")
+            try:
+                os.environ["MAGI_WHISPER_MODEL"] = auto_cli_model
+                cli_fast = balthasar_bridge._transcribe_with_whisper_cli(path)
+                if isinstance(cli_fast, dict) and cli_fast.get("success"):
+                    return {
+                        "success": True,
+                        "text": cli_fast.get("text", ""),
+                        "provider": str(cli_fast.get("provider") or "openai_whisper_cli"),
+                        "segments": cli_fast.get("segments") or [],
+                        "timestamp_text": cli_fast.get("timestamp_text", ""),
+                        "speaker_text": cli_fast.get("speaker_text", ""),
+                        "speaker_count_estimate": cli_fast.get("speaker_count_estimate", 0),
+                        "model": auto_cli_model,
+                    }
+                last_err = str(cli_fast.get("error") or last_err or "whisper_cli_failed")
+            except Exception as e:
+                last_err = str(e)
+                _tlog_tr.warning("Whisper CLI fast path attempt %d/%d failed: %s", attempt, max_retries, e)
+            finally:
+                if previous_model is None:
+                    os.environ.pop("MAGI_WHISPER_MODEL", None)
+                else:
+                    os.environ["MAGI_WHISPER_MODEL"] = previous_model
+
+        # 2) Existing default path
         try:
             result = balthasar_bridge.transcribe(path)
             if isinstance(result, dict) and result.get("success"):
@@ -782,6 +814,23 @@ def transcribe_audio(audio_path: str) -> dict:
         except Exception as e:
             last_err = str(e)
             _tlog_tr.warning("Balthasar transcribe attempt %d/%d failed: %s", attempt, max_retries, e)
+
+        if engine == "auto" and (not auto_prefers_apple):
+            try:
+                from skills.apple.apple_intelligence import transcribe_audio as apple_transcribe
+
+                ar = apple_transcribe(path, engine="auto")
+                if isinstance(ar, dict) and ar.get("success") and (ar.get("text") or "").strip():
+                    return {
+                        "success": True,
+                        "text": (ar.get("text") or "").strip(),
+                        "provider": "apple",
+                        "engine": ar.get("engine", "auto"),
+                    }
+                last_err = str(ar.get("error") or last_err or "apple transcription failed")
+            except Exception as e:
+                last_err = str(e)
+                _tlog_tr.warning("Apple transcribe attempt %d/%d failed after Balthasar: %s", attempt, max_retries, e)
 
         # Backoff before retry
         if attempt < max_retries:

@@ -82,7 +82,7 @@ class ReActEngine:
     def __init__(
         self,
         tools: dict[str, dict[str, Any]],
-        llm_fn: Callable | None = None,
+        llm_fn: Optional[Callable] = None,
         max_steps: int = MAX_STEPS,
         total_timeout: int = TOTAL_TIMEOUT,
     ):
@@ -169,14 +169,14 @@ class ReActEngine:
 
         return tool_name, params
 
-    def _parse_final(self, response: str) -> str | None:
+    def _parse_final(self, response: str) -> Optional[str]:
         """從 LLM 回應中解析 FINAL: answer。"""
         final_match = re.search(r'FINAL:\s*(.*)', response, re.DOTALL)
         if final_match:
             return final_match.group(1).strip()
         return None
 
-    def _iron_dome_check(self, tool_name: str, params: dict) -> str | None:
+    def _iron_dome_check(self, tool_name: str, params: dict) -> Optional[str]:
         """Iron Dome 安全檢查。回傳 None 表示安全，否則回傳攔截原因。"""
         param_str = json.dumps(params, ensure_ascii=False).lower()
         for blocked in _IRON_DOME_BLOCKED:

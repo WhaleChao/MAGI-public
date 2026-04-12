@@ -1,0 +1,2 @@
+"""MAGI API package."""
+

@@ -49,7 +49,7 @@ PROVIDERS: dict[str, dict[str, Any]] = {
 
 # ── Feature → Provider 路由 ────────────────────────────
 
-FEATURE_ROUTING: dict[str, dict[str, str | None]] = {
+FEATURE_ROUTING: dict[str, dict[str, Optional[str]]] = {
     "intent":     {"primary": "omlx", "fallback": None},        # 輕量，不值得花錢
     "translate":  {"primary": "omlx", "fallback": "claude"},     # oMLX 夠用，失敗才 fallback
     "summary":    {"primary": "omlx", "fallback": "claude"},
@@ -381,7 +381,7 @@ def polish_transcript_with_codex(prompt: str, *, timeout_sec: int = 120, **_extr
     }
 
 
-def run_prompt(*, feature: str, prompt: str, timeout_sec: int | None = None, **kwargs) -> dict:
+def run_prompt(*, feature: str, prompt: str, timeout_sec: Optional[int] = None, **kwargs) -> dict:
     """相容 openclaw_codex_bridge.run_prompt 介面。"""
     result = chat(
         prompt=prompt,
@@ -399,7 +399,7 @@ def run_prompt(*, feature: str, prompt: str, timeout_sec: int | None = None, **k
 
 
 def analyze_image_with_codex(
-    image_path: str, *, user_prompt: str, task_type: str = "vision", timeout_sec: int | None = None
+    image_path: str, *, user_prompt: str, task_type: str = "vision", timeout_sec: Optional[int] = None
 ) -> dict:
     """相容 openclaw_codex_bridge.analyze_image_with_codex 介面。"""
     normalized_task = str(task_type or "vision").strip().lower() or "vision"
@@ -434,7 +434,7 @@ def analyze_image_with_codex(
     return run_prompt(feature="vision", prompt=prompt, timeout_sec=timeout_sec)
 
 
-def refine_ocr_with_codex(ocr_text: str, *, user_prompt: str, timeout_sec: int | None = None) -> dict:
+def refine_ocr_with_codex(ocr_text: str, *, user_prompt: str, timeout_sec: Optional[int] = None) -> dict:
     """相容 openclaw_codex_bridge.refine_ocr_with_codex 介面。"""
     prompt = (
         "你是 MAGI 的 OCR 校對與抽取引擎。以下內容是由本地 OCR 模型擷取出的原始文字。\n"

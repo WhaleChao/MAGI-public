@@ -6,7 +6,7 @@ from .models import PermissionDecision, PermissionEffect, PermissionMode, Permis
 from .policy import PermissionPolicy
 
 
-@dataclass(slots=True)
+@dataclass()
 class PermissionEnforcer:
     """Evaluate permissions using a policy + declarative rules."""
 
@@ -14,9 +14,9 @@ class PermissionEnforcer:
 
     def __init__(
         self,
-        policy: PermissionPolicy | None = None,
+        policy: Optional[PermissionPolicy] = None,
         *,
-        mode: str | PermissionMode | None = None,
+        mode: str | Optional[PermissionMode] = None,
         rules: list[PermissionRule] | tuple[PermissionRule, ...] | None = None,
     ) -> None:
         if policy is None:

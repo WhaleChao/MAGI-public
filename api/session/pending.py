@@ -10,7 +10,7 @@ _DEFAULT_SESSION_STORE = SessionStore()
 
 def _resolve_store_and_args(
     args: tuple[Any, ...],
-    store: SessionStore | None,
+    store: Optional[SessionStore],
 ) -> tuple[SessionStore, tuple[Any, ...]]:
     if store is not None:
         return store, args
@@ -20,7 +20,7 @@ def _resolve_store_and_args(
 
 
 class SessionPendingManager:
-    def __init__(self, store: SessionStore | None = None) -> None:
+    def __init__(self, store: Optional[SessionStore] = None) -> None:
         self.store = store or SessionStore()
 
     def set(self, session_id: str, values: dict[str, Any]):
@@ -40,7 +40,7 @@ class SessionPendingManager:
         self.store.clear_pending_state(session_id)
 
 
-def set_pending_state(*args: Any, values: dict[str, Any] | None = None, store: SessionStore | None = None):
+def set_pending_state(*args: Any, values: dict[str, Any] | None = None, store: Optional[SessionStore] = None):
     resolved_store, remaining = _resolve_store_and_args(args, store)
     if not remaining:
         raise TypeError("set_pending_state() missing session_id")
@@ -52,21 +52,21 @@ def set_pending_state(*args: Any, values: dict[str, Any] | None = None, store: S
     return resolved_store.set_pending_state(session_id, values)
 
 
-def update_pending_state(*args: Any, store: SessionStore | None = None, **updates: Any):
+def update_pending_state(*args: Any, store: Optional[SessionStore] = None, **updates: Any):
     resolved_store, remaining = _resolve_store_and_args(args, store)
     if not remaining:
         raise TypeError("update_pending_state() missing session_id")
     return resolved_store.update_pending_state(remaining[0], **updates)
 
 
-def get_pending_state(*args: Any, store: SessionStore | None = None):
+def get_pending_state(*args: Any, store: Optional[SessionStore] = None):
     resolved_store, remaining = _resolve_store_and_args(args, store)
     if not remaining:
         raise TypeError("get_pending_state() missing session_id")
     return resolved_store.get_pending_state(remaining[0])
 
 
-def clear_pending_state(*args: Any, store: SessionStore | None = None) -> None:
+def clear_pending_state(*args: Any, store: Optional[SessionStore] = None) -> None:
     resolved_store, remaining = _resolve_store_and_args(args, store)
     if not remaining:
         raise TypeError("clear_pending_state() missing session_id")

@@ -12,7 +12,7 @@ from api.events.sinks import JsonlSink
 EventCallback = Callable[[EventModel], Any]
 
 
-@dataclass(slots=True)
+@dataclass()
 class Subscription:
     emitter: "EventEmitter"
     event_type: str

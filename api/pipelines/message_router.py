@@ -52,7 +52,7 @@ _GIBBERISH_LOG_PATH = _Path(os.environ.get(
 ))
 
 
-def handle_gibberish_report(orch, user_id, message: str, platform: str = "") -> str | None:
+def handle_gibberish_report(orch, user_id, message: str, platform: str = "") -> Optional[str]:
     """使用者回報「亂碼」→ 取上一則 assistant 回覆存入 JSONL，供偵測模組學習。"""
     if not _GIBBERISH_REPORT_RE.search((message or "").strip()):
         return None
@@ -107,7 +107,7 @@ def handle_gibberish_report(orch, user_id, message: str, platform: str = "") -> 
     return f"✅ 已記錄該亂碼回覆，偵測模組會自動學習。感謝回報！"
 
 
-def quick_fixed_reply(orch, message: str, role: str = "user") -> str | None:
+def quick_fixed_reply(orch, message: str, role: str = "user") -> Optional[str]:
     """Deterministic quick-replies for frequent operational questions."""
     t = str(message or "").strip().lower()
     if not t:
@@ -499,10 +499,10 @@ def explain_routing(orch, message: str, role: str = "user") -> dict:
                      requires_admin=True, handler="api/orchestrator.py:_handle_command('/help')")
 
     # Status: require MAGI/system context, not just bare "狀態" which hits case-status questions
-    _STATUS_EXACT = {"系統狀態", "運作狀態", "節點狀態", "機器狀態", "magi狀態", "magi status",
-                     "大腦狀態", "brain status", "status", "目前模型", "現在模型", "使用什麼模型"}
+    _STATUS_EXACT = {"狀態", "系統狀態", "運作狀態", "節點狀態", "機器狀態", "magi狀態", "magi status",
+                     "大腦", "大腦狀態", "brain", "brain status", "status", "目前模型", "現在模型", "使用什麼模型"}
     if msg_lower in _STATUS_EXACT or (
-        ("模型" in msg) and len(t) <= 12 and any(kw in msg_lower for kw in ["目前", "現在", "使用", "模式"])
+        ("模型" in msg) and len(msg) <= 12 and any(kw in msg_lower for kw in ["目前", "現在", "使用", "模式"])
     ):
         return _res(action="status_report", matched="status_keywords",
                      requires_admin=False, handler="api/orchestrator.py:process_message(status fast-path)")
@@ -540,7 +540,7 @@ def explain_routing(orch, message: str, role: str = "user") -> dict:
 
     # Fall back to classifier-based routing.
     try:
-        detail: dict | str | None
+        detail: dict | Optional[str]
         classify_detailed = getattr(orch.classifier, "classify_detailed", None)
         if callable(classify_detailed):
             detail = classify_detailed(msg)
@@ -588,10 +588,13 @@ def topic_fast_path(orch, topic_key: str, user_id, message: str, role: str, plat
     """
     # 頻道→允許的動作映射
     _CHANNEL_ACTION_MAP = {
-        "laf_go_live": {"allowed": ("go_live",), "label": "法扶-開辦", "hint": "這個頻道用來執行**開辦回報**"},
-        "laf_closing": {"allowed": ("closing",), "label": "法扶-結案", "hint": "這個頻道用來執行**結案回報**"},
+        "laf_go_live": {"allowed": ("go_live",), "label": "法扶-開辦", "hint": "這個頻道用來執行**開辦回報**", "default_action": "go_live"},
+        "laf_closing": {"allowed": ("closing",), "label": "法扶-結案", "hint": "這個頻道用來執行**結案回報**", "default_action": "closing"},
+        "laf_fee": {"allowed": ("fee",), "label": "法扶-費用", "hint": "這個頻道用來執行**費用支付回報**", "default_action": "fee"},
+        "laf_inquiry": {"allowed": ("inquiry",), "label": "法扶-疑義", "hint": "這個頻道用來執行**疑義回報**", "default_action": "inquiry"},
+        "laf_condition": {"allowed": ("condition",), "label": "法扶-二階段", "hint": "這個頻道用來執行**二階段回報**", "default_action": "condition"},
         "laf_dispatch": {"allowed": (), "label": "法扶-派案", "hint": "這個頻道顯示**派案通知**，有新信件時 MAGI 會自動通知"},
-        "laf": {"allowed": ("inquiry", "fee", "condition", "withdrawal", "closing", "go_live"), "label": "法扶-一般", "hint": "這個頻道用來執行疑義、費用、二階段、撤回等法扶作業"},
+        "laf": {"allowed": ("inquiry", "fee", "condition", "withdrawal", "closing", "go_live"), "label": "法扶-一般", "hint": "這個頻道用來執行各項法扶作業"},
     }
 
     conf = _CHANNEL_ACTION_MAP.get(topic_key)
@@ -608,22 +611,49 @@ def topic_fast_path(orch, topic_key: str, user_id, message: str, role: str, plat
 
     # 檢查是否為法扶指令
     try:
-        from api.handlers.laf_handler import parse_laf_report_payload, detect_laf_report_action
+        from api.handlers.laf_handler import parse_laf_report_payload
         payload = parse_laf_report_payload(message)
-        if payload:
-            action = payload.get("action", "")
-            allowed = conf.get("allowed", ())
-            if allowed and action not in allowed:
-                # 指令不屬於這個頻道 → 引導
-                _action_channel = {
-                    "go_live": "法扶-開辦", "closing": "法扶-結案",
-                    "inquiry": "法扶-一般", "fee": "法扶-一般",
-                    "condition": "法扶-一般", "withdrawal": "法扶-一般",
-                }
-                target = _action_channel.get(action, "法扶-一般")
-                return f"📍 這個指令請到 **#{target}** 頻道執行。\n（此頻道是 **{conf['label']}**：{conf['hint']}）"
-            # 指令屬於這個頻道 → return None 讓正常流程處理
-            return None
+        
+        # 情境：使用者在這個頻道發了一則「看起來像人名或案號」但「沒有關鍵字」的訊息
+        # 我們自動幫他帶上該頻道的 default_action
+        if not payload and conf.get("default_action"):
+            # 檢查是否像案號或人名
+            cleaned = message.strip()
+            is_case_no = bool(re.search(r"\d{6,8}-[A-Za-z]-\d{3}", cleaned)) or bool(re.search(r"\b\d{4}-\d{4}\b", cleaned))
+            # 簡易判斷：2-5 個中文字且不含指令關鍵字
+            is_potential_name = len(cleaned) >= 2 and len(cleaned) <= 6 and all('\u4e00' <= c <= '\u9fff' for c in cleaned)
+            
+            if is_case_no or is_potential_name:
+                default_act = conf["default_action"]
+                # 重新構建一個帶有關鍵字的訊息來觸發
+                action_kws = {"go_live": "開辦", "closing": "結案", "fee": "費用支付", "inquiry": "疑義", "condition": "二階段"}
+                kw = action_kws.get(default_act, "")
+                if kw:
+                    logger.info(f"[TopicFastPath] Auto-completing command for {topic_key}: '{message}' -> '{message} {kw}'")
+                    # 遞迴呼叫 Orchestrator 的處理流程，但改用合成訊息
+                    # 注意：這裡直接返回 None 讓後續流程跑「合成後」的邏輯可能較複雜
+                    # 簡單做法：直接修改 message 再繼續
+                    message = f"{message} {kw}"
+                    payload = parse_laf_report_payload(message)
+
+            if payload:
+                action = payload.get("action", "")
+                allowed = conf.get("allowed", ())
+                if allowed and action not in allowed:
+                    # 指令不屬於這個頻道 → 引導
+                    _action_channel = {
+                        "go_live": "法扶-開辦", "closing": "法扶-結案",
+                        "inquiry": "法扶-疑義", "fee": "法扶-費用",
+                        "condition": "法扶-二階段", "withdrawal": "法扶-一般",
+                    }
+                    target = _action_channel.get(action, "法扶-一般")
+                    return f"📍 這個指令請到 **#{target}** 頻道執行。\n（此頻道是 **{conf['label']}**：{conf['hint']}）"
+                
+                # IMPORTANT: Return handle_command result to execute the autocompleted command
+                logger.info(f"[TopicFastPath] executing: '{message}'")
+                return orch._handle_command(user_id, message, role=role, platform=platform)
+
+        return None
     except Exception:
         pass
 
@@ -928,10 +958,11 @@ def try_conversational_intent(orch, message: str, msg_lower: str, user_id, role:
          "假別：平日 / 休息日 / 例假日 / 國定假日", True),
 
         (r"(?:查判決|找判決|判決搜尋|搜尋判決|收集判決|判決搜集|"
-         r"搜尋最高法院判決|最近.{0,4}判決|法院判決|court\s*judgment)", "judgment_search",
+         r"搜尋最高法院判決|最近.{0,4}判決|法院判決|實務見解|法律見解|法院見解|court\s*judgment)", "judgment_search",
          "✅ **我可以幫您查判決！**\n\n"
          "• 直接輸入：`查判決 傷害`\n"
-         "• 也可提供案號：`查判決 113年度上訴字第12號`", True),
+         "• 也可提供案號：`查判決 113年度上訴字第12號`\n"
+         "• 實務見解整理：`實務見解 預售屋遲延交屋`", True),
 
         (r"(?:開庭排程|庭期|最近.{0,4}(?:什麼庭|有庭|開庭)|"
          r"明天.{0,2}開庭|今天.{0,4}庭|下.{0,2}開庭|"
@@ -978,7 +1009,7 @@ def try_conversational_intent(orch, message: str, msg_lower: str, user_id, role:
             continue
 
         if direct and action == "status":
-            from api.orchestrator_core import get_brain_status
+            from api.orchestrator import get_brain_status
             node_status = orch._get_magi_status()
             brain_status = get_brain_status()
             collab_status = orch._get_collaboration_status()

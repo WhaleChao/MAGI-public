@@ -409,7 +409,7 @@ class FAISSMemoryIndex:
             return False
 
         try:
-            self._index = faiss.read_index(idx_path, faiss.IO_FLAG_MMAP)
+            self._index = faiss.read_index(idx_path)
             self._id_map = np.load(map_path).tolist()
             self._doc_to_pos = {did: i for i, did in enumerate(self._id_map)}
 

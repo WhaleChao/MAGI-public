@@ -1,0 +1,195 @@
+        <section id="quotations" class="view">
+            <div class="card">
+                <div class="section-head">
+                    <div>
+                        <h3>報價單管理</h3>
+                        <div class="section-note">可維護報價單主檔、聯絡資訊與明細 JSON。先查詢，再編輯單筆資料。</div>
+                    </div>
+                </div>
+                <div class="soft-block">
+                    <div class="field-grid cols-4">
+                        <div class="field" style="grid-column: span 2;">
+                            <label for="qtQ">報價單搜尋</label>
+                            <input id="qtQ" placeholder="報價單編號 / 當事人 / 專案 / 電話 / Email">
+                        </div>
+                        <div class="field">
+                            <label for="qtStatusFilter">狀態篩選</label>
+                            <input id="qtStatusFilter" placeholder="draft / sent / accepted / rejected">
+                        </div>
+                        <div class="field">
+                            <label>操作</label>
+                            <div class="inline-actions">
+                                <button class="btn" id="qtSearchBtn">搜尋</button>
+                                <button class="btn" id="qtRefreshBtn">重新整理</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="soft-block">
+                    <div class="field-grid cols-4">
+                        <div class="field">
+                            <label for="qt_id">報價單 ID</label>
+                            <input id="qt_id" placeholder="留空自動生成">
+                        </div>
+                        <div class="field">
+                            <label for="qt_client_name">當事人</label>
+                            <input id="qt_client_name" placeholder="必填">
+                        </div>
+                        <div class="field">
+                            <label for="qt_project_name">專案名稱</label>
+                            <input id="qt_project_name" placeholder="必填">
+                        </div>
+                        <div class="field">
+                            <label for="qt_status">狀態</label>
+                            <input id="qt_status" placeholder="draft">
+                        </div>
+                        <div class="field">
+                            <label for="qt_contact">聯絡人</label>
+                            <input id="qt_contact" placeholder="contact">
+                        </div>
+                        <div class="field">
+                            <label for="qt_phone">電話</label>
+                            <input id="qt_phone" placeholder="phone">
+                        </div>
+                        <div class="field">
+                            <label for="qt_email">Email</label>
+                            <input id="qt_email" placeholder="email">
+                        </div>
+                        <div class="field">
+                            <label for="qt_tax_id">統編 / 身分字號</label>
+                            <input id="qt_tax_id" placeholder="tax_id">
+                        </div>
+                        <div class="field">
+                            <label for="qt_address">地址</label>
+                            <input id="qt_address" placeholder="address">
+                        </div>
+                        <div class="field">
+                            <label for="qt_date">日期</label>
+                            <input id="qt_date" type="date" placeholder="date">
+                        </div>
+                        <div class="field">
+                            <label for="qt_expiry">有效期限</label>
+                            <input id="qt_expiry" type="date" placeholder="expiry">
+                        </div>
+                        <div class="field">
+                            <label for="qt_subtotal">小計</label>
+                            <input id="qt_subtotal" type="number" step="0.01" placeholder="subtotal">
+                        </div>
+                        <div class="field">
+                            <label for="qt_discount">折扣</label>
+                            <input id="qt_discount" type="number" step="0.01" placeholder="discount">
+                        </div>
+                        <div class="field">
+                            <label for="qt_tax">稅額</label>
+                            <input id="qt_tax" type="number" step="0.01" placeholder="tax">
+                        </div>
+                        <div class="field">
+                            <label for="qt_total">總計</label>
+                            <input id="qt_total" type="number" step="0.01" placeholder="total">
+                        </div>
+                    </div>
+                    <div class="field" style="margin-top:10px;">
+                        <label for="qt_items">項目</label>
+                        <textarea id="qt_items" placeholder="items（JSON 或文字）"></textarea>
+                    </div>
+                    <div class="field" style="margin-top:10px;">
+                        <label for="qt_extended_data">延伸資料</label>
+                        <textarea id="qt_extended_data" placeholder="extended_data（JSON 或文字）"></textarea>
+                    </div>
+                    <div class="field" style="margin-top:10px;">
+                        <label for="qt_notes">備註</label>
+                        <textarea id="qt_notes" placeholder="notes"></textarea>
+                    </div>
+                </div>
+                <div class="toolbar">
+                    <button class="btn primary" id="qtSaveBtn">儲存報價單</button>
+                    <button class="btn warn" id="qtResetBtn">清空表單</button>
+                </div>
+            </div>
+            <div class="card">
+                <div class="table-wrap">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>ID</th>
+                                <th>當事人</th>
+                                <th>專案</th>
+                                <th>日期</th>
+                                <th>有效期限</th>
+                                <th>狀態</th>
+                                <th>總計</th>
+                                <th>操作</th>
+                            </tr>
+                        </thead>
+                        <tbody id="qtBody"></tbody>
+                    </table>
+                </div>
+            </div>
+            <div class="card">
+                <div class="section-head">
+                    <div>
+                        <h3>報價模板</h3>
+                        <div class="section-note">管理常用模板與預設項目，供建立新報價單時快速複用。</div>
+                    </div>
+                </div>
+                <div class="field-grid cols-4">
+                    <div class="field" style="grid-column: span 2;">
+                        <label for="qtTplQ">搜尋</label>
+                        <input id="qtTplQ" placeholder="名稱 / 說明 / 備註">
+                    </div>
+                    <div class="field">
+                        <label>操作</label>
+                        <div class="inline-actions">
+                            <button class="btn" id="qtTplSearchBtn">搜尋</button>
+                            <button class="btn" id="qtTplRefreshBtn">重新整理</button>
+                        </div>
+                    </div>
+                </div>
+                <div class="field-grid cols-4" style="margin-top:10px;">
+                    <div class="field">
+                        <label for="qtTplId">ID</label>
+                        <input id="qtTplId" placeholder="更新時使用">
+                    </div>
+                    <div class="field">
+                        <label for="qtTplName">名稱</label>
+                        <input id="qtTplName" placeholder="必填">
+                    </div>
+                    <div class="field">
+                        <label for="qtTplDefault">預設</label>
+                        <input id="qtTplDefault" placeholder="0/1">
+                    </div>
+                    <div class="field">
+                        <label for="qtTplDescription">說明</label>
+                        <input id="qtTplDescription" placeholder="description">
+                    </div>
+                </div>
+                <div class="field" style="margin-top:10px;">
+                    <label for="qtTplItems">模板項目</label>
+                    <textarea id="qtTplItems" placeholder="items（JSON 或文字）"></textarea>
+                </div>
+                <div class="field" style="margin-top:10px;">
+                    <label for="qtTplNotes">備註</label>
+                    <textarea id="qtTplNotes" placeholder="notes"></textarea>
+                </div>
+                <div class="toolbar">
+                    <button class="btn primary" id="qtTplSaveBtn">儲存模板</button>
+                    <button class="btn warn" id="qtTplResetBtn">清空</button>
+                </div>
+                <div class="table-wrap">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>ID</th>
+                                <th>名稱</th>
+                                <th>預設</th>
+                                <th>說明</th>
+                                <th>更新時間</th>
+                                <th>操作</th>
+                            </tr>
+                        </thead>
+                        <tbody id="qtTplBody"></tbody>
+                    </table>
+                </div>
+            </div>
+        </section>
+

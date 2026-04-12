@@ -10,7 +10,7 @@ DEFAULT_OCR_MODEL = "GLM-OCR-bf16"
 DEFAULT_EMBED_MODEL = "modernbert-embed-4bit"
 
 
-def _clean(value: str | None, fallback: str = "") -> str:
+def _clean(value: Optional[str], fallback: str = "") -> str:
     text = str(value or "").strip()
     return text or fallback
 
@@ -49,11 +49,11 @@ TEXT_MODEL_ALIASES = {
 }
 
 
-def is_text_model_alias(name: str | None) -> bool:
+def is_text_model_alias(name: Optional[str]) -> bool:
     return str(name or "").strip().lower() in TEXT_MODEL_ALIASES
 
 
-def resolve_text_model(name: str | None = None, *, available: Iterable[str] | None = None) -> str:
+def resolve_text_model(name: Optional[str] = None, *, available: Iterable[str] | None = None) -> str:
     requested = str(name or "").strip()
     candidate = TEXT_PRIMARY_MODEL if is_text_model_alias(requested) else requested or TEXT_PRIMARY_MODEL
     if available is None:

@@ -73,14 +73,14 @@ def _atomic_write_json(path: Path, payload: dict) -> None:
     _atomic_write_text(path, json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
 
 
-def _read_json(path: Path) -> dict | None:
+def _read_json(path: Path) -> Optional[dict]:
     try:
         return json.loads(path.read_text(encoding="utf-8"))
     except Exception:
         return None
 
 
-def _is_synthetic_timeout_fallback(text: str, result: dict | None = None) -> bool:
+def _is_synthetic_timeout_fallback(text: str, result: Optional[dict] = None) -> bool:
     t = str(text or "").strip()
     if isinstance(result, dict) and bool(result.get("synthetic_fallback")):
         return True
@@ -91,7 +91,7 @@ def _is_synthetic_timeout_fallback(text: str, result: dict | None = None) -> boo
     return "本機模型逾時" in t and "請稍後重試" in t
 
 
-def _summary_text_usable(text: str, result: dict | None = None) -> bool:
+def _summary_text_usable(text: str, result: Optional[dict] = None) -> bool:
     t = str(text or "").strip()
     if len(t) < 24:
         return False
@@ -429,7 +429,7 @@ def _extract_text_pdfplumber(pdf_path: str, max_pages: int) -> tuple[str, int]:
     return "\n".join(text_content), pages_processed
 
 
-def _extract_text_ocr(pdf_path: str, max_pages: int, ocr_page_limit: int | None = None) -> tuple[str, int]:
+def _extract_text_ocr(pdf_path: str, max_pages: int, ocr_page_limit: Optional[int] = None) -> tuple[str, int]:
     if str(os.environ.get("MAGI_PDF_OCR_ENABLE", "1")).strip().lower() not in {"1", "true", "yes", "on"}:
         return "", 0
 
@@ -1108,7 +1108,7 @@ def _split_segment_sections(segment_text: str, *, max_sections: int = 12) -> lis
         and not _PAGE_MARKER_RE.fullmatch(str(ln).strip())
     ]
     sections: list[dict] = []
-    current: dict | None = None
+    current: Optional[dict] = None
 
     def _flush() -> None:
         nonlocal current
@@ -1953,7 +1953,7 @@ def summarize_ultra_large_text(
     text: str,
     *,
     source_hint: str = "document",
-    page_count: int | None = None,
+    page_count: Optional[int] = None,
     progress_callback=None,
     summary_length: str = "medium",
 ) -> str:

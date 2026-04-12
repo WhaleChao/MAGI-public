@@ -39,6 +39,7 @@ if str(_MAGI_ROOT) not in sys.path:
 
 from api.runtime_paths import ensure_path_on_sys_path, get_config_path, get_json_dir, get_orch_dir
 from api.case_path_mapper import preferred_case_roots, translate_case_path_to_local
+from skills.engine.legal_web_adapter import format_legal_web_engine_log, resolve_legal_web_engine
 
 logger = logging.getLogger("FileReviewAutomation")
 
@@ -258,6 +259,8 @@ class LawyerPortalSSO:
 
         self.driver = None
         self.logged_in = False
+        self.web_engine_profile = resolve_legal_web_engine("file_review_portal", interactive_required=True)
+        self._engine_logged = False
         self.captcha_solver = CaptchaSolver()
         # 預設啟用自動 OCR（含正式站）；必要時可用環境變數關閉。
         self._allow_captcha_ocr = os.environ.get("MAGI_ALLOW_CAPTCHA_OCR", "1").strip().lower() in {
@@ -280,6 +283,9 @@ class LawyerPortalSSO:
     
     def _setup_driver(self):
         """設定 Chrome WebDriver (含反爬蟲措施)"""
+        if not self._engine_logged:
+            self.log(format_legal_web_engine_log(self.web_engine_profile))
+            self._engine_logged = True
         if not SELENIUM_AVAILABLE:
             raise ImportError("Selenium 未安裝")
         
@@ -7214,13 +7220,58 @@ class FileReviewManager:
 
             result["case_folder"] = folder_path
         all_files: List[str] = []
-        if prefer_stamped:
-            # 首次聲請：搜尋整個資料夾（非法扶案件的委任狀可能不在開辦資料中）
-            for root, _, filenames in os.walk(folder_path):
+        scan_budget_sec = int(os.environ.get("MAGI_FILE_REVIEW_UPLOAD_SCAN_BUDGET_SEC", "20") or "20")
+        max_candidates = int(os.environ.get("MAGI_FILE_REVIEW_UPLOAD_MAX_CANDIDATES", "600") or "600")
+        skip_dir_keywords = tuple(
+            k for k in [
+                "03_閱卷資料",
+                "04_閱卷資料",
+                "05_證據資料",
+                "06_證據資料",
+                "卷宗彙編",
+                "OCR",
+            ]
+            if k
+        )
+
+        def _collect_supported_files(base_dir: str, *, budget_sec: int, prefer_small_scope: bool = False) -> List[str]:
+            import time as _time
+
+            out: List[str] = []
+            start = _time.monotonic()
+            for root, dirnames, filenames in os.walk(base_dir):
+                if _time.monotonic() - start > budget_sec:
+                    self.log(f"  ⏱️ 附件掃描超過 {budget_sec}s，停止擴大搜尋：{os.path.basename(base_dir) or base_dir}")
+                    break
+                if prefer_small_scope:
+                    dirnames[:] = [
+                        d for d in dirnames
+                        if not any(keyword in d for keyword in skip_dir_keywords)
+                    ]
                 for name in filenames:
                     full = os.path.join(root, name)
                     if self._is_supported_review_upload(full):
-                        all_files.append(full)
+                        out.append(full)
+                        if len(out) >= max_candidates:
+                            self.log(f"  ⏱️ 附件候選超過 {max_candidates} 筆，停止擴大搜尋")
+                            return out
+            return out
+
+        if prefer_stamped:
+            # 首次聲請：先搜可能存放委任狀/存底的子目錄，避免大型卷證資料夾拖慢。
+            focused_dirs = [
+                "00_委任狀",
+                "01_委任契約書",
+                "01_法扶資料",
+                "02_開辦資料",
+                "02_我方歷次書狀",
+            ]
+            for subdir in focused_dirs:
+                target_dir = os.path.join(folder_path, subdir)
+                if os.path.isdir(target_dir):
+                    all_files.extend(_collect_supported_files(target_dir, budget_sec=max(4, scan_budget_sec // 2), prefer_small_scope=True))
+            if not all_files:
+                all_files.extend(_collect_supported_files(folder_path, budget_sec=scan_budget_sec, prefer_small_scope=True))
         else:
             # 非首次：優先搜尋特定子目錄
             preferred_dirs = ["01_法扶資料", "02_開辦資料", "00_委任狀", "01_委任契約書"]
@@ -7228,18 +7279,10 @@ class FileReviewManager:
                 target_dir = os.path.join(folder_path, subdir)
                 if not os.path.isdir(target_dir):
                     continue
-                for root, _, filenames in os.walk(target_dir):
-                    for name in filenames:
-                        full = os.path.join(root, name)
-                        if self._is_supported_review_upload(full):
-                            all_files.append(full)
+                all_files.extend(_collect_supported_files(target_dir, budget_sec=max(4, scan_budget_sec // 2), prefer_small_scope=True))
 
             if not all_files:
-                for root, _, filenames in os.walk(folder_path):
-                    for name in filenames:
-                        full = os.path.join(root, name)
-                        if self._is_supported_review_upload(full):
-                            all_files.append(full)
+                all_files.extend(_collect_supported_files(folder_path, budget_sec=scan_budget_sec, prefer_small_scope=True))
 
         deduped = sorted(set(all_files))
         result["laf_file"] = self._pick_review_upload_file(
@@ -7342,15 +7385,26 @@ class FileReviewManager:
 
     @staticmethod
     def _parse_court_case_no(text: str) -> Tuple[str, str, str]:
-        t = (text or "").replace(" ", "")
-        # e.g. 114年度訴字第123號 / 114年度原訴字第000084號
-        m = re.search(r"(\d{2,3})年度(.+?)字第0*(\d+)號", t)
+        if not text:
+            return "", "", ""
+        # Remove common spaces but keep word delimiters
+        t = text.strip()
+        
+        # 1) Full canonical format: 114年度訴字第123號 / 114年度原訴字第000084號
+        m = re.search(r"(\d{2,3})\s*年度\s*(.+?)\s*字\s*第\s*0*(\d+)\s*號", t)
         if m:
             return m.group(1), m.group(2), m.group(3)
-        # fallback: 114訴123 / 114原訴84
-        m2 = re.search(r"(\d{2,3})([\u4e00-\u9fffA-Za-z]{1,6})0*(\d+)", t)
+            
+        # 2) Dotted/Underscore/Space format: 114.原上訴.154 / 114_訴_123 / 114 訴 123
+        m2 = re.search(r"(\d{2,3})[^0-9A-Za-z\u4e00-\u9fff]+([\u4e00-\u9fffA-Za-z]{1,10})[^0-9A-Za-z\u4e00-\u9fff]+0*(\d+)", t)
         if m2:
             return m2.group(1), m2.group(2), m2.group(3)
+            
+        # 3) Compact format: 114訴123 / 114原上訴154
+        m3 = re.search(r"(\d{2,3})([\u4e00-\u9fffA-Za-z]{1,8})?0*(\d+)", t)
+        if m3:
+            return m3.group(1), m3.group(2) or "", m3.group(3)
+            
         return "", "", ""
 
     @staticmethod

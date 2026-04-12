@@ -111,7 +111,7 @@ def cmd_setup(host: str) -> dict:
     return {"success": True, "host": host, "gpu": gpu_name, "steps": steps}
 
 
-def cmd_run(host: str, tag: str | None = None) -> dict:
+def cmd_run(host: str, tag: Optional[str] = None) -> dict:
     """Start autonomous experiment loop on remote host."""
     if not tag:
         tag = datetime.now().strftime("%b%d").lower()
@@ -177,7 +177,7 @@ echo "Baseline: val_bpb=$BASELINE_BPB mem=$BASELINE_MEM_GB GB"
         return {"success": False, "error": str(e)}
 
 
-def cmd_status(host: str | None = None) -> dict:
+def cmd_status(host: Optional[str] = None) -> dict:
     """Check experiment status."""
     # List local run records
     runs = []

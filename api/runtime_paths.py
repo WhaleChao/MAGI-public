@@ -10,7 +10,7 @@ _LEGACY_CODE_ROOT_SENTINEL = _MAGI_ROOT_DEFAULT / ".legacy_code_disabled"
 _ORCH_RELATIVE = Path("casper_ecosystem") / "law_firm_orchestrators"
 
 
-def _env_path(*names: str) -> Path | None:
+def _env_path(*names: str) -> Optional[Path]:
     for name in names:
         raw = (os.environ.get(name) or "").strip()
         if raw:
@@ -67,6 +67,10 @@ def get_legacy_code_root() -> Path:
     env = _env_path("MAGI_LEGACY_CODE_DIR")
     if env:
         return env.resolve()
+    # Keep old call sites self-contained: when legacy mode is not enabled,
+    # treat the MAGI root itself as the effective compatibility root.
+    if not _env_flag("MAGI_ENABLE_LEGACY_CODE_ROOT", "0"):
+        return get_magi_root_dir()
     return _LEGACY_CODE_ROOT_SENTINEL
 
 
@@ -127,7 +131,7 @@ def get_autopilot_runs_dir() -> Path:
 
 def config_candidates(name: str = "config.json") -> list[Path]:
     env_specific = _env_path("MAGI_CONFIG_PATH") if name == "config.json" else None
-    items: list[Path | None] = [
+    items: list[Optional[Path]] = [
         env_specific,
         get_json_dir() / name,
         get_orch_dir() / "json" / name,

@@ -66,7 +66,7 @@ def _match_prefix(value: str, prefix: str) -> bool:
     )
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class PermissionRule:
     """Declarative allow/deny rule for commands or paths."""
 
@@ -125,7 +125,7 @@ class PermissionRule:
         return ", ".join(parts) if parts else "catch_all"
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class PermissionDecision:
     """Result of a permission evaluation."""
 
@@ -134,8 +134,8 @@ class PermissionDecision:
     mode: PermissionMode
     subject_kind: str
     subject: str
-    matched_rule: str | None = None
-    effect: PermissionEffect | None = None
+    matched_rule: Optional[str] = None
+    effect: Optional[PermissionEffect] = None
     details: tuple[str, ...] = field(default_factory=tuple)
 
     def as_dict(self) -> dict:

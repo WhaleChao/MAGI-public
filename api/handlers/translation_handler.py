@@ -30,7 +30,7 @@ def _atomic_write_json(path: Path, payload: dict) -> None:
     tmp.replace(path)
 
 
-def _read_json(path: Path) -> dict | None:
+def _read_json(path: Path) -> Optional[dict]:
     try:
         return json.loads(path.read_text(encoding="utf-8"))
     except Exception:
@@ -655,7 +655,7 @@ def translate_text_complete(text: str, source_lang: str = "auto", target_lang: s
         final_text: str = "",
         translated_text: str = "",
         complete: bool = False,
-        chunks_failed: int | None = None,
+        chunks_failed: Optional[int] = None,
         model: str = "",
     ) -> None:
         if checkpoint_path is None:

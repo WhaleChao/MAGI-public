@@ -16,7 +16,7 @@ from api.events.models import (
 HookCallback = Callable[[object], Any]
 
 
-@dataclass(slots=True)
+@dataclass()
 class HookBus:
     """Typed hook bus for runtime lifecycle events."""
 
@@ -61,7 +61,7 @@ class HookBus:
         output_data: Any = None,
         ok: bool = True,
         status: str = "ok",
-        duration_ms: float | None = None,
+        duration_ms: Optional[float] = None,
         error: str = "",
         correlation_id: str = "",
         metadata: dict[str, Any] | None = None,

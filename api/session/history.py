@@ -10,7 +10,7 @@ _DEFAULT_SESSION_STORE = SessionStore()
 
 def _resolve_store_and_args(
     args: tuple[Any, ...],
-    store: SessionStore | None,
+    store: Optional[SessionStore],
 ) -> tuple[SessionStore, tuple[Any, ...]]:
     if store is not None:
         return store, args
@@ -20,7 +20,7 @@ def _resolve_store_and_args(
 
 
 class SessionHistory:
-    def __init__(self, store: SessionStore | None = None) -> None:
+    def __init__(self, store: Optional[SessionStore] = None) -> None:
         self.store = store or SessionStore()
 
     def append(
@@ -47,11 +47,11 @@ class SessionHistory:
 
 def append_message(
     *args: Any,
-    role: str | None = None,
-    content: str | None = None,
+    role: Optional[str] = None,
+    content: Optional[str] = None,
     source: str = "raw",
     metadata: dict[str, Any] | None = None,
-    store: SessionStore | None = None,
+    store: Optional[SessionStore] = None,
 ):
     resolved_store, remaining = _resolve_store_and_args(args, store)
     if not remaining:
@@ -65,14 +65,14 @@ def append_message(
     return resolved_store.append_message(str(session_id), str(role), str(content), source=source, metadata=metadata)
 
 
-def list_messages(*args: Any, store: SessionStore | None = None):
+def list_messages(*args: Any, store: Optional[SessionStore] = None):
     resolved_store, remaining = _resolve_store_and_args(args, store)
     if not remaining:
         raise TypeError("list_messages() missing session_id")
     return resolved_store.list_messages(str(remaining[0]))
 
 
-def tail_messages(*args: Any, store: SessionStore | None = None):
+def tail_messages(*args: Any, store: Optional[SessionStore] = None):
     resolved_store, remaining = _resolve_store_and_args(args, store)
     if len(remaining) < 2:
         raise TypeError("tail_messages() missing session_id or count")
@@ -80,7 +80,7 @@ def tail_messages(*args: Any, store: SessionStore | None = None):
     return resolved_store.list_messages(str(session_id))[-int(count):]
 
 
-def last_message(*args: Any, store: SessionStore | None = None):
+def last_message(*args: Any, store: Optional[SessionStore] = None):
     resolved_store, remaining = _resolve_store_and_args(args, store)
     if not remaining:
         raise TypeError("last_message() missing session_id")

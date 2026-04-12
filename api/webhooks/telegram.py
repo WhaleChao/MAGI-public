@@ -127,7 +127,7 @@ def _telegram_verify_webhook_secret() -> bool:
 # Seen-update deduplication
 # ---------------------------------------------------------------------------
 
-def _telegram_mark_seen_update(update_id: int | None) -> bool:
+def _telegram_mark_seen_update(update_id: Optional[int]) -> bool:
     if update_id is None:
         return False
     now = int(time.time())
@@ -152,7 +152,7 @@ def _telegram_mark_seen_update(update_id: int | None) -> bool:
 # Telegram Bot API helper
 # ---------------------------------------------------------------------------
 
-def _telegram_api_post(token: str, method: str, payload: dict | None = None, files: dict | None = None):
+def _telegram_api_post(token: str, method: str, payload: Optional[dict] = None, files: Optional[dict] = None):
     try:
         from skills.bridge.http_pool import get_session
         sess = get_session()
@@ -220,7 +220,7 @@ def _chunk_text_for_line(text: str, limit: int = 4200) -> list[str]:
 # Send helpers
 # ---------------------------------------------------------------------------
 
-def _telegram_send_text_to(chat_id: str, text: str, reply_to_message_id: int | None = None) -> bool:
+def _telegram_send_text_to(chat_id: str, text: str, reply_to_message_id: Optional[int] = None) -> bool:
     token = _load_openclaw_telegram_token()
     if not token or not str(chat_id or "").strip():
         return False
@@ -259,7 +259,7 @@ def _telegram_send_text_to(chat_id: str, text: str, reply_to_message_id: int | N
     return ok_all
 
 
-def _telegram_send_document(chat_id: str, file_path: str, caption: str = "", reply_to_message_id: int | None = None) -> bool:
+def _telegram_send_document(chat_id: str, file_path: str, caption: str = "", reply_to_message_id: Optional[int] = None) -> bool:
     token = _load_openclaw_telegram_token()
     p = (file_path or "").strip()
     if not token or not str(chat_id or "").strip() or (not p) or (not os.path.exists(p)):
@@ -314,7 +314,7 @@ def _telegram_send_document(chat_id: str, file_path: str, caption: str = "", rep
         return False
 
 
-def _telegram_send_photo(chat_id: str, image_path: str, caption: str = "", reply_to_message_id: int | None = None) -> bool:
+def _telegram_send_photo(chat_id: str, image_path: str, caption: str = "", reply_to_message_id: Optional[int] = None) -> bool:
     token = _load_openclaw_telegram_token()
     p = (image_path or "").strip()
     if not token or not str(chat_id or "").strip() or (not p) or (not os.path.exists(p)):
@@ -435,7 +435,7 @@ def _normalize_telegram_output_text(text: str) -> str:
 # Orchestrator response dispatcher
 # ---------------------------------------------------------------------------
 
-def _telegram_send_orchestrator_response(chat_id: str, response_text: str, reply_to_message_id: int | None = None) -> None:
+def _telegram_send_orchestrator_response(chat_id: str, response_text: str, reply_to_message_id: Optional[int] = None) -> None:
     text = _normalize_telegram_output_text(response_text)
     if not text:
         _telegram_send_text_to(chat_id, "⚠️ 任務完成，但沒有可用輸出。", reply_to_message_id=reply_to_message_id)
@@ -506,10 +506,10 @@ def _telegram_process_async(
     user_id: str,
     role: str,
     user_text: str,
-    attachment: dict | None = None,
-    reply_to_message_id: int | None = None,
-    channel_context: dict | None = None,
-    _mq_msg_id: str | None = None,
+    attachment: Optional[dict] = None,
+    reply_to_message_id: Optional[int] = None,
+    channel_context: Optional[dict] = None,
+    _mq_msg_id: Optional[str] = None,
 ) -> None:
     orchestrator = _get_orchestrator()
     # OBS-1: correlation ID  /  OBS-2: latency tracking
@@ -1371,9 +1371,9 @@ def _handle_telegram_settings_command(
     *,
     chat_id: str,
     sender_id: str,
-    message_thread_id: int | None,
+    message_thread_id: Optional[int],
     role: str,
-) -> str | None:
+) -> Optional[str]:
     text = str(user_text or "").strip()
     low = text.lower()
     if not text:

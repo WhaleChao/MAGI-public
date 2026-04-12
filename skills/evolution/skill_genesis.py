@@ -19,6 +19,7 @@ import hashlib
 import sys
 import ast
 import importlib.util
+import threading
 from typing import Optional
 from datetime import datetime
 
@@ -28,7 +29,7 @@ _MAGI_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")
 if _MAGI_ROOT not in sys.path:
     sys.path.insert(0, _MAGI_ROOT)
 
-from api.runtime_paths import get_legacy_code_root, get_magi_root_dir, legacy_code_enabled
+from api.runtime_paths import get_legacy_code_root, get_magi_root_dir, get_skill_python, legacy_code_enabled
 
 # =============================================================================
 # Configuration
@@ -39,9 +40,12 @@ MAX_DEBUG_ROUNDS = int(os.environ.get("MAGI_SKILL_DEBUG_ROUNDS", "2"))
 MAX_RUNTIME_REPAIR_ROUNDS = int(os.environ.get("MAGI_RUNTIME_REPAIR_ROUNDS", "2"))
 SKILL_VERSIONS_DIR = os.path.join(SKILLS_DIR, ".versions")
 SKILL_EVENTS_FILE = os.environ.get("MAGI_SKILL_EVENTS_FILE", f"{_MAGI_ROOT}/logs/skill_runtime_events.jsonl")
+SKILL_USAGE_TRACKER_FILE = os.environ.get("MAGI_SKILL_USAGE_TRACKER_FILE", f"{_MAGI_ROOT}/logs/skill_usage_events.jsonl")
 SKILL_EXEC_TIMEOUT_SEC = int(os.environ.get("MAGI_SKILL_EXEC_TIMEOUT_SEC", "30"))
 SKILL_EXEC_MEM_MB = int(os.environ.get("MAGI_SKILL_EXEC_MEM_MB", "1024"))
 SKILL_EXEC_CPU_SEC = int(os.environ.get("MAGI_SKILL_EXEC_CPU_SEC", "20"))
+SKILL_ENABLE_PREEXEC = os.environ.get("MAGI_SKILL_ENABLE_PREEXEC", "0").strip().lower() in {"1", "true", "yes", "on"}
+SKILL_PYTHON = str(get_skill_python())
 SKILL_RUNTIME_SITE_PACKAGES = os.environ.get("MAGI_SKILL_RUNTIME_SITE_PACKAGES", f"{_MAGI_ROOT}/.runtime_site_packages")
 SKILL_AUTO_PIP_ENABLED = os.environ.get("MAGI_SKILL_AUTO_PIP", "1").strip().lower() not in {"0", "false", "no", "off"}
 SKILL_AUTO_PIP_TIMEOUT_SEC = int(os.environ.get("MAGI_SKILL_AUTO_PIP_TIMEOUT_SEC", "120"))
@@ -321,6 +325,55 @@ def get_skill_runtime_stats(limit: int = 200) -> dict:
     }
 
 
+def _track_skill_usage(skill: str, result: dict, task: str = "") -> dict:
+    try:
+        from skills.evolution.usage_tracker import UsageTracker
+        from skills.evolution.skill_scorer import score_skill_run
+        from skills.evolution.skill_improver import build_improvement_plan
+
+        tracker = UsageTracker(SKILL_USAGE_TRACKER_FILE)
+        success = bool(result.get("success"))
+        failure_reason = str(result.get("error") or result.get("stderr") or "").strip()
+        trace = result.get("trace") or []
+        latency_ms = 0
+        if isinstance(trace, list):
+            for item in reversed(trace):
+                if isinstance(item, dict) and item.get("duration_ms") is not None:
+                    try:
+                        latency_ms = int(item.get("duration_ms") or 0)
+                    except Exception:
+                        latency_ms = 0
+                    break
+
+        event = tracker.record(
+            skill=skill,
+            success=success,
+            latency_ms=latency_ms,
+            intent=str(task or "").strip()[:120],
+            failure_reason=failure_reason[:160],
+            auto_repaired=bool(result.get("auto_repaired")),
+        )
+        scored = score_skill_run(
+            {
+                "skill": skill,
+                "success": success,
+                "latency_ms": latency_ms,
+                "auto_repaired": bool(result.get("auto_repaired")),
+            }
+        )
+        summary = tracker.summarize(days=7)
+        plan = build_improvement_plan(skill, summary)
+        return {
+            "event": event,
+            "score": scored,
+            "summary_7d": summary,
+            "improvement_plan": plan,
+        }
+    except Exception as exc:
+        logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 327, exc_info=True)
+        return {"error": str(exc)[:160]}
+
+
 def _build_skill_exec_env() -> dict:
     env = {}
     for k in SKILL_ALLOWED_ENV_KEYS:
@@ -365,6 +418,12 @@ def _build_skill_exec_env() -> dict:
 def _skill_preexec():
     if os.name == "nt":
         return None
+    if not SKILL_ENABLE_PREEXEC:
+        return None
+    if threading.active_count() > 1:
+        # preexec_fn is unsafe in multithreaded runtimes (for example Flask/Tools API)
+        # and can fail with "Exception occurred in preexec_fn" before exec.
+        return None
     try:
         import resource
 
@@ -400,6 +459,11 @@ def _isolated_run(cmd: list[str], cwd: str, timeout_sec: int):
         "stderr": (proc.stderr or "").strip(),
         "duration_ms": int((time.time() - start) * 1000),
     }
+
+
+def _skill_cmd(*args: str) -> list[str]:
+    python_bin = SKILL_PYTHON if (SKILL_PYTHON and os.path.exists(SKILL_PYTHON)) else (sys.executable or "python3")
+    return [python_bin, "action.py", *args]
 
 
 def _extract_missing_modules(error_text: str) -> list[str]:
@@ -1093,7 +1157,7 @@ Return ONLY corrected Python code.
             ("choices", 0, "message", "content"),
         ),
         (
-            f"{MELCHIOR_HOST}/api/generate",
+            f"{MELCHIOR_BASE}/api/generate",
             {
                 "model": get_available_melchior_model(),
                 "prompt": prompt,
@@ -1253,9 +1317,9 @@ def _smoke_test_action(skill_dir: str, timeout_sec: int = 15, auto_install_deps:
         dep_bootstrap = _ensure_skill_runtime_dependencies(skill_dir, force_scan=True)
 
     commands = [
-        ["python3", "action.py", "--help"],
-        ["python3", "action.py", "--task", "self test"],
-        ["python3", "action.py", "self test"],
+        _skill_cmd("--help"),
+        _skill_cmd("--task", "self test"),
+        _skill_cmd("self test"),
     ]
     last_err = ""
     for cmd in commands:
@@ -1661,6 +1725,17 @@ try:
     OMLX_HOST = _get_svc_url("omlx_inference")
 except Exception:
     OMLX_HOST = "http://127.0.0.1:8080"
+try:
+    from api.routing.node_registry import get_node_ip as _get_node_ip
+    _melchior_host = os.environ.get("MELCHIOR_HOST") or _get_node_ip("melchior") or "127.0.0.1"
+except Exception:
+    _melchior_host = os.environ.get("MELCHIOR_HOST", "127.0.0.1")
+MELCHIOR_PORT = os.environ.get("MELCHIOR_PORT", "5002").strip() or "5002"
+MELCHIOR_BASE = (
+    _melchior_host
+    if str(_melchior_host).startswith(("http://", "https://"))
+    else f"http://{_melchior_host}:{MELCHIOR_PORT}"
+)
 PREFERRED_MODELS = [os.environ.get("MAGI_MAIN_MODEL", ""), os.environ.get("MAGI_TEXT_PRIMARY_MODEL", ""), os.environ.get("MAGI_OMLX_CODE_MODEL", "")]
 
 def get_available_melchior_model(preferred: list = PREFERRED_MODELS) -> str:
@@ -1789,7 +1864,7 @@ def request_melchior_skill_generation(prompt: str, model: str = None) -> dict:
         use_model = model if model else get_available_melchior_model()
         
         response = requests.post(
-            f"{MELCHIOR_HOST}/api/generate",
+            f"{MELCHIOR_BASE}/api/generate",
             json={
                 "model": use_model,
                 "prompt": f"""You are MELCHIOR, the Scientist of the MAGI system.
@@ -1975,7 +2050,7 @@ def validate_prerequisites(skill_content: str) -> dict:
         # But we need to be sure it actually exists now
         try:
             # Double check existence
-            response = requests.get(f"{MELCHIOR_HOST}/api/tags", timeout=5)
+            response = requests.get(f"{MELCHIOR_BASE}/api/tags", timeout=5)
             if response.status_code == 200:
                 available = [m["name"] for m in response.json().get("models", [])]
                 if model not in available:
@@ -2090,11 +2165,11 @@ def run_skill_action(
         # We must NOT treat `--help` output as a successful execution for non-help tasks,
         # otherwise callers will get a false-positive "success" (and often non-JSON output).
         commands = [
-            ["python3", "action.py", "--task", task_arg],
-            ["python3", "action.py", task_arg],
+            _skill_cmd("--task", task_arg),
+            _skill_cmd(task_arg),
         ]
         if task_arg in {"help", "--help", "-h"}:
-            commands.append(["python3", "action.py", "--help"])
+            commands.append(_skill_cmd("--help"))
 
         try:
             stdout_cap = int(os.environ.get("MAGI_SKILL_STDOUT_MAX_CHARS", "20000") or "20000")
@@ -2189,6 +2264,7 @@ def run_skill_action(
             first["canary_auto_promoted"] = True
             first["promoted_version"] = outcome.get("promoted_version")
         if first.get("success"):
+            first["usage_tracking"] = _track_skill_usage(skill, first, task=task)
             _record_skill_event("run", skill, "ok", f"canary success:{version_id}")
             return first
         _record_skill_event("run", skill, "error", f"canary failed:{version_id}")
@@ -2205,11 +2281,14 @@ def run_skill_action(
                 skill_dir, channel, version_id = original_dir, original_channel, original_version
                 fallback["canary_fallback"] = True
                 fallback["canary_result"] = first
+                fallback["usage_tracking"] = _track_skill_usage(skill, fallback, task=task)
                 _record_skill_event("run", skill, "ok" if fallback.get("success") else "error", f"fallback after canary failure -> {fallback_channel}:{fallback_version}")
                 return fallback
+        first["usage_tracking"] = _track_skill_usage(skill, first, task=task)
         return first
 
     if first.get("success") or not auto_repair:
+        first["usage_tracking"] = _track_skill_usage(skill, first, task=task)
         _record_skill_event("run", skill, "ok" if first.get("success") else "error", first.get("error", first.get("command", "")))
         return first
 
@@ -2220,6 +2299,7 @@ def run_skill_action(
         second = _attempt()
         second["auto_repaired"] = True
         second["repair"] = repair
+        second["usage_tracking"] = _track_skill_usage(skill, second, task=task)
         _record_skill_event("run_auto_repair", skill, "ok" if second.get("success") else "error", "auto repair applied")
         return second
 
@@ -2236,6 +2316,7 @@ def run_skill_action(
         "auto_repair": repair,
         "rollback": rollback_result,
     }
+    result["usage_tracking"] = _track_skill_usage(skill, result, task=task)
     _record_skill_event("run", skill, "error", result["error"], {"auto_repair": repair.get("error") if isinstance(repair, dict) else str(repair)})
     return result
 

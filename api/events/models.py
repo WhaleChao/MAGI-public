@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Optional
 from uuid import uuid4
 
 
@@ -10,7 +10,7 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
-@dataclass(slots=True, kw_only=True)
+@dataclass()
 class EventModel:
     """Base event payload for the MAGI runtime."""
 
@@ -33,54 +33,54 @@ class EventModel:
         return json.dumps(self.to_dict(), ensure_ascii=False, default=str, separators=(",", ":"))
 
 
-@dataclass(slots=True, kw_only=True)
+@dataclass()
 class PreToolHookEvent(EventModel):
     event_type: ClassVar[str] = "hook.tool.pre"
 
-    tool_name: str
+    tool_name: str = ""
     input_data: dict[str, Any] = field(default_factory=dict)
     user_id: str = ""
     platform: str = ""
 
 
-@dataclass(slots=True, kw_only=True)
+@dataclass()
 class PostToolHookEvent(EventModel):
     event_type: ClassVar[str] = "hook.tool.post"
 
-    tool_name: str
+    tool_name: str = ""
     output_data: Any = None
     ok: bool = True
     status: str = "ok"
-    duration_ms: float | None = None
+    duration_ms: Optional[float] = None
     error: str = ""
 
 
-@dataclass(slots=True, kw_only=True)
+@dataclass()
 class RouteDecisionEvent(EventModel):
     event_type: ClassVar[str] = "hook.route.decision"
 
-    route_name: str
+    route_name: str = ""
     confidence: float = 0.0
     reason: str = ""
     message: str = ""
     candidates: list[str] = field(default_factory=list)
 
 
-@dataclass(slots=True, kw_only=True)
+@dataclass()
 class FallbackEvent(EventModel):
     event_type: ClassVar[str] = "hook.fallback"
 
-    fallback_name: str
+    fallback_name: str = ""
     stage: str = ""
     reason: str = ""
     detail: dict[str, Any] = field(default_factory=dict)
 
 
-@dataclass(slots=True, kw_only=True)
+@dataclass()
 class MemoryWriteEvent(EventModel):
     event_type: ClassVar[str] = "hook.memory.write"
 
-    memory_kind: str
+    memory_kind: str = ""
     content: Any = None
     accepted: bool = True
     user_id: str = ""
@@ -89,13 +89,13 @@ class MemoryWriteEvent(EventModel):
     memory_key: str = ""
 
 
-@dataclass(slots=True, kw_only=True)
+@dataclass()
 class TaskLifecycleEvent(EventModel):
     event_type: ClassVar[str] = "task.lifecycle"
 
-    task_id: str
-    task_name: str
-    status: str
-    progress: float | None = None
+    task_id: str = ""
+    task_name: str = ""
+    status: str = ""
+    progress: Optional[float] = None
     user_id: str = ""
     detail: dict[str, Any] = field(default_factory=dict)

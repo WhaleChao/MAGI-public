@@ -9,7 +9,7 @@ def utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
-@dataclass(slots=True)
+@dataclass()
 class AgentSpec:
     name: str
     role: str = "general"
@@ -18,7 +18,7 @@ class AgentSpec:
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
-@dataclass(slots=True)
+@dataclass()
 class AgentMessage:
     sender: str
     content: str
@@ -26,7 +26,7 @@ class AgentMessage:
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
-@dataclass(slots=True)
+@dataclass()
 class TeamSpec:
     name: str
     mission: str = ""
@@ -34,7 +34,7 @@ class TeamSpec:
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
-@dataclass(slots=True)
+@dataclass()
 class AgentResponse:
     agent_name: str
     content: str

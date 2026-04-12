@@ -14,7 +14,7 @@ import time
 from typing import Any
 
 
-def _build_omlx_base_url(base_url: str | None = None, port_env: str = "MAGI_OMLX_PORT") -> str:
+def _build_omlx_base_url(base_url: Optional[str] = None, port_env: str = "MAGI_OMLX_PORT") -> str:
     if base_url:
         return str(base_url).rstrip("/")
     port = int(os.environ.get(port_env, "8080"))
@@ -45,7 +45,7 @@ def extract_model_labels(payload: Any) -> list[str]:
     return labels
 
 
-def _fetch_omlx_models(timeout_sec: int = 5, *, base_url: str | None = None, port_env: str = "MAGI_OMLX_PORT") -> tuple[int, list[str], str]:
+def _fetch_omlx_models(timeout_sec: int = 5, *, base_url: Optional[str] = None, port_env: str = "MAGI_OMLX_PORT") -> tuple[int, list[str], str]:
     try:
         import requests
     except Exception as exc:  # pragma: no cover - import failure is environment specific
@@ -66,7 +66,7 @@ def _fetch_omlx_models(timeout_sec: int = 5, *, base_url: str | None = None, por
         return 0, [], str(exc)
 
 
-def probe_omlx_models(timeout_sec: int = 8, *, base_url: str | None = None, port_env: str = "MAGI_OMLX_PORT") -> dict:
+def probe_omlx_models(timeout_sec: int = 8, *, base_url: Optional[str] = None, port_env: str = "MAGI_OMLX_PORT") -> dict:
     """Probe the oMLX model registry."""
     status_code, models, error = _fetch_omlx_models(timeout_sec=timeout_sec, base_url=base_url, port_env=port_env)
     if status_code == 200 and models:
@@ -79,7 +79,7 @@ def probe_omlx_models(timeout_sec: int = 8, *, base_url: str | None = None, port
 def resolve_omlx_model(
     default_model: str = "gemma4:26b",
     *,
-    base_url: str | None = None,
+    base_url: Optional[str] = None,
     timeout_sec: int = 5,
     requested_env: str = "CASPER_LOCAL_MODEL",
 ) -> str:
@@ -108,7 +108,7 @@ def probe_local_chat(
     retries: int = 2,
     backoff_sec: float = 1.5,
     *,
-    base_url: str | None = None,
+    base_url: Optional[str] = None,
     default_model: str = "gemma4:26b",
     models_timeout_sec: int = 8,
     requested_env: str = "CASPER_LOCAL_MODEL",

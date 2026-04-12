@@ -626,7 +626,7 @@ def _resolve_whisper_bin() -> str:
     return ""
 
 
-def _transcribe_with_whisper_cli(audio_path: str, language: str | None = None, initial_prompt: str | None = None) -> dict:
+def _transcribe_with_whisper_cli(audio_path: str, language: Optional[str] = None, initial_prompt: Optional[str] = None) -> dict:
     """
     Fallback transcription using OpenAI Whisper CLI.
     """
@@ -719,7 +719,7 @@ def _transcribe_with_whisper_cli(audio_path: str, language: str | None = None, i
             "route": "whisper_cli_fallback",
         }
 
-def transcribe(audio_path, language: str | None = None, initial_prompt: str | None = None, taigi_hint: bool = False):
+def transcribe(audio_path, language: Optional[str] = None, initial_prompt: Optional[str] = None, taigi_hint: bool = False):
     """
     Transcribes audio.
     If running on Casper (Mac), uses local mlx-whisper.

@@ -1,0 +1,96 @@
+        <section id="clients" class="view">
+            <div class="card">
+                <div class="section-head">
+                    <div>
+                        <h3>當事人資料</h3>
+                        <div class="section-note">建立與維護當事人主檔，供案件、會議與報價單共用。</div>
+                    </div>
+                </div>
+                <div class="field-grid cols-4">
+                    <div class="field" style="grid-column: span 2;">
+                        <label for="clientsQ">搜尋</label>
+                        <input id="clientsQ" placeholder="姓名 / 電話 / email">
+                    </div>
+                    <div class="field">
+                        <label>操作</label>
+                        <div class="inline-actions">
+                            <button class="btn" id="clientsSearchBtn">搜尋</button>
+                            <button class="btn" id="clientsRefreshBtn">重新整理</button>
+                        </div>
+                    </div>
+                </div>
+                <div class="field-grid cols-4" style="margin-top:10px;">
+                    <div class="field">
+                        <label for="client_id">ID</label>
+                        <input id="client_id" placeholder="留空自動產生">
+                    </div>
+                    <div class="field">
+                        <label for="client_name">姓名</label>
+                        <input id="client_name" placeholder="必填">
+                    </div>
+                    <div class="field">
+                        <label for="client_contact_person">聯絡人</label>
+                        <input id="client_contact_person" placeholder="contact_person">
+                    </div>
+                    <div class="field">
+                        <label for="client_phone">電話</label>
+                        <input id="client_phone" placeholder="phone">
+                    </div>
+                    <div class="field">
+                        <label for="client_email">Email</label>
+                        <input id="client_email" placeholder="email">
+                    </div>
+                    <div class="field">
+                        <label for="client_tax_id">統編 / 身分字號</label>
+                        <input id="client_tax_id" placeholder="tax_id">
+                    </div>
+                    <div class="field">
+                        <label for="client_address">地址</label>
+                        <input id="client_address" placeholder="address">
+                    </div>
+                    <div class="field">
+                        <label for="client_status">狀態</label>
+                        <input id="client_status" placeholder="預設 Active">
+                    </div>
+                </div>
+                <div class="field" style="margin-top:10px;">
+                    <label for="client_notes">備註</label>
+                    <textarea id="client_notes" placeholder="notes"></textarea>
+                </div>
+                <div class="toolbar" style="margin-top:8px;">
+                    <button class="btn primary" id="clientSaveBtn">儲存當事人</button>
+                    <button class="btn warn" id="clientResetBtn">清空表單</button>
+                </div>
+            </div>
+            <div class="card">
+                <div class="toolbar" style="margin-bottom:8px;">
+                    <div class="sort-bar">
+                        <label>排序</label>
+                        <select id="clientSortCol">
+                            <option value="">預設</option>
+                            <option value="name">姓名</option>
+                            <option value="phone">電話</option>
+                            <option value="email">email</option>
+                            <option value="status">狀態</option>
+                        </select>
+                        <button class="sort-dir-btn" id="clientSortDir">▲</button>
+                    </div>
+                </div>
+                <div class="table-wrap">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th data-sort="name">姓名</th>
+                                <th data-sort="phone">電話</th>
+                                <th data-sort="email">email</th>
+                                <th data-sort="address">地址</th>
+                                <th data-sort="status">狀態</th>
+                                <th>操作</th>
+                            </tr>
+                        </thead>
+                        <tbody id="clientsBody"></tbody>
+                    </table>
+                </div>
+            </div>
+        </section>
+

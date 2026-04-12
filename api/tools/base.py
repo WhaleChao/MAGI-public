@@ -7,5 +7,5 @@ from api.tools.contracts import ToolContext
 
 @runtime_checkable
 class ToolExecutor(Protocol):
-    def execute(self, arguments: Mapping[str, Any], context: ToolContext | None = None) -> Any:
+    def execute(self, arguments: Mapping[str, Any], context: Optional[ToolContext] = None) -> Any:
         ...

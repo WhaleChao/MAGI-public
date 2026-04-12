@@ -94,7 +94,7 @@ class FallbackPlan:
     reason: str = ""
 
     @property
-    def primary(self) -> ServiceTarget | None:
+    def primary(self) -> Optional[ServiceTarget]:
         """Return the first (highest priority) target, or None."""
         return self.targets[0] if self.targets else None
 
@@ -163,8 +163,8 @@ class RoutingDecision:
     reason: str = ""
     intent: str = ""
     candidates: tuple[dict[str, Any], ...] = ()
-    route_context: RoutingContext | None = None
-    fallback_plan: FallbackPlan | None = None
+    route_context: Optional[RoutingContext] = None
+    fallback_plan: Optional[FallbackPlan] = None
     trace: tuple[dict[str, Any], ...] = ()
 
     # ------------------------------------------------------------------

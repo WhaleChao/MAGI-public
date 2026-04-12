@@ -138,12 +138,64 @@ def migrate_json_file(conn, filepath: str, category: str, key_extractor=None):
     return count
 
 
+def migrate_case_filename_map(conn, filepath: str, category: str):
+    """遷移 {case_number: [filename, ...]} 結構到 DB。"""
+    p = Path(filepath)
+    if not p.exists():
+        logger.info(f"  skip {p.name} (not found)")
+        return 0
+
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except Exception as e:
+        logger.warning(f"  skip {p.name}: {e}")
+        return 0
+
+    if not isinstance(data, dict):
+        logger.warning(f"  skip {p.name}: unsupported structure {type(data).__name__}")
+        return 0
+
+    cur = conn.cursor()
+    count = 0
+    now_ts = datetime.now().isoformat()
+
+    for case_number, filenames in data.items():
+        if not isinstance(filenames, list):
+            continue
+        for filename in filenames:
+            filename = str(filename or "").strip()
+            case_number = str(case_number or "").strip()
+            if not case_number or not filename:
+                continue
+            item_key = f"{case_number}::{filename}"
+            meta = json.dumps(
+                {"case_number": case_number, "filename": filename, "source_file": p.name},
+                ensure_ascii=False,
+                default=str,
+            )
+            try:
+                cur.execute(
+                    """INSERT INTO dedup_registry (category, item_key, status, metadata, notified_at)
+                       VALUES (%s, %s, 'done', %s, %s)
+                       ON DUPLICATE KEY UPDATE updated_at=NOW()""",
+                    (category, item_key[:512], meta, now_ts),
+                )
+                count += 1
+            except Exception as e:
+                logger.debug(f"  insert error: {e}")
+
+    conn.commit()
+    logger.info(f"  ✓ {p.name} → {count} entries as '{category}'")
+    return count
+
+
 def main():
     conn = get_conn()
     create_table(conn)
 
     total = 0
     dl = MAGI_ROOT / "閱卷下載"
+    tl = MAGI_ROOT / "筆錄下載"
     ce = MAGI_ROOT / "casper_ecosystem" / "law_firm_orchestrators"
 
     # 1. 閱卷下載
@@ -155,6 +207,10 @@ def main():
     total += migrate_json_file(conn, dl / ".recent_activity_notified.json", "recent_activity")
     total += migrate_json_file(conn, dl / "apply_registry.json", "apply")
     total += migrate_json_file(conn, dl / "processed_emails.json", "email_filereview")
+
+    # 1b. 筆錄下載
+    total += migrate_json_file(conn, tl / ".downloaded_files.json", "transcript_download_md5")
+    total += migrate_case_filename_map(conn, tl / ".processed_original_files.json", "transcript_original_processed")
 
     # 2. 法扶
     total += migrate_json_file(conn, MAGI_ROOT / "json" / "processed_laf_emails.json", "email_laf")

@@ -10,6 +10,8 @@ import requests
 import logging
 import os
 
+from skills.engine.scraping_adapter import fetch_json
+
 logger = logging.getLogger("GitHubMonitor")
 
 def _internet_enabled() -> bool:
@@ -25,12 +27,16 @@ def search_repos(query):
     try:
         url = f"https://api.github.com/search/repositories?q={query}&sort=stars&order=desc"
         headers = {'User-Agent': 'MAGI-AI-Agent'}
-        
-        response = requests.get(url, headers=headers, timeout=10)
-        if response.status_code != 200:
-            return f"❌ GitHub API Error: {response.status_code}"
-            
-        data = response.json()
+        fetched = fetch_json(url, headers=headers, timeout=10)
+        if not fetched.get("use_fallback"):
+            if not fetched.get("success"):
+                return f"❌ GitHub API Error: {fetched.get('status_code', 'unknown')}"
+            data = fetched.get("data") or {}
+        else:
+            response = requests.get(url, headers=headers, timeout=10)
+            if response.status_code != 200:
+                return f"❌ GitHub API Error: {response.status_code}"
+            data = response.json()
         items = data.get('items', [])
         
         if not items:

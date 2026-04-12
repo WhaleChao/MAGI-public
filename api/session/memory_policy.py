@@ -19,7 +19,7 @@ from __future__ import annotations
 import os
 import re
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Optional, Union
 
 from api.session.provenance import (
     MemoryProvenance,
@@ -29,13 +29,13 @@ from api.session.provenance import (
 )
 
 
-@dataclass(slots=True, frozen=True)
+@dataclass(frozen=True)
 class MemoryWriteDecision:
     allowed: bool
     reason: str
     effective_source_type: str
     effective_confidence: float
-    expires_seconds: int | None = None
+    expires_seconds: Optional[int] = None
 
 
 # --- Blocklist: content that must NEVER enter long-term memory ---
@@ -81,7 +81,7 @@ _ALLOW_ASSISTANT_CHATLOG = os.environ.get(
 def evaluate_memory_write(
     content: str,
     source: str = "",
-    metadata: dict[str, Any] | None = None,
+    metadata: Optional[dict[str, Any]] = None,
 ) -> MemoryWriteDecision:
     """Evaluate whether *content* should be stored in long-term memory.
 
@@ -191,8 +191,8 @@ def _allow(
     prov: MemoryProvenance,
     reason: str,
     *,
-    expires_seconds: int | None = None,
-    override_confidence: float | None = None,
+    expires_seconds: Optional[int] = None,
+    override_confidence: Optional[float] = None,
 ) -> MemoryWriteDecision:
     conf = override_confidence if override_confidence is not None else prov.confidence
     return MemoryWriteDecision(

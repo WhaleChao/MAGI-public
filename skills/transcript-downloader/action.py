@@ -20,7 +20,7 @@ import sys
 import traceback
 from pathlib import Path
 from datetime import datetime
-from typing import Optional
+from typing import Any, Optional
 from urllib import request as _urlreq
 
 # ---------------------------------------------------------------------------
@@ -54,7 +54,12 @@ from api.runtime_paths import (
     get_orch_dir,
     get_skill_python,
 )
+from api.openclaw_compat import get_legacy_telegram_settings, load_openclaw_config
 from api.product_runtime import apply_product_runtime_env, product_profile_report
+try:
+    from skills.ops import flow_ledger as _flow_ledger
+except ImportError:
+    _flow_ledger = None
 
 ORCH_DIR = str(get_orch_dir())
 CODE_DIR = ORCH_DIR
@@ -71,6 +76,155 @@ TRANSCRIPT_RUNTIME = apply_product_runtime_env("transcript", env=os.environ)
 
 logger = logging.getLogger("transcript-downloader")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(message)s")
+
+
+def _flow_slug(value: str) -> str:
+    return re.sub(r"[^a-zA-Z0-9._-]+", "-", str(value or "").strip()).strip("-._") or "task"
+
+
+def _safe_create_flow_mirror(task_name: str, *, metadata: Optional[dict[str, Any]] = None) -> str:
+    if str(task_name or "").strip() not in {"download", "download_all", "sync"}:
+        return ""
+    payload = dict(metadata or {})
+    run_bits = [datetime.now().strftime("%Y%m%d_%H%M%S"), _flow_slug(task_name)]
+    case_hint = str(payload.get("case_number") or "").strip()
+    if case_hint:
+        run_bits.append(_flow_slug(case_hint)[:48])
+    try:
+        flow = _flow_ledger.create_flow(
+            parent_job_id=os.environ.get("MAGI_TRANSCRIPT_FLOW_PARENT_JOB_ID", "skill_transcript_downloader"),
+            run_id="_".join(bit for bit in run_bits if bit),
+            task=task_name,
+            metadata={**payload, "source": "transcript-downloader"},
+        )
+        return str(flow.get("flow_id") or "")
+    except Exception:
+        logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 78, exc_info=True)
+        return ""
+
+
+def _safe_flow_step_status(
+    flow_id: str,
+    step_name: str,
+    *,
+    status: str,
+    detail: str = "",
+    ok: Optional[bool] = None,
+    skipped: Optional[bool] = None,
+    metadata: Optional[dict[str, Any]] = None,
+) -> None:
+    if not flow_id:
+        return
+    try:
+        _flow_ledger.set_step_status(
+            flow_id,
+            step_name,
+            status=status,
+            detail=detail,
+            ok=ok,
+            skipped=skipped,
+            metadata=metadata,
+        )
+    except Exception:
+        logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 105, exc_info=True)
+
+
+def _safe_finalize_flow(flow_id: str, result: dict[str, Any]) -> None:
+    if not flow_id or not isinstance(result, dict):
+        return
+    try:
+        if bool(result.get("cancelled")) or str(result.get("status") or "").strip().lower() == "cancelled":
+            flow_status = "cancelled"
+        elif bool(result.get("manual_required")):
+            flow_status = "blocked"
+        elif bool(result.get("success")):
+            flow_status = "succeeded"
+        else:
+            flow_status = "failed"
+        artifacts: dict[str, str] = {}
+        for idx, path_value in enumerate(result.get("files") or []):
+            if idx >= 3:
+                break
+            if path_value:
+                artifacts[f"file_{idx + 1}"] = str(path_value)
+        _flow_ledger.finalize_flow(
+            flow_id,
+            status=flow_status,
+            ok=bool(result.get("success")),
+            summary=str(result.get("message") or result.get("error") or result.get("status") or "").strip()[:300],
+            blockers=[
+                item
+                for item in (
+                    ("cancel_requested" if bool(result.get("cancelled")) else ""),
+                    (str(result.get("manual_reason") or "").strip() if bool(result.get("manual_required")) else ""),
+                )
+                if item
+            ],
+            metadata={
+                "status": str(result.get("status") or "").strip(),
+                "noop": bool(result.get("noop")),
+                "downloaded_count": int(result.get("downloaded_count") or 0),
+                "manual_required": bool(result.get("manual_required")),
+                "cancelled": bool(result.get("cancelled")),
+            },
+            artifacts=artifacts or None,
+        )
+    except Exception:
+        logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 138, exc_info=True)
+
+
+def _mark_notify_step(flow_id: str, *, notify: bool, detail: str) -> None:
+    _safe_flow_step_status(
+        flow_id,
+        "notify",
+        status="succeeded" if notify else "skipped",
+        ok=bool(notify),
+        skipped=not notify,
+        detail=detail[:240],
+    )
+
+
+def _cancel_reason(flow_id: str) -> str:
+    if not flow_id:
+        return ""
+    try:
+        return _flow_ledger.get_cancel_reason(flow_id)
+    except Exception:
+        return ""
+
+
+def _cancelled_result(flow_id: str, step_name: str, *, case_number: str = "") -> dict[str, Any]:
+    reason = _cancel_reason(flow_id) or "operator requested"
+    detail = f"cancel_requested: {reason}"[:240]
+    _safe_flow_step_status(
+        flow_id,
+        step_name,
+        status="cancelled",
+        detail=detail,
+        ok=False,
+        metadata={"cancel_requested": True},
+    )
+    payload = {
+        "success": False,
+        "cancelled": True,
+        "status": "cancelled",
+        "error": detail,
+        "message": "⏹️ 筆錄任務已取消",
+    }
+    if case_number:
+        payload["case_number"] = case_number
+    return payload
+
+
+def _check_flow_cancelled(flow_id: str, step_name: str, *, case_number: str = "") -> Optional[dict[str, Any]]:
+    if not flow_id:
+        return None
+    try:
+        if _flow_ledger.is_cancel_requested(flow_id):
+            return _cancelled_result(flow_id, step_name, case_number=case_number)
+    except Exception:
+        logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 190, exc_info=True)
+    return None
 
 
 def _maybe_reexec_venv() -> None:
@@ -151,7 +305,7 @@ def _ensure_imports():
 # ---------------------------------------------------------------------------
 # Notification
 # ---------------------------------------------------------------------------
-def _notify(text: str, flag: bool = True):
+def _notify(text: str, flag: bool = True, topic_key: str = "transcript"):
     if not flag:
         return
 
@@ -163,7 +317,7 @@ def _notify(text: str, flag: bool = True):
             str(text or ""),
             severity="info",
             source="transcript_downloader",
-            topic_key="transcript_dl",
+            topic_key=topic_key,
             queue_on_fail=True,
         ) or {}
         if bool(st.get("telegram")) or bool(st.get("queued")):
@@ -194,15 +348,10 @@ def _notify(text: str, flag: bool = True):
             except Exception:
                 logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 194, exc_info=True)
             try:
-                oc = Path(os.path.expanduser("~/.openclaw/openclaw.json"))
-                if oc.exists():
-                    cfg = json.loads(oc.read_text(encoding="utf-8")) or {}
-                    tg = ((cfg.get("channels") or {}).get("telegram") or {})
-                    if not token:
-                        token = str(tg.get("botToken") or "").strip()
-                    nt = tg.get("notifyTo") or []
-                    if isinstance(nt, list):
-                        targets.extend([str(x).strip() for x in nt if str(x).strip()])
+                legacy = get_legacy_telegram_settings(load_openclaw_config())
+                if not token:
+                    token = str(legacy.get("bot_token") or "").strip()
+                targets.extend([str(x).strip() for x in (legacy.get("notify_to") or []) if str(x).strip()])
             except Exception:
                 logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 206, exc_info=True)
         if (not token) or (not targets):
@@ -363,13 +512,56 @@ def _get_db_manager(cfg: dict):
     try:
         if CODE_DIR not in sys.path:
             sys.path.insert(0, CODE_DIR)
-        from legalbridge_core import LegalBridgeDB
-        return LegalBridgeDB()
+        try:
+            from legalbridge_core import LegalBridgeDB
+            return LegalBridgeDB()
+        except Exception:
+            # Newer MAGI trees expose DatabaseManager/ConfigManager instead of
+            # the older LegalBridgeDB facade.
+            from legalbridge_core import ConfigManager as LegacyConfigManager
+            from legalbridge_core import DatabaseManager as LegacyDatabaseManager
+
+            legacy_cfg = LegacyConfigManager()
+            if isinstance(cfg, dict) and cfg:
+                legacy_cfg.config = dict(cfg)
+            return LegacyDatabaseManager(legacy_cfg)
     except Exception as legacy_err:
         try:
-            from legalbridge_core import ConfigManager, DatabaseManager
-            cfg_mgr = ConfigManager(config_path=CONFIG_PATH)
-            return DatabaseManager(cfg_mgr)
+            import importlib.util
+
+            osc_compat_path = os.path.join(MAGI_ROOT, "osc.py")
+            if os.path.isfile(osc_compat_path):
+                spec = importlib.util.spec_from_file_location("magi_osc_compat", osc_compat_path)
+                if spec and spec.loader:
+                    osc_compat = importlib.util.module_from_spec(spec)
+                    spec.loader.exec_module(osc_compat)
+                    OscDatabaseManager = getattr(osc_compat, "DatabaseManager", None)
+                else:
+                    OscDatabaseManager = None
+            else:
+                OscDatabaseManager = None
+
+            if OscDatabaseManager is None:
+                from osc import DatabaseManager as OscDatabaseManager
+
+            profiles = cfg.get("mariadb_profiles") or []
+            for want in ("Home_Local_Test", "Studio_Local", "Studio_VPN_Remote"):
+                for profile in profiles:
+                    if str(profile.get("profile_name") or "").strip() != want:
+                        continue
+                    conf = profile.get("config") or {}
+                    if conf.get("host") and conf.get("user") and conf.get("database"):
+                        return OscDatabaseManager(conf)
+
+            return OscDatabaseManager(
+                {
+                    "host": os.environ.get("OSC_DB_HOST", "127.0.0.1"),
+                    "port": int(os.environ.get("OSC_DB_PORT", "3307") or "3307"),
+                    "user": os.environ.get("OSC_DB_USER", "python_user"),
+                    "password": os.environ.get("OSC_DB_PASSWORD", ""),
+                    "database": os.environ.get("OSC_DB_NAME", "law_firm_data"),
+                }
+            )
         except Exception as new_err:
             logger.warning("DB manager not available: legacy=%s ; new=%s", legacy_err, new_err)
             return None
@@ -592,9 +784,11 @@ def _ensure_local_cases_schema() -> None:
 def cmd_download(case_number: str, out_folder: str = "", headless: bool = True,
                  timeout_sec: int = 3600, notify: bool = True,
                  skip_existing: bool = True, transcript_type_filter: str = "T",
-                 court_name: str = "", case_type: str = "") -> dict:
+                 court_name: str = "", case_type: str = "",
+                 flow_id: str = "") -> dict:
     """Download transcripts for a specific case number."""
     if not case_number:
+        _safe_flow_step_status(flow_id, "case_lookup", status="failed", detail="missing case_number", ok=False)
         return {"success": False, "error": "missing case_number"}
 
     # Resolve short court alias (e.g. "花蓮", "TPD") to full name
@@ -618,9 +812,15 @@ def cmd_download(case_number: str, out_folder: str = "", headless: bool = True,
     cfg = _load_config()
     creds = _get_credentials(cfg)
     if not creds["username"] or not creds["password"]:
+        _safe_flow_step_status(flow_id, "portal_login", status="failed", detail="missing credentials", ok=False)
         out = {"success": False, "error": "missing credentials — set MAGI_JUDICIAL_RECORD_USERNAME/PASSWORD in .env"}
         _eventlog("transcript:download:done", ok=False, payload=out, tags={"case_number": case_number})
         return out
+
+    cancelled = _check_flow_cancelled(flow_id, "portal_login", case_number=case_number)
+    if cancelled:
+        _eventlog("transcript:download:done", ok=False, payload=cancelled, tags={"case_number": case_number})
+        return cancelled
 
     try:
         _ensure_local_cases_schema()
@@ -638,9 +838,11 @@ def cmd_download(case_number: str, out_folder: str = "", headless: bool = True,
 
         try:
             # Login
+            _safe_flow_step_status(flow_id, "portal_login", status="running", detail=f"login {case_number}")
             logger.info("Logging into ezlawyer SSO...")
             login_ok = downloader.login()
             if not login_ok:
+                _safe_flow_step_status(flow_id, "portal_login", status="failed", detail="SSO login failed", ok=False)
                 msg = "SSO login failed"
                 if os.environ.get("MAGI_TRANSCRIPT_LOGIN_FAIL_QUEUE", "1").strip().lower() in {"1", "true", "yes", "on"}:
                     ticket = _enqueue_manual_review(
@@ -660,11 +862,19 @@ def cmd_download(case_number: str, out_folder: str = "", headless: bool = True,
                     _eventlog("transcript:download:done", ok=False, payload=out, tags={"case_number": case_number})
                     return out
                 _notify("❌ 筆錄下載失敗：" + msg, notify)
+                _mark_notify_step(flow_id, notify=notify, detail=msg)
                 out = {"success": False, "error": msg}
                 _eventlog("transcript:download:done", ok=False, payload=out, tags={"case_number": case_number})
                 return out
+            _safe_flow_step_status(flow_id, "portal_login", status="succeeded", detail="SSO login ok", ok=True)
+
+            cancelled = _check_flow_cancelled(flow_id, "portal_query", case_number=case_number)
+            if cancelled:
+                _eventlog("transcript:download:done", ok=False, payload=cancelled, tags={"case_number": case_number})
+                return cancelled
 
             # Build case object
+            _safe_flow_step_status(flow_id, "case_lookup", status="running", detail=case_number)
             case = mod.CourtCase(
                 case_number=case_number,
                 court_case_number=case_number,
@@ -684,6 +894,7 @@ def cmd_download(case_number: str, out_folder: str = "", headless: bool = True,
                     logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 679, exc_info=True)
 
             if not (case.court_name or "").strip():
+                _safe_flow_step_status(flow_id, "case_lookup", status="failed", detail="missing court_name", ok=False)
                 msg = (
                     "缺少法院資訊，無法執行筆錄下載。"
                     "請改用：download {\"case_number\":\"114年度原易字第000168號\",\"court_name\":\"臺灣臺東地方法院\",\"case_type\":\"刑事\"}"
@@ -691,17 +902,39 @@ def cmd_download(case_number: str, out_folder: str = "", headless: bool = True,
                 out = {"success": False, "error": msg}
                 _eventlog("transcript:download:done", ok=False, payload=out, tags={"case_number": case_number})
                 return out
+            _safe_flow_step_status(
+                flow_id,
+                "case_lookup",
+                status="succeeded",
+                detail=str(getattr(case, "court_case_number", "") or case_number),
+                ok=True,
+                metadata={"court_name": str(getattr(case, "court_name", "") or "").strip()},
+            )
 
             # Download
+            _safe_flow_step_status(flow_id, "portal_query", status="running", detail=str(getattr(case, "court_name", "") or case_number))
             logger.info("Downloading transcripts for: %s", case_number)
             downloaded_files = downloader.download_record(case) or []
             downloaded_count = len(downloaded_files)
+            _safe_flow_step_status(
+                flow_id,
+                "portal_query",
+                status="succeeded",
+                detail=f"portal query complete ({downloaded_count} new files)",
+                ok=True,
+                metadata={"downloaded_count": downloaded_count},
+            )
 
             if downloaded_count == 0:
                 msg = "⚠️ 筆錄查詢完成，但目前沒有可下載的新檔案 — " + case_number
                 _notify(msg, notify)
+                _safe_flow_step_status(flow_id, "dedup", status="succeeded", detail="no new files after dedup", ok=True, metadata={"downloaded_count": 0, "noop": True})
+                _safe_flow_step_status(flow_id, "archive", status="skipped", detail="no new files to archive", skipped=True, ok=True)
+                _mark_notify_step(flow_id, notify=notify, detail=msg)
                 out = {
-                    "success": False,
+                    "success": True,
+                    "status": "no_new_files",
+                    "noop": True,
                     "case_number": case_number,
                     "downloaded_count": 0,
                     "files": [],
@@ -712,7 +945,10 @@ def cmd_download(case_number: str, out_folder: str = "", headless: bool = True,
 
             # Archive to case folder
             logger.info("Archiving to case folder...")
+            _safe_flow_step_status(flow_id, "dedup", status="succeeded", detail=f"{downloaded_count} new files", ok=True, metadata={"downloaded_count": downloaded_count})
+            _safe_flow_step_status(flow_id, "archive", status="running", detail=f"archive {downloaded_count} files")
             downloader.move_to_case_folder(case, downloaded_files)
+            _safe_flow_step_status(flow_id, "archive", status="succeeded", detail=f"archived {downloaded_count} files", ok=True)
 
             msg = "📥 筆錄下載完成 — " + case_number
             label_parts = []
@@ -725,6 +961,7 @@ def cmd_download(case_number: str, out_folder: str = "", headless: bool = True,
             if label_parts:
                 msg = f"📥 筆錄下載完成 — {'｜'.join(label_parts)}（{downloaded_count} 份）"
             _notify(msg, notify)
+            _mark_notify_step(flow_id, notify=notify, detail=msg)
             out = {
                 "success": True,
                 "case_number": case_number,
@@ -743,6 +980,7 @@ def cmd_download(case_number: str, out_folder: str = "", headless: bool = True,
     except Exception as e:
         error_msg = str(e)[:200]
         logger.error("Download failed: %s", error_msg)
+        _safe_flow_step_status(flow_id, "portal_query", status="failed", detail=error_msg, ok=False)
         if _looks_like_captcha_error(error_msg):
             ticket = _enqueue_manual_review(
                 "download",
@@ -761,12 +999,13 @@ def cmd_download(case_number: str, out_folder: str = "", headless: bool = True,
             _eventlog("transcript:download:done", ok=False, payload=out, tags={"case_number": case_number})
             return out
         _notify("❌ 筆錄下載失敗 — " + case_number + ": " + error_msg, notify)
+        _mark_notify_step(flow_id, notify=notify, detail=error_msg)
         out = {"success": False, "error": error_msg, "traceback": traceback.format_exc()[-500:]}
         _eventlog("transcript:download:done", ok=False, payload=out, tags={"case_number": case_number})
         return out
 
 
-def cmd_download_all(headless: bool = True, notify: bool = True) -> dict:
+def cmd_download_all(headless: bool = True, notify: bool = True, flow_id: str = "") -> dict:
     """Download transcripts for all active cases from DB."""
     _eventlog("transcript:download_all:start")
     os.environ.setdefault("MAGI_EZLAWYER_SOLVE_CAPTCHA", "0")
@@ -776,9 +1015,15 @@ def cmd_download_all(headless: bool = True, notify: bool = True) -> dict:
     cfg = _load_config()
     creds = _get_credentials(cfg)
     if not creds["username"] or not creds["password"]:
+        _safe_flow_step_status(flow_id, "portal_query", status="failed", detail="missing credentials", ok=False)
         out = {"success": False, "error": "missing credentials — set MAGI_JUDICIAL_RECORD_USERNAME/PASSWORD in .env"}
         _eventlog("transcript:download_all:done", ok=False, payload=out)
         return out
+
+    cancelled = _check_flow_cancelled(flow_id, "portal_query")
+    if cancelled:
+        _eventlog("transcript:download_all:done", ok=False, payload=cancelled)
+        return cancelled
 
     try:
         mod = _ensure_imports()
@@ -795,11 +1040,14 @@ def cmd_download_all(headless: bool = True, notify: bool = True) -> dict:
 
         try:
             logger.info("Running download_all (all active cases)...")
+            _safe_flow_step_status(flow_id, "portal_query", status="running", detail="download_all")
             results = downloader.download_all() or {}
             if _payload_contains_captcha(results):
+                _safe_flow_step_status(flow_id, "portal_query", status="failed", detail="captcha detected", ok=False)
                 ticket = _enqueue_manual_review("download_all", {"headless": bool(headless)}, "captcha in download_all results")
                 msg = f"🧩 筆錄批次下載遇到 CAPTCHA，已轉人工佇列（ticket={ticket}）。"
                 _notify(msg, notify)
+                _mark_notify_step(flow_id, notify=notify, detail=msg)
                 out = {
                     "success": False,
                     "error": "captcha detected",
@@ -810,7 +1058,32 @@ def cmd_download_all(headless: bool = True, notify: bool = True) -> dict:
                 _eventlog("transcript:download_all:done", ok=False, payload=out)
                 return out
             msg, summary = _summarize_download_results(results)
+            _safe_flow_step_status(
+                flow_id,
+                "portal_query",
+                status="succeeded",
+                detail=f"download_all complete ({int(summary.get('downloaded_count') or 0)} files)",
+                ok=True,
+                metadata=summary,
+            )
+            _safe_flow_step_status(
+                flow_id,
+                "dedup",
+                status="succeeded",
+                detail=f"new_files={int(summary.get('downloaded_count') or 0)}",
+                ok=True,
+                metadata=summary,
+            )
+            _safe_flow_step_status(
+                flow_id,
+                "archive",
+                status="succeeded" if int(summary.get("downloaded_count") or 0) > 0 else "skipped",
+                detail="download_all handles archive internally",
+                ok=True,
+                skipped=int(summary.get("downloaded_count") or 0) <= 0,
+            )
             _notify(msg, notify)
+            _mark_notify_step(flow_id, notify=notify, detail=msg)
             out = {"success": True, "message": msg}
             out.update(summary)
             _eventlog("transcript:download_all:done", ok=True, payload=out)
@@ -821,10 +1094,12 @@ def cmd_download_all(headless: bool = True, notify: bool = True) -> dict:
     except Exception as e:
         error_msg = str(e)[:200]
         logger.error("Download all failed: %s", error_msg)
+        _safe_flow_step_status(flow_id, "portal_query", status="failed", detail=error_msg, ok=False)
         if _looks_like_captcha_error(error_msg):
             ticket = _enqueue_manual_review("download_all", {"headless": bool(headless)}, error_msg)
             msg = f"🧩 筆錄批次下載遇到 CAPTCHA，已轉人工佇列（ticket={ticket}）。"
             _notify(msg, notify)
+            _mark_notify_step(flow_id, notify=notify, detail=msg)
             out = {
                 "success": False,
                 "error": error_msg,
@@ -835,12 +1110,13 @@ def cmd_download_all(headless: bool = True, notify: bool = True) -> dict:
             _eventlog("transcript:download_all:done", ok=False, payload=out)
             return out
         _notify("❌ 筆錄批次下載失敗: " + error_msg, notify)
+        _mark_notify_step(flow_id, notify=notify, detail=error_msg)
         out = {"success": False, "error": error_msg}
         _eventlog("transcript:download_all:done", ok=False, payload=out)
         return out
 
 
-def cmd_sync(rename: bool = True, headless: bool = True, notify: bool = True) -> dict:
+def cmd_sync(rename: bool = True, headless: bool = True, notify: bool = True, flow_id: str = "") -> dict:
     """Full sync: MD5 scan -> download all -> rename all transcripts."""
     _eventlog("transcript:sync:start", payload={"rename": bool(rename), "headless": bool(headless)})
     os.environ.setdefault("MAGI_EZLAWYER_SOLVE_CAPTCHA", "0")
@@ -850,9 +1126,15 @@ def cmd_sync(rename: bool = True, headless: bool = True, notify: bool = True) ->
     cfg = _load_config()
     creds = _get_credentials(cfg)
     if not creds["username"] or not creds["password"]:
+        _safe_flow_step_status(flow_id, "portal_query", status="failed", detail="missing credentials", ok=False)
         out = {"success": False, "error": "missing credentials — set MAGI_JUDICIAL_RECORD_USERNAME/PASSWORD in .env"}
         _eventlog("transcript:sync:done", ok=False, payload=out)
         return out
+
+    cancelled = _check_flow_cancelled(flow_id, "case_scan")
+    if cancelled:
+        _eventlog("transcript:sync:done", ok=False, payload=cancelled)
+        return cancelled
 
     try:
         mod = _ensure_imports()
@@ -869,9 +1151,19 @@ def cmd_sync(rename: bool = True, headless: bool = True, notify: bool = True) ->
 
         try:
             logger.info("Running full sync (MD5 scan + download + rename)...")
+            _safe_flow_step_status(flow_id, "case_scan", status="running", detail="scan_case_folders_for_md5")
             downloader.scan_case_folders_for_md5(rename_files=False)
+            _safe_flow_step_status(flow_id, "case_scan", status="succeeded", detail="case folder scan complete", ok=True)
+
+            cancelled = _check_flow_cancelled(flow_id, "portal_query")
+            if cancelled:
+                _eventlog("transcript:sync:done", ok=False, payload=cancelled)
+                return cancelled
+
+            _safe_flow_step_status(flow_id, "portal_query", status="running", detail="sync download_all")
             results = downloader.download_all() or {}
             if _payload_contains_captcha(results):
+                _safe_flow_step_status(flow_id, "portal_query", status="failed", detail="captcha detected", ok=False)
                 ticket = _enqueue_manual_review(
                     "sync",
                     {"rename": bool(rename), "headless": bool(headless)},
@@ -879,6 +1171,7 @@ def cmd_sync(rename: bool = True, headless: bool = True, notify: bool = True) ->
                 )
                 msg = f"🧩 筆錄同步遇到 CAPTCHA，已轉人工佇列（ticket={ticket}）。"
                 _notify(msg, notify)
+                _mark_notify_step(flow_id, notify=notify, detail=msg)
                 out = {
                     "success": False,
                     "error": "captcha detected",
@@ -888,13 +1181,34 @@ def cmd_sync(rename: bool = True, headless: bool = True, notify: bool = True) ->
                 }
                 _eventlog("transcript:sync:done", ok=False, payload=out)
                 return out
-            if rename:
-                downloader.rename_all_transcripts()
-
             dl_msg, summary = _summarize_download_results(results)
+            _safe_flow_step_status(
+                flow_id,
+                "portal_query",
+                status="succeeded",
+                detail=f"sync download complete ({int(summary.get('downloaded_count') or 0)} files)",
+                ok=True,
+                metadata=summary,
+            )
+            _safe_flow_step_status(
+                flow_id,
+                "dedup",
+                status="succeeded",
+                detail=f"new_files={int(summary.get('downloaded_count') or 0)}",
+                ok=True,
+                metadata=summary,
+            )
+            if rename:
+                _safe_flow_step_status(flow_id, "rename", status="running", detail="rename_all_transcripts")
+                downloader.rename_all_transcripts()
+                _safe_flow_step_status(flow_id, "rename", status="succeeded", detail="rename complete", ok=True)
+            else:
+                _safe_flow_step_status(flow_id, "rename", status="skipped", detail="rename disabled", ok=True, skipped=True)
+
             suffix = "（含更名）" if rename else ""
             msg = f"🔄 筆錄全同步完成{suffix}\n{dl_msg}"
-            _notify(msg, notify)
+            _notify(msg, notify, topic_key="transcript" if int(summary.get("downloaded_count") or 0) > 0 else "quiet_cron")
+            _mark_notify_step(flow_id, notify=notify, detail=msg)
             out = {"success": True, "message": msg}
             out.update(summary)
             _eventlog("transcript:sync:done", ok=True, payload=out)
@@ -905,6 +1219,7 @@ def cmd_sync(rename: bool = True, headless: bool = True, notify: bool = True) ->
     except Exception as e:
         error_msg = str(e)[:200]
         logger.error("Sync failed: %s", error_msg)
+        _safe_flow_step_status(flow_id, "portal_query", status="failed", detail=error_msg, ok=False)
         if _looks_like_captcha_error(error_msg):
             ticket = _enqueue_manual_review(
                 "sync",
@@ -913,6 +1228,7 @@ def cmd_sync(rename: bool = True, headless: bool = True, notify: bool = True) ->
             )
             msg = f"🧩 筆錄同步遇到 CAPTCHA，已轉人工佇列（ticket={ticket}）。"
             _notify(msg, notify)
+            _mark_notify_step(flow_id, notify=notify, detail=msg)
             out = {
                 "success": False,
                 "error": error_msg,
@@ -923,6 +1239,7 @@ def cmd_sync(rename: bool = True, headless: bool = True, notify: bool = True) ->
             _eventlog("transcript:sync:done", ok=False, payload=out)
             return out
         _notify("❌ 筆錄同步失敗: " + error_msg, notify)
+        _mark_notify_step(flow_id, notify=notify, detail=error_msg)
         out = {"success": False, "error": error_msg}
         _eventlog("transcript:sync:done", ok=False, payload=out)
         return out
@@ -1171,12 +1488,21 @@ def main() -> int:
             return _ok({"success": False, "error": str(e)[:200]})
 
     if task.startswith("download_all"):
-        r = cmd_download_all()
+        flow_id = _safe_create_flow_mirror("download_all")
+        r = cmd_download_all(flow_id=flow_id)
+        _safe_finalize_flow(flow_id, r)
         return _ok(r)
 
     if task.startswith("download"):
         payload = _load_jsonish(task[len("download"):].strip())
-        cn = payload.get("case_number", "")
+        flow_id = _safe_create_flow_mirror(
+            "download",
+            metadata={
+                "case_number": payload.get("case_number", ""),
+                "court_name": payload.get("court_name", ""),
+                "case_type": payload.get("case_type", ""),
+            },
+        )
         r = cmd_download(
             case_number=payload.get("case_number", ""),
             out_folder=payload.get("out_folder", ""),
@@ -1187,11 +1513,15 @@ def main() -> int:
             transcript_type_filter=payload.get("transcript_type_filter", "T"),
             court_name=payload.get("court_name", ""),
             case_type=payload.get("case_type", ""),
+            flow_id=flow_id,
         )
+        _safe_finalize_flow(flow_id, r)
         return _ok(r)
 
     if task in ("sync", "筆錄同步", "全同步"):
-        r = cmd_sync()
+        flow_id = _safe_create_flow_mirror("sync", metadata={"rename": True})
+        r = cmd_sync(flow_id=flow_id)
+        _safe_finalize_flow(flow_id, r)
         return _ok(r)
 
     if task in ("rename", "筆錄更名"):
@@ -1203,14 +1533,27 @@ def main() -> int:
     if parsed:
         cmd = parsed["command"]
         if cmd == "sync":
-            r = cmd_sync()
+            flow_id = _safe_create_flow_mirror("sync", metadata={"source": "line_command"})
+            r = cmd_sync(flow_id=flow_id)
+            _safe_finalize_flow(flow_id, r)
             return _ok(r)
         if cmd == "download":
+            flow_id = _safe_create_flow_mirror(
+                "download",
+                metadata={
+                    "source": "line_command",
+                    "case_number": parsed.get("case_number", ""),
+                    "court_name": parsed.get("court_name", ""),
+                    "case_type": parsed.get("case_type", ""),
+                },
+            )
             r = cmd_download(
                 case_number=parsed.get("case_number", ""),
                 court_name=parsed.get("court_name", ""),
                 case_type=parsed.get("case_type", ""),
+                flow_id=flow_id,
             )
+            _safe_finalize_flow(flow_id, r)
             return _ok(r)
         if cmd == "rename":
             r = cmd_rename()

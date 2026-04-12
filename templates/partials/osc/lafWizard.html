@@ -1,0 +1,60 @@
+        <section id="lafWizard" class="view">
+            <div class="card">
+                <div class="section-head">
+                    <div>
+                        <h3>法扶回報向導</h3>
+                        <div class="section-note">流程：先預覽（不寫入）→ 存檔（只暫存）→ 送出（目前僅開辦，且僅管理員）。</div>
+                    </div>
+                </div>
+                <div class="field-grid cols-4" style="margin-top:8px;">
+                    <div class="field">
+                        <label for="lafWizardAction">回報動作</label>
+                        <select id="lafWizardAction">
+                            <option value="go_live">開辦</option>
+                            <option value="condition">二階段</option>
+                            <option value="inquiry">疑義</option>
+                            <option value="withdrawal">撤回</option>
+                            <option value="fee">訴訟中費用支付</option>
+                            <option value="closing">結案</option>
+                        </select>
+                    </div>
+                    <div class="field">
+                        <label for="lafWizardCaseId">案件 ID</label>
+                        <input id="lafWizardCaseId" placeholder="案件 ID（優先）">
+                    </div>
+                    <div class="field">
+                        <label for="lafWizardCaseNumber">案件編號</label>
+                        <input id="lafWizardCaseNumber" placeholder="選填">
+                    </div>
+                    <div class="field">
+                        <label for="lafWizardLafCaseNo">法扶案號</label>
+                        <input id="lafWizardLafCaseNo" placeholder="選填">
+                    </div>
+                    <div class="field">
+                        <label for="lafWizardClientName">當事人</label>
+                        <input id="lafWizardClientName" placeholder="選填">
+                    </div>
+                    <div class="field" style="grid-column: span 3;">
+                        <label for="lafWizardReason">原因 / 說明</label>
+                        <input id="lafWizardReason" placeholder="疑義/費用/撤回/結案時建議填寫">
+                    </div>
+                </div>
+                <div class="field" style="margin-top:10px;">
+                    <label for="lafWizardFields">進階欄位 JSON</label>
+                    <textarea id="lafWizardFields"
+                        placeholder='選填，例如 {"desc":"補充說明","rsm_reqsubj1":"0001"}'></textarea>
+                </div>
+                <div class="inline-actions" style="margin-top:10px;">
+                    <button class="btn" id="lafWizardPreviewBtn">預覽（不寫入）</button>
+                    <button class="btn primary" id="lafWizardDraftBtn">存檔（只暫存）</button>
+                    <button class="btn warn" id="lafWizardSubmitBtn">送出（僅開辦）</button>
+                </div>
+            </div>
+            <div class="card">
+                <h3>執行結果</h3>
+                <div id="lafWizardSummary" class="muted">尚未執行</div>
+                <div id="lafWizardLinks" class="toolbar"></div>
+                <div class="insight-full" id="lafWizardResult"></div>
+            </div>
+        </section>
+

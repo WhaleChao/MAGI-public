@@ -123,7 +123,7 @@ class ImplicitFeedbackDetector:
         "太好了", "完美", "正確", "沒錯",
     ]
 
-    def detect(self, current_msg: str, last_query: str = "", last_response: str = "") -> str | None:
+    def detect(self, current_msg: str, last_query: str = "", last_response: str = "") -> Optional[str]:
         """
         從使用者的後續訊息推斷前一次回覆的品質。
 
@@ -162,7 +162,7 @@ def record_feedback(query: str, routed_to: str, outcome: str, details: str = "")
     _routing_feedback.record(query, routed_to, outcome, details)
 
 
-def detect_implicit_feedback(current_msg: str, last_query: str = "", last_response: str = "") -> str | None:
+def detect_implicit_feedback(current_msg: str, last_query: str = "", last_response: str = "") -> Optional[str]:
     """偵測隱式回饋（全域入口）。"""
     return _implicit_detector.detect(current_msg, last_query, last_response)
 

@@ -76,7 +76,7 @@ class SessionStore:
             pending.updated_at = utcnow()
             return self._clone(pending)
 
-    def get_pending_state(self, session_id: str) -> SessionPendingState | None:
+    def get_pending_state(self, session_id: str) -> Optional[SessionPendingState]:
         with self._lock:
             pending = self._pending.get(session_id)
             return self._clone(pending) if pending else None

@@ -10,11 +10,11 @@ from api.tools.base import ToolExecutor
 from api.tools.contracts import ToolContext
 
 
-@dataclass(slots=True)
+@dataclass()
 class CallableToolExecutor:
     fn: Callable[..., Any]
 
-    def execute(self, arguments: Mapping[str, Any], context: ToolContext | None = None) -> Any:
+    def execute(self, arguments: Mapping[str, Any], context: Optional[ToolContext] = None) -> Any:
         kwargs = dict(arguments or {})
         if context is not None:
             sig = inspect.signature(self.fn)
@@ -25,14 +25,14 @@ class CallableToolExecutor:
         return self.fn(**kwargs)
 
 
-@dataclass(slots=True)
+@dataclass()
 class HttpJsonToolExecutor:
     method: str
     url: str
     timeout_sec: int = 30
-    session: requests.Session | None = None
+    session: requests.Optional[Session] = None
 
-    def execute(self, arguments: Mapping[str, Any], context: ToolContext | None = None) -> Any:
+    def execute(self, arguments: Mapping[str, Any], context: Optional[ToolContext] = None) -> Any:
         session = self.session or requests.Session()
         payload = dict(arguments or {})
         if context is not None:

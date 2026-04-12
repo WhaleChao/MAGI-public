@@ -346,13 +346,20 @@ print()
 print("=" * 72)
 print(f"RESULTS:  {passed} passed,  {failed} failed,  {passed + failed} total")
 print("=" * 72)
-if failures:
-    print()
-    print("FAILURES:")
-    for f in failures:
-        print(f)
-    print()
-    sys.exit(1)
-else:
-    print("All tests passed.")
-    sys.exit(0)
+
+
+def test_dispatch_patterns_regression():
+    assert failed == 0, "\n".join(failures)
+
+
+if __name__ == "__main__":
+    if failures:
+        print()
+        print("FAILURES:")
+        for f in failures:
+            print(f)
+        print()
+        sys.exit(1)
+    else:
+        print("All tests passed.")
+        sys.exit(0)

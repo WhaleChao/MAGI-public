@@ -2,7 +2,7 @@
 name: casper-autofix-knowledge
 description: Auto-learned code repair patterns from CASPER.
 author: CASPER-AUTOSKILL
-created: 2026-04-08
+created: 2026-04-11
 ---
 
 # casper-autofix-knowledge

@@ -194,7 +194,7 @@ def connect_mysql(cfg: DBConfig) -> mysql.connector.MySQLConnection:
         return conn
 
     tried: set[tuple[str, int, str]] = set()
-    last_err: Exception | None = None
+    last_err: Optional[Exception] = None
 
     # 1) primary cfg (usually remote-first)
     first_key = (cfg.host, int(cfg.port), cfg.database)

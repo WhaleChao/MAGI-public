@@ -70,7 +70,7 @@ def _load_jsonish(text: str) -> dict:
         return {"value": t}
 
 
-def _eventlog(event: str, *, ok: bool | None = None, payload: dict | None = None, tags: dict | None = None) -> None:
+def _eventlog(event: str, *, ok: Optional[bool] = None, payload: Optional[dict] = None, tags: Optional[dict] = None) -> None:
     try:
         ensure_orch_on_sys_path()
         import magi_eventlog  # type: ignore

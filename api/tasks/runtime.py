@@ -9,7 +9,7 @@ from api.tasks.store import TaskStore
 class TaskRuntime:
     """Convenience wrapper for the in-memory task store."""
 
-    def __init__(self, store: TaskStore | None = None) -> None:
+    def __init__(self, store: Optional[TaskStore] = None) -> None:
         self.store = store or TaskStore()
 
     def register(
@@ -34,10 +34,10 @@ class TaskRuntime:
     def cancel(self, task_id: str, *, reason: str = "", **changes: Any) -> TaskRecord:
         return self.store.cancel(task_id, reason=reason, **changes)
 
-    def get(self, task_id: str) -> TaskRecord | None:
+    def get(self, task_id: str) -> Optional[TaskRecord]:
         return self.store.get(task_id)
 
-    def list(self, *, status: TaskStatus | str | None = None) -> list[TaskRecord]:
+    def list(self, *, status: TaskStatus | Optional[str] = None) -> list[TaskRecord]:
         return self.store.list(status=status)
 
     def active(self) -> list[TaskRecord]:

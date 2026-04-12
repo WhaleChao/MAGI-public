@@ -23,7 +23,7 @@ import sys
 import traceback
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Any, Callable, Optional
 import subprocess
 import uuid
 
@@ -62,8 +62,16 @@ from api.runtime_paths import (
     get_orch_dir,
     get_skill_python,
 )
+try:
+    from api.openclaw_compat import get_legacy_telegram_settings, load_openclaw_config
+except ImportError:
+    pass
 from api.case_path_mapper import translate_case_path_to_local
 from api.product_runtime import apply_product_runtime_env, product_profile_report
+try:
+    from skills.ops import flow_ledger as _flow_ledger
+except ImportError:
+    _flow_ledger = None
 
 ORCH_DIR = str(get_orch_dir())
 FILE_REVIEW_RUNTIME = apply_product_runtime_env("file_review", env=os.environ)
@@ -100,6 +108,220 @@ os.environ.setdefault("MAGI_ENABLE_PRECLICK_SMART_SKIP", "1")
 
 logger = logging.getLogger("file-review-orchestrator")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(message)s", stream=sys.stderr)
+
+
+def _flow_slug(value: str) -> str:
+    return re.sub(r"[^a-zA-Z0-9._-]+", "-", str(value or "").strip()).strip("-._") or "task"
+
+
+def _safe_create_flow_mirror(task_name: str, *, metadata: Optional[dict[str, Any]] = None) -> str:
+    if not str(task_name or "").strip():
+        return ""
+    payload = dict(metadata or {})
+    run_bits = [datetime.now().strftime("%Y%m%d_%H%M%S"), _flow_slug(task_name)]
+    for key in ("case_number", "job_id", "court_code"):
+        value = str(payload.get(key) or "").strip()
+        if value:
+            run_bits.append(_flow_slug(value)[:40])
+            break
+    try:
+        flow = _flow_ledger.create_flow(
+            parent_job_id=os.environ.get("MAGI_FILE_REVIEW_FLOW_PARENT_JOB_ID", "skill_file_review_orchestrator"),
+            run_id="_".join(bit for bit in run_bits if bit),
+            task=task_name,
+            metadata={**payload, "source": "file-review-orchestrator"},
+        )
+        return str(flow.get("flow_id") or "")
+    except Exception:
+        logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 114, exc_info=True)
+        return ""
+
+
+def _safe_flow_step_status(
+    flow_id: str,
+    step_name: str,
+    *,
+    status: str,
+    detail: str = "",
+    ok: Optional[bool] = None,
+    skipped: Optional[bool] = None,
+    metadata: Optional[dict[str, Any]] = None,
+) -> None:
+    if not flow_id:
+        return
+    try:
+        _flow_ledger.set_step_status(
+            flow_id,
+            step_name,
+            status=status,
+            detail=detail,
+            ok=ok,
+            skipped=skipped,
+            metadata=metadata,
+        )
+    except Exception:
+        logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 141, exc_info=True)
+
+
+def _flow_artifacts_from_result(result: dict[str, Any]) -> dict[str, str]:
+    artifacts: dict[str, str] = {}
+    if not isinstance(result, dict):
+        return artifacts
+    evidence = result.get("evidence") if isinstance(result.get("evidence"), dict) else {}
+    for key in ("screenshot", "list_screenshot", "html"):
+        value = str(evidence.get(key) or "").strip()
+        if value:
+            artifacts[key] = value
+    for key in ("status_path", "log_path"):
+        value = str(result.get(key) or "").strip()
+        if value:
+            artifacts[key] = value
+    files = result.get("files") if isinstance(result.get("files"), list) else []
+    for idx, value in enumerate(files[:3], start=1):
+        if value:
+            artifacts[f"file_{idx}"] = str(value)
+    return artifacts
+
+
+def _safe_finalize_flow(flow_id: str, result: dict[str, Any]) -> None:
+    if not flow_id or not isinstance(result, dict):
+        return
+    if bool(result.get("queued")) and not bool(result.get("deduped")):
+        return
+    try:
+        result_key = str(result.get("result") or "").strip().lower()
+        status_key = str(result.get("status") or "").strip().lower()
+        ok = bool(result.get("success", result.get("ok")))
+        blockers: list[str] = []
+        flow_status = "succeeded" if ok else "failed"
+        if bool(result.get("cancelled")) or status_key == "cancelled":
+            flow_status = "cancelled"
+            ok = False
+            blockers.append("cancel_requested")
+        elif result_key == "ready":
+            flow_status = "blocked"
+            ok = True
+            blockers.append("manual_confirmation_required")
+        elif bool(result.get("manual_required")):
+            flow_status = "blocked"
+            blockers.append(str(result.get("manual_reason") or "manual_required").strip())
+        elif status_key == "already_running":
+            flow_status = "succeeded"
+            ok = True
+        _flow_ledger.finalize_flow(
+            flow_id,
+            status=flow_status,
+            ok=ok,
+            summary=str(result.get("message") or result.get("error") or result.get("status") or result.get("result") or "").strip()[:300],
+            blockers=[item for item in blockers if item],
+            metadata={
+                "status": str(result.get("status") or "").strip(),
+                "result": str(result.get("result") or "").strip(),
+                "queued": bool(result.get("queued")),
+                "deduped": bool(result.get("deduped")),
+                "downloaded_count": int(result.get("downloaded_count") or 0),
+                "review_download_count": int(result.get("review_download_count") or 0),
+                "payment_download_count": int(result.get("payment_download_count") or 0),
+                "cancelled": bool(result.get("cancelled")),
+            },
+            artifacts=_flow_artifacts_from_result(result) or None,
+        )
+    except Exception:
+        logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 194, exc_info=True)
+
+
+def _mark_notify_step(flow_id: str, *, notify: bool, detail: str) -> None:
+    _safe_flow_step_status(
+        flow_id,
+        "notify",
+        status="succeeded" if notify else "skipped",
+        ok=bool(notify),
+        skipped=not notify,
+        detail=detail[:240],
+    )
+
+
+def _result_step_status(result: dict[str, Any]) -> tuple[str, bool]:
+    if not isinstance(result, dict):
+        return "failed", False
+    if bool(result.get("cancelled")) or str(result.get("status") or "").strip().lower() == "cancelled":
+        return "cancelled", False
+    ok = bool(result.get("success", result.get("ok")))
+    if ok and str(result.get("result") or "").strip().lower() == "ready":
+        return "blocked", True
+    if ok:
+        return "succeeded", True
+    return "failed", False
+
+
+def _cancel_reason(flow_id: str) -> str:
+    if not flow_id:
+        return ""
+    try:
+        return _flow_ledger.get_cancel_reason(flow_id)
+    except Exception:
+        return ""
+
+
+def _cancelled_result(flow_id: str, step_name: str, *, detail: str = "") -> dict[str, Any]:
+    reason = detail or _cancel_reason(flow_id) or "operator requested"
+    message = f"cancel_requested: {reason}"[:240]
+    _safe_flow_step_status(
+        flow_id,
+        step_name,
+        status="cancelled",
+        detail=message,
+        ok=False,
+        metadata={"cancel_requested": True},
+    )
+    return {
+        "success": False,
+        "cancelled": True,
+        "status": "cancelled",
+        "error": message,
+        "message": "⏹️ 閱卷任務已取消",
+    }
+
+
+def _check_flow_cancelled(flow_id: str, step_name: str, *, detail: str = "") -> Optional[dict[str, Any]]:
+    if not flow_id:
+        return None
+    try:
+        if _flow_ledger.is_cancel_requested(flow_id):
+            return _cancelled_result(flow_id, step_name, detail=detail)
+    except Exception:
+        logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 252, exc_info=True)
+    return None
+
+
+def _run_with_flow(
+    task_name: str,
+    runner: Callable[[str], dict],
+    *,
+    metadata: Optional[dict[str, Any]] = None,
+    step_name: str = "",
+    detail: str = "",
+) -> dict:
+    flow_id = _safe_create_flow_mirror(task_name, metadata=metadata)
+    cancelled = _check_flow_cancelled(flow_id, step_name or task_name)
+    if cancelled:
+        _safe_finalize_flow(flow_id, cancelled)
+        return cancelled
+    if step_name:
+        _safe_flow_step_status(flow_id, step_name, status="running", detail=detail or task_name)
+    result = runner(flow_id)
+    if step_name and not (bool(result.get("queued")) and not bool(result.get("deduped"))):
+        status, ok = _result_step_status(result)
+        _safe_flow_step_status(
+            flow_id,
+            step_name,
+            status=status,
+            detail=str(result.get("message") or result.get("error") or result.get("status") or result.get("result") or "").strip()[:240],
+            ok=ok,
+            skipped=False,
+        )
+    _safe_finalize_flow(flow_id, result)
+    return result
 
 def _cleanup_old_downloads(download_folder: str, max_days: int = 15):
     """Clean up downloaded YYYYMMDD date-folders older than max_days.
@@ -400,6 +622,25 @@ def _truthy(v: str) -> bool:
     return str(v or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _boolish(value, default: bool = False) -> bool:
+    if value is None:
+        return bool(default)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "on"}:
+        return True
+    if text in {"0", "false", "no", "off"}:
+        return False
+    return bool(default)
+
+
+def _notifications_suppressed() -> bool:
+    return _boolish(os.environ.get("MAGI_FILE_REVIEW_SUPPRESS_NOTIFY"), False)
+
+
 def _download_job_paths(job_id: str) -> tuple[str, str]:
     return (
         os.path.join(BG_JOB_DIR, f"download_{job_id}.json"),
@@ -603,17 +844,13 @@ def _load_telegram_targets() -> tuple[str, list[str]]:
     except Exception:
         logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 602, exc_info=True)
     try:
-        oc_path = os.path.join(os.path.expanduser("~"), ".openclaw", "openclaw.json")
-        if os.path.exists(oc_path):
-            cfg = json.loads(open(oc_path, "r", encoding="utf-8").read() or "{}")
-            tg = (cfg.get("channels") or {}).get("telegram") or {}
+        if 'get_legacy_telegram_settings' in globals():
+            legacy = get_legacy_telegram_settings(load_openclaw_config())
             if not token:
-                token = str(tg.get("botToken") or "").strip()
-            notify_to = tg.get("notifyTo") or []
-            if isinstance(notify_to, list):
-                notify_ids.extend([str(x).strip() for x in notify_to if str(x).strip()])
+                token = str(legacy.get("bot_token") or "").strip()
+            notify_ids.extend([str(x).strip() for x in (legacy.get("notify_to") or []) if str(x).strip()])
     except Exception:
-        logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 614, exc_info=True)
+        logging.getLogger(__name__).debug("silent-catch at action.py:841", exc_info=True)
     dedup: list[str] = []
     seen: set[str] = set()
     for x in notify_ids:
@@ -655,6 +892,9 @@ def _notify_tg(text: str) -> bool:
 def _notify(text: str, flag: bool = True, topic_key: str = "filereview"):
     if not flag:
         return
+    if _notifications_suppressed():
+        logger.info("Notification suppressed by MAGI_FILE_REVIEW_SUPPRESS_NOTIFY: %s", str(text or "")[:160])
+        return
     msg = str(text or "")
     try:
         from skills.ops.red_phone import send_telegram_push_with_status  # type: ignore
@@ -676,6 +916,9 @@ def _notify(text: str, flag: bool = True, topic_key: str = "filereview"):
 def _notify_file(file_path: str, caption: str = "", flag: bool = True):
     """Send a file (image/PDF/etc.) to admin via TG and DC."""
     if not flag:
+        return
+    if _notifications_suppressed():
+        logger.info("File notification suppressed by MAGI_FILE_REVIEW_SUPPRESS_NOTIFY: %s", os.path.basename(file_path or ""))
         return
     if not file_path or not os.path.isfile(file_path):
         logger.warning("_notify_file: file not found: %s", file_path)
@@ -765,7 +1008,7 @@ COURT_ALIASES = {
     "金門": "KMD",
     "連江": "LCD",
     # 高等法院
-    "高院": "TPH", "台灣高等法院": "TPH",
+    "高院": "TPH", "高等法院": "TPH", "台灣高等法院": "TPH", "臺灣高等法院": "TPH",
     "高雄高分院": "KSH",
     "台中高分院": "TCH",
     "台南高分院": "TNH",
@@ -826,18 +1069,27 @@ def _resolve_court_code(text: str) -> str:
 def cmd_apply(court_code: str, year: str, case_type: str,
               case_number: str, client_name: str = "",
               auto_submit: bool = True, notify: bool = True,
-              folder_path: str = "") -> dict:
+              sys_type: str = "",
+              folder_path: str = "",
+              flow_id: str = "") -> dict:
     """Apply for file review (閱卷聲請)."""
     if not all([court_code, year, case_type, case_number]):
+        _safe_flow_step_status(flow_id, "preview_fill", status="failed", detail="missing required fields", ok=False)
         return {"success": False, "error": "missing required fields: court_code, year, case_type, case_number"}
 
     court_code = _resolve_court_code(court_code)
     if court_code.upper() not in _ALL_COURT_CODES:
+        _safe_flow_step_status(flow_id, "preview_fill", status="failed", detail=f"unknown court_code: {court_code}", ok=False)
         return {"success": False, "error": f"無法識別法院名稱「{court_code}」，請使用如：基隆、台北、TPD 等格式"}
     cfg = _load_config()
     creds = _get_credentials(cfg)
     if not creds["username"] or not creds["password"]:
+        _safe_flow_step_status(flow_id, "portal_login", status="failed", detail="missing credentials", ok=False)
         return {"success": False, "error": "missing credentials — set MAGI_JUDICIAL_EEFILE_USERNAME/PASSWORD in .env"}
+
+    cancelled = _check_flow_cancelled(flow_id, "portal_login", detail="before login")
+    if cancelled:
+        return cancelled
 
     try:
         mod = _ensure_imports()
@@ -872,14 +1124,22 @@ def cmd_apply(court_code: str, year: str, case_type: str,
 
         try:
             # SSO login
+            _safe_flow_step_status(flow_id, "portal_login", status="running", detail=f"{court_code} {year}-{case_type}-{case_number}")
             logger.info("Logging into SSO for file review...")
             if not mgr.login():
                 msg = "❌ 閱卷登入失敗，可能驗證碼連錯或系統維護，已中斷自動聲請。"
                 logger.error(msg)
                 _notify(msg, notify)
+                _safe_flow_step_status(flow_id, "portal_login", status="failed", detail="sso_login_failed", ok=False)
+                _mark_notify_step(flow_id, notify=notify, detail=msg)
                 return {"success": False, "error": "sso_login_failed"}
+            _safe_flow_step_status(flow_id, "portal_login", status="succeeded", detail="SSO login ok", ok=True)
 
             mgr.navigate_to_file_review()
+
+            cancelled = _check_flow_cancelled(flow_id, "preview_fill", detail="before apply_for_review")
+            if cancelled:
+                return cancelled
 
             # Apply
             case_info = {
@@ -889,15 +1149,19 @@ def cmd_apply(court_code: str, year: str, case_type: str,
                 "case_number": str(case_number),
                 "client_name": client_name,
             }
+            if sys_type:
+                case_info["sys_type"] = str(sys_type).strip()
             if folder_path:
                 case_info["folder_path"] = folder_path
             logger.info("Applying for review: %s", case_info)
+            _safe_flow_step_status(flow_id, "preview_fill", status="running", detail=label if 'label' in locals() else f"{court_code} {year}-{case_type}-{case_number}")
             result = mgr.apply_for_review(case_info, auto_submit=auto_submit)
 
             label = f"{court_code} {year}年{case_type}字第{case_number}號"
 
             # Parse evidence from result (format: "Applied|{json}")
             evidence = {}
+            fallback_evidence = getattr(mgr, "_last_apply_for_review_evidence", {}) or {}
             result_key = result
             if isinstance(result, str) and "|" in result:
                 result_key, _, evidence_str = result.partition("|")
@@ -905,6 +1169,8 @@ def cmd_apply(court_code: str, year: str, case_type: str,
                     evidence = json.loads(evidence_str)
                 except Exception:
                     logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 867, exc_info=True)
+            if not evidence and isinstance(fallback_evidence, dict):
+                evidence = dict(fallback_evidence)
 
             if result_key == "Applied":
                 app_no = evidence.get("application_number", "")
@@ -913,12 +1179,21 @@ def cmd_apply(court_code: str, year: str, case_type: str,
                     msg += f"\n收件編號：{app_no}"
                 if evidence.get("list_row_count"):
                     msg += f"\n列表確認：共 {evidence['list_row_count']} 筆"
+                _safe_flow_step_status(flow_id, "preview_fill", status="succeeded", detail="application prepared and submitted", ok=True)
+                _safe_flow_step_status(flow_id, "submit", status="succeeded", detail=result_key, ok=True)
             elif result_key == "Ready":
-                msg = f"✅ 閱卷已聲請完成（表單已填寫，待確認送出） — {label}"
+                msg = f"✅ 閱卷已填寫完成（待確認送出） — {label}"
+                if evidence.get("submit_ready"):
+                    msg += "\n系統已確認頁面可見「確認送出」按鈕。"
+                _safe_flow_step_status(flow_id, "preview_fill", status="succeeded", detail="preview ready", ok=True)
+                _safe_flow_step_status(flow_id, "submit", status="blocked", detail="manual confirmation required", ok=True)
             else:
                 msg = f"⚠️ 閱卷聲請結果: {result_key} — {label}"
+                _safe_flow_step_status(flow_id, "preview_fill", status="succeeded", detail=result_key, ok=True)
+                _safe_flow_step_status(flow_id, "submit", status="failed", detail=result_key, ok=False)
 
             _notify(msg, notify)
+            _mark_notify_step(flow_id, notify=notify, detail=msg)
 
             # Send evidence screenshot if available
             screenshot = evidence.get("screenshot", "")
@@ -927,6 +1202,9 @@ def cmd_apply(court_code: str, year: str, case_type: str,
             list_screenshot = evidence.get("list_screenshot", "")
             if list_screenshot and os.path.isfile(list_screenshot):
                 _notify_file(list_screenshot, caption=f"列表確認 — {label}", flag=notify)
+            html_path = evidence.get("html", "")
+            if html_path and os.path.isfile(html_path):
+                logger.info("預覽 HTML：%s", html_path)
 
             return {"success": True, "result": result_key, "case": label,
                     "message": msg, "evidence": evidence}
@@ -938,6 +1216,8 @@ def cmd_apply(court_code: str, year: str, case_type: str,
         error_msg = str(e)[:200]
         logger.error("Apply failed: %s", error_msg)
         _notify("❌ 閱卷聲請失敗: " + error_msg, notify)
+        _safe_flow_step_status(flow_id, "submit", status="failed", detail=error_msg, ok=False)
+        _mark_notify_step(flow_id, notify=notify, detail=error_msg)
         return {"success": False, "error": error_msg, "traceback": traceback.format_exc()[-500:]}
 
 
@@ -947,18 +1227,27 @@ def cmd_paper_apply(court_code: str, year: str, case_type: str,
                     court_division: str = "",
                     appointment_slots: list = None,
                     auto_submit: bool = True, notify: bool = True,
-                    folder_path: str = "") -> dict:
+                    sys_type: str = "",
+                    folder_path: str = "",
+                    flow_id: str = "") -> dict:
     """Apply for paper file review (紙本閱卷聲請)."""
     if not all([court_code, year, case_type, case_number]):
+        _safe_flow_step_status(flow_id, "preview_fill", status="failed", detail="missing required fields", ok=False)
         return {"success": False, "error": "missing required fields: court_code, year, case_type, case_number"}
 
     court_code = _resolve_court_code(court_code)
     if court_code.upper() not in _ALL_COURT_CODES:
+        _safe_flow_step_status(flow_id, "preview_fill", status="failed", detail=f"unknown court_code: {court_code}", ok=False)
         return {"success": False, "error": f"無法識別法院名稱「{court_code}」，請使用如：基隆、台北、TPD 等格式"}
     cfg = _load_config()
     creds = _get_credentials(cfg)
     if not creds["username"] or not creds["password"]:
+        _safe_flow_step_status(flow_id, "portal_login", status="failed", detail="missing credentials", ok=False)
         return {"success": False, "error": "missing credentials — set MAGI_JUDICIAL_EEFILE_USERNAME/PASSWORD in .env"}
+
+    cancelled = _check_flow_cancelled(flow_id, "portal_login", detail="before login")
+    if cancelled:
+        return cancelled
 
     try:
         mod = _ensure_imports()
@@ -993,13 +1282,21 @@ def cmd_paper_apply(court_code: str, year: str, case_type: str,
 
         try:
             logger.info("Logging into SSO for paper file review...")
+            _safe_flow_step_status(flow_id, "portal_login", status="running", detail=f"{court_code} {year}-{case_type}-{case_number}")
             if not mgr.login():
                 msg = "❌ 紙本閱卷登入失敗，可能驗證碼連錯或系統維護。"
                 logger.error(msg)
                 _notify(msg, notify)
+                _safe_flow_step_status(flow_id, "portal_login", status="failed", detail="sso_login_failed", ok=False)
+                _mark_notify_step(flow_id, notify=notify, detail=msg)
                 return {"success": False, "error": "sso_login_failed"}
+            _safe_flow_step_status(flow_id, "portal_login", status="succeeded", detail="SSO login ok", ok=True)
 
             mgr.navigate_to_file_review()
+
+            cancelled = _check_flow_cancelled(flow_id, "preview_fill", detail="before paper apply_for_review")
+            if cancelled:
+                return cancelled
 
             case_info = {
                 "court_code": court_code,
@@ -1011,11 +1308,14 @@ def cmd_paper_apply(court_code: str, year: str, case_type: str,
                 "appointment_time": appointment_time,
                 "court_division": court_division,
             }
+            if sys_type:
+                case_info["sys_type"] = str(sys_type).strip()
             if appointment_slots:
                 case_info["appointment_slots"] = appointment_slots
             if folder_path:
                 case_info["folder_path"] = folder_path
             logger.info("Applying for paper review: %s", case_info)
+            _safe_flow_step_status(flow_id, "preview_fill", status="running", detail=f"{court_code} {year}-{case_type}-{case_number}")
             result = mgr.apply_for_review(case_info, auto_submit=auto_submit, paper_review=True)
 
             label = f"{court_code} {year}年{case_type}字第{case_number}號 (紙本)"
@@ -1028,6 +1328,7 @@ def cmd_paper_apply(court_code: str, year: str, case_type: str,
                 appt_label = ""
 
             evidence = {}
+            fallback_evidence = getattr(mgr, "_last_apply_for_review_evidence", {}) or {}
             result_key = result
             if isinstance(result, str) and "|" in result:
                 result_key, _, evidence_str = result.partition("|")
@@ -1035,22 +1336,36 @@ def cmd_paper_apply(court_code: str, year: str, case_type: str,
                     evidence = json.loads(evidence_str)
                 except Exception:
                     pass
+            if not evidence and isinstance(fallback_evidence, dict):
+                evidence = dict(fallback_evidence)
 
             if result_key == "Applied":
                 app_no = evidence.get("application_number", "")
                 msg = f"📋 紙本閱卷聲請已送出 — {label}{appt_label}"
                 if app_no:
                     msg += f"\n收件編號：{app_no}"
+                _safe_flow_step_status(flow_id, "preview_fill", status="succeeded", detail="paper application prepared and submitted", ok=True)
+                _safe_flow_step_status(flow_id, "submit", status="succeeded", detail=result_key, ok=True)
             elif result_key == "Ready":
                 msg = f"✅ 紙本閱卷已填寫完成（待確認送出） — {label}{appt_label}"
+                if evidence.get("submit_ready"):
+                    msg += "\n系統已確認頁面可見「確認送出」按鈕。"
+                _safe_flow_step_status(flow_id, "preview_fill", status="succeeded", detail="paper preview ready", ok=True)
+                _safe_flow_step_status(flow_id, "submit", status="blocked", detail="manual confirmation required", ok=True)
             else:
                 msg = f"⚠️ 紙本閱卷聲請結果: {result_key} — {label}"
+                _safe_flow_step_status(flow_id, "preview_fill", status="succeeded", detail=result_key, ok=True)
+                _safe_flow_step_status(flow_id, "submit", status="failed", detail=result_key, ok=False)
 
             _notify(msg, notify)
+            _mark_notify_step(flow_id, notify=notify, detail=msg)
 
             screenshot = evidence.get("screenshot", "")
             if screenshot and os.path.isfile(screenshot):
                 _notify_file(screenshot, caption=f"紙本閱卷截圖 — {label}", flag=notify)
+            html_path = evidence.get("html", "")
+            if html_path and os.path.isfile(html_path):
+                logger.info("紙本閱卷預覽 HTML：%s", html_path)
 
             return {"success": True, "result": result_key, "case": label,
                     "message": msg, "evidence": evidence}
@@ -1062,6 +1377,8 @@ def cmd_paper_apply(court_code: str, year: str, case_type: str,
         error_msg = str(e)[:200]
         logger.error("Paper apply failed: %s", error_msg)
         _notify("❌ 紙本閱卷聲請失敗: " + error_msg, notify)
+        _safe_flow_step_status(flow_id, "submit", status="failed", detail=error_msg, ok=False)
+        _mark_notify_step(flow_id, notify=notify, detail=error_msg)
         return {"success": False, "error": error_msg, "traceback": traceback.format_exc()[-500:]}
 
 
@@ -1189,7 +1506,7 @@ def cmd_upload_payment_proof(court_code: str, year: str, case_type: str,
     if _proof_already_done:
         msg = f"ℹ️ {raw_case_id} 繳費憑證已上傳過 ({proof_registry.get(raw_case_id, {}).get('uploaded_at', '?')})，跳過"
         logger.info(msg)
-        _notify(msg, notify)
+        _notify(msg, notify, topic_key="filereview_payment")
         return {"success": True, "result": "Skipped", "message": msg}
 
     try:
@@ -1209,7 +1526,7 @@ def cmd_upload_payment_proof(court_code: str, year: str, case_type: str,
             logger.info("Logging into SSO for payment proof upload...")
             if not mgr.login():
                 msg = "❌ 閱卷登入失敗"
-                _notify(msg, notify)
+                _notify(msg, notify, topic_key="filereview_payment")
                 return {"success": False, "error": "sso_login_failed"}
 
             mgr.navigate_to_file_review()
@@ -1262,7 +1579,7 @@ def cmd_upload_payment_proof(court_code: str, year: str, case_type: str,
             else:
                 msg = f"❌ 繳費憑證上傳失敗 — {label} (結果: {result})"
 
-            _notify(msg, notify)
+            _notify(msg, notify, topic_key="filereview_payment")
             return {"success": result == "Uploaded", "result": result,
                     "case": label, "message": msg}
 
@@ -1272,7 +1589,7 @@ def cmd_upload_payment_proof(court_code: str, year: str, case_type: str,
     except Exception as e:
         error_msg = str(e)[:200]
         logger.error("Upload payment proof failed: %s", error_msg)
-        _notify("❌ 繳費憑證上傳失敗: " + error_msg, notify)
+        _notify("❌ 繳費憑證上傳失敗: " + error_msg, notify, topic_key="filereview_payment")
         return {"success": False, "error": error_msg,
                 "traceback": traceback.format_exc()[-500:]}
 
@@ -1308,7 +1625,7 @@ def cmd_upload_payment_proofs_batch(screenshot_dir: str = "",
 
     if not candidates:
         msg = "⚠️ 桌面上找不到今天的繳費截圖"
-        _notify(msg, notify)
+        _notify(msg, notify, topic_key="filereview_payment")
         return {"success": False, "error": "no screenshots found", "message": msg}
 
     logger.info("Found %d screenshot candidates: %s",
@@ -1333,7 +1650,7 @@ def cmd_upload_payment_proofs_batch(screenshot_dir: str = "",
 
     if not parsed_list:
         msg = f"⚠️ 掃到 {len(candidates)} 張截圖但都無法解析出案號"
-        _notify(msg, notify)
+        _notify(msg, notify, topic_key="filereview_payment")
         return {"success": False, "error": "no parseable screenshots",
                 "candidates": len(candidates), "message": msg}
 
@@ -1367,7 +1684,7 @@ def cmd_upload_payment_proofs_batch(screenshot_dir: str = "",
 
     if not new_list and parsed_list:
         msg = f"ℹ️ {len(parsed_list)} 筆繳費憑證皆已上傳過，無需重複操作"
-        _notify(msg, notify)
+        _notify(msg, notify, topic_key="filereview_payment")
         return {"success": True, "skipped": len(parsed_list), "message": msg}
 
     parsed_list = new_list
@@ -1378,7 +1695,7 @@ def cmd_upload_payment_proofs_batch(screenshot_dir: str = "",
         summary_lines.append(
             f"  • {p['raw_case_id']} ({p['court_name']}) ${p.get('amount', '?')}"
         )
-    _notify("\n".join(summary_lines), notify)
+    _notify("\n".join(summary_lines), notify, topic_key="filereview_payment")
 
     # 登入 OLA 並逐一上傳 (cfg/creds 已在去重段載入)
     if not creds["username"] or not creds["password"]:
@@ -1399,7 +1716,7 @@ def cmd_upload_payment_proofs_batch(screenshot_dir: str = "",
         logger.info("Logging into SSO for batch payment proof upload...")
         if not mgr.login():
             msg = "❌ 閱卷登入失敗"
-            _notify(msg, notify)
+            _notify(msg, notify, topic_key="filereview_payment")
             return {"success": False, "error": "sso_login_failed"}
 
         mgr.navigate_to_file_review()
@@ -1437,7 +1754,7 @@ def cmd_upload_payment_proofs_batch(screenshot_dir: str = "",
             })
 
             if result == "Uploaded":
-                _notify(f"✅ 繳費憑證已上傳 — {label}", notify)
+                _notify(f"✅ 繳費憑證已上傳 — {label}", notify, topic_key="filereview_payment")
                 # 記錄到 registry 避免重複上傳
                 from datetime import datetime as _dt
                 proof_registry[p["raw_case_id"]] = {
@@ -1464,9 +1781,9 @@ def cmd_upload_payment_proofs_batch(screenshot_dir: str = "",
                 except Exception:
                     pass
             elif result == "NotFound":
-                _notify(f"⚠️ 找不到案件 — {label}", notify)
+                _notify(f"⚠️ 找不到案件 — {label}", notify, topic_key="filereview_payment")
             else:
-                _notify(f"❌ 繳費憑證上傳失敗 — {label}", notify)
+                _notify(f"❌ 繳費憑證上傳失敗 — {label}", notify, topic_key="filereview_payment")
 
             import time as _time
             _time.sleep(2)  # 上傳間隔
@@ -1477,7 +1794,7 @@ def cmd_upload_payment_proofs_batch(screenshot_dir: str = "",
     uploaded = sum(1 for r in results if r["result"] == "Uploaded")
     total = len(results)
     final_msg = f"📊 繳費憑證批次上傳完成: {uploaded}/{total} 成功"
-    _notify(final_msg, notify)
+    _notify(final_msg, notify, topic_key="filereview_payment")
 
     return {
         "success": uploaded > 0,
@@ -1499,14 +1816,14 @@ def cmd_upload_payment_proof_from_image(image_path: str, notify: bool = True) ->
     """
     if not image_path or not os.path.exists(image_path):
         msg = "⚠️ 找不到繳費截圖檔案"
-        _notify(msg, notify)
+        _notify(msg, notify, topic_key="filereview_payment")
         return {"success": False, "error": "file not found", "message": msg}
 
     try:
         mod = _ensure_imports()
     except Exception as e:
         msg = f"❌ 載入閱卷模組失敗：{e}"
-        _notify(msg, notify)
+        _notify(msg, notify, topic_key="filereview_payment")
         return {"success": False, "error": str(e), "message": msg}
 
     # Step 1: 解析截圖
@@ -1517,7 +1834,7 @@ def cmd_upload_payment_proof_from_image(image_path: str, notify: bool = True) ->
             "⚠️ 無法從這張截圖解析出繳費案號資訊。\n"
             "請確認截圖包含案件繳費狀況查詢清單（含案號、法院、金額等欄位）。"
         )
-        _notify(msg, notify)
+        _notify(msg, notify, topic_key="filereview_payment")
         return {"success": False, "error": "parse_failed", "message": msg}
 
     court_code = info["court_code"]
@@ -1529,7 +1846,11 @@ def cmd_upload_payment_proof_from_image(image_path: str, notify: bool = True) ->
     amount = info.get("amount", "?")
 
     logger.info("💰 Parsed: %s (%s) $%s", raw_case_id, court_name, amount)
-    _notify(f"💰 解析繳費截圖: {raw_case_id} ({court_name}) ${amount}，開始上傳⋯", notify)
+    _notify(
+        f"💰 解析繳費截圖: {raw_case_id} ({court_name}) ${amount}，開始上傳⋯",
+        notify,
+        topic_key="filereview_payment",
+    )
 
     # Step 2: 呼叫現有的單件上傳 (含去重 + OLA 登入 + 上傳)
     return cmd_upload_payment_proof(
@@ -1638,7 +1959,9 @@ def cmd_download_payment_slips(max_days: int = 14, notify: bool = True) -> dict:
 
 def cmd_probe(court_code: str, year: str, case_type: str,
               case_number: str, client_name: str = "",
-              notify: bool = True) -> dict:
+              sys_type: str = "",
+              notify: bool = True,
+              flow_id: str = "") -> dict:
     """Probe file-review status without submitting any report."""
     return cmd_apply(
         court_code=court_code,
@@ -1646,12 +1969,14 @@ def cmd_probe(court_code: str, year: str, case_type: str,
         case_type=case_type,
         case_number=case_number,
         client_name=client_name,
+        sys_type=sys_type,
         auto_submit=False,
         notify=notify,
+        flow_id=flow_id,
     )
 
 
-def cmd_download(case_number: str = "", notify: bool = True) -> dict:
+def cmd_download(case_number: str = "", notify: bool = True, flow_id: str = "") -> dict:
     """Download approved file review materials."""
     case_number = str(case_number or "").strip()
     # 防呆：避免把「姓名/描述詞」誤當案號，造成只鎖單案下載。
@@ -1667,9 +1992,14 @@ def cmd_download(case_number: str = "", notify: bool = True) -> dict:
         case_number = ""
 
     _eventlog("filereview:download:start", payload={"case_number": case_number, "notify": bool(notify)}, tags={"case_number": case_number} if case_number else {})
+    cancelled = _check_flow_cancelled(flow_id, "portal_login", detail="before download login")
+    if cancelled:
+        _eventlog("filereview:download:done", ok=False, payload=cancelled, tags={"case_number": case_number} if case_number else {})
+        return cancelled
     cfg = _load_config()
     creds = _get_credentials(cfg)
     if not creds["username"] or not creds["password"]:
+        _safe_flow_step_status(flow_id, "portal_login", status="failed", detail="missing credentials", ok=False)
         out = {"success": False, "error": "missing credentials — set MAGI_JUDICIAL_EEFILE_USERNAME/PASSWORD in .env"}
         _eventlog("filereview:download:done", ok=False, payload=out, tags={"case_number": case_number} if case_number else {})
         return out
@@ -1689,17 +2019,27 @@ def cmd_download(case_number: str = "", notify: bool = True) -> dict:
 
         try:
             logger.info("Logging into SSO for download...")
+            _safe_flow_step_status(flow_id, "portal_login", status="running", detail=case_number or "all cases")
             if not mgr.login():
                 msg = "❌ 閱卷登入失敗，可能驗證碼連錯或系統維護，已中斷自動下載。"
                 logger.error(msg)
                 _notify(msg, notify)
+                _safe_flow_step_status(flow_id, "portal_login", status="failed", detail="sso_login_failed", ok=False)
+                _mark_notify_step(flow_id, notify=notify, detail=msg)
                 out = {"success": False, "error": "sso_login_failed"}
                 _eventlog("filereview:download:done", ok=False, payload=out, tags={"case_number": case_number} if case_number else {})
                 return out
+            _safe_flow_step_status(flow_id, "portal_login", status="succeeded", detail="SSO login ok", ok=True)
 
             mgr.navigate_to_file_review()
 
+            cancelled = _check_flow_cancelled(flow_id, "portal_download", detail="before portal download")
+            if cancelled:
+                _eventlog("filereview:download:done", ok=False, payload=cancelled, tags={"case_number": case_number} if case_number else {})
+                return cancelled
+
             logger.info("Checking and downloading available files...")
+            _safe_flow_step_status(flow_id, "portal_download", status="running", detail=case_number or "all cases")
             downloaded = mgr.check_and_download_available(
                 target_case_number=case_number if case_number else None
             )
@@ -1719,6 +2059,14 @@ def cmd_download(case_number: str = "", notify: bool = True) -> dict:
             review_items = [it for it in items if isinstance(it, dict) and _activity_artifact_kind(it) != "payment_slip"]
             payment_downloaded = [fp for fp in (downloaded or []) if os.path.basename(str(fp)).startswith("繳費單_")]
             review_downloaded = [fp for fp in (downloaded or []) if fp not in payment_downloaded]
+            _safe_flow_step_status(
+                flow_id,
+                "portal_download",
+                status="succeeded",
+                detail=f"download complete ({count} files)",
+                ok=True,
+                metadata={"downloaded_count": count},
+            )
 
             # ── Post-download: auto-bookmark downloaded PDFs ──
             if review_downloaded:
@@ -1849,12 +2197,22 @@ def cmd_download(case_number: str = "", notify: bool = True) -> dict:
                 or (bool(smart_skipped) and notify_smart_skips)
                 or notify_empty_download
             )
+            _safe_flow_step_status(
+                flow_id,
+                "archive",
+                status="succeeded" if review_count > 0 else "skipped",
+                detail=f"review_download_count={review_count}",
+                ok=True,
+                skipped=review_count <= 0,
+                metadata={"review_download_count": review_count, "payment_download_count": payment_count},
+            )
             if should_notify:
                 _notify(msg, True)
                 # If long detail was exported to TXT, also send the file
                 txt_path = exported.get("path", "") if exported else ""
                 if txt_path and os.path.isfile(txt_path):
                     _notify_file(txt_path, caption="卷宗下載明細", flag=True)
+            _mark_notify_step(flow_id, notify=should_notify, detail=msg or "no notification sent")
             archive_summary = {
                 "resolved_count": len(resolved_review_items),
                 "unresolved_count": len(unresolved_review_items),
@@ -1886,12 +2244,14 @@ def cmd_download(case_number: str = "", notify: bool = True) -> dict:
         error_msg = str(e)[:200]
         logger.error("Download failed: %s", error_msg)
         _notify("❌ 閱卷下載失敗: " + error_msg, notify)
+        _safe_flow_step_status(flow_id, "portal_download", status="failed", detail=error_msg, ok=False)
+        _mark_notify_step(flow_id, notify=notify, detail=error_msg)
         out = {"success": False, "error": error_msg}
         _eventlog("filereview:download:done", ok=False, payload=out, tags={"case_number": case_number} if case_number else {})
         return out
 
 
-def cmd_download_background(case_number: str = "", notify: bool = True) -> dict:
+def cmd_download_background(case_number: str = "", notify: bool = True, flow_id: str = "") -> dict:
     """
     Queue download job in background and return immediately.
     """
@@ -1899,6 +2259,10 @@ def cmd_download_background(case_number: str = "", notify: bool = True) -> dict:
     creds = _get_credentials(cfg)
     if not creds["username"] or not creds["password"]:
         return {"success": False, "error": "missing credentials — set MAGI_JUDICIAL_EEFILE_USERNAME/PASSWORD in .env"}
+
+    cancelled = _check_flow_cancelled(flow_id, "queue", detail="before queue spawn")
+    if cancelled:
+        return cancelled
 
     queue_notify = _truthy(os.environ.get("MAGI_FILE_REVIEW_DOWNLOAD_QUEUE_NOTIFY", "0"))
     singleton = _truthy(os.environ.get("MAGI_FILE_REVIEW_DOWNLOAD_BG_SINGLETON", "1"))
@@ -1910,6 +2274,7 @@ def cmd_download_background(case_number: str = "", notify: bool = True) -> dict:
             if st.get("running") and pid > 1 and _pid_alive(pid):
                 msg = f"📥 閱卷下載背景任務已執行中（job_id={latest}）"
                 _notify(msg, notify and queue_notify)
+                _safe_flow_step_status(flow_id, "queue", status="succeeded", detail=msg, ok=True, metadata={"job_id": latest, "deduped": True})
                 return {
                     "success": True,
                     "queued": True,
@@ -1926,6 +2291,7 @@ def cmd_download_background(case_number: str = "", notify: bool = True) -> dict:
         "job_id": job_id,
         "case_number": str(case_number or "").strip(),
         "notify": bool(notify),
+        "flow_id": str(flow_id or "").strip(),
     }
     _write_download_job(
         job_id,
@@ -1969,6 +2335,7 @@ def cmd_download_background(case_number: str = "", notify: bool = True) -> dict:
         )
         msg = f"📥 閱卷下載已於背景啟動（job_id={job_id}）"
         _notify(msg, notify and queue_notify)
+        _safe_flow_step_status(flow_id, "queue", status="succeeded", detail=msg, ok=True, metadata={"job_id": job_id})
         _eventlog(
             "filereview:download:queued",
             ok=True,
@@ -1986,6 +2353,7 @@ def cmd_download_background(case_number: str = "", notify: bool = True) -> dict:
         }
     except Exception as e:
         err = f"spawn_failed: {e}"
+        _safe_flow_step_status(flow_id, "queue", status="failed", detail=err, ok=False)
         _write_download_job(
             job_id,
             {
@@ -2009,6 +2377,7 @@ def cmd_download_worker(payload: dict) -> dict:
     job_id = str((payload or {}).get("job_id") or "").strip()
     case_number = str((payload or {}).get("case_number") or "").strip()
     notify = bool((payload or {}).get("notify", True))
+    flow_id = str((payload or {}).get("flow_id") or "").strip()
 
     if not job_id:
         return {"success": False, "error": "missing_job_id"}
@@ -2022,17 +2391,32 @@ def cmd_download_worker(payload: dict) -> dict:
             "case_number": case_number,
         },
     )
-    out = cmd_download(case_number=case_number, notify=notify)
+    cancelled = _check_flow_cancelled(flow_id, "portal_download", detail="before background portal download")
+    if cancelled:
+        _write_download_job(
+            job_id,
+            {
+                "status": "cancelled",
+                "running": False,
+                "success": False,
+                "finished_at": datetime.now().isoformat(),
+                "result": cancelled,
+            },
+        )
+        _safe_finalize_flow(flow_id, cancelled)
+        return {"success": False, "job_id": job_id, "cancelled": True}
+    out = cmd_download(case_number=case_number, notify=notify, flow_id=flow_id)
     _write_download_job(
         job_id,
         {
-            "status": "done" if bool(out.get("success")) else "failed",
+            "status": "cancelled" if bool(out.get("cancelled")) else ("done" if bool(out.get("success")) else "failed"),
             "running": False,
             "success": bool(out.get("success")),
             "finished_at": datetime.now().isoformat(),
             "result": out,
         },
     )
+    _safe_finalize_flow(flow_id, out)
     return {"success": bool(out.get("success")), "job_id": job_id}
 
 
@@ -2082,6 +2466,46 @@ def _format_roc_deadline(val: str) -> str:
     return str(val or "") or "未知"
 
 
+def _load_dismissed_payments_cache(download_folder: str) -> dict:
+    path = os.path.join(download_folder or DEFAULT_DOWNLOAD_FOLDER, "dismissed_payments.json")
+    if not os.path.exists(path):
+        return {}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f) or {}
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _merge_dismissed_payment_maps(download_folder: str, dismissed_payments: Optional[dict] = None) -> dict:
+    merged = {}
+    if isinstance(dismissed_payments, dict):
+        merged.update(dismissed_payments)
+    for key, val in _load_dismissed_payments_cache(download_folder).items():
+        merged.setdefault(key, val)
+    return merged
+
+
+def _load_payment_proof_case_tokens(download_folder: str) -> set[str]:
+    path = os.path.join(download_folder or DEFAULT_DOWNLOAD_FOLDER, "payment_proof_registry.json")
+    if not os.path.exists(path):
+        return set()
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f) or {}
+    except Exception:
+        return set()
+    if not isinstance(data, dict):
+        return set()
+    tokens: set[str] = set()
+    for key in data.keys():
+        norm = _normalize_case_token(key)
+        if norm:
+            tokens.add(norm)
+    return tokens
+
+
 def _normalize_case_token(val: str) -> str:
     s = str(val or "").strip()
     if not s:
@@ -2128,7 +2552,17 @@ def _portal_item_case_key(item: dict) -> str:
 def _portal_item_is_paid(item: dict) -> bool:
     if not isinstance(item, dict):
         return False
-    return str(item.get("paystatus") or "").strip() == "1" or str(item.get("p_status") or "").strip().upper() == "Y"
+    paystatus = str(item.get("paystatus") or "").strip()
+    p_status = str(item.get("p_status") or "").strip().upper()
+    payment_flag = str(item.get("payment_flag") or item.get("payment") or "").strip().upper()
+    status_name = str(item.get("status_name") or item.get("statusnm") or "").strip()
+    combined_text = " ".join(
+        str(item.get(field) or "").strip()
+        for field in ("status_name", "statusnm", "result_text", "row_text")
+    )
+    if paystatus == "1" or p_status == "Y" or payment_flag == "Y":
+        return True
+    return any(kw in f"{status_name} {combined_text}" for kw in ("已繳", "繳費完成", "收據", "繳訖", "繳費憑證"))
 
 
 def _portal_item_is_actionable_pending(item: dict) -> bool:
@@ -2137,14 +2571,50 @@ def _portal_item_is_actionable_pending(item: dict) -> bool:
     if _portal_item_is_paid(item):
         return False
 
-    status_name = str(item.get("status_name") or "").strip()
+    status_name = str(item.get("status_name") or item.get("statusnm") or "").strip()
     status_code = str(item.get("status_code") or "").strip()
-    result_text = str(item.get("result_text") or "").strip()
+    combined_text = " ".join(
+        str(item.get(field) or "").strip()
+        for field in ("result_text", "row_text")
+    )
     paystatus = str(item.get("paystatus") or "").strip()
 
-    has_pending_signal = ("待繳費" in result_text) or paystatus == "2"
+    has_pending_signal = ("待繳費" in combined_text) or paystatus == "2"
     has_approved_signal = ("同意" in status_name) or (not status_name and status_code in {"3", "6", ""})
     return has_pending_signal and has_approved_signal
+
+
+def _portal_item_search_blob(item: dict) -> tuple[str, str]:
+    if not isinstance(item, dict):
+        return "", ""
+    raw_parts = []
+    for field in (
+        "court_case_no",
+        "case_number",
+        "showyyidno",
+        "yyidno",
+        "party",
+        "client_name",
+        "payid",
+        "rowid",
+        "result_text",
+        "status_name",
+    ):
+        val = str(item.get(field) or "").strip()
+        if val:
+            raw_parts.append(val)
+    raw_blob = " ".join(raw_parts).lower()
+    return raw_blob, _normalize_case_token(" ".join(raw_parts))
+
+
+def _portal_item_has_uploaded_proof(item: dict, proof_case_tokens: set[str]) -> bool:
+    if not proof_case_tokens or not isinstance(item, dict):
+        return False
+    for field in ("court_case_no", "case_number", "showyyidno", "yyidno"):
+        norm = _normalize_case_token(item.get(field) or "")
+        if norm and norm in proof_case_tokens:
+            return True
+    return False
 
 
 def _portal_item_priority(item: dict) -> tuple:
@@ -2210,7 +2680,12 @@ def _filter_not_yet_downloaded(dl_items: list, download_folder: str) -> list:
     return result
 
 
-def _collapse_portal_items(items: list) -> dict:
+def _collapse_portal_items(
+    items: list,
+    *,
+    download_folder: str = "",
+    dismissed_payments: Optional[dict] = None,
+) -> dict:
     chosen = {}
     raw_items = [it for it in (items or []) if isinstance(it, dict)]
     for item in raw_items:
@@ -2220,12 +2695,28 @@ def _collapse_portal_items(items: list) -> dict:
             chosen[key] = item
 
     merged = list(chosen.values())
-    actionable = [
-        it for it in merged
-        if str(it.get("status") or "").strip() == "downloadable" or _portal_item_is_actionable_pending(it)
-    ]
-    downloadable = [it for it in actionable if str(it.get("status") or "").strip() == "downloadable"]
-    pending = [it for it in actionable if _portal_item_is_actionable_pending(it)]
+    dismissed_map = _merge_dismissed_payment_maps(download_folder, dismissed_payments)
+    proof_case_tokens = _load_payment_proof_case_tokens(download_folder)
+    downloadable = []
+    pending = []
+    for item in merged:
+        status = str(item.get("status") or "").strip()
+        if status == "downloadable":
+            # 💡 檢查是否已在本地下載過（避開重複通知）
+            if download_folder:
+                filtered = _filter_not_yet_downloaded([item], download_folder)
+                if not filtered:
+                    continue  # 已下載過 → 跳過
+            downloadable.append(item)
+            continue
+        if not _portal_item_is_actionable_pending(item):
+            continue
+        if dismissed_map and _is_portal_item_dismissed(item, dismissed_map):
+            continue
+        if proof_case_tokens and _portal_item_has_uploaded_proof(item, proof_case_tokens):
+            continue
+        pending.append(item)
+    actionable = downloadable + pending
     merged.sort(key=lambda it: (
         0 if str(it.get("status") or "").strip() == "downloadable" else 1,
         _normalize_case_token(it.get("court_case_no") or it.get("case_number") or ""),
@@ -2638,6 +3129,7 @@ def _is_portal_item_dismissed(item: dict, dismissed_payments: dict) -> bool:
     party_raw = item.get("party") or ""
     norm_case = _normalize_case_token(caseno_raw)
     party = party_raw.strip()
+    raw_blob, norm_blob = _portal_item_search_blob(item)
 
     # 1. Exact key match  (most common path)
     if norm_case and party:
@@ -2645,26 +3137,27 @@ def _is_portal_item_dismissed(item: dict, dismissed_payments: dict) -> bool:
         if exact_key in dismissed_payments:
             return True
 
-    # 2. Fuzzy: check if any dismissed keyword appears in norm_case or party
+    # 2. Fuzzy: check dismissed keyword against combined case identifiers
     for _dk, dv in dismissed_payments.items():
         kw = (dv.get("keyword", "") if isinstance(dv, dict) else "").strip()
-        if not kw:
-            continue
-        if norm_case and kw in norm_case:
+        kw_norm = _normalize_case_token(kw)
+        dk_norm = _normalize_case_token(_dk)
+        if kw_norm and kw_norm in norm_blob:
             return True
-        if party and kw in party:
+        if kw and kw.lower() in raw_blob:
             return True
-        # Also check the dismissed key itself against our item tokens
-        if norm_case and norm_case in _dk:
+        if dk_norm and dk_norm in norm_blob:
             return True
-        if party and party in _dk:
+        if norm_case and norm_case in dk_norm:
+            return True
+        if party and party.lower() in _dk.lower():
             return True
 
     return False
 
 
 def _filter_urgent_pending_payments(items: list, days: int = 7,
-                                    dismissed_payments: dict | None = None) -> dict:
+                                    dismissed_payments: Optional[dict] = None) -> dict:
     """
     過濾未繳費案件，分為三組：
     - overdue: 已逾期（繳費期限在今天之前）
@@ -2788,7 +3281,15 @@ def cmd_check_emails(notify: bool = True, notify_empty: bool = True) -> dict:
             err_cnt = len(errors) if isinstance(errors, list) else 0
             portal_count = int(portal_summary.get("count") or 0)
             portal_items_raw = portal_summary.get("items") if isinstance(portal_summary.get("items"), list) else []
-            portal_effective = _collapse_portal_items(portal_items_raw) if with_portal and bool(portal_summary.get("success")) else {
+            _dismissed_map = _merge_dismissed_payment_maps(
+                creds["download_folder"],
+                getattr(mgr, "dismissed_payments", None) or {},
+            )
+            portal_effective = _collapse_portal_items(
+                portal_items_raw,
+                download_folder=creds["download_folder"],
+                dismissed_payments=_dismissed_map,
+            ) if with_portal and bool(portal_summary.get("success")) else {
                 "raw_count": portal_count,
                 "case_count": 0,
                 "count": 0,
@@ -2835,7 +3336,6 @@ def cmd_check_emails(notify: bool = True, notify_empty: bool = True) -> dict:
                     )
                     # 列出未繳費案件明細（分逾期/即將到期/無期限）
                     portal_items = portal_effective.get("items") or []
-                    _dismissed_map = getattr(mgr, "dismissed_payments", None) or {}
                     groups = _filter_urgent_pending_payments(portal_items, days=14,
                                                             dismissed_payments=_dismissed_map)
                     overdue = groups.get("overdue", [])
@@ -2951,11 +3451,25 @@ def cmd_check_emails(notify: bool = True, notify_empty: bool = True) -> dict:
                 or review_signal
                 or download_signal
             )
+            # ── DC 靜音策略 ──
+            # 定期檢查但沒有新資訊時，只發 TG（quiet_cron 不在 DC mirror 白名單中）；
+            # 有新的、需要使用者處理的資訊時才鏡像到 DC。
+            _has_new_actionable_info = bool(
+                pay_hits > 0            # 有新繳費信件
+                or pay_notified > 0     # 有剛通知的繳費
+                or dl_hits > 0          # 有新閱卷通知信件
+                or ready_cnt > 0        # 有待下載佇列
+                or download_signal      # 有新卷宗下載
+                or err_cnt > 0          # 有掃描錯誤
+                or (with_portal and not bool(portal_summary.get("success")))  # 登入失敗要提醒
+            )
             should_notify_now = notify and (notify_empty or has_something_to_notify)
             if should_notify_now or (warn and notify_empty):
                 if section_messages:
                     for section_msg, section_topic in section_messages:
-                        _notify(section_msg, True, topic_key=section_topic)
+                        # 無新可處理資訊 → quiet_cron → TG only；有新資訊 → 原 topic → TG + DC
+                        effective_topic = section_topic if _has_new_actionable_info else "quiet_cron"
+                        _notify(section_msg, True, topic_key=effective_topic)
                     if should_notify_now:
                         _mark_recent_activity_notified(
                             recent_payment_activity,
@@ -2981,7 +3495,7 @@ def cmd_check_emails(notify: bool = True, notify_empty: bool = True) -> dict:
                     if warn_message:
                         _notify(warn_message, True)
                 else:
-                    _notify(msg, True)
+                    _notify(msg, True, topic_key="quiet_cron")
             out = {
                 "success": True,
                 "message": msg,
@@ -3118,6 +3632,8 @@ def cmd_downloadable_probe(days: int = 30, notify: bool = False) -> dict:
     day_n = max(1, min(day_n, 120))
 
     portal_r = {"success": False, "error": "portal_probe_not_run"}
+    portal_dismissed_map: dict = {}
+    creds = {"download_folder": DEFAULT_DOWNLOAD_FOLDER}
     try:
         _ensure_runtime_deps()
         cfg = _load_config()
@@ -3137,6 +3653,10 @@ def cmd_downloadable_probe(days: int = 30, notify: bool = False) -> dict:
             )
             try:
                 logger.info("Running portal downloadable probe...")
+                portal_dismissed_map = _merge_dismissed_payment_maps(
+                    creds["download_folder"],
+                    getattr(mgr, "dismissed_payments", None) or {},
+                )
                 portal_r = mgr.probe_downloadable_from_portal()
                 portal_r["probe_module"] = getattr(mod, "__file__", "")
                 logger.info(
@@ -3174,7 +3694,11 @@ def cmd_downloadable_probe(days: int = 30, notify: bool = False) -> dict:
 
     if source == "portal":
         raw_items = portal_r.get("items") if isinstance(portal_r.get("items"), list) else []
-        portal_effective = _collapse_portal_items(raw_items)
+        portal_effective = _collapse_portal_items(
+            raw_items,
+            download_folder=creds.get("download_folder") or DEFAULT_DOWNLOAD_FOLDER,
+            dismissed_payments=portal_dismissed_map,
+        )
         effective_items = portal_effective.get("items") or []
         items = effective_items[:report_limit]
         raw_count = int(portal_r.get("count") or len(raw_items) or 0)
@@ -3423,6 +3947,7 @@ def parse_line_command(text: str) -> Optional[dict]:
 
     Supported:
         閱卷聲請 台北 114訴123 民事
+        紙本閱卷 台北 114訴123 王小明 0407下午
         閱卷查核 台北 114訴123
         下載閱卷
         下載閱卷 114年度訴字第123號
@@ -3433,6 +3958,13 @@ def parse_line_command(text: str) -> Optional[dict]:
     t = (text or "").strip()
     if not t:
         return None
+
+    # Paper apply triggers
+    paper_apply_triggers = ["紙本閱卷", "紙本聲請閱卷", "聲請紙本閱卷"]
+    for trigger in paper_apply_triggers:
+        if t.startswith(trigger):
+            remainder = t[len(trigger):].strip()
+            return _parse_paper_args(remainder)
 
     # Apply triggers
     apply_triggers = ["閱卷聲請", "聲請閱卷", "申請閱卷"]
@@ -3516,30 +4048,85 @@ def parse_line_command(text: str) -> Optional[dict]:
     return None
 
 
+def _parse_case_token(token: str) -> Optional[dict]:
+    s = str(token or "").strip()
+    if not s:
+        return None
+    m = re.match(r"(\d{2,3})\s*(?:年度)?\s*([^\d\s]+)\s*(?:字)?\s*(?:第)?\s*(\d+)\s*(?:號)?", s)
+    if not m:
+        return None
+    case_type = re.sub(r"(字第|字|第)", "", (m.group(2) or "")).strip()
+    return {"year": m.group(1), "case_type": case_type, "case_number": m.group(3)}
+
+
+def _looks_like_sys_type(token: str) -> bool:
+    t = str(token or "").strip()
+    if not t:
+        return False
+    up = t.upper()
+    return up in {"H", "C", "A", "F", "M", "S", "AUTO"} or t in {"民事", "刑事", "行政", "少年", "家事"}
+
+
+def _looks_like_court_token(token: str) -> bool:
+    t = str(token or "").strip()
+    if not t:
+        return False
+    return _resolve_court_code(t).upper() in _ALL_COURT_CODES
+
+
 def _parse_case_spec(text: str) -> Optional[dict]:
-    """Parse '<法院> <案號> [當事人]' natural language args."""
+    """Parse flexible natural-language args around court/case/client/sys_type."""
     if not text:
         return None
 
-    parts = text.split()
+    parts = [p for p in text.split() if p]
     if len(parts) < 2:
         return None
 
-    court = parts[0]
-    case_text = parts[1] if len(parts) > 1 else ""
+    case_idx = -1
+    case_payload = None
+    for idx, token in enumerate(parts):
+        parsed = _parse_case_token(token)
+        if parsed:
+            case_idx = idx
+            case_payload = parsed
+            break
 
-    # Parse case number like:
-    # 114訴123 / 114年度訴字第123號 / 114 訴 123
-    m = re.match(r"(\d{2,3})\s*(?:年度)?\s*([^\d\s]+)\s*(?:字)?\s*(?:第)?\s*(\d+)\s*(?:號)?", case_text)
-    if m:
-        case_type = re.sub(r"(字第|字|第)", "", (m.group(2) or "")).strip()
-        result = {"court_code": court, "year": m.group(1), "case_type": case_type, "case_number": m.group(3)}
-        # 第三個以後的 parts 當作當事人姓名
-        if len(parts) >= 3:
-            result["client_name"] = " ".join(parts[2:])
-        return result
+    if case_idx < 0 or not case_payload:
+        return None
 
-    return None
+    remainder = [p for idx, p in enumerate(parts) if idx != case_idx]
+
+    court_token = ""
+    sys_token = ""
+    client_parts = []
+    for token in remainder:
+        if not court_token and _looks_like_court_token(token):
+            court_token = token
+            continue
+        if not sys_token and _looks_like_sys_type(token):
+            sys_token = token
+            continue
+        client_parts.append(token)
+
+    if not court_token:
+        if case_idx > 0:
+            court_token = parts[0]
+            client_parts = [p for idx, p in enumerate(parts) if idx not in {0, case_idx}]
+        else:
+            return None
+
+    result = {
+        "court_code": court_token,
+        "year": case_payload["year"],
+        "case_type": case_payload["case_type"],
+        "case_number": case_payload["case_number"],
+    }
+    if client_parts:
+        result["client_name"] = " ".join(client_parts)
+    if sys_token:
+        result["sys_type"] = sys_token
+    return result
 
 
 def _parse_apply_args(text: str) -> Optional[dict]:
@@ -3557,6 +4144,50 @@ def _parse_probe_args(text: str) -> Optional[dict]:
     if not payload:
         return None
     payload["command"] = "probe"
+    return payload
+
+
+_RE_APPOINTMENT_SLOT = re.compile(r"^(?P<month>\d{2})(?P<day>\d{2})(?P<ampm>上午|下午|AM|PM)$", re.IGNORECASE)
+
+
+def _split_paper_slot_tokens(tokens: list[str]) -> tuple[list[str], list[dict]]:
+    current_year = datetime.now().year
+    remain: list[str] = []
+    slots: list[dict] = []
+    for token in tokens:
+        m = _RE_APPOINTMENT_SLOT.match(str(token or "").strip())
+        if not m:
+            remain.append(token)
+            continue
+        try:
+            month = int(m.group("month"))
+            day = int(m.group("day"))
+            dt = datetime(current_year, month, day)
+        except Exception:
+            remain.append(token)
+            continue
+        ampm = (m.group("ampm") or "").upper()
+        slots.append(
+            {
+                "date": dt.strftime("%Y-%m-%d"),
+                "time": "上午" if ampm == "AM" or "上午" in token else "下午",
+            }
+        )
+    return remain, slots
+
+
+def _parse_paper_args(text: str) -> Optional[dict]:
+    """Parse 'paper_apply' arguments from natural language."""
+    tokens = [p for p in str(text or "").split() if p]
+    if not tokens:
+        return None
+    remain, slots = _split_paper_slot_tokens(tokens)
+    payload = _parse_case_spec(" ".join(remain))
+    if not payload:
+        return None
+    payload["command"] = "paper_apply"
+    if slots:
+        payload["appointment_slots"] = slots
     return payload
 
 
@@ -3675,49 +4306,89 @@ def main() -> int:
 
     if task.startswith("probe"):
         payload = _load_jsonish(task[len("probe"):].strip())
-        r = cmd_probe(
-            court_code=payload.get("court_code", ""),
-            year=payload.get("year", ""),
-            case_type=payload.get("case_type", ""),
-            case_number=payload.get("case_number", ""),
-            client_name=payload.get("client_name", ""),
+        r = _run_with_flow(
+            "probe",
+            lambda flow_id: cmd_probe(
+                court_code=payload.get("court_code", ""),
+                year=payload.get("year", ""),
+                case_type=payload.get("case_type", ""),
+                case_number=payload.get("case_number", ""),
+                client_name=payload.get("client_name", ""),
+                sys_type=payload.get("sys_type", ""),
+                notify=_boolish(payload.get("notify"), True),
+                flow_id=flow_id,
+            ),
+            metadata={
+                "court_code": payload.get("court_code", ""),
+                "case_number": payload.get("case_number", ""),
+                "case_type": payload.get("case_type", ""),
+            },
         )
         return _ok(r)
 
     if task.startswith("paper_apply"):
         payload = _load_jsonish(task[len("paper_apply"):].strip())
-        r = cmd_paper_apply(
-            court_code=payload.get("court_code", ""),
-            year=payload.get("year", ""),
-            case_type=payload.get("case_type", ""),
-            case_number=payload.get("case_number", ""),
-            client_name=payload.get("client_name", ""),
-            appointment_date=payload.get("appointment_date", ""),
-            appointment_time=payload.get("appointment_time", "下午"),
-            court_division=payload.get("court_division", ""),
-            appointment_slots=payload.get("appointment_slots"),
-            auto_submit=bool(payload.get("auto_submit", True)),
-            folder_path=payload.get("folder_path", ""),
+        r = _run_with_flow(
+            "paper_apply",
+            lambda flow_id: cmd_paper_apply(
+                court_code=payload.get("court_code", ""),
+                year=payload.get("year", ""),
+                case_type=payload.get("case_type", ""),
+                case_number=payload.get("case_number", ""),
+                client_name=payload.get("client_name", ""),
+                appointment_date=payload.get("appointment_date", ""),
+                appointment_time=payload.get("appointment_time", "下午"),
+                court_division=payload.get("court_division", ""),
+                appointment_slots=payload.get("appointment_slots"),
+                auto_submit=_boolish(payload.get("auto_submit"), True),
+                notify=_boolish(payload.get("notify"), True),
+                sys_type=payload.get("sys_type", ""),
+                folder_path=payload.get("folder_path", ""),
+                flow_id=flow_id,
+            ),
+            metadata={
+                "court_code": payload.get("court_code", ""),
+                "case_number": payload.get("case_number", ""),
+                "case_type": payload.get("case_type", ""),
+            },
         )
         return _ok(r)
 
     if task.startswith("apply"):
         payload = _load_jsonish(task[len("apply"):].strip())
-        r = cmd_apply(
-            court_code=payload.get("court_code", ""),
-            year=payload.get("year", ""),
-            case_type=payload.get("case_type", ""),
-            case_number=payload.get("case_number", ""),
-            client_name=payload.get("client_name", ""),
-            auto_submit=bool(payload.get("auto_submit", True)),
-            folder_path=payload.get("folder_path", ""),
+        r = _run_with_flow(
+            "apply",
+            lambda flow_id: cmd_apply(
+                court_code=payload.get("court_code", ""),
+                year=payload.get("year", ""),
+                case_type=payload.get("case_type", ""),
+                case_number=payload.get("case_number", ""),
+                client_name=payload.get("client_name", ""),
+                auto_submit=_boolish(payload.get("auto_submit"), True),
+                notify=_boolish(payload.get("notify"), True),
+                sys_type=payload.get("sys_type", ""),
+                folder_path=payload.get("folder_path", ""),
+                flow_id=flow_id,
+            ),
+            metadata={
+                "court_code": payload.get("court_code", ""),
+                "case_number": payload.get("case_number", ""),
+                "case_type": payload.get("case_type", ""),
+            },
         )
         return _ok(r)
 
     if task.startswith("download_payment_slips") or task == "下載繳費單":
         payload = _load_jsonish(task[len("download_payment_slips"):].strip()) if task.startswith("download_payment_slips") else {}
-        r = cmd_download_payment_slips(
-            max_days=int(payload.get("max_days", 14) or 14),
+        r = _run_with_flow(
+            "download_payment_slips",
+            lambda flow_id: cmd_download_payment_slips(
+                max_days=int(payload.get("max_days", 14) or 14),
+                notify=_boolish(payload.get("notify"), True),
+            ),
+            metadata={"max_days": int(payload.get("max_days", 14) or 14)},
+            step_name="payment_slip_scan",
+            detail=f"max_days={int(payload.get('max_days', 14) or 14)}",
         )
         return _ok(r)
 
@@ -3731,45 +4402,93 @@ def main() -> int:
             client_name=payload.get("client_name", ""),
             file_path=payload.get("file_path", ""),
             file_remark=payload.get("file_remark", "委任狀"),
+            notify=_boolish(payload.get("notify"), True),
         )
         return _ok(r)
 
     if task.startswith("upload_payment_proofs_batch") or task == "批次上傳繳費憑證":
         payload = _load_jsonish(task[len("upload_payment_proofs_batch"):].strip()) if task.startswith("upload_payment_proofs_batch") else {}
-        r = cmd_upload_payment_proofs_batch(
-            screenshot_dir=payload.get("screenshot_dir", ""),
+        r = _run_with_flow(
+            "upload_payment_proofs_batch",
+            lambda flow_id: cmd_upload_payment_proofs_batch(
+                screenshot_dir=payload.get("screenshot_dir", ""),
+                notify=_boolish(payload.get("notify"), True),
+            ),
+            metadata={"screenshot_dir": payload.get("screenshot_dir", "")},
+            step_name="payment_proof_upload",
+            detail=payload.get("screenshot_dir", "") or "batch upload",
         )
         return _ok(r)
 
     if task.startswith("upload_payment_proof") or task == "上傳繳費憑證":
         payload = _load_jsonish(task[len("upload_payment_proof"):].strip()) if task.startswith("upload_payment_proof") else {}
-        r = cmd_upload_payment_proof(
-            court_code=payload.get("court_code", ""),
-            year=payload.get("year", ""),
-            case_type=payload.get("case_type", ""),
-            case_number=payload.get("case_number", ""),
-            client_name=payload.get("client_name", ""),
-            file_path=payload.get("file_path", ""),
+        r = _run_with_flow(
+            "upload_payment_proof",
+            lambda flow_id: cmd_upload_payment_proof(
+                court_code=payload.get("court_code", ""),
+                year=payload.get("year", ""),
+                case_type=payload.get("case_type", ""),
+                case_number=payload.get("case_number", ""),
+                client_name=payload.get("client_name", ""),
+                file_path=payload.get("file_path", ""),
+                notify=_boolish(payload.get("notify"), True),
+            ),
+            metadata={
+                "court_code": payload.get("court_code", ""),
+                "case_number": payload.get("case_number", ""),
+                "file_path": payload.get("file_path", ""),
+            },
+            step_name="payment_proof_upload",
+            detail=payload.get("file_path", "") or payload.get("case_number", ""),
         )
         return _ok(r)
 
     if task.startswith("check_emails"):
         payload = _load_jsonish(task[len("check_emails"):].strip())
         notify_empty = bool(payload.get("notify_empty", True))
-        r = cmd_check_emails(notify=True, notify_empty=notify_empty)
+        r = _run_with_flow(
+            "check_emails",
+            lambda flow_id: cmd_check_emails(
+                notify=_boolish(payload.get("notify"), True),
+                notify_empty=_boolish(payload.get("notify_empty"), True),
+            ),
+            metadata={"notify_empty": notify_empty},
+            step_name="email_scan",
+            detail=f"notify_empty={notify_empty}",
+        )
         return _ok(r)
 
     if task == "檢查閱卷信箱":
-        r = cmd_check_emails()
+        r = _run_with_flow(
+            "check_emails",
+            lambda flow_id: cmd_check_emails(),
+            metadata={"source": "line_command"},
+            step_name="email_scan",
+            detail="line command",
+        )
         return _ok(r)
 
     if task in ("preview_emails", "閱卷通知預覽", "預覽閱卷通知"):
-        r = cmd_preview_emails()
+        r = _run_with_flow(
+            "preview_emails",
+            lambda flow_id: cmd_preview_emails(),
+            step_name="email_preview",
+            detail="preview emails",
+        )
         return _ok(r)
 
     if task.startswith("downloadable_probe") or task in ("可下載判定", "閱卷可下載判定"):
         payload = _load_jsonish(task[len("downloadable_probe"):].strip()) if task.startswith("downloadable_probe") else {}
-        r = cmd_downloadable_probe(days=int(payload.get("days", 30) or 30))
+        r = _run_with_flow(
+            "downloadable_probe",
+            lambda flow_id: cmd_downloadable_probe(
+                days=int(payload.get("days", 30) or 30),
+                notify=_boolish(payload.get("notify"), False),
+            ),
+            metadata={"days": int(payload.get("days", 30) or 30)},
+            step_name="downloadable_probe",
+            detail=f"days={int(payload.get('days', 30) or 30)}",
+        )
         return _ok(r)
 
     if task.startswith("download_status"):
@@ -3785,24 +4504,52 @@ def main() -> int:
     if task.startswith("download_sync"):
         payload = _load_jsonish(task[len("download_sync"):].strip())
         cn = payload.get("case_number", "")
-        r = cmd_download(case_number=cn)
+        r = _run_with_flow(
+            "download",
+            lambda flow_id: cmd_download(case_number=cn, notify=_boolish(payload.get("notify"), True), flow_id=flow_id),
+            metadata={"case_number": cn},
+        )
         return _ok(r)
 
     if task == "download" or task.startswith("download "):
         payload = _load_jsonish(task[len("download"):].strip())
         cn = payload.get("case_number", "")
+        notify_flag = _boolish(payload.get("notify"), True)
         if _truthy(os.environ.get("MAGI_FILE_REVIEW_DOWNLOAD_BACKGROUND", "1")):
-            r = cmd_download_background(case_number=cn)
+            r = _run_with_flow(
+                "download",
+                lambda flow_id: cmd_download_background(case_number=cn, notify=notify_flag, flow_id=flow_id),
+                metadata={"case_number": cn, "background": True},
+            )
         else:
-            r = cmd_download(case_number=cn)
+            r = _run_with_flow(
+                "download",
+                lambda flow_id: cmd_download(case_number=cn, notify=notify_flag, flow_id=flow_id),
+                metadata={"case_number": cn, "background": False},
+            )
         return _ok(r)
 
     if task in ("reauth_gmail", "重新授權閱卷信箱"):
-        r = cmd_reauth_gmail()
+        r = _run_with_flow(
+            "reauth_gmail",
+            lambda flow_id: cmd_reauth_gmail(notify=True),
+            step_name="gmail_reauth",
+            detail="reauth_gmail",
+        )
         return _ok(r)
 
     if task.startswith("check_stale"):
-        r = cmd_check_stale()
+        payload = _load_jsonish(task[len("check_stale"):].strip())
+        r = _run_with_flow(
+            "check_stale",
+            lambda flow_id: cmd_check_stale(
+                days=int(payload.get("days", 90) or 90),
+                notify=_boolish(payload.get("notify"), True),
+            ),
+            metadata={"days": int(payload.get("days", 90) or 90)},
+            step_name="stale_check",
+            detail=f"days={int(payload.get('days', 90) or 90)}",
+        )
         return _ok(r)
 
     if task.startswith("dismiss_payment"):
@@ -3830,44 +4577,111 @@ def main() -> int:
     parsed = parse_line_command(task)
     if parsed:
         cmd = parsed["command"]
+        if cmd == "paper_apply":
+            r = _run_with_flow(
+                "paper_apply",
+                lambda flow_id: cmd_paper_apply(
+                    court_code=parsed.get("court_code", ""),
+                    year=parsed.get("year", ""),
+                    case_type=parsed.get("case_type", ""),
+                    case_number=parsed.get("case_number", ""),
+                    client_name=parsed.get("client_name", ""),
+                    appointment_slots=parsed.get("appointment_slots"),
+                    sys_type=parsed.get("sys_type", ""),
+                    flow_id=flow_id,
+                ),
+                metadata={"source": "line_command", "case_number": parsed.get("case_number", ""), "court_code": parsed.get("court_code", "")},
+            )
+            return _ok(r)
         if cmd == "apply":
-            r = cmd_apply(
-                court_code=parsed.get("court_code", ""),
-                year=parsed.get("year", ""),
-                case_type=parsed.get("case_type", ""),
-                case_number=parsed.get("case_number", ""),
-                client_name=parsed.get("client_name", ""),
+            r = _run_with_flow(
+                "apply",
+                lambda flow_id: cmd_apply(
+                    court_code=parsed.get("court_code", ""),
+                    year=parsed.get("year", ""),
+                    case_type=parsed.get("case_type", ""),
+                    case_number=parsed.get("case_number", ""),
+                    client_name=parsed.get("client_name", ""),
+                    sys_type=parsed.get("sys_type", ""),
+                    flow_id=flow_id,
+                ),
+                metadata={"source": "line_command", "case_number": parsed.get("case_number", ""), "court_code": parsed.get("court_code", "")},
             )
             return _ok(r)
         if cmd == "probe":
-            r = cmd_probe(
-                court_code=parsed.get("court_code", ""),
-                year=parsed.get("year", ""),
-                case_type=parsed.get("case_type", ""),
-                case_number=parsed.get("case_number", ""),
+            r = _run_with_flow(
+                "probe",
+                lambda flow_id: cmd_probe(
+                    court_code=parsed.get("court_code", ""),
+                    year=parsed.get("year", ""),
+                    case_type=parsed.get("case_type", ""),
+                    case_number=parsed.get("case_number", ""),
+                    client_name=parsed.get("client_name", ""),
+                    sys_type=parsed.get("sys_type", ""),
+                    flow_id=flow_id,
+                ),
+                metadata={"source": "line_command", "case_number": parsed.get("case_number", ""), "court_code": parsed.get("court_code", "")},
             )
             return _ok(r)
         if cmd == "download":
             cn = parsed.get("case_number", "")
             if _truthy(os.environ.get("MAGI_FILE_REVIEW_DOWNLOAD_BACKGROUND", "1")):
-                r = cmd_download_background(case_number=cn)
+                r = _run_with_flow(
+                    "download",
+                    lambda flow_id: cmd_download_background(case_number=cn, flow_id=flow_id),
+                    metadata={"source": "line_command", "case_number": cn, "background": True},
+                )
             else:
-                r = cmd_download(case_number=cn)
+                r = _run_with_flow(
+                    "download",
+                    lambda flow_id: cmd_download(case_number=cn, flow_id=flow_id),
+                    metadata={"source": "line_command", "case_number": cn, "background": False},
+                )
             return _ok(r)
         if cmd == "check_emails":
-            r = cmd_check_emails()
+            r = _run_with_flow(
+                "check_emails",
+                lambda flow_id: cmd_check_emails(),
+                metadata={"source": "line_command"},
+                step_name="email_scan",
+                detail="line command",
+            )
             return _ok(r)
         if cmd == "downloadable_probe":
-            r = cmd_downloadable_probe()
+            r = _run_with_flow(
+                "downloadable_probe",
+                lambda flow_id: cmd_downloadable_probe(),
+                metadata={"source": "line_command"},
+                step_name="downloadable_probe",
+                detail="line command",
+            )
             return _ok(r)
         if cmd == "preview_emails":
-            r = cmd_preview_emails()
+            r = _run_with_flow(
+                "preview_emails",
+                lambda flow_id: cmd_preview_emails(),
+                metadata={"source": "line_command"},
+                step_name="email_preview",
+                detail="line command",
+            )
             return _ok(r)
         if cmd == "reauth_gmail":
-            r = cmd_reauth_gmail()
+            r = _run_with_flow(
+                "reauth_gmail",
+                lambda flow_id: cmd_reauth_gmail(),
+                metadata={"source": "line_command"},
+                step_name="gmail_reauth",
+                detail="line command",
+            )
             return _ok(r)
         if cmd == "check_stale":
-            r = cmd_check_stale()
+            r = _run_with_flow(
+                "check_stale",
+                lambda flow_id: cmd_check_stale(),
+                metadata={"source": "line_command"},
+                step_name="stale_check",
+                detail="line command",
+            )
             return _ok(r)
         if cmd == "dismiss_payment":
             kw = parsed.get("case_keyword", "")

@@ -10,10 +10,10 @@ from api.agents.models import AgentMessage, AgentResponse, AgentSpec, TeamSpec
 Responder = Callable[[str], str | dict[str, Any] | AgentResponse]
 
 
-@dataclass(slots=True)
+@dataclass()
 class AgentRuntime:
     spec: AgentSpec
-    responder: Responder | None = None
+    responder: Optional[Responder] = None
     history: deque[AgentMessage] = field(default_factory=lambda: deque(maxlen=200))
 
     def respond(self, message: str, **context: Any) -> AgentResponse:
@@ -35,7 +35,7 @@ class AgentRuntime:
         return response
 
 
-@dataclass(slots=True)
+@dataclass()
 class TeamRuntime:
     spec: TeamSpec
     agents: dict[str, AgentRuntime] = field(default_factory=dict)
@@ -50,7 +50,7 @@ class TeamRuntime:
     def list_agents(self) -> list[str]:
         return list(self.agents.keys())
 
-    def dispatch(self, message: str, target: str | None = None, **context: Any) -> AgentResponse:
+    def dispatch(self, message: str, target: Optional[str] = None, **context: Any) -> AgentResponse:
         if target and target in self.agents:
             return self.agents[target].respond(message, **context)
         if not self.agents:
@@ -61,7 +61,7 @@ class TeamRuntime:
         return agent.respond(message, **context)
 
 
-@dataclass(slots=True)
+@dataclass()
 class AgentCoordinator:
     name: str = "magi"
     teams: dict[str, TeamRuntime] = field(default_factory=dict)
@@ -84,7 +84,7 @@ class AgentCoordinator:
         team.register_agent(agent)
         return agent
 
-    def dispatch(self, message: str, *, team: str | None = None, agent: str | None = None, **context: Any) -> AgentResponse:
+    def dispatch(self, message: str, *, team: Optional[str] = None, agent: Optional[str] = None, **context: Any) -> AgentResponse:
         if agent:
             runtime = self.agents.get(agent)
             if runtime is None:

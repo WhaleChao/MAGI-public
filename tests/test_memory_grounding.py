@@ -132,3 +132,34 @@ def test_verify_and_repair_answer_rewrites_false_memory_claim(monkeypatch):
     )
 
     assert repaired == "目前沒有可驗證結果，我不能把未出現在當前上下文的內容當成既有記憶。"
+
+
+def test_persona_hallucination_detects_internal_badge_leak():
+    broken = "根據您的 [使用者陳述]，您覺得綠茶滿好喝的。關於您的問題，身為 CAS"
+
+    assert grounded_ai._is_persona_hallucination(broken) is True
+
+
+def test_simple_casual_chat_skips_memory_recall(monkeypatch):
+    calls = {"recall": 0}
+
+    monkeypatch.setattr(grounded_ai, "_classify_query_tier", lambda _m: "SIMPLE")
+    monkeypatch.setattr(grounded_ai, "_generate", lambda *args, **kwargs: "我沒有味覺，但很多人喜歡綠茶的清爽口感。")
+    monkeypatch.setattr(grounded_ai, "recall", lambda *args, **kwargs: calls.__setitem__("recall", calls["recall"] + 1) or [])
+
+    out = grounded_ai.chat_casper("我覺得綠茶滿好喝的，那你呢，你覺得好喝嗎", conversation_history="")
+
+    assert "綠茶" in out
+    assert calls["recall"] == 0
+
+
+def test_simple_memory_recall_query_keeps_recall_enabled(monkeypatch):
+    calls = {"recall": 0}
+
+    monkeypatch.setattr(grounded_ai, "_classify_query_tier", lambda _m: "SIMPLE")
+    monkeypatch.setattr(grounded_ai, "_generate", lambda *args, **kwargs: "你之前提過綠茶。")
+    monkeypatch.setattr(grounded_ai, "recall", lambda *args, **kwargs: calls.__setitem__("recall", calls["recall"] + 1) or [])
+
+    grounded_ai.chat_casper("你還記得我之前說過什麼嗎", conversation_history="")
+
+    assert calls["recall"] == 1

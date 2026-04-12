@@ -1,0 +1,431 @@
+        <section id="admin" class="view">
+            <div class="card">
+                <div class="section-head">
+                    <div>
+                        <h3>系統設定與資料字典</h3>
+                        <div class="section-note">集中維護 settings、案由模板、法院、法扶分會、使用者設定、案件熱鍵、對造與操作紀錄。</div>
+                    </div>
+                </div>
+            </div>
+            <div class="grid-2">
+                <div class="card">
+                    <div class="section-head">
+                        <div>
+                            <h3>系統設定</h3>
+                            <div class="section-note">全域設定值，例如 AI provider、模板與執行參數。</div>
+                        </div>
+                    </div>
+                    <div class="field-grid cols-3">
+                        <div class="field" style="grid-column: span 2;">
+                            <label for="adminSettingsQ">搜尋</label>
+                            <input id="adminSettingsQ" placeholder="key / value / description">
+                        </div>
+                        <div class="field">
+                            <label>操作</label>
+                            <div class="inline-actions">
+                                <button class="btn" id="adminSettingsSearchBtn">搜尋</button>
+                                <button class="btn" id="adminSettingsRefreshBtn">重新整理</button>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="field-grid cols-3" style="margin-top:10px;">
+                        <div class="field">
+                            <label for="adminSettingKey">Key</label>
+                            <input id="adminSettingKey" placeholder="必填">
+                        </div>
+                        <div class="field">
+                            <label for="adminSettingValue">Value</label>
+                            <input id="adminSettingValue" placeholder="value">
+                        </div>
+                        <div class="field">
+                            <label for="adminSettingDescription">Description</label>
+                            <input id="adminSettingDescription" placeholder="description">
+                        </div>
+                    </div>
+                    <div class="toolbar">
+                        <button class="btn primary" id="adminSettingSaveBtn">儲存設定</button>
+                        <button class="btn warn" id="adminSettingResetBtn">清空</button>
+                    </div>
+                    <div class="table-wrap">
+                        <table>
+                            <thead><tr><th>Key</th><th>Value</th><th>描述</th><th>更新</th><th>操作</th></tr></thead>
+                            <tbody id="adminSettingsBody"></tbody>
+                        </table>
+                    </div>
+                </div>
+                <div class="card">
+                    <div class="section-head">
+                        <div>
+                            <h3>案由模板</h3>
+                            <div class="section-note">維護桌面版與 web 版共用的案型 / 案由選單。</div>
+                        </div>
+                    </div>
+                    <div class="field-grid cols-4">
+                        <div class="field" style="grid-column: span 2;">
+                            <label for="adminReasonQ">搜尋</label>
+                            <input id="adminReasonQ" placeholder="案型 / 案由">
+                        </div>
+                        <div class="field">
+                            <label for="adminReasonTypeFilter">案型篩選</label>
+                            <input id="adminReasonTypeFilter" placeholder="如 刑事">
+                        </div>
+                        <div class="field">
+                            <label>操作</label>
+                            <div class="inline-actions">
+                                <button class="btn" id="adminReasonSearchBtn">搜尋</button>
+                                <button class="btn" id="adminReasonRefreshBtn">重新整理</button>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="field-grid cols-4" style="margin-top:10px;">
+                        <div class="field">
+                            <label for="adminReasonId">ID</label>
+                            <input id="adminReasonId" placeholder="更新時使用">
+                        </div>
+                        <div class="field">
+                            <label for="adminReasonType">案型</label>
+                            <input id="adminReasonType" placeholder="必填">
+                        </div>
+                        <div class="field">
+                            <label for="adminReasonText">案由</label>
+                            <input id="adminReasonText" placeholder="必填">
+                        </div>
+                        <div class="field">
+                            <label for="adminReasonCommon">常用</label>
+                            <input id="adminReasonCommon" placeholder="0/1">
+                        </div>
+                    </div>
+                    <div class="toolbar">
+                        <button class="btn primary" id="adminReasonSaveBtn">儲存案由</button>
+                        <button class="btn warn" id="adminReasonResetBtn">清空</button>
+                    </div>
+                    <div class="table-wrap">
+                        <table>
+                            <thead><tr><th>ID</th><th>案型</th><th>案由</th><th>常用</th><th>操作</th></tr></thead>
+                            <tbody id="adminReasonBody"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+            <div class="grid-2">
+                <div class="card">
+                    <div class="section-head">
+                        <div>
+                            <h3>法院與地檢署</h3>
+                            <div class="section-note">維護法院、地檢署名稱與地址，供案件與文書流程共用。</div>
+                        </div>
+                    </div>
+                    <div class="field-grid cols-4">
+                        <div class="field" style="grid-column: span 2;">
+                            <label for="adminCourtsQ">搜尋</label>
+                            <input id="adminCourtsQ" placeholder="名稱 / 地址 / 類型">
+                        </div>
+                        <div class="field">
+                            <label>操作</label>
+                            <div class="inline-actions">
+                                <button class="btn" id="adminCourtsSearchBtn">搜尋</button>
+                                <button class="btn" id="adminCourtsRefreshBtn">重新整理</button>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="field-grid cols-4" style="margin-top:10px;">
+                        <div class="field">
+                            <label for="adminCourtId">ID</label>
+                            <input id="adminCourtId" placeholder="更新時使用">
+                        </div>
+                        <div class="field">
+                            <label for="adminCourtName">名稱</label>
+                            <input id="adminCourtName" placeholder="必填">
+                        </div>
+                        <div class="field">
+                            <label for="adminCourtType">類型</label>
+                            <input id="adminCourtType" placeholder="法院 / 地檢署">
+                        </div>
+                        <div class="field">
+                            <label for="adminCourtAddress">地址</label>
+                            <input id="adminCourtAddress" placeholder="必填">
+                        </div>
+                    </div>
+                    <div class="toolbar">
+                        <button class="btn primary" id="adminCourtSaveBtn">儲存法院</button>
+                        <button class="btn warn" id="adminCourtResetBtn">清空</button>
+                    </div>
+                    <div class="table-wrap">
+                        <table>
+                            <thead><tr><th>名稱</th><th>類型</th><th>地址</th><th>操作</th></tr></thead>
+                            <tbody id="adminCourtsBody"></tbody>
+                        </table>
+                    </div>
+                </div>
+                <div class="card">
+                    <div class="section-head">
+                        <div>
+                            <h3>法扶分會</h3>
+                            <div class="section-note">維護法律扶助基金會各分會名稱與地址。</div>
+                        </div>
+                    </div>
+                    <div class="field-grid cols-3">
+                        <div class="field" style="grid-column: span 2;">
+                            <label for="adminBranchesQ">搜尋</label>
+                            <input id="adminBranchesQ" placeholder="名稱 / 地址">
+                        </div>
+                        <div class="field">
+                            <label>操作</label>
+                            <div class="inline-actions">
+                                <button class="btn" id="adminBranchesSearchBtn">搜尋</button>
+                                <button class="btn" id="adminBranchesRefreshBtn">重新整理</button>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="field-grid cols-3" style="margin-top:10px;">
+                        <div class="field">
+                            <label for="adminBranchId">ID</label>
+                            <input id="adminBranchId" placeholder="更新時使用">
+                        </div>
+                        <div class="field">
+                            <label for="adminBranchName">名稱</label>
+                            <input id="adminBranchName" placeholder="必填">
+                        </div>
+                        <div class="field">
+                            <label for="adminBranchAddress">地址</label>
+                            <input id="adminBranchAddress" placeholder="必填">
+                        </div>
+                    </div>
+                    <div class="toolbar">
+                        <button class="btn primary" id="adminBranchSaveBtn">儲存分會</button>
+                        <button class="btn warn" id="adminBranchResetBtn">清空</button>
+                    </div>
+                    <div class="table-wrap">
+                        <table>
+                            <thead><tr><th>名稱</th><th>地址</th><th>操作</th></tr></thead>
+                            <tbody id="adminBranchesBody"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+            <div class="grid-2">
+                <div class="card">
+                    <div class="section-head">
+                        <div>
+                            <h3>使用者設定</h3>
+                            <div class="section-note">管理各主機或使用者的局部設定。</div>
+                        </div>
+                    </div>
+                    <div class="field-grid cols-4">
+                        <div class="field" style="grid-column: span 2;">
+                            <label for="adminUserSettingsQ">搜尋</label>
+                            <input id="adminUserSettingsQ" placeholder="hostname / key / value">
+                        </div>
+                        <div class="field">
+                            <label>操作</label>
+                            <div class="inline-actions">
+                                <button class="btn" id="adminUserSettingsSearchBtn">搜尋</button>
+                                <button class="btn" id="adminUserSettingsRefreshBtn">重新整理</button>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="field-grid cols-4" style="margin-top:10px;">
+                        <div class="field">
+                            <label for="adminUserSettingId">ID</label>
+                            <input id="adminUserSettingId" placeholder="更新時使用">
+                        </div>
+                        <div class="field">
+                            <label for="adminUserSettingHost">Hostname</label>
+                            <input id="adminUserSettingHost" placeholder="必填">
+                        </div>
+                        <div class="field">
+                            <label for="adminUserSettingKey">Setting Key</label>
+                            <input id="adminUserSettingKey" placeholder="必填">
+                        </div>
+                        <div class="field">
+                            <label for="adminUserSettingValue">Setting Value</label>
+                            <input id="adminUserSettingValue" placeholder="setting_value">
+                        </div>
+                    </div>
+                    <div class="toolbar">
+                        <button class="btn primary" id="adminUserSettingSaveBtn">儲存使用者設定</button>
+                        <button class="btn warn" id="adminUserSettingResetBtn">清空</button>
+                    </div>
+                    <div class="table-wrap">
+                        <table>
+                            <thead><tr><th>Host</th><th>Key</th><th>Value</th><th>操作</th></tr></thead>
+                            <tbody id="adminUserSettingsBody"></tbody>
+                        </table>
+                    </div>
+                </div>
+                <div class="card">
+                    <div class="section-head">
+                        <div>
+                            <h3>案件熱鍵</h3>
+                            <div class="section-note">管理案件級別的快速替換與熱鍵資料。</div>
+                        </div>
+                    </div>
+                    <div class="field-grid cols-4">
+                        <div class="field" style="grid-column: span 2;">
+                            <label for="adminMemoryKeywordsQ">搜尋</label>
+                            <input id="adminMemoryKeywordsQ" placeholder="案號 / hotkey / name">
+                        </div>
+                        <div class="field">
+                            <label for="adminMemoryCaseFilter">案件編號篩選</label>
+                            <input id="adminMemoryCaseFilter" placeholder="選填">
+                        </div>
+                        <div class="field">
+                            <label>操作</label>
+                            <div class="inline-actions">
+                                <button class="btn" id="adminMemoryKeywordsSearchBtn">搜尋</button>
+                                <button class="btn" id="adminMemoryKeywordsRefreshBtn">重新整理</button>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="field-grid cols-4" style="margin-top:10px;">
+                        <div class="field">
+                            <label for="adminMemoryCaseNumber">案件編號</label>
+                            <input id="adminMemoryCaseNumber" placeholder="必填">
+                        </div>
+                        <div class="field">
+                            <label for="adminMemoryHotkey">Hotkey</label>
+                            <input id="adminMemoryHotkey" placeholder="必填">
+                        </div>
+                        <div class="field">
+                            <label for="adminMemoryName">名稱</label>
+                            <input id="adminMemoryName" placeholder="name">
+                        </div>
+                        <div class="field">
+                            <label for="adminMemoryValue">值</label>
+                            <input id="adminMemoryValue" placeholder="value">
+                        </div>
+                    </div>
+                    <div class="toolbar">
+                        <button class="btn primary" id="adminMemoryKeywordSaveBtn">儲存熱鍵</button>
+                        <button class="btn warn" id="adminMemoryKeywordResetBtn">清空</button>
+                    </div>
+                    <div class="table-wrap">
+                        <table>
+                            <thead><tr><th>案號</th><th>Hotkey</th><th>名稱</th><th>值</th><th>操作</th></tr></thead>
+                            <tbody id="adminMemoryKeywordsBody"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+            <div class="grid-2">
+                <div class="card">
+                    <div class="section-head">
+                        <div>
+                            <h3>對造管理</h3>
+                            <div class="section-note">維護案件對造姓名、地址與啟用狀態，供工作台與草擬流程使用。</div>
+                        </div>
+                    </div>
+                    <div class="field-grid cols-4">
+                        <div class="field" style="grid-column: span 2;">
+                            <label for="adminOpponentsQ">搜尋</label>
+                            <input id="adminOpponentsQ" placeholder="案號 / 對造 / 地址">
+                        </div>
+                        <div class="field">
+                            <label for="adminOpponentsCaseFilter">案件編號篩選</label>
+                            <input id="adminOpponentsCaseFilter" placeholder="選填">
+                        </div>
+                        <div class="field">
+                            <label>操作</label>
+                            <div class="inline-actions">
+                                <button class="btn" id="adminOpponentsSearchBtn">搜尋</button>
+                                <button class="btn" id="adminOpponentsRefreshBtn">重新整理</button>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="field-grid cols-4" style="margin-top:10px;">
+                        <div class="field">
+                            <label for="adminOpponentId">ID</label>
+                            <input id="adminOpponentId" placeholder="更新時使用">
+                        </div>
+                        <div class="field">
+                            <label for="adminOpponentCaseNumber">案件編號</label>
+                            <input id="adminOpponentCaseNumber" placeholder="必填">
+                        </div>
+                        <div class="field">
+                            <label for="adminOpponentName">姓名</label>
+                            <input id="adminOpponentName" placeholder="必填">
+                        </div>
+                        <div class="field">
+                            <label for="adminOpponentActive">啟用</label>
+                            <input id="adminOpponentActive" placeholder="0/1">
+                        </div>
+                    </div>
+                    <div class="field" style="margin-top:10px;">
+                        <label for="adminOpponentAddress">地址</label>
+                        <textarea id="adminOpponentAddress" placeholder="address"></textarea>
+                    </div>
+                    <div class="toolbar">
+                        <button class="btn primary" id="adminOpponentSaveBtn">儲存對造</button>
+                        <button class="btn warn" id="adminOpponentResetBtn">清空</button>
+                    </div>
+                    <div class="table-wrap">
+                        <table>
+                            <thead><tr><th>案號</th><th>姓名</th><th>地址</th><th>啟用</th><th>操作</th></tr></thead>
+                            <tbody id="adminOpponentsBody"></tbody>
+                        </table>
+                    </div>
+                </div>
+                <div class="card">
+                    <div class="section-head">
+                        <div>
+                            <h3>PDF 生成紀錄</h3>
+                            <div class="section-note">追蹤草擬與表單匯出結果，方便排查生成失敗原因。</div>
+                        </div>
+                    </div>
+                    <div class="field-grid cols-4">
+                        <div class="field" style="grid-column: span 2;">
+                            <label for="adminPdfLogsQ">搜尋</label>
+                            <input id="adminPdfLogsQ" placeholder="案號 / 檔名 / 狀態 / 錯誤">
+                        </div>
+                        <div class="field">
+                            <label for="adminPdfLogsCaseFilter">案件編號</label>
+                            <input id="adminPdfLogsCaseFilter" placeholder="選填">
+                        </div>
+                        <div class="field">
+                            <label>操作</label>
+                            <div class="inline-actions">
+                                <button class="btn" id="adminPdfLogsSearchBtn">搜尋</button>
+                                <button class="btn" id="adminPdfLogsRefreshBtn">重新整理</button>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="table-wrap">
+                        <table>
+                            <thead><tr><th>時間</th><th>案號</th><th>檔名</th><th>狀態</th><th>錯誤</th><th>操作</th></tr></thead>
+                            <tbody id="adminPdfLogsBody"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+            <div class="card">
+                <div class="section-head">
+                    <div>
+                        <h3>活動紀錄</h3>
+                        <div class="section-note">查看 CRUD 與重要流程操作的歷史紀錄。</div>
+                    </div>
+                </div>
+                <div class="field-grid cols-4">
+                    <div class="field" style="grid-column: span 2;">
+                        <label for="adminActivityLogsQ">搜尋</label>
+                        <input id="adminActivityLogsQ" placeholder="action / entity / details / user">
+                    </div>
+                    <div class="field">
+                        <label for="adminActivityTypeFilter">實體類型</label>
+                        <input id="adminActivityTypeFilter" placeholder="entity_type（選填）">
+                    </div>
+                    <div class="field">
+                        <label>操作</label>
+                        <div class="inline-actions">
+                            <button class="btn" id="adminActivityLogsSearchBtn">搜尋</button>
+                            <button class="btn" id="adminActivityLogsRefreshBtn">重新整理</button>
+                        </div>
+                    </div>
+                </div>
+                <div class="table-wrap">
+                    <table>
+                        <thead><tr><th>時間</th><th>動作</th><th>實體</th><th>ID</th><th>使用者</th><th>內容</th><th>操作</th></tr></thead>
+                        <tbody id="adminActivityLogsBody"></tbody>
+                    </table>
+                </div>
+            </div>
+        </section>

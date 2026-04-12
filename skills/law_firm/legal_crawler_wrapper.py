@@ -15,6 +15,7 @@ import threading
 import time
 import uuid
 import sys
+import requests
 from datetime import datetime
 from typing import Optional
 
@@ -80,6 +81,38 @@ TRANSIENT_PATTERNS = [
     r"service unavailable",
     r"remote disconnected",
 ]
+
+
+def _post_tools_skill(
+    skill: str,
+    task: str,
+    *,
+    timeout_sec: int,
+    request_timeout_sec: int,
+    auto_repair: bool = False,
+    rollback_on_fail: bool = True,
+    auto_install_deps: bool = False,
+) -> tuple[bool, dict]:
+    import requests
+
+    tools_api = os.environ.get("MAGI_TOOLS_API", _tools_api_default()).rstrip("/")
+    try:
+        response = requests.post(
+            f"{tools_api}/skills/run",
+            json={
+                "skill": skill,
+                "task": task,
+                "timeout_sec": int(timeout_sec),
+                "auto_repair": bool(auto_repair),
+                "rollback_on_fail": bool(rollback_on_fail),
+                "auto_install_deps": bool(auto_install_deps),
+            },
+            timeout=max(10, int(request_timeout_sec)),
+        )
+        data = response.json() if response.headers.get("content-type", "").startswith("application/json") else {}
+        return response.status_code == 200, {"status_code": response.status_code, "data": data or {}, "text": response.text[:800]}
+    except Exception as exc:
+        return False, {"error": str(exc)[:200], "status_code": 0, "data": {}}
 
 
 def _load_state() -> dict:
@@ -206,28 +239,21 @@ def _run_osc_index_cases() -> str:
     Best-effort: refresh local DB case index before downstream crawlers.
     This avoids false "no active cases" skips when Synology is slow.
     """
-    import requests
-    tools_api = os.environ.get("MAGI_TOOLS_API", _tools_api_default()).rstrip("/")
     payload = {
         "max_cases": int(os.environ.get("MAGI_CASE_INDEX_MAX_CASES", "220") or "220"),
         "max_files_per_case": int(os.environ.get("MAGI_CASE_INDEX_MAX_FILES_PER_CASE", "200") or "200"),
         "dry_run": False,
     }
     try:
-        r = requests.post(
-            f"{tools_api}/skills/run",
-            json={
-                "skill": "osc-orchestrator",
-                "task": "index_cases " + json.dumps(payload, ensure_ascii=False),
-                "timeout_sec": int(os.environ.get("MAGI_CASE_INDEX_TIMEOUT_SEC", "900") or "900"),
-                "auto_repair": False,
-                "rollback_on_fail": False,
-                "auto_install_deps": False,
-            },
-            timeout=930,
+        ok, result = _post_tools_skill(
+            "osc-orchestrator",
+            "index_cases " + json.dumps(payload, ensure_ascii=False),
+            timeout_sec=int(os.environ.get("MAGI_CASE_INDEX_TIMEOUT_SEC", "900") or "900"),
+            request_timeout_sec=930,
+            rollback_on_fail=False,
         )
-        if r.status_code == 200:
-            data = r.json() or {}
+        if ok:
+            data = result.get("data") or {}
             out = (data.get("output") or "").strip()
             try:
                 obj = json.loads(out) if out else {}
@@ -242,7 +268,7 @@ def _run_osc_index_cases() -> str:
             if scanned is not None:
                 return f"✅ 案件索引: scanned={scanned} inserted={inserted} updated={updated}"
             return "✅ 案件索引完成"
-        return f"⚠️ 案件索引 HTTP {r.status_code}"
+        return f"⚠️ 案件索引 HTTP {result.get('status_code')}"
     except Exception as e:
         return f"⚠️ 案件索引失敗: {str(e)[:120]}"
 
@@ -471,24 +497,15 @@ def _run_judgment_collector_daily() -> str:
     Call judgment-collector daily_crawl via Tools API (best-effort).
     Follows the same pattern as refresh_active_case_insights.
     """
-    import requests
-
-    tools_api = os.environ.get("MAGI_TOOLS_API", _tools_api_default()).rstrip("/")
     try:
-        r = requests.post(
-            f"{tools_api}/skills/run",
-            json={
-                "skill": "judgment-collector",
-                "task": "daily_crawl",
-                "timeout_sec": int(os.environ.get("MAGI_JUDGMENT_CRAWL_TIMEOUT_SEC", "1200")),
-                "auto_repair": False,
-                "rollback_on_fail": True,
-                "auto_install_deps": False,
-            },
-            timeout=1230,
+        ok, result = _post_tools_skill(
+            "judgment-collector",
+            "daily_crawl",
+            timeout_sec=int(os.environ.get("MAGI_JUDGMENT_CRAWL_TIMEOUT_SEC", "1200")),
+            request_timeout_sec=1230,
         )
-        if r.status_code == 200:
-            data = r.json() or {}
+        if ok:
+            data = result.get("data") or {}
             out = data.get("output") or ""
             try:
                 obj = json.loads(out) if out else {}
@@ -496,8 +513,7 @@ def _run_judgment_collector_daily() -> str:
                 obj = {}
             reasons = obj.get("reasons_processed", 0)
             return f"✅ 每日判決收集完成：{reasons} 案由處理"
-        else:
-            return f"judgment-collector HTTP {r.status_code}"
+        return f"judgment-collector HTTP {result.get('status_code')}"
     except Exception as e:
         return f"judgment-collector 失敗: {str(e)[:120]}"
 
@@ -507,28 +523,18 @@ def _run_transcript_sync() -> str:
     Call transcript-downloader sync via Tools API (best-effort).
     Downloads new transcripts + renames existing ones.
     """
-    import requests
-
-    tools_api = os.environ.get("MAGI_TOOLS_API", _tools_api_default()).rstrip("/")
     try:
-        r = requests.post(
-            f"{tools_api}/skills/run",
-            json={
-                "skill": "transcript-downloader",
-                "task": "sync",
-                "timeout_sec": int(os.environ.get("MAGI_TRANSCRIPT_SYNC_TIMEOUT_SEC", "900")),
-                "auto_repair": False,
-                "rollback_on_fail": True,
-                "auto_install_deps": False,
-            },
-            timeout=930,
+        ok, result = _post_tools_skill(
+            "transcript-downloader",
+            "sync",
+            timeout_sec=int(os.environ.get("MAGI_TRANSCRIPT_SYNC_TIMEOUT_SEC", "900")),
+            request_timeout_sec=930,
         )
-        if r.status_code == 200:
-            data = r.json() or {}
+        if ok:
+            data = result.get("data") or {}
             out = data.get("output") or ""
             return f"✅ 筆錄同步完成: {out[:200]}"
-        else:
-            return f"transcript-downloader HTTP {r.status_code}"
+        return f"transcript-downloader HTTP {result.get('status_code')}"
     except Exception as e:
         return f"transcript-downloader 失敗: {str(e)[:120]}"
 
@@ -537,28 +543,19 @@ def _run_file_review_check() -> str:
     """
     Call file-review-orchestrator check_emails + download via Tools API (best-effort).
     """
-    import requests
-
-    tools_api = os.environ.get("MAGI_TOOLS_API", _tools_api_default()).rstrip("/")
     results = []
     for task_name in ("check_emails", "download"):
         try:
-            r = requests.post(
-                f"{tools_api}/skills/run",
-                json={
-                    "skill": "file-review-orchestrator",
-                    "task": task_name,
-                    "timeout_sec": int(os.environ.get("MAGI_FILE_REVIEW_TIMEOUT_SEC", "600")),
-                    "auto_repair": False,
-                    "rollback_on_fail": True,
-                    "auto_install_deps": False,
-                },
-                timeout=630,
+            ok, result = _post_tools_skill(
+                "file-review-orchestrator",
+                task_name,
+                timeout_sec=int(os.environ.get("MAGI_FILE_REVIEW_TIMEOUT_SEC", "600")),
+                request_timeout_sec=630,
             )
-            if r.status_code == 200:
+            if ok:
                 results.append(f"✅ {task_name}")
             else:
-                results.append(f"⚠️ {task_name} HTTP {r.status_code}")
+                results.append(f"⚠️ {task_name} HTTP {result.get('status_code')}")
         except Exception as e:
             results.append(f"⚠️ {task_name} 失敗: {str(e)[:80]}")
     return " | ".join(results)
@@ -739,9 +736,6 @@ def refresh_active_case_insights() -> str:
         return "⚠️ 近期案件資料夾無法解析案由，跳過。"
 
     # Call Tools API to run existing ingest skill (so Iron Dome & skill versioning apply).
-    import requests
-
-    tools_api = os.environ.get("MAGI_TOOLS_API", _tools_api_default()).rstrip("/")
     profile_name = os.environ.get("MAGI_INSIGHT_DB_PROFILE", "").strip()
     max_results = int(os.environ.get("MAGI_ACTIVE_CASES_REFRESH_MAX_RESULTS", "2"))
 
@@ -759,20 +753,15 @@ def refresh_active_case_insights() -> str:
             "courts": courts,
         }
         try:
-            r = requests.post(
-                f"{tools_api}/skills/run",
-                json={
-                    "skill": "insight-flow-judicial-ingest",
-                    "task": "ingest " + json.dumps(payload, ensure_ascii=False),
-                    "timeout_sec": int(os.environ.get("MAGI_ACTIVE_CASES_REFRESH_TIMEOUT_SEC", "900")),
-                    "auto_repair": True,
-                    "rollback_on_fail": True,
-                    "auto_install_deps": False,
-                },
-                timeout=930,
+            ok, result = _post_tools_skill(
+                "insight-flow-judicial-ingest",
+                "ingest " + json.dumps(payload, ensure_ascii=False),
+                timeout_sec=int(os.environ.get("MAGI_ACTIVE_CASES_REFRESH_TIMEOUT_SEC", "900")),
+                request_timeout_sec=930,
+                auto_repair=True,
             )
-            if r.status_code == 200:
-                data = r.json() or {}
+            if ok:
+                data = result.get("data") or {}
                 # Tools API wraps stdout JSON in "output"
                 out = data.get("output") or ""
                 try:
@@ -783,7 +772,7 @@ def refresh_active_case_insights() -> str:
                 processed = obj.get("processed")
                 lines.append(f"- {reason}（{courts[0]}）：processed={processed} added={added}")
             else:
-                lines.append(f"- {reason}：HTTP {r.status_code}")
+                lines.append(f"- {reason}：HTTP {result.get('status_code')}")
         except Exception as e:
             lines.append(f"- {reason}：失敗 {str(e)[:120]}")
 

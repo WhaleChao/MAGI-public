@@ -439,7 +439,7 @@ def _osc_is_safe_local_path(path_str: str, *, allow_missing: bool = False) -> bo
     return False
 
 
-def _osc_resolve_existing_local_path(path_str: str, *, prefer_dir: bool | None = None) -> str:
+def _osc_resolve_existing_local_path(path_str: str, *, prefer_dir: Optional[bool] = None) -> str:
     candidates = _osc_local_path_candidates(path_str)
     norm = _osc_norm_path(path_str).replace("\\", "/")
     if norm and norm not in candidates:
@@ -1560,7 +1560,7 @@ def _osc_log_activity(action: str, entity_type: str = "", entity_id: str = "", d
         logger.warning("OSC activity log write failed: %s", e)
 
 
-def _osc_accounting_window(today: date | None = None) -> tuple[date, date]:
+def _osc_accounting_window(today: Optional[date] = None) -> tuple[date, date]:
     today = today or date.today()
     if today.day <= 25:
         end_date = date(today.year, today.month, 25)

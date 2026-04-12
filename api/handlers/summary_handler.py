@@ -34,7 +34,7 @@ def summary_length_prompt(length: str) -> tuple[str, str]:
     return ("輸出 **5-8 點**條列，每點 1-2 句話（包含關鍵事實）", "先給 **8-12 點**重點，每點 1-2 句話")
 
 
-def _is_synthetic_timeout_fallback(text: str, result: dict | None = None) -> bool:
+def _is_synthetic_timeout_fallback(text: str, result: Optional[dict] = None) -> bool:
     t = str(text or "").strip()
     if isinstance(result, dict) and bool(result.get("synthetic_fallback")):
         return True
@@ -45,7 +45,7 @@ def _is_synthetic_timeout_fallback(text: str, result: dict | None = None) -> boo
     return "本機模型逾時" in t and "請稍後重試" in t
 
 
-def _summary_chunk_usable(text: str, result: dict | None = None) -> bool:
+def _summary_chunk_usable(text: str, result: Optional[dict] = None) -> bool:
     from api.handlers import text_processing_handler as _tp
 
     t = str(text or "").strip()

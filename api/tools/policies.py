@@ -26,7 +26,7 @@ from dataclasses import dataclass
 from typing import Any
 
 
-@dataclass(slots=True, frozen=True)
+@dataclass(frozen=True)
 class ToolRequirement:
     level: str         # "required" | "optional" | "none"
     tool_hint: str     # suggested tool name or empty

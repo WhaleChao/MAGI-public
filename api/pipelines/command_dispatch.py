@@ -15,7 +15,13 @@ import sys
 import threading
 
 from api.command_registry import CommandContext
-from api.runtime_paths import get_laf_script, get_legacy_code_root, get_magi_root_dir, get_skill_python
+from api.runtime_paths import (
+    get_laf_script,
+    get_legacy_code_root,
+    get_magi_root_dir,
+    get_skill_python,
+    legacy_code_enabled,
+)
 
 # Fallback registry — primary path uses orch._cmd_registry (set in Orchestrator.__init__)
 _cmd_registry = None
@@ -57,7 +63,10 @@ calibrate_distributed_ngl = _lazy_brain("calibrate_distributed_ngl")
 from skills.bridge.legal_bridge import execute_skill
 
 # ── Pre-compiled regex patterns ──────────────────────────────────────────────
-_RE_DRAW = re.compile(r"(?:/draw\b|畫[圖一個張幅]|\bdraw\b|generate image|產生圖片|绘[图画製]|画[圖图一])", re.IGNORECASE)
+_RE_DRAW = re.compile(
+    r"(?:/draw\b|畫[圖一個張幅]|(?<![A-Za-z])draw\b|generate image|產生圖片|绘[图画製]|画[圖图一])",
+    re.IGNORECASE,
+)
 _RE_WEB_SEARCH_EXPLICIT = re.compile(
     r"^(?:搜尋|search|research|/search|查一下|找一下|搜一下|google|幫我搜|幫我查一下|執行網路研究|進行網路研究|網路研究|網路搜尋|幫我查詢|請幫我查詢)\s*[:：]?\s*"
 )
@@ -146,7 +155,7 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
             logger.debug("Fuzzy match skipped: %s", _fuzzy_err)
 
     # Help Command — role-aware
-    _HELP_CMD_EXACT = {"/help", "help", "指���", "說明", "功能", "menu", "helps", "/start",
+    _HELP_CMD_EXACT = {"/help", "help", "指令", "說明", "功能", "menu", "helps", "/start",
                        "幫助", "做什麼", "功能列表", "技能清單", "有什麼功能", "可以做什麼"}
     if msg_lower in _HELP_CMD_EXACT:
         if role == "admin":
@@ -181,6 +190,13 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
 "  手動更新狀態：\n"
 "• `[姓名] 已開辦` / `[姓名] 已報結` — 手動標記狀態\n"
 "• `[法扶案號] 已開辦`（如 1140728-K-002 已開辦）\n"
+"\n"
+"💡 **頻道感知自動補全 (Autocomplete)**\n"
+"系統已在 Discord 建立對應子頻道。在特定子頻道中發送案件人名或案號，MAGI 會自動補全指令並執行：\n"
+"• **#法扶-費用**：輸入人名 -> 自動執行 `費用支付` 回報\n"
+"• **#法扶-疑義**：輸入人名 -> 自動執行 `疑義` 回報\n"
+"• **#法扶-二階段**：輸入人名 -> 自動執行 `二階段` 回報\n"
+"• **#法扶-結案**：輸入人名 -> 自動執行 `結案` 回報\n"
 "\n"
 "━━━━━━━━━━━━━━━━━━━━\n"
 "📂 **閱卷 & 筆錄**\n"
@@ -464,7 +480,7 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
 
             autoskill = AutoSkill()
             source_dir = str(get_magi_root_dir())
-            if "legacy" in msg_lower or "archive" in msg_lower:
+            if ("legacy" in msg_lower or "archive" in msg_lower) and legacy_code_enabled():
                 source_dir = str(get_legacy_code_root())
             force = any(k in msg_lower for k in ["force", "重建", "重新內化"])
             result = autoskill.internalize_codebase_as_skills(
@@ -566,12 +582,13 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
         except Exception as e:
             return f"❌ 摘要補跑流程失敗: {e}"
 
-    if any(k in message for k in ["查判決", "找判決", "判決搜尋", "搜尋判決", "收集判決", "判決搜集", "搜尋最高法院判決"]):
+    if any(k in message for k in ["查判決", "找判決", "判決搜尋", "搜尋判決", "收集判決", "判決搜集", "搜尋最高法院判決", "實務見解", "法律見解", "法院見解"]):
         if orch._looks_like_capability_question(message):
             return (
                 "✅ **我可以幫您查判決！**\n\n"
                 "• 直接輸入：`查判決 傷害`\n"
-                "• 也可提供案號：`查判決 113年度上訴字第12號`"
+                "• 也可提供案號：`查判決 113年度上訴字第12號`\n"
+                "• 實務見解整理：`實務見解 預售屋遲延交屋`"
             )
         return orch._run_judgment_collector_command(message, notify=False)
 
@@ -765,6 +782,10 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
             return "🎨 請描述您想要的圖片內容。例如：'畫一隻可愛的貓咪'"
 
         logger.info(f"🎨 Image Generation requested: {prompt}")
+
+        legacy_generate = getattr(orch, "_generate_image", None)
+        if callable(legacy_generate):
+            return legacy_generate(prompt)
 
         from skills.bridge.melchior_bridge import generate_image
         result = generate_image(prompt)
@@ -1597,6 +1618,13 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
                                     _hint_lines.append("• 當事人姓名 + 案由")
                                     _hint_lines.append("")
                                     _hint_lines.append("範例：`1141223-E-021 結案` 或 `[當事人L] 更生 結案`")
+                                elif _reason == "identity_still_ambiguous":
+                                    _hint_lines.append(f"⚠️ {_identity.get('manual_hint', '發現多個審級或資料夾，請補上更具體的案由關鍵字')}")
+                                    _hint_lines.append("")
+                                    _hint_lines.append("系統比對結果：")
+                                    _top = _identity.get("top_candidates", [])
+                                    for _c in _top[:3]:
+                                        _hint_lines.append(f"• {_c.get('client_name','')} ({_c.get('status', '未知')}) — 案號：{_c.get('case_number','')}")
                                 elif _reason == "identity_signal_conflict":
                                     _hint_lines.append("找到的案件資訊有衝突，無法自動確認：")
                                     for _c in _conflicts[:3]:
@@ -2446,4 +2474,3 @@ def list_skills(orch):
 
     response += "💡 *您可以直接對我下達相關指令，例如「查詢行程」、「分析程式碼」等。*"
     return response
-

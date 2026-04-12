@@ -83,7 +83,7 @@ _CANONICAL_ACTIVE_SHARE_PREFIX = "Z:/lumi63181107"
 _CANONICAL_CLOSED_SHARE_PREFIX = "Y:/lumi"
 
 
-def load_path_config(config_path: str | None = None) -> dict:
+def load_path_config(config_path: Optional[str] = None) -> dict:
     p = (config_path or "").strip() or str(get_config_path("config.json"))
     try:
         with open(p, "r", encoding="utf-8") as f:
@@ -176,7 +176,7 @@ def _candidate_share_roots_from_config(cfg: dict, *, closed: bool) -> list[str]:
     return roots
 
 
-def default_synology_share_roots(*, include_closed: bool = False, cfg: dict | None = None) -> list[str]:
+def default_synology_share_roots(*, include_closed: bool = False, cfg: Optional[dict] = None) -> list[str]:
     cfg = cfg or load_path_config()
     roots: list[str] = []
     roots.extend(_candidate_share_roots_from_config(cfg, closed=False))
@@ -187,7 +187,7 @@ def default_synology_share_roots(*, include_closed: bool = False, cfg: dict | No
     return _dedupe_keep_order(roots)
 
 
-def preferred_synology_share_roots(*, include_closed: bool = False, cfg: dict | None = None) -> list[str]:
+def preferred_synology_share_roots(*, include_closed: bool = False, cfg: Optional[dict] = None) -> list[str]:
     all_roots = default_synology_share_roots(include_closed=include_closed, cfg=cfg)
     active_roots = default_synology_share_roots(include_closed=False, cfg=cfg)
     closed_roots = all_roots[len(active_roots) :]
@@ -200,7 +200,7 @@ def preferred_synology_share_roots(*, include_closed: bool = False, cfg: dict | 
     return _dedupe_keep_order(out)
 
 
-def default_case_roots(*, include_closed: bool = False, cfg: dict | None = None) -> list[str]:
+def default_case_roots(*, include_closed: bool = False, cfg: Optional[dict] = None) -> list[str]:
     roots: list[str] = []
     share_roots = default_synology_share_roots(include_closed=include_closed, cfg=cfg)
     active_count = len(default_synology_share_roots(include_closed=False, cfg=cfg))
@@ -212,7 +212,7 @@ def default_case_roots(*, include_closed: bool = False, cfg: dict | None = None)
     return _dedupe_keep_order(roots)
 
 
-def preferred_case_roots(*, include_closed: bool = False, cfg: dict | None = None) -> list[str]:
+def preferred_case_roots(*, include_closed: bool = False, cfg: Optional[dict] = None) -> list[str]:
     roots = preferred_synology_share_roots(include_closed=include_closed, cfg=cfg)
     out: list[str] = []
     if roots:
@@ -222,7 +222,7 @@ def preferred_case_roots(*, include_closed: bool = False, cfg: dict | None = Non
     return _dedupe_keep_order(out)
 
 
-def canonical_case_roots(*, include_closed: bool = False, cfg: dict | None = None) -> list[str]:
+def canonical_case_roots(*, include_closed: bool = False, cfg: Optional[dict] = None) -> list[str]:
     cfg = cfg or load_path_config()
     active = [
         _norm(rule.get("windows_prefix") or "").rstrip("/")
@@ -266,7 +266,7 @@ def _expand_from_prefix(path: str, prefixes: list[str], roots: list[str]) -> lis
     return out
 
 
-def local_synology_path_candidates(path: str, cfg: dict | None = None) -> list[str]:
+def local_synology_path_candidates(path: str, cfg: Optional[dict] = None) -> list[str]:
     s = _norm(path)
     if not s:
         return []
@@ -305,11 +305,11 @@ def local_synology_path_candidates(path: str, cfg: dict | None = None) -> list[s
     return _dedupe_keep_order(candidates or [s])
 
 
-def local_case_path_candidates(path: str, cfg: dict | None = None) -> list[str]:
+def local_case_path_candidates(path: str, cfg: Optional[dict] = None) -> list[str]:
     return local_synology_path_candidates(path, cfg=cfg)
 
 
-def translate_case_path_to_local(path: str, cfg: dict | None = None, *, require_existing: bool = False) -> str:
+def translate_case_path_to_local(path: str, cfg: Optional[dict] = None, *, require_existing: bool = False) -> str:
     candidates = local_case_path_candidates(path, cfg=cfg)
     if not candidates:
         return _norm(path)
@@ -328,7 +328,7 @@ def translate_case_path_to_local(path: str, cfg: dict | None = None, *, require_
     return candidates[0]
 
 
-def translate_synology_path_to_local(path: str, cfg: dict | None = None, *, require_existing: bool = False) -> str:
+def translate_synology_path_to_local(path: str, cfg: Optional[dict] = None, *, require_existing: bool = False) -> str:
     candidates = local_synology_path_candidates(path, cfg=cfg)
     if not candidates:
         return _norm(path)
@@ -347,7 +347,7 @@ def translate_synology_path_to_local(path: str, cfg: dict | None = None, *, requ
     return candidates[0]
 
 
-def translate_local_path_to_canonical(path: str, cfg: dict | None = None) -> str:
+def translate_local_path_to_canonical(path: str, cfg: Optional[dict] = None) -> str:
     s = _norm(path)
     if not s:
         return ""
@@ -399,7 +399,7 @@ def translate_local_path_to_canonical(path: str, cfg: dict | None = None) -> str
     return s.replace("/", "\\")
 
 
-def default_scan_roots(cfg: dict | None = None) -> list[str]:
+def default_scan_roots(cfg: Optional[dict] = None) -> list[str]:
     roots = preferred_synology_share_roots(include_closed=False, cfg=cfg) or default_synology_share_roots(include_closed=False, cfg=cfg)
     out: list[str] = []
     for root in roots:

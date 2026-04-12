@@ -86,7 +86,7 @@ def _load_config() -> dict:
 # Parsing helpers
 # ─────────────────────────────────────────────
 
-def _parse_case_type(msg: str) -> str | None:
+def _parse_case_type(msg: str) -> Optional[str]:
     m = msg.strip()
     for k, v in CASE_TYPE_MAP.items():
         if m == k or m == v:
@@ -100,7 +100,7 @@ def _parse_case_type(msg: str) -> str | None:
     return None
 
 
-def _parse_role(msg: str, case_type: str) -> str | None:
+def _parse_role(msg: str, case_type: str) -> Optional[str]:
     m = msg.strip()
     if case_type in ("民事", "行政"):
         return "代理人"

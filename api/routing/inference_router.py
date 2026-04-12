@@ -59,8 +59,8 @@ class InferenceRouter:
         ctx: RoutingContext,
         *,
         model_role: str = "text_primary",
-        provider: str | None = None,
-        service_name: str | None = None,
+        provider: Optional[str] = None,
+        service_name: Optional[str] = None,
     ) -> FallbackPlan:
         """Resolve *model_role* to a :class:`FallbackPlan`.
 
@@ -144,7 +144,7 @@ class InferenceRouter:
         self,
         ctx: RoutingContext,
         *,
-        provider: str | None = None,
+        provider: Optional[str] = None,
     ) -> ServiceTarget:
         """Resolve the embedding model to a single target.
 

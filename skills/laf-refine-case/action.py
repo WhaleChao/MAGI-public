@@ -68,7 +68,7 @@ def _build_prompt(case_info: dict, existing_cases: list) -> str:
 """.strip()
 
 
-def refine(case_info: dict, existing_cases: list | None = None) -> dict:
+def refine(case_info: dict, existing_cases: Optional[list] = None) -> dict:
     from casper_tools_client import casper_chat
 
     prompt = _build_prompt(case_info, existing_cases or [])

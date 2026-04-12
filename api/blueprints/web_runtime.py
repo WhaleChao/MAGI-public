@@ -191,9 +191,10 @@ def create_web_runtime_blueprint(
     logger: Any,
     web_notifications: dict[str, list[Any]],
     normalize_output_text=None,
-    magi_root: str | Path | None = None,
+    magi_root: str | Optional[Path] = None,
 ) -> Blueprint:
     bp = Blueprint("web_runtime", __name__)
+    isolated_runtime = magi_root is not None
     root = Path(magi_root) if magi_root else Path(__file__).resolve().parents[2]
     agent_dir = root / ".agent"
     process_monitor_state_path = root / "static" / "process_guardian_state.json"
@@ -209,20 +210,23 @@ def create_web_runtime_blueprint(
     def api_memory_stats():
         stats: dict[str, Any] = {"doc_count": 0, "source_count": 0, "last_ingest": None, "obsidian": {}, "faiss_size": 0}
         # Primary: get real document count from MariaDB
-        try:
-            from skills.memory.mem_bridge import _get_conn
-            _conn = _get_conn()
-            _cur = _conn.cursor()
-            _cur.execute("SELECT COUNT(*) FROM documents")
-            stats["doc_count"] = _cur.fetchone()[0]
-            _cur.execute("SELECT COUNT(DISTINCT source) FROM documents")
-            stats["source_count"] = _cur.fetchone()[0]
-            _cur.execute("SELECT MAX(created_at) FROM documents")
-            _last = _cur.fetchone()[0]
-            if _last:
-                stats["last_ingest"] = str(_last)
-            _conn.close()
-        except Exception:
+        if not isolated_runtime:
+            try:
+                from skills.memory.mem_bridge import _get_conn
+                _conn = _get_conn()
+                _cur = _conn.cursor()
+                _cur.execute("SELECT COUNT(*) FROM documents")
+                stats["doc_count"] = _cur.fetchone()[0]
+                _cur.execute("SELECT COUNT(DISTINCT source) FROM documents")
+                stats["source_count"] = _cur.fetchone()[0]
+                _cur.execute("SELECT MAX(created_at) FROM documents")
+                _last = _cur.fetchone()[0]
+                if _last:
+                    stats["last_ingest"] = str(_last)
+                _conn.close()
+            except Exception:
+                pass
+        if stats["doc_count"] == 0 and stats["last_ingest"] is None:
             # Fallback: read from doc_vector_index.json (attachment tracker only)
             try:
                 idx_path = agent_dir / "doc_vector_index.json"
@@ -249,25 +253,25 @@ def create_web_runtime_blueprint(
                 stats["obsidian"]["last_update"] = oidx.get("updated_at", "")
         except Exception as exc:
             stats["obsidian_error"] = str(exc)
-        try:
-            faiss_path = root / "skills" / "memory" / "index_cache" / "mem_index.faiss"
-            if faiss_path.exists():
-                stats["faiss_size"] = faiss_path.stat().st_size
-            meta_path = root / "skills" / "memory" / "index_cache" / "meta.json"
-            if meta_path.exists():
-                meta = json.loads(meta_path.read_text(encoding="utf-8"))
-                stats["faiss_vector_count"] = meta.get("total", 0)
-                stats["faiss_index_type"] = meta.get("index_type", "unknown")
-                stats["faiss_last_updated"] = meta.get("updated", "")
-        except Exception:
-            logger.debug("silent-catch in api_memory_stats", exc_info=True)
-        try:
-            from skills.memory.faiss_index import FAISSMemoryIndex
-            idx = FAISSMemoryIndex.get_instance()
-            stats["faiss_vector_count"] = idx.total
-            stats["faiss_index_type"] = idx.index_type
-        except Exception:
-            pass
+        faiss_path = root / "skills" / "memory" / "index_cache" / "mem_index.faiss"
+        if faiss_path.exists():
+            stats["faiss_size"] = faiss_path.stat().st_size
+        if not isolated_runtime:
+            try:
+                from skills.memory.mem_bridge import _get_faiss_index
+                idx = _get_faiss_index()
+                if idx:
+                    stats["faiss_vector_count"] = idx.total
+                    stats["faiss_index_type"] = idx.index_type
+            except Exception:
+                logger.debug("silent-catch in api_memory_stats index-sync", exc_info=True)
+            try:
+                from skills.memory.faiss_index import FAISSMemoryIndex
+                idx = FAISSMemoryIndex.get_instance()
+                stats["faiss_vector_count"] = idx.total
+                stats["faiss_index_type"] = idx.index_type
+            except Exception:
+                pass
         return jsonify(stats)
 
     @bp.route("/api/memory/recall", methods=["POST"])

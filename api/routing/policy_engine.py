@@ -54,7 +54,7 @@ class PolicyEngine:
     def __init__(
         self,
         *,
-        runtime_override_path: Path | None = None,
+        runtime_override_path: Optional[Path] = None,
     ) -> None:
         self._override_path = runtime_override_path or _RUNTIME_OVERRIDE_PATH
         self._overrides: dict[str, Any] = {}

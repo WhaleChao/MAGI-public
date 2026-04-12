@@ -39,7 +39,7 @@ def _sample_evenly(chunks: list[str], max_samples: int) -> list[tuple[int, str]]
     return out
 
 
-def _read_text(path: str, max_bytes: int | None = 512_000) -> str:
+def _read_text(path: str, max_bytes: Optional[int] = 512_000) -> str:
     with open(path, "rb") as f:
         if max_bytes is None or int(max_bytes) <= 0:
             raw = f.read()
@@ -51,7 +51,7 @@ def _read_text(path: str, max_bytes: int | None = 512_000) -> str:
         return raw.decode("utf-8", errors="ignore")
 
 
-def _extract_docx_text(path: str, max_chars: int | None = 120_000) -> str:
+def _extract_docx_text(path: str, max_chars: Optional[int] = 120_000) -> str:
     """
     Minimal .docx text extraction without extra dependencies.
     """
@@ -79,9 +79,9 @@ def extract_text_from_file(
     path: str,
     filename: str = "",
     *,
-    max_bytes: int | None = 512_000,
-    max_json_chars: int | None = 200_000,
-    max_docx_chars: int | None = 120_000,
+    max_bytes: Optional[int] = 512_000,
+    max_json_chars: Optional[int] = 200_000,
+    max_docx_chars: Optional[int] = 120_000,
 ) -> dict:
     """
     Returns {"success": bool, "text": str, "type": str, "error": str}

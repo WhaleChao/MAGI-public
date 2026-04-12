@@ -135,7 +135,7 @@ def has_recent_attachment_followup(orch, user_id: str, platform: str, message: s
     return looks_like_attachment_followup(message, str(recent.get("type") or ""))
 
 
-def maybe_reuse_recent_attachment(orch, user_id: str, platform: str, message: str) -> dict | None:
+def maybe_reuse_recent_attachment(orch, user_id: str, platform: str, message: str) -> Optional[dict]:
     recent = get_recent_attachment(orch, str(user_id or ""), str(platform or ""))
     if not recent:
         return None

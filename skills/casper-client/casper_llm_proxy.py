@@ -18,7 +18,7 @@ from casper_tools_client import casper_chat
 class CasperResponse:
     text: str
     candidates: list
-    prompt_feedback: str | None = None
+    prompt_feedback: Optional[str] = None
 
 
 class CasperGenerativeModel:

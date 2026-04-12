@@ -1,0 +1,115 @@
+        <section id="forms" class="view">
+            <div class="grid-2">
+                <div class="card">
+                    <div class="section-head">
+                        <div>
+                            <h3>文件產生器</h3>
+                            <div class="section-note">可產生委任狀、契約書、收據與存證信函。先填基本欄位，再預覽內容，確認後匯出。</div>
+                        </div>
+                    </div>
+                    <ul class="flow-list">
+                        <li>1. 選文件類型</li>
+                        <li>2. 填案件與金額欄位</li>
+                        <li>3. 先預覽再匯出</li>
+                    </ul>
+                    <div class="soft-block">
+                        <div class="field-grid cols-4">
+                            <div class="field">
+                                <label for="formType">文件類型</label>
+                                <select id="formType" onchange="(function(){
+                                    const isLal = document.getElementById('formType').value === 'legal_attest';
+                                    document.getElementById('formSenderNameField').style.display = isLal ? '' : 'none';
+                                    document.getElementById('formSenderAddrField').style.display = isLal ? '' : 'none';
+                                    document.getElementById('formReceiverNameField').style.display = isLal ? '' : 'none';
+                                    document.getElementById('formReceiverAddrField').style.display = isLal ? '' : 'none';
+                                })()">
+                                    <option value="power_of_attorney">委任狀</option>
+                                    <option value="contract">契約書</option>
+                                    <option value="receipt">收據</option>
+                                    <option value="legal_attest">存證信函</option>
+                                </select>
+                            </div>
+                            <div class="field">
+                                <label for="formCaseId">案件 ID</label>
+                                <input id="formCaseId" placeholder="案件 ID（優先）">
+                            </div>
+                            <div class="field">
+                                <label for="formCaseNumber">案件編號</label>
+                                <input id="formCaseNumber" placeholder="選填">
+                            </div>
+                            <div class="field">
+                                <label for="formClientName">當事人</label>
+                                <input id="formClientName" placeholder="選填">
+                            </div>
+                            <div class="field">
+                                <label for="formDate">日期</label>
+                                <input id="formDate" type="date" placeholder="日期">
+                            </div>
+                            <div class="field">
+                                <label for="formReceiptNo">收據編號</label>
+                                <input id="formReceiptNo" placeholder="收據用">
+                            </div>
+                            <div class="field">
+                                <label for="formAmount">金額</label>
+                                <input id="formAmount" type="number" step="0.01" placeholder="收據用">
+                            </div>
+                            <div class="field">
+                                <label for="formItem">費用項目</label>
+                                <input id="formItem" placeholder="收據用">
+                            </div>
+                            <div class="field">
+                                <label for="formPaymentMethod">付款方式</label>
+                                <input id="formPaymentMethod" placeholder="收據用">
+                            </div>
+                            <div class="field">
+                                <label for="formLawyerName">受任律師</label>
+                                <input id="formLawyerName" placeholder="委任狀用">
+                            </div>
+                            <div class="field">
+                                <label for="formCourtCaseNo">法院案號</label>
+                                <input id="formCourtCaseNo" placeholder="可覆蓋">
+                            </div>
+                            <div class="field">
+                                <label for="formLafCaseNo">法扶案號</label>
+                                <input id="formLafCaseNo" placeholder="可覆蓋">
+                            </div>
+                            <div class="field" id="formSenderNameField" style="display:none;">
+                                <label for="formSenderName">寄件人姓名/公司</label>
+                                <input id="formSenderName" placeholder="存證信函">
+                            </div>
+                            <div class="field" id="formSenderAddrField" style="display:none;">
+                                <label for="formSenderAddr">寄件人地址</label>
+                                <input id="formSenderAddr" placeholder="存證信函">
+                            </div>
+                            <div class="field" id="formReceiverNameField" style="display:none;">
+                                <label for="formReceiverName">收件人姓名/公司</label>
+                                <input id="formReceiverName" placeholder="存證信函">
+                            </div>
+                            <div class="field" id="formReceiverAddrField" style="display:none;">
+                                <label for="formReceiverAddr">收件人地址</label>
+                                <input id="formReceiverAddr" placeholder="存證信函">
+                            </div>
+                        </div>
+                    </div>
+                    <div class="field" style="margin-top:12px;">
+                        <label for="formNotes">備註 / 存證信函內文</label>
+                        <textarea id="formNotes" placeholder="補充內容、說明或信函內文（選填）"></textarea>
+                    </div>
+                    <div class="toolbar">
+                        <button class="btn" id="formPreviewBtn">預覽</button>
+                        <button class="btn primary" id="formExportBtn">匯出 WORD + PDF</button>
+                    </div>
+                </div>
+                <div class="card">
+                    <div class="section-head">
+                        <div>
+                            <h3>預覽內容</h3>
+                            <div class="section-note">預覽會保留可直接匯出的文字版本，先看格式是否正確再匯出。</div>
+                        </div>
+                    </div>
+                    <div id="formPreviewMeta" class="muted">尚未產生</div>
+                    <div class="insight-full" id="formPreviewText"></div>
+                </div>
+            </div>
+        </section>
+

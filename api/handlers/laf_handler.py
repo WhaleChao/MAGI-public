@@ -4,7 +4,11 @@ Legal Aid Foundation (LAF) report parsing utilities extracted from Orchestrator.
 Pure functions — no instance state.
 """
 
+import logging
 import re
+from typing import Optional, Union, Any
+
+logger = logging.getLogger("LAFHandler")
 
 
 def laf_report_command_help() -> str:
@@ -27,8 +31,16 @@ def laf_report_command_help() -> str:
         "- 案件系統編號（如：2026-0013）\n\n"
         "必要條件：\n"
         "- 開辦：需能找到「開辦通知/准予扶助證明」與「委任狀」，並完成日期判讀\n"
-        "  （開辦無存檔鈕：CASPER 會先截圖給你確認，回覆「正確送出 <確認碼>」才會送出）\n"
-        "- 二階段：需找到「調解不成立證明書」\n"
+        "  送出確認：系統會給確認碼，回覆 `正確送出 <確認碼>` 才實施送出。\n"
+        "\n"
+        "💡 **Discord 頻道感知自動補全 (Autocomplete)**\n"
+        "若您已加入 Discord，可直接在對應頻道發送受扶助人姓名或案號：\n"
+        "- **#法扶-費用**：輸入 謝千億 -> 自動觸發 `謝千億 費用支付` 回報\n"
+        "- **#法扶-疑義**：輸入 謝千億 -> 自動觸發 `謝千億 疑義` 回報\n"
+        "- **#法扶-二階段**：輸入 謝千億 -> 自動觸發 `謝千億 二階段` 回報\n"
+        "- **#法扶-結案**：輸入 謝千億 -> 自動觸發 `謝千億 結案` 回報\n"
+        "\n"
+        "• `法扶監控` — 現有案件狀態總覽\n"
         "- 訴訟中費用：需找到法院收據（粉紅收據/裁判費收據）\n"
         "- 結案：若統計欄位 <= 0，會先要求你補原因\n\n"
         "🔄 **手動更新法扶狀態**\n"
@@ -77,7 +89,7 @@ def _clean_client_name(raw_name: str) -> str:
     return ""
 
 
-def parse_laf_report_payload(raw_text: str) -> dict | None:
+def parse_laf_report_payload(raw_text: str) -> Optional[dict]:
     """Parse a natural-language LAF report command into a structured payload."""
     text = (raw_text or "").strip()
     if not text:
@@ -258,7 +270,7 @@ def _expand_reason_keywords(reason_hint: str) -> list[str]:
     return [hint]
 
 
-def parse_laf_status_update(raw_text: str) -> dict | None:
+def parse_laf_status_update(raw_text: str) -> Optional[dict]:
     """
     解析法扶狀態手動更新指令。
 

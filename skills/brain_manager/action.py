@@ -66,7 +66,7 @@ BRAIN_SWITCH_LOCK = threading.RLock()
 BRAIN_AUTO_FALLBACK_LOCAL = os.environ.get("BRAIN_AUTO_FALLBACK_LOCAL", "1") != "0"
 
 
-def _remote_agent_reachable(timeout_sec: float | None = None) -> bool:
+def _remote_agent_reachable(timeout_sec: Optional[float] = None) -> bool:
     """Fast preflight for Melchior agent reachability to avoid long switch retries."""
     try:
         timeout_val = float(
@@ -303,7 +303,7 @@ def check_local_health() -> Tuple[bool, str]:
     return False, f"Local offline ({msg})"
 
 
-def _parse_mb_value(v: Any) -> float | None:
+def _parse_mb_value(v: Any) -> Optional[float]:
     try:
         if v is None:
             return None
@@ -324,7 +324,7 @@ def _parse_mb_value(v: Any) -> float | None:
         return None
 
 
-def _extract_used_total_mb(payload: Any) -> Tuple[float | None, float | None]:
+def _extract_used_total_mb(payload: Any) -> Tuple[Optional[float], Optional[float]]:
     """
     Best-effort parser for Melchior /api/status payload variants.
     Supports forms like:
@@ -524,7 +524,7 @@ def calibrate_distributed_ngl(
     max_rounds: int = 4,
     min_ngl: int = 8,
     max_ngl: int = 80,
-    initial_ngl: int | None = None,
+    initial_ngl: Optional[int] = None,
     hard_cycle: bool = True,
 ) -> Dict[str, Any]:
     """

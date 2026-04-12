@@ -98,7 +98,7 @@ class RouteExplanationCollector:
         return [e.as_dict() for e in self._entries]
 
     @property
-    def dispatched_skill(self) -> str | None:
+    def dispatched_skill(self) -> Optional[str]:
         """Return the skill that was actually dispatched, if any."""
         for e in self._entries:
             if e.dispatched:

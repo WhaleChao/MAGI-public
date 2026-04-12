@@ -34,8 +34,13 @@ REQUIRE_API_KEY = (
 
 def _get_calling_user_id() -> str:
     """Extract user ID from Flask request context."""
-    if current_user and current_user.is_authenticated:
-        return str(getattr(current_user, "id", "unknown"))
+    try:
+        if current_user and current_user.is_authenticated:
+            return str(getattr(current_user, "id", "unknown"))
+    except Exception:
+        # Some Flask apps (for example the Tools API) do not initialize
+        # flask-login. Treat those requests as anonymous instead of 500ing.
+        return "anonymous"
     return "anonymous"
 
 
@@ -172,21 +177,27 @@ def is_admin(user=None) -> bool:
     Returns:
         True if user is admin, False otherwise
     """
-    if user is None:
-        user = current_user
-    if not user or not user.is_authenticated:
+    try:
+        if user is None:
+            user = current_user
+        if not user or not user.is_authenticated:
+            return False
+        return getattr(user, "role", "viewer") == "admin"
+    except Exception:
         return False
-    return getattr(user, "role", "viewer") == "admin"
 
 
 def is_operator_or_admin(user=None) -> bool:
     """Check if user has operator or admin role."""
-    if user is None:
-        user = current_user
-    if not user or not user.is_authenticated:
+    try:
+        if user is None:
+            user = current_user
+        if not user or not user.is_authenticated:
+            return False
+        role = getattr(user, "role", "viewer")
+        return role in {"operator", "admin"}
+    except Exception:
         return False
-    role = getattr(user, "role", "viewer")
-    return role in {"operator", "admin"}
 
 
 def check_authorization(required_role: str) -> tuple[bool, str]:
@@ -196,15 +207,18 @@ def check_authorization(required_role: str) -> tuple[bool, str]:
     Returns:
         (allowed: bool, reason: str) tuple
     """
-    if not (current_user and current_user.is_authenticated):
+    try:
+        if not (current_user and current_user.is_authenticated):
+            return False, "not_authenticated"
+
+        user_role = getattr(current_user, "role", "viewer") or "viewer"
+        role_hierarchy = {"admin": 3, "operator": 2, "viewer": 1}
+        required_level = role_hierarchy.get(required_role, 0)
+        user_level = role_hierarchy.get(user_role, 0)
+
+        if user_level < required_level:
+            return False, f"insufficient_role: has {user_role}, needs {required_role}"
+
+        return True, "authorized"
+    except Exception:
         return False, "not_authenticated"
-
-    user_role = getattr(current_user, "role", "viewer") or "viewer"
-    role_hierarchy = {"admin": 3, "operator": 2, "viewer": 1}
-    required_level = role_hierarchy.get(required_role, 0)
-    user_level = role_hierarchy.get(user_role, 0)
-
-    if user_level < required_level:
-        return False, f"insufficient_role: has {user_role}, needs {required_role}"
-
-    return True, "authorized"

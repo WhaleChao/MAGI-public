@@ -152,7 +152,7 @@ RE_AD_DATE = re.compile(
 )
 
 
-def _extract_roc_date(text: str) -> str | None:
+def _extract_roc_date(text: str) -> Optional[str]:
     """Extract first ROC date, return 'RRR.MM.DD' or None."""
     m = RE_ROC_DATE.search(text)
     if m:
@@ -232,7 +232,7 @@ def _is_prior_record_page(text: str) -> bool:
     return count >= 2
 
 
-def _detect_doc_type(text: str, in_prior_record: bool = False) -> tuple[str | None, int]:
+def _detect_doc_type(text: str, in_prior_record: bool = False) -> tuple[Optional[str], int]:
     """
     Detect document type from page text.
     Returns (label, level) or (None, 0).
@@ -280,7 +280,7 @@ def _ocr_page(page) -> str:
 
 def scan_and_bookmark(
     pdf_path: str,
-    output_path: str | None = None,
+    output_path: Optional[str] = None,
     dry_run: bool = False,
     default_name: str = "",
     min_text_len: int = 30,

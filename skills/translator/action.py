@@ -817,6 +817,32 @@ def translate(payload: dict) -> dict:
         "llm_timeout": llm_timeout,
     }
 
+    short_text = str(inner_payload.get("text") or "").strip()
+    stable_primary_enabled = str(
+        os.environ.get("MAGI_TRANSLATOR_STABLE_PRIMARY", "1") or "1"
+    ).strip().lower() in {"1", "true", "yes", "on"}
+    stable_primary_max_chars = int(os.environ.get("MAGI_TRANSLATOR_STABLE_PRIMARY_MAX_CHARS", "1600") or "1600")
+    if stable_primary_enabled and short_text and len(short_text) <= max(120, stable_primary_max_chars):
+        try:
+            out = _translate_via_google_gtx(
+                short_text,
+                target_lang=str(inner_payload.get("target_lang") or "繁體中文"),
+                timeout_sec=min(12, max(5, timeout_sec // 3)),
+            )
+            if out.strip():
+                return {
+                    "success": True,
+                    "mode": inner_payload.get("mode") or "full",
+                    "target_lang": inner_payload.get("target_lang") or "繁體中文",
+                    "source_lang": inner_payload.get("source_lang") or "auto",
+                    "exported": False,
+                    "text": out.strip(),
+                    "provider": "google_gtx_primary",
+                    "degraded": False,
+                }
+        except Exception:
+            logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 824, exc_info=True)
+
     cmd = [sys.executable, __file__, "--task", "_translate_inner"]
     env = os.environ.copy()
     env["MAGI_TRANSLATOR_NO_VENV"] = "1"

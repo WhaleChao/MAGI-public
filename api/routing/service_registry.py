@@ -105,7 +105,7 @@ def reload() -> None:
 # Public API
 # ---------------------------------------------------------------------------
 
-def get_service(name: str) -> ServiceEndpoint | None:
+def get_service(name: str) -> Optional[ServiceEndpoint]:
     """Return the *ServiceEndpoint* for *name*, or ``None``."""
     _ensure_loaded()
     return _registry.get(name)

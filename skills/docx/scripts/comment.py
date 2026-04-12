@@ -95,7 +95,7 @@ def _append_xml(xml_path: Path, root_tag: str, content: str) -> None:
     xml_path.write_text(output, encoding="utf-8")
 
 
-def _find_para_id(comments_path: Path, comment_id: int) -> str | None:
+def _find_para_id(comments_path: Path, comment_id: int) -> Optional[str]:
     dom = defusedxml.minidom.parseString(comments_path.read_text(encoding="utf-8"))
     for c in dom.getElementsByTagName("w:comment"):
         if c.getAttribute("w:id") == str(comment_id):
@@ -221,7 +221,7 @@ def add_comment(
     text: str,
     author: str = "Claude",
     initials: str = "C",
-    parent_id: int | None = None,
+    parent_id: Optional[int] = None,
 ) -> tuple[str, str]:
     word = Path(unpacked_dir) / "word"
     if not word.exists():

@@ -34,8 +34,8 @@ class ModelRole:
     name: str
     description: str
     model: str
-    fallback_role: str | None = None
-    env_override: str | None = None
+    fallback_role: Optional[str] = None
+    env_override: Optional[str] = None
     env_aliases: tuple[str, ...] = ()
 
 
@@ -49,7 +49,7 @@ _aliases: set[str] = set()
 _loaded = False
 
 
-def _resolve_env(env_name: str | None, aliases: list[str] | None = None) -> str | None:
+def _resolve_env(env_name: Optional[str], aliases: list[str] | None = None) -> Optional[str]:
     """Check env var + aliases, return first non-empty value or None."""
     if env_name:
         val = (os.environ.get(env_name) or "").strip()
@@ -159,13 +159,13 @@ def get_role_model(role: str) -> str:
     return TEXT_PRIMARY_MODEL
 
 
-def is_alias(name: str | None) -> bool:
+def is_alias(name: Optional[str]) -> bool:
     """Return True if *name* is a known legacy model alias."""
     _ensure_loaded()
     return str(name or "").strip().lower() in _aliases
 
 
-def resolve_model(name: str | None = None, *, available: Iterable[str] | None = None) -> str:
+def resolve_model(name: Optional[str] = None, *, available: Iterable[str] | None = None) -> str:
     """Resolve a model name, handling aliases and availability.
 
     Compatible with ``model_config.resolve_text_model()``.
@@ -198,7 +198,7 @@ def list_roles() -> list[ModelRole]:
     return list(_roles.values())
 
 
-def get_role(name: str) -> ModelRole | None:
+def get_role(name: str) -> Optional[ModelRole]:
     """Return the ModelRole for *name*, or None."""
     _ensure_loaded()
     return _roles.get(name)

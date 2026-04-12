@@ -61,7 +61,7 @@ def _now() -> float:
     return time.time()
 
 
-def _row_to_dict(row: sqlite3.Row | None) -> dict:
+def _row_to_dict(row: sqlite3.Optional[Row]) -> dict:
     if row is None:
         return {}
     return dict(row)
@@ -86,7 +86,7 @@ class _ConnectionProxy:
         return False
 
 
-def _open_conn(db_path: str | None = None) -> sqlite3.Connection:
+def _open_conn(db_path: Optional[str] = None) -> sqlite3.Connection:
     """Open a fresh SQLite connection (caller MUST close it)."""
     path = db_path or _DB_PATH
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -100,7 +100,7 @@ def _open_conn(db_path: str | None = None) -> sqlite3.Connection:
 # -- MessageQueue class -----------------------------------------------------
 
 class MessageQueue:
-    def __init__(self, db_path: str | None = None):
+    def __init__(self, db_path: Optional[str] = None):
         self._db = db_path or _DB_PATH
         self._lock = threading.Lock()
         self._init_db()
@@ -124,7 +124,7 @@ class MessageQueue:
         channel_id: str = "",
         reply_token: str = "",
         chat_id: str = "",
-        attachment: str | None = None,
+        attachment: Optional[str] = None,
         correlation_id: str = "",
     ) -> str:
         """Persist message, return msg_id.
@@ -178,7 +178,7 @@ class MessageQueue:
         logger.info("MQ enqueued %s platform=%s user=%s", msg_id, platform, user_id)
         return msg_id
 
-    def claim(self, msg_id: str) -> dict | None:
+    def claim(self, msg_id: str) -> Optional[dict]:
         """Atomically set status='processing', worker_pid, attempts+=1.
 
         Returns message dict or None if not claimable.
@@ -332,7 +332,7 @@ class MessageQueue:
 
 # -- Module-level singleton -------------------------------------------------
 
-_mq: MessageQueue | None = None
+_mq: Optional[MessageQueue] = None
 
 
 def get_queue() -> MessageQueue:

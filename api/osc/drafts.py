@@ -683,7 +683,7 @@ def _osc_build_archive_preview(limit: int = 300) -> dict:
 # JSON helpers
 # ═══════════════════════════════════════════════════════════════════════════
 
-def _osc_template_data_json_or_wrap(v: str | None) -> str | None:
+def _osc_template_data_json_or_wrap(v: Optional[str]) -> Optional[str]:
     """
     document_templates.template_data has CHECK(json_valid(...)).
     Accept plain text from UI and wrap into JSON to avoid 4025 failures.
@@ -698,7 +698,7 @@ def _osc_template_data_json_or_wrap(v: str | None) -> str | None:
         return json.dumps({"content": s}, ensure_ascii=False)
 
 
-def _osc_json_or_wrap(v, fallback_key: str = "content") -> str | None:
+def _osc_json_or_wrap(v, fallback_key: str = "content") -> Optional[str]:
     s = ("" if v is None else str(v)).strip()
     if not s:
         return None

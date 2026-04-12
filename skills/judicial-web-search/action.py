@@ -7,7 +7,11 @@ import re
 import subprocess
 import sys
 import hashlib
+import html
 from urllib.parse import urljoin
+from bs4 import BeautifulSoup
+import requests
+import urllib3
 _MAGI_ROOT = os.path.abspath(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 import sys as _sys
 if _MAGI_ROOT not in _sys.path:
@@ -19,6 +23,7 @@ VENV_PY = os.environ.get("JUDICIAL_VENV_PY", f"{_MAGI_ROOT}/.venv_judicial/bin/p
 CHROME_PATH = os.environ.get("JUDICIAL_CHROME_PATH", "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome").strip()
 BASE = "https://judgment.judicial.gov.tw/FJUD/Default_AD.aspx"
 CACHE_DIR = os.environ.get("JUDICIAL_CACHE_DIR", f"{_MAGI_ROOT}/.cache/judicial_web_search").strip()
+urllib3.disable_warnings()
 
 
 def _preview_limit() -> int:
@@ -91,6 +96,190 @@ def _launch(headless: bool):
     return p, browser
 
 
+def _prefer_http_fetch() -> bool:
+    return os.environ.get("MAGI_USE_SCRAPLING", "0").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _verify_ssl() -> bool:
+    return os.environ.get("MAGI_JUDICIAL_VERIFY_SSL", "0").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _requests_session() -> requests.Session:
+    session = requests.Session()
+    session.headers.update(
+        {
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36",
+            "Referer": BASE,
+        }
+    )
+    return session
+
+
+def _extract_hidden_fields(soup: BeautifulSoup) -> dict:
+    payload = {}
+    for name in ("__VIEWSTATE", "__VIEWSTATEGENERATOR", "__EVENTVALIDATION", "__VIEWSTATEENCRYPTED"):
+        node = soup.select_one(f'input[name="{name}"]')
+        payload[name] = node.get("value", "") if node else ""
+    return payload
+
+
+def _parse_result_items(results_html: str, base_url: str) -> list:
+    soup = BeautifulSoup(results_html or "", "html.parser")
+    items = []
+    seen = set()
+    for link in soup.select('a[href*="data.aspx?ty=JD"]'):
+        href = str(link.get("href") or "").strip()
+        title = " ".join(link.get_text(" ", strip=True).split())
+        if not href or not title:
+            continue
+        full_url = urljoin(base_url, href)
+        if full_url in seen:
+            continue
+        seen.add(full_url)
+        items.append({"title": title, "url": full_url})
+    return items
+
+
+def _next_page_href(results_html: str, base_url: str) -> str:
+    soup = BeautifulSoup(results_html or "", "html.parser")
+    link = soup.find("a", string=lambda text: bool(text and "下一頁" in text))
+    if not link:
+        return ""
+    href = str(link.get("href") or "").strip()
+    return urljoin(base_url, html.unescape(href)) if href else ""
+
+
+def _search_http_impl(
+    keywords: str,
+    max_results: int = 10,
+    timeout_sec: int = 60,
+    courts=None,
+    case_year: str = "",
+    case_word: str = "",
+    case_no: str = "",
+) -> dict:
+    kw = (keywords or "").strip()
+    has_structured_filters = bool((courts or []) or (case_year or "").strip() or (case_word or "").strip() or (case_no or "").strip())
+    if (not kw) and (not has_structured_filters):
+        return {"success": False, "error": "missing keywords_or_case_filters"}
+
+    max_n = max(1, int(max_results or 10))
+    timeout = max(10, int(timeout_sec or 60))
+    session = _requests_session()
+    verify_ssl = _verify_ssl()
+
+    try:
+        resp = session.get(BASE, timeout=timeout, verify=verify_ssl)
+        resp.raise_for_status()
+        soup = BeautifulSoup(resp.text, "html.parser")
+        payload = _extract_hidden_fields(soup)
+        payload.update(
+            {
+                "jud_kw": kw,
+                "jud_year": str(case_year or "").strip(),
+                "sel_judword": "",
+                "jud_case": str(case_word or "").strip(),
+                "jud_no": str(case_no or "").strip(),
+                "jud_no_end": "",
+                "dy1": "",
+                "dm1": "",
+                "dd1": "",
+                "dy2": "",
+                "dm2": "",
+                "dd2": "",
+                "jud_title": "",
+                "jud_jmain": "",
+                "KbStart": "",
+                "KbEnd": "",
+                "judtype": "JUDBOOK",
+                "whosub": "1",
+                "ctl00$cp_content$btnQry": "送出查詢",
+            }
+        )
+        if courts:
+            payload["jud_court"] = [str(c or "").strip() for c in courts if str(c or "").strip()]
+        post_resp = session.post(BASE, data=payload, timeout=timeout, verify=verify_ssl)
+        post_resp.raise_for_status()
+        iframe_match = re.search(r'<iframe[^>]+src="([^"]+)"[^>]+id="iframe-data"', post_resp.text)
+        if not iframe_match:
+            return {"success": False, "error": "missing_iframe_results"}
+
+        next_url = urljoin(BASE, html.unescape(iframe_match.group(1)))
+        items = []
+        seen = set()
+        for _ in range(10):
+            page_resp = session.get(next_url, timeout=timeout, verify=verify_ssl)
+            page_resp.raise_for_status()
+            page_items = _parse_result_items(page_resp.text, next_url)
+            added = 0
+            for item in page_items:
+                if item["url"] in seen:
+                    continue
+                seen.add(item["url"])
+                items.append(item)
+                added += 1
+                if len(items) >= max_n:
+                    break
+            if len(items) >= max_n:
+                break
+            next_href = _next_page_href(page_resp.text, next_url)
+            if not next_href or next_href == next_url or added == 0:
+                break
+            next_url = next_href
+
+        if not items:
+            return {"success": False, "error": "no_results"}
+
+        try:
+            os.makedirs(CACHE_DIR, exist_ok=True)
+            key_seed = json.dumps(
+                {
+                    "keywords": kw,
+                    "courts": courts or [],
+                    "case_year": str(case_year or ""),
+                    "case_word": str(case_word or ""),
+                    "case_no": str(case_no or ""),
+                    "engine": "http_form",
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+            key = hashlib.sha256(("search|" + key_seed).encode("utf-8")).hexdigest()[:16]
+            path = os.path.join(CACHE_DIR, f"{key}.results.json")
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(
+                    {
+                        "keywords": kw,
+                        "courts": courts or [],
+                        "case_year": str(case_year or ""),
+                        "case_word": str(case_word or ""),
+                        "case_no": str(case_no or ""),
+                        "results": items,
+                        "engine": "http_form",
+                    },
+                    f,
+                    ensure_ascii=False,
+                    indent=2,
+                )
+        except Exception:
+            path = ""
+
+        preview_cap = _preview_limit()
+        preview = items[: min(preview_cap, len(items))]
+        return {
+            "success": True,
+            "keywords": kw,
+            "structured_only": (not kw) and has_structured_filters,
+            "count": len(items),
+            "results": preview,
+            "results_truncated": len(preview) != len(items),
+            "results_path": path,
+            "engine": "http_form",
+        }
+    except Exception as e:
+        return {"success": False, "error": f"{type(e).__name__}: {str(e)[:240]}", "engine": "http_form"}
+
+
 def _search_impl(
     keywords: str,
     max_results: int = 10,
@@ -101,6 +290,18 @@ def _search_impl(
     case_word: str = "",
     case_no: str = "",
 ) -> dict:
+    if _prefer_http_fetch():
+        http_result = _search_http_impl(
+            keywords=keywords,
+            max_results=max_results,
+            timeout_sec=timeout_sec,
+            courts=courts,
+            case_year=case_year,
+            case_word=case_word,
+            case_no=case_no,
+        )
+        if http_result.get("success"):
+            return http_result
     kw = (keywords or "").strip()
     has_structured_filters = bool((courts or []) or (case_year or "").strip() or (case_word or "").strip() or (case_no or "").strip())
     if (not kw) and (not has_structured_filters):
@@ -369,6 +570,29 @@ def _fetch_text_impl(url: str, headless: bool = True, timeout_sec: int = 45, max
     u = (url or "").strip()
     if not u:
         return {"success": False, "error": "missing url"}
+    if _prefer_http_fetch():
+        try:
+            from skills.research.web_research import fetch_url_content
+
+            fetched = fetch_url_content(u, max_length=max_chars, exempt_iron_dome=True)
+            text = _clean_text(str(fetched.get("content") or ""))
+            if fetched.get("success") and text:
+                os.makedirs(CACHE_DIR, exist_ok=True)
+                key = hashlib.sha256(u.encode("utf-8")).hexdigest()[:16]
+                path = os.path.join(CACHE_DIR, f"{key}.txt")
+                with open(path, "w", encoding="utf-8") as f:
+                    f.write(text[:max_chars])
+                preview = (text[:220] + "...") if len(text) > 220 else text
+                return {
+                    "success": True,
+                    "url": u,
+                    "text_preview": preview,
+                    "text_path": path,
+                    "text_chars": min(len(text), int(max_chars)),
+                    "engine": str(fetched.get("engine") or "http_fetch"),
+                }
+        except Exception:
+            logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 239, exc_info=True)
     timeout_ms = int(timeout_sec) * 1000
     max_n = int(max_chars) if int(max_chars) > 0 else 500000
 
@@ -453,8 +677,9 @@ def main() -> int:
     if task in {"help", "summary", "list"}:
         return _ok({"success": True, "commands": ["help", "self_test", "search {..json..}", "fetch_text {..json..}"]})
 
-    # If we're running inside the dedicated venv, execute Playwright logic directly.
-    if os.environ.get("JUDICIAL_USE_VENV", "").strip() == "1":
+    # If we're running inside the dedicated venv, or if HTTP-form fetching is enabled,
+    # execute logic directly in the current interpreter.
+    if os.environ.get("JUDICIAL_USE_VENV", "").strip() == "1" or _prefer_http_fetch():
         if task == "self_test":
             return _ok(_self_test_impl())
         if task.startswith("search"):

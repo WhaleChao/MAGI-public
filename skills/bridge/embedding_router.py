@@ -419,13 +419,23 @@ class EmbeddingRouter:
         # - DIRECT: high confidence, clear winner
         # - GUIDED: moderate confidence, use as hint
         # - LOW: weak match, probably not a skill command
-        # Note: CHAT vs non-CHAT is IntentionClassifier's job, not ours
         if best_score >= _DIRECT_THRESH and gap >= 0.02:
             tier = "DIRECT"
         elif best_score >= _GUIDED_THRESH:
             tier = "GUIDED"
         else:
             tier = "LOW"
+
+        # ── Casual Suppression Guard (Phase A) ──
+        # If the user is just small-talking, suppress heavy routes even if they barely match
+        try:
+            from skills.bridge.grounded_ai import is_small_talk_intent, _classify_query_tier
+            msg_tier = _classify_query_tier(msg)
+            if is_small_talk_intent(msg, msg_tier):
+                logger.info(f"🛡️ Casual suppression active: suppressing the route to {best_skill}")
+                return None
+        except Exception as e:
+            logger.debug(f"Casual suppression check skipped: {e}")
 
         logger.info(
             f"🧭 Route: '{msg[:40]}' → {best_skill} "

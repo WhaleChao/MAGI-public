@@ -38,14 +38,14 @@ _PROBE_TIMEOUT = 5  # TCP connect timeout
 
 # ── 狀態 ──────────────────────────────────────────────────────
 _lock = threading.Lock()
-_remote_ok: bool | None = None       # None = 尚未檢查
+_remote_ok: Optional[bool] = None       # None = 尚未檢查
 _active_host: str = _REMOTE_HOST     # 目前生效的 host
 _active_port: int = _REMOTE_PORT
 _last_probe: float = 0.0
 _last_switch: float = 0.0
 _failover_active: bool = False       # True = 目前在用本機墊檔
 _syncing: bool = False
-_monitor_thread: threading.Thread | None = None
+_monitor_thread: threading.Optional[Thread] = None
 
 
 # ── 探測 ──────────────────────────────────────────────────────

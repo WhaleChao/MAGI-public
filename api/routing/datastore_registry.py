@@ -35,11 +35,11 @@ class Datastore:
     name: str
     description: str
     driver: str
-    host: str | None
-    port: int | None
-    database: str | None
-    user: str | None = None
-    password: str | None = None
+    host: Optional[str]
+    port: Optional[int]
+    database: Optional[str]
+    user: Optional[str] = None
+    password: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -67,7 +67,7 @@ def _load_registry() -> dict[str, Datastore]:
     for name, cfg in raw.get("datastores", {}).items():
         env = cfg.get("env_override", {})
 
-        def _env_or(key: str, fallback: Any = None) -> str | None:
+        def _env_or(key: str, fallback: Any = None) -> Optional[str]:
             env_name = env.get(key, "")
             val = (os.environ.get(env_name) or "").strip() if env_name else ""
             return val if val else (cfg.get(key) if cfg.get(key) is not None else fallback)
@@ -111,7 +111,7 @@ def reload() -> None:
 # Public API
 # ---------------------------------------------------------------------------
 
-def get_datastore(name: str) -> Datastore | None:
+def get_datastore(name: str) -> Optional[Datastore]:
     """Return the *Datastore* for *name*, or ``None``."""
     _ensure_loaded()
     return _stores.get(name)

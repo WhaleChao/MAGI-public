@@ -40,6 +40,7 @@ ProgressFn = Callable[[str], None]
 # ---------------------------------------------------------------------------
 
 _ENABLED = os.environ.get("MAGI_TRI_AGENT_ENABLED", "1").strip() in {"1", "true", "yes"}
+_ALLOW_LLM_FALLBACK = os.environ.get("MAGI_TRI_AGENT_LLM_FALLBACK", "0").strip().lower() in {"1", "true", "yes"}
 _MAX_REVISIONS = 1
 _TIMEOUT_PER_AGENT = int(os.environ.get("MAGI_TRI_AGENT_TIMEOUT", "45"))
 
@@ -48,7 +49,7 @@ _TIMEOUT_PER_AGENT = int(os.environ.get("MAGI_TRI_AGENT_TIMEOUT", "45"))
 # Data classes
 # ---------------------------------------------------------------------------
 
-@dataclass(slots=True)
+@dataclass()
 class TriAgentVerificationReport:
     passed: bool
     draft_answer: str
@@ -142,7 +143,7 @@ def _call_llm(
     system_prompt: str,
     user_prompt: str,
     *,
-    generate: VerifierGenerate | None = None,
+    generate: Optional[VerifierGenerate] = None,
     timeout: int = 45,
 ) -> str:
     """Call the LLM with a system+user prompt pair.
@@ -153,6 +154,12 @@ def _call_llm(
 
     if callable(generate):
         return str(generate(full_prompt) or "").strip()
+
+    # Default to heuristic-only mode unless live fallback is explicitly enabled.
+    # This keeps verification deterministic in test/offline environments and
+    # avoids blocking on unavailable local inference services.
+    if not _ALLOW_LLM_FALLBACK:
+        return ""
 
     try:
         from skills.bridge.inference_gateway import InferenceGateway
@@ -197,8 +204,8 @@ def run_tri_agent_verification(
     memory_context: str = "",
     web_context: str = "",
     conversation_history: str = "",
-    generate: VerifierGenerate | None = None,
-    progress_fn: ProgressFn | None = None,
+    generate: Optional[VerifierGenerate] = None,
+    progress_fn: Optional[ProgressFn] = None,
     timeout: int = 120,
 ) -> TriAgentVerificationReport:
     """Run the three sages verification pipeline.
@@ -367,7 +374,7 @@ def run_tri_agent_verification(
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _notify(fn: ProgressFn | None, msg: str) -> None:
+def _notify(fn: Optional[ProgressFn], msg: str) -> None:
     if callable(fn):
         try:
             fn(msg)

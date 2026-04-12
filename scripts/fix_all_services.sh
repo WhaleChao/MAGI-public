@@ -12,6 +12,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MAGI_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 cd "${MAGI_ROOT}"
 
+# ── 環境變數修復 (MAC) ──
+export PATH="/opt/homebrew/bin:/usr/local/bin:${PATH}"
+
 echo "═══════════════════════════════════════"
 echo "  MAGI 服務修復工具"
 echo "═══════════════════════════════════════"
@@ -123,8 +126,8 @@ check "oMLX Embeddings (8081)" "http://127.0.0.1:8081/v1/models"
 check "MAGI Server (5002)" "http://127.0.0.1:5002/health"
 check "Tools API (5003)" "http://127.0.0.1:5003/sages"
 
-# MariaDB check
-if mysqladmin ping -h 127.0.0.1 --silent 2>/dev/null; then
+# MariaDB check (ping or process)
+if mysqladmin ping -h 127.0.0.1 --silent 2>/dev/null || pgrep -x mariadbd >/dev/null; then
     echo "  ✅ MariaDB"
 else
     echo "  ❌ MariaDB"

@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from .models import PermissionMode, PermissionRule
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class PermissionPolicy:
     """Immutable permission policy."""
 
@@ -19,7 +19,7 @@ class PermissionPolicy:
         cls,
         rules: list[PermissionRule] | tuple[PermissionRule, ...],
         *,
-        mode: str | PermissionMode | None = None,
+        mode: str | Optional[PermissionMode] = None,
     ) -> "PermissionPolicy":
         return cls(mode=PermissionMode.coerce(mode), rules=tuple(rules))
 

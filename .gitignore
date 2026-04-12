@@ -273,3 +273,6 @@ toggle_codex_distributed_mode.sh
 magi_status.json
 Caddyfile_openclaw
 _autopilot_kill_log.jsonl
+
+# Personal website nested repository
+whalechao.github.io/

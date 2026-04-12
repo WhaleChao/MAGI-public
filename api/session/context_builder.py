@@ -14,11 +14,11 @@ class SessionContextBuilder:
 
     def __init__(
         self,
-        store: SessionStore | None = None,
+        store: Optional[SessionStore] = None,
         *,
-        history: SessionHistory | None = None,
-        summaries: SessionSummaryManager | None = None,
-        pending: SessionPendingManager | None = None,
+        history: Optional[SessionHistory] = None,
+        summaries: Optional[SessionSummaryManager] = None,
+        pending: Optional[SessionPendingManager] = None,
     ) -> None:
         base_store = store
         if base_store is None:
@@ -40,8 +40,8 @@ class SessionContextBuilder:
         session_id: str,
         *,
         system_prompt: str = "",
-        history_limit: int | None = None,
-        summary_limit: int | None = None,
+        history_limit: Optional[int] = None,
+        summary_limit: Optional[int] = None,
     ) -> SessionContext:
         raw_history = self.history.list(session_id)
         summaries = self.summaries.list(session_id)
@@ -69,11 +69,11 @@ class SessionContextBuilder:
         self,
         raw_history: list[SessionMessage],
         summaries: list[SessionSummary],
-        pending: SessionPendingState | None,
+        pending: Optional[SessionPendingState],
         *,
         system_prompt: str = "",
-        history_limit: int | None = None,
-        summary_limit: int | None = None,
+        history_limit: Optional[int] = None,
+        summary_limit: Optional[int] = None,
     ) -> list[dict[str, Any]]:
         messages: list[dict[str, Any]] = []
         if system_prompt.strip():
@@ -137,8 +137,8 @@ class SessionContextBuilder:
         session_id: str,
         *,
         system_prompt: str = "",
-        history_limit: int | None = None,
-        summary_limit: int | None = None,
+        history_limit: Optional[int] = None,
+        summary_limit: Optional[int] = None,
     ) -> str:
         return self.build(
             session_id,
@@ -151,10 +151,10 @@ class SessionContextBuilder:
 def build_session_context(
     session_id: str,
     *,
-    store: SessionStore | None = None,
+    store: Optional[SessionStore] = None,
     system_prompt: str = "",
-    history_limit: int | None = None,
-    summary_limit: int | None = None,
+    history_limit: Optional[int] = None,
+    summary_limit: Optional[int] = None,
 ) -> SessionContext:
     return SessionContextBuilder(store).build(
         session_id,
@@ -167,11 +167,11 @@ def build_session_context(
 def assemble_session_messages(
     raw_history: list[SessionMessage],
     summaries: list[SessionSummary],
-    pending: SessionPendingState | None,
+    pending: Optional[SessionPendingState],
     *,
     system_prompt: str = "",
-    history_limit: int | None = None,
-    summary_limit: int | None = None,
+    history_limit: Optional[int] = None,
+    summary_limit: Optional[int] = None,
 ) -> list[dict[str, Any]]:
     return SessionContextBuilder().assemble(
         raw_history,

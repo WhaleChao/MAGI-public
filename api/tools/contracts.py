@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 
-@dataclass(slots=True)
+@dataclass()
 class ToolContext:
     user_id: str = ""
     platform: str = ""
@@ -12,7 +12,7 @@ class ToolContext:
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
-@dataclass(slots=True)
+@dataclass()
 class ToolSpec:
     name: str
     description: str = ""
@@ -32,7 +32,7 @@ class ToolSpec:
         }
 
 
-@dataclass(slots=True)
+@dataclass()
 class ToolResult:
     tool_name: str
     success: bool

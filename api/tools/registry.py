@@ -8,7 +8,7 @@ from api.tools.contracts import ToolContext, ToolResult, ToolSpec
 from api.tools.executors import CallableToolExecutor
 
 
-@dataclass(slots=True)
+@dataclass()
 class RegisteredTool:
     spec: ToolSpec
     executor: ToolExecutor
@@ -60,7 +60,7 @@ class ToolRegistry:
         )
         return self.register(spec, CallableToolExecutor(fn), aliases=aliases)
 
-    def get(self, name: str) -> RegisteredTool | None:
+    def get(self, name: str) -> Optional[RegisteredTool]:
         return self._tools.get(name)
 
     def list_tools(self) -> list[dict[str, Any]]:
@@ -77,7 +77,7 @@ class ToolRegistry:
         self,
         name: str,
         arguments: Mapping[str, Any] | None = None,
-        context: ToolContext | None = None,
+        context: Optional[ToolContext] = None,
     ) -> ToolResult:
         entry = self.get(name)
         if entry is None:

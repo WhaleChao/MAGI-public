@@ -33,7 +33,7 @@ except Exception:
 NAS_USER = os.getenv("MAGI_NAS_USER", "lumi63181107")
 
 # 動態解析結果快取（host, expiry_time）
-_resolved_host: str | None = None
+_resolved_host: Optional[str] = None
 _resolved_expiry: float = 0.0
 _RESOLVE_TTL = 120  # 快取 120 秒
 
@@ -261,7 +261,7 @@ def ensure_nas_mounts() -> dict[str, bool]:
 
 # ── 背景守衛 ─────────────────────────────────────────────────
 
-_guard_thread: threading.Thread | None = None
+_guard_thread: threading.Optional[Thread] = None
 
 
 def _guard_loop(interval: int) -> None:

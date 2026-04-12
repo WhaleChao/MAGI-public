@@ -8,7 +8,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 SEED_FILE = os.path.join(BASE_DIR, "knowledge_seed.json")
 
 def _extract_terms(text):
-    return set(re.findall("[a-zA-Z0-9_\-一-鿿]{2,}", (text or "").lower()))
+    return set(re.findall(r"[a-zA-Z0-9_\-一-鿿]{2,}", (text or "").lower()))
 
 def main():
     parser = argparse.ArgumentParser(description="CASPER internalized skill responder")

@@ -173,7 +173,7 @@ def remove_target(url: str) -> dict:
     return {"success": True, "removed": removed, "url": u, "state_path": STATE_PATH}
 
 
-def _eventlog(event: str, *, ok: bool | None = None, payload: dict | None = None, tags: dict | None = None) -> None:
+def _eventlog(event: str, *, ok: Optional[bool] = None, payload: Optional[dict] = None, tags: Optional[dict] = None) -> None:
     try:
         if CODE_DIR not in sys.path:
             sys.path.insert(0, CODE_DIR)

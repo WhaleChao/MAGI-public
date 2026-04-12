@@ -61,6 +61,20 @@ def _chunk_text(text: str, chunk_chars: int = 1200, overlap: int = 120, max_chun
     return out
 
 
+def _prepare_embedding_inputs(parts: List[str]) -> List[str]:
+    if not parts:
+        return []
+    try:
+        from skills.engine.chinese_nlp import segment_for_indexing_many
+
+        prepared = segment_for_indexing_many(parts)
+        if isinstance(prepared, list) and len(prepared) == len(parts):
+            return [str(item or "").strip() or parts[idx] for idx, item in enumerate(prepared)]
+    except Exception:
+        logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 55, exc_info=True)
+    return list(parts)
+
+
 def ingest_sections_to_vector_memory(
     *,
     url: str,
@@ -85,6 +99,7 @@ def ingest_sections_to_vector_memory(
     sections = [s for s in (sections or []) if isinstance(s, dict)]
     chunks_written = 0
     items = []
+    budget = int(max(1, max_chunks_total))
 
     batch_items = []
     for sec in sections:
@@ -96,6 +111,7 @@ def ingest_sections_to_vector_memory(
         parts = _chunk_text(body, chunk_chars=chunk_chars, overlap=overlap, max_chunks=budget)
         if not parts:
             continue
+        embedding_parts = _prepare_embedding_inputs(parts)
         for idx, part in enumerate(parts, start=1):
             if chunks_written >= budget:
                 break
@@ -103,7 +119,13 @@ def ingest_sections_to_vector_memory(
                 f"doc={doc_key}|kind=url|url={url}|title={title}|"
                 f"section={sec_id}|section_title={sec_title}|chunk={idx}/{len(parts)}"
             )
-            batch_items.append({"content": part, "source": src})
+            batch_items.append(
+                {
+                    "content": part,
+                    "source": src,
+                    "embedding_input": embedding_parts[idx - 1],
+                }
+            )
             chunks_written += 1
         budget = max(0, budget - len(parts))
         if chunks_written >= int(max_chunks_total):
@@ -167,16 +189,23 @@ def ingest_text_to_vector_memory(
 
     chunks_written = 0
     items = []
-    
+
     batch_items = []
+    embedding_parts = _prepare_embedding_inputs(parts)
     for idx, part in enumerate(parts, start=1):
         src = f"doc={doc_key}|kind={kind}|primary={primary}|title={title}|chunk={idx}/{len(parts)}"
-        batch_items.append({"content": part, "source": src})
-    
+        batch_items.append(
+            {
+                "content": part,
+                "source": src,
+                "embedding_input": embedding_parts[idx - 1],
+            }
+        )
+
     # Use batch insertion to avoid long hangs and sequential timeouts
     res = remember_batch(batch_items)
     chunks_written = res.get("inserted", 0)
-    
+
     # Reconstruct items for the return dictionary
     for b in batch_items:
         items.append({"source": b["source"], "ok": True, "chars": len(b["content"])})

@@ -12,7 +12,7 @@ TaskCallable = Callable[..., Any]
 
 def _resolve_runtime_and_args(
     args: tuple[Any, ...],
-    runtime: TaskRuntime | None,
+    runtime: Optional[TaskRuntime],
 ) -> tuple[TaskRuntime, tuple[Any, ...]]:
     if runtime is not None:
         return runtime, args
@@ -25,7 +25,7 @@ def _resolve_runtime_and_args(
     return _DEFAULT_TASK_EXECUTION.runtime, args
 
 
-@dataclass(slots=True)
+@dataclass()
 class TaskExecutionResult:
     task: TaskRecord
     output: Any = None
@@ -39,7 +39,7 @@ class TaskExecutionResult:
 class TaskExecution:
     """Compatibility facade expected by the legacy tests and call sites."""
 
-    def __init__(self, runtime: TaskRuntime | None = None) -> None:
+    def __init__(self, runtime: Optional[TaskRuntime] = None) -> None:
         self.runtime = runtime or TaskRuntime()
 
     def create(
@@ -57,7 +57,7 @@ class TaskExecution:
         task_id: str,
         name: str,
         *,
-        description: str | None = None,
+        description: Optional[str] = None,
         metadata: dict[str, Any] | None = None,
     ) -> TaskRecord:
         self.create(task_id, name, description=description or "", metadata=metadata)
@@ -78,17 +78,17 @@ class TaskExecution:
     def cancel(self, task_id: str, *, reason: str = "", **changes: Any) -> TaskRecord:
         return self.runtime.cancel(task_id, reason=reason, **changes)
 
-    def get(self, task_id: str) -> TaskRecord | None:
+    def get(self, task_id: str) -> Optional[TaskRecord]:
         return self.runtime.get(task_id)
 
-    def list(self, *, status: TaskStatus | str | None = None) -> list[TaskRecord]:
+    def list(self, *, status: TaskStatus | Optional[str] = None) -> list[TaskRecord]:
         return self.runtime.list(status=status)
 
     def active(self) -> list[TaskRecord]:
         return self.runtime.active()
 
 
-@dataclass(slots=True)
+@dataclass()
 class TaskExecutor:
     runtime: TaskRuntime = field(default_factory=TaskRuntime)
 
@@ -120,7 +120,7 @@ def create_task(
     *args: Any,
     description: str = "",
     metadata: dict[str, Any] | None = None,
-    runtime: TaskRuntime | None = None,
+    runtime: Optional[TaskRuntime] = None,
 ) -> TaskRecord:
     resolved_runtime, remaining = _resolve_runtime_and_args(args, runtime)
     if len(remaining) < 2:
@@ -133,7 +133,7 @@ def start_task(
     *args: Any,
     description: str = "",
     metadata: dict[str, Any] | None = None,
-    runtime: TaskRuntime | None = None,
+    runtime: Optional[TaskRuntime] = None,
 ) -> TaskRecord:
     resolved_runtime, remaining = _resolve_runtime_and_args(args, runtime)
     if len(remaining) < 2:
@@ -142,28 +142,28 @@ def start_task(
     return TaskExecution(resolved_runtime).start(task_id, name, description=description, metadata=metadata)
 
 
-def update_task(*args: Any, runtime: TaskRuntime | None = None, **changes: Any) -> TaskRecord:
+def update_task(*args: Any, runtime: Optional[TaskRuntime] = None, **changes: Any) -> TaskRecord:
     resolved_runtime, remaining = _resolve_runtime_and_args(args, runtime)
     if not remaining:
         raise TypeError("update_task() missing task_id")
     return TaskExecution(resolved_runtime).update(remaining[0], **changes)
 
 
-def complete_task(*args: Any, result: Any = None, runtime: TaskRuntime | None = None, **changes: Any) -> TaskRecord:
+def complete_task(*args: Any, result: Any = None, runtime: Optional[TaskRuntime] = None, **changes: Any) -> TaskRecord:
     resolved_runtime, remaining = _resolve_runtime_and_args(args, runtime)
     if not remaining:
         raise TypeError("complete_task() missing task_id")
     return TaskExecution(resolved_runtime).complete(remaining[0], result=result, **changes)
 
 
-def fail_task(*args: Any, error: str, runtime: TaskRuntime | None = None, **changes: Any) -> TaskRecord:
+def fail_task(*args: Any, error: str, runtime: Optional[TaskRuntime] = None, **changes: Any) -> TaskRecord:
     resolved_runtime, remaining = _resolve_runtime_and_args(args, runtime)
     if not remaining:
         raise TypeError("fail_task() missing task_id")
     return TaskExecution(resolved_runtime).fail(remaining[0], error=error, **changes)
 
 
-def cancel_task(*args: Any, reason: str = "", runtime: TaskRuntime | None = None, **changes: Any) -> TaskRecord:
+def cancel_task(*args: Any, reason: str = "", runtime: Optional[TaskRuntime] = None, **changes: Any) -> TaskRecord:
     resolved_runtime, remaining = _resolve_runtime_and_args(args, runtime)
     if not remaining:
         raise TypeError("cancel_task() missing task_id")

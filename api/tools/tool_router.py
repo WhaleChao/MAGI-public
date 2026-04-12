@@ -27,7 +27,7 @@ from api.tools.policies import ToolRequirement, classify_tool_requirement, forma
 logger = logging.getLogger(__name__)
 
 
-@dataclass(slots=True)
+@dataclass()
 class ToolRouteResult:
     used_tool: bool = False
     tool_hint: str = ""

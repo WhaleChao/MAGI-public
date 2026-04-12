@@ -22,7 +22,7 @@ from typing import Any
 # Trust tiers (ordered from most to least trustworthy)
 # ---------------------------------------------------------------------------
 
-@dataclass(slots=True, frozen=True)
+@dataclass(frozen=True)
 class TrustTier:
     name: str
     badge: str
@@ -148,5 +148,6 @@ def build_trust_system_instruction() -> str:
     lines.append("- 遇到 [衍生推論] 標記的內容，回答時必須加上「根據目前線索」「尚待確認」等保留語氣。")
     lines.append("- 不得將 [衍生推論] 的內容當作已確認事實引用。")
     lines.append("- 若所有相關記憶都是 [衍生推論] 且無法查證，應坦承「我目前無法確認這個資訊」。")
+    lines.append("- 上述標記僅供內部判斷，回答時不得直接輸出 [已驗證事實]、[使用者陳述]、[檢索線索]、[衍生推論] 等標籤字樣。")
 
     return "\n".join(lines)

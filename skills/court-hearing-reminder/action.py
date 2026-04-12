@@ -101,7 +101,7 @@ _REMIND_STATE_PATH = os.environ.get(
 def _load_remind_state() -> Dict[str, Any]:
     """載入提醒狀態 — DB 為權威來源，JSON 僅在 DB 不可用時作為 fallback。"""
     # Try DB first (authoritative)
-    db_sent_keys: list | None = None
+    db_sent_keys: Optional[list] = None
     try:
         from skills.ops.dedup_db import list_done as _dd_list
         rows = _dd_list("hearing_remind", limit=5000)

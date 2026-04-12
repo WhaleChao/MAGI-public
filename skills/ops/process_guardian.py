@@ -11,23 +11,15 @@ import signal
 import logging
 import time
 
+from api.autopilot_artifacts import write_kill_reason as _store_autopilot_kill_reason
+
 logger = logging.getLogger("ProcessGuardian")
 
 def _write_autopilot_kill_reason(pid: int, reason: str) -> None:
     """寫入 kill reason — 同時寫入統一日誌及 per-PID 檔（供 autopilot 讀取後刪除）。"""
     try:
         magi_root = os.environ.get("MAGI_ROOT_DIR", os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-        # Per-PID file for autopilot signal handler to read
-        reason_path = os.path.join(magi_root, f"_autopilot_kill_reason_{pid}")
-        with open(reason_path, "w", encoding="utf-8") as f:
-            f.write(reason)
-        # Consolidated log (append-only)
-        import datetime as _dt
-        import json as _json
-        log_path = os.path.join(magi_root, "_autopilot_kill_log.jsonl")
-        entry = _json.dumps({"ts": _dt.datetime.now().isoformat(), "pid": pid, "reason": reason}, ensure_ascii=False)
-        with open(log_path, "a", encoding="utf-8") as f:
-            f.write(entry + "\n")
+        _store_autopilot_kill_reason(pid, reason, root=magi_root)
     except Exception:
         logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 23, exc_info=True)
 

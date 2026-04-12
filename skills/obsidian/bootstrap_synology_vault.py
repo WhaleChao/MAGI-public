@@ -65,7 +65,7 @@ SOURCE_SPECS = [
 ]
 
 
-def pick_existing(paths: list[Path]) -> Path | None:
+def pick_existing(paths: list[Path]) -> Optional[Path]:
     for path in paths:
         if path.exists():
             return path

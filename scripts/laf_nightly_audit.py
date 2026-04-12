@@ -1468,6 +1468,8 @@ def send_report(report_text: str, has_issues: bool = False):
             message=report_text,
             severity=severity,
             source="laf_nightly_audit",
+            # 如果沒有問題，DC 鏡像會被 red_phone 的 filter 攔截（clean status report）
+            # 若未來需要強制靜默，可在 topic_key 傳入 "__SILENT__"
             topic_key="laf",
         )
         logger.info("Telegram notification sent: %s", result.get("telegram", False))

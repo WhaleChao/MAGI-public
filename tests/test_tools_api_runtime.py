@@ -146,3 +146,143 @@ def test_summarize_circuit_breaker_degraded_path_emits_post_event(monkeypatch, t
     assert events[1]["status"] == "degraded"
     assert events[1]["ok"] is True
     assert events[1]["error"] == "circuit_open"
+
+
+def test_external_chat_applies_min_timeout_floor(monkeypatch, tools_api_runtime):
+    tools_api, client, _events_path = tools_api_runtime
+    monkeypatch.setenv("MAGI_EXTERNAL_API_KEY", "test-key")
+    monkeypatch.setenv("MAGI_CHAT_TIMEOUT_SEC", "150")
+    monkeypatch.delenv("MAGI_EXTERNAL_CHAT_MIN_TIMEOUT_SEC", raising=False)
+    tools_api._EXTERNAL_KEY_CACHE["ts"] = 0.0
+    tools_api._EXTERNAL_KEY_CACHE["value"] = ""
+
+    class _FakeOrch:
+        def process_message(self, user_id, message, platform, role):
+            return f"ok:{user_id}:{platform}:{role}:{message}"
+
+    captured = {}
+
+    def _fake_timeout(fn, wait_sec, *args, **kwargs):
+        captured["wait_sec"] = wait_sec
+        return True, fn()
+
+    monkeypatch.setattr(tools_api, "_get_osc_orchestrator", lambda: _FakeOrch())
+    monkeypatch.setattr(tools_api, "_run_with_timeout", _fake_timeout)
+
+    response = client.post(
+        "/osc/external/chat",
+        json={
+            "user_id": "external_api_user",
+            "platform": "WEB",
+            "message": "我覺得綠茶滿好喝的，那你呢，你覺得好喝嗎",
+            "timeout_sec": 45,
+            "async": False,
+        },
+        headers={"X-API-Key": "test-key"},
+    )
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["success"] is True
+    assert captured["wait_sec"] == 240
+
+
+def test_external_chat_simple_timeout_opt_in(monkeypatch, tools_api_runtime):
+    tools_api, client, _events_path = tools_api_runtime
+    monkeypatch.setenv("MAGI_EXTERNAL_API_KEY", "test-key")
+    monkeypatch.setenv("MAGI_CHAT_TIMEOUT_SEC", "150")
+    monkeypatch.setenv("MAGI_EXTERNAL_CHAT_SIMPLE_TIMEOUT_OPT_IN", "1")
+    monkeypatch.setenv("MAGI_EXTERNAL_CHAT_SIMPLE_MIN_TIMEOUT_SEC", "45")
+    monkeypatch.delenv("MAGI_EXTERNAL_CHAT_MIN_TIMEOUT_SEC", raising=False)
+    tools_api._EXTERNAL_KEY_CACHE["ts"] = 0.0
+    tools_api._EXTERNAL_KEY_CACHE["value"] = ""
+
+    class _FakeOrch:
+        def process_message(self, user_id, message, platform, role):
+            return f"ok:{user_id}:{platform}:{role}:{message}"
+
+    captured = {}
+
+    def _fake_timeout(fn, wait_sec, *args, **kwargs):
+        captured["wait_sec"] = wait_sec
+        return True, fn()
+
+    monkeypatch.setattr(tools_api, "_get_osc_orchestrator", lambda: _FakeOrch())
+    monkeypatch.setattr(tools_api, "_run_with_timeout", _fake_timeout)
+
+    response = client.post(
+        "/osc/external/chat",
+        json={
+            "user_id": "external_api_user",
+            "platform": "WEB",
+            "message": "我覺得綠茶滿好喝的，那你呢，你覺得好喝嗎",
+            "timeout_sec": 20,
+            "async": False,
+        },
+        headers={"X-API-Key": "test-key"},
+    )
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["success"] is True
+    assert captured["wait_sec"] == 45
+
+
+def test_summarize_circuit_open_uses_resilient_probe(monkeypatch, tools_api_runtime):
+    tools_api, client, _events_path = tools_api_runtime
+    monkeypatch.setattr(tools_api, "_summarize_cb_allow_upstream", lambda: False)
+
+    from api.handlers import summary_handler as _summary_handler
+
+    def _fake_resilient(text, summary_length="medium", progress_callback=None):
+        return {
+            "success": True,
+            "text": "【重點摘要】\n- 已由 resilient 路徑產生可用摘要。",
+            "provider": "resilient_probe",
+        }
+
+    monkeypatch.setattr(_summary_handler, "summarize_text_resilient", _fake_resilient)
+
+    response = client.post(
+        "/summarize",
+        json={"text": "這是一段需要摘要的長文字。" * 20, "summary_length": "medium", "timeout_sec": 45},
+    )
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["result"]["success"] is True
+    assert payload["result"].get("degraded") is not True
+    assert "resilient" in payload["note"]
+
+
+def test_summarize_timeout_uses_extractive_fallback(monkeypatch, tools_api_runtime):
+    tools_api, client, _events_path = tools_api_runtime
+
+    from api.handlers import summary_handler as _summary_handler
+
+    calls = {"count": 0, "cb_success": 0}
+
+    def _fake_resilient(text, summary_length="medium", progress_callback=None):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            return {"success": False, "error": "timeout_exceeded_46s"}
+        return {
+            "success": True,
+            "text": "• 第一重點\n• 第二重點",
+            "provider": "extractive_fallback",
+        }
+
+    monkeypatch.setattr(_summary_handler, "summarize_text_resilient", _fake_resilient)
+    monkeypatch.setattr(tools_api, "_summarize_cb_note_success", lambda: calls.__setitem__("cb_success", calls["cb_success"] + 1))
+
+    response = client.post(
+        "/summarize",
+        json={"text": "這是一段需要摘要的長文字。" * 20, "summary_length": "medium", "timeout_sec": 45},
+    )
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["result"]["success"] is True
+    assert payload["result"]["provider"] == "extractive_fallback"
+    assert payload["result"]["degraded"] is False
+    assert calls["cb_success"] == 1

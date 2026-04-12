@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Optional, Union
 
 
 _LOW_TRUST_TYPES = {
@@ -54,7 +54,7 @@ def _normalize_source_type(source_type: str) -> str:
     return raw
 
 
-@dataclass(slots=True)
+@dataclass()
 class MemoryProvenance:
     raw_source: str
     source_type: str = "unknown"
@@ -173,12 +173,12 @@ def build_source_signature(
     source: str,
     *,
     source_type: str = "",
-    verified: bool | None = None,
-    confidence: float | None = None,
+    verified: Optional[bool] = None,
+    confidence: Optional[float] = None,
     derived_from: str = "",
     role: str = "",
     source_id: str = "",
-    metadata: dict[str, Any] | None = None,
+    metadata: Optional[dict[str, Any]] = None,
 ) -> str:
     raw_source = str(source or "").strip()
     parts = [token for token in raw_source.split("|") if token]

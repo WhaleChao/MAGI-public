@@ -85,7 +85,7 @@ class InvalidSignatureError(Exception):
 class LineBotApiError(Exception):
     """Fallback LineBotApiError when LINE SDK is unavailable."""
 
-    def __init__(self, message: str = "", status_code: int | None = None) -> None:
+    def __init__(self, message: str = "", status_code: Optional[int] = None) -> None:
         super().__init__(message)
         self.status_code = status_code
 
@@ -152,7 +152,7 @@ try:
         )
 
     class _BinaryContentStream:
-        def __init__(self, payload: bytes | bytearray | None) -> None:
+        def __init__(self, payload: bytes | Optional[bytearray]) -> None:
             self._payload = bytes(payload or b"")
 
         def iter_content(self, chunk_size: int = 8192):
@@ -279,4 +279,7 @@ def build_line_clients(access_token: str, secret: str):
         return _UnavailableLineBotApi(), _UnavailableWebhookHandler(), False, "line-bot-sdk is not installed"
     if not token or not secret_value:
         return _UnavailableLineBotApi(), _UnavailableWebhookHandler(), False, "credentials missing"
-    return LineBotApi(token), WebhookHandler(secret_value), True, ""
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", category=DeprecationWarning, module=r"linebot(\..*)?")
+        warnings.filterwarnings("ignore", message=r".*Deprecated since version 3\.0\.0.*")
+        return LineBotApi(token), WebhookHandler(secret_value), True, ""

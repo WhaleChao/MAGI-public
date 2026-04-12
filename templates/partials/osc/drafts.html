@@ -1,0 +1,233 @@
+        <section id="drafts" class="view">
+            <div class="draft-layout">
+                <div class="card">
+                    <div class="section-head">
+                        <div>
+                            <h3>AI 書狀草擬</h3>
+                            <div class="section-note">對應桌面版 DraftGenerationFrame。建議流程：先載入案件、挑參考素材、預覽 Prompt，再正式生成與匯出。</div>
+                        </div>
+                        <div class="inline-actions">
+                            <span id="draftProviderBadge" class="badge">設定載入中...</span>
+                            <span id="draftTemplateBadge" class="badge">模板檢查中...</span>
+                            <button class="btn" id="draftMetaRefreshBtn">刷新設定</button>
+                        </div>
+                    </div>
+                    <ul class="flow-list">
+                        <li>1. 搜尋案件並載入欄位</li>
+                        <li>2. 指定書狀類型與案件事實</li>
+                        <li>3. 加入參考書狀與實務見解</li>
+                        <li>4. 先預覽 Prompt，再正式生成</li>
+                    </ul>
+                </div>
+                <div class="draft-main-grid">
+                    <div class="card">
+                        <div class="section-head">
+                            <div>
+                                <h3>案件與草擬內容</h3>
+                                <div class="section-note">先用案件搜尋帶入欄位，再手動補足事實與相對人資訊。</div>
+                            </div>
+                        </div>
+                        <div class="field-grid cols-4">
+                            <div class="field" style="grid-column: span 2;">
+                                <label for="draftCaseSearch">案件搜尋</label>
+                                <input id="draftCaseSearch" placeholder="輸入當事人 / 案號 / 法扶案號">
+                            </div>
+                            <div class="field">
+                                <label for="draftCaseSelect">案件清單</label>
+                                <select id="draftCaseSelect">
+                                    <option value="">請先搜尋案件</option>
+                                </select>
+                            </div>
+                            <div class="field">
+                                <label>案件操作</label>
+                                <div class="inline-actions">
+                                    <button class="btn" id="draftCaseSearchBtn">搜尋案件</button>
+                                    <button class="btn" id="draftCaseLoadBtn">載入案件資料</button>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="field-grid cols-4" style="margin-top:12px;">
+                            <div class="field">
+                                <label for="draftDocType">書狀類型</label>
+                                <select id="draftDocType">
+                                    <option value="">請選擇書狀類型</option>
+                                </select>
+                            </div>
+                            <div class="field">
+                                <label for="draftCaseNumber">案號</label>
+                                <input id="draftCaseNumber" placeholder="法院案號或內部案號">
+                            </div>
+                            <div class="field">
+                                <label for="draftDivision">股別</label>
+                                <input id="draftDivision" placeholder="例如 民一庭 / 義股">
+                            </div>
+                            <div class="field">
+                                <label for="draftCourtName">法院 / 地檢署</label>
+                                <input id="draftCourtName" placeholder="法院或地檢署名稱">
+                            </div>
+                            <div class="field">
+                                <label for="draftReason">案由</label>
+                                <input id="draftReason" placeholder="例如 更生 / 損害賠償">
+                            </div>
+                            <div class="field">
+                                <label for="draftPlaintiff">原告 / 聲請人</label>
+                                <input id="draftPlaintiff" placeholder="主要當事人">
+                            </div>
+                            <div class="field">
+                                <label for="draftDefendant">被告 / 相對人</label>
+                                <input id="draftDefendant" placeholder="對造或相對人">
+                            </div>
+                            <div class="field">
+                                <label for="draftSuggestedName">匯出檔名</label>
+                                <input id="draftSuggestedName" placeholder="可留空，系統自動生成">
+                            </div>
+                        </div>
+                        <div class="field" style="margin-top:12px;">
+                            <label for="draftFacts">案件事實摘要</label>
+                            <span class="helper">建議寫爭點、時序、金額、主張、證據來源，會直接影響草稿品質。</span>
+                            <textarea id="draftFacts" placeholder="請輸入案件事實摘要，或先載入案件後再補充事實。" style="min-height: 220px;"></textarea>
+                        </div>
+                        <div class="sticky-actions">
+                            <div class="inline-actions" style="margin-top:10px;">
+                                <button class="btn" id="draftPreviewBtn">預覽 Prompt</button>
+                                <button class="btn primary" id="draftGenerateBtn">開始生成</button>
+                                <button class="btn" id="draftCopyBtn">複製結果</button>
+                                <button class="btn warn" id="draftExportBtn">匯出 DOCX/PDF</button>
+                                <button class="btn ghost" id="draftClearBtn">清除結果</button>
+                            </div>
+                        </div>
+                        <div id="draftStatus" class="status-banner">草擬系統待命中。</div>
+                    </div>
+                    <div class="card">
+                        <div class="section-head">
+                            <div>
+                                <h3>目前設定與提醒</h3>
+                                <div class="section-note">這裡是操作節奏與品質提示，避免直接跳過關鍵步驟。</div>
+                            </div>
+                        </div>
+                        <div class="selection-list">
+                            <div class="selection-item">
+                                <div class="meta-text">
+                                    <div>建議先跑 Prompt 預覽</div>
+                                    <div class="muted">可先確認案號、法院、當事人與引用素材是否正確。</div>
+                                </div>
+                            </div>
+                            <div class="selection-item">
+                                <div class="meta-text">
+                                    <div>參考書狀不要一次放太多</div>
+                                    <div class="muted">目前後端會優先讀前 3 份，避免 Prompt 膨脹與風格衝突。</div>
+                                </div>
+                            </div>
+                            <div class="selection-item">
+                                <div class="meta-text">
+                                    <div>實務見解建議控制在 3-5 筆</div>
+                                    <div class="muted">太多摘要會壓縮案件事實比重，反而讓生成結果失焦。</div>
+                                </div>
+                            </div>
+                            <div class="selection-item">
+                                <div class="meta-text">
+                                    <div>若 provider 設為 Gemini 但政策關閉雲端模型</div>
+                                    <div class="muted">web 版會自動降級回 CASPER，畫面會顯示有效 provider。</div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="grid-2">
+                <div class="card">
+                    <div class="section-head">
+                        <div>
+                            <h3>參考書狀</h3>
+                            <div class="section-note">用來提供文體、段落順序與狀頭格式。不是越多越好。</div>
+                        </div>
+                        <div class="inline-actions">
+                            <button class="btn" id="draftDocsSearchBtn">搜尋</button>
+                            <button class="btn ghost" id="draftDocsClearBtn">清除選取</button>
+                        </div>
+                    </div>
+                    <div class="field-grid cols-3">
+                        <div class="field">
+                            <label for="draftDocsQ">文件搜尋</label>
+                            <input id="draftDocsQ" placeholder="檔名 / 路徑 / 關鍵字">
+                        </div>
+                        <div class="field">
+                            <label for="draftDocsCaseFilter">案件編號</label>
+                            <input id="draftDocsCaseFilter" placeholder="預設帶入上方案號">
+                        </div>
+                        <div class="field">
+                            <label for="draftDocsKind">文件類型</label>
+                            <select id="draftDocsKind">
+                                <option value="all">全部文件</option>
+                                <option value="poa">委任狀/委託書</option>
+                                <option value="receipt">收據/繳費</option>
+                                <option value="laf">法扶資料/開辦資料</option>
+                                <option value="court_notice">法院通知</option>
+                                <option value="judgment">判決/裁定</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="table-wrap" style="margin-top:8px;">
+                        <table>
+                            <thead><tr><th>選取</th><th>案號</th><th>類型</th><th>檔名</th><th>路徑</th></tr></thead>
+                            <tbody id="draftDocsBody"></tbody>
+                        </table>
+                    </div>
+                    <div style="margin-top:10px;">
+                        <div class="muted" id="draftSelectedDocsCount">已選 0 份參考書狀</div>
+                        <div id="draftSelectedDocs" class="selection-list" style="margin-top:8px;"></div>
+                    </div>
+                </div>
+                <div class="card">
+                    <div class="section-head">
+                        <div>
+                            <h3>參考實務見解</h3>
+                            <div class="section-note">用來補強論述依據與裁判見解，不要讓摘要蓋過案件事實本身。</div>
+                        </div>
+                        <div class="inline-actions">
+                            <button class="btn" id="draftInsightsSearchBtn">搜尋</button>
+                            <button class="btn" id="draftInsightsAutoBtn">依案由帶入</button>
+                            <button class="btn ghost" id="draftInsightsClearBtn">清除選取</button>
+                        </div>
+                    </div>
+                    <div class="field-grid cols-3">
+                        <div class="field">
+                            <label for="draftInsightsQ">見解搜尋</label>
+                            <input id="draftInsightsQ" placeholder="見解關鍵字">
+                        </div>
+                        <div class="field">
+                            <label for="draftInsightsCaseFilter">案件編號</label>
+                            <input id="draftInsightsCaseFilter" placeholder="選填，可縮小範圍">
+                        </div>
+                        <div class="field">
+                            <label for="draftInsightsReasonFilter">案由</label>
+                            <input id="draftInsightsReasonFilter" placeholder="預設帶入上方案由">
+                        </div>
+                    </div>
+                    <div class="table-wrap" style="margin-top:8px;">
+                        <table>
+                            <thead><tr><th>選取</th><th>來源</th><th>標題</th><th>案號</th><th>摘要</th></tr></thead>
+                            <tbody id="draftInsightsBody"></tbody>
+                        </table>
+                    </div>
+                    <div style="margin-top:10px;">
+                        <div class="muted" id="draftSelectedInsightsCount">已選 0 筆實務見解</div>
+                        <div id="draftSelectedInsights" class="selection-list" style="margin-top:8px;"></div>
+                    </div>
+                </div>
+                </div>
+                <div class="card">
+                    <div class="section-head">
+                        <div>
+                            <h3>生成結果 <span id="draftModeIndicator" class="draft-mode-indicator" style="display:none;"></span></h3>
+                            <div class="section-note">可直接在這裡人工修稿，再按匯出。若結果偏題，先回頭修案件事實或減少參考素材。</div>
+                        </div>
+                    </div>
+                    <textarea id="draftResult" class="mono-textarea" placeholder="生成結果將顯示在這裡。"></textarea>
+                    <div class="draft-result-meta">
+                        <span class="result-hint" id="draftResultHint">匯出前可直接在上方修改內容。</span>
+                        <span class="char-count" id="draftCharCount">0 字</span>
+                    </div>
+                </div>
+            </div>
+        </section>
+

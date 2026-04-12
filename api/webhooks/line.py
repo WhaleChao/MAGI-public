@@ -429,7 +429,7 @@ def _persist_attachment_copy(src_path: str, filename: str = "", prefix: str = "a
     return dst
 
 
-def _persist_attachment_payload(attachment: dict | None, *, prefix: str) -> dict | None:
+def _persist_attachment_payload(attachment: Optional[dict], *, prefix: str) -> Optional[dict]:
     if not isinstance(attachment, dict):
         return None
     src_path = str(attachment.get("path") or "").strip()
@@ -587,9 +587,9 @@ def _enqueue_attachment_job(
     user_id: str,
     role: str,
     user_text: str,
-    attachment: dict | None = None,
+    attachment: Optional[dict] = None,
     chat_id: str = "",
-    reply_to_message_id: int | None = None,
+    reply_to_message_id: Optional[int] = None,
 ) -> dict:
     durable_attachment = _persist_attachment_payload(attachment, prefix=f"{platform_name.lower()}_att") if attachment else None
     if _jq:
@@ -679,7 +679,7 @@ def _chunk_text_for_line(text: str, limit: int = 4200) -> list[str]:
     return out
 
 
-def _likely_long_task(user_text: str, attachment: dict | None) -> bool:
+def _likely_long_task(user_text: str, attachment: Optional[dict]) -> bool:
     if attachment:
         return True
     t = (user_text or "").lower()
@@ -940,7 +940,7 @@ def _enqueue_line_delayed(user_id: str, phase: str, reason: str, preview: str) -
         logger.warning(f"⚠️ Failed to enqueue LINE delayed item: {e}")
 
 
-def _line_quota_active(window_sec: int | None = None) -> bool:
+def _line_quota_active(window_sec: Optional[int] = None) -> bool:
     """
     Best-effort detector for recent LINE quota exhaustion.
     If quota alert was raised recently, skip repeated LINE send attempts and
@@ -1159,7 +1159,7 @@ def _line_send_messages(event, user_id: str, messages, prefer_push: bool = False
 # 12. Message processing (process_message_async)
 # ===================================================================
 
-def process_message_async(event, user_id, user_text, attachment, role="user", long_task: bool | None = None, already_acked: bool = False, _mq_msg_id: str | None = None):
+def process_message_async(event, user_id, user_text, attachment, role="user", long_task: Optional[bool] = None, already_acked: bool = False, _mq_msg_id: Optional[str] = None):
     # OBS-1: correlation ID  /  OBS-2: latency tracking
     correlation_id = f"magi-{uuid.uuid4().hex[:12]}"
     _start_ts = time.monotonic()

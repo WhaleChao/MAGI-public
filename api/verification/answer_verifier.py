@@ -23,7 +23,7 @@ _STRONG_CLAIM_PATTERNS = [
 ]
 
 
-@dataclass(slots=True)
+@dataclass()
 class AnswerVerificationResult:
     passed: bool
     reason: str = ""

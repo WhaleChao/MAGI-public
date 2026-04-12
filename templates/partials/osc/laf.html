@@ -1,0 +1,80 @@
+        <section id="laf" class="view">
+            <div class="card">
+                <h3>法扶資料（進度 / 補件 / 信件）</h3>
+                <div class="toolbar">
+                    <input id="lafQ" placeholder="搜尋：案號 / 事件 / 主旨 / 狀態 / 關鍵字">
+                    <input id="lafCaseNumber" placeholder="案件編號（選填）">
+                    <button class="btn" id="lafSearchBtn">搜尋</button>
+                    <button class="btn" id="lafRefreshBtn">重新整理</button>
+                </div>
+                <div class="stat-grid" style="margin-top: 12px;">
+                    <div class="stat-card">
+                        <div class="k">補件清單</div>
+                        <div id="lafChecklistCount" class="v">0</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="k">流程紀錄</div>
+                        <div id="lafLifecycleCount" class="v">0</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="k">法扶信件</div>
+                        <div id="lafEmailCount" class="v">0</div>
+                    </div>
+                </div>
+            </div>
+            <div class="card">
+                <h3>法扶補件/清單</h3>
+                <div class="table-wrap">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>更新時間</th>
+                                <th>案號</th>
+                                <th>項目鍵</th>
+                                <th>項目</th>
+                                <th>狀態</th>
+                                <th>備註</th>
+                            </tr>
+                        </thead>
+                        <tbody id="lafChecklistBody"></tbody>
+                    </table>
+                </div>
+            </div>
+            <div class="card">
+                <h3>法扶流程紀錄</h3>
+                <div class="table-wrap">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>建立時間</th>
+                                <th>案號</th>
+                                <th>事件</th>
+                                <th>狀態</th>
+                                <th>完成時間</th>
+                                <th>內容</th>
+                            </tr>
+                        </thead>
+                        <tbody id="lafLifecycleBody"></tbody>
+                    </table>
+                </div>
+            </div>
+            <div class="card">
+                <h3>法扶信件紀錄</h3>
+                <div class="table-wrap">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>收到時間</th>
+                                <th>案號</th>
+                                <th>狀態</th>
+                                <th>寄件人</th>
+                                <th>主旨</th>
+                                <th>錯誤</th>
+                            </tr>
+                        </thead>
+                        <tbody id="lafEmailBody"></tbody>
+                    </table>
+                </div>
+            </div>
+        </section>
+

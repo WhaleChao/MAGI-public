@@ -43,6 +43,7 @@ if str(_MAGI_ROOT) not in sys.path:
 
 from api.runtime_paths import ensure_orch_on_sys_path
 from api.case_path_mapper import translate_case_path_to_local
+from skills.engine.legal_web_adapter import format_legal_web_engine_log, resolve_legal_web_engine
 
 # =============================================================================
 # MAGI Safe FS (禁止刪除 Synology Drive / 重要資料)
@@ -395,6 +396,8 @@ class LawyerSSO:
         self.driver = None
         self.logged_in = False
         self.captcha_solver = CaptchaSolver()
+        self.web_engine_profile = resolve_legal_web_engine("judicial_sso", interactive_required=True)
+        self._engine_logged = False
     
     def log(self, message: str):
         timestamp = datetime.now().strftime("%H:%M:%S")
@@ -405,6 +408,9 @@ class LawyerSSO:
     
     def _setup_driver(self):
         """設定 Chrome WebDriver"""
+        if not self._engine_logged:
+            self.log(format_legal_web_engine_log(self.web_engine_profile))
+            self._engine_logged = True
         if not SELENIUM_AVAILABLE:
             raise ImportError("Selenium 未安裝")
         
@@ -736,6 +742,8 @@ class CourtRecordDownloader:
         
         self.driver = None
         self.logged_in = False
+        self.web_engine_profile = resolve_legal_web_engine("judicial_transcript", interactive_required=True)
+        self._engine_logged = False
         
         # ★ Gemini 解析快取（避免重複調用 API）
         self.gemini_cache_file = os.path.join(self.download_folder, '.gemini_parse_cache.json')
@@ -752,6 +760,9 @@ class CourtRecordDownloader:
     
     def _setup_driver(self):
         """設置 WebDriver（含反爬蟲措施）"""
+        if not self._engine_logged:
+            self.log(format_legal_web_engine_log(self.web_engine_profile))
+            self._engine_logged = True
         self.log("  正在設置 WebDriver...")
         
         try:
@@ -2352,14 +2363,37 @@ class CourtRecordDownloader:
             return None
     
     def _load_md5_records(self) -> Dict:
-
+        records = {}
         if os.path.exists(self.md5_record_file):
             try:
                 with open(self.md5_record_file, 'r', encoding='utf-8') as f:
-                    return json.load(f)
+                    loaded = json.load(f)
+                    if isinstance(loaded, dict):
+                        records.update(loaded)
             except Exception:
-                return {}
-        return {}
+                records = {}
+        try:
+            from skills.ops.dedup_db import list_done as _dd_list
+            for row in _dd_list("transcript_download_md5", limit=10000):
+                md5_key = str(row.get("item_key") or "").strip()
+                if not md5_key or md5_key in records:
+                    continue
+                meta = row.get("metadata")
+                payload = {}
+                if isinstance(meta, dict):
+                    payload = meta
+                elif isinstance(meta, str) and meta.strip():
+                    try:
+                        parsed = json.loads(meta)
+                        if isinstance(parsed, dict):
+                            payload = parsed
+                    except Exception:
+                        payload = {"raw_metadata": meta[:200]}
+                payload.setdefault("synced_from", "dedup_db")
+                records[md5_key] = payload
+        except Exception:
+            _log.debug("failed to load transcript_download_md5 from dedup db", exc_info=True)
+        return records
     
     def _save_md5_records(self, records: Dict):
 
@@ -2368,6 +2402,19 @@ class CourtRecordDownloader:
                 json.dump(records, f, ensure_ascii=False, indent=2)
         except Exception as e:
             self.log(f"  ⚠️ 保存 MD5 記錄失敗: {e}")
+        try:
+            from skills.ops.dedup_db import mark_done as _dd_mark
+            for md5_key, payload in (records or {}).items():
+                md5_key = str(md5_key or "").strip()
+                if not md5_key or md5_key.startswith("__"):
+                    continue
+                _dd_mark(
+                    "transcript_download_md5",
+                    md5_key,
+                    metadata=payload if isinstance(payload, dict) else {"value": payload},
+                )
+        except Exception:
+            _log.debug("failed to sync transcript_download_md5 to dedup db", exc_info=True)
 
     def close(self):
 
@@ -2826,16 +2873,33 @@ class TranscriptAutoDownloader:
         return os.path.join(os.path.dirname(self.md5_record_file), '.processed_original_files.json')
 
     def _load_processed_log(self):
+        records = {}
         log_path = self._get_processed_log_path()
         if os.path.exists(log_path):
             try:
                 with open(log_path, 'r', encoding='utf-8') as f:
-                    return json.load(f)
+                    loaded = json.load(f)
+                    if isinstance(loaded, dict):
+                        records.update(loaded)
             except (json.JSONDecodeError, UnicodeDecodeError) as e:
                 _log.warning("Processed log corrupted (%s): %s — returning empty", log_path, e)
             except Exception as e:
                 _log.warning("Failed to load processed log (%s): %s", log_path, e)
-        return {}
+        try:
+            from skills.ops.dedup_db import list_done as _dd_list
+            for row in _dd_list("transcript_original_processed", limit=10000):
+                item_key = str(row.get("item_key") or "").strip()
+                if "::" not in item_key:
+                    continue
+                case_number, filename = item_key.split("::", 1)
+                if not case_number or not filename:
+                    continue
+                bucket = records.setdefault(case_number, [])
+                if filename not in bucket:
+                    bucket.append(filename)
+        except Exception:
+            _log.debug("failed to load transcript_original_processed from dedup db", exc_info=True)
+        return records
 
     def _save_processed_log(self, data):
         log_path = self._get_processed_log_path()
@@ -2844,10 +2908,34 @@ class TranscriptAutoDownloader:
                 json.dump(data, f, ensure_ascii=False, indent=2)
         except Exception as e:
             _log.error("Failed to save processed log (%s): %s", log_path, e)
+        try:
+            from skills.ops.dedup_db import mark_done as _dd_mark
+            for case_number, filenames in (data or {}).items():
+                if not isinstance(filenames, list):
+                    continue
+                for filename in filenames:
+                    case_number = str(case_number or "").strip()
+                    filename = str(filename or "").strip()
+                    if not case_number or not filename:
+                        continue
+                    _dd_mark(
+                        "transcript_original_processed",
+                        f"{case_number}::{filename}",
+                        metadata={"case_number": case_number, "filename": filename, "source": "processed_log"},
+                    )
+        except Exception:
+            _log.debug("failed to sync transcript_original_processed to dedup db", exc_info=True)
 
     def _is_original_file_processed(self, case_number, filename):
         log = self._load_processed_log()
-        return filename in log.get(case_number, [])
+        if filename in log.get(case_number, []):
+            return True
+        try:
+            from skills.ops.dedup_db import is_done as _dd_is_done
+            return bool(_dd_is_done("transcript_original_processed", f"{case_number}::{filename}"))
+        except Exception:
+            _log.debug("failed to check transcript_original_processed in dedup db", exc_info=True)
+            return False
 
     def _mark_original_file_processed(self, case_number, filename):
         log = self._load_processed_log()
@@ -2856,6 +2944,16 @@ class TranscriptAutoDownloader:
         if filename not in log[case_number]:
             log[case_number].append(filename)
             self._save_processed_log(log)
+        else:
+            try:
+                from skills.ops.dedup_db import mark_done as _dd_mark
+                _dd_mark(
+                    "transcript_original_processed",
+                    f"{case_number}::{filename}",
+                    metadata={"case_number": case_number, "filename": filename, "source": "processed_log"},
+                )
+            except Exception:
+                _log.debug("failed to sync transcript_original_processed duplicate mark", exc_info=True)
 
     def archive_to_case_folder(self, filepath: str, case: 'CourtCase') -> bool:
         """歸檔到案件資料夾並重命名"""
@@ -3754,15 +3852,38 @@ class TranscriptAutoDownloader:
             return None
     
     def _load_md5_records(self) -> Dict:
-
+        records = {}
         if os.path.exists(self.md5_record_file):
             try:
                 with open(self.md5_record_file, 'r', encoding='utf-8') as f:
-                    return json.load(f)
+                    loaded = json.load(f)
+                    if isinstance(loaded, dict):
+                        records.update(loaded)
             except Exception as e:
                 self.log(f"  ⚠️ 載入 MD5 記錄失敗: {e}")
-        return {}
-    
+        try:
+            from skills.ops.dedup_db import list_done as _dd_list
+            for row in _dd_list("transcript_download_md5", limit=10000):
+                md5_key = str(row.get("item_key") or "").strip()
+                if not md5_key or md5_key in records:
+                    continue
+                meta = row.get("metadata")
+                payload = {}
+                if isinstance(meta, dict):
+                    payload = meta
+                elif isinstance(meta, str) and meta.strip():
+                    try:
+                        parsed = json.loads(meta)
+                        if isinstance(parsed, dict):
+                            payload = parsed
+                    except Exception:
+                        payload = {"raw_metadata": meta[:200]}
+                payload.setdefault("synced_from", "dedup_db")
+                records[md5_key] = payload
+        except Exception:
+            _log.debug("failed to load transcript_download_md5 from dedup db", exc_info=True)
+        return records
+
     def _save_md5_records(self, records: Dict):
 
         try:
@@ -3770,6 +3891,19 @@ class TranscriptAutoDownloader:
                 json.dump(records, f, indent=2, ensure_ascii=False)
         except Exception as e:
             self.log(f"  ⚠️ 保存 MD5 記錄失敗: {e}")
+        try:
+            from skills.ops.dedup_db import mark_done as _dd_mark
+            for md5_key, payload in (records or {}).items():
+                md5_key = str(md5_key or "").strip()
+                if not md5_key:
+                    continue
+                _dd_mark(
+                    "transcript_download_md5",
+                    md5_key,
+                    metadata=payload if isinstance(payload, dict) else {"value": payload},
+                )
+        except Exception:
+            _log.debug("failed to sync transcript_download_md5 to dedup db", exc_info=True)
     
     def is_file_already_downloaded(self, filepath: str) -> bool:
 

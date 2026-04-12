@@ -47,7 +47,7 @@ class TaskStore:
                 record.updated_at = now
             return self._clone(record)
 
-    def get(self, task_id: str) -> TaskRecord | None:
+    def get(self, task_id: str) -> Optional[TaskRecord]:
         with self._lock:
             record = self._tasks.get(task_id)
             return self._clone(record) if record else None
@@ -92,7 +92,7 @@ class TaskStore:
         )
         return self.update(task_id, **changes)
 
-    def list(self, *, status: TaskStatus | str | None = None) -> list[TaskRecord]:
+    def list(self, *, status: TaskStatus | Optional[str] = None) -> list[TaskRecord]:
         with self._lock:
             records = list(self._tasks.values())
         if status is not None:

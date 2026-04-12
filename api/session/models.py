@@ -9,7 +9,7 @@ def utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
-@dataclass(slots=True)
+@dataclass()
 class SessionMessage:
     role: str
     content: str
@@ -18,7 +18,7 @@ class SessionMessage:
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
-@dataclass(slots=True)
+@dataclass()
 class SessionSummary:
     text: str
     created_at: datetime = field(default_factory=utcnow)
@@ -27,13 +27,13 @@ class SessionSummary:
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
-@dataclass(slots=True)
+@dataclass()
 class SessionPendingState:
     values: dict[str, Any] = field(default_factory=dict)
     updated_at: datetime = field(default_factory=utcnow)
 
 
-@dataclass(slots=True)
+@dataclass()
 class SessionContext:
     session_id: str
     raw_history: list[SessionMessage]

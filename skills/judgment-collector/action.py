@@ -152,7 +152,7 @@ def _env(name: str, default: str = "") -> str:
 
 # ── WFGY 增強推理（判決摘要用） ──────────────────────────────────
 # 預設啟用；設定 MAGI_JUDGMENT_WFGY=0 可關閉。
-_WFGY_ENABLED: bool | None = None  # lazy-init
+_WFGY_ENABLED: Optional[bool] = None  # lazy-init
 
 
 def _wfgy_enabled() -> bool:
@@ -224,7 +224,7 @@ def _get_db_config() -> dict:
                 if prefer_local
                 else ["Studio_VPN_Remote", "Studio_Local", "Home_Local_Test"]
             )
-            reachable_fallback: dict | None = None
+            reachable_fallback: Optional[dict] = None
             for name in want:
                 for p in profiles:
                     if (p.get("profile_name") or "").strip() != name:

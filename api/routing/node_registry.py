@@ -40,12 +40,12 @@ class Node:
     name: str
     description: str
     role: str
-    tailscale_ip: str | None = None
-    lan_ip: str | None = None
+    tailscale_ip: Optional[str] = None
+    lan_ip: Optional[str] = None
     services: dict[str, NodeService] = field(default_factory=dict)
 
     @property
-    def preferred_ip(self) -> str | None:
+    def preferred_ip(self) -> Optional[str]:
         """Return the best available IP (Tailscale preferred over LAN)."""
         return self.tailscale_ip or self.lan_ip
 
@@ -118,13 +118,13 @@ def reload() -> None:
 # Public API
 # ---------------------------------------------------------------------------
 
-def get_node(name: str) -> Node | None:
+def get_node(name: str) -> Optional[Node]:
     """Return the *Node* for *name*, or ``None``."""
     _ensure_loaded()
     return _nodes.get(name)
 
 
-def get_node_ip(name: str) -> str | None:
+def get_node_ip(name: str) -> Optional[str]:
     """Return the preferred IP for *name*."""
     _ensure_loaded()
     node = _nodes.get(name)

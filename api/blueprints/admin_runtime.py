@@ -44,7 +44,7 @@ def create_admin_runtime_blueprint(
     db_config: dict[str, Any],
     mysql_connector: Any,
     safe_remove_tmp,
-    magi_root: str | Path | None = None,
+    magi_root: str | Optional[Path] = None,
 ) -> Blueprint:
     bp = Blueprint("admin_runtime", __name__)
     root = Path(magi_root) if magi_root else Path(__file__).resolve().parents[2]

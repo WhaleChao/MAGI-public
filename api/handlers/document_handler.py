@@ -357,7 +357,7 @@ def export_translation_txt(
     mode: str,
     prefix: str,
     user_id: str,
-) -> str | None:
+) -> Optional[str]:
     try:
         from skills.ops.export_text import export_txt
     except Exception as e:
@@ -392,13 +392,13 @@ def export_translation_docx(
     *,
     source_text: str,
     translated_text: str,
-    source_chunks: list | None = None,
-    translated_chunks: list | None = None,
+    source_chunks: Optional[list] = None,
+    translated_chunks: Optional[list] = None,
     title: str = "",
     subtitle: str = "",
     prefix: str = "translate",
     user_id: str,
-) -> str | None:
+) -> Optional[str]:
     """
     將翻譯結果輸出為雙語對照 docx 表格，支援 LINE/DC/TG 檔案傳送。
     優先使用 chunk 級別的 source/target 配對（翻譯流程已對齊），
@@ -470,7 +470,7 @@ def export_plain_docx(
     case_info: str = "",
     prefix: str = "export",
     user_id: str,
-) -> str | None:
+) -> Optional[str]:
     """
     將逐字稿/摘要輸出為 docx 表格，支援 LINE/DC/TG 檔案傳送。
     mode: "transcript" or "summary"
@@ -507,7 +507,7 @@ def export_plain_txt(
     prefix: str,
     user_id: str,
     title: str = "📄 已輸出 TXT 檔案。",
-) -> str | None:
+) -> Optional[str]:
     try:
         from skills.ops.export_text import export_txt
     except Exception as e:

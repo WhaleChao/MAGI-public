@@ -40,6 +40,12 @@ if str(_MAGI_ROOT) not in sys.path:
     sys.path.insert(0, str(_MAGI_ROOT))
 
 from api.case_path_mapper import default_scan_roots
+from api.autopilot_artifacts import (
+    cleanup_stale_kill_reason_files,
+    get_kill_reason_path,
+    read_kill_reason,
+    write_kill_reason,
+)
 
 from api.runtime_paths import (
     ensure_orch_on_sys_path,
@@ -5389,10 +5395,12 @@ def main() -> int:
                     # Stale lock — force acquire
                     try:
                         if holder_pid and pid_alive:
-                            _reason_path = os.path.join(MAGI_ROOT_DIR, f"_autopilot_kill_reason_{holder_pid}")
                             try:
-                                with open(_reason_path, "w", encoding="utf-8") as _rf:
-                                    _rf.write(f"新 autopilot 實例啟動，舊實例鎖定超時（已執行 {elapsed_h:.1f}h > 2h）被強制取代")
+                                write_kill_reason(
+                                    holder_pid,
+                                    f"新 autopilot 實例啟動，舊實例鎖定超時（已執行 {elapsed_h:.1f}h > 2h）被強制取代",
+                                    root=MAGI_ROOT_DIR,
+                                )
                             except Exception:
                                 logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 5387, exc_info=True)
                             os.kill(holder_pid, signal.SIGTERM)
@@ -5480,25 +5488,15 @@ def main() -> int:
 
     def _read_kill_reason() -> str:
         """讀取外部程序在發送 SIGTERM 前寫入的中斷原因檔。"""
-        reason_file = os.path.join(MAGI_ROOT_DIR, f"_autopilot_kill_reason_{os.getpid()}")
         try:
-            if os.path.exists(reason_file):
-                with open(reason_file, "r", encoding="utf-8") as f:
-                    reason = f.read().strip()
-                os.unlink(reason_file)
+            reason = read_kill_reason(os.getpid(), root=MAGI_ROOT_DIR, delete=True)
+            if reason:
                 return reason
         except Exception:
             logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 5481, exc_info=True)
         # Clean up stale per-PID files (orphans whose target process is long gone)
         try:
-            import glob as _glob
-            for stale in _glob.glob(os.path.join(MAGI_ROOT_DIR, "_autopilot_kill_reason_*")):
-                try:
-                    mtime = os.path.getmtime(stale)
-                    if time.time() - mtime > 3600:  # older than 1 hour
-                        os.unlink(stale)
-                except Exception:
-                    pass
+            cleanup_stale_kill_reason_files(root=MAGI_ROOT_DIR, max_age_seconds=3600)
         except Exception:
             pass
         return ""

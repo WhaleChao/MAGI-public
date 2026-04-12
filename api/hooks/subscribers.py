@@ -7,7 +7,7 @@ from typing import Any
 from api.events.sinks import JsonlSink
 
 
-@dataclass(slots=True)
+@dataclass()
 class HookEventCollector:
     events: list[dict[str, Any]] = field(default_factory=list)
 

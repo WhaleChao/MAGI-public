@@ -235,7 +235,7 @@ def save_runtime_state(state: dict[str, Any]) -> dict[str, Any]:
     return _save_json(RUNTIME_STATE_PATH, normalized)
 
 
-def update_policy(*, enabled: bool | None = None, features: dict[str, bool] | None = None) -> dict[str, Any]:
+def update_policy(*, enabled: Optional[bool] = None, features: dict[str, bool] | None = None) -> dict[str, Any]:
     policy = load_policy()
     if enabled is not None:
         policy["enabled"] = bool(enabled)
@@ -436,7 +436,7 @@ def status_report() -> dict[str, Any]:
     }
 
 
-def public_status_report(*, can_toggle: bool | None = None) -> dict[str, Any]:
+def public_status_report(*, can_toggle: Optional[bool] = None) -> dict[str, Any]:
     report = status_report()
     policy = report.get("policy") if isinstance(report.get("policy"), dict) else {}
     runtime = report.get("runtime_state") if isinstance(report.get("runtime_state"), dict) else {}
@@ -618,9 +618,9 @@ def run_prompt(
     *,
     feature: str,
     prompt: str,
-    timeout_sec: int | None = None,
-    thinking: str | None = None,
-    session_id: str | None = None,
+    timeout_sec: Optional[int] = None,
+    thinking: Optional[str] = None,
+    session_id: Optional[str] = None,
 ) -> dict[str, Any]:
     policy = load_policy()
     feature_name = _normalize_feature_name(feature)
@@ -802,7 +802,7 @@ def run_prompt(
     return result
 
 
-def translate_with_codex(text: str, *, source_lang: str = "auto", target_lang: str = "繁體中文", timeout_sec: int | None = None) -> dict[str, Any]:
+def translate_with_codex(text: str, *, source_lang: str = "auto", target_lang: str = "繁體中文", timeout_sec: Optional[int] = None) -> dict[str, Any]:
     prompt = (
         "你是 MAGI 的翻譯引擎。請把以下內容翻譯成指定語言。\n"
         f"- 來源語言：{source_lang}\n"
@@ -814,7 +814,7 @@ def translate_with_codex(text: str, *, source_lang: str = "auto", target_lang: s
     return run_prompt(feature="translate", prompt=prompt, timeout_sec=timeout_sec)
 
 
-def summarize_with_codex(text: str, *, summary_length: str = "medium", timeout_sec: int | None = None) -> dict[str, Any]:
+def summarize_with_codex(text: str, *, summary_length: str = "medium", timeout_sec: Optional[int] = None) -> dict[str, Any]:
     hint_map = {
         "short": "3-5 點",
         "medium": "5-8 點",
@@ -831,7 +831,7 @@ def summarize_with_codex(text: str, *, summary_length: str = "medium", timeout_s
     return run_prompt(feature="summary", prompt=prompt, timeout_sec=timeout_sec)
 
 
-def classify_intent_with_codex(text: str, *, timeout_sec: int | None = None) -> dict[str, Any]:
+def classify_intent_with_codex(text: str, *, timeout_sec: Optional[int] = None) -> dict[str, Any]:
     prompt = (
         "請把下面使用者訊息分類成且只能分類成以下其中一種：CHAT、QUERY、CMD、DANGER。\n"
         "- CHAT: 閒聊、寒暄、非執行性對話\n"
@@ -854,7 +854,7 @@ def classify_intent_with_codex(text: str, *, timeout_sec: int | None = None) -> 
     return result
 
 
-def analyze_image_with_codex(image_path: str, *, user_prompt: str, task_type: str = "vision", timeout_sec: int | None = None) -> dict[str, Any]:
+def analyze_image_with_codex(image_path: str, *, user_prompt: str, task_type: str = "vision", timeout_sec: Optional[int] = None) -> dict[str, Any]:
     normalized_task = str(task_type or "vision").strip().lower() or "vision"
     if normalized_task in OCR_TASK_TYPES:
         ocr = _local_ocr_extract(image_path)
@@ -882,7 +882,7 @@ def analyze_image_with_codex(image_path: str, *, user_prompt: str, task_type: st
     return run_prompt(feature="vision", prompt=prompt, timeout_sec=timeout_sec)
 
 
-def refine_ocr_with_codex(ocr_text: str, *, user_prompt: str, timeout_sec: int | None = None) -> dict[str, Any]:
+def refine_ocr_with_codex(ocr_text: str, *, user_prompt: str, timeout_sec: Optional[int] = None) -> dict[str, Any]:
     prompt = (
         "你是 MAGI 的 OCR 校對與抽取引擎。以下內容是由本地 OCR 模型擷取出的原始文字。\n"
         f"- 使用者需求：{str(user_prompt or '').strip()}\n"
@@ -895,7 +895,7 @@ def refine_ocr_with_codex(ocr_text: str, *, user_prompt: str, timeout_sec: int |
     return run_prompt(feature="vision", prompt=prompt, timeout_sec=timeout_sec)
 
 
-def polish_transcript_with_codex(text: str, *, timeout_sec: int | None = None) -> dict[str, Any]:
+def polish_transcript_with_codex(text: str, *, timeout_sec: Optional[int] = None) -> dict[str, Any]:
     prompt = (
         "你是 MAGI 的逐字稿整理引擎。請整理以下逐字稿：\n"
         "- 只修正標點、斷句、段落與可合理推定的說話者標記\n"

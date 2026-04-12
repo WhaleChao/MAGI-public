@@ -227,6 +227,42 @@ def fetch_url_content(url: str, max_length: int = MAX_CONTENT_LENGTH, exempt_iro
         ok, err = _internet_guard(url, allow_private=True)
         if not ok and not exempt_iron_dome:
             return {"success": False, "url": url, "title": "", "content": "", "error": err}
+
+        # Optional Scrapling path. If enabled but unavailable, continue with legacy fetch.
+        try:
+            from skills.engine.scraping_adapter import fetch_page
+
+            scrapling_result = fetch_page(url, timeout=20)
+            if not scrapling_result.get("use_fallback"):
+                if not scrapling_result.get("success"):
+                    return {
+                        "success": False,
+                        "url": url,
+                        "title": "",
+                        "content": "",
+                        "error": scrapling_result.get("error") or "scrapling_fetch_failed",
+                    }
+                text = re.sub(r'\n{3,}', '\n\n', str(scrapling_result.get("content") or ""))[:max_length]
+                title = str(scrapling_result.get("title") or "")
+                is_safe, text, violations = _validate_web_content(text)
+                if not is_safe:
+                    return {
+                        "success": False,
+                        "url": url,
+                        "title": title,
+                        "content": "",
+                        "error": f"IRON DOME: Content blocked - {violations[0]}",
+                    }
+                return {
+                    "success": True,
+                    "url": str(scrapling_result.get("url") or url),
+                    "title": title,
+                    "content": text,
+                    "error": None,
+                    "engine": "scrapling",
+                }
+        except Exception:
+            logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 238, exc_info=True)
         
         # Validate URL
         parsed = urlparse(url)
@@ -275,7 +311,8 @@ def fetch_url_content(url: str, max_length: int = MAX_CONTENT_LENGTH, exempt_iro
             "url": url,
             "title": title,
             "content": text,
-            "error": None
+            "error": None,
+            "engine": "requests",
         }
     except Exception as e:
         return {
@@ -312,15 +349,38 @@ def fetch_url_sections(url: str, max_length: int = MAX_CONTENT_LENGTH, max_secti
         if not parsed.scheme or not parsed.netloc:
             return {"success": False, "url": url, "title": "", "sections": [], "error": "Invalid URL"}
 
-        headers = {"User-Agent": USER_AGENT}
-        response = requests.get(url, headers=headers, timeout=25)
-        response.raise_for_status()
+        soup = None
+        title = ""
+        engine = "requests"
+        try:
+            from skills.engine.scraping_adapter import fetch_page
 
-        soup = BeautifulSoup(response.text, "html.parser")
+            scrapling_result = fetch_page(url, timeout=25)
+            if not scrapling_result.get("use_fallback"):
+                if not scrapling_result.get("success"):
+                    return {
+                        "success": False,
+                        "url": url,
+                        "title": "",
+                        "sections": [],
+                        "error": scrapling_result.get("error") or "scrapling_fetch_failed",
+                    }
+                soup = BeautifulSoup(str(scrapling_result.get("html") or ""), "html.parser")
+                title = str(scrapling_result.get("title") or "")
+                engine = "scrapling"
+        except Exception:
+            logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 317, exc_info=True)
+
+        if soup is None:
+            headers = {"User-Agent": USER_AGENT}
+            response = requests.get(url, headers=headers, timeout=25)
+            response.raise_for_status()
+            soup = BeautifulSoup(response.text, "html.parser")
         for element in soup(["script", "style"]):
             element.decompose()
 
-        title = soup.title.string.strip() if soup.title and soup.title.string else ""
+        if not title:
+            title = soup.title.string.strip() if soup.title and soup.title.string else ""
 
         sections = []
         used_chars = 0
@@ -385,7 +445,7 @@ def fetch_url_sections(url: str, max_length: int = MAX_CONTENT_LENGTH, max_secti
                 }
             sections = [{"id": "main", "title": title or "Main", "content": text}]
 
-        return {"success": True, "url": url, "title": title, "sections": sections, "error": None}
+        return {"success": True, "url": url, "title": title, "sections": sections, "error": None, "engine": engine}
     except Exception as e:
         return {"success": False, "url": url, "title": "", "sections": [], "error": str(e)}
 

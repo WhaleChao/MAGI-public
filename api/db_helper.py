@@ -25,7 +25,7 @@ def _default_config() -> dict[str, Any]:
 
 
 @contextmanager
-def get_connection(config: dict | None = None) -> Generator:
+def get_connection(config: Optional[dict] = None) -> Generator:
     """Context manager that opens a mysql connection and guarantees close."""
     conn = mysql.connector.connect(**(config or _default_config()))
     try:
@@ -38,7 +38,7 @@ def get_connection(config: dict | None = None) -> Generator:
 
 
 @contextmanager
-def get_cursor(config: dict | None = None, dictionary: bool = False, buffered: bool = True) -> Generator:
+def get_cursor(config: Optional[dict] = None, dictionary: bool = False, buffered: bool = True) -> Generator:
     """Context manager that yields (conn, cursor) and guarantees cleanup."""
     with get_connection(config) as conn:
         cursor = conn.cursor(dictionary=dictionary, buffered=buffered)

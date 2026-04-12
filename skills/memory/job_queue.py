@@ -95,7 +95,7 @@ def _now() -> float:
     return time.time()
 
 
-def _row_to_dict(row: sqlite3.Row | None) -> dict:
+def _row_to_dict(row: sqlite3.Optional[Row]) -> dict:
     if row is None:
         return {}
     d = dict(row)
@@ -118,8 +118,8 @@ def enqueue(
     role: str = "user",
     user_text: str = "",
     chat_id: str = "",
-    reply_to_message_id: int | None = None,
-    payload: dict | None = None,
+    reply_to_message_id: Optional[int] = None,
+    payload: Optional[dict] = None,
 ) -> str:
     """Create a new job and return its ID."""
     job_id = datetime.now().strftime("%Y%m%d_%H%M%S") + "_" + uuid.uuid4().hex[:6]
@@ -157,7 +157,7 @@ def read(job_id: str) -> dict:
         return _row_to_dict(row)
 
 
-def update_payload(job_id: str, patch: dict | None = None) -> dict:
+def update_payload(job_id: str, patch: Optional[dict] = None) -> dict:
     """Merge payload JSON for a job and return the updated row."""
     current = read(job_id)
     if not current:

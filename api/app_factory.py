@@ -54,7 +54,7 @@ def install_security_headers(app: Flask) -> Flask:
     return app
 
 
-def install_csrf(app: Flask, logger: logging.Logger | None = None) -> Flask:
+def install_csrf(app: Flask, logger: logging.Optional[Logger] = None) -> Flask:
     try:
         from api.csrf_guard import middleware_apply_csrf
 

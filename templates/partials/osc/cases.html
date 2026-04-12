@@ -1,0 +1,151 @@
+        <section id="cases" class="view">
+            <div class="card">
+                <div class="section-head">
+                    <div>
+                        <h3>案件管理</h3>
+                        <div class="section-note">先用分類與搜尋縮小範圍，再於下方建立或編輯單筆案件資料。</div>
+                    </div>
+                </div>
+                <div class="soft-block">
+                    <div class="field">
+                        <label>案件分類</label>
+                        <div class="chip-row" id="caseCategoryTabs">
+                            <button class="chip active" data-cat="全部">全部</button>
+                            <button class="chip" data-cat="一般案件">一般案件</button>
+                            <button class="chip" data-cat="法律扶助案件">法律扶助案件</button>
+                            <button class="chip" data-cat="消費者債務清理">消費者債務清理</button>
+                            <button class="chip" data-cat="指定辯護案件">指定辯護案件</button>
+                            <button class="chip" data-cat="無償案件">無償案件</button>
+                        </div>
+                    </div>
+                    <div class="field-grid cols-4" style="margin-top:10px;">
+                        <div class="field" style="grid-column: span 2;">
+                            <label for="casesQ">案件搜尋</label>
+                            <input id="casesQ" placeholder="案號 / 當事人 / 法扶案號 / 法院案號">
+                        </div>
+                        <div class="field">
+                            <label>操作</label>
+                            <div class="inline-actions">
+                                <button class="btn" id="casesSearchBtn">搜尋</button>
+                                <button class="btn" id="casesRefreshBtn">重新整理</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="soft-block">
+                    <div class="field-grid cols-4">
+                        <div class="field">
+                            <label for="case_id">ID</label>
+                            <input id="case_id" placeholder="留空自動產生">
+                        </div>
+                        <div class="field">
+                            <label for="case_case_number">案件編號</label>
+                            <input id="case_case_number" placeholder="case_number">
+                        </div>
+                        <div class="field">
+                            <label for="case_client_name">當事人</label>
+                            <input id="case_client_name" placeholder="必填">
+                        </div>
+                        <div class="field">
+                            <label for="case_client_phone">聯絡電話</label>
+                            <input id="case_client_phone" placeholder="phone">
+                        </div>
+                        <div class="field">
+                            <label for="case_client_email">Email</label>
+                            <input id="case_client_email" placeholder="email">
+                        </div>
+                        <div class="field">
+                            <label for="case_client_id_number">身分證字號</label>
+                            <input id="case_client_id_number" placeholder="ID number">
+                        </div>
+                        <div class="field">
+                            <label for="case_category">案件種類</label>
+                            <input id="case_category" placeholder="case_category">
+                        </div>
+                        <div class="field">
+                            <label for="case_type">案件類型</label>
+                            <input id="case_type" placeholder="case_type">
+                        </div>
+                        <div class="field">
+                            <label for="case_stage">審級 / 階段</label>
+                            <input id="case_stage" placeholder="case_stage">
+                        </div>
+                        <div class="field">
+                            <label for="case_reason">案由</label>
+                            <input id="case_reason" placeholder="case_reason">
+                        </div>
+                        <div class="field">
+                            <label for="case_laf_case_no">法扶案號</label>
+                            <input id="case_laf_case_no" placeholder="laf_case_no">
+                        </div>
+                        <div class="field">
+                            <label for="case_application_no">申請編號</label>
+                            <input id="case_application_no" placeholder="application_no">
+                        </div>
+                        <div class="field">
+                            <label for="case_court_case_no">法院案號</label>
+                            <input id="case_court_case_no" placeholder="court_case_no">
+                        </div>
+                        <div class="field">
+                            <label for="case_status">狀態</label>
+                            <input id="case_status" placeholder="預設 Active">
+                        </div>
+                        <div class="field" style="grid-column: span 2;">
+                            <label for="case_folder_path">案件資料夾</label>
+                            <div style="display:flex; gap:6px; align-items:center;">
+                                <input id="case_folder_path" placeholder="folder_path / Synology path" style="flex:1;">
+                                <label style="white-space:nowrap; font-size:0.85em; display:flex; align-items:center; gap:3px; cursor:pointer;">
+                                    <input type="checkbox" id="case_auto_create_folder" checked> 自動建立資料夾
+                                </label>
+                            </div>
+                        </div>
+                        <div class="field" style="grid-column: span 2;">
+                            <label for="case_notes">備註</label>
+                            <input id="case_notes" placeholder="notes">
+                        </div>
+                    </div>
+                </div>
+                <div class="toolbar" style="margin-top:8px;">
+                    <button class="btn primary" id="caseSaveBtn">儲存案件</button>
+                    <button class="btn warn" id="caseResetBtn">清空表單</button>
+                </div>
+            </div>
+            <div style="margin-top:8px;">
+                <div class="toolbar" style="margin-bottom:8px; flex-wrap:wrap; gap:8px;">
+                    <div class="sort-bar" id="caseSortBar">
+                        <label>排序</label>
+                        <select id="caseSortCol">
+                            <option value="">預設</option>
+                            <option value="case_number">案號</option>
+                            <option value="client_name">當事人</option>
+                            <option value="case_category">案件種類</option>
+                            <option value="case_reason">案由</option>
+                            <option value="court_case_no">法院案號</option>
+                            <option value="status">狀態</option>
+                        </select>
+                        <button class="sort-dir-btn" id="caseSortDir" title="切換升降冪">▲</button>
+                    </div>
+                    <div class="muted" style="font-size:11px;">雙擊卡片開啟 NAS 資料夾 · 拖曳可排序</div>
+                    <button class="btn" id="caseViewToggle" style="margin-left:auto;">切換表格</button>
+                </div>
+                <div id="casesCardGrid" class="card-grid"></div>
+                <div id="casesTableWrap" class="table-wrap" style="display:none;">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th data-sort="case_number">案號</th>
+                                <th data-sort="client_name">當事人</th>
+                                <th data-sort="case_category">案件種類</th>
+                                <th data-sort="case_reason">案由</th>
+                                <th data-sort="court_case_no">法院案號</th>
+                                <th data-sort="laf_case_no">法扶案號</th>
+                                <th data-sort="status">狀態</th>
+                                <th>操作</th>
+                            </tr>
+                        </thead>
+                        <tbody id="casesBody"></tbody>
+                    </table>
+                </div>
+            </div>
+        </section>
+

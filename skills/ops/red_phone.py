@@ -9,6 +9,7 @@ Security:
 """
 
 import os
+from typing import Any, Dict, List, Optional, Union
 import json
 import logging
 import time
@@ -215,7 +216,7 @@ def _send_line_push_real(message: str, user_id: str) -> bool:
         return False
 
 
-def send_line_push(message: str, user_id: str | None = None) -> bool:
+def send_line_push(message: str, user_id: Optional[str] = None) -> bool:
     """
     Send push message via LINE Messaging API.
     Falls back to Telegram if LINE is not configured.
@@ -459,7 +460,7 @@ def send_discord_bot_file(
         return False
 
 
-def send_discord_alert(message: str, webhook_url: str | None = None, severity: str = "warning") -> bool:
+def send_discord_alert(message: str, webhook_url: Optional[str] = None, severity: str = "warning") -> bool:
     """
     Legacy compatibility shim.
     System notifications are now TG-only, so this routes to Telegram.
@@ -545,13 +546,13 @@ def _canonical_topic_key(key: str) -> str:
         "filereview_apply": "filereview_apply",
         "filereview-apply": "filereview_apply",
         "閱卷聲請": "filereview_apply",
-        # 閱卷（通用 fallback → 下載頻道）
-        "filereview": "filereview_download",
-        "file_review": "filereview_download",
-        "file-review": "filereview_download",
-        "docket": "filereview_download",
-        "閱卷": "filereview_download",
-        "卷宗": "filereview_download",
+        # 閱卷（通用 fallback）
+        "filereview": "filereview",
+        "file_review": "filereview",
+        "file-review": "filereview",
+        "docket": "filereview",
+        "閱卷": "filereview",
+        "卷宗": "filereview",
         # 筆錄
         "transcript": "transcript",
         "transcripts": "transcript",
@@ -724,6 +725,7 @@ def _infer_topic_key(message: str, source: str, severity: str) -> str:
     # 因為報結訊息常含「判決書」字樣，會誤判到 judgment topic。
     if any(k in s for k in ["法扶", "laf", "legal aid", "legal_aid", "報結",
                              "派案", "開辦", "扶助", "laf_", "待報結",
+                             "費用", "疑義", "二階段", "附條件",
                              "closing_report", "laf_closing", "laf_dispatch"]):
         return "laf"
     if any(k in s for k in ["判決", "judgment", "司法院", "裁判"]):
@@ -734,12 +736,15 @@ def _infer_topic_key(message: str, source: str, severity: str) -> str:
         return "translation"
     if any(k in s for k in ["摘要", "summary", "summarize", "重點整理"]):
         return "summary"
-    if any(k in s for k in ["歸檔", "filing", "pdf_namer", "casper 歸檔"]):
-        return "filing"
     if any(k in s for k in ["繳費", "payment"]):
         return "filereview_payment"
-    if any(k in s for k in ["閱卷", "電子卷", "file_review", "file-review", "docket", "可下載"]):
-        return "filereview_download"
+    if any(k in s for k in ["閱卷", "電子卷", "file_review", "file-review", "docket", "可下載", "卷宗", "卷期", "卷下來"]):
+        # 閱卷通知優先查繳費
+        if any(k in s for k in ["繳費單", "待繳費", "逾期未繳"]):
+            return "filereview_payment"
+        return "filereview"
+    if any(k in s for k in ["歸檔", "filing", "pdf_namer", "casper 歸檔"]):
+        return "filing"
     if any(k in s for k in ["筆錄", "transcript"]):
         return "transcript"
     if any(k in s for k in ["股市", "股票", "market", "qqq", "tsla", "aapl", "vt"]):
@@ -756,7 +761,7 @@ def _infer_topic_key(message: str, source: str, severity: str) -> str:
     return "general"
 
 
-def _resolve_thread_id(message: str, source: str, severity: str, topic_key: str = "") -> tuple[str, int | None]:
+def _resolve_thread_id(message: str, source: str, severity: str, topic_key: str = "") -> tuple[str, Optional[int]]:
     tmap = _load_topic_map()
     if not tmap:
         return "", None
@@ -839,7 +844,7 @@ def _send_telegram_once(
     admin_ids: list[str],
     message: str,
     timeout_sec: int = 8,
-    thread_id: int | None = None,
+    thread_id: Optional[int] = None,
 ) -> dict:
     acked = []
     errors = []
@@ -988,13 +993,38 @@ def _mirror_to_discord(
     # DC 對外開放，僅鏡像業務相關通知；系統內部（alert/check/nightly）不發 DC
     _DC_MIRROR_ALLOWED_TOPICS = {
         "filereview", "filereview_payment", "filereview_download", "filereview_apply",
-        "laf", "laf_dispatch", "laf_go_live", "laf_closing",
+        "laf", "laf_dispatch", "laf_go_live", "laf_closing", "laf_fee", "laf_inquiry", "laf_condition",
         "transcript", "judgment", "market",
         "verbatim", "summary", "translation", "filing",
     }
     _resolved_topic = _canonical_topic_key(topic_key)
     if _resolved_topic and _resolved_topic not in _DC_MIRROR_ALLOWED_TOPICS:
         return False
+
+    # 🛑 靜默過濾：非「有新資訊」的定期報告不發 DC (TG 照發)
+    _s = (message or "").strip()
+    _CLEAN_PATTERNS = [
+        "所有法扶案件狀態正常，無需處理",
+        "查無筆錄",
+        "沒有新資訊",
+        "檢查完成",
+        "待繳費：0 件",
+        "待下載：0 件",
+        "可下載通知：0 封",
+        "待歸檔：0 份",
+    ]
+    # 如果是「[INFO] 💰 繳費單檢查完成\n- 繳費相關信件：0 封 (已通知 0 封)\n- 入口列表待繳費：0 件」這種
+    # 且沒有實質數字變化（>0），則靜默
+    if any(p in _s for p in _CLEAN_PATTERNS):
+        # 檢查是否有任何大於 0 的正則匹配（如「待歸檔：6 份」則不靜默）
+        # 這裡用簡易邏輯：如果訊息中有「：0」或「 0 」且沒有大於 0 的數字
+        _has_actual_count = False
+        import re as _re
+        for m in _re.finditer(r"([：\s])([1-9]\d*)\s*(?:件|封|份|案|部|個|次)", _s):
+            _has_actual_count = True
+            break
+        if not _has_actual_count:
+            return False
     try:
         return _send_discord_bot_message(
             message, severity, topic_key=topic_key, source=source
@@ -1104,15 +1134,41 @@ def send_telegram_push_with_status(
 def send_telegram_push(message: str) -> bool:
     """
     Send push message to admin Telegram chat IDs.
-
-    Returns:
-        True if sent to at least one admin successfully.
+    Includes content-based deduplication to prevent repeated alerts.
     """
+    if not message or not message.strip():
+        return False
+
+    # --- Global Content Deduplication (24h) ---
+    try:
+        from skills.ops.dedup_db import is_done, mark_done
+        import hashlib
+        # 取訊息內容的雜湊，併入當前日期，確保每天至少可發送一次相同的內容（或是跨日重啟時去重）
+        # 如果使用者想要更嚴格，可以只用 msg_hash
+        msg_hash = hashlib.sha256(message.encode("utf-8")).hexdigest()
+        date_str = datetime.now().strftime("%Y%m%d")
+        dedup_key = f"{date_str}:{msg_hash}"
+        
+        if is_done("alert_content", dedup_key):
+            logger.info("[RED PHONE] Deduplicated identical message (already sent today): %s", _preview_text(message))
+            return True
+        
+        # 發送成功後才標記（在 send_telegram_push_with_status 內處理）
+    except Exception as e:
+        logger.debug("[RED PHONE] Dedup check failed: %s", e)
+
     status = send_telegram_push_with_status(message, severity="warning", source="direct", queue_on_fail=True)
+    
     if status.get("telegram"):
         logger.info("[RED PHONE] Telegram alert sent successfully.")
+        # 標記為已發送
+        try:
+            mark_done("alert_content", dedup_key, metadata={"preview": _preview_text(message)})
+        except Exception:
+            pass
     else:
         logger.warning("[RED PHONE] Telegram send failed; queued=%s outbox_id=%s", status.get("queued"), status.get("outbox_id"))
+    
     return bool(status.get("telegram"))
 
 
@@ -1124,16 +1180,28 @@ def alert_admin(
 ) -> dict:
     """
     Send alert via all configured channels: Telegram, LINE, Discord.
-
-    Args:
-        message: Alert message
-        severity: "info", "warning", or "critical"
-
-    Returns:
-        Dict with results: {"line": bool, "discord": bool, "telegram": bool, ...}
+    Includes content-based deduplication (24h) to prevent repeating the same alert.
     """
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    if not message or not message.strip():
+        return {}
 
+    # --- Global Content Deduplication (24h) ---
+    # We dedup based on the RAW message to avoid timestamp-driven variations.
+    dedup_key = None
+    try:
+        from skills.ops.dedup_db import is_done, mark_done
+        import hashlib
+        msg_hash = hashlib.sha256(message.encode("utf-8")).hexdigest()
+        date_str = datetime.now().strftime("%Y%m%d")
+        dedup_key = f"{date_str}:{msg_hash}"
+        
+        if is_done("alert_content", dedup_key):
+            logger.info("[RED PHONE] alert_admin: Deduplicated identical message: %s", _preview_text(message))
+            return {"deduplicated": True, "telegram": True, "line": True, "discord": True}
+    except Exception as e:
+        logger.debug("[RED PHONE] alert_admin dedup check failed: %s", e)
+
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     severity_emoji = {"info": "ℹ️", "warning": "⚠️", "critical": "🚨"}.get(severity, "⚠️")
     formatted_message = f"{severity_emoji} MAGI 警報\n{timestamp}\n\n{message}"
 
@@ -1151,6 +1219,16 @@ def alert_admin(
         topic_key=topic_key,
         queue_on_fail=True,
     )
+    if status.get("telegram"):
+        logger.info("[RED PHONE] Telegram alert sent successfully.")
+        # 標記為已發送
+        if dedup_key:
+            try:
+                mark_done("alert_content", dedup_key, metadata={"preview": _preview_text(message)})
+            except Exception:
+                pass
+    else:
+        logger.warning("[RED PHONE] Telegram send failed; queued=%s outbox_id=%s", status.get("queued"), status.get("outbox_id"))
 
     # --- LINE ---
     # LINE 免費額度有限（200 則/月），僅發送需要人介入處理的重要通知。
@@ -1261,7 +1339,7 @@ _MAX_FILE_BYTES_TG = 50 * 1024 * 1024  # Telegram Bot API limit 50 MB
 def send_file_admin(
     file_path: str,
     caption: str = "",
-    reply_to_msg_id: int | None = None,
+    reply_to_msg_id: Optional[int] = None,
     topic_key: str = "",
 ) -> dict:
     """
@@ -1290,7 +1368,7 @@ def send_file_admin(
         return {"ok": False, "skipped_reason": "telegram_not_configured", "acked": [], "errors": []}
 
     # Resolve topic thread_id for correct TG topic routing
-    thread_id: int | None = None
+    thread_id: Optional[int] = None
     if topic_key:
         try:
             _key, thread_id = _resolve_thread_id(

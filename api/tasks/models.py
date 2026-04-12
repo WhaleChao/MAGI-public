@@ -18,7 +18,7 @@ class TaskStatus(str, Enum):
     CANCELLED = "cancelled"
 
 
-@dataclass(slots=True)
+@dataclass()
 class TaskRecord:
     task_id: str
     name: str
@@ -26,8 +26,8 @@ class TaskRecord:
     status: TaskStatus = TaskStatus.PENDING
     created_at: datetime = field(default_factory=utcnow)
     updated_at: datetime = field(default_factory=utcnow)
-    started_at: datetime | None = None
-    ended_at: datetime | None = None
+    started_at: Optional[datetime] = None
+    ended_at: Optional[datetime] = None
     progress: float = 0.0
     result: Any = None
     error: str = ""

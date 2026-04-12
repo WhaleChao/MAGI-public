@@ -69,6 +69,13 @@ def _infer_sub_topic(message: str, topic_key: str, source: str = "") -> str:
     Returns: sub_topic string (e.g. "filereview_payment", "laf_dispatch")
     """
     canonical = _canonical_topic_key(topic_key)
+    if not canonical:
+        try:
+            from skills.ops.red_phone import _infer_topic_key
+            canonical = _infer_topic_key(message, source, "")
+        except ImportError:
+            pass
+    
     s = str(message or "").lower()
     src = str(source or "").lower()
 
@@ -77,12 +84,12 @@ def _infer_sub_topic(message: str, topic_key: str, source: str = "") -> str:
         if canonical in ("filereview_payment", "filereview_download", "filereview_apply"):
             return canonical
         # 閱卷類：依動作細分
-        if any(k in s for k in ["繳費", "逾期", "到期", "待繳", "payment"]):
+        if any(k in s for k in ["聲請", "apply", "申請閱卷", "填寫完成", "紙本", "預約", "郵寄"]):
+            return "filereview_apply"
+        if any(k in s for k in ["繳費", "逾期", "到期", "待繳", "payment", "繳費單"]):
             return "filereview_payment"
         if any(k in s for k in ["下載完成", "已下載", "download", "歸檔"]):
             return "filereview_download"
-        if any(k in s for k in ["聲請", "apply", "申請閱卷"]):
-            return "filereview_apply"
         if any(k in s for k in ["信箱檢查完成", "閱卷信箱"]):
             return "filereview_download"
         return "filereview_download"
@@ -93,13 +100,24 @@ def _infer_sub_topic(message: str, topic_key: str, source: str = "") -> str:
             return "laf_dispatch"
         if any(k in s for k in ["審查結果", "review_result", "准予扶助"]):
             return "laf_dispatch"
-        if any(k in s for k in ["結案", "closing", "酬金", "領款"]):
+        if any(k in s for k in ["結案", "closing", "報結"]):
             return "laf_closing"
-        if any(k in s for k in ["開辦", "go_live", "go-live"]):
+        if any(k in s for k in ["酬金", "領款", "費用", "fee"]):
+            return "laf_fee"
+        if any(k in s for k in ["疑義", "inquiry", "不合標準"]):
+            return "laf_inquiry"
+        if any(k in s for k in ["二階段", "附條件", "condition"]):
+            return "laf_condition"
+        if any(k in s for k in ["開辦", "go_live", "go-live", "進行中"]):
+            # 如果包含「巡檢」或「報告」等報告字眼，改轉 laf_general
+            if any(k in s for k in ["巡檢", "報告", "報告", "待開辦", "逾期"]):
+                return "laf_general"
             return "laf_go_live"
+        if any(k in s for k in ["巡檢", "報告", "待辦", "彙報", "案件總數"]):
+            return "laf_general"
         if any(k in s for k in ["重試", "retry", "exhausted", "達上限"]):
             return "laf_closing"
-        return "laf"
+        return "laf_general"
 
     if canonical == "transcript":
         return "transcript"
@@ -130,7 +148,11 @@ _FALLBACK_CHAIN: dict[str, list[str]] = {
     "filereview": ["general"],
     "laf_dispatch": ["laf", "general"],
     "laf_go_live": ["laf_dispatch", "laf", "general"],
+    "laf_fee": ["laf", "general"],
+    "laf_inquiry": ["laf", "general"],
+    "laf_condition": ["laf", "general"],
     "laf_closing": ["laf", "general"],
+    "laf_general": ["laf", "general"],
     "laf": ["general"],
     "transcript": ["general"],
     "verbatim": ["general"],
@@ -342,9 +364,29 @@ DEFAULT_CHANNELS: list[dict] = [
         "topic": "開辦回報進度、開辦確認、開辦通知書",
     },
     {
+        "name": "法扶-費用",
+        "key": "laf_fee",
+        "topic": "費用支付回報、酬金領款、費用申報",
+    },
+    {
+        "name": "法扶-疑義",
+        "key": "laf_inquiry",
+        "topic": "疑義回報、資力不合、撤回等",
+    },
+    {
+        "name": "法扶-二階段",
+        "key": "laf_condition",
+        "topic": "二階段回報、附條件審查、調解證明",
+    },
+    {
+        "name": "法扶-一般",
+        "key": "laf_general",
+        "topic": "法扶巡檢報告、待辦清單、系統自動提醒",
+    },
+    {
         "name": "法扶-結案",
         "key": "laf_closing",
-        "topic": "結案回報、酬金領款、附件重試狀態",
+        "topic": "結案回報、報結結果、領款狀態",
     },
     {
         "name": "逐字稿",
@@ -360,6 +402,16 @@ DEFAULT_CHANNELS: list[dict] = [
         "name": "翻譯",
         "key": "translation",
         "topic": "文件翻譯產出結果",
+    },
+    {
+        "name": "歸檔通知",
+        "key": "filing",
+        "topic": "檔案命名、PDF 手續、CASPER 歸檔報告與結果",
+    },
+    {
+        "name": "裁判",
+        "key": "judgment",
+        "topic": "判決書搜集、裁判資料彙整",
     },
     {
         "name": "一般",

@@ -491,7 +491,7 @@ def _num_to_chinese(n: int) -> str:
     return str(n)
 
 
-def _roc_date_str(dt: datetime | None = None) -> str:
+def _roc_date_str(dt: Optional[datetime] = None) -> str:
     """產生民國日期字串"""
     dt = dt or datetime.now()
     roc_year = dt.year - 1911
@@ -863,7 +863,7 @@ def generate_creditor_list(data: dict[str, Any]) -> "Document":
 # 4. PDF 合併工具 (原 04_D.py)
 # ═══════════════════════════════════════════════════════════════
 
-def merge_debt_pdfs(file_paths: list[str], output_path: str | None = None,
+def merge_debt_pdfs(file_paths: list[str], output_path: Optional[str] = None,
                    add_bookmarks: bool = False) -> str:
     """
     合併多個 PDF/DOCX 檔案，奇數頁自動補空白頁。
@@ -1278,7 +1278,7 @@ def generate_report(data: dict[str, Any]) -> "Document":
 # 批次生成函式
 # ═══════════════════════════════════════════════════════════════
 
-def generate_all_documents(base_data: dict[str, Any], output_dir: str | None = None) -> dict[str, str]:
+def generate_all_documents(base_data: dict[str, Any], output_dir: Optional[str] = None) -> dict[str, str]:
     """
     一鍵生成所有五份消債文件。
 

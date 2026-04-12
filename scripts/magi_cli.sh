@@ -15,6 +15,8 @@ LABEL="com.magi.daemon"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 MENUBAR_LABEL="com.magi.menubar"
 MENUBAR_PLIST="$HOME/Library/LaunchAgents/$MENUBAR_LABEL.plist"
+RPC_LABEL="com.magi.rpc"
+RPC_PLIST="$HOME/Library/LaunchAgents/$RPC_LABEL.plist"
 
 _check() {
     local name="$1" pattern="$2"
@@ -46,9 +48,14 @@ cmd_status() {
     _check "Server"       "api/server.py"
     _check "Discord Bot"  "api/discord_bot.py"
     _check "Tools API"    "api/tools_api.py"
+    _check_port "RPC Worker"        50052
     echo ""
     echo "UI:"
     _check "Status Bar"   "gui/magi_menubar.py"
+    echo ""
+    echo "Sidecars:"
+    _check_port "LINE Desktop MCP"  3012
+    _check_port "Website Admin"     8088
     echo ""
     echo "oMLX Inference:"
     _check_port "Text (Gemma-4)" 8080
@@ -120,6 +127,10 @@ cmd_start() {
     # Start daemon
     echo "  Starting daemon..."
     launchctl bootstrap gui/$(id -u) "$PLIST" 2>/dev/null || launchctl load "$PLIST" 2>/dev/null || true
+    if [ -f "$RPC_PLIST" ]; then
+        echo "  Starting RPC worker..."
+        launchctl bootstrap gui/$(id -u) "$RPC_PLIST" 2>/dev/null || launchctl load "$RPC_PLIST" 2>/dev/null || true
+    fi
     # Start menubar
     if [ -f "$MENUBAR_PLIST" ]; then
         echo "  Starting status bar..."
@@ -134,6 +145,11 @@ cmd_stop() {
     # Stop daemon
     launchctl bootout gui/$(id -u)/$LABEL 2>/dev/null || launchctl unload "$PLIST" 2>/dev/null || true
     sleep 1
+    if [ -f "$RPC_PLIST" ]; then
+        echo "  Stopping RPC worker..."
+        launchctl bootout gui/$(id -u)/$RPC_LABEL 2>/dev/null || launchctl unload "$RPC_PLIST" 2>/dev/null || true
+    fi
+    sleep 1
     # Stop menubar
     if [ -f "$MENUBAR_PLIST" ]; then
         echo "  Stopping status bar..."
@@ -146,6 +162,7 @@ cmd_stop() {
     pkill -f "api/discord_bot.py" 2>/dev/null || true
     pkill -f "api/tools_api.py" 2>/dev/null || true
     pkill -f "gui/magi_menubar.py" 2>/dev/null || true
+    pkill -f "rpc-server" 2>/dev/null || true
     sleep 2
     echo "MAGI stopped."
 }

@@ -45,7 +45,7 @@ class RoutingTelemetry:
     def __init__(
         self,
         *,
-        telemetry_dir: Path | None = None,
+        telemetry_dir: Optional[Path] = None,
         filename: str = _DEFAULT_TELEMETRY_FILE,
         enabled: bool = True,
     ) -> None:

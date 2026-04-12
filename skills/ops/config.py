@@ -47,7 +47,7 @@ RECOMMENDED_VARS = [
 ]
 
 
-def _is_feature_enabled(enable_flag: str | None) -> bool:
+def _is_feature_enabled(enable_flag: Optional[str]) -> bool:
     """Check if a feature flag is set (truthy value)."""
     if enable_flag is None:
         return True

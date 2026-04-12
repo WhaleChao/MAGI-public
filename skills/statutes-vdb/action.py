@@ -591,6 +591,24 @@ _CRIME_ARTICLE_MAP = {
     "肇事逃逸罪": ["中華民國刑法|第 185-4 條"],
 }
 
+_LEGAL_ARTICLE_MAP = {
+    "侵權行為": ["民法|第 184 條"],
+    "損害賠償": ["民法|第 184 條", "民法|第 193 條", "民法|第 195 條"],
+    "不當得利": ["民法|第 179 條"],
+    "債務不履行": ["民法|第 227 條"],
+    "給付不能": ["民法|第 226 條"],
+    "給付遲延": ["民法|第 229 條", "民法|第 231 條"],
+    "遲延利息": ["民法|第 233 條"],
+    "契約解除": ["民法|第 259 條"],
+    "瑕疵擔保": ["民法|第 354 條", "民法|第 359 條"],
+    "買賣": ["民法|第 345 條"],
+    "租賃": ["民法|第 421 條"],
+    "承攬": ["民法|第 490 條"],
+    "僱傭": ["民法|第 482 條"],
+    "代理權": ["民法|第 103 條"],
+    "預售屋遲延交屋": ["民法|第 227 條", "民法|第 231 條"],
+}
+
 
 def _statute_keyword_search(query: str, top_k: int = 10) -> list:
     """Fast keyword-based statute search using SQL LIKE on content.
@@ -612,6 +630,22 @@ def _statute_keyword_search(query: str, top_k: int = 10) -> list:
         for sfx in ("罪",):
             if _compact_q.endswith(sfx) and len(_compact_q) > len(sfx) + 1:
                 _map_keys.append(_compact_q[:-len(sfx)])
+        for mk in list(_map_keys):
+            if mk in _LEGAL_ARTICLE_MAP:
+                for art_key in _LEGAL_ARTICLE_MAP[mk]:
+                    law_name, art_num = art_key.split("|")
+                    cur.execute(
+                        "SELECT id, content, source FROM documents "
+                        "WHERE source LIKE %s AND source LIKE %s "
+                        "ORDER BY id DESC LIMIT 1",
+                        (f"%law={law_name}|%", f"%article={art_num}|%"),
+                    )
+                    row = cur.fetchone()
+                    if row:
+                        _mapped_articles.append({
+                            "id": row[0], "content": row[1], "source": row[2],
+                            "score": 1.0, "_rel": 11,
+                        })
         for mk in _map_keys:
             if mk in _CRIME_ARTICLE_MAP:
                 for art_key in _CRIME_ARTICLE_MAP[mk]:
