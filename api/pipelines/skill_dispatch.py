@@ -1062,16 +1062,13 @@ def dispatch_ai_draft(message, user_id="", platform=""):
 
     try:
         from api.osc.drafts import _osc_generate_draft_with_casper
-        context = {
-            "doc_type": doc_type,
-            "case_number": case_number or (case_row.get("case_number") if case_row else ""),
-            "client_name": (case_row.get("client_name") if case_row else ""),
-            "case_reason": reason or (case_row.get("case_reason") if case_row else ""),
-        }
-        result = _osc_generate_draft_with_casper(context)
-        if result and result.get("text"):
-            draft_text = result["text"][:800]
-            return "📝 %s 草稿（前段預覽）：\n\n%s\n\n（完整版請至系統 Web 介面查看）" % (doc_type, draft_text)
+        _case_no = case_number or (case_row.get("case_number") if case_row else "")
+        _client = (case_row.get("client_name") if case_row else "") or ""
+        _reason = reason or (case_row.get("case_reason") if case_row else "") or ""
+        prompt = "請草擬%s。案件：%s，當事人：%s，案由：%s。" % (doc_type, _case_no, _client, _reason)
+        draft_text = _osc_generate_draft_with_casper(prompt)
+        if draft_text:
+            return "📝 %s 草稿（前段預覽）：\n\n%s\n\n（完整版請至系統 Web 介面查看）" % (doc_type, draft_text[:800])
         return "⚠️ 書狀草擬失敗，oMLX 未回應或無範本。"
     except Exception as e:
         logger.warning("dispatch_ai_draft error: %s", e)
