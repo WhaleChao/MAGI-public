@@ -7301,12 +7301,31 @@ class FileReviewManager:
                 all_files.extend(_collect_supported_files(folder_path, budget_sec=scan_budget_sec, prefer_small_scope=True))
 
         deduped = sorted(set(all_files))
-        result["laf_file"] = self._pick_review_upload_file(
-            deduped,
-            primary_terms=["扶助律師接案通知書", "接案通知書", "開辦通知書", "接案證明", "准予扶助證明書"],
-            secondary_terms=["法扶", "扶助", "通知書", "證明書"],
-            banned_terms=["審查表", "申請書", "資力詢問表", "預付酬金", "案件概述單"],
-        )
+
+        # 判斷是否為法扶案件：只有法扶案才需要上傳法扶通知書
+        _is_laf_case = False
+        if case_info.get("laf_case_no"):
+            _is_laf_case = True
+        elif folder_path:
+            # 資料夾路徑包含法扶相關關鍵字，或有 01_法扶資料 子目錄
+            _fp_lower = folder_path.replace("\\", "/").lower()
+            if "法扶" in _fp_lower or "legal_aid" in _fp_lower:
+                _is_laf_case = True
+            elif os.path.isdir(os.path.join(folder_path, "01_法扶資料")):
+                _is_laf_case = True
+            # 路徑含「無償案件」→ 明確非法扶
+            if "無償案件" in _fp_lower:
+                _is_laf_case = False
+
+        if _is_laf_case:
+            result["laf_file"] = self._pick_review_upload_file(
+                deduped,
+                primary_terms=["扶助律師接案通知書", "接案通知書", "開辦通知書", "接案證明", "准予扶助證明書"],
+                secondary_terms=["法扶", "扶助", "通知書", "證明書"],
+                banned_terms=["審查表", "申請書", "資力詢問表", "預付酬金", "案件概述單"],
+            )
+        else:
+            self.log("  ℹ️ 非法扶案件，跳過法扶通知書搜尋")
         if prefer_stamped:
             # 首次聲請：需要上傳有收文章的委任狀
             # 1. 先用檔名篩選所有可能的委任狀候選
@@ -9515,13 +9534,32 @@ class FileReviewManager:
                     self.log("  ⚠️ 找不到「確認送出」按鈕")
                     return "Error"
             else:
-                # === 手動確認模式 ===
+                # === 預覽確認模式：截圖 + 回傳 evidence 供上層產生確認碼 ===
+                ready_evidence = {"submit_ready": True}
+                try:
+                    import datetime as _dt
+                    _ts = _dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+                    _mode = "paper" if _is_paper else "electronic"
+                    _shot_name = f"preview_{_mode}_{_ts}.png"
+                    _shot_dir = os.path.join(self.download_folder, "screenshots")
+                    os.makedirs(_shot_dir, exist_ok=True)
+                    _shot_path = os.path.join(_shot_dir, _shot_name)
+                    self.driver.save_screenshot(_shot_path)
+                    ready_evidence["screenshot"] = _shot_path
+                    self.log(f"  📸 預覽截圖已保存: {_shot_path}")
+                except Exception as _ss_e:
+                    self.log(f"  ⚠️ 預覽截圖失敗: {_ss_e}")
+                ready_evidence["timestamp"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+                self._last_apply_for_review_evidence = ready_evidence
                 self.log("")
-                self.log("  ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★")
-                self.log("  ★ 表單已填寫完成，請手動確認後點擊「確認送出」 ★")
-                self.log("  ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★")
+                self.log("  ★ 表單已填寫完成，等待確認碼確認後送出 ★")
                 self.log("")
-                return "Ready"
+                evidence_json = ""
+                try:
+                    evidence_json = "|" + json.dumps(ready_evidence, ensure_ascii=False)
+                except Exception:
+                    pass
+                return "Ready" + evidence_json
             
         except Exception as e:
             self.log(f"  ❌ 聲請流程發生錯誤: {e}")

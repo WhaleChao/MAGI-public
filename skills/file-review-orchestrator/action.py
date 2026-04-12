@@ -1064,6 +1064,88 @@ def _resolve_court_code(text: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# 閱卷聲請確認碼 pending 管理
+# ---------------------------------------------------------------------------
+_REVIEW_PENDING_FILE = os.path.join(os.path.dirname(__file__), ".review_submit_pending.json")
+
+
+def _load_review_pending() -> dict:
+    try:
+        if os.path.exists(_REVIEW_PENDING_FILE):
+            with open(_REVIEW_PENDING_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if isinstance(data, dict):
+                    return data
+    except Exception:
+        pass
+    return {}
+
+
+def _save_review_pending(data: dict):
+    try:
+        with open(_REVIEW_PENDING_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logger.warning("無法儲存 review pending: %s", e)
+
+
+def _register_review_confirm(case_info: dict, evidence: dict, paper: bool = False) -> str:
+    """產生確認碼，儲存 pending 狀態，回傳 6 位 hex token。"""
+    import secrets as _secrets
+    import time as _time
+    token = _secrets.token_hex(3).upper()
+    ttl = int(os.environ.get("MAGI_FILE_REVIEW_CONFIRM_TTL_SEC", "1800") or "1800")
+    now = _time.time()
+    pending = _load_review_pending()
+    # 清理過期的 pending
+    expired = [k for k, v in pending.items() if isinstance(v, dict) and now > float(v.get("expires_at", 0) or 0)]
+    for k in expired:
+        pending.pop(k, None)
+    # evidence 中的 screenshot 路徑保留，但移除不可序列化的內容
+    safe_evidence = {}
+    for ek, ev in (evidence or {}).items():
+        if isinstance(ev, (str, int, float, bool, type(None))):
+            safe_evidence[ek] = ev
+    pending[token] = {
+        "token": token,
+        "case_info": case_info,
+        "paper": paper,
+        "evidence": safe_evidence,
+        "created_at": now,
+        "expires_at": now + ttl,
+        "status": "pending",
+    }
+    _save_review_pending(pending)
+    return token
+
+
+def _resolve_review_confirm(token_str: str):
+    """查找並消費確認碼。回傳 (token, entry) 或 (None, None)。"""
+    import time as _time
+    pending = _load_review_pending()
+    tk = (token_str or "").strip().upper()
+    import re as _re
+    m = _re.search(r"([A-F0-9]{6,12})", tk)
+    if m:
+        tk = m.group(1)
+    entry = pending.get(tk)
+    if not entry or not isinstance(entry, dict):
+        return None, None
+    now = _time.time()
+    if now > float(entry.get("expires_at", 0) or 0):
+        pending.pop(tk, None)
+        _save_review_pending(pending)
+        return None, None
+    if entry.get("status") != "pending":
+        return None, None
+    entry["status"] = "confirmed"
+    entry["confirmed_at"] = now
+    pending[tk] = entry
+    _save_review_pending(pending)
+    return tk, entry
+
+
+# ---------------------------------------------------------------------------
 # Core Commands
 # ---------------------------------------------------------------------------
 def cmd_apply(court_code: str, year: str, case_type: str,
@@ -1182,11 +1264,19 @@ def cmd_apply(court_code: str, year: str, case_type: str,
                 _safe_flow_step_status(flow_id, "preview_fill", status="succeeded", detail="application prepared and submitted", ok=True)
                 _safe_flow_step_status(flow_id, "submit", status="succeeded", detail=result_key, ok=True)
             elif result_key == "Ready":
-                msg = f"✅ 閱卷已填寫完成（待確認送出） — {label}"
-                if evidence.get("submit_ready"):
-                    msg += "\n系統已確認頁面可見「確認送出」按鈕。"
+                # 產生確認碼，通知使用者截圖 + 確認碼
+                confirm_token = _register_review_confirm(
+                    case_info=case_info, evidence=evidence, paper=False,
+                )
+                msg = (
+                    f"✅ 閱卷已填寫完成（待確認送出） — {label}"
+                    f"\n\n📌 確認碼：{confirm_token}"
+                    f"\n請確認截圖無誤後，回覆確認碼即可送出。"
+                    f"\n（確認碼 30 分鐘內有效）"
+                )
+                evidence["confirm_token"] = confirm_token
                 _safe_flow_step_status(flow_id, "preview_fill", status="succeeded", detail="preview ready", ok=True)
-                _safe_flow_step_status(flow_id, "submit", status="blocked", detail="manual confirmation required", ok=True)
+                _safe_flow_step_status(flow_id, "submit", status="blocked", detail=f"confirm_token={confirm_token}", ok=True)
             else:
                 msg = f"⚠️ 閱卷聲請結果: {result_key} — {label}"
                 _safe_flow_step_status(flow_id, "preview_fill", status="succeeded", detail=result_key, ok=True)
@@ -1198,7 +1288,7 @@ def cmd_apply(court_code: str, year: str, case_type: str,
             # Send evidence screenshot if available
             screenshot = evidence.get("screenshot", "")
             if screenshot and os.path.isfile(screenshot):
-                _notify_file(screenshot, caption=f"聲請截圖 — {label}", flag=notify)
+                _notify_file(screenshot, caption=f"閱卷預覽 — {label}", flag=notify)
             list_screenshot = evidence.get("list_screenshot", "")
             if list_screenshot and os.path.isfile(list_screenshot):
                 _notify_file(list_screenshot, caption=f"列表確認 — {label}", flag=notify)
@@ -1347,11 +1437,18 @@ def cmd_paper_apply(court_code: str, year: str, case_type: str,
                 _safe_flow_step_status(flow_id, "preview_fill", status="succeeded", detail="paper application prepared and submitted", ok=True)
                 _safe_flow_step_status(flow_id, "submit", status="succeeded", detail=result_key, ok=True)
             elif result_key == "Ready":
-                msg = f"✅ 紙本閱卷已填寫完成（待確認送出） — {label}{appt_label}"
-                if evidence.get("submit_ready"):
-                    msg += "\n系統已確認頁面可見「確認送出」按鈕。"
+                confirm_token = _register_review_confirm(
+                    case_info=case_info, evidence=evidence, paper=True,
+                )
+                msg = (
+                    f"✅ 紙本閱卷已填寫完成（待確認送出） — {label}{appt_label}"
+                    f"\n\n📌 確認碼：{confirm_token}"
+                    f"\n請確認截圖無誤後，回覆確認碼即可送出。"
+                    f"\n（確認碼 30 分鐘內有效）"
+                )
+                evidence["confirm_token"] = confirm_token
                 _safe_flow_step_status(flow_id, "preview_fill", status="succeeded", detail="paper preview ready", ok=True)
-                _safe_flow_step_status(flow_id, "submit", status="blocked", detail="manual confirmation required", ok=True)
+                _safe_flow_step_status(flow_id, "submit", status="blocked", detail=f"confirm_token={confirm_token}", ok=True)
             else:
                 msg = f"⚠️ 紙本閱卷聲請結果: {result_key} — {label}"
                 _safe_flow_step_status(flow_id, "preview_fill", status="succeeded", detail=result_key, ok=True)
@@ -1362,7 +1459,7 @@ def cmd_paper_apply(court_code: str, year: str, case_type: str,
 
             screenshot = evidence.get("screenshot", "")
             if screenshot and os.path.isfile(screenshot):
-                _notify_file(screenshot, caption=f"紙本閱卷截圖 — {label}", flag=notify)
+                _notify_file(screenshot, caption=f"紙本閱卷預覽 — {label}", flag=notify)
             html_path = evidence.get("html", "")
             if html_path and os.path.isfile(html_path):
                 logger.info("紙本閱卷預覽 HTML：%s", html_path)
@@ -1955,6 +2052,52 @@ def cmd_download_payment_slips(max_days: int = 14, notify: bool = True) -> dict:
         logger.error("Download payment slips failed: %s", error_msg)
         _notify("❌ 繳費單下載失敗: " + error_msg, notify)
         return {"success": False, "error": error_msg, "traceback": traceback.format_exc()[-500:]}
+
+
+def cmd_confirm_apply(token: str, notify: bool = True, flow_id: str = "") -> dict:
+    """使用者回覆確認碼後，重新登入並送出閱卷聲請。"""
+    tk, entry = _resolve_review_confirm(token)
+    if not tk or not entry:
+        msg = f"❌ 確認碼無效或已過期：{token}"
+        _notify(msg, notify)
+        return {"success": False, "error": msg}
+
+    case_info = entry.get("case_info") or {}
+    is_paper = bool(entry.get("paper"))
+
+    court_code = case_info.get("court_code", "")
+    year = case_info.get("year", "")
+    case_type_str = case_info.get("case_type", "")
+    case_number = case_info.get("case_number", "")
+    client_name = case_info.get("client_name", "")
+
+    label = f"{court_code} {year}年{case_type_str}字第{case_number}號"
+    if is_paper:
+        label += " (紙本)"
+    _notify(f"📤 確認碼 {tk} 已確認，正在重新登入送出 — {label}", notify)
+
+    if is_paper:
+        return cmd_paper_apply(
+            court_code=court_code, year=year, case_type=case_type_str,
+            case_number=case_number, client_name=client_name,
+            appointment_date=case_info.get("appointment_date", ""),
+            appointment_time=case_info.get("appointment_time", "下午"),
+            court_division=case_info.get("court_division", ""),
+            appointment_slots=case_info.get("appointment_slots"),
+            auto_submit=True, notify=notify,
+            sys_type=case_info.get("sys_type", ""),
+            folder_path=case_info.get("folder_path", ""),
+            flow_id=flow_id,
+        )
+    else:
+        return cmd_apply(
+            court_code=court_code, year=year, case_type=case_type_str,
+            case_number=case_number, client_name=client_name,
+            auto_submit=True, notify=notify,
+            sys_type=case_info.get("sys_type", ""),
+            folder_path=case_info.get("folder_path", ""),
+            flow_id=flow_id,
+        )
 
 
 def cmd_probe(court_code: str, year: str, case_type: str,
@@ -4302,6 +4445,20 @@ def main() -> int:
     if task.startswith("db_smoke"):
         payload = _load_jsonish(task[len("db_smoke"):].strip())
         r = cmd_db_smoke(prefer_profile=payload.get("prefer_profile", ""))
+        return _ok(r)
+
+    if task.startswith("confirm_apply") or task.startswith("confirm"):
+        payload = _load_jsonish(task.split(None, 1)[1].strip() if " " in task else "{}")
+        _token = payload.get("token") or payload.get("confirm_token") or task.split()[-1].strip()
+        r = _run_with_flow(
+            "confirm_apply",
+            lambda flow_id: cmd_confirm_apply(
+                token=_token,
+                notify=_boolish(payload.get("notify"), True),
+                flow_id=flow_id,
+            ),
+            metadata={"token": _token},
+        )
         return _ok(r)
 
     if task.startswith("probe"):
