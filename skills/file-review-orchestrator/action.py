@@ -913,7 +913,8 @@ def _notify(text: str, flag: bool = True, topic_key: str = "filereview"):
     _notify_tg(msg)
 
 
-def _notify_file(file_path: str, caption: str = "", flag: bool = True):
+def _notify_file(file_path: str, caption: str = "", flag: bool = True,
+                 topic_key: str = "filereview"):
     """Send a file (image/PDF/etc.) to admin via TG and DC."""
     if not flag:
         return
@@ -931,7 +932,7 @@ def _notify_file(file_path: str, caption: str = "", flag: bool = True):
         from line_notifier import LAFNotifier
         LAFNotifier().notify_admin_with_files(
             caption or os.path.basename(file_path), [file_path],
-            topic_key="filereview", source="file_review_orchestrator",
+            topic_key=topic_key, source="file_review_orchestrator",
         )
         logger.info("File sent via LAFNotifier (TG+DC): %s", os.path.basename(file_path))
         return
@@ -940,7 +941,7 @@ def _notify_file(file_path: str, caption: str = "", flag: bool = True):
     # Fallback: TG-only via red_phone
     try:
         from skills.ops.red_phone import send_file_admin  # type: ignore
-        result = send_file_admin(file_path, caption=caption, topic_key="filereview")
+        result = send_file_admin(file_path, caption=caption, topic_key=topic_key)
         if result.get("ok"):
             logger.info("File sent via red_phone (TG-only): %s", os.path.basename(file_path))
             return
@@ -1282,16 +1283,18 @@ def cmd_apply(court_code: str, year: str, case_type: str,
                 _safe_flow_step_status(flow_id, "preview_fill", status="succeeded", detail=result_key, ok=True)
                 _safe_flow_step_status(flow_id, "submit", status="failed", detail=result_key, ok=False)
 
-            _notify(msg, notify)
+            _notify(msg, notify, topic_key="filereview_apply")
             _mark_notify_step(flow_id, notify=notify, detail=msg)
 
             # Send evidence screenshot if available
             screenshot = evidence.get("screenshot", "")
             if screenshot and os.path.isfile(screenshot):
-                _notify_file(screenshot, caption=f"閱卷預覽 — {label}", flag=notify)
+                _notify_file(screenshot, caption=f"閱卷預覽 — {label}", flag=notify,
+                             topic_key="filereview_apply")
             list_screenshot = evidence.get("list_screenshot", "")
             if list_screenshot and os.path.isfile(list_screenshot):
-                _notify_file(list_screenshot, caption=f"列表確認 — {label}", flag=notify)
+                _notify_file(list_screenshot, caption=f"列表確認 — {label}", flag=notify,
+                             topic_key="filereview_apply")
             html_path = evidence.get("html", "")
             if html_path and os.path.isfile(html_path):
                 logger.info("預覽 HTML：%s", html_path)
@@ -1305,7 +1308,7 @@ def cmd_apply(court_code: str, year: str, case_type: str,
     except Exception as e:
         error_msg = str(e)[:200]
         logger.error("Apply failed: %s", error_msg)
-        _notify("❌ 閱卷聲請失敗: " + error_msg, notify)
+        _notify("❌ 閱卷聲請失敗: " + error_msg, notify, topic_key="filereview_apply")
         _safe_flow_step_status(flow_id, "submit", status="failed", detail=error_msg, ok=False)
         _mark_notify_step(flow_id, notify=notify, detail=error_msg)
         return {"success": False, "error": error_msg, "traceback": traceback.format_exc()[-500:]}
@@ -1454,12 +1457,13 @@ def cmd_paper_apply(court_code: str, year: str, case_type: str,
                 _safe_flow_step_status(flow_id, "preview_fill", status="succeeded", detail=result_key, ok=True)
                 _safe_flow_step_status(flow_id, "submit", status="failed", detail=result_key, ok=False)
 
-            _notify(msg, notify)
+            _notify(msg, notify, topic_key="filereview_apply")
             _mark_notify_step(flow_id, notify=notify, detail=msg)
 
             screenshot = evidence.get("screenshot", "")
             if screenshot and os.path.isfile(screenshot):
-                _notify_file(screenshot, caption=f"紙本閱卷預覽 — {label}", flag=notify)
+                _notify_file(screenshot, caption=f"紙本閱卷預覽 — {label}", flag=notify,
+                             topic_key="filereview_apply")
             html_path = evidence.get("html", "")
             if html_path and os.path.isfile(html_path):
                 logger.info("紙本閱卷預覽 HTML：%s", html_path)
@@ -1473,7 +1477,7 @@ def cmd_paper_apply(court_code: str, year: str, case_type: str,
     except Exception as e:
         error_msg = str(e)[:200]
         logger.error("Paper apply failed: %s", error_msg)
-        _notify("❌ 紙本閱卷聲請失敗: " + error_msg, notify)
+        _notify("❌ 紙本閱卷聲請失敗: " + error_msg, notify, topic_key="filereview_apply")
         _safe_flow_step_status(flow_id, "submit", status="failed", detail=error_msg, ok=False)
         _mark_notify_step(flow_id, notify=notify, detail=error_msg)
         return {"success": False, "error": error_msg, "traceback": traceback.format_exc()[-500:]}
@@ -2054,12 +2058,30 @@ def cmd_download_payment_slips(max_days: int = 14, notify: bool = True) -> dict:
         return {"success": False, "error": error_msg, "traceback": traceback.format_exc()[-500:]}
 
 
-def cmd_confirm_apply(token: str, notify: bool = True, flow_id: str = "") -> dict:
-    """使用者回覆確認碼後，重新登入並送出閱卷聲請。"""
+def cmd_confirm_apply(token: str, notify: bool = True, flow_id: str = "",
+                      source: str = "") -> dict:
+    """使用者回覆確認碼後，重新登入並送出閱卷聲請。
+
+    安全：只有來自使用者的訊息（source 含 'user' / 'telegram' / 'discord'）
+    或明確設定 MAGI_FILE_REVIEW_ALLOW_CONFIRM=1 才能觸發。
+    CLI 直接呼叫會被擋住。
+    """
+    # --- 安全閘門 ---
+    _allow = os.environ.get("MAGI_FILE_REVIEW_ALLOW_CONFIRM", "").strip()
+    _src = (source or "").lower()
+    _user_sources = ("user", "telegram", "discord", "tg", "dc", "line", "red_phone")
+    if _allow != "1" and not any(s in _src for s in _user_sources):
+        msg = (
+            "⛔ confirm_apply 只能由使用者透過 TG/DC 回覆確認碼觸發。"
+            "\n如需 CLI 測試，請設定 MAGI_FILE_REVIEW_ALLOW_CONFIRM=1"
+        )
+        logger.warning("confirm_apply blocked: source=%r, allow=%r", source, _allow)
+        return {"success": False, "error": msg, "blocked": True}
+
     tk, entry = _resolve_review_confirm(token)
     if not tk or not entry:
         msg = f"❌ 確認碼無效或已過期：{token}"
-        _notify(msg, notify)
+        _notify(msg, notify, topic_key="filereview_apply")
         return {"success": False, "error": msg}
 
     case_info = entry.get("case_info") or {}
@@ -2074,7 +2096,8 @@ def cmd_confirm_apply(token: str, notify: bool = True, flow_id: str = "") -> dic
     label = f"{court_code} {year}年{case_type_str}字第{case_number}號"
     if is_paper:
         label += " (紙本)"
-    _notify(f"📤 確認碼 {tk} 已確認，正在重新登入送出 — {label}", notify)
+    _notify(f"📤 確認碼 {tk} 已確認，正在重新登入送出 — {label}", notify,
+            topic_key="filereview_apply")
 
     if is_paper:
         return cmd_paper_apply(
@@ -4450,12 +4473,14 @@ def main() -> int:
     if task.startswith("confirm_apply") or task.startswith("confirm"):
         payload = _load_jsonish(task.split(None, 1)[1].strip() if " " in task else "{}")
         _token = payload.get("token") or payload.get("confirm_token") or task.split()[-1].strip()
+        _source = payload.get("source", "cli")  # CLI 呼叫預設 source=cli → 會被安全閘門擋住
         r = _run_with_flow(
             "confirm_apply",
             lambda flow_id: cmd_confirm_apply(
                 token=_token,
                 notify=_boolish(payload.get("notify"), True),
                 flow_id=flow_id,
+                source=_source,
             ),
             metadata={"token": _token},
         )

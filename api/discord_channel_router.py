@@ -84,7 +84,8 @@ def _infer_sub_topic(message: str, topic_key: str, source: str = "") -> str:
         if canonical in ("filereview_payment", "filereview_download", "filereview_apply"):
             return canonical
         # 閱卷類：依動作細分
-        if any(k in s for k in ["聲請", "apply", "申請閱卷", "填寫完成", "紙本", "預約", "郵寄"]):
+        if any(k in s for k in ["聲請", "apply", "申請閱卷", "填寫完成", "紙本", "預約", "郵寄",
+                                 "確認碼", "confirm", "待確認送出", "預覽"]):
             return "filereview_apply"
         if any(k in s for k in ["繳費", "逾期", "到期", "待繳", "payment", "繳費單"]):
             return "filereview_payment"
@@ -92,7 +93,8 @@ def _infer_sub_topic(message: str, topic_key: str, source: str = "") -> str:
             return "filereview_download"
         if any(k in s for k in ["信箱檢查完成", "閱卷信箱"]):
             return "filereview_download"
-        return "filereview_download"
+        # 預設 fallback：聲請比下載更常出現
+        return "filereview_apply"
 
     if canonical == "laf":
         # 法扶類：依動作細分
