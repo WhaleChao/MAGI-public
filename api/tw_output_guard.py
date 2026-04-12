@@ -520,7 +520,7 @@ def _strip_internal_leaks(text: str) -> Tuple[str, bool]:
 
     out = "\n".join(kept).strip()
     if not out:
-        out = "⏳ 已收到，正在處理中。完成後會回覆你結果。"
+        out = "抱歉，我剛才把內部判斷文字講出來了。請再說一次你的問題，我會直接自然回答。"
     return out, True
 
 
