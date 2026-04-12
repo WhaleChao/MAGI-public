@@ -511,6 +511,7 @@ def parse_document(
     prefer_parser: str = "auto",     # "auto" | "mineru" | "pymupdf"
     enable_llm_summary: bool = True, # 是否用 LLM 摘要表格
     output_dir: Optional[str] = None,
+    use_markitdown: bool = False,    # 是否優先用 MarkItDown（數位 PDF 直接跳過 MinerU）
 ) -> ParseResult:
     """
     解析文件為結構化多模態區塊。
@@ -539,6 +540,20 @@ def parse_document(
         )
 
     result = None
+
+    # MarkItDown opt-in path for digital PDFs (skips MinerU pipeline)
+    if use_markitdown or os.environ.get("MAGI_USE_MARKITDOWN", "0").strip() == "1":
+        try:
+            from skills.engine.document_reader import read_document
+            r = read_document(file_path)
+            if r.success and r.text:
+                block = {"type": "text", "text": r.text, "page": 1}
+                return ParseResult(
+                    file_path=file_path, parser_used="markitdown",
+                    blocks=[block], errors=[],
+                )
+        except Exception:
+            pass  # fall through to MinerU/PyMuPDF
 
     # 選擇解析器
     if prefer_parser == "mineru" or (prefer_parser == "auto" and _check_mineru_available()):

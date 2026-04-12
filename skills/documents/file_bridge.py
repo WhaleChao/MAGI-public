@@ -93,6 +93,19 @@ def extract_text_from_file(
     name = (filename or os.path.basename(p) or "").lower()
     ext = os.path.splitext(name)[1].lower()
 
+    # MarkItDown path for rich formats (feature-flagged, default OFF)
+    if os.environ.get("MAGI_USE_MARKITDOWN", "0").strip() == "1" and ext in {
+        ".docx", ".doc", ".pptx", ".ppt", ".xlsx", ".xls",
+        ".html", ".htm", ".xml", ".epub",
+    }:
+        try:
+            from skills.engine.document_reader import read_document
+            r = read_document(p)
+            if r.success and r.text:
+                return {"success": True, "text": r.text, "type": ext.lstrip("."), "error": ""}
+        except Exception:
+            pass  # fall through to legacy
+
     # Text-like files
     if ext in {".txt", ".md", ".log", ".csv"}:
         return {"success": True, "text": _read_text(p, max_bytes=max_bytes), "type": ext.lstrip("."), "error": ""}

@@ -43,6 +43,18 @@ def _load_text(path: str) -> str:
     p = Path(path)
     if not p.exists():
         raise FileNotFoundError(f"找不到檔案：{path}")
+
+    # MarkItDown path (feature-flagged, default OFF)
+    if os.environ.get("MAGI_USE_MARKITDOWN", "0").strip() == "1":
+        try:
+            from skills.engine.document_reader import read_document
+            r = read_document(str(p))
+            if r.success and r.text:
+                # Prefer markdown for contract review (preserves headings/structure)
+                return r.markdown or r.text
+        except Exception:
+            pass  # fall through to legacy
+
     suffix = p.suffix.lower()
     if suffix == ".txt":
         return p.read_text(encoding="utf-8", errors="replace")

@@ -39,6 +39,17 @@ def extract_text(path: Path) -> Dict:
         {"success": True, "text": ..., "pages": ..., "method": ...}
         or {"success": False, "error": ...}
     """
+    import os
+    # MarkItDown path (feature-flagged, default OFF)
+    if os.environ.get("MAGI_USE_MARKITDOWN", "0").strip() == "1":
+        try:
+            from skills.engine.document_reader import read_document
+            r = read_document(str(path))
+            if r.success and r.text:
+                return {"success": True, "text": r.text, "pages": 1, "method": "markitdown"}
+        except Exception:
+            pass  # fall through to legacy
+
     ext = path.suffix.lower()
     try:
         if ext in (".md", ".txt", ".text", ".log", ".csv"):
