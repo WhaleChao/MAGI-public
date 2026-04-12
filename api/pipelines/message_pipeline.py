@@ -200,6 +200,78 @@ def process_message_inner(orch, user_id, message, platform="LINE", role="user", 
     except Exception as e:
         logger.error(f"doc-producer intercept failed: {e}")
 
+    # --- 案件管理 Intercept (Tasks 1: 建案/查案件/案件清單/狀態更新/業務概況) ---
+    try:
+        _case_mgmt_kws = [
+            "建案", "新案件", "案件清單", "列出案件", "查案件", "案件狀態",
+            "改為已結案", "改為進行中", "改為暫停", "改為撤回",
+            "業務概況", "案件概況", "今天的案件", "案件狀況",
+        ]
+        if any(kw in message for kw in _case_mgmt_kws):
+            from api.pipelines.skill_dispatch import dispatch_case_management
+            _cm_result = dispatch_case_management(message, user_id=user_id, platform=platform)
+            if _cm_result:
+                return _cm_result
+    except Exception as e:
+        logger.error(f"case-management intercept failed: {e}")
+
+    # --- 當事人管理 Intercept (Task 2: 新增/查詢當事人) ---
+    try:
+        _client_mgmt_kws = ["新增當事人", "建立當事人", "查當事人", "查客戶"]
+        _client_data_pattern = message.endswith("的資料") and len(message) <= 15
+        if any(kw in message for kw in _client_mgmt_kws) or _client_data_pattern:
+            from api.pipelines.skill_dispatch import dispatch_client_management
+            _cli_result = dispatch_client_management(message, user_id=user_id, platform=platform)
+            if _cli_result:
+                return _cli_result
+    except Exception as e:
+        logger.error(f"client-management intercept failed: {e}")
+
+    # --- 記帳 Intercept (Task 3: 記收入/記支出/帳務查詢) ---
+    try:
+        _accounting_kws = ["記收入", "記支出", "本月帳務", "帳務查詢", "本月收支", "帳務概況"]
+        if any(kw in message for kw in _accounting_kws):
+            from api.pipelines.skill_dispatch import dispatch_accounting
+            _acc_result = dispatch_accounting(message, user_id=user_id, platform=platform)
+            if _acc_result:
+                return _acc_result
+    except Exception as e:
+        logger.error(f"accounting intercept failed: {e}")
+
+    # --- 報價單 Intercept (Task 4: 開報價單/報價單清單) ---
+    try:
+        _quotation_kws = ["開報價單", "報價單清單", "查報價單", "報價單列表"]
+        if any(kw in message for kw in _quotation_kws):
+            from api.pipelines.skill_dispatch import dispatch_quotation
+            _quot_result = dispatch_quotation(message, user_id=user_id, platform=platform)
+            if _quot_result:
+                return _quot_result
+    except Exception as e:
+        logger.error(f"quotation intercept failed: {e}")
+
+    # --- 行事曆事件 Intercept (Task 5: 排庭/排開會) ---
+    try:
+        _calendar_kws = ["排庭", "排開會", "排會議"]
+        if any(message.startswith(kw) for kw in _calendar_kws):
+            from api.pipelines.skill_dispatch import dispatch_calendar_event
+            _cal_result = dispatch_calendar_event(message, user_id=user_id, platform=platform)
+            if _cal_result:
+                return _cal_result
+    except Exception as e:
+        logger.error(f"calendar-event intercept failed: {e}")
+
+    # --- 書狀 AI 草擬 Intercept (Task 6: 草擬起訴狀/答辯狀) ---
+    try:
+        _draft_kws = ["草擬起訴狀", "草擬答辯狀", "草擬聲請狀", "草擬陳報狀", "草擬準備狀",
+                      "草擬上訴狀", "草擬抗告狀", "幫我草擬", "幫我起草"]
+        if any(kw in message for kw in _draft_kws):
+            from api.pipelines.skill_dispatch import dispatch_ai_draft
+            _draft_result = dispatch_ai_draft(message, user_id=user_id, platform=platform)
+            if _draft_result:
+                return _draft_result
+    except Exception as e:
+        logger.error(f"ai-draft intercept failed: {e}")
+
     # --- 文件產生 Intercept (委任狀/委託書/委任契約書/收據) ---
     try:
         import json as _json_poa

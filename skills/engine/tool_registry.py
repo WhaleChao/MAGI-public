@@ -88,10 +88,12 @@ def _web_search(query: str = "", num_results: int = 5, **_) -> str:
 def _query_cases(query: str = "", **_) -> str:
     """查詢案件資料庫（OSC）。"""
     try:
+        import os as _os_tr
+        _server_port = _os_tr.environ.get("MAGI_SERVER_PORT", "5002")
         from skills.bridge.http_pool import get_session
         session = get_session()
         resp = session.get(
-            "http://localhost:5002/api/osc/cases/search",
+            f"http://localhost:{_server_port}/api/osc/cases/search",
             params={"q": query, "limit": 5},
             timeout=15,
         )
@@ -144,8 +146,10 @@ def _get_schedule(date: str = "", **_) -> str:
         from skills.bridge.http_pool import get_session
         session = get_session()
         params = {"date": date} if date else {}
+        import os as _os_tr2
+        _server_port2 = _os_tr2.environ.get("MAGI_SERVER_PORT", "5002")
         resp = session.get(
-            "http://localhost:5002/api/schedule",
+            f"http://localhost:{_server_port2}/api/schedule",
             params=params,
             timeout=15,
         )

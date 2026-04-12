@@ -1287,6 +1287,18 @@ def _ai_generate_structured_name(ocr_text: str, already_extracted: dict) -> Opti
         return None
 
 
+def _pick_best_source(field_name, sources):
+    # type: (str, list) -> tuple
+    """Phase 2D: confidence-weighted field merge.
+    sources = [(value, confidence, source_name), ...]
+    Returns (best_value, best_confidence, best_source_name).
+    """
+    candidates = [(v, c, n) for v, c, n in sources if v]
+    if not candidates:
+        return "", 0.0, ""
+    return max(candidates, key=lambda x: x[1])
+
+
 def generate_name_proposal(pdf_path: str, case_name: str = None, return_structured: bool = False):
     """Propose a filename following the standard convention:
     {YYYYMMDD} {法院全名}{案號}{文件類型}（{當事人}）.pdf
@@ -1656,10 +1668,23 @@ def generate_name_proposal(pdf_path: str, case_name: str = None, return_structur
             date_method = "ocr"
         else:
             date_method = "vision"
-    found_court = vision_info.get("court") or ocr_court
-    found_case_no = vision_info.get("case_number") or ocr_case_no
-    found_type = vision_info.get("doc_type") or ocr_type
-    found_party = vision_info.get("party") or ocr_name
+    # Phase 2D: confidence-weighted merge (vision=0.90, ocr=0.70)
+    found_court, _, _ = _pick_best_source("court", [
+        (vision_info.get("court", ""), 0.90, "vision"),
+        (ocr_court, 0.70, "ocr"),
+    ])
+    found_case_no, _, _ = _pick_best_source("case_number", [
+        (vision_info.get("case_number", ""), 0.90, "vision"),
+        (ocr_case_no, 0.70, "ocr"),
+    ])
+    found_type, _, _ = _pick_best_source("doc_type", [
+        (vision_info.get("doc_type", ""), 0.90, "vision"),
+        (ocr_type, 0.70, "ocr"),
+    ])
+    found_party, _, _ = _pick_best_source("party", [
+        (vision_info.get("party", ""), 0.90, "vision"),
+        (ocr_name, 0.70, "ocr"),
+    ])
     found_doc_subtype = vision_info.get("doc_subtype", "") or ""
     found_summary = vision_info.get("summary", "") or ""
     found_case_type = vision_info.get("case_type", "") or ""  # 刑事/民事/行政
@@ -2650,6 +2675,9 @@ def _select_pages_scored(doc) -> dict:
         garbled_hits = sum(1 for m in _GARBLED_CONTENT_MARKERS if m in text)
         if garbled_hits >= 3:
             score += 1  # Moderate boost for garbled title pages
+        # Phase 2C: garbled text penalty
+        if _is_garbled_text(text):
+            score -= 5
         # Page 0 bonus: first page is most likely the title/header
         # (court docs: title page; our docs: 聲請狀/陳報狀 first page)
         if i == 0:

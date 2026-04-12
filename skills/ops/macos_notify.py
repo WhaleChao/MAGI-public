@@ -32,7 +32,7 @@ HAS_TERMINAL_NOTIFIER = _TERMINAL_NOTIFIER is not None
 # MAGI 圖示路徑
 _MAGI_ROOT = os.path.abspath(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 _MAGI_ICON = os.path.join(_MAGI_ROOT, "gui", "assets", "magi_icon.png")
-_DASHBOARD_URL = "http://localhost:5002"
+_DASHBOARD_URL = "http://localhost:%s" % os.environ.get("MAGI_SERVER_PORT", "5002")
 
 # 通知群組 ID（用於合併同類通知）
 GROUP_SYSTEM = "magi.system"

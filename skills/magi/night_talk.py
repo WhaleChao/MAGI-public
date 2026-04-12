@@ -339,7 +339,7 @@ def start_night_talk():
         _kaizen_ctx = []
         try:
             import requests as _req
-            _h = _req.get("http://127.0.0.1:5002/health", timeout=5).json()
+            _h = _req.get("http://127.0.0.1:%s/health" % __import__('os').environ.get("MAGI_SERVER_PORT", "5002"), timeout=5).json()
             _sys = _h.get("system", {})
             _kaizen_ctx.append(f"RAM: {_sys.get('memory_percent', '?')}%, CPU: {_sys.get('cpu_percent', '?')}%, Disk: {_sys.get('disk_free_gb', '?')}GB free")
             _kaizen_ctx.append(f"FAISS vectors: {_h.get('faiss', {}).get('vectors', '?')}")

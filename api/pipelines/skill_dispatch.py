@@ -449,3 +449,630 @@ def dispatch_doc_producer(orch, user_id, message, platform="LINE"):
     except Exception as e:
         logger.error("doc-producer dispatch error: %s", e)
         return "書狀製作發生錯誤：%s" % str(e)
+
+
+# ── Case Management dispatch (Task 1) ──────────────────────────────────────
+
+def dispatch_case_management(message, user_id="", platform=""):
+    # type: (str, str, str) -> Optional[str]
+    """口語化案件管理：建案 / 查詢 / 狀態更新 / Dashboard。"""
+    from typing import Optional as _Opt
+    import re as _re
+    import uuid as _uuid
+    from datetime import datetime as _dt
+
+    text = (message or "").strip()
+    text_lower = text.lower()
+
+    try:
+        from api.osc.utils import _osc_exec, _osc_resolve_case_id
+    except Exception as e:
+        logger.warning("dispatch_case_management: cannot import _osc_exec: %s", e)
+        return None
+
+    # ── Dashboard ──
+    if any(kw in text for kw in ("業務概況", "案件概況", "今天的案件", "案件狀況")):
+        try:
+            rows, _ = _osc_exec(
+                "SELECT status, COUNT(*) as cnt FROM cases GROUP BY status",
+                (), fetch="all",
+            )
+            if not rows:
+                return "目前資料庫無案件記錄。"
+            parts = ["📊 案件概況："]
+            for row in (rows or []):
+                s = row.get("status") or "未知"
+                c = row.get("cnt") or 0
+                parts.append(f"  {s}：{c} 件")
+            return "\n".join(parts)
+        except Exception as e:
+            logger.warning("dispatch_case_management dashboard error: %s", e)
+            return None
+
+    # ── List / search cases ──
+    if any(kw in text for kw in ("案件清單", "列出案件", "列出進行中", "所有案件")):
+        status_filter = None
+        if "進行中" in text:
+            status_filter = "進行中"
+        elif "已結案" in text:
+            status_filter = "已結案"
+        try:
+            if status_filter:
+                rows, _ = _osc_exec(
+                    "SELECT case_number, client_name, status, case_category FROM cases WHERE status=%s ORDER BY updated_at DESC LIMIT 30",
+                    (status_filter,), fetch="all",
+                )
+            else:
+                rows, _ = _osc_exec(
+                    "SELECT case_number, client_name, status, case_category FROM cases ORDER BY updated_at DESC LIMIT 30",
+                    (), fetch="all",
+                )
+            if not rows:
+                return "目前無符合條件的案件。"
+            parts = ["📂 案件清單（最近 %d 件）：" % len(rows)]
+            for row in (rows or []):
+                cn = row.get("case_number") or row.get("client_name") or "?"
+                cli = row.get("client_name") or ""
+                st = row.get("status") or ""
+                parts.append(f"  • {cn} {cli} [{st}]")
+            return "\n".join(parts)
+        except Exception as e:
+            logger.warning("dispatch_case_management list error: %s", e)
+            return None
+
+    if text.startswith("查案件") or text.startswith("案件查詢"):
+        q = text.replace("查案件", "").replace("案件查詢", "").strip()
+        if not q:
+            return "請提供查詢關鍵字，例如：查案件 王大明"
+        try:
+            like = "%%%s%%" % q
+            rows, _ = _osc_exec(
+                """
+                SELECT case_number, client_name, status, case_category FROM cases
+                WHERE case_number LIKE %s OR client_name LIKE %s OR court_case_no LIKE %s
+                ORDER BY updated_at DESC LIMIT 10
+                """,
+                (like, like, like), fetch="all",
+            )
+            if not rows:
+                return "找不到符合「%s」的案件。" % q
+            parts = ["🔍 查詢結果（%d 件）：" % len(rows)]
+            for row in (rows or []):
+                cn = row.get("case_number") or "?"
+                cli = row.get("client_name") or ""
+                st = row.get("status") or ""
+                parts.append(f"  • {cn} {cli} [{st}]")
+            return "\n".join(parts)
+        except Exception as e:
+            logger.warning("dispatch_case_management search error: %s", e)
+            return None
+
+    # ── Update case status ──
+    status_update_m = _re.search(r"(.+?)\s*(?:改為|更新為|狀態改為|狀態更新為)\s*(已結案|進行中|暫停|撤回)", text)
+    if status_update_m:
+        keyword = status_update_m.group(1).strip()
+        new_status = status_update_m.group(2).strip()
+        try:
+            like = "%%%s%%" % keyword
+            row, _ = _osc_exec(
+                "SELECT id, case_number, client_name FROM cases WHERE case_number LIKE %s OR client_name LIKE %s ORDER BY updated_at DESC LIMIT 1",
+                (like, like), fetch="one",
+            )
+            if not row:
+                return "找不到符合「%s」的案件，無法更新狀態。" % keyword
+            case_id = row.get("id")
+            cn = row.get("case_number") or row.get("client_name") or ""
+            _osc_exec(
+                "UPDATE cases SET status=%s, updated_at=%s WHERE id=%s",
+                (new_status, _dt.now().strftime("%Y-%m-%d %H:%M:%S"), case_id),
+                fetch="none",
+            )
+            return "✅ 案件「%s」狀態已更新為「%s」。" % (cn, new_status)
+        except Exception as e:
+            logger.warning("dispatch_case_management update error: %s", e)
+            return None
+
+    # ── Create case ──
+    if text.startswith("建案") or text.startswith("新案件"):
+        rest = _re.sub(r"^(?:建案|新案件)\s*", "", text).strip()
+        if not rest:
+            return "請提供案件資訊，例如：建案 114原訴24 王大明 民事 侵權行為"
+        parts = rest.split()
+        case_number = parts[0] if len(parts) > 0 else ""
+        client_name = parts[1] if len(parts) > 1 else ""
+        case_type = parts[2] if len(parts) > 2 else ""
+        case_reason = " ".join(parts[3:]) if len(parts) > 3 else ""
+        if not client_name:
+            return "請提供當事人姓名，例如：建案 114原訴24 王大明 民事 侵權行為"
+
+        # Determine case_category
+        case_category = ""
+        if any(kw in rest for kw in ("法扶", "法律扶助", "消費者債務", "消債", "更生", "清算")):
+            case_category = "法律扶助案件"
+        elif any(kw in rest for kw in ("刑事", "刑訴")):
+            case_category = "刑事案件"
+        elif any(kw in rest for kw in ("民事", "民訴", "侵權", "債務", "損害賠償")):
+            case_category = "民事案件"
+        elif any(kw in rest for kw in ("行政", "訴願")):
+            case_category = "行政案件"
+
+        row_id = "chat-%s" % _uuid.uuid4().hex[:10]
+        try:
+            _osc_exec(
+                "INSERT INTO cases (id, case_number, client_name, case_category, case_type, case_reason, status) VALUES (%s,%s,%s,%s,%s,%s,%s)",
+                (row_id, case_number or None, client_name, case_category or None, case_type or None, case_reason or None, "進行中"),
+                fetch="none",
+            )
+            msg = "✅ 案件已建立：\n  案號：%s\n  當事人：%s\n  類型：%s\n  案由：%s" % (
+                case_number or "(未填)", client_name, case_category or case_type or "(未填)", case_reason or "(未填)"
+            )
+            return msg
+        except Exception as e:
+            logger.warning("dispatch_case_management create error: %s", e)
+            return "建案失敗：%s" % str(e)
+
+    return None
+
+
+# ── Client Management dispatch (Task 2) ────────────────────────────────────
+
+def dispatch_client_management(message, user_id="", platform=""):
+    # type: (str, str, str) -> Optional[str]
+    """口語化當事人管理：新增 / 查詢。"""
+    import re as _re
+    import uuid as _uuid
+
+    text = (message or "").strip()
+
+    try:
+        from api.osc.utils import _osc_exec
+    except Exception as e:
+        logger.warning("dispatch_client_management: cannot import _osc_exec: %s", e)
+        return None
+
+    # ── Query client ──
+    if _re.search(r"^(?:查當事人|查客戶)\s+", text):
+        q = _re.sub(r"^(?:查當事人|查客戶)\s+", "", text).strip()
+        if not q:
+            return "請提供姓名，例如：查當事人 張三"
+        like = "%%%s%%" % q
+        try:
+            rows, _ = _osc_exec(
+                "SELECT name, phone, email, address, status FROM clients WHERE name LIKE %s OR phone LIKE %s ORDER BY updated_at DESC LIMIT 5",
+                (like, like), fetch="all",
+            )
+            if not rows:
+                return "找不到符合「%s」的當事人。" % q
+            parts = ["👤 當事人查詢結果："]
+            for row in (rows or []):
+                name = row.get("name") or "?"
+                phone = row.get("phone") or ""
+                addr = row.get("address") or ""
+                st = row.get("status") or ""
+                parts.append("  • %s %s %s [%s]" % (name, phone, addr, st))
+            return "\n".join(parts)
+        except Exception as e:
+            logger.warning("dispatch_client_management search error: %s", e)
+            return None
+
+    # Handle "XX的資料" pattern
+    data_m = _re.match(r"^(.+?)的資料$", text)
+    if data_m:
+        q = data_m.group(1).strip()
+        like = "%%%s%%" % q
+        try:
+            row, _ = _osc_exec(
+                "SELECT name, phone, email, address, notes, status FROM clients WHERE name LIKE %s ORDER BY updated_at DESC LIMIT 1",
+                (like,), fetch="one",
+            )
+            if not row:
+                return "找不到「%s」的當事人資料。" % q
+            parts = ["👤 %s 的資料：" % q]
+            if row.get("phone"):
+                parts.append("  電話：%s" % row["phone"])
+            if row.get("email"):
+                parts.append("  Email：%s" % row["email"])
+            if row.get("address"):
+                parts.append("  地址：%s" % row["address"])
+            if row.get("notes"):
+                parts.append("  備註：%s" % row["notes"])
+            return "\n".join(parts)
+        except Exception as e:
+            logger.warning("dispatch_client_management data error: %s", e)
+            return None
+
+    # ── Add client ──
+    if text.startswith("新增當事人") or text.startswith("建立當事人"):
+        rest = _re.sub(r"^(?:新增當事人|建立當事人)\s*", "", text).strip()
+        if not rest:
+            return "請提供當事人資訊，例如：新增當事人 張三 0912345678 台北市"
+        parts = rest.split()
+        name = parts[0] if parts else ""
+        phone = parts[1] if len(parts) > 1 and _re.match(r"^0\d{8,9}$", parts[1]) else ""
+        address = " ".join(parts[2:]) if len(parts) > 2 else ""
+        if not name:
+            return "請提供當事人姓名。"
+
+        row_id = "cli-%s" % _uuid.uuid4().hex[:10]
+        try:
+            _osc_exec(
+                "INSERT INTO clients (id, name, phone, address, status) VALUES (%s,%s,%s,%s,%s)",
+                (row_id, name, phone or None, address or None, "進行中"),
+                fetch="none",
+            )
+            return "✅ 當事人已建立：%s%s%s" % (name, (" | " + phone) if phone else "", (" | " + address) if address else "")
+        except Exception as e:
+            logger.warning("dispatch_client_management create error: %s", e)
+            return "新增當事人失敗：%s" % str(e)
+
+    return None
+
+
+# ── Accounting dispatch (Task 3) ────────────────────────────────────────────
+
+def dispatch_accounting(message, user_id="", platform=""):
+    # type: (str, str, str) -> Optional[str]
+    """口語化記帳：記收入 / 記支出 / 帳務查詢。"""
+    import re as _re
+    from datetime import datetime as _dt, date as _date
+
+    text = (message or "").strip()
+
+    try:
+        from api.osc.utils import _osc_exec, _osc_resolve_case_id
+    except Exception as e:
+        logger.warning("dispatch_accounting: cannot import _osc_exec: %s", e)
+        return None
+
+    # ── Monthly query ──
+    if any(kw in text for kw in ("本月帳務", "帳務查詢", "本月收支", "帳務概況")):
+        today = _date.today()
+        start = "%04d-%02d-01" % (today.year, today.month)
+        try:
+            rows, _ = _osc_exec(
+                "SELECT type, SUM(amount) as total FROM case_transactions WHERE date >= %s GROUP BY type",
+                (start,), fetch="all",
+            )
+            if not rows:
+                return "本月尚無帳務記錄。"
+            parts = ["💰 本月帳務（%d/%d）：" % (today.year, today.month)]
+            total_income = 0.0
+            total_expense = 0.0
+            for row in (rows or []):
+                t = row.get("type") or "其他"
+                amt = float(row.get("total") or 0)
+                parts.append("  %s：%.0f 元" % (t, amt))
+                if t == "收入":
+                    total_income = amt
+                elif t == "支出":
+                    total_expense = amt
+            parts.append("  淨額：%.0f 元" % (total_income - total_expense))
+            return "\n".join(parts)
+        except Exception as e:
+            logger.warning("dispatch_accounting monthly error: %s", e)
+            return None
+
+    # ── Record income / expense ──
+    tx_type = None
+    if text.startswith("記收入"):
+        tx_type = "收入"
+        rest = text[3:].strip()
+    elif text.startswith("記支出"):
+        tx_type = "支出"
+        rest = text[3:].strip()
+    else:
+        return None
+
+    # Parse: <amount> <category> [<case_or_client>]
+    parts = rest.split()
+    if not parts:
+        return "請提供金額，例如：記收入 5000 諮詢費 王大明"
+    try:
+        amount = float(parts[0].replace(",", ""))
+    except ValueError:
+        return "請提供有效金額，例如：記收入 5000 諮詢費 王大明"
+
+    category = parts[1] if len(parts) > 1 else ""
+    client_or_case = " ".join(parts[2:]) if len(parts) > 2 else ""
+
+    # Resolve case_id if possible
+    case_id = None
+    if client_or_case:
+        try:
+            case_id = _osc_resolve_case_id(client_or_case)
+        except Exception:
+            pass
+
+    # Use first case if still not found
+    if not case_id and client_or_case:
+        try:
+            like = "%%%s%%" % client_or_case
+            row, _ = _osc_exec(
+                "SELECT id FROM cases WHERE client_name LIKE %s OR case_number LIKE %s ORDER BY updated_at DESC LIMIT 1",
+                (like, like), fetch="one",
+            )
+            if row:
+                case_id = row.get("id")
+        except Exception:
+            pass
+
+    if not case_id:
+        return "找不到案件「%s」，請先建案或直接使用案號。" % (client_or_case or "")
+
+    tx_date = _date.today().strftime("%Y-%m-%d")
+    desc = "%s %s" % (category, client_or_case) if client_or_case else category
+    try:
+        _osc_exec(
+            "INSERT INTO case_transactions (case_id, date, type, category, description, amount) VALUES (%s,%s,%s,%s,%s,%s)",
+            (case_id, tx_date, tx_type, category or None, desc or None, amount),
+            fetch="none",
+        )
+        return "✅ 已記帳：%s %.0f 元（%s）" % (tx_type, amount, desc)
+    except Exception as e:
+        logger.warning("dispatch_accounting record error: %s", e)
+        return "記帳失敗：%s" % str(e)
+
+
+# ── Quotation dispatch (Task 4) ─────────────────────────────────────────────
+
+def dispatch_quotation(message, user_id="", platform=""):
+    # type: (str, str, str) -> Optional[str]
+    """口語化報價單：開報價單 / 報價單清單。"""
+    import re as _re
+    import uuid as _uuid
+    from datetime import date as _date
+
+    text = (message or "").strip()
+
+    try:
+        from api.osc.utils import _osc_exec, _osc_resolve_case_id
+    except Exception as e:
+        logger.warning("dispatch_quotation: cannot import _osc_exec: %s", e)
+        return None
+
+    # ── List quotations ──
+    if any(kw in text for kw in ("報價單清單", "查報價單", "報價單列表")):
+        try:
+            rows, _ = _osc_exec(
+                "SELECT id, client_name, service_type, total_amount, status, created_date FROM quotations ORDER BY created_date DESC LIMIT 10",
+                (), fetch="all",
+            )
+            if not rows:
+                return "目前無報價單記錄。"
+            parts = ["📋 報價單清單（最近 %d 筆）：" % len(rows)]
+            for row in (rows or []):
+                qid = row.get("id") or "?"
+                cli = row.get("client_name") or "?"
+                svc = row.get("service_type") or ""
+                amt = row.get("total_amount") or 0
+                st = row.get("status") or ""
+                parts.append("  • %s %s %s %.0f 元 [%s]" % (qid, cli, svc, float(amt), st))
+            return "\n".join(parts)
+        except Exception as e:
+            logger.warning("dispatch_quotation list error: %s", e)
+            return None
+
+    # ── Create quotation ──
+    if text.startswith("開報價單"):
+        rest = text[4:].strip()
+        parts = rest.split()
+        client_name = parts[0] if len(parts) > 0 else ""
+        service_type = parts[1] if len(parts) > 1 else ""
+        try:
+            amount = float(parts[2].replace(",", "")) if len(parts) > 2 else 0
+        except (ValueError, IndexError):
+            amount = 0
+        if not client_name:
+            return "請提供當事人姓名，例如：開報價單 王大明 民事訴訟 50000"
+
+        # Try to resolve case_id
+        case_id = None
+        try:
+            like = "%%%s%%" % client_name
+            row, _ = _osc_exec(
+                "SELECT id FROM cases WHERE client_name LIKE %s ORDER BY updated_at DESC LIMIT 1",
+                (like,), fetch="one",
+            )
+            if row:
+                case_id = row.get("id")
+        except Exception:
+            pass
+
+        row_id = "quot-%s" % _uuid.uuid4().hex[:8]
+        today = _date.today().strftime("%Y-%m-%d")
+        try:
+            _osc_exec(
+                "INSERT INTO quotations (id, case_id, client_name, service_type, total_amount, status, created_date) VALUES (%s,%s,%s,%s,%s,%s,%s)",
+                (row_id, case_id, client_name, service_type or None, amount, "草稿", today),
+                fetch="none",
+            )
+            return "✅ 報價單已建立：%s %s %.0f 元（草稿）" % (client_name, service_type, amount)
+        except Exception as e:
+            logger.warning("dispatch_quotation create error: %s", e)
+            return "建立報價單失敗：%s" % str(e)
+
+    return None
+
+
+# ── Calendar Event dispatch (Task 5) ────────────────────────────────────────
+
+def dispatch_calendar_event(message, user_id="", platform=""):
+    # type: (str, str, str) -> Optional[str]
+    """口語化行事曆：排庭 / 排開會 → 建立 Apple Calendar 事件。"""
+    import re as _re
+    from datetime import datetime as _dt, timedelta as _td
+
+    text = (message or "").strip()
+
+    is_court = text.startswith("排庭")
+    is_meeting = text.startswith("排開會") or text.startswith("排會議")
+    if not (is_court or is_meeting):
+        return None
+
+    rest = _re.sub(r"^(?:排庭|排開會|排會議)\s*", "", text).strip()
+    if not rest:
+        return "請提供時間，例如：排庭 4/20 上午10:00 114原訴24 台北地院"
+
+    # ── Parse date/time ──
+    # Formats: 4/20, 04/20, 2026/4/20, 4月20日, 20日
+    date_m = _re.search(r"(\d{1,4})[/月](\d{1,2})(?:[日/](\d{1,2}))?", rest)
+    time_m = _re.search(r"(上午|下午|早上|晚上)?\s*(\d{1,2})[：:.](\d{2})", rest)
+
+    if not date_m:
+        return "請提供日期，例如：排庭 4/20 上午10:00 114原訴24 台北地院"
+
+    now = _dt.now()
+    d1, d2, d3 = date_m.group(1), date_m.group(2), date_m.group(3)
+    if d3:
+        # Year/Month/Day or Month/Day/Hour
+        year, month, day = int(d1), int(d2), int(d3)
+        if year < 200:
+            year += 1911  # ROC year
+    else:
+        year = now.year
+        month, day = int(d1), int(d2)
+
+    hour, minute = 9, 0
+    if time_m:
+        ampm = time_m.group(1) or ""
+        hour = int(time_m.group(2))
+        minute = int(time_m.group(3))
+        if ampm in ("下午", "晚上") and hour < 12:
+            hour += 12
+        elif ampm in ("上午", "早上") and hour == 12:
+            hour = 0
+
+    try:
+        start_dt = _dt(year, month, day, hour, minute)
+    except ValueError:
+        return "日期格式不正確，請確認年月日是否合法。"
+
+    # ── Build title ──
+    # Remove date/time tokens
+    clean = _re.sub(r"\d{1,4}[/月]\d{1,2}(?:[日/]\d{1,2})?", "", rest)
+    clean = _re.sub(r"(?:上午|下午|早上|晚上)?\s*\d{1,2}[：:.]\\d{2}", "", clean)
+    clean = _re.sub(r"(?:上午|下午|早上|晚上)?\s*\d{1,2}[：:.]\d{2}", "", clean)
+    clean = clean.strip()
+
+    if is_court:
+        title = "開庭 %s" % clean if clean else "開庭"
+        location = ""
+        # Try to extract court name (last token)
+        tokens = clean.split()
+        if tokens:
+            location = tokens[-1]
+            case_part = " ".join(tokens[:-1]) if len(tokens) > 1 else tokens[0]
+            title = "開庭 %s" % case_part
+    else:
+        title = "開會 %s" % clean if clean else "開會"
+        location = ""
+
+    end_dt = start_dt + _td(hours=1)
+
+    try:
+        from skills.apple.eventkit_bridge import create_calendar_event
+        ok = create_calendar_event(
+            title=title,
+            start=start_dt,
+            end=end_dt,
+            location=location,
+            notes="由 MAGI 語音指令建立",
+        )
+        if ok:
+            return "✅ 行程已建立：%s\n時間：%s\n地點：%s" % (
+                title,
+                start_dt.strftime("%Y/%m/%d %H:%M"),
+                location or "（未填）",
+            )
+        else:
+            return "⚠️ 行事曆建立失敗，請檢查 Apple Calendar 權限。"
+    except Exception as e:
+        logger.warning("dispatch_calendar_event error: %s", e)
+        return "行程建立失敗：%s" % str(e)
+
+
+# ── AI Draft dispatch (Task 6) ──────────────────────────────────────────────
+
+def dispatch_ai_draft(message, user_id="", platform=""):
+    # type: (str, str, str) -> Optional[str]
+    """口語化書狀 AI 草擬：草擬起訴狀 / 答辯狀 / 聲請狀。"""
+    import re as _re
+    import subprocess as _sp
+    import sys as _sys
+
+    text = (message or "").strip()
+
+    _DRAFT_KEYWORDS = ["草擬", "草稿", "幫我寫", "幫我草擬", "幫我起草"]
+    _DOC_TYPES = {
+        "起訴狀": "起訴狀",
+        "答辯狀": "答辯狀",
+        "聲請狀": "聲請狀",
+        "陳報狀": "陳報狀",
+        "準備狀": "準備狀",
+        "上訴狀": "上訴狀",
+        "抗告狀": "抗告狀",
+    }
+
+    if not any(kw in text for kw in _DRAFT_KEYWORDS):
+        return None
+    doc_type = None
+    for kw, dt in _DOC_TYPES.items():
+        if kw in text:
+            doc_type = dt
+            break
+    if not doc_type:
+        return None
+
+    # Extract case number
+    case_m = _re.search(r"(\d{2,3}(?:年度?)?\w+?字第?\d+號?)", text)
+    case_number = case_m.group(1) if case_m else ""
+
+    # Extract reason / title
+    reason = ""
+    for kw in _DRAFT_KEYWORDS + list(_DOC_TYPES.keys()):
+        text = text.replace(kw, " ")
+    if case_number:
+        text = text.replace(case_number, " ")
+    reason = " ".join(text.split()).strip()
+
+    try:
+        from api.osc.utils import _osc_exec
+    except Exception as e:
+        logger.warning("dispatch_ai_draft: cannot import _osc_exec: %s", e)
+        return None
+
+    # Look up case from DB
+    case_row = None
+    if case_number:
+        like = "%%%s%%" % case_number
+        try:
+            case_row, _ = _osc_exec(
+                "SELECT id, case_number, client_name, court_case_no, case_reason FROM cases WHERE case_number LIKE %s OR court_case_no LIKE %s ORDER BY updated_at DESC LIMIT 1",
+                (like, like), fetch="one",
+            )
+        except Exception:
+            pass
+
+    # Call POST /api/osc/drafts/generate internally
+    try:
+        import json as _json
+        from api.blueprints.osc_cases import _osc_generate_draft_with_casper
+    except ImportError:
+        pass
+
+    try:
+        from api.osc.drafts import _osc_generate_draft_with_casper
+        context = {
+            "doc_type": doc_type,
+            "case_number": case_number or (case_row.get("case_number") if case_row else ""),
+            "client_name": (case_row.get("client_name") if case_row else ""),
+            "case_reason": reason or (case_row.get("case_reason") if case_row else ""),
+        }
+        result = _osc_generate_draft_with_casper(context)
+        if result and result.get("text"):
+            draft_text = result["text"][:800]
+            return "📝 %s 草稿（前段預覽）：\n\n%s\n\n（完整版請至系統 Web 介面查看）" % (doc_type, draft_text)
+        return "⚠️ 書狀草擬失敗，oMLX 未回應或無範本。"
+    except Exception as e:
+        logger.warning("dispatch_ai_draft error: %s", e)
+        return "書狀草擬失敗：%s" % str(e)

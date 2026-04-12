@@ -626,9 +626,10 @@ async def check_line_health(client):
     try:
         # 1. Check Local Server
         async with aiohttp.ClientSession() as session:
-            async with session.get('http://localhost:5002/health', timeout=aiohttp.ClientTimeout(total=10)) as resp:
+            _server_port = __import__('os').environ.get("MAGI_SERVER_PORT", "5002")
+            async with session.get(f'http://localhost:{_server_port}/health', timeout=aiohttp.ClientTimeout(total=10)) as resp:
                 if resp.status != 200:
-                    raise Exception(f"Local Server (Port 5002) returned {resp.status}")
+                    raise Exception(f"Local Server (Port {_server_port}) returned {resp.status}")
 
         # 1.5 If we recently received real LINE callbacks, treat channel as healthy.
         recent_ok, callback_age = _has_recent_line_callback()

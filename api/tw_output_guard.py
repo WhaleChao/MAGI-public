@@ -209,6 +209,11 @@ INTERNAL_LEAK_PATTERNS: List[str] = [
     r"/Users/ai/Desktop/.+\baction\.py\b",
     r"^\s*NO_REPLY\s*$",
     r"^\s*assistant\s*$",
+    # Internal trust badge leak patterns (2026-04-11)
+    r"\[已驗證事實\]",
+    r"\[使用者陳述\]",
+    r"\[檢索線索\]",
+    r"\[衍生推論\]",
 ]
 
 # LLM 角色設定幻覺 / prompt 洩漏：模型自行產出 CASPER 角色描述或原封不動吐出 system prompt。
