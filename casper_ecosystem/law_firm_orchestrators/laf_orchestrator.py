@@ -86,6 +86,7 @@ def _eventlog(event: str, *, ok: Optional[bool] = None, payload: Optional[dict] 
 # -------------------------------------------------------------------
 from laf_vision import LAFVision
 from laf_orchestrator_docmixins import LAFOrchestratorDocumentMixin
+from api.handlers.laf_handler import _expand_reason_keywords
 _db_manager = None
 _legalbridge_db = None
 _notifier = None
@@ -2335,6 +2336,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         laf_case_number: str = "",
         case_number: str = "",
         client_name: str = "",
+        reason_hint: str = "",
         action: str = "",
     ) -> dict:
         """
@@ -2507,18 +2509,79 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
             cand["matched"] = matched
             filtered.append(cand)
 
+
+        filtered.sort(key=lambda x: (int(x.get("score") or 0), str(x.get("id") or "")), reverse=True)
+
+        # ── Status Prioritization & Keyword Disambiguation ──
+        # If still ambiguous, try to pick based on status (進行中 preferred)
+        # and keywords (reason_hint).
+        if len(filtered) > 1:
+            # 1. Expand reason_hint to keywords
+            _keywords = self._expand_reason_keywords(reason_hint) if reason_hint else []
+            if _keywords:
+                logger.debug("  🔍 Disambiguating with keywords: %s", _keywords)
+                keyword_matched = []
+                for cand in filtered:
+                    _fpath = str(cand.get("folder_path") or "").lower()
+                    _cno = str(cand.get("case_number") or "").lower()
+                    if any((k in _fpath or k in _cno) for k in _keywords):
+                        keyword_matched.append(cand)
+                
+                if keyword_matched:
+                    logger.info("  🔍 Keyword match filtered candidates: %d -> %d", len(filtered), len(keyword_matched))
+                    filtered = keyword_matched
+
+            # 2. Prioritize "進行中" (In Progress)
+            if len(filtered) > 1:
+                in_progress = [c for c in filtered if c.get("legal_aid_status") == "進行中"]
+                if in_progress:
+                    logger.info("  🔍 Prioritizing '進行中' cases: %d -> %d", len(filtered), len(in_progress))
+                    filtered = in_progress
+
+        # Final check for ambiguity after all filters
+        if len(filtered) > 1:
+            # Check if they are actually the same instance (identical folder or IDs)
+            _unique_ids = {c.get("id") for c in filtered if c.get("id")}
+            if len(_unique_ids) > 1:
+                out["needs_manual_confirm"] = True
+                out["manual_reason"] = "identity_still_ambiguous"
+                out["manual_hint"] = "發現多個審級或資料夾，請補上更具體的案由關鍵字"
+                out["top_candidates"] = [
+                    {
+                        "laf_case_number": str(c.get("laf_case_number") or ""),
+                        "case_number": str(c.get("case_number") or ""),
+                        "client_name": str(c.get("client_name") or ""),
+                        "case_folder": str(c.get("case_folder") or ""),
+                        "status": str(c.get("legal_aid_status") or ""),
+                    }
+                    for c in filtered[:5]
+                ]
+                return out
+            else:
+                # Same logical record found multiple times (odd but handled)
+                filtered = [filtered[0]]
+
         if not filtered:
             if rejected:
                 out["needs_manual_confirm"] = True
                 out["manual_reason"] = "identity_signal_conflict"
                 out["conflicts"] = rejected[:5]
                 return out
+            
+            # fallback_find_case_folders logic remains here...
             fallback = self._fallback_find_case_folders(
                 client_name=out["client_name"],
                 laf_case_number=out["laf_case_number"],
                 limit=20,
             )
-            if len(fallback) == 1 and (req_laf or req_case):
+            # Filter fallback by keywords too
+            if len(fallback) > 1 and reason_hint:
+                _keywords = self._expand_reason_keywords(reason_hint)
+                keyword_matched_fallback = [fb for fb in fallback if any(k in fb for k in _keywords)]
+                if keyword_matched_fallback:
+                    fallback = keyword_matched_fallback
+            
+            if len(fallback) == 1 and (req_laf or req_case or req_client):
                 fb = fallback[0]
                 guessed_osc = self._guess_osc_case_no_from_folder(fb)
                 guessed_laf = self._guess_laf_case_no_from_folder(fb)
@@ -2538,38 +2601,26 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                 out["client_name"] = out["client_name"] or guessed_client
                 out["confidence"] = "low"
                 out["matched_signals"] = ["folder_fallback"]
+                # Clear confirm flag if we found a unique fallback
+                out["needs_manual_confirm"] = False
+                out["manual_reason"] = ""
                 return out
+
             out["needs_manual_confirm"] = True
             out["manual_reason"] = "identity_not_found"
             out["fallback_candidates"] = fallback[:5]
             return out
 
-        filtered.sort(key=lambda x: (int(x.get("score") or 0), str(x.get("id") or "")), reverse=True)
         top = filtered[0]
-        runner = filtered[1] if len(filtered) > 1 else None
         top_score = int(top.get("score") or 0)
-        runner_score = int(runner.get("score") or 0) if runner else -1
-        if runner and runner_score == top_score:
-            out["needs_manual_confirm"] = True
-            out["manual_reason"] = "identity_ambiguous"
-            out["top_candidates"] = [
-                {
-                    "laf_case_number": str(c.get("laf_case_number") or ""),
-                    "case_number": str(c.get("case_number") or ""),
-                    "client_name": str(c.get("client_name") or ""),
-                    "case_folder": str(c.get("case_folder") or ""),
-                }
-                for c in filtered[:5]
-            ]
-            return out
 
         matched = list(top.get("matched") or [])
         # Relax the strong-signal requirement when there is exactly ONE candidate
-        # and client_name matches — this means the DB unambiguously identified the case.
+        # and client_name matches (Smart resolution)
         _sole_candidate_client_match = (
             len(filtered) == 1
             and "client_name" in matched
-            and top.get("laf_case_number")
+            # As long as we have a result that isn't ambiguous, we allow it.
         )
         if (
             self.require_case_signal_for_auto
@@ -2590,8 +2641,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
             ]
             return out
         elif _sole_candidate_client_match:
-            # Clear the early "missing_case_or_laf_signal" flag — DB lookup
-            # unambiguously resolved the case via sole client_name match.
+            # Clear the early "missing_case_or_laf_signal" flag
             out["needs_manual_confirm"] = False
             out["manual_reason"] = ""
 
@@ -2643,6 +2693,10 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         m = re.search(r"([一-龥]{2,5})", base)
         cand = (m.group(1) if m else "").strip()
         return "" if cand in category_names else cand
+
+    @staticmethod
+    def _expand_reason_keywords(reason_hint: str) -> list[str]:
+        return _expand_reason_keywords(reason_hint)
 
     @staticmethod
     def _is_case_folder_name(name: str) -> bool:
@@ -3578,6 +3632,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
             laf_case_number=laf_case_number,
             case_number=case_number,
             client_name=client_name,
+            reason_hint=reason,
             action=act,
         )
         if identity.get("needs_manual_confirm"):
@@ -4207,6 +4262,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
             laf_case_number=laf_case_number,
             case_number=case_number,
             client_name=client_name,
+            reason_hint=reason,
             action=act,
         )
         if identity.get("needs_manual_confirm"):
@@ -5629,7 +5685,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                     `legal_aid_number`, `start_date`, `lawyer`)
                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
                 (case_id, case_number, client_name, case_type, case_reason,
-                 '法律扶助案件', case_stage, 'Active', folder_path,
+                 '法律扶助案件', case_stage, '進行中', folder_path,
                  laf_number, datetime.now().date(), '喬政翔律師')
             )
             logger.info("  ✅ DB record created: %s (%s)", case_number, case_id)

@@ -49,6 +49,7 @@ from api.case_path_mapper import (
 )
 
 from api.runtime_paths import config_candidates, ensure_orch_on_sys_path, get_config_path
+from skills.engine.legal_web_adapter import format_legal_web_engine_log, resolve_legal_web_engine
 from skills.bridge.shared_utils.text_utils import normalize_spaces as _normalize_spaces
 from skills.bridge.shared_utils.case_number_utils import RE_LAF_CASE_NUMBER
 
@@ -979,6 +980,8 @@ class LAFWebAutomation:
         
         self.driver = None
         self.driver = None
+        self.web_engine_profile = resolve_legal_web_engine("laf_portal", interactive_required=True)
+        self._engine_logged = False
         # Pass log_callback specifically to capture OCR logs in UI
         self.captcha_solver = CaptchaSolver(callback_on_fail=on_captcha_fail, log_callback=self.log)
         # 注意：正式站的驗證碼屬於安全機制。本工具不提供自動破解/繞過。
@@ -1054,6 +1057,9 @@ class LAFWebAutomation:
     
     def _create_driver(self):
         """建立 WebDriver (自動偵測 Chrome 或 Edge)"""
+        if not self._engine_logged:
+            self.log(format_legal_web_engine_log(self.web_engine_profile))
+            self._engine_logged = True
         if not SELENIUM_AVAILABLE:
             raise RuntimeError("Selenium 未安裝")
         
@@ -5394,7 +5400,7 @@ class LAFAutomationManager:
                             new_client_id = str(uuid.uuid4())
                             create_client_query = """
                                 INSERT INTO clients (id, name, phone, email, address, created_date, status)
-                                VALUES (%s, %s, %s, %s, %s, NOW(), 'Active')
+                                VALUES (%s, %s, %s, %s, %s, NOW(), '進行中')
                             """
                             self.db_manager.execute_write(create_client_query, (new_client_id, client_name, "", "", ""))
                             self.log(f"     👤 自動建立當事人資料: {client_name}")

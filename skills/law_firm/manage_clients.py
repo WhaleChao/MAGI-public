@@ -76,7 +76,7 @@ def add_client(code, name, contact, phone, address):
         conn = mysql.connector.connect(**DB_CONFIG)
         cursor = conn.cursor()
         
-        sql = "INSERT INTO clients (client_code, name, contact_person, phone, address, status) VALUES (%s, %s, %s, %s, %s, 'Active')"
+        sql = "INSERT INTO clients (client_code, name, contact_person, phone, address, status) VALUES (%s, %s, %s, %s, %s, '進行中')"
         val = (code, name, contact, phone, address)
         cursor.execute(sql, val)
         conn.commit()

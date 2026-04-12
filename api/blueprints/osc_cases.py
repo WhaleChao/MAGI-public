@@ -389,7 +389,7 @@ def osc_cases_api():
         (payload.get("laf_case_no") or payload.get("legal_aid_number") or "").strip() or None,
         (payload.get("application_no") or "").strip() or None,
         (payload.get("court_case_no") or payload.get("court_case_number") or "").strip() or None,
-        (payload.get("status") or "Active").strip() or "Active",
+        (payload.get("status") or "進行中").strip() or "進行中",
         (payload.get("notes") or "").strip() or None,
         translate_local_path_to_canonical((payload.get("folder_path") or "").strip()) or None,
     ]
@@ -425,7 +425,7 @@ def osc_cases_api():
             "laf_case_no": (payload.get("laf_case_no") or payload.get("legal_aid_number") or "").strip() or None,
             "application_no": (payload.get("application_no") or "").strip() or None,
             "court_case_no": (payload.get("court_case_no") or payload.get("court_case_number") or "").strip() or None,
-            "status": (payload.get("status") or "Active").strip() or "Active",
+            "status": (payload.get("status") or "進行中").strip() or "進行中",
             "notes": (payload.get("notes") or "").strip() or None,
             "folder_path": translate_local_path_to_canonical((payload.get("folder_path") or "").strip()) or None,
         }
@@ -2632,7 +2632,7 @@ def osc_clients_api():
         (payload.get("address") or "").strip() or None,
         (payload.get("tax_id") or "").strip() or None,
         (payload.get("notes") or "").strip() or None,
-        (payload.get("status") or "Active").strip() or "Active",
+        (payload.get("status") or "進行中").strip() or "進行中",
     ]
     result, _ = _osc_exec(
         f"INSERT INTO clients ({','.join(cols)}) VALUES ({','.join(['%s'] * len(cols))})",
