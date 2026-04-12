@@ -976,11 +976,11 @@ class FileReviewManager:
         self.enable_preclick_smart_skip = (
             os.environ.get("MAGI_ENABLE_PRECLICK_SMART_SKIP", "1").strip().lower() in {"1", "true", "yes", "on"}
         )
-        
+
         # 處理過的 Email 記錄 (持久化)
         self.processed_emails_file = os.path.join(self.download_folder, "processed_emails.json")
         self.processed_emails = self._load_processed_emails()
-        
+
         # 已通知案件記錄 (持久化，避免重複發送 Discord)
         self.notified_cases_file = os.path.join(self.download_folder, "notified_cases.json")
         self.notified_cases = self._load_notified_cases()
@@ -989,8 +989,8 @@ class FileReviewManager:
         self.dismissed_payments_file = os.path.join(self.download_folder, "dismissed_payments.json")
         self.dismissed_payments = self._load_dismissed_payments()
 
-        self.ready_to_download = [] # 待下載清單
-        
+        self.ready_to_download = []  # 待下載清單
+
         # MD5 記錄
         self.md5_records_file = os.path.join(self.download_folder, "md5_records.json")
         self.md5_records = self._load_md5_records()
@@ -1012,10 +1012,13 @@ class FileReviewManager:
         self.manual_archive_requests_file = os.path.join(self.download_folder, "manual_archive_requests.json")
         self._manual_archive_map = self._load_manual_archive_map()
         self._manual_archive_requests = self._load_manual_archive_requests()
-        
+
         self.logged_in = False
-        
+
         os.makedirs(self.download_folder, exist_ok=True)
+
+        import atexit
+        atexit.register(self._quit_driver)
 
     def _resolve_gmail_token_path(self, token_path: str, credentials_path: str) -> str:
         """

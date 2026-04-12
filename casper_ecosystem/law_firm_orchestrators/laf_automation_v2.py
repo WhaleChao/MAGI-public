@@ -1094,8 +1094,8 @@ class LAFWebAutomation:
         self.DOWNLOAD_URL = f"{self.base_url}/lafcsp/toDownloadList"
         
         self.driver = None
-        self.driver = None
         self.web_engine_profile = resolve_legal_web_engine("laf_portal_v2", interactive_required=True)
+
         self._engine_logged = False
         self.last_debug_artifact = {}
         self.last_upload_result = {}
@@ -1119,11 +1119,25 @@ class LAFWebAutomation:
             except Exception:
                 # If profile dir cannot be created, ignore and fall back to ephemeral profile.
                 self.browser_profile_dir = ""
-        
-        # 確保下載資料夾存在
-        
+
         # 確保下載資料夾存在
         self.download_folder.mkdir(parents=True, exist_ok=True)
+
+        import atexit
+        atexit.register(self._quit_driver)
+
+    def _quit_driver(self):
+        """確保 Chrome driver 在進程結束時一定被清理。"""
+        driver = getattr(self, "driver", None)
+        if driver is not None:
+            try:
+                driver.quit()
+            except Exception:
+                pass
+            self.driver = None
+
+    def __del__(self):
+        self._quit_driver()
 
     def _dump_login_dom_summary(self):
         """輸出登入頁 DOM 摘要（避免寫入帳密），用於除錯 selector。"""
