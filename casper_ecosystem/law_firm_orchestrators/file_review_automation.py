@@ -8293,7 +8293,7 @@ class FileReviewManager:
             case_type = case_info.get('case_type', '')
             case_number = case_info.get('case_number', '')
             client_name = case_info.get('client_name', '')
-            sys_type = case_info.get('sys_type', 'AUTO' if _is_paper else 'H')
+            sys_type = case_info.get('sys_type', 'AUTO')
             # When sys_type is "AUTO", we will try multiple system options.
             sys_auto_candidates = []
 
@@ -9255,6 +9255,27 @@ class FileReviewManager:
             try:
                 reg_key = self.make_apply_registry_key(case_info)
                 is_first = self.is_first_application(reg_key)
+
+                # ── 閱卷資料夾判斷：如果案件已有閱卷資料，視為非首次聲請 ──
+                if is_first:
+                    _case_folder = (case_info.get("folder_path") or "").strip()
+                    if not _case_folder:
+                        try:
+                            _case_folder = self._resolve_case_folder_from_db(
+                                party=case_info.get("client_name", ""),
+                            )
+                            if isinstance(_case_folder, list):
+                                _case_folder = _case_folder[0] if _case_folder else ""
+                        except Exception:
+                            _case_folder = ""
+                    if _case_folder and os.path.isdir(_case_folder):
+                        for _review_sub in ["03_閱卷資料", "04_閱卷資料", "閱卷資料"]:
+                            _review_dir = os.path.join(_case_folder, _review_sub)
+                            if os.path.isdir(_review_dir) and os.listdir(_review_dir):
+                                is_first = False
+                                self.log(f"  ℹ️ 偵測到 {_review_sub}/ 已有檔案 → 非首次聲請")
+                                break
+
                 if not is_first:
                     self.log("  ℹ️ 非首次聲請，跳過附件上傳")
                     upload_files = {}
