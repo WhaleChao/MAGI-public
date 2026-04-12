@@ -1020,6 +1020,19 @@ class FileReviewManager:
         import atexit
         atexit.register(self._quit_driver)
 
+    def _quit_driver(self):
+        """確保 Chrome driver 在進程結束時一定被清理。"""
+        driver = getattr(self, "driver", None)
+        if driver is not None:
+            try:
+                driver.quit()
+            except Exception:
+                pass
+            self.driver = None
+
+    def __del__(self):
+        self._quit_driver()
+
     def _resolve_gmail_token_path(self, token_path: str, credentials_path: str) -> str:
         """
         解析 Gmail token 路徑：
