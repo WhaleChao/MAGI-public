@@ -969,26 +969,59 @@ def dispatch_calendar_event(message, user_id="", platform=""):
 
     end_dt = start_dt + _td(hours=1)
 
+    # ── Extract case number from message for DB linkage ──
+    import re as _re2
+    case_m = _re2.search(r"(\d{2,3}(?:年度?)?\w+?字第?\d+號?|\d{4}-\d{4})", rest)
+    event_case_number = case_m.group(1) if case_m else "非案件行程"
+
+    # ── Write to case_todos DB (for Google Calendar sync) ──
+    todo_inserted = False
     try:
-        from skills.apple.eventkit_bridge import create_calendar_event
-        ok = create_calendar_event(
-            title=title,
-            start=start_dt,
-            end=end_dt,
-            location=location,
-            notes="由 MAGI 語音指令建立",
+        from api.osc.utils import _osc_exec
+        _osc_exec(
+            "INSERT INTO case_todos (case_number, client_name, todo_type, todo_date, todo_time, description, status) "
+            "VALUES (%s, %s, %s, %s, %s, %s, 'pending')",
+            (
+                event_case_number,
+                "",
+                "開庭" if is_court else "開會",
+                start_dt.strftime("%Y-%m-%d"),
+                start_dt.strftime("%H:%M:%S"),
+                "%s — %s" % (title, location) if location else title,
+            ),
+            fetch=None,
         )
-        if ok:
-            return "✅ 行程已建立：%s\n時間：%s\n地點：%s" % (
-                title,
-                start_dt.strftime("%Y/%m/%d %H:%M"),
-                location or "（未填）",
-            )
-        else:
-            return "⚠️ 行事曆建立失敗，請檢查 Apple Calendar 權限。"
-    except Exception as e:
-        logger.warning("dispatch_calendar_event error: %s", e)
-        return "行程建立失敗：%s" % str(e)
+        todo_inserted = True
+    except Exception as _dbe:
+        logger.warning("dispatch_calendar_event db insert failed: %s", _dbe)
+
+    # ── 偵測 Google Calendar 憑證是否存在 ──
+    import os as _os_gcal
+    _magi_root = _os_gcal.path.dirname(_os_gcal.path.dirname(_os_gcal.path.abspath(__file__)))
+    _cred_path = (
+        _os_gcal.environ.get("MAGI_GOOGLE_CREDENTIALS_PATH")
+        or _os_gcal.path.join(_magi_root, "json", "credentials.json")
+    )
+    cred_ok = _os_gcal.path.exists(_cred_path)
+
+    dt_str = start_dt.strftime("%Y/%m/%d %H:%M")
+    if todo_inserted and cred_ok:
+        return "✅ 行程已存入系統，今日 08:00 將自動同步至 Google 日曆。\n行程：%s｜時間：%s｜地點：%s" % (
+            title, dt_str, location or "未填",
+        )
+    elif todo_inserted:
+        _hint = (
+            "\n\n📌 尚未設定 Google 日曆 OAuth2 憑證，行程暫存本地：\n"
+            "1. 至 Google Cloud Console 建立 OAuth2 Desktop App\n"
+            "2. 下載 credentials JSON 存至 `json/credentials.json`\n"
+            "   或設定 MAGI_GOOGLE_CREDENTIALS_PATH 環境變數\n"
+            "設定完成後執行「日曆同步」即可推送。"
+        )
+        return "📅 行程已存入系統（Google 日曆待設定憑證後才會同步）。%s\n行程：%s｜時間：%s｜地點：%s" % (
+            _hint, title, dt_str, location or "未填",
+        )
+    else:
+        return "⚠️ 行程建立失敗，DB 寫入錯誤，請確認資料庫連線。"
 
 
 # ── AI Draft dispatch (Task 6) ──────────────────────────────────────────────
@@ -1053,23 +1086,77 @@ def dispatch_ai_draft(message, user_id="", platform=""):
         except Exception:
             pass
 
-    # Call POST /api/osc/drafts/generate internally
-    try:
-        import json as _json
-        from api.blueprints.osc_cases import _osc_generate_draft_with_casper
-    except ImportError:
-        pass
+    _case_no = case_number or (case_row.get("case_number") if case_row else "")
+    _client = (case_row.get("client_name") if case_row else "") or ""
+    _reason = reason or (case_row.get("case_reason") if case_row else "") or ""
+    prompt = (
+        "你是台灣執業律師的書狀助理。請根據以下資訊草擬一份%s，"
+        "格式參照台灣民事訴訟法書狀格式，包含當事人欄、案由、事實及理由各段。\n"
+        "案件：%s　當事人：%s　案由：%s\n"
+        "請直接輸出書狀內文，不要加說明。"
+    ) % (doc_type, _case_no or "（未指定）", _client or "（未指定）", _reason or "（未指定）")
 
+    import urllib.request as _ureq2, json as _jdraft
+
+    def _call_llm(url, model, timeout_sec):
+        # type: (str, str, int) -> str
+        """呼叫 OpenAI-compatible /v1/chat/completions，回傳 content 字串；失敗拋例外。"""
+        _body = _jdraft.dumps({
+            "model": model,
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": 4096,
+            "stream": False,
+        }).encode()
+        _req = _ureq2.Request(
+            url.rstrip("/") + "/v1/chat/completions",
+            data=_body,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with _ureq2.urlopen(_req, timeout=timeout_sec) as _resp:
+            _data = _jdraft.loads(_resp.read().decode())
+        _choices = _data.get("choices") or []
+        return (_choices[0].get("message", {}).get("content", "") if _choices else "").strip()
+
+    # ── 1. 優先走 oMLX（MAGI_OMLX_CHAT_URL，預設 26B）——先確認模型已載入 ──
+    _omlx_url = os.environ.get("MAGI_OMLX_CHAT_URL", "http://127.0.0.1:8080")
+    _omlx_model = os.environ.get("MAGI_TEXT_PRIMARY_MODEL") or "gemma-4-26b-a4b-it-4bit"
+    _omlx_timeout = int(os.environ.get("MAGI_DRAFT_OMLX_TIMEOUT_SEC", "120"))
+    draft_text = ""
+    _omlx_ready = False
+    try:
+        _h = _ureq2.urlopen(_omlx_url + "/health", timeout=3)
+        _hd = json.loads(_h.read().decode())
+        _omlx_ready = int(_hd.get("engine_pool", {}).get("loaded_count", 0)) > 0
+    except Exception:
+        pass
+    if _omlx_ready:
+        try:
+            draft_text = _call_llm(_omlx_url, _omlx_model, _omlx_timeout)
+        except Exception as _omlx_err:
+            logger.info("dispatch_ai_draft oMLX fail: %s", _omlx_err)
+    else:
+        logger.info("dispatch_ai_draft: oMLX not ready (loaded_count=0), skipping to Ollama")
+
+    # ── 2. Fallback: Ollama (gemma4:e4b，port 11434) ──
+    if not draft_text:
+        _ollama_url = os.environ.get("MAGI_DRAFT_OLLAMA_URL", "http://127.0.0.1:11434")
+        _ollama_model = os.environ.get("MAGI_DRAFT_OLLAMA_MODEL", "gemma4:e4b")
+        _ollama_timeout = int(os.environ.get("MAGI_DRAFT_OLLAMA_TIMEOUT_SEC", "180"))
+        try:
+            draft_text = _call_llm(_ollama_url, _ollama_model, _ollama_timeout)
+        except Exception as _ol_err:
+            logger.warning("dispatch_ai_draft Ollama also failed: %s", _ol_err)
+
+    if draft_text:
+        return "📝 %s 草稿（前段預覽）：\n\n%s\n\n（完整版請至系統 Web 介面查看）" % (doc_type, draft_text[:800])
+
+    # ── 3. Last-resort: casper collab/chat ──
     try:
         from api.osc.drafts import _osc_generate_draft_with_casper
-        _case_no = case_number or (case_row.get("case_number") if case_row else "")
-        _client = (case_row.get("client_name") if case_row else "") or ""
-        _reason = reason or (case_row.get("case_reason") if case_row else "") or ""
-        prompt = "請草擬%s。案件：%s，當事人：%s，案由：%s。" % (doc_type, _case_no, _client, _reason)
         draft_text = _osc_generate_draft_with_casper(prompt)
         if draft_text:
             return "📝 %s 草稿（前段預覽）：\n\n%s\n\n（完整版請至系統 Web 介面查看）" % (doc_type, draft_text[:800])
-        return "⚠️ 書狀草擬失敗，oMLX 未回應或無範本。"
     except Exception as e:
-        logger.warning("dispatch_ai_draft error: %s", e)
-        return "書狀草擬失敗：%s" % str(e)
+        logger.warning("dispatch_ai_draft casper fallback error: %s", e)
+    return "⚠️ 書狀草擬失敗（本機模型記憶體不足，oMLX 26B 需要 14GB 可用 RAM）。請關閉其他應用程式後重試。"
