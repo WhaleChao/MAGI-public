@@ -18,6 +18,7 @@ import re
 import subprocess
 import threading
 import time
+from typing import Dict, List, Optional, Tuple
 
 logger = logging.getLogger("magi.nas_mount_guard")
 
@@ -102,11 +103,12 @@ _SHARES: list[tuple[str, str]] = [
 # ── 掛載邏輯 ─────────────────────────────────────────────────
 
 def _is_mounted(volume_path: str) -> bool:
-    """檢查 volume 是否已掛載且可存取（含 macOS automount 後綴 -1）。"""
+    """檢查 volume 是否已掛載且可存取（含 macOS automount 後綴 -1）。
+    使用 os.stat() 取代 os.listdir() 避免在 SMB 延遲時 hang（0s vs 10-30s）。"""
     for path in (volume_path, f"{volume_path}-1"):
         if os.path.ismount(path):
             try:
-                os.listdir(path)
+                os.stat(path)
                 return True
             except OSError:
                 continue
