@@ -78,51 +78,65 @@ def _is_digital_pdf(pdf_path: str, threshold: int = 150) -> bool:
         logger.error(f"Error checking PDF type for {pdf_path}: {e}")
         return False
 
-def scan_nas_for_pdfs(max_limit=1000):
-    """掃描 NAS 目錄，找出所有的未處理 PDF，放進 DB"""
+def scan_nas_for_pdfs(max_limit=1000, max_depth=5):
+    """掃描 NAS 目錄，找出所有的未處理 PDF，放進 DB。
+    NAS 友善：深度限制（預設 5）、每 50 目錄 sleep 0.05s 避免打掛 NAS。"""
     if not os.path.exists(NAS_ROOT):
         logger.error(f"NAS root {NAS_ROOT} not accessible.")
         return 0
-        
-    logger.info(f"Scanning {NAS_ROOT} for untreated PDFs...")
+
+    logger.info(f"Scanning {NAS_ROOT} for untreated PDFs (max_limit={max_limit}, max_depth={max_depth})...")
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    
+
     added = 0
-    # 用 os.walk 遍歷
-    for root, dirs, files in os.walk(NAS_ROOT):
-        # 略過 Archive
-        if ARCHIVE_SUBDIR in root:
+    dir_count = 0
+    # 用有限深度的 stack-based DFS 取代無限 os.walk
+    stack = [(NAS_ROOT, 0)]
+    while stack:
+        cur_dir, depth = stack.pop()
+        dir_count += 1
+        if dir_count % 50 == 0:
+            time.sleep(0.05)  # NAS I/O 節流
+        if dir_count > 5000:
+            logger.warning(f"NAS scan safety cap reached ({dir_count} dirs). Stopping.")
+            break
+
+        try:
+            with os.scandir(cur_dir) as it:
+                for entry in it:
+                    if entry.is_dir(follow_symlinks=False):
+                        if ARCHIVE_SUBDIR in entry.name:
+                            continue
+                        if depth < max_depth:
+                            stack.append((entry.path, depth + 1))
+                    elif entry.is_file(follow_symlinks=False):
+                        fname = entry.name
+                        if not fname.lower().endswith('.pdf'):
+                            continue
+                        if "_OCR.pdf" in fname:
+                            continue
+                        full_path = entry.path
+                        ocr_counterpart = full_path[:-4] + "_OCR.pdf"
+                        if os.path.exists(ocr_counterpart):
+                            continue
+                        try:
+                            c.execute("INSERT INTO ocr_queue (file_path) VALUES (?)", (full_path,))
+                            added += 1
+                            if max_limit > 0 and added >= max_limit:
+                                conn.commit()
+                                conn.close()
+                                logger.info(f"Scan limit reached. Added {added} items ({dir_count} dirs visited).")
+                                return added
+                        except sqlite3.IntegrityError:
+                            pass
+        except Exception as e:
+            logger.debug(f"scandir error on {cur_dir}: {e}")
             continue
-            
-        for file in files:
-            if not file.lower().endswith('.pdf'):
-                continue
-                
-            if "_OCR.pdf" in file:
-                continue
-                
-            full_path = os.path.join(root, file)
-            # 檢查這支檔是否已經有產出過了 (同目錄下有 _OCR.pdf)
-            ocr_counterpart = full_path[:-4] + "_OCR.pdf"
-            if os.path.exists(ocr_counterpart):
-                continue
-                
-            # Insert into DB
-            try:
-                c.execute("INSERT INTO ocr_queue (file_path) VALUES (?)", (full_path,))
-                added += 1
-                if max_limit > 0 and added >= max_limit:
-                    conn.commit()
-                    conn.close()
-                    logger.info(f"Scan limit reached. Added {added} items.")
-                    return added
-            except sqlite3.IntegrityError:
-                pass # Already in queue
-                
+
     conn.commit()
     conn.close()
-    logger.info(f"Scan complete. Added {added} new items to queue.")
+    logger.info(f"Scan complete. Added {added} new items to queue ({dir_count} dirs visited).")
     return added
 
 def run_worker(batch_size=20):

@@ -7454,7 +7454,8 @@ class FileReviewManager:
         return re.sub("[^0-9A-Za-z一-鿿]+", "", (s or ""))
 
     def _scan_by_court_tokens(self, root: str, year: str, case_type: str, num: str,
-                              max_depth: int = 6, max_dirs: int = 25000) -> str:
+                              max_depth: int = 4, max_dirs: int = 2000) -> str:
+        """NAS 友善：max_dirs 降至 2000、深度 4，每 50 目錄 yield CPU 避免打掛 NAS。"""
         year = (year or "").strip()
         case_type = (case_type or "").strip()
         num = (num or "").strip()
@@ -7468,11 +7469,14 @@ class FileReviewManager:
             s = self._norm(path_text)
             return (target_year in s) and (target_type in s) and (target_num in s)
 
+        import time as _time
         visited = 0
         stack = [(root, 0)]
         while stack and visited < max_dirs:
             cur, depth = stack.pop()
             visited += 1
+            if visited % 50 == 0:
+                _time.sleep(0.05)  # NAS I/O 節流
             try:
                 if depth > 0 and _match(cur):
                     return cur
@@ -7487,18 +7491,22 @@ class FileReviewManager:
         return ""
 
     def _scan_by_laf_marker(self, root: str, laf_no: str,
-                            max_depth: int = 8, max_dirs: int = 35000) -> str:
+                            max_depth: int = 5, max_dirs: int = 3000) -> str:
+        """NAS 友善：max_dirs 降至 3000、深度 5，優先搜 法扶案件/ 子樹。"""
         laf_no = (laf_no or "").strip()
         if not laf_no:
             return ""
         # prioritize 法扶案件 subtree if present
         laf_root = os.path.join(root, "法扶案件")
         start = laf_root if os.path.isdir(laf_root) else root
+        import time as _time
         visited = 0
         stack = [(start, 0)]
         while stack and visited < max_dirs:
             cur, depth = stack.pop()
             visited += 1
+            if visited % 50 == 0:
+                _time.sleep(0.05)  # NAS I/O 節流
             try:
                 if depth >= max_depth:
                     continue
@@ -7520,7 +7528,9 @@ class FileReviewManager:
         return ""
 
     def _scan_by_party_name(self, root: str, party: str,
-                            max_depth: int = 4, max_dirs: int = 15000) -> str:
+                            max_depth: int = 4, max_dirs: int = 2000) -> str:
+        """NAS 友善：max_dirs 降至 2000、深度 4，每 50 目錄 yield CPU 避免打掛 NAS"""
+        import time as _time
         party = (party or "").strip()
         if not party:
             return ""
@@ -7530,6 +7540,8 @@ class FileReviewManager:
         while stack and visited < max_dirs:
             cur, depth = stack.pop()
             visited += 1
+            if visited % 50 == 0:
+                _time.sleep(0.05)  # NAS I/O 節流
             try:
                 if depth > 0:
                     if target and target in self._norm(os.path.basename(cur)):
@@ -7548,6 +7560,7 @@ class FileReviewManager:
         """
         在案件資料夾中遞迴尋找包含 '閱卷' 的子資料夾
         支援多層目錄結構 (e.g. 2025/112聲判12/06_閱卷資料)
+        NAS 友善：深度限制 3 層（案件資料夾內不會更深），每 50 目錄節流
         """
         if not case_folder or not os.path.exists(case_folder):
             return None
@@ -7555,29 +7568,63 @@ class FileReviewManager:
         # 1. 檢查根目錄本身是否就是
         if '閱卷' in os.path.basename(case_folder):
              return case_folder
-             
-        # 2. 遞迴搜尋所有子目錄
-        # 優先尋找 '06_閱卷資料' 或 '閱卷資料'
+
+        # 2. 有限深度搜尋（取代無限 os.walk）
+        import time as _time
+        _max_depth = 3
+        _visited = 0
+        _stack = [(case_folder, 0)]
         try:
-            for root, dirs, files in os.walk(case_folder):
-                for d in dirs:
-                    if '閱卷' in d:
-                        return os.path.join(root, d)
+            while _stack:
+                cur, depth = _stack.pop()
+                _visited += 1
+                if _visited % 50 == 0:
+                    _time.sleep(0.05)
+                if _visited > 500:
+                    break  # 安全上限
+                try:
+                    with os.scandir(cur) as it:
+                        for e in it:
+                            if e.is_dir(follow_symlinks=False):
+                                if '閱卷' in e.name:
+                                    return e.path
+                                if depth < _max_depth:
+                                    _stack.append((e.path, depth + 1))
+                except Exception:
+                    continue
         except Exception:
             logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 7344, exc_info=True)
 
-        return None   
+        return None
 
     def _file_exists_recursively(self, root_folder: str, filename: str) -> bool:
         """遞迴檢查檔案是否存在於資料夾中"""
         return bool(self._find_file_recursively(root_folder, filename))
 
     def _find_file_recursively(self, root_folder: str, filename: str) -> str:
-        """遞迴尋找檔案，找到則回傳完整路徑，否則回傳空字串。"""
+        """遞迴尋找檔案，找到則回傳完整路徑，否則回傳空字串。
+        NAS 友善：深度限制 4 層，每 50 目錄節流。"""
+        import time as _time
+        _max_depth = 4
+        _visited = 0
+        _stack = [(root_folder, 0)]
         try:
-            for root, _dirs, files in os.walk(root_folder):
-                if filename in files:
-                    return os.path.join(root, filename)
+            while _stack:
+                cur, depth = _stack.pop()
+                _visited += 1
+                if _visited % 50 == 0:
+                    _time.sleep(0.05)
+                if _visited > 1000:
+                    break
+                try:
+                    with os.scandir(cur) as it:
+                        for e in it:
+                            if e.is_file(follow_symlinks=False) and e.name == filename:
+                                return e.path
+                            if e.is_dir(follow_symlinks=False) and depth < _max_depth:
+                                _stack.append((e.path, depth + 1))
+                except Exception:
+                    continue
         except Exception:
             logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 7359, exc_info=True)
         return ""

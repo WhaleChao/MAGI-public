@@ -2888,16 +2888,31 @@ def _scan_laf_forms_for_client_fields(case_folder: str, max_pdfs: int = 10) -> D
 
     pdfs: List[str] = []
     preferred: List[str] = []
+    # NAS 友善：深度限制 3 層、每 50 目錄節流
+    _visited = 0
+    _stack = [(root, 0)]
     try:
-        for base, _dirs, files in os.walk(root):
-            for fn in files:
-                if not fn.lower().endswith(".pdf"):
-                    continue
-                p = os.path.join(base, fn)
-                if "法律扶助申請書" in fn or "法律扶助申請" in fn:
-                    preferred.append(p)
-                elif ("/01_法扶資料/" in p.replace("\\", "/")):
-                    pdfs.append(p)
+        while _stack:
+            _cur, _depth = _stack.pop()
+            _visited += 1
+            if _visited % 50 == 0:
+                import time as _t; _t.sleep(0.05)
+            if _visited > 500:
+                break
+            try:
+                with os.scandir(_cur) as _it:
+                    for _e in _it:
+                        if _e.is_dir(follow_symlinks=False) and _depth < 3:
+                            _stack.append((_e.path, _depth + 1))
+                        elif _e.is_file(follow_symlinks=False) and _e.name.lower().endswith(".pdf"):
+                            p = _e.path
+                            fn = _e.name
+                            if "法律扶助申請書" in fn or "法律扶助申請" in fn:
+                                preferred.append(p)
+                            elif ("/01_法扶資料/" in p.replace("\\", "/")):
+                                pdfs.append(p)
+            except Exception:
+                continue
     except Exception:
         return {}
 
