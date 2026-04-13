@@ -3386,11 +3386,12 @@ def _laf_one_shot(max_results: int = 15, general_max: int = 15) -> Dict[str, Any
         return {"ok": False, "error": f"{type(e).__name__}: {e}"}
 
 
-def _laf_condition_draft_one_shot(max_cases: int = 2) -> Dict[str, Any]:
+def _laf_condition_draft_one_shot(max_cases: int = 0) -> Dict[str, Any]:
     """
     自動觸發法扶 WF5（二階段）暫存：
     - 由 laf_orchestrator 依 DB + 檔案條件挑選候選案件
     - 僅暫存，不送出
+    - max_cases=0 表示不限（有幾件做幾件）
     """
     out: Dict[str, Any] = {"ok": True, "processed": 0, "scanned": 0, "items": [], "errors": []}
     try:
@@ -3721,9 +3722,9 @@ def run_tick(run_dir: str, *, emit_step_events: bool = True) -> Dict[str, Any]:
     # 1.5) LAF condition draft one-shot (WF5)
     if os.environ.get("MAGI_LAF_CONDITION_ENABLE", "1").strip().lower() in {"1", "true", "yes", "on"}:
         try:
-            max_cases = int((os.environ.get("MAGI_LAF_CONDITION_MAX_CASES", "2") or "2").strip() or "2")
+            max_cases = int((os.environ.get("MAGI_LAF_CONDITION_MAX_CASES", "0") or "0").strip() or "0")
         except Exception:
-            max_cases = 2
+            max_cases = 0
         try:
             cond_res = _laf_condition_draft_one_shot(max_cases=max_cases)
         except Exception as e:

@@ -1294,6 +1294,63 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
     if any(k in msg_lower for k in ["法扶回報指令", "法扶指令", "回報指令"]):
         return orch._laf_report_command_help()
 
+    # ── 法扶批次操作：二階段批次 / 自動報結掃描 ───────────────────
+    _is_batch_condition = any(k in message for k in ("二階段批次", "批次二階段", "二階段掃描"))
+    _is_batch_closing = any(k in message for k in ("自動報結掃描", "報結掃描", "批次報結", "結案掃描", "批次結案"))
+    if _is_batch_condition or _is_batch_closing:
+        _batch_action = "condition" if _is_batch_condition else "closing"
+        _batch_label = "二階段" if _is_batch_condition else "報結"
+
+        def _run_laf_batch(action_type, label, uid, plat):
+            try:
+                _orch_dir = os.path.join(_MAGI_ROOT, "casper_ecosystem", "law_firm_orchestrators")
+                if _orch_dir not in sys.path:
+                    sys.path.insert(0, _orch_dir)
+                import laf_orchestrator as _lo
+                orchestrator = _lo.LAFOrchestrator(dry_run=False)
+                if action_type == "condition":
+                    result = orchestrator.run_condition_drafts(max_cases=0)
+                else:
+                    result = orchestrator.run_closing_drafts(max_cases=0)
+
+                items = result.get("items") or []
+                scanned = result.get("scanned", 0)
+                processed = result.get("processed", 0)
+
+                lines = [f"📋 **法扶{label}批次掃描完成**"]
+                lines.append(f"找到 {scanned} 件、成功暫存 {processed} 件")
+                if not items:
+                    lines.append("目前沒有符合條件的案件。")
+                for item in items:
+                    ok = item.get("ok", False)
+                    name = item.get("client_name") or "-"
+                    laf_no = item.get("laf_case_number") or ""
+                    err = item.get("error") or ""
+                    if ok:
+                        lines.append(f"  ✅ {name}（{laf_no}）— 已暫存")
+                    else:
+                        lines.append(f"  ❌ {name}（{laf_no}）— {err or '暫存失敗'}")
+
+                reply = "\n".join(lines)
+                try:
+                    orch._notify(reply, topic_key=f"laf_{action_type}" if action_type == "condition" else "laf_closing")
+                except Exception:
+                    pass
+            except Exception as e:
+                reply = f"❌ 法扶{label}批次失敗：{type(e).__name__}: {e}"
+                try:
+                    orch._notify(reply, topic_key="laf")
+                except Exception:
+                    pass
+
+        import threading as _th
+        _th.Thread(
+            target=_run_laf_batch,
+            args=(_batch_action, _batch_label, str(user_id), str(platform or "")),
+            daemon=True,
+        ).start()
+        return f"🔄 法扶{_batch_label}批次掃描已啟動，完成後會通知結果。"
+
     # 法扶狀態手動更新：「[當事人E] 已開辦」「[當事人N] 已報結」
     # Keyword gate: only attempt expensive parse when message contains LAF-related keywords
     _LAF_STATUS_KEYWORDS = {"已開辦", "已報結", "已結案", "已撤回", "已撤案",

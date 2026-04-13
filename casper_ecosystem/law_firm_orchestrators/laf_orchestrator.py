@@ -4555,7 +4555,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
             return False
         return False
 
-    def _get_pending_condition_cases(self, max_cases: int = 3) -> List[dict]:
+    def _get_pending_condition_cases(self, max_cases: int = 0) -> List[dict]:
         if not self.db:
             return []
         order_expr = "id DESC"
@@ -4628,11 +4628,11 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                     "folder_path": folder,
                 }
             )
-            if len(out) >= int(max_cases):
+            if max_cases > 0 and len(out) >= int(max_cases):
                 break
         return out
 
-    def run_condition_drafts(self, max_cases: int = 3) -> dict:
+    def run_condition_drafts(self, max_cases: int = 0) -> dict:
         """
         自動尋找「調解不成立證明書」已到位案件並執行 WF5 暫存。
         僅暫存，不送出。
@@ -4707,7 +4707,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
             return False
         return False
 
-    def _get_pending_closing_draft_cases(self, max_cases: int = 3) -> List[dict]:
+    def _get_pending_closing_draft_cases(self, max_cases: int = 0) -> List[dict]:
         """
         Find LAF cases ready for auto closing draft:
         - legal_aid_status in (進行中, 已開辦, 待報結, 已結案，待報結)
@@ -4777,11 +4777,11 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                 "case_reason": (r.get("case_reason") or "").strip(),
                 "closing_basis_files": basis,
             })
-            if len(out) >= int(max_cases):
+            if max_cases > 0 and len(out) >= int(max_cases):
                 break
         return out
 
-    def run_closing_drafts(self, max_cases: int = 3) -> dict:
+    def run_closing_drafts(self, max_cases: int = 0) -> dict:
         """
         自動找「10_判決書已到位」的進行中法扶案件，
         呼叫既有 execute_portal_action_draft(action=closing) 暫存。
