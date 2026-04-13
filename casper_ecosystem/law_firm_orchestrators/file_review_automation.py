@@ -7275,9 +7275,15 @@ class FileReviewManager:
 
         if prefer_stamped:
             # 首次聲請：先搜可能存放委任狀/存底的子目錄，避免大型卷證資料夾拖慢。
+            # NAS 實際命名：
+            #   一般案件 → 01_委任契約書
+            #   無償案件 → 00_委任狀 或 01_無償委任資料
+            #   法扶案件 → 01_法扶資料 / 02_開辦資料
             focused_dirs = [
                 "00_委任狀",
                 "01_委任契約書",
+                "01_無償委任資料",
+                "委任資料",
                 "01_法扶資料",
                 "02_開辦資料",
                 "02_我方歷次書狀",
@@ -7290,7 +7296,8 @@ class FileReviewManager:
                 all_files.extend(_collect_supported_files(folder_path, budget_sec=scan_budget_sec, prefer_small_scope=True))
         else:
             # 非首次：優先搜尋特定子目錄
-            preferred_dirs = ["01_法扶資料", "02_開辦資料", "00_委任狀", "01_委任契約書"]
+            preferred_dirs = ["00_委任狀", "01_委任契約書", "01_無償委任資料", "委任資料",
+                              "01_法扶資料", "02_開辦資料"]
             for subdir in preferred_dirs:
                 target_dir = os.path.join(folder_path, subdir)
                 if not os.path.isdir(target_dir):
@@ -7313,8 +7320,8 @@ class FileReviewManager:
                 _is_laf_case = True
             elif os.path.isdir(os.path.join(folder_path, "01_法扶資料")):
                 _is_laf_case = True
-            # 路徑含「無償案件」→ 明確非法扶
-            if "無償案件" in _fp_lower:
+            # 路徑含「無償案件」或「指定辯護」→ 明確非法扶
+            if "無償案件" in _fp_lower or "指定辯護" in _fp_lower:
                 _is_laf_case = False
 
         if _is_laf_case:
@@ -9269,64 +9276,80 @@ class FileReviewManager:
                 else:
                     self.log("  ⚠️ 紙本閱卷未指定預約日期，跳過預約時段選擇")
 
-            # ========= 步驟 7.5: 自動上傳法扶附件/委任狀 =========
+            # ========= 步驟 7.5: 自動上傳附件（委任狀/法扶通知書） =========
             self.log("  檢查閱卷聲請附件...")
             try:
-                reg_key = self.make_apply_registry_key(case_info)
-                is_first = self.is_first_application(reg_key)
-
-                # ── 閱卷資料夾判斷：如果案件已有閱卷資料，視為非首次聲請 ──
-                if is_first:
-                    _case_folder = (case_info.get("folder_path") or "").strip()
-                    if not _case_folder:
-                        try:
-                            _case_folder = self._resolve_case_folder_from_db(
-                                party=case_info.get("client_name", ""),
-                            )
-                            if isinstance(_case_folder, list):
-                                _case_folder = _case_folder[0] if _case_folder else ""
-                        except Exception:
-                            _case_folder = ""
-                    if _case_folder and os.path.isdir(_case_folder):
-                        for _review_sub in ["03_閱卷資料", "04_閱卷資料", "閱卷資料"]:
-                            _review_dir = os.path.join(_case_folder, _review_sub)
-                            if os.path.isdir(_review_dir) and os.listdir(_review_dir):
-                                is_first = False
-                                self.log(f"  ℹ️ 偵測到 {_review_sub}/ 已有檔案 → 非首次聲請")
-                                break
-
-                if not is_first:
-                    self.log("  ℹ️ 非首次聲請，跳過附件上傳")
+                # 義務辯護（指定辯護案件）：完全不需上傳任何附件
+                # 除了 DB 判斷，也用資料夾路徑偵測
+                if not _is_appointed_defense:
+                    _fp = (case_info.get("folder_path") or "").replace("\\", "/")
+                    if "指定辯護案件" in _fp:
+                        _is_appointed_defense = True
+                        self.log("  ℹ️ 資料夾路徑含「指定辯護案件」→ 判定為義務辯護")
+                if _is_appointed_defense:
+                    self.log("  ℹ️ 義務辯護案件，不需上傳委任狀，直接聲請")
                     upload_files = {}
                     self._last_apply_for_review_uploads = upload_files
                 else:
-                    self.log("  ℹ️ 首次聲請 → 應上傳收文章委任狀（02_開辦資料）")
-                    upload_files = self._find_review_upload_files(case_info, prefer_stamped=True)
-                    self._last_apply_for_review_uploads = upload_files
+                    reg_key = self.make_apply_registry_key(case_info)
+                    is_first = self.is_first_application(reg_key)
 
-                if not is_first:
-                    pass  # 已跳過
-                elif upload_files.get("case_folder"):
-                    self.log(f"  ✓ 案件資料夾: {upload_files['case_folder']}")
-                else:
-                    self.log("  ⚠️ 找不到案件資料夾，略過附件上傳")
+                    # ── 閱卷資料夾判斷：如果案件已有閱卷資料，視為非首次聲請 ──
+                    if is_first:
+                        _case_folder = (case_info.get("folder_path") or "").strip()
+                        if not _case_folder:
+                            try:
+                                _case_folder = self._resolve_case_folder_from_db(
+                                    party=case_info.get("client_name", ""),
+                                )
+                                if isinstance(_case_folder, list):
+                                    _case_folder = _case_folder[0] if _case_folder else ""
+                            except Exception:
+                                _case_folder = ""
+                        if _case_folder and os.path.isdir(_case_folder):
+                            # NAS 實際命名：無償=03, 指定辯護=04, 法扶=06
+                            for _review_sub in ["03_閱卷資料", "04_閱卷資料", "06_閱卷資料", "閱卷資料"]:
+                                _review_dir = os.path.join(_case_folder, _review_sub)
+                                if os.path.isdir(_review_dir) and os.listdir(_review_dir):
+                                    is_first = False
+                                    self.log(f"  ℹ️ 偵測到 {_review_sub}/ 已有檔案 → 非首次聲請")
+                                    break
 
-                for field_name, label in [
-                    ("auth_file", "委任狀"),
-                    ("laf_file", "法扶通知書"),
-                ]:
-                    file_path = (upload_files.get(field_name) or "").strip()
-                    if not file_path:
-                        self.log(f"  ⚠️ 未找到可上傳的{label}")
-                        continue
-                    if not os.path.exists(file_path):
-                        self.log(f"  ⚠️ {label}檔案不存在: {file_path}")
-                        continue
-                    try:
-                        self._ola_upload_attachment(file_path, file_remark=label)
-                        self.log(f"  ✓ 已上傳{label}: {os.path.basename(file_path)}")
-                    except Exception as upload_e:
-                        self.log(f"  ⚠️ 上傳{label}失敗: {upload_e}")
+                    if not is_first:
+                        self.log("  ℹ️ 非首次聲請，跳過附件上傳")
+                        upload_files = {}
+                        self._last_apply_for_review_uploads = upload_files
+                    else:
+                        self.log("  ℹ️ 首次聲請 → 搜尋收文章委任狀")
+                        upload_files = self._find_review_upload_files(case_info, prefer_stamped=True)
+                        self._last_apply_for_review_uploads = upload_files
+
+                    if not is_first:
+                        pass  # 已跳過
+                    elif upload_files.get("case_folder"):
+                        self.log(f"  ✓ 案件資料夾: {upload_files['case_folder']}")
+                    else:
+                        self.log("  ⚠️ 找不到案件資料夾，略過附件上傳")
+
+                    # 只上傳找到的附件（auth_file 和 laf_file）
+                    for field_name, label in [
+                        ("auth_file", "委任狀"),
+                        ("laf_file", "法扶通知書"),
+                    ]:
+                        file_path = (upload_files.get(field_name) or "").strip()
+                        if not file_path:
+                            if is_first and field_name == "auth_file":
+                                self.log(f"  ⚠️ 未找到可上傳的{label}")
+                            # laf_file 為空是正常的（非法扶案件）
+                            continue
+                        if not os.path.exists(file_path):
+                            self.log(f"  ⚠️ {label}檔案不存在: {file_path}")
+                            continue
+                        try:
+                            self._ola_upload_attachment(file_path, file_remark=label)
+                            self.log(f"  ✓ 已上傳{label}: {os.path.basename(file_path)}")
+                        except Exception as upload_e:
+                            self.log(f"  ⚠️ 上傳{label}失敗: {upload_e}")
             except Exception as upload_scan_e:
                 self.log(f"  ⚠️ 附件掃描失敗: {upload_scan_e}")
             
