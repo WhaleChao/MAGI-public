@@ -685,41 +685,53 @@ class DailyOTRecord:
 def _parse_attendance_excel(path: str) -> List[DailyOTRecord]:
     """
     解析出席明細紀錄表 xlsx（打卡系統匯出格式）。
-    每行格式：
-      YYYY/MM/DD(星期) 應上班 應下班 實上班 實下班 ... 上班前加班 申報加班 0000
+    欄位索引：
+      [0]日期(ROC/MM/DD(星期)) [1]應上班 [2]應下班 [3]實上班 [4]實下班
+      [5]遲到 [6]早退 [7]忘卡 [8]曠職 [9]上班前加班(HHMM) [10]申報加班(HHMM) ...
+
+    修正（2026-04-13）：原版從 row[0] 文字末尾 regex 擷取 HHMM，但加班資料
+    在獨立欄位 row[9]/row[10]，導致全部解析失敗。現改為直接讀取正確欄位。
+    對週末/假日無 OT 欄位但有實際打卡的列，以實際出勤時數計算加班分鐘。
     """
     try:
         import openpyxl
     except ImportError:
         raise RuntimeError("需要 openpyxl：pip install openpyxl")
+    from datetime import time as _time
 
     wb = openpyxl.load_workbook(path, data_only=True)
     records: List[DailyOTRecord] = []
 
-    # Regex: 日期行
-    # e.g. "       110/12/01(三)    08:30  17:30  08:01  20:44  ...  0029  0314  0000"
-    ROW_RE = re.compile(
-        r"(\d{3}/\d{2}/\d{2})\(([一二三四五六日])\)"   # date + weekday
-        r"(?:.*?(\d{4})\s+(\d{4})\s+(\d{4})\s*$)?"     # pre_ot, post_ot, zero  (trailing 3 groups optional)
-    )
-    OT_RE = re.compile(r"(\d{4})\s+(\d{4})\s+\d{4}\s*$")  # last 3 HHMM groups at EOL
+    DATE_RE = re.compile(r"(\d{3}/\d{2}/\d{2})\(([一二三四五六日])\)")
+
+    def _to_minutes_from_cell(v) -> int:
+        """將儲存格值（datetime.time、HH:MM 字串、或 None）轉換為當日分鐘數。"""
+        if v is None:
+            return 0
+        if isinstance(v, _time):
+            return v.hour * 60 + v.minute
+        s = str(v).strip()
+        if ':' in s:
+            parts = s.split(':')
+            try:
+                return int(parts[0]) * 60 + int(parts[1])
+            except Exception:
+                return 0
+        return 0
 
     for shname in wb.sheetnames:
         ws = wb[shname]
         for row in ws.iter_rows(values_only=True):
-            raw = str(row[0]) if row[0] is not None else ""
-            raw = raw.strip()
-            if not raw:
+            if not row[0]:
                 continue
-
-            m = ROW_RE.search(raw)
+            raw = str(row[0]).strip()
+            m = DATE_RE.search(raw)
             if not m:
                 continue
 
             date_str = m.group(1)   # "110/12/01"
             wday = m.group(2)       # "三"
 
-            # Parse AD date
             parts = date_str.split("/")
             try:
                 ad_year = _roc_to_ad(int(parts[0]))
@@ -727,24 +739,29 @@ def _parse_attendance_excel(path: str) -> List[DailyOTRecord]:
             except Exception:
                 continue
 
-            # Extract OT columns (last 3 HHMM groups)
-            ot_m = OT_RE.search(raw)
-            if not ot_m:
-                pre_min = post_min = 0
-            else:
-                pre_min = _hhmm_to_minutes(ot_m.group(1))
-                post_min = _hhmm_to_minutes(ot_m.group(2))
+            # 從正確欄位讀取加班分鐘（HHMM 字串如 "0059"）
+            pre_raw = row[9] if len(row) > 9 else None
+            post_raw = row[10] if len(row) > 10 else None
+            pre_min = _hhmm_to_minutes(pre_raw) if pre_raw is not None else 0
+            post_min = _hhmm_to_minutes(post_raw) if post_raw is not None else 0
+
+            # 週末/假日無 OT 欄但有實際打卡→以整段出勤時數計算加班
+            # 注意：平日（一~五）若 pre/post 欄空白，代表無加班，不做 fallback
+            is_weekend_or_holiday = wday in ('六', '日')
+            if pre_min == 0 and post_min == 0 and is_weekend_or_holiday and len(row) > 4:
+                actual_in_min = _to_minutes_from_cell(row[3])
+                actual_out_min = _to_minutes_from_cell(row[4])
+                if actual_out_min > actual_in_min > 0:
+                    post_min = actual_out_min - actual_in_min
 
             if pre_min == 0 and post_min == 0:
                 continue  # 無加班紀錄，跳過
 
-            # Determine day type
             day_type = _get_day_type_from_weekday(wday)
 
             # Override for known national holidays
             hols = _build_tw_holidays(ad_date.year)
-            hol_key = (ad_date.year, ad_date.month, ad_date.day)
-            if hol_key in hols:
+            if (ad_date.year, ad_date.month, ad_date.day) in hols:
                 day_type = "國定假日"
 
             records.append(DailyOTRecord(
@@ -852,16 +869,24 @@ def _parse_ot_pdf_pages(doc) -> "List[DailyOTRecord]":
 
 def _calc_ot_pay_for_record(rec: DailyOTRecord, monthly_wage) -> float:
     """
-    依假別計算單日加班費（加給部分，不含正常工資）。
-    停班停課 → 出勤加倍（同例假日，雙倍計算）。
+    依假別計算單日加班費（全額費率，勞基法第24、39條）。
+
+    法條費率（全額，非加給部分）：
+      平日 OT  → 前2h × 4/3，超過 × 5/3（勞基法第24條第1項）
+      休息日   → 同平日費率（2018/3/1後）；2018前依一例一休最低計費規定
+      例假日/國定假日/停班停課 → 全部 × 2（勞基法第39條；行政院人事行政總處規定）
+
+    注意：月薪已涵蓋正常工時（每日8h）之對價，加班時數屬額外延長時間，
+    應按上述全額費率另行計算；計算時數精確至分鐘，不做無條件進位。
+
     monthly_wage: float 或 WageComponents（以經常性薪資計算時薪）
     """
     hourly = _hourly_from_monthly(monthly_wage)
     ot_hours = rec.total_ot_min / 60.0
 
     if rec.day_type in ("例假日", "國定假日", "停班停課"):
-        # 加倍：整日（出勤時數）× 時薪
-        return _round2(hourly * ot_hours)  # 額外加給部分（original already paid）
+        # 雙倍：出勤時數 × 2 × 時薪（勞基法第39條）
+        return _round2(hourly * ot_hours * 2.0)
 
     elif rec.day_type == "休息日":
         # 2018/3/1 後現行：按實際時數、二級費率（無最低計費）
@@ -878,9 +903,10 @@ def _calc_ot_pay_for_record(rec: DailyOTRecord, monthly_wage) -> float:
             return _round2(hourly * h1 * 4/3 + hourly * h2 * 5/3 + hourly * h3 * 8/3)
 
     else:  # 平日
+        # 全額費率：前2h × 4/3，超過 × 5/3（勞基法第24條第1項）
         h1 = min(ot_hours, 2.0)
         h2 = max(ot_hours - 2.0, 0.0)
-        return _round2(hourly * h1 * 1/3 + hourly * h2 * 2/3)
+        return _round2(hourly * h1 * 4/3 + hourly * h2 * 5/3)
 
 
 def calc_case_overtime(
