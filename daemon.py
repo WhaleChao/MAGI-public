@@ -1107,7 +1107,7 @@ def reap_orphan_workers(*, force: bool = False, dry_run: bool = False) -> str:
     _write_state(_snapshot_counts(rows=ps_rows))
 
     # Prune _REAPER_ZOMBIE_SEEN: remove PIDs no longer in the process table
-    _live_pids = {int(r[0]) for r in ps_rows} if ps_rows else set()
+    _live_pids = {int(r["pid"]) for r in ps_rows if isinstance(r, dict)} if ps_rows else set()
     _REAPER_ZOMBIE_SEEN.intersection_update(_live_pids)
 
     # ── Build report ──

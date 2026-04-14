@@ -191,6 +191,9 @@ print(json.dumps({{"identity": ident, "counts": counts, "log": log_lines}}, ensu
 def task_portal_action(action, laf_case_no="", case_number="", client_name="",
                        reason="", fields_json=""):
     """Execute a portal action via laf_orchestrator.py --mode portal-draft."""
+    # CLI portal-draft timeout: default 900s (15 min) to accommodate LAF CSRF delays,
+    # NAS attachment scan, form fill, and screenshot. Discord path uses 2400s.
+    portal_timeout = int(os.environ.get("MAGI_LAF_PORTAL_DRAFT_TIMEOUT_SEC", "900"))
     args_list = [
         "--mode", "portal-draft",
         "--action", action,
@@ -207,7 +210,7 @@ def task_portal_action(action, laf_case_no="", case_number="", client_name="",
         args_list += ["--fields-json", fields_json]
     args_list.append("-v")
 
-    result = _run_orchestrator(args_list, timeout=300)
+    result = _run_orchestrator(args_list, timeout=portal_timeout)
     result["product_profile"] = product_profile_report("laf")
     return result
 

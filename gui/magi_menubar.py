@@ -74,9 +74,9 @@ _USER_MOUNT_ROOT = os.path.expanduser("~/.magi_mounts")
 
 # 背景監控 thread 名稱（用於偵測是否在線）
 MONITOR_THREADS = [
-    ("法扶 Gmail 監控", "laf-gmail-monitor"),
-    ("法扶 Portal 重試", "laf-portal-retry-loop"),
-    ("閱卷 Email 監控", "file-review-email"),
+    ("法扶信箱監控", "laf-gmail-monitor"),
+    ("法扶附件重試", "laf-portal-retry-loop"),
+    ("閱卷信箱監控", "filereview-email-monitor"),
 ]
 
 # 排程任務最多顯示的條數
@@ -470,8 +470,9 @@ class MAGIMenuBar(rumps.App):
         if cache_snapshot:
             try:
                 self._apply_status(cache_snapshot)
-            except Exception:
-                pass
+            except Exception as _apply_err:
+                import traceback
+                logging.getLogger("menubar").error("_apply_status error: %s\n%s", _apply_err, traceback.format_exc())
         threading.Thread(target=self._collect_status, daemon=True).start()
 
     def _collect_status(self):
@@ -547,57 +548,61 @@ class MAGIMenuBar(rumps.App):
             })
         cache["cron_details"] = cron_details
 
-        # ── 背景監控 thread ──
+        # ── 背景監控 ──
         monitors = {}
         try:
+            # 方法：查 Server 進程的 /health 拿到 uptime，再掃 log 確認各 thread 活動
+            _health = {}
+            try:
+                import urllib.request as _ur
+                _hresp = _ur.urlopen("http://127.0.0.1:5002/health", timeout=3)
+                _health = json.loads(_hresp.read().decode())
+            except Exception:
+                pass
+            _server_up = _health.get("status") == "operational"
+            _uptime = _health.get("uptime_seconds", 0)
+
+            # 法扶 Gmail：server 在線 + log 有 [Gmail] 活動
             log_path = os.path.join(MAGI_ROOT, ".agent", "server.log")
-            tail = ""
+            _log_tail = ""
             if os.path.isfile(log_path):
                 with open(log_path, "rb") as f:
-                    f.seek(0, 2)
-                    sz = f.tell()
-                    # 讀最後 100KB 確保涵蓋到啟動訊息
-                    f.seek(max(0, sz - 102400))
-                    tail = f.read().decode("utf-8", errors="replace")
-            for display_name, thread_name in MONITOR_THREADS:
-                alive = False
-                detail = ""
-                if thread_name == "laf-gmail-monitor":
-                    alive = "[Gmail]" in tail and ("掃描" in tail or "檢查信件" in tail or "✅" in tail or "Gmail 監控已啟動" in tail)
-                    for line in reversed(tail.splitlines()):
-                        if "[Gmail]" in line and '"ts"' in line:
-                            try:
-                                detail = line.split('"ts": "')[1].split('"')[0][11:19]
-                            except Exception:
-                                pass
-                            break
-                elif thread_name == "laf-portal-retry-loop":
-                    alive = "LAF portal retry loop started" in tail or "portal:retry" in tail or "retry loop started" in tail
-                    for line in reversed(tail.splitlines()):
-                        if "retry loop" in line and '"ts"' in line:
-                            try:
-                                detail = line.split('"ts": "')[1].split('"')[0][11:19]
-                            except Exception:
-                                pass
-                            break
-                elif thread_name == "file-review-email":
-                    # 閱卷 email 監控是 cron job（job_file_review_check），不是常駐 thread
-                    # 檢查 cron_jobs.json 裡 file_review_check 是否 enabled
+                    f.seek(0, 2); sz = f.tell(); f.seek(max(0, sz - 30000))
+                    _log_tail = f.read().decode("utf-8", errors="replace")
+
+            # Gmail monitor
+            _gmail_alive = _server_up and ("[Gmail]" in _log_tail)
+            _gmail_detail = ""
+            for _line in reversed(_log_tail.splitlines()):
+                if "[Gmail]" in _line and '"ts"' in _line:
                     try:
-                        cron_path = os.path.join(MAGI_ROOT, "cron_jobs.json")
-                        if os.path.isfile(cron_path):
-                            with open(cron_path, "r") as _cf:
-                                _cjobs = json.load(_cf)
-                            for _cj in _cjobs:
-                                if isinstance(_cj, dict) and "file_review" in str(_cj.get("command", "")).lower():
-                                    alive = _cj.get("enabled", True)
-                                    lr = str(_cj.get("last_run", "")).strip()
-                                    if lr:
-                                        detail = lr[11:19] if len(lr) > 18 else lr
-                                    break
+                        _gmail_detail = _line.split('"ts": "')[1].split('"')[0][11:19]
                     except Exception:
                         pass
-                monitors[display_name] = {"alive": alive, "detail": detail}
+                    break
+            monitors["法扶信箱監控"] = {"alive": _gmail_alive, "detail": _gmail_detail}
+
+            # Portal retry：server 在線就代表 thread 有跑（daemon thread，隨 server 啟動）
+            monitors["法扶附件重試"] = {
+                "alive": _server_up and _uptime > 10,
+                "detail": "運行中" if _server_up else "",
+            }
+
+            # 閱卷 email 已整合進法扶 Gmail monitor cycle，偵測 log 中的閱卷掃描紀錄
+            _review_alive = _server_up and ("閱卷 Email" in _log_tail)
+            _review_detail = ""
+            for _rline in reversed(_log_tail.splitlines()):
+                if "閱卷 Email" in _rline and '"ts"' in _rline:
+                    try:
+                        _review_detail = _rline.split('"ts": "')[1].split('"')[0][11:19]
+                    except Exception:
+                        pass
+                    break
+            # fallback: 法扶 Gmail monitor 在線就代表閱卷也在（整合在同一個 cycle）
+            if not _review_alive and _gmail_alive:
+                _review_alive = True
+                _review_detail = "隨法扶監控"
+            monitors["閱卷信箱監控"] = {"alive": _review_alive, "detail": _review_detail}
         except Exception:
             pass
         cache["monitors"] = monitors
@@ -763,7 +768,7 @@ class MAGIMenuBar(rumps.App):
         for display_name, _ in MONITOR_THREADS:
             info = monitors.get(display_name, {})
             item = self.monitor_items.get(display_name)
-            if not item:
+            if item is None:
                 continue
             if info.get("alive"):
                 detail = info.get("detail", "")

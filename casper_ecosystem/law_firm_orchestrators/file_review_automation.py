@@ -7052,29 +7052,25 @@ class FileReviewManager:
 
         time.sleep(3.0)
 
-        # 驗證上傳結果：檢查附件列表
+        # 驗證上傳結果：只取附件清單中的檔案名稱（避免 dump 整張包含個資的表單）
         try:
             attach_info = self.driver.execute_script("""
-            // 重新載入附件列表
-            if (typeof queryFileList === 'function') {
-                try { queryFileList(); } catch(e) {}
-            }
-            // 取得附件列表文字
-            var tables = document.querySelectorAll('table');
-            var attachText = '';
-            for (var i = 0; i < tables.length; i++) {
-                var t = (tables[i].innerText || '');
-                if (t.indexOf('附件') >= 0 || t.indexOf('檔案') >= 0 || t.indexOf('上傳') >= 0) {
-                    attachText += t.substring(0, 300) + '\\n';
-                }
-            }
-            // 也找 id=attachList 或類似
+            // 只取附件清單元素中的檔名，避免印出整份聲請表單
             var al = document.getElementById('attachList') || document.getElementById('fileList');
-            if (al) attachText += '|LIST:' + (al.innerText || '').substring(0, 200);
-            return attachText.substring(0, 500);
+            if (al) {
+                var items = al.querySelectorAll('li, tr, .file-item');
+                var names = [];
+                for (var i = 0; i < Math.min(items.length, 5); i++) {
+                    var nm = (items[i].innerText || '').replace(/\\s+/g, ' ').trim();
+                    if (nm) names.push(nm.substring(0, 60));
+                }
+                return names.length ? names.join(' | ') : (al.innerText || '').replace(/\\s+/g, ' ').trim().substring(0, 100);
+            }
+            return '';
             """) or ""
+            # DEBUG only — no personal data dumped at INFO level
             if attach_info:
-                self.log(f"    [POST-UPLOAD] 附件區域: {attach_info[:300]}")
+                logging.getLogger(__name__).debug("[POST-UPLOAD] attach list: %s", attach_info[:200])
         except Exception:
             logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 6914, exc_info=True)
 
@@ -8910,18 +8906,42 @@ class FileReviewManager:
                 ]
                 
                 filled_count = 0
+                _js_set_field = """
+                (function(name, val) {
+                    var el = document.querySelector('[name="' + name + '"]');
+                    if (!el) return false;
+                    el.value = val;
+                    el.dispatchEvent(new Event('input', {bubbles:true}));
+                    el.dispatchEvent(new Event('change', {bubbles:true}));
+                    return true;
+                })(arguments[0], arguments[1]);
+                """
                 for field_name, field_value, field_label in form_data:
                     if not field_value:
                         continue
                     try:
-                        el = self.driver.find_element(By.NAME, field_name)
-                        el.clear()
-                        el.send_keys(str(field_value))
+                        ok = self.driver.execute_script(_js_set_field, field_name, str(field_value))
+                        if not ok:
+                            # JS path failed — fall back to send_keys
+                            el = self.driver.find_element(By.NAME, field_name)
+                            el.clear()
+                            el.send_keys(str(field_value))
+                        # Post-fill verification
+                        try:
+                            el2 = self.driver.find_element(By.NAME, field_name)
+                            actual = el2.get_attribute("value") or ""
+                            if actual != str(field_value):
+                                # Value didn't stick — retry with send_keys
+                                el2.clear()
+                                el2.send_keys(str(field_value))
+                                self.log(f"      ↺ {field_label}: JS注入後重填 (was: {actual!r})")
+                        except Exception:
+                            pass
                         filled_count += 1
                         self.log(f"      ✓ {field_label}: {field_value}")
                     except Exception as e:
                         self.log(f"      ❌ {field_label} ({field_name}) 填寫失敗: {e}")
-                
+
                 self.log(f"    ✓ 共填寫 {filled_count}/{len(form_data)} 個欄位")
                 
             except Exception as e:
@@ -9118,7 +9138,36 @@ class FileReviewManager:
                     time.sleep(0.2)
                 except Exception:
                     break
-            
+
+            # ★ 案號按鈕觸發 ASP.NET postback 後，crmyy/crmno 欄位可能被頁面重置為空白
+            # 在繼續之前補回年度與案號，確保截圖與後續送出時欄位有值
+            _refill_pairs = [
+                ("crmyy", year, "年度"),
+                ("crmid", case_type, "字別"),   # BUG-06: 部分法院 postback 也清字別
+                ("crmno", case_number, "案號"),
+            ]
+            _js_refill = """
+            (function(name, val) {
+                var el = document.querySelector('[name="' + name + '"]');
+                if (!el) return false;
+                if ((el.value || '') === val) return true;  // already correct
+                el.value = val;
+                el.dispatchEvent(new Event('input', {bubbles:true}));
+                el.dispatchEvent(new Event('change', {bubbles:true}));
+                return true;
+            })(arguments[0], arguments[1]);
+            """
+            for _fn, _fv, _fl in _refill_pairs:
+                if not _fv:
+                    continue
+                try:
+                    _cur = (self.driver.find_element(By.NAME, _fn).get_attribute("value") or "").strip()
+                    if _cur != str(_fv):
+                        self.driver.execute_script(_js_refill, _fn, str(_fv))
+                        self.log(f"  ↺ postback 後補回 {_fl}: {_fv} (was: {_cur!r})")
+                except Exception as _re:
+                    self.log(f"  ⚠️ postback 補回 {_fl} 失敗: {_re}")
+
             # ========= 步驟 6-7: 選擇聲請方式/範圍/交付 (極速 JS 批次版) =========
             self.log(f"  選擇聲請選項 (JS 批次模式, {'紙本閱卷' if _is_paper else '電子閱卷'})...")
 
@@ -9792,17 +9841,167 @@ class FileReviewManager:
             existing_files = [fp for fp in files if os.path.exists(fp)]
             court_case_no = self._notification_case_no(info)
 
-            # 手動標記已繳費 → 跳過通知（所有路徑統一攔截）
+            # ── 多路徑 dedup：dismissed / proof / DB，任一命中就跳過 ──
             _ck = court_case_no or info.court_case_no or info.laf_case_no or ""
             _party = info.client_name or ""
             _notify_key = f"web_payment:case:{_ck}:{_party}" if _ck else ""
-            if self._is_payment_dismissed(_notify_key, f"web_payment:{_ck}"):
+            _notify_key_no_party = f"web_payment:{_ck}" if _ck else ""
+
+            # 1. dismissed 比對（人名 key + 案號 key）
+            if self._is_payment_dismissed(_notify_key, _notify_key_no_party):
                 self.log(f"  ℹ️ 已標記為已繳費，跳過通知: {_ck} {_party}")
-                return True  # 回傳 True 讓呼叫端視為「已處理」
+                return True
+
+            # 2. payment_proof dedup DB 比對（案號格式：115.原侵重訴.000001）
+            _ck_norm = re.sub(r"[年度字第號\s]+", "", _ck) if _ck else ""
+            if _ck_norm:
+                _proof_m = re.match(r"(\d{2,3})([^\d]+?)(\d+)", _ck_norm)
+                if _proof_m:
+                    _proof_key = f"{_proof_m.group(1)}.{_proof_m.group(2)}.{_proof_m.group(3).zfill(6)}"
+                    try:
+                        from skills.ops.dedup_db import is_done as _is_done
+                        if _is_done("payment_proof", _proof_key):
+                            self.log(f"  ℹ️ 繳費憑證已上傳（dedup DB），跳過通知: {_proof_key}")
+                            return True
+                    except Exception:
+                        pass
+                    # 也查 proof registry JSON
+                    try:
+                        _proof_path = os.path.join(self.download_folder, "payment_proof_registry.json")
+                        if os.path.isfile(_proof_path):
+                            with open(_proof_path, "r", encoding="utf-8") as _pf:
+                                _proof_reg = json.load(_pf)
+                            if _proof_key in _proof_reg:
+                                self.log(f"  ℹ️ 繳費憑證已上傳（JSON），跳過通知: {_proof_key}")
+                                return True
+                    except Exception:
+                        pass
+
+            # 3. dismissed 模糊比對：人名出現在 dismissed keyword 中（不管 notify_key 格式）
+            if _party:
+                for _dk, _dv in self.dismissed_payments.items():
+                    _dkw = _dv.get("keyword", "") if isinstance(_dv, dict) else ""
+                    if _dkw and _dkw == _party:
+                        self.log(f"  ℹ️ 當事人已標記已繳費，跳過通知: {_party}")
+                        return True
+
+            # ── 從 DB 補齊法院名稱和當事人（email 路徑常缺這些）──
+            if (not info.court or info.court == "-") and _ck and self.db_manager:
+                try:
+                    _norm_ck = re.sub(r"[年度字第號\s]+", "", _ck)
+                    _db_row = self.db_manager.fetch_one(
+                        "SELECT court_name, client_name FROM cases WHERE "
+                        "REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(court_case_number,'年度',''),'年',''),'字第',''),'號',''),' ','') LIKE %s "
+                        "LIMIT 1",
+                        (f"%{_norm_ck}%",),
+                        as_dict=True,
+                    )
+                    if _db_row:
+                        if not info.court or info.court == "-":
+                            info.court = str(_db_row.get("court_name") or "").strip() or info.court
+                        if not _party:
+                            _party = str(_db_row.get("client_name") or "").strip()
+                            info.client_name = _party
+                except Exception:
+                    pass
+
+            # ── Auto-writeback: 用案號精確比對 DB，補齊空的法院/股別/案號 ──
+            # 安全規則：
+            #   1. 優先用案號 match（不靠人名猜，避免同名多案寫錯）
+            #   2. 只寫空欄位（不覆蓋已有值）
+            #   3. 不碰 case_stage / case_type / case_category
+            #   4. 案號 match 不到時，才 fallback 用 client_name + 唯一空案號
+            if _ck and self.db_manager:
+                try:
+                    _ck_formal = _ck
+                    # 正規化案號用於模糊比對：去掉「年度字第號」
+                    _ck_norm = re.sub(r"[年度字第號\s]+", "", _ck_formal)
+                    _division = getattr(info, "court_division", "") or ""
+
+                    # 策略 1：案號精確 match（最安全）
+                    _db_row_wb = self.db_manager.fetch_one(
+                        "SELECT id, case_number, client_name, court_case_number, court_name, court_division FROM cases "
+                        "WHERE REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(court_case_number,'年度',''),'年',''),'字第',''),'號',''),' ','') = %s "
+                        "LIMIT 1",
+                        (_ck_norm,), as_dict=True,
+                    )
+
+                    # 策略 2：client_name match + 唯一空案號 + case_type 比對（fallback）
+                    # 注意：閱卷繳費通知只來自法院審判階段（偵查不能閱卷），
+                    #       所以 case_type=刑事 match 審判字別是正確的。
+                    #       但同一人有多筆同類空案號時，用案由交叉驗證。
+                    if not _db_row_wb and _party:
+                        _empty_rows = self.db_manager.fetch_all(
+                            "SELECT id, case_number, client_name, case_type, case_category, case_reason, court_case_number, court_name, court_division FROM cases "
+                            "WHERE client_name = %s AND (court_case_number IS NULL OR court_case_number = '') "
+                            "ORDER BY created_date DESC LIMIT 10",
+                            (_party,), as_dict=True,
+                        ) or []
+                        # 排除偵查案件：court_name 含「地檢署」「檢察署」的不是審判案件，
+                        # 閱卷繳費通知只來自法院審判，不應回寫到偵查案件上
+                        _empty_rows = [
+                            r for r in _empty_rows
+                            if "檢察" not in str(r.get("court_name") or "") and "地檢" not in str(r.get("court_name") or "")
+                        ]
+                        if len(_empty_rows) == 1:
+                            _db_row_wb = _empty_rows[0]
+                        elif len(_empty_rows) > 1:
+                            # 多筆空案號：用字別分類縮小範圍（防止消債案寫到家事案上）
+                            try:
+                                from api.court_case_type_map import case_type_matches_db
+                                _ck_type_code = re.sub(r"\d+", "", _ck_norm)  # 去掉數字留字別
+                                _type_matched = [
+                                    r for r in _empty_rows
+                                    if case_type_matches_db(_ck_type_code, str(r.get("case_type") or ""), str(r.get("case_category") or ""))
+                                ]
+                                if len(_type_matched) == 1:
+                                    _db_row_wb = _type_matched[0]
+                                    self.log(f"  ℹ️ 案號字別分類比對成功: {_ck_type_code} → {_db_row_wb.get('case_type','')} ({_db_row_wb.get('case_number','')})")
+                                elif len(_type_matched) > 1:
+                                    # 同類別多筆：用 email 裡的案由做二次篩選
+                                    _email_reason = getattr(info, "case_reason", "") or ""
+                                    if _email_reason:
+                                        _reason_matched = [
+                                            r for r in _type_matched
+                                            if _email_reason in str(r.get("case_reason") or "") or str(r.get("case_reason") or "") in _email_reason
+                                        ]
+                                        if len(_reason_matched) == 1:
+                                            _db_row_wb = _reason_matched[0]
+                                            self.log(f"  ℹ️ 案由交叉驗證成功: {_email_reason} → {_db_row_wb.get('case_reason','')} ({_db_row_wb.get('case_number','')})")
+                                        else:
+                                            self.log(f"  ⚠️ DB 回寫跳過: {_party} 同類別 {len(_type_matched)} 筆，案由 '{_email_reason}' 比對到 {len(_reason_matched)} 筆")
+                                    else:
+                                        self.log(f"  ⚠️ DB 回寫跳過: {_party} 同類別 {len(_type_matched)} 筆，email 無案由可比對")
+                                else:
+                                    self.log(f"  ⚠️ DB 回寫跳過: {_party} 有 {len(_empty_rows)} 筆空案號案件，字別 {_ck_type_code} 比對到 0 筆")
+                            except ImportError:
+                                self.log(f"  ⚠️ DB 回寫跳過: {_party} 有 {len(_empty_rows)} 筆空案號案件，案號 {_ck_formal} 無法自動對應")
+
+                    if _db_row_wb:
+                        _updates = []
+                        _params = []
+                        if _ck_formal and not _db_row_wb.get("court_case_number"):
+                            _updates.append("court_case_number = %s")
+                            _params.append(_ck_formal)
+                        if info.court and info.court != "-" and not _db_row_wb.get("court_name"):
+                            _updates.append("court_name = %s")
+                            _params.append(info.court)
+                        if _division and not _db_row_wb.get("court_division"):
+                            _updates.append("court_division = %s")
+                            _params.append(_division)
+                        if _updates:
+                            _params.append(_db_row_wb["id"])
+                            self.db_manager.execute_write(
+                                f"UPDATE cases SET {', '.join(_updates)} WHERE id = %s",
+                                tuple(_params),
+                            )
+                            self.log(f"  ✅ DB 自動回寫: {_db_row_wb.get('client_name','')} ({_db_row_wb.get('case_number','')}) → 案號={_ck_formal} 法院={info.court} 股別={_division}")
+                except Exception as _wb_e:
+                    self.log(f"  ⚠️ DB 自動回寫失敗: {_wb_e}")
 
             self.log(f"  [DEBUG] notify_payment_needed: existing_files={existing_files}")
 
-            msg = f"💰 繳費單通知\n{info.client_name} - {court_case_no}\n法院: {info.court or '-'}\n繳費期限: {info.payment_deadline or '-'}"
+            msg = f"💰 繳費單通知\n{_party or info.client_name} - {court_case_no}\n法院: {info.court or '-'}\n繳費期限: {info.payment_deadline or '-'}"
             if info.laf_case_no:
                 msg += f"\n法扶案號: {info.laf_case_no}"
             if info.application_no and info.application_no != info.laf_case_no:
@@ -10213,6 +10412,31 @@ class FileReviewManager:
                          info.laf_case_no = ids["laf_case_no"]
                          info.application_no = ids["application_no"]
                          info.message_id = msg_id
+
+                         # ── 從 email HTML 表格補齊 client_name / court / payment_deadline ──
+                         _html_body = body or ""
+                         _m_court = re.search(r'對象法院</td>\s*<td[^>]*>(.*?)</td>', _html_body)
+                         if _m_court:
+                             info.court = _m_court.group(1).strip()
+                         _m_party = re.search(r'當事人</td>\s*<td[^>]*>(.*?)</td>', _html_body)
+                         if _m_party:
+                             info.client_name = _m_party.group(1).strip()
+                         _m_ck_dot = re.search(r'案號</td>\s*<td[^>]*>(\d{2,3})\.([\w]+)\.(\d+)</td>', _html_body)
+                         if _m_ck_dot and not info.court_case_no:
+                             _yr = _m_ck_dot.group(1)
+                             _cat = _m_ck_dot.group(2)
+                             _seq = _m_ck_dot.group(3).lstrip("0") or "0"
+                             info.court_case_no = f"{_yr}年度{_cat}字第{_seq}號"
+                             court_case_no = info.court_case_no
+                         _m_division = re.search(r'股別</td>\s*<td[^>]*>(.*?)</td>', _html_body)
+                         if _m_division:
+                             info.court_division = _m_division.group(1).strip()
+                         _m_reason = re.search(r'案由</td>\s*<td[^>]*>(.*?)</td>', _html_body)
+                         if _m_reason:
+                             info.case_reason = _m_reason.group(1).strip()
+                         _m_deadline = re.search(r'繳費期限[：:]\s*(\d{2,4}[/\-年]\d{1,2}[/\-月]\d{1,2})', _html_body)
+                         if _m_deadline:
+                             info.payment_deadline = _m_deadline.group(1).strip()
 
                          # ★ 下載附件 (繳費單 PDF)
                          self.log(f"  📥 正在下載繳費通知附件...")

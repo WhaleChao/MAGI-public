@@ -102,6 +102,7 @@ _SHARES: list[tuple[str, str]] = [
 
 # 當 /Volumes/<share> 因 root 權限無法建目錄時的 fallback
 _USER_MOUNT_ROOT = os.path.expanduser("~/.magi_mounts")
+_ENSURE_MOUNT_LOCK = threading.Lock()  # BUG-38: 防止多執行緒同時 mount 同一 share
 
 # ── 掛載邏輯 ─────────────────────────────────────────────────
 
@@ -139,16 +140,25 @@ def _is_correct_host(volume_path: str) -> bool:
 
 
 def _force_unmount_stale(volume_path: str) -> None:
-    """偵測並清理 stale SMB mount（掛載點存在但 SMB session 已斷）。"""
+    """偵測並清理 stale SMB mount（掛載點存在但 SMB session 已斷）。
+    只有 errno.EIO（I/O 錯誤，stale NFS/SMB 特徵）才卸載；
+    PermissionError 等其他 OSError 不卸載，避免誤殺正常掛載。
+    """
+    import errno as _errno
     for candidate in (volume_path, f"{volume_path}-1", f"{volume_path}-2"):
         if not os.path.exists(candidate):
             continue
         try:
             # 用 os.stat 測試可存取性（stale mount 通常會 hang 或 EIO）
             os.stat(candidate)
-        except OSError:
-            logger.info("偵測到 stale mount %s，強制卸載", candidate)
-            _unmount_path(candidate)
+        except OSError as e:
+            if e.errno == _errno.EIO:
+                # EIO = Input/Output Error → 確實是 stale SMB/NFS mount
+                logger.info("偵測到 stale mount %s (EIO)，強制卸載", candidate)
+                _unmount_path(candidate)
+            else:
+                # EACCES/EPERM 等：只是權限問題，不卸載
+                logger.debug("os.stat(%s) 失敗 (errno=%d)，非 stale mount，跳過", candidate, e.errno)
 
 
 def _mount_share(share_name: str, volume_path: str) -> bool:
@@ -308,7 +318,15 @@ def _cleanup_wrong_host_mounts() -> None:
 # ── 公開 API ─────────────────────────────────────────────────
 
 def ensure_nas_mounts() -> dict[str, bool]:
-    """檢查並掛載所有 NAS share，回傳各 share 狀態。"""
+    """檢查並掛載所有 NAS share，回傳各 share 狀態。
+    BUG-38: 使用全域 lock 防止守衛執行緒與啟動路徑同時觸發重複掛載。
+    """
+    with _ENSURE_MOUNT_LOCK:
+        return _ensure_nas_mounts_locked()
+
+
+def _ensure_nas_mounts_locked() -> dict[str, bool]:
+    """實際掛載邏輯（需在 _ENSURE_MOUNT_LOCK 持有期間呼叫）。"""
     results: dict[str, bool] = {}
 
     # 動態解析 NAS IP（LAN → Tailscale fallback）

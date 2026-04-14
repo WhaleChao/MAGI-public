@@ -214,6 +214,7 @@ def process_message_inner(orch, user_id, message, platform="LINE", role="user", 
                 return _cm_result
     except Exception as e:
         logger.error(f"case-management intercept failed: {e}")
+        return {"text": f"⚠️ 案件管理操作失敗，請稍後再試（{type(e).__name__}）"}
 
     # --- 當事人管理 Intercept (Task 2: 新增/查詢當事人) ---
     try:
@@ -226,6 +227,7 @@ def process_message_inner(orch, user_id, message, platform="LINE", role="user", 
                 return _cli_result
     except Exception as e:
         logger.error(f"client-management intercept failed: {e}")
+        return {"text": f"⚠️ 當事人管理操作失敗，請稍後再試（{type(e).__name__}）"}
 
     # --- 記帳 Intercept (Task 3: 記收入/記支出/帳務查詢) ---
     try:
@@ -237,6 +239,7 @@ def process_message_inner(orch, user_id, message, platform="LINE", role="user", 
                 return _acc_result
     except Exception as e:
         logger.error(f"accounting intercept failed: {e}")
+        return {"text": f"⚠️ 記帳操作失敗，請稍後再試（{type(e).__name__}）"}
 
     # --- 報價單 Intercept (Task 4: 開報價單/報價單清單) ---
     try:
@@ -248,6 +251,7 @@ def process_message_inner(orch, user_id, message, platform="LINE", role="user", 
                 return _quot_result
     except Exception as e:
         logger.error(f"quotation intercept failed: {e}")
+        return {"text": f"⚠️ 報價單操作失敗，請稍後再試（{type(e).__name__}）"}
 
     # --- 行事曆事件 Intercept (Task 5: 排庭/排開會) ---
     try:
@@ -259,6 +263,7 @@ def process_message_inner(orch, user_id, message, platform="LINE", role="user", 
                 return _cal_result
     except Exception as e:
         logger.error(f"calendar-event intercept failed: {e}")
+        return {"text": f"⚠️ 行事曆操作失敗，請稍後再試（{type(e).__name__}）"}
 
     # --- 書狀 AI 草擬 Intercept (Task 6: 草擬起訴狀/答辯狀) ---
     try:
@@ -271,6 +276,7 @@ def process_message_inner(orch, user_id, message, platform="LINE", role="user", 
                 return _draft_result
     except Exception as e:
         logger.error(f"ai-draft intercept failed: {e}")
+        return {"text": f"⚠️ 書狀草擬失敗，請稍後再試（{type(e).__name__}）"}
 
     # --- 文件產生 Intercept (委任狀/委託書/委任契約書/收據) ---
     try:

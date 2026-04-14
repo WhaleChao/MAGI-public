@@ -550,26 +550,49 @@ def _pick_db_profiles(cfg: dict, prefer: str = "") -> list:
     o_pass = (os.environ.get("OSC_DB_PASSWORD") or os.environ.get("MAGI_REMOTE_DB_PASSWORD") or "").strip()
     o_name = (os.environ.get("OSC_DB_NAME") or os.environ.get("MAGI_REMOTE_DB_NAME") or "").strip()
     if any([o_host, o_port, o_user, o_pass, o_name]):
-        patched = []
-        for p in profiles:
-            item = dict(p or {})
-            dbc = dict(item.get("config") or {})
+        if profiles:
+            # Patch existing profiles with env-var overrides
+            patched = []
+            for p in profiles:
+                item = dict(p or {})
+                dbc = dict(item.get("config") or {})
+                if o_host:
+                    dbc["host"] = o_host
+                if o_port:
+                    try:
+                        dbc["port"] = int(o_port)
+                    except Exception:
+                        dbc["port"] = o_port
+                if o_user:
+                    dbc["user"] = o_user
+                if o_pass:
+                    dbc["password"] = o_pass
+                if o_name:
+                    dbc["database"] = o_name
+                item["config"] = dbc
+                patched.append(item)
+            profiles = patched
+        else:
+            # config.json has no mariadb_profiles — synthesise one from OSC_DB_* / MAGI_REMOTE_DB_* env vars
+            # This is the common case when MAGI_PREFER_LOCAL_DB=1 but no local profile is defined.
+            synth_cfg: dict = {}
             if o_host:
-                dbc["host"] = o_host
+                synth_cfg["host"] = o_host
             if o_port:
                 try:
-                    dbc["port"] = int(o_port)
+                    synth_cfg["port"] = int(o_port)
                 except Exception:
-                    dbc["port"] = o_port
+                    synth_cfg["port"] = o_port
             if o_user:
-                dbc["user"] = o_user
+                synth_cfg["user"] = o_user
             if o_pass:
-                dbc["password"] = o_pass
+                synth_cfg["password"] = o_pass
             if o_name:
-                dbc["database"] = o_name
-            item["config"] = dbc
-            patched.append(item)
-        profiles = patched
+                synth_cfg["database"] = o_name
+            synth_cfg.setdefault("charset", "utf8mb4")
+            synth_cfg.setdefault("connect_timeout", 8)
+            profiles = [{"profile_name": "env_synth", "config": synth_cfg}]
+            logger.info("DB manager: synthesised profile from OSC_DB_*/MAGI_REMOTE_DB_* env vars (host=%s)", o_host)
     return profiles
 
 
@@ -925,7 +948,7 @@ def _notify_file(file_path: str, caption: str = "", flag: bool = True,
     if not file_path or not os.path.isfile(file_path):
         logger.warning("_notify_file: file not found: %s", file_path)
         return
-    # Use LAFNotifier which now sends to both TG and DC
+    # 1) Telegram via LAFNotifier
     try:
         import sys
         if CODE_DIR not in sys.path:
@@ -935,20 +958,34 @@ def _notify_file(file_path: str, caption: str = "", flag: bool = True,
             caption or os.path.basename(file_path), [file_path],
             topic_key=topic_key, source="file_review_orchestrator",
         )
-        logger.info("File sent via LAFNotifier (TG+DC): %s", os.path.basename(file_path))
-        return
+        logger.info("File sent via LAFNotifier (TG): %s", os.path.basename(file_path))
     except Exception as e:
         logger.warning("LAFNotifier send failed: %s", e)
-    # Fallback: TG-only via red_phone
+        # TG fallback via red_phone
+        try:
+            from skills.ops.red_phone import send_file_admin  # type: ignore
+            result = send_file_admin(file_path, caption=caption, topic_key=topic_key)
+            if result.get("ok"):
+                logger.info("File sent via red_phone (TG fallback): %s", os.path.basename(file_path))
+            else:
+                logger.warning("red_phone send_file_admin returned: %s", result)
+        except Exception as e2:
+            logger.warning("red_phone TG fallback also failed: %s", e2)
+    # 2) Discord — always attempt regardless of TG result
     try:
-        from skills.ops.red_phone import send_file_admin  # type: ignore
-        result = send_file_admin(file_path, caption=caption, topic_key=topic_key)
-        if result.get("ok"):
-            logger.info("File sent via red_phone (TG-only): %s", os.path.basename(file_path))
-            return
-        logger.warning("red_phone send_file_admin returned: %s", result)
-    except Exception as e2:
-        logger.warning("red_phone fallback also failed: %s", e2)
+        from skills.ops.red_phone import send_discord_bot_file  # type: ignore
+        ok = send_discord_bot_file(
+            file_path,
+            caption=caption or os.path.basename(file_path),
+            topic_key=topic_key,
+            source="file_review_orchestrator",
+        )
+        if ok:
+            logger.info("File sent via Discord bot: %s", os.path.basename(file_path))
+        else:
+            logger.warning("send_discord_bot_file returned False for: %s", os.path.basename(file_path))
+    except Exception as e3:
+        logger.warning("Discord file send failed: %s", e3)
 
 
 # ---------------------------------------------------------------------------

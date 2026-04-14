@@ -132,6 +132,11 @@ def test_search_exception_emits_error_post_event(monkeypatch, tools_api_runtime)
 def test_summarize_circuit_breaker_degraded_path_emits_post_event(monkeypatch, tools_api_runtime):
     tools_api, client, events_path = tools_api_runtime
     monkeypatch.setattr(tools_api, "_summarize_cb_allow_upstream", lambda: False)
+    # probe 也要失敗才會走到 degraded 路徑（_run_with_timeout 讓 probe 回失敗）
+    _orig_rwt = tools_api._run_with_timeout
+    def _fail_probe(fn, wait_sec, *args, **kwargs):
+        return False, {"success": False, "text": "", "error": "mocked_probe_fail"}
+    monkeypatch.setattr(tools_api, "_run_with_timeout", _fail_probe)
 
     response = client.post("/summarize", json={"text": "這是一段需要摘要的長文字。" * 5})
 

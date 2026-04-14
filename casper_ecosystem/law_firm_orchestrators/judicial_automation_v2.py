@@ -1347,6 +1347,12 @@ class CourtRecordDownloader:
             for row in results:
                 if isinstance(row, (tuple, list)):
                     row = dict(zip(_field_names, row))
+                elif hasattr(row, "keys"):
+                    # sqlite3.Row / dict-like
+                    row = dict(row)
+                elif not isinstance(row, dict):
+                    self.log(f"  ⚠️ 跳過未知 DB row 型態: {type(row)}")
+                    continue
                 case = CourtCase(
                     case_id=row.get('id', ''),
                     case_number=row.get('case_number', ''),

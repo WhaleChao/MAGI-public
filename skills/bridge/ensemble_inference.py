@@ -513,13 +513,21 @@ def _ensemble_review(
             executor.submit(_review, "phi4", OMLX_PHI4_BASE, _PHI4_REVIEWER_SYSTEM): "phi4",
             executor.submit(_review, "smol", OMLX_SMOL_BASE, _SMOL_REVIEWER_SYSTEM): "smol",
         }
-        for future in concurrent.futures.as_completed(fs, timeout=timeout_sec + 5):
-            try:
-                key, result = future.result()
-                results[key] = result
-            except Exception as e:
-                key = fs[future]
-                results[key] = {"success": False, "error": str(e), "text": ""}
+        try:
+            for future in concurrent.futures.as_completed(fs, timeout=timeout_sec + 5):
+                try:
+                    key, result = future.result()
+                    results[key] = result
+                except Exception as e:
+                    key = fs[future]
+                    results[key] = {"success": False, "error": str(e), "text": ""}
+        except concurrent.futures.TimeoutError:
+            # BUG-40: 審查員全部超時 → 棄權而非讓整個請求 500
+            import logging as _log
+            _log.getLogger(__name__).warning("Phase 2 reviewers timed out (timeout=%ds), proceeding with partial results", timeout_sec)
+            for future, key in fs.items():
+                if key not in results:
+                    results[key] = {"success": False, "error": "reviewer_timeout", "text": ""}
 
     return results
 

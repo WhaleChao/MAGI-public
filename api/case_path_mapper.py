@@ -18,12 +18,33 @@ def _is_dir_accessible(path: str) -> bool:
 
     用 os.stat 而非 os.listdir — SMB over Tailscale 的 listdir 可能要 10-30 秒，
     stat 通常 <0.1 秒。stat 失敗代表掛載已 stale。
+    SMB hang 時 stat 會無限卡住（kernel uninterruptible sleep），
+    所以 /Volumes/ 路徑用 thread + timeout 保護。
     """
-    try:
-        st = os.stat(path)
-        return st.st_mode & 0o40000 != 0  # S_ISDIR
-    except OSError:
+    # 本機路徑（/Users/、SynologyDrive）不需 timeout
+    if path.startswith("/Users/") or not path.startswith("/Volumes/"):
+        try:
+            st = os.stat(path)
+            return st.st_mode & 0o40000 != 0
+        except OSError:
+            return False
+
+    # /Volumes/ SMB 路徑：用 thread timeout 保護，防止 NAS hang 卡住整個 process
+    import threading
+    _result = [False]
+    def _check():
+        try:
+            st = os.stat(path)
+            _result[0] = st.st_mode & 0o40000 != 0
+        except OSError:
+            _result[0] = False
+    t = threading.Thread(target=_check, daemon=True)
+    t.start()
+    t.join(timeout=2)  # 最多等 2 秒
+    if t.is_alive():
+        _logger.debug("_is_dir_accessible timeout (2s): %s — SMB 可能 hang", path)
         return False
+    return _result[0]
 
 
 def _discover_volume(base: str, subdir: str = "") -> str:
@@ -50,15 +71,17 @@ def _discover_volume(base: str, subdir: str = "") -> str:
     return canonical
 
 
+# SynologyDrive 優先（本機 CloudStation 同步，不走 SMB，不會 hang）
+# SMB mount 放後面做 lazy fallback，避免 import 時 stat /Volumes/ 卡住整個 process
 _DEFAULT_ACTIVE_SHARE_ROOTS = [
-    _discover_volume("homes", "lumi63181107"),
     str(_HOME / "Library/CloudStorage/SynologyDrive-homes"),
     str(_HOME / "SynologyDrive/homes"),
     str(_HOME / "SynologyDrive"),
+    _discover_volume("homes", "lumi63181107"),
 ]
 _DEFAULT_CLOSED_SHARE_ROOTS = [
-    _discover_volume("lumi", "lumi"),
     str(_HOME / "Library/CloudStorage/SynologyDrive-homes/lumi"),
+    _discover_volume("lumi", "lumi"),
 ]
 _DEFAULT_ACTIVE_ROOTS = [
     root.rstrip("/") + "/01_案件" for root in _DEFAULT_ACTIVE_SHARE_ROOTS

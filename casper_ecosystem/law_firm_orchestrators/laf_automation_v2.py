@@ -171,6 +171,13 @@ SELENIUM_AVAILABLE = importlib.util.find_spec("selenium") is not None
 if not SELENIUM_AVAILABLE:
     _dep_logger.info("Selenium 未安裝，LAF 自動化功能無法使用")
 
+# Playwright (preferred over Selenium since Chrome 147 macOS ARM regression)
+PLAYWRIGHT_AVAILABLE = importlib.util.find_spec("playwright") is not None
+if PLAYWRIGHT_AVAILABLE:
+    _dep_logger.info("Playwright 可用，將優先作為 LAF 瀏覽器驅動（MAGI_LAF_ENGINE=selenium 可強制用 Selenium）")
+else:
+    _dep_logger.info("Playwright 未安裝，使用 Selenium 作為 LAF 瀏覽器驅動")
+
 # RapidOCR
 RAPIDOCR_AVAILABLE = importlib.util.find_spec("rapidocr_onnxruntime") is not None
 if not RAPIDOCR_AVAILABLE:
@@ -211,6 +218,427 @@ build = None
 
 Image = None
 np = None
+
+
+# ==============================================================================
+# Playwright 相容層 (Chrome 147 macOS ARM regression 後優先使用)
+# ==============================================================================
+
+def _convert_script_for_playwright(script, args):
+    """
+    Convert Selenium execute_script(script, *args) to Playwright evaluate format.
+    Handles the `arguments[N]` convention from Selenium.
+    Returns (fn_str, fn_arg) for page.evaluate(fn_str, fn_arg).
+    """
+    import re as _re
+    if not args:
+        return "() => { %s }" % script, None
+
+    refs_found = sorted(set(int(m) for m in _re.findall(r'arguments\[(\d+)\]', script)))
+    if not refs_found:
+        return "() => { %s }" % script, None
+
+    if len(args) == 1 and refs_found == [0]:
+        fn_body = script.replace("arguments[0]", "el")
+        return "el => { %s }" % fn_body, args[0]
+
+    fn_body = script
+    param_names = ["a%d" % i for i in refs_found]
+    for i, pn in zip(refs_found, param_names):
+        fn_body = fn_body.replace("arguments[%d]" % i, pn)
+    param_list = ", ".join(param_names)
+    return "([%s]) => { %s }" % (param_list, fn_body), list(args)
+
+
+class _PlaywrightSwitchTo(object):
+    """Mimics Selenium driver.switch_to for PlaywrightDriverWrapper."""
+    def __init__(self, wrapper):
+        self._w = wrapper
+
+    def default_content(self):
+        self._w._active_frame = None
+
+    def frame(self, frame_ref):
+        page = self._w._page
+        if isinstance(frame_ref, str):
+            f = page.frame(name=frame_ref)
+            self._w._active_frame = f
+        elif isinstance(frame_ref, int):
+            frames = page.frames
+            if frame_ref < len(frames):
+                self._w._active_frame = frames[frame_ref]
+        elif hasattr(frame_ref, "_el"):
+            # PlaywrightElementWrapper wrapping a <frame>/<iframe> element
+            try:
+                f = frame_ref._el.content_frame()
+                self._w._active_frame = f
+            except Exception:
+                self._w._active_frame = None
+        else:
+            self._w._active_frame = None
+
+    @property
+    def alert(self):
+        dlg = self._w._last_dialog
+        if dlg is None:
+            # Raise a RuntimeError that the caller can catch
+            raise RuntimeError("NoAlertPresentException: no pending dialog")
+        return _PlaywrightAlert(dlg, self._w)
+
+
+class _PlaywrightAlert(object):
+    def __init__(self, dialog, wrapper):
+        self._d = dialog
+        self._w = wrapper
+
+    @property
+    def text(self):
+        return self._d.message
+
+    def accept(self):
+        try:
+            self._d.accept()
+        except Exception:
+            pass
+        self._w._last_dialog = None
+
+    def dismiss(self):
+        try:
+            self._d.dismiss()
+        except Exception:
+            pass
+        self._w._last_dialog = None
+
+
+class PlaywrightElementWrapper(object):
+    """Wraps playwright ElementHandle to behave like a Selenium WebElement."""
+
+    def __init__(self, el, driver_wrapper):
+        self._el = el
+        self._driver = driver_wrapper
+
+    def click(self):
+        try:
+            self._el.scroll_into_view_if_needed()
+            self._el.click(timeout=5000)
+        except Exception:
+            try:
+                self._el.evaluate("el => el.click()")
+            except Exception:
+                pass
+
+    def send_keys(self, text):
+        t = str(text)
+        # --- File input: use set_input_files instead of type ---
+        try:
+            tag = self._el.evaluate("el => el.tagName.toLowerCase()")
+            inp_type = self._el.evaluate("el => (el.getAttribute('type') || '').toLowerCase()")
+            if tag == 'input' and inp_type == 'file':
+                self._el.set_input_files(t)
+                return
+        except Exception:
+            pass
+        # --- Regular input / textarea ---
+        if t == '\n':
+            self._el.press('Enter')
+        elif '\n' in t:
+            parts = t.split('\n')
+            for i, part in enumerate(parts):
+                if part:
+                    self._el.type(part)
+                if i < len(parts) - 1:
+                    self._el.press('Enter')
+        else:
+            self._el.type(t)
+
+    def clear(self):
+        try:
+            self._el.fill('')
+        except Exception:
+            try:
+                self._el.evaluate(
+                    "el => { el.value=''; el.dispatchEvent(new Event('input',{bubbles:true})); }"
+                )
+            except Exception:
+                pass
+
+    @property
+    def text(self):
+        try:
+            return self._el.text_content() or ''
+        except Exception:
+            return ''
+
+    @property
+    def tag_name(self):
+        try:
+            return self._el.evaluate("el => el.tagName.toLowerCase()")
+        except Exception:
+            return ''
+
+    def get_attribute(self, name):
+        try:
+            return self._el.get_attribute(name)
+        except Exception:
+            return None
+
+    def is_displayed(self):
+        try:
+            return self._el.is_visible()
+        except Exception:
+            return False
+
+    def is_enabled(self):
+        try:
+            return not self._el.is_disabled()
+        except Exception:
+            return True
+
+    @property
+    def screenshot_as_png(self):
+        try:
+            return self._el.screenshot()
+        except Exception:
+            return None
+
+    def find_element(self, by, value):
+        """Find a single child element (Selenium API compat)."""
+        try:
+            from selenium.webdriver.common.by import By as _By
+            if by == _By.CSS_SELECTOR:
+                handle = self._el.query_selector(value)
+            elif by == _By.XPATH:
+                handle = self._el.query_selector(f"xpath={value}")
+            elif by == _By.TAG_NAME:
+                handle = self._el.query_selector(value)
+            elif by == _By.ID:
+                handle = self._el.query_selector(f"#{value}")
+            elif by == _By.CLASS_NAME:
+                handle = self._el.query_selector(f".{value}")
+            elif by == _By.NAME:
+                handle = self._el.query_selector(f"[name='{value}']")
+            else:
+                handle = self._el.query_selector(value)
+            if handle is None:
+                from selenium.common.exceptions import NoSuchElementException
+                raise NoSuchElementException(f"No element found: {by}={value}")
+            return PlaywrightElementWrapper(handle, self._driver)
+        except Exception as _e:
+            from selenium.common.exceptions import NoSuchElementException
+            raise NoSuchElementException(f"find_element failed: {_e}") from _e
+
+    def find_elements(self, by, value):
+        """Find all child elements matching selector (Selenium API compat)."""
+        try:
+            from selenium.webdriver.common.by import By as _By
+            if by == _By.CSS_SELECTOR:
+                handles = self._el.query_selector_all(value)
+            elif by == _By.XPATH:
+                handles = self._el.query_selector_all(f"xpath={value}")
+            elif by == _By.TAG_NAME:
+                handles = self._el.query_selector_all(value)
+            elif by == _By.ID:
+                handles = self._el.query_selector_all(f"#{value}")
+            elif by == _By.CLASS_NAME:
+                handles = self._el.query_selector_all(f".{value}")
+            elif by == _By.NAME:
+                handles = self._el.query_selector_all(f"[name='{value}']")
+            else:
+                handles = self._el.query_selector_all(value)
+            return [PlaywrightElementWrapper(h, self._driver) for h in (handles or [])]
+        except Exception:
+            return []
+
+
+class PlaywrightDriverWrapper(object):
+    """
+    Thin Selenium-compatible wrapper around playwright.sync_api.Page.
+
+    Lets laf_automation_v2.py use Playwright as a drop-in for Selenium
+    without rewriting the core portal automation logic.
+    Chrome 147 on macOS ARM causes ChromeDriver session crashes on
+    processLogin redirect; Playwright's built-in Chromium is unaffected.
+    """
+
+    def __init__(self, page, context, pw_instance, download_dir=None):
+        self._page = page
+        self._context = context
+        self._pw = pw_instance
+        self._active_frame = None    # None = main page
+        self._last_dialog = None
+        self._download_dir = download_dir
+        self.switch_to = _PlaywrightSwitchTo(self)
+
+        # Dialog listener: capture for switch_to.alert; auto-dismiss after 2 s
+        def _on_dialog(dialog):
+            self._last_dialog = dialog
+
+            def _auto_dismiss():
+                import time as _t
+                _t.sleep(2)
+                if self._last_dialog is dialog:
+                    try:
+                        dialog.dismiss()
+                    except Exception:
+                        pass
+                    self._last_dialog = None
+
+            import threading as _threading
+            _threading.Thread(target=_auto_dismiss, daemon=True).start()
+
+        page.on("dialog", _on_dialog)
+
+    # ---- internal helpers ----
+
+    def _active(self):
+        return self._active_frame if self._active_frame else self._page
+
+    @staticmethod
+    def _to_selector(by, value):
+        by_s = str(by).lower()
+        if 'css' in by_s:
+            return value
+        if by_s == 'id':
+            return '#%s' % value
+        if 'name' in by_s:
+            return '[name="%s"]' % value
+        if 'class' in by_s:
+            return '.%s' % value
+        if 'tag' in by_s:
+            return value
+        if 'xpath' in by_s:
+            return 'xpath=%s' % value
+        if 'link' in by_s:
+            return 'a:has-text("%s")' % value
+        return value
+
+    # ---- WebDriver API ----
+
+    def get(self, url):
+        self._active_frame = None
+        try:
+            # 使用 'load' 等待整頁（含 JS 動態元素如驗證碼圖片）載入完成
+            self._page.goto(url, wait_until='load', timeout=30000)
+        except Exception:
+            try:
+                # fallback：至少等 domcontentloaded
+                self._page.goto(url, wait_until='domcontentloaded', timeout=30000)
+            except Exception:
+                # Portal pages sometimes have unresolved subresources - proceed anyway
+                pass
+
+    @property
+    def current_url(self):
+        return self._page.url
+
+    @property
+    def page_source(self):
+        try:
+            return self._active().content()
+        except Exception:
+            try:
+                return self._page.content()
+            except Exception:
+                return ''
+
+    def execute_script(self, script, *args):
+        """Selenium-compatible JS execution. Handles arguments[N] convention."""
+        processed = [
+            a._el if isinstance(a, PlaywrightElementWrapper) else a
+            for a in args
+        ]
+        fn_str, fn_arg = _convert_script_for_playwright(script, processed)
+        active = self._active()
+        try:
+            if fn_arg is None:
+                return active.evaluate(fn_str)
+            else:
+                return active.evaluate(fn_str, fn_arg)
+        except Exception as e:
+            _dep_logger.debug("PW execute_script err: %s | script=%s", e, script[:80])
+            return None
+
+    def execute_async_script(self, script, *args):
+        """
+        Selenium execute_async_script → Playwright evaluate (Promise).
+        Selenium pattern: last argument is callback; script calls arguments[N] when done.
+        Playwright pattern: wrap in Promise, resolve = callback.
+        """
+        processed = [
+            a._el if isinstance(a, PlaywrightElementWrapper) else a
+            for a in args
+        ]
+        # Wrap callback-style script in a Promise.
+        # allArgs = [...userArgs, resolve] so arguments[arguments.length-1] == resolve.
+        wrapper = (
+            "(argArray) => new Promise(function(resolve, reject) {"
+            " var allArgs = Array.from(argArray || []);"
+            " allArgs.push(resolve);"
+            " (function() { " + script + " }).apply(null, allArgs);"
+            "})"
+        )
+        active = self._active()
+        try:
+            return active.evaluate(wrapper, processed)
+        except Exception as e:
+            _dep_logger.debug("PW execute_async_script err: %s", e)
+            return None
+
+    def find_element(self, by, value):
+        selector = self._to_selector(by, value)
+        active = self._active()
+        try:
+            el = active.query_selector(selector)
+        except Exception:
+            el = None
+        if el is None:
+            exc = NoSuchElementException or Exception
+            raise exc("No element: %s" % selector)
+        return PlaywrightElementWrapper(el, self)
+
+    def find_elements(self, by, value):
+        selector = self._to_selector(by, value)
+        active = self._active()
+        try:
+            els = active.query_selector_all(selector)
+            return [PlaywrightElementWrapper(el, self) for el in els]
+        except Exception:
+            return []
+
+    def save_screenshot(self, path):
+        try:
+            self._page.screenshot(path=str(path), full_page=False)
+            return True
+        except Exception:
+            return False
+
+    def get_screenshot_as_png(self):
+        try:
+            return self._page.screenshot()
+        except Exception:
+            return b''
+
+    def close(self):
+        try:
+            self._page.close()
+        except Exception:
+            pass
+        try:
+            self._context.close()
+        except Exception:
+            pass
+
+    def quit(self):
+        self.close()
+        try:
+            self._pw.stop()
+        except Exception:
+            pass
+
+
+# ==============================================================================
+# End Playwright 相容層
+# ==============================================================================
 
 
 def _synthetic_ddddocr_package_name(package_dir: str) -> str:
@@ -899,18 +1327,55 @@ class CaptchaSolver:
                 return ""
 
             # =========================================================
-            # 優先使用 ddddocr
+            # 優先使用 ddddocr（搭配增強預處理）
             # =========================================================
             if self.dddd_ocr and img_bytes:
+                # 先試原始圖片
+                ddddocr_results = []
                 try:
-                    res = self.dddd_ocr.classification(img_bytes)
-                    # 只保留英數字
-                    res = re.sub(r'[^A-Za-z0-9]', '', res)
-                    self.log(f"  🔍 [ddddocr] 識別結果: {res}")
-                    if len(res) >= 4:
-                        return res[:4]
+                    res0 = self.dddd_ocr.classification(img_bytes)
+                    res0 = re.sub(r'[^A-Za-z0-9]', '', res0)
+                    self.log(f"  🔍 [ddddocr] 原始結果: {res0}")
+                    if len(res0) >= 4:
+                        ddddocr_results.append(res0[:4])
                 except Exception as e:
-                    self.log(f"  ⚠️ ddddocr 識別失敗: {e}")
+                    self.log(f"  ⚠️ ddddocr 原始識別失敗: {e}")
+
+                # 再試預處理版本（放大 3x + 二值化，去除噪點線條）
+                try:
+                    import io as _io
+                    _img_pre = img.convert('RGB') if img else None
+                    if _img_pre:
+                        _gray = np.array(_img_pre.convert('L'))
+                        # 二值化：深色字（灰階<140）→黑，背景→白
+                        _bin = np.where(_gray < 140, 0, 255).astype(np.uint8)
+                        _pil_bin = Image.fromarray(_bin).convert('L')
+                        # 放大 3x
+                        _pil_bin = _pil_bin.resize(
+                            (_pil_bin.width * 3, _pil_bin.height * 3),
+                            Image.Resampling.LANCZOS
+                        )
+                        _buf = _io.BytesIO()
+                        _pil_bin.save(_buf, format='PNG')
+                        _pre_bytes = _buf.getvalue()
+                        res_pre = self.dddd_ocr.classification(_pre_bytes)
+                        res_pre = re.sub(r'[^A-Za-z0-9]', '', res_pre)
+                        self.log(f"  🔍 [ddddocr] 預處理結果: {res_pre}")
+                        if len(res_pre) >= 4:
+                            ddddocr_results.append(res_pre[:4])
+                except Exception as e:
+                    self.log(f"  ⚠️ ddddocr 預處理識別失敗: {e}")
+
+                # 選出最常見結果（如果一致就直接用；否則用預處理版優先）
+                if len(ddddocr_results) >= 2 and ddddocr_results[0] == ddddocr_results[1]:
+                    self.log(f"  ✅ [ddddocr] 兩次一致: {ddddocr_results[0]}")
+                    return ddddocr_results[0]
+                elif len(ddddocr_results) >= 2:
+                    # 不一致，優先取預處理結果
+                    self.log(f"  ⚠️ [ddddocr] 兩次不一致 ({ddddocr_results[0]} vs {ddddocr_results[1]})，取預處理版")
+                    return ddddocr_results[1]
+                elif len(ddddocr_results) == 1:
+                    return ddddocr_results[0]
             
             # =========================================================
             # RapidOCR Fallback (如果 ddddocr 無效或沒安裝)
@@ -1190,17 +1655,109 @@ class LAFWebAutomation:
         except Exception as e:
             self.log(f"  ⚠️ 輸出 DOM 摘要失敗 (不影響流程): {e}")
     
+    def _create_playwright_driver(self):
+        """
+        建立 Playwright Chromium 驅動器。
+        Chrome 147 macOS ARM 造成 ChromeDriver session crash (Connection refused)，
+        Playwright 內建 Chromium 完全穩定，優先使用。
+        """
+        # Ensure Selenium helper objects (By, WebDriverWait, EC, NoSuchElementException)
+        # are available as module globals — the login() and other methods use them
+        # even when Playwright is the browser driver.
+        global webdriver, By, WebDriverWait, EC, Options, TimeoutException, NoSuchElementException, ElementClickInterceptedException
+        if By is None and SELENIUM_AVAILABLE:
+            try:
+                from selenium import webdriver as _wd
+                from selenium.webdriver.common.by import By as _By
+                from selenium.webdriver.support.ui import WebDriverWait as _WDW
+                from selenium.webdriver.support import expected_conditions as _EC
+                from selenium.webdriver.chrome.options import Options as _Opt
+                from selenium.common.exceptions import (
+                    TimeoutException as _TE,
+                    NoSuchElementException as _NSE,
+                    ElementClickInterceptedException as _ECIE,
+                )
+                webdriver = _wd
+                By = _By
+                WebDriverWait = _WDW
+                EC = _EC
+                Options = _Opt
+                TimeoutException = _TE
+                NoSuchElementException = _NSE
+                ElementClickInterceptedException = _ECIE
+            except Exception as _imp_err:
+                _dep_logger.debug("Playwright: Selenium import for By/EC/WDW failed: %s", _imp_err)
+
+        from playwright.sync_api import sync_playwright
+        pw = sync_playwright().start()
+        try:
+            launch_args = [
+                '--no-sandbox',
+                '--disable-dev-shm-usage',
+                '--disable-blink-features=AutomationControlled',
+            ]
+            browser = pw.chromium.launch(
+                headless=self.headless,
+                args=launch_args,
+            )
+            dl_path = str(getattr(self, 'download_folder', '/tmp'))
+            context = browser.new_context(
+                accept_downloads=True,
+                viewport={"width": 1920, "height": 1080},
+                ignore_https_errors=True,   # LAF portal 使用舊版 SSL cert
+                user_agent=(
+                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/131.0.0.0 Safari/537.36"
+                ),
+            )
+            page = context.new_page()
+            # Route downloads to the configured folder via CDP
+            try:
+                client = context.new_cdp_session(page)
+                client.send("Browser.setDownloadBehavior", {
+                    "behavior": "allow",
+                    "downloadPath": dl_path,
+                    "eventsEnabled": True,
+                })
+            except Exception as _cdp_err:
+                self.log(f"  ⚠️ Playwright CDP download path 設定失敗（可能不影響功能）: {_cdp_err}")
+            self.log("✅ Playwright Chromium 初始化成功（Chrome 147 regression 修復路徑）")
+            return PlaywrightDriverWrapper(page, context, pw, download_dir=dl_path)
+        except Exception:
+            try:
+                pw.stop()
+            except Exception:
+                pass
+            raise
+
     def _create_driver(self):
-        """建立 WebDriver (自動偵測 Chrome 或 Edge)"""
+        """
+        建立 WebDriver。
+        優先嘗試 Playwright（預設），Selenium 作為 fallback。
+        設定 MAGI_LAF_ENGINE=selenium 可強制用 Selenium。
+        """
         if not self._engine_logged:
             self.log(format_legal_web_engine_log(self.web_engine_profile))
             self._engine_logged = True
+
+        use_playwright = (
+            PLAYWRIGHT_AVAILABLE
+            and os.environ.get("MAGI_LAF_ENGINE", "playwright").strip().lower() != "selenium"
+        )
+
+        if use_playwright:
+            try:
+                return self._create_playwright_driver()
+            except Exception as _pw_err:
+                self.log(f"  ⚠️ Playwright 初始化失敗，回退到 Selenium: {_pw_err}")
+
         if not SELENIUM_AVAILABLE:
-            raise RuntimeError("Selenium 未安裝")
-        
+            raise RuntimeError("Selenium 未安裝，且 Playwright 不可用或已停用")
+
         # 偵測可用的瀏覽器
         browser_type, browser_path = self._detect_browser()
-        
+
         if browser_type == 'edge':
             return self._create_edge_driver(browser_path)
         else:
@@ -1271,7 +1828,8 @@ class LAFWebAutomation:
                 return None
 
         chrome_options = Options()
-        chrome_options.page_load_strategy = 'eager'  # Chrome 146+ renderer timeout 修正
+        # Chrome 147: eager + headless=new 可能導致 session 不穩定，改用 normal
+        chrome_options.page_load_strategy = 'normal'
 
         if self.headless:
             chrome_options.add_argument('--headless=new')
@@ -1298,11 +1856,14 @@ class LAFWebAutomation:
         chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
         chrome_options.add_experimental_option("useAutomationExtension", False)
         
-        # 基本參數
+        # 基本參數（Chrome 147+ session 穩定性修正）
         chrome_options.add_argument('--disable-gpu')
         chrome_options.add_argument('--no-sandbox')
         chrome_options.add_argument('--disable-dev-shm-usage')
         chrome_options.add_argument('--window-size=1920,1080')
+        chrome_options.add_argument('--disable-popup-blocking')
+        chrome_options.add_argument('--remote-allow-origins=*')
+        chrome_options.add_argument('--disable-features=RendererCodeIntegrity,IsolateOrigins,site-per-process')
         
         # 反偵測參數
         chrome_options.add_argument('--disable-blink-features=AutomationControlled')
@@ -1316,11 +1877,16 @@ class LAFWebAutomation:
             chrome_options.binary_location = binary_path
         
         try:
-            # Check availability of webdriver_manager locally inside function
+            # Chrome 147 headless session 不穩定（ChromeDriver 147 regression）
+            # 強制用 ChromeDriver 146 避免 session crash
+            _FORCE_CD_VERSION = os.environ.get("MAGI_CHROMEDRIVER_VERSION", "146.0.7680.80").strip()
             if importlib.util.find_spec("webdriver_manager") is not None:
                 from webdriver_manager.chrome import ChromeDriverManager
                 from selenium.webdriver.chrome.service import Service
-                service = Service(ChromeDriverManager().install())
+                try:
+                    service = Service(ChromeDriverManager(driver_version=_FORCE_CD_VERSION).install())
+                except Exception:
+                    service = Service(ChromeDriverManager().install())
                 return webdriver.Chrome(service=service, options=chrome_options)
             else:
                  return webdriver.Chrome(options=chrome_options)
@@ -1404,11 +1970,100 @@ class LAFWebAutomation:
             return webdriver.Edge(options=edge_options)
     
 
+    def _get_captcha_image_playwright(self) -> "np.ndarray":
+        """Playwright 專用驗證碼圖片取得：等待元素出現 → 截圖 or 直接 HTTP 下載"""
+        global np
+        if np is None:
+            import numpy as np
+        import io
+        from PIL import Image
+
+        pw: PlaywrightDriverWrapper = self.driver  # type: ignore
+
+        # 策略一：等待 img#kaptchaImage 出現（JS 動態注入，最多等 10s）
+        captcha_selectors = [
+            "img#kaptchaImage",
+            "img[src*='captcha-image']",
+            "img[src*='captcha']",
+        ]
+        for sel in captcha_selectors:
+            try:
+                # 先搜尋所有 frame（含主 page + iframe）
+                found_el = None
+                for frame in pw._page.frames:
+                    try:
+                        frame.wait_for_selector(sel, timeout=8000, state='attached')
+                        found_el = frame.query_selector(sel)
+                        if found_el:
+                            self.log(f"  🔍 Playwright 找到驗證碼: {sel} (frame={frame.name or 'main'})")
+                            break
+                    except Exception:
+                        continue
+                if found_el:
+                    img_bytes = found_el.screenshot()
+                    if img_bytes:
+                        img = Image.open(io.BytesIO(img_bytes))
+                        if self._debug_capture_enabled():
+                            debug_path = self.download_folder / 'debug_captcha.png'
+                            img.save(debug_path)
+                            self.log(f"  📷 驗證碼截圖: {debug_path}")
+                        return np.array(img)
+            except Exception as e:
+                self.log(f"  ⚠️ Playwright captcha selector {sel} 失敗: {e}")
+                continue
+
+        # 策略二：直接 HTTP 下載驗證碼圖片（從目前 portal 的 session 取得）
+        self.log("  🔄 嘗試 Playwright HTTP 直接下載驗證碼...")
+        try:
+            captcha_url = "https://lawyer.laf.org.tw/lafcsp/captcha-image"
+            resp = pw._page.request.get(captcha_url)
+            if resp.ok:
+                img_bytes = resp.body()
+                img = Image.open(io.BytesIO(img_bytes))
+                if self._debug_capture_enabled():
+                    debug_path = self.download_folder / 'debug_captcha_http.png'
+                    img.save(debug_path)
+                    self.log(f"  📷 驗證碼 HTTP 下載: {debug_path}")
+                self.log("  ✅ Playwright HTTP 驗證碼下載成功")
+                return np.array(img)
+        except Exception as e:
+            self.log(f"  ⚠️ Playwright HTTP 驗證碼下載失敗: {e}")
+
+        # 策略三：JavaScript canvas 截取
+        self.log("  🔄 嘗試 JavaScript canvas 截取驗證碼...")
+        try:
+            img_b64 = pw._page.evaluate("""() => {
+                const img = document.querySelector('img#kaptchaImage') ||
+                            document.querySelector('img[src*="captcha-image"]') ||
+                            document.querySelector('img[src*="captcha"]');
+                if (!img) return null;
+                const canvas = document.createElement('canvas');
+                canvas.width = img.naturalWidth || img.width || 80;
+                canvas.height = img.naturalHeight || img.height || 35;
+                const ctx = canvas.getContext('2d');
+                ctx.drawImage(img, 0, 0);
+                return canvas.toDataURL('image/png').split(',')[1];
+            }""")
+            if img_b64:
+                import base64
+                img_bytes = base64.b64decode(img_b64)
+                img = Image.open(io.BytesIO(img_bytes))
+                self.log("  ✅ JS canvas 截取驗證碼成功")
+                return np.array(img)
+        except Exception as e:
+            self.log(f"  ⚠️ JS canvas 截取失敗: {e}")
+
+        raise Exception("Playwright 三種策略均無法取得驗證碼圖片")
+
     def _get_captcha_image(self) -> "np.ndarray":
         """從網頁取得驗證碼圖片"""
         global np
         if np is None:
             import numpy as np
+
+        # Playwright 使用專用方法（支援 frame 搜尋 + HTTP 直接下載）
+        if isinstance(self.driver, PlaywrightDriverWrapper):
+            return self._get_captcha_image_playwright()
 
         try:
             selectors = [
@@ -1937,6 +2592,92 @@ class LAFWebAutomation:
                     self.log(f"  📷 登入頁面截圖: debug_login_page_{retry_count + 1}")
                 self._dump_login_dom_summary()
 
+                # ── Playwright 原生登入路徑（更可靠，直接使用 page.fill/click）──
+                if isinstance(self.driver, PlaywrightDriverWrapper):
+                    self.log("  🎭 使用 Playwright 原生登入路徑...")
+                    _pw_page = self.driver._page
+                    try:
+                        # 等待驗證碼圖片出現
+                        _pw_page.wait_for_selector('img#kaptchaImage', timeout=10000, state='visible')
+                        # 取驗證碼
+                        self.log("  🤖 以 OCR 自動辨識驗證碼...")
+                        captcha_img_arr = self._get_captcha_image()
+                        captcha_text = self.captcha_solver.solve(captcha_img_arr) if captcha_img_arr is not None else ''
+                        if not captcha_text:
+                            self.log("  ⚠️ OCR 失敗，重試登入")
+                            retry_count += 1
+                            continue
+                        self.log(f"✅ 驗證碼識別成功 (第 1 次): {captcha_text}")
+                        self.log('  🔢 已取得驗證碼（不顯示於日誌）')
+                        # 填入帳號、密碼、驗證碼（使用 Playwright 原生 fill，保證填入）
+                        _pw_page.fill("input[name='user_id']", self.username)
+                        _pw_page.fill("input[name='user_pass']", self.password)
+                        _pw_page.fill("input[name='capText']", captcha_text)
+                        # 驗證填入值
+                        _u = _pw_page.input_value("input[name='user_id']")
+                        _c = _pw_page.input_value("input[name='capText']")
+                        self.log(f"  ✅ 表單填入確認: user_id={'已填' if _u else '空'}, captcha={'已填' if _c else '空'}")
+                        if not _u:
+                            self.log("  ❌ username 填入失敗，重試")
+                            retry_count += 1
+                            continue
+                        # 提交（先試 checkForm()，失敗則直接 click loginLink）
+                        try:
+                            _pw_page.evaluate("() => { if(typeof checkForm==='function') checkForm(); }")
+                        except Exception:
+                            pass
+                        time.sleep(0.5)
+                        # 如果還在登入頁，改 click loginLink
+                        if 'toMainPage' not in (_pw_page.url or '') and 'processLogin' not in (_pw_page.url or ''):
+                            try:
+                                _pw_page.click('#loginLink, a#loginLink', timeout=3000)
+                            except Exception:
+                                pass
+                        # 等待登入結果（最多 25 秒）
+                        _login_ok_pw = False
+                        for _wi in range(25):
+                            time.sleep(1)
+                            _url = _pw_page.url or ''
+                            # 成功條件：toMainPage 或離開 processLogin（含 CSRF nonce 的 processLogin 是成功跳轉）
+                            if 'toMainPage' in _url:
+                                _login_ok_pw = True
+                                break
+                            # processLogin 完成後會跳到 toMainPage 或帶 CSRF_NONCE → 再等一秒讓它 redirect
+                            if 'processLogin' in _url and 'CSRF_NONCE' in _url:
+                                # 表示登入正在處理中，繼續等待
+                                continue
+                            # 主頁內容確認
+                            try:
+                                _src = _pw_page.content()
+                                if any(m in _src for m in ["自動登出", "案件狀態區", "待處理案件", "追蹤案件", "最新公告"]):
+                                    _login_ok_pw = True
+                                    break
+                            except Exception:
+                                pass
+                        # 若 loop 結束後仍在 processLogin，再做一次內容確認（portal 重定向有時超過 25s）
+                        if not _login_ok_pw:
+                            try:
+                                _url = _pw_page.url or ''
+                                if 'processLogin' in _url and 'CSRF_NONCE' in _url:
+                                    _src = _pw_page.content()
+                                    if any(m in _src for m in ["自動登出", "案件狀態區", "待處理案件", "追蹤案件", "最新公告", "toMainPage"]):
+                                        _login_ok_pw = True
+                            except Exception:
+                                pass
+                        self.log(f"  🔗 當前 URL: {_pw_page.url}")
+                        if _login_ok_pw:
+                            self.log('✅ LAF 登入成功！（Playwright 原生路徑）')
+                            _eventlog("laf:portal:login", ok=True, payload={"method": "playwright_native"}, tags={"base_url": self.base_url})
+                            self._dismiss_post_login_popups()
+                            return True
+                        else:
+                            self.log(f"❌ 登入失敗，可能是驗證碼錯誤 (第 {retry_count + 1} 次)")
+                            retry_count += 1
+                            continue
+                    except Exception as _pw_login_err:
+                        self.log(f"  ⚠️ Playwright 原生登入路徑失敗: {_pw_login_err}，fallback 到 Selenium 相容路徑")
+                        # fall through to old path
+
                 wait = WebDriverWait(self.driver, 30)
 
                 def _pick_interactable(css: str):
@@ -1955,6 +2696,29 @@ class LAFWebAutomation:
 
                 def _fill_login_input(el, value: str):
                     v = str(value or "")
+                    # Playwright 原生 fill()：最可靠，直接用
+                    if isinstance(el, PlaywrightElementWrapper):
+                        try:
+                            el._el.fill(v)
+                            # 觸發 input/change event 讓 JS 框架知道值已改
+                            el._el.evaluate(
+                                "el => { el.dispatchEvent(new Event('input',{bubbles:true})); "
+                                "el.dispatchEvent(new Event('change',{bubbles:true})); }"
+                            )
+                            return
+                        except Exception as _pw_fill_err:
+                            logging.getLogger(__name__).debug("PW fill err: %s", _pw_fill_err)
+                            # fallback to type()
+                            try:
+                                el._el.clear()
+                            except Exception:
+                                pass
+                            try:
+                                el._el.type(v)
+                                return
+                            except Exception:
+                                pass
+                    # Selenium 路徑
                     try:
                         self.driver.execute_script(
                             """
@@ -2123,10 +2887,23 @@ class LAFWebAutomation:
                     captcha_input.send_keys(captcha_text)
 
                 try:
-                    login_btn = self.driver.find_element(By.CSS_SELECTOR, '#loginLink, a#loginLink')
-                    login_btn.click()
+                    # Chrome 147+: 直接呼叫 checkForm() 比 click loginLink 更穩定
+                    # （法扶 portal 的登入按鈕是 <a onclick="checkForm();">，
+                    #   Chrome 147 headless 下 click 可能不正確觸發 onclick）
+                    self.driver.execute_script("checkForm();")
                 except Exception:
-                    password_input.send_keys('\n')
+                    try:
+                        login_btn = self.driver.find_element(By.CSS_SELECTOR, '#loginLink, a#loginLink')
+                        login_btn.click()
+                    except Exception:
+                        try:
+                            # Playwright fallback: click loginLink via native Playwright
+                            if isinstance(self.driver, PlaywrightDriverWrapper):
+                                self.driver._page.click('#loginLink, a#loginLink')
+                            else:
+                                password_input.send_keys('\n')
+                        except Exception:
+                            password_input.send_keys('\n')
 
                 # 等待 URL 離開 processLogin（最多 12 秒）
                 _login_ok = False
@@ -3210,7 +3987,7 @@ return (() => {
                     last = {"ok": False, "reason": "waiting", "rows": rows, "sig": sig, "alert": alert_msg}
 
                     # Hard error alerts — return immediately
-                    if any(k in alert_msg for k in ["請選擇文件類型", "請選擇要上傳檔案", "檔案上傳失敗", "超過上傳檔案大小限制"]):
+                    if any(k in alert_msg for k in ["請選擇文件類型", "請選擇要上傳檔案", "請選擇要上傳之檔案", "檔案上傳失敗", "超過上傳檔案大小限制"]):
                         return {"ok": False, "reason": "alert_error", "rows": rows, "sig": sig, "alert": alert_msg}
 
                     # Success signals — but ONLY if upload is no longer in progress
@@ -6090,8 +6867,17 @@ class LAFGmailMonitor:
         try:
             # 確保目錄存在
             os.makedirs(os.path.dirname(file_path) or '.', exist_ok=True)
+            # BUG-11: 裁剪到最新 3000 筆，防止長期無限增長
+            ids_list = list(ids_to_save)
+            if len(ids_list) > 5000:
+                ids_list = ids_list[-3000:]
+                if suffix:
+                    self._general_processed_ids = set(ids_list)
+                else:
+                    self._processed_ids = set(ids_list)
+                self.log(f"  ℹ️ 已處理信件記錄超過 5000，裁剪至 3000 筆")
             with open(file_path, 'w', encoding='utf-8') as f:
-                json.dump(list(ids_to_save), f)
+                json.dump(ids_list, f)
         except Exception as e:
             self.log(f"  ⚠️ 儲存已處理信件記錄失敗: {e}")
     
