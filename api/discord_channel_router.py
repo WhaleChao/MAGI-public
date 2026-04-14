@@ -118,7 +118,12 @@ def _infer_sub_topic(message: str, topic_key: str, source: str = "") -> str:
         if any(k in s for k in ["巡檢", "報告", "待辦", "彙報", "案件總數"]):
             return "laf_general"
         if any(k in s for k in ["重試", "retry", "exhausted", "達上限"]):
-            return "laf_closing"
+            # 依原因區分：開辦文件失敗 → laf_go_live，結案文件失敗 → laf_closing，其他 → laf_general
+            if any(k in s for k in ["opening_docs", "missing_opening", "開辦文件", "portal_not_listed"]):
+                return "laf_go_live"
+            if any(k in s for k in ["closing_docs", "missing_closing", "結案文件"]):
+                return "laf_closing"
+            return "laf_general"
         return "laf_general"
 
     if canonical == "transcript":

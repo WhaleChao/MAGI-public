@@ -847,11 +847,17 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                 # 已開辦 / 法扶已結案的案件不需要再補抓開辦文件（開辦流程早已完成）
                 if _laf_status_raw and _laf_status_raw not in ("未開辦", ""):
                     continue
-                # 建案超過 90 天的案件，portal 文件很可能已過期或不再提供
+                # 建案未滿 24 小時的新案，portal 可能尚未備妥文件，跳過 backfill
+                # 讓正常的 go-live 流程（Gmail monitor → handle_go_live）在 portal 就緒後再下載
                 if _created_date_raw:
                     try:
                         _cd = _created_date_raw if isinstance(_created_date_raw, datetime) else datetime.strptime(str(_created_date_raw)[:19], "%Y-%m-%d %H:%M:%S")
-                        if (datetime.now() - _cd).days > 90:
+                        _age_hours = (datetime.now() - _cd).total_seconds() / 3600
+                        if _age_hours < 24:
+                            logger.debug("Skip backfill for new case %s (age=%.1fh < 24h)", laf_case_no, _age_hours)
+                            continue
+                        # 建案超過 90 天的案件，portal 文件很可能已過期或不再提供
+                        if _age_hours > 90 * 24:
                             continue
                     except (ValueError, TypeError):
                         pass
@@ -1150,6 +1156,12 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         case_type = getattr(case_info, 'case_type', '')
         case_reason = getattr(case_info, 'case_reason', '')
         laf_number = getattr(case_info, 'laf_case_number', '')
+
+        # 消費者債務清理案件 — 案由一律正規化為「更生」（程序切換時再手動改）
+        # 資料來源（email/DB/手動）不同可能帶入「消費者債務清理程序」等原始文字，必須在此攔截
+        if case_type == '消費者債務清理' or '消費者債務清理' in case_reason:
+            if '清算' not in case_reason:
+                case_reason = '更生'
 
         # Dedup: skip if same laf_number already processed in this session
         if laf_number and laf_number in self._go_live_dedup:
@@ -4328,6 +4340,46 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         _disc_total = (int(counts.get("meeting_count", 0) or 0)
                        + int(counts.get("contact_count", 0) or 0)
                        + int(counts.get("inq_count", 0) or 0))
+        # ── 零值欄位自動補查（不再因 review_count=0 就擋住流程） ──
+        # 閱卷次數：從閱卷資料夾日期子目錄數量補
+        # 排除只有繳費單的子目錄（繳費單不是閱卷）
+        if int(counts.get("review_count", 0) or 0) <= 0 and case_folder:
+            _review_count_from_folder = 0
+            _review_dir_used = ""
+            for _review_dir_name in ("06_閱卷資料", "04_閱卷資料", "03_閱卷資料"):
+                _review_dir = os.path.join(case_folder, _review_dir_name)
+                if os.path.isdir(_review_dir):
+                    try:
+                        for _sub in os.listdir(_review_dir):
+                            _sub_path = os.path.join(_review_dir, _sub)
+                            if not os.path.isdir(_sub_path) or _sub.startswith("."):
+                                continue
+                            # 檢查子目錄裡是否有非繳費單的檔案（卷宗 PDF、OCR 等）
+                            _has_real_files = False
+                            try:
+                                for _fn in os.listdir(_sub_path):
+                                    _fn_lower = _fn.lower()
+                                    if _fn_lower.startswith("."):
+                                        continue
+                                    # 繳費單判定：檔名含「繳費」
+                                    if "繳費" in _fn:
+                                        continue
+                                    # 有任何非繳費單的檔案 → 算真正閱卷
+                                    _has_real_files = True
+                                    break
+                            except OSError:
+                                pass
+                            if _has_real_files:
+                                _review_count_from_folder += 1
+                    except OSError:
+                        pass
+                    if _review_count_from_folder > 0:
+                        _review_dir_used = _review_dir_name
+                        break
+            if _review_count_from_folder > 0:
+                counts["review_count"] = _review_count_from_folder
+                logger.info("  📂 閱卷次數從資料夾補齊: %d (from %s, 排除純繳費單目錄)", _review_count_from_folder, _review_dir_used)
+
         low_fields = []
         # 偵查案件的 disc_times=0 屬合理情形，不卡住流程，自動填理由即可
         if _disc_total <= 0 and not _is_inv_case:
@@ -4338,15 +4390,13 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
             low_fields.append("court_count")
         if int(counts.get("document_count", 0) or 0) <= 0 and not _is_inv_case:
             low_fields.append("document_count")
+
+        # 零值不再擋住流程：自動填寫理由，並在特別說明提醒律師
         if low_fields and (not reason):
-            return {
-                "ok": False,
-                "error": "need_reason_for_low_counts",
-                "action": act,
-                "identity": identity,
-                "counts": counts,
-                "low_fields": low_fields,
-            }
+            _label_map = {"disc_times": "研討案情", "review_count": "閱卷", "court_count": "開庭", "document_count": "書狀"}
+            _zero_labels = [_label_map.get(k, k) for k in low_fields]
+            reason = "以下項目次數為零，請律師確認：" + "、".join(_zero_labels) + "。"
+            logger.info("  ⚠️ 零值欄位自動填寫理由: %s", reason)
         zero_reasons = {}
         if reason:
             for key in low_fields:
@@ -5831,6 +5881,11 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         case_reason = getattr(case_info, 'case_reason', '')
         laf_number = getattr(case_info, 'laf_case_number', '')
         case_stage = getattr(case_info, 'case_stage', '')
+
+        # 消費者債務清理案件 — 案由正規化（確保即使 case_info 來自非 email 路徑也正確）
+        if case_type == '消費者債務清理' or '消費者債務清理' in case_reason:
+            if '清算' not in case_reason:
+                case_reason = '更生'
 
         case_number = str(case_number or "").strip() or self._generate_case_number()
         if not case_number:
