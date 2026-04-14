@@ -975,17 +975,19 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                         )
                         continue
 
-                    # NAS 預檢：若 NAS 資料夾裡已有開辦通知 + 委任狀，直接標 done
-                    # 不需要再上法扶官網，去重即可
+                    # NAS 預檢：依觸發類型判斷 NAS 是否已有對應檔案，有則標 done 不上網
+                    # origin_reason 記錄原始觸發（go_live、closing、backfill 等）
+                    # 不同觸發 → 不同必要檔案，只有「剛好抓到的那種」算滿足
+                    _origin = str(updated.get("origin_reason") or updated.get("reason") or "")
                     if local_case_folder and os.path.isdir(local_case_folder):
                         try:
-                            _docs_check = self._scan_case_folder_docs(local_case_folder)
-                            _has_notice = len(_docs_check.get("opening_notice_files") or []) > 0
-                            _has_poa = len(_docs_check.get("poa_files") or []) > 0
-                            if _has_notice and _has_poa:
+                            _satisfied, _sat_reason = self._nas_satisfies_trigger(
+                                _origin, local_case_folder
+                            )
+                            if _satisfied:
                                 logger.info(
-                                    "[LAF-RETRY] %s NAS 已有開辦通知+委任狀，跳過 portal，標記 done",
-                                    laf_case_no,
+                                    "[LAF-RETRY] %s NAS 已有對應檔案（%s），跳過 portal，標記 done",
+                                    laf_case_no, _sat_reason,
                                 )
                                 updated["status"] = "done"
                                 updated["last_error"] = ""
@@ -998,7 +1000,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                                     "laf_case_number": laf_case_no,
                                     "downloaded_count": 0,
                                     "status": "done",
-                                    "reason": "nas_already_has_docs",
+                                    "reason": _sat_reason,
                                 })
                                 continue
                         except Exception:
@@ -3487,6 +3489,67 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
             out["pink_receipt_files"].append(full_path)
         if "回執" in fn or "收件回執" in fn:
             out.setdefault("receipt_files", []).append(full_path)
+
+    def _scan_closing_docs(self, case_folder: str) -> List[str]:
+        """掃描結案相關文件（結案通知書、酬金明細等）。"""
+        _CLOSING_KW = ("結案通知書", "酬金明細", "服務費用", "法律扶助費用", "終結通知", "結案通知")
+        _SUBDIRS = ["", "01_法扶資料", "02_開辦資料", "08_結案資料", "結案"]
+        allowed = {".pdf", ".jpg", ".jpeg", ".png", ".tif", ".tiff"}
+        results: List[str] = []
+        root = str(case_folder or "").strip()
+        if not root or not os.path.isdir(root):
+            return results
+        for subdir in _SUBDIRS:
+            scan_path = os.path.join(root, subdir) if subdir else root
+            if not os.path.isdir(scan_path):
+                continue
+            try:
+                for fn in os.listdir(scan_path):
+                    if Path(fn).suffix.lower() in allowed:
+                        if any(k in fn for k in _CLOSING_KW):
+                            results.append(os.path.join(scan_path, fn))
+            except OSError:
+                continue
+        return results
+
+    def _nas_satisfies_trigger(self, origin_reason: str, case_folder: str):
+        """
+        依 portal retry 觸發原因，判斷 NAS 是否已有對應檔案。
+        回傳 (satisfied: bool, reason_str: str)。
+
+        觸發類型對應規則：
+          - go_live / opening / backfill → 需要開辦通知書 OR 委任狀（任一即可）
+          - closing / 結案 / 酬金 / fee → 需要結案通知書或酬金明細
+          - archive_failed / portal_check_failed → 不預檢（強制 portal 重試）
+          - 未知 → 不預檢
+        """
+        t = str(origin_reason or "").lower()
+        folder = str(case_folder or "").strip()
+        if not folder or not os.path.isdir(folder):
+            return False, ""
+
+        # 開辦類：有開辦通知書 OR 委任狀之一即滿足
+        if any(k in t for k in ("go_live", "opening", "backfill", "portal_not_listed")):
+            docs = self._scan_case_folder_docs(folder)
+            if len(docs.get("opening_notice_files") or []) > 0:
+                return True, "nas_has_opening_notice"
+            if len(docs.get("poa_files") or []) > 0:
+                return True, "nas_has_poa"
+            return False, ""
+
+        # 結案類：有結案通知書或酬金明細
+        if any(k in t for k in ("closing", "結案", "酬金", "fee", "laf_closing")):
+            closing = self._scan_closing_docs(folder)
+            if closing:
+                return True, "nas_has_closing_docs"
+            return False, ""
+
+        # archive_failed / portal_check_failed → 強制重試，不預檢
+        if any(k in t for k in ("archive_failed", "portal_check_failed")):
+            return False, ""
+
+        # 未知觸發類型 → 保守，不預檢
+        return False, ""
 
     @staticmethod
     def _find_first_existing(paths: List[str]) -> str:
