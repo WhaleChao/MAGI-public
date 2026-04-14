@@ -558,10 +558,9 @@ class LawyerPortalSSO:
                 else:
                     error_msg = self._get_error_message()
                     self.log(f"❌ 登入失敗: {error_msg}")
-                    
-                    # 驗證碼錯誤，重試
-                    if "驗證碼" in error_msg:
-                        continue
+                    # 不論是驗證碼錯誤、頁面無跳轉或其他原因，都重試下一輪
+                    # 歷史上 error_msg 有時為空字串（頁面靜默刷新），導致不 continue
+                    continue
                     
             except Exception as e:
                 self.log(f"⚠️ 登入異常: {e}")
@@ -743,12 +742,12 @@ class LawyerPortalSSO:
             local_text = re.sub(r"[^0-9]", "", self.captcha_solver.solve_from_element(self.driver, captcha_img) or "")[:6]
             self.log(f"  OCR 嘗試第 {retry + 1} 次，local_len={len(local_text)}")
 
-            melchior_text = ""
-            if len(local_text) < 6:
-                # 本地 OCR 不足 6 碼才呼叫 Melchior 備援，避免 oMLX 超時導致 Chrome session 過期
-                melchior_text = re.sub(r"[^0-9]", "", self._solve_captcha_with_melchior(captcha_img, expected_len=6) or "")[:6]
-                if melchior_text:
-                    self.log(f"  OCR 嘗試第 {retry + 1} 次，melchior_len={len(melchior_text)}")
+            # 無論 local 是否 >= 6，都呼叫 Melchior 做交叉驗證
+            # 歷史上 local_len=6 但填入後仍連續登入失敗，根因是本地 OCR 誤判字元
+            # Melchior timeout=12s，Chrome session 30s 超時，尚有餘裕
+            melchior_text = re.sub(r"[^0-9]", "", self._solve_captcha_with_melchior(captcha_img, expected_len=6) or "")[:6]
+            if melchior_text:
+                self.log(f"  OCR 嘗試第 {retry + 1} 次，melchior_len={len(melchior_text)}")
 
             # 雙引擎都拿到 6 碼時，必須一致才採用，降低誤判率
             if len(local_text) >= 6 and len(melchior_text) >= 6:
@@ -756,7 +755,9 @@ class LawyerPortalSSO:
                     self.log("  ✅ 雙引擎驗證一致")
                     return local_text
                 self.log("  ⚠️ 雙引擎結果不一致，刷新驗證碼重試")
-            elif len(local_text) >= 6:
+            elif len(local_text) >= 6 and not melchior_text:
+                # Melchior 無回應（超時或未啟用），退回信任 local OCR
+                self.log("  ⚠️ Melchior 無回應，退回信任 local OCR")
                 return local_text
             elif len(melchior_text) >= 6:
                 self.log("  ✅ Melchior 備援辨識成功")

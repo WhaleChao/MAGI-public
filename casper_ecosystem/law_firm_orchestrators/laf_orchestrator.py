@@ -59,7 +59,11 @@ from api.product_runtime import get_product_profile, resolve_laf_portal_targets
 CODE_DIR = get_orch_dir()
 SKILLS_DIR = MAGI_DIR / "skills"
 # Max retry attempts for portal downloads before marking as exhausted
-_PORTAL_RETRY_MAX_TRIES = int(os.environ.get("MAGI_LAF_PORTAL_MAX_RETRIES", "30") or "30")
+# 168 次 × 1 小時 = 7 天（足夠等 portal 新案就緒）
+_PORTAL_RETRY_MAX_TRIES = int(os.environ.get("MAGI_LAF_PORTAL_MAX_RETRIES", "168") or "168")
+# Portal retry loop 間隔（獨立於 Gmail check interval，預設 3600 秒 = 1 小時）
+# 避免和 Gmail 5 分鐘輪詢共用同一個 interval 導致 2.5 小時內打爆上限
+_PORTAL_RETRY_LOOP_INTERVAL = int(os.environ.get("MAGI_LAF_PORTAL_RETRY_INTERVAL", "3600") or "3600")
 CONDITION_MANUAL_DONE_PATH = CODE_DIR / "_laf_condition_manual_done.json"
 CONFIG_PATH = get_config_path("config.json")
 
@@ -366,10 +370,12 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         monitor.start_monitor(interval_seconds=interval)
 
         # Portal retries run after monitor is already active
+        # 注意：portal retry loop 使用獨立的 _PORTAL_RETRY_LOOP_INTERVAL（預設 3600s = 1 小時）
+        # 而不是 Gmail check interval（300s = 5 分鐘），避免頻繁重試快速打爆 30 次上限
         try:
             self._seed_pending_portal_retries_from_case_inventory(limit=80)
             self._retry_pending_portal_downloads(max_items=6)
-            self._ensure_pending_portal_retry_loop(interval_seconds=interval)
+            self._ensure_pending_portal_retry_loop(interval_seconds=_PORTAL_RETRY_LOOP_INTERVAL)
         except Exception as e:
             logger.warning("Portal retry setup failed (non-fatal): %s", e)
 
