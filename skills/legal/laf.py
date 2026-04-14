@@ -2699,6 +2699,22 @@ class LAFGmailMonitor:
         except Exception as _bare_e:
             _log.debug("laf skipped: %s", _bare_e)
     
+    def _check_filereview_emails(self):
+        """在法扶 Gmail monitor 的 poll cycle 內順便掃閱卷信件。
+        使用動態 import 避免 circular，失敗不影響法扶 monitor。"""
+        _log = _logging.getLogger(__name__)
+        try:
+            import sys as _sys
+            _magi_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+            _skill_path = os.path.join(_magi_root, "skills", "file-review-orchestrator")
+            if _skill_path not in _sys.path:
+                _sys.path.insert(0, _skill_path)
+            from action import cmd_check_emails as _fr_check
+            result = _fr_check(notify=True, notify_empty=False)
+            _log.info("閱卷 Email 掃描完成: success=%s", result.get("success") if isinstance(result, dict) else "?")
+        except Exception as e:
+            _log.warning("閱卷 Email 掃描失敗: %s", e)
+
     def start_monitor(self, interval_seconds: int = 300, check_immediately: bool = True, general_rules: List[Dict] = None):
         """啟動背景監控"""
         if self._running:
@@ -2756,7 +2772,7 @@ class LAFGmailMonitor:
 
     def _monitor_loop(self, interval: int, check_immediately: bool, general_rules: List[Dict] = None):
         """監控迴圈（含 token 自動重新整理與重新認證）"""
-        _log = logging.getLogger(__name__)
+        _log = _logging.getLogger(__name__)
         try:
             if not check_immediately:
                 time.sleep(interval)
@@ -2783,6 +2799,12 @@ class LAFGmailMonitor:
                     # 2. 檢查一般信件
                     if general_rules:
                         self.check_general_emails(general_rules)
+
+                    # 3. 順便檢查閱卷信件（共用同一個 Gmail poll cycle，不另開 thread）
+                    try:
+                        self._check_filereview_emails()
+                    except Exception as _fre:
+                        _log.warning("閱卷 email 檢查失敗（非致命）: %s", _fre)
 
                     _consecutive_errors = 0
                     time.sleep(interval)
