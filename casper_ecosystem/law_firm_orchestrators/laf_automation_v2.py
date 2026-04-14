@@ -164,23 +164,24 @@ PDFTOTEXT_BIN = os.environ.get("MAGI_PDFTOTEXT_BIN", "/opt/homebrew/bin/pdftotex
 # ==============================================================================
 # 依賴檢查 (Lazy Load Setup)
 # ==============================================================================
+_dep_logger = logging.getLogger(__name__)
 
 # Selenium
 SELENIUM_AVAILABLE = importlib.util.find_spec("selenium") is not None
 if not SELENIUM_AVAILABLE:
-    print("⚠️ Selenium 未安裝，LAF 自動化功能無法使用")
+    _dep_logger.info("Selenium 未安裝，LAF 自動化功能無法使用")
 
 # RapidOCR
 RAPIDOCR_AVAILABLE = importlib.util.find_spec("rapidocr_onnxruntime") is not None
 if not RAPIDOCR_AVAILABLE:
-    print("⚠️ RapidOCR 未安裝，驗證碼自動識別功能無法使用")
+    _dep_logger.debug("RapidOCR 未安裝，驗證碼自動識別功能無法使用")
 
 # ddddocr (Primary)
 DDDDOCR_AVAILABLE = importlib.util.find_spec("ddddocr") is not None
 if DDDDOCR_AVAILABLE:
-    print("✅ [Import] ddddocr 模組可用")
+    _dep_logger.debug("[Import] ddddocr 模組可用")
 else:
-    print("⚠️ [Import] ddddocr 模組未安裝")
+    _dep_logger.debug("[Import] ddddocr 模組未安裝")
 
 # Google Gmail API
 GMAIL_AVAILABLE = importlib.util.find_spec("googleapiclient") is not None and \
@@ -1931,9 +1932,9 @@ class LAFWebAutomation:
                 time.sleep(2)
 
                 if self._debug_capture_enabled():
-                    debug_screenshot = self.download_folder / f"debug_login_page_{retry_count + 1}.png"
-                    self.driver.save_screenshot(str(debug_screenshot))
-                    self.log(f"  📷 登入頁面截圖: {debug_screenshot}")
+                    from api.debug_capture import save_debug_screenshot
+                    save_debug_screenshot(self.driver, f"debug_login_page_{retry_count + 1}", context="法扶登入頁")
+                    self.log(f"  📷 登入頁面截圖: debug_login_page_{retry_count + 1}")
                 self._dump_login_dom_summary()
 
                 wait = WebDriverWait(self.driver, 30)
@@ -2197,6 +2198,7 @@ class LAFWebAutomation:
                 try:
                     if self.driver.find_elements(By.CSS_SELECTOR, "#loginLink"):
                         self.log(f"❌ 登入失敗，可能是驗證碼錯誤 (第 {retry_count + 1} 次)")
+                        self.close()  # 清理 driver 避免洩漏
                         retry_count += 1
                         continue
                 except Exception:
@@ -2204,6 +2206,7 @@ class LAFWebAutomation:
 
                 if 'lafcsp' in current_url and 'toMainPage' not in current_url:
                     self.log(f"❌ 登入失敗，可能是驗證碼錯誤 (第 {retry_count + 1} 次)")
+                    self.close()  # 清理 driver 避免洩漏
                     retry_count += 1
                     continue
 
@@ -2321,7 +2324,8 @@ class LAFWebAutomation:
                 self.log(f"  ⚠️ 找不到下載按鈕")
                 # 保存截圖供除錯
                 if self._debug_capture_enabled():
-                    self.driver.save_screenshot(str(self.download_folder / f"debug_no_download_btn_{case_number}.png"))
+                    from api.debug_capture import save_debug_screenshot
+                    save_debug_screenshot(self.driver, f"debug_no_download_btn_{case_number}", context="法扶找不到下載按鈕")
                 return downloaded
             
             # 點擊下載
@@ -3630,10 +3634,9 @@ return null;
                 # Debug dump
                 if self._debug_capture_enabled():
                     try:
-                        ts = int(time.time())
-                        p = self.download_folder / f"debug_closing_list_{applyno}_{ts}.png"
-                        self.driver.save_screenshot(str(p))
-                        self.log(f"  📷 已保存截圖: {p}")
+                        from api.debug_capture import save_debug_screenshot
+                        save_debug_screenshot(self.driver, f"debug_closing_list_{applyno}", context="法扶找不到回報按鈕")
+                        self.log(f"  📷 已保存截圖: debug_closing_list_{applyno}")
                     except Exception:
                         logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 3250, exc_info=True)
                 return False
@@ -9212,21 +9215,30 @@ class LAFAutomationManager:
             return
             
         try:
+            # 新路徑：統一清理 .runtime/debug_screenshots/
+            try:
+                from api.debug_capture import cleanup_old as _debug_cleanup_old
+                _runtime_deleted = _debug_cleanup_old(48)
+                if _runtime_deleted > 0:
+                    self.log(f"  ✅ 已清理 .runtime/debug_screenshots/ 中 {_runtime_deleted} 個舊 debug 檔")
+            except Exception:
+                pass
+
             download_folder = self.web_automation.download_folder
             if not download_folder or not os.path.exists(download_folder):
                 return
-            
-            # 要刪除的 debug 檔案模式
+
+            # 舊路徑相容清理（captcha 截圖仍寫到 tempdir）
             debug_patterns = [
                 "debug_captcha*.png",
                 "debug_login_page*.png",
             ]
-            
+
             import glob
             for pattern in debug_patterns:
                 for file_path in glob.glob(str(download_folder / pattern)):
                     _safe_remove(file_path, log=self.log)
-                        
+
         except Exception as e:
             self.log(f"  ⚠️ 清理 debug 截圖時發生錯誤: {e}")
 

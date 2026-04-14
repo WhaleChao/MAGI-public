@@ -34,7 +34,7 @@ def test_transcribe_auto_uses_fast_cli_before_balthasar(monkeypatch, tmp_path):
     monkeypatch.setattr(
         tri_sage_collab.balthasar_bridge,
         "_transcribe_with_whisper_cli",
-        lambda path: calls.__setitem__("cli", calls["cli"] + 1) or {"success": True, "text": "逐字稿", "provider": "openai_whisper_cli"},
+        lambda path, model=None: calls.__setitem__("cli", calls["cli"] + 1) or {"success": True, "text": "逐字稿", "provider": "openai_whisper_cli", "model": model or "tiny"},
     )
     monkeypatch.setattr(
         tri_sage_collab.balthasar_bridge,

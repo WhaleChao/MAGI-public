@@ -20,14 +20,13 @@ import shutil
 import threading
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Optional, Dict, List, Any
+from typing import Optional, Dict, List, Any, Tuple
 from dataclasses import dataclass, field
 import pickle
 import base64
 import email
 import html
 from email.mime.text import MIMEText
-import time
 
 import importlib.util
 import urllib.parse
@@ -199,7 +198,7 @@ class CaptchaSolver:
                 img = Image.open(io.BytesIO(img_data))
                 img_array = np.array(img)
                 
-                ocr_result, _ = self.ocr(img_array)
+                ocr_result = self.ocr(img_array)[0]
                 
                 if ocr_result:
                     text = ''.join([item[1] for item in ocr_result])
@@ -291,8 +290,8 @@ class LawyerPortalSSO:
         
         # Lazy Load Selenium
         global webdriver, Options, By, WebDriverWait, EC, ActionChains
-        global TimeoutException, NoSuchElementException, Keys
-        
+        global TimeoutException, NoSuchElementException, StaleElementReferenceException, Keys
+
         if webdriver is None:
             from selenium import webdriver
             from selenium.webdriver.common.by import By
@@ -301,7 +300,7 @@ class LawyerPortalSSO:
             from selenium.webdriver.support import expected_conditions as EC
             from selenium.webdriver.chrome.options import Options
             from selenium.webdriver.common.action_chains import ActionChains
-            from selenium.common.exceptions import TimeoutException, NoSuchElementException
+            from selenium.common.exceptions import TimeoutException, NoSuchElementException, StaleElementReferenceException
             
         options = Options()
         
@@ -684,7 +683,10 @@ class LawyerPortalSSO:
                     if safe_remove:
                         safe_remove(tmp_path, reason="tmp_captcha_snapshot", allow_delete=True)
                     else:
-                        pass
+                        try:
+                            os.unlink(tmp_path)
+                        except Exception:
+                            pass
             except Exception:
                 logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 679, exc_info=True)
     
@@ -1330,6 +1332,12 @@ class FileReviewManager:
 
     def _save_processed_emails(self):
         """儲存已處理的 Email ID 記錄"""
+        # Cap unbounded growth: keep most recent 3000 when exceeding 5000
+        _MAX_IDS = 5000
+        _TRIM_TO = 3000
+        if len(self.processed_emails) > _MAX_IDS:
+            _all = list(self.processed_emails)
+            self.processed_emails = set(_all[-_TRIM_TO:])
         try:
             with open(self.processed_emails_file, 'w', encoding='utf-8') as f:
                 json.dump(list(self.processed_emails), f)
@@ -2486,14 +2494,15 @@ class FileReviewManager:
             start_date: 開始日期 (格式: YYYY/MM/DD)，預設為 7 天前
             end_date: 結束日期 (格式: YYYY/MM/DD)，預設為今天
         """
-        if not self.gmail_service and not self._init_gmail(allow_interactive=True):
+        _interactive = sys.stdin.isatty() if hasattr(sys, 'stdin') and sys.stdin else False
+        if not self.gmail_service and not self._init_gmail(allow_interactive=_interactive):
             return []
-        
+
         try:
             # 使用傳入的日期或預設 7 天
             if not start_date:
                 start_date = (datetime.now() - timedelta(days=7)).strftime("%Y/%m/%d")
-            
+
             # 搜尋繳費單通知（只搜尋含繳費單的郵件，排除法扶來源避免與法扶通知重疊）
             query = f'subject:(含繳費單) -from:@laf.org.tw -from:laf.server after:{start_date}'
             if end_date:
@@ -2585,16 +2594,17 @@ class FileReviewManager:
             start_date: 開始日期 (格式: YYYY/MM/DD)，預設為 7 天前
             end_date: 結束日期 (格式: YYYY/MM/DD)，預設為今天
         """
-        if not self.gmail_service and not self._init_gmail(allow_interactive=True):
+        _interactive = sys.stdin.isatty() if hasattr(sys, 'stdin') and sys.stdin else False
+        if not self.gmail_service and not self._init_gmail(allow_interactive=_interactive):
             return []
-        
+
         try:
             # 使用傳入的日期或預設 7 天
             if not start_date:
                 start_date = (datetime.now() - timedelta(days=7)).strftime("%Y/%m/%d")
-            
+
             # 搜尋交付完成通知（排除法扶來源避免與法扶通知重疊）
-            query = f'subject:(法院 完成 線上 交付 核閱 通知) -from:@laf.org.tw -from:laf.server after:{start_date}'
+            query = f'subject:(法院 OR 完成 OR 線上交付 OR 核閱通知) -from:@laf.org.tw -from:laf.server after:{start_date}'
             if end_date:
                 query += f' before:{end_date}'
             self.log(f"  🔍 [DEBUG] 執行搜尋 query: {query}")
@@ -2641,7 +2651,15 @@ class FileReviewManager:
                         continue
 
                     notices.append(info)
-                    
+
+                    # 發送通知（與 check_payment_emails 對齊）
+                    try:
+                        self.notify_ready_to_download(info)
+                    except Exception as _notify_e:
+                        logging.getLogger(__name__).warning(
+                            "check_ready_emails: 已處理但通知發送失敗 — %s (case=%s)", _notify_e, info.case_number
+                        )
+
                     # (選擇性) 標記為已讀
                     try:
                         self.gmail_service.users().messages().modify(
@@ -2650,7 +2668,7 @@ class FileReviewManager:
                         ).execute()
                     except Exception:
                         logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 2577, exc_info=True)
-                    
+
                     self.processed_emails.add(msg_id)
                     self._save_processed_emails() # 立即儲存
                 else:
@@ -4716,10 +4734,9 @@ class FileReviewManager:
                 self.log("  ℹ️ 目前無可下載資料")
                 # Debug: 截圖和 HTML 以便分析
                 try:
-                    ts = int(datetime.now().timestamp())
-                    self.driver.save_screenshot(f"debug_no_download_{ts}.png")
-                    with open(f"debug_no_download_{ts}.html", "w", encoding="utf-8") as f:
-                        f.write(self.driver.page_source)
+                    from api.debug_capture import save_debug_screenshot, save_debug_html
+                    save_debug_screenshot(self.driver, "debug_no_download", context="閱卷無下載資料")
+                    save_debug_html(self.driver, "debug_no_download", context="閱卷無下載資料")
                 except Exception:
                     logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 4575, exc_info=True)
                 
@@ -5168,8 +5185,8 @@ class FileReviewManager:
                             
                             # DEBUG: 截圖點擊前狀態
                             if open_try == 0:
-                                ts = int(datetime.now().timestamp())
-                                self.driver.save_screenshot(f"debug_click_before_{ts}.png")
+                                from api.debug_capture import save_debug_screenshot
+                                save_debug_screenshot(self.driver, "debug_click_before", context="閱卷點擊前")
                             
                             # 2. 嘗試不同點擊方式 - 優先使用真實 MouseEvent
                             
@@ -5602,10 +5619,9 @@ class FileReviewManager:
                 
                 # Debug
                 try:
-                    from datetime import datetime
-                    ts = int(datetime.now().timestamp())
-                    self.driver.save_screenshot(f"debug_no_dialog_{ts}.png")
-                    self.log(f"  已儲存截圖: debug_no_dialog_{ts}.png")
+                    from api.debug_capture import save_debug_screenshot
+                    save_debug_screenshot(self.driver, "debug_no_dialog", context="閱卷無對話框")
+                    self.log(f"  已儲存截圖: debug_no_dialog")
                     
                     # 檢查是否有任何 dialog 相關元素
                     dialogs = self.driver.find_elements(By.CSS_SELECTOR, ".ui-dialog, [role='dialog']")
@@ -8728,8 +8744,9 @@ class FileReviewManager:
                 self.log("  ❌ 無法定位表單 Frame")
                 try:
                      ts = int(datetime.now().timestamp())
-                     self.driver.save_screenshot(f"frame_fail_{ts}.png")
-                     with open(f"frame_fail_{ts}.html", 'w', encoding='utf-8') as f:
+                     _fail_dir = getattr(self, 'download_folder', None) or os.getcwd()
+                     self.driver.save_screenshot(os.path.join(_fail_dir, f"frame_fail_{ts}.png"))
+                     with open(os.path.join(_fail_dir, f"frame_fail_{ts}.html"), 'w', encoding='utf-8') as f:
                          f.write(self.driver.page_source)
                      self.log(f"  📸 已保存失敗現場: frame_fail_{ts}.png/.html")
                 except Exception:
@@ -8740,15 +8757,13 @@ class FileReviewManager:
 
             # 保存截圖供調試
             try:
-                from datetime import datetime
-                ts = int(datetime.now().timestamp())
-                self.driver.save_screenshot(f"apply_form_{ts}.png")
-                self.log(f"  📸 已保存表單截圖: apply_form_{ts}.png")
-                
+                from api.debug_capture import save_debug_screenshot, save_debug_html
+                save_debug_screenshot(self.driver, "apply_form", context="閱卷聲請表單")
+                self.log(f"  📸 已保存表單截圖: apply_form")
+
                 # ★★★ DEBUG: 保存 mainFrame 內的 HTML 並總結所有表單欄位 ★★★
-                with open(f"apply_form_inside_{ts}.html", 'w', encoding='utf-8') as f:
-                    f.write(self.driver.page_source)
-                self.log(f"  📄 [DEBUG] 已保存 mainFrame 內 HTML: apply_form_inside_{ts}.html")
+                save_debug_html(self.driver, "apply_form_inside", context="閱卷聲請表單HTML")
+                self.log(f"  📄 [DEBUG] 已保存 mainFrame 內 HTML: apply_form_inside")
                 
                 # 列出所有 select 和 input 元素
                 inputs = self.driver.find_elements(By.TAG_NAME, "input")
@@ -9729,19 +9744,33 @@ class FileReviewManager:
             if not os.path.exists(review_folder_path):
                 return stale_cases
             
-            # 遞迴掃描資料夾
+            # 遞迴掃描資料夾 (bounded: max_depth=3, max_dirs=500, throttled)
+            _dir_count = 0
             for root, dirs, files in os.walk(review_folder_path):
+                _depth = root.replace(review_folder_path, "").count(os.sep)
+                if _depth >= 3:
+                    dirs.clear()
+                    continue
+                _dir_count += 1
+                if _dir_count > 500:
+                    dirs.clear()
+                    break
+                if _dir_count % 50 == 0:
+                    import time as _t; _t.sleep(0.05)
                 if not files:
                     continue
-                
+
                 # 取得最新檔案的修改時間
                 latest_time = None
                 for filename in files:
                     filepath = os.path.join(root, filename)
-                    mtime = datetime.fromtimestamp(os.path.getmtime(filepath))
+                    try:
+                        mtime = datetime.fromtimestamp(os.path.getmtime(filepath))
+                    except OSError:
+                        continue
                     if latest_time is None or mtime > latest_time:
                         latest_time = mtime
-                
+
                 if latest_time and latest_time < cutoff_date:
                     # 超過天數，加入待閱卷列表
                     stale_cases.append({
@@ -9889,13 +9918,20 @@ class FileReviewManager:
                 ).execute()
             
             payload = message.get('payload', {})
-            parts = payload.get('parts', [])
-            
-            # 如果沒有 parts，可能附件在 payload 本身
-            if not parts and payload.get('filename'):
-                parts = [payload]
-            
-            for part in parts:
+
+            # Use recursive extraction to handle nested multipart structures
+            _recursive_parts = self._extract_attachments_recursive(payload) if hasattr(self, '_extract_attachments_recursive') else []
+            if _recursive_parts:
+                # Re-wrap into format expected by downstream code (body.attachmentId)
+                _all_parts = [{"filename": p.get("filename", ""), "mimeType": p.get("mimeType", ""), "body": {"attachmentId": p.get("attachmentId", "")}} for p in _recursive_parts]
+            else:
+                # Fallback: flat single-level extraction
+                parts = payload.get('parts', [])
+                if not parts and payload.get('filename'):
+                    parts = [payload]
+                _all_parts = [{"filename": p.get("filename", ""), "mimeType": p.get("mimeType", ""), "body": p.get("body", {})} for p in parts]
+
+            for part in _all_parts:
                 filename = part.get('filename', '')
                 mime_type = part.get('mimeType', '')
                 
@@ -10099,7 +10135,7 @@ class FileReviewManager:
                  "payment_hits": 0, "payment_notified": 0, "errors": []}
         try:
             self.log(f"  🔍 [DEBUG] 執行搜尋 query: {query}")
-            results = self.gmail_service.users().messages().list(userId='me', q=query).execute()
+            results = self.gmail_service.users().messages().list(userId='me', q=query, maxResults=50).execute()
             messages = results.get('messages', [])
             self.log(f"  📊 [DEBUG] Gmail API 回傳 {len(messages)} 封符合的郵件")
 
@@ -10124,12 +10160,13 @@ class FileReviewManager:
 
                 # 解析內文
                 body = ""
-                if 'data' in message['payload']['body']:
+                _payload_body = message.get('payload', {}).get('body', {})
+                if 'data' in _payload_body:
                     import base64
                     try:
-                        body = base64.urlsafe_b64decode(message['payload']['body']['data']).decode('utf-8')
+                        body = base64.urlsafe_b64decode(_payload_body['data']).decode('utf-8')
                     except Exception as e: logger.debug("Failed to decode email body data: %s", e)
-                elif 'parts' in message['payload']:
+                elif 'parts' in message.get('payload', {}):
                     parts = message['payload']['parts']
                     for part in parts:
                         if part['mimeType'] == 'text/plain' and 'data' in part['body']:
@@ -10275,12 +10312,13 @@ class FileReviewManager:
                     continue
                     
                 body = ""
-                if 'data' in message['payload']['body']:
+                _payload_body2 = message.get('payload', {}).get('body', {})
+                if 'data' in _payload_body2:
                     import base64
                     try:
-                        body = base64.urlsafe_b64decode(message['payload']['body']['data']).decode('utf-8')
+                        body = base64.urlsafe_b64decode(_payload_body2['data']).decode('utf-8')
                     except Exception as e: logger.debug("Failed to decode draft body data: %s", e)
-                elif 'parts' in message['payload']:
+                elif 'parts' in message.get('payload', {}):
                     for part in message['payload']['parts']:
                         if part['mimeType'] == 'text/plain' and 'data' in part['body']:
                             import base64
@@ -10385,8 +10423,18 @@ class FileReviewManager:
                 return
 
             import glob
-            
-            # Debug 檔案模式
+            from pathlib import Path as _Path
+
+            # 新路徑：統一清理 .runtime/debug_screenshots/
+            try:
+                from api.debug_capture import cleanup_old as _debug_cleanup_old, DEBUG_DIR as _DEBUG_DIR
+                _runtime_deleted = _debug_cleanup_old(48)
+                if _runtime_deleted > 0:
+                    self.log(f"✅ 已清理 .runtime/debug_screenshots/ 中 {_runtime_deleted} 個舊 debug 檔")
+            except Exception:
+                pass
+
+            # Debug 檔案模式（舊路徑相容清理）
             debug_patterns = [
                 "debug_*.png",
                 "debug_*.html",
@@ -10394,12 +10442,12 @@ class FileReviewManager:
                 "apply_after_check_*.png",
                 "apply_final_*.png",
             ]
-            
+
             # 在當前目錄和下載資料夾中搜尋
             search_dirs = ['.']
             if hasattr(self, 'download_folder') and self.download_folder:
                 search_dirs.append(self.download_folder)
-            
+
             deleted_count = 0
             for search_dir in search_dirs:
                 for pattern in debug_patterns:

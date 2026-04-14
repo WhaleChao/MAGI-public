@@ -56,6 +56,8 @@ SERVICES = [
 
 OMLX_ENGINES = [
     ("文字推理", int(os.environ.get("MAGI_OMLX_PORT", "8080"))),
+    ("邏輯推理", int(os.environ.get("MAGI_OMLX_PHI4_PORT", "8082"))),
+    ("交叉驗證", int(os.environ.get("MAGI_OMLX_SMOL_PORT", "8083"))),
     ("向量嵌入", 8081),
 ]
 
@@ -67,6 +69,14 @@ REMOTE_NODES = []
 NAS_SHARES = [
     ("homes", "/Volumes/homes"),
     ("lumi",  "/Volumes/lumi"),
+]
+_USER_MOUNT_ROOT = os.path.expanduser("~/.magi_mounts")
+
+# 背景監控 thread 名稱（用於偵測是否在線）
+MONITOR_THREADS = [
+    ("法扶 Gmail 監控", "laf-gmail-monitor"),
+    ("法扶 Portal 重試", "laf-portal-retry-loop"),
+    ("閱卷 Email 監控", "file-review-email"),
 ]
 
 # 排程任務最多顯示的條數
@@ -367,6 +377,15 @@ class MAGIMenuBar(rumps.App):
         # 動態子項由 _apply_status 管理
         self._cron_job_items = []
 
+        # ── 背景監控 ──
+        self.monitor_header = rumps.MenuItem("── 背景監控 ──", callback=None)
+        self.monitor_header.set_callback(None)
+        self.monitor_items = {}
+        for display_name, _ in MONITOR_THREADS:
+            item = rumps.MenuItem(f"  ◻ {display_name}")
+            item.set_callback(None)
+            self.monitor_items[display_name] = item
+
         # ── 連線 ──
         self.conn_header = rumps.MenuItem("── 外部連線 ──", callback=None)
         self.conn_header.set_callback(None)
@@ -415,6 +434,10 @@ class MAGIMenuBar(rumps.App):
             # ── 排程 ──
             self.cron_header,
             self.cron_summary_item,
+            rumps.separator,
+            # ── 背景監控 ──
+            self.monitor_header,
+            *self.monitor_items.values(),
             rumps.separator,
             # ── 外部連線 ──
             self.conn_header,
@@ -524,6 +547,61 @@ class MAGIMenuBar(rumps.App):
             })
         cache["cron_details"] = cron_details
 
+        # ── 背景監控 thread ──
+        monitors = {}
+        try:
+            log_path = os.path.join(MAGI_ROOT, ".agent", "server.log")
+            tail = ""
+            if os.path.isfile(log_path):
+                with open(log_path, "rb") as f:
+                    f.seek(0, 2)
+                    sz = f.tell()
+                    # 讀最後 100KB 確保涵蓋到啟動訊息
+                    f.seek(max(0, sz - 102400))
+                    tail = f.read().decode("utf-8", errors="replace")
+            for display_name, thread_name in MONITOR_THREADS:
+                alive = False
+                detail = ""
+                if thread_name == "laf-gmail-monitor":
+                    alive = "[Gmail]" in tail and ("掃描" in tail or "檢查信件" in tail or "✅" in tail or "Gmail 監控已啟動" in tail)
+                    for line in reversed(tail.splitlines()):
+                        if "[Gmail]" in line and '"ts"' in line:
+                            try:
+                                detail = line.split('"ts": "')[1].split('"')[0][11:19]
+                            except Exception:
+                                pass
+                            break
+                elif thread_name == "laf-portal-retry-loop":
+                    alive = "LAF portal retry loop started" in tail or "portal:retry" in tail or "retry loop started" in tail
+                    for line in reversed(tail.splitlines()):
+                        if "retry loop" in line and '"ts"' in line:
+                            try:
+                                detail = line.split('"ts": "')[1].split('"')[0][11:19]
+                            except Exception:
+                                pass
+                            break
+                elif thread_name == "file-review-email":
+                    # 閱卷 email 監控是 cron job（job_file_review_check），不是常駐 thread
+                    # 檢查 cron_jobs.json 裡 file_review_check 是否 enabled
+                    try:
+                        cron_path = os.path.join(MAGI_ROOT, "cron_jobs.json")
+                        if os.path.isfile(cron_path):
+                            with open(cron_path, "r") as _cf:
+                                _cjobs = json.load(_cf)
+                            for _cj in _cjobs:
+                                if isinstance(_cj, dict) and "file_review" in str(_cj.get("command", "")).lower():
+                                    alive = _cj.get("enabled", True)
+                                    lr = str(_cj.get("last_run", "")).strip()
+                                    if lr:
+                                        detail = lr[11:19] if len(lr) > 18 else lr
+                                    break
+                    except Exception:
+                        pass
+                monitors[display_name] = {"alive": alive, "detail": detail}
+        except Exception:
+            pass
+        cache["monitors"] = monitors
+
         # ── NAS ──
         try:
             from api.routing.node_registry import get_node as _get_node
@@ -540,12 +618,13 @@ class MAGIMenuBar(rumps.App):
         shares = {}
         any_mounted = False
         for share_name, mount_path in NAS_SHARES:
-            # 也檢查 -1 variant
+            # 檢查 /Volumes/<share>, -1, -2, 以及 ~/.magi_mounts/<share>
             actual_path = mount_path
-            if not os.path.ismount(mount_path):
-                alt = mount_path + "-1"
-                if os.path.ismount(alt):
-                    actual_path = alt
+            user_path = os.path.join(_USER_MOUNT_ROOT, share_name)
+            for candidate in (mount_path, mount_path + "-1", mount_path + "-2", user_path):
+                if os.path.ismount(candidate):
+                    actual_path = candidate
+                    break
             mounted = os.path.ismount(actual_path)
             if mounted:
                 any_mounted = True
@@ -679,6 +758,20 @@ class MAGIMenuBar(rumps.App):
         for i in range(len(cron_details), len(self._cron_job_items)):
             _set_colored_title(self._cron_job_items[i], "", _GRAY, small=True)
 
+        # ── 背景監控 ──
+        monitors = c.get("monitors", {})
+        for display_name, _ in MONITOR_THREADS:
+            info = monitors.get(display_name, {})
+            item = self.monitor_items.get(display_name)
+            if not item:
+                continue
+            if info.get("alive"):
+                detail = info.get("detail", "")
+                suffix = f"  最近 {detail}" if detail else "  運行中"
+                _set_colored_title(item, f"  ● {display_name}{suffix}", _GREEN)
+            else:
+                _set_colored_title(item, f"  ✗ {display_name}  未偵測到活動", _RED)
+
         # ── NAS ──
         nas = c.get("nas", {})
         if nas.get("lan") and nas.get("mounted"):
@@ -753,15 +846,25 @@ class MAGIMenuBar(rumps.App):
             _set_colored_title(self.zombie_item, f"  ⚠ 殭屍程序  {zombies}個 {z_detail}", _RED)
 
         # ── 選單列圖示 ──
+        try:
+            _profile = open("/Users/ai/.omlx/active_profile").read().strip()
+        except Exception:
+            _profile = "day"
+
         total = core_up + omlx_up
-        expected = len(SERVICES) + len(OMLX_ENGINES)
+        # 離峰模式 8082/8083 不啟動，預期只有 E4B + embed = 2 個 oMLX
+        _night_mode = _profile == "night"
+        if _night_mode:
+            expected = len(SERVICES) + 2  # 只有 8080 + 8081
+        else:
+            expected = len(SERVICES) + len(OMLX_ENGINES)
         nodes_ok = nodes_up >= 1 if REMOTE_NODES else True
         if total == expected and zombies == 0 and nodes_ok:
-            self.title = " MAGI "
+            self.title = " MAGI " if not _night_mode else " MAGI \U0001f319"
         elif core_up >= 2:
-            self.title = " MAGI ⚠"
+            self.title = " MAGI \u26a0"
         else:
-            self.title = " MAGI ✕"
+            self.title = " MAGI \u2715"
 
     # ── 操作按鈕 ──────────────────────────────────────────────
 

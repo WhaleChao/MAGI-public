@@ -151,6 +151,11 @@ except Exception:
 
 app = Flask(__name__)
 from api.thread_pools import io_pool as _INLINE_EXECUTOR
+from concurrent.futures import ThreadPoolExecutor as _ThreadPoolExecutor
+_INFERENCE_EXECUTOR = _ThreadPoolExecutor(
+    max_workers=int(os.environ.get("MAGI_INFERENCE_POOL_SIZE", "4")),
+    thread_name_prefix="inference",
+)
 
 _SKILLS_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "skills"))
 
@@ -572,11 +577,18 @@ def _normalize_external_result_text(text: str) -> str:
     return s
 
 
-def _run_with_timeout(fn, wait_sec: int, *args, **kwargs):
-    future = _INLINE_EXECUTOR.submit(fn, *args, **kwargs)
+def _run_with_timeout(fn, wait_sec: int, *args, pool=None, **kwargs):
+    _pool = pool or _INLINE_EXECUTOR
+    future = _pool.submit(fn, *args, **kwargs)
     try:
         return True, future.result(timeout=max(1, int(wait_sec)))
     except FutureTimeoutError:
+        # NOTE: future.cancel() is a no-op for already-running tasks in ThreadPoolExecutor.
+        # The running function will continue until it finishes naturally.  This is acceptable
+        # because the inference pool (_INLINE_EXECUTOR) has a bounded worker count (4), which
+        # caps the maximum number of leaked in-flight tasks.  A cooperative cancellation via
+        # threading.Event would require changes to every callable passed here and is not
+        # worth the complexity.
         future.cancel()
         return False, {
             "success": False,
@@ -1597,7 +1609,7 @@ def api_summarize():
 
     if not _summarize_cb_allow_upstream():
         probe_budget = max(12, min(timeout_sec, int(os.environ.get("MAGI_SUMMARIZE_CB_PROBE_TIMEOUT_SEC", "20") or "20")))
-        probe_ok, probe_result = _run_with_timeout(_resilient_summarize, probe_budget + 1, text, summary_length)
+        probe_ok, probe_result = _run_with_timeout(_resilient_summarize, probe_budget + 1, text, summary_length, pool=_INFERENCE_EXECUTOR)
         if probe_ok and isinstance(probe_result, dict) and probe_result.get("success") and (probe_result.get("text") or "").strip():
             metric_route = str(probe_result.get("provider") or probe_result.get("route") or "resilient_probe")
             _summarize_cb_note_success()
@@ -1741,7 +1753,7 @@ def api_summarize():
             return response, 400
 
     # 2) Fallback: Balthasar summarization
-    ok, result = _run_with_timeout(_resilient_summarize, primary_timeout_sec + 1, text, summary_length)
+    ok, result = _run_with_timeout(_resilient_summarize, primary_timeout_sec + 1, text, summary_length, pool=_INFERENCE_EXECUTOR)
     if (not ok) and isinstance(result, dict):
         if "timeout_exceeded" in str(result.get("error", "")).lower():
             metric_timeout = True
@@ -1779,7 +1791,7 @@ def api_summarize():
 
     # 3) Fast degraded fallback: keep response under tight budget even when upstream stalls.
     fallback_budget = max(8, min(timeout_sec, int(os.environ.get("MAGI_SUMMARIZE_EXTRACTIVE_TIMEOUT_SEC", "16") or "16")))
-    fallback_ok, fallback_result = _run_with_timeout(_resilient_summarize, fallback_budget + 1, text, "short")
+    fallback_ok, fallback_result = _run_with_timeout(_resilient_summarize, fallback_budget + 1, text, "short", pool=_INFERENCE_EXECUTOR)
     if fallback_ok and isinstance(fallback_result, dict) and fallback_result.get("success") and (fallback_result.get("text") or "").strip():
         fallback_result = dict(fallback_result)
         fallback_result.setdefault("degraded", False)
@@ -1810,7 +1822,7 @@ def api_summarize():
         return response
 
     fallback_text = _extractive_summary_quick(text)
-    metric_degraded = False
+    metric_degraded = True
     metric_route = "extractive_fallback" if metric_timeout else "extractive_error_fallback"
     _record_summarize_metric(
         t0,
@@ -1832,7 +1844,7 @@ def api_summarize():
         "note": "若要啟用 Apple Intelligence 摘要，需先在捷徑 App 建立捷徑「MAGI 摘要」。",
         "result": {
             "success": True,
-            "degraded": False,
+            "degraded": True,
             "provider": metric_route,
             "error": metric_error[:240],
             "text": fallback_text,
@@ -2292,6 +2304,8 @@ def api_collab_translate():
     mode = data.get("mode", "auto")
     if not text:
         return jsonify({"error": "Missing 'text'"}), 400
+    if len(text) > 500_000:
+        return jsonify({"success": False, "error": "payload_too_large"}), 413
     result = translate_text(text, target_lang=target_lang, source_lang=source_lang, mode=mode)
     result = _guard_payload_fields(result)
     return jsonify(result), (200 if result.get("success") else 400)
@@ -2361,7 +2375,10 @@ def api_collab_transcribe():
     audio_path = data.get("audio_path", "")
     if not audio_path:
         return jsonify({"error": "Missing 'audio_path'"}), 400
-    result = transcribe_audio(audio_path)
+    _transcribe_timeout = int(os.environ.get("MAGI_TRANSCRIBE_TIMEOUT_SEC", "180") or "180")
+    _t_ok, result = _run_with_timeout(transcribe_audio, _transcribe_timeout, audio_path, pool=_INFERENCE_EXECUTOR)
+    if not _t_ok:
+        result = {"success": False, "error": f"transcribe_timeout_{_transcribe_timeout}s", "error_type": "timeout"}
     try:
         _record_transcribe_metric(
             t0,

@@ -42,6 +42,11 @@ def _discover_volume(base: str, subdir: str = "") -> str:
         if _is_dir_accessible(candidate):
             _logger.debug("SMB 掛載使用替代路徑: %s（原 %s）", candidate, canonical)
             return candidate
+    # fallback: user-level mount (nas_mount_guard 在 /Volumes/ 無法建目錄時掛到這裡)
+    user_mount = str(_HOME / f".magi_mounts/{base}/{subdir}") if subdir else str(_HOME / f".magi_mounts/{base}")
+    if _is_dir_accessible(user_mount):
+        _logger.debug("SMB 掛載使用 user-level 路徑: %s（原 %s）", user_mount, canonical)
+        return user_mount
     return canonical
 
 
@@ -301,6 +306,14 @@ def local_synology_path_candidates(path: str, cfg: Optional[dict] = None) -> lis
         rel = _lumi_match.group(1).lstrip("/")
         for root in _DEFAULT_CLOSED_SHARE_ROOTS[1:]:
             candidates.append(_join_root_rel(root, rel))
+
+    # 動態 fallback: user-level mount (nas_mount_guard 掛到 ~/.magi_mounts/)
+    _user_mount_root = str(_HOME / ".magi_mounts")
+    for prefix, subpath_start in [("Y:/lumi/", "lumi/"), ("Y:/lumi63181107/", "lumi63181107/")]:
+        if s.startswith(prefix):
+            rel = s[len(prefix):]
+            user_candidate = os.path.join(_user_mount_root, "lumi", subpath_start.rstrip("/"), rel)
+            candidates.append(user_candidate)
 
     return _dedupe_keep_order(candidates or [s])
 

@@ -151,31 +151,6 @@ def summarize_text_resilient(text: str, summary_length: str = "medium", *, progr
             return False
         return not _tp.output_guard_issues(t, mode="summary")
 
-    try:
-        from skills.bridge.llm_direct import feature_enabled as _codex_feature_enabled, summarize_with_codex
-
-        codex_max_chars = int(os.environ.get("MAGI_CODEX_SUMMARY_MAX_CHARS", "12000") or "12000")
-        if _codex_feature_enabled("summary") and len(payload) <= max(1200, codex_max_chars):
-            codex_res = summarize_with_codex(
-                payload,
-                summary_length=summary_length,
-                timeout_sec=int(os.environ.get("MAGI_CODEX_SUMMARY_TIMEOUT_SEC", "240") or "240"),
-            )
-            codex_text = str(codex_res.get("text") or "").strip()
-            if codex_res.get("success") and _summary_output_usable(codex_text):
-                return {
-                    "success": True,
-                    "text": codex_text,
-                    "provider": "openclaw_codex",
-                    "route": "openclaw_codex",
-                    "model": codex_res.get("model", "gpt-5.4"),
-                    "agent": codex_res.get("agent_id", "codex-distributed"),
-                }
-            if codex_res.get("error"):
-                logger.warning("summarize_text_resilient: codex route failed: %s", codex_res.get("error"))
-    except Exception as codex_err:
-        logger.warning("summarize_text_resilient: codex route skipped: %s", codex_err)
-
     def _extractive_fallback_summary(txt: str) -> str:
         body = str(txt or "").strip()
         if not body:

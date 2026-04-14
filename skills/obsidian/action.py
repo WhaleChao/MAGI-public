@@ -102,6 +102,7 @@ def _load_index() -> Dict:
 
 def _save_index(idx: Dict):
     idx["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+    INDEX_PATH.parent.mkdir(parents=True, exist_ok=True)
     INDEX_PATH.write_text(json.dumps(idx, ensure_ascii=False, indent=2), encoding="utf-8")
 
 

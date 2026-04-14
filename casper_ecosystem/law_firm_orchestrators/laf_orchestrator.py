@@ -106,7 +106,28 @@ def _get_db_manager():
     global _db_manager
     if _db_manager is None:
         try:
-            from osc import DatabaseManager
+            # Import DatabaseManager from MAGI root osc.py.
+            # Must use absolute path because laf_orchestrator.py lives inside
+            # casper_ecosystem/law_firm_orchestrators/ which has a local osc/
+            # sub-package that shadows the root osc.py when using plain "from osc import".
+            DatabaseManager = None
+            _osc_root_py = os.path.join(MAGI_DIR, "osc.py")
+            if os.path.exists(_osc_root_py):
+                try:
+                    import importlib.util as _ilu
+                    _spec = _ilu.spec_from_file_location("osc_root", _osc_root_py)
+                    _osc_mod = _ilu.module_from_spec(_spec)
+                    _spec.loader.exec_module(_osc_mod)
+                    DatabaseManager = _osc_mod.DatabaseManager
+                except Exception as _e:
+                    logger.warning("importlib osc.py load failed: %s", _e)
+            if DatabaseManager is None:
+                # Last-resort: use regular import (may get wrong osc/ package,
+                # but legalbridge_core.DatabaseManager is type-incompatible)
+                try:
+                    from osc import DatabaseManager  # type: ignore[import]
+                except (ImportError, AttributeError):
+                    from legalbridge_core import DatabaseManager  # type: ignore[import]
             config = _get_config()
 
             prefer_local = (os.environ.get("MAGI_PREFER_LOCAL_DB", "").strip().lower() in {"1", "true", "yes", "on"})
@@ -115,23 +136,16 @@ def _get_db_manager():
             if prefer_local:
                 try:
                     from osc_headless.db import db_config_from_env
-
-                    c = db_config_from_env()  # defaults to 127.0.0.1:3307
+                    c = db_config_from_env()
                     _db_manager = DatabaseManager(
-                        {
-                            "host": c.host,
-                            "port": int(c.port),
-                            "user": c.user,
-                            "password": c.password,
-                            "database": c.database,
-                        }
+                        {"host": c.host, "port": int(c.port), "user": c.user, "password": c.password, "database": c.database}
                     )
                     logger.info("Connected to local DB first (MAGI_PREFER_LOCAL_DB=1): %s:%s/%s", c.host, c.port, c.database)
                     return _db_manager
                 except Exception as e:
                     logger.warning("Local DB first attempt failed: %s", e)
 
-            # Try MariaDB profiles in order
+            # Try MariaDB profiles from config.json
             for profile in config.get("mariadb_profiles", []):
                 try:
                     _db_manager = DatabaseManager(profile["config"])
@@ -140,24 +154,34 @@ def _get_db_manager():
                 except Exception as e:
                     logger.warning("DB profile %s failed: %s", profile["profile_name"], e)
 
-            # Fallback: Casper 本機 DB（主 DB 關機時仍可運作）
+            # Direct OSC_DB_* env vars (bypasses osc_headless which may not be installed)
+            if _db_manager is None:
+                _db_host = os.environ.get("OSC_DB_HOST", "").strip()
+                _db_port = int(os.environ.get("OSC_DB_PORT", "3306") or "3306")
+                _db_user = os.environ.get("OSC_DB_USER", "").strip()
+                _db_pass = os.environ.get("OSC_DB_PASSWORD", "").strip()
+                _db_name = os.environ.get("OSC_DB_NAME", "law_firm_data").strip()
+                if _db_host and _db_user:
+                    try:
+                        _db_manager = DatabaseManager(
+                            {"host": _db_host, "port": _db_port, "user": _db_user, "password": _db_pass, "database": _db_name}
+                        )
+                        logger.info("Connected to DB via OSC_DB_* env: %s:%s/%s", _db_host, _db_port, _db_name)
+                    except Exception as e:
+                        logger.warning("OSC_DB_* env connection failed: %s", e)
+
+            # Legacy osc_headless fallback
             if _db_manager is None:
                 try:
                     from osc_headless.db import db_config_from_env
-
-                    c = db_config_from_env()  # defaults to 127.0.0.1:3307
+                    c = db_config_from_env()
                     _db_manager = DatabaseManager(
-                        {
-                            "host": c.host,
-                            "port": int(c.port),
-                            "user": c.user,
-                            "password": c.password,
-                            "database": c.database,
-                        }
+                        {"host": c.host, "port": int(c.port), "user": c.user, "password": c.password, "database": c.database}
                     )
-                    logger.info("Connected to local DB via OSC_DB_*: %s:%s/%s", c.host, c.port, c.database)
+                    logger.info("Connected to local DB via osc_headless: %s:%s/%s", c.host, c.port, c.database)
                 except Exception as e:
-                    logger.warning("Local DB fallback failed: %s", e)
+                    logger.warning("osc_headless fallback failed: %s", e)
+
         except Exception as e:
             logger.error("Cannot import DatabaseManager: %s", e)
     return _db_manager
@@ -219,6 +243,9 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
             os.environ.get("MAGI_LAF_REQUIRE_SIGNATURE_ON_NOTICE", "0").strip().lower() in {"1", "true", "yes", "on"}
         )
 
+        # Per-instance dedup set (avoids class-level shared mutable)
+        self._go_live_dedup = set()
+
         # Component references (lazy-loaded)
         self._db = None
         self._notifier = None
@@ -231,6 +258,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         self._doc_hint_ocr_init_attempted = False
         self._portal_retry_state_path = MAGI_DIR / ".agent" / "laf_pending_portal_downloads.json"
         self._portal_retry_lock_path = MAGI_DIR / ".agent" / "laf_pending_portal_downloads.lock"
+        self._portal_seed_skip_path = MAGI_DIR / ".agent" / "laf_seed_permanently_skipped.json"
 
     @property
     def db(self):
@@ -258,6 +286,28 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         """Start email monitoring loop."""
         logger.info("🚀 Starting LAF Email Monitor (dry_run=%s)", self.dry_run)
         _eventlog("laf:monitor:start", ok=None, payload={"dry_run": bool(self.dry_run)})
+
+        # Proactive DB check: alert immediately if DB is unavailable at startup.
+        # This prevents silent go_live failures later (case_number_generation_failed).
+        if not self.dry_run:
+            try:
+                _db_probe = self.db
+                if _db_probe is None:
+                    logger.error("🚨 LAF Monitor: DatabaseManager 初始化失敗（self.db=None），go_live 將無法建立案號")
+                    try:
+                        self.notifier.notify_admin(
+                            "🚨 LAF Gmail Monitor 啟動警告\n"
+                            "DatabaseManager 初始化失敗（self.db=None）\n"
+                            "這不是 DB 斷線，而是 _get_db_manager() import 鏈錯誤（osc 子包遮蔽問題）。\n"
+                            "派案通知收到後 go_live 將無法產生案號、建立資料夾或寫入 DB。\n"
+                            "請重啟 MAGI 或檢查 laf_orchestrator.py 的 importlib osc.py 路徑。"
+                        )
+                    except Exception as _ne:
+                        logger.warning("DB=None startup alert send failed: %s", _ne)
+                else:
+                    logger.info("✅ LAF Monitor: DB 連線確認正常")
+            except Exception as _dbe:
+                logger.warning("DB probe at monitor start failed: %s", _dbe)
 
         try:
             from laf import LAFGmailMonitor
@@ -396,6 +446,25 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                 handle.write(f"{os.getpid()}\n{datetime.now().isoformat()}\n")
             return True
         except FileExistsError:
+            # Check if the lock holder is still alive; if dead, reclaim
+            try:
+                lock_content = self._portal_retry_lock_path.read_text(encoding="utf-8").strip()
+                stale_pid = int(lock_content.split("\n")[0])
+                os.kill(stale_pid, 0)  # raises OSError if process dead
+            except (OSError, ValueError):
+                # Process is dead or PID unreadable — stale lock
+                try:
+                    self._portal_retry_lock_path.unlink()
+                except Exception:
+                    pass
+                # Retry once
+                try:
+                    fd = os.open(str(self._portal_retry_lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                        handle.write(f"{os.getpid()}\n{datetime.now().isoformat()}\n")
+                    return True
+                except Exception:
+                    pass
             return False
         except Exception as e:
             logger.warning("Failed to acquire portal retry lock: %s", e)
@@ -461,7 +530,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
             # 防止已耗盡的項目被 startup backfill 重複入隊
             existing_status = str(item.get("status") or "").strip().lower()
             existing_tries = int(item.get("tries") or 0)
-            if existing_status == "exhausted" or existing_tries > _PORTAL_RETRY_MAX_TRIES:
+            if existing_status == "exhausted" or existing_tries >= _PORTAL_RETRY_MAX_TRIES:
                 logger.debug(
                     "Skip re-queuing exhausted item %s (tries=%d, status=%s)",
                     laf_case_no, existing_tries, existing_status,
@@ -507,6 +576,30 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
             if laf_case_no in items:
                 items.pop(laf_case_no, None)
                 self._save_pending_portal_downloads(items)
+
+    # ── Seed permanent skip list ──
+
+    def _load_seed_skip_list(self) -> set:
+        """載入永久跳過清單（exhausted 後不再 seed 入佇列）。"""
+        try:
+            with open(self._portal_seed_skip_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            return set(data.get("skipped", []))
+        except (FileNotFoundError, json.JSONDecodeError):
+            return set()
+
+    def _add_to_seed_skip_list(self, laf_case_no: str, reason: str = "") -> None:
+        skipped = self._load_seed_skip_list()
+        skipped.add(str(laf_case_no or "").strip())
+        try:
+            os.makedirs(os.path.dirname(self._portal_seed_skip_path), exist_ok=True)
+            with open(self._portal_seed_skip_path, "w", encoding="utf-8") as f:
+                json.dump({
+                    "skipped": sorted(skipped),
+                    "updated_at": datetime.now().isoformat(timespec="seconds"),
+                }, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            logger.warning("Failed to write seed skip list: %s", e)
 
     def _archive_portal_downloads(self, files: List[str], case_folder: str) -> dict:
         result = {
@@ -644,12 +737,26 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         def _loop(owner: "LAFOrchestrator", every_sec: int) -> None:
             logger.info("🔁 LAF portal retry loop started (every %ss)", every_sec)
             _eventlog("laf:portal:retry:loop_start", ok=True, payload={"interval_sec": every_sec})
-            while True:
+            _consecutive_fails = 0
+            _admin_notified = False
+            while True:  # daemon=True ensures cleanup on process exit; no explicit shutdown needed
                 try:
                     owner._retry_pending_portal_downloads(max_items=6)
+                    _consecutive_fails = 0
+                    _admin_notified = False
                 except Exception as e:
-                    logger.error("Pending portal retry loop failed: %s", e)
-                time.sleep(every_sec)
+                    _consecutive_fails += 1
+                    logger.error("Pending portal retry loop failed (consecutive=%d): %s", _consecutive_fails, e)
+                    if _consecutive_fails >= 10 and not _admin_notified:
+                        _admin_notified = True
+                        try:
+                            from api.discord_channel_router import send as _dc_send
+                            _dc_send("admin", f"🚨 LAF portal retry loop 連續 {_consecutive_fails} 次失敗，請檢查: {str(e)[:200]}")
+                        except Exception:
+                            pass
+                # Exponential backoff on failures, capped at 1 hour
+                _sleep = min(every_sec * (2 ** min(_consecutive_fails, 4)), 3600) if _consecutive_fails else every_sec
+                time.sleep(_sleep)
 
         _portal_retry_thread = threading.Thread(
             target=_loop,
@@ -662,6 +769,9 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
     def _seed_pending_portal_retries_from_case_inventory(self, limit: int = 80) -> dict:
         if self.dry_run or not self.db:
             return {"ok": True, "seeded": 0, "scanned": 0, "skipped": "dry_run_or_no_db"}
+
+        # 載入永久跳過清單（之前 exhausted 過的案件不再入佇列）
+        seed_skip_set = self._load_seed_skip_list()
 
         query = """
             SELECT `case_number`, `client_name`, `case_type`, `case_reason`,
@@ -682,6 +792,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         seeded = 0
         scanned = 0
         for row in rows or []:
+            _created_date_raw = None
             if isinstance(row, dict):
                 case_number = str(row.get("case_number") or "").strip()
                 client_name = str(row.get("client_name") or "").strip()
@@ -703,6 +814,8 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
 
             if not laf_case_no:
                 continue
+            if laf_case_no in seed_skip_set:
+                continue
             scanned += 1
             local_folder = self._to_local_case_folder(folder_path)
             docs = self._scan_case_folder_docs(local_folder)
@@ -716,10 +829,32 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                     tags={"laf_case_no": laf_case_no, "client_name": client_name},
                 )
                 continue
+            # 取得法扶狀態，用來判斷是否需要補抓
+            if isinstance(row, dict):
+                _laf_status_raw = str(row.get("legal_aid_status") or "").strip()
+                _created_date_raw = row.get("created_date")
+            else:
+                _laf_status_raw = ""
+                _created_date_raw = _created
+
             if is_closed:
-                needs_queue = (not docs.get("closing_fee_files")) or (not docs.get("change_review_notice_files"))
+                # 只要 closing_fee_files（酬金/律師費收據）有了就代表結案文件已下載，不再重試。
+                # change_review_notice_files（變更審查通知）不是所有案件都有，
+                # 不能作為強制條件，否則沒有該文件的案件會無限觸發無效下載。
+                needs_queue = not docs.get("closing_fee_files")
                 queue_reason = "startup_backfill_missing_closing_docs"
             else:
+                # 已開辦 / 法扶已結案的案件不需要再補抓開辦文件（開辦流程早已完成）
+                if _laf_status_raw and _laf_status_raw not in ("未開辦", ""):
+                    continue
+                # 建案超過 90 天的案件，portal 文件很可能已過期或不再提供
+                if _created_date_raw:
+                    try:
+                        _cd = _created_date_raw if isinstance(_created_date_raw, datetime) else datetime.strptime(str(_created_date_raw)[:19], "%Y-%m-%d %H:%M:%S")
+                        if (datetime.now() - _cd).days > 90:
+                            continue
+                    except (ValueError, TypeError):
+                        pass
                 needs_queue = (not docs.get("opening_notice_files")) and (not docs.get("poa_files"))
                 queue_reason = "startup_backfill_missing_opening_docs"
             if not needs_queue:
@@ -855,6 +990,8 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                             )
                         except Exception:
                             logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 848, exc_info=True)
+                        # 永久跳過：寫入 skip list，下次 seed 不再入佇列
+                        self._add_to_seed_skip_list(laf_case_no, reason=str(updated.get("reason") or ""))
                         processed.append({"laf_case_number": laf_case_no, "downloaded_count": 0, "status": "exhausted"})
                         continue
 
@@ -998,7 +1135,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
 
     # In-memory dedup for go_live to prevent duplicate notifications when
     # multiple emails arrive for the same case (e.g., 派案通知 + 附加檔案).
-    _go_live_dedup: set = set()
+    # NOTE: initialized per-instance in __init__ to avoid cross-instance leakage.
 
     def handle_go_live(self, case_info):
         """
@@ -1060,6 +1197,17 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                     logger.error("  ❌ Standard case number generation failed")
                     self._log_event(laf_number, "go_live", {"error": "case_number_generation_failed"}, "failed")
                     _eventlog("laf:go_live:done", ok=False, payload={"error": "case_number_generation_failed"}, tags={"laf_case_no": laf_number, "client_name": client_name})
+                    try:
+                        self.notifier.notify_admin(
+                            f"🚨 法扶派案 go_live 失敗（DatabaseManager 初始化異常）\n"
+                            f"當事人：{client_name}\n"
+                            f"法扶案號：{laf_number}\n"
+                            f"原因：self.db=None（_get_db_manager() import 鏈錯誤，非 DB 斷線）\n"
+                            f"email 已標記為已處理，不會自動重試。\n"
+                            f"⚠️ 請重啟 MAGI 後手動在 Discord 輸入「{laf_number} {client_name} 開辦」補跑"
+                        )
+                    except Exception as _ne:
+                        logger.warning("go_live failure alert send failed: %s", _ne)
                     return
             folder_info = {
                 "case_number": case_number,
@@ -1080,6 +1228,16 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                 logger.error("  ❌ Folder creation failed")
                 self._log_event(laf_number, "go_live", {"error": "folder_creation_failed"}, "failed")
                 _eventlog("laf:go_live:done", ok=False, payload={"error": "folder_creation_failed"}, tags={"laf_case_no": laf_number, "client_name": client_name})
+                try:
+                    self.notifier.notify_admin(
+                        f"🚨 法扶派案 go_live 失敗（資料夾建立失敗）\n"
+                        f"當事人：{client_name}\n"
+                        f"法扶案號：{laf_number}\n"
+                        f"原因：NAS 資料夾建立失敗（可能是 NAS 斷線或路徑錯誤）\n"
+                        f"⚠️ 請確認 NAS 掛載狀態後，手動在 Discord 觸發開辦流程"
+                    )
+                except Exception as _ne:
+                    logger.warning("go_live failure alert send failed: %s", _ne)
                 return
 
             # Step 3: Insert DB record
@@ -2279,9 +2437,9 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                 logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 2227, exc_info=True)
             self._automation = None
 
-    def execute_portal_go_live_draft(self, case_number: str, client_name: str = "", fields: Optional[dict] = None) -> bool:
+    def execute_portal_go_live_draft(self, case_number: str, client_name: str = "", fields: Optional[dict] = None, *, suppress_notify: bool = False) -> bool:
         ok = self.execute_portal_workflow_draft("go_live", case_number, client_name, fields)
-        if ok and (not self.dry_run):
+        if ok and (not self.dry_run) and (not suppress_notify):
             notify_msg = f"✅ 已填寫開辦資料（未送出）— {client_name or '-'}（{case_number or '-'}）"
             # Send preview screenshot if available
             preview_png = ""
@@ -2302,15 +2460,15 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
             self.notifier.notify_admin(f"✅ 已送出開辦回報 — {client_name or '-'}（{case_number or '-'}）", topic_key="laf_go_live")
         return ok
 
-    def execute_portal_withdrawal_draft(self, case_number: str, client_name: str = "", fields: Optional[dict] = None) -> bool:
+    def execute_portal_withdrawal_draft(self, case_number: str, client_name: str = "", fields: Optional[dict] = None, *, suppress_notify: bool = False) -> bool:
         ok = self.execute_portal_workflow_draft("withdrawal", case_number, client_name, fields)
-        if ok and (not self.dry_run):
+        if ok and (not self.dry_run) and (not suppress_notify):
             self.notifier.notify_admin(f"✅ 已暫存撤回資料 — {client_name or '-'}（{case_number or '-'}）")
         return ok
 
-    def execute_portal_inquiry_draft(self, case_number: str, client_name: str = "", fields: Optional[dict] = None) -> bool:
+    def execute_portal_inquiry_draft(self, case_number: str, client_name: str = "", fields: Optional[dict] = None, *, suppress_notify: bool = False) -> bool:
         ok = self.execute_portal_workflow_draft("inquiry", case_number, client_name, fields)
-        if ok and (not self.dry_run):
+        if ok and (not self.dry_run) and (not suppress_notify):
             reason = (fields or {}).get("desc", "")
             msg = f"✅ 已暫存疑義資料 — {client_name or '-'}（{case_number or '-'}）\n說明：{reason}\n請務必登入平台確認內容是否正確。"
             if "其他" in reason or "0117" in str((fields or {}).get("rsm_reqsubj2", "")):
@@ -2318,15 +2476,15 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
             self.notifier.notify_admin(msg)
         return ok
 
-    def execute_portal_condition_draft(self, case_number: str, client_name: str = "", fields: Optional[dict] = None) -> bool:
+    def execute_portal_condition_draft(self, case_number: str, client_name: str = "", fields: Optional[dict] = None, *, suppress_notify: bool = False) -> bool:
         ok = self.execute_portal_workflow_draft("condition", case_number, client_name, fields)
-        if ok and (not self.dry_run):
+        if ok and (not self.dry_run) and (not suppress_notify):
             self.notifier.notify_admin(f"✅ 已暫存二階段資料 — {client_name or '-'}（{case_number or '-'}）")
         return ok
 
-    def execute_portal_fee_draft(self, case_number: str, client_name: str = "", fields: Optional[dict] = None) -> bool:
+    def execute_portal_fee_draft(self, case_number: str, client_name: str = "", fields: Optional[dict] = None, *, suppress_notify: bool = False) -> bool:
         ok = self.execute_portal_workflow_draft("fee", case_number, client_name, fields)
-        if ok and (not self.dry_run):
+        if ok and (not self.dry_run) and (not suppress_notify):
             self.notifier.notify_admin(f"✅ 已暫存費用支付資料 — {client_name or '-'}（{case_number or '-'}）")
         return ok
 
@@ -3621,10 +3779,12 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         client_name: str = "",
         reason: str = "",
         fields: Optional[dict] = None,
+        suppress_notify: bool = False,
     ) -> dict:
         """
         Execute one portal workflow in draft-only mode.
         action: go_live | inquiry | fee | condition | withdrawal | closing
+        suppress_notify: True = 不發 Discord/Telegram 通知（CLI 測試用）
         """
         act = (action or "").strip().lower()
         fields = dict(fields or {})
@@ -3737,7 +3897,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
             go_live_upload = self._find_go_live_upload_files(case_folder, is_consumer_debt=_is_consumer_debt)
             if go_live_upload:
                 fields.setdefault("upload_files", go_live_upload)
-            ok = self.execute_portal_go_live_draft(laf_no, cname, fields or {})
+            ok = self.execute_portal_go_live_draft(laf_no, cname, fields or {}, suppress_notify=suppress_notify)
             result = {
                 "ok": bool(ok),
                 "action": act,
@@ -3832,7 +3992,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                 fields.setdefault("closing_counts", counts)
                 fields.setdefault("lawy_status", "P")  # 辦理中
                 fields.setdefault("pb_lawyer_status", "P")
-            ok = self.execute_portal_withdrawal_draft(laf_no, cname, fields or {})
+            ok = self.execute_portal_withdrawal_draft(laf_no, cname, fields or {}, suppress_notify=suppress_notify)
             return {
                 "ok": bool(ok),
                 "action": act,
@@ -3869,7 +4029,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                         fields.setdefault("rsm_lawyer_status", "P")
                 except Exception:
                     logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 3674, exc_info=True)
-            ok = self.execute_portal_inquiry_draft(laf_no, cname, fields or {})
+            ok = self.execute_portal_inquiry_draft(laf_no, cname, fields or {}, suppress_notify=suppress_notify)
             return {
                 "ok": bool(ok),
                 "action": act,
@@ -3910,7 +4070,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                 fields.setdefault("upload_mode", "replace")
             fields.setdefault("desc", reason or f"依法院收據辦理（{receipt_name}）")
             fields.setdefault("lgfee_lawyer_status", "N")
-            ok = self.execute_portal_fee_draft(laf_no, cname, fields or {})
+            ok = self.execute_portal_fee_draft(laf_no, cname, fields or {}, suppress_notify=suppress_notify)
             return {
                 "ok": bool(ok),
                 "action": act,
@@ -3945,7 +4105,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                 fields.setdefault("upload_mode", "replace")
             fields.setdefault("at_ctype", "附條件審查")
             fields.setdefault("conditionrsn", reason or f"依調解不成立證明書辦理（{os.path.basename(med_doc)}）")
-            ok = self.execute_portal_condition_draft(laf_no, cname, fields or {})
+            ok = self.execute_portal_condition_draft(laf_no, cname, fields or {}, suppress_notify=suppress_notify)
             return {
                 "ok": bool(ok),
                 "action": act,
@@ -5677,16 +5837,25 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
             logger.error("  ❌ Could not determine standard case_number for DB insert")
             return ""
 
+        branch = str(getattr(case_info, 'branch', '') or '').strip()
+        notes = f"法扶案號: {laf_number}\n"
+        if branch:
+            notes += f"分會: {branch}\n"
+
         try:
             self.db.execute_write(
                 """INSERT INTO `cases`
                    (`id`, `case_number`, `client_name`, `case_type`, `case_reason`,
                     `case_category`, `case_stage`, `status`, `folder_path`,
-                    `legal_aid_number`, `start_date`, `lawyer`)
-                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                    `legal_aid_number`, `laf_case_no`, `application_no`,
+                    `legal_aid_status`, `notes`,
+                    `start_date`, `lawyer`)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
                 (case_id, case_number, client_name, case_type, case_reason,
                  '法律扶助案件', case_stage, '進行中', folder_path,
-                 laf_number, datetime.now().date(), '喬政翔律師')
+                 laf_number, laf_number, laf_number,
+                 '未開辦', notes,
+                 datetime.now().date(), '喬政翔律師')
             )
             logger.info("  ✅ DB record created: %s (%s)", case_number, case_id)
             return case_number
@@ -5840,6 +6009,7 @@ def main():
     parser.add_argument("--osc-list", type=str, default="", help="Comma-separated OSC case numbers for condition-mark-done")
     parser.add_argument("--max-scan", type=int, default=8000, help="Max rows scan for condition-mark-by-mediation mode")
     parser.add_argument("--dry-run", action="store_true", help="Force dry-run regardless of mode")
+    parser.add_argument("--no-notify", action="store_true", help="Suppress Discord/Telegram notifications (for CLI testing)")
     parser.add_argument("--verbose", "-v", action="store_true")
 
     args = parser.parse_args()
@@ -5948,6 +6118,7 @@ def main():
             client_name=args.client or "",
             reason=args.reason or "",
             fields=fields,
+            suppress_notify=bool(getattr(args, 'no_notify', False)),
         )
         print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
 

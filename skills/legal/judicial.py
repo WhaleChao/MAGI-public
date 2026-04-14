@@ -1270,10 +1270,10 @@ class CourtRecordDownloader:
             # 等待結果載入
             time.sleep(2)
             try:
-                self.driver.save_screenshot("debug_search_page.png")
-                with open("debug_search_page.html", "w", encoding="utf-8") as f:
-                    f.write(self.driver.page_source)
-                self.log("  [DEBUG] Saved debug_search_page.png and html")
+                from api.debug_capture import save_debug_screenshot, save_debug_html
+                save_debug_screenshot(self.driver, "debug_search_page", context="筆錄搜尋頁")
+                save_debug_html(self.driver, "debug_search_page", context="筆錄搜尋頁")
+                self.log("  [DEBUG] Saved debug_search_page")
             except Exception as _bare_e:
                 _log.debug("judicial skipped: %s", _bare_e)
             

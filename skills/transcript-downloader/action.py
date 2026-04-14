@@ -20,7 +20,7 @@ import sys
 import traceback
 from pathlib import Path
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any, Dict, Optional, Tuple
 from urllib import request as _urlreq
 
 # ---------------------------------------------------------------------------
@@ -82,7 +82,7 @@ def _flow_slug(value: str) -> str:
     return re.sub(r"[^a-zA-Z0-9._-]+", "-", str(value or "").strip()).strip("-._") or "task"
 
 
-def _safe_create_flow_mirror(task_name: str, *, metadata: Optional[dict[str, Any]] = None) -> str:
+def _safe_create_flow_mirror(task_name: str, *, metadata: Optional[Dict[str, Any]] = None) -> str:
     if str(task_name or "").strip() not in {"download", "download_all", "sync"}:
         return ""
     payload = dict(metadata or {})
@@ -111,7 +111,7 @@ def _safe_flow_step_status(
     detail: str = "",
     ok: Optional[bool] = None,
     skipped: Optional[bool] = None,
-    metadata: Optional[dict[str, Any]] = None,
+    metadata: Optional[Dict[str, Any]] = None,
 ) -> None:
     if not flow_id:
         return
@@ -129,7 +129,7 @@ def _safe_flow_step_status(
         logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 105, exc_info=True)
 
 
-def _safe_finalize_flow(flow_id: str, result: dict[str, Any]) -> None:
+def _safe_finalize_flow(flow_id: str, result: Dict[str, Any]) -> None:
     if not flow_id or not isinstance(result, dict):
         return
     try:
@@ -141,7 +141,7 @@ def _safe_finalize_flow(flow_id: str, result: dict[str, Any]) -> None:
             flow_status = "succeeded"
         else:
             flow_status = "failed"
-        artifacts: dict[str, str] = {}
+        artifacts: Dict[str, str] = {}
         for idx, path_value in enumerate(result.get("files") or []):
             if idx >= 3:
                 break
@@ -193,7 +193,7 @@ def _cancel_reason(flow_id: str) -> str:
         return ""
 
 
-def _cancelled_result(flow_id: str, step_name: str, *, case_number: str = "") -> dict[str, Any]:
+def _cancelled_result(flow_id: str, step_name: str, *, case_number: str = "") -> Dict[str, Any]:
     reason = _cancel_reason(flow_id) or "operator requested"
     detail = f"cancel_requested: {reason}"[:240]
     _safe_flow_step_status(
@@ -216,7 +216,7 @@ def _cancelled_result(flow_id: str, step_name: str, *, case_number: str = "") ->
     return payload
 
 
-def _check_flow_cancelled(flow_id: str, step_name: str, *, case_number: str = "") -> Optional[dict[str, Any]]:
+def _check_flow_cancelled(flow_id: str, step_name: str, *, case_number: str = "") -> Optional[Dict[str, Any]]:
     if not flow_id:
         return None
     try:
@@ -445,7 +445,7 @@ def _case_label(row: dict) -> str:
     return court_case_no or case_no or "未判斷案件"
 
 
-def _summarize_download_results(results: dict, *, max_cases: int = 20) -> tuple[str, dict]:
+def _summarize_download_results(results: dict, *, max_cases: int = 20) -> Tuple[str, dict]:
     try:
         max_cases = int(os.environ.get("MAGI_TRANSCRIPT_NOTIFY_MAX_CASES", str(max_cases)) or str(max_cases))
     except Exception:
@@ -614,14 +614,7 @@ def _ensure_local_cases_schema() -> None:
         "database": "law_firm_data",
     }
 
-    # Env overrides (kept for compatibility with other headless modules)
-    model = (os.environ.get("MAGI_WHISPER_MODEL") or "medium").strip() or "medium"
-    timeout_sec = int(os.environ.get("MAGI_WHISPER_TIMEOUT_SEC", "3600") or "3600")
-    timeout_sec = max(30, min(timeout_sec, 3600))
-    # The `language` variable is not defined in this scope. Assuming it's a placeholder or intended to be `base["user"]`
-    # as a fallback for a different context. For this function, it's likely not relevant.
-    # Keeping the original `base["user"]` as a fallback for `forced_language` to maintain syntactic correctness.
-    forced_language = (os.environ.get("MAGI_WHISPER_LANGUAGE") or "").strip() or base["user"]
+    # Env overrides for DB connection
     host = (os.environ.get("OSC_DB_HOST") or base["host"]).strip() or base["host"]
     port = int((os.environ.get("OSC_DB_PORT") or str(base["port"])).strip() or str(base["port"]))
     user = (os.environ.get("OSC_DB_USER") or base["user"]).strip() or base["user"]
@@ -1321,7 +1314,7 @@ def parse_line_command(text: str) -> Optional[dict]:
     return None
 
 
-_COURT_ALIAS_TO_FULL: dict[str, str] = {
+_COURT_ALIAS_TO_FULL: Dict[str, str] = {
     "基隆": "臺灣基隆地方法院", "臺北": "臺灣臺北地方法院", "台北": "臺灣臺北地方法院",
     "新北": "臺灣新北地方法院", "桃園": "臺灣桃園地方法院", "新竹": "臺灣新竹地方法院",
     "苗栗": "臺灣苗栗地方法院", "臺中": "臺灣臺中地方法院", "台中": "臺灣臺中地方法院",

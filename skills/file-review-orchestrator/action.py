@@ -23,7 +23,7 @@ import sys
 import traceback
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 import subprocess
 import uuid
 
@@ -114,7 +114,7 @@ def _flow_slug(value: str) -> str:
     return re.sub(r"[^a-zA-Z0-9._-]+", "-", str(value or "").strip()).strip("-._") or "task"
 
 
-def _safe_create_flow_mirror(task_name: str, *, metadata: Optional[dict[str, Any]] = None) -> str:
+def _safe_create_flow_mirror(task_name: str, *, metadata: Optional[Dict[str, Any]] = None) -> str:
     if not str(task_name or "").strip():
         return ""
     payload = dict(metadata or {})
@@ -145,7 +145,7 @@ def _safe_flow_step_status(
     detail: str = "",
     ok: Optional[bool] = None,
     skipped: Optional[bool] = None,
-    metadata: Optional[dict[str, Any]] = None,
+    metadata: Optional[Dict[str, Any]] = None,
 ) -> None:
     if not flow_id:
         return
@@ -163,8 +163,8 @@ def _safe_flow_step_status(
         logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 141, exc_info=True)
 
 
-def _flow_artifacts_from_result(result: dict[str, Any]) -> dict[str, str]:
-    artifacts: dict[str, str] = {}
+def _flow_artifacts_from_result(result: Dict[str, Any]) -> Dict[str, str]:
+    artifacts: Dict[str, str] = {}
     if not isinstance(result, dict):
         return artifacts
     evidence = result.get("evidence") if isinstance(result.get("evidence"), dict) else {}
@@ -183,7 +183,7 @@ def _flow_artifacts_from_result(result: dict[str, Any]) -> dict[str, str]:
     return artifacts
 
 
-def _safe_finalize_flow(flow_id: str, result: dict[str, Any]) -> None:
+def _safe_finalize_flow(flow_id: str, result: Dict[str, Any]) -> None:
     if not flow_id or not isinstance(result, dict):
         return
     if bool(result.get("queued")) and not bool(result.get("deduped")):
@@ -192,7 +192,7 @@ def _safe_finalize_flow(flow_id: str, result: dict[str, Any]) -> None:
         result_key = str(result.get("result") or "").strip().lower()
         status_key = str(result.get("status") or "").strip().lower()
         ok = bool(result.get("success", result.get("ok")))
-        blockers: list[str] = []
+        blockers: List[str] = []
         flow_status = "succeeded" if ok else "failed"
         if bool(result.get("cancelled")) or status_key == "cancelled":
             flow_status = "cancelled"
@@ -241,7 +241,7 @@ def _mark_notify_step(flow_id: str, *, notify: bool, detail: str) -> None:
     )
 
 
-def _result_step_status(result: dict[str, Any]) -> tuple[str, bool]:
+def _result_step_status(result: Dict[str, Any]) -> Tuple[str, bool]:
     if not isinstance(result, dict):
         return "failed", False
     if bool(result.get("cancelled")) or str(result.get("status") or "").strip().lower() == "cancelled":
@@ -263,7 +263,7 @@ def _cancel_reason(flow_id: str) -> str:
         return ""
 
 
-def _cancelled_result(flow_id: str, step_name: str, *, detail: str = "") -> dict[str, Any]:
+def _cancelled_result(flow_id: str, step_name: str, *, detail: str = "") -> Dict[str, Any]:
     reason = detail or _cancel_reason(flow_id) or "operator requested"
     message = f"cancel_requested: {reason}"[:240]
     _safe_flow_step_status(
@@ -283,7 +283,7 @@ def _cancelled_result(flow_id: str, step_name: str, *, detail: str = "") -> dict
     }
 
 
-def _check_flow_cancelled(flow_id: str, step_name: str, *, detail: str = "") -> Optional[dict[str, Any]]:
+def _check_flow_cancelled(flow_id: str, step_name: str, *, detail: str = "") -> Optional[Dict[str, Any]]:
     if not flow_id:
         return None
     try:
@@ -298,7 +298,7 @@ def _run_with_flow(
     task_name: str,
     runner: Callable[[str], dict],
     *,
-    metadata: Optional[dict[str, Any]] = None,
+    metadata: Optional[Dict[str, Any]] = None,
     step_name: str = "",
     detail: str = "",
 ) -> dict:
@@ -387,12 +387,12 @@ def _eventlog(event: str, *, ok: Optional[bool] = None, payload: Optional[dict] 
         return
 
 
-def _token_backups(token_path: str) -> list[str]:
+def _token_backups(token_path: str) -> List[str]:
     base = (token_path or "").strip()
     if not base:
         return []
     pats = [f"{base}.bak_*", f"{base}.invalid_*"]
-    out: list[str] = []
+    out: List[str] = []
     for p in pats:
         out.extend(glob.glob(p))
     out = [p for p in out if os.path.exists(p)]
@@ -641,7 +641,7 @@ def _notifications_suppressed() -> bool:
     return _boolish(os.environ.get("MAGI_FILE_REVIEW_SUPPRESS_NOTIFY"), False)
 
 
-def _download_job_paths(job_id: str) -> tuple[str, str]:
+def _download_job_paths(job_id: str) -> Tuple[str, str]:
     return (
         os.path.join(BG_JOB_DIR, f"download_{job_id}.json"),
         os.path.join(BG_JOB_DIR, f"download_{job_id}.log"),
@@ -824,7 +824,7 @@ def _json_path(name: str) -> str:
 # ---------------------------------------------------------------------------
 # Notification
 # ---------------------------------------------------------------------------
-def _load_telegram_targets() -> tuple[str, list[str]]:
+def _load_telegram_targets() -> Tuple[str, List[str]]:
     token = (os.environ.get("OPENCLAW_TELEGRAM_BOT_TOKEN") or "").strip()
     notify_ids = [
         x.strip()
@@ -836,7 +836,8 @@ def _load_telegram_targets() -> tuple[str, list[str]]:
     try:
         _magi_cfg_path = str(get_config_path("config.json"))
         if os.path.exists(_magi_cfg_path):
-            _magi_cfg = json.loads(open(_magi_cfg_path, "r", encoding="utf-8").read() or "{}")
+            with open(_magi_cfg_path, "r", encoding="utf-8") as _cfg_f:
+                _magi_cfg = json.loads(_cfg_f.read() or "{}")
             _magi_tg = _magi_cfg.get("telegram") or {}
             _magi_notify = _magi_tg.get("notifyTo") or []
             if isinstance(_magi_notify, list):
@@ -851,8 +852,8 @@ def _load_telegram_targets() -> tuple[str, list[str]]:
             notify_ids.extend([str(x).strip() for x in (legacy.get("notify_to") or []) if str(x).strip()])
     except Exception:
         logging.getLogger(__name__).debug("silent-catch at action.py:841", exc_info=True)
-    dedup: list[str] = []
-    seen: set[str] = set()
+    dedup: List[str] = []
+    seen: Set[str] = set()
     for x in notify_ids:
         if x and x not in seen:
             seen.add(x)
@@ -2246,7 +2247,7 @@ def cmd_download(case_number: str = "", notify: bool = True, flow_id: str = "") 
             def _norm(s: str) -> str:
                 return (s or "").strip()
 
-            def _format_download_message() -> tuple[str, dict]:
+            def _format_download_message() -> Tuple[str, dict]:
                 """
                 Returns (message, exported) where exported is export_txt() result or {}.
                 """
@@ -2653,7 +2654,7 @@ def _merge_dismissed_payment_maps(download_folder: str, dismissed_payments: Opti
     return merged
 
 
-def _load_payment_proof_case_tokens(download_folder: str) -> set[str]:
+def _load_payment_proof_case_tokens(download_folder: str) -> Set[str]:
     path = os.path.join(download_folder or DEFAULT_DOWNLOAD_FOLDER, "payment_proof_registry.json")
     if not os.path.exists(path):
         return set()
@@ -2664,7 +2665,7 @@ def _load_payment_proof_case_tokens(download_folder: str) -> set[str]:
         return set()
     if not isinstance(data, dict):
         return set()
-    tokens: set[str] = set()
+    tokens: Set[str] = set()
     for key in data.keys():
         norm = _normalize_case_token(key)
         if norm:
@@ -2750,7 +2751,7 @@ def _portal_item_is_actionable_pending(item: dict) -> bool:
     return has_pending_signal and has_approved_signal
 
 
-def _portal_item_search_blob(item: dict) -> tuple[str, str]:
+def _portal_item_search_blob(item: dict) -> Tuple[str, str]:
     if not isinstance(item, dict):
         return "", ""
     raw_parts = []
@@ -2773,7 +2774,7 @@ def _portal_item_search_blob(item: dict) -> tuple[str, str]:
     return raw_blob, _normalize_case_token(" ".join(raw_parts))
 
 
-def _portal_item_has_uploaded_proof(item: dict, proof_case_tokens: set[str]) -> bool:
+def _portal_item_has_uploaded_proof(item: dict, proof_case_tokens: Set[str]) -> bool:
     if not proof_case_tokens or not isinstance(item, dict):
         return False
     for field in ("court_case_no", "case_number", "showyyidno", "yyidno"):
@@ -2806,7 +2807,7 @@ def _filter_not_yet_downloaded(dl_items: list, download_folder: str) -> list:
         return []
 
     # ── DB-backed dedup (primary) ──
-    db_downloaded: set[str] = set()
+    db_downloaded: Set[str] = set()
     try:
         from skills.ops.dedup_db import is_done as _dd_is_done
         _db_available = True
@@ -2815,7 +2816,7 @@ def _filter_not_yet_downloaded(dl_items: list, download_folder: str) -> list:
 
     # ── JSON fallback ──
     registry_path = os.path.join(download_folder, "downloaded_registry.json") if download_folder else ""
-    json_downloaded: set[str] = set()
+    json_downloaded: Set[str] = set()
     if registry_path and os.path.exists(registry_path):
         try:
             with open(registry_path, "r", encoding="utf-8") as f:
@@ -2925,7 +2926,7 @@ def _recent_activity_state_path(download_folder: str) -> str:
     return os.path.join(base, RECENT_ACTIVITY_STATE_FILE)
 
 
-def _load_recent_activity_state(download_folder: str) -> tuple[dict, bool]:
+def _load_recent_activity_state(download_folder: str) -> Tuple[dict, bool]:
     path = _recent_activity_state_path(download_folder)
     if not os.path.exists(path):
         return {
@@ -3000,7 +3001,7 @@ def _prune_recent_activity_bucket(bucket: dict, keep_days: int = 30) -> dict:
     return cleaned
 
 
-def _filter_unnotified_recent_activity(records: list[dict], download_folder: str, bucket_name: str) -> list[dict]:
+def _filter_unnotified_recent_activity(records: List[dict], download_folder: str, bucket_name: str) -> List[dict]:
     if not records:
         return []
     state, is_new_state = _load_recent_activity_state(download_folder)
@@ -3053,7 +3054,7 @@ def _filter_unnotified_recent_activity(records: list[dict], download_folder: str
     return fresh
 
 
-def _mark_recent_activity_notified(records: list[dict], download_folder: str, bucket_name: str) -> None:
+def _mark_recent_activity_notified(records: List[dict], download_folder: str, bucket_name: str) -> None:
     if not records:
         return
     state, _ = _load_recent_activity_state(download_folder)
@@ -3078,7 +3079,7 @@ def _mark_recent_activity_notified(records: list[dict], download_folder: str, bu
     _save_recent_activity_state(download_folder, state)
 
 
-def _load_recent_payment_activity(download_folder: str, days: int = 7) -> list[dict]:
+def _load_recent_payment_activity(download_folder: str, days: int = 7) -> List[dict]:
     registry_path = os.path.join(download_folder or DEFAULT_DOWNLOAD_FOLDER, "payment_registry.json")
     if not os.path.exists(registry_path):
         return []
@@ -3127,7 +3128,7 @@ def _load_recent_payment_activity(download_folder: str, days: int = 7) -> list[d
     return list(chosen.values())
 
 
-def _auto_bookmark_pdfs(pdf_paths: list[str]) -> None:
+def _auto_bookmark_pdfs(pdf_paths: List[str]) -> None:
     """Post-download hook: auto-add bookmarks to downloaded court PDFs."""
     try:
         import importlib.util
@@ -3179,7 +3180,7 @@ def _activity_artifact_kind(item: dict) -> str:
     return "review_download"
 
 
-def _format_recent_activity_block(title: str, records: list[dict], limit: int = 8) -> list[str]:
+def _format_recent_activity_block(title: str, records: List[dict], limit: int = 8) -> List[str]:
     if not records:
         return []
     lines = [f"{title}（{len(records)} 件）："]
@@ -3195,7 +3196,7 @@ def _format_recent_activity_block(title: str, records: list[dict], limit: int = 
     return lines
 
 
-def _load_recent_download_activity(days: int = 7) -> list[dict]:
+def _load_recent_download_activity(days: int = 7) -> List[dict]:
     if not os.path.isdir(BG_JOB_DIR):
         return []
     cutoff = datetime.now().timestamp() - (max(1, int(days or 7)) * 86400)
@@ -3267,7 +3268,7 @@ def _load_recent_download_activity(days: int = 7) -> list[dict]:
     return list(chosen.values())
 
 
-def _load_recent_processed_activity(download_folder: str, days: int = 7, limit: int = 8) -> list[dict]:
+def _load_recent_processed_activity(download_folder: str, days: int = 7, limit: int = 8) -> List[dict]:
     merged = _load_recent_payment_activity(download_folder, days=days) + _load_recent_download_activity(days=days)
     merged.sort(key=lambda it: it.get("processed_at") or datetime.min, reverse=True)
     out = []
@@ -3584,7 +3585,7 @@ def cmd_check_emails(notify: bool = True, notify_empty: bool = True) -> dict:
                 or (with_portal and not bool(portal_summary.get("success")))
             )
             download_signal = bool(recent_review_download_activity)
-            section_messages: list[tuple[str, str]] = []  # (msg, topic_key)
+            section_messages: List[Tuple[str, str]] = []  # (msg, topic_key)
             if payment_signal:
                 section_messages.append(("\n".join(payment_lines), "filereview_payment"))
             if review_signal:
@@ -4316,10 +4317,10 @@ def _parse_probe_args(text: str) -> Optional[dict]:
 _RE_APPOINTMENT_SLOT = re.compile(r"^(?P<month>\d{2})(?P<day>\d{2})(?P<ampm>上午|下午|AM|PM)$", re.IGNORECASE)
 
 
-def _split_paper_slot_tokens(tokens: list[str]) -> tuple[list[str], list[dict]]:
+def _split_paper_slot_tokens(tokens: List[str]) -> Tuple[List[str], List[dict]]:
     current_year = datetime.now().year
-    remain: list[str] = []
-    slots: list[dict] = []
+    remain: List[str] = []
+    slots: List[dict] = []
     for token in tokens:
         m = _RE_APPOINTMENT_SLOT.match(str(token or "").strip())
         if not m:

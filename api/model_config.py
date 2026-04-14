@@ -4,7 +4,7 @@ import os
 from typing import Iterable
 
 
-DEFAULT_TEXT_MODEL = "gemma-4-26b-a4b-it-4bit"
+DEFAULT_TEXT_MODEL = "gemma-4-e4b-it-4bit"
 DEFAULT_VISION_MODEL = "GLM-OCR-bf16"
 DEFAULT_OCR_MODEL = "GLM-OCR-bf16"
 DEFAULT_EMBED_MODEL = "modernbert-embed-4bit"
@@ -25,6 +25,9 @@ TEXT_REVIEW_MODEL = _clean(os.environ.get("MAGI_TW_REVIEW_MODEL"), TEXT_PRIMARY_
 GENERAL_MODEL = _clean(os.environ.get("MAGI_OMLX_GENERAL_MODEL"), TEXT_PRIMARY_MODEL)
 SUMMARY_MODEL = _clean(os.environ.get("MAGI_OMLX_SUMMARY_MODEL"), TEXT_PRIMARY_MODEL)
 CODE_MODEL = _clean(os.environ.get("MAGI_OMLX_CODE_MODEL"), TEXT_PRIMARY_MODEL)
+TEXT_HEAVY_MODEL = _clean(os.environ.get("MAGI_TEXT_HEAVY_MODEL"), "gemma-4-26b-a4b-it-4bit")
+TEXT_VERIFY_MODEL_PHI4 = _clean(os.environ.get("MAGI_TEXT_VERIFY_MODEL_PHI4"), "Phi-4-mini-instruct-4bit")
+TEXT_VERIFY_MODEL_SMOL = _clean(os.environ.get("MAGI_TEXT_VERIFY_MODEL_SMOL"), "SmolLM3-3B-Instruct-4bit")
 VISION_MODEL = _clean(os.environ.get("MAGI_OMLX_VISION_MODEL"), DEFAULT_VISION_MODEL)
 OCR_MODEL = _clean(os.environ.get("MAGI_OMLX_OCR_MODEL"), DEFAULT_OCR_MODEL)
 EMBED_MODEL = _clean(os.environ.get("MAGI_OMLX_EMBED_MODEL"), DEFAULT_EMBED_MODEL)

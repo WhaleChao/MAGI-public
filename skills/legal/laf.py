@@ -1401,9 +1401,9 @@ class LAFWebAutomation:
                 self.driver.get(self.LOGIN_URL)
                 time.sleep(2)
 
-                debug_screenshot = self.download_folder / f"debug_login_page_{retry_count + 1}.png"
-                self.driver.save_screenshot(str(debug_screenshot))
-                self.log(f"  📷 登入頁面截圖: {debug_screenshot}")
+                from api.debug_capture import save_debug_screenshot
+                save_debug_screenshot(self.driver, f"debug_login_page_{retry_count + 1}", context="法扶登入頁")
+                self.log(f"  📷 登入頁面截圖: debug_login_page_{retry_count + 1}")
                 self._dump_login_dom_summary()
 
                 wait = WebDriverWait(self.driver, 30)
@@ -1643,7 +1643,8 @@ class LAFWebAutomation:
             if download_btn is None:
                 self.log(f"  ⚠️ 找不到下載按鈕")
                 # 保存截圖供除錯
-                self.driver.save_screenshot(str(self.download_folder / f"debug_no_download_btn_{case_number}.png"))
+                from api.debug_capture import save_debug_screenshot
+                save_debug_screenshot(self.driver, f"debug_no_download_btn_{case_number}", context="法扶找不到下載按鈕")
                 return downloaded
             
             # 點擊下載
@@ -2018,6 +2019,21 @@ class LAFGmailMonitor:
             base, ext = os.path.splitext(file_path)
             file_path = f"{base}{suffix}{ext}"
             ids_to_save = self._general_processed_ids
+            _db_category = "email_laf_general"
+
+        # Cap unbounded growth: keep most recent 3000 when exceeding 5000
+        _MAX_IDS = 5000
+        _TRIM_TO = 3000
+        if len(ids_to_save) > _MAX_IDS:
+            # Python 3.7+ sets preserve insertion order; keep the tail (newest)
+            _all = list(ids_to_save)
+            _trimmed = set(_all[-_TRIM_TO:])
+            ids_to_save.clear()
+            ids_to_save.update(_trimmed)
+            if not suffix:
+                self._processed_ids = ids_to_save
+            else:
+                self._general_processed_ids = ids_to_save
 
         try:
             # 確保目錄存在
@@ -2068,7 +2084,17 @@ class LAFGmailMonitor:
                 if not os.path.exists(self.credentials_path):
                     self.log(f"❌ 找不到 credentials.json: {self.credentials_path}")
                     return False
-                
+
+                # Guard: do NOT launch interactive OAuth in daemon/background context
+                if not sys.stdin.isatty():
+                    self.log("🚨 Gmail OAuth token 已過期且無法自動刷新，需要手動重新授權")
+                    try:
+                        from api.discord_channel_router import send as _dc_send
+                        _dc_send("admin", "🚨 LAF Gmail OAuth token 已過期且無法自動刷新，需要手動重新授權")
+                    except Exception:
+                        pass
+                    return False
+
                 flow = InstalledAppFlow.from_client_secrets_file(
                     self.credentials_path, self.SCOPES
                 )
@@ -2094,12 +2120,12 @@ class LAFGmailMonitor:
             self.log("🔍 正在檢查新信件...")
             # 搜尋近期法扶流程信件。不能只看未讀，否則一旦信件先被人工點開，
             # 背景監控就會永遠錯過那封派案信。
-            lookback_days = 1
+            lookback_days = 3
             try:
-                lookback_days = int(os.environ.get("MAGI_LAF_GMAIL_LOOKBACK_DAYS", "1") or "1")
+                lookback_days = int(os.environ.get("MAGI_LAF_GMAIL_LOOKBACK_DAYS", "3") or "3")
             except Exception:
-                lookback_days = 1
-            lookback_days = max(1, min(lookback_days, 7))
+                lookback_days = 3
+            lookback_days = max(1, min(lookback_days, 14))
             query = (
                 f'(from:@laf.org.tw OR from:laf.server) '
                 f'newer_than:{lookback_days}d '
@@ -2193,7 +2219,7 @@ class LAFGmailMonitor:
                     _gen_already = False
                     try:
                         from skills.ops.dedup_db import is_done as _dd_is_done
-                        _gen_already = _dd_is_done("email_laf", msg_id)
+                        _gen_already = _dd_is_done("email_laf_general", msg_id)
                     except Exception:
                         pass
                     if not _gen_already:
@@ -2696,31 +2722,97 @@ class LAFGmailMonitor:
         if self._monitor_thread:
             self._monitor_thread.join(timeout=5)
     
-    def _monitor_loop(self, interval: int, check_immediately: bool, general_rules: List[Dict] = None):
-        """監控迴圈"""
-        if not check_immediately:
-            time.sleep(interval)
+    def _reauth_if_needed(self) -> bool:
+        """若 token 即將過期或已過期，重新 authenticate 並存回 pickle。"""
+        try:
+            creds = self.credentials
+            if creds is None:
+                return self.authenticate()
+            # 提前 5 分鐘重新整理，避免在掃描途中過期
+            from datetime import timezone as _tz
+            now_utc = datetime.now(_tz.utc).replace(tzinfo=None)
+            expiry = creds.expiry
+            if expiry and hasattr(expiry, 'tzinfo') and expiry.tzinfo:
+                expiry = expiry.replace(tzinfo=None)
+            if expiry and (expiry - now_utc).total_seconds() < 300:
+                self.log("🔄 Gmail token 即將過期，重新整理中…")
+                try:
+                    from google.auth.transport.requests import Request as _Req
+                    creds.refresh(_Req())
+                    with open(self.token_path, 'wb') as _tf:
+                        pickle.dump(creds, _tf)
+                    # 重建 service
+                    from googleapiclient.discovery import build as _build
+                    self.service = _build('gmail', 'v1', credentials=creds)
+                    self.credentials = creds
+                    self.log("✅ Gmail token 已更新並存回 pickle")
+                except Exception as _re:
+                    self.log(f"⚠️ Token refresh 失敗，嘗試完整重新認證: {_re}")
+                    return self.authenticate()
+            return True
+        except Exception as _e:
+            self.log(f"⚠️ _reauth_if_needed 錯誤: {_e}")
+            return False
 
-        while self._running:
-            try:
-                # 1. 檢查法扶信件
-                cases = self.check_emails()
-                for case_info in cases:
-                    if self.callback:
-                        try:
-                            self.callback(case_info)
-                        except Exception as e:
-                            self.log(f"❌ 法扶回呼處理失敗: {e}")
-                
-                # 2. 檢查一般信件
-                if general_rules:
-                    self.check_general_emails(general_rules)
-                
+    def _monitor_loop(self, interval: int, check_immediately: bool, general_rules: List[Dict] = None):
+        """監控迴圈（含 token 自動重新整理與重新認證）"""
+        _log = logging.getLogger(__name__)
+        try:
+            if not check_immediately:
                 time.sleep(interval)
-            
-            except Exception as e:
-                self.log(f"❌ 監控迴圈錯誤: {e}")
-                time.sleep(60)
+
+            _consecutive_errors = 0
+            _last_admin_notify_ts = 0.0  # epoch seconds
+            _ADMIN_NOTIFY_COOLDOWN = 6 * 3600  # 6 hours
+            _ADMIN_NOTIFY_THRESHOLD = 5
+
+            while self._running:
+                try:
+                    # 每輪先確認 token 有效
+                    self._reauth_if_needed()
+
+                    # 1. 檢查法扶信件
+                    cases = self.check_emails()
+                    for case_info in cases:
+                        if self.callback:
+                            try:
+                                self.callback(case_info)
+                            except Exception as e:
+                                self.log(f"❌ 法扶回呼處理失敗: {e}")
+
+                    # 2. 檢查一般信件
+                    if general_rules:
+                        self.check_general_emails(general_rules)
+
+                    _consecutive_errors = 0
+                    time.sleep(interval)
+
+                except Exception as e:
+                    _consecutive_errors += 1
+                    self.log(f"❌ 監控迴圈錯誤 (連續第 {_consecutive_errors} 次): {e}")
+                    # 連續失敗達閾值 → 發一次 admin 通知（有冷卻）
+                    if _consecutive_errors >= _ADMIN_NOTIFY_THRESHOLD:
+                        _now = time.time()
+                        if (_now - _last_admin_notify_ts) >= _ADMIN_NOTIFY_COOLDOWN:
+                            _last_admin_notify_ts = _now
+                            _msg = f"🚨 LAF Gmail 監控連續 {_consecutive_errors} 次失敗，請檢查 OAuth token"
+                            self.log(_msg)
+                            try:
+                                from api.discord_channel_router import send as _dc_send
+                                _dc_send("admin", _msg)
+                            except Exception:
+                                pass
+                    # 連續失敗 2 次就重新認證
+                    if _consecutive_errors >= 2:
+                        self.log("🔄 嘗試重新認證 Gmail…")
+                        try:
+                            self.authenticate()
+                            _consecutive_errors = 0
+                        except Exception as _ae:
+                            self.log(f"❌ 重新認證失敗: {_ae}")
+                    time.sleep(min(60 * _consecutive_errors, 300))
+        finally:
+            _log.info("LAF Gmail monitor thread exiting")
 
 
 # ==============================================================================
@@ -4994,21 +5086,30 @@ class LAFAutomationManager:
             return
             
         try:
+            # 新路徑：統一清理 .runtime/debug_screenshots/
+            try:
+                from api.debug_capture import cleanup_old as _debug_cleanup_old
+                _runtime_deleted = _debug_cleanup_old(48)
+                if _runtime_deleted > 0:
+                    self.log(f"  ✅ 已清理 .runtime/debug_screenshots/ 中 {_runtime_deleted} 個舊 debug 檔")
+            except Exception:
+                pass
+
             download_folder = self.web_automation.download_folder
             if not download_folder or not os.path.exists(download_folder):
                 return
-            
-            # 要刪除的 debug 檔案模式
+
+            # 舊路徑相容清理（captcha 截圖仍寫到 tempdir）
             debug_patterns = [
                 "debug_captcha*.png",
                 "debug_login_page*.png",
             ]
-            
+
             import glob
             for pattern in debug_patterns:
                 for file_path in glob.glob(str(download_folder / pattern)):
                     _safe_remove(file_path, log=self.log)
-                        
+
         except Exception as e:
             self.log(f"  ⚠️ 清理 debug 截圖時發生錯誤: {e}")
 

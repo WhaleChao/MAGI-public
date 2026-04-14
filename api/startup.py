@@ -20,6 +20,12 @@ from urllib.parse import urlparse
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
+# Once-guard: run_startup_hooks() must execute at most once per process
+# ---------------------------------------------------------------------------
+_STARTUP_HOOKS_DONE = False
+_STARTUP_HOOKS_LOCK = threading.Lock()
+
+# ---------------------------------------------------------------------------
 # Directory / path constants
 # ---------------------------------------------------------------------------
 AGENT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".agent"))
@@ -776,6 +782,16 @@ def run_startup_hooks(app, orchestrator):
         app         - the Flask app instance
         orchestrator - the main orchestrator instance
     """
+    global _STARTUP_HOOKS_DONE
+    with _STARTUP_HOOKS_LOCK:
+        if _STARTUP_HOOKS_DONE:
+            logger.warning(
+                "run_startup_hooks() called again in the same process — skipping "
+                "(double-import or circular-import detected; LAF monitor already running)"
+            )
+            return
+        _STARTUP_HOOKS_DONE = True
+
     _startup_enabled = str(
         os.environ.get("MAGI_DISABLE_SERVER_STARTUP_HOOKS", "0")
     ).strip().lower() not in {"1", "true", "yes", "on"}

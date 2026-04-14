@@ -40,8 +40,8 @@ _RESOLVE_TTL = 120  # 快取 120 秒
 
 
 def _ping_ok(host: str, timeout: int = 2) -> bool:
-    """檢查主機是否可達：優先用 TCP 445 (SMB)，fallback 到 ICMP ping。
-    Synology NAS 可能擋 ICMP，所以 TCP port check 更可靠。"""
+    """檢查 NAS 是否可達：TCP 445 (SMB port) connect，fallback 到 ICMP ping。
+    注意：TCP connect 成功不代表 SMB 認證會通過，但代表 NAS 在線。"""
     import socket
     try:
         sock = socket.create_connection((host, 445), timeout=timeout)
@@ -49,7 +49,7 @@ def _ping_ok(host: str, timeout: int = 2) -> bool:
         return True
     except (OSError, socket.timeout):
         pass
-    # fallback: ICMP ping
+    # fallback: ICMP ping（Synology 可能擋 ICMP，TCP 更可靠）
     try:
         r = subprocess.run(
             ["ping", "-c", "1", "-W", str(timeout), host],
@@ -100,6 +100,9 @@ _SHARES: list[tuple[str, str]] = [
     ("lumi",  "/Volumes/lumi"),
 ]
 
+# 當 /Volumes/<share> 因 root 權限無法建目錄時的 fallback
+_USER_MOUNT_ROOT = os.path.expanduser("~/.magi_mounts")
+
 # ── 掛載邏輯 ─────────────────────────────────────────────────
 
 def _is_mounted(volume_path: str) -> bool:
@@ -135,27 +138,121 @@ def _is_correct_host(volume_path: str) -> bool:
     return False
 
 
+def _force_unmount_stale(volume_path: str) -> None:
+    """偵測並清理 stale SMB mount（掛載點存在但 SMB session 已斷）。"""
+    for candidate in (volume_path, f"{volume_path}-1", f"{volume_path}-2"):
+        if not os.path.exists(candidate):
+            continue
+        try:
+            # 用 os.stat 測試可存取性（stale mount 通常會 hang 或 EIO）
+            os.stat(candidate)
+        except OSError:
+            logger.info("偵測到 stale mount %s，強制卸載", candidate)
+            _unmount_path(candidate)
+
+
 def _mount_share(share_name: str, volume_path: str) -> bool:
-    """用 osascript mount volume 靜默掛載（走 Finder 原生 Keychain，不彈窗）。"""
+    """掛載 NAS share。策略：
+    1. 先清理 stale mount（SMB session 斷掉但 mount point 殘留）
+    2. osascript mount volume（走 Finder Keychain，30s timeout）
+    3. 若 osascript 失敗，fallback 到 mount_smbfs（CLI 直接掛載）
+    """
+    # Step 0: 清理 stale mount
+    _force_unmount_stale(volume_path)
+
     smb_url = f"smb://{NAS_USER}@{NAS_HOST}/{share_name}"
+
+    # Step 1: osascript mount volume（Finder Keychain）
     try:
-        # osascript mount volume 讓 Finder 處理認證（自動用 Keychain）
-        result = subprocess.run(
+        subprocess.run(
             ["osascript", "-e", f'mount volume "{smb_url}"'],
             capture_output=True, text=True, timeout=30,
         )
-        # 等待掛載完成
-        for _ in range(15):
+        for _ in range(10):
             time.sleep(1)
             if _is_mounted(volume_path):
                 return True
-
-        logger.warning("NAS mount 逾時: %s（15 秒內未出現 %s）", smb_url, volume_path)
-        return False
-
+    except subprocess.TimeoutExpired:
+        logger.warning("osascript mount timeout (30s): %s", smb_url)
     except Exception as e:
-        logger.error("NAS mount 異常: %s → %s", smb_url, e)
-        return False
+        logger.warning("osascript mount failed: %s → %s", smb_url, e)
+
+    # Step 2: mount_smbfs fallback（不走 Finder，直接 CLI 掛載）
+    # osascript 失敗時用 mount_smbfs 帶 keychain 密碼
+    _password = _get_nas_password_from_keychain()
+
+    # 確保 /Volumes/<share> mount point 存在且 user 有權限
+    _ensure_volume_mount_point(volume_path)
+
+    for mount_target in (volume_path, os.path.join(_USER_MOUNT_ROOT, share_name)):
+        try:
+            os.makedirs(mount_target, exist_ok=True)
+        except OSError:
+            continue
+        mount_url = f"//{NAS_USER}@{NAS_HOST}/{share_name}"
+        if _password:
+            mount_url = f"//{NAS_USER}:{_password}@{NAS_HOST}/{share_name}"
+        try:
+            result = subprocess.run(
+                ["mount_smbfs", "-o", "soft", mount_url, mount_target],
+                capture_output=True, text=True, timeout=15,
+            )
+            if result.returncode == 0:
+                for _ in range(5):
+                    time.sleep(1)
+                    if _is_mounted(mount_target):
+                        logger.info("mount_smbfs fallback 成功: %s → %s", share_name, mount_target)
+                        return True
+            else:
+                logger.debug("mount_smbfs %s → rc=%d: %s", mount_target, result.returncode, result.stderr.strip()[:100])
+        except subprocess.TimeoutExpired:
+            logger.debug("mount_smbfs timeout (15s): %s → %s", share_name, mount_target)
+        except Exception as e:
+            logger.debug("mount_smbfs 異常: %s → %s: %s", share_name, mount_target, e)
+
+    logger.error("NAS mount 失敗（osascript + mount_smbfs 均未成功）: %s", smb_url)
+    return False
+
+
+def _ensure_volume_mount_point(volume_path: str) -> None:
+    """確保 /Volumes/<share> mount point 存在且當前使用者有 mount 權限。
+    /Volumes/ 下建目錄需要 root，用 osascript 取得 admin 權限。"""
+    if os.path.isdir(volume_path):
+        # 檢查 owner 是否是當前使用者（mount_smbfs 需要）
+        try:
+            st = os.stat(volume_path)
+            if st.st_uid != os.getuid():
+                subprocess.run(
+                    ["osascript", "-e", f'do shell script "chown {os.getuid()}:staff {volume_path}" with administrator privileges'],
+                    capture_output=True, text=True, timeout=10,
+                )
+        except Exception:
+            pass
+        return
+    # 目錄不存在，用 osascript 建立
+    try:
+        subprocess.run(
+            ["osascript", "-e", f'do shell script "mkdir -p {volume_path} && chown {os.getuid()}:staff {volume_path}" with administrator privileges'],
+            capture_output=True, text=True, timeout=10,
+        )
+    except Exception as e:
+        logger.debug("Cannot create %s via osascript: %s", volume_path, e)
+
+
+def _get_nas_password_from_keychain() -> str:
+    """從 macOS keychain 取出 NAS SMB 密碼。"""
+    try:
+        result = subprocess.run(
+            ["security", "find-internet-password", "-s", NAS_HOST, "-a", NAS_USER, "-g"],
+            capture_output=True, text=True, timeout=5,
+        )
+        for line in result.stderr.splitlines():
+            if line.startswith("password: "):
+                pw = line.split("password: ", 1)[1].strip().strip('"')
+                return pw
+    except Exception:
+        pass
+    return ""
 
 
 def _unmount_path(volume_path: str) -> None:
@@ -226,9 +323,10 @@ def ensure_nas_mounts() -> dict[str, bool]:
     for share_name, volume_path in _SHARES:
         short_name = volume_path.split("/")[-1]
 
-        # 檢查正名和 -N 後綴是否有可用掛載
+        # 檢查正名、-N 後綴、user-level mount 是否有可用掛載
+        user_mount = os.path.join(_USER_MOUNT_ROOT, share_name)
         effective_path = volume_path
-        for candidate in (volume_path, f"{volume_path}-1", f"{volume_path}-2"):
+        for candidate in (volume_path, f"{volume_path}-1", f"{volume_path}-2", user_mount):
             if _is_mounted(candidate) and _is_correct_host(candidate):
                 effective_path = candidate
                 break

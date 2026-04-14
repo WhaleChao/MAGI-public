@@ -394,31 +394,6 @@ def summarize_text(text, timeout_sec=None, summary_length="medium"):
     content = (text or "").strip()
     if not content:
         return {"success": False, "error": "missing text"}
-    try:
-        from skills.bridge.llm_direct import feature_enabled as _codex_feature_enabled, summarize_with_codex
-
-        codex_max_chars = int(os.environ.get("MAGI_CODEX_SUMMARY_MAX_CHARS", "12000") or "12000")
-        if _codex_feature_enabled("summary") and len(content) <= max(1200, codex_max_chars):
-            codex_res = summarize_with_codex(
-                content,
-                summary_length=summary_length,
-                timeout_sec=int(os.environ.get("MAGI_CODEX_SUMMARY_TIMEOUT_SEC", "240") or "240"),
-            )
-            codex_text = _summary_postprocess(str(codex_res.get("text") or ""))
-            if codex_res.get("success") and codex_text:
-                return {
-                    "success": True,
-                    "text": codex_text,
-                    "provider": "openclaw_codex",
-                    "model": codex_res.get("model", "gpt-5.4"),
-                    "agent": codex_res.get("agent_id", "codex-distributed"),
-                    "error": "",
-                }
-            if codex_res.get("error"):
-                logger.warning("summarize_text: codex route failed: %s", codex_res.get("error"))
-    except Exception as codex_err:
-        logger.warning("summarize_text: codex route skipped: %s", codex_err)
-
     _length_prompts = {
         "short": "最多 5 點，每點一句話",
         "medium": "保留決策與行動重點，5-8 點，每點 1-2 句話（包含關鍵事實）",
@@ -626,7 +601,7 @@ def _resolve_whisper_bin() -> str:
     return ""
 
 
-def _transcribe_with_whisper_cli(audio_path: str, language: Optional[str] = None, initial_prompt: Optional[str] = None) -> dict:
+def _transcribe_with_whisper_cli(audio_path: str, language: Optional[str] = None, initial_prompt: Optional[str] = None, model: Optional[str] = None) -> dict:
     """
     Fallback transcription using OpenAI Whisper CLI.
     """
@@ -634,7 +609,7 @@ def _transcribe_with_whisper_cli(audio_path: str, language: Optional[str] = None
     if not whisper_bin:
         return {"success": False, "error": "whisper_cli_not_found"}
 
-    model = (os.environ.get("MAGI_WHISPER_MODEL") or "medium").strip() or "medium"
+    model = (model or os.environ.get("MAGI_WHISPER_MODEL") or "medium").strip() or "medium"
     timeout_sec = int(os.environ.get("MAGI_WHISPER_TIMEOUT_SEC", "900") or "900")
     timeout_sec = max(30, min(timeout_sec, 3600))
     forced_language = (language or os.environ.get("MAGI_WHISPER_LANGUAGE") or "").strip()

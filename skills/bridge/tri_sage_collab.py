@@ -8,6 +8,7 @@ import struct
 import time
 import wave
 from datetime import datetime
+from typing import List, Optional, Tuple
 
 import requests
 
@@ -17,8 +18,10 @@ from skills.bridge import balthasar_bridge, melchior_bridge, melchior_client
 from skills.documents.vector_pipeline import ingest_sections_to_vector_memory, ingest_text_to_vector_memory
 import hashlib
 from concurrent.futures import ThreadPoolExecutor
+import threading as _threading
 
 _bg_executor = ThreadPoolExecutor(max_workers=3)
+_bg_semaphore = _threading.BoundedSemaphore(10)  # cap pending ingestion jobs
 from skills.research.web_research import fetch_url_sections
 _MAGI_ROOT = os.path.abspath(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
@@ -50,7 +53,7 @@ def _extract_first_url(text: str) -> str:
     return url
 
 
-def _chunk_text(text: str, chunk_size: int, max_chunks: int) -> list[str]:
+def _chunk_text(text: str, chunk_size: int, max_chunks: int) -> List[str]:
     s = (text or "").strip()
     if not s:
         return []
@@ -62,7 +65,7 @@ def _chunk_text(text: str, chunk_size: int, max_chunks: int) -> list[str]:
     return out
 
 
-def _sample_chunks_evenly(chunks: list[str], max_samples: int) -> list[tuple[int, str]]:
+def _sample_chunks_evenly(chunks: List[str], max_samples: int) -> List[Tuple[int, str]]:
     """
     Pick up to max_samples chunks spread across the full document.
     Returns list of (1-based index, chunk_text).
@@ -244,15 +247,23 @@ def translate_text(
         doc_key = f"url-{hashlib.sha1((url or '').encode('utf-8')).hexdigest()[:12]}"
         try:
             # Offload vector DB ingestion to the background executor so we don't block the API
-            _bg_executor.submit(
-                ingest_sections_to_vector_memory,
-                url=url,
-                title=page_title,
-                sections=sections,
-                chunk_chars=vector_chunk_chars,
-                overlap=vector_overlap,
-                max_chunks_total=vector_max_chunks,
-            )
+            if _bg_semaphore.acquire(blocking=False):
+                def _ingest_sections_and_release(*a, **kw):
+                    try:
+                        return ingest_sections_to_vector_memory(*a, **kw)
+                    finally:
+                        _bg_semaphore.release()
+                _bg_executor.submit(
+                    _ingest_sections_and_release,
+                    url=url,
+                    title=page_title,
+                    sections=sections,
+                    chunk_chars=vector_chunk_chars,
+                    overlap=vector_overlap,
+                    max_chunks_total=vector_max_chunks,
+                )
+            else:
+                logging.getLogger(__name__).debug("bg ingestion queue full (>10 pending), skipping vector ingest for %s", url)
         except Exception:
             logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 251, exc_info=True)
 
@@ -352,16 +363,24 @@ def translate_text(
         doc_key = f"text-{hashlib.sha1((content or '').encode('utf-8')).hexdigest()[:12]}"
         try:
             # Offload vector DB ingestion to the background executor so we don't block the API
-            _bg_executor.submit(
-                ingest_text_to_vector_memory,
-                kind="text",
-                primary=content,  # hashed into doc_key internally
-                title="pasted_text",
-                text=content,
-                chunk_chars=vector_chunk_chars,
-                overlap=vector_overlap,
-                max_chunks_total=vector_max_chunks,
-            )
+            if _bg_semaphore.acquire(blocking=False):
+                def _ingest_text_and_release(*a, **kw):
+                    try:
+                        return ingest_text_to_vector_memory(*a, **kw)
+                    finally:
+                        _bg_semaphore.release()
+                _bg_executor.submit(
+                    _ingest_text_and_release,
+                    kind="text",
+                    primary=content,  # hashed into doc_key internally
+                    title="pasted_text",
+                    text=content,
+                    chunk_chars=vector_chunk_chars,
+                    overlap=vector_overlap,
+                    max_chunks_total=vector_max_chunks,
+                )
+            else:
+                logging.getLogger(__name__).debug("bg ingestion queue full (>10 pending), skipping vector ingest for pasted text")
         except Exception:
             logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 360, exc_info=True)
 
@@ -772,10 +791,8 @@ def transcribe_audio(audio_path: str) -> dict:
         # 1/2) Stability-first auto mode: use a small whisper CLI model first so
         # short live transcribe requests return quickly instead of hanging on MLX.
         if engine == "auto":
-            previous_model = os.environ.get("MAGI_WHISPER_MODEL")
             try:
-                os.environ["MAGI_WHISPER_MODEL"] = auto_cli_model
-                cli_fast = balthasar_bridge._transcribe_with_whisper_cli(path)
+                cli_fast = balthasar_bridge._transcribe_with_whisper_cli(path, model=auto_cli_model)
                 if isinstance(cli_fast, dict) and cli_fast.get("success"):
                     return {
                         "success": True,
@@ -791,11 +808,6 @@ def transcribe_audio(audio_path: str) -> dict:
             except Exception as e:
                 last_err = str(e)
                 _tlog_tr.warning("Whisper CLI fast path attempt %d/%d failed: %s", attempt, max_retries, e)
-            finally:
-                if previous_model is None:
-                    os.environ.pop("MAGI_WHISPER_MODEL", None)
-                else:
-                    os.environ["MAGI_WHISPER_MODEL"] = previous_model
 
         # 2) Existing default path
         try:

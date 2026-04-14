@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import re
 import subprocess
@@ -243,22 +244,26 @@ def _translate_via_google_gtx(text: str, target_lang: str, timeout_sec: int = 8)
 
     translated: List[str] = []
     for c in chunks[:120]:
-        q = urllib.parse.quote(c)
-        url = (
-            "https://translate.googleapis.com/translate_a/single"
-            f"?client=gtx&sl=auto&tl={urllib.parse.quote(tl)}&dt=t&q={q}"
-        )
-        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-        with urllib.request.urlopen(req, timeout=max(3, timeout_sec)) as resp:
-            raw = resp.read().decode("utf-8", "ignore")
-        data = json.loads(raw)
-        parts = []
-        if isinstance(data, list) and data and isinstance(data[0], list):
-            for seg in data[0]:
-                if isinstance(seg, list) and seg and seg[0]:
-                    parts.append(str(seg[0]))
-        piece = "".join(parts).strip()
-        translated.append(piece or c)
+        try:
+            q = urllib.parse.quote(c)
+            url = (
+                "https://translate.googleapis.com/translate_a/single"
+                f"?client=gtx&sl=auto&tl={urllib.parse.quote(tl)}&dt=t&q={q}"
+            )
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=max(3, timeout_sec)) as resp:
+                raw = resp.read().decode("utf-8", "ignore")
+            data = json.loads(raw)
+            parts = []
+            if isinstance(data, list) and data and isinstance(data[0], list):
+                for seg in data[0]:
+                    if isinstance(seg, list) and seg and seg[0]:
+                        parts.append(str(seg[0]))
+            piece = "".join(parts).strip()
+            translated.append(piece or c)
+        except Exception:
+            # On per-chunk failure, keep original text and continue
+            translated.append(c)
     return "\n\n".join(translated).strip()
 
 

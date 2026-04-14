@@ -349,6 +349,12 @@ class CaptchaSolver:
             if RapidOCR:
                 try:
                     self.ocr = RapidOCR()
+                    # Ensure PIL and numpy are available for solve_from_element
+                    global Image, np
+                    if Image is None:
+                        from PIL import Image  # noqa: F811
+                    if np is None:
+                        import numpy as np  # noqa: F811
                 except Exception as e:
                     print(f"⚠️ RapidOCR 初始化失敗: {e}")
     
@@ -833,6 +839,9 @@ class CourtRecordDownloader:
         # ★ Gemini 解析快取（避免重複調用 API）
         self.gemini_cache_file = os.path.join(self.download_folder, '.gemini_parse_cache.json')
 
+        self.gemini_cache = self._load_gemini_cache()
+        os.makedirs(self.download_folder, exist_ok=True)
+
         import atexit
         atexit.register(self._quit_driver)
 
@@ -848,9 +857,6 @@ class CourtRecordDownloader:
 
     def __del__(self):
         self._quit_driver()
-        self.gemini_cache = self._load_gemini_cache()
-        
-        os.makedirs(self.download_folder, exist_ok=True)
 
     def log(self, message: str):
         timestamp = datetime.now().strftime("%H:%M:%S")
@@ -1335,8 +1341,12 @@ class CourtRecordDownloader:
             """
             results = self.db.execute(query, fetch='all') or []
             
+            _field_names = ('id', 'case_number', 'court_name', 'court_case_number',
+                           'case_type', 'client_name', 'folder_path')
             cases = []
             for row in results:
+                if isinstance(row, (tuple, list)):
+                    row = dict(zip(_field_names, row))
                 case = CourtCase(
                     case_id=row.get('id', ''),
                     case_number=row.get('case_number', ''),
@@ -1604,10 +1614,10 @@ class CourtRecordDownloader:
             time.sleep(2)
             if (os.environ.get("MAGI_EZLAWYER_DEBUG", "0") or "0").strip().lower() in {"1", "true", "yes", "on"}:
                 try:
-                    self.driver.save_screenshot("debug_search_page.png")
-                    with open("debug_search_page.html", "w", encoding="utf-8") as f:
-                        f.write(self.driver.page_source)
-                    self.log("  [DEBUG] Saved debug_search_page.png and html")
+                    from api.debug_capture import save_debug_screenshot, save_debug_html
+                    save_debug_screenshot(self.driver, "debug_search_page", context="筆錄搜尋頁")
+                    save_debug_html(self.driver, "debug_search_page", context="筆錄搜尋頁")
+                    self.log("  [DEBUG] Saved debug_search_page")
                 except Exception:
                     logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 1581, exc_info=True)
             
@@ -2077,7 +2087,13 @@ class CourtRecordDownloader:
                 self.log(f"⏱️ 已超過最大執行時間 {max_runtime_sec}s，停止後續案件（已處理 {idx-1}/{len(cases)}）。")
                 break
 
-            downloaded_files = self.download_record(case)
+            _download_ok = True
+            try:
+                downloaded_files = self.download_record(case)
+            except Exception as _dl_exc:
+                self.log(f"  ❌ download_record exception: {_dl_exc}")
+                downloaded_files = []
+                _download_ok = False
 
             if downloaded_files:
                 results["success"] += 1
@@ -2086,6 +2102,9 @@ class CourtRecordDownloader:
                 self.move_to_case_folder(case, downloaded_files)
 
                 results["files"].extend(downloaded_files)
+            elif _download_ok:
+                # Query succeeded but all files were deduped — count as success (noop)
+                results["success"] += 1
             else:
                 results["failed"] += 1
 
@@ -2094,7 +2113,7 @@ class CourtRecordDownloader:
                 "court_case_number": case.court_case_number,
                 "client_name": getattr(case, "client_name", ""),
                 "files": downloaded_files,
-                "success": len(downloaded_files) > 0
+                "success": _download_ok,
             })
 
             time.sleep(2)
@@ -2622,8 +2641,8 @@ class CourtRecordDownloader:
         # 尋找案件資料夾
         transcript_folder = None
         if case.folder_path:
-            local_folder_path = self.db.translate_path_to_local(case.folder_path)
-            
+            local_folder_path = translate_case_path_to_local(case.folder_path)
+
             # ★ Debug Log for Packaged App
             self.log(f"  [DEBUG] 原路徑: {case.folder_path}")
             self.log(f"  [DEBUG] 轉換後路徑: {local_folder_path}")
@@ -2764,7 +2783,8 @@ class CourtRecordDownloader:
         """
         try:
             import hashlib, re as _re
-            data = open(filepath, "rb").read()
+            with open(filepath, "rb") as _fh:
+                data = _fh.read()
             # 1. 歸零時間戳
             data = _re.sub(
                 rb"/(?:Creation|Mod)Date\s*\(D:\d{14}[^)]*\)",
@@ -2879,7 +2899,10 @@ class CourtRecordDownloader:
                 continue
             if md5 in seen_md5:
                 try:
-                    os.remove(fpath)
+                    if safe_remove:
+                        safe_remove(fpath, reason="cleanup_dup", allow_delete=True, log=self.log)
+                    else:
+                        os.remove(fpath)
                     stats["removed"] += 1
                     self.log(f"  🗑️ 移除重複: {fname} (與 {os.path.basename(seen_md5[md5])} 內容相同)")
                 except Exception as e:
@@ -2971,7 +2994,7 @@ class CourtRecordDownloader:
                 if not case.folder_path:
                     continue
                 
-                local_path = self.db.translate_path_to_local(case.folder_path)
+                local_path = translate_case_path_to_local(case.folder_path)
                 transcript_folder = self.find_transcript_folder(local_path)
                 
                 if not transcript_folder or not os.path.exists(transcript_folder):
@@ -3172,7 +3195,7 @@ class CourtRecordDownloader:
                 if not case.folder_path:
                     continue
                 
-                local_path = self.db.translate_path_to_local(case.folder_path)
+                local_path = translate_case_path_to_local(case.folder_path)
                 transcript_folder = self.find_transcript_folder(local_path)
                 
                 if not transcript_folder or not os.path.exists(transcript_folder):
@@ -4304,7 +4327,8 @@ class TranscriptAutoDownloader:
         """
         try:
             import hashlib, re as _re
-            data = open(filepath, "rb").read()
+            with open(filepath, "rb") as _fh:
+                data = _fh.read()
             # 1. 歸零時間戳
             data = _re.sub(
                 rb"/(?:Creation|Mod)Date\s*\(D:\d{14}[^)]*\)",

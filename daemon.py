@@ -167,6 +167,9 @@ REAPER_SAFE_UTILITIES = (
     "pkuseg_py311",                          # PKUSeg sidecar interpreter
 )
 
+# ── Reaper dedup: avoid retrying the same stale PID every cycle ──
+_REAPER_ZOMBIE_SEEN = set()  # type: set[int]
+
 # ── 向後相容別名（供 server.py 等 import）──
 _ORPHAN_GRACE_BY_MARKER = REAPER_GRACE_PERIODS
 _WORKER_MARKERS = tuple(REAPER_GRACE_PERIODS.keys())
@@ -1069,6 +1072,9 @@ def reap_orphan_workers(*, force: bool = False, dry_run: bool = False) -> str:
             # 安全工具排除
             if any(safe in cmd for safe in REAPER_SAFE_UTILITIES):
                 continue
+            # Skip PIDs already attempted in a previous reaper cycle
+            if pid in _REAPER_ZOMBIE_SEEN:
+                continue
             reason = "STALE_UNPROTECTED"
             if not dry_run:
                 _write_autopilot_kill_reason(pid, f"reaper: stale Python 進程已執行 {etimes}s")
@@ -1077,6 +1083,7 @@ def reap_orphan_workers(*, force: bool = False, dry_run: bool = False) -> str:
                     killed.append((pid, ppid, etimes, cmd, reason))
                 except OSError:
                     pass
+                _REAPER_ZOMBIE_SEEN.add(pid)
             else:
                 spared.append(f"⏰ {reason} PID {pid} age={etimes}s — {cmd[:60]}")
 
@@ -1098,6 +1105,10 @@ def reap_orphan_workers(*, force: bool = False, dry_run: bool = False) -> str:
         for pid, ppid, etimes, cmd, reason in killed[:20]
     ]
     _write_state(_snapshot_counts(rows=ps_rows))
+
+    # Prune _REAPER_ZOMBIE_SEEN: remove PIDs no longer in the process table
+    _live_pids = {int(r[0]) for r in ps_rows} if ps_rows else set()
+    _REAPER_ZOMBIE_SEEN.intersection_update(_live_pids)
 
     # ── Build report ──
     return _build_reap_report(killed, spared, dry_run)

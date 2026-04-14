@@ -41,9 +41,22 @@ FAIL_THRESHOLD="${MAGI_OMLX_WATCHDOG_FAIL_THRESHOLD:-3}"
 COOLDOWN_SEC="${MAGI_OMLX_WATCHDOG_COOLDOWN_SEC:-150}"
 RESTART_GRACE_SEC="${MAGI_OMLX_WATCHDOG_RESTART_GRACE_SEC:-25}"
 # PROBE_MODEL kept for state JSON backward compatibility (no longer used for inference)
-PROBE_MODEL="${MAGI_OMLX_WATCHDOG_MODEL:-${MAGI_OMLX_GENERAL_MODEL:-gemma-4-26b-a4b-it-4bit}}"
+PROBE_MODEL="${MAGI_OMLX_WATCHDOG_MODEL:-${MAGI_OMLX_GENERAL_MODEL:-gemma-4-e4b-it-4bit}}"
+PROFILE_FILE="/Users/ai/.omlx/active_profile"
+SWITCH_GRACE_SEC="${MAGI_OMLX_SWITCH_GRACE_SEC:-90}"
 
 fail_count=0
+_switch_ts=0  # 上次模型切換時間
+
+get_active_profile() {
+    cat "$PROFILE_FILE" 2>/dev/null || echo "day"
+}
+
+is_in_switch_grace() {
+    local now
+    now=$(date +%s)
+    [ $((now - _switch_ts)) -lt "${SWITCH_GRACE_SEC}" ]
+}
 
 log() {
     printf '%s [watchdog] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >>"${LOG_FILE}"
@@ -201,6 +214,13 @@ main_loop() {
     log "watchdog started (interval=${CHECK_INTERVAL}s timeout=${PROBE_TIMEOUT}s threshold=${FAIL_THRESHOLD} model=${PROBE_MODEL})"
 
     while true; do
+        # 模型切換寬限期：切換後 90 秒不進行 probe（模型載入中）
+        if is_in_switch_grace; then
+            log "model switch grace period — skipping probe"
+            sleep "${CHECK_INTERVAL}"
+            continue
+        fi
+
         # Training lock: 訓練進行中暫停監控，避免與 distill training 互打
         if is_training_locked; then
             fail_count=0
@@ -230,6 +250,17 @@ main_loop() {
             if [ "${fail_count}" -ge "${FAIL_THRESHOLD}" ]; then
                 restart_omlx "probe_timeout_or_invalid_response"
                 continue
+            fi
+        fi
+
+        # ── 日間模式：Phi-4 (8082) / SmolLM3 (8083) 存活確認（不重啟，只記錄）──
+        _active_profile=$(get_active_profile)
+        if [ "$_active_profile" = "day" ]; then
+            if ! curl --silent --connect-timeout 2 --max-time 4 "http://127.0.0.1:8082/v1/models" >/dev/null 2>&1; then
+                log "WARN: Phi-4 (8082) not responding (day mode)"
+            fi
+            if ! curl --silent --connect-timeout 2 --max-time 4 "http://127.0.0.1:8083/v1/models" >/dev/null 2>&1; then
+                log "WARN: SmolLM3 (8083) not responding (day mode)"
             fi
         fi
 

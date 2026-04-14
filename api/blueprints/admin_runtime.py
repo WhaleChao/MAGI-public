@@ -650,9 +650,19 @@ def create_admin_runtime_blueprint(
             logger.debug("silent-catch in health attachment_jobs", exc_info=True)
 
         try:
-            from api.nas_mount_guard import _SHARES, _is_mounted
+            from api.nas_mount_guard import _SHARES, _is_mounted, _USER_MOUNT_ROOT
+            import os as _os_health
 
-            checks["nas"] = {vol.split("/")[-1]: _is_mounted(vol) for _, vol in _SHARES}
+            def _nas_check(share_name, vol):
+                if _is_mounted(vol):
+                    return True
+                for suffix in ("-1", "-2"):
+                    if _is_mounted(vol + suffix):
+                        return True
+                user_vol = _os_health.path.join(_USER_MOUNT_ROOT, share_name)
+                return _is_mounted(user_vol)
+
+            checks["nas"] = {vol.split("/")[-1]: _nas_check(name, vol) for name, vol in _SHARES}
         except Exception:
             logger.debug("silent-catch in health nas", exc_info=True)
 
