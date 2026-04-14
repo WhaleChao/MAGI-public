@@ -1497,6 +1497,43 @@ if __name__ == "__main__":
     # 2.5 Start Tools API (external routes / connections checks)
     start_process("ToolsAPI", f"{_PYTHON} api/tools_api.py")
 
+    # 2.55 oMLX 三哲人審查員（Phi-4 + SmolLM3）日間自動啟動
+    # 夜間模式由 omlx_switch_model.sh night 負責 bootout
+    if not _is_night_window():
+        try:
+            _uid = os.getuid()
+            _phi4_plist = os.path.expanduser("~/Library/LaunchAgents/com.magi.omlx-phi4.plist")
+            _smol_plist = os.path.expanduser("~/Library/LaunchAgents/com.magi.omlx-smol.plist")
+            for _label, _plist, _port in [
+                ("com.magi.omlx-phi4", _phi4_plist, 8082),
+                ("com.magi.omlx-smol", _smol_plist, 8083),
+            ]:
+                if not os.path.exists(_plist):
+                    logger.warning("oMLX reviewer plist not found: %s", _plist)
+                    continue
+                # 檢查是否已在線
+                import socket as _sock
+                _already_up = False
+                try:
+                    with _sock.socket(_sock.AF_INET, _sock.SOCK_STREAM) as _s:
+                        _s.settimeout(1)
+                        _already_up = _s.connect_ex(("127.0.0.1", _port)) == 0
+                except Exception:
+                    pass
+                if _already_up:
+                    logger.info("oMLX reviewer %s already on port %d — skip", _label, _port)
+                    continue
+                # bootout（忽略錯誤）→ bootstrap → kickstart
+                os.system(f'launchctl bootout gui/{_uid}/{_label} 2>/dev/null')
+                os.system(f'launchctl bootstrap gui/{_uid} {_plist} 2>/dev/null')
+                os.system(f'launchctl kickstart -kp gui/{_uid}/{_label}')
+                logger.info("✅ oMLX reviewer %s kicked on port %d", _label, _port)
+            logger.info("✅ 三哲人審查員啟動完成（日間模式）")
+        except Exception as e:
+            logger.warning("⚠️ oMLX reviewers kickstart failed: %s", e)
+    else:
+        logger.info("🌙 夜間模式：跳過 Phi-4/SmolLM3 啟動")
+
     # 2.6 OpenClaw cron bridge (排程來源在 OpenClaw；本機執行允許清單命令)
     # OpenClawCron removed (Phase 0)
 
