@@ -52,46 +52,56 @@ OMLX_E4B_BASE = os.environ.get("MAGI_OMLX_BASE", f"http://127.0.0.1:{OMLX_E4B_PO
 OMLX_PHI4_BASE = f"http://127.0.0.1:{OMLX_PHI4_PORT}"
 OMLX_SMOL_BASE = f"http://127.0.0.1:{OMLX_SMOL_PORT}"
 
-# ── 三模型性格定義 ──
+# ── Soul 載入 ──
+def _load_soul(name):
+    # type: (str) -> str
+    """從 docs/soul/SOUL_<NAME>.md 載入靈魂定義。找不到時回傳空字串。"""
+    try:
+        magi_root = os.environ.get(
+            "MAGI_ROOT",
+            os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        )
+        soul_path = os.path.join(magi_root, "docs", "soul", "SOUL_{}.md".format(name.upper()))
+        with open(soul_path, "r", encoding="utf-8") as f:
+            return f.read().strip()
+    except Exception:
+        return ""
+
+
+# 啟動時載入（module level，只讀一次）
+_SOUL_CASPER = _load_soul("CASPER")
+_SOUL_MELCHIOR = _load_soul("MELCHIOR")
+_SOUL_BALTHASAR = _load_soul("BALTHASAR")
+
+# ── 三模型身份對照 ──
+# E4B=Casper（仲裁者/生產者），Phi-4=Melchior（科學家/邏輯審查），SmolLM3=Balthasar（實用主義者/格式稽核）
+SOUL_NAME_MAP = {
+    "primary": "Casper",
+    "phi4":    "Melchior",
+    "smol":    "Balthasar",
+    "rule_sc": "規則稽核",
+    "output_guard": "輸出防衛",
+}
+
+# ── 三模型性格定義（soul 已注入） ──
 ENSEMBLE_ROLES = {
     "primary": {
-        "name": "Gemma (事實查核員)",
+        "name": "Casper (MAGI-01)",
         "port": OMLX_E4B_PORT,
         "base": OMLX_E4B_BASE,
-        "system_prefix": (
-            "你是「事實查核員」，專注於事實正確性與完整性。\n"
-            "職責：\n"
-            "1. 確認人名、日期、金額、法條編號、案號正確引用\n"
-            "2. 確認沒有遺漏關鍵事實\n"
-            "3. 確認沒有添加原文沒有的資訊（禁止幻覺）\n"
-            "4. 用繁體中文，遵循台灣法律用語\n"
-        ),
+        "soul": _SOUL_CASPER,
     },
     "phi4": {
-        "name": "Phi (邏輯審查員)",
+        "name": "Melchior (MAGI-02)",
         "port": OMLX_PHI4_PORT,
         "base": OMLX_PHI4_BASE,
-        "system_prefix": (
-            "你是「邏輯審查員」，專注於推理邏輯與結構一致性。\n"
-            "職責：\n"
-            "1. 確認因果關係正確（A 導致 B 的推論是否成立）\n"
-            "2. 確認結論與前提一致（沒有自相矛盾）\n"
-            "3. 確認分類與歸屬合理（案由、罪名、法條適用）\n"
-            "4. 發現邏輯漏洞時明確指出\n"
-        ),
+        "soul": _SOUL_MELCHIOR,
     },
     "smol": {
-        "name": "SmolLM (格式稽核員)",
+        "name": "Balthasar (MAGI-03)",
         "port": OMLX_SMOL_PORT,
         "base": OMLX_SMOL_BASE,
-        "system_prefix": (
-            "你是「格式稽核員」，專注於輸出品質與格式規範。\n"
-            "職責：\n"
-            "1. 確認輸出為繁體中文（不可混入簡體字）\n"
-            "2. 確認格式符合要求（條列式、結構化、無廢話）\n"
-            "3. 確認沒有洩漏內部標籤（[使用者陳述]、身為 CASPER）\n"
-            "4. 確認沒有 persona 跑題\n"
-        ),
+        "soul": _SOUL_BALTHASAR,
     },
 }
 
@@ -290,22 +300,38 @@ def _consensus_summary(results: Dict[str, Any]) -> ConsensusResult:
 
 
 # ── 審查員 prompt ──
-_PHI4_REVIEWER_SYSTEM = (
-    "你是邏輯審查員。任務：審查下面的法律回答有無邏輯錯誤或法條引用錯誤。\n"
-    "規則：\n"
-    "- 沒有問題：只回覆 OK，不要加任何其他字\n"
-    "- 有問題：只回覆 VETO: 後接一句具體錯誤描述（例如：VETO: 第184條第一項前段要件漏掉違法性）\n"
-    "禁止重複問題或重新回答問題，禁止回覆超過一行。"
+def _build_reviewer_system(soul_text, role_instruction):
+    # type: (str, str) -> str
+    """將 soul 與審查員指令合併成 system prompt。soul 提供身份，role_instruction 提供任務。"""
+    if soul_text:
+        # 只取 soul 前段（Prime Directives + Behavior）避免 token 浪費
+        soul_head = soul_text[:800].strip()
+        return "{}\n\n---\n{}".format(soul_head, role_instruction)
+    return role_instruction
+
+
+_PHI4_REVIEWER_SYSTEM = _build_reviewer_system(
+    _SOUL_MELCHIOR,
+    (
+        "現在任務：以 Melchior 的身份，審查下面這份法律回答有無邏輯錯誤或法條引用錯誤。\n"
+        "規則：\n"
+        "- 沒有問題：只回覆 OK，不要加任何其他字\n"
+        "- 有問題：只回覆 VETO: 後接一句具體錯誤描述（例如：VETO: 第184條第一項前段要件漏掉違法性）\n"
+        "禁止重複問題或重新回答問題，禁止回覆超過一行。"
+    )
 )
 
-_SMOL_REVIEWER_SYSTEM = (
-    "你是標籤稽核員。任務：審查下面的回答是否出現以下任何一種問題：\n"
-    "  (A) 洩漏內部標籤，例如 [使用者陳述]、[檢索線索]、[衍生推論]、[已驗證事實]\n"
-    "  (B) Persona 跑題，例如出現「身為 CASPER」「我是 AI 助理」「身為語言模型」\n"
-    "規則：\n"
-    "- 沒有問題：只回覆 OK，不要加任何其他字\n"
-    "- 有問題：只回覆 VETO: 後接一句描述（例如：VETO: 出現[使用者陳述]標籤）\n"
-    "禁止重複問題內容，禁止回覆超過一行，禁止做任何翻譯或繁簡判斷。"
+_SMOL_REVIEWER_SYSTEM = _build_reviewer_system(
+    _SOUL_BALTHASAR,
+    (
+        "現在任務：以 Balthasar 的身份，審查下面這份回答是否出現以下任何一種問題：\n"
+        "  (A) 洩漏內部標籤，例如 [使用者陳述]、[檢索線索]、[衍生推論]、[已驗證事實]\n"
+        "  (B) Persona 跑題，例如出現「身為 CASPER」「我是 AI 助理」「身為語言模型」\n"
+        "規則：\n"
+        "- 沒有問題：只回覆 OK，不要加任何其他字\n"
+        "- 有問題：只回覆 VETO: 後接一句描述（例如：VETO: 出現[使用者陳述]標籤）\n"
+        "禁止重複問題內容，禁止回覆超過一行，禁止做任何翻譯或繁簡判斷。"
+    )
 )
 
 # ── 規則式繁簡稽核器（不用 LLM） ──
@@ -467,8 +493,8 @@ def _build_review_consensus(original_prompt, primary_answer, review_results, tas
     veto_reasons = []
 
     role_labels = {
-        "phi4": "Phi-4 邏輯審查員",
-        "smol": "SmolLM3 格式稽核員",
+        "phi4": "Melchior",
+        "smol": "Balthasar",
     }
     review_verdicts = {}  # type: Dict[str, str]
 
@@ -569,24 +595,37 @@ def consensus_check(results: Dict[str, Any], task_type: str = "chat") -> Consens
 
 
 def ensemble_chat_verified(
-    prompt: str,
-    system: str = "",
-    timeout_sec: int = DEFAULT_ENSEMBLE_TIMEOUT,
-    max_tokens: int = 1024,
-    task_type: str = "chat",
-) -> ConsensusResult:
+    prompt,          # type: str
+    system="",       # type: str
+    timeout_sec=DEFAULT_ENSEMBLE_TIMEOUT,  # type: int
+    max_tokens=1024, # type: int
+    task_type="chat",# type: str
+):
+    # type: (...) -> ConsensusResult
     """兩階段審查模式（正式入口）。
 
-    Phase 1: E4B 生成答案（max_tokens）
-    Phase 2: Phi-4 + SmolLM3 並行審查（max_tokens=60，只回 OK/VETO）
+    Phase 1: Casper (E4B) 生成答案（注入 SOUL_CASPER）
+    Phase 2: Melchior (Phi-4) + Balthasar (SmolLM3) 並行審查（max_tokens=60，只回 OK/VETO）
     任一審查員否決 → unanimous=False，veto_reasons 說明原因
+
+    回應格式由 format_magi_response() 決定：
+      unanimous=True  → 以「MAGI」之名輸出（三哲人共識）
+      unanimous=False → 標明是哪位哲人的意見或哪位哲人提出異議
 
     適用：法律問答、文件摘要、任何需要品質把關的回覆
     不適用：意圖分類（用 ensemble_classify_intent）、純閒聊
     """
-    # Phase 1
     role = ENSEMBLE_ROLES["primary"]
-    sys_prompt = (role["system_prefix"] + "\n" + system).strip() if system else role["system_prefix"]
+
+    # Casper soul + 呼叫方傳入的 system 指令合併
+    soul = role.get("soul", "")
+    if soul and system:
+        sys_prompt = "{}\n\n---\n{}".format(soul, system)
+    elif soul:
+        sys_prompt = soul
+    else:
+        sys_prompt = system or "你是 MAGI 法律助理，請用繁體中文回答。"
+
     primary_result = _call_omlx_chat(
         role["base"], role["name"], sys_prompt, prompt,
         timeout_sec=timeout_sec, max_tokens=max_tokens
@@ -605,6 +644,40 @@ def ensemble_chat_verified(
     review_results = _ensemble_review(prompt, primary_answer, timeout_sec=review_timeout)
 
     return _build_review_consensus(prompt, primary_answer, review_results, task_type=task_type)
+
+
+def format_magi_response(cr):
+    # type: (ConsensusResult) -> str
+    """將 ConsensusResult 格式化為對外回應文字。
+
+    unanimous=True  → 「MAGI：<answer>」（三哲人共識，不揭露個別身份）
+    unanimous=False → 輸出 Casper 的答案 + 標明哪位哲人提出異議及原因
+    result=None     → 回報系統故障
+    """
+    if cr.result is None:
+        err = ""
+        if cr.individual_results:
+            err = cr.individual_results.get("primary_error", "")
+        return "MAGI 系統故障，無法生成回應。{}".format("（{}）".format(err) if err else "")
+
+    if cr.unanimous:
+        return cr.result  # 共識輸出，呼叫方可自行加 "MAGI：" 前綴
+
+    # 有異議：輸出答案 + 附上哪位哲人有意見
+    lines = [cr.result, ""]
+    lines.append("─── 三哲人意見分歧 ───")
+    # veto_reasons 與 vetoed_by 一一對應（同索引）
+    for i, veto_key in enumerate(cr.vetoed_by):
+        name = SOUL_NAME_MAP.get(veto_key, veto_key)
+        if i < len(cr.veto_reasons):
+            reason_raw = cr.veto_reasons[i]
+            # 去掉 reason 前面的 "Name: " 前綴（避免重複顯示名字）
+            colon_idx = reason_raw.find(": ")
+            reason = reason_raw[colon_idx + 2:].strip() if colon_idx >= 0 else reason_raw
+        else:
+            reason = "（未說明原因）"
+        lines.append("【{}】異議：{}".format(name, reason))
+    return "\n".join(lines)
 
 
 def format_disagreement(cr: ConsensusResult) -> str:
