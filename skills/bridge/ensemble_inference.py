@@ -1,17 +1,29 @@
 """
 ensemble_inference.py — 三模型兩階段審查推理
 建立時間：2026-04-14
-更新：2026-04-14（兩階段審查員模式）
+更新：2026-04-14（兩階段審查員模式 + 規則稽核器）
 
 架構：
   Port 8080: Gemma E4B   (生產者 + 事實查核員)
   Port 8082: Phi-4-mini  (邏輯審查員 — 審查 E4B 的輸出)
-  Port 8083: SmolLM3-3B  (格式稽核員 — 審查 E4B 的輸出)
+  Port 8083: SmolLM3-3B  (標籤洩漏稽核員 — 只查 internal label leak / persona 跑題)
+  [規則]    rule_checker  (格式稽核 — 繁簡辨別、禁用字串，不用 LLM)
+
+格式稽核設計原則：
+  繁簡辨別不用 LLM（小模型 Unicode 辨別不可靠）
+  改用 _check_simplified_chinese() 規則判斷，無需外部套件
+  SmolLM3 只負責：internal label leak + persona 跑題（字串比對型任務，LLM 穩定）
+
+模型選用原則（2026-04-14）：
+  不考慮中國模型（Qwen/DeepSeek/GLM/Yi 等）
+  原因：受中國審查機制，法律敏感內容（人權案件、政治敏感案由）會拒答
+  適用模型：Gemma 系列、Phi 系列、Mistral 系列、Llama 系列（西方開源）
 
 chat/legal 模式（兩階段）：
   Phase 1: E4B 生成答案
-  Phase 2: Phi-4 和 SmolLM3 並行審查 E4B 答案，各自回 OK 或 VETO: <原因>
-  → 任一審查員否決即觸發 unanimous=False
+  Phase 2a: Phi-4 邏輯審查 + SmolLM3 標籤洩漏稽核（並行 LLM）
+  Phase 2b: rule_checker 繁簡辨別（同步規則，不佔 timeout）
+  → 任一否決即 unanimous=False
 
 intent 模式（三票）：
   三模型各自分類，完全一致才算共識
@@ -19,7 +31,7 @@ intent 模式（三票）：
 summary 模式：
   E4B 主輸出，三模型結果存 individual_results
 
-否決失效條件：審查員自身失敗（逾時/錯誤）= 棄權，不算否決
+否決失效條件：LLM 審查員失敗（逾時/錯誤）= 棄權；規則稽核永不失敗
 """
 from __future__ import annotations
 
@@ -287,12 +299,92 @@ _PHI4_REVIEWER_SYSTEM = (
 )
 
 _SMOL_REVIEWER_SYSTEM = (
-    "你是格式稽核員。任務：審查下面的回答有無簡體字或內部標籤（如[使用者陳述]）洩漏。\n"
+    "你是標籤稽核員。任務：審查下面的回答是否出現以下任何一種問題：\n"
+    "  (A) 洩漏內部標籤，例如 [使用者陳述]、[檢索線索]、[衍生推論]、[已驗證事實]\n"
+    "  (B) Persona 跑題，例如出現「身為 CASPER」「我是 AI 助理」「身為語言模型」\n"
     "規則：\n"
     "- 沒有問題：只回覆 OK，不要加任何其他字\n"
-    "- 有問題：只回覆 VETO: 後接一句具體描述（例如：VETO: 第3行出現簡體字「损害」）\n"
-    "禁止重複問題或重新回答問題，禁止回覆超過一行。"
+    "- 有問題：只回覆 VETO: 後接一句描述（例如：VETO: 出現[使用者陳述]標籤）\n"
+    "禁止重複問題內容，禁止回覆超過一行，禁止做任何翻譯或繁簡判斷。"
 )
+
+# ── 規則式繁簡稽核器（不用 LLM） ──
+# 收錄法律文書中最常出現的簡體字（僅含與繁體碼位不同的字）
+# 原則：寧少勿多，確保不誤判。常見繁體字不在此列。
+_SC_LEGAL_CHARS = frozenset(
+    # 確認為簡體專用字（繁體寫法不同 Unicode code point）
+    # 格式：簡體字（← 對應繁體）
+    "损"  # 損
+    "权"  # 權
+    "责"  # 責
+    "证"  # 證
+    "诉"  # 訴
+    "处"  # 處
+    "规"  # 規
+    "进"  # 進
+    "对"  # 對
+    "认"  # 認
+    "时"  # 時
+    "问"  # 問
+    "说"  # 說
+    "来"  # 來
+    "过"  # 過
+    "义"  # 義
+    "务"  # 務
+    "类"  # 類
+    "协"  # 協
+    "签"  # 簽
+    "举"  # 舉
+    "书"  # 書
+    "审"  # 審
+    "长"  # 長
+    "会"  # 會
+    "还"  # 還
+    "为"  # 為
+    "从"  # 從
+    "发"  # 發
+    "开"  # 開
+    "关"  # 關
+    "应"  # 應
+    "现"  # 現
+    "给"  # 給
+    "让"  # 讓
+    "边"  # 邊
+    "单"  # 單
+    "实"  # 實
+    "续"  # 續
+    "区"  # 區
+    "动"  # 動
+    "结"  # 結
+    "请"  # 請
+    "们"  # 們
+    "违"  # 違
+    "约"  # 約
+    "赔"  # 賠
+    "据"  # 據
+    "议"  # 議
+    "订"  # 訂
+    "讨"  # 討
+    "论"  # 論
+    "题"  # 題
+)
+# 刻意排除 行、理、定 等繁簡共用字（code point 相同，加入會誤判繁體）
+
+
+def _check_simplified_chinese(text):
+    # type: (str) -> tuple
+    """規則式繁簡偵測。回傳 (has_simplified: bool, found_chars: list)。
+    只檢查 _SC_LEGAL_CHARS 中已知簡體字，不做完整轉換。
+    """
+    found = [c for c in text if c in _SC_LEGAL_CHARS]
+    # 去重保序
+    seen = set()
+    unique_found = []
+    for c in found:
+        if c not in seen:
+            seen.add(c)
+            unique_found.append(c)
+    return bool(unique_found), unique_found
 
 
 def _parse_reviewer_verdict(text: str):
@@ -392,6 +484,13 @@ def _build_review_consensus(original_prompt, primary_answer, review_results, tas
         if vetoed:
             vetoed_by.append(reviewer_key)
             veto_reasons.append("{}: {}".format(role_labels[reviewer_key], reason))
+
+    # 規則式繁簡稽核（不用 LLM，永不失敗）
+    has_sc, sc_chars = _check_simplified_chinese(primary_answer)
+    if has_sc:
+        vetoed_by.append("rule_sc")
+        veto_reasons.append("簡體字偵測（規則）：{}".format("、".join(sc_chars[:8])))
+    review_verdicts["rule_sc"] = "VETO: {}".format(sc_chars[:8]) if has_sc else "OK"
 
     # output_guard 保留
     final_answer = primary_answer
