@@ -181,6 +181,44 @@ def _call_omlx_chat(
         return {"success": False, "error": str(e), "text": ""}
 
 
+def _call_omlx_chat_multiturn(
+    base_url,       # type: str
+    model_hint,     # type: str
+    messages,       # type: List[Dict[str, str]]
+    timeout_sec=DEFAULT_ENSEMBLE_TIMEOUT,  # type: int
+    max_tokens=512, # type: int
+):
+    # type: (...) -> Dict[str, Any]
+    """多輪對話版 oMLX 呼叫。供 ReAct 引擎使用。"""
+    try:
+        import requests  # type: ignore
+
+        try:
+            models_resp = requests.get("{}/v1/models".format(base_url), timeout=5)
+            models_data = models_resp.json()
+            model_id = models_data["data"][0]["id"] if models_data.get("data") else model_hint
+        except Exception:
+            model_id = model_hint
+
+        payload = {
+            "model": model_id,
+            "messages": messages,
+            "max_tokens": max_tokens,
+            "temperature": 0.2,
+        }
+        resp = requests.post(
+            "{}/v1/chat/completions".format(base_url),
+            json=payload,
+            timeout=timeout_sec,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        text = data["choices"][0]["message"]["content"].strip()
+        return {"success": True, "text": text, "model": model_id}
+    except Exception as e:
+        return {"success": False, "error": str(e), "text": ""}
+
+
 def ensemble_chat(
     prompt: str,
     system: str = "",
@@ -646,6 +684,93 @@ def ensemble_chat_verified(
     return _build_review_consensus(prompt, primary_answer, review_results, task_type=task_type)
 
 
+# ── Feature flag ──
+_ENSEMBLE_TOOLS_ENABLED = os.environ.get("MAGI_ENSEMBLE_TOOLS", "0").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def ensemble_chat_with_tools(
+    prompt,          # type: str
+    system="",       # type: str
+    timeout_sec=DEFAULT_ENSEMBLE_TIMEOUT,  # type: int
+    max_tokens=1024, # type: int
+    task_type="chat",# type: str
+    context="",      # type: str
+):
+    # type: (...) -> ConsensusResult
+    """工具增強版 ensemble 入口（Casper ReAct + Melchior/Balthasar 審查）。
+
+    Phase 1: Casper (E4B) 用 ReAct 引擎推理，可呼叫工具
+    Phase 2: Melchior + Balthasar 並行審查最終答案
+    Phase 3: 規則稽核 + 共識判定
+
+    需要 MAGI_ENSEMBLE_TOOLS=1 才會真正啟用 ReAct。
+    若 flag=0 或 ReAct 失敗，自動 fallback 到 ensemble_chat_verified()。
+    """
+    if not _ENSEMBLE_TOOLS_ENABLED:
+        return ensemble_chat_verified(
+            prompt=prompt, system=system, timeout_sec=timeout_sec,
+            max_tokens=max_tokens, task_type=task_type,
+        )
+
+    # Phase 1: ReAct on E4B
+    react_answer = ""
+    react_trace = {}  # type: Dict[str, Any]
+    tools_used = []  # type: List[str]
+
+    try:
+        from skills.engine.react_engine import ReActEngine
+        casper_soul = ENSEMBLE_ROLES["primary"].get("soul", "")
+        # soul + 呼叫方 system 合併
+        full_soul = "{}\n\n---\n{}".format(casper_soul, system).strip() if system and casper_soul else (casper_soul or system or "")
+
+        react_timeout = max(30, timeout_sec - 20)  # 留 20s 給 Phase 2
+
+        engine = ReActEngine.for_omlx(
+            user_query=prompt,
+            max_steps=5,
+            total_timeout=react_timeout,
+            soul_text=full_soul,
+        )
+        result = engine.run(prompt, context=context)
+
+        react_trace = {
+            "steps": result.get("steps", 0),
+            "tools_used": result.get("tools_used", []),
+            "elapsed_sec": result.get("elapsed_sec", 0),
+            "partial": result.get("partial", False),
+        }
+        tools_used = result.get("tools_used", [])
+
+        if result.get("success") and result.get("answer"):
+            react_answer = result["answer"]
+            logger.info("ReAct 成功：%d 步，工具=%s，耗時=%.1fs",
+                        result["steps"], tools_used, result["elapsed_sec"])
+    except Exception as e:
+        logger.warning("ReAct 引擎失敗，fallback 到無工具模式：%s", e)
+        react_trace = {"error": str(e)}
+
+    # Fallback: ReAct 失敗 → 走舊的 _call_omlx_chat 無工具模式
+    if not react_answer:
+        logger.info("ReAct 無答案，fallback 到 ensemble_chat_verified")
+        return ensemble_chat_verified(
+            prompt=prompt, system=system, timeout_sec=timeout_sec,
+            max_tokens=max_tokens, task_type=task_type,
+        )
+
+    # Phase 2: Melchior + Balthasar 審查
+    review_timeout = max(15, timeout_sec - int(react_trace.get("elapsed_sec", 0)) - 5)
+    review_results = _ensemble_review(prompt, react_answer, timeout_sec=review_timeout)
+
+    # Phase 3: 共識判定
+    cr = _build_review_consensus(prompt, react_answer, review_results, task_type=task_type)
+
+    # 追加 ReAct trace 到 individual_results 供 debug
+    cr.individual_results["react_trace"] = react_trace
+    cr.individual_results["tools_used"] = tools_used
+
+    return cr
+
+
 def format_magi_response(cr):
     # type: (ConsensusResult) -> str
     """將 ConsensusResult 格式化為對外回應文字。
@@ -661,7 +786,19 @@ def format_magi_response(cr):
         return "MAGI 系統故障，無法生成回應。{}".format("（{}）".format(err) if err else "")
 
     if cr.unanimous:
-        return cr.result  # 共識輸出，呼叫方可自行加 "MAGI：" 前綴
+        text = cr.result
+        # 共識 + 有使用工具 → 附上來源標註
+        tools_used = cr.individual_results.get("tools_used", [])
+        if tools_used:
+            # 去重保序
+            seen = set()
+            unique = []
+            for t in tools_used:
+                if t not in seen:
+                    seen.add(t)
+                    unique.append(t)
+            text += "\n\n（參考資料來源：{}）".format("、".join(unique))
+        return text
 
     # 有異議：輸出答案 + 附上哪位哲人有意見
     lines = [cr.result, ""]

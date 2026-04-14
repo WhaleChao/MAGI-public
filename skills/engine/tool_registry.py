@@ -323,3 +323,26 @@ def get_tools() -> dict[str, dict[str, Any]]:
 def get_tool_names() -> list[str]:
     """取得所有工具名稱。"""
     return list(TOOLS.keys())
+
+
+# ── E4B Ensemble 用精簡工具集 ──
+import re as _re
+
+_REMEMBER_GATE_RE = _re.compile(r"(記住|請記得|記下來|幫我記|存起來|備忘|不要忘)")
+
+_E4B_ALWAYS_TOOLS = {
+    "search_memory", "web_search", "query_cases", "get_schedule",
+    "calculate", "current_time", "summarize", "translate",
+}
+
+
+def get_compact_tools(user_query: str = "") -> dict[str, dict[str, Any]]:
+    """E4B ensemble 用工具集。
+
+    常駐 8 個 + remember 條件開啟（使用者明確要求記憶時才給）。
+    排除 run_skill（太開放）和 read_file（路徑安全風險）。
+    """
+    tools = {k: v for k, v in TOOLS.items() if k in _E4B_ALWAYS_TOOLS}
+    if user_query and _REMEMBER_GATE_RE.search(user_query):
+        tools["remember"] = TOOLS["remember"]
+    return tools

@@ -2153,7 +2153,24 @@ def process_message_inner(orch, user_id, message, platform="LINE", role="user", 
                         response = orch._handle_query(user_id, message, platform_hint=platform)
             except Exception as _sr_err:
                 logger.debug(f"SemanticRouter error: {_sr_err}")
-            # Fix #1: When CMD falls through all routers, fall back to LLM chat with prefix
+            # Fix #1: When CMD falls through all routers, try ensemble tools then LLM chat
+            if not response:
+                # Ensemble tools path (feature flag gated)
+                try:
+                    from skills.bridge.ensemble_inference import ensemble_chat_with_tools, _ENSEMBLE_TOOLS_ENABLED, format_magi_response
+                    if _ENSEMBLE_TOOLS_ENABLED:
+                        logger.info("🔧 CMD fallthrough → ensemble_chat_with_tools: '%s'", message[:60])
+                        _ecr = ensemble_chat_with_tools(prompt=message, timeout_sec=80)
+                        if _ecr and _ecr.result:
+                            response = format_magi_response(_ecr)
+                            orch._append_route_trace(
+                                str(user_id or ""), str(platform or ""),
+                                "ensemble_tools", "cmd_fallthrough",
+                                {"unanimous": _ecr.unanimous, "tools": _ecr.individual_results.get("tools_used", [])},
+                            )
+                except Exception as _et_err:
+                    logger.debug("ensemble_chat_with_tools error: %s", _et_err)
+
             if not response:
                 logger.warning(f"⚠️ CMD fell through all routers: '{message[:80]}' → defaulting to LLM chat")
                 orch._append_route_trace(
@@ -2196,6 +2213,22 @@ def process_message_inner(orch, user_id, message, platform="LINE", role="user", 
                 message,
                 trigger_reason="gap",
             )
+        if not response:
+            # Ensemble tools path (feature flag gated)
+            try:
+                from skills.bridge.ensemble_inference import ensemble_chat_with_tools, _ENSEMBLE_TOOLS_ENABLED, format_magi_response
+                if _ENSEMBLE_TOOLS_ENABLED:
+                    logger.info("🔧 QUERY fallthrough → ensemble_chat_with_tools: '%s'", message[:60])
+                    _ecr = ensemble_chat_with_tools(prompt=message, timeout_sec=80)
+                    if _ecr and _ecr.result:
+                        response = format_magi_response(_ecr)
+                        orch._append_route_trace(
+                            str(user_id or ""), str(platform or ""),
+                            "ensemble_tools", "query_fallthrough",
+                            {"unanimous": _ecr.unanimous, "tools": _ecr.individual_results.get("tools_used", [])},
+                        )
+            except Exception as _et_err:
+                logger.debug("ensemble_chat_with_tools error: %s", _et_err)
         if not response:
             response = orch._handle_query(user_id, message, platform_hint=platform)
     elif intent == "CHAT":

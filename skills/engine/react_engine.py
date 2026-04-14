@@ -24,7 +24,7 @@ import logging
 import os
 import re
 import time
-from typing import Any, Callable
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 logger = logging.getLogger("ReActEngine")
 
@@ -126,12 +126,52 @@ class ReActEngine:
                 lines.append(f"  參數: {params}")
         return "\n".join(lines)
 
-    def _build_system_prompt(self) -> str:
-        """建構含工具清單的 system prompt。"""
-        return REACT_SYSTEM_PROMPT.format(
+    def _build_system_prompt(self, soul_text: str = "") -> str:
+        """建構含工具清單的 system prompt。可選 soul 注入。"""
+        react_part = REACT_SYSTEM_PROMPT.format(
             tool_list=self._format_tool_list(),
             max_steps=self.max_steps,
         )
+        if soul_text:
+            return "{}\n\n---\n{}".format(soul_text[:800].strip(), react_part)
+        return react_part
+
+    @classmethod
+    def for_omlx(cls, tools=None, user_query="", max_steps=5, total_timeout=60, soul_text=""):
+        # type: (Optional[dict], str, int, int, str) -> ReActEngine
+        """建立走 oMLX E4B 的 ReAct 引擎。
+
+        Args:
+            tools: 工具 dict，若為 None 則自動用 get_compact_tools
+            user_query: 使用者原文（用於 remember 閘門判斷）
+            max_steps: 最大步數（E4B 較慢，預設 5）
+            total_timeout: 整體超時秒數（預設 60，含 summarize/translate 等較慢工具）
+            soul_text: SOUL 身份文字（注入 system prompt 前段）
+        """
+        if tools is None:
+            from skills.engine.tool_registry import get_compact_tools
+            tools = get_compact_tools(user_query)
+
+        def _omlx_llm(messages):
+            from skills.bridge.ensemble_inference import (
+                _call_omlx_chat_multiturn, OMLX_E4B_BASE,
+            )
+            result = _call_omlx_chat_multiturn(
+                OMLX_E4B_BASE, "e4b", messages,
+                timeout_sec=45, max_tokens=512,
+            )
+            if result.get("success"):
+                return result["text"]
+            return "LLM ERROR: {}".format(result.get("error", "unknown"))
+
+        engine = cls(
+            tools=tools,
+            llm_fn=_omlx_llm,
+            max_steps=max_steps,
+            total_timeout=total_timeout,
+        )
+        engine._soul_text = soul_text
+        return engine
 
     def _parse_action(self, response: str) -> tuple[str, dict]:
         """從 LLM 回應中解析 ACTION + PARAMS。寬容處理各種格式。"""
@@ -213,7 +253,8 @@ class ReActEngine:
                 "elapsed_sec": float,
             }
         """
-        system_prompt = self._build_system_prompt()
+        soul = getattr(self, "_soul_text", "")
+        system_prompt = self._build_system_prompt(soul_text=soul)
         messages: list[dict] = [{"role": "system", "content": system_prompt}]
 
         # 加入背景資訊
