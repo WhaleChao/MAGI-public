@@ -1,859 +1,478 @@
-# MAGI v2 — 多代理治理基礎設施
+# MAGI — 多代理治理基礎設施
 
 [English](README.md)
 
-MAGI v2 是一套部署於本地硬體的 AI 作業平台，專為台灣法律事務所的日常營運設計。v2 在 v1 的基礎上進行了全面重構，新增企業級基礎設施（權限、事件、鉤子、任務、會話、工具登錄、多代理運行時、供應商抽象），並完成低幻覺架構改造。全系統含 67+ 模組化技能、247+ 測試、模組化路由架構。
+MAGI v2 是一套部署於本地硬體的 AI 作業平台，專為台灣法律事務所的日常營運設計。全系統在單台 Apple Silicon 節點上運行，結合 Flask 控制平面、60+ 模組化技能、三哲人 ensemble 推理管線、ReAct Agentic 工具呼叫引擎、定時排程、本地 LLM 推理，以及深度法務工作流程自動化——全部整合於一個程式碼庫。
 
-**跨平台支援**：支援 **macOS**（Apple Silicon，透過 oMLX）及 **Windows**（NVIDIA/CPU，透過 Ollama）。內建設定精靈自動偵測硬體、推薦模型、產生組態。
+**macOS 原生。** 生產環境在 Apple Silicon 透過 [oMLX](https://github.com/omlx/omlx) 以三模型日夜輪換架構運行。Windows / Linux 透過 Ollama 亦可支援。
 
-> **單機模式。** 所有生產工作負載皆在 Casper 本地運行。程式碼保留分散推理架構（Melchior、Balthasar），設定 `MAGI_AVOID_DISTRIBUTED=0` 可啟用多節點推理。
+> **單機模式（預設）。** 所有生產工作負載皆在 Casper（Mac Mini M4）本地運行。程式碼保留 Melchior / Balthasar 分散推理架構；設定 `MAGI_AVOID_DISTRIBUTED=0` 可啟用多節點推理。
 
 ---
 
 ## 目錄
 
-- [與 MAGI v1 的差異](#與-magi-v1-的差異)
 - [快速開始](#快速開始)
-- [其他電腦安裝方式](#其他電腦安裝方式)
-- [設定精靈](#設定精靈)
-- [平台支援](#平台支援)
 - [系統架構](#系統架構)
-- [操作管理 (`magi` CLI)](#操作管理-magi-cli)
-- [v2 基礎設施模組](#v2-基礎設施模組)
-- [Registry 系統](#registry-系統)
-- [低幻覺架構](#低幻覺架構)
-- [全部技能 (67+)](#全部技能-67)
+  - [三模型日夜切換](#三模型日夜切換)
+  - [三哲人 Ensemble 審查](#三哲人-ensemble-審查)
+  - [Agentic 工具呼叫（ReAct）](#agentic-工具呼叫react)
+  - [中文 NLP 與知識圖譜](#中文-nlp-與知識圖譜)
+- [法務自動化](#法務自動化)
+  - [法律扶助基金會（LAF）](#法律扶助基金會laf)
+  - [電子閱卷](#電子閱卷)
+  - [電子筆錄](#電子筆錄)
+- [操作管理 — `magi` CLI](#操作管理--magi-cli)
+- [技能目錄](#技能目錄)
 - [訊息處理流程](#訊息處理流程)
 - [治理與安全](#治理與安全)
-- [OpenClaw 整合](#openclaw-整合)
-- [組態設定](#組態設定)
-- [技術棧](#技術棧)
+- [環境設定](#環境設定)
+- [技術堆疊](#技術堆疊)
 - [目錄結構](#目錄結構)
-- [連接埠](#連接埠)
+- [服務埠口](#服務埠口)
 - [測試](#測試)
 - [授權](#授權)
 
 ---
 
-## 與 MAGI v1 的差異
-
-MAGI v2 是完全重寫的企業級平台，v1 僅為早期概念驗證。
-
-| 面向 | v1 | v2 |
-|------|----|----|
-| **定位** | 概念驗證骨架 | 完整企業級平台 |
-| **技能數** | 1（pdf-namer） | 67+ 核心技能 |
-| **測試** | 0 個測試 | 90+ 測試檔（247+ tests） |
-| **架構** | 單一巨型檔案 | 模組化拆分（blueprints + pipelines + domains + routing） |
-| **基礎模組** | 無 | 10+ 子系統（權限、事件、鉤子、任務、會話、工具、多代理、協調器、供應商） |
-| **路由系統** | 無 | 三層路由（短語 → 語義 → LLM 降級）+ Registry 統一路由 |
-| **組態系統** | 硬編碼 | JSON 設定 + Registry 模組 + 環境變數覆寫 |
-| **記憶系統** | 無 | ModernBERT 向量 RAG + 信任分層 |
-| **防幻覺** | 無 | 快取版本化、記憶降權、非權威標記、timeout 安全回退 |
-| **LLM 供應商** | 無 | oMLX / Anthropic / OpenAI / Ollama 統一抽象 |
-| **安全** | 無 | RBAC 權限、CSRF、事件稽核、會話硬化 |
-| **系統管理** | 無 | `magi` CLI + macOS 狀態列 |
-
-### v2 主要新增能力
-
-1. **模組化架構** — server.py（9463→802行）、orchestrator.py（10269→2335行）拆分為 blueprints/webhooks/pipelines/domains
-2. **Registry 系統** — 所有硬編碼值（IP、端口、模型名）外部化為 JSON 設定 + Python 註冊模組
-3. **統一路由層** — `api/routing/` 下 14 個模組，提供服務/模型/節點/資料庫的統一查詢
-4. **企業級基礎設施** — 權限系統、事件匯流排、鉤子生命週期、任務運行時、會話管理
-5. **操作管理工具** — `magi` CLI（status/start/stop/restart/menubar/zombie）
-6. **macOS 狀態列** — 即時顯示所有服務、遠端節點、排程任務、NAS、資料庫容錯狀態
-7. **低幻覺架構** — 路由收緊、記憶信任分層、摘要非權威標記、timeout 不自由回答
-8. **DB 容錯** — 遠端/本地雙活同步，自動切換 + mysqldump 同步
-
----
-
 ## 快速開始
 
-### macOS（Apple Silicon — 建議）
+### macOS（Apple Silicon）
 
 ```bash
-# 1. 下載
+# 1. 複製專案
 git clone https://github.com/WhaleChao/MAGI.git && cd MAGI
 
-# 2. Python 環境（需 Python 3.12+）
+# 2. 建立 Python 環境（需 Python 3.9+）
 python3 -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
-pip install -r requirements-optional.txt   # 完整技能支援
+pip install -r requirements-optional.txt  # MarkItDown、Scrapling、RapidOCR 等
 
-# 3. 安裝 oMLX — 本地 Apple Silicon MLX 推理引擎
-brew install omlx
+# 3. 複製並填寫環境變數
+cp .env.example .env   # 填入 token / DB 憑證
 
-# 4. 資料庫
-brew install mariadb && brew services start mariadb
-mysql -u root < init_auth.sql
-mysql -u root < setup_magi_brain.sql
-
-# 5. 設定精靈（自動偵測硬體、推薦模型、產生 .env）
-python3 setup_wizard.py
-
-# 6. 啟動
-./start_magi.sh
-
-# 7. 安裝 CLI 工具（選配）
-cp scripts/magi_cli.sh /opt/homebrew/bin/magi && chmod +x /opt/homebrew/bin/magi
+# 4. 啟動
+launchctl load ~/Library/LaunchAgents/com.magi.daemon.plist
+magi status
 ```
 
-### Windows
-
-```powershell
-# 1. 下載
-git clone https://github.com/WhaleChao/MAGI.git && cd MAGI
-
-# 2. Python 環境
-python -m venv venv && venv\Scripts\activate
-pip install -r requirements.txt
-pip install -r requirements-optional.txt
-pip install -r requirements-windows.txt   # Windows 專用（pywin32, llama-cpp-python）
-
-# 3. 安裝 Ollama — 跨平台推理引擎
-# 從 https://ollama.com/download/windows 下載
-
-# 4. 資料庫
-# 從 https://mariadb.org/download/ 安裝 MariaDB
-
-# 5. 設定精靈
-python setup_wizard.py
-
-# 6. 啟動
-start_magi.bat
-```
-
-### 驗證
+### Linux / Windows（Ollama 後端）
 
 ```bash
-curl http://localhost:5002/health        # 完整健康（FAISS、磁碟、運行時間）
-curl http://localhost:5003/sages         # Tools API 健康
-magi status                              # 完整系統儀表板
-python3 skills/ops/system_test.py        # 系統測試
+ollama pull gemma2:9b   # 或任何支援的模型
+MAGI_ALLOW_CLOUD_MODELS=1 python daemon.py
 ```
-
----
-
-## 其他電腦安裝方式
-
-MAGI v2 支援在多台電腦上部署，可依角色分為主節點（Casper）和輔助節點（Melchior / Balthasar）。
-
-### 主節點（Casper）— 完整功能
-
-即上方「快速開始」的安裝步驟。主節點運行所有核心服務。
-
-### 輔助節點（Melchior — Embedding 服務）
-
-Melchior 負責 Embedding 推理，減輕主節點負擔：
-
-```bash
-# 1. 下載
-git clone https://github.com/WhaleChao/MAGI.git && cd MAGI
-
-# 2. Python 環境
-python3 -m venv venv && source venv/bin/activate
-pip install -r requirements.txt
-
-# 3. 安裝推理引擎（依平台選擇）
-# macOS: brew install omlx
-# Windows/Linux: 安裝 Ollama
-
-# 4. 設定 .env（僅需 Embedding 相關）
-cat > .env << 'EOF'
-MAGI_OMLX_ENABLED=1
-MAGI_OMLX_EMBED_PORT=8081
-MEM_EMBED_MODEL=ModernBERT-embed-base-4bit
-EOF
-
-# 5. 啟動 Embedding 服務
-./start_melchior.sh
-```
-
-### 輔助節點（Balthasar — 摘要/翻譯分流）
-
-```bash
-# 1. 下載同上
-# 2. Python 環境同上
-# 3. 推理引擎同上
-
-# 4. 設定 .env（僅需推理相關）
-cat > .env << 'EOF'
-MAGI_OMLX_ENABLED=1
-MAGI_MAIN_MODEL=TAIDE-12b-Chat-mlx-4bit
-EOF
-
-# 5. 啟動
-./start_balthasar.sh
-```
-
-### 多節點組網
-
-節點間通訊透過 Tailscale VPN：
-
-```bash
-# 每台機器安裝 Tailscale
-# macOS: brew install tailscale
-# Windows: https://tailscale.com/download
-# Linux: curl -fsSL https://tailscale.com/install.sh | sh
-
-# 登入同一個 Tailnet
-tailscale up
-
-# 主節點 .env 設定輔助節點地址
-MAGI_MELCHIOR_HOST=100.x.x.x    # Melchior 的 Tailscale IP
-MAGI_BALTHASAR_HOST=100.x.x.x   # Balthasar 的 Tailscale IP
-```
-
-### 最低硬體需求
-
-| 角色 | RAM | 儲存 | GPU |
-|------|-----|------|-----|
-| Casper（主節點） | 16 GB+ | 50 GB+ | Apple Silicon 或 NVIDIA 8GB+ |
-| Melchior（Embedding） | 8 GB+ | 10 GB+ | Apple Silicon 或 CPU |
-| Balthasar（推理分流） | 16 GB+ | 30 GB+ | Apple Silicon 或 NVIDIA 8GB+ |
-
----
-
-## 設定精靈
-
-首次使用者會透過網頁介面的設定精靈引導完成設定：
-
-1. **硬體偵測** — 自動偵測 CPU、GPU（Metal/CUDA）、RAM、磁碟空間
-2. **引擎檢查** — 確認 oMLX（macOS）或 Ollama（Windows/Linux）已安裝
-3. **模型推薦** — 依硬體推薦最佳模型：
-   - Apple Silicon（>=16 GB）：TAIDE-12b（文字+視覺）+ Coder-14B + ModernBERT + GLM-OCR
-   - NVIDIA GPU（>=8 GB）：TAIDE-8b GGUF + Qwen2.5-7b + Nomic-embed
-   - 純 CPU（>=8 GB）：輕量 GGUF 模型
-4. **組態收集** — 收集 LINE API 憑證、資料庫帳密、管理員身分
-5. **連線測試** — 驗證 LINE API 及資料庫連線
-6. **產生 `.env`** — 產生完整環境組態檔
-
-隨時手動執行：`python3 setup_wizard.py`
-
----
-
-## 平台支援
-
-| 功能 | macOS (Apple Silicon) | Windows (NVIDIA/CPU) | Linux |
-|------|----------------------|---------------------|-------|
-| 推理引擎 | oMLX (MLX) | Ollama (GGUF) | Ollama (GGUF) |
-| 檔案鎖定 | fcntl | msvcrt | fcntl |
-| 服務管理 | LaunchAgent | 工作排程器 | systemd |
-| 行事曆整合 | Apple Calendar (osascript) | Outlook (COM) | — |
-| 瀏覽器自動化 | Playwright / Selenium | Playwright / Selenium | Playwright / Selenium |
-| 啟動腳本 | `start_magi.sh` | `start_magi.bat` | `start_magi.sh` |
-| 狀態列 | `gui/magi_menubar.py` (rumps) | — | — |
 
 ---
 
 ## 系統架構
 
-### 模組化架構（v2）
-
-v2 將原本的巨型檔案拆分為專責模組：
-
 ```
-┌──────────────────────────────────────────────────────────────┐
-│                          頻道層                                │
-│   LINE Webhook      │  Discord Bot  │  Telegram Bot           │
-│  (webhooks/line.py) │(discord_bot.py)│(webhooks/telegram.py)  │
-└─────────┬───────────┴──────┬────────┴──────────┬─────────────┘
-          │                  │                    │
-┌─────────▼──────────────────▼────────────────────▼─────────────┐
-│              Flask 應用 (api/server.py — 802 行)               │
-│  Blueprints: admin_runtime │ dashboard │ osc_cases │ web      │
-│  Webhooks:   line.py       │ telegram.py                       │
-│  啟動流程:   thread pools, security headers, CSRF              │
-└─────────────────────────────┬─────────────────────────────────┘
-                              │
-┌─────────────────────────────▼─────────────────────────────────┐
-│            協調器 (api/orchestrator.py — 2,335 行)              │
-│  委派至:                                                        │
-│  ├─ pipelines/message_pipeline.py    (訊息接收與消毒)           │
-│  ├─ pipelines/command_pipeline.py    (指令解析)                 │
-│  ├─ pipelines/chat_pipeline.py       (對話式 AI)                │
-│  ├─ pipelines/command_dispatch.py    (技能派遣)                 │
-│  ├─ pipelines/skill_dispatch.py      (技能解析)                 │
-│  ├─ pipelines/message_router.py      (意圖路由)                 │
-│  ├─ pipelines/attachment_pipeline.py (附件處理)                 │
-│  └─ domains/{codex,judgment,laf,market,memory}_flow.py         │
-└─────────────────────────────┬─────────────────────────────────┘
-                              │
-┌─────────────────────────────▼─────────────────────────────────┐
-│                    路由層 (api/routing/)                         │
-│  Registry:  service_registry │ model_registry │ node_registry  │
-│  Policy:    policy_engine    │ route_policy   │ route_decision │
-│  路由器:    request_router   │ inference_router                │
-│  設定檔:    json/services.json │ models.json │ nodes.json      │
-└─────────────────────────────┬─────────────────────────────────┘
-                              │
-┌─────────────────────────────▼─────────────────────────────────┐
-│                         執行層                                  │
-│  oMLX / Ollama (本地 LLM)   │  67+ 技能  │  MCP Server        │
-│  Embedding Router (ModernBERT)│ Playwright │  FAISS            │
-└─────────────────────────────┬─────────────────────────────────┘
-                              │
-┌─────────────────────────────▼─────────────────────────────────┐
-│                         資料層                                  │
-│  magi_brain (本地 MariaDB)   │  law_firm_data (遠端)           │
-│  FAISS 向量索引              │  NAS 案件資料夾                  │
-│  DB 容錯 (自動切換 遠端 ↔ 本地 + mysqldump 同步)                │
-└───────────────────────────────────────────────────────────────┘
+使用者（LINE / Discord / Telegram / Web）
+          │
+          ▼
+ ┌─────────────────────────────────┐
+ │   message_pipeline.py           │  意圖分類
+ │   20+ 攔截器（法務 / 作業）      │  指令分派
+ └────────────┬────────────────────┘
+              │  QUERY / CMD
+              ▼
+ ┌─────────────────────────────────────────────────────┐
+ │         ensemble_chat_with_tools()                  │
+ │                                                     │
+ │  Phase 1 — Casper + ReAct 引擎                      │
+ │    ├─ 不需工具  → FINAL（直接回答）                  │
+ │    └─ 需要工具  → ACTION → 執行 → OBSERVE           │
+ │                    ↺ 最多 5 步                       │
+ │                                                     │
+ │  Phase 2 — Melchior + Balthasar 並行審查            │
+ │    ├─ 兩者同意  → MAGI 共識                         │
+ │    └─ 任一否決  → 顯示個別哲人意見                  │
+ └─────────────────────────────────────────────────────┘
+              │
+              ▼
+      format_magi_response()
+      Iron Dome 輸出守衛
+      tw_output_guard（信任標籤洩漏防護）
 ```
 
-### 核心拆分成果
+### 三模型日夜切換
 
-| 原始檔案 | 原始行數 | 拆分後行數 | 策略 |
-|---------|---------|-----------|------|
-| `api/server.py` | 9,463 | 802 | 拆分為 `blueprints/`（7 模組）+ `webhooks/`（2 模組） |
-| `api/orchestrator.py` | 10,269 | 2,335 | 拆分為 `pipelines/`（8 模組）+ `domains/`（6 模組） |
-| `templates/osc.html` | 7,558 | 2,543 | 拆分為 `osc/` 模板片段 |
-| 硬編碼值 | 散落各處 | 0 | 外部化為 `json/` 設定 + `api/routing/` Registry |
+MAGI 依時段自動切換模型組合：
 
-### 推理模型
+| 模式 | Port 8080 | Port 8082 | Port 8083 | 觸發方式 |
+|------|-----------|-----------|-----------|----------|
+| **日間**（07:00–21:50） | Gemma-4 E4B（Casper） | Phi-4-mini（Melchior） | SmolLM3-3B（Balthasar） | `cron` + daemon 自動啟動 |
+| **夜間**（21:50–07:00） | Gemma-4 26B | — | — | `cron` 切換 |
 
-#### macOS（Apple Silicon + oMLX）
+- **日間模式**：三個模型並行，各自注入獨立 SOUL persona（`docs/soul/SOUL_*.md`）。
+- **夜間模式**：單一高容量 26B 模型處理批次任務（法扶稽核、PDF 命名、筆錄索引、LoRA 蒸餾訓練）。
+- 切換由兩個 cron job 管理（`job_omlx_switch_night` / `job_omlx_switch_day`），`daemon.py` 在日間啟動時自動 kickstart Phi-4 與 SmolLM3。
 
-| 模型 | 用途 | 量化 |
-|------|------|------|
-| **Gemma-4-26B** | 文字生成、法律推理、視覺、OCR、程式碼 — 全部角色 | MLX 4-bit |
-| **ModernBERT-embed** | Embedding 路由、語意搜尋 | MLX 4-bit |
+### 三哲人 Ensemble 審查
 
-所有文字角色（primary、review、summary、code、vision、OCR）皆對應同一個 **Gemma-4 26B** 模型。可透過環境變數覆寫個別角色 — 詳見 `json/models.json`。
+每個回應都經過兩階段管線：
 
-#### Windows / Linux（Ollama + GGUF）
+**Phase 1 — Casper 生成**
+- 以 `ReActEngine.for_omlx()` 搭配最多 8 個工具，執行最多 5 步 ReAct 迴圈。
+- 使用 `get_compact_tools(user_query)` — 8 個常駐工具，加上條件開啟的 `remember`（只有使用者明確要求記住時才開放）。
 
-| 模型 | 用途 | 量化 |
-|------|------|------|
-| **Gemma-4**（或相容模型） | 文字生成、法律推理 | GGUF Q4 |
-| **Nomic-embed-text** | Embedding 路由、語意搜尋 | GGUF |
+**Phase 2 — Melchior + Balthasar 並行審查**
+- Melchior（Phi-4-mini）：邏輯一致性與法律正確性審查。
+- Balthasar（SmolLM3-3B）：格式與引用稽核。
+- 各自獨立投票 `APPROVE` 或 `VETO`（附一句理由）。
 
----
+**輸出格式**
+- 全數通過 → `「MAGI：...」`（共識標籤）
+- 任一否決 → 顯示該哲人姓名與否決理由。
+- 使用工具時附上資料來源（例：`（資料來源：web_search、query_cases）`）。
 
-## 操作管理 (`magi` CLI)
+**模型選用政策**
+- 排除中國大陸模型（Qwen / DeepSeek / GLM / Yi）——因審查風險。
+- 規則式繁簡體偵測器，無需 LLM 推理即可攔截簡體中文輸出。
 
-`magi` 命令管理完整 MAGI 生命週期，包括 daemon、所有服務及 macOS 狀態列。
+### Agentic 工具呼叫（ReAct）
 
-### 安裝
-
-```bash
-cp scripts/magi_cli.sh /opt/homebrew/bin/magi && chmod +x /opt/homebrew/bin/magi
-```
-
-### 指令
-
-```bash
-magi                 # 顯示完整系統狀態（預設）
-magi status          # 同上 — 服務、節點、NAS、DB、殭屍、記憶體
-magi start           # 透過 launchctl 啟動 daemon + 狀態列
-magi stop            # 停止 daemon + 所有服務 + 狀態列
-magi restart         # 完整停止 → 啟動循環
-magi menubar         # 僅重啟 macOS 狀態列
-magi zombie          # 偵測並清理殭屍進程
-```
-
-### 狀態儀表板
-
-`magi status` 顯示完整即時概覽：
+`ReActEngine.for_omlx()` 對 E4B 執行同步 ReAct 迴圈：
 
 ```
-═══ MAGI System Status ═══
-
-Core Services:
-  ● Daemon             PID 4272
-  ● Server             PID 4358
-  ● Discord Bot        PID 4359
-  ● Tools API          PID 4361
-
-UI:
-  ● Status Bar         PID 4275
-
-oMLX Inference:
-  ● Text (Gemma-4)     port 8080  PID 1234
-  ● Embed (BERT)       port 8081  PID 1235
-
-Remote Nodes:
-  ● Melchior           100.116.54.16:8080
-  ○ Balthasar          100.118.235.126:5002  DOWN
-  ● Keeper             100.121.61.74:3306
-
-NAS Mounts:
-  ● homes              1.2T/3.6T (34%)
-  ● lumi               800G/1.8T (45%)
-
-Database:
-  ● 雙活同步 (remote+local)
-
-Zombies: 0
-Memory:  ~2.3GB (MAGI + oMLX)
+使用者查詢
+  → 建立 system prompt（soul + 工具清單 + ReAct 格式）
+  → LLM 輪次：THINK → ACTION: <工具> / PARAMS: {...}
+  → 本地執行工具
+  → 將 OBSERVATION 注入對話
+  → 重複直到 FINAL: <答案> 或達到 max_steps（5）
 ```
 
-### macOS 狀態列
+**可用工具（精簡集）**
 
-狀態列（`gui/magi_menubar.py`）以 macOS menu bar 應用程式即時顯示系統健康：
-
-- **服務狀態**：Daemon、Server、Discord Bot、Tools API — 彩色指示燈
-- **遠端節點**：Melchior、Balthasar、Keeper — TCP + HTTP 健康檢查
-- **排程任務**：每個排程任務的最後執行時間 + 過期偵測（31 個排程任務）
-- **NAS 掛載**：每個分享的掛載狀態 + 磁碟用量（`os.statvfs()`）
-- **資料庫**：容錯詳情（遠端+本地雙活、容錯狀態、同步狀態）
-- **oMLX 推理**：文字及 Embedding 模型狀態 + 端口檢查
-
-### LaunchAgent 管理
-
-MAGI 使用 macOS LaunchAgents 管理程序生命週期：
-
-| 代理 | Label | 用途 |
-|------|-------|------|
-| Daemon | `com.magi.daemon` | 主程序（啟動 server、discord、tools_api） |
-| 狀態列 | `com.magi.menubar` | macOS menu bar 健康監控 |
-| oMLX Text | `com.magi.omlx` | Gemma-4 26B 推理（port 8080） |
-| oMLX Embed | `com.magi.omlx-embed` | ModernBERT embedding（port 8081） |
-| DB Proxy | `com.magi.db-proxy` | SSH tunnel 至遠端 MariaDB |
-| SMB 重連 | `com.magi.smb-reconnect` | NAS 網路中斷自動重連 |
-| Caddy | `com.magi.caddy-openclaw` | 反向代理（OpenClaw） |
-
----
-
-## v2 基礎設施模組
-
-以下為 v2 新增的企業級基礎設施，v1 完全沒有這些子系統：
-
-### 權限系統（`api/permissions/`）
-
-RBAC 權限引擎，控制技能執行、工具存取、API 端點的存取權限。
-
-### 事件系統（`api/events/`）
-
-全局事件發射器，所有操作產生可追蹤的事件流。
-
-### 鉤子匯流排（`api/hooks/`）
-
-實時事件訂閱/發佈機制，支援 JSONL 持久化。
-
-### 任務運行時（`api/tasks/`）
-
-異步任務排隊與執行、狀態管理（PENDING → RUNNING → COMPLETE/FAILED）、超時控制。
-
-### 會話管理（`api/session/`）
-
-多輪對話上下文保存、歷史管理、摘要生成、待處理狀態追蹤。
-
-### 工具登錄（`api/tools/`）
-
-動態工具發現、執行合約驗證、HTTP/Callable 雙模式執行器。
-
-### 多代理運行時（`api/agents/`）
-
-代理協調器、團隊輪轉分派、代理間消息路由。
-
-### 供應商抽象（`providers/`）
-
-統一 LLM 供應商介面，支援動態註冊與健康檢查。
-
-| 供應商 | 檔案 | 說明 |
-|--------|------|------|
-| oMLX | `omlx.py` | 本地 Apple Silicon 推理 |
-| Anthropic | `anthropic.py` | Claude API |
-| OpenAI | `openai.py` | OpenAI / 相容 API |
-| Ollama | `ollama.py` | 本地 GGUF 推理 |
-
----
-
-## Registry 系統
-
-MAGI v2 將所有硬編碼值（IP、端口、模型名、連線字串）外部化為宣告式 JSON + Python Registry 系統。每個 Registry 遵循相同模式：**JSON 設定 → Python 單例模組 → 環境變數覆寫 → 硬編碼後備**。
-
-### JSON 設定檔（`json/`）
-
-| 檔案 | 用途 | 範例 |
-|------|------|------|
-| `services.json` | 服務端點（host、port、path） | `{"casper": {"host": "127.0.0.1", "port": 5002}}` |
-| `models.json` | 模型別名、供應商、參數 | `{"taide-12b": {"provider": "omlx", "ctx": 4096}}` |
-| `nodes.json` | 執行節點（IP、角色、健康 URL） | `{"melchior": {"ip": "100.116.54.16", "role": "vision"}}` |
-| `datastores.json` | 資料庫及儲存連線 | `{"magi_brain": {"host": "127.0.0.1", "port": 3306}}` |
-
-### Python Registry 模組（`api/routing/`）
-
-| 模組 | 函式 | 讀取自 |
-|------|------|--------|
-| `service_registry.py` | `get_service()`, `get_service_url()`, `get_service_host_port()` | `json/services.json` |
-| `model_registry.py` | `get_role_model()`, `resolve_model()`, `is_alias()` | `json/models.json` |
-| `node_registry.py` | `get_node()`, `get_node_ip()`, `get_node_url()` | `json/nodes.json` |
-| `datastore_registry.py` | `get_datastore()`, `get_connection_params()` | `json/datastores.json` |
-
-### 覆寫鏈
-
-```
-環境變數 (MAGI_CASPER_PORT=5002)
-    → JSON 設定 (json/services.json)
-        → 硬編碼後備 (在 Registry 模組中)
-```
-
-### 統一路由（Phase 4）
-
-| 模組 | 角色 |
+| 工具 | 說明 |
 |------|------|
-| `context.py` | `RoutingContext` — 每請求狀態 |
-| `models.py` | `RoutingDecision`, `FallbackPlan`, `ServiceTarget` |
-| `policy_engine.py` | `PolicyEngine` — 套用路由規則 |
-| `request_router.py` | `RequestRouter` — HTTP 請求路由至服務 |
-| `inference_router.py` | `InferenceRouter` — LLM 呼叫路由至供應商 |
-| `telemetry.py` | `RoutingTelemetry` — 可觀察性與指標 |
+| `search_memory` | FAISS + Graph-RAG 記憶檢索 |
+| `web_search` | Scrapling 即時網路搜尋 |
+| `query_cases` | 依案號 / 當事人查詢案件資料庫 |
+| `get_schedule` | 讀取法庭行事曆 |
+| `calculate` | 安全算術計算 |
+| `current_time` | 當前日期時間 |
+| `summarize` | 長文摘要（含抽取式 fallback） |
+| `translate` | 翻譯（Google GTX 快速路徑） |
+| `remember` | *（條件開啟）* 寫入長期記憶 |
+
+功能旗標：`MAGI_ENSEMBLE_TOOLS=1`（預設 `0`）。
+
+### 中文 NLP 與知識圖譜
+
+- **PKUSeg** 分詞器搭配法律詞典（`skills/engine/legal_dict.txt`），透過 Python 3.11 sidecar 確保相容性。
+- **Graph-RAG**（`skills/engine/knowledge_graph/`）：實體抽取 → 關係建構 → 社群偵測 → 注入 `recall()` 上下文。
+- GraphStore 使用 mtime 鍵值快取；短法律查詢走快速路徑，p95 延遲 < 200ms。
+- 所有向量 embedding 使用 NLP 正規化輸入；顯示時保留原始文字。
 
 ---
 
-## 低幻覺架構
+## 法務自動化
 
-v2 的核心改進之一是從架構層面切斷「模型講錯 → 寫回記憶 → 再引用自己」的幻覺循環。
+### 法律扶助基金會（LAF）
 
-### 已實作的防護
+自動化法扶案件完整生命週期：
 
-| 防護措施 | 說明 |
-|---------|------|
-| **意圖快取版本化** | 快取綁定 schema/policy 版本，只持久化低風險意圖（CHAT），CMD/QUERY 不緩存 |
-| **語義路由收緊** | 廣義詞（摘要、翻譯、記得）改為軟提示，不再直接硬派遣 |
-| **自動記憶寫入停用** | `_auto_remember()` 預設關閉，assistant 回覆不自動進入長期記憶 |
-| **記憶信任分層** | `assistant_generated` 權重 0.18、`chatlog` 權重 0.28、高信任來源 1.00 |
-| **摘要非權威標記** | 歷史壓縮摘要標記為「非原文、僅供延續上下文」，不作為事實依據 |
-| **timeout 安全回退** | 查詢逾時不再自由回答，改為 evidence-only 回覆 |
-| **skill interview 收斂** | admin gap 只在明確創建請求時觸發，不再對普通問題誤判 |
+| 階段 | MAGI 執行內容 |
+|------|---------------|
+| **來信偵測** | Gmail 監控自動偵測法扶通知信 |
+| **申辦開案** | 自動填寫開辦表單、上傳委任狀 + 法扶通知書 |
+| **待辦掃描** | 掃描 portal 中未簽署的暫存草稿，通知律師 |
+| **結案辦理** | 依規則草擬結案申請，附正確備註格式 |
+| **批次作業** | 透過自然語言指令執行批次查詢 / 結案 / 稽核 |
+| **智慧辨識** | 依狀態優先順序 + 關鍵字過濾，自動消除多案歧義 |
 
-### 幻覺鏈條防護測試
+NAS 資料夾結構依案件類型（法扶 / 一般 / 無償 / 指定辯護）分別處理。
 
-```bash
-python -m pytest tests/test_routing.py tests/test_memory_grounding.py \
-  tests/test_orchestrator_low_hallucination.py tests/test_tw_output_guard_metadata.py -q
-```
+### 電子閱卷
+
+兩階段閱卷申請流程（`file-review-orchestrator`）：
+
+1. **填表** — 系統自動填寫電子閱卷申請表並截圖。
+2. **確認** — 產生 6 字元 hex 確認碼（30 分鐘 TTL），將截圖傳送律師審閱。
+3. **律師核可** — 回覆確認碼；系統重新驗證並送出申請。
+
+安全閘門：確認端點只接受來源為 `user/telegram/discord/line` 的請求（非 CLI 直接呼叫），除非設定 `MAGI_FILE_REVIEW_ALLOW_CONFIRM=1`。
+
+附件掃描有 20 秒預算限制與 600 筆候選上限，防止 NAS I/O 飽和。
+
+### 電子筆錄
+
+- 自動下載並以 MD5 去重（JSON + MariaDB 雙寫）。
+- DB fallback：本機 JSON 遺失時，可從 MariaDB 回復去重記憶。
+- 整合自我測試、`db_probe` 與登入 smoke 步驟。
 
 ---
 
-## 全部技能 (67+)
-
-每個技能遵循標準結構：
+## 操作管理 — `magi` CLI
 
 ```
-skills/{skill-name}/
-├── SKILL.md       # 元資料、能力說明、用法
-├── action.py      # CLI 入口（--task / --text）
-└── *.py           # 支援模組
+magi status       # 完整系統健康（服務、oMLX、NAS、DB、殭屍）
+magi restart      # 透過 launchctl kickstart 乾淨重啟
+magi stop         # 正常關機
+magi zombie       # 列出並回收殭屍程序
+magi logs         # 追蹤所有日誌
 ```
 
-### 法務自動化 (14 個技能)
+NAS 狀態同時檢查 `/Volumes/` 與 `~/.magi_mounts/`（Tailscale fallback 路徑）。
 
-| 技能 | 說明 |
+**37 個定時排程任務**（由 `cron_jobs.json` 管理，由 Discord Bot 排程器執行）：
+
+| 類別 | 任務 |
 |------|------|
-| **`file-review-orchestrator`** | 端到端閱卷自動化：申請、驗證碼破解、文件下載、繳費追蹤、歸檔 |
-| **`laf-orchestrator`** | 法律扶助基金會報結與結案 |
-| **`laf-portal-automation`** | 法扶入口網站表單自動化，6 種工作流程，人機協作 |
-| **`judicial-web-search`** | 司法院裁判書查詢爬蟲（Playwright） |
-| **`judicial-flow-search-archive`** | 自然語言 → 布林查詢，裁判書歸檔 |
-| **`judgment-collector`** | 裁判自動收集 + 結構化 LLM 摘要 |
-| **`transcript-downloader`** | 電子筆錄自動下載、重命名、歸檔 |
-| **`transcript-indexer`** | 筆錄向量化索引（FAISS 語意搜尋） |
-| **`trial-prep`** | 開庭準備：庭期查詢、資料夾掃描、法條比對 |
-| **`brief-gen`** | 書狀輔助產生（7 種範本） |
-| **`legal_attest`** | 存證信函產生器 |
-| **`statutes-vdb`** | 法規條文向量資料庫 |
-| **`labor-law-calculator`** | 勞基法計算器（加班費、特休、資遣費） |
-| **`law_review`** | 法律用語審核 |
+| 法務 | 法扶待辦掃描、法扶夜間稽核、司法院 API 夜拉 + 晨間拉取、閱卷檢查（平日 10:00 / 15:00） |
+| 知識庫 | Obsidian 向量入庫、見解同步、Wiki 合成、知識 lint、見解重處理、判決補查 |
+| 運維 | 健康報告、夜間 autopilot、最佳化報告、夜間回歸測試、人格清理、debug 截圖清理 |
+| NAS / 文件 | PDF 命名（夜間）、週末書籤、筆錄同步、每週法律爬取 |
+| 市場 | 市場簡報（平日 08:30）、全球情報監控（每 6 小時）、對沖基金委員會 |
+| 基礎設施 | oMLX 日夜切換、OSC 案件索引 / 掃描、Google 日曆同步、external chat 健康檢查 |
 
-### 文件處理 (7 個技能)
+---
 
-| 技能 | 說明 |
+## 技能目錄
+
+60+ 個技能模組位於 `skills/`，各自有獨立的 `action.py` 入口。
+
+### 法務
+| 技能 | 功能 |
 |------|------|
-| **`pdf`** | PDF 合併、分割、擷取、OCR、加密 |
-| **`pdf-namer`** | 智慧 PDF 重命名（OCR → 視覺模型） |
-| **`pdf-annotator`** | 自動產生 PDF 書籤及目錄 |
-| **`pdf-bookmarker`** | PDF 書籤管理 |
-| **`translator`** | GTX+TAIDE post-edit 全文翻譯 |
-| **`docx`** / **`pptx`** / **`xlsx`** | Office 文件處理 |
+| `laf-orchestrator` | 法扶案件完整生命週期自動化 |
+| `file-review-orchestrator` | 兩階段電子閱卷申請 |
+| `transcript-downloader` | 電子筆錄下載與去重 |
+| `statutes-vdb` | 法條向量資料庫 + 條號對應 |
+| `judgment-collector` | 司法院判決書爬取 |
+| `judicial-web-search` | 司法院即時搜尋（HTTP form + Scrapling） |
+| `judicial-flow-search-archive` | 本地判決庫 fallback |
+| `contract-review` | AI 合約審閱（搭配 MarkItDown） |
+| `trial-prep` | 開庭準備清單 |
+| `evidence-admissibility` | 刑事卷證傳聞法則分類 |
+| `labor-law-calculator` | 加班費 / 資遣費計算 |
+| `laf-refine-case` | 法扶案件資料補強 |
+| `laf-withdrawal-report` | 法扶撤回報告自動化 |
+| `brief-gen` | AI 書狀草稿生成 |
+| `court-hearing-reminder` | 開庭日提醒 |
+| `hearing` | 庭期管理 |
 
-### 金融分析
+### 文件與 PDF
+| 技能 | 功能 |
+|------|------|
+| `pdf-namer` | AI PDF 命名（Vision OCR + 多引擎共識） |
+| `pdf-bookmarker` | PDF 目錄與書籤生成 |
+| `doc-producer` | 文件產製管線 |
+| `docx` | Word 文件創建 / 編輯 |
+| `pptx` | PowerPoint 生成 |
+| `xlsx` | 試算表處理 |
+| `documents` | 統一文件讀取（MarkItDown adapter） |
+| `screenshot-sorter-tw` | 截圖分類與歸檔 |
 
-| 子指令 | 說明 |
-|--------|------|
-| `market-briefing --task briefing` | 每日股價預測（台美股），自調整模型 |
-| `--task comps` | 同業比較分析 |
-| `--task sector` | 產業分析（38 個 TWSE 分類） |
-| `--task export` | 匯出追蹤清單 |
-| `--task performance` | 模型績效指標 |
+### 情報與研究
+| 技能 | 功能 |
+|------|------|
+| `market-briefing` | 對沖基金委員會：技術 / 基本面 / 情緒分析師 + 風控 / 投資組合經理 |
+| `worldmonitor-intel` | 全球新聞與法律情報監控 |
+| `autoresearch` | 自主研究管線 |
+| `insight-refine` | 見解蒸餾與精煉 |
+| `crawler-targets` | 定時爬取目標 |
+| `obsidian` | Obsidian 筆記庫同步與向量入庫 |
 
-### 系統智能 (7 個技能)
+### 記憶與推理
+| 技能 | 功能 |
+|------|------|
+| `memory` | 長期記憶：FAISS 向量庫 + Graph-RAG |
+| `brain_manager` | 跨 session 記憶管理 |
+| `reasoning` | 逐步推理鷹架 |
+| `bridge` | Ensemble 推理橋接（Casper / Melchior / Balthasar） |
+| `casper` | Casper LLM 直接介面 |
+| `translator` | 翻譯（Google GTX 快速路徑 + LLM fallback） |
 
-memory、obsidian、brain_manager、evolution、magi-doctor、magi-autopilot、iron-dome
-
-### 通訊與工具 (7 個技能)
-
-browser、apple、translator、research、gmail-drafts、worldmonitor-intel、crawler-targets
+### 運維
+| 技能 | 功能 |
+|------|------|
+| `magi-autopilot` | 夜間批次自動化任務 |
+| `magi-doctor` | 系統健康診斷 |
+| `magi-self-repair` | 已知故障模式自動修復 |
+| `process-hygiene` | 殭屍與過期程序清理 |
+| `iron-dome` | 安全規則引擎 |
+| `gmail-drafts` | Gmail 草稿管理 |
 
 ---
 
 ## 訊息處理流程
 
 ```
-收到訊息（LINE / Discord / Telegram）
+收到訊息
     │
-    ▼
-頻道處理器 (webhooks/line.py, webhooks/telegram.py, discord_bot.py)
-    │  ─ 簽章驗證、角色檢查、快速路徑
+    ├─ 20+ 正則攔截器（法扶 / 閱卷 / 筆錄 / 排庭 / 帳務 …）
+    │       ↓ 命中 → 直接走領域處理器（跳過 LLM）
     │
-    ▼
-背景執行器（非同步 — LINE webhook 須於 3 秒內回應）
+    ├─ 意圖分類器  →  CMD / QUERY / CHAT / SYSTEM
     │
-    ▼
-協調器 (api/orchestrator.py) → 委派至 pipelines/
+    ├─ CMD / QUERY（MAGI_ENSEMBLE_TOOLS=1）
+    │       ↓  ensemble_chat_with_tools()
+    │       ↓  Phase 1：ReAct（Casper + 工具，最多 5 步）
+    │       ↓  Phase 2：Melchior + Balthasar 並行審查
+    │       ↓  format_magi_response()
     │
-    ├─ message_pipeline.py     ─ 輸入消毒、上下文載入
-    ├─ command_pipeline.py     ─ 指令前綴偵測與解析
-    ├─ message_router.py       ─ Embedding Router (ModernBERT)
-    └─ command_dispatch.py     ─ 技能解析與派遣
-        │
-        ▼
-    意圖分類器（regex → heuristic → LLM）
-        ├─ DANGER → 阻擋 + red_phone 警報
-        ├─ CMD    → skill_dispatch.py → action.py
-        ├─ QUERY  → chat_pipeline.py（記憶檢索 + 網路研究）
-        └─ CHAT   → chat_pipeline.py（對話模式）
-        │
-        ▼
-    特定領域流程 (domains/)：
-        ├─ judgment_flow.py   ─ 司法裁判查詢
-        ├─ laf_flow.py        ─ 法扶作業
-        ├─ market_flow.py     ─ 股市分析
-        ├─ memory_flow.py     ─ RAG 記憶操作
-        └─ codex_flow.py      ─ 程式碼分析
-        │
-        ▼
-    回應透過頻道 API 推送
+    ├─ CMD / QUERY（MAGI_ENSEMBLE_TOOLS=0，預設）
+    │       ↓  ensemble_chat_verified() — 直接三哲人文字生成
+    │
+    └─ CHAT  →  grounded_ai.chat_casper()（閒聊快速路徑）
 ```
+
+**支援頻道**：LINE Messaging API、Discord Bot、Telegram Bot、Web API（`/osc/external/chat`）。
 
 ---
 
 ## 治理與安全
 
-```
-使用者（Admin Token）        ← 最高權限
-  └── 憲法                   ← 覆蓋所有 AI 邏輯
-      └── Casper（總督）     ← AI 權限
-          └── Permission Enforcer ← RBAC 權限
-              └── Iron Dome       ← 硬性保護層
-```
+### Iron Dome
+對每次工具呼叫與 shell 指令進行多層安全審查：
+- 危險字串模式比對（`rm -rf`、SQL `DROP`、路徑穿越等）。
+- 嚴重程度評分：BLOCK / WARN / ALLOW。
+- 在每次 ReAct 工具執行前觸發。
 
-- **SQL 防護**：硬性阻擋 `DELETE` / `DROP` / `TRUNCATE`
-- **Shell 防護**：阻擋 `rm -rf`、`mkfs`、`dd` 等
-- **提示注入**：模式匹配 + 幻覺關鍵字偵測
-- **訪客隔離**：非管理員為唯讀
-- **CSRF**：令牌驗證
-- **安全標頭**：CSP、HSTS、X-Content-Type-Options
+### 信任標籤洩漏防護
+- 內部上下文標籤（`[已驗證事實]`、`[使用者陳述]` 等）僅供內部推理使用。
+- `tw_output_guard.py` 攔截並改寫任何將此類標籤洩漏到外部頻道的回應。
+- `grounded_ai.py` 偵測人格幻覺（`身為 CASPER …`）並在輸出前重試。
 
----
+### 中國模型政策
+具有已知內容審查限制的模型（Qwen / DeepSeek / GLM / Yi 系列）依政策排除在外。僅允許無審查限制的開放模型。
 
-## OpenClaw 整合
-
-OpenClaw 是 MAGI 的分散推論橋接層，**v2 中預設停用**。
-
-### 狀態
-
-| 項目 | 說明 |
-|------|------|
-| 橋接模組 | `skills/bridge/openclaw_codex_bridge.py` |
-| 支援功能 | OCR、翻譯、視覺、意圖識別、轉錄 |
-| 預設狀態 | **停用**（`MAGI_AVOID_DISTRIBUTED=1`） |
-| 啟用方式 | 設定 `MAGI_AVOID_DISTRIBUTED=0` 及 `OPENCLAW_TELEGRAM_BOT_TOKEN` |
+### Reaper 安全白名單
+`daemon.py` Phase 4 過期程序回收器具有明確安全白名單（`REAPER_SAFE_UTILITIES`），防止 oMLX、magi_menubar、admin_server 與 benchmark 程序被誤殺為「過期 Python 程序」。
 
 ---
 
-## 組態設定
+## 環境設定
 
-### 引導式設定（建議）
+主要環境變數（在 `.env` 中設定）：
 
-```bash
-python3 setup_wizard.py
-```
-
-### 手動設定
-
-複製 `.env.example` 為 `.env`：
-
-| 類別 | 變數 | 說明 |
-|------|------|------|
-| **Flask** | `FLASK_SECRET_KEY`, `MAGI_API_KEY` | 產生：`python3 -c "import secrets; print(secrets.token_hex(32))"` |
-| **資料庫** | `DB_HOST`, `DB_USER`, `DB_PASSWORD` | `magi_brain` — 向量記憶 |
-| **遠端資料庫** | `OSC_DB_HOST`, `MAGI_REMOTE_DB_HOST` | `law_firm_data`（OSC） |
-| **LINE** | `MAGI_LINE_CHANNEL_ACCESS_TOKEN`, `MAGI_LINE_CHANNEL_SECRET` | LINE Messaging API |
-| **Discord** | `DISCORD_BOT_TOKEN`, `DISCORD_NOTIFY_CHANNEL_ID` | Discord Bot |
-| **Telegram** | `OPENCLAW_TELEGRAM_BOT_TOKEN`, `MAGI_TG_ADMIN_CHAT_ID` | Telegram Bot |
-| **管理員** | `MAGI_ADMIN_DISPLAY_NAME`, `MAGI_ADMIN_LINE_IDS` | LINE user ID |
-| **模型** | `MAGI_MAIN_MODEL` | `gemma-4-26b-a4b-it-4bit`（macOS） |
-| **推理** | `MAGI_OMLX_ENABLED` | `1` 用 oMLX（macOS），`0` 用 Ollama |
-
-完整設定見 [.env.example](.env.example)。
+| 變數 | 預設值 | 用途 |
+|------|--------|------|
+| `MAGI_ENSEMBLE_TOOLS` | `0` | 啟用 ReAct Agentic 工具呼叫 |
+| `MAGI_ALLOW_CLOUD_MODELS` | `0` | 允許 Claude / GPT fallback |
+| `MAGI_USE_SCRAPLING` | `0` | 使用 Scrapling 抓網頁（更快，無需瀏覽器） |
+| `MAGI_USE_MARKITDOWN` | `0` | 使用 MarkItDown 解析文件 |
+| `MAGI_PDF_OCR_CONSENSUS` | `0` | PDF 命名多引擎 OCR 共識 |
+| `MAGI_NAS_HOST` | `192.168.1.3` | NAS LAN IP |
+| `MAGI_NAS_TAILSCALE_HOST` | `100.111.10.126` | NAS Tailscale IP（自動 fallback） |
+| `MAGI_AVOID_DISTRIBUTED` | `1` | 僅單機運行 |
+| `MAGI_COMMITTEE_LIGHT_MODEL` | *(E4B)* | 分析師代理模型 |
+| `MAGI_COMMITTEE_HEAVY_MODEL` | *(26B)* | 風控 / 投資組合經理模型 |
+| `MAGI_FILE_REVIEW_ALLOW_CONFIRM` | `0` | 允許 CLI 觸發閱卷確認 |
+| `MAGI_JUDICIAL_VERIFY_SSL` | `0` | 司法院網站 SSL 驗證（TLS 相容模式關閉） |
 
 ---
 
-## 技術棧
+## 技術堆疊
 
 | 層次 | 技術 |
 |------|------|
-| 語言 | Python 3.12+（核心）、Node.js v22（OpenClaw 前端） |
-| 網頁框架 | Flask + Jinja2 + Blueprint |
-| 資料庫 | MariaDB 10.11+（雙活容錯：遠端 + 本地） |
-| 推理 | oMLX（macOS）/ Ollama（Windows/Linux） |
-| 供應商層 | `providers/` — oMLX / Anthropic / OpenAI / Ollama |
-| 嵌入 | ModernBERT（oMLX）/ Nomic-embed（Ollama） |
-| 通訊 | LINE Bot SDK、Discord.py、python-telegram-bot |
-| 網路 | Tailscale VPN、Cloudflare Tunnel（自動管理） |
-| 反向代理 | Caddy（選配，用於對外服務） |
-| 瀏覽器 | Playwright、Selenium |
-| PDF/OCR | PyMuPDF、RapidOCR、pdfplumber、ReportLab |
-| 向量資料庫 | FAISS（本地） |
-| 排程 | LaunchAgent（macOS）/ 工作排程器（Windows）/ systemd（Linux） |
-| 狀態列 | rumps + PyObjC（macOS menu bar） |
+| **執行環境** | Python 3.9+（生產：macOS 3.14），venv |
+| **LLM 推理** | [oMLX](https://github.com/omlx/omlx)（MLX / Apple Silicon）· Ollama（Linux/Windows） |
+| **模型** | Gemma-4 E4B · Phi-4-mini · SmolLM3-3B · Gemma-4 26B（夜間） |
+| **Embedding** | ModernBERT-embed-4bit（port 8081） |
+| **向量庫** | FAISS（144K+ 向量，mmap） |
+| **資料庫** | MariaDB（本地 + Tailscale 遠端同步） |
+| **中文 NLP** | PKUSeg（3.11 sidecar）· Apple NaturalLanguage fallback |
+| **知識圖譜** | 自製 Graph-RAG（實體抽取 → 社群偵測） |
+| **網路爬取** | Scrapling · requests + BeautifulSoup fallback |
+| **文件解析** | MarkItDown · pdftotext · fitz · pdfplumber · Tesseract · macOS Vision |
+| **OCR** | macOS Vision · RapidOCR · Tesseract（共識模式） |
+| **API 框架** | Flask · Flask-Login · Flask-SocketIO |
+| **排程** | `discord_bot.py` 內建 CronScheduler（cron_jobs.json） |
+| **訊息頻道** | LINE Messaging API · Discord.py · python-telegram-bot |
+| **NAS** | SMB LAN（192.168.1.3）+ Tailscale fallback（100.111.10.126） |
+| **日曆** | Google Calendar API（OAuth2，自動 refresh） |
+| **安全** | Iron Dome 規則引擎 · tw_output_guard · 信任標籤洩漏偵測器 |
+| **測試** | pytest（1,142 個測試） |
 
 ---
 
 ## 目錄結構
 
 ```
-MAGI/
-├── api/                              # 核心 API 層
-│   ├── server.py                     # Flask 入口（802 行 — 委派至模組）
-│   ├── orchestrator.py               # 意圖路由中樞（2,335 行 — 委派至 pipelines）
-│   ├── tools_api.py                  # RESTful 工具 API（port 5003）
-│   ├── discord_bot.py                # Discord 整合 + 排程
-│   ├── db_failover.py                # DB 容錯控制器（遠端 ↔ 本地自動切換）
-│   ├── blueprints/                   # Flask Blueprint 模組（拆自 server.py）
-│   │   ├── admin_runtime.py          # 管理員儀表板路由
-│   │   ├── dashboard_pages.py        # 儀表板頁面路由
-│   │   ├── osc_cases.py              # 案件管理系統路由
-│   │   ├── osc_accounting.py         # 會計系統路由
-│   │   ├── osc_debt.py               # 債務案件路由
-│   │   ├── osc_settings.py           # 系統設定路由
-│   │   └── web_runtime.py            # Web 應用路由
-│   ├── webhooks/                     # 頻道 Webhook 處理器（拆自 server.py）
-│   │   ├── line.py                   # LINE 訊息 webhook
-│   │   └── telegram.py               # Telegram bot webhook
-│   ├── pipelines/                    # 處理管線（拆自 orchestrator.py）
-│   │   ├── message_pipeline.py       # 訊息接收與消毒
-│   │   ├── command_pipeline.py       # 指令解析與驗證
-│   │   ├── chat_pipeline.py          # 對話式 AI 管線
-│   │   ├── command_dispatch.py       # 技能派遣調度
-│   │   ├── skill_dispatch.py         # 技能解析邏輯
-│   │   ├── message_router.py         # 意圖路由
-│   │   ├── attachment_pipeline.py    # 附件處理
-│   │   └── specialized_commands.py   # 特定領域指令
-│   ├── domains/                      # 特定領域流程（拆自 orchestrator.py）
-│   │   ├── judgment_flow.py          # 司法裁判查詢
-│   │   ├── laf_flow.py              # 法扶作業
-│   │   ├── market_flow.py           # 股市分析
-│   │   ├── memory_flow.py           # RAG 記憶操作
-│   │   ├── codex_flow.py            # 程式碼分析
-│   │   └── skill_interview_flow.py  # 技能查詢
-│   ├── routing/                      # 統一路由 & Registry 系統
-│   │   ├── service_registry.py      # 服務端點 Registry
-│   │   ├── model_registry.py        # 模型 Registry
-│   │   ├── node_registry.py         # 節點 Registry
-│   │   ├── datastore_registry.py    # 資料庫 Registry
-│   │   ├── policy_engine.py         # 路由策略引擎
-│   │   ├── request_router.py        # HTTP 請求路由器
-│   │   ├── inference_router.py      # LLM 推理路由器
-│   │   └── telemetry.py             # 路由遙測
-│   ├── handlers/                     # 請求處理器
-│   ├── agents/                       # 多代理運行時
-│   ├── coordinator/                  # 任務協調
-│   ├── events/                       # 事件系統
-│   ├── hooks/                        # 鉤子系統
-│   ├── osc/                          # 線上服務中心整合
-│   ├── permissions/                  # 授權與權限
-│   ├── session/                      # 會話管理
-│   ├── tasks/                        # 任務佇列與執行
-│   ├── tools/                        # 工具定義與登錄
-│   └── verification/                 # 回應驗證
-├── json/                             # 宣告式設定（Registry 系統）
-│   ├── services.json                 # 服務端點
-│   ├── models.json                   # 模型定義與別名
-│   ├── nodes.json                    # 執行節點定義
-│   ├── datastores.json               # 資料庫連線設定
-│   └── holidays_config.json          # 假日行事曆
-├── skills/                           # 67+ 模組化技能
-│   ├── bridge/                       # 推理閘道、路由、安全（14 模組）
-│   ├── ops/                          # 營運 + 平台抽象（19 模組）
-│   ├── magi/                         # 自治（3 模組）
-│   ├── memory/                       # FAISS 向量記憶 + RAG
-│   └── {skill-name}/                 # 個別技能
-├── gui/                              # GUI 元件
-│   └── magi_menubar.py               # macOS 狀態列（rumps + PyObjC）
-├── scripts/                          # 操作腳本（60+）
-│   ├── magi_cli.sh                   # `magi` CLI 工具
-│   ├── nightly_council.py            # 每日知識整合
-│   └── ops/                          # 操作腳本（smoke tests、DB 同步等）
-├── providers/                        # AI 供應商整合
-├── mcp/                              # MCP 伺服器
-├── casper_ecosystem/                 # 法務自動化引擎
-├── tests/                            # 90+ 測試檔
-├── docs/                             # 文件
-│   ├── ARCHITECTURE.md               # 系統架構
-│   ├── OPERATOR_RUNBOOK.md           # 操作手冊
-│   └── API_CONTRACT.md               # API 規格
-├── migrations/                       # 資料庫遷移
-├── templates/                        # Flask/Jinja2 模板
-├── static/                           # 靜態資源
-├── daemon.py                         # 程序守護 daemon
-├── setup_wizard.py                   # 首次設定精靈
-├── requirements.txt                  # 核心依賴
-├── requirements-optional.txt         # 選配依賴
-├── requirements-windows.txt          # Windows 專用依賴
-├── .env.example                      # 環境變數範本
-└── CONSTITUTION.md                   # 治理規則
+MAGI_v2/
+├── daemon.py                   # 主程序管理（KeepAlive、reaper、日夜切換）
+├── api/
+│   ├── server.py               # Flask API（port 5002）
+│   ├── tools_api.py            # Tools API（port 5003）
+│   ├── discord_bot.py          # Discord Bot + CronScheduler
+│   ├── pipelines/              # message_pipeline、command_dispatch、skill_dispatch …
+│   ├── domains/                # laf_flow、multimedia_flow、judgment_flow、schedule_flow …
+│   ├── blueprints/             # web_runtime、admin_runtime
+│   ├── nas_mount_guard.py      # NAS SMB 自動掛載 + Tailscale fallback
+│   ├── debug_capture.py        # 統一 debug 截圖 helper
+│   └── tw_output_guard.py      # 輸出正規化 + 信任標籤洩漏防護
+├── skills/
+│   ├── engine/                 # react_engine、tool_registry、chinese_nlp、knowledge_graph …
+│   ├── bridge/                 # ensemble_inference、grounded_ai、llm_direct …
+│   ├── legal/                  # laf.py、judicial.py（瀏覽器自動化）
+│   ├── memory/                 # mem_bridge、vector_pipeline
+│   ├── documents/              # file_bridge、multimodal_parser、document_reader
+│   ├── research/               # web_research、github_monitor
+│   ├── evolution/              # usage_tracker、skill_improver、skill_genesis
+│   ├── laf-orchestrator/       # 法扶生命週期技能
+│   ├── file-review-orchestrator/
+│   ├── transcript-downloader/
+│   ├── pdf-namer/
+│   ├── market-briefing/        # 對沖基金委員會（agents/、models/、predict/）
+│   └── …（共 60+ 技能）
+├── docs/
+│   └── soul/                   # SOUL_CASPER.md · SOUL_MELCHIOR.md · SOUL_BALTHASAR.md
+├── tests/                      # 1,142 個 pytest 測試
+├── cron_jobs.json              # 所有排程任務的唯一來源
+└── .env                        # 執行環境設定（不提交至版本控制）
 ```
 
 ---
 
-## 連接埠
+## 服務埠口
 
-| 埠號 | 服務 | 說明 |
-|------|------|------|
-| 5002 | MAGI Server | LINE Webhook + 儀表板（主要端口） |
-| 5003 | Tools API | RESTful 工具 API |
-| 8080 | oMLX / Ollama | 本地推理引擎 |
-| 8081 | Embedding 服務 | ModernBERT 嵌入 |
-| 8199 | 設定精靈 | 首次設定（暫時） |
-| 18789 | OpenClaw Gateway | 僅 loopback |
+| 埠口 | 服務 |
+|------|------|
+| `5002` | Flask 主伺服器（`/health`、`/chat`、`/skills/…`） |
+| `5003` | Tools API（`/summarize`、`/translate`、`/collab/transcribe`、`/osc/external/chat`） |
+| `8080` | oMLX 文字 — Gemma-4 E4B（Casper，日間）/ Gemma-4 26B（夜間） |
+| `8081` | oMLX Embedding — ModernBERT-embed-4bit |
+| `8082` | oMLX 文字 — Phi-4-mini-instruct（Melchior，僅日間） |
+| `8083` | oMLX 文字 — SmolLM3-3B（Balthasar，僅日間） |
+| `8088` | Website Admin 管理面板 |
+| `50052` | gRPC RPC Worker |
 
 ---
 
 ## 測試
 
 ```bash
-# 全部測試（247+ tests）
-python -m pytest tests/ -v
+# 完整測試
+./venv/bin/python -m pytest -q          # 1,142 個測試
 
-# Registry & 路由測試
-python -m pytest tests/test_registry*.py tests/test_routing*.py -v
+# 精準測試
+pytest tests/test_react_omlx.py         # ReAct + ensemble tools（15 個測試）
+pytest tests/test_document_reader.py    # MarkItDown adapter（24 個測試）
+pytest tests/test_knowledge_graph.py    # Graph-RAG（5 個測試）
+pytest tests/test_judicial_web_search.py
 
-# Blueprint 測試
-python -m pytest tests/test_*_blueprint.py -v
-
-# Pipeline 測試
-python -m pytest tests/test_*_pipeline.py tests/test_command_dispatch.py -v
-
-# 技能合約測試
-python -m pytest tests/test_skill_contract_*.py -v
-
-# 低幻覺專項測試
-python -m pytest tests/test_routing.py tests/test_memory_grounding.py \
-  tests/test_orchestrator_low_hallucination.py tests/test_tw_output_guard_metadata.py -q
-
-# 系統自我測試
-python3 skills/ops/system_test.py
-
-# 系統診斷
-python3 skills/magi-doctor/action.py --task diagnose
+# Live smoke（需要服務運行中）
+magi status
+curl http://127.0.0.1:5002/health
+curl http://127.0.0.1:5003/health
+MAGI_USE_SCRAPLING=1 skills/judicial-web-search/action.py --task self_test
+skills/laf-orchestrator/action.py --task self_test
+skills/file-review-orchestrator/action.py --task self_test
+skills/transcript-downloader/action.py --task self_test
 ```
+
+CI 閘門：`scripts/ci/check_hardcodes.py` — 提交的程式碼中有任何 IP / 憑證即失敗。
 
 ---
 
 ## 授權
 
-No open-source license. All rights reserved until a LICENSE file is published.
+私有 / 專屬。保留所有權利。
+
+原始碼僅供參考與內部使用。未經書面許可，不得重新發布或用於商業用途。
