@@ -544,7 +544,12 @@ class LawyerPortalSSO:
                     if "驗證碼" in alert_text:
                         self.log("  (Alert 指示驗證碼錯誤，重試)")
                         continue
-                    if "帳號" in alert_text or "密碼" in alert_text:
+                    # 密碼到期「建議」警告 → 不是錯誤，接受後繼續檢查登入結果
+                    # 例：「因密碼超過180天未更新,建議您先至個人資料維護內更改密碼。」
+                    if ("建議" in alert_text or "未更新" in alert_text) and "密碼" in alert_text:
+                        self.log("  (Alert 為密碼到期警告，接受後繼續)")
+                        # 不 continue，讓下方 _check_login_success() 判斷實際結果
+                    elif "帳號" in alert_text or "密碼" in alert_text:
                         self.log("  (Alert 指示帳號密碼錯誤)")
                         return False
                 except Exception:

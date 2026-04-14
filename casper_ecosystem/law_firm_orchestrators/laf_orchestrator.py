@@ -974,6 +974,36 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                             }
                         )
                         continue
+
+                    # NAS 預檢：若 NAS 資料夾裡已有開辦通知 + 委任狀，直接標 done
+                    # 不需要再上法扶官網，去重即可
+                    if local_case_folder and os.path.isdir(local_case_folder):
+                        try:
+                            _docs_check = self._scan_case_folder_docs(local_case_folder)
+                            _has_notice = len(_docs_check.get("opening_notice_files") or []) > 0
+                            _has_poa = len(_docs_check.get("poa_files") or []) > 0
+                            if _has_notice and _has_poa:
+                                logger.info(
+                                    "[LAF-RETRY] %s NAS 已有開辦通知+委任狀，跳過 portal，標記 done",
+                                    laf_case_no,
+                                )
+                                updated["status"] = "done"
+                                updated["last_error"] = ""
+                                updated["updated_at"] = now_iso
+                                with _portal_retry_state_lock:
+                                    queue_items = self._load_pending_portal_downloads()
+                                    queue_items[laf_case_no] = dict(queue_items.get(laf_case_no) or {}, **updated)
+                                    self._save_pending_portal_downloads(queue_items)
+                                processed.append({
+                                    "laf_case_number": laf_case_no,
+                                    "downloaded_count": 0,
+                                    "status": "done",
+                                    "reason": "nas_already_has_docs",
+                                })
+                                continue
+                        except Exception:
+                            pass  # 掃描失敗不擋流程，繼續走 portal 嘗試
+
                     updated["tries"] = int(updated.get("tries") or 0) + 1
                     updated["last_try_at"] = now_iso
                     updated["updated_at"] = now_iso
