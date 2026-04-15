@@ -135,14 +135,32 @@ def handle_payment_proof_from_channel(orch, image_path: str) -> str:
     stdout = (proc.stdout or "").strip()
     stderr = (proc.stderr or "").strip()
 
-    try:
-        result = json.loads(stdout)
-        return result.get("message") or str(result)
-    except Exception:
-        logger.warning("Payment subprocess returned non-JSON stdout: %s", stdout[:200], exc_info=True)
+    # The subprocess may print log lines (from self.log()) to stdout before
+    # the final JSON result line.  Search for the last line that parses as a
+    # JSON dict — that is the actual result payload.
+    result = None
+    for line in reversed(stdout.splitlines()):
+        line = line.strip()
+        if not line or not line.startswith("{"):
+            continue
+        try:
+            obj = json.loads(line)
+            if isinstance(obj, dict):
+                result = obj
+                break
+        except Exception:
+            continue
 
-    if stdout:
-        return stdout
+    if result is not None:
+        msg = result.get("message") or ""
+        if msg:
+            return msg
+        # Fallback: compose from fields rather than dumping raw JSON
+        if result.get("success"):
+            return f"✅ 繳費憑證已上傳 — {result.get('case', '')}"
+        return f"❌ 繳費憑證上傳失敗：{result.get('error', '未知錯誤')}"
+
+    # No JSON result found at all
     if proc.returncode != 0:
         err = stderr[:200] if stderr else f"exit code {proc.returncode}"
         return f"❌ 繳費憑證上傳失敗：{err}"

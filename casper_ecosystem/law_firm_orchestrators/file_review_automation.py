@@ -2090,14 +2090,17 @@ class FileReviewManager:
             info.payment_amount = 0
         info.files = file_paths
 
-        sent_ok = bool(self.notify_payment_needed(info))
+        _notify_result = self.notify_payment_needed(info)
+        sent_ok = _notify_result is True  # True=sent, None=intentional skip, False=failed
         if sent_ok:
             self.notified_cases.add(notify_key)
             if notify_key_case:
                 self.notified_cases.add(notify_key_case)
             self._save_notified_cases()
-        else:
+        elif _notify_result is False:
+            # False means the send was attempted but failed
             self.log(f"  ⚠️ 繳費通知未送達，暫不標記已通知: {notify_key}")
+        # None = dismissed/dedup skip — already logged inside notify_payment_needed
         return sent_ok
 
     def _register_downloaded(self, filename: str, yyidno: str = "", case_info: dict = None):
@@ -9856,7 +9859,7 @@ class FileReviewManager:
             # 1. dismissed 比對（人名 key + 案號 key）
             if self._is_payment_dismissed(_notify_key, _notify_key_no_party):
                 self.log(f"  ℹ️ 已標記為已繳費，跳過通知: {_ck} {_party}")
-                return True
+                return None  # intentional skip — caller must NOT count as "notified"
 
             # 2. payment_proof dedup DB 比對（案號格式：115.原侵重訴.000001）
             _ck_norm = re.sub(r"[年度字第號\s]+", "", _ck) if _ck else ""
@@ -9868,7 +9871,7 @@ class FileReviewManager:
                         from skills.ops.dedup_db import is_done as _is_done
                         if _is_done("payment_proof", _proof_key):
                             self.log(f"  ℹ️ 繳費憑證已上傳（dedup DB），跳過通知: {_proof_key}")
-                            return True
+                            return None  # intentional skip
                     except Exception:
                         pass
                     # 也查 proof registry JSON
@@ -9879,7 +9882,7 @@ class FileReviewManager:
                                 _proof_reg = json.load(_pf)
                             if _proof_key in _proof_reg:
                                 self.log(f"  ℹ️ 繳費憑證已上傳（JSON），跳過通知: {_proof_key}")
-                                return True
+                                return None  # intentional skip
                     except Exception:
                         pass
 
@@ -9889,7 +9892,7 @@ class FileReviewManager:
                     _dkw = _dv.get("keyword", "") if isinstance(_dv, dict) else ""
                     if _dkw and _dkw == _party:
                         self.log(f"  ℹ️ 當事人已標記已繳費，跳過通知: {_party}")
-                        return True
+                        return None  # intentional skip
 
             # ── 從 DB 補齊法院名稱和當事人（email 路徑常缺這些）──
             if (not info.court or info.court == "-") and _ck and self.db_manager:
@@ -10302,9 +10305,11 @@ class FileReviewManager:
 
             # 排除法扶來源信件，避免與法扶通知系統重複處理
             _excl_laf = " -from:@laf.org.tw -from:laf.server"
+            # 排除「繳費完成通知信」— 法院確認收款的回報信，不是待繳費通知
+            _excl_completion = " -subject:繳費完成"
 
             # A. 繳費單通知
-            query_payment = f"(法院 回覆 閱卷 結果 通知 OR 含繳費單 OR 待繳費 OR 繳費期限) after:{check_date}{_excl_laf}"
+            query_payment = f"(法院 回覆 閱卷 結果 通知 OR 含繳費單 OR 待繳費 OR 繳費期限) after:{check_date}{_excl_laf}{_excl_completion}"
             r_pay = self._scan_and_process_emails(query_payment, "payment")
             summary["payment_hits"] += r_pay.get("hits", 0)
             summary["payment_notified"] += r_pay.get("notified", 0)
@@ -10317,7 +10322,7 @@ class FileReviewManager:
             summary["errors"].extend(r_dl.get("errors", []))
 
             # C. 備援掃描（主旨格式改版/插空白時）
-            query_auto = f"(閱卷 OR 閱 卷 OR 複製電子卷證 OR 線上聲請閱卷暨聲請複製電子卷證系統) after:{check_date}{_excl_laf}"
+            query_auto = f"(閱卷 OR 閱 卷 OR 複製電子卷證 OR 線上聲請閱卷暨聲請複製電子卷證系統) after:{check_date}{_excl_laf}{_excl_completion}"
             r_auto = self._scan_and_process_emails(query_auto, "auto")
             summary["payment_hits"] += r_auto.get("payment_hits", 0)
             summary["payment_notified"] += r_auto.get("payment_notified", 0)
@@ -10358,6 +10363,14 @@ class FileReviewManager:
                 # 排除法扶來源信件（避免與法扶通知系統重疊）
                 sender_lower = sender.lower()
                 if '@laf.org.tw' in sender_lower or 'laf.server' in sender_lower:
+                    self.processed_emails.add(msg_id)
+                    continue
+
+                # 排除「繳費完成通知信」— 這是繳費已收款的確認信，不是待繳費通知
+                # 主旨含「繳費完成」的信代表法院已收到款項，不需再通知律師
+                _subject_norm = self._normalize_case_text(subject)
+                if "繳費完成" in _subject_norm or "繳費完成通知" in subject:
+                    self.log(f"  ℹ️ [{msg_id}] 繳費完成確認信，略過（非待繳費）: {subject[:60]}")
                     self.processed_emails.add(msg_id)
                     continue
 
@@ -10457,15 +10470,18 @@ class FileReviewManager:
                          # 通知 (含附件) — key 統一加 web_payment: 前綴避免與 web 掃描重複
                          notify_key = f"web_payment:{info.court_case_no or info.laf_case_no or info.application_no or msg_id}"
                          if notify_key not in self.notified_cases:
-                             sent_ok = bool(self.notify_payment_needed(info))
+                             _notify_result = self.notify_payment_needed(info)
+                             sent_ok = _notify_result is True  # True=sent, None=skip, False=failed
                              if sent_ok:
                                  self.notified_cases.add(notify_key)
                                  self._save_notified_cases()  # 持久化，避免重複通知
                                  stats["notified"] += 1
                                  if type == "auto":
                                      stats["payment_notified"] += 1
-                             else:
+                             elif _notify_result is False:
+                                 # False = attempted but failed
                                  self.log(f"  ⚠️ 繳費通知未送達，暫不標記已通知: {notify_key}")
+                             # None = dismissed/dedup — already logged; don't warn
 
                 elif msg_type == "download":
                     stats["hits"] += 1
