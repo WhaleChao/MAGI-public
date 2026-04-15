@@ -180,7 +180,7 @@ Automates the full lifecycle of Legal Aid Foundation cases:
 | **Incoming mail** | Gmail monitor detects LAF notification emails |
 | **Portal go-live** | Auto-fills case opening forms, uploads commission letter + LAF notice |
 | **Pending drafts** | Scans portal for unsigned drafts, surfaces to lawyer |
-| **Closing** | Drafts case-closing submissions with correct remark format |
+| **Closing** | Drafts case-closing submissions with correct remark format; supports `引用OOO的會議` (inherit another case's meeting count) and `OOO就是結案文件` (specify any file as closing basis by keyword) |
 | **Batch ops** | Bulk query / batch closing / batch audit via natural-language commands |
 | **Smart lookup** | Disambiguates multiple cases by status priority + keyword filtering |
 
@@ -223,7 +223,7 @@ NAS status checks both `/Volumes/` and `~/.magi_mounts/` (Tailscale fallback pat
 | Category | Jobs |
 |----------|------|
 | Legal | LAF pending scan, nightly LAF audit, judicial API pull (night + morning), file review check (10:00 / 15:00 weekdays) |
-| Knowledge | Obsidian ingest, insight sync, wiki synthesiser, knowledge lint, reprocess insights, judgment retry |
+| Knowledge | Obsidian ingest, case card index sync, insight sync, knowledge lint, reprocess insights, judgment retry |
 | Ops | Health report, nightly autopilot, optimize report, nightly regression, purge persona, debug cleanup |
 | NAS / Files | PDF namer (nightly), weekend bookmark, transcript sync, weekly legal crawl |
 | Market | Market briefing (weekday 08:30), world monitor (every 6h), hedge fund committee |
@@ -276,7 +276,7 @@ NAS status checks both `/Volumes/` and `~/.magi_mounts/` (Tailscale fallback pat
 | `autoresearch` | Autonomous research pipeline |
 | `insight-refine` | Insight distillation and refinement |
 | `crawler-targets` | Scheduled web crawl targets |
-| `obsidian` | Obsidian vault sync and vector ingest |
+| `obsidian` | Obsidian vault sync, vector ingest, and case card index (`30_Index/`) |
 
 ### Memory & Inference
 | Skill | Function |
