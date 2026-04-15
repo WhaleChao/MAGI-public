@@ -18,7 +18,6 @@ The module is intentionally dependency-light and does not import server.py.
 
 from __future__ import annotations
 
-import html
 from pathlib import Path
 
 from flask import Blueprint, Response, redirect, render_template, request, url_for
@@ -32,8 +31,9 @@ _MAGI_ROOT = Path(__file__).resolve().parents[2]
 _WORLDMONITOR_REPORT_DIR = _MAGI_ROOT / "static" / "worldmonitor_reports"
 
 
-def _iter_worldmonitor_reports(limit: int = 20) -> list[dict[str, str]]:
-    reports: list[dict[str, str]] = []
+def _iter_worldmonitor_reports(limit: int = 20) -> list[dict]:
+    import re as _re
+    reports: list[dict] = []
     if not _WORLDMONITOR_REPORT_DIR.is_dir():
         return reports
     for entry in sorted(_WORLDMONITOR_REPORT_DIR.iterdir(), reverse=True):
@@ -42,23 +42,16 @@ def _iter_worldmonitor_reports(limit: int = 20) -> list[dict[str, str]]:
         if not entry.is_file() or entry.suffix.lower() != ".md":
             continue
         try:
-            content = entry.read_text(encoding="utf-8")[:5000]
+            content = entry.read_text(encoding="utf-8")[:8000]
         except Exception:
             content = "(讀取失敗)"
-        reports.append({"name": entry.name, "content": content})
+        # Extract date from filename: intel_20260415_130000.md
+        date_display = entry.stem.replace("intel_", "")
+        m = _re.match(r"(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})", date_display)
+        if m:
+            date_display = f"{m.group(1)}-{m.group(2)}-{m.group(3)} {m.group(4)}:{m.group(5)}"
+        reports.append({"name": entry.name, "content": content, "date_display": date_display})
     return reports
-
-
-def _render_worldmonitor_page() -> tuple[str, int]:
-    reports = _iter_worldmonitor_reports()
-    if not reports:
-        return "<h2>🌐 全球情報面板</h2><p>尚無報告。</p>", 200
-
-    parts = ["<h2>🌐 全球情報面板</h2>"]
-    for report in reports:
-        parts.append(f"<h3>{html.escape(report['name'])}</h3>")
-        parts.append(f"<pre>{html.escape(report['content'])}</pre><hr>")
-    return "\n".join(parts), 200
 
 
 @dashboard_pages_bp.route("/static/worldmonitor_reports")
@@ -82,7 +75,8 @@ def openclaw_entry():
 @dashboard_pages_bp.route("/intel")
 @login_required
 def intel_panel():
-    return _render_worldmonitor_page()
+    reports = _iter_worldmonitor_reports()
+    return render_template("intel.html", reports=reports)
 
 
 @dashboard_pages_bp.route("/dashboard")

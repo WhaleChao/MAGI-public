@@ -6,16 +6,18 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>MAGI SYSTEM CONSOLE v2</title>
     <style>
-        @import url('https://fonts.googleapis.com/css2?family=Libre+Baskerville:wght@700&family=Noto+Serif+JP:wght@900&display=swap');
-
         :root {
-            --bg-color: #000000;
-            --magi-orange: #ff6b00;
-            --magi-red: #ff0000;
-            --magi-green: #2ecc71;
-            --magi-blue: #0984e3;
-            --text-main: #ffffff;
-            --font-main: 'Libre Baskerville', 'Noto Serif JP', serif;
+            --bg-color: #F5F5F7;
+            --magi-orange: #007AFF;
+            --magi-red: #FF3B30;
+            --magi-green: #34C759;
+            --magi-blue: #007AFF;
+            --text-main: #1D1D1F;
+            --text-secondary: #6E6E73;
+            --surface: #FFFFFF;
+            --surface-2: #F2F2F7;
+            --border: rgba(0,0,0,0.08);
+            --font-main: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Helvetica Neue', Arial, sans-serif;
         }
 
         body {
@@ -27,7 +29,6 @@
             overflow: hidden;
             height: 100vh;
             min-height: 100vh;
-            text-transform: uppercase;
         }
 
         .content-area {
@@ -106,10 +107,11 @@
             z-index: 2;
         }
         .right-col-section {
-            border: 1px solid rgba(255, 107, 0, 0.3);
-            border-left: 3px solid var(--magi-orange);
+            border: 1px solid var(--border);
+            border-left: 3px solid var(--magi-blue);
+            border-radius: 0 8px 8px 0;
             padding: 10px 14px;
-            background: rgba(255, 107, 0, 0.02);
+            background: var(--surface);
             position: relative;
         }
         .right-col-section::before {
@@ -117,30 +119,37 @@
             position: absolute;
             top: 0; left: 0; right: 0;
             height: 1px;
-            background: linear-gradient(90deg, var(--magi-orange), transparent);
-            opacity: 0.4;
+            background: linear-gradient(90deg, var(--magi-blue), transparent);
+            opacity: 0.2;
         }
         .right-col-section h3 {
             margin: 0 0 6px 0;
             font-size: 0.8rem;
-            color: var(--magi-orange);
-            letter-spacing: 2px;
-            border-bottom: 1px solid rgba(255, 107, 0, 0.2);
+            color: var(--magi-blue);
+            letter-spacing: 0.5px;
+            border-bottom: 1px solid rgba(0,122,255,0.15);
             padding-bottom: 6px;
-            font-family: monospace;
+            font-family: var(--font-main);
+            font-weight: 600;
         }
         .wizard-field,
         .wizard-textarea,
         .wizard-output {
             width: 100%;
             box-sizing: border-box;
-            background: rgba(255,255,255,0.03);
-            border: 1px solid rgba(9,132,227,0.25);
+            background: var(--surface-2);
+            border: 1px solid var(--border);
+            border-radius: 6px;
             color: var(--text-main);
-            font-family: monospace;
+            font-family: var(--font-main);
             padding: 8px 10px;
             font-size: 0.74rem;
             margin-top: 8px;
+        }
+        .wizard-field:focus, .wizard-textarea:focus {
+            outline: none;
+            border-color: #007AFF;
+            box-shadow: 0 0 0 3px rgba(0,122,255,0.15);
         }
         .wizard-textarea {
             min-height: 72px;
@@ -175,7 +184,7 @@
         }
         .wizard-history-item {
             padding: 6px 0;
-            border-bottom: 1px solid rgba(255,255,255,0.06);
+            border-bottom: 1px solid rgba(0,0,0,0.04);
             line-height: 1.45;
         }
         .wizard-history-item:last-child { border-bottom: none; }
@@ -203,7 +212,7 @@
             background: rgba(9, 132, 227, 0.06);
             text-align: center;
             min-width: 180px;
-            clip-path: polygon(12px 0, 100% 0, 100% calc(100% - 12px), calc(100% - 12px) 100%, 0 100%, 0 12px);
+            border-radius: 10px;
             transition: all 0.3s ease;
             position: relative;
             font-family: monospace;
@@ -222,44 +231,36 @@
         .ext-node-card .sub-label { font-size: 0.65rem; color: var(--magi-blue); letter-spacing: 2px; }
         .ext-node-card .status { font-size: 0.8rem; margin-top: 4px; letter-spacing: 0.5px; }
 
-        .scanlines {
-            position: fixed;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            background: linear-gradient(rgba(18, 16, 16, 0) 50%, rgba(0, 0, 0, 0.25) 50%), linear-gradient(90deg, rgba(255, 0, 0, 0.06), rgba(0, 255, 0, 0.02), rgba(0, 0, 255, 0.06));
-            background-size: 100% 2px, 3px 100%;
-            pointer-events: none;
-            z-index: 1000;
-        }
+        .scanlines { display: none; }
 
         .header {
             position: fixed;
             top: 0;
             left: 0;
             right: 0;
-            border-bottom: 4px solid var(--magi-orange);
+            border-bottom: 1px solid var(--border);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
             display: flex;
             justify-content: space-between;
             align-items: flex-end;
             padding: 10px 20px 6px 20px;
-            background: var(--bg-color);
+            background: rgba(245,245,247,0.92);
             z-index: 100;
             box-sizing: border-box;
         }
 
         .header h1 {
-            font-size: 2.2rem;
+            font-size: 1.4rem;
             margin: 0;
-            color: var(--magi-orange);
-            letter-spacing: 0.1em;
-            text-shadow: 0 0 10px var(--magi-orange);
+            color: var(--text-main);
+            letter-spacing: -0.5px;
+            font-weight: 700;
         }
 
         .header .code {
-            font-size: 1.2rem;
-            color: var(--magi-orange);
+            font-size: 0.85rem;
+            color: var(--text-secondary);
             text-align: right;
         }
 
@@ -272,11 +273,10 @@
 
         .header-btn {
             padding: 8px 15px;
-            font-weight: 900;
+            font-weight: 600;
             cursor: pointer;
-            font-family: sans-serif;
-            letter-spacing: 1px;
-            text-transform: uppercase;
+            font-family: var(--font-main);
+            letter-spacing: 0;
             font-size: 0.85rem;
             text-decoration: none;
             display: flex;
@@ -307,22 +307,22 @@
             transform: translate(-50%, -50%);
             width: 110px;
             height: 110px;
-            background: var(--bg-color);
-            border: 3px solid var(--magi-orange);
+            background: var(--surface);
+            border: 2px solid var(--magi-blue);
             border-radius: 50%;
             display: flex;
             flex-direction: column;
             justify-content: center;
             align-items: center;
             z-index: 10;
-            box-shadow: 0 0 30px rgba(255, 107, 0, 0.3), 0 0 60px rgba(255, 107, 0, 0.1), inset 0 0 20px rgba(255, 107, 0, 0.05);
+            box-shadow: 0 0 30px rgba(0,122,255,0.2), 0 0 60px rgba(0,122,255,0.08), inset 0 0 20px rgba(0,122,255,0.04);
             font-family: monospace;
         }
         .center-hub::after {
             content: '';
             position: absolute;
             inset: -8px;
-            border: 1px solid rgba(255, 107, 0, 0.25);
+            border: 1px solid rgba(0,122,255,0.2);
             border-radius: 50%;
             pointer-events: none;
         }
@@ -337,25 +337,24 @@
         .center-hub .vote-count {
             font-size: 2rem;
             font-weight: 900;
-            color: var(--magi-orange);
-            text-shadow: 0 0 15px var(--magi-orange);
+            color: var(--magi-blue);
         }
 
         .node-card {
             position: absolute;
             width: 160px;
             height: 80px;
-            background-color: var(--bg-color);
-            border: 4px solid var(--magi-orange);
+            background-color: var(--surface);
+            border: 2px solid var(--magi-blue);
             color: var(--text-main);
             display: flex;
             flex-direction: column;
             justify-content: center;
             align-items: center;
             transition: all 0.3s ease;
-            clip-path: polygon(16px 0, 100% 0, 100% calc(100% - 16px), calc(100% - 16px) 100%, 0 100%, 0 16px);
+            border-radius: 10px;
             z-index: 2000;
-            box-shadow: 0 0 15px rgba(255, 107, 0, 0.15), inset 0 0 30px rgba(255, 107, 0, 0.03);
+            box-shadow: 0 0 15px rgba(0,122,255,0.1), inset 0 0 30px rgba(0,122,255,0.02);
             font-family: monospace;
         }
 
@@ -409,8 +408,7 @@
             margin: 0;
             line-height: 1;
             letter-spacing: 3px;
-            text-shadow: 0 0 8px rgba(255,255,255,0.2);
-        }
+                    }
 
         .node-card .sub-label {
             font-size: 0.75rem;
@@ -425,7 +423,7 @@
         .node-card .status {
             font-size: 0.95rem;
             margin-top: 8px;
-            border-top: 1px solid rgba(255,255,255,0.3);
+            border-top: 1px solid rgba(0,0,0,0.12);
             padding-top: 5px;
             width: 80%;
             text-align: center;
@@ -451,7 +449,7 @@
             display: none;
         }
         .sidebar-section {
-            border-bottom: 1px solid rgba(255, 107, 0, 0.2);
+            border-bottom: 1px solid rgba(0,122,255,0.15);
             padding: 0;
         }
         .sidebar-header {
@@ -466,7 +464,7 @@
             letter-spacing: 1px;
             user-select: none;
         }
-        .sidebar-header:hover { background: rgba(255, 107, 0, 0.1); }
+        .sidebar-header:hover { background: rgba(0,122,255,0.08); }
         .sidebar-content {
             padding: 5px 15px 15px;
             font-size: 0.95rem;
@@ -475,20 +473,22 @@
         .sb-btn {
             display: block;
             width: 100%;
-            padding: 8px 12px;
+            padding: 7px 12px;
             margin-bottom: 4px;
-            background: transparent;
-            border: 1px solid var(--magi-blue);
-            color: var(--magi-blue);
+            background: var(--surface-2);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            color: #007AFF;
             cursor: pointer;
-            font-family: monospace;
-            font-size: 0.85rem;
+            font-family: var(--font-main);
+            font-size: 0.83rem;
+            font-weight: 500;
             text-align: left;
             text-decoration: none;
-            letter-spacing: 0.5px;
             box-sizing: border-box;
+            transition: background 0.15s;
         }
-        .sb-btn:hover { background: rgba(9, 132, 227, 0.15); }
+        .sb-btn:hover { background: rgba(0,122,255,0.08); }
         .sb-btn-red {
             border-color: var(--magi-red);
             color: var(--magi-red);
@@ -602,27 +602,29 @@
             .bottom-full { grid-template-columns: 1fr; }
         }
         .bottom-panel {
-            border: 1px solid rgba(255, 107, 0, 0.2);
-            background: rgba(255, 107, 0, 0.015);
+            border: 1px solid var(--border);
+            background: var(--surface);
+            border-radius: 12px;
             padding: 10px 14px;
             position: relative;
-            clip-path: polygon(10px 0, 100% 0, 100% calc(100% - 10px), calc(100% - 10px) 100%, 0 100%, 0 10px);
         }
         .bottom-panel::before {
             content: '';
             position: absolute;
-            top: 0; left: 0; right: 0;
+            top: 0; left: 14px; right: 14px;
             height: 2px;
-            background: linear-gradient(90deg, var(--magi-orange), transparent 70%);
-            opacity: 0.5;
+            background: linear-gradient(90deg, transparent, var(--magi-blue), transparent);
+            border-radius: 2px;
+            opacity: 0.25;
         }
         .bottom-panel h3 {
             margin: 0 0 6px 0;
             font-size: 0.75rem;
-            color: var(--magi-orange);
-            letter-spacing: 3px;
-            font-family: monospace;
-            border-bottom: 1px solid rgba(255, 107, 0, 0.15);
+            color: var(--magi-blue);
+            letter-spacing: 0.5px;
+            font-family: var(--font-main);
+            font-weight: 600;
+            border-bottom: 1px solid var(--border);
             padding-bottom: 4px;
         }
         .bp-row {
@@ -631,7 +633,7 @@
             align-items: center;
             padding: 3px 0;
             font-size: 0.72rem;
-            border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+            border-bottom: 1px solid rgba(0,0,0,0.06);
         }
         .bp-row:last-child { border-bottom: none; }
         .bp-label { color: var(--magi-blue); letter-spacing: 1px; }
@@ -653,7 +655,7 @@
             text-decoration: none;
             font-size: 0.72rem;
             letter-spacing: 0.5px;
-            border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+            border-bottom: 1px solid rgba(0,0,0,0.06);
             transition: color 0.2s;
         }
         .bp-link:last-child { border-bottom: none; }
@@ -889,7 +891,7 @@
         <div class="ext-node-card left-card" style="border-color: var(--magi-red); background: rgba(255,0,0,0.04);">
             <span class="sub-label" style="color: var(--magi-red);">DEFENSE SYSTEM</span>
             <h3 style="color: var(--magi-red);">IRON DOME</h3>
-            <div class="status" style="color: var(--magi-orange); font-weight: 900; text-shadow: 0 0 8px var(--magi-orange);">
+            <div class="status" style="color: var(--magi-orange); font-weight: 900; font-weight: 700;">
                 <span class="blink">運作中</span>
                 <span style="font-size: 0.6rem; color: var(--magi-blue); margin-left: 6px;">LV:LOW</span>
             </div>
@@ -958,28 +960,12 @@
             <a class="sb-btn" href="/osc">[ 案件管理 ]</a>
             <a class="sb-btn" href="/ops/process-monitor">[ 程序監控 ]</a>
             <button class="sb-btn" onclick="openMemoryPanel()">[ 向量記憶 ]</button>
-            <a class="sb-btn" href="/dashboard/nerv" style="color:#ff6600;">[ NERV 系統狀態 ]</a>
+            <a class="sb-btn" href="/dashboard/nerv" style="color:#007AFF;">[ NERV 系統狀態 ]</a>
             <a class="sb-btn" href="/dashboard/website" style="color:#0984e3;">[ 個人網站管理 ]</a>
         </div>
         <div class="right-col-section">
-            <h3 style="color: var(--magi-blue); border-color: rgba(9,132,227,0.3);">Codex Sidecar</h3>
-            <div id="codex-mode-right" style="color: var(--magi-blue); font-size: 0.82rem; margin-bottom: 8px;">讀取中...</div>
-            <div id="codex-meta-right" style="font-size: 0.75rem; color: rgba(255,255,255,0.78); line-height: 1.5; margin-bottom: 10px;">
-                讀取 Codex sidecar 狀態中...
-            </div>
-            <div id="codex-features-right" style="display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px;"></div>
-            <div style="display:flex; flex-wrap:wrap; gap:6px;">
-                <button class="sb-btn" id="btn-codex-refresh-right" onclick="fetchCodexDistributedStatus()">[ 重新整理 ]</button>
-                <button class="sb-btn" id="btn-codex-on-right" onclick="setCodexDistributedMode('on')">[ 全部啟用 ]</button>
-                <button class="sb-btn sb-btn-red" id="btn-codex-off-right" onclick="setCodexDistributedMode('off')">[ 僅本地 ]</button>
-            </div>
-            <div id="codex-note-right" style="margin-top: 10px; font-size: 0.72rem; color: rgba(9,132,227,0.85); line-height: 1.4;">
-                通訊指令也可用：codex 狀態 / codex 開啟 / codex 關閉
-            </div>
-        </div>
-        <div class="right-col-section">
             <h3 style="color: var(--magi-blue); border-color: rgba(9,132,227,0.3);">Skill Interview</h3>
-            <div style="font-size:0.74rem; line-height:1.5; color:rgba(255,255,255,0.82);">
+            <div style="font-size:0.74rem; line-height:1.5; color:rgba(29,29,31,0.8);">
                 這裡直接走和通訊軟體、NERV 相同的 5 題問答流程。完成後會自動寫進 MAGI，並留下版本快照。
             </div>
             <input id="skill-interview-request-right" class="wizard-field" type="text" placeholder="例如：幫我做一個會整理逐字稿的工具">
@@ -1123,7 +1109,7 @@
                 <a class="sb-btn" href="/osc">[ 案件管理 ]</a>
                 <a class="sb-btn" href="/ops/process-monitor">[ 程序監控 ]</a>
                 <button class="sb-btn" onclick="openMemoryPanel()">[ 向量記憶 ]</button>
-                <a class="sb-btn" href="/dashboard/nerv" style="color:#ff6600;">[ NERV 系統狀態 ]</a>
+                <a class="sb-btn" href="/dashboard/nerv" style="color:#007AFF;">[ NERV 系統狀態 ]</a>
                 <a class="sb-btn" href="/dashboard/website" style="color:#0984e3;">[ 個人網站管理 ]</a>
             </div>
         </div>
@@ -1174,7 +1160,7 @@
             </div>
             <div class="sidebar-content" id="sec-dome">
                 <div style="text-align: center;">
-                    <div style="font-size: 1.2rem; font-weight: 900; color: var(--magi-orange); text-shadow: 0 0 10px var(--magi-orange);" class="blink">
+                    <div style="font-size: 1.2rem; font-weight: 900; color: var(--magi-orange); font-weight: 700;" class="blink">
                         運作中
                     </div>
                     <div style="font-size: 0.7rem; color: var(--magi-blue); margin-top: 4px;">THREAT LEVEL: LOW</div>
@@ -1216,9 +1202,9 @@
 
 
     <!-- SYSTEM TEST MODAL -->
-    <div id="test-modal" style="display:none; position:fixed; inset:0; z-index:99999; background:rgba(0,0,0,0.92);
-                               font-family: monospace; color: white; overflow-y: auto;">
-        <div style="max-width:700px; margin:40px auto; padding:30px;">
+    <div id="test-modal" style="display:none; position:fixed; inset:0; z-index:99999; background:rgba(0,0,0,0.5);
+                               font-family: -apple-system, BlinkMacSystemFont, sans-serif; color: #1D1D1F; overflow-y: auto;">
+        <div style="max-width:700px; margin:40px auto; padding:30px; background:#fff; border-radius:16px; box-shadow:0 20px 60px rgba(0,0,0,0.3);">
             <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:20px;">
                 <h2 style="color:var(--magi-orange); margin:0;">🔍 MAGI 全系統功能測試</h2>
                 <button onclick="closeTestModal()"
@@ -1226,7 +1212,7 @@
                     關閉</button>
             </div>
             <div id="test-progress" style="margin-bottom:20px;">
-                <div style="background:rgba(255,255,255,0.1); height:4px; width:100%;">
+                <div style="background:rgba(0,0,0,0.08); height:4px; width:100%; border-radius:2px;">
                     <div id="test-progress-bar"
                         style="background:var(--magi-orange); height:100%; width:0%; transition:width 0.5s ease;"></div>
                 </div>
@@ -1311,7 +1297,7 @@
             <strong>向量同步 (VECTOR):</strong> <span class="val" id="val-vdb">運作中</span>
         </div>
         <div class="aux-item" id="panel-obsidian" onclick="openMemoryPanel()"
-            style="border-color: #7c3aed; background: rgba(124, 58, 237, 0.1); cursor: pointer;">
+            style="border-color: #007AFF; background: rgba(124, 58, 237, 0.1); cursor: pointer;">
             <strong>筆記整合 (OBSIDIAN):</strong> <span class="val" id="val-obsidian">---</span>
         </div>
     </div>
@@ -1389,7 +1375,7 @@
             if (!el) return;
             const rows = Array.isArray(items) ? items : [];
             if (!rows.length) {
-                el.innerHTML = '<div style="color: rgba(255,255,255,0.6);">目前還沒有生成紀錄。</div>';
+                el.innerHTML = '<div style="color: rgba(29,29,31,0.55);">目前還沒有生成紀錄。</div>';
                 return;
             }
             const labels = {
@@ -1408,10 +1394,10 @@
                     <div class="wizard-history-item">
                         <div style="display:flex; justify-content:space-between; gap:10px; margin-bottom:4px;">
                             <strong style="color: var(--magi-blue);">${escapeHtml(skillName)}</strong>
-                            <span style="color: rgba(255,255,255,0.55);">${escapeHtml(ts)}</span>
+                            <span style="color: rgba(29,29,31,0.45);">${escapeHtml(ts)}</span>
                         </div>
-                        <div style="color: rgba(255,255,255,0.82); margin-bottom:4px;">${escapeHtml(event)} · ${escapeHtml(snapshot)}</div>
-                        <div style="color: rgba(255,255,255,0.58); margin-bottom:6px;">${escapeHtml(detail)}</div>
+                        <div style="color: rgba(29,29,31,0.8); margin-bottom:4px;">${escapeHtml(event)} · ${escapeHtml(snapshot)}</div>
+                        <div style="color: rgba(29,29,31,0.5); margin-bottom:6px;">${escapeHtml(detail)}</div>
                         <a class="sb-link" href="/dashboard/nerv" style="font-size:0.72rem;">前往 NERV 編輯器</a>
                     </div>
                 `;
@@ -1476,7 +1462,7 @@
             } catch (e) {
                 const el = document.getElementById('skill-interview-history-right');
                 if (!el) return;
-                el.innerHTML = `<div style="color: rgba(255,255,255,0.58);">${escapeHtml(
+                el.innerHTML = `<div style="color: rgba(29,29,31,0.5);">${escapeHtml(
                     e.message === '請重新登入 dashboard' ? '請重新登入後查看生成紀錄。' : '目前無法讀取生成紀錄。'
                 )}</div>`;
             }
@@ -1555,7 +1541,7 @@
             container.innerHTML = Object.entries(CODEX_FEATURE_LABELS).map(([key, label]) => {
                 const on = !!features[key];
                 const border = on ? 'rgba(46,204,113,0.45)' : 'rgba(9,132,227,0.3)';
-                const bg = on ? 'rgba(46,204,113,0.12)' : 'rgba(255,255,255,0.03)';
+                const bg = on ? 'rgba(46,204,113,0.12)' : 'rgba(0,0,0,0.02)';
                 const color = on ? 'var(--magi-green)' : 'var(--text-main)';
                 const disabledAttr = canToggle ? '' : 'disabled';
                 return `<button class="sb-btn" ${disabledAttr} onclick="toggleCodexFeature('${key}')" style="border-color:${border}; background:${bg}; color:${color};">[ ${label}: ${on ? 'ON' : 'OFF'} ]</button>`;
@@ -1780,7 +1766,7 @@
                         <span>${task.name}</span>
                         <span>${task.progress}%</span>
                     </div>
-                    <div style="background: rgba(255, 255, 255, 0.1); height: 6px; width: 100%;">
+                    <div style="background: rgba(0,0,0,0.08); height: 6px; width: 100%;">
                         <div style="background: ${barColor}; height: 100%; width: ${width}; transition: width 0.5s ease;"></div>
                     </div>
                     <div style="font-size: 0.7rem; color: var(--magi-blue); margin-top: 2px;">
@@ -1809,7 +1795,7 @@
                         <span>${task.name}</span>
                         <span>${task.progress}%</span>
                     </div>
-                    <div style="background: rgba(255, 255, 255, 0.1); height: 4px; width: 100%;">
+                    <div style="background: rgba(0,0,0,0.08); height: 4px; width: 100%;">
                         <div style="background: ${barColor}; height: 100%; width: ${width}; transition: width 0.5s ease;"></div>
                     </div>
                     <div style="font-size: 0.65rem; color: var(--magi-blue); margin-top: 2px;">${task.status}</div>
@@ -1975,8 +1961,6 @@
 
         setInterval(fetchStatus, 3000);
         fetchStatus();
-        setInterval(fetchCodexDistributedStatus, 15000);
-        fetchCodexDistributedStatus();
         fetchSkillInterviewStateRight({ quiet: true });
         fetchSkillInterviewHistoryRight();
         setInterval(() => fetchSkillInterviewStateRight({ quiet: true }), 15000);
@@ -2220,7 +2204,7 @@
                 for (const t of report.tests) {
                     const icon = t.pass ? '✅' : '❌';
                     const color = t.pass ? 'var(--magi-green)' : 'var(--magi-red)';
-                    html += `<div style="display:flex; justify-content:space-between; padding:8px 10px; margin-bottom:4px; border-left:3px solid ${color}; background:rgba(255,255,255,0.03);">
+                    html += `<div style="display:flex; justify-content:space-between; padding:8px 10px; margin-bottom:4px; border-left:3px solid ${color}; background:rgba(0,0,0,0.02);">
                         <span>${icon} ${t.label}</span>
                         <span style="color:${color}; font-size:0.85rem; max-width:350px; text-align:right;">${t.detail}</span>
                     </div>`;
@@ -2311,7 +2295,7 @@
                 for (const r of (report.repairs || [])) {
                     const icon = r.repaired ? '✅' : '⚠️';
                     const color = r.repaired ? 'var(--magi-green)' : 'var(--magi-red)';
-                    html += `<div style="display:flex; justify-content:space-between; padding:6px 10px; margin-bottom:3px; border-left:3px solid ${color}; background:rgba(255,255,255,0.03);">
+                    html += `<div style="display:flex; justify-content:space-between; padding:6px 10px; margin-bottom:3px; border-left:3px solid ${color}; background:rgba(0,0,0,0.02);">
                         <span>${icon} ${r.action}</span>
                         <span style="color:${color}; font-size:0.85rem;">${r.detail}</span>
                     </div>`;
@@ -2334,12 +2318,12 @@
     </script>
 
     <!-- VECTOR MEMORY MODAL -->
-    <div id="memory-modal" style="display:none; position:fixed; inset:0; z-index:99999; background:rgba(0,0,0,0.95);
-                                   font-family: monospace; color: white; overflow-y: auto;">
-        <div style="max-width:800px; margin:30px auto; padding:25px;">
+    <div id="memory-modal" style="display:none; position:fixed; inset:0; z-index:99999; background:rgba(0,0,0,0.5);
+                                   font-family: -apple-system, BlinkMacSystemFont, sans-serif; color: #1D1D1F; overflow-y: auto;">
+        <div style="max-width:800px; margin:30px auto; padding:25px; background:#fff; border-radius:16px; box-shadow:0 20px 60px rgba(0,0,0,0.3);">
             <!-- Header -->
             <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:20px;">
-                <h2 style="color:#7c3aed; margin:0;">向量記憶控制台</h2>
+                <h2 style="color:#007AFF; margin:0;">向量記憶控制台</h2>
                 <button onclick="closeMemoryPanel()"
                     style="background:none; border:1px solid var(--magi-red); color:var(--magi-red); padding:5px 15px; cursor:pointer; font-family:monospace;">
                     關閉</button>
@@ -2347,36 +2331,36 @@
 
             <!-- Stats Bar -->
             <div id="mem-stats" style="display:flex; gap:15px; margin-bottom:20px; flex-wrap:wrap;">
-                <div style="border:1px solid #7c3aed; padding:10px 15px; min-width:140px; text-align:center;">
+                <div style="border:1px solid #007AFF; padding:10px 15px; min-width:140px; text-align:center;">
                     <div style="font-size:0.7rem; color:var(--magi-blue);">文件總數</div>
-                    <div id="mem-stat-vectors" style="font-size:1.5rem; color:#7c3aed; font-weight:bold;">--</div>
+                    <div id="mem-stat-vectors" style="font-size:1.5rem; color:#007AFF; font-weight:bold;">--</div>
                     <div id="mem-stat-docs-sub" style="font-size:0.65rem; color:var(--magi-blue); margin-top:2px;">--</div>
                 </div>
-                <div style="border:1px solid #7c3aed; padding:10px 15px; min-width:140px; text-align:center;">
+                <div style="border:1px solid #007AFF; padding:10px 15px; min-width:140px; text-align:center;">
                     <div style="font-size:0.7rem; color:var(--magi-blue);">FAISS 向量</div>
-                    <div id="mem-stat-faiss" style="font-size:1.5rem; color:#7c3aed; font-weight:bold;">--</div>
+                    <div id="mem-stat-faiss" style="font-size:1.5rem; color:#007AFF; font-weight:bold;">--</div>
                     <div id="mem-stat-faiss-size" style="font-size:0.65rem; color:var(--magi-blue); margin-top:2px;">--</div>
                 </div>
-                <div style="border:1px solid #7c3aed; padding:10px 15px; min-width:140px; text-align:center;">
+                <div style="border:1px solid #007AFF; padding:10px 15px; min-width:140px; text-align:center;">
                     <div style="font-size:0.7rem; color:var(--magi-blue);">Obsidian 筆記</div>
-                    <div id="mem-stat-obsidian" style="font-size:1.5rem; color:#7c3aed; font-weight:bold;">--</div>
+                    <div id="mem-stat-obsidian" style="font-size:1.5rem; color:#007AFF; font-weight:bold;">--</div>
                 </div>
-                <div style="border:1px solid #7c3aed; padding:10px 15px; min-width:180px; text-align:center;">
+                <div style="border:1px solid #007AFF; padding:10px 15px; min-width:180px; text-align:center;">
                     <div style="font-size:0.7rem; color:var(--magi-blue);">最後更新</div>
-                    <div id="mem-stat-updated" style="font-size:0.9rem; color:#7c3aed; font-weight:bold;">--</div>
+                    <div id="mem-stat-updated" style="font-size:0.9rem; color:#007AFF; font-weight:bold;">--</div>
                 </div>
             </div>
 
             <!-- Tab Buttons -->
             <div style="display:flex; gap:0; margin-bottom:15px; border-bottom:2px solid rgba(124,58,237,0.3);">
                 <button onclick="switchMemTab('search')" id="mem-tab-search"
-                    style="background:#7c3aed; color:white; border:none; padding:8px 20px; cursor:pointer; font-family:monospace; font-weight:bold; font-size:0.85rem;">
+                    style="background:#007AFF; color:white; border:none; padding:8px 20px; cursor:pointer; font-family:monospace; font-weight:bold; font-size:0.85rem;">
                     搜尋記憶</button>
                 <button onclick="switchMemTab('add')" id="mem-tab-add"
-                    style="background:rgba(124,58,237,0.2); color:#7c3aed; border:none; padding:8px 20px; cursor:pointer; font-family:monospace; font-size:0.85rem;">
+                    style="background:rgba(0,122,255,0.08); color:#007AFF; border:none; padding:8px 20px; cursor:pointer; font-family:monospace; font-size:0.85rem;">
                     新增記憶</button>
                 <button onclick="switchMemTab('obsidian')" id="mem-tab-obsidian"
-                    style="background:rgba(124,58,237,0.2); color:#7c3aed; border:none; padding:8px 20px; cursor:pointer; font-family:monospace; font-size:0.85rem;">
+                    style="background:rgba(0,122,255,0.08); color:#007AFF; border:none; padding:8px 20px; cursor:pointer; font-family:monospace; font-size:0.85rem;">
                     Obsidian 同步</button>
             </div>
 
@@ -2384,14 +2368,14 @@
             <div id="mem-panel-search">
                 <div style="display:flex; gap:10px; margin-bottom:15px;">
                     <input id="mem-search-input" type="text" placeholder="輸入關鍵字搜尋向量記憶庫..."
-                        style="flex:1; padding:10px; background:rgba(255,255,255,0.05); border:1px solid #7c3aed; color:white; font-family:monospace; font-size:0.9rem;"
+                        style="flex:1; padding:10px; background:rgba(0,0,0,0.04); border:1px solid rgba(0,122,255,0.4); color:#1D1D1F; font-family:-apple-system,BlinkMacSystemFont,sans-serif; font-size:0.9rem;"
                         onkeydown="if(event.key==='Enter')memSearch()">
-                    <select id="mem-search-topk" style="padding:10px; background:rgba(255,255,255,0.05); border:1px solid #7c3aed; color:white; font-family:monospace;">
+                    <select id="mem-search-topk" style="padding:10px; background:rgba(0,0,0,0.04); border:1px solid rgba(0,122,255,0.4); color:#1D1D1F; font-family:-apple-system,BlinkMacSystemFont,sans-serif;">
                         <option value="3">Top 3</option>
                         <option value="5" selected>Top 5</option>
                         <option value="10">Top 10</option>
                     </select>
-                    <button onclick="memSearch()" style="padding:10px 20px; background:#7c3aed; color:white; border:none; cursor:pointer; font-family:monospace; font-weight:bold;">
+                    <button onclick="memSearch()" style="padding:10px 20px; background:#007AFF; color:white; border:none; cursor:pointer; font-family:monospace; font-weight:bold;">
                         搜尋</button>
                 </div>
                 <div id="mem-search-results" style="max-height:400px; overflow-y:auto;"></div>
@@ -2402,16 +2386,16 @@
                 <div style="margin-bottom:10px;">
                     <label style="color:var(--magi-blue); font-size:0.8rem;">來源標記 (Source)</label>
                     <input id="mem-add-source" type="text" value="dashboard-manual" placeholder="來源標記"
-                        style="width:100%; padding:8px; background:rgba(255,255,255,0.05); border:1px solid #7c3aed; color:white; font-family:monospace; margin-top:4px; box-sizing:border-box;">
+                        style="width:100%; padding:8px; background:rgba(0,0,0,0.04); border:1px solid rgba(0,122,255,0.4); color:#1D1D1F; font-family:-apple-system,BlinkMacSystemFont,sans-serif; margin-top:4px; box-sizing:border-box;">
                 </div>
                 <div style="margin-bottom:10px;">
                     <label style="color:var(--magi-blue); font-size:0.8rem;">記憶內容</label>
                     <textarea id="mem-add-content" rows="8" placeholder="在此貼上要記憶的文字內容..."
-                        style="width:100%; padding:10px; background:rgba(255,255,255,0.05); border:1px solid #7c3aed; color:white; font-family:monospace; font-size:0.9rem; resize:vertical; margin-top:4px; box-sizing:border-box;"></textarea>
+                        style="width:100%; padding:10px; background:rgba(0,0,0,0.04); border:1px solid rgba(0,122,255,0.4); color:#1D1D1F; font-family:-apple-system,BlinkMacSystemFont,sans-serif; font-size:0.9rem; resize:vertical; margin-top:4px; box-sizing:border-box;"></textarea>
                 </div>
                 <div style="display:flex; justify-content:space-between; align-items:center;">
                     <span id="mem-add-charcount" style="color:var(--magi-blue); font-size:0.8rem;">0 字元</span>
-                    <button onclick="memAdd()" id="mem-add-btn" style="padding:10px 25px; background:#7c3aed; color:white; border:none; cursor:pointer; font-family:monospace; font-weight:bold; font-size:0.9rem;">
+                    <button onclick="memAdd()" id="mem-add-btn" style="padding:10px 25px; background:#007AFF; color:white; border:none; cursor:pointer; font-family:monospace; font-weight:bold; font-size:0.9rem;">
                         儲存至記憶庫</button>
                 </div>
                 <div id="mem-add-result" style="margin-top:10px;"></div>
@@ -2422,23 +2406,23 @@
                 <div style="border:1px solid rgba(124,58,237,0.3); padding:15px; margin-bottom:15px;">
                     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
                         <span style="color:var(--magi-blue); font-size:0.85rem;">Vault 路徑</span>
-                        <span id="obs-vault-path" style="color:#7c3aed;">--</span>
+                        <span id="obs-vault-path" style="color:#007AFF;">--</span>
                     </div>
                     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
                         <span style="color:var(--magi-blue); font-size:0.85rem;">Vault 名稱</span>
-                        <span id="obs-vault-name" style="color:#7c3aed;">--</span>
+                        <span id="obs-vault-name" style="color:#007AFF;">--</span>
                     </div>
                     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
                         <span style="color:var(--magi-blue); font-size:0.85rem;">已索引筆記數</span>
-                        <span id="obs-notes-count" style="color:#7c3aed;">--</span>
+                        <span id="obs-notes-count" style="color:#007AFF;">--</span>
                     </div>
                     <div style="display:flex; justify-content:space-between; align-items:center;">
                         <span style="color:var(--magi-blue); font-size:0.85rem;">最後同步時間</span>
-                        <span id="obs-last-sync" style="color:#7c3aed;">--</span>
+                        <span id="obs-last-sync" style="color:#007AFF;">--</span>
                     </div>
                 </div>
                 <button onclick="obsidianSync()" id="obs-sync-btn"
-                    style="width:100%; padding:12px; background:#7c3aed; color:white; border:none; cursor:pointer; font-family:monospace; font-weight:bold; font-size:1rem; box-shadow:0 0 10px rgba(124,58,237,0.5);">
+                    style="width:100%; padding:12px; background:#007AFF; color:white; border:none; cursor:pointer; font-family:monospace; font-weight:bold; font-size:1rem; box-shadow:0 0 10px rgba(0,122,255,0.3);">
                     重新索引 Obsidian Vault</button>
                 <div id="obs-sync-result" style="margin-top:10px;"></div>
             </div>
@@ -2460,11 +2444,11 @@
                 document.getElementById('mem-panel-' + t).style.display = t === tab ? 'block' : 'none';
                 const btn = document.getElementById('mem-tab-' + t);
                 if (t === tab) {
-                    btn.style.background = '#7c3aed';
+                    btn.style.background = '#007AFF';
                     btn.style.color = 'white';
                 } else {
-                    btn.style.background = 'rgba(124,58,237,0.2)';
-                    btn.style.color = '#7c3aed';
+                    btn.style.background = 'rgba(0,122,255,0.08)';
+                    btn.style.color = '#007AFF';
                 }
             });
         }
@@ -2521,12 +2505,12 @@
                     const score = m.score !== undefined ? (m.score * 100).toFixed(1) + '%' : '--';
                     const content = (m.content || '').substring(0, 300) + ((m.content || '').length > 300 ? '...' : '');
                     const source = m.source || 'unknown';
-                    return `<div style="border-left:3px solid #7c3aed; padding:10px 12px; margin-bottom:8px; background:rgba(124,58,237,0.05);">
+                    return `<div style="border-left:3px solid #007AFF; padding:10px 12px; margin-bottom:8px; background:rgba(124,58,237,0.05);">
                         <div style="display:flex; justify-content:space-between; margin-bottom:5px;">
-                            <span style="color:#7c3aed; font-weight:bold;">#${i + 1}</span>
+                            <span style="color:#007AFF; font-weight:bold;">#${i + 1}</span>
                             <span style="color:var(--magi-blue); font-size:0.75rem;">相似度: ${score} | 來源: ${source}</span>
                         </div>
-                        <div style="color:rgba(255,255,255,0.85); font-size:0.85rem; line-height:1.4; word-break:break-all; white-space:pre-wrap;">${content}</div>
+                        <div style="color:rgba(29,29,31,0.75); font-size:0.85rem; line-height:1.4; word-break:break-all; white-space:pre-wrap;">${content}</div>
                     </div>`;
                 }).join('');
             } catch (e) {

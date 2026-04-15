@@ -228,7 +228,13 @@ def _reason_with_melchior(prompt: str, max_tokens: int = 2048) -> str:
         except Exception:
             _omlx_def = "http://127.0.0.1:8080"
         omlx_url = (os.environ.get("OMLX_URL") or os.environ.get("OLLAMA_URL") or _omlx_def).rstrip("/")
-        model = os.environ.get("MELCHIOR_MODEL", os.environ.get("MAGI_TEXT_PRIMARY_MODEL", ""))
+        model = (os.environ.get("MELCHIOR_MODEL") or os.environ.get("MAGI_TEXT_PRIMARY_MODEL") or "").strip()
+        if not model:
+            try:
+                from api.model_config import TEXT_PRIMARY_MODEL as _tpm
+                model = _tpm or "gemma-4-e4b-it-4bit"
+            except Exception:
+                model = "gemma-4-e4b-it-4bit"
 
         payload = json.dumps({
             "model": model,
@@ -259,6 +265,28 @@ def _reason_with_melchior(prompt: str, max_tokens: int = 2048) -> str:
 # Memory storage
 # ---------------------------------------------------------------------------
 def _store_to_memory(content: str, metadata: Dict = None):
+    # Always save to file first so /intel page has fresh content
+    report_dir = os.path.join(MAGI_DIR, "static", "worldmonitor_reports")
+    os.makedirs(report_dir, exist_ok=True)
+    filepath = os.path.join(report_dir, f"intel_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md")
+    try:
+        with open(filepath, "w", encoding="utf-8") as f:
+            f.write(content)
+        logger.info(f"📁 Saved report to {filepath}")
+        # Prune old reports — keep latest 30
+        try:
+            existing = sorted(
+                [e for e in os.scandir(report_dir) if e.is_file() and e.name.endswith(".md")],
+                key=lambda e: e.name, reverse=True
+            )
+            for old in existing[30:]:
+                os.unlink(old.path)
+        except Exception:
+            pass
+    except Exception as e:
+        logger.warning(f"File save failed: {e}")
+
+    # Also store in MAGI vector memory
     try:
         from skills.memory import mem_bridge
         source_bits = ["worldmonitor-intel"]
@@ -270,17 +298,8 @@ def _store_to_memory(content: str, metadata: Dict = None):
             source_bits.append(f"markets={len(market_symbols)}")
         mem_bridge.remember(content, source="|".join(source_bits))
         logger.info(f"✅ Stored to MAGI memory ({len(content)} chars)")
-        return True
     except Exception as e:
-        logger.warning(f"Memory bridge failed, saving to file: {e}")
-    
-    # Fallback: local file
-    report_dir = os.path.join(MAGI_DIR, "static", "worldmonitor_reports")
-    os.makedirs(report_dir, exist_ok=True)
-    filepath = os.path.join(report_dir, f"intel_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md")
-    with open(filepath, "w", encoding="utf-8") as f:
-        f.write(content)
-    logger.info(f"📁 Saved report to {filepath}")
+        logger.warning(f"Memory bridge failed: {e}")
     return True
 
 
