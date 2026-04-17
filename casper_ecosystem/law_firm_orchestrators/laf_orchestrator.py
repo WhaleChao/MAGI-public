@@ -6660,6 +6660,10 @@ def main():
             fields=fields,
         )
         print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
+        # Force exit to bypass Playwright asyncio cleanup hang (same fix as portal-draft).
+        # JSON result is already printed above; os._exit skips Python teardown.
+        import os as _os
+        _os._exit(0 if result.get("ok") else 1)
 
     elif args.mode == "test-notify":
         # Quick test of notification
