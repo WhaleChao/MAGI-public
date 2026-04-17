@@ -2213,6 +2213,7 @@ class LAFWebAutomation:
             "withdrawal": ["#dialog-closingReply"],
             "condition": ["#dialog-conditionReply"],
             "inquiry": ["#dialog-inquiryReply"],
+            "progress": ["#dialog-notClosedReply"],
         }.get(wf, [])
         fallback = ["#dialog-notOpenedReply", "#dialog-closingReply", "#dialog-conditionReply", "#dialog-inquiryReply"]
         out: List[str] = []
@@ -5830,6 +5831,27 @@ return null;
                 "draft_js": ["doSave('toPB')", "doSave('toPb')", "doSave()"],
                 "draft_buttons": ["存檔", "暫存", "保存", "儲存"],
             },
+            "progress": {
+                "name": "進度回報",
+                "url_path": "/lafcsp/toNotClosedCase",
+                "apply_selectors": ["#applyno", "input[name='applyno']"],
+                "name_selectors": ["#applynm", "input[name='applynm']"],
+                "search_js": ["showList()"],
+                "report_onclick": ["goReply("],
+                "expected_token": "dialog-notClosedReply",
+                # 無 draft 暫存；與 go_live 相同，填完不按送出
+                "draft_js": [],
+                "draft_buttons": [],
+                "submit_js": ["doUpdate()"],
+                "submit_buttons": ["確定"],
+                "form_fields": {
+                    "result_select": "#selResult",
+                    "remark_textarea": "#selRemark",
+                    "upload_js": "linkUpload('NOT_CLOSE')",
+                },
+                "requires_confirm_token": True,
+                "confirm_token_ttl_sec_env": "MAGI_LAF_PROGRESS_CONFIRM_TTL_SEC",
+            },
         }
         return table.get(wf, {})
 
@@ -6130,6 +6152,25 @@ return null;
                 kind="textarea",
             )
 
+        elif wf == "progress":
+            # 進度回報 — dialog-notClosedReply modal: selResult + selRemark
+            # goReply() JS pre-fills selResult with replyStatus from the row.
+            # Only override if the caller explicitly provides a value.
+            _sel_result = data.get("sel_result") or data.get("result")
+            if _sel_result:
+                _set_any(
+                    ["#selResult", "select[name='selResult']", "#noc_selResult", "select[name='result']"],
+                    _sel_result,
+                    ["回報狀態", "進度"],
+                    kind="input",
+                )
+            _set_any(
+                ["#selRemark", "textarea[name='selRemark']", "#noc_remark", "textarea[name='remark']"],
+                data.get("remark") or data.get("desc"),
+                ["說明", "備註", "進度說明"],
+                kind="textarea",
+            )
+
         else:
             self.log(f"⚠️ 無可填欄位映射（workflow={workflow}）")
             return False
@@ -6246,14 +6287,20 @@ return null;
             return False
 
         wf = (workflow or "").strip().lower()
-        if wf != "go_live":
-            self.log("🔒 安全政策：submit_workflow 目前僅允許 go_live。")
+        if wf not in {"go_live", "progress"}:
+            self.log(f"🔒 安全政策：submit_workflow 目前僅允許 go_live / progress（不支援 {wf}）。")
             return False
 
-        allow = str(os.environ.get("MAGI_LAF_ALLOW_GO_LIVE_SUBMIT", "0")).strip().lower() in {"1", "true", "yes", "on"}
-        if not allow:
-            self.log("🔒 安全政策：MAGI_LAF_ALLOW_GO_LIVE_SUBMIT != 1，禁止送出。")
-            return False
+        if wf == "go_live":
+            allow = str(os.environ.get("MAGI_LAF_ALLOW_GO_LIVE_SUBMIT", "0")).strip().lower() in {"1", "true", "yes", "on"}
+            if not allow:
+                self.log("🔒 安全政策：MAGI_LAF_ALLOW_GO_LIVE_SUBMIT != 1，禁止送出。")
+                return False
+        elif wf == "progress":
+            allow = str(os.environ.get("MAGI_LAF_ALLOW_PROGRESS_SUBMIT", "0")).strip().lower() in {"1", "true", "yes", "on"}
+            if not allow:
+                self.log("🔒 安全政策：MAGI_LAF_ALLOW_PROGRESS_SUBMIT != 1，禁止送出。")
+                return False
 
         if not self.open_workflow_report_page(workflow, laf_case_number=laf_case_number, client_name=client_name):
             return False

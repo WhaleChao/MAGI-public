@@ -1699,7 +1699,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                 try:
                     import json as _json
                     _processed_path = os.path.join(
-                        str(MAGI_DIR), '.agent', 'processed_laf_emails.json'
+                        str(MAGI_DIR), 'json', 'processed_laf_emails.json'
                     )
                     _data: dict = {}
                     if os.path.exists(_processed_path):
@@ -1824,6 +1824,10 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
             ]
             if remark:
                 _cmd += ['--reason', remark]
+            # P1-1: pass PDF files to draft subprocess so portal can upload them
+            _upload_files = [str(p) for p in [court_pdf, doc_pdf] if p]
+            if _upload_files:
+                _cmd += ['--fields-json', _json.dumps({"upload_files": _upload_files})]
             _env = os.environ.copy()
             _env['MAGI_TRANSLATOR_NO_VENV'] = '1'
             logger.info("progress draft subprocess starting (timeout=%ds)", portal_timeout)
@@ -1851,6 +1855,26 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         except Exception as e:
             logger.error("progress draft skill failed: %s", e)
             draft_result = {}
+
+        # P0-3: Only register confirm_token if the draft actually succeeded.
+        # draft_result.get('ok') is set by execute_portal_workflow_draft;
+        # draft_result.get('success') covers other success-style returns.
+        _draft_ok = isinstance(draft_result, dict) and (
+            draft_result.get('ok') or draft_result.get('success')
+        )
+        if not _draft_ok:
+            _draft_err = (draft_result or {}).get('error') or 'portal_draft_failed'
+            _fail_msg = (
+                f"⚠️ 進度回報草稿失敗（{client_name} / {laf_case_no}）：{_draft_err}\n"
+                f"請手動觸發或稍後重試。"
+            )
+            logger.error(_fail_msg)
+            if hasattr(self, 'notifier') and self.notifier:
+                try:
+                    self.notifier.notify_admin(_fail_msg)
+                except Exception:
+                    pass
+            return
 
         # 5. Register confirm_token and notify laf_progress channel
         try:
@@ -2632,8 +2656,8 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         通用送出（目前只允許 go_live，需由上層確認後啟用）。
         """
         wf = (workflow or "").strip()
-        if wf != "go_live":
-            logger.warning("Portal submit blocked: only go_live is allowed now (%s)", wf)
+        if wf not in {"go_live", "progress"}:
+            logger.warning("Portal submit blocked: only go_live/progress are allowed (%s)", wf)
             return False
         if not case_number and not client_name:
             logger.warning("Portal submit skipped: missing case_number/client_name")
@@ -4829,8 +4853,40 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         Execute explicit submit (currently only go_live).
         """
         act = (action or "").strip().lower()
-        if act != "go_live":
-            return {"ok": False, "error": "submit_only_supports_go_live", "action": act}
+        if act not in {"go_live", "progress"}:
+            return {"ok": False, "error": "submit_not_supported_for_action", "action": act}
+
+        # ── progress submit: re-open form and send for real ─────────────────
+        if act == "progress":
+            allow = str(os.environ.get("MAGI_LAF_ALLOW_PROGRESS_SUBMIT", "0")).strip().lower() in {
+                "1", "true", "yes", "on"
+            }
+            if not allow:
+                return {"ok": False, "error": "MAGI_LAF_ALLOW_PROGRESS_SUBMIT not set", "action": act}
+            _pid = self._lookup_case_identity(
+                laf_case_number=laf_case_number,
+                case_number=case_number,
+                client_name=client_name,
+                action=act,
+            )
+            if _pid.get("needs_manual_confirm"):
+                return {"ok": False, "error": "identity_needs_manual_confirmation",
+                        "action": act, "identity": _pid}
+            _laf_no = (_pid.get("laf_case_number") or "").strip()
+            _cname = (_pid.get("client_name") or "").strip()
+            if not _laf_no and not _cname:
+                return {"ok": False, "error": "missing_target", "action": act, "identity": _pid}
+            _flds = dict(fields or {})
+            if reason and "remark" not in _flds:
+                _flds["remark"] = reason
+            ok = self.execute_portal_workflow_submit("progress", _laf_no or _cname, _cname, _flds)
+            return {
+                "ok": ok,
+                "action": act,
+                "laf_case_number": _laf_no,
+                "client_name": _cname,
+                "artifact": self._last_portal_artifact if isinstance(self._last_portal_artifact, dict) else {},
+            }
 
         identity = self._lookup_case_identity(
             laf_case_number=laf_case_number,

@@ -31,7 +31,7 @@ SOURCE_FILE = str(get_laf_script())
 CODE_ROOT = str(get_orch_dir())
 LAF_RUNTIME = apply_product_runtime_env("laf", env=os.environ)
 
-PORTAL_ACTIONS = {"closing", "go_live", "inquiry", "withdrawal", "fee", "condition"}
+PORTAL_ACTIONS = {"closing", "go_live", "inquiry", "withdrawal", "fee", "condition", "progress"}
 
 # ── helpers ──────────────────────────────────────────────────────────────
 
@@ -189,7 +189,7 @@ print(json.dumps({{"identity": ident, "counts": counts, "log": log_lines}}, ensu
 
 
 def task_portal_action(action, laf_case_no="", case_number="", client_name="",
-                       reason="", fields_json=""):
+                       reason="", fields_json="", suppress_notify=False):
     """Execute a portal action via laf_orchestrator.py --mode portal-draft."""
     # CLI portal-draft timeout: default 900s (15 min) to accommodate LAF CSRF delays,
     # NAS attachment scan, form fill, and screenshot. Discord path uses 2400s.
@@ -208,6 +208,40 @@ def task_portal_action(action, laf_case_no="", case_number="", client_name="",
         args_list += ["--reason", reason]
     if fields_json:
         args_list += ["--fields-json", fields_json]
+    if suppress_notify:
+        args_list.append("--no-notify")
+    args_list.append("-v")
+
+    result = _run_orchestrator(args_list, timeout=portal_timeout)
+    result["product_profile"] = product_profile_report("laf")
+    return result
+
+
+def task_portal_submit(action, laf_case_no="", case_number="", client_name="",
+                       reason="", fields_json="", suppress_notify=False):
+    """Execute a portal action via laf_orchestrator.py --mode portal-submit.
+
+    Used for the second phase of T3 confirm-token flows (e.g. progress submit).
+    Requires the caller to have set the appropriate MAGI_LAF_ALLOW_*_SUBMIT
+    env variable to "1" (handled by laf_flow._run_progress_submit).
+    """
+    portal_timeout = int(os.environ.get("MAGI_LAF_REPORT_TIMEOUT_SEC", "2400"))
+    args_list = [
+        "--mode", "portal-submit",
+        "--action", action,
+    ]
+    if laf_case_no:
+        args_list += ["--laf-case-no", laf_case_no]
+    if case_number:
+        args_list += ["--case", case_number]
+    if client_name:
+        args_list += ["--client", client_name]
+    if reason:
+        args_list += ["--reason", reason]
+    if fields_json:
+        args_list += ["--fields-json", fields_json]
+    if suppress_notify:
+        args_list.append("--no-notify")
     args_list.append("-v")
 
     result = _run_orchestrator(args_list, timeout=portal_timeout)
@@ -222,16 +256,28 @@ def main():
         description="LAF Orchestrator MAGI Skill (v2.0)"
     )
     parser.add_argument("--task", default="summary",
-                        help="closing|go_live|inquiry|withdrawal|fee|condition|"
-                             "preview_counts|self_test|summary")
+                        help="closing|go_live|inquiry|withdrawal|fee|condition|progress|"
+                             "progress_report|preview_counts|self_test|summary")
     parser.add_argument("--laf-case-no", default="", help="法扶案號 e.g. 1140806-J-002")
     parser.add_argument("--case", default="", help="OSC 案號 e.g. 2025-0022")
     parser.add_argument("--client", default="", help="當事人姓名")
     parser.add_argument("--reason", default="", help="理由/說明文字")
     parser.add_argument("--fields-json", default="", help="附加欄位 JSON")
+    # T3: progress_report specific args
+    parser.add_argument("--case_no", default="", help="法扶案號（progress_report 專用別名）")
+    parser.add_argument("--client_name", default="", help="當事人姓名（progress_report 專用別名）")
+    parser.add_argument("--mode", default="draft",
+                        help="draft（填寫截圖）或 submit（送出）")
+    parser.add_argument("--no-notify", action="store_true",
+                        help="suppress Discord notification")
 
     args = parser.parse_args()
     task = (args.task or "").strip().lower()
+    # Normalize aliases: --case_no / --client_name → --laf-case-no / --client
+    if args.case_no and not args.laf_case_no:
+        args.laf_case_no = args.case_no
+    if args.client_name and not args.client:
+        args.client = args.client_name
 
     if not os.path.exists(SOURCE_FILE):
         print(json.dumps({"success": False, "error": f"source missing: {SOURCE_FILE}"},
@@ -274,6 +320,40 @@ def main():
         )
         print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
         return 0
+
+    # ── progress_report (T3) ──
+    # draft path: fill form + screenshot (portal-draft mode)
+    # submit path: re-open form and send for real (portal-submit mode, mode=submit)
+    if task in {"progress_report", "progress_draft", "progress_submit"}:
+        if not args.laf_case_no and not args.client and not args.case:
+            print(json.dumps({"success": False, "error": "需要 --case_no 或 --laf-case-no 或 --client"},
+                             ensure_ascii=False))
+            return 1
+        _mode = (args.mode or "draft").strip().lower()
+        if _mode == "submit":
+            # P0-2: when the confirm token is verified, submit (not draft) the form
+            result = task_portal_submit(
+                action="progress",
+                laf_case_no=args.laf_case_no,
+                case_number=args.case,
+                client_name=args.client,
+                reason=args.reason or "",
+                fields_json=args.fields_json,
+                suppress_notify=bool(getattr(args, 'no_notify', False)),
+            )
+        else:
+            result = task_portal_action(
+                action="progress",
+                laf_case_no=args.laf_case_no,
+                case_number=args.case,
+                client_name=args.client,
+                reason=args.reason or "",
+                fields_json=args.fields_json,
+                suppress_notify=bool(getattr(args, 'no_notify', False)),
+            )
+        result["product_profile"] = product_profile_report("laf")
+        print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
+        return 0 if result.get("success") else 1
 
     # ── portal actions ──
     if task in PORTAL_ACTIONS:

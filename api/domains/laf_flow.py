@@ -542,6 +542,10 @@ def handle_laf_progress_submit_confirmation_if_any(orch, *, platform: str, user_
     payload = ent.get("payload") if isinstance(ent.get("payload"), dict) else {}
     laf_case_no = str(payload.get("laf_case_no") or "").strip()
     client_name = str(payload.get("client_name") or "").strip()
+    # P0-2: pass remark and PDF paths so the submit subprocess can re-fill the form
+    _remark_str = str(payload.get("remark") or "").strip()
+    _court_pdf_str = str(payload.get("court_pdf") or "").strip()
+    _doc_pdf_str = str(payload.get("doc_pdf") or "").strip()
 
     def _run_progress_submit(uid, plat, tok):
         cmd = [
@@ -552,6 +556,11 @@ def handle_laf_progress_submit_confirmation_if_any(orch, *, platform: str, user_
             "--mode", "submit",
             "--no-notify",
         ]
+        if _remark_str:
+            cmd += ["--reason", _remark_str]
+        _upload_files = [p for p in [_court_pdf_str, _doc_pdf_str] if p and os.path.exists(p)]
+        if _upload_files:
+            cmd += ["--fields-json", json.dumps({"upload_files": _upload_files})]
         env = os.environ.copy()
         env["MAGI_LAF_ALLOW_PROGRESS_SUBMIT"] = "1"
         timeout_sec = int(os.environ.get("MAGI_LAF_REPORT_TIMEOUT_SEC", "2400") or "2400")
