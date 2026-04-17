@@ -1,7 +1,8 @@
 """
 Helper utilities for T3 未結案件進度回報.
 
-- PDF selection: 存底 > 清稿 > v-number > date
+- PDF/DOCX selection: 存底 > 清稿 > v-number > date
+- For 'doc' kind: files ending with「狀」are preferred; 回執/掛號收據 are excluded
 - ROC date conversion
 - Remark builder
 """
@@ -12,21 +13,71 @@ from pathlib import Path
 
 
 _COURT_SUBFOLDERS = [
-    "法院通知", "程序裁定", "03_法院通知", "04_法院通知", "法院通知或程序裁定",
+    # numbered variants (standard LAF folder structure)
+    "09_法院通知或程序裁定",
+    "08_法院通知或程序裁定",
+    "04_法院通知",
+    "03_法院通知",
+    # unnumbered fallbacks
+    "法院通知或程序裁定",
+    "法院通知",
+    "程序裁定",
 ]
 _DOC_SUBFOLDERS = [
-    "我方歷次書狀", "書狀", "03_我方歷次書狀", "04_我方歷次書狀", "我方書狀",
+    # numbered variants (standard LAF folder structure)
+    "04_我方歷次書狀",
+    "05_我方歷次書狀",
+    "03_我方歷次書狀",
+    # unnumbered fallbacks
+    "我方歷次書狀",
+    "書狀",
+    "我方書狀",
 ]
 
 # Priority scoring constants (higher = picked first)
 _SCORE_BACKUP = 100
 _SCORE_CLEAN = 50
+_SCORE_ZHUAN = 30   # filename stem ends with「狀」— proper 書狀 document
 _VNUM_RE = re.compile(r'[vV](\d+)')
 _DATE_RE = re.compile(r'^(\d{4})(\d{2})(\d{2})')
 
+# Keywords in 'doc' filenames that indicate a postal receipt — must be excluded
+_DOC_EXCLUDE_KEYWORDS = (
+    "回執",
+    "收件回執",
+    "郵件回執",
+    "掛號收據",
+    "掛號回執",
+    "郵件收件",
+)
 
-def _score_pdf(path: Path) -> Tuple[int, int, str]:
-    """Return (priority, vnum, datestr) for sorting — higher priority first."""
+# Valid doc file extensions (PDF + Word)
+_DOC_EXTENSIONS = {".pdf", ".docx", ".doc"}
+
+
+def _is_doc_excluded(name: str) -> bool:
+    """Return True if this 'doc' candidate should be skipped (it's a receipt, not a 書狀)."""
+    return any(kw in name for kw in _DOC_EXCLUDE_KEYWORDS)
+
+
+def _stem_ends_with_zhuan(name: str) -> bool:
+    """Return True if the stem ends with「狀」(e.g. 陳報狀, 聲請狀, 準備狀).
+
+    Strips trailing parenthetical suffixes like （[當事人D]）or (client) before checking,
+    so '20250623_更生陳報狀（[當事人D]）' is correctly recognised as a 書狀.
+    """
+    # Strip trailing （…）or (…) groups and whitespace
+    cleaned = re.sub(r'[（(][^（(）)]*[）)]?\s*$', '', name).rstrip()
+    return cleaned.endswith("狀")
+
+
+def _score_pdf(path: Path, kind: str = "court") -> Tuple[int, int, str]:
+    """Return (priority, vnum, datestr) for sorting — higher priority first.
+
+    For 'doc' kind:
+    - Files ending with「狀」get _SCORE_ZHUAN base priority
+    - Receipt/掛號 files should be filtered before calling this
+    """
     name = path.stem
     if "存底" in name:
         return (_SCORE_BACKUP, 0, name)
@@ -36,6 +87,11 @@ def _score_pdf(path: Path) -> Tuple[int, int, str]:
     if vm:
         return (10, int(vm.group(1)), name)
     dm = _DATE_RE.match(name)
+    if kind == "doc" and _stem_ends_with_zhuan(name):
+        # 書狀 files get a boosted base score; use date as tiebreaker (newer wins)
+        date_str = dm.group(0) if dm else ""
+        return (_SCORE_ZHUAN, 0, date_str)
+    # Non-書狀 files with date prefix rank lower
     if dm:
         return (5, 0, dm.group(0))
     return (0, 0, name)
@@ -44,7 +100,13 @@ def _score_pdf(path: Path) -> Tuple[int, int, str]:
 def pick_latest_pdf(case_folder: Path, kind: str) -> Optional[Path]:
     """
     kind: 'court' (法院通知/程序裁定) or 'doc' (我方歷次書狀)
-    Priority: 存底 > 清稿 > largest v-number > newest date
+
+    For 'doc':
+    - Scans PDF, DOCX, DOC files
+    - Excludes filenames containing 回執 / 掛號收據 / 郵件回執 etc.
+    - Files whose stem ends with「狀」get priority boost
+
+    Priority order: 存底 > 清稿 > 書狀結尾(newest) > largest v-number > newest date > others
     Returns Path or None.
     """
     subfolders = _COURT_SUBFOLDERS if kind == "court" else _DOC_SUBFOLDERS
@@ -63,18 +125,29 @@ def pick_latest_pdf(case_folder: Path, kind: str) -> Optional[Path]:
             if depth > 4:
                 break
             for fname in files:
-                if fname.lower().endswith(".pdf"):
-                    candidates.append(Path(root) / fname)
+                fpath = Path(root) / fname
+                ext = fpath.suffix.lower()
+                if kind == "court":
+                    if ext != ".pdf":
+                        continue
+                else:  # doc
+                    if ext not in _DOC_EXTENSIONS:
+                        continue
+                    if _is_doc_excluded(fpath.stem):
+                        continue
+                candidates.append(fpath)
 
     if not candidates:
         return None
 
-    # Sort: higher score first, then larger vnum, then larger datestr (newer)
-    return sorted(
-        candidates,
-        key=lambda p: (_score_pdf(p)[0], _score_pdf(p)[1], _score_pdf(p)[2]),
-        reverse=True,
-    )[0]
+    def _sort_key(p: Path) -> Tuple[int, int, str, int]:
+        sc = _score_pdf(p, kind)
+        # Prefer PDF over DOCX/DOC when scores are equal (portal handles PDF best)
+        ext_rank = 1 if p.suffix.lower() == ".pdf" else 0
+        return (sc[0], sc[1], sc[2], ext_rank)
+
+    # Sort: higher score first, then larger vnum, then larger datestr (newer), then PDF > DOCX
+    return sorted(candidates, key=_sort_key, reverse=True)[0]
 
 
 def extract_date_from_pdf_name(path: Path) -> Optional[str]:
