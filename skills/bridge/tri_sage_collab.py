@@ -171,9 +171,46 @@ def translate_text(
     text: str,
     target_lang: str = "繁體中文",
     source_lang: str = "auto",
+    mode: str = "full",
+    timeout: Optional[int] = None,
+) -> dict:
+    """
+    Back-compat adapter. 2026-04-17 整合：內部改呼叫 skills.translator.action.translate_core。
+    保留原 response schema 供 /collab/translate 上游使用。
+    """
+    content = (text or "").strip()
+    if not content:
+        return {"success": False, "error": "missing text", "text": "", "provider": "", "degraded": True}
+    try:
+        from skills.translator.action import translate_core
+        _timeout = int(
+            timeout if timeout is not None
+            else os.environ.get("MAGI_COLLAB_TRANSLATE_TIMEOUT_SEC", "60")
+        )
+        return translate_core(
+            content,
+            target_lang=target_lang,
+            source_lang=source_lang if source_lang != "auto" else None,
+            mode=mode if mode != "auto" else "full",
+            export=False,
+            timeout_sec=max(10, min(_timeout, 7200)),
+        )
+    except Exception:
+        logger.exception("translate_text adapter failed")
+        return {"success": False, "text": "", "error": "translate_core unavailable", "provider": "", "degraded": True}
+
+
+# ── Legacy translate_text body (now delegated to translate_core) ──
+# The following module-level helpers are kept for backward-compat but are no longer
+# called by translate_text. They remain available if needed by external callers.
+def _translate_text_legacy(
+    text: str,
+    target_lang: str = "繁體中文",
+    source_lang: str = "auto",
     mode: str = "auto",
     timeout: Optional[int] = None,
 ) -> dict:
+    """Legacy implementation — replaced by translate_core adapter. Not called anymore."""
     content = (text or "").strip()
     if not content:
         return {"success": False, "error": "missing text"}

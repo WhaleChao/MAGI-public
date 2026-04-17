@@ -375,3 +375,229 @@ def handle_laf_submit_confirmation_if_any(orch, user_id: str, platform: str, rol
     ).start()
 
     return True, f"\u23f3 \u5df2\u6536\u5230\u78ba\u8a8d\uff0c\u958b\u59cb\u9001\u51fa\u958b\u8fa6\u56de\u5831\uff08\u78ba\u8a8d\u78bc {token}\uff09\u3002\u5b8c\u6210\u5f8c\u6211\u6703\u4e3b\u52d5\u56de\u5831\u3002"
+
+
+# ---------------------------------------------------------------------------
+# Progress submit pending (T3: 未結案件進度回報 confirm_token)
+# ---------------------------------------------------------------------------
+
+def _progress_pending_file(orch) -> str:
+    """Return path to laf_progress_submit_pending.json (runtime dir)."""
+    if hasattr(orch, "_laf_progress_submit_pending_file"):
+        return str(orch._laf_progress_submit_pending_file)
+    runtime_dir = os.path.join(_MAGI_ROOT, ".runtime")
+    os.makedirs(runtime_dir, exist_ok=True)
+    return os.path.join(runtime_dir, "laf_progress_submit_pending.json")
+
+
+def _load_progress_pending(path: str) -> dict:
+    try:
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f) or {}
+            return data if isinstance(data, dict) else {}
+    except Exception:
+        pass
+    return {}
+
+
+def _save_progress_pending(path: str, data: dict) -> None:
+    try:
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data if isinstance(data, dict) else {}, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, path)
+    except Exception:
+        logging.getLogger(__name__).debug("silent-catch _save_progress_pending", exc_info=True)
+
+
+def register_laf_progress_submit_pending(
+    orch, *, platform: str, requester_user_id: str, payload: dict, result_data: dict
+) -> str:
+    """Register a pending progress submit.  Returns the 6-hex confirm_token string."""
+    pending_file = _progress_pending_file(orch)
+    pending = _load_progress_pending(pending_file)
+    token = secrets.token_hex(3).upper()
+    expires_sec = int(os.environ.get("MAGI_LAF_PROGRESS_CONFIRM_TTL_SEC", "1800") or "1800")
+    now = time.time()
+    entry = {
+        "kind": "laf_progress_submit",
+        "token": token,
+        "platform": str(platform or "").strip(),
+        "requester_user_id": str(requester_user_id or "").strip(),
+        "created_at": now,
+        "expires_at": now + float(expires_sec),
+        "status": "pending",
+        "payload": payload or {},
+        "result_data": result_data or {},
+    }
+    pending[token] = entry
+    _save_progress_pending(pending_file, pending)
+    return token
+
+
+def find_pending_progress_token_for_case(orch, laf_case_no: str):
+    """Return (token, entry) if an unexpired pending token exists for laf_case_no, else (None, None)."""
+    pending_file = _progress_pending_file(orch)
+    pending = _load_progress_pending(pending_file)
+    now = time.time()
+    for tk, entry in list(pending.items()):
+        if not isinstance(entry, dict):
+            continue
+        if str(entry.get("kind")) != "laf_progress_submit":
+            continue
+        if str(entry.get("status")) != "pending":
+            continue
+        exp = float(entry.get("expires_at", 0) or 0)
+        if exp and now > exp:
+            continue
+        p = entry.get("payload") or {}
+        if str(p.get("laf_case_no") or "").strip() == str(laf_case_no or "").strip():
+            return tk, entry
+    return None, None
+
+
+def resolve_laf_progress_pending_token(orch, token: str):
+    """Return the pending entry if token is valid + unexpired, else None."""
+    if not token:
+        return None
+    pending_file = _progress_pending_file(orch)
+    pending = _load_progress_pending(pending_file)
+    now = time.time()
+    # prune expired
+    removed = [
+        tk for tk, e in list(pending.items())
+        if not isinstance(e, dict) or (float(e.get("expires_at", 0) or 0) and now > float(e.get("expires_at", 0) or 0))
+    ]
+    if removed:
+        for tk in removed:
+            pending.pop(tk, None)
+        _save_progress_pending(pending_file, pending)
+
+    e = pending.get(token)
+    if not isinstance(e, dict):
+        return None
+    if str(e.get("kind")) != "laf_progress_submit":
+        return None
+    if str(e.get("status")) != "pending":
+        return None
+    return e
+
+
+def handle_laf_progress_submit_confirmation_if_any(orch, *, platform: str, user_id: str, text: str):
+    """
+    Check if text contains a valid progress confirm_token.
+    Returns dict with 'handled', 'message' keys, or None if not a progress token.
+    """
+    msg = (text or "").strip()
+    if not msg:
+        return None
+    m = re.search(r"\b([A-F0-9]{6,12})\b", msg.upper())
+    if not m:
+        return None
+    token = m.group(1)
+    entry = resolve_laf_progress_pending_token(orch, token)
+    if not isinstance(entry, dict):
+        return None
+
+    platform_norm = str(platform or "").strip().lower()
+    if str(entry.get("platform", "")).strip().lower() != platform_norm:
+        return {"handled": True, "message": f"\u26a0\ufe0f \u78ba\u8a8d\u78bc {token} \u5c6c\u65bc\u5176\u4ed6\u901a\u8a0a\u5e73\u53f0\uff0c\u8acb\u5728\u539f\u5e73\u53f0\u56de\u8986\u3002"}
+
+    low = msg.lower()
+    has_cancel = any(k in low for k in ["\u53d6\u6d88", "\u4e0d\u8981\u9001\u51fa", "\u5148\u4e0d\u8981", "\u66ab\u505c"])
+    if has_cancel:
+        pending_file = _progress_pending_file(orch)
+        pending = _load_progress_pending(pending_file)
+        ent = pending.get(token)
+        if isinstance(ent, dict):
+            ent["status"] = "cancelled"
+            ent["cancelled_by"] = str(user_id or "")
+            ent["cancelled_at"] = time.time()
+            pending[token] = ent
+            _save_progress_pending(pending_file, pending)
+        return {"handled": True, "message": f"\U0001f6d1 \u5df2\u53d6\u6d88\u9032\u5ea6\u56de\u5831\u9001\u51fa\uff08\u78ba\u8a8d\u78bc {token}\uff09\u3002"}
+
+    # Confirm
+    pending_file = _progress_pending_file(orch)
+    pending = _load_progress_pending(pending_file)
+    ent = pending.get(token)
+    if not isinstance(ent, dict):
+        return {"handled": True, "message": "\u26a0\ufe0f \u9019\u7b46\u9032\u5ea6\u56de\u5831\u78ba\u8a8d\u5df2\u4e0d\u5b58\u5728\u6216\u5df2\u904e\u671f\u3002"}
+    if str(ent.get("status")) != "pending":
+        return {"handled": True, "message": f"\u26a0\ufe0f \u9019\u7b46\u9032\u5ea6\u56de\u5831\u78ba\u8a8d\u76ee\u524d\u72c0\u614b\u70ba\u300c{ent.get('status')}\u300d\uff0c\u4e0d\u80fd\u91cd\u8907\u9001\u51fa\u3002"}
+
+    ent["status"] = "submitting"
+    ent["confirmed_by"] = str(user_id or "")
+    ent["confirmed_at"] = time.time()
+    pending[token] = ent
+    _save_progress_pending(pending_file, pending)
+
+    skill_python = (os.environ.get("MAGI_SKILL_PYTHON") or "").strip()
+    if not skill_python:
+        skill_python = os.path.join(_MAGI_ROOT, "venv", "bin", "python")
+    if not os.path.exists(skill_python):
+        skill_python = sys.executable or "python3"
+    laf_skill = os.path.join(_MAGI_ROOT, "skills", "laf-orchestrator", "action.py")
+    payload = ent.get("payload") if isinstance(ent.get("payload"), dict) else {}
+    laf_case_no = str(payload.get("laf_case_no") or "").strip()
+    client_name = str(payload.get("client_name") or "").strip()
+
+    def _run_progress_submit(uid, plat, tok):
+        cmd = [
+            skill_python, laf_skill,
+            "--task", "progress_report",
+            "--case_no", laf_case_no,
+            "--client_name", client_name,
+            "--mode", "submit",
+            "--no-notify",
+        ]
+        env = os.environ.copy()
+        env["MAGI_LAF_ALLOW_PROGRESS_SUBMIT"] = "1"
+        timeout_sec = int(os.environ.get("MAGI_LAF_REPORT_TIMEOUT_SEC", "2400") or "2400")
+        success = False
+        text_out = ""
+        try:
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_sec, env=env)
+            stdout_text = (proc.stdout or "").strip()
+            data = None
+            for line in reversed(stdout_text.splitlines()):
+                try:
+                    data = json.loads(line)
+                    if isinstance(data, dict):
+                        break
+                except Exception:
+                    pass
+            if proc.returncode == 0 and isinstance(data, dict) and data.get("success"):
+                text_out = f"\u2705 \u9032\u5ea6\u56de\u5831\u5df2\u9001\u51fa\uff08\u78ba\u8a8d\u78bc {tok}\uff09"
+                success = True
+            else:
+                err = str((data or {}).get("error") or stdout_text[:300]) if data else stdout_text[:300]
+                text_out = f"\u274c \u9032\u5ea6\u56de\u5831\u9001\u51fa\u5931\u6557\uff08\u78ba\u8a8d\u78bc {tok}\uff09\uff1a{err}"
+        except subprocess.TimeoutExpired:
+            text_out = f"\u23f3 \u9032\u5ea6\u56de\u5831\u9001\u51fa\u903e\u6642\uff08\u78ba\u8a8d\u78bc {tok}\uff09\u3002"
+        except Exception as exc:
+            text_out = f"\u274c \u9032\u5ea6\u56de\u5831\u9001\u51fa\u7570\u5e38\uff08\u78ba\u8a8d\u78bc {tok}\uff09\uff1a{exc}"
+        try:
+            pending2 = _load_progress_pending(pending_file)
+            e2 = pending2.get(tok)
+            if isinstance(e2, dict):
+                e2["status"] = "submitted" if success else "failed"
+                e2["finished_at"] = time.time()
+                pending2[tok] = e2
+                _save_progress_pending(pending_file, pending2)
+        except Exception:
+            pass
+        try:
+            if getattr(orch, "notification_callback", None):
+                orch.notification_callback(uid, text_out, plat, topic_key="laf_progress")
+        except Exception as ne:
+            logger.warning("progress submit notify failed: %s", ne)
+
+    threading.Thread(
+        target=_run_progress_submit,
+        args=(str(user_id or ""), str(platform or ""), token),
+        daemon=True,
+    ).start()
+    return {"handled": True, "message": f"\u23f3 \u5df2\u6536\u5230\u78ba\u8a8d\uff0c\u958b\u59cb\u9001\u51fa\u9032\u5ea6\u56de\u5831\uff08\u78ba\u8a8d\u78bc {token}\uff09\u3002\u5b8c\u6210\u5f8c\u6211\u6703\u4e3b\u52d5\u56de\u5831\u3002"}
+

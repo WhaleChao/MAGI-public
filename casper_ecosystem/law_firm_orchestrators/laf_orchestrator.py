@@ -1173,7 +1173,21 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
             self.handle_inquiry(case_info)
         elif notification_type in ('fee', '費用'):
             self.handle_fee_payment(case_info)
+        elif notification_type in ('progress', '進度'):
+            self.handle_progress_report(case_info)
         else:
+            # 嘗試 progress 關鍵字偵測（進度/案件 同時出現）
+            try:
+                from skills.legal.laf import _classify_progress_email, _PROGRESS_PRIORITY_TYPES
+                subject = getattr(case_info, 'subject', '')
+                snippet = getattr(case_info, 'snippet', '')
+                if (notification_type not in _PROGRESS_PRIORITY_TYPES
+                        and _classify_progress_email(subject, snippet)):
+                    logger.info("📋 Progress email detected: %s", client_name)
+                    self.handle_progress_report(case_info)
+                    return
+            except Exception as _pe:
+                logger.debug("progress detect skip: %s", _pe)
             # Default: treat as new case dispatch
             self.handle_go_live(case_info)
 
@@ -1659,6 +1673,234 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
             },
         )
         return result
+
+    def handle_progress_report(self, case_info, force: bool = False, suppress_notify: bool = False):
+        """
+        T3 未結案件進度定期回報 (Phase 1 draft-only).
+        0. Gate 1: mark email ID processed immediately (even if draft fails)
+        0. Gate 2: if pending token exists for this case, send reminder and return
+        1. 確認案件在 DB
+        2. 揀選最新 court/doc PDF
+        3. 建 remark
+        4. 呼叫 skill portal-action progress draft
+        5. 產 confirm_token 送 laf_progress 頻道
+        force=True bypasses Gates 1 & 2 (manual re-trigger).
+        """
+        client_name = getattr(case_info, 'client_name', '') or ''
+        laf_case_no = getattr(case_info, 'laf_case_number', '') or ''
+        subject = getattr(case_info, 'subject', '') or ''
+        message_id = getattr(case_info, 'message_id', '') or ''
+        logger.info("📋 handle_progress_report: client=%s laf_no=%s", client_name, laf_case_no)
+
+        if not force:
+            # Gate 1: mark this Gmail message_id as processed immediately,
+            # so that lookback scans won't retry the same email even if draft fails.
+            if message_id:
+                try:
+                    import json as _json
+                    _processed_path = os.path.join(
+                        str(MAGI_DIR), '.agent', 'processed_laf_emails.json'
+                    )
+                    _data: dict = {}
+                    if os.path.exists(_processed_path):
+                        with open(_processed_path, 'r', encoding='utf-8') as _f:
+                            _data = _json.load(_f) or {}
+                    if isinstance(_data, list):
+                        # Legacy format: list of IDs
+                        if message_id not in _data:
+                            _data.append(message_id)
+                    elif isinstance(_data, dict):
+                        _data[message_id] = True
+                    _tmp = _processed_path + '.tmp'
+                    with open(_tmp, 'w', encoding='utf-8') as _f:
+                        _json.dump(_data, _f, ensure_ascii=False)
+                    os.replace(_tmp, _processed_path)
+                except Exception as _ge:
+                    logger.debug("progress Gate 1 write failed: %s", _ge)
+
+            # Gate 2: if an unexpired pending token already exists for this case,
+            # send a reminder and skip creating a new draft.
+            if laf_case_no:
+                try:
+                    from api.domains.laf_flow import find_pending_progress_token_for_case
+                    _existing_tok, _existing_ent = find_pending_progress_token_for_case(self, laf_case_no)
+                    if _existing_tok and _existing_ent:
+                        _exp = float(_existing_ent.get('expires_at', 0) or 0)
+                        _remain = max(0, int((_exp - time.time()) / 60))
+                        _reminder = (
+                            f"ℹ️ 案件 {laf_case_no}（{client_name}）已有待確認的進度回報\n"
+                            f"確認碼：`{_existing_tok}`（剩餘約 {_remain} 分鐘）\n"
+                            f"請回覆確認碼以送出，或回覆「取消」重新填寫。"
+                        )
+                        if (not suppress_notify) and hasattr(self, 'notifier') and self.notifier:
+                            try:
+                                self.notifier.notify(_reminder, topic='laf_progress')
+                            except Exception:
+                                pass
+                        return
+                except Exception as _g2e:
+                    logger.debug("progress Gate 2 check failed: %s", _g2e)
+
+        # 1. 確認 DB 有此案
+        if laf_case_no:
+            existing = self._check_duplicate(laf_case_no, client_name, '', '')
+        else:
+            existing = None
+        if not existing:
+            msg = (
+                f"⚠️ 進度回報 email 收到（{client_name} / {laf_case_no}），"
+                f"但 DB 找不到對應案件。請先手動建案後重新觸發。"
+            )
+            logger.warning(msg)
+            if hasattr(self, 'notifier') and self.notifier:
+                try:
+                    self.notifier.notify_admin(msg)
+                except Exception:
+                    pass
+            return
+
+        # 2. NAS folder
+        try:
+            from api.case_path_mapper import translate_case_path_to_local
+            folder_path = translate_case_path_to_local(
+                str(existing.get('folder_path') or existing.get('case_folder_path') or '')
+            )
+        except Exception:
+            folder_path = ''
+
+        if not folder_path or not os.path.isdir(str(folder_path)):
+            msg = (
+                f"⚠️ 進度回報：找不到 NAS 資料夾（{client_name} / {laf_case_no}）。"
+                f"請確認資料夾路徑正確後手動觸發。"
+            )
+            logger.warning(msg)
+            if hasattr(self, 'notifier') and self.notifier:
+                try:
+                    self.notifier.notify_admin(msg)
+                except Exception:
+                    pass
+            return
+
+        # 3. 揀選 PDF
+        try:
+            from casper_ecosystem.law_firm_orchestrators.laf_progress_helper import (
+                pick_latest_pdf, build_progress_remark,
+            )
+            from pathlib import Path
+            court_pdf = pick_latest_pdf(Path(folder_path), 'court')
+            doc_pdf = pick_latest_pdf(Path(folder_path), 'doc')
+            remark = build_progress_remark(court_pdf, doc_pdf)
+        except Exception as e:
+            msg = (
+                f"⚠️ 進度回報：找不到法院通知/書狀 PDF（{client_name} / {laf_case_no}）：{e}"
+            )
+            logger.warning(msg)
+            if hasattr(self, 'notifier') and self.notifier:
+                try:
+                    self.notifier.notify_admin(msg)
+                except Exception:
+                    pass
+            return
+
+        # 4. Phase 1 draft — spawn laf_orchestrator.py --mode portal-draft directly.
+        # Skip action.py intermediate to keep the chain at 2 levels only.
+        # laf_orchestrator.py calls os._exit(0) after printing JSON to avoid
+        # Playwright asyncio cleanup hang in the grandchild process.
+        draft_result = {}
+        try:
+            import subprocess as _sp
+            import sys as _sys
+            import json as _json
+            _orch_script = os.path.abspath(__file__)
+            _skill_py = str(_sys.executable)
+            portal_timeout = int(os.environ.get("MAGI_LAF_PORTAL_DRAFT_TIMEOUT_SEC", "900"))
+            _cmd = [
+                _skill_py, _orch_script,
+                '--mode', 'portal-draft',
+                '--action', 'progress',
+                '--laf-case-no', laf_case_no,
+                '--client', client_name,
+                '--no-notify',
+            ]
+            if remark:
+                _cmd += ['--reason', remark]
+            _env = os.environ.copy()
+            _env['MAGI_TRANSLATOR_NO_VENV'] = '1'
+            logger.info("progress draft subprocess starting (timeout=%ds)", portal_timeout)
+            _cp = _sp.run(_cmd, capture_output=True, text=True,
+                          timeout=portal_timeout, env=_env)
+            logger.info("progress draft subprocess done rc=%d", _cp.returncode)
+            _stdout = (_cp.stdout or '').strip()
+            # Try full stdout as JSON (indent=2 multi-line)
+            try:
+                _parsed = _json.loads(_stdout)
+                if isinstance(_parsed, dict):
+                    draft_result = _parsed
+            except Exception:
+                # Fallback: scan reversed lines for last single-line JSON dict
+                for _line in reversed(_stdout.splitlines()):
+                    _line = _line.strip()
+                    if _line.startswith('{') and _line.endswith('}'):
+                        try:
+                            _parsed = _json.loads(_line)
+                            if isinstance(_parsed, dict):
+                                draft_result = _parsed
+                                break
+                        except Exception:
+                            continue
+        except Exception as e:
+            logger.error("progress draft skill failed: %s", e)
+            draft_result = {}
+
+        # 5. Register confirm_token and notify laf_progress channel
+        try:
+            from api.domains.laf_flow import register_laf_progress_submit_pending
+            token = register_laf_progress_submit_pending(
+                self,
+                platform='discord',
+                requester_user_id='',
+                payload={
+                    'laf_case_no': laf_case_no,
+                    'client_name': client_name,
+                    'remark': remark,
+                    'court_pdf': str(court_pdf) if court_pdf else '',
+                    'doc_pdf': str(doc_pdf) if doc_pdf else '',
+                },
+                result_data=draft_result,
+            )
+        except Exception as e:
+            logger.error("register_laf_progress_submit_pending failed: %s", e)
+            token = ''
+
+        if not isinstance(draft_result, dict):
+            draft_result = {}
+        # screenshot_path may live in preview.png (portal-draft result format)
+        _preview = draft_result.get('preview') or {}
+        screenshot_path = (
+            draft_result.get('screenshot_path')
+            or (_preview.get('png') if isinstance(_preview, dict) else '')
+            or ''
+        )
+        try:
+            if (not suppress_notify) and hasattr(self, 'notifier') and self.notifier:
+                court_name = str(court_pdf.name) if court_pdf else '（未找到）'
+                doc_name = str(doc_pdf.name) if doc_pdf else '（未找到）'
+                lines = [
+                    f"📋 案件進度回報草稿已填寫",
+                    f"案號：{laf_case_no}",
+                    f"當事人：{client_name}",
+                    f"remark：{remark}",
+                    f"已上傳：{court_name} / {doc_name}",
+                ]
+                if token:
+                    lines.append(f"確認碼：`{token}`（30 分鐘內回覆此碼以送出）")
+                self.notifier.notify(
+                    '\n'.join(lines),
+                    topic='laf_progress',
+                    attachment=screenshot_path or None,
+                )
+        except Exception as e:
+            logger.error("progress notify failed: %s", e)
 
     def handle_withdrawal(self, case_info, reason: str = ""):
         """
@@ -3919,7 +4161,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         case_folder = (identity.get("case_folder") or "").strip()
         docs = self._scan_case_folder_docs(case_folder) if case_folder else self._empty_docs_map()
 
-        if act not in {"go_live", "inquiry", "fee", "condition", "withdrawal", "closing"}:
+        if act not in {"go_live", "inquiry", "fee", "condition", "withdrawal", "closing", "progress"}:
             return {"ok": False, "error": f"unknown_action:{act}"}
 
         # Workflows except closing can run with either LAF case no or client name.
@@ -4226,6 +4468,29 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                 "upload_bundle": upload_bundle,
                 "preview": self._last_portal_artifact,
             }
+
+        if act == "progress":
+            # 進度回報：不需必要文件，remark 由呼叫端提供或留空給 portal 填
+            fields.setdefault("remark", reason or "")
+            ok = self.execute_portal_workflow_draft("progress", laf_no, cname, fields or {})
+            result = {
+                "ok": bool(ok),
+                "action": act,
+                "identity": identity,
+                "fields": fields,
+                "preview": self._last_portal_artifact,
+            }
+            if not ok:
+                result["error"] = "portal_draft_failed"
+            if ok and not suppress_notify:
+                try:
+                    self.notifier.notify(
+                        f"📋 進度回報草稿已填寫（{cname} / {laf_no}）",
+                        topic="laf_progress",
+                    )
+                except Exception:
+                    pass
+            return result
 
         # closing
         close_case_no = laf_no or case_number
@@ -5870,6 +6135,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         try:
             laf_number = str(laf_number or "").strip()
             client_key = self._norm_token(client_name)
+
             # Strategy 1: LAF number exact match
             if laf_number:
                 result = self.db.fetch_one(
@@ -5877,12 +6143,31 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                     (laf_number,), as_dict=True
                 )
                 if result:
+                    logger.debug(
+                        "Duplicate matched by=legal_aid_number, laf_no=%s, client=%s, row_id=%s",
+                        laf_number, result.get("client_name"), result.get("id")
+                    )
                     return result
-                result = self.db.fetch_one(
-                    "SELECT * FROM `cases` WHERE `notes` LIKE %s LIMIT 1",
+
+                # Strategy 1b: notes LIKE — 必須同時驗 client_name，避免案號 substring 誤判
+                rows_by_notes = self.db.fetch_all(
+                    "SELECT * FROM `cases` WHERE `notes` LIKE %s LIMIT 20",
                     (f"%{laf_number}%",), as_dict=True
                 )
-                if result:
+                for result in (rows_by_notes or []):
+                    if not isinstance(result, dict):
+                        continue
+                    db_client_key = self._norm_token(result.get("client_name"))
+                    if client_key and db_client_key and db_client_key != client_key:
+                        logger.debug(
+                            "Duplicate skip notes-match: laf_no=%s matched row client=%s != input client=%s",
+                            laf_number, result.get("client_name"), client_name
+                        )
+                        continue
+                    logger.debug(
+                        "Duplicate matched by=notes, laf_no=%s, client=%s, row_id=%s",
+                        laf_number, result.get("client_name"), result.get("id")
+                    )
                     return result
 
             # Strategy 2: Name + type + category (異體字在 Python 端比對)
@@ -5897,22 +6182,40 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                 for result in (rows or []):
                     if not isinstance(result, dict):
                         continue
-                    # 異體字正規化比對 client_name
                     db_client_key = self._norm_token(result.get("client_name"))
                     if db_client_key != client_key:
                         continue
+
+                    existing_laf = str(result.get("legal_aid_number") or "").strip()
+                    db_reason = str(result.get("case_reason") or "").strip()
+                    _reason_empty = not case_reason or case_reason in ("待確認", "")
+
                     if laf_number:
-                        existing_laf = str(result.get("legal_aid_number") or "").strip()
                         notes = str(result.get("notes") or "")
-                        # 若 DB 的 legal_aid_number 非空且與本次不同，才跳過
-                        # 若 DB 的 legal_aid_number 為空（尚未填入），允許依 case_reason 比對
                         if existing_laf and existing_laf != laf_number and laf_number not in notes:
                             continue
-                    db_reason = str(result.get("case_reason") or "").strip()
-                    if case_reason:
+                        # Strategy 2 特殊規則：case_reason 為空/待確認時，
+                        # 必須要求 laf_case_no 完全相符，避免不同案件因同姓名誤合
+                        if _reason_empty and existing_laf and existing_laf != laf_number:
+                            logger.debug(
+                                "Duplicate skip S2 empty-reason: laf_no=%s != existing=%s, client=%s",
+                                laf_number, existing_laf, client_name
+                            )
+                            continue
+
+                    if case_reason and not _reason_empty:
                         if db_reason and (case_reason in db_reason or db_reason in case_reason):
+                            logger.debug(
+                                "Duplicate matched by=name+type+reason, laf_no=%s, client=%s, row_id=%s",
+                                laf_number, result.get("client_name"), result.get("id")
+                            )
                             return result
                         continue
+
+                    logger.debug(
+                        "Duplicate matched by=name+type(fallback), laf_no=%s, client=%s, row_id=%s",
+                        laf_number, result.get("client_name"), result.get("id")
+                    )
                     return result
 
         except Exception as e:
@@ -6275,6 +6578,12 @@ def main():
             suppress_notify=bool(getattr(args, 'no_notify', False)),
         )
         print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
+        # Explicitly close the browser before exit to prevent Playwright async loop hang.
+        try:
+            orchestrator.close()
+        except Exception:
+            pass
+        import sys as _sys; _sys.stdout.flush(); os._exit(0)
 
     elif args.mode == "portal-submit":
         fields = {}

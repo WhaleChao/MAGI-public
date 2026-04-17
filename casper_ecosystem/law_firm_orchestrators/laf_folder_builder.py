@@ -263,17 +263,36 @@ class LAFFolderBuilder:
         return text[:max_len]
 
     def _resolve_case_category(self, case_info: Dict) -> str:
+        # 優先採用明確 case_type（不走關鍵字推斷）
+        explicit_type = str(case_info.get("case_type") or "").strip()
+        if explicit_type in ("民事", "刑事", "家事", "消費者債務清理", "少年", "行政"):
+            return explicit_type
+
         text = " ".join(
             str(case_info.get(k, "") or "").strip()
             for k in ("case_type", "case_stage", "case_reason")
         )
+
+        # 消費者債務清理 / 更生 / 清算（家事類不含「清算」）
         if "消費者債務清理" in text or "更生" in text or "清算" in text:
             return "消費者債務清理"
+        # 家事 / 少年
+        if any(token in text for token in ("離婚", "收養", "監護", "扶養", "遺產")):
+            return "家事"
+        if "少年" in text:
+            return "少年"
         if "行政" in text:
             return "行政"
         if "非訟" in text:
             return "非訟"
-        if any(token in text for token in ("刑事", "偵查", "上訴", "自訴", "執行")):
+        # 刑事獨有關鍵字（已剔除「上訴」「執行」等民刑共用詞）
+        _CRIMINAL_ONLY = (
+            "刑事", "偵查", "自訴", "起訴", "公訴", "交保", "羈押",
+            "毒品", "殺人", "強盜", "竊盜", "傷害", "詐欺", "侵占",
+            "背信", "貪污", "賄賂", "妨害性自主", "公共危險",
+            "過失致死", "非常上訴",
+        )
+        if any(token in text for token in _CRIMINAL_ONLY):
             return "刑事"
         return "民事"
 
