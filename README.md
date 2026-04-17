@@ -22,6 +22,7 @@ MAGI v2 is a locally-deployed AI operations platform built for a Taiwanese law f
   - [Legal Aid Foundation (LAF)](#legal-aid-foundation-laf)
   - [Court File Review](#court-file-review)
   - [Court Transcripts](#court-transcripts)
+  - [Apple Shortcuts (thin wrappers)](#apple-shortcuts-thin-wrappers)
 - [Operations — `magi` CLI](#operations--magi-cli)
 - [Skill Catalogue](#skill-catalogue)
 - [Message Processing Flow](#message-processing-flow)
@@ -203,6 +204,20 @@ Attachment scan has a 20-second budget and 600-file candidate cap to protect NAS
 - Automatic download and deduplication via MD5 registry (JSON + MariaDB dual-write).
 - DB fallback: if local JSON is missing, dedup records are recovered from the DB.
 - Self-test, `db_probe`, and smoke-login steps integrated.
+
+### Apple Shortcuts (thin wrappers)
+
+Four `text/plain`-in / `text/plain`-out endpoints on Tools API (`5003`) so
+`Get Contents of URL` in Shortcuts.app can call MAGI without JSON gymnastics:
+
+| Endpoint | Input body | Returns |
+|----------|-----------|---------|
+| `POST /shortcut/ocr` | raw image bytes (jpg/png/heic) | extracted text |
+| `POST /shortcut/pdf_text` | raw PDF bytes | extracted text (with OCR fallback) |
+| `POST /shortcut/summarize` | `text/plain` UTF-8 body | summary |
+| `POST /shortcut/transcribe` | raw audio bytes | transcription |
+
+All require `X-API-Key`. Body size caps: OCR 20 MB, PDF 50 MB, audio 100 MB, text 500 KB.
 
 ---
 
@@ -439,7 +454,7 @@ MAGI_v2/
 | Port | Service |
 |------|---------|
 | `5002` | Flask main server (`/health`, `/chat`, `/skills/…`) |
-| `5003` | Tools API (`/summarize`, `/translate`, `/collab/transcribe`, `/osc/external/chat`) |
+| `5003` | Tools API (`/summarize`, `/translate`, `/collab/transcribe`, `/osc/external/chat`, `/shortcut/*`) |
 | `8080` | oMLX text — Gemma-4 E4B (Casper, day) / Gemma-4 26B (night) |
 | `8081` | oMLX embed — ModernBERT-embed-4bit |
 | `8082` | oMLX text — Phi-4-mini-instruct (Melchior, day only) |

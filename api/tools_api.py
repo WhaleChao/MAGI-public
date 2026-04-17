@@ -1872,6 +1872,223 @@ def api_summarize_health():
         "circuit_breaker": _summarize_cb_snapshot(),
     }), 200
 
+
+# ============== Apple Shortcut thin wrappers ==============
+# Apple Shortcuts' "Get Contents of URL" works best with raw octet-stream request
+# bodies and text/plain responses.  These wrappers accept a single payload per
+# endpoint and return plain text, so the Shortcut can use "Stop and Output"
+# directly without JSON parsing.
+
+_SHORTCUT_OCR_MAX_BYTES = int(os.environ.get("MAGI_SHORTCUT_OCR_MAX_BYTES", str(20 * 1024 * 1024)))
+_SHORTCUT_PDF_MAX_BYTES = int(os.environ.get("MAGI_SHORTCUT_PDF_MAX_BYTES", str(50 * 1024 * 1024)))
+_SHORTCUT_AUDIO_MAX_BYTES = int(os.environ.get("MAGI_SHORTCUT_AUDIO_MAX_BYTES", str(100 * 1024 * 1024)))
+_SHORTCUT_TEXT_MAX_BYTES = int(os.environ.get("MAGI_SHORTCUT_TEXT_MAX_BYTES", str(500 * 1024)))
+
+
+def _shortcut_text_response(body: str, status: int = 200):
+    resp = Response(str(body or ""), status=status, mimetype="text/plain; charset=utf-8")
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
+
+
+def _shortcut_write_temp(data: bytes, suffix: str) -> str:
+    import tempfile
+    fd, path = tempfile.mkstemp(prefix="shortcut_", suffix=suffix)
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+    except Exception:
+        try:
+            os.close(fd)
+        except Exception:
+            pass
+        raise
+    return path
+
+
+def _shortcut_payload_bytes(max_bytes: int):
+    """Read raw request body or first multipart file.  Returns (bytes, suffix_hint, err)."""
+    if request.files:
+        try:
+            key = next(iter(request.files))
+        except Exception:
+            key = None
+        if key:
+            f = request.files[key]
+            raw = f.read() or b""
+            suffix = os.path.splitext(f.filename or "")[1].lower() or ""
+            if len(raw) > max_bytes:
+                return b"", "", f"payload_too_large: {len(raw)} > {max_bytes}"
+            return raw, suffix, ""
+    raw = request.get_data(cache=False) or b""
+    if not raw:
+        return b"", "", "empty_body"
+    if len(raw) > max_bytes:
+        return b"", "", f"payload_too_large: {len(raw)} > {max_bytes}"
+    return raw, "", ""
+
+
+@app.route('/shortcut/ocr', methods=['POST'])
+@require_api_key
+def api_shortcut_ocr():
+    """Thin wrapper: raw image bytes → plain-text OCR output.
+
+    Accepts either ``application/octet-stream`` raw body or multipart ``file=``.
+    Returns ``text/plain`` with extracted text.  Uses the same vision gateway as
+    ``/vision`` with ``task_type=ocr``.
+    """
+    raw, suffix, err = _shortcut_payload_bytes(_SHORTCUT_OCR_MAX_BYTES)
+    if err:
+        return _shortcut_text_response(f"[error] {err}", status=400)
+
+    if suffix not in {".jpg", ".jpeg", ".png", ".heic", ".heif", ".tif", ".tiff", ".bmp", ".webp"}:
+        # Sniff from first bytes if no suffix
+        if raw[:3] == b"\xff\xd8\xff":
+            suffix = ".jpg"
+        elif raw[:8] == b"\x89PNG\r\n\x1a\n":
+            suffix = ".png"
+        elif raw[4:8] == b"ftyp":
+            suffix = ".heic"
+        else:
+            suffix = ".jpg"
+
+    tmp_path = _shortcut_write_temp(raw, suffix)
+    try:
+        timeout_sec = int(request.args.get("timeout_sec") or os.environ.get("MAGI_VISION_TIMEOUT_SEC", "90") or "90")
+        try:
+            result = _INFERENCE_GATEWAY.vision(
+                image_path=tmp_path,
+                prompt="請將影像中的文字完整辨識出來，保留原始排版。",
+                timeout=max(8, int(timeout_sec)),
+                task_type="ocr",
+                force_local=True,
+            )
+        except Exception as e:
+            result = {"success": False, "error": f"vision_gateway_exception: {e}"}
+
+        if not result.get("success"):
+            fb_ok, fb_val = _run_with_timeout(analyze_image, 60, tmp_path, "OCR this image; return extracted text only.")
+            if fb_ok:
+                text = str(fb_val or "").strip()
+                if text and not text.lower().startswith("error"):
+                    return _shortcut_text_response(text)
+            return _shortcut_text_response(f"[error] ocr_failed: {result.get('error', 'unknown')}", status=502)
+
+        text = str(result.get("analysis") or result.get("response") or "").strip()
+        return _shortcut_text_response(text)
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except Exception:
+            pass
+
+
+@app.route('/shortcut/pdf_text', methods=['POST'])
+@require_api_key
+def api_shortcut_pdf_text():
+    """Thin wrapper: raw PDF bytes → plain-text extraction (with OCR fallback)."""
+    raw, _suffix, err = _shortcut_payload_bytes(_SHORTCUT_PDF_MAX_BYTES)
+    if err:
+        return _shortcut_text_response(f"[error] {err}", status=400)
+    if raw[:4] != b"%PDF":
+        return _shortcut_text_response("[error] not_a_pdf", status=400)
+
+    tmp_path = _shortcut_write_temp(raw, ".pdf")
+    try:
+        from skills.engine.document_reader import read_document
+        r = read_document(tmp_path, mode="auto", ocr_fallback=True, max_chars=500_000)
+        if not r.success:
+            return _shortcut_text_response(f"[error] pdf_extract_failed: {r.error}", status=502)
+        text = (r.text or "").strip()
+        if not text:
+            return _shortcut_text_response("[error] empty_output", status=502)
+        return _shortcut_text_response(text)
+    except Exception as e:
+        return _shortcut_text_response(f"[error] pdf_exception: {e}", status=500)
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except Exception:
+            pass
+
+
+@app.route('/shortcut/summarize', methods=['POST'])
+@require_api_key
+def api_shortcut_summarize():
+    """Thin wrapper: raw text body → plain-text summary."""
+    raw = request.get_data(cache=False) or b""
+    if not raw:
+        return _shortcut_text_response("[error] empty_body", status=400)
+    if len(raw) > _SHORTCUT_TEXT_MAX_BYTES:
+        return _shortcut_text_response(
+            f"[error] payload_too_large: {len(raw)} > {_SHORTCUT_TEXT_MAX_BYTES}", status=400
+        )
+    try:
+        text = raw.decode("utf-8", errors="replace").strip()
+    except Exception as e:
+        return _shortcut_text_response(f"[error] decode_failed: {e}", status=400)
+    if not text:
+        return _shortcut_text_response("[error] empty_text", status=400)
+
+    timeout_sec = int(request.args.get("timeout_sec") or "75")
+    try:
+        ok, result = _run_with_timeout(
+            summarize_text, max(15, timeout_sec), text, pool=_INFERENCE_EXECUTOR
+        )
+    except Exception as e:
+        return _shortcut_text_response(f"[error] summarize_exception: {e}", status=500)
+    if not ok:
+        return _shortcut_text_response(f"[error] summarize_timeout_{timeout_sec}s", status=504)
+    if isinstance(result, dict):
+        summary = (result.get("summary") or result.get("text") or "").strip()
+        if not summary and not result.get("success", False):
+            return _shortcut_text_response(f"[error] summarize_failed: {result.get('error', 'unknown')}", status=502)
+    else:
+        summary = str(result or "").strip()
+    if not summary:
+        return _shortcut_text_response("[error] empty_summary", status=502)
+    return _shortcut_text_response(summary)
+
+
+@app.route('/shortcut/transcribe', methods=['POST'])
+@require_api_key
+def api_shortcut_transcribe():
+    """Thin wrapper: raw audio bytes → plain-text transcription."""
+    raw, suffix, err = _shortcut_payload_bytes(_SHORTCUT_AUDIO_MAX_BYTES)
+    if err:
+        return _shortcut_text_response(f"[error] {err}", status=400)
+
+    if suffix not in {".wav", ".mp3", ".m4a", ".aiff", ".aif", ".caf", ".flac", ".ogg", ".mp4"}:
+        suffix = ".m4a"
+
+    tmp_path = _shortcut_write_temp(raw, suffix)
+    try:
+        from skills.bridge.tri_sage_collab import transcribe_audio
+        timeout_sec = int(
+            request.args.get("timeout_sec")
+            or os.environ.get("MAGI_TRANSCRIBE_TIMEOUT_SEC", "180")
+            or "180"
+        )
+        ok, result = _run_with_timeout(
+            transcribe_audio, max(30, timeout_sec), tmp_path, pool=_INFERENCE_EXECUTOR
+        )
+        if not ok:
+            return _shortcut_text_response(f"[error] transcribe_timeout_{timeout_sec}s", status=504)
+        if not result.get("success"):
+            return _shortcut_text_response(
+                f"[error] transcribe_failed: {result.get('error', 'unknown')}", status=502
+            )
+        text = str(result.get("text") or result.get("transcript") or "").strip()
+        if not text:
+            return _shortcut_text_response("[error] empty_transcript", status=502)
+        return _shortcut_text_response(text)
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except Exception:
+            pass
+
+
 # ============== Skills ==============
 @app.route('/skills', methods=['GET'])
 def api_list_skills():

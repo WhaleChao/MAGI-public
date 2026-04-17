@@ -63,6 +63,7 @@ CSRF_EXEMPT_API_PATTERNS = (
     "/static/",
     "/judgment",
     "/transcript",
+    "/shortcut/",
 )
 
 

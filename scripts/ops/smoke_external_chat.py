@@ -17,7 +17,11 @@ except ImportError:
     pass
 
 def main():
-    api_key = os.environ.get("OSC_EXTERNAL_API_KEY", "openclaw2026")
+    api_key = (
+        os.environ.get("MAGI_EXTERNAL_API_KEY")
+        or os.environ.get("OSC_EXTERNAL_API_KEY")
+        or "openclaw2026"
+    )
     port = os.environ.get("MAGI_HTTP_PORT", "5003")
     url = f"http://127.0.0.1:{port}/osc/external/chat"
     

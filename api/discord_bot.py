@@ -543,7 +543,7 @@ async def bg_scheduler_loop():
                 else:
                     # Non-@MAGI command: execute as async subprocess via asyncio
                     # (native async — does NOT consume any thread pool workers)
-                    _SAFE_PREFIXES = ("cd ", "/Users/", "./venv/", "python3 ", "MAGI_", "JUDICIAL_")
+                    _SAFE_PREFIXES = ("cd ", "/Users/", "./venv/", "python3 ", "bash ", "MAGI_", "JUDICIAL_")
                     if not any(command.strip().startswith(p) for p in _SAFE_PREFIXES):
                         logger.warning("⚠️ Blocked suspicious cron command: %s", command[:100])
                     else:
