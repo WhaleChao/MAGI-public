@@ -59,3 +59,77 @@ description: 完整翻譯（預設不摘要）並在內容過長時自動輸出 
 
 使用者：翻譯這個檔案 /tmp/doc.pdf
 → 翻譯 file=/tmp/doc.pdf
+
+---
+
+## APE 法律翻譯升級（Apple Translation + LLM Post-Editing）
+
+### 概覽
+
+短到中長度法律文本（zh↔en）可啟用 APE（Automatic Post-Editing）路徑，品質顯著高於純 Google GTX：
+
+```
+zh 原文
+  │
+  ▼  Apple Translation（離線，~50ms）
+baseline 機器初譯
+  │
+  ▼  LLM post-edit（E4B 日 / 26B 夜，~2-5s）
+     Tier 1 MOJ 雙語 + Tier 2 學理詞條作為 glossary 注入
+polished 譯文
+  │
+  ▼  雙保險 validator
+     ├── 長度差異 ≤35%（短句寬鬆）
+     ├── 數字 / 案號 / 當事人名保留
+     ├── 繁體中文目標時無簡體字
+     └── 無 LLM 重複崩潰
+  │
+  ├── valid → 回傳 polished（provider=apple_translation_ape）
+  └── invalid → fallback baseline（provider=apple_translation_baseline, degraded=True）
+```
+
+### 啟用方式
+
+```bash
+# 單次翻譯
+MAGI_TRANSLATOR_APE=1 skills/translator/action.py --task 'translate {"text":"原告訴之聲明...","target_lang":"en"}'
+
+# 長文分段 APE（每段 ≤1800 字）
+MAGI_TRANSLATOR_APE_CHUNKS=1  # 預設開啟，在 MAGI_TRANSLATOR_APE=1 時生效
+```
+
+### 環境變數
+
+| 變數 | 預設 | 說明 |
+|------|------|------|
+| `MAGI_TRANSLATOR_APE` | `0` | 主路由 APE 開關（opt-in） |
+| `MAGI_TRANSLATOR_APE_MAX_CHARS` | `1200` | 主路由最大字元數 |
+| `MAGI_TRANSLATOR_APE_CHUNKS` | `1` | 長文分段 APE |
+| `MAGI_TRANSLATOR_APE_CHUNK_MAX_CHARS` | `1800` | 每段最大字元數 |
+| `MAGI_APPLE_TRANSLATION_TIMEOUT_SEC` | `10.0` | Apple sidecar timeout |
+
+### 回傳欄位（APE 路徑）
+
+```json
+{
+  "success": true,
+  "text": "Prayer for relief: The defendant shall pay NT$200,000.",
+  "provider": "apple_translation_ape",
+  "baseline": "Plaintiff's statement: The defendant shall pay NT$200,000.",
+  "validator": { "valid": true, "reasons": [], "stats": { ... } },
+  "degraded": false,
+  "elapsed_ms": 3200
+}
+```
+
+### 前置條件
+
+1. macOS 15+ Sequoia（Apple Translation framework 需求）
+2. 系統設定 → 語言與地區 → 翻譯語言 → 下載「英文」「繁體中文」
+3. `skills/engine/apple_translation/_sidecar/magi_translator_sidecar` 已編譯（預編譯 arm64 已包含）
+
+### 夜間回歸
+
+`cron_jobs.json` 中 `job_translator_ape_regression`（每日 03:15）執行
+`scripts/ops/benchmark_translator_ape.py`，結果寫至 `static/translator_ape_latest.json`。
+APE 術語命中率低於 baseline 或退化率 > 50% 時自動發 DC 告警。
