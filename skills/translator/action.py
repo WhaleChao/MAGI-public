@@ -1191,17 +1191,37 @@ def translate_core(
     """
     Single authoritative translation entry point.
 
+    Used by skills.bridge.tri_sage_collab.translate_text and /collab/translate.
+    APE (Apple Translation + LLM post-edit) path is activated when
+    MAGI_TRANSLATOR_APE=1, Apple sidecar is available, and text is legal.
+
     Schema returned:
     {
       "success": bool,
       "text": str,
-      "provider": str,   # google_gtx_primary / google_gtx_fallback / llm / extractive_fallback
+      "provider": str,   # google_gtx_primary / google_gtx_fallback / llm / extractive_fallback / apple_ape
       "degraded": bool,
       "elapsed_sec": float,
       "export_path": str | None,
       "error": str | None,
     }
     """
+    ape_enabled = os.environ.get("MAGI_TRANSLATOR_APE", "0").strip().lower() in {"1", "true", "yes", "on"}
+    if ape_enabled:
+        try:
+            from skills.engine.apple_translation import is_available
+            from skills.translator._apple_post_edit import is_legal_text, translate_with_ape
+            avail, _ = is_available()
+            ape_max = int(os.environ.get("MAGI_TRANSLATOR_APE_MAX_CHARS", "5000") or "5000")
+            if avail and is_legal_text(text) and len(text) <= ape_max:
+                return translate_with_ape(
+                    text,
+                    target_lang=target_lang,
+                    source_lang=source_lang or "auto",
+                )
+        except Exception:
+            logging.getLogger(__name__).debug("APE routing failed, falling through", exc_info=True)
+
     payload: dict = {
         "text": text,
         "target_lang": target_lang,

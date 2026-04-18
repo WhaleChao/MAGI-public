@@ -607,6 +607,62 @@ _OSC_ORCHESTRATOR = None
 _INFERENCE_GATEWAY = InferenceGateway()
 _EXTERNAL_KEY_CACHE = {"ts": 0.0, "value": ""}
 _SUMMARIZE_CB_LOCK = threading.Lock()
+
+# ── Async skill-run job helpers ───────────────────────────────────────────────
+# complete() in job_queue stores at most 4 000 chars; budget 200 chars for metadata.
+_JOB_RESULT_CAP = 3800
+
+
+def _trim_skill_result_for_storage(result: dict) -> str:
+    """Serialize result dict to JSON, trimming large text fields to stay under DB cap."""
+    import json as _json
+
+    r = dict(result)
+    encoded = _json.dumps(r, ensure_ascii=False)
+    if len(encoded) <= _JOB_RESULT_CAP:
+        return encoded
+    # Progressive trim: output → stderr → trace
+    for field, limit in (("output", 4096), ("stderr", 1024), ("output", 1024), ("stderr", 256)):
+        raw = r.get(field)
+        if raw and len(str(raw)) > limit:
+            r[field] = str(raw)[:limit] + "\n…[truncated]"
+            r["_truncated"] = True
+    r.pop("trace", None)
+    return _json.dumps(r, ensure_ascii=False)[:_JOB_RESULT_CAP]
+
+
+def _run_skill_job_background(
+    job_id: str,
+    skill: str,
+    task: str,
+    timeout_sec: int,
+    auto_repair: bool,
+    rollback_on_fail: bool,
+    auto_install_deps: bool,
+    route_key: str,
+) -> None:
+    """Background worker: claim → run → complete/fail the async skill job."""
+    from skills.memory.job_queue import claim as _jq_claim
+    from skills.memory.job_queue import complete as _jq_complete
+    from skills.memory.job_queue import fail as _jq_fail
+    from skills.evolution.skill_genesis import run_skill_action
+
+    if not _jq_claim(job_id):
+        return  # already claimed by another thread or invalid id
+
+    try:
+        result = run_skill_action(
+            skill,
+            task,
+            timeout_sec=timeout_sec,
+            auto_repair=auto_repair,
+            rollback_on_fail=rollback_on_fail,
+            auto_install_deps=auto_install_deps,
+            route_key=route_key,
+        )
+        _jq_complete(job_id, _trim_skill_result_for_storage(result))
+    except Exception as exc:
+        _jq_fail(job_id, str(exc)[:2000])
 _SUMMARIZE_CB = {
     "consecutive_upstream_timeout": 0,
     "open_until": 0.0,
@@ -2152,7 +2208,11 @@ def api_acquire_skill():
 @app.route('/skills/run', methods=['POST'])
 @require_api_key
 def api_run_skill():
-    """Run generated/imported skill action.py."""
+    """Run generated/imported skill action.py.
+
+    Pass ``"async": true`` to enqueue the job and return 202 immediately.
+    Poll ``GET /jobs/<job_id>`` for the result.
+    """
     from skills.evolution.skill_genesis import run_skill_action
     data = request.get_json() or {}
     skill = data.get('skill', '')
@@ -2162,10 +2222,13 @@ def api_run_skill():
     rollback_on_fail = _to_bool(data.get('rollback_on_fail', True), True)
     auto_install_deps = _to_bool(data.get('auto_install_deps', True), True)
     route_key = data.get('route_key', '')
+    async_mode = _to_bool(data.get('async', False), False)
+
     if not task:
         return jsonify({"error": "Missing 'task' parameter"}), 400
     if not skill:
         return jsonify({"error": "Missing 'skill' parameter"}), 400
+
     tool_name = f"skill:{skill}"
     started = _start_tool_event(tool_name, {"task": task}, {"route": "skills_run"})
     allowed, decision = _check_tool_access(
@@ -2175,6 +2238,40 @@ def api_run_skill():
     )
     if not allowed:
         return _tool_denied_response(tool_name, started, decision, {"route": "skills_run"})
+
+    # ── Async path ────────────────────────────────────────────────────────────
+    if async_mode:
+        from skills.memory.job_queue import enqueue as _jq_enqueue
+        job_id = _jq_enqueue(
+            job_type="skill_run",
+            platform="api",
+            user_id=request.headers.get("X-Api-Key-Id", "api"),
+            role="operator",
+            user_text=f"{skill}:{task}",
+            chat_id="",
+            payload={
+                "skill": skill,
+                "task": task,
+                "timeout_sec": timeout_sec,
+                "auto_repair": auto_repair,
+                "rollback_on_fail": rollback_on_fail,
+                "auto_install_deps": auto_install_deps,
+                "route_key": route_key,
+            },
+        )
+        _INLINE_EXECUTOR.submit(
+            _run_skill_job_background,
+            job_id, skill, task, timeout_sec,
+            auto_repair, rollback_on_fail, auto_install_deps, route_key,
+        )
+        return jsonify({
+            "success": True,
+            "queued": True,
+            "job_id": job_id,
+            "poll_url": f"/jobs/{job_id}",
+        }), 202
+
+    # ── Sync path (unchanged) ─────────────────────────────────────────────────
     try:
         result = run_skill_action(
             skill,
@@ -2202,6 +2299,59 @@ def api_run_skill():
         metadata={"route": "skills_run"},
     )
     return jsonify(result), (200 if result.get("success") else 400)
+
+
+_JOB_ID_RE = re.compile(r'^[A-Za-z0-9_-]{8,80}$')
+
+
+@app.route('/jobs/<job_id>', methods=['GET'])
+@require_api_key
+def api_get_job(job_id: str):
+    """Poll the status of an async job submitted via POST /skills/run?async=true.
+
+    Returns:
+        202 — queued or running (poll again)
+        200 — done (``result`` contains the skill output)
+        400 — failed or abandoned
+        404 — unknown job_id
+        400 — invalid job_id format
+    """
+    if not _JOB_ID_RE.match(job_id):
+        return jsonify({"error": "invalid_job_id", "job_id": job_id}), 400
+
+    from skills.memory.job_queue import read as _jq_read
+    import json as _json
+
+    job = _jq_read(job_id)
+    if not job:
+        return jsonify({"error": "job_not_found", "job_id": job_id}), 404
+
+    status = job.get("status", "queued")
+    resp = {
+        "job_id": job_id,
+        "status": status,
+        "job_type": job.get("job_type"),
+        "created_at": job.get("created_at"),
+        "started_at": job.get("started_at"),
+        "finished_at": job.get("finished_at"),
+    }
+
+    if status == "done":
+        raw = job.get("result") or "{}"
+        try:
+            resp["result"] = _json.loads(raw) if isinstance(raw, str) else raw
+        except Exception:
+            resp["result"] = {"output": str(raw)}
+        resp["success"] = bool(resp["result"].get("success"))
+        return jsonify(resp), 200
+
+    if status in ("failed", "abandoned"):
+        resp["success"] = False
+        resp["error"] = job.get("error") or "unknown_error"
+        return jsonify(resp), 400
+
+    # queued or running
+    return jsonify(resp), 202
 
 
 @app.route('/skills/versions', methods=['POST'])

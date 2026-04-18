@@ -407,7 +407,7 @@ Key environment variables (set in `.env`):
 | **NAS** | SMB via LAN (192.168.1.3) with Tailscale fallback (100.111.10.126) |
 | **Calendar** | Google Calendar API (OAuth2, auto-refresh) |
 | **Security** | Iron Dome rule engine · tw_output_guard · trust-badge leak detector |
-| **Testing** | pytest (1 142 tests) |
+| **Testing** | pytest (1 336 tests) |
 
 ---
 
@@ -442,7 +442,7 @@ MAGI_v2/
 │   └── … (60+ skills total)
 ├── docs/
 │   └── soul/                   # SOUL_CASPER.md · SOUL_MELCHIOR.md · SOUL_BALTHASAR.md
-├── tests/                      # 1 142 pytest tests
+├── tests/                      # 1 336 pytest tests
 ├── cron_jobs.json              # Single source of truth for all scheduled jobs
 └── .env                        # Runtime configuration (not committed)
 ```
@@ -467,14 +467,20 @@ MAGI_v2/
 ## Testing
 
 ```bash
-# Full suite
-./venv/bin/python -m pytest -q          # 1 142 tests
+# Full suite (130 files · 1 336 tests · ~12 min)
+./venv/bin/python -m pytest -q
 
-# Targeted
-pytest tests/test_react_omlx.py         # ReAct + ensemble tools (15 tests)
-pytest tests/test_document_reader.py    # MarkItDown adapter (24 tests)
-pytest tests/test_knowledge_graph.py    # Graph-RAG (5 tests)
-pytest tests/test_judicial_web_search.py
+# By module
+pytest tests/test_routing_unified.py            # unified routing (38 tests)
+pytest tests/test_tools_api_async_jobs.py       # async job queue API (18 tests)
+pytest tests/test_react_omlx.py                 # ReAct + ensemble tools
+pytest tests/test_document_reader.py            # MarkItDown adapter (24 tests)
+pytest tests/test_translator_legal_termbase.py  # three-tier legal termbase (22 tests)
+pytest tests/test_translator_post_edit.py       # APE post-edit pipeline (22 tests)
+pytest tests/test_knowledge_graph.py            # Graph-RAG
+pytest tests/test_hallucination_regression.py   # hallucination guard (22 tests)
+pytest tests/test_laf_progress_helper.py        # LAF progress report helpers (16 tests)
+pytest tests/test_memory_policy.py              # memory write policy (20 tests)
 
 # Live smoke (requires running services)
 magi status
@@ -485,6 +491,23 @@ skills/laf-orchestrator/action.py --task self_test
 skills/file-review-orchestrator/action.py --task self_test
 skills/transcript-downloader/action.py --task self_test
 ```
+
+### Test Suite Coverage (130 files · 1 336 tests)
+
+| Category | Files | Tests | Key areas |
+|----------|-------|-------|-----------|
+| **Routing & dispatch** | 13 | 190 | Unified routing, skill contracts (market-briefing / trial-prep / contract-review), command dispatch, skill smoke |
+| **Apple platform** | 10 | 173 | Spotlight, Keychain, EventKit (calendar), CoreML classifier, NaturalLanguage NLP, Contacts, file monitor |
+| **Infrastructure** | 33 | 218 | Health probes, session/context management, audio pipeline, text processing, logging, packaging, entrypoints, security baseline (CORS / headers / cookies) |
+| **Documents & PDF** | 7 | 86 | MarkItDown adapter, PDF bridge (OCR + timeout recovery), pdf-namer (naming_validator, dynamic confidence), pdf-bookmarker (OLA threshold, Vision fallback) |
+| **Legal Aid (LAF)** | 11 | 81 | Progress report helpers, submit-pending token lifecycle, closing E2E mock, email classification, case category resolver, duplicate check |
+| **Config & runtime** | 21 | 80 | Runtime path resolution, modular config, model config, authz, provider adapters, job scheduling |
+| **Tools API** | 8 | 76 | Tool-first pipeline, async job queue (202/poll pattern), inference gateway routing, shortcut endpoints |
+| **Translation** | 5 | 65 | Three-tier legal termbase (MOJ SQLite / JSON / prompt), Apple Translation + APE post-edit validator, pipeline resilience, unified API |
+| **Memory system** | 8 | 58 | Memory write policy, grounding & query augmentation, Graph-RAG recall, false-memory regression, assistant-utterance promotion guard, provenance tracking |
+| **Verification & safety** | 6 | 49 | Hallucination regression (22 scenarios), answer verifier, authz gate, output guard (trust-badge leak), security baseline |
+| **Data & persistence** | 6 | 45 | Job queue (SQLite), embedding router, migration framework, DB helper, vector pipeline NLP |
+| **CI / packaging** | 2 | 29 | Hardcode checker, console-script targets |
 
 CI gate: `scripts/ci/check_hardcodes.py` — fails on any committed IP / credential.
 
