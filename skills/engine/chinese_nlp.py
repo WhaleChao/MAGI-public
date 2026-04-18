@@ -21,7 +21,7 @@ import re
 import subprocess
 import threading
 from pathlib import Path
-from typing import Iterable, List, Sequence
+from typing import Iterable, List, Optional, Sequence
 
 logger = logging.getLogger("chinese_nlp")
 
@@ -38,10 +38,48 @@ _segmenter = None
 _seg_lock = threading.Lock()
 _cached_stopwords = None
 
-# Limit concurrent sidecar subprocesses to avoid spawning hundreds of
-# chinese_nlp_sidecar.py processes when many threads call NLP simultaneously.
+# Global slot limit for chinese_nlp_sidecar.py across ALL processes (including
+# parallel pytest workers and Codex agent sessions).  threading.BoundedSemaphore
+# only protects within one process; we use a tmp-dir slot approach so that even
+# 200 parallel pytest subprocesses combined never exceed GLOBAL_MAX sidecars.
 _SIDECAR_MAX_CONCURRENT = int(os.environ.get("MAGI_PKUSEG_SIDECAR_MAX_CONCURRENT", "4") or "4")
+_SIDECAR_GLOBAL_MAX = int(os.environ.get("MAGI_PKUSEG_SIDECAR_GLOBAL_MAX", "4") or "4")
 _sidecar_sem = threading.BoundedSemaphore(_SIDECAR_MAX_CONCURRENT)
+_SLOT_DIR = Path("/tmp/magi_nlp_slots")
+
+
+def _acquire_global_slot(timeout_sec: float = 2.0) -> Optional[Path]:
+    """Atomically claim a slot file under /tmp/magi_nlp_slots/.
+    Returns the slot Path on success, None if global cap already reached."""
+    import time as _time
+    try:
+        _SLOT_DIR.mkdir(parents=True, exist_ok=True)
+        # Purge stale slots (older than sidecar timeout * 3)
+        stale_age = _SIDECAR_TIMEOUT_SEC * 3
+        now = _time.time()
+        for p in list(_SLOT_DIR.glob("*.slot")):
+            try:
+                if now - p.stat().st_mtime > stale_age:
+                    p.unlink(missing_ok=True)
+            except Exception:
+                pass
+        # Count live slots
+        live = len(list(_SLOT_DIR.glob("*.slot")))
+        if live >= _SIDECAR_GLOBAL_MAX:
+            return None
+        slot = _SLOT_DIR / f"{os.getpid()}_{threading.get_ident()}_{int(now*1000)}.slot"
+        slot.touch()
+        return slot
+    except Exception:
+        return None
+
+
+def _release_global_slot(slot: Optional[Path]) -> None:
+    if slot:
+        try:
+            slot.unlink(missing_ok=True)
+        except Exception:
+            pass
 
 
 def _looks_chinese(text: str) -> bool:
@@ -104,15 +142,21 @@ class _SidecarPKUSegSegmenter:
     def _run(self, texts: Sequence[str]) -> List[List[str]]:
         if not texts:
             return []
+        slot = _acquire_global_slot()
+        if slot is None:
+            raise RuntimeError("sidecar global cap reached — falling back to regex")
         with _sidecar_sem:
-            proc = subprocess.run(
-                [self._python_path, str(_SIDECAR_SCRIPT)],
-                input=json.dumps(list(texts), ensure_ascii=False),
-                text=True,
-                capture_output=True,
-                timeout=max(5, _SIDECAR_TIMEOUT_SEC),
-                check=False,
-            )
+            try:
+                proc = subprocess.run(
+                    [self._python_path, str(_SIDECAR_SCRIPT)],
+                    input=json.dumps(list(texts), ensure_ascii=False),
+                    text=True,
+                    capture_output=True,
+                    timeout=max(5, _SIDECAR_TIMEOUT_SEC),
+                    check=False,
+                )
+            finally:
+                _release_global_slot(slot)
         if proc.returncode != 0:
             stderr = (proc.stderr or "").strip()
             raise RuntimeError(stderr or "sidecar returned non-zero exit status")
