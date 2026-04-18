@@ -1877,9 +1877,7 @@ class LAFWebAutomation:
             chrome_options.binary_location = binary_path
         
         try:
-            # Chrome 147 headless session 不穩定（ChromeDriver 147 regression）
-            # 強制用 ChromeDriver 146 避免 session crash
-            _FORCE_CD_VERSION = os.environ.get("MAGI_CHROMEDRIVER_VERSION", "146.0.7680.80").strip()
+            _FORCE_CD_VERSION = os.environ.get("MAGI_CHROMEDRIVER_VERSION", "147.0.7727.57").strip()
             if importlib.util.find_spec("webdriver_manager") is not None:
                 from webdriver_manager.chrome import ChromeDriverManager
                 from selenium.webdriver.chrome.service import Service

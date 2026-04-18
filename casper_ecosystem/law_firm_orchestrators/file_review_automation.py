@@ -409,7 +409,7 @@ class LawyerPortalSSO:
             from selenium.webdriver.chrome.service import Service
             from webdriver_manager.chrome import ChromeDriverManager
 
-            forced_version = os.environ.get("MAGI_CHROMEDRIVER_VERSION", "146.0.7680.80").strip()
+            forced_version = os.environ.get("MAGI_CHROMEDRIVER_VERSION", "147.0.7727.57").strip()
             try:
                 service = Service(ChromeDriverManager(driver_version=forced_version).install())
                 return webdriver.Chrome(service=service, options=chrome_options)
