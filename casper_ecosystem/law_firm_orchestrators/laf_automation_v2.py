@@ -3449,7 +3449,7 @@ return (() => {
             try:
                 snap = self.driver.execute_script(
                         """
-                        const box = document.querySelector('#uploadDocnmsY');
+                        const box = document.querySelector('#uploadDocnmsY') || document.querySelector('#uploadDocnms');
                         if (!box) return {rows: 0, sig: ""};
                         const rows = Array.from(box.querySelectorAll('tr'));
                         if (!rows.length) return {rows: 0, sig: ""};
@@ -3552,7 +3552,7 @@ return (() => {
                 try:
                     snap = self.driver.execute_script(
                         """
-                        const box = document.querySelector('#uploadDocnmsY');
+                        const box = document.querySelector('#uploadDocnmsY') || document.querySelector('#uploadDocnms');
                         let rows = 0;
                         const sigs = [];
                         if (box) {
@@ -3564,6 +3564,13 @@ return (() => {
                               const tds = r.querySelectorAll('td');
                               const text = Array.from(tds).map(td => (td.textContent || '').trim()).join('|');
                               if (text) sigs.push(text);
+                            }
+                          }
+                          // Fee-style: container may show entries as plain rows without download links
+                          if (rows === 0) {
+                            for (const r of trs) {
+                              const txt = (r.innerText || '').trim();
+                              if (txt) { rows += 1; sigs.push(txt); }
                             }
                           }
                         }
@@ -3745,15 +3752,27 @@ return (() => {
                 _select_upload_doc_type(p)
 
                 # 3) Snapshot current file list (for _wait_upload_settled comparison)
+                # LAF portal uses different container IDs depending on workflow:
+                #  - #uploadDocnmsY: go_live/condition/closing/etc.
+                #  - #uploadDocnms:  fee/other workflows
+                # Query both to be safe.
                 _before_snap = self.driver.execute_script(
                     """
-                    const box = document.querySelector('#uploadDocnmsY');
+                    const box = document.querySelector('#uploadDocnmsY') || document.querySelector('#uploadDocnms');
                     let rows = 0; const sigs = [];
                     if (box) {
                         const trs = Array.from(box.querySelectorAll('tr'));
                         for (const r of trs) {
                             const dl = r.querySelector("a[href*='downloadFile'], a[href*='viewUploadFileDetail']");
                             if (dl) { rows++; sigs.push(Array.from(r.querySelectorAll('td')).map(td => (td.textContent||'').trim()).join('|')); }
+                        }
+                        // Fee-style container may just list text rows without download links;
+                        // accept any row with text as a signature so we can detect change.
+                        if (rows === 0) {
+                            for (const r of trs) {
+                                const txt = (r.innerText || '').trim();
+                                if (txt) { rows++; sigs.push(txt); }
+                            }
                         }
                     }
                     return {"rows": rows, "sig": sigs.join('||')};
@@ -5586,24 +5605,65 @@ return null;
         time.sleep(1.0)
 
         btn = None
-        for token in (meta.get("report_onclick") or []):
-            if not token:
-                continue
-            try:
-                if applyno:
-                    xp = (
-                        f"//*[( @onclick and contains(@onclick, {json.dumps(token)}) and contains(@onclick, {json.dumps(applyno)}) ) "
-                        f"or ( @href and contains(@href, {json.dumps(token)}) and contains(@href, {json.dumps(applyno)}) )]"
-                    )
-                    els = self.driver.find_elements(By.XPATH, xp)
-                    if els:
-                        btn = els[0]
-                if not btn:
-                    btn = self._find_clickable_by_onclick(token)
-            except Exception:
-                btn = None
-            if btn:
-                break
+        # Strategy 1: JS-based search (most reliable with Playwright) — iterate
+        # DOM directly and return the actual <input type="button"> / <a> element.
+        # This avoids Playwright XPath engine quirks with @onclick attribute matching.
+        try:
+            tokens_all = [t for t in (meta.get("report_onclick") or []) if t]
+            # IMPORTANT: execute_handle via evaluate can serialize an Element, but
+            # to get a usable ElementHandle we must use evaluate_handle (not evaluate).
+            pw_page = getattr(self.driver, "_page", None)
+            if pw_page is not None and tokens_all:
+                frames_to_try = [pw_page] + [f for f in pw_page.frames if f != pw_page.main_frame]
+                for _fr in frames_to_try:
+                    try:
+                        handle = _fr.evaluate_handle(
+                            """(args) => {
+                                const tokens = args.tokens || [];
+                                const applyno = args.applyno || '';
+                                const all = document.querySelectorAll('input[type="button"], input[type="submit"], a, button');
+                                for (const el of all) {
+                                    const oc = el.getAttribute('onclick') || '';
+                                    const hf = el.getAttribute('href') || '';
+                                    const attrs = oc + ' ' + hf;
+                                    const hit_token = tokens.some(t => attrs.includes(t));
+                                    const hit_apply = applyno ? attrs.includes(applyno) : true;
+                                    if (hit_token && hit_apply) return el;
+                                }
+                                return null;
+                            }""",
+                            {"tokens": tokens_all, "applyno": applyno or ""},
+                        )
+                        as_el = handle.as_element()
+                        if as_el is not None:
+                            btn = PlaywrightElementWrapper(as_el, self.driver)
+                            break
+                    except Exception as _e:
+                        logging.getLogger(__name__).debug("js-search frame err: %s", _e)
+                        continue
+        except Exception as _e:
+            logging.getLogger(__name__).debug("js-search outer err: %s", _e)
+
+        # Strategy 2: legacy XPath fallback (kept for Selenium path + defense)
+        if not btn:
+            for token in (meta.get("report_onclick") or []):
+                if not token:
+                    continue
+                try:
+                    if applyno:
+                        xp = (
+                            f"//*[( @onclick and contains(@onclick, {json.dumps(token)}) and contains(@onclick, {json.dumps(applyno)}) ) "
+                            f"or ( @href and contains(@href, {json.dumps(token)}) and contains(@href, {json.dumps(applyno)}) )]"
+                        )
+                        els = self.driver.find_elements(By.XPATH, xp)
+                        if els:
+                            btn = els[0]
+                    if not btn:
+                        btn = self._find_clickable_by_onclick(token)
+                except Exception:
+                    btn = None
+                if btn:
+                    break
         if (not btn) and reqnm:
             btn = self._find_report_button_for_person(reqnm, meta.get("report_onclick") or [])
         if not btn:
@@ -5627,8 +5687,14 @@ return null;
         except Exception:
             _pre_click_url = ""
 
-        # Extract onclick attribute (if any) and execute directly — Playwright's
-        # click() sometimes doesn't fire legacy onclick handlers like toReport(...).
+        # LAF 回報 button is typically <input type="button" onclick="javascript:toReport(...)">.
+        # Playwright's ElementHandle.click() dispatches a synthetic click which
+        # does NOT fire legacy onclick="javascript:..." handlers reliably. We MUST
+        # extract the onclick attribute and execute it directly.
+        # LAF 回報 button is typically <input type="button" onclick="javascript:toReport(...)">.
+        # Playwright's ElementHandle.click() dispatches a synthetic click which
+        # does NOT fire legacy onclick="javascript:..." handlers reliably. Strategy:
+        # extract the onclick attribute and execute it directly via evaluate.
         _onclick_js = ""
         try:
             _btn_info = self.driver.execute_script(
@@ -5643,20 +5709,26 @@ return null;
             _onclick_js = ""
 
         _clicked = False
+        # Strategy A: execute onclick JS directly (most reliable for legacy onclick handlers)
         if _onclick_js and ("(" in _onclick_js):
             try:
                 self.driver.execute_script(_onclick_js)
                 _clicked = True
             except Exception:
                 pass
+        # Strategy B: invoke element.click() via JS (triggers native click with onclick)
+        if not _clicked:
+            try:
+                self.driver.execute_script("arguments[0].click();", btn)
+                _clicked = True
+            except Exception:
+                pass
+        # Strategy C: Playwright ElementHandle.click() (unreliable for legacy onclick)
         if not _clicked:
             try:
                 btn.click()
             except Exception:
-                try:
-                    self.driver.execute_script("arguments[0].click();", btn)
-                except Exception:
-                    pass
+                pass
 
         token = (meta.get("expected_token") or "").strip()
         if token:
