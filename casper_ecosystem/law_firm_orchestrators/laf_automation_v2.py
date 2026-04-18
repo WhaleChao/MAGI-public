@@ -3295,25 +3295,47 @@ return (() => {
             return result
 
         def _upload_panel_is_open() -> bool:
-            """Check if upload panel/modal has rendered a file input anywhere."""
-            sels = ["input[type='file'][name='uploadDoc']", "input[name='uploadDoc']", "input[type='file']"]
-            for sel in sels:
-                try:
-                    els = self.driver.find_elements(By.CSS_SELECTOR, sel)
-                    if els:
-                        return True
-                except Exception:
-                    continue
+            """Check if upload modal (#dialog-form) is actually VISIBLE (not just in DOM)."""
+            try:
+                result = self.driver.execute_script(
+                    """
+                    var modal = document.querySelector('#dialog-form');
+                    if (modal) {
+                        var style = window.getComputedStyle(modal);
+                        if (style.display !== 'none' && modal.offsetHeight > 0) return true;
+                        if (modal.classList.contains('in') || modal.classList.contains('show')) return true;
+                        if (modal.style.display && modal.style.display !== 'none') return true;
+                    }
+                    var inputs = Array.prototype.slice.call(
+                        document.querySelectorAll("input[type='file'][name='uploadDoc']"));
+                    return inputs.some(function(el) { return el.offsetParent !== null; });
+                    """
+                )
+                if bool(result):
+                    return True
+            except Exception:
+                pass
             try:
                 pw_page = getattr(self.driver, "_page", None)
                 if pw_page is not None:
                     for fr in pw_page.frames:
-                        for sel in sels:
-                            try:
-                                if fr.query_selector(sel):
-                                    return True
-                            except Exception:
-                                continue
+                        try:
+                            r = fr.evaluate(
+                                """() => {
+                                    var modal = document.querySelector('#dialog-form');
+                                    if (modal) {
+                                        var s = window.getComputedStyle(modal);
+                                        if (s.display !== 'none' && modal.offsetHeight > 0) return true;
+                                    }
+                                    var inputs = Array.prototype.slice.call(
+                                        document.querySelectorAll("input[type='file'][name='uploadDoc']"));
+                                    return inputs.some(function(el) { return el.offsetParent !== null; });
+                                }"""
+                            )
+                            if r:
+                                return True
+                        except Exception:
+                            continue
             except Exception:
                 pass
             return False

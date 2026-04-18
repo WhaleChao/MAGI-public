@@ -3254,7 +3254,7 @@ class FileReviewManager:
                     return False
 
                 try:
-                    WebDriverWait(self.driver, 5).until(EC.new_window_is_opened(original_windows))
+                    WebDriverWait(self.driver, 12).until(EC.new_window_is_opened(original_windows))
                     _new_set = set(self.driver.window_handles) - original_windows
                     if _new_set:
                         new_window = _new_set.pop()
@@ -3262,8 +3262,23 @@ class FileReviewManager:
                         self.log("  ⚠️ 未偵測到新視窗")
                         return False
                 except TimeoutException:
-                    self.log("  ⚠️ 等待新視窗逾時")
-                    return False
+                    # Fallback: poll window_handles directly (works for Playwright
+                    # where popup registration may lag behind the EC check)
+                    _new_set = set(self.driver.window_handles) - original_windows
+                    if _new_set:
+                        new_window = _new_set.pop()
+                        self.log("  ✓ 延遲偵測到新視窗")
+                    else:
+                        # Also check if same-tab navigation already reached OLA
+                        try:
+                            _cur = (self.driver.current_url or "").lower()
+                        except Exception:
+                            _cur = ""
+                        if any(k in _cur for k in ["ola.", "eefile.", "judicial.gov.tw/ola"]):
+                            self.log("  ✓ 頁面已直接導航到閱卷系統 (same-tab)")
+                            return True
+                        self.log("  ⚠️ 等待新視窗逾時")
+                        return False
 
             # 2. 切換到新視窗並關閉舊視窗（Playwright / Selenium 共用路徑）
             old_window = next(iter(original_windows), None)
