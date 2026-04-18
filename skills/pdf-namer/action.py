@@ -158,6 +158,56 @@ CASE_ROOT = os.environ.get(
     "MAGI_CASE_ROOT",
     _CASE_ROOTS[0] if _CASE_ROOTS else (_FALLBACK_CASE_ROOTS[0] if _FALLBACK_CASE_ROOTS else str(Path.home() / "Library" / "CloudStorage" / "SynologyDrive-homes" / "01_案件")),
 )
+
+# ── Synology Drive local path candidates (for SMB fallback) ──
+_HOME = Path.home()
+_SYNOLOGY_LOCAL_SHARE_CANDIDATES = [
+    str(_HOME / "Library/CloudStorage/SynologyDrive-homes"),
+    str(_HOME / "SynologyDrive/homes"),
+    str(_HOME / "SynologyDrive"),
+]
+# NAS root prefixes that map to the user's home share
+_NAS_HOME_SHARE_PREFIXES = [
+    str(_HOME / ".magi_mounts/homes/lumi63181107"),
+    str(_HOME / ".magi_mounts/homes"),
+]
+for _vol_base in ("homes", "homes-1", "homes-2", "homes-3"):
+    _NAS_HOME_SHARE_PREFIXES.append(f"/Volumes/{_vol_base}/lumi63181107")
+    _NAS_HOME_SHARE_PREFIXES.append(f"/Volumes/{_vol_base}")
+
+
+def _resolve_pdf_with_synology_fallback(pdf_path: str) -> str:
+    """If pdf_path is inaccessible, try the equivalent Synology Drive local path.
+
+    Maps SMB/NAS prefixes (e.g. /Volumes/homes-1/lumi63181107/...) to local
+    Synology Drive paths (~/Library/CloudStorage/SynologyDrive-homes/...).
+    Returns the best accessible path, or the original path if none found.
+    """
+    if os.path.exists(pdf_path):
+        return pdf_path
+    # Find which NAS prefix matches this path
+    rel = None
+    for prefix in _NAS_HOME_SHARE_PREFIXES:
+        norm_prefix = prefix.rstrip("/") + "/"
+        norm_path = pdf_path if pdf_path.endswith("/") else pdf_path
+        if norm_path.startswith(norm_prefix):
+            rel = norm_path[len(norm_prefix):]
+            break
+        # also try without trailing slash
+        if norm_path == prefix:
+            rel = ""
+            break
+    if rel is None:
+        return pdf_path
+    # Try each local Synology Drive candidate
+    for local_root in _SYNOLOGY_LOCAL_SHARE_CANDIDATES:
+        candidate = os.path.join(local_root, rel) if rel else local_root
+        if os.path.exists(candidate):
+            logger.info("SMB 路徑不可達，改用 Synology Drive 本機路徑: %s → %s", pdf_path, candidate)
+            return candidate
+    return pdf_path
+
+
 SKILL_DIR = os.path.dirname(os.path.abspath(__file__))
 LEARNED_RULES_PATH = os.path.join(SKILL_DIR, "_learned_filename_rules.json")
 CORRECTIONS_PATH = os.path.join(SKILL_DIR, "_corrections.json")
@@ -1292,11 +1342,48 @@ def _pick_best_source(field_name, sources):
     """Phase 2D: confidence-weighted field merge.
     sources = [(value, confidence, source_name), ...]
     Returns (best_value, best_confidence, best_source_name).
+    Empty/blank strings are excluded — a non-empty 0.60 beats an empty 0.90.
+    Tie-break on confidence: vision > ocr > learn.
     """
-    candidates = [(v, c, n) for v, c, n in sources if v]
-    if not candidates:
-        return "", 0.0, ""
-    return max(candidates, key=lambda x: x[1])
+    _SOURCE_PRIORITY = {"vision": 1, "ocr": 2, "learn": 3}
+    filtered = [(v, c, src) for (v, c, src) in sources if v and str(v).strip()]
+    if not filtered:
+        return ("", 0.0, "none")
+    return max(filtered, key=lambda x: (x[1], -_SOURCE_PRIORITY.get(x[2], 99)))
+
+
+def _compute_dynamic_confidence(value, base_conf, field_name, source):
+    # type: (str, float, str, str) -> float
+    """Apply quality discounts to base confidence based on field-specific rules.
+
+    Discounts:
+      court:    must contain 地方法院/高等法院/最高法院/檢察署, else × 0.5
+      case_no:  must match legal case number pattern, else × 0.3
+      date:     must parse as valid YYYYMMDD, else × 0.2
+      party:    must not contain obvious garbled chars, else × 0.5
+    """
+    import re as _re
+    if not value or not str(value).strip():
+        return 0.0
+    v = str(value).strip()
+    if field_name == "court":
+        if not _re.search(r"(地方法院|高等法院|最高法院|檢察署|地院|高院)", v):
+            base_conf *= 0.5
+    elif field_name in ("case_no", "case_number"):
+        if not _re.search(r"\d+年?.?\w+字第?\d+號?", v):
+            base_conf *= 0.3
+    elif field_name == "date":
+        try:
+            y, m, d = int(v[:4]), int(v[4:6]), int(v[6:8])
+            if not (2000 <= y <= 2099 and 1 <= m <= 12 and 1 <= d <= 31):
+                base_conf *= 0.2
+        except (ValueError, IndexError):
+            base_conf *= 0.2
+    elif field_name == "party":
+        garbled = sum(1 for c in v if ord(c) > 0xFFFF or (0xD800 <= ord(c) <= 0xDFFF))
+        if garbled > 2:
+            base_conf *= 0.5
+    return base_conf
 
 
 def generate_name_proposal(pdf_path: str, case_name: str = None, return_structured: bool = False):
@@ -1305,11 +1392,13 @@ def generate_name_proposal(pdf_path: str, case_name: str = None, return_structur
 
     Court docs: Page 1-2 = envelope, Page 3+ = actual content.
     Uses oMLX Vision on page 3 as primary, OCR as supplement for date.
+    Falls back to Synology Drive local path when SMB/NAS path is inaccessible.
 
     Args:
         return_structured: If True, returns dict with all extracted fields + filename.
                           If False, returns filename string (backward compat).
     """
+    pdf_path = _resolve_pdf_with_synology_fallback(pdf_path)
     empty_result = {"filename": None, "date": None, "court": "", "case_number": "",
                     "doc_type": "", "party": "", "date_method": ""}
 
@@ -1668,38 +1757,56 @@ def generate_name_proposal(pdf_path: str, case_name: str = None, return_structur
             date_method = "ocr"
         else:
             date_method = "vision"
-    # Phase 2D: confidence-weighted merge (vision=0.90, ocr=0.70)
+    # Phase 2D: confidence-weighted merge with dynamic quality discounts
+    _v_court = vision_info.get("court", "") or ""
+    _v_case_no = vision_info.get("case_number", "") or ""
+    _v_type = vision_info.get("doc_type", "") or ""
+    _v_party = vision_info.get("party", "") or ""
     found_court, _, _ = _pick_best_source("court", [
-        (vision_info.get("court", ""), 0.90, "vision"),
-        (ocr_court, 0.70, "ocr"),
+        (_v_court, _compute_dynamic_confidence(_v_court, 0.90, "court", "vision"), "vision"),
+        (ocr_court, _compute_dynamic_confidence(ocr_court, 0.70, "court", "ocr"), "ocr"),
     ])
     found_case_no, _, _ = _pick_best_source("case_number", [
-        (vision_info.get("case_number", ""), 0.90, "vision"),
-        (ocr_case_no, 0.70, "ocr"),
+        (_v_case_no, _compute_dynamic_confidence(_v_case_no, 0.90, "case_no", "vision"), "vision"),
+        (ocr_case_no, _compute_dynamic_confidence(ocr_case_no, 0.70, "case_no", "ocr"), "ocr"),
     ])
     found_type, _, _ = _pick_best_source("doc_type", [
-        (vision_info.get("doc_type", ""), 0.90, "vision"),
+        (_v_type, 0.90, "vision"),
         (ocr_type, 0.70, "ocr"),
     ])
     found_party, _, _ = _pick_best_source("party", [
-        (vision_info.get("party", ""), 0.90, "vision"),
-        (ocr_name, 0.70, "ocr"),
+        (_v_party, _compute_dynamic_confidence(_v_party, 0.90, "party", "vision"), "vision"),
+        (ocr_name, _compute_dynamic_confidence(ocr_name, 0.70, "party", "ocr"), "ocr"),
     ])
     found_doc_subtype = vision_info.get("doc_subtype", "") or ""
-    found_summary = vision_info.get("summary", "") or ""
+    _vision_summary = vision_info.get("summary", "") or ""
     found_case_type = vision_info.get("case_type", "") or ""  # 刑事/民事/行政
 
-    # ── Step 3b: Extract summary from ALL pages' native text (even garbled) ──
-    # Garbled text still contains recognizable keywords for 主文 extraction
-    if not found_summary and found_type:
+    # ── Step 3b: Extract summary from ALL pages' native text + confidence merge ──
+    # OCR summary (0.60) used as fallback; vision summary (0.90) wins if non-empty.
+    _ocr_summary = ""
+    if found_type:
         all_pages_text = ""
         for pi in range(min(doc.page_count, 6)):
             all_pages_text += (doc[pi].get_text() or "") + "\n"
         if all_pages_text.strip():
-            all_summary = _extract_summary_from_ocr(all_pages_text, found_type)
-            if all_summary:
-                found_summary = all_summary
-                logger.info("Summary from native text (all pages): %s", found_summary[:60])
+            _ocr_summary = _extract_summary_from_ocr(all_pages_text, found_type) or ""
+    found_summary, _, _sum_src = _pick_best_source("summary", [
+        (_vision_summary, 0.90, "vision"),
+        (_ocr_summary, 0.60, "ocr"),
+    ])
+    if found_summary:
+        logger.info("Summary source=%s: %s", _sum_src, found_summary[:60])
+
+    # ── Step 3c: Extract legal action fields (holding/correction_order/deadline) ──
+    _ocr_legal = _extract_legal_fields_from_ocr(
+        "\n".join(doc[pi].get_text() or "" for pi in range(min(doc.page_count, 6))),
+        found_type,
+    )
+    found_holding = vision_info.get("holding", "") or _ocr_legal.get("holding", "")
+    found_correction_order = vision_info.get("correction_order", "") or _ocr_legal.get("correction_order", "")
+    found_deadline = vision_info.get("deadline") or _ocr_legal.get("deadline")
+    found_deadline_type = vision_info.get("deadline_type", "") or _ocr_legal.get("deadline_type", "")
 
     # ── Step 4a: Targeted stamp-area vision OCR ──
     # When full-page vision missed the stamp, crop stamp regions and OCR them.
@@ -1920,6 +2027,29 @@ def generate_name_proposal(pdf_path: str, case_name: str = None, return_structur
         summary=found_summary,
         case_type_hint=found_case_type,
     )
+    # Attach extracted legal action fields to result for downstream use
+    if found_holding:
+        result["holding"] = found_holding
+    if found_correction_order:
+        result["correction_order"] = found_correction_order
+    if found_deadline is not None:
+        result["deadline"] = found_deadline
+    if found_deadline_type:
+        result["deadline_type"] = found_deadline_type
+
+    # Format guard: validate before returning (non-blocking)
+    try:
+        from skills.pdf_namer.naming_validator import validate_filename as _vf
+    except ImportError:
+        try:
+            from naming_validator import validate_filename as _vf
+        except ImportError:
+            _vf = None
+    if _vf and result.get("filename"):
+        _valid, _warns = _vf(result["filename"])
+        if _warns:
+            logger.warning("pdf-namer format guard: %s → %s", result["filename"], _warns)
+            result["warnings"] = _warns
 
     if return_structured:
         return result
@@ -2016,6 +2146,73 @@ def _extract_summary_from_ocr(ocr_text: str, doc_type: str = "") -> str:
             return m.group(1)
 
     return ""
+
+
+def _extract_legal_fields_from_ocr(ocr_text: str, doc_type: str = "") -> dict:
+    """Extract structured legal fields from OCR text via regex.
+
+    Returns dict with keys: holding, correction_order, deadline, deadline_type.
+    All fields default to "" or None if not found.
+    """
+    text = ocr_text or ""
+    dt = doc_type or ""
+    fields = {"holding": "", "correction_order": "", "deadline": None, "deadline_type": ""}
+
+    # Extract holding (判決主文 first line)
+    if "判決" in dt or "裁定" in dt:
+        m = re.search(r"主\s*文[：:\s]*\n?(.*?)(?:\n|。|$)", text, re.DOTALL)
+        if m:
+            raw = re.sub(r"\s+", "", m.group(1).strip())[:30]
+            if raw and len(raw) > 3:
+                fields["holding"] = raw
+
+    # Extract correction_order + deadline
+    _DEADLINE_PATTERNS = [
+        (r"應於本裁定送達後\s*(\d+)\s*日內\s*(補正)", "補正"),
+        (r"(?:應於|限於)\s*文到\s*(\d+)\s*日內\s*(補正)", "補正"),
+        (r"命.+?於\s*(\d+)\s*日內\s*(補正)", "補正"),
+        (r"應於\s*(\d+)\s*日內\s*(補正)", "補正"),
+        (r"上訴期間.*?送達.*?(\d+)\s*日內", None),
+        (r"如不服本判決.+?(\d+)\s*日內.+?(上訴)", "上訴"),
+        (r"應於判決送達後\s*(\d+)\s*日內提起\s*(上訴)", "上訴"),
+        (r"應於文到\s*(\d+)\s*日內\s*(陳述意見)", "陳述意見"),
+        (r"限於\s*(\d+)\s*日內.+?(陳述意見)", "陳述意見"),
+        (r"應於文到\s*(\d+)\s*日內繳納.+(規費|裁判費)", "繳費"),
+        (r"限\s*(\d+)\s*日內.+?繳納.+?(裁判費|規費)", "繳費"),
+        (r"應於\s*(\d+)\s*日內.+(閱卷)", "閱卷期限"),
+        (r"閱卷期限.+?(\d+)\s*日", None),
+    ]
+    for pat, dtype in _DEADLINE_PATTERNS:
+        pm = re.search(pat, text)
+        if pm:
+            groups = pm.groups()
+            days_str = groups[0] if groups else None
+            if days_str and days_str.isdigit():
+                fields["deadline"] = int(days_str)
+            if dtype:
+                fields["deadline_type"] = dtype
+                # Build correction_order from matched text
+                snippet = pm.group(0)[:20]
+                fields["correction_order"] = snippet
+            break
+
+    # Extract correction_order from 函文 主旨 if not yet set
+    if not fields["correction_order"] and ("函" in dt or "通知" in dt):
+        m2 = re.search(r"(?:應於|文到)\s*(\d+)\s*日\s*內\s*([\u4e00-\u9fff]+)", text)
+        if m2:
+            fields["correction_order"] = f"應於文到{m2.group(1)}日內{m2.group(2)[:10]}"
+            if not fields["deadline"]:
+                fields["deadline"] = int(m2.group(1))
+            if not fields["deadline_type"]:
+                act = m2.group(2)
+                if "補正" in act:
+                    fields["deadline_type"] = "補正"
+                elif "陳述意見" in act:
+                    fields["deadline_type"] = "陳述意見"
+                else:
+                    fields["deadline_type"] = act[:4]
+
+    return fields
 
 
 _VISION_OCR_BIN = os.path.expanduser("~/Library/Application Support/MAGI/bin/vision_ocr")
@@ -2188,7 +2385,7 @@ def _ocr_consensus(page, pdf_path: str = "", page_idx: int = 0) -> str:
             try:
                 results[name] = fut.result(timeout=30) or ""
             except Exception as exc:
-                logger.debug("[ocr-consensus] %s failed: %s", name, exc)
+                logger.warning("[ocr-consensus] %s failed: %s", name, exc)
                 results[name] = ""
 
     scores = {name: _score_ocr_text(text) for name, text in results.items()}
@@ -2205,7 +2402,8 @@ def _ocr_consensus(page, pdf_path: str = "", page_idx: int = 0) -> str:
             return _ocr_page_rapid(page)
         return ""
 
-    logger.info("[ocr-consensus] winner=%s score=%.3f len=%d", best_engine, scores[best_engine], len(best_text))
+    engines_used = [k for k, v in results.items() if v]
+    logger.info("ocr_consensus engines=%s winner=%s score=%.3f", engines_used, best_engine, scores[best_engine])
     return best_text
 
 
@@ -2271,20 +2469,33 @@ def _glm_ocr_page(page, dpi: int = 200) -> str:
         return ""
 
 
+def _is_omlx_port_up(port: int = 8080, timeout: float = 0.5) -> bool:
+    """Fast socket probe — returns True if oMLX is listening on the given port."""
+    import socket
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
 def _analyze_ocr_text(ocr_text: str) -> dict:
-    """Stage 2 only: Use Gemma 4 to analyze OCR text, with regex fallback.
-    Separated from OCR so batch processing can analyze all texts at once
-    without model switching."""
+    """Stage 2 only: Use Gemma E4B (oMLX port 8080) to analyze OCR text, regex fallback.
+    Probes port availability first — skips LLM immediately if oMLX is offline."""
     if not ocr_text or len(ocr_text.strip()) < 10:
         return {}
 
-    # Try Gemma 4 first
-    try:
-        from skills.bridge import melchior_client as _mc
-        _chat_fn = getattr(_mc, "_chat_omlx", None)
-        result = _gemma4_analyze_ocr_text(ocr_text, _chat_fn)
-    except Exception:
-        result = {}
+    # Probe port before attempting LLM call to avoid 60s timeout when oMLX is offline
+    result = {}
+    if _is_omlx_port_up(8080):
+        try:
+            from skills.bridge import melchior_client as _mc
+            _chat_fn = getattr(_mc, "_chat_omlx", None)
+            result = _gemma4_analyze_ocr_text(ocr_text, _chat_fn)
+        except Exception:
+            result = {}
+    else:
+        logger.info("oMLX port 8080 offline — skipping Gemma E4B, using regex fallback")
 
     # Regex fallback for missing fields
     if not result.get("court") and not result.get("case_number"):
@@ -2329,21 +2540,50 @@ def _analyze_ocr_text(ocr_text: str) -> dict:
 
 
 def _vision_analyze_for_naming(content_page) -> dict:
-    """Analyze a page using two-stage pipeline: GLM-OCR → Gemma 4.
-    For single-file mode. Batch mode uses _glm_ocr_page + _analyze_ocr_text directly.
+    """Analyze a page using two-stage pipeline: OCR → Gemma E4B (oMLX).
+
+    Stage 1 OCR priority (no port 8080 needed):
+      1. macOS Vision (vision_ocr binary) — best quality for printed Traditional Chinese
+      2. RapidOCR                          — fast local fallback
+      3. oMLX port 8080 (legacy GLM path) — last resort when local engines unavailable
+
+    Stage 2: Gemma E4B text LLM (oMLX port 8080) with regex fallback when offline.
+    Garbled OCR text (simplified Chinese artifacts, kana noise) is rejected early.
     """
     if os.environ.get("MAGI_PDF_NAMER_USE_VISION", "1").strip() in {"0", "false", "no", "off"}:
         return {}
 
     try:
-        # Stage 1: GLM-OCR
-        ocr_text = _glm_ocr_page(content_page, dpi=200)
+        # Stage 1: OCR — prefer local engines, avoid port 8080 where possible
+        ocr_text = ""
+
+        # 1a. macOS Vision (best for printed Traditional Chinese)
+        _pdf_path = getattr(getattr(content_page, "parent", None), "name", "") or ""
+        _page_num = getattr(content_page, "number", 0)
+        if _pdf_path and os.path.exists(_VISION_OCR_BIN):
+            ocr_text = _macos_vision_ocr_page(_pdf_path, _page_num)
+
+        # 1b. RapidOCR fallback
+        if not ocr_text and HAS_OCR:
+            ocr_text = _ocr_page_rapid(content_page) or ""
+
+        # 1c. oMLX port 8080 (legacy path, last resort — requires oMLX running)
+        if not ocr_text and _is_omlx_port_up(8080):
+            ocr_text = _glm_ocr_page(content_page, dpi=200)
+
         if not ocr_text:
             logger.info("Vision OCR: no text from page.")
             return {}
+
+        # Reject garbled text (simplified Chinese OCR artifacts, kana noise, etc.)
+        # — prevents garbage doc_subtype/party from polluting the merged result
+        if _is_garbled_text(ocr_text):
+            logger.info("Vision OCR: garbled text detected (%d chars), skipping page.", len(ocr_text))
+            return {}
+
         logger.info("Vision OCR transcription (%d chars): %s", len(ocr_text), ocr_text[:200])
 
-        # Stage 2: Analysis (Gemma 4 + regex fallback)
+        # Stage 2: Analysis (Gemma E4B + regex fallback)
         return _analyze_ocr_text(ocr_text)
 
     except Exception as e:
@@ -2370,7 +2610,11 @@ def _gemma4_analyze_ocr_text(ocr_text: str, _chat_fn=None) -> dict:
         '"doc_type":"裁定/判決/庭通知書/函/起訴書/不起訴處分書/聲請書/陳報狀/答辯狀/委任狀/筆錄/其他",'
         '"doc_subtype":"完整文件標題如臺灣花蓮地方法院刑事裁定(null=找不到)",'
         '"party":"被告或原告或聲請人姓名(null=找不到)",'
-        '"summary":"主文或主旨摘要60字以內(null=找不到)"}'
+        '"summary":"主文或主旨摘要60字以內(null=找不到)",'
+        '"holding":"判決主文第一條摘要(僅限判決/裁定類,null=無)",'
+        '"correction_order":"補正事項核心(若含應於...補正/陳述意見,摘20字,null=無)",'
+        '"deadline":"期限天數如30(若有文到N日內,null=無)",'
+        '"deadline_type":"期限類型:補正/上訴/陳述意見/繳費/閱卷(null=無)"}'
     )
 
     try:
@@ -2564,11 +2808,12 @@ def _parse_naming_response(text: str) -> dict:
     return result
 
 def rename_file(pdf_path: str, case_name: str = None, dry_run: bool = False):
+    pdf_path = _resolve_pdf_with_synology_fallback(pdf_path)
     proposal = generate_name_proposal(pdf_path, case_name)
     if not proposal:
         logger.warning(f"Could not determine name for {pdf_path}")
         return
-    
+
     dir_name = os.path.dirname(pdf_path)
     new_path = os.path.join(dir_name, proposal)
     
@@ -3089,7 +3334,13 @@ def _build_name_result(
     case_no = found_case_no or ""
     party = found_party or ""
     dt = found_type or ""
-    sub = doc_subtype or dt or ""
+    # For pure 回執 (postal receipt), subtype from delivery record page often
+    # contains form text ("口附上原掛號收據") rather than the receipt label —
+    # use doc_type directly so the name is just "回執".
+    if dt == "回執":
+        sub = dt
+    else:
+        sub = doc_subtype or dt or ""
     sfx = suffix or ""
 
     category = _resolve_doc_category(dt)
