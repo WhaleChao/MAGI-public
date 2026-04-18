@@ -13,6 +13,7 @@ Metrics:
 Exit 1 if format_valid_rate < 70% or empty_filename_rate > 5%.
 Writes results to .runtime/benchmark_pdf_namer_latest.json.
 """
+import importlib.util
 import json
 import os
 import sys
@@ -26,7 +27,7 @@ sys.path.insert(0, MAGI_ROOT)
 
 NAS_CASE_ROOT = "/Volumes/lumi/lumi/01_案件"
 FALLBACK_ROOT = os.path.expanduser("~/Library/CloudStorage/SynologyDrive-homes/01_案件")
-MAX_PDFS = 100
+MAX_PDFS = int(os.environ.get("MAGI_PDF_NAMER_BENCHMARK_MAX_PDFS", "100"))
 OUTPUT_PATH = os.path.join(MAGI_ROOT, ".runtime", "benchmark_pdf_namer_latest.json")
 
 FORMAT_VALID_THRESHOLD = 0.70
@@ -62,12 +63,24 @@ def main():
         sys.exit(0)
 
     try:
-        from skills.pdf_namer.naming_validator import validate_filename
-        from skills.pdf_namer import action as namer
-    except ImportError:
         sys.path.insert(0, os.path.join(MAGI_ROOT, "skills", "pdf-namer"))
         from naming_validator import validate_filename
         import action as namer
+    except ImportError:
+        validator_spec = importlib.util.spec_from_file_location(
+            "pdf_namer_validator",
+            os.path.join(MAGI_ROOT, "skills", "pdf-namer", "naming_validator.py"),
+        )
+        validator_mod = importlib.util.module_from_spec(validator_spec)
+        validator_spec.loader.exec_module(validator_mod)
+        validate_filename = validator_mod.validate_filename
+
+        namer_spec = importlib.util.spec_from_file_location(
+            "pdf_namer_action",
+            os.path.join(MAGI_ROOT, "skills", "pdf-namer", "action.py"),
+        )
+        namer = importlib.util.module_from_spec(namer_spec)
+        namer_spec.loader.exec_module(namer)
 
     pdfs = find_pdfs(case_root)
     if not pdfs:

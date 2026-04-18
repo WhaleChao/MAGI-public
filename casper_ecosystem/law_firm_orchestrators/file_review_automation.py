@@ -75,6 +75,7 @@ def _is_production_host(url: str) -> bool:
 
 # Check availability without importing
 SELENIUM_AVAILABLE = importlib.util.find_spec("selenium") is not None
+PLAYWRIGHT_AVAILABLE = importlib.util.find_spec("playwright") is not None
 RAPIDOCR_AVAILABLE = importlib.util.find_spec("rapidocr_onnxruntime") is not None
 DDDDOCR_AVAILABLE = False
 try:
@@ -422,16 +423,49 @@ class LawyerPortalSSO:
     
     def _setup_driver(self):
         """設定 Chrome WebDriver (含反爬蟲措施)"""
-        if not self._engine_logged:
-            self.log(format_legal_web_engine_log(self.web_engine_profile))
-            self._engine_logged = True
-        if not SELENIUM_AVAILABLE:
-            raise ImportError("Selenium 未安裝")
-        
-        # Lazy Load Selenium
+        # 宣告所有模組全域變數（必須在任何條件分支之前）
         global webdriver, Options, By, WebDriverWait, EC, ActionChains
         global TimeoutException, NoSuchElementException, StaleElementReferenceException, Keys
 
+        if not self._engine_logged:
+            self.log(format_legal_web_engine_log(self.web_engine_profile))
+            self._engine_logged = True
+
+        # ---- Playwright 優先（MAGI_FILE_REVIEW_WEB_ENGINE != "selenium"）----
+        _engine = os.environ.get("MAGI_FILE_REVIEW_WEB_ENGINE", "playwright").strip().lower()
+        if _engine != "selenium" and PLAYWRIGHT_AVAILABLE:
+            try:
+                from skills.engine.playwright_wrapper import (
+                    create_playwright_driver as _cpw,
+                    By as _By, WebDriverWait as _WDW, EC as _EC,
+                    PlaywrightActionChains as _AC, PlaywrightSelect as _Sel, Keys as _Keys,
+                    TimeoutException as _TE, NoSuchElementException as _NSE,
+                    StaleElementReferenceException as _SERE,
+                )
+                dl_path = os.path.abspath(self.download_folder)
+                self.driver = _cpw(
+                    headless=self.headless, download_dir=dl_path,
+                    page_load_timeout=float(os.environ.get("MAGI_SELENIUM_PAGELOAD_TIMEOUT_SEC", "60")),
+                )
+                By = _By
+                WebDriverWait = _WDW
+                EC = _EC
+                ActionChains = _AC
+                Keys = _Keys
+                TimeoutException = _TE
+                NoSuchElementException = _NSE
+                StaleElementReferenceException = _SERE
+                self.driver.implicitly_wait(10)
+                mode = "Headless" if self.headless else "GUI"
+                self.log(f"✅ 閱卷系統使用 Playwright Chromium（{mode} 模式）")
+                return
+            except Exception as _pw_err:
+                self.log(f"  ⚠️ Playwright 初始化失敗，退回 Selenium: {_pw_err}")
+
+        if not SELENIUM_AVAILABLE:
+            raise ImportError("Selenium 未安裝，且 Playwright 不可用或已停用")
+
+        # Lazy Load Selenium
         if webdriver is None:
             from selenium import webdriver
             from selenium.webdriver.common.by import By
@@ -3119,103 +3153,152 @@ class FileReviewManager:
             
             self.log("導航到閱卷系統 (極速版)...")
             original_windows = set(self.driver.window_handles)
-            
-            # Helper: 快速點擊連結
-            def quick_click_link():
-                xpath = "//a[contains(text(), '聲請閱卷') or contains(text(), '電子卷證')]"
+
+            # Detect Playwright vs Selenium path
+            _use_playwright_popup = hasattr(self.driver, 'click_link_and_wait_for_popup')
+
+            _link_xpath = "//a[contains(text(), '聲請閱卷') or contains(text(), '電子卷證')]"
+
+            def _find_link_elem():
+                """找到閱卷連結 element，回傳 element 或 None。"""
                 try:
-                    # 使用短等待
-                    elem = WebDriverWait(self.driver, 1).until(
-                        EC.presence_of_element_located((By.XPATH, xpath))
+                    return WebDriverWait(self.driver, 1).until(
+                        EC.presence_of_element_located((By.XPATH, _link_xpath))
                     )
-                    # JS 點擊最快
-                    self.driver.execute_script("arguments[0].click();", elem)
-                    return True
                 except Exception:
+                    return None
+
+            # Helper: 快速點擊連結 (Selenium 路徑用)
+            def quick_click_link():
+                elem = _find_link_elem()
+                if elem is None:
                     return False
+                self.driver.execute_script("arguments[0].click();", elem)
+                return True
 
             # 1. 嘗試主頁面 & Frame (優先嘗試 mainFrame)
             self.driver.switch_to.default_content()
             clicked = False
-            
-            # A. 嘗試直接找 (Main Content)
-            if quick_click_link():
-                clicked = True
-            else:
-                # B. 嘗試 mainFrame (最常見的情況)
-                try:
-                    self.driver.switch_to.frame("mainFrame")
-                    if quick_click_link():
-                        clicked = True
-                        self.log("  ✓ 在 mainFrame 找到並點擊連結")
-                except Exception:
-                    # C. 掃描其他 Frame (最後手段)
-                    self.driver.switch_to.default_content()
-                    frames = self.driver.find_elements(By.TAG_NAME, "frame") + self.driver.find_elements(By.TAG_NAME, "iframe")
-                    for f in frames:
-                        try:
-                            self.driver.switch_to.frame(f)
-                            if quick_click_link():
-                                clicked = True
-                                self.log("  ✓ 在 Frame 找到連結")
-                                break
-                            self.driver.switch_to.default_content()
-                        except Exception:
-                            self.driver.switch_to.default_content()
-            
-            if not clicked:
-                self.log("  ⚠️ 找不到閱卷連結 (已搜尋所有路徑)")
-                return False
+            new_window = None  # handle of the new tab/window
 
-            # 2. 等待新視窗開啟 (智慧等待)
-            old_window = None
-            try:
-                WebDriverWait(self.driver, 5).until(EC.new_window_is_opened(original_windows))
-                new_windows = set(self.driver.window_handles) - original_windows
-                if new_windows:
-                    new_window = new_windows.pop()
-                    
-                    # ★★★ 關鍵優化: 記錄舊視窗，稍後關閉 ★★★
-                    # 避免之後切換到錯誤的視窗
-                    for w in original_windows:
-                        try:
-                            old_window = w
-                            break
-                        except Exception:
-                            logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 2948, exc_info=True)
-                    
-                    self.driver.switch_to.window(new_window)
-                    self.log(f"  ✓ 切換到新視窗")
-                    
-                    # ★★★ 關閉舊的 Portal 視窗 ★★★
-                    # 用戶建議: 避免切換回錯誤的視窗
-                    if old_window:
-                        try:
-                            self.driver.switch_to.window(old_window)
-                            self.driver.close()
-                            self.driver.switch_to.window(new_window)
-                            self.log(f"  ✓ 已關閉舊視窗 (Portal)")
-                        except Exception as close_e:
-                            self.log(f"  ⚠️ 關閉舊視窗失敗: {close_e}")
-                            # 確保回到新視窗
+            if _use_playwright_popup:
+                # ---- Playwright 路徑：用 expect_popup() 可靠捕捉新視窗 ----
+                # 遍歷 main → mainFrame → other frames，找到元素後使用
+                # click_link_and_wait_for_popup()（內部包 page.expect_popup()）
+                elem = _find_link_elem()
+                if elem is None:
+                    try:
+                        self.driver.switch_to.frame("mainFrame")
+                        elem = _find_link_elem()
+                        if elem:
+                            self.log("  ✓ 在 mainFrame 找到連結")
+                    except Exception:
+                        self.driver.switch_to.default_content()
+                        frames = (self.driver.find_elements(By.TAG_NAME, "frame") +
+                                  self.driver.find_elements(By.TAG_NAME, "iframe"))
+                        for f in frames:
                             try:
-                                self.driver.switch_to.window(new_window)
+                                self.driver.switch_to.frame(f)
+                                elem = _find_link_elem()
+                                if elem:
+                                    self.log("  ✓ 在 Frame 找到連結")
+                                    break
+                                self.driver.switch_to.default_content()
                             except Exception:
-                                logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 2967, exc_info=True)
-                else:
-                    self.log("  ⚠️ 未偵測到新視窗")
+                                self.driver.switch_to.default_content()
+
+                if elem is None:
+                    self.log("  ⚠️ 找不到閱卷連結 (已搜尋所有路徑)")
                     return False
-            except TimeoutException:
-                 self.log("  ⚠️ 等待新視窗逾時")
-                 return False
+
+                new_window = self.driver.click_link_and_wait_for_popup(elem, timeout_ms=10000)
+                if new_window:
+                    clicked = True
+                    self.log("  ✓ Playwright: 捕獲新視窗")
+                else:
+                    # Fallback: link might navigate same-page rather than open popup
+                    _cur = (self.driver.current_url or "").lower()
+                    if any(k in _cur for k in ["ola.", "eefile.", "judicial.gov.tw/ola"]):
+                        self.log("  ✓ 已直接導航到閱卷系統 (同頁面)")
+                        return True
+                    self.log("  ⚠️ 等待新視窗逾時 (Playwright expect_popup)")
+                    return False
+
+            else:
+                # ---- Selenium 路徑：現有邏輯 ----
+                if quick_click_link():
+                    clicked = True
+                else:
+                    try:
+                        self.driver.switch_to.frame("mainFrame")
+                        if quick_click_link():
+                            clicked = True
+                            self.log("  ✓ 在 mainFrame 找到並點擊連結")
+                    except Exception:
+                        self.driver.switch_to.default_content()
+                        frames = (self.driver.find_elements(By.TAG_NAME, "frame") +
+                                  self.driver.find_elements(By.TAG_NAME, "iframe"))
+                        for f in frames:
+                            try:
+                                self.driver.switch_to.frame(f)
+                                if quick_click_link():
+                                    clicked = True
+                                    self.log("  ✓ 在 Frame 找到連結")
+                                    break
+                                self.driver.switch_to.default_content()
+                            except Exception:
+                                self.driver.switch_to.default_content()
+
+                if not clicked:
+                    self.log("  ⚠️ 找不到閱卷連結 (已搜尋所有路徑)")
+                    return False
+
+                try:
+                    WebDriverWait(self.driver, 5).until(EC.new_window_is_opened(original_windows))
+                    _new_set = set(self.driver.window_handles) - original_windows
+                    if _new_set:
+                        new_window = _new_set.pop()
+                    else:
+                        self.log("  ⚠️ 未偵測到新視窗")
+                        return False
+                except TimeoutException:
+                    self.log("  ⚠️ 等待新視窗逾時")
+                    return False
+
+            # 2. 切換到新視窗並關閉舊視窗（Playwright / Selenium 共用路徑）
+            old_window = next(iter(original_windows), None)
+            self.driver.switch_to.window(new_window)
+            self.log("  ✓ 切換到新視窗")
+
+            if old_window:
+                try:
+                    self.driver.switch_to.window(old_window)
+                    self.driver.close()
+                    self.driver.switch_to.window(new_window)
+                    self.log("  ✓ 已關閉舊視窗 (Portal)")
+                except Exception as close_e:
+                    self.log(f"  ⚠️ 關閉舊視窗失敗: {close_e}")
+                    try:
+                        self.driver.switch_to.window(new_window)
+                    except Exception:
+                        pass
+
+            # Playwright 路徑：等待新頁面完全載入（含 JS 重新導向）
+            if _use_playwright_popup and hasattr(self.driver, '_page'):
+                try:
+                    self.driver._page.wait_for_load_state("load", timeout=30000)
+                    self.log(f"  ✓ 新頁面已載入: {self.driver.current_url}")
+                except Exception:
+                    self.log(f"  ⚠️ 新頁面等待超時，繼續: {self.driver.current_url}")
 
             # ★★★ 新增: 404/網路錯誤偵測與自動重新整理 ★★★
             # ola.judicial.gov.tw 容易斷線或 404，需要自動重試
             max_refresh_retries = 5
             for refresh_attempt in range(max_refresh_retries):
                 try:
-                    # 等待頁面載入 (極速版:減少等待)
-                    WebDriverWait(self.driver, 3).until(
+                    # 等待頁面載入
+                    _rs_timeout = 15 if _use_playwright_popup else 3
+                    WebDriverWait(self.driver, _rs_timeout).until(
                         lambda d: d.execute_script("return document.readyState") == "complete"
                     )
                 except Exception:
@@ -3271,11 +3354,12 @@ class FileReviewManager:
 
             # 4. 點擊「線上閱卷作業」展開選單
             # Helper: 快速點選單
+            _menu_wait_sec = 8 if _use_playwright_popup else 2
             def click_menu_item(text):
                 # 支援 span.menu-text 及其父元素 a
                 xpath = f"//span[contains(@class, 'menu-text') and contains(text(), '{text}')]/parent::a | //a[contains(text(), '{text}')]"
                 try:
-                    elem = WebDriverWait(self.driver, 2).until(EC.element_to_be_clickable((By.XPATH, xpath)))
+                    elem = WebDriverWait(self.driver, _menu_wait_sec).until(EC.element_to_be_clickable((By.XPATH, xpath)))
                     self.driver.execute_script("arguments[0].click();", elem)
                     return True
                 except Exception:
@@ -3283,11 +3367,49 @@ class FileReviewManager:
 
             # 在新視窗中尋找選單
             found_menu = False
-            
-            # A. 嘗試直接點擊
-            if click_menu_item("線上閱卷作業"):
-                found_menu = True
-            else:
+
+            # A0. ★ Playwright-native frame search (must run BEFORE Selenium-style paths)
+            # MAINPAGE.htm is a Java frameset whose readyState never reaches "complete".
+            # page.frames gives already-loaded Frame objects directly — no content_frame()
+            # needed, so this works even when the frameset is still "loading".
+            if _use_playwright_popup and hasattr(self.driver, '_page') and not found_menu:
+                _pw_page = self.driver._page
+                # Wait up to 10 s for at least one subframe to load (frameset async)
+                for _fw in range(20):
+                    _pf_list = _pw_page.frames
+                    if len(_pf_list) > 1:
+                        break
+                    time.sleep(0.5)
+                _pf_list = _pw_page.frames
+                self.log(f"  Playwright frames ({len(_pf_list)}): {[f.name or '(main)' for f in _pf_list]}")
+                for _pf in _pf_list:
+                    try:
+                        _href = _pf.evaluate("""(function() {
+                            var links = Array.from(document.querySelectorAll('a'));
+                            for (var i = 0; i < links.length; i++) {
+                                var t = (links[i].textContent || links[i].innerText || '').trim();
+                                if (t.indexOf('\u7dda\u4e0a\u95b1\u5377\u4f5c\u696d') >= 0) {
+                                    links[i].click();
+                                    return links[i].href || 'clicked';
+                                }
+                            }
+                            return null;
+                        })()""")
+                        if _href:
+                            found_menu = True
+                            # Keep driver context in this frame so submenu search works
+                            self.driver._active_frame = _pf
+                            self.log(f"  \u2713 Playwright-native: Frame '{_pf.name}' \u9078\u55ae\u5df2\u9ede\u64ca ({_href})")
+                            break
+                    except Exception:
+                        continue
+
+            # A. Selenium-style: 嘗試直接點擊 (fallback if A0 failed)
+            if not found_menu:
+                if click_menu_item("線上閱卷作業"):
+                    found_menu = True
+
+            if not found_menu:
                 # B. 嘗試 Frame (新視窗通常也有 Frame)
                 try:
                     # 快速掃描 Frame
@@ -3300,7 +3422,7 @@ class FileReviewManager:
                                 found_menu = True
                                 self.log("  ✓ 在新視窗 Frame 中點擊選單")
                                 break
-                            
+
                             # 巢狀 Frame 支援
                             nested = self.driver.find_elements(By.TAG_NAME, "frame")
                             for nf in nested:
@@ -3308,9 +3430,12 @@ class FileReviewManager:
                                 if click_menu_item("線上閱卷作業"):
                                     found_menu = True
                                     break
-                                self.driver.switch_to.parent_frame()
+                                try:
+                                    self.driver.switch_to.parent_frame()
+                                except Exception:
+                                    self.driver.switch_to.default_content()
                             if found_menu: break
-                            
+
                         except Exception:
                             continue
                 except Exception:
@@ -3318,33 +3443,56 @@ class FileReviewManager:
 
             if not found_menu:
                 self.log("  ⚠️ 在新視窗中找不到「線上閱卷作業」選單，嘗試 JS 展開...")
-                # Fallback: use JS to click all menu items matching the text
-                try:
-                    self.driver.switch_to.default_content()
-                    # Try all frames
-                    for _fr in [None] + self.driver.find_elements(By.TAG_NAME, "frame") + self.driver.find_elements(By.TAG_NAME, "iframe"):
+                # Playwright-native JS fallback (second attempt with fresh frame list)
+                if _use_playwright_popup and hasattr(self.driver, '_page') and not found_menu:
+                    for _pf2 in self.driver._page.frames:
                         try:
-                            if _fr is not None:
-                                self.driver.switch_to.default_content()
-                                self.driver.switch_to.frame(_fr)
-                            js_clicked = self.driver.execute_script("""
-                                var links = document.querySelectorAll('a');
+                            _h2 = _pf2.evaluate("""(function() {
+                                var links = Array.from(document.querySelectorAll('a'));
                                 for (var i = 0; i < links.length; i++) {
-                                    if ((links[i].textContent || '').indexOf('線上閱卷作業') >= 0) {
+                                    var t = (links[i].textContent || links[i].innerText || '').trim();
+                                    if (t.indexOf('\u7dda\u4e0a\u95b1\u5377\u4f5c\u696d') >= 0) {
                                         links[i].click();
-                                        return true;
+                                        return links[i].href || 'clicked';
                                     }
                                 }
-                                return false;
-                            """)
-                            if js_clicked:
+                                return null;
+                            })()""")
+                            if _h2:
                                 found_menu = True
-                                self.log("  ✓ JS fallback: 選單已展開")
+                                self.driver._active_frame = _pf2
+                                self.log(f"  \u2713 Playwright JS fallback: Frame '{_pf2.name}' \u9078\u55ae\u5df2\u5c55\u958b")
                                 break
                         except Exception:
                             continue
-                except Exception:
-                    pass
+                # Selenium-style JS fallback
+                if not found_menu:
+                    try:
+                        self.driver.switch_to.default_content()
+                        # Try all frames
+                        for _fr in [None] + self.driver.find_elements(By.TAG_NAME, "frame") + self.driver.find_elements(By.TAG_NAME, "iframe"):
+                            try:
+                                if _fr is not None:
+                                    self.driver.switch_to.default_content()
+                                    self.driver.switch_to.frame(_fr)
+                                js_clicked = self.driver.execute_script("""
+                                    var links = document.querySelectorAll('a');
+                                    for (var i = 0; i < links.length; i++) {
+                                        if ((links[i].textContent || '').indexOf('線上閱卷作業') >= 0) {
+                                            links[i].click();
+                                            return true;
+                                        }
+                                    }
+                                    return false;
+                                """)
+                                if js_clicked:
+                                    found_menu = True
+                                    self.log("  ✓ JS fallback: 選單已展開")
+                                    break
+                            except Exception:
+                                continue
+                    except Exception:
+                        pass
 
             if not found_menu:
                 self.log("  ⚠️ 所有方法均無法找到「線上閱卷作業」選單")
@@ -3360,30 +3508,49 @@ class FileReviewManager:
                 self.log("  ✓ 選單展開成功")
                 submenu_found = True
             except Exception:
-                # Try JS fallback to find submenu in all frames
-                try:
-                    self.driver.switch_to.default_content()
-                    for _fr in [None] + self.driver.find_elements(By.TAG_NAME, "frame") + self.driver.find_elements(By.TAG_NAME, "iframe"):
+                # Playwright-native: search all frames for submenu items
+                if _use_playwright_popup and hasattr(self.driver, '_page') and not submenu_found:
+                    for _psf in self.driver._page.frames:
                         try:
-                            if _fr is not None:
-                                self.driver.switch_to.default_content()
-                                self.driver.switch_to.frame(_fr)
-                            has_submenu = self.driver.execute_script("""
-                                var links = document.querySelectorAll('a');
-                                for (var i = 0; i < links.length; i++) {
-                                    var t = links[i].textContent || '';
-                                    if (t.indexOf('列表式查看') >= 0 || t.indexOf('閱卷聲請登錄') >= 0) return true;
-                                }
-                                return false;
-                            """)
-                            if has_submenu:
+                            _has = _psf.evaluate("""(function() {
+                                var links = Array.from(document.querySelectorAll('a'));
+                                return links.some(function(l) {
+                                    var t = (l.textContent || l.innerText || '').trim();
+                                    return t.indexOf('\u5217\u8868\u5f0f\u67e5\u770b') >= 0 || t.indexOf('\u95b1\u5377\u8072\u8acb\u767b\u9304') >= 0;
+                                });
+                            })()""")
+                            if _has:
                                 submenu_found = True
-                                self.log("  ✓ JS fallback: 子選單已找到")
+                                self.driver._active_frame = _psf
+                                self.log(f"  \u2713 Playwright-native: \u5b50\u9078\u55ae\u5728 Frame '{_psf.name}' \u4e2d\u627e\u5230")
                                 break
                         except Exception:
                             continue
-                except Exception:
-                    pass
+                # Selenium-style JS fallback
+                if not submenu_found:
+                    try:
+                        self.driver.switch_to.default_content()
+                        for _fr in [None] + self.driver.find_elements(By.TAG_NAME, "frame") + self.driver.find_elements(By.TAG_NAME, "iframe"):
+                            try:
+                                if _fr is not None:
+                                    self.driver.switch_to.default_content()
+                                    self.driver.switch_to.frame(_fr)
+                                has_submenu = self.driver.execute_script("""
+                                    var links = document.querySelectorAll('a');
+                                    for (var i = 0; i < links.length; i++) {
+                                        var t = links[i].textContent || '';
+                                        if (t.indexOf('列表式查看') >= 0 || t.indexOf('閱卷聲請登錄') >= 0) return true;
+                                    }
+                                    return false;
+                                """)
+                                if has_submenu:
+                                    submenu_found = True
+                                    self.log("  ✓ JS fallback: 子選單已找到")
+                                    break
+                            except Exception:
+                                continue
+                    except Exception:
+                        pass
 
             if not submenu_found:
                 self.log("  ⚠️ 子選單展開失敗，無法進入列表頁")

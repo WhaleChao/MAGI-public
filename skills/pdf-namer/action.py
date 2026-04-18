@@ -1489,7 +1489,9 @@ def generate_name_proposal(pdf_path: str, case_name: str = None, return_structur
                 found_summary = _extract_summary_from_ocr(all_text, found_type)
 
         if not found_date:
-            logger.warning("Could not extract date from %s", pdf_path)
+            found_date, date_method = _fallback_date_from_filename_or_mtime(pdf_path)
+            logger.warning("Could not extract date from %s; fallback=%s", pdf_path, found_date)
+        if not found_date:
             return empty_result if return_structured else None
 
         # Refine with learned rules
@@ -1953,7 +1955,9 @@ def generate_name_proposal(pdf_path: str, case_name: str = None, return_structur
                 logger.info("Date from last page text: %s", found_date)
 
     if not found_date:
-        logger.warning("Could not extract date from %s", pdf_path)
+        found_date, date_method = _fallback_date_from_filename_or_mtime(pdf_path)
+        logger.warning("Could not extract date from %s; fallback=%s", pdf_path, found_date)
+    if not found_date:
         return empty_result if return_structured else None
 
     # ── Step 5: Refine with learned rules + DB templates ──
@@ -3245,6 +3249,17 @@ def _shorten_court(court: str) -> str:
     return (court or "").strip()
 
 
+def _fallback_date_from_filename_or_mtime(pdf_path: str) -> Tuple[Optional[str], str]:
+    bn = os.path.basename(pdf_path or "")
+    m = re.match(r"^(20\d{6})", bn)
+    if m:
+        return m.group(1), "filename_prefix_fallback"
+    try:
+        return datetime.fromtimestamp(os.path.getmtime(pdf_path)).strftime("%Y%m%d"), "file_mtime_fallback"
+    except Exception:
+        return None, ""
+
+
 def _resolve_doc_category(doc_type: str) -> Optional[str]:
     """Map extracted doc_type to a DOC_CATEGORIES key from naming_rules."""
     dt = (doc_type or "").strip()
@@ -3377,20 +3392,36 @@ def _build_name_result(
         body = f"{court}{case_no}{case_type}判決"
         if party:
             body += f"（{party}；{smry}）" if smry else f"（{party}）"
+        elif smry:
+            body += f"（{smry}）"
+        else:
+            body += "（待補摘要）"
     elif category == "裁定":
         body = f"{court}{case_no}{case_type}裁定"
         if party:
             body += f"（{party}；{smry}）" if smry else f"（{party}）"
+        elif smry:
+            body += f"（{smry}）"
+        else:
+            body += "（待補摘要）"
     elif category == "庭通知書":
         body = f"{court}{case_no}{case_type}庭通知書"
         if party:
             body += f"（{party}；{smry}）" if smry else f"（{party}）"
+        elif smry:
+            body += f"（{smry}）"
+        else:
+            body += "（待補摘要）"
     elif category == "函文":
         body = f"{court}{case_no}{case_type}函" if case_type else f"{court}{case_no}函"
         if "庭" in (sub or ""):
             body = f"{court}{case_no}{case_type}庭函"
         if party:
             body += f"（{party}；{smry}）" if smry else f"（{party}）"
+        elif smry:
+            body += f"（{smry}）"
+        else:
+            body += "（待補摘要）"
     elif category == "起訴書":
         # {date} {court/署}{case_no}起訴書（{party}）
         body = f"{court}{case_no}起訴書"

@@ -6,6 +6,7 @@ from typing import Any, Optional, Union
 
 _LOW_TRUST_TYPES = {
     "assistant_generated",
+    "assistant_generated_utterance",
     "summary_derived",
     "generated_summary",
     "llm_summary",
@@ -21,9 +22,15 @@ _HIGH_TRUST_TYPES = {
     "official",
     "statute",
     "judicial_api",
+    "verified_fact",
     "case_statutes",
     "legal_crawler_judgment",
     "legal_crawler_news",
+}
+
+_NAMESPACE_MAP = {
+    "assistant_generated_utterance": "assistant_utterances",
+    "verified_fact": "verified_facts",
 }
 
 
@@ -86,7 +93,12 @@ class MemoryProvenance:
             "source_id": self.source_id,
             "metadata": dict(self.metadata),
             "trust_label": self.trust_label,
+            "namespace": namespace_for_source_type(self.source_type),
         }
+
+
+def namespace_for_source_type(source_type: str) -> str:
+    return _NAMESPACE_MAP.get(_normalize_source_type(source_type), "default")
 
 
 def default_confidence_for_source(source_type: str, *, verified: bool = False, role: str = "") -> float:
@@ -146,7 +158,7 @@ def parse_source_provenance(source: str) -> MemoryProvenance:
     )
     if derived_from and source_type not in _HIGH_TRUST_TYPES:
         confidence = min(confidence, 0.35)
-    if source_type in {"assistant_generated", "summary_derived", "generated_summary", "llm_summary"}:
+    if source_type in {"assistant_generated", "assistant_generated_utterance", "summary_derived", "generated_summary", "llm_summary"}:
         verified = False
         confidence = min(confidence, 0.20)
     if source_type == "chatlog" and role == "assistant":

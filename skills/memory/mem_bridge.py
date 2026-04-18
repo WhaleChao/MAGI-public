@@ -12,6 +12,7 @@ from functools import lru_cache  # kept for any external consumers that may impo
 
 from api.session.provenance import (
     build_source_signature,
+    namespace_for_source_type,
     parse_source_provenance,
     render_provenance_badge,
 )
@@ -104,6 +105,9 @@ _MEMORY_RECALL_CHATLOG_MARKERS = (
     "回顧",
     "回憶",
     "之前說",
+    "上次說",
+    "我上次說",
+    "你上次說",
     "你記得",
     "對話記錄",
     "聊天紀錄",
@@ -116,6 +120,7 @@ _MEMORY_RECALL_CHATLOG_MARKERS = (
 _MEMORY_LOW_TRUST_MARKERS = (
     "chatlog|",
     "assistant_generated",
+    "assistant_generated_utterance",
     "summary_derived",
     "generated_summary",
     "llm_summary",
@@ -165,6 +170,12 @@ def _source_trust_weight(source: str, query: str = "") -> float:
         if prov.role == "assistant":
             return 0.45 if wants_chatlog else 0.18
         return 0.85 if wants_chatlog else 0.28
+
+    if prov.source_type == "assistant_generated_utterance":
+        return 0.40 if wants_chatlog else 0.10
+
+    if prov.source_type == "verified_fact":
+        return max(0.95, prov.confidence or 0.95)
 
     if prov.verified:
         return max(0.90, prov.confidence or 0.90)
@@ -220,6 +231,15 @@ def _rank_recall_results(query: str, results: list[dict]) -> list[dict]:
         reverse=True,
     )
     return ranked
+
+
+def _allow_result_for_query(source: str, query: str, source_contains: str = "") -> bool:
+    prov = parse_source_provenance(source)
+    if source_contains:
+        return source_contains in str(source or "")
+    if prov.source_type == "assistant_generated_utterance":
+        return _query_prefers_chatlog(query)
+    return True
 
 # FAISS index (lazy init)
 _FAISS_INDEX = None
@@ -702,7 +722,9 @@ def remember(content, source="manual", metadata: Optional[dict] = None, embeddin
     embedding = get_embedding(embedding_source)
 
     # Safe truncate for MySQL VARCHAR limits on 'source' column
-    safe_source = build_source_signature(str(source or "manual"), metadata=metadata)[:250]
+    _metadata = dict(metadata or {})
+    _metadata.setdefault("namespace", namespace_for_source_type(_metadata.get("source_type", "")))
+    safe_source = build_source_signature(str(source or "manual"), metadata=_metadata)[:250]
 
     if _keeper_offline():
         return _save_local_backup(content, safe_source, embedding, is_synced=False)
@@ -799,10 +821,11 @@ def remember_batch(items):
 
     texts = [it.get("content", "") for it in filtered_items]
     embedding_texts = [it.get("embedding_input") or it.get("content", "") for it in filtered_items]
-    sources = [
-        build_source_signature(str(it.get("source", "batch")), metadata=it.get("metadata"))[:250]
-        for it in filtered_items
-    ]
+    sources = []
+    for it in filtered_items:
+        meta = dict(it.get("metadata") or {})
+        meta.setdefault("namespace", namespace_for_source_type(meta.get("source_type", "")))
+        sources.append(build_source_signature(str(it.get("source", "batch")), metadata=meta)[:250])
 
     # Batch embed
     embeddings = get_embeddings_batch(embedding_texts)
@@ -1109,8 +1132,7 @@ def recall(query, top_k=3, source_contains: str = "",
     retrieval_query = _augment_query_for_retrieval(query)
     if _keeper_offline():
         data = _fallback_local_search(query, want * 30, source_contains=source_contains)
-        if source_contains:
-            data = [x for x in data if source_contains in (x.get("source") or "")]
+        data = [x for x in data if _allow_result_for_query(x.get("source") or "", query, source_contains=source_contains)]
         data = _merge_graph_context(query, data, want, source_contains=source_contains)
         data = _rank_recall_results(query, data)
         if not _query_prefers_chatlog(query) and not source_contains:
@@ -1433,7 +1455,7 @@ def recall(query, top_k=3, source_contains: str = "",
             if not doc:
                 continue
             src = doc[2] or ""
-            if source_contains and (source_contains not in src):
+            if not _allow_result_for_query(src, query, source_contains=source_contains):
                 continue
             if exclude_sources and any(ex in src for ex in exclude_sources):
                 continue
@@ -1481,8 +1503,7 @@ def recall(query, top_k=3, source_contains: str = "",
         _mark_keeper_offline(str(e)[:180])
         logger.warning(f"Keeper unavailable, fallback to local search: {e}")
         data = _fallback_local_search(query, want * 30, source_contains=source_contains)
-        if source_contains:
-            data = [x for x in data if source_contains in (x.get("source") or "")]
+        data = [x for x in data if _allow_result_for_query(x.get("source") or "", query, source_contains=source_contains)]
         data = _merge_graph_context(query, data, want, source_contains=source_contains)
         data = _rank_recall_results(query, data)
         if not _query_prefers_chatlog(query) and not source_contains:
@@ -1496,8 +1517,7 @@ def recall(query, top_k=3, source_contains: str = "",
     except Exception as e:
         logger.error(f"Recall error: {e}")
         data = _fallback_local_search(query, want * 30, source_contains=source_contains)
-        if source_contains:
-            data = [x for x in data if source_contains in (x.get("source") or "")]
+        data = [x for x in data if _allow_result_for_query(x.get("source") or "", query, source_contains=source_contains)]
         data = _merge_graph_context(query, data, want, source_contains=source_contains)
         data = _rank_recall_results(query, data)
         if not _query_prefers_chatlog(query) and not source_contains:

@@ -72,10 +72,10 @@ _SUMMARY_TTL_SECONDS = int(
     os.environ.get("MAGI_MEMORY_SUMMARY_TTL_SEC", "0")
 )
 
-# Assistant chatlog capture (default off)
-_ALLOW_ASSISTANT_CHATLOG = os.environ.get(
-    "MAGI_CAPTURE_ASSISTANT_CHATLOG", ""
-).strip().lower() in {"1", "true", "yes"}
+def _allow_assistant_chatlog() -> bool:
+    return os.environ.get(
+        "MAGI_CAPTURE_ASSISTANT_CHATLOG", ""
+    ).strip().lower() in {"1", "true", "yes", "on"}
 
 
 def evaluate_memory_write(
@@ -116,13 +116,13 @@ def evaluate_memory_write(
         return _deny(prov, "assistant 自己產生的內容不應進入長期記憶")
 
     if prov.source_type == "chatlog" and prov.role == "assistant":
-        if not _ALLOW_ASSISTANT_CHATLOG:
-            return _deny(prov, "assistant chatlog 預設不記錄（MAGI_CAPTURE_ASSISTANT_CHATLOG=0）")
-        # Even when allowed, cap confidence
+        if not _allow_assistant_chatlog():
+            return _deny(prov, "assistant chatlog / utterance 預設不記錄（MAGI_CAPTURE_ASSISTANT_CHATLOG=0）")
+        prov.source_type = "assistant_generated_utterance"
         capped_conf = min(prov.confidence, 0.25)
         return _allow(
             prov,
-            "assistant chatlog（信心已壓低）",
+            "assistant utterance（Layer 2，獨立 namespace）",
             override_confidence=capped_conf,
         )
 

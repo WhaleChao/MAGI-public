@@ -193,14 +193,24 @@ def maybe_capture_chatlog(orch, user_id: str, platform: str, role: str, content:
             )
             return
         src = f"chatlog|platform={platform}|user={user_id}|role={role}|ts={datetime.now(timezone.utc).isoformat()}"
+        source_type = "chatlog"
+        namespace = "default"
+        confidence = 0.82 if role_name == "user" else 0.18
+        derived_from = ""
+        if role_name == "assistant":
+            source_type = "assistant_generated_utterance"
+            namespace = "assistant_utterances"
+            confidence = 0.18
+            derived_from = "assistant_reply"
         remember(
             safe, source=src,
             metadata={
                 "verified": role_name == "user",
-                "confidence": 0.82 if role_name == "user" else 0.18,
-                "source_type": "chatlog",
+                "confidence": confidence,
+                "source_type": source_type,
                 "role": role_name,
-                "derived_from": "" if role_name == "user" else "assistant_reply",
+                "derived_from": derived_from,
+                "namespace": namespace,
             },
         )
         orch._hook_bus.memory_write(

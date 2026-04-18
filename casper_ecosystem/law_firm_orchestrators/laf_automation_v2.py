@@ -221,421 +221,19 @@ np = None
 
 
 # ==============================================================================
-# Playwright 相容層 (Chrome 147 macOS ARM regression 後優先使用)
+# Playwright 相容層 — 從共用模組 import（skills/engine/playwright_wrapper.py）
 # ==============================================================================
-
-def _convert_script_for_playwright(script, args):
-    """
-    Convert Selenium execute_script(script, *args) to Playwright evaluate format.
-    Handles the `arguments[N]` convention from Selenium.
-    Returns (fn_str, fn_arg) for page.evaluate(fn_str, fn_arg).
-    """
-    import re as _re
-    if not args:
-        return "() => { %s }" % script, None
-
-    refs_found = sorted(set(int(m) for m in _re.findall(r'arguments\[(\d+)\]', script)))
-    if not refs_found:
-        return "() => { %s }" % script, None
-
-    if len(args) == 1 and refs_found == [0]:
-        fn_body = script.replace("arguments[0]", "el")
-        return "el => { %s }" % fn_body, args[0]
-
-    fn_body = script
-    param_names = ["a%d" % i for i in refs_found]
-    for i, pn in zip(refs_found, param_names):
-        fn_body = fn_body.replace("arguments[%d]" % i, pn)
-    param_list = ", ".join(param_names)
-    return "([%s]) => { %s }" % (param_list, fn_body), list(args)
-
-
-class _PlaywrightSwitchTo(object):
-    """Mimics Selenium driver.switch_to for PlaywrightDriverWrapper."""
-    def __init__(self, wrapper):
-        self._w = wrapper
-
-    def default_content(self):
-        self._w._active_frame = None
-
-    def frame(self, frame_ref):
-        page = self._w._page
-        if isinstance(frame_ref, str):
-            f = page.frame(name=frame_ref)
-            self._w._active_frame = f
-        elif isinstance(frame_ref, int):
-            frames = page.frames
-            if frame_ref < len(frames):
-                self._w._active_frame = frames[frame_ref]
-        elif hasattr(frame_ref, "_el"):
-            # PlaywrightElementWrapper wrapping a <frame>/<iframe> element
-            try:
-                f = frame_ref._el.content_frame()
-                self._w._active_frame = f
-            except Exception:
-                self._w._active_frame = None
-        else:
-            self._w._active_frame = None
-
-    @property
-    def alert(self):
-        dlg = self._w._last_dialog
-        if dlg is None:
-            # Raise a RuntimeError that the caller can catch
-            raise RuntimeError("NoAlertPresentException: no pending dialog")
-        return _PlaywrightAlert(dlg, self._w)
-
-
-class _PlaywrightAlert(object):
-    def __init__(self, dialog, wrapper):
-        self._d = dialog
-        self._w = wrapper
-
-    @property
-    def text(self):
-        return self._d.message
-
-    def accept(self):
-        try:
-            self._d.accept()
-        except Exception:
-            pass
-        self._w._last_dialog = None
-
-    def dismiss(self):
-        try:
-            self._d.dismiss()
-        except Exception:
-            pass
-        self._w._last_dialog = None
-
-
-class PlaywrightElementWrapper(object):
-    """Wraps playwright ElementHandle to behave like a Selenium WebElement."""
-
-    def __init__(self, el, driver_wrapper):
-        self._el = el
-        self._driver = driver_wrapper
-
-    def click(self):
-        try:
-            self._el.scroll_into_view_if_needed()
-            self._el.click(timeout=5000)
-        except Exception:
-            try:
-                self._el.evaluate("el => el.click()")
-            except Exception:
-                pass
-
-    def send_keys(self, text):
-        t = str(text)
-        # --- File input: use set_input_files instead of type ---
-        try:
-            tag = self._el.evaluate("el => el.tagName.toLowerCase()")
-            inp_type = self._el.evaluate("el => (el.getAttribute('type') || '').toLowerCase()")
-            if tag == 'input' and inp_type == 'file':
-                self._el.set_input_files(t)
-                return
-        except Exception:
-            pass
-        # --- Regular input / textarea ---
-        if t == '\n':
-            self._el.press('Enter')
-        elif '\n' in t:
-            parts = t.split('\n')
-            for i, part in enumerate(parts):
-                if part:
-                    self._el.type(part)
-                if i < len(parts) - 1:
-                    self._el.press('Enter')
-        else:
-            self._el.type(t)
-
-    def clear(self):
-        try:
-            self._el.fill('')
-        except Exception:
-            try:
-                self._el.evaluate(
-                    "el => { el.value=''; el.dispatchEvent(new Event('input',{bubbles:true})); }"
-                )
-            except Exception:
-                pass
-
-    @property
-    def text(self):
-        try:
-            return self._el.text_content() or ''
-        except Exception:
-            return ''
-
-    @property
-    def tag_name(self):
-        try:
-            return self._el.evaluate("el => el.tagName.toLowerCase()")
-        except Exception:
-            return ''
-
-    def get_attribute(self, name):
-        try:
-            return self._el.get_attribute(name)
-        except Exception:
-            return None
-
-    def is_displayed(self):
-        try:
-            return self._el.is_visible()
-        except Exception:
-            return False
-
-    def is_enabled(self):
-        try:
-            return not self._el.is_disabled()
-        except Exception:
-            return True
-
-    @property
-    def screenshot_as_png(self):
-        try:
-            return self._el.screenshot()
-        except Exception:
-            return None
-
-    def find_element(self, by, value):
-        """Find a single child element (Selenium API compat)."""
-        try:
-            from selenium.webdriver.common.by import By as _By
-            if by == _By.CSS_SELECTOR:
-                handle = self._el.query_selector(value)
-            elif by == _By.XPATH:
-                handle = self._el.query_selector(f"xpath={value}")
-            elif by == _By.TAG_NAME:
-                handle = self._el.query_selector(value)
-            elif by == _By.ID:
-                handle = self._el.query_selector(f"#{value}")
-            elif by == _By.CLASS_NAME:
-                handle = self._el.query_selector(f".{value}")
-            elif by == _By.NAME:
-                handle = self._el.query_selector(f"[name='{value}']")
-            else:
-                handle = self._el.query_selector(value)
-            if handle is None:
-                from selenium.common.exceptions import NoSuchElementException
-                raise NoSuchElementException(f"No element found: {by}={value}")
-            return PlaywrightElementWrapper(handle, self._driver)
-        except Exception as _e:
-            from selenium.common.exceptions import NoSuchElementException
-            raise NoSuchElementException(f"find_element failed: {_e}") from _e
-
-    def find_elements(self, by, value):
-        """Find all child elements matching selector (Selenium API compat)."""
-        try:
-            from selenium.webdriver.common.by import By as _By
-            if by == _By.CSS_SELECTOR:
-                handles = self._el.query_selector_all(value)
-            elif by == _By.XPATH:
-                handles = self._el.query_selector_all(f"xpath={value}")
-            elif by == _By.TAG_NAME:
-                handles = self._el.query_selector_all(value)
-            elif by == _By.ID:
-                handles = self._el.query_selector_all(f"#{value}")
-            elif by == _By.CLASS_NAME:
-                handles = self._el.query_selector_all(f".{value}")
-            elif by == _By.NAME:
-                handles = self._el.query_selector_all(f"[name='{value}']")
-            else:
-                handles = self._el.query_selector_all(value)
-            return [PlaywrightElementWrapper(h, self._driver) for h in (handles or [])]
-        except Exception:
-            return []
-
-
-class PlaywrightDriverWrapper(object):
-    """
-    Thin Selenium-compatible wrapper around playwright.sync_api.Page.
-
-    Lets laf_automation_v2.py use Playwright as a drop-in for Selenium
-    without rewriting the core portal automation logic.
-    Chrome 147 on macOS ARM causes ChromeDriver session crashes on
-    processLogin redirect; Playwright's built-in Chromium is unaffected.
-    """
-
-    def __init__(self, page, context, pw_instance, download_dir=None):
-        self._page = page
-        self._context = context
-        self._pw = pw_instance
-        self._active_frame = None    # None = main page
-        self._last_dialog = None
-        self._download_dir = download_dir
-        self.switch_to = _PlaywrightSwitchTo(self)
-
-        # Dialog listener: capture for switch_to.alert; auto-dismiss after 2 s
-        def _on_dialog(dialog):
-            self._last_dialog = dialog
-
-            def _auto_dismiss():
-                import time as _t
-                _t.sleep(2)
-                if self._last_dialog is dialog:
-                    try:
-                        dialog.dismiss()
-                    except Exception:
-                        pass
-                    self._last_dialog = None
-
-            import threading as _threading
-            _threading.Thread(target=_auto_dismiss, daemon=True).start()
-
-        page.on("dialog", _on_dialog)
-
-    # ---- internal helpers ----
-
-    def _active(self):
-        return self._active_frame if self._active_frame else self._page
-
-    @staticmethod
-    def _to_selector(by, value):
-        by_s = str(by).lower()
-        if 'css' in by_s:
-            return value
-        if by_s == 'id':
-            return '#%s' % value
-        if 'name' in by_s:
-            return '[name="%s"]' % value
-        if 'class' in by_s:
-            return '.%s' % value
-        if 'tag' in by_s:
-            return value
-        if 'xpath' in by_s:
-            return 'xpath=%s' % value
-        if 'link' in by_s:
-            return 'a:has-text("%s")' % value
-        return value
-
-    # ---- WebDriver API ----
-
-    def get(self, url):
-        self._active_frame = None
-        try:
-            # 使用 'load' 等待整頁（含 JS 動態元素如驗證碼圖片）載入完成
-            self._page.goto(url, wait_until='load', timeout=30000)
-        except Exception:
-            try:
-                # fallback：至少等 domcontentloaded
-                self._page.goto(url, wait_until='domcontentloaded', timeout=30000)
-            except Exception:
-                # Portal pages sometimes have unresolved subresources - proceed anyway
-                pass
-
-    @property
-    def current_url(self):
-        return self._page.url
-
-    @property
-    def page_source(self):
-        try:
-            return self._active().content()
-        except Exception:
-            try:
-                return self._page.content()
-            except Exception:
-                return ''
-
-    def execute_script(self, script, *args):
-        """Selenium-compatible JS execution. Handles arguments[N] convention."""
-        processed = [
-            a._el if isinstance(a, PlaywrightElementWrapper) else a
-            for a in args
-        ]
-        fn_str, fn_arg = _convert_script_for_playwright(script, processed)
-        active = self._active()
-        try:
-            if fn_arg is None:
-                return active.evaluate(fn_str)
-            else:
-                return active.evaluate(fn_str, fn_arg)
-        except Exception as e:
-            _dep_logger.debug("PW execute_script err: %s | script=%s", e, script[:80])
-            return None
-
-    def execute_async_script(self, script, *args):
-        """
-        Selenium execute_async_script → Playwright evaluate (Promise).
-        Selenium pattern: last argument is callback; script calls arguments[N] when done.
-        Playwright pattern: wrap in Promise, resolve = callback.
-        """
-        processed = [
-            a._el if isinstance(a, PlaywrightElementWrapper) else a
-            for a in args
-        ]
-        # Wrap callback-style script in a Promise.
-        # allArgs = [...userArgs, resolve] so arguments[arguments.length-1] == resolve.
-        wrapper = (
-            "(argArray) => new Promise(function(resolve, reject) {"
-            " var allArgs = Array.from(argArray || []);"
-            " allArgs.push(resolve);"
-            " (function() { " + script + " }).apply(null, allArgs);"
-            "})"
-        )
-        active = self._active()
-        try:
-            return active.evaluate(wrapper, processed)
-        except Exception as e:
-            _dep_logger.debug("PW execute_async_script err: %s", e)
-            return None
-
-    def find_element(self, by, value):
-        selector = self._to_selector(by, value)
-        active = self._active()
-        try:
-            el = active.query_selector(selector)
-        except Exception:
-            el = None
-        if el is None:
-            exc = NoSuchElementException or Exception
-            raise exc("No element: %s" % selector)
-        return PlaywrightElementWrapper(el, self)
-
-    def find_elements(self, by, value):
-        selector = self._to_selector(by, value)
-        active = self._active()
-        try:
-            els = active.query_selector_all(selector)
-            return [PlaywrightElementWrapper(el, self) for el in els]
-        except Exception:
-            return []
-
-    def save_screenshot(self, path):
-        try:
-            self._page.screenshot(path=str(path), full_page=False)
-            return True
-        except Exception:
-            return False
-
-    def get_screenshot_as_png(self):
-        try:
-            return self._page.screenshot()
-        except Exception:
-            return b''
-
-    def close(self):
-        try:
-            self._page.close()
-        except Exception:
-            pass
-        try:
-            self._context.close()
-        except Exception:
-            pass
-
-    def quit(self):
-        self.close()
-        try:
-            self._pw.stop()
-        except Exception:
-            pass
-
-
+from skills.engine.playwright_wrapper import (
+    PlaywrightElementWrapper,
+    PlaywrightDriverWrapper,
+    PlaywrightActionChains,
+    PlaywrightSelect,
+    PlaywrightWebDriverWait,
+    _convert_script_for_playwright,
+    _PlaywrightSwitchTo,
+    _PlaywrightAlert,
+    create_playwright_driver as _create_pw_driver_shared,
+)
 # ==============================================================================
 # End Playwright 相容層
 # ==============================================================================
@@ -1656,80 +1254,15 @@ class LAFWebAutomation:
             self.log(f"  ⚠️ 輸出 DOM 摘要失敗 (不影響流程): {e}")
     
     def _create_playwright_driver(self):
-        """
-        建立 Playwright Chromium 驅動器。
-        Chrome 147 macOS ARM 造成 ChromeDriver session crash (Connection refused)，
-        Playwright 內建 Chromium 完全穩定，優先使用。
-        """
-        # Ensure Selenium helper objects (By, WebDriverWait, EC, NoSuchElementException)
-        # are available as module globals — the login() and other methods use them
-        # even when Playwright is the browser driver.
-        global webdriver, By, WebDriverWait, EC, Options, TimeoutException, NoSuchElementException, ElementClickInterceptedException
-        if By is None and SELENIUM_AVAILABLE:
-            try:
-                from selenium import webdriver as _wd
-                from selenium.webdriver.common.by import By as _By
-                from selenium.webdriver.support.ui import WebDriverWait as _WDW
-                from selenium.webdriver.support import expected_conditions as _EC
-                from selenium.webdriver.chrome.options import Options as _Opt
-                from selenium.common.exceptions import (
-                    TimeoutException as _TE,
-                    NoSuchElementException as _NSE,
-                    ElementClickInterceptedException as _ECIE,
-                )
-                webdriver = _wd
-                By = _By
-                WebDriverWait = _WDW
-                EC = _EC
-                Options = _Opt
-                TimeoutException = _TE
-                NoSuchElementException = _NSE
-                ElementClickInterceptedException = _ECIE
-            except Exception as _imp_err:
-                _dep_logger.debug("Playwright: Selenium import for By/EC/WDW failed: %s", _imp_err)
-
-        from playwright.sync_api import sync_playwright
-        pw = sync_playwright().start()
-        try:
-            launch_args = [
-                '--no-sandbox',
-                '--disable-dev-shm-usage',
-                '--disable-blink-features=AutomationControlled',
-            ]
-            browser = pw.chromium.launch(
-                headless=self.headless,
-                args=launch_args,
-            )
-            dl_path = str(getattr(self, 'download_folder', '/tmp'))
-            context = browser.new_context(
-                accept_downloads=True,
-                viewport={"width": 1920, "height": 1080},
-                ignore_https_errors=True,   # LAF portal 使用舊版 SSL cert
-                user_agent=(
-                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/131.0.0.0 Safari/537.36"
-                ),
-            )
-            page = context.new_page()
-            # Route downloads to the configured folder via CDP
-            try:
-                client = context.new_cdp_session(page)
-                client.send("Browser.setDownloadBehavior", {
-                    "behavior": "allow",
-                    "downloadPath": dl_path,
-                    "eventsEnabled": True,
-                })
-            except Exception as _cdp_err:
-                self.log(f"  ⚠️ Playwright CDP download path 設定失敗（可能不影響功能）: {_cdp_err}")
-            self.log("✅ Playwright Chromium 初始化成功（Chrome 147 regression 修復路徑）")
-            return PlaywrightDriverWrapper(page, context, pw, download_dir=dl_path)
-        except Exception:
-            try:
-                pw.stop()
-            except Exception:
-                pass
-            raise
+        """建立 Playwright Chromium 驅動器（委派給共用 factory）。"""
+        dl_path = str(getattr(self, 'download_folder', '/tmp'))
+        driver = _create_pw_driver_shared(
+            headless=self.headless,
+            download_dir=dl_path,
+            page_load_timeout=60.0,
+        )
+        self.log("✅ Playwright Chromium 初始化成功（共用 factory）")
+        return driver
 
     def _create_driver(self):
         """
@@ -3558,9 +3091,45 @@ return (() => {
         v = str(value).strip()
         if not v:
             return False
+
+        # Strategy 0: single JS call covering all selectors (bypasses Playwright timing)
+        try:
+            sel_json = json.dumps([s for s in (selectors or []) if s])
+            v_json = json.dumps(v)
+            hit = self.driver.execute_script(
+                f"""
+                const sels = {sel_json};
+                const val = {v_json};
+                for (const sel of sels) {{
+                    try {{
+                        const el = document.querySelector(sel);
+                        if (!el || el.disabled || el.type === 'hidden') continue;
+                        el.focus();
+                        el.value = val;
+                        el.dispatchEvent(new Event('input', {{bubbles: true}}));
+                        el.dispatchEvent(new Event('change', {{bubbles: true}}));
+                        if (el.value) return sel;
+                    }} catch(e) {{}}
+                }}
+                return null;
+                """
+            )
+            if hit:
+                return True
+        except Exception:
+            pass
+
         for sel in (selectors or []):
             if not sel:
                 continue
+            # Strategy 1: trust fill_by_selector without JS readback verification
+            try:
+                if hasattr(self.driver, "fill_by_selector"):
+                    if self.driver.fill_by_selector(sel, v):
+                        return True
+            except Exception:
+                pass
+            # Strategy 2: ElementHandle-based (accept any non-empty value)
             try:
                 els = self.driver.find_elements(By.CSS_SELECTOR, sel)
                 if not els:
@@ -3575,7 +3144,6 @@ return (() => {
                         continue
                 if not candidates:
                     continue
-                # Prefer visible controls; fallback to first enabled.
                 visible_first = [e for e in candidates if e.is_displayed()]
                 ordered = visible_first + [e for e in candidates if e not in visible_first]
                 for el in ordered:
@@ -3586,7 +3154,7 @@ return (() => {
                     elif tag in ("textarea", "input"):
                         self._set_input_value(el, v)
                         got = (el.get_attribute("value") or "").strip()
-                        if got == v:
+                        if got:
                             return True
             except Exception:
                 continue
@@ -3726,17 +3294,61 @@ return (() => {
             self.last_upload_result = dict(result)
             return result
 
+        def _upload_panel_is_open() -> bool:
+            """Check if upload panel/modal has rendered a file input anywhere."""
+            sels = ["input[type='file'][name='uploadDoc']", "input[name='uploadDoc']", "input[type='file']"]
+            for sel in sels:
+                try:
+                    els = self.driver.find_elements(By.CSS_SELECTOR, sel)
+                    if els:
+                        return True
+                except Exception:
+                    continue
+            try:
+                pw_page = getattr(self.driver, "_page", None)
+                if pw_page is not None:
+                    for fr in pw_page.frames:
+                        for sel in sels:
+                            try:
+                                if fr.query_selector(sel):
+                                    return True
+                            except Exception:
+                                continue
+            except Exception:
+                pass
+            return False
+
         def _open_upload_panel() -> bool:
-            # 1) click explicit upload buttons first (keeps correct uploadFieldName such as CND)
+            # Fast path: panel already open.
+            if _upload_panel_is_open():
+                return True
+            wf = (workflow or "").strip().lower()
+            token = {
+                "condition": "CND", "fee": "LGFEE", "inquiry": "RSM",
+                "withdrawal": "PB_doc", "closing": "CR_CS", "go_live": "NOT_OPEN",
+            }.get(wf, "")
+            # 1) Direct JS linkUpload('TOKEN') — portal canonical way
+            js_candidates = [
+                f"if (typeof linkUpload === 'function') {{ try {{ linkUpload('{token}'); return true; }} catch(e) {{}} }} return false;" if token else "",
+                "if (typeof linkUpload === 'function') { try { linkUpload(); return true; } catch(e) {} } return false;",
+            ]
+            for js in js_candidates:
+                if not js:
+                    continue
+                try:
+                    if bool(self.driver.execute_script(js)):
+                        for _ in range(15):
+                            if _upload_panel_is_open():
+                                return True
+                            time.sleep(0.2)
+                except Exception:
+                    logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 2673, exc_info=True)
+
+            # 2) Click explicit upload buttons (fallback if linkUpload not available)
             selectors = [
-                "#uploadBtnY",
-                "#uploadBtnN",
-                "#uploadBtn",
-                "button#uploadBtn",
-                "a#uploadBtn",
-                "button[name='uploadBtn']",
-                "a[onclick*='linkUpload']",
-                "button[onclick*='linkUpload']",
+                "#uploadBtnY", "#uploadBtnN", "#uploadBtn",
+                "button#uploadBtn", "a#uploadBtn", "button[name='uploadBtn']",
+                "a[onclick*='linkUpload']", "button[onclick*='linkUpload']",
                 "button[data-target*='upload']",
             ]
             for sel in selectors:
@@ -3750,35 +3362,20 @@ return (() => {
                         el.click()
                     except Exception:
                         self.driver.execute_script("arguments[0].click();", el)
-                    time.sleep(0.8)
-                    return True
+                    for _ in range(15):
+                        if _upload_panel_is_open():
+                            return True
+                        time.sleep(0.2)
                 except Exception:
                     continue
-            # 2) direct JS hooks
-            wf = (workflow or "").strip().lower()
-            token = {
-                "condition": "CND",
-                "fee": "LGFEE",
-                "inquiry": "RSM",
-                "withdrawal": "PB_doc",
-                "closing": "CR_CS",
-                "go_live": "NOT_OPEN",
-            }.get(wf, "")
-            js_candidates = [
-                f"if (typeof linkUpload === 'function') {{ try {{ linkUpload('{token}'); return true; }} catch(e) {{}} }} return false;" if token else "",
-                "if (typeof linkUpload === 'function') { try { linkUpload(); return true; } catch(e) {} } return false;",
-            ]
-            for js in js_candidates:
-                if not js:
-                    continue
-                try:
-                    if bool(self.driver.execute_script(js)):
-                        time.sleep(0.8)
+
+            # 3) Text fallback
+            if self._click_button_by_text(["上傳文件", "上傳檔案", "+上傳文件", "上傳"]):
+                for _ in range(15):
+                    if _upload_panel_is_open():
                         return True
-                except Exception:
-                    logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 2673, exc_info=True)
-            # 3) text fallback
-            return self._click_button_by_text(["上傳文件", "上傳檔案", "+上傳文件", "上傳"])
+                    time.sleep(0.2)
+            return False
 
         def _find_file_input():
             cands = [
@@ -3786,13 +3383,31 @@ return (() => {
                 "input[name='uploadDoc']",
                 "input[type='file']",
             ]
-            for sel in cands:
+            # Poll for up to ~4s: upload panel / modal may take a moment to render
+            # after _open_upload_panel() click or after _select_upload_doc_type() AJAX.
+            for _attempt in range(20):
+                for sel in cands:
+                    try:
+                        els = self.driver.find_elements(By.CSS_SELECTOR, sel)
+                        if els:
+                            return els[0]
+                    except Exception:
+                        continue
+                # Also try each frame (upload widget may be iframed)
                 try:
-                    els = self.driver.find_elements(By.CSS_SELECTOR, sel)
-                    if els:
-                        return els[0]
+                    pw_page = getattr(self.driver, "_page", None)
+                    if pw_page is not None:
+                        for fr in pw_page.frames:
+                            for sel in cands:
+                                try:
+                                    el = fr.query_selector(sel)
+                                    if el:
+                                        return PlaywrightElementWrapper(el, self.driver)
+                                except Exception:
+                                    continue
                 except Exception:
-                    continue
+                    pass
+                time.sleep(0.2)
             return None
 
         def _click_upload_confirm() -> bool:
@@ -4330,12 +3945,41 @@ return null;
         # 填入申請編號並搜尋
         try:
             inp = None
-            for sel in ["#applyno", "input[name='applyno']", "input#applyno"]:
-                try:
-                    inp = WebDriverWait(self.driver, 15).until(EC.presence_of_element_located((By.CSS_SELECTOR, sel)))
+            # Poll across main page + all frames for up to 15s — avoids
+            # Selenium WebDriverWait quirks when driver is PlaywrightDriverWrapper.
+            _deadline = time.time() + 15.0
+            _selectors = ["#applyno", "input[name='applyno']", "input#applyno"]
+            while time.time() < _deadline and not inp:
+                for sel in _selectors:
+                    try:
+                        els = self.driver.find_elements(By.CSS_SELECTOR, sel)
+                        if els:
+                            inp = els[0]
+                            break
+                    except Exception:
+                        continue
+                if inp:
                     break
+                # Also try each Playwright frame directly
+                try:
+                    pw_page = getattr(self.driver, "_page", None)
+                    if pw_page is not None:
+                        for fr in pw_page.frames:
+                            for sel in _selectors:
+                                try:
+                                    el = fr.query_selector(sel)
+                                    if el:
+                                        inp = PlaywrightElementWrapper(el, self.driver)
+                                        break
+                                except Exception:
+                                    continue
+                            if inp:
+                                break
                 except Exception:
-                    continue
+                    pass
+                if inp:
+                    break
+                time.sleep(0.3)
             if not inp:
                 self.log("❌ 找不到結案清單的申請編號輸入框")
                 self._save_page_debug_html("closing_list_no_applyno", force=True)
@@ -5892,14 +5536,16 @@ return null;
             self._set_field_by_selectors(meta.get("apply_selectors", []), applyno)
         if reqnm:
             self._set_field_by_selectors(meta.get("name_selectors", []), reqnm)
-            try:
-                nm = self.driver.execute_script(
-                    "const e=document.querySelector('#applynm')||document.querySelector(\"input[name='applynm']\"); return e?(e.value||''):'';"
-                )
-                if (nm or "").strip() != reqnm:
-                    self.log(f"⚠️ 姓名欄位回讀不一致：期望={reqnm} 實際={(nm or '').strip()}")
-            except Exception:
-                logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 4679, exc_info=True)
+
+        try:
+            _sspath = os.path.join(
+                self.download_folder or ".",
+                f"debug_{workflow}_before_search_{int(time.time())}.png",
+            )
+            self.driver.save_screenshot(_sspath)
+            self.log(f"📸 診斷截圖: {_sspath}")
+        except Exception:
+            pass
 
         searched = False
         # 優先點 queryBtn（showList 會走 form submit）
@@ -5974,18 +5620,82 @@ return null;
             self.driver.execute_script("arguments[0].scrollIntoView({block:'center'});", btn)
         except Exception:
             logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 4753, exc_info=True)
+
+        # Record pre-click URL so we can detect navigation properly
         try:
-            btn.click()
+            _pre_click_url = self.driver.current_url or ""
         except Exception:
-            self.driver.execute_script("arguments[0].click();", btn)
+            _pre_click_url = ""
+
+        # Extract onclick attribute (if any) and execute directly — Playwright's
+        # click() sometimes doesn't fire legacy onclick handlers like toReport(...).
+        _onclick_js = ""
+        try:
+            _btn_info = self.driver.execute_script(
+                "return {onclick: arguments[0].getAttribute('onclick') || '',"
+                " href: arguments[0].getAttribute('href') || ''};",
+                btn,
+            ) or {}
+            _onclick_js = (_btn_info.get("onclick") or _btn_info.get("href") or "").strip()
+            if _onclick_js.lower().startswith("javascript:"):
+                _onclick_js = _onclick_js[11:].strip()
+        except Exception:
+            _onclick_js = ""
+
+        _clicked = False
+        if _onclick_js and ("(" in _onclick_js):
+            try:
+                self.driver.execute_script(_onclick_js)
+                _clicked = True
+            except Exception:
+                pass
+        if not _clicked:
+            try:
+                btn.click()
+            except Exception:
+                try:
+                    self.driver.execute_script("arguments[0].click();", btn)
+                except Exception:
+                    pass
 
         token = (meta.get("expected_token") or "").strip()
         if token:
-            try:
-                WebDriverWait(self.driver, 20).until(
-                    lambda d: token in (d.current_url or "") or token in (d.page_source or "")
-                )
-            except Exception:
+            # Wait for ACTUAL navigation/modal: either URL changed OR a fee-form
+            # specific element appears (input[name='applynm'] without 'Query' prefix,
+            # or upload panel elements). page_source match alone is unreliable because
+            # list pages often embed the expected token in onclick attrs.
+            _deadline = time.time() + 20.0
+            _detail_markers = [
+                "input[name='applynm']", "#applynm",
+                "#uploadBtn", "#uploadBtnY", "#uploadBtnN",
+                "input[type='file']",
+                "select[name='cl_docnm2']", "#cl_docnm2",
+            ]
+            _entered = False
+            while time.time() < _deadline:
+                try:
+                    cur_url = self.driver.current_url or ""
+                except Exception:
+                    cur_url = ""
+                # URL actually changed (away from list/query page)
+                if cur_url and cur_url != _pre_click_url and token in cur_url:
+                    _entered = True
+                    break
+                # Detail-page markers appeared on current page
+                try:
+                    for _msel in _detail_markers:
+                        try:
+                            if self.driver.find_elements(By.CSS_SELECTOR, _msel):
+                                _entered = True
+                                break
+                        except Exception:
+                            continue
+                    if _entered:
+                        break
+                except Exception:
+                    pass
+                time.sleep(0.3)
+            if not _entered:
                 self.log(f"⚠️ 未偵測到 {token} 入口（可能是 modal），改以欄位偵測繼續")
 
         self._switch_to_content_frame_if_any()

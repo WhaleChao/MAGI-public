@@ -19,6 +19,11 @@ from datetime import datetime, timezone
 
 logger = logging.getLogger("Orchestrator")
 
+try:
+    from api.session.conversation_history import get_conversation_history
+except Exception:
+    get_conversation_history = None
+
 
 # ---------------------------------------------------------------------------
 # History / compression helpers
@@ -73,6 +78,11 @@ def append_history(orch, user_id, role, content):
         )
     except Exception:
         logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, "append_history", exc_info=True)
+    try:
+        if get_conversation_history and os.environ.get("MAGI_ASSISTANT_MEMORY_LAYER1", "1").strip().lower() not in {"0", "false", "no", "off"}:
+            get_conversation_history().append(str(user_id or ""), str(role or ""), text, metadata={"ts": ts})
+    except Exception:
+        logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, "append_history_layer1", exc_info=True)
     if len(user_hist) >= _HISTORY_COMPRESS_AT:
         compress_history(orch, user_id)
     elif len(user_hist) >= _HISTORY_COMPRESS_KEEP + 4:
@@ -188,6 +198,13 @@ def build_conversation_history(orch, user_id, limit=12) -> str:
         _mark_non_authoritative_context = None
 
     history = list(orch.user_history.get(user_id, []))
+    try:
+        if get_conversation_history and os.environ.get("MAGI_ASSISTANT_MEMORY_LAYER1", "1").strip().lower() not in {"0", "false", "no", "off"}:
+            layer1 = get_conversation_history().last_n(str(user_id or ""), max(limit, 20))
+            if layer1:
+                history = layer1
+    except Exception:
+        logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, "build_conversation_history_layer1", exc_info=True)
     with orch._history_summaries_lock:
         summary = orch._history_summaries.get(user_id, "")
     if not history and not summary:

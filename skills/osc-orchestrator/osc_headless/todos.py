@@ -249,4 +249,22 @@ def extract_todos_from_filename(
             except (re.error, ValueError, IndexError):
                 continue
 
+    if not matched:
+        bracket_todo = _extract_todo_from_filename(filename)
+        if bracket_todo:
+            days = int(bracket_todo["days"])
+            deadline = document_date + timedelta(days=days)
+            adjusted = next_workday(deadline, tw)
+            todos.append({
+                "type": bracket_todo["deadline_type"],
+                "deadline_type": bracket_todo["deadline_type"],
+                "file": filename,
+                "source_file": filename,
+                "source": bracket_todo.get("source", "filename_bracket"),
+                "date": adjusted.strftime("%Y-%m-%d"),
+                "datetime": adjusted,
+                "time": "",
+                "description": f"📝 {days}日內{bracket_todo['deadline_type']} ({document_date.strftime('%m/%d')}文到)",
+            })
+
     return todos

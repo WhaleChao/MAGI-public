@@ -37,6 +37,11 @@ logger = logging.getLogger("pdf-bookmarker")
 
 ocr_engine = RapidOCR() if HAS_OCR else None
 
+try:
+    from bookmark_validator import validate_bookmark
+except Exception:
+    validate_bookmark = None
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # 文件類型定義 — 依辨識優先順序排列
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -210,6 +215,20 @@ def _is_ola_separator(text: str) -> bool:
     return False
 
 
+def _meaningful_char_count(text: str) -> int:
+    clean = re.sub(r"\s+", "", text or "")
+    clean = re.sub(r"[^\w\u4e00-\u9fff]", "", clean)
+    return len(clean)
+
+
+def _compute_ola_threshold(counts: list[int]) -> int:
+    valid = sorted(c for c in counts if c >= 0)
+    if not valid:
+        return 80
+    idx = max(0, min(len(valid) - 1, int(len(valid) * 0.10)))
+    return max(80, valid[idx])
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # 文件類型辨識
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -333,6 +352,30 @@ def scan_and_bookmark(
 
     logger.info(f"掃描 {Path(pdf_path).name}（{doc.page_count} 頁，現有書籤 {len(existing_toc)} 個）...")
 
+    page_texts = []
+    meaningful_counts = []
+    for page_num in range(doc.page_count):
+        page = doc[page_num]
+        text = page.get_text()
+        if len(text.strip()) < min_text_len and HAS_OCR:
+            text = _ocr_page(page)
+        page_texts.append(text)
+        meaningful_counts.append(_meaningful_char_count(text))
+
+    ola_threshold = _compute_ola_threshold(meaningful_counts)
+    stats_path = Path(__file__).resolve().parents[2] / ".runtime" / "bookmarker_ola_stats.jsonl"
+    try:
+        stats_path.parent.mkdir(parents=True, exist_ok=True)
+        with stats_path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps({
+                "pdf": str(pdf_path),
+                "threshold": ola_threshold,
+                "pages": doc.page_count,
+                "sample_counts": meaningful_counts[:20],
+            }, ensure_ascii=False) + "\n")
+    except Exception:
+        logger.debug("Failed to write OLA stats", exc_info=True)
+
     def _flush_group():
         """Flush accumulated consecutive same-type bookmarks into one grouped entry."""
         nonlocal consecutive_same_count, consecutive_same_type, consecutive_same_start_pg
@@ -342,6 +385,10 @@ def scan_and_bookmark(
             else:
                 suffix = f"（共 {consecutive_same_count} 份）"
             label = f"{consecutive_same_type}{suffix}"
+            if callable(validate_bookmark):
+                ok, warns = validate_bookmark(label)
+                if not ok:
+                    logger.warning("bookmark format guard: %s → %s", label, warns)
             toc.append([2, label, consecutive_same_start_pg])
             logger.info(f"  [P{consecutive_same_start_pg}] {label}")
         consecutive_same_count = 0
@@ -350,15 +397,10 @@ def scan_and_bookmark(
 
     for page_num in range(doc.page_count):
         page = doc[page_num]
-        text = page.get_text()
-
-        # OCR fallback for scanned pages
-        if len(text.strip()) < min_text_len and HAS_OCR:
-            logger.debug(f"  [P{page_num+1}] 文字不足，嘗試 OCR...")
-            text = _ocr_page(page)
+        text = page_texts[page_num]
 
         # Skip OLA watermark-only separator pages
-        if _is_ola_separator(text):
+        if _is_ola_separator(text) and _meaningful_char_count(text) <= ola_threshold:
             continue
 
         # Skip nearly empty pages
@@ -380,6 +422,10 @@ def scan_and_bookmark(
             if name:
                 parts.append(name)
             label = " ".join(parts)
+            if callable(validate_bookmark):
+                ok, warns = validate_bookmark(label)
+                if not ok:
+                    logger.warning("bookmark format guard: %s → %s", label, warns)
             if label != last_label:
                 logger.info(f"  [P{page_num+1}] {label}")
                 toc.append([1, label, page_num + 1])
@@ -438,6 +484,10 @@ def scan_and_bookmark(
                 parts.append(name)
 
         label = " ".join(parts)
+        if callable(validate_bookmark):
+            ok, warns = validate_bookmark(label)
+            if not ok:
+                logger.warning("bookmark format guard: %s → %s", label, warns)
 
         # Dedup: skip if identical to last bookmark
         if label == last_label:

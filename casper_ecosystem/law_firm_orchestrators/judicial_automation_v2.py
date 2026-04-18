@@ -466,17 +466,48 @@ class LawyerSSO:
             self.log_callback(full_msg)
     
     def _setup_driver(self):
-        """設定 Chrome WebDriver"""
+        """設定 WebDriver（Playwright 優先，Selenium 回退）"""
+        # global 宣告必須在任何賦值前
+        global webdriver, Options, By, WebDriverWait, EC, ActionChains, Select
+        global TimeoutException, NoSuchElementException, Keys, StaleElementReferenceException
+
         if not self._engine_logged:
             self.log(format_legal_web_engine_log(self.web_engine_profile))
             self._engine_logged = True
+
+        use_playwright = (
+            os.environ.get("MAGI_TRANSCRIPT_WEB_ENGINE", "playwright").strip().lower() != "selenium"
+        )
+
+        if use_playwright:
+            try:
+                from skills.engine.playwright_wrapper import (
+                    create_playwright_driver,
+                    By as _By, Keys as _Keys, PlaywrightSelect as _Select,
+                    WebDriverWait as _WDW, EC as _EC, PlaywrightActionChains as _AC,
+                    TimeoutException as _TE, NoSuchElementException as _NSE,
+                    StaleElementReferenceException as _SERE,
+                )
+                By = _By; Keys = _Keys; Select = _Select
+                WebDriverWait = _WDW; EC = _EC; ActionChains = _AC
+                TimeoutException = _TE; NoSuchElementException = _NSE
+                StaleElementReferenceException = _SERE
+
+                page_timeout = float(os.environ.get("MAGI_WEB_PAGELOAD_TIMEOUT_SEC", "45") or "45")
+                dl_dir = os.path.abspath("./downloads")
+                self.driver = create_playwright_driver(
+                    headless=self.headless,
+                    download_dir=dl_dir,
+                    page_load_timeout=page_timeout,
+                )
+                self.log("✅ Playwright Chromium 初始化成功（筆錄模組）")
+                return
+            except Exception as _pw_err:
+                self.log(f"  ⚠️ Playwright 初始化失敗，回退到 Selenium: {_pw_err}")
+
         if not SELENIUM_AVAILABLE:
-            raise ImportError("Selenium 未安裝")
-        
-        # Lazy Load Selenium
-        global webdriver, Options, By, WebDriverWait, EC, ActionChains, Select
-        global TimeoutException, NoSuchElementException, Keys
-        
+            raise ImportError("Selenium 未安裝，且 Playwright 不可用或已停用")
+
         if webdriver is None:
             from selenium import webdriver
             from selenium.webdriver.common.by import By
@@ -486,9 +517,9 @@ class LawyerSSO:
             from selenium.webdriver.chrome.options import Options
             from selenium.webdriver.common.action_chains import ActionChains
             from selenium.common.exceptions import TimeoutException, NoSuchElementException
-            
+
         options = Options()
-        options.page_load_strategy = 'eager'  # Chrome 146+ renderer timeout 修正
+        options.page_load_strategy = 'eager'
         if self.headless:
             options.add_argument('--headless=new')
 
@@ -500,8 +531,7 @@ class LawyerSSO:
         options.add_experimental_option("excludeSwitches", ["enable-automation"])
         options.add_experimental_option('useAutomationExtension', False)
         options.add_argument('user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36')
-        
-        # 下載設定
+
         prefs = {
             "download.default_directory": os.path.abspath("./downloads"),
             "download.prompt_for_download": False,
@@ -509,28 +539,21 @@ class LawyerSSO:
             "plugins.always_open_pdf_externally": True
         }
         options.add_experimental_option("prefs", prefs)
-        
+
         self.driver = webdriver.Chrome(options=options)
 
-        # 防呆：避免 driver.get()/等待資源在網路不穩時無限卡住
         try:
             page_timeout = int(os.environ.get("MAGI_SELENIUM_PAGELOAD_TIMEOUT_SEC", "45") or "45")
             script_timeout = int(os.environ.get("MAGI_SELENIUM_SCRIPT_TIMEOUT_SEC", "45") or "45")
             self.driver.set_page_load_timeout(page_timeout)
             self.driver.set_script_timeout(script_timeout)
         except Exception as e:
-            try:
-                self.log(f"  ⚠️ 設定 Selenium timeout 失敗(可忽略): {e}")
-            except Exception:
-                logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 517, exc_info=True)
-        
-        # 隱藏 webdriver 特徵
+            self.log(f"  ⚠️ 設定 Selenium timeout 失敗(可忽略): {e}")
+
         self.driver.execute_cdp_cmd('Page.addScriptToEvaluateOnNewDocument', {
-            'source': '''
-                Object.defineProperty(navigator, 'webdriver', {get: () => undefined})
-            '''
+            'source': 'Object.defineProperty(navigator, "webdriver", {get: () => undefined})'
         })
-        
+
         self.driver.implicitly_wait(10)
     
     def login(self, max_retries: int = 3) -> bool:
@@ -884,92 +907,107 @@ class CourtRecordDownloader:
             self.log_callback(full_msg)
     
     def _setup_driver(self):
-        """設置 WebDriver（含反爬蟲措施）"""
+        """設置 WebDriver（Playwright 優先，Selenium 回退；含反爬蟲措施）"""
+        # global 宣告必須在任何賦值前
+        global webdriver, Options, By, WebDriverWait, EC, ActionChains, Select
+        global TimeoutException, NoSuchElementException, Keys, StaleElementReferenceException
+
         if not self._engine_logged:
             self.log(format_legal_web_engine_log(self.web_engine_profile))
             self._engine_logged = True
         self.log("  正在設置 WebDriver...")
-        
+
+        use_playwright = (
+            os.environ.get("MAGI_TRANSCRIPT_WEB_ENGINE", "playwright").strip().lower() != "selenium"
+        )
+
         try:
-            import random
-            
-            # Lazy Load Selenium
-            global webdriver, Options, By, WebDriverWait, EC, ActionChains, Select
-            global TimeoutException, NoSuchElementException, Keys
-            
-            if webdriver is None:
-                from selenium import webdriver
-                from selenium.webdriver.common.by import By
-                from selenium.webdriver.common.keys import Keys
-                from selenium.webdriver.support.ui import WebDriverWait, Select
-                from selenium.webdriver.support import expected_conditions as EC
-                from selenium.webdriver.chrome.options import Options
-                from selenium.webdriver.common.action_chains import ActionChains
-                from selenium.common.exceptions import TimeoutException, NoSuchElementException
-            
-            options = Options()
-            options.page_load_strategy = 'eager'  # Chrome 146+ renderer timeout 修正
+            if use_playwright:
+                from skills.engine.playwright_wrapper import (
+                    create_playwright_driver,
+                    By as _By, Keys as _Keys, PlaywrightSelect as _Select,
+                    WebDriverWait as _WDW, EC as _EC, PlaywrightActionChains as _AC,
+                    TimeoutException as _TE, NoSuchElementException as _NSE,
+                    StaleElementReferenceException as _SERE,
+                )
+                By = _By; Keys = _Keys; Select = _Select
+                WebDriverWait = _WDW; EC = _EC; ActionChains = _AC
+                TimeoutException = _TE; NoSuchElementException = _NSE
+                StaleElementReferenceException = _SERE
 
-            # 啟用 headless 模式
-            if self.headless:
-                options.add_argument('--headless=new')
-            
-            # 反爬蟲：使用真實的 User-Agent
-            user_agents = [
-                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
-                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36',
-            ]
-            options.add_argument(f'--user-agent={random.choice(user_agents)}')
-            
-            # 反爬蟲：禁用自動化標誌
-            options.add_argument('--disable-blink-features=AutomationControlled')
-            options.add_experimental_option("excludeSwitches", ["enable-automation"])
-            options.add_experimental_option('useAutomationExtension', False)
-            
-            options.add_argument('--no-sandbox')
-            options.add_argument('--disable-dev-shm-usage')
-            options.add_argument('--disable-gpu')
-            options.add_argument('--window-size=1280,800')
-            
-            # 設定下載資料夾
-            prefs = {
-                "download.default_directory": self.download_folder,
-                "download.prompt_for_download": False,
-                "download.directory_upgrade": True,
-                "plugins.always_open_pdf_externally": True
-            }
-            options.add_experimental_option("prefs", prefs)
-            
-            self.driver = webdriver.Chrome(options=options)
-            
-            # 反爬蟲：移除 webdriver 屬性
-            self.driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+                page_timeout = float(os.environ.get("MAGI_WEB_PAGELOAD_TIMEOUT_SEC", "45") or "45")
+                self.driver = create_playwright_driver(
+                    headless=self.headless,
+                    download_dir=self.download_folder,
+                    page_load_timeout=page_timeout,
+                )
+                self.log("✅ Playwright Chromium 初始化成功（筆錄 CourtRecordDownloader）")
+                # 初始化驗證碼識別器
+                self.captcha_solver = CaptchaSolver()
+                return
+        except Exception as _pw_err:
+            self.log(f"  ⚠️ Playwright 初始化失敗，回退到 Selenium: {_pw_err}")
 
-            # 防呆：避免 driver.get()/等待資源在網路不穩時無限卡住
-            try:
-                page_timeout = int(os.environ.get("MAGI_SELENIUM_PAGELOAD_TIMEOUT_SEC", "45") or "45")
-                script_timeout = int(os.environ.get("MAGI_SELENIUM_SCRIPT_TIMEOUT_SEC", "45") or "45")
-                self.driver.set_page_load_timeout(page_timeout)
-                self.driver.set_script_timeout(script_timeout)
-            except Exception as e:
-                try:
-                    self.log(f"  ⚠️ 設定 Selenium timeout 失敗(可忽略): {e}")
-                except Exception:
-                    logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 904, exc_info=True)
-            
-            self.driver.implicitly_wait(5)  # 減少隱式等待時間
-            
-            # 初始化驗證碼識別器
-            self.captcha_solver = CaptchaSolver()
-            
-            self.log("  ✓ WebDriver 設置完成")
-            
+        # ---- Selenium fallback ----
+        if not SELENIUM_AVAILABLE:
+            raise ImportError("Selenium 未安裝，且 Playwright 不可用或已停用")
+
+        import random
+
+        if webdriver is None:
+            from selenium import webdriver
+            from selenium.webdriver.common.by import By
+            from selenium.webdriver.common.keys import Keys
+            from selenium.webdriver.support.ui import WebDriverWait, Select
+            from selenium.webdriver.support import expected_conditions as EC
+            from selenium.webdriver.chrome.options import Options
+            from selenium.webdriver.common.action_chains import ActionChains
+            from selenium.common.exceptions import TimeoutException, NoSuchElementException
+
+        options = Options()
+        options.page_load_strategy = 'eager'
+
+        if self.headless:
+            options.add_argument('--headless=new')
+
+        user_agents = [
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
+        ]
+        options.add_argument(f'--user-agent={random.choice(user_agents)}')
+        options.add_argument('--disable-blink-features=AutomationControlled')
+        options.add_experimental_option("excludeSwitches", ["enable-automation"])
+        options.add_experimental_option('useAutomationExtension', False)
+        options.add_argument('--no-sandbox')
+        options.add_argument('--disable-dev-shm-usage')
+        options.add_argument('--disable-gpu')
+        options.add_argument('--window-size=1280,800')
+
+        prefs = {
+            "download.default_directory": self.download_folder,
+            "download.prompt_for_download": False,
+            "download.directory_upgrade": True,
+            "plugins.always_open_pdf_externally": True
+        }
+        options.add_experimental_option("prefs", prefs)
+
+        self.driver = webdriver.Chrome(options=options)
+        self.driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+
+        try:
+            page_timeout = int(os.environ.get("MAGI_SELENIUM_PAGELOAD_TIMEOUT_SEC", "45") or "45")
+            script_timeout = int(os.environ.get("MAGI_SELENIUM_SCRIPT_TIMEOUT_SEC", "45") or "45")
+            self.driver.set_page_load_timeout(page_timeout)
+            self.driver.set_script_timeout(script_timeout)
         except Exception as e:
-            self.log(f"  ❌ WebDriver 設置失敗: {e}")
-            traceback.print_exc()
-            raise
-    
+            self.log(f"  ⚠️ 設定 Selenium timeout 失敗(可忽略): {e}")
+
+        self.driver.implicitly_wait(5)
+
+        # 初始化驗證碼識別器
+        self.captcha_solver = CaptchaSolver()
+        self.log("  ✓ WebDriver 設置完成")
+
     def _random_delay(self, min_sec: float = 0.5, max_sec: float = 2.0):
         """隨機延遲（模擬人類行為）"""
         import random

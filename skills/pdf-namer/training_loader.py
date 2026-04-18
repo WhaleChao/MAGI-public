@@ -25,6 +25,7 @@ DB_HOST = os.environ.get("OSC_DB_HOST", os.environ.get("MAGI_REMOTE_DB_HOST", "1
 DB_USER = os.environ.get("OSC_DB_USER", os.environ.get("DB_USER", "casper_service"))
 DB_PASS = os.environ.get("OSC_DB_PASSWORD", os.environ.get("DB_PASSWORD", ""))
 DB_NAME = "law_firm_data"
+_DB_FAILURE_UNTIL = 0.0
 
 # Target archive types (matching user's 4 folder spec)
 TARGET_ARCHIVE_TYPES = [
@@ -43,6 +44,12 @@ SKILL_DIR = os.path.dirname(os.path.abspath(__file__))
 
 def _get_db_connection():
     """Get MariaDB connection with failover: remote → local socket → local TCP."""
+    global _DB_FAILURE_UNTIL
+    if os.environ.get("MAGI_PDF_NAMER_DISABLE_DB_RULES", "0").strip().lower() in {"1", "true", "yes", "on"}:
+        return None
+    now = __import__("time").time()
+    if _DB_FAILURE_UNTIL and now < _DB_FAILURE_UNTIL:
+        return None
     import mysql.connector
 
     # Try TCP connection (remote or local via env)
@@ -75,6 +82,7 @@ def _get_db_connection():
         )
         return conn
     except Exception as e:
+        _DB_FAILURE_UNTIL = __import__("time").time() + 300
         logger.warning(f"⚠️ MariaDB 連線失敗 (all hosts): {e}")
         return None
 

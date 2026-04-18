@@ -556,7 +556,8 @@ async def bg_scheduler_loop():
                                       "job_wiki_synthesizer", "job_knowledge_lint",
                                       "job_smoke_external_chat",
                                       "job_translator_ape_regression",
-                                      "job_omlx_switch_night", "job_omlx_switch_day"}
+                                      "job_omlx_switch_night", "job_omlx_switch_day",
+                                      "job_benchmark_pdf_bookmarker"}
                         _timeout = 7200 if job.get("id") in _LONG_JOBS else 600
                         _job_id = job.get("id", "?")
                         _shell_env = {**os.environ, "MAGI_PREFER_LOCAL_DB": "0", "MAGI_NO_DELETE": "1"}
