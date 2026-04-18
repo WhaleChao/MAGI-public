@@ -23,13 +23,12 @@ class TestCompactTools(unittest.TestCase):
     def test_always_tools_count(self):
         from skills.engine.tool_registry import get_compact_tools
         tools = get_compact_tools("")
-        # 常駐 8 個（不含 remember）
-        self.assertEqual(len(tools), 8)
+        # 常駐 9 個（含 run_skill，不含 remember）— T5 已將 run_skill 加入 always tools
+        self.assertEqual(len(tools), 9)
         for name in ["search_memory", "web_search", "query_cases", "get_schedule",
-                      "calculate", "current_time", "summarize", "translate"]:
+                      "calculate", "current_time", "summarize", "translate", "run_skill"]:
             self.assertIn(name, tools, "{} should be in compact tools".format(name))
         self.assertNotIn("remember", tools)
-        self.assertNotIn("run_skill", tools)
 
     def test_remember_gate_opens(self):
         from skills.engine.tool_registry import get_compact_tools
@@ -89,9 +88,9 @@ class TestReActForOmlx(unittest.TestCase):
         self.assertEqual(engine.max_steps, 5)
         self.assertEqual(engine.total_timeout, 60)
         self.assertIsNotNone(engine._llm)
-        # 確認 tools 含 compact set
+        # 確認 tools 含 compact set（含 T5 加入的 run_skill）
         self.assertIn("current_time", engine.tools)
-        self.assertNotIn("run_skill", engine.tools)
+        self.assertIn("run_skill", engine.tools)
 
     def test_soul_text_injected(self):
         from skills.engine.react_engine import ReActEngine

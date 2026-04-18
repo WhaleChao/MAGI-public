@@ -286,11 +286,17 @@ class ReActEngine:
                 trace.append({"step": step, "type": "timeout", "elapsed": round(elapsed, 1)})
                 break
 
-            # Context 裁剪 — 保留 system + 最近 6 輪對話，避免 token 累積
+            # Context 壓縮 — 多階段策略（工具結果裁剪 + head/tail 保護 + 中間段摘要）
             if len(messages) > 14:
-                system_msgs = [m for m in messages if m["role"] == "system"]
-                non_system = [m for m in messages if m["role"] != "system"]
-                messages = system_msgs + non_system[-6:]
+                try:
+                    from skills.engine.trajectory_compressor import TrajectoryCompressor
+                    _tc = TrajectoryCompressor()
+                    messages = _tc.compress_for_react(messages, max_tokens=6000)
+                except Exception:
+                    # Fallback: 原有粗暴裁剪
+                    system_msgs = [m for m in messages if m["role"] == "system"]
+                    non_system = [m for m in messages if m["role"] != "system"]
+                    messages = system_msgs + non_system[-6:]
 
             # 呼叫 LLM
             try:

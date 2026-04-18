@@ -66,7 +66,7 @@ def strip_zero_width(s: str) -> str:
 
 
 def normalize_court_char(s: str) -> str:
-    """臺/台 統一：將常見的「台」字地名替換為「臺」。"""
+    """臺/台 統一 + 簡繁轉換：將常見的「台」字地名與 OCR 常見簡體錯字替換為正體。"""
     if not s:
         return s or ""
     return (
@@ -75,4 +75,9 @@ def normalize_court_char(s: str) -> str:
         .replace("台南", "臺南")
         .replace("台東", "臺東")
         .replace("台北", "臺北")
+        # OCR 常將 灣→湾、東→东，在法院名稱中補回正體
+        .replace("臺湾", "臺灣")
+        .replace("台湾", "臺灣")
+        .replace("臺东", "臺東")
+        .replace("台东", "臺東")
     )

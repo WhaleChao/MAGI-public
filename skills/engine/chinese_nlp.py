@@ -38,6 +38,11 @@ _segmenter = None
 _seg_lock = threading.Lock()
 _cached_stopwords = None
 
+# Limit concurrent sidecar subprocesses to avoid spawning hundreds of
+# chinese_nlp_sidecar.py processes when many threads call NLP simultaneously.
+_SIDECAR_MAX_CONCURRENT = int(os.environ.get("MAGI_PKUSEG_SIDECAR_MAX_CONCURRENT", "4") or "4")
+_sidecar_sem = threading.BoundedSemaphore(_SIDECAR_MAX_CONCURRENT)
+
 
 def _looks_chinese(text: str) -> bool:
     return bool(re.search(r"[\u3400-\u9fff]", str(text or "")))
@@ -99,14 +104,15 @@ class _SidecarPKUSegSegmenter:
     def _run(self, texts: Sequence[str]) -> List[List[str]]:
         if not texts:
             return []
-        proc = subprocess.run(
-            [self._python_path, str(_SIDECAR_SCRIPT)],
-            input=json.dumps(list(texts), ensure_ascii=False),
-            text=True,
-            capture_output=True,
-            timeout=max(5, _SIDECAR_TIMEOUT_SEC),
-            check=False,
-        )
+        with _sidecar_sem:
+            proc = subprocess.run(
+                [self._python_path, str(_SIDECAR_SCRIPT)],
+                input=json.dumps(list(texts), ensure_ascii=False),
+                text=True,
+                capture_output=True,
+                timeout=max(5, _SIDECAR_TIMEOUT_SEC),
+                check=False,
+            )
         if proc.returncode != 0:
             stderr = (proc.stderr or "").strip()
             raise RuntimeError(stderr or "sidecar returned non-zero exit status")

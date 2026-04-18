@@ -1040,8 +1040,8 @@ def task_writeback(note_name: str, content: str, folder: str = "MAGI",
 
 def task_sync_case_notes(vault_path: Optional[Path] = None) -> Dict:
     """
-    從 MAGI 資料庫取出案件資訊，同步為 Obsidian 筆記。
-    每個案件生成一個 .md 筆記，放在 vault/MAGI/案件/ 下。
+    從 MAGI 資料庫取出案件資訊，在 30_Index/ 生成含 YAML frontmatter 的案件卡片。
+    Dataview 可直接查詢這些卡片，無需 LLM。
     """
     vp = vault_path or _get_vault_path()
     if not vp:
@@ -1060,9 +1060,8 @@ def task_sync_case_notes(vault_path: Optional[Path] = None) -> Dict:
                    court_name, status, start_date, end_date,
                    COALESCE(NULLIF(court_case_no, ''), court_case_number, '') AS court_case_number
             FROM cases
-            WHERE status NOT IN ('已結案', '結案')
             ORDER BY case_number DESC
-            LIMIT 200
+            LIMIT 500
             """,
         )
         cases = cur.fetchall() or []
@@ -1075,34 +1074,81 @@ def task_sync_case_notes(vault_path: Optional[Path] = None) -> Dict:
     updated = 0
     skipped = 0
 
+    index_dir = vp / "30_Index"
+    index_dir.mkdir(parents=True, exist_ok=True)
+    now_str = time.strftime("%Y-%m-%d")
+
     for c in cases:
         case_no = c.get("case_number", "")
         client = c.get("client_name", "")
-        name = f"{case_no} {client}".strip() or case_no
+        if not case_no:
+            continue
 
-        lines = [f"# {name}", ""]
+        # --- YAML frontmatter（供 Dataview 查詢）---
+        def _esc(v):
+            return str(v).replace('"', '\\"') if v else ""
+
+        fm_lines = [
+            "---",
+            "type: case-card",
+            f'case_number: "{_esc(case_no)}"',
+            f'client_name: "{_esc(client)}"',
+            f'case_type: "{_esc(c.get("case_type", ""))}"',
+            f'case_reason: "{_esc(c.get("case_reason", ""))}"',
+            f'court_name: "{_esc(c.get("court_name", ""))}"',
+            f'court_case_number: "{_esc(c.get("court_case_number", ""))}"',
+            f'status: "{_esc(c.get("status", ""))}"',
+            f'start_date: "{_esc(c.get("start_date", ""))}"',
+            f'updated: "{now_str}"',
+            "tags: [case-card]",
+            "---",
+        ]
+        frontmatter = "\n".join(fm_lines)
+
+        # --- 正文（人類可讀）---
+        title = f"{client} ({case_no})" if client else case_no
+        body_lines = [f"# {title}", ""]
         if c.get("court_name"):
-            lines.append(f"**法院**: {c['court_name']}")
+            body_lines.append(f"**法院**: {c['court_name']}")
         if c.get("court_case_number"):
-            lines.append(f"**案號**: {c['court_case_number']}")
+            body_lines.append(f"**法院案號**: {c['court_case_number']}")
         if c.get("case_reason"):
-            lines.append(f"**案由**: {c['case_reason']}")
+            body_lines.append(f"**案由**: {c['case_reason']}")
         if c.get("case_type"):
-            lines.append(f"**案件類型**: {c['case_type']}")
+            body_lines.append(f"**案件類型**: {c['case_type']}")
         if c.get("status"):
-            lines.append(f"**狀態**: {c['status']}")
+            body_lines.append(f"**狀態**: {c['status']}")
         if c.get("start_date"):
-            lines.append(f"**開始日期**: {c['start_date']}")
-        content = "\n".join(lines)
+            body_lines.append(f"**開始日期**: {c['start_date']}")
 
-        result = task_writeback(name, content, folder="MAGI/案件", vault_path=vp)
-        status = result.get("status", "")
-        if status == "created":
-            created += 1
-        elif status == "updated":
+        body_lines += [
+            "",
+            "## 相關文件",
+            "",
+            "```dataview",
+            f'LIST file.name FROM "20_Notes" WHERE case_number = "{case_no}" SORT file.mtime DESC LIMIT 20',
+            "```",
+        ]
+        body = "\n".join(body_lines)
+        full_content = frontmatter + "\n\n" + body + "\n"
+
+        # --- 寫檔（dedup：正文相同則跳過）---
+        safe_no = re.sub(r'[\\/*?:"<>|]', "_", case_no)
+        target_file = index_dir / f"{safe_no}.md"
+        if target_file.exists():
+            try:
+                existing = target_file.read_text(encoding="utf-8")
+                existing_body = re.sub(r"^---.*?---\s*", "", existing, flags=re.DOTALL).strip()
+                if existing_body == body.strip():
+                    skipped += 1
+                    continue
+            except Exception:
+                pass
+            target_file.write_text(full_content, encoding="utf-8")
             updated += 1
         else:
-            skipped += 1
+            target_file.write_text(full_content, encoding="utf-8")
+            created += 1
 
     return {
         "success": True,

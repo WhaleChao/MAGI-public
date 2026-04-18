@@ -22,6 +22,7 @@ import shutil
 import json
 import pickle
 import base64
+import tempfile
 import threading
 import traceback
 from datetime import datetime, timedelta
@@ -337,61 +338,53 @@ class CaptchaSolver:
                 except Exception as e:
                     print(f"⚠️ ddddocr 初始化失敗: {e}")
 
-        # Lazy Load RapidOCR
-        if RAPIDOCR_AVAILABLE and not self.dddd_ocr:
+        # Lazy Load RapidOCR (與 ddddocr 並行，雙引擎互補)
+        if RAPIDOCR_AVAILABLE:
             global RapidOCR
             if RapidOCR is None:
                 try:
                     from rapidocr_onnxruntime import RapidOCR
                 except ImportError:
                     pass
-            
+
             if RapidOCR:
                 try:
                     self.ocr = RapidOCR()
-                    # Ensure PIL and numpy are available for solve_from_element
-                    global Image, np
-                    if Image is None:
-                        from PIL import Image  # noqa: F811
-                    if np is None:
-                        import numpy as np  # noqa: F811
                 except Exception as e:
                     print(f"⚠️ RapidOCR 初始化失敗: {e}")
     
     def solve_from_element(self, driver, img_element) -> str:
-        """從 Selenium 元素識別驗證碼"""
+        """從 Selenium 元素識別驗證碼（ddddocr + RapidOCR 雙引擎並行）"""
         try:
-            # 截圖驗證碼圖片
             img_data = img_element.screenshot_as_png
-            
-            # 1. Try ddddocr
+            if not img_data:
+                return ""
+            candidates = []
             if self.dddd_ocr:
                 try:
-                    res = self.dddd_ocr.classification(img_data)
-                    # Keep valid characters only (Judicial captchas are usually alphanumeric)
-                    res = re.sub(r'[^A-Za-z0-9]', '', res)
-                    return res
+                    res = re.sub(r'[^A-Za-z0-9]', '', self.dddd_ocr.classification(img_data))
+                    if res:
+                        candidates.append(res)
                 except Exception as e:
                     print(f"ddddocr 識別失敗: {e}")
-
-            if not self.ocr:
+            if self.ocr:
+                try:
+                    from PIL import Image as _PIL_Image
+                    import numpy as _np
+                    img = _PIL_Image.open(io.BytesIO(img_data))
+                    img_array = _np.array(img)
+                    result, _ = self.ocr(img_array)
+                    if result:
+                        text = re.sub(r'[^A-Za-z0-9]', '', ''.join([item[1] for item in result]))
+                        if text:
+                            candidates.append(text)
+                except Exception as e:
+                    print(f"RapidOCR 識別失敗: {e}")
+            if not candidates:
                 return ""
-            
-            # 2. RapidOCR Fallback
-            img = Image.open(io.BytesIO(img_data))
-            img_array = np.array(img)
-            
-            result, _ = self.ocr(img_array)
-            
-            if result:
-                # 合併所有識別結果
-                text = ''.join([item[1] for item in result])
-                # 清理：只保留英數字
-                text = re.sub(r'[^A-Za-z0-9]', '', text)
-                return text
-            
-            return ""
-            
+            # 回傳字元數最多的結果
+            candidates.sort(key=lambda s: len(s), reverse=True)
+            return candidates[0]
         except Exception as e:
             print(f"驗證碼識別失敗: {e}")
             return ""
@@ -555,18 +548,21 @@ class LawyerSSO:
                 self.log(f"正在登入 (第 {attempt + 1} 次嘗試)...")
                 self.driver.get(self.LOGIN_URL)
                 time.sleep(2)
-                
+
+                # 頁面載入後先清一次 alert（密碼到期警告可能在頁面載入時就彈出）
+                self._dismiss_password_expiry_alert()
+
                 # 等待頁面載入
                 WebDriverWait(self.driver, 10).until(
                     EC.presence_of_element_located((By.TAG_NAME, "form"))
                 )
-                
+
                 # 尋找表單元素（根據實際頁面結構）
                 # 帳號是第一個 form-control，密碼是第二個
                 form_inputs = self.driver.find_elements(
                     By.CSS_SELECTOR, "input.form-control"
                 )
-                
+
                 if len(form_inputs) >= 2:
                     username_field = form_inputs[0]  # 第一個 input
                     password_field = form_inputs[1]  # 第二個 input
@@ -581,7 +577,7 @@ class LawyerSSO:
                         (By.CSS_SELECTOR, "input[type='password']"),
                         (By.NAME, "password"),
                     ])
-                
+
                 if not username_field or not password_field:
                     self.log("找不到帳號或密碼欄位")
                     continue
@@ -678,7 +674,10 @@ class LawyerSSO:
                     password_field.send_keys(Keys.RETURN)
                 
                 time.sleep(random.uniform(2.5, 4))
-                
+
+                # 按鈕點擊後再清一次 alert（密碼到期警告也可能在送出後才彈）
+                self._dismiss_password_expiry_alert()
+
                 # 檢查登入結果
                 if self._check_login_success():
                     self.logged_in = True
@@ -687,12 +686,12 @@ class LawyerSSO:
                 else:
                     error_msg = self._get_error_message()
                     self.log(f"登入失敗: {error_msg}")
-                    
+
                     # 如果是驗證碼錯誤，重試
                     if "驗證碼" in error_msg or "captcha" in error_msg.lower():
                         self.log("驗證碼錯誤，重新嘗試...")
                         continue
-                    
+
             except Exception as e:
                 self.log(f"登入異常: {e}")
                 traceback.print_exc()
@@ -706,6 +705,25 @@ class LawyerSSO:
         
         return False
     
+    def _dismiss_password_expiry_alert(self) -> bool:
+        """
+        攔截並接受「密碼到期建議更改」alert。
+        回傳 True 表示有 alert 被處理，False 表示無 alert。
+        若 alert 是帳密錯誤，記錄後仍 accept（避免 unexpected alert open 讓後續操作崩潰）。
+        """
+        try:
+            al = self.driver.switch_to.alert
+            alert_text = al.text
+            self.log(f"  ⚠️ 發現 Alert: {alert_text}")
+            al.accept()
+            if ("建議" in alert_text or "未更新" in alert_text or "未變更" in alert_text) and "密碼" in alert_text:
+                self.log("  (Alert 為密碼到期警告，已接受，繼續登入)")
+            else:
+                self.log(f"  (Alert 已接受: {alert_text[:80]})")
+            return True
+        except Exception:
+            return False
+
     def _find_element(self, selectors: List[Tuple]) -> Optional[Any]:
         """嘗試多種選擇器尋找元素"""
         for by, value in selectors:
@@ -957,7 +975,22 @@ class CourtRecordDownloader:
         import random
         delay = random.uniform(min_sec, max_sec)
         time.sleep(delay)
-    
+
+    def _dismiss_password_expiry_alert(self) -> bool:
+        """接受密碼到期警告 alert（不是帳密錯誤），返回是否成功接受。"""
+        try:
+            al = self.driver.switch_to.alert
+            alert_text = al.text
+            self.log(f"  ⚠️ 發現 Alert: {alert_text}")
+            al.accept()
+            if ("建議" in alert_text or "未更新" in alert_text or "未變更" in alert_text) and "密碼" in alert_text:
+                self.log("  (Alert 為密碼到期警告，已接受，繼續登入)")
+            else:
+                self.log(f"  (Alert 已接受: {alert_text[:80]})")
+            return True
+        except Exception:
+            return False
+
     def login(self, max_retries: int = 3) -> bool:
         """
         登入 ezlawyer.com.tw
@@ -1091,20 +1124,44 @@ class CourtRecordDownloader:
                 self._random_delay(3, 5)
                 
                 # 檢查是否登入成功
-                # 若有 alert（例如欄位缺漏），先關閉再重試
+                # 若有 alert（密碼到期警告或欄位缺漏），先關閉再確認是否已登入
                 try:
                     current_url = self.driver.current_url
                 except Exception as e:
-                    try:
-                        al = self.driver.switch_to.alert
-                        txt = (al.text or "").strip()
-                        try:
-                            al.accept()
-                        except Exception:
-                            logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 1067, exc_info=True)
-                        self.log(f"  ⚠️ 登入出現 Alert: {txt}")
-                    except Exception:
+                    # current_url 讀取失敗 → 通常是 unexpected alert open
+                    # 密碼到期警告出現在成功登入後的頁面跳轉期間 → 接受後需等待主頁面載入
+                    _alert_accepted = self._dismiss_password_expiry_alert()
+                    err_str = str(e)
+                    if not _alert_accepted:
                         self.log(f"  ⚠️ 登入讀取 current_url 失敗: {e}")
+                    # Alert 含「驗證碼」→ 必須填驗證碼才能登入，不等直接下一輪
+                    if "驗證碼" in err_str or "captcha" in err_str.lower():
+                        need_captcha = True
+                        self.log("  ℹ️ Alert 要求驗證碼，下一輪啟用 OCR")
+                        self._random_delay(2, 4)
+                        continue
+                    # 密碼到期警告或其他 alert → 等待主頁面載入，retry 最多 5 次
+                    # 每次等 1.5-2.5s，最長等 ~12s；每輪也清掉殘留 alert
+                    _login_detected = False
+                    for _post_alert_retry in range(5):
+                        self._random_delay(1.5, 2.5)
+                        self._dismiss_password_expiry_alert()  # 清掉殘留 alert
+                        if self._has_logout_link():
+                            self.logged_in = True
+                            self.log(f"✅ 登入成功（alert 已處理，第 {_post_alert_retry + 1} 次確認）")
+                            _login_detected = True
+                            return True
+                        try:
+                            _url_now = self.driver.current_url
+                            if "loginPage" not in _url_now:
+                                self.logged_in = True
+                                self.log(f"✅ 登入成功（URL 已跳轉: {_url_now[:60]}）")
+                                _login_detected = True
+                                return True
+                        except Exception:
+                            pass  # 另一個 alert 尚待關閉，繼續等待
+                    if not _login_detected:
+                        self.log("  ⚠️ Alert 已接受但未偵測到登入成功狀態，下一輪重試")
                     self._random_delay(2, 4)
                     continue
                 if "loginPage" not in current_url or self._has_logout_link():
@@ -1112,15 +1169,19 @@ class CourtRecordDownloader:
                     self.log("✅ 登入成功")
                     return True
                 else:
-                    self.log(f"  ⚠️ 登入失敗，等待後重試... (URL: {current_url[:50]})")
-                    # 若頁面明確提示需要/錯誤驗證碼，下一輪才啟用 OCR
+                    self.log(f"  ⚠️ 登入失敗，等待後重試... (URL: {current_url[:80]})")
+                    # 抓取頁面錯誤文字以診斷失敗原因
                     try:
-                        src = (self.driver.page_source or "")
-                        if ("驗證碼" in src) and (("錯誤" in src) or ("請輸入" in src) or ("不正確" in src)):
-                            need_captcha = True
-                            self.log("  ℹ️ 偵測到驗證碼提示，下一輪將啟用 OCR")
+                        page_text = self.driver.find_element(By.TAG_NAME, "body").text or ""
+                        for kw in ["驗證碼", "錯誤", "帳號", "密碼", "Error", "captcha", "locked", "鎖"]:
+                            if kw.lower() in page_text.lower():
+                                # 取出含關鍵字的那行
+                                for line in page_text.splitlines():
+                                    if kw.lower() in line.lower() and line.strip():
+                                        self.log(f"  📄 頁面訊息: {line.strip()[:120]}")
+                                        break
                     except Exception:
-                        logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 1086, exc_info=True)
+                        pass
                     # 失敗後等待更長時間再重試
                     self._random_delay(5 * (attempt + 1), 10 * (attempt + 1))
                     
@@ -1178,7 +1239,10 @@ class CourtRecordDownloader:
 
                 best_score = -10**9
                 best = None
-                input_y = float((captcha_input.location or {}).get("y", 0))
+                try:
+                    input_y = float((captcha_input.location or {}).get("y", 0))
+                except Exception:
+                    input_y = 0.0
                 for el in candidates:
                     try:
                         if not el.is_displayed():
@@ -1227,10 +1291,11 @@ class CourtRecordDownloader:
 
             allow_ocr = os.environ.get("MAGI_ALLOW_CAPTCHA_OCR", "1").strip().lower() in {"1", "true", "yes", "on"}
             allow_human = os.environ.get("MAGI_ALLOW_HUMAN_CAPTCHA_FALLBACK", "0").strip().lower() in {"1", "true", "yes", "on"}
-            expected_len = int(os.environ.get("MAGI_EZLAWYER_CAPTCHA_LEN", "6") or "6")
+            expected_len = int(os.environ.get("MAGI_EZLAWYER_CAPTCHA_LEN", "4") or "4")
             max_retries = int(os.environ.get("MAGI_EZLAWYER_CAPTCHA_RETRIES", "8") or "8")
 
             def _refresh_captcha() -> bool:
+                # 用 find_elements（plural）避免 implicit wait 每個 selector 等 5s
                 refresh_selectors = [
                     (By.CSS_SELECTOR, "a[onclick*='reload']"),
                     (By.CSS_SELECTOR, "a[onclick*='refresh']"),
@@ -1243,11 +1308,12 @@ class CourtRecordDownloader:
                 ]
                 for by, value in refresh_selectors:
                     try:
-                        el = self.driver.find_element(by, value)
-                        if el and el.is_displayed():
-                            el.click()
-                            self._random_delay(0.5, 1.2)
-                            return True
+                        els = self.driver.find_elements(by, value)
+                        for el in els:
+                            if el and el.is_displayed():
+                                el.click()
+                                self._random_delay(0.5, 1.2)
+                                return True
                     except Exception:
                         continue
                 try:
@@ -1262,13 +1328,63 @@ class CourtRecordDownloader:
             captcha_text = ""
             if allow_ocr:
                 for n in range(max_retries):
-                    # captcha 可能已刷新成新元素，避免 stale element reference
-                    captcha_img = _find_captcha_img() or captcha_img
-                    raw = self.captcha_solver.solve_from_element(self.driver, captcha_img) or ""
-                    captcha_text = re.sub(r"[^0-9]", "", raw)
-                    if len(captcha_text) >= expected_len:
-                        captcha_text = captcha_text[:expected_len]
+                    # 每次都重新找元素，避免 stale element reference
+                    try:
+                        captcha_img = _find_captcha_img() or captcha_img
+                    except Exception:
+                        captcha_img = None
+                    if not captcha_img:
                         break
+                    try:
+                        raw = self.captcha_solver.solve_from_element(self.driver, captcha_img) or ""
+                    except Exception:
+                        captcha_img = _find_captcha_img()
+                        if not captcha_img:
+                            break
+                        try:
+                            raw = self.captcha_solver.solve_from_element(self.driver, captcha_img) or ""
+                        except Exception:
+                            break
+                    local_text = re.sub(r"[^A-Za-z0-9]", "", raw)[:expected_len]
+                    self.log(f"  OCR 第 {n + 1} 次，local_len={len(local_text)} text={local_text!r}")
+                    # 儲存驗證碼圖片供人工檢查（first OCR attempt only）
+                    if n == 0:
+                        try:
+                            _debug_path = os.path.join(self.download_folder, "debug_ezlawyer_captcha.png")
+                            with open(_debug_path, "wb") as _f:
+                                _f.write(captcha_img.screenshot_as_png)
+                            self.log(f"  📸 驗證碼圖片已存: {_debug_path}")
+                        except Exception:
+                            pass
+
+                    # Melchior 交叉驗證（與 file_review 一致）
+                    melchior_text = ""
+                    if captcha_img:
+                        try:
+                            melchior_text = re.sub(
+                                r"[^A-Za-z0-9]", "",
+                                self._solve_captcha_with_melchior(captcha_img, expected_len) or ""
+                            )[:expected_len]
+                            if melchior_text:
+                                self.log(f"  Melchior 第 {n + 1} 次，melchior_len={len(melchior_text)}")
+                        except Exception:
+                            pass
+
+                    if len(local_text) >= expected_len and len(melchior_text) >= expected_len:
+                        if local_text == melchior_text:
+                            self.log("  ✅ 雙引擎驗證一致")
+                            captcha_text = local_text
+                            break
+                        self.log("  ⚠️ 雙引擎結果不一致，刷新重試")
+                    elif len(local_text) >= expected_len and not melchior_text:
+                        self.log("  ⚠️ Melchior 無回應，退回信任 local OCR")
+                        captcha_text = local_text
+                        break
+                    elif len(melchior_text) >= expected_len:
+                        self.log("  ✅ Melchior 備援辨識成功")
+                        captcha_text = melchior_text
+                        break
+
                     self.log(f"  ⚠️ 驗證碼 OCR 不足（第 {n + 1}/{max_retries} 次），自動刷新重試")
                     _refresh_captcha()
                 else:
@@ -1297,7 +1413,7 @@ class CourtRecordDownloader:
                     self.log(f"  ⚠️ 人工驗證碼流程失敗: {e}")
                     captcha_text = ""
 
-            captcha_text = re.sub(r"[^0-9]", "", (captcha_text or ""))
+            captcha_text = re.sub(r"[^A-Za-z0-9]", "", (captcha_text or ""))
             if len(captcha_text) >= expected_len:
                 self.log("  ✓ 已取得驗證碼（不顯示）")
                 captcha_input.clear()
@@ -1320,6 +1436,54 @@ class CourtRecordDownloader:
         except NoSuchElementException:
             return False
     
+    def _solve_captcha_with_melchior(self, captcha_img, expected_len: int = 6) -> str:
+        """InferenceGateway 備援 OCR — 驗證碼交叉驗證（alphanumeric）"""
+        if os.environ.get("MAGI_CAPTCHA_USE_MELCHIOR", "1").strip().lower() not in {"1", "true", "yes", "on"}:
+            return ""
+        tmp_path = None
+        try:
+            png = captcha_img.screenshot_as_png
+            with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tf:
+                tf.write(png)
+                tmp_path = tf.name
+            try:
+                from skills.bridge.inference_gateway import InferenceGateway
+            except Exception:
+                magi_root = os.environ.get("MAGI_ROOT_DIR", str(_MAGI_ROOT)).strip() or str(_MAGI_ROOT)
+                if magi_root and magi_root not in sys.path:
+                    sys.path.insert(0, magi_root)
+                from skills.bridge.inference_gateway import InferenceGateway
+            prompt = (
+                f"Read this CAPTCHA image and output ONLY the {expected_len} "
+                "alphanumeric characters (letters and digits). No spaces, no punctuation."
+            )
+            gateway = InferenceGateway()
+            r = gateway.dispatch(
+                prompt=prompt,
+                image_path=tmp_path,
+                task_type="captcha",
+                timeout=max(8, int(os.environ.get("MAGI_CAPTCHA_VISION_TIMEOUT", "12") or "12")),
+                cross_validate=True,
+                tc_review=False,
+            )
+            text = ""
+            if isinstance(r, dict):
+                text = str(r.get("analysis") or r.get("response") or r.get("text") or "")
+            cleaned = re.sub(r"[^A-Za-z0-9]", "", text or "")
+            if len(cleaned) >= expected_len:
+                self.log(f"  🤖 Gateway CAPTCHA route={r.get('route')} degraded={r.get('degraded')}")
+                return cleaned[:expected_len]
+            return ""
+        except Exception as e:
+            self.log(f"  ⚠️ Gateway 驗證碼備援失敗: {e}")
+            return ""
+        finally:
+            if tmp_path:
+                try:
+                    os.unlink(tmp_path)
+                except Exception:
+                    pass
+
     def get_cases_from_db(self) -> List[CourtCase]:
         """從資料庫取得案件"""
         if not self.db:

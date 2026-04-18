@@ -106,6 +106,114 @@ def run_inline_translation_command(orch, user_id, message: str) -> str:
     return f"🌐 翻譯結果（{result.get('provider','tri-sage')}）:\n{translated_text}"
 
 
+def run_translate_file_command(orch, user_id, message: str) -> str:
+    """Translate a local file (DOCX/PDF/PPTX/TXT/etc.) end-to-end.
+
+    Invocation: `翻譯檔案 <path>` or `translate file <path>`.
+    Optional trailing target language: `翻譯檔案 <path> 目標:英文`.
+    Runs full APE-enabled chunk translation via the translator skill and
+    returns a DOCX export (bilingual) attached to the reply.
+    """
+    import shlex
+    raw = orch._strip_intent_prefixes(
+        message,
+        [r"^(?:幫我|請|麻煩|協助我|可以幫我)?\s*",
+         r"^(?:翻譯檔案|翻譯文件|translate\s+file)\s*"],
+    )
+    if not raw:
+        return "❓ 請提供檔案路徑，例如：`翻譯檔案 /Users/ai/Desktop/a.docx`"
+
+    # Parse trailing target-language hint: `目標:英文` / `target:en`
+    target_lang = "繁體中文"
+    m = re.search(r"(?:目標[:：]|target[:：])\s*([A-Za-z\u4e00-\u9fff-]+)", raw)
+    if m:
+        target_lang = m.group(1).strip()
+        raw = raw[:m.start()].strip() + raw[m.end():].strip()
+
+    # Extract file path — support quoted or bare paths
+    path = raw.strip().strip("「」\"'` ")
+    # If user pasted multiple tokens, try shlex
+    if not os.path.exists(path):
+        try:
+            toks = shlex.split(raw)
+            for t in toks:
+                if os.path.exists(t):
+                    path = t
+                    break
+        except Exception:
+            pass
+
+    if not path or not os.path.exists(path):
+        return f"❌ 找不到檔案：`{path or raw}`"
+    if not os.path.isfile(path):
+        return f"❌ 不是檔案：`{path}`"
+
+    size = os.path.getsize(path)
+    if size > 20 * 1024 * 1024:
+        return f"❌ 檔案過大（{size/1024/1024:.1f}MB > 20MB），請先切分。"
+
+    try:
+        skill_script = f"{_MAGI_ROOT}/skills/translator/action.py"
+        if not os.path.exists(skill_script):
+            return "❌ 找不到 translator skill。"
+        import json as _json
+        payload = {
+            "input_path": path,
+            "target_lang": target_lang,
+            "source_lang": "auto",
+            "mode": "full",
+            "export": "1",
+            "export_format": "docx",
+            "llm_timeout": int(os.environ.get("MAGI_TRANSLATOR_LLM_TIMEOUT_SEC", "900") or "900"),
+            "timeout_sec": int(os.environ.get("MAGI_TRANSLATOR_TIMEOUT_SEC", "1800") or "1800"),
+        }
+        env = os.environ.copy()
+        # Force-enable APE paths for file translation (can be disabled via MAGI_TRANSLATE_FILE_APE=0)
+        if str(env.get("MAGI_TRANSLATE_FILE_APE", "1") or "1").strip().lower() in {"1", "true", "yes", "on"}:
+            env["MAGI_TRANSLATOR_APE"] = "1"
+            env["MAGI_TRANSLATOR_APE_CHUNKS"] = "1"
+        cmd = [sys.executable, skill_script, "--task", "translate " + _json.dumps(payload, ensure_ascii=False)]
+        proc = subprocess.run(
+            cmd, capture_output=True, text=True,
+            timeout=payload["timeout_sec"] + 60,
+            cwd=_MAGI_ROOT, env=env,
+        )
+        out = (proc.stdout or "").strip()
+        if proc.returncode != 0 and not out:
+            err = (proc.stderr or "unknown").strip()[:400]
+            return f"❌ 翻譯檔案失敗：{err}"
+        try:
+            result = _json.loads(out.splitlines()[-1]) if out else {}
+        except Exception:
+            # Try from last dict-looking line
+            result = {}
+            for ln in reversed(out.splitlines()):
+                ln = ln.strip()
+                if ln.startswith("{") and ln.endswith("}"):
+                    try:
+                        result = _json.loads(ln)
+                        break
+                    except Exception:
+                        continue
+        if not result.get("success"):
+            err = str(result.get("error") or proc.stderr or "unknown").strip()[:400]
+            return f"❌ 翻譯檔案失敗：{err}"
+
+        docx_path = result.get("docx_path") or result.get("export_path") or ""
+        provider = result.get("provider") or "translator"
+        lines = [f"📄 翻譯完成（{provider}，目標語言：{target_lang}）"]
+        if docx_path and os.path.exists(docx_path):
+            lines.append(f"📎 DOCX：`{docx_path}`")
+        elif result.get("text"):
+            preview = result["text"][:800]
+            lines.append(f"\n{preview}{'…' if len(result['text']) > 800 else ''}")
+        return "\n".join(lines)
+    except subprocess.TimeoutExpired:
+        return "❌ 翻譯檔案逾時（超過 30 分鐘）。可嘗試拆分檔案。"
+    except Exception as e:
+        return f"❌ 翻譯檔案錯誤：{e}"
+
+
 def run_inline_summary_command(orch, message: str) -> str:
     summary_length = orch._detect_summary_length(message)
     text = orch._strip_intent_prefixes(

@@ -178,7 +178,20 @@ def _call_omlx_chat(
         text = data["choices"][0]["message"]["content"].strip()
         return {"success": True, "text": text, "model": model_id}
     except Exception as e:
-        return {"success": False, "error": str(e), "text": ""}
+        try:
+            from skills.engine.error_classifier import classify_error
+            ce = classify_error(e, provider="omlx")
+            return {
+                "success": False,
+                "error": str(e),
+                "text": "",
+                "error_classified": ce.reason,
+                "retryable": ce.retryable,
+                "should_compress": ce.should_compress,
+                "should_fallback": ce.should_fallback,
+            }
+        except Exception:
+            return {"success": False, "error": str(e), "text": ""}
 
 
 def _call_omlx_chat_multiturn(
@@ -216,7 +229,20 @@ def _call_omlx_chat_multiturn(
         text = data["choices"][0]["message"]["content"].strip()
         return {"success": True, "text": text, "model": model_id}
     except Exception as e:
-        return {"success": False, "error": str(e), "text": ""}
+        try:
+            from skills.engine.error_classifier import classify_error
+            ce = classify_error(e, provider="omlx")
+            return {
+                "success": False,
+                "error": str(e),
+                "text": "",
+                "error_classified": ce.reason,
+                "retryable": ce.retryable,
+                "should_compress": ce.should_compress,
+                "should_fallback": ce.should_fallback,
+            }
+        except Exception:
+            return {"success": False, "error": str(e), "text": ""}
 
 
 def ensemble_chat(

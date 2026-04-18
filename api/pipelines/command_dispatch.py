@@ -239,6 +239,7 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
 "━━━━━━━━━━━━━━━━━━━━\n"
 "• `翻譯 [文字]` — 文字翻譯\n"
 "• `翻譯 [網址]` — 整頁翻譯\n"
+"• `翻譯檔案 [路徑]` — 翻譯 DOCX/PDF 等檔案（法律長文自動 APE 潤飾）\n"
 "• `摘要 [文字/網址]` — 文件摘要（預設 5-8 點）\n"
 "• `精簡摘要 [內容]` — 3-5 點精簡版\n"
 "• `詳細摘要 [內容]` — 12-15 點完整版\n"
@@ -346,6 +347,7 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
 "━━━━━━━━━━━━━━━━━━━━\n"
 "• `翻譯 [文字]` — 文字翻譯\n"
 "• `翻譯 [網址]` — 整頁翻譯\n"
+"• `翻譯檔案 [路徑]` — 翻譯 DOCX/PDF 等檔案（法律長文自動 APE 潤飾）\n"
 "• `摘要 [文字/網址]` — 文件摘要（預設 5-8 點）\n"
 "• `精簡摘要 [內容]` — 3-5 點精簡版\n"
 "• `詳細摘要 [內容]` — 12-15 點完整版\n"
@@ -591,6 +593,12 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
                 "• 實務見解整理：`實務見解 預售屋遲延交屋`"
             )
         return orch._run_judgment_collector_command(message, notify=False)
+
+    if (message.startswith("翻譯檔案") or message.startswith("翻譯文件")
+            or msg_lower.startswith("translate file")
+            or msg_stripped.startswith("翻譯檔案") or msg_stripped.startswith("翻譯文件")):
+        from api.pipelines.specialized_commands import run_translate_file_command
+        return run_translate_file_command(orch, user_id, message)
 
     if message.startswith("翻譯 ") or message.lower().startswith("translate ") or msg_stripped.startswith("翻譯 "):
         return orch._run_inline_translation_command(user_id, message)

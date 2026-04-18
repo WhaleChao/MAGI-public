@@ -21,7 +21,7 @@ import urllib.parse
 import urllib.request
 from datetime import datetime
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 
 _MAGI_ROOT = Path(__file__).resolve().parents[2]
 if str(_MAGI_ROOT) not in sys.path:
@@ -117,19 +117,92 @@ def _export_docx_bilingual(
     except Exception:
         return {"success": False, "error": "export_docx_not_available"}
 
-    # Split both texts into paragraphs and pair them
-    src_paras = [p.strip() for p in re.split(r"\n{2,}", (source_text or "").strip()) if p.strip()]
-    tgt_paras = [p.strip() for p in re.split(r"\n{2,}", (translated_text or "").strip()) if p.strip()]
+    # Split both texts into fine-grained segments. MarkItDown / LLM output
+    # often uses single newlines (or markdown table markers) instead of blank
+    # lines, so splitting only on \n{2,} produces a handful of massive blobs
+    # and the bilingual table collapses into one row. Split on single \n,
+    # drop markdown noise, and merge very-short fragments back into their
+    # predecessor so each row holds a readable chunk.
+    def _segments(raw: str) -> List[str]:
+        if not raw:
+            return []
+        md_noise = re.compile(r"^\s*\|?\s*[-:| ]+\s*\|?\s*$")
+        sent_split = re.compile(r"(?<=[。！？!?])\s+|(?<=\.)\s{2,}")
+        out: List[str] = []
+        for line in raw.splitlines():
+            s = line.strip()
+            if not s or md_noise.match(s):
+                continue
+            # Explode markdown table rows ("| a | b | c |") into separate cells.
+            if "|" in s and s.count("|") >= 2:
+                pieces = [p.strip() for p in s.split("|") if p.strip()]
+            else:
+                pieces = [s]
+            for piece in pieces:
+                # Further split long pieces on bullets / sentence boundaries.
+                if len(piece) > 180:
+                    # Split on TOC bullets and dot-leaders first.
+                    bullet_parts = re.split(r"\s*[•·]\s*|\.{3,}", piece)
+                    parts: List[str] = []
+                    for bp in bullet_parts:
+                        bp = bp.strip(" .")
+                        if not bp:
+                            continue
+                        if len(bp) > 180:
+                            parts.extend(sent_split.split(bp))
+                        else:
+                            parts.append(bp)
+                else:
+                    parts = [piece]
+                for part in parts:
+                    t = part.strip()
+                    if not t:
+                        continue
+                    if out and len(t) < 8:
+                        out[-1] = (out[-1] + " " + t).strip()
+                        continue
+                    out.append(t)
+        return out
 
-    # Pad to equal length
-    max_len = max(len(src_paras), len(tgt_paras), 1)
-    while len(src_paras) < max_len:
-        src_paras.append("")
-    while len(tgt_paras) < max_len:
-        tgt_paras.append("")
+    src_lines = _segments(source_text)
+    tgt_lines = _segments(translated_text)
+
+    # Drop obvious LLM preamble / apology lines from target.
+    _preamble_re = re.compile(
+        r"^(?:好的|以下是|以下為|這是|這裡是|作為專業|身為|我將|我會|我是|Sure|Here('s| is)|As an? |I('ll| will) )",
+        re.IGNORECASE,
+    )
+    tgt_lines = [t for t in tgt_lines if not _preamble_re.match(t)]
+
+    # Align the two sequences by proportional interleave when lengths differ.
+    n = max(len(src_lines), len(tgt_lines), 1)
+    def _stretch(seq: List[str], target_len: int) -> List[str]:
+        if not seq:
+            return ["" for _ in range(target_len)]
+        if len(seq) == target_len:
+            return seq
+        out: List[str] = []
+        for i in range(target_len):
+            j = int(i * len(seq) / target_len)
+            out.append(seq[j])
+        # Dedupe consecutive duplicates produced by stretching, keep position.
+        cleaned: List[str] = []
+        last = None
+        for v in out:
+            if v == last:
+                cleaned.append("")
+            else:
+                cleaned.append(v)
+                last = v
+        return cleaned
+
+    src_rows = _stretch(src_lines, n)
+    tgt_rows = _stretch(tgt_lines, n)
 
     pages = []
-    for i, (s, t) in enumerate(zip(src_paras, tgt_paras)):
+    for i, (s, t) in enumerate(zip(src_rows, tgt_rows)):
+        if not s and not t:
+            continue
         pages.append({"page": i + 1, "source": s, "target": t})
 
     return export_bilingual_docx(
@@ -148,8 +221,9 @@ def _load_text_from_file(path: str) -> str:
     if not os.path.exists(p) or not os.path.isfile(p):
         return ""
     max_chars = int(os.environ.get("MAGI_TRANSLATOR_MAX_FILE_CHARS", "220000") or "220000")
+    low = p.lower()
     # PDF: use pdf_bridge to extract text instead of reading raw binary
-    if p.lower().endswith(".pdf"):
+    if low.endswith(".pdf"):
         try:
             from skills.documents.pdf_bridge import extract_text
             data = extract_text(p)
@@ -157,6 +231,27 @@ def _load_text_from_file(path: str) -> str:
         except Exception as e:
             logging.getLogger(__name__).warning(f"PDF extract failed for {p}: {e}")
             return ""
+    # Office / markup / ebook formats → MarkItDown via document_reader
+    if low.endswith((".docx", ".doc", ".pptx", ".ppt", ".xlsx", ".xls",
+                     ".html", ".htm", ".xml", ".epub", ".odt", ".rtf",
+                     ".csv", ".json")):
+        try:
+            from skills.engine.document_reader import read_document
+            r = read_document(p, max_chars=max_chars, ocr_fallback=False)
+            if r.success and r.text:
+                return (r.text or "")[:max_chars]
+        except Exception as e:
+            logging.getLogger(__name__).warning(f"document_reader failed for {p}: {e}")
+        # Fallback for docx: try python-docx directly
+        if low.endswith(".docx"):
+            try:
+                import docx  # type: ignore
+                doc = docx.Document(p)
+                paras = [para.text for para in doc.paragraphs if para.text.strip()]
+                return "\n\n".join(paras)[:max_chars]
+            except Exception as e:
+                logging.getLogger(__name__).warning(f"python-docx fallback failed for {p}: {e}")
+        return ""
     # Plain text-like files
     for enc in ("utf-8", "utf-8-sig", "cp950", "big5", "latin-1"):
         try:
@@ -327,6 +422,8 @@ def _translate_chunks_local(
     target_lang: str,
     timeout_per_chunk: int = 60,
     max_chunks: int = 60,
+    legal_tier1: str = "",
+    legal_tier2: str = "",
 ) -> str:
     chunks = _split_chunks(text, chunk_size=int(os.environ.get("MAGI_TRANSLATOR_CHUNK_SIZE", "1500") or "1500"))
     if not chunks:
@@ -350,13 +447,68 @@ def _translate_chunks_local(
         markers = ("系統降級回覆", "本機模型逾時", "請稍後重試", "降級摘要")
         return any(m in t for m in markers)
 
+    # ── Per-chunk APE eligibility (legal zh↔en, feature-flagged) ──
+    _ape_chunks_enabled = str(os.environ.get("MAGI_TRANSLATOR_APE_CHUNKS", "1") or "1").strip().lower() in {"1", "true", "yes", "on"}
+    _ape_chunk_max = int(os.environ.get("MAGI_TRANSLATOR_APE_CHUNK_MAX_CHARS", "1800") or "1800")
+    _ape_chunk_eligible = False
+    _ape_chunk_src = ""
+    _ape_chunk_tgt = ""
+    if _ape_chunks_enabled:
+        try:
+            from skills.engine.apple_translation import normalize_lang, is_available as _apple_avail_fn
+            _src_code = normalize_lang(source_lang or "auto")
+            _tgt_code = normalize_lang(target_lang or "en")
+            # auto source: detect via first chunk sample
+            _auto_is_en = False
+            if _src_code == "auto":
+                _sample = "".join(chunks[:2])[:2000] if chunks else ""
+                if _sample:
+                    _ratio = sum(1 for ch in _sample if ord(ch) < 128) / max(1, len(_sample))
+                    _auto_is_en = _ratio > 0.6
+            _zh_en = (
+                (_src_code.startswith("zh") and _tgt_code == "en") or
+                (_src_code == "en" and _tgt_code.startswith("zh")) or
+                (_src_code == "auto" and _tgt_code in {"en"}) or
+                (_src_code == "auto" and _tgt_code.startswith("zh") and _auto_is_en)
+            )
+            _apple_ok, _ = _apple_avail_fn()
+            if _apple_ok and _zh_en:
+                _ape_chunk_eligible = True
+                if _src_code == "auto":
+                    _ape_chunk_src = "en" if _auto_is_en else "zh-Hant"
+                else:
+                    _ape_chunk_src = _src_code
+                _ape_chunk_tgt = _tgt_code
+        except Exception:
+            _ape_chunk_eligible = False
+
     def process_chunk(idx: int, c: str) -> tuple[int, str, bool]:
         c = c.strip()
         if not c:
             return idx, "", False
 
         max_chunk_retries = int(os.environ.get("MAGI_TRANSLATOR_CHUNK_RETRIES", "3") or "3")
-        
+
+        # ── APE per-chunk pass (legal zh↔en, short/medium) ──
+        if _ape_chunk_eligible and len(c) <= _ape_chunk_max:
+            try:
+                from skills.translator._apple_post_edit import translate_with_ape, is_legal_text
+                if is_legal_text(c):
+                    ape_res = translate_with_ape(
+                        c,
+                        source_lang=_ape_chunk_src,
+                        target_lang=_ape_chunk_tgt,
+                        llm_timeout=min(60, max(15, timeout_per_chunk)),
+                        apple_timeout=float(os.environ.get("MAGI_APPLE_TRANSLATION_TIMEOUT_SEC", "10.0") or "10.0"),
+                        tier1=legal_tier1,
+                        tier2=legal_tier2,
+                    )
+                    if ape_res.get("success") and str(ape_res.get("text") or "").strip():
+                        _chunk_logger.info("Chunk %d via APE (degraded=%s)", idx+1, ape_res.get("degraded"))
+                        return idx, str(ape_res.get("text") or "").strip(), False
+            except Exception as e:
+                _chunk_logger.debug("Chunk %d APE errored, falling through: %s", idx+1, e)
+
         for attempt in range(1, max_chunk_retries + 1):
             piece = ""
             # Try finding grounded_ai first
@@ -368,13 +520,26 @@ def _translate_chunks_local(
 
             if _generate_local:
                 try:
-                    prompt = (
-                        "你是專業翻譯員。\n"
-                        f"來源語言：{source_lang}\n"
-                        f"目標語言：{target_lang}\n"
-                        "規則：完整翻譯，不摘要，不省略，不補充。請確保語法連貫。\n\n"
-                        f"{c}"
-                    )
+                    if legal_tier1 or legal_tier2:
+                        try:
+                            from skills.translator.legal_termbase import build_legal_prompt
+                            prompt = build_legal_prompt(c, target_lang, legal_tier1, legal_tier2)
+                        except Exception:
+                            prompt = (
+                                "你是專業翻譯員。\n"
+                                f"來源語言：{source_lang}\n"
+                                f"目標語言：{target_lang}\n"
+                                "規則：完整翻譯，不摘要，不省略，不補充。請確保語法連貫。\n\n"
+                                f"{c}"
+                            )
+                    else:
+                        prompt = (
+                            "你是專業翻譯員。\n"
+                            f"來源語言：{source_lang}\n"
+                            f"目標語言：{target_lang}\n"
+                            "規則：完整翻譯，不摘要，不省略，不補充。請確保語法連貫。\n\n"
+                            f"{c}"
+                        )
                     piece = _strip_translation_preamble((_generate_local(prompt, temperature=0.1, timeout=timeout_per_chunk, num_ctx=4096) or "").strip())
                     if _is_degraded_response(piece):
                         _chunk_logger.warning("Chunk %d attempt %d _generate_local returned degraded response", idx+1, attempt)
@@ -517,6 +682,10 @@ def _translate_inner(payload: dict) -> dict:
         llm_timeout = 600
     llm_timeout = max(20, min(7200, llm_timeout))
 
+    # Legal termbase context (passed through from translate_core)
+    _legal_tier1 = str(payload.get("_legal_tier1") or "").strip()
+    _legal_tier2 = str(payload.get("_legal_tier2") or "").strip()
+
     # For long inputs, use chunked local mode first to avoid long blocking calls.
     direct_chunk_min = int(os.environ.get("MAGI_TRANSLATOR_DIRECT_CHUNK_MIN", "1200") or "1200")
     if len(text) >= direct_chunk_min:
@@ -526,6 +695,8 @@ def _translate_inner(payload: dict) -> dict:
             target_lang=target_lang,
             timeout_per_chunk=max(60, llm_timeout // 3),
             max_chunks=int(os.environ.get("MAGI_TRANSLATOR_MAX_CHUNKS", "200") or "200"),
+            legal_tier1=_legal_tier1,
+            legal_tier2=_legal_tier2,
         )
         if chunked:
             if export in {"1", "true", "yes", "on"} or len(chunked) > max_inline_chars:
@@ -697,6 +868,8 @@ def _translate_inner(payload: dict) -> dict:
                     target_lang=target_lang,
                     timeout_per_chunk=max(60, llm_timeout // 2),
                     max_chunks=int(os.environ.get("MAGI_TRANSLATOR_MAX_CHUNKS", "200") or "200"),
+                    legal_tier1=_legal_tier1,
+                    legal_tier2=_legal_tier2,
                 )
                 if chunked:
                     if export in {"1", "true", "yes", "on"} or len(chunked) > max_inline_chars:
@@ -821,8 +994,85 @@ def translate(payload: dict) -> dict:
         "max_inline_chars": payload.get("max_inline_chars") or 3000,
         "llm_timeout": llm_timeout,
     }
+    # Thread legal termbase context if present
+    _t1 = str(payload.get("_legal_tier1") or "").strip()
+    _t2 = str(payload.get("_legal_tier2") or "").strip()
+    if _t1:
+        inner_payload["_legal_tier1"] = _t1
+    if _t2:
+        inner_payload["_legal_tier2"] = _t2
 
     short_text = str(inner_payload.get("text") or "").strip()
+    # If text empty but input_path provided, load file contents for APE/stable-primary eligibility checks.
+    if not short_text:
+        _ip = str(inner_payload.get("input_path") or "").strip()
+        if _ip and os.path.isfile(_ip):
+            try:
+                short_text = _load_text_from_file(_ip).strip()
+                if short_text:
+                    inner_payload["text"] = short_text
+            except Exception:
+                short_text = ""
+
+    # ── Apple Translation + LLM Post-Edit (APE) ───────────────────────────
+    # Opt-in via MAGI_TRANSLATOR_APE=1. Only for legal text, short-to-medium
+    # length, and zh↔en pair. Produces Apple baseline → LLM polish →
+    # validator, falls back to baseline if the edit is rejected.
+    ape_enabled = str(os.environ.get("MAGI_TRANSLATOR_APE", "0") or "0").strip().lower() in {"1", "true", "yes", "on"}
+    ape_max_chars = int(os.environ.get("MAGI_TRANSLATOR_APE_MAX_CHARS", "1200") or "1200")
+    if ape_enabled and short_text and len(short_text) <= ape_max_chars:
+        try:
+            from skills.engine.apple_translation import normalize_lang, is_available as _apple_avail
+            from skills.translator._apple_post_edit import translate_with_ape, is_legal_text
+            src_code = normalize_lang(str(inner_payload.get("source_lang") or "zh-Hant"))
+            tgt_code = normalize_lang(str(inner_payload.get("target_lang") or "en"))
+            # Only run APE on zh↔en pairs where on-device pack is likely installed.
+            # Auto-source: detect ASCII-heavy text as English.
+            auto_src_is_en = False
+            if src_code == "auto":
+                sample = short_text[:2000]
+                ascii_ratio = sum(1 for c in sample if ord(c) < 128) / max(1, len(sample))
+                auto_src_is_en = ascii_ratio > 0.6
+            zh_en_pair = (
+                (src_code.startswith("zh") and tgt_code == "en") or
+                (src_code == "en" and tgt_code.startswith("zh")) or
+                (src_code == "auto" and tgt_code in {"en"} and is_legal_text(short_text)) or
+                (src_code == "auto" and tgt_code.startswith("zh") and auto_src_is_en and is_legal_text(short_text))
+            )
+            # Resolve effective source code for APE call
+            if src_code == "auto":
+                eff_src = "en" if auto_src_is_en else "zh-Hant"
+            else:
+                eff_src = src_code
+            apple_ok, _apple_reason = _apple_avail()
+            if apple_ok and zh_en_pair and is_legal_text(short_text):
+                ape_res = translate_with_ape(
+                    short_text,
+                    source_lang=eff_src,
+                    target_lang=tgt_code,
+                    llm_timeout=min(60, max(15, llm_timeout // 3)),
+                    apple_timeout=float(os.environ.get("MAGI_APPLE_TRANSLATION_TIMEOUT_SEC", "10.0") or "10.0"),
+                    tier1=str(inner_payload.get("_legal_tier1") or ""),
+                    tier2=str(inner_payload.get("_legal_tier2") or ""),
+                )
+                if ape_res.get("success") and str(ape_res.get("text") or "").strip():
+                    _res = {
+                        "success": True,
+                        "mode": inner_payload.get("mode") or "full",
+                        "target_lang": inner_payload.get("target_lang") or "繁體中文",
+                        "source_lang": inner_payload.get("source_lang") or "auto",
+                        "exported": False,
+                        "text": str(ape_res.get("text") or "").strip(),
+                        "provider": str(ape_res.get("provider") or "apple_translation_ape"),
+                        "degraded": bool(ape_res.get("degraded") or False),
+                        "baseline": ape_res.get("baseline"),
+                        "validator": ape_res.get("validator"),
+                        "elapsed_ms": ape_res.get("elapsed_ms"),
+                    }
+                    return _maybe_export_docx(payload, inner_payload, _res)
+        except Exception:
+            logging.getLogger(__name__).debug("ape: path errored, falling through", exc_info=True)
+
     stable_primary_enabled = str(
         os.environ.get("MAGI_TRANSLATOR_STABLE_PRIMARY", "1") or "1"
     ).strip().lower() in {"1", "true", "yes", "on"}
@@ -835,7 +1085,7 @@ def translate(payload: dict) -> dict:
                 timeout_sec=min(12, max(5, timeout_sec // 3)),
             )
             if out.strip():
-                return {
+                _sp_res = {
                     "success": True,
                     "mode": inner_payload.get("mode") or "full",
                     "target_lang": inner_payload.get("target_lang") or "繁體中文",
@@ -845,6 +1095,7 @@ def translate(payload: dict) -> dict:
                     "provider": "google_gtx_primary",
                     "degraded": False,
                 }
+                return _maybe_export_docx(payload, inner_payload, _sp_res)
         except Exception:
             logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 824, exc_info=True)
 
@@ -881,22 +1132,34 @@ def translate(payload: dict) -> dict:
         fb = _non_llm_fallback(inner_payload, reason=str(err))
         return fb if fb.get("success") else {"success": False, "error": err}
 
-    # ── DOCX export post-processing (default: always produce docx) ─────
-    export_format = str(payload.get("export_format") or "docx").strip().lower()
-    if export_format not in {"txt", "none", "off", "0"} and inner_res.get("success"):
+    inner_res = _maybe_export_docx(payload, inner_payload, inner_res)
+    return inner_res
+
+
+def _maybe_export_docx(payload: dict, inner_payload: dict, inner_res: dict) -> dict:
+    """Attach bilingual DOCX if export_format is docx (default) and result has text."""
+    try:
+        export_format = str(payload.get("export_format") or "docx").strip().lower()
+        if export_format in {"txt", "none", "off", "0"} or not inner_res.get("success"):
+            return inner_res
         source_text = inner_payload.get("text") or ""
         if not source_text:
             input_path = str(inner_payload.get("input_path") or "").strip()
             if input_path:
                 source_text = _load_text_from_file(input_path)
-        translated_text = inner_res.get("text") or inner_res.get("preview") or ""
-        # If text was exported to TXT, read it back
-        if not translated_text and inner_res.get("export_path"):
+        translated_text = inner_res.get("text") or ""
+        # Prefer full exported TXT over truncated preview
+        exp_path = inner_res.get("export_path") or ""
+        if exp_path and os.path.isfile(exp_path):
             try:
-                with open(inner_res["export_path"], "r", encoding="utf-8") as f:
-                    translated_text = f.read().strip()
+                with open(exp_path, "r", encoding="utf-8") as f:
+                    file_text = f.read().strip()
+                if file_text:
+                    translated_text = file_text
             except Exception:
-                logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 859, exc_info=True)
+                pass
+        if not translated_text:
+            translated_text = inner_res.get("preview") or ""
         if translated_text:
             docx_res = _export_docx_bilingual(
                 source_text=source_text,
@@ -910,8 +1173,55 @@ def translate(payload: dict) -> dict:
                 inner_res["docx_path"] = docx_res.get("path", "")
                 inner_res["docx_filename"] = docx_res.get("filename", "")
                 inner_res["docx_url"] = docx_res.get("url", "")
-
+    except Exception:
+        logging.getLogger(__name__).debug("maybe_export_docx failed", exc_info=True)
     return inner_res
+
+
+def translate_core(
+    text: str,
+    *,
+    target_lang: str = "繁體中文",
+    source_lang: Optional[str] = None,
+    mode: str = "full",
+    export: bool = False,
+    timeout_sec: int = 60,
+    llm_timeout: int = 25,
+) -> dict:
+    """
+    Single authoritative translation entry point.
+
+    Schema returned:
+    {
+      "success": bool,
+      "text": str,
+      "provider": str,   # google_gtx_primary / google_gtx_fallback / llm / extractive_fallback
+      "degraded": bool,
+      "elapsed_sec": float,
+      "export_path": str | None,
+      "error": str | None,
+    }
+    """
+    payload: dict = {
+        "text": text,
+        "target_lang": target_lang,
+        "source_lang": source_lang or "auto",
+        "mode": mode,
+        "export": "1" if export else "0",
+        "timeout_sec": timeout_sec,
+        "llm_timeout": llm_timeout,
+    }
+    try:
+        from skills.translator.legal_termbase import should_use_legal_mode, build_glossary_for_chunk
+        if should_use_legal_mode(text):
+            _t1, _t2 = build_glossary_for_chunk(text, target_lang)
+            if _t1:
+                payload["_legal_tier1"] = _t1
+            if _t2:
+                payload["_legal_tier2"] = _t2
+    except Exception:
+        pass  # graceful: legal termbase unavailable
+    return translate(payload)
 
 
 def main() -> int:

@@ -87,6 +87,12 @@ def test_intel_page_lists_recent_reports(tmp_path, monkeypatch):
     template_dir.mkdir()
     for name in ("dashboard.html", "dashboard_nerv.html"):
         (template_dir / name).write_text("{{ user.id }}", encoding="utf-8")
+    
+    # Add the missing intel.html mock template
+    (template_dir / "intel.html").write_text(
+        "🌐 全球情報面板\n{% for report in reports %}{{ report.name }} {{ report.content }}\n{% endfor %}", 
+        encoding="utf-8"
+    )
 
     from api.blueprints import dashboard_pages as mod
 

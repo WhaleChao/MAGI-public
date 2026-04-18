@@ -166,7 +166,9 @@ def get_court_code(court_name: str) -> Optional[str]:
 
 def extract_court_name(text: str) -> str:
     """從文本中 regex 擷取法院全名並正規化。"""
-    m = RE_COURT_NAME.search(text or "")
+    # Normalize simplified chars (OCR often renders 灣→湾, 東→东) before regex
+    normalized = normalize_court_char(text or "")
+    m = RE_COURT_NAME.search(normalized)
     if not m:
         return ""
     court = m.group(1)

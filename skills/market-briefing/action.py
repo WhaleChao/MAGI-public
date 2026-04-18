@@ -24,6 +24,9 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 _SKILL_DIR = Path(__file__).resolve().parent
+_MAGI_ROOT = _SKILL_DIR.parent.parent
+if str(_MAGI_ROOT) not in sys.path:
+    sys.path.insert(0, str(_MAGI_ROOT))
 if str(_SKILL_DIR) not in sys.path:
     sys.path.insert(0, str(_SKILL_DIR))
 

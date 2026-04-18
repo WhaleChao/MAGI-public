@@ -73,8 +73,8 @@ INDEX_PATH = AGENT_DIR / "obsidian_index.json"
 WIKI_FOLDER = "30_Wiki"  # Inside vault
 
 # Max chars to feed LLM per synthesis call
-# gemma-4-26b context ~8K tokens ≈ 12K Chinese chars; leave room for prompt + output
-MAX_SOURCE_CHARS = int(os.environ.get("MAGI_WIKI_MAX_SOURCE_CHARS", "8000"))
+# E4B on 6GB runs safely at ~3K chars; 26B can handle 8K. Default to 3K to protect E4B.
+MAX_SOURCE_CHARS = int(os.environ.get("MAGI_WIKI_MAX_SOURCE_CHARS", "3000"))
 # Max notes per case to synthesize in one pass
 MAX_NOTES_PER_CASE = int(os.environ.get("MAGI_WIKI_MAX_NOTES", "50"))
 
@@ -168,9 +168,15 @@ def _gather_case_notes(vault: Path) -> Dict[str, List[Dict]]:
 
 
 def _case_needs_update(case_number: str, notes: List[Dict], state: Dict) -> bool:
-    """Check if any note in this case has changed since last synthesis."""
+    """Check if any note in this case has changed since last synthesis,
+    or if the previous synthesis used structural fallback (llm_synthesized=False).
+    """
     prev = state.get("cases", {}).get(case_number, {})
     prev_hashes = prev.get("source_hashes", {})
+
+    # Re-synthesize if previous run used structural fallback (oMLX was down)
+    if prev and not prev.get("llm_synthesized", True):
+        return True
 
     for note in notes:
         prev_hash = prev_hashes.get(note["path"])
@@ -192,6 +198,28 @@ def _get_gateway():
     """Get InferenceGateway instance."""
     from skills.bridge.inference_gateway import InferenceGateway
     return InferenceGateway()
+
+
+def _omlx_chat_direct(prompt: str, timeout: int = 60, max_tokens: int = 500) -> Optional[str]:
+    """Call oMLX directly with controlled max_tokens (bypasses gateway's hardcoded 2048)."""
+    try:
+        import requests as _req
+        url = "http://127.0.0.1:8080/v1/chat/completions"
+        payload = {
+            "model": os.environ.get("MAGI_WIKI_LLM_MODEL", "gemma-4-e4b-it-4bit"),
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": max_tokens,
+            "temperature": 0.3,
+            "stream": False,
+        }
+        r = _req.post(url, json=payload, timeout=(2.0, float(timeout)))
+        if r.status_code == 200:
+            data = r.json()
+            text = data.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
+            return text if text else None
+    except Exception as e:
+        logger.debug("_omlx_chat_direct failed: %s", e)
+    return None
 
 
 def _extract_note_text(abs_path: str, max_chars: int = 5000) -> str:
@@ -221,7 +249,12 @@ def _synthesize_overview(
     notes: List[Dict],
     gw,
 ) -> Optional[str]:
-    """Use LLM to synthesize a case overview from all notes."""
+    """Use LLM to synthesize a case overview from all notes.
+
+    Set MAGI_WIKI_SKIP_LLM=1 to bypass LLM entirely (fast structural-only run).
+    """
+    if os.environ.get("MAGI_WIKI_SKIP_LLM", "0") == "1":
+        return None  # caller will use _structural_overview
 
     # Collect source texts, staying within budget
     source_parts = []
@@ -290,29 +323,89 @@ def _synthesize_overview(
 {chr(10).join(source_parts)}
 """
 
-    try:
-        result = gw.chat(
-            prompt,
-            task_type="general",
-            timeout=180,
-        )
-        if result.get("success"):
-            resp = result.get("response", "").strip()
-            # Detect degraded / empty responses
-            if not resp or len(resp) < 100:
-                logger.warning("LLM response too short for %s (%d chars)", case_number, len(resp))
-                return None
-            degraded_markers = ["系統降級", "逾時", "請稍後重試", "無法處理"]
-            if any(m in resp for m in degraded_markers):
-                logger.warning("LLM returned degraded response for %s", case_number)
-                return None
+    # Bound output tokens so E4B under memory pressure can't run for hours.
+    # Use direct oMLX call (bypasses gateway's hardcoded max_tokens=2048).
+    max_tokens = int(os.environ.get("MAGI_WIKI_MAX_TOKENS", "500"))
+    timeout_sec = int(os.environ.get("MAGI_WIKI_LLM_TIMEOUT", "90"))
+
+    resp = _omlx_chat_direct(prompt, timeout=timeout_sec, max_tokens=max_tokens)
+    if resp and len(resp) >= 100:
+        degraded_markers = ["系統降級", "逾時", "請稍後重試", "無法處理"]
+        if not any(m in resp for m in degraded_markers):
             return resp
-        else:
-            logger.warning("LLM synthesis failed for %s: %s", case_number, result.get("error"))
-            return None
+        logger.warning("LLM returned degraded response for %s", case_number)
+        return None
+
+    # oMLX direct failed or too short — fall back to gateway (Ollama etc.)
+    if resp is not None:
+        logger.warning("LLM response too short for %s (%d chars)", case_number, len(resp))
+    try:
+        result = gw.chat(prompt, task_type="general", timeout=30)
+        if result.get("success"):
+            gw_resp = result.get("response", "").strip()
+            if gw_resp and len(gw_resp) >= 100:
+                degraded_markers = ["系統降級", "逾時", "請稍後重試", "無法處理"]
+                if not any(m in gw_resp for m in degraded_markers):
+                    return gw_resp
+        logger.warning("LLM synthesis failed for %s: %s", case_number, result.get("error"))
+        return None
     except Exception as e:
         logger.warning("LLM synthesis error for %s: %s", case_number, e)
         return None
+
+
+# ── Wikilink helpers ────────────────────────────────────────────────
+
+def _note_path_to_wikilink(note_path: str) -> str:
+    """Convert a relative note path like 'folder/My Note.md' to '[[My Note]]'."""
+    name = Path(note_path).stem
+    return f"[[{name}]]"
+
+
+def _build_source_wikilinks_section(notes: List[Dict]) -> str:
+    """Build a '## 相關文件' section with wikilinks to source notes."""
+    links = []
+    seen = set()
+    for note in notes:
+        wikilink = _note_path_to_wikilink(note["path"])
+        if wikilink not in seen:
+            seen.add(wikilink)
+            links.append(f"- {wikilink}  ")
+    if not links:
+        return ""
+    return "## 相關文件\n\n" + "\n".join(links) + "\n"
+
+
+def _inject_source_wikilinks(content: str, notes: List[Dict]) -> str:
+    """
+    Post-process LLM content to convert '→ 來源：文件名' refs to wikilinks.
+    Matches patterns like:
+      → 來源：115年度偵聲字第10號刑事裁定
+      → 來源：刑事答辯狀(陳明宗)
+    And converts them to wikilinks based on the actual note stems.
+    """
+    # Build a map: doc_name (without extension, without summary__ prefix) → wikilink
+    doc_map: Dict[str, str] = {}
+    for note in notes:
+        stem = Path(note["path"]).stem
+        clean = stem.replace("summary__", "")
+        doc_map[clean] = f"[[{stem}]]"
+
+    def replace_source(m: "re.Match") -> str:
+        raw_name = m.group(1).strip()
+        # Try exact match first
+        if raw_name in doc_map:
+            return f"→ 來源：{doc_map[raw_name]}"
+        # Try partial match (source name is a substring of doc key)
+        for clean_key, wlink in doc_map.items():
+            if raw_name in clean_key or clean_key in raw_name:
+                return f"→ 來源：{wlink}"
+        # No match — keep as plain text
+        return m.group(0)
+
+    # Match: → 來源：<name>  (until newline or next →)
+    pattern = re.compile(r"→ 來源：([^\n→]+)")
+    return pattern.sub(replace_source, content)
 
 
 # ── Write wiki pages ────────────────────────────────────────────────
@@ -323,8 +416,9 @@ def _write_wiki_page(
     client_name: str,
     content: str,
     page_name: str = "overview",
+    notes: Optional[List[Dict]] = None,
 ) -> Path:
-    """Write a wiki page to vault/30_Wiki/<case>/<page>.md"""
+    """Write a wiki page to vault/30_Wiki/<case>/<page>.md with wikilinks."""
     wiki_dir = vault / WIKI_FOLDER / f"{case_number}-{client_name}"
     wiki_dir.mkdir(parents=True, exist_ok=True)
 
@@ -340,10 +434,85 @@ def _write_wiki_page(
         f"---\n\n"
     )
 
+    # Navigation section with wikilinks — appears before main content
+    nav_section = (
+        f"## 導覽\n\n"
+        f"**索引**：[[案件]] | [[30_Wiki]]\n"
+        f"**當事人**：[[{client_name}]]\n"
+        f"**案件**：{case_number}\n\n"
+        f"---\n\n"
+    )
+
+    # Inject wikilinks into source references in the LLM content
+    if notes:
+        content = _inject_source_wikilinks(content, notes)
+
+    # Build footer with all source notes as wikilinks
+    footer = ""
+    if notes:
+        footer = "\n\n---\n\n" + _build_source_wikilinks_section(notes)
+
     target = wiki_dir / f"{page_name}.md"
-    full_content = frontmatter + content.strip() + "\n"
+    full_content = frontmatter + nav_section + content.strip() + footer + "\n"
     target.write_text(full_content, encoding="utf-8")
     return target
+
+
+def _structural_overview(
+    case_number: str,
+    client_name: str,
+    notes: List[Dict],
+) -> str:
+    """
+    Structural fallback: generate a wiki overview purely from note metadata.
+    No LLM required. Produces a usable wiki page with wikilinks even when
+    LLM is unavailable. Nightly cron will replace with LLM content later.
+    """
+    lines = [
+        f"> ℹ️ 此為結構式自動概要（LLM 暫時無法使用）。待夜間 cron 03:30 補齊 LLM 合成版。\n",
+        "",
+        "## 案件概要",
+        "",
+        f"- **當事人**：{client_name}",
+        f"- **案件號**：{case_number}",
+        f"- **筆記數**：{len(notes)} 份",
+        "",
+        "## 文件清單",
+        "",
+    ]
+
+    # Group notes by subfolder (inferred document category)
+    category_map: Dict[str, List[str]] = {}
+    for note in sorted(notes, key=lambda n: n["path"]):
+        stem = Path(note["path"]).stem
+        clean = stem.replace("summary__", "")
+        # Infer category from path parts
+        parts = Path(note["path"]).parts
+        # Find the most specific named part after case folder
+        category = "其他"
+        for p in parts:
+            if re.match(r"\d{2}_", p):
+                category = p
+                break
+        category_map.setdefault(category, []).append(f"[[{stem}]]")
+
+    for cat, wlinks in sorted(category_map.items()):
+        lines.append(f"### {cat}")
+        lines.extend(f"- {w}" for w in wlinks)
+        lines.append("")
+
+    lines += [
+        "## 爭點",
+        "",
+        "> ⏳ 待 LLM 合成後補充",
+        "",
+        "## 事件時間軸",
+        "",
+        "> ⏳ 待 LLM 合成後補充",
+        "",
+    ]
+
+    return "\n".join(lines)
 
 
 def _ingest_wiki_to_vectors(
@@ -394,6 +563,7 @@ def synthesize(
     dry_run: bool = False,
     limit: int = 0,
     quiet: bool = False,
+    skip_ingest: bool = False,
 ):
     """Main entry: scan cases, synthesize wiki pages for changed ones."""
     t0 = time.time()
@@ -457,25 +627,31 @@ def synthesize(
         if not quiet:
             print(f"\n[{i}/{len(cases_to_update)}] {case_number} ({client_name}) — {len(notes)} 份筆記")
 
-        # Synthesize overview
+        # Synthesize overview (LLM path)
         overview = _synthesize_overview(case_number, client_name, notes, gw)
 
+        # Structural fallback: always produce a wiki page even if LLM fails
+        used_fallback = False
         if not overview:
-            errors += 1
+            overview = _structural_overview(case_number, client_name, notes)
+            used_fallback = True
             if not quiet:
-                print(f"  ⚠️  合成失敗")
-            continue
+                print(f"  ⚠️  LLM 失敗，使用結構式 fallback（夜間 cron 補齊）")
 
-        # Write wiki page
-        wiki_path = _write_wiki_page(vault, case_number, client_name, overview, "overview")
+        # Write wiki page (with wikilinks injected)
+        wiki_path = _write_wiki_page(vault, case_number, client_name, overview, "overview", notes=notes)
         if not quiet:
-            print(f"  ✅ 寫入 {wiki_path.relative_to(vault)}")
+            label = "📋 結構式" if used_fallback else "✅ LLM"
+            print(f"  {label} 寫入 {wiki_path.relative_to(vault)}")
 
-        # Ingest to vectors
-        vr = _ingest_wiki_to_vectors(vault, case_number, client_name, overview, "overview")
-        chunks = vr.get("chunks_written", 0) if vr.get("success") else 0
-        if not quiet:
-            print(f"  📊 向量化 {chunks} chunks")
+        # Ingest to vectors (skip if --no-ingest; Phase 4 ingest handles it separately)
+        if skip_ingest:
+            chunks = 0
+        else:
+            vr = _ingest_wiki_to_vectors(vault, case_number, client_name, overview, "overview")
+            chunks = vr.get("chunks_written", 0) if vr.get("success") else 0
+            if not quiet:
+                print(f"  📊 向量化 {chunks} chunks")
 
         # Update state
         state.setdefault("cases", {})[case_number] = {
@@ -485,6 +661,7 @@ def synthesize(
             "wiki_page": str(wiki_path.relative_to(vault)),
             "synthesized_at": datetime.now().isoformat(),
             "vector_chunks": chunks,
+            "llm_synthesized": not used_fallback,
         }
         _save_state(state)
         synthesized += 1
@@ -503,6 +680,7 @@ def main():
     parser.add_argument("--dry-run", action="store_true", help="預覽模式")
     parser.add_argument("--limit", type=int, default=0, help="最多合成幾個案件（0=不限）")
     parser.add_argument("--quiet", action="store_true", help="安靜模式（cron 用）")
+    parser.add_argument("--no-ingest", action="store_true", help="跳過向量化（Phase 4 另外跑）")
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -516,6 +694,7 @@ def main():
         dry_run=args.dry_run,
         limit=args.limit,
         quiet=args.quiet,
+        skip_ingest=getattr(args, "no_ingest", False),
     )
 
 

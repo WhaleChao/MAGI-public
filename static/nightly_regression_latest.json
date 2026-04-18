@@ -1,17 +1,19 @@
 {
-  "generated_at": "2026-04-13T02:36:31.971550",
-  "elapsed_sec": 360.3,
+  "generated_at": "2026-04-18T02:30:50.914513",
+  "elapsed_sec": 41.4,
   "overall_ok": false,
   "suites": [
     {
       "suite": "system",
       "label": "System Health",
-      "passed": 10,
-      "failed": 2,
+      "passed": 8,
+      "failed": 4,
       "total": 12,
       "failures": [
+        "oMLX 本地推理",
         "Keeper 資料庫",
-        "夜間排程 (AUTOPILOT)"
+        "夜間排程 (AUTOPILOT)",
+        "本機 LLM 推理 (TAIDE)"
       ],
       "ok": false
     },
@@ -43,15 +45,14 @@
     {
       "suite": "coreroutes",
       "label": "Core Routes Smoke",
-      "passed": 2,
-      "failed": 5,
+      "passed": 3,
+      "failed": 4,
       "total": 7,
       "failures": [
         "translate_guide",
         "summary_guide",
         "labor_guide",
-        "judgment_guide",
-        "stock_list"
+        "judgment_guide"
       ],
       "ok": false,
       "rc": 1

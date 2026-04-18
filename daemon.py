@@ -137,6 +137,8 @@ REAPER_GRACE_PERIODS = {
     "skills/statutes-vdb/action.py": int(os.environ.get("MAGI_ORPHAN_GRACE_STATUTES_VDB_SEC", "1800") or "1800"),
     # Coordinator
     "skills/magi-autopilot/action.py": int(os.environ.get("MAGI_ORPHAN_GRACE_AUTOPILOT_SEC", "2400") or "2400"),
+    # Short-lived NLP sidecars — should exit in <20s; cut grace short so orphans are reaped fast
+    "chinese_nlp_sidecar.py": 30,          # pkuseg sidecar, should die in <20s
     # Background subprocesses (fire-and-forget)
     "MEMORY_ENABLE_FAISS": 300,            # FAISS rebuild — ~32萬 vectors, 通常 30-90s, 留 5min grace
     "build_from_db": 300,                   # same, alternative marker

@@ -70,6 +70,24 @@ _log = _logging.getLogger("laf")
 NO_DELETE = os.environ.get("MAGI_NO_DELETE", "1").strip().lower() in {"1", "true", "yes", "on"}
 
 
+_PROGRESS_PRIORITY_TYPES = frozenset({
+    "dispatch", "opening", "closing", "review", "inquiry",
+    "fee", "withdrawal", "condition",
+    "派案通知", "審核結果通知", "審查結果通知", "審查通知", "派案",
+})
+
+
+def _classify_progress_email(subject: str, snippet: str) -> bool:
+    """
+    Return True if the email should be classified as a progress-report request.
+    Conditions: subject OR snippet contains both '案件' and '進度'.
+    Caller must check that existing notification_type is not in _PROGRESS_PRIORITY_TYPES
+    before acting on the return value.
+    """
+    combined = (subject or "") + " " + (snippet or "")
+    return ("案件" in combined) and ("進度" in combined)
+
+
 def _safe_remove(path: str, log=None) -> None:
     if not path:
         return

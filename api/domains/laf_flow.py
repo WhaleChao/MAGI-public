@@ -185,6 +185,10 @@ def resolve_laf_go_live_pending_token(orch, platform: str, message: str) -> tupl
             if str(e.get("platform", "")).strip().lower() != platform_norm:
                 return "", {}
             return tk, e
+        # Message explicitly carried a token-like string. Do not fall back to the
+        # platform-unique pending item, or a stale/foreign token could cancel the
+        # wrong go-live submission.
+        return "", {}
 
     cands = []
     for tk, e in pending.items():
@@ -207,6 +211,15 @@ def handle_laf_submit_confirmation_if_any(orch, user_id: str, platform: str, rol
     msg = (message or "").strip()
     if not msg:
         return False, ""
+
+    progress_result = handle_laf_progress_submit_confirmation_if_any(
+        orch,
+        platform=str(platform or ""),
+        user_id=str(user_id or ""),
+        text=msg,
+    )
+    if isinstance(progress_result, dict) and progress_result.get("handled"):
+        return True, str(progress_result.get("message") or "")
 
     low = msg.lower()
     has_confirm_kw = any(k in low for k in ["\u6b63\u78ba", "\u78ba\u8a8d", "ok", "\u53ef\u4ee5\u9001\u51fa", "\u9001\u51fa"])
@@ -609,4 +622,3 @@ def handle_laf_progress_submit_confirmation_if_any(orch, *, platform: str, user_
         daemon=True,
     ).start()
     return {"handled": True, "message": f"\u23f3 \u5df2\u6536\u5230\u78ba\u8a8d\uff0c\u958b\u59cb\u9001\u51fa\u9032\u5ea6\u56de\u5831\uff08\u78ba\u8a8d\u78bc {token}\uff09\u3002\u5b8c\u6210\u5f8c\u6211\u6703\u4e3b\u52d5\u56de\u5831\u3002"}
-

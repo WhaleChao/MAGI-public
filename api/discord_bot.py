@@ -555,6 +555,7 @@ async def bg_scheduler_loop():
                                       "job_weekend_bookmark", "job_market_briefing_script",
                                       "job_wiki_synthesizer", "job_knowledge_lint",
                                       "job_smoke_external_chat",
+                                      "job_translator_ape_regression",
                                       "job_omlx_switch_night", "job_omlx_switch_day"}
                         _timeout = 7200 if job.get("id") in _LONG_JOBS else 600
                         _job_id = job.get("id", "?")

@@ -7,7 +7,7 @@ import logging
 
 import os
 from contextlib import contextmanager
-from typing import Any, Generator
+from typing import Any, Dict, Generator, Optional
 
 import mysql.connector
 
@@ -21,6 +21,8 @@ def _default_config() -> dict[str, Any]:
         "database": os.environ.get("DB_NAME", "magi_brain"),
         "use_pure": True,
         "connection_timeout": 5,
+        "charset": "utf8mb4",
+        "collation": "utf8mb4_unicode_ci",
     }
 
 

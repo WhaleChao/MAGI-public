@@ -94,16 +94,62 @@ def get_default_patterns() -> Dict[str, List[Dict]]:
             {"pattern": r"應於本裁定送達後(\d+)日內補正", "pattern_type": "relative", "days": None},
             {"pattern": r"請於文到(\d+)日內補正", "pattern_type": "relative", "days": None},
             {"pattern": r"文到(\d+)日內.*?補正", "pattern_type": "relative", "days": None},
+            {"pattern": r"命.+?於(\d+)日內補正", "pattern_type": "relative", "days": None},
+            {"pattern": r"應於(\d+)日內補正", "pattern_type": "relative", "days": None},
             {"pattern": r"(\d+)日內補正", "pattern_type": "relative", "days": None},
         ],
+        "上訴": [
+            {"pattern": r"上訴期間.*?送達.*?(\d+)日內", "pattern_type": "relative", "days": None},
+            {"pattern": r"如不服本判決.*?(\d+)日內.*?上訴", "pattern_type": "relative", "days": None},
+            {"pattern": r"應於判決送達後(\d+)日內提起上訴", "pattern_type": "relative", "days": None},
+            {"pattern": r"(\d+)日內提起上訴", "pattern_type": "relative", "days": None},
+        ],
         "陳述意見": [
+            {"pattern": r"應於文到(\d+)日內陳述意見", "pattern_type": "relative", "days": None},
+            {"pattern": r"限於(\d+)日內.+?陳述意見", "pattern_type": "relative", "days": None},
             {"pattern": r"文到(\d+)日內陳述意見", "pattern_type": "relative", "days": None},
             {"pattern": r"(\d+)日內陳述意見", "pattern_type": "relative", "days": None},
+        ],
+        "繳費": [
+            {"pattern": r"應於文到(\d+)日內繳納.*?(?:規費|裁判費)", "pattern_type": "relative", "days": None},
+            {"pattern": r"限(\d+)日內.*?繳納.*?(?:裁判費|規費)", "pattern_type": "relative", "days": None},
+            {"pattern": r"(\d+)日內繳納.*?(?:裁判費|規費)", "pattern_type": "relative", "days": None},
+        ],
+        "閱卷期限": [
+            {"pattern": r"應於(\d+)日內.*?閱卷", "pattern_type": "relative", "days": None},
+            {"pattern": r"閱卷期限.*?(\d+)日", "pattern_type": "relative", "days": None},
+            {"pattern": r"(\d+)日.*?閱卷", "pattern_type": "relative", "days": None},
         ],
         "開庭": [
             {"pattern": r"(\d{1,2})月(\d{1,2})日([上下])午(\d{1,2})時(\d*)分?.*?(開庭|準備程序)", "pattern_type": "absolute_time", "days": None},
         ],
     }
+
+
+def _extract_todo_from_filename(filename: str) -> Optional[Dict]:
+    """Extract todo type and deadline from pdf-namer bracket supplemental info.
+
+    Parses the bracket section of a filename like:
+      20241015 裁定（王大明；應於15日內補正）.pdf
+    Returns dict with deadline_type and days, or None if not matched.
+    """
+    m = re.search(r"[（(]([^）)]+)[）)]", filename)
+    if not m:
+        return None
+    bracket_text = m.group(1)
+
+    _BRACKET_PATTERNS = [
+        (r"(\d+)日內補正", "補正"),
+        (r"(\d+)日內上訴", "上訴"),
+        (r"(\d+)日內陳述意見", "陳述意見"),
+        (r"(\d+)日內繳納", "繳費"),
+        (r"(\d+)日內閱卷", "閱卷期限"),
+    ]
+    for pat, dtype in _BRACKET_PATTERNS:
+        pm = re.search(pat, bracket_text)
+        if pm:
+            return {"deadline_type": dtype, "days": int(pm.group(1)), "source": "filename_bracket"}
+    return None
 
 
 def extract_todos_from_filename(
@@ -128,7 +174,7 @@ def extract_todos_from_filename(
     all_patterns = patterns or get_default_patterns()
     type_priority = [
         "繳費", "補正", "開庭", "準備程序", "審理程序", "言詞辯論",
-        "陳報", "提出資料", "陳述意見", "閱卷", "答辯", "訊問",
+        "陳報", "提出資料", "陳述意見", "閱卷期限", "閱卷", "答辯", "訊問",
         "異議", "抗告", "上訴", "再抗告",
     ]
 
@@ -147,7 +193,7 @@ def extract_todos_from_filename(
                     continue
                 matched = True
 
-                todo: Dict = {"type": todo_type, "file": filename, "source_file": filename}
+                todo: Dict = {"type": todo_type, "deadline_type": todo_type, "file": filename, "source_file": filename}
                 pattern_type = pattern_data.get("pattern_type", "")
                 preset_days = pattern_data.get("days")
 

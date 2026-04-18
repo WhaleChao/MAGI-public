@@ -110,6 +110,8 @@ def _infer_sub_topic(message: str, topic_key: str, source: str = "") -> str:
             return "laf_inquiry"
         if any(k in s for k in ["二階段", "附條件", "condition"]):
             return "laf_condition"
+        if any(k in s for k in ["進度回報", "laf_progress", "未結案件進度", "confirm_token", "確認碼"]):
+            return "laf_progress"
         if any(k in s for k in ["開辦", "go_live", "go-live", "進行中"]):
             # 如果包含「巡檢」或「報告」等報告字眼，改轉 laf_general
             if any(k in s for k in ["巡檢", "報告", "報告", "待開辦", "逾期"]):
@@ -158,6 +160,7 @@ _FALLBACK_CHAIN: dict[str, list[str]] = {
     "laf_fee": ["laf", "general"],
     "laf_inquiry": ["laf", "general"],
     "laf_condition": ["laf", "general"],
+    "laf_progress": ["laf", "general"],
     "laf_closing": ["laf", "general"],
     "laf_general": ["laf", "general"],
     "laf": ["general"],
@@ -386,6 +389,14 @@ DEFAULT_CHANNELS: list[dict] = [
         "topic": "二階段回報、附條件審查、調解證明",
     },
     {
+        "name": "法扶-進度回報",
+        "key": "laf_progress",
+        "topic": "未結案件進度自動回報，含 confirm_token 兩階段確認",
+        "category": "法扶自動化",
+        "autocomplete": True,
+        "aliases": ["🔄 進度回報"],
+    },
+    {
         "name": "法扶-一般",
         "key": "laf_general",
         "topic": "法扶巡檢報告、待辦清單、系統自動提醒",
@@ -428,6 +439,19 @@ DEFAULT_CHANNELS: list[dict] = [
 ]
 
 
+def _channel_name_candidates(channel_def: dict) -> list[str]:
+    """Return all acceptable existing names for a channel definition."""
+    candidates: list[str] = []
+    primary = str(channel_def.get("name") or "").strip()
+    if primary:
+        candidates.append(primary)
+    for alias in channel_def.get("aliases") or []:
+        val = str(alias or "").strip()
+        if val and val not in candidates:
+            candidates.append(val)
+    return candidates
+
+
 def get_mirror_channel_id(sub_topic: str) -> str:
     """
     查詢 mirror（測試伺服器）對應的頻道 ID。
@@ -456,40 +480,52 @@ def get_mirror_channel_id(sub_topic: str) -> str:
 async def auto_setup_channels(guild, category_name: str = "📋 MAGI 通知") -> dict[str, str]:
     """
     在 Discord guild 中自動建立分類與子頻道。
+    全 guild 搜尋同名頻道，避免跨 category 重複建立。
 
     Parameters:
         guild: discord.Guild 物件
-        category_name: 分類名稱
+        category_name: 建立新頻道時使用的預設分類名稱
 
     Returns: { sub_topic: channel_id_str, ... }
     """
     import discord  # noqa
 
-    # 找或建分類
-    category = None
-    for cat in guild.categories:
-        if cat.name == category_name:
-            category = cat
-            break
-    if category is None:
-        category = await guild.create_category(category_name)
-        logger.info("✅ Created Discord category: %s", category_name)
+    # 建立「全 guild」頻道名稱索引，避免跨 category 重複建立
+    all_text_channels = {ch.name: ch for ch in guild.text_channels}
+
+    # 各 channel_def 的 category override
+    category_cache: dict[str, object] = {}
+
+    async def _get_or_create_category(cname: str):
+        if cname in category_cache:
+            return category_cache[cname]
+        for cat in guild.categories:
+            if cat.name == cname:
+                category_cache[cname] = cat
+                return cat
+        cat = await guild.create_category(cname)
+        logger.info("✅ Created Discord category: %s", cname)
+        category_cache[cname] = cat
+        return cat
 
     channel_map: dict[str, str] = {}
-    existing_names = {ch.name: ch for ch in category.text_channels}
 
     for ch_def in DEFAULT_CHANNELS:
         name = ch_def["name"]
         key = ch_def["key"]
         topic = ch_def.get("topic", "")
+        target_cat_name = ch_def.get("category", category_name)
+        candidates = _channel_name_candidates(ch_def)
 
-        if name in existing_names:
-            ch = existing_names[name]
-            logger.info("  ↳ Channel already exists: #%s (id=%s)", name, ch.id)
+        existing_name = next((candidate for candidate in candidates if candidate in all_text_channels), "")
+        if existing_name:
+            ch = all_text_channels[existing_name]
+            logger.info("  ↳ Channel already exists: #%s (id=%s) for key=%s", existing_name, ch.id, key)
         else:
+            target_cat = await _get_or_create_category(target_cat_name)
             ch = await guild.create_text_channel(
                 name=name,
-                category=category,
+                category=target_cat,
                 topic=topic,
             )
             logger.info("  ✅ Created channel: #%s (id=%s)", name, ch.id)

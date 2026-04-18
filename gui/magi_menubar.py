@@ -16,8 +16,10 @@ import subprocess
 import json
 import threading
 import time
+import re
 import urllib.request
 import urllib.error
+from datetime import datetime
 
 import rumps
 
@@ -84,14 +86,16 @@ CRON_DISPLAY_MAX = 15
 
 # ── 顏色 ──
 if _HAS_APPKIT:
-    _GREEN  = NSColor.colorWithSRGBRed_green_blue_alpha_(0.34, 0.85, 0.47, 1.0)
-    _YELLOW = NSColor.colorWithSRGBRed_green_blue_alpha_(1.0, 0.75, 0.0, 1.0)
-    _RED    = NSColor.colorWithSRGBRed_green_blue_alpha_(1.0, 0.33, 0.33, 1.0)
-    _GRAY   = NSColor.colorWithSRGBRed_green_blue_alpha_(0.55, 0.55, 0.55, 1.0)
-    _CYAN   = NSColor.colorWithSRGBRed_green_blue_alpha_(0.3, 0.85, 0.9, 1.0)
-    _FONT   = NSFont.monospacedSystemFontOfSize_weight_(12.0, 0.0)
-    _FONT_S = NSFont.monospacedSystemFontOfSize_weight_(11.0, 0.0)
-    _FONT_B = NSFont.monospacedSystemFontOfSize_weight_(12.0, 0.5)
+    # 使用 macOS 原生語意顏色 (Semantic Colors)
+    _GREEN  = NSColor.systemGreenColor()
+    _YELLOW = NSColor.systemOrangeColor() # Orange 更有警示感且在淺色底較清晰
+    _RED    = NSColor.systemRedColor()
+    _GRAY   = NSColor.labelColor()        # 使用 labelColor 獲得最強烈的黑/白適應對比
+    _CYAN   = NSColor.systemBlueColor()   # Blue 在淺色底比 Teal 清晰
+    # 加粗預設字體重量 (原本 0.0 -> 0.3) 讓字體在淺色背景下更顯眼
+    _FONT   = NSFont.monospacedSystemFontOfSize_weight_(12.0, 0.3)
+    _FONT_S = NSFont.monospacedSystemFontOfSize_weight_(11.0, 0.2)
+    _FONT_B = NSFont.monospacedSystemFontOfSize_weight_(12.0, 0.6)
 else:
     _GREEN = _YELLOW = _RED = _GRAY = _CYAN = _FONT = _FONT_S = _FONT_B = None
 
@@ -166,6 +170,50 @@ def _http_health(url: str, timeout: float = 3) -> str:
             return "Active"
     except Exception:
         return ""
+
+
+_LOG_TS_RE = re.compile(r'"ts"\s*:\s*"([^"]+)"')
+
+
+def _read_log_tail(path: str, max_bytes: int = 60000) -> str:
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, 2)
+            sz = f.tell()
+            f.seek(max(0, sz - max_bytes))
+            return f.read().decode("utf-8", errors="replace")
+    except Exception:
+        return ""
+
+
+def _extract_log_time(line: str) -> tuple[float, str]:
+    m = _LOG_TS_RE.search(line)
+    if not m:
+        return 0.0, ""
+    raw = (m.group(1) or "").strip()
+    try:
+        dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        return dt.timestamp(), dt.strftime("%H:%M:%S")
+    except Exception:
+        return 0.0, ""
+
+
+def _find_latest_log_match(log_tail: str, markers: tuple[str, ...]) -> tuple[float, str]:
+    if not log_tail:
+        return 0.0, ""
+    for line in reversed(log_tail.splitlines()):
+        if any(marker in line for marker in markers):
+            return _extract_log_time(line)
+    return 0.0, ""
+
+
+def _service_alive(services: dict, *aliases: str) -> bool:
+    if not isinstance(services, dict):
+        return False
+    for name in aliases:
+        if name and bool(services.get(name)):
+            return True
+    return False
 
 
 _MAGI_ZOMBIE_PARENTS = {
@@ -551,58 +599,75 @@ class MAGIMenuBar(rumps.App):
         # ── 背景監控 ──
         monitors = {}
         try:
-            # 方法：查 Server 進程的 /health 拿到 uptime，再掃 log 確認各 thread 活動
-            _health = {}
-            try:
-                import urllib.request as _ur
-                _hresp = _ur.urlopen("http://127.0.0.1:5002/health", timeout=3)
-                _health = json.loads(_hresp.read().decode())
-            except Exception:
-                pass
-            _server_up = _health.get("status") == "operational"
-            _uptime = _health.get("uptime_seconds", 0)
-
-            # 法扶 Gmail：server 在線 + log 有 [Gmail] 活動
+            # 監控顯示以 thread / log 活動為主，避免被 /health 的重型檢查誤判。
+            _server_up = _service_alive(cache.get("services", {}), "主伺服器", "Server")
             log_path = os.path.join(MAGI_ROOT, ".agent", "server.log")
-            _log_tail = ""
-            if os.path.isfile(log_path):
-                with open(log_path, "rb") as f:
-                    f.seek(0, 2); sz = f.tell(); f.seek(max(0, sz - 30000))
-                    _log_tail = f.read().decode("utf-8", errors="replace")
+            _log_tail = _read_log_tail(log_path)
+            _now = time.time()
 
-            # Gmail monitor
-            _gmail_alive = _server_up and ("[Gmail]" in _log_tail)
-            _gmail_detail = ""
-            for _line in reversed(_log_tail.splitlines()):
-                if "[Gmail]" in _line and '"ts"' in _line:
-                    try:
-                        _gmail_detail = _line.split('"ts": "')[1].split('"')[0][11:19]
-                    except Exception:
-                        pass
-                    break
-            monitors["法扶信箱監控"] = {"alive": _gmail_alive, "detail": _gmail_detail}
+            def _fmt_recent(epoch: float, *, max_age_sec: int, live_text: str, stale_text: str):
+                if not epoch:
+                    return "down", ""
+                age = _now - epoch
+                hhmmss = datetime.fromtimestamp(epoch).strftime("%H:%M:%S")
+                if age <= max_age_sec:
+                    return "alive", f"{live_text} {hhmmss}"
+                return "stale", f"{stale_text} {hhmmss}"
 
-            # Portal retry：server 在線就代表 thread 有跑（daemon thread，隨 server 啟動）
-            monitors["法扶附件重試"] = {
-                "alive": _server_up and _uptime > 10,
-                "detail": "運行中" if _server_up else "",
+            # 法扶 Gmail monitor：以 [Gmail] 活動為準；若已看到啟動訊息但尚未有活動，顯示黃燈。
+            _gmail_epoch, _ = _find_latest_log_match(_log_tail, ("[Gmail]",))
+            _gmail_state, _gmail_detail = _fmt_recent(
+                _gmail_epoch,
+                max_age_sec=900,
+                live_text="最近",
+                stale_text="最後活動",
+            )
+            if _gmail_state == "down" and _server_up and "LAF Gmail Monitor background thread started" in _log_tail:
+                _gmail_state = "starting"
+                _gmail_detail = "已啟動，待首輪活動"
+            monitors["法扶信箱監控"] = {
+                "alive": _gmail_state == "alive",
+                "state": _gmail_state,
+                "detail": _gmail_detail,
             }
 
-            # 閱卷 email 已整合進法扶 Gmail monitor cycle，偵測 log 中的閱卷掃描紀錄
-            _review_alive = _server_up and ("閱卷 Email" in _log_tail)
-            _review_detail = ""
-            for _rline in reversed(_log_tail.splitlines()):
-                if "閱卷 Email" in _rline and '"ts"' in _rline:
-                    try:
-                        _review_detail = _rline.split('"ts": "')[1].split('"')[0][11:19]
-                    except Exception:
-                        pass
-                    break
-            # fallback: 法扶 Gmail monitor 在線就代表閱卷也在（整合在同一個 cycle）
-            if not _review_alive and _gmail_alive:
-                _review_alive = True
+            # Portal retry：屬於 server 內 daemon loop；server 活著即可視為已啟動，若有 retry log 再附最後時間。
+            _retry_epoch, _ = _find_latest_log_match(_log_tail, ("[LAF-RETRY]",))
+            _retry_detail = "隨 Server"
+            if _retry_epoch:
+                _retry_detail = f"最近 {datetime.fromtimestamp(_retry_epoch).strftime('%H:%M:%S')}"
+            monitors["法扶附件重試"] = {
+                "alive": _server_up,
+                "state": "alive" if _server_up else "down",
+                "detail": _retry_detail if _server_up else "",
+            }
+
+            # 閱卷 email 已整合進法扶 Gmail monitor cycle，需對齊目前實際 log 格式。
+            _review_epoch, _ = _find_latest_log_match(
+                _log_tail,
+                (
+                    "[閱卷]",
+                    "Checking Gmail for file review notifications...",
+                    "Checking Gmail for non-LAF/Judicial auto-drafts...",
+                ),
+            )
+            _review_state, _review_detail = _fmt_recent(
+                _review_epoch,
+                max_age_sec=900,
+                live_text="最近",
+                stale_text="最後活動",
+            )
+            if _review_state == "down" and _server_up and "File Review Email Monitor: integrated into LAF Gmail Monitor cycle" in _log_tail:
+                _review_state = "starting"
+                _review_detail = "已整合至法扶監控 cycle"
+            elif _review_state == "down" and monitors.get("法扶信箱監控", {}).get("state") == "alive":
+                _review_state = "alive"
                 _review_detail = "隨法扶監控"
-            monitors["閱卷信箱監控"] = {"alive": _review_alive, "detail": _review_detail}
+            monitors["閱卷信箱監控"] = {
+                "alive": _review_state == "alive",
+                "state": _review_state,
+                "detail": _review_detail,
+            }
         except Exception:
             pass
         cache["monitors"] = monitors
@@ -681,10 +746,10 @@ class MAGIMenuBar(rumps.App):
         svcs = c.get("services", {})
         for name, _ in SERVICES:
             if svcs.get(name):
-                _set_colored_title(self.service_items[name], f"  ● {name}  運行中", _GREEN)
+                _set_colored_title(self.service_items[name], f"  🟢 {name}  運行中", None)
                 core_up += 1
             else:
-                _set_colored_title(self.service_items[name], f"  ✗ {name}  已停止", _RED)
+                _set_colored_title(self.service_items[name], f"  🔴 {name}  已停止", None)
 
         # ── 推理引擎 ──
         omlx_up = 0
@@ -693,19 +758,19 @@ class MAGIMenuBar(rumps.App):
             model_id = engines.get(name, "")
             if model_id:
                 short = model_id[:28] if len(model_id) > 28 else model_id
-                _set_colored_title(self.omlx_items[name], f"  ● {name}  {short}", _GREEN)
+                _set_colored_title(self.omlx_items[name], f"  🟢 {name}  {short}", None)
                 omlx_up += 1
             else:
-                _set_colored_title(self.omlx_items[name], f"  ✗ {name}  離線", _RED)
+                _set_colored_title(self.omlx_items[name], f"  🔴 {name}  離線", None)
         # macOS Vision OCR status
         try:
             from skills.apple.apple_intelligence import VISION_AVAILABLE
             if VISION_AVAILABLE:
-                _set_colored_title(self.ocr_item, "  ● OCR引擎  macOS Vision", _GREEN)
+                _set_colored_title(self.ocr_item, "  🟢 OCR引擎  macOS Vision", None)
             else:
-                _set_colored_title(self.ocr_item, "  ✗ OCR引擎  未安裝", _GRAY)
+                _set_colored_title(self.ocr_item, "  ⚪ OCR引擎  未安裝", None)
         except Exception as e:
-            _set_colored_title(self.ocr_item, f"  ✗ OCR引擎  未安裝 ({e})", _GRAY)
+            _set_colored_title(self.ocr_item, f"  ⚪ OCR引擎  未安裝 ({e})", None)
 
         # ── 遠端節點 ──
         nodes_up = 0
@@ -716,23 +781,23 @@ class MAGIMenuBar(rumps.App):
                 detail = info.get("detail", "")
                 if detail and detail not in ("Active", "連線正常"):
                     short = detail[:20] if len(detail) > 20 else detail
-                    label = f"  ● {display_name}  {short}"
+                    label = f"  🟢 {display_name}  {short}"
                 else:
-                    label = f"  ● {display_name}  在線"
-                _set_colored_title(self.node_items[display_name], label, _GREEN)
+                    label = f"  🟢 {display_name}  在線"
+                _set_colored_title(self.node_items[display_name], label, None)
                 nodes_up += 1
             else:
-                _set_colored_title(self.node_items[display_name], f"  ✗ {display_name}  離線", _RED)
+                _set_colored_title(self.node_items[display_name], f"  🔴 {display_name}  離線", None)
 
         # ── 排程 ──
         cron_n = c.get("cron_enabled", -1)
         cron_bot = c.get("cron_bot", False)
         if cron_n >= 0 and cron_bot:
-            _set_colored_title(self.cron_summary_item, f"  ● 排程總覽  {cron_n}個啟用・Bot運行", _GREEN)
+            _set_colored_title(self.cron_summary_item, f"  🟢 排程總覽  {cron_n}個啟用・Bot運行", None)
         elif cron_n > 0:
-            _set_colored_title(self.cron_summary_item, f"  ✗ 排程總覽  {cron_n}個啟用・Bot停止", _RED)
+            _set_colored_title(self.cron_summary_item, f"  🔴 排程總覽  {cron_n}個啟用・Bot停止", None)
         else:
-            _set_colored_title(self.cron_summary_item, "  ⚠ 排程總覽  讀取失敗", _YELLOW)
+            _set_colored_title(self.cron_summary_item, "  🟡 排程總覽  讀取失敗", None)
 
         # 排程逐條 — 動態增減子項
         cron_details = c.get("cron_details", [])
@@ -756,12 +821,12 @@ class MAGIMenuBar(rumps.App):
             desc = detail["desc"]
             rel = detail["relative"]
             if detail["stale"]:
-                _set_colored_title(item, f"    ⚠ {desc}  {rel}", _YELLOW, small=True)
+                _set_colored_title(item, f"    🟡 {desc}  {rel}", None, small=True)
             else:
-                _set_colored_title(item, f"    ● {desc}  {rel}", _GRAY, small=True)
+                _set_colored_title(item, f"    ⚪ {desc}  {rel}", None, small=True)
         # 隱藏多餘的
         for i in range(len(cron_details), len(self._cron_job_items)):
-            _set_colored_title(self._cron_job_items[i], "", _GRAY, small=True)
+            _set_colored_title(self._cron_job_items[i], "", None, small=True)
 
         # ── 背景監控 ──
         monitors = c.get("monitors", {})
@@ -770,25 +835,29 @@ class MAGIMenuBar(rumps.App):
             item = self.monitor_items.get(display_name)
             if item is None:
                 continue
-            if info.get("alive"):
-                detail = info.get("detail", "")
-                suffix = f"  最近 {detail}" if detail else "  運行中"
-                _set_colored_title(item, f"  ● {display_name}{suffix}", _GREEN)
+            state = str(info.get("state") or ("alive" if info.get("alive") else "down"))
+            detail = info.get("detail", "")
+            if state == "alive":
+                suffix = f"  {detail}" if detail else "  運行中"
+                _set_colored_title(item, f"  🟢 {display_name}{suffix}", None)
+            elif state in {"starting", "stale", "idle"}:
+                suffix = f"  {detail}" if detail else "  已啟動但暫無新活動"
+                _set_colored_title(item, f"  🟡 {display_name}{suffix}", None)
             else:
-                _set_colored_title(item, f"  ✗ {display_name}  未偵測到活動", _RED)
+                _set_colored_title(item, f"  🔴 {display_name}  未偵測到活動", None)
 
         # ── NAS ──
         nas = c.get("nas", {})
         if nas.get("lan") and nas.get("mounted"):
-            _set_colored_title(self.nas_status_item, "  ● 網路硬碟  區網掛載", _GREEN)
+            _set_colored_title(self.nas_status_item, "  🟢 網路硬碟  區網掛載", None)
         elif nas.get("vpn") and nas.get("mounted"):
-            _set_colored_title(self.nas_status_item, "  ● 網路硬碟  VPN掛載", _GREEN)
+            _set_colored_title(self.nas_status_item, "  🟢 網路硬碟  VPN掛載", None)
         elif nas.get("mounted"):
-            _set_colored_title(self.nas_status_item, "  ⚠ 網路硬碟  連線不穩", _YELLOW)
+            _set_colored_title(self.nas_status_item, "  🟡 網路硬碟  連線不穩", None)
         elif nas.get("lan") or nas.get("vpn"):
-            _set_colored_title(self.nas_status_item, "  ⚠ 網路硬碟  可達未掛載", _YELLOW)
+            _set_colored_title(self.nas_status_item, "  🟡 網路硬碟  可達未掛載", None)
         else:
-            _set_colored_title(self.nas_status_item, "  ✗ 網路硬碟  未掛載", _RED)
+            _set_colored_title(self.nas_status_item, "  🔴 網路硬碟  未掛載", None)
 
         # NAS 各卷
         shares = nas.get("shares", {})
@@ -803,52 +872,54 @@ class MAGIMenuBar(rumps.App):
                     _set_colored_title(
                         item,
                         f"    {bar} {share_name}  {used_gb:.0f}/{total_gb:.0f}G ({pct:.0f}%)",
-                        _GREEN if pct < 80 else (_YELLOW if pct < 90 else _RED),
+                        None,
                         small=True,
                     )
                 else:
-                    _set_colored_title(item, f"    ● {share_name}  已掛載", _GREEN, small=True)
+                    _set_colored_title(item, f"    🟢 {share_name}  已掛載", None, small=True)
             else:
-                _set_colored_title(item, f"    ✗ {share_name}  未掛載", _RED, small=True)
+                _set_colored_title(item, f"    🔴 {share_name}  未掛載", None, small=True)
 
         # ── DB ──
         db = c.get("db", {})
         syncing = db.get("syncing", False)
         failover = db.get("failover_active", False)
         if syncing:
-            _set_colored_title(self.db_status_item, "  ⟳ 資料庫群  同步中", _CYAN)
-            _set_colored_title(self.db_detail_item, "    本機→遠端資料回寫中...", _CYAN, small=True)
+            _set_colored_title(self.db_status_item, "  🔵 資料庫群  同步中", None)
+            _set_colored_title(self.db_detail_item, "    本機→遠端資料回寫中...", None, small=True)
         elif db.get("remote") and db.get("local") and not failover:
-            _set_colored_title(self.db_status_item, "  ● 資料庫群  雙活同步", _GREEN)
-            _set_colored_title(self.db_detail_item, f"    主={db.get('active_host', '?')}  備=127.0.0.1", _GRAY, small=True)
+            _set_colored_title(self.db_status_item, "  🟢 資料庫群  雙活同步", None)
+            _set_colored_title(self.db_detail_item, f"    主={db.get('active_host', '?')}  備=127.0.0.1", None, small=True)
         elif failover and db.get("local"):
-            _set_colored_title(self.db_status_item, "  ⚠ 資料庫群  使用備份", _YELLOW)
-            _set_colored_title(self.db_detail_item, "    遠端不可達・已切換至本機", _YELLOW, small=True)
+            _set_colored_title(self.db_status_item, "  🟡 資料庫群  使用備份", None)
+            _set_colored_title(self.db_detail_item, "    遠端不可達・已切換至本機", None, small=True)
         elif db.get("remote"):
-            _set_colored_title(self.db_status_item, "  ● 資料庫群  遠端直連", _GREEN)
-            _set_colored_title(self.db_detail_item, f"    主={db.get('active_host', '?')}", _GRAY, small=True)
+            _set_colored_title(self.db_status_item, "  🟢 資料庫群  遠端直連", None)
+            _set_colored_title(self.db_detail_item, f"    主={db.get('active_host', '?')}", None, small=True)
         elif db.get("local"):
-            _set_colored_title(self.db_status_item, "  ⚠ 資料庫群  僅本機", _YELLOW)
-            _set_colored_title(self.db_detail_item, "    遠端離線・本機獨立運行", _YELLOW, small=True)
+            _set_colored_title(self.db_status_item, "  🟡 資料庫群  僅本機", None)
+            _set_colored_title(self.db_detail_item, "    遠端離線・本機獨立運行", None, small=True)
         else:
-            _set_colored_title(self.db_status_item, "  ✗ 資料庫群  全部離線", _RED)
-            _set_colored_title(self.db_detail_item, "    遠端+本機皆不可達", _RED, small=True)
+            _set_colored_title(self.db_status_item, "  🔴 資料庫群  全部離線", None)
+            _set_colored_title(self.db_detail_item, "    遠端+本機皆不可達", None, small=True)
 
         # ── 記憶體 ──
         _, avail_gb, pct = c.get("mem", (0, 0, 0))
         if pct > 0:
             bar = _mem_bar(pct)
-            mem_color = _GREEN if pct < 70 else (_YELLOW if pct < 85 else _RED)
-            _set_colored_title(self.mem_system_item, f"  {bar} 系統記憶  {pct:.0f}% {avail_gb:.1f}G餘", mem_color)
+            mem_color = None
+            icon = "🔴" if pct >= 85 else ("🟡" if pct >= 70 else "🟢")
+            _set_colored_title(self.mem_system_item, f"  {icon} {bar} 系統記憶  {pct:.0f}% {avail_gb:.1f}G餘", None)
 
         magi_mb = c.get("magi_mb", 0)
-        _set_colored_title(self.mem_total_item, f"  ● 程序佔用  {magi_mb}MB", _YELLOW if magi_mb > 2000 else _GREEN)
+        icon = "🟡" if magi_mb > 2000 else "🟢"
+        _set_colored_title(self.mem_total_item, f"  {icon} 程序佔用  {magi_mb}MB", None)
 
         zombies, z_detail = c.get("zombies", (0, ""))
         if zombies == 0:
-            _set_colored_title(self.zombie_item, "  ● 殭屍程序  無", _GREEN)
+            _set_colored_title(self.zombie_item, "  🟢 殭屍程序  無", None)
         else:
-            _set_colored_title(self.zombie_item, f"  ⚠ 殭屍程序  {zombies}個 {z_detail}", _RED)
+            _set_colored_title(self.zombie_item, f"  🔴 殭屍程序  {zombies}個 {z_detail}", None)
 
         # ── 選單列圖示 ──
         try:

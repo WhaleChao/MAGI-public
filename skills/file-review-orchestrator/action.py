@@ -746,6 +746,27 @@ def _get_credentials(cfg: dict) -> dict:
     }
 
 
+def _portal_login_failure_message(mgr, *, action_label: str) -> Tuple[str, str, str]:
+    code = str(
+        getattr(mgr, "last_login_error_code", "")
+        or getattr(getattr(mgr, "sso", None), "last_error_code", "")
+        or "sso_login_failed"
+    ).strip() or "sso_login_failed"
+    detail = str(
+        getattr(mgr, "last_login_error_detail", "")
+        or getattr(getattr(mgr, "sso", None), "last_error_detail", "")
+        or ""
+    ).strip()
+
+    if code == "driver_init_failed":
+        return code, detail, f"❌ 閱卷登入失敗：Chrome 啟動異常，已中斷{action_label}。"
+    if code == "captcha_failed":
+        return code, detail, f"❌ 閱卷登入失敗：驗證碼未通過，已中斷{action_label}。"
+    if code == "auth_failed":
+        return code, detail, f"❌ 閱卷登入失敗：帳號或密碼被拒絕，已中斷{action_label}。"
+    return code, detail, f"❌ 閱卷登入失敗，可能驗證碼連錯或系統維護，已中斷{action_label}。"
+
+
 def _ensure_imports():
     """Lazy import file_review_automation, preferring MAGI's maintained copy."""
     import importlib.util
@@ -2225,12 +2246,16 @@ def cmd_download(case_number: str = "", notify: bool = True, flow_id: str = "") 
             logger.info("Logging into SSO for download...")
             _safe_flow_step_status(flow_id, "portal_login", status="running", detail=case_number or "all cases")
             if not mgr.login():
-                msg = "❌ 閱卷登入失敗，可能驗證碼連錯或系統維護，已中斷自動下載。"
+                error_code, error_detail, msg = _portal_login_failure_message(mgr, action_label="自動下載")
                 logger.error(msg)
+                if error_detail:
+                    logger.error("閱卷登入失敗 detail: %s", error_detail)
                 _notify(msg, notify)
-                _safe_flow_step_status(flow_id, "portal_login", status="failed", detail="sso_login_failed", ok=False)
+                _safe_flow_step_status(flow_id, "portal_login", status="failed", detail=error_code, ok=False)
                 _mark_notify_step(flow_id, notify=notify, detail=msg)
-                out = {"success": False, "error": "sso_login_failed"}
+                out = {"success": False, "error": error_code}
+                if error_detail:
+                    out["error_detail"] = error_detail
                 _eventlog("filereview:download:done", ok=False, payload=out, tags={"case_number": case_number} if case_number else {})
                 return out
             _safe_flow_step_status(flow_id, "portal_login", status="succeeded", detail="SSO login ok", ok=True)

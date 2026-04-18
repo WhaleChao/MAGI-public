@@ -258,6 +258,9 @@ class LawyerPortalSSO:
 
         self.driver = None
         self.logged_in = False
+        self.last_error_code = ""
+        self.last_error_detail = ""
+        self._isolated_profile_dir = ""
         self.web_engine_profile = resolve_legal_web_engine("file_review_portal", interactive_required=True)
         self._engine_logged = False
         self.captcha_solver = CaptchaSolver()
@@ -279,6 +282,143 @@ class LawyerPortalSSO:
         print(full_msg)
         if self.log_callback:
             self.log_callback(full_msg)
+
+    @staticmethod
+    def _looks_like_driver_bootstrap_error(exc: Exception) -> bool:
+        text = str(exc or "").lower()
+        return any(token in text for token in (
+            "devtoolsactiveport",
+            "session not created",
+            "chrome failed to start",
+            "chrome not reachable",
+            "unable to discover open pages",
+            "cannot find chrome binary",
+            "browser binary",
+        ))
+
+    def _set_login_error(self, code: str, detail: str = "") -> None:
+        self.last_error_code = str(code or "").strip()
+        self.last_error_detail = str(detail or "").strip()
+
+    def _clear_login_error(self) -> None:
+        self.last_error_code = ""
+        self.last_error_detail = ""
+
+    def _detect_chrome_binary(self) -> Optional[str]:
+        if sys.platform == "darwin":
+            candidates = [
+                "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+                "/Applications/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing",
+                os.path.expanduser("~/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
+                "/opt/homebrew/bin/chromium",
+                "/usr/local/bin/chromium",
+            ]
+        elif sys.platform == "win32":
+            candidates = [
+                r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+                r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+            ]
+        else:
+            candidates = [
+                "/usr/bin/google-chrome",
+                "/usr/bin/chromium-browser",
+                "/usr/bin/chromium",
+            ]
+        for path in candidates:
+            if path and os.path.exists(path):
+                return path
+        return None
+
+    def _ensure_isolated_profile_dir(self) -> str:
+        if self._isolated_profile_dir and os.path.isdir(self._isolated_profile_dir):
+            return self._isolated_profile_dir
+        base_dir = _MAGI_ROOT / ".runtime" / "browser_profiles" / "file_review"
+        base_dir.mkdir(parents=True, exist_ok=True)
+        self._isolated_profile_dir = tempfile.mkdtemp(prefix="chrome_", dir=str(base_dir))
+        return self._isolated_profile_dir
+
+    def _cleanup_isolated_profile_dir(self) -> None:
+        path = str(self._isolated_profile_dir or "").strip()
+        if not path:
+            return
+        try:
+            shutil.rmtree(path, ignore_errors=True)
+        except Exception:
+            logger.debug("cleanup isolated profile failed: %s", path, exc_info=True)
+        self._isolated_profile_dir = ""
+
+    def _build_chrome_options(self, *, isolated_profile: bool = False, ignore_certificate_errors: bool = False):
+        options = Options()
+        options.page_load_strategy = "normal"
+
+        if self.headless:
+            options.add_argument("--headless=new")
+            options.add_argument("--window-size=1920,1080")
+        else:
+            options.add_argument("--window-size=1280,800")
+
+        options.add_argument("--disable-gpu")
+        options.add_argument("--no-sandbox")
+        options.add_argument("--disable-dev-shm-usage")
+        options.add_argument("--disable-blink-features=AutomationControlled")
+        options.add_argument("--disable-infobars")
+        options.add_argument("--disable-notifications")
+        options.add_argument("--disable-popup-blocking")
+        options.add_argument("--disable-extensions")
+        options.add_argument("--disable-renderer-backgrounding")
+        options.add_argument("--disable-backgrounding-occluded-windows")
+        options.add_argument("--disable-hang-monitor")
+        options.add_argument("--disable-ipc-flooding-protection")
+        options.add_argument("--memory-pressure-off")
+        options.add_argument("--js-flags=--max-old-space-size=512")
+        options.add_argument("--remote-allow-origins=*")
+        options.add_argument("--remote-debugging-port=0")
+        options.add_argument("--disable-features=RendererCodeIntegrity,IsolateOrigins,site-per-process")
+        options.add_experimental_option("excludeSwitches", ["enable-automation"])
+        options.add_experimental_option("useAutomationExtension", False)
+        options.add_experimental_option("prefs", {
+            "download.default_directory": os.path.join(self.download_folder, datetime.now().strftime("%Y%m%d")),
+            "download.prompt_for_download": False,
+            "download.directory_upgrade": True,
+            "plugins.always_open_pdf_externally": True,
+            "profile.default_content_settings.popups": 0,
+        })
+
+        user_agents = [
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
+        ]
+        options.add_argument(f"--user-agent={random.choice(user_agents)}")
+
+        chrome_binary = self._detect_chrome_binary()
+        if chrome_binary:
+            options.binary_location = chrome_binary
+
+        if isolated_profile:
+            options.add_argument(f"--user-data-dir={self._ensure_isolated_profile_dir()}")
+        if ignore_certificate_errors:
+            options.add_argument("--ignore-certificate-errors")
+
+        return options
+
+    def _launch_chrome_driver(self, chrome_options, *, pinned_driver: bool = False):
+        if not pinned_driver:
+            return webdriver.Chrome(options=chrome_options)
+
+        if importlib.util.find_spec("webdriver_manager") is not None:
+            from selenium.webdriver.chrome.service import Service
+            from webdriver_manager.chrome import ChromeDriverManager
+
+            forced_version = os.environ.get("MAGI_CHROMEDRIVER_VERSION", "146.0.7680.80").strip()
+            try:
+                service = Service(ChromeDriverManager(driver_version=forced_version).install())
+                return webdriver.Chrome(service=service, options=chrome_options)
+            except Exception as pinned_err:
+                self.log(f"  ⚠️ pinned ChromeDriver {forced_version} 啟動失敗，回退預設版本: {pinned_err}")
+                service = Service(ChromeDriverManager().install())
+                return webdriver.Chrome(service=service, options=chrome_options)
+
+        return webdriver.Chrome(options=chrome_options)
     
     def _setup_driver(self):
         """設定 Chrome WebDriver (含反爬蟲措施)"""
@@ -301,70 +441,28 @@ class LawyerPortalSSO:
             from selenium.webdriver.chrome.options import Options
             from selenium.webdriver.common.action_chains import ActionChains
             from selenium.common.exceptions import TimeoutException, NoSuchElementException, StaleElementReferenceException
-            
-        options = Options()
-        
-        # Headless 模式設定
-        if self.headless:
-            options.add_argument('--headless=new')
-            # Headless 模式下重要設定，防止崩潰
-            options.add_argument('--window-size=1920,1080')
-            options.add_argument('--disable-gpu')
-            options.add_argument('--no-sandbox')
-            options.add_argument('--disable-dev-shm-usage')
-        else:
-            options.add_argument('--window-size=1280,800')
-        
-        # 反爬蟲：使用真實 User-Agent
-        user_agents = [
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
-        ]
-        options.add_argument(f'--user-agent={random.choice(user_agents)}')
-        
-        # 反爬蟲：禁用自動化標誌
-        options.add_argument('--disable-blink-features=AutomationControlled')
-        options.add_experimental_option("excludeSwitches", ["enable-automation"])
-        options.add_experimental_option('useAutomationExtension', False)
-        
-        # Chrome 146+ renderer timeout 修正：不等外部資源完全載入
-        options.page_load_strategy = 'eager'
+        self._clear_login_error()
 
-        # 穩定性設定 — 防止 renderer timeout ("Timed out receiving message from renderer")
-        options.add_argument('--disable-infobars')
-        options.add_argument('--disable-notifications')
-        options.add_argument('--disable-popup-blocking')
-        options.add_argument('--remote-allow-origins=*')
-        options.add_argument('--disable-extensions')
-        options.add_argument('--disable-renderer-backgrounding')
-        options.add_argument('--disable-backgrounding-occluded-windows')
-        options.add_argument('--disable-hang-monitor')
-        options.add_argument('--disable-ipc-flooding-protection')
-        options.add_argument('--memory-pressure-off')
-        options.add_argument('--js-flags=--max-old-space-size=512')
-        
-        # 下載設定
-        date_str = datetime.now().strftime("%Y%m%d")
-        download_dir = os.path.join(self.download_folder, date_str)
+        download_dir = os.path.join(self.download_folder, datetime.now().strftime("%Y%m%d"))
         os.makedirs(download_dir, exist_ok=True)
-        
-        prefs = {
-            "download.default_directory": download_dir,
-            "download.prompt_for_download": False,
-            "download.directory_upgrade": True,
-            "plugins.always_open_pdf_externally": True,
-            "profile.default_content_settings.popups": 0
-        }
-        options.add_experimental_option("prefs", prefs)
-        
-        # 初始化 WebDriver
+
         try:
-            self.driver = webdriver.Chrome(options=options)
+            self.driver = self._launch_chrome_driver(
+                self._build_chrome_options(),
+                pinned_driver=False,
+            )
         except Exception as e:
             self.log(f"⚠️ Chrome Driver 初始化失敗，嘗試相容模式: {e}")
-            # 備用方案: 可能是 driver 版本問題
-            options.add_argument('--ignore-certificate-errors')
-            self.driver = webdriver.Chrome(options=options)
+            try:
+                self.driver = self._launch_chrome_driver(
+                    self._build_chrome_options(isolated_profile=True, ignore_certificate_errors=True),
+                    pinned_driver=True,
+                )
+                self.log("  ✓ Chrome Driver 相容模式啟動成功")
+            except Exception as fallback_e:
+                detail = str(fallback_e or e).strip()
+                self._set_login_error("driver_init_failed", detail)
+                raise RuntimeError(detail) from fallback_e
 
         # 防呆：避免 driver.get()/等待資源在網路不穩時無限卡住
         try:
@@ -379,7 +477,7 @@ class LawyerPortalSSO:
                 logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 370, exc_info=True)
         
         # ★ Headless 模式下強制設定下載行為 (重要修復)
-        if self.headless:
+        if self.headless and hasattr(self.driver, "execute_cdp_cmd"):
             try:
                 # 確保下載路徑是絕對路徑 (使用與 prefs 相同的路徑)
                 params = {
@@ -418,7 +516,15 @@ class LawyerPortalSSO:
         for attempt in range(max_retries):
             try:
                 if not self.driver:
-                    self._setup_driver()
+                    try:
+                        self._setup_driver()
+                    except Exception as setup_e:
+                        detail = str(setup_e or "").strip()
+                        self._set_login_error("driver_init_failed", detail)
+                        self.log(f"⚠️ Chrome Driver 初始化異常: {detail}")
+                        self.driver = None
+                        time.sleep(2)
+                        continue
                 
                 self.log(f"正在登入 (第 {attempt + 1} 次嘗試)...")
                 try:
@@ -506,6 +612,7 @@ class LawyerPortalSSO:
                             time.sleep(random.uniform(0.05, 0.15))
                     else:
                         self.log("  ❌ 驗證碼識別失敗，將進入下一輪登入重試")
+                        self._set_login_error("captcha_failed", "captcha_ocr_failed")
                         continue
                 
                 time.sleep(random.uniform(0.3, 1.0))
@@ -543,6 +650,7 @@ class LawyerPortalSSO:
                     
                     if "驗證碼" in alert_text:
                         self.log("  (Alert 指示驗證碼錯誤，重試)")
+                        self._set_login_error("captcha_failed", alert_text)
                         continue
                     # 密碼到期「建議」警告 → 不是錯誤，接受後繼續檢查登入結果
                     # 例：「因密碼超過180天未更新,建議您先至個人資料維護內更改密碼。」
@@ -551,6 +659,7 @@ class LawyerPortalSSO:
                         # 不 continue，讓下方 _check_login_success() 判斷實際結果
                     elif "帳號" in alert_text or "密碼" in alert_text:
                         self.log("  (Alert 指示帳號密碼錯誤)")
+                        self._set_login_error("auth_failed", alert_text)
                         return False
                 except Exception:
                     logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 542, exc_info=True)
@@ -558,16 +667,23 @@ class LawyerPortalSSO:
                 # 檢查登入結果
                 if self._check_login_success():
                     self.logged_in = True
+                    self._clear_login_error()
                     self.log("✅ 登入成功")
                     return True
                 else:
                     error_msg = self._get_error_message()
+                    error_code = "captcha_failed" if "驗證碼" in error_msg else "sso_login_failed"
+                    self._set_login_error(error_code, error_msg)
                     self.log(f"❌ 登入失敗: {error_msg}")
                     # 不論是驗證碼錯誤、頁面無跳轉或其他原因，都重試下一輪
                     # 歷史上 error_msg 有時為空字串（頁面靜默刷新），導致不 continue
                     continue
                     
             except Exception as e:
+                if self._looks_like_driver_bootstrap_error(e):
+                    self._set_login_error("driver_init_failed", str(e))
+                elif not self.last_error_code:
+                    self._set_login_error("sso_login_failed", str(e))
                 self.log(f"⚠️ 登入異常: {e}")
                 import traceback
                 traceback.print_exc()
@@ -855,6 +971,7 @@ class LawyerPortalSSO:
                 logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 837, exc_info=True)
             self.driver = None
             self.logged_in = False
+        self._cleanup_isolated_profile_dir()
 
 
 # =============================================================================
@@ -959,6 +1076,8 @@ class FileReviewManager:
         
         self.sso = None
         self.driver = None
+        self.last_login_error_code = ""
+        self.last_login_error_detail = ""
         self.gmail_service = None
         self._last_gmail_error = ""
         self._last_smart_skipped_files = []
@@ -1030,6 +1149,15 @@ class FileReviewManager:
 
     def _quit_driver(self):
         """確保 Chrome driver 在進程結束時一定被清理。"""
+        sso = getattr(self, "sso", None)
+        if sso is not None:
+            try:
+                sso.close()
+            except Exception:
+                pass
+            self.sso = None
+            self.driver = None
+            return
         driver = getattr(self, "driver", None)
         if driver is not None:
             try:
@@ -2962,8 +3090,12 @@ class FileReviewManager:
         if self.sso.login():
             self.driver = self.sso.driver
             self.logged_in = True
+            self.last_login_error_code = ""
+            self.last_login_error_detail = ""
             return True
-        
+
+        self.last_login_error_code = str(getattr(self.sso, "last_error_code", "") or "sso_login_failed").strip()
+        self.last_login_error_detail = str(getattr(self.sso, "last_error_detail", "") or "").strip()
         return False
     
     def navigate_to_file_review(self) -> bool:

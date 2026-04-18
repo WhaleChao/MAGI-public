@@ -593,6 +593,7 @@ def topic_fast_path(orch, topic_key: str, user_id, message: str, role: str, plat
         "laf_fee": {"allowed": ("fee",), "label": "法扶-費用", "hint": "這個頻道用來執行**費用支付回報**", "default_action": "fee"},
         "laf_inquiry": {"allowed": ("inquiry",), "label": "法扶-疑義", "hint": "這個頻道用來執行**疑義回報**", "default_action": "inquiry"},
         "laf_condition": {"allowed": ("condition",), "label": "法扶-二階段", "hint": "這個頻道用來執行**二階段回報**", "default_action": "condition"},
+        "laf_progress": {"allowed": ("__progress__",), "label": "法扶-進度回報", "hint": "這個頻道用來查看**未結案件進度回報**通知與確認碼"},
         "laf_dispatch": {"allowed": (), "label": "法扶-派案", "hint": "這個頻道顯示**派案通知**，有新信件時 MAGI 會自動通知"},
         "laf": {"allowed": ("inquiry", "fee", "condition", "withdrawal", "closing", "go_live"), "label": "法扶-一般", "hint": "這個頻道用來執行各項法扶作業"},
     }
@@ -636,22 +637,23 @@ def topic_fast_path(orch, topic_key: str, user_id, message: str, role: str, plat
                     message = f"{message} {kw}"
                     payload = parse_laf_report_payload(message)
 
-            if payload:
-                action = payload.get("action", "")
-                allowed = conf.get("allowed", ())
-                if allowed and action not in allowed:
-                    # 指令不屬於這個頻道 → 引導
-                    _action_channel = {
-                        "go_live": "法扶-開辦", "closing": "法扶-結案",
-                        "inquiry": "法扶-疑義", "fee": "法扶-費用",
-                        "condition": "法扶-二階段", "withdrawal": "法扶-一般",
-                    }
-                    target = _action_channel.get(action, "法扶-一般")
-                    return f"📍 這個指令請到 **#{target}** 頻道執行。\n（此頻道是 **{conf['label']}**：{conf['hint']}）"
-                
-                # IMPORTANT: Return handle_command result to execute the autocompleted command
-                logger.info(f"[TopicFastPath] executing: '{message}'")
-                return orch._handle_command(user_id, message, role=role, platform=platform)
+        if payload:
+            action = payload.get("action", "")
+            allowed = conf.get("allowed", ())
+            if allowed and action not in allowed:
+                # 指令不屬於這個頻道 → 引導
+                _action_channel = {
+                    "go_live": "法扶-開辦", "closing": "法扶-結案",
+                    "inquiry": "法扶-疑義", "fee": "法扶-費用",
+                    "condition": "法扶-二階段", "withdrawal": "法扶-一般",
+                    "__progress__": "法扶-進度回報",
+                }
+                target = _action_channel.get(action, "法扶-一般")
+                return f"📍 這個指令請到 **#{target}** 頻道執行。\n（此頻道是 **{conf['label']}**：{conf['hint']}）"
+
+            # IMPORTANT: Return handle_command result to execute the autocompleted command
+            logger.info(f"[TopicFastPath] executing: '{message}'")
+            return orch._handle_command(user_id, message, role=role, platform=platform)
 
         return None
     except Exception:

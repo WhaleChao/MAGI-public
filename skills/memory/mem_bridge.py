@@ -74,6 +74,8 @@ DB_CONFIG = {
     "password": os.environ.get("DB_PASSWORD", ""),
     "host": os.environ.get("DB_HOST", "127.0.0.1"),
     "database": os.environ.get("DB_NAME", "magi_brain"),
+    "charset": "utf8mb4",
+    "collation": "utf8mb4_unicode_ci",
 }
 
 _OMLX_EMBED_BASE = os.environ.get("MAGI_OMLX_EMBED_URL", "http://127.0.0.1:8081").rstrip("/")

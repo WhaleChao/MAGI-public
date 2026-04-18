@@ -237,8 +237,9 @@ def _detect_doc_type(text: str, in_prior_record: bool = False) -> tuple[Optional
     Detect document type from page text.
     Returns (label, level) or (None, 0).
 
-    If in_prior_record=True, only returns 前案紀錄表-related types
-    (avoids false positives from 判決/裁定 mentioned within prior records).
+    If in_prior_record=True, only returns 前案紀錄表-related types.
+    Falls back to shared doc_type_detector Vision path when regex fails
+    (MAGI_BOOKMARKER_VISION_FALLBACK=1 by default).
     """
     header = text[:2000]
 
@@ -251,6 +252,18 @@ def _detect_doc_type(text: str, in_prior_record: bool = False) -> tuple[Optional
     for pattern, label, level in DOC_PATTERNS:
         if pattern.search(header):
             return label, level
+
+    # Vision fallback (controlled by MAGI_BOOKMARKER_VISION_FALLBACK)
+    import os as _os
+    if _os.environ.get("MAGI_BOOKMARKER_VISION_FALLBACK", "1").strip() in ("1", "true", "yes"):
+        try:
+            from skills.engine.doc_type_detector import detect_doc_type as _dtd
+            r = _dtd(header)
+            if r.source == "vision" and r.confidence >= 0.60 and r.doc_type != "其他":
+                return r.doc_type, 1
+        except Exception:
+            pass
+
     return None, 0
 
 
