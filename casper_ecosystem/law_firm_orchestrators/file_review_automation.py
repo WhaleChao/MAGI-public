@@ -476,18 +476,20 @@ class LawyerPortalSSO:
             except Exception:
                 logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 370, exc_info=True)
         
-        # ★ Headless 模式下強制設定下載行為 (重要修復)
+        # ★ Headless 模式下強制設定下載行為
+        # Chrome 117+ headless=new 已廢棄 Page.setDownloadBehavior（會造成 renderer timeout）
+        # 改用 Browser.setDownloadBehavior；失敗時靜默略過（prefs 已設定 download.default_directory）
         if self.headless and hasattr(self.driver, "execute_cdp_cmd"):
             try:
-                # 確保下載路徑是絕對路徑 (使用與 prefs 相同的路徑)
-                params = {
-                    "behavior": "allow", 
-                    "downloadPath": download_dir
-                }
-                self.driver.execute_cdp_cmd("Page.setDownloadBehavior", params)
+                self.driver.execute_cdp_cmd("Browser.setDownloadBehavior", {
+                    "behavior": "allow",
+                    "downloadPath": download_dir,
+                    "eventsEnabled": True,
+                })
                 self.log(f"  已設定 Headless 下載路徑: {download_dir}")
-            except Exception as e:
-                self.log(f"  ⚠️ 設定 Headless 下載行為失敗: {e}")
+            except Exception:
+                # Browser.setDownloadBehavior 失敗時不 fallback 舊命令（會 hang renderer）
+                self.log(f"  ℹ️ Browser.setDownloadBehavior 略過，依賴 prefs 設定")
 
         # 隱藏 webdriver 特徵
         try:
@@ -539,6 +541,7 @@ class LawyerPortalSSO:
                         except Exception:
                             logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 425, exc_info=True)
                         self.driver = None
+                        self._cleanup_isolated_profile_dir()  # 清除殘留 profile lock
                         time.sleep(3)
                         continue
                     raise get_e
