@@ -245,7 +245,9 @@ _LAUNCHD_SERVICES = [
         "label": "com.magi.omlx",
         "name": "oMLX Inference",
         "probe_url": f"http://127.0.0.1:{os.environ.get('MAGI_OMLX_PORT', '8080')}/v1/models",
-        "probe_timeout": 60,
+        "probe_timeout": 10,    # startup 等待上限：不阻斷主啟動序列（oMLX 會自行上線）
+        "kickstart_grace": 180, # kickstart 後 180s 內不再重複 probe-kickstart（防誤殺）
+        "startup_probe": False, # 不在 startup 時同步等待 oMLX（E4B 需 ~120s，會卡住整個啟動）
     },
     {
         "label": "com.magi.omlx-embed",
@@ -261,9 +263,10 @@ _LAUNCHD_SERVICES = [
     },
     # OpenClaw gateway + Caddy proxy removed (Phase 0)
 ]
-_LAUNCHD_CHECK_INTERVAL = 45  # seconds between periodic launchd health checks (was 120, shortened for faster oMLX recovery)
+_LAUNCHD_CHECK_INTERVAL = 45  # seconds between periodic launchd health checks
 _LAST_LAUNCHD_CHECK_AT = 0.0
-_prev_svc_status: dict = {}  # label -> bool(running); only log on state change
+_prev_svc_status: dict = {}      # label -> bool(running); only log on state change
+_LAST_KICKSTART_AT: dict = {}    # label -> float(timestamp); throttle repeated kickstarts
 
 
 def _kill_existing_daemons() -> int:
@@ -1230,7 +1233,10 @@ def _kickstart_launchd_service(label: str) -> bool:
             text=True,
             timeout=10,
         )
-        return result.returncode == 0
+        if result.returncode == 0:
+            _LAST_KICKSTART_AT[label] = time.time()
+            return True
+        return False
     except Exception as e:
         logger.warning(f"⚠️ launchctl kickstart failed for {label}: {e}")
         return False
@@ -1272,11 +1278,17 @@ def _ensure_launchd_services(*, startup: bool = False) -> None:
 
         if running and not startup:
             # Periodic check: service is there, quick HTTP probe if configured
-            if probe_url and not _probe_url(probe_url, timeout=4.0):
-                logger.warning(f"⚠️ {name} ({label}) launchd ok but HTTP probe failed — kickstarting")
-                if not _kickstart_launchd_service(label):
-                    logger.warning(f"⚠️ {name} ({label}) kickstart after probe failure also failed")
-            elif state_changed:
+            if probe_url:
+                grace = svc.get("kickstart_grace", 0)
+                since_kick = time.time() - _LAST_KICKSTART_AT.get(label, 0)
+                if grace and since_kick < grace:
+                    # Still within startup grace window — don't probe-kickstart (E4B needs ~120s)
+                    logger.debug(f"⏳ {name} — in kickstart grace ({int(since_kick)}s / {grace}s), skipping probe")
+                elif not _probe_url(probe_url, timeout=4.0):
+                    logger.warning(f"⚠️ {name} ({label}) launchd ok but HTTP probe failed — kickstarting")
+                    if not _kickstart_launchd_service(label):
+                        logger.warning(f"⚠️ {name} ({label}) kickstart after probe failure also failed")
+            if state_changed:
                 logger.info(f"✅ {name} ({label}) recovered — now running")
             continue
 
@@ -1287,28 +1299,13 @@ def _ensure_launchd_services(*, startup: bool = False) -> None:
                 logger.debug(f"🔧 {name} ({label}) still not running — kickstarting...")
             if not _kickstart_launchd_service(label):
                 logger.warning(f"⚠️ {name} ({label}) kickstart failed")
-                # For oMLX inference: attempt direct restart via omlx serve as last resort
-                if label == "com.magi.omlx":
-                    logger.info("🔄 Attempting direct oMLX restart via subprocess...")
-                    try:
-                        _omlx_bin = shutil.which("omlx") or "/opt/homebrew/bin/omlx"
-                        if os.path.isfile(_omlx_bin):
-                            _omlx_proc = subprocess.Popen(
-                                [_omlx_bin, "serve", "--port", "8080"],
-                                stdout=subprocess.DEVNULL,
-                                stderr=subprocess.DEVNULL,
-                                start_new_session=True,
-                            )
-                            threading.Thread(target=_omlx_proc.wait, daemon=True).start()
-                            logger.info("🔄 oMLX direct restart initiated (pid detached)")
-                        else:
-                            logger.warning(f"⚠️ omlx binary not found at {_omlx_bin}")
-                    except Exception as omlx_err:
-                        logger.warning(f"⚠️ oMLX direct restart failed: {omlx_err}")
+                # oMLX: 不做 direct Popen fallback（會產生 launchd 管不到的孤兒進程）
+                # 讓 omlx_watchdog.sh 負責重試，daemon 只負責 launchd kickstart
                 continue
 
         # If startup mode and there's a probe URL, wait for the service to be ready
-        if startup and probe_url:
+        # startup_probe=False means: kickstart if needed but don't block startup waiting for it
+        if startup and probe_url and svc.get("startup_probe", True):
             deadline = time.time() + probe_timeout
             ready = False
             while time.time() < deadline:
