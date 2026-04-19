@@ -136,25 +136,29 @@ class PIIScrubber:
 # Factory: 從 MAGI DB 載入已知當事人清單
 # ────────────────────────────────────────────────────────────
 def build_scrubber_from_magi_db(limit: int = 1000) -> PIIScrubber:
-    """從 cases 表撈 client_name 建立 scrubber。失敗時退回純 regex 模式。"""
+    """從 cases 表撈 client_name 建立 scrubber。失敗時退回純 regex 模式。
+
+    - `cases` 表在 `law_firm_data` DB（不是預設的 `magi_brain`）
+    - 用 `api.db_helper.get_cursor(config={...})` 可覆寫 database 名稱
+    - 可透過 env `MAGI_CASES_DB_NAME` 自訂 DB 名稱
+    """
+    import os
     try:
-        from api.db_helper import DBHelper
-        db = DBHelper()
-        rows = db.execute_read(
-            "SELECT DISTINCT client_name FROM cases "
-            "WHERE client_name IS NOT NULL AND TRIM(client_name) != '' "
-            f"ORDER BY updated_at DESC LIMIT {int(limit)}"
-        )
-        names = []
-        for row in rows or []:
-            if isinstance(row, dict):
-                n = str(row.get("client_name") or "").strip()
-            elif isinstance(row, (list, tuple)):
-                n = str(row[0] or "").strip()
-            else:
-                continue
-            if n:
-                names.append(n)
+        from api.db_helper import _default_config, get_cursor
+        cfg = _default_config()
+        cfg["database"] = os.environ.get("MAGI_CASES_DB_NAME", "law_firm_data")
+        names: list[str] = []
+        with get_cursor(config=cfg, dictionary=True) as (_conn, cur):
+            cur.execute(
+                "SELECT DISTINCT client_name FROM cases "
+                "WHERE client_name IS NOT NULL AND TRIM(client_name) != '' "
+                "ORDER BY updated_at DESC LIMIT %s",
+                (int(limit),),
+            )
+            for row in cur.fetchall() or []:
+                n = str((row or {}).get("client_name") or "").strip()
+                if n and len(n) >= 2:
+                    names.append(n)
         logger.info("PII Scrubber loaded %d known names from DB", len(names))
         return PIIScrubber(known_names=names)
     except Exception as e:

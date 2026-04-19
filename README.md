@@ -161,6 +161,19 @@ User query
 
 Feature flag: `MAGI_ENSEMBLE_TOOLS=1` (default `0`).
 
+### Heavy Cloud Fallback — NVIDIA NIM (Plan A, 2026-04-19)
+
+When local oMLX fails or a request needs SOTA reasoning, MAGI can fall back to NVIDIA NIM's free cloud inference:
+
+- **Trigger**: User prefixes message with `@heavy` or `@重型` (opt-in, never automatic)
+- **Primary model**: `meta/llama-3.1-405b-instruct` (128K context, multilingual, no content censorship)
+- **Fast model**: `meta/llama-3.3-70b-instruct` for simpler heavy requests
+- **Hardcoded block list**: Chinese models (DeepSeek / Qwen / MiniMax / Kimi / GLM / Yi / Baichuan / Moonshot / InternLM / ChatGLM / SenseTime) — banned due to content censorship unsuitable for legal work
+- **PII scrubber**: Reversible masking of TW ID, LAF case no, court case no, mobile, and DB-known client names (restored in reply)
+- **Safety**: Circuit breaker (3×429 → 60s cooldown), daily budget (500 req), semaphore (3 concurrent)
+- **Rate limit**: 40 req/min (shared across all NIM models on a single `nvapi-` key)
+- **Feature flag**: `NVIDIA_NIM_ENABLE=0` (default off)
+
 ### Chinese NLP & Knowledge Graph
 
 - **PKUSeg** segmenter with legal dictionary (`skills/engine/legal_dict.txt`), via Python 3.11 sidecar for compatibility.
@@ -383,6 +396,13 @@ Key environment variables (set in `.env`):
 | `MAGI_COMMITTEE_HEAVY_MODEL` | *(26B)* | Risk / Portfolio manager model |
 | `MAGI_FILE_REVIEW_ALLOW_CONFIRM` | `0` | Allow CLI-triggered file review confirmation |
 | `MAGI_JUDICIAL_VERIFY_SSL` | `0` | SSL verify for judicial website (disable for TLS quirks) |
+| `NVIDIA_NIM_ENABLE` | `0` | Enable NVIDIA NIM cloud fallback for heavy tasks (Plan A) |
+| `NVIDIA_NIM_API_KEY` | — | `nvapi-…` key from build.nvidia.com (free tier, 40 req/min) |
+| `NVIDIA_NIM_MODEL` | `meta/llama-3.1-405b-instruct` | Heavy model (128K context, multilingual, non-censored) |
+| `NVIDIA_NIM_MODEL_FAST` | `meta/llama-3.3-70b-instruct` | Fast model for general @heavy requests |
+| `NVIDIA_NIM_REQUIRE_OPTIN` | `1` | Require `@heavy` / `@重型` prefix to trigger NIM |
+| `NVIDIA_NIM_REQUIRE_PII_SCRUB` | `1` | PII scrub before sending to cloud (never disable) |
+| `NVIDIA_NIM_DAILY_BUDGET` | `500` | Max daily NIM requests before blocking |
 
 ---
 
