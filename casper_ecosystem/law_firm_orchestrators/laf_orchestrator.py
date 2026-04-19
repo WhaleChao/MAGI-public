@@ -2562,6 +2562,8 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         case_number: str,
         client_name: str = "",
         fields: Optional[dict] = None,
+        *,
+        suppress_notify: bool = False,
     ) -> bool:
         """
         通用法扶 workflow 暫存（只暫存不送出）。
@@ -2631,7 +2633,8 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                 self._last_portal_artifact = {"upload_result": upload_res}
         except Exception as e:
             try:
-                self.notifier.notify_admin(f"❌ {wf} 暫存失敗 — {case_number or client_name}\n原因：{e}")
+                if not suppress_notify:
+                    self.notifier.notify_admin(f"❌ {wf} 暫存失敗 — {case_number or client_name}\n原因：{e}")
             except Exception:
                 logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 2110, exc_info=True)
             self._log_event(case_number or client_name, wf, {"error": str(e), "fields": fields or {}}, "error")
@@ -2754,7 +2757,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
             self._automation = None
 
     def execute_portal_go_live_draft(self, case_number: str, client_name: str = "", fields: Optional[dict] = None, *, suppress_notify: bool = False) -> bool:
-        ok = self.execute_portal_workflow_draft("go_live", case_number, client_name, fields)
+        ok = self.execute_portal_workflow_draft("go_live", case_number, client_name, fields, suppress_notify=suppress_notify)
         if ok and (not self.dry_run) and (not suppress_notify):
             notify_msg = f"✅ 已填寫開辦資料（未送出）— {client_name or '-'}（{case_number or '-'}）"
             # Send preview screenshot if available
@@ -2777,13 +2780,13 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         return ok
 
     def execute_portal_withdrawal_draft(self, case_number: str, client_name: str = "", fields: Optional[dict] = None, *, suppress_notify: bool = False) -> bool:
-        ok = self.execute_portal_workflow_draft("withdrawal", case_number, client_name, fields)
+        ok = self.execute_portal_workflow_draft("withdrawal", case_number, client_name, fields, suppress_notify=suppress_notify)
         if ok and (not self.dry_run) and (not suppress_notify):
             self.notifier.notify_admin(f"✅ 已暫存撤回資料 — {client_name or '-'}（{case_number or '-'}）")
         return ok
 
     def execute_portal_inquiry_draft(self, case_number: str, client_name: str = "", fields: Optional[dict] = None, *, suppress_notify: bool = False) -> bool:
-        ok = self.execute_portal_workflow_draft("inquiry", case_number, client_name, fields)
+        ok = self.execute_portal_workflow_draft("inquiry", case_number, client_name, fields, suppress_notify=suppress_notify)
         if ok and (not self.dry_run) and (not suppress_notify):
             reason = (fields or {}).get("desc", "")
             msg = f"✅ 已暫存疑義資料 — {client_name or '-'}（{case_number or '-'}）\n說明：{reason}\n請務必登入平台確認內容是否正確。"
@@ -2793,13 +2796,13 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         return ok
 
     def execute_portal_condition_draft(self, case_number: str, client_name: str = "", fields: Optional[dict] = None, *, suppress_notify: bool = False) -> bool:
-        ok = self.execute_portal_workflow_draft("condition", case_number, client_name, fields)
+        ok = self.execute_portal_workflow_draft("condition", case_number, client_name, fields, suppress_notify=suppress_notify)
         if ok and (not self.dry_run) and (not suppress_notify):
             self.notifier.notify_admin(f"✅ 已暫存二階段資料 — {client_name or '-'}（{case_number or '-'}）")
         return ok
 
     def execute_portal_fee_draft(self, case_number: str, client_name: str = "", fields: Optional[dict] = None, *, suppress_notify: bool = False) -> bool:
-        ok = self.execute_portal_workflow_draft("fee", case_number, client_name, fields)
+        ok = self.execute_portal_workflow_draft("fee", case_number, client_name, fields, suppress_notify=suppress_notify)
         if ok and (not self.dry_run) and (not suppress_notify):
             self.notifier.notify_admin(f"✅ 已暫存費用支付資料 — {client_name or '-'}（{case_number or '-'}）")
         return ok
@@ -4496,7 +4499,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         if act == "progress":
             # 進度回報：不需必要文件，remark 由呼叫端提供或留空給 portal 填
             fields.setdefault("remark", reason or "")
-            ok = self.execute_portal_workflow_draft("progress", laf_no, cname, fields or {})
+            ok = self.execute_portal_workflow_draft("progress", laf_no, cname, fields or {}, suppress_notify=suppress_notify)
             result = {
                 "ok": bool(ok),
                 "action": act,

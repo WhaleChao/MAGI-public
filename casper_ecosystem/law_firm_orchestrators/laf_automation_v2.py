@@ -201,8 +201,64 @@ PIL_AVAILABLE = importlib.util.find_spec("PIL") is not None and importlib.util.f
 # Placeholders
 webdriver = None
 Options = None
-By = None
-WebDriverWait = None
+
+
+class _ByFallback:
+    """Selenium By-compatible constants for use when Playwright driver is active
+    (i.e. _create_chrome_driver() was never called so the real selenium.By was
+    never lazily imported).  Playwright find_elements() accepts these strings."""
+    XPATH = "xpath"
+    CSS_SELECTOR = "css selector"
+    TAG_NAME = "tag name"
+    ID = "id"
+    NAME = "name"
+    CLASS_NAME = "class name"
+    LINK_TEXT = "link text"
+    PARTIAL_LINK_TEXT = "partial link text"
+
+
+By = _ByFallback
+
+
+class _WebDriverWaitFallback:
+    """Minimal WebDriverWait shim for Playwright path (no Selenium installed)."""
+    def __init__(self, driver, timeout, poll_frequency=0.5, ignored_exceptions=None):
+        import time as _time
+        self._driver = driver
+        self._timeout = timeout
+        self._poll = poll_frequency
+        self._time = _time
+
+    def until(self, condition, message=""):
+        deadline = self._time.time() + self._timeout
+        last_exc = None
+        while self._time.time() < deadline:
+            try:
+                result = condition(self._driver)
+                if result:
+                    return result
+            except Exception as exc:
+                last_exc = exc
+            self._time.sleep(self._poll)
+        raise Exception(
+            f"Condition not met after {self._timeout}s. {message}"
+            + (f" Last exception: {last_exc}" if last_exc else "")
+        )
+
+    def until_not(self, condition, message=""):
+        deadline = self._time.time() + self._timeout
+        while self._time.time() < deadline:
+            try:
+                result = condition(self._driver)
+                if not result:
+                    return True
+            except Exception:
+                return True
+            self._time.sleep(self._poll)
+        raise Exception(f"Condition still true after {self._timeout}s. {message}")
+
+
+WebDriverWait = _WebDriverWaitFallback
 EC = None
 TimeoutException = None
 NoSuchElementException = None
