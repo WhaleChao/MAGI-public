@@ -157,6 +157,7 @@ def test_external_chat_applies_min_timeout_floor(monkeypatch, tools_api_runtime)
     tools_api, client, _events_path = tools_api_runtime
     monkeypatch.setenv("MAGI_EXTERNAL_API_KEY", "test-key")
     monkeypatch.setenv("MAGI_CHAT_TIMEOUT_SEC", "150")
+    monkeypatch.setenv("MAGI_EXTERNAL_CHAT_SIMPLE_TIMEOUT_OPT_IN", "0")  # force COMPLEX floor to test 240s default
     monkeypatch.delenv("MAGI_EXTERNAL_CHAT_MIN_TIMEOUT_SEC", raising=False)
     tools_api._EXTERNAL_KEY_CACHE["ts"] = 0.0
     tools_api._EXTERNAL_KEY_CACHE["value"] = ""

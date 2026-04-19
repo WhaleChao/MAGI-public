@@ -1104,7 +1104,9 @@ def _external_osc_chat_inner():
     except Exception:
         msg_tier = "COMPLEX"
 
-    simple_timeout_opt_in = _to_bool(os.environ.get("MAGI_EXTERNAL_CHAT_SIMPLE_TIMEOUT_OPT_IN", "0"), False)
+    # SIMPLE tier uses a shorter floor so responses finish well within most caller timeouts.
+    # Default opt-in changed to "1" (was "0") to take advantage of the E4B day model speed.
+    simple_timeout_opt_in = _to_bool(os.environ.get("MAGI_EXTERNAL_CHAT_SIMPLE_TIMEOUT_OPT_IN", "1"), True)
     if simple_timeout_opt_in and msg_tier == "SIMPLE":
         min_timeout_sec = max(
             int(os.environ.get("MAGI_EXTERNAL_CHAT_SIMPLE_MIN_TIMEOUT_SEC", "45") or "45"),
@@ -3277,16 +3279,24 @@ _bootstrap_tool_registry()
 def _warmup_background():
     import time
     time.sleep(3)  # wait for server to begin listening
+    _log = logging.getLogger("tools_api")
     try:
         from skills.bridge.grounded_ai import _classify_query_tier
-        logger = logging.getLogger("tools_api")
-        logger.info("🔧 System Background Warmup: Preloading embedding anchors (Phase D)...")
+        _log.info("🔧 System Background Warmup: Preloading embedding anchors (Phase D)...")
         # Preload SIMPLE / COMPLEX routes
         _classify_query_tier("早安你好")
         _classify_query_tier("幫我查一個最高法院113年度的判決與存證信函")
-        logger.info("✅ System Background Warmup Complete: models loaded in RAM.")
+        _log.info("✅ Warmup Phase D done: embedding anchors loaded.")
     except Exception as e:
-        logging.getLogger("tools_api").debug(f"Warmup skipped: {e}")
+        _log.debug(f"Warmup phase D skipped: {e}")
+    # Pre-initialize the Orchestrator singleton so first /osc/external/chat request
+    # doesn't pay the cold-start penalty (avoids first-request hang on heavy import chains).
+    try:
+        _log.info("🔧 System Background Warmup: Pre-init Orchestrator singleton...")
+        _get_osc_orchestrator()
+        _log.info("✅ Warmup Orchestrator done.")
+    except Exception as e:
+        _log.warning(f"Orchestrator warmup failed (non-fatal): {e}")
 
 import threading
 threading.Thread(target=_warmup_background, daemon=True).start()
