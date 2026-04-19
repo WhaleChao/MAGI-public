@@ -2161,6 +2161,9 @@ def _extract_legal_fields_from_ocr(ocr_text: str, doc_type: str = "") -> dict:
     All fields default to "" or None if not found.
     """
     text = ocr_text or ""
+    # Opus 驗收補丁 D-3: OCR 引擎常把「內」(U+5167) 讀成「内」(U+5185)；
+    # 兩者在繁中法律文書是同一字，統一正規化，避免所有 deadline regex 漏抓真實 PDF。
+    text = text.replace("\u5185", "\u5167")
     dt = doc_type or ""
     fields = {"holding": "", "correction_order": "", "deadline": None, "deadline_type": ""}
 
@@ -2183,6 +2186,9 @@ def _extract_legal_fields_from_ocr(ocr_text: str, doc_type: str = "") -> dict:
         (r"應於判決送達後\s*(\d+)\s*日內提起\s*(上訴)", "上訴"),
         (r"應於文到\s*(\d+)\s*日內\s*(陳述意見)", "陳述意見"),
         (r"限於\s*(\d+)\s*日內.+?(陳述意見)", "陳述意見"),
+        # Opus D-3: 真實函文常用「陳報」而非「陳述意見」（如「文到10日內陳報如說明」）
+        (r"(?:應於|限於|於)?\s*文到\s*(\d+)\s*日內\s*(陳報)", "陳報"),
+        (r"應於\s*(\d+)\s*日內\s*(陳報)", "陳報"),
         (r"應於文到\s*(\d+)\s*日內繳納.+(規費|裁判費)", "繳費"),
         (r"限\s*(\d+)\s*日內.+?繳納.+?(裁判費|規費)", "繳費"),
         (r"應於\s*(\d+)\s*日內.+(閱卷)", "閱卷期限"),
@@ -3337,9 +3343,12 @@ def _resolve_doc_category(doc_type: str) -> Optional[str]:
 
 
 # OSC todos.py 的 bracket regex 使用「繳納」「閱卷」，需把 Vision/OCR 抽出的詞彙正規化
+# Opus D-3: 「陳報」是函文最常見動作之一（如「文到10日內陳報如說明」），
+# OSC regex 只認「陳述意見」，故把陳報正規化為陳述意見以觸發 todo_sync。
 _OSC_KEYWORDS = {
     "繳費": "繳納",
     "閱卷期限": "閱卷",
+    "陳報": "陳述意見",
 }
 
 # 5 個類別在括號內注入 deadline（對齊 OSC regex）
@@ -3547,13 +3556,20 @@ def _build_name_result(
             body += f"（{party}）"
 
     # 注入 deadline 到括號（僅 5 個白名單類別）
-    if category in _DEADLINE_INJECT_CATEGORIES and deadline and "日" in str(deadline):
-        normalized_type = _OSC_KEYWORDS.get(deadline_type or "", deadline_type or "")
-        deadline_part = f"{deadline}{normalized_type}"
-        if body.endswith("）"):
-            body = body[:-1] + f"；{deadline_part}）"
-        else:
-            body += f"（{deadline_part}）"
+    # Opus 驗收補丁 D-1: Vision prompt 回純數字 30，OCR 回 int(days)；
+    # 原 `"日" in str(deadline)` 對 int/純數字永遠 fail → 先正規化為 "N日內" 字串
+    if category in _DEADLINE_INJECT_CATEGORIES and deadline:
+        _dl_raw = str(deadline).strip()
+        # 純數字 → "{N}日內"
+        if _dl_raw.isdigit():
+            _dl_raw = f"{_dl_raw}日內"
+        if "日" in _dl_raw:
+            normalized_type = _OSC_KEYWORDS.get(deadline_type or "", deadline_type or "")
+            deadline_part = f"{_dl_raw}{normalized_type}"
+            if body.endswith("）"):
+                body = body[:-1] + f"；{deadline_part}）"
+            else:
+                body += f"（{deadline_part}）"
 
     new_name = f"{found_date} {body}.pdf"
     new_name = re.sub(r'[/\\:*?"<>|]', "", new_name)
@@ -3614,6 +3630,12 @@ def _maybe_fast_text_name_result(content_text: str, *, case_name: Optional[str] 
     if not found_date or not (found_court or found_case_no or found_type):
         return None
 
+    # Opus 驗收補丁 D-2: fast text path 也要抽 deadline/deadline_type，否則
+    # 含 text layer 的掃描 PDF 會完全跳過 Task A 的 deadline 注入
+    _legal = _extract_legal_fields_from_ocr(text, found_type or "")
+    _fast_deadline = _legal.get("deadline")
+    _fast_deadline_type = _legal.get("deadline_type", "")
+
     return _build_name_result(
         found_date=found_date,
         found_court=found_court,
@@ -3621,6 +3643,8 @@ def _maybe_fast_text_name_result(content_text: str, *, case_name: Optional[str] 
         found_type=found_type,
         found_party=found_party,
         date_method="ocr_fast_path",
+        deadline=_fast_deadline,
+        deadline_type=_fast_deadline_type,
     )
 
 
