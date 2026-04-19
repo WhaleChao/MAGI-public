@@ -16,7 +16,8 @@ GRANDFATHER = REPO / "scripts" / "ci" / "shell_true_grandfather.txt"
 
 _SCAN_ROOTS = ["api", "skills", "scripts", "casper_ecosystem", "daemon.py"]
 _EXCLUDE_SUBSTR = (".runtime/", "venv/", "__pycache__/", ".git/",
-                   "scripts/ci/check_shell_true.py")
+                   "scripts/ci/check_shell_true.py",
+                   "api/platforms/safe_process.py")  # 本身就是取代 shell=True 的模組，docstring/comment 會誤觸
 
 _PATTERNS = (
     re.compile(r"\bshell\s*=\s*True\b"),
