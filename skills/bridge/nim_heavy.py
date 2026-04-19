@@ -108,6 +108,22 @@ def _pick_model(task_type: str, heavy: bool = False) -> str:
 
 
 def _cb_can_call():
+    # --- NEW: RemoteHealthGate opt-in path ---
+    if os.environ.get("MAGI_USE_REMOTE_HEALTH_GATE", "0").strip().lower() in {"1", "true", "on", "yes"}:
+        try:
+            from api.platform.remote_health_gate import get_gate, PeerConfig
+            gate = get_gate()
+            gate.register(PeerConfig(
+                name="nvidia_nim",
+                probe_url=None,  # NIM 沒有 health endpoint；純 mark_failure/mark_success
+                fail_threshold=3,
+                cooldown_seconds=(60, 120, 300),
+            ))
+            ok, _ = gate.is_reachable("nvidia_nim")
+            return ok, ""
+        except Exception:
+            pass
+    # legacy code unchanged below
     with _cb_lock:
         now = time.time()
         if _cb_state["cooldown_until_ts"] > now:

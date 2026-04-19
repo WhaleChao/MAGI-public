@@ -434,6 +434,25 @@ class InferenceGateway:
         if self._force_local():
             return False, "force_local"
 
+        # --- NEW: RemoteHealthGate opt-in path ---
+        if os.environ.get("MAGI_USE_REMOTE_HEALTH_GATE", "0").strip().lower() in {"1", "true", "on", "yes"}:
+            try:
+                from api.platform.remote_health_gate import get_gate, PeerConfig
+                gate = get_gate()
+                gate.register(PeerConfig(
+                    name="balthasar",
+                    probe_url=f"{self.balthasar_url.rstrip('/')}/health",
+                    fail_threshold=int(os.environ.get("BALTHASAR_CB_FAIL_THRESHOLD", "2")),
+                    probe_cache_ttl_sec=0,
+                    audit_dir_env="SYNOLOGY_BALTHASAR_FALLBACK_DIR",
+                ))
+                return gate.is_reachable("balthasar")
+            except Exception as exc:
+                # gate 自己爆 → 降級走 legacy，不讓使用者受影響
+                pass
+        # --- end NEW ---
+        # 以下為原有 legacy 程式碼（不動）
+
         # Circuit breaker: skip probe while tripped (saves ~1.2s per call).
         # When Balthasar/Tailscale peer is unreachable, the downstream caller
         # falls back to local OCR/inference (degraded mode). A Synology Drive

@@ -723,6 +723,27 @@ def _remote_online_quick() -> bool:
     if _avoid_distributed():
         return False
 
+        # --- NEW: RemoteHealthGate opt-in path ---
+    if os.environ.get("MAGI_USE_REMOTE_HEALTH_GATE", "0").strip().lower() in {"1", "true", "on", "yes"}:
+        try:
+            from api.platform.remote_health_gate import get_gate, PeerConfig
+            gate = get_gate()
+            gate.register(PeerConfig(
+                name="melchior",
+                probe_url=f"{MELCHIOR_BASE_URL.rstrip('/')}/health" if MELCHIOR_BASE_URL else None,
+                fail_threshold=int(os.environ.get("MELCHIOR_CB_THRESHOLD", "3")),
+                cooldown_seconds=(
+                    int(os.environ.get("MELCHIOR_CB_COOLDOWN_SEC", "180")),
+                    int(os.environ.get("MELCHIOR_CB_COOLDOWN_SEC", "180")) * 2,
+                    int(os.environ.get("MELCHIOR_CB_COOLDOWN_SEC", "180")) * 3,
+                ),
+            ))
+            ok, _ = gate.is_reachable("melchior")
+            return ok
+        except Exception:
+            pass
+        # legacy code unchanged below
+
     if (os.environ.get("MELCHIOR_FORCE_LOCAL", "") or "").strip().lower() in {"1", "true", "yes", "on"}:
         return False
 
