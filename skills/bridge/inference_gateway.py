@@ -846,6 +846,72 @@ class InferenceGateway:
 
         errors: List[str] = []
         allow_synthetic_fallback = bool(kwargs.get("allow_synthetic_fallback", True))
+        nim_already_tried = False  # 避免 heavy fast path 失敗後又重打 NIM（雙倍耗 daily budget）
+
+        # ── 讀取 heavy opt-in flag（@heavy / @重型 觸發器）──
+        # 3 層偵測（雙保險 — 解決 ThreadPoolExecutor 子 thread 讀不到 flask.g 的 P1-2 bug）：
+        # 1) kwarg: 直接呼叫 chat(heavy=True) 傳入
+        # 2) flask.g: tools_api / message_pipeline 透過 Flask g 設定（request thread 有效）
+        # 3) prompt prefix: 終極防線 — 偵測 @heavy / @重型 前綴並自動剝除
+        heavy_opt_in = bool(kwargs.get("heavy", False))
+        if not heavy_opt_in:
+            try:
+                from flask import g as _flask_g
+                heavy_opt_in = bool(getattr(_flask_g, "heavy_opt_in", False))
+            except Exception:
+                pass
+        if not heavy_opt_in and (prompt.startswith("@heavy ") or prompt.startswith("@重型 ")):
+            heavy_opt_in = True
+            # 剝除前綴，不讓 `@heavy` 字面傳給 LLM
+            prompt = prompt.split(" ", 1)[1] if " " in prompt else ""
+            logger.info("inference_chat: @heavy prefix detected in prompt (final-line defense)")
+
+        # ── @heavy fast path：跳過 oMLX，直接走 NIM 405B（Plan A, 2026-04-19 P1-2 修） ──
+        # 使用者明確 @heavy 表示要雲端重型模型；oMLX 常在高負載時吐「忙碌中」假 success，
+        # 讓 NIM 永遠接不到手（P1-2 bug）。修法：heavy_opt_in=True 時跳過 oMLX，直接試 NIM。
+        if (
+            heavy_opt_in
+            and _env_bool("NVIDIA_NIM_ENABLE", False)
+            and task_type not in ("tc_review", "captcha", "date_extract")
+        ):
+            try:
+                from skills.bridge.nim_heavy import run_nim_chat
+                logger.info(
+                    "inference_chat: @heavy fast path (skip oMLX, direct NIM) task=%s",
+                    task_type,
+                )
+                nim_r = run_nim_chat(
+                    prompt=prompt,
+                    timeout_sec=max(60, int(timeout)),
+                    task_type=task_type,
+                    require_pii_scrub=_env_bool("NVIDIA_NIM_REQUIRE_PII_SCRUB", True),
+                    system_prompt=_DEFAULT_SYSTEM_PROMPT_ZH,
+                    heavy=True,  # 強制走 405B
+                )
+                if nim_r.get("success") and nim_r.get("response"):
+                    return self._result(
+                        success=True,
+                        route="nvidia_nim",
+                        degraded=True,
+                        response=nim_r["response"],
+                        model=str(nim_r.get("model") or "nvidia_nim"),
+                        provider="nvidia_nim",
+                        task_type=task_type,
+                        pii_scrubbed=bool(nim_r.get("pii_scrubbed")),
+                        pii_counts=nim_r.get("pii_counts") or {},
+                        heavy_fast_path=True,
+                    )
+                # NIM 失敗（rate limit / budget / circuit open）→ 退回 oMLX 流程
+                errors.append(f"nvidia_nim_heavy_fast:{nim_r.get('error', 'empty')}")
+                nim_already_tried = True
+                logger.warning(
+                    "@heavy fast path NIM failed (%s), falling back to oMLX",
+                    nim_r.get("error", "empty"),
+                )
+            except Exception as nim_err:
+                errors.append(f"nvidia_nim_heavy_fast:exception:{nim_err}")
+                nim_already_tried = True
+                logger.warning("@heavy fast path NIM exception: %s", nim_err)
 
         # Try oMLX first for tasks that have an oMLX model configured
         # OCR/date extraction stay on OCR model; review/classify still use the configured local text model.
@@ -942,6 +1008,7 @@ class InferenceGateway:
             and errors
             and task_type not in ("tc_review", "captcha")
             and (not nim_require_optin or heavy_opt_in)
+            and not nim_already_tried  # P1-2: heavy fast path 已試過就別再打
         )
 
         if nim_allowed:

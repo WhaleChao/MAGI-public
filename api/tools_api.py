@@ -991,10 +991,11 @@ def external_osc_chat():
         return jsonify({"success": False, "error": "Missing 'message'"}), 400
 
     # @heavy opt-in：允許使用者觸發 NVIDIA NIM 重型兜底
+    # 注意：不在此剝除前綴，保留到 _chat_inner 自己偵測（P1-2 修）。ThreadPoolExecutor 子 thread
+    # 讀不到 request thread 的 flask.g，所以 prompt prefix 是唯一可靠的跨 thread 傳遞方式。
     heavy_opt_in = False
     if message.startswith("@heavy ") or message.startswith("@重型 "):
         heavy_opt_in = True
-        message = message.split(" ", 1)[1] if " " in message else ""
         logging.getLogger(__name__).info("external chat: @heavy opt-in detected, will try NIM fallback")
     try:
         from flask import g as _flask_g
