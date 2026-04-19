@@ -276,3 +276,15 @@ _autopilot_kill_log.jsonl
 
 # Personal website nested repository
 whalechao.github.io/
+
+# === R3 RuntimeDir (2026-04-19) ===
+# runtime state 不入庫（schedule 定義入庫，state 不入庫）
+.runtime/cron_state.json
+.runtime/pending/
+.runtime/metrics/
+
+# live 測試污染
+_laf_smoke/
+scratch/
+.agent/server.log.*
+.agent/daemon.log.*

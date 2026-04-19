@@ -14,6 +14,38 @@ import logging
 from datetime import datetime
 import time
 import uuid
+from typing import Dict
+
+# === R3: runtime_dir 接入 ===
+try:
+    from api.platforms import runtime_dir as _rd
+except Exception:
+    _rd = None
+
+
+def _use_runtime_dir() -> bool:
+    if _rd is None:
+        return False
+    return os.environ.get("MAGI_USE_RUNTIME_DIR", "0").strip().lower() in {"1", "true", "on", "yes"}
+
+
+def _load_cron_state() -> Dict[str, Dict[str, str]]:
+    if not _use_runtime_dir():
+        return {}
+    p = _rd.cron_state()
+    if not p.exists():
+        return {}
+    try:
+        import json as _j
+        return _j.loads(p.read_text(encoding="utf-8")) or {}
+    except Exception:
+        return {}
+
+
+def _save_cron_state(state: Dict[str, Dict[str, str]]) -> None:
+    if not _use_runtime_dir():
+        return
+    _rd.atomic_write_json(_rd.cron_state(), state)
 
 logger = logging.getLogger("CronScheduler")
 
@@ -70,6 +102,14 @@ class CronScheduler:
         else:
             self.jobs = []
         self._normalize_jobs()
+        # --- R3 merge：若 cron_state.json 存在，用它覆蓋 last_run / last_run_minute ---
+        if _use_runtime_dir():
+            state = _load_cron_state()
+            for j in self.jobs:
+                jid = j.get("id")
+                if jid and jid in state:
+                    j["last_run"] = state[jid].get("last_run", j.get("last_run"))
+                    j["last_run_minute"] = state[jid].get("last_run_minute", j.get("last_run_minute"))
 
     def _hot_reload_if_changed(self):
         """Reload jobs from disk if the file was modified externally."""
@@ -117,6 +157,12 @@ class CronScheduler:
                     logger.info("🔄 Preserved externally-added job: %s", djid)
 
             self.jobs = merged
+
+            # --- R3：flag 開時把 last_run/last_run_minute 從寫出 payload 清乾淨 ---
+            if _use_runtime_dir():
+                for j in self.jobs:
+                    j["last_run"] = None
+                    j["last_run_minute"] = None
 
             with open(JOB_FILE, 'w', encoding='utf-8') as f:
                 json.dump(self.jobs, f, indent=2, ensure_ascii=False)
@@ -312,7 +358,15 @@ class CronScheduler:
                     due_jobs.append(job)
                     job["last_run"] = now.isoformat()
                     job["last_run_minute"] = current_minute_str
-                    
+                    # R3: 寫到 cron_state.json，cron_jobs.json 由 strip 腳本清乾淨
+                    if _use_runtime_dir():
+                        st = _load_cron_state()
+                        st[job["id"]] = {
+                            "last_run": job["last_run"],
+                            "last_run_minute": job["last_run_minute"],
+                        }
+                        _save_cron_state(st)
+
             except Exception as e:
                 logger.error(f"Error checking job {job['id']}: {e}")
                 continue
