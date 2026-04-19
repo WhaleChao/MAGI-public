@@ -2260,7 +2260,9 @@ def cmd_download(case_number: str = "", notify: bool = True, flow_id: str = "") 
                 return out
             _safe_flow_step_status(flow_id, "portal_login", status="succeeded", detail="SSO login ok", ok=True)
 
-            mgr.navigate_to_file_review()
+            nav_ok = mgr.navigate_to_file_review()
+            if not nav_ok:
+                logger.warning("navigate_to_file_review failed; will attempt download from current portal page")
 
             cancelled = _check_flow_cancelled(flow_id, "portal_download", detail="before portal download")
             if cancelled:

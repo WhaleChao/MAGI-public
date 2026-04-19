@@ -3162,7 +3162,8 @@ class FileReviewManager:
             def _find_link_elem():
                 """找到閱卷連結 element，回傳 element 或 None。"""
                 try:
-                    return WebDriverWait(self.driver, 1).until(
+                    # 8s timeout: fresh SSO session needs ~5s for mainFrame menu to render
+                    return WebDriverWait(self.driver, 8).until(
                         EC.presence_of_element_located((By.XPATH, _link_xpath))
                     )
                 except Exception:
@@ -3863,13 +3864,18 @@ class FileReviewManager:
                     pending_payment = self._is_pending_payment_row(row_json, row_text=row_text)
                     has_download = bool(row_data.get("has_online_download"))
 
+                    # IMPORTANT: check pending_payment FIRST.
+                    # `has_online_download` can be triggered by `input[name='btn_pay']` (the fee
+                    # payment button), so a "待繳費" row also has has_download=True.  We must not
+                    # call those cases "downloadable" — the court blocks the actual file download
+                    # until the clerk confirms payment.
                     status = "other"
-                    if has_download:
-                        status = "downloadable"
-                        downloadable_count += 1
-                    elif pending_payment:
+                    if pending_payment:
                         status = "pending_payment"
                         pending_payment_count += 1
+                    elif has_download:
+                        status = "downloadable"
+                        downloadable_count += 1
 
                     paystatus = str(row_json.get("paystatus") or "").strip()
                     p_status = str(row_json.get("p_status") or "").strip().upper()
