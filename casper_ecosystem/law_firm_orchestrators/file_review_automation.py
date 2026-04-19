@@ -4132,6 +4132,19 @@ class FileReviewManager:
                 s += 2
             if "待繳費" in (row_text_inner or ""):
                 s += 1
+            # ★ 優先選未逾期列：逾期超過 14 天扣 4 分（確保較新未逾期申請排前面）
+            _limitdt = str((row_json_inner or {}).get("limitdt") or "").strip()
+            if _limitdt and len(_limitdt) == 7:
+                try:
+                    from datetime import date as _date
+                    _y = int(_limitdt[:3]) + 1911
+                    _m = int(_limitdt[3:5])
+                    _d = int(_limitdt[5:7])
+                    _dl = _date(_y, _m, _d)
+                    if (_date.today() - _dl).days > 14:
+                        s -= 4  # 逾期超過 14 天：大幅降分，讓較新未逾期申請優先
+                except Exception:
+                    pass
             applydt = re.sub(r"\D", "", str((row_json_inner or {}).get("applydt") or ""))
             rowid = re.sub(r"\D", "", str((row_json_inner or {}).get("rowid") or ""))
             return (s, applydt, rowid)
@@ -5531,7 +5544,8 @@ class FileReviewManager:
                     # 嘗試點擊並確認彈窗開啟 (最多試 3 次)
                     max_open_retries = 3
                     popup_opened = False
-                    
+                    _payment_pending_skip = False  # ★ Fix2: 待繳費未確認時跳過卷宗下載
+
                     for open_try in range(max_open_retries):
                         if _time_exceeded():
                             self.log(f"  ⏳ 已達時間上限 {max_runtime_sec}s，停止下載彈窗重試（第 {i+1} 筆）")
@@ -5629,6 +5643,21 @@ class FileReviewManager:
                                     except Exception:
                                         logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 5097, exc_info=True)
 
+                                    # ★ Fix2: 待繳費未確認偵測 — paystatus=2 + payment=N → 跳過卷宗下載，送繳費通知
+                                    _rj_paystatus = str(row_json.get("paystatus") or "").strip()
+                                    _rj_payment = str(row_json.get("payment") or "").strip().upper()
+                                    _rj_result = str(row_json.get("result") or "")
+                                    if (_rj_paystatus == "2" and _rj_payment == "N"
+                                            and "繳費" in _rj_result and "線上下載" in _rj_result):
+                                        _rj_fee = str(row_json.get("procfee") or "").strip()
+                                        self.log(f"    ⚠️ 待繳費未確認 (paystatus=2/payment=N，費用 {_rj_fee} 元)，跳過卷宗下載")
+                                        _payment_pending_skip = True
+                                        try:
+                                            self._notify_payment_if_needed(row_json, case_info=case_info, file_paths=None)
+                                        except Exception as _ne:
+                                            self.log(f"    ⚠️ 繳費通知失敗: {_ne}")
+                                        break  # 跳出 open_try 迴圈，不開彈窗
+
                                     # 嘗試完整模擬按鈕點擊的邏輯
                                     self.driver.execute_script("""
                                         var json = arguments[0];
@@ -5717,10 +5746,15 @@ class FileReviewManager:
                             except Exception:
                                 logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 5185, exc_info=True)
                     
+                    # ★ Fix2: 若已偵測到待繳費未確認，跳過此案卷宗下載
+                    if _payment_pending_skip:
+                        self.log("  ℹ️ 繳費待確認，暫跳過卷宗下載（已送繳費通知）")
+                        continue
+
                     if not popup_opened:
                         self.log("  ❌ 嘗試多次仍無法開啟彈窗，跳過此項目")
                         continue
-                        
+
                     # 處理彈窗 (傳入記錄的視窗清單以偵測新視窗)
                     self.log("  進入彈窗內容處理...")
                     
