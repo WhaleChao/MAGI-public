@@ -5346,9 +5346,17 @@ class FileReviewManager:
                         "downloadPath": today_folder,
                         "eventsEnabled": True,
                     })
-                    self.log(f"  ✓ 已更新下載路徑: {today_folder}")
+                    self.log(f"  ✓ 已更新 CDP 下載路徑: {today_folder}")
             except Exception as _dl_upd_e:
-                self.log(f"  ℹ️ 更新下載路徑略過: {_dl_upd_e}")
+                self.log(f"  ℹ️ CDP 更新下載路徑略過: {_dl_upd_e}")
+            # ★ 同步更新 Playwright context-level 下載攔截器的目標資料夾
+            # 這確保 popup 視窗觸發的下載也落在 today_folder，不再跑到 ~/Downloads
+            try:
+                if self.driver and hasattr(self.driver, 'set_download_dir'):
+                    self.driver.set_download_dir(today_folder)
+                    self.log(f"  ✓ 已更新 context 下載路徑: {today_folder}")
+            except Exception as _dl_ctx_e:
+                self.log(f"  ℹ️ context 下載路徑更新略過: {_dl_ctx_e}")
 
             # ★ 記錄下載前的時間戳（用於偵測新檔案）
             download_start_time = time.time()
@@ -6279,16 +6287,25 @@ class FileReviewManager:
                                     if new_window not in self.driver.window_handles:
                                         self.log("  新視窗已自動關閉")
                                         break
-                                    # 偵測到 crdownload / 完整檔案
+                                    # 偵測到 crdownload / 完整 PDF 檔案（只算檔案，排除目錄）
                                     try:
                                         _dl_folder = os.path.join(self.download_folder, datetime.now().strftime("%Y%m%d"))
                                         _dl_root = self.download_folder
+                                        _found_dl = False
                                         for _chk in [_dl_folder, _dl_root]:
                                             if os.path.isdir(_chk):
                                                 for _fn in os.listdir(_chk):
-                                                    if not _fn.endswith(('.json',)):
-                                                        self.log(f"  偵測到下載中/完成: {_fn}")
+                                                    _fp = os.path.join(_chk, _fn)
+                                                    if not os.path.isfile(_fp):
+                                                        continue  # skip directories like _待歸檔
+                                                    if _fn.endswith(('.json', '.tmp')):
+                                                        continue
+                                                    if _fn not in existing_file_mtimes or os.path.getmtime(_fp) > existing_file_mtimes.get(_fp, 0):
+                                                        self.log(f"  ✅ 偵測到新下載: {_fn}")
+                                                        _found_dl = True
                                                         break
+                                            if _found_dl:
+                                                break
                                     except Exception:
                                         pass
                                     time.sleep(1)

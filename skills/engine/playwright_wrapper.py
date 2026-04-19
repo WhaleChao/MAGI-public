@@ -555,6 +555,32 @@ class PlaywrightDriverWrapper(object):
 
         page.on("dialog", _on_dialog)
 
+        # ★ Context-level download interceptor — catches downloads from ALL pages/popups.
+        # CDP Browser.setDownloadBehavior only applies to its own CDP session (the main
+        # page). When a popup triggers a download, Chrome uses the system default folder
+        # (~/ Downloads). We wire up Playwright's own context download event so that ALL
+        # downloads — including from popups — are saved to self._download_dir.
+        def _on_download(download):
+            try:
+                fname = download.suggested_filename or "download"
+                target_dir = self._download_dir or "/tmp"
+                os.makedirs(target_dir, exist_ok=True)
+                target = os.path.join(target_dir, fname)
+                # Avoid overwriting an identical existing file
+                if os.path.exists(target):
+                    base, ext = os.path.splitext(fname)
+                    import time as _time
+                    target = os.path.join(target_dir, f"{base}_{int(_time.time())}{ext}")
+                download.save_as(target)
+                _logger.info("✅ 下載截獲 (context): %s → %s", fname, target)
+            except Exception as _de:
+                _logger.warning("下載截獲失敗: %s", _de)
+
+        try:
+            context.on("download", _on_download)
+        except Exception:
+            pass
+
         # Capture popups / new tabs so window_handles stays consistent.
         # Playwright fires 'popup' on the ORIGINATING page, and 'page' on context.
         # We cache them here so polling window_handles sees them immediately.
@@ -564,6 +590,11 @@ class PlaywrightDriverWrapper(object):
             if popup_page not in self._popup_pages:
                 self._popup_pages.append(popup_page)
                 popup_page.on("dialog", _on_dialog)
+                # Also wire download interceptor on each popup page (belt-and-suspenders)
+                try:
+                    popup_page.on("download", _on_download)
+                except Exception:
+                    pass
 
         page.on("popup", _on_popup)
         try:
@@ -572,6 +603,15 @@ class PlaywrightDriverWrapper(object):
             pass
 
     # ---- internal helpers ----
+
+    def set_download_dir(self, path: str) -> None:
+        """Update the download directory for the context-level download interceptor.
+
+        Call this after creating a date-based subfolder so all subsequent downloads
+        (including from popups) land in the new path.
+        """
+        self._download_dir = path
+        os.makedirs(path, exist_ok=True)
 
     def _active(self):
         return self._active_frame if self._active_frame else self._page
