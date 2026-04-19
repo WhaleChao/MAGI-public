@@ -5336,17 +5336,31 @@ class FileReviewManager:
             )
             os.makedirs(today_folder, exist_ok=True)
             self.log(f"  建立下載資料夾: {today_folder}")
-            
+
+            # ★ 更新 Playwright / Selenium CDP 下載路徑到日期子資料夾
+            # Playwright 初始化時 download_dir 是 root，這裡統一更新到 today_folder
+            try:
+                if self.driver and hasattr(self.driver, 'execute_cdp_cmd'):
+                    self.driver.execute_cdp_cmd("Browser.setDownloadBehavior", {
+                        "behavior": "allow",
+                        "downloadPath": today_folder,
+                        "eventsEnabled": True,
+                    })
+                    self.log(f"  ✓ 已更新下載路徑: {today_folder}")
+            except Exception as _dl_upd_e:
+                self.log(f"  ℹ️ 更新下載路徑略過: {_dl_upd_e}")
+
             # ★ 記錄下載前的時間戳（用於偵測新檔案）
             download_start_time = time.time()
-            
-            # 也記錄現有檔案的修改時間（用於排除）
+
+            # 也記錄現有檔案的修改時間（用於排除，同時掃 root 與 today_folder）
             existing_file_mtimes = {}
-            if os.path.exists(today_folder):
-                for f in os.listdir(today_folder):
-                    fpath = os.path.join(today_folder, f)
-                    if os.path.isfile(fpath):
-                        existing_file_mtimes[f] = os.path.getmtime(fpath)
+            for _scan_dir in set([today_folder, self.download_folder]):
+                if os.path.exists(_scan_dir):
+                    for f in os.listdir(_scan_dir):
+                        fpath = os.path.join(_scan_dir, f)
+                        if os.path.isfile(fpath) and not f.endswith(('.json', '.tmp')):
+                            existing_file_mtimes[fpath] = os.path.getmtime(fpath)
             
             # 點擊每個下載按鈕，同時擷取當事人資料
             case_info_list = []  # 存儲每個案件的資訊
@@ -5544,7 +5558,6 @@ class FileReviewManager:
                     # 嘗試點擊並確認彈窗開啟 (最多試 3 次)
                     max_open_retries = 3
                     popup_opened = False
-                    _payment_pending_skip = False  # ★ Fix2: 待繳費未確認時跳過卷宗下載
 
                     for open_try in range(max_open_retries):
                         if _time_exceeded():
@@ -5643,21 +5656,6 @@ class FileReviewManager:
                                     except Exception:
                                         logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 5097, exc_info=True)
 
-                                    # ★ Fix2: 待繳費未確認偵測 — paystatus=2 + payment=N → 跳過卷宗下載，送繳費通知
-                                    _rj_paystatus = str(row_json.get("paystatus") or "").strip()
-                                    _rj_payment = str(row_json.get("payment") or "").strip().upper()
-                                    _rj_result = str(row_json.get("result") or "")
-                                    if (_rj_paystatus == "2" and _rj_payment == "N"
-                                            and "繳費" in _rj_result and "線上下載" in _rj_result):
-                                        _rj_fee = str(row_json.get("procfee") or "").strip()
-                                        self.log(f"    ⚠️ 待繳費未確認 (paystatus=2/payment=N，費用 {_rj_fee} 元)，跳過卷宗下載")
-                                        _payment_pending_skip = True
-                                        try:
-                                            self._notify_payment_if_needed(row_json, case_info=case_info, file_paths=None)
-                                        except Exception as _ne:
-                                            self.log(f"    ⚠️ 繳費通知失敗: {_ne}")
-                                        break  # 跳出 open_try 迴圈，不開彈窗
-
                                     # 嘗試完整模擬按鈕點擊的邏輯
                                     self.driver.execute_script("""
                                         var json = arguments[0];
@@ -5746,11 +5744,6 @@ class FileReviewManager:
                             except Exception:
                                 logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 5185, exc_info=True)
                     
-                    # ★ Fix2: 若已偵測到待繳費未確認，跳過此案卷宗下載
-                    if _payment_pending_skip:
-                        self.log("  ℹ️ 繳費待確認，暫跳過卷宗下載（已送繳費通知）")
-                        continue
-
                     if not popup_opened:
                         self.log("  ❌ 嘗試多次仍無法開啟彈窗，跳過此項目")
                         continue
@@ -5789,23 +5782,38 @@ class FileReviewManager:
 
                     def _collect_new_files_for_case(timeout_sec: int = 8) -> list:
                         found = []
-                        if not os.path.exists(today_folder):
+                        # ★ 同時掃 today_folder 與 root（Playwright 可能存到 root）
+                        _scan_dirs = [d for d in set([today_folder, self.download_folder]) if os.path.exists(d)]
+                        if not _scan_dirs:
                             return found
                         start = time.time()
                         while time.time() - start < timeout_sec:
                             try:
-                                for filename in os.listdir(today_folder):
-                                    if filename.endswith(('.json', '.tmp', '.crdownload')):
-                                        continue
-                                    fpath = os.path.join(today_folder, filename)
-                                    if not os.path.isfile(fpath):
-                                        continue
-                                    current_mtime = os.path.getmtime(fpath)
-                                    old_mtime = existing_file_mtimes.get(filename, 0)
-                                    if filename not in existing_file_mtimes or current_mtime > old_mtime:
-                                        found.append(filename)
-                                        # update baseline so subsequent cases won't "claim" the same file
-                                        existing_file_mtimes[filename] = current_mtime
+                                for _sdir in _scan_dirs:
+                                    for filename in os.listdir(_sdir):
+                                        if filename.endswith(('.json', '.tmp', '.crdownload')):
+                                            continue
+                                        fpath = os.path.join(_sdir, filename)
+                                        if not os.path.isfile(fpath):
+                                            continue
+                                        current_mtime = os.path.getmtime(fpath)
+                                        old_mtime = existing_file_mtimes.get(fpath, 0)
+                                        if fpath not in existing_file_mtimes or current_mtime > old_mtime:
+                                            found.append(fpath)
+                                            # update baseline so subsequent cases won't "claim" the same file
+                                            existing_file_mtimes[fpath] = current_mtime
+                                            # 若在 root，搬到 today_folder
+                                            if _sdir == self.download_folder and _sdir != today_folder:
+                                                try:
+                                                    dst = os.path.join(today_folder, filename)
+                                                    if not os.path.exists(dst):
+                                                        import shutil as _shutil
+                                                        _shutil.move(fpath, dst)
+                                                        self.log(f"    ✓ 檔案從 root 移到日期資料夾: {filename}")
+                                                        found[-1] = dst
+                                                        existing_file_mtimes[dst] = current_mtime
+                                                except Exception as _mv_e:
+                                                    self.log(f"    ⚠️ 移檔失敗: {_mv_e}")
                             except Exception:
                                 logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 5243, exc_info=True)
                             time.sleep(0.8)
@@ -5866,14 +5874,28 @@ class FileReviewManager:
             time.sleep(1.5)
 
             # 最後保險：若某些下載在 per-case window 之外才落地，仍嘗試補進候選（但 meta 可能空白）。
+            # ★ 同時掃 today_folder 與 root（Playwright 可能存到 root）
             try:
-                if os.path.exists(today_folder):
-                    for fn in os.listdir(today_folder):
+                for _late_dir in set([today_folder, self.download_folder]):
+                    if not os.path.exists(_late_dir):
+                        continue
+                    for fn in os.listdir(_late_dir):
                         if fn.endswith(('.json', '.tmp', '.crdownload')):
                             continue
-                        fp = os.path.join(today_folder, fn)
+                        fp = os.path.join(_late_dir, fn)
                         if not os.path.isfile(fp):
                             continue
+                        # 若在 root，移到 today_folder
+                        if _late_dir == self.download_folder and _late_dir != today_folder:
+                            dst = os.path.join(today_folder, fn)
+                            if not os.path.exists(dst):
+                                try:
+                                    import shutil as _shutil
+                                    _shutil.move(fp, dst)
+                                    fp = dst
+                                    self.log(f"  ✓ 後補移檔: {fn} → today_folder")
+                                except Exception:
+                                    pass
                         if fp in download_meta_by_file:
                             continue
                         try:
@@ -6245,24 +6267,41 @@ class FileReviewManager:
                         if new_windows:
                             self.log(f"  偵測到新視窗: {len(new_windows)} 個")
                             new_window = new_windows.pop()
-                            
-                            # ★ 新策略：不切換到新視窗，只等待它自動關閉
-                            # 這樣可以避免 Chrome 在視窗切換時崩潰
-                            
-                            # 等待下載觸發和新視窗自動關閉 (最多 30 秒)
-                            start_wait = time.time()
-                            while time.time() - start_wait < 30:
-                                try:
-                                    current_handles = self.driver.window_handles
-                                    if new_window not in current_handles:
+
+                            # ★ 切換到新視窗讓 OLA 下載頁真正觸發下載，再關閉切回
+                            try:
+                                self.driver.switch_to.window(new_window)
+                                self.log("  ✓ 已切換到下載視窗，等待下載觸發…")
+                                # 等待下載開始（最多 20 秒，偵測到 .crdownload 或視窗自動關閉即可離開）
+                                dl_start = time.time()
+                                while time.time() - dl_start < 20:
+                                    # 視窗自動關閉
+                                    if new_window not in self.driver.window_handles:
                                         self.log("  新視窗已自動關閉")
                                         break
-                                except Exception as handle_e:
-                                    # WebDriver 可能崩潰
-                                    self.log(f"  ❌ WebDriver 連線錯誤: {handle_e}")
-                                    break
-                                time.sleep(1)
-                            
+                                    # 偵測到 crdownload / 完整檔案
+                                    try:
+                                        _dl_folder = os.path.join(self.download_folder, datetime.now().strftime("%Y%m%d"))
+                                        _dl_root = self.download_folder
+                                        for _chk in [_dl_folder, _dl_root]:
+                                            if os.path.isdir(_chk):
+                                                for _fn in os.listdir(_chk):
+                                                    if not _fn.endswith(('.json',)):
+                                                        self.log(f"  偵測到下載中/完成: {_fn}")
+                                                        break
+                                    except Exception:
+                                        pass
+                                    time.sleep(1)
+                                # 手動關閉新視窗（若仍開著）
+                                try:
+                                    if new_window in self.driver.window_handles:
+                                        self.driver.close()
+                                        self.log("  ✓ 下載視窗已關閉")
+                                except Exception:
+                                    pass
+                            except Exception as sw_e:
+                                self.log(f"  ⚠️ 切換下載視窗失敗: {sw_e}")
+
                             # ★ CRITICAL: 檢查 WebDriver 是否仍然可用
                             try:
                                 _ = self.driver.current_window_handle
@@ -6270,7 +6309,7 @@ class FileReviewManager:
                                 self.log(f"  ❌ WebDriver 會話已遺失: {session_e}")
                                 self.log("  停止處理此案件")
                                 break  # 退出檔案下載迴圈
-                            
+
                             # 確保我們在主視窗
                             try:
                                 self.driver.switch_to.window(main_window_handle)
