@@ -254,7 +254,8 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
 "• `記住 [內容]` — 存入長期記憶\n"
 "• `忘記 [內容]` — 刪除記憶（非管理員需授權）\n"
 "• `@MAGI 深度思考 [問題]` — 深度分析模式\n"
-"• `obsidian [指令]` — 筆記管理\n"
+"• `@heavy [問題]` / `@重型 [問題]` — 強制走 NVIDIA NIM 405B 雲端兜底（⚠️ 個資自動遮蔽）\n"
+"• `obsidian [指令]` — 筆記管理（search / ingest / ask / sync_case_notes / daily_report / create_note / list_notes）\n"
 "• `日曆同步` — 庭期同步 Google Calendar\n"
 "• `排庭 <日期> <時間> <案號> <法院>` — 建立開庭行事曆事件\n"
 "• `排開會 <日期> <時間> <說明>` — 建立開會行事曆事件\n"
@@ -290,8 +291,20 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
 "━━━━━━━━━━━━━━━━━━━━\n"
 "• `技能CI [skill]` — 安全檢查\n"
 "• `技能事件` — 執行統計\n"
+"• `技能版本 [skill]` — 查看版本快照\n"
+"• `回滾技能 [skill] [version]` — 回滾版本\n"
+"• `標記穩定版 [skill] [version]` — 標記穩定版\n"
+"• `開始canary [skill] [ver] [%]` / `停止canary [skill]` — Canary 發布\n"
+"• `批准核心變更 [id]` / `拒絕核心變更 [id]` — 核心變更審批\n"
 "• `內化code` — 自動技能化\n"
 "• `自動巡檢` — 修復＋內化循環\n"
+"• `同步技能到melchior` — 同步技能包到 Melchior\n"
+"• `搜尋skill [名稱]` / `安裝skill [名稱]` — ClawhubHub 技能管理\n"
+"• `夜議` — 啟動夜議模式\n"
+"• `修理大腦` — 修復 Melchior 記憶庫\n"
+"• `自動修復code` — 自動修復程式碼\n"
+"• `教學檔案 [路徑]` — 從檔案教學 MAGI\n"
+"• `製作音樂 [描述]` — 生成音樂（需 Suno/MusicGen）\n"
 "• `核心變更待審` — 核心改動審批\n"
 "• `系統監控` / `健康檢查` — 系統資源監控\n"
 "• `檢查分身` — 重複程序清理\n"
@@ -383,6 +396,7 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
 "• `股市晨報` — 股票追蹤與分析\n"
 "• `記住 [內容]` — 存入長期記憶\n"
 "• `@MAGI 深度思考 [問題]` — 深度分析模式\n"
+"• `@heavy [問題]` / `@重型 [問題]` — 強制走 NVIDIA NIM 405B 雲端兜底（⚠️ 個資自動遮蔽）\n"
 "• `掃描案件待辦` / `待辦佇列狀態` — 案件待辦管理\n"
 "• `日曆同步` — 庭期同步 Google Calendar\n"
 "• `排庭 <日期> <時間> <案號>` / `排開會 <日期> <時間>` — 建立行程\n"
@@ -625,6 +639,76 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
             return f"❌ 音樂生成失敗: {result.get('error')}"
         except Exception as e:
             return f"❌ 音樂生成流程失敗: {e}"
+
+    # PDF Naming (單檔命名 / 批次命名)
+    if any(kw in msg_lower for kw in ["單檔命名", "批次命名", "pdf naming", "pdf rename"]):
+        if role != "admin":
+            return "⛔ 抱歉，只有管理員可以執行 PDF 命名。"
+        import threading as _thr
+        is_batch = any(kw in msg_lower for kw in ["批次命名", "batch"])
+        if is_batch:
+            def _run_batch_namer(uid):
+                try:
+                    import subprocess as _sp
+                    _py = get_skill_python()
+                    _script = os.path.join(_MAGI_ROOT, "skills", "pdf-namer", "action.py")
+                    if not os.path.exists(_script):
+                        if hasattr(orch, "notification_callback") and orch.notification_callback:
+                            orch.notification_callback(uid, "❌ 找不到 pdf-namer skill。", "Discord")
+                        return
+                    r = _sp.run(
+                        [_py, _script, "--task", "file", "--execute", "1", "--notify", "1"],
+                        capture_output=True, text=True, timeout=600,
+                        env={**os.environ, "MAGI_ROOT": _MAGI_ROOT},
+                    )
+                    out = r.stdout.strip() or r.stderr.strip() or "（無輸出）"
+                    try:
+                        import json as _json
+                        data = _json.loads(out.split("\n")[-1])
+                        renamed = data.get("renamed", 0)
+                        skipped = data.get("skipped", 0)
+                        msg_out = f"✅ 批次 PDF 命名完成：已命名 {renamed} 份，跳過 {skipped} 份。"
+                    except Exception:
+                        msg_out = f"📋 批次 PDF 命名結果：\n{out[:800]}"
+                    if hasattr(orch, "notification_callback") and orch.notification_callback:
+                        orch.notification_callback(uid, msg_out, "Discord")
+                except Exception as _e:
+                    if hasattr(orch, "notification_callback") and orch.notification_callback:
+                        orch.notification_callback(uid, f"❌ 批次 PDF 命名失敗：{_e}", "Discord")
+            _thr.Thread(target=_run_batch_namer, args=(str(user_id),), daemon=True).start()
+            return "🔄 批次 PDF 命名已啟動，完成後會通知結果。"
+        else:
+            # Single file naming — extract path from message
+            path_arg = (
+                message.replace("單檔命名", "")
+                .replace("pdf naming", "")
+                .replace("pdf rename", "")
+                .strip()
+            )
+            if not path_arg:
+                return (
+                    "📄 **單檔命名用法**\n"
+                    "`單檔命名 /path/to/file.pdf`\n\n"
+                    "提供 PDF 路徑，系統會分析並建議新檔名。\n"
+                    "如需批次處理所有待命名 PDF，請用：`批次命名`"
+                )
+            try:
+                import subprocess as _sp
+                _py = get_skill_python()
+                _script = os.path.join(_MAGI_ROOT, "skills", "pdf-namer", "action.py")
+                if not os.path.exists(_script):
+                    return "❌ 找不到 pdf-namer skill。"
+                r = _sp.run(
+                    [_py, _script, "--task", "review_name", "--path", path_arg],
+                    capture_output=True, text=True, timeout=120,
+                    env={**os.environ, "MAGI_ROOT": _MAGI_ROOT},
+                )
+                out = (r.stdout or r.stderr or "").strip()
+                if r.returncode != 0:
+                    return f"❌ PDF 命名分析失敗：{out[:400]}"
+                return f"📄 建議命名：\n{out[:600]}"
+            except Exception as _e:
+                return f"❌ PDF 命名失敗：{_e}"
 
     # Teach / Internalize Commands
     if any(message.startswith(prefix) for prefix in ["教學檔案", "@MAGI 教學檔案", "teach file", "@MAGI teach file"]):
