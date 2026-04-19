@@ -23,6 +23,26 @@ from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
 
+# ────────────────────────────────────────────────────────────────────────
+# Fork-depth sentinel (P2-0 defense-in-depth, 2026-04-19)
+# 即使未來有人又引入讓 translator 遞迴呼叫自己的 code path（像 2026-04-17 那次
+# translate_core 重構引入的 translate_text → translate_core → subprocess → _translate_inner
+# → translate_text 無限 fork bomb），第 2 層 child 啟動時會立刻自殺，把炸彈限制在
+# 最多 1 次 fork 的範圍內（從幾何級數 → 線性）。
+# ────────────────────────────────────────────────────────────────────────
+_FORK_DEPTH_ENV = "_MAGI_TRANSLATOR_FORK_DEPTH"
+_MAX_FORK_DEPTH = int(os.environ.get("MAGI_TRANSLATOR_MAX_FORK_DEPTH", "2") or "2")
+_current_fork_depth = int(os.environ.get(_FORK_DEPTH_ENV, "0") or "0")
+if _current_fork_depth >= _MAX_FORK_DEPTH:
+    sys.stderr.write(
+        f"[translator] Fork-depth sentinel triggered: depth={_current_fork_depth} "
+        f">= max={_MAX_FORK_DEPTH}. Aborting to prevent recursive fork bomb.\n"
+    )
+    # Exit code 87 = EREMOTE, arbitrary but distinguishable
+    sys.exit(87)
+# Increment for any subprocess we spawn ourselves
+os.environ[_FORK_DEPTH_ENV] = str(_current_fork_depth + 1)
+
 _MAGI_ROOT = Path(__file__).resolve().parents[2]
 if str(_MAGI_ROOT) not in sys.path:
     sys.path.insert(0, str(_MAGI_ROOT))

@@ -27,6 +27,23 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
+# ────────────────────────────────────────────────────────────────────────
+# Fork-depth sentinel (P2-0 defense-in-depth, 2026-04-19)
+# 此 skill 會在 task_update_cases 裡 spawn 自己做 background_fill（line 496）。
+# 加 depth sentinel 防止未來有人引入 task_update_cases → task_background_fill → spawn
+# task_update_cases → spawn ... 遞迴。
+# ────────────────────────────────────────────────────────────────────────
+_FORK_DEPTH_ENV = "_MAGI_STATUTES_VDB_FORK_DEPTH"
+_MAX_FORK_DEPTH = int(os.environ.get("MAGI_STATUTES_VDB_MAX_FORK_DEPTH", "2") or "2")
+_current_fork_depth = int(os.environ.get(_FORK_DEPTH_ENV, "0") or "0")
+if _current_fork_depth >= _MAX_FORK_DEPTH:
+    sys.stderr.write(
+        f"[statutes-vdb] Fork-depth sentinel triggered: depth={_current_fork_depth} "
+        f">= max={_MAX_FORK_DEPTH}. Aborting to prevent recursive fork bomb.\n"
+    )
+    sys.exit(87)
+os.environ[_FORK_DEPTH_ENV] = str(_current_fork_depth + 1)
+
 import requests
 
 
@@ -493,12 +510,41 @@ def task_update_cases(payload: Dict[str, Any]) -> Dict[str, Any]:
     if bool(payload.get("background_fill", True)):
         import subprocess
         import threading as _threading
-        cmd = [sys.executable, os.path.abspath(__file__), "--task", "background_fill {}"]
+        # Overlap guard (P2-0 defense, 2026-04-19): 若已有 background_fill 在跑就不再 spawn
+        # 原先每次 update_cases 都無條件 spawn，cron 多次觸發會累積多個 subprocess 吃 RAM
+        _lock_path = Path(_MAGI_ROOT) / ".runtime" / "statutes_vdb_bg_fill.pid"
+        _existing_ok = False
         try:
-            _p = subprocess.Popen(cmd, start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            _threading.Thread(target=_p.wait, daemon=True).start()
-        except Exception as e:
-            out["background_fill_error"] = str(e)
+            if _lock_path.exists():
+                _existing_pid = int(_lock_path.read_text().strip() or "0")
+                if _existing_pid > 1:
+                    try:
+                        os.kill(_existing_pid, 0)  # signal 0 = check alive
+                        _existing_ok = True
+                        out["background_fill_skipped"] = f"already_running_pid={_existing_pid}"
+                    except OSError:
+                        _lock_path.unlink(missing_ok=True)  # stale PID
+        except Exception:
+            pass
+        if not _existing_ok:
+            try:
+                _lock_path.parent.mkdir(parents=True, exist_ok=True)
+                cmd = [sys.executable, os.path.abspath(__file__), "--task", "background_fill {}"]
+                # 繼承 _FORK_DEPTH_ENV：parent(0)→child(1) 是合法單層；若 child 再 spawn
+                # 孫(depth=2) 會被 sentinel 擋下。不 reset env 才有遞迴防禦。
+                _p = subprocess.Popen(cmd, start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                _lock_path.write_text(str(_p.pid))
+                def _wait_and_cleanup(p=_p, lp=_lock_path):
+                    try:
+                        p.wait()
+                    finally:
+                        try:
+                            lp.unlink(missing_ok=True)
+                        except Exception:
+                            pass
+                _threading.Thread(target=_wait_and_cleanup, daemon=True).start()
+            except Exception as e:
+                out["background_fill_error"] = str(e)
 
     return out
 

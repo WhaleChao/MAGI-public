@@ -135,6 +135,10 @@ REAPER_GRACE_PERIODS = {
     "skills/pdf-namer/action.py": int(os.environ.get("MAGI_ORPHAN_GRACE_PDF_NAMER_SEC", "1500") or "1500"),
     "skills/crawler-targets/action.py": int(os.environ.get("MAGI_ORPHAN_GRACE_CRAWLER_TARGETS_SEC", "1800") or "1800"),
     "skills/statutes-vdb/action.py": int(os.environ.get("MAGI_ORPHAN_GRACE_STATUTES_VDB_SEC", "1800") or "1800"),
+    # P2-0 defense (2026-04-19): translator 有 self-spawn pattern，孤兒必須短時間內清掉
+    # 正常翻譯 subprocess 應該 <120s，超過視為卡住或泄漏，reaper 盡早 kill 避免累積吃 RAM
+    "skills/translator/action.py": int(os.environ.get("MAGI_ORPHAN_GRACE_TRANSLATOR_SEC", "180") or "180"),
+    "skills/translator/action.py --task _translate_inner": int(os.environ.get("MAGI_ORPHAN_GRACE_TRANSLATOR_INNER_SEC", "120") or "120"),
     # Coordinator
     "skills/magi-autopilot/action.py": int(os.environ.get("MAGI_ORPHAN_GRACE_AUTOPILOT_SEC", "2400") or "2400"),
     # Short-lived NLP sidecars — should exit in <20s; cut grace short so orphans are reaped fast
