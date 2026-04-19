@@ -3212,7 +3212,8 @@ class FileReviewManager:
                     self.log("  ⚠️ 找不到閱卷連結 (已搜尋所有路徑)")
                     return False
 
-                new_window = self.driver.click_link_and_wait_for_popup(elem, timeout_ms=10000)
+                # 延長 popup 等待至 25s（OLA portal 在高延遲時 window.open 需 10-20s）
+                new_window = self.driver.click_link_and_wait_for_popup(elem, timeout_ms=25000)
                 if new_window:
                     clicked = True
                     self.log("  ✓ Playwright: 捕獲新視窗")
@@ -3222,6 +3223,26 @@ class FileReviewManager:
                     if any(k in _cur for k in ["ola.", "eefile.", "judicial.gov.tw/ola"]):
                         self.log("  ✓ 已直接導航到閱卷系統 (同頁面)")
                         return True
+                    # 第二次嘗試：重新找連結元素再點一次（portal 偶爾需要兩次觸發）
+                    self.log("  ⚠️ 第一次 popup 等待逾時，重新嘗試 (timeout_ms=25000)…")
+                    try:
+                        import time as _t2
+                        _t2.sleep(2)
+                        elem2 = _find_link_elem()
+                        if elem2 is None:
+                            self.driver.switch_to.default_content()
+                            try:
+                                self.driver.switch_to.frame("mainFrame")
+                                elem2 = _find_link_elem()
+                            except Exception:
+                                self.driver.switch_to.default_content()
+                        if elem2:
+                            new_window2 = self.driver.click_link_and_wait_for_popup(elem2, timeout_ms=25000)
+                            if new_window2:
+                                self.log("  ✓ Playwright: 第二次嘗試捕獲新視窗")
+                                return True
+                    except Exception as _retry_err:
+                        self.log(f"  ⚠️ 第二次嘗試異常: {_retry_err}")
                     self.log("  ⚠️ 等待新視窗逾時 (Playwright expect_popup)")
                     return False
 
