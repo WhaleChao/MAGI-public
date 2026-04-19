@@ -4,7 +4,7 @@ from unittest.mock import MagicMock, patch
 
 from skills.bridge import inference_gateway as _ig
 from skills.bridge.inference_gateway import InferenceGateway
-from api.platform import remote_health_gate as _rhg
+from api.platforms import remote_health_gate as _rhg
 
 
 @pytest.fixture(autouse=True)
@@ -40,7 +40,7 @@ def test_flag_off_uses_legacy_path(monkeypatch):
 def test_flag_on_uses_new_gate(monkeypatch):
     monkeypatch.setenv("MAGI_USE_REMOTE_HEALTH_GATE", "1")
     gw = _gw()
-    with patch("api.platform.remote_health_gate.requests") as rq:
+    with patch("api.platforms.remote_health_gate.requests") as rq:
         resp = MagicMock(); resp.status_code = 200
         rq.get.return_value = resp
         ok, reason = gw._can_try_remote_balthasar()
@@ -62,7 +62,7 @@ def test_flag_on_gate_failure_falls_back_to_legacy(monkeypatch):
     # force gate import to fail by mocking
     resp = MagicMock(); resp.status_code = 200
     gw.session.get.return_value = resp
-    with patch("api.platform.remote_health_gate.get_gate", side_effect=RuntimeError("boom")):
+    with patch("api.platforms.remote_health_gate.get_gate", side_effect=RuntimeError("boom")):
         ok, reason = gw._can_try_remote_balthasar()
     # legacy path ran → returned ok
     assert ok is True
@@ -71,7 +71,7 @@ def test_flag_on_gate_failure_falls_back_to_legacy(monkeypatch):
 def test_flag_on_trips_gate_not_legacy(monkeypatch):
     monkeypatch.setenv("MAGI_USE_REMOTE_HEALTH_GATE", "1")
     gw = _gw()
-    with patch("api.platform.remote_health_gate.requests") as rq:
+    with patch("api.platforms.remote_health_gate.requests") as rq:
         rq.get.side_effect = TimeoutError("t")
         for _ in range(3):
             gw._can_try_remote_balthasar()

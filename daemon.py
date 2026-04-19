@@ -628,13 +628,35 @@ def _start_cron_fallback() -> None:
                             _SAFE_PREFIXES = ("cd ", "/Users/", "./venv/", "python3 ", "MAGI_", "JUDICIAL_")
                             if any(command.strip().startswith(p) for p in _SAFE_PREFIXES):
                                 _shell_env = {**os.environ, "MAGI_PREFER_LOCAL_DB": "0", "MAGI_NO_DELETE": "1"}
-                                result = subprocess.run(
-                                    command, shell=True, capture_output=True, text=True,
-                                    cwd=_MAGI_ROOT, env=_shell_env, timeout=600,
-                                )
-                                if result.returncode != 0:
+                                # ===== R2: SafeProcess 分支 =====
+                                _USE_SAFE_PROCESS = os.environ.get("MAGI_USE_SAFE_PROCESS", "0").strip().lower() in {"1", "true", "on", "yes"}
+                                result_returncode = -1
+                                result_stdout = ""
+                                result_stderr = ""
+                                if _USE_SAFE_PROCESS:
+                                    try:
+                                        from api.platforms.safe_process import parse_cron_command, run as _safe_run
+                                        argv = parse_cron_command(command)
+                                        _sr = _safe_run(argv, timeout_sec=600, cwd=_MAGI_ROOT)
+                                        result_returncode = _sr.returncode
+                                        result_stdout = _sr.stdout
+                                        result_stderr = _sr.stderr
+                                    except Exception as _e:
+                                        logger.error("[SafeProcess] fallback to legacy shell path: %s", _e)
+                                        _USE_SAFE_PROCESS = False
+                                if not _USE_SAFE_PROCESS:
+                                    # --- legacy 原樣保留，不要刪 ---
+                                    result = subprocess.run(
+                                        command, shell=True, capture_output=True, text=True,
+                                        cwd=_MAGI_ROOT, env=_shell_env, timeout=600,
+                                    )
+                                    result_returncode = result.returncode
+                                    result_stdout = result.stdout
+                                    result_stderr = result.stderr
+                                # ===== R2 end =====
+                                if result_returncode != 0:
                                     logger.warning("⚠️ [CronFallback] Shell job %s exited %d: %s",
-                                                   job_id, result.returncode, (result.stderr or "")[:300])
+                                                   job_id, result_returncode, (result_stderr or "")[:300])
                                 else:
                                     logger.info("✅ [CronFallback] Shell job %s completed OK", job_id)
                             else:

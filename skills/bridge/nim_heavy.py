@@ -111,7 +111,7 @@ def _cb_can_call():
     # --- NEW: RemoteHealthGate opt-in path ---
     if os.environ.get("MAGI_USE_REMOTE_HEALTH_GATE", "0").strip().lower() in {"1", "true", "on", "yes"}:
         try:
-            from api.platform.remote_health_gate import get_gate, PeerConfig
+            from api.platforms.remote_health_gate import get_gate, PeerConfig
             gate = get_gate()
             gate.register(PeerConfig(
                 name="nvidia_nim",

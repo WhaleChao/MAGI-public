@@ -3,7 +3,7 @@ import pytest
 from unittest.mock import patch
 
 import skills.bridge.nim_heavy as _nim
-from api.platform import remote_health_gate as _rhg
+from api.platforms import remote_health_gate as _rhg
 
 
 @pytest.fixture(autouse=True)
@@ -51,7 +51,7 @@ def test_flag_on_gate_trips_after_mark_failure(monkeypatch):
 
 def test_flag_on_gate_exception_falls_back_to_legacy(monkeypatch):
     monkeypatch.setenv("MAGI_USE_REMOTE_HEALTH_GATE", "1")
-    with patch("api.platform.remote_health_gate.get_gate", side_effect=RuntimeError("boom")):
+    with patch("api.platforms.remote_health_gate.get_gate", side_effect=RuntimeError("boom")):
         ok, msg = _nim._cb_can_call()
     # legacy path ran; no crash
     assert isinstance(ok, bool)
@@ -61,7 +61,7 @@ def test_flag_on_legacy_cb_not_touched_on_gate_path(monkeypatch):
     monkeypatch.setenv("MAGI_USE_REMOTE_HEALTH_GATE", "1")
     gate = _rhg.get_gate()
     # pre-register and trip
-    from api.platform.remote_health_gate import PeerConfig
+    from api.platforms.remote_health_gate import PeerConfig
     gate.register(PeerConfig(name="nvidia_nim", probe_url=None, fail_threshold=3, cooldown_seconds=(60, 120, 300)))
     for _ in range(3):
         gate.mark_failure("nvidia_nim", "429")

@@ -4,7 +4,7 @@ import time
 import pytest
 from unittest.mock import patch, MagicMock
 
-from api.platform.remote_health_gate import (
+from api.platforms.remote_health_gate import (
     RemoteHealthGate, PeerConfig, get_gate, _require_enabled,
 )
 
@@ -34,7 +34,7 @@ def test_not_registered_returns_down(gate):
 
 def test_healthy_probe_returns_ok(gate):
     gate.register(_cfg())
-    with patch("api.platform.remote_health_gate.requests") as rq:
+    with patch("api.platforms.remote_health_gate.requests") as rq:
         resp = MagicMock(); resp.status_code = 200
         rq.get.return_value = resp
         ok, reason = gate.is_reachable("peer1")
@@ -43,7 +43,7 @@ def test_healthy_probe_returns_ok(gate):
 
 def test_single_failure_does_not_trip(gate):
     gate.register(_cfg(fail_threshold=2))
-    with patch("api.platform.remote_health_gate.requests") as rq:
+    with patch("api.platforms.remote_health_gate.requests") as rq:
         rq.get.side_effect = TimeoutError("t")
         ok, reason = gate.is_reachable("peer1")
     assert ok is False and reason.startswith("down:")
@@ -52,7 +52,7 @@ def test_single_failure_does_not_trip(gate):
 
 def test_threshold_failures_trip_circuit(gate):
     gate.register(_cfg(fail_threshold=2, probe_cache_ttl_sec=0))
-    with patch("api.platform.remote_health_gate.requests") as rq:
+    with patch("api.platforms.remote_health_gate.requests") as rq:
         rq.get.side_effect = TimeoutError("t")
         for _ in range(2):
             gate.is_reachable("peer1")
@@ -63,7 +63,7 @@ def test_threshold_failures_trip_circuit(gate):
 
 def test_open_circuit_short_circuits(gate):
     gate.register(_cfg(fail_threshold=2, probe_cache_ttl_sec=0))
-    with patch("api.platform.remote_health_gate.requests") as rq:
+    with patch("api.platforms.remote_health_gate.requests") as rq:
         rq.get.side_effect = TimeoutError("t")
         for _ in range(2):
             gate.is_reachable("peer1")
@@ -95,7 +95,7 @@ def test_exponential_backoff_levels(gate):
 
 def test_probe_cache_ttl(gate):
     gate.register(_cfg(probe_cache_ttl_sec=30.0))
-    with patch("api.platform.remote_health_gate.requests") as rq:
+    with patch("api.platforms.remote_health_gate.requests") as rq:
         resp = MagicMock(); resp.status_code = 200
         rq.get.return_value = resp
         gate.is_reachable("peer1")
