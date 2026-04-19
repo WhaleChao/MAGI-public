@@ -157,6 +157,12 @@ _INFERENCE_EXECUTOR = _ThreadPoolExecutor(
     thread_name_prefix="inference",
 )
 
+# ── P2-1 Backpressure state（2026-04-19）──
+# /osc/external/chat 全域 in-flight counter，防止連續 timeout 造成 task 堆積吃爆 RAM。
+import threading as _threading
+_EXTERNAL_CHAT_INFLIGHT_LOCK = _threading.Lock()
+_EXTERNAL_CHAT_INFLIGHT_COUNT = [0]  # list wrapper for mutable int
+
 _SKILLS_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "skills"))
 
 # --- Load .env for subprocess/cron credential access ---
@@ -981,6 +987,41 @@ def external_osc_health():
 
 @app.route('/osc/external/chat', methods=['POST'])
 def external_osc_chat():
+    # ── P2-1 Backpressure（2026-04-19）──
+    # Pre-existing bug: _run_with_timeout 的 future.cancel() 對 running task 是 no-op，連續
+    # timeout 會讓 orchestrator.process_message 在背景累積 N 份 in-flight task，每份吃 DB/FAISS/
+    # 可能 subprocess（如 P2-0 修前的 translator fork 炸彈），RAM 爆炸就是這樣來的。
+    # 這層 counter + lock 限制同時最多 N 個 in-flight，超過直接 429 拒絕而不是排隊到 pool
+    # （pool 的 queue 仍會跑完所有舊 task）。配合 P2-0 fork 炸彈修復根治 RAM 洩漏。
+    _max_inflight = int(os.environ.get("MAGI_EXTERNAL_CHAT_MAX_INFLIGHT", "3") or "3")
+    _inflight_lock = _EXTERNAL_CHAT_INFLIGHT_LOCK
+    _inflight_count = _EXTERNAL_CHAT_INFLIGHT_COUNT
+    with _inflight_lock:
+        if _inflight_count[0] >= _max_inflight:
+            logging.getLogger(__name__).warning(
+                "external chat: backpressure 429 (inflight=%d/%d)",
+                _inflight_count[0], _max_inflight,
+            )
+            return jsonify({
+                "success": False,
+                "error": "too_many_requests",
+                "reply": "⏳ 系統正在處理多個請求，請 10 秒後再試。",
+                "meta": {"inflight": _inflight_count[0], "max_inflight": _max_inflight},
+            }), 429
+        _inflight_count[0] += 1
+
+    def _decrement_inflight():
+        with _inflight_lock:
+            _inflight_count[0] = max(0, _inflight_count[0] - 1)
+
+    try:
+        return _external_osc_chat_inner()
+    finally:
+        _decrement_inflight()
+
+
+def _external_osc_chat_inner():
+    """Actual chat logic. Wrapped by external_osc_chat() for inflight counter tracking."""
     ok, err = _check_external_api_key()
     if not ok:
         code = 503 if "server_misconfigured" in err else 401

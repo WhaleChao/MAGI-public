@@ -660,7 +660,10 @@ def _translate_chunks_local(
 
 def _translate_inner(payload: dict) -> dict:
     sys.path.insert(0, _MAGI_ROOT)
-    from skills.bridge.tri_sage_collab import translate_text  # type: ignore
+    # IMPORTANT: 不得 import translate_text 或 translate_core — 2026-04-17 重構後 tri_sage_collab.translate_text
+    # 內部改走 translate_core → translate() → subprocess(__file__ _translate_inner) 會形成無限遞迴 fork 炸彈。
+    # 這裡是 inner worker，**只能呼叫具體底層實作**（InferenceGateway / _translate_chunks_local / apple_translation），
+    # 絕對不能呼叫回 translator public entry point。(2026-04-19 P2-0 修)
 
     text = (payload.get("text") or payload.get("value") or "").strip()
     if not text:
@@ -847,16 +850,12 @@ def _translate_inner(payload: dict) -> dict:
                 }
         except Exception:
             logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 664, exc_info=True)
-    try:
-        r = translate_text(
-            text,
-            target_lang=target_lang,
-            source_lang=source_lang,
-            mode=mode,
-            timeout=llm_timeout,
-        )
-    except Exception as e:
-        r = {"success": False, "error": f"{type(e).__name__}: {e}"}
+    # P2-0 修（2026-04-19）：原先此處呼叫 `translate_text(...)` 會經由
+    # tri_sage_collab → translate_core → translate() → subprocess(_translate_inner) 形成
+    # 無限遞迴 fork 炸彈（單次觸發可 spawn 100+ 子進程，吃爆 24GB RAM 讓整台 Mac 卡死）。
+    # 改為空 result 直接 fall through 到下面的 chunked_local 與 InferenceGateway fallback，
+    # 不再繞回 tri_sage_collab 這條會造成遞迴的路徑。
+    r = {"success": False, "error": "_translate_inner: tri_sage_collab path disabled (recursion guard)"}
 
     if not isinstance(r, dict) or not r.get("success"):
         # Chunked local fallback for longer text to reduce hard timeouts.
