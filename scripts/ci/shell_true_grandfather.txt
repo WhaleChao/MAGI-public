@@ -1,0 +1,10 @@
+# shell=True / os.system(f...) / os.popen() grandfather list
+# 格式：<relpath>:<lineno>   （不可在 key 後面加 # 行內註解，另起一行加 # 說明）
+# R2 legacy fallback：flag off 時仍走 shell=True；flag on 走 SafeProcess；待 Phase 3 灰度完成後清除
+
+# daemon.py:650 — R2 legacy fallback，MAGI_USE_SAFE_PROCESS=0 時使用，待 Phase 3 清除
+daemon.py:650
+# daemon.py:1552-1554 — launchctl legacy，待 SafeProcess launchctl_op 接入後清除
+daemon.py:1552
+daemon.py:1553
+daemon.py:1554
