@@ -877,6 +877,12 @@ class CourtRecordDownloader:
         self.web_engine_profile = resolve_legal_web_engine("judicial_transcript_v2", interactive_required=True)
         self._engine_logged = False
 
+        # ★ Cookie 持久化：成功登入後存檔，下次直接沿用 session
+        _runtime_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__)))), ".runtime")
+        os.makedirs(_runtime_dir, exist_ok=True)
+        self._session_cookie_file = os.path.join(_runtime_dir, "ezlawyer_transcript_session.json")
+
         # ★ Gemini 解析快取（避免重複調用 API）
         self.gemini_cache_file = os.path.join(self.download_folder, '.gemini_parse_cache.json')
 
@@ -898,6 +904,70 @@ class CourtRecordDownloader:
 
     def __del__(self):
         self._quit_driver()
+
+    def _save_session_cookies(self):
+        """登入成功後把 cookies 存到磁碟，供下次直接沿用 session。"""
+        try:
+            if not self.driver:
+                return
+            # 嘗試透過 Playwright context 取得 cookies
+            _ctx = getattr(self.driver, "_context", None)
+            if _ctx is not None:
+                cookies = _ctx.cookies()
+            else:
+                cookies = self.driver.get_cookies()
+            if not cookies:
+                return
+            import json as _json
+            with open(self._session_cookie_file, "w", encoding="utf-8") as _f:
+                _json.dump({"cookies": cookies, "ts": time.time()}, _f, ensure_ascii=False)
+            self.log(f"  ✅ Session cookies 已存檔（{len(cookies)} 筆）")
+        except Exception as _e:
+            self.log(f"  ⚠️ 存 session cookies 失敗（非致命）: {_e}")
+
+    def _restore_session_cookies(self) -> bool:
+        """嘗試從磁碟讀取 cookies 並注入瀏覽器，若 session 仍有效則跳過登入。"""
+        try:
+            import json as _json
+            if not os.path.isfile(self._session_cookie_file):
+                return False
+            with open(self._session_cookie_file, "r", encoding="utf-8") as _f:
+                data = _json.load(_f)
+            # Cookie 超過 8 小時視為過期
+            if time.time() - data.get("ts", 0) > 8 * 3600:
+                self.log("  ℹ️ Session cookies 已過期（>8h），重新登入")
+                return False
+            cookies = data.get("cookies", [])
+            if not cookies:
+                return False
+            # 先導航到目標 domain 才能注入 cookies
+            _ctx = getattr(self.driver, "_context", None)
+            if _ctx is not None:
+                try:
+                    _ctx.add_cookies(cookies)
+                except Exception as _ce:
+                    self.log(f"  ⚠️ PW context add_cookies 失敗: {_ce}")
+                    return False
+            else:
+                # Fallback: Selenium-style add_cookie
+                self.driver.get("https://www.ezlawyer.com.tw/eb/login/loginPage")
+                for c in cookies:
+                    try:
+                        self.driver.add_cookie(c)
+                    except Exception:
+                        pass
+            self.log(f"  ℹ️ Session cookies 已注入（{len(cookies)} 筆），驗證中...")
+            # 導航到已登入頁面確認
+            self.driver.get("https://www.ezlawyer.com.tw/eb/user/userPage")
+            time.sleep(2)
+            if self._has_logout_link():
+                self.log("  ✅ Session 有效，跳過登入流程")
+                return True
+            self.log("  ℹ️ Session 已失效，需要重新登入")
+            return False
+        except Exception as _e:
+            self.log(f"  ⚠️ 還原 session cookies 失敗（非致命）: {_e}")
+            return False
 
     def log(self, message: str):
         timestamp = datetime.now().strftime("%H:%M:%S")
@@ -1043,23 +1113,31 @@ class CourtRecordDownloader:
         need_captcha = os.environ.get("MAGI_EZLAWYER_ASSUME_CAPTCHA_REQUIRED", "0").strip().lower() in {"1", "true", "yes", "on"}
         force_solve = os.environ.get("MAGI_EZLAWYER_SOLVE_CAPTCHA", "0").strip().lower() in {"1", "true", "yes", "on"}
 
+        # ★ 先嘗試從磁碟還原 session（避免重複登入觸發 IP 鎖定）
+        if not self.driver:
+            self._setup_driver()
+        if self._restore_session_cookies():
+            self.logged_in = True
+            return True
+
         for attempt in range(max_retries):
             try:
                 if not self.driver:
                     self._setup_driver()
-                
+
                 self.log(f"正在登入 ezlawyer.com.tw... (第 {attempt + 1} 次嘗試)")
-                
+
                 # 隨機延遲避免被偵測
                 self._random_delay(1, 3)
-                
+
                 self.driver.get(self.LOGIN_URL)
                 self._random_delay(2, 4)
-                
+
                 # ★ 檢查是否已經登入 (可能被重導向到首頁)
                 if self._has_logout_link():
                     self.log("  ℹ️ 偵測到已登入狀態")
                     self.logged_in = True
+                    self._save_session_cookies()
                     return True
                 
                 # 找到帳號欄位
@@ -1136,21 +1214,90 @@ class CourtRecordDownloader:
                     self.log("❌ 找不到登入按鈕")
                     continue
 
-                # 防呆：若刷新驗證碼導致欄位被清空，先補填再送出，避免跳出「請輸入會員帳號！」。
+                # 防呆：若欄位被清空，先補填再送出，避免跳出「請輸入會員帳號！」。
+                # ★ 注意：瀏覽器安全限制下 password input 的 getAttribute("value") 永遠回傳 ""，
+                #   不能以此判斷密碼是否已填。使用 JS property 讀取實際值；若仍讀不到則
+                #   只在未曾解過驗證碼的情況下重填（避免重填密碼時清掉已填的驗證碼）。
+                _captcha_was_solved = force_solve or need_captcha
                 try:
                     uval = (username_field.get_attribute("value") or "").strip()
-                    pval = (password_field.get_attribute("value") or "").strip()
                     if not uval:
-                        self.log("  ⚠️ 帳號欄位疑似被清空，重新填入")
-                        username_field.clear()
-                        username_field.send_keys(self.username)
+                        if _captcha_was_solved:
+                            # ★ 驗證碼已填時，用 JS 設帳號（不觸發事件，避免清掉驗證碼）
+                            try:
+                                self.driver.execute_script(
+                                    "arguments[0].value = arguments[1]",
+                                    username_field, self.username)
+                                self.log("  ⚠️ 帳號欄位空值（已解驗證碼），用 JS 直接設值（不觸發 event）")
+                            except Exception:
+                                self.log("  ⚠️ JS 設帳號失敗，略過（避免清掉驗證碼）")
+                        else:
+                            self.log("  ⚠️ 帳號欄位疑似被清空，重新填入")
+                            username_field.clear()
+                            username_field.send_keys(self.username)
+                    # 密碼欄位：優先用 JS property 判斷，避免 getAttribute 永遠回空
+                    try:
+                        pval = (self.driver.execute_script(
+                            "return arguments[0].value", password_field) or "").strip()
+                    except Exception:
+                        pval = (password_field.get_attribute("value") or "").strip()
                     if not pval:
-                        self.log("  ⚠️ 密碼欄位疑似被清空，重新填入")
-                        password_field.clear()
-                        password_field.send_keys(self.password)
+                        if _captcha_was_solved:
+                            # ★ 若驗證碼已填，不重填密碼（重填密碼會清掉驗證碼）
+                            # 改用 JS 直接設值，不觸發 input event
+                            try:
+                                self.driver.execute_script(
+                                    "arguments[0].value = arguments[1]",
+                                    password_field, self.password)
+                                self.log("  ⚠️ 密碼欄位空值（已解驗證碼），用 JS 直接設值（不觸發 event）")
+                            except Exception:
+                                self.log("  ⚠️ JS 設密碼失敗，略過（避免清掉驗證碼）")
+                        else:
+                            self.log("  ⚠️ 密碼欄位疑似被清空，重新填入")
+                            password_field.clear()
+                            password_field.send_keys(self.password)
+                    # ★★ 驗證碼保護：若驗證碼已填，確認欄位值仍在（帳號/密碼填寫可能觸發 JS 清空）
+                    if _captcha_was_solved:
+                        try:
+                            _chk_val = self.driver.execute_script(
+                                "return document.getElementById('chkCode') ? "
+                                "document.getElementById('chkCode').value : ''") or ""
+                            if not _chk_val.strip():
+                                self.log("  ⚠️ 驗證碼欄位被清空（帳號/密碼填寫觸發 JS），重新填入")
+                                # 用 JS 直接補填驗證碼，不觸發 focus/blur 事件
+                                try:
+                                    self.driver.execute_script(
+                                        "var el = document.getElementById('chkCode');"
+                                        "if(el){ el.value = arguments[0]; }",
+                                        getattr(self, '_last_captcha_text', ''))
+                                    self.log(f"  ★ 驗證碼已用 JS 補填（len={len(getattr(self,'_last_captcha_text',''))}）")
+                                except Exception as _ce:
+                                    self.log(f"  ⚠️ JS 補填驗證碼失敗: {_ce}")
+                            else:
+                                self.log(f"  ✓ 驗證碼欄位確認有值（len={len(_chk_val)}）")
+                        except Exception as _ve:
+                            self.log(f"  ⚠️ 驗證碼保護讀取失敗: {_ve}")
                 except Exception:
                     logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 1044, exc_info=True)
                 
+                # ★★ 送出前診斷：列出所有 form 欄位值（含隱藏欄位），確認有沒有漏填
+                if _captcha_was_solved:
+                    try:
+                        _form_diag = self.driver.execute_script("""
+                            var f = document.querySelector('form');
+                            if (!f) return 'no form';
+                            var inputs = [];
+                            f.querySelectorAll('input').forEach(function(el){
+                                var v = el.value || '';
+                                var masked = el.type==='password' ? '***' : (v.length>20 ? v.substring(0,20)+'…' : v);
+                                inputs.push(el.name+'['+el.type+']='+masked);
+                            });
+                            return inputs.join(', ');
+                        """) or ""
+                        self.log(f"  [diag-form] {_form_diag}")
+                    except Exception as _fd:
+                        self.log(f"  [diag-form] 讀取失敗: {_fd}")
+
                 self.log("  點擊登入...")
                 try:
                     login_btn.click()
@@ -1187,6 +1334,7 @@ class CourtRecordDownloader:
                         if self._has_logout_link():
                             self.logged_in = True
                             self.log(f"✅ 登入成功（alert 已處理，第 {_post_alert_retry + 1} 次確認）")
+                            self._save_session_cookies()
                             _login_detected = True
                             return True
                         try:
@@ -1194,6 +1342,7 @@ class CourtRecordDownloader:
                             if "loginPage" not in _url_now:
                                 self.logged_in = True
                                 self.log(f"✅ 登入成功（URL 已跳轉: {_url_now[:60]}）")
+                                self._save_session_cookies()
                                 _login_detected = True
                                 return True
                         except Exception:
@@ -1205,10 +1354,21 @@ class CourtRecordDownloader:
                 if "loginPage" not in current_url or self._has_logout_link():
                     self.logged_in = True
                     self.log("✅ 登入成功")
+                    self._save_session_cookies()
                     return True
                 else:
                     self.log(f"  ⚠️ 登入失敗，等待後重試... (URL: {current_url[:80]})")
+                    # ★ IP 鎖定偵測：errCnt 過高 → 提前放棄，避免繼續累積失敗加重鎖定
+                    import re as _re_login
+                    _err_cnt_match = _re_login.search(r"errCnt=(\d+)", current_url)
+                    if _err_cnt_match:
+                        _err_cnt = int(_err_cnt_match.group(1))
+                        if _err_cnt >= 30:
+                            self.log(f"  🚫 偵測到 errCnt={_err_cnt}（>=30），疑似 IP/帳號被鎖定。"
+                                     "請手動登入或等待 15-30 分鐘後重試。")
+                            break  # 提前跳出 retry 迴圈，不再繼續嘗試
                     # 抓取頁面錯誤文字以診斷失敗原因
+                    _page_requires_captcha = False
                     try:
                         page_text = self.driver.find_element(By.TAG_NAME, "body").text or ""
                         for kw in ["驗證碼", "錯誤", "帳號", "密碼", "Error", "captcha", "locked", "鎖"]:
@@ -1218,8 +1378,14 @@ class CourtRecordDownloader:
                                     if kw.lower() in line.lower() and line.strip():
                                         self.log(f"  📄 頁面訊息: {line.strip()[:120]}")
                                         break
+                        # ★ 頁面明確要求驗證碼 → 下一輪啟用 OCR
+                        if "驗證碼" in page_text or "captcha" in page_text.lower():
+                            _page_requires_captcha = True
                     except Exception:
                         pass
+                    if _page_requires_captcha and not need_captcha:
+                        need_captcha = True
+                        self.log("  ℹ️ 頁面要求驗證碼，下一輪啟用 OCR")
                     # 失敗後等待更長時間再重試
                     self._random_delay(5 * (attempt + 1), 10 * (attempt + 1))
                     
@@ -1454,9 +1620,51 @@ class CourtRecordDownloader:
             captcha_text = re.sub(r"[^A-Za-z0-9]", "", (captcha_text or ""))
             if len(captcha_text) >= expected_len:
                 self.log("  ✓ 已取得驗證碼（不顯示）")
-                captcha_input.clear()
-                self._random_delay(0.3, 0.8)
-                captcha_input.send_keys(captcha_text[:expected_len])
+                _target = captcha_text[:expected_len]
+                _filled = False
+                # 診斷：確認 captcha_input 的 id / name / type
+                try:
+                    _ci_id = captcha_input.get_attribute("id") or ""
+                    _ci_name = captcha_input.get_attribute("name") or ""
+                    _ci_type = captcha_input.get_attribute("type") or ""
+                    self.log(f"  [diag] captcha_input: id={_ci_id!r} name={_ci_name!r} type={_ci_type!r}")
+                except Exception:
+                    pass
+                # ★ 優先用 Playwright native fill()（最可靠，直接設 value + 觸發事件）
+                try:
+                    _pw_el = getattr(captcha_input, "_el", None)
+                    if _pw_el is not None:
+                        _pw_el.fill(_target)
+                        _filled = True
+                        # 回讀確認
+                        try:
+                            _readback = self.driver.execute_script("return arguments[0].value", captcha_input) or ""
+                            self.log(f"  (captcha filled via PW native fill, readback_len={len(_readback)})")
+                        except Exception:
+                            self.log("  (captcha filled via PW native fill)")
+                except Exception as _e:
+                    self.log(f"  ⚠️ PW native fill 失敗: {_e}")
+                if not _filled:
+                    # Fallback: click + clear + 逐字 send_keys + dispatchEvent
+                    try:
+                        captcha_input.click()
+                        self._random_delay(0.1, 0.3)
+                    except Exception:
+                        pass
+                    captcha_input.clear()
+                    self._random_delay(0.1, 0.3)
+                    for ch in _target:
+                        captcha_input.send_keys(ch)
+                        time.sleep(0.06)
+                    try:
+                        self.driver.execute_script(
+                            "arguments[0].dispatchEvent(new Event('input',{bubbles:true}));"
+                            "arguments[0].dispatchEvent(new Event('change',{bubbles:true}));",
+                            captcha_input)
+                    except Exception:
+                        pass
+                # ★ 儲存驗證碼文字，供 pre-submit 保護機制補填用
+                self._last_captcha_text = _target
                 return True
 
             self.log("  ⚠️ 驗證碼未取得，將由登入流程重新嘗試")
