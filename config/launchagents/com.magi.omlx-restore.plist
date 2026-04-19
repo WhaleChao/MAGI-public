@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.magi.omlx-restore</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>-c</string>
+        <string>sleep 90 &amp;&amp; /bin/bash '/Users/ai/Library/Application Support/MAGI/bin/omlx_switch_model.sh' auto</string>
+    </array>
+
+    <!-- 每次開機自動執行一次，恢復對應時段的正確模型 -->
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!-- 不要持續保活；只跑一次 -->
+    <key>KeepAlive</key>
+    <false/>
+
+    <key>StandardOutPath</key>
+    <string>/opt/homebrew/var/log/omlx_switch.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/opt/homebrew/var/log/omlx_switch.log</string>
+</dict>
+</plist>
