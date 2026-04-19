@@ -989,6 +989,19 @@ def external_osc_chat():
     message = (data.get("message") or data.get("prompt") or "").strip()
     if not message:
         return jsonify({"success": False, "error": "Missing 'message'"}), 400
+
+    # @heavy opt-in：允許使用者觸發 NVIDIA NIM 重型兜底
+    heavy_opt_in = False
+    if message.startswith("@heavy ") or message.startswith("@重型 "):
+        heavy_opt_in = True
+        message = message.split(" ", 1)[1] if " " in message else ""
+        logging.getLogger(__name__).info("external chat: @heavy opt-in detected, will try NIM fallback")
+    try:
+        from flask import g as _flask_g
+        _flask_g.heavy_opt_in = heavy_opt_in
+    except Exception:
+        pass
+
     user_id = str(data.get("user_id") or "external_api_user")
     platform = _infer_external_platform(str(data.get("platform") or ""), user_id=user_id)
     role_raw = str(data.get("role") or "user").strip().lower()

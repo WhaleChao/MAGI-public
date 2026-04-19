@@ -4,6 +4,7 @@ from typing import Any
 
 from .anthropic import AnthropicProvider
 from .base import OpenAICompatibleProvider, ProviderAdapter, ProviderHealth
+from .nvidia_nim import NvidiaNimProvider
 from .ollama import OllamaProvider
 from .omlx import OmlxProvider
 from .openai import OpenAIProvider
@@ -16,6 +17,7 @@ def build_provider_registry(*, session=None, config: dict[str, dict[str, Any]] |
         OpenAIProvider(session=session, **config.get("openai", {})),
         AnthropicProvider(session=session, **config.get("anthropic", {})),
         OllamaProvider(session=session, **config.get("ollama", {})),
+        NvidiaNimProvider(session=session, **config.get("nvidia_nim", {})),
     ]
     return {adapter.name: adapter for adapter in adapters}
 
@@ -30,6 +32,7 @@ def list_provider_names() -> list[str]:
 
 __all__ = [
     "AnthropicProvider",
+    "NvidiaNimProvider",
     "OllamaProvider",
     "OmlxProvider",
     "OpenAICompatibleProvider",

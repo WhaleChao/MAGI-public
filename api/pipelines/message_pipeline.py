@@ -42,6 +42,19 @@ def get_brain_status(*a, **kw):
 
 def process_message_inner(orch, user_id, message, platform="LINE", role="user", attachment=None, correlation_id=None, progress_callback=None, channel_context=None):
     message = orch._sanitize_incoming_message((message or "").strip())
+
+    # @heavy opt-in：允許使用者觸發 NVIDIA NIM 重型兜底（Plan A, 2026-04-19）
+    _heavy_opt_in = False
+    if message.startswith("@heavy ") or message.startswith("@重型 "):
+        _heavy_opt_in = True
+        message = message.split(" ", 1)[1].strip() if " " in message else ""
+        logger.info("message_pipeline: @heavy opt-in detected, will try NIM fallback if oMLX fails")
+    try:
+        from flask import g as _flask_g
+        _flask_g.heavy_opt_in = _heavy_opt_in
+    except Exception:
+        pass
+
     quick_reply = orch._quick_fixed_reply(message, role)
     if quick_reply:
         orch._append_history(user_id, "user", message)
@@ -1290,7 +1303,7 @@ def process_message_inner(orch, user_id, message, platform="LINE", role="user", 
 
                 # Summarize via InferenceGateway (oMLX → remote → local fallback)
                 _gw = orch._inference_gw
-                resp = _gw.chat(prompt, task_type="summary", timeout=120)
+                resp = _gw.chat(prompt, task_type="summary", timeout=120, heavy=_heavy_opt_in)
                 summary = resp.get("response", "無法產生摘要。")
 
                 if "error" in resp and resp["error"]:
@@ -1467,7 +1480,7 @@ def process_message_inner(orch, user_id, message, platform="LINE", role="user", 
 {ch}
 """.strip()
                             _gw = orch._inference_gw
-                            r = _gw.chat(tprompt, task_type="translate", timeout=240)
+                            r = _gw.chat(tprompt, task_type="translate", timeout=240, heavy=_heavy_opt_in)
                             t = (r.get("response") or "").strip()
                             if not (r.get("success") and t):
                                 err = (r.get("error") or "unknown").strip()
@@ -1529,7 +1542,7 @@ def process_message_inner(orch, user_id, message, platform="LINE", role="user", 
 """.strip()
 
                     _gw = orch._inference_gw
-                    resp = _gw.chat(prompt, task_type="translate", timeout=240)
+                    resp = _gw.chat(prompt, task_type="translate", timeout=240, heavy=_heavy_opt_in)
                     text = (resp.get("response") or "").strip()
                     if not (resp.get("success") and text):
                         err = (resp.get("error") or "unknown").strip()

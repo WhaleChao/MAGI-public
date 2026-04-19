@@ -891,8 +891,9 @@ class InferenceGateway:
                 task_type=task_type,
             )
 
-        # ── Codex OAuth fallback: when oMLX is down, try Codex before giving up ──
-        codex_chat_fallback_enabled = _env_bool("MAGI_CODEX_CHAT_FALLBACK", True)
+        # ── Codex OAuth fallback: 已死（openclaw binary 缺失、auth 缺失），保留 try/except 作為 no-op，
+        # 待 Phase 6 清理。Opus 2026-04-19 驗證 enabled=false / agent_available=false
+        codex_chat_fallback_enabled = _env_bool("MAGI_CODEX_CHAT_FALLBACK", False)  # 預設改為 False
         if codex_chat_fallback_enabled and allow_synthetic_fallback and errors and task_type not in ("tc_review", "captcha"):
             try:
                 from skills.bridge.llm_direct import (
@@ -921,6 +922,57 @@ class InferenceGateway:
                     errors.append(f"codex_fallback:{codex_r.get('error', 'empty')}")
             except Exception as codex_err:
                 errors.append(f"codex_fallback:exception:{codex_err}")
+
+        # ── NVIDIA NIM fallback: oMLX 失敗時走雲端重型模型（Plan A, 2026-04-19） ──
+        # 預設關閉（NVIDIA_NIM_ENABLE=0），使用者驗收完才開
+        nim_enabled = _env_bool("NVIDIA_NIM_ENABLE", False)
+        nim_require_optin = _env_bool("NVIDIA_NIM_REQUIRE_OPTIN", True)
+        nim_require_pii = _env_bool("NVIDIA_NIM_REQUIRE_PII_SCRUB", True)
+        heavy_opt_in = bool(kwargs.get("heavy", False))
+        # 也支援從 Flask request context 取 heavy flag（由 tools_api.py 設）
+        if not heavy_opt_in:
+            try:
+                from flask import g as _flask_g
+                heavy_opt_in = bool(getattr(_flask_g, "heavy_opt_in", False))
+            except Exception:
+                pass
+
+        nim_allowed = (
+            nim_enabled
+            and errors
+            and task_type not in ("tc_review", "captcha")
+            and (not nim_require_optin or heavy_opt_in)
+        )
+
+        if nim_allowed:
+            try:
+                from skills.bridge.nim_heavy import run_nim_chat
+                logger.info(
+                    "inference_chat: oMLX down, trying NVIDIA NIM heavy fallback "
+                    "(task=%s, require_pii=%s)", task_type, nim_require_pii,
+                )
+                nim_r = run_nim_chat(
+                    prompt=prompt,
+                    timeout_sec=max(60, int(timeout)),
+                    task_type=task_type,
+                    require_pii_scrub=nim_require_pii,
+                    system_prompt=_DEFAULT_SYSTEM_PROMPT_ZH,
+                )
+                if nim_r.get("success") and nim_r.get("response"):
+                    return self._result(
+                        success=True,
+                        route="nvidia_nim",
+                        degraded=True,  # 走雲端視為降級路徑
+                        response=nim_r["response"],
+                        model=str(nim_r.get("model") or "nvidia_nim"),
+                        provider="nvidia_nim",
+                        task_type=task_type,
+                        pii_scrubbed=bool(nim_r.get("pii_scrubbed")),
+                        pii_counts=nim_r.get("pii_counts") or {},
+                    )
+                errors.append(f"nvidia_nim:{nim_r.get('error', 'empty')}")
+            except Exception as nim_err:
+                errors.append(f"nvidia_nim:exception:{nim_err}")
 
         # NOTE: Melchior / Balthasar distributed nodes are not in active use.
         # Skipping remote probe to avoid unnecessary latency.

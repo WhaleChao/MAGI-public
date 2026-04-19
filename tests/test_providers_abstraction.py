@@ -26,8 +26,8 @@ def test_provider_registry_lists_all_known_adapters():
 
     registry = build_provider_registry()
 
-    assert set(registry) == {"omlx", "openai", "anthropic", "ollama"}
-    assert list_provider_names() == ["anthropic", "ollama", "omlx", "openai"]
+    assert set(registry) == {"omlx", "openai", "anthropic", "ollama", "nvidia_nim"}
+    assert list_provider_names() == ["anthropic", "nvidia_nim", "ollama", "omlx", "openai"]
     assert get_provider_adapter("omlx") is not None
 
 
