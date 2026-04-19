@@ -376,6 +376,30 @@ Models with known content restrictions (Qwen / DeepSeek / GLM / Yi series) are e
 ### Reaper Safety
 `daemon.py` Phase 4 stale-process reaper has an explicit safe-list (`REAPER_SAFE_UTILITIES`) that protects oMLX, magi_menubar, admin_server, and benchmark processes from being killed as "stale unprotected Python".
 
+### SafeProcess — Shell Injection Guard (`api/platforms/safe_process.py`)
+All cron commands are routed through `SafeProcess` when `MAGI_USE_SAFE_PROCESS=1` (legacy `shell=True` path preserved for gradual rollout):
+- **argv whitelist**: only `python3`, `launchctl`, `git`, `curl`, `mount_smbfs`, `osascript`, and the MAGI venv interpreter are allowed as `argv[0]`.
+- **Shell metachar denylist**: `;`, `|`, `&`, `` ` ``, `$`, `<`, `>`, newline — rejected even in no-shell mode.
+- **Env prefix whitelist**: only `MAGI_`, `JUDICIAL_`, `PATH`, `HOME`, `USER`, `PYTHONPATH`, `LANG`, `LC_*`, `TZ` pass through.
+- **Timeout flow**: SIGTERM → 3 s grace → SIGKILL; 1 MB stdout cap; `BoundedSemaphore(8)` for concurrency control.
+- **CI gate**: `scripts/ci/check_shell_true.py` blocks any new `shell=True` / `os.system(f"…")` / `os.popen()` additions. Four legacy sites are grandfather-listed until SafeProcess Phase 3 grey-rollout is complete.
+
+### RemoteHealthGate — Unified Inference Circuit Breaker (`api/platforms/remote_health_gate.py`)
+Provides a single shared circuit breaker for all remote inference peers (Balthasar / Melchior / NIM). Replaces the previous per-module ad-hoc try/except pattern:
+- Per-peer `PeerState` with `threading.Lock` (no bare acquire/release).
+- Progressive cooldown: 30 s → 5 min → 30 min → 2 h.
+- Probe result cache (`probe_cache_ttl_sec`) to avoid redundant HTTP health checks.
+- `get_gate()` module-level singleton protected by `_SINGLETON_LOCK`.
+- Feature flag: `MAGI_USE_REMOTE_HEALTH_GATE=1`.
+
+### RuntimeDir — Centralised `.runtime/` Path Management (`api/platforms/runtime_dir.py`)
+Ensures all ephemeral state lands under `.runtime/` rather than being scattered in the repo root or cron_jobs.json:
+- `atomic_write_json()` — write via `.tmp` + `os.replace()` (no partial writes on crash).
+- `atomic_append_jsonl()` — thread-safe append with auto-rotation.
+- `legacy_fallback()` — dual-read: try new path first, fall back to legacy path for zero-downtime migration.
+- `cron_state()` — separates job execution timestamps (`last_run`, `last_run_minute`) from the job definition file `cron_jobs.json`, keeping the definition file commit-stable.
+- Feature flag: `MAGI_USE_RUNTIME_DIR=1`.
+
 ---
 
 ## Configuration
@@ -403,6 +427,9 @@ Key environment variables (set in `.env`):
 | `NVIDIA_NIM_REQUIRE_OPTIN` | `1` | Require `@heavy` / `@重型` prefix to trigger NIM |
 | `NVIDIA_NIM_REQUIRE_PII_SCRUB` | `1` | PII scrub before sending to cloud (never disable) |
 | `NVIDIA_NIM_DAILY_BUDGET` | `500` | Max daily NIM requests before blocking |
+| `MAGI_USE_REMOTE_HEALTH_GATE` | `0` | Unified circuit breaker for Balthasar / Melchior / NIM (R1) |
+| `MAGI_USE_SAFE_PROCESS` | `0` | Route cron commands through argv whitelist guard instead of `shell=True` (R2) |
+| `MAGI_USE_RUNTIME_DIR` | `0` | Write cron state + ephemeral JSON to `.runtime/` instead of `cron_jobs.json` (R3) |
 
 ---
 
@@ -443,6 +470,7 @@ MAGI_v2/
 │   ├── pipelines/              # message_pipeline, command_dispatch, skill_dispatch …
 │   ├── domains/                # laf_flow, multimedia_flow, judgment_flow, schedule_flow …
 │   ├── blueprints/             # web_runtime, admin_runtime
+│   ├── platforms/              # RemoteHealthGate (CB), SafeProcess (argv guard), RuntimeDir (path mgmt)
 │   ├── nas_mount_guard.py      # NAS SMB auto-mount + Tailscale fallback
 │   ├── debug_capture.py        # Unified debug screenshot helper
 │   └── tw_output_guard.py      # Output normalisation + trust-badge leak guard
@@ -487,7 +515,7 @@ MAGI_v2/
 ## Testing
 
 ```bash
-# Full suite (130 files · 1 336 tests · ~12 min)
+# Full suite (~140 files · ~1 575 tests · ~12 min)
 ./venv/bin/python -m pytest -q
 
 # By module
@@ -512,13 +540,14 @@ skills/file-review-orchestrator/action.py --task self_test
 skills/transcript-downloader/action.py --task self_test
 ```
 
-### Test Suite Coverage (130 files · 1 336 tests)
+### Test Suite Coverage (~140 files · ~1 575 tests)
 
 | Category | Files | Tests | Key areas |
 |----------|-------|-------|-----------|
 | **Routing & dispatch** | 13 | 190 | Unified routing, skill contracts (market-briefing / trial-prep / contract-review), command dispatch, skill smoke |
 | **Apple platform** | 10 | 173 | Spotlight, Keychain, EventKit (calendar), CoreML classifier, NaturalLanguage NLP, Contacts, file monitor |
 | **Infrastructure** | 33 | 218 | Health probes, session/context management, audio pipeline, text processing, logging, packaging, entrypoints, security baseline (CORS / headers / cookies) |
+| **Platform layer (R1–R3)** | 7 | 72 | RemoteHealthGate circuit breaker (16), Balthasar/Melchior/NIM opt-in (15), SafeProcess argv/env/timeout (19), RuntimeDir atomic I/O (14), cron state migration (8) |
 | **Documents & PDF** | 7 | 86 | MarkItDown adapter, PDF bridge (OCR + timeout recovery), pdf-namer (naming_validator, dynamic confidence), pdf-bookmarker (OLA threshold, Vision fallback) |
 | **Legal Aid (LAF)** | 11 | 81 | Progress report helpers, submit-pending token lifecycle, closing E2E mock, email classification, case category resolver, duplicate check |
 | **Config & runtime** | 21 | 80 | Runtime path resolution, modular config, model config, authz, provider adapters, job scheduling |
@@ -529,7 +558,9 @@ skills/transcript-downloader/action.py --task self_test
 | **Data & persistence** | 6 | 45 | Job queue (SQLite), embedding router, migration framework, DB helper, vector pipeline NLP |
 | **CI / packaging** | 2 | 29 | Hardcode checker, console-script targets |
 
-CI gate: `scripts/ci/check_hardcodes.py` — fails on any committed IP / credential.
+CI gates:
+- `scripts/ci/check_hardcodes.py` — fails on any committed IP / credential.
+- `scripts/ci/check_shell_true.py` — blocks new `shell=True` / `os.system(f"…")` additions (grandfather list for 4 approved legacy sites).
 
 ---
 
