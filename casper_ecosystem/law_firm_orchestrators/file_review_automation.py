@@ -3662,9 +3662,13 @@ class FileReviewManager:
 
     @staticmethod
     def _normalize_case_keyword(text: str) -> str:
-        """案號比對正規化（移除常見格式字與符號）。"""
+        """案號比對正規化（移除常見格式字與符號）。
+
+        也移除全半形括號，使 「更(二)」 與 「更二」 等價。
+        """
         s = str(text or "")
-        s = re.sub(r"[年度字第號\s\.\-_/／\\]+", "", s)
+        # 移除格式字、空白、符號、及括號（半形與全形）
+        s = re.sub(r"[年度字第號\s\.\-_/／\\()（）]+", "", s)
         return s.strip().lower()
 
     @classmethod
@@ -3683,22 +3687,44 @@ class FileReviewManager:
 
         return re.sub(r"\d+", _strip_leading_zeros, base)
 
+    @staticmethod
+    def _strip_court_code_prefix(normalized: str) -> str:
+        """移除院所縮寫前綴（如 tph、ttd、tnd 等 2-4 個英文字母），
+        讓 'tph114重上更二95' 可以和 '114重上更二95' 互相匹配。"""
+        # 例: tph114... -> 114...；若開頭不是純英文前綴則不變
+        return re.sub(r"^[a-z]{2,4}(?=\d)", "", normalized)
+
     def _matches_target_case_number(self, target_case_number: str, *probes: str) -> bool:
-        """比對目標案號與候選值，容忍符號與零補位差異。"""
+        """比對目標案號與候選值，容忍符號、零補位、括號與院所代碼差異。"""
         target_strict = self._normalize_case_keyword(target_case_number)
         if not target_strict:
             return False
         target_loose = self._normalize_case_keyword_loose(target_case_number)
+        # 也嘗試去掉院所縮寫前綴的版本（OLA 顯示中文院名，不含 TPH/TTD 等縮寫）
+        target_strict_nc = self._strip_court_code_prefix(target_strict)
+        target_loose_nc = self._strip_court_code_prefix(target_loose)
 
         for probe in probes:
             probe_text = str(probe or "")
             if not probe_text:
                 continue
             probe_strict = self._normalize_case_keyword(probe_text)
-            if probe_strict and (target_strict in probe_strict or probe_strict in target_strict):
-                return True
+            if probe_strict:
+                if target_strict in probe_strict or probe_strict in target_strict:
+                    return True
+                # 試無院所縮寫前綴版本
+                if target_strict_nc and (
+                    target_strict_nc in probe_strict or probe_strict in target_strict_nc
+                ):
+                    return True
             probe_loose = self._normalize_case_keyword_loose(probe_text)
-            if target_loose and probe_loose and (target_loose in probe_loose or probe_loose in target_loose):
+            if target_loose and probe_loose and (
+                target_loose in probe_loose or probe_loose in target_loose
+            ):
+                return True
+            if target_loose_nc and probe_loose and (
+                target_loose_nc in probe_loose or probe_loose in target_loose_nc
+            ):
                 return True
         return False
 
@@ -3864,18 +3890,13 @@ class FileReviewManager:
                     pending_payment = self._is_pending_payment_row(row_json, row_text=row_text)
                     has_download = bool(row_data.get("has_online_download"))
 
-                    # IMPORTANT: check pending_payment FIRST.
-                    # `has_online_download` can be triggered by `input[name='btn_pay']` (the fee
-                    # payment button), so a "待繳費" row also has has_download=True.  We must not
-                    # call those cases "downloadable" — the court blocks the actual file download
-                    # until the clerk confirms payment.
                     status = "other"
-                    if pending_payment:
-                        status = "pending_payment"
-                        pending_payment_count += 1
-                    elif has_download:
+                    if has_download:
                         status = "downloadable"
                         downloadable_count += 1
+                    elif pending_payment:
+                        status = "pending_payment"
+                        pending_payment_count += 1
 
                     paystatus = str(row_json.get("paystatus") or "").strip()
                     p_status = str(row_json.get("p_status") or "").strip().upper()
@@ -5059,8 +5080,22 @@ class FileReviewManager:
                     download_btns = filtered_btns
                 else:
                     self.log(f"  ⚠️ 找不到符合 {target_case_number} 的按鈕；為避免誤歸檔，本輪不下載")
+                    # Debug: 存截圖 + 首列文字，幫助排查案號格式差異
+                    try:
+                        from api.debug_capture import save_debug_screenshot, save_debug_html
+                        save_debug_screenshot(self.driver, "debug_case_filter_fail", context=f"案號過濾失敗: {target_case_number}")
+                        save_debug_html(self.driver, "debug_case_filter_fail", context=f"案號過濾失敗: {target_case_number}")
+                        # 印出前 5 個按鈕所在列的 row.text 幫助診斷
+                        for _i, _btn in enumerate(download_btns[:5]):
+                            try:
+                                _row = _btn.find_element(By.XPATH, "./ancestor::tr")
+                                self.log(f"    [debug] row[{_i}] text={repr(_row.text[:120])}")
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
                     return downloaded_files
-            
+
             if not download_btns:
                 self.log(f"  找到 {len(download_btns)} 個可下載項目 (沒有資料)")
                 self.log("  ℹ️ 目前無可下載資料")
