@@ -898,11 +898,22 @@ def _best_effort_sync_osc_todos(filed_path: str, match: Dict, analysis: Dict) ->
             logger.warning(f"Google Calendar 同步失敗(rc={r2.returncode}): {(r2.stderr or r2.stdout or '').strip()[:300]}")
             
         # Step 3: 推 Discord 通知（best-effort）
+        # 根因: OSC task_todo_sync 回傳的 JSON 是 {"ok": true, ...}
+        # 不是 {"success": true}，原先 substring 判斷永遠不會命中。
         if r1.returncode == 0:
-            stdout1 = (r1.stdout or "").lower()
-            if "success" in stdout1 and "true" in stdout1:
+            stdout1 = (r1.stdout or "").strip()
+            sync_ok = False
+            try:
+                _parsed = json.loads(stdout1) if stdout1 else {}
+                if isinstance(_parsed, dict):
+                    sync_ok = bool(_parsed.get("ok") or _parsed.get("success"))
+            except Exception:
+                # Fallback: substring check across both key variants
+                _lower = stdout1.lower()
+                sync_ok = (('"ok": true' in _lower) or ('"success": true' in _lower))
+            if sync_ok:
                 _push_discord_pdf_filing(
-                    analysis.get("case_folder_name", ""),
+                    case_folder_name or analysis.get("case_folder_name", ""),
                     os.path.basename(filed_path),
                 )
 
@@ -923,7 +934,7 @@ def _push_discord_pdf_filing(case_folder_name: str, file_name: str) -> None:
             from skills.ops.red_phone import send_telegram_push_with_status  # type: ignore
             send_telegram_push_with_status(
                 message, severity="info", source="pdf_namer",
-                topic_key="pdf_filing", queue_on_fail=False
+                topic_key="filing", queue_on_fail=False
             )
         except ImportError:
             import sys as _sys
@@ -931,7 +942,7 @@ def _push_discord_pdf_filing(case_folder_name: str, file_name: str) -> None:
             from red_phone import send_telegram_push_with_status  # type: ignore
             send_telegram_push_with_status(
                 message, severity="info", source="pdf_namer",
-                topic_key="pdf_filing", queue_on_fail=False
+                topic_key="filing", queue_on_fail=False
             )
     except Exception:
         logging.getLogger(__name__).debug("Discord push failed", exc_info=True)
