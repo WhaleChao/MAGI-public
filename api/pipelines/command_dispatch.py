@@ -706,7 +706,13 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
                 out = (r.stdout or r.stderr or "").strip()
                 if r.returncode != 0:
                     return f"❌ PDF 命名分析失敗：{out[:400]}"
-                return f"📄 建議命名：\n{out[:600]}"
+                reply_lines = [f"📄 建議命名：\n{out[:600]}"]
+                for _line in out.splitlines():
+                    if _line.startswith("Deadline:"):
+                        dl_info = _line[len("Deadline:"):].strip()
+                        reply_lines.append(f"📅 偵測到期限：{dl_info}（已嘗試建立待辦）")
+                        break
+                return "\n".join(reply_lines)
             except Exception as _e:
                 return f"❌ PDF 命名失敗：{_e}"
 

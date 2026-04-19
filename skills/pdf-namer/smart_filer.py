@@ -897,8 +897,76 @@ def _best_effort_sync_osc_todos(filed_path: str, match: Dict, analysis: Dict) ->
         if r2.returncode != 0:
             logger.warning(f"Google Calendar 同步失敗(rc={r2.returncode}): {(r2.stderr or r2.stdout or '').strip()[:300]}")
             
+        # Step 3: 推 Discord 通知（best-effort）
+        if r1.returncode == 0:
+            stdout1 = (r1.stdout or "").lower()
+            if "success" in stdout1 and "true" in stdout1:
+                _push_discord_pdf_filing(
+                    analysis.get("case_folder_name", ""),
+                    os.path.basename(filed_path),
+                )
+
     except Exception as e:
         logger.warning(f"OSC 待辦/日曆同步呼叫失敗: {e}")
+
+
+def _push_discord_pdf_filing(case_folder_name: str, file_name: str) -> None:
+    """Best-effort Discord push after OSC todo sync（使用既有 red_phone 基礎設施）。"""
+    try:
+        message = (
+            f"📄 PDF 命名完成\n"
+            f"案件：{case_folder_name}\n"
+            f"檔案：{file_name}\n"
+            f"待辦已同步至 OSC"
+        )
+        try:
+            from skills.ops.red_phone import send_telegram_push_with_status  # type: ignore
+            send_telegram_push_with_status(
+                message, severity="info", source="pdf_namer",
+                topic_key="pdf_filing", queue_on_fail=False
+            )
+        except ImportError:
+            import sys as _sys
+            _sys.path.insert(0, os.path.join(os.path.dirname(SKILL_DIR), "ops"))
+            from red_phone import send_telegram_push_with_status  # type: ignore
+            send_telegram_push_with_status(
+                message, severity="info", source="pdf_namer",
+                topic_key="pdf_filing", queue_on_fail=False
+            )
+    except Exception:
+        logging.getLogger(__name__).debug("Discord push failed", exc_info=True)
+
+
+def sync_osc_todos_for_path(final_path: str) -> Dict:
+    """供 action.py 單檔 rename 後呼叫的公開入口。
+
+    從 final_path 推 case_folder_name（往上找到 NAS 案件根目錄），
+    然後呼叫既有的 _best_effort_sync_osc_todos()。
+    Best-effort：失敗只 log，不丟例外。
+    """
+    if os.environ.get("PDF_NAMER_OSC_TODO_SYNC", "1") != "1":
+        return {"success": False, "skipped": "feature_flag_off"}
+
+    try:
+        parts = os.path.normpath(final_path).split(os.sep)
+        try:
+            idx = parts.index("01_案件")
+            if idx + 2 < len(parts):
+                case_folder_name = parts[idx + 2]
+            else:
+                return {"success": False, "skipped": "case_folder_not_resolved"}
+        except ValueError:
+            return {"success": False, "skipped": "not_in_case_tree"}
+
+        match = {"case_info": {"folder_name": case_folder_name}, "case_folder": os.sep.join(parts[:idx + 3])}
+        analysis = {"case_folder_name": case_folder_name}
+        _best_effort_sync_osc_todos(final_path, match, analysis)
+        return {"success": True, "case_folder_name": case_folder_name}
+    except Exception as e:
+        logging.getLogger(__name__).warning(
+            "sync_osc_todos_for_path failed: %s", e, exc_info=True
+        )
+        return {"success": False, "error": str(e)}
 
 
 def _save_filing_log(report: Dict):

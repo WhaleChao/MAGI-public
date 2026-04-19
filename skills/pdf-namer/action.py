@@ -2030,6 +2030,8 @@ def generate_name_proposal(pdf_path: str, case_name: str = None, return_structur
         doc_subtype=found_doc_subtype,
         summary=found_summary,
         case_type_hint=found_case_type,
+        deadline=found_deadline,
+        deadline_type=found_deadline_type,
     )
     # Attach extracted legal action fields to result for downstream use
     if found_holding:
@@ -2811,16 +2813,45 @@ def _parse_naming_response(text: str) -> dict:
 
     return result
 
+def _trigger_osc_sync_if_applicable(new_path: str, result: dict) -> None:
+    """快速 regex 預檢檔名 bracket 是否含期限，命中才呼 OSC sync。
+
+    避免每次 rename 都 spawn subprocess（45s timeout × 兩次）。
+    """
+    if os.environ.get("PDF_NAMER_OSC_TODO_SYNC", "1") != "1":
+        return
+
+    name = os.path.basename(new_path)
+    if not re.search(r"\d+日內(補正|上訴|陳述意見|繳納|繳費|閱卷)", name):
+        return
+
+    try:
+        import importlib.util as _ilu
+        _sf_spec = _ilu.spec_from_file_location(
+            "smart_filer",
+            os.path.join(os.path.dirname(__file__), "smart_filer.py"),
+        )
+        _sf_mod = _ilu.module_from_spec(_sf_spec)
+        _sf_spec.loader.exec_module(_sf_mod)
+        sync_result = _sf_mod.sync_osc_todos_for_path(new_path)
+    except Exception as _e:
+        logger.debug("OSC sync import error: %s", _e, exc_info=True)
+        return
+
+    logger.info("OSC sync result for %s: %s", name, sync_result)
+
+
 def rename_file(pdf_path: str, case_name: str = None, dry_run: bool = False):
     pdf_path = _resolve_pdf_with_synology_fallback(pdf_path)
-    proposal = generate_name_proposal(pdf_path, case_name)
-    if not proposal:
+    structured = generate_name_proposal(pdf_path, case_name, return_structured=True)
+    if not structured or not (isinstance(structured, dict) and structured.get("filename")):
         logger.warning(f"Could not determine name for {pdf_path}")
         return
 
+    proposal = structured["filename"]
     dir_name = os.path.dirname(pdf_path)
     new_path = os.path.join(dir_name, proposal)
-    
+
     if new_path == pdf_path:
         logger.info("Name already correct.")
         return
@@ -2831,11 +2862,16 @@ def rename_file(pdf_path: str, case_name: str = None, dry_run: bool = False):
     while os.path.exists(new_path):
         new_path = f"{base}({counter}){ext}"
         counter += 1
-    
+
     logger.info(f"Renaming: {os.path.basename(pdf_path)} -> {os.path.basename(new_path)}")
-    
+
     if not dry_run:
         os.rename(pdf_path, new_path)
+        # 觸發 OSC todo sync（best-effort，失敗不影響 rename 結果）
+        try:
+            _trigger_osc_sync_if_applicable(new_path, structured)
+        except Exception:
+            logger.debug("OSC sync trigger raised", exc_info=True)
 
 def extract_text(pdf_path: str) -> Tuple[str, bool]:
     """Extract text from PDF (first 5 pages), with OCR fallback."""
@@ -3300,6 +3336,16 @@ def _resolve_doc_category(doc_type: str) -> Optional[str]:
     return None
 
 
+# OSC todos.py 的 bracket regex 使用「繳納」「閱卷」，需把 Vision/OCR 抽出的詞彙正規化
+_OSC_KEYWORDS = {
+    "繳費": "繳納",
+    "閱卷期限": "閱卷",
+}
+
+# 5 個類別在括號內注入 deadline（對齊 OSC regex）
+_DEADLINE_INJECT_CATEGORIES = {"判決", "裁定", "庭通知書", "函文", "法院通知"}
+
+
 def _build_name_result(
     *,
     found_date: Optional[str],
@@ -3312,6 +3358,8 @@ def _build_name_result(
     summary: Optional[str] = "",
     suffix: Optional[str] = "",
     case_type_hint: Optional[str] = "",
+    deadline: Optional[str] = None,
+    deadline_type: Optional[str] = "",
 ) -> dict:
     """Build filename following naming_rules.DOC_CATEGORIES templates.
 
@@ -3497,6 +3545,15 @@ def _build_name_result(
             body = "文件"
         if party and party != "Unknown":
             body += f"（{party}）"
+
+    # 注入 deadline 到括號（僅 5 個白名單類別）
+    if category in _DEADLINE_INJECT_CATEGORIES and deadline and "日" in str(deadline):
+        normalized_type = _OSC_KEYWORDS.get(deadline_type or "", deadline_type or "")
+        deadline_part = f"{deadline}{normalized_type}"
+        if body.endswith("）"):
+            body = body[:-1] + f"；{deadline_part}）"
+        else:
+            body += f"（{deadline_part}）"
 
     new_name = f"{found_date} {body}.pdf"
     new_name = re.sub(r'[/\\:*?"<>|]', "", new_name)
@@ -3823,8 +3880,15 @@ def main():
         if not args.path:
             print("Error: --path required")
             return
-        prop = generate_name_proposal(args.path, args.case_name)
-        print(f"Proposed Name: {prop}")
+        result_r = generate_name_proposal(args.path, args.case_name, return_structured=True)
+        if result_r and isinstance(result_r, dict):
+            print(f"Proposed Name: {result_r.get('filename', '')}")
+            dl = result_r.get("deadline", "")
+            dl_type = result_r.get("deadline_type", "")
+            if dl and dl_type:
+                print(f"Deadline: {dl}{dl_type}")
+        else:
+            print(f"Proposed Name: {result_r}")
     
     elif args.task == "rename_file":
         if not args.path:
