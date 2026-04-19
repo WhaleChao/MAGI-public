@@ -59,6 +59,24 @@ except Exception:
 logger = logging.getLogger("InferenceGateway")
 
 # ---------------------------------------------------------------------------
+# Balthasar circuit breaker state (2026-04-19)
+# ---------------------------------------------------------------------------
+# When Tailscale peer 100.118.235.126:5002 (Balthasar) is unreachable, the
+# health probe has no upstream protection and every captcha/date_extract call
+# wastes ~1.2s on the timeout. We cache the "down" state for BALTHASAR_CB_TTL_SEC
+# and log a Synology Drive audit marker when the circuit trips so the lawyer has
+# visibility into which cases ran in degraded mode. Closed cases are already
+# filtered out by the file-review pipeline's `include_closed=False`, matching
+# the user's standing instruction (結案的就先不管了).
+_BALTHASAR_CB_STATE = {
+    "down_until": 0.0,
+    "consecutive_failures": 0,
+    "last_reason": "",
+    "last_tripped_at": 0.0,
+    "lock": threading.Lock(),
+}
+
+# ---------------------------------------------------------------------------
 # Night window (default 22:00-06:00)
 # ---------------------------------------------------------------------------
 _NIGHT_START = int(os.environ.get("MAGI_NIGHT_START_HOUR", "22"))
@@ -415,13 +433,153 @@ class InferenceGateway:
     def _can_try_remote_balthasar(self) -> Tuple[bool, str]:
         if self._force_local():
             return False, "force_local"
+
+        # Circuit breaker: skip probe while tripped (saves ~1.2s per call).
+        # When Balthasar/Tailscale peer is unreachable, the downstream caller
+        # falls back to local OCR/inference (degraded mode). A Synology Drive
+        # audit marker was written at trip time for lawyer visibility.
+        cb = _BALTHASAR_CB_STATE
+        now = time.monotonic()
+        down_until = float(cb.get("down_until", 0.0) or 0.0)
+        if now < down_until:
+            remaining = int(down_until - now)
+            return False, f"circuit_open_synology_fallback:retry_in_{remaining}s"
+
         try:
             r = self.session.get(f"{self.balthasar_url}/health", timeout=self._timeout_tuple(3))
             if r.status_code == 200:
+                with cb["lock"]:
+                    cb["consecutive_failures"] = 0
+                    cb["down_until"] = 0.0
+                    cb["last_reason"] = ""
                 return True, "ok"
-            return False, f"health_status_{r.status_code}"
+            reason = f"health_status_{r.status_code}"
         except Exception as e:
-            return False, str(e)
+            reason = (str(e) or "unknown_error").split(":", 1)[0][:120]
+
+        self._balthasar_cb_record_failure(reason)
+        return False, f"down:{reason}"
+
+    def _balthasar_cb_record_failure(self, reason: str) -> None:
+        """Bump failure counter; trip circuit + write Synology audit marker when threshold hit."""
+        cb = _BALTHASAR_CB_STATE
+        try:
+            threshold = max(1, int(os.environ.get("BALTHASAR_CB_FAIL_THRESHOLD", "2") or "2"))
+        except Exception:
+            threshold = 2
+        try:
+            ttl = max(30, int(os.environ.get("BALTHASAR_CB_TTL_SEC", "300") or "300"))
+        except Exception:
+            ttl = 300
+        now = time.monotonic()
+        trip = False
+        with cb["lock"]:
+            cb["consecutive_failures"] = int(cb.get("consecutive_failures", 0) or 0) + 1
+            cb["last_reason"] = str(reason or "")[:160]
+            if cb["consecutive_failures"] >= threshold and now >= float(cb.get("down_until", 0.0) or 0.0):
+                cb["down_until"] = now + ttl
+                cb["last_tripped_at"] = time.time()
+                trip = True
+        if trip:
+            try:
+                logger.warning(
+                    "balthasar circuit tripped: reason=%s failures=%d ttl=%ds url=%s — Synology audit marker written",
+                    reason, cb.get("consecutive_failures", 0), ttl, self.balthasar_url,
+                )
+            except Exception:
+                logging.getLogger(__name__).debug("balthasar cb log silent-catch", exc_info=True)
+            try:
+                self._write_synology_balthasar_fallback_marker(reason=reason, ttl=ttl)
+            except Exception:
+                logging.getLogger(__name__).debug("synology marker write silent-catch", exc_info=True)
+
+    def _resolve_synology_fallback_dir(self) -> str:
+        """Find a usable Synology Drive folder for fallback audit markers.
+
+        Honors SYNOLOGY_BALTHASAR_FALLBACK_DIR env; otherwise searches known mount
+        points. Returns "" if Synology Drive is not mounted (caller silently skips).
+        """
+        explicit = os.environ.get("SYNOLOGY_BALTHASAR_FALLBACK_DIR", "").strip()
+        if explicit:
+            return explicit
+        home = os.path.expanduser("~")
+        # Candidate path, with the Synology root we need present for it to be usable.
+        # Grandparent-level check lets us auto-create ``MAGI/balthasar_fallback/``
+        # the first time the circuit trips, without pre-seeding the folder.
+        candidates = [
+            (
+                os.path.join(home, "Library", "CloudStorage", "SynologyDrive-homes", "MAGI", "balthasar_fallback"),
+                os.path.join(home, "Library", "CloudStorage", "SynologyDrive-homes"),
+            ),
+            (
+                os.path.join(home, "Library", "CloudStorage", "SynologyDrive-home", "MAGI", "balthasar_fallback"),
+                os.path.join(home, "Library", "CloudStorage", "SynologyDrive-home"),
+            ),
+            (
+                os.path.join(home, "SynologyDrive", "MAGI", "balthasar_fallback"),
+                os.path.join(home, "SynologyDrive"),
+            ),
+            (
+                "/Volumes/SynologyDrive/MAGI/balthasar_fallback",
+                "/Volumes/SynologyDrive",
+            ),
+        ]
+        for path, root in candidates:
+            if os.path.isdir(root):
+                return path
+        return ""
+
+    def _write_synology_balthasar_fallback_marker(self, *, reason: str, ttl: int) -> None:
+        """Write a JSON audit marker to Synology Drive when Balthasar circuit trips.
+
+        Per user standing instruction (2026-04-19): when Tailscale peer is unreachable,
+        use Synology Drive as FALLBACK for audit trail. Closed cases are filtered by
+        the upstream file-review pipeline (include_closed=False), so this marker only
+        reflects active-case degraded-mode events.
+        """
+        base = self._resolve_synology_fallback_dir()
+        if not base:
+            logger.info("balthasar fallback: Synology Drive not mounted; skipping audit marker (reason=%s)", reason)
+            return
+        try:
+            os.makedirs(base, exist_ok=True)
+        except Exception as e:
+            logger.info("balthasar fallback: cannot create %s: %s", base, e)
+            return
+        fname = f"balthasar_down_{int(time.time())}_{uuid.uuid4().hex[:6]}.json"
+        fpath = os.path.join(base, fname)
+        payload = {
+            "ts": datetime.datetime.now().isoformat(timespec="seconds"),
+            "balthasar_url": self.balthasar_url,
+            "reason": str(reason or "")[:200],
+            "consecutive_failures": int(_BALTHASAR_CB_STATE.get("consecutive_failures", 0) or 0),
+            "ttl_sec": int(ttl),
+            "hostname": os.uname().nodename if hasattr(os, "uname") else "",
+            "note": (
+                "Balthasar/Tailscale peer unreachable; local inference used as degraded fallback. "
+                "Closed cases skipped per standing instruction."
+            ),
+        }
+        try:
+            with open(fpath, "w", encoding="utf-8") as f:
+                _json.dump(payload, f, ensure_ascii=False, indent=2)
+            logger.info("balthasar fallback: audit marker written to %s", fpath)
+        except Exception as e:
+            logger.info("balthasar fallback: audit marker write failed: %s", e)
+
+    def balthasar_circuit_status(self) -> dict:
+        """Public read-only snapshot of Balthasar circuit state (for tests and health endpoints)."""
+        cb = _BALTHASAR_CB_STATE
+        now = time.monotonic()
+        down_until = float(cb.get("down_until", 0.0) or 0.0)
+        return {
+            "open": now < down_until,
+            "retry_in_sec": max(0, int(down_until - now)) if down_until > 0 else 0,
+            "consecutive_failures": int(cb.get("consecutive_failures", 0) or 0),
+            "last_reason": str(cb.get("last_reason", "") or ""),
+            "last_tripped_at": float(cb.get("last_tripped_at", 0.0) or 0.0),
+            "balthasar_url": self.balthasar_url,
+        }
 
     def _local_ollama_online(self) -> Tuple[bool, List[str], str]:
         # oMLX uses OpenAI-compatible /v1/models (Ollama /api/tags is retired)
