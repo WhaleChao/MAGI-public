@@ -590,6 +590,30 @@ def _build_review_consensus(original_prompt, primary_answer, review_results, tas
         veto_reasons.append("簡體字偵測（規則）：{}".format("、".join(sc_chars[:8])))
     review_verdicts["rule_sc"] = "VETO: {}".format(sc_chars[:8]) if has_sc else "OK"
 
+    # 規則式事實溯源稽核（rule_fact_grounding）
+    # 答案中引用的法條號碼，必須在 prompt（含記憶/網路 context）中有依據。
+    # 若 LLM 憑訓練知識自行生成「第184條」等引用，此規則將觸發否決。
+    try:
+        from api.hallucination_guard import check_fact_grounding as _check_fg
+        _fg_grounded, _fg_ungrounded = _check_fg(primary_answer, [original_prompt])
+        if not _fg_grounded:
+            vetoed_by.append("rule_fact_grounding")
+            veto_reasons.append(
+                "法條引用未有依據（溯源檢查）：{}".format("、".join(_fg_ungrounded[:5]))
+            )
+            _log.getLogger(__name__).warning(
+                "[rule_fact_grounding] VETO — ungrounded refs: %s",
+                _fg_ungrounded,
+            )
+        review_verdicts["rule_fact_grounding"] = (
+            "VETO: {}".format(_fg_ungrounded[:5]) if not _fg_grounded else "OK"
+        )
+    except Exception as _fg_err:
+        _log.getLogger(__name__).debug(
+            "[rule_fact_grounding] skipped: %s", _fg_err
+        )
+        review_verdicts["rule_fact_grounding"] = "(skipped)"
+
     # output_guard 保留
     final_answer = primary_answer
     try:

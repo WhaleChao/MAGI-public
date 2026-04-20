@@ -315,6 +315,26 @@ def _classify_query_tier(message: str) -> str:
             return "COMPLEX"
 
         logger.debug("🏷️ Tier: SIMPLE (C=%.3f, S=%.3f)", c_score, s_score)
+        # ── 防幻覺升級：HIGH-risk 查詢強制走 COMPLEX ──
+        # 即使 embedding 判定為 SIMPLE，含具體法條引用或程序時效的查詢
+        # 必須走完整三哲人審查，不允許跳過驗證直接回傳 LLM 輸出。
+        try:
+            from api.hallucination_guard import classify_risk as _classify_risk
+            _risk = _classify_risk(message)
+            if _risk == "HIGH":
+                logger.info(
+                    "🛡️ Tier override: SIMPLE→COMPLEX "
+                    "(HIGH-risk factual query, hallucination guard)"
+                )
+                return "COMPLEX"
+            if _risk == "MEDIUM":
+                logger.info(
+                    "🛡️ Tier upgrade: SIMPLE→COMPLEX "
+                    "(MEDIUM-risk legal query, upgrading for verification)"
+                )
+                return "COMPLEX"
+        except Exception as _hg_err:
+            logger.debug("[HG] risk classify skipped: %s", _hg_err)
         return "SIMPLE"
 
     except Exception as e:
@@ -1153,6 +1173,13 @@ def chat_casper(message, conversation_history=""):
             "並提醒使用者「以中央氣象署（CWA）為準」。不得憑空給出降雨機率或溫度數字。"
         )
 
+    # 防幻覺規則（注入 prompt）
+    try:
+        from api.hallucination_guard import build_anti_hallucination_prompt_rules
+        _anti_hallucination_rules = "\n" + build_anti_hallucination_prompt_rules()
+    except Exception:
+        _anti_hallucination_rules = ""
+
     prompt = f"""你是 CASPER（MAGI-01），請以繁體中文回答。
 你需要同時參考記憶與近期對話，保持前後一致。
 
@@ -1163,7 +1190,7 @@ def chat_casper(message, conversation_history=""):
 - 若使用者糾正您的錯誤或補充新資訊，請【務必明確總結並覆誦正確的資訊】，這會幫助系統將正確知識寫入長期記憶。
 - 不要使用 Markdown 語法（**粗體**、`程式碼`、### 標題等）。純文字即可。
 - 內部信任標記僅供你判斷，回答時不得直接說出 [使用者陳述]、[已驗證事實]、[檢索線索]、[衍生推論] 或「身為 CASPER」這類內部提示字樣。
-- 若回答引用網路搜尋資料，必須說出資料來源名稱，不可用「根據我目前找到的資訊」等模糊說法。{_realtime_rule}
+- 若回答引用網路搜尋資料，必須說出資料來源名稱，不可用「根據我目前找到的資訊」等模糊說法。{_realtime_rule}{_anti_hallucination_rules}
 {_style_rule}
 
 

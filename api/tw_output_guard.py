@@ -863,6 +863,14 @@ def normalize_output_text(text: str, platform: str = "", force_taide: bool = Fal
             out = out.replace(_vague_src, _replacement, 1)
             break
 
+    # 1.5b-pre2) LLM 訓練知識模糊歸因 rewrite（根據我的了解 / 據我所知 等）
+    # 這類句式代表 LLM 以訓練知識回答事實性問題，未提供可查證來源
+    try:
+        from api.hallucination_guard import rewrite_ungrounded_attribution as _rua
+        out = _rua(out)
+    except Exception:
+        pass
+
     # 1.5b) 內部命令洩漏防護（LINE / Discord / TG / Web 等對外輸出）
     out, _ = _strip_internal_leaks(out)
 
