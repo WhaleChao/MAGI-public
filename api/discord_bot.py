@@ -34,6 +34,15 @@ def _sigchld_handler(_signum, _frame):
             break
 signal.signal(signal.SIGCHLD, _sigchld_handler)
 
+
+def _sigterm_handler(_signum, _frame):
+    """Graceful SIGTERM: log and exit cleanly so daemon knows it was intentional."""
+    logging.getLogger("discord_bot").info("SIGTERM received — shutting down Discord bot")
+    sys.exit(0)
+
+
+signal.signal(signal.SIGTERM, _sigterm_handler)
+
 # Load .env (shared with server.py)
 try:
     from dotenv import load_dotenv

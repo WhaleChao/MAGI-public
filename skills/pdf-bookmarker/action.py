@@ -373,6 +373,11 @@ def scan_and_bookmark(
                 "pages": doc.page_count,
                 "sample_counts": meaningful_counts[:20],
             }, ensure_ascii=False) + "\n")
+        try:
+            from api.events.sinks import rotate_jsonl
+            rotate_jsonl(str(stats_path))
+        except Exception:
+            pass
     except Exception:
         logger.debug("Failed to write OLA stats", exc_info=True)
 

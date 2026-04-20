@@ -821,5 +821,16 @@ if not _SERVER_STARTUP_HOOKS_DISABLED:
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
+def _sigterm_handler(_signum, _frame):
+    """Graceful SIGTERM: flush logs then exit cleanly."""
+    import logging as _logging
+    _logging.getLogger("server").info("SIGTERM received — shutting down server")
+    import sys as _sys
+    _sys.exit(0)
+
+
+_signal.signal(_signal.SIGTERM, _sigterm_handler)
+
+
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5002, debug=False, threaded=True)

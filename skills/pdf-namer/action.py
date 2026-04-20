@@ -4020,6 +4020,35 @@ def main():
     elif args.task == "self_train":
         print(task_self_train())
 
+    elif args.task == "self_test":
+        errors = []
+        try:
+            import fitz as _fitz  # noqa: F401
+        except Exception as e:
+            errors.append(f"fitz import failed: {e}")
+        try:
+            from skills.pdf_namer.naming_validator import validate_filename as _vf  # type: ignore
+        except Exception:
+            try:
+                import importlib.util as _ilu
+                _spec = _ilu.spec_from_file_location(
+                    "naming_validator",
+                    os.path.join(os.path.dirname(__file__), "naming_validator.py"),
+                )
+                _nm = _ilu.module_from_spec(_spec)
+                _spec.loader.exec_module(_nm)
+                _vf = _nm.validate_filename
+            except Exception as e:
+                errors.append(f"naming_validator import failed: {e}")
+                _vf = None
+        if _vf:
+            _sample = "20260101 臺灣花蓮地方法院判決（王小明）.pdf"
+            _ok_flag, _issues = _vf(_sample)
+            if not _ok_flag:
+                errors.append(f"naming_validator rejected valid sample: {_issues}")
+        result = {"success": len(errors) == 0, "errors": errors or None}
+        print(json.dumps(result, ensure_ascii=False))
+
 
 if __name__ == "__main__":
     main()
