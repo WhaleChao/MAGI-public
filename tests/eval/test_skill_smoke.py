@@ -61,7 +61,15 @@ class TestSkillDefinitionsComplete:
             has_action_py = (skill_dir / "action.py").exists()
             has_init = (skill_dir / "__init__.py").exists()
             has_any_py = any(skill_dir.glob("*.py"))
-            if not (has_skill_md or has_action_py or has_init or has_any_py):
+            # Anthropic document skill bundles (pptx/xlsx/bilingual-docx) ship
+            # as `scripts/` subdirs + reference markdown instead of action.py;
+            # accept that shape too.
+            has_scripts = (skill_dir / "scripts").is_dir()
+            has_md_docs = any(skill_dir.glob("*.md"))
+            if not (
+                has_skill_md or has_action_py or has_init or has_any_py
+                or has_scripts or has_md_docs
+            ):
                 missing.append(skill_dir.name)
         assert missing == [], (
             f"Skills without SKILL.md or action.py or any .py: {missing}"
