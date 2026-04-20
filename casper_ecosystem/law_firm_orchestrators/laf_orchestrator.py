@@ -6754,7 +6754,7 @@ def main():
                 print(json.dumps({"ok": False, "error": f"invalid_fields_json: {e}"}, ensure_ascii=False, indent=2))
                 return
         # 取互斥鎖，避免與另一個 portal-draft/submit 並發搶 LAF session
-        _acquire_portal_lock(wait_sec=int(os.environ.get("MAGI_LAF_PORTAL_LOCK_WAIT_SEC", "900")))
+        _acquire_portal_lock(wait_sec=int(os.environ.get("MAGI_LAF_PORTAL_LOCK_WAIT_SEC", "2400")))
         try:
             result = orchestrator.execute_portal_action_draft(
                 action=args.action,
@@ -6785,7 +6785,7 @@ def main():
             except Exception as e:
                 print(json.dumps({"ok": False, "error": f"invalid_fields_json: {e}"}, ensure_ascii=False, indent=2))
                 return
-        _acquire_portal_lock(wait_sec=int(os.environ.get("MAGI_LAF_PORTAL_LOCK_WAIT_SEC", "900")))
+        _acquire_portal_lock(wait_sec=int(os.environ.get("MAGI_LAF_PORTAL_LOCK_WAIT_SEC", "2400")))
         try:
             result = orchestrator.execute_portal_action_submit(
                 action=args.action,
