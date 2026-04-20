@@ -549,6 +549,13 @@ def _print_report(checks: list[Check]) -> tuple[int, int, int]:
 
 
 def main() -> int:
+    # 2026-04-20: OpenClaw/LINE primary webhook path removed. LINE probing
+    # here is legacy; LINE/Discord/Telegram routing now lives in
+    # api/pipelines/message_pipeline.py and api/domains/*_flow.py.
+    # This smoke remains available for manual credential-presence checks,
+    # but may emit WARN for LINE sections that no longer have a runtime.
+    print("⚠️  smoke_three_channels.py: LINE webhook probes are legacy (OpenClaw removed 2026-04-20).",
+          file=sys.stderr)
     parser = argparse.ArgumentParser(description="MAGI 3-channel smoke checks (LINE/DC/TG)")
     parser.add_argument("--server-url", default="http://127.0.0.1:5002", help="MAGI server base URL")
     try:

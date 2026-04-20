@@ -413,7 +413,11 @@ def generate_env(config: dict[str, Any]) -> str:
     if config.get("telegram_token"):
         lines += [
             "# ── Telegram ─────────────────────────────────────────────────",
+            # Legacy var name kept for backward compat with existing deployments
+            # that still read OPENCLAW_TELEGRAM_BOT_TOKEN. OpenClaw itself is
+            # removed (2026-04-20); prefer MAGI_TELEGRAM_BOT_TOKEN going forward.
             f"OPENCLAW_TELEGRAM_BOT_TOKEN={config.get('telegram_token', '')}",
+            f"MAGI_TELEGRAM_BOT_TOKEN={config.get('telegram_token', '')}",
             f"MAGI_ADMIN_TELEGRAM_IDS={config.get('telegram_admin_id', '')}",
             "",
         ]
@@ -483,14 +487,14 @@ def generate_env(config: dict[str, Any]) -> str:
             f"MAGI_OMLX_SUMMARY_MODEL={config.get('summary_model', DEFAULT_TEXT_MODEL)}",
             f"MAGI_OMLX_VISION_MODEL={config.get('vision_model', DEFAULT_VISION_MODEL)}",
             f"MAGI_OMLX_OCR_MODEL={config.get('ocr_model', DEFAULT_VISION_MODEL)}",
-            f"MAGI_OPENCLAW_PRIMARY_MODEL=omlx/{config.get('summary_model', DEFAULT_TEXT_MODEL)}",
+            # MAGI_OPENCLAW_PRIMARY_MODEL removed 2026-04-20: OpenClaw chain deleted.
             "",
         ]
     else:
         lines += [
             "# ── Ollama / llama.cpp ────────────────────────────────────────",
             "MAGI_OMLX_ENABLED=0",
-            f"MAGI_OPENCLAW_PRIMARY_MODEL=ollama/{main_model}",
+            # MAGI_OPENCLAW_PRIMARY_MODEL removed 2026-04-20: OpenClaw chain deleted.
             "",
         ]
 
