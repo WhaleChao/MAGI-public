@@ -566,8 +566,14 @@ def _ensure_cloudflared():
                 logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, "_ensure_cloudflared/pkill", exc_info=True)
             logger.info("Starting cloudflared tunnel...")
             _cf_log_fh = open(log_path, "w")  # kept open for cloudflared's lifetime
+            _cf_local_port = (
+                os.environ.get("MAGI_SERVER_PORT")
+                or _load_dotenv_value("MAGI_SERVER_PORT")
+                or "5002"
+            ).strip()
+            logger.info("cloudflared → local port %s", _cf_local_port)
             _cf_proc = subprocess.Popen(
-                ["/opt/homebrew/bin/cloudflared", "tunnel", "--url", "http://127.0.0.1:18790", "--no-autoupdate"],
+                ["/opt/homebrew/bin/cloudflared", "tunnel", "--url", f"http://127.0.0.1:{_cf_local_port}", "--no-autoupdate"],
                 stdout=subprocess.DEVNULL, stderr=_cf_log_fh,
             )
             # Safety net: register atexit handler to close file handle
@@ -676,7 +682,7 @@ def _ensure_cloudflared():
                 logger.error("LINE webhook registration failed after 3 attempts")
             # Telegram webhook auto-registration
             try:
-                from api.server import _load_openclaw_telegram_token, _load_telegram_webhook_secret
+                from api.webhooks.telegram import _load_openclaw_telegram_token, _load_telegram_webhook_secret
                 tg_token = _load_openclaw_telegram_token()
                 tg_secret = _load_telegram_webhook_secret()
                 if tg_token:
