@@ -1425,12 +1425,17 @@ def main() -> int:
         })
 
     if task == "self_test":
-        # Verify imports and config without actually logging in
+        # Verify imports, config, DB, and ezlawyer site reachability (no login)
+        import urllib.request as _urllib_req
         errors = []
+        warnings = []
+        checks = {}
         try:
             _ensure_imports()
+            checks["import"] = True
         except Exception as e:
             errors.append("import judicial_automation_v2 failed: " + str(e)[:100])
+            checks["import"] = False
 
         cfg = _load_config()
         creds = _get_credentials(cfg)
@@ -1438,11 +1443,41 @@ def main() -> int:
             errors.append("missing judicial.record_username in config.json")
         if not creds["password"]:
             errors.append("missing judicial.record_password in config.json")
+        checks["credentials"] = bool(creds["username"] and creds["password"])
+
+        # DB probe (non-blocking)
+        try:
+            _ensure_local_cases_schema()
+            db = _get_db_manager(cfg)
+            checks["db"] = db is not None
+            if not db:
+                warnings.append("db_manager unavailable; transcript dedup will use JSON fallback")
+        except Exception as e:
+            warnings.append("db probe failed: " + str(e)[:80])
+            checks["db"] = False
+
+        # ezlawyer site reachability (HEAD, no login)
+        try:
+            _req = _urllib_req.Request(
+                "https://www.ezlawyer.com.tw/eb/user/loginPage",
+                method="HEAD",
+            )
+            _req.add_header("User-Agent", "MAGI-self-test/1.0")
+            with _urllib_req.urlopen(_req, timeout=10) as _resp:
+                checks["site_reachable"] = _resp.status < 500
+        except Exception as e:
+            warnings.append("ezlawyer site unreachable: " + str(e)[:80])
+            checks["site_reachable"] = False
 
         ok = len(errors) == 0
-        return _ok({"success": ok, "errors": errors if errors else None,
-                     "credentials_found": bool(creds["username"]),
-                     "product_profile": product_profile_report("transcript", config=cfg)})
+        return _ok({
+            "success": ok,
+            "checks": checks,
+            "errors": errors if errors else None,
+            "warnings": warnings if warnings else None,
+            "credentials_found": bool(creds["username"]),
+            "product_profile": product_profile_report("transcript", config=cfg),
+        })
 
     if task == "db_probe":
         # Verify DB connectivity and whether we have eligible cases (no website login).

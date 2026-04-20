@@ -623,11 +623,74 @@ def show_toc(pdf_path: str) -> str:
 # CLI
 # ═══════════════════════════════════════════════════════════════════════════════
 
+def task_self_test() -> dict:
+    """驗證 pdf-bookmarker 的關鍵依賴與基本功能，無副作用。"""
+    import tempfile
+    errors = []
+    warnings = []
+    checks = {}
+
+    # 1. PyMuPDF
+    try:
+        import fitz as _fitz  # noqa: F401
+        checks["fitz"] = True
+    except ImportError as e:
+        errors.append("PyMuPDF (fitz) missing: " + str(e)[:80])
+        checks["fitz"] = False
+
+    # 2. RapidOCR
+    checks["rapidocr"] = HAS_OCR
+    if not HAS_OCR:
+        warnings.append("rapidocr_onnxruntime not installed; OCR fallback disabled")
+
+    # 3. bookmark_validator importable
+    try:
+        from skills.pdf_bookmarker.bookmark_validator import validate_bookmark as _vb  # noqa: F401
+        checks["bookmark_validator"] = True
+    except ImportError:
+        _bv_path = Path(__file__).parent / "bookmark_validator.py"
+        checks["bookmark_validator"] = _bv_path.exists()
+        if not checks["bookmark_validator"]:
+            errors.append("bookmark_validator.py missing from pdf-bookmarker skill directory")
+
+    # 4. doc_type_detector importable
+    try:
+        from skills.engine.doc_type_detector import detect_doc_type as _dtd  # noqa: F401
+        checks["doc_type_detector"] = True
+    except ImportError:
+        warnings.append("doc_type_detector not importable; Vision fallback may not work")
+        checks["doc_type_detector"] = False
+
+    # 5. Smoke: scan_and_bookmark on a synthetic PDF (dry_run)
+    try:
+        _tmp = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False)
+        _tmp_path = _tmp.name
+        _tmp.close()
+        _doc = fitz.open()
+        _page = _doc.new_page()
+        _page.insert_text((50, 100), "20260101 臺灣花蓮地方法院判決", fontsize=12)
+        _doc.save(_tmp_path)
+        _doc.close()
+        result = scan_and_bookmark(_tmp_path, dry_run=True)
+        os.unlink(_tmp_path)
+        checks["scan_smoke"] = result.get("success", False)
+        if not checks["scan_smoke"]:
+            warnings.append("scan smoke returned success=False: " + result.get("message", "")[:80])
+    except Exception as e:
+        warnings.append("scan smoke exception: " + str(e)[:120])
+        checks["scan_smoke"] = False
+
+    ok = len(errors) == 0
+    return {"success": ok, "checks": checks,
+            "errors": errors if errors else None,
+            "warnings": warnings if warnings else None}
+
+
 def main():
     parser = argparse.ArgumentParser(description="MAGI PDF 自動書籤 v2.0")
     parser.add_argument("--task", required=True,
-                        choices=["scan_file", "batch", "show", "test"],
-                        help="scan_file=單檔, batch=整個資料夾, show=顯示書籤, test=測試")
+                        choices=["scan_file", "batch", "show", "test", "self_test"],
+                        help="scan_file=單檔, batch=整個資料夾, show=顯示書籤, test=測試, self_test=健康檢查")
     parser.add_argument("--path", help="PDF 檔案或資料夾路徑")
     parser.add_argument("--output", help="輸出路徑（預設覆寫原檔）")
     parser.add_argument("--case-name", default="", help="當事人姓名（輔助辨識）")
@@ -679,6 +742,11 @@ def main():
         else:
             print("ERROR: --path is required for test mode")
             return 1
+
+    elif args.task == "self_test":
+        result = task_self_test()
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 0 if result["success"] else 1
 
     return 0
 
