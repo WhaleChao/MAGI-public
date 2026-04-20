@@ -207,6 +207,12 @@ def _format_statute_items(items: List[Dict[str, Any]]) -> List[str]:
 
 
 def _search_local_judgment_archive(query: str, limit: int = 3) -> Dict[str, Any]:
+    """本地實務見解庫 fallback（判決-搜尋）。
+
+    2026-04-21 後：主查詢來源改為 `court_judgments`（與 OSC 面板同一張表）。
+    `judgment_archive` 已由 `scripts/ops/merge_judgment_archive_to_court.py` 合併
+    至 `court_judgments`；仍留的 662 筆無 jid 舊案作為 secondary fallback。
+    """
     text = str(query or "").strip()
     if not text:
         return {"success": False, "error": "missing_query"}
@@ -215,29 +221,34 @@ def _search_local_judgment_archive(query: str, limit: int = 3) -> Dict[str, Any]
         if db is None:
             return {"success": False, "error": "local_archive_db_unavailable"}
         like = f"%{text}%"
+        limit_int = max(1, int(limit))
+
+        # 主查詢：court_judgments（OSC 可見正式實務見解庫）
         rows = db.execute(
             """
             SELECT
-                judgment_title,
-                judgment_url,
-                LEFT(summary_text, 1200) AS summary_text,
-                case_reason,
-                search_query,
+                jid,
+                court_name,
+                case_number,
+                case_type,
+                judgment_date,
+                LEFT(COALESCE(summary, ''), 1200) AS summary_text,
+                source_url,
                 crawled_at
-            FROM judgment_archive
+            FROM court_judgments
             WHERE
-                case_reason LIKE %s
-                OR search_query LIKE %s
-                OR summary_text LIKE %s
-                OR judgment_title LIKE %s
+                case_number LIKE %s
+                OR summary LIKE %s
+                OR full_text LIKE %s
+                OR court_name LIKE %s
             ORDER BY crawled_at DESC
             LIMIT %s
             """,
-            (like, like, like, like, max(1, int(limit))),
+            (like, like, like, like, limit_int),
             fetch="all",
         ) or []
     except Exception as exc:
-        logger.warning("local judgment archive fallback failed: %s", exc)
+        logger.warning("local judgment court_judgments fallback failed: %s", exc)
         return {"success": False, "error": f"local_archive_failed: {str(exc)[:160]}"}
 
     items: List[Dict[str, Any]] = []
@@ -246,15 +257,64 @@ def _search_local_judgment_archive(query: str, limit: int = 3) -> Dict[str, Any]
             continue
         summary = str(row.get("summary_text") or "").strip()
         is_degraded = "系統降級回覆" in summary
+        court_name = str(row.get("court_name") or "").strip()
+        case_number = str(row.get("case_number") or "").strip()
+        title_parts = [p for p in [court_name, case_number] if p]
+        title = " ".join(title_parts) if title_parts else str(row.get("jid") or "").strip()
         items.append(
             {
-                "title": str(row.get("judgment_title") or "").strip(),
+                "title": title,
                 "summary_preview": summary,
-                "url": str(row.get("judgment_url") or "").strip(),
+                "url": str(row.get("source_url") or "").strip(),
                 "is_degraded": is_degraded,
-                "source": "local_judgment_archive",
+                "source": "court_judgments_local",
             }
         )
+
+    # Secondary fallback: 662 筆無 jid 舊 judgment_archive（merge 時無法正規化）
+    if not items:
+        try:
+            db = _get_local_db_manager()
+            if db is not None:
+                like = f"%{text}%"
+                legacy_rows = db.execute(
+                    """
+                    SELECT
+                        judgment_title,
+                        judgment_url,
+                        LEFT(summary_text, 1200) AS summary_text,
+                        case_reason,
+                        crawled_at
+                    FROM judgment_archive
+                    WHERE
+                        (source_jid IS NULL OR source_jid = '')
+                        AND (
+                            case_reason LIKE %s
+                            OR summary_text LIKE %s
+                            OR judgment_title LIKE %s
+                        )
+                    ORDER BY crawled_at DESC
+                    LIMIT %s
+                    """,
+                    (like, like, like, max(1, int(limit))),
+                    fetch="all",
+                ) or []
+                for row in legacy_rows:
+                    if not isinstance(row, dict):
+                        continue
+                    summary = str(row.get("summary_text") or "").strip()
+                    is_degraded = "系統降級回覆" in summary
+                    items.append(
+                        {
+                            "title": str(row.get("judgment_title") or "").strip(),
+                            "summary_preview": summary,
+                            "url": str(row.get("judgment_url") or "").strip(),
+                            "is_degraded": is_degraded,
+                            "source": "judgment_archive_legacy",
+                        }
+                    )
+        except Exception as exc:
+            logger.debug("legacy judgment_archive secondary fallback failed: %s", exc)
 
     items = [item for item in items if item.get("title")]
     non_degraded_items = [item for item in items if not item.get("is_degraded")]
@@ -262,7 +322,7 @@ def _search_local_judgment_archive(query: str, limit: int = 3) -> Dict[str, Any]
     items = non_degraded_items[: max(1, int(limit))] or degraded_items[: max(1, int(limit))]
     if not items:
         return {"success": False, "error": "no_local_archive_matches"}
-    return {"success": True, "source_label": "本地判決庫 fallback", "items": items[: max(1, int(limit))]}
+    return {"success": True, "source_label": "本地實務見解庫", "items": items[: max(1, int(limit))]}
 
 
 def format_practical_insight_result(query: str, judgments: Dict[str, Any], statutes: Dict[str, Any]) -> str:
