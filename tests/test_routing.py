@@ -57,11 +57,15 @@ class TestExplainRouting:
         assert result["action"] == "schedule_query"
         assert result["matched"] == "schedule_keywords"
 
-    # ---- 4. OpenClaw update (admin) ----
-    def test_openclaw_update(self):
+    # ---- 4. OpenClaw update removed (2026-04-20, Phase 1 of cleanup plan) ----
+    # OpenClaw Gateway chain was deleted; "更新openclaw" is no longer a
+    # recognized admin command and falls through to the generic chat handler.
+    def test_openclaw_update_removed_falls_through_to_chat(self):
         result = self.orc._explain_routing("更新openclaw")
-        assert result["action"] == "openclaw_update"
-        assert result["requires_admin"] is True
+        assert result["action"] != "openclaw_update"
+        # Implementation detail: the non-matched path returns "chat_handler".
+        # We assert the absence of the old route rather than pinning to a
+        # specific fallthrough label, to stay robust to dispatcher changes.
 
     # ---- 5. Memory write (admin) ----
     @pytest.mark.parametrize("msg", ["記住這件事", "remember this fact"])
