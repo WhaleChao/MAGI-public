@@ -6043,18 +6043,21 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                         elif any(k in s for k in _tel_kw):
                             _c_tel += 1
 
-                    if "meeting_count" in _zero_keys and _c_meet > 0:
+                    # Take max across DB sources: existing case_todos value vs calendar_events.
+                    # Reason: 王淑婷 case_todos 只有 1 次開庭標完成，calendar_events 也只有 1 筆，
+                    # 但 GCal 其實有 2 筆 — 後續 GCal 階段會再取 max。
+                    if _c_meet > int(counts.get("meeting_count", 0) or 0):
                         counts["meeting_count"] = _c_meet
                         logger.info("  📅 Calendar 補 meeting_count: %d", _c_meet)
-                    if "contact_count" in _zero_keys and _c_tel > 0:
+                    if _c_tel > int(counts.get("contact_count", 0) or 0):
                         counts["contact_count"] = _c_tel
                         logger.info("  📅 Calendar 補 contact_count: %d", _c_tel)
-                    if "court_count" in _zero_keys and _c_court > 0:
+                    if _c_court > int(counts.get("court_count", 0) or 0):
                         counts["court_count"] = _c_court
                         if not counts["court_dates"]:
                             counts["court_dates"] = _court_dates_cal
                         logger.info("  📅 Calendar 補 court_count: %d (dates: %s)", _c_court, _court_dates_cal)
-                    if "review_count" in _zero_keys and _c_review > 0:
+                    if _c_review > int(counts.get("review_count", 0) or 0):
                         counts["review_count"] = _c_review
                         if not counts["review_dates"]:
                             counts["review_dates"] = _review_dates_cal
@@ -6062,12 +6065,12 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
             except Exception as e:
                 logger.warning("Calendar fallback for zero counts failed: %s", e)
 
-        # 第三層 fallback：若 DB calendar_events 表也沒資料，直接查 Google Calendar API
-        _still_zero = [k for k in ("meeting_count", "contact_count", "court_count", "review_count")
-                       if int(counts.get(k, 0) or 0) == 0]
-        if _still_zero and client_name:
+        # 第三層 fallback：無論 DB 有無，都查 Google Calendar API 取 max（live 永遠最準確）
+        # 傳全部 keys 讓 _gcal_fallback_counts 自己判斷是否 > 目前值
+        if client_name:
             try:
-                self._gcal_fallback_counts(counts, _still_zero, case_number, client_name)
+                _all_keys = ["meeting_count", "contact_count", "court_count", "review_count"]
+                self._gcal_fallback_counts(counts, _all_keys, case_number, client_name)
             except Exception as e:
                 logger.warning("GCal API fallback for zero counts failed: %s", e)
 
@@ -6174,38 +6177,62 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
 
         _c_court = 0; _c_meet = 0; _c_tel = 0; _c_review = 0
         _court_dates_gcal = []; _review_dates_gcal = []
+        # 同日同類事件只算一次（不同日曆用不同 summary 的情形常見，例如
+        # 「王淑婷審理」vs「[2025-0024] 王淑婷 - 審理程序」同是 2026-03-12 一場庭）
+        _seen_court_dates: set = set()
+        _seen_review_dates: set = set()
+        _seen_meet_dates: set = set()
+        _seen_tel_dates: set = set()
         for ev in events:
             summary = ev.get("summary", "")
             if any(ex in summary for ex in _excl_kw):
                 continue
             start = ev.get("start", {}).get("dateTime") or ev.get("start", {}).get("date", "")
+            _dk = (start or "")[:10]
             if any(k in summary for k in _court_kw):
+                if _dk and _dk in _seen_court_dates:
+                    continue
                 _c_court += 1
-                if start:
-                    _court_dates_gcal.append(start[:10])
+                if _dk:
+                    _seen_court_dates.add(_dk)
+                    _court_dates_gcal.append(_dk)
             elif any(k in summary for k in _review_kw):
+                if _dk and _dk in _seen_review_dates:
+                    continue
                 _c_review += 1
-                if start:
-                    _review_dates_gcal.append(start[:10])
+                if _dk:
+                    _seen_review_dates.add(_dk)
+                    _review_dates_gcal.append(_dk)
             elif any(k in summary for k in _meet_kw):
+                if _dk and _dk in _seen_meet_dates:
+                    continue
                 _c_meet += 1
+                if _dk:
+                    _seen_meet_dates.add(_dk)
             elif any(k in summary for k in _tel_kw):
+                if _dk and _dk in _seen_tel_dates:
+                    continue
                 _c_tel += 1
+                if _dk:
+                    _seen_tel_dates.add(_dk)
 
-        if "meeting_count" in zero_keys and _c_meet > 0:
+        # Take max across all sources: GCal API is live and usually most complete.
+        # 只補值 when GCal 數字 > 目前值（避免 GCal 關鍵字漏配造成倒退）
+        if "meeting_count" in zero_keys and _c_meet > int(counts.get("meeting_count", 0) or 0):
             counts["meeting_count"] = _c_meet
             logger.info("  📅 GCal API 補 meeting_count: %d", _c_meet)
-        if "contact_count" in zero_keys and _c_tel > 0:
+        if "contact_count" in zero_keys and _c_tel > int(counts.get("contact_count", 0) or 0):
             counts["contact_count"] = _c_tel
             logger.info("  📅 GCal API 補 contact_count: %d", _c_tel)
-        if "court_count" in zero_keys and _c_court > 0:
+        if "court_count" in zero_keys and _c_court > int(counts.get("court_count", 0) or 0):
             counts["court_count"] = _c_court
-            if not counts.get("court_dates"):
+            # 以 GCal 的實際日期覆蓋（更完整）
+            if _court_dates_gcal:
                 counts["court_dates"] = _court_dates_gcal
-            logger.info("  📅 GCal API 補 court_count: %d", _c_court)
-        if "review_count" in zero_keys and _c_review > 0:
+            logger.info("  📅 GCal API 補 court_count: %d (dates: %s)", _c_court, _court_dates_gcal)
+        if "review_count" in zero_keys and _c_review > int(counts.get("review_count", 0) or 0):
             counts["review_count"] = _c_review
-            if not counts.get("review_dates"):
+            if _review_dates_gcal:
                 counts["review_dates"] = _review_dates_gcal
             logger.info("  📅 GCal API 補 review_count: %d", _c_review)
 
