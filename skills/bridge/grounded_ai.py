@@ -1117,8 +1117,10 @@ def chat_casper(message, conversation_history=""):
 
     # ── Real-time Data Gateway（Layer 0：authoritative API 先行）──────────
     # 天氣/股價/匯率等即時資料，絕不讓 LLM 合成猜測數字；
-    # 優先打 authoritative API；失敗時明確拒絕，而非降級到 DuckDuckGo 合成。
+    # 優先打 authoritative API；若 API+scrape 均失敗，fall through 到 web_research
+    # 讓搜尋引擎補一刀，而非直接硬拒。只有 web_research 也失敗時才用拒絕文字。
     _rdg_result = None
+    _rdg_refusal_text = None  # 備用：只有 web_research 也撈不到資料時才用
     try:
         from skills.engine.realtime_data_gateway import handle_realtime_query
         _rdg_result = handle_realtime_query(message)
@@ -1131,9 +1133,11 @@ def chat_casper(message, conversation_history=""):
             logger.info("[RDG] ✅ authoritative data ready, bypassing LLM synthesis")
             return _rdg_result["reply"]
         elif _rdg_result.get("refusal"):
-            # 無法取得即時資料 → 直接拒絕，不讓 LLM 胡亂填空
-            logger.info("[RDG] 🚫 realtime refusal (no live data available)")
-            return _rdg_result["refusal"]
+            # 無法取得即時資料（API key 缺失 / scrape 失敗）→ 先試 web_research
+            # 不立即拒絕；把拒絕文字存起來作為最後備份
+            logger.info("[RDG] ⚠️ realtime data unavailable, falling through to web_research")
+            _rdg_refusal_text = _rdg_result.get("refusal")
+            # 繼續執行，不 return
         # else：_rdg_result 但沒有 success/refusal → fall through 到 auto-research
 
     # 智慧搜尋觸發：明確關鍵字觸發，或「記憶不足 + 事實問題」才上網
@@ -1157,6 +1161,13 @@ def chat_casper(message, conversation_history=""):
                 web_context = _src_note + "\n" + search_res.get("combined_content", "")[:2800]
         except Exception as e:
             logger.warning(f"Web research failed in chat_casper: {e}")
+
+    # RDG refusal 安全網：如果 web_research 也完全沒撈到資料，
+    # 用 RDG 的明確拒絕文字（含正確的 CWA 連結）作為回覆，
+    # 防止 LLM 憑空合成天氣數字
+    if _rdg_refusal_text and web_context == "無。":
+        logger.info("[RDG] 🚫 web_research also empty, returning rdg refusal")
+        return _rdg_refusal_text
 
     _trust_rules = build_trust_system_instruction()
     _style_rule = ""

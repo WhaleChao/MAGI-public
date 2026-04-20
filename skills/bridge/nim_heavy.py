@@ -92,6 +92,11 @@ def _log_usage(payload: Dict[str, Any]) -> None:
         USAGE_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
         with open(USAGE_LOG_PATH, "a", encoding="utf-8") as fh:
             fh.write(json.dumps(payload, ensure_ascii=False) + "\n")
+        try:
+            from api.events.sinks import rotate_jsonl
+            rotate_jsonl(str(USAGE_LOG_PATH))
+        except Exception:
+            pass
     except Exception as e:
         logger.debug("NIM usage log failed: %s", e)
 

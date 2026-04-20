@@ -40,6 +40,18 @@ if str(_MAGI_ROOT) not in sys.path:
 from api.case_path_mapper import translate_case_path_to_local
 from skills.engine.legal_web_adapter import format_legal_web_engine_log, resolve_legal_web_engine
 
+# Shared browser helper (P2-5: consolidate duplicate _dismiss_password_expiry_alert)
+try:
+    _bh_spec = importlib.util.spec_from_file_location(
+        "magi_lf_browser_helpers",
+        Path(__file__).parent / "_browser_helpers.py",
+    )
+    _bh_mod = importlib.util.module_from_spec(_bh_spec)
+    _bh_spec.loader.exec_module(_bh_mod)
+    _shared_dismiss_alert = _bh_mod.dismiss_password_expiry_alert
+except Exception:
+    _shared_dismiss_alert = None
+
 # --- Load .env for subprocess/cron credential access ---
 try:
     from dotenv import load_dotenv as _load_dotenv
@@ -728,13 +740,21 @@ class LawyerSSO:
         
         return False
     
-    def _dismiss_password_expiry_alert(self) -> bool:
+    def _dismiss_password_expiry_alert(self, wait_sec: float = 2.0) -> bool:
         """
         攔截並接受「密碼到期建議更改」alert。
-        回傳 True 表示有 alert 被處理，False 表示無 alert。
-        若 alert 是帳密錯誤，記錄後仍 accept（避免 unexpected alert open 讓後續操作崩潰）。
+        使用 WebDriverWait 等待 alert 出現（最多 wait_sec 秒）。
+        回傳 True 表示有 alert 被處理，False 表示無 alert 或逾時。
         """
+        if _shared_dismiss_alert is not None:
+            return _shared_dismiss_alert(self.driver, log_fn=self.log, wait_sec=wait_sec)
+        # Fallback: inline implementation with WebDriverWait
         try:
+            if WebDriverWait and EC:
+                try:
+                    WebDriverWait(self.driver, wait_sec).until(EC.alert_is_present())
+                except Exception:
+                    return False
             al = self.driver.switch_to.alert
             alert_text = al.text
             self.log(f"  ⚠️ 發現 Alert: {alert_text}")
@@ -1084,9 +1104,17 @@ class CourtRecordDownloader:
         delay = random.uniform(min_sec, max_sec)
         time.sleep(delay)
 
-    def _dismiss_password_expiry_alert(self) -> bool:
-        """接受密碼到期警告 alert（不是帳密錯誤），返回是否成功接受。"""
+    def _dismiss_password_expiry_alert(self, wait_sec: float = 2.0) -> bool:
+        """接受密碼到期警告 alert，使用 WebDriverWait 等待 alert 出現（最多 wait_sec 秒）。"""
+        if _shared_dismiss_alert is not None:
+            return _shared_dismiss_alert(self.driver, log_fn=self.log, wait_sec=wait_sec)
+        # Fallback inline
         try:
+            if WebDriverWait and EC:
+                try:
+                    WebDriverWait(self.driver, wait_sec).until(EC.alert_is_present())
+                except Exception:
+                    return False
             al = self.driver.switch_to.alert
             alert_text = al.text
             self.log(f"  ⚠️ 發現 Alert: {alert_text}")

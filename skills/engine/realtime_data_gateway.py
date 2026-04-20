@@ -176,12 +176,17 @@ def _query_cwa_scrape(location_name: str) -> Dict[str, Any]:
             return {"success": False, "error": "unknown_location"}
 
         url = f"{_CWA_COUNTY_PAGE}?CID={county_id}"
-        from skills.research.web_research import fetch_url_content
-        result = fetch_url_content(url, max_length=6000)
-        if not result.get("success"):
-            return {"success": False, "error": result.get("error", "fetch_failed")}
-
-        content = result.get("content", "")
+        # 使用 requests verify=False 繞過 CWA TLS Missing Subject Key Identifier 問題
+        # （與司法院判決搜尋相同的 SSL 相容模式）
+        import requests
+        import urllib3
+        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+        resp = requests.get(
+            url, timeout=8, verify=False,
+            headers={"User-Agent": "Mozilla/5.0 (compatible; MAGI/2.0)"},
+        )
+        resp.raise_for_status()
+        content = resp.text
         # 只要能取回 CWA 頁面，就不讓 LLM 合成，直接回「請看這裡」
         if len(content) > 100:
             return {
