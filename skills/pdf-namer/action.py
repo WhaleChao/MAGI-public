@@ -3897,7 +3897,81 @@ def main():
     args = parser.parse_args()
 
     if args.task == "help":
-        print(json.dumps({"skill": "pdf-namer", "tasks": ["rename_file", "review_name", "file", "file_sync", "file_worker", "file_status", "self_train"], "description": "PDF 智慧命名與歸檔"}, ensure_ascii=False, indent=2))
+        print(json.dumps({"skill": "pdf-namer", "tasks": ["rename_file", "review_name", "file", "file_sync", "file_worker", "file_status", "self_train", "self_test"], "description": "PDF 智慧命名與歸檔"}, ensure_ascii=False, indent=2))
+        return
+
+    if args.task == "self_test":
+        errors = []
+        warnings = []
+        checks = {}
+
+        # 1. Core imports
+        try:
+            import fitz as _fitz  # noqa: F401
+            checks["fitz"] = True
+        except ImportError as e:
+            errors.append("PyMuPDF (fitz) missing: " + str(e)[:80])
+            checks["fitz"] = False
+
+        try:
+            from rapidocr_onnxruntime import RapidOCR as _RapidOCR  # noqa: F401
+            checks["rapidocr"] = True
+        except ImportError:
+            warnings.append("rapidocr_onnxruntime not installed; OCR path will use fallback")
+            checks["rapidocr"] = False
+
+        # 2. macOS Vision availability
+        try:
+            import Vision  # noqa: F401
+            checks["vision"] = True
+        except ImportError:
+            try:
+                import objc  # noqa: F401
+                checks["vision"] = True
+            except ImportError:
+                warnings.append("macOS Vision (pyobjc) not importable; will use RapidOCR only")
+                checks["vision"] = False
+
+        # 3. naming_validator importable
+        try:
+            from skills.pdf_namer.naming_validator import validate_filename as _vf  # noqa: F401
+            checks["naming_validator"] = True
+        except ImportError:
+            try:
+                _nv_path = Path(__file__).parent / "naming_validator.py"
+                if _nv_path.exists():
+                    checks["naming_validator"] = True
+                else:
+                    errors.append("naming_validator.py missing from pdf-namer skill directory")
+                    checks["naming_validator"] = False
+            except Exception:
+                checks["naming_validator"] = False
+
+        # 4. Smoke: generate_name_proposal on a tiny synthetic PDF
+        try:
+            import tempfile as _tf
+            _tmp = _tf.NamedTemporaryFile(suffix=".pdf", delete=False)
+            _tmp_path = _tmp.name
+            _tmp.close()
+            _doc = fitz.open()
+            _page = _doc.new_page()
+            _page.insert_text((50, 100), "臺灣花蓮地方法院 113年度原訴字第024號 判決", fontsize=12)
+            _doc.save(_tmp_path)
+            _doc.close()
+            result = generate_name_proposal(_tmp_path, case_name="測試", return_structured=True)
+            os.unlink(_tmp_path)
+            checks["name_proposal_smoke"] = bool(result)
+        except Exception as e:
+            warnings.append("name_proposal smoke failed: " + str(e)[:120])
+            checks["name_proposal_smoke"] = False
+
+        ok = len(errors) == 0
+        out = {"success": ok, "checks": checks}
+        if errors:
+            out["errors"] = errors
+        if warnings:
+            out["warnings"] = warnings
+        print(json.dumps(out, ensure_ascii=False, indent=2))
         return
 
     if args.task == "review_name":
