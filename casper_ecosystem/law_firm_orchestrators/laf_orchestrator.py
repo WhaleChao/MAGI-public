@@ -4808,8 +4808,8 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
             upload_files=(fields.get("upload_files") or upload_bundle.get("pdf_files") or []),
             client_name=cname,
         )
-        if ok:
-            # 暫存成功 → 回寫 DB status
+        if ok and not self.dry_run:
+            # 暫存成功 → 回寫 DB status（dry-run 不寫）
             try:
                 _upd_case = identity.get("case_number") or ""
                 if _upd_case and self.db:
