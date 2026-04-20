@@ -3887,7 +3887,7 @@ def main():
     parser.add_argument(
         "--task",
         required=True,
-        choices=["rename_file", "review_name", "file", "file_sync", "file_worker", "file_status", "self_train", "help"],
+        choices=["rename_file", "review_name", "file", "file_sync", "file_worker", "file_status", "self_train", "self_test", "help"],
     )
     parser.add_argument("--path", help="PDF file path")
     parser.add_argument("--case_name", help="Client Name (e.g. 游秀鈴)")

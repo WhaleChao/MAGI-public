@@ -259,7 +259,56 @@ class _WebDriverWaitFallback:
 
 
 WebDriverWait = _WebDriverWaitFallback
-EC = None
+
+
+class _ECFallback:
+    """Minimal expected_conditions shim for Playwright path."""
+    @staticmethod
+    def presence_of_element_located(locator):
+        by, value = locator
+        def _check(driver):
+            try:
+                el = driver.find_element(by, value)
+                return el
+            except Exception:
+                return False
+        return _check
+
+    @staticmethod
+    def frame_to_be_available_and_switch_to_it(locator):
+        by, value = locator
+        def _check(driver):
+            try:
+                driver.switch_to.frame(driver.find_element(by, value))
+                return True
+            except Exception:
+                return False
+        return _check
+
+    @staticmethod
+    def element_to_be_clickable(locator):
+        by, value = locator
+        def _check(driver):
+            try:
+                el = driver.find_element(by, value)
+                return el if el else False
+            except Exception:
+                return False
+        return _check
+
+    @staticmethod
+    def visibility_of_element_located(locator):
+        by, value = locator
+        def _check(driver):
+            try:
+                el = driver.find_element(by, value)
+                return el if el else False
+            except Exception:
+                return False
+        return _check
+
+
+EC = _ECFallback
 TimeoutException = None
 NoSuchElementException = None
 ElementClickInterceptedException = None

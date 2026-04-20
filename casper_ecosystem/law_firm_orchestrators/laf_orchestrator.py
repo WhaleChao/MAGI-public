@@ -2200,17 +2200,9 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                     "原因：`10_判決書` 資料夾中找不到「起訴書/判決/裁定/不起訴處分書」檔案，請補齊後再試。"
                 )
                 return
-        if folder_path and not docs.get("office_receipt_files"):
-            if _is_investigation:
-                # 偵查案件：文件由檢察署寄送，不一定有法院收文章
-                logger.info("  ℹ️ 偵查案件 %s 無收文章證據，允許繼續", case_number)
-            else:
-                logger.warning("  ⚠️ 無法產生結案報告：%s 缺少收文章證據 (%s)", case_number, folder_path)
-                self.notifier.notify_admin(
-                    f"⚠️ 無法產生結案報告：\n案號：{case_number}\n當事人：{client_name}\n"
-                    "原因：未偵測到法院收文章章戳或郵局回執，請補齊後再試。"
-                )
-                return
+        # 註：不再檢查 office_receipt_files（收文章/回執）。
+        # LAF portal 結案只需要判決/裁定/不起訴處分書，收文章證據是事務所內部流程，
+        # 律師在 Discord 觸發「準備結案」時已代表親自確認文件齊全，系統不再二次把關。
 
         # Gather counts from DB
         counts = self._gather_case_counts(case_number, client_name)
@@ -4585,12 +4577,10 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
             override_basis_files = normalized_override_files
 
         basis_files = override_basis_files or list(docs.get("closing_basis_files") or [])
-        receipt_files = list(docs.get("office_receipt_files") or [])
+        # 結案只檢查結案依據文件（判決/裁定/不起訴）；收文章/回執是「開辦」才需要的內部驗證。
         missing = []
         if not basis_files:
             missing.append("結案依據文件（起訴書/判決/裁定/不起訴處分書/確定證明書）")
-        if not receipt_files:
-            missing.append("事務所收文章證據（法院章/郵局回執）")
         if missing:
             return {
                 "ok": False,
