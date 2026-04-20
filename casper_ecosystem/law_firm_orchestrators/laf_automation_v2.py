@@ -6206,7 +6206,12 @@ return null;
         elif wf == "progress":
             allow = str(os.environ.get("MAGI_LAF_ALLOW_PROGRESS_SUBMIT", "0")).strip().lower() in {"1", "true", "yes", "on"}
             if not allow:
-                self.log("🔒 安全政策：MAGI_LAF_ALLOW_PROGRESS_SUBMIT != 1，禁止送出。")
+                self.log(
+                    "🔒 安全政策：MAGI_LAF_ALLOW_PROGRESS_SUBMIT != 1，禁止送出。\n"
+                    "正確路徑：請透過 Discord/Telegram 回覆「正確送出 <確認碼>」，\n"
+                    "由 api/domains/laf_flow.py::_run_progress_submit() 統一帶 env=1 執行。\n"
+                    "CLI 直接 submit 為反模式，可能誤送未核對的資料。"
+                )
                 return False
 
         if not self.open_workflow_report_page(workflow, laf_case_number=laf_case_number, client_name=client_name):
