@@ -373,8 +373,95 @@ class CronScheduler:
         
         if due_jobs:
             self._save_jobs()
-            
+
         return due_jobs
+
+    def get_missed_jobs(self, catchup_window_hours: int = 8, min_hour: int = 6) -> list:
+        """
+        Return jobs that were due in the past catchup_window_hours but were NOT executed.
+
+        Called once at startup (2nd scheduler loop, ~60s after start) to catch up jobs
+        missed while MAGI was offline (kernel panic, restart, maintenance, etc.).
+
+        Rules:
+        - Looks back at most catchup_window_hours (default 8h) from now
+        - Does NOT look earlier than today's min_hour:00 (default 06:00) to avoid
+          re-running nightly/overnight jobs at the wrong time
+        - Respects per-job ``"no_catchup": true`` flag for timing-sensitive jobs
+        - Each job appears at most once (the most recent missed occurrence)
+        - Skips jobs whose ``last_run_minute >= most_recent_due`` (already ran)
+
+        Args:
+            catchup_window_hours: How many hours back to search (env: MAGI_CRON_CATCHUP_HOURS)
+            min_hour: Skip jobs scheduled before this hour today (env: MAGI_CRON_CATCHUP_MIN_HOUR)
+
+        Returns:
+            List of job dicts sorted chronologically (oldest missed first).
+        """
+        from datetime import timedelta
+        self._hot_reload_if_changed()
+        now = datetime.now()
+
+        # Effective search window: [effective_start, window_end]
+        # Leave a 2-minute grace at the end to avoid racing with check_due_jobs.
+        window_end = now - timedelta(minutes=2)
+        window_back = now - timedelta(hours=catchup_window_hours)
+        today_floor = now.replace(hour=min_hour, minute=0, second=0, microsecond=0)
+        effective_start = max(window_back, today_floor)
+
+        if window_end <= effective_start:
+            return []
+
+        total_minutes = int((window_end - effective_start).total_seconds() / 60) + 1
+        missed = []  # list of (due_datetime, job_dict)
+
+        for job in self.jobs:
+            if not job.get("enabled", True):
+                continue
+            if job.get("no_catchup", False):
+                continue
+            try:
+                parts = job["cron"].split()
+                if len(parts) != 5:
+                    continue
+                min_f, hour_f, day_f, month_f, dow_f = parts
+            except Exception:
+                continue
+
+            # Walk backwards minute-by-minute to find the most recent occurrence.
+            most_recent_due = None
+            check_dt = window_end.replace(second=0, microsecond=0)
+            for _ in range(total_minutes + 1):
+                if check_dt < effective_start:
+                    break
+                cron_dow = (check_dt.weekday() + 1) % 7  # cron Sun=0..Sat=6
+                if (self._field_match(min_f, check_dt.minute, 0, 59)
+                        and self._field_match(hour_f, check_dt.hour, 0, 23)
+                        and self._field_match(day_f, check_dt.day, 1, 31)
+                        and self._field_match(month_f, check_dt.month, 1, 12)
+                        and self._field_match(dow_f, cron_dow, 0, 6)):
+                    most_recent_due = check_dt
+                    break
+                check_dt -= timedelta(minutes=1)
+
+            if most_recent_due is None:
+                continue
+
+            # Skip if the job already ran at or after this occurrence.
+            due_str = most_recent_due.strftime("%Y-%m-%d %H:%M")
+            last_run_minute = job.get("last_run_minute")
+            if last_run_minute and last_run_minute >= due_str:
+                continue
+
+            missed.append((most_recent_due, job))
+            logger.debug(
+                "🔄 Catch-up candidate: %s (due %s, last_run_minute=%s)",
+                job.get("id"), due_str, last_run_minute,
+            )
+
+        # Sort oldest-first so jobs execute in their natural chronological order.
+        missed.sort(key=lambda x: x[0])
+        return [j for _, j in missed]
 
 if __name__ == "__main__":
     s = CronScheduler()

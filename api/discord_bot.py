@@ -441,13 +441,43 @@ async def bg_scheduler_loop():
     scheduler = CronScheduler()
     logger.info("⏰ Cron Scheduler Started")
     loop_counter = 0
-    
+    _startup_catchup_done = False  # Fires once on 2nd iteration (~60s after start)
+
     while not client.is_closed():
         try:
             # 1. Check due jobs (run in dedicated cron executor to avoid blocking event loop / heartbeat)
             loop = asyncio.get_running_loop()
             due_jobs = await loop.run_in_executor(_CRON_EXECUTOR, scheduler.check_due_jobs)
-            
+
+            # ── Startup catch-up ─────────────────────────────────────────────────────
+            # On the second loop iteration (~60s after start), scan for jobs that were
+            # due while MAGI was offline (kernel panic, restart, etc.) and prepend them
+            # to this iteration's due_jobs so they execute immediately.
+            if not _startup_catchup_done and loop_counter == 1:
+                _startup_catchup_done = True
+                _cu_hours = int(os.environ.get("MAGI_CRON_CATCHUP_HOURS", "8"))
+                _cu_min_hour = int(os.environ.get("MAGI_CRON_CATCHUP_MIN_HOUR", "6"))
+                try:
+                    _catchup_jobs = await loop.run_in_executor(
+                        _CRON_EXECUTOR,
+                        lambda: scheduler.get_missed_jobs(_cu_hours, _cu_min_hour),
+                    )
+                    if _catchup_jobs:
+                        logger.info(
+                            "🔄 [Startup Catch-up] %d missed job(s) will run now: %s",
+                            len(_catchup_jobs),
+                            ", ".join(j.get("id", "?") for j in _catchup_jobs),
+                        )
+                        due_jobs = list(_catchup_jobs) + list(due_jobs)
+                    else:
+                        logger.info(
+                            "✅ [Startup Catch-up] No missed jobs (window=%dh, min_hour=%d)",
+                            _cu_hours, _cu_min_hour,
+                        )
+                except Exception as _cu_err:
+                    logger.warning("⚠️ [Startup Catch-up] Error during scan: %s", _cu_err)
+            # ─────────────────────────────────────────────────────────────────────────
+
             for job in due_jobs:
                 command = job["command"]
                 channel_id = job.get("channel_id")
