@@ -157,11 +157,21 @@ _INFERENCE_EXECUTOR = _ThreadPoolExecutor(
     thread_name_prefix="inference",
 )
 
-# ── P2-1 Backpressure state（2026-04-19）──
-# /osc/external/chat 全域 in-flight counter，防止連續 timeout 造成 task 堆積吃爆 RAM。
+# ── Backpressure state（2026-04-19 external/chat，2026-04-20 tool routes）──
+# 全域 in-flight counter，防止連續 timeout 造成 task 堆積吃爆 RAM。
 import threading as _threading
 _EXTERNAL_CHAT_INFLIGHT_LOCK = _threading.Lock()
 _EXTERNAL_CHAT_INFLIGHT_COUNT = [0]  # list wrapper for mutable int
+
+# search / research / fetch 共用 io_pool（預設 4 workers）
+_TOOL_INFLIGHT_LOCK = _threading.Lock()
+_TOOL_INFLIGHT_COUNT = [0]
+_TOOL_MAX_INFLIGHT = int(os.environ.get("MAGI_TOOL_MAX_INFLIGHT", "4") or "4")
+
+# summarize / transcribe 共用 _INFERENCE_EXECUTOR（預設 4 workers）
+_INFER_INFLIGHT_LOCK = _threading.Lock()
+_INFER_INFLIGHT_COUNT = [0]
+_INFER_MAX_INFLIGHT = int(os.environ.get("MAGI_INFER_MAX_INFLIGHT", "3") or "3")
 
 _SKILLS_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "skills"))
 
@@ -1471,6 +1481,10 @@ def api_search():
     allowed, decision = _check_tool_access("search", command_subject="tool:search")
     if not allowed:
         return _tool_denied_response("search", started, decision)
+    with _TOOL_INFLIGHT_LOCK:
+        if _TOOL_INFLIGHT_COUNT[0] >= _TOOL_MAX_INFLIGHT:
+            return jsonify({"success": False, "error": "backpressure_429", "inflight": _TOOL_INFLIGHT_COUNT[0]}), 429
+        _TOOL_INFLIGHT_COUNT[0] += 1
     try:
         ok, result = _run_with_timeout(search_web, 30, query, num_results)
         if not ok:
@@ -1478,6 +1492,9 @@ def api_search():
             return _tool_exception_response("search", started, f"{prefix}: {result.get('error', 'unknown_error')}")
     except Exception as exc:
         return _tool_exception_response("search", started, f"search_exception: {exc}")
+    finally:
+        with _TOOL_INFLIGHT_LOCK:
+            _TOOL_INFLIGHT_COUNT[0] = max(0, _TOOL_INFLIGHT_COUNT[0] - 1)
     _finish_tool_event("search", started, ok=True, status="handled", output_data=_tool_preview(result))
     return jsonify(result)
 
@@ -1495,6 +1512,10 @@ def api_research():
     allowed, decision = _check_tool_access("research", command_subject="tool:research")
     if not allowed:
         return _tool_denied_response("research", started, decision)
+    with _TOOL_INFLIGHT_LOCK:
+        if _TOOL_INFLIGHT_COUNT[0] >= _TOOL_MAX_INFLIGHT:
+            return jsonify({"success": False, "error": "backpressure_429", "inflight": _TOOL_INFLIGHT_COUNT[0]}), 429
+        _TOOL_INFLIGHT_COUNT[0] += 1
     try:
         ok, result = _run_with_timeout(research_topic, 60, topic, depth)
         if not ok:
@@ -1502,6 +1523,9 @@ def api_research():
             return _tool_exception_response("research", started, f"{prefix}: {result.get('error', 'unknown_error')}")
     except Exception as exc:
         return _tool_exception_response("research", started, f"research_exception: {exc}")
+    finally:
+        with _TOOL_INFLIGHT_LOCK:
+            _TOOL_INFLIGHT_COUNT[0] = max(0, _TOOL_INFLIGHT_COUNT[0] - 1)
     payload = {
         "topic": result["topic"],
         "sources": [{"title": s["title"], "url": s["url"]} for s in result.get("sources", [])],
@@ -1527,6 +1551,10 @@ def api_fetch():
     allowed, decision = _check_tool_access("fetch", command_subject="tool:fetch")
     if not allowed:
         return _tool_denied_response("fetch", started, decision)
+    with _TOOL_INFLIGHT_LOCK:
+        if _TOOL_INFLIGHT_COUNT[0] >= _TOOL_MAX_INFLIGHT:
+            return jsonify({"success": False, "error": "backpressure_429", "inflight": _TOOL_INFLIGHT_COUNT[0]}), 429
+        _TOOL_INFLIGHT_COUNT[0] += 1
     try:
         ok, result = _run_with_timeout(fetch_url_content, 30, url)
         if not ok:
@@ -1534,6 +1562,9 @@ def api_fetch():
             return _tool_exception_response("fetch", started, f"{prefix}: {result.get('error', 'unknown_error')}")
     except Exception as exc:
         return _tool_exception_response("fetch", started, f"fetch_exception: {exc}")
+    finally:
+        with _TOOL_INFLIGHT_LOCK:
+            _TOOL_INFLIGHT_COUNT[0] = max(0, _TOOL_INFLIGHT_COUNT[0] - 1)
     _finish_tool_event("fetch", started, ok=True, status="handled", output_data=_tool_preview(result))
     return jsonify(result)
 
@@ -1673,6 +1704,14 @@ def api_summarize():
     allowed, decision = _check_tool_access("summarize", command_subject="tool:summarize")
     if not allowed:
         return _tool_denied_response("summarize", started, decision)
+    with _INFER_INFLIGHT_LOCK:
+        if _INFER_INFLIGHT_COUNT[0] >= _INFER_MAX_INFLIGHT:
+            return jsonify({"success": False, "error": "backpressure_429", "inflight": _INFER_INFLIGHT_COUNT[0]}), 429
+        _INFER_INFLIGHT_COUNT[0] += 1
+
+    def _infer_dec():
+        with _INFER_INFLIGHT_LOCK:
+            _INFER_INFLIGHT_COUNT[0] = max(0, _INFER_INFLIGHT_COUNT[0] - 1)
 
     default_engine = metric_engine or "balthasar"
     auto_prefers_apple = _to_bool(os.environ.get("MAGI_SUMMARIZE_AUTO_APPLE", "0"), False)
@@ -1784,6 +1823,7 @@ def api_summarize():
             output_data=_tool_preview(response.get_json()),
             error="circuit_open",
         )
+        _infer_dec()
         return response
 
     # 1) Apple Intelligence via Shortcuts (requires user-created shortcut "MAGI 摘要")
@@ -1894,6 +1934,7 @@ def api_summarize():
             "result": result
         })
         _finish_tool_event("summarize", started, ok=True, status="handled", output_data=_tool_preview(response.get_json()))
+        _infer_dec()
         return response
 
     if not ok:
@@ -1932,6 +1973,7 @@ def api_summarize():
             "result": fallback_result,
         })
         _finish_tool_event("summarize", started, ok=True, status="handled", output_data=_tool_preview(response.get_json()))
+        _infer_dec()
         return response
 
     fallback_text = _extractive_summary_quick(text)
@@ -1971,6 +2013,7 @@ def api_summarize():
         output_data=_tool_preview(response.get_json()),
         error=metric_error[:240],
     )
+    _infer_dec()
     return response
 
 
@@ -2799,22 +2842,30 @@ def api_collab_transcribe():
     audio_path = data.get("audio_path", "")
     if not audio_path:
         return jsonify({"error": "Missing 'audio_path'"}), 400
-    _transcribe_timeout = int(os.environ.get("MAGI_TRANSCRIBE_TIMEOUT_SEC", "180") or "180")
-    _t_ok, result = _run_with_timeout(transcribe_audio, _transcribe_timeout, audio_path, pool=_INFERENCE_EXECUTOR)
-    if not _t_ok:
-        result = {"success": False, "error": f"transcribe_timeout_{_transcribe_timeout}s", "error_type": "timeout"}
+    with _INFER_INFLIGHT_LOCK:
+        if _INFER_INFLIGHT_COUNT[0] >= _INFER_MAX_INFLIGHT:
+            return jsonify({"success": False, "error": "backpressure_429", "inflight": _INFER_INFLIGHT_COUNT[0]}), 429
+        _INFER_INFLIGHT_COUNT[0] += 1
     try:
-        _record_transcribe_metric(
-            t0,
-            success=bool(result.get("success")),
-            speaker_count_estimate=int(result.get("speaker_count_estimate", 0) or 0),
-            audio_path=str(audio_path or ""),
-            provider=str(result.get("provider") or ""),
-            error=str(result.get("error") or ""),
-        )
-    except Exception:
-        logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 1829, exc_info=True)
-    return jsonify(result), (200 if result.get("success") else 400)
+        _transcribe_timeout = int(os.environ.get("MAGI_TRANSCRIBE_TIMEOUT_SEC", "180") or "180")
+        _t_ok, result = _run_with_timeout(transcribe_audio, _transcribe_timeout, audio_path, pool=_INFERENCE_EXECUTOR)
+        if not _t_ok:
+            result = {"success": False, "error": f"transcribe_timeout_{_transcribe_timeout}s", "error_type": "timeout"}
+        try:
+            _record_transcribe_metric(
+                t0,
+                success=bool(result.get("success")),
+                speaker_count_estimate=int(result.get("speaker_count_estimate", 0) or 0),
+                audio_path=str(audio_path or ""),
+                provider=str(result.get("provider") or ""),
+                error=str(result.get("error") or ""),
+            )
+        except Exception:
+            logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 1829, exc_info=True)
+        return jsonify(result), (200 if result.get("success") else 400)
+    finally:
+        with _INFER_INFLIGHT_LOCK:
+            _INFER_INFLIGHT_COUNT[0] = max(0, _INFER_INFLIGHT_COUNT[0] - 1)
 
 
 @app.route('/council/core/pending', methods=['GET'])

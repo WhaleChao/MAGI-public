@@ -628,32 +628,22 @@ def _start_cron_fallback() -> None:
                             _SAFE_PREFIXES = ("cd ", "/Users/", "./venv/", "python3 ", "MAGI_", "JUDICIAL_")
                             if any(command.strip().startswith(p) for p in _SAFE_PREFIXES):
                                 _shell_env = {**os.environ, "MAGI_PREFER_LOCAL_DB": "0", "MAGI_NO_DELETE": "1"}
-                                # ===== R2: SafeProcess 分支 =====
-                                _USE_SAFE_PROCESS = os.environ.get("MAGI_USE_SAFE_PROCESS", "0").strip().lower() in {"1", "true", "on", "yes"}
+                                # ===== R2 Phase 3: SafeProcess 正式路徑（legacy 已清除）=====
                                 result_returncode = -1
                                 result_stdout = ""
                                 result_stderr = ""
-                                if _USE_SAFE_PROCESS:
-                                    try:
-                                        from api.platforms.safe_process import parse_cron_command, run as _safe_run
-                                        argv = parse_cron_command(command)
-                                        _sr = _safe_run(argv, timeout_sec=600, cwd=_MAGI_ROOT)
-                                        result_returncode = _sr.returncode
-                                        result_stdout = _sr.stdout
-                                        result_stderr = _sr.stderr
-                                    except Exception as _e:
-                                        logger.error("[SafeProcess] fallback to legacy shell path: %s", _e)
-                                        _USE_SAFE_PROCESS = False
-                                if not _USE_SAFE_PROCESS:
-                                    # --- legacy 原樣保留，不要刪 ---
-                                    result = subprocess.run(
-                                        command, shell=True, capture_output=True, text=True,
-                                        cwd=_MAGI_ROOT, env=_shell_env, timeout=600,
-                                    )
-                                    result_returncode = result.returncode
-                                    result_stdout = result.stdout
-                                    result_stderr = result.stderr
-                                # ===== R2 end =====
+                                try:
+                                    from api.platforms.safe_process import parse_cron_command, run as _safe_run
+                                    argv = parse_cron_command(command)
+                                    _sr = _safe_run(argv, timeout_sec=600, cwd=_MAGI_ROOT)
+                                    result_returncode = _sr.returncode
+                                    result_stdout = _sr.stdout
+                                    result_stderr = _sr.stderr
+                                except Exception as _e:
+                                    logger.error("[SafeProcess] cron job %s failed: %s", job_id, _e)
+                                    result_returncode = 1
+                                    result_stderr = str(_e)
+                                # ===== R2 Phase 3 end =====
                                 if result_returncode != 0:
                                     logger.warning("⚠️ [CronFallback] Shell job %s exited %d: %s",
                                                    job_id, result_returncode, (result_stderr or "")[:300])
@@ -1548,10 +1538,18 @@ if __name__ == "__main__":
                 if _already_up:
                     logger.info("oMLX reviewer %s already on port %d — skip", _label, _port)
                     continue
-                # bootout（忽略錯誤）→ bootstrap → kickstart
-                os.system(f'launchctl bootout gui/{_uid}/{_label} 2>/dev/null')
-                os.system(f'launchctl bootstrap gui/{_uid} {_plist} 2>/dev/null')
-                os.system(f'launchctl kickstart -kp gui/{_uid}/{_label}')
+                # bootout（忽略錯誤）→ bootstrap → kickstart — R2 Phase 3: SafeProcess
+                try:
+                    from api.platforms.safe_process import launchctl_op as _lctl
+                    try:
+                        _lctl("bootout", _label)
+                    except Exception:
+                        pass  # bootout 失敗（未載入）為正常
+                    _lctl("bootstrap", _label)
+                    _lctl("kickstart", _label)
+                except Exception as _lctl_err:
+                    logger.warning("oMLX reviewer %s launchctl failed: %s", _label, _lctl_err)
+                    continue
                 logger.info("✅ oMLX reviewer %s kicked on port %d", _label, _port)
             logger.info("✅ 三哲人審查員啟動完成（日間模式）")
         except Exception as e:
