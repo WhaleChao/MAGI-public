@@ -6109,6 +6109,8 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
             cal_ids = ["primary"]
 
         events = []
+        _seen_keys: set = set()
+        _raw_total = 0
         for _cal_id in cal_ids:
             try:
                 _result = service.events().list(
@@ -6123,7 +6125,18 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                 _items = _result.get("items", [])
                 if _items:
                     logger.info("  📅 GCal API: calendar '%s' → %d events for '%s'", _cal_id[:30], len(_items), _cn_only)
-                    events.extend(_items)
+                    _raw_total += len(_items)
+                    for _ev in _items:
+                        # 跨日曆去重：同一事件若同時出現在主日曆+事務所共用日曆，
+                        # event.id 通常相同；若是手動複製則用 (date + summary) 去重。
+                        _ev_id = (_ev.get("id") or "").strip()
+                        _st = _ev.get("start", {}).get("dateTime") or _ev.get("start", {}).get("date", "") or ""
+                        _sm = _ev.get("summary", "") or ""
+                        _k = _ev_id or f"{_st[:10]}|{_sm[:80]}"
+                        if _k in _seen_keys:
+                            continue
+                        _seen_keys.add(_k)
+                        events.append(_ev)
             except Exception as e:
                 logger.debug("GCal API list failed for calendar %s: %s", _cal_id[:30], e)
 
@@ -6131,7 +6144,8 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
             logger.info("  📅 GCal API: no events found for '%s' across %d calendars", _cn_only, len(cal_ids))
             return
 
-        logger.info("  📅 GCal API: total %d events for '%s' across %d calendars", len(events), _cn_only, len(cal_ids))
+        logger.info("  📅 GCal API: total %d events for '%s' across %d calendars (raw=%d, dedup=%d)",
+                    len(events), _cn_only, len(cal_ids), _raw_total, _raw_total - len(events))
 
         _court_kw = ["開庭", "言詞辯論", "準備程序", "調解", "訊問", "審理"]
         _meet_kw = ["會議", "來所", "碰面", "視訊", "面談", "開會", "交資料", "律見", "接見", "律師接見"]
