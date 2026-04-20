@@ -4,6 +4,7 @@ import glob as _glob
 import json
 import logging
 import os
+import time
 from pathlib import Path
 
 from api.runtime_paths import get_config_path
@@ -81,44 +82,99 @@ _DEFAULT_ACTIVE_SHARE_ROOTS = [
 ]
 
 
-def _discover_external_closed_root() -> Optional[str]:
+# 動態偵測結案歸檔根目錄 — 每 N 秒重新掃描一次，不 cache 在 module-level，
+# 因為使用者可能把 Seagate 外接硬碟從本機改掛到 NAS（反之亦然）。
+_CLOSED_ROOT_CACHE: dict = {"roots": None, "expires": 0.0}
+_CLOSED_ROOT_TTL = float(os.environ.get("MAGI_CLOSED_ROOT_TTL_SEC", "60"))
+
+
+def _probe_external_closed_roots() -> list[str]:
     """
-    偵測外接硬碟上的結案歸檔根目錄。
-    結構假設：<外接硬碟>/lumi/03_工作資料/10_結案
-    優先順序：
-      1. MAGI_CLOSED_CASE_ROOT env var（顯式指定硬碟根目錄，含 /lumi 到根的完整路徑）
-      2. MAGI_CLOSED_VOLUME env var（只指定 /Volumes/<名稱>，自動拼 /lumi）
-      3. 自動掃 /Volumes/ 尋找任一有 lumi/03_工作資料/10_結案 結構的外接硬碟
+    動態掃描所有可能的結案歸檔位置，按優先序返回：
+      1. MAGI_CLOSED_CASE_ROOT env var（顯式指定）
+      2. MAGI_CLOSED_VOLUME env var（只指定 /Volumes/<名稱>）
+      3. 本機/NAS 上任一含 lumi/03_工作資料/10_結案 的掛載點（自動掃 /Volumes/）
+      4. SynologyDrive 雲同步變體
+      5. NAS lumi share 的 canonical/-1/-2 suffix
+    每個候選都經 _is_dir_accessible 驗證（2 秒 timeout），避免 stale SMB 誤判。
     """
+    candidates: list[str] = []
+
+    # 1. 環境變數
     env_root = os.environ.get("MAGI_CLOSED_CASE_ROOT", "").strip()
-    if env_root and _is_dir_accessible(env_root):
-        return env_root
+    if env_root:
+        candidates.append(env_root)
     env_vol = os.environ.get("MAGI_CLOSED_VOLUME", "").strip()
     if env_vol:
-        candidate = os.path.join(env_vol if env_vol.startswith("/Volumes/") else f"/Volumes/{env_vol}", "lumi")
-        if _is_dir_accessible(candidate):
-            return candidate
-    # Auto-discover：掃 /Volumes/ 找含有 lumi/03_工作資料/10_結案 的外接硬碟
+        candidates.append(os.path.join(
+            env_vol if env_vol.startswith("/Volumes/") else f"/Volumes/{env_vol}",
+            "lumi",
+        ))
+
+    # 2. 自動掃 /Volumes/ — 跳過系統 volume 和 homes share（防止誤判）
     try:
         for entry in sorted(os.listdir("/Volumes")):
-            # 跳過已知的 SMB share 與系統 volume
-            if entry in ("Macintosh HD", "homes", "homes-1", "homes-2", "lumi", "lumi-1", "lumi-2"):
+            if entry in ("Macintosh HD", "homes", "homes-1", "homes-2"):
                 continue
-            probe = os.path.join("/Volumes", entry, "lumi", "03_工作資料", "10_結案")
+            root = os.path.join("/Volumes", entry, "lumi")
+            probe = os.path.join(root, "03_工作資料", "10_結案")
             if _is_dir_accessible(probe):
-                return os.path.join("/Volumes", entry, "lumi")
+                candidates.append(root)
     except OSError:
         pass
-    return None
+
+    # 3. SynologyDrive 雲同步變體
+    synology_variants = [
+        str(_HOME / "Library/CloudStorage/SynologyDrive-homes/lumi"),
+        str(_HOME / "SynologyDrive/homes/lumi"),
+        str(_HOME / "SynologyDrive/lumi"),
+    ]
+    for v in synology_variants:
+        probe = os.path.join(v, "03_工作資料", "10_結案")
+        if _is_dir_accessible(probe):
+            candidates.append(v)
+
+    # 4. NAS lumi share fallback（macOS automount 可能加 -1/-2 後綴）
+    nas_discovered = _discover_volume("lumi", "lumi")
+    nas_probe = os.path.join(nas_discovered, "03_工作資料", "10_結案")
+    if _is_dir_accessible(nas_probe):
+        candidates.append(nas_discovered)
+
+    # 去重保序（inline 不依賴 _dedupe_keep_order 避免 import 時 forward ref）
+    seen: set = set()
+    out: list[str] = []
+    for p in candidates:
+        if p and p not in seen:
+            seen.add(p)
+            out.append(p)
+    return out
 
 
-_EXTERNAL_CLOSED_ROOT = _discover_external_closed_root()
-_DEFAULT_CLOSED_SHARE_ROOTS = [
-    # 外接硬碟（Seagate 等本機掛載）優先，因為 NAS lumi share 已移除
-    *([_EXTERNAL_CLOSED_ROOT] if _EXTERNAL_CLOSED_ROOT else []),
-    str(_HOME / "Library/CloudStorage/SynologyDrive-homes/lumi"),
-    _discover_volume("lumi", "lumi"),
-]
+def _get_default_closed_share_roots() -> list[str]:
+    """取得結案歸檔根目錄列表（TTL cached 60 秒，免重複 stat）。"""
+    now = time.time()
+    if _CLOSED_ROOT_CACHE["roots"] is not None and now < _CLOSED_ROOT_CACHE["expires"]:
+        return list(_CLOSED_ROOT_CACHE["roots"])
+    roots = _probe_external_closed_roots()
+    # 若都 probe 失敗，保底回傳 canonical 路徑（讓上層 log 一致）
+    if not roots:
+        roots = [
+            str(_HOME / "Library/CloudStorage/SynologyDrive-homes/lumi"),
+            _discover_volume("lumi", "lumi"),
+        ]
+    _CLOSED_ROOT_CACHE["roots"] = tuple(roots)
+    _CLOSED_ROOT_CACHE["expires"] = now + _CLOSED_ROOT_TTL
+    return list(roots)
+
+
+def _get_default_closed_roots() -> list[str]:
+    """取得結案歸檔 /03_工作資料/10_結案 完整路徑列表。"""
+    return [r.rstrip("/") + "/03_工作資料/10_結案" for r in _get_default_closed_share_roots()]
+
+
+# 保留名稱相容（module 級 list 導出，但避免使用 — 改用 _get_* 函式取得最新）
+# 這些只在 import 時產生一次，caller 若要動態同步必須呼叫 _get_default_closed_*()
+_DEFAULT_CLOSED_SHARE_ROOTS = _get_default_closed_share_roots()
 _DEFAULT_ACTIVE_ROOTS = [
     root.rstrip("/") + "/01_案件" for root in _DEFAULT_ACTIVE_SHARE_ROOTS
 ]
@@ -247,7 +303,8 @@ def default_synology_share_roots(*, include_closed: bool = False, cfg: Optional[
     roots.extend(_DEFAULT_ACTIVE_SHARE_ROOTS)
     if include_closed:
         roots.extend(_candidate_share_roots_from_config(cfg, closed=True))
-        roots.extend(_DEFAULT_CLOSED_SHARE_ROOTS)
+        # 動態查最新結案根（Seagate 可能在本機或 NAS 上，TTL 60 秒）
+        roots.extend(_get_default_closed_share_roots())
     return _dedupe_keep_order(roots)
 
 
@@ -363,7 +420,8 @@ def local_synology_path_candidates(path: str, cfg: Optional[dict] = None) -> lis
     _lumi_match = _re.match(r"^/Volumes/lumi(?:-\d+)?/lumi/(.*)$", s)
     if _lumi_match:
         rel = _lumi_match.group(1).lstrip("/")
-        for root in _DEFAULT_CLOSED_SHARE_ROOTS[1:]:
+        # 動態查最新結案根；略過第一個（通常是當下 canonical 的 input 路徑本身）
+        for root in _get_default_closed_share_roots()[1:]:
             candidates.append(_join_root_rel(root, rel))
 
     # 動態 fallback: user-level mount (nas_mount_guard 掛到 ~/.magi_mounts/)
