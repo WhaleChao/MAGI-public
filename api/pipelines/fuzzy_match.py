@@ -203,7 +203,6 @@ _ADMIN_KEYWORDS: set[str] = {
     "melchior狀態", "發布狀態",
     # System management
     "系統監控", "健康檢查", "檢查分身", "殭屍巡邏",
-    "更新openclaw",
 }
 
 

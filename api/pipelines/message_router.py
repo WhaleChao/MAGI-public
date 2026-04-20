@@ -168,8 +168,7 @@ def quick_fixed_reply(orch, message: str, role: str = "user") -> Optional[str]:
                 "• obsidian [指令] 🔄 ｜ 備份資料庫 🔄\n"
                 "• 審閱契約 🔄 ｜ 證據能力 [案號] 🔄 ｜ 截圖排序 🔄\n\n"
                 "━━ 技能進化 (管理員) ━━\n"
-                "• 核心變更待審 ⚡ ｜ 內化code 🔄 ｜ 技能CI ⚡\n"
-                "• 更新openclaw 🔄\n\n"
+                "• 核心變更待審 ⚡ ｜ 內化code 🔄 ｜ 技能CI ⚡\n\n"
                 "⚡ = 即時回覆　🔄 = 背景執行\n"
                 "💡 直接打指令即可，也可用自然語言如「找關於詐欺的判決」"
             )
@@ -217,7 +216,6 @@ def quick_fixed_reply(orch, message: str, role: str = "user") -> Optional[str]:
     }
     if t in _MODEL_EXACT:
         from api.model_config import TEXT_PRIMARY_MODEL
-        primary = read_openclaw_primary_model()
         target_main = (os.environ.get("MAGI_MAIN_MODEL") or TEXT_PRIMARY_MODEL).strip() or TEXT_PRIMARY_MODEL
         omlx_models = []
         try:
@@ -237,8 +235,7 @@ def quick_fixed_reply(orch, message: str, role: str = "user") -> Optional[str]:
             f"推理引擎：oMLX (port 8080)\n"
             f"可用模型：{active}\n"
             f"主要模型：{target_main}\n"
-            f"模式：本地推理 oMLX（Ollama 已退役）\n"
-            f"OpenClaw 預設：{primary}"
+            f"模式：本地推理 oMLX（Ollama 已退役）"
         )
 
     return None
@@ -915,13 +912,6 @@ def try_conversational_intent(orch, message: str, msg_lower: str, user_id, role:
          r"有沒有.{0,4}(?:掛|當|crash)|"
          r"系統.{0,4}(?:掛|當|crash|down)|"
          r"ping|heartbeat|uptime|是否.{0,4}正常)", "sys_monitor", None, True),
-
-        (r"(?:更新openclaw|openclaw.{0,4}更新|update\s*openclaw|"
-         r"openclaw.*(?:update|upgrade|版本)|"
-         r"升級.{0,4}openclaw)", "openclaw_update",
-         "✅ **我可以幫您更新 OpenClaw！**\n\n"
-         "請輸入：`更新openclaw`\n"
-         "（僅限管理員操作）"),
 
         (r"(?:語音|錄音|聽寫|逐字稿|transcript|speech|"
          r"audio|voice|whisper|stt|語音辨識|"
