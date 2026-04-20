@@ -5246,28 +5246,10 @@ def run_nightly(run_dir: str) -> Dict[str, Any]:
     except Exception:
         logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 5230, exc_info=True)
 
-    # 10.6) OpenClaw self-update (best-effort, non-blocking)
-    # Controlled by MAGI_OPENCLAW_AUTO_UPDATE=1 (default) in .env
-    try:
-        oc_auto = os.environ.get("MAGI_OPENCLAW_AUTO_UPDATE", "1").strip().lower() in {"1", "true", "yes", "on"}
-        if oc_auto:
-            oc_update_cmd = [
-                VENV_PY, "-c",
-                (
-                    "import sys; sys.path.insert(0, str(_MAGI_ROOT)); "
-                    "from skills.ops.openclaw_updater import update_openclaw; "
-                    "import json; print(json.dumps(update_openclaw(auto=True), ensure_ascii=False))"
-                ),
-            ]
-            _run_budgeted_step(
-                "openclaw_self_update",
-                oc_update_cmd,
-                _tb("MAGI_NIGHTLY_OPENCLAW_UPDATE_BUDGET_SEC", "MAGI_NIGHTLY_OPENCLAW_UPDATE_TIMEOUT_SEC", 180),
-                min_start_sec=10,
-                reserve_after_sec=reserve_final_flush_sec,
-            )
-    except Exception:
-        logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 5253, exc_info=True)
+    # 10.6) OpenClaw self-update removed (Phase 0 / 2026-04-20):
+    # OpenClaw Gateway/Caddy/updater chain was deleted; nightly autopilot
+    # no longer performs remote self-update. Use `magi restart` via
+    # LaunchAgent for canonical restart path.
 
     # --- Night Talk (三哲人議會) ---
     # 整合到 nightly 流程尾段，僅在三哲人可用時召開。

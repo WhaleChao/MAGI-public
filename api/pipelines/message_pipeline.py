@@ -714,23 +714,6 @@ def process_message_inner(orch, user_id, message, platform="LINE", role="user", 
             )
         return orch._run_labor_law_command(message)
 
-    # 2.7.7 OpenClaw Auto Update (Admin Only)
-    if any(kw in msg_lower for kw in ["更新openclaw", "openclaw update", "openclaw 更新", "update openclaw"]):
-        if role != "admin":
-            return "⛔ 抱歉，只有管理員可以更新 OpenClaw（系統改動指令）。"
-        try:
-            from skills.ops.openclaw_updater import update_openclaw
-            r = update_openclaw(auto=False)  # manual trigger
-            if r.get("skipped"):
-                return "ℹ️ OpenClaw 更新已跳過（auto update disabled）。"
-            if not r.get("success"):
-                return f"❌ OpenClaw 更新失敗: {r.get('error','unknown')}"
-            if r.get("updated"):
-                return f"🚀 OpenClaw 已更新：{r.get('from','?')} -> {r.get('to','?')} (restart={r.get('restart','')})"
-            return f"✅ OpenClaw 已是最新版本：{r.get('current','?')}"
-        except Exception as e:
-            return f"❌ OpenClaw 更新流程錯誤: {e}"
-
     # 2.7.75 Judgment Collector / Search
     if any(k in msg_lower for k in ["查判決", "找判決", "判決搜尋", "搜尋判決", "實務見解", "法律見解", "法院見解"]):
         if orch._looks_like_capability_question(message):

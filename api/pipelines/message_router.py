@@ -514,10 +514,6 @@ def explain_routing(orch, message: str, role: str = "user") -> dict:
         return _res(action="schedule_query", matched="schedule_keywords",
                      requires_admin=False, handler="api/orchestrator.py:_get_schedule")
 
-    if any(kw in msg_lower for kw in ["更新openclaw", "openclaw update", "openclaw 更新", "update openclaw"]):
-        return _res(action="openclaw_update", matched="openclaw_update_keywords",
-                     requires_admin=True, handler="api/orchestrator.py:openclaw_updater.update_openclaw")
-
     if any(msg_lower.startswith(k) for k in ["記住", "remember", "save memory", "memorize", "@magi 記住", "@magi learn"]):
         return _res(action="memory_write", matched="memory_write_keywords",
                      requires_admin=True, handler="skills/memory/mem_bridge.py:remember")

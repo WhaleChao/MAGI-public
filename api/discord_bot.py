@@ -61,7 +61,6 @@ INTERNAL_CRON_ENABLED = (
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from api.runtime_paths import ensure_path_on_sys_path, get_config_path, get_orch_dir
 
-from skills.ops.openclaw_updater import update_openclaw
 from api.orchestrator import Orchestrator
 from api.admin_allowlist import get_discord_admin_ids
 try:

@@ -309,7 +309,6 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
 "• `系統監控` / `健康檢查` — 系統資源監控\n"
 "• `檢查分身` — 重複程序清理\n"
 "• `殭屍巡邏` — 殭屍程序清除\n"
-"• `更新openclaw` — OpenClaw 更新\n"
 "\n"
 "⚡ = 即時回覆　🔄 = 語意路由（用自然語言觸發）\n"
 "💡 直接打指令即可，專屬頻道也支援自然語言\n"
