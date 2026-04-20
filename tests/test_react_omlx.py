@@ -23,10 +23,12 @@ class TestCompactTools(unittest.TestCase):
     def test_always_tools_count(self):
         from skills.engine.tool_registry import get_compact_tools
         tools = get_compact_tools("")
-        # 常駐 9 個（含 run_skill，不含 remember）— T5 已將 run_skill 加入 always tools
-        self.assertEqual(len(tools), 9)
+        # 常駐 11 個（含 search_judgments/search_statutes/run_skill，不含 remember）
+        # 2026-04-20：加入 search_judgments + search_statutes 兩個法律直連工具
+        self.assertEqual(len(tools), 11)
         for name in ["search_memory", "web_search", "query_cases", "get_schedule",
-                      "calculate", "current_time", "summarize", "translate", "run_skill"]:
+                      "calculate", "current_time", "summarize", "translate",
+                      "search_judgments", "search_statutes", "run_skill"]:
             self.assertIn(name, tools, "{} should be in compact tools".format(name))
         self.assertNotIn("remember", tools)
 
@@ -185,6 +187,78 @@ class TestFormatMagiResponseToolSource(unittest.TestCase):
         text = format_magi_response(cr)
         # web_search 只出現一次
         self.assertEqual(text.count("web_search"), 1)
+
+
+class TestSearchJudgmentsAndStatutes(unittest.TestCase):
+    """新增直連工具 search_judgments / search_statutes 單元測試。"""
+
+    def setUp(self):
+        from skills.engine.tool_registry import TOOLS
+        self.tools = TOOLS
+
+    def test_search_judgments_in_registry(self):
+        self.assertIn("search_judgments", self.tools)
+        self.assertIn("fn", self.tools["search_judgments"])
+        self.assertIn("keywords", self.tools["search_judgments"]["params"])
+
+    def test_search_statutes_in_registry(self):
+        self.assertIn("search_statutes", self.tools)
+        self.assertIn("fn", self.tools["search_statutes"])
+        self.assertIn("query", self.tools["search_statutes"]["params"])
+
+    def test_search_judgments_requires_keywords(self):
+        fn = self.tools["search_judgments"]["fn"]
+        result = fn(keywords="")
+        self.assertIn("關鍵字", result)
+
+    def test_search_statutes_requires_query(self):
+        fn = self.tools["search_statutes"]["fn"]
+        result = fn(query="")
+        self.assertIn("關鍵字", result)
+
+    def test_run_skill_wrong_name_blocked(self):
+        from skills.engine.tool_registry import _run_skill
+        result = _run_skill(skill_name="hacker_tool")
+        self.assertIn("⛔", result)
+        self.assertIn("hacker_tool", result)
+
+    def test_run_skill_no_name(self):
+        from skills.engine.tool_registry import _run_skill
+        result = _run_skill(skill_name="")
+        self.assertIn("可用技能", result)
+
+    def test_run_skill_valid_name_calls_tools_api(self):
+        """run_skill 白名單技能向正確 endpoint 發 POST（mock 回 404）。"""
+        from skills.engine.tool_registry import _run_skill
+        with patch("skills.bridge.http_pool.get_session") as mock_session_fn:
+            mock_resp = MagicMock()
+            mock_resp.status_code = 404
+            mock_resp.text = "not found"
+            session = MagicMock()
+            session.post.return_value = mock_resp
+            mock_session_fn.return_value = session
+
+            result = _run_skill(skill_name="judicial-web-search", task="search",
+                                params='{"keywords": "侵權行為"}')
+            # 確認打到了正確 endpoint（/skills/run）
+            args, kwargs = session.post.call_args
+            self.assertIn("/skills/run", args[0])
+            body = kwargs["json"]
+            self.assertEqual(body["skill"], "judicial-web-search")
+            self.assertEqual(body["task"], "search")
+            self.assertEqual(body["keywords"], "侵權行為")
+
+    def test_allowed_skills_are_all_real_directories(self):
+        """白名單中的 skill 名稱必須對應 skills/ 下真實目錄。"""
+        import os
+        from skills.engine.tool_registry import _ALLOWED_SKILLS
+        skills_root = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "skills",
+        )
+        missing = [s for s in _ALLOWED_SKILLS if not os.path.isdir(os.path.join(skills_root, s))]
+        self.assertEqual(missing, [],
+                         f"白名單中這些 skill 目錄不存在: {missing}")
 
 
 if __name__ == "__main__":
