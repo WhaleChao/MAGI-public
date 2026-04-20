@@ -64,12 +64,35 @@ cmd_status() {
 
     echo ""
 
-    # NAS mounts
+    # NAS mounts — 從 MAGI_NAS_SHARES env var 讀取（與 nas_mount_guard 同步）
     echo "NAS Mounts:"
-    for vol in /Volumes/homes /Volumes/lumi; do
-        if mount | grep -q "$vol"; then
+    # 優先讀 env；沒有再從 .env 撈
+    local magi_root_guess="${MAGI_ROOT:-/Users/ai/Desktop/MAGI_v2}"
+    local nas_shares_env="${MAGI_NAS_SHARES:-}"
+    if [ -z "$nas_shares_env" ] && [ -f "$magi_root_guess/.env" ]; then
+        nas_shares_env=$(grep -E "^MAGI_NAS_SHARES=" "$magi_root_guess/.env" 2>/dev/null | tail -1 | cut -d= -f2 | tr -d '"' | tr -d "'")
+    fi
+    local vol_list
+    if [ -n "$nas_shares_env" ]; then
+        vol_list=""
+        for s in ${nas_shares_env//,/ }; do
+            vol_list="$vol_list /Volumes/$s"
+        done
+    else
+        vol_list="/Volumes/homes /Volumes/lumi"
+    fi
+    for vol in $vol_list; do
+        # 接受 /Volumes/<share> 或 /Volumes/<share>-1、/Volumes/<share>-2 等 macOS automount suffix
+        local mounted_path=""
+        for candidate in "$vol" "${vol}-1" "${vol}-2"; do
+            if mount | grep -q "$candidate"; then
+                mounted_path="$candidate"
+                break
+            fi
+        done
+        if [ -n "$mounted_path" ]; then
             local usage
-            usage=$(df -h "$vol" 2>/dev/null | tail -1 | awk '{print $3"/"$2" ("$5")"}')
+            usage=$(df -h "$mounted_path" 2>/dev/null | tail -1 | awk '{print $3"/"$2" ("$5")"}')
             printf "  ${GREEN}●${NC} %-18s %s\n" "$(basename $vol)" "$usage"
         else
             printf "  ${RED}○${NC} %-18s ${RED}NOT MOUNTED${NC}\n" "$(basename $vol)"

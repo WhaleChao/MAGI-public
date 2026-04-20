@@ -67,11 +67,19 @@ OMLX_ENGINES = [
 # Melchior/Balthasar/Keeper 已停用（推理走本機 oMLX，DB 走本機 MariaDB）
 REMOTE_NODES = []
 
-# NAS 掛載卷
-NAS_SHARES = [
-    ("homes", "/Volumes/homes"),
-    ("lumi",  "/Volumes/lumi"),
-]
+# NAS 掛載卷 — 可透過 MAGI_NAS_SHARES env var 覆寫（與 nas_mount_guard 同步）
+_NAS_SHARES_ENV = os.environ.get("MAGI_NAS_SHARES", "").strip()
+if _NAS_SHARES_ENV:
+    NAS_SHARES = [
+        (name.strip(), f"/Volumes/{name.strip()}")
+        for name in _NAS_SHARES_ENV.split(",")
+        if name.strip()
+    ]
+else:
+    NAS_SHARES = [
+        ("homes", "/Volumes/homes"),
+        ("lumi",  "/Volumes/lumi"),
+    ]
 _USER_MOUNT_ROOT = os.path.expanduser("~/.magi_mounts")
 
 # 背景監控 thread 名稱（用於偵測是否在線）
