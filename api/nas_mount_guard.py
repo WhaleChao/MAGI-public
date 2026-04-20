@@ -38,6 +38,33 @@ _resolved_host: Optional[str] = None
 _resolved_expiry: float = 0.0
 _RESOLVE_TTL = 120  # 快取 120 秒
 
+# 邊緣觸發通知：只在 share 狀態真正改變（上→下、下→上）時才送通知，
+# 避免 NAS 長期不可達時每 120 秒巡檢都發「NAS 斷線」訊息。
+# 初始值 None 代表「尚未判定」，第一次結果不發「重連成功」誤報。
+_LAST_MOUNT_STATUS: Dict[str, Optional[bool]] = {}
+_LAST_MOUNT_STATUS_LOCK = threading.Lock()
+
+# SynologyDrive 雲同步 fallback 路徑（Synology Drive Client 安裝後自動產生）
+_SYNOLOGY_DRIVE_CANDIDATES = (
+    os.path.expanduser("~/Library/CloudStorage/SynologyDrive-homes"),
+    os.path.expanduser("~/Library/CloudStorage/SynologyDrive-home"),
+    os.path.expanduser("~/SynologyDrive"),
+)
+
+
+def _synology_drive_available() -> bool:
+    """檢查 SynologyDrive 本地同步是否可用（MAGI 的 NAS fallback 路徑）。"""
+    for p in _SYNOLOGY_DRIVE_CANDIDATES:
+        try:
+            if os.path.isdir(p):
+                # 目錄存在且有內容 → 視為 fallback 可用
+                entries = os.listdir(p)
+                if entries:
+                    return True
+        except OSError:
+            continue
+    return False
+
 
 def _ping_ok(host: str, timeout: int = 2) -> bool:
     """檢查 NAS 是否可達：TCP 445 (SMB port) connect，fallback 到 ICMP ping。
@@ -95,10 +122,21 @@ def resolve_nas_host() -> str:
 NAS_HOST = _NAS_LAN_HOST  # 先設預設，啟動時由 resolve_nas_host() 覆蓋
 
 # (share_name, expected_volume_path)
-_SHARES: list[tuple[str, str]] = [
+# 可透過 MAGI_NAS_SHARES 環境變數覆寫（逗號分隔 share 名，volume path 自動推定為 /Volumes/<share>）
+# 例：MAGI_NAS_SHARES=homes → 只掛 homes（若 NAS 上已無 lumi share）
+_SHARES_DEFAULT: list[tuple[str, str]] = [
     ("homes", "/Volumes/homes"),
     ("lumi",  "/Volumes/lumi"),
 ]
+_SHARES_ENV = os.getenv("MAGI_NAS_SHARES", "").strip()
+if _SHARES_ENV:
+    _SHARES: list[tuple[str, str]] = [
+        (name.strip(), f"/Volumes/{name.strip()}")
+        for name in _SHARES_ENV.split(",")
+        if name.strip()
+    ]
+else:
+    _SHARES = list(_SHARES_DEFAULT)
 
 # 當 /Volumes/<share> 因 root 權限無法建目錄時的 fallback
 _USER_MOUNT_ROOT = os.path.expanduser("~/.magi_mounts")
@@ -361,20 +399,56 @@ def _ensure_nas_mounts_locked() -> dict[str, bool]:
 
         if ok:
             logger.info("NAS share 掛載成功: %s", volume_path)
-            try:
-                from skills.ops.macos_notify import notify_nas_status
-                notify_nas_status(connected=True, share_name=short_name)
-            except Exception:
-                pass
         else:
             logger.error("NAS share 掛載失敗: %s", volume_path)
-            try:
-                from skills.ops.macos_notify import notify_nas_status
-                notify_nas_status(connected=False, share_name=short_name)
-            except Exception:
-                pass
 
+    # 邊緣觸發通知 — 只在狀態改變時送 macOS 通知，避免 NAS 長期不可達的通知洪水
+    _dispatch_transition_notifications(results)
     return results
+
+
+def _dispatch_transition_notifications(results: Dict[str, bool]) -> None:
+    """根據本次與上次的掛載結果，只在狀態轉換時送通知。
+
+    規則：
+    - 上次 False → 本次 True：送「NAS 重連成功」
+    - 上次 True → 本次 False：送「NAS 斷線」，但若 SynologyDrive 雲同步可用則改 log 不彈通知
+    - 上次 None（首次巡檢）：不送通知，只記錄狀態（避免冷啟動誤報）
+    - 其他（狀態相同）：不送通知
+    """
+    try:
+        from skills.ops.macos_notify import notify_nas_status
+    except Exception:
+        notify_nas_status = None
+
+    synology_ok = _synology_drive_available()
+    with _LAST_MOUNT_STATUS_LOCK:
+        for share_name, current_ok in results.items():
+            last = _LAST_MOUNT_STATUS.get(share_name)
+            _LAST_MOUNT_STATUS[share_name] = current_ok
+            if last is None:
+                # 首次巡檢：只記錄，不送通知（避免冷啟動誤報）
+                if not current_ok and synology_ok:
+                    logger.info("NAS share %s 不可用，MAGI 自動走 SynologyDrive 本地同步", share_name)
+                continue
+            if last == current_ok:
+                continue  # 狀態沒變化 → 不送通知
+            if notify_nas_status is None:
+                continue
+            if current_ok:
+                try:
+                    notify_nas_status(connected=True, share_name=share_name)
+                except Exception:
+                    pass
+            else:
+                # 斷線：若 SynologyDrive 可用，降級為 log，不彈通知
+                if synology_ok:
+                    logger.info("NAS share %s 斷線，MAGI 已自動走 SynologyDrive 本地同步（通知已抑制）", share_name)
+                else:
+                    try:
+                        notify_nas_status(connected=False, share_name=share_name)
+                    except Exception:
+                        pass
 
 
 # ── 背景守衛 ─────────────────────────────────────────────────
