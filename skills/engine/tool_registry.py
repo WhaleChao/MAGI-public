@@ -252,6 +252,9 @@ def _search_statutes(query: str = "", **_) -> str:
 
 
 # 真實 skill 名稱對照（skills/ 目錄下的子目錄名，全部唯讀/分析類）
+# 安全紅線：敏感 skill（laf-orchestrator / file-review-orchestrator / transcript-downloader /
+# brain_manager / magi-autopilot）禁止加入此白名單 — 它們會寫入 runtime 或觸發 portal 操作，
+# 只能透過管理員指令或 pipeline 直接 dispatch，不能讓 LLM 自主 run_skill 呼叫。
 _ALLOWED_SKILLS: dict[str, str] = {
     # skill 目錄名: 說明
     "judicial-web-search": "搜尋司法院判決（用 task=search，params: keywords, max_results）",
@@ -260,6 +263,13 @@ _ALLOWED_SKILLS: dict[str, str] = {
     "contract-review":     "合約審閱分析（task=review，params: text 或 path）",
     "worldmonitor-intel":  "查詢全球/法律新聞（task=run）",
     "judgment-collector":  "依案由收集判決摘要（task=collect，params: case_reason）",
+    # 2026-04-21 新增（6 個真實運作 skill，全部唯讀/分析類）
+    "pdf-namer":           "PDF 檔名提案（task=propose，params: path）",
+    "pdf-bookmarker":      "PDF 頁籤生成（task=run，params: path）",
+    "translator":          "翻譯（task=translate，params: text, target_lang, mode）",
+    "market-briefing":     "股市晨報/追蹤清單（task=list|brief，params: symbols）",
+    "trial-prep":          "開庭準備摘要（task=prepare，params: case_no）",
+    "osc-orchestrator":    "案件/當事人/帳務查詢（task=query，params: type, keyword）",
 }
 
 
