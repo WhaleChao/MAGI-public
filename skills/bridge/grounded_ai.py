@@ -1093,9 +1093,31 @@ def chat_casper(message, conversation_history=""):
     memory_context = _summarize_memories_if_needed(message, memories, max_tokens=_ctx_budget)
 
     web_context = "無。"
+    memories_insufficient = len(memories) == 0
+
+    # ── Real-time Data Gateway（Layer 0：authoritative API 先行）──────────
+    # 天氣/股價/匯率等即時資料，絕不讓 LLM 合成猜測數字；
+    # 優先打 authoritative API；失敗時明確拒絕，而非降級到 DuckDuckGo 合成。
+    _rdg_result = None
+    try:
+        from skills.engine.realtime_data_gateway import handle_realtime_query
+        _rdg_result = handle_realtime_query(message)
+    except Exception as _rdg_err:
+        logger.debug("[RDG] import/call error: %s", _rdg_err)
+
+    if _rdg_result is not None:
+        if _rdg_result.get("success") and _rdg_result.get("reply"):
+            # API 成功 → 直接用 authoritative data，跳過 LLM 合成
+            logger.info("[RDG] ✅ authoritative data ready, bypassing LLM synthesis")
+            return _rdg_result["reply"]
+        elif _rdg_result.get("refusal"):
+            # 無法取得即時資料 → 直接拒絕，不讓 LLM 胡亂填空
+            logger.info("[RDG] 🚫 realtime refusal (no live data available)")
+            return _rdg_result["refusal"]
+        # else：_rdg_result 但沒有 success/refusal → fall through 到 auto-research
+
     # 智慧搜尋觸發：明確關鍵字觸發，或「記憶不足 + 事實問題」才上網
     # SIMPLE 級閒聊即使沒記憶也不搜尋，避免無謂延遲
-    memories_insufficient = len(memories) == 0
     should_research = (
         _needs_research(message)  # 明確關鍵字（天氣、最新、上網...）
         or (memories_insufficient and _is_factual_question(message))  # 沒記憶 + 事實問題

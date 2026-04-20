@@ -216,6 +216,15 @@ INTERNAL_LEAK_PATTERNS: List[str] = [
     r"\[衍生推論\]",
 ]
 
+# 模糊 source 聲明 → 軟性 rewrite（不整行刪除，只換前綴）
+# LLM 沒有實際資料時常用此類措辭（2026-04-20）
+_VAGUE_SOURCE_REWRITES: List[Tuple[str, str]] = [
+    ("根據我目前找到的資訊，", "（以下資料來自網路搜尋，不保證即時準確）"),
+    ("根據我目前找到的資訊", "（以下資料來自網路搜尋，不保證即時準確）"),
+    ("根據我剛剛搜尋到的資料，", "（以下資料來自網路搜尋，不保證即時準確）"),
+    ("根據我的搜尋結果，", "（以下資料來自網路搜尋，不保證即時準確）"),
+]
+
 # LLM 角色設定幻覺 / prompt 洩漏：模型自行產出 CASPER 角色描述或原封不動吐出 system prompt。
 # 這裡用整段偵測（非逐行），命中 >= 2 個即攔截整段回覆。
 _PERSONA_HALLUCINATION_KEYWORDS: List[str] = [
@@ -847,6 +856,12 @@ def normalize_output_text(text: str, platform: str = "", force_taide: bool = Fal
 
     # 1.5a) 客服模板洩漏防護（LLM 把入口網站 HTML 重格式化成客服信件）
     out, _ = _strip_customer_service_template(out)
+
+    # 1.5b-pre) 模糊 source 聲明軟性 rewrite（不整段刪除，只換前綴）
+    for _vague_src, _replacement in _VAGUE_SOURCE_REWRITES:
+        if _vague_src in out:
+            out = out.replace(_vague_src, _replacement, 1)
+            break
 
     # 1.5b) 內部命令洩漏防護（LINE / Discord / TG / Web 等對外輸出）
     out, _ = _strip_internal_leaks(out)
