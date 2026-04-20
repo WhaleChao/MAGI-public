@@ -1258,7 +1258,7 @@ def chat_casper(message, conversation_history=""):
             # COMPLEX tier: full verification pipeline
             if tier == "SIMPLE":
                 return answer
-            return _verify_and_repair_answer(
+            final_answer = _verify_and_repair_answer(
                 query=message,
                 answer=answer,
                 prompt=prompt,
@@ -1268,6 +1268,36 @@ def chat_casper(message, conversation_history=""):
                 conversation_history=conversation_history,
                 entity_context=_entity_ctx,
             )
+            # ── 溯源頁尾（2026-04-20：來源標記，方便使用者引導修正）──────────
+            try:
+                from api.answer_provenance import (
+                    build_provenance_footer as _build_prov,
+                    store_provenance as _store_prov,
+                )
+                _prov_risk = "SAFE"
+                try:
+                    from api.hallucination_guard import classify_risk as _cr
+                    _prov_risk = _cr(message)
+                except Exception:
+                    pass
+                _footer = _build_prov(
+                    memories=memories,
+                    web_context=web_context,
+                    tier=tier,
+                    risk_level=_prov_risk,
+                )
+                if _footer:
+                    final_answer = final_answer + "\n\n" + _footer
+                # 背景儲存溯源記錄（用於「這條不對」修正流程）
+                import threading as _thr
+                _thr.Thread(
+                    target=_store_prov,
+                    args=("default", memories, web_context, message),
+                    daemon=True,
+                ).start()
+            except Exception as _prov_err:
+                logger.debug("[provenance] footer build failed: %s", _prov_err)
+            return final_answer
     except Exception as e:
         logger.error(f"Chat Error: {e}")
         return "我目前有點忙碌，請稍後再試一次。"
