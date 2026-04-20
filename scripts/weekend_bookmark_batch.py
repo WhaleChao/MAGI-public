@@ -171,7 +171,20 @@ def stage1_regex(pdfs: list[Path], state: dict, scan_fn) -> dict:
     stats = {"processed": 0, "bookmarks": 0, "skipped": 0, "errors": 0}
     completed = state.setdefault("completed", {})
 
+    # Optional soft budget (seconds) — nightly caller sets this to ~1800 to bound wall-clock.
+    _budget_raw = os.environ.get("BOOKMARK_REGEX_BUDGET_SEC", "").strip()
+    try:
+        budget_sec = int(_budget_raw) if _budget_raw else 0
+    except ValueError:
+        budget_sec = 0
+    stage_start = time.time()
+
     for i, pdf in enumerate(pdfs, 1):
+        if budget_sec and (time.time() - stage_start) > budget_sec:
+            logger.info(
+                f"⏰ Stage 1 regex budget exhausted ({budget_sec}s) at {i}/{len(pdfs)}; remaining PDFs will be picked up next run"
+            )
+            break
         key = str(pdf)
         try:
             mtime = str(pdf.stat().st_mtime)
@@ -374,12 +387,32 @@ def _parse_vision_response(raw: str) -> dict | None:
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="Two-stage PDF bookmark batch (regex + vision)"
+    )
+    parser.add_argument(
+        "--stage",
+        choices=["regex", "vision", "all"],
+        default="all",
+        help="regex=fast nightly pass (no oMLX restart), vision=refinement only, all=full weekend pass (default)",
+    )
+    parser.add_argument(
+        "--max-minutes",
+        type=int,
+        default=0,
+        help="Soft time budget for regex stage in minutes (0=no limit). Nightly runs should cap ~30.",
+    )
+    args = parser.parse_args()
+
     started = time.time()
     state = _load_state()
 
     # preferred_case_roots already prefers NAS SMB over Synology Drive
     roots = preferred_case_roots(include_closed=False)
-    logger.info(f"📑 Weekend Bookmark Batch — roots: {roots}")
+    label = "Nightly Regex" if args.stage == "regex" else ("Vision Only" if args.stage == "vision" else "Weekend")
+    logger.info(f"📑 Bookmark Batch [{label}] — roots: {roots}")
 
     pdfs = find_all_pdfs(roots)
     logger.info(f"Found {len(pdfs)} PDFs across all case folders")
@@ -388,52 +421,65 @@ def main():
         logger.info("No PDFs to process — done")
         return
 
-    # ── Stage 1: Regex (fast, no LLM needed) ──
-    logger.info("═══ Stage 1: Regex bookmarks ═══")
-    _stop_omlx()  # Free RAM for faster I/O
+    s1 = {"processed": 0, "bookmarks": 0, "skipped": 0, "errors": 0}
+    s2 = {"pages_checked": 0, "bookmarks_added": 0, "files_refined": 0, "errors": 0}
 
-    scan_fn = _load_bookmarker()
-    s1 = stage1_regex(pdfs, state, scan_fn)
-    logger.info(
-        f"Stage 1 done: {s1['processed']} processed, "
-        f"{s1['bookmarks']} bookmarks, {s1['skipped']} skipped, "
-        f"{s1['errors']} errors ({time.time() - started:.0f}s)"
-    )
+    do_regex = args.stage in ("regex", "all")
+    do_vision = args.stage in ("vision", "all")
 
-    # ── Stage 2: Vision refinement (needs oMLX) ──
-    logger.info("═══ Stage 2: Vision refinement ═══")
-    omlx_ok = _start_omlx()
-    if not omlx_ok:
-        logger.warning("oMLX not available — skipping vision stage")
-        s2 = {"pages_checked": 0, "bookmarks_added": 0, "files_refined": 0, "errors": 0}
-    else:
-        gw = _load_vision_gateway()
-        if gw:
-            s2 = stage2_vision(pdfs, state, gw)
+    if do_regex:
+        # ── Stage 1: Regex (fast, no LLM needed) ──
+        logger.info("═══ Stage 1: Regex bookmarks ═══")
+        # Only stop oMLX for full weekend run; nightly regex coexists with text/vision models.
+        if args.stage == "all":
+            _stop_omlx()  # Free RAM for faster I/O
+
+        scan_fn = _load_bookmarker()
+        # Pass soft budget through env so stage1_regex can honor it without signature churn
+        if args.max_minutes > 0:
+            os.environ["BOOKMARK_REGEX_BUDGET_SEC"] = str(args.max_minutes * 60)
+        s1 = stage1_regex(pdfs, state, scan_fn)
+        logger.info(
+            f"Stage 1 done: {s1['processed']} processed, "
+            f"{s1['bookmarks']} bookmarks, {s1['skipped']} skipped, "
+            f"{s1['errors']} errors ({time.time() - started:.0f}s)"
+        )
+
+    if do_vision:
+        # ── Stage 2: Vision refinement (needs oMLX) ──
+        logger.info("═══ Stage 2: Vision refinement ═══")
+        # For --stage vision we assume oMLX is already up; only --stage all had to restart it.
+        omlx_ok = _start_omlx() if args.stage == "all" else True
+        if not omlx_ok:
+            logger.warning("oMLX not available — skipping vision stage")
         else:
-            s2 = {"pages_checked": 0, "bookmarks_added": 0, "files_refined": 0, "errors": 0}
+            gw = _load_vision_gateway()
+            if gw:
+                s2 = stage2_vision(pdfs, state, gw)
 
     elapsed = time.time() - started
-    summary = (
-        f"📑 Weekend Bookmark Batch 完成\n"
-        f"  PDF 數量：{len(pdfs)} 個\n"
-        f"  ── Stage 1 (regex) ──\n"
-        f"  處理：{s1['processed']} 份 / {s1['bookmarks']} 個書籤\n"
-        f"  跳過：{s1['skipped']} 份\n"
-        f"  ── Stage 2 (vision) ──\n"
-        f"  視覺檢查：{s2['pages_checked']} 頁\n"
-        f"  補充書籤：{s2['bookmarks_added']} 個 / {s2['files_refined']} 份\n"
-        f"  錯誤：{s1['errors'] + s2['errors']} 筆\n"
-        f"  耗時：{elapsed:.0f} 秒（{elapsed / 3600:.1f} 小時）"
-    )
+    lines = [f"📑 Bookmark Batch [{label}] 完成"]
+    lines.append(f"  PDF 數量：{len(pdfs)} 個")
+    if do_regex:
+        lines.append("  ── Stage 1 (regex) ──")
+        lines.append(f"  處理：{s1['processed']} 份 / {s1['bookmarks']} 個書籤")
+        lines.append(f"  跳過：{s1['skipped']} 份")
+    if do_vision:
+        lines.append("  ── Stage 2 (vision) ──")
+        lines.append(f"  視覺檢查：{s2['pages_checked']} 頁")
+        lines.append(f"  補充書籤：{s2['bookmarks_added']} 個 / {s2['files_refined']} 份")
+    lines.append(f"  錯誤：{s1['errors'] + s2['errors']} 筆")
+    lines.append(f"  耗時：{elapsed:.0f} 秒（{elapsed / 3600:.1f} 小時）")
+    summary = "\n".join(lines)
     logger.info(summary)
 
-    # Notify
-    try:
-        from api.red_phone import notify
-        notify(summary, channel="system")
-    except Exception:
-        pass
+    # Notify (weekend full pass gets the system channel; nightly is quieter — log only)
+    if args.stage == "all":
+        try:
+            from api.red_phone import notify
+            notify(summary, channel="system")
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":
