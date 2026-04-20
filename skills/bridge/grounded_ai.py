@@ -664,8 +664,22 @@ def _needs_research(text):
         "天氣", "氣溫", "溫度", "weather", "forecast",
         "上網", "網路查", "幫我查", "查一下",
         "現在", "目前",
+        # 天氣相關補充（2026-04-20：「下雨」等詞不含「天氣」但需搜尋）
+        "下雨", "下雪", "颱風", "降雨", "會不會下", "天晴", "陰天", "晴天",
+        "氣象", "預報", "降雪", "豪雨", "颳風", "大風", "濕度",
     ]
     return any(k in lowered for k in dynamic_keywords)
+
+
+def _is_weather_query(text: str) -> bool:
+    """偵測是否為天氣/氣象類查詢，用於強制標示資料來源並推薦 CWA。"""
+    lowered = (text or "").lower()
+    weather_signals = [
+        "天氣", "氣溫", "溫度", "weather", "forecast", "下雨", "下雪",
+        "颱風", "降雨", "天晴", "陰天", "晴天", "氣象", "預報", "降雪",
+        "豪雨", "颳風", "大風", "濕度", "會下", "會不會下",
+    ]
+    return any(k in lowered for k in weather_signals)
 
 
 def _is_factual_question(text: str) -> bool:
@@ -904,9 +918,20 @@ def ask_casper(query, conversation_history="", force_research=False):
             logger.info(f"🌐 ask_casper auto-research ({reason})")
             search_res = research_topic(query, depth=2)
             if search_res.get("sources"):
-                web_context = search_res.get("combined_content", "")[:3500]
+                _src_titles = [s.get("title", "").split("|")[0].strip() for s in search_res["sources"][:2]]
+                _src_note = f"（資料來源：{', '.join(t for t in _src_titles if t)}）"
+                if _is_weather_query(query):
+                    _src_note += " ⚠️ 天氣資料非即時精確，請以中央氣象署（CWA）為準：https://www.cwa.gov.tw/"
+                web_context = _src_note + "\n" + search_res.get("combined_content", "")[:3500]
         except Exception as e:
             logger.warning(f"Web research failed in ask_casper: {e}")
+
+    _ask_weather_rule = ""
+    if _is_weather_query(query):
+        _ask_weather_rule = (
+            "\n7. 【天氣規則】回答天氣時必須明確說明資料來源，"
+            "並提醒使用者「以中央氣象署（CWA）為準」。不得憑空給出降雨機率或溫度數字。"
+        )
 
     prompt = f"""
 你是 CASPER（MAGI-01），負責穩定、可追溯、低幻覺的回答。
@@ -918,6 +943,7 @@ def ask_casper(query, conversation_history="", force_research=False):
 4. 回覆語言必須是繁體中文。
 5. 若使用者糾正您的錯誤或補充新資訊，請【務必明確總結並覆誦正確的資訊】，這會幫助系統將正確知識寫入長期記憶。
 6. 記憶中的「證據等級」若是「已驗證」才能當成事實；「原始對話」與「衍生線索」只能當線索，不可硬寫成確定事實。
+7. 若回答引用網路搜尋資料，必須說出資料來源名稱，不可用「根據我目前找到的資訊」等模糊說法。{_ask_weather_rule}
 
 [長期記憶]
 {memory_context}
@@ -1082,7 +1108,11 @@ def chat_casper(message, conversation_history=""):
             logger.info(f"🌐 chat_casper auto-research ({reason}): {message}")
             search_res = research_topic(message, depth=2)
             if search_res.get("sources"):
-                web_context = search_res.get("combined_content", "")[:2800]
+                _src_titles = [s.get("title", "").split("|")[0].strip() for s in search_res["sources"][:2]]
+                _src_note = f"（資料來源：{', '.join(t for t in _src_titles if t)}）"
+                if _is_weather_query(message):
+                    _src_note += " ⚠️ 天氣資料非即時精確，請以中央氣象署（CWA）為準：https://www.cwa.gov.tw/"
+                web_context = _src_note + "\n" + search_res.get("combined_content", "")[:2800]
         except Exception as e:
             logger.warning(f"Web research failed in chat_casper: {e}")
 
@@ -1092,6 +1122,14 @@ def chat_casper(message, conversation_history=""):
         _style_rule = "- 【閒聊模式】回答請簡短（1~3句）、自然、口語化。不要像客服那樣過度道歉或解釋，就像朋友一樣對話即可。"
     if is_small_talk_intent(message, tier):
         _style_rule = _style_rule + "\n" + _SMALL_TALK_STYLE_HINT if _style_rule else _SMALL_TALK_STYLE_HINT
+
+    # 天氣/即時資料規則
+    _realtime_rule = ""
+    if _is_weather_query(message):
+        _realtime_rule = (
+            "\n- 【天氣規則】回答天氣時必須明確說明資料來源（如 Weather.com、AccuWeather），"
+            "並提醒使用者「以中央氣象署（CWA）為準」。不得憑空給出降雨機率或溫度數字。"
+        )
 
     prompt = f"""你是 CASPER（MAGI-01），請以繁體中文回答。
 你需要同時參考記憶與近期對話，保持前後一致。
@@ -1103,6 +1141,7 @@ def chat_casper(message, conversation_history=""):
 - 若使用者糾正您的錯誤或補充新資訊，請【務必明確總結並覆誦正確的資訊】，這會幫助系統將正確知識寫入長期記憶。
 - 不要使用 Markdown 語法（**粗體**、`程式碼`、### 標題等）。純文字即可。
 - 內部信任標記僅供你判斷，回答時不得直接說出 [使用者陳述]、[已驗證事實]、[檢索線索]、[衍生推論] 或「身為 CASPER」這類內部提示字樣。
+- 若回答引用網路搜尋資料，必須說出資料來源名稱，不可用「根據我目前找到的資訊」等模糊說法。{_realtime_rule}
 {_style_rule}
 
 
