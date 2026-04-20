@@ -172,7 +172,7 @@ _FALLBACK_CHAIN: dict[str, list[str]] = {
     "alert": ["general"],
     "check": ["general"],
     "nightly": ["general"],
-    "market": ["general"],
+    "market": [],  # 股票資訊不發 Discord (2026-04-20)
     "filing": ["general"],
 }
 

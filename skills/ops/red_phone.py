@@ -994,7 +994,8 @@ def _mirror_to_discord(
     _DC_MIRROR_ALLOWED_TOPICS = {
         "filereview", "filereview_payment", "filereview_download", "filereview_apply",
         "laf", "laf_dispatch", "laf_go_live", "laf_closing", "laf_fee", "laf_inquiry", "laf_condition",
-        "transcript", "judgment", "market",
+        "transcript", "judgment",
+        # "market" 已從 DC 鏡像中移除 (2026-04-20)：股票資訊不發 Discord
         "verbatim", "summary", "translation", "filing",
     }
     _resolved_topic = _canonical_topic_key(topic_key)
