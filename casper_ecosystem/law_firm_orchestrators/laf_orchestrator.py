@@ -4761,6 +4761,25 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                 counts["review_count"] = _review_count_from_folder
                 logger.info("  📂 閱卷次數從資料夾補齊: %d (from %s, 排除純繳費單目錄)", _review_count_from_folder, _review_dir_used)
 
+        # 規則：若「開會+律見」皆為 0、但有開庭，則以開庭次數補會議次數。
+        # 理由：律師出庭當天必與當事人在法院碰面，視同會議/面談一次。
+        _mc = int(counts.get("meeting_count", 0) or 0)
+        _iq = int(counts.get("inq_count", 0) or 0)
+        _cc = int(counts.get("court_count", 0) or 0)
+        if _mc == 0 and _iq == 0 and _cc > 0:
+            counts["meeting_count"] = _cc
+            # 同步把開庭日期補進 meeting_dates（若該欄未被其他邏輯使用，至少保留來源）
+            _cd = counts.get("court_dates") or []
+            if _cd and not counts.get("meeting_dates"):
+                counts["meeting_dates"] = list(_cd)
+            logger.info("  🔁 開會/律見皆 0，以開庭次數 %d 作為會議次數（出庭當天視同碰面）", _cc)
+            # 重算 _disc_total 讓下方 low_fields / zero_reasons 判斷正確
+            _disc_total = (
+                int(counts.get("meeting_count", 0) or 0)
+                + int(counts.get("contact_count", 0) or 0)
+                + int(counts.get("inq_count", 0) or 0)
+            )
+
         low_fields = []
         # 偵查案件的 disc_times=0 屬合理情形，不卡住流程，自動填理由即可
         if _disc_total <= 0 and not _is_inv_case:
