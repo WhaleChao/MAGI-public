@@ -6557,6 +6557,82 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
 # CLI
 # ==============================================================================
 
+# Portal 操作互斥鎖：避免同時兩個 laf_orchestrator.py subprocess 搶 LAF session，
+# 造成其中一個誤報「portal ... draft save failed」。
+_PORTAL_LOCK_FD = None
+
+
+def _acquire_portal_lock(wait_sec: int = 900):
+    """取得 LAF portal 全域檔案鎖；同時間只允許一個 portal-draft/submit 跑。
+
+    等待上限 wait_sec 秒（預設 900s 與 portal-draft subprocess timeout 對齊）；
+    超時則回傳 (None, False) 由 caller 決定要不要 fail-open。
+    """
+    global _PORTAL_LOCK_FD
+    try:
+        import fcntl as _fcntl
+    except ImportError:
+        return None, True  # 非 POSIX 平台不鎖，fail-open
+    try:
+        from api.runtime_paths import get_magi_root_dir as _grd
+        _lock_dir = os.path.join(str(_grd()), ".runtime")
+    except Exception:
+        _lock_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".runtime")
+    try:
+        os.makedirs(_lock_dir, exist_ok=True)
+    except Exception:
+        pass
+    _lock_path = os.path.join(_lock_dir, "laf_portal.lock")
+    try:
+        fd = open(_lock_path, 'w')
+    except Exception as e:
+        logger.warning("Cannot open portal lock file %s: %s", _lock_path, e)
+        return None, True
+    started = time.time()
+    deadline = started + max(1, int(wait_sec))
+    announced = False
+    while time.time() < deadline:
+        try:
+            _fcntl.flock(fd.fileno(), _fcntl.LOCK_EX | _fcntl.LOCK_NB)
+            try:
+                fd.seek(0)
+                fd.truncate(0)
+                fd.write(f"{os.getpid()} {datetime.now().isoformat()}\n")
+                fd.flush()
+            except Exception:
+                pass
+            _PORTAL_LOCK_FD = fd
+            return fd, True
+        except BlockingIOError:
+            if not announced:
+                logger.info("⏳ 另一個 LAF portal 操作正在執行，本程序排隊等候（最久 %ds）", int(wait_sec))
+                announced = True
+            time.sleep(2)
+    logger.warning("⚠️ 等候 LAF portal 鎖超時（%ds），fail-open 繼續執行（可能會與他程序衝突）", wait_sec)
+    try:
+        fd.close()
+    except Exception:
+        pass
+    return None, False
+
+
+def _release_portal_lock():
+    global _PORTAL_LOCK_FD
+    fd = _PORTAL_LOCK_FD
+    _PORTAL_LOCK_FD = None
+    if fd is None:
+        return
+    try:
+        import fcntl as _fcntl
+        _fcntl.flock(fd.fileno(), _fcntl.LOCK_UN)
+    except Exception:
+        pass
+    try:
+        fd.close()
+    except Exception:
+        pass
+
+
 def main():
     parser = argparse.ArgumentParser(description="LAF Case Lifecycle Orchestrator")
     parser.add_argument("--mode", choices=["monitor", "closing", "closing-draft", "condition-draft", "condition-mark-done", "condition-mark-by-mediation", "portal-draft", "portal-submit", "dry-run", "test-notify"],
@@ -6677,15 +6753,20 @@ def main():
             except Exception as e:
                 print(json.dumps({"ok": False, "error": f"invalid_fields_json: {e}"}, ensure_ascii=False, indent=2))
                 return
-        result = orchestrator.execute_portal_action_draft(
-            action=args.action,
-            laf_case_number=args.laf_case_no or "",
-            case_number=args.case or "",
-            client_name=args.client or "",
-            reason=args.reason or "",
-            fields=fields,
-            suppress_notify=bool(getattr(args, 'no_notify', False)),
-        )
+        # 取互斥鎖，避免與另一個 portal-draft/submit 並發搶 LAF session
+        _acquire_portal_lock(wait_sec=int(os.environ.get("MAGI_LAF_PORTAL_LOCK_WAIT_SEC", "900")))
+        try:
+            result = orchestrator.execute_portal_action_draft(
+                action=args.action,
+                laf_case_number=args.laf_case_no or "",
+                case_number=args.case or "",
+                client_name=args.client or "",
+                reason=args.reason or "",
+                fields=fields,
+                suppress_notify=bool(getattr(args, 'no_notify', False)),
+            )
+        finally:
+            _release_portal_lock()
         print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
         # Explicitly close the browser before exit to prevent Playwright async loop hang.
         try:
@@ -6704,14 +6785,18 @@ def main():
             except Exception as e:
                 print(json.dumps({"ok": False, "error": f"invalid_fields_json: {e}"}, ensure_ascii=False, indent=2))
                 return
-        result = orchestrator.execute_portal_action_submit(
-            action=args.action,
-            laf_case_number=args.laf_case_no or "",
-            case_number=args.case or "",
-            client_name=args.client or "",
-            reason=args.reason or "",
-            fields=fields,
-        )
+        _acquire_portal_lock(wait_sec=int(os.environ.get("MAGI_LAF_PORTAL_LOCK_WAIT_SEC", "900")))
+        try:
+            result = orchestrator.execute_portal_action_submit(
+                action=args.action,
+                laf_case_number=args.laf_case_no or "",
+                case_number=args.case or "",
+                client_name=args.client or "",
+                reason=args.reason or "",
+                fields=fields,
+            )
+        finally:
+            _release_portal_lock()
         print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
         # Force exit to bypass Playwright asyncio cleanup hang (same fix as portal-draft).
         # JSON result is already printed above; os._exit skips Python teardown.
