@@ -173,7 +173,53 @@ class ReActEngine:
         engine._soul_text = soul_text
         return engine
 
-    def _parse_action(self, response: str) -> tuple[str, dict]:
+    @staticmethod
+    def _extract_balanced_json(text: str) -> Optional[str]:
+        """從文字中找出第一個完整的 JSON 物件（支援巢狀結構）。
+
+        使用大括號計數器，正確處理 {"a": {"b": "c"}} 這類巢狀 JSON，
+        解決 r'[^}]*' 正則在遇到第一個 } 就停止的問題。
+        """
+        start = text.find("{")
+        if start == -1:
+            return None
+        depth = 0
+        in_string = False
+        escape_next = False
+        for i, ch in enumerate(text[start:], start=start):
+            if escape_next:
+                escape_next = False
+                continue
+            if ch == "\\" and in_string:
+                escape_next = True
+                continue
+            if ch == '"':
+                in_string = not in_string
+                continue
+            if in_string:
+                continue
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    return text[start: i + 1]
+        return None
+
+    @staticmethod
+    def _fix_json_lite(raw: str) -> str:
+        """修復 LLM 常見的 JSON 格式問題。
+
+        - 單引號 → 雙引號
+        - 尾逗號（trailing comma）移除
+        不使用 rstrip("}"') 以免破壞巢狀物件。
+        """
+        fixed = raw.replace("'", '"')
+        # 移除物件/陣列末尾的尾逗號
+        fixed = re.sub(r',\s*([}\]])', r'\1', fixed)
+        return fixed
+
+    def _parse_action(self, response: str) -> Tuple[str, dict]:
         """從 LLM 回應中解析 ACTION + PARAMS。寬容處理各種格式。"""
         tool_name = ""
         params = {}
@@ -183,29 +229,32 @@ class ReActEngine:
         if action_match:
             tool_name = action_match.group(1).strip()
 
-        # 找 PARAMS: line (JSON) — 支援多行
-        params_match = re.search(r'PARAMS:\s*(\{[^}]*\})', response, re.DOTALL)
-        if params_match:
-            raw = params_match.group(1).strip()
+        # 找 PARAMS: 後的完整 JSON 物件（支援巢狀、多行）
+        params_start = re.search(r'PARAMS:\s*', response)
+        if params_start:
+            after_params = response[params_start.end():]
+            raw = self._extract_balanced_json(after_params)
             if raw and raw != "{}":
                 try:
                     params = json.loads(raw)
                 except json.JSONDecodeError:
                     # 嘗試修復常見格式問題（單引號、尾逗號）
                     try:
-                        fixed = raw.replace("'", '"').rstrip(",}")  + "}"
-                        params = json.loads(fixed)
+                        params = json.loads(self._fix_json_lite(raw))
                     except json.JSONDecodeError:
                         logger.debug("Non-JSON PARAMS ignored: %s", raw[:100])
 
-        # 如果沒找到 PARAMS 但有 tool_name，嘗試從 response 中提取 JSON
+        # 如果沒找到 PARAMS 但有 tool_name，嘗試從 response 整體提取第一個 JSON
         if tool_name and not params:
-            json_match = re.search(r'\{[^}]+\}', response)
-            if json_match:
+            raw2 = self._extract_balanced_json(response)
+            if raw2:
                 try:
-                    params = json.loads(json_match.group(0))
+                    params = json.loads(raw2)
                 except json.JSONDecodeError:
-                    pass
+                    try:
+                        params = json.loads(self._fix_json_lite(raw2))
+                    except json.JSONDecodeError:
+                        pass
 
         return tool_name, params
 
@@ -233,8 +282,8 @@ class ReActEngine:
         self,
         user_query: str,
         context: str = "",
-        conversation_history: list[dict] | None = None,
-    ) -> dict[str, Any]:
+        conversation_history: Optional[List[dict]] = None,
+    ) -> Dict[str, Any]:
         """
         執行 ReAct 推理迴圈。
 

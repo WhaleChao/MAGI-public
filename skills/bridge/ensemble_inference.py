@@ -743,7 +743,9 @@ def ensemble_chat_verified(
 
 
 # ── Feature flag ──
-_ENSEMBLE_TOOLS_ENABLED = os.environ.get("MAGI_ENSEMBLE_TOOLS", "0").strip().lower() in {"1", "true", "yes", "on"}
+# 預設值改為 "1"（2026-04-20）：ReAct 工具呼叫正式啟用。
+# 若要停用（如測試或緊急回滾），設定 MAGI_ENSEMBLE_TOOLS=0。
+_ENSEMBLE_TOOLS_ENABLED = os.environ.get("MAGI_ENSEMBLE_TOOLS", "1").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def ensemble_chat_with_tools(
