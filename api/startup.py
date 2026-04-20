@@ -774,41 +774,12 @@ def _start_laf_gmail_monitor():
         logger.warning("LAF Gmail Monitor failed to start: %s", e)
 
 
-def _start_filereview_email_monitor():
-    """Background thread: scan Gmail for file-review payment/ready emails every 300s.
-    與法扶 Gmail monitor 獨立運行，使用不同的 Gmail token 和 credentials。"""
-    _interval = int(os.environ.get("MAGI_FILEREVIEW_EMAIL_INTERVAL", "300") or "300")
-    _consecutive_fails = 0
-    _MAX_FAILS_BEFORE_NOTIFY = 5
-    _last_notify_ts = 0.0
-    logger.info("閱卷 Email Monitor 啟動（每 %d 秒掃描）", _interval)
-    while True:
-        try:
-            time.sleep(_interval)
-            # 動態 import 避免 circular
-            _magi_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-            _skill_path = os.path.join(_magi_root, "skills", "file-review-orchestrator")
-            if _skill_path not in sys.path:
-                sys.path.insert(0, _skill_path)
-            from action import cmd_check_emails
-            result = cmd_check_emails(notify=True, notify_empty=False)
-            _consecutive_fails = 0
-            logger.info("閱卷 Email Monitor: scan done, success=%s", result.get("success"))
-        except Exception as e:
-            _consecutive_fails += 1
-            logger.warning("閱卷 Email Monitor error (%d): %s", _consecutive_fails, e)
-            if _consecutive_fails >= _MAX_FAILS_BEFORE_NOTIFY and (time.time() - _last_notify_ts > 21600):
-                try:
-                    from skills.ops.red_phone import notify_admin
-                    notify_admin(
-                        f"🚨 閱卷 Email Monitor 連續 {_consecutive_fails} 次失敗\n"
-                        f"最近錯誤: {str(e)[:200]}\n"
-                        f"請檢查 Gmail token 或網路連線",
-                        topic_key="filereview",
-                    )
-                    _last_notify_ts = time.time()
-                except Exception:
-                    pass
+# _start_filereview_email_monitor() removed 2026-04-20:
+# file-review Gmail scan is integrated into the LAF Gmail monitor cycle
+# (see laf_orchestrator.run_monitor() -> scan_for_file_review_emails()).
+# The standalone function's log marker never emitted because run_startup_hooks
+# did not spawn it; removal prevents menubar detection from relying on a
+# string that was never logged.
 
 
 # ============================================================================

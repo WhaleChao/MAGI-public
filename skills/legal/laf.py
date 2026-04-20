@@ -2721,6 +2721,7 @@ class LAFGmailMonitor:
         """在法扶 Gmail monitor 的 poll cycle 內順便掃閱卷信件。
         使用動態 import 避免 circular，失敗不影響法扶 monitor。"""
         _log = _logging.getLogger(__name__)
+        _log.info("[閱卷] file review email scan integrated in LAF monitor cycle — starting")
         try:
             import sys as _sys
             _magi_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -2729,9 +2730,10 @@ class LAFGmailMonitor:
                 _sys.path.insert(0, _skill_path)
             from action import cmd_check_emails as _fr_check
             result = _fr_check(notify=True, notify_empty=False)
-            _log.info("閱卷 Email 掃描完成: success=%s", result.get("success") if isinstance(result, dict) else "?")
+            _log.info("[閱卷] file review email scan done: success=%s",
+                      result.get("success") if isinstance(result, dict) else "?")
         except Exception as e:
-            _log.warning("閱卷 Email 掃描失敗: %s", e)
+            _log.warning("[閱卷] file review email scan failed: %s", e)
 
     def start_monitor(self, interval_seconds: int = 300, check_immediately: bool = True, general_rules: List[Dict] = None):
         """啟動背景監控"""
