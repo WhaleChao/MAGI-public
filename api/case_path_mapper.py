@@ -79,7 +79,43 @@ _DEFAULT_ACTIVE_SHARE_ROOTS = [
     str(_HOME / "SynologyDrive"),
     _discover_volume("homes", "lumi63181107"),
 ]
+
+
+def _discover_external_closed_root() -> Optional[str]:
+    """
+    偵測外接硬碟上的結案歸檔根目錄。
+    結構假設：<外接硬碟>/lumi/03_工作資料/10_結案
+    優先順序：
+      1. MAGI_CLOSED_CASE_ROOT env var（顯式指定硬碟根目錄，含 /lumi 到根的完整路徑）
+      2. MAGI_CLOSED_VOLUME env var（只指定 /Volumes/<名稱>，自動拼 /lumi）
+      3. 自動掃 /Volumes/ 尋找任一有 lumi/03_工作資料/10_結案 結構的外接硬碟
+    """
+    env_root = os.environ.get("MAGI_CLOSED_CASE_ROOT", "").strip()
+    if env_root and _is_dir_accessible(env_root):
+        return env_root
+    env_vol = os.environ.get("MAGI_CLOSED_VOLUME", "").strip()
+    if env_vol:
+        candidate = os.path.join(env_vol if env_vol.startswith("/Volumes/") else f"/Volumes/{env_vol}", "lumi")
+        if _is_dir_accessible(candidate):
+            return candidate
+    # Auto-discover：掃 /Volumes/ 找含有 lumi/03_工作資料/10_結案 的外接硬碟
+    try:
+        for entry in sorted(os.listdir("/Volumes")):
+            # 跳過已知的 SMB share 與系統 volume
+            if entry in ("Macintosh HD", "homes", "homes-1", "homes-2", "lumi", "lumi-1", "lumi-2"):
+                continue
+            probe = os.path.join("/Volumes", entry, "lumi", "03_工作資料", "10_結案")
+            if _is_dir_accessible(probe):
+                return os.path.join("/Volumes", entry, "lumi")
+    except OSError:
+        pass
+    return None
+
+
+_EXTERNAL_CLOSED_ROOT = _discover_external_closed_root()
 _DEFAULT_CLOSED_SHARE_ROOTS = [
+    # 外接硬碟（Seagate 等本機掛載）優先，因為 NAS lumi share 已移除
+    *([_EXTERNAL_CLOSED_ROOT] if _EXTERNAL_CLOSED_ROOT else []),
     str(_HOME / "Library/CloudStorage/SynologyDrive-homes/lumi"),
     _discover_volume("lumi", "lumi"),
 ]
