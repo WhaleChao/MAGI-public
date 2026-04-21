@@ -199,9 +199,19 @@ def _extract_pdf(path: Path) -> Dict:
 def _extract_pdf_ocr(path: Path, page_count_hint: Optional[int] = None) -> Optional[Dict]:
     """Render PDF pages to images with PyMuPDF and OCR via tesseract.
 
+    Feature flag MAGI_OBSIDIAN_OCR_CONSENSUS_ENABLE=0 (default off):
+      - flag off  → legacy tesseract-only path (zero change)
+      - flag on   → run_consensus() replaces single-page tesseract; failure fallback to legacy
+
     Returns an extraction dict on success, or None if OCR is unavailable.
     """
-    # Check tesseract availability
+    # --- consensus feature flag -----------------------------------------------
+    _consensus_enable = (
+        str(os.environ.get("MAGI_OBSIDIAN_OCR_CONSENSUS_ENABLE", "0")).strip().lower()
+        in {"1", "true", "yes", "on"}
+    )
+
+    # Check tesseract availability (needed for both legacy and consensus paths)
     if not shutil.which("tesseract"):
         logger.debug("tesseract not found on PATH; skipping OCR fallback for %s", path)
         return None
@@ -212,7 +222,87 @@ def _extract_pdf_ocr(path: Path, page_count_hint: Optional[int] = None) -> Optio
         logger.debug("PyMuPDF (fitz) not available; skipping OCR fallback for %s", path)
         return None
 
+    # --- metrics writer (lazy, only used when consensus enabled) --------------
+    def _write_metrics(page_num, img_hash, consensus_result, legacy_len):
+        try:
+            from api.platforms.runtime_dir import (
+                metrics as _rt_metrics,
+                atomic_append_jsonl as _rt_append,
+            )
+            import time as _time
+            record = {
+                "ts": _time.time(),
+                "page_num": page_num,
+                "img_hash": img_hash,
+                "consensus_success": bool(
+                    consensus_result and consensus_result.success
+                ),
+                "consensus_confidence": (
+                    round(consensus_result.confidence, 4)
+                    if consensus_result and consensus_result.success
+                    else None
+                ),
+                "consensus_len": (
+                    len(consensus_result.corrected_text)
+                    if consensus_result and consensus_result.success
+                    else 0
+                ),
+                "legacy_len": legacy_len,
+                "mode": "enabled",
+            }
+            metrics_path = _rt_metrics("ocr") / "obsidian_ocr_consensus.jsonl"
+            _rt_append(metrics_path, record, rotate_at=500, keep_tail=500)
+        except Exception as e:
+            logger.debug("obsidian: consensus metrics write failed: %s", e)
+
+    # --- consensus runner (lazy import, lazy failure) -------------------------
+    def _run_consensus_page(img_data_bytes):
+        """Write PNG bytes to tmp file, run consensus, return result or None."""
+        import tempfile
+        tmp_path = None
+        try:
+            from skills.engine.ocr import consensus as _ocr_mod
+            fd, tmp_path = tempfile.mkstemp(suffix=".png")
+            try:
+                os.write(fd, img_data_bytes)
+            finally:
+                os.close(fd)
+            result = _ocr_mod.run_consensus(tmp_path, task_type="legal")
+            if result and result.success:
+                return result
+            return None
+        except Exception as e:
+            logger.warning(
+                "obsidian: consensus OCR failed, falling back to legacy: %s", e
+            )
+            return None
+        finally:
+            if tmp_path:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+
+    # --- single-page legacy OCR (original logic) ------------------------------
+    def _legacy_ocr_page(png_data):
+        try:
+            proc = subprocess.run(
+                ["tesseract", "-", "-", "-l", "chi_tra+eng"],
+                input=png_data,
+                capture_output=True,
+                timeout=60,
+            )
+            if proc.returncode == 0:
+                return proc.stdout.decode("utf-8", errors="replace").strip()
+            return None
+        except subprocess.TimeoutExpired:
+            return None
+        except Exception:
+            return None
+
     try:
+        import hashlib as _hashlib
+
         doc = fitz.open(str(path))
         page_count = len(doc)
         pages_to_ocr = min(page_count, _OCR_MAX_PAGES)
@@ -224,31 +314,55 @@ def _extract_pdf_ocr(path: Path, page_count_hint: Optional[int] = None) -> Optio
             pix = page.get_pixmap(dpi=_OCR_DPI)
             png_data = pix.tobytes("png")
 
-            try:
-                proc = subprocess.run(
-                    ["tesseract", "-", "-", "-l", "chi_tra+eng"],
-                    input=png_data,
-                    capture_output=True,
-                    timeout=60,
-                )
-                if proc.returncode == 0:
-                    text = proc.stdout.decode("utf-8", errors="replace").strip()
-                    if text:
-                        ocr_texts.append(text)
-                else:
-                    logger.debug("tesseract returned %d for page %d of %s: %s",
-                                 proc.returncode, i + 1, path,
-                                 proc.stderr.decode("utf-8", errors="replace")[:200])
-            except subprocess.TimeoutExpired:
-                logger.warning("tesseract timed out on page %d of %s", i + 1, path)
-            except Exception as e:
-                logger.debug("tesseract error on page %d of %s: %s", i + 1, path, e)
+            if not _consensus_enable:
+                # --- flag off: pure legacy path (zero change) ---
+                try:
+                    proc = subprocess.run(
+                        ["tesseract", "-", "-", "-l", "chi_tra+eng"],
+                        input=png_data,
+                        capture_output=True,
+                        timeout=60,
+                    )
+                    if proc.returncode == 0:
+                        text = proc.stdout.decode("utf-8", errors="replace").strip()
+                        if text:
+                            ocr_texts.append(text)
+                    else:
+                        logger.debug(
+                            "tesseract returned %d for page %d of %s: %s",
+                            proc.returncode, i + 1, path,
+                            proc.stderr.decode("utf-8", errors="replace")[:200],
+                        )
+                except subprocess.TimeoutExpired:
+                    logger.warning("tesseract timed out on page %d of %s", i + 1, path)
+                except Exception as e:
+                    logger.debug("tesseract error on page %d of %s: %s", i + 1, path, e)
+            else:
+                # --- flag on: consensus path, fallback to legacy ---
+                img_hash = _hashlib.sha256(png_data).hexdigest()[:16]
+                legacy_text = _legacy_ocr_page(png_data)
+                consensus_result = _run_consensus_page(png_data)
+                _write_metrics(i + 1, img_hash, consensus_result, len(legacy_text or ""))
+
+                if consensus_result and consensus_result.success:
+                    chosen = (
+                        consensus_result.corrected_text
+                        or consensus_result.selected_text
+                        or ""
+                    ).strip()
+                    if chosen:
+                        ocr_texts.append(chosen)
+                        continue  # skip legacy append
+                # consensus unavailable or empty → fall back
+                if legacy_text:
+                    ocr_texts.append(legacy_text)
 
         doc.close()
 
         if ocr_texts:
             combined = "\n\n".join(ocr_texts)[:MAX_TEXT_CHARS]
-            method = f"ocr/tesseract ({pages_to_ocr}/{page_count} pages)"
+            mode = "consensus" if _consensus_enable else "tesseract"
+            method = f"ocr/{mode} ({pages_to_ocr}/{page_count} pages)"
             return {"success": True, "text": combined, "pages": page_count, "method": method}
 
         logger.debug("OCR produced no text for %s", path)
