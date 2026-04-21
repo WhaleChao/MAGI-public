@@ -44,6 +44,8 @@ _ARGV0_WHITELIST = frozenset({
     "curl",
     "mount_smbfs",
     "osascript",
+    "tesseract",   # OCR runtime (Phase A)
+    "pdftoppm",    # PDF → image conversion for OCR (Phase C)
     "/Users/ai/Desktop/MAGI_v2/venv/bin/python3",
 })
 

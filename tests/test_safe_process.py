@@ -152,3 +152,26 @@ def test_parse_cron_rejects_pipe():
 def test_parse_cron_rejects_dollar_paren():
     with pytest.raises(PermissionError):
         sp.parse_cron_command("python3 a.py $(whoami)")
+
+
+# --- OCR runtime whitelist (Phase A) ------------------------------------
+
+def test_tesseract_in_whitelist():
+    """tesseract must be whitelisted so tesseract_provider can use SafeProcess."""
+    assert "tesseract" in sp._ARGV0_WHITELIST
+
+
+def test_pdftoppm_in_whitelist():
+    """pdftoppm must be whitelisted for PDF → image conversion (Phase C)."""
+    assert "pdftoppm" in sp._ARGV0_WHITELIST
+
+
+def test_tesseract_argv_accepted_without_run():
+    """_validate_argv should accept tesseract without raising PermissionError."""
+    # Does not actually run tesseract — just validates argv construction
+    sp._validate_argv(["tesseract", "/tmp/test.png", "stdout", "-l", "chi_tra+eng", "--psm", "3"])
+
+
+def test_pdftoppm_argv_accepted_without_run():
+    """_validate_argv should accept pdftoppm without raising PermissionError."""
+    sp._validate_argv(["pdftoppm", "-r", "300", "/tmp/test.pdf", "/tmp/test_out"])
