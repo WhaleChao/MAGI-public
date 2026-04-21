@@ -205,6 +205,13 @@ TRANSCRIBE_METRICS_PATH = os.environ.get(
     "MAGI_TRANSCRIBE_METRICS_PATH",
     str(get_metrics_dir() / "transcribe_requests.jsonl"),
 )
+
+# ── Phase G: OCR consensus feature flags ──────────────────────────────────────
+# MAGI_VISION_OCR_CONSENSUS_ENABLE=1    → /vision 路由啟用新 OCR 共識引擎
+# MAGI_SHORTCUT_OCR_CONSENSUS_ENABLE=1  → /shortcut/ocr 路由啟用新 OCR 共識引擎
+# 兩者預設皆為 0（向後相容）；captcha 類型一律繞過（v2 §4 紅線）
+_VISION_OCR_CONSENSUS_ENABLE = os.environ.get("MAGI_VISION_OCR_CONSENSUS_ENABLE", "0").strip() in {"1", "true", "on", "yes"}
+_SHORTCUT_OCR_CONSENSUS_ENABLE = os.environ.get("MAGI_SHORTCUT_OCR_CONSENSUS_ENABLE", "0").strip() in {"1", "true", "on", "yes"}
 EXTERNAL_CHAT_METRICS_PATH = os.path.join(_MAGI_ROOT, "static", "external_chat_metrics.jsonl")
 
 # P0-13: CORS 改為 allowlist，不再允許所有來源。
@@ -1617,6 +1624,67 @@ def api_vision():
     force_local = _to_bool(data.get("force_local"), _to_bool(os.environ.get("MAGI_VISION_FORCE_LOCAL", "1"), True))
     timeout_sec = int(data.get("timeout_sec") or os.environ.get("MAGI_VISION_TIMEOUT_SEC", "90") or "90")
 
+    # ── Phase G: OCR consensus opt-in（captcha 絕不走此路徑，§4 紅線）──────────
+    if _VISION_OCR_CONSENSUS_ENABLE and task_type in {"ocr", "text", "scan"} and not is_captcha:
+        _consensus_result = None
+        try:
+            from skills.engine.ocr.consensus import run_consensus as _run_consensus
+            from api.platforms.runtime_dir import atomic_append_jsonl as _arj, metrics as _rmetrics
+            import time as _time
+            _cs_t0 = _time.monotonic()
+            _consensus_result = _run_consensus(image_path, task_type="legal", timeout_sec=max(8, int(timeout_sec)))
+            _cs_dur = round(_time.monotonic() - _cs_t0, 3)
+            if _consensus_result and _consensus_result.success:
+                # Metrics: counts-only — no raw text / PII written
+                try:
+                    _arj(
+                        _rmetrics("ocr_vision_consensus"),
+                        {
+                            "ts": _time.time(),
+                            "route": "vision",
+                            "task_type": task_type,
+                            "confidence": round(_consensus_result.confidence or 0.0, 3),
+                            "writable": bool(_consensus_result.writable),
+                            "critical_conflict": bool(_consensus_result.critical_conflict),
+                            "char_count": len(_consensus_result.selected_text or ""),
+                            "warnings": len(_consensus_result.warnings or []),
+                            "entities": (_consensus_result.entities.to_counts() if _consensus_result.entities else {}),
+                            "duration_sec": _cs_dur,
+                        },
+                    )
+                except Exception:
+                    pass
+                _text = _consensus_result.corrected_text or _consensus_result.selected_text or ""
+                _finish_tool_event(
+                    "vision",
+                    started,
+                    ok=True,
+                    status="handled",
+                    output_data=_tool_preview(_text),
+                    metadata={"route": "ocr_consensus", "task_type": effective_task},
+                )
+                return jsonify({
+                    "success": True,
+                    "sage": "vision_gateway",
+                    "image": image_path,
+                    "description": _text,
+                    "route": "ocr_consensus",
+                    "model": "consensus",
+                    "degraded": False,
+                    "force_local": bool(force_local),
+                    "task_type": effective_task,
+                    "error": "",
+                    # additive fields (backward-compat: old callers ignore unknown keys)
+                    "ocr_confidence": round(_consensus_result.confidence or 0.0, 3),
+                    "ocr_writable": bool(_consensus_result.writable),
+                    "ocr_critical_conflict": bool(_consensus_result.critical_conflict),
+                    "ocr_warnings": list(_consensus_result.warnings or []),
+                })
+        except Exception as _ce:
+            logging.getLogger("tools_api").warning("ocr_consensus_fallback: %s", _ce)
+            # fall through to legacy vision gateway below
+    # ── end Phase G ──────────────────────────────────────────────────────────
+
     try:
         result = _INFERENCE_GATEWAY.vision(
             image_path=image_path,
@@ -2116,6 +2184,41 @@ def api_shortcut_ocr():
     tmp_path = _shortcut_write_temp(raw, suffix)
     try:
         timeout_sec = int(request.args.get("timeout_sec") or os.environ.get("MAGI_VISION_TIMEOUT_SEC", "90") or "90")
+
+        # ── Phase G: shortcut/ocr consensus opt-in（captcha 絕不走此路徑）──────
+        if _SHORTCUT_OCR_CONSENSUS_ENABLE:
+            try:
+                from skills.engine.ocr.consensus import run_consensus as _run_consensus
+                from api.platforms.runtime_dir import atomic_append_jsonl as _arj, metrics as _rmetrics
+                import time as _time
+                _cs_t0 = _time.monotonic()
+                _cs = _run_consensus(tmp_path, task_type="legal", timeout_sec=max(8, int(timeout_sec)))
+                _cs_dur = round(_time.monotonic() - _cs_t0, 3)
+                if _cs and _cs.success:
+                    try:
+                        _arj(
+                            _rmetrics("ocr_shortcut_consensus"),
+                            {
+                                "ts": _time.time(),
+                                "route": "shortcut_ocr",
+                                "confidence": round(_cs.confidence or 0.0, 3),
+                                "writable": bool(_cs.writable),
+                                "critical_conflict": bool(_cs.critical_conflict),
+                                "char_count": len(_cs.selected_text or ""),
+                                "warnings": len(_cs.warnings or []),
+                                "entities": (_cs.entities.to_counts() if _cs.entities else {}),
+                                "duration_sec": _cs_dur,
+                            },
+                        )
+                    except Exception:
+                        pass
+                    _txt = _cs.corrected_text or _cs.selected_text or ""
+                    return _shortcut_text_response(_txt)
+            except Exception as _ce:
+                logging.getLogger("tools_api").warning("shortcut_ocr_consensus_fallback: %s", _ce)
+                # fall through to legacy vision gateway below
+        # ── end Phase G ──────────────────────────────────────────────────────
+
         try:
             result = _INFERENCE_GATEWAY.vision(
                 image_path=tmp_path,
