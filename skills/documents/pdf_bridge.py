@@ -538,8 +538,79 @@ def _extract_text_ocr(pdf_path: str, max_pages: int, ocr_page_limit: Optional[in
                 return vision_text
             return base_body
 
-        def _ocr_single_page(page_info):
-            page_num, img_path = page_info
+        # --- Phase C: consensus feature flags -----------------------------------
+        _consensus_enable = (
+            str(os.environ.get("MAGI_PDF_OCR_CONSENSUS_ENABLE", "0")).strip().lower()
+            in {"1", "true", "yes", "on"}
+        )
+        _consensus_shadow = (
+            str(os.environ.get("MAGI_PDF_OCR_CONSENSUS_SHADOW", "0")).strip().lower()
+            in {"1", "true", "yes", "on"}
+        )
+
+        def _run_consensus_for_page(page_num, img_path):
+            """呼叫 skills.engine.ocr.consensus.run_consensus，失敗回 None。
+
+            業務紅線：task_type="legal"（非 captcha），不走 legal_corrector bypass。
+            """
+            try:
+                from skills.engine.ocr import consensus as _ocr_consensus_mod
+                result = _ocr_consensus_mod.run_consensus(
+                    str(img_path),
+                    task_type="legal",
+                )
+                if result and result.success:
+                    return result
+                return None
+            except Exception as e:
+                logger.warning(
+                    "pdf_bridge: consensus OCR page %s failed, fallback to legacy: %s",
+                    page_num, e,
+                )
+                return None
+
+        def _write_consensus_metrics(page_num, img_path, consensus_result, legacy_txt):
+            """寫 consensus metrics（只記 count / hash，不記 entity 字串）。"""
+            try:
+                from api.platforms.runtime_dir import (
+                    metrics as _rt_metrics,
+                    atomic_append_jsonl as _rt_append,
+                )
+                img_bytes = Path(img_path).read_bytes()
+                img_hash = hashlib.sha256(img_bytes).hexdigest()[:16]
+                record = {
+                    "ts": time.time(),
+                    "page_num": page_num,
+                    "img_hash": img_hash,
+                    "consensus_success": bool(consensus_result and consensus_result.success),
+                    "consensus_confidence": (
+                        round(consensus_result.confidence, 4)
+                        if consensus_result and consensus_result.success
+                        else None
+                    ),
+                    "consensus_len": (
+                        len(consensus_result.corrected_text)
+                        if consensus_result and consensus_result.success
+                        else 0
+                    ),
+                    "legacy_len": len(legacy_txt or ""),
+                    "entities_counts": (
+                        consensus_result.entities.to_counts()
+                        if (consensus_result and consensus_result.success and
+                            consensus_result.entities)
+                        else {}
+                    ),
+                    "mode": (
+                        "shadow" if _consensus_shadow else "enabled"
+                    ),
+                }
+                metrics_path = _rt_metrics("ocr") / "pdf_ocr_consensus.jsonl"
+                _rt_append(metrics_path, record, rotate_at=500, keep_tail=1000)
+            except Exception as e:
+                logger.debug("pdf_bridge: consensus metrics write failed: %s", e)
+
+        def _ocr_single_page_legacy(page_num, img_path):
+            """既有 OCR 路徑（Tesseract + Vision upgrade）。"""
             ocr = subprocess.run(
                 [
                     tesseract_bin,
@@ -557,8 +628,42 @@ def _extract_text_ocr(pdf_path: str, max_pages: int, ocr_page_limit: Optional[in
             )
             txt = _normalize_extracted_text(ocr.stdout or "")
             txt = _maybe_upgrade_with_vision(page_num, img_path, txt)
-            if txt:
-                return page_num, f"--- 第 {page_num} 頁 (OCR) ---\n{_normalize_extracted_text(txt)}"
+            return txt
+
+        def _ocr_single_page(page_info):
+            page_num, img_path = page_info
+
+            # --- flag 完全關閉：走純舊路徑（零影響） ---
+            if not _consensus_enable and not _consensus_shadow:
+                txt = _ocr_single_page_legacy(page_num, img_path)
+                if txt:
+                    return page_num, f"--- 第 {page_num} 頁 (OCR) ---\n{_normalize_extracted_text(txt)}"
+                return page_num, None
+
+            # --- shadow mode：新舊都跑，回舊結果，只 log 差異 ---
+            if _consensus_shadow and not _consensus_enable:
+                legacy_txt = _ocr_single_page_legacy(page_num, img_path)
+                consensus_result = _run_consensus_for_page(page_num, img_path)
+                _write_consensus_metrics(page_num, img_path, consensus_result, legacy_txt)
+                # shadow：永遠回舊結果
+                if legacy_txt:
+                    return page_num, f"--- 第 {page_num} 頁 (OCR) ---\n{_normalize_extracted_text(legacy_txt)}"
+                return page_num, None
+
+            # --- consensus enable：走新路徑，失敗 fallback 舊路徑 ---
+            legacy_txt = _ocr_single_page_legacy(page_num, img_path)
+            consensus_result = _run_consensus_for_page(page_num, img_path)
+            _write_consensus_metrics(page_num, img_path, consensus_result, legacy_txt)
+
+            if consensus_result and consensus_result.success:
+                new_txt = _normalize_extracted_text(
+                    consensus_result.corrected_text or consensus_result.selected_text
+                )
+                if new_txt:
+                    return page_num, f"--- 第 {page_num} 頁 (OCR) ---\n{new_txt}"
+            # consensus 失敗 → fallback 到舊路徑
+            if legacy_txt:
+                return page_num, f"--- 第 {page_num} 頁 (OCR) ---\n{_normalize_extracted_text(legacy_txt)}"
             return page_num, None
 
         page_tasks = [(i, img) for i, img in enumerate(imgs[:page_limit], start=1)]
