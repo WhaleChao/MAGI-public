@@ -412,7 +412,15 @@ Key environment variables (set in `.env`):
 | `MAGI_ALLOW_CLOUD_MODELS` | `0` | Allow Claude / GPT fallback |
 | `MAGI_USE_SCRAPLING` | `0` | Use Scrapling for web fetch (faster, no browser) |
 | `MAGI_USE_MARKITDOWN` | `0` | Use MarkItDown for document extraction |
-| `MAGI_PDF_OCR_CONSENSUS` | `1` | Multi-engine OCR consensus for PDF naming |
+| `MAGI_PDF_OCR_CONSENSUS` | `1` | Multi-engine OCR consensus for PDF naming (pdf-namer only) |
+| `MAGI_OCR_CACHE_ENABLE` | `1` | SHA-256 image-hash LRU cache for new unified OCR runtime |
+| `MAGI_VISION_OCR_CONSENSUS_ENABLE` | `1` | `/vision` API opt-in consensus (`task_type=ocr/text/scan` only; captcha bypassed) |
+| `MAGI_SHORTCUT_OCR_CONSENSUS_ENABLE` | `1` | `/shortcut/ocr` consensus (mimetype stays `text/plain`) |
+| `MAGI_PDF_OCR_CONSENSUS_SHADOW` | `1` | pdf_bridge shadow mode — run new consensus for metrics, return legacy text |
+| `MAGI_PDF_OCR_CONSENSUS_ENABLE` | `0` | pdf_bridge full switch (leave `0` until shadow metrics confirm parity) |
+| `MAGI_LAF_OCR_CONSENSUS_SHADOW` | `1` | LAFVision shadow mode (3-module protection; 1-week observation required) |
+| `MAGI_LAF_OCR_CONSENSUS_ENABLE` | `0` | LAFVision full switch (do NOT enable without shadow review) |
+| `MAGI_OBSIDIAN_OCR_CONSENSUS_ENABLE` | `0` | Obsidian PDF OCR fallback consensus |
 | `MAGI_NAS_HOST` | `192.168.1.3` | NAS LAN IP |
 | `MAGI_NAS_TAILSCALE_HOST` | `100.111.10.126` | NAS Tailscale IP (auto-fallback) |
 | `MAGI_AVOID_DISTRIBUTED` | `1` | Run single-node only |
@@ -447,7 +455,7 @@ Key environment variables (set in `.env`):
 | **Knowledge graph** | Custom Graph-RAG (entity extraction → community detection) |
 | **Web scraping** | Scrapling · requests + BeautifulSoup fallback |
 | **Document parsing** | MarkItDown · pdftotext · fitz · pdfplumber · Tesseract · macOS Vision |
-| **OCR** | macOS Vision · RapidOCR · Tesseract (consensus mode) |
+| **OCR** | macOS Vision · RapidOCR · Tesseract · unified runtime `skills/engine/ocr/` (Vision + Tesseract consensus, SHA-256 image cache, legal-text corrector, feature-flagged) |
 | **API framework** | Flask · Flask-Login · Flask-SocketIO |
 | **Scheduling** | Internal CronScheduler in `discord_bot.py` (cron_jobs.json) |
 | **Channels** | LINE Messaging API · Discord.py · python-telegram-bot |
