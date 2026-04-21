@@ -490,14 +490,18 @@ def task_digest(namespace: Optional[str] = None, *, notify: bool = True) -> int:
                 }, ensure_ascii=False) + "\n")
         except Exception as e:
             logger.debug("digest log append failed: %s", e)
-        # Notify
+        # Notify — alert_admin handles Telegram; Discord must be called directly
+        # (alert_admin intentionally skips Discord per red_phone design)
         delivered = False
         if notify:
             try:
-                from skills.ops.red_phone import alert_admin
+                from skills.ops.red_phone import alert_admin, _send_discord_bot_message
                 alert_admin(digest_text, severity="info",
                             source=f"research_brief.{n}",
                             topic_key=topic_key)
+                _send_discord_bot_message(digest_text, severity="info",
+                                          topic_key=topic_key,
+                                          source=f"research_brief.{n}")
                 delivered = True
             except Exception as e:
                 logger.warning("notify failed for %s: %s", n, e)
