@@ -624,6 +624,18 @@ async def bg_scheduler_loop():
                             else:
                                 if _proc.returncode != 0:
                                     _err_text = (_stderr or b"").decode("utf-8", "ignore")[:500]
+                                    try:
+                                        from skills.management.issue_tracker import log_issue
+
+                                        log_issue(
+                                            command=f"cron:{job.get('name') or _job_id}",
+                                            error_msg=f"exit={_proc.returncode} stderr={_err_text}",
+                                            context=f"schedule={job.get('schedule')} command={str(job.get('command'))[:200]}",
+                                            severity="High",
+                                            source="discord_bot.cron_scheduler",
+                                        )
+                                    except Exception:
+                                        pass
                                     logger.warning("⚠️ Shell job %s exited %d: %s", _job_id, _proc.returncode, _err_text)
                                 else:
                                     logger.info("✅ Shell job %s completed OK", _job_id)

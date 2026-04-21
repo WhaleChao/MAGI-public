@@ -33,6 +33,7 @@ def shortcut_client(monkeypatch, tmp_path):
     monkeypatch.setattr(_authz, "MAGI_EXTERNAL_API_KEY", "test-key", raising=False)
     tools_api._EXTERNAL_KEY_CACHE["ts"] = 0.0
     tools_api._EXTERNAL_KEY_CACHE["value"] = ""
+    monkeypatch.setattr(tools_api, "_SHORTCUT_OCR_CONSENSUS_ENABLE", False)
 
     return tools_api, tools_api.app.test_client()
 

@@ -1249,6 +1249,18 @@ class Orchestrator:
         try:
             return self._process_message_inner(user_id, message, platform, role, attachment, correlation_id, progress_callback, channel_context=channel_context)
         except Exception as _fatal:
+            try:
+                from skills.management.issue_tracker import log_issue
+
+                log_issue(
+                    command=str(message)[:200] if isinstance(message, str) else repr(message)[:200],
+                    error_msg=f"{type(_fatal).__name__}: {_fatal}",
+                    context=f"user_id={user_id} platform={platform}",
+                    severity="High",
+                    source="orchestrator.process_message",
+                )
+            except Exception:
+                pass
             logger.error(f"❌ Unhandled exception in process_message: {_fatal}", exc_info=True)
             self._append_route_trace(str(user_id or ""), str(platform or ""), "fatal_error", "unhandled", {"error": str(_fatal)[:200]})
             return "❌ 系統暫時忙碌，請稍後再試。"
@@ -1458,4 +1470,3 @@ class Orchestrator:
 
     def _handle_chat_async(self, user_id, message, platform_hint="LINE"):
         return _chat_pipeline.handle_chat_async(self, user_id, message, platform_hint)
-

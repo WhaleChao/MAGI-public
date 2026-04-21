@@ -44,6 +44,7 @@ import re
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from flask import Flask, request, jsonify, send_from_directory, Response
+from werkzeug.exceptions import HTTPException
 
 _MAGI_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 _STARTUP_TS = time.time()
@@ -155,6 +156,27 @@ except Exception:
     _normalize_output_text = None
 
 app = Flask(__name__)
+
+
+@app.errorhandler(Exception)
+def _global_exception_hook(e):
+    if isinstance(e, HTTPException):
+        return e
+    try:
+        from skills.management.issue_tracker import log_issue
+
+        log_issue(
+            command=f"{request.method} {request.path}",
+            error_msg=f"{type(e).__name__}: {e}",
+            context=f"remote={request.remote_addr}",
+            severity="High",
+            source="tools_api.errorhandler",
+        )
+    except Exception:
+        pass
+    raise
+
+
 from api.thread_pools import io_pool as _INLINE_EXECUTOR
 from concurrent.futures import ThreadPoolExecutor as _ThreadPoolExecutor
 _INFERENCE_EXECUTOR = _ThreadPoolExecutor(
