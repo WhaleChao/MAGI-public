@@ -1,0 +1,18 @@
+{
+  "namespace": "語言政策",
+  "topic_key": "research_language",
+  "keywords": [
+    "language rights", "language policy", "endangered language",
+    "minority language", "mother tongue", "linguistic human rights",
+    "語言權", "國家語言", "少數語言", "瀕危語言", "母語", "語言政策",
+    "language revitalization"
+  ],
+  "sources": [
+    {"url": "https://www.unesco.org/en/articles/feed", "type": "rss", "lang": "en", "note": "UNESCO News"},
+    {"url": "https://en.wal.unesco.org/news", "type": "html", "lang": "en", "note": "UNESCO World Atlas of Languages"},
+    {"url": "https://link.springer.com/journal/10993.rss", "type": "rss", "lang": "en", "note": "Language Policy (Springer)"},
+    {"url": "https://www.tandfonline.com/feed/rss/rmmm20", "type": "rss", "lang": "en", "note": "Journal of Multilingual and Multicultural Development"},
+    {"url": "https://www.klokkare.se/feed/", "type": "rss", "lang": "en", "note": "Language rights / rokkare (int'l)"},
+    {"url": "https://ilrdc.tw/news.php", "type": "html", "lang": "zh-Hant", "note": "原住民族語言研究發展基金會"}
+  ]
+}

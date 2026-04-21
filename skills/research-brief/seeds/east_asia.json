@@ -1,0 +1,26 @@
+{
+  "namespace": "東亞法學與語言",
+  "topic_key": "research_eastasia",
+  "keywords": [
+    "court interpreter", "human rights", "minority language",
+    "法律通譯", "司法通譯", "人権", "少数民族", "多言語",
+    "通訳", "言語権", "법원 통역", "인권", "소수민족",
+    "語言政策", "多元文化"
+  ],
+  "sources": [
+    {"url": "https://ci.nii.ac.jp/opensearch/search?q=司法通訳&format=rss", "type": "rss", "lang": "ja", "note": "CiNii Articles 司法通訳"},
+    {"url": "https://www.jstage.jst.go.jp/browse/_pubinfo/-char/en", "type": "html", "lang": "ja", "note": "J-STAGE 学術誌電子図書館"},
+    {"url": "https://www.nichibenren.or.jp/activity/human/rss.xml", "type": "rss", "lang": "ja", "note": "日弁連 人権活動"},
+    {"url": "https://www.courts.go.jp/app/hanrei_en/search", "type": "html", "lang": "ja", "note": "最高裁判所判例検索"},
+    {"url": "https://www.moj.go.jp/EN/HOUSO/index.html", "type": "html", "lang": "ja", "note": "法務省 多言語対応"},
+    {"url": "https://www.minpaku.ac.jp/research/activity/news", "type": "html", "lang": "ja", "note": "国立民族学博物館 研究活動"},
+    {"url": "https://www.institut-fuer-menschenrechte.de/en/rss.xml", "type": "rss", "lang": "de", "note": "Deutsches Institut für Menschenrechte"},
+    {"url": "https://www.mpil.de/en/pub/news.cfm", "type": "html", "lang": "de", "note": "Max Planck Institute for Comparative Public Law and International Law"},
+    {"url": "https://www.germanlawjournal.com/latest", "type": "html", "lang": "en", "note": "German Law Journal"},
+    {"url": "https://www.bundesverfassungsgericht.de/SiteGlobals/Functions/RSSFeed/DE/RSSNewsfeed/RSSNewsfeed_Entscheidungen/RSSNewsfeed.xml", "type": "rss", "lang": "de", "note": "Bundesverfassungsgericht 決定"},
+    {"url": "https://www.kci.go.kr/kciportal/main.kci", "type": "html", "lang": "ko", "note": "KCI Korea Citation Index"},
+    {"url": "https://www.humanrights.go.kr/base/board/list?boardManagementNo=5", "type": "html", "lang": "ko", "note": "國家人權委員會 (韓)"},
+    {"url": "https://www.law.hku.hk/ccpl/newspapers.html", "type": "html", "lang": "en", "note": "HKU CCPL"},
+    {"url": "https://www.hkhrm.org.hk/english/reports/index.html", "type": "html", "lang": "en", "note": "HK Human Rights Monitor"}
+  ]
+}

@@ -1,0 +1,17 @@
+{
+  "namespace": "族群人類學",
+  "topic_key": "research_ethno",
+  "keywords": [
+    "indigenous", "ethnography", "linguistic anthropology", "minority",
+    "原住民族", "族群", "人類學", "民族學", "文化研究", "多元文化",
+    "ethnic identity", "cultural heritage", "族語"
+  ],
+  "sources": [
+    {"url": "https://www.ioe.sinica.edu.tw/zh/Publication/ListPeriodical", "type": "html", "lang": "zh-Hant", "note": "中研院民族所出版品"},
+    {"url": "https://www.cip.gov.tw/zh-tw/news.html", "type": "html", "lang": "zh-Hant", "note": "原民會新聞"},
+    {"url": "https://ihc.apc.gov.tw/", "type": "html", "lang": "zh-Hant", "note": "原住民族歷史文化園區"},
+    {"url": "https://www.minpaku.ac.jp/en/research/publication", "type": "html", "lang": "en", "note": "国立民族学博物館 Minpaku"},
+    {"url": "https://www.eth.mpg.de/publications", "type": "html", "lang": "en", "note": "Max Planck Institute for Social Anthropology"},
+    {"url": "https://www.ethnologue.com/news", "type": "html", "lang": "en", "note": "Ethnologue News"}
+  ]
+}

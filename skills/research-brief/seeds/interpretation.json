@@ -1,0 +1,17 @@
+{
+  "namespace": "通譯",
+  "topic_key": "research_interpretation",
+  "keywords": [
+    "court interpreter", "legal interpreting", "forensic linguistics",
+    "法庭通譯", "司法通譯", "法律通譯", "通譯倫理", "通譯人員",
+    "language access", "language services", "sworn translator"
+  ],
+  "sources": [
+    {"url": "https://www.judicial.gov.tw/tw/lp-1763-1.html", "type": "html", "lang": "zh-Hant", "note": "司法院通譯專區"},
+    {"url": "https://www.ncsc.org/resources/topics/language-access", "type": "html", "lang": "en", "note": "NCSC Language Access"},
+    {"url": "https://www.aiic.org/site/news", "type": "html", "lang": "en", "note": "AIIC (International Conference Interpreters)"},
+    {"url": "https://benjamins.com/catalog/intp/rss/feed", "type": "rss", "lang": "en", "note": "Benjamins Interpreting journal"},
+    {"url": "https://www.tandfonline.com/feed/rss/rtrn20", "type": "rss", "lang": "en", "note": "The Translator (Routledge)"},
+    {"url": "https://www.tandfonline.com/feed/rss/rtrn21", "type": "rss", "lang": "en", "note": "Translation and Interpreting Studies"}
+  ]
+}

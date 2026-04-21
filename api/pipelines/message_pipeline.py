@@ -700,6 +700,120 @@ def process_message_inner(orch, user_id, message, platform="LINE", role="user", 
         except Exception as e:
             return f"❌ 爬蟲目標指令失敗：{e}"
 
+    # 2.7.6.4 Research brief (extensible multi-namespace literature crawler)
+    _rb_kws = ["研究爬蟲", "研究來源", "研究命名空間", "研究摘要", "研究關鍵字",
+               "research brief", "research digest"]
+    if any(kw in message for kw in _rb_kws):
+        try:
+            skill_script = f"{_MAGI_ROOT}/skills/research-brief/action.py"
+            if not os.path.exists(skill_script):
+                return "❌ 找不到 research-brief skill。"
+            # Parse sub-command
+            msg = message.strip()
+            url_match = re.search(r"(https?://\S+)", msg)
+            url = (url_match.group(1).strip() if url_match else "").rstrip(").,")
+            # Extract namespace (first non-keyword token after command word)
+            _RB_WORDS = {"研究爬蟲", "研究來源", "研究命名空間", "研究摘要", "研究關鍵字",
+                         "清單", "新增", "移除", "關鍵字", "查詢", "今日摘要",
+                         "research", "brief", "digest", "add", "remove", "list"}
+            tokens = [t for t in re.split(r"\s+", msg) if t and not t.startswith("http")]
+            non_kw = [t for t in tokens if t not in _RB_WORDS]
+
+            cli_args: list[str] = [sys.executable, skill_script]
+            task = "list"
+            namespace = non_kw[0] if non_kw else ""
+            keyword = ""
+
+            if "新增命名空間" in msg:
+                task = "add_namespace"
+            elif "移除命名空間" in msg:
+                task = "remove_namespace"
+            elif "今日摘要" in msg or "digest" in msg.lower():
+                task = "digest" if namespace else "digest_all"
+            elif "查詢" in msg and namespace:
+                task = "query"
+                # find quoted keyword
+                qm = re.search(r'[「""\'](.+?)[」""\']', msg)
+                keyword = qm.group(1) if qm else (non_kw[-1] if len(non_kw) >= 2 else "")
+            elif "關鍵字" in msg and namespace:
+                kw_parts = [t for t in non_kw if t not in {namespace}]
+                keyword = kw_parts[-1] if kw_parts else ""
+                task = "remove_keyword" if "移除" in msg else "add_keyword"
+            elif ("新增" in msg or "add" in msg.lower()) and url and namespace:
+                task = "add_source"
+            elif ("移除" in msg or "remove" in msg.lower()) and url and namespace:
+                task = "remove_source"
+            elif ("清單" in msg or "list" in msg.lower()) and namespace:
+                task = "list_namespace"
+            elif "清單" in msg or "list" in msg.lower():
+                task = "list"
+            elif namespace:
+                task = "list_namespace"
+
+            cli_args += ["--task", task]
+            if namespace and task not in ("list",):
+                cli_args += ["--namespace", namespace]
+            if url:
+                cli_args += ["--url", url]
+            if keyword:
+                cli_args += ["--keyword", keyword]
+            if task in ("digest", "digest_all"):
+                cli_args += ["--no-notify"]  # chat path returns summary, cron path notifies
+
+            proc = subprocess.run(
+                cli_args, capture_output=True, text=True,
+                timeout=int(os.environ.get("MAGI_RESEARCH_BRIEF_TIMEOUT_SEC", "120") or "120"),
+            )
+            out = (proc.stdout or "").strip()
+            data: dict = {}
+            try:
+                data = json.loads(out) if out else {}
+            except Exception:
+                m = re.search(r"(\{[\s\S]*\})\s*$", out or "")
+                if m:
+                    try:
+                        data = json.loads(m.group(1))
+                    except Exception:
+                        data = {}
+
+            if proc.returncode != 0 or (isinstance(data, dict) and not data.get("success", False)):
+                err = ""
+                if isinstance(data, dict):
+                    err = str(data.get("error") or "").strip()
+                if not err:
+                    err = (proc.stderr or out or "unknown error").strip()[:240]
+                return f"❌ 研究爬蟲失敗：{err}"
+
+            if task == "list":
+                items = data.get("namespaces", [])
+                if not items:
+                    return "📭 尚無任何研究命名空間。"
+                lines = ["📚 **研究命名空間清單**"]
+                for it in items:
+                    lines.append(
+                        f"• `{it['name']}` — 來源 {it['source_count']} · 關鍵字 {it['keyword_count']} · topic={it['topic_key']}"
+                    )
+                return "\n".join(lines)
+            if task == "list_namespace":
+                lines = [
+                    f"📂 **{data.get('namespace','?')}**（topic={data.get('topic_key','?')}）",
+                    f"關鍵字（{len(data.get('keywords', []))}）：" + ", ".join(data.get("keywords", [])[:10]),
+                    f"來源（{len(data.get('sources', []))}）："
+                ]
+                for s in data.get("sources", [])[:15]:
+                    note = f"（{s.get('note')}）" if s.get("note") else ""
+                    lines.append(f"  - [{s.get('type','?')}/{s.get('lang','?')}] {s.get('url','')}{note}")
+                return "\n".join(lines)
+            if task in ("digest", "digest_all"):
+                results = data.get("results", [])
+                lines = ["✅ 摘要已觸發："]
+                for r in results:
+                    lines.append(f"• {r.get('namespace')}: {r.get('new_entries', 0)} 則新文獻")
+                return "\n".join(lines)
+            return data.get("message") or "✅ 已執行。"
+        except Exception as e:
+            return f"❌ 研究爬蟲指令失敗：{e}"
+
     # 2.7.6.5 勞動基準法計算
     _labor_kws = ["加班費", "勞基法", "勞動基準法", "特休假", "特別休假", "資遣費",
                   "一例一休", "例假日加班", "休息日加班", "平日加班", "overtime計算",

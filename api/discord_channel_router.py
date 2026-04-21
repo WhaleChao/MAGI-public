@@ -143,6 +143,11 @@ def _infer_sub_topic(message: str, topic_key: str, source: str = "") -> str:
     if canonical == "filing":
         return "filing"
 
+    # ───────── 研究通訊命名空間路由 ─────────
+    if canonical in ("research_daily", "research_interpretation", "research_ethno",
+                     "research_humanrights", "research_language", "research_eastasia"):
+        return canonical
+
     # 其他 topic 直接返回 canonical
     return canonical or "general"
 
@@ -174,6 +179,12 @@ _FALLBACK_CHAIN: dict[str, list[str]] = {
     "nightly": ["general"],
     "market": [],  # 股票資訊不發 Discord (2026-04-20)
     "filing": ["general"],
+    "research_daily": ["general"],
+    "research_interpretation": ["research_daily", "general"],
+    "research_ethno": ["research_daily", "general"],
+    "research_humanrights": ["research_daily", "general"],
+    "research_language": ["research_daily", "general"],
+    "research_eastasia": ["research_daily", "general"],
 }
 
 
@@ -430,6 +441,42 @@ DEFAULT_CHANNELS: list[dict] = [
         "name": "裁判",
         "key": "judgment",
         "topic": "判決書搜集、裁判資料彙整",
+    },
+    {
+        "name": "研究-每日摘要",
+        "key": "research_daily",
+        "topic": "研究爬蟲每日合併摘要（所有命名空間）",
+        "category": "📚 研究通訊",
+    },
+    {
+        "name": "研究-通譯",
+        "key": "research_interpretation",
+        "topic": "法庭通譯、司法口譯、通譯倫理研究與新聞",
+        "category": "📚 研究通訊",
+    },
+    {
+        "name": "研究-族群人類學",
+        "key": "research_ethno",
+        "topic": "族群、原住民族、人類學、文化研究相關新聞與論文",
+        "category": "📚 研究通訊",
+    },
+    {
+        "name": "研究-人權公約",
+        "key": "research_humanrights",
+        "topic": "兩公約、UN 公約、區域人權機制、NGO 人權報告",
+        "category": "📚 研究通訊",
+    },
+    {
+        "name": "研究-語言政策",
+        "key": "research_language",
+        "topic": "語言權、少數語言、瀕危語言、多元文化政策",
+        "category": "📚 研究通訊",
+    },
+    {
+        "name": "研究-東亞",
+        "key": "research_eastasia",
+        "topic": "日韓港 法學與語言學（多語來源）",
+        "category": "📚 研究通訊",
     },
     {
         "name": "一般",
