@@ -61,7 +61,12 @@ def _sigchld_handler(_signum, _frame):
                 break
         except ChildProcessError:
             break
-_signal.signal(_signal.SIGCHLD, _sigchld_handler)
+_STARTUP_HOOKS_DISABLED = (
+    os.environ.get("MAGI_DISABLE_SERVER_STARTUP_HOOKS", "").strip().lower()
+    in {"1", "true", "yes", "on"}
+)
+if not _STARTUP_HOOKS_DISABLED:
+    _signal.signal(_signal.SIGCHLD, _sigchld_handler)
 
 from api.hooks import HookBus
 from api.permissions import (
@@ -3271,56 +3276,56 @@ def _tool_registry_vision(image_path: str = "", prompt: str = "Describe this ima
 
 
 def _bootstrap_tool_registry() -> None:
+    # Always overwrite registrations so the registry always holds the current
+    # module's callables.  Guarding with "if not registry.get(...)" is unsafe
+    # when the module is deleted from sys.modules and reimported (e.g. in some
+    # tests): the registry would keep the *old* module's function, making
+    # monkeypatching the current module's names invisible to the registry.
     try:
         from api.tools import get_global_tool_registry
 
         registry = get_global_tool_registry()
         globals()["TOOL_REGISTRY"] = registry
-        if not registry.get("search"):
-            registry.register_callable(
-                "search",
-                _tool_registry_search,
-                description="Web search",
-                permission_tag="tool:search",
-                timeout_sec=30,
-                metadata={"route": "/search"},
-            )
-        if not registry.get("research"):
-            registry.register_callable(
-                "research",
-                _tool_registry_research,
-                description="Deep web research",
-                permission_tag="tool:research",
-                timeout_sec=60,
-                metadata={"route": "/research"},
-            )
-        if not registry.get("fetch"):
-            registry.register_callable(
-                "fetch",
-                _tool_registry_fetch,
-                description="Fetch URL content",
-                permission_tag="tool:fetch",
-                timeout_sec=30,
-                metadata={"route": "/fetch"},
-            )
-        if not registry.get("summarize"):
-            registry.register_callable(
-                "summarize",
-                _tool_registry_summarize,
-                description="Summarize text",
-                permission_tag="tool:summarize",
-                timeout_sec=90,
-                metadata={"route": "/summarize"},
-            )
-        if not registry.get("vision"):
-            registry.register_callable(
-                "vision",
-                _tool_registry_vision,
-                description="Vision analysis",
-                permission_tag="tool:vision",
-                timeout_sec=90,
-                metadata={"route": "/vision"},
-            )
+        registry.register_callable(
+            "search",
+            _tool_registry_search,
+            description="Web search",
+            permission_tag="tool:search",
+            timeout_sec=30,
+            metadata={"route": "/search"},
+        )
+        registry.register_callable(
+            "research",
+            _tool_registry_research,
+            description="Deep web research",
+            permission_tag="tool:research",
+            timeout_sec=60,
+            metadata={"route": "/research"},
+        )
+        registry.register_callable(
+            "fetch",
+            _tool_registry_fetch,
+            description="Fetch URL content",
+            permission_tag="tool:fetch",
+            timeout_sec=30,
+            metadata={"route": "/fetch"},
+        )
+        registry.register_callable(
+            "summarize",
+            _tool_registry_summarize,
+            description="Summarize text",
+            permission_tag="tool:summarize",
+            timeout_sec=90,
+            metadata={"route": "/summarize"},
+        )
+        registry.register_callable(
+            "vision",
+            _tool_registry_vision,
+            description="Vision analysis",
+            permission_tag="tool:vision",
+            timeout_sec=90,
+            metadata={"route": "/vision"},
+        )
     except Exception:
         logging.getLogger("tools_api").debug("tool registry bootstrap skipped", exc_info=True)
 
@@ -3350,7 +3355,8 @@ def _warmup_background():
         _log.warning(f"Orchestrator warmup failed (non-fatal): {e}")
 
 import threading
-threading.Thread(target=_warmup_background, daemon=True).start()
+if not _STARTUP_HOOKS_DISABLED:
+    threading.Thread(target=_warmup_background, daemon=True).start()
 
 if __name__ == '__main__':
     logging.getLogger("tools_api").info("MAGI Tools API starting on http://localhost:5003")

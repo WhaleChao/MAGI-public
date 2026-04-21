@@ -19,6 +19,9 @@ def mock_env_vars(monkeypatch):
         "DB_USER": "test_user",
         "DB_PASSWORD": "test_pass",
         "FLASK_SECRET_KEY": "test_flask_secret",
+        # Disable remote health gate in all tests; gate opt-in tests override this
+        # with their own monkeypatch.setenv("MAGI_USE_REMOTE_HEALTH_GATE", "1").
+        "MAGI_USE_REMOTE_HEALTH_GATE": "0",
     }
     for k, v in defaults.items():
         monkeypatch.setenv(k, v)

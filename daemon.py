@@ -238,7 +238,11 @@ def _sigchld_handler(signum, frame):
         except ChildProcessError:
             break
 
-if not IS_WINDOWS:
+_DAEMON_STARTUP_HOOKS_DISABLED = (
+    os.environ.get("MAGI_DISABLE_SERVER_STARTUP_HOOKS", "").strip().lower()
+    in {"1", "true", "yes", "on"}
+)
+if not IS_WINDOWS and not _DAEMON_STARTUP_HOOKS_DISABLED:
     signal.signal(signal.SIGCHLD, _sigchld_handler)
 
 # ---------------------------------------------------------------------------

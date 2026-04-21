@@ -26,22 +26,34 @@ class TestToolsAPICors:
 
     def test_cors_origins_from_env_allowlist(self):
         """CORS origins should come from env allowlist, not wildcard."""
-        with patch.dict('os.environ', {
-            'MAGI_CORS_ORIGINS': 'http://localhost:3000,http://localhost:5002'
-        }):
-            # Import fresh to get env vars
-            import importlib
-            import sys
-            if 'api.tools_api' in sys.modules:
+        import sys
+        # Preserve the original module so we can restore it after the test.
+        # Deleting api.tools_api from sys.modules and reimporting it creates a
+        # new module object; without restoration later tests that monkeypatch
+        # the current module would patch a different object than the one stored
+        # in GLOBAL_TOOL_REGISTRY's callables.
+        _original_tools_api = sys.modules.get('api.tools_api')
+        try:
+            with patch.dict('os.environ', {
+                'MAGI_CORS_ORIGINS': 'http://localhost:3000,http://localhost:5002'
+            }):
+                # Import fresh to get env vars
+                if 'api.tools_api' in sys.modules:
+                    del sys.modules['api.tools_api']
+
+                from api import tools_api
+
+                # The module should have defined _cors_origins as a list
+                assert hasattr(tools_api, '_cors_origins')
+                assert isinstance(tools_api._cors_origins, list)
+                # Should not contain wildcard
+                assert '*' not in str(tools_api._cors_origins)
+        finally:
+            # Restore original module so subsequent tests see a consistent state.
+            if _original_tools_api is not None:
+                sys.modules['api.tools_api'] = _original_tools_api
+            elif 'api.tools_api' in sys.modules:
                 del sys.modules['api.tools_api']
-
-            from api import tools_api
-
-            # The module should have defined _cors_origins as a list
-            assert hasattr(tools_api, '_cors_origins')
-            assert isinstance(tools_api._cors_origins, list)
-            # Should not contain wildcard
-            assert '*' not in str(tools_api._cors_origins)
 
 
 class TestServerSecurityHeaders:

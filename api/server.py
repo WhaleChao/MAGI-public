@@ -55,7 +55,8 @@ def _sigchld_handler(_signum, _frame):
             break
 
 
-_signal.signal(_signal.SIGCHLD, _sigchld_handler)
+if os.environ.get("MAGI_DISABLE_SERVER_STARTUP_HOOKS", "").strip().lower() not in {"1", "true", "yes", "on"}:
+    _signal.signal(_signal.SIGCHLD, _sigchld_handler)
 
 # Load Env — always use explicit path to guarantee .env is found regardless of cwd
 load_dotenv(os.path.join(_MAGI_ROOT, ".env"))

@@ -78,18 +78,53 @@ def normalize_lang(code: str) -> str:
     return _LANG_ALIASES.get(code, code)
 
 
+_SIDECAR_PROBE_CACHE: Optional[Tuple[bool, str]] = None
+
+
 def is_available() -> Tuple[bool, str]:
     """
-    Report whether the sidecar binary is built and reachable.
+    Report whether the sidecar binary is built and actually functional.
 
     Returns (available, reason). `reason` is an empty string on success,
     otherwise a short stable error key.
+
+    Result is cached after the first call (session-scoped).  The probe runs
+    a real short translation with a 5-second timeout so that a binary that
+    exists but hangs (e.g. language packs not installed) is detected
+    correctly and tests are skipped rather than timing out after 15 s.
     """
+    global _SIDECAR_PROBE_CACHE
+    if _SIDECAR_PROBE_CACHE is not None:
+        return _SIDECAR_PROBE_CACHE
+
     if not _SIDECAR_BIN.exists():
-        return False, "sidecar_binary_missing"
+        _SIDECAR_PROBE_CACHE = False, "sidecar_binary_missing"
+        return _SIDECAR_PROBE_CACHE
     if not os.access(str(_SIDECAR_BIN), os.X_OK):
-        return False, "sidecar_binary_not_executable"
-    return True, ""
+        _SIDECAR_PROBE_CACHE = False, "sidecar_binary_not_executable"
+        return _SIDECAR_PROBE_CACHE
+
+    # Functional probe: attempt a real translation with a short timeout.
+    # If the sidecar hangs (e.g. language packs not downloaded yet) it
+    # should not be treated as available — callers would time out.
+    try:
+        proc = subprocess.run(
+            [str(_SIDECAR_BIN), "zh-Hant", "en"],
+            input="測試".encode("utf-8"),
+            capture_output=True,
+            timeout=5.0,
+        )
+        if proc.returncode == 0:
+            _SIDECAR_PROBE_CACHE = True, ""
+        else:
+            error_key = _EXIT_CODE_MAP.get(proc.returncode, f"exit_{proc.returncode}")
+            _SIDECAR_PROBE_CACHE = False, error_key
+    except subprocess.TimeoutExpired:
+        _SIDECAR_PROBE_CACHE = False, "sidecar_not_responding"
+    except Exception:  # noqa: BLE001
+        _SIDECAR_PROBE_CACHE = False, "sidecar_probe_error"
+
+    return _SIDECAR_PROBE_CACHE
 
 
 def _build_sidecar_if_needed() -> bool:
