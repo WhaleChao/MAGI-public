@@ -171,6 +171,7 @@ REAPER_SAFE_UTILITIES = (
     "benchmark_",                            # benchmark scripts (may run >30min)
     "nas_pdf_ocr_worker",                    # NAS PDF OCR background worker
     "pkuseg_py311",                          # PKUSeg sidecar interpreter
+    "memory_watchdog.py",                    # Layer 2 memory watchdog (launchd-managed)
 )
 
 # ── Reaper dedup: avoid retrying the same stale PID every cycle ──
