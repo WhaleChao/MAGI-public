@@ -14,6 +14,7 @@ import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+from api.help_text import HELP_ALIASES
 from api.model_config import TEXT_PRIMARY_MODEL
 from api.runtime_paths import get_legacy_code_root, get_magi_root_dir, legacy_code_enabled
 from skills.ops.red_phone import alert_iron_dome_violation
@@ -531,8 +532,7 @@ def process_message_inner(orch, user_id, message, platform="LINE", role="user", 
     # Capture explicit personal facts into long-term memory for all users.
     orch._maybe_capture_profile_fact(user_id, message)
     # Help: exact match only (same whitelist as message_router.py)
-    _HELP_EXACT_MP = {"help", "/help", "指令", "說明", "功能", "menu", "helps", "/start",
-                      "幫助", "做什麼", "功能列表", "技能清單", "有什麼功能", "可以做什麼"}
+    _HELP_EXACT_MP = HELP_ALIASES
     if msg_lower in _HELP_EXACT_MP:
          return orch._handle_command(user_id, "/help", role=role, platform=platform) # Force route to command handler
 

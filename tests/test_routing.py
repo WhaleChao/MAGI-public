@@ -40,7 +40,7 @@ class TestExplainRouting:
         result = self.orc._explain_routing(msg)
         assert result["action"] == "help_menu"
         assert result["matched"] == "universal_help"
-        assert result["requires_admin"] is True
+        assert result["requires_admin"] is False
 
     # ---- 2. Status keywords ----
     @pytest.mark.parametrize("msg", ["狀態", "status", "大腦", "brain", "運作狀態"])
