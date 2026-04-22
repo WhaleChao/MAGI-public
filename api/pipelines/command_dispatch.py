@@ -1810,10 +1810,15 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
                     break
 
             # Natural phrase mode: <法院> <案號> [當事人]
+            # 也支援姓名在前：<姓名> <法院> <案號>（自動偵測並調整順序）
             remainder = _insert_spaces_if_needed(remainder)
             parts = remainder.split()
             if len(parts) < 2:
                 return None
+            # 偵測姓名在前的格式：若 parts[1] 不像案號但 parts[2] 像案號 → 調整順序
+            if len(parts) >= 3 and not _RE_CASE_NUMBER.match(parts[1]) and _RE_CASE_NUMBER.match(parts[2]):
+                # <姓名> <法院> <案號> [其他] → <法院> <案號> <姓名> [其他]
+                parts = [parts[1], parts[2], parts[0]] + parts[3:]
             court = parts[0].strip()
             case_text = parts[1].strip()
             m = _RE_CASE_NUMBER.match(case_text)
