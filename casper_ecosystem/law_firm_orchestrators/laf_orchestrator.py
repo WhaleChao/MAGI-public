@@ -53,7 +53,7 @@ if str(MAGI_DIR) not in sys.path:
     sys.path.insert(0, str(MAGI_DIR))
 
 from api.runtime_paths import ensure_path_on_sys_path, get_config_path, get_orch_dir
-from api.case_path_mapper import canonical_case_roots, preferred_case_roots, translate_case_path_to_local, translate_local_path_to_canonical
+from api.case_path_mapper import canonical_case_roots, local_synology_path_candidates, preferred_case_roots, translate_case_path_to_local, translate_local_path_to_canonical
 from api.product_runtime import get_product_profile, resolve_laf_portal_targets
 
 CODE_DIR = get_orch_dir()
@@ -978,11 +978,13 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                     # NAS 預檢：依觸發類型判斷 NAS 是否已有對應檔案，有則標 done 不上網
                     # origin_reason 記錄原始觸發（go_live、closing、backfill 等）
                     # 不同觸發 → 不同必要檔案，只有「剛好抓到的那種」算滿足
+                    # NAS/Synology Drive 雙向 fallback：任一路徑可存取即做預檢
                     _origin = str(updated.get("origin_reason") or updated.get("reason") or "")
-                    if local_case_folder and os.path.isdir(local_case_folder):
+                    _resolved_for_nas_check = self._resolve_case_folder_with_fallback(local_case_folder) if local_case_folder else ""
+                    if _resolved_for_nas_check:
                         try:
                             _satisfied, _sat_reason = self._nas_satisfies_trigger(
-                                _origin, local_case_folder
+                                _origin, _resolved_for_nas_check
                             )
                             if _satisfied:
                                 logger.info(
@@ -3786,8 +3788,11 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         """
         t = str(origin_reason or "").lower()
         folder = str(case_folder or "").strip()
-        if not folder or not os.path.isdir(folder):
+        # NAS/Synology Drive 雙向 fallback：任一路徑存在即可繼續
+        resolved_folder = self._resolve_case_folder_with_fallback(folder)
+        if not resolved_folder:
             return False, ""
+        folder = resolved_folder  # 使用解析後的實際路徑（可能已切換至 Synology Drive）
 
         # 開辦類：有開辦通知書 OR 委任狀之一即滿足
         if any(k in t for k in ("go_live", "opening", "backfill", "portal_not_listed")):
@@ -3817,6 +3822,33 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         for p in (paths or []):
             if p and os.path.exists(p):
                 return p
+        return ""
+
+    def _resolve_case_folder_with_fallback(self, folder: str) -> str:
+        """NAS 找不到時自動 fallback 到 Synology Drive，反之亦然。
+
+        按 local_synology_path_candidates() 的候選順序嘗試所有已知掛載路徑
+        （NAS /Volumes/、SynologyDrive CloudStation、user-level ~/.magi_mounts/），
+        回傳第一個實際存在的資料夾路徑；所有候選都不存在時回空字串。
+        """
+        f = (folder or "").strip()
+        if not f:
+            return ""
+        # 快速路徑：原路徑已存在
+        if os.path.isdir(f):
+            return f
+        # 嘗試所有候選路徑（NAS + Synology Drive 各種掛載變體）
+        try:
+            for cand in local_synology_path_candidates(f):
+                if cand and cand != f and os.path.isdir(cand):
+                    logger.debug(
+                        "[LAF] 資料夾路徑 fallback: %s → %s",
+                        os.path.basename(f.rstrip("/")),
+                        cand,
+                    )
+                    return cand
+        except Exception:
+            pass
         return ""
 
     def _to_pdf_for_portal(self, src_path: str, out_dir: str) -> str:
