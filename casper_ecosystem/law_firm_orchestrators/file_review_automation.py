@@ -42,6 +42,133 @@ from skills.engine.legal_web_adapter import format_legal_web_engine_log, resolve
 
 logger = logging.getLogger("FileReviewAutomation")
 
+
+def _infer_file_review_sys_type(court_code: str, case_type: str) -> str:
+    """Infer OLA file-review system type from court/case code when obvious."""
+    cc = (court_code or "").strip().upper()
+    ct = (case_type or "").strip()
+    if not ct:
+        return ""
+
+    admin_courts = {"TPA", "TPBA", "TPBT", "TCBA", "TCBT", "KSBA", "KSBT"}
+    if cc in admin_courts or ct.startswith("行") or "行政" in ct:
+        return "A"
+
+    family_hints = (
+        "婚", "家", "親", "護", "繼", "監宣", "輔宣", "收養", "扶養",
+        "暫家", "家聲", "家非", "家調",
+    )
+    if any(hint in ct for hint in family_hints):
+        return "U"
+
+    if ct.startswith("少") or "少年" in ct:
+        return "I"
+
+    criminal_hints = (
+        "原訴", "原易", "原簡", "金訴", "金重訴", "原金訴", "侵訴",
+        "侵重訴", "交易", "交簡", "交訴", "易", "訴緝", "聲羈",
+    )
+    if any(hint in ct for hint in criminal_hints):
+        return "H"
+
+    return ""
+
+
+def _ordered_file_review_sys_candidates(option_values: List[str], preferred: str = "") -> List[str]:
+    """Return AUTO sys candidates, preserving page options and useful priority."""
+    vals = []
+    for raw in option_values or []:
+        v = (raw or "").strip()
+        if v and v not in vals:
+            vals.append(v)
+    priority = []
+    if preferred:
+        priority.append(preferred)
+    # OLA options observed: H=刑事, V=民事, U=家事, I=少年, A=行政, K=民執.
+    priority.extend(["H", "V", "U", "I", "A", "K", "C", "F", "M", "S"])
+    ordered = [v for v in priority if v in vals]
+    ordered.extend([v for v in vals if v not in ordered])
+    return ordered
+
+
+def _normalize_file_review_text(text: str) -> str:
+    return re.sub(r"\s+", "", text or "")
+
+
+def _file_review_case_signature_present(text: str, case_info: Dict[str, str]) -> bool:
+    """Return whether visible/list text contains this court case signature."""
+    norm = _normalize_file_review_text(text)
+    year = str((case_info or {}).get("year") or "").strip()
+    case_type = str((case_info or {}).get("case_type") or "").strip()
+    case_number = str((case_info or {}).get("case_number") or "").strip()
+    if not year or not case_type or not case_number:
+        return False
+
+    number_variants = {case_number}
+    digits = re.sub(r"\D+", "", case_number)
+    if digits:
+        try:
+            unpadded = str(int(digits))
+        except Exception:
+            unpadded = digits.lstrip("0") or "0"
+        number_variants.update({digits, unpadded, digits.zfill(6), unpadded.zfill(6)})
+
+    exact_variants = []
+    for no in number_variants:
+        exact_variants.extend([
+            f"{year}年度{case_type}字第{no}號",
+            f"{year}年{case_type}字第{no}號",
+            f"{year}{case_type}{no}",
+        ])
+    if any(v and v in norm for v in exact_variants):
+        return True
+
+    return year in norm and case_type in norm and any(no and no in norm for no in number_variants)
+
+
+def _file_review_submit_success_from_text(text: str, case_info: Dict[str, str]) -> bool:
+    """Detect the OLA final accepted state from visible text."""
+    norm = _normalize_file_review_text(text)
+    if not norm:
+        return False
+    success_terms = (
+        "已受理", "聲請成功", "送出成功", "申請成功", "新增成功", "登錄成功", "完成聲請",
+        "已將下列資訊提交至法院", "提交至法院",
+    )
+    context_terms = (
+        "您的閱卷聲請", "請靜待法院回覆結果", "已將下列資訊提交至法院",
+        "聲請序號", "聲請編號", "申請編號", "收件編號",
+    )
+    if not any(term in norm for term in success_terms):
+        return False
+    return any(term in norm for term in context_terms) or _file_review_case_signature_present(norm, case_info)
+
+
+def _file_review_alert_looks_rejected(text: str) -> bool:
+    """Return whether an alert/message looks like a validation rejection."""
+    norm = _normalize_file_review_text(text)
+    if not norm:
+        return False
+    failure_terms = (
+        "錯誤", "失敗", "必填", "尚未", "未填", "未選", "請選擇", "請輸入",
+        "請上傳", "無法", "不得", "不可", "異常", "逾期", "附件", "委任狀",
+    )
+    return any(term in norm for term in failure_terms)
+
+
+def _file_review_submit_evidence_is_success(
+    evidence: Dict[str, Any],
+    visible_text: str,
+    case_info: Dict[str, str],
+) -> bool:
+    if (
+        (evidence or {}).get("application_number")
+        or (evidence or {}).get("list_case_verified")
+        or (evidence or {}).get("success_text_detected")
+    ):
+        return True
+    return _file_review_submit_success_from_text(visible_text, case_info)
+
 # ==============================================================================
 # Safe file operations (never delete Synology Drive data)
 # ==============================================================================
@@ -280,7 +407,7 @@ class LawyerPortalSSO:
     def log(self, message: str):
         timestamp = datetime.now().strftime("%H:%M:%S")
         full_msg = f"[{timestamp}] [閱卷SSO] {message}"
-        print(full_msg)
+        print(full_msg, file=sys.stderr)
         if self.log_callback:
             self.log_callback(full_msg)
 
@@ -2526,7 +2653,7 @@ class FileReviewManager:
     def log(self, message: str):
         timestamp = datetime.now().strftime("%H:%M:%S")
         full_msg = f"[{timestamp}] [閱卷] {message}"
-        print(full_msg)
+        print(full_msg, file=sys.stderr)
         if self.log_callback:
             self.log_callback(full_msg)
     
@@ -8985,6 +9112,8 @@ class FileReviewManager:
             sys_type = case_info.get('sys_type', 'AUTO')
             # When sys_type is "AUTO", we will try multiple system options.
             sys_auto_candidates = []
+            selected_sys_type = ""
+            sys_type_raw = (sys_type or "").strip()
 
             _mode_label = "紙本閱卷" if _is_paper else "電子閱卷"
             self.log(f"開始閱卷聲請 ({_mode_label}極速版): {court_code} {year}年 {case_type}字第{case_number}號")
@@ -9395,15 +9524,135 @@ class FileReviewManager:
             try:
                 # ★★★ 優化重點：使用 JavaScript 批次填寫表單 ★★★
                 # 比 send_keys 快 30-50%，且更穩定
+
+                def _get_select_values(select_name: str) -> List[str]:
+                    try:
+                        vals = self.driver.execute_script(
+                            """
+                            return (function(name) {
+                                var el = document.getElementsByName(name)[0];
+                                if (!el) return [];
+                                return Array.from(el.options || []).map(function(o) {
+                                    return (o.value || '').trim();
+                                }).filter(Boolean);
+                            })(arguments[0]);
+                            """,
+                            select_name,
+                        )
+                        return [str(v).strip() for v in (vals or []) if str(v or "").strip()]
+                    except Exception:
+                        return []
+
+                def _set_select_value(select_name: str, value: str, label: str = "") -> bool:
+                    target = str(value or "").strip()
+                    if not target:
+                        return False
+                    result = None
+                    try:
+                        result = self.driver.execute_script(
+                            """
+                            return (function(name, val) {
+                                var el = document.getElementsByName(name)[0];
+                                if (!el) return {ok:false, current:'', reason:'missing'};
+                                var opts = Array.from(el.options || []);
+                                var opt = opts.find(function(o) { return (o.value || '') === val; });
+                                if (!opt) {
+                                    return {
+                                        ok:false,
+                                        current:(el.value || ''),
+                                        reason:'option_missing',
+                                        options:opts.slice(0, 20).map(function(o) {
+                                            return (o.value || '') + '=' + (o.text || '');
+                                        })
+                                    };
+                                }
+                                el.value = val;
+                                opt.selected = true;
+                                el.dispatchEvent(new Event('input', {bubbles:true}));
+                                el.dispatchEvent(new Event('change', {bubbles:true}));
+                                return {ok:(el.value || '') === val, current:(el.value || ''), text:(opt.text || '')};
+                            })(arguments[0], arguments[1]);
+                            """,
+                            select_name,
+                            target,
+                        )
+                    except Exception as js_e:
+                        self.log(f"      ⚠️ {label or select_name} JS 選取失敗: {js_e}")
+
+                    if isinstance(result, dict) and result.get("ok"):
+                        self.log(f"    {label or select_name}: {target}")
+                        return True
+                    if isinstance(result, dict) and result.get("reason") == "option_missing":
+                        self.log(
+                            f"      ⚠️ {label or select_name} 找不到選項 {target}: "
+                            f"{result.get('options') or []}"
+                        )
+                        return False
+
+                    try:
+                        el = self.driver.find_element(By.NAME, select_name)
+                        if hasattr(el, "_el") and hasattr(el._el, "select_option"):
+                            el._el.select_option(value=target)
+                        else:
+                            from selenium.webdriver.support.ui import Select as SeleniumSelect
+                            SeleniumSelect(el).select_by_value(target)
+                        current = (self.driver.execute_script(
+                            "return (document.getElementsByName(arguments[0])[0] || {}).value || '';",
+                            select_name,
+                        ) or "").strip()
+                        if current == target:
+                            self.log(f"    {label or select_name}: {target}")
+                            return True
+                    except Exception as fb_e:
+                        reason = result.get("reason") if isinstance(result, dict) else ""
+                        opts = result.get("options") if isinstance(result, dict) else ""
+                        self.log(f"      ⚠️ {label or select_name} 選取失敗: {fb_e} {reason} {opts}")
+                    return False
+
+                def _set_select_visible_text(select_name: str, text: str, label: str = "") -> bool:
+                    target_text = str(text or "").strip()
+                    if not target_text:
+                        return False
+                    try:
+                        result = self.driver.execute_script(
+                            """
+                            return (function(name, txt) {
+                                var el = document.getElementsByName(name)[0];
+                                if (!el) return {ok:false, current:'', reason:'missing'};
+                                var opts = Array.from(el.options || []);
+                                var opt = opts.find(function(o) { return (o.text || '').trim() === txt; }) ||
+                                          opts.find(function(o) { return (o.text || '').indexOf(txt) >= 0; });
+                                if (!opt) {
+                                    return {
+                                        ok:false,
+                                        current:(el.value || ''),
+                                        reason:'option_missing',
+                                        options:opts.slice(0, 20).map(function(o) {
+                                            return (o.value || '') + '=' + (o.text || '');
+                                        })
+                                    };
+                                }
+                                el.value = opt.value || '';
+                                opt.selected = true;
+                                el.dispatchEvent(new Event('input', {bubbles:true}));
+                                el.dispatchEvent(new Event('change', {bubbles:true}));
+                                return {ok:true, current:(el.value || ''), text:(opt.text || '')};
+                            })(arguments[0], arguments[1]);
+                            """,
+                            select_name,
+                            target_text,
+                        )
+                        if isinstance(result, dict) and result.get("ok"):
+                            self.log(f"    {label or select_name}: {result.get('text') or target_text}")
+                            return True
+                    except Exception as js_e:
+                        self.log(f"      ⚠️ {label or select_name} 文字選取失敗: {js_e}")
+                    return False
                 
                 # 步驟 1: 先選擇下拉選單 (這會觸發 AJAX)
                 try:
-                    from selenium.webdriver.support.ui import Select
-                    
                     # 法院選擇 (ocrtid = 對象法院)
-                    court_select = self.driver.find_element(By.NAME, "ocrtid")
-                    Select(court_select).select_by_value(court_code)
-                    self.log(f"    法院: {court_code}")
+                    _set_select_value("ocrtid", court_code, "法院")
 
                     # ★ 關鍵：等待 AJAX 穩定 (下拉選單變更後會觸發後端呼叫)
                     time.sleep(1.0)
@@ -9412,36 +9661,30 @@ class FileReviewManager:
                     court_division = case_info.get('court_division', '')
                     if court_division:
                         try:
-                            crt_select = self.driver.find_element(By.NAME, "crtid")
-                            crt_sel = Select(crt_select)
                             # 先嘗試精確 value 匹配，再嘗試文字模糊匹配
-                            crt_selected = False
-                            try:
-                                crt_sel.select_by_value(court_division)
-                                crt_selected = True
-                            except Exception:
-                                pass
+                            crt_selected = _set_select_value("crtid", court_division, "具體法院")
                             if not crt_selected:
-                                for opt in crt_sel.options:
-                                    if court_division in (opt.text or ''):
-                                        crt_sel.select_by_visible_text(opt.text)
-                                        crt_selected = True
-                                        break
+                                crt_selected = _set_select_visible_text("crtid", court_division, "具體法院")
                             if crt_selected:
-                                self.log(f"    具體法院: {court_division}")
                                 time.sleep(0.5)
                             else:
                                 self.log(f"    ⚠️ 找不到具體法院選項: {court_division}")
                                 # 列出可用選項
-                                avail = [f"{o.get_attribute('value')}={o.text}" for o in crt_sel.options[:15]]
+                                avail = self.driver.execute_script(
+                                    """
+                                    (function() {
+                                        var el = document.getElementsByName('crtid')[0];
+                                        return Array.from((el && el.options) || []).slice(0, 15).map(function(o) {
+                                            return (o.value || '') + '=' + (o.text || '');
+                                        });
+                                    })();
+                                    """
+                                ) or []
                                 self.log(f"        可用: {avail}")
                         except Exception as crt_e:
                             self.log(f"    ⚠️ crtid 選擇失敗: {crt_e}")
 
                     # 系統別選擇
-                    sys_select = self.driver.find_element(By.NAME, "sys")
-                    sys_sel = Select(sys_select)
-
                     # sys_type 支援：
                     # - 具體值 (e.g. "H")
                     # - 文字 (e.g. "刑事"/"民事")：嘗試以 visible text 選取
@@ -9449,47 +9692,30 @@ class FileReviewManager:
                     sys_type_raw = (sys_type or "").strip()
                     sys_auto_candidates = []
                     if (not sys_type_raw) or sys_type_raw.upper() == "AUTO":
-                        vals = []
-                        for opt in (sys_sel.options or []):
-                            try:
-                                v = (opt.get_attribute("value") or "").strip()
-                            except Exception:
-                                v = ""
-                            if v:
-                                vals.append(v)
-                        # Prefer common choices first, then the rest.
-                        preferred = [v for v in ["H", "C", "A", "F", "M", "S"] if v in vals]
-                        sys_auto_candidates = preferred + [v for v in vals if v not in preferred]
+                        vals = _get_select_values("sys")
+                        inferred_sys = _infer_file_review_sys_type(court_code, case_type)
+                        sys_auto_candidates = _ordered_file_review_sys_candidates(vals, inferred_sys)
                         # Pick the first candidate now; the rest will be tried later if needed.
                         if sys_auto_candidates:
                             sys_type_raw = sys_auto_candidates[0]
                             sys_auto_candidates = sys_auto_candidates[1:]
 
-                    selected_ok = False
-                    if sys_type_raw:
-                        try:
-                            sys_sel.select_by_value(sys_type_raw)
-                            selected_ok = True
-                            self.log(f"    系統別: {sys_type_raw}")
-                        except Exception:
-                            selected_ok = False
+                    selected_ok = _set_select_value("sys", sys_type_raw, "系統別") if sys_type_raw else False
                     if (not selected_ok) and sys_type_raw:
                         # Try visible text selection for human-friendly labels.
-                        try:
-                            sys_sel.select_by_visible_text(sys_type_raw)
-                            selected_ok = True
-                            self.log(f"    系統別(文字): {sys_type_raw}")
-                        except Exception:
-                            selected_ok = False
+                        selected_ok = _set_select_visible_text("sys", sys_type_raw, "系統別")
 
                     if not selected_ok:
                         # As a last resort, keep whatever default is selected.
                         try:
-                            cur = sys_sel.first_selected_option.get_attribute("value") or ""
+                            cur = self.driver.execute_script(
+                                "return (document.getElementsByName('sys')[0] || {}).value || '';"
+                            ) or ""
                         except Exception:
                             cur = ""
                         self.log(f"    ⚠️ 系統別未指定/無法選取，沿用預設: {cur}")
                         sys_type_raw = cur
+                    selected_sys_type = sys_type_raw
                     
                     # ★ 再次等待 AJAX 穩定
                     time.sleep(0.5)
@@ -9656,13 +9882,7 @@ class FileReviewManager:
                     self.log(f"  ⚠️ 案號查詢失敗，嘗試切換系統別重試（剩餘 {len(sys_auto_candidates)} 種）...")
 
                     def _select_sys_value(v: str) -> bool:
-                        try:
-                            from selenium.webdriver.support.ui import Select
-                            s = Select(self.driver.find_element(By.NAME, "sys"))
-                            s.select_by_value(v)
-                            return True
-                        except Exception:
-                            return False
+                        return _set_select_value("sys", v, "系統別")
 
                     def _click_check_anywhere() -> bool:
                         nonlocal check_clicked
@@ -9721,6 +9941,7 @@ class FileReviewManager:
                                     has_ebook = True
 
                             if has_ebook:
+                                selected_sys_type = cand
                                 self.log(f"  ✅ 系統別={cand} 成功通過檢查")
                                 break
                         except Exception as e2:
@@ -9771,6 +9992,27 @@ class FileReviewManager:
                         self.log(f"  ↺ postback 後補回 {_fl}: {_fv} (was: {_cur!r})")
                 except Exception as _re:
                     self.log(f"  ⚠️ postback 補回 {_fl} 失敗: {_re}")
+
+            # 案號檢查 postback 也可能把 select 重置成空白；截圖與送出前必須補回。
+            _postback_select_pairs = [
+                ("ocrtid", court_code, "法院"),
+                ("sys", selected_sys_type or sys_type_raw or _infer_file_review_sys_type(court_code, case_type), "系統別"),
+            ]
+            for _sn, _sv, _sl in _postback_select_pairs:
+                if not _sv:
+                    continue
+                try:
+                    _cur = (self.driver.execute_script(
+                        "return (document.getElementsByName(arguments[0])[0] || {}).value || '';",
+                        _sn,
+                    ) or "").strip()
+                    if _cur != str(_sv):
+                        if _set_select_value(_sn, str(_sv), _sl):
+                            self.log(f"  ↺ postback 後補回 {_sl}: {_sv} (was: {_cur!r})")
+                        else:
+                            self.log(f"  ⚠️ postback 補回 {_sl} 失敗: target={_sv} current={_cur!r}")
+                except Exception as _se:
+                    self.log(f"  ⚠️ postback 補回 {_sl} 失敗: {_se}")
 
             # ========= 步驟 6-7: 選擇聲請方式/範圍/交付 (極速 JS 批次版) =========
             self.log(f"  選擇聲請選項 (JS 批次模式, {'紙本閱卷' if _is_paper else '電子閱卷'})...")
@@ -10107,41 +10349,168 @@ class FileReviewManager:
                 self.log("  尋找送出按鈕...")
                 
                 submit_selectors = [
+                    "//button[normalize-space(.)='確認送出']",
                     "//button[@text='確認送出']",
                     "//button[.//span[contains(text(), '確認送出')]]",
                     "//button[contains(@class, 'btn-success') and contains(., '送出')]",
+                    "//input[@type='button' and @value='確認送出']",
+                    "//*[self::button or self::a or self::input][contains(normalize-space(.), '確認送出') or @value='確認送出']",
                 ]
+
+                def _visible_page_text() -> str:
+                    try:
+                        txt = self.driver.execute_script(
+                            "return document.body ? document.body.innerText : document.documentElement.innerText;"
+                        )
+                        if txt:
+                            return str(txt)
+                    except Exception:
+                        logging.getLogger(__name__).debug("visible text unavailable", exc_info=True)
+                    try:
+                        return self.driver.page_source or ""
+                    except Exception:
+                        return ""
+
+                def _confirm_button_still_visible() -> bool:
+                    for xp in submit_selectors:
+                        try:
+                            items = self.driver.find_elements(By.XPATH, xp)
+                            if any(it.is_displayed() for it in items):
+                                return True
+                        except Exception:
+                            continue
+                    return False
                 
                 submit_clicked = False
+                submit_rejected = False
+                submit_alerts: List[str] = []
+                last_click_error = ""
+                direct_submit_invoked = False
+                direct_submit_error = ""
                 for sel in submit_selectors:
-                    try:
-                        btn = WebDriverWait(self.driver, 1).until(EC.element_to_be_clickable((By.XPATH, sel)))
-                        self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", btn)
-                        self.driver.execute_script("arguments[0].click();", btn)
-                        submit_clicked = True
-                        self.log("  ✓ 已點擊「確認送出」按鈕")
+                    for click_mode in ("native", "js"):
+                        try:
+                            btn = WebDriverWait(self.driver, 1).until(EC.element_to_be_clickable((By.XPATH, sel)))
+                            self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", btn)
+                            if click_mode == "native":
+                                btn.click()
+                            else:
+                                self.driver.execute_script("arguments[0].click();", btn)
+                            submit_clicked = True
+                            self.log(f"  ✓ 已用{click_mode}方式點擊「確認送出」按鈕")
+
+                            # 處理送出後的確認或驗證彈窗。
+                            alert_looks_rejected = False
+                            try:
+                                WebDriverWait(self.driver, 3).until(EC.alert_is_present())
+                                alert = self.driver.switch_to.alert
+                                confirm_msg = alert.text or ""
+                                submit_alerts.append(confirm_msg)
+                                self.log(f"  送出確認: {confirm_msg}")
+                                alert.accept()
+                                if _file_review_alert_looks_rejected(confirm_msg):
+                                    alert_looks_rejected = True
+                            except Exception:
+                                logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, "submit_alert", exc_info=True)
+
+                            time.sleep(2)
+                            if _file_review_submit_success_from_text(_visible_page_text(), case_info):
+                                self.log("  ✅ 偵測到法院端受理訊息")
+                                break
+                            if alert_looks_rejected:
+                                submit_rejected = True
+                                break
+                            if not _confirm_button_still_visible():
+                                self.log("  ℹ️ 送出後頁面已離開確認按鈕，進入成功驗證")
+                                break
+                            self.log("  ⚠️ 點擊後尚未出現受理訊息，改用下一種點擊方式")
+                        except Exception as click_e:
+                            last_click_error = str(click_e)[:200]
+                            continue
+                        if submit_clicked and (
+                            submit_rejected
+                            or _file_review_submit_success_from_text(_visible_page_text(), case_info)
+                            or not _confirm_button_still_visible()
+                        ):
+                            break
+                    if submit_clicked and (
+                        submit_rejected
+                            or _file_review_submit_success_from_text(_visible_page_text(), case_info)
+                            or not _confirm_button_still_visible()
+                        ):
+                            break
+                    if submit_clicked:
                         break
-                    except Exception:
-                        continue
+
+                if submit_clicked and (not submit_rejected) and (not _file_review_submit_success_from_text(_visible_page_text(), case_info)):
+                    # Some OLA pages show/accept confirm() but do not advance in headless mode.
+                    # After the user confirmation has already been accepted, fall back to the
+                    # page's own submit checker instead of raw form submission.
+                    try:
+                        self.log("  ⚠️ 確認彈窗已接受但未進入受理頁，改用頁面 doSubmitCheck() 送出")
+                        direct_submit_invoked = True
+                        direct_ok = self.driver.execute_script(
+                            """
+                            return (function() {
+                                if (typeof window.confirm === 'function') {
+                                    window.confirm = function(){ return true; };
+                                }
+                                if (typeof doSubmitCheck === 'function') {
+                                    doSubmitCheck();
+                                    return true;
+                                }
+                                return false;
+                            })();
+                            """
+                        )
+                        if not direct_ok:
+                            direct_submit_error = "doSubmitCheck unavailable"
+                        for _ in range(10):
+                            try:
+                                WebDriverWait(self.driver, 0.8).until(EC.alert_is_present())
+                                alert = self.driver.switch_to.alert
+                                direct_msg = alert.text or ""
+                                submit_alerts.append(direct_msg)
+                                self.log(f"  直接送出彈窗: {direct_msg}")
+                                alert.accept()
+                                if _file_review_alert_looks_rejected(direct_msg):
+                                    submit_rejected = True
+                                    break
+                            except Exception:
+                                pass
+                            if _file_review_submit_success_from_text(_visible_page_text(), case_info):
+                                self.log("  ✅ doSubmitCheck 後偵測到法院端受理訊息")
+                                break
+                            time.sleep(1)
+                    except Exception as direct_e:
+                        direct_submit_error = str(direct_e)[:200]
+                        self.log(f"  ⚠️ doSubmitCheck 直接送出失敗: {direct_submit_error}")
                 
                 if submit_clicked:
-                    # 處理送出後的確認彈窗
-                    try:
-                        WebDriverWait(self.driver, 3).until(EC.alert_is_present())
-                        alert = self.driver.switch_to.alert
-                        confirm_msg = alert.text
-                        self.log(f"  送出確認: {confirm_msg}")
-                        alert.accept()
-                    except Exception:
-                        logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 8984, exc_info=True)
-                    
-                    self.log("  ✅ 閱卷聲請已自動提交")
+                    self.log("  開始驗證法院端是否已受理")
 
                     # ========= 送出後成功驗證 =========
                     apply_evidence = {
-                        "submitted": True,
+                        "submitted": False,
                         "timestamp": datetime.now().isoformat(),
                     }
+                    if submit_alerts:
+                        apply_evidence["alert_messages"] = submit_alerts
+                    if submit_rejected and submit_alerts:
+                        apply_evidence["rejection_message"] = submit_alerts[-1]
+                    if last_click_error:
+                        apply_evidence["last_click_error"] = last_click_error
+                    if direct_submit_invoked:
+                        apply_evidence["direct_submit_invoked"] = True
+                    if direct_submit_error:
+                        apply_evidence["direct_submit_error"] = direct_submit_error
+                    try:
+                        first_text = _visible_page_text()
+                        apply_evidence["success_text_detected"] = _file_review_submit_success_from_text(first_text, case_info)
+                        if first_text:
+                            apply_evidence["visible_text_excerpt"] = first_text[:800]
+                    except Exception:
+                        logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, "submit_text_evidence", exc_info=True)
 
                     # (a) 截圖保存成功頁面
                     try:
@@ -10159,7 +10528,7 @@ class FileReviewManager:
                     # (b) 嘗試從頁面抓取聲請編號
                     try:
                         application_number = None
-                        page_text = self.driver.page_source or ""
+                        page_text = _visible_page_text() or self.driver.page_source or ""
                         # 嘗試多種模式抓取聲請序號
                         import re as _re
                         patterns = [
@@ -10201,6 +10570,8 @@ class FileReviewManager:
                         if application_number:
                             apply_evidence["application_number"] = application_number
                             self.log(f"  ✅ 取得聲請編號: {application_number}")
+                        elif apply_evidence.get("success_text_detected"):
+                            self.log("  ✅ 已偵測到受理文字（未提供聲請編號）")
                         else:
                             self.log("  ⚠️ 未能取得聲請編號，建議人工確認")
                     except Exception as an_e:
@@ -10254,7 +10625,12 @@ class FileReviewManager:
                                 rows = self.driver.find_elements(By.XPATH, "//table//tr")
                                 if rows:
                                     apply_evidence["list_row_count"] = len(rows)
-                                    self.log(f"  ✅ 列表頁確認：共 {len(rows)} 筆記錄")
+                                    list_text = _visible_page_text()
+                                    if _file_review_case_signature_present(list_text, case_info):
+                                        apply_evidence["list_case_verified"] = True
+                                        self.log(f"  ✅ 列表頁確認：找到本案記錄（共 {len(rows)} 列）")
+                                    else:
+                                        self.log(f"  ⚠️ 列表頁有 {len(rows)} 列，但未精準找到本案")
 
                                     # 嘗試截圖列表頁
                                     try:
@@ -10273,26 +10649,30 @@ class FileReviewManager:
                     except Exception as list_e:
                         self.log(f"  ⚠️ 列表頁驗證失敗: {list_e}")
 
+                    final_visible_text = _visible_page_text()
+                    submit_verified = _file_review_submit_evidence_is_success(
+                        apply_evidence,
+                        final_visible_text,
+                        case_info,
+                    )
+                    apply_evidence["submitted"] = bool(submit_verified)
+
                     # (d) 記錄成功證據到日誌
                     try:
-                        evidence_summary = f"成功證據: submitted={apply_evidence.get('submitted')}"
+                        evidence_summary = f"送出驗證: submitted={apply_evidence.get('submitted')}"
                         if apply_evidence.get("application_number"):
                             evidence_summary += f", 聲請編號={apply_evidence['application_number']}"
                         if apply_evidence.get("screenshot"):
                             evidence_summary += f", 截圖={os.path.basename(apply_evidence['screenshot'])}"
-                        if apply_evidence.get("list_row_count"):
-                            evidence_summary += f", 列表筆數={apply_evidence['list_row_count']}"
+                        if apply_evidence.get("list_case_verified"):
+                            evidence_summary += ", 列表已找到本案"
+                        elif apply_evidence.get("list_row_count"):
+                            evidence_summary += f", 列表列數={apply_evidence['list_row_count']}（未找到本案）"
+                        if apply_evidence.get("rejection_message"):
+                            evidence_summary += f", 系統訊息={apply_evidence['rejection_message'][:120]}"
                         self.log(f"  📋 {evidence_summary}")
                     except Exception:
                         logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 9135, exc_info=True)
-
-                    # 記錄聲請（用於追蹤首次聲請）
-                    try:
-                        reg_key = self.make_apply_registry_key(case_info)
-                        self.record_application(reg_key, case_info)
-                        self.log(f"  📝 已記錄聲請: {reg_key}")
-                    except Exception:
-                        logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 9143, exc_info=True)
 
                     # 將證據附加到回傳值（使用特殊格式以便上層解析）
                     evidence_json = ""
@@ -10300,7 +10680,23 @@ class FileReviewManager:
                         evidence_json = "|" + json.dumps(apply_evidence, ensure_ascii=False)
                     except Exception:
                         logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 9150, exc_info=True)
-                    return "Applied" + evidence_json
+                    if submit_verified:
+                        self.log("  ✅ 閱卷聲請已由法院端受理")
+                        # 記錄聲請（用於追蹤首次聲請）
+                        try:
+                            reg_key = self.make_apply_registry_key(case_info)
+                            self.record_application(reg_key, case_info)
+                            self.log(f"  📝 已記錄聲請: {reg_key}")
+                        except Exception:
+                            logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 9143, exc_info=True)
+                        return "Applied" + evidence_json
+
+                    if submit_rejected:
+                        self.log("  ❌ 法院系統退回送出，未完成聲請")
+                        return "SubmitRejected" + evidence_json
+
+                    self.log("  ❌ 未偵測到法院端受理訊息或列表本案紀錄，未視為已送出")
+                    return "SubmitUnverified" + evidence_json
                 else:
                     self.log("  ⚠️ 找不到「確認送出」按鈕")
                     return "Error"
