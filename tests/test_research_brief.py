@@ -388,3 +388,76 @@ def test_fetch_source_dispatches_by_type(rb_fetchers, monkeypatch):
     rb_fetchers.fetch_source({"url": "https://b/", "type": "html"})
     assert ("rss", "https://a/") in called
     assert ("html", "https://b/") in called
+
+
+# ───────── fetch_html article extraction ─────────
+
+def test_fetch_html_autodiscovers_rss(rb_fetchers, monkeypatch):
+    """If page contains <link rel=alternate type=rss+xml>, delegate to fetch_rss."""
+    html_with_rss = """<html><head>
+      <link rel="alternate" type="application/rss+xml" href="/feed.xml">
+    </head><body><a href="/news/1">Some Article Title Here</a></body></html>"""
+    rss_items = [{"title": "RSS Article", "url": "https://ex.com/news/rss-1",
+                  "snippet": "snippet", "raw": "raw", "lang_hint": "en", "published": ""}]
+    monkeypatch.setattr(rb_fetchers, "_http_get", lambda u, timeout=15: html_with_rss)
+    monkeypatch.setattr(rb_fetchers, "fetch_rss", lambda u, **kw: rss_items)
+    items = rb_fetchers.fetch_html("https://ex.com/news/", lang_hint="en")
+    assert len(items) == 1
+    assert items[0]["title"] == "RSS Article"
+
+
+def test_fetch_html_extracts_article_links(rb_fetchers, monkeypatch):
+    """fetch_html should extract individual article links, not return the homepage."""
+    html = """<html><head><title>News Site</title></head>
+    <body>
+      <nav><a href="/">首頁</a><a href="/about">About</a></nav>
+      <main>
+        <a href="/news/2026/indigenous-rights-report">Indigenous Rights Annual Report 2026</a>
+        <a href="/news/2026/iccpr-concluding-observations">ICCPR Concluding Observations Released</a>
+        <a href="/news/2026/un-treaty-body-session">UN Treaty Body Session Outcomes</a>
+      </main>
+      <footer><a href="/contact">Contact Us</a></footer>
+    </body></html>"""
+    monkeypatch.setattr(rb_fetchers, "_http_get", lambda u, timeout=15: html)
+    items = rb_fetchers.fetch_html("https://nhrc.cy.gov.tw/news/", lang_hint="zh")
+    assert len(items) >= 3
+    titles = [i["title"] for i in items]
+    assert any("Indigenous Rights" in t for t in titles)
+    assert any("ICCPR" in t for t in titles)
+    # Navigation links should be excluded
+    assert not any(t in ("首頁", "About", "Contact Us") for t in titles)
+
+
+def test_fetch_html_filters_short_titles(rb_fetchers, monkeypatch):
+    """Links with very short text (nav items) should be skipped."""
+    html = """<html><head><title>Site</title></head><body>
+      <a href="/page/very-important-human-rights-article-title">Important Article on Human Rights</a>
+      <a href="/short">OK</a>
+      <a href="/x">X</a>
+    </body></html>"""
+    monkeypatch.setattr(rb_fetchers, "_http_get", lambda u, timeout=15: html)
+    items = rb_fetchers.fetch_html("https://ex.com/listing/", lang_hint="en")
+    assert len(items) == 1
+    assert "Important Article" in items[0]["title"]
+
+
+def test_fetch_html_excludes_cross_domain_links(rb_fetchers, monkeypatch):
+    """Links pointing to external domains should not be included."""
+    html = """<html><head><title>Site</title></head><body>
+      <a href="/local/article-title-long-enough-to-pass">Local Article That Is Long Enough</a>
+      <a href="https://external.org/some/different/article/path">External Article Link Here</a>
+    </body></html>"""
+    monkeypatch.setattr(rb_fetchers, "_http_get", lambda u, timeout=15: html)
+    items = rb_fetchers.fetch_html("https://ex.com/", lang_hint="en")
+    assert all("ex.com" in i["url"] or i["url"].startswith("/") for i in items)
+    assert not any("external.org" in i["url"] for i in items)
+
+
+def test_fetch_html_falls_back_to_page_when_no_links(rb_fetchers, monkeypatch):
+    """If no article links found, fall back to returning the page itself."""
+    html = """<html><head><title>Single Page</title></head>
+    <body><p>This page has no article links, just plain text content here.</p></body></html>"""
+    monkeypatch.setattr(rb_fetchers, "_http_get", lambda u, timeout=15: html)
+    items = rb_fetchers.fetch_html("https://ex.com/", lang_hint="zh")
+    assert len(items) == 1
+    assert items[0]["url"] == "https://ex.com/"

@@ -196,27 +196,152 @@ def fetch_json_api(url: str, *, lang_hint: Optional[str] = None,
 
 # ───────── HTML scrape (generic) ─────────
 
+_NAV_SKIP_PATTERNS = re.compile(
+    r"(首頁|回首頁|home|about|contact|sitemap|privacy|login|logout|search|register"
+    r"|facebook|twitter|youtube|instagram|linkedin|rss|訂閱|分享|列印|print"
+    r"|next|prev|previous|older|newer|下一|上一|更多|more|載入|loading"
+    r"|skip to|jump to|回到頂|top of page|^#)",
+    re.IGNORECASE,
+)
+
+_MIN_TITLE_LEN = 8
+_MIN_PATH_DEPTH = 1  # skip bare-root hrefs like "/"
+
+
+def _autodiscover_rss(html: str, base_url: str) -> Optional[str]:
+    """Return RSS/Atom feed URL if autodiscovery link found in <head>."""
+    from urllib.parse import urljoin
+    for m in re.finditer(
+        r'<link[^>]+type=["\']application/(rss|atom)\+xml["\'][^>]*>',
+        html, re.IGNORECASE
+    ):
+        href_m = re.search(r'href=["\']([^"\']+)["\']', m.group(0), re.IGNORECASE)
+        if href_m:
+            return urljoin(base_url, href_m.group(1))
+    return None
+
+
+def _extract_article_links(html: str, base_url: str,
+                            max_links: int) -> List[Dict[str, Any]]:
+    """
+    Extract candidate article links from an HTML listing page.
+    Returns list of {title, url, snippet} dicts.
+    """
+    from urllib.parse import urljoin, urlparse
+
+    base_parsed = urlparse(base_url)
+    base_netloc = base_parsed.netloc.lower()
+
+    # Strip <script> / <style> / <nav> / <footer> / <header> blocks first
+    clean = re.sub(
+        r"<(script|style|nav|footer|header|aside)[^>]*>.*?</\1>",
+        " ", html, flags=re.IGNORECASE | re.DOTALL,
+    )
+
+    # Extract all <a> tags
+    anchors = re.findall(r'<a\s[^>]*href=["\']([^"\'#][^"\']*)["\'][^>]*>(.*?)</a>',
+                         clean, re.IGNORECASE | re.DOTALL)
+
+    seen_urls: set = set()
+    results: List[Dict[str, Any]] = []
+
+    for raw_href, raw_text in anchors:
+        if len(results) >= max_links:
+            break
+
+        title = _strip_html(raw_text).strip()
+        if len(title) < _MIN_TITLE_LEN:
+            continue
+        if _NAV_SKIP_PATTERNS.search(title):
+            continue
+
+        href = raw_href.strip()
+        # Skip mailto / javascript / fragment-only
+        if re.match(r"(mailto:|javascript:|tel:)", href, re.IGNORECASE):
+            continue
+
+        abs_url = urljoin(base_url, href)
+        parsed = urlparse(abs_url)
+
+        # Only same-domain or sub-domain links
+        link_netloc = parsed.netloc.lower()
+        if link_netloc and link_netloc != base_netloc:
+            # Allow sub-domains of base domain
+            base_root = ".".join(base_netloc.split(".")[-2:])
+            if not link_netloc.endswith(base_root):
+                continue
+
+        # Require some path depth to skip bare root hrefs
+        path = parsed.path.rstrip("/")
+        if path.count("/") < _MIN_PATH_DEPTH:
+            continue
+
+        # Skip obvious non-article extensions
+        if re.search(r"\.(css|js|png|jpg|jpeg|gif|svg|ico|pdf|zip|xml)$",
+                     parsed.path, re.IGNORECASE):
+            continue
+
+        # Dedup
+        if abs_url in seen_urls:
+            continue
+        seen_urls.add(abs_url)
+
+        results.append({
+            "title": title[:200],
+            "url": abs_url,
+            "snippet": "",
+            "raw": "",
+        })
+
+    return results
+
+
 def fetch_html(url: str, *, lang_hint: Optional[str] = None,
                max_links: int = 20) -> List[Dict[str, Any]]:
     """
-    Generic HTML landing-page scrape: extract <a> anchors and snippet the page body.
-    Works as a fallback when a site has no RSS.
+    Improved HTML listing-page scrape:
+    1. Autodiscover RSS/Atom feed — if found, delegate to fetch_rss().
+    2. Otherwise extract individual article links from <a> tags.
+    3. Falls back to returning the page itself if no links found.
     """
     content = _http_get(url)
     if not content:
         return []
-    # Find title
+
+    # Step 1: RSS autodiscovery
+    rss_url = _autodiscover_rss(content, url)
+    if rss_url:
+        logger.info("fetch_html: found RSS feed %s for %s", rss_url, url)
+        items = fetch_rss(rss_url, lang_hint=lang_hint)
+        if items:
+            return items
+
+    # Step 2: Extract article links
+    items = _extract_article_links(content, url, max_links=max_links)
+
+    if items:
+        now_iso = datetime.now(timezone.utc).isoformat()
+        result = []
+        for item in items[:_MAX_ENTRIES_PER_SOURCE]:
+            result.append({
+                "title": item["title"],
+                "url": item["url"],
+                "published": now_iso,
+                "snippet": item["snippet"],
+                "raw": item["raw"],
+                "lang_hint": lang_hint,
+            })
+        return result
+
+    # Step 3: Fallback — return page itself (last resort)
     m = re.search(r"<title>(.*?)</title>", content, re.IGNORECASE | re.DOTALL)
     page_title = _strip_html(m.group(1)) if m else url
     body = _strip_html(content)
-    snippet = body[:600]
-    # Return landing-page as single entry; we intentionally don't over-scrape anchors
-    # to avoid drowning the namespace. Dedicated adapters can be added per-source.
     return [{
         "title": page_title,
         "url": url,
         "published": datetime.now(timezone.utc).isoformat(),
-        "snippet": snippet,
+        "snippet": body[:600],
         "raw": body[:4000],
         "lang_hint": lang_hint,
     }]
