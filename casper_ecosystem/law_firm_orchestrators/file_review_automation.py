@@ -1242,6 +1242,7 @@ class FileReviewManager:
         self.driver = None
         self.last_login_error_code = ""
         self.last_login_error_detail = ""
+        self._last_upload_screenshot = None  # 最後一次上傳成功的截圖路徑
         self.gmail_service = None
         self._last_gmail_error = ""
         self._last_smart_skipped_files = []
@@ -8694,14 +8695,14 @@ class FileReviewManager:
 
             if upload_done:
                 self.log(f"  ✅ 附件上傳成功: {os.path.basename(file_path)}")
-                # 截圖記錄
+                # 截圖記錄 — 存到 screenshots/ 目錄，並更新 _last_upload_screenshot 供預覽截圖使用
                 try:
-                    ss_path = os.path.join(
-                        os.path.dirname(os.path.abspath(__file__)) if "__file__" in dir() else "/tmp",
-                        f"upload_result_{int(time.time())}.png",
-                    )
+                    _ss_dir = os.path.join(self.download_folder, "screenshots")
+                    os.makedirs(_ss_dir, exist_ok=True)
+                    ss_path = os.path.join(_ss_dir, f"upload_result_{int(time.time())}.png")
                     self.driver.save_screenshot(ss_path)
-                    self.log(f"  📸 截圖: {ss_path}")
+                    self._last_upload_screenshot = ss_path
+                    self.log(f"  📸 上傳成功截圖: {ss_path}")
                 except Exception:
                     logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 7693, exc_info=True)
 
@@ -10410,6 +10411,10 @@ class FileReviewManager:
                                 alert.accept()
                                 if _file_review_alert_looks_rejected(confirm_msg):
                                     alert_looks_rejected = True
+                                elif any(t in confirm_msg for t in ("已受理", "聲請成功", "送出成功", "申請成功", "新增成功", "登錄成功", "完成聲請", "提交至法院")):
+                                    # 彈窗本身即為「已受理」確認訊息，不需再驗證頁面文字
+                                    self.log(f"  ✅ 彈窗確認受理: {confirm_msg}")
+                                    break
                             except Exception:
                                 logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, "submit_alert", exc_info=True)
 
@@ -10707,13 +10712,18 @@ class FileReviewManager:
                     import datetime as _dt
                     _ts = _dt.datetime.now().strftime("%Y%m%d_%H%M%S")
                     _mode = "paper" if _is_paper else "electronic"
-                    _shot_name = f"preview_{_mode}_{_ts}.png"
                     _shot_dir = os.path.join(self.download_folder, "screenshots")
                     os.makedirs(_shot_dir, exist_ok=True)
-                    _shot_path = os.path.join(_shot_dir, _shot_name)
-                    self.driver.save_screenshot(_shot_path)
-                    ready_evidence["screenshot"] = _shot_path
-                    self.log(f"  📸 預覽截圖已保存: {_shot_path}")
+                    # 優先使用上傳成功截圖（顯示已上傳的附件列表）；否則截目前頁面
+                    if self._last_upload_screenshot and os.path.isfile(self._last_upload_screenshot):
+                        ready_evidence["screenshot"] = self._last_upload_screenshot
+                        self.log(f"  📸 使用上傳成功截圖作為預覽: {self._last_upload_screenshot}")
+                    else:
+                        _shot_name = f"preview_{_mode}_{_ts}.png"
+                        _shot_path = os.path.join(_shot_dir, _shot_name)
+                        self.driver.save_screenshot(_shot_path)
+                        ready_evidence["screenshot"] = _shot_path
+                        self.log(f"  📸 預覽截圖已保存: {_shot_path}")
                 except Exception as _ss_e:
                     self.log(f"  ⚠️ 預覽截圖失敗: {_ss_e}")
                 ready_evidence["timestamp"] = time.strftime("%Y-%m-%dT%H:%M:%S")
