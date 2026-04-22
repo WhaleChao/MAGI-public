@@ -497,6 +497,49 @@ def topic_fast_path(orch, topic_key: str, user_id, message: str, role: str, plat
     若使用者在法扶-開辦頻道發了結案指令，引導到結案頻道。
     若使用者在法扶-開辦頻道發了開辦指令，直接執行（不阻擋）。
     """
+    # ── 筆錄-通知頻道 (transcript) 自動補全 ──
+    if topic_key == "transcript":
+        _tr_aliases = ["同步筆錄", "筆錄同步", "下載筆錄", "筆錄下載"]
+        msg_stripped = (message or "").strip()
+        # 訊息已帶指令關鍵字 → 直接執行
+        if any(msg_stripped.startswith(a) for a in _tr_aliases):
+            logger.info("[TopicFastPath] transcript: executing existing command")
+            return orch._handle_command(user_id, message, role=role, platform=platform)
+        # 看起來像 <法院> <案號> 或年度案號格式 → 自動補同步筆錄前綴
+        # 例：HLD 114原訴24 / 花蓮 114原訴24 / 114年度原訴字第000024號
+        _CASE_PAT_TR = re.compile(
+            r'^[\u4e00-\u9fffA-Za-z]{2,4}\s+\d{2,4}[\u4e00-\u9fff]{1,6}\d+'  # <法院> <案號>
+            r'|^\d{2,3}年度'  # 114年度...
+        )
+        if _CASE_PAT_TR.match(msg_stripped) and len(msg_stripped) <= 60:
+            autocompleted = "同步筆錄 " + msg_stripped
+            logger.info("[TopicFastPath] transcript autocomplete: '%s' -> '%s'", msg_stripped, autocompleted)
+            return orch._handle_command(user_id, autocompleted, role=role, platform=platform)
+        # 其他訊息（如一般問題）→ 不攔截
+        return None
+
+    # ── 閱卷-繳費頻道 (filereview_payment) 守門 ──
+    if topic_key == "filereview_payment":
+        msg_stripped = (message or "").strip()
+        # 帶明確指令關鍵字或有附件（繳費憑證截圖）→ 放行讓既有管線處理
+        _pay_kws = ["已繳費", "繳費完成", "繳費通知", "付款完成", "上傳憑證", "繳費憑證", "繳費截圖"]
+        if any(kw in msg_stripped for kw in _pay_kws) or attachment:
+            return None
+        # 純文字且沒有繳費關鍵字 → 提示頻道用途，不走 chat engine
+        if len(msg_stripped) > 1:
+            logger.info("[TopicFastPath] filereview_payment: non-payment text, returning hint")
+            return "💡 這個頻道顯示**閱卷繳費通知**。如需回報繳費，請上傳繳費憑證截圖，或至閱卷相關頻道執行指令。"
+        return None
+
+    # ── 閱卷-下載頻道 (filereview_download) 守門 ──
+    if topic_key == "filereview_download":
+        msg_stripped = (message or "").strip()
+        _dl_kws = ["閱卷查核", "可下載", "下載清單"]
+        if any(msg_stripped.startswith(kw) for kw in _dl_kws):
+            return orch._handle_command(user_id, message, role=role, platform=platform)
+        # 通知頻道，非指令訊息不走 chat engine
+        return None
+
     # ── 閱卷-聲請頻道 (filereview_apply) 自動補全 ──
     if topic_key == "filereview_apply":
         _apply_aliases = ["閱卷聲請", "聲請閱卷", "申請閱卷", "聲請閱覽"]
@@ -525,6 +568,8 @@ def topic_fast_path(orch, topic_key: str, user_id, message: str, role: str, plat
         "laf_progress": {"allowed": ("__progress__",), "label": "法扶-進度回報", "hint": "這個頻道用來查看**未結案件進度回報**通知與確認碼"},
         "laf_dispatch": {"allowed": (), "label": "法扶-派案", "hint": "這個頻道顯示**派案通知**，有新信件時 MAGI 會自動通知"},
         "laf": {"allowed": ("inquiry", "fee", "condition", "withdrawal", "closing", "go_live"), "label": "法扶-一般", "hint": "這個頻道用來執行各項法扶作業"},
+        # laf_general 是 discord_channel_router.py 實際使用的 key（原 MAP 只有 "laf" 造成 key 不符）
+        "laf_general": {"allowed": ("inquiry", "fee", "condition", "withdrawal", "closing", "go_live"), "label": "法扶-一般", "hint": "這個頻道用來執行各項法扶作業"},
     }
 
     conf = _CHANNEL_ACTION_MAP.get(topic_key)
