@@ -50,7 +50,12 @@ class BaseAgent(abc.ABC):
         Priority: explicit `model` arg > self.model_name > melchior_client.TEXT_PRIMARY_MODEL
         melchior_client.chat() already handles fallback if requested model is unavailable.
         """
-        sys_p = system_prompt or f"You are {self.name}, {self.role_description}. Conduct analysis in Traditional Chinese (繁體中文)."
+        sys_p = system_prompt or (
+            f"You are {self.name}, {self.role_description}. Conduct analysis in Traditional Chinese (繁體中文).\n"
+            "Grounding rules: use only the market data, indicators, filings, and attributed headlines provided in the task. "
+            "Do not invent prices, news, analyst ratings, events, dates, or sources. "
+            "If a data field is missing or marked unavailable, say the signal is insufficient and lower confidence."
+        )
         combined_prompt = f"[Instructions]\n{sys_p}\n\n[Analysis Task]\n{prompt}"
 
         resolved_model = model.strip() if model.strip() else (

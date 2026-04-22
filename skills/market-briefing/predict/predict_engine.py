@@ -26,6 +26,7 @@ from data.fetcher import (
     _latest_us_filing,
     _yahoo_history,
 )
+from market_news import fetch_market_news, format_news_for_prompt
 from data.perf_tracker import _predict_pct_by_params
 from data.watchlist import WatchItem, _format_watchlist
 
@@ -168,6 +169,13 @@ def _predict_one(
         # ── MAGI v2 Upgrade: Multi-Agent Committee Deliberation ──
         if mode == "deep" and committee_callback is not None:
             try:
+                news_items = fetch_market_news(
+                    item.symbol,
+                    label=item.label,
+                    market=item.market,
+                    max_items=5,
+                )
+                news_lines = format_news_for_prompt(news_items, max_items=5)
                 market_data = {
                     "closes": closes,
                     "vol": vol,
@@ -177,7 +185,13 @@ def _predict_one(
                         "rev": fund.split("｜")[0] if fund else "N/A",
                         "eps": fund.split("｜")[1] if "｜" in fund else "N/A",
                     },
-                    "news": [f"市場關注 {item.label} 近期趨勢與新聞"],
+                    "news": news_lines,
+                    "news_sources": news_items,
+                    "data_quality": {
+                        "price_source": "Yahoo Finance chart API",
+                        "fundamental_source": "TWSE OpenAPI" if item.market == "TW" else ("SEC submissions" if item.market == "US" else "N/A"),
+                        "news_source": "Google News RSS" if news_items else "unavailable",
+                    },
                 }
                 committee_result = committee_callback(item, mode, market_data)
                 if committee_result:

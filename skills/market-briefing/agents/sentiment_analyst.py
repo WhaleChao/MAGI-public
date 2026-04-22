@@ -21,8 +21,14 @@ class SentimentAnalyst(BaseAgent):
     def run(self, state: CommitteeState) -> TradingSignal:
         # 1. Extract raw data from state (News/Sentiment)
         news = state.market_data.get("news", [])
+        news_source = ((state.market_data.get("data_quality") or {}).get("news_source") or "unavailable")
         if not news:
-            return TradingSignal(action=TradingAction.NEUTRAL, confidence=0.0, reasoning="缺乏新聞或社群情緒數據。")
+            return TradingSignal(
+                action=TradingAction.NEUTRAL,
+                confidence=0.0,
+                reasoning="缺乏可驗證新聞標題；不進行情緒推論。",
+                indicators={"headline_count": 0, "news_source": news_source},
+            )
 
         # 2. Format news for prompt
         news_summaries = "\n".join([f"- {item}" for item in news[:10]]) # Max 10 headlines
@@ -32,6 +38,11 @@ class SentimentAnalyst(BaseAgent):
 請根據以下新聞標題與市場訊息分析 {state.ticker} ({state.company_name}) 的市場情緒：
 
 {news_summaries}
+
+資料限制：
+- 只能引用上方列出的標題與來源，不得補充未提供的新聞、事件或分析師評級。
+- 如果標題不足以支持明確方向，請選 NEUTRAL 或 HOLD，並降低 confidence。
+- reasoning 必須點名使用了哪些標題編號；不得寫「市場普遍」這類沒有來源的泛稱。
 
 請給出您的專業判斷，包含：
 1. 具體的交易動作 (BUY, SELL, HOLD, NEUTRAL)
@@ -63,7 +74,8 @@ class SentimentAnalyst(BaseAgent):
                 reasoning=data.get("reasoning", "無法解析 LLM 推理過程。"),
                 indicators={
                     "headline_count": len(news),
-                    "primary_tone": "Analyzed by LLM"
+                    "news_source": news_source,
+                    "primary_tone": "grounded_in_attributed_headlines"
                 }
             )
         except Exception as e:

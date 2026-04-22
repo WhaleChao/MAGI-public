@@ -25,6 +25,9 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 SKILL_DIR = Path(__file__).resolve().parent.parent / "skills" / "market-briefing"
 ACTION_PY = SKILL_DIR / "action.py"
+PREDICT_ENGINE_PY = SKILL_DIR / "predict" / "predict_engine.py"
+SENTIMENT_ANALYST_PY = SKILL_DIR / "agents" / "sentiment_analyst.py"
+BASE_AGENT_PY = SKILL_DIR / "agents" / "base.py"
 
 
 def _parse_tree() -> ast.Module:
@@ -177,6 +180,26 @@ class TestBoundary:
 
     def test_has_comps_function(self):
         assert "_cmd_comps" in _func_names()
+
+    def test_deep_mode_uses_attributed_news_fetcher(self):
+        source = PREDICT_ENGINE_PY.read_text(encoding="utf-8")
+        assert "fetch_market_news" in source
+        assert "format_news_for_prompt" in source
+        assert "news_sources" in source
+        assert "Google News RSS" in source
+        assert "市場關注 {item.label} 近期趨勢與新聞" not in source
+
+    def test_sentiment_agent_requires_grounded_headlines(self):
+        source = SENTIMENT_ANALYST_PY.read_text(encoding="utf-8")
+        assert "缺乏可驗證新聞標題" in source
+        assert "只能引用上方列出的標題與來源" in source
+        assert "不得補充未提供的新聞" in source
+
+    def test_base_agent_has_grounding_rules(self):
+        source = BASE_AGENT_PY.read_text(encoding="utf-8")
+        assert "Grounding rules" in source
+        assert "Do not invent prices, news" in source
+        assert "lower confidence" in source
 
 
 # ===================================================================
