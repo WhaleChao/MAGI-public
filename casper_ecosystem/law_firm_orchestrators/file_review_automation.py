@@ -7868,6 +7868,132 @@ class FileReviewManager:
             )
         return result
 
+    def _find_review_upload_laf_only(self, case_info: Dict[str, str]) -> Dict[str, str]:
+        """
+        法扶模式：只找法扶通知書（開辦通知書/准予扶助證明書），不上傳委任狀。
+
+        搜尋優先順序：
+          1. 02_開辦資料/ — 接案通知書、開辦通知書（律師已簽好名的版本）
+          2. 01_法扶資料/ — 准予扶助證明書（申請書等）
+          3. fallback 到整個案件資料夾掃描
+
+        回傳 dict：
+          {"case_folder": ..., "auth_file": "", "laf_file": ...}
+          auth_file 永遠為空（法扶模式不上傳委任狀）
+        """
+        result: Dict[str, str] = {"case_folder": "", "auth_file": "", "laf_file": ""}
+
+        # ── 1. 解析案件資料夾 ──
+        folder_path = (
+            case_info.get("folder_path") or case_info.get("case_folder") or ""
+        ).strip()
+        if folder_path and os.path.exists(folder_path):
+            result["case_folder"] = folder_path
+        else:
+            derived_court_case_no = (
+                case_info.get("court_case_no") or case_info.get("showyyidno") or ""
+            ).strip()
+            party_name = (case_info.get("client_name") or case_info.get("party") or "").strip()
+            if not derived_court_case_no:
+                year = (case_info.get("year") or "").strip()
+                case_type = (case_info.get("case_type") or "").strip()
+                case_number = (case_info.get("case_number") or "").strip()
+                if year and case_type and case_number:
+                    try:
+                        derived_court_case_no = f"{year}年度{case_type}字第{int(case_number)}號"
+                    except Exception:
+                        derived_court_case_no = f"{year}年度{case_type}字第{case_number}號"
+            info = FileReviewCase(
+                case_number=(case_info.get("yyidno") or "").strip(),
+                client_name=party_name,
+            )
+            info.laf_case_no = (case_info.get("laf_case_no") or "").strip()
+            info.court_case_no = derived_court_case_no
+            folder_path = self._resolve_case_folder(info) or ""
+            if (not folder_path or not os.path.exists(folder_path)) and (derived_court_case_no or party_name):
+                import time as _time
+                _scan_start = _time.monotonic()
+                _SCAN_BUDGET = 30
+                y, ct, num = self._parse_court_case_no(derived_court_case_no)
+                for root in self._get_case_root_candidates():
+                    if _time.monotonic() - _scan_start > _SCAN_BUDGET:
+                        self.log(f"  ⏱️ 資料夾掃描超過 {_SCAN_BUDGET}s，跳過剩餘搜尋")
+                        break
+                    root = self._to_local_case_path(root)
+                    if not root or not os.path.isdir(root):
+                        continue
+                    if y and ct and num:
+                        hit = self._scan_by_court_tokens(root, str(y), str(ct), str(num))
+                        if hit and (not party_name or self._norm(party_name) in self._norm(os.path.basename(hit))):
+                            folder_path = hit
+                            break
+                    if party_name:
+                        hit = self._scan_by_party_name(root, party_name, max_depth=4, max_dirs=5000)
+                        if hit:
+                            folder_path = hit
+                            break
+            if not folder_path or not os.path.exists(folder_path):
+                return result
+            result["case_folder"] = folder_path
+
+        # ── 2. 法扶通知書搜尋（02_開辦資料 > 01_法扶資料 > 整個資料夾） ──
+        # 接案通知書/開辦通知書用語（已簽名版）優先
+        _primary_terms = ["扶助律師接案通知書", "接案通知書", "開辦通知書", "接案證明", "准予扶助證明書"]
+        _secondary_terms = ["法扶", "扶助", "通知書", "證明書"]
+        _banned_terms = ["審查表", "申請書", "資力詢問表", "預付酬金", "案件概述單", "委任"]
+
+        scan_budget_sec = int(os.environ.get("MAGI_FILE_REVIEW_UPLOAD_SCAN_BUDGET_SEC", "20") or "20")
+        max_candidates = int(os.environ.get("MAGI_FILE_REVIEW_UPLOAD_MAX_CANDIDATES", "600") or "600")
+
+        def _collect_pdfs(base_dir: str, budget_sec: int) -> List[str]:
+            import time as _time
+            out: List[str] = []
+            start = _time.monotonic()
+            for root, _dirs, filenames in os.walk(base_dir):
+                if _time.monotonic() - start > budget_sec:
+                    break
+                for name in filenames:
+                    full = os.path.join(root, name)
+                    if self._is_supported_review_upload(full):
+                        out.append(full)
+                        if len(out) >= max_candidates:
+                            return out
+            return out
+
+        # 優先：02_開辦資料（律師已簽好名的接案/開辦通知書）
+        candidates: List[str] = []
+        for sub in ["02_開辦資料", "01_法扶資料"]:
+            target = os.path.join(folder_path, sub)
+            if os.path.isdir(target):
+                sub_files = _collect_pdfs(target, budget_sec=max(4, scan_budget_sec // 2))
+                picked = self._pick_review_upload_file(
+                    sub_files,
+                    primary_terms=_primary_terms,
+                    secondary_terms=_secondary_terms,
+                    banned_terms=_banned_terms,
+                )
+                if picked:
+                    self.log(f"  ✓ 法扶模式：從 {sub}/ 找到通知書: {os.path.basename(picked)}")
+                    result["laf_file"] = picked
+                    return result
+
+        # Fallback：整個資料夾掃描
+        if not candidates:
+            all_files = _collect_pdfs(folder_path, budget_sec=scan_budget_sec)
+            picked = self._pick_review_upload_file(
+                all_files,
+                primary_terms=_primary_terms,
+                secondary_terms=_secondary_terms,
+                banned_terms=_banned_terms,
+            )
+            if picked:
+                self.log(f"  ✓ 法扶模式（全資料夾 fallback）：{os.path.basename(picked)}")
+                result["laf_file"] = picked
+            else:
+                self.log("  ⚠️ 法扶模式：未找到可上傳的法扶通知書/開辦通知書")
+
+        return result
+
     def _get_case_root_candidates(self) -> List[str]:
         out: List[str] = []
         # 1) env override
@@ -8826,7 +8952,7 @@ class FileReviewManager:
 
         return False
 
-    def apply_for_review(self, case_info: Dict[str, str], auto_submit: bool = True, paper_review: bool = False, skip_upload: bool = False) -> str:
+    def apply_for_review(self, case_info: Dict[str, str], auto_submit: bool = True, paper_review: bool = False, skip_upload: bool = False, laf_only: bool = False) -> str:
         """
         閱卷聲請流程
 
@@ -9870,6 +9996,8 @@ class FileReviewManager:
             try:
                 # 已遞委任模式：使用者已確認委任狀另行遞交，直接略過所有附件判斷與上傳
                 _skip_upload_flag = skip_upload or bool(case_info.get("skip_upload"))
+                # 法扶模式：只上傳開辦通知書/准予扶助證明書，不上傳委任狀
+                _laf_only_flag = laf_only or bool(case_info.get("laf_only"))
                 if _skip_upload_flag:
                     self.log("  ℹ️ 已遞委任模式：略過附件上傳，直接聲請")
                     upload_files = {}
@@ -9883,6 +10011,29 @@ class FileReviewManager:
                         self.log("  ℹ️ 資料夾路徑含「指定辯護案件」→ 判定為義務辯護")
                 if _skip_upload_flag:
                     pass  # 已遞委任：upload_files 已在上方設為 {}，直接略過
+                elif _laf_only_flag:
+                    self.log("  ℹ️ 法扶模式：只上傳開辦通知書/准予扶助證明書，略過委任狀")
+                    upload_files = self._find_review_upload_laf_only(case_info)
+                    self._last_apply_for_review_uploads = upload_files
+                    if upload_files.get("case_folder"):
+                        self.log(f"  ✓ 案件資料夾: {upload_files['case_folder']}")
+                    else:
+                        self.log("  ⚠️ 法扶模式：找不到案件資料夾，略過附件上傳")
+                    for field_name, label in [
+                        ("auth_file", "委任狀"),
+                        ("laf_file", "法扶通知書"),
+                    ]:
+                        file_path = (upload_files.get(field_name) or "").strip()
+                        if not file_path:
+                            continue
+                        if not os.path.exists(file_path):
+                            self.log(f"  ⚠️ {label}檔案不存在: {file_path}")
+                            continue
+                        try:
+                            self._ola_upload_attachment(file_path, file_remark=label)
+                            self.log(f"  ✓ 已上傳{label}: {os.path.basename(file_path)}")
+                        except Exception as upload_e:
+                            self.log(f"  ⚠️ 上傳{label}失敗: {upload_e}")
                 elif _is_appointed_defense:
                     self.log("  ℹ️ 義務辯護案件，不需上傳委任狀，直接聲請")
                     upload_files = {}

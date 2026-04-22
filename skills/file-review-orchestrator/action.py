@@ -1214,7 +1214,8 @@ def cmd_apply(court_code: str, year: str, case_type: str,
               sys_type: str = "",
               folder_path: str = "",
               flow_id: str = "",
-              skip_upload: bool = False) -> dict:
+              skip_upload: bool = False,
+              laf_only: bool = False) -> dict:
     """Apply for file review (閱卷聲請)."""
     if not all([court_code, year, case_type, case_number]):
         _safe_flow_step_status(flow_id, "preview_fill", status="failed", detail="missing required fields", ok=False)
@@ -1298,7 +1299,7 @@ def cmd_apply(court_code: str, year: str, case_type: str,
                 case_info["folder_path"] = folder_path
             logger.info("Applying for review: %s", case_info)
             _safe_flow_step_status(flow_id, "preview_fill", status="running", detail=label if 'label' in locals() else f"{court_code} {year}-{case_type}-{case_number}")
-            result = mgr.apply_for_review(case_info, auto_submit=auto_submit, skip_upload=skip_upload)
+            result = mgr.apply_for_review(case_info, auto_submit=auto_submit, skip_upload=skip_upload, laf_only=laf_only)
 
             label = f"{court_code} {year}年{case_type}字第{case_number}號"
 
@@ -4205,6 +4206,8 @@ def parse_line_command(text: str) -> Optional[dict]:
         "已遞委任", "已送委任", "委任已送", "委任已遞",
         "不用上傳", "無需上傳", "跳過上傳", "略過上傳",
     ]
+    # 法扶模式：只上傳開辦通知書/准予扶助證明書，略過委任狀
+    _LAF_ONLY_KEYWORDS = ["法扶"]
     for trigger in apply_triggers:
         if t.startswith(trigger):
             remainder = t[len(trigger):].strip()
@@ -4215,9 +4218,19 @@ def parse_line_command(text: str) -> Optional[dict]:
                     remainder = remainder.replace(kw, "").strip()
                     skip_upload_detected = True
                     break
+            # 偵測「法扶」模式：只上傳開辦通知書，略過委任狀
+            laf_only_detected = False
+            for kw in _LAF_ONLY_KEYWORDS:
+                if kw in remainder:
+                    remainder = remainder.replace(kw, "").strip()
+                    laf_only_detected = True
+                    break
             parsed = _parse_apply_args(remainder)
-            if parsed and skip_upload_detected:
-                parsed["skip_upload"] = True
+            if parsed:
+                if skip_upload_detected:
+                    parsed["skip_upload"] = True
+                if laf_only_detected:
+                    parsed["laf_only"] = True
             return parsed
 
     # Probe triggers
@@ -4633,6 +4646,7 @@ def main() -> int:
                 folder_path=payload.get("folder_path", ""),
                 flow_id=flow_id,
                 skip_upload=_boolish(payload.get("skip_upload"), False),
+                laf_only=_boolish(payload.get("laf_only"), False),
             ),
             metadata={
                 "court_code": payload.get("court_code", ""),

@@ -2049,6 +2049,7 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
             "已遞委任", "已送委任", "委任已送", "委任已遞",
             "不用上傳", "無需上傳", "跳過上傳", "略過上傳",
         ]
+        _APPLY_LAF_ONLY_KWS = ["法扶"]
 
         def _parse_apply_payload(raw_text: str):
             raw = (raw_text or "").strip()
@@ -2072,6 +2073,13 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
                 if kw in remainder:
                     remainder = remainder.replace(kw, "").strip()
                     skip_upload_detected = True
+                    break
+            # 偵測「法扶」模式：只上傳開辦通知書，略過委任狀
+            laf_only_detected = False
+            for kw in _APPLY_LAF_ONLY_KWS:
+                if kw in remainder:
+                    remainder = remainder.replace(kw, "").strip()
+                    laf_only_detected = True
                     break
 
             # Natural phrase mode: <法院> <案號> [當事人]
@@ -2099,6 +2107,8 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
                     result["client_name"] = extra
             if skip_upload_detected:
                 result["skip_upload"] = True
+            if laf_only_detected:
+                result["laf_only"] = True
             return result
 
         payload = _parse_apply_payload(message)
@@ -2124,6 +2134,8 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
         }
         if payload.get("skip_upload"):
             task_payload["skip_upload"] = True
+        if payload.get("laf_only"):
+            task_payload["laf_only"] = True
         if not all([task_payload["court_code"], task_payload["year"], task_payload["case_type"], task_payload["case_number"]]):
             return "❌ 缺少必要欄位：court_code/year/case_type/case_number"
 
