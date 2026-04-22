@@ -1620,8 +1620,10 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
     def _insert_spaces_if_needed(text: str) -> str:
         """Insert space between court name and case number if missing.
         e.g. '基隆114訴123' -> '基隆 114訴123'
+        Must use ^ anchor so we only split court-name vs year, NOT inside
+        the case number itself (e.g. '婚19', '訴36' must stay intact).
         """
-        return re.sub(r'([\u4e00-\u9fff])(\d)', r'\1 \2', text, count=1)
+        return re.sub(r'^([\u4e00-\u9fff]+)(\d)', r'\1 \2', text)
 
     # File Review Probe (chat-callable formal skill command)
     probe_aliases = ["閱卷查核", "查核閱卷", "卷宗查核", "查核卷宗", "卷宗檢核", "檢核卷宗"]
@@ -1840,10 +1842,11 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
         if not payload:
             return (
                 "❓ 指令格式：`閱卷聲請 <法院> <案號> <當事人>`\n"
-                "例如：`閱卷聲請 花蓮 115原侵訴1 王小明`\n"
-                "或：`閱卷聲請 台北 114訴123 張三`\n"
+                "例如：`閱卷聲請 花蓮 115原訴36 [當事人C]`\n"
+                "或：`閱卷聲請 花蓮 115婚19 [當事人J]`（單字案件類型亦支援）\n"
+                "或：`閱卷聲請 TPH 114重上更二95 [當事人A] 已遞委任`\n"
                 "（當事人未填時會嘗試從案件 DB 自動帶入）\n"
-                "或：`閱卷聲請 {\"court_code\":\"HLD\",\"year\":\"115\",\"case_type\":\"原侵訴\",\"case_number\":\"1\",\"client_name\":\"王小明\"}`"
+                "或：`閱卷聲請 {\"court_code\":\"HLD\",\"year\":\"115\",\"case_type\":\"原訴\",\"case_number\":\"36\",\"client_name\":\"[當事人C]\"}`"
             )
 
         action_script = f"{_MAGI_ROOT}/skills/file-review-orchestrator/action.py"
