@@ -15,6 +15,8 @@ import subprocess
 import sys
 import time
 
+from api.help_text import HELP_ALIASES, build_help_text
+
 logger = logging.getLogger("Orchestrator")
 
 _MAGI_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
@@ -122,95 +124,9 @@ def quick_fixed_reply(orch, message: str, role: str = "user") -> Optional[str]:
 
     # Help/command list: ONLY match exact short phrases.
     # Never intercept conversational messages that happen to contain keywords.
-    _HELP_EXACT = {
-        "help", "/help", "功能", "指令", "幫助", "說明", "做什麼",
-        "功能列表", "技能清單", "指令清單", "指令列表",
-        "有什麼功能", "有哪些功能", "可以做什麼", "你可以做什麼",
-        "你能做什麼", "你會什麼", "有什麼skill", "有哪些skill",
-    }
+    _HELP_EXACT = HELP_ALIASES
     if t in _HELP_EXACT:
-        if role == "admin":
-            return (
-                "🛠️ **MAGI 指令總表 (管理員)**\n\n"
-                "━━ 系統 ━━\n"
-                "• 系統狀態 ⚡ ｜ 系統監控 ⚡ ｜ 目前模型 ⚡\n"
-                "• 健康檢查 ⚡ ｜ 檢查分身 ⚡ ｜ 殭屍巡邏 ⚡\n"
-                "• 自動巡檢 🔄 ｜ 夜間任務 🔄\n\n"
-                "━━ 法扶 ━━\n"
-                "• 幫[姓名]做開辦回報 ⚡ ｜ 法扶監控 🔄\n"
-                "• 幫[姓名]做疑義/二階段/結案/撤回回報 ⚡\n"
-                "• 正確送出 <確認碼> ⚡（系統給碼後才送出）\n"
-                "• [姓名] 已開辦/已報結 ⚡ ｜ 法扶回報指令 ⚡\n"
-                "• 自動報結掃描 🔄 ｜ 二階段批次 🔄\n\n"
-                "━━ 閱卷 / 筆錄 ━━\n"
-                "• 閱卷查核 [法院] [案號] ⚡ ｜ 閱卷聲請 🔄\n"
-                "  ↳ 加「已遞委任」= 略過附件直接聲請 ｜ 加「法扶」= 只傳開辦/接案通知書\n"
-                "• 檢查閱卷信箱 🔄 ｜ 下載閱卷 [案號] 🔄\n"
-                "• 同步筆錄 🔄 ｜ 下載筆錄 [案號] 🔄\n"
-                "• [姓名]已繳費 ⚡ ｜ 上傳繳費截圖+繳費 🔄\n\n"
-                "━━ 案件 / PDF ━━\n"
-                "• 掃描案件待辦 🔄 ｜ 待辦佇列狀態 ⚡\n"
-                "• 日曆同步 🔄 ｜ 單檔命名 ⚡ ｜ 批次命名 🔄\n\n"
-                "━━ 法律工具 ━━\n"
-                "• 查判決 [關鍵字] 🔄 ｜ 判決趨勢 [案由] 🔄\n"
-                "• 法規搜尋 [查詢] ⚡ ｜ 加班費 [條件] ⚡\n"
-                "• 庭期 ⚡ ｜ 案件時程總覽 ⚡\n\n"
-                "━━ 翻譯／摘要／文件 ━━\n"
-                "• 翻譯 [文字/網址] 🔄 ｜ 上傳音檔→逐字稿 🔄\n"
-                "• 摘要 [文字/網址] 🔄 ｜ 精簡摘要 / 詳細摘要\n"
-                "• 上傳音檔→逐字稿 🔄 ｜ 上傳PDF→摘要 🔄\n\n"
-                "━━ 爬蟲／搜尋／追蹤 ━━\n"
-                "• 爬蟲目標（新增/列出/移除）🔄\n"
-                "• 搜尋 [關鍵字] 🔄 ｜ 股市晨報 🔄\n"
-                "• rss [指令] ⚡\n\n"
-                "━━ 記憶／助理 ━━\n"
-                "• 記住 [內容] ⚡ ｜ 忘記 [內容] ⚡\n"
-                "• 今天行程 ⚡ ｜ @MAGI 深度思考 [問題] 🔄\n"
-                "• obsidian [指令] 🔄 ｜ 備份資料庫 🔄\n"
-                "• 審閱契約 🔄 ｜ 證據能力 [案號] 🔄 ｜ 截圖排序 🔄\n\n"
-                "━━ 技能進化 (管理員) ━━\n"
-                "• 核心變更待審 ⚡ ｜ 內化code 🔄 ｜ 技能CI ⚡\n\n"
-                "⚡ = 即時回覆　🔄 = 背景執行\n"
-                "💡 直接打指令即可，也可用自然語言如「找關於詐欺的判決」"
-            )
-        else:
-            return (
-                "🛠️ **MAGI 指令總表**\n\n"
-                "━━ 法扶 ━━\n"
-                "• 幫[姓名]做開辦回報 ⚡ ｜ 法扶監控 🔄\n"
-                "• 幫[姓名]做疑義/二階段/結案/撤回回報 ⚡\n"
-                "• 正確送出 <確認碼> ⚡ ｜ 法扶回報指令 ⚡\n"
-                "• [姓名] 已開辦/已報結 ⚡\n\n"
-                "━━ 閱卷 / 筆錄 / 繳費 ━━\n"
-                "• 閱卷查核 [法院] [案號] ⚡ ｜ 閱卷聲請 🔄\n"
-                "  ↳ 加「已遞委任」= 略過附件直接聲請 ｜ 加「法扶」= 只傳開辦/接案通知書\n"
-                "• 檢查閱卷信箱 🔄 ｜ 下載閱卷 [案號] 🔄\n"
-                "• 同步筆錄 🔄 ｜ 下載筆錄 [案號] 🔄\n"
-                "• [姓名]已繳費 ⚡ ｜ 上傳繳費截圖+繳費 🔄\n\n"
-                "━━ 翻譯 / 摘要 ━━\n"
-                "• 翻譯 [文字/網址] 🔄 ｜ 上傳音檔→逐字稿 🔄\n"
-                "• 摘要 [文字/網址] 🔄 ｜ 精簡摘要 / 詳細摘要\n"
-                "• 上傳音檔→逐字稿 🔄 ｜ 上傳PDF→摘要 🔄\n\n"
-                "━━ 文件產生 ━━\n"
-                "• 委任狀 ⚡ ｜ 契約書 ⚡ ｜ 收據 ⚡ ｜ 存證信函 ⚡\n"
-"• 審閱契約 🔄 ｜ 證據能力 🔄 ｜ 截圖排序 🔄\n\n"
-                "━━ 法律工具 ━━\n"
-                "• 查判決 [關鍵字] 🔄 ｜ 判決趨勢 [案由] 🔄\n"
-                "• 法規搜尋 [查詢] ⚡ ｜ 加班費 [條件] ⚡\n"
-                "• 庭期 ⚡ ｜ 案件時程總覽 ⚡\n\n"
-                "━━ 案件 / PDF ━━\n"
-                "• 掃描案件待辦 🔄 ｜ 待辦佇列狀態 ⚡\n"
-                "• 日曆同步 🔄 ｜ 單檔命名 ⚡ ｜ 批次命名 🔄\n\n"
-                "━━ 搜尋 / 追蹤 ━━\n"
-                "• 搜尋 [關鍵字] 🔄 ｜ 股市晨報 🔄\n"
-                "• 畫 [描述] 🔄 ｜ 上傳圖片→分析 ⚡\n\n"
-                "━━ 助理 / 記憶 ━━\n"
-                "• 記住 [內容] ⚡ ｜ @MAGI 深度思考 [問題] 🔄\n"
-                "• 今天行程 ⚡ ｜ 系統狀態 ⚡ ｜ 目前模型 ⚡\n\n"
-                "⚡ = 即時回覆　🔄 = 背景執行\n"
-                "💡 直接打指令即可，也可用自然語言如「找關於詐欺的判決」\n"
-                "🔒 系統管理、技能進化等需管理員權限"
-            )
+        return build_help_text(role)
 
     _MODEL_EXACT = {
         "目前模型", "現在模型", "使用什麼模型", "模型是什麼", "模型為何",
@@ -493,9 +409,9 @@ def explain_routing(orch, message: str, role: str = "user") -> dict:
         return _res(action="codex_distributed_control", matched="codex_sidecar_keywords",
                      requires_admin=True, handler="api/orchestrator.py:_handle_codex_distributed_command")
 
-    if msg_lower in ["/help", "help", "指令", "說明", "功能", "menu", "helps", "/start"]:
+    if msg_lower in HELP_ALIASES:
         return _res(action="help_menu", matched="universal_help",
-                     requires_admin=True, handler="api/orchestrator.py:_handle_command('/help')")
+                     requires_admin=False, handler="api/orchestrator.py:_handle_command('/help')")
 
     # Status: require MAGI/system context, not just bare "狀態" which hits case-status questions
     _STATUS_EXACT = {"狀態", "系統狀態", "運作狀態", "節點狀態", "機器狀態", "magi狀態", "magi status",
@@ -581,6 +497,24 @@ def topic_fast_path(orch, topic_key: str, user_id, message: str, role: str, plat
     若使用者在法扶-開辦頻道發了結案指令，引導到結案頻道。
     若使用者在法扶-開辦頻道發了開辦指令，直接執行（不阻擋）。
     """
+    # ── 閱卷-聲請頻道 (filereview_apply) 自動補全 ──
+    if topic_key == "filereview_apply":
+        _apply_aliases = ["閱卷聲請", "聲請閱卷", "申請閱卷", "聲請閱覽"]
+        msg_stripped = (message or "").strip()
+        # 訊息已帶指令關鍵字 → 直接執行
+        if any(msg_stripped.startswith(a) for a in _apply_aliases):
+            logger.info("[TopicFastPath] filereview_apply: executing existing command")
+            return orch._handle_command(user_id, message, role=role, platform=platform)
+        # 看起來像 <法院> <案號> [姓名] 格式 → 自動補前綴
+        # 例：HLD 115原訴36 [當事人J] / 花蓮 115家救3 [當事人J]
+        _CASE_PAT = re.compile(r'^[\u4e00-\u9fffA-Za-z]{2,4}\s+\d{2,4}[\u4e00-\u9fff]{1,6}\d+')
+        if _CASE_PAT.match(msg_stripped):
+            autocompleted = "閱卷聲請 " + msg_stripped
+            logger.info("[TopicFastPath] filereview_apply autocomplete: '%s' -> '%s'", msg_stripped, autocompleted)
+            return orch._handle_command(user_id, autocompleted, role=role, platform=platform)
+        # 其他訊息（如一般問題、確認碼）→ 不攔截，走一般流程
+        return None
+
     # 頻道→允許的動作映射
     _CHANNEL_ACTION_MAP = {
         "laf_go_live": {"allowed": ("go_live",), "label": "法扶-開辦", "hint": "這個頻道用來執行**開辦回報**", "default_action": "go_live"},
