@@ -8826,7 +8826,7 @@ class FileReviewManager:
 
         return False
 
-    def apply_for_review(self, case_info: Dict[str, str], auto_submit: bool = True, paper_review: bool = False) -> str:
+    def apply_for_review(self, case_info: Dict[str, str], auto_submit: bool = True, paper_review: bool = False, skip_upload: bool = False) -> str:
         """
         閱卷聲請流程
 
@@ -9868,14 +9868,22 @@ class FileReviewManager:
             # ========= 步驟 7.5: 自動上傳附件（委任狀/法扶通知書） =========
             self.log("  檢查閱卷聲請附件...")
             try:
+                # 已遞委任模式：使用者已確認委任狀另行遞交，直接略過所有附件判斷與上傳
+                _skip_upload_flag = skip_upload or bool(case_info.get("skip_upload"))
+                if _skip_upload_flag:
+                    self.log("  ℹ️ 已遞委任模式：略過附件上傳，直接聲請")
+                    upload_files = {}
+                    self._last_apply_for_review_uploads = upload_files
                 # 義務辯護（指定辯護案件）：完全不需上傳任何附件
                 # 除了 DB 判斷，也用資料夾路徑偵測
-                if not _is_appointed_defense:
+                elif not _is_appointed_defense:
                     _fp = (case_info.get("folder_path") or "").replace("\\", "/")
                     if "指定辯護案件" in _fp:
                         _is_appointed_defense = True
                         self.log("  ℹ️ 資料夾路徑含「指定辯護案件」→ 判定為義務辯護")
-                if _is_appointed_defense:
+                if _skip_upload_flag:
+                    pass  # 已遞委任：upload_files 已在上方設為 {}，直接略過
+                elif _is_appointed_defense:
                     self.log("  ℹ️ 義務辯護案件，不需上傳委任狀，直接聲請")
                     upload_files = {}
                     self._last_apply_for_review_uploads = upload_files

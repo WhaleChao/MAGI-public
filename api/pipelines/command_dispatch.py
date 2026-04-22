@@ -2045,6 +2045,11 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
     apply_aliases = ["閱卷聲請", "聲請閱卷", "申請閱卷", "聲請閱覽"]
     if any(msg_lower.startswith(alias) for alias in apply_aliases) or any(msg_stripped.startswith(alias) for alias in apply_aliases):
 
+        _APPLY_SKIP_UPLOAD_KWS = [
+            "已遞委任", "已送委任", "委任已送", "委任已遞",
+            "不用上傳", "無需上傳", "跳過上傳", "略過上傳",
+        ]
+
         def _parse_apply_payload(raw_text: str):
             raw = (raw_text or "").strip()
             alias_hit = next((alias for alias in apply_aliases if raw.lower().startswith(alias)), "")
@@ -2060,6 +2065,14 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
                         return payload
                 except Exception:
                     return None
+
+            # 偵測「已遞委任」類關鍵字（可出現在指令中任意位置）
+            skip_upload_detected = False
+            for kw in _APPLY_SKIP_UPLOAD_KWS:
+                if kw in remainder:
+                    remainder = remainder.replace(kw, "").strip()
+                    skip_upload_detected = True
+                    break
 
             # Natural phrase mode: <法院> <案號> [當事人]
             remainder = _insert_spaces_if_needed(remainder)
@@ -2079,14 +2092,13 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
                 "case_number": m.group(3),
             }
             # Optional: client_name or case category after case number
-            if len(parts) >= 3:
-                extra = parts[2].strip()
-                if extra in ("刑事", "民事", "行政"):
-                    pass  # category hint, already embedded in case_type
-                else:
+            remaining_parts = [p for p in parts[2:] if p not in _APPLY_SKIP_UPLOAD_KWS]
+            if remaining_parts:
+                extra = remaining_parts[0].strip()
+                if extra not in ("刑事", "民事", "行政"):
                     result["client_name"] = extra
-            if len(parts) >= 4 and "client_name" not in result:
-                result["client_name"] = parts[3].strip()
+            if skip_upload_detected:
+                result["skip_upload"] = True
             return result
 
         payload = _parse_apply_payload(message)
@@ -2110,6 +2122,8 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
             "case_number": str(payload.get("case_number", "")).strip(),
             "client_name": str(payload.get("client_name", "")).strip(),
         }
+        if payload.get("skip_upload"):
+            task_payload["skip_upload"] = True
         if not all([task_payload["court_code"], task_payload["year"], task_payload["case_type"], task_payload["case_number"]]):
             return "❌ 缺少必要欄位：court_code/year/case_type/case_number"
 

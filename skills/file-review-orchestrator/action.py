@@ -1213,7 +1213,8 @@ def cmd_apply(court_code: str, year: str, case_type: str,
               auto_submit: bool = False, notify: bool = True,
               sys_type: str = "",
               folder_path: str = "",
-              flow_id: str = "") -> dict:
+              flow_id: str = "",
+              skip_upload: bool = False) -> dict:
     """Apply for file review (閱卷聲請)."""
     if not all([court_code, year, case_type, case_number]):
         _safe_flow_step_status(flow_id, "preview_fill", status="failed", detail="missing required fields", ok=False)
@@ -1297,7 +1298,7 @@ def cmd_apply(court_code: str, year: str, case_type: str,
                 case_info["folder_path"] = folder_path
             logger.info("Applying for review: %s", case_info)
             _safe_flow_step_status(flow_id, "preview_fill", status="running", detail=label if 'label' in locals() else f"{court_code} {year}-{case_type}-{case_number}")
-            result = mgr.apply_for_review(case_info, auto_submit=auto_submit)
+            result = mgr.apply_for_review(case_info, auto_submit=auto_submit, skip_upload=skip_upload)
 
             label = f"{court_code} {year}年{case_type}字第{case_number}號"
 
@@ -4199,10 +4200,25 @@ def parse_line_command(text: str) -> Optional[dict]:
 
     # Apply triggers
     apply_triggers = ["閱卷聲請", "聲請閱卷", "申請閱卷"]
+    # 已遞委任：已另行遞交委任狀，略過上傳步驟
+    _SKIP_UPLOAD_KEYWORDS = [
+        "已遞委任", "已送委任", "委任已送", "委任已遞",
+        "不用上傳", "無需上傳", "跳過上傳", "略過上傳",
+    ]
     for trigger in apply_triggers:
         if t.startswith(trigger):
             remainder = t[len(trigger):].strip()
-            return _parse_apply_args(remainder)
+            # 偵測「已遞委任」類關鍵字（可出現在任意位置）
+            skip_upload_detected = False
+            for kw in _SKIP_UPLOAD_KEYWORDS:
+                if kw in remainder:
+                    remainder = remainder.replace(kw, "").strip()
+                    skip_upload_detected = True
+                    break
+            parsed = _parse_apply_args(remainder)
+            if parsed and skip_upload_detected:
+                parsed["skip_upload"] = True
+            return parsed
 
     # Probe triggers
     probe_triggers = ["閱卷查核", "查核閱卷", "卷宗查核", "查核卷宗", "卷宗檢核", "檢核卷宗"]
@@ -4616,6 +4632,7 @@ def main() -> int:
                 sys_type=payload.get("sys_type", ""),
                 folder_path=payload.get("folder_path", ""),
                 flow_id=flow_id,
+                skip_upload=_boolish(payload.get("skip_upload"), False),
             ),
             metadata={
                 "court_code": payload.get("court_code", ""),
