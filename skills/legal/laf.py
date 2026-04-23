@@ -30,6 +30,7 @@ import traceback
 import tempfile
 import shutil
 import subprocess
+import types
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional, Dict, List, Any, Tuple
@@ -160,16 +161,10 @@ if not RAPIDOCR_AVAILABLE:
     print("⚠️ RapidOCR 未安裝，驗證碼自動識別功能無法使用")
 
 # ddddocr (Primary)
-DDDDOCR_AVAILABLE = False
-try:
-    if importlib.util.find_spec("ddddocr") is not None:
-        import ddddocr as _ddddocr_probe
-        DDDDOCR_AVAILABLE = hasattr(_ddddocr_probe, "DdddOcr")
-except Exception:
-    DDDDOCR_AVAILABLE = False
+DDDDOCR_AVAILABLE = importlib.util.find_spec("ddddocr") is not None
 
 if DDDDOCR_AVAILABLE:
-    print("✅ [Import] ddddocr 模組可用")
+    print("✅ [Import] ddddocr 套件已找到（必要時使用 compat fallback）")
 else:
     print("⚠️ [Import] ddddocr 模組不可用（將改用 RapidOCR）")
 
@@ -201,6 +196,83 @@ build = None
 
 Image = None
 np = None
+
+
+def _synthetic_ddddocr_package_name(package_dir: str) -> str:
+    raw = re.sub(r"[^0-9A-Za-z_]+", "_", str(package_dir or "").strip()) or "default"
+    return f"_magi_ddddocr_fallback_{raw}"
+
+
+def _ensure_synthetic_package(module_name: str, package_dir: str) -> types.ModuleType:
+    mod = sys.modules.get(module_name)
+    if isinstance(mod, types.ModuleType):
+        return mod
+    pkg = types.ModuleType(module_name)
+    pkg.__path__ = [package_dir]
+    pkg.__file__ = os.path.join(package_dir, "__init__.py")
+    pkg.__package__ = module_name
+    sys.modules[module_name] = pkg
+    return pkg
+
+
+def _load_ddddocr_legacy_class(package_dir: str):
+    legacy_py = os.path.join(package_dir, "compat", "legacy.py")
+    if not os.path.exists(legacy_py):
+        return None
+
+    base_name = _synthetic_ddddocr_package_name(package_dir)
+    compat_name = f"{base_name}.compat"
+    legacy_name = f"{compat_name}.legacy"
+
+    _ensure_synthetic_package(base_name, package_dir)
+    _ensure_synthetic_package(compat_name, os.path.join(package_dir, "compat"))
+
+    spec = importlib.util.spec_from_file_location(legacy_name, legacy_py)
+    if spec is None or spec.loader is None:
+        return None
+
+    sys.modules.pop(legacy_name, None)
+    mod = importlib.util.module_from_spec(spec)
+    mod.__package__ = compat_name
+    sys.modules[legacy_name] = mod
+    spec.loader.exec_module(mod)  # type: ignore[attr-defined]
+    return getattr(mod, "DdddOcr", None)
+
+
+def _resolve_ddddocr_class(log=None):
+    def _emit(message: str) -> None:
+        try:
+            if log:
+                log(message)
+        except Exception:
+            _log.debug("ddddocr resolver log failed", exc_info=True)
+
+    if not DDDDOCR_AVAILABLE:
+        return None
+
+    try:
+        ddddocr_mod = importlib.import_module("ddddocr")
+        cls = getattr(ddddocr_mod, "DdddOcr", None)
+        if cls is not None:
+            return cls
+    except Exception as e:
+        _emit(f"⚠️ [ddddocr] import 失敗，改用相容載入器: {e}")
+
+    try:
+        spec = importlib.util.find_spec("ddddocr")
+        pkg_dir = ""
+        if spec and spec.submodule_search_locations:
+            pkg_dir = list(spec.submodule_search_locations)[0]
+        if not pkg_dir:
+            return None
+        cls = _load_ddddocr_legacy_class(pkg_dir)
+        if cls is not None:
+            _emit(f"✅ [ddddocr] 使用 compat/legacy fallback 載入: {pkg_dir}")
+            return cls
+    except Exception as e:
+        _emit(f"⚠️ [ddddocr] compat/legacy fallback 載入失敗: {e}")
+
+    return None
 
 
 # ==============================================================================
@@ -491,7 +563,63 @@ class LAFCaseTypeParser:
             info.needs_download = False  # 不需從系統下載
             return info
 
-        # 4. ★ 專員來信簡寫格式：1150324-T-047沈筱筑(債清)
+        # 4. ★ 審核回報格式：通知喬政翔律師回報(結案|附條件)...
+        # 範例：通知喬政翔律師回報(結案)1140905-K-001-陳瀚-刑事二審辯護-詐欺等之資料，業經分會轉入系統
+        report_result_match = re.search(
+            r'回報[（(](結案|附條件)[)）].*?(\d{7}-[A-Z]-\d{3})(.*)$',
+            subject,
+        )
+        if report_result_match:
+            report_kind = (report_result_match.group(1) or "").strip()
+            info.notification_type = "審核結果通知"
+            info.branch = "待確認"
+            info.laf_case_number = (report_result_match.group(2) or "").strip()
+            tail = (report_result_match.group(3) or "").strip(" -")
+            tail = re.sub(r'之資料.*$', '', tail).strip()
+            parts = [p.strip() for p in tail.split('-') if p.strip()]
+
+            if parts:
+                info.client_name = parts[0]
+
+            if len(parts) >= 2:
+                info.laf_case_type = parts[1]
+                info.case_type, info.case_stage = cls._determine_case_type(info.laf_case_type)
+            else:
+                info.case_type = "民事"
+                info.case_stage = "一審"
+                info.laf_case_type = "一般案件"
+
+            if len(parts) >= 3:
+                raw_reason = "-".join(parts[2:])
+                info.case_reason = cls._cleanup_reason(raw_reason)
+            else:
+                info.case_reason = "待確認"
+
+            if report_kind == "附條件" and (not info.case_reason or info.case_reason == "待確認"):
+                info.case_reason = "附條件審查"
+
+            info.needs_download = True
+            return info
+
+        # 4.5. ★ 分會指派辦理格式：法扶XX分會指派辦理刑事偵查中辯護案件（案號，當事人）
+        # 範例：法扶台東分會指派辦理刑事偵查中辯護案件（1150423-J-017，陳○華）
+        assign_match = re.search(
+            r'法扶(.+?)分會指派辦理(.+?)（(\d{7}-[A-Z]-\d{3})[，,](.+?)）',
+            subject,
+        )
+        if assign_match:
+            info.branch = assign_match.group(1)
+            info.notification_type = "派案通知"
+            laf_case_type_text = assign_match.group(2).strip()
+            info.laf_case_number = assign_match.group(3)
+            info.client_name = assign_match.group(4).strip()
+            info.laf_case_type = laf_case_type_text
+            info.case_type, info.case_stage = cls._determine_case_type(laf_case_type_text)
+            info.case_reason = "待確認"
+            info.needs_download = True
+            return info
+
+        # 5. ★ 專員來信簡寫格式：1150324-T-047沈筱筑(債清)
         # 格式：{案號}{當事人}({案由簡稱})  或  {案號}{當事人}
         staff_short_match = re.search(
             r'(\d{7}-[A-Z]-\d{3})\s*([^\s(（]+)\s*(?:[(（](.+?)[)）])?',
@@ -499,7 +627,8 @@ class LAFCaseTypeParser:
         )
         if staff_short_match:
             info.laf_case_number = staff_short_match.group(1)
-            info.client_name = staff_short_match.group(2).strip()
+            # 清理 Pattern 5 常見殘留：全形逗號開頭（「，陳○華）」）和全形右括號結尾
+            info.client_name = staff_short_match.group(2).strip().lstrip('，,').rstrip('）)')
             info.notification_type = "派案通知"
             info.branch = "待確認"
 
@@ -655,14 +784,8 @@ class CaptchaSolver:
         """初始化 OCR 引擎"""
         # 1. ddddocr (Primary)
         if DDDDOCR_AVAILABLE:
-            global ddddocr
-            if ddddocr is None:
-                try:
-                    import ddddocr
-                except ImportError:
-                    pass
-
-            if ddddocr:
+            DdddOcrCls = _resolve_ddddocr_class(log=self.log)
+            if DdddOcrCls:
                 try:
                     # ★★★ Packaged App Fix: Handle common.onnx path in frozen environment ★★★
                     onnx_kwargs = {'show_ad': False}
@@ -690,7 +813,7 @@ class CaptchaSolver:
                         else:
                             self.log(f"⚠️ [ddddocr] frozen model not found in: {possible_paths}")
 
-                    self.dddd_ocr = ddddocr.DdddOcr(**onnx_kwargs)
+                    self.dddd_ocr = DdddOcrCls(**onnx_kwargs)
                     self.log("✅ ddddocr 引擎初始化成功")
                 except Exception as e:
                     self.log(f"⚠️ ddddocr 初始化失敗: {e}")
@@ -941,10 +1064,10 @@ class CaptchaSolver:
                 result = self.solve(image)
                 
                 if result and len(result) >= 4:
-                    self.log(f"✅ 驗證碼識別成功 (第 {attempt + 1} 次): {result}")
+                    self.log(f"✅ 驗證碼識別成功 (第 {attempt + 1} 次)")
                     return result
                 
-                self.log(f"⚠️ 驗證碼識別結果不完整 (第 {attempt + 1} 次): {result}")
+                self.log(f"⚠️ 驗證碼識別結果不完整 (第 {attempt + 1} 次)")
                 time.sleep(1)  # 等待一秒後重試
                 
             except Exception as e:
