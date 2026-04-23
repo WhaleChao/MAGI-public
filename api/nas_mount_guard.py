@@ -264,27 +264,51 @@ def _mount_share(share_name: str, volume_path: str) -> bool:
 
 def _ensure_volume_mount_point(volume_path: str) -> None:
     """確保 /Volumes/<share> mount point 存在且當前使用者有 mount 權限。
-    /Volumes/ 下建目錄需要 root，用 osascript 取得 admin 權限。"""
+
+    策略（依序嘗試）：
+    1. 目錄已存在且 owner 正確 → 直接返回
+    2. owner 不符 → 只有在互動環境（有 GUI/TTY）才觸發 osascript 彈窗；
+       daemon 環境靜默跳過（由開機時 com.magi.nas-mountpoints LaunchDaemon 預先 chown）
+    3. 目錄不存在 → 先嘗試 mkdir（若 /Volumes 可寫），再 osascript（互動環境），
+       最後靜默放棄（mount_smbfs 會 fallback 到 ~/.magi_mounts）
+    """
+    _interactive = bool(os.environ.get("DISPLAY") or os.environ.get("TERM_PROGRAM") or
+                        (hasattr(os, "isatty") and os.isatty(1)))
+
     if os.path.isdir(volume_path):
-        # 檢查 owner 是否是當前使用者（mount_smbfs 需要）
         try:
             st = os.stat(volume_path)
             if st.st_uid != os.getuid():
-                subprocess.run(
-                    ["osascript", "-e", f'do shell script "chown {os.getuid()}:staff {volume_path}" with administrator privileges'],
-                    capture_output=True, text=True, timeout=10,
-                )
+                if _interactive:
+                    subprocess.run(
+                        ["osascript", "-e",
+                         f'do shell script "chown {os.getuid()}:staff {volume_path}" with administrator privileges'],
+                        capture_output=True, text=True, timeout=10,
+                    )
+                else:
+                    # daemon 環境：靜默略過，開機 LaunchDaemon (com.magi.nas-mountpoints) 已預先 chown
+                    logger.debug("_ensure_volume_mount_point: %s owned by root, skipping GUI chown in daemon context", volume_path)
         except Exception:
             pass
         return
-    # 目錄不存在，用 osascript 建立
+
+    # 目錄不存在
     try:
-        subprocess.run(
-            ["osascript", "-e", f'do shell script "mkdir -p {volume_path} && chown {os.getuid()}:staff {volume_path}" with administrator privileges'],
-            capture_output=True, text=True, timeout=10,
-        )
-    except Exception as e:
-        logger.debug("Cannot create %s via osascript: %s", volume_path, e)
+        os.makedirs(volume_path, exist_ok=True)
+        return
+    except OSError:
+        pass
+    if _interactive:
+        try:
+            subprocess.run(
+                ["osascript", "-e",
+                 f'do shell script "mkdir -p {volume_path} && chown {os.getuid()}:staff {volume_path}" with administrator privileges'],
+                capture_output=True, text=True, timeout=10,
+            )
+        except Exception as e:
+            logger.debug("Cannot create %s via osascript: %s", volume_path, e)
+    else:
+        logger.debug("_ensure_volume_mount_point: cannot create %s in daemon context, will fallback to ~/.magi_mounts", volume_path)
 
 
 def _get_nas_password_from_keychain() -> str:
