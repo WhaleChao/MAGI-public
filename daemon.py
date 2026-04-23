@@ -54,6 +54,16 @@ except ImportError:
 os.environ.setdefault("MAGI_MYSQL_USE_PURE", "1")
 os.environ.setdefault("MYSQL_USE_PURE", "1")
 os.environ.setdefault("MAGI_AVOID_DISTRIBUTED", "1")
+# Google Calendar dedup enforcement (2026-04-24: 36 historic dup groups cleaned;
+# observation phase complete, prevention now active).
+os.environ.setdefault("MAGI_GCAL_DEDUP_ENABLED", "1")
+os.environ.setdefault("MAGI_GCAL_DEDUP_DRY_RUN", "0")
+os.environ.setdefault("MAGI_GCAL_DUP_AUDIT_ENABLED", "1")
+os.environ.setdefault("MAGI_GCAL_DUP_AUDIT_APPLY", "0")
+os.environ.setdefault("MAGI_GCAL_DUP_AUDIT_MIN_CONFIDENCE", "high")
+os.environ.setdefault("MAGI_GCAL_DUP_AUDIT_LOOKBACK_DAYS", "730")
+os.environ.setdefault("MAGI_GCAL_DUP_AUDIT_LOOKAHEAD_DAYS", "365")
+os.environ.setdefault("MAGI_GCAL_DUP_AUDIT_OUTPUT_DIR", os.path.join(_MAGI_ROOT, "reports", "gcal_dedup"))
 os.environ["MAGI_DAEMON"] = "1"  # Signal to child processes (server.py) to skip console StreamHandler
 
 # Configure Logging with RotatingFileHandler

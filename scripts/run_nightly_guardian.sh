@@ -9,6 +9,27 @@ VENV_PY="$MAGI_DIR/venv/bin/python3"
 LOG_DIR="$MAGI_DIR/logs"
 mkdir -p "$LOG_DIR"
 
+# Google Calendar dedup / audit defaults
+# Observation mode by default:
+# - dedup enabled (enforcement mode since 2026-04-24 historic cleanup)
+# - dry-run off: prevent new duplicates from being inserted
+: "${MAGI_GCAL_DEDUP_ENABLED:=1}"
+: "${MAGI_GCAL_DEDUP_DRY_RUN:=0}"
+: "${MAGI_GCAL_DUP_AUDIT_ENABLED:=1}"
+: "${MAGI_GCAL_DUP_AUDIT_APPLY:=0}"
+: "${MAGI_GCAL_DUP_AUDIT_MIN_CONFIDENCE:=high}"
+: "${MAGI_GCAL_DUP_AUDIT_LOOKBACK_DAYS:=730}"
+: "${MAGI_GCAL_DUP_AUDIT_LOOKAHEAD_DAYS:=365}"
+: "${MAGI_GCAL_DUP_AUDIT_OUTPUT_DIR:=$MAGI_DIR/reports/gcal_dedup}"
+export MAGI_GCAL_DEDUP_ENABLED
+export MAGI_GCAL_DEDUP_DRY_RUN
+export MAGI_GCAL_DUP_AUDIT_ENABLED
+export MAGI_GCAL_DUP_AUDIT_APPLY
+export MAGI_GCAL_DUP_AUDIT_MIN_CONFIDENCE
+export MAGI_GCAL_DUP_AUDIT_LOOKBACK_DAYS
+export MAGI_GCAL_DUP_AUDIT_LOOKAHEAD_DAYS
+export MAGI_GCAL_DUP_AUDIT_OUTPUT_DIR
+
 log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a "$LOG_DIR/nightly_guardian.log"
 }
@@ -150,6 +171,7 @@ start_rename_watcher() {
 
 # === 主循環 ===
 log "=== MAGI Nightly Guardian 啟動 ==="
+log "gcal_observe_mode: dedup_enabled=$MAGI_GCAL_DEDUP_ENABLED dedup_dry_run=$MAGI_GCAL_DEDUP_DRY_RUN audit_enabled=$MAGI_GCAL_DUP_AUDIT_ENABLED audit_apply=$MAGI_GCAL_DUP_AUDIT_APPLY"
 cleanup_state
 start_rename_watcher
 
