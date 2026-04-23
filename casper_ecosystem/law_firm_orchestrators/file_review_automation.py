@@ -3371,8 +3371,39 @@ class FileReviewManager:
                                 return True
                     except Exception as _retry_err:
                         self.log(f"  ⚠️ 第二次嘗試異常: {_retry_err}")
-                    self.log("  ⚠️ 等待新視窗逾時 (Playwright expect_popup)")
-                    return False
+                    # ---- context.pages fallback ----
+                    # OLA portal 的 onClick 先跑 async AJAX 才 window.open()；
+                    # AJAX 在夜間可能超過 50s，導致兩次 expect_popup 都逾時。
+                    # 但 Playwright BrowserContext 已記錄該頁面，只是事件沒捕到。
+                    # ⚠️ 守則：不要再動這段邏輯，已根修 navigate_failed 間歇性問題。
+                    try:
+                        import time as _t_fallback
+                        _t_fallback.sleep(3)  # 給 window.open() 最後 3s 完成
+                        _cur_handles = set(self.driver.window_handles)
+                        _new_handles = _cur_handles - original_windows
+                        if _new_handles:
+                            _fallback_win = next(iter(_new_handles))
+                            self.log(f"  ✓ context.pages fallback: 找到延遲出現的新視窗 {_fallback_win}")
+                            # 補追蹤到 _popup_pages（讓後續 switch_to.window 可用）
+                            try:
+                                _ctx = getattr(self.driver, '_context', None)
+                                if _ctx:
+                                    for _p in _ctx.pages:
+                                        if str(id(_p)) == _fallback_win:
+                                            if _p not in getattr(self.driver, '_popup_pages', []):
+                                                self.driver._popup_pages.append(_p)
+                                            break
+                            except Exception:
+                                pass
+                            new_window = _fallback_win
+                            clicked = True
+                        else:
+                            self.log("  ⚠️ context.pages fallback: 仍無新視窗")
+                    except Exception as _fb_err:
+                        self.log(f"  ⚠️ context.pages fallback 異常: {_fb_err}")
+                    if not clicked:
+                        self.log("  ⚠️ 等待新視窗逾時 (Playwright expect_popup)")
+                        return False
 
             else:
                 # ---- Selenium 路徑：現有邏輯 ----
