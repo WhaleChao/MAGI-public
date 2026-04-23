@@ -1029,18 +1029,23 @@ class CaptchaSolver:
                 self.log(f"⚠️ 不支援的圖片類型: {type(image_source)}")
                 return ""
 
+            candidates = []
+
+            def _add_candidate(source: str, value: str):
+                digits = re.sub(r'[^\d]', '', str(value or ''))
+                if len(digits) >= 4:
+                    candidates.append((source, digits[:4]))
+
             # =========================================================
-            # 優先使用 ddddocr（搭配增強預處理）
+            # ddddocr（搭配增強預處理）
             # =========================================================
             if self.dddd_ocr and img_bytes:
                 # 先試原始圖片
-                ddddocr_results = []
                 try:
                     res0 = self.dddd_ocr.classification(img_bytes)
                     res0 = re.sub(r'[^A-Za-z0-9]', '', res0)
-                    self.log(f"  🔍 [ddddocr] 原始結果: {res0}")
-                    if len(res0) >= 4:
-                        ddddocr_results.append(res0[:4])
+                    self.log(f"  🔍 [ddddocr] 原始結果: {'可用' if len(res0) >= 4 else '不完整'}")
+                    _add_candidate("dddd_raw", res0)
                 except Exception as e:
                     self.log(f"  ⚠️ ddddocr 原始識別失敗: {e}")
 
@@ -1063,119 +1068,102 @@ class CaptchaSolver:
                         _pre_bytes = _buf.getvalue()
                         res_pre = self.dddd_ocr.classification(_pre_bytes)
                         res_pre = re.sub(r'[^A-Za-z0-9]', '', res_pre)
-                        self.log(f"  🔍 [ddddocr] 預處理結果: {res_pre}")
-                        if len(res_pre) >= 4:
-                            ddddocr_results.append(res_pre[:4])
+                        self.log(f"  🔍 [ddddocr] 預處理結果: {'可用' if len(res_pre) >= 4 else '不完整'}")
+                        _add_candidate("dddd_pre", res_pre)
                 except Exception as e:
                     self.log(f"  ⚠️ ddddocr 預處理識別失敗: {e}")
-
-                # 選出最常見結果（如果一致就直接用；否則用預處理版優先）
-                if len(ddddocr_results) >= 2 and ddddocr_results[0] == ddddocr_results[1]:
-                    self.log(f"  ✅ [ddddocr] 兩次一致: {ddddocr_results[0]}")
-                    return ddddocr_results[0]
-                elif len(ddddocr_results) >= 2:
-                    # 不一致，優先取預處理結果
-                    self.log(f"  ⚠️ [ddddocr] 兩次不一致 ({ddddocr_results[0]} vs {ddddocr_results[1]})，取預處理版")
-                    return ddddocr_results[1]
-                elif len(ddddocr_results) == 1:
-                    return ddddocr_results[0]
             
             # =========================================================
-            # RapidOCR Fallback (如果 ddddocr 無效或沒安裝)
+            # RapidOCR（與 ddddocr 交叉比對，不只是 fallback）
             # =========================================================
-            if not self.ocr_engine:
-                return ""
-            
-            # === 進階圖像預處理 ===
-            # 1. 轉為 RGB（確保格式一致）
-            if img.mode != 'RGB':
-                img = img.convert('RGB')
-            
-            img_array = np.array(img)
-            
-            # 2. 法扶驗證碼特徵：深藍色數字、白色背景
-            # 深藍色：R低、G低、B高
-            # 白色：R高、G高、B高
-            # 策略：用灰階值來區分（深藍色灰階值較低）
-            
-            # 轉灰階
-            gray = np.array(img.convert('L'))
-            
-            # 3. 二值化：灰階值低於閾值的是數字（深色），變成黑色；其他變白
-            threshold = 150  # 深藍色數字的灰階值大約 50-100
-            binary = np.where(gray < threshold, 0, 255).astype(np.uint8)
-            
-            # 4. 轉為 PIL Image 並放大（提高 OCR 準確度）
-            processed_img = Image.fromarray(binary)
-            
-            # 放大 2 倍
-            new_size = (processed_img.width * 2, processed_img.height * 2)
-            processed_img = processed_img.resize(new_size, Image.Resampling.LANCZOS)
-            
-            processed_array = np.array(processed_img)
-            
-            # 保存處理後圖片僅供除錯
-            if getattr(self, '_debug_capture_enabled', lambda: False)():
+            if self.ocr_engine:
                 try:
-                    debug_processed = Path(tempfile.gettempdir()) / "debug_captcha_processed.png"
-                    processed_img.save(debug_processed)
-                    self.log(f"  📷 預處理後圖片: {debug_processed}")
-                except Exception:
-                    logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 895, exc_info=True)
-            
-            # OCR 識別
-            result, elapse = self.ocr_engine(processed_array)
-            
-            self.log(f"  🔍 OCR 原始結果: {result}")
-            
-            if result:
-                # 合併所有識別結果
-                all_text = ''.join([line[1] for line in result])
-                self.log(f"  🔍 OCR 合併文字: {all_text}")
-                
-                # 移除空白和特殊字元，保留英文字母和數字
-                clean_text = re.sub(r'[^a-zA-Z0-9]', '', all_text)
-                self.log(f"  🔍 清理後文字: {clean_text}")
-                
-                # 只保留數字版本
-                digits_only = re.sub(r'[^\d]', '', all_text)
-                
-                # ★ 修改：強制只回傳數字，若非數字則視為失敗 (讓它去重試)
-                if len(digits_only) >= 4:
-                    return digits_only[:4]
-                
-                # 移除原本會回傳 clean_text 的邏輯，因為法扶只有數字
-                # if len(clean_text) >= 4:
-                #     return clean_text[:4]
-            
-            # 如果上面失敗，嘗試不同的閾值
-            self.log("  ⚠️ 第一次識別失敗，嘗試其他閾值...")
-            gray = np.array(img.convert('L'))
-            
-            for thresh in [120, 180, 100, 200]:
-                binary_test = np.where(gray < thresh, 0, 255).astype(np.uint8)
-                # 放大
-                test_img = Image.fromarray(binary_test)
-                test_img = test_img.resize((test_img.width * 2, test_img.height * 2), Image.Resampling.LANCZOS)
-                test_array = np.array(test_img)
-                
-                result_test, _ = self.ocr_engine(test_array)
-                if result_test:
-                    all_text = ''.join([line[1] for line in result_test])
-                    digits = re.sub(r'[^\d]', '', all_text)
-                    self.log(f"  🔍 閾值 {thresh} 結果: {digits}")
-                    if len(digits) >= 4:
-                        return digits[:4]
-            
-            # 最後嘗試原始灰階
-            self.log("  ⚠️ 嘗試原始灰階...")
-            result_gray, _ = self.ocr_engine(gray)
-            if result_gray:
-                all_text = ''.join([line[1] for line in result_gray])
-                digits_only = re.sub(r'[^\d]', '', all_text)
-                self.log(f"  🔍 灰階 OCR 結果: {digits_only}")
-                if len(digits_only) >= 4:
-                    return digits_only[:4]
+                    import cv2
+
+                    if img.mode != 'RGB':
+                        img = img.convert('RGB')
+
+                    rgb = np.array(img)
+                    gray = np.array(img.convert('L'))
+
+                    def _rapid_try(source: str, arr):
+                        result, _ = self.ocr_engine(arr)
+                        if result:
+                            all_text = ''.join([line[1] for line in result])
+                            _add_candidate(source, all_text)
+                            return True
+                        return False
+
+                    threshold = 150
+                    binary = np.where(gray < threshold, 0, 255).astype(np.uint8)
+                    processed_img = Image.fromarray(binary)
+                    processed_img = processed_img.resize(
+                        (processed_img.width * 2, processed_img.height * 2),
+                        Image.Resampling.LANCZOS,
+                    )
+                    processed_array = np.array(processed_img)
+
+                    if getattr(self, '_debug_capture_enabled', lambda: False)():
+                        try:
+                            debug_processed = Path(tempfile.gettempdir()) / "debug_captcha_processed.png"
+                            processed_img.save(debug_processed)
+                            self.log(f"  📷 預處理後圖片: {debug_processed}")
+                        except Exception:
+                            logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 895, exc_info=True)
+
+                    _rapid_try("rapid_binary_150", processed_array)
+
+                    for thresh in [120, 180, 100, 200]:
+                        binary_test = np.where(gray < thresh, 0, 255).astype(np.uint8)
+                        test_img = Image.fromarray(binary_test)
+                        test_img = test_img.resize(
+                            (test_img.width * 2, test_img.height * 2),
+                            Image.Resampling.LANCZOS,
+                        )
+                        _rapid_try(f"rapid_thresh_{thresh}", np.array(test_img))
+
+                    _rapid_try("rapid_gray", gray)
+
+                    hsv = cv2.cvtColor(rgb, cv2.COLOR_RGB2HSV)
+                    blue_mask = cv2.inRange(hsv, (75, 35, 20), (150, 255, 255))
+                    blue_mask = cv2.GaussianBlur(blue_mask, (3, 3), 0)
+                    blue_mask = cv2.threshold(blue_mask, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)[1]
+                    blue_mask = cv2.resize(
+                        blue_mask,
+                        (blue_mask.shape[1] * 2, blue_mask.shape[0] * 2),
+                        interpolation=cv2.INTER_CUBIC,
+                    )
+                    _rapid_try("rapid_blue_mask", blue_mask)
+
+                except Exception as e:
+                    self.log(f"  ⚠️ RapidOCR 失敗: {e}")
+
+            if candidates:
+                from collections import Counter
+                dddd_values = {value for source, value in candidates if source.startswith("dddd")}
+                rapid_values = [value for source, value in candidates if source.startswith("rapid")]
+                rapid_counter = Counter(rapid_values)
+                counts = Counter(value for _, value in candidates)
+                cross_engine = [value for value in counts if value in dddd_values and value in rapid_counter]
+
+                if cross_engine:
+                    best = max(cross_engine, key=lambda value: (counts[value], rapid_counter[value], value))
+                    self.log("  ✅ OCR 雙引擎結果一致")
+                    return best
+
+                prefer_engine = os.environ.get("LAF_OCR_PREFER_ENGINE", "rapid").strip().lower()
+                if prefer_engine == "dddd" and dddd_values:
+                    best = counts.most_common(1)[0][0]
+                    self.log("  🔍 OCR 採用 ddddocr 候選")
+                    return best
+                if rapid_counter:
+                    best = rapid_counter.most_common(1)[0][0]
+                    self.log("  🔍 OCR 採用 RapidOCR 多策略候選")
+                    return best
+
+                best = counts.most_common(1)[0][0]
+                self.log("  🔍 OCR 採用唯一可用候選")
+                return best
             
             return ""
             
@@ -1205,10 +1193,10 @@ class CaptchaSolver:
                 result = self.solve(image)
                 
                 if result and len(result) >= 4:
-                    self.log(f"✅ 驗證碼識別成功 (第 {attempt + 1} 次): {result}")
+                    self.log(f"✅ 驗證碼識別成功 (第 {attempt + 1} 次)")
                     return result
                 
-                self.log(f"⚠️ 驗證碼識別結果不完整 (第 {attempt + 1} 次): {result}")
+                self.log(f"⚠️ 驗證碼識別結果不完整 (第 {attempt + 1} 次)")
                 time.sleep(1)  # 等待一秒後重試
                 
             except Exception as e:
@@ -1279,7 +1267,10 @@ class LAFWebAutomation:
 
         # 瀏覽器 profile（用於保留 cookies / session，降低重複登入成本；不保證可永久免驗證碼）
         env_profile = os.environ.get("LAF_BROWSER_PROFILE_DIR", "").strip()
+        default_profile = str(get_magi_root_dir() / ".runtime" / "laf_chrome_profile")
         self.browser_profile_dir = (browser_profile_dir or env_profile).strip()
+        if not self.browser_profile_dir and not self.mock_mode:
+            self.browser_profile_dir = default_profile
         if self.browser_profile_dir:
             try:
                 p = Path(self.browser_profile_dir).expanduser()
@@ -1607,7 +1598,7 @@ class LAFWebAutomation:
     
 
     def _get_captcha_image_playwright(self) -> "np.ndarray":
-        """Playwright 專用驗證碼圖片取得：等待元素出現 → 截圖 or 直接 HTTP 下載"""
+        """Playwright 專用驗證碼圖片取得：優先用同 session HTTP 下載，再退回元素截圖。"""
         global np
         if np is None:
             import numpy as np
@@ -1616,7 +1607,54 @@ class LAFWebAutomation:
 
         pw: PlaywrightDriverWrapper = self.driver  # type: ignore
 
-        # 策略一：等待 img#kaptchaImage 出現（JS 動態注入，最多等 10s）
+        # 策略一：直接用 Playwright 的 request context 下載 captcha。
+        # 法扶站的 captcha 是動態 JPEG；元素截圖在 headless 模式偶爾會拿到
+        # 抗鋸齒/縮放後的影像，OCR 穩定度差。request context 與 browser
+        # context 共用 cookies，同 session GET 會同步更新伺服器端 captcha。
+        try:
+            from urllib.parse import urljoin as _urljoin
+            try:
+                pw._page.wait_for_selector('img#kaptchaImage, img[src*="captcha"]', timeout=8000, state='attached')
+            except Exception:
+                pass
+            candidates = []
+            for frame in pw._page.frames:
+                try:
+                    src = frame.evaluate("""() => {
+                        const img = document.querySelector('img#kaptchaImage') ||
+                                    document.querySelector('img[src*="captcha-image"]') ||
+                                    document.querySelector('img[src*="captcha"]');
+                        return img ? new URL(img.getAttribute('src') || img.src, location.href).href : '';
+                    }""")
+                    if src:
+                        candidates.append(str(src))
+                except Exception:
+                    continue
+            candidates.extend([
+                _urljoin(self.LOGIN_URL, "/lafcsp/captcha-image"),
+                _urljoin(f"{self.base_url.rstrip('/')}/", "lafcsp/captcha-image"),
+            ])
+            seen = set()
+            for captcha_url in candidates:
+                if not captcha_url or captcha_url in seen:
+                    continue
+                seen.add(captcha_url)
+                resp = pw._page.request.get(captcha_url)
+                if not resp.ok:
+                    self.log(f"  ⚠️ Playwright HTTP 驗證碼下載失敗: status={getattr(resp, 'status', '')}")
+                    continue
+                img_bytes = resp.body()
+                img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+                if self._debug_capture_enabled():
+                    debug_path = self.download_folder / 'debug_captcha_http.png'
+                    img.save(debug_path)
+                    self.log(f"  📷 驗證碼 HTTP 下載: {debug_path}")
+                self.log("  ✅ Playwright HTTP 驗證碼下載成功")
+                return np.array(img)
+        except Exception as e:
+            self.log(f"  ⚠️ Playwright HTTP 驗證碼下載失敗: {e}")
+
+        # 策略二：等待 img#kaptchaImage 出現（JS 動態注入，最多等 10s）
         captcha_selectors = [
             "img#kaptchaImage",
             "img[src*='captcha-image']",
@@ -1647,23 +1685,6 @@ class LAFWebAutomation:
             except Exception as e:
                 self.log(f"  ⚠️ Playwright captcha selector {sel} 失敗: {e}")
                 continue
-
-        # 策略二：直接 HTTP 下載驗證碼圖片（從目前 portal 的 session 取得）
-        self.log("  🔄 嘗試 Playwright HTTP 直接下載驗證碼...")
-        try:
-            captcha_url = "https://lawyer.laf.org.tw/lafcsp/captcha-image"
-            resp = pw._page.request.get(captcha_url)
-            if resp.ok:
-                img_bytes = resp.body()
-                img = Image.open(io.BytesIO(img_bytes))
-                if self._debug_capture_enabled():
-                    debug_path = self.download_folder / 'debug_captcha_http.png'
-                    img.save(debug_path)
-                    self.log(f"  📷 驗證碼 HTTP 下載: {debug_path}")
-                self.log("  ✅ Playwright HTTP 驗證碼下載成功")
-                return np.array(img)
-        except Exception as e:
-            self.log(f"  ⚠️ Playwright HTTP 驗證碼下載失敗: {e}")
 
         # 策略三：JavaScript canvas 截取
         self.log("  🔄 嘗試 JavaScript canvas 截取驗證碼...")
@@ -1702,6 +1723,66 @@ class LAFWebAutomation:
             return self._get_captcha_image_playwright()
 
         try:
+            # Selenium 元素截圖在新版 LAF 登入頁會被 input-group/CSS 裁切，
+            # 常只截到 captcha 的一部分。先用同 session cookie 直接抓原始
+            # /captcha-image，讓伺服器端 session 與我們要填的四碼一致。
+            try:
+                import io as _io
+                import urllib.request as _urlrequest
+                from urllib.parse import urljoin as _urljoin
+
+                candidates = []
+                try:
+                    src = self.driver.execute_script("""
+                        const img = document.querySelector('img#kaptchaImage') ||
+                                    document.querySelector('img[src*="captcha-image"]') ||
+                                    document.querySelector('img[src*="captcha"]');
+                        return img ? new URL(img.getAttribute('src') || img.src, location.href).href : '';
+                    """)
+                    if src:
+                        candidates.append(str(src))
+                except Exception:
+                    pass
+                candidates.extend([
+                    _urljoin(self.LOGIN_URL, "/lafcsp/captcha-image"),
+                    _urljoin(f"{self.base_url.rstrip('/')}/", "lafcsp/captcha-image"),
+                ])
+                cookies = []
+                try:
+                    for c in self.driver.get_cookies() or []:
+                        name = str(c.get("name") or "").strip()
+                        value = str(c.get("value") or "").strip()
+                        if name:
+                            cookies.append(f"{name}={value}")
+                except Exception:
+                    cookies = []
+                headers = {"User-Agent": "Mozilla/5.0"}
+                if cookies:
+                    headers["Cookie"] = "; ".join(cookies)
+                last_err = ""
+                seen = set()
+                for captcha_url in candidates:
+                    if not captcha_url or captcha_url in seen:
+                        continue
+                    seen.add(captcha_url)
+                    try:
+                        req = _urlrequest.Request(captcha_url, headers=headers)
+                        with _urlrequest.urlopen(req, timeout=8) as resp:
+                            img_bytes = resp.read()
+                        img = Image.open(_io.BytesIO(img_bytes)).convert("RGB")
+                        if self._debug_capture_enabled():
+                            debug_path = self.download_folder / 'debug_captcha_http.png'
+                            img.save(debug_path)
+                            self.log(f"  📷 驗證碼 HTTP 下載: {debug_path}")
+                        self.log("  ✅ HTTP 驗證碼下載成功")
+                        return np.array(img)
+                    except Exception as _one_err:
+                        last_err = str(_one_err)
+                if last_err:
+                    raise RuntimeError(last_err)
+            except Exception as e:
+                self.log(f"  ⚠️ HTTP 驗證碼下載失敗，改用元素截圖: {e}")
+
             selectors = [
                 # LAF 正式站：固定為 /lafcsp/captcha-image
                 "img#kaptchaImage[src*='captcha-image']",
@@ -2152,13 +2233,98 @@ class LAFWebAutomation:
         except Exception:
             logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 1534, exc_info=True)
 
+    def _handle_password_reminder_page(self) -> bool:
+        """Handle the post-login 90-day password reminder interstitial."""
+        if not self.driver:
+            return False
+        try:
+            src = self.driver.page_source or ""
+            cur = self.driver.current_url or ""
+            if "changePwReminderResult" not in src and "請每90天變更一次使用者密碼" not in src:
+                return False
+
+            self.log("  🔐 偵測到密碼變更提醒頁，選擇三個月後再提醒。")
+            clicked = self.driver.execute_script("""
+                var btn = document.querySelector('#remindLater');
+                if (btn) {
+                    btn.click();
+                    return 'remindLater';
+                }
+                if (typeof remindLater === 'function') {
+                    remindLater();
+                    return 'remindLaterFn';
+                }
+                var input = document.querySelector('#reminderResult, input[name="reminderResult"]');
+                if (input) input.value = 'later';
+                var form = document.querySelector('form[action*="changePwReminderResult"]');
+                if (form) {
+                    form.submit();
+                    return 'formSubmit';
+                }
+                return '';
+            """)
+            if not clicked:
+                return False
+
+            deadline = time.time() + 20
+            while time.time() < deadline:
+                time.sleep(0.5)
+                try:
+                    now_url = self.driver.current_url or ""
+                    now_src = self.driver.page_source or ""
+                    if "toMainPage" in now_url:
+                        self.log("  ✅ 密碼提醒頁已略過，進入主頁。")
+                        return True
+                    if "changePwReminderResult" not in now_src and "請每90天變更一次使用者密碼" not in now_src:
+                        self.log("  ✅ 密碼提醒頁已略過。")
+                        return True
+                except Exception:
+                    logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, "password_reminder_wait", exc_info=True)
+            return "toMainPage" in (self.driver.current_url or "")
+        except Exception as e:
+            self.log(f"  ⚠️ 密碼提醒頁處理失敗: {e}")
+            return False
+
+    def _current_page_looks_authenticated(self) -> bool:
+        """Best-effort detection for an already-authenticated LAF portal page."""
+        if not self.driver:
+            return False
+        try:
+            src = self.driver.page_source or ""
+            title = (self.driver.title or "").strip()
+            cur = self.driver.current_url or ""
+            if self.driver.find_elements(By.CSS_SELECTOR, "input[name='user_id'], input[name='user_pass'], #loginLink"):
+                return False
+            if any(m in src for m in ["自動登出", "案件狀態區", "待處理案件", "追蹤案件", "最新公告"]):
+                return True
+            if "toMainPage" in cur:
+                return True
+            if title == "線上回報":
+                return True
+            if self.driver.find_elements(By.CSS_SELECTOR, "frame[name='contentFrame'], frame[name='footerFrame']"):
+                return True
+        except Exception:
+            logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, "current_page_auth_check", exc_info=True)
+        return False
+
     def login(self) -> bool:
         """登入 LAF 律師線上操作系統"""
         retry_count = 0
+        ocr_rejected_count = 0
         try:
-            max_login_retry = int(os.environ.get('LAF_LOGIN_MAX_RETRY', '5').strip() or '5')
+            max_login_retry = int(os.environ.get('LAF_LOGIN_MAX_RETRY', '8').strip() or '8')
         except Exception:
-            max_login_retry = 5
+            max_login_retry = 8
+        try:
+            captcha_ocr_retry = int(os.environ.get('LAF_CAPTCHA_MAX_RETRY', '5').strip() or '5')
+        except Exception:
+            captcha_ocr_retry = 5
+        captcha_ocr_retry = max(1, captcha_ocr_retry)
+
+        def _mark_ocr_rejected():
+            nonlocal ocr_rejected_count
+            ocr_rejected_count += 1
+            self.log("  🔁 OCR 驗證碼被入口拒絕，刷新驗證碼後自動重試。")
 
         while retry_count < max_login_retry:
             if not self.driver:
@@ -2183,6 +2349,11 @@ class LAFWebAutomation:
                     cur0 = (self.driver.current_url or "").lower()
                     if any(k in cur0 for k in ("tologin", "timeout=y", "/logout")):
                         raise RuntimeError("session_not_valid")
+                    if self._handle_password_reminder_page() or self._current_page_looks_authenticated():
+                        self.log("✅ LAF 已登入（沿用既有 session）")
+                        _eventlog("laf:portal:login", ok=True, payload={"method": "session_reuse_page"}, tags={"base_url": self.base_url})
+                        self._dismiss_post_login_popups()
+                        return True
                     # 嚴格判定：需在主頁面上找到至少 2 個 markers
                     main_markers = ["案件狀態區", "待處理案件", "追蹤案件", "最新公告"]
                     _matched_markers = sum(1 for m in main_markers if m in src0)
@@ -2229,6 +2400,11 @@ class LAFWebAutomation:
                     self.log(f"  📷 登入頁面截圖: debug_login_page_{retry_count + 1}")
                 self._dump_login_dom_summary()
 
+                if self._handle_password_reminder_page() or self._current_page_looks_authenticated():
+                    self.log("✅ LAF 已登入（登入入口已是 portal 頁）")
+                    self._dismiss_post_login_popups()
+                    return True
+
                 # ── Playwright 原生登入路徑（更可靠，直接使用 page.fill/click）──
                 if isinstance(self.driver, PlaywrightDriverWrapper):
                     self.log("  🎭 使用 Playwright 原生登入路徑...")
@@ -2238,13 +2414,15 @@ class LAFWebAutomation:
                         _pw_page.wait_for_selector('img#kaptchaImage', timeout=10000, state='visible')
                         # 取驗證碼
                         self.log("  🤖 以 OCR 自動辨識驗證碼...")
-                        captcha_img_arr = self._get_captcha_image()
-                        captcha_text = self.captcha_solver.solve(captcha_img_arr) if captcha_img_arr is not None else ''
+                        captcha_text = self.captcha_solver.solve_with_retry(
+                            get_image_func=lambda: (self._refresh_captcha() or self._get_captcha_image()),
+                            max_retry=captcha_ocr_retry,
+                        )
                         if not captcha_text:
                             self.log("  ⚠️ OCR 失敗，重試登入")
                             retry_count += 1
                             continue
-                        self.log(f"✅ 驗證碼識別成功 (第 1 次): {captcha_text}")
+                        self.log("✅ 驗證碼識別成功 (第 1 次)")
                         self.log('  🔢 已取得驗證碼（不顯示於日誌）')
                         # 填入帳號、密碼、驗證碼（使用 Playwright 原生 fill，保證填入）
                         _pw_page.fill("input[name='user_id']", self.username)
@@ -2301,6 +2479,8 @@ class LAFWebAutomation:
                                         _login_ok_pw = True
                             except Exception:
                                 pass
+                        if not _login_ok_pw and self._handle_password_reminder_page():
+                            _login_ok_pw = True
                         self.log(f"  🔗 當前 URL: {_pw_page.url}")
                         if _login_ok_pw:
                             self.log('✅ LAF 登入成功！（Playwright 原生路徑）')
@@ -2309,6 +2489,7 @@ class LAFWebAutomation:
                             return True
                         else:
                             self.log(f"❌ 登入失敗，可能是驗證碼錯誤 (第 {retry_count + 1} 次)")
+                            _mark_ocr_rejected()
                             retry_count += 1
                             continue
                     except Exception as _pw_login_err:
@@ -2392,16 +2573,19 @@ class LAFWebAutomation:
                     "input[name='capText'], #kaptcha, input[name='captcha'], input[placeholder*='驗證'], input[name='checkCode']"
                 )
 
-                # 驗證碼處理：OCR 自動辨識 → 環境變數覆寫 → LINE 人工回覆
+                # 驗證碼處理：環境變數覆寫 → OCR 自動辨識；不走人工回覆，半夜可自動重試。
                 captcha_text = ''
+                captcha_source = ''
                 if self.mock_mode:
                     captcha_text = '0000'
+                    captcha_source = 'mock_mode'
                     self.log('  🧪 [MockMode] 使用固定驗證碼 0000')
                     _eventlog("laf:captcha:provided", ok=True, payload={"method": "mock_mode"}, tags={"base_url": self.base_url})
                 else:
                     # Step 1: 環境變數覆寫（最高優先權）
                     captcha_text = (self._captcha_override or '').strip()
                     if captcha_text:
+                        captcha_source = 'env_override'
                         _eventlog("laf:captcha:provided", ok=True, payload={"method": "env_override"}, tags={"base_url": self.base_url})
 
                     # Step 2: OCR 自動辨識（ddddocr / RapidOCR）
@@ -2411,112 +2595,23 @@ class LAFWebAutomation:
                         try:
                             captcha_text = self.captcha_solver.solve_with_retry(
                                 get_image_func=lambda: (self._refresh_captcha() or self._get_captcha_image()),
-                                max_retry=5,
+                                max_retry=captcha_ocr_retry,
                             )
                         except Exception as ocr_err:
                             self.log(f"  ⚠️ OCR 辨識異常: {ocr_err}")
                             captcha_text = ""
                         if captcha_text:
                             # Do not log the captcha itself.
+                            captcha_source = 'ocr'
                             _eventlog("laf:captcha:ocr:done", ok=True, payload={"result": "ok", "chars": len(captcha_text)}, tags={"base_url": self.base_url})
+                        elif self._allow_captcha_ocr:
+                            _eventlog("laf:captcha:ocr:done", ok=False, payload={"result": "empty", "headless": bool(self.headless)}, tags={"base_url": self.base_url})
 
-                        if not captcha_text and self.headless:
-                            # Headless + OCR 失敗：快速重試整個登入流程
-                            self.log("  ❌ OCR 未能辨識驗證碼，重新載入頁面重試...")
-                            _eventlog("laf:captcha:ocr:done", ok=False, payload={"result": "empty", "headless": True}, tags={"base_url": self.base_url})
-                            retry_count += 1
-                            continue
-
-                        if not captcha_text:
-                            # 正式站：CAPTCHA 為安全機制，不做自動辨識/繞過。
-                            # 改用「LINE 人工回覆四碼」的協作方式（只在需要登入時才通知）。
-                            self.log("⚠️ 需要人工提供驗證碼（LINE 回覆四碼，或環境變數 LAF_CAPTCHA=四碼）")
-                            _eventlog("laf:captcha:ocr:done", ok=False, payload={"result": "need_human"}, tags={"base_url": self.base_url})
-
-                            req_id = uuid.uuid4().hex[:12]
-
-                            # 先嘗試發送 LINE 通知（含驗證碼圖片連結）
-                            notify_enabled = os.environ.get("LAF_NOTIFY_CAPTCHA", "").strip().lower() in {"1", "true", "yes", "on"} or self.headless
-                            if notify_enabled:
-                                try:
-                                    from line_notifier import LAFNotifier
-                                    img_path = self.download_folder / f"laf_captcha_request_{req_id}.png"
-                                    if not img_path.exists():
-                                        try:
-                                            from PIL import Image
-                                            cap_arr = self._get_captcha_image()
-                                            if cap_arr is not None and getattr(cap_arr, "size", 0):
-                                                Image.fromarray(cap_arr).save(img_path)
-                                        except Exception:
-                                            logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 1723, exc_info=True)
-                                    exported = _export_file_to_static(img_path, prefix="laf_captcha")
-                                    req = {
-                                        "request_id": req_id,
-                                        "requested_at": int(time.time()),
-                                        "expires_at": int(time.time()) + int(LAF_CAPTCHA_TTL_SECONDS),
-                                        "image_path": str(img_path),
-                                        "export": exported,
-                                        "hint": "請直接回覆 4 碼數字（例如：1234）。",
-                                    }
-                                    _write_json_atomic(LAF_CAPTCHA_REQUEST_FILE, req)
-
-                                    url = (exported.get("url") or "").strip()
-                                    msg_lines = [
-                                        "🔐 法扶登入需要驗證碼（只會在 session 失效時通知）",
-                                        "請看圖後直接回覆 4 碼數字（例如：1234）。",
-                                    ]
-                                    if url:
-                                        msg_lines.append(url)
-                                    else:
-                                        msg_lines.append(f"(目前沒有可公開連結，圖檔位置：{img_path})")
-                                    LAFNotifier().notify_admin("\n".join(msg_lines))
-                                except Exception as e:
-                                    self.log(f"  ⚠️ LINE 通知失敗（仍可手動處理）: {e}")
-
-                            # Headless：等待 LINE 回覆，拿到四碼後自動登入
-                            if self.headless and not self._allow_captcha_ocr:
-                                try:
-                                    wait_s = int(os.environ.get("LAF_LINE_WAIT_SECONDS", "180").strip() or "180")
-                                except Exception:
-                                    wait_s = 180
-                                self.log(f"  ⏳ 等待 LINE 回覆驗證碼（{wait_s} 秒）...")
-                                deadline = time.time() + wait_s
-                                while time.time() < deadline:
-                                    # Allow env override to short-circuit
-                                    captcha_text = (os.environ.get("LAF_CAPTCHA") or "").strip()
-                                    if captcha_text and len(re.sub(r'[^0-9]', '', captcha_text)) >= 4:
-                                        captcha_text = re.sub(r'[^0-9]', '', captcha_text)[:4]
-                                        break
-                                    try:
-                                        if LAF_CAPTCHA_RESPONSE_FILE.exists():
-                                            with open(LAF_CAPTCHA_RESPONSE_FILE, "r", encoding="utf-8") as f:
-                                                data = json.load(f) or {}
-                                            if (data.get("request_id") or "") == req_id:
-                                                code = re.sub(r'[^0-9]', '', (data.get("captcha") or ""))
-                                                if len(code) >= 4:
-                                                    captcha_text = code[:4]
-                                                    break
-                                    except Exception:
-                                        logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 1772, exc_info=True)
-                                    time.sleep(1.0)
-
-                                if not captcha_text:
-                                    self.log("  ❌ 未收到驗證碼回覆，改用重試登入流程")
-                                    retry_count += 1
-                                    continue
-
-                            # 非 headless：照舊讓使用者直接在瀏覽器輸入（但仍已發 LINE 提醒）
-                            if not self.headless:
-                                try:
-                                    wait_s = int(os.environ.get("LAF_MANUAL_WAIT_SECONDS", "180").strip() or "180")
-                                except Exception:
-                                    wait_s = 180
-                                self.log('  💡 請在瀏覽器中手動輸入驗證碼並點擊登入（本次只做登入，不做任何回報/送出）')
-                                self.log(f"  ⏳ 等待 {wait_s} 秒...")
-                                time.sleep(wait_s)
-                                if self.driver and 'toMainPage' in (self.driver.current_url or ""):
-                                    self.log('✅ 手動登入成功！')
-                                    return True
+                    if not captcha_text:
+                        self.log("  ❌ OCR 未取得四碼，換新驗證碼自動重試。")
+                        _eventlog("laf:captcha:ocr:done", ok=False, payload={"result": "empty_auto_retry"}, tags={"base_url": self.base_url})
+                        retry_count += 1
+                        continue
 
                 if captcha_text:
                     self.log('  🔢 已取得驗證碼（不顯示於日誌）')
@@ -2560,6 +2655,12 @@ class LAFWebAutomation:
                 # 驗證登入成功 - 檢查多種可能的成功 URL/頁面特徵
                 current_url = self.driver.current_url
                 self.log(f"  🔗 當前 URL: {current_url}")
+
+                # 0-1) 登入成功後可能先進「90 天密碼變更提醒」中間頁
+                if self._handle_password_reminder_page():
+                    self.log("✅ LAF 登入成功！（已略過密碼提醒）")
+                    self._dismiss_post_login_popups()
+                    return True
 
                 # 1) URL 判斷
                 if 'toMainPage' in current_url:
@@ -2612,6 +2713,8 @@ class LAFWebAutomation:
                 try:
                     if self.driver.find_elements(By.CSS_SELECTOR, "#loginLink"):
                         self.log(f"❌ 登入失敗，可能是驗證碼錯誤 (第 {retry_count + 1} 次)")
+                        if captcha_source == 'ocr':
+                            _mark_ocr_rejected()
                         self.close()  # 清理 driver 避免洩漏
                         retry_count += 1
                         continue
@@ -2620,6 +2723,8 @@ class LAFWebAutomation:
 
                 if 'lafcsp' in current_url and 'toMainPage' not in current_url:
                     self.log(f"❌ 登入失敗，可能是驗證碼錯誤 (第 {retry_count + 1} 次)")
+                    if captcha_source == 'ocr':
+                        _mark_ocr_rejected()
                     self.close()  # 清理 driver 避免洩漏
                     retry_count += 1
                     continue
@@ -2742,42 +2847,127 @@ class LAFWebAutomation:
                     save_debug_screenshot(self.driver, f"debug_no_download_btn_{case_number}", context="法扶找不到下載按鈕")
                 return downloaded
             
-            # 點擊下載
+            # ── Strategy 0: Try to extract direct download URL from parent <a> ──
+            direct_download_url = None
+            try:
+                raw_el = download_btn._el if hasattr(download_btn, '_el') else download_btn
+                js_parent = """
+                let el = arguments[0];
+                for (let i = 0; i < 6; i++) {
+                    if (!el) break;
+                    if (el.tagName === 'A' && el.href) return el.href;
+                    el = el.parentElement;
+                }
+                return null;
+                """
+                direct_download_url = self.driver.execute_script(js_parent, raw_el)
+                if direct_download_url:
+                    self.log(f"  🔗 找到父連結 href: {direct_download_url}")
+            except Exception:
+                pass
+
+            # ── Strategy 1: Click button ──
+            is_playwright = hasattr(self.driver, '_context') and hasattr(self.driver, '_all_pages')
+            original_handles = set(self.driver.window_handles) if is_playwright else set()
+
             try:
                 self.log(f"  🖱️ 點擊下載按鈕...")
-                # 嘗試多種點擊方式
                 try:
                     download_btn.click()
                 except Exception:
-                    self.driver.execute_script("arguments[0].click();", download_btn)
-                
+                    self.driver.execute_script(
+                        "arguments[0].click();",
+                        download_btn._el if hasattr(download_btn, '_el') else download_btn,
+                    )
                 time.sleep(3)
-                
             except Exception as e:
                 self.log(f"  ⚠️ 點擊下載按鈕失敗: {e}")
                 return downloaded
-            
-            # 等待下載完成（最多等 30 秒）
-            max_wait = 30
-            for _ in range(max_wait):
-                time.sleep(1)
-                files_after = set(os.listdir(self.download_folder))
-                new_files = files_after - files_before
-                
-                # 檢查是否有正在下載的檔案（.crdownload 或 .tmp）
-                downloading = any(f.endswith(('.crdownload', '.tmp', '.part')) for f in new_files)
-                if new_files and not downloading:
-                    break
-            
+
+            # ── Strategy 2: Detect popup / new-page opened by the click (Playwright) ──
+            popup_url = None
+            if is_playwright:
+                import time as _t2
+                deadline = _t2.monotonic() + 8
+                while _t2.monotonic() < deadline:
+                    try:
+                        new_handles = set(self.driver.window_handles) - original_handles
+                        if new_handles:
+                            for _ph in new_handles:
+                                for _pg in self.driver._all_pages():
+                                    if str(id(_pg)) == _ph:
+                                        popup_url = _pg.url
+                                        self.log(f"  🔗 偵測到彈窗頁面: {popup_url}")
+                                        try:
+                                            _pg.close()
+                                        except Exception:
+                                            pass
+                                        break
+                            if popup_url:
+                                break
+                    except Exception:
+                        pass
+                    _t2.sleep(0.5)
+
+            # ── Strategy 3: HTTP download via Playwright session (no re-auth needed) ──
+            def _http_dl(url):
+                """Download file via Playwright request context (preserves session cookies)."""
+                if not url or not url.startswith('http'):
+                    return None
+                try:
+                    resp = self.driver._context.request.get(url, timeout=30000)
+                    if resp.status == 200:
+                        body = resp.body()
+                        if len(body) > 500:
+                            from urllib.parse import urlparse, unquote as _uq
+                            _parsed = urlparse(url)
+                            fname = os.path.basename(_parsed.path) or f"{case_number}_doc.pdf"
+                            if '.' not in fname:
+                                fname = f"{case_number}_doc.pdf"
+                            fname = _uq(fname)
+                            save_path = self.download_folder / fname
+                            save_path.write_bytes(body)
+                            self.log(f"  ✓ HTTP 直接下載: {fname} ({len(body):,} bytes)")
+                            return str(save_path)
+                        else:
+                            self.log(f"  ⚠️ HTTP 回應體太小 ({len(body)} bytes)，可能是錯誤頁面")
+                    else:
+                        self.log(f"  ⚠️ HTTP 下載失敗: status={resp.status}")
+                except Exception as _he:
+                    self.log(f"  ⚠️ HTTP 下載異常: {_he}")
+                return None
+
+            if is_playwright and popup_url:
+                _f = _http_dl(popup_url)
+                if _f:
+                    downloaded.append(_f)
+
+            if not downloaded and is_playwright and direct_download_url:
+                _f = _http_dl(direct_download_url)
+                if _f:
+                    downloaded.append(_f)
+
+            # ── Strategy 4: Poll laf_downloads/ (standard Playwright download event) ──
+            if not downloaded:
+                max_wait = 30
+                for _ in range(max_wait):
+                    time.sleep(1)
+                    files_after = set(os.listdir(self.download_folder))
+                    new_files = files_after - files_before
+                    downloading = any(f.endswith(('.crdownload', '.tmp', '.part')) for f in new_files)
+                    if new_files and not downloading:
+                        break
+
             # 收集下載的檔案
             files_after = set(os.listdir(self.download_folder))
             new_files = files_after - files_before
-            
+
             for f in new_files:
                 if not f.endswith(('.crdownload', '.tmp', '.part')):
                     full_path = str(self.download_folder / f)
-                    downloaded.append(full_path)
-                    self.log(f"  ✓ 已下載: {f}")
+                    if full_path not in downloaded:
+                        downloaded.append(full_path)
+                        self.log(f"  ✓ 已下載: {f}")
             
             if downloaded:
                 self.log(f"✅ 案件 {case_number} 下載完成，共 {len(downloaded)} 個檔案")
