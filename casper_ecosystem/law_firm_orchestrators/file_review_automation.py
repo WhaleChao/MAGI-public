@@ -10457,11 +10457,13 @@ class FileReviewManager:
                         try:
                             btn = WebDriverWait(self.driver, 1).until(EC.element_to_be_clickable((By.XPATH, sel)))
                             self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", btn)
+                            try:
+                                self.driver._last_dialog = None
+                            except Exception:
+                                pass
                             if click_mode == "native":
-                                self.driver._next_dialog_no_dismiss = True  # one-shot: caller will accept() via switch_to.alert
                                 btn.click()
                             else:
-                                self.driver._next_dialog_no_dismiss = True  # one-shot: caller will accept() via switch_to.alert
                                 self.driver.execute_script("arguments[0].click();", btn)
                             submit_clicked = True
                             self.log(f"  ✓ 已用{click_mode}方式點擊「確認送出」按鈕")
@@ -10520,7 +10522,10 @@ class FileReviewManager:
                     try:
                         self.log("  ⚠️ 確認彈窗已接受但未進入受理頁，改用頁面 doSubmitCheck() 送出")
                         direct_submit_invoked = True
-                        self.driver._next_dialog_no_dismiss = True  # one-shot: caller will accept() via switch_to.alert
+                        try:
+                            self.driver._last_dialog = None
+                        except Exception:
+                            pass
                         direct_ok = self.driver.execute_script(
                             """
                             return (function() {

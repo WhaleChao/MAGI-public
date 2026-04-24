@@ -2628,26 +2628,42 @@ class LAFWebAutomation:
                     # Chrome 147+: 直接呼叫 checkForm() 比 click loginLink 更穩定
                     # （法扶 portal 的登入按鈕是 <a onclick="checkForm();">，
                     #   Chrome 147 headless 下 click 可能不正確觸發 onclick）
-                    # Opt-in one-shot flag: login submit may raise post-login alert;
-                    # _dismiss_post_login_popups() reads it synchronously below.
-                    self.driver._next_dialog_no_dismiss = True
+                    # 守則：絕不在 execute_script/click 前設 _next_dialog_no_dismiss=True。
+                    # Playwright sync 在 dialog 未 dismiss 時會無限卡住。
+                    # 改為重置 _last_dialog，讓 _on_dialog 自動 dismiss 後讀 _last_dialog.message。
+                    try:
+                        self.driver._last_dialog = None
+                    except Exception:
+                        pass
                     self.driver.execute_script("checkForm();")
                 except Exception:
                     try:
                         login_btn = self.driver.find_element(By.CSS_SELECTOR, '#loginLink, a#loginLink')
-                        self.driver._next_dialog_no_dismiss = True
+                        try:
+                            self.driver._last_dialog = None
+                        except Exception:
+                            pass
                         login_btn.click()
                     except Exception:
                         try:
                             # Playwright fallback: click loginLink via native Playwright
                             if isinstance(self.driver, PlaywrightDriverWrapper):
-                                self.driver._next_dialog_no_dismiss = True
+                                try:
+                                    self.driver._last_dialog = None
+                                except Exception:
+                                    pass
                                 self.driver._page.click('#loginLink, a#loginLink')
                             else:
-                                self.driver._next_dialog_no_dismiss = True
+                                try:
+                                    self.driver._last_dialog = None
+                                except Exception:
+                                    pass
                                 password_input.send_keys('\n')
                         except Exception:
-                            self.driver._next_dialog_no_dismiss = True
+                            try:
+                                self.driver._last_dialog = None
+                            except Exception:
+                                pass
                             password_input.send_keys('\n')
 
                 # 等待 URL 離開 processLogin（最多 12 秒）
@@ -5118,7 +5134,10 @@ return null;
                 # 頁面仍在 Page 1，toPrevious() 可用
                 self.log("  🚀 toPrevious() → Page 2...")
                 try:
-                    self.driver._next_dialog_no_dismiss = True
+                    try:
+                        self.driver._last_dialog = None
+                    except Exception:
+                        pass
                     self.driver.execute_script("toPrevious();")
                 except Exception as e:
                     self.log(f"  ⚠️ toPrevious() exception: {e}")
@@ -5460,7 +5479,10 @@ return null;
         # 2. 呼叫 doFinish() 進入結案資料彙整
         self.log("🔗 呼叫 doFinish() → 結案資料彙整...")
         try:
-            self.driver._next_dialog_no_dismiss = True
+            try:
+                self.driver._last_dialog = None
+            except Exception:
+                pass
             self.driver.execute_script("doFinish();")
         except Exception as e:
             self.log(f"  ❌ doFinish() 呼叫失敗：{e}")
@@ -5529,12 +5551,18 @@ return null;
                     var overs = document.getElementsByName('over');
                     for (var i = 0; i < overs.length; i++) overs[i].value = '';
                 """)
-                self.driver._next_dialog_no_dismiss = True  # one-shot: caller will accept() via switch_to.alert
+                try:
+                    self.driver._last_dialog = None
+                except Exception:
+                    pass
                 self.driver.execute_script("doTempSave();")
                 save_attempted = True
                 self.log("  💾 doTempSave() called")
             else:
-                self.driver._next_dialog_no_dismiss = True  # one-shot: caller will accept() via switch_to.alert
+                try:
+                    self.driver._last_dialog = None
+                except Exception:
+                    pass
                 save_attempted = self._click_button_by_text(["存檔", "暫存", "保存", "儲存"])
         except Exception as e:
             self.log(f"  ⚠️ doTempSave 失敗：{e}")
@@ -5651,7 +5679,10 @@ return null;
                     var fps = document.getElementsByName('fromPage');
                     for (var i = 0; i < fps.length; i++) fps[i].value = '';
                 """)
-                self.driver._next_dialog_no_dismiss = True  # one-shot: caller will accept() via switch_to.alert
+                try:
+                    self.driver._last_dialog = None
+                except Exception:
+                    pass
                 self.driver.execute_script("doTempSave();")
                 save_attempted = True
                 self.log("  💾 doTempSave() called (with tempSaveFlag fix)")
@@ -5660,14 +5691,20 @@ return null;
                 try:
                     btn = self.driver.find_element("id", "save_btn")
                     if btn and btn.is_displayed():
-                        self.driver._next_dialog_no_dismiss = True  # one-shot: caller will accept() via switch_to.alert
+                        try:
+                            self.driver._last_dialog = None
+                        except Exception:
+                            pass
                         btn.click()
                         save_attempted = True
                         self.log("  💾 save_btn clicked")
                 except Exception:
                     logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 4434, exc_info=True)
                 if not save_attempted:
-                    self.driver._next_dialog_no_dismiss = True  # one-shot: caller will accept() via switch_to.alert
+                    try:
+                        self.driver._last_dialog = None
+                    except Exception:
+                        pass
                     save_attempted = self._click_button_by_text(["存檔", "暫存", "保存", "儲存"])
         except Exception as e:
             self.log(f"  ⚠️ doTempSave exception: {e}")
