@@ -1049,6 +1049,9 @@ class InferenceGateway:
         # ── @heavy fast path：跳過 oMLX，直接走 NIM 405B（Plan A, 2026-04-19 P1-2 修） ──
         # 使用者明確 @heavy 表示要雲端重型模型；oMLX 常在高負載時吐「忙碌中」假 success，
         # 讓 NIM 永遠接不到手（P1-2 bug）。修法：heavy_opt_in=True 時跳過 oMLX，直接試 NIM。
+        #
+        # 2026-04-24：新增 strict 模式 (MAGI_HEAVY_STRICT_NIM=1) — 失敗時以指數退避重試 NIM
+        # 而非立刻退回 oMLX。適合使用者明確要求「所有 chunk 統一用 NIM 405B，慢沒關係」的場景。
         if (
             heavy_opt_in
             and _env_bool("NVIDIA_NIM_ENABLE", False)
@@ -1060,14 +1063,38 @@ class InferenceGateway:
                     "inference_chat: @heavy fast path (skip oMLX, direct NIM) task=%s",
                     task_type,
                 )
-                nim_r = run_nim_chat(
-                    prompt=prompt,
-                    timeout_sec=max(60, int(timeout)),
-                    task_type=task_type,
-                    require_pii_scrub=_env_bool("NVIDIA_NIM_REQUIRE_PII_SCRUB", True),
-                    system_prompt=_DEFAULT_SYSTEM_PROMPT_ZH,
-                    heavy=True,  # 強制走 405B
-                )
+                _strict_nim = _env_bool("MAGI_HEAVY_STRICT_NIM", False)
+                _strict_retries = max(0, int(os.environ.get("MAGI_HEAVY_STRICT_NIM_RETRIES", "5") or "5"))
+                _strict_backoff_base = float(os.environ.get("MAGI_HEAVY_STRICT_NIM_BACKOFF_BASE", "4") or "4")
+                _strict_backoff_max = float(os.environ.get("MAGI_HEAVY_STRICT_NIM_BACKOFF_MAX", "60") or "60")
+                _max_attempts = _strict_retries + 1 if _strict_nim else 1
+                nim_r = {}
+                for _attempt in range(_max_attempts):
+                    if _attempt > 0:
+                        import time as _t
+                        _sleep = min(_strict_backoff_max, _strict_backoff_base * (2 ** (_attempt - 1)))
+                        logger.info(
+                            "inference_chat: @heavy strict retry #%d after %ds (task=%s)",
+                            _attempt, int(_sleep), task_type,
+                        )
+                        _t.sleep(_sleep)
+                    nim_r = run_nim_chat(
+                        prompt=prompt,
+                        timeout_sec=max(60, int(timeout)),
+                        task_type=task_type,
+                        require_pii_scrub=_env_bool("NVIDIA_NIM_REQUIRE_PII_SCRUB", True),
+                        system_prompt=_DEFAULT_SYSTEM_PROMPT_ZH,
+                        heavy=True,  # 強制走 405B
+                    )
+                    if nim_r.get("success") and nim_r.get("response"):
+                        break
+                    # 若是可重試錯誤（timeout / rate_limit / circuit_open），strict 模式繼續；
+                    # 若是 hard error（auth / budget exhausted / blocked model），立即放棄。
+                    _err = str(nim_r.get("error") or "").lower()
+                    _hard_stop = any(k in _err for k in ("budget_exhausted", "auth_failed", "blocked_model", "pii_scrub_failed"))
+                    if _hard_stop:
+                        logger.warning("inference_chat: @heavy strict hard-stop (%s), aborting retries", _err)
+                        break
                 if nim_r.get("success") and nim_r.get("response"):
                     return self._result(
                         success=True,
@@ -1081,9 +1108,23 @@ class InferenceGateway:
                         pii_counts=nim_r.get("pii_counts") or {},
                         heavy_fast_path=True,
                     )
-                # NIM 失敗（rate limit / budget / circuit open）→ 退回 oMLX 流程
+                # NIM 全部嘗試失敗（strict 已重試 N 次，或 hard-stop 中止）
                 errors.append(f"nvidia_nim_heavy_fast:{nim_r.get('error', 'empty')}")
                 nim_already_tried = True
+                if _strict_nim and not _env_bool("MAGI_HEAVY_STRICT_NIM_ALLOW_FALLBACK", False):
+                    # strict 模式預設禁止 fallback；直接回失敗讓呼叫端自己決定是否降級
+                    logger.warning(
+                        "@heavy strict NIM failed after %d attempts (%s); NOT falling back to oMLX",
+                        _max_attempts, nim_r.get("error", "empty"),
+                    )
+                    return self._result(
+                        success=False,
+                        route="nvidia_nim_strict_failed",
+                        degraded=False,
+                        response="",
+                        error=f"nim_strict_exhausted:{nim_r.get('error', 'empty')}",
+                        task_type=task_type,
+                    )
                 logger.warning(
                     "@heavy fast path NIM failed (%s), falling back to oMLX",
                     nim_r.get("error", "empty"),

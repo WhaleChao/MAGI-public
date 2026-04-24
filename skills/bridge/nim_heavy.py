@@ -42,6 +42,57 @@ _cb_state: Dict[str, Any] = {
     "last_error": "",
 }
 
+# ── 2026-04-24：動態壅塞監測 — 供 handler 決定是否跳過 NIM 直接走 GTX ──
+# 維護最近 N 次呼叫結果的 sliding window，判定 NIM 目前是否在 congestion。
+# 當 3/最近 5 次失敗或 p50 延遲 > 300s → 建議 prefer_gtx（下一 chunk 跳過 NIM 省時間）。
+_congestion_lock = threading.Lock()
+_congestion_window: list = []  # list of (ts, success, duration_ms) tuples
+_CONGESTION_MAX = 5
+
+
+def record_nim_outcome(success: bool, duration_ms: int, error: str = "") -> None:
+    """Track recent NIM call outcome for adaptive policy decisions."""
+    with _congestion_lock:
+        _congestion_window.append((time.time(), bool(success), int(duration_ms)))
+        if len(_congestion_window) > _CONGESTION_MAX:
+            _congestion_window.pop(0)
+
+
+def recommend_nim_policy() -> Dict[str, Any]:
+    """Return adaptive policy recommendation based on recent NIM health.
+
+    Returns dict with keys:
+      - policy: 'healthy' | 'fail_fast' | 'prefer_gtx'
+      - reason: human-readable explanation
+      - recent_success_rate: float (0.0-1.0)
+      - recent_avg_duration_ms: int
+    """
+    with _congestion_lock:
+        if len(_congestion_window) < 3:
+            return {"policy": "healthy", "reason": "warmup:not_enough_samples",
+                    "recent_success_rate": 1.0, "recent_avg_duration_ms": 0}
+        successes = [x for x in _congestion_window if x[1]]
+        failures = [x for x in _congestion_window if not x[1]]
+        rate = len(successes) / len(_congestion_window)
+        avg_ms = int(sum(x[2] for x in _congestion_window) / len(_congestion_window))
+        if rate < 0.4:
+            return {"policy": "prefer_gtx", "reason": f"failure_rate={rate:.0%}",
+                    "recent_success_rate": rate, "recent_avg_duration_ms": avg_ms}
+        if avg_ms > 600_000:  # 10 min avg
+            return {"policy": "prefer_gtx", "reason": f"avg_duration={avg_ms//1000}s",
+                    "recent_success_rate": rate, "recent_avg_duration_ms": avg_ms}
+        if rate < 0.6 or avg_ms > 300_000:
+            return {"policy": "fail_fast", "reason": f"rate={rate:.0%} avg={avg_ms//1000}s",
+                    "recent_success_rate": rate, "recent_avg_duration_ms": avg_ms}
+        return {"policy": "healthy", "reason": f"rate={rate:.0%} avg={avg_ms//1000}s",
+                "recent_success_rate": rate, "recent_avg_duration_ms": avg_ms}
+
+
+def reset_congestion_window() -> None:
+    """For tests / manual reset."""
+    with _congestion_lock:
+        _congestion_window.clear()
+
 
 def _today_key() -> str:
     return datetime.date.today().isoformat()
@@ -252,9 +303,11 @@ def run_nim_chat(
         )
     except requests.Timeout:
         _cb_record_429("timeout")
+        record_nim_outcome(False, int((time.monotonic() - t0) * 1000), "timeout")
         _log_usage({"ts": started_iso, "model": chosen_model, "ok": False, "error": "timeout", "task": task_type})
         return _fail("nim_http_timeout")
     except Exception as e:
+        record_nim_outcome(False, int((time.monotonic() - t0) * 1000), str(e)[:100])
         _log_usage({"ts": started_iso, "model": chosen_model, "ok": False, "error": str(e)[:200], "task": task_type})
         return _fail(f"nim_http_exception:{e}")
     finally:
@@ -262,9 +315,11 @@ def run_nim_chat(
 
     if r.status_code == 429:
         _cb_record_429(f"http_429:{(r.text or '')[:100]}")
+        record_nim_outcome(False, int((time.monotonic() - t0) * 1000), "http_429")
         _log_usage({"ts": started_iso, "model": chosen_model, "ok": False, "error": "http_429", "task": task_type})
         return _fail("nim_rate_limit_429")
     if r.status_code != 200:
+        record_nim_outcome(False, int((time.monotonic() - t0) * 1000), f"http_{r.status_code}")
         _log_usage({"ts": started_iso, "model": chosen_model, "ok": False, "error": f"http_{r.status_code}", "task": task_type})
         return _fail(f"nim_http_{r.status_code}:{(r.text or '')[:200]}")
 
@@ -286,6 +341,7 @@ def run_nim_chat(
 
     _cb_record_success()
     duration_ms = int((time.monotonic() - t0) * 1000)
+    record_nim_outcome(True, duration_ms, "")
     usage = (data or {}).get("usage") or {}
     _log_usage({
         "ts": started_iso,

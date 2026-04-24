@@ -584,7 +584,15 @@ class LawyerSSO:
                 # Opt-in one-shot flag: page load may trigger password-expiry alert;
                 # we read it synchronously via _dismiss_password_expiry_alert().
                 self.driver._next_dialog_no_dismiss = True
-                self.driver.get(self.LOGIN_URL)
+                try:
+                    _page = getattr(self.driver, "_page", None)
+                    if _page is not None:
+                        _page.goto(self.LOGIN_URL, timeout=15000)
+                    else:
+                        self.driver.get(self.LOGIN_URL)
+                except Exception as _ne:
+                    self.log(f"  ⚠️ 登入頁面導航逾時/失敗: {_ne}")
+                    continue
                 time.sleep(2)
 
                 # 頁面載入後先清一次 alert（密碼到期警告可能在頁面載入時就彈出）
@@ -833,7 +841,15 @@ class LawyerSSO:
             }
             
             if target in targets:
-                self.driver.get(targets[target])
+                try:
+                    _page = getattr(self.driver, "_page", None)
+                    if _page is not None:
+                        _page.goto(targets[target], timeout=15000)
+                    else:
+                        self.driver.get(targets[target])
+                except Exception as _ne:
+                    self.log(f"  ⚠️ 導航到 {target} 逾時/失敗: {_ne}")
+                    return False
                 time.sleep(2)
                 return True
             
@@ -983,13 +999,41 @@ class CourtRecordDownloader:
                     except Exception:
                         pass
             self.log(f"  ℹ️ Session cookies 已注入（{len(cookies)} 筆），驗證中...")
-            # 導航到已登入頁面確認
-            self.driver.get("https://www.ezlawyer.com.tw/eb/user/userPage")
+            # 導航到已登入頁面確認（15s timeout 避免 stale cookies 造成無限 hang）
+            _nav_ok = False
+            try:
+                _page = getattr(self.driver, "_page", None)
+                if _page is not None:
+                    _page.goto("https://www.ezlawyer.com.tw/eb/user/userPage", timeout=15000)
+                else:
+                    self.driver.get("https://www.ezlawyer.com.tw/eb/user/userPage")
+                _nav_ok = True
+            except Exception as _ne:
+                self.log(f"  ⚠️ Session 驗證導航逾時/失敗: {_ne}，將改走完整登入流程")
+                _nav_ok = False
+            if not _nav_ok:
+                try:
+                    if _ctx is not None and hasattr(_ctx, "clear_cookies"):
+                        _ctx.clear_cookies()
+                except Exception:
+                    pass
+                return False
             time.sleep(2)
             if self._has_logout_link():
                 self.log("  ✅ Session 有效，跳過登入流程")
                 return True
-            self.log("  ℹ️ Session 已失效，需要重新登入")
+            self.log("  ℹ️ Session 已失效，清除 cookies 並重新登入")
+            # 清除失效 cookies 避免殘留狀態干擾登入重試
+            try:
+                if _ctx is not None and hasattr(_ctx, "clear_cookies"):
+                    _ctx.clear_cookies()
+                else:
+                    try:
+                        self.driver.delete_all_cookies()
+                    except Exception:
+                        pass
+            except Exception:
+                pass
             return False
         except Exception as _e:
             self.log(f"  ⚠️ 還原 session cookies 失敗（非致命）: {_e}")
@@ -1164,7 +1208,15 @@ class CourtRecordDownloader:
                 # 隨機延遲避免被偵測
                 self._random_delay(1, 3)
 
-                self.driver.get(self.LOGIN_URL)
+                try:
+                    _page = getattr(self.driver, "_page", None)
+                    if _page is not None:
+                        _page.goto(self.LOGIN_URL, timeout=15000)
+                    else:
+                        self.driver.get(self.LOGIN_URL)
+                except Exception as _ne:
+                    self.log(f"  ⚠️ 登入頁面導航逾時/失敗: {_ne}")
+                    continue
                 self._random_delay(2, 4)
 
                 # ★ 檢查是否已經登入 (可能被重導向到首頁)
@@ -1173,7 +1225,16 @@ class CourtRecordDownloader:
                     self.logged_in = True
                     self._save_session_cookies()
                     return True
-                
+
+                # ★ 顯式等待 #j_username 出現（最多 15 秒），避免 JS-rendered 表單時序競爭
+                if WebDriverWait and EC:
+                    try:
+                        WebDriverWait(self.driver, 15).until(
+                            EC.presence_of_element_located((By.ID, "j_username"))
+                        )
+                    except Exception as _wait_err:
+                        self.log(f"  ⚠️ WebDriverWait #j_username 逾時: {_wait_err}")
+
                 # 找到帳號欄位
                 username_field = None
                 try:
@@ -1182,7 +1243,27 @@ class CourtRecordDownloader:
                     try:
                         username_field = self.driver.find_element(By.CSS_SELECTOR, "input[type='text']")
                     except NoSuchElementException:
-                        self.log("❌ 找不到帳號欄位")
+                        # 診斷：dump URL + HTML snippet + 截圖
+                        try:
+                            _cur_url = getattr(self.driver, "current_url", "?")
+                            self.log(f"❌ 找不到帳號欄位 | URL={_cur_url}")
+                        except Exception:
+                            self.log("❌ 找不到帳號欄位")
+                        try:
+                            _html = self.driver.page_source or ""
+                            _snippet = _html[:2000].replace("\n", " ")
+                            self.log(f"  HTML snippet: {_snippet}")
+                        except Exception:
+                            pass
+                        try:
+                            import time as _time
+                            _dbg_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), ".runtime", "debug_screenshots")
+                            os.makedirs(_dbg_dir, exist_ok=True)
+                            _dbg_path = os.path.join(_dbg_dir, f"transcript_login_fail_{int(_time.time())}.png")
+                            self.driver.save_screenshot(_dbg_path)
+                            self.log(f"  已儲存診斷截圖: {_dbg_path}")
+                        except Exception as _dbg_err:
+                            self.log(f"  截圖失敗: {_dbg_err}")
                         continue
                 
                 # 找到密碼欄位
@@ -1893,7 +1974,15 @@ class CourtRecordDownloader:
             
             # 導航到搜尋頁面
             if self.driver.current_url != self.SEARCH_URL:
-                 self.driver.get(self.SEARCH_URL)
+                try:
+                    _page = getattr(self.driver, "_page", None)
+                    if _page is not None:
+                        _page.goto(self.SEARCH_URL, timeout=15000)
+                    else:
+                        self.driver.get(self.SEARCH_URL)
+                except Exception as _ne:
+                    self.log(f"  ⚠️ 導航到搜尋頁面逾時/失敗: {_ne}")
+                    return False
             time.sleep(2)
             
             # 選擇法院 (模糊比對，台/臺 視為同義)
@@ -2139,7 +2228,15 @@ class CourtRecordDownloader:
                     # 重新搜尋
                     if case:
                         self.log(f"  🔄 重新搜尋案件...")
-                        self.driver.get(self.SEARCH_URL)
+                        try:
+                            _page = getattr(self.driver, "_page", None)
+                            if _page is not None:
+                                _page.goto(self.SEARCH_URL, timeout=15000)
+                            else:
+                                self.driver.get(self.SEARCH_URL)
+                        except Exception as _ne:
+                            self.log(f"  ⚠️ 重新搜尋導航逾時: {_ne}")
+                            break
                         time.sleep(2)
                         yy, id_word, num = self._parse_case_number(case.court_case_number)
                         if yy and id_word and num:
@@ -2196,7 +2293,15 @@ class CourtRecordDownloader:
                     # 如果不是第一次迭代，需要重新搜尋以恢復頁面狀態 (Re-search Strategy)
                     if loop_index > 0:
                         self.log(f"  🔄 重新搜尋以處理下一個項目...")
-                        self.driver.get(self.SEARCH_URL)
+                        try:
+                            _page = getattr(self.driver, "_page", None)
+                            if _page is not None:
+                                _page.goto(self.SEARCH_URL, timeout=15000)
+                            else:
+                                self.driver.get(self.SEARCH_URL)
+                        except Exception as _ne:
+                            self.log(f"  ⚠️ 重新搜尋導航逾時: {_ne}")
+                            break
                         time.sleep(1)
                         
                         # 重填表單 (複製自 initial search logic)

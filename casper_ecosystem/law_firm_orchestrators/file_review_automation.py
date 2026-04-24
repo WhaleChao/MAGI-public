@@ -797,23 +797,43 @@ class LawyerPortalSSO:
                 if login_btn:
                     self.log("  點擊登入按鈕")
                     time.sleep(random.uniform(0.3, 0.8))
-                    self.driver._next_dialog_no_dismiss = True  # one-shot: caller will accept() via switch_to.alert
+                    # 注意：絕不可設 _next_dialog_no_dismiss=True 再呼叫 click()。
+                    # Playwright sync 的 _el.click() 在 dialog 未 dismiss 時會無限卡住
+                    # （greenlet cross-thread 限制）。正確做法：讓 _on_dialog 自動 dismiss，
+                    # 再從 _last_dialog.message 讀取訊息。
+                    try:
+                        self.driver._last_dialog = None
+                    except Exception:
+                        pass
                     login_btn.click()
                 else:
                     self.log("  ⚠️ 找不到登入按鈕，嘗試 Enter 提交")
-                    self.driver._next_dialog_no_dismiss = True  # one-shot: caller will accept() via switch_to.alert
+                    try:
+                        self.driver._last_dialog = None
+                    except Exception:
+                        pass
                     captcha_field.send_keys(Keys.RETURN)
 
                 # 等待登入結果
                 time.sleep(random.uniform(1.0, 2.0))
 
                 # 檢查是否有 Alert (如驗證碼錯誤)
+                # Playwright 路徑：dialog 已由 _on_dialog 自動 dismiss，讀 _last_dialog.message
+                alert_text = ""
                 try:
-                    alert = self.driver.switch_to.alert
-                    alert_text = alert.text
+                    _dlg = getattr(self.driver, '_last_dialog', None)
+                    if _dlg is not None:
+                        alert_text = _dlg.message or ""
+                    else:
+                        # Selenium 路徑：嘗試 switch_to.alert（Playwright 下此行通常拋例外）
+                        alert = self.driver.switch_to.alert
+                        alert_text = alert.text or ""
+                        alert.accept()
+                except Exception:
+                    logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 542, exc_info=True)
+
+                if alert_text:
                     self.log(f"  ⚠️ 發現 Alert: {alert_text}")
-                    alert.accept()
-                    
                     if "驗證碼" in alert_text:
                         self.log("  (Alert 指示驗證碼錯誤，重試)")
                         self._set_login_error("captcha_failed", alert_text)
@@ -821,14 +841,12 @@ class LawyerPortalSSO:
                     # 密碼到期「建議」警告 → 不是錯誤，接受後繼續檢查登入結果
                     # 例：「因密碼超過180天未更新,建議您先至個人資料維護內更改密碼。」
                     if ("建議" in alert_text or "未更新" in alert_text) and "密碼" in alert_text:
-                        self.log("  (Alert 為密碼到期警告，接受後繼續)")
+                        self.log("  (Alert 為密碼到期警告，繼續檢查登入結果)")
                         # 不 continue，讓下方 _check_login_success() 判斷實際結果
                     elif "帳號" in alert_text or "密碼" in alert_text:
                         self.log("  (Alert 指示帳號密碼錯誤)")
                         self._set_login_error("auth_failed", alert_text)
                         return False
-                except Exception:
-                    logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 542, exc_info=True)
                 
                 # 檢查登入結果
                 if self._check_login_success():
@@ -9830,7 +9848,14 @@ class FileReviewManager:
                 try:
                     btn = WebDriverWait(self.driver, 1).until(EC.element_to_be_clickable((By.XPATH, combined_xpath)))
                     self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", btn)
-                    self.driver._next_dialog_no_dismiss = True  # one-shot: caller will accept() via switch_to.alert
+                    # 清除舊的 _last_dialog，讓點擊後的新 dialog 可以被偵測
+                    # 注意：不可設 _next_dialog_no_dismiss=True —— Playwright 的 page.evaluate()
+                    # 在 dialog 未 dismiss 時會無限卡住（greenlet cross-thread 限制）。
+                    # 讓 _on_dialog 自動 dismiss，再從 _last_dialog.message 讀取訊息。
+                    try:
+                        self.driver._last_dialog = None
+                    except Exception:
+                        pass
                     self.driver.execute_script("arguments[0].click();", btn)
                     return True
                 except Exception:
@@ -9875,14 +9900,18 @@ class FileReviewManager:
             has_ebook = False
             alert_message = ""
             
-            try:
-                # 等待 Alert 出現 (最多 5 秒)
-                WebDriverWait(self.driver, 5).until(EC.alert_is_present())
-                alert = self.driver.switch_to.alert
-                alert_message = alert.text
+            # Playwright 路徑：dialog 在 execute_script 期間被 _on_dialog 自動 dismiss，
+            # 不能再用 EC.alert_is_present() 等待（dialog 已不存在）；
+            # 直接從 driver._last_dialog.message 讀取訊息。
+            _dlg = getattr(self.driver, '_last_dialog', None)
+            if _dlg is not None:
+                try:
+                    alert_message = _dlg.message
+                except Exception:
+                    alert_message = ""
                 self.log(f"  偵測到彈窗: {alert_message}")
-                alert.accept()
-                
+                # 已由 _on_dialog 自動 dismiss，無需再呼叫 accept()
+
                 # 判斷是否可繼續聲請
                 if _is_paper:
                     # 紙本閱卷：alert 可能顯示案號存在/股別確認等，只要不是明確錯誤就繼續
@@ -9897,8 +9926,7 @@ class FileReviewManager:
                         has_ebook = False
                     else:
                         has_ebook = True  # 預設可繼續
-                    
-            except TimeoutException:
+            else:
                 # 沒有 Alert，檢查頁面訊息
                 self.log("  ⚠️ 未偵測到彈窗，檢查頁面訊息...")
                 page_source = self.driver.page_source
@@ -9954,15 +9982,17 @@ class FileReviewManager:
                             if not _click_check_anywhere():
                                 continue
 
-                            # Re-run alert check
+                            # Re-run alert check（Playwright 路徑：直接讀 _last_dialog.message）
                             has_ebook = False
                             alert_message = ""
-                            try:
-                                WebDriverWait(self.driver, 5).until(EC.alert_is_present())
-                                alert = self.driver.switch_to.alert
-                                alert_message = alert.text
+                            _dlg2 = getattr(self.driver, '_last_dialog', None)
+                            if _dlg2 is not None:
+                                try:
+                                    alert_message = _dlg2.message
+                                except Exception:
+                                    alert_message = ""
                                 self.log(f"  (重試) 偵測到彈窗: {alert_message}")
-                                alert.accept()
+                                # 已自動 dismiss，無需再 accept()
 
                                 if any(keyword in alert_message for keyword in ["已有電子卷證", "可供聲請", "電子卷證"]):
                                     has_ebook = True
@@ -9970,7 +10000,7 @@ class FileReviewManager:
                                     has_ebook = False
                                 else:
                                     has_ebook = True
-                            except TimeoutException:
+                            else:
                                 page_source = self.driver.page_source
                                 if "已有電子卷證" in page_source or "可供聲請" in page_source:
                                     has_ebook = True

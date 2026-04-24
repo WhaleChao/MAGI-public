@@ -52,3 +52,4 @@ watchdog>=3.0
 # -- GUI (for OSC desktop app) --
 tkcalendar>=1.6
 markitdown[all]>=0.0.2
+opencc-python-reimplemented>=0.1.7  # 2026-04-24: @HEAVY 翻譯 s2twp postprocess

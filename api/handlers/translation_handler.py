@@ -240,6 +240,14 @@ def translate_text_complete(text: str, source_lang: str = "auto", target_lang: s
     if heavy and use_gtx_primary:
         logger.info("translate_text_complete: heavy=True → skipping GTX primary, routing to NIM 405B")
         use_gtx_primary = False
+    # 2026-04-24：strict NIM 模式 — 強制序列 (workers=1)，避免並行觸發 NIM 40 req/min 限制。
+    # 使用者明確表示「慢沒關係，模型要統一」時啟用。每 chunk 間會由 inference_gateway 負責退避重試。
+    _strict_nim_mode = heavy and (
+        os.environ.get("MAGI_HEAVY_STRICT_NIM", "0").strip().lower() in {"1", "true", "yes", "on"}
+    )
+    if _strict_nim_mode:
+        logger.info("translate_text_complete: strict NIM mode → workers=1 (serial), no oMLX fallback")
+        translate_workers = 1
     try:
         gtx_primary_workers = int(os.environ.get("MAGI_FILE_TRANSLATE_GTX_PRIMARY_WORKERS", "4") or "4")
     except Exception:
@@ -295,33 +303,69 @@ def translate_text_complete(text: str, source_lang: str = "auto", target_lang: s
         return "zh-TW"
 
     def _translate_via_gtx(text_part: str) -> str:
+        """Call Google GTX. Returns translated text or empty on total failure.
+
+        2026-04-24：雙向雙嘗試 — 若 sl=auto 回原文不變（例如混合雙語的附錄段落
+        被 auto 誤判），退回以 sl=en 重試。避免 GTX 對雙語術語表完全 no-op。
+        """
         if (not gtx_enabled) or (not str(text_part or "").strip()):
             return ""
         tl = _normalize_gtx_lang(target_lang)
-        pieces = []
         part = str(text_part or "").strip()
         step = gtx_segment_chars
-        for i in range(0, len(part), step):
-            seg = part[i : i + step]
-            if not seg:
-                continue
-            q = urllib.parse.quote(seg)
-            url = (
-                "https://translate.googleapis.com/translate_a/single"
-                f"?client=gtx&sl=auto&tl={urllib.parse.quote(tl)}&dt=t&q={q}"
-            )
-            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-            with urllib.request.urlopen(req, timeout=10) as resp:
-                raw = resp.read().decode("utf-8", "ignore")
-            data = json.loads(raw)
-            seg_parts = []
-            if isinstance(data, list) and data and isinstance(data[0], list):
-                for row in data[0]:
-                    if isinstance(row, list) and row and row[0]:
-                        seg_parts.append(str(row[0]))
-            got = "".join(seg_parts).strip()
-            pieces.append(got or seg)
-        return "\n\n".join(pieces).strip()
+
+        def _one_pass(sl_code: str) -> str:
+            pieces = []
+            for i in range(0, len(part), step):
+                seg = part[i : i + step]
+                if not seg:
+                    continue
+                q = urllib.parse.quote(seg)
+                url = (
+                    "https://translate.googleapis.com/translate_a/single"
+                    f"?client=gtx&sl={sl_code}&tl={urllib.parse.quote(tl)}&dt=t&q={q}"
+                )
+                req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    raw = resp.read().decode("utf-8", "ignore")
+                data = json.loads(raw)
+                seg_parts = []
+                if isinstance(data, list) and data and isinstance(data[0], list):
+                    for row in data[0]:
+                        if isinstance(row, list) and row and row[0]:
+                            seg_parts.append(str(row[0]))
+                got = "".join(seg_parts).strip()
+                pieces.append(got or seg)
+            return "\n\n".join(pieces).strip()
+
+        try:
+            auto_out = _one_pass("auto")
+        except Exception:
+            auto_out = ""
+
+        # 若 sl=auto 返回與原文幾乎相同（例如 mixed-language 被誤判為已是目標語），
+        # 強制以 sl=en 再試一次；英→中的 GTX 結果會顯著不同。
+        needs_retry_en = False
+        if auto_out:
+            # 近似相等：長度差 <5%、且前 200 字大致一致
+            if abs(len(auto_out) - len(part)) < max(20, len(part) * 0.05):
+                head_a = auto_out[:200]
+                head_p = part[:200]
+                # Count overlap — if >80% of the first 200 chars match, treat as no-op
+                common = sum(1 for x, y in zip(head_a, head_p) if x == y)
+                if common > 160:
+                    needs_retry_en = True
+
+        if needs_retry_en:
+            try:
+                en_out = _one_pass("en")
+                # Accept en_out if it's meaningfully different from part
+                if en_out and (abs(len(en_out) - len(part)) >= 40 or en_out[:200] != part[:200]):
+                    return en_out
+            except Exception:
+                pass
+
+        return auto_out
 
     def _translation_needs_rescue(src_part: str, translated_part: str) -> bool:
         from api.handlers import text_processing_handler as _tp
@@ -330,6 +374,32 @@ def translate_text_complete(text: str, source_lang: str = "auto", target_lang: s
         if not out:
             return True
         if "翻譯失敗" in out or "⚠️" in out or "系統降級" in out:
+            return True
+        # 2026-04-24：偵測 LLM acknowledgment preamble（把 system prompt 當成對話，
+        # 回覆「好的，我已理解規則，請提供內容」而沒有真的翻譯）。
+        # 這種輸出 _PREAMBLE_RE 抓不到（那只認「以下是翻譯：」開頭格式），
+        # 也不屬於 customer_service 或 drift，所以 output_guard 放行。
+        _ack_patterns = (
+            "我已理解", "我將嚴格遵守", "作為.{0,10}AI", "作為 MAGI", "作為 AI 助理",
+            "請提供需要翻譯", "請提供需翻譯", "請提供.{0,6}(內容|段落|文字|後續)",
+            "我會依照.{0,10}規則", "我會嚴格遵守", "收到.{0,10}指示",
+            "了解.{0,10}需求", "沒問題.{0,4}我.{0,6}翻譯", "好的.{0,30}翻譯規則",
+            "請將您.{0,20}(翻譯|貼於|提供)", "依照您設定的.{0,10}規則",
+            "待翻譯內容", "需要翻譯的.{0,10}(段落|內容|文字)",
+        )
+        # 2026-04-24：preamble 可能出現在開頭（對話式回覆）或結尾（翻譯完後補問下一段）
+        if len(src) >= 100:
+            _head = out[:200]
+            _tail = out[-250:] if len(out) > 200 else ""
+            for p in _ack_patterns:
+                if re.search(p, _head):
+                    return True
+                if _tail and re.search(p, _tail):
+                    return True
+        # 2026-04-24：輸出過短（<= src 長度 10%）且 src 有實質英文內容 → 視為翻譯不完整
+        # 本次 chunk 98（雙語術語表附錄）即觸發此規則：2279 字 src → 僅 158 字 tgt。
+        src_has_en = bool(re.search(r"[A-Za-z]{3,}", src))
+        if len(src) >= 300 and src_has_en and len(out) <= max(30, len(src) // 10):
             return True
         if _tp.output_guard_issues(out, mode="translation"):
             return True
@@ -352,6 +422,144 @@ def translate_text_complete(text: str, source_lang: str = "auto", target_lang: s
             if long_latin_words >= 18 and out_latin > out_cjk * 0.55:
                 return True
         return False
+
+    # 2026-04-24：剝除 LLM 在譯文後追加的「請提供下一段」類 meta-commentary
+    # 這種 preamble 漏水通常以 `\n---\n` 或 `\n\n---\n\n` 分隔符開頭，後接對話式內容。
+    _TAIL_META_SEP_RE = re.compile(
+        r"\n\s*-{2,}\s*\n+\s*(?:\*\*|【|（|\(|若您|請您|請提供|我將|我會|需要翻譯|待翻譯)",
+    )
+    # 2026-04-24：剝除 LLM 在譯文前加的「以下是翻譯結果」類開頭
+    _HEAD_INTRO_RE = re.compile(
+        r"^(?:"
+        r"以下是.{0,20}(?:翻譯|內容|譯文).{0,10}[：:]?\s*\n"
+        r"|翻譯結果[如下]?.{0,4}[：:]?\s*\n"
+        r"|\*\*?【翻譯結果】\*\*?\s*\n"
+        r"|這是.{0,10}翻譯.{0,10}[：:]?\s*\n"
+        r")",
+        re.UNICODE,
+    )
+
+    def _strip_trailing_meta(piece: str, src_len: int = 0) -> str:
+        """Strip trailing meta-commentary separated by `---`. Preserve real translation."""
+        s = str(piece or "")
+        if not s:
+            return s
+        m = _TAIL_META_SEP_RE.search(s)
+        if not m:
+            return s
+        body = s[:m.start()].rstrip()
+        # 防呆：剝除後若剩下的內容過短且 src 非短，不敢剝（可能誤判）
+        if src_len >= 400 and len(body) < max(80, src_len // 20):
+            return s
+        return body
+
+    def _strip_head_intro(piece: str) -> str:
+        """Strip conversational head intro ('以下是完整翻譯的內容：\\n' etc.)."""
+        s = str(piece or "").lstrip()
+        m = _HEAD_INTRO_RE.match(s)
+        if m:
+            s = s[m.end():].lstrip()
+        return s
+
+    def _is_bilingual_glossary_chunk(text_part: str) -> bool:
+        """Detect a bilingual glossary section (English term 中文詞彙 pairs on each line).
+
+        Chunk 98 of the interpreter PDF is Appendix C/D — term/name mapping.
+        LLM tends to invent definitions like '六法全書：指中國古代的法律典籍'
+        when prompt says 'translate'. This detector lets caller swap to a
+        preservation-style prompt.
+        """
+        s = str(text_part or "")
+        # Look for "English Word(s) 中文詞" on 3+ lines
+        pair_lines = 0
+        for ln in s.splitlines():
+            if re.search(r"[A-Za-z][A-Za-z ,\-]{2,}\s+[\u4e00-\u9fff]{2,}", ln):
+                pair_lines += 1
+        return pair_lines >= 3 and (
+            "Glossary" in s or "Appendix" in s or "附錄" in s or "詞彙表" in s
+            or "TERMS" in s or "NAMES" in s
+        )
+
+    # 2026-04-24：偵測 chunk 源文內是否已含中文法條原文（例：「民事訴訟法,第 207 條: ...」）
+    # 這類中文片段是台灣法規權威原文，翻譯時必須一字不漏保留，絕不可由 LLM paraphrase。
+    _TW_STATUTE_CITATION_RE = re.compile(
+        r"(?:中華民國)?"
+        r"(?:民法|刑法|民事訴訟法|刑事訴訟法|行政訴訟法|法院組織法|"
+        r"勞動基準法|公司法|中華民國憲法|憲法|公務員服務法|律師法|"
+        r"強制執行法|家事事件法|少年事件處理法|著作權法|專利法|商標法|"
+        r"政府採購法|個人資料保護法|消費者保護法|公平交易法|"
+        r"行政程序法|國家賠償法|社會秩序維護法|道路交通管理處罰條例|"
+        r"[\u4e00-\u9fff]{2,10}法(?:草案)?)"
+        r"[,，]?\s*第\s*\d+(?:[\-\u2013\u2014]\d+)?\s*[條項]"
+    )
+
+    def _chunk_has_tw_statute(text_part: str) -> bool:
+        """Does this chunk cite TW statute articles (likely with Chinese authoritative text nearby)?"""
+        if not text_part:
+            return False
+        # Need both a citation AND substantial Chinese text (not just English citation)
+        has_citation = bool(_TW_STATUTE_CITATION_RE.search(text_part))
+        has_zh = sum(1 for c in text_part if 0x4E00 <= ord(c) <= 0x9FFF) > 40
+        return has_citation and has_zh
+
+    # TW legal authoritative cache (in-memory, per translate_text_complete call)
+    _tw_law_cache: dict = {}
+
+    def _lookup_tw_law_content(law_name: str) -> str:
+        """Fetch full law content from MAGI DB (law_firm_data.law_regulations). Cached."""
+        if law_name in _tw_law_cache:
+            return _tw_law_cache[law_name]
+        try:
+            from skills.memory.mem_bridge import _get_conn
+            conn = _get_conn()
+            cur = conn.cursor(dictionary=True)
+            cur.execute(
+                "SELECT law_content FROM law_firm_data.law_regulations WHERE law_name=%s LIMIT 1",
+                (law_name,),
+            )
+            row = cur.fetchone()
+            conn.close()
+            txt = str(row.get("law_content") or "") if row else ""
+        except Exception as exc:
+            logger.debug("law lookup failed for %s: %s", law_name, exc)
+            txt = ""
+        _tw_law_cache[law_name] = txt
+        return txt
+
+    def _build_tw_statute_reference(text_part: str, max_chars: int = 1500) -> str:
+        """Build a statutory reference snippet for prompt injection.
+
+        For each TW law cited in the chunk, pull a short paragraph from MAGI DB
+        that contains related keywords. This gives the LLM authoritative Chinese
+        to anchor translation of the English portions around.
+        """
+        laws_cited = set()
+        for m in _TW_STATUTE_CITATION_RE.finditer(text_part):
+            law_token = m.group(0)
+            # Extract just the law name (strip 「,」 「第 N 條」 suffix)
+            name_match = re.match(r"(中華民國)?([\u4e00-\u9fff]{2,15}?法(?:草案)?)", law_token)
+            if name_match:
+                laws_cited.add(name_match.group(2))
+        if not laws_cited:
+            return ""
+
+        snippets = []
+        budget = max_chars
+        for law in sorted(laws_cited):
+            content = _lookup_tw_law_content(law)
+            if not content:
+                # Try with 中華民國 prefix
+                content = _lookup_tw_law_content("中華民國" + law)
+            if content:
+                # Keep a short header + first 200 chars of content as authority anchor
+                take = min(400, budget)
+                if take < 100:
+                    break
+                snippets.append(f"【{law}（MAGI 法規庫）】\n{content[:take].strip()}")
+                budget -= take
+            if budget <= 100:
+                break
+        return "\n\n".join(snippets)
 
     def _quick_translate(text_part: str, label: str = "") -> tuple[str, str]:
         glossary = doc_glossary  # 使用 document-level glossary 確保全文術語一致
@@ -397,21 +605,92 @@ def translate_text_complete(text: str, source_lang: str = "auto", target_lang: s
     def _process_chunk(idx, part):
         def _translate_piece(text_part: str, *, label: str, depth: int) -> tuple[str, str, int]:
             glossary = doc_glossary  # 使用 document-level glossary 確保全文術語一致
-            prompt = (
-                "你是專業法律翻譯員，擅長精確翻譯法律文件。\n\n"
-                "【任務】\n"
-                f"將以下內容從{source_lang}完整翻譯為{target_lang}。\n\n"
-                "【翻譯規則】\n"
-                "1. 逐句完整翻譯，禁止摘要、省略或增添內容\n"
-                "2. 保留原文段落結構和清單格式\n"
-                "3. 法律專有名詞必須精確翻譯，不確定時保留原文並加括號註記\n"
-                "4. 忽略印刷殘字（ISBN、頁碼、*.indb 等）\n"
-                "5. 只輸出譯文，不要任何說明或解釋\n"
-                f"{glossary}\n"
-                f"{label}\n\n"
-                "【待翻譯內容】\n"
-                f"{text_part}"
-            )
+            # 2026-04-24：動態 NIM 壅塞偵測 — 若最近 NIM 呼叫成功率低或延遲超高，直接走 GTX 省時間
+            _skip_nim_this_chunk = False
+            _pure_mode = os.environ.get("MAGI_HEAVY_STRICT_NIM_PURE", "0").strip().lower() in {"1", "true", "yes", "on"}
+            if heavy and not _pure_mode:
+                try:
+                    from skills.bridge.nim_heavy import recommend_nim_policy
+                    _pol = recommend_nim_policy()
+                    if _pol.get("policy") == "prefer_gtx":
+                        logger.info(
+                            "chunk %d: NIM congestion detected (%s) → skipping NIM, using GTX directly",
+                            idx+1, _pol.get("reason", "?"),
+                        )
+                        _skip_nim_this_chunk = True
+                    elif _pol.get("policy") == "fail_fast":
+                        logger.info(
+                            "chunk %d: NIM degraded (%s) → fail-fast mode, 1 retry only",
+                            idx+1, _pol.get("reason", "?"),
+                        )
+                except Exception as _e:
+                    logger.debug("NIM policy probe failed: %s", _e)
+            # 2026-04-24：若 chunk 引用台灣法規，從 MAGI 法規庫取權威中文法條注入 prompt
+            _tw_authority = ""
+            _has_tw_statute = _chunk_has_tw_statute(text_part)
+            if _has_tw_statute:
+                try:
+                    _tw_authority = _build_tw_statute_reference(text_part)
+                except Exception as e:
+                    logger.debug("TW statute reference build failed: %s", e)
+                if _tw_authority:
+                    logger.info("chunk %d: injected TW statute authority (%d chars)", idx+1, len(_tw_authority))
+            # 2026-04-24：雙語術語表附錄（TERMS/NAMES 對照表）改用保留式 prompt，
+            # 避免 LLM 把「Liufaquanshu 六法全書」類詞對誤讀成「請替六法全書寫定義」。
+            # 2026-04-24：TW 法規權威注入段（若 chunk 引用 TW 法律才有內容）
+            _auth_block = ""
+            if _tw_authority:
+                _auth_block = (
+                    "【台灣法規權威原文（來自 MAGI 法規庫）】\n"
+                    "以下是你翻譯時可參考的法規權威中文。當英文段落是翻譯某條條文時，你必須優先對齊這裡的中文正文、"
+                    "不可自行改寫。若原文已含中文條文，必須一字不漏原樣保留，不得 paraphrase。\n"
+                    f"{_tw_authority}\n\n"
+                )
+            _preserve_rule = ""
+            if _has_tw_statute:
+                _preserve_rule = (
+                    "7. 原文中若已含中文法條原文（例：「民事訴訟法,第 207 條: 參與辯論人...」），"
+                    "必須一字不漏原樣保留，不得改寫、不得以 paraphrase 取代、不得省略。\n"
+                )
+            if _is_bilingual_glossary_chunk(text_part):
+                prompt = (
+                    "你是法律文件譯者。以下內容是一份「雙語術語/姓名對照表」，每行是一個詞對：\n"
+                    "   <英文術語/英文姓名>  <對應的中文詞彙或中文姓名>\n\n"
+                    f"{_auth_block}"
+                    "【嚴格規則】\n"
+                    f"1. 目標輸出語言：{target_lang}。\n"
+                    "2. 絕對禁止替任何詞彙寫定義、解釋、補充說明或猜測其來源。\n"
+                    "3. 絕對禁止改寫既有的中文詞彙。原本的中文詞彙（如「六法全書」「書記官」）必須原樣保留。\n"
+                    "4. 每個詞對輸出為：「中文詞（原英文）」形式，例如：\n"
+                    "   - Court clerk 書記官   →   書記官（Court clerk）\n"
+                    "   - Liufaquanshu 六法全書 →   六法全書（Liufaquanshu）\n"
+                    "5. 對表外的完整英文段落（例如法條全文）才進行翻譯，且不得摘要或省略。\n"
+                    "6. 只輸出最終結果，不要任何前言、說明或對話。\n"
+                    f"{_preserve_rule}"
+                    f"{glossary}\n"
+                    f"{label}\n\n"
+                    "【待處理內容】\n"
+                    f"{text_part}"
+                )
+            else:
+                prompt = (
+                    "你是專業法律翻譯員，擅長精確翻譯法律文件。\n\n"
+                    f"{_auth_block}"
+                    "【任務】\n"
+                    f"將以下內容從{source_lang}完整翻譯為{target_lang}。\n\n"
+                    "【翻譯規則】\n"
+                    "1. 逐句完整翻譯，禁止摘要、省略或增添內容\n"
+                    "2. 保留原文段落結構和清單格式\n"
+                    "3. 法律專有名詞必須精確翻譯，不確定時保留原文並加括號註記\n"
+                    "4. 忽略印刷殘字（ISBN、頁碼、*.indb 等）\n"
+                    "5. 只輸出譯文，不要任何說明或解釋\n"
+                    "6. 絕對不要在輸出前或後加入任何對話、確認、提示下一段的文字\n"
+                    f"{_preserve_rule}"
+                    f"{glossary}\n"
+                    f"{label}\n\n"
+                    "【待翻譯內容】\n"
+                    f"{text_part}"
+                )
 
             piece = ""
             cb_open = False
@@ -456,13 +735,26 @@ def translate_text_complete(text: str, source_lang: str = "auto", target_lang: s
                         piece = gtx_piece
                         used_model = "google_gtx"
 
-            if (not piece) and prefer_local_first:
+            # 2026-04-24：strict NIM 模式 — 略過 _quick_translate（oMLX 快速路徑），
+            # 避免 chunk 間因單邊取得 oMLX E4B 結果造成「部分 NIM 部分 E4B」的模型混用。
+            # 此旗標在 translate_text_complete 函式頂部由 MAGI_HEAVY_STRICT_NIM env 控制。
+            # 2026-04-24：動態壅塞偵測 — prefer_gtx 時直接跳過 NIM，走 GTX
+            if (not piece) and _skip_nim_this_chunk:
+                try:
+                    _gtx_early = _translate_via_gtx(text_part)
+                except Exception:
+                    _gtx_early = ""
+                if _gtx_early and len(_gtx_early.strip()) > 10:
+                    piece = _gtx_early
+                    used_model = "google_gtx_congestion_skip"
+
+            if (not piece) and prefer_local_first and not _strict_nim_mode:
                 q_text, q_model = _quick_translate(text_part, label=label)
                 if q_text:
                     piece = q_text
                     used_model = q_model or used_model
 
-            if (not piece) and (not cb_open):
+            if (not piece) and (not cb_open) and not _skip_nim_this_chunk:
                 _gw = InferenceGateway()
                 for _ in range(retries + 1):
                     r = _gw.chat(
@@ -477,11 +769,20 @@ def translate_text_complete(text: str, source_lang: str = "auto", target_lang: s
                         used_model = str(r.get("model") or "")
                         break
 
-            if (not piece) and (not prefer_local_first):
+            if (not piece) and (not prefer_local_first) and not _strict_nim_mode:
                 q_text, q_model = _quick_translate(text_part, label=label)
                 if q_text:
                     piece = q_text
                     used_model = q_model or used_model
+
+            # 2026-04-24：剝除 LLM 前後加的對話式文字（以下是翻譯：... / ---\n**【請提供下一段】）
+            if piece:
+                _h = _strip_head_intro(piece)
+                if _h and _h != piece:
+                    piece = _h
+                _stripped = _strip_trailing_meta(piece, src_len=len(text_part))
+                if _stripped and _stripped != piece:
+                    piece = _stripped
 
             if piece and _translation_needs_rescue(text_part, piece):
                 try:
@@ -595,6 +896,12 @@ def translate_text_complete(text: str, source_lang: str = "auto", target_lang: s
         )
     except Exception:
         translate_idle_timeout = max(90, min(600, max(remote_timeout, quick_timeout) + 30))
+    # 2026-04-24：strict NIM 模式下 NIM 405B 單次可能跑 10-25 分鐘（NVIDIA 高負載時）+ 退避重試 6 次
+    # 預設 idle_timeout 600 秒會直接斷掉仍在跑的 NIM 請求 → 反而讓 strict 毫無意義。
+    # 把上限拉到 2 小時 per chunk（7200s），讓 strict 真正能等到結果。
+    if _strict_nim_mode:
+        translate_idle_timeout = max(translate_idle_timeout, 7200)
+        logger.info("translate_text_complete: strict NIM mode → idle_timeout=%ds (2h per chunk)", translate_idle_timeout)
 
     from concurrent.futures import FIRST_COMPLETED, wait
     from api.thread_pools import inference_pool
@@ -736,11 +1043,15 @@ def translate_text_complete(text: str, source_lang: str = "auto", target_lang: s
             f.cancel()
             if not isinstance(result_buffer[i], dict):
                 # 逾時 chunk 嘗試 Google fallback 兜底，避免直接保留原文
+                # 2026-04-24：adaptive 模式 — NIM 優先，GTX 次要，永不 oMLX。
+                # 只有明示 MAGI_HEAVY_STRICT_NIM_PURE=1（純粹模式）才禁止 GTX、留源文。
                 _gtx_fallback = ""
-                try:
-                    _gtx_fallback = _translate_via_gtx(chunks[i])
-                except Exception:
-                    pass
+                _pure_mode = os.environ.get("MAGI_HEAVY_STRICT_NIM_PURE", "0").strip().lower() in {"1", "true", "yes", "on"}
+                if not _pure_mode:
+                    try:
+                        _gtx_fallback = _translate_via_gtx(chunks[i])
+                    except Exception:
+                        pass
                 if _gtx_fallback and len(_gtx_fallback.strip()) > 10:
                     result_buffer[i] = {
                         "text": _gtx_fallback,
@@ -781,6 +1092,29 @@ def translate_text_complete(text: str, source_lang: str = "auto", target_lang: s
 
     translated = []
     translated_chunks = []
+    # 2026-04-24：目標為繁體中文時，對每段輸出做簡→繁轉換（opencc s2twp），
+    # 消除 LLM 偶發的簡體洩漏（如「您是否将自己视为法院系统之外的自由职业者？」）。
+    # 使用 s2twp（Simplified → Traditional with Taiwan phrase equivalents）：
+    # - `视为 → 視為` / `自由职业者 → 自由職業者`
+    # - 不影響已是繁體的內容（opencc 對繁體字是 identity）
+    _s2t_converter = None
+    _target_is_zh_tw = (target_lang and ("中文" in target_lang or str(target_lang).lower().startswith("zh")))
+    if _target_is_zh_tw and os.environ.get("MAGI_TRANSLATE_S2T_POSTPROCESS", "1").strip().lower() in {"1", "true", "yes", "on"}:
+        try:
+            from opencc import OpenCC as _OpenCC
+            _s2t_converter = _OpenCC("s2twp")
+        except Exception as _e:
+            logger.debug("opencc unavailable, skipping s2twp postprocess: %s", _e)
+            _s2t_converter = None
+
+    def _apply_s2t(text: str) -> str:
+        if not _s2t_converter or not text:
+            return text
+        try:
+            return _s2t_converter.convert(text)
+        except Exception:
+            return text
+
     failed_chunks = 0
     for i, result in enumerate(result_buffer):
         if not isinstance(result, dict):
@@ -789,6 +1123,7 @@ def translate_text_complete(text: str, source_lang: str = "auto", target_lang: s
         text_part = str(result.get("text") or "").strip()
         if text_part:
             polished_part = _dh.polish_translated_document_text(text_part) or text_part
+            polished_part = _apply_s2t(polished_part)  # 2026-04-24：s2twp 簡→繁收斂
             translated.append(polished_part)
             translated_chunks.append(polished_part)
         else:
@@ -799,6 +1134,7 @@ def translate_text_complete(text: str, source_lang: str = "auto", target_lang: s
         failed_chunks += int(result.get("failed") or 0)
     raw_joined = "\n\n".join(translated).strip()
     final_translation_text = _dh.polish_translated_document_text(raw_joined) or raw_joined
+    final_translation_text = _apply_s2t(final_translation_text)  # 2026-04-24：最終組裝後再過一次，以防段落接合處殘留
     from api.handlers import text_processing_handler as _tp
     final_issues = _tp.output_guard_issues(final_translation_text, mode="translation")
     if final_issues:

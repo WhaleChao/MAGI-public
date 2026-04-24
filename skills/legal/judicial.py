@@ -415,19 +415,19 @@ class LawyerSSO:
             raise ImportError("Selenium 未安裝")
         
         # Lazy Load Selenium
-        global webdriver, Options, By, WebDriverWait, EC, ActionChains
+        global webdriver, Options, By, WebDriverWait, EC, ActionChains, Select
         global TimeoutException, NoSuchElementException, Keys
-        
+
         if webdriver is None:
             from selenium import webdriver
             from selenium.webdriver.common.by import By
             from selenium.webdriver.common.keys import Keys
-            from selenium.webdriver.support.ui import WebDriverWait
+            from selenium.webdriver.support.ui import WebDriverWait, Select
             from selenium.webdriver.support import expected_conditions as EC
             from selenium.webdriver.chrome.options import Options
             from selenium.webdriver.common.action_chains import ActionChains
             from selenium.common.exceptions import TimeoutException, NoSuchElementException
-            
+
         options = Options()
         options.page_load_strategy = 'eager'  # Chrome 146+ renderer timeout 修正
         if self.headless:
@@ -769,14 +769,14 @@ class CourtRecordDownloader:
             import random
             
             # Lazy Load Selenium
-            global webdriver, Options, By, WebDriverWait, EC, ActionChains
+            global webdriver, Options, By, WebDriverWait, EC, ActionChains, Select
             global TimeoutException, NoSuchElementException, Keys
-            
+
             if webdriver is None:
                 from selenium import webdriver
                 from selenium.webdriver.common.by import By
                 from selenium.webdriver.common.keys import Keys
-                from selenium.webdriver.support.ui import WebDriverWait
+                from selenium.webdriver.support.ui import WebDriverWait, Select
                 from selenium.webdriver.support import expected_conditions as EC
                 from selenium.webdriver.chrome.options import Options
                 from selenium.webdriver.common.action_chains import ActionChains
@@ -1102,26 +1102,41 @@ class CourtRecordDownloader:
         執行查詢動作 (導航、填寫表單、點擊查詢)
         回傳是否成功提交查詢
         """
+        import sys as _sys
+        print("[trace-stdout] entered _execute_search_query top", flush=True); _sys.stdout.flush()
         try:
+            print("[trace-stdout] before _parse_case_number", flush=True); _sys.stdout.flush()
             # 解析案號
             year, word, number = self._parse_case_number(case.court_case_number)
-            
+            print(f"[trace-stdout] after _parse_case_number: year={year!r} word={word!r} number={number!r}", flush=True); _sys.stdout.flush()
+
             if not all([year, word, number]):
                 self.log(f"  ❌ 無法識別案號格式，請確認格式是否正確（例：115年度訴字第123號、115.訴.000123）")
                 self.log(f"     原始案號: {case.court_case_number}")
                 return False
-            
+
+            print("[trace-stdout] before self.log [trace] 進入...", flush=True); _sys.stdout.flush()
             # 導航到搜尋頁面
-            if self.driver.current_url != self.SEARCH_URL:
-                 self.driver.get(self.SEARCH_URL)
+            self.log(f"  [trace] 進入 _execute_search_query, 讀取 current_url")
+            print("[trace-stdout] after self.log, before driver.current_url", flush=True); _sys.stdout.flush()
+            _cur = self.driver.current_url
+            self.log(f"  [trace] current_url={_cur!r}")
+            if _cur != self.SEARCH_URL:
+                self.log(f"  [trace] driver.get({self.SEARCH_URL}) 開始")
+                self.driver.get(self.SEARCH_URL)
+                self.log(f"  [trace] driver.get 完成")
             time.sleep(2)
-            
+
             # 選擇法院 (模糊比對)
             court_name = case.court_name.replace("台", "臺")
             court_found = False
-            
+
             try:
-                court_select = Select(self.driver.find_element(By.ID, "jud_name"))
+                self.log(f"  [trace] find_element(jud_name) 開始")
+                _jud_el = self.driver.find_element(By.ID, "jud_name")
+                self.log(f"  [trace] find_element(jud_name) 完成, 建立 Select")
+                court_select = Select(_jud_el)
+                self.log(f"  [trace] Select(jud_name) 建立完成")
                 # 優先嘗試完全匹配
                 try:
                     court_select.select_by_visible_text(court_name)
