@@ -89,6 +89,30 @@ def _clean_client_name(raw_name: str) -> str:
     return ""
 
 
+_ACTION_NAME_TOKENS = {
+    "開辦",
+    "開案",
+    "遵期開辦",
+    "疑義",
+    "異議",
+    "异议",
+    "訴訟中費用支付",
+    "訴訟中費用",
+    "費用支付",
+    "二階段",
+    "附條件",
+    "附條件審查",
+    "結案",
+    "報結",
+    "撤回",
+}
+
+
+def _looks_like_laf_action_name(candidate: str) -> bool:
+    compact = re.sub(r"\s+", "", candidate or "")
+    return bool(compact and compact in _ACTION_NAME_TOKENS)
+
+
 def parse_laf_report_payload(raw_text: str) -> Optional[dict]:
     """Parse a natural-language LAF report command into a structured payload."""
     text = (raw_text or "").strip()
@@ -129,7 +153,9 @@ def parse_laf_report_payload(raw_text: str) -> Optional[dict]:
         text,
     )
     if m_client:
-        client_name = _clean_client_name(m_client.group(1) or "")
+        _candidate_name = _clean_client_name(m_client.group(1) or "")
+        if _candidate_name and not _looks_like_laf_action_name(_candidate_name):
+            client_name = _candidate_name
 
     # natural phrase fallback: 「蕭仁俊開辦回報」
     if not client_name:

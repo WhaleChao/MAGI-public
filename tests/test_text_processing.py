@@ -31,3 +31,16 @@ def test_output_guard_issues_returns_list():
     from api.handlers.text_processing_handler import output_guard_issues
     result = output_guard_issues("正常的回覆文字")
     assert isinstance(result, list)
+
+
+def test_translation_guard_allows_contact_info_in_source_text():
+    from api.handlers.text_processing_handler import output_guard_issues
+
+    translated_appendix = (
+        "財團法人臺北市賽珍珠基金會\n"
+        "電話：(零二)二三六九-捌八八零\n"
+        "電子郵件：hsinchi@example.org\n"
+        "地址：臺北市中山區龍江路二百六十四號三樓"
+    )
+
+    assert output_guard_issues(translated_appendix, mode="translation") == []

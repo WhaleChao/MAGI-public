@@ -173,6 +173,7 @@ def translate_text(
     source_lang: str = "auto",
     mode: str = "full",
     timeout: Optional[int] = None,
+    heavy: bool = False,
 ) -> dict:
     """
     Back-compat adapter. 2026-04-17 整合：內部改呼叫 skills.translator.action.translate_core。
@@ -194,6 +195,7 @@ def translate_text(
             mode=mode if mode != "auto" else "full",
             export=False,
             timeout_sec=max(10, min(_timeout, 7200)),
+            heavy=bool(heavy),
         )
     except Exception:
         logger.exception("translate_text adapter failed")

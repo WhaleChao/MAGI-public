@@ -1078,8 +1078,10 @@ def _external_osc_chat_inner():
     # @heavy opt-in：允許使用者觸發 NVIDIA NIM 重型兜底
     # 注意：不在此剝除前綴，保留到 _chat_inner 自己偵測（P1-2 修）。ThreadPoolExecutor 子 thread
     # 讀不到 request thread 的 flask.g，所以 prompt prefix 是唯一可靠的跨 thread 傳遞方式。
+    # 2026-04-24：case-insensitive（@HEAVY / @Heavy 都接受）；全形 ＠ 在 orchestrator sanitize 轉半形
     heavy_opt_in = False
-    if message.startswith("@heavy ") or message.startswith("@重型 "):
+    _message_head_lower = message.lstrip().lower()
+    if _message_head_lower.startswith("@heavy ") or _message_head_lower.startswith("@重型 "):
         heavy_opt_in = True
         logging.getLogger(__name__).info("external chat: @heavy opt-in detected, will try NIM fallback")
     try:

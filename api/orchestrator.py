@@ -837,11 +837,17 @@ class Orchestrator:
     def _split_translate_chunks(self, text: str) -> list[str]:
         return _get_handler("dh").split_translate_chunks(text)
 
-    def _translate_text_complete(self, text: str, source_lang: str = "auto", target_lang: str = "繁體中文") -> dict:
+    def _translate_text_complete(self, text: str, source_lang: str = "auto", target_lang: str = "繁體中文", heavy: bool = False) -> dict:
         task_id = f"translate_{id(text)}_{time.time():.0f}"
         self.register_heavy_task(task_id, "翻譯")
         try:
-            return _get_handler("tr").translate_text_complete(text, source_lang=source_lang, target_lang=target_lang)
+            if not heavy:
+                try:
+                    from flask import g as _flask_g
+                    heavy = bool(getattr(_flask_g, "heavy_opt_in", False))
+                except Exception:
+                    heavy = False
+            return _get_handler("tr").translate_text_complete(text, source_lang=source_lang, target_lang=target_lang, heavy=heavy)
         finally:
             self.unregister_heavy_task(task_id)
 

@@ -182,6 +182,7 @@ REAPER_SAFE_UTILITIES = (
     "nas_pdf_ocr_worker",                    # NAS PDF OCR background worker
     "pkuseg_py311",                          # PKUSeg sidecar interpreter
     "memory_watchdog.py",                    # Layer 2 memory watchdog (launchd-managed)
+    "magi_heavy_translate.py",               # 2026-04-24：@HEAVY PDF 翻譯 harness，可能跑 >30min
 )
 
 # ── Reaper dedup: avoid retrying the same stale PID every cycle ──

@@ -78,6 +78,24 @@ class TestTranslateSingleChunk:
         assert "翻譯後的文字" in result["text"]
         assert "| 原文 | 中文 |" in result["text"]
         assert "This is English text to translate." in result["text"]
+
+    @patch("api.handlers.translation_handler.InferenceGateway")
+    @patch("skills.bridge.melchior_client.get_circuit_breaker_status", return_value={"open": False})
+    def test_heavy_opt_in_is_passed_to_gateway(self, mock_cb, mock_gw_cls):
+        mock_gw = MagicMock()
+        mock_gw.chat.return_value = _make_gateway_response("這是 heavy 翻譯")
+        mock_gw_cls.return_value = mock_gw
+
+        from api.handlers.translation_handler import translate_text_complete
+
+        result = translate_text_complete(
+            "This is a unique English paragraph for heavy route propagation.",
+            target_lang="繁體中文",
+            heavy=True,
+        )
+
+        assert result["success"] is True
+        assert any(call.kwargs.get("heavy") is True for call in mock_gw.chat.call_args_list)
         assert result["chunks_total"] >= 1
         assert result["chunks_failed"] == 0
         first_call = mock_gw.chat.call_args_list[0]

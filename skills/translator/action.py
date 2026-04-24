@@ -436,6 +436,24 @@ def _non_llm_fallback(payload: dict, *, reason: str) -> dict:
     }
 
 
+# 2026-04-24：Taiwan 法律/司法翻譯固定術語表（所有分支一致套用，確保術語不因 chunk 而漂移）
+_TW_LEGAL_GLOSSARY_BLOCK = (
+    "【Taiwan 司法/法律術語對照（必須一致採用，不可混用）】\n"
+    "- interpreter（口譯情境）→ 口譯員（法學語境用「通譯」亦可，但**全文一致**，不要和 翻譯員 混用）\n"
+    "- translator（書面翻譯）→ 翻譯員\n"
+    "- defendant → 被告（不是「被告人」）\n"
+    "- plaintiff → 原告\n"
+    "- prosecutor → 檢察官\n"
+    "- witness → 證人\n"
+    "- indictment / charge sheet → 起訴書\n"
+    "- verdict → 判決；ruling / order → 裁定\n"
+    "- civil procedure → 民事訴訟；criminal procedure → 刑事訴訟\n"
+    "- due process → 正當法律程序\n"
+    "- Article N of the XXX Code → XXX法第 N 條\n"
+    "一律使用繁體字（正體中文），嚴禁簡體字（如 为/这/国/发/证/诉）。\n"
+)
+
+
 def _translate_chunks_local(
     text: str,
     source_lang: str,
@@ -444,6 +462,7 @@ def _translate_chunks_local(
     max_chunks: int = 60,
     legal_tier1: str = "",
     legal_tier2: str = "",
+    heavy: bool = False,
 ) -> str:
     chunks = _split_chunks(text, chunk_size=int(os.environ.get("MAGI_TRANSLATOR_CHUNK_SIZE", "1500") or "1500"))
     if not chunks:
@@ -544,8 +563,11 @@ def _translate_chunks_local(
                         try:
                             from skills.translator.legal_termbase import build_legal_prompt
                             prompt = build_legal_prompt(c, target_lang, legal_tier1, legal_tier2)
+                            # 2026-04-24：即使走 legal_prompt，也前置 Taiwan glossary 強制術語統一
+                            prompt = _TW_LEGAL_GLOSSARY_BLOCK + "\n" + prompt
                         except Exception:
                             prompt = (
+                                _TW_LEGAL_GLOSSARY_BLOCK + "\n"
                                 "你是專業翻譯員。\n"
                                 f"來源語言：{source_lang}\n"
                                 f"目標語言：{target_lang}\n"
@@ -554,6 +576,7 @@ def _translate_chunks_local(
                             )
                     else:
                         prompt = (
+                            _TW_LEGAL_GLOSSARY_BLOCK + "\n"
                             "你是專業翻譯員。\n"
                             f"來源語言：{source_lang}\n"
                             f"目標語言：{target_lang}\n"
@@ -572,10 +595,12 @@ def _translate_chunks_local(
                 try:
                     from skills.bridge.inference_gateway import InferenceGateway
                     prompt2 = (
-                        f"請把下列內容完整翻譯成{target_lang}，不要摘要，不要補充：\n\n{c}"
+                        _TW_LEGAL_GLOSSARY_BLOCK + "\n"
+                        f"請把下列內容完整翻譯成{target_lang}（Taiwan 用語），不要摘要，不要補充：\n\n{c}"
                     )
                     _gw = InferenceGateway()
-                    qr = _gw.chat(prompt2, task_type="translate", timeout=max(15, timeout_per_chunk))
+                    # 2026-04-24：heavy=True → 走 NIM 405B fast path（chat_inner 已支援）
+                    qr = _gw.chat(prompt2, task_type="translate", timeout=max(15, timeout_per_chunk), heavy=heavy)
                     piece = _strip_translation_preamble((qr.get("response") or "").strip()) if isinstance(qr, dict) else ""
                     if _is_degraded_response(piece):
                         _chunk_logger.warning("Chunk %d attempt %d gateway returned degraded response", idx+1, attempt)
@@ -708,6 +733,8 @@ def _translate_inner(payload: dict) -> dict:
     # Legal termbase context (passed through from translate_core)
     _legal_tier1 = str(payload.get("_legal_tier1") or "").strip()
     _legal_tier2 = str(payload.get("_legal_tier2") or "").strip()
+    # 2026-04-24：heavy opt-in 從 payload 讀取，全鏈下達到 InferenceGateway → NIM 405B
+    _heavy = bool(payload.get("heavy") or False)
 
     # For long inputs, use chunked local mode first to avoid long blocking calls.
     direct_chunk_min = int(os.environ.get("MAGI_TRANSLATOR_DIRECT_CHUNK_MIN", "1200") or "1200")
@@ -720,6 +747,7 @@ def _translate_inner(payload: dict) -> dict:
             max_chunks=int(os.environ.get("MAGI_TRANSLATOR_MAX_CHUNKS", "200") or "200"),
             legal_tier1=_legal_tier1,
             legal_tier2=_legal_tier2,
+            heavy=_heavy,
         )
         if chunked:
             if export in {"1", "true", "yes", "on"} or len(chunked) > max_inline_chars:
@@ -889,6 +917,7 @@ def _translate_inner(payload: dict) -> dict:
                     max_chunks=int(os.environ.get("MAGI_TRANSLATOR_MAX_CHUNKS", "200") or "200"),
                     legal_tier1=_legal_tier1,
                     legal_tier2=_legal_tier2,
+                    heavy=_heavy,
                 )
                 if chunked:
                     if export in {"1", "true", "yes", "on"} or len(chunked) > max_inline_chars:
@@ -1206,6 +1235,7 @@ def translate_core(
     export: bool = False,
     timeout_sec: int = 60,
     llm_timeout: int = 25,
+    heavy: bool = False,
 ) -> dict:
     """
     Single authoritative translation entry point.
@@ -1249,6 +1279,7 @@ def translate_core(
         "export": "1" if export else "0",
         "timeout_sec": timeout_sec,
         "llm_timeout": llm_timeout,
+        "heavy": bool(heavy),  # 2026-04-24：@HEAVY → NIM 405B 全鏈旗標
     }
     try:
         from skills.translator.legal_termbase import should_use_legal_mode, build_glossary_for_chunk

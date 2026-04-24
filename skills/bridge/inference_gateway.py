@@ -1037,10 +1037,13 @@ class InferenceGateway:
                 heavy_opt_in = bool(getattr(_flask_g, "heavy_opt_in", False))
             except Exception:
                 pass
-        if not heavy_opt_in and (prompt.startswith("@heavy ") or prompt.startswith("@重型 ")):
+        # 2026-04-24：case-insensitive（@HEAVY / @Heavy 都接受）；全形 ＠ 已在上游 sanitize 轉半形
+        _prompt_lower_head = prompt.lstrip().lower() if isinstance(prompt, str) else ""
+        if not heavy_opt_in and (_prompt_lower_head.startswith("@heavy ") or _prompt_lower_head.startswith("@重型 ")):
             heavy_opt_in = True
-            # 剝除前綴，不讓 `@heavy` 字面傳給 LLM
-            prompt = prompt.split(" ", 1)[1] if " " in prompt else ""
+            # 剝除前綴，不讓 `@heavy` 字面傳給 LLM（保留 prompt 原大小寫的其餘內容）
+            _p = prompt.lstrip()
+            prompt = _p.split(" ", 1)[1] if " " in _p else ""
             logger.info("inference_chat: @heavy prefix detected in prompt (final-line defense)")
 
         # ── @heavy fast path：跳過 oMLX，直接走 NIM 405B（Plan A, 2026-04-19 P1-2 修） ──

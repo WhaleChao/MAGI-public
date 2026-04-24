@@ -180,6 +180,11 @@ _CUSTOMER_SERVICE_PATTERNS: List[str] = [
     r"地址：\d{3}",
 ]
 
+# 2026-04-24：索引 6-8（電話/電子郵件/地址）單獨出現不是客服樣板，
+# 是文件附錄常見格式（本次撞到 179 頁研究報告附錄的 NGO 名錄誤觸發）。
+# STRONG 只保留真正的客服開頭/結尾樣板前 6 條。
+_CUSTOMER_SERVICE_STRONG_PATTERNS: List[str] = _CUSTOMER_SERVICE_PATTERNS[:6]
+
 _GENERIC_REFUSAL_PATTERNS: List[str] = [
     r"根據您所提供的對話內容",
     r"我無法直接為您提供",
@@ -543,14 +548,20 @@ def detect_output_guard_issues(text: str, mode: str = "general") -> List[str]:
         return []
 
     issues: List[str] = []
+    mode_l = mode.lower()
+    customer_patterns = (
+        _CUSTOMER_SERVICE_STRONG_PATTERNS
+        if mode_l in {"translation", "summary"}
+        else _CUSTOMER_SERVICE_PATTERNS
+    )
     checks: List[Tuple[str, List[str]]] = [
-        ("customer_service", _CUSTOMER_SERVICE_PATTERNS),
+        ("customer_service", customer_patterns),
         ("internal_leak", INTERNAL_LEAK_PATTERNS),
     ]
     # generic_refusal: 翻譯/摘要模式不檢查，因為原文可能包含「一般性建議」等合法法律用語
-    if mode.lower() not in {"translation", "summary"}:
+    if mode_l not in {"translation", "summary"}:
         checks.append(("generic_refusal", _GENERIC_REFUSAL_PATTERNS))
-    if mode.lower() in {"translation", "summary"}:
+    if mode_l in {"translation", "summary"}:
         checks.append(("translation_drift", _TRANSLATION_DRIFT_PATTERNS))
 
     for label, patterns in checks:

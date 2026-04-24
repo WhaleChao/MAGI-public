@@ -5113,6 +5113,58 @@ def run_nightly(run_dir: str) -> Dict[str, Any]:
     except Exception:
         logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 5097, exc_info=True)
 
+    # 9.6) Google Calendar duplicate audit（read-only by default）
+    try:
+        audit_enabled = os.environ.get("MAGI_GCAL_DUP_AUDIT_ENABLED", "1").strip().lower() in {"1", "true", "yes", "on"}
+        if audit_enabled:
+            audit_script = os.path.join(str(_MAGI_ROOT), "scripts", "audit_gcal_duplicates.py")
+            if os.path.exists(audit_script):
+                audit_lookback = int(os.environ.get("MAGI_GCAL_DUP_AUDIT_LOOKBACK_DAYS", "730") or "730")
+                audit_lookahead = int(os.environ.get("MAGI_GCAL_DUP_AUDIT_LOOKAHEAD_DAYS", "365") or "365")
+                audit_output = os.environ.get(
+                    "MAGI_GCAL_DUP_AUDIT_OUTPUT_DIR",
+                    os.path.join(str(_MAGI_ROOT), "reports", "gcal_dedup"),
+                )
+                audit_apply = os.environ.get("MAGI_GCAL_DUP_AUDIT_APPLY", "0").strip().lower() in {"1", "true", "yes", "on"}
+                audit_conf = (os.environ.get("MAGI_GCAL_DUP_AUDIT_MIN_CONFIDENCE", "high") or "high").strip().lower()
+                audit_cmd = [
+                    VENV_PY,
+                    audit_script,
+                    "--lookback-days",
+                    str(max(1, min(audit_lookback, 3650))),
+                    "--lookahead-days",
+                    str(max(1, min(audit_lookahead, 3650))),
+                    "--output-dir",
+                    audit_output,
+                    "--confidence",
+                    audit_conf if audit_conf in {"low", "medium", "high"} else "high",
+                ]
+                if audit_apply:
+                    audit_cmd.append("--apply")
+                else:
+                    audit_cmd.append("--dry-run")
+                _run_budgeted_step(
+                    "osc_gcal_duplicate_audit",
+                    audit_cmd,
+                    _tb("MAGI_NIGHTLY_GCAL_AUDIT_BUDGET_SEC", "MAGI_NIGHTLY_GCAL_AUDIT_TIMEOUT_SEC", 180),
+                    min_start_sec=8,
+                    reserve_after_sec=(reserve_iron_dome_sec + reserve_final_flush_sec),
+                )
+            else:
+                _record_skip(
+                    "osc_gcal_duplicate_audit",
+                    "略過：未找到 audit_gcal_duplicates.py",
+                    {
+                        "requested_sec": 0,
+                        "allocated_sec": 0,
+                        "min_start_sec": 1,
+                        "remaining_before_sec": _remaining_budget_sec(),
+                        "guard_sec": max(0, int(nightly_guard_sec)),
+                    },
+                )
+    except Exception:
+        logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 5131, exc_info=True)
+
     # 9.8) 開庭提醒（掃描 case_todos，發送前一天/當天提醒）
     try:
         hearing_enabled = os.environ.get("MAGI_ENABLE_HEARING_REMINDER", "1").strip().lower() in {"1", "true", "yes", "on"}

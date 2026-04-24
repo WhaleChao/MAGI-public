@@ -42,6 +42,24 @@ def test_parse_payload_with_case_no():
     assert "資力不合標準" in p["reason"]
 
 
+def test_parse_condition_payload_with_client_name():
+    from api.handlers.laf_handler import parse_laf_report_payload
+    p = parse_laf_report_payload("[當事人G]二階段回報")
+    assert p is not None
+    assert p["action"] == "condition"
+    assert p["client_name"] == "[當事人G]"
+    assert p["fields"]["at_ctype"] == "附條件審查"
+
+
+def test_parse_withdrawal_beneficiary_phrase_keeps_client_name():
+    from api.handlers.laf_handler import parse_laf_report_payload
+    p = parse_laf_report_payload("[當事人G]受扶助人撤回回報 原因 測試")
+    assert p is not None
+    assert p["action"] == "withdrawal"
+    assert p["client_name"] == "[當事人G]"
+    assert p["reason"] == "測試"
+
+
 def test_parse_payload_unrelated():
     from api.handlers.laf_handler import parse_laf_report_payload
     assert parse_laf_report_payload("今天天氣很好") is None

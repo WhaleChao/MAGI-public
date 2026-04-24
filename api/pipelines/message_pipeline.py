@@ -41,14 +41,218 @@ def get_brain_status(*a, **kw):
     return _bm.get_brain_status(*a, **kw)
 
 
+_FILE_REVIEW_CONFIRM_RE = re.compile(r"(?<![A-Fa-f0-9])([A-Fa-f0-9]{6,12})(?![A-Fa-f0-9])")
+_ARITHMETIC_INTENT_RE = re.compile(
+    r"(等於多少|是多少|多少|幫我算|算一下|請.*算|用工具算|不要心算|計算|calculate)",
+    re.IGNORECASE,
+)
+_ARITHMETIC_EXPR_RE = re.compile(
+    r"(?<![\w])([0-9][0-9\s+\-＋－*/().,%×xX＊÷／]*[+\-＋－*/%×xX＊÷／][0-9\s+\-＋－*/().,%×xX＊÷／]*[0-9)])"
+)
+
+
+def _normalize_arithmetic_expression(expr: str) -> str:
+    """Normalize a user-visible arithmetic expression for the calculate tool."""
+    normalized = (expr or "").strip()
+    normalized = normalized.replace("＋", "+").replace("－", "-")
+    normalized = normalized.replace("×", "*").replace("＊", "*")
+    normalized = normalized.replace("÷", "/").replace("／", "/")
+    normalized = re.sub(r"(?<=\d)[xX](?=\d)", "*", normalized)
+    normalized = normalized.replace(",", "")
+    normalized = re.sub(r"\s+", "", normalized)
+    return normalized
+
+
+def _extract_arithmetic_expression(message: str) -> str:
+    """Extract a simple arithmetic expression from a natural-language prompt.
+
+    This is intentionally conservative: it only activates when the message has
+    arithmetic intent language (or is mostly an expression) and contains a real
+    arithmetic operator. This prevents dates and case numbers from being treated
+    as math just because they contain hyphens.
+    """
+    text = (message or "").strip()
+    if not text:
+        return ""
+    candidates = [_normalize_arithmetic_expression(m.group(1)) for m in _ARITHMETIC_EXPR_RE.finditer(text)]
+    candidates = [c for c in candidates if c and re.search(r"\d", c) and re.search(r"[+\-*/%]", c)]
+    if not candidates:
+        return ""
+    mostly_expression = bool(re.fullmatch(r"[\d\s+\-＋－*/().,%×xX＊÷／=？?多少等於是多少]+", text))
+    if not (_ARITHMETIC_INTENT_RE.search(text) or mostly_expression):
+        return ""
+    # Pick the longest candidate; prompts often contain a clean expression plus
+    # surrounding wording.
+    return max(candidates, key=len)
+
+
+def _try_arithmetic_tool_fast_path(message: str) -> str:
+    """Return a deterministic calculator answer when the prompt is arithmetic.
+
+    The live failure in 2026-04-23 showed the chat path could ignore "請用工具算",
+    hallucinate the arithmetic result, mix languages, and trigger rule memory.
+    This fast path routes simple arithmetic to the registered calculate tool
+    before LLM generation or rule-memory capture.
+    """
+    expr = _extract_arithmetic_expression(message)
+    if not expr:
+        return ""
+    try:
+        from skills.engine.tool_registry import TOOLS
+
+        result = str(TOOLS["calculate"]["fn"](expression=expr)).strip()
+    except Exception as exc:
+        return f"計算工具目前無法使用：{type(exc).__name__}: {exc}"
+    if not result:
+        return "計算工具沒有回傳結果。"
+    return f"{result}\n\n（使用工具：calculate）"
+
+
+def _find_file_review_confirm_record(message: str) -> tuple[str, dict, str]:
+    """Return a file-review confirm token, record, and state found in message."""
+    candidates = [m.group(1).upper() for m in _FILE_REVIEW_CONFIRM_RE.finditer(message or "")]
+    if not candidates:
+        return "", {}, ""
+
+    pending_file = os.path.join(_MAGI_ROOT, "skills", "file-review-orchestrator", ".review_submit_pending.json")
+    try:
+        with open(pending_file, "r", encoding="utf-8") as f:
+            pending = json.load(f)
+    except Exception:
+        return "", {}, ""
+    if not isinstance(pending, dict):
+        return "", {}, ""
+
+    import time as _time
+    now = _time.time()
+    stale_match = ("", {}, "")
+    for token in candidates:
+        entry = pending.get(token)
+        if not isinstance(entry, dict):
+            continue
+        if str(entry.get("status") or "") != "pending":
+            if not stale_match[0]:
+                stale_match = (token, entry, "closed")
+            continue
+        try:
+            if now > float(entry.get("expires_at", 0) or 0):
+                if not stale_match[0]:
+                    stale_match = (token, entry, "expired")
+                continue
+        except Exception:
+            if not stale_match[0]:
+                stale_match = (token, entry, "expired")
+            continue
+        return token, entry, "pending"
+    return stale_match
+
+
+def _find_file_review_confirm_token(message: str) -> str:
+    """Return a live file-review confirm token found in message, if any."""
+    token, _entry, state = _find_file_review_confirm_record(message)
+    return token if state == "pending" else ""
+
+
+def _handle_file_review_confirmation_if_any(orch, user_id, platform: str, message: str) -> tuple[bool, str]:
+    """Dispatch file-review submit confirmation when a user replies with the token."""
+    token, entry, state = _find_file_review_confirm_record(message)
+    if not token:
+        return False, ""
+    if state == "expired":
+        return True, f"⚠️ 閱卷確認碼 {token} 已逾期，請重新發起閱卷聲請。"
+    if state != "pending":
+        status = str((entry or {}).get("status") or "已失效")
+        return True, f"⚠️ 閱卷確認碼 {token} 目前狀態為 {status}，未送出；請重新發起閱卷聲請。"
+
+    action_script = os.path.join(_MAGI_ROOT, "skills", "file-review-orchestrator", "action.py")
+    if not os.path.exists(action_script):
+        return True, f"❌ 找不到閱卷確認腳本：{action_script}"
+
+    skill_python = os.environ.get("MAGI_SKILL_PYTHON", "").strip() or sys.executable
+    timeout_sec = int(os.environ.get("MAGI_FILE_REVIEW_CONFIRM_TIMEOUT_SEC", "1800") or "1800")
+    source = str(platform or "user").lower() or "user"
+    task_text = "confirm_apply " + json.dumps(
+        {"token": token, "source": source, "notify": True},
+        ensure_ascii=False,
+    )
+
+    def run_confirm(uid: str, platform_name: str):
+        try:
+            proc = subprocess.run(
+                [skill_python, action_script, "--task", task_text],
+                capture_output=True,
+                text=True,
+                timeout=timeout_sec,
+            )
+            stdout_text = (proc.stdout or "").strip()
+            stderr_text = (proc.stderr or "").strip()
+            if proc.returncode != 0:
+                result_text = f"❌ 閱卷確認送出失敗（code={proc.returncode}）\n{(stderr_text or stdout_text)[:1200]}"
+            else:
+                data = None
+                if stdout_text:
+                    try:
+                        data = json.loads(stdout_text)
+                    except Exception:
+                        m = re.search(r"(\{.*\})\s*$", stdout_text, flags=re.S)
+                        if m:
+                            try:
+                                data = json.loads(m.group(1))
+                            except Exception:
+                                data = None
+                if isinstance(data, dict) and data.get("success") and str(data.get("result") or "") == "Applied":
+                    case_label = str(data.get("case", "")).strip()
+                    msg = str(data.get("message", "")).strip()
+                    result_text = "\n".join(x for x in ["📋 閱卷確認送出完成", case_label, msg] if x)
+                elif isinstance(data, dict) and data.get("success"):
+                    case_label = str(data.get("case", "")).strip()
+                    msg = str(data.get("message", "")).strip()
+                    result_key = str(data.get("result", "")).strip()
+                    result_text = "\n".join(
+                        x for x in [
+                            "⚠️ 閱卷確認流程未完成送出",
+                            case_label,
+                            result_key,
+                            msg,
+                        ] if x
+                    )
+                elif isinstance(data, dict):
+                    case_label = str(data.get("case", "")).strip()
+                    err = str(data.get("error") or data.get("message") or "unknown").strip()
+                    result_text = "\n".join(x for x in ["❌ 閱卷確認送出失敗", case_label, err] if x)
+                else:
+                    result_text = f"📋 閱卷確認流程完成。\n{stdout_text[:1200] if stdout_text else '(無輸出)'}"
+        except subprocess.TimeoutExpired:
+            result_text = f"⏳ 閱卷確認送出逾時（>{timeout_sec} 秒），請稍後查核。"
+        except Exception as exc:
+            result_text = f"❌ 閱卷確認背景流程異常：{exc}"
+
+        try:
+            if getattr(orch, "notification_callback", None):
+                orch.notification_callback(uid, result_text, platform_name)
+        except Exception as notify_err:
+            logger.warning("File-review confirm callback failed: %s", notify_err)
+
+    threading.Thread(
+        target=run_confirm,
+        args=(str(user_id or ""), str(platform or "")),
+        daemon=True,
+    ).start()
+
+    return True, f"📤 已收到閱卷確認碼 {token}，正在重新登入送出。"
+
+
 def process_message_inner(orch, user_id, message, platform="LINE", role="user", attachment=None, correlation_id=None, progress_callback=None, channel_context=None):
     message = orch._sanitize_incoming_message((message or "").strip())
 
     # @heavy opt-in：允許使用者觸發 NVIDIA NIM 重型兜底（Plan A, 2026-04-19）
+    # 2026-04-24：case-insensitive（@HEAVY / @Heavy 都接受）；全形 ＠ 已在 sanitize 統一轉半形
     _heavy_opt_in = False
-    if message.startswith("@heavy ") or message.startswith("@重型 "):
+    _msg_lower_head = message.lstrip().lower()
+    if _msg_lower_head.startswith("@heavy ") or _msg_lower_head.startswith("@重型 "):
         _heavy_opt_in = True
-        message = message.split(" ", 1)[1].strip() if " " in message else ""
+        # 保留原大小寫的其餘內容，只剝除前綴
+        message = message.lstrip().split(" ", 1)[1].strip() if " " in message.lstrip() else ""
         logger.info("message_pipeline: @heavy opt-in detected, will try NIM fallback if oMLX fails")
     try:
         from flask import g as _flask_g
@@ -378,6 +582,19 @@ def process_message_inner(orch, user_id, message, platform="LINE", role="user", 
     except Exception:
         logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 4158, exc_info=True)
 
+    # 閱卷聲請確認碼：使用者可直接回覆 6 位確認碼或「確認碼xxxxxx」送出。
+    try:
+        handled, reply = _handle_file_review_confirmation_if_any(
+            orch,
+            str(user_id or ""),
+            str(platform or ""),
+            message,
+        )
+        if handled:
+            return reply
+    except Exception:
+        logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, "file_review_confirm", exc_info=True)
+
     # Route explain (safe): allow both user/admin to ask what would be executed.
     ok_route, probe, route_err = orch._extract_route_probe(message)
     if ok_route:
@@ -385,6 +602,23 @@ def process_message_inner(orch, user_id, message, platform="LINE", role="user", 
             return route_err
         info = orch._explain_routing(probe, role=role)
         return orch._format_route_explain(info, role=role)
+
+    # Deterministic arithmetic tool fast path.
+    #
+    # Keep this before chatlog/rule-memory capture: prompts like
+    # "請用工具算，不要心算" contain "不要" but are instructions for this
+    # single calculation, not durable user rules.
+    arithmetic_reply = _try_arithmetic_tool_fast_path(message)
+    if arithmetic_reply:
+        orch._append_route_trace(
+            str(user_id or ""),
+            str(platform or ""),
+            "top_level",
+            "arithmetic_calculate",
+            {"tool": "calculate"},
+        )
+        orch._append_history(user_id, "assistant", arithmetic_reply)
+        return arithmetic_reply
 
     # Persist chat + user rules for ALL users (but keep system mutation commands admin-only).
     try:

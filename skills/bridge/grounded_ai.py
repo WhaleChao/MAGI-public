@@ -1031,7 +1031,7 @@ def ask_casper(query, conversation_history="", force_research=False):
         return "系統忙碌中，暫時無法完成推理。"
 
 
-def chat_casper(message, conversation_history=""):
+def chat_casper(message, conversation_history="", heavy: bool = False):
     """
     General conversational interface with 3-layer anti-hallucination.
     Layer 3: Query tier → GREETING / SIMPLE / COMPLEX
@@ -1046,13 +1046,31 @@ def chat_casper(message, conversation_history=""):
     # 此為 chat_casper 主要入口，處理所有 /osc/external/chat → _handle_chat_async 路徑。
     # 必須在這一層接 @heavy，因為 chat_casper 不會走 inference_gateway._chat_inner 的 heavy fast path。
     _msg_stripped = str(message or "").strip()
-    if _msg_stripped.startswith("@heavy ") or _msg_stripped.startswith("@重型 "):
+    # 2026-04-24：case-insensitive（@HEAVY / @Heavy 都接受）；全形 ＠ 已在 orchestrator sanitize 統一轉半形
+    _msg_lower_head = _msg_stripped.lower()
+    # 2026-04-24：三保險偵測（prefix / flask.g / explicit kwarg）
+    # - prefix：上游尚未剝除時直接命中
+    # - flask.g：同 request thread 設定，但 ThreadPoolExecutor 子 thread 讀不到
+    # - heavy kwarg：caller（chat_pipeline）在 main thread 讀完 flask.g 後顯式傳入，跨 thread 可靠
+    _heavy_via_g = bool(heavy)
+    if not _heavy_via_g:
+        try:
+            from flask import g as _flask_g_head
+            _heavy_via_g = bool(getattr(_flask_g_head, "heavy_opt_in", False))
+        except Exception:
+            _heavy_via_g = False
+    _has_prefix = _msg_lower_head.startswith("@heavy ") or _msg_lower_head.startswith("@重型 ")
+    if _has_prefix or _heavy_via_g:
         import os as _os
         _nim_enabled = (_os.environ.get("NVIDIA_NIM_ENABLE", "0") or "").strip().lower() in {"1", "true", "yes", "on"}
         if _nim_enabled:
             try:
                 from skills.bridge.nim_heavy import run_nim_chat
-                _clean_msg = _msg_stripped.split(" ", 1)[1] if " " in _msg_stripped else ""
+                # 若 prefix 還在就剝除；若上游已剝除則直接用原文
+                if _has_prefix:
+                    _clean_msg = _msg_stripped.split(" ", 1)[1] if " " in _msg_stripped else ""
+                else:
+                    _clean_msg = _msg_stripped
                 logger.info("chat_casper: @heavy opt-in → NIM 405B fast path")
                 _nim_r = run_nim_chat(
                     prompt=_clean_msg,
@@ -1081,10 +1099,16 @@ def chat_casper(message, conversation_history=""):
                 message = _clean_msg
             except Exception as _nim_err:
                 logger.warning("chat_casper: NIM exception (%s), falling back to oMLX", _nim_err)
-                message = _msg_stripped.split(" ", 1)[1] if " " in _msg_stripped else ""
+                if _has_prefix:
+                    message = _msg_stripped.split(" ", 1)[1] if " " in _msg_stripped else ""
+                else:
+                    message = _msg_stripped
         else:
             # NIM 未啟用，剝除 @heavy 前綴正常走 oMLX（避免前綴混進 prompt）
-            message = _msg_stripped.split(" ", 1)[1] if " " in _msg_stripped else ""
+            if _has_prefix:
+                message = _msg_stripped.split(" ", 1)[1] if " " in _msg_stripped else ""
+            else:
+                message = _msg_stripped
 
     # ── Layer 3: Query Classification ──
     tier = _classify_query_tier(message)

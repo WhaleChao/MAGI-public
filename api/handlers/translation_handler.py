@@ -91,7 +91,7 @@ def _build_document_glossary(text: str, target_lang: str = "繁體中文") -> st
     return "\n【術語對照表（全文必須統一使用）】\n" + "\n".join(found[:15])
 
 
-def translate_text_complete(text: str, source_lang: str = "auto", target_lang: str = "繁體中文") -> dict:
+def translate_text_complete(text: str, source_lang: str = "auto", target_lang: str = "繁體中文", heavy: bool = False) -> dict:
     from skills.bridge import melchior_client
 
     from api.handlers import document_handler as _dh
@@ -234,6 +234,12 @@ def translate_text_complete(text: str, source_lang: str = "auto", target_lang: s
                 (target_is_zh and doc_src_latin > max(200, doc_src_cjk * 2))
                 or (target_is_en and doc_src_cjk > max(200, doc_src_latin * 2))
             )
+    # 2026-04-24：@HEAVY 明確要求 NIM 405B；跳過 GTX primary，讓 heavy=True 真的打到 NIM。
+    # 否則 handler 對英→中長文自動選 GTX primary，InferenceGateway.chat(heavy=True) fast path
+    # 只會當 GTX 失敗時才被當 fallback 呼叫，@HEAVY 形同虛設。
+    if heavy and use_gtx_primary:
+        logger.info("translate_text_complete: heavy=True → skipping GTX primary, routing to NIM 405B")
+        use_gtx_primary = False
     try:
         gtx_primary_workers = int(os.environ.get("MAGI_FILE_TRANSLATE_GTX_PRIMARY_WORKERS", "4") or "4")
     except Exception:
@@ -368,7 +374,7 @@ def translate_text_complete(text: str, source_lang: str = "auto", target_lang: s
         qq = InferenceGateway().chat(
             pp, task_type="translate", timeout=quick_timeout, model=fallback_model,
             num_ctx=_tr_ctx, num_predict=min(4096, max(1536, len(text_part) * 2)),
-            allow_synthetic_fallback=False,
+            allow_synthetic_fallback=False, heavy=heavy,
         )
         out = str((qq or {}).get("response") or "").strip()
         model_used = str((qq or {}).get("model") or "").strip()
@@ -464,6 +470,7 @@ def translate_text_complete(text: str, source_lang: str = "auto", target_lang: s
                         task_type="translate",
                         timeout=remote_timeout,
                         allow_synthetic_fallback=False,
+                        heavy=heavy,
                     )
                     if r.get("success") and str(r.get("response") or "").strip():
                         piece = str(r.get("response") or "").strip()

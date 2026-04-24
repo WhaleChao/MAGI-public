@@ -25,6 +25,9 @@ def sanitize_incoming_message(message: str) -> str:
     text = str(message or "").strip()
     if not text:
         return ""
+    # Normalize full-width @ / # / ！ to half-width so prefix detectors
+    # (@heavy / @重型 / @MAGI / ！指令) work for Chinese-IME users.
+    text = text.replace("＠", "@").replace("＃", "#").replace("！", "!")
     text = re.sub(
         r"Conversation info \(untrusted metadata\):\s*\{[\s\S]*?\}\s*",
         "",

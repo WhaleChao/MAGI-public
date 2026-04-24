@@ -16,6 +16,22 @@ class _NoopThread:
         return None
 
 
+class _ImmediateThread:
+    """Test double that runs the background target synchronously."""
+
+    def __init__(self, *args, **kwargs):
+        self.args = args
+        self.kwargs = kwargs
+
+    def start(self):
+        target = self.kwargs.get("target") if self.kwargs else None
+        args = self.kwargs.get("args", ()) if self.kwargs else ()
+        if target is None and self.args:
+            target = self.args[0]
+        if target:
+            target(*args)
+
+
 class _MockOrch:
     """Minimal orchestrator stub for confirmation routing tests."""
 
@@ -216,3 +232,137 @@ def test_message_pipeline_intercepts_progress_submit_confirmation(monkeypatch, t
 
     assert "進度回報" in reply
     assert token in reply
+
+
+def test_message_pipeline_intercepts_file_review_confirmation(monkeypatch, tmp_path):
+    import api.pipelines.message_pipeline as message_pipeline
+    from api.pipelines.message_pipeline import process_message_inner
+
+    monkeypatch.setattr(
+        message_pipeline,
+        "_find_file_review_confirm_record",
+        lambda message: ("150A81", {"status": "pending"}, "pending"),
+    )
+    monkeypatch.setattr(message_pipeline.threading, "Thread", _NoopThread)
+    orch = _MockOrch(tmp_path)
+
+    reply = process_message_inner(
+        orch,
+        user_id="lawyer1",
+        message="確認碼150A81",
+        platform="discord",
+        role="user",
+    )
+
+    assert "閱卷確認碼 150A81" in reply
+
+
+def test_message_pipeline_explains_expired_file_review_confirmation(monkeypatch, tmp_path):
+    import api.pipelines.message_pipeline as message_pipeline
+    from api.pipelines.message_pipeline import process_message_inner
+
+    monkeypatch.setattr(
+        message_pipeline,
+        "_find_file_review_confirm_record",
+        lambda message: ("150A81", {"status": "pending"}, "expired"),
+    )
+    orch = _MockOrch(tmp_path)
+
+    reply = process_message_inner(
+        orch,
+        user_id="lawyer1",
+        message="確認碼150A81",
+        platform="discord",
+        role="user",
+    )
+
+    assert "閱卷確認碼 150A81 已逾期" in reply
+
+
+def test_message_pipeline_explains_closed_file_review_confirmation(monkeypatch, tmp_path):
+    import api.pipelines.message_pipeline as message_pipeline
+    from api.pipelines.message_pipeline import process_message_inner
+
+    monkeypatch.setattr(
+        message_pipeline,
+        "_find_file_review_confirm_record",
+        lambda message: ("55C5E0", {"status": "invalidated"}, "closed"),
+    )
+    orch = _MockOrch(tmp_path)
+
+    reply = process_message_inner(
+        orch,
+        user_id="lawyer1",
+        message="55C5E0",
+        platform="discord",
+        role="user",
+    )
+
+    assert "狀態為 invalidated" in reply
+
+
+def test_file_review_confirmation_prefers_live_token_over_stale(monkeypatch, tmp_path):
+    import json
+    import time
+    import api.pipelines.message_pipeline as message_pipeline
+
+    root = tmp_path / "root"
+    pending_dir = root / "skills" / "file-review-orchestrator"
+    pending_dir.mkdir(parents=True)
+    (pending_dir / ".review_submit_pending.json").write_text(
+        json.dumps(
+            {
+                "150A81": {"status": "invalidated"},
+                "55C5E0": {"status": "pending", "expires_at": time.time() + 600},
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(message_pipeline, "_MAGI_ROOT", str(root))
+
+    token, _entry, state = message_pipeline._find_file_review_confirm_record("確認碼150A81，改用 55C5E0")
+
+    assert token == "55C5E0"
+    assert state == "pending"
+
+
+def test_file_review_confirmation_does_not_report_unverified_submit_as_done(monkeypatch, tmp_path):
+    import json
+    import api.pipelines.message_pipeline as message_pipeline
+    from api.pipelines.message_pipeline import process_message_inner
+
+    monkeypatch.setattr(
+        message_pipeline,
+        "_find_file_review_confirm_record",
+        lambda message: ("369F53", {"status": "pending"}, "pending"),
+    )
+    monkeypatch.setattr(message_pipeline.threading, "Thread", _ImmediateThread)
+
+    class _Proc:
+        returncode = 0
+        stdout = json.dumps({
+            "success": False,
+            "result": "SubmitUnverified",
+            "case": "HLD 115年婚字第19號",
+            "message": "未偵測到法院端已受理",
+            "error": "未偵測到法院端已受理",
+        }, ensure_ascii=False)
+        stderr = ""
+
+    monkeypatch.setattr(message_pipeline.subprocess, "run", lambda *args, **kwargs: _Proc())
+    orch = _MockOrch(tmp_path)
+    notifications = []
+    orch.notification_callback = lambda uid, text, platform: notifications.append(text)
+
+    reply = process_message_inner(
+        orch,
+        user_id="lawyer1",
+        message="確認碼：369F53",
+        platform="discord",
+        role="user",
+    )
+
+    assert "閱卷確認碼 369F53" in reply
+    assert notifications
+    assert "閱卷確認送出失敗" in notifications[0]
+    assert "送出完成" not in notifications[0]

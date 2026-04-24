@@ -1,9 +1,11 @@
 """Tests for Orchestrator._handle_command() dispatch logic."""
 
 import pytest
+import json
 from unittest.mock import patch, MagicMock
 
 from api.help_text import HELP_ALIASES, build_help_text
+from api.pipelines.command_dispatch import handle_command
 from api.pipelines.message_router import quick_fixed_reply
 
 
@@ -95,3 +97,76 @@ class TestHandleCommandDraw:
         orc = _make_orchestrator()
         result = orc._handle_command("user1", "/draw")
         assert "描述" in result or "請" in result
+
+
+class _ImmediateThread:
+    def __init__(self, target=None, args=(), kwargs=None, **_ignored):
+        self.target = target
+        self.args = args
+        self.kwargs = kwargs or {}
+
+    def start(self):
+        if self.target:
+            self.target(*self.args, **self.kwargs)
+
+
+def test_file_review_apply_callback_uploads_preview_screenshot(monkeypatch, tmp_path):
+    import api.pipelines.command_dispatch as command_dispatch
+    import skills.ops.red_phone as red_phone
+
+    screenshot = tmp_path / "preview.png"
+    screenshot.write_bytes(b"\x89PNG\r\n\x1a\n")
+    sent_files = []
+    callbacks = []
+
+    class _Proc:
+        returncode = 0
+        stderr = ""
+        stdout = json.dumps(
+            {
+                "success": True,
+                "case": "HLD 115年婚字第19號",
+                "message": "✅ 閱卷已填寫完成（待確認送出）\n\n📌 確認碼：369F53",
+                "evidence": {"screenshot": str(screenshot)},
+            },
+            ensure_ascii=False,
+        )
+
+    def fake_run(cmd, **_kwargs):
+        task_text = cmd[-1]
+        assert '"notify": false' in task_text
+        return _Proc()
+
+    def fake_send_discord_bot_file(**kwargs):
+        sent_files.append(kwargs)
+        return True
+
+    class _Orch:
+        _cmd_registry = None
+        _fuzzy_recursion_guard = True
+
+        def _parse_laf_report_payload(self, _message):
+            return None
+
+        def _laf_report_command_help(self):
+            return ""
+
+        def notification_callback(self, *args, **kwargs):
+            callbacks.append((args, kwargs))
+
+    monkeypatch.setattr(command_dispatch.threading, "Thread", _ImmediateThread)
+    monkeypatch.setattr(command_dispatch.subprocess, "run", fake_run)
+    monkeypatch.setattr(red_phone, "send_discord_bot_file", fake_send_discord_bot_file)
+
+    reply = handle_command(
+        _Orch(),
+        "discord_123",
+        "閱卷聲請 [當事人J] 花蓮 115婚19 已遞委任",
+        role="admin",
+        platform="Discord",
+    )
+
+    assert "已啟動閱卷聲請" in reply
+    assert sent_files and sent_files[0]["file_path"] == str(screenshot)
+    assert "369F53" in sent_files[0]["caption"]
+    assert callbacks == []

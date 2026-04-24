@@ -175,6 +175,12 @@ def handle_multimedia(orch, user_id, prompt, attachment) -> str:
     """Routes file attachments to appropriate skills."""
     msg_type = attachment['type']
     path = attachment['path']
+    heavy_opt_in = False
+    try:
+        from flask import g as _flask_g
+        heavy_opt_in = bool(getattr(_flask_g, "heavy_opt_in", False))
+    except Exception:
+        heavy_opt_in = False
 
     if msg_type == "image":
         prompt_lower = (prompt or "").lower()
@@ -338,6 +344,7 @@ def handle_multimedia(orch, user_id, prompt, attachment) -> str:
                     transcript,
                     source_lang="auto",
                     target_lang="繁體中文",
+                    heavy=heavy_opt_in,
                 )
                 _sm_future = inference_pool.submit(
                     orch._summarize_text_resilient,
@@ -371,6 +378,7 @@ def handle_multimedia(orch, user_id, prompt, attachment) -> str:
                             transcript,
                             source_lang="auto",
                             target_lang="繁體中文",
+                            heavy=heavy_opt_in,
                         )
                         if isinstance(rr, dict) and rr.get("success"):
                             t = str(rr.get("text") or "").strip()
@@ -493,7 +501,7 @@ def handle_multimedia(orch, user_id, prompt, attachment) -> str:
             if _can_parallel_summary:
                 _translate_future = inference_pool.submit(
                     orch._translate_text_complete, src_text,
-                    source_lang="auto", target_lang="繁體中文",
+                    source_lang="auto", target_lang="繁體中文", heavy=heavy_opt_in,
                 )
                 _summary_future = inference_pool.submit(
                     orch._summarize_text_resilient, src_text,
@@ -509,7 +517,7 @@ def handle_multimedia(orch, user_id, prompt, attachment) -> str:
                     sr = {"success": False, "error": str(e)}
             else:
                 try:
-                    rr = orch._translate_text_complete(src_text, source_lang="auto", target_lang="繁體中文")
+                    rr = orch._translate_text_complete(src_text, source_lang="auto", target_lang="繁體中文", heavy=heavy_opt_in)
                 except Exception as e:
                     rr = {"success": False, "error": str(e)}
                 sr = None

@@ -1506,11 +1506,14 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
                                     "請回覆：`<當事人/案號> 結案回報 原因 <理由>`"
                                 )
                             elif err == "portal_draft_failed":
+                                detail = str(data.get("detail") or data.get("message") or "").strip()
                                 result_text = (
                                     f"❌ 法扶{payload_obj.get('action_label','回報')}表單填寫失敗。\n"
                                     "可能原因：法扶網站登入逾時、頁面載入異常或按鈕找不到。\n"
                                     "請稍後重試，或手動在法扶系統確認。"
                                 )
+                                if detail:
+                                    result_text += f"\n細節：{detail[:300]}"
                             elif err == "identity_needs_manual_confirmation":
                                 _identity = data.get("identity") or {}
                                 _reason = _identity.get("manual_reason", "")
@@ -1777,6 +1780,7 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
             "不用上傳", "無需上傳", "跳過上傳", "略過上傳",
         ]
         _APPLY_LAF_ONLY_KWS = ["法扶"]
+        _APPLY_SYS_TYPES = {"H", "V", "U", "I", "A", "K", "C", "F", "M", "S", "AUTO", "刑事", "民事", "家事", "少年", "行政", "民執"}
 
         def _parse_apply_payload(raw_text: str):
             raw = (raw_text or "").strip()
@@ -1831,12 +1835,19 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
                 "case_type": case_type,
                 "case_number": m.group(3),
             }
-            # Optional: client_name or case category after case number
+            # Optional: client_name and/or case category after case number
             remaining_parts = [p for p in parts[2:] if p not in _APPLY_SKIP_UPLOAD_KWS]
-            if remaining_parts:
-                extra = remaining_parts[0].strip()
-                if extra not in ("刑事", "民事", "行政"):
-                    result["client_name"] = extra
+            client_parts = []
+            for extra in remaining_parts:
+                extra = extra.strip()
+                if not extra:
+                    continue
+                if "sys_type" not in result and extra.upper() in _APPLY_SYS_TYPES:
+                    result["sys_type"] = extra
+                    continue
+                client_parts.append(extra)
+            if client_parts:
+                result["client_name"] = " ".join(client_parts)
             if skip_upload_detected:
                 result["skip_upload"] = True
             if laf_only_detected:
@@ -1865,6 +1876,8 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
             "case_number": str(payload.get("case_number", "")).strip(),
             "client_name": str(payload.get("client_name", "")).strip(),
         }
+        if payload.get("sys_type"):
+            task_payload["sys_type"] = str(payload.get("sys_type", "")).strip()
         if payload.get("skip_upload"):
             task_payload["skip_upload"] = True
         if payload.get("laf_only"):
@@ -1878,8 +1891,13 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
         # 2026-03-29: removed local import threading (use module-level import)
 
         def run_apply(uid: str, payload_obj: dict, platform_name: str):
-            task_text = f"apply {json.dumps(payload_obj, ensure_ascii=False)}"
+            # Parent owns user-facing callbacks here, including screenshot upload.
+            # Suppress child notifications to avoid text-only duplicates.
+            payload_for_child = dict(payload_obj or {})
+            payload_for_child["notify"] = False
+            task_text = f"apply {json.dumps(payload_for_child, ensure_ascii=False)}"
             cmd = [skill_python, action_script, "--task", task_text]
+            screenshot_sent = False
             try:
                 proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_sec)
                 stdout_text = (proc.stdout or "").strip()
@@ -1905,6 +1923,43 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
                             case_label = str(data.get("case", "")).strip()
                             msg = str(data.get("message", "")).strip()
                             result_text = f"📋 閱卷聲請已送出\n{case_label}\n{msg}".strip()
+                            evidence = data.get("evidence") if isinstance(data.get("evidence"), dict) else {}
+                            screenshot_path = str(evidence.get("screenshot") or "").strip()
+                            if screenshot_path and os.path.isfile(screenshot_path):
+                                try:
+                                    from skills.ops.red_phone import send_discord_bot_file, send_file_admin
+
+                                    caption = f"閱卷預覽 — {case_label}\n{msg}".strip()[:1800]
+                                    plat = str(platform_name or "").strip().lower()
+                                    if plat == "discord":
+                                        screenshot_sent = bool(send_discord_bot_file(
+                                            file_path=screenshot_path,
+                                            caption=caption,
+                                            topic_key="filereview_apply",
+                                            source="file_review_apply",
+                                        ))
+                                    elif plat == "telegram":
+                                        st = send_file_admin(
+                                            file_path=screenshot_path,
+                                            caption=caption,
+                                            topic_key="filereview_apply",
+                                        )
+                                        screenshot_sent = bool(isinstance(st, dict) and st.get("ok"))
+                                    else:
+                                        st = send_file_admin(
+                                            file_path=screenshot_path,
+                                            caption=caption,
+                                            topic_key="filereview_apply",
+                                        )
+                                        dc_ok = send_discord_bot_file(
+                                            file_path=screenshot_path,
+                                            caption=caption,
+                                            topic_key="filereview_apply",
+                                            source="file_review_apply",
+                                        )
+                                        screenshot_sent = bool(dc_ok or (isinstance(st, dict) and st.get("ok")))
+                                except Exception as file_err:
+                                    logger.warning("File-review preview screenshot send failed: %s", file_err)
                         else:
                             result_text = f"❌ 閱卷聲請失敗：{str(data.get('error', 'unknown')).strip()}"
                     else:
@@ -1916,8 +1971,11 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
                 result_text = f"❌ 閱卷聲請背景流程異常：{e}"
 
             try:
-                if getattr(orch, "notification_callback", None):
-                    orch.notification_callback(uid, result_text, platform_name)
+                if getattr(orch, "notification_callback", None) and not screenshot_sent:
+                    try:
+                        orch.notification_callback(uid, result_text, platform_name, topic_key="filereview_apply")
+                    except TypeError:
+                        orch.notification_callback(uid, result_text, platform_name)
             except Exception as notify_err:
                 logger.warning(f"File-review apply callback failed: {notify_err}")
 

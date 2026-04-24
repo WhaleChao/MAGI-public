@@ -12,15 +12,16 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import pickle
 import re
 import subprocess
 import sys
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 _MAGI_ROOT = Path(__file__).resolve().parents[2]
 if str(_MAGI_ROOT) not in sys.path:
@@ -1340,6 +1341,136 @@ def _build_google_calendar_service(
         return {"ok": False, "error": f"calendar_build_failed:{type(e).__name__}"}
 
 
+def _env_bool(name: str, default: bool = False) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return bool(default)
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _event_list_time_window_from_body(body: Dict[str, Any], tz: str) -> Tuple[str, str]:
+    start = body.get("start") if isinstance(body, dict) else {}
+    if not isinstance(start, dict):
+        return "", ""
+    date_time = str(start.get("dateTime") or "").strip()
+    if date_time:
+        try:
+            dt = datetime.fromisoformat(date_time.replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            dt_utc = dt.astimezone(timezone.utc)
+            return (
+                (dt_utc - timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                (dt_utc + timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            )
+        except Exception:
+            return "", ""
+    date_only = str(start.get("date") or "").strip()
+    if date_only:
+        try:
+            d0 = datetime.strptime(date_only, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+            return (
+                d0.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                (d0 + timedelta(days=2)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            )
+        except Exception:
+            return "", ""
+    return "", ""
+
+
+def _find_existing_gcal_event(
+    service: Any,
+    *,
+    calendar_id: str,
+    body: Dict[str, Any],
+    dedup_key: str,
+    tz: str,
+) -> Optional[Dict[str, Any]]:
+    try:
+        from osc_headless.gcal_dedup import build_dedup_key_from_gcal_event, confidence_for_match
+    except Exception:
+        return None
+
+    candidates: List[Dict[str, Any]] = []
+    seen_ids: set[str] = set()
+
+    def _add_candidates(items: Any) -> None:
+        if not isinstance(items, list):
+            return
+        for ev in items:
+            if not isinstance(ev, dict):
+                continue
+            eid = str(ev.get("id") or "").strip()
+            if eid and eid in seen_ids:
+                continue
+            if eid:
+                seen_ids.add(eid)
+            candidates.append(ev)
+
+    if dedup_key:
+        try:
+            res = service.events().list(
+                calendarId=calendar_id,
+                privateExtendedProperty=f"magi_dedup_key={dedup_key}",
+                singleEvents=True,
+                maxResults=25,
+            ).execute()
+            matched_items = (res or {}).get("items", [])
+            _add_candidates(matched_items)
+            # privateExtendedProperty is exact; trust it as first-class hit.
+            if isinstance(matched_items, list) and matched_items:
+                first_hit = matched_items[0]
+                if isinstance(first_hit, dict) and first_hit.get("id"):
+                    return first_hit
+        except Exception:
+            logging.getLogger(__name__).debug("gcal dedup lookup by private property failed", exc_info=True)
+
+    time_min, time_max = _event_list_time_window_from_body(body, tz)
+    if time_min and time_max:
+        try:
+            res = service.events().list(
+                calendarId=calendar_id,
+                timeMin=time_min,
+                timeMax=time_max,
+                singleEvents=True,
+                orderBy="startTime",
+                maxResults=120,
+            ).execute()
+            _add_candidates((res or {}).get("items", []))
+        except Exception:
+            logging.getLogger(__name__).debug("gcal dedup time-window lookup failed", exc_info=True)
+
+    probe = {
+        "summary": body.get("summary") or "",
+        "description": body.get("description") or "",
+        "start": body.get("start") or {},
+        "todo_type": ((body.get("extendedProperties") or {}).get("private") or {}).get("magi_todo_type") or "",
+        "case_number": ((body.get("extendedProperties") or {}).get("private") or {}).get("magi_case_number") or "",
+        "dedup_key": dedup_key,
+    }
+    for ev in candidates:
+        try:
+            ev_key = build_dedup_key_from_gcal_event(ev, tz=tz)
+            if dedup_key and ev_key == dedup_key:
+                return ev
+            conf = confidence_for_match(
+                probe,
+                {
+                    "summary": ev.get("summary") or "",
+                    "description": ev.get("description") or "",
+                    "start": ev.get("start") or {},
+                    "todo_type": "",
+                    "case_number": "",
+                    "dedup_key": ev_key,
+                },
+            )
+            if conf == "high":
+                return ev
+        except Exception:
+            continue
+    return None
+
+
 def _todo_to_gcal_event(todo: Dict[str, Any], tz: str) -> Dict[str, Any]:
     """
     Convert a DB todo row into a Google Calendar event body.
@@ -1353,6 +1484,12 @@ def _todo_to_gcal_event(todo: Dict[str, Any], tz: str) -> Dict[str, Any]:
     todo_time = todo.get("todo_time")
     desc = (todo.get("description") or "").strip()
     src = (todo.get("source_file") or "").strip()
+    dedup_key = ""
+    try:
+        from osc_headless.gcal_dedup import build_dedup_key_from_todo
+        dedup_key = build_dedup_key_from_todo(todo, tz=tz)
+    except Exception:
+        dedup_key = ""
 
     key = court_case_no or case_number
     summary = "⚖️ "
@@ -1393,6 +1530,10 @@ def _todo_to_gcal_event(todo: Dict[str, Any], tz: str) -> Dict[str, Any]:
             "private": {
                 "magi_case_number": case_number,
                 "magi_todo_id": str(todo.get("id") or ""),
+                "magi_todo_type": todo_type,
+                "magi_dedup_key": dedup_key,
+                "magi_source": "osc_gcal_sync",
+                "magi_created_by": "MAGI",
             }
         },
     }
@@ -1444,6 +1585,8 @@ def task_gcal_sync(payload: Dict[str, Any]) -> Dict[str, Any]:
     limit = int((payload or {}).get("limit") or 60)
     calendar_id = (payload or {}).get("calendar_id") or "primary"
     tz = (payload or {}).get("time_zone") or os.environ.get("MAGI_TIME_ZONE") or "Asia/Taipei"
+    dedup_enabled = _env_bool("MAGI_GCAL_DEDUP_ENABLED", False)
+    dedup_dry_run = _env_bool("MAGI_GCAL_DEDUP_DRY_RUN", True)
 
     credentials_path = ((payload or {}).get("credentials_path") or os.environ.get("MAGI_GOOGLE_CREDENTIALS_PATH") or "").strip()
     token_path = ((payload or {}).get("token_path") or os.environ.get("MAGI_GOOGLE_CALENDAR_TOKEN_PATH") or "").strip()
@@ -1506,6 +1649,9 @@ def task_gcal_sync(payload: Dict[str, Any]) -> Dict[str, Any]:
 
     inserted = 0
     failed = 0
+    dedup_matched = 0
+    dedup_would_match = 0
+    would_insert = 0
     items: List[Dict[str, Any]] = []
     failed_items: List[Dict[str, Any]] = []
     oauth_blocked = False
@@ -1519,6 +1665,68 @@ def task_gcal_sync(payload: Dict[str, Any]) -> Dict[str, Any]:
             attempts += 1
             try:
                 body = _todo_to_gcal_event(td, tz=str(tz))
+                private = ((body.get("extendedProperties") or {}).get("private") or {})
+                dedup_key = str(private.get("magi_dedup_key") or "").strip()
+
+                if dedup_enabled:
+                    existing = _find_existing_gcal_event(
+                        service,
+                        calendar_id=calendar_id,
+                        body=body,
+                        dedup_key=dedup_key,
+                        tz=str(tz),
+                    )
+                    if existing and existing.get("id"):
+                        event_id = str(existing.get("id") or "").strip()
+                        if dedup_dry_run:
+                            dedup_would_match += 1
+                        else:
+                            if connw is None:
+                                connw = connect_mysql(cfg)
+                                ensure_osc_min_schema(connw)
+                            set_todo_google_calendar_id(connw, todo_id=int(td.get("id") or 0), google_calendar_id=event_id)
+                            dedup_matched += 1
+                        synced = True
+                        if len(items) < 25:
+                            items.append(
+                                {
+                                    "todo_id": td.get("id"),
+                                    "case_number": td.get("case_number"),
+                                    "client_name": td.get("client_name"),
+                                    "court_case_number": td.get("court_case_number"),
+                                    "todo_type": td.get("todo_type"),
+                                    "todo_date": str(td.get("todo_date") or ""),
+                                    "todo_time": str(td.get("todo_time") or ""),
+                                    "google_calendar_id": event_id,
+                                    "attempts": attempts,
+                                    "dedup_key": dedup_key,
+                                    "matched_existing": True,
+                                    "dry_run": bool(dedup_dry_run),
+                                }
+                            )
+                        break
+
+                    if dedup_dry_run:
+                        would_insert += 1
+                        synced = True
+                        if len(items) < 25:
+                            items.append(
+                                {
+                                    "todo_id": td.get("id"),
+                                    "case_number": td.get("case_number"),
+                                    "client_name": td.get("client_name"),
+                                    "court_case_number": td.get("court_case_number"),
+                                    "todo_type": td.get("todo_type"),
+                                    "todo_date": str(td.get("todo_date") or ""),
+                                    "todo_time": str(td.get("todo_time") or ""),
+                                    "attempts": attempts,
+                                    "dedup_key": dedup_key,
+                                    "would_insert": True,
+                                    "dry_run": True,
+                                }
+                            )
+                        break
+
                 res = service.events().insert(calendarId=calendar_id, body=body).execute()
                 event_id = (res or {}).get("id", "") or ""
                 if not event_id:
@@ -1542,6 +1750,7 @@ def task_gcal_sync(payload: Dict[str, Any]) -> Dict[str, Any]:
                             "todo_time": str(td.get("todo_time") or ""),
                             "google_calendar_id": event_id,
                             "attempts": attempts,
+                            "dedup_key": dedup_key,
                         }
                     )
                 break
@@ -1588,6 +1797,11 @@ def task_gcal_sync(payload: Dict[str, Any]) -> Dict[str, Any]:
             "fetched": len(todos or []),
             "inserted": inserted,
             "failed": failed,
+            "dedup_enabled": bool(dedup_enabled),
+            "dedup_dry_run": bool(dedup_dry_run),
+            "dedup_matched": dedup_matched,
+            "dedup_would_match": dedup_would_match,
+            "would_insert": would_insert,
             "items": items,
             "failed_items": failed_items,
             "retry_max_attempts": retry_max_attempts,
@@ -1606,6 +1820,11 @@ def task_gcal_sync(payload: Dict[str, Any]) -> Dict[str, Any]:
         "fetched": len(todos or []),
         "inserted": inserted,
         "failed": failed,
+        "dedup_enabled": bool(dedup_enabled),
+        "dedup_dry_run": bool(dedup_dry_run),
+        "dedup_matched": dedup_matched,
+        "dedup_would_match": dedup_would_match,
+        "would_insert": would_insert,
         "items": items,
         "failed_items": failed_items,
         "retry_max_attempts": retry_max_attempts,
@@ -1636,6 +1855,7 @@ def task_gcal_import(payload: Dict[str, Any]) -> Dict[str, Any]:
     lookback_days = int(p.get("lookback_days") or 30)
     lookahead_days = int(p.get("lookahead_days") or 180)
     limit = int(p.get("limit") or 250)
+    dedup_enabled = _env_bool("MAGI_GCAL_DEDUP_ENABLED", False)
 
     credentials_path = (p.get("credentials_path") or os.environ.get("MAGI_GOOGLE_CREDENTIALS_PATH") or "").strip()
     token_path = (p.get("token_path") or os.environ.get("MAGI_GOOGLE_CALENDAR_TOKEN_PATH") or "").strip()
@@ -1733,8 +1953,18 @@ def task_gcal_import(payload: Dict[str, Any]) -> Dict[str, Any]:
 
     imported = 0
     skipped = 0
+    dedup_skipped_in_batch = 0
+    db_dedup_skipped = 0
+    invalid_case_keys = 0
     errors = []
     cur = conn.cursor()
+    seen_dedup_keys: set[str] = set()
+    try:
+        from osc_headless.gcal_dedup import build_dedup_key_from_gcal_event, is_invalid_case_key, normalize_case_key
+    except Exception:
+        build_dedup_key_from_gcal_event = None  # type: ignore
+        is_invalid_case_key = None  # type: ignore
+        normalize_case_key = None  # type: ignore
 
     for event in events:
         gcal_id = event.get("id", "")
@@ -1743,6 +1973,19 @@ def task_gcal_import(payload: Dict[str, Any]) -> Dict[str, Any]:
         if gcal_id in existing_gcal_ids:
             skipped += 1
             continue
+
+        event_dedup_key = ""
+        if dedup_enabled and callable(build_dedup_key_from_gcal_event):
+            try:
+                event_dedup_key = build_dedup_key_from_gcal_event(event, tz=str(tz))
+            except Exception:
+                event_dedup_key = ""
+            if event_dedup_key:
+                if event_dedup_key in seen_dedup_keys:
+                    skipped += 1
+                    dedup_skipped_in_batch += 1
+                    continue
+                seen_dedup_keys.add(event_dedup_key)
 
         summary = event.get("summary") or ""
         description = event.get("description") or ""
@@ -1758,11 +2001,30 @@ def task_gcal_import(payload: Dict[str, Any]) -> Dict[str, Any]:
 
         # Try to extract case_number from summary/description
         case_number = ""
-        for text in [summary, description]:
-            m = _CASE_NUM_RE.search(text)
-            if m:
-                case_number = m.group(0).strip()
-                break
+        if callable(normalize_case_key):
+            ck, ck_source = normalize_case_key(
+                {
+                    "summary": summary,
+                    "description": description,
+                    "extendedProperties": event.get("extendedProperties") or {},
+                }
+            )
+            if ck and not (callable(is_invalid_case_key) and is_invalid_case_key(ck)):
+                case_number = ck
+            elif ck and callable(is_invalid_case_key) and is_invalid_case_key(ck):
+                invalid_case_keys += 1
+                case_number = ""
+        if not case_number:
+            for text in [summary, description]:
+                m = _CASE_NUM_RE.search(text)
+                if m:
+                    candidate = m.group(0).strip()
+                    if callable(is_invalid_case_key) and is_invalid_case_key(candidate):
+                        invalid_case_keys += 1
+                        case_number = ""
+                    else:
+                        case_number = candidate
+                    break
 
         # Determine todo_type from summary keywords
         todo_type = "行事曆事件"
@@ -1772,6 +2034,40 @@ def task_gcal_import(payload: Dict[str, Any]) -> Dict[str, Any]:
             if kw in summary:
                 todo_type = t
                 break
+
+        if dedup_enabled:
+            try:
+                if case_number:
+                    cur.execute(
+                        """
+                        SELECT 1 FROM case_todos
+                         WHERE case_number=%s
+                           AND todo_type=%s
+                           AND todo_date=%s
+                           AND COALESCE(todo_time,'')=%s
+                         LIMIT 1
+                        """,
+                        (case_number, todo_type, start_date or None, start_time or ""),
+                    )
+                else:
+                    cur.execute(
+                        """
+                        SELECT 1 FROM case_todos
+                         WHERE source_file='gcal_import'
+                           AND todo_type=%s
+                           AND todo_date=%s
+                           AND COALESCE(todo_time,'')=%s
+                           AND COALESCE(description,'')=%s
+                         LIMIT 1
+                        """,
+                        (todo_type, start_date or None, start_time or "", (summary[:500] if summary else "")),
+                    )
+                if cur.fetchone():
+                    skipped += 1
+                    db_dedup_skipped += 1
+                    continue
+            except Exception:
+                logging.getLogger(__name__).debug("gcal_import dedup pre-check failed", exc_info=True)
 
         try:
             cur.execute(
@@ -1802,7 +2098,16 @@ def task_gcal_import(payload: Dict[str, Any]) -> Dict[str, Any]:
     conn.close()
 
     _eventlog("osc:gcal_import", ok=True, payload={"imported": imported, "skipped": skipped, "errors": len(errors)})
-    return {"ok": True, "imported": imported, "skipped": skipped, "errors": errors[:10]}
+    return {
+        "ok": True,
+        "imported": imported,
+        "skipped": skipped,
+        "dedup_enabled": bool(dedup_enabled),
+        "dedup_skipped_in_batch": dedup_skipped_in_batch,
+        "db_dedup_skipped": db_dedup_skipped,
+        "invalid_case_keys": invalid_case_keys,
+        "errors": errors[:10],
+    }
 
 
 def task_laf_pending_scan(payload: Dict[str, Any]) -> Dict[str, Any]:

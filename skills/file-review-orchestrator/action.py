@@ -1297,6 +1297,10 @@ def cmd_apply(court_code: str, year: str, case_type: str,
                 case_info["sys_type"] = str(sys_type).strip()
             if folder_path:
                 case_info["folder_path"] = folder_path
+            if skip_upload:
+                case_info["skip_upload"] = True
+            if laf_only:
+                case_info["laf_only"] = True
             logger.info("Applying for review: %s", case_info)
             _safe_flow_step_status(flow_id, "preview_fill", status="running", detail=label if 'label' in locals() else f"{court_code} {year}-{case_type}-{case_number}")
             result = mgr.apply_for_review(case_info, auto_submit=auto_submit, skip_upload=skip_upload, laf_only=laf_only)
@@ -1321,8 +1325,8 @@ def cmd_apply(court_code: str, year: str, case_type: str,
                 msg = f"📋 閱卷聲請已送出 — {label}"
                 if app_no:
                     msg += f"\n收件編號：{app_no}"
-                if evidence.get("list_row_count"):
-                    msg += f"\n列表確認：共 {evidence['list_row_count']} 筆"
+                if evidence.get("list_case_verified"):
+                    msg += "\n列表確認：已找到本案聲請紀錄"
                 _safe_flow_step_status(flow_id, "preview_fill", status="succeeded", detail="application prepared and submitted", ok=True)
                 _safe_flow_step_status(flow_id, "submit", status="succeeded", detail=result_key, ok=True)
             elif result_key == "Ready":
@@ -1339,6 +1343,20 @@ def cmd_apply(court_code: str, year: str, case_type: str,
                 evidence["confirm_token"] = confirm_token
                 _safe_flow_step_status(flow_id, "preview_fill", status="succeeded", detail="preview ready", ok=True)
                 _safe_flow_step_status(flow_id, "submit", status="blocked", detail=f"confirm_token={confirm_token}", ok=True)
+            elif result_key == "SubmitRejected":
+                rejection = str(evidence.get("rejection_message") or "").strip()
+                msg = f"❌ 閱卷聲請未送出 — {label}"
+                if rejection:
+                    msg += f"\n法院系統訊息：{rejection}"
+                _safe_flow_step_status(flow_id, "preview_fill", status="succeeded", detail=result_key, ok=True)
+                _safe_flow_step_status(flow_id, "submit", status="failed", detail=rejection or result_key, ok=False)
+            elif result_key == "SubmitUnverified":
+                msg = (
+                    f"❌ 閱卷聲請未確認送出 — {label}"
+                    "\n未偵測到法院端「已受理」訊息，也未在列表精準找到本案；未視為已送出。"
+                )
+                _safe_flow_step_status(flow_id, "preview_fill", status="succeeded", detail=result_key, ok=True)
+                _safe_flow_step_status(flow_id, "submit", status="failed", detail=result_key, ok=False)
             else:
                 msg = f"⚠️ 閱卷聲請結果: {result_key} — {label}"
                 _safe_flow_step_status(flow_id, "preview_fill", status="succeeded", detail=result_key, ok=True)
@@ -1360,8 +1378,12 @@ def cmd_apply(court_code: str, year: str, case_type: str,
             if html_path and os.path.isfile(html_path):
                 logger.info("預覽 HTML：%s", html_path)
 
-            return {"success": True, "result": result_key, "case": label,
-                    "message": msg, "evidence": evidence}
+            ok_result = result_key in {"Applied", "Ready"}
+            response = {"success": ok_result, "result": result_key, "case": label,
+                        "message": msg, "evidence": evidence}
+            if not ok_result:
+                response["error"] = msg
+            return response
 
         finally:
             mgr.close()
@@ -1513,6 +1535,20 @@ def cmd_paper_apply(court_code: str, year: str, case_type: str,
                 evidence["confirm_token"] = confirm_token
                 _safe_flow_step_status(flow_id, "preview_fill", status="succeeded", detail="paper preview ready", ok=True)
                 _safe_flow_step_status(flow_id, "submit", status="blocked", detail=f"confirm_token={confirm_token}", ok=True)
+            elif result_key == "SubmitRejected":
+                rejection = str(evidence.get("rejection_message") or "").strip()
+                msg = f"❌ 紙本閱卷聲請未送出 — {label}{appt_label}"
+                if rejection:
+                    msg += f"\n法院系統訊息：{rejection}"
+                _safe_flow_step_status(flow_id, "preview_fill", status="succeeded", detail=result_key, ok=True)
+                _safe_flow_step_status(flow_id, "submit", status="failed", detail=rejection or result_key, ok=False)
+            elif result_key == "SubmitUnverified":
+                msg = (
+                    f"❌ 紙本閱卷聲請未確認送出 — {label}{appt_label}"
+                    "\n未偵測到法院端「已受理」訊息，也未在列表精準找到本案；未視為已送出。"
+                )
+                _safe_flow_step_status(flow_id, "preview_fill", status="succeeded", detail=result_key, ok=True)
+                _safe_flow_step_status(flow_id, "submit", status="failed", detail=result_key, ok=False)
             else:
                 msg = f"⚠️ 紙本閱卷聲請結果: {result_key} — {label}"
                 _safe_flow_step_status(flow_id, "preview_fill", status="succeeded", detail=result_key, ok=True)
@@ -1529,8 +1565,12 @@ def cmd_paper_apply(court_code: str, year: str, case_type: str,
             if html_path and os.path.isfile(html_path):
                 logger.info("紙本閱卷預覽 HTML：%s", html_path)
 
-            return {"success": True, "result": result_key, "case": label,
-                    "message": msg, "evidence": evidence}
+            ok_result = result_key in {"Applied", "Ready"}
+            response = {"success": ok_result, "result": result_key, "case": label,
+                        "message": msg, "evidence": evidence}
+            if not ok_result:
+                response["error"] = msg
+            return response
 
         finally:
             mgr.close()
@@ -2161,7 +2201,7 @@ def cmd_confirm_apply(token: str, notify: bool = True, flow_id: str = "",
             topic_key="filereview_apply")
 
     if is_paper:
-        return cmd_paper_apply(
+        result = cmd_paper_apply(
             court_code=court_code, year=year, case_type=case_type_str,
             case_number=case_number, client_name=client_name,
             appointment_date=case_info.get("appointment_date", ""),
@@ -2174,14 +2214,29 @@ def cmd_confirm_apply(token: str, notify: bool = True, flow_id: str = "",
             flow_id=flow_id,
         )
     else:
-        return cmd_apply(
+        result = cmd_apply(
             court_code=court_code, year=year, case_type=case_type_str,
             case_number=case_number, client_name=client_name,
             auto_submit=True, notify=notify,
             sys_type=case_info.get("sys_type", ""),
             folder_path=case_info.get("folder_path", ""),
             flow_id=flow_id,
+            skip_upload=bool(case_info.get("skip_upload")),
+            laf_only=bool(case_info.get("laf_only")),
         )
+    try:
+        pending = _load_review_pending()
+        ent = pending.get(tk)
+        if isinstance(ent, dict):
+            result_key = str((result or {}).get("result") or "").strip()
+            ent["status"] = "submitted" if (result or {}).get("success") and result_key == "Applied" else "failed"
+            ent["finished_at"] = __import__("time").time()
+            ent["submit_result"] = result_key
+            pending[tk] = ent
+            _save_review_pending(pending)
+    except Exception as _status_err:
+        logger.debug("confirm_apply status update skipped: %s", _status_err)
+    return result
 
 
 def cmd_probe(court_code: str, year: str, case_type: str,
@@ -4324,7 +4379,7 @@ def _looks_like_sys_type(token: str) -> bool:
     if not t:
         return False
     up = t.upper()
-    return up in {"H", "C", "A", "F", "M", "S", "AUTO"} or t in {"民事", "刑事", "行政", "少年", "家事"}
+    return up in {"H", "V", "U", "I", "A", "K", "C", "F", "M", "S", "AUTO"} or t in {"民事", "刑事", "行政", "少年", "家事", "民執"}
 
 
 def _looks_like_court_token(token: str) -> bool:
@@ -4886,6 +4941,8 @@ def main() -> int:
                     client_name=parsed.get("client_name", ""),
                     sys_type=parsed.get("sys_type", ""),
                     flow_id=flow_id,
+                    skip_upload=_boolish(parsed.get("skip_upload"), False),
+                    laf_only=_boolish(parsed.get("laf_only"), False),
                 ),
                 metadata={"source": "line_command", "case_number": parsed.get("case_number", ""), "court_code": parsed.get("court_code", "")},
             )

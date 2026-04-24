@@ -368,6 +368,15 @@ def handle_chat_async(orch, user_id, message, platform_hint="LINE") -> str:
     """Routes chat to LLM (Casper/oMLX) for generation."""
     logger.info(f"\U0001f4ac Chatting with {user_id}...")
 
+    # 2026-04-24：在 main thread（request thread）讀 flask.g.heavy_opt_in，顯式傳給 chat_casper，
+    # 避開 ThreadPoolExecutor 子 thread 讀不到 flask.g 的 P1-2 bug
+    _heavy_flag = False
+    try:
+        from flask import g as _g_hdr
+        _heavy_flag = bool(getattr(_g_hdr, "heavy_opt_in", False))
+    except Exception:
+        _heavy_flag = False
+
     # Heavy task awareness
     heavy_tasks = orch.get_active_heavy_tasks()
     if heavy_tasks:
@@ -384,7 +393,7 @@ def handle_chat_async(orch, user_id, message, platform_hint="LINE") -> str:
             try:
                 history = build_conversation_history(orch, _uid, limit=8)
                 from skills.bridge.grounded_ai import chat_casper
-                reply = chat_casper(_msg, conversation_history=history)
+                reply = chat_casper(_msg, conversation_history=history, heavy=_heavy_flag)
                 reply = str(reply or "").strip() or "\u62b1\u6b49\u8b93\u4f60\u4e45\u7b49\u4e86\uff0c\u4f46\u76ee\u524d\u6c92\u6709\u53ef\u7528\u8f38\u51fa\u3002"
                 banner = orch._brain_runtime_banner()
                 orch.notification_callback(_uid, f"{banner}\n{reply}", _platform)
@@ -411,7 +420,7 @@ def handle_chat_async(orch, user_id, message, platform_hint="LINE") -> str:
         def _run_chat_background():
             try:
                 reply = orch._call_with_timeout(
-                    lambda: chat_casper(message, conversation_history=history),
+                    lambda: chat_casper(message, conversation_history=history, heavy=_heavy_flag),
                     async_timeout_sec,
                     f"\u26a0\ufe0f \u9577\u8a0a\u606f\u8655\u7406\u903e\u6642\uff08>{async_timeout_sec}s\uff09\u3002",
                     "chat-async",
@@ -430,7 +439,7 @@ def handle_chat_async(orch, user_id, message, platform_hint="LINE") -> str:
         return f"{mode_banner}\n\u23f3 \u554f\u984c\u5167\u5bb9\u8f03\u9577\uff0c\u6211\u5df2\u6539\u6210\u80cc\u666f\u8655\u7406\u3002\u5b8c\u6210\u5f8c\u6703\u4e3b\u52d5\u56de\u8986\u7d50\u679c\u3002"
 
     reply = orch._call_with_timeout(
-        lambda: chat_casper(message, conversation_history=history),
+        lambda: chat_casper(message, conversation_history=history, heavy=_heavy_flag),
         timeout_sec,
         f"\u26a0\ufe0f \u6211\u9019\u908a\u56de\u8986\u903e\u6642\uff08>{timeout_sec}s\uff09\uff0c\u8acb\u518d\u8a66\u4e00\u6b21\uff0c\u6216\u6539\u554f\u300c\u72c0\u614b\u300d\u8b93\u6211\u5148\u505a\u5065\u5eb7\u6aa2\u67e5\u3002",
         "chat",
