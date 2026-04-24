@@ -828,6 +828,19 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
             if laf_case_no in seed_skip_set:
                 continue
             scanned += 1
+            # ── 消費者債務清理 case_reason 正規化 ─────────────────────────────
+            # 與 handle_go_live() / _create_case_record() 相同邏輯：
+            # email 原始文字「消費者債務清理程序」在 DB 中有時尚未被正規化，
+            # 資料夾名稱卻已由 laf_folder_builder 寫成「更生」，導致路徑不符。
+            if case_type == '消費者債務清理' or '消費者債務清理' in case_reason:
+                if '清算' not in case_reason:
+                    case_reason = '更生'
+            # ── 資料夾路徑同步正規化 ─────────────────────────────────────────
+            # 若 DB folder_path 的 basename 仍含舊名（消費者債務清理程序），
+            # 但 NAS 實際資料夾已用正規化後的名稱（更生），需修正 basename 才能
+            # 讓 _resolve_case_folder_with_fallback() 找到真實目錄。
+            if folder_path and '消費者債務清理程序' in folder_path:
+                folder_path = folder_path.replace('消費者債務清理程序', case_reason)
             local_folder = self._to_local_case_folder(folder_path)
             docs = self._scan_case_folder_docs(local_folder)
             status_norm = status_value.strip().lower()
