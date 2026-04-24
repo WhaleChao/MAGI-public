@@ -343,13 +343,6 @@ from skills.engine.playwright_wrapper import (
 # End Playwright 相容層
 # ==============================================================================
 
-# Module-level Selenium exception import (consolidated from method-level imports)
-try:
-    from selenium.common.exceptions import NoAlertPresentException
-except Exception:  # pragma: no cover - selenium may not be installed in test env
-    class NoAlertPresentException(Exception):
-        pass
-
 
 def _synthetic_ddddocr_package_name(package_dir: str) -> str:
     raw = re.sub(r"[^0-9A-Za-z_]+", "_", str(package_dir or "").strip()) or "default"
@@ -2232,6 +2225,7 @@ class LAFWebAutomation:
 
         # Also handle JS alert dialogs
         try:
+            from selenium.common.exceptions import NoAlertPresentException
             alert = self.driver.switch_to.alert
             alert_text = (alert.text or "").strip()
             self.log(f"  ⚠️ Post-login alert: {alert_text[:80]}")
@@ -2628,26 +2622,19 @@ class LAFWebAutomation:
                     # Chrome 147+: 直接呼叫 checkForm() 比 click loginLink 更穩定
                     # （法扶 portal 的登入按鈕是 <a onclick="checkForm();">，
                     #   Chrome 147 headless 下 click 可能不正確觸發 onclick）
-                    # Opt-in one-shot flag: login submit may raise post-login alert;
-                    # _dismiss_post_login_popups() reads it synchronously below.
-                    self.driver._next_dialog_no_dismiss = True
                     self.driver.execute_script("checkForm();")
                 except Exception:
                     try:
                         login_btn = self.driver.find_element(By.CSS_SELECTOR, '#loginLink, a#loginLink')
-                        self.driver._next_dialog_no_dismiss = True
                         login_btn.click()
                     except Exception:
                         try:
                             # Playwright fallback: click loginLink via native Playwright
                             if isinstance(self.driver, PlaywrightDriverWrapper):
-                                self.driver._next_dialog_no_dismiss = True
                                 self.driver._page.click('#loginLink, a#loginLink')
                             else:
-                                self.driver._next_dialog_no_dismiss = True
                                 password_input.send_keys('\n')
                         except Exception:
-                            self.driver._next_dialog_no_dismiss = True
                             password_input.send_keys('\n')
 
                 # 等待 URL 離開 processLogin（最多 12 秒）
@@ -5051,6 +5038,8 @@ return null;
                 except Exception as e:
                     self.log(f"  ⚠️ Phase 0b verify failed: {e}")
 
+                from selenium.common.exceptions import NoAlertPresentException
+
                 # Debug: log key Page 1 form values before save
                 try:
                     _p1_vals = self.driver.execute_script("""
@@ -5118,7 +5107,6 @@ return null;
                 # 頁面仍在 Page 1，toPrevious() 可用
                 self.log("  🚀 toPrevious() → Page 2...")
                 try:
-                    self.driver._next_dialog_no_dismiss = True
                     self.driver.execute_script("toPrevious();")
                 except Exception as e:
                     self.log(f"  ⚠️ toPrevious() exception: {e}")
@@ -5460,7 +5448,6 @@ return null;
         # 2. 呼叫 doFinish() 進入結案資料彙整
         self.log("🔗 呼叫 doFinish() → 結案資料彙整...")
         try:
-            self.driver._next_dialog_no_dismiss = True
             self.driver.execute_script("doFinish();")
         except Exception as e:
             self.log(f"  ❌ doFinish() 呼叫失敗：{e}")
@@ -5529,12 +5516,10 @@ return null;
                     var overs = document.getElementsByName('over');
                     for (var i = 0; i < overs.length; i++) overs[i].value = '';
                 """)
-                self.driver._next_dialog_no_dismiss = True
                 self.driver.execute_script("doTempSave();")
                 save_attempted = True
                 self.log("  💾 doTempSave() called")
             else:
-                self.driver._next_dialog_no_dismiss = True
                 save_attempted = self._click_button_by_text(["存檔", "暫存", "保存", "儲存"])
         except Exception as e:
             self.log(f"  ⚠️ doTempSave 失敗：{e}")
@@ -5651,7 +5636,6 @@ return null;
                     var fps = document.getElementsByName('fromPage');
                     for (var i = 0; i < fps.length; i++) fps[i].value = '';
                 """)
-                self.driver._next_dialog_no_dismiss = True
                 self.driver.execute_script("doTempSave();")
                 save_attempted = True
                 self.log("  💾 doTempSave() called (with tempSaveFlag fix)")
@@ -5660,14 +5644,12 @@ return null;
                 try:
                     btn = self.driver.find_element("id", "save_btn")
                     if btn and btn.is_displayed():
-                        self.driver._next_dialog_no_dismiss = True
                         btn.click()
                         save_attempted = True
                         self.log("  💾 save_btn clicked")
                 except Exception:
                     logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 4434, exc_info=True)
                 if not save_attempted:
-                    self.driver._next_dialog_no_dismiss = True
                     save_attempted = self._click_button_by_text(["存檔", "暫存", "保存", "儲存"])
         except Exception as e:
             self.log(f"  ⚠️ doTempSave exception: {e}")
@@ -5752,6 +5734,7 @@ return null;
 
         # Also check for JS alert (just in case)
         try:
+            from selenium.common.exceptions import NoAlertPresentException
             alert = self.driver.switch_to.alert
             alert_text = (alert.text or "").strip()
             self.log(f"  ℹ️ Alert: {alert_text}")
