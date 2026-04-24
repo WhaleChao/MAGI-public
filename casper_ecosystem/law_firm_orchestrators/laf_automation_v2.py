@@ -2847,46 +2847,111 @@ class LAFWebAutomation:
                     save_debug_screenshot(self.driver, f"debug_no_download_btn_{case_number}", context="法扶找不到下載按鈕")
                 return downloaded
             
-            # ── Strategy 0: Try to extract direct download URL from parent <a> ──
-            direct_download_url = None
-            try:
-                raw_el = download_btn._el if hasattr(download_btn, '_el') else download_btn
-                js_parent = """
-                let el = arguments[0];
-                for (let i = 0; i < 6; i++) {
-                    if (!el) break;
-                    if (el.tagName === 'A' && el.href) return el.href;
-                    el = el.parentElement;
-                }
-                return null;
-                """
-                direct_download_url = self.driver.execute_script(js_parent, raw_el)
-                if direct_download_url:
-                    self.log(f"  🔗 找到父連結 href: {direct_download_url}")
-            except Exception:
-                pass
-
-            # ── Strategy 1: Click button ──
+            # ── Strategy 0: Extract doDownload() params → direct POST to /lafcsp/mailtoDownload ──
+            # doDownload(this, attachFileName, lawyerid, mailSeq, fileSeq) submits a form
+            # to /lafcsp/mailtoDownload and the server responds with the ZIP binary.
             is_playwright = hasattr(self.driver, '_context') and hasattr(self.driver, '_all_pages')
+            direct_download_url = None
+            _zip_downloaded = False
+
+            if is_playwright:
+                try:
+                    import re as _re
+                    # Find the <a> with doDownload in its onclick (search whole row HTML)
+                    row_raw = download_btn._el if hasattr(download_btn, '_el') else download_btn
+                    js_onclick = """
+                    let el = arguments[0];
+                    // Walk up to find the row, then search for doDownload <a>
+                    let root = el;
+                    for (let i = 0; i < 8; i++) {
+                        if (!root || root.tagName === 'TR') break;
+                        root = root.parentElement;
+                    }
+                    if (root) {
+                        let anchors = root.querySelectorAll('a[onclick*=\"doDownload\"]');
+                        if (anchors.length > 0) return anchors[0].getAttribute('onclick');
+                    }
+                    // fallback: check the element itself
+                    let oc = el.getAttribute('onclick') || '';
+                    if (oc.includes('doDownload')) return oc;
+                    return null;
+                    """
+                    onclick_text = self.driver.execute_script(js_onclick, row_raw)
+                    if onclick_text and 'doDownload' in onclick_text:
+                        # Parse: doDownload(this,'ZIP_PATH','LAWYER_ID','MAIL_SEQ','FILE_SEQ')
+                        m = _re.search(
+                            r"doDownload\s*\(\s*this\s*,\s*['\"]([^'\"]+)['\"]\s*,\s*['\"]([^'\"]+)['\"]\s*,\s*['\"]([^'\"]+)['\"]\s*,\s*['\"]([^'\"]+)['\"]",
+                            onclick_text,
+                        )
+                        if m:
+                            _attach_fname = m.group(1)
+                            _lawyerid     = m.group(2)
+                            _mail_seq     = m.group(3)
+                            _file_seq     = m.group(4)
+                            self.log(f"  📋 解析到 doDownload 參數: attachFileName={_attach_fname}, mailSeq={_mail_seq}, fileSeq={_file_seq}")
+
+                            # POST to /lafcsp/mailtoDownload with form data (session cookies carried automatically)
+                            _post_url = f"{self.base_url}/lafcsp/mailtoDownload"
+                            _form_data = {
+                                "attachFileName": _attach_fname,
+                                "lawyerid":       _lawyerid,
+                                "mailSeq":        _mail_seq,
+                                "fileSeq":        _file_seq,
+                                "downloadType":   "fromList",
+                            }
+                            self.log(f"  📤 直接 POST → {_post_url}")
+                            try:
+                                _resp = self.driver._context.request.post(
+                                    _post_url,
+                                    form=_form_data,
+                                    timeout=60000,
+                                )
+                                _body = _resp.body()
+                                self.log(f"  📥 回應 status={_resp.status}, body={len(_body)} bytes")
+                                if _resp.status == 200 and len(_body) > 500:
+                                    # ZIP magic bytes: PK (0x50 0x4B)
+                                    if _body[:2] == b'PK':
+                                        # Use the filename from the zip path (last component)
+                                        _zip_fname = os.path.basename(_attach_fname) or f"{case_number}.zip"
+                                        _save_path = self.download_folder / _zip_fname
+                                        _save_path.write_bytes(_body)
+                                        self.log(f"  ✅ Strategy 0 成功: 已下載 {_zip_fname} ({len(_body):,} bytes)")
+                                        downloaded.append(str(_save_path))
+                                        _zip_downloaded = True
+                                    else:
+                                        _preview = _body[:200].decode('utf-8', errors='replace')
+                                        self.log(f"  ⚠️ Strategy 0: 回應不是 ZIP，前200字元: {_preview}")
+                                else:
+                                    self.log(f"  ⚠️ Strategy 0: 回應異常 status={_resp.status}, size={len(_body)}")
+                            except Exception as _pe:
+                                self.log(f"  ⚠️ Strategy 0 POST 失敗: {_pe}")
+                        else:
+                            self.log(f"  ⚠️ 無法解析 doDownload 參數: {onclick_text[:120]}")
+                    else:
+                        self.log(f"  ⚠️ 找不到 doDownload onclick 屬性")
+                except Exception as _s0e:
+                    self.log(f"  ⚠️ Strategy 0 異常: {_s0e}")
+
+            # ── Strategy 1: Click button (fallback if Strategy 0 failed) ──
             original_handles = set(self.driver.window_handles) if is_playwright else set()
 
-            try:
-                self.log(f"  🖱️ 點擊下載按鈕...")
+            if not _zip_downloaded:
                 try:
-                    download_btn.click()
-                except Exception:
-                    self.driver.execute_script(
-                        "arguments[0].click();",
-                        download_btn._el if hasattr(download_btn, '_el') else download_btn,
-                    )
-                time.sleep(3)
-            except Exception as e:
-                self.log(f"  ⚠️ 點擊下載按鈕失敗: {e}")
-                return downloaded
+                    self.log(f"  🖱️ Strategy 1: 點擊下載按鈕...")
+                    try:
+                        download_btn.click()
+                    except Exception:
+                        self.driver.execute_script(
+                            "arguments[0].click();",
+                            download_btn._el if hasattr(download_btn, '_el') else download_btn,
+                        )
+                    time.sleep(3)
+                except Exception as e:
+                    self.log(f"  ⚠️ 點擊下載按鈕失敗: {e}")
 
             # ── Strategy 2: Detect popup / new-page opened by the click (Playwright) ──
             popup_url = None
-            if is_playwright:
+            if is_playwright and not _zip_downloaded:
                 import time as _t2
                 deadline = _t2.monotonic() + 8
                 while _t2.monotonic() < deadline:
@@ -2897,7 +2962,7 @@ class LAFWebAutomation:
                                 for _pg in self.driver._all_pages():
                                     if str(id(_pg)) == _ph:
                                         popup_url = _pg.url
-                                        self.log(f"  🔗 偵測到彈窗頁面: {popup_url}")
+                                        self.log(f"  🔗 Strategy 2: 偵測到彈窗頁面: {popup_url}")
                                         try:
                                             _pg.close()
                                         except Exception:
@@ -2937,7 +3002,7 @@ class LAFWebAutomation:
                     self.log(f"  ⚠️ HTTP 下載異常: {_he}")
                 return None
 
-            if is_playwright and popup_url:
+            if is_playwright and popup_url and not _zip_downloaded:
                 _f = _http_dl(popup_url)
                 if _f:
                     downloaded.append(_f)
