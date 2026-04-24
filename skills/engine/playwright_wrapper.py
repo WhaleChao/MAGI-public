@@ -35,6 +35,7 @@ try:
         ElementClickInterceptedException,
         StaleElementReferenceException,
         NoSuchFrameException,
+        NoAlertPresentException,
     )
     _SELENIUM_SHIMS_AVAILABLE = True
 except Exception:
@@ -53,6 +54,7 @@ except Exception:
 
     class Keys:
         ENTER = "\n"
+        RETURN = "\n"
         TAB = "\t"
         BACKSPACE = "\x08"
         DELETE = "\x7f"
@@ -64,13 +66,76 @@ except Exception:
         def select_by_value(self, value): self._el.select_option(value=value)
 
     WebDriverWait = None
-    EC = None
+
+    class _ECShim:
+        """Minimal Selenium expected_conditions shim.
+
+        Each factory returns a callable that takes `driver` and returns a truthy
+        value (the located element) or False / None on miss. Exceptions from
+        driver calls are swallowed so WebDriverWait polling loops behave like
+        real Selenium EC.
+        """
+
+        @staticmethod
+        def presence_of_element_located(locator):
+            by, value = locator
+
+            def _cond(driver):
+                try:
+                    return driver.find_element(by, value)
+                except Exception:
+                    return False
+            return _cond
+
+        @staticmethod
+        def element_to_be_clickable(locator):
+            by, value = locator
+
+            def _cond(driver):
+                try:
+                    el = driver.find_element(by, value)
+                    if el is None:
+                        return False
+                    try:
+                        if hasattr(el, "is_displayed") and not el.is_displayed():
+                            return False
+                    except Exception:
+                        pass
+                    try:
+                        if hasattr(el, "is_enabled") and not el.is_enabled():
+                            return False
+                    except Exception:
+                        pass
+                    return el
+                except Exception:
+                    return False
+            return _cond
+
+        @staticmethod
+        def frame_to_be_available_and_switch_to_it(locator):
+            def _cond(driver):
+                try:
+                    if isinstance(locator, tuple):
+                        by, value = locator
+                        el = driver.find_element(by, value)
+                        if not el:
+                            return False
+                        driver.switch_to.frame(el)
+                    else:
+                        driver.switch_to.frame(locator)
+                    return True
+                except Exception:
+                    return False
+            return _cond
+
+    EC = _ECShim()
     ActionChains = None
     TimeoutException = Exception
     NoSuchElementException = Exception
     ElementClickInterceptedException = Exception
     StaleElementReferenceException = Exception
     NoSuchFrameException = Exception
+    NoAlertPresentException = Exception
     _SELENIUM_SHIMS_AVAILABLE = False
 
 
@@ -147,6 +212,13 @@ class _PlaywrightSwitchTo(object):
     def default_content(self):
         self._w._active_frame = None
 
+    def parent_frame(self):
+        # Selenium's parent_frame pops one frame level up; for the three
+        # orchestrator modules the only use case is escaping an iframe back
+        # to the top document, which default_content() handles. Nested iframe
+        # parent walk is not used in the MAGI flows touched by this wrapper.
+        self._w._active_frame = None
+
     def frame(self, frame_ref):
         page = self._w._page
         if isinstance(frame_ref, str):
@@ -181,7 +253,7 @@ class _PlaywrightSwitchTo(object):
     def alert(self):
         dlg = self._w._last_dialog
         if dlg is None:
-            raise RuntimeError("NoAlertPresentException: no pending dialog")
+            raise NoAlertPresentException("no pending dialog")
         return _PlaywrightAlert(dlg, self._w)
 
 
@@ -214,7 +286,15 @@ class PlaywrightActionChains(object):
         self._actions.append(("send_keys", text))
         return self
 
+    def pause(self, seconds: float):
+        try:
+            self._actions.append(("pause", float(seconds)))
+        except Exception:
+            self._actions.append(("pause", 0.0))
+        return self
+
     def perform(self):
+        import time as _time
         last_hovered = None
         for action, arg in self._actions:
             try:
@@ -230,6 +310,11 @@ class PlaywrightActionChains(object):
                 elif action == "send_keys":
                     page = self._driver._page
                     page.keyboard.type(str(arg))
+                elif action == "pause":
+                    try:
+                        _time.sleep(max(0.0, float(arg)))
+                    except Exception:
+                        pass
             except Exception as e:
                 _logger.debug("PlaywrightActionChains.perform error: %s", e)
         self._actions.clear()
@@ -542,12 +627,23 @@ class PlaywrightDriverWrapper(object):
         self._download_dir = download_dir
         self.switch_to = _PlaywrightSwitchTo(self)
 
+        # One-shot opt-in flag: callers that need to accept() (not dismiss) an alert
+        # must set `driver._next_dialog_no_dismiss = True` IMMEDIATELY before the
+        # JS/click that triggers the alert. The flag is consumed on first fire.
+        self._next_dialog_no_dismiss = False
+
         def _on_dialog(dialog):
             # Store the dialog for switch_to.alert compatibility.
             self._last_dialog = dialog
-            # Dismiss immediately to avoid blocking the JavaScript execution context.
-            # Background threads cannot call Playwright sync API (greenlet cross-thread
-            # switch is illegal), so we MUST dismiss within this callback.
+            # Opt-in escape hatch: if caller requested no-dismiss (to accept() via
+            # switch_to.alert), consume the one-shot flag and return without touching
+            # the dialog. The caller must handle accept/dismiss synchronously.
+            if getattr(self, "_next_dialog_no_dismiss", False):
+                self._next_dialog_no_dismiss = False  # consume flag (one-shot)
+                return  # let caller accept/dismiss via switch_to.alert
+            # Default: dismiss immediately to avoid blocking the JavaScript execution
+            # context. Background threads cannot call Playwright sync API (greenlet
+            # cross-thread switch is illegal), so we MUST dismiss within this callback.
             try:
                 dialog.dismiss()
             except Exception:
@@ -655,6 +751,21 @@ class PlaywrightDriverWrapper(object):
             return self._page.title()
         except Exception:
             return ""
+
+    def get_cookies(self) -> list:
+        """Selenium-compatible cookie export.
+
+        Returns all cookies in the current browser context. Playwright's
+        context.cookies() already returns a list of dicts with fields that
+        match Selenium's shape (name, value, domain, path, expires, httpOnly,
+        secure, sameSite), so no transformation is needed for the three
+        orchestrator modules' auth/session flows.
+        """
+        try:
+            return list(self._context.cookies())
+        except Exception as _ce:
+            _logger.debug("PW get_cookies err: %s", _ce)
+            return []
 
     def execute_script(self, script: str, *args):
         """Selenium-compatible JS execution."""

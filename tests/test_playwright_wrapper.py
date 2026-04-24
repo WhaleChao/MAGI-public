@@ -20,6 +20,7 @@ from skills.engine.playwright_wrapper import (
     _PlaywrightAlert,
     create_playwright_driver,
     By,
+    NoAlertPresentException,
 )
 
 
@@ -282,7 +283,7 @@ class TestSwitchTo:
     def test_alert_no_dialog_raises(self):
         driver = _make_driver()
         driver._last_dialog = None
-        with pytest.raises(RuntimeError):
+        with pytest.raises((RuntimeError, NoAlertPresentException)):
             _ = driver.switch_to.alert
 
     def test_window_handles_returns_list(self):
