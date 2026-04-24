@@ -96,9 +96,10 @@ def laf_vision_cls(tmp_path, monkeypatch):
         monkeypatch.setitem(sys.modules, "skills.bridge", bridge_mod)
 
     # Remove any cached laf_vision module to force fresh import
+    # Use monkeypatch.delitem so cleanup is automatic (avoids module pollution)
     for key in list(sys.modules.keys()):
         if "laf_vision" in key:
-            del sys.modules[key]
+            monkeypatch.delitem(sys.modules, key, raising=False)
 
     # Add casper_ecosystem to path
     casper_root = Path(wt_root) / "casper_ecosystem" / "law_firm_orchestrators"

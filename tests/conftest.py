@@ -22,6 +22,16 @@ def mock_env_vars(monkeypatch):
         # Disable remote health gate in all tests; gate opt-in tests override this
         # with their own monkeypatch.setenv("MAGI_USE_REMOTE_HEALTH_GATE", "1").
         "MAGI_USE_REMOTE_HEALTH_GATE": "0",
+        # Disable NVIDIA NIM by default; tests that explicitly test NIM behaviour
+        # (e.g. test_inference_gateway_heavy_fast_path.py) set NVIDIA_NIM_ENABLE=1
+        # in their own setup_method / monkeypatch.setenv, overriding this default.
+        "NVIDIA_NIM_ENABLE": "0",
+        # Disable strict-NIM retry loop by default so unit tests that patch
+        # run_nim_chat see exactly 1 call, regardless of whether .env has been
+        # loaded by a previous test importing api.handlers.summary_handler or
+        # api.handlers.translation_handler (both call load_dotenv() on import).
+        "MAGI_HEAVY_STRICT_NIM": "0",
+        "MAGI_HEAVY_STRICT_NIM_RETRIES": "0",
     }
     for k, v in defaults.items():
         monkeypatch.setenv(k, v)
