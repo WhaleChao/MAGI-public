@@ -282,7 +282,11 @@ class TestSwitchTo:
     def test_alert_no_dialog_raises(self):
         driver = _make_driver()
         driver._last_dialog = None
-        with pytest.raises(RuntimeError):
+        # Wrapper now raises Selenium-compatible NoAlertPresentException (subclass
+        # of Exception, not RuntimeError) to match Selenium API. Accept either
+        # for forward/backward compatibility.
+        from selenium.common.exceptions import NoAlertPresentException
+        with pytest.raises((RuntimeError, NoAlertPresentException)):
             _ = driver.switch_to.alert
 
     def test_window_handles_returns_list(self):

@@ -581,6 +581,9 @@ class LawyerSSO:
                     self._setup_driver()
                 
                 self.log(f"正在登入 (第 {attempt + 1} 次嘗試)...")
+                # Opt-in one-shot flag: page load may trigger password-expiry alert;
+                # we read it synchronously via _dismiss_password_expiry_alert().
+                self.driver._next_dialog_no_dismiss = True
                 self.driver.get(self.LOGIN_URL)
                 time.sleep(2)
 
@@ -703,9 +706,12 @@ class LawyerSSO:
                 
                 if login_btn:
                     time.sleep(random.uniform(0.3, 0.8))  # 點擊前再等一下
+                    # Opt-in one-shot flag: login submit may raise password-expiry alert.
+                    self.driver._next_dialog_no_dismiss = True
                     login_btn.click()
                 else:
                     # 嘗試用 Enter 提交
+                    self.driver._next_dialog_no_dismiss = True
                     password_field.send_keys(Keys.RETURN)
                 
                 time.sleep(random.uniform(2.5, 4))
@@ -1328,9 +1334,12 @@ class CourtRecordDownloader:
 
                 self.log("  點擊登入...")
                 try:
+                    # Opt-in one-shot flag: login may raise password-expiry alert.
+                    self.driver._next_dialog_no_dismiss = True
                     login_btn.click()
                 except Exception:
                     try:
+                        self.driver._next_dialog_no_dismiss = True
                         password_field.send_keys(Keys.RETURN)
                     except Exception:
                         logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 1053, exc_info=True)
