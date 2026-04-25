@@ -1,10 +1,16 @@
 """
 distill_collector — 知識蒸餾訓練資料收集器
 
-收集 Codex OAuth 的高品質判決摘要 (prompt, response) 對，
-作為 TAIDE-12b LoRA 微調的訓練資料。
+收集 NIM / oMLX 高品質判決摘要 (prompt, response) 對，
+作為 Gemma E4B LoRA 微調的訓練資料（同時向下相容 TAIDE-12b）。
 
-儲存位置: ~/.omlx/training/taide-distill/raw_pairs.jsonl
+儲存位置（預設 gemma）: ~/.omlx/training/gemma-distill/raw_pairs.jsonl
+儲存位置（taide 相容）: ~/.omlx/training/taide-distill/raw_pairs.jsonl
+
+MAGI_DISTILL_TARGET 環境變數：
+  "gemma"  → 只寫 gemma-distill（預設）
+  "taide"  → 只寫 taide-distill（向下相容）
+  "both"   → 雙寫
 """
 
 from __future__ import annotations
@@ -22,15 +28,46 @@ from typing import Optional
 
 logger = logging.getLogger("distill_collector")
 
-# ── 路徑 ──────────────────────────────────────────────────────────────
-DISTILL_DIR = Path(os.environ.get(
-    "TAIDE_DISTILL_DIR",
-    str(Path.home() / ".omlx/training/taide-distill"),
-))
-RAW_PATH = DISTILL_DIR / "raw_pairs.jsonl"
-TRAIN_PATH = DISTILL_DIR / "train.jsonl"
-EVAL_PATH = DISTILL_DIR / "eval.jsonl"
-STATE_PATH = DISTILL_DIR / "collector_state.json"
+# ── 蒸餾目標（gemma / taide / both）──────────────────────────────────
+ACTIVE_DISTILL_TARGET = os.environ.get("MAGI_DISTILL_TARGET", "gemma").lower()  # "gemma"|"taide"|"both"
+
+
+def _paths_for(target: str) -> dict:
+    """回傳指定蒸餾目標的路徑 dict（raw / train / eval / state / dir）。"""
+    t = str(target or "gemma").strip().lower()
+    if t == "taide":
+        d = Path(os.environ.get("TAIDE_DISTILL_DIR", str(Path.home() / ".omlx/training/taide-distill")))
+    else:
+        # gemma（含 both 時也先用 gemma 路徑）
+        d = Path(os.environ.get("GEMMA_DISTILL_DIR", str(Path.home() / ".omlx/training/gemma-distill")))
+    return {
+        "dir": d,
+        "raw": d / "raw_pairs.jsonl",
+        "train": d / "train.jsonl",
+        "eval": d / "eval.jsonl",
+        "state": d / "collector_state.json",
+    }
+
+
+def _taide_paths_for_both() -> dict:
+    """both 模式下 taide 目錄的路徑。"""
+    d = Path(os.environ.get("TAIDE_DISTILL_DIR", str(Path.home() / ".omlx/training/taide-distill")))
+    return {
+        "dir": d,
+        "raw": d / "raw_pairs.jsonl",
+        "train": d / "train.jsonl",
+        "eval": d / "eval.jsonl",
+        "state": d / "collector_state.json",
+    }
+
+
+# ── 路徑（預設指向目前 active target，向下相容 taide）──────────────────
+_active_paths = _paths_for(ACTIVE_DISTILL_TARGET if ACTIVE_DISTILL_TARGET != "both" else "gemma")
+DISTILL_DIR = _active_paths["dir"]
+RAW_PATH = _active_paths["raw"]
+TRAIN_PATH = _active_paths["train"]
+EVAL_PATH = _active_paths["eval"]
+STATE_PATH = _active_paths["state"]
 
 # ── 品質門檻 ──────────────────────────────────────────────────────────
 MIN_OUTPUT_LEN = 100
@@ -131,14 +168,46 @@ def _cleanup_old_archives(keep_days: int = 90) -> None:
 
 
 # ── 主要 API ──────────────────────────────────────────────────────────
+def _write_to_target(paths: dict, record: dict, h: str) -> bool:
+    """寫入一筆 record 到指定 target 的 raw_pairs.jsonl。"""
+    target_dir = paths["dir"]
+    raw_path = paths["raw"]
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    # 對此目標做 rotate 檢查
+    try:
+        if raw_path.exists() and raw_path.stat().st_size > RAW_MAX_BYTES:
+            ts = time.strftime("%Y%m%d_%H%M%S")
+            archive = target_dir / f"raw_pairs_{ts}.jsonl.gz"
+            import gzip as _gzip
+            with open(raw_path, "rb") as f_in, _gzip.open(archive, "wb") as f_out:
+                f_out.write(f_in.read())
+            raw_path.write_text("", "utf-8")
+    except Exception as e:
+        logger.warning("Distill: rotate failed for %s: %s", target_dir.name, e)
+
+    try:
+        with open(raw_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        return True
+    except Exception as e:
+        logger.warning("Distill: write failed to %s: %s", target_dir.name, e)
+        return False
+
+
 def collect_summary_pair(
     prompt: str,
     response: str,
     case_reason: str = "",
-    source: str = "openclaw_codex",
+    source: str = "nim_resummary",
 ) -> bool:
     """
     收集一組 (prompt, response) 訓練資料。
+
+    行為依 MAGI_DISTILL_TARGET 環境變數：
+    - "gemma"（預設）→ 只寫 gemma-distill
+    - "taide" → 只寫 taide-distill（向下相容）
+    - "both" → 雙寫
 
     Returns True if collected, False if rejected (quality / dedup).
     """
@@ -168,14 +237,17 @@ def collect_summary_pair(
         },
     }
 
-    DISTILL_DIR.mkdir(parents=True, exist_ok=True)
-    _rotate_if_needed()
+    # 決定寫入目標
+    target = ACTIVE_DISTILL_TARGET
+    primary_paths = _paths_for(target if target != "both" else "gemma")
+    ok = _write_to_target(primary_paths, record, h)
 
-    try:
-        with open(RAW_PATH, "a", encoding="utf-8") as f:
-            f.write(json.dumps(record, ensure_ascii=False) + "\n")
-    except Exception as e:
-        logger.warning("Distill: write failed: %s", e)
+    # both 模式 — 同時寫入 taide 目錄
+    if target == "both" and ok:
+        taide_paths = _taide_paths_for_both()
+        _write_to_target(taide_paths, record, h)
+
+    if not ok:
         return False
 
     # 更新 state
