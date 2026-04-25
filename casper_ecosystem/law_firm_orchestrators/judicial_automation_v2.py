@@ -3574,7 +3574,10 @@ class CourtRecordDownloader:
                             # 1. Parse content
                             # ★ OPTIMIZATION: 若檔名已符合格式 (YYYYMMDD Type(Period).pdf)，跳過解析
                             # Regex: 8 digits, space, chars, (, chars, ), .pdf
-                            if re.match(r'^\d{8}\s.+?\(.+\)\.pdf$', fname):
+                            if (
+                                re.match(r'^\d{8}\s.+?\(.+\)\.pdf$', fname)
+                                and not fname.startswith("00000000 ")
+                            ):
                                 # self.log(f"    ⏭️ 檔名已標準化，略過解析: {fname}")
                                 continue
 
@@ -3710,6 +3713,9 @@ class CourtRecordDownloader:
         # 標準命名格式: 日期(8位數字) + 空格 + 筆錄類型
         standard_pattern = r'^\d{8}\s+(審理程序筆錄|準備程序筆錄|言詞辯論筆錄|調解程序筆錄|審判筆錄|訊問筆錄|勘驗筆錄|和解程序筆錄|調查程序筆錄|調查筆錄|宣示判決筆錄|協商會議記錄|消債調查筆錄|筆錄)'
         
+        if name_without_ext.startswith("00000000 "):
+            return True
+
         if re.match(standard_pattern, name_without_ext):
             # 已符合標準命名格式，表示已經被改名過，不應再更名
             return False

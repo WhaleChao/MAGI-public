@@ -650,6 +650,30 @@ def create_admin_runtime_blueprint(
             logger.debug("silent-catch in health attachment_jobs", exc_info=True)
 
         try:
+            audit_path = root / ".runtime" / "operational_hardening_audit_latest.json"
+            if audit_path.exists():
+                audit = json.loads(audit_path.read_text(encoding="utf-8"))
+                age_sec = max(0.0, time.time() - audit_path.stat().st_mtime)
+                cron = audit.get("cron") or {}
+                git = audit.get("git") or {}
+                checks["operational_audit"] = {
+                    "ok": (
+                        int(cron.get("parse_failure_count") or 0) == 0
+                        and int(cron.get("collision_count") or 0) == 0
+                        and age_sec < 36 * 3600
+                    ),
+                    "age_seconds": round(age_sec, 0),
+                    "cron_parse_failures": int(cron.get("parse_failure_count") or 0),
+                    "cron_collisions": int(cron.get("collision_count") or 0),
+                    "dirty_count": int(git.get("dirty_count") or 0),
+                    "generated_or_runtime_count": int(git.get("generated_or_runtime_count") or 0),
+                }
+            else:
+                checks["operational_audit"] = {"ok": False, "missing": True}
+        except Exception as exc:
+            checks["operational_audit"] = {"ok": False, "detail": str(exc)[:120]}
+
+        try:
             from api.nas_mount_guard import _SHARES, _is_mounted, _USER_MOUNT_ROOT
             import os as _os_health
 
@@ -671,7 +695,10 @@ def create_admin_runtime_blueprint(
         except Exception:
             logger.debug("silent-catch in health uptime", exc_info=True)
 
-        checks["status"] = "operational" if checks.get("omlx", {}).get("ok") else "degraded"
+        degraded = not checks.get("omlx", {}).get("ok")
+        if checks.get("operational_audit", {}).get("ok") is False:
+            degraded = True
+        checks["status"] = "degraded" if degraded else "operational"
         return jsonify(checks), 200
 
     @bp.route("/api/transcribe", methods=["POST"])

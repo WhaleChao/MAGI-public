@@ -137,7 +137,12 @@ static/system_test_report.json
 .brain_state.json
 rpc_server.pid
 cron_jobs.json
+cron_jobs.json.bak.*
 casper_ecosystem/law_firm_orchestrators/.draft_processed_emails.json
+
+# Local Claude/Codex worktrees and generated intelligence reports
+.claude/worktrees/
+static/worldmonitor_reports/intel_*.md
 
 # Config files with secrets (legalbridge included)
 **/legalbridge_config.json

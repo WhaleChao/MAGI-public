@@ -22,8 +22,14 @@ import logging
 import os
 import sys
 import time
+from pathlib import Path
 
 import mysql.connector
+
+try:
+    from api.mysql_connector_guard import patch_mysql_connector_for_stability
+except Exception:
+    patch_mysql_connector_for_stability = None
 
 # --- Load .env for subprocess/cron credential access ---
 try:
@@ -33,14 +39,27 @@ except Exception:
     pass
 
 logger = logging.getLogger("insight_sync")
+os.environ.setdefault("MAGI_MYSQL_USE_PURE", "1")
+if patch_mysql_connector_for_stability:
+    patch_mysql_connector_for_stability()
 
 # ---------- DB configs ----------
+# 2026-04-25: 遠端 DB (100.121.61.74) 已故障，所有資料回收到本機 MariaDB。
+# 為避免 cron 環境 OSC_DB_HOST 被誤注入舊遠端值，這裡明確強制 127.0.0.1。
+# 若未來確認遠端恢復需切回，移除下方 _force_local 並注釋還原即可。
+_force_local = os.environ.get("MAGI_INSIGHT_SYNC_FORCE_LOCAL", "1") == "1"
+_remote_host = "127.0.0.1" if _force_local else os.environ.get("OSC_DB_HOST", "127.0.0.1")
+# 使用本機 casper_service 帳號（不是 python_user，後者只在遠端 DB）
+_remote_user = os.environ.get("DB_USER", "casper_service") if _force_local else os.environ.get("OSC_DB_USER", "python_user")
+_remote_pass = os.environ.get("DB_PASSWORD", "") if _force_local else os.environ.get("OSC_DB_PASSWORD", "")
+
 REMOTE_DB = {
-    "host": os.environ.get("OSC_DB_HOST", "127.0.0.1"),
+    "host": _remote_host,
     "port": int(os.environ.get("OSC_DB_PORT", "3306")),
-    "user": os.environ.get("OSC_DB_USER", "python_user"),
-    "password": os.environ.get("OSC_DB_PASSWORD", ""),
+    "user": _remote_user,
+    "password": _remote_pass,
     "database": "law_firm_data",
+    "connection_timeout": 10,
 }
 
 LOCAL_DB = {
@@ -49,6 +68,7 @@ LOCAL_DB = {
     "user": os.environ.get("DB_USER", "casper_service"),
     "password": os.environ.get("DB_PASSWORD", ""),
     "database": "magi_brain",
+    "connection_timeout": 10,
 }
 
 OMLX_URL = os.environ.get("OMLX_EMBED_URL", "http://127.0.0.1:8081/v1/embeddings")
@@ -278,7 +298,11 @@ def main():
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.WARNING if args.quiet else logging.INFO)
-    sync(dry_run=args.dry_run, quiet=args.quiet)
+    try:
+        sync(dry_run=args.dry_run, quiet=args.quiet)
+    except Exception:
+        logger.exception("insight sync failed")
+        raise
 
 
 if __name__ == "__main__":

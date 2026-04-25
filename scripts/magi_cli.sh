@@ -54,7 +54,6 @@ cmd_status() {
     _check "Status Bar"   "gui/magi_menubar.py"
     echo ""
     echo "Sidecars:"
-    _check_port "LINE Desktop MCP"  3012
     _check_port "Website Admin"     8088
     echo ""
     echo "oMLX Inference:"

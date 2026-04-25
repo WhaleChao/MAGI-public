@@ -651,7 +651,12 @@ def _start_cron_fallback() -> None:
                                 try:
                                     from api.platforms.safe_process import parse_cron_command, run as _safe_run
                                     argv = parse_cron_command(command)
-                                    _sr = _safe_run(argv, timeout_sec=600, cwd=_MAGI_ROOT)
+                                    _custom_timeout = job.get("timeout_sec")
+                                    if isinstance(_custom_timeout, (int, float)) and _custom_timeout > 0:
+                                        _timeout_sec = float(_custom_timeout)
+                                    else:
+                                        _timeout_sec = 600
+                                    _sr = _safe_run(argv, timeout_sec=_timeout_sec, cwd=_MAGI_ROOT)
                                     result_returncode = _sr.returncode
                                     result_stdout = _sr.stdout
                                     result_stderr = _sr.stderr

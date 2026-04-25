@@ -307,6 +307,30 @@ def _extract_name_from_filename(filename: str) -> Optional[str]:
     return None
 
 
+def _infer_party_from_case_folder_path(pdf_path: str) -> Optional[str]:
+    """Infer party from a MAGI case folder path: YYYY-NNNN-Party-Stage-Reason."""
+    try:
+        parts = Path(pdf_path).parts
+    except Exception:
+        return None
+    for part in reversed(parts):
+        m = re.match(r"^\d{4}-\d{4}-(.+)$", part)
+        if not m:
+            continue
+        tokens = m.group(1).split("-")
+        if not tokens:
+            continue
+        party = tokens[0].strip()
+        if (
+            party
+            and 2 <= len(party) <= 30
+            and not party.startswith("[")
+            and not re.search(r"(當事人|Unknown|不詳)", party)
+        ):
+            return party
+    return None
+
+
 def _infer_doc_type_from_hints(filename: str) -> Optional[str]:
     base = _strip_date_prefix(filename)
     for kw, dt in _DOC_TYPE_HINTS:
@@ -1624,7 +1648,7 @@ def generate_name_proposal(pdf_path: str, case_name: str = None, return_structur
     # ── Step 1b: Fast text path (only for clean text) ──
     fast_text = "\n".join(part for part in [content_text_native, content_text] if part)
     if fast_text.strip() and not _is_garbled_text(fast_text):
-        fast_result = _maybe_fast_text_name_result(fast_text, case_name=case_name)
+        fast_result = _maybe_fast_text_name_result(fast_text, case_name=case_name, pdf_path=pdf_path)
         if fast_result:
             logger.info("Fast text path hit for %s", pdf_path)
             return fast_result if return_structured else fast_result["filename"]
@@ -1908,6 +1932,8 @@ def generate_name_proposal(pdf_path: str, case_name: str = None, return_structur
 
     if case_name:
         found_party = case_name
+    elif not found_party:
+        found_party = _infer_party_from_case_folder_path(pdf_path) or ""
 
     # ── Step 4b: Date fallback — scan last page for 具狀人 date, then filing date ──
     if not found_date and doc.page_count > 0:
@@ -3413,6 +3439,8 @@ def _build_name_result(
         sub = dt
     else:
         sub = doc_subtype or dt or ""
+    if sub:
+        sub = re.sub(r"(留底|留存)$", "存底", sub)
     sfx = suffix or ""
 
     category = _resolve_doc_category(dt)
@@ -3489,7 +3517,7 @@ def _build_name_result(
         body = sub or "書狀"
         if sfx:
             body += sfx
-        else:
+        elif not re.search(r"(存底|副本|繕本)$", body):
             body += "存底"
         if party:
             body += f"（{party}）"
@@ -3598,7 +3626,12 @@ def _is_garbled_text(text: str) -> bool:
     return False
 
 
-def _maybe_fast_text_name_result(content_text: str, *, case_name: Optional[str] = None) -> Optional[dict]:
+def _maybe_fast_text_name_result(
+    content_text: str,
+    *,
+    case_name: Optional[str] = None,
+    pdf_path: str = "",
+) -> Optional[dict]:
     """
     Fast path for searchable PDFs.
 
@@ -3618,6 +3651,8 @@ def _maybe_fast_text_name_result(content_text: str, *, case_name: Optional[str] 
     found_case_no = _extract_case_number(text)
     found_type = _extract_doc_type(text)
     found_party = case_name or _extract_name(text, default_name=None)
+    if not found_party and pdf_path:
+        found_party = _infer_party_from_case_folder_path(pdf_path)
 
     if found_party:
         try:

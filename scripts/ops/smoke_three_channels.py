@@ -202,7 +202,7 @@ def _discord_bot_token(code_cfg: dict[str, Any], openclaw_cfg: dict[str, Any]) -
 
 
 def _discord_webhook(code_cfg: dict[str, Any], openclaw_cfg: dict[str, Any]) -> str:
-    for k in ("MAGI_DISCORD_WEBHOOK", "DISCORD_WEBHOOK_URL"):
+    for k in ("MAGI_DISCORD_WEBHOOK", "MAGI_DISCORD_WEBHOOK_URL", "DISCORD_WEBHOOK_URL"):
         v = str(os.environ.get(k, "")).strip()
         if v:
             return v
@@ -225,7 +225,7 @@ def _discord_channel_id() -> str:
 
 
 def _telegram_token(openclaw_cfg: dict[str, Any]) -> str:
-    for k in ("MAGI_TELEGRAM_BOT_TOKEN", "TELEGRAM_BOT_TOKEN"):
+    for k in ("MAGI_TELEGRAM_BOT_TOKEN", "TELEGRAM_BOT_TOKEN", "OPENCLAW_TELEGRAM_BOT_TOKEN"):
         v = str(os.environ.get(k, "")).strip()
         if v:
             return v
