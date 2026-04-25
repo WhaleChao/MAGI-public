@@ -676,7 +676,11 @@ def task_ingest_source(
             continue
 
         # Extract text
-        result = extract_text(f)
+        try:
+            result = extract_text(f)
+        except Exception as e:
+            errors.append({"path": relpath, "error": str(e)})
+            continue
         if not result.get("success"):
             errors.append({"path": relpath, "error": result.get("error", "extraction failed")})
             continue

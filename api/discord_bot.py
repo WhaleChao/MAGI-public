@@ -605,7 +605,8 @@ async def bg_scheduler_loop():
                                       "job_weekly_cache_cleanup",  # cache 掃描可能慢
                                       # 2026-04-25 second pass: bug scan 找出仍 600s timeout 的長任務
                                       "job_benchmark_pdf_namer",   # 過去 3× exit=1 stderr 空（被 SIGTERM）
-                                      "job_case_index_sync"}       # 過去 2× exit=255（DB query + Obsidian write）
+                                      "job_case_index_sync",       # 過去 2× exit=255（DB query + Obsidian write）
+                                      "job_self_repair_reporter"}  # JSONL 讀取 + TG 發送，保守給 7200s
                         # 2026-04-25: 支援 cron_jobs.json 自定義 timeout_sec，免於每加新長任務都要動 _LONG_JOBS
                         _custom_timeout = job.get("timeout_sec")
                         if isinstance(_custom_timeout, (int, float)) and _custom_timeout > 0:

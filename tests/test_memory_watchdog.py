@@ -214,7 +214,7 @@ def test_read_memory_parses_vm_stat_and_swap(monkeypatch):
     def fake_run(cmd, **kw):
         if cmd[0] == "vm_stat":
             return FakeVM()
-        if cmd[0] == "sysctl":
+        if cmd[0] in ("sysctl", "/usr/sbin/sysctl"):
             return FakeSwap()
         raise AssertionError(f"unexpected: {cmd}")
 
