@@ -71,6 +71,18 @@ debug_*.png
 debug_*.html
 exports/
 
+# 2026-04-25: Personal/business memory & customer data — 禁止對外推送
+# CLAUDE.md 含完整客戶姓名、案號、法扶 ID 與業務記錄，僅本機使用
+CLAUDE.md
+# .runtime/ 含 portal session、Chrome cookies、debug 截圖（當事人資料）、
+# DB dump、conversation history SQLite、issue agenda 等 runtime state
+.runtime/
+# 筆錄手動補件佇列含案號 + 法院名 + 案件類型
+static/transcript_manual_queue.jsonl
+# Sonnet/Opus session 自動筆記（可能含案件思考）
+session-*.md
+SESSION-*.md
+
 # Work records & audit reports (moved to docs/, session-specific)
 docs/codex/
 docs/claude/
