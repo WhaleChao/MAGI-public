@@ -59,6 +59,15 @@ INDEX_DB_PATH = Path(
 )
 BATCH_SIZE = int(os.environ.get("TRANSCRIPT_BATCH", "20") or "20")
 
+# 2026-04-25: 進度節流 + wall-clock budget（NAS over Tailscale 平均 1.5-3s/PDF，
+# 602 個 PDF 約 20 分鐘超 cron timeout 600s）
+TRANSCRIPT_MAX_PDFS_PER_RUN = int(os.environ.get("TRANSCRIPT_MAX_PDFS_PER_RUN", "150") or "150")
+TRANSCRIPT_BUDGET_SEC = int(os.environ.get("TRANSCRIPT_BUDGET_SEC", "480") or "480")  # 8 min < 10 min cron timeout
+TRANSCRIPT_PDF_TIMEOUT_SEC = int(os.environ.get("TRANSCRIPT_PDF_TIMEOUT_SEC", "30") or "30")  # 單檔 fitz timeout
+TRANSCRIPT_THROTTLE_EVERY = int(os.environ.get("TRANSCRIPT_THROTTLE_EVERY", "20") or "20")
+TRANSCRIPT_THROTTLE_SLEEP = float(os.environ.get("TRANSCRIPT_THROTTLE_SLEEP", "0.3") or "0.3")
+TRANSCRIPT_LISTING_BUDGET_SEC = int(os.environ.get("TRANSCRIPT_LISTING_BUDGET_SEC", "120") or "120")
+
 # Source prefix stored in KEEPER — kept short to fit VARCHAR(250)
 _SOURCE_PREFIX = "transcript"
 
@@ -158,17 +167,35 @@ def _iter_case_dirs(root: Path):
 
 
 def _iter_transcript_pdfs() -> Generator[Tuple[Path, str, str], None, None]:
-    """Yield (pdf_path, case_name, transcript_subdir) across all case roots."""
+    """Yield (pdf_path, case_name, transcript_subdir) across all case roots.
+
+    2026-04-25: 加 listing budget — NAS over Tailscale 列舉 600+ PDFs 需 ~80s，
+    超過 TRANSCRIPT_LISTING_BUDGET_SEC（預設 120s）截斷。
+    """
+    import time as _t
     seen: set = set()
+    t_start = _t.time()
     for root in CASE_ROOTS:
         for case_dir in _iter_case_dirs(root):
+            if _t.time() - t_start > TRANSCRIPT_LISTING_BUDGET_SEC:
+                print(f"[index] ⏱️ listing budget {TRANSCRIPT_LISTING_BUDGET_SEC}s 已用盡，截斷列舉",
+                      file=sys.stderr, flush=True)
+                return
             case_name = case_dir.name
             for subdir_name in _TRANSCRIPT_SUBDIRS:
                 subdir = case_dir / subdir_name
                 if not subdir.is_dir():
                     continue
-                for pdf in sorted(subdir.glob("*.pdf")):
-                    key = str(pdf.resolve())
+                try:
+                    pdfs = sorted(subdir.glob("*.pdf"))
+                except OSError as e:
+                    print(f"[index] ⚠️ skip {subdir.name}: {e}", file=sys.stderr, flush=True)
+                    continue
+                for pdf in pdfs:
+                    try:
+                        key = str(pdf.resolve())
+                    except OSError:
+                        continue
                     if key in seen:
                         continue
                     seen.add(key)
@@ -177,8 +204,8 @@ def _iter_transcript_pdfs() -> Generator[Tuple[Path, str, str], None, None]:
 
 # ── PDF text extraction ───────────────────────────────────────────────────────
 
-def _extract_pages(pdf_path: Path) -> List[Tuple[int, str]]:
-    """Return [(page_num_1based, text), ...]."""
+def _extract_pages_inner(pdf_path: Path) -> List[Tuple[int, str]]:
+    """Inner extractor (no timeout) — used by _extract_pages with thread wrapper."""
     try:
         import fitz  # PyMuPDF
         doc = fitz.open(str(pdf_path))
@@ -187,8 +214,35 @@ def _extract_pages(pdf_path: Path) -> List[Tuple[int, str]]:
             pages.append((i + 1, page.get_text()))
         doc.close()
         return pages
-    except Exception as e:
+    except Exception:
         return []
+
+
+def _extract_pages(pdf_path: Path) -> List[Tuple[int, str]]:
+    """Return [(page_num_1based, text), ...].
+
+    2026-04-25: 加 thread-based timeout (TRANSCRIPT_PDF_TIMEOUT_SEC，預設 30s)。
+    fitz 對某些壞 PDF 或 NAS 慢 I/O 會 hang，必須有外層守時。
+    Thread 雖無法真正 kill C 層 fitz，但主流程能繼續往下走（孤兒 thread 會在 process exit 時收掉）。
+    """
+    import threading
+    result: List[Tuple[int, str]] = []
+    done = threading.Event()
+
+    def _runner():
+        try:
+            r = _extract_pages_inner(pdf_path)
+            result.extend(r)
+        finally:
+            done.set()
+
+    t = threading.Thread(target=_runner, daemon=True, name=f"pdf-extract-{pdf_path.name[:30]}")
+    t.start()
+    if not done.wait(timeout=TRANSCRIPT_PDF_TIMEOUT_SEC):
+        print(f"  ⏱️ extract timeout {TRANSCRIPT_PDF_TIMEOUT_SEC}s, skip: {pdf_path.name}",
+              file=sys.stderr, flush=True)
+        return []  # 放棄這個 PDF（thread 自然結束於 process exit）
+    return result
 
 
 def _clean_line(line: str) -> str:
@@ -313,22 +367,53 @@ def _get_mem_bridge():
 # ── Index command ─────────────────────────────────────────────────────────────
 
 def cmd_index(force: bool = False) -> str:
+    """2026-04-25: 加 wall-clock budget + max-batch limit + 進度節流。
+
+    NAS over Tailscale relay 下，每 PDF ~1.5-3s，602 個 PDF 會超過 cron 600s timeout。
+    每輪 cron 限制：
+      - TRANSCRIPT_BUDGET_SEC=480（8 min < 10 min cron）
+      - TRANSCRIPT_MAX_PDFS_PER_RUN=150
+      - 每 TRANSCRIPT_THROTTLE_EVERY=20 個 PDF sleep TRANSCRIPT_THROTTLE_SLEEP=0.3 秒
+    """
+    import time as _t
     remember_batch, _ = _get_mem_bridge()
     idx = _load_index()
     indexed_map = idx.get("indexed") or {}
 
     total_files = total_new_chunks = total_skipped = 0
     errors = []
+    aborted_reason = ""
+    t_start = _t.time()
 
     for pdf_path, case_name, subdir_name in _iter_transcript_pdfs():
+        # Wall-clock budget guard
+        if _t.time() - t_start > TRANSCRIPT_BUDGET_SEC:
+            aborted_reason = f"budget_exhausted ({TRANSCRIPT_BUDGET_SEC}s)"
+            print(f"[index] ⏱️ {aborted_reason} — 提前結束，下次 cron 會接續處理",
+                  file=sys.stderr, flush=True)
+            break
+        # Max-batch guard
+        if total_files >= TRANSCRIPT_MAX_PDFS_PER_RUN:
+            aborted_reason = f"max_batch_reached ({TRANSCRIPT_MAX_PDFS_PER_RUN})"
+            print(f"[index] 🛑 {aborted_reason} — 提前結束，下次 cron 會接續處理",
+                  file=sys.stderr, flush=True)
+            break
+
         pdf_key = str(pdf_path)
-        mtime = str(pdf_path.stat().st_mtime) if pdf_path.exists() else ""
+        try:
+            mtime = str(pdf_path.stat().st_mtime) if pdf_path.exists() else ""
+        except OSError:
+            mtime = ""
         if not force and _is_transcript_indexed(pdf_key, mtime, indexed_map):
             total_skipped += 1
             continue
 
         total_files += 1
         print(f"[index] {total_files}: {pdf_path.name} ({case_name})", file=sys.stderr, flush=True)
+
+        # 進度節流：每 N 個 PDF 喘息一次，避免連續 NAS I/O 衝爆
+        if total_files > 0 and total_files % TRANSCRIPT_THROTTLE_EVERY == 0:
+            _t.sleep(TRANSCRIPT_THROTTLE_SLEEP)
 
         # Extract date from filename
         m = _DATE_FROM_FILENAME_RE.search(pdf_path.stem)
@@ -384,12 +469,16 @@ def cmd_index(force: bool = False) -> str:
     }
     _save_index(idx)
 
+    elapsed = round(_t.time() - t_start, 1)
     lines = [
-        f"筆錄索引完成",
+        f"筆錄索引{'完成' if not aborted_reason else '部分完成'}",
         f"- 本次新索引：{total_files} 份（{total_new_chunks} 段）",
         f"- 已跳過（無變動）：{total_skipped} 份",
         f"- 累計索引：{idx['stats']['total_files']} 份 / {idx['stats']['total_chunks']} 段",
+        f"- 耗時：{elapsed}s",
     ]
+    if aborted_reason:
+        lines.append(f"- 提前結束：{aborted_reason}（剩餘 PDF 將於下次 cron 接續）")
     if errors:
         lines.append(f"- 錯誤（{len(errors)} 筆）：" + "；".join(errors[:5]))
     return "\n".join(lines)

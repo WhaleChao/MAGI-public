@@ -598,8 +598,17 @@ async def bg_scheduler_loop():
                                       "job_omlx_switch_night", "job_omlx_switch_day",
                                       "job_benchmark_pdf_bookmarker",
                                       "job_research_brief_daily",
-                                      "job_disk_cleanup_healthcheck"}
-                        _timeout = 7200 if job.get("id") in _LONG_JOBS else 600
+                                      "job_disk_cleanup_healthcheck",
+                                      # 2026-04-25: 補入 timestamp-style + 新加 cron 的 long jobs
+                                      "job_1772867062892_6cef0b",  # 筆錄向量化（NAS walk + fitz）
+                                      "job_1776221713533_0a5366",  # wiki synthesizer
+                                      "job_weekly_cache_cleanup"}  # cache 掃描可能慢
+                        # 2026-04-25: 支援 cron_jobs.json 自定義 timeout_sec，免於每加新長任務都要動 _LONG_JOBS
+                        _custom_timeout = job.get("timeout_sec")
+                        if isinstance(_custom_timeout, (int, float)) and _custom_timeout > 0:
+                            _timeout = int(_custom_timeout)
+                        else:
+                            _timeout = 7200 if job.get("id") in _LONG_JOBS else 600
                         _job_id = job.get("id", "?")
                         _shell_env = {**os.environ, "MAGI_PREFER_LOCAL_DB": "0", "MAGI_NO_DELETE": "1"}
                         try:
