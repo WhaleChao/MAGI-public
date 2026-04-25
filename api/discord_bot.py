@@ -602,7 +602,10 @@ async def bg_scheduler_loop():
                                       # 2026-04-25: 補入 timestamp-style + 新加 cron 的 long jobs
                                       "job_1772867062892_6cef0b",  # 筆錄向量化（NAS walk + fitz）
                                       "job_1776221713533_0a5366",  # wiki synthesizer
-                                      "job_weekly_cache_cleanup"}  # cache 掃描可能慢
+                                      "job_weekly_cache_cleanup",  # cache 掃描可能慢
+                                      # 2026-04-25 second pass: bug scan 找出仍 600s timeout 的長任務
+                                      "job_benchmark_pdf_namer",   # 過去 3× exit=1 stderr 空（被 SIGTERM）
+                                      "job_case_index_sync"}       # 過去 2× exit=255（DB query + Obsidian write）
                         # 2026-04-25: 支援 cron_jobs.json 自定義 timeout_sec，免於每加新長任務都要動 _LONG_JOBS
                         _custom_timeout = job.get("timeout_sec")
                         if isinstance(_custom_timeout, (int, float)) and _custom_timeout > 0:
