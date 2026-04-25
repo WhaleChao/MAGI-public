@@ -20,13 +20,13 @@ VALID_LAF_PORTAL_ENVS = {"production", "test", "compare"}
 
 DEFAULT_PROFILES: dict[str, dict[str, Any]] = {
     "file_review": {
-        "codex_mode": "auto",
+        "codex_mode": "local",
     },
     "transcript": {
-        "codex_mode": "auto",
+        "codex_mode": "local",
     },
     "laf": {
-        "codex_mode": "auto",
+        "codex_mode": "local",
         "portal_env": "production",
         "prod_base_url": "https://lawyer.laf.org.tw",
         "test_base_url": "http://127.0.0.1:17002",
@@ -63,10 +63,20 @@ def _load_config() -> dict[str, Any]:
 
 
 def _normalize_codex_mode(value: Any) -> str:
+    """[2026-04-25] Codex 已全面停用，codex_mode 強制降級為 local。
+
+    若任何地方嘗試設定 codex 模式，記錄一次 info 並改用 local。
+    """
     mode = str(value or "").strip().lower()
+    if mode == "codex":
+        import logging as _logging
+        _logging.getLogger("product_runtime").info(
+            "codex_mode 'codex' requested but Codex is disabled (2026-04-25); forcing 'local'"
+        )
+        return "local"
     if mode in VALID_CODEX_MODES:
         return mode
-    return "auto"
+    return "local"
 
 
 def _normalize_portal_env(value: Any) -> str:
