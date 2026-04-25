@@ -246,16 +246,25 @@ magi logs         # tail all logs
 
 NAS status checks both `/Volumes/` and `~/.magi_mounts/` (Tailscale fallback path).
 
-**37 scheduled cron jobs** (managed via `cron_jobs.json`, executed by the Discord Bot scheduler):
+**50+ scheduled cron jobs** (managed via `cron_jobs.json`, executed by the Discord Bot scheduler):
 
 | Category | Jobs |
 |----------|------|
 | Legal | LAF pending scan, nightly LAF audit, judicial API pull (night + morning), file review check (10:00 / 15:00 weekdays) |
-| Knowledge | Obsidian ingest, case card index sync, insight sync, knowledge lint, reprocess insights, judgment retry |
-| Ops | Health report, nightly autopilot, optimize report, nightly regression, purge persona, debug cleanup |
+| Knowledge | Obsidian ingest (`--limit 50`, 07:10 daily), case card index sync, insight sync, knowledge lint, reprocess insights, judgment retry |
+| Ops | Health report (07:30), nightly autopilot, optimize report, nightly regression, purge persona, debug cleanup |
 | NAS / Files | PDF namer (nightly), weekend bookmark, transcript sync, weekly legal crawl |
 | Market | Market briefing (weekday 08:30), world monitor (every 6h), hedge fund committee |
 | Infrastructure | oMLX day/night switch, OSC case index/scan, gcal sync, smoke chat check |
+| **Disk hygiene (2026-04-25)** | **`disk_low_water_alarm`** (hourly :05 — High <30 GB / Critical <10 GB → `self_repair`), **`weekly_cache_cleanup`** (Sun 04:00 — Vision/HF cache atime >14 d) |
+
+### Self-repair loop & autonomy guards (2026-04-21 → 2026-04-25)
+
+- **Phase 1 issue tracker** — every cron failure / orchestrator catch-all / Tools API errorhandler logs to `.runtime/issue_agenda.jsonl` (PII-scrubbed, 5-min dedup, 5000-row rotation). Truncation limits: stderr `[:4000]`, error_msg `[:5000]`, context `[:2000]`. Set `MAGI_ISSUE_TRACKER_ENABLE=1`.
+- **Layer 1 — `omlx_heartbeat_reaper.py`** — kills duplicate `omlx serve` processes by `--model-dir` fingerprint. Default `OMLX_HEARTBEAT_KILL_MODE=shadow`.
+- **Layer 2 — `memory_watchdog.py`** (LaunchAgent `com.magi.memory-watchdog`) — kills the highest-RSS recoverable MAGI subprocess when swap >8 GB or free+inactive <2 GB for 90 s. Default `MAGI_WATCHDOG_KILL_MODE=shadow`. Decisions logged to `~/.local/share/magi/runtime/metrics/memory_watchdog_decisions.jsonl`.
+- **Layer 3 — `omlx_switch_gatekeeper.py`** — preflight RSS check + TTL pause (≤24 h) before oMLX day/night switch. **Enforce by default.**
+- **Layer 4 — `disk_cleanup_healthcheck.py`** (cron 03:45) — JSONL rotation + LRU cache prune. Default `MAGI_DISK_CLEANUP_DRY_RUN=1`.
 
 ---
 

@@ -623,13 +623,18 @@ async def bg_scheduler_loop():
                                 _stdout = _stderr = None
                             else:
                                 if _proc.returncode != 0:
-                                    _err_text = (_stderr or b"").decode("utf-8", "ignore")[:500]
+                                    # 2026-04-25: 提高 stderr 截斷上限至 4000，並補 stdout tail（stderr 空時可診斷）
+                                    _err_text = (_stderr or b"").decode("utf-8", "ignore")[:4000]
+                                    _out_tail = ""
+                                    if not _err_text.strip():
+                                        _out_text = (_stdout or b"").decode("utf-8", "ignore")
+                                        _out_tail = _out_text[-1500:] if _out_text else ""
                                     try:
                                         from skills.management.issue_tracker import log_issue
 
                                         log_issue(
                                             command=f"cron:{job.get('name') or _job_id}",
-                                            error_msg=f"exit={_proc.returncode} stderr={_err_text}",
+                                            error_msg=f"exit={_proc.returncode} stderr={_err_text}" + (f" stdout_tail={_out_tail}" if _out_tail else ""),
                                             context=f"schedule={job.get('schedule')} command={str(job.get('command'))[:200]}",
                                             severity="High",
                                             source="discord_bot.cron_scheduler",

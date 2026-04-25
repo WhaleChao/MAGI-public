@@ -110,9 +110,10 @@ def log_issue(
         return None
 
     try:
+        # 2026-04-25: 提高截斷上限（Traceback 常被截掉，無法定位根因）
         cmd_s = _scrub(str(command)[:500])
-        err_s = _scrub(str(error_msg)[:2000])
-        ctx_s = _scrub(str(context)[:1000]) if context else None
+        err_s = _scrub(str(error_msg)[:5000])
+        ctx_s = _scrub(str(context)[:2000]) if context else None
 
         key = _dedup_key(cmd_s, err_s)
         if _is_duplicate(key):

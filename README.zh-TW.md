@@ -231,16 +231,25 @@ magi logs         # 追蹤所有日誌
 
 NAS 狀態同時檢查 `/Volumes/` 與 `~/.magi_mounts/`（Tailscale fallback 路徑）。
 
-**37 個定時排程任務**（由 `cron_jobs.json` 管理，由 Discord Bot 排程器執行）：
+**50+ 個定時排程任務**（由 `cron_jobs.json` 管理，由 Discord Bot 排程器執行）：
 
 | 類別 | 任務 |
 |------|------|
 | 法務 | 法扶待辦掃描、法扶夜間稽核、司法院 API 夜拉 + 晨間拉取、閱卷檢查（平日 10:00 / 15:00） |
-| 知識庫 | Obsidian 向量入庫、案件卡片索引同步、見解同步、知識 lint、見解重處理、判決補查 |
-| 運維 | 健康報告、夜間 autopilot、最佳化報告、夜間回歸測試、人格清理、debug 截圖清理 |
+| 知識庫 | Obsidian 向量入庫（`--limit 50`，每日 07:10）、案件卡片索引同步、見解同步、知識 lint、見解重處理、判決補查 |
+| 運維 | 健康報告（07:30）、夜間 autopilot、最佳化報告、夜間回歸測試、人格清理、debug 截圖清理 |
 | NAS / 文件 | PDF 命名（夜間）、週末書籤、筆錄同步、每週法律爬取 |
 | 市場 | 市場簡報（平日 08:30）、全球情報監控（每 6 小時）、對沖基金委員會 |
 | 基礎設施 | oMLX 日夜切換、OSC 案件索引 / 掃描、Google 日曆同步、external chat 健康檢查 |
+| **磁碟自律（2026-04-25）** | **`disk_low_water_alarm`**（每小時 :05 — High <30 GB / Critical <10 GB → 推 `self_repair`）、**`weekly_cache_cleanup`**（每週日 04:00 — Vision / HF cache atime >14 天） |
+
+### 自我修復閉環與自主防線（2026-04-21 → 2026-04-25）
+
+- **Phase 1 issue tracker** — 每筆 cron 失敗 / orchestrator 例外 / Tools API errorhandler 自動寫進 `.runtime/issue_agenda.jsonl`（PII 已 scrub、5 分鐘 dedup、5000 筆輪替）。截斷上限：stderr `[:4000]`、error_msg `[:5000]`、context `[:2000]`。需設 `MAGI_ISSUE_TRACKER_ENABLE=1`。
+- **Layer 1 — `omlx_heartbeat_reaper.py`** — 以 `--model-dir` 指紋偵測並清除重複 `omlx serve` 進程。預設 `OMLX_HEARTBEAT_KILL_MODE=shadow`。
+- **Layer 2 — `memory_watchdog.py`**（LaunchAgent `com.magi.memory-watchdog`）— 連續 90 s 偵測 swap >8 GB 或 free+inactive <2 GB 時殺最高 RSS 可回收 MAGI 子進程。預設 `MAGI_WATCHDOG_KILL_MODE=shadow`，決策寫至 `~/.local/share/magi/runtime/metrics/memory_watchdog_decisions.jsonl`。
+- **Layer 3 — `omlx_switch_gatekeeper.py`** — oMLX 日夜切換前置 RSS 預檢 + TTL pause（上限 24 h），**直接 enforce**。
+- **Layer 4 — `disk_cleanup_healthcheck.py`**（cron 03:45）— JSONL 輪替 + LRU cache 清理。預設 `MAGI_DISK_CLEANUP_DRY_RUN=1`。
 
 ---
 

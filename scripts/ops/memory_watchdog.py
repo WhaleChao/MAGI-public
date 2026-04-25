@@ -115,9 +115,12 @@ def read_memory() -> MemoryReading:
     free_gb = free_pages * page_size / 1024 / 1024 / 1024
     inactive_gb = inactive_pages * page_size / 1024 / 1024 / 1024
 
-    # swap
+    # swap (use absolute paths so launchd PATH limitations don't break us)
+    _sysctl_bin = "/usr/sbin/sysctl"
+    if not os.path.exists(_sysctl_bin):
+        _sysctl_bin = "sysctl"  # fallback to PATH lookup
     swap = subprocess.run(
-        ["sysctl", "vm.swapusage"],
+        [_sysctl_bin, "vm.swapusage"],
         capture_output=True, text=True, timeout=10, check=False,
     )
     swap_used_gb = 0.0
