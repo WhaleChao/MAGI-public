@@ -109,26 +109,36 @@ def train(version: str) -> dict:
     if not BASE_MODEL.exists():
         raise FileNotFoundError(f"Base model not found: {BASE_MODEL}")
 
+    # 新版 mlx-lm 把 LoRA 超參數搬到 YAML config（用 -c 載入），CLI 不再支援
+    # --lora-rank/--lora-alpha/--lora-dropout/--target-modules/--warmup
+    import yaml
+    lora_yaml_path = adapter_dir / "lora_params.yaml"
+    lora_scale = 2.0 * LORA_CONFIG["alpha"] / LORA_CONFIG["rank"]  # 沿用 train_taide_lora 慣例
+    lora_yaml_path.write_text(yaml.dump({
+        "lora_parameters": {
+            "rank": LORA_CONFIG["rank"],
+            "dropout": LORA_CONFIG["dropout"],
+            "scale": lora_scale,
+        },
+    }), "utf-8")
+
     cmd = [
         OMLX_PYTHON, "-m", "mlx_lm.lora",
         "--model", str(BASE_MODEL),
         "--train",
+        "--fine-tune-type", "lora",
         "--data", str(DISTILL_DIR),
         "--adapter-path", str(adapter_dir),
-        "--lora-rank", str(LORA_CONFIG["rank"]),
-        "--lora-alpha", str(LORA_CONFIG["alpha"]),
-        "--lora-dropout", str(LORA_CONFIG["dropout"]),
-        "--target-modules", ",".join(LORA_CONFIG["target_modules"]),
+        "--num-layers", "16",  # 只微調最後 16 層省記憶體（沿用 TAIDE 設定）
         "--batch-size", str(TRAIN_CONFIG["batch_size"]),
         "--grad-checkpoint",
-        "--gradient-accumulation-steps", str(TRAIN_CONFIG["gradient_accumulation_steps"]),
+        "--grad-accumulation-steps", str(TRAIN_CONFIG["gradient_accumulation_steps"]),
         "--learning-rate", str(TRAIN_CONFIG["learning_rate"]),
         "--iters", str(TRAIN_CONFIG["max_steps"]),
         "--max-seq-length", str(TRAIN_CONFIG["max_seq_length"]),
         "--save-every", str(TRAIN_CONFIG["save_every"]),
         "--steps-per-eval", str(TRAIN_CONFIG["eval_every"]),
-        "--warmup", str(TRAIN_CONFIG["warmup_steps"]),
-        "--val-batches", "10",
+        "-c", str(lora_yaml_path),
     ]
 
     logger.info("Running: %s", " ".join(cmd))
