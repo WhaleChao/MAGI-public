@@ -623,8 +623,10 @@ async def bg_scheduler_loop():
                                 _stdout = _stderr = None
                             else:
                                 if _proc.returncode != 0:
-                                    # 2026-04-25: 提高 stderr 截斷上限至 4000，並補 stdout tail（stderr 空時可診斷）
-                                    _err_text = (_stderr or b"").decode("utf-8", "ignore")[:4000]
+                                    # 2026-04-25: stderr 取 tail [-4000:]（Python traceback 在尾段，
+                                    # head 多半是 progress log 把根因擠出截斷視窗）；補 stdout tail。
+                                    _stderr_full = (_stderr or b"").decode("utf-8", "ignore")
+                                    _err_text = _stderr_full[-4000:] if len(_stderr_full) > 4000 else _stderr_full
                                     _out_tail = ""
                                     if not _err_text.strip():
                                         _out_text = (_stdout or b"").decode("utf-8", "ignore")
