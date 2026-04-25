@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """
-weekend_resummary.py — 週末 Codex 批次重摘要
+weekend_resummary.py — 週末 NIM 批次重摘要
 
-用 Codex OAuth 重新摘要所有已下載的判決全文，同時餵進知識蒸餾管線。
+用 NVIDIA NIM 405B 重新摘要所有已下載的判決全文，同時餵進知識蒸餾管線。
 
 安全機制：
 - PID lock 防止多進程同時跑
 - SIGTERM/SIGINT graceful shutdown
 - 連續失敗 backoff（3 連敗等 60s，5 連敗停止）
-- cooldown 自動等待
-- 短文 (<1KB) 跳過不浪費 Codex 額度
+- 短文 (<1KB) 跳過不浪費 NIM 額度
+- NIM 日預算防呆（WEEKEND_RESUMMARY_BUDGET_CAP）
 
 用法：
   python weekend_resummary.py                    # 摘要所有尚未完成的
@@ -48,7 +48,7 @@ LOCK_PATH = Path.home() / ".cache/judgment_collector/resummary.pid"
 
 # ── 參數 ──────────────────────────────────────────────────────────────
 MIN_TEXT_LEN = 1000         # 全文太短跳過（之前 500 太小，短裁定浪費額度）
-INTER_REQUEST_DELAY = 5.0   # Codex 請求間隔（秒）
+INTER_REQUEST_DELAY = 1.5   # NIM 請求間隔（秒；rate limit 較寬，但仍給點 buffer）
 SUMMARY_TIMEOUT_SEC = 120
 RESUMMARY_SESSION_ID = "weekend-resummary-batch"  # 獨立 session，避免跟 gateway 主 session 衝突
 BATCH_NOTIFY_EVERY = 50
@@ -95,7 +95,7 @@ def _signal_handler(sig, frame):
 
 
 def _kill_child_processes():
-    """清掉本進程的所有子進程（openclaw CLI 等），避免孤兒持有 session lock。"""
+    """清掉本進程的所有子進程，避免孤兒持有 session lock。"""
     try:
         import subprocess
         result = subprocess.run(
@@ -134,17 +134,9 @@ def _acquire_lock() -> bool:
                 logger.error("Another instance is running (pid=%d), exiting", old_pid)
                 return False
             except OSError:
-                # 舊進程已死，清理 stale lock + 孤兒子進程
+                # 舊進程已死，清理 stale lock
                 logger.info("Cleaning stale lock (pid=%d)", old_pid)
                 LOCK_PATH.unlink(missing_ok=True)
-                # 清掉舊進程可能殘留的 openclaw session lock
-                import glob
-                for lf in glob.glob(str(Path.home() / ".openclaw/agents/codex-distributed/sessions/*.lock")):
-                    try:
-                        Path(lf).unlink()
-                        logger.info("Cleaned orphan session lock: %s", lf)
-                    except OSError:
-                        pass
         except (ValueError, OSError):
             LOCK_PATH.unlink(missing_ok=True)
 
@@ -171,7 +163,7 @@ def _load_state() -> dict:
             return json.loads(STATE_PATH.read_text("utf-8"))
         except Exception:
             pass
-    return {"codex_done": {}, "stats": {}}
+    return {"nim_done": {}, "stats": {}}
 
 
 def _save_state(state: dict) -> None:
@@ -193,7 +185,7 @@ def _extract_case_reason_from_text(text: str) -> str:
     return "裁判書"
 
 
-def _load_judgments_reasons() -> dict[str, str]:
+def _load_judgments_reasons() -> dict:
     mapping = {}
     if JUDGMENTS_JSON.exists():
         try:
@@ -208,71 +200,41 @@ def _load_judgments_reasons() -> dict[str, str]:
     return mapping
 
 
-# ── Codex cooldown 清除 ───────────────────────────────────────────────
-def _clear_codex_cooldown() -> None:
-    """等待結束後清除 Codex runtime state 的 cooldown。"""
+# ── NIM 呼叫 ─────────────────────────────────────────────────────────
+def _nim_summarize(prompt: str) -> tuple:
+    """呼叫 NVIDIA NIM 405B 摘要。
+
+    Returns: (success, response_text, error_msg)
+    """
     try:
-        from skills.bridge.llm_direct import (
-            load_runtime_state,
-            save_runtime_state,
-        )
-        state = load_runtime_state()
-        if int(state.get("cooldown_until_ts", 0)) > 0:
-            state["cooldown_until_ts"] = 0
-            state["cooldown_reason"] = ""
-            state["consecutive_failures"] = 0
-            save_runtime_state(state)
-            logger.info("Cleared Codex cooldown state")
-    except Exception:
-        pass
-
-
-# ── Codex 呼叫 ────────────────────────────────────────────────────────
-def _codex_summarize(prompt: str) -> tuple[bool, str, str]:
-    """呼叫 Codex OAuth 摘要。遇到 cooldown 自動等待重試一次。"""
+        from skills.bridge.inference_gateway import InferenceGateway
+    except Exception as e:
+        return False, "", f"InferenceGateway import failed: {e}"
     try:
-        from skills.bridge.llm_direct import (
-            feature_enabled,
-            run_prompt,
-        )
-        if not feature_enabled("summary"):
-            return False, "", "summary feature disabled"
-
-        result = run_prompt(
-            feature="summary",
+        gw = InferenceGateway()
+        # heavy=True 強制走 NIM 405B（heavy_fast_path）；
+        # require_pii_scrub 預設由 NVIDIA_NIM_REQUIRE_PII_SCRUB 控制（=1）
+        r = gw.chat(
             prompt=prompt,
-            timeout_sec=SUMMARY_TIMEOUT_SEC,
+            heavy=True,
+            timeout=SUMMARY_TIMEOUT_SEC,
+            task_type="judgment_summary",
             session_id=RESUMMARY_SESSION_ID,
         )
-
-        # cooldown 等待重試
-        error = str(result.get("error", ""))
-        if "cooldown_active" in error:
-            wait_sec = int(result.get("cooldown_remaining_sec", 0)) or 60
-            wait_sec = min(wait_sec + 10, 900)
-            logger.info("Codex cooldown, waiting %ds...", wait_sec)
-            # 分段 sleep，方便 graceful shutdown
-            deadline = time.time() + wait_sec
-            while time.time() < deadline and not _shutdown_requested:
-                time.sleep(min(10, deadline - time.time()))
-            if _shutdown_requested:
-                return False, "", "shutdown_requested"
-            _clear_codex_cooldown()
-            result = run_prompt(
-                feature="summary",
-                prompt=prompt,
-                timeout_sec=SUMMARY_TIMEOUT_SEC,
-                session_id=RESUMMARY_SESSION_ID,
-            )
-
-        if result.get("success"):
-            text = str(result.get("text") or "").strip()
-            if text and len(text) > 50:
-                return True, text, ""
-            return False, "", "empty or too short"
-        return False, "", str(result.get("error", "unknown"))
+        if not isinstance(r, dict):
+            return False, "", f"unexpected return type: {type(r).__name__}"
+        if not r.get("success"):
+            return False, "", str(r.get("error") or "unknown")
+        # 只接受走 NIM 的結果；走 oMLX fallback 不算數（因為 405B 才能取代 Codex）
+        provider = str(r.get("provider") or "")
+        if provider != "nvidia_nim":
+            return False, "", f"wrong provider: {provider} (expected nvidia_nim)"
+        text = str(r.get("response") or "").strip()
+        if not text:
+            return False, "", "empty response"
+        return True, text, ""
     except Exception as e:
-        return False, "", str(e)
+        return False, "", f"nim_summarize exception: {e}"
 
 
 def _is_quality_summary(text: str) -> bool:
@@ -284,7 +246,7 @@ def _is_quality_summary(text: str) -> bool:
 def _collect_for_distill(prompt: str, response: str, case_reason: str) -> None:
     try:
         from skills.bridge.distill_collector import collect_summary_pair
-        collect_summary_pair(prompt, response, case_reason, "codex_resummary")
+        collect_summary_pair(prompt, response, case_reason, "nim_resummary")
     except Exception:
         pass
 
@@ -298,7 +260,7 @@ def _notify_progress(message: str) -> None:
 
 
 # ── 掃描 ──────────────────────────────────────────────────────────────
-def scan_texts() -> list[dict]:
+def scan_texts() -> list:
     entries = []
     if not NORM_ROOT.exists():
         return entries
@@ -326,7 +288,7 @@ def main():
     signal.signal(signal.SIGTERM, _signal_handler)
     signal.signal(signal.SIGINT, _signal_handler)
 
-    parser = argparse.ArgumentParser(description="週末 Codex 批次重摘要")
+    parser = argparse.ArgumentParser(description="週末 NIM 批次重摘要")
     parser.add_argument("--all", action="store_true", help="強制重摘所有")
     parser.add_argument("--limit", type=int, default=0, help="限制筆數（0=不限）")
     parser.add_argument("--dry-run", action="store_true", help="模擬模式")
@@ -339,10 +301,15 @@ def main():
     atexit.register(_release_lock)
 
     state = _load_state()
-    codex_done = state.get("codex_done", {})
+    # 向下相容：舊 state 使用 codex_done，遷移到 nim_done
+    nim_done = state.get("nim_done") or state.get("codex_done", {})
+
+    # NIM 日預算防呆
+    NIM_DAILY_BUDGET = int(os.environ.get("NVIDIA_NIM_DAILY_BUDGET", "500"))
+    RESUMMARY_BUDGET_CAP = int(os.environ.get("WEEKEND_RESUMMARY_BUDGET_CAP",
+                                               str(max(50, NIM_DAILY_BUDGET - 200))))
 
     # RunAtLoad 守衛：非手動啟動時，只在有未完成工作時才繼續
-    # 判斷是否有進行中的 session（當天 stats 存在且 stopped_by != "complete"）
     from datetime import datetime
     today = datetime.now().strftime("%Y-%m-%d")
     weekday = datetime.now().weekday()  # 0=Mon, 5=Sat, 6=Sun
@@ -364,24 +331,34 @@ def main():
     logger.info("Found %d normalized texts (>= %d bytes)", len(entries), MIN_TEXT_LEN)
 
     if not args.all:
-        entries = [e for e in entries if e["slug"] not in codex_done]
+        entries = [e for e in entries if e["slug"] not in nim_done]
         logger.info("After filtering already done: %d remaining", len(entries))
 
-    if args.limit > 0:
+    # 套用 budget cap
+    effective_limit = args.limit if args.limit > 0 else RESUMMARY_BUDGET_CAP
+    if len(entries) > effective_limit:
+        logger.warning(
+            "Clamping entries from %d to %d (budget_cap=%d)",
+            len(entries), effective_limit, RESUMMARY_BUDGET_CAP,
+        )
+        entries = entries[:effective_limit]
+    elif args.limit > 0:
         entries = entries[:args.limit]
 
     if not entries:
         logger.info("Nothing to do")
         return 0
 
-    logger.info("Starting Codex re-summary of %d judgments", len(entries))
+    logger.info("Starting NIM re-summary of %d judgments (budget_cap=%d)",
+                len(entries), RESUMMARY_BUDGET_CAP)
     if not args.dry_run:
-        _notify_progress(f"週末 Codex 重摘要開始：{len(entries)} 筆")
+        _notify_progress(f"週末 NIM 重摘要開始：{len(entries)} 筆")
 
     success_count = 0
     fail_count = 0
     distill_count = 0
     consecutive_fails = 0
+    processed = 0
     start_time = time.time()
 
     for i, entry in enumerate(entries):
@@ -390,7 +367,7 @@ def main():
             logger.info("Shutdown requested, stopping at %d/%d", i, len(entries))
             break
 
-        txt_path: Path = entry["path"]
+        txt_path = entry["path"]
         slug = entry["slug"]
 
         try:
@@ -422,7 +399,7 @@ def main():
         )
 
         if args.dry_run:
-            logger.info("[DRY-RUN] %d/%d %s (reason=%s, len=%d)",
+            logger.info("[DRY-RUN] %d/%d %s (reason=%s, len=%d) provider=nvidia_nim",
                         i + 1, len(entries), slug, case_reason, len(full_text))
             continue
 
@@ -434,26 +411,40 @@ def main():
                 time.sleep(min(10, deadline - time.time()))
 
         if consecutive_fails >= MAX_CONSECUTIVE_FAILS:
-            logger.error("Too many consecutive failures (%d), stopping", consecutive_fails)
+            logger.error("Too many consecutive NIM failures (%d), stopping", consecutive_fails)
+            # 呼叫 issue tracker 記錄連續失敗
+            try:
+                from skills.management.issue_tracker import log_issue
+                log_issue(
+                    command="weekend_resummary",
+                    error_msg=f"NIM consecutive failures: {consecutive_fails}",
+                    context=f"budget_remaining={RESUMMARY_BUDGET_CAP - processed}",
+                    severity="High",
+                    source="weekend_resummary",
+                )
+            except Exception:
+                pass
             break
 
-        # 呼叫 Codex
-        ok, summary, error = _codex_summarize(prompt)
+        # 呼叫 NIM
+        ok, summary, error = _nim_summarize(prompt)
 
         if _shutdown_requested:
             break
 
+        processed += 1
+
         if ok and _is_quality_summary(summary):
             success_count += 1
             consecutive_fails = 0
-            codex_done[slug] = {
+            nim_done[slug] = {
                 "at": time.strftime("%Y-%m-%dT%H:%M:%S"),
                 "len": len(summary),
             }
             _collect_for_distill(prompt, summary, case_reason)
             distill_count += 1
             logger.info(
-                "%d/%d OK: %s (reason=%s, summary=%d chars)",
+                "%d/%d OK: %s (reason=%s, summary=%d chars, provider=nvidia_nim)",
                 i + 1, len(entries), slug, case_reason, len(summary),
             )
         else:
@@ -467,7 +458,7 @@ def main():
 
         # 定期儲存 state（每筆成功都存，避免丟失進度）
         if success_count > 0 and (success_count % 5 == 0 or (i + 1) % 10 == 0):
-            state["codex_done"] = codex_done
+            state["nim_done"] = nim_done
             _save_state(state)
 
         # 進度通知
@@ -483,7 +474,7 @@ def main():
         time.sleep(args.delay)
 
     # 最終儲存
-    state["codex_done"] = codex_done
+    state["nim_done"] = nim_done
     state["stats"][time.strftime("%Y-%m-%d")] = {
         "total": len(entries),
         "success": success_count,
@@ -497,7 +488,7 @@ def main():
 
     elapsed_min = (time.time() - start_time) / 60
     report = (
-        f"週末 Codex 重摘要{'中斷' if _shutdown_requested else '完成'}\n"
+        f"週末 NIM 重摘要{'中斷' if _shutdown_requested else '完成'}\n"
         f"處理: {i + 1}/{len(entries)} 筆\n"
         f"成功: {success_count}\n"
         f"失敗: {fail_count}\n"

@@ -48,7 +48,7 @@ logger = logging.getLogger("reprocess-insights")
 
 # ── 路徑 ──────────────────────────────────────────────────────────────
 NORM_ROOT = Path.home() / ".cache/judgment_collector/judicial_api/normalized"
-CODEX_TIMEOUT = int(os.environ.get("OSC_INSIGHT_SUMMARY_TIMEOUT_SEC", "120"))
+NIM_TIMEOUT = int(os.environ.get("OSC_INSIGHT_SUMMARY_TIMEOUT_SEC", "120"))
 
 # ── 司法院 API ────────────────────────────────────────────────────────
 JDG_API_BASE = os.environ.get("JUDICIAL_API_BASE", "https://data.judicial.gov.tw/jdg/api").rstrip("/")
@@ -295,35 +295,17 @@ def _find_text_in_cache(court_ref: str, txt_index: dict[str, Path]) -> Optional[
     return None
 
 
-# ── Codex 摘要（走 openclaw_codex_bridge，跟 weekend_resummary 同路徑）──
+# ── NIM 摘要（走 InferenceGateway heavy_fast_path，2026-04-25 從 Codex 遷移）──
 RESUMMARY_SESSION_ID = "reprocess-insights-batch"
 SUMMARY_TIMEOUT_SEC = 300
 
 _shutdown_requested = False
 
 
-def _clear_codex_cooldown() -> None:
+def _summarize_with_nim(raw_text: str, case_reason: str) -> Optional[str]:
+    """Use NVIDIA NIM 405B (InferenceGateway heavy) to generate verbatim extraction."""
     try:
-        from skills.bridge.llm_direct import load_runtime_state, save_runtime_state
-        state = load_runtime_state()
-        if int(state.get("cooldown_until_ts", 0)) > 0:
-            state["cooldown_until_ts"] = 0
-            state["cooldown_reason"] = ""
-            state["consecutive_failures"] = 0
-            save_runtime_state(state)
-            logger.info("Cleared Codex cooldown state")
-    except Exception:
-        pass
-
-
-def _summarize_with_codex(raw_text: str, case_reason: str) -> Optional[str]:
-    """Use Codex OAuth (openclaw_codex_bridge) to generate verbatim extraction."""
-    try:
-        from skills.bridge.llm_direct import feature_enabled, run_prompt
-
-        if not feature_enabled("summary"):
-            logger.warning("    Codex summary feature disabled")
-            return None
+        from skills.bridge.inference_gateway import InferenceGateway
 
         text = raw_text[:150000] if len(raw_text) > 150000 else raw_text
         prompt = PROMPT_TEMPLATE.format(
@@ -331,52 +313,35 @@ def _summarize_with_codex(raw_text: str, case_reason: str) -> Optional[str]:
             full_text=text,
         )
 
-        result = run_prompt(
-            feature="summary",
+        gw = InferenceGateway()
+        result = gw.chat(
             prompt=prompt,
-            timeout_sec=SUMMARY_TIMEOUT_SEC,
+            heavy=True,
+            timeout=SUMMARY_TIMEOUT_SEC,
+            task_type="judgment_summary",
             session_id=RESUMMARY_SESSION_ID,
         )
 
-        # Handle cooldown
-        error = str(result.get("error", ""))
-        if "cooldown_active" in error:
-            wait_sec = int(result.get("cooldown_remaining_sec", 0)) or 60
-            wait_sec = min(wait_sec + 10, 900)
-            logger.info("    Codex cooldown, waiting %ds...", wait_sec)
-            deadline = time.time() + wait_sec
-            while time.time() < deadline and not _shutdown_requested:
-                time.sleep(min(10, deadline - time.time()))
-            if _shutdown_requested:
-                return None
-            _clear_codex_cooldown()
-            result = run_prompt(
-                feature="summary",
-                prompt=prompt,
-                timeout_sec=SUMMARY_TIMEOUT_SEC,
-                session_id=RESUMMARY_SESSION_ID,
-            )
-
         if not result.get("success"):
-            logger.warning("    Codex failed: error=%s duration=%sms model=%s rc=%s",
+            logger.warning("    NIM failed: error=%s duration=%sms model=%s",
                            str(result.get("error", "unknown"))[:200],
                            result.get("duration_ms", "?"),
-                           result.get("model", "?"),
-                           result.get("returncode", "?"))
-            # Debug: dump stdout tail to see response structure
-            stdout_tail = result.get("stdout_tail", "")
-            if stdout_tail:
-                logger.info("    stdout_tail: %s", stdout_tail[:500])
+                           result.get("model", "?"))
             return None
 
-        summary = str(result.get("text") or "").strip()
+        # 只接受走 NIM 的結果
+        provider = str(result.get("provider") or "")
+        if provider != "nvidia_nim":
+            logger.warning("    Wrong provider: %s (expected nvidia_nim), skipping", provider)
+            return None
+
+        summary = str(result.get("response") or "").strip()
         if not summary or len(summary) < 20:
-            logger.warning("    Codex returned empty/short text (%d chars): [%s], rc=%s",
-                           len(summary), summary[:100], result.get("returncode"))
+            logger.warning("    NIM returned empty/short text (%d chars)", len(summary))
             return None
 
         if any(kw in summary for kw in REJECT_KEYWORDS):
-            logger.info("    Codex rejected (no extractable insight)")
+            logger.info("    NIM rejected (no extractable insight)")
             return summary
 
         if not any(h in summary for h in STRUCTURE_HEADERS):
@@ -385,17 +350,17 @@ def _summarize_with_codex(raw_text: str, case_reason: str) -> Optional[str]:
         return summary
 
     except Exception as e:
-        logger.error("    Codex error: %s", e)
+        logger.error("    NIM error: %s", e)
         return None
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Reprocess legal_insights with new verbatim extraction prompt")
+    parser = argparse.ArgumentParser(description="Reprocess legal_insights with NIM verbatim extraction prompt")
     parser.add_argument("--dry-run", action="store_true", help="Preview only, don't update DB")
     parser.add_argument("--limit", type=int, default=0, help="Max entries to process (0=all)")
     parser.add_argument("--only-with-raw", action="store_true", help="Only process rows that have raw_text")
     parser.add_argument("--start-id", type=int, default=0, help="Start from this ID")
-    parser.add_argument("--delay", type=float, default=5.0, help="Delay between Codex calls (sec)")
+    parser.add_argument("--delay", type=float, default=1.5, help="Delay between NIM calls (sec)")
     parser.add_argument("--skip-api", action="store_true", help="Skip judicial API fetch (cache + raw_text only)")
     args = parser.parse_args()
 
@@ -481,7 +446,7 @@ def main():
             processed += 1
             continue
 
-        summary = _summarize_with_codex(raw_text, case_reason)
+        summary = _summarize_with_nim(raw_text, case_reason)
         if not summary:
             logger.warning("    Failed to get summary")
             failed += 1
