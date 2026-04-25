@@ -5,22 +5,108 @@
     "court interpreter", "human rights", "minority language",
     "法律通譯", "司法通譯", "人権", "少数民族", "多言語",
     "通訳", "言語権", "법원 통역", "인권", "소수민족",
-    "語言政策", "多元文化"
+    "語言政策", "多元文化", "法学", "比較法",
+    "Japanese law", "Korean law", "Hong Kong law", "Taiwan law",
+    "Verfassungsrecht", "Grundgesetz", "constitutional law",
+    "東アジア", "동아시아", "法律", "司法制度",
+    "linguistic minority", "multilingual court", "language access Asia"
   ],
   "sources": [
-    {"url": "https://ci.nii.ac.jp/opensearch/search?q=司法通訳&format=rss", "type": "rss", "lang": "ja", "note": "CiNii Articles 司法通訳"},
-    {"url": "https://www.jstage.jst.go.jp/browse/_pubinfo/-char/en", "type": "html", "lang": "ja", "note": "J-STAGE 学術誌電子図書館"},
-    {"url": "https://www.nichibenren.or.jp/activity/human/rss.xml", "type": "rss", "lang": "ja", "note": "日弁連 人権活動"},
-    {"url": "https://www.courts.go.jp/app/hanrei_en/search", "type": "html", "lang": "ja", "note": "最高裁判所判例検索"},
-    {"url": "https://www.moj.go.jp/EN/HOUSO/index.html", "type": "html", "lang": "ja", "note": "法務省 多言語対応"},
-    {"url": "https://www.minpaku.ac.jp/research/activity/news", "type": "html", "lang": "ja", "note": "国立民族学博物館 研究活動"},
-    {"url": "https://www.institut-fuer-menschenrechte.de/en/rss.xml", "type": "rss", "lang": "de", "note": "Deutsches Institut für Menschenrechte"},
-    {"url": "https://www.mpil.de/en/pub/news.cfm", "type": "html", "lang": "de", "note": "Max Planck Institute for Comparative Public Law and International Law"},
-    {"url": "https://www.germanlawjournal.com/latest", "type": "html", "lang": "en", "note": "German Law Journal"},
-    {"url": "https://www.bundesverfassungsgericht.de/SiteGlobals/Functions/RSSFeed/DE/RSSNewsfeed/RSSNewsfeed_Entscheidungen/RSSNewsfeed.xml", "type": "rss", "lang": "de", "note": "Bundesverfassungsgericht 決定"},
-    {"url": "https://www.kci.go.kr/kciportal/main.kci", "type": "html", "lang": "ko", "note": "KCI Korea Citation Index"},
-    {"url": "https://www.humanrights.go.kr/base/board/list?boardManagementNo=5", "type": "html", "lang": "ko", "note": "國家人權委員會 (韓)"},
-    {"url": "https://www.law.hku.hk/ccpl/newspapers.html", "type": "html", "lang": "en", "note": "HKU CCPL"},
-    {"url": "https://www.hkhrm.org.hk/english/reports/index.html", "type": "html", "lang": "en", "note": "HK Human Rights Monitor"}
+    {
+      "url": "https://ci.nii.ac.jp/opensearch/search?q=司法通訳&format=atom",
+      "type": "rss",
+      "lang": "ja",
+      "note": "CiNii 司法通訳検索 (Atom) — 日本学術論文データベース、法廷通訳・司法通訳研究論文"
+    },
+    {
+      "url": "https://ci.nii.ac.jp/opensearch/search?q=通訳&count=20&format=atom&lang=ja",
+      "type": "rss",
+      "lang": "ja",
+      "note": "CiNii 通訳検索 (Atom) — 日本學術論文庫通譯相關論文，涵蓋法庭、會議、社區通訳"
+    },
+    {
+      "url": "https://ci.nii.ac.jp/opensearch/search?q=多文化共生&count=20&format=atom",
+      "type": "rss",
+      "lang": "ja",
+      "note": "CiNii 多文化共生検索 (Atom) — 日本多文化共生・多言語政策研究論文"
+    },
+    {
+      "url": "https://ci.nii.ac.jp/opensearch/search?q=在日外国人+言語&count=20&format=atom",
+      "type": "rss",
+      "lang": "ja",
+      "note": "CiNii 在日外国人言語検索 (Atom) — 日本外籍居民語言使用與法律保障研究"
+    },
+    {
+      "url": "https://link.springer.com/search.rss?query=&search-within=Journal&facet-journal-id=10831",
+      "type": "rss",
+      "lang": "en",
+      "note": "Journal of East Asian Linguistics (Springer) — 東亞語言學旗艦期刊，含日語、韓語、漢語語法與政策"
+    },
+    {
+      "url": "https://link.springer.com/search.rss?query=&search-within=Journal&facet-journal-id=10836",
+      "type": "rss",
+      "lang": "en",
+      "note": "Journal of Japanese Linguistics (Springer) — 日語語言學專屬學術期刊"
+    },
+    {
+      "url": "https://link.springer.com/search.rss?query=&search-within=Journal&facet-journal-id=13580",
+      "type": "rss",
+      "lang": "en",
+      "note": "Korean Linguistics / RASK (Springer) — 韓語語言學與東北亞語言研究期刊"
+    },
+    {
+      "url": "https://link.springer.com/search.rss?query=&search-within=Journal&facet-journal-id=12284",
+      "type": "rss",
+      "lang": "en",
+      "note": "Taiwan Studies (Springer) — 台灣政治、法律、語言多元主題學術期刊"
+    },
+    {
+      "url": "https://germanlawjournal.com/feed/",
+      "type": "rss",
+      "lang": "en",
+      "note": "German Law Journal (Cambridge) — 德國及歐洲憲法、比較法英文期刊，含基本權利分析"
+    },
+    {
+      "url": "https://verfassungsblog.de/feed/",
+      "type": "rss",
+      "lang": "de",
+      "note": "Verfassungsblog — 德語圈最重要憲法法學部落格，含人權、少數族群保護最新評論"
+    },
+    {
+      "url": "https://fra.europa.eu/en/rss.xml",
+      "type": "rss",
+      "lang": "en",
+      "note": "EU Agency for Fundamental Rights (FRA) — 歐盟基本權利署報告，語言少數族群保護政策"
+    },
+    {
+      "url": "https://www.tandfonline.com/feed/rss/rcas20",
+      "type": "rss",
+      "lang": "en",
+      "note": "Critical Asian Studies (Routledge) — 批判性亞洲研究期刊，含東亞法律、族群與語言議題"
+    },
+    {
+      "url": "https://link.springer.com/search.rss?query=&search-within=Journal&facet-journal-id=12247",
+      "type": "rss",
+      "lang": "en",
+      "note": "Pacific Affairs (UBC/Springer) — 太平洋區域研究期刊，含日本韓國台灣法律與族群研究"
+    },
+    {
+      "url": "https://www.mpil.de/en/pub/news.cfm",
+      "type": "html",
+      "lang": "en",
+      "note": "Max Planck Institute for Comparative Public Law and International Law (MPIL) — 德國比較公法研究所，亞洲法律比較研究"
+    },
+    {
+      "url": "https://www.courts.go.jp/app/hanrei_en/search",
+      "type": "html",
+      "lang": "en",
+      "note": "日本最高裁判所判例検索 (英文版) — 日本最高裁判所英文判決，含外籍人士語言權相關判決"
+    },
+    {
+      "url": "https://www.humanrights.go.kr/base/board/list?boardManagementNo=5",
+      "type": "html",
+      "lang": "ko",
+      "note": "韓國國家人權委員會 (NHRCK) 通知 — 韓國官方人權機構公告，含語言少數族群議題"
+    }
   ]
 }

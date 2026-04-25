@@ -5,19 +5,101 @@
     "ICCPR", "ICESCR", "CEDAW", "CRC", "CRPD", "CERD", "CAT",
     "human rights", "treaty body", "concluding observations",
     "兩公約", "公民與政治權利", "經濟社會文化權利", "人權公約", "人權報告",
-    "憲法法庭", "國家人權委員會", "human rights council"
+    "憲法法庭", "國家人權委員會", "human rights council",
+    "Menschenrechte", "Grundrechte", "인권", "人権",
+    "special rapporteur", "UPR", "universal periodic review",
+    "fundamental rights", "EU Charter", "ECHR"
   ],
   "sources": [
-    {"url": "https://www.humanrights.moj.gov.tw/17725/17728/Nodelist", "type": "html", "lang": "zh-Hant", "note": "法務部兩公約專區"},
-    {"url": "https://nhrc.cy.gov.tw/News.aspx?n=13417", "type": "html", "lang": "zh-Hant", "note": "監察院國家人權委員會新聞"},
-    {"url": "https://cons.judicial.gov.tw/docdata.aspx?fid=38&id=348299", "type": "html", "lang": "zh-Hant", "note": "憲法法庭人權相關判決"},
-    {"url": "https://www.tahr.org.tw/news", "type": "html", "lang": "zh-Hant", "note": "台灣人權促進會"},
-    {"url": "https://www.ohchr.org/en/news", "type": "html", "lang": "en", "note": "OHCHR 聯合國人權事務高級專員辦事處"},
-    {"url": "https://tbinternet.ohchr.org/_layouts/15/TreatyBodyExternal/countries.aspx", "type": "html", "lang": "en", "note": "UN Treaty Body Database"},
-    {"url": "https://hudoc.echr.coe.int/eng", "type": "html", "lang": "en", "note": "ECHR HUDOC 歐洲人權法院判決庫"},
-    {"url": "https://www.hrw.org/rss/news", "type": "rss", "lang": "en", "note": "Human Rights Watch"},
-    {"url": "https://www.amnesty.org/en/latest/news/feed/", "type": "rss", "lang": "en", "note": "Amnesty International"},
-    {"url": "https://www.icj.org/feed/", "type": "rss", "lang": "en", "note": "International Commission of Jurists"},
-    {"url": "https://minorityrights.org/feed/", "type": "rss", "lang": "en", "note": "Minority Rights Group"}
+    {
+      "url": "https://www.humanrights.moj.gov.tw/17725/17728/Nodelist",
+      "type": "html",
+      "lang": "zh-Hant",
+      "note": "法務部兩公約資訊網 — 台灣官方兩公約施行報告及審查結論"
+    },
+    {
+      "url": "https://nhrc.cy.gov.tw/News.aspx?n=13417",
+      "type": "html",
+      "lang": "zh-Hant",
+      "note": "監察院國家人權委員會新聞 — 台灣 NHRC 發布記者會與調查報告"
+    },
+    {
+      "url": "https://cons.judicial.gov.tw/docdata.aspx?fid=38&id=348299",
+      "type": "html",
+      "lang": "zh-Hant",
+      "note": "憲法法庭人權相關判決 — 台灣憲法法庭基本權利裁判"
+    },
+    {
+      "url": "https://www.tahr.org.tw/news",
+      "type": "html",
+      "lang": "zh-Hant",
+      "note": "台灣人權促進會 (TAHR) 新聞 — 台灣最重要人權 NGO，含移民、原住民、監控議題"
+    },
+    {
+      "url": "https://www.ohchr.org/en/news",
+      "type": "html",
+      "lang": "en",
+      "note": "OHCHR 聯合國人權事務高級專員辦事處 — UN 最高人權機構新聞發布"
+    },
+    {
+      "url": "https://tbinternet.ohchr.org/_layouts/15/TreatyBodyExternal/countries.aspx",
+      "type": "html",
+      "lang": "en",
+      "note": "UN Treaty Body Database — 各國 ICCPR/ICESCR 等公約履約報告及結論性意見"
+    },
+    {
+      "url": "https://hudoc.echr.coe.int/eng",
+      "type": "html",
+      "lang": "en",
+      "note": "ECHR HUDOC — 歐洲人權法院判決全文資料庫"
+    },
+    {
+      "url": "https://www.hrw.org/rss/news",
+      "type": "rss",
+      "lang": "en",
+      "note": "Human Rights Watch — 全球最具影響力人權監察 NGO 的每日新聞 RSS"
+    },
+    {
+      "url": "https://www.amnesty.org/en/latest/news/feed/",
+      "type": "rss",
+      "lang": "en",
+      "note": "Amnesty International — 國際特赦組織最新報告與聲明"
+    },
+    {
+      "url": "https://www.icj.org/feed/",
+      "type": "rss",
+      "lang": "en",
+      "note": "International Commission of Jurists (ICJ) — 法治與人權律師國際組織，涵蓋亞洲判決分析"
+    },
+    {
+      "url": "https://minorityrights.org/feed/",
+      "type": "rss",
+      "lang": "en",
+      "note": "Minority Rights Group International — 全球少數族群與原住民族權利報告"
+    },
+    {
+      "url": "https://fra.europa.eu/en/rss.xml",
+      "type": "rss",
+      "lang": "en",
+      "note": "EU Agency for Fundamental Rights (FRA) — 歐盟基本權利署，歐洲基本人權監測報告"
+    },
+    {
+      "url": "https://news.un.org/feed/subscribe/en/news/topic/human-rights/feed/rss.xml",
+      "type": "rss",
+      "lang": "en",
+      "note": "UN News (Human Rights) — 聯合國新聞人權分類 RSS，含 HRC 決議與特別報告員報告"
+    },
+    {
+      "url": "https://verfassungsblog.de/feed/",
+      "type": "rss",
+      "lang": "de",
+      "note": "Verfassungsblog — 德國憲法法學部落格，德語圈最重要人權法與比較憲法學術媒體"
+    },
+    {
+      "url": "https://www.institut-fuer-menschenrechte.de/en/news.html",
+      "type": "html",
+      "lang": "de",
+      "note": "Deutsches Institut für Menschenrechte (DIMR) — 德國國家人權機構，德國 Menschenrechte 政策報告"
+    }
   ]
 }

@@ -4,14 +4,126 @@
   "keywords": [
     "indigenous", "ethnography", "linguistic anthropology", "minority",
     "原住民族", "族群", "人類學", "民族學", "文化研究", "多元文化",
-    "ethnic identity", "cultural heritage", "族語"
+    "ethnic identity", "cultural heritage", "族語",
+    "Ainu", "Sámi", "Māori", "Aboriginal", "Native American",
+    "indigenous rights", "land rights", "cultural preservation",
+    "先住民族", "アイヌ", "민족", "원주민",
+    "ethnology", "decolonization", "indigenous knowledge"
   ],
   "sources": [
-    {"url": "https://www.ioe.sinica.edu.tw/zh/Publication/ListPeriodical", "type": "html", "lang": "zh-Hant", "note": "中研院民族所出版品"},
-    {"url": "https://www.cip.gov.tw/zh-tw/news.html", "type": "html", "lang": "zh-Hant", "note": "原民會新聞"},
-    {"url": "https://ihc.apc.gov.tw/", "type": "html", "lang": "zh-Hant", "note": "原住民族歷史文化園區"},
-    {"url": "https://www.minpaku.ac.jp/en/research/publication", "type": "html", "lang": "en", "note": "国立民族学博物館 Minpaku"},
-    {"url": "https://www.eth.mpg.de/publications", "type": "html", "lang": "en", "note": "Max Planck Institute for Social Anthropology"},
-    {"url": "https://www.ethnologue.com/news", "type": "html", "lang": "en", "note": "Ethnologue News"}
+    {
+      "url": "https://www.ioe.sinica.edu.tw/zh/Publication/ListPeriodical",
+      "type": "html",
+      "lang": "zh-Hant",
+      "note": "中研院民族學研究所 — 台灣最重要的民族學學術機構，出版品列表"
+    },
+    {
+      "url": "https://www.americananthro.org/feed/",
+      "type": "rss",
+      "lang": "en",
+      "note": "American Anthropological Association (AAA) — 美國人類學會官方新聞，涵蓋北美原住民研究"
+    },
+    {
+      "url": "https://www.culturalsurvival.org/rss.xml",
+      "type": "rss",
+      "lang": "en",
+      "note": "Cultural Survival — 哈佛大學關聯的原住民權利組織，全球原住民文化保存倡議報導"
+    },
+    {
+      "url": "https://www.therai.org.uk/feed/",
+      "type": "rss",
+      "lang": "en",
+      "note": "Royal Anthropological Institute (RAI) — 英國皇家人類學學會，歐洲人類學研究與政策動態"
+    },
+    {
+      "url": "https://www.easaonline.org/feed/",
+      "type": "rss",
+      "lang": "en",
+      "note": "EASA (European Association of Social Anthropologists) — 歐洲社會人類學會，跨國族群研究"
+    },
+    {
+      "url": "https://www.anthropology-news.org/feed/",
+      "type": "rss",
+      "lang": "en",
+      "note": "Anthropology News (AAA) — 美國人類學會期刊媒體，田野研究與公共人類學文章"
+    },
+    {
+      "url": "https://www.journals.uchicago.edu/action/showFeed?type=etoc&feed=rss&jc=jar",
+      "type": "rss",
+      "lang": "en",
+      "note": "Journal of Anthropological Research (Chicago) — 芝加哥大學人類學研究期刊，理論與田野並重"
+    },
+    {
+      "url": "https://www.journals.uchicago.edu/action/showFeed?type=etoc&feed=rss&jc=ca",
+      "type": "rss",
+      "lang": "en",
+      "note": "Current Anthropology (Chicago) — 全球人類學旗艦期刊，含族群研究論文"
+    },
+    {
+      "url": "https://onlinelibrary.wiley.com/feed/14698676/most-recent",
+      "type": "rss",
+      "lang": "en",
+      "note": "Social Anthropology / Anthropologie Sociale (Wiley) — EASA 官方期刊，歐洲人類學"
+    },
+    {
+      "url": "https://onlinelibrary.wiley.com/feed/14678322/most-recent",
+      "type": "rss",
+      "lang": "en",
+      "note": "Anthropology Today (RAI/Wiley) — 公共政策取向人類學，關注原住民議題"
+    },
+    {
+      "url": "https://onlinelibrary.wiley.com/feed/15481425/most-recent",
+      "type": "rss",
+      "lang": "en",
+      "note": "American Ethnologist (Wiley) — 美國民族學期刊，聚焦族群、文化政治與身份認同"
+    },
+    {
+      "url": "https://onlinelibrary.wiley.com/feed/14679655/most-recent",
+      "type": "rss",
+      "lang": "en",
+      "note": "Journal of the Royal Anthropological Institute (Wiley/RAI) — 英國人類學頂級期刊"
+    },
+    {
+      "url": "https://www.tandfonline.com/feed/rss/cjms20",
+      "type": "rss",
+      "lang": "en",
+      "note": "Journal of Ethnic and Migration Studies (Routledge) — 族群與移民研究重要期刊，涵蓋歐亞各地區"
+    },
+    {
+      "url": "https://www.titv.org.tw/rss",
+      "type": "rss",
+      "lang": "zh-Hant",
+      "note": "原住民族電視台 (TITV) 新聞 — 台灣原住民族最重要電子媒體，族語及中文報導"
+    },
+    {
+      "url": "https://intercontinentalcry.org/feed/",
+      "type": "rss",
+      "lang": "en",
+      "note": "Intercontinental Cry — 全球原住民議題獨立媒體，含拉美、北美、亞太報導"
+    },
+    {
+      "url": "https://www.narf.org/feed/",
+      "type": "rss",
+      "lang": "en",
+      "note": "Native American Rights Fund (NARF) — 美國原住民法律權利基金，法律倡議動態"
+    },
+    {
+      "url": "https://ictnews.org/feed/",
+      "type": "rss",
+      "lang": "en",
+      "note": "Indian Country Today — 美國原住民新聞媒體，部落政治、文化與語言報導"
+    },
+    {
+      "url": "https://globalvoices.org/feed/",
+      "type": "rss",
+      "lang": "en",
+      "note": "Global Voices — 多語言公民媒體，含亞洲原住民族、少數族群聲音"
+    },
+    {
+      "url": "https://www.minpaku.ac.jp/en/research/publication",
+      "type": "html",
+      "lang": "en",
+      "note": "国立民族学博物館 (Minpaku) 英文版 — 日本國立民族學博物館研究出版品，含 Ainu 及東亞族群研究"
+    }
   ]
 }

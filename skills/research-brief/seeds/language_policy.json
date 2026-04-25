@@ -5,14 +5,96 @@
     "language rights", "language policy", "endangered language",
     "minority language", "mother tongue", "linguistic human rights",
     "語言權", "國家語言", "少數語言", "瀕危語言", "母語", "語言政策",
-    "language revitalization"
+    "language revitalization", "language documentation",
+    "Sprachpolitik", "Minderheitensprache", "言語権", "少数言語",
+    "언어권", "소수언어", "language planning", "multilingualism",
+    "bilingual education", "language endangerment", "indigenous language",
+    "Sámi", "Welsh", "Breton", "Frisian", "multilingual policy"
   ],
   "sources": [
-    {"url": "https://www.unesco.org/en/articles/feed", "type": "rss", "lang": "en", "note": "UNESCO News"},
-    {"url": "https://en.wal.unesco.org/news", "type": "html", "lang": "en", "note": "UNESCO World Atlas of Languages"},
-    {"url": "https://link.springer.com/journal/10993.rss", "type": "rss", "lang": "en", "note": "Language Policy (Springer)"},
-    {"url": "https://www.tandfonline.com/feed/rss/rmmm20", "type": "rss", "lang": "en", "note": "Journal of Multilingual and Multicultural Development"},
-    {"url": "https://www.klokkare.se/feed/", "type": "rss", "lang": "en", "note": "Language rights / rokkare (int'l)"},
-    {"url": "https://ilrdc.tw/news.php", "type": "html", "lang": "zh-Hant", "note": "原住民族語言研究發展基金會"}
+    {
+      "url": "https://www.elen.ngo/feed/",
+      "type": "rss",
+      "lang": "en",
+      "note": "ELEN (European Language Equality Network) — 歐洲語言平等倡議組織，聚焦歐盟少數與區域語言政策"
+    },
+    {
+      "url": "https://www.npld.eu/feed/",
+      "type": "rss",
+      "lang": "en",
+      "note": "Network to Promote Linguistic Diversity (NPLD) — 跨歐語言多樣性推廣網絡，含 Sámi、Welsh、Basque 等"
+    },
+    {
+      "url": "https://link.springer.com/search.rss?query=language+policy&search-within=Journal&facet-journal-id=10993",
+      "type": "rss",
+      "lang": "en",
+      "note": "Language Policy (Springer) 期刊搜尋 RSS — 語言政策旗艦學術期刊最新論文"
+    },
+    {
+      "url": "https://link.springer.com/search.rss?query=minority+language&search-within=Journal&facet-journal-id=10993",
+      "type": "rss",
+      "lang": "en",
+      "note": "Language Policy (Springer) — 少數語言政策相關論文篩選"
+    },
+    {
+      "url": "https://www.tandfonline.com/feed/rss/rmmm20",
+      "type": "rss",
+      "lang": "en",
+      "note": "Journal of Multilingual and Multicultural Development (Routledge) — 多語與多元文化發展學術期刊"
+    },
+    {
+      "url": "https://www.tandfonline.com/feed/rss/rjml20",
+      "type": "rss",
+      "lang": "en",
+      "note": "International Journal of Multilingualism (Routledge) — 多語主義國際學術期刊"
+    },
+    {
+      "url": "https://www.languagemagazine.com/feed/",
+      "type": "rss",
+      "lang": "en",
+      "note": "Language Magazine — 語言教育與政策專業雜誌，含北美少數語言政策報導"
+    },
+    {
+      "url": "https://www.languageonthemove.com/feed/",
+      "type": "rss",
+      "lang": "en",
+      "note": "Language on the Move — 語言社會學學術部落格，聚焦全球化下的多語政策與移民語言"
+    },
+    {
+      "url": "https://terralingua.org/feed/",
+      "type": "rss",
+      "lang": "en",
+      "note": "Terralingua — 語言生物多樣性研究組織，監測瀕危語言與原住民語言復振"
+    },
+    {
+      "url": "https://www.titv.org.tw/rss",
+      "type": "rss",
+      "lang": "zh-Hant",
+      "note": "原住民族電視台 (TITV) — 台灣原住民族語言政策與族語使用最即時報導"
+    },
+    {
+      "url": "https://ci.nii.ac.jp/opensearch/search?q=言語政策&count=20&format=atom",
+      "type": "rss",
+      "lang": "ja",
+      "note": "CiNii 言語政策検索 (Atom) — 日本最大學術論文資料庫的語言政策相關論文"
+    },
+    {
+      "url": "https://ci.nii.ac.jp/opensearch/search?q=アイヌ語&count=20&format=atom",
+      "type": "rss",
+      "lang": "ja",
+      "note": "CiNii アイヌ語検索 (Atom) — 日本 CiNii 資料庫 Ainu 語研究論文，涵蓋語言保存與政策"
+    },
+    {
+      "url": "https://ilrdc.tw/news.php",
+      "type": "html",
+      "lang": "zh-Hant",
+      "note": "原住民族語言研究發展基金會 (ILRDC) — 台灣族語標準化與推廣官方機構"
+    },
+    {
+      "url": "https://en.wal.unesco.org/news",
+      "type": "html",
+      "lang": "en",
+      "note": "UNESCO World Atlas of Languages — UNESCO 世界語言地圖，瀕危語言監測與政策報告"
+    }
   ]
 }
