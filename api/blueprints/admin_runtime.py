@@ -673,6 +673,72 @@ def create_admin_runtime_blueprint(
         except Exception as exc:
             checks["operational_audit"] = {"ok": False, "detail": str(exc)[:120]}
 
+        # 2026-04-25 P2-7: operational_health — count cron failures + benchmark freshness
+        try:
+            import json as _json_h
+            issue_path = root / ".runtime" / "issue_agenda.jsonl"
+            cutoff_24h = _time.time() - 86400
+            cron_failures_24h = 0
+            high_severity_24h = 0
+            distinct_jobs = set()
+            if issue_path.exists():
+                with open(issue_path, encoding="utf-8") as _fh:
+                    for _line in _fh:
+                        try:
+                            _r = _json_h.loads(_line)
+                            if float(_r.get("ts", 0)) < cutoff_24h:
+                                continue
+                            if _r.get("source", "").startswith("discord_bot.cron_scheduler"):
+                                cron_failures_24h += 1
+                                distinct_jobs.add(_r.get("command", ""))
+                            if _r.get("severity") in ("High", "Critical"):
+                                high_severity_24h += 1
+                        except Exception:
+                            continue
+
+            # Benchmark freshness (pdf_namer / pdf_bookmarker)
+            bench_freshness = {}
+            for _bn in ("benchmark_pdf_namer_latest.json", "benchmark_pdf_bookmarker_latest.json"):
+                _bp = root / ".runtime" / _bn
+                if _bp.exists():
+                    _age_h = (_time.time() - _bp.stat().st_mtime) / 3600
+                    bench_freshness[_bn.replace("_latest.json", "")] = round(_age_h, 1)
+                else:
+                    bench_freshness[_bn.replace("_latest.json", "")] = None
+
+            # Watchdog decisions
+            wd_path = root / ".runtime" / "metrics" / "memory_watchdog_decisions.jsonl"
+            wd_decisions_24h = 0
+            if wd_path.exists():
+                with open(wd_path, encoding="utf-8") as _fh:
+                    for _line in _fh:
+                        try:
+                            _r = _json_h.loads(_line)
+                            if float(_r.get("ts", 0)) >= cutoff_24h:
+                                wd_decisions_24h += 1
+                        except Exception:
+                            continue
+
+            _op_health = {
+                "cron_failures_24h": cron_failures_24h,
+                "distinct_failing_jobs_24h": len(distinct_jobs),
+                "issue_agenda_high_severity_24h": high_severity_24h,
+                "watchdog_decisions_24h": wd_decisions_24h,
+                "benchmark_age_hours": bench_freshness,
+            }
+            _op_health["degraded_reasons"] = []
+            if cron_failures_24h > 5:
+                _op_health["degraded_reasons"].append(f"cron_failures_24h={cron_failures_24h}>5")
+            if high_severity_24h > 10:
+                _op_health["degraded_reasons"].append(f"issue_agenda_high_severity_24h={high_severity_24h}>10")
+            for _b, _age in bench_freshness.items():
+                if _age is not None and _age > 48:
+                    _op_health["degraded_reasons"].append(f"{_b}_stale_{_age}h")
+            _op_health["ok"] = len(_op_health["degraded_reasons"]) == 0
+            checks["operational_health"] = _op_health
+        except Exception as exc:
+            checks["operational_health"] = {"ok": False, "detail": str(exc)[:120]}
+
         try:
             from api.nas_mount_guard import _SHARES, _is_mounted, _USER_MOUNT_ROOT
             import os as _os_health
@@ -697,6 +763,9 @@ def create_admin_runtime_blueprint(
 
         degraded = not checks.get("omlx", {}).get("ok")
         if checks.get("operational_audit", {}).get("ok") is False:
+            degraded = True
+        # 2026-04-25 P2-7: operational_health degradation also marks degraded
+        if checks.get("operational_health", {}).get("ok") is False:
             degraded = True
         checks["status"] = "degraded" if degraded else "operational"
         return jsonify(checks), 200

@@ -607,10 +607,14 @@ async def bg_scheduler_loop():
                                       "job_benchmark_pdf_namer",   # 過去 3× exit=1 stderr 空（被 SIGTERM）
                                       "job_case_index_sync",       # 過去 2× exit=255（DB query + Obsidian write）
                                       "job_self_repair_reporter"}  # JSONL 讀取 + TG 發送，保守給 7200s
-                        # 2026-04-25: 支援 cron_jobs.json 自定義 timeout_sec，免於每加新長任務都要動 _LONG_JOBS
+                        # 2026-04-25: 支援 cron_jobs.json 自定義 timeout_sec / long_job，
+                        # 免於每加新長任務都要動 _LONG_JOBS hardcoded set。
+                        # 優先順序：timeout_sec > long_job=true > _LONG_JOBS (legacy)
                         _custom_timeout = job.get("timeout_sec")
                         if isinstance(_custom_timeout, (int, float)) and _custom_timeout > 0:
                             _timeout = int(_custom_timeout)
+                        elif job.get("long_job") is True:
+                            _timeout = 7200
                         else:
                             _timeout = 7200 if job.get("id") in _LONG_JOBS else 600
                         _job_id = job.get("id", "?")
