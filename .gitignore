@@ -74,6 +74,9 @@ exports/
 # 2026-04-25: Personal/business memory & customer data — 禁止對外推送
 # CLAUDE.md 含完整客戶姓名、案號、法扶 ID 與業務記錄，僅本機使用
 CLAUDE.md
+CLAUDE.md.archive-*
+docs/CLAUDE_FIX_LOG_ARCHIVE.md
+docs/CLAUDE_FIX_LOG_ARCHIVE_*.md
 # .runtime/ 含 portal session、Chrome cookies、debug 截圖（當事人資料）、
 # DB dump、conversation history SQLite、issue agenda 等 runtime state
 .runtime/
