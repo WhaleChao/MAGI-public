@@ -4761,7 +4761,42 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
             }
             if not ok:
                 result["error"] = "portal_draft_failed"
+
+            # ── Plan C：兩階段確認碼 ──────────────────────────────────────
+            # 填表 + 截圖完成後，產生 6-hex token，寫入 progress pending file，
+            # 通知律師預覽截圖並附上確認碼；律師回覆後才真正送出。
+            token = ""
             if ok and not suppress_notify:
+                try:
+                    from api.domains.laf_flow import register_laf_progress_submit_pending
+                    _platform = str(fields.get("_platform") or "discord").strip() or "discord"
+                    _requester = str(fields.get("_requester_user_id") or "").strip()
+                    _preview_data = self._last_portal_artifact or {}
+                    _preview_url = ""
+                    if isinstance(_preview_data, dict):
+                        _png_exp = _preview_data.get("png_export") or {}
+                        if isinstance(_png_exp, dict):
+                            _preview_url = str(_png_exp.get("url") or "").strip()
+                    token = register_laf_progress_submit_pending(
+                        self,
+                        platform=_platform,
+                        requester_user_id=_requester,
+                        payload={
+                            "laf_case_no": laf_no,
+                            "client_name": cname,
+                            "remark": str(fields.get("remark") or reason or "").strip(),
+                            "fields": {k: v for k, v in fields.items() if not k.startswith("_")},
+                        },
+                        result_data={
+                            "zero_fields_detected": detected_zero_fields,
+                            "preview_url": _preview_url,
+                        },
+                    )
+                    result["pending_token"] = token
+                    logger.info("progress pending token registered: %s (platform=%s)", token, _platform)
+                except Exception as _te:
+                    logger.exception("register_laf_progress_submit_pending failed: %s", _te)
+
                 try:
                     msg = f"📋 進度回報草稿已填寫（{cname} / {laf_no}）"
                     if detected_zero_fields:
@@ -4770,10 +4805,20 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                             "（已自動填預設說明，請上 portal 確認補充）：\n"
                             + "\n".join(f"   - {f}" for f in detected_zero_fields)
                         )
+                    _preview_url_msg = ""
+                    if isinstance(self._last_portal_artifact, dict):
+                        _pe = self._last_portal_artifact.get("png_export") or {}
+                        if isinstance(_pe, dict):
+                            _preview_url_msg = str(_pe.get("url") or "").strip()
+                    if _preview_url_msg:
+                        msg += f"\n\n📷 預覽截圖：{_preview_url_msg}"
+                    if token:
+                        msg += f"\n\n✅ 確認無誤後請回覆此確認碼以送出：`{token}`\n（30 分鐘內有效）"
                     # 修正 Plan B bug：LAFNotifier 沒 notify() 方法，正確是 notify_admin(text, topic_key=...)
                     # 既有 closing/go_live 都用 notify_admin（line 1401/1721/1724/1726 等共 5 處）
                     _notify_result = self.notifier.notify_admin(msg, topic_key="laf_progress")
-                    logger.info("progress notify_admin result: %s (zero_fields=%d)", _notify_result, len(detected_zero_fields))
+                    logger.info("progress notify_admin result: %s (zero_fields=%d, token=%s)",
+                                _notify_result, len(detected_zero_fields), token or "(none)")
                 except Exception as _ne:
                     logger.exception("progress notify_admin failed: %s", _ne)
             return result
