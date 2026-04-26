@@ -1410,6 +1410,74 @@ def _compute_dynamic_confidence(value, base_conf, field_name, source):
     return base_conf
 
 
+def _build_source_hint(pdf_path: str, case_name: str = "", snippets: Optional[List[str]] = None) -> str:
+    hints: List[str] = []
+    bn = os.path.basename(pdf_path or "")
+    if bn:
+        hints.append(bn)
+    if pdf_path:
+        hints.append(pdf_path)
+    if case_name:
+        hints.append(case_name)
+    for part in snippets or []:
+        text = str(part or "").strip()
+        if not text:
+            continue
+        hints.append(text[:1500])
+    return "\n".join(hints)
+
+
+def _apply_naming_guards(result: dict, source_hint: str = "") -> dict:
+    """Apply filename sanitization + format/quality checks (non-blocking)."""
+    if not isinstance(result, dict):
+        return result
+    filename = result.get("filename")
+    if not filename:
+        return result
+
+    try:
+        from skills.pdf_namer.naming_validator import (
+            sanitize_filename as _sanitize_filename,
+            validate_filename as _validate_filename,
+            validate_filename_quality as _validate_filename_quality,
+        )
+    except ImportError:
+        try:
+            from naming_validator import (  # type: ignore
+                sanitize_filename as _sanitize_filename,
+                validate_filename as _validate_filename,
+                validate_filename_quality as _validate_filename_quality,
+            )
+        except ImportError:
+            return result
+
+    sanitized, fixes = _sanitize_filename(filename, source_hint=source_hint)
+    if sanitized and sanitized != filename:
+        logger.warning("pdf-namer sanitizer: %s -> %s", filename, sanitized)
+        result["filename"] = sanitized
+        result["sanitizer_fixes"] = fixes
+    elif fixes:
+        result["sanitizer_fixes"] = fixes
+
+    valid, warns = _validate_filename(result.get("filename", ""))
+    if warns:
+        logger.warning("pdf-namer format guard: %s -> %s", result.get("filename", ""), warns)
+        result["warnings"] = warns
+    result["format_ok"] = bool(valid)
+
+    quality_ok, quality_issues, quality_details = _validate_filename_quality(
+        result.get("filename", ""),
+        source_hint=source_hint,
+    )
+    result["quality_ok"] = bool(quality_ok)
+    if quality_issues:
+        result["quality_issues"] = quality_issues
+    if quality_details:
+        result["quality_issue_details"] = quality_details
+
+    return result
+
+
 def generate_name_proposal(pdf_path: str, case_name: str = None, return_structured: bool = False):
     """Propose a filename following the standard convention:
     {YYYYMMDD} {法院全名}{案號}{文件類型}（{當事人}）.pdf
@@ -1426,11 +1494,13 @@ def generate_name_proposal(pdf_path: str, case_name: str = None, return_structur
     empty_result = {"filename": None, "date": None, "court": "", "case_number": "",
                     "doc_type": "", "party": "", "date_method": ""}
 
+    source_hint_parts = [case_name or ""]
     # ── Check batch cache (pre-computed by batch_ocr_pages + batch_analyze_texts) ──
     cached = _BATCH_ANALYSIS_CACHE.get(pdf_path)
     if cached and cached.get("merged"):
         logger.info("[batch-cache] Using pre-computed analysis for %s", os.path.basename(pdf_path))
         vision_info = dict(cached["merged"])
+        source_hint_parts.extend([cached.get("envelope_ocr", ""), cached.get("content_ocr", "")])
         # Still need stamp date — do stamp extraction only
         doc = fitz.open(pdf_path)
         if doc.needs_pass:
@@ -1530,6 +1600,10 @@ def generate_name_proposal(pdf_path: str, case_name: str = None, return_structur
             found_party=found_party, date_method=date_method,
             doc_subtype=found_doc_subtype, summary=found_summary,
             case_type_hint=found_case_type,
+        )
+        result = _apply_naming_guards(
+            result,
+            source_hint=_build_source_hint(pdf_path, case_name=case_name or "", snippets=source_hint_parts),
         )
         if return_structured:
             return result
@@ -1651,6 +1725,10 @@ def generate_name_proposal(pdf_path: str, case_name: str = None, return_structur
         fast_result = _maybe_fast_text_name_result(fast_text, case_name=case_name, pdf_path=pdf_path)
         if fast_result:
             logger.info("Fast text path hit for %s", pdf_path)
+            fast_result = _apply_naming_guards(
+                fast_result,
+                source_hint=_build_source_hint(pdf_path, case_name=case_name or "", snippets=[fast_text]),
+            )
             return fast_result if return_structured else fast_result["filename"]
 
     # ── Step 2: Dual-page Vision OCR ──
@@ -2069,19 +2147,14 @@ def generate_name_proposal(pdf_path: str, case_name: str = None, return_structur
     if found_deadline_type:
         result["deadline_type"] = found_deadline_type
 
-    # Format guard: validate before returning (non-blocking)
-    try:
-        from skills.pdf_namer.naming_validator import validate_filename as _vf
-    except ImportError:
-        try:
-            from naming_validator import validate_filename as _vf
-        except ImportError:
-            _vf = None
-    if _vf and result.get("filename"):
-        _valid, _warns = _vf(result["filename"])
-        if _warns:
-            logger.warning("pdf-namer format guard: %s → %s", result["filename"], _warns)
-            result["warnings"] = _warns
+    result = _apply_naming_guards(
+        result,
+        source_hint=_build_source_hint(
+            pdf_path,
+            case_name=case_name or "",
+            snippets=[content_text_native, content_text, vision_info.get("summary", "")],
+        ),
+    )
 
     if return_structured:
         return result

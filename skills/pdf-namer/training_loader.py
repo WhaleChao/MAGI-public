@@ -10,6 +10,7 @@ import json
 import os
 import sys
 import logging
+import time
 from typing import Dict, List, Optional, Tuple
 
 logger = logging.getLogger("pdf-namer-loader")
@@ -26,6 +27,13 @@ DB_USER = os.environ.get("OSC_DB_USER", os.environ.get("DB_USER", "casper_servic
 DB_PASS = os.environ.get("OSC_DB_PASSWORD", os.environ.get("DB_PASSWORD", ""))
 DB_NAME = "law_firm_data"
 _DB_FAILURE_UNTIL = 0.0
+_RULES_STATUS: Dict[str, object] = {
+    "source": "unavailable",
+    "degraded": True,
+    "reason": "init",
+    "rules_count": 0,
+    "updated_at": None,
+}
 
 # Target archive types (matching user's 4 folder spec)
 TARGET_ARCHIVE_TYPES = [
@@ -42,13 +50,41 @@ TARGET_ARCHIVE_TYPES = [
 SKILL_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
+def _truthy(value: str) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _update_rules_status(source: str, degraded: bool, reason: str = "", rules_count: int = 0):
+    global _RULES_STATUS
+    _RULES_STATUS = {
+        "source": source,
+        "degraded": bool(degraded),
+        "reason": reason or "",
+        "rules_count": int(max(0, rules_count)),
+        "updated_at": __import__("datetime").datetime.now().isoformat(),
+    }
+
+
+def get_doc_rules_status() -> Dict[str, object]:
+    """Expose latest doc_rules loading status for benchmark/health reporting."""
+    return dict(_RULES_STATUS)
+
+
 def _get_db_connection():
     """Get MariaDB connection with failover: remote → local socket → local TCP."""
     global _DB_FAILURE_UNTIL
     if os.environ.get("MAGI_PDF_NAMER_DISABLE_DB_RULES", "0").strip().lower() in {"1", "true", "yes", "on"}:
+        _update_rules_status("cache", degraded=True, reason="db_rules_disabled")
+        logger.warning("pdf-namer doc_rules DB access disabled; using cache fallback")
         return None
-    now = __import__("time").time()
+    allow_empty_password = _truthy(os.environ.get("MAGI_PDF_NAMER_ALLOW_EMPTY_DB_PASSWORD", "0"))
+    if not str(DB_PASS or "").strip() and not allow_empty_password:
+        _update_rules_status("cache", degraded=True, reason="missing_db_credentials")
+        logger.warning("pdf-namer doc_rules DB credentials missing; using cache fallback")
+        return None
+    now = time.time()
     if _DB_FAILURE_UNTIL and now < _DB_FAILURE_UNTIL:
+        _update_rules_status("cache", degraded=True, reason="db_circuit_open")
         return None
     import mysql.connector
 
@@ -67,6 +103,7 @@ def _get_db_connection():
             )
             if host != DB_HOST:
                 logger.info("pdf-namer DB failover: using local DB (127.0.0.1)")
+            _update_rules_status("db", degraded=False, reason="connected")
             return conn
         except Exception:
             continue
@@ -80,10 +117,12 @@ def _get_db_connection():
             unix_socket="/tmp/mysql.sock",
             connect_timeout=5,
         )
+        _update_rules_status("db", degraded=False, reason="connected_via_socket")
         return conn
     except Exception as e:
-        _DB_FAILURE_UNTIL = __import__("time").time() + 300
-        logger.warning(f"⚠️ MariaDB 連線失敗 (all hosts): {e}")
+        _DB_FAILURE_UNTIL = time.time() + 300
+        _update_rules_status("cache", degraded=True, reason=f"db_connect_error:{type(e).__name__}")
+        logger.warning("pdf-namer doc_rules DB unavailable; cache fallback (%s)", e)
         return None
 
 
@@ -104,7 +143,12 @@ def load_doc_rules_from_db(
     """
     conn = _get_db_connection()
     if not conn:
-        return _load_cached_rules()
+        cached = _load_cached_rules()
+        if cached:
+            _update_rules_status("cache", degraded=True, reason=_RULES_STATUS.get("reason", "db_unavailable"), rules_count=len(cached))
+        else:
+            _update_rules_status("unavailable", degraded=True, reason=_RULES_STATUS.get("reason", "no_cache"), rules_count=0)
+        return cached
     
     try:
         cursor = conn.cursor(dictionary=True)
@@ -134,6 +178,7 @@ def load_doc_rules_from_db(
         # Cache locally
         _cache_rules(rules)
         
+        _update_rules_status("db", degraded=False, reason="ok", rules_count=len(rules))
         logger.info(f"✅ 從 MariaDB 載入 {len(rules)} 筆 doc_rules")
         return rules
         
@@ -141,7 +186,12 @@ def load_doc_rules_from_db(
         logger.error(f"❌ 查詢失敗: {e}")
         if conn:
             conn.close()
-        return _load_cached_rules()
+        cached = _load_cached_rules()
+        if cached:
+            _update_rules_status("cache", degraded=True, reason=f"db_query_error:{type(e).__name__}", rules_count=len(cached))
+        else:
+            _update_rules_status("unavailable", degraded=True, reason=f"db_query_error:{type(e).__name__}", rules_count=0)
+        return cached
 
 
 def _cache_rules(rules: List[Dict]):
