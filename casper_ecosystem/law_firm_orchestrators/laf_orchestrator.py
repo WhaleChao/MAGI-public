@@ -4727,22 +4727,43 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         if act == "progress":
             # 進度回報：不需必要文件，remark 由呼叫端提供或留空給 portal 填
             fields.setdefault("remark", reason or "")
+            # 傳入自動填寫 noarrivereason 的模板（automation.fill_workflow_fields 使用）
+            fields.setdefault(
+                "auto_zero_reason_template",
+                (
+                    "本回報週期內，以下項目尚未發生：{ZERO_FIELDS}。"
+                    "若有遺漏請律師上 portal 暫存頁面補充。"
+                    f"（MAGI 自動填寫，{datetime.now().strftime('%Y-%m-%d')}）"
+                ),
+            )
             ok = self.execute_portal_workflow_draft("progress", laf_no, cname, fields or {}, suppress_notify=suppress_notify)
+            # 取 automation 偵測到的零次數欄位（由 fill_workflow_fields 設定 last_zero_fields）
+            detected_zero_fields = []
+            try:
+                automation = self._get_automation()
+                detected_zero_fields = list(getattr(automation, 'last_zero_fields', []) or [])
+            except Exception:
+                pass
             result = {
                 "ok": bool(ok),
                 "action": act,
                 "identity": identity,
                 "fields": fields,
+                "zero_fields_detected": detected_zero_fields,
                 "preview": self._last_portal_artifact,
             }
             if not ok:
                 result["error"] = "portal_draft_failed"
             if ok and not suppress_notify:
                 try:
-                    self.notifier.notify(
-                        f"📋 進度回報草稿已填寫（{cname} / {laf_no}）",
-                        topic="laf_progress",
-                    )
+                    msg = f"📋 進度回報草稿已填寫（{cname} / {laf_no}）"
+                    if detected_zero_fields:
+                        msg += (
+                            "\n\n⚠️ 偵測到下列項目次數為零"
+                            "（已自動填預設說明，請上 portal 確認補充）：\n"
+                            + "\n".join(f"   - {f}" for f in detected_zero_fields)
+                        )
+                    self.notifier.notify(msg, topic="laf_progress")
                 except Exception:
                     pass
             return result

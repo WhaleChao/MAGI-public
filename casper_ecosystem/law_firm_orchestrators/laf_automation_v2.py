@@ -5421,24 +5421,40 @@ return null;
 
         # 4. noarrivereason: required when any count is 0
         # This is the "扶助律師特別說明" textarea
+        self.fill_noarrivereason_textarea(counts=counts or {}, zero_reasons=zero_reasons or {})
+
+        return True
+
+    def fill_noarrivereason_textarea(self, counts, zero_reasons=None):
+        """填 portal noarrivereason textarea（共用 helper，closing 與 progress 均呼叫）。
+
+        Args:
+            counts: 必須含 noarrivereason 鍵（已是最終文案）或留空讓 zero_reasons 拼接
+            zero_reasons: 各零次數欄位的解釋 dict（fallback）
+
+        Returns:
+            True if textarea found and filled (or no need), False if fill failed.
+        """
         _noarrive_reason = str((counts or {}).get("noarrivereason") or "").strip()
         if not _noarrive_reason:
             # Build from zero_reasons
             parts = [str(v).strip() for v in (zero_reasons or {}).values() if str(v).strip()]
             _noarrive_reason = "; ".join(parts) if parts else ""
-        if _noarrive_reason:
-            try:
-                ta = self.driver.find_elements("id", "noarrivereason")
-                if ta:
-                    ta[0].clear()
-                    ta[0].send_keys(_noarrive_reason)
-                    self.log(f"  ✍️ noarrivereason = {_noarrive_reason[:60]}...")
-                else:
-                    self.log("  ⚠️ 找不到 noarrivereason textarea")
-            except Exception as e:
-                self.log(f"  ❌ 填寫 noarrivereason 失敗: {e}")
-
-        return True
+        if not _noarrive_reason:
+            return True  # 沒有零值或已說明，無需填
+        try:
+            ta = self.driver.find_elements("id", "noarrivereason")
+            if ta:
+                ta[0].clear()
+                ta[0].send_keys(_noarrive_reason)
+                self.log(f"  ✍️ noarrivereason = {_noarrive_reason[:60]}...")
+                return True
+            else:
+                self.log("  ⚠️ 找不到 noarrivereason textarea")
+                return False
+        except Exception as e:
+            self.log(f"  ❌ 填寫 noarrivereason 失敗: {e}")
+            return False
 
     def fill_workflow_closing_summary(
         self,
@@ -6386,6 +6402,58 @@ return null;
                 ["說明", "備註", "進度說明"],
                 kind="textarea",
             )
+            # 偵測 portal modal 中的零次數欄位，自動填 noarrivereason（同 closing 處理）
+            _PROGRESS_COUNT_FIELD_LABELS = {
+                "meet_times": "會議次數",
+                "tel_times": "電話聯繫次數",
+                "inq_times": "詢問次數",
+                "disc_times": "討論次數",
+                "viewsheet_times": "閱卷次數",
+                "ap_times": "開庭次數",
+                "lawyerap_times": "律師開庭次數",
+                "isap_times": "本人到庭次數",
+                "wc_times": "書狀次數",
+                "med_times": "調解次數",
+            }
+            try:
+                zero_fields_found = self.driver.execute_script("""
+                    var fieldIds = arguments[0];
+                    var zeros = [];
+                    for (var i = 0; i < fieldIds.length; i++) {
+                        var id = fieldIds[i];
+                        var el = document.getElementById(id);
+                        if (el) {
+                            var v = (el.value || '').replace(/^0+/, '') || '0';
+                            if (v === '0' || v === '' || parseInt(v, 10) === 0) {
+                                zeros.push(id);
+                            }
+                        }
+                    }
+                    return zeros;
+                """, list(_PROGRESS_COUNT_FIELD_LABELS.keys()))
+            except Exception:
+                zero_fields_found = []
+            self.last_zero_fields = [_PROGRESS_COUNT_FIELD_LABELS.get(f, f) for f in (zero_fields_found or [])]
+            if self.last_zero_fields:
+                # 建立 noarrivereason（若 caller 已提供則優先用；否則用預設模板）
+                _provided = str((data or {}).get("noarrivereason") or "").strip()
+                if not _provided:
+                    _tmpl = str((data or {}).get("auto_zero_reason_template") or "").strip()
+                    if _tmpl and "{ZERO_FIELDS}" in _tmpl:
+                        _provided = _tmpl.replace("{ZERO_FIELDS}", "、".join(self.last_zero_fields))
+                    else:
+                        import datetime as _dt
+                        _provided = (
+                            f"本回報週期內，以下項目尚未發生：{'、'.join(self.last_zero_fields)}。"
+                            f"若有遺漏請律師上 portal 暫存頁面補充。"
+                            f"（MAGI 自動填寫，{_dt.date.today().strftime('%Y-%m-%d')}）"
+                        )
+                _zero_reasons = {f: _provided for f in (zero_fields_found or [])}
+                # 傳入已組好的文案（counts dict 含 noarrivereason 鍵）
+                self.fill_noarrivereason_textarea(
+                    counts={"noarrivereason": _provided},
+                    zero_reasons=_zero_reasons,
+                )
 
         else:
             self.log(f"⚠️ 無可填欄位映射（workflow={workflow}）")
