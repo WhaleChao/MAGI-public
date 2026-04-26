@@ -85,6 +85,7 @@ _WEATHER_KEYWORDS = [
     "天氣", "氣溫", "溫度", "下雨", "下雪", "颱風", "降雨", "天晴",
     "陰天", "晴天", "氣象", "預報", "降雪", "豪雨", "颳風", "大風",
     "濕度", "weather", "forecast", "會下", "會不會下", "明天",
+    "幾度", "多熱", "多冷", "熱不熱", "冷不冷", "悶不悶", "體感",
 ]
 _STOCK_KEYWORDS = ["股價", "股票", "台積電", "鴻海", "大盤", "加權", "漲", "跌", "點數",
                    "上市", "上櫃", "TWSE", "TSE", "股", "元/股"]
@@ -187,36 +188,75 @@ def _query_cwa_api(location_name: str) -> Dict[str, Any]:
 
 
 def _query_cwa_scrape(location_name: str) -> Dict[str, Any]:
-    """Fallback：抓 CWA 縣市頁面（不需 API key）。"""
+    """Fallback：直接抓 CWA 公開 JS 資料端點（不需 API key、含結構化溫度/天氣描述）。
+
+    CWA 縣市頁面（County.html）的溫度與天氣是 JS 動態載入，純 HTML 抓不到數字；
+    但 CWA 同時把資料以 `Data/js/3hr/ChartData_3hr_T_<CID>.js` 形式公開（前端 SPA 拉取的來源）。
+    格式為 `var TempArray_3hr = { '<station_id>': { C: { T:[...], AT:[...] }, Wx: { C: [[code,desc],...] } } };`
+    """
     try:
         county_id = _COUNTY_MAP.get(location_name)
         if not county_id:
             return {"success": False, "error": "unknown_location"}
 
-        url = f"{_CWA_COUNTY_PAGE}?CID={county_id}"
-        # 使用 requests verify=False 繞過 CWA TLS Missing Subject Key Identifier 問題
-        # （與司法院判決搜尋相同的 SSL 相容模式）
-        import requests
-        import urllib3
+        import requests, re, urllib3
         urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+        url = f"https://www.cwa.gov.tw/Data/js/3hr/ChartData_3hr_T_{county_id}.js"
         resp = requests.get(
             url, timeout=8, verify=False,
-            headers={"User-Agent": "Mozilla/5.0 (compatible; MAGI/2.0)"},
+            headers={
+                "User-Agent": "Mozilla/5.0 (compatible; MAGI/2.0)",
+                "Referer": "https://www.cwa.gov.tw/",
+            },
         )
         resp.raise_for_status()
         content = resp.text
-        # 只要能取回 CWA 頁面，就不讓 LLM 合成，直接回「請看這裡」
-        if len(content) > 100:
+
+        # 解析 var TempArray_3hr = {...}，抓第一個測站的當下值
+        # 該檔以時間順序 24+ 小時逐時刻儲存，index 0 = 當下時刻（從檔首 Updated 時間開始）
+        m = re.search(r"TempArray_3hr\s*=\s*\{\s*'(\d+)'\s*:\s*\{\s*'C'\s*:\s*\{\s*'T'\s*:\s*\[([\d,\-\.]+)\][^}]*'AT'\s*:\s*\[([\d,\-\.]+)\][^}]*\},\s*'F'\s*:\s*\{[^}]+\},\s*'Wx'\s*:\s*\{\s*'C'\s*:\s*\[(\[[^\]]+\](?:,\[[^\]]+\])*)\]", content, re.S)
+        updated_m = re.search(r"Updated:\s*([\d/:\s]+)", content)
+        updated = updated_m.group(1).strip() if updated_m else ""
+
+        if m:
+            temps = [int(x) for x in m.group(2).split(",")]
+            ats = [int(x) for x in m.group(3).split(",")]
+            wx_raw = m.group(4)
+            wx_pairs = re.findall(r"\['(\d+)','([^']+)'\]", wx_raw)
+            now_t = temps[0] if temps else None
+            now_at = ats[0] if ats else None
+            now_wx = wx_pairs[0][1] if wx_pairs else ""
+            # 收集未來 12h 摘要（每 3h 一筆，間隔比 hourly 適合一般使用者）
+            forecast_hours = []
+            for i in range(0, min(13, len(temps)), 3):
+                w = wx_pairs[i][1] if i < len(wx_pairs) else ""
+                forecast_hours.append(f"+{i}h: {temps[i]}°C ({w})")
+            forecast = (
+                f"當下：{now_wx}，氣溫 {now_t}°C（體感 {now_at}°C）\n"
+                f"未來 12 小時：" + " / ".join(forecast_hours)
+            )
             return {
                 "success": True,
                 "location": location_name,
-                "source": "中央氣象署 CWA（網頁資料，未解析）",
-                "source_url": url,
-                "forecast": f"已取得 CWA 網頁資料（{len(content)} 字元）。請直接查閱：{url}",
-                "raw_content": content[:800],
-                "scrape_only": True,  # 標記：只有 scrape，沒有 parsed data
+                "source": f"中央氣象署 CWA（公開 JS 資料 / 更新時間 {updated}）",
+                "source_url": f"{_CWA_COUNTY_PAGE}?CID={county_id}",
+                "forecast": forecast,
+                "raw_periods": len(forecast_hours),
+                "now_temp": now_t,
+                "now_apparent_temp": now_at,
+                "now_weather": now_wx,
             }
-        return {"success": False, "error": "empty_content"}
+
+        # 解析失敗（CWA 改格式）：明確回失敗讓上層走降級流程
+        county_url = f"{_CWA_COUNTY_PAGE}?CID={county_id}"
+        return {
+            "success": False,
+            "error": "parse_failed",
+            "location": location_name,
+            "source_url": county_url,
+            "raw_size": len(content),
+        }
     except Exception as e:
         logger.warning("[RDG] CWA scrape error: %s", e)
         return {"success": False, "error": str(e)}
@@ -254,12 +294,13 @@ def query_weather(query_text: str) -> Dict[str, Any]:
         )
         return {**api_result, "reply": reply}
 
-    # 2. Scrape fallback
+    # 2. Scrape fallback（已升級為解析公開 JS 端點，會回真實溫度）
     scrape_result = _query_cwa_scrape(location)
     if scrape_result.get("success"):
         reply = (
-            f"我從中央氣象署取得了 {location} 的頁面，但無法自動解析詳細數字。"
-            f"請直接查閱：{scrape_result['source_url']}"
+            f"以下資料來自{scrape_result['source']}：\n"
+            f"{location}\n{scrape_result['forecast']}\n"
+            f"（完整頁面：{scrape_result['source_url']}）"
         )
         return {**scrape_result, "reply": reply}
 
