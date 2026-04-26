@@ -112,7 +112,12 @@ _PREAMBLE_RE = re.compile(
     r"以下是.*?[:：]\s*|潤飾後.*?[:：]\s*)",
     re.IGNORECASE,
 )
-_CASE_NUMBER_RE = re.compile(r"\d+年度\S+?字第\d+號")
+_CASE_NUMBER_RE = re.compile(
+    # ASCII 數字 + 中文數字（一/二/三/...十/百/千）皆要支援
+    # 「年度」中的「度」字部分書狀省略，要容忍
+    # 案號中的空白容忍（OCR 或 LLM 改寫常見）
+    r"(?:\d+|[一二三四五六七八九十百千零兩〇○]+)\s*年(?:度)?\s*\S+?\s*字\s*第\s*\d+\s*號"
+)
 
 
 def _strip_preamble(text: str) -> str:
