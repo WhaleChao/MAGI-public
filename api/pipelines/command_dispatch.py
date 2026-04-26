@@ -1443,8 +1443,8 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
                                     _screenshot_sent = True  # 避免 notification_callback 重複發送
                                 except Exception as _img_err:
                                     logger.warning("LAF screenshot send failed: %s", _img_err)
-                            # 回寫 DB：closing 成功 → legal_aid_status = "已報結"
-                            #          withdrawal 成功 → "已報結"
+                            # 回寫 DB：closing 成功 → legal_aid_status = "已結案，待送出"
+                            #          withdrawal 成功 → "已結案，待送出"（送出前暫存狀態）
                             if action in ("closing", "withdrawal") and data.get("server_verified"):
                                 try:
                                     _upd_osc = osc_no or str(payload_obj.get("case_number") or "").strip()
@@ -1453,8 +1453,8 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
                                         orch._update_laf_status_after_action(
                                             case_number=_upd_osc,
                                             client_name=_upd_cli,
-                                            new_status="已報結",
-                                            action_label=f"報結（{action}）",
+                                            new_status="已結案，待送出",
+                                            action_label=f"報結（{action}）暫存",
                                         )
                                 except Exception as _db_err2:
                                     logger.warning("closing DB status update failed: %s", _db_err2)
