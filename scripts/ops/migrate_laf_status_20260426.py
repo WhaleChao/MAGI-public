@@ -52,21 +52,44 @@ MIGRATION_MAP = [
 
 
 def _connect_db():
-    """連接本地 DB，使用 legalbridge_config.json 設定。"""
+    """連接本地 DB，優先用 osc_headless.db.db_config_from_env()，fallback 到 legalbridge_config.json。"""
+    import pymysql
+
+    # 優先走 MAGI 自己的 env-based DB 設定
+    try:
+        from osc_headless.db import db_config_from_env
+        c = db_config_from_env()
+        conn = pymysql.connect(
+            host=c.host, port=int(c.port), user=c.user,
+            password=c.password, database=c.database,
+            charset="utf8mb4", cursorclass=pymysql.cursors.DictCursor,
+        )
+        print(f"✅ DB 連線（env）：{c.host}:{c.port}/{c.database}")
+        return conn
+    except Exception as e:
+        print(f"⚠️ osc_headless DB config fallback: {e}")
+
+    # Fallback：legalbridge_config.json
     config_path = os.path.join(_REPO_ROOT, "casper_ecosystem", "law_firm_orchestrators", "legalbridge_config.json")
     with open(config_path, encoding="utf-8") as f:
         config = json.load(f)
     db_cfg = config.get("database", {})
-    import pymysql
+
+    # 再 fallback：從 env vars 取 DB 憑據
+    # 支援 MAGI_REMOTE_DB_PASS 和 MAGI_REMOTE_DB_PASSWORD 兩種命名
+    user = os.environ.get("MAGI_REMOTE_DB_USER") or db_cfg.get("user", "root")
+    password = (os.environ.get("MAGI_REMOTE_DB_PASS")
+                or os.environ.get("MAGI_REMOTE_DB_PASSWORD")
+                or db_cfg.get("password", ""))
+    host = os.environ.get("MAGI_REMOTE_DB_HOST") or db_cfg.get("host", "127.0.0.1")
+    port = int(os.environ.get("MAGI_REMOTE_DB_PORT") or db_cfg.get("port", 3306))
+    database = os.environ.get("MAGI_REMOTE_DB_NAME") or db_cfg.get("database", "law_firm_data")
+
     conn = pymysql.connect(
-        host=db_cfg.get("host", "127.0.0.1"),
-        port=int(db_cfg.get("port", 3306)),
-        user=db_cfg.get("user", "root"),
-        password=db_cfg.get("password", ""),
-        database=db_cfg.get("database", "law_firm_data"),
-        charset="utf8mb4",
-        cursorclass=pymysql.cursors.DictCursor,
+        host=host, port=port, user=user, password=password,
+        database=database, charset="utf8mb4", cursorclass=pymysql.cursors.DictCursor,
     )
+    print(f"✅ DB 連線（config fallback）：{host}:{port}/{database}")
     return conn
 
 
@@ -82,20 +105,26 @@ def check_schema(conn):
     print("✅ Schema 確認：legal_aid_approval_status 欄位已存在")
 
 
-def collect_candidates(conn):
+def collect_candidates(conn, has_approval_col=True):
     """查詢所有需要遷移的 case。"""
     old_statuses = [m["old_status"] for m in MIGRATION_MAP]
     # deduplicate
     old_statuses = list(dict.fromkeys(old_statuses))
     placeholders = ", ".join(["%s"] * len(old_statuses))
+    extra_col = ", `legal_aid_approval_status`" if has_approval_col else ""
     with conn.cursor() as cur:
         cur.execute(
-            f"SELECT `id`, `case_number`, `client_name`, `laf_case_no`, `legal_aid_status`, "
-            f"`legal_aid_approval_status` FROM `cases` "
+            f"SELECT `id`, `case_number`, `client_name`, `laf_case_no`, `legal_aid_status`"
+            f"{extra_col} FROM `cases` "
             f"WHERE `legal_aid_status` IN ({placeholders})",
             old_statuses,
         )
-        return cur.fetchall()
+        rows = cur.fetchall()
+    if not has_approval_col:
+        # 補空 approval_status
+        for r in rows:
+            r["legal_aid_approval_status"] = ""
+    return rows
 
 
 def plan_migrations(rows):
@@ -220,9 +249,22 @@ def main():
         print(f"ERROR: DB 連線失敗：{e}")
         sys.exit(1)
 
-    check_schema(conn)
+    # 偵測 schema 狀態
+    has_approval_col = False
+    if args.apply:
+        check_schema(conn)  # --apply 前強制確認 schema 已 ALTER
+        has_approval_col = True
+    else:
+        # dry-run 模式下即使 schema 尚未 ALTER 也能預覽
+        try:
+            check_schema(conn)
+            has_approval_col = True
+        except SystemExit:
+            print("⚠️ Dry-run 模式：legal_aid_approval_status 欄位尚未建立，仍可預覽待遷移資料。")
+            print("   請在 --apply 前先執行：")
+            print("   mysql -u casper_service -p law_firm_data < scripts/ops/migrate_laf_status_20260426_schema.sql\n")
 
-    rows = collect_candidates(conn)
+    rows = collect_candidates(conn, has_approval_col=has_approval_col)
     print(f"\n找到 {len(rows)} 筆候選案件：")
     for r in rows:
         print(f"  id={r['id']} {r.get('client_name','')} ({r.get('case_number','')}): "
