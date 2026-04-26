@@ -569,7 +569,8 @@ def process_message_inner(orch, user_id, message, platform="LINE", role="user", 
     except Exception as e:
         logger.error(f"Document gen chat flow check failed: {e}")
 
-    # LAF 開辦送出確認（你或同事回覆「正確送出 <確認碼>」才會真正送出）
+    # LAF 兩階段確認碼路由：進度回報（Plan C）+ 開辦（go_live）
+    # 律師回覆「正確送出 <確認碼>」時，先試 progress token，再試 go_live token（kind 嚴格分離）。
     try:
         handled, reply = orch._handle_laf_submit_confirmation_if_any(
             str(user_id or ""),
