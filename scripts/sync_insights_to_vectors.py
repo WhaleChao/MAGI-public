@@ -72,7 +72,7 @@ LOCAL_DB = {
 }
 
 OMLX_URL = os.environ.get("OMLX_EMBED_URL", "http://127.0.0.1:8081/v1/embeddings")
-EMBED_MODEL = os.environ.get("OMLX_EMBED_MODEL", os.environ.get("MAGI_OMLX_EMBED_MODEL", ""))
+EMBED_MODEL = os.environ.get("OMLX_EMBED_MODEL", os.environ.get("MAGI_OMLX_EMBED_MODEL", "modernbert-embed-4bit"))
 SOURCE_PREFIX = "legal_insight"
 
 

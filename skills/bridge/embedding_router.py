@@ -54,7 +54,7 @@ _OMLX_BASE = (
     or "http://127.0.0.1:8081"
 )
 _OMLX_EMBED_URL = _OMLX_BASE.rstrip("/") + "/v1/embeddings"
-_EMBED_MODEL = os.environ.get("EMBEDDING_ROUTER_MODEL", os.environ.get("MAGI_OMLX_EMBED_MODEL", ""))
+_EMBED_MODEL = os.environ.get("EMBEDDING_ROUTER_MODEL", os.environ.get("MAGI_OMLX_EMBED_MODEL", "modernbert-embed-4bit"))
 _DIRECT_THRESH = float(os.environ.get("EMBEDDING_ROUTER_DIRECT_THRESH", "0.75") or "0.75")
 _GUIDED_THRESH = float(os.environ.get("EMBEDDING_ROUTER_GUIDED_THRESH", "0.55") or "0.55")
 _EMBED_TIMEOUT = 4  # seconds per embedding request
@@ -541,9 +541,15 @@ class EmbeddingRouter:
     def _get_embedding(self, text: str) -> Optional[List[float]]:
         """Get single embedding vector from oMLX."""
         try:
+            # Lazily resolve model name so it picks up env vars loaded after module import
+            model = (
+                os.environ.get("EMBEDDING_ROUTER_MODEL")
+                or os.environ.get("MAGI_OMLX_EMBED_MODEL")
+                or _EMBED_MODEL
+            )
             resp = _http.post(
                 _OMLX_EMBED_URL,
-                json={"model": _EMBED_MODEL, "input": text},
+                json={"model": model, "input": text},
                 timeout=_EMBED_TIMEOUT,
             )
             if resp.status_code == 200:
@@ -559,13 +565,19 @@ class EmbeddingRouter:
 
     def _get_embeddings_batch(self, texts: List[str]) -> List[Optional[List[float]]]:
         """Get embeddings for multiple texts, batching API calls."""
+        # Lazily resolve model name so it picks up env vars loaded after module import
+        model = (
+            os.environ.get("EMBEDDING_ROUTER_MODEL")
+            or os.environ.get("MAGI_OMLX_EMBED_MODEL")
+            or _EMBED_MODEL
+        )
         results: List[Optional[List[float]]] = []
         for i in range(0, len(texts), _BATCH_SIZE):
             batch = texts[i : i + _BATCH_SIZE]
             try:
                 resp = _http.post(
                     _OMLX_EMBED_URL,
-                    json={"model": _EMBED_MODEL, "input": batch},
+                    json={"model": model, "input": batch},
                     timeout=_EMBED_TIMEOUT * 2,
                 )
                 if resp.status_code == 200:

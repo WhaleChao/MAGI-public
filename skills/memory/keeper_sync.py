@@ -35,7 +35,7 @@ DB_CONFIG = {
 }
 
 OLLAMA_URL = os.environ.get("OLLAMA_EMBED_URL", "http://127.0.0.1:8081/v1/embeddings")
-EMBED_MODEL = os.environ.get("MAGI_OMLX_EMBED_MODEL", os.environ.get("MAGI_OMLX_EMBED_MODEL", ""))
+EMBED_MODEL = os.environ.get("MAGI_OMLX_EMBED_MODEL", "modernbert-embed-4bit")
 SYNC_INTERVAL = 300  # 5 minutes
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')

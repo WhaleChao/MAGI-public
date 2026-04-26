@@ -215,6 +215,7 @@ def build_vector_index(db_path: Optional[Path] = None) -> Optional[Path]:
         import requests as _req
 
         embed_url = os.environ.get("MAGI_EMBED_URL", "http://127.0.0.1:8081/v1/embeddings")
+        embed_model = os.environ.get("MAGI_OMLX_EMBED_MODEL", "modernbert-embed-4bit")
         conn = sqlite3.connect(str(path))
         rows = conn.execute("SELECT id, text_zh FROM articles WHERE text_zh != '' LIMIT 5000").fetchall()
         conn.close()
@@ -226,7 +227,7 @@ def build_vector_index(db_path: Optional[Path] = None) -> Optional[Path]:
         batch_size = 32
         for i in range(0, len(texts), batch_size):
             batch = list(texts[i:i + batch_size])
-            resp = _req.post(embed_url, json={"input": batch, "model": "text-embedding"}, timeout=30)
+            resp = _req.post(embed_url, json={"input": batch, "model": embed_model}, timeout=30)
             resp.raise_for_status()
             data = resp.json()
             for item in data.get("data", []):
