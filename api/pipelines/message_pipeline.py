@@ -696,16 +696,22 @@ def process_message_inner(orch, user_id, message, platform="LINE", role="user", 
     _nl_router_enabled = bool(_topic_key and _topic_key not in ("general", ""))
     
     # ── Phase A: Casual Fast-Path Bypass ──
-    # 注意：畫圖請求不得走 small-talk fast-path，否則會繞過 draw handler 導致 persona drift。
+    # 注意：畫圖請求 / 自然語言提醒 不得走 small-talk fast-path，否則會繞過對應 handler
+    # 導致 persona drift 或 LLM 幻覺式「我已設定提醒」回應。
     _draw_exclude_pattern = re.compile(
         r"(?:/draw\b|畫[圖一個張幅]|\bdraw\b|generate image|產生圖片|绘[图画製]|画[圖图一])",
         re.IGNORECASE,
     )
     _is_draw_request = bool(_draw_exclude_pattern.search(message))
+    _reminder_exclude_pattern = re.compile(
+        r"(?:明天|今天|後天|\d+月\d+日|\d+號).*?(?:[\d零一二兩三四五六七八九十]+)\s*點.*?(?:提醒|記|備忘|開會|會議)"
+        r"|(?:提醒我|幫我記|備忘錄|設個提醒).*?(?:明天|今天|後天|\d+月|[\d零一二兩三四五六七八九十]+\s*點|\d+時)",
+    )
+    _is_reminder_request = bool(_reminder_exclude_pattern.search(message))
     try:
         from skills.bridge.grounded_ai import is_small_talk_intent, _classify_query_tier
         _msg_tier = _classify_query_tier(message)
-        if is_small_talk_intent(message, _msg_tier) and not _is_draw_request:
+        if is_small_talk_intent(message, _msg_tier) and not _is_draw_request and not _is_reminder_request:
             orch._append_route_trace(
                 str(user_id or ""), str(platform or ""),
                 "top_level", "chat_fast_path",
@@ -2439,6 +2445,11 @@ def process_message_inner(orch, user_id, message, platform="LINE", role="user", 
     if any(k in msg_lower for k in ["法扶回報指令", "法扶指令", "回報指令", "開辦回報", "開辦案件"]):
         forced_cmd = True
     elif orch._parse_laf_report_payload(message):
+        forced_cmd = True
+    # 自然語言提醒（如「明天下午三點提醒我開會」）的 classifier 會誤判為 CHAT 走 LLM，
+    # 導致幻覺式「我已設定提醒」。強制路由到 CMD，讓 command_dispatch 的 _RE_NATURAL_REMINDER
+    # 給出誠實「不支援」回覆。
+    elif _is_reminder_request:
         forced_cmd = True
 
     intent = "CMD" if forced_cmd else orch.classifier.classify(message)

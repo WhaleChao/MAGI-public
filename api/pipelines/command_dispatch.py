@@ -2396,9 +2396,10 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
         )
 
     # 自然語言提醒/行程查詢：誠實告知不支援，而不是誤判為天氣或回 onboarding
+    # 一... 中文數字 + ASCII 數字都要支援（「三點」「3 點」皆要命中）
     _RE_NATURAL_REMINDER = re.compile(
-        r"(?:明天|今天|後天|\d+月\d+日|\d+號).*?(?:\d+)\s*點.*?(?:提醒|記|備忘|開會|會議)"
-        r"|(?:提醒我|幫我記|備忘錄|設個提醒).*?(?:明天|今天|後天|\d+月|\d+點|\d+時)",
+        r"(?:明天|今天|後天|\d+月\d+日|\d+號).*?(?:[\d零一二兩三四五六七八九十]+)\s*點.*?(?:提醒|記|備忘|開會|會議)"
+        r"|(?:提醒我|幫我記|備忘錄|設個提醒).*?(?:明天|今天|後天|\d+月|[\d零一二兩三四五六七八九十]+\s*點|\d+時)",
         re.IGNORECASE,
     )
     if _RE_NATURAL_REMINDER.search(message):

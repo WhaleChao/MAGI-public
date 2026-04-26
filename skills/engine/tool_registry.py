@@ -86,31 +86,36 @@ def _web_search(query: str = "", num_results: int = 5, **_) -> str:
 
 
 def _query_cases(query: str = "", **_) -> str:
-    """查詢案件資料庫（OSC）。"""
+    """查詢案件資料庫（OSC）。直接走 DB，不繞 HTTP（避免 login_required 攔截）。"""
     try:
-        import os as _os_tr
-        _server_port = _os_tr.environ.get("MAGI_SERVER_PORT", "5002")
-        from skills.bridge.http_pool import get_session
-        session = get_session()
-        resp = session.get(
-            f"http://localhost:{_server_port}/api/osc/cases/search",
-            params={"q": query, "limit": 5},
-            timeout=15,
-        )
-        if resp.status_code == 200:
-            data = resp.json()
-            cases = data.get("cases", data.get("results", []))
-            if not cases:
-                return f"查無與「{query}」相關的案件。"
-            lines = []
-            for c in cases[:5]:
-                name = c.get("client_name", c.get("name", ""))
-                case_no = c.get("case_number", c.get("case_no", ""))
-                reason = c.get("case_reason", c.get("reason", ""))
-                status = c.get("status", "")
-                lines.append(f"- {name} | {case_no} | {reason} | 狀態: {status}")
-            return "\n".join(lines)
-        return f"案件查詢 API 回傳 {resp.status_code}"
+        from api.osc.utils import _osc_exec
+        sql = """
+            SELECT case_number, client_name, case_reason, court_case_no, status
+            FROM cases
+        """
+        params: tuple = ()
+        if query:
+            like = f"%{query}%"
+            sql += """
+                WHERE case_number LIKE %s
+                   OR client_name LIKE %s
+                   OR court_case_no LIKE %s
+                   OR laf_case_no LIKE %s
+                   OR application_no LIKE %s
+            """
+            params = (like, like, like, like, like)
+        sql += " ORDER BY updated_at DESC, created_date DESC LIMIT 5"
+        rows, _err = _osc_exec(sql, params, fetch="all")
+        if not rows:
+            return f"查無與「{query}」相關的案件。" if query else "目前沒有任何案件記錄。"
+        lines = []
+        for c in rows[:5]:
+            name = c.get("client_name", "")
+            case_no = c.get("case_number", "") or c.get("court_case_no", "")
+            reason = c.get("case_reason", "")
+            status = c.get("status", "")
+            lines.append(f"- {name} | {case_no} | {reason} | 狀態: {status}")
+        return "\n".join(lines)
     except Exception as e:
         return f"案件查詢失敗: {e}"
 

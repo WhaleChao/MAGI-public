@@ -1344,7 +1344,7 @@ class Orchestrator:
         from api.domains.schedule_flow import get_schedule
         return get_schedule(self)
 
-    def _translate_prompt_to_english(prompt: str) -> str:
+    def _translate_prompt_to_english(self, prompt: str) -> str:
         """Translate non-ASCII prompt to English for Stable Diffusion."""
         import urllib.parse, urllib.request
         # If prompt is already mostly ASCII, skip translation
