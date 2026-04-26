@@ -2,76 +2,76 @@
   "success": true,
   "cases": 4,
   "avg_term_hit_rate": {
-    "gtx_primary": 0.729,
+    "gtx_primary": 0.875,
     "apple_baseline": 0.729,
-    "apple_ape": 0.729
+    "apple_ape": 0.875
   },
-  "ape_degraded_count": 4,
+  "ape_degraded_count": 1,
   "ape_beats_baseline": true,
   "rows": [
     {
       "id": "prayer_for_relief",
       "stage": "gtx_primary",
-      "provider": "apple_translation_baseline",
-      "degraded": true,
-      "elapsed_ms": 3580,
-      "text": "The plaintiff's original statement: The defendant shall pay the plaintiff NT$200,000 in full.",
-      "term_hit_rate": 0.75
+      "provider": "apple_translation_ape",
+      "degraded": false,
+      "elapsed_ms": 38698,
+      "text": "Prayer for Relief: The defendant shall pay the plaintiff the sum of NT$200,000.",
+      "term_hit_rate": 1.0
     },
     {
       "id": "prayer_for_relief",
       "stage": "apple_baseline",
       "provider": "apple_translation",
       "success": true,
-      "elapsed_ms": 2457,
+      "elapsed_ms": 1681,
       "text": "The plaintiff's original statement: The defendant shall pay the plaintiff NT$200,000 in full.",
       "term_hit_rate": 0.75
     },
     {
       "id": "prayer_for_relief",
       "stage": "apple_ape",
-      "provider": "apple_translation_baseline",
-      "degraded": true,
-      "elapsed_ms": 2532,
-      "text": "The plaintiff's original statement: The defendant shall pay the plaintiff NT$200,000 in full.",
-      "validator_reasons": null,
-      "term_hit_rate": 0.75
+      "provider": "apple_translation_ape",
+      "degraded": false,
+      "elapsed_ms": 20911,
+      "text": "Prayer for Relief: The defendant shall pay the plaintiff the sum of NT$200,000.",
+      "validator_reasons": [],
+      "term_hit_rate": 1.0
     },
     {
       "id": "criminal_indictment",
       "stage": "gtx_primary",
-      "provider": "apple_translation_baseline",
-      "degraded": true,
-      "elapsed_ms": 2477,
-      "text": "The defendant was convicted of fraud and sentenced to six months in prison.",
-      "term_hit_rate": 0.6666666666666666
+      "provider": "apple_translation_ape",
+      "degraded": false,
+      "elapsed_ms": 2994,
+      "text": "The defendant was convicted of fraud and sentenced to six months' imprisonment.",
+      "term_hit_rate": 1.0
     },
     {
       "id": "criminal_indictment",
       "stage": "apple_baseline",
       "provider": "apple_translation",
       "success": true,
-      "elapsed_ms": 2268,
+      "elapsed_ms": 1047,
       "text": "The defendant was convicted of fraud and sentenced to six months in prison.",
       "term_hit_rate": 0.6666666666666666
     },
     {
       "id": "criminal_indictment",
       "stage": "apple_ape",
-      "provider": "apple_translation_baseline",
-      "degraded": true,
-      "elapsed_ms": 2223,
-      "text": "The defendant was convicted of fraud and sentenced to six months in prison.",
-      "validator_reasons": null,
-      "term_hit_rate": 0.6666666666666666
+      "provider": "apple_translation_ape",
+      "degraded": false,
+      "elapsed_ms": 2122,
+      "text": "The defendant was convicted of fraud and sentenced to six months' imprisonment.",
+      "validator_reasons": [],
+      "term_hit_rate": 1.0
     },
     {
       "id": "civil_tort",
       "stage": "gtx_primary",
-      "provider": "apple_translation_baseline",
-      "degraded": true,
-      "elapsed_ms": 2471,
-      "text": "The defendant shall be liable for damages for infringement of property rights caused by the plaintiff.",
+      "provider": "apple_translation_ape",
+      "degraded": false,
+      "elapsed_ms": 2168,
+      "text": "The defendant shall be liable for damages for the infringement of the plaintiff's rights.",
       "term_hit_rate": 1.0
     },
     {
@@ -79,18 +79,18 @@
       "stage": "apple_baseline",
       "provider": "apple_translation",
       "success": true,
-      "elapsed_ms": 2273,
+      "elapsed_ms": 899,
       "text": "The defendant shall be liable for damages for infringement of property rights caused by the plaintiff.",
       "term_hit_rate": 1.0
     },
     {
       "id": "civil_tort",
       "stage": "apple_ape",
-      "provider": "apple_translation_baseline",
-      "degraded": true,
-      "elapsed_ms": 2264,
-      "text": "The defendant shall be liable for damages for infringement of property rights caused by the plaintiff.",
-      "validator_reasons": null,
+      "provider": "apple_translation_ape",
+      "degraded": false,
+      "elapsed_ms": 2009,
+      "text": "The defendant shall be liable for damages arising from the plaintiff's injuries.",
+      "validator_reasons": [],
       "term_hit_rate": 1.0
     },
     {
@@ -98,7 +98,7 @@
       "stage": "gtx_primary",
       "provider": "apple_translation_baseline",
       "degraded": true,
-      "elapsed_ms": 2841,
+      "elapsed_ms": 3376,
       "text": "The original lawsuit No. 000024 of the 114th year of our court is currently being heard.",
       "term_hit_rate": 0.5
     },
@@ -107,7 +107,7 @@
       "stage": "apple_baseline",
       "provider": "apple_translation",
       "success": true,
-      "elapsed_ms": 2505,
+      "elapsed_ms": 1100,
       "text": "The original lawsuit No. 000024 of the 114th year of our court is currently being heard.",
       "term_hit_rate": 0.5
     },
@@ -116,11 +116,14 @@
       "stage": "apple_ape",
       "provider": "apple_translation_baseline",
       "degraded": true,
-      "elapsed_ms": 2412,
+      "elapsed_ms": 3328,
       "text": "The original lawsuit No. 000024 of the 114th year of our court is currently being heard.",
-      "validator_reasons": null,
+      "validator_reasons": [
+        "numbers_missing",
+        "case_numbers_missing"
+      ],
       "term_hit_rate": 0.5
     }
   ],
-  "generated_at": "2026-04-24T03:15:36.210125"
+  "generated_at": "2026-04-26T13:45:10.816130"
 }

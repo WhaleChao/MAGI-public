@@ -240,7 +240,7 @@
     "description": "由 AI 範本學習 (任務 B) 自動建立"
   },
   {
-    "doc_type": "民事上訴理由狀(被告：[當事人K])",
+    "doc_type": "民事上訴理由狀(被告：呂易錫)",
     "filename_template": "{doc_type}({client_name}；{action_item})",
     "archive_destination_type": "對方歷次書狀",
     "description": "由 AI 範本學習 (任務 B) 自動建立"
@@ -780,7 +780,7 @@
     "description": "由 AI 範本學習 (任務 B) 自動建立"
   },
   {
-    "doc_type": "[當事人K]-民事調解庭通知書",
+    "doc_type": "呂易錫-民事調解庭通知書",
     "filename_template": "{doc_title}-{case_no}-{doc_type}({client_name}；{action_item})",
     "archive_destination_type": "法院通知或程序裁定",
     "description": "由 AI 範本學習 (任務 B) 自動建立"
@@ -894,8 +894,8 @@
     "description": "由 AI 範本學習 (任務 B) 自動建立"
   },
   {
-    "doc_type": "新北地院函文_[當事人R]_114.9.",
-    "filename_template": "新北地院函文_[當事人R]_114.9.{date}",
+    "doc_type": "新北地院函文_董碧雲_114.9.",
+    "filename_template": "新北地院函文_董碧雲_114.9.{date}",
     "archive_destination_type": "法院通知或程序裁定",
     "description": "由 AI 範本學習 (任務 B) 自動建立"
   },
@@ -912,25 +912,25 @@
     "description": "由 AI 範本學習 (任務 B) 自動建立"
   },
   {
-    "doc_type": "新北地院民事執行處_[當事人R]_113.10.",
+    "doc_type": "新北地院民事執行處_董碧雲_113.10.",
     "filename_template": "{doc_type}.{date}",
     "archive_destination_type": "法院通知或程序裁定",
     "description": "由 AI 範本學習 (任務 B) 自動建立"
   },
   {
-    "doc_type": "新北地院民事執行處_[當事人D]_113.10.",
+    "doc_type": "新北地院民事執行處_黃彩庭_113.10.",
     "filename_template": "{doc_title}_({client_name}；)_{date}",
     "archive_destination_type": "法院通知或程序裁定",
     "description": "由 AI 範本學習 (任務 B) 自動建立"
   },
   {
-    "doc_type": "新北地院民事執行處函文_[當事人R]_113.10.",
+    "doc_type": "新北地院民事執行處函文_董碧雲_113.10.",
     "filename_template": "{date}_{doc_title}_{doc_type}_({client_name}；{action_item})",
     "archive_destination_type": "法院通知或程序裁定",
     "description": "由 AI 範本學習 (任務 B) 自動建立"
   },
   {
-    "doc_type": "新北地院民事執行處函文_[當事人R]_113.7.",
+    "doc_type": "新北地院民事執行處函文_董碧雲_113.7.",
     "filename_template": "{doc_type}{date}",
     "archive_destination_type": "法院通知或程序裁定",
     "description": "由 AI 範本學習 (任務 B) 自動建立"
@@ -960,8 +960,8 @@
     "description": "由 AI 範本學習 (任務 B) 自動建立"
   },
   {
-    "doc_type": "新北地院民事執行處函文_[當事人D]_113.7.",
-    "filename_template": "新北地院民事執行處函文_[當事人D]_113.7.{date}",
+    "doc_type": "新北地院民事執行處函文_黃彩庭_113.7.",
+    "filename_template": "新北地院民事執行處函文_黃彩庭_113.7.{date}",
     "archive_destination_type": "法院通知或程序裁定",
     "description": "由 AI 範本學習 (任務 B) 自動建立"
   },
@@ -978,7 +978,7 @@
     "description": "由 AI 範本學習 (任務 B) 自動建立"
   },
   {
-    "doc_type": "新北地院民事裁定_[當事人R]_114.9.",
+    "doc_type": "新北地院民事裁定_董碧雲_114.9.",
     "filename_template": "{doc_title}{doc_type}_{client_name}_{date}",
     "archive_destination_type": "法院通知或程序裁定",
     "description": "由 AI 範本學習 (任務 B) 自動建立"
@@ -996,7 +996,7 @@
     "description": "由 AI 範本學習 (任務 B) 自動建立"
   },
   {
-    "doc_type": "新北地院民事裁定_[當事人D]_113.12.",
+    "doc_type": "新北地院民事裁定_黃彩庭_113.12.",
     "filename_template": "{doc_title}{doc_type}_({client_name}；{action_item})_{date}",
     "archive_destination_type": "法院通知或程序裁定",
     "description": "由 AI 範本學習 (任務 B) 自動建立"
@@ -1056,7 +1056,7 @@
     "description": "由 AI 範本學習 (任務 B) 自動建立"
   },
   {
-    "doc_type": "民事執行處函([當事人D]；主旨：檢送債務人黃彩~人清冊；檢送開始更生程序公告，請債務人於文到二十日內依說明三至七提出相關資料到院）",
+    "doc_type": "民事執行處函(黃彩庭；主旨：檢送債務人黃彩~人清冊；檢送開始更生程序公告，請債務人於文到二十日內依說明三至七提出相關資料到院）",
     "filename_template": "{date} {doc_title}{case_no}民事執行處函({client_name}；{action_item})",
     "archive_destination_type": "法院通知或程序裁定",
     "description": "由 AI 範本學習 (任務 B) 自動建立"
@@ -1944,19 +1944,19 @@
     "description": "由 AI 範本學習 (任務 B) 自動建立"
   },
   {
-    "doc_type": "證物_[當事人R]_113.11.",
+    "doc_type": "證物_董碧雲_113.11.",
     "filename_template": "{doc_type}.{date}",
     "archive_destination_type": "證據資料",
     "description": "由 AI 範本學習 (任務 B) 自動建立"
   },
   {
-    "doc_type": "證物_[當事人R]_113.12.",
+    "doc_type": "證物_董碧雲_113.12.",
     "filename_template": "{doc_type}{date}",
     "archive_destination_type": "證據資料",
     "description": "由 AI 範本學習 (任務 B) 自動建立"
   },
   {
-    "doc_type": "證物_[當事人R]_114.2.",
+    "doc_type": "證物_董碧雲_114.2.",
     "filename_template": "{date}_{doc_title}_{case_no}_{doc_type}_({client_name}；{action_item})",
     "archive_destination_type": "證據資料",
     "description": "由 AI 範本學習 (任務 B) 自動建立"
