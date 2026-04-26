@@ -1045,6 +1045,22 @@ class Orchestrator:
     def _handle_laf_submit_confirmation_if_any(self, user_id: str, platform: str, role: str, message: str) -> tuple[bool, str]:
         return _laf_flow.handle_laf_submit_confirmation_if_any(self, user_id, platform, role, message)
 
+    # ── Plan C: progress submit pending wrappers ────────────────────────────
+
+    def _register_laf_progress_submit_pending(self, *, platform: str, requester_user_id: str, payload: dict, result_data: dict) -> str:
+        """進度回報兩階段確認碼：登記 pending，回傳 6-hex token。"""
+        return _laf_flow.register_laf_progress_submit_pending(
+            self,
+            platform=platform,
+            requester_user_id=requester_user_id,
+            payload=payload,
+            result_data=result_data,
+        )
+
+    def _resolve_laf_progress_pending_token(self, token: str):
+        """進度回報兩階段確認碼：驗證 token，回傳 entry dict 或 None。"""
+        return _laf_flow.resolve_laf_progress_pending_token(self, token)
+
 
     def _is_ambiguous_rule(self, text: str) -> bool:
         return _memory_flow.is_ambiguous_rule(text)
