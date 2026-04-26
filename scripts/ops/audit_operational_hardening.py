@@ -13,7 +13,9 @@ import json
 import os
 import subprocess
 import sys
+import time
 from collections import defaultdict
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +24,83 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from api.platforms.safe_process import parse_cron_command, _validate_argv  # noqa: E402
+
+
+def _safe_epoch(value: Any) -> float:
+    try:
+        return float(value)
+    except Exception:
+        pass
+    txt = str(value or "").strip()
+    if not txt:
+        return 0.0
+    try:
+        if txt.endswith("Z"):
+            txt = txt[:-1] + "+00:00"
+        return datetime.fromisoformat(txt).timestamp()
+    except Exception:
+        return 0.0
+
+
+def _cron_job_from_issue_command(command: Any) -> str:
+    cmd = str(command or "").strip()
+    if not cmd.startswith("cron:"):
+        return ""
+    return cmd.split(":", 1)[1].strip()
+
+
+def _is_false_positive_cron_issue(row: dict[str, Any]) -> bool:
+    source = str(row.get("source", ""))
+    if not source.startswith("discord_bot.cron_scheduler"):
+        return False
+    err = str(row.get("error", ""))
+    err_lower = err.lower()
+    if "stdout_tail=" not in err_lower:
+        return False
+    return ("\"success\": true" in err_lower) or ("✅" in err)
+
+
+def _load_cron_last_run_ts() -> dict[str, float]:
+    state_path = ROOT / ".runtime" / "cron_state.json"
+    if not state_path.exists():
+        return {}
+    raw = _load_json(state_path, {})
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, float] = {}
+    for job_id, data in raw.items():
+        if not isinstance(data, dict):
+            continue
+        ts = _safe_epoch(data.get("last_run"))
+        if ts > 0:
+            out[str(job_id)] = ts
+    return out
+
+
+def _classify_issue_row(
+    row: dict[str, Any],
+    *,
+    active_cutoff: float,
+    latest_cron_issue_ts_by_job: dict[str, float],
+    cron_last_run_ts: dict[str, float],
+) -> str:
+    source = str(row.get("source", ""))
+    if not source.startswith("discord_bot.cron_scheduler"):
+        return "non_cron"
+    if _is_false_positive_cron_issue(row):
+        return "false_positive"
+
+    ts = _safe_epoch(row.get("ts") or row.get("iso"))
+    job_id = _cron_job_from_issue_command(row.get("command"))
+    if not job_id:
+        return "stale" if ts < active_cutoff else "active_unresolved"
+    if latest_cron_issue_ts_by_job.get(job_id, ts) > ts:
+        return "superseded"
+    if cron_last_run_ts.get(job_id, 0.0) > ts:
+        return "recovered"
+    if ts < active_cutoff:
+        return "stale"
+    return "active_unresolved"
 
 
 def _load_json(path: Path, default: Any) -> Any:
@@ -111,24 +190,87 @@ def audit_issue_agenda(limit: int = 20) -> dict[str, Any]:
     path = ROOT / ".runtime" / "issue_agenda.jsonl"
     if not path.exists():
         return {"exists": False, "recent": []}
-    rows = []
-    for line in path.read_text(encoding="utf-8", errors="replace").splitlines()[-limit:]:
+
+    all_rows = []
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
         try:
-            rows.append(json.loads(line))
+            row = json.loads(line)
+            row["_ts"] = _safe_epoch(row.get("ts") or row.get("iso"))
+            all_rows.append(row)
         except Exception:
             continue
+    rows = all_rows[-limit:]
+
+    latest_cron_issue_ts_by_job: dict[str, float] = {}
+    for row in all_rows:
+        source = str(row.get("source", ""))
+        if not source.startswith("discord_bot.cron_scheduler"):
+            continue
+        if _is_false_positive_cron_issue(row):
+            continue
+        job_id = _cron_job_from_issue_command(row.get("command"))
+        if not job_id:
+            continue
+        ts = float(row.get("_ts") or 0.0)
+        prev = latest_cron_issue_ts_by_job.get(job_id, 0.0)
+        if ts > prev:
+            latest_cron_issue_ts_by_job[job_id] = ts
+
+    active_window_sec = int(os.environ.get("MAGI_OPERATIONAL_ACTIVE_ISSUE_WINDOW_SEC", "21600") or "21600")
+    active_cutoff = time.time() - active_window_sec
+    cron_last_run_ts = _load_cron_last_run_ts()
+    class_counts: dict[str, int] = defaultdict(int)
+    recent = []
+    for row in rows:
+        state = _classify_issue_row(
+            row,
+            active_cutoff=active_cutoff,
+            latest_cron_issue_ts_by_job=latest_cron_issue_ts_by_job,
+            cron_last_run_ts=cron_last_run_ts,
+        )
+        class_counts[state] += 1
+        recent.append(
+            {
+                "iso": row.get("iso"),
+                "command": row.get("command"),
+                "severity": row.get("severity"),
+                "state": state,
+                "error": (row.get("error") or "")[:500],
+            }
+        )
+
     return {
         "exists": True,
         "recent_count": len(rows),
-        "recent": [
-            {
-                "iso": r.get("iso"),
-                "command": r.get("command"),
-                "severity": r.get("severity"),
-                "error": (r.get("error") or "")[:500],
-            }
-            for r in rows
-        ],
+        "recent_state_counts": dict(class_counts),
+        "recent": recent,
+    }
+
+
+def audit_gmail_monitor_mode() -> dict[str, Any]:
+    """Check whether Gmail monitoring uses polling or push-watch semantics.
+
+    Push mode needs daily watch renewal and historyId 404 full-sync handling.
+    MAGI's stable LAF monitor is currently polling; this audit makes that
+    explicit so a future push implementation cannot be added silently.
+    """
+    files = [
+        ROOT / "skills" / "legal" / "laf.py",
+        ROOT / "skills" / "gmail-drafts" / "action.py",
+        ROOT / "api" / "startup.py",
+    ]
+    hits = []
+    for path in files:
+        if not path.exists():
+            continue
+        text = path.read_text(encoding="utf-8", errors="replace")
+        if ".watch(" in text or "users().watch" in text or "history().list" in text:
+            hits.append(str(path.relative_to(ROOT)))
+    return {
+        "ok": len(hits) == 0,
+        "mode": "polling" if not hits else "push_or_history_detected",
+        "push_watch_files": hits,
+        "requirement": "If Gmail push/history is introduced, add daily watch renewal and HTTP 404 full-sync backstop.",
     }
 
 
@@ -142,6 +284,7 @@ def main() -> int:
         "cron": audit_cron(),
         "git": audit_git(),
         "issue_agenda": audit_issue_agenda(),
+        "gmail_monitor": audit_gmail_monitor_mode(),
     }
     out = Path(args.json_out)
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -152,12 +295,14 @@ def main() -> int:
         "cron_collisions": report["cron"]["collision_count"],
         "dirty_count": report["git"]["dirty_count"],
         "recent_issues": report["issue_agenda"]["recent_count"],
+        "gmail_monitor_mode": report["gmail_monitor"]["mode"],
         "json_out": str(out),
     }, ensure_ascii=False))
 
     if args.fail_on_red and (
         report["cron"]["parse_failure_count"] > 0
         or report["cron"]["collision_count"] > 0
+        or not report["gmail_monitor"]["ok"]
     ):
         return 1
     return 0

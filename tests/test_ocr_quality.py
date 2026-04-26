@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import pytest
 from skills.engine.ocr.quality import (
+    assess_page_scan_quality,
     compute_quality_score,
     is_likely_legal_text,
     score_pair,
@@ -99,3 +100,27 @@ class TestScorePair:
         garbage = "\ufffd\ufffd\ufffd\ufffd???"
         a, b = score_pair(legal, garbage)
         assert a > b
+
+
+class TestScanQualityAssessment:
+    def test_a4_300dpi_is_good_for_ocr(self):
+        # A4 ~= 8.27 x 11.69 inch; at 300 DPI ~= 2481 x 3507 px.
+        result = assess_page_scan_quality(
+            width_px=2481,
+            height_px=3507,
+            page_width_pt=595,
+            page_height_pt=842,
+        )
+        assert result.ok_for_ocr is True
+        assert result.level == "good"
+
+    def test_low_resolution_is_rejected(self):
+        result = assess_page_scan_quality(
+            width_px=1000,
+            height_px=1414,
+            page_width_pt=595,
+            page_height_pt=842,
+        )
+        assert result.ok_for_ocr is False
+        assert result.level in {"poor", "borderline"}
+        assert "重新掃描" in result.recommendation

@@ -76,6 +76,8 @@ def _clean_client_name(raw_name: str) -> str:
     s = (raw_name or "").strip()
     if not s:
         return ""
+    if re.fullmatch(r"\[[^\[\]\n]{1,60}\]", s):
+        return s
     for token in (
         "幫我", "幫", "請", "處理", "回報", "法扶", "做", "先", "暫存", "存檔",
         "姓名", "名字", "受扶助人", "當事人", "原因", "說明", "備註", "理由",
@@ -148,11 +150,15 @@ def parse_laf_report_payload(raw_text: str) -> Optional[dict]:
 
     # explicit target by labels
     client_name = ""
+    m_bracketed_prefix = re.match(r"^\s*(\[[^\[\]\n]{1,60}\])", text)
+    if m_bracketed_prefix:
+        client_name = m_bracketed_prefix.group(1).strip()
+
     m_client = re.search(
         r"(?:受扶助人|當事人|姓名|名字)\s*(?:是|為|:|：)?\s*([^\n,，。；;]+?)\s*(?=(?:原因|說明|備註|理由|$))",
         text,
     )
-    if m_client:
+    if not client_name and m_client:
         _candidate_name = _clean_client_name(m_client.group(1) or "")
         if _candidate_name and not _looks_like_laf_action_name(_candidate_name):
             client_name = _candidate_name

@@ -4131,6 +4131,29 @@ def run_nightly(run_dir: str) -> Dict[str, Any]:
     # 判決爬取避免拖死整輪：讓 judgment-collector 內部 time_budget 更保守一點。
     os.environ.setdefault("JUDGMENT_DAILY_TIME_BUDGET_SEC", "900")
 
+    _USER_DEFER_THRESHOLD = int(os.environ.get("MAGI_USER_ACTIVE_THRESHOLD_SEC", "300"))
+    _nightly_results_ref: Dict[str, Any] = {"steps": {}}
+
+    def _user_active_defer(step_name: str) -> bool:
+        """若使用者近期活躍，跳過此 LLM 步驟並記錄。回傳 True 表示已延後。"""
+        try:
+            from skills.ops.user_activity_beacon import is_user_active, seconds_since_last_activity
+            if is_user_active(_USER_DEFER_THRESHOLD):
+                elapsed = int(seconds_since_last_activity())
+                reason = f"略過：使用者 {elapsed} 秒前仍在使用中，LLM 任務自動延後"
+                logger.info("nightly: %s — %s", step_name, reason)
+                steps = _nightly_results_ref.setdefault("steps", {})
+                steps[step_name] = {
+                    "ok": True,
+                    "skipped": True,
+                    "reason": reason,
+                    "user_active_defer": True,
+                }
+                return True
+        except Exception:
+            logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 4135, exc_info=True)
+        return False
+
     # ── Phase 0: PDF 視覺訓練（22:00 起跑，使用 oMLX/PyMuPDF，不影響後續 API 拉取）──
     import threading as _thr
     _nightly_train_script = os.path.join(MAGI_ROOT_DIR, "skills", "pdf-namer", "nightly_train.py")
@@ -4225,6 +4248,7 @@ def run_nightly(run_dir: str) -> Dict[str, Any]:
             os.environ.pop("MAGI_ENABLE_JUDICIAL_API_DAY_PROCESS", None)
         else:
             os.environ["MAGI_ENABLE_JUDICIAL_API_DAY_PROCESS"] = _prev_day_process
+    _nightly_results_ref = results
 
     # 寫入 PDF 視覺訓練結果
     results["steps"]["pdf_nightly_train"] = _pdf_train_result
@@ -4268,27 +4292,6 @@ def run_nightly(run_dir: str) -> Dict[str, Any]:
     if isinstance(auth_step, dict) and not bool(auth_step.get("ok", True)):
         results["ok"] = False
         return results
-
-    # ── 使用者優先：LLM 重度步驟開始前檢查使用者是否活躍 ──
-    _USER_DEFER_THRESHOLD = int(os.environ.get("MAGI_USER_ACTIVE_THRESHOLD_SEC", "300"))
-
-    def _user_active_defer(step_name: str) -> bool:
-        """若使用者近期活躍，跳過此 LLM 步驟並記錄。回傳 True 表示已延後。"""
-        try:
-            from skills.ops.user_activity_beacon import is_user_active, seconds_since_last_activity
-            if is_user_active(_USER_DEFER_THRESHOLD):
-                elapsed = int(seconds_since_last_activity())
-                reason = f"略過：使用者 {elapsed} 秒前仍在使用中，LLM 任務自動延後"
-                logger.info("nightly: %s — %s", step_name, reason)
-                results["steps"][step_name] = {
-                    "ok": True, "skipped": True,
-                    "reason": reason,
-                    "user_active_defer": True,
-                }
-                return True
-        except Exception:
-            logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 4273, exc_info=True)
-        return False
 
     def _t(env_name: str, default: int) -> int:
         try:

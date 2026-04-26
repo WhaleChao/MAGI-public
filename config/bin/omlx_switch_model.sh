@@ -254,14 +254,14 @@ case "$MODE" in
     ln -sf "$B26_SRC" "$MODELS_TEXT_DIR/gemma-4-26b-a4b-it-4bit"
     echo "night" > "$PROFILE_FILE"
 
-    # 重啟 oMLX 26B（大記憶體，但下修為 14GB/12GB 保留系統緩衝）
+    # 重啟 oMLX 26B（模型實際約 14.63GB；MODEL 需高於模型大小，否則 completion 回 507）
     launchctl bootout "gui/$UID_NUM/com.magi.omlx" 2>/dev/null || true
     wait_port_closed 8080 30
     # 所有舊 process 都 bootout 後才檢查記憶體
     preflight_memory_check 10 "NIGHT"
-    /usr/libexec/PlistBuddy -c "Set :EnvironmentVariables:OMLX_TEXT_MAX_MODEL_MEMORY 14GB" \
+    /usr/libexec/PlistBuddy -c "Set :EnvironmentVariables:OMLX_TEXT_MAX_MODEL_MEMORY 16GB" \
         ~/Library/LaunchAgents/com.magi.omlx.plist 2>/dev/null || true
-    /usr/libexec/PlistBuddy -c "Set :EnvironmentVariables:OMLX_TEXT_MAX_PROCESS_MEMORY 12GB" \
+    /usr/libexec/PlistBuddy -c "Set :EnvironmentVariables:OMLX_TEXT_MAX_PROCESS_MEMORY 18GB" \
         ~/Library/LaunchAgents/com.magi.omlx.plist 2>/dev/null || true
     launchctl bootstrap "gui/$UID_NUM" ~/Library/LaunchAgents/com.magi.omlx.plist || true
     sleep 3

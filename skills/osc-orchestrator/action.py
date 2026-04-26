@@ -1856,6 +1856,7 @@ def task_gcal_import(payload: Dict[str, Any]) -> Dict[str, Any]:
     lookahead_days = int(p.get("lookahead_days") or 180)
     limit = int(p.get("limit") or 250)
     dedup_enabled = _env_bool("MAGI_GCAL_DEDUP_ENABLED", False)
+    incremental = bool(p.get("incremental")) or _env_bool("MAGI_GCAL_INCREMENTAL_IMPORT", False)
 
     credentials_path = (p.get("credentials_path") or os.environ.get("MAGI_GOOGLE_CREDENTIALS_PATH") or "").strip()
     token_path = (p.get("token_path") or os.environ.get("MAGI_GOOGLE_CALENDAR_TOKEN_PATH") or "").strip()
@@ -1892,23 +1893,100 @@ def task_gcal_import(payload: Dict[str, Any]) -> Dict[str, Any]:
         if not cal_ids:
             cal_ids = ["primary"]
 
+    def _sync_state_path() -> Path:
+        try:
+            from api.platforms import runtime_dir
+            return runtime_dir.root() / "gcal_import_sync_tokens.json"
+        except Exception:
+            return _MAGI_ROOT / ".runtime" / "gcal_import_sync_tokens.json"
+
+    def _load_sync_state() -> Dict[str, Any]:
+        path = _sync_state_path()
+        try:
+            if path.exists():
+                return json.loads(path.read_text(encoding="utf-8")) or {}
+        except Exception:
+            logging.getLogger(__name__).debug("gcal_import sync state load failed", exc_info=True)
+        return {}
+
+    def _save_sync_state(state: Dict[str, Any]) -> None:
+        path = _sync_state_path()
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_suffix(path.suffix + ".tmp")
+            tmp.write_text(json.dumps(state, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+            os.replace(tmp, path)
+        except Exception:
+            logging.getLogger(__name__).debug("gcal_import sync state save failed", exc_info=True)
+
+    def _is_http_410(exc: Exception) -> bool:
+        resp = getattr(exc, "resp", None)
+        status = getattr(resp, "status", None) or getattr(resp, "status_code", None)
+        try:
+            if int(status) == 410:
+                return True
+        except Exception:
+            pass
+        s = str(exc)
+        return "410" in s and ("Gone" in s or "gone" in s or "Sync token" in s or "syncToken" in s)
+
+    sync_state = _load_sync_state() if incremental else {}
+    sync_token_resets = 0
+    incremental_used = False
     events = []
     for _cid in cal_ids:
-        try:
-            events_result = service.events().list(
-                calendarId=_cid,
-                timeMin=time_min,
-                timeMax=time_max,
-                maxResults=limit,
-                singleEvents=True,
-                orderBy="startTime",
-            ).execute()
-            _items = events_result.get("items", [])
-            if _items:
-                logger.info("gcal_import: calendar '%s' → %d events", _cid[:40], len(_items))
-                events.extend(_items)
-        except Exception as e:
-            logger.debug("gcal_import: calendar '%s' failed: %s", _cid[:30], e)
+        token = str(sync_state.get(_cid) or "") if incremental else ""
+        attempt_token = token
+        for _attempt in range(2):
+            try:
+                page_token = None
+                fetched_for_calendar = 0
+                while True:
+                    list_kwargs = {
+                        "calendarId": _cid,
+                        "maxResults": max(1, min(limit, 2500)),
+                        "singleEvents": True,
+                    }
+                    if attempt_token:
+                        list_kwargs["syncToken"] = attempt_token
+                        incremental_used = True
+                    else:
+                        list_kwargs.update({
+                            "timeMin": time_min,
+                            "timeMax": time_max,
+                            "orderBy": "startTime",
+                        })
+                    if page_token:
+                        list_kwargs["pageToken"] = page_token
+                    events_result = service.events().list(**list_kwargs).execute()
+                    _items = events_result.get("items", [])
+                    if _items:
+                        events.extend(_items)
+                        fetched_for_calendar += len(_items)
+                    page_token = events_result.get("nextPageToken")
+                    next_sync_token = events_result.get("nextSyncToken")
+                    if next_sync_token:
+                        sync_state[_cid] = next_sync_token
+                    if not page_token or fetched_for_calendar >= limit:
+                        break
+                if fetched_for_calendar:
+                    logger.info("gcal_import: calendar '%s' → %d events", _cid[:40], fetched_for_calendar)
+                break
+            except Exception as e:
+                if attempt_token and _is_http_410(e):
+                    sync_token_resets += 1
+                    sync_state.pop(_cid, None)
+                    attempt_token = ""
+                    logging.getLogger(__name__).warning(
+                        "gcal_import: calendar '%s' syncToken expired; falling back to full window sync",
+                        _cid[:30],
+                    )
+                    continue
+                logging.getLogger(__name__).debug("gcal_import: calendar '%s' failed: %s", _cid[:30], e)
+                break
+
+    if incremental:
+        _save_sync_state(sync_state)
 
     if not events:
         try:
@@ -1926,7 +2004,15 @@ def task_gcal_import(payload: Dict[str, Any]) -> Dict[str, Any]:
             return {"ok": False, "error": f"gcal_list_failed:{type(e).__name__}:{e}"}
 
     if not events:
-        return {"ok": True, "imported": 0, "skipped": 0, "message": "calendar_empty_or_no_events_in_range"}
+        return {
+            "ok": True,
+            "imported": 0,
+            "skipped": 0,
+            "message": "calendar_empty_or_no_events_in_range",
+            "incremental": bool(incremental),
+            "incremental_used": bool(incremental_used),
+            "sync_token_resets": sync_token_resets,
+        }
 
     # Connect DB
     try:
@@ -2106,6 +2192,9 @@ def task_gcal_import(payload: Dict[str, Any]) -> Dict[str, Any]:
         "dedup_skipped_in_batch": dedup_skipped_in_batch,
         "db_dedup_skipped": db_dedup_skipped,
         "invalid_case_keys": invalid_case_keys,
+        "incremental": bool(incremental),
+        "incremental_used": bool(incremental_used),
+        "sync_token_resets": sync_token_resets,
         "errors": errors[:10],
     }
 

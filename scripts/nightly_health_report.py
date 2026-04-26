@@ -82,6 +82,17 @@ def _parse_step_results(run_dir: str) -> dict:
                             "skipped": bool((step.get("parsed") or {}).get("skipped")),
                             "detail": _extract_step_detail(step),
                         }
+            if not results and report.get("ok") is False:
+                detail = ""
+                if isinstance(details, dict):
+                    detail = str(details.get("error") or details.get("summary") or "")
+                detail = detail or str(report.get("summary") or "nightly report marked ok=false")
+                results["_nightly_run"] = {
+                    "name": "夜間主流程",
+                    "ok": False,
+                    "skipped": False,
+                    "detail": detail[:240],
+                }
             return results
         except Exception:
             pass
@@ -208,7 +219,8 @@ def generate_report() -> str:
             fail_count = 0
             skip_count = 0
 
-            for step_key, step_name in NIGHTLY_KEY_STEPS:
+            display_steps = [("_nightly_run", "夜間主流程")] + NIGHTLY_KEY_STEPS
+            for step_key, step_name in display_steps:
                 if step_key in step_results:
                     r = step_results[step_key]
                     if r["skipped"]:

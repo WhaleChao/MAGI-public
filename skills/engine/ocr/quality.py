@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from dataclasses import dataclass
 from typing import Tuple
 
 # 繁體中文常見 CJK 範圍（基本 + 擴充 A/B 的前段）
@@ -37,6 +38,44 @@ _LEGAL_TERMS = frozenset({
 
 # 明顯亂碼字元樣式（替換字元、私用區等）
 _GARBAGE_PATTERN = re.compile(r"[\ufffd\ue000-\uf8ff\ufffe\uffff]")
+
+
+@dataclass(frozen=True)
+class ScanQualityAssessment:
+    effective_dpi: float
+    level: str
+    ok_for_ocr: bool
+    recommendation: str
+
+
+def assess_page_scan_quality(
+    *,
+    width_px: int,
+    height_px: int,
+    page_width_pt: float,
+    page_height_pt: float,
+) -> ScanQualityAssessment:
+    """Assess scan resolution from image pixels and PDF page size.
+
+    PDF points are 1/72 inch. Standard legal text should be at least 300 DPI;
+    small print or weak originals should be closer to 400 DPI.
+    """
+    try:
+        w_px = max(0, int(width_px))
+        h_px = max(0, int(height_px))
+        w_in = max(0.01, float(page_width_pt) / 72.0)
+        h_in = max(0.01, float(page_height_pt) / 72.0)
+        dpi = min(w_px / w_in, h_px / h_in)
+    except Exception:
+        dpi = 0.0
+
+    if dpi >= 395:
+        return ScanQualityAssessment(round(dpi, 1), "excellent", True, "400 DPI 以上，適合小字或品質較差原稿。")
+    if dpi >= 295:
+        return ScanQualityAssessment(round(dpi, 1), "good", True, "300 DPI 以上，適合一般法律文件 OCR。")
+    if dpi >= 200:
+        return ScanQualityAssessment(round(dpi, 1), "borderline", False, "低於 300 DPI，建議重新掃描；若是小字或淡色原稿請用 400 DPI。")
+    return ScanQualityAssessment(round(dpi, 1), "poor", False, "低於 200 DPI，OCR 容易漏字或誤判，應重新掃描。")
 
 
 def compute_quality_score(text: str) -> float:

@@ -618,51 +618,54 @@ async def bg_scheduler_loop():
                         else:
                             _timeout = 7200 if job.get("id") in _LONG_JOBS else 600
                         _job_id = job.get("id", "?")
-                        _shell_env = {**os.environ, "MAGI_PREFER_LOCAL_DB": "0", "MAGI_NO_DELETE": "1"}
+                        _shell_env = {"MAGI_PREFER_LOCAL_DB": "0", "MAGI_NO_DELETE": "1"}
                         try:
-                            _proc = await asyncio.create_subprocess_shell(
-                                command,
-                                stdout=asyncio.subprocess.PIPE,
-                                stderr=asyncio.subprocess.PIPE,
-                                cwd=_MAGI_ROOT,
-                                env=_shell_env,
+                            from api.platforms.safe_process import parse_cron_command, run as _safe_run
+                            from skills.ops.cron_result_policy import should_log_cron_issue
+
+                            _argv = parse_cron_command(command)
+                            _sr = await loop.run_in_executor(
+                                _CRON_EXECUTOR,
+                                lambda: _safe_run(
+                                    _argv,
+                                    timeout_sec=_timeout,
+                                    cwd=_MAGI_ROOT,
+                                    env_extra=_shell_env,
+                                ),
                             )
-                            try:
-                                _stdout, _stderr = await asyncio.wait_for(
-                                    _proc.communicate(), timeout=_timeout,
-                                )
-                            except asyncio.TimeoutError:
-                                try:
-                                    _proc.kill()
-                                except Exception:
-                                    pass
+                            _stdout_text = _sr.stdout or ""
+                            _stderr_text = _sr.stderr or ""
+                            if _sr.timed_out:
                                 logger.warning("⚠️ Shell job %s timed out (%ds)", _job_id, _timeout)
-                                _stdout = _stderr = None
-                            else:
-                                if _proc.returncode != 0:
-                                    # 2026-04-25: stderr 取 tail [-4000:]（Python traceback 在尾段，
-                                    # head 多半是 progress log 把根因擠出截斷視窗）；補 stdout tail。
-                                    _stderr_full = (_stderr or b"").decode("utf-8", "ignore")
-                                    _err_text = _stderr_full[-4000:] if len(_stderr_full) > 4000 else _stderr_full
-                                    _out_tail = ""
-                                    if not _err_text.strip():
-                                        _out_text = (_stdout or b"").decode("utf-8", "ignore")
-                                        _out_tail = _out_text[-1500:] if _out_text else ""
+                            if _sr.returncode != 0:
+                                # 2026-04-25: stderr 取 tail [-4000:]（Python traceback 在尾段，
+                                # head 多半是 progress log 把根因擠出截斷視窗）；補 stdout tail。
+                                _err_text = _stderr_text[-4000:] if len(_stderr_text) > 4000 else _stderr_text
+                                _out_tail = ""
+                                if not _err_text.strip():
+                                    _out_tail = _stdout_text[-1500:] if _stdout_text else ""
+                                if should_log_cron_issue(_sr.returncode, _stdout_text, _stderr_text):
                                     try:
                                         from skills.management.issue_tracker import log_issue
 
                                         log_issue(
                                             command=f"cron:{job.get('name') or _job_id}",
-                                            error_msg=f"exit={_proc.returncode} stderr={_err_text}" + (f" stdout_tail={_out_tail}" if _out_tail else ""),
+                                            error_msg=f"exit={_sr.returncode} stderr={_err_text}" + (f" stdout_tail={_out_tail}" if _out_tail else ""),
                                             context=f"schedule={job.get('schedule')} command={str(job.get('command'))[:200]}",
                                             severity="High",
                                             source="discord_bot.cron_scheduler",
                                         )
                                     except Exception:
                                         pass
-                                    logger.warning("⚠️ Shell job %s exited %d: %s", _job_id, _proc.returncode, _err_text)
+                                    logger.warning("⚠️ Shell job %s exited %d: %s", _job_id, _sr.returncode, _err_text)
                                 else:
-                                    logger.info("✅ Shell job %s completed OK", _job_id)
+                                    logger.info(
+                                        "✅ Shell job %s returned %d but stdout indicates success; issue suppressed",
+                                        _job_id,
+                                        _sr.returncode,
+                                    )
+                            else:
+                                logger.info("✅ Shell job %s completed OK", _job_id)
                         except Exception as _se:
                             logger.warning("⚠️ Shell job %s error: %s", _job_id, _se)
                     # Shell job results go to logs only — not to Discord general channel.

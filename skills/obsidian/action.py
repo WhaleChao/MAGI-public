@@ -82,6 +82,11 @@ _KNOWN_MALFORMED_PDF_HINTS = (
     "[pdf 提取失敗",
     "pdf 提取失敗",
     "cannot find xref",
+    "couldn't find trailer dictionary",
+    "couldn't read xref table",
+    "failed to open file",
+    "cannot open broken document",
+    "xref table",
 )
 
 

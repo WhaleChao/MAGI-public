@@ -25,6 +25,7 @@ import argparse
 import json
 import logging
 import os
+import re
 import subprocess
 import sys
 import time
@@ -74,6 +75,34 @@ TRAIN_CONFIG = {
 # ── 結構檢查關鍵字 ────────────────────────────────────────────────────
 STRUCTURE_HEADERS = ["實務見解", "法院見解", "適用法條", "法院認為", "應解為"]
 MIN_ROUGE1_F1 = 0.3
+MIN_OUTPUT_CHARS = 48
+MIN_CJK_CHARS = 24
+MIN_CJK_RATIO = 0.45
+MAX_ASCII_ALPHA_RATIO = 0.35
+
+# 規則式繁簡檢查：只放「繁體不共碼位」的常見簡體字，避免誤判。
+_SC_LEGAL_CHARS = frozenset(
+    "损权责证诉处规进对认时问说来过义务类协签举书审长会还为从发开关应现给让边单实续区动结请们违约赔据议订讨论题"
+)
+_CHANNEL_MARKER_PATTERNS = (
+    re.compile(r"<\|channel\>\s*thought", re.IGNORECASE),
+    re.compile(r"<\|channel\>", re.IGNORECASE),
+)
+_EN_THINKING_TRACE = re.compile(
+    r"(?i)\b("
+    r"let'?s think|"
+    r"chain\s+of\s+thought|"
+    r"thought\s+process|"
+    r"internal\s+monologue|"
+    r"my\s+reasoning|"
+    r"i\s+will\s+reason|"
+    r"step\s+by\s+step|"
+    r"reasoning\s*:|"
+    r"analysis\s*:"
+    r")\b"
+)
+_CJK_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff]")
+_ASCII_ALPHA_RE = re.compile(r"[A-Za-z]")
 
 # ── mlx-lm Python（使用 oMLX 內建 Python 3.11）──────────────────────
 OMLX_PYTHON = "/opt/homebrew/opt/omlx/libexec/bin/python3.11"
@@ -91,6 +120,81 @@ def _adapter_dir(version: str) -> Path:
 
 def _merged_dir(version: str) -> Path:
     return MERGED_DIR / f"Gemma-{version}"
+
+
+def _check_simplified_chinese(text: str) -> list[str]:
+    found = [c for c in text if c in _SC_LEGAL_CHARS]
+    seen: set[str] = set()
+    unique_found = []
+    for c in found:
+        if c not in seen:
+            seen.add(c)
+            unique_found.append(c)
+    return unique_found
+
+
+def _build_validation_messages(prompt: str) -> list[dict[str, str]]:
+    """Validation 專用提示，加入 final-channel suppression（僅訓練/驗證流程使用）。"""
+    return [
+        {
+            "role": "system",
+            "content": (
+                "你是台灣法律助理。只輸出最終答案，不要輸出思考過程。"
+                "禁止輸出任何 channel marker（例如 <|channel>thought、<|channel>）。"
+                "請使用繁體中文，內容需具體完整。/no_think"
+            ),
+        },
+        {"role": "user", "content": prompt},
+    ]
+
+
+def _validate_output_gate(output: str) -> tuple[bool, list[str], dict]:
+    text = (output or "").strip()
+    reasons: list[str] = []
+    stats = {
+        "length": len(text),
+        "cjk_chars": 0,
+        "cjk_ratio": 0.0,
+        "ascii_alpha_ratio": 0.0,
+        "simplified_chars": [],
+    }
+
+    if not text:
+        reasons.append("empty_output")
+        return False, reasons, stats
+
+    for pattern in _CHANNEL_MARKER_PATTERNS:
+        if pattern.search(text):
+            reasons.append("channel_marker_leak")
+            break
+
+    if _EN_THINKING_TRACE.search(text):
+        reasons.append("english_thinking_trace")
+
+    if len(text) < MIN_OUTPUT_CHARS:
+        reasons.append("too_short")
+
+    cjk_chars = len(_CJK_RE.findall(text))
+    ascii_alpha = len(_ASCII_ALPHA_RE.findall(text))
+    total_len = max(len(text), 1)
+    cjk_ratio = cjk_chars / total_len
+    ascii_alpha_ratio = ascii_alpha / total_len
+
+    stats["cjk_chars"] = cjk_chars
+    stats["cjk_ratio"] = round(cjk_ratio, 3)
+    stats["ascii_alpha_ratio"] = round(ascii_alpha_ratio, 3)
+
+    if cjk_chars < MIN_CJK_CHARS or cjk_ratio < MIN_CJK_RATIO:
+        reasons.append("insufficient_traditional_chinese")
+    if ascii_alpha_ratio > MAX_ASCII_ALPHA_RATIO:
+        reasons.append("too_much_english")
+
+    simplified_chars = _check_simplified_chinese(text)
+    stats["simplified_chars"] = simplified_chars[:8]
+    if simplified_chars:
+        reasons.append("simplified_chinese_detected")
+
+    return len(reasons) == 0, reasons, stats
 
 
 def train(version: str) -> dict:
@@ -227,6 +331,7 @@ def validate(version: str) -> dict:
     ]
 
     passed = 0
+    details = []
     for i, prompt in enumerate(test_prompts):
         try:
             # 新版 mlx-lm: generate(model, tok, prompt, verbose, **kwargs) — temp 不再是位置/直接參數
@@ -237,7 +342,7 @@ def validate(version: str) -> dict:
 import sys; sys.path.insert(0, '/opt/homebrew/opt/omlx/libexec/lib/python3.11/site-packages')
 from mlx_lm import load, generate
 model, tok = load({str(merged_path)!r})
-msgs = [{{'role':'user','content':{prompt!r}}}]
+msgs = { _build_validation_messages(prompt)!r }
 p = tok.apply_chat_template(msgs, tokenize=False, add_generation_prompt=True)
 out = generate(model, tok, p, max_tokens=128, verbose=False)
 print(out[:400])
@@ -245,21 +350,44 @@ print(out[:400])
             ]
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
             output = (result.stdout or "").strip()
-            if len(output) > 10:
+            sample_ok, reasons, stats = _validate_output_gate(output)
+            details.append({
+                "sample": i + 1,
+                "prompt": prompt,
+                "pass": sample_ok,
+                "reasons": reasons,
+                "stats": stats,
+                "output_preview": output[:160],
+            })
+            if sample_ok:
                 passed += 1
                 logger.info("  Validate %d/3: OK (%d chars)", i + 1, len(output))
             else:
-                logger.warning("  Validate %d/3: short output (%d chars)", i + 1, len(output))
+                logger.warning(
+                    "  Validate %d/3: FAIL reasons=%s stats=%s",
+                    i + 1, ",".join(reasons), stats,
+                )
         except Exception as e:
             logger.warning("  Validate %d/3: %s", i + 1, e)
+            details.append({
+                "sample": i + 1,
+                "prompt": prompt,
+                "pass": False,
+                "reasons": ["exception"],
+                "stats": {"error": str(e)},
+                "output_preview": "",
+            })
 
-    success = passed >= 2
+    validation_pass = passed >= 2
     result_dict = {
         "version": version,
-        "success": success,
+        "success": validation_pass,
+        "validation_pass": validation_pass,
         "passed": passed,
         "total": len(test_prompts),
+        "pass_rate": round(passed / len(test_prompts), 3),
         "merged_path": str(merged_path),
+        "details": details,
     }
 
     # 寫 metrics

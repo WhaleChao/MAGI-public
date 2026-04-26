@@ -145,10 +145,16 @@ def run(
     timeout_sec: float = 120.0,
     env_whitelist_prefixes: Optional[Sequence[str]] = None,
     cwd: Optional[str] = None,
+    env_extra: Optional[dict] = None,
 ) -> SafeRunResult:
     """以 argv 啟動子進程，禁用 shell=True。超時走 SIGTERM→3s→SIGKILL。"""
     _validate_argv(argv)
     env = _filter_env(env_whitelist_prefixes)
+    if env_extra:
+        allow = tuple(env_whitelist_prefixes) if env_whitelist_prefixes else _DEFAULT_ENV_PREFIXES
+        for k, v in env_extra.items():
+            if any(k == p or str(k).startswith(p) for p in allow):
+                env[str(k)] = str(v)
     t0 = time.time()
     killed = False
     timed_out = False

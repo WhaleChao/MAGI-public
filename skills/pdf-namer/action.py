@@ -2355,6 +2355,10 @@ def _macos_vision_ocr_page(pdf_path: str, page_num: int = 0) -> str:
 # ─────────────────────────────────────────────────────────────────────────────
 
 _PDF_OCR_CONSENSUS = os.environ.get("MAGI_PDF_OCR_CONSENSUS", "0").strip() in ("1", "true", "yes")
+try:
+    _CHANDRA_OCR_MIN_SCORE = float(os.environ.get("MAGI_CHANDRA_OCR_MIN_SCORE", "0.45") or "0.45")
+except (TypeError, ValueError):
+    _CHANDRA_OCR_MIN_SCORE = 0.45
 
 
 def _score_ocr_text(text: str) -> float:
@@ -2377,6 +2381,49 @@ def _score_ocr_text(text: str) -> float:
     length_bonus = min(math.log1p(total) / 8.0, 1.0)
     score = (cjk_ratio * 0.6 + length_bonus * 0.4) * (1.0 - garbage_penalty)
     return round(score, 4)
+
+
+def _chandra_ocr_page(pdf_path: str, page_idx: int = 0) -> str:
+    """Optional Chandra OCR fallback for hard scanned PDFs.
+
+    This path is off by default and returns an empty string on any unavailable
+    backend/license/server condition, so it cannot destabilize the existing
+    Vision/RapidOCR/GLM path.
+    """
+    try:
+        from skills.engine.ocr import chandra_provider
+        if not chandra_provider.enabled():
+            return ""
+        result = chandra_provider.run_pdf_page(pdf_path, page_num=page_idx)
+        if result.success and result.text.strip():
+            logger.info("[Chandra-OCR] page %d: %d chars in %.2fs", page_idx, len(result.text), result.duration_sec)
+            return result.text.strip()
+        if result.error:
+            logger.info("[Chandra-OCR] unavailable for page %d: %s", page_idx, result.error)
+    except Exception as exc:
+        logger.debug("[Chandra-OCR] failed: %s", exc)
+    return ""
+
+
+def _prefer_chandra_if_better(current_text: str, pdf_path: str, page_idx: int = 0) -> str:
+    if not pdf_path:
+        return current_text
+    current_score = _score_ocr_text(current_text)
+    if current_score >= _CHANDRA_OCR_MIN_SCORE:
+        return current_text
+    chandra_text = _chandra_ocr_page(pdf_path, page_idx)
+    if not chandra_text:
+        return current_text
+    chandra_score = _score_ocr_text(chandra_text)
+    if chandra_score > current_score:
+        logger.info(
+            "[Chandra-OCR] selected page %d score %.3f > %.3f",
+            page_idx,
+            chandra_score,
+            current_score,
+        )
+        return chandra_text
+    return current_text
 
 
 def _preprocess_receipt_image(img_bytes: bytes, scale: int = 4) -> bytes:
@@ -2506,11 +2553,14 @@ def _ocr_consensus(page, pdf_path: str = "", page_idx: int = 0) -> str:
     # Pick winner
     best_engine = max(scores, key=lambda k: scores[k])
     best_text = results[best_engine]
+    if pdf_path:
+        best_text = _prefer_chandra_if_better(best_text, pdf_path, page_idx)
 
     if not best_text.strip():
         # All engines failed: fall back to basic RapidOCR
         if page is not None:
-            return _ocr_page_rapid(page)
+            rapid_text = _ocr_page_rapid(page)
+            return _prefer_chandra_if_better(rapid_text, pdf_path, page_idx)
         return ""
 
     engines_used = [k for k, v in results.items() if v]
@@ -2681,6 +2731,10 @@ def _vision_analyze_for_naming(content_page) -> dict:
         # 1c. oMLX port 8080 (legacy path, last resort — requires oMLX running)
         if not ocr_text and _is_omlx_port_up(8080):
             ocr_text = _glm_ocr_page(content_page, dpi=200)
+
+        # 1d. Chandra layout OCR (explicit opt-in) for empty/low-quality pages.
+        if _pdf_path:
+            ocr_text = _prefer_chandra_if_better(ocr_text, _pdf_path, _page_num)
 
         if not ocr_text:
             logger.info("Vision OCR: no text from page.")
@@ -3137,6 +3191,7 @@ def batch_ocr_pages(pdf_paths: list) -> dict:
                 text = _macos_vision_ocr_page(pdf_path, page_idx)
                 if not text and page_idx < doc.page_count:
                     text = _glm_ocr_page(doc[page_idx], dpi=200)
+                text = _prefer_chandra_if_better(text, pdf_path, page_idx)
                 return text
 
             if pages["envelope"]:

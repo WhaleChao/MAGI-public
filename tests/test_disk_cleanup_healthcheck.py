@@ -150,6 +150,18 @@ def test_omlx_cache_dry_run_no_delete(sandbox, monkeypatch):
     assert stale.exists()
 
 
+def test_omlx_cache_apply_respects_safety_cap(sandbox, monkeypatch):
+    cache = sandbox["home"] / ".omlx" / "cache-e4b"
+    stale = cache / "old"
+    _touch_with_atime(stale, 10 * 86400)
+    monkeypatch.setattr(dc, "OMLX_CACHE_MAX_DELETE_BYTES", 1, raising=True)
+    actions = dc.cleanup_omlx_cache(dry_run=False)
+    assert stale.exists()
+    info = next(a for a in actions if a["cache"].endswith("cache-e4b"))
+    assert info["skipped"] is True
+    assert info["deleted_files"] == 0
+
+
 # ---------- cleanup_tmp ------------------------------------------------
 
 def test_tmp_cleanup_removes_old_magi_files(sandbox, monkeypatch, tmp_path):
@@ -229,3 +241,14 @@ def test_main_enforce_mode_flag_read(sandbox, monkeypatch):
     assert dc._is_dry_run() is False
     monkeypatch.setenv("MAGI_DISK_CLEANUP_DRY_RUN", "1")
     assert dc._is_dry_run() is True
+
+
+def test_main_apply_arg_overrides_env_dry_run(sandbox, monkeypatch):
+    monkeypatch.setenv("MAGI_DISK_CLEANUP_DRY_RUN", "1")
+    calls = []
+    monkeypatch.setattr(dc, "cleanup_metrics", lambda dry_run: calls.append(dry_run) or [])
+    monkeypatch.setattr(dc, "cleanup_omlx_cache", lambda dry_run: [])
+    monkeypatch.setattr(dc, "cleanup_tmp", lambda dry_run: [{"candidate_count": 0}])
+    monkeypatch.setattr(dc, "report_agent_logs", lambda dry_run: [])
+    assert dc.main(["--apply"]) == 0
+    assert calls == [False]

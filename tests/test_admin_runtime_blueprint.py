@@ -414,6 +414,13 @@ def test_operational_issue_health_reconciles_recovered_and_false_positive(tmp_pa
             "error": "exit=1 stderr=Syntax Warning: May not be a PDF file",
         },
         {
+            "ts": now - 900,
+            "severity": "High",
+            "source": "discord_bot.cron_scheduler",
+            "command": "cron:job_obsidian_ingest",
+            "error": "exit=1 stderr=old failure for same job",
+        },
+        {
             "ts": now - 5000,
             "severity": "High",
             "source": "discord_bot.cron_scheduler",
@@ -445,9 +452,13 @@ def test_operational_issue_health_reconciles_recovered_and_false_positive(tmp_pa
 
     monkeypatch.setenv("MAGI_OPERATIONAL_ACTIVE_ISSUE_WINDOW_SEC", "3600")
     summary = _compute_operational_issue_health(tmp_path, now)
-    assert summary["raw_cron_failures_24h"] == 4
+    assert summary["raw_cron_failures_24h"] == 5
     assert summary["active_cron_failures_24h"] == 1
     assert summary["active_distinct_jobs_24h"] == 1
     assert summary["false_positive_cron_failures_24h"] == 1
     assert summary["active_high_severity_24h"] == 2
-    assert summary["inactive_cron_failures_24h"] == 2
+    assert summary["inactive_cron_failures_24h"] == 3
+    assert summary["recovered_cron_failures_24h"] == 1
+    assert summary["superseded_cron_failures_24h"] == 1
+    assert summary["stale_cron_failures_24h"] == 1
+    assert summary["inactive_or_noise_cron_failures_24h"] == 4

@@ -64,6 +64,36 @@ _check_port_with_label() {
     fi
 }
 
+_estimate_magi_memory_gb() {
+    # 估算 MAGI 核心 + oMLX 服務 RSS（GB）
+    local pid_list
+    pid_list=$(
+        {
+            pgrep -f "daemon.py|api/server.py|api/discord_bot.py|api/tools_api.py|omlx|mlx_lm" 2>/dev/null || true
+            lsof -ti:8080 -sTCP:LISTEN 2>/dev/null || true
+            lsof -ti:8081 -sTCP:LISTEN 2>/dev/null || true
+            lsof -ti:8082 -sTCP:LISTEN 2>/dev/null || true
+            lsof -ti:8083 -sTCP:LISTEN 2>/dev/null || true
+        } | awk 'NF {print $1}' | sort -u
+    )
+
+    if [ -z "$pid_list" ]; then
+        echo "?"
+        return 0
+    fi
+
+    ps -o pid=,rss= -p $(echo "$pid_list" | tr '\n' ' ') 2>/dev/null | awk '
+        NF >= 2 {sum += $2; found = 1}
+        END {
+            if (!found) {
+                print "?"
+            } else {
+                printf "%.1f", sum / 1024 / 1024
+            }
+        }
+    '
+}
+
 cmd_status() {
     echo "═══ MAGI System Status ═══"
     echo ""
@@ -166,7 +196,7 @@ cmd_status() {
 
     # Memory
     local mem_used
-    mem_used=$(ps -eo rss,comm 2>/dev/null | grep -E "omlx|daemon.py|server.py|discord_bot|tools_api" | awk '{sum+=$1} END {printf "%.1f", sum/1024/1024}' 2>/dev/null || echo "?")
+    mem_used=$(_estimate_magi_memory_gb)
     echo "Memory:  ~${mem_used}GB (MAGI + oMLX)"
 }
 

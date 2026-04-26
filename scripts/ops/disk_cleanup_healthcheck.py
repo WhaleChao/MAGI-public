@@ -23,6 +23,7 @@ import json
 import os
 import sys
 import time
+import argparse
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -37,6 +38,7 @@ from api.platforms import runtime_dir  # noqa: E402
 METRICS_ROTATE_BYTES = int(os.environ.get("MAGI_DISK_METRICS_ROTATE_BYTES", str(10 * 1024 * 1024)))
 METRICS_KEEP_TAIL = int(os.environ.get("MAGI_DISK_METRICS_KEEP_TAIL", "1000"))
 OMLX_CACHE_KEEP_DAYS = int(os.environ.get("MAGI_DISK_OMLX_KEEP_DAYS", "7"))
+OMLX_CACHE_MAX_DELETE_BYTES = int(float(os.environ.get("MAGI_DISK_OMLX_MAX_DELETE_GB", "20")) * 1024 * 1024 * 1024)
 TMP_MAX_AGE_HOURS = int(os.environ.get("MAGI_DISK_TMP_MAX_AGE_HOURS", "48"))
 
 # 受保護名單（即使符合 pattern 也不動）
@@ -143,6 +145,7 @@ def cleanup_omlx_cache(dry_run: bool) -> List[Dict[str, Any]]:
         candidate_count = 0
         deleted_bytes = 0
         deleted_count = 0
+        candidates: List[Tuple[Path, int]] = []
         for f in _walk_cache_files(cache_root):
             try:
                 st = f.stat()
@@ -154,14 +157,21 @@ def cleanup_omlx_cache(dry_run: bool) -> List[Dict[str, Any]]:
                 continue
             total_candidate_bytes += st.st_size
             candidate_count += 1
-            if dry_run:
-                continue
-            try:
-                f.unlink()
-                deleted_bytes += st.st_size
-                deleted_count += 1
-            except OSError as e:
-                _log(f"cache unlink failed: {f} ({e})")
+            candidates.append((f, st.st_size))
+        if not dry_run and total_candidate_bytes <= OMLX_CACHE_MAX_DELETE_BYTES:
+            for f, size in candidates:
+                try:
+                    f.unlink()
+                    deleted_bytes += size
+                    deleted_count += 1
+                except OSError as e:
+                    _log(f"cache unlink failed: {f} ({e})")
+        elif not dry_run and total_candidate_bytes > OMLX_CACHE_MAX_DELETE_BYTES:
+            _log(
+                f"SKIP oMLX cache {cache_root.name}: "
+                f"{total_candidate_bytes / 1024 / 1024 / 1024:.2f} GB exceeds "
+                f"safety cap {OMLX_CACHE_MAX_DELETE_BYTES / 1024 / 1024 / 1024:.2f} GB"
+            )
         info = {
             "cache": str(cache_root),
             "candidate_files": candidate_count,
@@ -170,6 +180,11 @@ def cleanup_omlx_cache(dry_run: bool) -> List[Dict[str, Any]]:
             "deleted_bytes": deleted_bytes,
             "dry_run": dry_run,
         }
+        if not dry_run and total_candidate_bytes > OMLX_CACHE_MAX_DELETE_BYTES:
+            info["skipped"] = True
+            info["reason"] = "candidate_bytes_exceeds_safety_cap"
+            actions.append(info)
+            continue
         _log(
             f"oMLX cache {cache_root.name}: "
             f"{'would free' if dry_run else 'freed'} "
@@ -265,8 +280,14 @@ def report_agent_logs(_dry_run: bool) -> List[Dict[str, Any]]:
 
 # ---- entrypoint ---------------------------------------------------------
 
-def main() -> int:
-    dry_run = _is_dry_run()
+def main(argv: Optional[List[str]] = None) -> int:
+    parser = argparse.ArgumentParser(description="MAGI disk cleanup healthcheck")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--dry-run", action="store_true", help="report only; do not delete/rotate")
+    mode.add_argument("--apply", action="store_true", help="perform guarded cleanup")
+    args = parser.parse_args([] if argv is None else argv)
+
+    dry_run = True if args.dry_run else (False if args.apply else _is_dry_run())
     _log(f"start (dry_run={dry_run})")
     summary: Dict[str, Any] = {
         "ts": time.strftime("%Y-%m-%dT%H:%M:%S"),
@@ -301,4 +322,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(main(sys.argv[1:]))

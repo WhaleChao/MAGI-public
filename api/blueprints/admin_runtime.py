@@ -55,6 +55,32 @@ def _is_false_positive_cron_issue(row: dict[str, Any]) -> bool:
     return ("\"success\": true" in err_lower) or ("✅" in err)
 
 
+def _classify_cron_issue(
+    row: dict[str, Any],
+    *,
+    active_cutoff: float,
+    latest_cron_issue_ts_by_job: dict[str, float],
+    cron_last_run_ts: dict[str, float],
+) -> str:
+    if _is_false_positive_cron_issue(row):
+        return "false_positive"
+
+    ts = float(row.get("_ts") or 0.0)
+    job_id = _cron_job_from_issue_command(row.get("command"))
+    if not job_id:
+        return "stale" if ts < active_cutoff else "active_unresolved"
+
+    latest_issue_ts = latest_cron_issue_ts_by_job.get(job_id, ts)
+    last_run_ts = cron_last_run_ts.get(job_id, 0.0)
+    if latest_issue_ts > ts:
+        return "superseded"
+    if last_run_ts > ts:
+        return "recovered"
+    if ts < active_cutoff:
+        return "stale"
+    return "active_unresolved"
+
+
 def _load_recent_issue_rows(issue_path: Path, cutoff_ts: float) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     if not issue_path.exists():
@@ -120,6 +146,9 @@ def _compute_operational_issue_health(root: Path, now_ts: float) -> dict[str, An
     active_jobs: set[str] = set()
     inactive_cron_failures = 0
     false_positive_cron_failures = 0
+    recovered_cron_failures = 0
+    superseded_cron_failures = 0
+    stale_cron_failures = 0
 
     for row in rows:
         ts = float(row.get("_ts") or 0.0)
@@ -135,22 +164,27 @@ def _compute_operational_issue_health(root: Path, now_ts: float) -> dict[str, An
             continue
 
         raw_cron_failures += 1
-        if _is_false_positive_cron_issue(row):
+        state = _classify_cron_issue(
+            row,
+            active_cutoff=active_cutoff,
+            latest_cron_issue_ts_by_job=latest_cron_issue_ts_by_job,
+            cron_last_run_ts=cron_last_run_ts,
+        )
+        if state == "false_positive":
             false_positive_cron_failures += 1
             continue
-
-        job_id = _cron_job_from_issue_command(row.get("command"))
-        latest_issue_ts = latest_cron_issue_ts_by_job.get(job_id, ts) if job_id else ts
-        last_run_ts = cron_last_run_ts.get(job_id, 0.0) if job_id else 0.0
-        superseded = bool(job_id) and latest_issue_ts > ts
-        recovered = bool(job_id) and last_run_ts > ts
-        stale = ts < active_cutoff
-
-        if superseded or recovered or stale:
+        if state in ("superseded", "recovered", "stale"):
             inactive_cron_failures += 1
+            if state == "superseded":
+                superseded_cron_failures += 1
+            elif state == "recovered":
+                recovered_cron_failures += 1
+            else:
+                stale_cron_failures += 1
             continue
 
         active_cron_failures += 1
+        job_id = _cron_job_from_issue_command(row.get("command"))
         if job_id:
             active_jobs.add(job_id)
         if is_high:
@@ -164,6 +198,12 @@ def _compute_operational_issue_health(root: Path, now_ts: float) -> dict[str, An
         "raw_high_severity_24h": raw_high_severity,
         "inactive_cron_failures_24h": inactive_cron_failures,
         "false_positive_cron_failures_24h": false_positive_cron_failures,
+        "recovered_cron_failures_24h": recovered_cron_failures,
+        "superseded_cron_failures_24h": superseded_cron_failures,
+        "stale_cron_failures_24h": stale_cron_failures,
+        "inactive_or_noise_cron_failures_24h": (
+            inactive_cron_failures + false_positive_cron_failures
+        ),
         "active_window_sec": active_window_sec,
     }
 
@@ -976,13 +1016,28 @@ def create_admin_runtime_blueprint(
                 "issue_agenda_high_severity_24h": high_severity_24h,
                 "watchdog_decisions_24h": wd_decisions_24h,
                 "benchmark_age_hours": bench_freshness,
+                "active_unresolved_24h": {
+                    "cron_failures": cron_failures_24h,
+                    "issue_agenda_high_severity": high_severity_24h,
+                    "distinct_failing_jobs": distinct_jobs_24h,
+                },
                 "raw_counts_24h": {
                     "cron_failures": int(issue_health.get("raw_cron_failures_24h", 0)),
                     "issue_agenda_high_severity": int(issue_health.get("raw_high_severity_24h", 0)),
+                    "for_context_only": True,
                 },
                 "inactive_or_recovered_24h": {
                     "cron_failures": int(issue_health.get("inactive_cron_failures_24h", 0)),
                     "false_positive_cron_failures": int(issue_health.get("false_positive_cron_failures_24h", 0)),
+                },
+                "inactive_breakdown_24h": {
+                    "recovered_cron_failures": int(issue_health.get("recovered_cron_failures_24h", 0)),
+                    "superseded_cron_failures": int(issue_health.get("superseded_cron_failures_24h", 0)),
+                    "stale_cron_failures": int(issue_health.get("stale_cron_failures_24h", 0)),
+                    "false_positive_cron_failures": int(issue_health.get("false_positive_cron_failures_24h", 0)),
+                    "inactive_or_noise_cron_failures": int(
+                        issue_health.get("inactive_or_noise_cron_failures_24h", 0)
+                    ),
                 },
                 "active_issue_window_hours": round(
                     float(issue_health.get("active_window_sec", 0)) / 3600.0,

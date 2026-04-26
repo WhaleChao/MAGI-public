@@ -56,6 +56,35 @@ class _FakeService:
         return self.events_api
 
 
+class _Resp410:
+    status = 410
+
+
+class _Http410(Exception):
+    def __init__(self):
+        super().__init__("410 Gone: syncToken expired")
+        self.resp = _Resp410()
+
+
+class _FakeImportEventsApi:
+    def __init__(self):
+        self.calls = []
+
+    def list(self, **kwargs):
+        self.calls.append(kwargs)
+        if kwargs.get("syncToken"):
+            raise _Http410()
+        return _FakeReq({"items": [], "nextSyncToken": "fresh-token"})
+
+
+class _FakeImportService:
+    def __init__(self):
+        self.events_api = _FakeImportEventsApi()
+
+    def events(self):
+        return self.events_api
+
+
 class _DummyConn:
     def close(self):
         return None
@@ -170,3 +199,25 @@ def test_gcal_sync_dedup_matches_existing_and_updates_db(monkeypatch):
     assert fake_service.events_api.insert_calls == []
     assert set_calls == [(2, "existing-123")]
 
+
+def test_gcal_import_incremental_410_resets_token_and_full_syncs(monkeypatch, tmp_path):
+    monkeypatch.setenv("MAGI_RUNTIME_DIR", str(tmp_path))
+    monkeypatch.setenv("MAGI_USE_RUNTIME_DIR", "1")
+    from api.platforms import runtime_dir
+
+    mod = _load_action_module()
+    state_path = runtime_dir.root() / "gcal_import_sync_tokens.json"
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    state_path.write_text('{"primary":"expired-token"}', encoding="utf-8")
+
+    fake_service = _FakeImportService()
+    monkeypatch.setattr(mod, "_build_google_calendar_service", lambda *a, **k: {"ok": True, "service": fake_service})
+
+    out = mod.task_gcal_import({"calendar_id": "primary", "incremental": True, "limit": 10})
+
+    assert out["ok"] is True
+    assert out["sync_token_resets"] == 1
+    assert fake_service.events_api.calls[0]["syncToken"] == "expired-token"
+    assert "syncToken" not in fake_service.events_api.calls[1]
+    assert "timeMin" in fake_service.events_api.calls[1]
+    assert "fresh-token" in state_path.read_text(encoding="utf-8")

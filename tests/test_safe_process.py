@@ -86,6 +86,20 @@ def test_env_custom_prefix_extends(monkeypatch):
     assert "yes" in r.stdout
 
 
+def test_env_extra_respects_default_whitelist():
+    r = sp.run(
+        [
+            "python3",
+            "-c",
+            "import os; print(os.environ.get('MAGI_EXTRA','')); print(os.environ.get('SECRET_EXTRA','NOPE'))",
+        ],
+        env_extra={"MAGI_EXTRA": "visible", "SECRET_EXTRA": "hidden"},
+        timeout_sec=10,
+    )
+    assert "visible" in r.stdout
+    assert "hidden" not in r.stdout
+
+
 # --- timeout / kill -----------------------------------------------------
 
 def test_timeout_triggers_sigterm():

@@ -89,6 +89,14 @@ MAX_OLD_ADAPTERS = 4
 _start_time = time.time()
 
 
+def _validation_gate_passed(validate_result: dict) -> bool:
+    if not isinstance(validate_result, dict):
+        return False
+    if "validation_pass" in validate_result:
+        return bool(validate_result.get("validation_pass"))
+    return bool(validate_result.get("success"))
+
+
 # ── E4B 日間視窗檢查 ──────────────────────────────────────────────────
 def _in_e4b_window() -> bool:
     """E4B 日間視窗（07:00-21:50）。訓練必須在此視窗。"""
@@ -234,6 +242,25 @@ def safe_start_omlx() -> bool:
 # ── 手動部署入口（--deploy <version>）───────────────────────────────
 def deploy_model(version: str) -> int:
     """手動部署：切換 oMLX symlink 並跑 post-deploy test。"""
+    if PENDING_DEPLOY_PATH.exists():
+        try:
+            pending = json.loads(PENDING_DEPLOY_PATH.read_text(encoding="utf-8"))
+        except Exception:
+            pending = {}
+        if (
+            pending.get("version") == version
+            and (
+                pending.get("deploy_allowed") is False
+                or str(pending.get("status", "")).lower() in {"rejected", "failed", "blocked"}
+            )
+        ):
+            logger.error(
+                "Refusing to deploy rejected Gemma distill version %s: %s",
+                version,
+                pending.get("rejection_reason") or "deploy_allowed=false",
+            )
+            return 1
+
     merged_path = DISTILL_DIR / "merged" / f"Gemma-{version}"
     if not merged_path.exists():
         logger.error("Merged model not found: %s", merged_path)
@@ -414,6 +441,7 @@ def main() -> int:
     train_result = {}
     validate_result = {}
     merge_result = {}
+    validation_ok = False
 
     try:
         venv_python = str(MAGI_ROOT / "venv/bin/python3")
@@ -445,6 +473,7 @@ def main() -> int:
                 validate_result = results.get("validate", {})
                 merge_result = results.get("merge", {})
                 version = train_result.get("version")
+                validation_ok = _validation_gate_passed(validate_result)
             except Exception as e:
                 logger.error("Failed to parse train output: %s", e)
 
@@ -455,6 +484,11 @@ def main() -> int:
 
         # 5. 寫 pending_deploy.json（不自動切 symlink）
         merged_path = merge_result.get("merged_path", "")
+        if not validation_ok:
+            logger.warning("Validation gate failed for %s: %s", version, validate_result)
+            _notify(f"Gemma 蒸餾：{version} 驗證失敗，未產生 pending deploy。")
+            return 1
+
         if merged_path and Path(merged_path).exists():
             pending = {
                 "version": version,
@@ -494,7 +528,7 @@ def main() -> int:
     else:
         _notify("Gemma 蒸餾：流程完成但無 version（請查 log）")
 
-    return 0
+    return 0 if validation_ok else 1
 
 
 if __name__ == "__main__":

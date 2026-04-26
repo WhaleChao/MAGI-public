@@ -135,6 +135,25 @@ def test_grounding_context_with_spaces():
     assert grounded is True
 
 
+def test_grounding_case_citation_in_context():
+    """具體裁判字號必須可在 context 中回查。"""
+    from api.hallucination_guard import check_fact_grounding
+    answer = "最高法院112年度台上字第1234號判決採相同見解。"
+    context = ["最高法院 112 年度台上字第 1234 號判決要旨：..."]
+    grounded, ungrounded = check_fact_grounding(answer, context)
+    assert grounded is True
+    assert ungrounded == []
+
+
+def test_grounding_case_citation_missing_context():
+    from api.hallucination_guard import check_fact_grounding
+    answer = "最高法院112年度台上字第1234號判決採相同見解。"
+    context = ["這段資料沒有任何裁判字號。"]
+    grounded, ungrounded = check_fact_grounding(answer, context)
+    assert grounded is False
+    assert "最高法院112年度台上字第1234號" in ungrounded
+
+
 # ---------------------------------------------------------------------------
 # rewrite_ungrounded_attribution
 # ---------------------------------------------------------------------------
@@ -230,6 +249,11 @@ def test_tier_classifier_upgrades_high_risk(monkeypatch):
 def test_needs_grounding_check_with_article():
     from api.hallucination_guard import needs_grounding_check
     assert needs_grounding_check("民法第184條") is True
+
+
+def test_needs_grounding_check_with_case_citation():
+    from api.hallucination_guard import needs_grounding_check
+    assert needs_grounding_check("最高法院112年度台上字第1234號") is True
 
 
 def test_needs_grounding_check_no_article():

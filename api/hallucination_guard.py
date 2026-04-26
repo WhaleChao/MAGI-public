@@ -18,7 +18,8 @@ api/hallucination_guard.py
             → 允許 SIMPLE tier
 
 3. 事實溯源檢查（check_fact_grounding）
-   偵測答案中的法條引用（如「民法第184條」），確認是否出現在提供的 context。
+   偵測答案中的法條引用（如「民法第184條」）與具體裁判字號，
+   確認是否出現在提供的 context。
    未溯源的引用 → 納入 veto 理由，在 ensemble 中觸發否決。
    設計保守：只抓「第N條」格式，不誤傷模糊表達。
 
@@ -88,6 +89,16 @@ _LAW_ARTICLE_REF_RE = re.compile(
     r"第\s*([1-9]\d{0,3})\s*條"
 )
 
+# 具體裁判字號：最高法院 112 年度台上字第 1234 號、臺灣高等法院 114 年度上字第 55 號等。
+_CASE_CITATION_REF_RE = re.compile(
+    r"(?:最高法院|臺灣高等法院|台灣高等法院|智慧財產及商業法院|臺灣[\u4e00-\u9fff]{1,4}地方法院|台灣[\u4e00-\u9fff]{1,4}地方法院)?"
+    r"\s*\d{2,3}\s*年度?\s*[\u4e00-\u9fffA-Za-z]{1,10}\s*字第\s*\d{1,6}\s*號"
+)
+
+
+def _compact_ref(value: str) -> str:
+    return re.sub(r"\s+", "", str(value or ""))
+
 
 # ---------------------------------------------------------------------------
 # 公開 API
@@ -122,11 +133,11 @@ def check_fact_grounding(
     context_texts: List[str],
 ) -> Tuple[bool, List[str]]:
     """
-    檢查 answer 中的法條引用是否有在 context_texts 中出現。
+    檢查 answer 中的法條引用/裁判字號是否有在 context_texts 中出現。
 
     返回：(is_grounded, ungrounded_refs)
-    - is_grounded     : True = 所有法條都有溯源，或沒有法條引用
-    - ungrounded_refs : 未溯源的法條引用列表（如 ["第184條", "第195條"]）
+    - is_grounded     : True = 所有具體引用都有溯源，或沒有具體引用
+    - ungrounded_refs : 未溯源的引用列表（如 ["第184條", "最高法院112年度台上字第1234號"]）
 
     設計保守：
     - 只偵測「第N條」格式的直接引用，不包括模糊的「相關法條」
@@ -136,26 +147,32 @@ def check_fact_grounding(
     if not answer:
         return True, []
 
-    matches = _LAW_ARTICLE_REF_RE.findall(answer)
-    if not matches:
+    article_matches = _LAW_ARTICLE_REF_RE.findall(answer)
+    case_matches = [_compact_ref(m.group(0)) for m in _CASE_CITATION_REF_RE.finditer(answer)]
+    if not article_matches and not case_matches:
         return True, []
 
     combined_context = " ".join(context_texts) if context_texts else ""
     if not combined_context:
-        # 無 context 但有法條引用 → 全部算未溯源
-        return False, ["第{}條".format(n) for n in sorted(set(matches), key=int)]
+        refs = ["第{}條".format(n) for n in sorted(set(article_matches), key=int)]
+        refs.extend(sorted(set(case_matches)))
+        return False, refs
 
     ungrounded = []
-    for article_num in sorted(set(matches), key=int):
+    compact_context = _compact_ref(combined_context)
+    for article_num in sorted(set(article_matches), key=int):
         if not re.search(r"第\s*{}\s*條".format(re.escape(article_num)), combined_context):
             ungrounded.append("第{}條".format(article_num))
+    for case_ref in sorted(set(case_matches)):
+        if case_ref and case_ref not in compact_context:
+            ungrounded.append(case_ref)
 
     return len(ungrounded) == 0, ungrounded
 
 
 def needs_grounding_check(text: str) -> bool:
     """是否需要做事實溯源檢查（含法條引用時才需要）。"""
-    return bool(_LAW_ARTICLE_REF_RE.search(text))
+    return bool(_LAW_ARTICLE_REF_RE.search(text) or _CASE_CITATION_REF_RE.search(text))
 
 
 def rewrite_ungrounded_attribution(text: str) -> str:
