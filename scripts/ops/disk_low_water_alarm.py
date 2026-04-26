@@ -47,7 +47,11 @@ def _push_self_repair(severity: str, free_gb: float, threshold_gb: float) -> Non
     try:
         from skills.management.issue_tracker import log_issue
         log_issue(
-            command="cron:job_disk_low_water_alarm",
+            # 2026-04-27：command 從 "cron:job_disk_low_water_alarm" 改為 "alarm:disk_low_water"。
+            # script 自身 exit=0（設計原則：永不 raise），但主動 log alarm 給 issue tracker 紀錄。
+            # 用 "cron:" 前綴會被 self-repair-reporter 誤判為 cron 故障；改 "alarm:" 前綴讓它
+            # 仍進 issue agenda（律師關心磁碟空間），但不混進「持續性故障」週報。
+            command="alarm:disk_low_water",
             error_msg=msg,
             context={
                 "free_gb": free_gb,
