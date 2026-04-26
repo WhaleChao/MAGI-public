@@ -80,7 +80,11 @@ def check_keeper_online():
 
 
 def _ensure_schema(conn):
-    """Widen documents.source to TEXT if still a narrow VARCHAR."""
+    """Self-heal documents schema:
+    1. Widen source to TEXT if still narrow VARCHAR.
+    2. Add `synced` column if missing — mem_bridge / keeper_sync INSERT 都會寫此欄位，
+       新部署或重建 magi_brain DB 時若沒先跑 setup_rag_db.py 會炸。
+    """
     try:
         cur = conn.cursor()
         cur.execute("SHOW COLUMNS FROM documents LIKE 'source'")
@@ -89,6 +93,11 @@ def _ensure_schema(conn):
             cur.execute("ALTER TABLE documents MODIFY COLUMN source TEXT")
             conn.commit()
             logger.info("✅ Migrated documents.source -> TEXT")
+        cur.execute("SHOW COLUMNS FROM documents LIKE 'synced'")
+        if not cur.fetchone():
+            cur.execute("ALTER TABLE documents ADD COLUMN synced TINYINT(1) NOT NULL DEFAULT 0")
+            conn.commit()
+            logger.info("✅ Added documents.synced column")
         cur.close()
     except Exception as e:
         logger.warning(f"Schema migration skipped: {e}")
