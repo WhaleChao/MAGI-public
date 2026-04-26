@@ -249,6 +249,63 @@ def task_portal_submit(action, laf_case_no="", case_number="", client_name="",
     return result
 
 
+def cmd_confirm_progress(token: str, *, source: str = "", platform: str = "") -> dict:
+    """律師回覆確認碼 → 真送出進度回報（Plan C 兩階段確認碼 Stage 2）。
+
+    安全閘門：source 必須含 user/telegram/discord/line，防止 CLI 直接呼叫。
+    可用 MAGI_LAF_ALLOW_PROGRESS_CONFIRM=1 在測試時 bypass。
+
+    此函式是給 Discord / LINE bot 呼叫的 API wrapper。
+    實際 confirm 邏輯由 api.domains.laf_flow.handle_laf_progress_submit_confirmation_if_any 執行。
+    """
+    token = (token or "").strip().upper()
+    if not token:
+        return {"ok": False, "error": "token 不可為空"}
+
+    # 安全閘門
+    _user_sources = {"user", "telegram", "discord", "line"}
+    source_lower = (source or "").lower()
+    _is_user_src = any(s in source_lower for s in _user_sources)
+    if not _is_user_src:
+        allow_bypass = str(os.environ.get("MAGI_LAF_ALLOW_PROGRESS_CONFIRM", "0")).strip().lower() in {
+            "1", "true", "yes", "on"
+        }
+        if not allow_bypass:
+            return {
+                "ok": False,
+                "error": "confirm_progress 需從使用者來源觸發（user/telegram/discord/line），"
+                         "或設 MAGI_LAF_ALLOW_PROGRESS_CONFIRM=1（測試用）",
+            }
+
+    # 呼叫 api.domains.laf_flow.handle_laf_progress_submit_confirmation_if_any
+    try:
+        from api.domains import laf_flow as _laf_domain
+    except ImportError as e:
+        return {"ok": False, "error": f"api.domains.laf_flow 無法載入: {e}"}
+
+    # 建立最小 orchestrator stub（只需 pending file 路徑 + notification_callback）
+    class _MinimalOrch:
+        _laf_progress_submit_pending_file: str = ""
+        notification_callback = None
+
+    _orch = _MinimalOrch()
+
+    result = _laf_domain.handle_laf_progress_submit_confirmation_if_any(
+        _orch,
+        platform=str(platform or "").strip() or "cli",
+        user_id="cli_confirm",
+        text=token,
+    )
+    if result is None:
+        return {"ok": False, "error": f"token {token} 無效、已使用或已過期"}
+    if isinstance(result, dict):
+        return {
+            "ok": result.get("handled", False),
+            "message": result.get("message", ""),
+        }
+    return {"ok": False, "error": "unexpected result type from handle_laf_progress_submit_confirmation_if_any"}
+
+
 # ── main ─────────────────────────────────────────────────────────────────
 
 def main():
