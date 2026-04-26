@@ -556,6 +556,158 @@ def research_topic(topic: str, depth: int = 3) -> dict:
 
 
 # =============================================================================
+# Web-Grounded Synthesis (Bug #5: Layer C)
+# =============================================================================
+
+# 自然語意即時資訊查詢路由器：命中以下類別 → 走 web_research_synthesize
+_WEB_GROUNDED_PATTERNS = [
+    # 評價類
+    (re.compile(r"評價|好不好|推薦|心得|評論|評分|review|有人去過|有人試過|值不值得", re.IGNORECASE), "review"),
+    # 路線類（含地名才觸發）
+    (re.compile(r"怎麼去|怎麼走|要多久|路線|開車到|搭車到|捷運|公車|交通|怎麼搭|從.{1,10}到", re.IGNORECASE), "route"),
+    # 營業時間類
+    (re.compile(r"營業|開門|幾點關|還在開嗎|有開嗎|營業時間|開放時間", re.IGNORECASE), "hours"),
+    # 商品比較類
+    (re.compile(r"比較|哪個比較|差別|差在哪|和.{1,10}哪個好", re.IGNORECASE), "compare"),
+    # 新聞時事類
+    (re.compile(r"最近.{0,8}(新聞|消息|發生|怎麼了|怎樣了)|近期.{0,8}消息|最新消息", re.IGNORECASE), "news"),
+]
+
+# 純閒聊排除 pattern：命中這些 → 不走 web_grounded（交給 LLM 閒聊）
+_WEB_GROUNDED_EXCLUDE = re.compile(
+    r"^(?:你好|嗨|哈囉|hello|hi|謝謝|再見|bye|哈哈|好的|好啊|不客氣|可以|恩|嗯)",
+    re.IGNORECASE,
+)
+
+logger_wrs = logging.getLogger(__name__ + ".synthesize")
+
+
+def _maybe_route_to_web_grounded(message: str):
+    """
+    判斷訊息是否屬於「即時資訊類（非數字精確）」查詢。
+    命中 → 回傳 category 字串（'review'/'route'/'hours'/'compare'/'news'）
+    未命中 → 回傳 None，讓後面 LLM 處理。
+    """
+    if not message or len(message.strip()) < 4:
+        return None
+    compact = message.strip()
+    if _WEB_GROUNDED_EXCLUDE.match(compact):
+        return None
+    for pattern, category in _WEB_GROUNDED_PATTERNS:
+        if pattern.search(compact):
+            return category
+    return None
+
+
+def web_research_synthesize(query: str, max_sources: int = 3) -> str:
+    """
+    搜尋 + 抓內文 + LLM 整理摘要（Bug #5 Layer C）。
+
+    設計原則：
+    - 數字精確類（天氣/股價）由 realtime_data_gateway 處理，不在此函式範圍。
+    - 資訊整合類（評價/路線/營業時間/商品比較/新聞）走此路徑。
+    - 若搜尋或抓網頁全失敗，回 fallback 文字（比「給網址自己看」更誠實）。
+
+    Returns:
+        格式化字串：
+        {LLM 整理的 2-4 句答案}
+
+        ── 資料來源 ──
+        [1] {title} — {url}
+        [2] ...
+    """
+    ok, err = _internet_guard("", allow_private=False)
+    if not ok:
+        logger_wrs.warning("web_research_synthesize blocked by internet guard: %s", err)
+        return (
+            f"我搜尋了但網路存取受限，建議直接查 Google：\n"
+            f"https://www.google.com/search?q={quote_plus(query)}"
+        )
+
+    # Step 1: DuckDuckGo 搜尋
+    try:
+        results = search_duckduckgo(query, num_results=5)
+    except Exception as e:
+        logger_wrs.warning("search_duckduckgo failed: %s", e)
+        results = []
+
+    if not results:
+        return (
+            f"我搜尋了但沒找到可靠來源，建議直接查 Google：\n"
+            f"https://www.google.com/search?q={quote_plus(query)}"
+        )
+
+    # Step 2: 對前 max_sources 筆結果抓內文
+    fetched = []
+    for item in results[:max_sources]:
+        url = item.get("url", "")
+        title = item.get("title", url)
+        if not url:
+            continue
+        try:
+            resp = requests.get(
+                url,
+                headers={"User-Agent": USER_AGENT},
+                timeout=8,
+                verify=False,
+            )
+            resp.raise_for_status()
+            soup = BeautifulSoup(resp.text, "html.parser")
+            # 抽主要文字：優先 article/main，退而求其次 p tags
+            body = soup.find("article") or soup.find("main") or soup.body
+            if body:
+                text = " ".join(p.get_text(" ", strip=True) for p in body.find_all("p"))
+            else:
+                text = soup.get_text(" ", strip=True)
+            text = text[:1500]
+            fetched.append({"title": title, "url": url, "text": text})
+        except Exception as e:
+            logger_wrs.debug("fetch %s failed: %s", url, e)
+            # 即使抓網頁失敗，保留 snippet 作為替代
+            snippet = item.get("snippet", "")
+            if snippet:
+                fetched.append({"title": title, "url": url, "text": snippet[:500]})
+
+    if not fetched:
+        return (
+            f"我搜尋了但無法讀取搜尋結果頁面，建議直接查 Google：\n"
+            f"https://www.google.com/search?q={quote_plus(query)}"
+        )
+
+    # Step 3: 用本地 LLM 整理摘要（grounded synthesis）
+    sources_text = "\n\n".join(
+        f"[來源 {i+1}] {s['title']}\n{s['text']}"
+        for i, s in enumerate(fetched)
+    )
+    synthesis_prompt = (
+        f"使用者問題：{query}\n\n"
+        f"以下是從網路搜集的資料：\n{sources_text}\n\n"
+        f"請只根據以上資料，用 2~4 句繁體中文回答使用者問題。"
+        f"每個重要事實後面標注 [來源 N]（N 為來源編號）。"
+        f"若所有來源都沒提到使用者問的點，請明說「目前搜尋到的資料不足以回答此問題」。"
+        f"不要自行補充資料中沒有的資訊。"
+    )
+
+    synthesized = ""
+    try:
+        from skills.bridge.grounded_ai import _generate_local
+        synthesized = _generate_local(synthesis_prompt, max_tokens=300)
+    except Exception as e:
+        logger_wrs.warning("LLM synthesis failed: %s", e)
+        # Fallback: 直接列出 snippet
+        synthesized = "根據以下搜尋結果整理：\n" + "\n".join(
+            f"• {s['title']}：{s['text'][:200]}..." for s in fetched[:2]
+        )
+
+    # Step 4: 格式化輸出
+    source_lines = "\n".join(
+        f"[{i+1}] {s['title']} — {s['url']}"
+        for i, s in enumerate(fetched)
+    )
+    return f"{synthesized.strip()}\n\n── 資料來源 ──\n{source_lines}"
+
+
+# =============================================================================
 # Module Test
 # =============================================================================
 if __name__ == "__main__":

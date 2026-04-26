@@ -2395,6 +2395,21 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
             trigger_reason="gap",
         )
 
+    # 自然語言提醒/行程查詢：誠實告知不支援，而不是誤判為天氣或回 onboarding
+    _RE_NATURAL_REMINDER = re.compile(
+        r"(?:明天|今天|後天|\d+月\d+日|\d+號).*?(?:\d+)\s*點.*?(?:提醒|記|備忘|開會|會議)"
+        r"|(?:提醒我|幫我記|備忘錄|設個提醒).*?(?:明天|今天|後天|\d+月|\d+點|\d+時)",
+        re.IGNORECASE,
+    )
+    if _RE_NATURAL_REMINDER.search(message):
+        # TODO: 長期接 EventKit bridge (skills/apple/eventkit_bridge.py) 做自然語言提醒建立
+        logger.info("💬 Natural-language reminder request detected, returning honest response")
+        return (
+            "目前 MAGI 還不支援自然語言建立提醒。\n"
+            "請改用 `/開庭提醒 [案號] [日期]` 建立開庭提醒，"
+            "或直接使用 Apple 提醒事項 / 行事曆。"
+        )
+
     # Everything else: let LLM handle it conversationally.
     logger.info("💬 No command matched, routing to LLM chat")
     # Signal to fuzzy-correction caller that we fell through to LLM chat

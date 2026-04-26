@@ -619,10 +619,13 @@ def _build_review_consensus(original_prompt, primary_answer, review_results, tas
     try:
         from api.tw_output_guard import normalize_output_text  # type: ignore
         cleaned = normalize_output_text(primary_answer)
-        if cleaned != primary_answer and "抱歉" in cleaned:
-            vetoed_by.append("output_guard")
-            veto_reasons.append("內部標籤洩漏或 persona 跑題")
+        if cleaned != primary_answer:
+            # output_guard 改寫了文本 → 一律採用 cleaned
             final_answer = cleaned
+            # 只在改動量顯著或含明確拒答關鍵字時記 veto（讓上層知道有清理過）
+            if len(cleaned) < len(primary_answer) * 0.7 or "抱歉" in cleaned:
+                vetoed_by.append("output_guard")
+                veto_reasons.append("output_guard 已修剪內部標籤")
     except Exception:
         pass
 
@@ -669,10 +672,12 @@ def consensus_check(results: Dict[str, Any], task_type: str = "chat") -> Consens
         try:
             from api.tw_output_guard import normalize_output_text  # type: ignore
             cleaned = normalize_output_text(primary_text)
-            if cleaned != primary_text and "抱歉" in cleaned:
-                vetoed_by.append("output_guard")
-                veto_reasons.append("內部標籤洩漏或 persona 跑題")
+            if cleaned != primary_text:
+                # output_guard 改寫了文本 → 一律採用 cleaned
                 primary_text = cleaned
+                if len(cleaned) < len(primary_text) * 0.7 or "抱歉" in cleaned:
+                    vetoed_by.append("output_guard")
+                    veto_reasons.append("output_guard 已修剪內部標籤")
         except Exception:
             pass
 
@@ -860,19 +865,23 @@ def format_magi_response(cr):
             text += "\n\n（參考資料來源：{}）".format("、".join(unique))
         return text
 
-    # 有異議：輸出答案 + 附上哪位哲人有意見
+    # 有異議：過濾掉內部稽核 veto（不外洩給終端使用者）
+    INTERNAL_VETO_KEYS = {"output_guard"}  # 內部稽核，veto 訊息不外洩
+    visible_vetoes = [
+        (veto_key, cr.veto_reasons[i] if i < len(cr.veto_reasons) else "（未說明原因）")
+        for i, veto_key in enumerate(cr.vetoed_by)
+        if veto_key not in INTERNAL_VETO_KEYS
+    ]
+    if not visible_vetoes:
+        # 全是內部 veto → 只回乾淨答案，不附「意見分歧」區塊
+        return cr.result
     lines = [cr.result, ""]
     lines.append("─── 三哲人意見分歧 ───")
-    # veto_reasons 與 vetoed_by 一一對應（同索引）
-    for i, veto_key in enumerate(cr.vetoed_by):
+    for veto_key, reason_raw in visible_vetoes:
         name = SOUL_NAME_MAP.get(veto_key, veto_key)
-        if i < len(cr.veto_reasons):
-            reason_raw = cr.veto_reasons[i]
-            # 去掉 reason 前面的 "Name: " 前綴（避免重複顯示名字）
-            colon_idx = reason_raw.find(": ")
-            reason = reason_raw[colon_idx + 2:].strip() if colon_idx >= 0 else reason_raw
-        else:
-            reason = "（未說明原因）"
+        # 去掉 reason 前面的 "Name: " 前綴（避免重複顯示名字）
+        colon_idx = reason_raw.find(": ")
+        reason = reason_raw[colon_idx + 2:].strip() if colon_idx >= 0 else reason_raw
         lines.append("【{}】異議：{}".format(name, reason))
     return "\n".join(lines)
 

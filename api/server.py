@@ -663,8 +663,12 @@ def _fallback_to_tools_api(error):
 
     data = request.get_data() if request.method in {"POST", "PUT", "PATCH", "DELETE"} else None
     req_obj = urllib.request.Request(url, data=data or None, headers=fwd_headers, method=request.method)
+    # proxy timeout must be >= orchestrator inner effective_timeout upper bound (240s for COMPLEX).
+    # A shorter proxy timeout causes false 502 while the inner request is still running.
+    # Override via MAGI_TOOLS_API_PROXY_TIMEOUT env var (default 250s).
+    _proxy_timeout = float(os.environ.get("MAGI_TOOLS_API_PROXY_TIMEOUT", "250") or "250")
     try:
-        with urllib.request.urlopen(req_obj, timeout=30) as resp:
+        with urllib.request.urlopen(req_obj, timeout=_proxy_timeout) as resp:
             body = resp.read()
             status = int(getattr(resp, "status", 200))
             resp_ct = resp.headers.get("Content-Type", "application/json; charset=utf-8")

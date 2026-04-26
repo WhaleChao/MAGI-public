@@ -1193,6 +1193,23 @@ def chat_casper(message, conversation_history="", heavy: bool = False):
         logger.info("[RDG] 🚫 web_research also empty, returning rdg refusal")
         return _rdg_refusal_text
 
+    # ── Web-Grounded Synthesis Router（Bug #5 Layer B+C）──────────────────
+    # 資訊整合類查詢（評價/路線/營業時間/商品比較/新聞）→ 走 web_research_synthesize，
+    # 而非讓 LLM 憑空回答。此路由在 RDG 之後、LLM 之前插入。
+    # 只有當 web_context 尚未被前面流程填充時才觸發（避免重複搜尋）。
+    if web_context == "無。":
+        try:
+            from skills.research.web_research import _maybe_route_to_web_grounded, web_research_synthesize
+            _wg_category = _maybe_route_to_web_grounded(message)
+            if _wg_category:
+                logger.info("[WG] Web-grounded synthesis triggered for category: %s", _wg_category)
+                _wg_reply = web_research_synthesize(message, max_sources=3)
+                if _wg_reply and len(_wg_reply.strip()) > 50:
+                    return _wg_reply
+        except Exception as _wg_err:
+            logger.warning("[WG] web_research_synthesize failed: %s", _wg_err)
+            # fall through to LLM
+
     _trust_rules = build_trust_system_instruction()
     _style_rule = ""
     if tier == "SIMPLE":

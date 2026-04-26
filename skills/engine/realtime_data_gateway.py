@@ -5,11 +5,15 @@ skills/engine/realtime_data_gateway.py
 
 設計原則
 --------
-1. **LLM 不碰即時數字**：天氣/股價/匯率必須來自 authoritative API，
+1. **數字精確類（天氣/股價/匯率）**：必須來自 authoritative API；
    raw data 直接格式化後回傳，不讓 LLM 合成/四捨五入。
-2. **無 API 時明確拒絕**：沒有即時資料來源時，直接說「我沒有即時資料，
-   請查 [authoritative URL]」，不嘗試用搜尋引擎猜測。
-3. **不依賴 DuckDuckGo / ReAct**：這類查詢的精確度要求超過搜尋引擎能保證的。
+   無 API 時明確拒絕，不讓 LLM 合成。
+2. **資訊整合類（評價/路線/評論/營業時間/新聞/商品比較）**：允許
+   web_search → 抓內文 → LLM 整理摘要 + 引用來源（見 web_research_synthesize）。
+   無外部來源時可降階回「我目前沒有這方面的即時資料，建議查 [URL]」，
+   但這是 fallback 不是預設。
+3. **不依賴 DuckDuckGo / ReAct 處理數字精確類**：天氣/股價等精確數字的
+   精確度要求超過搜尋引擎能保證的。非數字類查詢則可以使用 web_research_synthesize。
 
 支援類型
 --------
@@ -87,14 +91,28 @@ _STOCK_KEYWORDS = ["股價", "股票", "台積電", "鴻海", "大盤", "加權"
 _FX_KEYWORDS = ["匯率", "美金", "日圓", "歐元", "人民幣", "港幣", "換算", "外幣",
                 "exchange rate", "forex"]
 
+# 提醒/行程/會議類查詢的負面條件：命中這些關鍵字時不走 weather，
+# 即使 message 含「明天」等時間詞也不應誤判為天氣查詢。
+_WEATHER_NEGATIVE = re.compile(
+    r"提醒|記事|行程|開會|會議|事項|備忘|memo|remind|schedule",
+    re.IGNORECASE,
+)
+
 
 def classify_realtime_query(text: str) -> Optional[str]:
     """
     回傳即時資料類型 ("weather" / "stock" / "fx_rate") 或 None（非即時查詢）。
+
+    注意：若 message 含提醒/行程/會議類詞彙，即使有時間詞（「明天」）
+    也不走 weather，避免提醒查詢誤進天氣路徑。
     """
     lowered = (text or "").lower()
     if any(k in lowered for k in _WEATHER_KEYWORDS):
-        return "weather"
+        # 負面條件：提醒/行程類 → 不走 weather
+        if _WEATHER_NEGATIVE.search(text):
+            pass  # fall through to other checks or return None
+        else:
+            return "weather"
     if any(k in lowered for k in _STOCK_KEYWORDS):
         return "stock"
     if any(k in lowered for k in _FX_KEYWORDS):

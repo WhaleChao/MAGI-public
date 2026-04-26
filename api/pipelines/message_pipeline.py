@@ -696,10 +696,16 @@ def process_message_inner(orch, user_id, message, platform="LINE", role="user", 
     _nl_router_enabled = bool(_topic_key and _topic_key not in ("general", ""))
     
     # ── Phase A: Casual Fast-Path Bypass ──
+    # 注意：畫圖請求不得走 small-talk fast-path，否則會繞過 draw handler 導致 persona drift。
+    _draw_exclude_pattern = re.compile(
+        r"(?:/draw\b|畫[圖一個張幅]|\bdraw\b|generate image|產生圖片|绘[图画製]|画[圖图一])",
+        re.IGNORECASE,
+    )
+    _is_draw_request = bool(_draw_exclude_pattern.search(message))
     try:
         from skills.bridge.grounded_ai import is_small_talk_intent, _classify_query_tier
         _msg_tier = _classify_query_tier(message)
-        if is_small_talk_intent(message, _msg_tier):
+        if is_small_talk_intent(message, _msg_tier) and not _is_draw_request:
             orch._append_route_trace(
                 str(user_id or ""), str(platform or ""),
                 "top_level", "chat_fast_path",
@@ -1280,6 +1286,26 @@ def process_message_inner(orch, user_id, message, platform="LINE", role="user", 
                 return reply
     except Exception as e:
         logger.warning(f"Pending intent-forge continuation skipped: {e}")
+
+    # ── 2.7.98 Image Generation Early Route (High Priority) ──
+    # 畫圖請求必須在 semantic route / LLM 之前攔截，防止 persona drift（「我是大型語言模型」）。
+    # 若 generate_image 失敗，明確回 ❌ 錯誤訊息，絕不走到 LLM persona 拒答。
+    _draw_early_pattern = re.compile(
+        r"(?:/draw\b|畫[圖一個張幅]|\bdraw\b|generate image|產生圖片|绘[图画製]|画[圖图一])",
+        re.IGNORECASE,
+    )
+    if _draw_early_pattern.search(msg_lower) and not msg_lower.startswith("畫面") and not msg_lower.startswith("畫成"):
+        _draw_prompt = message
+        for _kw in ["/draw", "幫我", "請", "畫圖", "一張", "一個", "draw", "generate image", "產生圖片", "畫", "画"]:
+            _draw_prompt = re.sub(re.escape(_kw), "", _draw_prompt, flags=re.IGNORECASE).strip()
+        if len(_draw_prompt) < 2:
+            _draw_reply = "🎨 請描述您想要的圖片內容。例如：'畫一隻可愛的貓咪'"
+        else:
+            _draw_reply = orch._generate_image(_draw_prompt, user_id)
+            if not _draw_reply or not str(_draw_reply).strip():
+                _draw_reply = "❌ **Melchior 回報錯誤**: 畫圖服務暫時無法使用，請稍後再試。"
+        orch._append_history(user_id, "assistant", str(_draw_reply))
+        return _draw_reply
 
     # ── 2.7.99 Comprehensive Natural Language Intent Dispatcher ──
     # Catches conversational phrasing for ALL major skills so the user

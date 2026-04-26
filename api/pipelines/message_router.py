@@ -961,9 +961,12 @@ def try_conversational_intent(orch, message: str, msg_lower: str, user_id, role:
          "• 清單：`追蹤清單`\n"
          "• 晨報：`股市晨報`", True),
 
-        (r"(?:怎麼用|怎麼使用|使用方法|使用教學|新手|"
-         r"tutorial|guide|manual|beginner|"
-         r"操作說明|操作方式|使用說明|入門)", "help",
+        # 注意：此 help pattern 僅對詢問 MAGI 本身的用法有效；
+        # 若訊息含特定第三方產品/API 名稱，應交給 LLM 正常回答，不跳出 onboarding。
+        # 用法條件：必須（a）明確提到 MAGI/CASPER/系統，或（b）是純粹的使用說明詢問（不含具體產品詞）
+        (r"(?:(?:magi|casper|這個系統|這套系統|你|你們).{0,12}(?:怎麼用|怎麼使用|使用方法|使用教學|怎麼操作)|"
+         r"^(?:新手|入門|如何開始|不知道怎麼用|不知道怎麼開始|第一次用))|"
+         r"(?:magi|casper).{0,20}(?:tutorial|guide|manual|操作說明|使用說明)", "help",
          "✅ **歡迎使用 MAGI 系統！**\n\n"
          "輸入 `/help` 或 `指令` 可以看到完整的功能清單。\n"
          "也可以直接用白話問我，例如：\n"
