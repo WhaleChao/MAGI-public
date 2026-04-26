@@ -4,29 +4,14 @@ import re
 import time
 from collections import deque
 
-import requests
 from api.model_config import TEXT_PRIMARY_MODEL
-try:
-    from skills.bridge.http_pool import get_session as _get_session
-    _http = _get_session()
-except ImportError:
-    _http = requests.Session()
 
 # Configure Logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("IntentionClassifier")
 
-# Inference Configuration (oMLX primary, InferenceGateway fallback)
-try:
-    from api.routing.service_registry import get_service_url as _get_svc_url
-    _omlx_default = _get_svc_url("omlx_inference")
-except Exception:
-    _omlx_default = "http://127.0.0.1:8080"
-_OMLX_BASE = os.environ.get("CASPER_CLASSIFIER_OMLX_URL", _omlx_default)
-_OMLX_CHAT_URL = _OMLX_BASE.rstrip("/") + "/v1/chat/completions"
+# Model identifier — used for persistent cache invalidation (not for LLM calls)
 MODEL_NAME = os.environ.get("CASPER_CLASSIFIER_MODEL", TEXT_PRIMARY_MODEL)
-LLM_TIMEOUT_SEC = max(2, int(os.environ.get("CASPER_CLASSIFIER_TIMEOUT_SEC", "15") or "15"))
-LLM_COOLDOWN_SEC = max(5, int(os.environ.get("CASPER_CLASSIFIER_COOLDOWN_SEC", "30") or "30"))
 
 
 _CACHE_PERSIST_PATH = os.path.join(
@@ -40,17 +25,15 @@ _PERSISTABLE_INTENTS = {"CHAT"}
 
 class IntentionClassifier:
     def __init__(self, use_llm=None, cache_size=256):
-        # Env var CASPER_CLASSIFIER_USE_LLM=1 enables LLM fallback (default: on, using local model)
+        # use_llm 參數保留以相容既有呼叫端（已不實際呼叫 LLM）
         if use_llm is None:
-            use_llm = os.environ.get("CASPER_CLASSIFIER_USE_LLM", "1") == "1"
+            use_llm = False
         self.use_llm = use_llm
         self.cache_size = cache_size
         self._cache = {}
         self._cache_order = deque()
-        self._llm_cooldown_until = 0.0
-        self._last_llm_error = ""
         self._load_persistent_cache()
-        logger.info(f"🔮 Intention Classifier Initialized (LLM={use_llm}, cached={len(self._cache)})")
+        logger.info(f"🔮 Intention Classifier Initialized (Regex+Embedding ensemble, cached={len(self._cache)})")
 
     @staticmethod
     def _is_persistable_intent(value) -> bool:
@@ -295,11 +278,12 @@ class IntentionClassifier:
         Determines the intent of the message.
         Returns routing metadata with intent/confidence/method.
 
-        Pipeline (ensemble, no LLM):
+        Pipeline (Regex + Embedding ensemble, 完全不呼叫 LLM):
           1. Cache hit → return immediately
-          2. Regex rules → high confidence, stored as candidate
-          3. Embedding Router → fast cosine similarity intent
-          4. Ensemble: regex > embedding (high) > heuristic
+          2. DANGER regex → 最高優先，命中即返回
+          3. Regex conf >= 0.9 → 直接返回
+          4. Embedding Router (conf >= 0.7) → ~0.1s（vs 原 LLM 15s）
+          5. Heuristic → 兜底
         """
         key = (text or "").strip().lower()
         cached = self._cache_get(key)
@@ -333,30 +317,7 @@ class IntentionClassifier:
         else:
             regex_conf = 0.0
 
-        # --- Layer 2: LLM 判斷（主要分類器）---
-        llm_intent = self._ask_llm(text)
-
-        if llm_intent and llm_intent in ("CHAT", "QUERY", "CMD", "DANGER"):
-            # LLM 成功 → 直接採用（LLM 是最聰明的分類器）
-            logger.info(f"🧠 LLM Classified: {llm_intent}")
-            self._cache_set(key, llm_intent, confidence=0.96)
-            candidates.append({"method": "llm", "intent": llm_intent, "confidence": 0.96})
-            return {
-                "intent": llm_intent,
-                "confidence": 0.96,
-                "method": "llm",
-                "reason": "llm_classifier",
-                "candidates": candidates,
-            }
-
-        # --- Layer 3: Embedding + Heuristic fallback（LLM 失敗時）---
-        embed_intent, embed_conf = self._embedding_classify(text)
-        heuristic_intent = self._heuristic_classify(text)
-        if embed_intent:
-            candidates.append({"method": "embedding", "intent": embed_intent, "confidence": round(float(embed_conf), 3)})
-        candidates.append({"method": "heuristic", "intent": heuristic_intent, "confidence": 0.55})
-
-        # 高信心 regex
+        # --- Layer 2: Regex 高信心（非 DANGER 且 regex 命中）---
         if regex_conf >= 0.9 and regex_intent:
             logger.info(f"⚡ Regex Matched: {regex_intent}")
             self._cache_set(key, regex_intent, confidence=0.90)
@@ -368,19 +329,25 @@ class IntentionClassifier:
                 "candidates": candidates,
             }
 
-        # 高信心 embedding（≥ 0.8 DIRECT）
-        if embed_intent and embed_conf >= 0.8:
-            logger.info(f"🧭 Embedding High: {embed_intent} (conf={embed_conf:.2f})")
+        # --- Layer 3: Embedding Router（取代 LLM，~0.1s vs 15s）---
+        embed_intent, embed_conf = self._embedding_classify(text)
+        heuristic_intent = self._heuristic_classify(text)
+        if embed_intent:
+            candidates.append({"method": "embedding", "intent": embed_intent, "confidence": round(float(embed_conf), 3)})
+        candidates.append({"method": "heuristic", "intent": heuristic_intent, "confidence": 0.55})
+
+        if embed_intent and embed_conf >= 0.7:
+            logger.info(f"🧭 Embedding Classified: {embed_intent} (conf={embed_conf:.2f})")
             self._cache_set(key, embed_intent, confidence=float(embed_conf))
             return {
                 "intent": embed_intent,
                 "confidence": float(embed_conf),
                 "method": "embedding",
-                "reason": "embedding_high_confidence",
+                "reason": "embedding_classified",
                 "candidates": candidates,
             }
 
-        # Heuristic fallback (low confidence — not cached to prevent persistent misrouting)
+        # --- Layer 4: Heuristic fallback（兜底，不呼叫 LLM）---
         logger.info(f"📊 Heuristic Fallback: {heuristic_intent}")
         self._cache_set(key, heuristic_intent, confidence=0.55)
         return {
@@ -397,102 +364,10 @@ class IntentionClassifier:
 
     def _ask_llm(self, text):
         """
-        Asks oMLX (OpenAI-compatible) to classify the intent.
-        Falls back to InferenceGateway if oMLX is unavailable.
+        Stub — LLM 分類已於 2026-04-26 移除。
+        改用 Regex + Embedding ensemble（classify_detailed 的 Layer 2-3）。
+        方法保留以相容既有 monkeypatch（test_routing.py）。
         """
-        if time.monotonic() < self._llm_cooldown_until:
-            return ""
-
-        try:
-            from skills.bridge.llm_direct import classify_intent_with_codex, feature_enabled as _codex_feature_enabled
-
-            if _codex_feature_enabled("intent"):
-                codex_res = classify_intent_with_codex(
-                    text,
-                    timeout_sec=int(os.environ.get("MAGI_CODEX_INTENT_TIMEOUT_SEC", "120") or "120"),
-                )
-                label = str(codex_res.get("intent") or codex_res.get("label") or codex_res.get("text") or "").strip().upper()
-                if label in {"CHAT", "QUERY", "CMD", "DANGER"}:
-                    return label
-                if codex_res.get("error"):
-                    logger.warning("Codex intent route failed: %s", codex_res.get("error"))
-        except Exception as codex_err:
-            logger.warning("Codex intent route skipped: %s", codex_err)
-
-        system_prompt = (
-            "Classify the following user message into exactly ONE of these categories:\n"
-            "- CHAT: Casual conversation, greetings, jokes, philosophical questions.\n"
-            "- QUERY: Asking for factual information, database lookups, news, or specific knowledge.\n"
-            "- CMD: Asking the system to perform an action, change settings, or run a tool.\n"
-            "- DANGER: Destructive or security-sensitive instructions.\n\n"
-            "Reply ONLY with one category name: CHAT, QUERY, CMD, or DANGER."
-        )
-
-        def _extract_intent(raw: str) -> str:
-            result = (raw or "").strip().upper()
-            for valid in ["DANGER", "CMD", "QUERY", "CHAT"]:
-                if valid in result:
-                    return valid
-            return ""
-
-        # --- Primary: oMLX via OpenAI-compatible /v1/chat/completions ---
-        try:
-            payload = {
-                "model": MODEL_NAME,
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": text},
-                ],
-                "temperature": 0.1,
-                "max_tokens": 8,
-                "stream": False,
-            }
-            response = _http.post(_OMLX_CHAT_URL, json=payload, timeout=LLM_TIMEOUT_SEC)
-            if response.status_code == 200:
-                data = response.json()
-                choices = data.get("choices") or []
-                if choices:
-                    raw = (choices[0].get("message") or {}).get("content", "")
-                    intent = _extract_intent(raw)
-                    if intent:
-                        return intent
-                    logger.warning(f"⚠️ oMLX returned unclear intent: {raw}")
-            elif response.status_code in {429, 503}:
-                self._last_llm_error = f"busy:{response.status_code}"
-            else:
-                logger.warning(f"⚠️ oMLX intent error: {response.status_code}")
-        except Exception as e:
-            logger.debug(f"oMLX intent unavailable: {e}")
-
-        # --- Fallback: InferenceGateway (tries all available routes) ---
-        try:
-            from skills.bridge.inference_gateway import InferenceGateway
-            _gw = InferenceGateway()
-            fb = _gw.chat(
-                f"{system_prompt}\n\nMessage: \"{text}\"",
-                task_type="intent",
-                timeout=max(LLM_TIMEOUT_SEC, 8),
-            )
-            if fb.get("success"):
-                intent = _extract_intent(fb.get("response", ""))
-                if intent:
-                    return intent
-        except Exception:
-            logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 397, exc_info=True)
-
-        logger.error(f"❌ Classification Failed: oMLX and InferenceGateway both unavailable")
-        self._last_llm_error = "all_routes_failed"
-        self._llm_cooldown_until = time.monotonic() + LLM_COOLDOWN_SEC
-        # Emit admin warning so the operator knows LLM classifier is down
-        try:
-            from line_notifier import LAFNotifier
-            LAFNotifier().notify_admin(
-                f"⚠️ Intent Classifier 降級警報：oMLX 及 InferenceGateway 均無回應，"
-                f"已進入 {LLM_COOLDOWN_SEC}s cooldown，期間使用 heuristic 分類。",
-                topic_key="system_health", source="intent_classifier",
-            )
-        except Exception:
-            pass
         return ""
 
 
