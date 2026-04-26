@@ -2153,11 +2153,17 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                 ]
                 if token:
                     lines.append(f"確認碼：`{token}`（30 分鐘內回覆此碼以送出）")
-                self.notifier.notify(
-                    '\n'.join(lines),
-                    topic='laf_progress',
-                    attachment=screenshot_path or None,
-                )
+                # 修正既有 bug（2026-04-18 commit 0eb584fd）：notify→notify_admin/_with_files，topic→topic_key
+                # attachment kwarg 不存在；notify_admin_with_files 用 file_paths list
+                _msg = '\n'.join(lines)
+                if screenshot_path:
+                    self.notifier.notify_admin_with_files(
+                        _msg,
+                        file_paths=[screenshot_path],
+                        topic_key='laf_progress',
+                    )
+                else:
+                    self.notifier.notify_admin(_msg, topic_key='laf_progress')
         except Exception as e:
             logger.error("progress notify failed: %s", e)
 
