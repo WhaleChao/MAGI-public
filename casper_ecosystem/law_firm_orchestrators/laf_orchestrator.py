@@ -4772,9 +4772,10 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                         )
                     # 修正 Plan B bug：LAFNotifier 沒 notify() 方法，正確是 notify_admin(text, topic_key=...)
                     # 既有 closing/go_live 都用 notify_admin（line 1401/1721/1724/1726 等共 5 處）
-                    self.notifier.notify_admin(msg, topic_key="laf_progress")
-                except Exception:
-                    pass
+                    _notify_result = self.notifier.notify_admin(msg, topic_key="laf_progress")
+                    logger.info("progress notify_admin result: %s (zero_fields=%d)", _notify_result, len(detected_zero_fields))
+                except Exception as _ne:
+                    logger.exception("progress notify_admin failed: %s", _ne)
             return result
 
         # closing

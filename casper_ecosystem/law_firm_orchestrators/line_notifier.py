@@ -159,8 +159,14 @@ class LAFNotifier:
         # Backward compatibility for old call sites/attribute names.
         self.telegram_admin_ids = self.telegram_notify_ids
 
-        # Discord (legacy, disabled in notify path)
-        self.discord_webhook = self._env.get("MAGI_DISCORD_WEBHOOK_URL", "") or self._config.get("discord_webhook_url", "")
+        # Discord — 2026-04-26 起 notify_admin 同時 push DC + TG（不再 TG-only）
+        # 優先 LAF 專用 webhook，fallback 一般 webhook
+        self.discord_webhook = (
+            self._env.get("MAGI_DISCORD_WEBHOOK_LEGALBRIDGE_LAF", "")
+            or self._env.get("MAGI_DISCORD_WEBHOOK_LEGALBRIDGE", "")
+            or self._env.get("MAGI_DISCORD_WEBHOOK_URL", "")
+            or self._config.get("discord_webhook_url", "")
+        )
 
         if self.telegram_token and self.telegram_notify_ids:
             logger.info(
@@ -183,17 +189,27 @@ class LAFNotifier:
         source: str = "laf_notifier",
     ) -> bool:
         """
-        Send message to admin (TG-only).
+        Send message to admin (Telegram + Discord，2026-04-26 起雙通道).
 
         Returns:
             True if at least one channel succeeded.
         """
         safe_text = _guard_text(text, platform="TELEGRAM")
-        if self._push_telegram(safe_text, topic_key=topic_key, source=source):
+        tg_ok = self._push_telegram(safe_text, topic_key=topic_key, source=source)
+        # DC 為次要通道：失敗不影響主回傳，但會 log；DC 文案不需 TG-specific guard
+        dc_ok = False
+        try:
+            dc_ok = self._push_discord(text)
+        except Exception as _dce:
+            logger.error("Discord push exception (non-fatal): %s", _dce)
+        if tg_ok or dc_ok:
+            if not tg_ok:
+                logger.warning("notify_admin: TG failed but DC sent (topic=%s)", topic_key)
+            if not dc_ok:
+                logger.warning("notify_admin: TG sent but DC failed (topic=%s)", topic_key)
             return True
-        logger.error("Telegram notification failed. Logging locally.")
+        logger.error("notify_admin: BOTH TG and DC failed for topic=%s", topic_key)
         if safe_text:
-            logger.error("All notification channels failed! Logging locally.")
             self._log_local(safe_text)
         return False
 
