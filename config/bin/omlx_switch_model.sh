@@ -191,10 +191,11 @@ case "$MODE" in
     wait_port_closed 8080 15
     # bootout 後才檢查記憶體（避免舊 process 佔用干擾判斷）
     preflight_memory_check 4 "DAY"
-    # 日間：設定小記憶體限制
-    /usr/libexec/PlistBuddy -c "Set :EnvironmentVariables:OMLX_TEXT_MAX_MODEL_MEMORY 6GB" \
+    # 日間：E4B 5.10GB + KV cache need 6.38GB → MODEL=8GB / PROCESS=10GB
+    # 之前 6GB/6GB 會被 process_memory_enforcer 在啟動時強殺（2026-04-26 09:03/09:07 兩次 SIGABRT）
+    /usr/libexec/PlistBuddy -c "Set :EnvironmentVariables:OMLX_TEXT_MAX_MODEL_MEMORY 8GB" \
         ~/Library/LaunchAgents/com.magi.omlx.plist 2>/dev/null || true
-    /usr/libexec/PlistBuddy -c "Set :EnvironmentVariables:OMLX_TEXT_MAX_PROCESS_MEMORY 6GB" \
+    /usr/libexec/PlistBuddy -c "Set :EnvironmentVariables:OMLX_TEXT_MAX_PROCESS_MEMORY 10GB" \
         ~/Library/LaunchAgents/com.magi.omlx.plist 2>/dev/null || true
     launchctl bootstrap "gui/$UID_NUM" ~/Library/LaunchAgents/com.magi.omlx.plist
 

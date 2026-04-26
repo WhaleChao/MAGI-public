@@ -292,17 +292,34 @@ def _flag_semantic_dupes(insights: list, quiet: bool = False) -> int:
 
 
 def main():
+    import traceback
+
     parser = argparse.ArgumentParser(description="legal_insights → magi_brain 向量同步")
     parser.add_argument("--dry-run", action="store_true", help="預覽模式")
     parser.add_argument("--quiet", action="store_true", help="安靜模式（cron 用）")
     args = parser.parse_args()
 
-    logging.basicConfig(level=logging.WARNING if args.quiet else logging.INFO)
+    # Always configure logging so exceptions are visible in cron stderr.
+    # --quiet suppresses normal INFO output but exceptions must still reach stderr
+    # so discord_bot.cron_scheduler can capture them in issue_agenda.
+    log_level = logging.WARNING if args.quiet else logging.INFO
+    logging.basicConfig(
+        level=log_level,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        stream=sys.stderr,
+    )
+
+    print(f"[insight_sync] start pid={os.getpid()} dry_run={args.dry_run} quiet={args.quiet}",
+          file=sys.stderr)
     try:
         sync(dry_run=args.dry_run, quiet=args.quiet)
+        print("[insight_sync] completed OK", file=sys.stderr)
     except Exception:
-        logger.exception("insight sync failed")
-        raise
+        # Write full traceback to stderr so cron captures root cause.
+        tb = traceback.format_exc()
+        print(f"[insight_sync] FAILED:\n{tb}", file=sys.stderr)
+        logger.error("insight sync failed:\n%s", tb)
+        sys.exit(1)
 
 
 if __name__ == "__main__":

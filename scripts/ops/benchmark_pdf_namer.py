@@ -22,6 +22,55 @@ import logging
 
 logging.basicConfig(level=logging.WARNING)
 
+
+def _warmup_phi4(timeout_sec: int = 90) -> bool:
+    """Pre-load phi4 on port 8082 to avoid cold-start timeout in benchmark.
+
+    phi4 (Melchior, MAGI-02) runs on port 8082 with loaded_count=0 after idle.
+    First request triggers model load (~30-60s). This warmup fires a cheap
+    dummy request before the real benchmark so the subsequent PDF-namer calls
+    don't timeout waiting for model initialization.
+
+    Returns True if phi4 is responsive, False if still unreachable after timeout.
+    """
+    import requests
+
+    phi4_base = os.environ.get("MAGI_OMLX_VISION_URL", "http://127.0.0.1:8082").rstrip("/")
+    models_url = f"{phi4_base}/v1/models"
+    chat_url = f"{phi4_base}/v1/chat/completions"
+    phi4_model = os.environ.get("MAGI_OMLX_VISION_MODEL", "Phi-4-mini-instruct-4bit")
+
+    deadline = time.time() + timeout_sec
+    attempt = 0
+    while time.time() < deadline:
+        attempt += 1
+        try:
+            r = requests.get(models_url, timeout=5)
+            if r.status_code == 200:
+                # Port is up; fire a minimal chat to trigger model load if needed
+                try:
+                    requests.post(
+                        chat_url,
+                        json={
+                            "model": phi4_model,
+                            "messages": [{"role": "user", "content": "ping"}],
+                            "max_tokens": 5,
+                        },
+                        timeout=min(60, max(5, int(deadline - time.time()))),
+                    )
+                except Exception:
+                    pass  # timeout here is OK — model is loading; will be ready for real calls
+                print(f"[warmup] phi4 responsive after attempt {attempt}")
+                return True
+        except Exception as exc:
+            if attempt == 1:
+                print(f"[warmup] phi4 not yet available ({exc.__class__.__name__}), waiting...",
+                      file=sys.stderr)
+        time.sleep(5)
+    print(f"[warmup] phi4 still unreachable after {timeout_sec}s — benchmark may have degraded results",
+          file=sys.stderr)
+    return False
+
 MAGI_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, MAGI_ROOT)
 
@@ -61,6 +110,11 @@ def main():
     if not os.path.isdir(case_root):
         print(f"[SKIP] NAS not mounted at {case_root}. Skipping benchmark.")
         sys.exit(0)
+
+    # Pre-warm phi4 (port 8082 / OMLX_VISION_BASE) before hitting it with 100 PDFs.
+    # If phi4 is cold-starting (loaded_count=0), the first real request can timeout
+    # causing every PDF to fail → format_valid_rate=0% → spurious FAIL.
+    _warmup_phi4(timeout_sec=90)
 
     try:
         sys.path.insert(0, os.path.join(MAGI_ROOT, "skills", "pdf-namer"))

@@ -26,6 +26,36 @@ from skills.translator._apple_post_edit import translate_with_ape
 from skills.translator.action import translate as _translate
 
 
+def _warmup_omlx(timeout_sec: int = 60) -> bool:
+    """Pre-warm the primary oMLX chat server (port 8080) before benchmark.
+
+    With loaded_count=0 the first request can timeout; pre-warming avoids
+    a cold-start failure that would register as a hard APE regression.
+    Returns True if server is responsive, False if unreachable.
+    """
+    import requests
+
+    omlx_base = os.environ.get("MAGI_OMLX_CHAT_URL",
+                               os.environ.get("MAGI_OMLX_BASE", "http://127.0.0.1:8080")).rstrip("/")
+    models_url = f"{omlx_base}/v1/models"
+    deadline = time.time() + timeout_sec
+    attempt = 0
+    while time.time() < deadline:
+        attempt += 1
+        try:
+            r = requests.get(models_url, timeout=5)
+            if r.status_code == 200:
+                print(f"[warmup] oMLX responsive after attempt {attempt}")
+                return True
+        except Exception as exc:
+            if attempt == 1:
+                print(f"[warmup] oMLX not ready ({exc.__class__.__name__}), waiting...",
+                      file=sys.stderr)
+        time.sleep(3)
+    print(f"[warmup] oMLX still unreachable after {timeout_sec}s", file=sys.stderr)
+    return False
+
+
 SUITE = [
     {
         "id": "prayer_for_relief",
@@ -150,6 +180,10 @@ def main() -> int:
         print(json.dumps(result, ensure_ascii=False))
         _write_static_result(result)
         return 2
+
+    # Pre-warm oMLX primary server to avoid cold-start timeout silently failing all calls.
+    # GTX path uses melchior → oMLX; APE path uses grounded_ai → oMLX.
+    _warmup_omlx(timeout_sec=60)
 
     os.environ.setdefault("MAGI_TRANSLATOR_APE", "1")
     rows = []
