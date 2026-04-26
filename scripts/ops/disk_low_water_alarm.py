@@ -121,4 +121,10 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        _rc = main()
+    except Exception:
+        _rc = 0  # 設計原則：永不 raise，永不阻塞
+    sys.stdout.flush()
+    sys.stderr.flush()
+    sys.exit(int(_rc) if isinstance(_rc, int) else 0)

@@ -80,20 +80,24 @@ def delete_ids(cursor, ids):
     cursor.execute(f"DELETE FROM documents WHERE id IN ({placeholders})", ids)
 
 
-def main():
+def main() -> int:
     parser = argparse.ArgumentParser(description="清除角色幻覺污染記憶")
     parser.add_argument("--dry-run", action="store_true", help="僅預覽，不刪除")
     args = parser.parse_args()
 
-    conn = get_conn()
-    cursor = conn.cursor()
+    try:
+        conn = get_conn()
+        cursor = conn.cursor()
+    except Exception as e:
+        print(f"DB 連線失敗，跳過清理：{e}")
+        return 0  # DB unavailable 不視為失敗
 
     polluted = find_polluted(cursor)
     if not polluted:
         print("✅ 未發現角色幻覺污染記憶。")
         cursor.close()
         conn.close()
-        return
+        return 0
 
     print(f"🔍 發現 {len(polluted)} 筆疑似角色幻覺記憶：\n")
     for doc_id, hits, source, preview in polluted:
@@ -111,7 +115,8 @@ def main():
 
     cursor.close()
     conn.close()
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

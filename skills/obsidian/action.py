@@ -675,13 +675,19 @@ def task_ingest_source(
             skipped += 1
             continue
 
-        # Extract text
+        # Extract text — per-file try/except 確保單檔失敗不炸整個 ingest job
         try:
             result = extract_text(f)
-        except Exception as e:
-            errors.append({"path": relpath, "error": str(e)})
+        except BaseException as e:
+            logging.getLogger(__name__).warning(
+                "obsidian_ingest: skip unreadable file %s: %s", relpath, e
+            )
+            errors.append({"path": relpath, "error": f"{type(e).__name__}: {e}"})
             continue
         if not result.get("success"):
+            logging.getLogger(__name__).warning(
+                "obsidian_ingest: extraction failed %s: %s", relpath, result.get("error", "")
+            )
             errors.append({"path": relpath, "error": result.get("error", "extraction failed")})
             continue
 
