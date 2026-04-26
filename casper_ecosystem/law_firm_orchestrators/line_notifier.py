@@ -199,7 +199,7 @@ class LAFNotifier:
         # DC 為次要通道：失敗不影響主回傳，但會 log；DC 文案不需 TG-specific guard
         dc_ok = False
         try:
-            dc_ok = self._push_discord(text)
+            dc_ok = self._push_discord(text, topic_key=topic_key)
         except Exception as _dce:
             logger.error("Discord push exception (non-fatal): %s", _dce)
         if tg_ok or dc_ok:
@@ -388,8 +388,40 @@ class LAFNotifier:
     # Private — Discord
     # ------------------------------------------------------------------
 
-    def _push_discord(self, text: str) -> bool:
-        """Send message via Discord webhook."""
+    def _push_discord_via_bot(self, text: str, channel_id: str) -> bool:
+        """Send via Discord bot REST API（topic_key → channel_id 路由）。"""
+        bot_token = (self._env.get("DISCORD_BOT_TOKEN", "") or "").strip()
+        if not bot_token or not channel_id:
+            return False
+        try:
+            url = f"https://discord.com/api/v10/channels/{channel_id}/messages"
+            headers = {"Authorization": f"Bot {bot_token}", "Content-Type": "application/json"}
+            payload = {"content": str(text or "")[:2000]}
+            resp = requests.post(url, json=payload, headers=headers, timeout=10)
+            if resp.status_code in (200, 201):
+                logger.info("✅ Discord bot message sent to channel %s", channel_id)
+                return True
+            logger.warning("Discord bot HTTP %d to channel %s: %s", resp.status_code, channel_id, resp.text[:200])
+            return False
+        except Exception as e:
+            logger.error("Discord bot push exception: %s", e)
+            return False
+
+    def _resolve_dc_channel_id(self, topic_key: str) -> str:
+        """topic_key → DC channel id（從 env：MAGI_DC_CHANNEL_<UPPER_TOPIC>）。"""
+        if not topic_key:
+            return ""
+        env_key = f"MAGI_DC_CHANNEL_{topic_key.upper()}"
+        return (self._env.get(env_key, "") or "").strip()
+
+    def _push_discord(self, text: str, *, topic_key: str = "") -> bool:
+        """Send message to Discord：優先 bot+channel_id（topic 路由），fallback webhook。"""
+        # 1) 嘗試 bot + topic-routed channel_id（精準路由）
+        if topic_key:
+            channel_id = self._resolve_dc_channel_id(topic_key)
+            if channel_id and self._push_discord_via_bot(text, channel_id):
+                return True
+        # 2) Fallback 既有 webhook（一般 LAF channel）
         if not self.discord_webhook:
             return False
 
