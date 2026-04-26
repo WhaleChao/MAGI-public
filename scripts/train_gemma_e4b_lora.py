@@ -185,7 +185,7 @@ def merge(version: str) -> dict:
         "--model", str(BASE_MODEL),
         "--adapter-path", str(adapter_dir),
         "--save-path", str(merged_path),
-        "--de-quantize",
+        "--dequantize",  # 新版 mlx_lm.fuse 改用 --dequantize（無連字號）
     ]
 
     logger.info("Running: %s", " ".join(cmd))
@@ -229,14 +229,18 @@ def validate(version: str) -> dict:
     passed = 0
     for i, prompt in enumerate(test_prompts):
         try:
+            # 新版 mlx-lm: generate(model, tok, prompt, verbose, **kwargs) — temp 不再是位置/直接參數
+            # Gemma 4 instruction-tuned 必須套 chat template，否則只會複讀
             cmd = [
                 OMLX_PYTHON, "-c",
                 f"""
 import sys; sys.path.insert(0, '/opt/homebrew/opt/omlx/libexec/lib/python3.11/site-packages')
 from mlx_lm import load, generate
-model, tok = load('{merged_path}')
-out = generate(model, tok, '{prompt}', max_tokens=128, temp=0.1, verbose=False)
-print(out[:200])
+model, tok = load({str(merged_path)!r})
+msgs = [{{'role':'user','content':{prompt!r}}}]
+p = tok.apply_chat_template(msgs, tokenize=False, add_generation_prompt=True)
+out = generate(model, tok, p, max_tokens=128, verbose=False)
+print(out[:400])
 """,
             ]
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
