@@ -40,6 +40,30 @@ _check_port() {
     fi
 }
 
+_launchctl_present() {
+    local label="$1"
+    launchctl list "$label" >/dev/null 2>&1
+}
+
+_check_port_with_label() {
+    local name="$1" port="$2" label="$3"
+    local pid
+    pid=$(lsof -ti:"$port" -sTCP:LISTEN 2>/dev/null | head -1 || true)
+    if [ -n "$pid" ]; then
+        if _launchctl_present "$label"; then
+            printf "  ${GREEN}●${NC} %-18s port %-5s PID %-6s\n" "$name" "$port" "$pid"
+        else
+            printf "  ${YELLOW}▲${NC} %-18s port %-5s PID %-6s ${YELLOW}UNMANAGED${NC}\n" "$name" "$port" "$pid"
+        fi
+    else
+        if _launchctl_present "$label"; then
+            printf "  ${YELLOW}○${NC} %-18s port %-5s ${YELLOW}IDLE${NC}\n" "$name" "$port"
+        else
+            printf "  ${RED}○${NC} %-18s port %-5s ${RED}DOWN${NC}\n" "$name" "$port"
+        fi
+    fi
+}
+
 cmd_status() {
     echo "═══ MAGI System Status ═══"
     echo ""
@@ -57,8 +81,10 @@ cmd_status() {
     _check_port "Website Admin"     8088
     echo ""
     echo "oMLX Inference:"
-    _check_port "Text (Gemma-4)" 8080
-    _check_port "Embed (BERT)"   8081
+    _check_port_with_label "Text (Gemma-4)" 8080 "com.magi.omlx"
+    _check_port_with_label "Embed (BERT)"   8081 "com.magi.omlx-embed"
+    _check_port_with_label "Logic (Phi-4)"  8082 "com.magi.omlx-phi4"
+    _check_port_with_label "Cross (SmolLM3)" 8083 "com.magi.omlx-smol"
     echo ""
 
     echo ""

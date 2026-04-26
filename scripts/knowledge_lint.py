@@ -39,12 +39,13 @@ import json
 import logging
 import os
 import re
+import shutil
 import sys
 import time
 from collections import Counter, defaultdict
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 MAGI_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if MAGI_ROOT not in sys.path:
@@ -61,11 +62,25 @@ INGEST_STATE_PATH = AGENT_DIR / "obsidian_ingest_state.json"
 
 REPORT_DIR = Path(MAGI_ROOT) / "static"
 REPORT_PATH = REPORT_DIR / "knowledge_lint_latest.json"
+CLEANUP_REPORT_PATH = REPORT_DIR / "knowledge_duplicate_cleanup_latest.json"
+DEFAULT_DUPLICATE_BACKUP_DIR = Path(MAGI_ROOT) / "archive" / "knowledge_duplicate_cleanup"
 
 # Thresholds
 MIN_INSIGHT_LEN = 100  # chars — insights shorter than this are flagged
 DUPLICATE_SIM_THRESHOLD = 0.95  # cosine similarity for near-duplicate
 MAX_LLM_CHECKS = 10  # max contradiction checks per run
+DUPLICATE_PLAN_GROUP_LIMIT = 50
+DELETE_BATCH_SIZE = 500
+
+INSIGHT_DEGRADED_MARKERS = (
+    "摘要失敗",
+    "timeout",
+    "逾時",
+    "系統降級回覆",
+    "無法擷取",
+    "請稍後再試",
+    "模型忙碌",
+)
 
 
 # ── Helpers ─────────────────────────────────────────────────────────
@@ -109,28 +124,705 @@ def _db_connect(db_name: str = "magi_brain"):
         )
 
 
+def _extract_insight_body(text: str) -> str:
+    s = str(text or "").strip()
+    for marker in ("實務見解：", "## 實務見解"):
+        if marker in s:
+            return s.split(marker, 1)[1].strip()
+    return s
+
+
+def _is_low_quality_insight(text: str, is_degraded: bool) -> Tuple[bool, str]:
+    s = str(text or "").strip()
+    if not s:
+        return True, "empty"
+    if any(marker.lower() in s.lower() for marker in INSIGHT_DEGRADED_MARKERS):
+        return True, "degraded_marker"
+
+    body = _extract_insight_body(s)
+    placeholder_markers = (
+        "未發現符合擷取規則",
+        "從判決中逐字擷取",
+        "列出本判決適用的法條",
+    )
+    body_without_placeholders = body
+    for marker in placeholder_markers:
+        body_without_placeholders = body_without_placeholders.replace(marker, "")
+    body_without_placeholders = re.sub(r"[#_（）()：:\s\n\r\t-]+", "", body_without_placeholders)
+
+    if len(body_without_placeholders) < MIN_INSIGHT_LEN and bool(is_degraded):
+        return True, "degraded_short"
+    if len(body_without_placeholders) < 25:
+        return True, "substantive_body_too_short"
+    return False, ""
+
+
+def _vector_rows_for_doc_key(conn, doc_key: str) -> int:
+    if not doc_key:
+        return 0
+    cur = conn.cursor(dictionary=True)
+    try:
+        cur.execute(
+            "SELECT COUNT(*) AS cnt FROM documents WHERE source LIKE %s",
+            (f"%doc={doc_key}%",),
+        )
+        row = cur.fetchone() or {}
+        return int(row.get("cnt") or 0)
+    finally:
+        cur.close()
+
+
+def _parse_id_list(ids_text: str) -> List[int]:
+    ids = []
+    for part in str(ids_text or "").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            ids.append(int(part))
+        except ValueError:
+            continue
+    return ids
+
+
+def _chunked_ids(ids: List[int], size: int = DELETE_BATCH_SIZE) -> List[List[int]]:
+    if not ids:
+        return []
+    size = max(1, int(size))
+    return [ids[i : i + size] for i in range(0, len(ids), size)]
+
+
+def _json_safe(value: Any) -> Any:
+    if isinstance(value, datetime):
+        return value.isoformat(sep=" ")
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(v) for v in value]
+    if isinstance(value, dict):
+        return {k: _json_safe(v) for k, v in value.items()}
+    return value
+
+
+def _fetch_duplicate_rows(conn, max_groups: int = DUPLICATE_PLAN_GROUP_LIMIT) -> List[Dict]:
+    cur = conn.cursor(dictionary=True)
+    cur.execute(
+        "SELECT MD5(content) AS h, COUNT(*) AS cnt, "
+        "GROUP_CONCAT(id ORDER BY id SEPARATOR ',') AS ids, "
+        "MIN(CHAR_LENGTH(content)) AS min_len "
+        "FROM documents "
+        "GROUP BY MD5(content) "
+        "HAVING COUNT(*) > 1 "
+        "ORDER BY cnt DESC "
+        "LIMIT %s",
+        (max(1, int(max_groups)),),
+    )
+    rows = cur.fetchall()
+    cur.close()
+    return rows
+
+
+def _fetch_documents_for_ids(conn, ids: List[int]) -> List[Dict]:
+    if not ids:
+        return []
+    cur = conn.cursor(dictionary=True)
+    ph = ",".join(["%s"] * len(ids))
+    cur.execute(
+        f"SELECT id, content, source, created_at, synced FROM documents WHERE id IN ({ph}) ORDER BY id",
+        tuple(ids),
+    )
+    rows = cur.fetchall()
+    cur.close()
+    return rows
+
+
+def _fetch_vectors_for_ids(conn, ids: List[int]) -> List[Dict]:
+    if not ids:
+        return []
+    cur = conn.cursor(dictionary=True)
+    ph = ",".join(["%s"] * len(ids))
+    cur.execute(
+        f"SELECT doc_id, embedding FROM vectors WHERE doc_id IN ({ph}) ORDER BY doc_id",
+        tuple(ids),
+    )
+    rows = cur.fetchall()
+    cur.close()
+    return rows
+
+
+def _delete_vectors_for_ids(conn, ids: List[int]) -> int:
+    if not ids:
+        return 0
+    deleted = 0
+    cur = conn.cursor()
+    for batch in _chunked_ids(ids):
+        ph = ",".join(["%s"] * len(batch))
+        cur.execute(f"DELETE FROM vectors WHERE doc_id IN ({ph})", tuple(batch))
+        deleted += int(cur.rowcount or 0)
+    cur.close()
+    return deleted
+
+
+def _delete_documents_for_ids(conn, ids: List[int]) -> int:
+    if not ids:
+        return 0
+    deleted = 0
+    cur = conn.cursor()
+    for batch in _chunked_ids(ids):
+        ph = ",".join(["%s"] * len(batch))
+        cur.execute(f"DELETE FROM documents WHERE id IN ({ph})", tuple(batch))
+        deleted += int(cur.rowcount or 0)
+    cur.close()
+    return deleted
+
+
+def _count_documents_for_ids(conn, ids: List[int]) -> int:
+    if not ids:
+        return 0
+    total = 0
+    cur = conn.cursor()
+    for batch in _chunked_ids(ids):
+        ph = ",".join(["%s"] * len(batch))
+        cur.execute(f"SELECT COUNT(*) FROM documents WHERE id IN ({ph})", tuple(batch))
+        total += int(cur.fetchone()[0] or 0)
+    cur.close()
+    return total
+
+
+def _count_vectors_for_ids(conn, ids: List[int]) -> int:
+    if not ids:
+        return 0
+    total = 0
+    cur = conn.cursor()
+    for batch in _chunked_ids(ids):
+        ph = ",".join(["%s"] * len(batch))
+        cur.execute(f"SELECT COUNT(*) FROM vectors WHERE doc_id IN ({ph})", tuple(batch))
+        total += int(cur.fetchone()[0] or 0)
+    cur.close()
+    return total
+
+
+def _fetch_ids_for_hash(conn, hash_value: str) -> List[int]:
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT id FROM documents WHERE MD5(content) = %s ORDER BY id",
+        (hash_value,),
+    )
+    ids = [int(row[0]) for row in cur.fetchall()]
+    cur.close()
+    return ids
+
+
+def _fetch_existing_document_ids(conn, ids: List[int]) -> set:
+    if not ids:
+        return set()
+    existing = set()
+    cur = conn.cursor()
+    for batch in _chunked_ids(ids):
+        ph = ",".join(["%s"] * len(batch))
+        cur.execute(f"SELECT id FROM documents WHERE id IN ({ph})", tuple(batch))
+        existing.update(int(row[0]) for row in cur.fetchall())
+    cur.close()
+    return existing
+
+
+def _fetch_duplicate_counts_for_hashes(conn, hashes: List[str]) -> Dict[str, int]:
+    if not hashes:
+        return {}
+    counts: Dict[str, int] = {}
+    cur = conn.cursor()
+    for batch in _chunked_ids([h for h in hashes if h], size=200):
+        if not batch:
+            continue
+        ph = ",".join(["%s"] * len(batch))
+        cur.execute(
+            f"SELECT MD5(content) AS h, COUNT(*) AS cnt "
+            f"FROM documents "
+            f"WHERE MD5(content) IN ({ph}) "
+            f"GROUP BY MD5(content)",
+            tuple(batch),
+        )
+        for row in cur.fetchall():
+            h = str(row[0] or "")
+            cnt = int(row[1] or 0)
+            if h:
+                counts[h] = counts.get(h, 0) + cnt
+    cur.close()
+    return counts
+
+
+def _insert_document_rows(conn, rows: List[Dict]) -> int:
+    if not rows:
+        return 0
+    cur = conn.cursor()
+    sql = (
+        "INSERT INTO documents (id, content, source, created_at, synced) "
+        "VALUES (%s, %s, %s, %s, %s)"
+    )
+    payload = [
+        (
+            int(r.get("id")),
+            r.get("content"),
+            r.get("source"),
+            r.get("created_at"),
+            int(r.get("synced", 0) or 0),
+        )
+        for r in rows
+    ]
+    cur.executemany(sql, payload)
+    inserted = int(cur.rowcount or 0)
+    cur.close()
+    return inserted
+
+
+def _insert_vector_rows(conn, rows: List[Dict]) -> int:
+    if not rows:
+        return 0
+    cur = conn.cursor()
+    sql = "INSERT INTO vectors (doc_id, embedding) VALUES (%s, %s)"
+    payload = [
+        (int(r.get("doc_id")), r.get("embedding"))
+        for r in rows
+    ]
+    cur.executemany(sql, payload)
+    inserted = int(cur.rowcount or 0)
+    cur.close()
+    return inserted
+
+
+def _load_cleanup_summary() -> Dict:
+    if not CLEANUP_REPORT_PATH.exists():
+        return {}
+    try:
+        data = json.loads(CLEANUP_REPORT_PATH.read_text("utf-8"))
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _write_cleanup_summary(summary: Dict) -> None:
+    REPORT_DIR.mkdir(parents=True, exist_ok=True)
+    CLEANUP_REPORT_PATH.write_text(
+        json.dumps(_json_safe(summary), ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
+def _duplicate_cleanup_gate(dupe_rows: List[Dict]) -> Dict:
+    latest = _load_cleanup_summary()
+    if not dupe_rows:
+        if latest.get("mode") == "apply" and latest.get("verified") is True:
+            return {
+                "status": "applied_verified",
+                "reason": "",
+                "report_path": str(CLEANUP_REPORT_PATH),
+            }
+        return {"status": "not_required", "reason": ""}
+
+    if not latest:
+        return {
+            "status": "pending_apply",
+            "reason": "duplicate cleanup has not been applied yet",
+            "report_path": str(CLEANUP_REPORT_PATH),
+        }
+
+    latest_status = str(latest.get("status", "") or "").strip().lower()
+    if latest_status in {"blocked_by_manual_backup", "unsupported_format"}:
+        return {
+            "status": latest_status,
+            "reason": latest.get("reason", ""),
+            "report_path": str(CLEANUP_REPORT_PATH),
+        }
+
+    if latest.get("mode") == "apply" and latest.get("verified") is True:
+        after = latest.get("after", {}) if isinstance(latest.get("after"), dict) else {}
+        if int(after.get("duplicate_groups", 0) or 0) == 0:
+            return {
+                "status": "blocked_by_regeneration",
+                "reason": (
+                    "duplicate cleanup was verified to zero, but duplicates reappeared; "
+                    "a background source is re-ingesting duplicate contents"
+                ),
+                "report_path": str(CLEANUP_REPORT_PATH),
+            }
+        return {
+            "status": "partially_applied",
+            "reason": "duplicates still remain after last apply",
+            "report_path": str(CLEANUP_REPORT_PATH),
+        }
+
+    return {
+        "status": "pending_apply",
+        "reason": "latest duplicate cleanup run is not verified",
+        "report_path": str(CLEANUP_REPORT_PATH),
+    }
+
+
+def build_duplicate_cleanup_plan(dupes: List[Dict], max_groups: int = DUPLICATE_PLAN_GROUP_LIMIT) -> Dict:
+    """Build dry-run cleanup plan (keep min id, remove the rest) for duplicate vectors."""
+    groups = []
+    total_delete = 0
+
+    for row in (dupes or [])[: max(1, int(max_groups))]:
+        ids = _parse_id_list(row.get("ids", ""))
+        if len(ids) < 2:
+            continue
+        ids = sorted(ids)
+        keep_id = ids[0]
+        remove_ids = ids[1:]
+        total_delete += len(remove_ids)
+        groups.append(
+            {
+                "hash": row.get("h"),
+                "count": int(row.get("cnt", len(ids))),
+                "keep_id": keep_id,
+                "remove_ids": remove_ids,
+            }
+        )
+
+    sql_preview = []
+    for g in groups[:10]:
+        if not g["remove_ids"]:
+            continue
+        ids_csv = ",".join(str(i) for i in g["remove_ids"])
+        sql_preview.append(f"DELETE FROM vectors WHERE doc_id IN ({ids_csv});")
+        sql_preview.append(f"DELETE FROM documents WHERE id IN ({ids_csv});")
+
+    return {
+        "mode": "dry_run",
+        "groups": groups,
+        "groups_planned": len(groups),
+        "estimated_delete_documents": total_delete,
+        "estimated_delete_vectors": total_delete,
+        "sql_preview": sql_preview,
+        "notes": [
+            "先備份再刪除；本計畫預設只輸出，不自動執行。",
+            "每組保留最小 id 作為 canonical entry。",
+        ],
+    }
+
+
+def _backup_faiss_files(backup_dir: Path) -> Dict:
+    try:
+        from skills.memory import faiss_index as fi
+
+        index_dir = Path(getattr(fi, "INDEX_DIR", Path(MAGI_ROOT) / "skills" / "memory" / "index_cache"))
+        target_files = [
+            index_dir / getattr(fi, "INDEX_FILE", "mem_index.faiss"),
+            index_dir / getattr(fi, "IDMAP_FILE", "mem_idmap.npy"),
+            index_dir / "meta.json",
+        ]
+    except Exception:
+        return {
+            "ok": False,
+            "status": "unsupported_format",
+            "reason": "unable to resolve FAISS index paths",
+            "path": "",
+            "files": [],
+        }
+
+    backup_target = backup_dir / "faiss"
+    backup_target.mkdir(parents=True, exist_ok=True)
+    copied = []
+    for src in target_files:
+        if not src.exists():
+            continue
+        dst = backup_target / src.name
+        shutil.copy2(src, dst)
+        copied.append(src.name)
+
+    return {
+        "ok": True,
+        "status": "ok",
+        "path": str(backup_target),
+        "files": copied,
+        "source_dir": str(index_dir),
+    }
+
+
+def _restore_faiss_files(faiss_backup: Dict) -> Dict:
+    if not isinstance(faiss_backup, dict) or not faiss_backup.get("ok"):
+        return {"restored": False, "reason": "no faiss backup"}
+
+    source_path = Path(str(faiss_backup.get("path", "")))
+    source_dir = source_path
+    live_dir_str = str(faiss_backup.get("source_dir", "") or "").strip()
+    live_dir = Path(live_dir_str) if live_dir_str else None
+    if not source_dir.exists() or live_dir is None:
+        return {"restored": False, "reason": "invalid faiss backup path"}
+    live_dir.mkdir(parents=True, exist_ok=True)
+
+    restored = 0
+    for file_name in faiss_backup.get("files", []):
+        src = source_dir / str(file_name)
+        if not src.exists():
+            continue
+        dst = live_dir / str(file_name)
+        shutil.copy2(src, dst)
+        restored += 1
+    return {"restored": restored > 0, "files_restored": restored}
+
+
+def _rebuild_faiss_index() -> Dict:
+    try:
+        from skills.memory.faiss_index import FAISSMemoryIndex
+
+        idx = FAISSMemoryIndex.get_instance()
+        n = idx.build_from_db(
+            {
+                "host": os.environ.get("DB_HOST", "127.0.0.1"),
+                "port": int(os.environ.get("DB_PORT", "3306")),
+                "user": os.environ.get("DB_USER", "casper_service"),
+                "password": os.environ.get("DB_PASSWORD", ""),
+                "database": "magi_brain",
+            }
+        )
+        return {"ok": True, "vectors_indexed": int(n), "index_type": getattr(idx, "index_type", "unknown")}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+def _prepare_backup_payload(
+    conn,
+    remove_ids: List[int],
+    keep_ids: List[int],
+    groups: List[Dict],
+    backup_dir: Path,
+) -> Tuple[Path, Dict]:
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    docs_rows = _fetch_documents_for_ids(conn, remove_ids)
+    vector_rows = _fetch_vectors_for_ids(conn, remove_ids)
+    payload = {
+        "created_at": datetime.now().isoformat(),
+        "remove_ids": [int(i) for i in remove_ids],
+        "keep_ids": [int(i) for i in keep_ids],
+        "groups": groups,
+        "documents": [_json_safe(r) for r in docs_rows],
+        "vectors": [_json_safe(r) for r in vector_rows],
+    }
+    backup_path = backup_dir / "duplicate_cleanup_backup.json"
+    backup_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    return backup_path, payload
+
+
+def _restore_from_backup_payload(conn, payload: Dict) -> Dict:
+    docs = payload.get("documents", []) if isinstance(payload, dict) else []
+    vectors = payload.get("vectors", []) if isinstance(payload, dict) else []
+    inserted_docs = _insert_document_rows(conn, docs)
+    inserted_vectors = _insert_vector_rows(conn, vectors)
+    return {
+        "inserted_documents": inserted_docs,
+        "inserted_vectors": inserted_vectors,
+    }
+
+
+def _verify_duplicate_cleanup(conn, groups: List[Dict], removed_ids: List[int], faiss_ok: bool = True) -> Dict:
+    keep_ok = True
+    remove_ok = True
+    hash_ok = True
+    targeted_duplicate_groups = 0
+    targeted_extra_entries = 0
+
+    if _count_documents_for_ids(conn, removed_ids) != 0:
+        remove_ok = False
+    if _count_vectors_for_ids(conn, removed_ids) != 0:
+        remove_ok = False
+
+    keep_ids = [int(g.get("keep_id", 0) or 0) for g in groups if int(g.get("keep_id", 0) or 0) > 0]
+    existing_keep_ids = _fetch_existing_document_ids(conn, keep_ids)
+    if any(keep_id not in existing_keep_ids for keep_id in keep_ids):
+        keep_ok = False
+
+    hashes = sorted({str(g.get("hash", "") or "") for g in groups if g.get("hash")})
+    duplicate_counts = _fetch_duplicate_counts_for_hashes(conn, hashes)
+    for h in hashes:
+        cnt = int(duplicate_counts.get(h, 0) or 0)
+        extra = max(0, cnt - 1)
+        targeted_extra_entries += extra
+        if extra > 0:
+            targeted_duplicate_groups += 1
+
+    if targeted_duplicate_groups > 0:
+        hash_ok = False
+
+    ok = keep_ok and remove_ok and hash_ok and bool(faiss_ok)
+    return {
+        "ok": ok,
+        "keep_ok": keep_ok,
+        "remove_ok": remove_ok,
+        "hash_ok": hash_ok,
+        "faiss_ok": bool(faiss_ok),
+        "targeted_duplicate_groups": targeted_duplicate_groups,
+        "targeted_extra_entries": targeted_extra_entries,
+    }
+
+
+def cleanup_duplicate_vectors(
+    *,
+    apply: bool = False,
+    max_groups: int = DUPLICATE_PLAN_GROUP_LIMIT,
+    backup_dir: Optional[Path] = None,
+    rebuild_faiss: bool = True,
+    auto_rollback: bool = True,
+    quiet: bool = False,
+) -> Dict:
+    backup_root = Path(backup_dir or DEFAULT_DUPLICATE_BACKUP_DIR)
+    started = time.time()
+
+    conn = _db_connect("magi_brain")
+    try:
+        dupes_before = _fetch_duplicate_rows(conn, max_groups=max_groups)
+        total_extra_before = sum(int(d.get("cnt", 0) or 0) - 1 for d in dupes_before)
+        plan = build_duplicate_cleanup_plan(dupes_before, max_groups=max_groups)
+        groups = plan.get("groups", [])
+        remove_ids = [int(i) for g in groups for i in g.get("remove_ids", [])]
+        keep_ids = [int(g.get("keep_id")) for g in groups if g.get("keep_id")]
+
+        summary = {
+            "ts": datetime.now().isoformat(),
+            "mode": "apply" if apply else "dry_run",
+            "status": "ok" if not apply else "pending",
+            "before": {
+                "duplicate_groups": len(dupes_before),
+                "total_extra_entries": total_extra_before,
+            },
+            "after": {
+                "duplicate_groups": len(dupes_before),
+                "total_extra_entries": total_extra_before,
+            },
+            "planned_groups": len(groups),
+            "removed_count": 0,
+            "backup_path": "",
+            "verified": False,
+            "cleanup_plan": plan,
+            "verification": {},
+            "faiss": {},
+            "rollback": {"attempted": False, "restored": False},
+            "rollback_hint": "",
+            "elapsed_sec": 0.0,
+        }
+
+        if not groups:
+            summary["status"] = "ok"
+            summary["verified"] = True
+            summary["verification"] = {"ok": True, "reason": "no duplicates"}
+            summary["elapsed_sec"] = round(time.time() - started, 2)
+            _write_cleanup_summary(summary)
+            if not quiet:
+                print("✅ duplicate cleanup: no duplicate groups found")
+            return summary
+
+        if not apply:
+            summary["status"] = "dry_run"
+            summary["verification"] = {"ok": False, "reason": "dry_run_no_apply"}
+            summary["elapsed_sec"] = round(time.time() - started, 2)
+            _write_cleanup_summary(summary)
+            if not quiet:
+                print(
+                    f"🔍 duplicate cleanup dry-run: {len(groups)} groups, "
+                    f"{len(remove_ids)} removable entries"
+                )
+            return summary
+
+        run_dir = backup_root / datetime.now().strftime("%Y%m%d_%H%M%S")
+        run_dir.mkdir(parents=True, exist_ok=True)
+        backup_path, payload = _prepare_backup_payload(
+            conn,
+            remove_ids=remove_ids,
+            keep_ids=keep_ids,
+            groups=groups,
+            backup_dir=run_dir,
+        )
+        summary["backup_path"] = str(backup_path)
+        summary["rollback_hint"] = (
+            f"使用備份檔 {backup_path} 重新插回 documents/vectors，"
+            "並將 backup/faiss 目錄覆蓋回 live FAISS index。"
+        )
+
+        faiss_backup = _backup_faiss_files(run_dir)
+        summary["faiss"]["backup"] = faiss_backup
+        if not faiss_backup.get("ok"):
+            summary["status"] = str(faiss_backup.get("status") or "unsupported_format")
+            summary["reason"] = str(faiss_backup.get("reason") or "FAISS backup failed")
+            summary["elapsed_sec"] = round(time.time() - started, 2)
+            _write_cleanup_summary(summary)
+            return summary
+
+        try:
+            _delete_vectors_for_ids(conn, remove_ids)
+            removed_docs = _delete_documents_for_ids(conn, remove_ids)
+            conn.commit()
+            summary["removed_count"] = int(removed_docs)
+        except Exception as e:
+            conn.rollback()
+            summary["status"] = "blocked_by_manual_backup"
+            summary["reason"] = f"delete_failed:{e}"
+            summary["elapsed_sec"] = round(time.time() - started, 2)
+            _write_cleanup_summary(summary)
+            return summary
+
+        if rebuild_faiss:
+            summary["faiss"]["rebuild"] = _rebuild_faiss_index()
+        else:
+            summary["faiss"]["rebuild"] = {"ok": True, "skipped": True}
+        faiss_rebuild_ok = bool((summary["faiss"].get("rebuild") or {}).get("ok"))
+
+        dupes_after = _fetch_duplicate_rows(conn, max_groups=max_groups)
+        total_extra_after = sum(int(d.get("cnt", 0) or 0) - 1 for d in dupes_after)
+        summary["after"] = {
+            "duplicate_groups": len(dupes_after),
+            "total_extra_entries": total_extra_after,
+        }
+
+        try:
+            verification = _verify_duplicate_cleanup(conn, groups, remove_ids, faiss_ok=faiss_rebuild_ok)
+        except Exception as e:
+            verification = {
+                "ok": False,
+                "keep_ok": False,
+                "remove_ok": False,
+                "hash_ok": False,
+                "faiss_ok": bool(faiss_rebuild_ok),
+                "targeted_duplicate_groups": -1,
+                "targeted_extra_entries": -1,
+                "error": f"verify_exception:{e}",
+            }
+        summary["verification"] = verification
+        summary["verified"] = bool(verification.get("ok"))
+        summary["status"] = "ok" if summary["verified"] else "error"
+
+        if not summary["verified"] and auto_rollback:
+            summary["rollback"]["attempted"] = True
+            try:
+                rollback_result = _restore_from_backup_payload(conn, payload)
+                faiss_restore = _restore_faiss_files(faiss_backup)
+                conn.commit()
+                summary["rollback"]["restored"] = True
+                summary["rollback"]["result"] = rollback_result
+                summary["rollback"]["faiss"] = faiss_restore
+            except Exception as e:
+                conn.rollback()
+                summary["rollback"]["restored"] = False
+                summary["rollback"]["error"] = str(e)
+
+        summary["elapsed_sec"] = round(time.time() - started, 2)
+        _write_cleanup_summary(summary)
+        return summary
+    finally:
+        conn.close()
+
+
 # ── Lint Checks ─────────────────────────────────────────────────────
 
 def check_duplicate_vectors() -> Dict:
     """Find near-duplicate content in magi_brain.documents (by MD5)."""
     try:
         conn = _db_connect("magi_brain")
-        cur = conn.cursor(dictionary=True)
-        cur.execute(
-            "SELECT MD5(content) AS h, COUNT(*) AS cnt, "
-            "GROUP_CONCAT(id ORDER BY id SEPARATOR ',') AS ids, "
-            "MIN(CHAR_LENGTH(content)) AS min_len "
-            "FROM documents "
-            "GROUP BY MD5(content) "
-            "HAVING COUNT(*) > 1 "
-            "ORDER BY cnt DESC "
-            "LIMIT 50"
-        )
-        dupes = cur.fetchall()
-        cur.close()
+        dupes = _fetch_duplicate_rows(conn, max_groups=DUPLICATE_PLAN_GROUP_LIMIT)
         conn.close()
 
         total_extra = sum(d["cnt"] - 1 for d in dupes)
+        plan = build_duplicate_cleanup_plan(dupes, max_groups=DUPLICATE_PLAN_GROUP_LIMIT)
+        cleanup_gate = _duplicate_cleanup_gate(dupes)
+
         return {
             "check": "duplicate_vectors",
             "status": "warn" if dupes else "ok",
@@ -145,6 +837,8 @@ def check_duplicate_vectors() -> Dict:
                 }
                 for d in dupes[:10]
             ],
+            "cleanup_plan": plan,
+            "cleanup_gate": cleanup_gate,
         }
     except Exception as e:
         return {"check": "duplicate_vectors", "status": "error", "error": str(e)}
@@ -156,59 +850,38 @@ def check_insight_quality() -> Dict:
         conn = _db_connect("law_firm_data")
         cur = conn.cursor(dictionary=True)
 
-        # Total insights
-        cur.execute("SELECT COUNT(*) AS total FROM legal_insights")
-        total = cur.fetchone()["total"]
-
-        # Degraded
-        cur.execute("SELECT COUNT(*) AS cnt FROM legal_insights WHERE is_degraded = 1")
-        degraded = cur.fetchone()["cnt"]
-
-        # Too short
         cur.execute(
-            "SELECT COUNT(*) AS cnt FROM legal_insights "
-            "WHERE insight_text IS NOT NULL AND CHAR_LENGTH(insight_text) < %s "
-            "AND is_degraded = 0",
-            (MIN_INSIGHT_LEN,)
+            "SELECT id, insight_text, COALESCE(is_degraded, 0) AS is_degraded "
+            "FROM legal_insights"
         )
-        too_short = cur.fetchone()["cnt"]
-
-        # Empty
-        cur.execute(
-            "SELECT COUNT(*) AS cnt FROM legal_insights "
-            "WHERE insight_text IS NULL OR insight_text = ''"
-        )
-        empty = cur.fetchone()["cnt"]
-
-        # Boilerplate patterns
-        boilerplate_patterns = [
-            "判決連結：\n",
-            "摘要失敗",
-            "timeout",
-            "系統降級回覆",
-            "無法擷取",
-        ]
-        boilerplate_count = 0
-        for pat in boilerplate_patterns:
-            cur.execute(
-                "SELECT COUNT(*) AS cnt FROM legal_insights "
-                "WHERE insight_text LIKE %s AND is_degraded = 0",
-                (f"%{pat}%",)
-            )
-            boilerplate_count += cur.fetchone()["cnt"]
+        rows = cur.fetchall()
 
         cur.close()
         conn.close()
 
-        issues = degraded + too_short + empty + boilerplate_count
+        total = len(rows)
+        reasons = Counter()
+        issue_ids = []
+        for row in rows:
+            bad, reason = _is_low_quality_insight(
+                row.get("insight_text") or "",
+                bool(row.get("is_degraded")),
+            )
+            if bad:
+                reasons[reason] += 1
+                issue_ids.append(row.get("id"))
+
+        issues = sum(reasons.values())
         return {
             "check": "insight_quality",
             "status": "warn" if issues > 0 else "ok",
             "total_insights": total,
-            "degraded": degraded,
-            "too_short": too_short,
-            "empty": empty,
-            "boilerplate": boilerplate_count,
+            "degraded": reasons.get("degraded_marker", 0) + reasons.get("degraded_short", 0),
+            "too_short": reasons.get("substantive_body_too_short", 0),
+            "empty": reasons.get("empty", 0),
+            "boilerplate": 0,
+            "issue_reasons": dict(reasons),
+            "sample_issue_ids": issue_ids[:10],
             "healthy": total - issues,
             "health_pct": round((total - issues) / max(total, 1) * 100, 1),
         }
@@ -299,12 +972,15 @@ def check_orphan_notes() -> Dict:
 
     notes_in_index = set(idx.get("notes", {}).keys())
 
-    # Find actual .md files in vault
-    notes_dir = vault / "20_Notes"
+    # Find actual .md files in the vault.  The index legitimately contains
+    # dashboard/wiki/index notes too, so comparing it only against 20_Notes
+    # creates false orphan alarms.
     actual_notes = set()
-    if notes_dir.is_dir():
-        for md in notes_dir.rglob("*.md"):
-            actual_notes.add(str(md.relative_to(vault)))
+    for md in vault.rglob("*.md"):
+        rel_parts = md.relative_to(vault).parts
+        if any(part in {".obsidian", ".trash", ".git", "node_modules", "__pycache__"} for part in rel_parts):
+            continue
+        actual_notes.add(str(md.relative_to(vault)))
 
     # Notes on disk but not indexed
     unindexed = actual_notes - notes_in_index
@@ -312,10 +988,24 @@ def check_orphan_notes() -> Dict:
     orphaned_index = notes_in_index - actual_notes
 
     # Notes indexed but with 0 chunks
-    zero_chunks = [
-        path for path, info in idx.get("notes", {}).items()
-        if info.get("chunks", 0) == 0 and path in actual_notes
-    ]
+    zero_chunks = []
+    zero_chunks_verified = 0
+    try:
+        conn = _db_connect("magi_brain")
+    except Exception:
+        conn = None
+    try:
+        for path, info in idx.get("notes", {}).items():
+            if info.get("chunks", 0) != 0 or path not in actual_notes:
+                continue
+            doc_key = str(info.get("doc_key") or "")
+            if doc_key and conn is not None and _vector_rows_for_doc_key(conn, doc_key) > 0:
+                zero_chunks_verified += 1
+                continue
+            zero_chunks.append(path)
+    finally:
+        if conn is not None:
+            conn.close()
 
     return {
         "check": "orphan_notes",
@@ -325,8 +1015,10 @@ def check_orphan_notes() -> Dict:
         "unindexed": len(unindexed),
         "orphaned_index_entries": len(orphaned_index),
         "zero_chunk_notes": len(zero_chunks),
+        "zero_chunk_verified_in_db": zero_chunks_verified,
         "sample_unindexed": sorted(unindexed)[:5],
         "sample_orphaned": sorted(orphaned_index)[:5],
+        "sample_zero_chunk": sorted(zero_chunks)[:5],
     }
 
 
@@ -436,6 +1128,14 @@ def _format_report_md(results: List[Dict]) -> str:
         if check == "duplicate_vectors":
             lines.append(f"- 重複群組: {r.get('duplicate_groups', 0)}")
             lines.append(f"- 多餘條目: {r.get('total_extra_entries', 0)}")
+            plan = r.get("cleanup_plan") or {}
+            if plan:
+                lines.append(f"- 清理計畫（dry-run）: {plan.get('groups_planned', 0)} 組，預估刪除 {plan.get('estimated_delete_documents', 0)} 筆")
+            gate = r.get("cleanup_gate") or {}
+            if gate:
+                lines.append(f"- 清理閘門: {gate.get('status', 'unknown')}")
+                if gate.get("reason"):
+                    lines.append(f"  - 原因: {gate.get('reason')}")
         elif check == "insight_quality":
             lines.append(f"- 總見解數: {r.get('total_insights', 0)}")
             lines.append(f"- 健康比例: {r.get('health_pct', 0)}%")
@@ -474,7 +1174,12 @@ def _summarize_check(r: Dict) -> str:
 
     if check == "duplicate_vectors":
         n = r.get("duplicate_groups", 0)
-        return f"{n} 組重複" if n else "無重複"
+        if not n:
+            return "無重複"
+        gate = (r.get("cleanup_gate") or {}).get("status", "")
+        if gate:
+            return f"{n} 組重複（gate: {gate}）"
+        return f"{n} 組重複"
     elif check == "insight_quality":
         return f"{r.get('health_pct', 0)}% 健康 ({r.get('total_insights', 0)} 筆)"
     elif check == "wiki_staleness":
@@ -601,12 +1306,36 @@ def main():
     parser.add_argument("--write-to-vault", action="store_true", help="將報告寫入 Obsidian vault")
     parser.add_argument("--quiet", action="store_true", help="安靜模式")
     parser.add_argument("--dry-run", action="store_true", help="同 --quick")
+    parser.add_argument("--cleanup-duplicates", action="store_true", help="執行 duplicate cleanup（預設 dry-run）")
+    parser.add_argument("--apply", action="store_true", help="搭配 --cleanup-duplicates 實際刪除 duplicate extra entries")
+    parser.add_argument("--backup-dir", default=str(DEFAULT_DUPLICATE_BACKUP_DIR), help="duplicate cleanup 備份路徑")
+    parser.add_argument("--max-groups", type=int, default=DUPLICATE_PLAN_GROUP_LIMIT, help="duplicate cleanup 最大處理群組數")
+    parser.add_argument("--no-faiss-rebuild", action="store_true", help="duplicate cleanup 後跳過 FAISS rebuild")
+    parser.add_argument("--no-auto-rollback", action="store_true", help="verify 失敗時不要自動 rollback")
     args = parser.parse_args()
 
     logging.basicConfig(
         level=logging.WARNING if args.quiet else logging.INFO,
         format="%(asctime)s [%(levelname)s] %(message)s",
     )
+
+    if args.cleanup_duplicates:
+        if args.apply and args.dry_run:
+            raise SystemExit("--apply 與 --dry-run 不能同時使用")
+        summary = cleanup_duplicate_vectors(
+            apply=bool(args.apply),
+            max_groups=int(max(1, args.max_groups)),
+            backup_dir=Path(args.backup_dir),
+            rebuild_faiss=not args.no_faiss_rebuild,
+            auto_rollback=not args.no_auto_rollback,
+            quiet=args.quiet,
+        )
+        if not args.quiet:
+            print(json.dumps(summary, ensure_ascii=False, indent=2))
+            print(f"cleanup report: {CLEANUP_REPORT_PATH}")
+        if args.apply and not summary.get("verified"):
+            raise SystemExit(2)
+        return
 
     lint(
         quick=args.quick or args.dry_run,

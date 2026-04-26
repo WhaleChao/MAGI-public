@@ -67,6 +67,36 @@ def test_preserves_case_number_from_source():
     assert "case_numbers_missing" in r_bad["reasons"]
 
 
+def test_ape_appends_verbatim_case_number_to_english_output(monkeypatch):
+    from skills.translator import _apple_post_edit as ape
+
+    monkeypatch.setattr(
+        ape,
+        "_apple_translate",
+        lambda *a, **k: {
+            "success": True,
+            "provider": "apple_translation",
+            "text": "The original lawsuit No. 000024 of the 114th year is pending.",
+        },
+    )
+    monkeypatch.setattr(
+        ape,
+        "_run_local_llm",
+        lambda *a, **k: "The case is currently pending before this court.",
+    )
+
+    result = ape.translate_with_ape(
+        "本院114年度原訴字第000024號案現正審理中。",
+        source_lang="zh-Hant",
+        target_lang="en",
+    )
+
+    assert result["success"] is True
+    assert result["degraded"] is False
+    assert "114年度原訴字第000024號" in result["text"]
+    assert result["validator"]["valid"] is True
+
+
 def test_detects_repetition_runaway():
     src = "A"
     baseline = "pay the plaintiff"

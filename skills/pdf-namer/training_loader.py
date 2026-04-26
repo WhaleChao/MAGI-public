@@ -11,7 +11,9 @@ import os
 import sys
 import logging
 import time
-from typing import Dict, List, Optional, Tuple
+import hashlib
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger("pdf-namer-loader")
 
@@ -22,11 +24,11 @@ if _MAGI_ROOT not in sys.path:
 from api.runtime_paths import get_orch_dir
 
 # ── DB Config ──
-DB_HOST = os.environ.get("OSC_DB_HOST", os.environ.get("MAGI_REMOTE_DB_HOST", "127.0.0.1"))
-DB_USER = os.environ.get("OSC_DB_USER", os.environ.get("DB_USER", "casper_service"))
-DB_PASS = os.environ.get("OSC_DB_PASSWORD", os.environ.get("DB_PASSWORD", ""))
-DB_NAME = "law_firm_data"
+DB_NAME_DEFAULT = "law_firm_data"
+_RULES_BUNDLE_SCHEMA_VERSION = 1
 _DB_FAILURE_UNTIL = 0.0
+_DB_FALLBACK_REASON = "init"
+_ENV_BOOTSTRAPPED = False
 _RULES_STATUS: Dict[str, object] = {
     "source": "unavailable",
     "degraded": True,
@@ -54,6 +56,122 @@ def _truthy(value: str) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _bootstrap_runtime_credentials() -> None:
+    """Load .env and resolve keychain-backed secrets for standalone scripts."""
+    global _ENV_BOOTSTRAPPED
+    if _ENV_BOOTSTRAPPED:
+        return
+    _ENV_BOOTSTRAPPED = True
+    if not _truthy(os.environ.get("MAGI_PDF_NAMER_LOAD_DOTENV", "1")):
+        return
+    try:
+        from dotenv import load_dotenv as _load_dotenv
+
+        _load_dotenv(os.path.join(_MAGI_ROOT, ".env"), override=False)
+    except Exception:
+        logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 64, exc_info=True)
+    try:
+        from skills.ops.keychain_manager import resolve_env_keychain
+
+        resolve_env_keychain()
+    except Exception:
+        logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 70, exc_info=True)
+
+
+def _get_rules_bundle_path() -> str:
+    override = str(os.environ.get("MAGI_PDF_NAMER_RULES_BUNDLE_PATH", "") or "").strip()
+    if override:
+        return override
+    return os.path.join(SKILL_DIR, "db_rules_cache.json")
+
+
+def _rules_bundle_max_age_seconds() -> int:
+    days_raw = str(os.environ.get("MAGI_PDF_NAMER_RULES_BUNDLE_MAX_AGE_DAYS", "365") or "365").strip()
+    try:
+        days = max(1, int(days_raw))
+    except Exception:
+        days = 365
+    return days * 86400
+
+
+def _compute_rules_checksum(rules: List[Dict[str, Any]]) -> str:
+    payload = json.dumps(rules, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _build_rules_bundle(rules: List[Dict[str, Any]], generated_at: Optional[str] = None) -> Dict[str, Any]:
+    stamp = str(generated_at or datetime.now(timezone.utc).isoformat())
+    clean_rules = list(rules or [])
+    return {
+        "schema_version": _RULES_BUNDLE_SCHEMA_VERSION,
+        "generated_at": stamp,
+        "rules_count": len(clean_rules),
+        "checksum": _compute_rules_checksum(clean_rules),
+        "rules": clean_rules,
+    }
+
+
+def _parse_iso_datetime(value: Any) -> Optional[datetime]:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except Exception:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _read_rules_bundle() -> Tuple[List[Dict[str, Any]], bool, str]:
+    path = _get_rules_bundle_path()
+    if not os.path.exists(path):
+        return [], True, "bundled_cache_missing"
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+    except Exception:
+        return [], True, "bundled_cache_invalid_json"
+
+    # Backward compatibility: legacy cache was a plain rules list.
+    if isinstance(payload, list):
+        rules = payload
+        if not rules:
+            return [], True, "bundled_cache_legacy_empty"
+        try:
+            _cache_rules(rules)
+        except Exception:
+            logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 134, exc_info=True)
+        return list(rules), False, "bundled_cache_legacy_auto_migrated"
+
+    if not isinstance(payload, dict):
+        return [], True, "bundled_cache_schema_mismatch:not_object"
+
+    schema_version = int(payload.get("schema_version", -1) or -1)
+    if schema_version != _RULES_BUNDLE_SCHEMA_VERSION:
+        return [], True, f"bundled_cache_schema_mismatch:{schema_version}"
+
+    generated_at = _parse_iso_datetime(payload.get("generated_at"))
+    if generated_at is None:
+        return [], True, "bundled_cache_schema_mismatch:generated_at"
+
+    rules = payload.get("rules")
+    if not isinstance(rules, list):
+        return [], True, "bundled_cache_schema_mismatch:rules"
+
+    checksum = str(payload.get("checksum", "") or "").strip()
+    expected_checksum = _compute_rules_checksum(rules)
+    if not checksum or checksum != expected_checksum:
+        return [], True, "bundled_cache_checksum_mismatch"
+
+    age_sec = (datetime.now(timezone.utc) - generated_at).total_seconds()
+    if age_sec > _rules_bundle_max_age_seconds():
+        return list(rules), True, "bundled_cache_stale"
+
+    return list(rules), False, "bundled_cache_valid"
+
+
 def _update_rules_status(source: str, degraded: bool, reason: str = "", rules_count: int = 0):
     global _RULES_STATUS
     _RULES_STATUS = {
@@ -61,7 +179,7 @@ def _update_rules_status(source: str, degraded: bool, reason: str = "", rules_co
         "degraded": bool(degraded),
         "reason": reason or "",
         "rules_count": int(max(0, rules_count)),
-        "updated_at": __import__("datetime").datetime.now().isoformat(),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
     }
 
 
@@ -70,60 +188,115 @@ def get_doc_rules_status() -> Dict[str, object]:
     return dict(_RULES_STATUS)
 
 
+def _resolve_db_profile() -> Dict[str, Any]:
+    _bootstrap_runtime_credentials()
+    host = (
+        os.environ.get("OSC_DB_HOST")
+        or os.environ.get("MAGI_REMOTE_DB_HOST")
+        or os.environ.get("DB_HOST")
+        or "127.0.0.1"
+    )
+    user = os.environ.get("OSC_DB_USER") or os.environ.get("DB_USER") or "casper_service"
+    password = (
+        os.environ.get("OSC_DB_PASSWORD")
+        or os.environ.get("MAGI_REMOTE_DB_PASSWORD")
+        or os.environ.get("DB_PASSWORD")
+        or ""
+    )
+    db_name = (
+        os.environ.get("OSC_DB_NAME")
+        or os.environ.get("MAGI_REMOTE_DB_NAME")
+        or DB_NAME_DEFAULT
+    )
+    port_raw = (
+        os.environ.get("OSC_DB_PORT")
+        or os.environ.get("MAGI_REMOTE_DB_PORT")
+        or os.environ.get("DB_PORT")
+        or "3306"
+    )
+    try:
+        port = int(str(port_raw or "3306"))
+    except Exception:
+        port = 3306
+    return {
+        "host": str(host or "127.0.0.1"),
+        "user": str(user or "casper_service"),
+        "password": str(password or ""),
+        "database": str(db_name or DB_NAME_DEFAULT),
+        "port": max(1, int(port or 3306)),
+    }
+
+
 def _get_db_connection():
     """Get MariaDB connection with failover: remote → local socket → local TCP."""
-    global _DB_FAILURE_UNTIL
+    global _DB_FAILURE_UNTIL, _DB_FALLBACK_REASON
     if os.environ.get("MAGI_PDF_NAMER_DISABLE_DB_RULES", "0").strip().lower() in {"1", "true", "yes", "on"}:
-        _update_rules_status("cache", degraded=True, reason="db_rules_disabled")
         logger.warning("pdf-namer doc_rules DB access disabled; using cache fallback")
+        _DB_FALLBACK_REASON = "db_rules_disabled"
         return None
+    db_cfg = _resolve_db_profile()
     allow_empty_password = _truthy(os.environ.get("MAGI_PDF_NAMER_ALLOW_EMPTY_DB_PASSWORD", "0"))
-    if not str(DB_PASS or "").strip() and not allow_empty_password:
-        _update_rules_status("cache", degraded=True, reason="missing_db_credentials")
+    if not str(db_cfg.get("password") or "").strip() and not allow_empty_password:
         logger.warning("pdf-namer doc_rules DB credentials missing; using cache fallback")
+        _DB_FALLBACK_REASON = "missing_db_credentials"
         return None
     now = time.time()
     if _DB_FAILURE_UNTIL and now < _DB_FAILURE_UNTIL:
-        _update_rules_status("cache", degraded=True, reason="db_circuit_open")
+        _DB_FALLBACK_REASON = "db_circuit_open"
         return None
     import mysql.connector
 
     # Try TCP connection (remote or local via env)
-    hosts = [DB_HOST]
-    if DB_HOST != "127.0.0.1":
-        hosts.append("127.0.0.1")
-    for host in hosts:
+    host_ports: List[Tuple[str, int]] = [(str(db_cfg["host"]), int(db_cfg["port"]))]
+    if str(db_cfg["host"]) != "127.0.0.1":
+        host_ports.append(("127.0.0.1", int(os.environ.get("DB_PORT", "3306") or "3306")))
+    last_error: Optional[Exception] = None
+    for host, port in host_ports:
         try:
             conn = mysql.connector.connect(
                 host=host,
-                user=DB_USER,
-                password=DB_PASS,
-                database=DB_NAME,
+                port=port,
+                user=str(db_cfg["user"]),
+                password=str(db_cfg["password"]),
+                database=str(db_cfg["database"]),
                 connect_timeout=5,
             )
-            if host != DB_HOST:
+            if host != str(db_cfg["host"]):
                 logger.info("pdf-namer DB failover: using local DB (127.0.0.1)")
-            _update_rules_status("db", degraded=False, reason="connected")
+            _DB_FALLBACK_REASON = "connected"
             return conn
-        except Exception:
+        except Exception as exc:
+            last_error = exc
             continue
 
     # Final fallback: local unix socket (for dev/localhost)
     try:
         conn = mysql.connector.connect(
-            user=DB_USER or "ai",
-            password=DB_PASS,
-            database=DB_NAME,
+            user=str(db_cfg["user"] or "ai"),
+            password=str(db_cfg["password"]),
+            database=str(db_cfg["database"] or DB_NAME_DEFAULT),
             unix_socket="/tmp/mysql.sock",
             connect_timeout=5,
         )
-        _update_rules_status("db", degraded=False, reason="connected_via_socket")
+        _DB_FALLBACK_REASON = "connected_via_socket"
         return conn
     except Exception as e:
         _DB_FAILURE_UNTIL = time.time() + 300
-        _update_rules_status("cache", degraded=True, reason=f"db_connect_error:{type(e).__name__}")
-        logger.warning("pdf-namer doc_rules DB unavailable; cache fallback (%s)", e)
+        root = last_error or e
+        _DB_FALLBACK_REASON = f"db_connect_error:{type(root).__name__}"
+        logger.warning("pdf-namer doc_rules DB unavailable; bundled fallback (%s)", root)
         return None
+
+
+def _load_rules_via_bundled_source(db_reason: str = "") -> List[Dict]:
+    rules, degraded, bundle_reason = _read_rules_bundle()
+    source = "bundled_cache" if rules else "unavailable"
+    reasons = [str(x).strip() for x in (db_reason, bundle_reason) if str(x or "").strip()]
+    merged_reason = ";".join(dict.fromkeys(reasons))
+    _update_rules_status(source, degraded=bool(degraded), reason=merged_reason, rules_count=len(rules))
+    if rules:
+        logger.info("📋 從 bundled rules 載入 %d 筆 doc_rules", len(rules))
+    return rules
 
 
 def load_doc_rules_from_db(
@@ -143,12 +316,7 @@ def load_doc_rules_from_db(
     """
     conn = _get_db_connection()
     if not conn:
-        cached = _load_cached_rules()
-        if cached:
-            _update_rules_status("cache", degraded=True, reason=_RULES_STATUS.get("reason", "db_unavailable"), rules_count=len(cached))
-        else:
-            _update_rules_status("unavailable", degraded=True, reason=_RULES_STATUS.get("reason", "no_cache"), rules_count=0)
-        return cached
+        return _load_rules_via_bundled_source(_DB_FALLBACK_REASON or "db_unavailable")
     
     try:
         cursor = conn.cursor(dictionary=True)
@@ -186,36 +354,25 @@ def load_doc_rules_from_db(
         logger.error(f"❌ 查詢失敗: {e}")
         if conn:
             conn.close()
-        cached = _load_cached_rules()
-        if cached:
-            _update_rules_status("cache", degraded=True, reason=f"db_query_error:{type(e).__name__}", rules_count=len(cached))
-        else:
-            _update_rules_status("unavailable", degraded=True, reason=f"db_query_error:{type(e).__name__}", rules_count=0)
-        return cached
+        return _load_rules_via_bundled_source(f"db_query_error:{type(e).__name__}")
 
 
 def _cache_rules(rules: List[Dict]):
-    """Cache rules locally for offline use."""
-    cache_path = os.path.join(SKILL_DIR, "db_rules_cache.json")
+    """Persist local bundled rules with schema/version/checksum metadata."""
+    cache_path = _get_rules_bundle_path()
     try:
+        os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+        payload = _build_rules_bundle(list(rules or []))
         with open(cache_path, "w", encoding="utf-8") as f:
-            json.dump(rules, f, ensure_ascii=False, indent=2)
+            json.dump(payload, f, ensure_ascii=False, indent=2)
     except Exception as e:
         logger.warning(f"⚠️ 快取寫入失敗: {e}")
 
 
 def _load_cached_rules() -> List[Dict]:
-    """Load rules from local cache when DB is offline."""
-    cache_path = os.path.join(SKILL_DIR, "db_rules_cache.json")
-    if os.path.exists(cache_path):
-        try:
-            with open(cache_path, "r", encoding="utf-8") as f:
-                rules = json.load(f)
-            logger.info(f"📋 從本地快取載入 {len(rules)} 筆 doc_rules")
-            return rules
-        except Exception:
-            logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 138, exc_info=True)
-    return []
+    """Compatibility helper: return local bundled rules without status metadata."""
+    rules, _degraded, _reason = _read_rules_bundle()
+    return rules
 
 
 def build_db_enhanced_prompt(rules: List[Dict] = None) -> str:

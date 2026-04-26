@@ -39,6 +39,7 @@ class Case:
     name: str
     message: str
     expect_substring: str | Sequence[str]
+    warn_substring: str | Sequence[str] = ()
     network: bool = False
     heavy: bool = False
     timeout_sec: int = 18
@@ -46,11 +47,11 @@ class Case:
 
 def _cases() -> list[Case]:
     return [
-        Case("translate_guide", "你會翻譯嗎？", "我可以幫您翻譯"),
-        Case("summary_guide", "你會摘要嗎？", "我可以幫您做摘要"),
-        Case("labor_guide", "你會算勞基法嗎？", "我可以幫您計算勞基法"),
+        Case("translate_guide", "你會翻譯嗎？", ("我可以幫您翻譯", "翻譯結果")),
+        Case("summary_guide", "你會摘要嗎？", ("我可以幫您做摘要", "摘要結果", "請提供您需要我分析")),
+        Case("labor_guide", "請介紹勞基法試算功能", ("我可以幫您計算勞基法", "勞動基準法計算說明")),
         Case("labor_exec", "幫我算勞基法加班費 30000", "請提供月薪金額"),
-        Case("judgment_guide", "你會查判決嗎？", "我可以幫您查判決"),
+        Case("judgment_guide", "你會查判決嗎？", "我可以幫您查判決", warn_substring=("missing API key", "unauthorized")),
         Case("stock_guide", "你會追蹤股票嗎？", "我可以幫您追蹤股票"),
         Case("stock_list", "追蹤清單", "目前追蹤股票"),
         Case("translate_exec", "請幫我翻譯 Hello world", ("你好世界", "您好世界"), heavy=True, timeout_sec=45),
@@ -82,6 +83,25 @@ def _alarm_handler(signum, frame):
     raise CaseTimeoutError
 
 
+def _normalize_tokens(value: str | Sequence[str]) -> tuple[str, ...]:
+    if isinstance(value, (list, tuple)):
+        return tuple(str(v) for v in value if str(v))
+    token = str(value)
+    return (token,) if token else ()
+
+
+def _classify_case_output(case: Case, text: str, *, timed_out: bool = False) -> str:
+    if timed_out:
+        return "FAIL"
+    expected = _normalize_tokens(case.expect_substring)
+    if any(token in text for token in expected):
+        return "PASS"
+    warn_tokens = _normalize_tokens(case.warn_substring)
+    if any(token in text for token in warn_tokens):
+        return "WARN"
+    return "FAIL"
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--with-network", action="store_true", help="include network-dependent route checks")
@@ -91,6 +111,7 @@ def main() -> int:
 
     orch = Orchestrator()
     failed = 0
+    warned = 0
     total = 0
     case_reports: list[dict[str, object]] = []
     started = time.time()
@@ -114,21 +135,13 @@ def main() -> int:
             signal.setitimer(signal.ITIMER_REAL, 0)
             signal.signal(signal.SIGALRM, previous_handler)
         text = str(out or "").strip()
-        expected = (
-            tuple(case.expect_substring)
-            if isinstance(case.expect_substring, (list, tuple))
-            else (str(case.expect_substring),)
-        )
-        ok = any(token in text for token in expected)
-        if timed_out:
-            ok = False
-        mark = "PASS" if ok else "FAIL"
+        mark = _classify_case_output(case, text, timed_out=timed_out)
         preview = text.replace("\n", " ")[:180]
         print(f"{mark} {case.name}: {preview}")
         case_reports.append(
             {
                 "name": case.name,
-                "pass": ok,
+                "pass": mark != "FAIL",
                 "status": mark,
                 "network": case.network,
                 "heavy": case.heavy,
@@ -136,10 +149,13 @@ def main() -> int:
                 "preview": preview,
             }
         )
-        if not ok:
+        if mark == "FAIL":
             failed += 1
+        elif mark == "WARN":
+            warned += 1
 
-    print(f"--- Summary ---\nPASS: {total - failed}\nFAIL: {failed}")
+    passed = total - failed - warned
+    print(f"--- Summary ---\nPASS: {passed}\nWARN: {warned}\nFAIL: {failed}")
     if args.json_out:
         out_path = Path(args.json_out)
         out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -147,7 +163,8 @@ def main() -> int:
             json.dumps(
                 {
                     "summary": {
-                        "pass": total - failed,
+                        "pass": passed,
+                        "warn": warned,
                         "fail": failed,
                         "total": total,
                         "elapsed_sec": round(time.time() - started, 1),

@@ -39,6 +39,7 @@ _RUNTIME_DIR = _MAGI_ROOT / ".runtime" / "research_brief"
 _NS_DIR = _RUNTIME_DIR / "namespaces"
 _SEEN_PATH = _RUNTIME_DIR / "seen.json"
 _LAST_DIGEST_PATH = _RUNTIME_DIR / "last_digest.jsonl"
+_INGEST_SEEN_PATH = _RUNTIME_DIR / "ingest_seen.json"
 _SEEDS_DIR = _THIS.parent / "seeds"
 
 _SEEN_TTL_DAYS = int(os.environ.get("RESEARCH_BRIEF_DEDUPE_TTL_DAYS", "60"))
@@ -169,6 +170,17 @@ def _save_seen(seen: Dict[str, Any]) -> None:
     _atomic_write_json(_SEEN_PATH, seen)
 
 
+def _load_ingest_seen() -> Dict[str, Any]:
+    data = _load_json(_INGEST_SEEN_PATH, {})
+    if not isinstance(data, dict):
+        return {}
+    return data
+
+
+def _save_ingest_seen(seen: Dict[str, Any]) -> None:
+    _atomic_write_json(_INGEST_SEEN_PATH, seen)
+
+
 def _seen_timestamp(entry: Any) -> float:
     """Normalize entry (legacy float or new dict) → timestamp."""
     if isinstance(entry, (int, float)):
@@ -188,6 +200,10 @@ def _seen_content_hash(entry: Any) -> str:
 def _prune_seen(seen: Dict[str, Any]) -> Dict[str, Any]:
     cutoff = time.time() - (_SEEN_TTL_DAYS * 86400)
     return {k: v for k, v in seen.items() if _seen_timestamp(v) >= cutoff}
+
+
+def _ingest_key(namespace: str, brief_id: str, content_hash: str) -> str:
+    return f"{namespace}|{brief_id}|{content_hash}"
 
 
 # ───────── keyword filter ─────────
@@ -383,21 +399,31 @@ def _ingest_entries_to_memory(namespace: str, entries: List[Dict[str, Any]]) -> 
         logger.debug("mem_bridge unavailable: %s", e)
         return 0
 
+    ingest_seen = _prune_seen(_load_ingest_seen())
     payloads: List[Dict[str, Any]] = []
+    accepted_keys: List[str] = []
     for e in entries:
         title = str(e.get("title") or "").strip()
         snippet = str(e.get("raw") or e.get("snippet") or "").strip()
         if not title and not snippet:
             continue
+        brief_id = str(e.get("_hash") or _hash_url(str(e.get("url") or f"{namespace}:{title}")))
+        content_hash = _hash_content(title, snippet)
+        ikey = _ingest_key(namespace, brief_id, content_hash)
+        if ikey in ingest_seen:
+            continue
         text = f"{title}\n\n{snippet}"[:4000]
+        # Keep provenance stable for idempotent source signatures.
+        # Do not include volatile timestamps such as ingested_at here.
         meta = {
             "namespace": namespace,
             "url": e.get("url"),
             "source_name": e.get("source_name"),
             "lang_hint": e.get("lang_hint"),
             "published": e.get("published"),
+            "brief_id": brief_id,
+            "content_hash": content_hash,
             "trust": "external_source",
-            "ingested_at": datetime.now(timezone.utc).isoformat(),
         }
         # mem_bridge.remember_batch expects {"content", "source", "metadata"}
         payloads.append({
@@ -405,11 +431,16 @@ def _ingest_entries_to_memory(namespace: str, entries: List[Dict[str, Any]]) -> 
             "source": f"research-brief:{namespace}",
             "metadata": meta,
         })
+        accepted_keys.append(ikey)
 
     if not payloads:
         return 0
     try:
         result = remember_batch(payloads)
+        now = time.time()
+        for key in accepted_keys:
+            ingest_seen[key] = {"ts": now}
+        _save_ingest_seen(ingest_seen)
         if isinstance(result, dict):
             return int(result.get("inserted", len(payloads)))
         if isinstance(result, int):

@@ -74,6 +74,24 @@ HIGH_VALUE_FOLDERS = {
     "13_電子筆錄",
 }
 MIN_EXTRACTED_CHARS = int(os.environ.get("MAGI_INGEST_MIN_CHARS", "50"))
+_KNOWN_MALFORMED_PDF_HINTS = (
+    "may not be a pdf file",
+    "malformed",
+    "all pdf extractors failed",
+    "no_extractable_text_after_pdftotext_fitz_pdfplumber_ocr",
+    "[pdf 提取失敗",
+    "pdf 提取失敗",
+    "cannot find xref",
+)
+
+
+def _is_known_malformed_pdf_skip(path: Path, error_text: str) -> bool:
+    if path.suffix.lower() != ".pdf":
+        return False
+    msg = str(error_text or "").strip().lower()
+    if not msg:
+        return False
+    return any(token in msg for token in _KNOWN_MALFORMED_PDF_HINTS)
 
 
 # ── Vault Management ───────────────────────────────────────────────
@@ -645,6 +663,8 @@ def task_ingest_source(
     skipped = 0
     short_text = 0
     errors = []
+    warnings = []
+    malformed_skipped = 0
     notes_created = []
     t_start = time.time()
 
@@ -679,16 +699,41 @@ def task_ingest_source(
         try:
             result = extract_text(f)
         except BaseException as e:
+            if _is_known_malformed_pdf_skip(f, str(e)):
+                logging.getLogger(__name__).warning(
+                    "obsidian_ingest: skip malformed pdf %s: %s", relpath, e
+                )
+                warnings.append({
+                    "path": relpath,
+                    "warning": f"{type(e).__name__}: {e}",
+                    "kind": "malformed_pdf",
+                })
+                malformed_skipped += 1
+                skipped += 1
+                continue
             logging.getLogger(__name__).warning(
                 "obsidian_ingest: skip unreadable file %s: %s", relpath, e
             )
             errors.append({"path": relpath, "error": f"{type(e).__name__}: {e}"})
             continue
         if not result.get("success"):
+            err_msg = result.get("error", "extraction failed")
+            if _is_known_malformed_pdf_skip(f, str(err_msg)):
+                logging.getLogger(__name__).warning(
+                    "obsidian_ingest: malformed pdf skipped %s: %s", relpath, err_msg
+                )
+                warnings.append({
+                    "path": relpath,
+                    "warning": str(err_msg),
+                    "kind": "malformed_pdf",
+                })
+                malformed_skipped += 1
+                skipped += 1
+                continue
             logging.getLogger(__name__).warning(
-                "obsidian_ingest: extraction failed %s: %s", relpath, result.get("error", "")
+                "obsidian_ingest: extraction failed %s: %s", relpath, err_msg
             )
-            errors.append({"path": relpath, "error": result.get("error", "extraction failed")})
+            errors.append({"path": relpath, "error": err_msg})
             continue
 
         text = result["text"]
@@ -829,7 +874,7 @@ def task_ingest_source(
 
     elapsed = time.time() - t_start
     print(f"[ingest_source] 完成！耗時 {elapsed:.1f}s  "
-          f"匯入={processed} 跳過={skipped} 文字太短={short_text} 錯誤={len(errors)} "
+          f"匯入={processed} 跳過={skipped} 文字太短={short_text} 警告={len(warnings)} 錯誤={len(errors)} "
           f"folder排除={filtered_by_folder}", flush=True)
 
     return {
@@ -840,10 +885,13 @@ def task_ingest_source(
         "filtered_by_folder": filtered_by_folder,
         "processed": processed,
         "skipped": skipped,
+        "malformed_pdf_skipped": malformed_skipped,
         "short_text_skipped": short_text,
+        "warnings": len(warnings),
         "errors": len(errors),
         "elapsed_sec": round(elapsed, 1),
         "notes_created": notes_created[:20],
+        "warning_details": warnings[:10] if warnings else [],
         "error_details": errors[:10] if errors else [],
         "include_folders": sorted(_include_set) if _include_set else None,
         "exclude_folders": sorted(_exclude_set) if _exclude_set else None,

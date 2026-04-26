@@ -122,3 +122,57 @@ def test_stage1_regex_success_stores_post_write_mtime(tmp_path, monkeypatch):
     assert second["processed"] == 0
     assert second["skipped"] == 1
     assert state["completed"][str(pdf)]["mtime"] == str(pdf.stat().st_mtime)
+
+
+def test_build_backfill_plan_reports_no_boundary_and_mtime_backlog(tmp_path, monkeypatch):
+    api_pkg = types.ModuleType("api")
+    mapper_mod = types.ModuleType("api.case_path_mapper")
+    mapper_mod.preferred_case_roots = lambda include_closed=False: []
+    monkeypatch.setitem(sys.modules, "api", api_pkg)
+    monkeypatch.setitem(sys.modules, "api.case_path_mapper", mapper_mod)
+
+    mod = _load_weekend_module()
+
+    done_pdf = tmp_path / "done.pdf"
+    done_pdf.write_bytes(b"%PDF-1.4\n%%EOF\n")
+    backlog_pdf = tmp_path / "backlog.pdf"
+    backlog_pdf.write_bytes(b"%PDF-1.4\n%%EOF\n")
+    changed_pdf = tmp_path / "changed.pdf"
+    changed_pdf.write_bytes(b"%PDF-1.4\n%%EOF\n")
+
+    state = {
+        "completed": {
+            str(done_pdf): {
+                "mtime": str(done_pdf.stat().st_mtime),
+                "stage1": True,
+                "stage1_bookmarks": 4,
+                "pages": 12,
+            },
+            str(backlog_pdf): {
+                "mtime": str(backlog_pdf.stat().st_mtime),
+                "stage1": True,
+                "stage1_bookmarks": 0,
+                "pages": 20,
+                "no_boundary": True,
+            },
+            str(changed_pdf): {
+                "mtime": "0.0",
+                "stage1": True,
+                "stage1_bookmarks": 1,
+                "pages": 9,
+            },
+        },
+        "vision_done": {
+            str(done_pdf): {"mtime": str(done_pdf.stat().st_mtime), "added": 0},
+        },
+    }
+
+    plan = mod.build_backfill_plan([done_pdf, backlog_pdf, changed_pdf], state, sample_limit=10)
+
+    assert plan["total_pdfs"] == 3
+    assert plan["stage1_pending_count"] == 1
+    assert str(changed_pdf) in plan["samples"]["stage1_pending"]
+    assert plan["no_boundary_backlog_count"] == 1
+    assert str(backlog_pdf) in plan["samples"]["no_boundary_backlog"]
+    assert plan["vision_pending_count"] == 1
+    assert str(backlog_pdf) in plan["samples"]["vision_pending"]

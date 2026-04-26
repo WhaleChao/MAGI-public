@@ -97,7 +97,15 @@ def _normalize_name(name: str) -> str:
 def _to_traditional(text: str) -> str:
     conv = _opencc_s2t()
     if not conv:
-        return str(text or "")
+        # Fallback for environments without opencc (common surname/orthography variants).
+        fallback_map = {
+            "余": "餘",
+            "台": "臺",
+            "启": "啟",
+            "泽": "澤",
+            "广": "廣",
+        }
+        return "".join(fallback_map.get(ch, ch) for ch in str(text or ""))
     try:
         return conv.convert(str(text or ""))
     except Exception:

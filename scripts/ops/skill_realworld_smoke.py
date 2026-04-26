@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import subprocess
@@ -9,7 +10,7 @@ import tempfile
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, List, Optional
 
 import fitz
 
@@ -300,11 +301,28 @@ def write_reports(summary: dict[str, Any]) -> tuple[Path, Path]:
     return json_path, md_path
 
 
-def main() -> int:
+def _parse_args(argv: Optional[List[str]] = None):
+    parser = argparse.ArgumentParser(
+        description="Run MAGI real-world skill smoke matrix and write JSON/Markdown reports."
+    )
+    parser.add_argument(
+        "--fail-on-warn",
+        action="store_true",
+        help="Treat WARN as failure (exit non-zero when WARN exists).",
+    )
+    return parser.parse_args(argv)
+
+
+def main(argv: Optional[List[str]] = None) -> int:
+    args = _parse_args(argv)
     summary = run_matrix()
     json_path, md_path = write_reports(summary)
     print(json.dumps({**summary, "json_report": str(json_path), "md_report": str(md_path)}, ensure_ascii=False, indent=2))
-    return 0 if summary["fail_count"] == 0 else 1
+    if summary["fail_count"] > 0:
+        return 1
+    if args.fail_on_warn and summary["warn_count"] > 0:
+        return 2
+    return 0
 
 
 if __name__ == "__main__":

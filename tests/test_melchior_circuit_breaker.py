@@ -88,6 +88,36 @@ class TestCircuitBreaker(unittest.TestCase):
         )
         self.assertEqual(resolved, "Qwen2.5-Coder-14B-Instruct-4bit")
 
+    def test_chat_omlx_skips_unavailable_model_on_non_default_base(self):
+        """Non-default oMLX bases should fail locally when the requested model is absent."""
+        local_circuit = {
+            "consecutive_failures": 0,
+            "tripped_at": 0.0,
+            "last_error": "",
+            "cooldown_level": 0,
+            "effective_cooldown": self.mc.CIRCUIT_BREAKER_COOLDOWN_SEC,
+        }
+
+        with (
+            patch.object(self.mc, "_omlx_service_available", return_value=True),
+            patch.object(
+                self.mc,
+                "list_omlx_models_for_base",
+                return_value=["Phi-4-mini-instruct-4bit"],
+            ),
+            patch.object(self.mc, "_post_json") as post_json,
+        ):
+            result = self.mc._chat_omlx(
+                "extract text",
+                model="GLM-OCR-bf16",
+                base_url="http://127.0.0.1:8082",
+                circuit=local_circuit,
+            )
+
+        self.assertFalse(result["success"])
+        self.assertIn("omlx_model_unavailable:GLM-OCR-bf16", result["error"])
+        post_json.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

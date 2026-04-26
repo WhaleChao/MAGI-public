@@ -15,6 +15,7 @@ import json
 import os
 import sys
 import time
+from collections import defaultdict
 from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parents[2]
@@ -79,6 +80,8 @@ SUITE = [
     },
 ]
 
+_CRITICAL_VALIDATOR_REASONS = {"numbers_missing", "case_numbers_missing"}
+
 
 def _term_hit_rate(text: str, expected: list) -> float:
     if not expected:
@@ -129,6 +132,64 @@ def _bench_ape(item):
         "validator_reasons": (r.get("validator") or {}).get("reasons"),
         "term_hit_rate": _term_hit_rate(r.get("text") or "", item["expect_terms_en"]),
     }
+
+
+def _evaluate_case_results(rows: list[dict]) -> list[dict]:
+    """Evaluate per-case health so top-level success can't hide hard failures."""
+    grouped: dict[str, dict] = defaultdict(
+        lambda: {
+            "id": "",
+            "ok": True,
+            "degraded": False,
+            "fail_reasons": [],
+            "warning_reasons": [],
+        }
+    )
+
+    def _append_unique(target: list[str], value: str) -> None:
+        if value and value not in target:
+            target.append(value)
+
+    for row in rows:
+        case_id = str(row.get("id") or "")
+        if not case_id:
+            continue
+        stage = str(row.get("stage") or "")
+        entry = grouped[case_id]
+        entry["id"] = case_id
+
+        text = str(row.get("text") or "").strip()
+        provider = str(row.get("provider") or "").strip()
+        stage_success = row.get("success")
+        validator_reasons = set(row.get("validator_reasons") or [])
+        critical_reasons = sorted(validator_reasons & _CRITICAL_VALIDATOR_REASONS)
+
+        is_empty = not text
+        provider_failed = provider.endswith("_failed") or stage_success is False
+
+        if stage == "apple_ape" and is_empty:
+            _append_unique(entry["fail_reasons"], "apple_ape_empty_output")
+        elif is_empty:
+            _append_unique(entry["warning_reasons"], f"{stage}_empty_output")
+
+        if stage == "apple_ape" and provider_failed:
+            _append_unique(entry["fail_reasons"], "apple_ape_provider_failed")
+        elif provider_failed:
+            _append_unique(entry["warning_reasons"], f"{stage}_provider_failed")
+
+        for reason in critical_reasons:
+            _append_unique(entry["fail_reasons"], reason)
+
+        if bool(row.get("degraded")):
+            _append_unique(entry["warning_reasons"], f"{stage}_degraded")
+
+        entry["degraded"] = bool(entry["degraded"] or row.get("degraded"))
+
+    results: list[dict] = []
+    for _, item in sorted(grouped.items(), key=lambda kv: kv[0]):
+        item["ok"] = len(item["fail_reasons"]) == 0
+        results.append(item)
+    return results
 
 
 def _write_static_result(summary: dict) -> None:
@@ -197,8 +258,15 @@ def main() -> int:
     ape_hit = sum(r["term_hit_rate"] for r in rows if r["stage"] == "apple_ape") / len(SUITE)
     ape_degraded = sum(1 for r in rows if r["stage"] == "apple_ape" and r.get("degraded"))
 
+    case_results = _evaluate_case_results(rows)
+    case_fail_count = sum(1 for item in case_results if not item.get("ok"))
+    case_degraded_count = sum(1 for item in case_results if item.get("degraded"))
+    has_failures = case_fail_count > 0
+
     summary = {
-        "success": True,
+        "success": not has_failures,
+        "ok": not has_failures,
+        "has_failures": has_failures,
         "cases": len(SUITE),
         "avg_term_hit_rate": {
             "gtx_primary": round(gtx_hit, 3),
@@ -207,6 +275,9 @@ def main() -> int:
         },
         "ape_degraded_count": ape_degraded,
         "ape_beats_baseline": ape_hit >= base_hit,
+        "case_fail_count": case_fail_count,
+        "case_degraded_count": case_degraded_count,
+        "case_results": case_results,
         "rows": rows,
     }
     print(json.dumps(summary, ensure_ascii=False, indent=2))
@@ -215,7 +286,11 @@ def main() -> int:
     _write_static_result(summary)
 
     # Fail cron if APE regressed vs baseline or degraded >50% of the suite.
-    regressed = not summary["ape_beats_baseline"] or ape_degraded > len(SUITE) // 2
+    regressed = (
+        bool(summary.get("has_failures"))
+        or not summary["ape_beats_baseline"]
+        or ape_degraded > len(SUITE) // 2
+    )
     if regressed:
         _send_dc_alert(summary)
         return 1

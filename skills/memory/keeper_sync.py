@@ -9,6 +9,7 @@ import time
 import json
 import logging
 import threading
+import hashlib
 import mysql.connector
 import requests
 
@@ -93,6 +94,35 @@ def _ensure_schema(conn):
         logger.warning(f"Schema migration skipped: {e}")
 
 
+def _row_md5(content: str) -> str:
+    return hashlib.md5((content or "").encode("utf-8", errors="replace")).hexdigest()
+
+
+def _already_synced_in_target(cursor, record: dict) -> bool:
+    """
+    Idempotency guard for sync daemon.
+
+    1) If same id/content/source already exists in target, treat as already synced.
+       (This happens when local backup and keeper share the same DB.)
+    2) Else if same content hash + same source already exists (different id), skip reinsert.
+    """
+    rid = int(record.get("id") or 0)
+    content = str(record.get("content") or "")
+    source = str(record.get("source") or "")
+    if rid > 0:
+        cursor.execute(
+            "SELECT 1 FROM documents WHERE id = %s AND source = %s AND MD5(content) = %s LIMIT 1",
+            (rid, source, _row_md5(content)),
+        )
+        if cursor.fetchone():
+            return True
+    cursor.execute(
+        "SELECT 1 FROM documents WHERE source = %s AND MD5(content) = %s LIMIT 1",
+        (source, _row_md5(content)),
+    )
+    return cursor.fetchone() is not None
+
+
 def sync_to_keeper():
     """
     Sync pending records from SQLite backup to Keeper.
@@ -120,13 +150,18 @@ def sync_to_keeper():
                 content = record['content']
                 source = str(record['source'] or "")
 
+                # Idempotency first: avoid duplicate reinsertion.
+                if _already_synced_in_target(cursor, record):
+                    synced_ids.append(record['id'])
+                    continue
+
                 # Generate embedding
                 embedding = get_embedding(content)
 
                 # Insert document
                 cursor.execute(
-                    "INSERT INTO documents (content, source) VALUES (%s, %s)",
-                    (content, source)
+                    "INSERT INTO documents (content, source, synced) VALUES (%s, %s, %s)",
+                    (content, source, 1)
                 )
                 doc_id = cursor.lastrowid
 

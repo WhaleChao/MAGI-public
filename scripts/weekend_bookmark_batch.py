@@ -43,6 +43,7 @@ STATE_FILE = MAGI_ROOT / ".agent" / "bookmark_batch_state.json"
 VISION_BUDGET_SECONDS = int(os.environ.get("BOOKMARK_VISION_BUDGET_SEC", "28800"))  # 8 hours default
 VISION_PER_PAGE_TIMEOUT = 30  # seconds per vision call
 TARGET_SUBDIRS = ["06_閱卷資料"]
+BACKFILL_PLAN_PATH = MAGI_ROOT / ".runtime" / "bookmark_backfill_plan_latest.json"
 
 # ── Imports ───────────────────────────────────────────────────────────────────
 try:
@@ -276,6 +277,58 @@ def _is_stage1_no_hit_result(result: Any) -> bool:
     return zero_bookmarks and toc_empty
 
 
+def build_backfill_plan(pdfs: list[Path], state: dict, sample_limit: int = 20) -> dict:
+    """Build a non-destructive backfill plan from current state + file mtimes."""
+    completed = state.get("completed", {}) or {}
+    vision_done = state.get("vision_done", {}) or {}
+
+    stage1_pending = []
+    stage1_done = 0
+    no_boundary_backlog = []
+    vision_pending = []
+    stage1_skipped_with_bookmarks = 0
+
+    for pdf in pdfs:
+        key = str(pdf)
+        info = completed.get(key, {}) or {}
+        try:
+            mtime = str(pdf.stat().st_mtime)
+        except Exception:
+            continue
+
+        stage1_done_same_version = bool(info.get("stage1") and info.get("mtime") == mtime)
+        if stage1_done_same_version:
+            stage1_done += 1
+            if int(info.get("stage1_bookmarks", 0) or 0) >= 3:
+                stage1_skipped_with_bookmarks += 1
+        else:
+            stage1_pending.append(key)
+
+        if info.get("no_boundary") and info.get("mtime") == mtime:
+            no_boundary_backlog.append(key)
+
+        if stage1_done_same_version and int(info.get("pages", 0) or 0) >= 5:
+            vision_info = vision_done.get(key, {}) or {}
+            if vision_info.get("mtime") != mtime:
+                vision_pending.append(key)
+
+    plan = {
+        "generated_at": datetime.now().isoformat(),
+        "total_pdfs": len(pdfs),
+        "stage1_pending_count": len(stage1_pending),
+        "stage1_done_count": stage1_done,
+        "stage1_existing_bookmark_skip_estimate": stage1_skipped_with_bookmarks,
+        "no_boundary_backlog_count": len(no_boundary_backlog),
+        "vision_pending_count": len(vision_pending),
+        "samples": {
+            "stage1_pending": stage1_pending[:sample_limit],
+            "no_boundary_backlog": no_boundary_backlog[:sample_limit],
+            "vision_pending": vision_pending[:sample_limit],
+        },
+    }
+    return plan
+
+
 # ── Stage 2: Vision refinement ───────────────────────────────────────────────
 
 def stage2_vision(pdfs: list[Path], state: dict, gw) -> dict:
@@ -437,6 +490,17 @@ def main():
         default=0,
         help="Soft time budget for regex stage in minutes (0=no limit). Nightly runs should cap ~30.",
     )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Only output a backfill plan (no PDF writes, no oMLX restart).",
+    )
+    parser.add_argument(
+        "--plan-limit",
+        type=int,
+        default=20,
+        help="Number of sample paths per plan category.",
+    )
     args = parser.parse_args()
 
     started = time.time()
@@ -452,6 +516,20 @@ def main():
 
     if not pdfs:
         logger.info("No PDFs to process — done")
+        return
+
+    if args.dry_run:
+        plan = build_backfill_plan(pdfs, state, sample_limit=max(1, args.plan_limit))
+        BACKFILL_PLAN_PATH.parent.mkdir(parents=True, exist_ok=True)
+        BACKFILL_PLAN_PATH.write_text(json.dumps(plan, ensure_ascii=False, indent=2), encoding="utf-8")
+        logger.info("Dry-run backfill plan written: %s", BACKFILL_PLAN_PATH)
+        logger.info(
+            "Plan summary: total=%d stage1_pending=%d no_boundary=%d vision_pending=%d",
+            plan["total_pdfs"],
+            plan["stage1_pending_count"],
+            plan["no_boundary_backlog_count"],
+            plan["vision_pending_count"],
+        )
         return
 
     s1 = {"processed": 0, "bookmarks": 0, "skipped": 0, "no_boundary": 0, "errors": 0}

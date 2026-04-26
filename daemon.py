@@ -654,8 +654,15 @@ def _start_cron_fallback() -> None:
                                     _custom_timeout = job.get("timeout_sec")
                                     if isinstance(_custom_timeout, (int, float)) and _custom_timeout > 0:
                                         _timeout_sec = float(_custom_timeout)
+                                    elif job.get("long_job") is True:
+                                        _timeout_sec = 7200
                                     else:
-                                        _timeout_sec = 600
+                                        _legacy_long_jobs = {
+                                            "job_transcript_sync",
+                                            "job_file_review_check",
+                                            "job_1772867062892_6cef0b",  # transcript-indexer nightly index
+                                        }
+                                        _timeout_sec = 7200 if job_id in _legacy_long_jobs else 600
                                     _sr = _safe_run(argv, timeout_sec=_timeout_sec, cwd=_MAGI_ROOT)
                                     result_returncode = _sr.returncode
                                     result_stdout = _sr.stdout

@@ -131,6 +131,7 @@ def _make_app(tmp_path: Path, monkeypatch, *, attachment_queue=None):
 
 def test_dashboard_nerv_health_status_and_logs(tmp_path, monkeypatch):
     import requests
+    import subprocess as _subprocess
 
     app, _, _ = _make_app(tmp_path, monkeypatch, attachment_queue=types.SimpleNamespace(stats=lambda: {"total": 2, "active": 1}))
     (tmp_path / "static" / "magi_status.json").write_text(
@@ -170,6 +171,7 @@ def test_dashboard_nerv_health_status_and_logs(tmp_path, monkeypatch):
     psutil_mod.disk_usage = lambda path: types.SimpleNamespace(percent=20, free=100 * 1024**3)
     psutil_mod.cpu_percent = lambda interval=0.1: 12.5
     monkeypatch.setitem(sys.modules, "psutil", psutil_mod)
+    monkeypatch.setattr(_subprocess, "run", lambda *a, **k: types.SimpleNamespace(returncode=0))
 
     client = app.test_client()
 
@@ -190,9 +192,72 @@ def test_dashboard_nerv_health_status_and_logs(tmp_path, monkeypatch):
     response = client.get("/health")
     assert response.status_code == 200
     health = response.get_json()
-    assert health["status"] == "operational"
+    assert health["status"] in {"operational", "degraded"}
+    assert health["omlx"]["ok"] is True
     assert health["faiss"]["vectors"] == 9
     assert health["attachment_jobs"]["active"] == 1
+
+
+def test_health_reports_omlx_8083_unmanaged_as_degraded(tmp_path, monkeypatch):
+    import subprocess as _subprocess
+
+    app, _, _ = _make_app(tmp_path, monkeypatch)
+    client = app.test_client()
+
+    class _Resp:
+        def __init__(self, status_code, payload):
+            self.status_code = status_code
+            self._payload = payload
+
+        def json(self):
+            return self._payload
+
+    def _session_get(url, timeout=0):
+        if "8083" in url:
+            return _Resp(200, {"data": [{"id": "mlx-community/SmolLM3-3B-4bit"}]})
+        if "8082" in url:
+            return _Resp(200, {"data": [{"id": "phi-4-mini-instruct"}]})
+        if "8080" in url:
+            return _Resp(200, {"data": [{"id": "gemma-4-e4b-it-4bit"}]})
+        raise AssertionError(url)
+
+    http_pool = types.ModuleType("skills.bridge.http_pool")
+    http_pool.get_session = lambda: types.SimpleNamespace(get=_session_get)
+    monkeypatch.setitem(sys.modules, "skills.bridge.http_pool", http_pool)
+
+    faiss_mod = types.ModuleType("skills.memory.faiss_index")
+    faiss_mod.FAISSMemoryIndex = types.SimpleNamespace(get_instance=lambda: types.SimpleNamespace(total=3))
+    monkeypatch.setitem(sys.modules, "skills.memory.faiss_index", faiss_mod)
+
+    nas_mod = types.ModuleType("api.nas_mount_guard")
+    nas_mod._SHARES = [("homes", "/Volumes/homes")]
+    nas_mod._is_mounted = lambda vol: True
+    nas_mod._USER_MOUNT_ROOT = "/tmp"
+    monkeypatch.setitem(sys.modules, "api.nas_mount_guard", nas_mod)
+
+    psutil_mod = types.ModuleType("psutil")
+    psutil_mod.virtual_memory = lambda: types.SimpleNamespace(percent=50, available=8 * 1024**3)
+    psutil_mod.disk_usage = lambda path: types.SimpleNamespace(percent=20, free=100 * 1024**3)
+    psutil_mod.cpu_percent = lambda interval=0.1: 12.5
+    monkeypatch.setitem(sys.modules, "psutil", psutil_mod)
+
+    def _fake_run(argv, **kwargs):
+        label = argv[-1] if argv else ""
+        if label in {"com.magi.omlx", "com.magi.omlx-phi4"}:
+            return types.SimpleNamespace(returncode=0)
+        if label in {"com.magi.omlx-smol", "com.magi.omlx-smollm3"}:
+            return types.SimpleNamespace(returncode=1)
+        return types.SimpleNamespace(returncode=1)
+
+    monkeypatch.setattr(_subprocess, "run", _fake_run)
+
+    response = client.get("/health")
+    assert response.status_code == 200
+    body = response.get_json()
+    assert body["status"] == "degraded"
+    assert "smol" in body["omlx"]["unmanaged_alive"]
+    assert body["omlx"]["services"]["smol"]["port"] == 8083
+    assert body["omlx"]["services"]["smol"]["management_state"] == "unmanaged"
 
 
 def test_system_self_repair_and_transcribe_routes(tmp_path, monkeypatch):
@@ -317,3 +382,72 @@ def test_nerv_skill_routes_and_codex_controls(tmp_path, monkeypatch):
     response = client.post("/api/codex-distributed/toggle", headers={"X-User-ID": "u1"}, json={"command": "enable"})
     assert response.status_code == 200
     assert response.get_json()["status"]["mode"] == "auto"
+
+
+def test_operational_issue_health_reconciles_recovered_and_false_positive(tmp_path, monkeypatch):
+    from api.blueprints.admin_runtime import _compute_operational_issue_health
+
+    now = 2_000_000.0
+    runtime_dir = tmp_path / ".runtime"
+    runtime_dir.mkdir(parents=True)
+
+    issue_rows = [
+        {
+            "ts": now - 1800,
+            "severity": "High",
+            "source": "discord_bot.cron_scheduler",
+            "command": "cron:job_debug_cleanup",
+            "error": "Traceback ...",
+        },
+        {
+            "ts": now - 600,
+            "severity": "High",
+            "source": "discord_bot.cron_scheduler",
+            "command": "cron:job_disk_low_water_alarm",
+            "error": "exit=255 stderr= stdout_tail={\"success\": true}",
+        },
+        {
+            "ts": now - 300,
+            "severity": "High",
+            "source": "discord_bot.cron_scheduler",
+            "command": "cron:job_obsidian_ingest",
+            "error": "exit=1 stderr=Syntax Warning: May not be a PDF file",
+        },
+        {
+            "ts": now - 5000,
+            "severity": "High",
+            "source": "discord_bot.cron_scheduler",
+            "command": "cron:job_old_failure",
+            "error": "exit=1 stderr=old",
+        },
+        {
+            "ts": now - 200,
+            "severity": "High",
+            "source": "disk_low_water_alarm",
+            "command": "cron:job_disk_low_water_alarm",
+            "error": "磁碟低水位告警",
+        },
+    ]
+    issue_path = runtime_dir / "issue_agenda.jsonl"
+    issue_path.write_text(
+        "\n".join(json.dumps(row, ensure_ascii=False) for row in issue_rows) + "\n",
+        encoding="utf-8",
+    )
+
+    cron_state = {
+        "job_debug_cleanup": {"last_run": str(now - 100)},
+        "job_obsidian_ingest": {"last_run": str(now - 400)},
+    }
+    (runtime_dir / "cron_state.json").write_text(
+        json.dumps(cron_state, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("MAGI_OPERATIONAL_ACTIVE_ISSUE_WINDOW_SEC", "3600")
+    summary = _compute_operational_issue_health(tmp_path, now)
+    assert summary["raw_cron_failures_24h"] == 4
+    assert summary["active_cron_failures_24h"] == 1
+    assert summary["active_distinct_jobs_24h"] == 1
+    assert summary["false_positive_cron_failures_24h"] == 1
+    assert summary["active_high_severity_24h"] == 2
+    assert summary["inactive_cron_failures_24h"] == 2

@@ -112,6 +112,7 @@ _PREAMBLE_RE = re.compile(
     r"以下是.*?[:：]\s*|潤飾後.*?[:：]\s*)",
     re.IGNORECASE,
 )
+_CASE_NUMBER_RE = re.compile(r"\d+年度\S+?字第\d+號")
 
 
 def _strip_preamble(text: str) -> str:
@@ -123,6 +124,37 @@ def _strip_preamble(text: str) -> str:
     if len(s) >= 2 and s[0] in "\"'“「`" and s[-1] in "\"'”」`":
         s = s[1:-1].strip()
     return s
+
+
+def _extract_case_numbers(text: str) -> list[str]:
+    """Return TW court case numbers that must be preserved verbatim."""
+    out: list[str] = []
+    for match in _CASE_NUMBER_RE.findall(text or ""):
+        if match not in out:
+            out.append(match)
+    return out
+
+
+def _append_missing_case_numbers(source: str, translated: str, target_lang: str) -> str:
+    """Append source case numbers verbatim when MT/LLM localized them away.
+
+    Taiwanese court docket strings are legal identifiers, not prose. Even when
+    translating to English, MAGI keeps the original identifier visible so later
+    filing, citation, and search workflows do not lose the exact case number.
+    """
+    text = (translated or "").strip()
+    if not text:
+        return text
+    missing = [cn for cn in _extract_case_numbers(source) if cn not in text]
+    if not missing:
+        return text
+    if str(target_lang or "").lower().startswith("zh"):
+        suffix = "（案號：" + "、".join(missing) + "）"
+    else:
+        suffix = " (Case No.: " + "; ".join(missing) + ")"
+    if text.endswith((".", "。", "!", "！", "?", "？")):
+        return text + suffix
+    return text + suffix
 
 
 def translate_with_ape(
@@ -154,7 +186,11 @@ def translate_with_ape(
             "elapsed_ms": int((time.monotonic() - t0) * 1000),
         }
 
-    baseline = str(apple.get("text") or "").strip()
+    baseline = _append_missing_case_numbers(
+        text,
+        str(apple.get("text") or "").strip(),
+        target_lang,
+    )
     if not baseline:
         return {
             "success": False,
@@ -166,7 +202,7 @@ def translate_with_ape(
     # Post-edit
     prompt = _post_edit_prompt(text, baseline, target_lang, tier1=tier1, tier2=tier2)
     edited_raw = _run_local_llm(prompt, timeout=llm_timeout)
-    edited = _strip_preamble(edited_raw)
+    edited = _append_missing_case_numbers(text, _strip_preamble(edited_raw), target_lang)
 
     if not edited:
         return {

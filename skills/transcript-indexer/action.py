@@ -366,7 +366,7 @@ def _get_mem_bridge():
 
 # ── Index command ─────────────────────────────────────────────────────────────
 
-def cmd_index(force: bool = False) -> str:
+def cmd_index(force: bool = False) -> Dict[str, Any]:
     """2026-04-25: 加 wall-clock budget + max-batch limit + 進度節流。
 
     NAS over Tailscale relay 下，每 PDF ~1.5-3s，602 個 PDF 會超過 cron 600s timeout。
@@ -470,8 +470,12 @@ def cmd_index(force: bool = False) -> str:
     _save_index(idx)
 
     elapsed = round(_t.time() - t_start, 1)
+    partial = bool(aborted_reason) or bool(errors)
+    successful_files = max(0, total_files - len(errors))
+    fatal = bool(errors) and successful_files == 0 and total_new_chunks == 0 and not aborted_reason
+    status = "error" if fatal else ("partial" if partial else "ok")
     lines = [
-        f"筆錄索引{'完成' if not aborted_reason else '部分完成'}",
+        f"筆錄索引{'完成' if status == 'ok' else '部分完成'}",
         f"- 本次新索引：{total_files} 份（{total_new_chunks} 段）",
         f"- 已跳過（無變動）：{total_skipped} 份",
         f"- 累計索引：{idx['stats']['total_files']} 份 / {idx['stats']['total_chunks']} 段",
@@ -481,7 +485,21 @@ def cmd_index(force: bool = False) -> str:
         lines.append(f"- 提前結束：{aborted_reason}（剩餘 PDF 將於下次 cron 接續）")
     if errors:
         lines.append(f"- 錯誤（{len(errors)} 筆）：" + "；".join(errors[:5]))
-    return "\n".join(lines)
+    return {
+        "success": not fatal,
+        "status": status,
+        "partial": status == "partial",
+        "fatal": fatal,
+        "indexed_files": total_files,
+        "indexed_chunks": total_new_chunks,
+        "skipped_files": total_skipped,
+        "errors_count": len(errors),
+        "errors": errors,
+        "aborted_reason": aborted_reason or "",
+        "elapsed_seconds": elapsed,
+        "stats": idx.get("stats", {}),
+        "message": "\n".join(lines),
+    }
 
 
 # ── Query command ─────────────────────────────────────────────────────────────
@@ -626,7 +644,9 @@ def main() -> int:
     force = str(args.force or "0").strip().lower() in {"1", "true", "yes"}
 
     if task == "index":
-        print(cmd_index(force=force))
+        summary = cmd_index(force=force)
+        print(json.dumps(summary, ensure_ascii=False, indent=2))
+        return 1 if summary.get("fatal") else 0
     elif task == "query":
         print(cmd_query(args.query, top_k=args.top_k))
     elif task == "query_docx":

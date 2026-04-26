@@ -15,10 +15,157 @@ import time
 from api.thread_pools import io_pool
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 from flask import Blueprint, current_app, jsonify, request
 from flask_login import current_user, login_required
+
+
+def _safe_epoch(value: Any) -> float:
+    try:
+        return float(value)
+    except Exception:
+        pass
+    txt = str(value or "").strip()
+    if not txt:
+        return 0.0
+    try:
+        if txt.endswith("Z"):
+            txt = txt[:-1] + "+00:00"
+        return datetime.fromisoformat(txt).timestamp()
+    except Exception:
+        return 0.0
+
+
+def _cron_job_from_issue_command(command: Any) -> str:
+    cmd = str(command or "").strip()
+    if not cmd.startswith("cron:"):
+        return ""
+    return cmd.split(":", 1)[1].strip()
+
+
+def _is_false_positive_cron_issue(row: dict[str, Any]) -> bool:
+    source = str(row.get("source", ""))
+    if not source.startswith("discord_bot.cron_scheduler"):
+        return False
+    err = str(row.get("error", ""))
+    err_lower = err.lower()
+    if "stdout_tail=" not in err_lower:
+        return False
+    return ("\"success\": true" in err_lower) or ("✅" in err)
+
+
+def _load_recent_issue_rows(issue_path: Path, cutoff_ts: float) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    if not issue_path.exists():
+        return rows
+    with open(issue_path, encoding="utf-8") as fh:
+        for line in fh:
+            try:
+                row = json.loads(line)
+            except Exception:
+                continue
+            ts = _safe_epoch(row.get("ts") or row.get("iso"))
+            if ts < cutoff_ts:
+                continue
+            row["_ts"] = ts
+            rows.append(row)
+    return rows
+
+
+def _load_cron_last_run_ts(root: Path) -> dict[str, float]:
+    state_path = root / ".runtime" / "cron_state.json"
+    if not state_path.exists():
+        return {}
+    try:
+        raw = json.loads(state_path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, float] = {}
+    for job_id, data in raw.items():
+        if not isinstance(data, dict):
+            continue
+        ts = _safe_epoch(data.get("last_run"))
+        if ts > 0:
+            out[str(job_id)] = ts
+    return out
+
+
+def _compute_operational_issue_health(root: Path, now_ts: float) -> dict[str, Any]:
+    cutoff_24h = now_ts - 86400
+    active_window_sec = int(os.environ.get("MAGI_OPERATIONAL_ACTIVE_ISSUE_WINDOW_SEC", "21600") or "21600")
+    active_cutoff = now_ts - active_window_sec
+    rows = _load_recent_issue_rows(root / ".runtime" / "issue_agenda.jsonl", cutoff_24h)
+    cron_last_run_ts = _load_cron_last_run_ts(root)
+
+    latest_cron_issue_ts_by_job: dict[str, float] = {}
+    for row in rows:
+        source = str(row.get("source", ""))
+        if not source.startswith("discord_bot.cron_scheduler"):
+            continue
+        job_id = _cron_job_from_issue_command(row.get("command"))
+        if not job_id:
+            continue
+        ts = float(row.get("_ts") or 0.0)
+        prev = latest_cron_issue_ts_by_job.get(job_id, 0.0)
+        if ts > prev:
+            latest_cron_issue_ts_by_job[job_id] = ts
+
+    raw_cron_failures = 0
+    raw_high_severity = 0
+    active_cron_failures = 0
+    active_high_severity = 0
+    active_jobs: set[str] = set()
+    inactive_cron_failures = 0
+    false_positive_cron_failures = 0
+
+    for row in rows:
+        ts = float(row.get("_ts") or 0.0)
+        source = str(row.get("source", ""))
+        is_cron = source.startswith("discord_bot.cron_scheduler")
+        is_high = str(row.get("severity", "")) in ("High", "Critical")
+        if is_high:
+            raw_high_severity += 1
+
+        if not is_cron:
+            if is_high and ts >= active_cutoff:
+                active_high_severity += 1
+            continue
+
+        raw_cron_failures += 1
+        if _is_false_positive_cron_issue(row):
+            false_positive_cron_failures += 1
+            continue
+
+        job_id = _cron_job_from_issue_command(row.get("command"))
+        latest_issue_ts = latest_cron_issue_ts_by_job.get(job_id, ts) if job_id else ts
+        last_run_ts = cron_last_run_ts.get(job_id, 0.0) if job_id else 0.0
+        superseded = bool(job_id) and latest_issue_ts > ts
+        recovered = bool(job_id) and last_run_ts > ts
+        stale = ts < active_cutoff
+
+        if superseded or recovered or stale:
+            inactive_cron_failures += 1
+            continue
+
+        active_cron_failures += 1
+        if job_id:
+            active_jobs.add(job_id)
+        if is_high:
+            active_high_severity += 1
+
+    return {
+        "active_cron_failures_24h": active_cron_failures,
+        "active_high_severity_24h": active_high_severity,
+        "active_distinct_jobs_24h": len(active_jobs),
+        "raw_cron_failures_24h": raw_cron_failures,
+        "raw_high_severity_24h": raw_high_severity,
+        "inactive_cron_failures_24h": inactive_cron_failures,
+        "false_positive_cron_failures_24h": false_positive_cron_failures,
+        "active_window_sec": active_window_sec,
+    }
 
 
 def create_admin_runtime_blueprint(
@@ -579,16 +726,135 @@ def create_admin_runtime_blueprint(
     @bp.route("/health", methods=["GET"])
     def health():
         import time as _time
+        import subprocess as _sp
+        from urllib.parse import urlparse as _urlparse
         from skills.bridge.http_pool import get_session as _get_session
 
         sess = _get_session()
         checks: dict[str, Any] = {"status": "operational", "timestamp": _time.time()}
 
+        def _extract_port(base_url: str, fallback: int) -> int:
+            try:
+                parsed = _urlparse(str(base_url or ""))
+                return int(parsed.port or fallback)
+            except Exception:
+                return int(fallback)
+
+        def _launchctl_has_label(label: str) -> Optional[bool]:
+            if not label:
+                return None
+            try:
+                rc = _sp.run(
+                    ["launchctl", "list", label],
+                    capture_output=True,
+                    text=True,
+                    timeout=2,
+                ).returncode
+                return rc == 0
+            except Exception:
+                return None
+
+        def _resolve_launchctl_label(label: str, aliases: tuple[str, ...] = ()) -> dict[str, Any]:
+            checked: list[dict[str, Any]] = []
+            for candidate in (label, *aliases):
+                state = _launchctl_has_label(candidate)
+                checked.append({"label": candidate, "present": state})
+                if state is True:
+                    return {
+                        "managed": True,
+                        "active_label": candidate,
+                        "checked": checked,
+                    }
+            if any(item["present"] is None for item in checked):
+                managed: Optional[bool] = None
+            else:
+                managed = False
+            return {"managed": managed, "active_label": "", "checked": checked}
+
+        def _probe_omlx_service(
+            *,
+            service_id: str,
+            name: str,
+            base_url: str,
+            port: int,
+            label: str,
+            aliases: tuple[str, ...] = (),
+        ) -> dict[str, Any]:
+            service: dict[str, Any] = {
+                "id": service_id,
+                "name": name,
+                "base_url": str(base_url).rstrip("/"),
+                "port": int(port),
+                "label": label,
+                "label_aliases": list(aliases),
+                "reachable": False,
+                "http_status": 0,
+                "models": [],
+                "managed": None,
+                "management_state": "unknown",
+            }
+            try:
+                response = sess.get(f"{service['base_url']}/v1/models", timeout=3)
+                service["http_status"] = int(getattr(response, "status_code", 0) or 0)
+                if service["http_status"] == 200:
+                    models = [item.get("id", "") for item in (response.json() or {}).get("data", [])]
+                    service["models"] = [m for m in models if m]
+                    service["reachable"] = True
+            except Exception as exc:
+                service["error"] = str(exc)[:120]
+
+            label_state = _resolve_launchctl_label(label, aliases=aliases)
+            service["managed"] = label_state["managed"]
+            service["active_label"] = label_state["active_label"]
+            service["launchctl_checked"] = label_state["checked"]
+            if label_state["managed"] is True:
+                service["management_state"] = "managed"
+            elif label_state["managed"] is False:
+                service["management_state"] = "unmanaged"
+            else:
+                service["management_state"] = "unknown"
+            service["ok"] = bool(service["reachable"]) and service["management_state"] != "unmanaged"
+            return service
+
         try:
-            _chat_url = os.environ.get("MAGI_OMLX_CHAT_URL", "http://127.0.0.1:11434")
-            response = sess.get(f"{_chat_url}/v1/models", timeout=3)
-            models = [item.get("id", "") for item in (response.json() or {}).get("data", [])]
-            checks["omlx"] = {"ok": response.status_code == 200, "models": models}
+            _chat_url = os.environ.get("MAGI_OMLX_CHAT_URL", os.environ.get("MAGI_OMLX_BASE", "http://127.0.0.1:8080"))
+            _phi4_url = os.environ.get("MAGI_OMLX_PHI4_URL", f"http://127.0.0.1:{os.environ.get('MAGI_OMLX_PHI4_PORT', '8082')}")
+            _smol_url = os.environ.get("MAGI_OMLX_SMOL_URL", f"http://127.0.0.1:{os.environ.get('MAGI_OMLX_SMOL_PORT', '8083')}")
+            services = [
+                _probe_omlx_service(
+                    service_id="text",
+                    name="Gemma-4",
+                    base_url=_chat_url,
+                    port=_extract_port(_chat_url, 8080),
+                    label="com.magi.omlx",
+                ),
+                _probe_omlx_service(
+                    service_id="phi4",
+                    name="Phi-4",
+                    base_url=_phi4_url,
+                    port=_extract_port(_phi4_url, 8082),
+                    label="com.magi.omlx-phi4",
+                ),
+                _probe_omlx_service(
+                    service_id="smol",
+                    name="SmolLM3",
+                    base_url=_smol_url,
+                    port=_extract_port(_smol_url, 8083),
+                    label="com.magi.omlx-smol",
+                    aliases=("com.magi.omlx-smollm3",),
+                ),
+            ]
+            service_map = {svc["id"]: svc for svc in services}
+            primary = service_map.get("text") or {}
+            unmanaged_alive = [svc["id"] for svc in services if svc.get("reachable") and svc.get("management_state") == "unmanaged"]
+            checks["omlx"] = {
+                "ok": bool(primary.get("reachable")) and not unmanaged_alive,
+                "models": primary.get("models", []),
+                "services": service_map,
+                "unmanaged_alive": unmanaged_alive,
+            }
+            if unmanaged_alive:
+                checks["omlx"]["degraded_reasons"] = [f"unmanaged_service:{sid}" for sid in unmanaged_alive]
         except Exception:
             checks["omlx"] = {"ok": False}
 
@@ -675,26 +941,11 @@ def create_admin_runtime_blueprint(
 
         # 2026-04-25 P2-7: operational_health — count cron failures + benchmark freshness
         try:
-            import json as _json_h
-            issue_path = root / ".runtime" / "issue_agenda.jsonl"
-            cutoff_24h = _time.time() - 86400
-            cron_failures_24h = 0
-            high_severity_24h = 0
-            distinct_jobs = set()
-            if issue_path.exists():
-                with open(issue_path, encoding="utf-8") as _fh:
-                    for _line in _fh:
-                        try:
-                            _r = _json_h.loads(_line)
-                            if float(_r.get("ts", 0)) < cutoff_24h:
-                                continue
-                            if _r.get("source", "").startswith("discord_bot.cron_scheduler"):
-                                cron_failures_24h += 1
-                                distinct_jobs.add(_r.get("command", ""))
-                            if _r.get("severity") in ("High", "Critical"):
-                                high_severity_24h += 1
-                        except Exception:
-                            continue
+            now_ts = _time.time()
+            issue_health = _compute_operational_issue_health(root, now_ts)
+            cron_failures_24h = int(issue_health.get("active_cron_failures_24h", 0))
+            high_severity_24h = int(issue_health.get("active_high_severity_24h", 0))
+            distinct_jobs_24h = int(issue_health.get("active_distinct_jobs_24h", 0))
 
             # Benchmark freshness (pdf_namer / pdf_bookmarker)
             bench_freshness = {}
@@ -721,10 +972,22 @@ def create_admin_runtime_blueprint(
 
             _op_health = {
                 "cron_failures_24h": cron_failures_24h,
-                "distinct_failing_jobs_24h": len(distinct_jobs),
+                "distinct_failing_jobs_24h": distinct_jobs_24h,
                 "issue_agenda_high_severity_24h": high_severity_24h,
                 "watchdog_decisions_24h": wd_decisions_24h,
                 "benchmark_age_hours": bench_freshness,
+                "raw_counts_24h": {
+                    "cron_failures": int(issue_health.get("raw_cron_failures_24h", 0)),
+                    "issue_agenda_high_severity": int(issue_health.get("raw_high_severity_24h", 0)),
+                },
+                "inactive_or_recovered_24h": {
+                    "cron_failures": int(issue_health.get("inactive_cron_failures_24h", 0)),
+                    "false_positive_cron_failures": int(issue_health.get("false_positive_cron_failures_24h", 0)),
+                },
+                "active_issue_window_hours": round(
+                    float(issue_health.get("active_window_sec", 0)) / 3600.0,
+                    1,
+                ),
             }
             _op_health["degraded_reasons"] = []
             if cron_failures_24h > 5:

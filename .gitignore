@@ -314,3 +314,4 @@ static/external_chat_metrics.jsonl
 static/nightly_regression_latest.json
 skills/pdf-namer/_learned_filename_rules.json
 skills/pdf-namer/_nightly_report.json
+.backup/

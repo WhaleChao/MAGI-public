@@ -187,6 +187,38 @@ class TestBoundary:
         text = "臺灣高等法院被告前案紀錄表\n查詢條件：姓名 王大明\n報表編號 HHD4D01"
         assert mod._is_prior_record_page(text)
 
+    def test_normalize_doc_type_aliases(self):
+        mod = _load_module()
+        assert mod._normalize_doc_type("上訴抗告狀") == "上訴/抗告狀"
+        assert mod._normalize_doc_type("調解筆錄") == "調解/和解筆錄"
+
+    def test_classify_no_boundary_single_doc_hint(self):
+        mod = _load_module()
+        classification, reason = mod._classify_no_boundary_case(
+            pdf_path="/tmp/20250718 告知上訴權益同意書(余秋菊)_已簽名.pdf",
+            page_count=1,
+            meaningful_counts=[8],
+            detected_doc_types=set(),
+        )
+        assert classification == "legitimate_single_doc"
+        assert reason
+
+    def test_classify_no_boundary_filename_hint_with_multi_doc_signals_goes_manual_review(self):
+        mod = _load_module()
+        page_texts = [
+            "臺灣花蓮地方檢察署 起訴書\n收文章：114000123\n被告王小明",
+            "臺灣花蓮地方法院刑事判決\n主文 被告王小明有罪\n第 1 頁",
+        ]
+        classification, reason = mod._classify_no_boundary_case(
+            pdf_path="/tmp/20250718 告知上訴權益同意書(余秋菊)_已簽名.pdf",
+            page_count=2,
+            meaningful_counts=[120, 130],
+            detected_doc_types=set(),
+            page_texts=page_texts,
+        )
+        assert classification == "needs_manual_review"
+        assert "multi_doc_signal" in reason
+
 
 # ===================================================================
 # 4. Should reject

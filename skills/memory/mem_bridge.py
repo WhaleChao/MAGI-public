@@ -740,7 +740,10 @@ def remember(content, source="manual", metadata: Optional[dict] = None, embeddin
             conn.close()
             return True
 
-        cursor.execute("INSERT INTO documents (content, source) VALUES (%s, %s)", (content, safe_source))
+        cursor.execute(
+            "INSERT INTO documents (content, source, synced) VALUES (%s, %s, %s)",
+            (content, safe_source, 1),
+        )
         doc_id = cursor.lastrowid
 
         cursor.execute(
@@ -868,8 +871,8 @@ def remember_batch(items):
             emb = embeddings[i] if i < len(embeddings) else _zero_embedding()
             try:
                 cursor.execute(
-                    "INSERT INTO documents (content, source) VALUES (%s, %s)",
-                    (content, source),
+                    "INSERT INTO documents (content, source, synced) VALUES (%s, %s, %s)",
+                    (content, source, 1),
                 )
                 doc_id = cursor.lastrowid
                 cursor.execute(
@@ -884,6 +887,8 @@ def remember_batch(items):
                     except Exception:
                         logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 545, exc_info=True)
 
+                # Prevent duplicate inserts within the same batch payload.
+                existing_hashes.add(hashes[i])
                 inserted += 1
             except Exception as e:
                 logger.warning("Batch insert item %d failed: %s", i, e)

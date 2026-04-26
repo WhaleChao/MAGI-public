@@ -147,6 +147,29 @@ _p(r"(?:收據|收文|發文)", "收發文", 2)
 _p(r"(?:通訊監察|監聽)(?:書|譯文)", "通訊監察", 1)
 _p(r"(?:監視器|錄影).*(?:畫面|截圖|翻拍)", "監視器畫面", 2)
 
+KNOWN_DOC_LABELS = {label for _, label, _ in DOC_PATTERNS}
+SINGLE_DOC_FILENAME_HINT_RE = re.compile(
+    r"(?:同意書|證明書|委任|上訴理由狀|聲明上訴|答辯狀|陳報狀|聲請狀|信件|回執|收據)"
+)
+_STRONG_DOC_SIGNAL_PATTERNS = [
+    ("判決", re.compile(r"(?:刑事|民事|家事)?判決(?:書)?|主文")),
+    ("裁定", re.compile(r"(?:刑事|民事|家事)?裁定(?:書)?")),
+    ("起訴書", re.compile(r"起訴書|公訴檢察官|追加起訴書")),
+    ("筆錄", re.compile(r"(?:審判|準備程序|言詞辯論|訊問|調查|勘驗).{0,3}筆錄")),
+    ("聲請狀", re.compile(r"(?:刑事|民事|家事)?聲請(?:狀|書)")),
+    ("答辯狀", re.compile(r"(?:刑事|民事|家事)?答辯(?:狀|書|意旨)")),
+    ("前案紀錄表", re.compile(r"(?:前案紀錄表|前科(?:紀錄|資料))")),
+    ("報到單", re.compile(r"報到單")),
+    ("收發文", re.compile(r"(?:收發文|收文章|發文字號|收文日期|發文日期)")),
+    ("照片/截圖", re.compile(r"(?:照片|相片|截圖|翻拍)")),
+]
+_AGENCY_SIGNAL_PATTERNS = [
+    ("法院", re.compile(r"(?:臺灣|高等|地方法院|最高法院)")),
+    ("檢察", re.compile(r"(?:檢察署|地檢署|地方檢察)")),
+    ("警察", re.compile(r"(?:警察局|分局|派出所|刑事警察)")),
+]
+_PAGE_BREAK_SIGNAL_RE = re.compile(r"(?:第\s*\d+\s*頁|共\s*\d+\s*頁|收文章|發文字號|案號)")
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # 日期偵測
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -256,7 +279,167 @@ def _is_prior_record_page(text: str) -> bool:
     return count >= 2
 
 
-def _detect_doc_type(text: str, in_prior_record: bool = False) -> tuple[Optional[str], int]:
+def _normalize_doc_type(raw_label: Optional[str], context_text: str = "") -> Optional[str]:
+    """Normalize doc type aliases from regex / vision into canonical bookmark labels."""
+    if not raw_label:
+        return None
+
+    label = re.sub(r"\s+", "", str(raw_label))
+    context = re.sub(r"\s+", "", context_text or "")
+    probe = f"{label}{context}"
+
+    exact_alias = {
+        "上訴抗告狀": "上訴/抗告狀",
+        "調解筆錄": "調解/和解筆錄",
+        "調解/和解方案": "調解/和解",
+    }
+    if label in exact_alias:
+        return exact_alias[label]
+    if label in KNOWN_DOC_LABELS:
+        return label
+
+    if "前案" in probe and ("紀錄" in probe or "前科" in probe):
+        return "前案紀錄表"
+    if any(k in probe for k in ("報到單", "報到")):
+        return "報到單"
+    if any(k in probe for k in ("收發文", "收文", "發文", "掛號", "回執")):
+        return "收發文"
+    if any(k in probe for k in ("照片", "相片", "截圖", "翻拍")):
+        return "照片/截圖"
+
+    if "起訴" in probe:
+        if "追加起訴" in probe:
+            return "追加起訴書"
+        if "不起訴" in probe:
+            return "不起訴處分書"
+        if "緩起訴" in probe:
+            return "緩起訴處分書"
+        return "起訴書"
+
+    if "裁定" in probe:
+        return "裁定"
+    if "判決" in probe:
+        return "判決"
+
+    if "筆錄" in probe:
+        if "言詞辯論" in probe:
+            return "言詞辯論筆錄"
+        if "準備程序" in probe:
+            return "準備程序筆錄"
+        if "訊問" in probe or "讯问" in probe:
+            return "訊問筆錄"
+        if "調查" in probe or "调查" in probe:
+            return "調查筆錄"
+        if "勘驗" in probe or "勘验" in probe:
+            return "勘驗筆錄"
+        if "調解" in probe or "和解" in probe:
+            return "調解/和解筆錄"
+        if "搜索" in probe or "扣押" in probe:
+            return "搜索扣押筆錄"
+        return "審判筆錄"
+
+    return None
+
+
+def _classify_no_boundary_case(
+    pdf_path: str,
+    page_count: int,
+    meaningful_counts: list[int],
+    detected_doc_types: set[str],
+    page_texts: list[str] | None = None,
+) -> tuple[str, str]:
+    """Classify no-boundary outcomes to avoid penalizing legitimate single docs."""
+    stem = Path(pdf_path).stem
+    max_meaningful = max(meaningful_counts) if meaningful_counts else 0
+    filename_doc_type, _ = _detect_doc_type(stem, in_prior_record=False, allow_vision=False)
+    audit = _audit_no_boundary_multidoc_signals(page_texts or [], detected_doc_types)
+
+    if audit["has_multi_doc_signal"]:
+        return "needs_manual_review", f"multi_doc_signal:{','.join(audit['evidence'][:3])}"
+
+    if detected_doc_types and len(detected_doc_types) == 1 and page_count <= 20:
+        only_type = sorted(detected_doc_types)[0]
+        return "legitimate_single_doc", f"single_doc_detected_type:{only_type}"
+
+    if filename_doc_type and page_count <= 20:
+        return "legitimate_single_doc", f"filename_doc_type:{filename_doc_type}"
+
+    if page_count <= 2 and max_meaningful < 45:
+        return "legitimate_single_doc", "short_low_text_pdf"
+
+    if page_count <= 12 and SINGLE_DOC_FILENAME_HINT_RE.search(stem):
+        return "legitimate_single_doc", "filename_single_doc_hint"
+
+    return "empty_failure", "no_boundary_without_single_doc_signal"
+
+
+def _audit_no_boundary_multidoc_signals(
+    page_texts: list[str],
+    detected_doc_types: set[str],
+) -> dict:
+    """
+    Audit no-boundary documents for multi-document boundary signals.
+
+    Returns a dict with:
+      - has_multi_doc_signal: bool
+      - evidence: list[str]
+      - distinct_doc_types: list[str]
+      - transition_hits: int
+    """
+    evidence: list[str] = []
+    distinct_doc_types = set(detected_doc_types or set())
+    distinct_agencies = set()
+    page_multi_type_hits = 0
+    transition_hits = 0
+    page_break_hits = 0
+    prev_signature: tuple[tuple[str, ...], tuple[str, ...]] | None = None
+
+    for raw in page_texts:
+        text = str(raw or "")[:3000]
+        if not text.strip():
+            continue
+        page_types = {name for name, pat in _STRONG_DOC_SIGNAL_PATTERNS if pat.search(text)}
+        page_agencies = {name for name, pat in _AGENCY_SIGNAL_PATTERNS if pat.search(text)}
+        if _PAGE_BREAK_SIGNAL_RE.search(text):
+            page_break_hits += 1
+
+        if len(page_types) >= 2:
+            page_multi_type_hits += 1
+        distinct_doc_types.update(page_types)
+        distinct_agencies.update(page_agencies)
+
+        signature = (tuple(sorted(page_types)), tuple(sorted(page_agencies)))
+        if (signature[0] or signature[1]) and prev_signature and signature != prev_signature:
+            transition_hits += 1
+        if signature[0] or signature[1]:
+            prev_signature = signature
+
+    if len(distinct_doc_types) >= 2:
+        evidence.append("distinct_doc_types>=2")
+    if page_multi_type_hits >= 1:
+        evidence.append("page_multi_type_hits>=1")
+    if len(distinct_agencies) >= 2 and transition_hits >= 1:
+        evidence.append("cross_agency_transition")
+    if transition_hits >= 2 and len(distinct_doc_types) >= 1:
+        evidence.append("signature_transition>=2")
+    if page_break_hits >= 2 and len(distinct_doc_types) >= 2:
+        evidence.append("page_break_with_multi_doc_type")
+
+    return {
+        "has_multi_doc_signal": bool(evidence),
+        "evidence": evidence,
+        "distinct_doc_types": sorted(distinct_doc_types),
+        "distinct_agencies": sorted(distinct_agencies),
+        "transition_hits": transition_hits,
+        "page_break_hits": page_break_hits,
+    }
+
+
+def _detect_doc_type(
+    text: str,
+    in_prior_record: bool = False,
+    allow_vision: bool = True,
+) -> tuple[Optional[str], int]:
     """
     Detect document type from page text.
     Returns (label, level) or (None, 0).
@@ -275,16 +458,19 @@ def _detect_doc_type(text: str, in_prior_record: bool = False) -> tuple[Optional
 
     for pattern, label, level in DOC_PATTERNS:
         if pattern.search(header):
-            return label, level
+            normalized = _normalize_doc_type(label, header)
+            return normalized or label, level
 
     # Vision fallback (controlled by MAGI_BOOKMARKER_VISION_FALLBACK)
     import os as _os
-    if _os.environ.get("MAGI_BOOKMARKER_VISION_FALLBACK", "1").strip() in ("1", "true", "yes"):
+    if allow_vision and _os.environ.get("MAGI_BOOKMARKER_VISION_FALLBACK", "1").strip() in ("1", "true", "yes"):
         try:
             from skills.engine.doc_type_detector import detect_doc_type as _dtd
             r = _dtd(header)
             if r.source == "vision" and r.confidence >= 0.60 and r.doc_type != "其他":
-                return r.doc_type, 1
+                normalized = _normalize_doc_type(r.doc_type, header)
+                if normalized:
+                    return normalized, 1
         except Exception:
             pass
 
@@ -343,6 +529,7 @@ def scan_and_bookmark(
 
     existing_toc = doc.get_toc() or []
     toc: list[list] = []
+    page_count = doc.page_count
 
     # Track state for dedup and section awareness
     last_label = ""
@@ -351,15 +538,16 @@ def scan_and_bookmark(
     consecutive_same_count = 0    # Count consecutive same-type (e.g., 送達證書)
     consecutive_same_type = ""
     consecutive_same_start_pg = 0
+    detected_doc_types: set[str] = set()
 
     # Types that are individually less important — group consecutive ones
     _GROUPABLE_TYPES = {"送達證書", "傳票", "提票", "報到單", "收發文"}
 
-    logger.info(f"掃描 {Path(pdf_path).name}（{doc.page_count} 頁，現有書籤 {len(existing_toc)} 個）...")
+    logger.info(f"掃描 {Path(pdf_path).name}（{page_count} 頁，現有書籤 {len(existing_toc)} 個）...")
 
     page_texts = []
     meaningful_counts = []
-    for page_num in range(doc.page_count):
+    for page_num in range(page_count):
         page = doc[page_num]
         text = page.get_text()
         if len(text.strip()) < min_text_len and HAS_OCR:
@@ -375,7 +563,7 @@ def scan_and_bookmark(
             fh.write(json.dumps({
                 "pdf": str(pdf_path),
                 "threshold": ola_threshold,
-                "pages": doc.page_count,
+                "pages": page_count,
                 "sample_counts": meaningful_counts[:20],
             }, ensure_ascii=False) + "\n")
         try:
@@ -405,7 +593,7 @@ def scan_and_bookmark(
         consecutive_same_type = ""
         consecutive_same_start_pg = 0
 
-    for page_num in range(doc.page_count):
+    for page_num in range(page_count):
         page = doc[page_num]
         text = page_texts[page_num]
 
@@ -459,6 +647,7 @@ def scan_and_bookmark(
         if not doc_type:
             # No doc_type detected — skip (date alone is too noisy)
             continue
+        detected_doc_types.add(doc_type)
 
         # ── Handle groupable types (送達證書, 傳票, etc.) ──
         if doc_type in _GROUPABLE_TYPES:
@@ -511,12 +700,31 @@ def scan_and_bookmark(
     # Flush any remaining group
     _flush_group()
 
+    generated_toc = list(toc)
+
     # ── Write bookmarks ──
     if not toc:
+        classification, reason = _classify_no_boundary_case(
+            pdf_path=pdf_path,
+            page_count=page_count,
+            meaningful_counts=meaningful_counts,
+            detected_doc_types=detected_doc_types,
+            page_texts=page_texts,
+        )
         doc.close()
         msg = f"未偵測到文件邊界，無法產生書籤（{Path(pdf_path).name}）"
+        if classification == "legitimate_single_doc":
+            msg = f"{msg}；判定為單一文件（{reason}）"
         logger.warning(msg)
-        return {"success": False, "bookmarks": 0, "toc": [], "message": msg}
+        return {
+            "success": False,
+            "bookmarks": 0,
+            "toc": [],
+            "generated_toc": [],
+            "classification": classification,
+            "classification_reason": reason,
+            "message": msg,
+        }
 
     # Merge with existing TOC if any (keep existing, append new non-overlapping)
     if existing_toc:
@@ -546,6 +754,9 @@ def scan_and_bookmark(
         "success": True,
         "bookmarks": len(toc),
         "toc": toc,
+        "generated_toc": generated_toc,
+        "classification": "bookmarkable",
+        "classification_reason": "detected_boundary",
         "message": f"成功建立 {len(toc)} 個書籤",
     }
 

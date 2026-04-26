@@ -75,6 +75,24 @@ def _prepare_embedding_inputs(parts: List[str]) -> List[str]:
     return list(parts)
 
 
+def _dedupe_batch_items(items: List[Dict]) -> Tuple[List[Dict], int]:
+    """Remove exact-duplicate chunk contents within a single ingest batch."""
+    deduped = []
+    seen = set()
+    skipped = 0
+    for item in items or []:
+        content = str(item.get("content") or "")
+        if not content:
+            continue
+        key = _sha1(content)
+        if key in seen:
+            skipped += 1
+            continue
+        seen.add(key)
+        deduped.append(item)
+    return deduped, skipped
+
+
 def ingest_sections_to_vector_memory(
     *,
     url: str,
@@ -131,6 +149,7 @@ def ingest_sections_to_vector_memory(
         if chunks_written >= int(max_chunks_total):
             break
             
+    batch_items, deduped_in_batch = _dedupe_batch_items(batch_items)
     res = remember_batch(batch_items)
     for b in batch_items:
         items.append({"source": b["source"], "ok": True, "chars": len(b["content"])})
@@ -152,6 +171,7 @@ def ingest_sections_to_vector_memory(
         "success": True,
         "doc_key": doc_key,
         "chunks_written": chunks_written,
+        "deduped_in_batch": deduped_in_batch,
         "index_path": INDEX_PATH,
         "items": items[:10],
     }
@@ -202,9 +222,12 @@ def ingest_text_to_vector_memory(
             }
         )
 
+    batch_items, deduped_in_batch = _dedupe_batch_items(batch_items)
+
     # Use batch insertion to avoid long hangs and sequential timeouts
     res = remember_batch(batch_items)
-    chunks_written = res.get("inserted", 0)
+    chunks_written = int(res.get("inserted", 0) or 0)
+    chunks_covered = chunks_written + int(res.get("skipped", 0) or 0)
 
     # Reconstruct items for the return dictionary
     for b in batch_items:
@@ -216,7 +239,8 @@ def ingest_text_to_vector_memory(
         "kind": kind,
         "primary": primary,
         "title": title,
-        "chunks_written": chunks_written,
+        "chunks_written": chunks_covered,
+        "chunks_inserted": chunks_written,
         "updated_at": _now_iso(),
     }
     index[doc_key] = entry
@@ -225,7 +249,9 @@ def ingest_text_to_vector_memory(
     return {
         "success": True,
         "doc_key": doc_key,
-        "chunks_written": chunks_written,
+        "chunks_written": chunks_covered,
+        "chunks_inserted": chunks_written,
+        "deduped_in_batch": deduped_in_batch,
         "index_path": INDEX_PATH,
         "items": items[:10],
     }

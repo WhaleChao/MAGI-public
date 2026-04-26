@@ -68,6 +68,7 @@ OMLX_WATCHDOG_STATE_PATH = os.environ.get(
 OMLX_WATCHDOG_CACHE_TTL_SEC = float(os.environ.get("MAGI_OMLX_WATCHDOG_CACHE_TTL_SEC", "2"))
 OMLX_WATCHDOG_STALE_SEC = int(os.environ.get("MAGI_OMLX_WATCHDOG_STALE_SEC", "900"))
 _OMLX_MODELS_CACHE = {"ts": 0.0, "models": []}
+_OMLX_BASE_MODELS_CACHE: dict[str, dict] = {}
 _OMLX_WATCHDOG_CACHE = {"ts": 0.0, "data": {}}
 _MODEL_CACHE_LOCK = threading.Lock()  # guards _MODEL_CACHE, _OMLX_MODELS_CACHE, _OPENAI_MODELS_CACHE
 
@@ -377,6 +378,30 @@ def list_omlx_models(force_refresh: bool = False) -> List[str]:
         return []
 
 
+def list_omlx_models_for_base(base_url: str, force_refresh: bool = False) -> List[str]:
+    """List models available on a specific oMLX base URL."""
+    if not OMLX_ENABLED:
+        return []
+    base = (base_url or OMLX_CHAT_BASE).rstrip("/")
+    now = time.time()
+    with _MODEL_CACHE_LOCK:
+        cached = _OMLX_BASE_MODELS_CACHE.get(base) or {}
+        if not force_refresh and cached.get("models") and (now - float(cached.get("ts") or 0)) < 30:
+            return list(cached.get("models") or [])
+    try:
+        data = _get_json(f"{base}/v1/models", timeout=3)
+        models = []
+        for it in (data or {}).get("data", []):
+            if isinstance(it, dict) and it.get("id"):
+                models.append(str(it["id"]).strip())
+        models = sorted(set(models))
+        with _MODEL_CACHE_LOCK:
+            _OMLX_BASE_MODELS_CACHE[base] = {"ts": now, "models": models}
+        return models
+    except Exception:
+        return []
+
+
 def _resolve_omlx_chat_model(raw_model: str, *, available_models: Optional[List[str]] = None) -> str:
     """Resolve requested chat model to an actually available local oMLX model."""
     requested = _OMLX_MODEL_ALIAS.get((raw_model or "").strip(), (raw_model or "").strip())
@@ -494,6 +519,13 @@ def _chat_omlx(
     # vision server that only serves GLM-OCR.
     if base_url and base_url.rstrip("/") != OMLX_CHAT_BASE:
         use_model = raw_model
+        available_on_base = list_omlx_models_for_base(_base)
+        if available_on_base and use_model not in available_on_base:
+            return _result(
+                False,
+                "",
+                f"omlx_model_unavailable:{use_model}; available={','.join(available_on_base)}",
+            )
     else:
         use_model = _resolve_omlx_chat_model(raw_model)
     messages = []

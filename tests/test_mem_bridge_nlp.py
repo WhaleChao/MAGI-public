@@ -56,3 +56,68 @@ def test_recall_merges_graph_context_when_keeper_is_offline(monkeypatch):
 
     assert results
     assert results[0]["source"].startswith("graph_rag|")
+
+
+def test_remember_batch_dedupes_same_content_across_different_sources(monkeypatch):
+    class _FakeCursor:
+        def __init__(self):
+            self._fetch_rows = []
+            self.lastrowid = 100
+            self.docs_inserted = 0
+            self.vectors_inserted = 0
+
+        def execute(self, sql, params=None):
+            s = " ".join(str(sql).split()).strip().lower()
+            if s.startswith("select distinct md5(content) from documents where md5(content) in"):
+                self._fetch_rows = []
+                return
+            if s.startswith("insert into documents (content, source, synced)"):
+                self.docs_inserted += 1
+                self.lastrowid += 1
+                return
+            if s.startswith("insert into vectors"):
+                self.vectors_inserted += 1
+                return
+            raise AssertionError(f"unexpected sql: {sql}")
+
+        def fetchall(self):
+            return list(self._fetch_rows)
+
+        def close(self):
+            return None
+
+    class _FakeConn:
+        def __init__(self, cursor):
+            self._cursor = cursor
+
+        def cursor(self):
+            return self._cursor
+
+        def commit(self):
+            return None
+
+        def is_connected(self):
+            return True
+
+        def close(self):
+            return None
+
+    fake_cursor = _FakeCursor()
+    fake_conn = _FakeConn(fake_cursor)
+
+    monkeypatch.setattr(mem_bridge, "_keeper_offline", lambda: False)
+    monkeypatch.setattr(mem_bridge, "_get_conn", lambda: fake_conn)
+    monkeypatch.setattr(mem_bridge, "get_embeddings_batch", lambda texts, batch_size=32: [[0.1], [0.2]])
+    monkeypatch.setattr(mem_bridge, "ENABLE_FAISS", False)
+
+    result = mem_bridge.remember_batch(
+        [
+            {"content": "完全相同內容", "source": "research-brief:語言政策"},
+            {"content": "完全相同內容", "source": "research-brief:通譯"},
+        ]
+    )
+
+    assert result["inserted"] == 1
+    assert result["skipped"] == 1
+    assert fake_cursor.docs_inserted == 1
+    assert fake_cursor.vectors_inserted == 1

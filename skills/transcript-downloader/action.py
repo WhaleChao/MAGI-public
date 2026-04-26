@@ -73,6 +73,12 @@ MANUAL_QUEUE_PATH = Path(
     )
 )
 TRANSCRIPT_RUNTIME = apply_product_runtime_env("transcript", env=os.environ)
+TRANSCRIPT_SYNC_MD5_SCAN_TIMEOUT_SEC = int(
+    os.environ.get("MAGI_TRANSCRIPT_SYNC_MD5_SCAN_TIMEOUT_SEC", "420") or "420"
+)
+TRANSCRIPT_SYNC_MD5_SCAN_MODE = str(
+    os.environ.get("MAGI_TRANSCRIPT_SYNC_MD5_SCAN_MODE", "subprocess") or "subprocess"
+).strip().lower()
 
 logger = logging.getLogger("transcript-downloader")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(message)s")
@@ -264,6 +270,75 @@ def _eventlog(event: str, *, ok: Optional[bool] = None, payload: Optional[dict] 
 def _ok(payload: dict) -> int:
     print(json.dumps(payload, ensure_ascii=False, indent=2))
     return 0
+
+
+def _extract_json_from_output(raw: str) -> Optional[Dict[str, Any]]:
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = json.loads(text)
+        if isinstance(parsed, dict):
+            return parsed
+    except Exception:
+        pass
+    start = text.find("{")
+    end = text.rfind("}")
+    if start < 0 or end <= start:
+        return None
+    try:
+        parsed = json.loads(text[start : end + 1])
+        if isinstance(parsed, dict):
+            return parsed
+    except Exception:
+        return None
+    return None
+
+
+def _run_md5_scan_subprocess(timeout_sec: int) -> Dict[str, Any]:
+    cmd = [VENV_PY, __file__, "--task", "md5_scan"]
+    env = dict(os.environ)
+    env["MAGI_TRANSCRIPT_NO_VENV"] = "1"
+    started = datetime.now()
+    try:
+        proc = subprocess.run(
+            cmd,
+            cwd=CODE_DIR,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=max(30, int(timeout_sec)),
+        )
+    except subprocess.TimeoutExpired as exc:
+        elapsed = round((datetime.now() - started).total_seconds(), 1)
+        stdout = (exc.stdout or "") if isinstance(exc.stdout, str) else ""
+        stderr = (exc.stderr or "") if isinstance(exc.stderr, str) else ""
+        return {
+            "success": False,
+            "timed_out": True,
+            "timeout_sec": int(timeout_sec),
+            "elapsed_seconds": elapsed,
+            "error": f"md5_scan_timeout_{int(timeout_sec)}s",
+            "stdout_tail": stdout[-500:],
+            "stderr_tail": stderr[-500:],
+        }
+    elapsed = round((datetime.now() - started).total_seconds(), 1)
+    payload = _extract_json_from_output(proc.stdout)
+    if isinstance(payload, dict):
+        payload.setdefault("success", bool(payload.get("success")))
+        payload["timed_out"] = False
+        payload["elapsed_seconds"] = elapsed
+        payload["returncode"] = int(proc.returncode)
+        return payload
+    return {
+        "success": proc.returncode == 0,
+        "timed_out": False,
+        "elapsed_seconds": elapsed,
+        "returncode": int(proc.returncode),
+        "stdout_tail": str(proc.stdout or "")[-500:],
+        "stderr_tail": str(proc.stderr or "")[-500:],
+        "error": "" if proc.returncode == 0 else "md5_scan_subprocess_failed",
+    }
 
 
 def _load_config() -> dict:
@@ -1109,6 +1184,33 @@ def cmd_download_all(headless: bool = True, notify: bool = True, flow_id: str = 
         return out
 
 
+def cmd_md5_scan_only(headless: bool = True) -> dict:
+    """Run only the pre-download MD5 scan step (no login/download/rename flow changes)."""
+    _ensure_local_cases_schema()
+    cfg = _load_config()
+    creds = _get_credentials(cfg)
+    if not creds["username"] or not creds["password"]:
+        return {"success": False, "error": "missing credentials — set MAGI_JUDICIAL_RECORD_USERNAME/PASSWORD in .env"}
+    try:
+        mod = _ensure_imports()
+        db = _get_db_manager(cfg)
+        downloader = mod.CourtRecordDownloader(
+            username=creds["username"],
+            password=creds["password"],
+            db_manager=db,
+            download_folder=creds["download_folder"],
+            headless=headless,
+            log_callback=lambda msg: logger.info(msg),
+        )
+        try:
+            downloader.scan_case_folders_for_md5(rename_files=False)
+            return {"success": True, "message": "md5_scan_completed"}
+        finally:
+            downloader.close()
+    except Exception as e:
+        return {"success": False, "error": str(e)[:200]}
+
+
 def cmd_sync(rename: bool = True, headless: bool = True, notify: bool = True, flow_id: str = "") -> dict:
     """Full sync: MD5 scan -> download all -> rename all transcripts."""
     _eventlog("transcript:sync:start", payload={"rename": bool(rename), "headless": bool(headless)})
@@ -1145,8 +1247,32 @@ def cmd_sync(rename: bool = True, headless: bool = True, notify: bool = True, fl
         try:
             logger.info("Running full sync (MD5 scan + download + rename)...")
             _safe_flow_step_status(flow_id, "case_scan", status="running", detail="scan_case_folders_for_md5")
-            downloader.scan_case_folders_for_md5(rename_files=False)
-            _safe_flow_step_status(flow_id, "case_scan", status="succeeded", detail="case folder scan complete", ok=True)
+            md5_warning = ""
+            if TRANSCRIPT_SYNC_MD5_SCAN_MODE == "inline":
+                scan_result = cmd_md5_scan_only(headless=headless)
+                if not scan_result.get("success"):
+                    md5_warning = str(scan_result.get("error") or "md5 scan failed")
+            else:
+                scan_result = _run_md5_scan_subprocess(timeout_sec=TRANSCRIPT_SYNC_MD5_SCAN_TIMEOUT_SEC)
+                if scan_result.get("timed_out"):
+                    md5_warning = (
+                        f"MD5 掃描逾時（>{int(scan_result.get('timeout_sec') or TRANSCRIPT_SYNC_MD5_SCAN_TIMEOUT_SEC)}s）"
+                        "，改以下載流程接續；下輪 sync 會再補掃。"
+                    )
+                elif not scan_result.get("success"):
+                    md5_warning = str(scan_result.get("error") or "md5 scan failed")
+            if md5_warning:
+                _safe_flow_step_status(
+                    flow_id,
+                    "case_scan",
+                    status="succeeded",
+                    detail=f"scan_warning: {md5_warning}"[:240],
+                    ok=True,
+                    metadata={"partial": True, "scan_result": scan_result},
+                )
+                logger.warning("Sync MD5 scan warning: %s", md5_warning)
+            else:
+                _safe_flow_step_status(flow_id, "case_scan", status="succeeded", detail="case folder scan complete", ok=True)
 
             cancelled = _check_flow_cancelled(flow_id, "portal_query")
             if cancelled:
@@ -1200,6 +1326,8 @@ def cmd_sync(rename: bool = True, headless: bool = True, notify: bool = True, fl
 
             suffix = "（含更名）" if rename else ""
             msg = f"🔄 筆錄全同步完成{suffix}\n{dl_msg}"
+            if md5_warning:
+                msg += f"\n⚠️ {md5_warning}"
             _notify(msg, notify, topic_key="transcript" if int(summary.get("downloaded_count") or 0) > 0 else "quiet_cron")
             _mark_notify_step(flow_id, notify=notify, detail=msg)
             out = {"success": True, "message": msg}
@@ -1414,6 +1542,7 @@ def main() -> int:
                 'download {"case_number":"...","court_name":"臺灣臺東地方法院","case_type":"刑事"}',
                 "download_all",
                 "sync",
+                "md5_scan",
                 "rename",
             ],
             "line_triggers": [
@@ -1550,6 +1679,10 @@ def main() -> int:
         flow_id = _safe_create_flow_mirror("sync", metadata={"rename": True})
         r = cmd_sync(flow_id=flow_id)
         _safe_finalize_flow(flow_id, r)
+        return _ok(r)
+
+    if task in ("md5_scan", "md5_scan_only"):
+        r = cmd_md5_scan_only()
         return _ok(r)
 
     if task in ("rename", "筆錄更名"):

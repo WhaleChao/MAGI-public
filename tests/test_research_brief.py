@@ -47,6 +47,7 @@ def rb_action(tmp_path):
     mod._NS_DIR = rt / "namespaces"
     mod._SEEN_PATH = rt / "seen.json"
     mod._LAST_DIGEST_PATH = rt / "last_digest.jsonl"
+    mod._INGEST_SEEN_PATH = rt / "ingest_seen.json"
     yield mod
 
 
@@ -255,6 +256,73 @@ def test_memory_ingestion_calls_remember_batch(rb_action, monkeypatch):
     assert captured[0]["metadata"]["lang_hint"] == "en"
     assert "T1" in captured[0]["content"]
     assert "body1" in captured[0]["content"]
+
+
+def test_memory_ingestion_is_idempotent_on_repeated_entries(rb_action, monkeypatch):
+    import types
+    captured: list = []
+
+    def fake_remember_batch(payloads):
+        captured.extend(payloads)
+        return len(payloads)
+
+    stub = types.ModuleType("skills.memory.mem_bridge")
+    stub.remember_batch = fake_remember_batch
+    monkeypatch.setitem(sys.modules, "skills.memory.mem_bridge", stub)
+
+    entries = [
+        {
+            "title": "Same Title",
+            "raw": "same snippet",
+            "snippet": "same snippet",
+            "url": "https://same.example/a",
+            "source_name": "src",
+            "_hash": rb_action._hash_url("https://same.example/a"),
+        }
+    ]
+    first = rb_action._ingest_entries_to_memory("語言政策", entries)
+    second = rb_action._ingest_entries_to_memory("語言政策", entries)
+    assert first == 1
+    assert second == 0
+    assert len(captured) == 1
+    assert captured[0]["metadata"]["brief_id"]
+    assert "ingested_at" not in captured[0]["metadata"]
+
+
+def test_memory_ingestion_same_content_different_brief_ids_are_allowed(rb_action, monkeypatch):
+    import types
+    captured: list = []
+
+    def fake_remember_batch(payloads):
+        captured.extend(payloads)
+        return len(payloads)
+
+    stub = types.ModuleType("skills.memory.mem_bridge")
+    stub.remember_batch = fake_remember_batch
+    monkeypatch.setitem(sys.modules, "skills.memory.mem_bridge", stub)
+
+    entries = [
+        {
+            "title": "T",
+            "raw": "identical body",
+            "snippet": "identical body",
+            "url": "https://ex.com/1",
+            "source_name": "src1",
+            "_hash": rb_action._hash_url("https://ex.com/1"),
+        },
+        {
+            "title": "T",
+            "raw": "identical body",
+            "snippet": "identical body",
+            "url": "https://ex.com/2",
+            "source_name": "src2",
+            "_hash": rb_action._hash_url("https://ex.com/2"),
+        },
+    ]
+    count = rb_action._ingest_entries_to_memory("通譯", entries)
+    assert count == 2
+    assert len(captured) == 2
+    assert captured[0]["metadata"]["brief_id"] != captured[1]["metadata"]["brief_id"]
 
 
 # ───────── translator ─────────

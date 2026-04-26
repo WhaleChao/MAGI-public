@@ -1,0 +1,94 @@
+{
+  "ts": "2026-04-26T19:30:22.099990",
+  "mode": "apply",
+  "status": "ok",
+  "before": {
+    "duplicate_groups": 3,
+    "total_extra_entries": 3
+  },
+  "after": {
+    "duplicate_groups": 0,
+    "total_extra_entries": 0
+  },
+  "planned_groups": 3,
+  "removed_count": 3,
+  "backup_path": "/Users/ai/Desktop/MAGI_v2/archive/knowledge_duplicate_cleanup/20260426_193022/duplicate_cleanup_backup.json",
+  "verified": true,
+  "cleanup_plan": {
+    "mode": "dry_run",
+    "groups": [
+      {
+        "hash": "82bee291919dcb81700b902ffe11f572",
+        "count": 2,
+        "keep_id": 996756,
+        "remove_ids": [
+          996757
+        ]
+      },
+      {
+        "hash": "c92e4e6d153297109c9b7db68e2464e7",
+        "count": 2,
+        "keep_id": 996752,
+        "remove_ids": [
+          996753
+        ]
+      },
+      {
+        "hash": "f52b550d3ee53950c84b4a93f977f205",
+        "count": 2,
+        "keep_id": 996754,
+        "remove_ids": [
+          996755
+        ]
+      }
+    ],
+    "groups_planned": 3,
+    "estimated_delete_documents": 3,
+    "estimated_delete_vectors": 3,
+    "sql_preview": [
+      "DELETE FROM vectors WHERE doc_id IN (996757);",
+      "DELETE FROM documents WHERE id IN (996757);",
+      "DELETE FROM vectors WHERE doc_id IN (996753);",
+      "DELETE FROM documents WHERE id IN (996753);",
+      "DELETE FROM vectors WHERE doc_id IN (996755);",
+      "DELETE FROM documents WHERE id IN (996755);"
+    ],
+    "notes": [
+      "先備份再刪除；本計畫預設只輸出，不自動執行。",
+      "每組保留最小 id 作為 canonical entry。"
+    ]
+  },
+  "verification": {
+    "ok": true,
+    "keep_ok": true,
+    "remove_ok": true,
+    "hash_ok": true,
+    "faiss_ok": true,
+    "targeted_duplicate_groups": 0,
+    "targeted_extra_entries": 0
+  },
+  "faiss": {
+    "backup": {
+      "ok": true,
+      "status": "ok",
+      "path": "/Users/ai/Desktop/MAGI_v2/archive/knowledge_duplicate_cleanup/20260426_193022/faiss",
+      "files": [
+        "mem_index.faiss",
+        "mem_idmap.npy",
+        "meta.json"
+      ],
+      "source_dir": "/Users/ai/Desktop/MAGI_v2/skills/memory/index_cache"
+    },
+    "rebuild": {
+      "ok": true,
+      "vectors_indexed": 68186,
+      "index_type": "flat"
+    }
+  },
+  "rollback": {
+    "attempted": false,
+    "restored": false
+  },
+  "rollback_hint": "使用備份檔 /Users/ai/Desktop/MAGI_v2/archive/knowledge_duplicate_cleanup/20260426_193022/duplicate_cleanup_backup.json 重新插回 documents/vectors，並將 backup/faiss 目錄覆蓋回 live FAISS index。",
+  "elapsed_sec": 24.53
+}
