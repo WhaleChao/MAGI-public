@@ -21,6 +21,11 @@ import os
 import re
 import sys
 from pathlib import Path
+from typing import Optional
+
+MAGI_ROOT = Path(__file__).resolve().parents[2]
+if str(MAGI_ROOT) not in sys.path:
+    sys.path.insert(0, str(MAGI_ROOT))
 
 try:
     from rapidocr_onnxruntime import RapidOCR
@@ -673,7 +678,14 @@ def task_self_test() -> dict:
         _tmp.close()
         _doc = fitz.open()
         _page = _doc.new_page()
-        _page.insert_text((50, 100), "20260101 臺灣花蓮地方法院判決", fontsize=12)
+        _page.insert_text(
+            (50, 100),
+            "臺灣花蓮地方法院刑事判決\n"
+            "中華民國115年1月1日\n"
+            "被告王小明犯詐欺取財罪，處有期徒刑。",
+            fontsize=12,
+            fontname="china-t",
+        )
         _doc.save(_tmp_path)
         _doc.close()
         result = scan_and_bookmark(_tmp_path, dry_run=True)

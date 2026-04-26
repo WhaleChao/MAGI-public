@@ -168,7 +168,7 @@ def stage1_regex(pdfs: list[Path], state: dict, scan_fn) -> dict:
     """Fast regex-based bookmark pass. Returns stats dict."""
     import fitz
 
-    stats = {"processed": 0, "bookmarks": 0, "skipped": 0, "errors": 0}
+    stats = {"processed": 0, "bookmarks": 0, "skipped": 0, "no_boundary": 0, "errors": 0}
     completed = state.setdefault("completed", {})
 
     # Optional soft budget (seconds) — nightly caller sets this to ~1800 to bound wall-clock.
@@ -222,13 +222,28 @@ def stage1_regex(pdfs: list[Path], state: dict, scan_fn) -> dict:
             result = scan_fn(str(pdf), output_path=None, dry_run=False)
             if result.get("success"):
                 bm_count = result.get("bookmarks", 0)
+                try:
+                    stored_mtime = str(pdf.stat().st_mtime)
+                except Exception:
+                    stored_mtime = mtime
                 stats["processed"] += 1
                 stats["bookmarks"] += bm_count
                 completed[key] = {
-                    "mtime": mtime, "stage1": True,
+                    "mtime": stored_mtime, "stage1": True,
                     "stage1_bookmarks": bm_count,
                     "pages": page_count,
                 }
+            elif _is_stage1_no_hit_result(result):
+                message = str(result.get("message") or "")
+                completed[key] = {
+                    "mtime": mtime,
+                    "stage1": True,
+                    "stage1_bookmarks": 0,
+                    "pages": page_count,
+                    "no_boundary": True,
+                    "message": message,
+                }
+                stats["no_boundary"] += 1
             else:
                 stats["errors"] += 1
         except Exception as e:
@@ -241,6 +256,24 @@ def stage1_regex(pdfs: list[Path], state: dict, scan_fn) -> dict:
 
     _save_state(state)
     return stats
+
+
+def _is_stage1_no_hit_result(result: Any) -> bool:
+    """Classify expected regex misses (no boundary / empty toc) as non-errors."""
+    if not isinstance(result, dict):
+        return False
+    if result.get("success") is True:
+        return False
+
+    msg = str(result.get("message") or "")
+    if re.search(r"(未偵測到文件邊界|無法產生書籤|no\s*boundary|empty\s*toc|toc\s*empty)", msg, re.IGNORECASE):
+        return True
+
+    bookmarks = result.get("bookmarks")
+    toc = result.get("toc")
+    zero_bookmarks = bookmarks == 0
+    toc_empty = toc is None or (isinstance(toc, list) and len(toc) == 0)
+    return zero_bookmarks and toc_empty
 
 
 # ── Stage 2: Vision refinement ───────────────────────────────────────────────
@@ -421,7 +454,7 @@ def main():
         logger.info("No PDFs to process — done")
         return
 
-    s1 = {"processed": 0, "bookmarks": 0, "skipped": 0, "errors": 0}
+    s1 = {"processed": 0, "bookmarks": 0, "skipped": 0, "no_boundary": 0, "errors": 0}
     s2 = {"pages_checked": 0, "bookmarks_added": 0, "files_refined": 0, "errors": 0}
 
     do_regex = args.stage in ("regex", "all")
@@ -442,7 +475,7 @@ def main():
         logger.info(
             f"Stage 1 done: {s1['processed']} processed, "
             f"{s1['bookmarks']} bookmarks, {s1['skipped']} skipped, "
-            f"{s1['errors']} errors ({time.time() - started:.0f}s)"
+            f"{s1['no_boundary']} no-boundary, {s1['errors']} errors ({time.time() - started:.0f}s)"
         )
 
     if do_vision:
@@ -464,6 +497,7 @@ def main():
         lines.append("  ── Stage 1 (regex) ──")
         lines.append(f"  處理：{s1['processed']} 份 / {s1['bookmarks']} 個書籤")
         lines.append(f"  跳過：{s1['skipped']} 份")
+        lines.append(f"  無邊界（待 vision 補漏）：{s1['no_boundary']} 份")
     if do_vision:
         lines.append("  ── Stage 2 (vision) ──")
         lines.append(f"  視覺檢查：{s2['pages_checked']} 頁")
