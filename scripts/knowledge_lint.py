@@ -64,6 +64,8 @@ REPORT_DIR = Path(MAGI_ROOT) / "static"
 REPORT_PATH = REPORT_DIR / "knowledge_lint_latest.json"
 CLEANUP_REPORT_PATH = REPORT_DIR / "knowledge_duplicate_cleanup_latest.json"
 DEFAULT_DUPLICATE_BACKUP_DIR = Path(MAGI_ROOT) / "archive" / "knowledge_duplicate_cleanup"
+# 保留最近 N 份備份（每份約 1.3 GB）。歷史曾累積到 16 份 / 16 GB，需強制 prune。
+DUPLICATE_CLEANUP_BACKUP_RETENTION = 7
 
 # Thresholds
 MIN_INSIGHT_LEN = 100  # chars — insights shorter than this are flagged
@@ -406,6 +408,32 @@ def _write_cleanup_summary(summary: Dict) -> None:
     )
 
 
+def _prune_duplicate_cleanup_backups(
+    backup_root: Path, keep: int = DUPLICATE_CLEANUP_BACKUP_RETENTION
+) -> Dict:
+    """淘汰超過 retention 的備份目錄；目錄名為時間戳排序，保留最新 keep 份。"""
+    result = {"pruned": 0, "kept": 0, "errors": []}
+    if not backup_root.exists():
+        return result
+    try:
+        children = sorted(
+            (p for p in backup_root.iterdir() if p.is_dir()),
+            key=lambda p: p.name,
+            reverse=True,
+        )
+    except Exception as e:
+        result["errors"].append(f"iterdir:{e}")
+        return result
+    result["kept"] = min(len(children), keep)
+    for victim in children[keep:]:
+        try:
+            shutil.rmtree(victim)
+            result["pruned"] += 1
+        except Exception as e:
+            result["errors"].append(f"{victim.name}:{e}")
+    return result
+
+
 def _duplicate_cleanup_gate(dupe_rows: List[Dict]) -> Dict:
     latest = _load_cleanup_summary()
     if not dupe_rows:
@@ -724,6 +752,8 @@ def cleanup_duplicate_vectors(
 
         run_dir = backup_root / datetime.now().strftime("%Y%m%d_%H%M%S")
         run_dir.mkdir(parents=True, exist_ok=True)
+        # 淘汰舊備份避免無限累積（單份 ~1.3 GB）
+        summary["backup_prune"] = _prune_duplicate_cleanup_backups(backup_root)
         backup_path, payload = _prepare_backup_payload(
             conn,
             remove_ids=remove_ids,
