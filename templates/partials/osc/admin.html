@@ -7,6 +7,36 @@
                     </div>
                 </div>
             </div>
+            <div class="card" id="gcalSection">
+                <div class="section-head">
+                    <div>
+                        <h3>📅 Google Calendar 同步</h3>
+                        <div class="section-note">將 OSC 待辦事項與行事曆事件同步到 Google Calendar。需先設定 Google OAuth client_id/client_secret。</div>
+                    </div>
+                </div>
+                <div class="field-grid cols-3">
+                    <div class="field">
+                        <label for="gcalClientId">Client ID</label>
+                        <input id="gcalClientId" placeholder="Google Cloud Console 取得">
+                    </div>
+                    <div class="field">
+                        <label for="gcalClientSecret">Client Secret</label>
+                        <input id="gcalClientSecret" type="password">
+                    </div>
+                    <div class="field">
+                        <label for="gcalCalendarId">Calendar ID</label>
+                        <input id="gcalCalendarId" placeholder="primary">
+                    </div>
+                </div>
+                <div class="toolbar">
+                    <button class="btn" id="gcalSaveCredsBtn">💾 儲存憑證</button>
+                    <button class="btn primary" id="gcalConnectBtn">🔗 連線授權</button>
+                    <button class="btn" id="gcalSyncDryRunBtn">🔍 Dry-run 同步</button>
+                    <button class="btn primary" id="gcalSyncBtn">⏫ 立即同步</button>
+                    <button class="btn danger" id="gcalDisconnectBtn">❌ 解除授權</button>
+                </div>
+                <div id="gcalStatus" class="helper" style="margin-top:8px"></div>
+            </div>
             <div class="card" id="discordWebhookSection">
                 <div class="section-head">
                     <div>

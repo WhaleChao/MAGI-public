@@ -11,6 +11,7 @@ async function loadAdminData() {
         loadAdminPdfLogs(),
         loadAdminActivityLogs(),
         loadOscBackups(),
+        loadGcalStatus(),
     ]);
 }
 
@@ -473,4 +474,88 @@ async function delOscBackup(filename) {
     await api(`/api/osc/backups/${encodeURIComponent(filename)}`, "DELETE");
     showToast("備份已刪除");
     await loadOscBackups();
+}
+
+// ── P4: Google Calendar 同步 ──────────────────────────────────────────────────
+
+async function loadGcalStatus() {
+    const statusEl = document.getElementById("gcalStatus");
+    if (!statusEl) return;
+    try {
+        const data = await api("/api/osc/gcal/status");
+        if (data && data.connected) {
+            statusEl.textContent = `✅ 已連線 Google Calendar（calendar_id: ${data.calendar_id || "primary"}）${data.expires_at ? " | 到期：" + data.expires_at : ""}`;
+        } else {
+            statusEl.textContent = "⚪ 尚未授權 Google Calendar";
+        }
+    } catch (err) {
+        statusEl.textContent = `⚠️ 無法取得 GCal 狀態：${err.message}`;
+    }
+}
+
+async function saveGcalCreds() {
+    const clientId = (document.getElementById("gcalClientId").value || "").trim();
+    const clientSecret = (document.getElementById("gcalClientSecret").value || "").trim();
+    const calendarId = (document.getElementById("gcalCalendarId").value || "").trim() || "primary";
+    const statusEl = document.getElementById("gcalStatus");
+
+    if (!clientId || !clientSecret) {
+        if (statusEl) statusEl.textContent = "❌ Client ID 與 Client Secret 均為必填";
+        return;
+    }
+    try {
+        await api("/api/osc/settings", "POST", { key: "gcal_client_id", value: clientId, description: "Google Calendar OAuth client_id（P4）" });
+        await api("/api/osc/settings", "POST", { key: "gcal_client_secret", value: clientSecret, description: "Google Calendar OAuth client_secret（P4）" });
+        await api("/api/osc/settings", "POST", { key: "gcal_calendar_id", value: calendarId, description: "Google Calendar target calendar id（P4）" });
+        showToast("GCal 憑證已儲存", "ok");
+        if (statusEl) statusEl.textContent = "✅ 憑證已儲存，可點「連線授權」開始 OAuth 流程";
+    } catch (err) {
+        if (statusEl) statusEl.textContent = `❌ 儲存失敗：${err.message}`;
+    }
+}
+
+async function connectGcal() {
+    const statusEl = document.getElementById("gcalStatus");
+    try {
+        const res = await api("/api/osc/gcal/auth/start", "POST", {});
+        if (res && res.auth_url) {
+            window.open(res.auth_url, "_blank", "width=600,height=700");
+            if (statusEl) statusEl.textContent = "🔗 已開啟授權視窗，完成後請重新整理狀態";
+            // Poll status after 5s
+            setTimeout(() => loadGcalStatus(), 5000);
+        } else {
+            if (statusEl) statusEl.textContent = `❌ 無法取得授權 URL：${res?.error || ""}`;
+        }
+    } catch (err) {
+        if (statusEl) statusEl.textContent = `❌ 連線失敗：${err.message}`;
+    }
+}
+
+async function syncGcal(dryRun) {
+    const statusEl = document.getElementById("gcalStatus");
+    try {
+        const res = await api("/api/osc/gcal/sync", "POST", { dry_run: dryRun });
+        if (res && res.ok) {
+            const mode = dryRun ? "Dry-run" : "同步";
+            const msg = `${mode} 完成 — 推送 ${res.pushed ?? 0} 筆，略過 ${res.skipped ?? 0} 筆${res.errors && res.errors.length ? `（${res.errors.length} 錯誤）` : ""}`;
+            if (statusEl) statusEl.textContent = (dryRun ? "🔍 " : "✅ ") + msg;
+            showToast(msg, "ok");
+        } else {
+            if (statusEl) statusEl.textContent = `❌ 同步失敗：${res?.error || ""}`;
+        }
+    } catch (err) {
+        if (statusEl) statusEl.textContent = `❌ 同步失敗：${err.message}`;
+    }
+}
+
+async function disconnectGcal() {
+    if (!confirm("確定解除 Google Calendar 授權？將刪除本機 token。")) return;
+    const statusEl = document.getElementById("gcalStatus");
+    try {
+        await api("/api/osc/gcal/disconnect", "POST", {});
+        showToast("Google Calendar 授權已解除", "ok");
+        await loadGcalStatus();
+    } catch (err) {
+        if (statusEl) statusEl.textContent = `❌ 解除失敗：${err.message}`;
+    }
 }
