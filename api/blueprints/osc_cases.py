@@ -4423,3 +4423,373 @@ def osc_backup_delete(filename):
         return jsonify({"ok": True})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# P2: 報價單 PDF 匯出
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _osc_find_font() -> str:
+    """Return a path to a CJK TrueType/TrueType Collection font available on macOS."""
+    candidates = [
+        "/System/Library/Fonts/PingFang.ttc",
+        "/System/Library/Fonts/STHeiti Medium.ttc",
+        "/System/Library/Fonts/Hiragino Sans GB.ttc",
+        "/Library/Fonts/Arial Unicode MS.ttf",
+    ]
+    for p in candidates:
+        if os.path.exists(p):
+            return p
+    return ""
+
+
+def _osc_build_quotation_pdf(row: dict) -> bytes:
+    """Generate a PDF for the given quotation row and return raw bytes."""
+    from io import BytesIO
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.units import mm
+    from reportlab.lib import colors
+    from reportlab.platypus import (
+        SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, HRFlowable,
+    )
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.ttfonts import TTFont
+
+    font_path = _osc_find_font()
+    font_name = "PingFang"
+    if font_path:
+        try:
+            pdfmetrics.registerFont(TTFont(font_name, font_path))
+        except Exception:
+            font_name = "Helvetica"
+    else:
+        font_name = "Helvetica"
+
+    buf = BytesIO()
+    doc = SimpleDocTemplate(
+        buf,
+        pagesize=A4,
+        topMargin=20 * mm,
+        bottomMargin=20 * mm,
+        leftMargin=20 * mm,
+        rightMargin=20 * mm,
+    )
+
+    styles = getSampleStyleSheet()
+    title_style = ParagraphStyle(
+        "Title2",
+        fontName=font_name,
+        fontSize=18,
+        alignment=1,
+        spaceAfter=8,
+        leading=24,
+    )
+    h2_style = ParagraphStyle(
+        "H2",
+        fontName=font_name,
+        fontSize=12,
+        spaceAfter=4,
+        leading=16,
+    )
+    normal_style = ParagraphStyle(
+        "Normal2",
+        fontName=font_name,
+        fontSize=10,
+        spaceAfter=2,
+        leading=14,
+    )
+    small_style = ParagraphStyle(
+        "Small",
+        fontName=font_name,
+        fontSize=9,
+        spaceAfter=2,
+        leading=13,
+    )
+
+    story = []
+
+    # Firm info from settings
+    firm_name = _osc_get_setting_value("firm_name", "")
+    firm_address = _osc_get_setting_value("firm_address", "")
+    firm_phone = _osc_get_setting_value("firm_phone", "")
+    if firm_name:
+        story.append(Paragraph(firm_name, h2_style))
+    if firm_address:
+        story.append(Paragraph(firm_address, small_style))
+    if firm_phone:
+        story.append(Paragraph(f"電話：{firm_phone}", small_style))
+    if firm_name or firm_address or firm_phone:
+        story.append(HRFlowable(width="100%", thickness=0.5, spaceAfter=8))
+
+    # Title
+    story.append(Paragraph("法律服務報價單", title_style))
+    story.append(Spacer(1, 6 * mm))
+
+    # Client info
+    client_name = str(row.get("client_name") or "")
+    project_name = str(row.get("project_name") or "")
+    row_id = str(row.get("id") or "")
+    date_str = str(row.get("date") or "")
+    story.append(Paragraph(f"客戶姓名：{client_name}", normal_style))
+    story.append(Paragraph(f"案件編號：{row_id}", normal_style))
+    story.append(Paragraph(f"項目名稱：{project_name}", normal_style))
+    story.append(Paragraph(f"報價日期：{date_str}", normal_style))
+    story.append(Spacer(1, 6 * mm))
+
+    # Items table
+    items_raw = row.get("items") or "[]"
+    if isinstance(items_raw, str):
+        try:
+            items = json.loads(items_raw)
+        except Exception:
+            items = []
+    elif isinstance(items_raw, list):
+        items = items_raw
+    else:
+        items = []
+
+    table_data = [["項次", "項目", "數量", "單價", "小計"]]
+    for idx, it in enumerate(items, 1):
+        if not isinstance(it, dict):
+            continue
+        name = str(it.get("name") or it.get("item") or it.get("description") or "")
+        qty = str(it.get("qty") or it.get("quantity") or 1)
+        unit_price = str(it.get("unit_price") or it.get("price") or 0)
+        subtotal = str(it.get("subtotal") or it.get("amount") or "")
+        try:
+            if not subtotal:
+                subtotal = str(float(qty) * float(unit_price))
+        except Exception:
+            pass
+        table_data.append([str(idx), name, qty, unit_price, subtotal])
+
+    if len(table_data) > 1:
+        col_widths = [15 * mm, 80 * mm, 20 * mm, 30 * mm, 30 * mm]
+        tbl = Table(table_data, colWidths=col_widths)
+        tbl.setStyle(TableStyle([
+            ("FONTNAME", (0, 0), (-1, -1), font_name),
+            ("FONTSIZE", (0, 0), (-1, -1), 9),
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#d0d8e8")),
+            ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+            ("ALIGN", (2, 0), (-1, -1), "RIGHT"),
+            ("ALIGN", (0, 0), (0, -1), "CENTER"),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f5f5f5")]),
+        ]))
+        story.append(tbl)
+        story.append(Spacer(1, 4 * mm))
+
+    # Total
+    discount = row.get("discount") or 0
+    tax = row.get("tax") or 0
+    total = row.get("total") or 0
+    story.append(Paragraph(f"折扣：{discount}", normal_style))
+    story.append(Paragraph(f"稅額：{tax}", normal_style))
+    story.append(Paragraph(f"<b>總計：{total}</b>", normal_style))
+    story.append(Spacer(1, 6 * mm))
+
+    # Notes
+    notes = str(row.get("notes") or "")
+    if notes:
+        story.append(Paragraph("備註：", h2_style))
+        story.append(Paragraph(notes, normal_style))
+        story.append(Spacer(1, 6 * mm))
+
+    # Signature area
+    story.append(HRFlowable(width="100%", thickness=0.5, spaceAfter=12))
+    sig_data = [
+        [Paragraph("客戶簽名：___________________", normal_style),
+         Paragraph("律師簽名：___________________", normal_style)],
+    ]
+    sig_tbl = Table(sig_data, colWidths=[85 * mm, 85 * mm])
+    sig_tbl.setStyle(TableStyle([
+        ("FONTNAME", (0, 0), (-1, -1), font_name),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+    ]))
+    story.append(sig_tbl)
+
+    doc.build(story)
+    return buf.getvalue()
+
+
+@osc_bp.route("/api/osc/quotations/<row_id>/export-pdf", methods=["GET"])
+@login_required
+def osc_quotation_export_pdf(row_id):
+    """Export a quotation as PDF and return as attachment."""
+    row, _ = _osc_exec("SELECT * FROM quotations WHERE id=%s", (row_id,), fetch="one")
+    if not row:
+        return jsonify({"ok": False, "error": "Quotation not found"}), 404
+
+    try:
+        pdf_bytes = _osc_build_quotation_pdf(row)
+    except Exception as e:
+        logging.exception("PDF generation error for quotation %s", row_id)
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+    today = datetime.now().strftime("%Y%m%d")
+    safe_name = (row.get("client_name") or row_id or "quotation").replace("/", "_")
+    filename = f"報價單_{safe_name}_{today}.pdf"
+
+    buf = io.BytesIO(pdf_bytes)
+    buf.seek(0)
+    return send_file(
+        buf,
+        mimetype="application/pdf",
+        as_attachment=True,
+        download_name=filename,
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# P2: 地址標籤 PNG 預覽 + 下載
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _osc_build_address_label(
+    sender_name: str,
+    sender_address: str,
+    receiver_name: str,
+    receiver_address: str,
+) -> bytes:
+    """Render address label PNG (8cm×4cm @300 DPI) and return raw PNG bytes."""
+    import textwrap
+    from io import BytesIO
+    from PIL import Image, ImageDraw, ImageFont
+
+    W, H = 945, 472  # 8cm × 4cm @ 300 DPI
+
+    font_path = _osc_find_font()
+
+    def _load_font(size: int):
+        if font_path:
+            try:
+                return ImageFont.truetype(font_path, size, index=0)
+            except Exception:
+                pass
+        return ImageFont.load_default()
+
+    font_large = _load_font(28)
+    font_normal = _load_font(22)
+    font_small = _load_font(18)
+
+    img = Image.new("RGB", (W, H), "white")
+    draw = ImageDraw.Draw(img)
+
+    # Sender block (top-left, small)
+    draw.text((20, 18), sender_name, fill="black", font=font_small)
+    if sender_address:
+        addr_lines = textwrap.wrap(sender_address, width=28)
+        for i, line in enumerate(addr_lines[:2]):
+            draw.text((20, 42 + i * 22), line, fill="black", font=font_small)
+
+    # Separator line
+    draw.line([(20, 110), (W - 20, 110)], fill="#cccccc", width=1)
+
+    # Receiver name (large, center-ish)
+    draw.text((50, 130), receiver_name, fill="black", font=font_large)
+
+    # Receiver address (wrapped)
+    addr_lines = textwrap.wrap(receiver_address, width=18)
+    y = 178
+    for line in addr_lines[:4]:
+        draw.text((50, y), line, fill="black", font=font_normal)
+        y += 34
+
+    buf = BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+@osc_bp.route("/api/osc/cases/<row_id>/address-label", methods=["GET"])
+@login_required
+def osc_case_address_label(row_id):
+    """Generate address label PNG for a case.
+
+    Query params:
+      mode      preview|download  (default: preview)
+      recipient court|defendant|laf
+    """
+    mode = (request.args.get("mode") or "preview").strip().lower()
+    recipient = (request.args.get("recipient") or "").strip().lower()
+
+    if recipient not in ("court", "defendant", "laf"):
+        return jsonify({"ok": False, "error": "recipient must be court/defendant/laf"}), 400
+
+    # Load case
+    case, _ = _osc_exec("SELECT * FROM cases WHERE id=%s", (row_id,), fetch="one")
+    if not case:
+        return jsonify({"ok": False, "error": "Case not found"}), 404
+
+    case_number = str(case.get("case_number") or "")
+    client_name = str(case.get("client_name") or "")
+
+    # Sender
+    sender_name = _osc_get_setting_value("firm_name", "")
+    sender_address = _osc_get_setting_value("firm_address", "")
+
+    # Receiver
+    receiver_name = ""
+    receiver_address = ""
+
+    if recipient == "court":
+        court_name = str(case.get("court_name") or "").strip()
+        if not court_name:
+            return jsonify({"ok": False, "error": "案件未設定法院/地檢署名稱"}), 400
+        receiver_name = court_name
+        # Try to look up address from courts table
+        court_row, _ = _osc_exec(
+            "SELECT address FROM courts WHERE name=%s LIMIT 1",
+            (court_name,),
+            fetch="one",
+        )
+        receiver_address = str((court_row or {}).get("address") or "")
+
+    elif recipient == "defendant":
+        opp_rows, _ = _osc_exec(
+            "SELECT name, address FROM opponents WHERE case_number=%s AND is_active=1 ORDER BY id LIMIT 1",
+            (case_number,),
+            fetch="all",
+        )
+        if not opp_rows:
+            # Fallback: try notes
+            notes = str(case.get("notes") or "")
+            if not notes.strip():
+                return jsonify({"ok": False, "error": "案件無對造資料"}), 400
+            receiver_name = client_name or case_number
+            receiver_address = notes[:80]
+        else:
+            opp = opp_rows[0]
+            receiver_name = str(opp.get("name") or "")
+            receiver_address = str(opp.get("address") or "")
+
+    elif recipient == "laf":
+        laf_branch = str(case.get("laf_branch") or "").strip()
+        if not laf_branch:
+            return jsonify({"ok": False, "error": "案件未設定法扶分會"}), 400
+        receiver_name = laf_branch
+        branch_row, _ = _osc_exec(
+            "SELECT address FROM legal_aid_branches WHERE name=%s LIMIT 1",
+            (laf_branch,),
+            fetch="one",
+        )
+        receiver_address = str((branch_row or {}).get("address") or "")
+
+    try:
+        png_bytes = _osc_build_address_label(
+            sender_name, sender_address, receiver_name, receiver_address
+        )
+    except Exception as e:
+        logging.exception("Address label generation error for case %s", row_id)
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+    today = datetime.now().strftime("%Y%m%d")
+    filename = f"地址標籤_{case_number or row_id}_{recipient}.png"
+
+    as_attachment = (mode == "download")
+    buf = io.BytesIO(png_bytes)
+    buf.seek(0)
+    return send_file(
+        buf,
+        mimetype="image/png",
+        as_attachment=as_attachment,
+        download_name=filename,
+    )

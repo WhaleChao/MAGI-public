@@ -53,6 +53,7 @@ function renderCases() {
                     <button class="btn primary" data-act="case-workbench" data-id="${esc(r.id)}">工作台</button>
                     <button class="btn" data-act="case-open" data-id="${esc(r.id)}">資料夾</button>
                     <button class="btn" data-act="case-edit" data-id="${esc(r.id)}">編輯</button>
+                    <button class="btn" data-act="case-address-label" data-id="${esc(r.id)}">📮 地址標籤</button>
                     <button class="btn danger" data-act="case-del" data-id="${esc(r.id)}">刪除</button>
                 </div>
             </div>`;
@@ -74,6 +75,7 @@ function renderCases() {
             <button class="btn" data-act="case-workbench" data-id="${esc(r.id)}">工作台</button>
             <button class="btn" data-act="case-open" data-id="${esc(r.id)}">資料夾</button>
             <button class="btn" data-act="case-edit" data-id="${esc(r.id)}">編輯</button>
+            <button class="btn" data-act="case-address-label" data-id="${esc(r.id)}">📮 地址標籤</button>
             <button class="btn danger" data-act="case-del" data-id="${esc(r.id)}">刪除</button>
         </td>
     </tr>
@@ -861,4 +863,70 @@ async function saveMeeting() {
     clearFields(["meeting_id", "meeting_case_number", "meeting_client_name", "meeting_type", "meeting_datetime", "meeting_duration", "meeting_location", "meeting_notes", "meeting_status"]);
     await loadMeetings();
     await loadMeta();
+}
+
+// ── 地址標籤 Dialog ──────────────────────────────────────────────────────────
+
+function addressLabelDialog(caseId) {
+    const existingDlg = document.getElementById("address-label-dialog");
+    if (existingDlg) existingDlg.remove();
+
+    const dlg = document.createElement("dialog");
+    dlg.id = "address-label-dialog";
+    dlg.innerHTML = `
+        <div style="min-width:360px;padding:16px;">
+            <h3 style="margin:0 0 12px 0;">📮 地址標籤</h3>
+            <p style="margin:0 0 10px 0;color:#555;">選擇收件人類型：</p>
+            <div style="display:flex;gap:8px;margin-bottom:14px;">
+                <button class="btn" id="al-btn-court">🏛 法院地址</button>
+                <button class="btn" id="al-btn-defendant">👤 對造地址</button>
+                <button class="btn" id="al-btn-laf">📋 法扶分會</button>
+            </div>
+            <div id="al-preview" style="margin-bottom:12px;text-align:center;min-height:40px;"></div>
+            <div style="display:flex;gap:8px;justify-content:flex-end;">
+                <button class="btn" id="al-download-btn" style="display:none;">📥 下載</button>
+                <button class="btn" id="al-close-btn">關閉</button>
+            </div>
+        </div>
+    `;
+    document.body.appendChild(dlg);
+    dlg.showModal();
+
+    let currentRecipient = null;
+
+    async function selectRecipient(recipient) {
+        currentRecipient = recipient;
+        const previewDiv = document.getElementById("al-preview");
+        previewDiv.innerHTML = `<span style="color:#888">載入中…</span>`;
+        document.getElementById("al-download-btn").style.display = "none";
+        try {
+            const url = `/api/osc/cases/${encodeURIComponent(caseId)}/address-label?mode=preview&recipient=${recipient}`;
+            const resp = await fetch(url, { credentials: "same-origin" });
+            if (!resp.ok) {
+                const json = await resp.json().catch(() => ({}));
+                previewDiv.innerHTML = `<span style="color:red">錯誤：${json.error || resp.statusText}</span>`;
+                return;
+            }
+            const blob = await resp.blob();
+            const objUrl = URL.createObjectURL(blob);
+            previewDiv.innerHTML = `<img src="${objUrl}" style="max-width:100%;border:1px solid #ddd;border-radius:4px;" />`;
+            document.getElementById("al-download-btn").style.display = "inline-block";
+        } catch (e) {
+            previewDiv.innerHTML = `<span style="color:red">載入失敗：${e.message}</span>`;
+        }
+    }
+
+    document.getElementById("al-btn-court").addEventListener("click", () => selectRecipient("court"));
+    document.getElementById("al-btn-defendant").addEventListener("click", () => selectRecipient("defendant"));
+    document.getElementById("al-btn-laf").addEventListener("click", () => selectRecipient("laf"));
+
+    document.getElementById("al-download-btn").addEventListener("click", () => {
+        if (!currentRecipient) return;
+        window.location.href = `/api/osc/cases/${encodeURIComponent(caseId)}/address-label?mode=download&recipient=${currentRecipient}`;
+    });
+
+    document.getElementById("al-close-btn").addEventListener("click", () => {
+        dlg.close();
+        dlg.remove();
+    });
 }

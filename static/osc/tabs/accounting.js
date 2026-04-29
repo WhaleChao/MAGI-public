@@ -251,6 +251,7 @@ async function loadQuotations() {
         <td>${fmtAmount(r.total)}</td>
         <td class="actions">
             <button class="btn" data-act="qt-edit" data-id="${esc(r.id)}">編輯</button>
+            <a class="btn" href="/api/osc/quotations/${esc(r.id)}/export-pdf" target="_blank">📄 下載 PDF</a>
             <button class="btn danger" data-act="qt-del" data-id="${esc(r.id)}">刪除</button>
         </td>
     </tr>
