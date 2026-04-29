@@ -7,6 +7,28 @@
                     </div>
                 </div>
             </div>
+            <div class="card" id="discordWebhookSection">
+                <div class="section-head">
+                    <div>
+                        <h3>🔔 Discord Webhook 通知</h3>
+                        <div class="section-note">設定後，補件提醒、結案歸檔等事件可推播到 Discord 頻道。對應原版 PaperClip Discord 推播功能。</div>
+                    </div>
+                </div>
+                <div class="field-grid cols-4">
+                    <div class="field" style="grid-column: span 3;">
+                        <label for="discordWebhookUrl">Webhook URL</label>
+                        <input id="discordWebhookUrl" type="text" placeholder="https://discord.com/api/webhooks/...">
+                    </div>
+                    <div class="field">
+                        <label>儲存到 settings.discord_webhook_url</label>
+                        <div class="inline-actions">
+                            <button class="btn primary" id="discordWebhookSaveBtn">💾 儲存</button>
+                            <button class="btn" id="discordWebhookTestBtn">📤 Test 推播</button>
+                        </div>
+                    </div>
+                </div>
+                <div id="discordWebhookStatus" class="helper" style="margin-top:8px"></div>
+            </div>
             <div class="grid-2">
                 <div class="card">
                     <div class="section-head">

@@ -352,3 +352,63 @@ async function delAdminActivityLog(id) {
     await loadAdminActivityLogs();
     await loadMeta();
 }
+
+// ── Discord Webhook UI（P2 對應 PaperClip osc.py:22790 SettingsDialog discord_group）──
+
+async function loadDiscordWebhook() {
+    const input = document.getElementById("discordWebhookUrl");
+    if (!input) return;
+    try {
+        const data = await api("/api/osc/settings/discord_webhook_url");
+        if (data && data.ok && data.item) {
+            input.value = data.item.value || "";
+        }
+    } catch (_) {
+        // 沒這 key 是正常情況
+    }
+}
+
+async function saveDiscordWebhook() {
+    const url = (document.getElementById("discordWebhookUrl").value || "").trim();
+    const status = document.getElementById("discordWebhookStatus");
+    if (!url) {
+        if (status) status.textContent = "Webhook URL 為空。";
+        return;
+    }
+    if (!/^https:\/\/(discord\.com|discordapp\.com)\/api\/webhooks\//.test(url)) {
+        if (status) status.textContent = "❌ 無效的 Discord webhook URL（必須是 https://discord.com/api/webhooks/...）。";
+        return;
+    }
+    try {
+        await api("/api/osc/settings", "POST", {
+            key: "discord_webhook_url",
+            value: url,
+            description: "Discord webhook URL（OSC 通知推播用）",
+        });
+        if (status) status.textContent = "✅ 已儲存到 settings.discord_webhook_url";
+        showToast("Discord webhook 設定已儲存。", "ok");
+    } catch (err) {
+        if (status) status.textContent = `❌ 儲存失敗：${err.message}`;
+    }
+}
+
+async function testDiscordWebhook() {
+    const url = (document.getElementById("discordWebhookUrl").value || "").trim();
+    const status = document.getElementById("discordWebhookStatus");
+    if (status) status.textContent = "推播中...";
+    try {
+        const res = await api("/api/osc/discord/test", "POST", {
+            webhook_url: url,
+            message: "✅ MAGI OSC Webhook 連線測試 — 此訊息確認 webhook 正常。",
+        });
+        if (res && res.ok) {
+            if (status) status.textContent = `✅ Test 推播成功（HTTP ${res.status_code}）。請到 Discord 頻道確認。`;
+            showToast("Discord 推播成功！", "ok");
+        } else {
+            if (status) status.textContent = `❌ Test 失敗：${res?.error || "未知錯誤"}`;
+            showToast(`Discord Test 失敗：${res?.error || ""}`, "warn", 4000);
+        }
+    } catch (err) {
+        if (status) status.textContent = `❌ Test 失敗：${err.message}`;
+    }
+}

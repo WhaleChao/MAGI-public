@@ -217,3 +217,58 @@ def osc_legal_aid_branch_detail_api(row_id):
     result, _ = _osc_exec(f"UPDATE legal_aid_branches SET {','.join(sets)} WHERE id=%s", tuple(vals), fetch="none")
     _osc_log_activity("legal_aid_branch:update", "legal_aid_branches", str(row_id), payload)
     return jsonify({"ok": True, "result": result})
+
+
+# ── Discord Webhook test ──────────────────────────────────────────────
+# 對應原版 PaperClip Discord 推播（osc.py SettingsDialog discord_group line 22790）。
+# 網頁版過去無專屬 UI，現在 admin tab 有專屬 webhook 設定 + Test 推播按鈕。
+
+@osc_settings_bp.route("/api/osc/discord/test", methods=["POST"])
+@login_required
+def osc_discord_test_api():
+    """測試 Discord webhook：POST 一則「✅ MAGI Webhook 連線測試」訊息。
+
+    payload: {"webhook_url": "https://discord.com/api/webhooks/...", "message?": "..."}
+    若 webhook_url 為空、嘗試從 settings.discord_webhook_url 讀取。
+
+    Returns: {ok, status_code, error?}
+    """
+    import json as _json
+    import urllib.request as _ureq
+    import urllib.error as _uerr
+
+    payload = request.get_json(silent=True) or {}
+    webhook_url = (payload.get("webhook_url") or "").strip()
+    msg = (payload.get("message") or "").strip() or "✅ MAGI Webhook 連線測試（OSC admin → Test 推播）"
+
+    if not webhook_url:
+        # fallback：讀 settings.discord_webhook_url
+        _osc_exec, _, _ = _get_osc_helpers()
+        row, _ = _osc_exec(
+            "SELECT value FROM settings WHERE `key`='discord_webhook_url'",
+            (),
+            fetch="one",
+        )
+        webhook_url = (row.get("value") if row else "") or ""
+        webhook_url = webhook_url.strip()
+
+    if not webhook_url:
+        return jsonify({"ok": False, "error": "webhook_url required (and no settings.discord_webhook_url found)"}), 400
+
+    if not webhook_url.startswith(("https://discord.com/api/webhooks/", "https://discordapp.com/api/webhooks/")):
+        return jsonify({"ok": False, "error": "invalid Discord webhook URL"}), 400
+
+    body = _json.dumps({"content": msg}).encode("utf-8")
+    req = _ureq.Request(
+        webhook_url,
+        data=body,
+        method="POST",
+        headers={"Content-Type": "application/json", "User-Agent": "MAGI-OSC/1.0"},
+    )
+    try:
+        with _ureq.urlopen(req, timeout=10) as resp:
+            return jsonify({"ok": True, "status_code": resp.status})
+    except _uerr.HTTPError as e:
+        return jsonify({"ok": False, "status_code": e.code, "error": f"HTTP {e.code}: {e.reason}"}), 502
+    except Exception as e:
+        return jsonify({"ok": False, "error": f"{type(e).__name__}: {e}"}), 502

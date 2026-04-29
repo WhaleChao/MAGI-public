@@ -55,7 +55,10 @@ function bindTabs() {
                 loadQuotationTemplates();
             }
             if (tabId === "insights") loadInsights();
-            if (tabId === "admin") loadAdminData();
+            if (tabId === "admin") {
+                loadAdminData();
+                loadDiscordWebhook();
+            }
         });
     });
 }
@@ -274,6 +277,8 @@ function bindEvents() {
         ["adminSettingsSearchBtn", loadAdminSettings, "系統設定搜尋"],
         ["adminSettingsRefreshBtn", loadAdminSettings, "系統設定重新整理"],
         ["adminSettingSaveBtn", saveAdminSetting, "系統設定儲存"],
+        ["discordWebhookSaveBtn", saveDiscordWebhook, "Discord 設定儲存"],
+        ["discordWebhookTestBtn", testDiscordWebhook, "Discord Test 推播"],
         ["adminReasonSearchBtn", loadAdminCaseReasons, "案由模板搜尋"],
         ["adminReasonRefreshBtn", loadAdminCaseReasons, "案由模板重新整理"],
         ["adminReasonSaveBtn", saveAdminCaseReason, "案由模板儲存"],
@@ -517,6 +522,35 @@ function initGlobalSearch() {
     });
 }
 
+// ── Theme toggle (P2 對應 PaperClip ThemeManager line 507) ──
+function initThemeToggle() {
+    const STORAGE_KEY = "magi.osc.theme";
+    const btn = document.getElementById("themeToggleBtn");
+
+    function applyTheme(name) {
+        if (name === "dark") {
+            document.body.classList.add("theme-dark");
+            if (btn) btn.textContent = "☀️";
+        } else {
+            document.body.classList.remove("theme-dark");
+            if (btn) btn.textContent = "🌙";
+        }
+    }
+
+    let saved = "light";
+    try { saved = localStorage.getItem(STORAGE_KEY) || "light"; } catch (_) {}
+    applyTheme(saved);
+
+    if (btn) {
+        btn.addEventListener("click", () => {
+            const cur = document.body.classList.contains("theme-dark") ? "dark" : "light";
+            const next = cur === "dark" ? "light" : "dark";
+            applyTheme(next);
+            try { localStorage.setItem(STORAGE_KEY, next); } catch (_) {}
+        });
+    }
+}
+
 async function boot() {
     bindTabs();
     bindEvents();
@@ -524,6 +558,7 @@ async function boot() {
     initCalendarView();
     initSortBars();
     initGlobalSearch();
+    initThemeToggle();
     syncFormTypeFields();
     applyAccountingPeriod();
     await loadMeta();

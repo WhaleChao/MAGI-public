@@ -190,3 +190,50 @@ header {
     pointer-events: none;
 }
 
+
+/* ============================================================ */
+/* Dark mode（2026-04-29 P2：對應 PaperClip ThemeManager）        */
+/* ============================================================ */
+body.theme-dark {
+    --bg: #0f172a;
+    --panel: #1e293b;
+    --panel-2: #1a2438;
+    --line: #334155;
+    --text: #e2e8f0;
+    --muted: #94a3b8;
+    --accent: #38bdf8;
+    --accent-2: #fbbf24;
+    --danger: #f87171;
+    --ok: #4ade80;
+    --sidebar-bg: #020617;
+    --sidebar-text: #cbd5e1;
+    --sidebar-accent: #38bdf8;
+}
+
+body.theme-dark input,
+body.theme-dark select,
+body.theme-dark textarea {
+    background: var(--panel-2);
+    color: var(--text);
+    border-color: var(--line);
+}
+
+body.theme-dark .badge {
+    background: var(--panel-2);
+    color: var(--muted);
+}
+
+#themeToggleBtn {
+    background: transparent;
+    border: 1px solid var(--line);
+    color: var(--text);
+    padding: 6px 10px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 14px;
+    line-height: 1;
+}
+
+#themeToggleBtn:hover {
+    background: var(--panel-2);
+}
