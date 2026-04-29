@@ -3209,6 +3209,154 @@ def osc_forms_export_api():
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# Document stamping (正本/副本/繕本 + 附委任狀 + 繕本已送對造)
+# 對應原版 osc.py:25984 _add_overlays_and_stamp 桌面功能
+# 後端委派給 skills/doc-producer/action.py（PyMuPDF 實作）
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+@osc_bp.route("/api/osc/documents/stamp", methods=["POST"])
+@login_required
+def osc_documents_stamp_api():
+    """書狀蓋章：在 PDF 加 正本/副本/繕本 + 可選 附委任狀 / 繕本已送對造。
+
+    Request:
+        {
+            "file_path": "/abs/path/to/file.pdf or .docx",
+            "copy_type": "正本" | "副本" | "繕本",
+            "add_poa": bool,
+            "add_sent_to_opponent": bool
+        }
+
+    DOCX 會先轉 PDF 再蓋章；PDF 直接蓋章。
+    """
+    import subprocess as _sp
+
+    payload = request.get_json(silent=True) or {}
+    file_path = (payload.get("file_path") or "").strip()
+    copy_type = (payload.get("copy_type") or "正本").strip()
+    add_poa = bool(payload.get("add_poa"))
+    add_sent_to_opponent = bool(payload.get("add_sent_to_opponent"))
+
+    if not file_path:
+        return jsonify({"ok": False, "error": "file_path required"}), 400
+    if copy_type not in ("正本", "副本", "繕本"):
+        return jsonify({"ok": False, "error": "copy_type must be 正本/副本/繕本"}), 400
+
+    # 路徑安全性：解析 + allowed-roots 檢查
+    candidates = _osc_local_path_candidates(file_path)
+    abs_path = _osc_resolve_existing_local_path(candidates)
+    if not abs_path:
+        return jsonify({"ok": False, "error": f"file not found: {file_path}"}), 404
+    if not _osc_is_safe_local_path(abs_path):
+        return jsonify({"ok": False, "error": f"file not in allowed roots: {abs_path}"}), 403
+
+    abs_str = str(abs_path)
+    ext = os.path.splitext(abs_str)[1].lower()
+
+    if ext == ".pdf":
+        task = "mark"
+        skill_payload = {
+            "input": abs_str,
+            "copy_type": copy_type,
+            "add_poa": add_poa,
+            "add_sent_to_opponent": add_sent_to_opponent,
+        }
+    elif ext in (".docx", ".doc"):
+        task = "produce"
+        skill_payload = {
+            "input": abs_str,
+            "copy_type": copy_type,
+            "add_poa": add_poa,
+            "add_sent_to_opponent": add_sent_to_opponent,
+        }
+    else:
+        return jsonify(
+            {"ok": False, "error": f"unsupported file type: {ext} (only .pdf/.docx/.doc)"}
+        ), 400
+
+    # 呼叫 doc-producer skill
+    try:
+        from api.runtime_paths import get_skill_python
+        skill_python = str(get_skill_python())
+    except Exception as e:
+        return jsonify({"ok": False, "error": f"runtime python not available: {e}"}), 500
+
+    skill_script = os.path.join(_MAGI_ROOT, "skills", "doc-producer", "action.py")
+    if not os.path.isfile(skill_script):
+        return jsonify({"ok": False, "error": "doc-producer skill missing"}), 500
+
+    task_arg = f"{task} {json.dumps(skill_payload, ensure_ascii=False)}"
+
+    try:
+        proc = _sp.run(
+            [skill_python, skill_script, "--task", task_arg],
+            capture_output=True,
+            text=True,
+            timeout=180,
+        )
+    except _sp.TimeoutExpired:
+        return jsonify({"ok": False, "error": "skill timeout (180s)"}), 504
+    except Exception as e:
+        return jsonify({"ok": False, "error": f"skill invocation failed: {e}"}), 500
+
+    out = (proc.stdout or "").strip()
+    if not out:
+        return jsonify(
+            {"ok": False, "error": f"skill no stdout. stderr: {(proc.stderr or '')[:300]}"}
+        ), 500
+
+    try:
+        result = json.loads(out)
+    except json.JSONDecodeError:
+        return jsonify({"ok": False, "error": f"skill output parse failed: {out[:300]}"}), 500
+
+    if not result.get("success"):
+        return jsonify({"ok": False, "error": result.get("error") or "skill returned success=false"}), 500
+
+    # 取結果路徑：mark → output；produce → outputs.marked / outputs.merged / outputs.pdf
+    output_path = (
+        result.get("output")
+        or (result.get("outputs") or {}).get("merged")
+        or (result.get("outputs") or {}).get("marked")
+        or (result.get("outputs") or {}).get("pdf")
+        or ""
+    )
+
+    # log activity（best-effort）
+    try:
+        _osc_log_activity(
+            "stamp_document",
+            "document",
+            file_path,
+            json.dumps(
+                {
+                    "copy_type": copy_type,
+                    "add_poa": add_poa,
+                    "add_sent_to_opponent": add_sent_to_opponent,
+                    "output": output_path,
+                    "task": task,
+                },
+                ensure_ascii=False,
+            ),
+        )
+    except Exception:
+        _log.debug("silent-catch _osc_log_activity stamp", exc_info=True)
+
+    return jsonify(
+        {
+            "ok": True,
+            "input_path": abs_str,
+            "output_path": output_path,
+            "copy_type": copy_type,
+            "add_poa": add_poa,
+            "add_sent_to_opponent": add_sent_to_opponent,
+            "task": task,
+        }
+    )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # LAF wizard
 # ══════════════════════════════════════════════════════════════════════════════
 

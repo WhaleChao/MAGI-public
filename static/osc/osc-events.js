@@ -81,6 +81,7 @@ async function dispatchDelegatedAction(act, t) {
 
     if (act === "doc-open") return await openDocumentPath(t.dataset.path || "");
     if (act === "doc-copy") return await copyDocumentPath(t.dataset.path || "");
+    if (act === "doc-stamp") return await stampDocument(t.dataset.path || "");
     if (act === "doc-tpl-edit") return await editDocumentTemplate(Number(id));
     if (act === "doc-tpl-del") return await delDocumentTemplate(Number(id));
     if (act === "doc-kw-edit") return await editDocumentKeyword(Number(id));

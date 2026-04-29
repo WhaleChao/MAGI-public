@@ -74,20 +74,77 @@ async function loadDocuments() {
         body.innerHTML = `<tr><td colspan="7" class="muted">沒有文件資料</td></tr>`;
         return;
     }
-    body.innerHTML = state.documents.map(r => `
+    body.innerHTML = state.documents.map(r => {
+        const fp = r.file_path || "";
+        const ext = (fp.split(".").pop() || "").toLowerCase();
+        const stampable = ["pdf", "docx", "doc"].includes(ext);
+        const stampBtn = stampable
+            ? `<button class="btn" data-act="doc-stamp" data-path="${esc(fp)}" title="蓋章製作正本/副本/繕本">📋 蓋章</button>`
+            : "";
+        return `
     <tr>
         <td>${esc(r.timestamp)}</td>
         <td>${esc(r.source)}</td>
         <td>${esc(r.case_number)}</td>
         <td>${esc(r.kind_label || "")}</td>
         <td>${esc(r.file_name)}</td>
-        <td title="${esc(r.file_path)}">${esc(r.file_path)}</td>
+        <td title="${esc(fp)}">${esc(fp)}</td>
         <td class="actions">
-            <button class="btn" data-act="doc-open" data-path="${esc(r.file_path)}">開啟</button>
-            <button class="btn" data-act="doc-copy" data-path="${esc(r.file_path)}">複製路徑</button>
+            <button class="btn" data-act="doc-open" data-path="${esc(fp)}">開啟</button>
+            <button class="btn" data-act="doc-copy" data-path="${esc(fp)}">複製路徑</button>
+            ${stampBtn}
         </td>
-    </tr>
-`).join("");
+    </tr>`;
+    }).join("");
+}
+
+// ── 蓋章製作（呼叫後端 doc-producer skill）──
+async function stampDocument(path) {
+    if (!path) return;
+    const ext = (path.split(".").pop() || "").toLowerCase();
+    if (!["pdf", "docx", "doc"].includes(ext)) {
+        showToast("僅支援 PDF / DOCX 蓋章", "warn");
+        return;
+    }
+
+    const copyType = (prompt(
+        "請選擇蓋章類型（直接按確定預設「正本」）：\n\n  正本 / 副本 / 繕本",
+        "正本"
+    ) || "").trim();
+    if (!copyType) return;
+    if (!["正本", "副本", "繕本"].includes(copyType)) {
+        showToast("無效的蓋章類型，僅可填正本/副本/繕本", "warn");
+        return;
+    }
+
+    let addPoa = false;
+    let addSent = false;
+    if (copyType === "正本") {
+        addPoa = confirm("正本是否加註「附委任狀」？");
+        addSent = confirm("正本是否加註「繕本已送對造」？");
+    }
+
+    const fileLabel = path.split(/[\\/]/).pop() || path;
+    showToast(`蓋章中：${fileLabel} → ${copyType}${addPoa ? "（附委任狀）" : ""}${addSent ? "（繕本已送對造）" : ""}`, "info", 2400);
+
+    try {
+        const result = await api("/api/osc/documents/stamp", "POST", {
+            file_path: path,
+            copy_type: copyType,
+            add_poa: addPoa,
+            add_sent_to_opponent: addSent,
+        });
+        if (result && result.ok) {
+            const out = result.output_path || "（無輸出路徑）";
+            showToast(`✅ ${copyType}已產出：${out.split(/[\\/]/).pop()}`, "ok", 4000);
+            // 自動把產出路徑放剪貼簿
+            try { await copyText(out, "已複製產出檔路徑到剪貼簿。"); } catch (_) {}
+        } else {
+            showToast(`蓋章失敗：${result?.error || "未知錯誤"}`, "warn", 4000);
+        }
+    } catch (err) {
+        showToast(`蓋章失敗：${err.message || err}`, "warn", 4000);
+    }
 }
 
 async function loadDocumentTemplates() {
