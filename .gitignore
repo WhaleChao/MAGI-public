@@ -193,6 +193,8 @@ CIRCULAR_IMPORTS_DETAILS.txt
 # Generated manuals & reports (docx/xlsx in repo root)
 *.xlsx
 *.docx
+# 消債 5 種書類 docx 範本必須入庫（無此檔則 /api/osc/debt/generate 全失敗）
+!templates/debt_templates/*.docx
 
 # ============================
 # MAGI_v2 額外排除

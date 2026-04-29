@@ -38,11 +38,21 @@ def _srv():
 # ── helpers forwarded from server ──────────────────────────────────────────
 
 def _osc_exec(sql, params=(), fetch="none"):
-    return _srv()._osc_exec(sql, params=params, fetch=fetch)
+    # 2026-04-30: server.py 重構後不再 export _osc_exec；改直接呼叫 osc.utils。
+    # 保留 _srv() fallback 以相容未來可能的 monkeypatch。
+    try:
+        from api.osc.utils import _osc_exec as _utils_exec
+        return _utils_exec(sql, params=params, fetch=fetch)
+    except (ImportError, AttributeError):
+        return _srv()._osc_exec(sql, params=params, fetch=fetch)
 
 
 def _osc_truthy(v) -> bool:
-    return _srv()._osc_truthy(v)
+    try:
+        from api.osc.utils import _osc_truthy as _utils_truthy
+        return _utils_truthy(v)
+    except (ImportError, AttributeError):
+        return _srv()._osc_truthy(v)
 
 
 def _osc_get_setting_value(key: str, default: str = "") -> str:

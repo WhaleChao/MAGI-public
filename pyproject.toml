@@ -108,6 +108,9 @@ exclude = ["tests*", "backups*", "archive*", "_autopilot_runs*"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+markers = [
+    "live: integration tests that hit real DB / produce real files (slower; auto-skip if DB unreachable; use -m 'not live' to exclude in CI without DB)",
+]
 filterwarnings = [
     "ignore:builtin type SwigPyPacked has no __module__ attribute:DeprecationWarning",
     "ignore:builtin type SwigPyObject has no __module__ attribute:DeprecationWarning",

@@ -3438,6 +3438,9 @@ def osc_cases_import_csv_api():
     except UnicodeDecodeError:
         content = f.read().decode("big5", errors="replace")
 
+    # 防呆：若上游 export 寫了重複 BOM，第一個 fieldname 會帶 ﻿ 前綴
+    if content and content[0] == "﻿":
+        content = content[1:]
     reader = csv.DictReader(io.StringIO(content))
     fieldnames = reader.fieldnames or []
     if "當事人" not in fieldnames:
@@ -3541,7 +3544,8 @@ def osc_cases_export_csv_api():
         return str(v)
 
     buf = io.StringIO()
-    buf.write("﻿")  # BOM for Excel
+    # 不要在這裡寫 BOM，下方 encode("utf-8-sig") 會加；
+    # 否則雙 BOM 會讓 import 的 DictReader 把 BOM 當欄位名一部分（fieldname 變 "﻿案件編號"）。
     writer = csv.writer(buf)
     writer.writerow(_CASES_CSV_HEADERS)
     for r in rows:
@@ -3590,6 +3594,8 @@ def osc_clients_import_csv_api():
     except UnicodeDecodeError:
         content = f.read().decode("big5", errors="replace")
 
+    if content and content[0] == "﻿":
+        content = content[1:]
     reader = csv.DictReader(io.StringIO(content))
     fieldnames = reader.fieldnames or []
     # Accept 姓名 or name as required
@@ -3670,7 +3676,7 @@ def osc_clients_export_csv_api():
     )
 
     buf = io.StringIO()
-    buf.write("﻿")
+    # encode("utf-8-sig") 已加 BOM，不要重複
     writer = csv.writer(buf)
     writer.writerow(_CLIENTS_CSV_HEADERS_ZH)
     for r in rows:
@@ -4035,14 +4041,16 @@ def osc_laf_checklist_get():
     )
     items = []
     for r in (rows or []):
+        # _osc_exec 回 dict rows
+        lu = r.get("last_updated") if isinstance(r, dict) else r[6]
         items.append({
-            "id": r[0],
-            "case_number": r[1],
-            "item_key": r[2],
-            "item_label": r[3],
-            "status": r[4],
-            "notes": r[5],
-            "last_updated": r[6].isoformat() if r[6] else None,
+            "id": r.get("id") if isinstance(r, dict) else r[0],
+            "case_number": r.get("case_number") if isinstance(r, dict) else r[1],
+            "item_key": r.get("item_key") if isinstance(r, dict) else r[2],
+            "item_label": r.get("item_label") if isinstance(r, dict) else r[3],
+            "status": r.get("status") if isinstance(r, dict) else r[4],
+            "notes": r.get("notes") if isinstance(r, dict) else r[5],
+            "last_updated": lu.isoformat() if hasattr(lu, "isoformat") else (lu if lu else None),
         })
     return jsonify({"ok": True, "items": items})
 
@@ -4144,12 +4152,12 @@ def osc_case_checklist_get():
     items = []
     for r in (rows or []):
         items.append({
-            "id": r[0],
-            "case_number": r[1],
-            "item_label": r[2],
-            "status": r[3],
-            "notes": r[4],
-            "is_active": r[5],
+            "id": r.get("id") if isinstance(r, dict) else r[0],
+            "case_number": r.get("case_number") if isinstance(r, dict) else r[1],
+            "item_label": r.get("item_label") if isinstance(r, dict) else r[2],
+            "status": r.get("status") if isinstance(r, dict) else r[3],
+            "notes": r.get("notes") if isinstance(r, dict) else r[4],
+            "is_active": r.get("is_active") if isinstance(r, dict) else r[5],
         })
     return jsonify({"ok": True, "items": items})
 
