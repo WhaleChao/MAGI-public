@@ -386,6 +386,17 @@ def ensure_cases_schema(conn: mysql.connector.MySQLConnection) -> None:
             _add("ALTER TABLE `cases` ADD COLUMN `application_no` VARCHAR(120) DEFAULT ''")
         if "court_case_no" not in cols:
             _add("ALTER TABLE `cases` ADD COLUMN `court_case_no` VARCHAR(255) DEFAULT ''")
+        # 2026-04-29 P1 CSV 匯入欄位：與 PaperClip 桌面版 osc.py:18310 import_csv 對齊
+        if "case_subject" not in cols:
+            _add("ALTER TABLE `cases` ADD COLUMN `case_subject` VARCHAR(255) DEFAULT ''")
+        if "start_date" not in cols:
+            _add("ALTER TABLE `cases` ADD COLUMN `start_date` DATE DEFAULT NULL")
+        if "court_date" not in cols:
+            _add("ALTER TABLE `cases` ADD COLUMN `court_date` DATE DEFAULT NULL")
+        if "lawyer" not in cols:
+            _add("ALTER TABLE `cases` ADD COLUMN `lawyer` VARCHAR(120) DEFAULT ''")
+        if "court_division" not in cols:
+            _add("ALTER TABLE `cases` ADD COLUMN `court_division` VARCHAR(50) DEFAULT ''")
 
         # Backfill new columns from legacy columns (idempotent; no deletes).
         try:

@@ -302,6 +302,23 @@ function bindEvents() {
     document.querySelectorAll("#caseCategoryTabs .chip").forEach(btn => {
         btn.addEventListener("click", () => setCaseCategory(btn.dataset.cat || "全部"));
     });
+
+    // Cases CSV
+    const casesImportBtn = document.getElementById("casesImportCsvBtn");
+    const casesExportBtn = document.getElementById("casesExportCsvBtn");
+    const casesFileInput = document.getElementById("casesImportCsvFile");
+    if (casesImportBtn) casesImportBtn.addEventListener("click", importCasesCsv);
+    if (casesExportBtn) casesExportBtn.addEventListener("click", exportCasesCsv);
+    if (casesFileInput) casesFileInput.addEventListener("change", e => handleCasesCsvUpload(e.target.files[0]));
+
+    // Clients CSV
+    const clientsImportBtn = document.getElementById("clientsImportCsvBtn");
+    const clientsExportBtn = document.getElementById("clientsExportCsvBtn");
+    const clientsFileInput = document.getElementById("clientsImportCsvFile");
+    if (clientsImportBtn) clientsImportBtn.addEventListener("click", importClientsCsv);
+    if (clientsExportBtn) clientsExportBtn.addEventListener("click", exportClientsCsv);
+    if (clientsFileInput) clientsFileInput.addEventListener("change", e => handleClientsCsvUpload(e.target.files[0]));
+
     document.getElementById("clientResetBtn").addEventListener("click", () => clearFields(["client_id", "client_name", "client_contact_person", "client_phone", "client_email", "client_address", "client_tax_id", "client_notes", "client_status"]));
     document.getElementById("meetingResetBtn").addEventListener("click", () => clearFields(["meeting_id", "meeting_case_number", "meeting_client_name", "meeting_type", "meeting_datetime", "meeting_duration", "meeting_location", "meeting_notes", "meeting_status"]));
     document.getElementById("calResetBtn").addEventListener("click", () => clearFields(["cal_id", "cal_event_id", "cal_title", "cal_case_number", "cal_start_date", "cal_end_date", "cal_location", "cal_color", "cal_is_all_day", "cal_reminder_minutes", "cal_summary", "cal_description", "cal_raw_data"]));

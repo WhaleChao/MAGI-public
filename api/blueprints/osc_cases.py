@@ -17,7 +17,10 @@ import uuid
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
-from flask import Blueprint, request, jsonify, send_file
+import csv
+import io
+
+from flask import Blueprint, request, jsonify, send_file, Response
 from flask_login import login_required, current_user
 
 from api.osc.utils import (
@@ -3353,6 +3356,338 @@ def osc_documents_stamp_api():
             "add_sent_to_opponent": add_sent_to_opponent,
             "task": task,
         }
+    )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# CSV Import / Export — Cases & Clients (P1)
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Cases 欄位對映（CSV 中文標題 → DB column）
+# 2026-04-29: 5 個原本 IGNORED 的欄位（案件標的/開始日期/開庭日期/承辦律師/股別）
+# 已透過 ensure_cases_schema 加入 cases 表，CSV 匯入匯出完整 round-trip。
+_CASES_CSV_MAP = {
+    "案件編號": "case_number",
+    "當事人": "client_name",       # 必填
+    "呼號": "client_name_en",
+    "案件類型": "case_type",
+    "案件種類": "case_category",
+    "案件標的": "case_subject",
+    "案由": "case_reason",
+    "狀態": "status",
+    "開始日期": "start_date",
+    "開庭日期": "court_date",
+    "承辦律師": "lawyer",
+    "法院案號": "court_case_no",
+    "股別": "court_division",
+    "法院/地檢署名稱": "court_name",
+}
+
+_CASES_CSV_HEADERS = [
+    "案件編號", "當事人", "呼號", "案件類型", "案件種類", "案件標的", "案由",
+    "狀態", "開始日期", "開庭日期", "承辦律師", "法院案號", "股別", "法院/地檢署名稱",
+]
+
+# Clients 欄位對映
+_CLIENTS_CSV_MAP = {
+    "姓名": "name",
+    "name": "name",
+    "聯絡人": "contact_person",
+    "contact_person": "contact_person",
+    "電話": "phone",
+    "phone": "phone",
+    "email": "email",
+    "地址": "address",
+    "address": "address",
+    "統編": "tax_id",
+    "tax_id": "tax_id",
+}
+
+_CLIENTS_CSV_HEADERS_ZH = ["姓名", "聯絡人", "電話", "email", "地址", "統編"]
+
+
+def _parse_csv_date(s):
+    """YYYY-MM-DD or YYYY/MM/DD → YYYY-MM-DD, or None."""
+    if not s:
+        return None
+    s = s.strip().replace("/", "-")
+    try:
+        datetime.strptime(s, "%Y-%m-%d")
+        return s
+    except ValueError:
+        return None
+
+
+@osc_bp.route("/api/osc/cases/import-csv", methods=["POST"])
+@login_required
+def osc_cases_import_csv_api():
+    """CSV 案件批次匯入。
+
+    Multipart form: file=<CSV>
+    必填欄位：當事人
+    回傳 {ok, imported, skipped, errors:[{row, reason}]}
+    """
+    if "file" not in request.files:
+        return jsonify({"ok": False, "error": "file required"}), 400
+    f = request.files["file"]
+    if not f.filename:
+        return jsonify({"ok": False, "error": "file required"}), 400
+
+    try:
+        content = f.read().decode("utf-8-sig")
+    except UnicodeDecodeError:
+        content = f.read().decode("big5", errors="replace")
+
+    reader = csv.DictReader(io.StringIO(content))
+    fieldnames = reader.fieldnames or []
+    if "當事人" not in fieldnames:
+        return jsonify({"ok": False, "error": "CSV 缺少必填欄位「當事人」"}), 400
+
+    imported = 0
+    skipped = 0
+    errors = []
+
+    for idx, row in enumerate(reader, start=2):  # row 1 = header
+        client_name = (row.get("當事人") or "").strip()
+        if not client_name:
+            errors.append({"row": idx, "reason": "當事人欄位為空"})
+            skipped += 1
+            continue
+
+        case_number = (row.get("案件編號") or "").strip()
+        if not case_number:
+            case_number = f"web-csv-{uuid.uuid4().hex[:12]}"
+
+        # Check duplicate case_number
+        try:
+            existing, _ = _osc_exec(
+                "SELECT id FROM cases WHERE case_number=%s LIMIT 1",
+                (case_number,),
+                fetch="one",
+            )
+            if existing:
+                errors.append({"row": idx, "reason": f"案件編號 {case_number} 已存在"})
+                skipped += 1
+                continue
+        except Exception as e:
+            errors.append({"row": idx, "reason": f"查重失敗: {e}"})
+            skipped += 1
+            continue
+
+        row_id = f"web-{uuid.uuid4().hex[:12]}"
+        case_type = (row.get("案件類型") or "").strip() or None
+        case_category = _osc_norm_case_category((row.get("案件種類") or "").strip())
+        case_subject = (row.get("案件標的") or "").strip() or None
+        case_reason = (row.get("案由") or "").strip() or None
+        status = (row.get("狀態") or "進行中").strip() or "進行中"
+        court_case_no = (row.get("法院案號") or "").strip() or None
+        court_name = (row.get("法院/地檢署名稱") or "").strip() or None
+        client_name_en = (row.get("呼號") or "").strip() or None
+        start_date = _parse_csv_date(row.get("開始日期", ""))
+        court_date = _parse_csv_date(row.get("開庭日期", ""))
+        lawyer = (row.get("承辦律師") or "").strip() or None
+        court_division = (row.get("股別") or "").strip() or None
+
+        cols = [
+            "id", "case_number", "client_name", "client_name_en",
+            "case_type", "case_category", "case_subject", "case_reason",
+            "court_case_no", "court_name", "court_division",
+            "start_date", "court_date", "lawyer", "status",
+        ]
+        vals = [
+            row_id, case_number, client_name, client_name_en,
+            case_type, case_category or None, case_subject, case_reason,
+            court_case_no, court_name, court_division,
+            start_date, court_date, lawyer, status,
+        ]
+        try:
+            _osc_exec(
+                f"INSERT INTO cases ({','.join(cols)}) VALUES ({','.join(['%s']*len(cols))})",
+                tuple(vals),
+                fetch="none",
+            )
+            imported += 1
+        except Exception as e:
+            errors.append({"row": idx, "reason": str(e)})
+            skipped += 1
+
+    return jsonify({"ok": True, "imported": imported, "skipped": skipped, "errors": errors})
+
+
+@osc_bp.route("/api/osc/cases/export-csv", methods=["GET"])
+@login_required
+def osc_cases_export_csv_api():
+    """匯出全部案件為 CSV（中文 header，utf-8-sig，與匯入相容）。"""
+    rows, _ = _osc_exec(
+        """
+        SELECT case_number, client_name, client_name_en, case_type, case_category,
+               case_subject, case_reason, status, start_date, court_date,
+               lawyer, court_case_no, court_division, court_name
+        FROM cases
+        ORDER BY updated_at DESC, created_date DESC
+        """,
+        (),
+        fetch="all",
+    )
+
+    def _date_str(v):
+        if not v:
+            return ""
+        try:
+            if hasattr(v, "isoformat"):
+                return v.isoformat()
+        except Exception:
+            pass
+        return str(v)
+
+    buf = io.StringIO()
+    buf.write("﻿")  # BOM for Excel
+    writer = csv.writer(buf)
+    writer.writerow(_CASES_CSV_HEADERS)
+    for r in rows:
+        writer.writerow([
+            r.get("case_number") or "",
+            r.get("client_name") or "",
+            r.get("client_name_en") or "",
+            r.get("case_type") or "",
+            r.get("case_category") or "",
+            r.get("case_subject") or "",
+            r.get("case_reason") or "",
+            r.get("status") or "",
+            _date_str(r.get("start_date")),
+            _date_str(r.get("court_date")),
+            r.get("lawyer") or "",
+            r.get("court_case_no") or "",
+            r.get("court_division") or "",
+            r.get("court_name") or "",
+        ])
+
+    filename = f"案件資料匯出_{time.strftime('%Y%m%d')}.csv"
+    return Response(
+        buf.getvalue().encode("utf-8-sig"),
+        mimetype="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{filename}"},
+    )
+
+
+@osc_bp.route("/api/osc/clients/import-csv", methods=["POST"])
+@login_required
+def osc_clients_import_csv_api():
+    """CSV 當事人批次匯入。
+
+    Multipart form: file=<CSV>
+    支援中英欄位混用。重複 (name, phone) 跳過。
+    回傳 {ok, imported, skipped, errors:[{row, reason}]}
+    """
+    if "file" not in request.files:
+        return jsonify({"ok": False, "error": "file required"}), 400
+    f = request.files["file"]
+    if not f.filename:
+        return jsonify({"ok": False, "error": "file required"}), 400
+
+    try:
+        content = f.read().decode("utf-8-sig")
+    except UnicodeDecodeError:
+        content = f.read().decode("big5", errors="replace")
+
+    reader = csv.DictReader(io.StringIO(content))
+    fieldnames = reader.fieldnames or []
+    # Accept 姓名 or name as required
+    has_name_col = "姓名" in fieldnames or "name" in fieldnames
+    if not has_name_col:
+        return jsonify({"ok": False, "error": "CSV 缺少必填欄位「姓名」或「name」"}), 400
+
+    imported = 0
+    skipped = 0
+    errors = []
+
+    for idx, row in enumerate(reader, start=2):
+        name = (row.get("姓名") or row.get("name") or "").strip()
+        if not name:
+            errors.append({"row": idx, "reason": "姓名欄位為空"})
+            skipped += 1
+            continue
+
+        phone = (row.get("電話") or row.get("phone") or "").strip() or None
+
+        # Deduplicate by (name, phone)
+        try:
+            if phone:
+                dup, _ = _osc_exec(
+                    "SELECT id FROM clients WHERE name=%s AND phone=%s LIMIT 1",
+                    (name, phone),
+                    fetch="one",
+                )
+            else:
+                dup, _ = _osc_exec(
+                    "SELECT id FROM clients WHERE name=%s AND (phone IS NULL OR phone='') LIMIT 1",
+                    (name,),
+                    fetch="one",
+                )
+            if dup:
+                errors.append({"row": idx, "reason": f"{name} / {phone or '無電話'} 已存在"})
+                skipped += 1
+                continue
+        except Exception as e:
+            errors.append({"row": idx, "reason": f"查重失敗: {e}"})
+            skipped += 1
+            continue
+
+        row_id = f"webc-{uuid.uuid4().hex[:12]}"
+        contact_person = (row.get("聯絡人") or row.get("contact_person") or "").strip() or None
+        email = (row.get("email") or "").strip() or None
+        address = (row.get("地址") or row.get("address") or "").strip() or None
+        tax_id = (row.get("統編") or row.get("tax_id") or "").strip() or None
+
+        cols = ["id", "name", "contact_person", "phone", "email", "address", "tax_id", "status"]
+        vals = [row_id, name, contact_person, phone, email, address, tax_id, "進行中"]
+        try:
+            _osc_exec(
+                f"INSERT INTO clients ({','.join(cols)}) VALUES ({','.join(['%s']*len(cols))})",
+                tuple(vals),
+                fetch="none",
+            )
+            imported += 1
+        except Exception as e:
+            errors.append({"row": idx, "reason": str(e)})
+            skipped += 1
+
+    return jsonify({"ok": True, "imported": imported, "skipped": skipped, "errors": errors})
+
+
+@osc_bp.route("/api/osc/clients/export-csv", methods=["GET"])
+@login_required
+def osc_clients_export_csv_api():
+    """匯出全部當事人為 CSV（中文 header，utf-8-sig，與匯入相容）。"""
+    rows, _ = _osc_exec(
+        """
+        SELECT name, contact_person, phone, email, address, tax_id
+        FROM clients
+        ORDER BY updated_date DESC, created_date DESC
+        """,
+        (),
+        fetch="all",
+    )
+
+    buf = io.StringIO()
+    buf.write("﻿")
+    writer = csv.writer(buf)
+    writer.writerow(_CLIENTS_CSV_HEADERS_ZH)
+    for r in rows:
+        writer.writerow([
+            r.get("name") or "",
+            r.get("contact_person") or "",
+            r.get("phone") or "",
+            r.get("email") or "",
+            r.get("address") or "",
+            r.get("tax_id") or "",
+        ])
+
+    filename = f"當事人資料匯出_{time.strftime('%Y%m%d')}.csv"
+    return Response(
+        buf.getvalue().encode("utf-8-sig"),
+        mimetype="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{filename}"},
     )
 
 

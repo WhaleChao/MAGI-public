@@ -788,6 +788,68 @@ async function delMeeting(id) {
     await loadMeta();
 }
 
+/* ── Cases CSV Import / Export ── */
+async function importCasesCsv() {
+    const f = document.getElementById("casesImportCsvFile");
+    f.value = "";
+    f.click();
+}
+
+async function handleCasesCsvUpload(file) {
+    if (!file) return;
+    const fd = new FormData();
+    fd.append("file", file);
+    showToast("匯入中...", "info", 2000);
+    try {
+        const res = await fetch("/api/osc/cases/import-csv", { method: "POST", body: fd });
+        const data = await res.json();
+        if (data.ok) {
+            const errMsg = (data.errors || []).slice(0, 3).map(e => `第 ${e.row} 行: ${e.reason}`).join("\n");
+            showToast(`✅ 匯入完成：成功 ${data.imported} 筆 / 跳過 ${data.skipped}${errMsg ? "\n" + errMsg : ""}`, "ok", 5000);
+            await loadCases();
+        } else {
+            showToast(`匯入失敗：${data.error || "未知錯誤"}`, "warn", 4000);
+        }
+    } catch (err) {
+        showToast(`匯入失敗：${err.message}`, "warn", 4000);
+    }
+}
+
+function exportCasesCsv() {
+    window.location.href = "/api/osc/cases/export-csv";
+}
+
+/* ── Clients CSV Import / Export ── */
+async function importClientsCsv() {
+    const f = document.getElementById("clientsImportCsvFile");
+    f.value = "";
+    f.click();
+}
+
+async function handleClientsCsvUpload(file) {
+    if (!file) return;
+    const fd = new FormData();
+    fd.append("file", file);
+    showToast("匯入中...", "info", 2000);
+    try {
+        const res = await fetch("/api/osc/clients/import-csv", { method: "POST", body: fd });
+        const data = await res.json();
+        if (data.ok) {
+            const errMsg = (data.errors || []).slice(0, 3).map(e => `第 ${e.row} 行: ${e.reason}`).join("\n");
+            showToast(`✅ 匯入完成：成功 ${data.imported} 筆 / 跳過 ${data.skipped}${errMsg ? "\n" + errMsg : ""}`, "ok", 5000);
+            await loadClients();
+        } else {
+            showToast(`匯入失敗：${data.error || "未知錯誤"}`, "warn", 4000);
+        }
+    } catch (err) {
+        showToast(`匯入失敗：${err.message}`, "warn", 4000);
+    }
+}
+
+function exportClientsCsv() {
+    window.location.href = "/api/osc/clients/export-csv";
+}
+
 async function saveMeeting() {
     const p = readFields(["meeting_id", "meeting_case_number", "meeting_client_name", "meeting_type", "meeting_datetime", "meeting_duration", "meeting_location", "meeting_notes", "meeting_status"]);
     const body = {
