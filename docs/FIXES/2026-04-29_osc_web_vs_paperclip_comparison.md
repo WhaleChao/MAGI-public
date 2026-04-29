@@ -16,12 +16,15 @@
 | 🚫 不建議移植 | 4 |
 | 整體還原度（功能加權粗估） | **~65%** |
 
-**Top 5 重要缺失：**
-1. **Google Calendar 真實雙向同步**（僅有本地 calendar_events 表，無 OAuth 推送）
-2. **案件/當事人 CSV 批次匯入匯出**（日常資料遷移和備份依賴）
-3. **地址標籤 PNG 生成**（寄件封面自動化，法扶作業核心工具）
-4. **自動備份還原**（桌面版每 24h 自動備份 JSON，網頁版無對應）
-5. **Checklist（應備事項表）**（法扶補件追蹤，原版有完整 UI + Discord 推播）
+**Top 6 重要缺失：**
+1. **OSC UI 沒有蓋章/書狀製作按鈕**（後端 doc-producer skill 已完整、只缺前端入口；UX 退化嚴重，使用者得改 chat 觸發）
+2. **Google Calendar 真實雙向同步**（僅有本地 calendar_events 表，無 OAuth 推送）
+3. **案件/當事人 CSV 批次匯入匯出**（日常資料遷移和備份依賴）
+4. **地址標籤 PNG 生成**（寄件封面自動化，法扶作業核心工具）
+5. **自動備份還原**（桌面版每 24h 自動備份 JSON，網頁版無對應）
+6. **Checklist（應備事項表）**（法扶補件追蹤，原版有完整 UI + Discord 推播）
+
+**書狀生成 / 委任契約 / 合併 PDF 三大核心已 ✅ 完整實作**（osc_debt 5 種書類、forms 委任契約收據、debt/merge-pdf + doc-producer 雙合併路徑）。蓋章後端也已完整，只差網頁 UI 整合。
 
 ---
 
@@ -264,6 +267,25 @@ Tab JS 檔：accounting.js / admin.js / calendar.js / cases.js / dashboard.js / 
 | 夜間主題切換 | ThemeManager, line 507 | osc-theme.css 存在，無動態切換按鈕 | ⚠️ 半 | 低 |
 | DB 效能監控 | PerformanceMonitor + StatusMonitorDialog | 無 | 🚫 低優先 | — |
 
+### 3.12 PDF 蓋章與一條龍書狀製作（Sonnet 初稿漏掉，Opus 補）
+
+| 子功能 | 原版 | 網頁版 | 狀態 | 補強難度 |
+|---|---|---|---|---|
+| **PDF overlay 標記正本/副本/繕本** | `_add_overlays_and_stamp` (osc.py:25984) PyMuPDF + china-ss 16/12 字體 | `skills/doc-producer/action.py mark_copy_type()`（邏輯與原版幾乎一致） | ✅ **後端完整** | — |
+| **附委任狀旗標** | 同上 | 同上 | ✅ 後端完整 | — |
+| **繕本已送對造旗標** | 同上 | 同上 | ✅ 後端完整 | — |
+| **DOCX→PDF→蓋章→合併 一條龍** | `finalize_and_generate_pdf` (osc.py:~26150) | `doc-producer produce()` (action.py:269) | ✅ 後端完整 | — |
+| **chat 訊息觸發**（如「做正本 /path」「合併pdf a.pdf b.pdf」） | 無（桌面 button） | `api/pipelines/skill_dispatch.py:344-410` | ✅（網頁版新增） | — |
+| **OSC 網頁 UI 上的蓋章/製作按鈕** | tk button | **無**（osc.html 16 個 tab + osc_debt.html 6 個 panel 都沒入口） | ❌ **缺 UI** | 低-中 |
+| **批次同時產 N 份繕本**（原版彈窗詢問份數） | `finalize_and_generate_pdf` simpledialog | skill 一次只處理一份，須前端 loop | ⚠️ 半 | 低 |
+| **手動定位蓋章座標**（PDF 上點擊選 x/y） | `prompt_for_manual_stamp` (osc.py:26042) + `_get_stamp_location_manually` (line 26200) tk Canvas | 無（瀏覽器互動式 PDF 點擊未實作） | ❌ 完全缺 | 高（需 PDF.js 整合） |
+
+**重要說明**：書狀蓋章核心邏輯**已完整實作於 `skills/doc-producer/`**，但**只能透過 chat 訊息或直接呼叫 skill 觸發**。OSC 網頁主介面與消債羅伯特子頁都沒有「蓋章」按鈕，使用者若要蓋章必須改用 chat 介面或記住路徑手動觸發 skill，UX 體驗顯著退化。
+
+**補強建議**：在 `osc_debt.html` 「合併PDF」panel 加蓋章選項；在 `osc.html` 「📄 書狀索引」or 「🖨 委任/收據」標籤的每筆紀錄旁加「製作正本」「製作副本」按鈕，呼叫既有 doc-producer skill（後端不用動）。難度低-中。
+
+---
+
 ### 3.11 儀表板
 
 | 子功能 | 原版 | 網頁版 | 狀態 | 補強難度 |
@@ -318,6 +340,7 @@ Tab JS 檔：accounting.js / admin.js / calendar.js / cases.js / dashboard.js / 
 
 | 優先 | 功能 | 預估工作量 |
 |---|---|---|
+| **P0** | **OSC UI 接 doc-producer 蓋章按鈕**（後端已就緒，只缺前端按鈕 + JS 呼叫；高 ROI） | **0.5-1 天** |
 | P1 | CSV 匯入匯出（案件 + 當事人，須 port 原版解析邏輯） | 2-3 天 |
 | P1 | Checklist 應備事項（API + laf.html UI） | 1-2 天 |
 | P2 | 地址標籤 PNG 生成 | 2-3 天 |
