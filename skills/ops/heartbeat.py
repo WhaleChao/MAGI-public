@@ -34,11 +34,13 @@ NODES = {
         "port": 5002
     },
     "keeper": {
-        "ip": _node_ip_or("nas", "100.121.61.74"),
+        # 2026-04-30：DB 已遷至本機（MAGI_PREFER_LOCAL_DB=1 + OSC_DB_HOST=127.0.0.1）。
+        # 不再使用 NAS 遠端 DB，舊 fallback 100.121.61.74（已下線的 desktop-jj06fa3）失效。
+        "ip": os.environ.get("OSC_DB_HOST") or os.environ.get("MAGI_REMOTE_DB_HOST") or "127.0.0.1",
         "name": "Keeper",
         "role": "Database (Iron Dome)",
         "type": "db",
-        "port": 3306,
+        "port": int(os.environ.get("OSC_DB_PORT") or os.environ.get("MAGI_REMOTE_DB_PORT") or 3306),
         "model": "MariaDB 10.11"
     },
     "melchior": {
