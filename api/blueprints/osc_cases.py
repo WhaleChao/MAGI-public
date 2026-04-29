@@ -4202,3 +4202,224 @@ def osc_case_checklist_put(row_id):
 def osc_case_checklist_delete(row_id):
     _osc_exec("UPDATE case_checklists SET is_active=0 WHERE id=%s", (row_id,), fetch="none")
     return jsonify({"ok": True})
+# ── P3: Auto Backup / Restore ──────────────────────────────────────────────────
+
+_BACKUP_DIR = Path(os.path.expanduser("~/.magi/backups/osc"))
+
+_BACKUP_TABLES = [
+    "cases",
+    "clients",
+    "todos",
+    "meetings",
+    "calendar_events",
+    "legal_aid_checklists",
+    "case_checklists",
+    "quotations",
+    "transactions",
+    "legal_aid_branches",
+    "settings",
+]
+
+
+def _osc_backup_dir() -> Path:
+    _BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+    return _BACKUP_DIR
+
+
+def _osc_backup_table(table: str) -> list:
+    """Return all rows for a table; returns [] if table doesn't exist."""
+    try:
+        rows, _ = _osc_exec(f"SELECT * FROM `{table}`", (), fetch="all")
+        return rows if rows else []
+    except Exception:
+        return None  # None = table doesn't exist / error
+
+
+def _osc_create_backup(label: str = "manual") -> dict:
+    """Write backup JSON to disk; prune to 7 files; return metadata."""
+    import zoneinfo
+
+    tz = zoneinfo.ZoneInfo("Asia/Taipei")
+    now = datetime.now(tz)
+    ts = now.strftime("%Y%m%d_%H%M%S")
+    safe_label = re.sub(r"[^\w\-]", "", label)[:20] or "manual"
+    filename = f"backup_{ts}_{safe_label}.json"
+
+    tables_data = {}
+    table_counts = {}
+    for table in _BACKUP_TABLES:
+        rows = _osc_backup_table(table)
+        if rows is not None:
+            tables_data[table] = rows
+            table_counts[table] = len(rows)
+
+    payload = {
+        "version": 1,
+        "created_at": now.isoformat(),
+        "label": safe_label,
+        "tables": tables_data,
+        "table_counts": table_counts,
+    }
+
+    backup_path = _osc_backup_dir() / filename
+    backup_path.write_text(json.dumps(payload, ensure_ascii=False, default=str), encoding="utf-8")
+
+    # Prune: keep at most 7 files
+    files = sorted(_osc_backup_dir().glob("backup_*.json"), key=lambda p: p.stat().st_mtime)
+    while len(files) > 7:
+        files[0].unlink(missing_ok=True)
+        files.pop(0)
+
+    return {
+        "filename": filename,
+        "size_bytes": backup_path.stat().st_size,
+        "table_counts": table_counts,
+    }
+
+
+def _osc_parse_backup_meta(p: Path) -> dict:
+    """Read minimal metadata from a backup file."""
+    try:
+        stat = p.stat()
+        raw = json.loads(p.read_text(encoding="utf-8"))
+        return {
+            "filename": p.name,
+            "size_bytes": stat.st_size,
+            "created_at": raw.get("created_at", ""),
+            "table_counts": raw.get("table_counts", {}),
+        }
+    except Exception as e:
+        return {
+            "filename": p.name,
+            "size_bytes": 0,
+            "created_at": "",
+            "table_counts": {},
+            "error": str(e),
+        }
+
+
+@osc_bp.route("/api/osc/backups", methods=["GET"])
+@login_required
+def osc_backup_list():
+    """List backup files, sorted by mtime DESC, max 50."""
+    bd = _osc_backup_dir()
+    files = sorted(bd.glob("backup_*.json"), key=lambda p: p.stat().st_mtime, reverse=True)[:50]
+    items = [_osc_parse_backup_meta(p) for p in files]
+    return jsonify({"ok": True, "items": items})
+
+
+@osc_bp.route("/api/osc/backups", methods=["POST"])
+@login_required
+def osc_backup_create():
+    """Create a new backup snapshot."""
+    data = request.get_json() or {}
+    label = str(data.get("label") or "manual").strip() or "manual"
+    try:
+        meta = _osc_create_backup(label)
+        return jsonify({"ok": True, **meta})
+    except Exception as e:
+        logger.error("[osc_backup_create] %s", e)
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@osc_bp.route("/api/osc/backups/<filename>/restore", methods=["POST"])
+@login_required
+def osc_backup_restore(filename):
+    """Restore from a backup file. dry_run=true for preview."""
+    # Sanitize filename
+    if not re.fullmatch(r"backup_[\w\-\.]+\.json", filename):
+        return jsonify({"ok": False, "error": "Invalid filename"}), 400
+
+    backup_path = _osc_backup_dir() / filename
+    if not backup_path.exists():
+        return jsonify({"ok": False, "error": "Backup file not found"}), 404
+
+    data = request.get_json() or {}
+    dry_run = bool(data.get("dry_run"))
+    confirm = bool(data.get("confirm"))
+
+    if not dry_run and not confirm:
+        return jsonify({"ok": False, "error": "Need dry_run=true or confirm=true"}), 400
+
+    try:
+        payload = json.loads(backup_path.read_text(encoding="utf-8"))
+    except Exception as e:
+        return jsonify({"ok": False, "error": f"Cannot parse backup: {e}"}), 500
+
+    tables = payload.get("tables") or {}
+    inserted_count = 0
+    skipped_count = 0
+    errors = []
+
+    for table, rows in tables.items():
+        if not rows:
+            continue
+        if not isinstance(rows, list):
+            continue
+
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            cols = list(row.keys())
+            if not cols:
+                continue
+
+            if dry_run:
+                # Count rows in DB that are already present by primary key 'id'
+                pk_val = row.get("id")
+                if pk_val is not None:
+                    try:
+                        existing, _ = _osc_exec(
+                            f"SELECT COUNT(*) AS cnt FROM `{table}` WHERE id=%s",
+                            (pk_val,),
+                            fetch="one",
+                        )
+                        if existing and int(existing.get("cnt", 0)) > 0:
+                            skipped_count += 1
+                        else:
+                            inserted_count += 1
+                    except Exception as e:
+                        errors.append(f"{table}[{pk_val}]: {e}")
+                else:
+                    inserted_count += 1
+            else:
+                # Real INSERT IGNORE
+                try:
+                    placeholders = ", ".join(["%s"] * len(cols))
+                    col_names = ", ".join(f"`{c}`" for c in cols)
+                    vals = tuple(row[c] for c in cols)
+                    sql = f"INSERT IGNORE INTO `{table}` ({col_names}) VALUES ({placeholders})"
+                    result, _ = _osc_exec(sql, vals, fetch="none")
+                    # rowcount == 0 means duplicate was skipped
+                    if result is not None and hasattr(result, "rowcount") and result.rowcount == 0:
+                        skipped_count += 1
+                    else:
+                        inserted_count += 1
+                except Exception as e:
+                    errors.append(f"{table}: {e}")
+
+    return jsonify({
+        "ok": True,
+        "mode": "dry_run" if dry_run else "restore",
+        "inserted_count": inserted_count,
+        "skipped_count": skipped_count,
+        "errors": errors[:50],
+    })
+
+
+@osc_bp.route("/api/osc/backups/<filename>", methods=["DELETE"])
+@login_required
+def osc_backup_delete(filename):
+    """Delete a backup file."""
+    if not re.fullmatch(r"backup_[\w\-\.]+\.json", filename):
+        return jsonify({"ok": False, "error": "Invalid filename"}), 400
+
+    backup_path = _osc_backup_dir() / filename
+    if not backup_path.exists():
+        return jsonify({"ok": False, "error": "File not found"}), 404
+
+    try:
+        backup_path.unlink()
+        return jsonify({"ok": True})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500

@@ -10,6 +10,7 @@ async function loadAdminData() {
         loadAdminOpponents(),
         loadAdminPdfLogs(),
         loadAdminActivityLogs(),
+        loadOscBackups(),
     ]);
 }
 
@@ -411,4 +412,65 @@ async function testDiscordWebhook() {
     } catch (err) {
         if (status) status.textContent = `❌ Test 失敗：${err.message}`;
     }
+}
+// ── P3: Backup / Restore ──────────────────────────────────────────────────────
+
+function _fmtBytes(b) {
+    if (b == null) return "-";
+    if (b < 1024) return `${b} B`;
+    if (b < 1024 * 1024) return `${(b / 1024).toFixed(1)} KB`;
+    return `${(b / (1024 * 1024)).toFixed(2)} MB`;
+}
+
+function _fmtTableCounts(tc) {
+    if (!tc || typeof tc !== "object") return "-";
+    return Object.entries(tc).filter(([, v]) => v > 0).map(([k, v]) => `${k}:${v}`).join(" ");
+}
+
+async function loadOscBackups() {
+    const data = await api("/api/osc/backups");
+    const items = data.items || [];
+    const tbody = document.getElementById("oscBackupBody");
+    if (!tbody) return;
+    if (!items.length) {
+        tbody.innerHTML = `<tr><td colspan="5" class="muted">尚無備份檔案</td></tr>`;
+        return;
+    }
+    tbody.innerHTML = items.map(item => `<tr>
+        <td>${esc(item.filename)}</td>
+        <td>${esc(item.created_at || "")}</td>
+        <td>${esc(_fmtBytes(item.size_bytes))}</td>
+        <td class="muted small">${esc(_fmtTableCounts(item.table_counts))}</td>
+        <td class="actions">
+            <button class="btn" data-act="osc-backup-dry-run" data-filename="${esc(item.filename)}">Dry-run</button>
+            <button class="btn primary" data-act="osc-backup-restore" data-filename="${esc(item.filename)}">確認還原</button>
+            <button class="btn danger" data-act="osc-backup-del" data-filename="${esc(item.filename)}">刪除</button>
+        </td>
+    </tr>`).join("");
+}
+
+async function createOscBackup() {
+    const res = await api("/api/osc/backups", "POST", { label: "manual" });
+    showToast(`備份完成：${res.filename || ""}`);
+    await loadOscBackups();
+}
+
+async function restoreOscBackup(filename, dryRun) {
+    if (!dryRun) {
+        if (!confirm(`確定要從 ${filename} 還原資料嗎？\n（已有的紀錄不會被覆蓋，只補缺少的筆數）`)) return;
+    }
+    const payload = dryRun ? { dry_run: true } : { confirm: true };
+    const res = await api(`/api/osc/backups/${encodeURIComponent(filename)}/restore`, "POST", payload);
+    const mode = dryRun ? "Dry-run 預覽" : "還原完成";
+    showToast(`${mode}：插入 ${res.inserted_count ?? 0} 筆，略過 ${res.skipped_count ?? 0} 筆${res.errors && res.errors.length ? `（${res.errors.length} 錯誤）` : ""}`);
+    if (res.errors && res.errors.length) {
+        console.warn("[backup restore errors]", res.errors);
+    }
+}
+
+async function delOscBackup(filename) {
+    if (!confirm(`確定刪除備份 ${filename}？`)) return;
+    await api(`/api/osc/backups/${encodeURIComponent(filename)}`, "DELETE");
+    showToast("備份已刪除");
+    await loadOscBackups();
 }

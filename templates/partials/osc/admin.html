@@ -450,4 +450,22 @@
                     </table>
                 </div>
             </div>
+            <div class="card" id="oscBackupSection">
+                <div class="section-head">
+                    <div>
+                        <h3>💾 自動備份還原</h3>
+                        <div class="section-note">每天 03:00 自動備份案件/客戶/待辦/法扶等資料到 ~/.magi/backups/osc/，保留最近 7 份。NAS 故障時可從此處還原。</div>
+                    </div>
+                    <div class="inline-actions">
+                        <button class="btn primary" id="oscBackupCreateBtn">📦 立即備份</button>
+                        <button class="btn" id="oscBackupRefreshBtn">重新整理</button>
+                    </div>
+                </div>
+                <div class="table-wrap">
+                    <table>
+                        <thead><tr><th>檔名</th><th>建立時間</th><th>大小</th><th>內容</th><th>操作</th></tr></thead>
+                        <tbody id="oscBackupBody"><tr><td colspan="5" class="muted">載入中...</td></tr></tbody>
+                    </table>
+                </div>
+            </div>
         </section>

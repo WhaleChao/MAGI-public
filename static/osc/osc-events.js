@@ -125,6 +125,11 @@ async function dispatchDelegatedAction(act, t) {
     if (act === "admin-pdf-log-del") return await delAdminPdfLog(Number(id));
     if (act === "admin-activity-del") return await delAdminActivityLog(Number(id));
 
+    // P3: Backup / Restore
+    if (act === "osc-backup-dry-run") return await restoreOscBackup(t.dataset.filename || "", true);
+    if (act === "osc-backup-restore") return await restoreOscBackup(t.dataset.filename || "", false);
+    if (act === "osc-backup-del") return await delOscBackup(t.dataset.filename || "");
+
     if (act === "wb-case-open") return await openCaseFolder(id);
     if (act === "wb-case-open-host") return await openCaseFolderHost(id);
     if (act === "wb-case-workbench") return await openCaseWorkbench(id);
@@ -279,6 +284,8 @@ function bindEvents() {
         ["adminSettingSaveBtn", saveAdminSetting, "系統設定儲存"],
         ["discordWebhookSaveBtn", saveDiscordWebhook, "Discord 設定儲存"],
         ["discordWebhookTestBtn", testDiscordWebhook, "Discord Test 推播"],
+        ["oscBackupCreateBtn", createOscBackup, "立即備份"],
+        ["oscBackupRefreshBtn", loadOscBackups, "備份列表重新整理"],
         ["adminReasonSearchBtn", loadAdminCaseReasons, "案由模板搜尋"],
         ["adminReasonRefreshBtn", loadAdminCaseReasons, "案由模板重新整理"],
         ["adminReasonSaveBtn", saveAdminCaseReason, "案由模板儲存"],
