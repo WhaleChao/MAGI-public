@@ -150,5 +150,34 @@
                     </table>
                 </div>
             </div>
+
+            <section class="card" id="caseChecklistSection">
+                <div class="section-head">
+                    <div>
+                        <h3>📑 案件補正清單</h3>
+                        <div class="section-note">記錄法院通知補正項目；不需 item_key，純文字標籤。</div>
+                    </div>
+                    <div class="inline-actions">
+                        <input id="caseChecklistCaseNumber" placeholder="案件編號" style="width:180px">
+                        <button class="btn" id="caseChecklistLoadBtn">載入</button>
+                    </div>
+                </div>
+                <div class="table-wrap">
+                    <table>
+                        <thead><tr><th>項目</th><th>狀態</th><th>備註</th><th>操作</th></tr></thead>
+                        <tbody id="caseChecklistBody"><tr><td colspan="4" class="muted">輸入案號並按「載入」</td></tr></tbody>
+                    </table>
+                </div>
+                <div class="soft-block" style="margin-top:10px">
+                    <div class="field-grid cols-3">
+                        <div class="field"><label>新增項目</label><input id="caseChecklistNewLabel"></div>
+                        <div class="field"><label>狀態</label>
+                            <select id="caseChecklistNewStatus"><option>待補</option><option>已備齊</option><option>不適用</option></select>
+                        </div>
+                        <div class="field"><label>備註</label><input id="caseChecklistNewNotes"></div>
+                    </div>
+                    <div class="toolbar"><button class="btn primary" id="caseChecklistAddBtn">➕ 新增項目</button></div>
+                </div>
+            </section>
         </section>
 

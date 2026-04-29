@@ -3974,3 +3974,231 @@ def osc_labor_law_parse_files():
         "records": all_records,
         "errors": errors,
     })
+
+
+# ── Checklist defaults ────────────────────────────────────────────────────────
+
+def _laf_default_checklist_items():
+    """生成法扶預設清單，所得清單年度依當下時間動態。"""
+    from datetime import datetime
+    now = datetime.now()
+    roc = now.year - 1911
+    if now.month >= 7:
+        latest, previous = roc - 1, roc - 2
+    else:
+        latest, previous = roc - 2, roc - 3
+
+    return [
+        ("household_reg_self", "最近一個月之全戶戶籍謄本(記事勿省略)"),
+        ("jcic_credit_report", "最近一個月金融聯合徵信中心「個人中文債權人清冊」及「信用報告」"),
+        ("tax_list_self", f"最近二年度綜合所得稅各類所得資料清單({previous}、{latest}年度)"),
+        ("property_list_self", "最近一個月財產資料歸屬清單"),
+        ("labor_insurance_self", "最近一個月勞工保險被保險人投保資料表及其明細"),
+        ("income_proof_self", "最近三個月薪資證明文件"),
+        ("income_affidavit", "收入切結書 (因無法提供薪資單)"),
+        ("bank_book_self", "近二年所有銀行存摺封面及內頁影本(補摺至最新)"),
+        ("bank_assoc_inquiry", "銀行公會存款紀錄查詢申請書"),
+        ("insurance_list_self", "壽險公會投保紀錄(含要保人及被保險人)"),
+        ("insurance_policy_self", "所有壽險保單解約金數額證明"),
+        ("stock_investment_self", "證券集保庫存及歷史交易紀錄"),
+        ("business_tax_return", "前五年內營利事業申報及核定書表(401報表)"),
+        ("household_reg_parents", "父母之全戶戶籍謄本(記事勿省略)"),
+        ("tax_list_parents", f"父母最近二年度所得稅清單({previous}、{latest}年度)"),
+        ("property_list_parents", "父母最近一個月財產清單"),
+        ("household_reg_children", "扶養子女之全戶戶籍謄本(記事勿省略)"),
+        ("tax_list_children", f"子女最近二年度所得稅清單({previous}、{latest}年度)"),
+        ("property_list_children", "子女最近一個月財產清單"),
+        ("student_cert_children", "扶養子女在學證明(滿20歲)"),
+        ("rental_contract", "租約影本及近三個月租金收據"),
+        ("relative_building_transcript", "親屬之建物謄本或稅籍證明"),
+        ("residence_consent_form", "居住親屬房屋同意書"),
+        ("relative_land_transcript", "親屬之土地謄本"),
+        ("court_documents", "現有強制執行或訴訟案件之命令或裁判影本"),
+        ("negotiation_docs", "過往銀行協商或調解協議書/筆錄"),
+        ("expense_receipt", "裁判費新臺幣 1,000 元 (備齊後支付)"),
+        ("income_expense_table", "以月為單位之一年收支表"),
+    ]
+
+
+# ── 1A. legal_aid_checklists endpoints (5) ───────────────────────────────────
+
+@osc_bp.route("/api/osc/checklists/legal-aid", methods=["GET"])
+@login_required
+def osc_laf_checklist_get():
+    case_number = request.args.get("case_number", "").strip()
+    if not case_number:
+        return jsonify({"ok": False, "error": "case_number 必填"}), 400
+    rows, _ = _osc_exec(
+        "SELECT id, case_number, item_key, item_label, status, notes, last_updated "
+        "FROM legal_aid_checklists WHERE case_number=%s ORDER BY last_updated DESC, id DESC",
+        (case_number,), fetch="all"
+    )
+    items = []
+    for r in (rows or []):
+        items.append({
+            "id": r[0],
+            "case_number": r[1],
+            "item_key": r[2],
+            "item_label": r[3],
+            "status": r[4],
+            "notes": r[5],
+            "last_updated": r[6].isoformat() if r[6] else None,
+        })
+    return jsonify({"ok": True, "items": items})
+
+
+@osc_bp.route("/api/osc/checklists/legal-aid", methods=["POST"])
+@login_required
+def osc_laf_checklist_post():
+    data = request.get_json(silent=True) or {}
+    case_number = (data.get("case_number") or "").strip()
+    if not case_number:
+        return jsonify({"ok": False, "error": "case_number 必填"}), 400
+    item_key = (data.get("item_key") or "").strip()
+    if not item_key:
+        item_key = f"custom_{uuid.uuid4().hex[:8]}"
+    item_label = (data.get("item_label") or "").strip()
+    status = (data.get("status") or "待補").strip()
+    notes = (data.get("notes") or "").strip()
+    result, _ = _osc_exec(
+        "INSERT INTO legal_aid_checklists (case_number, item_key, item_label, status, notes, last_updated) "
+        "VALUES (%s, %s, %s, %s, %s, NOW()) "
+        "ON DUPLICATE KEY UPDATE item_label=VALUES(item_label), status=VALUES(status), notes=VALUES(notes), last_updated=NOW()",
+        (case_number, item_key, item_label, status, notes), fetch="none"
+    )
+    row, _ = _osc_exec(
+        "SELECT id FROM legal_aid_checklists WHERE case_number=%s AND item_key=%s",
+        (case_number, item_key), fetch="one"
+    )
+    row_id = row[0] if row else None
+    return jsonify({"ok": True, "id": row_id, "case_number": case_number, "item_key": item_key})
+
+
+@osc_bp.route("/api/osc/checklists/legal-aid/<int:row_id>", methods=["PUT"])
+@login_required
+def osc_laf_checklist_put(row_id):
+    data = request.get_json(silent=True) or {}
+    sets = []
+    vals = []
+    if "status" in data:
+        sets.append("status=%s"); vals.append(data["status"])
+    if "notes" in data:
+        sets.append("notes=%s"); vals.append(data["notes"])
+    if "item_label" in data:
+        sets.append("item_label=%s"); vals.append(data["item_label"])
+    if not sets:
+        return jsonify({"ok": False, "error": "無可更新欄位"}), 400
+    sets.append("last_updated=NOW()")
+    vals.append(row_id)
+    _osc_exec(f"UPDATE legal_aid_checklists SET {','.join(sets)} WHERE id=%s", tuple(vals), fetch="none")
+    return jsonify({"ok": True})
+
+
+@osc_bp.route("/api/osc/checklists/legal-aid/<int:row_id>", methods=["DELETE"])
+@login_required
+def osc_laf_checklist_delete(row_id):
+    _osc_exec("DELETE FROM legal_aid_checklists WHERE id=%s", (row_id,), fetch="none")
+    return jsonify({"ok": True})
+
+
+@osc_bp.route("/api/osc/checklists/legal-aid/seed", methods=["POST"])
+@login_required
+def osc_laf_checklist_seed():
+    data = request.get_json(silent=True) or {}
+    case_number = (data.get("case_number") or "").strip()
+    if not case_number:
+        return jsonify({"ok": False, "error": "case_number 必填"}), 400
+    items = _laf_default_checklist_items()
+    inserted = 0
+    skipped = 0
+    for item_key, item_label in items:
+        existing, _ = _osc_exec(
+            "SELECT id FROM legal_aid_checklists WHERE case_number=%s AND item_key=%s",
+            (case_number, item_key), fetch="one"
+        )
+        if existing:
+            skipped += 1
+        else:
+            _osc_exec(
+                "INSERT INTO legal_aid_checklists (case_number, item_key, item_label, status, last_updated) "
+                "VALUES (%s, %s, %s, '待補', NOW())",
+                (case_number, item_key, item_label), fetch="none"
+            )
+            inserted += 1
+    return jsonify({"ok": True, "inserted_count": inserted, "skipped_count": skipped})
+
+
+# ── 1B. case_checklists endpoints (4) ────────────────────────────────────────
+
+@osc_bp.route("/api/osc/checklists/case", methods=["GET"])
+@login_required
+def osc_case_checklist_get():
+    case_number = request.args.get("case_number", "").strip()
+    if not case_number:
+        return jsonify({"ok": False, "error": "case_number 必填"}), 400
+    rows, _ = _osc_exec(
+        "SELECT id, case_number, item_label, status, notes, is_active "
+        "FROM case_checklists WHERE case_number=%s AND is_active=1 ORDER BY id DESC",
+        (case_number,), fetch="all"
+    )
+    items = []
+    for r in (rows or []):
+        items.append({
+            "id": r[0],
+            "case_number": r[1],
+            "item_label": r[2],
+            "status": r[3],
+            "notes": r[4],
+            "is_active": r[5],
+        })
+    return jsonify({"ok": True, "items": items})
+
+
+@osc_bp.route("/api/osc/checklists/case", methods=["POST"])
+@login_required
+def osc_case_checklist_post():
+    data = request.get_json(silent=True) or {}
+    case_number = (data.get("case_number") or "").strip()
+    item_label = (data.get("item_label") or "").strip()
+    if not case_number or not item_label:
+        return jsonify({"ok": False, "error": "case_number 與 item_label 必填"}), 400
+    status = (data.get("status") or "待補").strip()
+    notes = (data.get("notes") or "").strip()
+    _osc_exec(
+        "INSERT INTO case_checklists (case_number, item_label, status, notes, is_active) "
+        "VALUES (%s, %s, %s, %s, 1) "
+        "ON DUPLICATE KEY UPDATE status=VALUES(status), notes=VALUES(notes), is_active=1",
+        (case_number, item_label, status, notes), fetch="none"
+    )
+    row, _ = _osc_exec(
+        "SELECT id FROM case_checklists WHERE case_number=%s AND item_label=%s",
+        (case_number, item_label), fetch="one"
+    )
+    row_id = row[0] if row else None
+    return jsonify({"ok": True, "id": row_id, "case_number": case_number, "item_label": item_label})
+
+
+@osc_bp.route("/api/osc/checklists/case/<int:row_id>", methods=["PUT"])
+@login_required
+def osc_case_checklist_put(row_id):
+    data = request.get_json(silent=True) or {}
+    sets = []
+    vals = []
+    if "status" in data:
+        sets.append("status=%s"); vals.append(data["status"])
+    if "notes" in data:
+        sets.append("notes=%s"); vals.append(data["notes"])
+    if "is_active" in data:
+        sets.append("is_active=%s"); vals.append(int(data["is_active"]))
+    if not sets:
+        return jsonify({"ok": False, "error": "無可更新欄位"}), 400
+    vals.append(row_id)
+    _osc_exec(f"UPDATE case_checklists SET {','.join(sets)} WHERE id=%s", tuple(vals), fetch="none")
+    return jsonify({"ok": True})
+
+
+@osc_bp.route("/api/osc/checklists/case/<int:row_id>", methods=["DELETE"])
+@login_required
+def osc_case_checklist_delete(row_id):
+    _osc_exec("UPDATE case_checklists SET is_active=0 WHERE id=%s", (row_id,), fetch="none")
+    return jsonify({"ok": True})

@@ -319,6 +319,20 @@ function bindEvents() {
     if (clientsExportBtn) clientsExportBtn.addEventListener("click", exportClientsCsv);
     if (clientsFileInput) clientsFileInput.addEventListener("change", e => handleClientsCsvUpload(e.target.files[0]));
 
+    // LAF Checklist
+    const lafClLoadBtn = document.getElementById("lafChecklistLoadBtn");
+    const lafClSeedBtn = document.getElementById("lafChecklistSeedBtn");
+    const lafClAddBtn  = document.getElementById("lafChecklistAddBtn");
+    if (lafClLoadBtn) lafClLoadBtn.addEventListener("click", loadLafChecklist);
+    if (lafClSeedBtn) lafClSeedBtn.addEventListener("click", seedLafChecklist);
+    if (lafClAddBtn)  lafClAddBtn.addEventListener("click", addLafChecklistItem);
+
+    // Case Checklist
+    const caseClLoadBtn = document.getElementById("caseChecklistLoadBtn");
+    const caseClAddBtn  = document.getElementById("caseChecklistAddBtn");
+    if (caseClLoadBtn) caseClLoadBtn.addEventListener("click", loadCaseChecklist);
+    if (caseClAddBtn)  caseClAddBtn.addEventListener("click", addCaseChecklistItem);
+
     document.getElementById("clientResetBtn").addEventListener("click", () => clearFields(["client_id", "client_name", "client_contact_person", "client_phone", "client_email", "client_address", "client_tax_id", "client_notes", "client_status"]));
     document.getElementById("meetingResetBtn").addEventListener("click", () => clearFields(["meeting_id", "meeting_case_number", "meeting_client_name", "meeting_type", "meeting_datetime", "meeting_duration", "meeting_location", "meeting_notes", "meeting_status"]));
     document.getElementById("calResetBtn").addEventListener("click", () => clearFields(["cal_id", "cal_event_id", "cal_title", "cal_case_number", "cal_start_date", "cal_end_date", "cal_location", "cal_color", "cal_is_all_day", "cal_reminder_minutes", "cal_summary", "cal_description", "cal_raw_data"]));

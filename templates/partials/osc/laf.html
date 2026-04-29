@@ -76,5 +76,37 @@
                     </table>
                 </div>
             </div>
+
+            <section class="card" id="lafChecklistSection">
+                <div class="section-head">
+                    <div>
+                        <h3>📋 補件清單</h3>
+                        <div class="section-note">逐項追蹤法扶申請所需補件，狀態：待補 / 已備齊 / 不適用。</div>
+                    </div>
+                    <div class="inline-actions">
+                        <input id="lafChecklistCaseNumber" placeholder="案件編號 (例如 2026-0017)" style="width:180px">
+                        <button class="btn" id="lafChecklistLoadBtn">載入</button>
+                        <button class="btn primary" id="lafChecklistSeedBtn">填入預設清單</button>
+                    </div>
+                </div>
+                <div class="table-wrap">
+                    <table>
+                        <thead>
+                            <tr><th>項目</th><th>狀態</th><th>備註</th><th>更新時間</th><th>操作</th></tr>
+                        </thead>
+                        <tbody id="lafChecklistMgmtBody"><tr><td colspan="5" class="muted">輸入案號並按「載入」</td></tr></tbody>
+                    </table>
+                </div>
+                <div class="soft-block" style="margin-top:10px">
+                    <div class="field-grid cols-3">
+                        <div class="field"><label>新增項目（標籤）</label><input id="lafChecklistNewLabel" placeholder="自訂補件項目"></div>
+                        <div class="field"><label>狀態</label>
+                            <select id="lafChecklistNewStatus"><option>待補</option><option>已備齊</option><option>不適用</option></select>
+                        </div>
+                        <div class="field"><label>備註</label><input id="lafChecklistNewNotes" placeholder="可選"></div>
+                    </div>
+                    <div class="toolbar"><button class="btn primary" id="lafChecklistAddBtn">➕ 新增項目</button></div>
+                </div>
+            </section>
         </section>
 
