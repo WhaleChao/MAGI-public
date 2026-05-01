@@ -113,7 +113,8 @@ def cmd_extract(doc_path: str) -> Dict:
             elif tag in ("tbl", "tr", "tc", "sdt", "sdtContent"):
                 collect(child)
 
-    collect(root.find(f"{{{W}}}body") or root)
+    body = root.find(f"{{{W}}}body")
+    collect(body if body is not None else root)
 
     return {
         "text": "\n".join(paragraphs),
@@ -151,7 +152,8 @@ def cmd_find(
             elif tag in ("tbl", "tr", "tc", "sdt", "sdtContent"):
                 collect(child)
 
-    collect(root.find(f"{{{W}}}body") or root)
+    body2 = root.find(f"{{{W}}}body")
+    collect(body2 if body2 is not None else root)
 
     matches = []
     for para_idx, para_text in enumerate(paragraphs):
