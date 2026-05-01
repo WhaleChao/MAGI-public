@@ -1,0 +1,9 @@
+{
+  "name": "docx-editor",
+  "version": "1.0.0",
+  "description": "Apply anchored find-and-replace as Word tracked changes (<w:ins>/<w:del>). Ported from Mike OSS Legal Platform docxTrackedChanges.ts.",
+  "entry": "skills/docx-editor/action.py",
+  "tasks": ["apply", "extract", "find", "self_test"],
+  "dependencies": ["lxml>=6.0.0", "python-docx>=1.2.0"],
+  "author": "MAGI"
+}
