@@ -2,16 +2,30 @@
 Tests for skills/docx-editor/action.py (CLI smoke tests)
 """
 
+import importlib.util
 import io
 import json
 import os
 import sys
 import tempfile
 
-# Make skill importable
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "skills", "docx-editor"))
 
-import action as docx_action
+def _import_docx_editor_action():
+    """Import skills/docx-editor/action.py without polluting sys.modules with 'action'."""
+    action_path = os.path.join(
+        os.path.dirname(__file__), "..", "skills", "docx-editor", "action.py"
+    )
+    spec = importlib.util.spec_from_file_location("docx_editor_action", action_path)
+    mod = importlib.util.module_from_spec(spec)
+    # Ensure lib/ is importable relative to the skill
+    skill_dir = os.path.dirname(os.path.abspath(action_path))
+    if skill_dir not in sys.path:
+        sys.path.insert(0, skill_dir)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+docx_action = _import_docx_editor_action()
 
 FIXTURES_DIR = os.path.join(os.path.dirname(__file__), "fixtures", "docx_editor")
 
