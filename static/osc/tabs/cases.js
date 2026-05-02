@@ -129,44 +129,137 @@ async function saveCase() {
     await loadMeta();
 }
 
+// ── Cross-platform open folder（2026-05-03 UX v3 P0）──────────────────────
+// 後端 /open-folder 不再 server-side open，只回 candidates。前端依
+// navigator.platform 觸發 smb:// (mac) / file:// (Win Synology Drive) /
+// file: UNC (Win NAS) / 多候選路徑複製對話框 (iPad / 其他)。
 async function openCaseFolderHost(id, quiet = false) {
     try {
         const data = await api(`/api/osc/cases/${encodeURIComponent(id)}/open-folder`, "POST", {});
 
-        // 成功
-        if (data.ok) {
-            if (!quiet) {
-                const srcLabel = { nas_smb: "NAS", synology_drive: "Synology Drive", smb_direct: "SMB" }[data.source] || "本機";
-                showToast(`已開啟資料夾（${srcLabel}）`, "ok");
-            }
+        // 失敗（error_kind） — 與舊行為一致
+        if (!data.ok) {
+            if (!quiet) handleOpenFolderError(data);
             return data;
         }
 
-        // 失敗：依 error_kind 彈窗（不再靜默）
-        if (!quiet) {
-            const kind = data.error_kind || "open_failed";
-            const msg = data.message || "開啟資料夾失敗";
-            const cands = [...(data.smb_candidates || []), ...(data.local_candidates || [])];
-            const detail = cands.length > 0
-                ? `已嘗試路徑：\n${cands.slice(0, 4).join("\n")}`
-                : "";
+        const candidates = data.candidates || {
+            // 後備：相容舊 payload 格式
+            smb_url: data.smb_candidates || (data.smb_url ? [data.smb_url] : []),
+            mac_synology: data.local_candidates || [],
+            win_unc: [],
+            win_synology: [],
+        };
+        const platform = (navigator.userAgentData?.platform || navigator.platform || "").toLowerCase();
+        const ua = navigator.userAgent || "";
+        const isMac = /mac/i.test(platform) && !/iPad|iPhone/.test(ua);
+        const isWin = /win/i.test(platform);
+        const isIpad = /iPad/.test(ua) || (isMac && navigator.maxTouchPoints > 1);
 
-            if (kind === "no_nas_no_synology") {
-                showAlert("❌ 無法開啟資料夾", msg, detail || undefined);
-            } else if (kind === "folder_not_found") {
-                showAlert("⚠️ 找不到案件資料夾", msg,
-                    detail || "建議：確認案號、當事人姓名與 NAS 資料夾名稱相符，或用「建立資料夾」按鈕建立預設結構。");
-            } else if (kind === "folder_path_empty") {
-                const clientName = (data.case || {}).client_name || "此案件";
-                showAlert("⚠️ 案件未設定資料夾", `${clientName} 尚未設定資料夾路徑，請先用「建立資料夾」按鈕建立預設結構。`);
-            } else {
-                showAlert("❌ 開啟資料夾失敗", msg, detail || undefined);
+        // mac：smb:// → Finder 自動 mount + 開
+        if (isMac && !isIpad && candidates.smb_url && candidates.smb_url.length) {
+            try { window.location.href = candidates.smb_url[0]; }
+            catch (_) { /* ignore */ }
+            if (!quiet) showToast("已嘗試開啟（NAS / Finder）", "ok");
+            return data;
+        }
+
+        // Windows：優先 Synology Drive 本機路徑（如裝），fallback UNC
+        if (isWin) {
+            if (candidates.win_synology && candidates.win_synology.length) {
+                const raw = candidates.win_synology[0];
+                // file:/// 不認 %USERPROFILE%；落到複製對話框讓使用者貼
+                if (/%USERPROFILE%/i.test(raw)) {
+                    showFolderPathDialog(data.folder_path || "", candidates);
+                    return data;
+                }
+                const path = raw.replace(/\\/g, "/");
+                window.open(`file:///${path}`, "_blank");
+                if (!quiet) showToast("已嘗試開啟（Synology Drive）", "ok");
+                return data;
+            }
+            if (candidates.win_unc && candidates.win_unc.length) {
+                window.open(`file:${candidates.win_unc[0]}`, "_blank");
+                if (!quiet) showToast("已嘗試開啟（NAS 共享）", "ok");
+                return data;
             }
         }
+
+        // iPad / 其他 / fallback：顯示路徑 + 複製按鈕
+        showFolderPathDialog(data.folder_path || "", candidates);
         return data;
+
     } catch (e) {
         if (!quiet) showAlert("❌ 系統錯誤", `無法呼叫開啟資料夾 API：${e.message || e}`);
         throw e;
+    }
+}
+
+// 把後端 error_kind 統一彈窗（從原 openCaseFolderHost 抽出來）
+function handleOpenFolderError(data) {
+    const kind = data.error_kind || "open_failed";
+    const msg = data.message || "開啟資料夾失敗";
+    const cands = [...(data.smb_candidates || []), ...(data.local_candidates || [])];
+    const detail = cands.length > 0
+        ? `已嘗試路徑：\n${cands.slice(0, 4).join("\n")}`
+        : "";
+    if (kind === "no_nas_no_synology") {
+        showAlert("❌ 無法開啟資料夾", msg, detail || undefined);
+    } else if (kind === "folder_not_found") {
+        showAlert("⚠️ 找不到案件資料夾", msg,
+            detail || "建議：確認案號、當事人姓名與 NAS 資料夾名稱相符，或用「建立資料夾」按鈕建立預設結構。");
+    } else if (kind === "folder_path_empty") {
+        const clientName = (data.case || {}).client_name || "此案件";
+        showAlert("⚠️ 案件未設定資料夾", `${clientName} 尚未設定資料夾路徑，請先用「建立資料夾」按鈕建立預設結構。`);
+    } else {
+        showAlert("❌ 開啟資料夾失敗", msg, detail || undefined);
+    }
+}
+
+// 跨平台路徑複製對話框（iPad / Win 不裝 Synology / Linux 等情境）
+function showFolderPathDialog(folderPath, candidates) {
+    const c = candidates || {};
+    const items = [
+        ...(c.smb_url || []).map(u => ({ label: "📡 NAS (SMB)", value: u, hint: "mac Finder 直接點開" })),
+        ...(c.win_unc || []).map(u => ({ label: "🪟 Windows 共享 (UNC)", value: u, hint: "Win+R 或 Explorer 貼網址" })),
+        ...(c.win_synology || []).map(u => ({
+            label: "💾 Win Synology Drive",
+            value: u.replace(/%USERPROFILE%/g, "C:\\Users\\<您的帳號>"),
+            hint: "若裝了 Synology Drive 用本機路徑",
+        })),
+        ...(c.mac_synology || []).map(u => ({ label: "🍎 mac Synology Drive", value: u, hint: "本機已同步路徑" })),
+    ];
+    const safeJSON = (s) => JSON.stringify(String(s || "")).replace(/</g, "\\u003c");
+    const html = `
+<div style="max-width:560px">
+  <p style="margin:0 0 12px;color:#666;font-size:13px">
+    瀏覽器無法直接開啟此資料夾。請複製路徑到 Finder（mac）/ Explorer（Win）：
+  </p>
+  ${items.length ? items.map(it => `
+    <div style="margin:8px 0;padding:10px;background:#f5f5f7;border-radius:8px">
+      <div style="font-weight:600;font-size:12px;margin-bottom:6px">
+        ${esc(it.label)}${it.hint ? `<span style="color:#86868b;font-weight:normal;font-size:11px"> — ${esc(it.hint)}</span>` : ""}
+      </div>
+      <div style="display:flex;gap:6px">
+        <input type="text" readonly value="${esc(it.value)}"
+          style="flex:1;font-family:'SF Mono',Menlo,monospace;font-size:11px;padding:5px 8px;border:1px solid #d2d2d7;border-radius:6px"
+          onclick="this.select()">
+        <button class="btn-secondary"
+          onclick="(navigator.clipboard?.writeText(${safeJSON(it.value)}) || Promise.resolve()).then(()=>showToast('已複製','ok'))"
+          style="white-space:nowrap;padding:5px 10px;font-size:12px">📋 複製</button>
+      </div>
+    </div>
+  `).join("") : `<div class="muted">無可用路徑（請先用「建立資料夾」按鈕建立）</div>`}
+  <div style="margin-top:12px;font-size:12px;color:#86868b">
+    原始路徑：<code style="background:#f0f0f3;padding:2px 6px;border-radius:4px">${esc(folderPath || "")}</code>
+  </div>
+</div>`;
+    if (typeof showCustomDialog === "function") {
+        showCustomDialog("📂 開啟資料夾", html);
+    } else {
+        // fallback
+        const txt = items.map(it => `${it.label}: ${it.value}`).join("\n");
+        showAlert("📂 開啟資料夾", `路徑：${folderPath}\n\n${txt}`);
     }
 }
 

@@ -413,3 +413,44 @@ function showAlert(title, body, detail) {
         window.alert(txt);
     }
 }
+
+/**
+ * showCustomDialog(title, bodyHtml)
+ * 與 showAlert 類似，但 body 接收 HTML 字串（caller 須自行 esc）。
+ * 用於需要互動內容（按鈕 / input / 多段資訊）的彈窗，例如跨平台
+ * 開資料夾時的多候選路徑複製對話框。
+ */
+function showCustomDialog(title, bodyHtml) {
+    try {
+        const existing = document.getElementById("_oscCustomDialog");
+        if (existing) existing.remove();
+        const dlg = document.createElement("dialog");
+        dlg.id = "_oscCustomDialog";
+        dlg.style.cssText = [
+            "padding:0", "border:none", "border-radius:12px",
+            "box-shadow:0 8px 32px rgba(0,0,0,0.22)", "max-width:600px", "width:92vw",
+            "font-family:var(--apple-font,-apple-system,sans-serif)",
+        ].join(";");
+        dlg.innerHTML = `
+<div style="padding:20px 24px 12px">
+  <div style="font-size:17px;font-weight:700;color:#1d1d1f;margin-bottom:12px">${esc ? esc(title) : title}</div>
+  <div style="font-size:14px;color:#3d3d3f;line-height:1.55">${bodyHtml || ""}</div>
+</div>
+<div style="display:flex;justify-content:flex-end;padding:8px 24px 20px;border-top:1px solid #f0f0f2">
+  <button id="_oscCustomOk" style="
+    background:#007aff;color:#fff;border:none;border-radius:8px;
+    padding:9px 24px;font-size:15px;font-weight:600;cursor:pointer
+  ">關閉</button>
+</div>`;
+        document.body.appendChild(dlg);
+        dlg.showModal();
+        dlg.querySelector("#_oscCustomOk").addEventListener("click", () => dlg.close());
+        dlg.addEventListener("close", () => dlg.remove());
+        return dlg;
+    } catch (_e) {
+        // fallback：剝掉 HTML，丟 alert
+        const txt = (bodyHtml || "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+        window.alert([title, txt].filter(Boolean).join("\n\n"));
+        return null;
+    }
+}
