@@ -137,6 +137,73 @@ def _entry_dict(name: str, full_path: str, base_real: str, *, summarize: bool) -
 # ── routes ──────────────────────────────────────────────────────────────
 
 
+@osc_files_bp.route("/api/osc/folders/tree", methods=["GET"])
+@login_required
+def osc_folders_tree_api():
+    """
+    Lazy-load tree node children — sub-directories only (files excluded for tree).
+    Args:
+        base_path : root path
+        relative_path : sub-path under base whose children we list (default: root itself)
+        show_hidden : "1" to include暫存資料夾
+    """
+    base = str(request.args.get("base_path") or "").strip()
+    relative = str(request.args.get("relative_path") or "").strip().strip("/")
+    show_hidden = str(request.args.get("show_hidden") or "").strip().lower() in {"1", "true", "yes"}
+
+    if not base:
+        return jsonify({"ok": False, "error": "base_path required"}), 400
+
+    base_real = _resolve_target_dir(base)
+    if not base_real:
+        return jsonify({"ok": False, "error": "base_not_found_or_not_allowed"}), 404
+
+    target = _safe_join_under(base_real, relative)
+    if target is None:
+        return jsonify({"ok": False, "error": "path_escape"}), 400
+    if not _osc_is_safe_local_path(target):
+        return jsonify({"ok": False, "error": "path_not_allowed"}), 403
+    if not os.path.isdir(target):
+        return jsonify({"ok": False, "error": "folder_not_found"}), 404
+
+    children = []
+    try:
+        for name in sorted(os.listdir(target), key=str.lower):
+            if _is_hidden_name(name) and not show_hidden:
+                continue
+            full = os.path.join(target, name)
+            try:
+                if not os.path.isdir(full):
+                    continue
+            except OSError:
+                continue
+            # detect grandchild dirs to know if expandable
+            has_subdirs = False
+            try:
+                for sub in os.listdir(full):
+                    if _is_hidden_name(sub) and not show_hidden:
+                        continue
+                    if os.path.isdir(os.path.join(full, sub)):
+                        has_subdirs = True
+                        break
+            except OSError:
+                pass
+            children.append({
+                "name": name,
+                "relative_path": _osc_relpath_under(base_real, full),
+                "has_subdirs": has_subdirs,
+            })
+    except OSError as e:
+        return jsonify({"ok": False, "error": f"listdir_failed: {e}"}), 500
+
+    return jsonify({
+        "ok": True,
+        "base_path": base_real,
+        "current_relative_path": _osc_relpath_under(base_real, target),
+        "children": children,
+    })
+
+
 @osc_files_bp.route("/api/osc/folders/browse", methods=["GET"])
 @login_required
 def osc_folders_browse_api():
