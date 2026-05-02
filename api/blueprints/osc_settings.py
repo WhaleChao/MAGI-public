@@ -63,9 +63,9 @@ def osc_setting_detail_api(setting_key):
     _osc_exec, _osc_text, _osc_log_activity = _get_osc_helpers()
     if request.method == "GET":
         row, _ = _osc_exec("SELECT `key`, value, description, updated_date FROM settings WHERE `key`=%s", (setting_key,), fetch="one")
-        if not row:
-            return jsonify({"ok": False, "error": "not found"}), 404
-        return jsonify({"ok": True, "item": row})
+        # 不存在的 key 回 200 + item:null（與 admin.js「沒這 key 是正常情況」對齊，
+        # 避免瀏覽器 console 出現「Failed to load resource: 404」誤導律師）
+        return jsonify({"ok": True, "item": row or None})
     if request.method == "DELETE":
         result, _ = _osc_exec("DELETE FROM settings WHERE `key`=%s", (setting_key,), fetch="none")
         _osc_log_activity("setting:delete", "settings", setting_key)
