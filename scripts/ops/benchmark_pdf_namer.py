@@ -194,6 +194,7 @@ def main():
     results = []
 
     print(f"[benchmark] Running pdf-namer on {total} PDFs...")
+    inaccessible_count = 0
     for pdf_path in pdfs:
         try:
             r = namer.generate_name_proposal(pdf_path, return_structured=True)
@@ -244,18 +245,31 @@ def main():
                 "doc_type": doc_type,
             })
         except Exception as e:
-            empty_count += 1
-            results.append({"path": pdf_path, "error": str(e)})
+            err_str = str(e)
+            if "Failed to open file" in err_str or "no such file" in err_str.lower():
+                inaccessible_count += 1
+                results.append({"path": pdf_path, "error": err_str, "inaccessible": True})
+            else:
+                empty_count += 1
+                results.append({"path": pdf_path, "error": err_str})
 
-    format_valid_rate = valid_format / total if total else 0.0
-    quality_pass_rate = quality_pass / total if total else 0.0
-    overall_pass_rate = overall_pass / total if total else 0.0
-    empty_rate = empty_count / total if total else 0.0
+    effective_total = total - inaccessible_count
+    if effective_total <= 0:
+        print(f"[SKIP] All {total} PDFs were inaccessible (likely Synology offline placeholders). Skipping benchmark.")
+        sys.exit(0)
+    format_valid_rate = valid_format / effective_total if effective_total else 0.0
+    quality_pass_rate = quality_pass / effective_total if effective_total else 0.0
+    overall_pass_rate = overall_pass / effective_total if effective_total else 0.0
+    empty_rate = empty_count / effective_total if effective_total else 0.0
     holding_coverage = holding_found / holding_applicable if holding_applicable else None
+    if inaccessible_count:
+        print(f"[benchmark] {inaccessible_count}/{total} PDFs were inaccessible (excluded from rates)")
 
     summary = {
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
         "total": total,
+        "inaccessible_count": inaccessible_count,
+        "effective_total": effective_total,
         "format_valid_rate": round(format_valid_rate, 3),
         "quality_pass_rate": round(quality_pass_rate, 3),
         "overall_pass_rate": round(overall_pass_rate, 3),

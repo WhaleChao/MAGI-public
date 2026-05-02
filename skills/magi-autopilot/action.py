@@ -3548,7 +3548,7 @@ def run_tick(run_dir: str, *, emit_step_events: bool = True) -> Dict[str, Any]:
             results["blockers"].append(f"{step}: {kind}")
 
     results: Dict[str, Any] = {"ok": True, "steps": {}, "blocked": False, "blockers": []}
-    if _env_on("MAGI_TICK_OPENCLAW_AUTH_GUARD_ENABLE", True):
+    if _env_on("MAGI_TICK_OPENCLAW_AUTH_GUARD_ENABLE", False):
         try:
             auth_guard = _openclaw_auth_mode_guard()
         except Exception as e:
@@ -3574,7 +3574,7 @@ def run_tick(run_dir: str, *, emit_step_events: bool = True) -> Dict[str, Any]:
         results["steps"]["openclaw_auth_guard"] = {
             "ok": True,
             "skipped": True,
-            "reason": "MAGI_TICK_OPENCLAW_AUTH_GUARD_ENABLE=0",
+            "reason": "OpenClaw deprecated; guard disabled by default",
         }
 
     # DB strategy guardrail: remote DB first when reachable, local fallback only on real outage.
@@ -5575,13 +5575,19 @@ def main() -> int:
                 k: os.path.exists(_skill_action(k))
                 for k in ["pdf-namer", "osc-orchestrator", "file-review-orchestrator", "transcript-downloader"]
             }
-            auth_guard = _openclaw_auth_mode_guard()
+            if _env_on("MAGI_SELFTEST_OPENCLAW_AUTH_GUARD_ENABLE", False):
+                auth_guard = _openclaw_auth_mode_guard()
+            else:
+                auth_guard = {"ok": True, "status": "skipped", "reason": "OpenClaw deprecated"}
             report["details"]["openclaw_auth_guard"] = auth_guard
             db_smoke = _run_cmd([VENV_PY, _skill_action("osc-orchestrator"), "--task", "db_smoke {}"], timeout_sec=60)
             report["details"]["osc_db_smoke"] = {"ok": db_smoke.ok, "parsed": db_smoke.parsed, "stderr_tail": (db_smoke.stderr or "")[-400:]}
             schema_guard = _db_schema_chk_nb_guard()
             report["details"]["db_schema_guard"] = schema_guard
-            model_guard = _openclaw_model_guard(auto_restart=_env_on("MAGI_OPENCLAW_MODEL_GUARD_RESTART", True))
+            if _env_on("MAGI_SELFTEST_OPENCLAW_MODEL_GUARD_ENABLE", False):
+                model_guard = _openclaw_model_guard(auto_restart=_env_on("MAGI_OPENCLAW_MODEL_GUARD_RESTART", True))
+            else:
+                model_guard = {"ok": True, "status": "skipped", "reason": "OpenClaw deprecated"}
             report["details"]["openclaw_model_guard"] = model_guard
             comm = _comm_health_self_test()
             report["details"]["comm_health"] = comm
