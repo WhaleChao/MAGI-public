@@ -132,20 +132,40 @@ async function saveCase() {
 async function openCaseFolderHost(id, quiet = false) {
     try {
         const data = await api(`/api/osc/cases/${encodeURIComponent(id)}/open-folder`, "POST", {});
-        const result = data.open_result || {};
-        if (result.ok) {
-            if (!quiet) showToast("已送出本機開啟指令。", "ok");
+
+        // 成功
+        if (data.ok) {
+            if (!quiet) {
+                const srcLabel = { nas_smb: "NAS", synology_drive: "Synology Drive", smb_direct: "SMB" }[data.source] || "本機";
+                showToast(`已開啟資料夾（${srcLabel}）`, "ok");
+            }
             return data;
         }
-        const cands = data.smb_candidates || [];
-        const smb = cands[0] || data.smb_url || "";
-        if (smb && isLocalConsole()) window.open(smb, "_blank");
+
+        // 失敗：依 error_kind 彈窗（不再靜默）
         if (!quiet) {
-            alert(`無法直接開啟資料夾，請使用下列路徑重試：\n${(cands || []).join("\n")}`);
+            const kind = data.error_kind || "open_failed";
+            const msg = data.message || "開啟資料夾失敗";
+            const cands = [...(data.smb_candidates || []), ...(data.local_candidates || [])];
+            const detail = cands.length > 0
+                ? `已嘗試路徑：\n${cands.slice(0, 4).join("\n")}`
+                : "";
+
+            if (kind === "no_nas_no_synology") {
+                showAlert("❌ 無法開啟資料夾", msg, detail || undefined);
+            } else if (kind === "folder_not_found") {
+                showAlert("⚠️ 找不到案件資料夾", msg,
+                    detail || "建議：確認案號、當事人姓名與 NAS 資料夾名稱相符，或用「建立資料夾」按鈕建立預設結構。");
+            } else if (kind === "folder_path_empty") {
+                const clientName = (data.case || {}).client_name || "此案件";
+                showAlert("⚠️ 案件未設定資料夾", `${clientName} 尚未設定資料夾路徑，請先用「建立資料夾」按鈕建立預設結構。`);
+            } else {
+                showAlert("❌ 開啟資料夾失敗", msg, detail || undefined);
+            }
         }
         return data;
     } catch (e) {
-        if (!quiet) alert(`開啟資料夾失敗：${e.message}`);
+        if (!quiet) showAlert("❌ 系統錯誤", `無法呼叫開啟資料夾 API：${e.message || e}`);
         throw e;
     }
 }

@@ -355,3 +355,44 @@ function wbClose() {
     document.getElementById("wbBody").innerHTML = "";
     wbSetStatus("");
 }
+
+/**
+ * showAlert(title, body, detail?)
+ * 顯示一個簡易警告彈窗（用 <dialog> element）。
+ * 若瀏覽器不支援 <dialog>，fallback 到 window.alert()。
+ */
+function showAlert(title, body, detail) {
+    // 嘗試用 <dialog>
+    try {
+        const existing = document.getElementById("_oscAlertDialog");
+        if (existing) existing.remove();
+        const dlg = document.createElement("dialog");
+        dlg.id = "_oscAlertDialog";
+        dlg.style.cssText = [
+            "padding:0", "border:none", "border-radius:12px",
+            "box-shadow:0 8px 32px rgba(0,0,0,0.22)", "max-width:480px", "width:90vw",
+            "font-family:var(--apple-font,-apple-system,sans-serif)",
+        ].join(";");
+        const detailHtml = detail ? `<pre style="margin:10px 0 0;padding:10px;background:#f5f5f7;border-radius:6px;font-size:12px;white-space:pre-wrap;color:#555;max-height:160px;overflow-y:auto">${esc ? esc(detail) : detail}</pre>` : "";
+        dlg.innerHTML = `
+<div style="padding:24px 24px 16px">
+  <div style="font-size:17px;font-weight:700;color:#1d1d1f;margin-bottom:10px">${esc ? esc(title) : title}</div>
+  <div style="font-size:14px;color:#3d3d3f;line-height:1.6;white-space:pre-wrap">${esc ? esc(body) : body}</div>
+  ${detailHtml}
+</div>
+<div style="display:flex;justify-content:flex-end;padding:8px 24px 20px">
+  <button id="_oscAlertOk" style="
+    background:#007aff;color:#fff;border:none;border-radius:8px;
+    padding:9px 24px;font-size:15px;font-weight:600;cursor:pointer
+  ">了解</button>
+</div>`;
+        document.body.appendChild(dlg);
+        dlg.showModal();
+        dlg.querySelector("#_oscAlertOk").addEventListener("click", () => dlg.close());
+        dlg.addEventListener("close", () => dlg.remove());
+    } catch (_e) {
+        // fallback
+        const txt = [title, body, detail].filter(Boolean).join("\n\n");
+        window.alert(txt);
+    }
+}

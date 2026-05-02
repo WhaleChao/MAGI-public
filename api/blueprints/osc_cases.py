@@ -495,59 +495,141 @@ def osc_case_detail_api(row_id):
 # ══════════════════════════════════════════════════════════════════════════════
 
 
+def _check_nas_mount_status() -> bool:
+    """檢查 NAS SMB mount 是否還在線（輕量，最多 1s）。"""
+    try:
+        from api.nas_mount_guard import _is_mounted, _SHARES
+        for _share_name, volume_path in _SHARES:
+            if _is_mounted(volume_path):
+                return True
+        return False
+    except Exception:
+        return False
+
+
+def _osc_synology_drive_base() -> str:
+    """回傳 Synology Drive homes 本機路徑（若未安裝則空字串）。"""
+    base = os.path.expanduser("~/Library/CloudStorage/SynologyDrive-homes")
+    return base if os.path.isdir(base) else ""
+
+
 @osc_bp.route("/api/osc/cases/<row_id>/open-folder", methods=["POST"])
 @login_required
 def osc_case_open_folder_api(row_id):
+    """開啟案件資料夾。
+
+    新邏輯（2026-05-02）：
+    1. 優先試 local_candidates（含 Synology Drive + NAS /Volumes/ 路徑）
+    2. 再試 SMB 路徑
+    3. 都失敗時回明確 error_kind 給前端彈窗（不再靜默）
+    """
     row_id = (row_id or "").strip()
     row, _ = _osc_exec("SELECT id, case_number, client_name, folder_path FROM cases WHERE id=%s", (row_id,), fetch="one")
     if not row:
-        return jsonify({"ok": False, "error": "case_not_found"}), 404
+        return jsonify({"ok": False, "error_kind": "case_not_found", "message": "找不到案件"}), 404
     folder_path = (row.get("folder_path") or "").strip()
     if not folder_path:
         folder_path = _osc_guess_case_folder(row.get("case_number") or "")
     if not folder_path:
-        return jsonify({"ok": False, "error": "folder_path_empty"}), 400
+        return jsonify({
+            "ok": False,
+            "error_kind": "folder_path_empty",
+            "message": "案件未設定資料夾路徑，請先用「建立資料夾」按鈕建立預設結構。",
+            "client_name": row.get("client_name"),
+        }), 400
     norm = _osc_norm_path(folder_path)
     smb_candidates = _osc_smb_candidates(norm)
     smb = smb_candidates[0] if smb_candidates else ""
-    local_candidates = _osc_local_path_candidates(norm)
+    local_candidates = _osc_local_path_candidates(norm)  # 已包含 Synology Drive 路徑
+    case_info = {"id": row.get("id"), "case_number": row.get("case_number"), "client_name": row.get("client_name")}
 
+    # ── Step 1: 試 local 路徑（含 Synology Drive + /Volumes/ NAS）──
     chosen_open_path = ""
     open_result = {"ok": False, "error": "open_failed"}
+    found_existing_local = False
 
     for lp in local_candidates:
         try:
             if lp and os.path.exists(lp):
+                found_existing_local = True
                 r = _osc_try_open_path(lp)
                 chosen_open_path = lp
                 open_result = r
                 if r.get("ok"):
-                    break
+                    # 判斷來源：NAS /Volumes 或 Synology Drive
+                    synology_base = _osc_synology_drive_base()
+                    source = "synology_drive" if (synology_base and lp.startswith(synology_base)) else "nas_smb"
+                    return jsonify({
+                        "ok": True,
+                        "source": source,
+                        "chosen_open_path": lp,
+                        "case": case_info,
+                        "folder_path": norm,
+                        "smb_url": smb,
+                        "smb_candidates": smb_candidates,
+                        "local_candidates": local_candidates,
+                        "browser_supported": True,
+                        "browser_url": f"/api/osc/cases/{row_id}/folder-browser",
+                    })
         except Exception:
             continue
 
+    # ── Step 2: 試 SMB 路徑（Windows/macOS SMB open） ──
     if not open_result.get("ok"):
         for sp in smb_candidates:
-            r = _osc_try_open_path(sp)
-            chosen_open_path = sp
-            open_result = r
-            if r.get("ok"):
-                break
+            try:
+                r = _osc_try_open_path(sp)
+                chosen_open_path = sp
+                open_result = r
+                if r.get("ok"):
+                    return jsonify({
+                        "ok": True,
+                        "source": "smb_direct",
+                        "chosen_open_path": sp,
+                        "case": case_info,
+                        "folder_path": norm,
+                        "smb_url": smb,
+                        "smb_candidates": smb_candidates,
+                        "local_candidates": local_candidates,
+                        "browser_supported": True,
+                        "browser_url": f"/api/osc/cases/{row_id}/folder-browser",
+                    })
+            except Exception:
+                continue
 
-    return jsonify(
-        {
-            "ok": True,
-            "case": {"id": row.get("id"), "case_number": row.get("case_number"), "client_name": row.get("client_name")},
-            "folder_path": norm,
-            "smb_url": smb,
-            "smb_candidates": smb_candidates,
-            "local_candidates": local_candidates,
-            "chosen_open_path": chosen_open_path,
-            "open_result": open_result,
-            "browser_supported": True,
-            "browser_url": f"/api/osc/cases/{row_id}/folder-browser",
-        }
-    )
+    # ── Step 3: 都失敗 → 回明確 error_kind ──
+    nas_mounted = _check_nas_mount_status()
+    synology_base = _osc_synology_drive_base()
+
+    if not nas_mounted and not synology_base:
+        # NAS 和 Synology Drive 都不可用
+        error_kind = "no_nas_no_synology"
+        message = "電腦未連接 NAS，也找不到 Synology Drive 本機資料夾。請先連 NAS 或確認 Synology Drive 已開啟並同步。"
+    elif found_existing_local:
+        # 路徑存在但 Finder 無法開啟（權限或其他問題）
+        error_kind = "open_failed"
+        message = f"資料夾存在但開啟失敗，請手動到 Finder 嘗試。路徑：{chosen_open_path or norm}"
+    elif nas_mounted or synology_base:
+        # NAS/Synology 有掛但找不到這個資料夾
+        error_kind = "folder_not_found"
+        message = f"NAS / Synology Drive 已連線但找不到此案件資料夾。\n可能是案號或當事人姓名與資料夾名稱不符，或尚未建立資料夾。"
+    else:
+        error_kind = "open_failed"
+        message = "開啟資料夾失敗，請確認 NAS 連線狀態後重試。"
+
+    return jsonify({
+        "ok": False,
+        "error_kind": error_kind,
+        "message": message,
+        "case": case_info,
+        "folder_path": norm,
+        "smb_candidates": smb_candidates[:3],
+        "local_candidates": local_candidates[:3],
+        "nas_mounted": nas_mounted,
+        "synology_available": bool(synology_base),
+        "browser_supported": True,
+        "browser_url": f"/api/osc/cases/{row_id}/folder-browser",
+    })
 
 
 @osc_bp.route("/api/osc/cases/<row_id>/create-folder", methods=["POST"])
