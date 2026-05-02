@@ -21,9 +21,26 @@
                 </div>
             </div>
             <div class="fm-toolbar">
+                <div class="fm-toolbar-group" role="group" aria-label="檢視模式">
+                    <button class="btn-mini fm-view-btn active" data-view="detail" title="詳細檢視">📋 詳細</button>
+                    <button class="btn-mini fm-view-btn" data-view="grid" title="網格檢視">🔲 網格</button>
+                    <button class="btn-mini fm-view-btn" data-view="compact" title="清單檢視">≡ 清單</button>
+                </div>
+                <div class="fm-toolbar-group">
+                    <label for="fmSortSelect" class="fm-toolbar-label">排序：</label>
+                    <select id="fmSortSelect" class="fm-mini-select">
+                        <option value="mtime_desc">修改日新→舊</option>
+                        <option value="mtime_asc">修改日舊→新</option>
+                        <option value="name_asc">名稱 A→Z</option>
+                        <option value="name_desc">名稱 Z→A</option>
+                        <option value="size_desc">大小大→小</option>
+                        <option value="size_asc">大小小→大</option>
+                        <option value="type_group">類型分組</option>
+                    </select>
+                </div>
                 <label class="toggle">
                     <input type="checkbox" id="fmShowHiddenToggle">
-                    顯示暫存檔（.DS_Store / ~$tmp / Thumbs.db 等）
+                    顯示暫存檔
                 </label>
             </div>
         </div>

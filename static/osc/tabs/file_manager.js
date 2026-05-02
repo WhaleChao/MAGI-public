@@ -15,7 +15,12 @@
         basePath: '',          // current root (NAS path string)
         currentRel: '',        // relative path under base
         showHidden: false,
+        viewMode: 'detail',    // detail | grid | compact (Phase 2 commit 7)
+        sort: 'mtime_desc',    // mtime_desc | mtime_asc | name_asc | name_desc | size_desc | size_asc | type_group
         loading: false,
+        lastEntries: { folders: [], files: [] },
+        selectedRel: null,
+        selectedType: null,
     };
 
     // ── Icons ──────────────────────────────────────────────────────────
@@ -25,13 +30,13 @@
         '.xls': '📊', '.xlsx': '📊', '.csv': '📊', '.tsv': '📊',
         '.ppt': '📙', '.pptx': '📙',
         '.jpg': '🖼', '.jpeg': '🖼', '.png': '🖼', '.gif': '🖼', '.webp': '🖼',
-        '.bmp': '🖼', '.tiff': '🖼', '.heic': '🖼', '.heif': '🖼', '.svg': '🖼',
-        '.mp3': '🎵', '.wav': '🎵', '.m4a': '🎵', '.aac': '🎵', '.flac': '🎵',
-        '.mp4': '🎬', '.mov': '🎬', '.webm': '🎬', '.m4v': '🎬', '.avi': '🎬',
+        '.bmp': '🖼', '.tiff': '🖼', '.tif': '🖼', '.heic': '🖼', '.heif': '🖼', '.svg': '🖼',
+        '.mp3': '🎵', '.wav': '🎵', '.m4a': '🎵', '.aac': '🎵', '.flac': '🎵', '.ogg': '🎵',
+        '.mp4': '🎬', '.mov': '🎬', '.webm': '🎬', '.m4v': '🎬', '.avi': '🎬', '.mkv': '🎬',
         '.zip': '🗜', '.7z': '🗜', '.rar': '🗜', '.tar': '🗜', '.gz': '🗜',
         '.eml': '📧', '.msg': '📧',
-        '.txt': '📝', '.md': '📝', '.json': '📝', '.log': '📝',
-        '.py': '📝', '.js': '📝', '.html': '📝', '.css': '📝',
+        '.txt': '📝', '.md': '📝', '.json': '📝', '.log': '📝', '.xml': '📝', '.yml': '📝', '.yaml': '📝',
+        '.py': '📝', '.js': '📝', '.html': '📝', '.css': '📝', '.sql': '📝',
     };
     function iconFor(entry) {
         if (entry.type === 'dir') return ICON_FOLDER;
@@ -95,7 +100,30 @@
         });
     }
 
-    // ── Render: entries (folders + files sections) ─────────────────────
+    // ── Sort entries (Phase 2 commit 7) ───────────────────────────────
+    function sortEntries(entries) {
+        const out = entries.slice();
+        switch (FM.sort) {
+            case 'name_asc':  out.sort((a, b) => a.name.localeCompare(b.name, 'zh-hant')); break;
+            case 'name_desc': out.sort((a, b) => b.name.localeCompare(a.name, 'zh-hant')); break;
+            case 'mtime_asc': out.sort((a, b) => (a.mtime_ts || 0) - (b.mtime_ts || 0)); break;
+            case 'size_desc': out.sort((a, b) => (b.size || b.child_total_size || 0) - (a.size || a.child_total_size || 0)); break;
+            case 'size_asc':  out.sort((a, b) => (a.size || a.child_total_size || 0) - (b.size || b.child_total_size || 0)); break;
+            case 'type_group':
+                out.sort((a, b) => {
+                    const ea = (a.ext || '').toLowerCase();
+                    const eb = (b.ext || '').toLowerCase();
+                    if (ea === eb) return a.name.localeCompare(b.name, 'zh-hant');
+                    return ea.localeCompare(eb);
+                });
+                break;
+            case 'mtime_desc':
+            default: out.sort((a, b) => (b.mtime_ts || 0) - (a.mtime_ts || 0));
+        }
+        return out;
+    }
+
+    // ── Render: entries (depending on view mode) ─────────────────────
     function renderEntries(data) {
         const main = document.getElementById('fmEntriesArea');
         if (!main) return;
@@ -103,14 +131,31 @@
             main.innerHTML = '<div class="fm-empty">無法載入：' + escapeHTML((data && data.error) || '未知錯誤') + '</div>';
             return;
         }
-        const folders = data.folders || [];
-        const files = data.files || [];
-        let html = '';
+        FM.lastEntries.folders = data.folders || [];
+        FM.lastEntries.files = data.files || [];
+
+        const folders = sortEntries(FM.lastEntries.folders);
+        const files = sortEntries(FM.lastEntries.files);
 
         if (folders.length === 0 && files.length === 0) {
-            html += '<div class="fm-empty">此資料夾為空</div>';
+            main.innerHTML = '<div class="fm-empty">此資料夾為空</div>';
+            return;
         }
 
+        let html = '';
+        if (FM.viewMode === 'grid') {
+            html = renderGrid(folders, files, data);
+        } else if (FM.viewMode === 'compact') {
+            html = renderCompact(folders, files, data);
+        } else {
+            html = renderDetail(folders, files, data);
+        }
+        main.innerHTML = html;
+        bindEntryClicks(main);
+    }
+
+    function renderDetail(folders, files, data) {
+        let html = '';
         if (folders.length > 0) {
             html += '<div class="fm-section-title">📁 資料夾 (' + folders.length + ')</div>';
             html += '<table class="fm-table"><thead><tr>'
@@ -120,7 +165,7 @@
                     ? (f.child_files + ' 檔 ' + (f.child_folders ? '/ ' + f.child_folders + ' 子夾 ' : '')
                        + (f.child_size_label || ''))
                     : '';
-                html += '<tr class="fm-row dir" data-rel="' + escapeHTML(f.relative_path) + '" data-type="dir">'
+                html += '<tr class="fm-row dir" data-rel="' + escapeHTML(f.relative_path) + '" data-type="dir" data-name="' + escapeHTML(f.name) + '">'
                     + '<td><span class="fm-icon">' + iconFor(f) + '</span><span class="fm-name" title="'
                     + escapeHTML(f.name) + '">' + escapeHTML(f.name) + '</span></td>'
                     + '<td class="fm-meta">' + escapeHTML(meta) + '</td>'
@@ -129,13 +174,12 @@
             }
             html += '</tbody></table>';
         }
-
         if (files.length > 0) {
             html += '<div class="fm-section-title">📄 檔案 (' + files.length + ')</div>';
             html += '<table class="fm-table"><thead><tr>'
                 + '<th>名稱</th><th>大小</th><th>修改時間</th></tr></thead><tbody>';
             for (const f of files) {
-                html += '<tr class="fm-row file" data-rel="' + escapeHTML(f.relative_path) + '" data-type="file">'
+                html += '<tr class="fm-row file" data-rel="' + escapeHTML(f.relative_path) + '" data-type="file" data-name="' + escapeHTML(f.name) + '">'
                     + '<td><span class="fm-icon">' + iconFor(f) + '</span><span class="fm-name" title="'
                     + escapeHTML(f.name) + '">' + escapeHTML(f.name) + '</span></td>'
                     + '<td class="fm-meta">' + escapeHTML(f.size_label || '') + '</td>'
@@ -144,24 +188,92 @@
             }
             html += '</tbody></table>';
         }
+        if (data.hidden_count && !FM.showHidden) html += hiddenHint(data.hidden_count);
+        return html;
+    }
 
-        if (data.hidden_count && !FM.showHidden) {
-            html += '<div class="fm-empty" style="font-size:11px;padding:8px;">'
-                 + '隱藏 ' + data.hidden_count + ' 個系統暫存檔（.DS_Store / ~$tmp / Thumbs.db 等）'
-                 + ' — 勾選「顯示暫存檔」可顯示</div>';
+    function renderGrid(folders, files, data) {
+        let html = '';
+        if (folders.length > 0) {
+            html += '<div class="fm-section-title">📁 資料夾 (' + folders.length + ')</div>';
+            html += '<div class="fm-grid">';
+            for (const f of folders) html += gridItem(f);
+            html += '</div>';
         }
+        if (files.length > 0) {
+            html += '<div class="fm-section-title">📄 檔案 (' + files.length + ')</div>';
+            html += '<div class="fm-grid">';
+            for (const f of files) html += gridItem(f);
+            html += '</div>';
+        }
+        if (data.hidden_count && !FM.showHidden) html += hiddenHint(data.hidden_count);
+        return html;
+    }
 
-        main.innerHTML = html;
+    function gridItem(f) {
+        const meta = f.type === 'dir'
+            ? ((f.child_files != null) ? (f.child_files + ' 檔') : '')
+            : (f.size_label || '');
+        return '<div class="fm-grid-item ' + f.type + '" data-rel="' + escapeHTML(f.relative_path)
+            + '" data-type="' + f.type + '" data-name="' + escapeHTML(f.name) + '">'
+            + '<span class="fm-grid-icon">' + iconFor(f) + '</span>'
+            + '<div class="fm-grid-name" title="' + escapeHTML(f.name) + '">' + escapeHTML(f.name) + '</div>'
+            + '<div class="fm-grid-meta">' + escapeHTML(meta) + '</div>'
+            + '</div>';
+    }
 
-        // bind clicks: dir → navigate; file → Phase 2 will open preview
-        main.querySelectorAll('.fm-row.dir').forEach(row => {
-            row.addEventListener('click', () => navigateTo(row.dataset.rel));
-        });
-        main.querySelectorAll('.fm-row.file').forEach(row => {
-            row.addEventListener('click', () => {
-                setStatus('檔案預覽 modal 將於 Phase 2 加入；目前僅支援資料夾巡覽。', false);
+    function renderCompact(folders, files, data) {
+        let html = '<ul class="fm-compact">';
+        for (const f of folders) html += compactItem(f);
+        for (const f of files) html += compactItem(f);
+        html += '</ul>';
+        if (data.hidden_count && !FM.showHidden) html += hiddenHint(data.hidden_count);
+        return html;
+    }
+
+    function compactItem(f) {
+        const meta = f.type === 'dir'
+            ? ((f.child_files != null) ? (f.child_files + ' 檔') : '')
+            : (f.size_label || '');
+        return '<li class="fm-compact-item ' + f.type + '" data-rel="' + escapeHTML(f.relative_path)
+            + '" data-type="' + f.type + '" data-name="' + escapeHTML(f.name) + '">'
+            + '<span class="fm-icon">' + iconFor(f) + '</span>'
+            + '<span class="fm-compact-name" title="' + escapeHTML(f.name) + '">' + escapeHTML(f.name) + '</span>'
+            + '<span class="fm-compact-meta">' + escapeHTML(meta) + '</span>'
+            + '</li>';
+    }
+
+    function hiddenHint(n) {
+        return '<div class="fm-empty" style="font-size:11px;padding:8px;">'
+            + '隱藏 ' + n + ' 個系統暫存檔（.DS_Store / ~$tmp / Thumbs.db 等）'
+            + ' — 勾選「顯示暫存檔」可顯示</div>';
+    }
+
+    function bindEntryClicks(main) {
+        const allItems = main.querySelectorAll('[data-rel][data-type]');
+        allItems.forEach(el => {
+            const rel = el.dataset.rel;
+            const type = el.dataset.type;
+            el.addEventListener('click', (ev) => {
+                if (ev.shiftKey || ev.metaKey || ev.ctrlKey) return;
+                selectEntry(rel, type, el);
+                if (type === 'dir') {
+                    navigateTo(rel);
+                } else {
+                    // Preview will be wired in Phase 2 commit 8
+                    if (typeof openPreview === 'function') openPreview(rel, el.dataset.name);
+                    else setStatus('檔案預覽功能將於下個 commit 啟用。');
+                }
             });
         });
+    }
+
+    function selectEntry(rel, type, el) {
+        FM.selectedRel = rel;
+        FM.selectedType = type;
+        const main = document.getElementById('fmEntriesArea');
+        if (main) main.querySelectorAll('.selected').forEach(n => n.classList.remove('selected'));
+        if (el) el.classList.add('selected');
     }
 
     // ── Render: tree (lazy-load) ──────────────────────────────────────
@@ -297,6 +409,35 @@
                 if (FM.basePath) navigateTo(FM.currentRel);
             });
         }
+
+        // Phase 2 commit 7: view modes + sort
+        const sortSelect = document.getElementById('fmSortSelect');
+        const viewBtns = document.querySelectorAll('.fm-view-btn');
+        if (sortSelect && !sortSelect._fmBound) {
+            sortSelect._fmBound = true;
+            sortSelect.addEventListener('change', () => {
+                FM.sort = sortSelect.value;
+                renderEntries({
+                    folders: FM.lastEntries.folders,
+                    files: FM.lastEntries.files,
+                    hidden_count: 0, ok: true,
+                });
+            });
+        }
+        viewBtns.forEach(b => {
+            if (b._fmBound) return;
+            b._fmBound = true;
+            b.addEventListener('click', () => {
+                viewBtns.forEach(x => x.classList.remove('active'));
+                b.classList.add('active');
+                FM.viewMode = b.dataset.view;
+                renderEntries({
+                    folders: FM.lastEntries.folders,
+                    files: FM.lastEntries.files,
+                    hidden_count: 0, ok: true,
+                });
+            });
+        });
     };
 
     // Auto-init when this tab becomes visible
