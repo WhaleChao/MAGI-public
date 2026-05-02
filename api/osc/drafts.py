@@ -56,31 +56,61 @@ def _osc_truthy(v) -> bool:
 
 
 def _osc_get_setting_value(key: str, default: str = "") -> str:
-    return _srv()._osc_get_setting_value(key, default)
+    # bug fix 2026-05-02：server.py 重構後不再 export，try utils 再 fallback _srv
+    try:
+        from api.osc.utils import _osc_get_setting_value as _utils_fn
+        return _utils_fn(key, default)
+    except (ImportError, AttributeError):
+        return _srv()._osc_get_setting_value(key, default)
 
 
 def _osc_unique_strings(values) -> list[str]:
-    return _srv()._osc_unique_strings(values)
+    try:
+        from api.osc.utils import _osc_unique_strings as _utils_fn
+        return _utils_fn(values)
+    except (ImportError, AttributeError):
+        return _srv()._osc_unique_strings(values)
 
 
 def _osc_collect_insights():
-    return _srv()._osc_collect_insights()
+    # _osc_collect_insights 在 api.osc.judicial（不在 utils）
+    try:
+        from api.osc.judicial import _osc_collect_insights as _judicial_fn
+        return _judicial_fn()
+    except (ImportError, AttributeError):
+        return _srv()._osc_collect_insights()
 
 
 def _osc_read_reference_document(raw_path: str, max_chars: int = 9000) -> dict:
-    return _srv()._osc_read_reference_document(raw_path, max_chars=max_chars)
+    try:
+        from api.osc.utils import _osc_read_reference_document as _utils_fn
+        return _utils_fn(raw_path, max_chars=max_chars)
+    except (ImportError, AttributeError):
+        return _srv()._osc_read_reference_document(raw_path, max_chars=max_chars)
 
 
 def _osc_norm_path(path_str: str) -> str:
-    return _srv()._osc_norm_path(path_str)
+    try:
+        from api.osc.utils import _osc_norm_path as _utils_fn
+        return _utils_fn(path_str)
+    except (ImportError, AttributeError):
+        return _srv()._osc_norm_path(path_str)
 
 
 def _osc_local_path_candidates(path_str: str) -> list[str]:
-    return _srv()._osc_local_path_candidates(path_str)
+    try:
+        from api.osc.utils import _osc_local_path_candidates as _utils_fn
+        return _utils_fn(path_str)
+    except (ImportError, AttributeError):
+        return _srv()._osc_local_path_candidates(path_str)
 
 
 def _osc_guess_case_folder(case_number: str) -> str:
-    return _srv()._osc_guess_case_folder(case_number)
+    try:
+        from api.osc.utils import _osc_guess_case_folder as _utils_fn
+        return _utils_fn(case_number)
+    except (ImportError, AttributeError):
+        return _srv()._osc_guess_case_folder(case_number)
 
 
 def _public_url_for_local_file(local_path: str) -> str:

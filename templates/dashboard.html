@@ -1698,6 +1698,7 @@
 
                 // Calculate SYNC RATIO based on online nodes
                 const nodes = data.nodes;
+                let online = 0;  // bug fix 2026-05-02：原本沒宣告 → ReferenceError
                 if (nodes.casper && nodes.casper.online) {
                     online += 3; // The local Three Magi
                 }
