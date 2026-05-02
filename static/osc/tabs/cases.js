@@ -234,7 +234,11 @@ function showFolderPathDialog(folderPath, candidates) {
         })),
         ...(c.mac_synology || []).map(u => ({ label: "🍎 mac Synology Drive", value: u, hint: "本機已同步路徑" })),
     ];
-    const safeJSON = (s) => JSON.stringify(String(s || "")).replace(/</g, "\\u003c");
+    // 必須 HTML-escape `"`，否則 JSON 字串裡的 `"` 會提前關閉外層 onclick="..." 屬性
+    // 導致後半段 HTML 被當純文字渲染。JSON.stringify 的輸出本身不會含 `&`，所以僅需處理 " 與 <
+    const safeJSON = (s) => JSON.stringify(String(s || ""))
+        .replace(/</g, "\\u003c")
+        .replace(/"/g, "&quot;");
     const html = `
 <div style="max-width:560px">
   <p style="margin:0 0 12px;color:#666;font-size:13px">
