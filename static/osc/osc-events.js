@@ -88,6 +88,7 @@ async function dispatchDelegatedAction(act, t) {
     if (act === "case-edit") return await editCase(id);
     if (act === "case-del") return await delCase(id);
     if (act === "case-open") return await openCaseFolder(id);
+    if (act === "case-open-fm") return await openCaseInFileManager(id);
     if (act === "case-workbench") return await openCaseWorkbench(id);
     if (act === "case-address-label") return addressLabelDialog(id);
 
