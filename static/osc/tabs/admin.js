@@ -385,7 +385,7 @@ async function saveDiscordWebhook() {
         await api("/api/osc/settings", "POST", {
             key: "discord_webhook_url",
             value: url,
-            description: "Discord webhook URL（OSC 通知推播用）",
+            description: "Discord webhook URL（Paperclip 通知推播用）",
         });
         if (status) status.textContent = "✅ 已儲存到 settings.discord_webhook_url";
         showToast("Discord webhook 設定已儲存。", "ok");
@@ -401,7 +401,7 @@ async function testDiscordWebhook() {
     try {
         const res = await api("/api/osc/discord/test", "POST", {
             webhook_url: url,
-            message: "✅ MAGI OSC Webhook 連線測試 — 此訊息確認 webhook 正常。",
+            message: "✅ MAGI Paperclip Webhook 連線測試 — 此訊息確認 webhook 正常。",
         });
         if (res && res.ok) {
             if (status) status.textContent = `✅ Test 推播成功（HTTP ${res.status_code}）。請到 Discord 頻道確認。`;
