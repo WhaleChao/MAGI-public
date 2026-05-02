@@ -180,6 +180,168 @@ def cmd_find(
     return {"matches": matches, "total": len(matches)}
 
 
+def cmd_generate(
+    title: str,
+    sections_json: str,
+    output_path: str = "",
+    landscape: bool = False,
+    author: str = "MAGI",
+) -> Dict:
+    """從 JSON 產 .docx。
+
+    sections_json: JSON string of List[SectionSpec dict]
+    每個 SectionSpec dict 可含：
+      - heading: str (optional)
+      - level: int (1/2/3, default 1)
+      - content: str (多段以 \\n\\n 分隔, optional)
+      - table: {headers: [...], rows: [[...],...]} (optional)
+      - page_break: bool (optional)
+
+    output_path: 預設 /tmp/magi_docx_gen/<title>.docx
+
+    Returns: {ok: bool, output_path: str, error: str}
+    """
+    import re as _re
+    from lib.generator import generate_docx, GenerateDocxRequest, SectionSpec, TableSpec
+
+    try:
+        raw_sections = json.loads(sections_json)
+    except json.JSONDecodeError as e:
+        return {"ok": False, "error": f"sections_json parse error: {e}", "output_path": None}
+
+    sections = []
+    for i, s in enumerate(raw_sections):
+        if not isinstance(s, dict):
+            return {"ok": False, "error": f"section[{i}] is not a dict", "output_path": None}
+        table = None
+        if s.get("table"):
+            t = s["table"]
+            table = TableSpec(
+                headers=t.get("headers", []),
+                rows=t.get("rows", []),
+            )
+        sections.append(SectionSpec(
+            heading=s.get("heading"),
+            level=int(s.get("level", 1)),
+            content=s.get("content"),
+            table=table,
+            page_break=bool(s.get("page_break", False)),
+        ))
+
+    req = GenerateDocxRequest(
+        title=title,
+        sections=sections,
+        landscape=landscape,
+        author=author,
+    )
+
+    try:
+        docx_bytes = generate_docx(req)
+    except (ValueError, Exception) as e:
+        return {"ok": False, "error": str(e), "output_path": None}
+
+    # Determine output path
+    if not output_path:
+        out_dir = "/tmp/magi_docx_gen"
+        os.makedirs(out_dir, exist_ok=True)
+        # Sanitize title for filename
+        safe_title = _re.sub(r"[^\w一-鿿\-]", "_", title)[:60]
+        output_path = os.path.join(out_dir, f"{safe_title}.docx")
+
+    with open(output_path, "wb") as f:
+        f.write(docx_bytes)
+
+    return {"ok": True, "output_path": output_path, "error": None, "size_bytes": len(docx_bytes)}
+
+
+def cmd_chat_edit(
+    doc_path: str,
+    instruction: str,
+    output_path: str = "",
+    author: str = "MAGI",
+    source: str = "",
+) -> Dict:
+    """律師 chat 入口：給 docx + 指令，回 edited.docx。
+
+    安全閘門：source 必須含 user/telegram/discord/line（防 CLI 直接呼叫無預期改動律師檔案）。
+    可用 MAGI_DOCX_EDITOR_ALLOW_CLI=1 bypass（測試用）。
+
+    注意：此函式在 Phase 3 (commit 6) 完整實作；目前為骨架佔位。
+
+    Returns: {
+        "ok": bool,
+        "output_path": str | None,
+        "changes_applied": int,
+        "warnings": [str, ...],
+        "errors": [{"index": N, "reason": "..."}],
+    }
+    """
+    # --- 安全閘門 ---
+    _safe_sources = ("user", "telegram", "discord", "line")
+    _allow_cli = os.environ.get("MAGI_DOCX_EDITOR_ALLOW_CLI", "0").strip() == "1"
+    _source_ok = _allow_cli or any(s in source.lower() for s in _safe_sources)
+    if not _source_ok:
+        return {
+            "ok": False,
+            "output_path": None,
+            "changes_applied": 0,
+            "warnings": [],
+            "errors": [{"index": -1, "reason": "安全閘門：source 必須含 user/telegram/discord/line，或設 MAGI_DOCX_EDITOR_ALLOW_CLI=1"}],
+        }
+
+    # --- 讀取文件全文 ---
+    extract_result = cmd_extract(doc_path)
+    docx_text = extract_result.get("text", "")
+
+    # --- LLM edit planner ---
+    from lib.llm_edit_planner import plan_edits_with_llm
+
+    edits, warnings_list = plan_edits_with_llm(
+        docx_text=docx_text,
+        user_instruction=instruction,
+    )
+
+    if not edits:
+        # LLM 回空 list（指令超出 anchored edit 範圍）
+        return {
+            "ok": True,
+            "output_path": None,
+            "changes_applied": 0,
+            "warnings": warnings_list + ["LLM 判定指令超出 anchored edit 範圍，建議用 @MAGI 產文件"],
+            "errors": [],
+        }
+
+    # --- 套用 edits ---
+    import datetime
+    if not output_path:
+        out_dir = "/tmp/magi_docx_edits"
+        os.makedirs(out_dir, exist_ok=True)
+        ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        base_name = os.path.basename(doc_path)
+        output_path = os.path.join(out_dir, f"{ts}_{base_name}")
+
+    edits_dicts = [
+        {
+            "find": e.find,
+            "replace": e.replace,
+            "context_before": e.context_before,
+            "context_after": e.context_after,
+            "reason": e.reason,
+        }
+        for e in edits
+    ]
+
+    apply_result = cmd_apply(doc_path, edits_dicts, output_path=output_path, author=author)
+
+    return {
+        "ok": apply_result["ok"],
+        "output_path": apply_result.get("output_path"),
+        "changes_applied": apply_result.get("success_count", 0),
+        "warnings": warnings_list,
+        "errors": apply_result.get("errors", []),
+    }
+
+
 def cmd_self_test() -> Dict:
     """讀 tests/fixtures/docx_editor/simple.docx → 套一個 edit → 寫到 /tmp → 驗回讀。"""
     import tempfile
@@ -254,14 +416,20 @@ def cmd_self_test() -> Dict:
 
 def main():
     parser = argparse.ArgumentParser(description="docx-editor skill")
-    parser.add_argument("--task", required=True, choices=["apply", "extract", "find", "self_test"])
+    parser.add_argument("--task", required=True, choices=["apply", "extract", "find", "self_test", "generate", "chat_edit"])
     parser.add_argument("--doc", help="Path to .docx file")
     parser.add_argument("--edits", help="JSON string or path to JSON file with edits list")
-    parser.add_argument("--output", help="Output path for apply task")
+    parser.add_argument("--output", help="Output path for apply/generate task")
     parser.add_argument("--author", default="MAGI", help="Author name for tracked changes")
     parser.add_argument("--query", help="Text to search for (find task)")
     parser.add_argument("--max-results", type=int, default=20)
     parser.add_argument("--context-chars", type=int, default=80)
+    # generate task args
+    parser.add_argument("--title", help="Document title (generate task)")
+    parser.add_argument("--sections", help="JSON array of SectionSpec dicts (generate task)")
+    parser.add_argument("--landscape", action="store_true", help="Landscape orientation (generate task)")
+    # chat_edit task args
+    parser.add_argument("--instruction", help="Edit instruction for chat_edit task")
 
     args = parser.parse_args()
 
@@ -304,6 +472,39 @@ def main():
 
         elif args.task == "self_test":
             result = cmd_self_test()
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+
+        elif args.task == "generate":
+            if not args.title:
+                print(json.dumps({"ok": False, "error": "--title required"}))
+                sys.exit(1)
+            if not args.sections:
+                print(json.dumps({"ok": False, "error": "--sections required"}))
+                sys.exit(1)
+            result = cmd_generate(
+                title=args.title,
+                sections_json=args.sections,
+                output_path=args.output or "",
+                landscape=args.landscape,
+                author=args.author,
+            )
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+
+        elif args.task == "chat_edit":
+            if not args.doc:
+                print(json.dumps({"ok": False, "error": "--doc required"}))
+                sys.exit(1)
+            if not args.instruction:
+                print(json.dumps({"ok": False, "error": "--instruction required"}))
+                sys.exit(1)
+            _allow_cli = os.environ.get("MAGI_DOCX_EDITOR_ALLOW_CLI", "0").strip() == "1"
+            result = cmd_chat_edit(
+                doc_path=args.doc,
+                instruction=args.instruction,
+                output_path=args.output or "",
+                author=args.author,
+                source="cli" if _allow_cli else "",
+            )
             print(json.dumps(result, ensure_ascii=False, indent=2))
 
     except Exception as e:
