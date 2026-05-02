@@ -35,6 +35,7 @@ from api.osc.utils import (
     _osc_relpath_under,
     _osc_human_size,
 )
+from api.osc import preview as osc_preview
 
 osc_files_bp = Blueprint("osc_files", __name__)
 _log = logging.getLogger(__name__)
@@ -552,6 +553,107 @@ def osc_folders_tree_api():
         "base_path": base_real,
         "current_relative_path": _osc_relpath_under(base_real, target),
         "children": children,
+    })
+
+
+@osc_files_bp.route("/api/osc/files/preview", methods=["GET"])
+@login_required
+def osc_files_preview_api():
+    """
+    Unified preview dispatcher.
+    Args:
+        path : the file path (will be resolved against allowed roots)
+    Behavior:
+        - PDF / image / audio / video / text → 302 redirect to /api/osc/files/content?inline=1
+          (browser handles natively or Phase 2 modal)
+        - Office → convert to PDF → send_file the cached PDF inline
+        - HEIC → sips → JPEG → send_file inline
+        - CSV / Email / ZIP / Hex → return JSON
+    """
+    raw = str(request.args.get("path") or "").strip()
+    if not raw:
+        return jsonify({"ok": False, "error": "path required"}), 400
+    local = _osc_resolve_existing_local_path(raw, prefer_dir=False)
+    if not local:
+        return jsonify({"ok": False, "error": "file_not_found"}), 404
+    if not _osc_is_safe_local_path(local):
+        return jsonify({"ok": False, "error": "path_not_allowed"}), 403
+
+    kind = osc_preview.categorize(local)
+
+    if kind in ("pdf", "image", "audio", "video", "text"):
+        return jsonify({
+            "ok": True, "kind": kind,
+            "content_url": f"/api/osc/files/content?path={request.args.get('path')}&inline=1",
+            "name": os.path.basename(local),
+        })
+
+    if kind == "office":
+        cached = osc_preview.preview_office_to_pdf(local)
+        if not cached:
+            return jsonify({"ok": False, "kind": "office", "error": "office_convert_failed",
+                            "fallback": "download"}), 500
+        return send_file(cached, mimetype="application/pdf", as_attachment=False,
+                         download_name=os.path.splitext(os.path.basename(local))[0] + ".pdf")
+
+    if kind == "heic":
+        cached = osc_preview.preview_heic_to_jpg(local)
+        if not cached:
+            return jsonify({"ok": False, "kind": "heic", "error": "heic_convert_failed",
+                            "fallback": "download"}), 500
+        return send_file(cached, mimetype="image/jpeg", as_attachment=False,
+                         download_name=os.path.splitext(os.path.basename(local))[0] + ".jpg")
+
+    if kind == "csv":
+        result = osc_preview.preview_csv_to_rows(local)
+        result["kind"] = "csv"
+        return jsonify(result)
+
+    if kind == "email":
+        result = osc_preview.preview_email(local)
+        result["kind"] = "email"
+        return jsonify(result)
+
+    if kind == "zip":
+        result = osc_preview.preview_zip(local)
+        result["kind"] = "zip"
+        return jsonify(result)
+
+    # other → hex dump
+    result = osc_preview.preview_hex_dump(local)
+    result["kind"] = "other"
+    result["mime"], _ = mimetypes.guess_type(local)
+    result["ext"] = os.path.splitext(local)[1].lower()
+    return jsonify(result)
+
+
+@osc_files_bp.route("/api/osc/files/info", methods=["GET"])
+@login_required
+def osc_files_info_api():
+    """File metadata (no content): name, size, mtime, mime, kind."""
+    raw = str(request.args.get("path") or "").strip()
+    if not raw:
+        return jsonify({"ok": False, "error": "path required"}), 400
+    local = _osc_resolve_existing_local_path(raw, prefer_dir=False)
+    if not local:
+        return jsonify({"ok": False, "error": "file_not_found"}), 404
+    if not _osc_is_safe_local_path(local):
+        return jsonify({"ok": False, "error": "path_not_allowed"}), 403
+    try:
+        st = os.stat(local)
+    except OSError as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+    mime, _ = mimetypes.guess_type(local)
+    return jsonify({
+        "ok": True,
+        "name": os.path.basename(local),
+        "ext": os.path.splitext(local)[1].lower(),
+        "size": st.st_size,
+        "size_label": _osc_human_size(st.st_size),
+        "mtime": datetime.fromtimestamp(st.st_mtime).strftime("%Y-%m-%d %H:%M:%S"),
+        "mime": mime or "application/octet-stream",
+        "kind": osc_preview.categorize(local),
+        "local_path": local,
     })
 
 
