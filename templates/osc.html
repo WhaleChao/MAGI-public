@@ -19,50 +19,84 @@
         <div style="padding: 8px 16px 0;">
             <a href="/dashboard" style="display:block;text-align:center;padding:8px 12px;background:rgba(56,189,248,0.12);border:1px solid var(--sidebar-accent);border-radius:6px;color:var(--sidebar-accent);text-decoration:none;font-size:13px;font-weight:600;">← 返回 DASHBOARD</a>
         </div>
-        <div class="tabs">
-            <details class="sidebar-group" open>
-                <summary>主控台</summary>
-                <div class="group-items">
-                    <button class="tab-btn active" data-tab="dashboard">📊 業務概覽</button>
+        <nav class="sidebar-nav tabs">
+            <!-- 業務概覽（單一 view）-->
+            <button class="tab-btn group-single active" data-tab="dashboard">
+                <span class="group-icon">📊</span><span>業務概覽</span>
+            </button>
+
+            <!-- 案件（5 sub-tab）-->
+            <div class="sidebar-group" data-group="case">
+                <button class="group-btn" data-group-toggle="case">
+                    <span class="group-icon">📁</span>
+                    <span class="group-label">案件</span>
+                    <span class="group-arrow">▶</span>
+                </button>
+                <div class="group-children" data-group-children="case" hidden>
+                    <button class="tab-btn sub-tab" data-tab="cases"><span class="sub-icon">📋</span> 案件清單</button>
+                    <button class="tab-btn sub-tab" data-tab="clients"><span class="sub-icon">👥</span> 當事人</button>
+                    <button class="tab-btn sub-tab" data-tab="meetings"><span class="sub-icon">📅</span> 會議紀錄</button>
+                    <button class="tab-btn sub-tab" data-tab="calendar"><span class="sub-icon">📆</span> 行事曆</button>
+                    <button class="tab-btn sub-tab" data-tab="todos"><span class="sub-icon">✅</span> 待辦事項</button>
                 </div>
-            </details>
-            <details class="sidebar-group" open>
-                <summary>案件與排程</summary>
-                <div class="group-items">
-                    <button class="tab-btn" data-tab="cases">📁 案件管理</button>
-                    <button class="tab-btn" data-tab="clients">👥 當事人</button>
-                    <button class="tab-btn" data-tab="meetings">📅 會議紀錄</button>
-                    <button class="tab-btn" data-tab="calendar">📆 行事曆</button>
-                    <button class="tab-btn" data-tab="todos">✅ 待辦事項</button>
+            </div>
+
+            <!-- 書狀（3 sub-tab + 消債羅伯特連結）-->
+            <div class="sidebar-group" data-group="document">
+                <button class="group-btn" data-group-toggle="document">
+                    <span class="group-icon">✍️</span>
+                    <span class="group-label">書狀</span>
+                    <span class="group-arrow">▶</span>
+                </button>
+                <div class="group-children" data-group-children="document" hidden>
+                    <button class="tab-btn sub-tab" data-tab="drafts"><span class="sub-icon">🤖</span> AI 草擬</button>
+                    <button class="tab-btn sub-tab" data-tab="documents"><span class="sub-icon">📄</span> 書狀索引</button>
+                    <button class="tab-btn sub-tab" data-tab="forms"><span class="sub-icon">🖨</span> 委任 / 收據</button>
+                    <a href="/osc/debt" class="tab-btn sub-tab" style="text-decoration:none;"><span class="sub-icon">🤖</span> 消債羅伯特</a>
                 </div>
-            </details>
-            <details class="sidebar-group" open>
-                <summary>文件與書狀</summary>
-                <div class="group-items">
-                    <button class="tab-btn" data-tab="documents">📄 書狀索引</button>
-                    <button class="tab-btn" data-tab="drafts">✍️ 書狀草擬</button>
-                    <button class="tab-btn" data-tab="forms">🖨 委任/收據</button>
-                    <a href="/osc/debt" class="tab-btn" style="text-decoration:none;display:flex;align-items:center;gap:8px;">🤖 消債羅伯特</a>
+            </div>
+
+            <!-- 法扶（2 sub-tab）-->
+            <div class="sidebar-group" data-group="laf-group">
+                <button class="group-btn" data-group-toggle="laf-group">
+                    <span class="group-icon">🏦</span>
+                    <span class="group-label">法扶</span>
+                    <span class="group-arrow">▶</span>
+                </button>
+                <div class="group-children" data-group-children="laf-group" hidden>
+                    <button class="tab-btn sub-tab" data-tab="laf"><span class="sub-icon">📋</span> 法扶清單</button>
+                    <button class="tab-btn sub-tab" data-tab="lafWizard"><span class="sub-icon">⚖️</span> 回報精靈</button>
                 </div>
-            </details>
-            <details class="sidebar-group">
-                <summary>自動化精靈</summary>
-                <div class="group-items">
-                    <button class="tab-btn" data-tab="lafWizard">⚖️ 法扶回報</button>
-                    <button class="tab-btn" data-tab="archiveWizard">📦 結案歸檔</button>
+            </div>
+
+            <!-- 結案歸檔（單一）-->
+            <button class="tab-btn group-single" data-tab="archiveWizard">
+                <span class="group-icon">📦</span><span>結案歸檔</span>
+            </button>
+
+            <!-- 帳務（2 sub-tab）-->
+            <div class="sidebar-group" data-group="finance">
+                <button class="group-btn" data-group-toggle="finance">
+                    <span class="group-icon">💰</span>
+                    <span class="group-label">帳務</span>
+                    <span class="group-arrow">▶</span>
+                </button>
+                <div class="group-children" data-group-children="finance" hidden>
+                    <button class="tab-btn sub-tab" data-tab="accounting"><span class="sub-icon">📒</span> 帳務收支</button>
+                    <button class="tab-btn sub-tab" data-tab="quotations"><span class="sub-icon">🧾</span> 報價單</button>
                 </div>
-            </details>
-            <details class="sidebar-group">
-                <summary>行政與資源</summary>
-                <div class="group-items">
-                    <button class="tab-btn" data-tab="laf">🏦 法扶清單</button>
-                    <button class="tab-btn" data-tab="accounting">💰 帳務收支</button>
-                    <button class="tab-btn" data-tab="quotations">🧾 報價單</button>
-                    <button class="tab-btn" data-tab="insights">🧠 實務見解</button>
-                    <button class="tab-btn" data-tab="admin">⚙️ 系統設定</button>
-                </div>
-            </details>
-        </div>
+            </div>
+
+            <!-- 實務見解（單一）-->
+            <button class="tab-btn group-single" data-tab="insights">
+                <span class="group-icon">🧠</span><span>實務見解</span>
+            </button>
+
+            <!-- 系統設定（單一）-->
+            <button class="tab-btn group-single" data-tab="admin">
+                <span class="group-icon">⚙️</span><span>系統設定</span>
+            </button>
+        </nav>
         <div style="padding: 12px 16px; border-top: 1px solid rgba(255,255,255,0.08);">
             <span id="dbBadge" class="badge" style="background:rgba(255,255,255,0.08);border-color:rgba(255,255,255,0.15);color:var(--sidebar-text);font-size:11px;">連線中...</span>
         </div>
