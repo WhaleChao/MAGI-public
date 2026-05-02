@@ -58,8 +58,17 @@ function _csrfToken() {
     return m ? decodeURIComponent(m[1]) : "";
 }
 
+// session expired 時直接 redirect 到 login（每 30s 內只做一次，避免 setInterval 風暴）
+function _handleSessionExpired() {
+    const now = Date.now();
+    const last = parseInt(sessionStorage.getItem("_paperclip_session_redirect_at") || "0", 10);
+    if (now - last < 30000) return;  // 30s 內已 redirect 過則跳過（讓律師有時間互動）
+    sessionStorage.setItem("_paperclip_session_redirect_at", String(now));
+    location.href = "/login?next=" + encodeURIComponent(location.pathname);
+}
+
 async function api(path, method = "GET", body = null) {
-    const opts = { method, headers: {} };
+    const opts = { method, headers: {}, redirect: "manual" };  // redirect:manual 才能偵測 302
     const csrf = _csrfToken();
     if (csrf) opts.headers["X-CSRF-Token"] = csrf;
     if (body !== null) {
@@ -67,12 +76,27 @@ async function api(path, method = "GET", body = null) {
         opts.body = JSON.stringify(body);
     }
     const res = await fetch(path, opts);
+
+    // 偵測 session expired：opaqueredirect（manual mode 下 302 會變這個）/ status=0 / 3xx
+    if (res.type === "opaqueredirect" || res.status === 0 || (res.status >= 300 && res.status < 400)) {
+        _handleSessionExpired();
+        throw new Error("登入已逾時，正在跳轉登入頁...");
+    }
+
     const txt = await res.text();
+
+    // 雙重保險：拿到 HTML（被 redirect 跟隨後）也視為 session expired
+    if (txt.trim().startsWith("<")) {
+        _handleSessionExpired();
+        throw new Error("登入已逾時，正在跳轉登入頁...");
+    }
+
     let data = {};
     try { data = txt ? JSON.parse(txt) : {}; } catch { data = { ok: false, error: txt || res.statusText }; }
     const rawErr = String(data.error || "");
     if (!res.ok && (rawErr.includes("/login?next=") || rawErr.includes("Redirecting"))) {
-        throw new Error("登入已逾時，請重新登入後再操作。");
+        _handleSessionExpired();
+        throw new Error("登入已逾時，正在跳轉登入頁...");
     }
     if (!res.ok) {
         const detail = shortText(data.detail || data.body || "", 240);
