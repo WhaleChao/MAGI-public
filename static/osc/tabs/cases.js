@@ -200,7 +200,7 @@ function renderWorkbenchCaseEditor(c) {
             <div class="field"><label>申請編號</label><input id="wb_case_application_no" value="${esc(c.application_no || "")}"></div>
             <div class="field"><label>法院案號</label><input id="wb_case_court_case_no" value="${esc(c.court_case_no || "")}"></div>
             <div class="field"><label>狀態</label><input id="wb_case_status" value="${esc(c.status || "")}"></div>
-            <div class="field" style="grid-column: span 2;"><label>案件資料夾</label><input id="wb_case_folder_path" value="${esc(c.folder_path || "")}" placeholder="Y:\lumi\01_案件\..."></div>
+            <div class="field" style="grid-column: span 2;"><label>案件資料夾</label><input id="wb_case_folder_path" value="${esc(c.folder_path || "")}" placeholder="Y:\\lumi\\01_案件\\..."></div>
             <div class="field" style="grid-column: span 2;"><label>備註</label><input id="wb_case_notes" value="${esc(c.notes || "")}"></div>
         </div>
         <div class="toolbar" style="margin-top:10px; margin-bottom:0;">
