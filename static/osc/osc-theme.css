@@ -308,6 +308,85 @@ header {
     flex-wrap: wrap;
 }
 
+/* === UX v3 P6: Apple style 統一 === */
+/* button 三色系（hyphenated alias，與既有 .btn / .btn.primary 並存） */
+.btn-primary {
+    background: var(--apple-blue);
+    color: #fff;
+    border: 1px solid var(--apple-blue);
+    border-radius: var(--apple-radius);
+    padding: 8px 16px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background 0.15s, transform 0.12s;
+    font-family: var(--apple-font);
+    font-size: 13px;
+}
+.btn-primary:hover { background: #0051d5; }
+.btn-primary:active { transform: scale(0.98); }
+
+.btn-secondary {
+    background: #fff;
+    color: var(--apple-blue);
+    border: 1px solid var(--apple-blue);
+    border-radius: var(--apple-radius);
+    padding: 8px 16px;
+    cursor: pointer;
+    transition: background 0.15s;
+    font-family: var(--apple-font);
+    font-size: 13px;
+}
+.btn-secondary:hover { background: rgba(0,122,255,0.06); }
+
+.btn-danger {
+    background: #ff3b30;
+    color: #fff;
+    border: 1px solid #ff3b30;
+    border-radius: var(--apple-radius);
+    padding: 8px 16px;
+    cursor: pointer;
+    transition: background 0.15s;
+    font-family: var(--apple-font);
+    font-size: 13px;
+}
+.btn-danger:hover { background: #d70015; }
+
+/* table zebra + hover（不影響既有 .osc-table 也對 .table-wrap 內 table 套用） */
+.table-wrap table tbody tr:nth-child(even) { background: rgba(0,0,0,0.018); }
+.table-wrap table tbody tr:hover { background: rgba(0,122,255,0.05); }
+.osc-table tbody tr:nth-child(even) { background: rgba(0,0,0,0.018); }
+.osc-table tbody tr:hover { background: rgba(0,122,255,0.05); cursor: pointer; }
+
+/* empty state component */
+.empty-state {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 48px 16px;
+    text-align: center;
+    color: var(--apple-secondary);
+    gap: 8px;
+}
+.empty-state .empty-icon {
+    font-size: 48px;
+    opacity: 0.35;
+    line-height: 1;
+}
+.empty-state .empty-title {
+    font-size: 16px;
+    color: var(--text);
+    font-weight: 600;
+}
+.empty-state .empty-hint {
+    font-size: 13px;
+    color: var(--apple-secondary);
+}
+
+/* card hover（非 case-card，避免影響 dragable） */
+.card { transition: box-shadow 0.18s; }
+.card:hover:not(.no-hover) { box-shadow: var(--apple-shadow); }
+
 /* Global search in header */
 .global-search {
     flex: 1;
