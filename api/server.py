@@ -442,6 +442,10 @@ except Exception as e:
 from api.blueprints.osc_cases import osc_bp
 app.register_blueprint(osc_bp)
 
+# OSC Files Blueprint (NAS file manager — Phase 1)
+from api.blueprints.osc_files import osc_files_bp
+app.register_blueprint(osc_files_bp)
+
 # OSC Google Calendar Blueprint (P4)
 from api.blueprints.osc_gcal import osc_gcal_bp
 app.register_blueprint(osc_gcal_bp)
