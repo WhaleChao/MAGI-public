@@ -137,6 +137,216 @@ def _entry_dict(name: str, full_path: str, base_real: str, *, summarize: bool) -
 # ── routes ──────────────────────────────────────────────────────────────
 
 
+_CHUNK_TMP_DIR = Path(os.path.expanduser("~/.cache/paperclip-uploads"))
+_CHUNK_SESSION_TTL_SEC = 3600  # 1 hour
+_MAX_UPLOAD_BYTES_PER_FILE = 1 * 1024 * 1024 * 1024  # 1 GB cap (chunked enabled)
+_MAX_MULTI_TOTAL_BYTES = 500 * 1024 * 1024  # 500 MB per multi-upload request
+
+
+def _check_upload_ext(filename: str) -> tuple[bool, str]:
+    ext = os.path.splitext(filename or "")[1].lower()
+    if ext in _BLOCKED_UPLOAD_EXTS:
+        return False, f"blocked_extension:{ext}"
+    return True, ""
+
+
+def _cleanup_stale_chunk_sessions():
+    if not _CHUNK_TMP_DIR.exists():
+        return
+    now = datetime.now().timestamp()
+    for session_dir in _CHUNK_TMP_DIR.iterdir():
+        try:
+            if not session_dir.is_dir():
+                continue
+            if now - session_dir.stat().st_mtime > _CHUNK_SESSION_TTL_SEC:
+                shutil.rmtree(session_dir, ignore_errors=True)
+        except OSError:
+            continue
+
+
+@osc_files_bp.route("/api/osc/files/upload-multi", methods=["POST"])
+@login_required
+def osc_files_upload_multi_api():
+    """
+    Multi-file upload (multipart/form-data with files[]).
+    Form fields:
+      base_path     : NAS root
+      relative_path : sub-folder under base (default root)
+      overwrite     : "1" to overwrite (default fail on conflict per file)
+      files         : multiple file fields
+    Returns: per-file results array (some may succeed, some fail).
+    """
+    base = str(request.form.get("base_path") or "").strip()
+    relative = str(request.form.get("relative_path") or "").strip().strip("/")
+    overwrite = str(request.form.get("overwrite") or "").strip().lower() in {"1", "true", "yes"}
+    if not base:
+        return jsonify({"ok": False, "error": "base_path required"}), 400
+
+    base_real = _resolve_target_dir(base)
+    if not base_real:
+        return jsonify({"ok": False, "error": "base_not_found_or_not_allowed"}), 404
+    target = _safe_join_under(base_real, relative)
+    if target is None or not _osc_is_safe_local_path(target) or not os.path.isdir(target):
+        return jsonify({"ok": False, "error": "target_dir_not_found"}), 404
+
+    uploads = request.files.getlist("files") or request.files.getlist("file")
+    if not uploads:
+        return jsonify({"ok": False, "error": "files required"}), 400
+
+    results = []
+    total_saved = 0
+    for up in uploads:
+        name = os.path.basename(str(up.filename or "").strip())
+        if not name:
+            results.append({"ok": False, "error": "empty_filename"})
+            continue
+        ok, ext_err = _check_upload_ext(name)
+        if not ok:
+            results.append({"ok": False, "name": name, "error": ext_err})
+            continue
+        dest = os.path.join(target, name)
+        if os.path.exists(dest) and not overwrite:
+            results.append({"ok": False, "name": name, "error": "file_exists", "path": dest})
+            continue
+        try:
+            up.save(dest)
+            sz = os.path.getsize(dest)
+        except OSError as e:
+            results.append({"ok": False, "name": name, "error": f"save_failed: {e}"})
+            continue
+        if sz > _MAX_UPLOAD_BYTES_PER_FILE:
+            os.remove(dest)
+            results.append({"ok": False, "name": name, "error": "file_too_large",
+                            "size_mb": round(sz / 1024 / 1024, 1),
+                            "limit_mb": _MAX_UPLOAD_BYTES_PER_FILE // 1024 // 1024})
+            continue
+        total_saved += sz
+        if total_saved > _MAX_MULTI_TOTAL_BYTES:
+            os.remove(dest)
+            results.append({"ok": False, "name": name, "error": "total_too_large",
+                            "limit_mb": _MAX_MULTI_TOTAL_BYTES // 1024 // 1024})
+            break
+        results.append({"ok": True, "name": name, "path": dest, "size": sz,
+                        "size_label": _osc_human_size(sz),
+                        "relative_path": _osc_relpath_under(base_real, dest)})
+
+    succeeded = sum(1 for r in results if r.get("ok"))
+    return jsonify({
+        "ok": succeeded > 0,
+        "succeeded": succeeded,
+        "failed": len(results) - succeeded,
+        "results": results,
+        "target_dir": target,
+    })
+
+
+@osc_files_bp.route("/api/osc/files/upload-chunked", methods=["POST"])
+@login_required
+def osc_files_upload_chunked_api():
+    """
+    Chunked upload protocol (for files >10 MB).
+    Form fields per request:
+      session_id    : client-generated unique id (e.g. uuid)
+      chunk_index   : 0-based int
+      total_chunks  : int
+      filename      : final filename
+      base_path     : NAS root (required on every chunk; final chunk also writes file)
+      relative_path : sub-folder
+      overwrite     : "1"
+      chunk         : the binary chunk data
+    Behavior:
+      - Each chunk written to ~/.cache/paperclip-uploads/<session_id>/<index>.part
+      - On chunk_index == total_chunks - 1, concatenate all parts → write to final dest, cleanup session
+      - Returns {ok, chunk_index, received, finalized?, path?}
+    """
+    _cleanup_stale_chunk_sessions()
+
+    session_id = str(request.form.get("session_id") or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9_\-]{6,64}", session_id):
+        return jsonify({"ok": False, "error": "session_id_invalid"}), 400
+    try:
+        chunk_index = int(request.form.get("chunk_index") or "0")
+        total_chunks = int(request.form.get("total_chunks") or "0")
+    except ValueError:
+        return jsonify({"ok": False, "error": "chunk_index/total_chunks invalid"}), 400
+    if chunk_index < 0 or total_chunks <= 0 or chunk_index >= total_chunks:
+        return jsonify({"ok": False, "error": "chunk range invalid"}), 400
+
+    filename = os.path.basename(str(request.form.get("filename") or "").strip())
+    if not filename:
+        return jsonify({"ok": False, "error": "filename required"}), 400
+    ok, ext_err = _check_upload_ext(filename)
+    if not ok:
+        return jsonify({"ok": False, "error": ext_err}), 400
+
+    chunk_file = request.files.get("chunk")
+    if chunk_file is None:
+        return jsonify({"ok": False, "error": "chunk required"}), 400
+
+    session_dir = _CHUNK_TMP_DIR / session_id
+    session_dir.mkdir(parents=True, exist_ok=True)
+    part_path = session_dir / f"{chunk_index:06d}.part"
+    chunk_file.save(str(part_path))
+
+    if chunk_index < total_chunks - 1:
+        return jsonify({
+            "ok": True,
+            "session_id": session_id,
+            "chunk_index": chunk_index,
+            "received": True,
+            "finalized": False,
+        })
+
+    # Last chunk → finalize
+    base = str(request.form.get("base_path") or "").strip()
+    relative = str(request.form.get("relative_path") or "").strip().strip("/")
+    overwrite = str(request.form.get("overwrite") or "").strip().lower() in {"1", "true", "yes"}
+    base_real = _resolve_target_dir(base) if base else ""
+    if not base_real:
+        shutil.rmtree(session_dir, ignore_errors=True)
+        return jsonify({"ok": False, "error": "base_not_found_or_not_allowed"}), 404
+    target = _safe_join_under(base_real, relative)
+    if target is None or not _osc_is_safe_local_path(target) or not os.path.isdir(target):
+        shutil.rmtree(session_dir, ignore_errors=True)
+        return jsonify({"ok": False, "error": "target_dir_not_found"}), 404
+    dest = os.path.join(target, filename)
+    if os.path.exists(dest) and not overwrite:
+        shutil.rmtree(session_dir, ignore_errors=True)
+        return jsonify({"ok": False, "error": "file_exists", "path": dest}), 409
+
+    # Verify all parts present
+    missing = []
+    for i in range(total_chunks):
+        if not (session_dir / f"{i:06d}.part").exists():
+            missing.append(i)
+    if missing:
+        return jsonify({"ok": False, "error": "chunks_missing", "missing": missing}), 400
+
+    try:
+        with open(dest, "wb") as out:
+            for i in range(total_chunks):
+                with open(session_dir / f"{i:06d}.part", "rb") as f:
+                    shutil.copyfileobj(f, out, length=4 * 1024 * 1024)
+        sz = os.path.getsize(dest)
+        if sz > _MAX_UPLOAD_BYTES_PER_FILE:
+            os.remove(dest)
+            return jsonify({"ok": False, "error": "file_too_large", "size_mb": round(sz / 1024 / 1024, 1)}), 413
+    except OSError as e:
+        return jsonify({"ok": False, "error": f"finalize_failed: {e}"}), 500
+    finally:
+        shutil.rmtree(session_dir, ignore_errors=True)
+
+    return jsonify({
+        "ok": True,
+        "session_id": session_id,
+        "finalized": True,
+        "path": dest,
+        "size": sz,
+        "size_label": _osc_human_size(sz),
+        "relative_path": _osc_relpath_under(base_real, dest),
+    })
+
+
 _INVALID_NAME_RE = re.compile(r'[\\/:*?"<>|]')
 
 
