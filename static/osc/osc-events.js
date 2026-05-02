@@ -565,18 +565,39 @@ function initThemeToggle() {
 }
 
 async function boot() {
-    bindTabs();
-    bindEvents();
-    initCaseViewToggle();
-    initCalendarView();
-    initSortBars();
-    initGlobalSearch();
-    initThemeToggle();
-    syncFormTypeFields();
-    applyAccountingPeriod();
-    await loadMeta();
-    await loadDashboard();
-    setInterval(loadMeta, 30000);
+    // bug fix 2026-05-02：原本 await loadMeta() 在 init chain 之後，任一 init 拋例外
+    // 整個 boot() 不繼續，dbBadge 卡「連線中」永不更新（律師外網看到的問題）
+    // 改：loadMeta fire-and-forget + 每個 init 包 try/catch（一個壞不影響其他）
+    const _safeLoadMeta = () => {
+        try {
+            loadMeta().catch((e) => {
+                console.error("loadMeta failed:", e);
+                const dbBadge = document.getElementById("dbBadge");
+                if (dbBadge) dbBadge.textContent = `DB: 連線失敗 (${e.message || e})`;
+            });
+        } catch (e) {
+            console.error("loadMeta sync error:", e);
+            const dbBadge = document.getElementById("dbBadge");
+            if (dbBadge) dbBadge.textContent = `DB: 連線失敗 (${e.message || e})`;
+        }
+    };
+    _safeLoadMeta();
+
+    const _safe = (label, fn) => {
+        try { fn(); } catch (e) { console.error(`${label} failed:`, e); }
+    };
+    _safe("bindTabs", bindTabs);
+    _safe("bindEvents", bindEvents);
+    _safe("initCaseViewToggle", initCaseViewToggle);
+    _safe("initCalendarView", initCalendarView);
+    _safe("initSortBars", initSortBars);
+    _safe("initGlobalSearch", initGlobalSearch);
+    _safe("initThemeToggle", initThemeToggle);
+    _safe("syncFormTypeFields", syncFormTypeFields);
+    _safe("applyAccountingPeriod", applyAccountingPeriod);
+
+    try { await loadDashboard(); } catch (e) { console.error("loadDashboard failed:", e); }
+    setInterval(_safeLoadMeta, 30000);
 }
 boot();
 // bfcache: reload active tab data when returning via back/forward
