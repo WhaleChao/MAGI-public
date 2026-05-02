@@ -574,6 +574,321 @@
         clearPreviewBlob();
     }
 
+    async function refresh() {
+        if (FM.basePath) await navigateTo(FM.currentRel);
+    }
+
+    // ── Upload / mkdir / move (Phase 2 commit 9) ──────────────────────
+    const CHUNK_THRESHOLD = 10 * 1024 * 1024;
+    const CHUNK_SIZE = 5 * 1024 * 1024;
+    const MAX_PARALLEL = 3;
+    let _uploadConflictPolicy = null;     // null | overwrite-all | skip-all
+    const _ensuredFolders = new Set();
+
+    async function apiMkdir(basePath, relativePath, name) {
+        const r = await fetch('/api/osc/folders/mkdir', {
+            method: 'POST', credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ base_path: basePath, relative_path: relativePath, name }),
+        });
+        return r.json();
+    }
+
+    function openConflictDialog(name) {
+        return new Promise(resolve => {
+            const m = document.getElementById('fmConflictModal');
+            const body = document.getElementById('fmConflictBody');
+            if (!m || !body) return resolve('skip');
+            body.innerHTML = '<b>' + escapeHTML(name) + '</b> 已存在於目前資料夾。請選擇處理方式：';
+            m.hidden = false;
+            const handler = (ev) => {
+                const btn = ev.target.closest('[data-conflict-act]');
+                if (!btn) return;
+                const a = btn.dataset.conflictAct;
+                m.hidden = true;
+                m.removeEventListener('click', handler);
+                if (a === 'overwrite-all') _uploadConflictPolicy = 'overwrite-all';
+                if (a === 'skip-all') _uploadConflictPolicy = 'skip-all';
+                resolve(a);
+            };
+            m.addEventListener('click', handler);
+        });
+    }
+
+    function showQueue() {
+        const q = document.getElementById('fmUploadQueue');
+        if (q) q.style.display = 'flex';
+    }
+    function hideQueue() {
+        const q = document.getElementById('fmUploadQueue');
+        if (q) q.style.display = 'none';
+    }
+    function addQueueRow(id, name) {
+        const body = document.getElementById('fmUploadQueueBody');
+        if (!body) return;
+        const item = document.createElement('div');
+        item.className = 'fm-queue-item';
+        item.id = 'fmQ_' + id;
+        item.innerHTML = '<div class="fm-queue-name" title="' + escapeHTML(name) + '">' + escapeHTML(name) + '</div>'
+            + '<div class="fm-queue-bar"><div class="fm-queue-bar-fill" style="width:0%"></div></div>'
+            + '<div class="fm-queue-status">等待中…</div>';
+        body.appendChild(item);
+    }
+    function setQueueProgress(id, pct, statusText, klass) {
+        const item = document.getElementById('fmQ_' + id);
+        if (!item) return;
+        const fill = item.querySelector('.fm-queue-bar-fill');
+        const status = item.querySelector('.fm-queue-status');
+        if (fill) fill.style.width = pct + '%';
+        if (status && statusText) status.textContent = statusText;
+        if (klass) {
+            item.classList.remove('ok', 'err');
+            item.classList.add(klass);
+        }
+    }
+
+    async function uploadFiles(fileList) {
+        if (!FM.basePath) { setStatus('尚未開啟資料夾', true); return; }
+        if (!fileList || !fileList.length) return;
+        _uploadConflictPolicy = null;
+        showQueue();
+
+        const queue = Array.from(fileList).map((f, i) => ({
+            id: 'u' + Date.now() + '_' + i,
+            file: f,
+            relPath: (f.webkitRelativePath || '').split('/').slice(0, -1).join('/'),
+        }));
+        queue.forEach(q => addQueueRow(q.id, (q.relPath ? q.relPath + '/' : '') + q.file.name));
+
+        let uploadedAny = false;
+
+        async function uploadOne(q) {
+            let targetRel = FM.currentRel || '';
+            if (q.relPath) {
+                targetRel = (targetRel ? targetRel + '/' : '') + q.relPath;
+                await ensureFolderChain(q.relPath, FM.currentRel);
+            }
+            try {
+                let result;
+                if (q.file.size > CHUNK_THRESHOLD) result = await uploadChunked(q, targetRel);
+                else result = await uploadSingle(q, targetRel);
+                if (result.ok) {
+                    setQueueProgress(q.id, 100, '完成', 'ok');
+                    uploadedAny = true;
+                } else if (result.skipped) {
+                    setQueueProgress(q.id, 0, '略過', 'err');
+                } else {
+                    setQueueProgress(q.id, 0, '失敗：' + (result.error || ''), 'err');
+                }
+            } catch (e) {
+                setQueueProgress(q.id, 0, '錯誤：' + (e.message || e), 'err');
+            }
+        }
+
+        let cursor = 0;
+        async function worker() {
+            while (cursor < queue.length) {
+                const idx = cursor++;
+                await uploadOne(queue[idx]);
+            }
+        }
+        const workers = [];
+        for (let i = 0; i < MAX_PARALLEL; i++) workers.push(worker());
+        await Promise.all(workers);
+
+        if (uploadedAny) await refresh();
+    }
+
+    async function ensureFolderChain(relPath, base) {
+        const parts = relPath.split('/').filter(Boolean);
+        let acc = base || '';
+        for (const p of parts) {
+            const key = (acc || '') + '|' + p;
+            if (_ensuredFolders.has(key)) {
+                acc = (acc ? acc + '/' : '') + p;
+                continue;
+            }
+            try { await apiMkdir(FM.basePath, acc, p); } catch (_) {}
+            _ensuredFolders.add(key);
+            acc = (acc ? acc + '/' : '') + p;
+        }
+    }
+
+    async function uploadSingle(q, targetRel) {
+        let overwrite = (_uploadConflictPolicy === 'overwrite-all');
+        for (let attempt = 0; attempt < 3; attempt++) {
+            const fd = new FormData();
+            fd.append('base_path', FM.basePath);
+            fd.append('relative_path', targetRel);
+            if (overwrite) fd.append('overwrite', '1');
+            fd.append('files', q.file, q.file.name);
+
+            const r = await xhrUpload('/api/osc/files/upload-multi', fd, q.id);
+            if (r.json && r.json.results && r.json.results[0]) {
+                const r0 = r.json.results[0];
+                if (r0.ok) return { ok: true, path: r0.path };
+                if (r0.error === 'file_exists') {
+                    if (_uploadConflictPolicy === 'skip-all') return { skipped: true };
+                    if (_uploadConflictPolicy === 'overwrite-all') { overwrite = true; continue; }
+                    const choice = await openConflictDialog(q.file.name);
+                    if (choice === 'overwrite' || choice === 'overwrite-all') { overwrite = true; continue; }
+                    if (choice === 'skip' || choice === 'skip-all') return { skipped: true };
+                    if (choice === 'rename') {
+                        const baseName = q.file.name.replace(/(\.[^.]+)$/, '');
+                        const ext = (q.file.name.match(/\.[^.]+$/) || [''])[0];
+                        const newName = baseName + '_' + Date.now() + ext;
+                        const newFile = new File([q.file], newName, { type: q.file.type });
+                        const fd2 = new FormData();
+                        fd2.append('base_path', FM.basePath);
+                        fd2.append('relative_path', targetRel);
+                        fd2.append('files', newFile, newName);
+                        const r2 = await xhrUpload('/api/osc/files/upload-multi', fd2, q.id);
+                        if (r2.json && r2.json.results && r2.json.results[0] && r2.json.results[0].ok) return { ok: true };
+                        return { error: (r2.json && r2.json.results && r2.json.results[0] && r2.json.results[0].error) || 'rename_failed' };
+                    }
+                    return { skipped: true };
+                }
+                return { error: r0.error || 'unknown' };
+            }
+            return { error: (r.json && r.json.error) || 'no_result' };
+        }
+        return { error: 'too_many_attempts' };
+    }
+
+    function xhrUpload(url, fd, qid) {
+        return new Promise((resolve, reject) => {
+            const xhr = new XMLHttpRequest();
+            xhr.open('POST', url);
+            xhr.withCredentials = true;
+            xhr.upload.onprogress = (ev) => {
+                if (!ev.lengthComputable) return;
+                const pct = Math.round(ev.loaded / ev.total * 95);
+                setQueueProgress(qid, pct, '上傳中… ' + pct + '%');
+            };
+            xhr.onload = () => {
+                let json = null;
+                try { json = JSON.parse(xhr.responseText); } catch (_) {}
+                resolve({ status: xhr.status, json });
+            };
+            xhr.onerror = () => reject(new Error('network_error'));
+            xhr.send(fd);
+        });
+    }
+
+    async function uploadChunked(q, targetRel) {
+        const sessionId = 'sess_' + Date.now() + '_' + Math.random().toString(36).slice(2, 10);
+        const total = Math.ceil(q.file.size / CHUNK_SIZE);
+        let overwrite = (_uploadConflictPolicy === 'overwrite-all');
+        for (let i = 0; i < total; i++) {
+            const start = i * CHUNK_SIZE;
+            const end = Math.min(start + CHUNK_SIZE, q.file.size);
+            const blob = q.file.slice(start, end);
+            const fd = new FormData();
+            fd.append('session_id', sessionId);
+            fd.append('chunk_index', String(i));
+            fd.append('total_chunks', String(total));
+            fd.append('filename', q.file.name);
+            fd.append('base_path', FM.basePath);
+            fd.append('relative_path', targetRel);
+            if (overwrite) fd.append('overwrite', '1');
+            fd.append('chunk', blob, q.file.name + '.part' + i);
+
+            const r = await fetch('/api/osc/files/upload-chunked', {
+                method: 'POST', credentials: 'same-origin', body: fd,
+            });
+            const j = await r.json();
+            if (!j.ok) {
+                if (j.error === 'file_exists') {
+                    if (_uploadConflictPolicy === 'skip-all') return { skipped: true };
+                    const choice = await openConflictDialog(q.file.name);
+                    if (choice === 'overwrite' || choice === 'overwrite-all') {
+                        overwrite = true; i = -1; continue;
+                    }
+                    if (choice === 'skip' || choice === 'skip-all') return { skipped: true };
+                }
+                return { error: j.error || 'chunk_failed' };
+            }
+            const pct = Math.round(((i + 1) / total) * 100);
+            setQueueProgress(q.id, pct, '上傳中 ' + (i + 1) + '/' + total + ' (' + pct + '%)');
+            if (j.finalized) return { ok: true, path: j.path };
+        }
+        return { error: 'chunked_no_finalize' };
+    }
+
+    function bindDropZone() {
+        const main = document.querySelector('#fileManager .fm-main');
+        const dz = document.getElementById('fmDropZone');
+        if (!main || !dz) return;
+        let depth = 0;
+        main.addEventListener('dragenter', (e) => {
+            if (!e.dataTransfer || !Array.from(e.dataTransfer.types || []).includes('Files')) return;
+            depth++;
+            dz.style.display = 'flex';
+        });
+        main.addEventListener('dragleave', () => {
+            depth = Math.max(0, depth - 1);
+            if (depth === 0) dz.style.display = 'none';
+        });
+        main.addEventListener('dragover', (e) => {
+            if (!e.dataTransfer || !Array.from(e.dataTransfer.types || []).includes('Files')) return;
+            e.preventDefault();
+        });
+        main.addEventListener('drop', async (e) => {
+            depth = 0;
+            dz.style.display = 'none';
+            if (!e.dataTransfer) return;
+            e.preventDefault();
+            const dt = e.dataTransfer;
+            const items = dt.items ? Array.from(dt.items) : [];
+            const hasDirEntry = items.some(it => it.webkitGetAsEntry && (it.webkitGetAsEntry() || {}).isDirectory);
+            if (hasDirEntry) {
+                const collected = [];
+                for (const it of items) {
+                    const ent = it.webkitGetAsEntry && it.webkitGetAsEntry();
+                    if (!ent) continue;
+                    await collectEntries(ent, '', collected);
+                }
+                if (collected.length) await uploadFiles(collected);
+                return;
+            }
+            const files = Array.from(dt.files || []);
+            if (files.length) await uploadFiles(files);
+        });
+    }
+
+    function collectEntries(entry, prefix, out) {
+        return new Promise(resolve => {
+            if (entry.isFile) {
+                entry.file(file => {
+                    try {
+                        Object.defineProperty(file, 'webkitRelativePath', {
+                            value: prefix + file.name, writable: false, configurable: true,
+                        });
+                    } catch (_) {}
+                    out.push(file);
+                    resolve();
+                }, () => resolve());
+            } else if (entry.isDirectory) {
+                const reader = entry.createReader();
+                const allEntries = [];
+                const readBatch = () => {
+                    reader.readEntries(async (batch) => {
+                        if (!batch.length) {
+                            for (const sub of allEntries) {
+                                await collectEntries(sub, prefix + entry.name + '/', out);
+                            }
+                            resolve();
+                        } else {
+                            allEntries.push.apply(allEntries, batch);
+                            readBatch();
+                        }
+                    }, () => resolve());
+                };
+                readBatch();
+            } else { resolve(); }
+        });
+    }
+
     // ── Public init (called when sidebar tab activates) ───────────────
     FM.init = function () {
         const inp = document.getElementById('fmBasePathInput');
@@ -650,6 +965,52 @@
                 if (m && !m.hidden) closePreview();
             });
         }
+
+        // Phase 2 commit 9: upload buttons + drop zone + queue close
+        const mkdirBtn = document.getElementById('fmMkdirBtn');
+        const uploadBtn = document.getElementById('fmUploadBtn');
+        const uploadFolderBtn = document.getElementById('fmUploadFolderBtn');
+        const fileInput = document.getElementById('fmFileInput');
+        const folderInput = document.getElementById('fmFolderInput');
+        const queueClose = document.getElementById('fmUploadQueueClose');
+        if (mkdirBtn && !mkdirBtn._fmBound) {
+            mkdirBtn._fmBound = true;
+            mkdirBtn.addEventListener('click', async () => {
+                if (!FM.basePath) { setStatus('請先開啟資料夾', true); return; }
+                const name = prompt('新資料夾名稱：');
+                if (!name) return;
+                const r = await apiMkdir(FM.basePath, FM.currentRel, name.trim());
+                if (r && r.ok) { setStatus('已建立資料夾：' + name); refresh(); setTimeout(() => setStatus(''), 2000); }
+                else setStatus('建立失敗：' + ((r && r.error) || '未知'), true);
+            });
+        }
+        if (uploadBtn && !uploadBtn._fmBound) {
+            uploadBtn._fmBound = true;
+            uploadBtn.addEventListener('click', () => fileInput && fileInput.click());
+        }
+        if (uploadFolderBtn && !uploadFolderBtn._fmBound) {
+            uploadFolderBtn._fmBound = true;
+            uploadFolderBtn.addEventListener('click', () => folderInput && folderInput.click());
+        }
+        if (fileInput && !fileInput._fmBound) {
+            fileInput._fmBound = true;
+            fileInput.addEventListener('change', () => {
+                if (fileInput.files && fileInput.files.length) uploadFiles(fileInput.files);
+                fileInput.value = '';
+            });
+        }
+        if (folderInput && !folderInput._fmBound) {
+            folderInput._fmBound = true;
+            folderInput.addEventListener('change', () => {
+                if (folderInput.files && folderInput.files.length) uploadFiles(folderInput.files);
+                folderInput.value = '';
+            });
+        }
+        if (queueClose && !queueClose._fmBound) {
+            queueClose._fmBound = true;
+            queueClose.addEventListener('click', hideQueue);
+        }
+        bindDropZone();
     };
 
     // Auto-init when this tab becomes visible

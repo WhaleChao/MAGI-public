@@ -349,6 +349,107 @@
     padding: 4px 8px;
 }
 
+/* === Dropzone overlay (Phase 2 commit 9) === */
+.fm-dropzone {
+    position: absolute;
+    inset: 0;
+    background: rgba(0, 122, 255, 0.08);
+    border: 3px dashed var(--apple-blue, #007aff);
+    border-radius: var(--apple-radius, 10px);
+    z-index: 50;
+    pointer-events: none;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+.fm-dropzone-inner {
+    text-align: center;
+    color: var(--apple-blue, #007aff);
+    font-weight: 500;
+    font-size: 14px;
+    pointer-events: none;
+}
+.fm-dropzone-icon {
+    font-size: 60px;
+    margin-bottom: 8px;
+}
+
+/* === Upload queue panel (Phase 2 commit 9, floating) === */
+.fm-upload-queue {
+    position: fixed;
+    bottom: 20px;
+    right: 20px;
+    width: 340px;
+    max-height: 60vh;
+    background: var(--card-bg, #fff);
+    border: 1px solid var(--apple-border, rgba(0, 0, 0, 0.15));
+    border-radius: var(--apple-radius, 10px);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.15);
+    z-index: 200;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+.fm-queue-head {
+    display: flex;
+    align-items: center;
+    padding: 8px 12px;
+    background: rgba(0, 0, 0, 0.04);
+    border-bottom: 1px solid var(--apple-border, rgba(0, 0, 0, 0.1));
+}
+.fm-queue-title {
+    flex: 1;
+    font-weight: 600;
+    font-size: 13px;
+}
+.fm-queue-close {
+    background: transparent;
+    border: none;
+    cursor: pointer;
+    font-size: 14px;
+    color: var(--text-secondary, #6c6c70);
+}
+.fm-queue-body {
+    overflow-y: auto;
+    padding: 8px 12px;
+    max-height: 50vh;
+}
+.fm-queue-item {
+    margin-bottom: 8px;
+    font-size: 12px;
+}
+.fm-queue-item:last-child { margin-bottom: 0; }
+.fm-queue-item .fm-queue-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    margin-bottom: 3px;
+}
+.fm-queue-item .fm-queue-bar {
+    height: 5px;
+    background: rgba(0, 0, 0, 0.06);
+    border-radius: 3px;
+    overflow: hidden;
+}
+.fm-queue-item .fm-queue-bar-fill {
+    height: 100%;
+    background: var(--apple-blue, #007aff);
+    width: 0%;
+    transition: width 0.2s;
+}
+.fm-queue-item.ok .fm-queue-bar-fill { background: #34c759; }
+.fm-queue-item.err .fm-queue-bar-fill { background: #ff3b30; }
+.fm-queue-item .fm-queue-status {
+    font-size: 11px;
+    color: var(--text-secondary, #6c6c70);
+    margin-top: 2px;
+}
+.fm-queue-item.err .fm-queue-status { color: #ff3b30; }
+.fm-queue-item.ok .fm-queue-status { color: #34c759; }
+
+#fileManager .fm-shell { position: relative; }
+#fileManager .fm-main { position: relative; }
+
 /* === Preview Modal (Phase 2 commit 8) === */
 .fm-modal {
     position: fixed;

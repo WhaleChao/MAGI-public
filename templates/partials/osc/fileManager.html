@@ -42,10 +42,49 @@
                     <input type="checkbox" id="fmShowHiddenToggle">
                     顯示暫存檔
                 </label>
+                <div class="fm-toolbar-spacer"></div>
+                <div class="fm-toolbar-group">
+                    <button class="btn-mini" id="fmMkdirBtn" title="新增資料夾">＋ 資料夾</button>
+                    <button class="btn-mini" id="fmUploadBtn" title="上傳檔案">⬆ 上傳</button>
+                    <button class="btn-mini" id="fmUploadFolderBtn" title="上傳資料夾">⬆ 資料夾</button>
+                </div>
             </div>
         </div>
 
         <div id="fmStatus" class="fm-status" style="display:none;"></div>
+
+        <!-- hidden file inputs (Phase 2 commit 9) -->
+        <input type="file" id="fmFileInput" multiple style="display:none;">
+        <input type="file" id="fmFolderInput" webkitdirectory directory multiple style="display:none;">
+
+        <!-- Upload queue panel (Phase 2 commit 9, floating bottom-right) -->
+        <div id="fmUploadQueue" class="fm-upload-queue" style="display:none;">
+            <div class="fm-queue-head">
+                <span class="fm-queue-title">上傳佇列</span>
+                <button class="fm-queue-close" id="fmUploadQueueClose" title="關閉">✕</button>
+            </div>
+            <div id="fmUploadQueueBody" class="fm-queue-body"></div>
+        </div>
+
+        <!-- Conflict dialog (Phase 2 commit 9) -->
+        <div id="fmConflictModal" class="fm-modal" hidden>
+            <div class="fm-modal-backdrop"></div>
+            <div class="fm-modal-dialog small" role="dialog" aria-labelledby="fmConflictTitle">
+                <div class="fm-modal-head">
+                    <span id="fmConflictTitle" class="fm-modal-title">檔案已存在</span>
+                </div>
+                <div class="fm-modal-body padded">
+                    <div id="fmConflictBody" style="font-size:13px; line-height:1.5;"></div>
+                </div>
+                <div class="fm-modal-foot">
+                    <button class="btn-mini" data-conflict-act="skip">略過</button>
+                    <button class="btn-mini" data-conflict-act="rename">重命名</button>
+                    <button class="btn-mini" data-conflict-act="overwrite">覆蓋</button>
+                    <button class="btn-mini" data-conflict-act="skip-all">全部略過</button>
+                    <button class="btn-mini primary" data-conflict-act="overwrite-all">全部覆蓋</button>
+                </div>
+            </div>
+        </div>
 
         <!-- Preview modal (Phase 2 commit 8) -->
         <div id="fmPreviewModal" class="fm-modal" hidden>
@@ -70,6 +109,12 @@
             <div class="fm-main">
                 <div id="fmBreadcrumb" class="fm-breadcrumb">
                     <span class="crumb current" data-rel="">尚未開啟</span>
+                </div>
+                <div id="fmDropZone" class="fm-dropzone" style="display:none;">
+                    <div class="fm-dropzone-inner">
+                        <div class="fm-dropzone-icon">⬇</div>
+                        <div>放開以上傳到目前資料夾</div>
+                    </div>
                 </div>
                 <div id="fmEntriesArea">
                     <div class="fm-empty">輸入 NAS 路徑後按「開啟」</div>
