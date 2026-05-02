@@ -180,7 +180,7 @@ function renderWorkbenchCaseEditor(c) {
             <div class="field"><label>申請編號</label><input id="wb_case_application_no" value="${esc(c.application_no || "")}"></div>
             <div class="field"><label>法院案號</label><input id="wb_case_court_case_no" value="${esc(c.court_case_no || "")}"></div>
             <div class="field"><label>狀態</label><input id="wb_case_status" value="${esc(c.status || "")}"></div>
-            <div class="field" style="grid-column: span 2;"><label>案件資料夾</label><input id="wb_case_folder_path" value="${esc(c.folder_path || "")}" placeholder="folder_path"></div>
+            <div class="field" style="grid-column: span 2;"><label>案件資料夾</label><input id="wb_case_folder_path" value="${esc(c.folder_path || "")}" placeholder="Y:\lumi\01_案件\..."></div>
             <div class="field" style="grid-column: span 2;"><label>備註</label><input id="wb_case_notes" value="${esc(c.notes || "")}"></div>
         </div>
         <div class="toolbar" style="margin-top:10px; margin-bottom:0;">
@@ -362,10 +362,10 @@ function wbRenderTodoForm(defaultCaseNumber = "", defaultClientName = "") {
             <input id="wb_todo_type" placeholder="類型（如 開庭、補件）">
             <input id="wb_todo_date" type="date" placeholder="日期">
             <input id="wb_todo_time" type="time" placeholder="時間">
-            <input id="wb_todo_status" placeholder="狀態 (pending/completed)">
-            <input id="wb_todo_source_file" placeholder="來源檔案">
+            <input id="wb_todo_status" placeholder="狀態 (pending/completed/cancelled)">
+            <input id="wb_todo_source_file" placeholder="來源檔名（選填）">
         </div>
-        <textarea id="wb_todo_desc" placeholder="描述"></textarea>
+        <textarea id="wb_todo_desc" placeholder="詳細說明（選填）"></textarea>
         <div class="toolbar" style="margin-top:8px;">
             <button class="btn primary" data-act="wb-todo-save">儲存待辦</button>
             <button class="btn warn" data-act="wb-todo-reset">清空表單</button>
