@@ -44,8 +44,25 @@ async function loadMeta() {
     const dbBadge = document.getElementById("dbBadge");
     const countBadge = document.getElementById("countBadge");
     try {
-        const res = await fetch("/api/osc/meta");
-        const data = await res.json().catch(() => ({ ok: false, error: res.statusText }));
+        // redirect:"manual" 讓 302 不被 fetch 自動跟隨，否則拿到 /login HTML 會被誤判為 DB 失敗
+        const res = await fetch("/api/osc/meta", { redirect: "manual" });
+        // 偵測 session expired：fetch 拿到 0/opaqueredirect/3xx → 強制跳 login
+        if (res.type === "opaqueredirect" || res.status === 0 || (res.status >= 300 && res.status < 400)) {
+            dbBadge.classList.remove("ok");
+            dbBadge.innerHTML = `DB: <a href="/login?next=${encodeURIComponent(location.pathname)}" style="color:var(--apple-blue,#007aff);text-decoration:underline;">⚠️ 請重新登入</a>`;
+            if (countBadge) countBadge.textContent = "登入逾時，請點上方連結重新登入";
+            return;
+        }
+        const txt = await res.text();
+        // 偵測 HTML response（被 redirect 跟隨拿到 login 頁）
+        if (txt.trim().startsWith("<")) {
+            dbBadge.classList.remove("ok");
+            dbBadge.innerHTML = `DB: <a href="/login?next=${encodeURIComponent(location.pathname)}" style="color:var(--apple-blue,#007aff);text-decoration:underline;">⚠️ 請重新登入</a>`;
+            if (countBadge) countBadge.textContent = "登入逾時，請點上方連結重新登入";
+            return;
+        }
+        let data = {};
+        try { data = txt ? JSON.parse(txt) : {}; } catch { data = { ok: false, error: txt || res.statusText }; }
         const fo = data.failover || {};
         const foTag = (fo.failover_active ? " [本機備援]" : "") + (fo.syncing ? " [同步中]" : "");
         if (!res.ok || !data.ok) {
