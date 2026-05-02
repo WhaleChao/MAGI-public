@@ -1,0 +1,233 @@
+/* ==========================================================================
+   Paperclip NAS File Manager — Phase 1 (UI shell)
+   ========================================================================== */
+
+#fileManager .fm-shell {
+    display: grid;
+    grid-template-columns: 280px 1fr;
+    gap: 12px;
+    min-height: 70vh;
+}
+
+#fileManager .fm-sidebar {
+    border: 1px solid var(--apple-border, rgba(0, 0, 0, 0.1));
+    border-radius: var(--apple-radius, 10px);
+    background: var(--card-bg, #fff);
+    padding: 10px;
+    overflow: auto;
+    max-height: 75vh;
+}
+
+#fileManager .fm-main {
+    border: 1px solid var(--apple-border, rgba(0, 0, 0, 0.1));
+    border-radius: var(--apple-radius, 10px);
+    background: var(--card-bg, #fff);
+    padding: 12px 14px;
+    display: flex;
+    flex-direction: column;
+    min-height: 70vh;
+}
+
+/* breadcrumb */
+.fm-breadcrumb {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px;
+    margin-bottom: 10px;
+    padding: 8px 10px;
+    background: rgba(0, 122, 255, 0.04);
+    border-radius: 6px;
+    font-size: 13px;
+    line-height: 1.4;
+}
+
+.fm-breadcrumb .crumb {
+    color: var(--apple-blue, #007aff);
+    cursor: pointer;
+    text-decoration: none;
+    padding: 2px 6px;
+    border-radius: 4px;
+    transition: background 0.12s;
+}
+
+.fm-breadcrumb .crumb:hover {
+    background: rgba(0, 122, 255, 0.1);
+    text-decoration: none;
+}
+
+.fm-breadcrumb .crumb.current {
+    color: var(--text-primary, #1d1d1f);
+    cursor: default;
+    font-weight: 600;
+}
+
+.fm-breadcrumb .sep {
+    color: var(--text-secondary, #8e8e93);
+    user-select: none;
+}
+
+/* toolbar */
+.fm-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 12px;
+    flex-wrap: wrap;
+}
+
+.fm-toolbar .btn-mini {
+    padding: 5px 10px;
+    font-size: 12px;
+    border-radius: 6px;
+    border: 1px solid var(--apple-border, rgba(0, 0, 0, 0.15));
+    background: var(--card-bg, #fff);
+    cursor: pointer;
+    transition: background 0.12s;
+}
+
+.fm-toolbar .btn-mini:hover {
+    background: rgba(0, 122, 255, 0.06);
+}
+
+.fm-toolbar label.toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 12px;
+    color: var(--text-secondary, #6c6c70);
+    cursor: pointer;
+    user-select: none;
+}
+
+/* entries — folders section + files section */
+.fm-section-title {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-secondary, #6c6c70);
+    margin: 14px 0 6px;
+    padding-bottom: 4px;
+    border-bottom: 1px solid var(--apple-border, rgba(0, 0, 0, 0.08));
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.fm-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+}
+
+.fm-table th, .fm-table td {
+    padding: 7px 10px;
+    text-align: left;
+    border-bottom: 1px solid rgba(0, 0, 0, 0.05);
+}
+
+.fm-table th {
+    color: var(--text-secondary, #6c6c70);
+    font-weight: 500;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
+.fm-row {
+    cursor: pointer;
+    transition: background 0.12s;
+}
+
+.fm-row:hover {
+    background: rgba(0, 122, 255, 0.05);
+}
+
+.fm-row.dir td:first-child {
+    font-weight: 500;
+}
+
+.fm-icon {
+    display: inline-block;
+    margin-right: 6px;
+    font-size: 14px;
+    width: 1.4em;
+    text-align: center;
+}
+
+.fm-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 480px;
+}
+
+.fm-meta {
+    color: var(--text-secondary, #6c6c70);
+    font-size: 12px;
+    white-space: nowrap;
+}
+
+.fm-empty {
+    padding: 30px 12px;
+    text-align: center;
+    color: var(--text-secondary, #6c6c70);
+    font-size: 13px;
+}
+
+.fm-status {
+    margin: 10px 0;
+    padding: 8px 10px;
+    background: rgba(255, 200, 0, 0.08);
+    border-left: 3px solid #ff9500;
+    border-radius: 4px;
+    font-size: 12px;
+    color: #6c4d00;
+}
+
+.fm-status.error {
+    background: rgba(255, 59, 48, 0.08);
+    border-left-color: #ff3b30;
+    color: #8a0c00;
+}
+
+/* tree (left sidebar) */
+.fm-tree-node {
+    padding: 4px 6px;
+    cursor: pointer;
+    border-radius: 4px;
+    font-size: 13px;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    transition: background 0.12s;
+}
+
+.fm-tree-node:hover {
+    background: rgba(0, 122, 255, 0.08);
+}
+
+.fm-tree-node.active {
+    background: rgba(0, 122, 255, 0.15);
+    color: var(--apple-blue, #007aff);
+    font-weight: 500;
+}
+
+.fm-tree-node .tw {
+    font-size: 10px;
+    color: var(--text-secondary, #6c6c70);
+    width: 12px;
+    display: inline-block;
+}
+
+.fm-tree-children {
+    margin-left: 16px;
+    border-left: 1px dashed rgba(0, 0, 0, 0.08);
+    padding-left: 6px;
+}
+
+.fm-loading-inline {
+    color: var(--text-secondary, #6c6c70);
+    font-size: 12px;
+    font-style: italic;
+    padding: 4px 8px;
+}

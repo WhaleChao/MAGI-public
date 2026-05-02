@@ -1,0 +1,47 @@
+<section id="fileManager" class="view">
+    <div class="card">
+        <div class="section-head">
+            <div>
+                <h3>📁 NAS 檔案總管</h3>
+                <div class="section-note">在瀏覽器內巡覽 NAS 案件資料夾。Phase 1 — 純檢視；上傳、預覽、拖放於 Phase 2 加入。</div>
+            </div>
+        </div>
+        <div class="soft-block">
+            <div class="field-grid cols-3" style="align-items:end;">
+                <div class="field" style="grid-column: span 2;">
+                    <label for="fmBasePathInput">NAS 案件資料夾路徑</label>
+                    <input id="fmBasePathInput" placeholder="Z:\lumi63181107\01_案件\... 或 /Users/ai/SynologyDrive/...">
+                </div>
+                <div class="field">
+                    <label>&nbsp;</label>
+                    <div class="inline-actions">
+                        <button class="btn" id="fmBasePathGoBtn">開啟</button>
+                        <button class="btn" id="fmRefreshBtn">重新整理</button>
+                    </div>
+                </div>
+            </div>
+            <div class="fm-toolbar">
+                <label class="toggle">
+                    <input type="checkbox" id="fmShowHiddenToggle">
+                    顯示暫存檔（.DS_Store / ~$tmp / Thumbs.db 等）
+                </label>
+            </div>
+        </div>
+
+        <div id="fmStatus" class="fm-status" style="display:none;"></div>
+
+        <div class="fm-shell">
+            <div class="fm-sidebar" id="fmTree">
+                <div class="fm-empty">尚未開啟資料夾</div>
+            </div>
+            <div class="fm-main">
+                <div id="fmBreadcrumb" class="fm-breadcrumb">
+                    <span class="crumb current" data-rel="">尚未開啟</span>
+                </div>
+                <div id="fmEntriesArea">
+                    <div class="fm-empty">輸入 NAS 路徑後按「開啟」</div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
