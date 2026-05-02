@@ -284,6 +284,30 @@ header {
     font-family: var(--apple-font);
 }
 
+/* === UX v3 P4-2: 統一 toolbar 樣式（osc-toolbar 與 .toolbar 共用） === */
+.osc-toolbar,
+.toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 10px;
+    align-items: center;
+}
+.osc-toolbar input[type="search"],
+.osc-toolbar input[type="text"],
+.toolbar input[type="search"],
+.toolbar input[type="text"] {
+    flex: 0 1 320px;
+    min-width: 180px;
+}
+.osc-toolbar .toolbar-actions,
+.toolbar .toolbar-actions {
+    display: flex;
+    gap: 6px;
+    margin-left: auto;
+    flex-wrap: wrap;
+}
+
 /* Global search in header */
 .global-search {
     flex: 1;
