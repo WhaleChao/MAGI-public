@@ -620,3 +620,43 @@
     padding: 4px 0;
     font-size: 12px;
 }
+
+/* === Context menu (Phase 2 commit 11) === */
+.fm-context-menu {
+    position: fixed;
+    background: var(--card-bg, #fff);
+    border: 1px solid var(--apple-border, rgba(0, 0, 0, 0.1));
+    border-radius: 8px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.15);
+    z-index: 2000;
+    list-style: none;
+    margin: 0;
+    padding: 6px 0;
+    min-width: 180px;
+    font-size: 13px;
+}
+.fm-context-menu[hidden] { display: none; }
+.fm-context-menu li {
+    padding: 6px 14px;
+    cursor: pointer;
+    transition: background 0.1s;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+.fm-context-menu li:hover {
+    background: rgba(0, 122, 255, 0.08);
+    color: var(--apple-blue, #007aff);
+}
+.fm-context-menu li.danger:hover {
+    background: rgba(255, 59, 48, 0.08);
+    color: #ff3b30;
+}
+.fm-context-menu li.sep {
+    height: 1px;
+    background: rgba(0, 0, 0, 0.08);
+    margin: 4px 0;
+    padding: 0;
+    cursor: default;
+}
+.fm-context-menu li.sep:hover { background: rgba(0, 0, 0, 0.08); }

@@ -152,6 +152,7 @@
         }
         main.innerHTML = html;
         bindEntryClicks(main);
+        if (typeof bindContextMenu === 'function') bindContextMenu();
     }
 
     function renderDetail(folders, files, data) {
@@ -577,6 +578,131 @@
     async function refresh() {
         if (FM.basePath) await navigateTo(FM.currentRel);
     }
+
+    // ── Rename / move-to-trash API (Phase 2 commit 11) ───────────────
+    async function apiRename(basePath, relativePath, newName) {
+        const r = await fetch('/api/osc/folders/rename', {
+            method: 'POST', credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ base_path: basePath, relative_path: relativePath, new_name: newName }),
+        });
+        return r.json();
+    }
+    async function apiMoveToTrash(basePath, relativePath) {
+        const r = await fetch('/api/osc/folders/move', {
+            method: 'POST', credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ base_path: basePath, source_relative_path: relativePath, to_trash: true }),
+        });
+        return r.json();
+    }
+
+    // ── Context menu + keyboard (Phase 2 commit 11) ──────────────────
+    function bindContextMenu() {
+        const main = document.getElementById('fmEntriesArea');
+        if (!main) return;
+        if (main._fmCtxBound) return;
+        main._fmCtxBound = true;
+        main.addEventListener('contextmenu', (ev) => {
+            const el = ev.target.closest('[data-rel][data-type]');
+            if (!el) return;
+            ev.preventDefault();
+            const rel = el.dataset.rel;
+            const type = el.dataset.type;
+            const name = el.dataset.name;
+            selectEntry(rel, type, el);
+            openContextMenu(ev.clientX, ev.clientY, rel, type, name);
+        });
+    }
+
+    function openContextMenu(x, y, rel, type, name) {
+        const menu = document.getElementById('fmContextMenu');
+        if (!menu) return;
+        const items = [];
+        if (type === 'file') {
+            items.push({ label: '👁 預覽', act: 'preview' });
+            items.push({ label: '⬇ 下載', act: 'download' });
+            items.push({ sep: true });
+        }
+        items.push({ label: '✏ 重命名 (F2)', act: 'rename' });
+        items.push({ label: '📋 複製路徑', act: 'copy-path' });
+        items.push({ sep: true });
+        items.push({ label: '🗑 移到回收桶 (Del)', act: 'trash', danger: true });
+
+        menu.innerHTML = items.map(it => {
+            if (it.sep) return '<li class="sep"></li>';
+            return '<li class="' + (it.danger ? 'danger' : '') + '" data-act="' + it.act + '">'
+                + escapeHTML(it.label) + '</li>';
+        }).join('');
+        menu.hidden = false;
+        const w = menu.offsetWidth || 200;
+        const h = menu.offsetHeight || 200;
+        const vx = Math.min(x, window.innerWidth - w - 10);
+        const vy = Math.min(y, window.innerHeight - h - 10);
+        menu.style.left = vx + 'px';
+        menu.style.top = vy + 'px';
+
+        menu.querySelectorAll('li[data-act]').forEach(li => {
+            li.addEventListener('click', async () => {
+                closeContextMenu();
+                await runContextAction(li.dataset.act, rel, type, name);
+            });
+        });
+    }
+    function closeContextMenu() {
+        const menu = document.getElementById('fmContextMenu');
+        if (menu) menu.hidden = true;
+    }
+    document.addEventListener('click', closeContextMenu);
+    document.addEventListener('scroll', closeContextMenu, true);
+
+    async function runContextAction(act, rel, type, name) {
+        const fullPath = buildLocalPath(rel);
+        if (act === 'preview' && type === 'file') return openPreview(rel, name);
+        if (act === 'download') {
+            const url = '/api/osc/files/content?path=' + encodeURIComponent(fullPath);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = name || '';
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            return;
+        }
+        if (act === 'copy-path') {
+            try {
+                await navigator.clipboard.writeText(fullPath);
+                setStatus('已複製路徑：' + fullPath);
+                setTimeout(() => setStatus(''), 2500);
+            } catch (e) {
+                setStatus('複製失敗：' + (e.message || e), true);
+            }
+            return;
+        }
+        if (act === 'rename') return renameSelected(rel, name);
+        if (act === 'trash') return trashSelected(rel, name);
+    }
+
+    async function renameSelected(rel, oldName) {
+        if (!rel) return;
+        const newName = prompt('新名稱：', oldName || '');
+        if (newName == null) return;
+        const trimmed = newName.trim();
+        if (!trimmed || trimmed === oldName) return;
+        const r = await apiRename(FM.basePath, rel, trimmed);
+        if (r && r.ok) { setStatus('已重命名為：' + trimmed); refresh(); setTimeout(() => setStatus(''), 2500); }
+        else setStatus('重命名失敗：' + ((r && r.error) || '未知'), true);
+    }
+
+    async function trashSelected(rel, name) {
+        if (!rel) return;
+        if (!confirm('將「' + (name || rel) + '」移到回收桶（.trash 子資料夾）？\n\n（此操作可從 .trash 內手動還原；不會永久刪除。）')) return;
+        const r = await apiMoveToTrash(FM.basePath, rel);
+        if (r && r.ok) { setStatus('已移到回收桶：' + r.new_relative_path); refresh(); setTimeout(() => setStatus(''), 3000); }
+        else setStatus('移到回收桶失敗：' + ((r && r.error) || '未知'), true);
+    }
+
+    function cssEsc(s) { return String(s || '').replace(/(["\\])/g, '\\$1'); }
 
     // ── Upload / mkdir / move (Phase 2 commit 9) ──────────────────────
     const CHUNK_THRESHOLD = 10 * 1024 * 1024;
@@ -1011,6 +1137,30 @@
             queueClose.addEventListener('click', hideQueue);
         }
         bindDropZone();
+
+        // Phase 2 commit 11: keyboard shortcuts (F2 rename / Del trash)
+        if (!document._fmKeysBound) {
+            document._fmKeysBound = true;
+            document.addEventListener('keydown', (ev) => {
+                const fmEl = document.getElementById('fileManager');
+                if (!fmEl || fmEl.offsetParent === null) return;  // tab not visible
+                const previewModal = document.getElementById('fmPreviewModal');
+                if (previewModal && !previewModal.hidden) return;  // preview eats keys
+                if (ev.target && /input|textarea|select/i.test(ev.target.tagName)) return;
+                if (!FM.selectedRel) return;
+                if (ev.key === 'F2') {
+                    ev.preventDefault();
+                    const el = document.querySelector('#fmEntriesArea [data-rel="' + cssEsc(FM.selectedRel) + '"]');
+                    const name = el && el.dataset.name;
+                    renameSelected(FM.selectedRel, name);
+                } else if (ev.key === 'Delete' || ev.key === 'Backspace') {
+                    ev.preventDefault();
+                    const el = document.querySelector('#fmEntriesArea [data-rel="' + cssEsc(FM.selectedRel) + '"]');
+                    const name = el && el.dataset.name;
+                    trashSelected(FM.selectedRel, name);
+                }
+            });
+        }
     };
 
     // Auto-init when this tab becomes visible
