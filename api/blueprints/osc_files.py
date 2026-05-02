@@ -137,6 +137,147 @@ def _entry_dict(name: str, full_path: str, base_real: str, *, summarize: bool) -
 # ── routes ──────────────────────────────────────────────────────────────
 
 
+_INVALID_NAME_RE = re.compile(r'[\\/:*?"<>|]')
+
+
+def _validate_filename(name: str) -> tuple[bool, str]:
+    n = (name or "").strip()
+    if not n:
+        return False, "name_empty"
+    if n in (".", ".."):
+        return False, "name_invalid"
+    if _INVALID_NAME_RE.search(n):
+        return False, "name_has_invalid_chars"
+    if len(n) > 200:
+        return False, "name_too_long"
+    return True, ""
+
+
+@osc_files_bp.route("/api/osc/folders/mkdir", methods=["POST"])
+@login_required
+def osc_folders_mkdir_api():
+    payload = request.get_json(silent=True) or {}
+    base = str(payload.get("base_path") or "").strip()
+    relative = str(payload.get("relative_path") or "").strip().strip("/")
+    new_name = str(payload.get("name") or "").strip()
+    if not base:
+        return jsonify({"ok": False, "error": "base_path required"}), 400
+    ok, err = _validate_filename(new_name)
+    if not ok:
+        return jsonify({"ok": False, "error": err}), 400
+
+    base_real = _resolve_target_dir(base)
+    if not base_real:
+        return jsonify({"ok": False, "error": "base_not_found_or_not_allowed"}), 404
+    parent = _safe_join_under(base_real, relative)
+    if parent is None or not _osc_is_safe_local_path(parent) or not os.path.isdir(parent):
+        return jsonify({"ok": False, "error": "parent_not_found"}), 404
+
+    target = os.path.join(parent, new_name)
+    if os.path.exists(target):
+        return jsonify({"ok": False, "error": "already_exists"}), 409
+    try:
+        os.makedirs(target, exist_ok=False)
+    except OSError as e:
+        return jsonify({"ok": False, "error": f"mkdir_failed: {e}"}), 500
+    return jsonify({
+        "ok": True,
+        "created_path": target,
+        "relative_path": _osc_relpath_under(base_real, target),
+    })
+
+
+@osc_files_bp.route("/api/osc/folders/rename", methods=["POST"])
+@login_required
+def osc_folders_rename_api():
+    payload = request.get_json(silent=True) or {}
+    base = str(payload.get("base_path") or "").strip()
+    relative = str(payload.get("relative_path") or "").strip().strip("/")
+    new_name = str(payload.get("new_name") or "").strip()
+    if not base:
+        return jsonify({"ok": False, "error": "base_path required"}), 400
+    if not relative:
+        return jsonify({"ok": False, "error": "relative_path required"}), 400
+    ok, err = _validate_filename(new_name)
+    if not ok:
+        return jsonify({"ok": False, "error": err}), 400
+
+    base_real = _resolve_target_dir(base)
+    if not base_real:
+        return jsonify({"ok": False, "error": "base_not_found_or_not_allowed"}), 404
+    src = _safe_join_under(base_real, relative)
+    if src is None or not _osc_is_safe_local_path(src) or not os.path.exists(src):
+        return jsonify({"ok": False, "error": "source_not_found"}), 404
+    dst = os.path.join(os.path.dirname(src), new_name)
+    if os.path.exists(dst):
+        return jsonify({"ok": False, "error": "target_exists"}), 409
+    try:
+        os.rename(src, dst)
+    except OSError as e:
+        return jsonify({"ok": False, "error": f"rename_failed: {e}"}), 500
+    return jsonify({
+        "ok": True,
+        "new_path": dst,
+        "new_relative_path": _osc_relpath_under(base_real, dst),
+    })
+
+
+@osc_files_bp.route("/api/osc/folders/move", methods=["POST"])
+@login_required
+def osc_folders_move_api():
+    """
+    Move file or folder to a new location under the same base.
+    Special: target_relative_path == ".trash" → moved to <base>/.trash/<name>_<ts>
+    (per CLAUDE.md prohibited_actions: never permanent delete, always recycle).
+    """
+    payload = request.get_json(silent=True) or {}
+    base = str(payload.get("base_path") or "").strip()
+    src_rel = str(payload.get("source_relative_path") or "").strip().strip("/")
+    dst_rel = str(payload.get("target_relative_path") or "").strip().strip("/")
+    to_trash = bool(payload.get("to_trash"))
+    if not base:
+        return jsonify({"ok": False, "error": "base_path required"}), 400
+    if not src_rel:
+        return jsonify({"ok": False, "error": "source_relative_path required"}), 400
+    if not to_trash and not dst_rel:
+        return jsonify({"ok": False, "error": "target_relative_path or to_trash required"}), 400
+
+    base_real = _resolve_target_dir(base)
+    if not base_real:
+        return jsonify({"ok": False, "error": "base_not_found_or_not_allowed"}), 404
+    src = _safe_join_under(base_real, src_rel)
+    if src is None or not _osc_is_safe_local_path(src) or not os.path.exists(src):
+        return jsonify({"ok": False, "error": "source_not_found"}), 404
+
+    src_name = os.path.basename(src)
+
+    if to_trash:
+        trash_dir = os.path.join(base_real, ".trash")
+        os.makedirs(trash_dir, exist_ok=True)
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        new_name = f"{os.path.splitext(src_name)[0]}_{ts}{os.path.splitext(src_name)[1]}"
+        dst = os.path.join(trash_dir, new_name)
+    else:
+        target_parent = _safe_join_under(base_real, dst_rel)
+        if target_parent is None or not _osc_is_safe_local_path(target_parent) or not os.path.isdir(target_parent):
+            return jsonify({"ok": False, "error": "target_dir_not_found"}), 404
+        dst = os.path.join(target_parent, src_name)
+        if os.path.exists(dst):
+            return jsonify({"ok": False, "error": "target_exists"}), 409
+
+    try:
+        shutil.move(src, dst)
+    except OSError as e:
+        return jsonify({"ok": False, "error": f"move_failed: {e}"}), 500
+
+    return jsonify({
+        "ok": True,
+        "new_path": dst,
+        "new_relative_path": _osc_relpath_under(base_real, dst),
+        "to_trash": to_trash,
+    })
+
+
 @osc_files_bp.route("/api/osc/folders/tree", methods=["GET"])
 @login_required
 def osc_folders_tree_api():
