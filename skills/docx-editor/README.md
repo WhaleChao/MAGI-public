@@ -87,6 +87,103 @@ with open("document.edited.docx", "wb") as f:
     f.write(result.bytes)
 ```
 
+## Phase 3: Chat-driven docx edit (DC/TG/LINE)
+
+律師上傳 .docx 附件，訊息含觸發詞 → MAGI 用 LLM 產 edits → 套用 tracked changes → 回傳 edited.docx。
+
+### 觸發詞
+- `@MAGI 編輯 <指令>`
+- `@MAGI 修改 <指令>`
+- `編輯這份 <指令>`
+- `修改這份 <指令>`
+- `edit this <指令>`
+
+### CLI
+```bash
+MAGI_DOCX_EDITOR_ALLOW_CLI=1 python skills/docx-editor/action.py \
+  --task chat_edit \
+  --doc /path/to/document.docx \
+  --instruction "把所有『甲方』改成『原告』"
+```
+
+### Python API
+```python
+from skills.docx_editor.action import cmd_chat_edit
+
+result = cmd_chat_edit(
+    doc_path="/path/to/document.docx",
+    instruction="把所有『甲方』改成『原告』",
+    source="telegram",  # 安全閘門：必須含 user/telegram/discord/line
+)
+# result["ok"]: bool
+# result["output_path"]: /tmp/magi_docx_edits/<timestamp>_<filename>
+# result["changes_applied"]: int
+# result["warnings"]: [str, ...]  # LLM 預檢警告
+```
+
+---
+
+## Phase 4: 從零產文件 (generate_docx)
+
+給 sections list → 產出 .docx。
+
+### CLI
+```bash
+python skills/docx-editor/action.py --task generate \
+  --title "結案報告書" \
+  --sections '[
+    {"heading":"事實摘要","level":1,"content":"本案當事人..."},
+    {"heading":"法律意見","level":1,"content":"依民法第..."},
+    {"level":2,"heading":"損害賠償","content":"...","table":{"headers":["項目","金額"],"rows":[["律師費","50000"]]}}
+  ]'
+```
+
+### Python API
+```python
+from skills.docx_editor.lib.generator import generate_docx, GenerateDocxRequest, SectionSpec, TableSpec
+
+req = GenerateDocxRequest(
+    title="結案報告書",
+    sections=[
+        SectionSpec(heading="事實摘要", level=1, content="本案當事人..."),
+        SectionSpec(heading="費用明細", level=1, table=TableSpec(
+            headers=["項目", "金額"],
+            rows=[["律師費", "50000"]],
+        )),
+    ],
+)
+docx_bytes = generate_docx(req)
+```
+
+---
+
+## Phase 5: Citation 系統 (ensemble_inference)
+
+LLM 引用文件時，使用 Mike citation 格式 `[N]` + `<CITATIONS>` JSON block。
+
+### 啟用方式
+```python
+from skills.bridge.ensemble_inference import ensemble_chat_verified
+
+result = ensemble_chat_verified(
+    prompt="依據合約第三條，被告應如何負責？",
+    enable_citation=True,  # 預設 False
+)
+# result.individual_results["citations"]: [{"ref": 1, "doc_id": "...", "page": "3", "quote": "..."}]
+# result.individual_results["prose"]: 移除 <CITATIONS> 後的乾淨文字
+```
+
+### Citation 格式
+```
+依據[1]，被告應負損害賠償責任。
+
+<CITATIONS>
+[{"ref": 1, "doc_id": "doc-0", "page": "3", "quote": "被告應負損害賠償責任"}]
+</CITATIONS>
+```
+
+---
+
 ## Safety guarantees
 
 - Any failed edit (anchor not found / ambiguous) goes to `errors`, does not affect other edits
