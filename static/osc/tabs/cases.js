@@ -56,6 +56,11 @@ function renderCases() {
                     <button class="btn" data-act="case-address-label" data-id="${esc(r.id)}">📮 地址標籤</button>
                     <button class="btn danger" data-act="case-del" data-id="${esc(r.id)}">刪除</button>
                 </div>
+                <div class="card-quick-actions">
+                    <button class="btn-icon" data-act="case-workbench" data-id="${esc(r.id)}" title="開啟工作台">⚙️</button>
+                    <button class="btn-icon" data-act="wb-case-open-host" data-id="${esc(r.id)}" title="在本機開資料夾">📂</button>
+                    <button class="btn-icon" data-act="case-edit" data-id="${esc(r.id)}" title="編輯案件">✏️</button>
+                </div>
             </div>`;
         }).join("");
         initCardDrag(cardGrid);
