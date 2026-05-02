@@ -42,6 +42,95 @@ def get_brain_status(*a, **kw):
 
 
 _FILE_REVIEW_CONFIRM_RE = re.compile(r"(?<![A-Fa-f0-9])([A-Fa-f0-9]{6,12})(?![A-Fa-f0-9])")
+
+# ── docx chat edit 觸發詞（Phase 3）──
+_DOCX_EDIT_TRIGGER_RE = re.compile(
+    r"@magi\s*(編輯|修改)|編輯這份|修改這份|edit\s+this",
+    re.IGNORECASE,
+)
+
+# ── docx 附件 MIME types ──
+_DOCX_MIME = {
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "docx",
+}
+
+
+def _handle_docx_chat_edit_if_any(orch, user_id, platform, message, attachment, correlation_id=None):
+    """偵測律師上傳 .docx + 訊息含觸發詞 → 路由到 cmd_chat_edit。
+
+    觸發條件（all required）：
+    - attachment 不為 None 且 attachment.type / mime 為 docx
+    - message 含任一觸發詞：「@MAGI 編輯」「@MAGI 修改」「編輯這份」「修改這份」「edit this」
+
+    Returns: (handled: bool, reply: str)
+    """
+    if not attachment:
+        return False, ""
+
+    # 判斷是否為 docx 附件
+    attach_type = str(attachment.get("type") or "").lower()
+    attach_mime = str(attachment.get("mime") or "").lower()
+    attach_name = str(attachment.get("filename") or attachment.get("name") or "").lower()
+
+    is_docx = (
+        attach_type in _DOCX_MIME
+        or attach_mime in _DOCX_MIME
+        or "docx" in attach_mime
+        or attach_name.endswith(".docx")
+    )
+    if not is_docx:
+        return False, ""
+
+    # 判斷 message 是否含觸發詞
+    if not _DOCX_EDIT_TRIGGER_RE.search(message or ""):
+        return False, ""
+
+    # 取得指令（去除觸發詞後的部分）
+    instruction = _DOCX_EDIT_TRIGGER_RE.sub("", message or "").strip()
+    if not instruction:
+        instruction = message.strip()
+
+    # 取得 docx 檔案路徑
+    doc_path = attachment.get("path") or attachment.get("file_path") or ""
+    if not doc_path or not os.path.isfile(doc_path):
+        return True, "⚠️ 無法讀取上傳的 .docx 檔案路徑，請重新上傳。"
+
+    try:
+        import importlib.util as _ilu
+        _skill_dir = os.path.join(_MAGI_ROOT, "skills", "docx-editor")
+        _spec = _ilu.spec_from_file_location("docx_editor_action", os.path.join(_skill_dir, "action.py"))
+        _action_mod = _ilu.module_from_spec(_spec)
+        _spec.loader.exec_module(_action_mod)
+
+        result = _action_mod.cmd_chat_edit(
+            doc_path=doc_path,
+            instruction=instruction,
+            source=platform or "user",
+            author="MAGI",
+        )
+    except Exception as e:
+        logger.error(f"docx_chat_edit_router failed: {e}")
+        return True, f"⚠️ 編輯失敗：{e}"
+
+    if not result["ok"] and result["errors"]:
+        err_msg = result["errors"][0].get("reason", "未知錯誤")
+        return True, f"⚠️ {err_msg}"
+
+    changes = result.get("changes_applied", 0)
+    out_path = result.get("output_path", "")
+    warnings = result.get("warnings", [])
+
+    parts = [f"✅ 已套用 {changes} 處修改。"]
+    if out_path:
+        parts.append(f"📄 輸出檔：`{out_path}`")
+    if warnings:
+        warn_str = "\n".join(f"⚠️ {w}" for w in warnings[:3])
+        parts.append(warn_str)
+    if changes == 0:
+        parts = ["ℹ️ " + (warnings[0] if warnings else "沒有可套用的修改。")]
+
+    return True, "\n".join(parts)
 _ARITHMETIC_INTENT_RE = re.compile(
     r"(等於多少|是多少|多少|幫我算|算一下|請.*算|用工具算|不要心算|計算|calculate)",
     re.IGNORECASE,
@@ -310,6 +399,17 @@ def process_message_inner(orch, user_id, message, platform="LINE", role="user", 
                 )
     except Exception as recent_err:
         logger.warning(f"Recent attachment context skipped: {recent_err}")
+
+    # ── docx chat edit router (Phase 3) ──
+    try:
+        _docx_handled, _docx_reply = _handle_docx_chat_edit_if_any(
+            orch, user_id, platform, message, attachment, correlation_id
+        )
+        if _docx_handled:
+            orch._append_history(user_id, "assistant", _docx_reply)
+            return _docx_reply
+    except Exception as _docx_err:
+        logger.warning(f"docx_chat_edit_router skipped: {_docx_err}")
 
     # ════════════════════════════════════════════════════════════════
     # CHANNEL-AWARE ROUTING — topic fast path + general channel logic
