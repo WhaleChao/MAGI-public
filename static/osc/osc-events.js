@@ -59,6 +59,11 @@ function bindTabs() {
                 loadAdminData();
                 loadDiscordWebhook();
             }
+
+            // UX v3: 切到 sub-tab 時自動展開所屬 sidebar group（手風琴）
+            if (typeof autoExpandGroupForTab === "function") {
+                try { autoExpandGroupForTab(tabId); } catch (e) { console.warn("autoExpandGroupForTab failed:", e); }
+            }
         });
     });
 }
@@ -586,6 +591,7 @@ async function boot() {
     const _safe = (label, fn) => {
         try { fn(); } catch (e) { console.error(`${label} failed:`, e); }
     };
+    _safe("bindSidebarGroups", typeof bindSidebarGroups === "function" ? bindSidebarGroups : () => {});
     _safe("bindTabs", bindTabs);
     _safe("bindEvents", bindEvents);
     _safe("initCaseViewToggle", initCaseViewToggle);
