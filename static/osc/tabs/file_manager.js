@@ -384,6 +384,196 @@
         await navigateTo('');
     }
 
+    // ── Preview Modal (Phase 2 commit 8) ──────────────────────────────
+    async function apiPreview(filePath) {
+        const url = '/api/osc/files/preview?path=' + encodeURIComponent(filePath);
+        const r = await fetch(url, { credentials: 'same-origin' });
+        const ct = (r.headers.get('Content-Type') || '').toLowerCase();
+        if (ct.includes('application/json')) {
+            return { json: await r.json(), blob: null, contentType: ct, status: r.status };
+        }
+        return { json: null, blob: await r.blob(), contentType: ct, status: r.status };
+    }
+
+    function buildLocalPath(rel) {
+        const sep = FM.basePath.includes('\\') ? '\\' : '/';
+        const r = (rel || '').replace(/\//g, sep);
+        if (!r) return FM.basePath;
+        return FM.basePath.replace(/[\\/]+$/, '') + sep + r;
+    }
+
+    let _previewBlobUrl = null;
+    function clearPreviewBlob() {
+        if (_previewBlobUrl) { URL.revokeObjectURL(_previewBlobUrl); _previewBlobUrl = null; }
+    }
+
+    async function openPreview(rel, name) {
+        const modal = document.getElementById('fmPreviewModal');
+        const title = document.getElementById('fmPreviewTitle');
+        const body = document.getElementById('fmPreviewBody');
+        const dl = document.getElementById('fmPreviewDownload');
+        if (!modal || !body) return;
+        modal.hidden = false;
+        title.textContent = name || rel;
+        body.classList.remove('padded');
+        body.innerHTML = '<div class="fm-preview-loading"><div class="spinner"></div>'
+            + '正在載入預覽…<br><span style="font-size:11px;">Office 檔案首次轉檔需要 3–8 秒</span></div>';
+
+        const fullPath = buildLocalPath(rel);
+        if (dl) dl.href = '/api/osc/files/content?path=' + encodeURIComponent(fullPath);
+
+        let res;
+        try {
+            res = await apiPreview(fullPath);
+        } catch (e) {
+            body.innerHTML = '<div class="fm-empty">預覽失敗：' + escapeHTML(String(e && e.message || e)) + '</div>';
+            return;
+        }
+
+        if (res.blob && res.blob.size > 0) {
+            clearPreviewBlob();
+            _previewBlobUrl = URL.createObjectURL(res.blob);
+            const ct = res.contentType;
+            if (ct.includes('application/pdf')) {
+                body.innerHTML = '<embed class="fm-preview-pdf" type="application/pdf" src="' + _previewBlobUrl + '">';
+            } else if (ct.startsWith('image/')) {
+                body.classList.add('padded');
+                body.innerHTML = '<img class="fm-preview-img" src="' + _previewBlobUrl + '">';
+            } else {
+                body.innerHTML = '<embed class="fm-preview-pdf" src="' + _previewBlobUrl + '" type="' + ct + '">';
+            }
+            return;
+        }
+
+        const j = res.json;
+        if (!j) { body.innerHTML = '<div class="fm-empty">預覽回傳為空</div>'; return; }
+        if (j.ok === false) { body.innerHTML = renderJsonError(j, fullPath); return; }
+        const kind = j.kind || '';
+        if (kind === 'pdf' || kind === 'image' || kind === 'audio' || kind === 'video' || kind === 'text') {
+            const url = j.content_url || ('/api/osc/files/content?path=' + encodeURIComponent(fullPath) + '&inline=1');
+            if (kind === 'pdf') {
+                body.innerHTML = '<embed class="fm-preview-pdf" type="application/pdf" src="' + url + '">';
+            } else if (kind === 'image') {
+                body.classList.add('padded');
+                body.innerHTML = '<img class="fm-preview-img" src="' + url + '">';
+            } else if (kind === 'audio') {
+                body.classList.add('padded');
+                body.innerHTML = '<audio class="fm-preview-media" controls src="' + url + '"></audio>';
+            } else if (kind === 'video') {
+                body.classList.add('padded');
+                body.innerHTML = '<video class="fm-preview-media" controls src="' + url + '"></video>';
+            } else if (kind === 'text') {
+                body.classList.add('padded');
+                try {
+                    const tr = await fetch(url, { credentials: 'same-origin' });
+                    const txt = await tr.text();
+                    body.innerHTML = '<pre class="fm-preview-text">' + escapeHTML(txt.slice(0, 500000)) + '</pre>';
+                } catch (e) {
+                    body.innerHTML = '<div class="fm-empty">文字載入失敗</div>';
+                }
+            }
+            return;
+        }
+        if (kind === 'csv') { body.innerHTML = renderCsvPreview(j); return; }
+        if (kind === 'email') { body.innerHTML = renderEmailPreview(j); return; }
+        if (kind === 'zip') { body.innerHTML = renderZipPreview(j); return; }
+        if (kind === 'other') { body.innerHTML = renderHexPreview(j, name || rel); return; }
+        body.innerHTML = '<div class="fm-empty">不支援的預覽類型：' + escapeHTML(kind) + '</div>';
+    }
+
+    function renderJsonError(j, fullPath) {
+        return '<div class="fm-empty">預覽失敗：' + escapeHTML(j.error || 'unknown') + '<br><br>'
+            + '<a class="btn-mini" href="/api/osc/files/content?path=' + encodeURIComponent(fullPath)
+            + '" download>⬇ 直接下載原檔</a></div>';
+    }
+
+    function renderCsvPreview(j) {
+        const headers = j.headers || [];
+        const rows = j.rows || [];
+        let html = '<div class="fm-preview-section"><span class="label">列數</span><span class="val">'
+            + rows.length + (j.truncated ? '+ (前 500 列)' : '') + '</span></div>';
+        html += '<div style="overflow:auto;"><table class="fm-preview-table">';
+        if (headers.length) {
+            html += '<thead><tr>';
+            headers.forEach(h => html += '<th>' + escapeHTML(h) + '</th>');
+            html += '</tr></thead>';
+        }
+        html += '<tbody>';
+        rows.forEach(r => {
+            html += '<tr>';
+            r.forEach(c => html += '<td title="' + escapeHTML(c) + '">' + escapeHTML(c) + '</td>');
+            html += '</tr>';
+        });
+        html += '</tbody></table></div>';
+        return html;
+    }
+
+    function renderEmailPreview(j) {
+        let html = '';
+        ['from', 'to', 'cc', 'subject', 'date'].forEach(k => {
+            const v = j[k] || '';
+            if (!v) return;
+            html += '<div class="fm-preview-section"><span class="label">' + k.toUpperCase()
+                + '</span><span class="val">' + escapeHTML(v) + '</span></div>';
+        });
+        if (j.attachments && j.attachments.length) {
+            html += '<div class="fm-preview-section"><span class="label">附件</span><span class="val">'
+                + j.attachments.length + '</span></div>';
+            html += '<ul class="fm-preview-attachments">';
+            j.attachments.forEach(a => {
+                html += '<li>📎 ' + escapeHTML(a.filename || '(unnamed)')
+                    + ' <span style="color:#888;font-size:11px;">(' + escapeHTML(a.content_type || '')
+                    + (a.size ? ', ' + Math.round(a.size / 1024) + ' KB' : '') + ')</span></li>';
+            });
+            html += '</ul>';
+        }
+        const body = j.body_text || j.body_html || '';
+        if (body) {
+            if (j.body_html) {
+                html += '<div class="fm-preview-section"><span class="label">內文 (HTML)</span></div>';
+                html += '<iframe class="fm-preview-iframe" sandbox srcdoc="' + escapeHTML(body)
+                    + '" style="height:60vh;border-top:1px solid #eee;"></iframe>';
+            } else {
+                html += '<div class="fm-preview-section"><span class="label">內文</span></div>';
+                html += '<pre class="fm-preview-text">' + escapeHTML(body) + '</pre>';
+            }
+        }
+        return html;
+    }
+
+    function renderZipPreview(j) {
+        const items = j.items || [];
+        let html = '<div class="fm-preview-section"><span class="label">項目數</span><span class="val">'
+            + items.length + (j.truncated ? '+' : '') + '</span></div>';
+        html += '<div style="overflow:auto;"><table class="fm-preview-table">'
+            + '<thead><tr><th>名稱</th><th>大小</th><th>壓縮</th><th>修改</th></tr></thead><tbody>';
+        items.forEach(it => {
+            html += '<tr><td title="' + escapeHTML(it.name) + '">' + (it.is_dir ? '📁 ' : '📄 ')
+                + escapeHTML(it.name) + '</td>'
+                + '<td>' + (it.size != null ? Math.round(it.size / 1024) + ' KB' : '') + '</td>'
+                + '<td>' + (it.compressed_size != null ? Math.round(it.compressed_size / 1024) + ' KB' : '') + '</td>'
+                + '<td>' + escapeHTML(it.modified || '') + '</td></tr>';
+        });
+        html += '</tbody></table></div>';
+        return html;
+    }
+
+    function renderHexPreview(j, name) {
+        let html = '<div class="fm-preview-section"><span class="label">檔名</span><span class="val">'
+            + escapeHTML(name) + '</span></div>';
+        if (j.size != null) html += '<div class="fm-preview-section"><span class="label">大小</span><span class="val">' + j.size + ' bytes</span></div>';
+        if (j.mime) html += '<div class="fm-preview-section"><span class="label">MIME</span><span class="val">' + escapeHTML(j.mime) + '</span></div>';
+        html += '<div class="fm-preview-section"><span class="label">前 ' + (j.shown_bytes || 256) + ' bytes (hex dump)</span></div>';
+        html += '<pre class="fm-preview-text">' + escapeHTML(j.hex || '') + '</pre>';
+        return html;
+    }
+
+    function closePreview() {
+        const modal = document.getElementById('fmPreviewModal');
+        if (modal) modal.hidden = true;
+        clearPreviewBlob();
+    }
+
     // ── Public init (called when sidebar tab activates) ───────────────
     FM.init = function () {
         const inp = document.getElementById('fmBasePathInput');
@@ -438,6 +628,28 @@
                 });
             });
         });
+
+        // Phase 2 commit 8: preview modal close handlers
+        const previewClose = document.getElementById('fmPreviewClose');
+        const previewModal = document.getElementById('fmPreviewModal');
+        if (previewClose && !previewClose._fmBound) {
+            previewClose._fmBound = true;
+            previewClose.addEventListener('click', closePreview);
+        }
+        if (previewModal && !previewModal._fmBound) {
+            previewModal._fmBound = true;
+            previewModal.addEventListener('click', (ev) => {
+                if (ev.target.classList.contains('fm-modal-backdrop')) closePreview();
+            });
+        }
+        if (!document._fmEscBound) {
+            document._fmEscBound = true;
+            document.addEventListener('keydown', (ev) => {
+                if (ev.key !== 'Escape') return;
+                const m = document.getElementById('fmPreviewModal');
+                if (m && !m.hidden) closePreview();
+            });
+        }
     };
 
     // Auto-init when this tab becomes visible

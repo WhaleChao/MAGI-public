@@ -47,6 +47,22 @@
 
         <div id="fmStatus" class="fm-status" style="display:none;"></div>
 
+        <!-- Preview modal (Phase 2 commit 8) -->
+        <div id="fmPreviewModal" class="fm-modal" hidden>
+            <div class="fm-modal-backdrop"></div>
+            <div class="fm-modal-dialog" role="dialog" aria-labelledby="fmPreviewTitle">
+                <div class="fm-modal-head">
+                    <span id="fmPreviewTitle" class="fm-modal-title">預覽</span>
+                    <span class="fm-modal-spacer"></span>
+                    <a id="fmPreviewDownload" class="btn-mini" download>⬇ 下載</a>
+                    <button class="fm-modal-close" id="fmPreviewClose" title="關閉 (Esc)">✕</button>
+                </div>
+                <div id="fmPreviewBody" class="fm-modal-body">
+                    <div class="fm-empty">載入中…</div>
+                </div>
+            </div>
+        </div>
+
         <div class="fm-shell">
             <div class="fm-sidebar" id="fmTree">
                 <div class="fm-empty">尚未開啟資料夾</div>
