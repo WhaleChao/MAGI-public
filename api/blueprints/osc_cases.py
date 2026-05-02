@@ -1810,49 +1810,96 @@ def osc_documents_open_api():
 # ══════════════════════════════════════════════════════════════════════════════
 
 
+def _osc_read_file_with_retry(local_file: str, *, max_attempts: int = 4) -> bytes:
+    """讀檔並對 SMB EDEADLK (errno 11) / EAGAIN 做指數 backoff 重試。
+
+    macOS SMB-over-Tailscale-relay 在多 client 同時開檔（Word / Preview / 其他律師）會偶發
+    `[Errno 11] Resource deadlock avoided`。此函式會 retry 4 次（0.25s/0.5s/1s backoff）。
+    """
+    import time as _time
+    last_exc: Exception | None = None
+    for attempt in range(max_attempts):
+        try:
+            with open(local_file, "rb") as f:
+                return f.read()
+        except OSError as e:
+            last_exc = e
+            # errno 11 = EDEADLK on macOS, also EAGAIN on some platforms
+            if e.errno in (11, 35) and attempt < max_attempts - 1:
+                _time.sleep(0.25 * (2 ** attempt))
+                continue
+            raise
+    # unreachable but defensive
+    if last_exc:
+        raise last_exc
+    return b""
+
+
 @osc_bp.route("/api/osc/files/content", methods=["GET"])
 @login_required
 def osc_file_content_api():
     raw = str(request.args.get("path") or "").strip()
     if not raw:
         return jsonify({"ok": False, "error": "path required"}), 400
-    local_file = _osc_resolve_existing_local_path(raw, prefer_dir=False)
-    if not local_file:
+    # 改為枚舉所有 candidate，遇 EDEADLK / 開檔失敗時 fallback 到下一個（NAS↔Synology 雙向）
+    candidates = _osc_local_path_candidates(raw)
+    norm = _osc_norm_path(raw).replace("\\", "/")
+    if norm and norm not in candidates:
+        candidates.append(norm)
+    existing_candidates = []
+    for cand in candidates:
+        try:
+            real = os.path.realpath(cand)
+            if _osc_is_safe_local_path(real) and os.path.isfile(real):
+                if real not in existing_candidates:
+                    existing_candidates.append(real)
+        except Exception:
+            continue
+    if not existing_candidates:
         return jsonify({"ok": False, "error": "file_not_found"}), 404
-    if not _osc_is_safe_local_path(local_file):
-        return jsonify({"ok": False, "error": "path_not_allowed"}), 403
+
     inline = str(request.args.get("inline") or "").strip() in {"1", "true", "yes"}
-    mime, _ = mimetypes.guess_type(local_file)
     import io
-    # --- size guard: reject files > 50 MB to avoid unbounded memory usage ---
-    try:
-        file_size = os.path.getsize(local_file)
-    except OSError:
-        file_size = 0
-    if file_size > 50 * 1024 * 1024:  # 50 MB limit
-        return jsonify({"ok": False, "error": "File too large", "size_mb": round(file_size / 1024 / 1024, 1)}), 413
-    try:
-        with open(local_file, "rb") as f:
-            buf = io.BytesIO(f.read())
-    except OSError as e:
-        _log.error("osc_file_content_api read error (errno=%s): %s - file=%s", e.errno, e, local_file)
-        return jsonify({"ok": False, "error": f"send_file_error: {e}"}), 500
+
+    last_err: Exception | None = None
+    chosen: str = ""
+    file_bytes: bytes = b""
+    for local_file in existing_candidates:
+        try:
+            file_size = os.path.getsize(local_file)
+        except OSError:
+            file_size = 0
+        if file_size > 50 * 1024 * 1024:  # 50 MB limit
+            return jsonify({"ok": False, "error": "File too large", "size_mb": round(file_size / 1024 / 1024, 1)}), 413
+        try:
+            file_bytes = _osc_read_file_with_retry(local_file)
+            chosen = local_file
+            break
+        except OSError as e:
+            last_err = e
+            _log.warning("osc_file_content_api read failed (errno=%s) on %s, trying next candidate", e.errno, local_file)
+            continue
+    if not chosen:
+        _log.error("osc_file_content_api: all candidates failed; last_err=%s; tried=%s", last_err, existing_candidates)
+        return jsonify({"ok": False, "error": f"send_file_error: {last_err}"}), 500
+
+    mime, _ = mimetypes.guess_type(chosen)
     try:
         resp = send_file(
-            buf,
+            io.BytesIO(file_bytes),
             mimetype=mime or "application/octet-stream",
             as_attachment=not inline,
-            download_name=os.path.basename(local_file),
+            download_name=os.path.basename(chosen),
         )
         try:
-            st = os.stat(local_file)
+            st = os.stat(chosen)
             resp.headers["ETag"] = f'"{int(st.st_mtime)}-{st.st_size}"'
             resp.headers["Cache-Control"] = "private, max-age=300"
         except OSError:
             pass
         return resp
     except Exception as e:
-        _log.error("osc_file_content_api send_file error: %s - file=%s", e, local_file)
+        _log.error("osc_file_content_api send_file error: %s - file=%s", e, chosen)
         return jsonify({"ok": False, "error": f"send_file_error: {e}"}), 500
 
 

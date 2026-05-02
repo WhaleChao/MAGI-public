@@ -545,7 +545,23 @@ def _osc_read_text_file(path_str: str, max_bytes: int = 2 * 1024 * 1024) -> tupl
     size = os.path.getsize(path_str)
     if size > max_bytes:
         raise ValueError(f"file_too_large:{size}")
-    raw = Path(path_str).read_bytes()
+    # SMB EDEADLK retry：macOS SMB-over-Tailscale 偶發 errno 11 / 35
+    import time as _time
+    raw = b""
+    last_exc: Exception | None = None
+    for attempt in range(4):
+        try:
+            raw = Path(path_str).read_bytes()
+            last_exc = None
+            break
+        except OSError as e:
+            last_exc = e
+            if e.errno in (11, 35) and attempt < 3:
+                _time.sleep(0.25 * (2 ** attempt))
+                continue
+            raise
+    if last_exc:
+        raise last_exc
     for enc in ("utf-8-sig", "utf-8", "cp950"):
         try:
             return raw.decode(enc), enc
