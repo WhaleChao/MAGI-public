@@ -42,6 +42,26 @@ function formatBytes(v) {
     return idx === 0 ? `${Math.round(x)}${units[idx]}` : `${x.toFixed(1)}${units[idx]}`;
 }
 
+// === UX v3 P3: 全域 loading overlay helper ===
+let _oscLoadingCount = 0;
+function showLoading(text) {
+    _oscLoadingCount += 1;
+    const el = document.getElementById("tabLoadingOverlay");
+    if (!el) return;
+    const t = el.querySelector(".loading-text");
+    if (t && text) t.textContent = String(text);
+    el.hidden = false;
+}
+function hideLoading() {
+    _oscLoadingCount = Math.max(0, _oscLoadingCount - 1);
+    if (_oscLoadingCount > 0) return;
+    const el = document.getElementById("tabLoadingOverlay");
+    if (!el) return;
+    el.hidden = true;
+    const t = el.querySelector(".loading-text");
+    if (t) t.textContent = "載入中...";
+}
+
 async function copyText(text, message = "已複製到剪貼簿。") {
     const value = String(text || "").trim();
     if (!value) return;

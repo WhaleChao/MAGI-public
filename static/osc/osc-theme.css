@@ -258,6 +258,32 @@ header {
     border-color: var(--apple-blue);
 }
 
+/* === UX v3 P3 Loading overlay === */
+#tabLoadingOverlay {
+    position: fixed; inset: 0;
+    background: rgba(255,255,255,0.65);
+    -webkit-backdrop-filter: blur(2px);
+    backdrop-filter: blur(2px);
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    z-index: 9999; gap: 12px;
+    pointer-events: none;
+}
+#tabLoadingOverlay[hidden] { display: none; }
+.spinner {
+    width: 40px; height: 40px;
+    border: 3px solid var(--apple-border);
+    border-top-color: var(--apple-blue);
+    border-radius: 50%;
+    animation: oscspin 0.8s linear infinite;
+}
+@keyframes oscspin { to { transform: rotate(360deg); } }
+#tabLoadingOverlay .loading-text {
+    color: var(--apple-secondary);
+    font-size: 13px;
+    font-family: var(--apple-font);
+}
+
 /* Global search in header */
 .global-search {
     flex: 1;

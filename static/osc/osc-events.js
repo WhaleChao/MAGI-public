@@ -19,20 +19,35 @@ function bindTabs() {
                 titleEl.textContent = btn.textContent.replace(/^[\p{Emoji}\s]+/u, '');
             }
 
-            if (tabId === "dashboard") loadDashboard();
-            if (tabId === "cases") loadCases();
-            if (tabId === "laf") loadLaf();
-            if (tabId === "clients") loadClients();
-            if (tabId === "meetings") loadMeetings();
-            if (tabId === "calendar") loadCalendarEvents();
-            if (tabId === "todos") loadTodos();
+            // UX v3 P3: 切 tab 時 0.5s loading spinner（避免空白感）
+            const _withLoading = (label, fn) => {
+                if (typeof showLoading !== "function") { try { fn(); } catch (e) { console.warn(e); } return; }
+                showLoading(label);
+                try {
+                    const ret = fn();
+                    if (ret && typeof ret.then === "function") {
+                        ret.finally(() => hideLoading());
+                    } else {
+                        // 同步或不返回 Promise：給最少 200ms spinner，提示有反應
+                        setTimeout(hideLoading, 200);
+                    }
+                } catch (e) { console.warn(`${label} failed:`, e); hideLoading(); }
+            };
+
+            if (tabId === "dashboard") _withLoading("載入儀表板...", loadDashboard);
+            if (tabId === "cases") _withLoading("載入案件...", loadCases);
+            if (tabId === "laf") _withLoading("載入法扶清單...", loadLaf);
+            if (tabId === "clients") _withLoading("載入當事人...", loadClients);
+            if (tabId === "meetings") _withLoading("載入會議紀錄...", loadMeetings);
+            if (tabId === "calendar") _withLoading("載入行事曆...", loadCalendarEvents);
+            if (tabId === "todos") _withLoading("載入待辦事項...", loadTodos);
             if (tabId === "documents") {
-                loadDocuments();
+                _withLoading("載入書狀索引...", loadDocuments);
                 loadDocumentTemplates();
                 loadDocumentKeywords();
                 loadDocumentReplacements();
             }
-            if (tabId === "drafts") loadDraftComposer();
+            if (tabId === "drafts") _withLoading("載入書狀草擬...", loadDraftComposer);
             if (tabId === "forms") {
                 const now = new Date();
                 const d = now.toISOString().slice(0, 10);
@@ -43,20 +58,20 @@ function bindTabs() {
                 // no-op: user-triggered actions only
             }
             if (tabId === "archiveWizard") {
-                loadArchivePreview();
+                _withLoading("載入結案歸檔預覽...", loadArchivePreview);
             }
             if (tabId === "accounting") {
-                loadTransactions();
+                _withLoading("載入帳務...", loadTransactions);
                 loadExpenseDefaults();
                 loadRecurringExpenses();
             }
             if (tabId === "quotations") {
-                loadQuotations();
+                _withLoading("載入報價單...", loadQuotations);
                 loadQuotationTemplates();
             }
-            if (tabId === "insights") loadInsights();
+            if (tabId === "insights") _withLoading("載入實務見解...", loadInsights);
             if (tabId === "admin") {
-                loadAdminData();
+                _withLoading("載入系統設定...", loadAdminData);
                 loadDiscordWebhook();
             }
 
