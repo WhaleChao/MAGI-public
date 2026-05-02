@@ -33,6 +33,7 @@ from api.osc.utils import (
     _osc_case_folder_from_doc_path, _osc_guess_case_folder,
     _osc_folder_entries, _osc_human_size, _osc_relpath_under,
     _osc_is_editable_text_path, _osc_read_text_file, _osc_smb_candidates,
+    _osc_windows_unc_candidates, _osc_windows_synology_candidates,
     _osc_path_to_smb, _osc_parse_dt, _osc_read_reference_document,
     _osc_read_plain_text, _osc_read_docx_text, _osc_read_pdf_text,
     _osc_allowed_local_roots,
@@ -516,12 +517,16 @@ def _osc_synology_drive_base() -> str:
 @osc_bp.route("/api/osc/cases/<row_id>/open-folder", methods=["POST"])
 @login_required
 def osc_case_open_folder_api(row_id):
-    """開啟案件資料夾。
+    """開啟案件資料夾（cross-platform 多候選路徑）。
 
-    新邏輯（2026-05-02）：
-    1. 優先試 local_candidates（含 Synology Drive + NAS /Volumes/ 路徑）
-    2. 再試 SMB 路徑
-    3. 都失敗時回明確 error_kind 給前端彈窗（不再靜默）
+    2026-05-03 改寫（UX v3 P0）：
+    - 不再 server-side `open` / `xdg-open`（在 Tailscale / 遠端瀏覽器情境下
+      只會在伺服器電腦開 Finder，律師看不到）
+    - 改回多種 candidate 路徑（smb_url / mac_synology / win_unc /
+      win_synology），由前端依 navigator.platform 觸發 smb:// /
+      file:/// / 複製對話框
+    - 仍保留 error_kind（folder_path_empty / case_not_found 等）給前端
+      決定是否彈警告
     """
     row_id = (row_id or "").strip()
     row, _ = _osc_exec("SELECT id, case_number, client_name, folder_path FROM cases WHERE id=%s", (row_id,), fetch="one")
@@ -536,97 +541,30 @@ def osc_case_open_folder_api(row_id):
             "error_kind": "folder_path_empty",
             "message": "案件未設定資料夾路徑，請先用「建立資料夾」按鈕建立預設結構。",
             "client_name": row.get("client_name"),
-        }), 400
+        }), 200
     norm = _osc_norm_path(folder_path)
-    smb_candidates = _osc_smb_candidates(norm)
-    smb = smb_candidates[0] if smb_candidates else ""
-    local_candidates = _osc_local_path_candidates(norm)  # 已包含 Synology Drive 路徑
     case_info = {"id": row.get("id"), "case_number": row.get("case_number"), "client_name": row.get("client_name")}
 
-    # ── Step 1: 試 local 路徑（含 Synology Drive + /Volumes/ NAS）──
-    chosen_open_path = ""
-    open_result = {"ok": False, "error": "open_failed"}
-    found_existing_local = False
-
-    for lp in local_candidates:
-        try:
-            if lp and os.path.exists(lp):
-                found_existing_local = True
-                r = _osc_try_open_path(lp)
-                chosen_open_path = lp
-                open_result = r
-                if r.get("ok"):
-                    # 判斷來源：NAS /Volumes 或 Synology Drive
-                    synology_base = _osc_synology_drive_base()
-                    source = "synology_drive" if (synology_base and lp.startswith(synology_base)) else "nas_smb"
-                    return jsonify({
-                        "ok": True,
-                        "source": source,
-                        "chosen_open_path": lp,
-                        "case": case_info,
-                        "folder_path": norm,
-                        "smb_url": smb,
-                        "smb_candidates": smb_candidates,
-                        "local_candidates": local_candidates,
-                        "browser_supported": True,
-                        "browser_url": f"/api/osc/cases/{row_id}/folder-browser",
-                    })
-        except Exception:
-            continue
-
-    # ── Step 2: 試 SMB 路徑（Windows/macOS SMB open） ──
-    if not open_result.get("ok"):
-        for sp in smb_candidates:
-            try:
-                r = _osc_try_open_path(sp)
-                chosen_open_path = sp
-                open_result = r
-                if r.get("ok"):
-                    return jsonify({
-                        "ok": True,
-                        "source": "smb_direct",
-                        "chosen_open_path": sp,
-                        "case": case_info,
-                        "folder_path": norm,
-                        "smb_url": smb,
-                        "smb_candidates": smb_candidates,
-                        "local_candidates": local_candidates,
-                        "browser_supported": True,
-                        "browser_url": f"/api/osc/cases/{row_id}/folder-browser",
-                    })
-            except Exception:
-                continue
-
-    # ── Step 3: 都失敗 → 回明確 error_kind ──
-    nas_mounted = _check_nas_mount_status()
-    synology_base = _osc_synology_drive_base()
-
-    if not nas_mounted and not synology_base:
-        # NAS 和 Synology Drive 都不可用
-        error_kind = "no_nas_no_synology"
-        message = "電腦未連接 NAS，也找不到 Synology Drive 本機資料夾。請先連 NAS 或確認 Synology Drive 已開啟並同步。"
-    elif found_existing_local:
-        # 路徑存在但 Finder 無法開啟（權限或其他問題）
-        error_kind = "open_failed"
-        message = f"資料夾存在但開啟失敗，請手動到 Finder 嘗試。路徑：{chosen_open_path or norm}"
-    elif nas_mounted or synology_base:
-        # NAS/Synology 有掛但找不到這個資料夾
-        error_kind = "folder_not_found"
-        message = f"NAS / Synology Drive 已連線但找不到此案件資料夾。\n可能是案號或當事人姓名與資料夾名稱不符，或尚未建立資料夾。"
-    else:
-        error_kind = "open_failed"
-        message = "開啟資料夾失敗，請確認 NAS 連線狀態後重試。"
+    smb_candidates = _osc_smb_candidates(norm)
+    mac_synology = _osc_local_path_candidates(norm)  # /Users/.../SynologyDrive-homes/... + /Volumes/...
+    win_unc = _osc_windows_unc_candidates(norm)
+    win_synology = _osc_windows_synology_candidates(norm)
 
     return jsonify({
-        "ok": False,
-        "error_kind": error_kind,
-        "message": message,
+        "ok": True,
         "case": case_info,
         "folder_path": norm,
-        "smb_candidates": smb_candidates[:3],
-        "local_candidates": local_candidates[:3],
-        "nas_mounted": nas_mounted,
-        "synology_available": bool(synology_base),
+        # 主要候選（前端依 platform 選用）
+        "candidates": {
+            "smb_url": smb_candidates,
+            "mac_synology": mac_synology,
+            "win_unc": win_unc,
+            "win_synology": win_synology,
+        },
+        # 既有 callers 回傳：smb_url / smb_candidates / local_candidates 仍保留以相容
+        "smb_url": smb_candidates[0] if smb_candidates else "",
+        "smb_candidates": smb_candidates,
+        "local_candidates": mac_synology,
         "browser_supported": True,
         "browser_url": f"/api/osc/cases/{row_id}/folder-browser",
     })
