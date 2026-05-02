@@ -245,31 +245,80 @@ def _call_omlx_chat_multiturn(
             return {"success": False, "error": str(e), "text": ""}
 
 
+# ── Citation helpers (Phase 5) ─────────────────────────────────────────────────
+
+def _build_system_with_citation(system: str, enable_citation: bool) -> str:
+    """若 enable_citation=True，在 system prompt 末端附加 CITATION_INSTRUCTIONS。
+
+    預設 enable_citation=False，行為不變。
+    """
+    if not enable_citation:
+        return system
+    try:
+        from skills.bridge.citation_format import build_citation_system_prompt
+        citation_instructions = build_citation_system_prompt()
+    except Exception:
+        return system
+    if system:
+        return system + "\n\n---\n" + citation_instructions
+    return citation_instructions
+
+
+def _inject_citation_result(result_dict: Dict[str, Any], primary_text: str) -> None:
+    """Parse citations from primary answer and inject into result dict (in-place).
+
+    Adds 'citations' and 'prose' keys. Silently no-ops on any parse error.
+    """
+    try:
+        from skills.bridge.citation_format import parse_citations
+        parsed = parse_citations(primary_text)
+        result_dict["citations"] = [
+            {"ref": c.ref, "doc_id": c.doc_id, "page": c.page, "quote": c.quote}
+            for c in parsed.citations
+        ]
+        result_dict["prose"] = parsed.prose
+        if parsed.parse_warnings:
+            result_dict["citation_warnings"] = parsed.parse_warnings
+    except Exception as _e:
+        logger.warning(f"_inject_citation_result failed (non-fatal): {_e}")
+
+
 def ensemble_chat(
     prompt: str,
     system: str = "",
     mode: str = "verify",
     timeout_sec: int = DEFAULT_ENSEMBLE_TIMEOUT,
     max_tokens: int = 1024,
+    enable_citation: bool = False,
 ) -> Dict[str, Any]:
     """並行送給三個 port，回傳各模型結果 dict。
 
     mode:
       "fast"   — 只送 primary (E4B)，不走三模型
       "verify" — 三模型並行
+
+    enable_citation: 若 True，在 system prompt 末端附加 CITATION_INSTRUCTIONS，
+      並在結果 dict 加入 citations / prose 欄位。預設 False（不影響既有 caller）。
     """
+    _effective_system = _build_system_with_citation(system, enable_citation)
+
     if mode == "fast":
         role = ENSEMBLE_ROLES["primary"]
-        sys_prompt = (role["system_prefix"] + "\n" + system).strip() if system else role["system_prefix"]
+        _role_sys = role.get("system_prefix", role.get("soul", ""))
+        sys_prompt = (_role_sys + "\n" + _effective_system).strip() if _effective_system else _role_sys
         result = _call_omlx_chat(role["base"], "gemma-4-e4b-it-4bit", sys_prompt, prompt, timeout_sec, max_tokens)
-        return {"primary": result, "phi4": None, "smol": None, "mode": "fast"}
+        raw = {"primary": result, "phi4": None, "smol": None, "mode": "fast"}
+        if enable_citation:
+            _inject_citation_result(raw, result.get("text", ""))
+        return raw
 
     results: Dict[str, Any] = {}
     roles_list = [("primary", ENSEMBLE_ROLES["primary"]), ("phi4", ENSEMBLE_ROLES["phi4"]), ("smol", ENSEMBLE_ROLES["smol"])]
 
     def _call_role(key_role):
         key, role = key_role
-        sys_prompt = (role["system_prefix"] + "\n" + system).strip() if system else role["system_prefix"]
+        _role_sys = role.get("system_prefix", role.get("soul", ""))
+        sys_prompt = (_role_sys + "\n" + _effective_system).strip() if _effective_system else _role_sys
         return key, _call_omlx_chat(role["base"], role["name"], sys_prompt, prompt, timeout_sec, max_tokens)
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
@@ -283,6 +332,9 @@ def ensemble_chat(
                 results[key] = {"success": False, "error": str(e), "text": ""}
 
     results["mode"] = "verify"
+    if enable_citation:
+        primary_text = (results.get("primary") or {}).get("text", "")
+        _inject_citation_result(results, primary_text)
     return results
 
 
@@ -696,11 +748,12 @@ def consensus_check(results: Dict[str, Any], task_type: str = "chat") -> Consens
 
 
 def ensemble_chat_verified(
-    prompt,          # type: str
-    system="",       # type: str
+    prompt,                # type: str
+    system="",             # type: str
     timeout_sec=DEFAULT_ENSEMBLE_TIMEOUT,  # type: int
-    max_tokens=1024, # type: int
-    task_type="chat",# type: str
+    max_tokens=1024,       # type: int
+    task_type="chat",      # type: str
+    enable_citation=False, # type: bool
 ):
     # type: (...) -> ConsensusResult
     """兩階段審查模式（正式入口）。
@@ -713,19 +766,24 @@ def ensemble_chat_verified(
       unanimous=True  → 以「MAGI」之名輸出（三哲人共識）
       unanimous=False → 標明是哪位哲人的意見或哪位哲人提出異議
 
+    enable_citation: 若 True，在 system prompt 末端附加 CITATION_INSTRUCTIONS，
+      並在回傳的 ConsensusResult.individual_results 中加入 citations / prose 欄位。
+      預設 False（不影響既有 caller）。
+
     適用：法律問答、文件摘要、任何需要品質把關的回覆
     不適用：意圖分類（用 ensemble_classify_intent）、純閒聊
     """
     role = ENSEMBLE_ROLES["primary"]
 
-    # Casper soul + 呼叫方傳入的 system 指令合併
+    # Casper soul + 呼叫方傳入的 system 指令合併（含 citation instructions）
     soul = role.get("soul", "")
-    if soul and system:
-        sys_prompt = "{}\n\n---\n{}".format(soul, system)
+    _effective_system = _build_system_with_citation(system, enable_citation)
+    if soul and _effective_system:
+        sys_prompt = "{}\n\n---\n{}".format(soul, _effective_system)
     elif soul:
         sys_prompt = soul
     else:
-        sys_prompt = system or "你是 MAGI 法律助理，請用繁體中文回答。"
+        sys_prompt = _effective_system or "你是 MAGI 法律助理，請用繁體中文回答。"
 
     primary_result = _call_omlx_chat(
         role["base"], role["name"], sys_prompt, prompt,
@@ -744,7 +802,26 @@ def ensemble_chat_verified(
     review_timeout = max(15, timeout_sec // 2)
     review_results = _ensemble_review(prompt, primary_answer, timeout_sec=review_timeout)
 
-    return _build_review_consensus(prompt, primary_answer, review_results, task_type=task_type)
+    consensus = _build_review_consensus(prompt, primary_answer, review_results, task_type=task_type)
+
+    # Phase 5 citation injection（不影響既有 caller：enable_citation 預設 False）
+    if enable_citation:
+        try:
+            from skills.bridge.citation_format import parse_citations
+            parsed = parse_citations(primary_answer)
+            if consensus.individual_results is None:
+                consensus.individual_results = {}
+            consensus.individual_results["citations"] = [
+                {"ref": c.ref, "doc_id": c.doc_id, "page": c.page, "quote": c.quote}
+                for c in parsed.citations
+            ]
+            consensus.individual_results["prose"] = parsed.prose
+            if parsed.parse_warnings:
+                consensus.individual_results["citation_warnings"] = parsed.parse_warnings
+        except Exception as _cite_err:
+            logger.warning(f"citation injection failed (non-fatal): {_cite_err}")
+
+    return consensus
 
 
 # ── Feature flag ──
