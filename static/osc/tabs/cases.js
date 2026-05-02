@@ -169,23 +169,33 @@ async function openCaseFolderHost(id, quiet = false) {
             return data;
         }
 
-        // Windows：優先 Synology Drive 本機路徑（如裝），fallback UNC
+        // Windows：優先 Synology Drive 本機路徑（如裝且不含 %USERPROFILE%），
+        // 否則 fallback 到 UNC \\\\nas\\share（file:// 形式）。
+        // 注意：Chrome/Edge 在 https origin 會 BLOCK file://，window.open 會靜默失敗；
+        // 因此**永遠**同時把複製對話框留作保險（300ms 後檢查焦點未變即彈）。
         if (isWin) {
+            const tryOpen = (url, label) => {
+                try {
+                    const w = window.open(url, "_blank");
+                    // 多數現代瀏覽器會 return null 或立刻 close，視為失敗 → 0.4s 後彈對話框
+                    setTimeout(() => {
+                        if (!w || w.closed) showFolderPathDialog(data.folder_path || "", candidates);
+                    }, 400);
+                    if (!quiet) showToast(`已嘗試開啟（${label}），若沒反應請從對話框複製貼到 Explorer`, "ok");
+                } catch (_) {
+                    showFolderPathDialog(data.folder_path || "", candidates);
+                }
+            };
             if (candidates.win_synology && candidates.win_synology.length) {
                 const raw = candidates.win_synology[0];
-                // file:/// 不認 %USERPROFILE%；落到複製對話框讓使用者貼
-                if (/%USERPROFILE%/i.test(raw)) {
-                    showFolderPathDialog(data.folder_path || "", candidates);
+                if (!/%USERPROFILE%/i.test(raw)) {
+                    tryOpen(`file:///${raw.replace(/\\/g, "/")}`, "Synology Drive");
                     return data;
                 }
-                const path = raw.replace(/\\/g, "/");
-                window.open(`file:///${path}`, "_blank");
-                if (!quiet) showToast("已嘗試開啟（Synology Drive）", "ok");
-                return data;
+                // %USERPROFILE% 無法解析 → 改試 UNC，再不行對話框
             }
             if (candidates.win_unc && candidates.win_unc.length) {
-                window.open(`file:${candidates.win_unc[0]}`, "_blank");
-                if (!quiet) showToast("已嘗試開啟（NAS 共享）", "ok");
+                tryOpen(`file:${candidates.win_unc[0]}`, "NAS 共享");
                 return data;
             }
         }

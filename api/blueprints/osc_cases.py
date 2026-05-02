@@ -3055,8 +3055,14 @@ def osc_insights_fetch_full_api():
         summary = _osc_summarize_legal_insight(full_text)
     except Exception as e:
         summary = f"摘要失敗：{e}"
+    # 防護：raw_text 已 ALTER 為 MEDIUMTEXT (16MB)，但保留 code-side cap 避免異常超大文字塞爆
+    _MAX_RAW_TEXT_BYTES = 15 * 1024 * 1024  # 15MB（留 1MB buffer 給 MEDIUMTEXT 16MB 上限）
+    safe_full_text = full_text
+    if len(safe_full_text.encode("utf-8", errors="replace")) > _MAX_RAW_TEXT_BYTES:
+        # 簡單截斷：保留前 14MB 文字，避免精確 byte-truncate 把多 byte char 切壞
+        safe_full_text = safe_full_text[: 14 * 1024 * 1024 // 3] + "\n\n…（已截斷，原文超過 15MB）"
     cols = ["case_number", "document_name", "court_reference", "insight_type", "insight_text", "case_reason", "source_file", "raw_text"]
-    vals = [case_number, title, None, "web_fetch_fulltext", str(summary or "").strip(), case_reason, url, full_text]
+    vals = [case_number, title, None, "web_fetch_fulltext", str(summary or "").strip(), case_reason, url, safe_full_text]
     r, _ = _osc_exec(
         f"INSERT INTO legal_insights ({','.join(cols)}) VALUES ({','.join(['%s'] * len(cols))})",
         tuple(vals),
