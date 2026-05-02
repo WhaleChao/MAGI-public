@@ -237,6 +237,21 @@ def _nim_summarize(prompt: str) -> tuple:
         return False, "", f"nim_summarize exception: {e}"
 
 
+def _extract_citations_if_enabled(text: str) -> str:
+    """若 MAGI_RESUMMARY_ENABLE_CITATION=1，解析 <CITATIONS> block 並保留 prose。
+    預設關閉（enable_citation=False，不影響既有摘要流程）。
+    """
+    import os as _os
+    if _os.environ.get("MAGI_RESUMMARY_ENABLE_CITATION", "0").strip() != "1":
+        return text
+    try:
+        from skills.bridge.citation_format import parse_citations
+        parsed = parse_citations(text)
+        return parsed.prose  # 移除 <CITATIONS> 後的乾淨文字
+    except Exception:
+        return text
+
+
 def _is_quality_summary(text: str) -> bool:
     if len(text) < 100:
         return False
