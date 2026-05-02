@@ -610,6 +610,82 @@ def _osc_path_to_smb(path_str: str) -> str:
     return cands[0] if cands else str(path_str or "")
 
 
+def _osc_windows_unc_candidates(path_str: str) -> list[str]:
+    """
+    Return Windows UNC \\\\nas-host\\share\\... candidates for NAS browsing on Win.
+
+    Maps Y:\\lumi\\... and Z:\\lumi63181107\\... back to NAS shares.
+    Used by web UI on Windows clients (Explorer / file:// fallback).
+    """
+    try:
+        from api.nas_mount_guard import resolve_nas_host
+        host = resolve_nas_host()
+    except Exception:
+        host = (os.environ.get("MAGI_NAS_HOST") or "192.168.1.3").strip() or "192.168.1.3"
+    candidates: list[str] = []
+    norm = _osc_norm_path(path_str)
+    np = norm.replace("/", "\\")
+    # Y:\lumi\... → \\nas-host\lumi\...
+    if np.upper().startswith("Y:\\"):
+        rel = np[3:]  # 去掉 Y:\
+        if rel.lower().startswith("lumi\\"):
+            sub = rel[5:]
+            candidates.append(f"\\\\{host}\\lumi\\{sub}")
+            candidates.append(f"\\\\{host}\\lumi\\lumi\\{sub}")
+        else:
+            candidates.append(f"\\\\{host}\\{rel}")
+    # Z:\lumi63181107\... → \\nas-host\homes\lumi63181107\... + \\nas-host\SynologyDrive\...
+    elif np.upper().startswith("Z:\\"):
+        rel = np[3:]
+        if rel.lower().startswith("lumi63181107\\"):
+            sub = rel[len("lumi63181107\\"):]
+            candidates.append(f"\\\\{host}\\homes\\lumi63181107\\{sub}")
+            candidates.append(f"\\\\{host}\\SynologyDrive\\{sub}")
+            candidates.append(f"\\\\{host}\\home\\{sub}")
+        else:
+            candidates.append(f"\\\\{host}\\{rel}")
+    # 已是 \\... UNC 直接保留
+    elif np.startswith("\\\\"):
+        candidates.append(np)
+    # dedup keep order
+    seen = set()
+    uniq = []
+    for c in candidates:
+        if c and c not in seen:
+            seen.add(c)
+            uniq.append(c)
+    return uniq
+
+
+def _osc_windows_synology_candidates(path_str: str) -> list[str]:
+    """
+    Return Windows Synology Drive default-install paths (C:\\Users\\<user>\\SynologyDrive\\...).
+
+    Tries to extract the case-relative subpath using common markers
+    (01_案件 / 02_開辦 / 03_閱卷 / 04_我方) and reconstruct under SynologyDrive.
+    """
+    candidates: list[str] = []
+    norm = _osc_norm_path(path_str)
+    np = norm.replace("/", "\\")
+    markers = ["01_案件", "02_開辦", "03_閱卷", "04_我方"]
+    for marker in markers:
+        if marker in np:
+            # 取 marker 開始的相對路徑
+            idx = np.find(marker)
+            rel = np[idx:]  # e.g. "01_案件\foo\bar"
+            candidates.append(f"%USERPROFILE%\\SynologyDrive\\{rel}")
+            candidates.append(f"C:\\SynologyDrive\\{rel}")
+            break
+    # dedup
+    seen = set()
+    uniq = []
+    for c in candidates:
+        if c and c not in seen:
+            seen.add(c)
+            uniq.append(c)
+    return uniq
+
+
 def _osc_try_open_path(path_str: str) -> dict:
     """
     Best-effort open folder in host OS. Returns execution result only.
