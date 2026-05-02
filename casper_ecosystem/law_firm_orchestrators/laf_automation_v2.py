@@ -1724,6 +1724,9 @@ class LAFWebAutomation:
         global np
         if np is None:
             import numpy as np
+        # PIL Image 必須在函數開頭 import；line 1854 的 `from PIL import Image`
+        # 會把 Image 變成 local，導致 HTTP path 的 `Image.open` 觸發 UnboundLocalError。
+        from PIL import Image
 
         # Playwright 使用專用方法（支援 frame 搜尋 + HTTP 直接下載）
         if isinstance(self.driver, PlaywrightDriverWrapper):
@@ -1768,13 +1771,20 @@ class LAFWebAutomation:
                     headers["Cookie"] = "; ".join(cookies)
                 last_err = ""
                 seen = set()
+                # LAF portal TLS 憑證 Missing Subject Key Identifier — Python urllib 嚴格驗證會拒絕。
+                # 此處用 unverified context 繞過（只影響本 captcha 圖下載；登入仍走 Playwright）
+                # 否則會 fallback 到元素截圖，OCR 品質差導致連續失敗。
+                import ssl as _ssl
+                _laf_ssl_ctx = _ssl.create_default_context()
+                _laf_ssl_ctx.check_hostname = False
+                _laf_ssl_ctx.verify_mode = _ssl.CERT_NONE
                 for captcha_url in candidates:
                     if not captcha_url or captcha_url in seen:
                         continue
                     seen.add(captcha_url)
                     try:
                         req = _urlrequest.Request(captcha_url, headers=headers)
-                        with _urlrequest.urlopen(req, timeout=8) as resp:
+                        with _urlrequest.urlopen(req, timeout=8, context=_laf_ssl_ctx) as resp:
                             img_bytes = resp.read()
                         img = Image.open(_io.BytesIO(img_bytes)).convert("RGB")
                         if self._debug_capture_enabled():
@@ -2251,42 +2261,72 @@ class LAFWebAutomation:
 
             self.log("  🔐 偵測到密碼變更提醒頁，選擇三個月後再提醒。")
             clicked = self.driver.execute_script("""
+                // LAF portal 的密碼提醒頁有 bug：頁面有 2 個 form（login + reminder），
+                // 但 button click handler 寫死 document.forms[0].submit()，submit 到 LOGIN form
+                // 而不是 reminder form → server 視為非法 → 重導 toLogin → 我們以為登入失敗
+                //
+                // 正確做法：直接 set reminderResult.value="remindLater" 然後 submit reminder form
+                // （action 含 changePwReminderResult），不要透過 button click。
+
+                // Step 1: set hidden reminderResult value to button id (mimic LAF JS behavior)
+                var input = document.querySelector('#reminderResult, input[name="reminderResult"]');
+                if (input) {
+                    input.value = 'remindLater';
+                }
+
+                // Step 2: 直接 submit reminder form（找 action 含 changePwReminderResult 的 form）
+                var allForms = Array.from(document.querySelectorAll('form'));
+                for (var i = 0; i < allForms.length; i++) {
+                    var f = allForms[i];
+                    var act = (f.action || '') + '';
+                    if (act.indexOf('changePwReminderResult') >= 0 || act.indexOf('Reminder') >= 0) {
+                        try {
+                            f.submit();
+                            return 'reminderFormSubmit:' + act.slice(0, 80);
+                        } catch(e) {
+                            return 'reminderFormSubmitErr:' + e.message;
+                        }
+                    }
+                }
+
+                // Step 3 (兜底): 找 form 含 reminderResult input 的 form 直接 submit
+                if (input) {
+                    var f2 = input.closest('form');
+                    if (f2) {
+                        try { f2.submit(); return 'closestFormSubmit:' + (f2.action || ''); } catch(e) {}
+                    }
+                }
+
+                // Step 4 (最後兜底): 點 button（舊行為，但 LAF JS 會把 reminderResult 寫死成 button id）
                 var btn = document.querySelector('#remindLater');
                 if (btn) {
-                    btn.click();
-                    return 'remindLater';
+                    try { btn.click(); return 'btnClickFallback'; } catch(e) {}
                 }
-                if (typeof remindLater === 'function') {
-                    remindLater();
-                    return 'remindLaterFn';
-                }
-                var input = document.querySelector('#reminderResult, input[name="reminderResult"]');
-                if (input) input.value = 'later';
-                var form = document.querySelector('form[action*="changePwReminderResult"]');
-                if (form) {
-                    form.submit();
-                    return 'formSubmit';
-                }
+
                 return '';
             """)
             if not clicked:
                 return False
 
-            deadline = time.time() + 20
+            # 等待頁面變更（30 秒）
+            deadline = time.time() + 30
             while time.time() < deadline:
                 time.sleep(0.5)
                 try:
                     now_url = self.driver.current_url or ""
                     now_src = self.driver.page_source or ""
                     if "toMainPage" in now_url:
-                        self.log("  ✅ 密碼提醒頁已略過，進入主頁。")
+                        self.log("  ✅ 密碼提醒頁已略過。")
                         return True
-                    if "changePwReminderResult" not in now_src and "請每90天變更一次使用者密碼" not in now_src:
+                    if not ("changePwReminderResult" in now_src or "請每90天變更一次使用者密碼" in now_src):
+                        # reminder 標記消失但 URL 不一定是 toMainPage（可能是 frameset 或 toLogin）
+                        if "toLogin" in now_url:
+                            return False  # session invalidated
                         self.log("  ✅ 密碼提醒頁已略過。")
                         return True
                 except Exception:
-                    logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, "password_reminder_wait", exc_info=True)
-            return "toMainPage" in (self.driver.current_url or "")
+                    pass
+            return False
         except Exception as e:
             self.log(f"  ⚠️ 密碼提醒頁處理失敗: {e}")
             return False
@@ -2467,10 +2507,15 @@ class LAFWebAutomation:
                             if 'processLogin' in _url and 'CSRF_NONCE' in _url:
                                 # 表示登入正在處理中，繼續等待
                                 continue
-                            # 主頁內容確認
+                            # 主頁內容確認 — 直接 markers 或 frameset 結構
                             try:
                                 _src = _pw_page.content()
                                 if any(m in _src for m in ["自動登出", "案件狀態區", "待處理案件", "追蹤案件", "最新公告"]):
+                                    _login_ok_pw = True
+                                    break
+                                # ★ frameset 結構偵測：登入成功後 LAF 可能直接給 frameset 主框（URL 仍 processLogin）
+                                # frameset 含 contentFrame/footerFrame → 已登入主頁，內容在 sub-frame
+                                if ("contentFrame" in _src and "footerFrame" in _src) or ("toPublishmentList" in _src):
                                     _login_ok_pw = True
                                     break
                             except Exception:
@@ -2482,6 +2527,8 @@ class LAFWebAutomation:
                                 if 'processLogin' in _url and 'CSRF_NONCE' in _url:
                                     _src = _pw_page.content()
                                     if any(m in _src for m in ["自動登出", "案件狀態區", "待處理案件", "追蹤案件", "最新公告", "toMainPage"]):
+                                        _login_ok_pw = True
+                                    elif ("contentFrame" in _src and "footerFrame" in _src) or ("toPublishmentList" in _src):
                                         _login_ok_pw = True
                             except Exception:
                                 pass
@@ -2706,6 +2753,13 @@ class LAFWebAutomation:
                 main_markers = ["自動登出", "案件狀態區", "待處理案件", "追蹤案件", "最新公告"]
                 if any(m in src for m in main_markers):
                     self.log("✅ LAF 登入成功！（以頁面內容判斷）")
+                    self._dismiss_post_login_popups()
+                    return True
+
+                # 2-0) frameset 結構偵測（登入成功後 LAF 直接給 frameset 主框，content 在 sub-frame）
+                # 必須在 #loginLink 檢查之前，避免被誤判為登入失敗
+                if ("contentFrame" in src and "footerFrame" in src) or ("toPublishmentList" in src):
+                    self.log("✅ LAF 登入成功！（以 frameset 內容判斷）")
                     self._dismiss_post_login_popups()
                     return True
 
@@ -6848,20 +6902,35 @@ return null;
         time.sleep(3)
 
         # 匯出 Excel
+        # Bug fix: LAF 原生 exportFile() 把 form target 設為 "hideFrame"，但 hideFrame 只存在於
+        # frameset 主框（toMainPage 後的外層）。我們直接 GET /toCaseList 是 standalone 頁面 → 沒 hideFrame
+        # → form submit 找不到 target → 開新 tab 或 submit 失敗 → 沒下載
+        # 修法：建立 hideFrame iframe 後再 submit；確保 download 在當前 context 觸發
         import glob
         dl = str(self.download_folder)
         before = set(glob.glob(os.path.join(dl, "*.xlsx")))
         self.driver.execute_script(
-            "document.downloadForm.stdtForExcel.value=arguments[0];"
-            "document.downloadForm.eddtForExcel.value=arguments[1];"
-            "document.downloadForm.action='/lafcsp/exportCaseListDatas';"
-            "document.downloadForm.target='hideFrame';"
-            "document.downloadForm.submit();",
+            """
+            // 確保 hideFrame iframe 存在（standalone 頁面沒有，建立一個）
+            var existing = document.querySelector('iframe[name="hideFrame"]');
+            if (!existing) {
+                var iframe = document.createElement('iframe');
+                iframe.name = 'hideFrame';
+                iframe.id = 'hideFrame';
+                iframe.style.display = 'none';
+                document.body.appendChild(iframe);
+            }
+            document.downloadForm.stdtForExcel.value = arguments[0];
+            document.downloadForm.eddtForExcel.value = arguments[1];
+            document.downloadForm.action = '/lafcsp/exportCaseListDatas';
+            document.downloadForm.target = 'hideFrame';
+            document.downloadForm.submit();
+            """,
             str(start_tw), str(end_tw),
         )
 
-        # 等待下載完成（最多 15 秒）
-        for _ in range(15):
+        # 等待下載完成（最多 90 秒；LAF 案件多時 Excel 生成需要時間）
+        for _ in range(90):
             time.sleep(1)
             after = set(glob.glob(os.path.join(dl, "*.xlsx")))
             new = after - before
@@ -6870,7 +6939,7 @@ return null;
                 self.log(f"✅ 接案清冊已匯出: {os.path.basename(path)}")
                 return path
 
-        self.log("⚠️ 接案清冊匯出逾時（15 秒內無新檔案）")
+        self.log("⚠️ 接案清冊匯出逾時（90 秒內無新檔案）")
         return None
 
     # ------------------------------------------------------------------

@@ -2344,9 +2344,32 @@ def cmd_download(case_number: str = "", notify: bool = True, flow_id: str = "") 
             unresolved_items = [it for it in items if isinstance(it, dict) and not (it.get("folder") or "").strip()]
             resolved_items = [it for it in items if isinstance(it, dict) and (it.get("folder") or "").strip()]
             smart_skipped = getattr(mgr, "_last_smart_skipped_files", []) or []
-            review_items = [it for it in items if isinstance(it, dict) and _activity_artifact_kind(it) != "payment_slip"]
+            # ★ 排除 archive 階段判定為重複的檔案（exists_skip / target_exists_*）— 不算 "新檔案"
+            _SKIP_ACTIONS = {"exists_skip", "target_exists_keep_src", "target_exists_isolate_src"}
+            review_items = [
+                it for it in items
+                if isinstance(it, dict)
+                and _activity_artifact_kind(it) != "payment_slip"
+                and str(it.get("action") or "") not in _SKIP_ACTIONS
+            ]
             payment_downloaded = [fp for fp in (downloaded or []) if os.path.basename(str(fp)).startswith("繳費單_")]
-            review_downloaded = [fp for fp in (downloaded or []) if fp not in payment_downloaded]
+            # ★ 從 _last_archive_report 找出 dedup 跳過的 src，從 review_downloaded 剔除
+            _archive_skipped_srcs = set()
+            try:
+                for it in items:
+                    if isinstance(it, dict) and str(it.get("action") or "") in _SKIP_ACTIONS:
+                        src_p = (it.get("file") or it.get("src") or "").strip()
+                        if src_p:
+                            _archive_skipped_srcs.add(src_p)
+                            _archive_skipped_srcs.add(os.path.basename(src_p))
+            except Exception:
+                pass
+            review_downloaded = [
+                fp for fp in (downloaded or [])
+                if fp not in payment_downloaded
+                and fp not in _archive_skipped_srcs
+                and os.path.basename(str(fp)) not in _archive_skipped_srcs
+            ]
             _safe_flow_step_status(
                 flow_id,
                 "portal_download",
@@ -2923,39 +2946,75 @@ def _portal_item_priority(item: dict) -> tuple:
 
 
 def _filter_not_yet_downloaded(dl_items: list, download_folder: str) -> list:
-    """Filter out portal items whose case_number already exists in downloaded_registry.json or dedup DB."""
+    """Filter out portal items whose download BUTTON has already been clicked.
+
+    改用 button-level (rowid) dedup（symmetric with file_review_automation.py 修補）：
+    - 已點過 rowid → 視為下載過按鈕 → 過濾掉
+    - 沒點過 rowid → 視為新按鈕（即使同案 yyidno 之前下載過卷宗或繳費單）→ 保留
+    - artifact_type=='payment_slip' 的 registry entry 不算「卷宗已下載」
+    """
     if not dl_items:
         return []
 
-    # ── DB-backed dedup (primary) ──
-    db_downloaded: Set[str] = set()
-    try:
-        from skills.ops.dedup_db import is_done as _dd_is_done
-        _db_available = True
-    except Exception:
-        _db_available = False
+    # ── Button-level dedup（首選）──
+    clicked_rowids: Set[str] = set()
+    if download_folder:
+        clicked_path = os.path.join(download_folder, "clicked_rowids.json")
+        if os.path.exists(clicked_path):
+            try:
+                with open(clicked_path, "r", encoding="utf-8") as f:
+                    clicked_data = json.load(f) or {}
+                for k in clicked_data.keys():
+                    clicked_rowids.add(str(k).strip())
+            except Exception:
+                pass
 
-    # ── JSON fallback ──
+    # ── 卷宗檔案 dedup（fallback）：只認非 payment_slip 的 entry ──
     registry_path = os.path.join(download_folder, "downloaded_registry.json") if download_folder else ""
     json_downloaded: Set[str] = set()
     if registry_path and os.path.exists(registry_path):
         try:
             with open(registry_path, "r", encoding="utf-8") as f:
                 registry = json.load(f) or {}
-            for v in registry.values():
+            for k, v in registry.items():
+                if not isinstance(v, dict):
+                    continue
+                # 排除 path-keyed bad entries（key 以 `/` 開頭，artifact 經常是 None）
+                # 這些是歷史 bug 重複登錄，不應該影響 dedup 判斷
+                if str(k).startswith(("/", "\\")):
+                    continue
+                # 只把「真正卷宗」的 yyidno 加入 set，繳費單/檔名含「繳費單」字樣不算
+                ci = v.get("case_info") if isinstance(v.get("case_info"), dict) else {}
+                artifact = (ci.get("artifact_type") or "").strip().lower()
+                if artifact == "payment_slip":
+                    continue
+                # 額外保險：檔名（key）含「繳費單」字樣 → 視為 payment_slip
+                if "繳費單" in str(k):
+                    continue
                 y = (v.get("yyidno") or "").strip()
                 if y:
                     json_downloaded.add(y)
         except Exception:
             pass
 
+    # ── DB-backed dedup ──
+    try:
+        from skills.ops.dedup_db import is_done as _dd_is_done
+        _db_available = True
+    except Exception:
+        _db_available = False
+
     result = []
     for it in dl_items:
         case_num = (it.get("case_number") or "").strip()
+        rowid = str(it.get("rowid") or "").strip()
+        # Button-level：rowid 已點過 → 跳過
+        if rowid and rowid in clicked_rowids:
+            continue
         if not case_num:
             result.append(it)
             continue
-        # Check DB first, then JSON
+        # 卷宗下載過（非繳費單）→ 跳過
         if _db_available:
             try:
                 if _dd_is_done("download", case_num):
@@ -3905,7 +3964,9 @@ def cmd_preview_emails(days: int = 7) -> dict:
         return out
 
 
-def cmd_downloadable_probe(days: int = 30, notify: bool = False) -> dict:
+def cmd_downloadable_probe(days: int = 30, notify: bool = False,
+                           target_case_number: str = "",
+                           dump_raw: bool = False) -> dict:
     """
     法院端狀態掃描（唯讀，不下載、不改資料）：
     回傳法院入口列表中「目前有線上下載按鈕」或「待繳費」的案件。
@@ -3945,8 +4006,26 @@ def cmd_downloadable_probe(days: int = 30, notify: bool = False) -> dict:
                     creds["download_folder"],
                     getattr(mgr, "dismissed_payments", None) or {},
                 )
-                portal_r = mgr.probe_downloadable_from_portal()
+                portal_r = mgr.probe_downloadable_from_portal(target_case_number=target_case_number or None)
                 portal_r["probe_module"] = getattr(mod, "__file__", "")
+                if dump_raw:
+                    # debug mode: 印出每筆 raw row 的關鍵狀態欄位
+                    raw_items = portal_r.get("items") or []
+                    portal_r["dump_raw_items"] = [
+                        {
+                            "case_number": it.get("case_number"),
+                            "court_case_no": it.get("court_case_no"),
+                            "party": it.get("party"),
+                            "status": it.get("status"),
+                            "rowid": it.get("rowid"),
+                            "paystatus": it.get("paystatus"),
+                            "p_status": it.get("p_status"),
+                            "payment_flag": it.get("payment_flag"),
+                            "status_name": it.get("status_name"),
+                            "result_text": (it.get("result_text") or "")[:120],
+                        }
+                        for it in raw_items
+                    ]
                 logger.info(
                     "Portal probe done: success=%s count=%s downloadable=%s module=%s",
                     bool(portal_r.get("success")),
@@ -4021,6 +4100,7 @@ def cmd_downloadable_probe(days: int = 30, notify: bool = False) -> dict:
                 "items_total": len(effective_items),
                 "error": portal_r.get("error") if not bool(portal_r.get("success")) else "",
                 "probe_module": str(portal_r.get("probe_module") or ""),
+                "dump_raw_items": portal_r.get("dump_raw_items"),
             },
             "gmail": {
                 "success": bool(gmail_r.get("success")),
@@ -4821,6 +4901,8 @@ def main() -> int:
             lambda flow_id: cmd_downloadable_probe(
                 days=int(payload.get("days", 30) or 30),
                 notify=_boolish(payload.get("notify"), False),
+                target_case_number=str(payload.get("target_case_number") or "").strip(),
+                dump_raw=_boolish(payload.get("dump_raw"), False),
             ),
             metadata={"days": int(payload.get("days", 30) or 30)},
             step_name="downloadable_probe",

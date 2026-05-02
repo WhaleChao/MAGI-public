@@ -167,6 +167,15 @@ def test_debt_schema_returns_fields(client):
     assert r.status_code == 200
 
 
+def test_debt_source_status_uses_bundled_source(client):
+    r = client.get("/api/osc/debt/source-status")
+    assert r.status_code == 200
+    body = r.get_json()
+    assert body["ok"] is True
+    assert body["source_dir"].endswith("integrations/debt_robot")
+    assert body["modules"]["supplement"].endswith("06_F.py")
+
+
 # ── 4. 委任狀及契約生成（forms） ─────────────────────────────────────────────
 
 

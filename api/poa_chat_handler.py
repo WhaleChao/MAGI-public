@@ -60,7 +60,7 @@ def _clear_user(state: dict, user_id: str):
 def _load_config() -> dict:
     config = {
         "company_name": "偵理法律事務所",
-        "default_lawyer": "喬政翔律師",
+        "default_lawyer": "喬政翔",
         "company_address_hl": "",
         "company_phone": "",
         "company_fax": "",

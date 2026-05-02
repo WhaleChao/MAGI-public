@@ -1486,6 +1486,53 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
             # Update legal_aid_number if not set
             if not existing.get("legal_aid_number") and laf_number:
                 self._update_legal_aid_number(existing.get("id"), laf_number)
+
+            # ★ Placeholder reconcile：existing 是 placeholder（_is_placeholder_case 必為 False，
+            # 因為到這層的 client_name/case_reason 已從第二封 email 解析出乾淨資料）→
+            # 比對 DB 既有 client_name/case_reason，若 DB 是 placeholder 而 email 給好資料 → UPDATE DB + rename folder
+            try:
+                _existing_name = str(existing.get("client_name") or "").strip()
+                _existing_reason = str(existing.get("case_reason") or "").strip()
+                _existing_stage = str(existing.get("case_stage") or "").strip()
+                # 重用本函數已偵測過的 placeholder 規則（line ~1450 的 inline helper）
+                _PLACEHOLDER_INVALID_CHARS = set(")(<>[]{}!@#$%^&*+=|\\;:\"'?/`~")
+                _PLACEHOLDER_NOISE_TOKENS = ("案情", "文件", "卷宗", "附件", "信件", "資料夾")
+                _PLACEHOLDER_REASON_TOKENS = {"", "待確認", "未確認"}
+                _existing_name_bad = (
+                    not _existing_name
+                    or any(c in _PLACEHOLDER_INVALID_CHARS for c in _existing_name)
+                    or "--" in _existing_name
+                    or any(tok in _existing_name for tok in _PLACEHOLDER_NOISE_TOKENS)
+                    or len(_existing_name) > 30
+                )
+                _existing_reason_bad = _existing_reason in _PLACEHOLDER_REASON_TOKENS
+                _existing_is_placeholder = bool(_existing_name_bad or _existing_reason_bad)
+                if _existing_is_placeholder and not _is_placeholder_case:
+                    logger.info(
+                        "  🔧 Placeholder reconcile: DB('%s' / '%s' / '%s') → email('%s' / '%s' / '%s')",
+                        _existing_name, _existing_reason, _existing_stage,
+                        client_name, case_reason, getattr(case_info, 'case_stage', '') or '',
+                    )
+                    self._reconcile_placeholder_record(
+                        existing,
+                        new_client_name=client_name,
+                        new_case_reason=case_reason,
+                        new_case_stage=getattr(case_info, 'case_stage', '') or _existing_stage,
+                        new_case_type=case_type or str(existing.get("case_type") or ""),
+                    )
+                    # 重新讀取 db_path（rename 後可能已變）
+                    if self.db:
+                        try:
+                            _refreshed = self.db.fetch_one(
+                                "SELECT folder_path FROM cases WHERE id = %s",
+                                (existing.get("id"),), as_dict=True,
+                            )
+                            if _refreshed:
+                                db_path = self._to_local_case_folder(str(_refreshed.get("folder_path") or "")) or db_path
+                        except Exception:
+                            pass
+            except Exception as _rec_e:
+                logger.warning("Placeholder reconcile failed: %s", _rec_e)
         else:
             # Step 2: Create folder
             case_number = ""
@@ -1609,7 +1656,36 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         go_live_upload_file = ""
         go_live_draft_ok = False
 
-        if not self.dry_run:
+        # Placeholder 偵測：派案 email 解析不完整（client_name 含特殊字元 / case_reason='待確認'）
+        # 條件還沒齊 → 不啟動 portal go_live draft（避免錯資料送出）
+        # 等接案清冊 reconcile_placeholder_cases() 修正後，下次自然 retry 才開辦
+        # NOTE: 規則 mirror laf_nightly_audit._is_placeholder_*；這裡 inline 避免 import 整個 module
+        _is_placeholder_case = False
+        try:
+            _PLACEHOLDER_INVALID_CHARS = set(")(<>[]{}!@#$%^&*+=|\\;:\"'?/`~")
+            _PLACEHOLDER_NOISE_TOKENS = ("案情", "文件", "卷宗", "附件", "信件", "資料夾")
+            _PLACEHOLDER_REASON_TOKENS = {"", "待確認", "未確認"}
+            _name = str(client_name or "").strip()
+            _reason = str(case_reason or "").strip()
+            _name_bad = (
+                not _name
+                or any(c in _PLACEHOLDER_INVALID_CHARS for c in _name)
+                or "--" in _name
+                or any(tok in _name for tok in _PLACEHOLDER_NOISE_TOKENS)
+                or len(_name) > 30
+            )
+            _reason_bad = _reason in _PLACEHOLDER_REASON_TOKENS
+            _is_placeholder_case = bool(_name_bad or _reason_bad)
+            if _is_placeholder_case:
+                logger.info(
+                    "  ⏸️ Placeholder 案件偵測（client=%r, reason=%r）— 跳過 portal go_live draft，"
+                    "等 reconcile_placeholder 修正後再開辦",
+                    client_name, case_reason,
+                )
+        except Exception as _placeholder_e:
+            logger.debug("placeholder detection skipped: %s", _placeholder_e)
+
+        if not self.dry_run and not _is_placeholder_case:
             try:
                 # 消債案件也要嘗試自動開辦（有開辦通知書就夠）
                 _can_try_go_live = docs_ready_for_go_live or (open_doc and not _is_consumer_debt)
@@ -1645,7 +1721,12 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
 
         go_live_reminder = ""
         if not self.dry_run:
-            if go_live_draft_ok:
+            if _is_placeholder_case:
+                go_live_reminder = (
+                    "⚠️ 派案 email 資料不完整（當事人/案由），已建立臨時資料夾。"
+                    "系統會每小時自動從接案清冊修正 DB 與資料夾名稱後再啟動開辦。"
+                )
+            elif go_live_draft_ok:
                 go_live_reminder = "✅ 開辦表單已自動填寫（未送出），截圖已傳送，請確認後回覆。"
             elif docs_ready_for_go_live:
                 if submission_info.get("confidence") == "low":
@@ -6656,6 +6737,144 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         except Exception as e:
             logger.error("Update LAF number failed: %s", e)
 
+    def _reconcile_placeholder_record(self, existing: dict, *, new_client_name: str,
+                                      new_case_reason: str, new_case_stage: str,
+                                      new_case_type: str) -> bool:
+        """修補 DB 中的 placeholder 案件（client_name/case_reason 是垃圾），用第二封 email 的乾淨資料。
+
+        - UPDATE DB: client_name, case_reason, case_stage, case_type, folder_path
+        - Rename 資料夾（lsof 偵測到被開啟則跳過 rename，但 DB 仍更新；通知律師）
+        - 不影響 legal_aid_number / legal_aid_status / case_number / case_category 等其他欄位
+        Returns True if any change applied.
+        """
+        if self.dry_run or not self.db:
+            return False
+        case_id = existing.get("id")
+        case_number = existing.get("case_number") or ""
+        old_folder_canonical = str(existing.get("folder_path") or "").strip()
+        old_client_name = str(existing.get("client_name") or "")
+        old_case_reason = str(existing.get("case_reason") or "")
+
+        # 消費者債務清理特殊處理（同 handle_go_live 開頭）
+        if new_case_type == "消費者債務清理" or "消費者債務清理" in (new_case_reason or ""):
+            if "清算" not in (new_case_reason or ""):
+                new_case_reason = "更生"
+
+        # 1. 建構新資料夾名（用 LAFFolderBuilder 的 _build_folder_name 規則保持一致）
+        new_basename = ""
+        try:
+            from laf_folder_builder import LAFFolderBuilder  # type: ignore
+            fb = LAFFolderBuilder()
+            new_basename = fb._build_folder_name({
+                "case_number": case_number,
+                "client_name": new_client_name,
+                "case_type": new_case_type,
+                "case_stage": new_case_stage,
+                "case_reason": new_case_reason,
+            })
+        except Exception as e:
+            logger.warning("build folder name failed: %s", e)
+            return False
+
+        # 2. UPDATE DB（client_name/reason/stage/type）
+        try:
+            self.db.execute_write(
+                """UPDATE `cases`
+                   SET `client_name` = %s,
+                       `case_reason` = %s,
+                       `case_stage` = CASE WHEN COALESCE(`case_stage`,'') IN ('','待確認','未確認') THEN %s ELSE `case_stage` END,
+                       `case_type` = CASE WHEN COALESCE(`case_type`,'') IN ('','待確認') THEN %s ELSE `case_type` END
+                   WHERE `id` = %s""",
+                (new_client_name, new_case_reason, new_case_stage, new_case_type, case_id),
+            )
+            logger.info("  📝 DB updated: client_name=%s case_reason=%s case_stage=%s",
+                        new_client_name, new_case_reason, new_case_stage)
+        except Exception as e:
+            logger.error("DB update failed: %s", e)
+            return False
+
+        # 3. Rename 資料夾（lsof 偵測 + 安全 rename）
+        rename_ok = False
+        new_canonical = old_folder_canonical
+        if old_folder_canonical:
+            try:
+                from api.case_path_mapper import local_synology_path_candidates
+                old_local = ""
+                for cand in (local_synology_path_candidates(old_folder_canonical) or []):
+                    if os.path.isdir(cand):
+                        old_local = cand
+                        break
+                if old_local:
+                    new_local = os.path.join(os.path.dirname(old_local), new_basename)
+                    if os.path.exists(new_local):
+                        logger.info("  ⚠️ 目標資料夾已存在，不 rename: %s", new_local)
+                    else:
+                        # lsof 偵測
+                        is_open = False
+                        try:
+                            import subprocess as _subp
+                            proc = _subp.run(
+                                ["lsof", "+D", old_local],
+                                capture_output=True, text=True, timeout=10,
+                            )
+                            out_lines = [
+                                ln for ln in (proc.stdout or "").splitlines()
+                                if ln and not ln.startswith("COMMAND")
+                                and not (ln.split() and ln.split()[0] in {"python3", "python", "lsof", "Python"})
+                            ]
+                            is_open = bool(out_lines)
+                        except Exception:
+                            is_open = False
+                        if is_open:
+                            logger.info("  ⚠️ 資料夾被其他應用開啟，跳過 rename（DB 已更新）")
+                            try:
+                                self.notifier.notify_admin(
+                                    f"⚠️ 法扶 placeholder 修正：DB 已更新但資料夾被開啟未 rename\n"
+                                    f"案件: {case_number} ({existing.get('legal_aid_number') or ''})\n"
+                                    f"當事人: 「{old_client_name}」 → 「{new_client_name}」\n"
+                                    f"案由: 「{old_case_reason}」 → 「{new_case_reason}」\n"
+                                    f"舊資料夾: {os.path.basename(old_local)}\n"
+                                    f"新資料夾: {new_basename}\n"
+                                    f"請關閉相關應用後手動 rename。"
+                                )
+                            except Exception:
+                                pass
+                        else:
+                            try:
+                                os.rename(old_local, new_local)
+                                rename_ok = True
+                                # 同步更新 canonical 路徑
+                                if "\\" in old_folder_canonical:
+                                    sep = "\\"
+                                else:
+                                    sep = "/"
+                                parts = old_folder_canonical.rstrip("/\\").split(sep)
+                                parts[-1] = new_basename
+                                new_canonical = sep.join(parts)
+                                self.db.execute_write(
+                                    "UPDATE `cases` SET `folder_path` = %s WHERE `id` = %s",
+                                    (new_canonical, case_id),
+                                )
+                                logger.info("  📁 資料夾已 rename → %s", new_basename)
+                            except OSError as e:
+                                logger.warning("  ⚠️ rename 失敗: %s", e)
+            except Exception as e:
+                logger.warning("rename folder block failed: %s", e)
+
+        # 4. 通知律師（成功 rename 時）
+        if rename_ok:
+            try:
+                self.notifier.notify_admin(
+                    f"📝 法扶 placeholder 已自動修正\n"
+                    f"案件: {case_number} ({existing.get('legal_aid_number') or ''})\n"
+                    f"當事人: 「{old_client_name}」 → 「{new_client_name}」\n"
+                    f"案由: 「{old_case_reason}」 → 「{new_case_reason}」\n"
+                    f"📁 資料夾: {new_basename}"
+                )
+            except Exception:
+                pass
+        return True
+
     def _generate_case_number(self) -> str:
         """Generate a standard OSC case number (YYYY-NNNN)."""
         if not self.db:
@@ -6720,6 +6939,9 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         if branch:
             notes += f"分會: {branch}\n"
 
+        # 承辦律師：消費者債務清理案件預設「林稚芳」，其餘預設「喬政翔」（不加「律師」尾綴）
+        default_lawyer = '林稚芳' if case_type == '消費者債務清理' else '喬政翔'
+
         try:
             self.db.execute_write(
                 """INSERT INTO `cases`
@@ -6733,7 +6955,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                  '法律扶助案件', case_stage, '進行中', folder_path,
                  laf_number, laf_number, laf_number,
                  '未開辦', notes,
-                 datetime.now().date(), '喬政翔律師')
+                 datetime.now().date(), default_lawyer)
             )
             logger.info("  ✅ DB record created: %s (%s)", case_number, case_id)
             return case_number
@@ -6945,9 +7167,9 @@ def _release_portal_lock():
 
 def main():
     parser = argparse.ArgumentParser(description="LAF Case Lifecycle Orchestrator")
-    parser.add_argument("--mode", choices=["monitor", "closing", "closing-draft", "condition-draft", "condition-mark-done", "condition-mark-by-mediation", "portal-draft", "portal-submit", "dry-run", "test-notify"],
+    parser.add_argument("--mode", choices=["monitor", "closing", "closing-draft", "condition-draft", "condition-mark-done", "condition-mark-by-mediation", "portal-draft", "portal-submit", "redo-go-live", "dry-run", "test-notify"],
                         default="dry-run",
-                        help="monitor=watch Gmail, closing=process 待報結, dry-run=preview")
+                        help="monitor=watch Gmail, closing=process 待報結, redo-go-live=從 DB 重跑開辦流程（reconcile 修正 placeholder 後使用）, dry-run=preview")
     parser.add_argument("--case", type=str, default=None,
                         help="Specific case number to process (for closing mode)")
     parser.add_argument("--laf-case-no", type=str, default="", help="LAF case number for portal-draft mode")
@@ -7112,6 +7334,61 @@ def main():
         # JSON result is already printed above; os._exit skips Python teardown.
         import os as _os
         _os._exit(0 if result.get("ok") else 1)
+
+    elif args.mode == "redo-go-live":
+        # 從 DB 讀現有案件資料，重新觸發 handle_go_live 完整流程
+        # 用途：reconcile_placeholder_cases 修正 client_name/case_reason 後，重跑開辦流程
+        laf_no = (args.laf_case_no or "").strip()
+        if not laf_no:
+            print(json.dumps({"success": False, "error": "missing --laf-case-no"}, ensure_ascii=False))
+        elif not orchestrator.db:
+            print(json.dumps({"success": False, "error": "db not available"}, ensure_ascii=False))
+        else:
+            try:
+                row = orchestrator.db.fetch_one(
+                    "SELECT * FROM `cases` WHERE `legal_aid_number` = %s LIMIT 1",
+                    (laf_no,), as_dict=True,
+                )
+                if not row:
+                    print(json.dumps({"success": False, "error": f"case not found: {laf_no}"}, ensure_ascii=False))
+                else:
+                    laf_status = str(row.get("legal_aid_status") or "").strip()
+                    if laf_status and laf_status != "未開辦":
+                        print(json.dumps({
+                            "success": False,
+                            "error": f"案件狀態為「{laf_status}」，不是未開辦；redo-go-live 只能對未開辦案件使用",
+                            "case_number": row.get("case_number"),
+                        }, ensure_ascii=False))
+                    else:
+                        try:
+                            from laf_automation_v2 import LAFCaseInfo  # type: ignore
+                        except Exception:
+                            from skills.legal.laf import LAFCaseInfo  # type: ignore
+                        case_info = LAFCaseInfo(
+                            laf_case_number=laf_no,
+                            client_name=str(row.get("client_name") or ""),
+                            case_type=str(row.get("case_type") or ""),
+                            case_stage=str(row.get("case_stage") or ""),
+                            case_reason=str(row.get("case_reason") or ""),
+                            subject=f"[redo-go-live] {laf_no} {row.get('client_name','')}",
+                        )
+                        # 清除 session dedup 確保完整重跑
+                        try:
+                            orchestrator._go_live_dedup.discard(laf_no)
+                        except Exception:
+                            pass
+                        logger.info("🔁 Redo go-live 開始: %s (%s) %s",
+                                    row.get("case_number"), laf_no, row.get("client_name"))
+                        orchestrator.handle_go_live(case_info)
+                        print(json.dumps({
+                            "success": True,
+                            "message": f"redo go-live triggered for {laf_no}",
+                            "case_number": row.get("case_number"),
+                            "client_name": row.get("client_name"),
+                        }, ensure_ascii=False))
+            except Exception as redo_e:
+                logger.exception("redo-go-live failed: %s", redo_e)
+                print(json.dumps({"success": False, "error": str(redo_e)[:300]}, ensure_ascii=False))
 
     elif args.mode == "test-notify":
         # Quick test of notification

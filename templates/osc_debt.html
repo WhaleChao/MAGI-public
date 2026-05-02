@@ -111,6 +111,7 @@
         <button class="nav-btn" data-panel="asset_statement"><span class="icon">💰</span><span>財產說明書</span></button>
         <button class="nav-btn" data-panel="creditor_list"><span class="icon">🏦</span><span>債權人清冊</span></button>
         <button class="nav-btn" data-panel="report"><span class="icon">📝</span><span>陳報狀</span></button>
+        <button class="nav-btn" data-panel="supplement"><span class="icon">🧾</span><span>補件書狀</span></button>
         <button class="nav-btn" data-panel="pdf_merge"><span class="icon">📎</span><span>合併PDF</span></button>
         <button class="nav-btn" data-panel="batch_generate"><span class="icon">⚡</span><span>一鍵產生</span></button>
     </nav>
@@ -352,7 +353,36 @@
             </div>
         </div>
 
-        <!-- ═══ 5. 合併 PDF ═══ -->
+        <!-- ═══ 5. 補件書狀 ═══ -->
+        <div class="form-panel" id="panel-supplement">
+            <div class="card">
+                <div class="card-title">補件書狀</div>
+                <div class="card-desc">整理補正命令項目並產生補件陳報狀</div>
+                <div class="form-row">
+                    <div class="form-group"><label>法院</label><select id="sup-court"></select></div>
+                    <div class="form-group"><label>案號</label><input type="text" id="sup-case-no" placeholder="例如 113年度司消債更字第1號"></div>
+                </div>
+                <div class="form-row">
+                    <div class="form-group"><label>股別</label><input type="text" id="sup-branch"></div>
+                    <div class="form-group"><label>聲請人</label><input type="text" id="sup-applicant"></div>
+                </div>
+                <div class="form-row">
+                    <div class="form-group"><label>程序</label><select id="sup-procedure"><option>更生</option><option>清算</option></select></div>
+                    <div class="form-group"><label>書狀序號</label><input type="number" id="sup-brief-no" value="1"></div>
+                </div>
+                <table class="dyn-table">
+                    <thead><tr><th>補件類別</th><th>期間/內容</th><th>附件</th><th></th></tr></thead>
+                    <tbody id="supplementBody"></tbody>
+                </table>
+                <button class="btn btn-sm" onclick="addSupplementRow()">＋ 新增補件項目</button>
+                <div class="form-row" style="margin-top:12px">
+                    <div class="form-group" style="min-width:100%"><label>其他說明</label><textarea id="sup-notes"></textarea></div>
+                </div>
+                <button class="btn btn-primary" onclick="generateSupplement()">📄 產生補件書狀</button>
+            </div>
+        </div>
+
+        <!-- ═══ 6. 合併 PDF ═══ -->
         <div class="form-panel" id="panel-pdf_merge">
             <div class="card">
                 <div class="card-title">合併PDF檔案</div>
@@ -371,7 +401,7 @@
             </div>
         </div>
 
-        <!-- ═══ 6. 一鍵產生 ═══ -->
+        <!-- ═══ 7. 一鍵產生 ═══ -->
         <div class="form-panel" id="panel-batch_generate">
             <div class="card">
                 <div class="card-title">一鍵產生全部文件</div>
@@ -392,6 +422,7 @@
                     <div class="checkbox-item"><input type="checkbox" id="batch-check-asset" checked><label for="batch-check-asset">財產及收入狀況說明書</label></div>
                     <div class="checkbox-item"><input type="checkbox" id="batch-check-creditor" checked><label for="batch-check-creditor">債權人清冊</label></div>
                     <div class="checkbox-item"><input type="checkbox" id="batch-check-report"><label for="batch-check-report">陳報狀</label></div>
+                    <div class="checkbox-item"><input type="checkbox" id="batch-check-supplement"><label for="batch-check-supplement">補件書狀</label></div>
                 </div>
 
                 <div style="margin-top:16px;padding-top:16px;border-top:1px solid var(--line)">
@@ -427,6 +458,7 @@ function showPanel(panelId) {
         'asset_statement': '財產及收入狀況說明書',
         'creditor_list': '債權人清冊',
         'report': '陳報狀',
+        'supplement': '補件書狀',
         'pdf_merge': '合併PDF',
         'batch_generate': '一鍵產生全部文件'
     };
@@ -441,6 +473,7 @@ function updateTopButton(panelId) {
         'asset_statement': '📄 產生說明書',
         'creditor_list': '📄 產生清冊',
         'report': '📄 產生陳報狀',
+        'supplement': '📄 產生補件書狀',
         'pdf_merge': '📦 合併 PDF',
         'batch_generate': '⚡ 一鍵產生'
     };
@@ -461,6 +494,7 @@ function topAction() {
         'panel-asset_statement': () => generateDoc('asset_statement'),
         'panel-creditor_list': () => generateDoc('creditor_list'),
         'panel-report': () => generateReport(),
+        'panel-supplement': () => generateSupplement(),
         'panel-pdf_merge': () => mergePDF(),
         'panel-batch_generate': () => batchGenerate()
     };
@@ -487,7 +521,7 @@ async function loadCourtList() {
     const result = await apiCall('GET', '/api/osc/debt/courts');
     if (result && result.courts) {
         const courts = result.courts;
-        const selects = ['app-court', 'app-exec-court', 'batch-court', 'rpt-E1'];
+        const selects = ['app-court', 'app-exec-court', 'batch-court', 'rpt-E1', 'sup-court'];
         selects.forEach(id => {
             const sel = document.getElementById(id);
             if (sel) {
@@ -972,6 +1006,60 @@ async function generateReport() {
 }
 
 // ────────────────────────────────────────────────────────────────
+// Supplement (補件書狀)
+// ────────────────────────────────────────────────────────────────
+function addSupplementRow(item = {}) {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+        <td><input type="text" value="${item.category || ''}" placeholder="例如 勞保資料"></td>
+        <td><input type="text" value="${item.period || ''}" placeholder="例如 111年至112年"></td>
+        <td><input type="text" value="${item.attachment || ''}" placeholder="附件名稱"></td>
+        <td><button class="btn-remove" onclick="this.closest('tr').remove()">✕</button></td>
+    `;
+    document.getElementById('supplementBody').appendChild(tr);
+}
+
+async function generateSupplement() {
+    const items = [];
+    document.querySelectorAll('#supplementBody tr').forEach(row => {
+        const inputs = row.querySelectorAll('input');
+        if (inputs[0]?.value || inputs[1]?.value || inputs[2]?.value) {
+            items.push({
+                category: inputs[0]?.value || '',
+                period: inputs[1]?.value || '',
+                attachment: inputs[2]?.value || ''
+            });
+        }
+    });
+
+    const data = {
+        court: document.getElementById('sup-court').value,
+        case_no: document.getElementById('sup-case-no').value,
+        branch: document.getElementById('sup-branch').value,
+        applicant: document.getElementById('sup-applicant').value,
+        procedure: document.getElementById('sup-procedure').value,
+        brief_no: document.getElementById('sup-brief-no').value,
+        items,
+        notes: document.getElementById('sup-notes').value
+    };
+
+    if (!data.applicant) {
+        showToast('請填寫聲請人', 'error');
+        return;
+    }
+
+    const result = await apiCall('POST', '/api/osc/debt/generate', {
+        form_type: 'supplement',
+        data
+    });
+
+    if (result && result.ok) {
+        showToast(result.message || '補件書狀產生成功', 'success');
+        if (result.url) window.open(result.url, '_blank');
+    }
+}
+
+// ────────────────────────────────────────────────────────────────
 // PDF Merge
 // ────────────────────────────────────────────────────────────────
 function handleFileDrop(e) {
@@ -1062,6 +1150,7 @@ async function batchGenerate() {
     if (document.getElementById('batch-check-asset').checked) types.push('asset_statement');
     if (document.getElementById('batch-check-creditor').checked) types.push('creditor_list');
     if (document.getElementById('batch-check-report').checked) types.push('report');
+    if (document.getElementById('batch-check-supplement').checked) types.push('supplement');
 
     if (types.length === 0) {
         showToast('請至少選擇一種文件類型', 'error');
@@ -1100,6 +1189,7 @@ document.addEventListener('DOMContentLoaded', () => {
     loadCourtList();
     loadDebtCases();
     loadReportOptions();
+    addSupplementRow();
 
     // Set today's date for any date inputs that exist
     const today = new Date().toISOString().split('T')[0];

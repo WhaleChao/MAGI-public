@@ -694,6 +694,444 @@ def backfill_from_case_list(db, missing_cases: List[dict]) -> List[dict]:
     return backfilled
 
 
+# ─── 1.5 Reconcile placeholder LAF 案件（不完整派案 email）──────────
+
+import time as _time
+
+# 客戶名禁用字元（族名 UTAK KUAD 含半形空白與 - 是合法的）
+_PLACEHOLDER_INVALID_CHARS = set(")(<>[]{}!@#$%^&*+=|\\;:\"'?/`~")
+_PLACEHOLDER_NOISE_TOKENS = ("案情", "文件", "卷宗", "附件", "信件", "資料夾")
+_PLACEHOLDER_REASON_TOKENS = {"", "待確認", "未確認"}
+_RECONCILE_STATE_FILE = os.path.join(PROJECT_ROOT, "static", "laf_reconcile_state.json")
+_RECONCILE_THROTTLE_SEC = 3600  # 1 小時節流
+
+
+def _is_placeholder_client_name(name: str) -> bool:
+    """客戶名是否為不完整 email 解析出的垃圾。
+
+    規則（任一命中即視為 placeholder）：
+    - 空字串 / None
+    - 含特殊字元（括號、底線、特殊符號）— 半形空白與單個 `-` 視為合法（族名 UTAK KUAD）
+    - 連續 `--`
+    - 含明顯 placeholder 文字（案情/文件/卷宗等）
+    - 長度 > 30 字元（族名也不應超過此值）
+    """
+    s = str(name or "").strip()
+    if not s:
+        return True
+    if any(c in _PLACEHOLDER_INVALID_CHARS for c in s):
+        return True
+    if "--" in s:
+        return True
+    for token in _PLACEHOLDER_NOISE_TOKENS:
+        if token in s:
+            return True
+    if len(s) > 30:
+        return True
+    return False
+
+
+def _is_placeholder_case_reason(reason: str) -> bool:
+    """case_reason 是否 placeholder（空、'待確認'、'未確認'）。"""
+    return str(reason or "").strip() in _PLACEHOLDER_REASON_TOKENS
+
+
+def _is_folder_open_by_other(folder_path: str) -> Tuple[bool, str]:
+    """檢查資料夾是否被其他應用打開（lsof）— 排除自己 process（python3/lsof）。
+
+    Returns (is_open, who) — who 為 process 名稱列表（用 , 分隔）。
+    """
+    if not folder_path or not os.path.isdir(folder_path):
+        return False, ""
+    try:
+        import subprocess as _subp
+        proc = _subp.run(
+            ["lsof", "+D", folder_path],
+            capture_output=True, text=True, timeout=15,
+        )
+        out = (proc.stdout or "")
+        lines = [ln for ln in out.splitlines() if ln and not ln.startswith("COMMAND")]
+        # 第一欄是 process 名稱
+        my_pid = str(os.getpid())
+        ignored_procs = {"python3", "python", "lsof", "Python"}
+        relevant_procs = []
+        for ln in lines:
+            tokens = ln.split()
+            if len(tokens) < 2:
+                continue
+            pname, pid = tokens[0], tokens[1]
+            if pid == my_pid:
+                continue
+            if pname in ignored_procs:
+                continue
+            relevant_procs.append(pname)
+        if relevant_procs:
+            uniq = sorted(set(relevant_procs))
+            return True, ",".join(uniq[:3])
+    except Exception as e:
+        logger.debug("lsof check failed for %s: %s", folder_path, e)
+    return False, ""
+
+
+def _safe_rename_case_folder(old_path: str, new_path: str) -> Tuple[bool, str]:
+    """安全 rename 資料夾。Returns (renamed, reason)。
+
+    reason='' 表示成功；否則為跳過原因（folder_open / target_exists / ...）。
+    """
+    if not old_path:
+        return False, "old_path_empty"
+    if not os.path.isdir(old_path):
+        return False, f"old_not_exist"
+    if old_path == new_path:
+        return False, "same_path"
+    if os.path.exists(new_path):
+        return False, "target_exists"
+    is_open, who = _is_folder_open_by_other(old_path)
+    if is_open:
+        return False, f"folder_open:{who}"
+    try:
+        os.rename(old_path, new_path)
+        return True, ""
+    except OSError as e:
+        return False, f"rename_failed:{e}"
+
+
+def _replace_folder_basename_canonical(canonical_path: str, new_basename: str) -> str:
+    """把 canonical 路徑（Z:\\... 或 Y:\\...）的最後一段 basename 換成新值。
+
+    處理 \\ 與 / 兩種分隔符（Z 路徑通常是 \\）。
+    """
+    if not canonical_path or not new_basename:
+        return canonical_path
+    p = canonical_path.rstrip("/\\")
+    if "\\" in p:
+        sep = "\\"
+    else:
+        sep = "/"
+    parts = p.split(sep)
+    if not parts:
+        return canonical_path
+    parts[-1] = new_basename
+    return sep.join(parts)
+
+
+def _write_reconcile_state():
+    try:
+        os.makedirs(os.path.dirname(_RECONCILE_STATE_FILE), exist_ok=True)
+        with open(_RECONCILE_STATE_FILE, "w", encoding="utf-8") as f:
+            json.dump(
+                {"last_run": _time.time(), "last_run_iso": datetime.now().isoformat()},
+                f,
+            )
+    except Exception as e:
+        logger.debug("write reconcile state failed: %s", e)
+
+
+def _check_reconcile_throttle() -> Tuple[bool, int]:
+    """Returns (throttled, remaining_sec)."""
+    try:
+        if os.path.exists(_RECONCILE_STATE_FILE):
+            with open(_RECONCILE_STATE_FILE) as f:
+                st = json.load(f)
+            last = float(st.get("last_run") or 0)
+            elapsed = _time.time() - last
+            if elapsed < _RECONCILE_THROTTLE_SEC:
+                return True, int(_RECONCILE_THROTTLE_SEC - elapsed)
+    except Exception:
+        pass
+    return False, 0
+
+
+def reconcile_placeholder_cases(db, *, force: bool = False,
+                                 only_laf_no: str = "",
+                                 notifier=None) -> dict:
+    """修補不完整派案 email 建立的 placeholder 法扶案件。
+
+    從 LAF portal 接案清冊 Excel 抓真實資料：
+    - 用 legal_aid_number 直接比對（不靠 client_name，因為它是垃圾）
+    - 更新 DB: client_name, case_reason, case_stage
+    - 安全 rename 資料夾（lsof 偵測；被開啟則跳過 rename，仍更新 DB）
+    - 更新 DB folder_path
+    - DC 通知律師每筆修正
+
+    Args:
+        db: DatabaseManager 實例
+        force: True 跳過 1 小時節流
+        only_laf_no: 僅處理特定 LAF 案號（CLI 單筆觸發）
+        notifier: optional LAFNotifier；提供時會送 DC 通知
+
+    Returns: dict with placeholder_count, reconciled, renamed, rename_skipped, throttled
+    """
+    # 節流（單筆觸發或 force 時跳過）
+    if not force and not only_laf_no:
+        throttled, remaining = _check_reconcile_throttle()
+        if throttled:
+            return {"throttled": True, "next_run_in_sec": remaining,
+                    "placeholder_count": 0, "reconciled": [], "renamed": [], "rename_skipped": []}
+
+    # Step 1: 找 placeholder 案件
+    where_clause = """
+        WHERE (`case_category` = '法律扶助案件'
+               OR `case_reason` LIKE '%法扶%'
+               OR `case_reason` LIKE '%法律扶助%')
+          AND COALESCE(`legal_aid_number`, '') <> ''
+    """
+    params: tuple = ()
+    if only_laf_no:
+        where_clause += " AND `legal_aid_number` = %s"
+        params = (only_laf_no,)
+    query = f"""
+        SELECT `id`, `case_number`, `client_name`, `case_type`, `case_reason`,
+               `case_stage`, `case_category`, `folder_path`, `legal_aid_number`
+        FROM `cases`
+        {where_clause}
+        ORDER BY `case_number` DESC
+        LIMIT 200
+    """
+    try:
+        all_rows = db.fetch_all(query, params, as_dict=True) or []
+    except Exception as e:
+        logger.error("reconcile fetch failed: %s", e)
+        return {"error": f"fetch_failed: {e}"}
+
+    placeholders = [
+        r for r in all_rows
+        if _is_placeholder_client_name(r.get("client_name") or "")
+        or _is_placeholder_case_reason(r.get("case_reason") or "")
+    ]
+
+    if not placeholders:
+        if not only_laf_no:
+            _write_reconcile_state()
+        return {"placeholder_count": 0, "reconciled": [], "renamed": [], "rename_skipped": []}
+
+    logger.info("🔍 Reconcile: 找到 %d 個 placeholder 案件%s",
+                len(placeholders), f" (filter laf_no={only_laf_no})" if only_laf_no else "")
+
+    # Step 2: 匯出接案清冊 Excel
+    laf = None
+    xlsx_path = None
+    try:
+        laf = _make_laf_web_automation(log_prefix="LAF-RECONCILE")
+        if not laf.login():
+            logger.error("法扶網站登入失敗，無法匯出接案清冊")
+            return {"error": "portal_login_failed", "placeholder_count": len(placeholders)}
+        xlsx_path = laf.export_case_list_excel()
+    except Exception as e:
+        logger.error("匯出接案清冊失敗: %s", e)
+        return {"error": f"excel_export_failed: {e}", "placeholder_count": len(placeholders)}
+    finally:
+        if laf:
+            try:
+                laf.close()
+            except Exception:
+                pass
+
+    if not xlsx_path:
+        return {"error": "excel_path_empty", "placeholder_count": len(placeholders)}
+
+    portal_entries = _parse_case_list_excel(xlsx_path)
+    if not portal_entries:
+        logger.warning("接案清冊 Excel 解析結果為空")
+        return {"error": "excel_parse_empty", "placeholder_count": len(placeholders)}
+
+    applyno_index = {e["applyno"]: e for e in portal_entries}
+    logger.info("接案清冊共 %d 筆，準備比對 %d 個 placeholder", len(portal_entries), len(placeholders))
+
+    # Step 3: 對每個 placeholder 找 portal entry，做修正
+    try:
+        from laf_folder_builder import LAFFolderBuilder
+        folder_builder = LAFFolderBuilder()
+    except Exception as fb_e:
+        logger.error("import LAFFolderBuilder failed: %s", fb_e)
+        return {"error": f"folder_builder_import: {fb_e}", "placeholder_count": len(placeholders)}
+
+    try:
+        from api.case_path_mapper import local_synology_path_candidates as _path_cands
+    except Exception:
+        _path_cands = None
+
+    reconciled = []
+    renamed = []
+    rename_skipped = []
+    not_found_in_portal = []
+
+    for case in placeholders:
+        laf_no = str(case.get("legal_aid_number") or "").strip()
+        case_id = case.get("id")
+        case_number = case.get("case_number") or ""
+        old_client_name = case.get("client_name") or ""
+        old_case_reason = case.get("case_reason") or ""
+        old_folder_path = case.get("folder_path") or ""
+        old_case_stage = case.get("case_stage") or ""
+
+        portal = applyno_index.get(laf_no)
+        if not portal:
+            logger.info("⏭️ %s: 接案清冊找不到 LAF %s", case_number, laf_no)
+            not_found_in_portal.append({"case_number": case_number, "laf_no": laf_no})
+            continue
+
+        new_client_name = (portal.get("name") or "").strip().translate(_NAME_FIXES)
+        new_case_reason = (portal.get("reason") or "").strip()
+        new_case_stage = (portal.get("procedure") or "").strip()
+
+        if not new_client_name and not new_case_reason:
+            logger.info("⏭️ %s: portal entry name/reason 都空", case_number)
+            continue
+
+        # 消費者債務清理特殊處理
+        case_type = case.get("case_type") or ""
+        case_category = case.get("case_category") or ""
+        if case_type == "消費者債務清理" or case_category == "消費者債務清理" or "消費者債務清理" in new_case_reason:
+            if "清算" not in new_case_reason:
+                new_case_reason = "更生"
+
+        # 若 portal 給的資料和 DB 完全一樣，跳過（雖然不該發生）
+        if (new_client_name == old_client_name
+                and new_case_reason == old_case_reason
+                and new_case_stage == old_case_stage):
+            continue
+
+        # Step 4: UPDATE DB（先用 case_id 直接 UPDATE）
+        try:
+            db.execute_write(
+                """UPDATE `cases`
+                   SET `client_name` = %s,
+                       `case_reason` = %s,
+                       `case_stage` = CASE WHEN COALESCE(`case_stage`,'') IN ('','待確認','未確認') THEN %s ELSE `case_stage` END
+                   WHERE `id` = %s""",
+                (new_client_name, new_case_reason, new_case_stage, case_id),
+            )
+            logger.info("📝 DB updated %s: name=%s reason=%s stage=%s",
+                        case_number, new_client_name, new_case_reason, new_case_stage)
+        except Exception as e:
+            logger.error("UPDATE DB failed for %s: %s", case_number, e)
+            continue
+
+        # Step 5: Rename folder（找到實體舊路徑 + 安全 rename）
+        new_folder_info = {
+            "case_number": case_number,
+            "client_name": new_client_name,
+            "case_type": case_type,
+            "case_stage": new_case_stage,
+            "case_reason": new_case_reason,
+        }
+        new_basename = folder_builder._build_folder_name(new_folder_info)
+
+        rename_result = {"renamed": False, "old": old_folder_path,
+                         "new": "", "reason": "", "new_canonical": ""}
+
+        if old_folder_path:
+            old_local = ""
+            cands = []
+            if _path_cands:
+                cands = _path_cands(old_folder_path) or []
+            for cand in cands:
+                if os.path.isdir(cand):
+                    old_local = cand
+                    break
+
+            if old_local:
+                new_local = os.path.join(os.path.dirname(old_local), new_basename)
+                ok, reason = _safe_rename_case_folder(old_local, new_local)
+                rename_result["old"] = old_local
+                rename_result["new"] = new_local
+                rename_result["reason"] = reason
+                rename_result["renamed"] = ok
+
+                if ok:
+                    new_canonical = _replace_folder_basename_canonical(old_folder_path, new_basename)
+                    rename_result["new_canonical"] = new_canonical
+                    try:
+                        db.execute_write(
+                            "UPDATE `cases` SET `folder_path` = %s WHERE `id` = %s",
+                            (new_canonical, case_id),
+                        )
+                        renamed.append({
+                            "case_number": case_number,
+                            "old_local": old_local,
+                            "new_local": new_local,
+                            "new_canonical": new_canonical,
+                        })
+                        logger.info("📁 Renamed %s: %s → %s", case_number,
+                                    os.path.basename(old_local), new_basename)
+                    except Exception as e:
+                        logger.error("UPDATE folder_path failed for %s: %s", case_number, e)
+                        rename_result["reason"] = f"db_update_failed_after_rename:{e}"
+                else:
+                    rename_skipped.append({
+                        "case_number": case_number,
+                        "old": old_local,
+                        "intended_new": new_local,
+                        "reason": reason,
+                    })
+                    logger.info("📁 Rename skipped %s: %s (folder=%s)",
+                                case_number, reason, os.path.basename(old_local))
+            else:
+                rename_skipped.append({
+                    "case_number": case_number,
+                    "old": old_folder_path,
+                    "intended_new": "",
+                    "reason": "old_local_not_found",
+                })
+
+        reconciled.append({
+            "case_number": case_number,
+            "laf_no": laf_no,
+            "old_client_name": old_client_name,
+            "new_client_name": new_client_name,
+            "old_case_reason": old_case_reason,
+            "new_case_reason": new_case_reason,
+            "old_case_stage": old_case_stage,
+            "new_case_stage": new_case_stage,
+            "rename_result": rename_result,
+        })
+
+    # Step 6: 通知律師
+    if notifier and reconciled:
+        try:
+            lines = ["📝 法扶 placeholder 案件已自動修正"]
+            for r in reconciled:
+                lines.append("")
+                lines.append(f"• {r['case_number']} ({r['laf_no']})")
+                lines.append(f"  當事人: 「{r['old_client_name']}」 → 「{r['new_client_name']}」")
+                lines.append(f"  案由: 「{r['old_case_reason']}」 → 「{r['new_case_reason']}」")
+                rr = r["rename_result"]
+                if rr["renamed"]:
+                    lines.append(f"  📁 資料夾已 rename → {os.path.basename(rr['new'])}")
+                elif rr.get("reason", "").startswith("folder_open"):
+                    proc = rr["reason"].split(":", 1)[-1] if ":" in rr["reason"] else "?"
+                    lines.append(f"  ⚠️ 資料夾正開啟（{proc}），DB 已更新但資料夾未 rename。")
+                    lines.append(f"     請關閉相關應用後手動重跑：reconcile_placeholder --laf-no {r['laf_no']}")
+                elif rr.get("reason"):
+                    lines.append(f"  ⚠️ 資料夾 rename 跳過：{rr['reason']}（DB 已更新）")
+            try:
+                notifier.notify_admin("\n".join(lines), topic_key="laf")
+            except TypeError:
+                notifier.notify_admin("\n".join(lines))
+        except Exception as e:
+            logger.warning("send reconcile notify failed: %s", e)
+
+    # 清理暫存 Excel
+    try:
+        if xlsx_path and os.path.exists(xlsx_path):
+            os.remove(xlsx_path)
+    except Exception:
+        pass
+
+    if not only_laf_no:
+        _write_reconcile_state()
+
+    return {
+        "placeholder_count": len(placeholders),
+        "reconciled": reconciled,
+        "renamed": renamed,
+        "rename_skipped": rename_skipped,
+        "not_found_in_portal": not_found_in_portal,
+        "throttled": False,
+    }
+
+
 # ─── 2. 掃描開辦/結案狀態 ─────────────────────────────────────
 
 def scan_laf_reporting_status(db) -> dict:
@@ -1663,6 +2101,30 @@ def run_audit(notify: bool = True, dry_run: bool = False) -> dict:
         backfilled.extend(caselist_backfilled)
         logger.info("自動補填成功（接案清冊）: %d", len(caselist_backfilled))
 
+    # 2c. Placeholder 案件 reconcile：派案 email 不完整建立的案件，從接案清冊修正 client/案由 + rename 資料夾
+    reconcile_result = {}
+    if not dry_run:
+        try:
+            notifier = None
+            if notify:
+                try:
+                    from line_notifier import LAFNotifier  # type: ignore
+                    notifier = LAFNotifier()
+                except Exception:
+                    notifier = None
+            reconcile_result = reconcile_placeholder_cases(db, force=True, notifier=notifier)
+            if reconcile_result.get("reconciled"):
+                logger.info(
+                    "✅ Placeholder reconcile: %d 筆已修正（rename %d, skip %d）",
+                    len(reconcile_result.get("reconciled") or []),
+                    len(reconcile_result.get("renamed") or []),
+                    len(reconcile_result.get("rename_skipped") or []),
+                )
+            elif reconcile_result.get("error"):
+                logger.warning("Placeholder reconcile 失敗: %s", reconcile_result.get("error"))
+        except Exception as _rc_e:
+            logger.warning("Placeholder reconcile 跳過: %s", _rc_e)
+
     # 3. 掃描開辦/結案狀態
     status = scan_laf_reporting_status(db)
     logger.info(
@@ -1895,12 +2357,47 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="法扶夜間巡檢")
     parser.add_argument("--dry-run", action="store_true", help="預覽模式，不寫入 DB 也不發送通知")
     parser.add_argument("--no-notify", action="store_true", help="不發送 Telegram 通知")
-    parser.add_argument("--mode", choices=["full", "backfill"], default="full",
-                        help="full=完整巡檢, backfill=只補填案號")
+    parser.add_argument("--mode", choices=["full", "backfill", "reconcile_placeholder"],
+                        default="full",
+                        help="full=完整巡檢, backfill=只補填案號, reconcile_placeholder=修補不完整 placeholder 案件")
+    parser.add_argument("--laf-no", default="", help="只處理特定 LAF 案號（reconcile_placeholder 專用）")
+    parser.add_argument("--force", action="store_true", help="跳過 1 小時節流（reconcile_placeholder 專用）")
     args = parser.parse_args()
 
     if args.mode == "backfill":
         result = run_backfill_only(notify=not args.no_notify)
+    elif args.mode == "reconcile_placeholder":
+        # 強制 load PROJECT_ROOT/osc.py（含 DatabaseManager），覆蓋
+        # casper_ecosystem/law_firm_orchestrators/osc/ package（無 DatabaseManager）
+        import sys as _sys
+        try:
+            import importlib.util as _ilu
+            _osc_path = os.path.join(PROJECT_ROOT, "osc.py")
+            if os.path.isfile(_osc_path):
+                _spec = _ilu.spec_from_file_location("osc", _osc_path)
+                _mod = _ilu.module_from_spec(_spec)
+                _sys.modules["osc"] = _mod  # 先 register 才能讓 _spec.loader.exec_module 內部 self-import 成功
+                _spec.loader.exec_module(_mod)
+                logger.info("force-loaded osc.py from %s (has DatabaseManager=%s)",
+                            _osc_path, hasattr(_mod, "DatabaseManager"))
+        except Exception as _e:
+            logger.warning("force load osc.py failed: %s", _e)
+        db = _get_db()
+        if not db:
+            result = {"success": False, "error": "db init failed"}
+        else:
+            notifier = None
+            if not args.no_notify:
+                try:
+                    from line_notifier import LAFNotifier  # type: ignore
+                    notifier = LAFNotifier()
+                except Exception:
+                    notifier = None
+            force = args.force or bool(args.laf_no)
+            result = reconcile_placeholder_cases(
+                db, force=force, only_laf_no=args.laf_no.strip(), notifier=notifier,
+            )
+            result["success"] = "error" not in result
     else:
         # Housekeeping: clean up old exports (>30 days)
         try:

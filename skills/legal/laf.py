@@ -619,6 +619,28 @@ class LAFCaseTypeParser:
             info.needs_download = True
             return info
 
+        # 4.5 ★ 專員來信新格式：廖錦明(1150429-T-052)--案情文件 / 廖錦明(1150429-T-052)
+        # 客戶名在 ( 之前，案號在 () 內，後面 -- 是描述後綴（垃圾，不要當案由）
+        # 必須在 staff_short_match 之前 match，避免後者誤把 ")--案情文件" 抓成 client_name
+        new_paren_match = re.search(
+            r'(?<![一-鿿])([一-鿿·]{2,8})\s*[(（]\s*(\d{7}-[A-Z]-\d{3})\s*[)）]',
+            subject,
+        )
+        if new_paren_match:
+            info.client_name = new_paren_match.group(1).strip()
+            info.laf_case_number = new_paren_match.group(2)
+            info.notification_type = "派案通知"
+            info.branch = "待確認"
+            # case_reason 從 email body 推斷（subject 後綴 -- 是 attachment 描述不可用）
+            # 預設視為一般案件待確認；handle_go_live 與後續 reconcile 會補正
+            info.case_type = "民事"
+            info.case_stage = "一審"
+            info.case_reason = "待確認"
+            info.laf_case_type = "一般案件"
+            info.has_attachment = True
+            info.needs_download = True
+            return info
+
         # 5. ★ 專員來信簡寫格式：1150324-T-047沈筱筑(債清)
         # 格式：{案號}{當事人}({案由簡稱})  或  {案號}{當事人}
         staff_short_match = re.search(

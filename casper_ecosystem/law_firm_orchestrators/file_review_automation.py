@@ -1311,6 +1311,12 @@ class FileReviewManager:
         self.download_registry_file = os.path.join(self.download_folder, "downloaded_registry.json")
         self._download_registry = self._load_download_registry()
 
+        # ★ 已點擊下載按鈕 registry（button-level dedup）
+        # 同一案件在 OLA 上可能有多筆聲請（多個 row, 各有自己的下載按鈕），
+        # 用 rowid 記錄每個按鈕，避免同 button 被重複點擊；新 button 則一定下載
+        self.clicked_rowids_file = os.path.join(self.download_folder, "clicked_rowids.json")
+        self._clicked_rowids: dict = self._load_clicked_rowids()
+
         # 已處理的「待繳費」項目（避免重複點擊/下載同一張繳費單）
         self.payment_registry_file = os.path.join(self.download_folder, "payment_registry.json")
         self.payment_registry = self._load_payment_registry()
@@ -1891,11 +1897,21 @@ class FileReviewManager:
     @staticmethod
     def _strip_chrome_suffix(filename: str) -> str:
         """
-        去除 Chrome 自動加上的 (N) 後綴。
-        例: '113_偵_002746_DOC_001_OCR (3).pdf' → '113_偵_002746_DOC_001_OCR.pdf'
+        把每次下載 OLA 給的不同檔名規範化成統一 base name 用於 dedup。
+
+        移除：
+        - Chrome 自動加上的 ` (N)` 後綴
+        - OLA 在 OCR 後加的 epoch timestamp `_OCR_<10digit_epoch>` → `_OCR`
+          （每次點線上下載按鈕，OLA 給的檔名 epoch 都不同，但實際是同一份卷宗 → 必須 normalize）
+
+        例:
+        - `113_偵_002746_DOC_001_OCR (3).pdf` → `113_偵_002746_DOC_001_OCR.pdf`
+        - `115_偵_000333_DOC_001_1150331191909_OCR_1777541155.pdf` → `115_偵_000333_DOC_001_1150331191909_OCR.pdf`
         """
         stem, ext = os.path.splitext(filename)
-        # 移除尾部的 " (N)"
+        # 1. 移除 OLA 加的 epoch timestamp suffix `_<10digit>` after `_OCR`
+        stem = re.sub(r'_OCR_\d{10,13}$', '_OCR', stem)
+        # 2. 移除 Chrome 重複後綴 ` (N)`
         cleaned = re.sub(r'\s*\(\d+\)$', '', stem)
         return cleaned + ext
 
@@ -1908,6 +1924,44 @@ class FileReviewManager:
             except Exception:
                 logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 1507, exc_info=True)
         return {}
+
+    def _load_clicked_rowids(self) -> dict:
+        """載入已點擊下載按鈕的 rowid registry（button-level dedup）。"""
+        if os.path.exists(self.clicked_rowids_file):
+            try:
+                with open(self.clicked_rowids_file, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+            except Exception:
+                logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 1920, exc_info=True)
+        return {}
+
+    def _save_clicked_rowids(self):
+        try:
+            os.makedirs(os.path.dirname(self.clicked_rowids_file), exist_ok=True)
+            with open(self.clicked_rowids_file, 'w', encoding='utf-8') as f:
+                json.dump(self._clicked_rowids, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            self.log(f"  ⚠️ 儲存 clicked_rowids 失敗: {e}")
+
+    def _is_rowid_clicked(self, rowid: str) -> bool:
+        """檢查某個 OLA rowid 是否已被點擊過下載按鈕。"""
+        rid = str(rowid or "").strip()
+        if not rid:
+            return False
+        return rid in self._clicked_rowids
+
+    def _register_rowid_clicked(self, rowid: str, case_info: dict = None):
+        """登錄已點擊下載按鈕的 rowid。"""
+        rid = str(rowid or "").strip()
+        if not rid:
+            return
+        if rid not in self._clicked_rowids:
+            self._clicked_rowids[rid] = {
+                "first_clicked": datetime.now().isoformat(),
+                "yyidno": (case_info or {}).get("case_number") or (case_info or {}).get("yyidno") or "",
+                "party": (case_info or {}).get("party") or (case_info or {}).get("client_name") or "",
+            }
+            self._save_clicked_rowids()
 
     def _load_manual_archive_map(self) -> dict:
         """載入手動歸檔映射"""
@@ -2304,11 +2358,16 @@ class FileReviewManager:
 
         判斷依據（任一命中即視為已繳費）：
         - paystatus == '1'  → OLA 列表標記已繳
-        - p_status == 'Y'   → OLA 列表繳費完成
-        - payment == 'Y'    → OLA 繳費旗標
-        - statusnm / result 文字包含「已繳」「繳費完成」「收據」
+        - payment == 'Y'    → OLA 繳費旗標已設
+        - statusnm / result 文字包含「已繳」「繳費完成」「收據」「繳訖」
         - 不再是 pending_payment（statusnm 無「待繳費」且 paystatus != '2'）
           且 status 已推進到後續階段 (status >= '4')
+
+        ⚠️ 注意：`p_status == 'Y'` 不是「已繳費」，而是「繳費單已產生可下載」
+        （OLA 把 p_payid / barcode 欄位填上即會將 p_status 設為 'Y'）。
+        曾有 bug 把 p_status='Y' 誤判為已繳，導致剛下載的繳費單立刻被跳過通知，
+        DC 收不到 PDF（陳文明 115.原訴.000036 案 2026-04-29 觸發；
+        詳見 docs/FIXES/2026-04-29_payment_p_status_misjudgment.md）。
         """
         if not isinstance(row_json, dict):
             return False
@@ -2321,7 +2380,8 @@ class FileReviewManager:
         combined_text = f"{statusnm} {result_text}"
 
         paid = False
-        if paystatus == "1" or p_status == "Y" or payment == "Y":
+        # p_status 已從 paid 條件移除（它代表「繳費單已產生」，不是「已繳費」）
+        if paystatus == "1" or payment == "Y":
             paid = True
         elif any(kw in combined_text for kw in ("已繳", "繳費完成", "收據", "繳訖")):
             paid = True
@@ -4019,12 +4079,24 @@ class FileReviewManager:
             rows_data = self.driver.execute_script(
                 """
                 function hasOnlineDownload(row) {
-                  const inputSel = "input[type='button'][title='線上下載'],input[type='button'][value='線上下載'],input[name='btn_pay']";
+                  // 嚴格只認「線上下載」按鈕；btn_pay 是「繳費」按鈕，不可視為可下載
+                  // （之前誤把 btn_pay 加進 selector，導致每筆待繳費案件都被誤分類為 downloadable）
+                  const inputSel = "input[type='button'][title='線上下載'],input[type='button'][value='線上下載']";
                   if (row.querySelector(inputSel)) return true;
-                  const nodes = Array.from(row.querySelectorAll("button,a,input[type='button'],input[type='submit']"));
+                  // 擴大兼容：button/a/input 含「線上下載」或「下載卷宗」等文字 + onclick 含 doViewFile / doDownload
+                  const nodes = Array.from(row.querySelectorAll("button,a,input[type='button'],input[type='submit'],input[type='image'],img"));
                   return nodes.some((n) => {
-                    const t = ((n.innerText || n.value || n.title || '') + '').replace(/\\s+/g, '');
-                    return t.indexOf('線上下載') >= 0;
+                    const name = ((n.name || '') + '').toLowerCase();
+                    if (name === 'btn_pay') return false;  // 排除繳費按鈕
+                    const txt = ((n.innerText || n.value || n.title || n.alt || '') + '').replace(/\\s+/g, '');
+                    if (txt.indexOf('線上下載') >= 0) return true;
+                    if (txt.indexOf('下載卷宗') >= 0) return true;
+                    // 圖示按鈕（無文字）— 看 onclick / src
+                    const onclick = ((n.getAttribute && n.getAttribute('onclick')) || '') + '';
+                    if (onclick.indexOf('doViewFile') >= 0) return true;
+                    if (onclick.indexOf('doDownload') >= 0) return true;
+                    if (onclick.indexOf('downloadFile') >= 0) return true;
+                    return false;
                   });
                 }
 
@@ -5750,18 +5822,37 @@ class FileReviewManager:
                             else:
                                 continue
 
-                    # ★★★ Registry 去重：如果該案號已經下載過，跳過 ★★★
+                    # ★★★ Registry 去重：分兩種情境 ★★★
+                    # 1. row 沒有「線上下載」按鈕：用 case-level dedup（看 yyidno 是否完全下載過）跳過
+                    # 2. row 有「線上下載」按鈕：用 button-level dedup（看 rowid 是否點過）跳過
+                    #    — 因為同案可能有多個聲請（多 row），每個 row 是獨立的下載按鈕
+                    #    — 同案資料夾已有舊卷宗也不能跳，法院可能追加上傳新卷宗
+                    #    — 檔案層級的去重（檔名/hash）由 archive 階段處理：已存在則刪、不存在則歸檔
                     yyidno_for_dedup = (case_info.get("case_number") or case_info.get("showyyidno") or "").strip()
-                    if self.enable_case_level_download_skip and yyidno_for_dedup and self._is_yyidno_fully_downloaded(yyidno_for_dedup):
-                        party_label = (case_info.get("party") or "").strip() or "(未知)"
-                        self.log(f"  ⏭️ [已下載] 跳過案號 {yyidno_for_dedup} (當事人: {party_label})——registry 中已有紀錄")
-                        continue
+                    party_label = (case_info.get("party") or "").strip() or "(未知)"
+                    # row_json 是 scope 內的 local 變數（line ~5660 由 _extract_row_json 提取）
+                    row_id_for_dedup = ""
+                    try:
+                        if isinstance(row_json, dict):
+                            row_id_for_dedup = str(row_json.get("rowid") or row_json.get("no") or "").strip()
+                    except Exception:
+                        row_id_for_dedup = ""
 
-                    # ★★★ 案件資料夾去重：如果閱卷資料夾已有檔案，跳過下載 ★★★
-                    if self._case_review_folder_has_files(case_info):
-                        party_label = (case_info.get("party") or "").strip() or "(未知)"
-                        self.log(f"  ⏭️ [閱卷資料已存在] 跳過案號 {yyidno_for_dedup} (當事人: {party_label})——案件資料夾已有閱卷資料")
-                        continue
+                    if not row_has_online_download:
+                        # 情境 1：沒下載按鈕 → 用 case-level dedup
+                        if self.enable_case_level_download_skip and yyidno_for_dedup and self._is_yyidno_fully_downloaded(yyidno_for_dedup):
+                            self.log(f"  ⏭️ [已下載] 跳過案號 {yyidno_for_dedup} (當事人: {party_label})——registry 中已有紀錄")
+                            continue
+                        if self._case_review_folder_has_files(case_info):
+                            self.log(f"  ⏭️ [閱卷資料已存在] 跳過案號 {yyidno_for_dedup} (當事人: {party_label})——案件資料夾已有閱卷資料")
+                            continue
+                    else:
+                        # 情境 2：有下載按鈕 → 用 button-level (rowid) dedup
+                        if row_id_for_dedup and self._is_rowid_clicked(row_id_for_dedup):
+                            self.log(f"  ⏭️ [按鈕已點過] 跳過 rowid={row_id_for_dedup} ({party_label}/{yyidno_for_dedup})——button registry 已有紀錄")
+                            continue
+                        if self._case_review_folder_has_files(case_info):
+                            self.log(f"  ℹ️ [追加上傳偵測] 資料夾已有舊閱卷資料，但 portal 仍顯示「線上下載」且此 rowid 未點過，續跑（檔名/hash dedup 會擋重複）: {yyidno_for_dedup} ({party_label})")
                     
                     # 嘗試點擊並確認彈窗開啟 (最多試 3 次)
                     max_open_retries = 3
@@ -5955,6 +6046,18 @@ class FileReviewManager:
                     if not popup_opened:
                         self.log("  ❌ 嘗試多次仍無法開啟彈窗，跳過此項目")
                         continue
+
+                    # ★ Button-level dedup：成功點擊下載按鈕後登錄 rowid，避免下次同 button 被重複點擊
+                    try:
+                        if row_id_for_dedup:
+                            _info_for_reg = {
+                                "case_number": (case_info.get("case_number") if isinstance(case_info, dict) else "") or yyidno_for_dedup,
+                                "party": (case_info.get("party") if isinstance(case_info, dict) else "") or party_label,
+                            }
+                            self._register_rowid_clicked(row_id_for_dedup, _info_for_reg)
+                            self.log(f"  ✓ 已登錄 rowid: {row_id_for_dedup}")
+                    except Exception as _rrc_e:
+                        self.log(f"  ⚠️ 登錄 rowid 失敗: {_rrc_e}")
 
                     # 處理彈窗 (傳入記錄的視窗清單以偵測新視窗)
                     self.log("  進入彈窗內容處理...")
@@ -6799,14 +6902,23 @@ class FileReviewManager:
 
             os.makedirs(review_folder, exist_ok=True)
 
-            # avoid duplicates
+            # avoid duplicates — 用 _strip_chrome_suffix 規範化的 base name 比對
+            # 因為 OLA 每次線上下載給的 epoch suffix 不同（_OCR_<10digit>），exact filename 永遠不 match → 重複歸檔
             try:
+                norm_filename = self._strip_chrome_suffix(filename)
                 for root, _dirs, files in os.walk(review_folder):
-                    if filename in files:
-                        self.log(f"  ⏭️ 已存在，跳過: {filename}")
-                        # 回報用：仍視為 ok，dst 以現有路徑為準（若能找到）。
-                        existing = os.path.join(root, filename)
-                        return {"ok": True, "dst": existing, "action": "exists_skip"}
+                    for existing_fn in files:
+                        if self._strip_chrome_suffix(existing_fn) == norm_filename:
+                            self.log(f"  ⏭️ 已存在（規範化後同名），跳過: {filename} (existing: {existing_fn})")
+                            existing = os.path.join(root, existing_fn)
+                            # 來源檔處理：no_delete 模式保留；否則 isolate
+                            if not self.no_delete:
+                                try:
+                                    if safe_remove:
+                                        safe_remove(file_path, reason="archive_dup_normalized", allow_delete=True, log=self.log)
+                                except Exception:
+                                    pass
+                            return {"ok": True, "dst": existing, "action": "exists_skip"}
             except Exception:
                 logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 5989, exc_info=True)
 
@@ -8514,12 +8626,18 @@ class FileReviewManager:
             # ========= 步驟 2: 找到目標列 =========
             self.log("  搜尋目標案件...")
 
+            # 上傳繳費憑證時，必須挑「待繳費」未繳的那一列；
+            # 同案多列（例如先聲請本審後又合併聲請）時，第一列可能是已繳，會把繳費截圖傳錯。
+            # 因此 file_remark='繳費憑證' 時，過濾掉 paystatus='1' / payment='Y' / 文字含「已繳/繳費完成」的列。
+            # （陳文明 115.原訴.000036 案 2026-04-29 踩到，詳見 docs/FIXES/2026-04-29_payment_p_status_misjudgment.md）
+            _is_payment_proof_upload = (file_remark == "繳費憑證")
             target_row_idx = self.driver.execute_script("""
             var rows = document.querySelectorAll('tr');
             var targetYear = arguments[0];
             var targetType = arguments[1];
             var targetNum = arguments[2];
             var targetName = arguments[3];
+            var isPaymentProofUpload = arguments[4] || false;
 
             // Build multiple matching patterns
             var numPadded = ('000000' + targetNum).slice(-6);
@@ -8529,14 +8647,15 @@ class FileReviewManager:
                 targetYear + '.原金訴.' + numPadded,
             ];
 
+            // 兩階段：先收集所有 match 的 row + 是否已繳，再依 isPaymentProofUpload 挑選
+            var candidates = [];  // [{idx, paid, hasPending}]
+
             for (var i = 0; i < rows.length; i++) {
                 var row = rows[i];
                 var rowText = (row.innerText || '').toString();
 
-                // Skip rows that don't have the target name
                 if (targetName && rowText.indexOf(targetName) < 0) continue;
 
-                // Match by case number pattern in visible text
                 var matchCase = false;
                 for (var p = 0; p < patterns.length; p++) {
                     if (rowText.indexOf(patterns[p]) >= 0) {
@@ -8545,7 +8664,6 @@ class FileReviewManager:
                     }
                 }
 
-                // Also try data-json if available
                 if (!matchCase) {
                     var jsonStr = row.getAttribute('data-json');
                     if (jsonStr) {
@@ -8562,14 +8680,50 @@ class FileReviewManager:
                     }
                 }
 
-                // Also check if row has "取消" status (skip cancelled ones)
-                if (matchCase) {
-                    if (rowText.indexOf('聲請者取消') >= 0) continue;
-                    return i;
+                if (!matchCase) continue;
+                if (rowText.indexOf('聲請者取消') >= 0) continue;
+
+                // 判定該列繳費狀態
+                var paid = false;
+                var hasPending = (rowText.indexOf('待繳費') >= 0);
+                if (rowText.indexOf('已繳') >= 0 || rowText.indexOf('繳費完成') >= 0 || rowText.indexOf('繳訖') >= 0) {
+                    paid = true;
                 }
+                var jsonStr2 = row.getAttribute('data-json');
+                if (jsonStr2) {
+                    try {
+                        var rj2 = JSON.parse(jsonStr2);
+                        var ps = (rj2.paystatus || '').toString();
+                        var pmt = (rj2.payment || '').toString().toUpperCase();
+                        if (ps === '1' || pmt === 'Y') paid = true;
+                        if (ps === '2') hasPending = true;  // paystatus=2 = 待繳費
+                    } catch(e) {}
+                }
+
+                candidates.push({idx: i, paid: paid, hasPending: hasPending});
             }
-            return -1;
-            """, year, case_type, case_number, client_name)
+
+            if (candidates.length === 0) return -1;
+
+            if (isPaymentProofUpload) {
+                // 1. 優先挑「待繳費」row
+                for (var c = 0; c < candidates.length; c++) {
+                    if (candidates[c].hasPending && !candidates[c].paid) return candidates[c].idx;
+                }
+                // 2. 其次挑非已繳的 row
+                for (var c = 0; c < candidates.length; c++) {
+                    if (!candidates[c].paid) return candidates[c].idx;
+                }
+                // 3. 全都已繳：log 警告，回 -1（不上傳到已繳 row 避免錯亂）
+                console.warn('[upload_payment_proof] all matched rows are already paid; refusing to upload');
+                return -1;
+            }
+            // 非繳費憑證：維持原行為（首個 match）
+            return candidates[0].idx;
+            """, year, case_type, case_number, client_name, _is_payment_proof_upload)
+
+            if _is_payment_proof_upload and (target_row_idx is None or target_row_idx < 0):
+                self.log("  ⚠️ 繳費憑證上傳：找不到「待繳費」row（可能所有 row 都已繳費），拒絕上傳到已繳列以避免錯亂")
 
             if target_row_idx is None or target_row_idx < 0:
                 self.log("  ❌ 找不到目標案件的列")
@@ -10086,7 +10240,7 @@ class FileReviewManager:
             # paper_review=True  → applyway=0 (閱紙本卷), 無 getway, applytype=0 (全卷)
             # paper_review=False → applyway=1 (複製電子卷證), getway=線上交付, applytype=2 (合併聲請)
             js_select_radios = """
-            (function() {
+            return (function() {
                 var selected = [];
                 var isPaper = arguments[1] || false;
 
@@ -10113,15 +10267,74 @@ class FileReviewManager:
                     selected.push('聲請方式=' + (isPaper ? '紙本' : '電子'));
                 }
 
-                // 2. 聲請範圍 (applytype — 紙本時可能不存在)
+                // 2. 聲請範圍 — OLA 真實 radio name 是 dossier_radio（不是 applytype），
+                // 並有對應 hidden input name="dossier" 儲存最終文字值（送出時讀此欄位）。
+                // 必須同時 click radio 並更新 hidden dossier.value，否則送出的仍是預設「聲請本審」。
+                // 陳文明 115.原訴.000036（2026-04-29）即因 OLA 改 name 而踩到此 bug。
+                // 為相容 OLA 未來改名，依下列順序嘗試：dossier_radio → applytype（舊名）→ 任何含「合併」label 的 radio
                 if (!isPaper) {
-                    var applytype = document.querySelector('input[name="applytype"][value="2"]') ||
-                                    document.querySelector('input[name="applytype"][value="合併聲請"]');
-                    if (applytype && !applytype.checked) {
-                        applytype.checked = true;
-                        applytype.click();
-                        applytype.dispatchEvent(new Event('change', {bubbles: true}));
-                        selected.push('聲請範圍');
+                    var TARGET_DOSSIER = '合併聲請本審及本審以外之電子卷證';
+                    var applytype = null;
+                    var radioNames = ['dossier_radio', 'applytype'];
+                    // 1. value 完全 match
+                    for (var ni = 0; ni < radioNames.length && !applytype; ni++) {
+                        applytype =
+                            document.querySelector('input[name="' + radioNames[ni] + '"][value="' + TARGET_DOSSIER + '"]') ||
+                            document.querySelector('input[name="' + radioNames[ni] + '"][value="2"]') ||
+                            document.querySelector('input[name="' + radioNames[ni] + '"][value="合併聲請"]');
+                    }
+                    // 2. label / 周圍文字含「合併」「本審及本審以外」「本審以外」
+                    if (!applytype) {
+                        for (var ni2 = 0; ni2 < radioNames.length && !applytype; ni2++) {
+                            var radios = document.querySelectorAll('input[name="' + radioNames[ni2] + '"]');
+                            for (var ri = 0; ri < radios.length; ri++) {
+                                var r = radios[ri];
+                                var label = '';
+                                if (r.id) {
+                                    var lbl = document.querySelector('label[for="' + r.id + '"]');
+                                    if (lbl) label = lbl.textContent || '';
+                                }
+                                if (!label && r.parentElement && r.parentElement.tagName === 'LABEL') {
+                                    label = r.parentElement.textContent || '';
+                                }
+                                if (!label && r.nextSibling) {
+                                    label = (r.nextSibling.textContent || r.nextSibling.nodeValue || '');
+                                }
+                                if (!label) {
+                                    var tr = r.closest('tr') || r.closest('div') || r.parentElement;
+                                    if (tr) label = tr.textContent || '';
+                                }
+                                if (label && (label.indexOf('合併') >= 0 ||
+                                              label.indexOf('本審及本審以外') >= 0)) {
+                                    applytype = r;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    // 3. 最後 fallback：dossier_radio 最後一個 → applytype 最後一個
+                    if (!applytype) {
+                        for (var ni3 = 0; ni3 < radioNames.length && !applytype; ni3++) {
+                            var allATs = document.querySelectorAll('input[name="' + radioNames[ni3] + '"]');
+                            if (allATs.length > 0) applytype = allATs[allATs.length - 1];
+                        }
+                    }
+                    if (applytype) {
+                        if (!applytype.checked) {
+                            applytype.checked = true;
+                            applytype.click();
+                            applytype.dispatchEvent(new Event('change', {bubbles: true}));
+                        }
+                        // 同步更新 hidden dossier.value（OLA 送出時讀此欄位）
+                        var hiddenDossier = document.querySelector('input[name="dossier"]');
+                        if (hiddenDossier) {
+                            var newVal = applytype.value || TARGET_DOSSIER;
+                            if (hiddenDossier.value !== newVal) {
+                                hiddenDossier.value = newVal;
+                                hiddenDossier.dispatchEvent(new Event('change', {bubbles: true}));
+                            }
+                        }
+                        selected.push('聲請範圍=' + (applytype.value || '?') + ' [name=' + applytype.name + ']');
                     }
                 } else {
                     // 紙本: 選第一個 applytype (全卷) 如果存在
@@ -10155,6 +10368,18 @@ class FileReviewManager:
                     }
                 }
 
+                // 5. 最終狀態 sanity check：dossier 與 getway 是否真的選對；若沒選到追加 warning
+                var hiddenDossier2 = document.querySelector('input[name="dossier"]');
+                var dossierVal = hiddenDossier2 ? (hiddenDossier2.value||'') : '';
+                if (!isPaper && dossierVal && dossierVal.indexOf('合併') < 0) {
+                    selected.push('⚠️ 警告: dossier hidden 仍是 "' + dossierVal.slice(0,30) + '"，不是合併聲請');
+                }
+                if (!isPaper) {
+                    var getwayChecked = document.querySelector('input[name="getway"]:checked');
+                    if (!getwayChecked || (getwayChecked.value||'').indexOf('線上') < 0) {
+                        selected.push('⚠️ 警告: getway 不是線上交付');
+                    }
+                }
                 return selected;
             })();
             """
@@ -10182,7 +10407,7 @@ class FileReviewManager:
             try:
                 selected_options = self.driver.execute_script(js_select_radios, _is_appointed_defense, _is_paper)
                 if selected_options:
-                    self.log(f"  ✓ JS 批次選擇: {', '.join(selected_options)}")
+                    self.log(f"  ✓ JS 批次選擇: {', '.join(str(x) for x in selected_options)}")
                 else:
                     self.log("  ℹ️ 選項已預設或不需變更")
             except Exception as js_e:
@@ -11001,10 +11226,10 @@ class FileReviewManager:
                         return None  # intentional skip
 
             # ── 從 DB 補齊法院名稱和當事人（email 路徑常缺這些）──
-            if (not info.court or info.court == "-") and _ck and self.db_manager:
+            if (not info.court or info.court == "-") and _ck and self.db:
                 try:
                     _norm_ck = re.sub(r"[年度字第號\s]+", "", _ck)
-                    _db_row = self.db_manager.fetch_one(
+                    _db_row = self.db.fetch_one(
                         "SELECT court_name, client_name FROM cases WHERE "
                         "REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(court_case_number,'年度',''),'年',''),'字第',''),'號',''),' ','') LIKE %s "
                         "LIMIT 1",
@@ -11026,7 +11251,7 @@ class FileReviewManager:
             #   2. 只寫空欄位（不覆蓋已有值）
             #   3. 不碰 case_stage / case_type / case_category
             #   4. 案號 match 不到時，才 fallback 用 client_name + 唯一空案號
-            if _ck and self.db_manager:
+            if _ck and self.db:
                 try:
                     _ck_formal = _ck
                     # 正規化案號用於模糊比對：去掉「年度字第號」
@@ -11034,7 +11259,7 @@ class FileReviewManager:
                     _division = getattr(info, "court_division", "") or ""
 
                     # 策略 1：案號精確 match（最安全）
-                    _db_row_wb = self.db_manager.fetch_one(
+                    _db_row_wb = self.db.fetch_one(
                         "SELECT id, case_number, client_name, court_case_number, court_name, court_division FROM cases "
                         "WHERE REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(court_case_number,'年度',''),'年',''),'字第',''),'號',''),' ','') = %s "
                         "LIMIT 1",
@@ -11046,7 +11271,7 @@ class FileReviewManager:
                     #       所以 case_type=刑事 match 審判字別是正確的。
                     #       但同一人有多筆同類空案號時，用案由交叉驗證。
                     if not _db_row_wb and _party:
-                        _empty_rows = self.db_manager.fetch_all(
+                        _empty_rows = self.db.fetch_all(
                             "SELECT id, case_number, client_name, case_type, case_category, case_reason, court_case_number, court_name, court_division FROM cases "
                             "WHERE client_name = %s AND (court_case_number IS NULL OR court_case_number = '') "
                             "ORDER BY created_date DESC LIMIT 10",
@@ -11106,7 +11331,7 @@ class FileReviewManager:
                             _params.append(_division)
                         if _updates:
                             _params.append(_db_row_wb["id"])
-                            self.db_manager.execute_write(
+                            self.db.execute_write(
                                 f"UPDATE cases SET {', '.join(_updates)} WHERE id = %s",
                                 tuple(_params),
                             )

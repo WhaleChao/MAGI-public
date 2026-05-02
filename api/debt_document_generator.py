@@ -33,7 +33,59 @@ from typing import Any, Optional
 logger = logging.getLogger("DebtDocumentGenerator")
 
 _MAGI_ROOT = os.path.abspath(os.path.dirname(os.path.dirname(__file__)))
-_TEMPLATE_DIR = os.path.join(_MAGI_ROOT, "templates", "debt_templates")
+_ROBOT_SOURCE_DIR = os.environ.get(
+    "MAGI_DEBT_ROBOT_SOURCE_DIR",
+    os.path.join(_MAGI_ROOT, "integrations", "debt_robot"),
+)
+_ROBOT_DOCUMENT_DIR = os.environ.get(
+    "MAGI_DEBT_ROBOT_DOCUMENT_DIR",
+    os.path.join(_ROBOT_SOURCE_DIR, "document"),
+)
+_LEGACY_TEMPLATE_DIR = os.path.join(_MAGI_ROOT, "templates", "debt_templates")
+_TEMPLATE_DIR = _ROBOT_DOCUMENT_DIR if os.path.isdir(_ROBOT_DOCUMENT_DIR) else _LEGACY_TEMPLATE_DIR
+_REQUIRED_ROBOT_MODULES = {
+    "application": "01_A.py",
+    "asset_statement": "02_B.py",
+    "creditor_list": "03_C.py",
+    "pdf_merge": "04_D.py",
+    "report": "05_E.py",
+    "supplement": "06_F.py",
+}
+_REQUIRED_ROBOT_DOCUMENTS = (
+    "A.docx",
+    "B.docx",
+    "C.docx",
+    "D.docx",
+    "all adress - bank.csv",
+    "all adress - company.csv",
+)
+_REQUIRED_ROBOT_RUNTIME_FILES = (
+    "src/supplement_core/__init__.py",
+    "data/templates/D_supplement.docx",
+)
+
+
+def get_robot_source_status() -> dict[str, Any]:
+    """回傳 OSC 消債羅伯特源碼與文件模板路徑狀態。"""
+    modules = {key: os.path.join(_ROBOT_SOURCE_DIR, name) for key, name in _REQUIRED_ROBOT_MODULES.items()}
+    documents = {name: os.path.join(_ROBOT_DOCUMENT_DIR, name) for name in _REQUIRED_ROBOT_DOCUMENTS}
+    runtime_files = {name: os.path.join(_MAGI_ROOT, name) for name in _REQUIRED_ROBOT_RUNTIME_FILES}
+    missing_modules = [key for key, path in modules.items() if not os.path.exists(path)]
+    missing_documents = [name for name, path in documents.items() if not os.path.exists(path)]
+    missing_runtime_files = [name for name, path in runtime_files.items() if not os.path.exists(path)]
+    return {
+        "ok": not missing_modules and not missing_documents and not missing_runtime_files,
+        "source_dir": _ROBOT_SOURCE_DIR,
+        "document_dir": _ROBOT_DOCUMENT_DIR,
+        "template_dir": _TEMPLATE_DIR,
+        "legacy_template_dir": _LEGACY_TEMPLATE_DIR,
+        "modules": modules,
+        "documents": documents,
+        "runtime_files": runtime_files,
+        "missing_modules": missing_modules,
+        "missing_documents": missing_documents,
+        "missing_runtime_files": missing_runtime_files,
+    }
 
 # ═══════════════════════════════════════════════════════════════
 # 常數配置（原本散落在各 PY 檔的硬編碼）
@@ -882,7 +934,10 @@ def merge_debt_pdfs(file_paths: list[str], output_path: Optional[str] = None,
     Returns:
         輸出的 PDF 檔案路徑
     """
-    from PyPDF2 import PdfReader, PdfWriter
+    try:
+        from PyPDF2 import PdfReader, PdfWriter
+    except ImportError:
+        from pypdf import PdfReader, PdfWriter
 
     if not output_path:
         stamp = datetime.now().strftime("%Y%m%d")
@@ -1275,6 +1330,102 @@ def generate_report(data: dict[str, Any]) -> "Document":
 
 
 # ═══════════════════════════════════════════════════════════════
+# 6. 補件書狀產生器 (原 06_F.py)
+# ═══════════════════════════════════════════════════════════════
+
+def generate_supplement(data: dict[str, Any]) -> "Document":
+    """
+    產生消債補件書狀。
+
+    06_F.py 的桌面版依賴 PyQt5 及 supplement_core；網頁版在後端保留同一組
+    源碼與模板路徑，並以資料驅動方式產生可下載 DOCX，避免開啟外部 EXE。
+
+    data 欄位:
+      - court: 法院
+      - case_no: 案號
+      - branch: 股別
+      - applicant: 聲請人
+      - procedure: 更生/清算
+      - brief_no: 第幾份書狀
+      - items: [{category, period, attachment, required}, ...]
+      - notes: 其他說明
+    """
+    from docx import Document
+    from docx.shared import Pt
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
+
+    doc = Document()
+    styles = doc.styles
+    styles["Normal"].font.name = "新細明體"
+    styles["Normal"].font.size = Pt(12)
+
+    court = str(data.get("court") or data.get("E1") or "").strip()
+    case_no = str(data.get("case_no") or data.get("A2") or "").strip()
+    branch = str(data.get("branch") or data.get("A3") or "").strip()
+    applicant = str(data.get("applicant") or data.get("name") or data.get("A4") or "").strip()
+    procedure = str(data.get("procedure") or "更生").strip()
+    brief_no = str(data.get("brief_no") or data.get("A1") or "1").strip()
+    notes = str(data.get("notes") or "").strip()
+    items = data.get("items") or []
+
+    title = doc.add_paragraph()
+    title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    run = title.add_run(f"消費者債務清理{procedure}補件陳報狀")
+    run.bold = True
+    run.font.size = Pt(18)
+
+    meta_rows = [
+        ("案號", case_no),
+        ("股別", branch),
+        ("聲請人", applicant),
+        ("書狀序號", f"第 {brief_no} 份"),
+    ]
+    if court:
+        meta_rows.insert(0, ("法院", court))
+
+    table = doc.add_table(rows=0, cols=2)
+    table.style = "Table Grid"
+    for label, value in meta_rows:
+        row = table.add_row().cells
+        row[0].text = label
+        row[1].text = value
+
+    doc.add_paragraph()
+    doc.add_paragraph("謹依鈞院補正命令，陳報補正事項如下：")
+
+    item_table = doc.add_table(rows=1, cols=4)
+    item_table.style = "Table Grid"
+    headers = ["項次", "補件類別", "期間/內容", "附件"]
+    for idx, header in enumerate(headers):
+        item_table.rows[0].cells[idx].text = header
+
+    if not items:
+        row = item_table.add_row().cells
+        row[0].text = "1"
+        row[1].text = "待補正資料"
+        row[2].text = "詳如附件或後續陳報"
+        row[3].text = ""
+    else:
+        for idx, item in enumerate(items, 1):
+            row = item_table.add_row().cells
+            row[0].text = str(idx)
+            row[1].text = str(item.get("category") or item.get("name") or "")
+            row[2].text = str(item.get("period") or item.get("description") or "")
+            row[3].text = str(item.get("attachment") or item.get("selected") or "")
+
+    if notes:
+        doc.add_paragraph()
+        doc.add_paragraph(notes)
+
+    doc.add_paragraph()
+    doc.add_paragraph("此致")
+    doc.add_paragraph(court or "臺灣地方法院")
+    doc.add_paragraph(_roc_date_str())
+
+    return doc
+
+
+# ═══════════════════════════════════════════════════════════════
 # 批次生成函式
 # ═══════════════════════════════════════════════════════════════
 
@@ -1512,6 +1663,25 @@ def get_form_schema(form_type: str) -> dict:
                 {"key": "E1", "label": "審理法院", "type": "select", "options": [""] + COURT_OPTIONS},
             ],
         },
+        "supplement": {
+            "title": "補件書狀產生器",
+            "description": "依補正命令整理補件項目，產生消債補件陳報狀",
+            "fields": [
+                {"key": "court", "label": "法院", "type": "select", "options": [""] + COURT_OPTIONS},
+                {"key": "case_no", "label": "案號", "type": "text"},
+                {"key": "branch", "label": "股別", "type": "text"},
+                {"key": "applicant", "label": "聲請人", "type": "text", "required": True},
+                {"key": "procedure", "label": "程序", "type": "select", "options": ["更生", "清算"]},
+                {"key": "brief_no", "label": "書狀序號", "type": "number", "default": "1"},
+                {"key": "items", "label": "補件項目", "type": "table",
+                 "columns": [
+                     {"key": "category", "label": "補件類別", "type": "text"},
+                     {"key": "period", "label": "期間/內容", "type": "text"},
+                     {"key": "attachment", "label": "附件", "type": "text"},
+                 ]},
+                {"key": "notes", "label": "其他說明", "type": "textarea"},
+            ],
+        },
     }
     return schemas.get(form_type, {})
 
@@ -1524,4 +1694,5 @@ def get_all_form_types() -> list[dict]:
         {"key": "creditor_list", "label": "債權人清冊", "icon": "🏦", "description": "債權人資料與金額"},
         {"key": "pdf_merge", "label": "合併PDF", "icon": "📎", "description": "合併多個PDF/DOCX為單一檔案"},
         {"key": "report", "label": "陳報狀", "icon": "📝", "description": "消費者債務清理陳報狀"},
+        {"key": "supplement", "label": "補件書狀", "icon": "🧾", "description": "消債補件陳報狀"},
     ]

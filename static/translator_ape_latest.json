@@ -48,7 +48,7 @@
       "stage": "gtx_primary",
       "provider": "apple_translation_ape",
       "degraded": false,
-      "elapsed_ms": 8288,
+      "elapsed_ms": 5994,
       "text": "Prayer for Relief: The defendant shall pay the plaintiff the sum of NT$200,000.",
       "term_hit_rate": 1.0
     },
@@ -57,7 +57,7 @@
       "stage": "apple_baseline",
       "provider": "apple_translation",
       "success": true,
-      "elapsed_ms": 2602,
+      "elapsed_ms": 2682,
       "text": "The plaintiff's original statement: The defendant shall pay the plaintiff NT$200,000 in full.",
       "term_hit_rate": 0.75
     },
@@ -66,7 +66,7 @@
       "stage": "apple_ape",
       "provider": "apple_translation_ape",
       "degraded": false,
-      "elapsed_ms": 5852,
+      "elapsed_ms": 3870,
       "text": "Prayer for Relief: The defendant shall pay the plaintiff the sum of NT$200,000.",
       "validator_reasons": [],
       "term_hit_rate": 1.0
@@ -76,8 +76,8 @@
       "stage": "gtx_primary",
       "provider": "apple_translation_ape",
       "degraded": false,
-      "elapsed_ms": 4133,
-      "text": "The defendant was convicted of fraud and sentenced to six months' imprisonment.",
+      "elapsed_ms": 3775,
+      "text": "The defendant was convicted of fraud and sentenced to imprisonment for six months.",
       "term_hit_rate": 1.0
     },
     {
@@ -85,7 +85,7 @@
       "stage": "apple_baseline",
       "provider": "apple_translation",
       "success": true,
-      "elapsed_ms": 1054,
+      "elapsed_ms": 2672,
       "text": "The defendant was convicted of fraud and sentenced to six months in prison.",
       "term_hit_rate": 0.6666666666666666
     },
@@ -94,8 +94,8 @@
       "stage": "apple_ape",
       "provider": "apple_translation_ape",
       "degraded": false,
-      "elapsed_ms": 5946,
-      "text": "The defendant was convicted of fraud and sentenced to imprisonment for six months.",
+      "elapsed_ms": 3354,
+      "text": "The defendant was convicted of fraud and sentenced to six months' imprisonment.",
       "validator_reasons": [],
       "term_hit_rate": 1.0
     },
@@ -104,7 +104,7 @@
       "stage": "gtx_primary",
       "provider": "apple_translation_ape",
       "degraded": false,
-      "elapsed_ms": 3658,
+      "elapsed_ms": 3604,
       "text": "The defendant shall be liable for damages for the plaintiff's injuries.",
       "term_hit_rate": 1.0
     },
@@ -113,7 +113,7 @@
       "stage": "apple_baseline",
       "provider": "apple_translation",
       "success": true,
-      "elapsed_ms": 1426,
+      "elapsed_ms": 2462,
       "text": "The defendant shall be liable for damages for infringement of property rights caused by the plaintiff.",
       "term_hit_rate": 1.0
     },
@@ -122,8 +122,8 @@
       "stage": "apple_ape",
       "provider": "apple_translation_ape",
       "degraded": false,
-      "elapsed_ms": 3910,
-      "text": "The defendant shall be liable for damages for the plaintiff's injuries.",
+      "elapsed_ms": 3754,
+      "text": "The defendant shall be liable for damages arising from the plaintiff's injuries.",
       "validator_reasons": [],
       "term_hit_rate": 1.0
     },
@@ -132,7 +132,7 @@
       "stage": "gtx_primary",
       "provider": "apple_translation_ape",
       "degraded": false,
-      "elapsed_ms": 4811,
+      "elapsed_ms": 4605,
       "text": "The matter, Case No. 114年度原訴字第000024號, is currently under adjudication before this Court.",
       "term_hit_rate": 1.0
     },
@@ -141,7 +141,7 @@
       "stage": "apple_baseline",
       "provider": "apple_translation",
       "success": true,
-      "elapsed_ms": 1480,
+      "elapsed_ms": 2611,
       "text": "The original lawsuit No. 000024 of the 114th year of our court is currently being heard.",
       "term_hit_rate": 0.5
     },
@@ -150,11 +150,11 @@
       "stage": "apple_ape",
       "provider": "apple_translation_ape",
       "degraded": false,
-      "elapsed_ms": 5837,
-      "text": "The matter, Original Lawsuit No. 000024 of the current year of this Court, is presently under adjudication. (Case No.: 114年度原訴字第000024號)",
+      "elapsed_ms": 4259,
+      "text": "The matter, Case No. 114年度原訴字第000024號, is currently under adjudication before this Court.",
       "validator_reasons": [],
       "term_hit_rate": 1.0
     }
   ],
-  "generated_at": "2026-04-26T19:13:48.657363"
+  "generated_at": "2026-05-01T13:15:56.483626"
 }

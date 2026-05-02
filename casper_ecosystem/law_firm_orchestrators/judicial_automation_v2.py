@@ -1973,17 +1973,40 @@ class CourtRecordDownloader:
                 return False
             
             # 導航到搜尋頁面
+            # 根因：登入後 ezlawyer userPage 在 $(document).ready 時觸發
+            # alert("密碼超過180天未變更...")（native browser alert）
+            # Playwright wrapper 的 dialog handler 會 dismiss，但 timing 上 alert
+            # 可能仍 pending 阻擋後續 page.goto / evaluate 的 sync API 呼叫
+            # 修法：navigate 前用 CDP 強制清理 dialog 狀態，再用 page.goto wait_until="commit"
             if self.driver.current_url != self.SEARCH_URL:
-                try:
-                    _page = getattr(self.driver, "_page", None)
-                    if _page is not None:
-                        _page.goto(self.SEARCH_URL, timeout=15000)
-                    else:
+                _nav_ok = False
+                _page = getattr(self.driver, "_page", None)
+                if _page is not None:
+                    # Wrapper 已透過 add_init_script override window.alert/confirm/prompt
+                    # → ezlawyer userPage 的 alert("密碼超過180天未變更...") 不再卡 sync API
+                    # 直接用 page.goto(commit) navigate
+                    try:
+                        _page.goto(self.SEARCH_URL, timeout=15000, wait_until="commit")
+                        _nav_ok = True
+                    except Exception as _ne:
+                        self.log(f"  ⚠️ goto(commit) 失敗: {str(_ne)[:120]}")
+                    if _nav_ok:
+                        try:
+                            _page.wait_for_selector("#jud_name", timeout=20000, state="attached")
+                            self.log(f"  ✓ 搜尋頁就緒")
+                        except Exception as _se:
+                            self.log(f"  ⚠️ #jud_name 等待逾時: {str(_se)[:120]}")
+                else:
+                    # Selenium fallback
+                    try:
                         self.driver.get(self.SEARCH_URL)
-                except Exception as _ne:
-                    self.log(f"  ⚠️ 導航到搜尋頁面逾時/失敗: {_ne}")
+                        _nav_ok = True
+                    except Exception as _ne:
+                        self.log(f"  ⚠️ driver.get 失敗: {str(_ne)[:120]}")
+                if not _nav_ok:
+                    self.log(f"  ❌ 導航搜尋頁失敗（視為 search 失敗，不視為 no_new_files）")
                     return False
-            time.sleep(2)
+            time.sleep(1)
             
             # 選擇法院 (模糊比對，台/臺 視為同義)
             court_name = (case.court_name or "").strip()
@@ -2089,14 +2112,15 @@ class CourtRecordDownloader:
         
         try:
             self.log(f"下載: {case.court_name} {case.court_case_number}")
-            
-            # 執行查詢
+
+            # 執行查詢（失敗視為查詢失敗，不可假成功成 no_new_files）
             if not self._execute_search_query(case):
-                return downloaded_files
-            
+                # raise 讓上層 action.py 知道是真的失敗，不要回報 noop
+                raise RuntimeError(f"search_navigate_failed: {case.court_case_number}")
+
             # 等待結果載入
             time.sleep(2)
-            
+
             # 尋找「立即調閱」按鈕並點擊
             downloaded_files = self._process_search_results(transcript_folder=transcript_folder, case=case) or []
             
@@ -2110,8 +2134,20 @@ class CourtRecordDownloader:
         except Exception as e:
             self.log(f"  ❌ 下載失敗: {e}")
             traceback.print_exc()
+            # 記錄錯誤到 instance attribute 讓 action.py 區分「真失敗」和「no_new_files」
+            err_msg = str(e)[:300]
+            try:
+                self._last_download_error = err_msg
+                if not hasattr(self, "_last_download_errors"):
+                    self._last_download_errors = []
+                self._last_download_errors.append({
+                    "case_number": getattr(case, "court_case_number", "") or "",
+                    "error": err_msg,
+                })
+            except Exception:
+                pass
             return downloaded_files
-    
+
     def _handle_alert(self) -> str:
         """
         處理 JavaScript alert 對話框

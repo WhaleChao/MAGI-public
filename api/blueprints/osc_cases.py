@@ -3161,7 +3161,7 @@ def osc_forms_export_api():
         config = {}
         try:
             config['company_name'] = '偵理法律事務所'
-            config['default_lawyer'] = '喬政翔律師'
+            config['default_lawyer'] = '喬政翔'
         except Exception:
             _log.debug("silent-catch config defaults", exc_info=True)
 

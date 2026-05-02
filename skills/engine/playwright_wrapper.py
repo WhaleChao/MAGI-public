@@ -627,6 +627,32 @@ class PlaywrightDriverWrapper(object):
         self._download_dir = download_dir
         self.switch_to = _PlaywrightSwitchTo(self)
 
+        # ★ 防止 native alert/confirm/prompt 卡死 sync API
+        # Playwright sync API 在 dialog 開啟時所有 evaluate/goto 都會 deadlock
+        # （greenlet cross-thread 限制讓 _on_dialog handler 的 dismiss() 不一定生效）
+        # 用 add_init_script 在 page load 前 override，alert/confirm/prompt 改成存到
+        # window.__magi_dialogs 陣列（保留訊息但不彈 native dialog 卡 page）。
+        # 需要讀 alert 訊息的 caller 可以 evaluate("() => window.__magi_dialogs") 取出。
+        # 例：ezlawyer userPage 在 $(document).ready 觸發 alert("密碼超過180天未變更...")
+        try:
+            context.add_init_script("""
+                (() => {
+                    if (window.__magi_dialogs) return;
+                    window.__magi_dialogs = [];
+                    const _record = (kind, msg, def) => {
+                        try {
+                            window.__magi_dialogs.push({kind, msg: String(msg||''), ts: Date.now()});
+                            console.log('[magi silenced ' + kind + ']', msg);
+                        } catch(e){}
+                    };
+                    window.alert = (msg) => { _record('alert', msg); };
+                    window.confirm = (msg) => { _record('confirm', msg); return true; };
+                    window.prompt = (msg, def) => { _record('prompt', msg, def); return def || ''; };
+                })();
+            """)
+        except Exception as _ie:
+            _logger.debug("add_init_script silence-alert failed: %s", _ie)
+
         # One-shot opt-in flag: callers that need to accept() (not dismiss) an alert
         # must set `driver._next_dialog_no_dismiss = True` IMMEDIATELY before the
         # JS/click that triggers the alert. The flag is consumed on first fire.

@@ -14,6 +14,7 @@ OSC 消費者債務清理 API Blueprint
   POST /api/osc/debt/auto-import          → 從已有文件自動帶入資料
   POST /api/osc/debt/validate             → 驗證表單資料
   GET  /api/osc/debt/expense-reference    → 取得法定費用參考金額
+  GET  /api/osc/debt/source-status        → 取得六模組源碼與文件模板路徑狀態
 """
 
 from __future__ import annotations
@@ -49,6 +50,7 @@ def _save_doc(doc, form_type: str, data: dict) -> dict:
         "asset_statement": "02_財產及收入狀況說明書",
         "creditor_list": "03_債權人清冊",
         "report": "陳報狀",
+        "supplement": "06_補件書狀",
     }
     base_name = filename_map.get(form_type, "消債文件")
     name = data.get("name") or data.get("A4") or ""
@@ -106,6 +108,15 @@ def debt_expense_reference():
             "勞保費": 1042,
             "健保費": 826,
         }})
+
+
+@osc_debt_bp.route("/api/osc/debt/source-status", methods=["GET"])
+def debt_source_status():
+    """確認 MAGI 內建的 Robot 六模組源碼與 document/ 路徑是否完整。"""
+    from api.debt_document_generator import get_robot_source_status
+
+    status = get_robot_source_status()
+    return jsonify(status), (200 if status.get("ok") else 500)
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -251,6 +262,7 @@ def debt_generate_document():
         generate_asset_statement,
         generate_creditor_list,
         generate_report,
+        generate_supplement,
     )
 
     payload = request.get_json(force=True, silent=True) or {}
@@ -262,6 +274,7 @@ def debt_generate_document():
         "asset_statement": generate_asset_statement,
         "creditor_list": generate_creditor_list,
         "report": generate_report,
+        "supplement": generate_supplement,
     }
 
     if form_type not in generators:
@@ -300,6 +313,7 @@ def debt_batch_generate():
         generate_asset_statement,
         generate_creditor_list,
         generate_report,
+        generate_supplement,
     )
 
     payload = request.get_json(force=True, silent=True) or {}
@@ -311,6 +325,7 @@ def debt_batch_generate():
         "asset_statement": generate_asset_statement,
         "creditor_list": generate_creditor_list,
         "report": generate_report,
+        "supplement": generate_supplement,
     }
 
     results = []

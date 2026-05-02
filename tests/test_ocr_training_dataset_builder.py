@@ -33,6 +33,15 @@ def test_parse_filename_fields_without_space_after_date():
     assert fields.party == "蘇建和"
 
 
+def test_parse_filename_fields_payment_slip_party_from_case_marker():
+    fields = parse_filename_fields("20250218 113年度原易字第179號《余秋菊案》花蓮地院規費繳款單（線上聲請閱卷）.pdf")
+
+    assert fields.court == "臺灣花蓮地方法院"
+    assert fields.case_number == "113年度原易字第179號"
+    assert fields.doc_type == "規費繳款單"
+    assert fields.party == "余秋菊"
+
+
 def test_support_score_rewards_ocr_evidence():
     fields = FilenameFields(
         date="20250707",

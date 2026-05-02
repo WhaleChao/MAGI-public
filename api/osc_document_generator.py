@@ -123,7 +123,7 @@ def generate_poa(data, case_type, role, config):
     company_address = config.get('company_address_hl') or ''
     company_phone = config.get('company_phone') or ''
     company_fax = config.get('company_fax') or ''
-    default_lawyer = config.get('default_lawyer') or '喬政翔律師'
+    default_lawyer = config.get('default_lawyer') or '喬政翔'
     
     p_agent_cells = table.rows[2].cells
     p_agent_cells[0].text = "受任人"
@@ -184,7 +184,7 @@ def generate_engagement_agreement(data, config):
         setattr(section, prop, Cm(2))
         
     company_name = config.get('company_name') or '偵理法律事務所'
-    default_lawyer = config.get('default_lawyer') or '喬政翔律師'
+    default_lawyer = config.get('default_lawyer') or '喬政翔'
     company_phone = config.get('company_phone') or ''
     company_email = config.get('company_email') or ''
     company_address = config.get('company_address_hl') or ''

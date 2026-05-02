@@ -412,6 +412,41 @@ def main():
         print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
         return 0 if result.get("success") else 1
 
+    # ── reconcile_placeholder：用接案清冊 Excel 修正 placeholder LAF 案件 ──
+    if task in {"reconcile_placeholder", "reconcile", "reconcile_placeholders"}:
+        try:
+            sys.path.insert(0, CODE_ROOT)
+            from laf_nightly_audit import reconcile_placeholder_cases, _get_db  # type: ignore
+        except Exception as e:
+            print(json.dumps({"success": False, "error": f"import failed: {e}"},
+                             ensure_ascii=False))
+            return 1
+
+        db = _get_db()
+        if not db:
+            print(json.dumps({"success": False, "error": "db init failed"},
+                             ensure_ascii=False))
+            return 1
+
+        notifier = None
+        if not getattr(args, "no_notify", False):
+            try:
+                from line_notifier import LAFNotifier  # type: ignore
+                notifier = LAFNotifier()
+            except Exception:
+                notifier = None
+
+        force_flag = bool(args.laf_case_no)  # 單筆觸發即視為 force（跳過節流）
+        result = reconcile_placeholder_cases(
+            db,
+            force=force_flag,
+            only_laf_no=(args.laf_case_no or "").strip(),
+            notifier=notifier,
+        )
+        out = {"success": "error" not in result, **result}
+        print(json.dumps(out, ensure_ascii=False, indent=2, default=str))
+        return 0 if out["success"] else 1
+
     # ── portal actions ──
     if task in PORTAL_ACTIONS:
         if not args.client and not args.laf_case_no and not args.case:

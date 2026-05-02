@@ -985,14 +985,36 @@ def cmd_download(case_number: str, out_folder: str = "", headless: bool = True,
             logger.info("Downloading transcripts for: %s", case_number)
             downloaded_files = downloader.download_record(case) or []
             downloaded_count = len(downloaded_files)
+            # 取 downloader 內部記錄的錯誤（避免假成功）
+            _last_dl_err = str(getattr(downloader, "_last_download_error", "") or "").strip()
             _safe_flow_step_status(
                 flow_id,
                 "portal_query",
-                status="succeeded",
-                detail=f"portal query complete ({downloaded_count} new files)",
-                ok=True,
+                status="succeeded" if not _last_dl_err else "failed",
+                detail=f"portal query complete ({downloaded_count} new files)" if not _last_dl_err else f"search failed: {_last_dl_err[:120]}",
+                ok=not bool(_last_dl_err),
                 metadata={"downloaded_count": downloaded_count},
             )
+
+            # ★ 區分「查詢成功但 0 新檔」vs「查詢失敗」
+            if _last_dl_err and downloaded_count == 0:
+                # 真失敗：navigate timeout 等
+                msg = f"❌ 筆錄查詢失敗（不是 no_new_files）— {case_number}: {_last_dl_err[:160]}"
+                _notify(msg, notify)
+                _safe_flow_step_status(flow_id, "dedup", status="failed", detail="search failed", ok=False)
+                _safe_flow_step_status(flow_id, "archive", status="skipped", detail="search failed", skipped=True, ok=True)
+                _mark_notify_step(flow_id, notify=notify, detail=msg)
+                out = {
+                    "success": False,
+                    "status": "search_failed",
+                    "case_number": case_number,
+                    "downloaded_count": 0,
+                    "files": [],
+                    "error": _last_dl_err,
+                    "message": msg,
+                }
+                _eventlog("transcript:download:done", ok=False, payload={"case_number": case_number, "error": _last_dl_err}, tags={"case_number": case_number})
+                return out
 
             if downloaded_count == 0:
                 msg = "⚠️ 筆錄查詢完成，但目前沒有可下載的新檔案 — " + case_number

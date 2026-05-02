@@ -123,24 +123,38 @@ def parse_filename_fields(filename: str) -> FilenameFields:
     else:
         rest_no_party = rest
 
+    court_alias = ""
     court = extract_court_name(rest_no_party) or ""
+    court_aliases_in_name = []
+    compact = re.sub(r"\s+", "", rest_no_party)
+    for needle, _normalized in COURT_ALIASES:
+        if needle in compact:
+            court_aliases_in_name.append(needle)
     if not court:
-        compact = re.sub(r"\s+", "", rest_no_party)
         for needle, normalized in COURT_ALIASES:
             if needle in compact:
+                court_alias = needle
                 court = normalized
                 break
 
+    if not party or "聲請閱卷" in party or "線上聲請" in party:
+        case_party = re.search(r"《([^》]+?)案》", rest_no_party)
+        if case_party:
+            party = case_party.group(1).strip()
+
     case_number = extract_case_number(rest_no_party) or ""
+    loose_case_text = ""
     if not case_number:
         cm = LOOSE_CASE_RE.search(rest_no_party)
         if cm:
+            loose_case_text = cm.group(0)
             case_number = "%s年度%s第%s號" % (cm.group(1), cm.group(2), cm.group(3))
 
     doc_type = rest_no_party
-    for token in (court, case_number):
+    for token in (court, court_alias, loose_case_text, case_number) + tuple(court_aliases_in_name):
         if token:
             doc_type = doc_type.replace(token, "")
+    doc_type = re.sub(r"《[^》]+?案》", "", doc_type)
     doc_type = re.sub(r"^[\s_、，,.-]+|[\s_、，,.-]+$", "", doc_type)
     doc_type = re.sub(r"\s+", "", doc_type)
 
@@ -199,6 +213,71 @@ def _vision_text(pdf_path: Path, page_nums: List[int], limit: int, timeout_sec: 
     text = _clean_text("\n".join(chunks), limit)
     ents = extract_entities(text)
     return SourceResult("macos_vision", text, compute_quality_score(text), asdict(ents), "; ".join(errors[:3]))
+
+
+def _process_pdf_direct(
+    pdf_path: Path,
+    page_nums: List[int],
+    text_limit: int,
+    run_vision: bool,
+    vision_timeout: float,
+) -> Dict[str, object]:
+    sha256_head = _sha256_file(pdf_path)
+    doc = fitz.open(str(pdf_path))
+    try:
+        if doc.needs_pass:
+            try:
+                doc.authenticate("3800")
+            except Exception:
+                pass
+        page_count = doc.page_count
+        pages = [p for p in page_nums if p < page_count]
+        sources = [_native_text(doc, pages, text_limit)]
+        if run_vision:
+            sources.append(_vision_text(pdf_path, pages, text_limit, vision_timeout))
+        return {
+            "ok": True,
+            "sha256_head": sha256_head,
+            "page_count": page_count,
+            "sources": [asdict(s) for s in sources],
+        }
+    finally:
+        doc.close()
+
+
+def _process_pdf_with_timeout(
+    pdf_path: Path,
+    page_nums: List[int],
+    text_limit: int,
+    run_vision: bool,
+    vision_timeout: float,
+    per_file_timeout: float,
+) -> Dict[str, object]:
+    cmd = [
+        sys.executable,
+        str(Path(__file__).resolve()),
+        "--process-one",
+        str(pdf_path),
+        "--pages",
+        ",".join(str(p) for p in page_nums),
+        "--text-limit",
+        str(text_limit),
+        "--vision-timeout",
+        str(vision_timeout),
+    ]
+    if run_vision:
+        cmd.append("--vision")
+    try:
+        completed = subprocess.run(cmd, capture_output=True, text=True, timeout=per_file_timeout)
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "error": "TimeoutExpired: per-file timeout %.1fs" % per_file_timeout}
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout or "").strip()[-400:]
+        return {"ok": False, "error": "WorkerExit: exitcode %s %s" % (completed.returncode, detail)}
+    try:
+        return json.loads(completed.stdout)
+    except json.JSONDecodeError as exc:
+        return {"ok": False, "error": "JSONDecodeError: %s" % exc}
 
 
 def _support_score(fields: FilenameFields, sources: List[SourceResult]) -> Tuple[float, List[str]]:
@@ -344,26 +423,25 @@ def build_dataset(args: argparse.Namespace) -> Dict[str, object]:
                 "sha256_head": "",
                 "filename_fields": asdict(fields),
             }
-            try:
-                record_base["sha256_head"] = _sha256_file(pdf_path)
-                doc = fitz.open(str(pdf_path))
-                if doc.needs_pass:
-                    try:
-                        doc.authenticate("3800")
-                    except Exception:
-                        pass
-                page_count = doc.page_count
-                pages = [p for p in page_nums if p < page_count]
-                sources = [_native_text(doc, pages, args.text_limit)]
-                if args.vision:
-                    sources.append(_vision_text(pdf_path, pages, args.text_limit, args.vision_timeout))
-                doc.close()
-            except Exception as exc:
+            result = _process_pdf_with_timeout(
+                pdf_path,
+                page_nums,
+                args.text_limit,
+                args.vision,
+                args.vision_timeout,
+                args.per_file_timeout,
+            )
+            if not result.get("ok"):
                 stats["errors"] += 1
                 item = dict(record_base)
-                item["error"] = "%s: %s" % (type(exc).__name__, exc)
+                item["error"] = str(result.get("error", "unknown error"))
                 reject_fh.write(json.dumps(item, ensure_ascii=False) + "\n")
+                if stats["scanned"] % 25 == 0:
+                    print(json.dumps({k: stats[k] for k in ("scanned", "silver", "needs_labeling", "rejected", "errors")}, ensure_ascii=False), flush=True)
                 continue
+            record_base["sha256_head"] = str(result.get("sha256_head", ""))
+            page_count = int(result.get("page_count", 0))
+            sources = [SourceResult(**s) for s in result.get("sources", [])]
 
             support_score, support = _support_score(fields, sources)
             best_quality = max((s.quality for s in sources), default=0.0)
@@ -420,6 +498,7 @@ def build_dataset(args: argparse.Namespace) -> Dict[str, object]:
 
 def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Build MAGI OCR silver training data from curated PDFs.")
+    parser.add_argument("--process-one", default="", help=argparse.SUPPRESS)
     parser.add_argument("--root", dest="roots", action="append", help="Root directory to scan. Can be passed multiple times.")
     parser.add_argument("--candidate-list", default="", help="Newline-delimited PDF path list. Prefer this for large NAS/Synology roots.")
     parser.add_argument("--output-dir", default="", help="Output directory. Defaults to data/ocr_training/<timestamp>.")
@@ -430,9 +509,25 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--text-limit", type=int, default=2400)
     parser.add_argument("--vision", action="store_true", help="Run macOS Vision OCR in addition to native text.")
     parser.add_argument("--vision-timeout", type=float, default=25.0)
+    parser.add_argument("--per-file-timeout", type=float, default=45.0, help="Hard timeout per PDF to avoid one cloud placeholder blocking the batch.")
     parser.add_argument("--min-support-score", type=float, default=0.58)
     parser.add_argument("--min-quality", type=float, default=0.22)
     args = parser.parse_args(argv)
+
+    if args.process_one:
+        page_nums = [int(p) for p in str(args.pages).split(",") if str(p).strip().isdigit()] or [0]
+        try:
+            result = _process_pdf_direct(
+                Path(args.process_one).expanduser(),
+                page_nums,
+                args.text_limit,
+                args.vision,
+                args.vision_timeout,
+            )
+        except Exception as exc:
+            result = {"ok": False, "error": "%s: %s" % (type(exc).__name__, exc)}
+        print(json.dumps(result, ensure_ascii=False))
+        return 0 if result.get("ok") else 1
 
     start = time.time()
     stats = build_dataset(args)
