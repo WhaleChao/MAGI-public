@@ -1059,7 +1059,8 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                                 f"當事人: {updated.get('client_name', '')}\n"
                                 f"已嘗試: {updated['tries']} 次（上限 {_PORTAL_RETRY_MAX_TRIES}）\n"
                                 f"原因: {updated.get('reason', '')}\n"
-                                f"請人工處理或清除佇列。"
+                                f"請人工處理或清除佇列。",
+                                topic_key="laf_dispatch",
                             )
                         except Exception:
                             logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 848, exc_info=True)
@@ -1112,7 +1113,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                                 docs = self._scan_case_folder_docs(str(result.get("case_folder") or ""))
                                 notify_lines.append(f"開辦通知: {len(docs.get('opening_notice_files') or [])} 份")
                                 notify_lines.append(f"委任狀: {len(docs.get('poa_files') or [])} 份")
-                            self.notifier.notify_admin("\n".join(notify_lines))
+                            self.notifier.notify_admin("\n".join(notify_lines), topic_key="laf_dispatch")
                         else:
                             with _portal_retry_state_lock:
                                 queue_items = self._load_pending_portal_downloads()
