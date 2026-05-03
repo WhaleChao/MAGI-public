@@ -51,15 +51,14 @@ function renderCases() {
                 </div>
                 <div class="card-actions">
                     <button class="btn primary" data-act="case-workbench" data-id="${esc(r.id)}">工作台</button>
-                    <button class="btn" data-act="case-open" data-id="${esc(r.id)}">資料夾</button>
+                    <button class="btn" data-act="case-open-fm" data-id="${esc(r.id)}">📁 檔案</button>
                     <button class="btn" data-act="case-edit" data-id="${esc(r.id)}">編輯</button>
                     <button class="btn" data-act="case-address-label" data-id="${esc(r.id)}">📮 地址標籤</button>
                     <button class="btn danger" data-act="case-del" data-id="${esc(r.id)}">刪除</button>
                 </div>
                 <div class="card-quick-actions">
                     <button class="btn-icon" data-act="case-workbench" data-id="${esc(r.id)}" title="開啟工作台">⚙️</button>
-                    <button class="btn-icon" data-act="case-open-fm" data-id="${esc(r.id)}" title="在 Paperclip 內巡覽 NAS（跨電腦友善）">🌐</button>
-                    <button class="btn-icon" data-act="wb-case-open-host" data-id="${esc(r.id)}" title="在本機開資料夾">📂</button>
+                    <button class="btn-icon" data-act="case-open-fm" data-id="${esc(r.id)}" title="開啟檔案總管">📁</button>
                     <button class="btn-icon" data-act="case-edit" data-id="${esc(r.id)}" title="編輯案件">✏️</button>
                 </div>
             </div>`;
@@ -79,7 +78,7 @@ function renderCases() {
         <td>${esc(r.status)}</td>
         <td class="actions">
             <button class="btn" data-act="case-workbench" data-id="${esc(r.id)}">工作台</button>
-            <button class="btn" data-act="case-open" data-id="${esc(r.id)}">資料夾</button>
+            <button class="btn" data-act="case-open-fm" data-id="${esc(r.id)}">📁 檔案</button>
             <button class="btn" data-act="case-edit" data-id="${esc(r.id)}">編輯</button>
             <button class="btn" data-act="case-address-label" data-id="${esc(r.id)}">📮 地址標籤</button>
             <button class="btn danger" data-act="case-del" data-id="${esc(r.id)}">刪除</button>
@@ -390,8 +389,7 @@ function renderCaseFolderBrowser(data) {
             <button class="btn slim" data-act="wb-folder-open" data-id="${esc(c.id || "")}" data-path="${esc(rel)}">重新整理</button>
             <button class="btn slim" data-act="wb-folder-upload" data-id="${esc(c.id || "")}" data-path="${esc(rel)}" data-folder-path="${esc(folderPath)}">上傳檔案</button>
             <button class="btn slim" data-act="wb-folder-copy-path" data-path="${esc(folderPath)}">複製案件路徑</button>
-            <button class="btn slim" data-act="case-open-fm" data-id="${esc(c.id || "")}">🌐 NAS 檔案總管</button>
-            <button class="btn slim" data-act="wb-case-open-host" data-id="${esc(c.id || "")}">在本機開 NAS</button>
+            <button class="btn slim primary" data-act="case-open-fm" data-id="${esc(c.id || "")}">📁 開啟檔案總管</button>
         </div>
         <div class="wb-folder-meta">
             <div class="wb-folder-kv"><div class="k">案件</div><div class="v">${esc(c.case_number || "")}｜${esc(c.client_name || "")}</div></div>
@@ -717,9 +715,7 @@ async function openCaseWorkbench(id, statusText = "") {
     <div class="card">
         <h3>快捷功能（委任狀/收據/結案整理）</h3>
         <div class="toolbar">
-            <button class="btn" data-act="wb-case-open" data-id="${esc(id)}">瀏覽案件資料夾</button>
-            <button class="btn" data-act="case-open-fm" data-id="${esc(id)}">🌐 NAS 檔案總管</button>
-            <button class="btn" data-act="wb-case-open-host" data-id="${esc(id)}">在本機開 NAS</button>
+            <button class="btn primary" data-act="case-open-fm" data-id="${esc(id)}">📁 開啟檔案總管</button>
             <button class="btn" data-act="wb-case-action" data-action="generate_power_of_attorney">製作委任狀（交給 CASPER）</button>
             <button class="btn" data-act="wb-case-action" data-action="generate_receipt">製作收據（交給 CASPER）</button>
             <button class="btn warn" data-act="wb-case-action" data-action="closing_overview">結案狀況整理</button>
