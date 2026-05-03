@@ -122,7 +122,6 @@ def check_service_health():
         "Discord Bot": "api/discord_bot.py",
         "API Server": "api/server.py",
         "Tools API": "api/tools_api.py",
-        "OpenClaw Cron Runner": "skills/ops/openclaw_cron_runner.py",
         "File Review Worker": "skills/ops/file_review_auto_worker.py",
         "Ollama (LLM)": "ollama",
         "Dashboard": "http.server",

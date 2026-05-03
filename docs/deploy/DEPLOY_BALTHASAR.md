@@ -26,6 +26,7 @@ export OLLAMA_HOST=0.0.0.0:11434
 ```
 
 ### 3. 安裝 OpenClaw
+> ⚠️ DEPRECATED 2026-05-03：OpenClaw 已棄用，本段保留為歷史參考。
 ```bash
 # 使用 Homebrew
 brew install openclaw
@@ -41,6 +42,7 @@ scp casper@100.97.29.92:/Users/ai/Desktop/MAGI_v2/SOUL_BALTHASAR.md ~/Desktop/
 ```
 
 ### 5. 設定 OpenClaw Agent
+> ⚠️ DEPRECATED 2026-05-03：OpenClaw 已棄用，本段保留為歷史參考。
 ```bash
 mkdir -p ~/.openclaw/agents/main/agent
 cp ~/Desktop/SOUL_BALTHASAR.md ~/.openclaw/agents/main/agent/boot.md
@@ -67,6 +69,7 @@ curl http://100.128.235.126:11434/api/version
 已內建於 Ollama 安裝程式。
 
 ### OpenClaw Gateway
+> ⚠️ DEPRECATED 2026-05-03：OpenClaw 已棄用，本段保留為歷史參考。
 建立 `~/Library/LaunchAgents/com.openclaw.gateway.plist`：
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>

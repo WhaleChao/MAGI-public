@@ -127,15 +127,6 @@ def get_node_model(ip, port=8080):
     except Exception:
         return "Unreachable"
 
-def get_openclaw_default_model(config_path):
-    """Read OpenClaw config for default model"""
-    try:
-        with open(config_path, 'r') as f:
-            config = json.load(f)
-            return config.get("agents", {}).get("defaults", {}).get("model", {}).get("primary", "Unknown")
-    except Exception:
-        return "Unknown"
-
 def update_status():
     status_data = {
         "timestamp": datetime.now().isoformat(),

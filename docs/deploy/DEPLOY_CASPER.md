@@ -5,6 +5,7 @@
 > **Network IP**: Follow `CONNECTION_SECRETS.md`
 
 ## 1. Environment Check (Existing OpenClaw)
+> ⚠️ DEPRECATED 2026-05-03：OpenClaw 已棄用，本段保留為歷史參考。
 Since OpenClaw is already running on Casper:
 
 1.  **Check Health**:
@@ -24,6 +25,7 @@ Since OpenClaw is already running on Casper:
     ```
 
 ## 2. Federation Configuration
+> ⚠️ DEPRECATED 2026-05-03：OpenClaw 已棄用，本段保留為歷史參考。
 We need to tell the existing OpenClaw about the Federation.
 
 **Edit your OpenClaw configuration** (usually `~/.openclaw/config.json` or `.env` depending on your setup). Add/Update these keys:

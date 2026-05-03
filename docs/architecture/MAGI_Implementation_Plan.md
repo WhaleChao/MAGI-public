@@ -25,7 +25,7 @@
     *   本專案採用 **NanoClaw** (OpenClaw 的輕量化版本) 作為核心架構。
     *   **每一台機器**都需要 clone 本專案程式碼。
     *   **角色**: 這是「大腦的邏輯層」，負責調度、記憶與執行工具。
-    *   *註*: [OpenClaw](https://openclaw.ai/) 是一個完整的 AI 代理作業系統，而我們使用其輕量版概念。
+    *   *註*: [OpenClaw](https://openclaw.ai/) 是一個完整的 AI 代理作業系統，而我們使用其輕量版概念。*(⚠️ DEPRECATED 2026-05-03：OpenClaw 已棄用，本段保留為歷史參考)*
 
 2.  **Ollama (The Engine)**:
     *   **除 Dell 外的機器** 都要安裝 Ollama。

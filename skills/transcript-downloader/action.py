@@ -55,7 +55,13 @@ from api.runtime_paths import (
     get_orch_dir,
     get_skill_python,
 )
-from api.openclaw_compat import get_legacy_telegram_settings, load_openclaw_config
+try:
+    from api.openclaw_compat import get_legacy_telegram_settings, load_openclaw_config  # legacy fallback; module removed 2026-05-03
+except ImportError:
+    def load_openclaw_config():  # type: ignore[misc]
+        return {}
+    def get_legacy_telegram_settings(cfg=None):  # type: ignore[misc]
+        return {"bot_token": "", "notify_to": []}
 from api.product_runtime import apply_product_runtime_env, product_profile_report
 try:
     from skills.ops import flow_ledger as _flow_ledger
