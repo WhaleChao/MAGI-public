@@ -151,6 +151,32 @@ def _check_upload_ext(filename: str) -> tuple[bool, str]:
     return True, ""
 
 
+# Magic-byte signatures for executables — block even if extension is renamed.
+# (commit 13: harden against `disguised_exe.pdf` style renaming)
+_EXEC_MAGIC_SIGS = (
+    b"MZ",                # Windows PE / DOS
+    b"\x7fELF",           # Linux ELF
+    b"\xca\xfe\xba\xbe",  # Mach-O fat binary / Java class
+    b"\xcf\xfa\xed\xfe",  # Mach-O 64-bit LE
+    b"\xfe\xed\xfa\xce",  # Mach-O 32-bit BE
+    b"\xfe\xed\xfa\xcf",  # Mach-O 64-bit BE
+    b"#!",                # Shell script shebang
+)
+
+
+def _sniff_executable(path: str) -> str | None:
+    """Return a short label if the file's first bytes look executable; else None."""
+    try:
+        with open(path, "rb") as fh:
+            head = fh.read(8)
+    except OSError:
+        return None
+    for sig in _EXEC_MAGIC_SIGS:
+        if head.startswith(sig):
+            return "executable_signature:" + sig.hex()
+    return None
+
+
 def _cleanup_stale_chunk_sessions():
     if not _CHUNK_TMP_DIR.exists():
         return
@@ -214,6 +240,16 @@ def osc_files_upload_multi_api():
             sz = os.path.getsize(dest)
         except OSError as e:
             results.append({"ok": False, "name": name, "error": f"save_failed: {e}"})
+            continue
+        # Magic-byte sniff: catch executables renamed to allowed extensions.
+        sniff = _sniff_executable(dest)
+        if sniff:
+            try:
+                os.remove(dest)
+            except OSError:
+                pass
+            results.append({"ok": False, "name": name, "error": "blocked_content_signature",
+                            "detail": sniff})
             continue
         if sz > _MAX_UPLOAD_BYTES_PER_FILE:
             os.remove(dest)
@@ -332,6 +368,13 @@ def osc_files_upload_chunked_api():
         if sz > _MAX_UPLOAD_BYTES_PER_FILE:
             os.remove(dest)
             return jsonify({"ok": False, "error": "file_too_large", "size_mb": round(sz / 1024 / 1024, 1)}), 413
+        sniff = _sniff_executable(dest)
+        if sniff:
+            try:
+                os.remove(dest)
+            except OSError:
+                pass
+            return jsonify({"ok": False, "error": "blocked_content_signature", "detail": sniff}), 415
     except OSError as e:
         return jsonify({"ok": False, "error": f"finalize_failed: {e}"}), 500
     finally:
