@@ -708,7 +708,7 @@ def translate_text_complete(text: str, source_lang: str = "auto", target_lang: s
                 except Exception:
                     gtx_piece = ""
                 if gtx_piece and not _translation_needs_rescue(text_part, gtx_piece):
-                    # GTX-first + TAIDE post-edit: 用 TAIDE 修正 GTX 的術語錯誤
+                    # GTX-first + oMLX post-edit: 用本地模型修正 GTX 的術語錯誤
                     if glossary and len(gtx_piece) > 60:
                         try:
                             _pe_prompt = (
@@ -724,7 +724,7 @@ def translate_text_complete(text: str, source_lang: str = "auto", target_lang: s
                             _pe_out = str((_pe_r or {}).get("response") or "").strip()
                             if _pe_r.get("success") and _pe_out and len(_pe_out) > len(gtx_piece) * 0.5:
                                 piece = _pe_out
-                                used_model = "google_gtx+taide_postedit"
+                                used_model = "google_gtx+omlx_postedit"
                             else:
                                 piece = gtx_piece
                                 used_model = "google_gtx"
@@ -808,7 +808,7 @@ def translate_text_complete(text: str, source_lang: str = "auto", target_lang: s
                     )
                     _vr_out = str((_vr or {}).get("response") or "").strip()
                     if _vr.get("success") and "有問題" in _vr_out:
-                        logger.warning("translate_verify: taide-12b flagged chunk %d/%d: %s", idx, total, _vr_out[:120])
+                        logger.warning("translate_verify: oMLX flagged chunk %d/%d: %s", idx, total, _vr_out[:120])
                         try:
                             gtx_rescue = _translate_via_gtx(text_part)
                         except Exception:

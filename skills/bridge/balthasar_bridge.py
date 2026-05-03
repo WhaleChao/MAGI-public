@@ -347,7 +347,7 @@ def call_apple_ai(endpoint, payload):
 
 def _tc_review_pass(text: str, timeout: int = 30) -> str:
     """
-    Run taide-12b 繁體中文校正 on text (fix simplified Chinese → 正體).
+    Run local oMLX 繁體中文校正 on text (fix simplified Chinese → 正體).
     Returns corrected text, or original if review fails.
     """
     if not text or len(text.strip()) < 10:
@@ -359,14 +359,14 @@ def _tc_review_pass(text: str, timeout: int = 30) -> str:
             "只修改用語，不改變原文內容和結構。直接輸出修改後的文字，不要加任何說明。\n\n"
             + text
         )
-        # Primary: oMLX TAIDE-12b MLX for 繁體校正
+        # Primary: oMLX local chat model for 繁體校正
         _chat_omlx = getattr(melchior_client, "_chat_omlx", None)
         _omlx_avail = getattr(melchior_client, "_omlx_available", None)
-        _taide_model = getattr(melchior_client, "OMLX_TAIDE_MODEL", TEXT_REVIEW_MODEL)
+        _local_model = getattr(melchior_client, "OMLX_LOCAL_CHAT_MODEL", TEXT_REVIEW_MODEL)
         if callable(_chat_omlx) and callable(_omlx_avail) and _omlx_avail():
             r = _chat_omlx(
                 prompt=prompt,
-                model=_taide_model,
+                model=_local_model,
                 timeout=max(15, timeout),
                 temperature=0.2,
                 max_tokens=min(2048, max(512, len(text))),
@@ -385,9 +385,9 @@ def _tc_review_pass(text: str, timeout: int = 30) -> str:
 
 def summarize_text(text, timeout_sec=None, summary_length="medium"):
     """
-    Local-first summary using oMLX/TAIDE-12b (primary):
-    - Fast path: oMLX/TAIDE-12b (直接繁中輸出)
-    - Quality path: taide-12b via melchior_client.chat (Ollama fallback)
+    Local-first summary using oMLX (primary):
+    - Fast path: oMLX local chat model (直接繁中輸出)
+    - Quality path: melchior_client.chat (Ollama fallback)
     - Fallback: truncated text if all models fail
     - summary_length: "short" (3-5 pts), "medium" (4-8 pts), "long" (12-15 pts)
     """
@@ -491,7 +491,7 @@ def summarize_text(text, timeout_sec=None, summary_length="medium"):
             _summ_num_ctx = 8192
             _summ_num_predict = 1024
 
-        # Primary: oMLX/TAIDE-12b — 繁體中文原生輸出，免 TC review 省一輪推理。
+        # Primary: oMLX local model — 繁體中文原生輸出，免 TC review 省一輪推理。
         _omlx_chat = getattr(melchior_client, "_chat_omlx", None)
         _omlx_avail = getattr(melchior_client, "_omlx_available", None)
         if callable(_omlx_chat) and callable(_omlx_avail) and _omlx_avail():
@@ -505,7 +505,7 @@ def summarize_text(text, timeout_sec=None, summary_length="medium"):
             )
             if q.get("success") and q.get("response"):
                 raw_summary = q.get("response", "")
-                # TAIDE 直接輸出繁體中文，無需 _tc_review_pass
+                # 本地模型直接輸出繁體中文，無需 _tc_review_pass
                 clean = _summary_postprocess(raw_summary)
                 return {
                     "success": True,

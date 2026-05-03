@@ -2677,7 +2677,7 @@ def acquire_skill(need_description: str, auto_generate: bool = True, auto_activa
                 )
 
             model_used = genesis_result.get("model_used", "Unknown")
-            source_agent = "CASPER" if "70B" in model_used or "gpt-oss" in model_used or "taide" in model_used else "MELCHIOR"
+            source_agent = "CASPER" if "70B" in model_used or "gpt-oss" in model_used else "MELCHIOR"
             message = f"🧬 {source_agent} ({model_used}) 已生成並上線技能: {safe_name}"
             if action_path:
                 message += " (含 action.py，已驗證)"

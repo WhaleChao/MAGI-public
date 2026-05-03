@@ -16,5 +16,5 @@ def test_default_local_vision_models_use_default_vision_model():
 
 
 def test_resolve_text_model_maps_legacy_alias_to_primary():
-    models = ["gemma-4-26b-a4b-it-4bit", "GLM-OCR-bf16"]
-    assert resolve_text_model("taide-12b", available=models) == "gemma-4-26b-a4b-it-4bit"
+    models = ["gemma-4-26b-a4b-it-4bit"]
+    assert resolve_text_model("gemma-4", available=models) == "gemma-4-26b-a4b-it-4bit"

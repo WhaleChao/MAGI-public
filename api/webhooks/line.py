@@ -1022,7 +1022,7 @@ def _normalize_line_output_text(text: str, skip_llm: bool = False) -> str:
     try:
         if _normalize_output_text:
             if skip_llm:
-                # Deterministic replacements only — skip slow TAIDE LLM review.
+                # Deterministic replacements only — skip slow LLM review.
                 from api.tw_output_guard import _opencc_s2twp, _replace_mainland_terms, _strip_internal_leaks, _limit_message_for_platform, strip_markdown_for_chat
                 s = _opencc_s2twp(s)
                 s, _ = _replace_mainland_terms(s)

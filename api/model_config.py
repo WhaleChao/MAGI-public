@@ -5,8 +5,8 @@ from typing import Iterable
 
 
 DEFAULT_TEXT_MODEL = "gemma-4-e4b-it-4bit"
-DEFAULT_VISION_MODEL = "GLM-OCR-bf16"
-DEFAULT_OCR_MODEL = "GLM-OCR-bf16"
+DEFAULT_VISION_MODEL = "gemma-4-e4b-it-4bit"
+DEFAULT_OCR_MODEL = "gemma-4-e4b-it-4bit"
 DEFAULT_EMBED_MODEL = "modernbert-embed-4bit"
 
 
@@ -35,9 +35,6 @@ DEFAULT_MODEL_ALIAS = _clean(os.environ.get("MAGI_DEFAULT_MODEL"), TEXT_PRIMARY_
 
 TEXT_MODEL_ALIASES = {
     "",
-    "taide",
-    "taide-12b",
-    "taide-12b-chat-mlx-4bit",
     "gemma-4",
     "gemma4",
     "gemma-4-26b",

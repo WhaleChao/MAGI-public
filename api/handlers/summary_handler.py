@@ -345,7 +345,7 @@ def summarize_text_resilient(text: str, summary_length: str = "medium", *, progr
         return "\n".join(parts).strip()
 
     # --- Strategy: direct-first, map-reduce only for very large docs ---
-    # taide-12b already pinned in memory. Try direct summary first
+    # Local oMLX model already pinned in memory. Try direct summary first
     # to avoid expensive model-swapping in map-reduce chunks.
     # Only fall back to map-reduce if text exceeds direct model capacity.
     try:
@@ -454,8 +454,8 @@ def summarize_text_resilient(text: str, summary_length: str = "medium", *, progr
                     sampled_chunks = _sample_evenly_chunks(chunks, summary_max_samples)
                 summaries = [""] * len(sampled_chunks)
 
-                # Chunks use oMLX/TAIDE-12b (primary, fast Apple Silicon).
-                # Falls back to Ollama/taide-12b if oMLX unavailable.
+                # Chunks use oMLX local model (primary, fast Apple Silicon).
+                # Falls back to Ollama if oMLX unavailable.
 
                 def _run_chunk_prompt(
                     chunk_text: str,

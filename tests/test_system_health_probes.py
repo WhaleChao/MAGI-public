@@ -56,7 +56,7 @@ def _load_system_test_module():
 def _mock_models_response(status_code=200, models=None):
     """Create a mock requests.get response for /v1/models."""
     if models is None:
-        models = [{"id": "TAIDE-12b-Chat-mlx-4bit"}]
+        models = [{"id": "gemma-4-e4b-it-4bit"}]
     resp = MagicMock()
     resp.status_code = status_code
     resp.json.return_value = {"data": models}
@@ -67,16 +67,16 @@ def _mock_models_response(status_code=200, models=None):
     "payload, expected",
     [
         (
-            {"object": "list", "data": [{"id": "TAIDE-12b-Chat-mlx-4bit"}, {"id": "Qwen2.5-Coder-14B"}]},
-            ["TAIDE-12b-Chat-mlx-4bit", "Qwen2.5-Coder-14B"],
+            {"object": "list", "data": [{"id": "gemma-4-e4b-it-4bit"}, {"id": "Qwen2.5-Coder-14B"}]},
+            ["gemma-4-e4b-it-4bit", "Qwen2.5-Coder-14B"],
         ),
         (
-            {"object": "list", "models": [{"name": "TAIDE-12b-Chat-mlx-4bit"}, {"model": "Qwen2.5-Coder-14B"}]},
-            ["TAIDE-12b-Chat-mlx-4bit", "Qwen2.5-Coder-14B"],
+            {"object": "list", "models": [{"name": "gemma-4-e4b-it-4bit"}, {"model": "Qwen2.5-Coder-14B"}]},
+            ["gemma-4-e4b-it-4bit", "Qwen2.5-Coder-14B"],
         ),
         (
-            [{"id": "TAIDE-12b-Chat-mlx-4bit"}, "Qwen2.5-Coder-14B"],
-            ["TAIDE-12b-Chat-mlx-4bit", "Qwen2.5-Coder-14B"],
+            [{"id": "gemma-4-e4b-it-4bit"}, "Qwen2.5-Coder-14B"],
+            ["gemma-4-e4b-it-4bit", "Qwen2.5-Coder-14B"],
         ),
     ],
 )
@@ -89,7 +89,7 @@ def test_shared_health_probe_extract_model_labels_normalizes_payloads(payload, e
 def test_shared_health_probe_local_chat_retries_after_timeout(monkeypatch):
     from skills.ops import health_probes
 
-    mock_models = _mock_models_response(200, [{"id": "TAIDE-12b-Chat-mlx-4bit"}])
+    mock_models = _mock_models_response(200, [{"id": "gemma-4-e4b-it-4bit"}])
     success_resp = MagicMock()
     success_resp.status_code = 200
     success_resp.json.return_value = {"choices": [{"message": {"content": "OK"}}]}
@@ -110,14 +110,14 @@ def test_shared_health_probe_local_chat_retries_after_timeout(monkeypatch):
     result = health_probes.probe_local_chat(timeout_sec=30, retries=2)
 
     assert result["pass"] is True
-    assert result["model"] == "TAIDE-12b-Chat-mlx-4bit"
+    assert result["model"] == "gemma-4-e4b-it-4bit"
     assert len(post_calls) == 2
 
 
 def test_system_test_omlx_uses_models_endpoint(monkeypatch):
     from skills.ops import system_test
 
-    mock_resp = _mock_models_response(200, [{"id": "TAIDE-12b-Chat-mlx-4bit"}, {"id": "Qwen2.5-Coder-14B"}])
+    mock_resp = _mock_models_response(200, [{"id": "gemma-4-e4b-it-4bit"}, {"id": "Qwen2.5-Coder-14B"}])
     fake_requests = types.ModuleType("requests")
     fake_requests.get = MagicMock(return_value=mock_resp)
     monkeypatch.setitem(sys.modules, "requests", fake_requests)
@@ -147,16 +147,16 @@ def test_system_test_omlx_unreachable(monkeypatch):
     "payload, expected",
     [
         (
-            {"object": "list", "data": [{"id": "TAIDE-12b-Chat-mlx-4bit"}, {"id": "Qwen2.5-Coder-14B"}]},
-            ["TAIDE-12b-Chat-mlx-4bit", "Qwen2.5-Coder-14B"],
+            {"object": "list", "data": [{"id": "gemma-4-e4b-it-4bit"}, {"id": "Qwen2.5-Coder-14B"}]},
+            ["gemma-4-e4b-it-4bit", "Qwen2.5-Coder-14B"],
         ),
         (
-            {"object": "list", "models": [{"name": "TAIDE-12b-Chat-mlx-4bit"}, {"model": "Qwen2.5-Coder-14B"}]},
-            ["TAIDE-12b-Chat-mlx-4bit", "Qwen2.5-Coder-14B"],
+            {"object": "list", "models": [{"name": "gemma-4-e4b-it-4bit"}, {"model": "Qwen2.5-Coder-14B"}]},
+            ["gemma-4-e4b-it-4bit", "Qwen2.5-Coder-14B"],
         ),
         (
-            [{"id": "TAIDE-12b-Chat-mlx-4bit"}, "Qwen2.5-Coder-14B"],
-            ["TAIDE-12b-Chat-mlx-4bit", "Qwen2.5-Coder-14B"],
+            [{"id": "gemma-4-e4b-it-4bit"}, "Qwen2.5-Coder-14B"],
+            ["gemma-4-e4b-it-4bit", "Qwen2.5-Coder-14B"],
         ),
     ],
 )
@@ -197,7 +197,7 @@ def test_system_test_run_all_tests_writes_report_under_static(tmp_path, monkeypa
 def test_magi_doctor_probe_imports_requests_lazily_and_uses_models_schema(monkeypatch):
     module = _load_magi_doctor_module()
 
-    mock_resp = _mock_models_response(200, [{"id": "TAIDE-12b-Chat-mlx-4bit"}, {"id": "Qwen2.5-Coder-14B"}])
+    mock_resp = _mock_models_response(200, [{"id": "gemma-4-e4b-it-4bit"}, {"id": "Qwen2.5-Coder-14B"}])
     fake_requests = types.ModuleType("requests")
     fake_requests.get = MagicMock(return_value=mock_resp)
     monkeypatch.setitem(sys.modules, "requests", fake_requests)
@@ -206,7 +206,7 @@ def test_magi_doctor_probe_imports_requests_lazily_and_uses_models_schema(monkey
 
     assert result["pass"] is True
     assert "2 models" in result["detail"]
-    assert "TAIDE-12b-Chat-mlx-4bit" in result["detail"]
+    assert "gemma-4-e4b-it-4bit" in result["detail"]
     assert "Qwen2.5-Coder-14B" in result["detail"]
 
 
@@ -227,7 +227,7 @@ def test_magi_doctor_repair_ollama_uses_models_probe(monkeypatch):
 def test_magi_doctor_local_llm_probe_retries_after_timeout(monkeypatch):
     module = _load_magi_doctor_module()
 
-    mock_models = _mock_models_response(200, [{"id": "TAIDE-12b-Chat-mlx-4bit"}])
+    mock_models = _mock_models_response(200, [{"id": "gemma-4-e4b-it-4bit"}])
     success_resp = MagicMock()
     success_resp.status_code = 200
     success_resp.json.return_value = {"choices": [{"message": {"content": "OK"}}]}
@@ -384,7 +384,7 @@ def test_market_briefing_uses_current_python_for_skill_invocation(monkeypatch):
 def test_system_test_local_llm_probe_retries_after_timeout(monkeypatch):
     from skills.ops import system_test
 
-    mock_models = _mock_models_response(200, [{"id": "TAIDE-12b-Chat-mlx-4bit"}])
+    mock_models = _mock_models_response(200, [{"id": "gemma-4-e4b-it-4bit"}])
     success_resp = MagicMock()
     success_resp.status_code = 200
     success_resp.json.return_value = {"choices": [{"message": {"content": "OK"}}]}

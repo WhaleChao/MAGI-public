@@ -308,7 +308,7 @@ def handle_multimedia(orch, user_id, prompt, attachment) -> str:
                         _pp_out = str(_pp["response"]).strip()
                         if 0.7 < len(_pp_out) / max(1, len(transcript)) < 1.4:
                             transcript = _pp_out
-                            logger.info("Transcript punctuation corrected by taide-12b")
+                            logger.info("Transcript punctuation corrected by oMLX local model")
                 except Exception as _pp_err:
                     logger.debug("Transcript punctuation correction skipped: %s", _pp_err)
 

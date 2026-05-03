@@ -8,10 +8,10 @@ from providers import AnthropicProvider, OllamaProvider, OmlxProvider, OpenAIPro
 def test_omlx_provider_builds_payload_and_healthcheck(monkeypatch):
     import providers.omlx as omux_mod
 
-    provider = OmlxProvider(base_url="http://127.0.0.1:8080", model="taide-12b")
+    provider = OmlxProvider(base_url="http://127.0.0.1:8080", model="gemma-4-e4b")
     payload = provider.build_chat_payload("hello")
 
-    assert payload["model"] == "taide-12b"
+    assert payload["model"] == "gemma-4-e4b"
     assert payload["messages"][0]["content"] == "hello"
 
     resp = MagicMock()

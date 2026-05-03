@@ -106,7 +106,7 @@ def _is_vision_model(model_name: str) -> bool:
         return False
     low = m.lower()
     # Fast-path by common vision model naming.
-    if any(k in low for k in ("llava", "minicpm-v", "glm-ocr", "gemma3", "gemma-4", "gemma4", "qwen", "taide")):
+    if any(k in low for k in ("llava", "minicpm-v", "gemma3", "gemma-4", "gemma4", "qwen")):
         return True
     meta = _load_ollama_meta()
     for it in (meta.get("models") or []):
@@ -464,7 +464,7 @@ def extract_info_with_vision(png_bytes: bytes, timeout_sec: int = 45) -> dict:
                 return False
         return True
 
-    # Try oMLX first (TAIDE-12b vision), then OpenAI gateway, then Ollama
+    # Try oMLX first (Gemma vision), then OpenAI gateway, then Ollama
     content = _ask_omlx_vision(
         prompt, b64, timeout_sec=timeout_sec, validate_fn=_info_validate,
     )

@@ -59,12 +59,11 @@
   "aliases": {
     "_description": "Legacy model name aliases that resolve to text_primary",
     "names": [
-      "", "taide", "taide-12b", "taide-12b-chat-mlx-4bit",
+      "",
       "gemma-4", "gemma4", "gemma-4-26b", "gemma-4-26b-a4b",
       "gemma-4-e2b-it-local-bf16", "gemma-4-26b-a4b-it-4bit",
       "gemma-4-e4b-it-4bit", "gemma4:26b",
-      "gemma4:26b-a4b-it-q4_K_M", "gemma-4-e4b-it-bf16",
-      "GLM-OCR-bf16"
+      "gemma4:26b-a4b-it-q4_K_M", "gemma-4-e4b-it-bf16"
     ]
   }
 }

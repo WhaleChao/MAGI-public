@@ -733,7 +733,7 @@ def _generate_local(prompt, temperature=0.4, timeout=90, num_ctx=6144, stream=Fa
             yield text
         return _single_yield(result)
 
-    # Try oMLX first (faster on Apple Silicon, TAIDE-12b primary)
+    # Try oMLX first (faster on Apple Silicon, Gemma E4B primary)
     try:
         omlx_chat = getattr(melchior_client, "_chat_omlx", None)
         omlx_avail = getattr(melchior_client, "_omlx_available", None)

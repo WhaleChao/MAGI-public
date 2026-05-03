@@ -64,12 +64,12 @@ def guard_tailscale_serve():
     """Disabled — nodes are on LAN (192.168.1.x), no longer need Tailscale serve."""
     pass
 
-# ── TAIDE Model Resident Guard ──
-# Ollama retired — TAIDE now runs on oMLX as TAIDE-12b-Chat-mlx-4bit.
-TAIDE_MODEL = os.environ.get("MAGI_TEXT_PRIMARY_MODEL", "")
+# ── Local Chat Model Resident Guard ──
+# Ollama retired — local chat now runs on oMLX (default Gemma E4B).
+LOCAL_CHAT_MODEL = os.environ.get("MAGI_TEXT_PRIMARY_MODEL", "")
 
-def guard_taide_resident():
-    """No-op: Ollama retired. TAIDE runs on oMLX (managed by launchd)."""
+def guard_local_chat_resident():
+    """No-op: Ollama retired. Local chat runs on oMLX (managed by launchd)."""
     pass
 
 def check_omlx_health():
@@ -104,8 +104,8 @@ def get_node_model(ip, port=8080):
             data = response.json()
             models = data.get("data") or []
             if models:
-                # 優先回傳主對話模型（TAIDE），Qwen 只負責 code
-                main_model = os.environ.get("MAGI_MAIN_MODEL", "TAIDE")
+                # 優先回傳主對話模型（Gemma），Qwen 只負責 code
+                main_model = os.environ.get("MAGI_MAIN_MODEL", "gemma")
                 for m in models:
                     mid = m.get("id", "")
                     if main_model.lower().split("-")[0] in mid.lower():
@@ -162,8 +162,8 @@ def update_status():
                     if r.status_code == 200:
                         omlx_models = [m.get("id", "") for m in r.json().get("data", [])]
                         if omlx_models:
-                            # 顯示主對話模型（TAIDE），Qwen 只負責 code
-                            main_kw = os.environ.get("MAGI_MAIN_MODEL", "TAIDE").lower().split("-")[0]
+                            # 顯示主對話模型（Gemma），Qwen 只負責 code
+                            main_kw = os.environ.get("MAGI_MAIN_MODEL", "gemma").lower().split("-")[0]
                             primary = next((m for m in omlx_models if main_kw in m.lower()), omlx_models[0])
                             model = f"oMLX: {primary}"
                         else:
@@ -270,7 +270,7 @@ def update_status():
 
 _ts_guard_counter = 0
 _TS_GUARD_EVERY_N = 6    # Check Tailscale every ~60s (6 × 10s)
-_TAIDE_GUARD_EVERY_N = 30  # Check TAIDE every ~5min (30 × 10s)
+_LOCAL_CHAT_GUARD_EVERY_N = 30  # Check local chat every ~5min (30 × 10s)
 
 # ── macOS Desktop Notification (lazy load) ──
 _omlx_was_healthy = True  # track state transitions to avoid spamming
@@ -287,19 +287,19 @@ if __name__ == "__main__":
     print("💗 MAGI Heartbeat Monitor Started (v5 - Dual Engine: Ollama + oMLX)")
     # Initial guards on startup
     guard_tailscale_serve()
-    guard_taide_resident()
+    guard_local_chat_resident()
     check_omlx_health()
-    _taide_guard_counter = 0
+    _local_chat_guard_counter = 0
     while True:
         update_status()
         _ts_guard_counter += 1
-        _taide_guard_counter += 1
+        _local_chat_guard_counter += 1
         if _ts_guard_counter >= _TS_GUARD_EVERY_N:
             _ts_guard_counter = 0
             guard_tailscale_serve()
-        if _taide_guard_counter >= _TAIDE_GUARD_EVERY_N:
-            _taide_guard_counter = 0
-            guard_taide_resident()
+        if _local_chat_guard_counter >= _LOCAL_CHAT_GUARD_EVERY_N:
+            _local_chat_guard_counter = 0
+            guard_local_chat_resident()
             omlx_ok = check_omlx_health()
             # Desktop notification on oMLX state transition
             if not omlx_ok and _omlx_was_healthy:

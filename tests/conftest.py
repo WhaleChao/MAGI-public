@@ -40,7 +40,7 @@ def mock_env_vars(monkeypatch):
 @pytest.fixture
 def mock_omlx_response():
     """Mock a successful oMLX HTTP response."""
-    def _make(text="mock response", model="TAIDE-12b-Chat-mlx-4bit"):
+    def _make(text="mock response", model="gemma-4-e4b-it-4bit"):
         resp = MagicMock()
         resp.status_code = 200
         resp.json.return_value = {
@@ -54,7 +54,7 @@ def mock_omlx_response():
 @pytest.fixture
 def mock_ollama_response():
     """Mock a successful Ollama HTTP response."""
-    def _make(text="mock response", model="taide-12b"):
+    def _make(text="mock response", model="gemma-4-e4b"):
         resp = MagicMock()
         resp.status_code = 200
         resp.json.return_value = {

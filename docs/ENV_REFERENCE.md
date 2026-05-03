@@ -89,7 +89,7 @@
 |----------|------|---------|-------------|
 | `MAGI_MAIN_MODEL` | string | `llama3.1:8b` | 主要推理模型 |
 | `CASPER_LOCAL_MODEL` | string | `llama3.1:8b` | 本地推理模型 |
-| `CASPER_CLASSIFIER_MODEL` | string | `taide-12b` | 意圖分類模型 |
+| `CASPER_CLASSIFIER_MODEL` | string | `gemma-4-e4b-it-4bit` | 意圖分類模型 |
 <!-- MAGI_OPENCLAW_PRIMARY_MODEL / MAGI_OPENCLAW_FALLBACK_MODEL rows
      removed 2026-04-20 (cleanup plan Phase 5): OpenClaw Gateway chain
      has been deleted. Text-model routing is now handled by

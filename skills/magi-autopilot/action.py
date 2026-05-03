@@ -2277,7 +2277,7 @@ def _openclaw_session_selfheal(max_files: int = 80) -> Dict[str, Any]:
         out["ok"] = False
         out["errors"].append("sessions_dir_missing")
         return out
-    fallback_model = "ollama/taide-12b"
+    fallback_model = "omlx/gemma-4-e4b-it-4bit"
     try:
         cfg_path = Path.home() / ".openclaw" / "openclaw.json"
         cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
@@ -2612,12 +2612,12 @@ def _openclaw_codex_quota_guard(current_primary: str, current_fallbacks: list[st
         return out
 
     local_primary = str(
-        os.environ.get("MAGI_OPENCLAW_LOCAL_PRIMARY_MODEL", "omlx/TAIDE-12b-Chat-mlx-4bit")
-        or "omlx/TAIDE-12b-Chat-mlx-4bit"
+        os.environ.get("MAGI_OPENCLAW_LOCAL_PRIMARY_MODEL", "omlx/gemma-4-e4b-it-4bit")
+        or "omlx/gemma-4-e4b-it-4bit"
     ).strip()
     local_fallbacks = _model_list_from_env(
         "MAGI_OPENCLAW_LOCAL_FALLBACK_MODELS",
-        "omlx/TAIDE-12b-Chat-mlx-4bit",
+        "omlx/gemma-4-e4b-it-4bit",
     )
     remote_primary_default = str(
         os.environ.get("MAGI_OPENCLAW_REMOTE_PRIMARY_MODEL", "openai-codex/gpt-5.4")

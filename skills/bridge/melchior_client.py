@@ -55,8 +55,7 @@ OMLX_OCR_MODEL = os.environ.get("MAGI_OMLX_OCR_MODEL", DEFAULT_OCR_MODEL)
 OMLX_CODE_MODEL = os.environ.get("MAGI_OMLX_CODE_MODEL", DEFAULT_CODE_MODEL)
 OMLX_EMBED_MODEL = os.environ.get("MAGI_OMLX_EMBED_MODEL", DEFAULT_EMBED_MODEL)
 OMLX_GENERAL_MODEL = os.environ.get("MAGI_OMLX_GENERAL_MODEL", DEFAULT_GENERAL_MODEL)
-OMLX_LOCAL_CHAT_MODEL = os.environ.get("MAGI_OMLX_TAIDE_MODEL", TEXT_REVIEW_MODEL)
-OMLX_TAIDE_MODEL = OMLX_LOCAL_CHAT_MODEL  # backward compat
+OMLX_LOCAL_CHAT_MODEL = os.environ.get("MAGI_OMLX_LOCAL_CHAT_MODEL", TEXT_REVIEW_MODEL)
 MAGI_RUNTIME_DIR = os.environ.get(
     "MAGI_RUNTIME_DIR",
     os.path.join(os.path.expanduser("~"), "Library", "Application Support", "MAGI"),
@@ -74,9 +73,6 @@ _MODEL_CACHE_LOCK = threading.Lock()  # guards _MODEL_CACHE, _OMLX_MODELS_CACHE,
 
 # Model alias: Ollama names → oMLX names (for seamless migration)
 _OMLX_MODEL_ALIAS = {
-    "taide-12b": TEXT_PRIMARY_MODEL,
-    "taide": TEXT_PRIMARY_MODEL,
-    "TAIDE-12b-Chat-mlx-4bit": TEXT_PRIMARY_MODEL,
     "nomic-embed-text": OMLX_EMBED_MODEL,
     "Qwen2.5-Coder-14B-Instruct-4bit": TEXT_PRIMARY_MODEL,
     "Qwen3.5-9B-4bit": TEXT_PRIMARY_MODEL,
@@ -421,9 +417,9 @@ def _resolve_omlx_chat_model(raw_model: str, *, available_models: Optional[List[
         if requested_lower and (requested_lower == lower or requested_lower in lower or lower.startswith(requested_lower)):
             return model_name
 
-    # When the configured TAIDE model is absent, use the best available local chat model
+    # When the configured chat model is absent, use the best available local chat model
     # instead of triggering a guaranteed 404 and falling straight into fallback mode.
-    if "taide" in requested_lower or "gemma" in requested_lower:
+    if "gemma" in requested_lower:
         for model_name in models:
             lower = model_name.lower()
             if "gemma-4" in lower:
@@ -439,7 +435,7 @@ def _resolve_omlx_chat_model(raw_model: str, *, available_models: Optional[List[
 def _ensure_alternating_roles(messages: list) -> list:
     """Ensure messages follow user/assistant alternation required by strict chat templates.
 
-    Some models (e.g. TAIDE-12b Gemma-3) enforce strict role alternation:
+    Some models (e.g. Gemma family) enforce strict role alternation:
     - First non-system message must be 'user'
     - Roles must alternate user/assistant/user/assistant/...
     - Consecutive same-role messages are merged
@@ -543,7 +539,7 @@ def _chat_omlx(
     else:
         messages.append({"role": "user", "content": prompt})
 
-    # Ensure strict role alternation for models like TAIDE-12b (Gemma template)
+    # Ensure strict role alternation for Gemma family (which enforces role alternation)
     messages = _ensure_alternating_roles(messages)
 
     payload = {
@@ -940,8 +936,8 @@ def _pick_openai_model(requested_model: str, available: List[str]) -> str:
         hit = next((a for a in avail if a.lower().split(":")[0] == pref), "")
         if hit:
             return hit
-    # Prefer local models available on this machine
-    for c in ["taide", "glm"]:
+    # Prefer local Gemma models available on this machine
+    for c in ["gemma"]:
         hit = next((a for a in avail if a.lower().startswith(c)), "")
         if hit:
             return hit
@@ -1081,7 +1077,7 @@ def _fallback_remote_models(primary: str, available: List[str]) -> List[str]:
         if m in avail:
             candidates.append(m)
             continue
-        # Prefix match (e.g., taide -> taide-12b)
+        # Prefix match (e.g., gemma-4 -> gemma-4-26b-a4b-it-4bit)
         pref = m.split(":")[0].lower()
         hit = next((a for a in avail if a.lower().split(":")[0] == pref), "")
         if hit:
@@ -1090,7 +1086,7 @@ def _fallback_remote_models(primary: str, available: List[str]) -> List[str]:
     if not candidates:
         for a in avail:
             low = a.lower()
-            if any(k in low for k in ["tinyllama", "taide-12b", "mistral", "7b", "8b"]):
+            if any(k in low for k in ["tinyllama", "mistral", "7b", "8b"]):
                 candidates.append(a)
     # Never re-try the primary here.
     candidates = [c for c in candidates if c and c != primary]
@@ -1287,7 +1283,7 @@ def chat_stream(prompt, model=TEXT_PRIMARY_MODEL, timeout=TIMEOUT):
     # Resolve model alias (same logic as chat())
     omlx_model = _OMLX_MODEL_ALIAS.get(model, model)
     if omlx_model == model and model not in list_omlx_models():
-        omlx_model = OMLX_TAIDE_MODEL
+        omlx_model = OMLX_LOCAL_CHAT_MODEL
 
     messages = [{"role": "user", "content": prompt}]
     messages = _ensure_alternating_roles(messages)
@@ -1359,9 +1355,9 @@ def chat(prompt: str, model: str = TEXT_PRIMARY_MODEL, timeout: int = TIMEOUT) -
         _step_timeout = min(local_try_timeout, _remaining(deadline, floor=4))
         if _step_timeout >= 4 and _omlx_available():
             omlx_model = _OMLX_MODEL_ALIAS.get(model, model)
-            # If the requested model isn't known to oMLX, use TAIDE as default
+            # If the requested model isn't known to oMLX, use local chat model as default
             if omlx_model == model and model not in list_omlx_models():
-                omlx_model = OMLX_TAIDE_MODEL
+                omlx_model = OMLX_LOCAL_CHAT_MODEL
             omlx_r = _chat_omlx(prompt=prompt, model=omlx_model, timeout=_step_timeout)
             if omlx_r.get("success"):
                 omlx_r["route"] = "omlx_primary"
@@ -1535,7 +1531,7 @@ def chat(prompt: str, model: str = TEXT_PRIMARY_MODEL, timeout: int = TIMEOUT) -
         local["tried_models"] = tried
         local["timeout_budget_sec"] = budget_sec
         return local
-    # Fallback 2: local llama-server OpenAI /v1 (taide-12b stack) if available.
+    # Fallback 2: local llama-server OpenAI /v1 stack if available.
     local_v1 = _local_openai_v1_chat(
         prompt,
         model=os.environ.get("LOCAL_MAIN_MODEL", TEXT_PRIMARY_MODEL),

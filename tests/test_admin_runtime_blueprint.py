@@ -135,7 +135,7 @@ def test_dashboard_nerv_health_status_and_logs(tmp_path, monkeypatch):
 
     app, _, _ = _make_app(tmp_path, monkeypatch, attachment_queue=types.SimpleNamespace(stats=lambda: {"total": 2, "active": 1}))
     (tmp_path / "static" / "magi_status.json").write_text(
-        json.dumps({"timestamp": "2026-04-03T12:00:00", "nodes": {"casper": {"online": True, "model": "taide-12b"}}}),
+        json.dumps({"timestamp": "2026-04-03T12:00:00", "nodes": {"casper": {"online": True, "model": "gemma-4-e4b"}}}),
         encoding="utf-8",
     )
     (tmp_path / ".agent" / "server.log").write_text("l1\nl2\n", encoding="utf-8")
@@ -144,7 +144,7 @@ def test_dashboard_nerv_health_status_and_logs(tmp_path, monkeypatch):
 
     def _fake_get(url, timeout=0):
         if url.endswith("/v1/models"):
-            return types.SimpleNamespace(status_code=200, json=lambda: {"data": [{"id": "taide-12b"}]})
+            return types.SimpleNamespace(status_code=200, json=lambda: {"data": [{"id": "gemma-4-e4b"}]})
         if url.endswith("/health"):
             return types.SimpleNamespace(status_code=200, json=lambda: {})
         if url.endswith("/api/tags"):
@@ -154,7 +154,7 @@ def test_dashboard_nerv_health_status_and_logs(tmp_path, monkeypatch):
     monkeypatch.setattr(requests, "get", _fake_get)
 
     http_pool = types.ModuleType("skills.bridge.http_pool")
-    http_pool.get_session = lambda: types.SimpleNamespace(get=lambda url, timeout=0: types.SimpleNamespace(status_code=200, json=lambda: {"data": [{"id": "taide-12b"}]}))
+    http_pool.get_session = lambda: types.SimpleNamespace(get=lambda url, timeout=0: types.SimpleNamespace(status_code=200, json=lambda: {"data": [{"id": "gemma-4-e4b"}]}))
     monkeypatch.setitem(sys.modules, "skills.bridge.http_pool", http_pool)
 
     faiss_mod = types.ModuleType("skills.memory.faiss_index")
@@ -183,7 +183,7 @@ def test_dashboard_nerv_health_status_and_logs(tmp_path, monkeypatch):
 
     response = client.get("/api/status")
     assert response.status_code == 200
-    assert response.get_json()["nodes"]["casper"]["model"] == "taide-12b"
+    assert response.get_json()["nodes"]["casper"]["model"] == "gemma-4-e4b"
 
     response = client.get("/api/live-log?limit=1", headers={"X-User-ID": "u1"})
     assert response.status_code == 200

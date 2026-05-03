@@ -886,7 +886,7 @@ def _find_receipt_date_from_text(text: str) -> Optional[str]:
 def _llava_extract_receipt_date(png_bytes: bytes, *, timeout_sec: int = 14) -> Optional[str]:
     """
     使用本機視覺模型做「收文章日期」判讀（優先於 OCR）。
-    路徑：oMLX/GLM-OCR → Ollama vision chain。
+    路徑：macOS Vision → oMLX Gemma → Ollama vision chain。
     回覆格式要求：YYYYMMDD 或 NONE
     """
     if (not HAS_REQUESTS) or (not png_bytes):
@@ -910,7 +910,7 @@ def _llava_extract_receipt_date(png_bytes: bytes, *, timeout_sec: int = 14) -> O
                 return m.group(1)
             return _extract_any_date(out)
 
-        # ── Primary: oMLX (GLM-OCR or TAIDE-12b vision) ──
+        # ── Primary: oMLX (Gemma vision) ──
         try:
             from skills.bridge import melchior_client as _mc
             _chat_omlx = getattr(_mc, "_chat_omlx", None)
@@ -2331,7 +2331,7 @@ _VISION_OCR_BIN = os.path.expanduser("~/Library/Application Support/MAGI/bin/vis
 
 def _macos_vision_ocr_page(pdf_path: str, page_num: int = 0) -> str:
     """Use macOS Vision framework for OCR — high quality, free, no GPU needed.
-    This is the primary OCR engine. Falls back to GLM-OCR if unavailable."""
+    This is the primary OCR engine. Falls back to oMLX Gemma vision if unavailable."""
     if not os.path.exists(_VISION_OCR_BIN):
         return ""
     try:
@@ -2388,7 +2388,7 @@ def _chandra_ocr_page(pdf_path: str, page_idx: int = 0) -> str:
 
     This path is off by default and returns an empty string on any unavailable
     backend/license/server condition, so it cannot destabilize the existing
-    Vision/RapidOCR/GLM path.
+    Vision/RapidOCR/Gemma path.
     """
     try:
         from skills.engine.ocr import chandra_provider
@@ -2569,8 +2569,9 @@ def _ocr_consensus(page, pdf_path: str = "", page_idx: int = 0) -> str:
 
 
 def _glm_ocr_page(page, dpi: int = 200) -> str:
-    """Stage 1 fallback: Use GLM-OCR to transcribe a page image to text.
-    Used when macOS Vision OCR is unavailable."""
+    """Stage 1 fallback: Use oMLX vision model to transcribe a page image to text.
+    Used when macOS Vision OCR is unavailable. Function name kept for backwards compat;
+    actual model is now MAGI_OMLX_VISION_MODEL (Gemma E4B by default)."""
     try:
         from skills.bridge import melchior_client as _mc
         _chat_omlx = getattr(_mc, "_chat_omlx", None)
@@ -2608,7 +2609,7 @@ def _glm_ocr_page(page, dpi: int = 200) -> str:
                 break
             if _attempt == 0:
                 import time
-                logger.info("GLM-OCR: retrying after model load delay...")
+                logger.info("oMLX vision OCR: retrying after model load delay...")
                 time.sleep(8)  # Wait for LRU model swap
         if not (r.get("success") and r.get("response")):
             return ""
@@ -2626,7 +2627,7 @@ def _glm_ocr_page(page, dpi: int = 200) -> str:
                     break
         return ocr_text
     except Exception as e:
-        logger.debug("GLM-OCR failed: %s", e)
+        logger.debug("oMLX vision OCR failed: %s", e)
         return ""
 
 
@@ -2706,7 +2707,7 @@ def _vision_analyze_for_naming(content_page) -> dict:
     Stage 1 OCR priority (no port 8080 needed):
       1. macOS Vision (vision_ocr binary) — best quality for printed Traditional Chinese
       2. RapidOCR                          — fast local fallback
-      3. oMLX port 8080 (legacy GLM path) — last resort when local engines unavailable
+      3. oMLX port 8080 (Gemma vision)    — last resort when local engines unavailable
 
     Stage 2: Gemma E4B text LLM (oMLX port 8080) with regex fallback when offline.
     Garbled OCR text (simplified Chinese artifacts, kana noise) is rejected early.
@@ -3147,23 +3148,23 @@ def _select_pages_scored(doc) -> dict:
 
 
 def batch_ocr_pages(pdf_paths: list) -> dict:
-    """Phase 1: Batch OCR all pages using GLM-OCR (stays loaded throughout).
+    """Phase 1: Batch OCR all pages using oMLX vision model (stays loaded throughout).
 
     Returns {pdf_path: {"envelope_ocr": str, "content_ocr": str, "pages": dict}}
     """
-    # Pre-warm GLM-OCR: force model load before batch starts
+    # Pre-warm vision model: force model load before batch starts
     # This ensures all OCR requests hit a loaded model (no swap delays)
     try:
         import requests as _req
         from skills.bridge.melchior_client import OMLX_VISION_BASE, OMLX_VISION_MODEL
         _req.post(
             f"{OMLX_VISION_BASE}/v1/chat/completions",
-            json={"model": OMLX_VISION_MODEL or "gemma-4-26b-a4b-it-4bit",
+            json={"model": OMLX_VISION_MODEL or "gemma-4-e4b-it-4bit",
                   "messages": [{"role": "user", "content": "test"}],
                   "max_tokens": 1, "stream": False},
             timeout=30,
         )
-        logger.info("[batch-ocr] GLM-OCR pre-warmed")
+        logger.info("[batch-ocr] vision model pre-warmed")
     except Exception as e:
         logger.debug("[batch-ocr] Pre-warm failed (OK if model already loaded): %s", e)
 
@@ -3182,12 +3183,12 @@ def batch_ocr_pages(pdf_paths: list) -> dict:
             content_ocr = ""
 
             # Primary OCR: macOS Vision framework (fast, high quality, no GPU)
-            # Fallback: GLM-OCR (GPU-based, slower but handles edge cases)
+            # Fallback: oMLX Gemma vision (slower but handles edge cases)
             def _ocr_page(page_idx: int) -> str:
                 # Phase 2B: multi-engine consensus when MAGI_PDF_OCR_CONSENSUS=1
                 if _PDF_OCR_CONSENSUS and page_idx < doc.page_count:
                     return _ocr_consensus(doc[page_idx], pdf_path=pdf_path, page_idx=page_idx)
-                # Default: macOS Vision primary → GLM-OCR fallback
+                # Default: macOS Vision primary → oMLX Gemma vision fallback
                 text = _macos_vision_ocr_page(pdf_path, page_idx)
                 if not text and page_idx < doc.page_count:
                     text = _glm_ocr_page(doc[page_idx], dpi=200)
@@ -3252,7 +3253,7 @@ def batch_analyze_texts(ocr_results: dict) -> dict:
 
     Returns {pdf_path: {"envelope_info": dict, "content_info": dict, "merged": dict}}
     """
-    # Pre-warm Gemma 4: force model swap from GLM-OCR
+    # Pre-warm Gemma 4: force model swap from vision model
     try:
         import requests as _req
         from skills.bridge.melchior_client import OMLX_CHAT_BASE, TEXT_PRIMARY_MODEL as _TEXT_MODEL

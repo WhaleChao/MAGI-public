@@ -8,7 +8,7 @@ Architecture:
   - Balthasar (MAGI-03 / Pragmatist) → UX & operational impact
   - Casper    (MAGI-01 / Stabilizer) → Safety audit, final ruling
 
-All three agents share the same local model (taide-12b) but receive
+All three agents share the same local model (Gemma E4B) but receive
 different system prompts derived from their SOUL files.
 
 Usage:

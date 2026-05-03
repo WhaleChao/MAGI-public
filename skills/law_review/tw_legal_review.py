@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
 臺灣法規用語校正模組 (Taiwan Legal Review)
-使用 TAIDE 本地模型校正法律用語，確保符合臺灣法規慣用語。
+使用 oMLX 本地模型（預設 Gemma E4B，由 MAGI_TW_REVIEW_MODEL 指定）校正法律用語。
 
 架構:
-  分散式推理 (20B 主模型) → 產出初稿
-  → 本模組 (TAIDE 8B, Local) → 法規用語校正
+  分散式推理 (主模型) → 產出初稿
+  → 本模組 (Gemma E4B, Local oMLX) → 法規用語校正
   → 最終回覆
 """
 
@@ -58,7 +58,7 @@ def review_legal_text(
     timeout: int = 120,
 ) -> Optional[str]:
     """
-    將文字送入 TAIDE 模型進行臺灣法規用語校正。
+    將文字送入 oMLX 本地模型進行臺灣法規用語校正。
 
     Args:
         text: 待校正的文字

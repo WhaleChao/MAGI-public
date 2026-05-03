@@ -249,14 +249,6 @@ class ModelSpec:
 MODEL_CATALOG: list[ModelSpec] = [
     # ── MLX Models (Apple Silicon) ──
     ModelSpec(
-        name="TAIDE-12b-Chat-mlx-4bit",
-        display_name="TAIDE 12B（繁中專精）",
-        size_gb=7.5, min_ram_gb=12, category="chat", platform="mlx",
-        description="台灣 AI 實驗室訓練的繁體中文大型語言模型，法律用語最佳",
-        recommended_for="主要對話模型、法律文件處理",
-        omlx_id="TAIDE-12b-Chat-mlx-4bit",
-    ),
-    ModelSpec(
         name="gemma-3-12b-it-4bit",
         display_name="Gemma 3 12B（多語言通用 + 視覺）",
         size_gb=7.0, min_ram_gb=12, category="chat", platform="mlx",
@@ -273,14 +265,6 @@ MODEL_CATALOG: list[ModelSpec] = [
         omlx_id="Qwen2.5-Coder-14B-Instruct-4bit",
     ),
     ModelSpec(
-        name="GLM-OCR-bf16",
-        display_name="GLM OCR（文件辨識）",
-        size_gb=4.0, min_ram_gb=10, category="vision", platform="mlx",
-        description="文件 OCR 視覺模型，支援中文文件掃描辨識",
-        recommended_for="PDF 辨識、文件命名、視覺分析",
-        omlx_id="GLM-OCR-bf16",
-    ),
-    ModelSpec(
         name="modernbert-embed-4bit",
         display_name="ModernBERT Embed（向量嵌入）",
         size_gb=0.5, min_ram_gb=8, category="embed", platform="mlx",
@@ -289,22 +273,6 @@ MODEL_CATALOG: list[ModelSpec] = [
         omlx_id="modernbert-embed-4bit",
     ),
     # ── GGUF Models (Cross-platform / llama.cpp) ──
-    ModelSpec(
-        name="taide-llama3-8b-q4",
-        display_name="TAIDE 8B GGUF（繁中通用）",
-        size_gb=4.5, min_ram_gb=8, category="chat", platform="gguf",
-        description="TAIDE GGUF 格式，適用於 Windows / Linux llama.cpp",
-        recommended_for="Windows/Linux 主要對話模型",
-        ollama_id="taide-lx-7b-chat",
-    ),
-    ModelSpec(
-        name="qwen2.5-7b-q4",
-        display_name="Qwen 2.5 7B GGUF（多語言）",
-        size_gb=4.0, min_ram_gb=8, category="chat", platform="gguf",
-        description="Qwen GGUF 格式，跨平台可用",
-        recommended_for="Windows/Linux 分類器、多語言任務",
-        ollama_id="qwen2.5:7b",
-    ),
     ModelSpec(
         name="nomic-embed-text",
         display_name="Nomic Embed（向量嵌入）",

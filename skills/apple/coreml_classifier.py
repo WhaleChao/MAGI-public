@@ -10,7 +10,7 @@ Core ML 文件分類模組。
 整合點：
 - skills/pdf-namer/：PDF 命名前先用 Core ML 分類
 - pipelines/attachment_pipeline.py：附件上傳時自動分類
-- 定期用新資料 retrain（nightly_distill_train）
+- 定期用新資料 retrain（nightly_distill_gemma）
 """
 from __future__ import annotations
 

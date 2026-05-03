@@ -2746,7 +2746,7 @@ def _sanitize_summary(text: str) -> str:
         "", s, flags=re.MULTILINE,
     )
 
-    # Remove WFGY-style chain-of-thought reasoning that TAIDE sometimes generates
+    # Remove WFGY-style chain-of-thought reasoning that local models sometimes generate
     # Patterns: "辨識到潛在混淆", "釐清", "核心語意", "錨定", "Low -", "步驟一"
     _cot_patterns = re.compile(
         r"^[-\s]*(?:辨識到潛在混淆|釐清|核心語意|錨定|聚焦|檢視|批判|調整|"

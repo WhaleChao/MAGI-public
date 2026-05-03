@@ -5,8 +5,8 @@ import logging
 skills/ops/daily_reflection.py
 
 Daily summarization of usage patterns, errors, and user corrections.
-Parses OpenClaw JSONL session files over the last 24 hours and uses TAIDE
-to synthesize a reflection summary for self-evolution.
+Parses OpenClaw JSONL session files over the last 24 hours and uses the local oMLX
+chat model to synthesize a reflection summary for self-evolution.
 """
 
 import os
@@ -85,7 +85,7 @@ def run_reflection() -> dict:
     if not conversation.strip():
         return {"success": False, "error": "No recent conversation logs found."}
 
-    # Limit prompt size (TAIDE has 8192 context, leaving room for generation)
+    # Limit prompt size (Gemma E4B has 8192 context, leaving room for generation)
     char_limit = 20000
     if len(conversation) > char_limit:
         conversation = conversation[-char_limit:]
@@ -104,7 +104,7 @@ def run_reflection() -> dict:
 {conversation}
 【對話紀錄結束】
 """
-    model_hint = os.environ.get("MAGI_REFLECTION_MODEL", "cwchang/llama3-taide-lx-8b-chat-alpha1:latest")
+    model_hint = os.environ.get("MAGI_REFLECTION_MODEL", "gemma-4-e4b-it-4bit")
     
     try:
         gateway = InferenceGateway()

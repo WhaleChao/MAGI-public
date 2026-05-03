@@ -191,7 +191,7 @@ def _start_local_server_if_needed() -> bool:
         return False
 
     logger.info("Starting local llama-server...")
-    gguf_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "models", "Gemma-3-TAIDE-12b-Chat-2602-Q4_K_M.gguf")
+    gguf_path = os.environ.get("MAGI_LLAMA_GGUF_PATH", "")
     cmd = [
         LLAMA_SERVER_PATH,
         "-m",
@@ -1022,7 +1022,7 @@ def get_brain_status():
         api_status = "Online" if local_ok else f"Degraded ({local_msg})"
         return (
             "🔌 **目前大腦模式:** Local (oMLX Direct)\n"
-            "- **模型:** TAIDE-12b-Chat (MLX 4-bit)\n"
+            "- **模型:** Gemma 4 E4B (oMLX 4-bit)\n"
             f"- **狀態:** {api_status}\n"
             "- **角色:** Primary Inference Engine"
         )

@@ -1598,7 +1598,7 @@ def _ultra_segment_note_with_model(
         retry_attempts = 1
     retry_attempts = max(0, min(retry_attempts, 3))
     # NOTE: 不走 summarize_text_resilient（會 spawn openclaw-agent 佔住 oMLX slot，
-    # 導致後續 27 段全部 timeout）。直接用 InferenceGateway/TAIDE 做段落摘要。
+    # 導致後續 27 段全部 timeout）。直接用 InferenceGateway 走 oMLX 做段落摘要。
     try:
         from skills.bridge.inference_gateway import InferenceGateway
 
@@ -1978,7 +1978,7 @@ def _ultra_final_summary_with_model(
         return deterministic
     seed = "\n\n".join(usable_notes)
     # NOTE: 跳過 summarize_text_resilient（會 spawn openclaw-agent 佔 oMLX slot）。
-    # 最終匯總直接走 InferenceGateway/TAIDE。
+    # 最終匯總直接走 InferenceGateway/oMLX。
     if len(seed) > 14000:
         seed = _mr_reduce_summaries(
             usable_notes,

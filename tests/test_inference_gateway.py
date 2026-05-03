@@ -69,7 +69,7 @@ def test_gateway_can_disable_synthetic_fallback():
 
 
 def test_tc_review_uses_local_without_remote_probes():
-    """tc_review should go straight to local oMLX TAIDE instead of probing remotes first."""
+    """tc_review should go straight to local oMLX (Gemma E4B) instead of probing remotes first."""
     from skills.bridge.inference_gateway import InferenceGateway
 
     gw = InferenceGateway()
@@ -77,7 +77,7 @@ def test_tc_review_uses_local_without_remote_probes():
          patch.object(gw, "_remote_chat_balthasar", side_effect=AssertionError("remote balthasar should not be called")), \
          patch.object(gw, "_can_try_remote_melchior", side_effect=AssertionError("remote melchior probe should not be called")), \
          patch.object(gw, "_can_try_remote_balthasar", side_effect=AssertionError("remote balthasar probe should not be called")), \
-         patch.object(gw, "_omlx_chat", return_value={"success": True, "response": "正確", "route": "omlx", "model": "TAIDE-12b-Chat-mlx-4bit"}):
+         patch.object(gw, "_omlx_chat", return_value={"success": True, "response": "正確", "route": "omlx", "model": "gemma-4-e4b-it-4bit"}):
         result = gw.chat("請檢查這段譯文是否忠實", task_type="tc_review", timeout=12)
 
     assert result["success"] is True

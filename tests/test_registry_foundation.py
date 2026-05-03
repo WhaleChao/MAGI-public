@@ -172,22 +172,22 @@ class TestModelRegistry:
         from api.routing.model_registry import is_alias, resolve_model
         (json_dir / "models.json").write_text(json.dumps({
             "roles": {"text_primary": {"model": "gemma-4-26b", "description": "Primary"}},
-            "aliases": {"names": ["taide", "gemma4", ""]}
+            "aliases": {"names": ["legacy-alias", "gemma4", ""]}
         }))
-        assert is_alias("taide") is True
+        assert is_alias("legacy-alias") is True
         assert is_alias("gemma4") is True
         assert is_alias("") is True
         assert is_alias("unknown-model") is False
-        assert resolve_model("taide") == "gemma-4-26b"
+        assert resolve_model("legacy-alias") == "gemma-4-26b"
 
     def test_resolve_with_available(self, json_dir):
         from api.routing.model_registry import resolve_model
         (json_dir / "models.json").write_text(json.dumps({
             "roles": {"text_primary": {"model": "gemma-4-26b-a4b-it-4bit", "description": "P"}},
-            "aliases": {"names": ["taide"]}
+            "aliases": {"names": ["legacy-alias"]}
         }))
         available = ["gemma-4-26b-a4b-it-4bit", "other-model"]
-        assert resolve_model("taide", available=available) == "gemma-4-26b-a4b-it-4bit"
+        assert resolve_model("legacy-alias", available=available) == "gemma-4-26b-a4b-it-4bit"
 
     def test_unknown_role_falls_back(self, json_dir):
         from api.routing.model_registry import get_role_model

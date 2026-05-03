@@ -13,7 +13,7 @@ import time
 from unittest.mock import patch, MagicMock
 
 
-def _make_gateway_response(text="翻譯結果", success=True, model="TAIDE-12b-Chat-mlx-4bit", route="omlx"):
+def _make_gateway_response(text="翻譯結果", success=True, model="gemma-4-e4b-it-4bit", route="omlx"):
     return {
         "success": success,
         "response": text,
@@ -158,7 +158,7 @@ class TestTranslateMultiChunk:
         def _mock_chat(prompt, **kwargs):
             task = kwargs.get("task_type", "")
             if task == "tc_review":
-                return _make_gateway_response("正確", model="taide-12b")
+                return _make_gateway_response("正確", model="gemma-4-e4b")
             if task == "translate":
                 if "子段：" in prompt:
                     return _make_gateway_response("分段翻譯成功")
@@ -231,7 +231,7 @@ class TestTranslateGTXFallback:
 
         def _mock_chat(prompt, **kwargs):
             if kwargs.get("task_type") == "tc_review":
-                return _make_gateway_response("正確", model="taide-12b")
+                return _make_gateway_response("正確", model="gemma-4-e4b")
             return _make_gateway_response("", success=False)
 
         mock_gw = MagicMock()
@@ -288,7 +288,7 @@ class TestTranslateTimeoutHandling:
         def _mock_chat(prompt, **kwargs):
             task = kwargs.get("task_type", "")
             if task == "tc_review":
-                return _make_gateway_response("正確", model="taide-12b")
+                return _make_gateway_response("正確", model="gemma-4-e4b")
             call_count[0] += 1
             return _make_gateway_response(f"翻譯段落{call_count[0]}")
 
@@ -369,7 +369,7 @@ class TestTranslateTimeoutHandling:
 
 
 class TestTranslateVerifyStep:
-    """Semantic verification via taide-12b after translation."""
+    """Semantic verification via local oMLX model after translation."""
 
     @patch("api.handlers.translation_handler.InferenceGateway")
     @patch("skills.bridge.melchior_client.get_circuit_breaker_status", return_value={"open": False})
@@ -381,7 +381,7 @@ class TestTranslateVerifyStep:
             call_idx[0] += 1
             task = kwargs.get("task_type", "")
             if task == "tc_review":
-                return _make_gateway_response("正確", model="taide-12b")
+                return _make_gateway_response("正確", model="gemma-4-e4b")
             return _make_gateway_response("高品質翻譯結果")
 
         mock_gw = MagicMock()
@@ -402,7 +402,7 @@ class TestTranslateVerifyStep:
             task = kwargs.get("task_type", "")
             if task == "tc_review":
                 calls["tc_review"] += 1
-                return _make_gateway_response("正確", model="taide-12b")
+                return _make_gateway_response("正確", model="gemma-4-e4b")
             calls["translate"] += 1
             return _make_gateway_response("抽樣驗證翻譯結果")
 

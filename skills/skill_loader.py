@@ -77,7 +77,7 @@ def _register_direct_handlers(orch: object, registry) -> None:
         "✅ **我可以幫您翻譯！**\n\n"
         "• 翻譯文字：直接輸入 `翻譯 [文字/網址]`\n"
         "• 翻譯檔案：上傳 PDF/TXT/DOCX 後在留言打 `翻譯`\n"
-        "• 支援中英日韓等多語系，透過 TAIDE 引擎處理！"
+        "• 支援中英日韓等多語系，本地 oMLX 引擎處理！"
     )
     registry.register_handler(
         "tri_sage_translate",

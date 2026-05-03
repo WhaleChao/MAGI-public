@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Shared oMLX / TAIDE probe helpers.
+Shared oMLX local-chat probe helpers.
 
 These helpers keep the runtime checks in magi-doctor and system_test aligned
 without duplicating the request / retry / model-resolution logic.
@@ -98,7 +98,7 @@ def resolve_omlx_model(
         if req_low and (req_low == low or req_low in low or low.startswith(req_low)):
             return model
     for model in models:
-        if "taide" in model.lower():
+        if "gemma" in model.lower():
             return model
     return models[0]
 
@@ -115,7 +115,7 @@ def probe_local_chat(
     prompt: str = "請只回答 OK",
     max_tokens: int = 128,
 ) -> dict:
-    """Run a bounded TAIDE chat probe with retry/backoff."""
+    """Run a bounded local chat probe with retry/backoff."""
     try:
         import requests
     except Exception as exc:  # pragma: no cover - environment specific

@@ -298,14 +298,14 @@ def _probe_local_llm_inference(timeout: int = 60, retries: int = 3, backoff_sec:
 
 
 def test_local_llm_inference():
-    """Test local TAIDE inference with a short prompt via oMLX."""
+    """Test local LLM inference with a short prompt via oMLX."""
     try:
         return _probe_local_llm_inference(
             timeout=int(os.environ.get("MAGI_SYSTEM_TEST_LOCAL_LLM_TIMEOUT", "30")),
             retries=int(os.environ.get("MAGI_SYSTEM_TEST_LOCAL_LLM_RETRIES", "2")),
         )
     except Exception as e:
-        return {"pass": False, "detail": f"TAIDE 推理失敗: {e}"}
+        return {"pass": False, "detail": f"oMLX 推理失敗: {e}"}
 
 
 def test_local_embedding_inference():
@@ -351,7 +351,7 @@ ALL_TESTS = [
     ("iron_dome",          "鐵穹防禦 (IRON DOME)",    test_iron_dome),
     ("autopilot_schedule", "夜間排程 (AUTOPILOT)",    test_autopilot_schedule),
     ("daily_reflection",   "每日反省 (REFLECTION)",   test_daily_reflection),
-    ("local_llm",          "本機 LLM 推理 (TAIDE)",   test_local_llm_inference),
+    ("local_llm",          "本機 LLM 推理 (oMLX)",    test_local_llm_inference),
     ("local_embed",        "本機 Embedding 推理",     test_local_embedding_inference),
 ]
 

@@ -113,7 +113,6 @@ REAPER_NEVER_KILL = (
     "skills/ops/heartbeat.py",
     "rpc-server",
     "weekend_resummary.py",
-    "nightly_distill_train.py",
     "worldmonitor",
     "run_nightly_guardian.sh",
     "run_db_sync.sh",
@@ -157,7 +156,6 @@ REAPER_GRACE_PERIODS = {
     "MEMORY_ENABLE_FAISS": 300,            # FAISS rebuild — ~32萬 vectors, 通常 30-90s, 留 5min grace
     "build_from_db": 300,                   # same, alternative marker
     "weekend_resummary.py": 50400,          # weekly task — 14hr, 700+ judgments @ ~1min each
-    "nightly_distill_train.py": 10800,      # LoRA training — 3hr
     "laf_nightly_audit.py": 1200,           # nightly LAF audit
     # Selenium / Chrome (LAF automation spawns headless Chrome)
     "chromedriver": 2700,                   # 45min grace — LAF automation can be slow

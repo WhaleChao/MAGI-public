@@ -83,7 +83,7 @@ class TestCircuitBreaker(unittest.TestCase):
 
     def test_resolve_omlx_chat_model_falls_back_to_available_local_model(self):
         resolved = self.mc._resolve_omlx_chat_model(
-            "TAIDE-12b-Chat-mlx-4bit",
+            "gemma-4-26b-a4b-it-4bit",
             available_models=["Qwen2.5-Coder-14B-Instruct-4bit"],
         )
         self.assertEqual(resolved, "Qwen2.5-Coder-14B-Instruct-4bit")
@@ -109,13 +109,13 @@ class TestCircuitBreaker(unittest.TestCase):
         ):
             result = self.mc._chat_omlx(
                 "extract text",
-                model="GLM-OCR-bf16",
+                model="some-unavailable-model",
                 base_url="http://127.0.0.1:8082",
                 circuit=local_circuit,
             )
 
         self.assertFalse(result["success"])
-        self.assertIn("omlx_model_unavailable:GLM-OCR-bf16", result["error"])
+        self.assertIn("omlx_model_unavailable:some-unavailable-model", result["error"])
         post_json.assert_not_called()
 
 

@@ -294,7 +294,7 @@ def _has_semantic_breaks(text: str) -> bool:
     """
     if len(text) < 30:
         return False
-    # 已知的 TAIDE 亂碼語義搭配（動詞+不合理賓語）
+    # 已知的中文模型亂碼語義搭配（動詞+不合理賓語）
     bizarre_collocations = [
         r"訊息反映了.{0,6}行為的行動",
         r"指令應是.{0,8}利用",
@@ -721,12 +721,12 @@ def _contains_mainland_signal(text: str) -> bool:
         return False
     if any(k in s for k in MAINLAND_TO_TW.keys()):
         return True
-    # 常見簡體字訊號（門檻低，作為 TAIDE 觸發條件之一）
+    # 常見簡體字訊號（門檻低，作為 TW review 觸發條件之一）
     return bool(re.search(r"[后发为这并对关审证诉务数据国资讯线点复启删优适账号调范拟续结滚]", s))
 
 
-def _should_run_taide(text: str, force: bool = False) -> bool:
-    # 預設所有輸出都經過 TAIDE 二次確認；必要時可用環境變數關閉。
+def _should_run_tw_review(text: str, force: bool = False) -> bool:
+    # 預設所有輸出都經過二次確認；必要時可用環境變數關閉。
     # Default to selective mode to avoid adding 6s latency on every short notification.
     force_all = _to_bool(os.environ.get("MAGI_TW_REVIEW_FORCE_ALL", "0"), False)
     if force or force_all:
@@ -819,7 +819,7 @@ def _fix_surname_opencc(text: str) -> str:
     return out
 
 
-def _looks_taide_domain_drift(before: str, after: str) -> bool:
+def _looks_tw_review_domain_drift(before: str, after: str) -> bool:
     """
     Guard against model drift:
     when legal/system notifications are rewritten into unrelated客服話術.
@@ -841,7 +841,7 @@ def _looks_taide_domain_drift(before: str, after: str) -> bool:
     return after_off_topic and not before_off_topic
 
 
-def normalize_output_text(text: str, platform: str = "", force_taide: bool = False) -> str:
+def normalize_output_text(text: str, platform: str = "", force_tw_review: bool = False) -> str:
     """
     輸出前的台灣用語守門器。
     回傳可直接送出的文字；任何例外都降級回原文。
@@ -892,14 +892,14 @@ def normalize_output_text(text: str, platform: str = "", force_taide: bool = Fal
     out, _ = _machine_output_to_natural_text(out)
     out = _restore_terms(out, protected_terms)
 
-    # 2) 可選 TAIDE 二次校正（僅在必要條件）
-    if (not has_protected_legal_terms) and _should_run_taide(out, force=force_taide):
+    # 2) 可選 TW review 二次校正（僅在必要條件，模型由 MAGI_TW_REVIEW_MODEL 決定）
+    if (not has_protected_legal_terms) and _should_run_tw_review(out, force=force_tw_review):
         try:
             from skills.law_review.tw_legal_review import review_legal_text
 
             timeout = int(os.environ.get("MAGI_TW_REVIEW_TIMEOUT_SEC", "6") or "6")
             model = (os.environ.get("MAGI_TW_REVIEW_MODEL") or "").strip()
-            before_taide = out
+            before_review = out
             if model:
                 corrected = review_legal_text(out, model=model, timeout=timeout)
             else:
@@ -908,8 +908,8 @@ def normalize_output_text(text: str, platform: str = "", force_taide: bool = Fal
                 candidate = corrected.strip()
                 candidate = _opencc_s2twp(candidate)
                 candidate, _ = _replace_mainland_terms(candidate)
-                if _looks_taide_domain_drift(before_taide, candidate):
-                    logger.warning("[TAIDE drift] off-topic rewrite detected; keep deterministic output.")
+                if _looks_tw_review_domain_drift(before_review, candidate):
+                    logger.warning("[TW review drift] off-topic rewrite detected; keep deterministic output.")
                 else:
                     out = candidate
         except Exception:

@@ -760,7 +760,7 @@ class InferenceGateway:
     }
 
     def _omlx_chat(self, prompt: str, timeout: int, model: str = "", task_type: str = "general") -> dict:
-        """Try oMLX for chat inference (TAIDE-12b etc.)."""
+        """Try oMLX for chat inference (Gemma E4B / 26B MoE etc.)."""
         chat_omlx = getattr(melchior_client, "_chat_omlx", None)
         omlx_avail = getattr(melchior_client, "_omlx_available", None)
         if not callable(chat_omlx) or not callable(omlx_avail) or not omlx_avail():
@@ -856,7 +856,7 @@ class InferenceGateway:
             x = str(m or "").strip()
             if x and x not in candidates:
                 candidates.append(x)
-        # Resolve legacy aliases (taide / gemma shorthand) to the configured local text model.
+        # Resolve legacy aliases (gemma shorthand) to the configured local text model.
         alias_map = getattr(melchior_client, "_OMLX_MODEL_ALIAS", {})
         candidates = [alias_map.get(m, m) for m in candidates]
         if models:
@@ -1144,7 +1144,7 @@ class InferenceGateway:
                 return r
             errors.append(f"omlx:{r.get('error','')}")
 
-        # tc_review is a lightweight guard rail. Route it directly to local oMLX/TAIDE
+        # tc_review is a lightweight guard rail. Route it directly to local oMLX
         # instead of probing remotes or the Ollama-style local endpoint.
         if task_type == "tc_review":
             review_model = model or _MODEL_ROSTER.get("tc_review", {}).get("omlx", "") or self.select_model_for_task("tc_review")
@@ -1421,7 +1421,7 @@ class InferenceGateway:
                 r["task_type"] = task_type
                 if ocr_context:
                     r["ocr_context"] = ocr_context
-                # Vision model 輸出可能含簡體 → TAIDE TC review 轉繁體（Gemma-3 通常直接輸出繁體）
+                # Vision model 輸出可能含簡體 → TC review 轉繁體（Gemma 通常直接輸出繁體）
                 raw = r.get("analysis", "")
                 if raw and task_type != "ocr":
                     try:

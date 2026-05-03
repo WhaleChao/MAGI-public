@@ -375,7 +375,7 @@ def _llm_generate_patch(rel_path: str, current_source: str, proposal: str, issue
         return {"success": False, "error": "requests not available"}
 
     # Always try Qwen Coder first (oMLX auto-loads on request).
-    # TAIDE is NOT suitable for code generation — skip it entirely.
+    # Code generation requires a code-tuned model (Qwen Coder), not the general chat model.
     models_to_try = ["Qwen2.5-Coder-14B-Instruct-4bit"]
 
     for model_name in models_to_try:

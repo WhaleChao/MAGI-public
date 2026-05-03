@@ -169,7 +169,7 @@ def _probe_omlx_chat(timeout_sec: int = 8) -> dict:
 
 
 def _probe_local_llm_inference(timeout_sec: int = 30, retries: int = 2, backoff_sec: float = 1.5) -> dict:
-    """Probe local TAIDE inference with one bounded retry when oMLX is briefly saturated."""
+    """Probe local oMLX inference with one bounded retry when oMLX is briefly saturated."""
     probe = _health_probes.probe_local_chat(
         timeout_sec=timeout_sec,
         retries=retries,
@@ -404,12 +404,12 @@ def check_infrastructure():
     except Exception as e:
         checks.append({"id": "autopilot_schedule", "label": "夜間排程", "pass": False, "detail": str(e)})
 
-    # -- TAIDE LLM (oMLX) --
+    # -- Local LLM (oMLX) --
     llm_probe = _probe_local_llm_inference(
         timeout_sec=int(os.environ.get("MAGI_DOCTOR_OMLX_TIMEOUT", "30")),
         retries=int(os.environ.get("MAGI_DOCTOR_OMLX_RETRIES", "2")),
     )
-    checks.append({"id": "local_llm", "label": "本機 TAIDE (oMLX)", "pass": bool(llm_probe.get("pass")),
+    checks.append({"id": "local_llm", "label": "本機 LLM (oMLX)", "pass": bool(llm_probe.get("pass")),
                     "detail": str(llm_probe.get("detail") or "unknown")})
 
     passed = sum(1 for c in checks if c["pass"])
@@ -542,7 +542,7 @@ def _repair_local_llm():
             choices = r.json().get("choices") or []
             resp = (choices[0].get("message", {}).get("content", "") if choices else "")
             if resp.strip():
-                return {"repaired": True, "action": "模型暖機", "detail": "TAIDE (oMLX) 推理已恢復"}
+                return {"repaired": True, "action": "模型暖機", "detail": "本機 (oMLX) 推理已恢復"}
     except Exception:
         logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 543, exc_info=True)
     return {"repaired": False, "action": "oMLX 修復",

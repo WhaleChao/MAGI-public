@@ -93,7 +93,7 @@ def _get_gateway():
 
 
 def _llm_json(prompt: str, fallback: dict) -> dict:
-    """Call TAIDE and extract JSON from the response."""
+    """Call local LLM and extract JSON from the response."""
     try:
         gw = _get_gateway()
         r = gw.chat(prompt=prompt, task_type="general", timeout=_LLM_TIMEOUT)

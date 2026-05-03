@@ -13,7 +13,7 @@ from unittest.mock import patch, MagicMock
 from contextlib import contextmanager
 
 
-def _make_gateway_response(text="摘要結果", success=True, model="TAIDE-12b-Chat-mlx-4bit", route="omlx"):
+def _make_gateway_response(text="摘要結果", success=True, model="gemma-4-e4b-it-4bit", route="omlx"):
     return {
         "success": success,
         "response": text,
@@ -182,7 +182,7 @@ class TestSummarizeMapReduce:
                         "text": "（系統降級回覆）本機模型逾時，請稍後重試。",
                         "summary": "（系統降級回覆）本機模型逾時，請稍後重試。",
                         "analysis": "（系統降級回覆）本機模型逾時，請稍後重試。",
-                        "model": "taide-12b",
+                        "model": "gemma-4-e4b",
                         "route": "local_ollama",
                         "degraded": True,
                         "synthetic_fallback": True,
