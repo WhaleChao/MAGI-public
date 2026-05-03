@@ -1173,12 +1173,21 @@
     };
 
     // Auto-init when this tab becomes visible
-    document.addEventListener('DOMContentLoaded', () => {
-        FM.init();
-    });
+    // 重要：若 script 在 DOMContentLoaded 已觸發後才載入（外網慢、deferred eval），
+    // addEventListener 不會 fire → FM.init 永遠不跑 → openCaseInFileManager 卡死
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', () => FM.init());
+    } else {
+        // DOM 已就緒 → 立即 init
+        try { FM.init(); } catch (e) { console.warn('FM.init failed:', e); }
+    }
 
     // Allow other tabs to open this view with a preset case folder
     FM.openWithBasePath = function (basePath) {
+        // 防呆：若 FM.init 還沒跑（DOM listener race），這裡補一次
+        if (!FM._initialized) {
+            try { FM.init(); FM._initialized = true; } catch (e) { console.warn('FM.init in openWithBasePath:', e); }
+        }
         const inp = document.getElementById('fmBasePathInput');
         if (inp) inp.value = basePath;
         setRoot(basePath);

@@ -50,16 +50,11 @@ function renderCases() {
                     ${r.laf_case_no ? `<div><span class="label">法扶</span> <span class="value">${esc(r.laf_case_no)}</span></div>` : ''}
                 </div>
                 <div class="card-actions">
-                    <button class="btn primary" data-act="case-workbench" data-id="${esc(r.id)}">工作台</button>
+                    <button class="btn primary" data-act="case-workbench" data-id="${esc(r.id)}">⚙️ 工作台</button>
                     <button class="btn" data-act="case-open-fm" data-id="${esc(r.id)}">📁 檔案</button>
-                    <button class="btn" data-act="case-edit" data-id="${esc(r.id)}">編輯</button>
+                    <button class="btn" data-act="case-edit" data-id="${esc(r.id)}">✏️ 編輯</button>
                     <button class="btn" data-act="case-address-label" data-id="${esc(r.id)}">📮 地址標籤</button>
-                    <button class="btn danger" data-act="case-del" data-id="${esc(r.id)}">刪除</button>
-                </div>
-                <div class="card-quick-actions">
-                    <button class="btn-icon" data-act="case-workbench" data-id="${esc(r.id)}" title="開啟工作台">⚙️</button>
-                    <button class="btn-icon" data-act="case-open-fm" data-id="${esc(r.id)}" title="開啟檔案總管">📁</button>
-                    <button class="btn-icon" data-act="case-edit" data-id="${esc(r.id)}" title="編輯案件">✏️</button>
+                    <button class="btn danger" data-act="case-del" data-id="${esc(r.id)}">🗑 刪除</button>
                 </div>
             </div>`;
         }).join("");
