@@ -78,15 +78,21 @@
 }
 .case-card .card-actions {
     display: flex;
-    gap: 6px;
+    flex-wrap: wrap;          /* 5 顆按鈕在 320px 卡片內必換行，不換 → 刪除會溢出右緣 */
+    gap: 6px 6px;
     margin-top: 10px;
     border-top: 1px solid var(--line);
     padding-top: 8px;
 }
 .case-card .card-actions .btn {
     font-size: 12px;
-    padding: 4px 10px;
+    padding: 4px 9px;
+    flex: 0 1 auto;           /* 不強撐、不縮 */
+    white-space: nowrap;
 }
+/* 工作台是主動作 → 顯眼；刪除推到末段 */
+.case-card .card-actions .btn.primary { flex-grow: 1; min-width: 78px; }
+.case-card .card-actions .btn.danger { margin-left: auto; }
 
 /* ── Google-style Calendar ── */
 .cal-toolbar { display:flex; align-items:center; gap:10px; margin-bottom:12px; flex-wrap:wrap; }
