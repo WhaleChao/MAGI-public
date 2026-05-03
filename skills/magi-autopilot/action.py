@@ -3617,7 +3617,7 @@ def run_tick(run_dir: str, *, emit_step_events: bool = True) -> Dict[str, Any]:
         }
 
     # -0.5) OpenClaw model guard（避免 context/timeout/並發配置導致任務卡住）
-    if _env_on("MAGI_TICK_OPENCLAW_MODEL_GUARD_ENABLE", True):
+    if _env_on("MAGI_TICK_OPENCLAW_MODEL_GUARD_ENABLE", False):
         try:
             mg = _openclaw_model_guard(auto_restart=_env_on("MAGI_OPENCLAW_MODEL_GUARD_RESTART", True))
         except Exception as e:
@@ -3629,7 +3629,7 @@ def run_tick(run_dir: str, *, emit_step_events: bool = True) -> Dict[str, Any]:
         results["steps"]["openclaw_model_guard"] = {
             "ok": True,
             "skipped": True,
-            "reason": "MAGI_TICK_OPENCLAW_MODEL_GUARD_ENABLE=0",
+            "reason": "OpenClaw deprecated; guard disabled by default",
         }
 
     # 0) 通訊健康自檢（LINE/Discord）
