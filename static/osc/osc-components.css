@@ -46,28 +46,35 @@
 .case-card .card-meta {
     display: grid;
     grid-template-columns: 1fr 1fr;
-    gap: 6px 16px;
-    font-size: 12px;
+    gap: 6px 20px;
+    font-size: 12.5px;
     color: var(--muted);
+    line-height: 1.55;
 }
 .case-card .card-meta > div {
     display: grid;
-    grid-template-columns: 36px 1fr;
+    /* 4em ≈ 50px @ 12.5px，足以容下「案號/案由/法院/種類/法扶」等 2 字標籤對齊 */
+    grid-template-columns: 4em minmax(0, 1fr);
     align-items: baseline;
-    gap: 8px;
+    column-gap: 10px;
     min-width: 0;
 }
 .case-card .card-meta .label {
     color: var(--muted);
+    font-size: 11.5px;
+    font-weight: 500;
     text-align: left;
     white-space: nowrap;
+    letter-spacing: 0.05em;
 }
 .case-card .card-meta .value {
     color: var(--text);
+    font-weight: 500;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
     min-width: 0;
+    font-variant-numeric: tabular-nums;
 }
 .case-card .card-actions {
     display: flex;

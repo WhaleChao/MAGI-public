@@ -781,6 +781,60 @@ def _osc_guess_case_folder(case_number: str) -> str:
             return _osc_case_folder_from_doc_path(cn, row.get("file_path"))
     except Exception:
         logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, "_osc_guess_case_folder:case_docs", exc_info=True)
+    # 最後手段：掃 NAS 01_案件/ 找含 case_number 或 client_name 的資料夾
+    # 受 CLAUDE.md §4.6 NAS I/O 節流規範：限深度 5、上限 2000、每 50 個 sleep
+    try:
+        scanned = _osc_scan_nas_for_case_folder(cn)
+        if scanned:
+            return scanned
+    except Exception:
+        logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, "_osc_guess_case_folder:nas_scan", exc_info=True)
+    return ""
+
+
+def _osc_scan_nas_for_case_folder(case_number: str, *, client_name: str = "") -> str:
+    """掃 NAS 01_案件/ 找符合 case_number 或 client_name 的案件資料夾。
+
+    為避免一次掃整個 NAS（CLAUDE.md §4.6），限制 depth=5 / max 2000 / 每 50 個
+    sleep 0.05s。回傳 canonical 路徑（Y:\\lumi\\01_案件\\... 形式），找不到回 ""。
+    """
+    cn = (case_number or "").strip()
+    cln = (client_name or "").strip()
+    if not cn and not cln:
+        return ""
+    import time as _time
+    tokens = [t for t in [cn, cln] if t]
+    # 找 NAS 01_案件 base：枚舉允許的 root
+    for root in _osc_allowed_local_roots():
+        # NAS 標準層：<root>/<lumi*>/01_案件/...
+        try:
+            for top in os.listdir(root):
+                if "lumi" not in top.lower():
+                    continue
+                base = os.path.join(root, top, "01_案件")
+                if not os.path.isdir(base):
+                    continue
+                count = 0
+                for dirpath, dirnames, _ in os.walk(base):
+                    rel_depth = dirpath[len(base):].count(os.sep)
+                    if rel_depth >= 5:
+                        dirnames[:] = []
+                        continue
+                    for d in dirnames:
+                        if any(t in d for t in tokens):
+                            full = os.path.join(dirpath, d)
+                            try:
+                                from skills.bridge.case_path_mapper import translate_local_path_to_canonical
+                                return translate_local_path_to_canonical(full)
+                            except Exception:
+                                return full
+                        count += 1
+                        if count % 50 == 0:
+                            _time.sleep(0.05)
+                        if count > 2000:
+                            return ""
+        except OSError:
+            continue
     return ""
 
 

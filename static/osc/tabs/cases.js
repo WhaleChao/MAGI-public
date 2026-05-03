@@ -215,23 +215,35 @@ async function openCaseFolderHost(id, quiet = false) {
 // 不依賴本機檔案總管 / smb 協定。把 NAS 案件路徑塞進 #fileManager tab。
 async function openCaseInFileManager(id) {
     try {
-        const data = await api(`/api/osc/cases/${encodeURIComponent(id)}`);
-        const c = data.item || {};
-        const folder = (c.folder_path || "").trim();
+        // 先呼 /open-folder：後端已含 DB → _osc_guess_case_folder（含 NAS 掃描）
+        // 三層 fallback，能找到就找到。前端不再自己判 folder 為空。
+        const data = await api(`/api/osc/cases/${encodeURIComponent(id)}/open-folder`, "POST", {});
+        let folder = (data && data.folder_path || "").trim();
         if (!folder) {
+            // 後端三層都找不到 → 顯示 friendly 警告，提供「建立資料夾」按鈕
+            const cdata = await api(`/api/osc/cases/${encodeURIComponent(id)}`);
+            const c = (cdata && cdata.item) || {};
             showAlert(
-                "⚠️ 案件未設定資料夾",
-                `${c.client_name || "此案件"} 尚未設定 NAS 資料夾路徑，請先用「建立資料夾」按鈕建立預設結構。`
+                "⚠️ 找不到此案件的 NAS 資料夾",
+                `${c.client_name || "此案件"}（${c.case_number || id}）在 NAS 上沒有對應資料夾。`,
+                "可在「案件編輯」頁勾選「自動建立資料夾」儲存，MAGI 會自動建好結構。"
             );
             return;
         }
-        if (window.FileManager && typeof window.FileManager.openWithBasePath === "function") {
-            window.FileManager.openWithBasePath(folder);
-            showToast(`已切換到 NAS 檔案總管：${folder}`, "ok", 2500);
-        } else {
-            // FileManager 未載入 → 回退舊行為
-            return openCaseFolderHost(id);
-        }
+        // 1. 先切到 fileManager tab（會自動展開所屬 sidebar group）
+        const fmTabBtn = document.querySelector('.tab-btn[data-tab="fileManager"]');
+        if (fmTabBtn) fmTabBtn.click();
+        // 2. setRoot 到該案件資料夾（FileManager init 完成後）
+        const tryOpen = () => {
+            if (window.FileManager && typeof window.FileManager.openWithBasePath === "function") {
+                window.FileManager.openWithBasePath(folder);
+                showToast(`已切換到檔案總管：${folder}`, "ok", 2500);
+            } else {
+                // FileManager 還沒載入 → 50ms 後重試（init 走 DOMContentLoaded）
+                setTimeout(tryOpen, 50);
+            }
+        };
+        tryOpen();
     } catch (e) {
         showAlert("❌ 系統錯誤", `無法開啟檔案總管：${e.message || e}`);
     }
