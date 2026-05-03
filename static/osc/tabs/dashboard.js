@@ -21,7 +21,7 @@ async function loadDashboard() {
     );
     renderSimpleRows(
         "dashboardTodosBody",
-        (data.pending_todos || []).map(r => `<tr><td>${esc(r.todo_date || "")} ${esc(r.todo_time || "")}</td><td>${esc(r.case_number)}</td><td>${esc(r.todo_type)}</td><td>${esc(shortText(r.description, 60))}</td></tr>`),
+        (data.pending_todos || []).map(r => `<tr><td style="white-space:nowrap">${esc(r.todo_date || "")} ${esc(r.todo_time || "")}</td><td style="white-space:nowrap">${esc(r.case_number)}</td><td style="white-space:nowrap">${esc(r.todo_type)}</td><td>${esc(shortText(r.description, 60))}</td></tr>`),
         4,
         "目前沒有待辦"
     );

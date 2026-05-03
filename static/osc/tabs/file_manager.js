@@ -101,20 +101,28 @@
         });
     }
 
-    // ── Sort entries (Phase 2 commit 7) ───────────────────────────────
+    // ── Sort entries (Phase 2 commit 7；2026-05-03 加入筆畫排序) ──────
+    // Intl.Collator with Unicode 'stroke' collation 在 Chrome/Edge/Safari 全支援
+    // （ICU CLDR co=stroke），按繁中筆畫數排序檔名首字
+    const _strokeCollator = (() => {
+        try { return new Intl.Collator('zh-Hant-u-co-stroke'); }
+        catch (_) { return new Intl.Collator('zh-Hant'); }  // fallback
+    })();
     function sortEntries(entries) {
         const out = entries.slice();
         switch (FM.sort) {
-            case 'name_asc':  out.sort((a, b) => a.name.localeCompare(b.name, 'zh-hant')); break;
-            case 'name_desc': out.sort((a, b) => b.name.localeCompare(a.name, 'zh-hant')); break;
-            case 'mtime_asc': out.sort((a, b) => (a.mtime_ts || 0) - (b.mtime_ts || 0)); break;
-            case 'size_desc': out.sort((a, b) => (b.size || b.child_total_size || 0) - (a.size || a.child_total_size || 0)); break;
-            case 'size_asc':  out.sort((a, b) => (a.size || a.child_total_size || 0) - (b.size || b.child_total_size || 0)); break;
+            case 'name_asc':    out.sort((a, b) => a.name.localeCompare(b.name, 'zh-Hant')); break;
+            case 'name_desc':   out.sort((a, b) => b.name.localeCompare(a.name, 'zh-Hant')); break;
+            case 'stroke_asc':  out.sort((a, b) => _strokeCollator.compare(a.name, b.name)); break;
+            case 'stroke_desc': out.sort((a, b) => _strokeCollator.compare(b.name, a.name)); break;
+            case 'mtime_asc':   out.sort((a, b) => (a.mtime_ts || 0) - (b.mtime_ts || 0)); break;
+            case 'size_desc':   out.sort((a, b) => (b.size || b.child_total_size || 0) - (a.size || a.child_total_size || 0)); break;
+            case 'size_asc':    out.sort((a, b) => (a.size || a.child_total_size || 0) - (b.size || b.child_total_size || 0)); break;
             case 'type_group':
                 out.sort((a, b) => {
                     const ea = (a.ext || '').toLowerCase();
                     const eb = (b.ext || '').toLowerCase();
-                    if (ea === eb) return a.name.localeCompare(b.name, 'zh-hant');
+                    if (ea === eb) return a.name.localeCompare(b.name, 'zh-Hant');
                     return ea.localeCompare(eb);
                 });
                 break;
