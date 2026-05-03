@@ -232,26 +232,54 @@ class LAFNotifier:
 
         files = [str(p).strip() for p in (file_paths or []) if str(p).strip() and os.path.exists(str(p).strip())]
 
+        tg_ok = False
+        dc_ok = False
+
         if files:
-            # Send text as caption on first file — avoids duplicate message
+            # --- TG: send text as caption on first file ---
             ok_file_any = False
             for i, fp in enumerate(files):
                 caption = safe_text[:1024] if i == 0 and safe_text else ""
                 if self._push_telegram_document(fp, caption=caption):
                     ok_file_any = True
-            # If text was too long for caption (>1024), send remainder separately
             if safe_text and len(safe_text) > 1024:
                 self._push_telegram(safe_text, topic_key=topic_key, source=source)
-            if ok_file_any:
-                return True
+            tg_ok = ok_file_any
+
+            # --- DC: upload files via bot to topic-routed channel, fallback webhook ---
+            try:
+                channel_id = self._resolve_dc_channel_id(topic_key) if topic_key else ""
+                if channel_id:
+                    dc_ok = self._push_discord_files_via_bot(safe_text or "", files, channel_id)
+                if not dc_ok:
+                    # Webhook 也支援 multipart 檔案上傳
+                    dc_ok = self._push_discord_files_via_webhook(safe_text or "", files)
+                if not dc_ok and safe_text:
+                    # 最後 fallback：至少把文字送到 DC（無附檔）
+                    try:
+                        self._push_discord(safe_text, topic_key=topic_key)
+                    except Exception as _dwe:
+                        logger.error("Discord text fallback exception: %s", _dwe)
+            except Exception as _dce:
+                logger.error("Discord file push exception (non-fatal): %s", _dce)
         else:
-            # No files — send text only
-            ok_text = self._push_telegram(safe_text, topic_key=topic_key, source=source) if safe_text else False
-            if ok_text:
-                return True
+            # No files — send text only to both channels
+            if safe_text:
+                tg_ok = self._push_telegram(safe_text, topic_key=topic_key, source=source)
+                try:
+                    dc_ok = self._push_discord(safe_text, topic_key=topic_key)
+                except Exception as _dce:
+                    logger.error("Discord push exception (non-fatal): %s", _dce)
+
+        if tg_ok or dc_ok:
+            if not tg_ok:
+                logger.warning("notify_admin_with_files: TG failed but DC sent (topic=%s)", topic_key)
+            if not dc_ok:
+                logger.warning("notify_admin_with_files: TG sent but DC failed (topic=%s)", topic_key)
+            return True
 
         if safe_text:
-            logger.error("Telegram message/file failed. Logging locally.")
+            logger.error("notify_admin_with_files: BOTH TG and DC failed. Logging locally.")
             self._log_local(safe_text)
         return False
 
@@ -405,6 +433,70 @@ class LAFNotifier:
             return False
         except Exception as e:
             logger.error("Discord bot push exception: %s", e)
+            return False
+
+    def _push_discord_files_via_bot(self, text: str, file_paths: List[str], channel_id: str) -> bool:
+        """上傳檔案 + 文字到 Discord bot channel（multipart/form-data）。"""
+        bot_token = (self._env.get("DISCORD_BOT_TOKEN", "") or "").strip()
+        if not bot_token or not channel_id:
+            return False
+        valid_files = [str(p).strip() for p in (file_paths or []) if str(p).strip() and os.path.exists(str(p).strip())]
+        if not valid_files:
+            return False
+        try:
+            url = f"https://discord.com/api/v10/channels/{channel_id}/messages"
+            headers = {"Authorization": f"Bot {bot_token}"}
+            data = {"payload_json": json.dumps({"content": str(text or "")[:2000]}, ensure_ascii=False)}
+            files_payload = []
+            opened = []
+            try:
+                for i, fp in enumerate(valid_files[:10]):  # discord 最多 10 個附件 / message
+                    fh = open(fp, "rb")
+                    opened.append(fh)
+                    fname = os.path.basename(fp)
+                    files_payload.append((f"files[{i}]", (fname, fh, "application/octet-stream")))
+                resp = requests.post(url, headers=headers, data=data, files=files_payload, timeout=30)
+            finally:
+                for fh in opened:
+                    try: fh.close()
+                    except Exception: pass
+            if resp.status_code in (200, 201):
+                logger.info("✅ Discord bot %d 個檔案已上傳到 channel %s", len(valid_files), channel_id)
+                return True
+            logger.warning("Discord bot file upload HTTP %d: %s", resp.status_code, (resp.text or "")[:200])
+            return False
+        except Exception as e:
+            logger.error("Discord bot file upload exception: %s", e)
+            return False
+
+    def _push_discord_files_via_webhook(self, text: str, file_paths: List[str]) -> bool:
+        """Webhook fallback：multipart 上傳檔案到既有 webhook（無 topic 路由時用）。"""
+        if not self.discord_webhook:
+            return False
+        valid_files = [str(p).strip() for p in (file_paths or []) if str(p).strip() and os.path.exists(str(p).strip())]
+        if not valid_files:
+            return False
+        try:
+            data = {"payload_json": json.dumps({"content": str(text or "")[:2000]}, ensure_ascii=False)}
+            files_payload = []
+            opened = []
+            try:
+                for i, fp in enumerate(valid_files[:10]):
+                    fh = open(fp, "rb")
+                    opened.append(fh)
+                    files_payload.append((f"files[{i}]", (os.path.basename(fp), fh, "application/octet-stream")))
+                resp = requests.post(self.discord_webhook, data=data, files=files_payload, timeout=30)
+            finally:
+                for fh in opened:
+                    try: fh.close()
+                    except Exception: pass
+            if resp.status_code in (200, 204):
+                logger.info("✅ Discord webhook %d 個檔案已上傳", len(valid_files))
+                return True
+            logger.warning("Discord webhook file upload HTTP %d: %s", resp.status_code, (resp.text or "")[:200])
+            return False
+        except Exception as e:
+            logger.error("Discord webhook file upload exception: %s", e)
             return False
 
     def _resolve_dc_channel_id(self, topic_key: str) -> str:

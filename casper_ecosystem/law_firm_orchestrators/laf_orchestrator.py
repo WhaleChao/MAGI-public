@@ -1696,7 +1696,8 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
 
                     if confidence in ("high", "medium") or _is_consumer_debt:
                         go_live_remark = self._compose_go_live_remark(
-                            submission_info, client_name, is_consumer_debt=_is_consumer_debt
+                            submission_info, client_name, is_consumer_debt=_is_consumer_debt,
+                            open_doc_date=extracted_date or "",
                         )
                         go_live_upload_files = self._find_go_live_upload_files(
                             db_path, is_consumer_debt=_is_consumer_debt
@@ -3702,10 +3703,15 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                     logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 2808, exc_info=True)
 
     def _extract_best_date_from_doc(self, path_value: str) -> str:
-        date_from_name = self._extract_date_from_filename(path_value)
-        if date_from_name:
-            return date_from_name
-        return self._extract_date_with_vision(path_value)
+        """優先用 Vision/OCR 辨識手寫簽署日期；找不到才用檔名日期 fallback。
+
+        檔名日期通常是 LAF 派發日（如 `_1150414`），律師實際簽署日可能晚數日；
+        因此**先用 Vision 抓 PDF 內手寫文字 / 列印日期**，找不到才退回檔名。
+        """
+        date_from_vision = self._extract_date_with_vision(path_value)
+        if date_from_vision:
+            return date_from_vision
+        return self._extract_date_from_filename(path_value)
 
     # ── 開辦自動化：遞狀日期偵測 + selRemark 生成 ──────────────────
 
@@ -3882,19 +3888,32 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         return ""
 
     def _compose_go_live_remark(self, submission_info: dict, client_name: str = "",
-                                is_consumer_debt: bool = False) -> str:
-        """根據遞狀日期資訊生成自然語言 selRemark。"""
-        date_roc = submission_info.get("date_roc", "")
-        if not date_roc:
-            return ""
+                                is_consumer_debt: bool = False,
+                                open_doc_date: str = "") -> str:
+        """根據遞狀日期資訊生成自然語言 selRemark。
 
+        消債案件：優先使用開辦通知書簽署日（Vision OCR 抓到的）；找不到才退回遞狀日。
+        一般案件：用委任狀/書狀/回執日期。
+        """
+        date_roc = submission_info.get("date_roc", "")
         source = submission_info.get("source", "")
         doc_type = submission_info.get("source_doc_type", "委任狀")
         src_file = submission_info.get("source_file", "")
 
-        # 消費者債務清理 — 不需要委任狀，只有開辦通知書
+        # 消費者債務清理 — 開辦通知書簽署日優先（律師親簽日期是「開辦日期」的依據）
         if is_consumer_debt:
-            return f"已於民國{date_roc}遞送聲請狀至法院。"
+            # open_doc_date 是 ISO format（_extract_best_date_from_doc 回傳）
+            open_roc = self._iso_to_roc(open_doc_date) if open_doc_date else ""
+            if open_roc and date_roc:
+                return f"已於民國{open_roc}簽署接案通知書，民國{date_roc}遞送聲請狀至法院。"
+            if open_roc:
+                return f"已於民國{open_roc}簽署接案通知書。"
+            if date_roc:
+                return f"已於民國{date_roc}遞送聲請狀至法院。"
+            return ""
+
+        if not date_roc:
+            return ""
 
         # 從檔名提取實際文件種類（如「委任狀」「上訴狀」等）
         doc_name = self._extract_doc_name_from_filename(src_file) or "委任狀"
@@ -4561,8 +4580,11 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
             fields.setdefault("sel_result", "1")
             # 生成自然語言 remark — 與 email 自動流程使用同一套邏輯
             submission_info = self._detect_poa_submission_info(case_folder)
-            if submission_info.get("date_roc"):
-                default_remark = self._compose_go_live_remark(submission_info, cname, _is_consumer_debt)
+            if submission_info.get("date_roc") or _is_consumer_debt:
+                default_remark = self._compose_go_live_remark(
+                    submission_info, cname, _is_consumer_debt,
+                    open_doc_date=open_date or "",
+                )
             elif _is_consumer_debt:
                 default_remark = f"已簽署開辦通知書（開辦日期 {open_date}）。"
             else:
@@ -5569,23 +5591,50 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         return self._has_condition_trigger_file(case_folder)
 
     def _was_condition_drafted_recently(self, case_number: str, days: int = 30) -> bool:
+        """檢查此案是否已不應再重複 condition draft。
+
+        永久條件（不論 days 參數）：
+        - portal 已收到分會轉入通知（review_result_download 含「業經分會轉入系統」或審核/審查結果通知）
+          → portal 端已進入下一階段，再 draft 必失敗
+        - condition 已成功 draft 過（status='draft' 或 'success'）— 律師若想重做應手動 reset
+
+        days 參數保留作 backward compat 但實質上 condition 任何成功 draft 都永久 dedup。
+        """
         if not self.db or not case_number:
             return False
         try:
-            q = (
+            # 1. 永久 dedup：condition 已成功 draft / manual_done（不限時間）
+            q1 = (
                 "SELECT COUNT(*) AS cnt FROM `laf_lifecycle_log` "
                 "WHERE `case_number` = %s "
                 "AND ("
                 "(`event_type` = 'condition' AND `status` IN ('draft','success')) "
                 "OR (`event_type` = 'condition_manual_done' AND `status` IN ('manual_done','success'))"
-                ") "
-                "AND `created_at` >= DATE_SUB(NOW(), INTERVAL %s DAY)"
+                ")"
             )
-            row = self.db.fetch_one(q, (case_number, int(days)), as_dict=True)
+            row = self.db.fetch_one(q1, (case_number,), as_dict=True)
+            cnt = 0
             if isinstance(row, dict):
-                return int(row.get("cnt") or 0) > 0
-            if isinstance(row, (tuple, list)) and row:
-                return int(row[0] or 0) > 0
+                cnt = int(row.get("cnt") or 0)
+            elif isinstance(row, (tuple, list)) and row:
+                cnt = int(row[0] or 0)
+            if cnt > 0:
+                return True
+
+            # 2. portal 已轉入系統 → review_result_download 紀錄含轉入訊號
+            q2 = (
+                "SELECT `event_data` FROM `laf_lifecycle_log` "
+                "WHERE `case_number` = %s "
+                "AND `event_type` = 'review_result_download' "
+                "AND `status` = 'success' "
+                "ORDER BY `id` DESC LIMIT 5"
+            )
+            rows = self.db.fetch_all(q2, (case_number,), as_dict=True) or []
+            for r in rows:
+                ed = str((r or {}).get("event_data") or "")
+                if any(k in ed for k in ("業經分會轉入系統", "審核結果通知", "審查結果通知", "回報(附條件)", "回報（附條件）")):
+                    logger.info("  ⏭️ condition skip：%s portal 已轉入系統 (review_result_download 訊號)", case_number)
+                    return True
         except Exception:
             return False
         return False
@@ -5699,6 +5748,33 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                     "upload_mode": "replace",
                 },
             )
+            # ★ 連續失敗自動 mark manual_done：portal 拒絕通常代表已報結/已轉入/不再可暫存
+            # 連 2 次以上 portal condition draft save failed → 自動標記，下次 nightly 跳過
+            if not ok and self.db:
+                try:
+                    fail_q = (
+                        "SELECT COUNT(*) AS cnt FROM `laf_lifecycle_log` "
+                        "WHERE `case_number` = %s "
+                        "AND `event_type` = 'condition' "
+                        "AND `status` = 'error' "
+                        "AND `event_data` LIKE %s"
+                    )
+                    fail_row = self.db.fetch_one(fail_q, (laf_case_no, "%portal condition draft save failed%"), as_dict=True)
+                    fail_cnt = int((fail_row or {}).get("cnt") or 0) if isinstance(fail_row, dict) else 0
+                    if fail_cnt >= 2:
+                        # 自動寫入 manual_done 標記（避免下次 nightly 再嘗試）
+                        try:
+                            self.db.execute_write(
+                                "INSERT INTO `laf_lifecycle_log` (`case_number`, `event_type`, `event_data`, `status`) VALUES (%s, %s, %s, %s)",
+                                (laf_case_no, "condition_manual_done",
+                                 '{"auto_marked": true, "reason": "portal condition draft save failed >= 2 times — assumed already 報結/轉入/不可再暫存"}',
+                                 "manual_done"),
+                            )
+                            logger.info("  🔒 已自動標記 condition_manual_done: %s（連續失敗 %d 次）", laf_case_no, fail_cnt)
+                        except Exception as _ie:
+                            logger.warning("auto-mark condition_manual_done failed: %s", _ie)
+                except Exception:
+                    pass
             results.append(
                 {
                     "ok": bool(ok),
