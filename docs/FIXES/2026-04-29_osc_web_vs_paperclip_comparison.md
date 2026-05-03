@@ -314,7 +314,7 @@ Tab JS 檔：accounting.js / admin.js / calendar.js / cases.js / dashboard.js / 
 
 ### 4.3 地址標籤 PNG 生成（寄件封面）
 
-- **原版實作**：osc.py:15011-15095，觸發 AddressConfirmationDialog（line 18674）讓用戶確認地址，背景呼叫 `_generate_address_label_image_threaded`，用 PIL 繪製 300 DPI PNG
+- **原版實作**：osc.py:15011-15095，觸發 AddressConfirmationDialog（line 18674）讓使用者確認地址，背景呼叫 `_generate_address_label_image_threaded`，用 PIL 繪製 300 DPI PNG
 - **為何重要**：對被告、法院寄送文件時必須列印地址標籤，是每個案件必用功能；法扶版本則對多個法扶分會批量生成
 - **網頁版能否補**：可以，後端用 PIL/Pillow 生成，回傳 PNG stream 供前端下載
 - **補強建議**：`POST /api/osc/cases/:id/address-label-png`，難度中（需 Pillow + 字型設定）

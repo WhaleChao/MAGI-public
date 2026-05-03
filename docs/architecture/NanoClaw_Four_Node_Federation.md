@@ -12,7 +12,7 @@
 
 ```
                     ┌─────────────────┐
-                    │   用戶請求       │
+                    │   使用者請求       │
                     │ (LINE/Discord)  │
                     │ 🚫 No Wake Word │
                     └────────┬────────┘
@@ -46,7 +46,7 @@
 *   **角色定位**: **純粹儲存與檢索節點 (Pure Storage & Retrieval Node)**。
 *   **🚫 決策變更**: **不恢復 AI 能力 (No AI Capabilities)**。
 *   **🔍 技術深度解析 (Why No AI?)**:
-    1.  **IOPS 資源競爭**: 用戶要求極致的檢索速度。如果在檢索當下同時運行 LLM 推理，會導致 CPU Context Switch 頻繁，增加資料庫查詢延遲 (Latency)。
+    1.  **IOPS 資源競爭**: 使用者要求極致的檢索速度。如果在檢索當下同時運行 LLM 推理，會導致 CPU Context Switch 頻繁，增加資料庫查詢延遲 (Latency)。
     2.  **記憶體專用化**: 24GB RAM 雖然充足，但為了處理大量法律文件的全文檢索與向量比對，我們將 50%~60% 的記憶體 (約 12-14GB) 劃分為 **InnoDB Buffer Pool** 與 **OS File Cache**。若再運行 LLM (需佔用 4-6GB)，將導致 Cache Hit Rate 下降，影響整體讀取效能。
     3.  **職責單一原則 (SRP)**: 讓 KEEPER 專注於「記」與「查」，讓 CASPER 專注於「想」。這種架構更符合分散式系統的穩定性原則。
 *   **能力配置**:
@@ -174,7 +174,7 @@ sequenceDiagram
     C->>U: 📊 "分析完成！這是趨勢圖 (Image) 與結論 text"
 ```
 
-#### C. 用戶可見度 (User Visibility)
+#### C. 使用者可見度 (User Visibility)
 您不用擔心「不知道發生什麼事」。CASPER 作為**唯一對口窗口**，會負責：
 1.  **狀態廣播 (Status Broadcasting)**: 當後台 Melchior 正在跑程式 (可能需時 10-30 秒) 時，CASPER 會每隔 5 秒發送「打字中 (Typing Signal)」或「進度更新 (Processing...)」給您。
 2.  **結果彙整 (Result Aggregation)**: Melchior 跑完的圖表 (PNG) 或數據 (CSV)，會由 CASPER 統一打包，附上 CASPER 自己的解說 (Insights)，一次性回傳給您。

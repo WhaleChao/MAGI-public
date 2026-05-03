@@ -213,7 +213,7 @@ class DocumentGenerator(QMainWindow):
         # D15：財產書明書等資料
         self.scroll_layout.addWidget(QLabel("二十三、審理法院"))
         self.e1_box = QComboBox()
-        self.e1_box.addItems(["",  # 默認為空白
+        self.e1_box.addItems(["",  # 預設為空白
             "臺灣臺北地方法院", "臺灣新北地方法院", "臺灣士林地方法院", "臺灣桃園地方法院", 
             "臺灣新竹地方法院", "臺灣苗栗地方法院", "臺灣臺中地方法院", "臺灣南投地方法院", 
             "臺灣彰化地方法院", "臺灣雲林地方法院", "臺灣嘉義地方法院", "臺灣臺南地方法院", 

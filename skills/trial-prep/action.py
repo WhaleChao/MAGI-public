@@ -455,7 +455,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="MAGI 開庭準備自動化")
     ap.add_argument("--task", default="upcoming", help="upcoming|prepare|checklist|timeline")
     ap.add_argument("--text", default="", help="案號或關鍵字")
-    ap.add_argument("--days", default="7", help="upcoming 天數（默認 7）")
+    ap.add_argument("--days", default="7", help="upcoming 天數（預設 7）")
     args = ap.parse_args()
 
     task = str(args.task or "upcoming").strip().lower()

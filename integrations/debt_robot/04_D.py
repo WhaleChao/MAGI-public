@@ -85,13 +85,13 @@ def merge_and_save():
         else:
             pdf_list.append(file)
 
-    # 獲取當前日期，並設置默認檔案名稱
+    # 取得當前日期，並設定預設檔案名稱
     current_date = datetime.now().strftime("%Y%m%d")
     default_filename = f"{current_date}_消費者債務清理調解聲請狀及附件.pdf"
     
     # 打開保存對話框，讓使用者選擇保存位置
     output_file = filedialog.asksaveasfilename(
-        initialfile=default_filename,  # 設定默認檔案名稱
+        initialfile=default_filename,  # 設定預設檔案名稱
         defaultextension=".pdf",
         filetypes=[("PDF Files", "*.pdf")],
         title="保存合併的 PDF 檔案"
@@ -103,7 +103,7 @@ def merge_and_save():
 
 # 建立主介面
 root = tk.Tk()
-root.title("消債蘿蔔特-合併檔案")  # 設置窗口標題
+root.title("消債蘿蔔特-合併檔案")  # 設定視窗標題
 
 # 選擇PDF或DOCX檔案按鈕
 select_button = tk.Button(root, text="選擇 PDF 或 DOCX 檔案", command=select_files)

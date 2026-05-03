@@ -46,7 +46,7 @@ class DocumentEditor(QMainWindow):
         # 選擇法院資訊
         court_layout = QVBoxLayout()
         court_options = [
-            "",  # 默認為空白
+            "",  # 預設為空白
             "臺灣臺北地方法院", "臺灣新北地方法院", "臺灣士林地方法院", "臺灣桃園地方法院", 
             "臺灣新竹地方法院", "臺灣苗栗地方法院", "臺灣臺中地方法院", "臺灣南投地方法院", 
             "臺灣彰化地方法院", "臺灣雲林地方法院", "臺灣嘉義地方法院", "臺灣臺南地方法院", 
@@ -152,7 +152,7 @@ class DocumentEditor(QMainWindow):
         table3 = doc.tables[2]
         table3.cell(0, 0).text = self.bank_name_label.text().split("：")[-1]  # C0
 
-        # 更新法院信息和其他信息
+        # 更新法院資訊和其他資訊
         table4 = doc.tables[3]
         table4.cell(0, 0).text = self.court_combo_box_d0.currentText() if self.court_combo_box_d0.currentText() else "無"  # D0
         table4.cell(0, 1).text = self.court_input_d1.text()  # D1
@@ -169,7 +169,7 @@ class DocumentEditor(QMainWindow):
         table7.cell(0, 2).text = self.name_input.text() 
         # G0
 
-        # 默認文件名為 01_消費者債務清理聲請狀（表格內A0的文字）.docx
+        # 預設檔名為 01_消費者債務清理聲請狀（表格內A0的文字）.docx
         default_filename = f"01_消費者債務清理聲請狀（{self.name_input.text()}）.docx"
         save_path, _ = QFileDialog.getSaveFileName(self, "存檔", default_filename, "Word 文件 (*.docx);;所有文件 (*)")
 

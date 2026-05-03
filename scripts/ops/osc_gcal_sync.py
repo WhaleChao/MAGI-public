@@ -2,7 +2,7 @@
 OSC → Google Calendar 定時同步腳本
 ====================================
 每 30 分鐘由 cron 呼叫，推送未來 30 天內的 case_todos 到 GCal。
-enabled=false by default — 用戶完成 OAuth 後手動在 Admin 啟用。
+enabled=false by default — 使用者完成 OAuth 後手動在 Admin 啟用。
 """
 import sys
 import logging

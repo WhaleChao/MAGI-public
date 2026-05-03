@@ -3635,7 +3635,7 @@ class OSCCaseCreator:
                             if existing_folder:
                                 search_root = os.path.dirname(existing_folder)
                             
-                            # 如果上一層也不存在，嘗試默認路徑 (NAS 直連)
+                            # 如果上一層也不存在，嘗試預設路徑 (NAS 直連)
                             if not search_root or not os.path.exists(search_root):
                                 import sys as _sys
                                 if _sys.platform == 'darwin':

@@ -759,11 +759,11 @@ class CourtRecordDownloader:
             self.log_callback(full_msg)
     
     def _setup_driver(self):
-        """設置 WebDriver（含反爬蟲措施）"""
+        """設定 WebDriver（含反爬蟲措施）"""
         if not self._engine_logged:
             self.log(format_legal_web_engine_log(self.web_engine_profile))
             self._engine_logged = True
-        self.log("  正在設置 WebDriver...")
+        self.log("  正在設定 WebDriver...")
         
         try:
             import random
@@ -826,10 +826,10 @@ class CourtRecordDownloader:
             # 初始化驗證碼識別器
             self.captcha_solver = CaptchaSolver()
             
-            self.log("  ✓ WebDriver 設置完成")
-            
+            self.log("  ✓ WebDriver 設定完成")
+
         except Exception as e:
-            self.log(f"  ❌ WebDriver 設置失敗: {e}")
+            self.log(f"  ❌ WebDriver 設定失敗: {e}")
             traceback.print_exc()
             raise
     

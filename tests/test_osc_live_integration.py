@@ -264,7 +264,7 @@ def test_cases_export_csv_returns_real_csv(client):
     first_line = text.split("\n", 1)[0]
     assert "案件編號" in first_line
     assert "當事人" in first_line
-    # 寫到磁碟給用戶看
+    # 寫到磁碟給使用者看
     (OUT_DIR / "cases_export.csv").write_bytes(raw)
 
 

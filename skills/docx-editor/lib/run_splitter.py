@@ -32,7 +32,7 @@ def _w(tag: str) -> str:
 # ---------------------------------------------------------------------------
 
 class RunInfo:
-    """一個 run 的 flat 視圖（平面化後的資訊）。"""
+    """一個 run 的 flat 檢視（平面化後的資訊）。"""
     __slots__ = ("el", "rpr", "para_start", "para_end", "text")
 
     def __init__(self, el: etree._Element, rpr: Optional[etree._Element],

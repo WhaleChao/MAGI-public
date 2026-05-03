@@ -1879,7 +1879,7 @@
                     },
                     "days": {
                         "type": "integer",
-                        "description": "掃描天數（默認 7）"
+                        "description": "掃描天數（預設 7）"
                     },
                     "text": {
                         "type": "string",

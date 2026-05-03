@@ -1044,7 +1044,7 @@ def task_checklist(case_number: str = "") -> str:
 def main() -> int:
     ap = argparse.ArgumentParser(description="MAGI 開庭提醒技能")
     ap.add_argument("--task", default="list", choices=["scan", "remind", "prep", "list", "done", "checklist", "dashboard", "patterns", "help"])
-    ap.add_argument("--days", type=int, default=7, help="掃描天數（默認 7）")
+    ap.add_argument("--days", type=int, default=7, help="掃描天數（預設 7）")
     ap.add_argument("--case-number", default="", help="案號（prep/done 任務用）")
     ap.add_argument("--notify", default="1", help="1=發送通知")
     ap.add_argument("--text", default="", help="自然語句（通訊軟體路由用）")

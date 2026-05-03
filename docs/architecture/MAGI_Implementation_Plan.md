@@ -10,7 +10,7 @@
 | 節點 | 硬體規格 | 角色 | 備註 |
 |------|---------|------|------|
 | **CASPER** | Mac Mini M4 **24GB** | 總理 | 主力機 (All-in-One AI) |
-| **MELCHIOR** | Windows RTX 3060 12GB | 工程師 | 需升級顯卡 |
+| **MELCHIOR** | Windows RTX 3060 12GB | 工程師 | 需升級顯示卡 |
 | **KEEPER** | Dell **24GB** (i3-1305U) | 智慧史官 | **純資料庫 (No AI)** |
 | **BALTHASAR** | MBA M4 16GB | 行動秘書 | Apple Intelligence |
 | **WATCHER** | M1 Air 8GB | 外交官 | 輕量級輔助 |

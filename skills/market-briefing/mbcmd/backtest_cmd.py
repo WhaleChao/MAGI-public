@@ -56,7 +56,7 @@ def _cmd_backtest() -> str:
 
     candidates = [
         ("目前權重", params_current),
-        ("默認權重", params_default),
+        ("預設權重", params_default),
     ]
     if fitted_uni:
         candidates.append(("均勻擬合", fitted_uni))
