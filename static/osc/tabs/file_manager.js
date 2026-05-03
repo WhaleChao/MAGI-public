@@ -137,7 +137,13 @@
         const main = document.getElementById('fmEntriesArea');
         if (!main) return;
         if (!data || data.ok === false) {
-            main.innerHTML = '<div class="fm-empty">無法載入：' + escapeHTML((data && data.error) || '未知錯誤') + '</div>';
+            const friendly = (data && data.message) || (data && data.error) || '未知錯誤';
+            const diagHtml = (data && data.diagnostic && data.diagnostic.candidates && data.diagnostic.candidates.length)
+                ? '<details style="margin-top:8px;font-size:11px;color:#888"><summary>診斷（嘗試過的本地路徑）</summary>'
+                  + data.diagnostic.candidates.map(c => '<div>' + (c.exists ? '✓' : '✗') + ' ' + escapeHTML(c.path) + '</div>').join('')
+                  + '</details>'
+                : '';
+            main.innerHTML = '<div class="fm-empty">⚠️ ' + escapeHTML(friendly) + diagHtml + '</div>';
             return;
         }
         FM.lastEntries.folders = data.folders || [];
@@ -293,7 +299,13 @@
         root.innerHTML = '<div class="fm-loading-inline">載入樹狀…</div>';
         const data = await apiTree(FM.basePath, '');
         if (!data || data.ok === false) {
-            root.innerHTML = '<div class="fm-empty">樹狀載入失敗：' + escapeHTML((data && data.error) || '') + '</div>';
+            const friendly = (data && data.message) || (data && data.error) || '未知錯誤';
+            const diagHtml = (data && data.diagnostic && data.diagnostic.candidates && data.diagnostic.candidates.length)
+                ? '<details style="margin-top:8px;font-size:11px;color:#888"><summary>診斷（嘗試過的本地路徑）</summary>'
+                  + data.diagnostic.candidates.map(c => '<div>' + (c.exists ? '✓' : '✗') + ' ' + escapeHTML(c.path) + '</div>').join('')
+                  + '</details>'
+                : '';
+            root.innerHTML = '<div class="fm-empty">⚠️ ' + escapeHTML(friendly) + diagHtml + '</div>';
             return;
         }
         root.innerHTML = '';

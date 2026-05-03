@@ -68,9 +68,43 @@ def _is_hidden_name(name: str) -> bool:
 
 
 def _resolve_target_dir(path_str: str) -> str:
-    """Resolve a possibly-Windows path to a local existing directory under allowed roots."""
+    """Resolve a possibly-Windows path to a local existing directory under allowed roots.
+
+    若首次解析失敗（路徑指向 NAS 但 share 未掛載），自動觸發 ensure_nas_mounts()
+    嘗試掛載一次再 retry。常見情境：結案案件在 lumi share，平時不掛、律師點開
+    才需要 mount-on-demand。
+    """
+    real = _osc_resolve_existing_local_path(path_str, prefer_dir=True)
+    if real:
+        return real
+    # 第二次機會：嘗試 mount NAS 後 retry
+    try:
+        from api.nas_mount_guard import ensure_nas_mounts
+        import logging as _lg
+        _lg.getLogger(__name__).info("[file_manager] _resolve_target_dir miss, triggering ensure_nas_mounts() for: %s", path_str)
+        ensure_nas_mounts()
+    except Exception as e:
+        import logging as _lg
+        _lg.getLogger(__name__).warning("[file_manager] ensure_nas_mounts failed: %s", e)
     real = _osc_resolve_existing_local_path(path_str, prefer_dir=True)
     return real or ""
+
+
+def _resolve_with_diagnostic(path_str: str) -> tuple[str, dict]:
+    """Resolve + 回傳診斷資訊（candidate 列表 + 各 candidate 是否存在），供前端錯誤訊息用。"""
+    real = _resolve_target_dir(path_str)
+    diag = {"input_path": path_str, "resolved": real or None}
+    if not real:
+        try:
+            from api.osc.utils import _osc_local_path_candidates
+            cands = _osc_local_path_candidates(path_str)
+            diag["candidates"] = [
+                {"path": c, "exists": os.path.isdir(c)}
+                for c in cands
+            ]
+        except Exception:
+            diag["candidates"] = []
+    return real, diag
 
 
 def _safe_join_under(base_real: str, relative_path: str) -> str | None:
@@ -549,9 +583,14 @@ def osc_folders_tree_api():
     if not base:
         return jsonify({"ok": False, "error": "base_path required"}), 400
 
-    base_real = _resolve_target_dir(base)
+    base_real, diag = _resolve_with_diagnostic(base)
     if not base_real:
-        return jsonify({"ok": False, "error": "base_not_found_or_not_allowed"}), 404
+        return jsonify({
+            "ok": False,
+            "error": "base_not_found_or_not_allowed",
+            "message": "找不到此資料夾，可能 NAS 尚未掛載、案件已歸檔到其他位置、或路徑拼寫有誤",
+            "diagnostic": diag,
+        }), 404
 
     target = _safe_join_under(base_real, relative)
     if target is None:
@@ -719,9 +758,14 @@ def osc_folders_browse_api():
     if not base:
         return jsonify({"ok": False, "error": "base_path required"}), 400
 
-    base_real = _resolve_target_dir(base)
+    base_real, diag = _resolve_with_diagnostic(base)
     if not base_real:
-        return jsonify({"ok": False, "error": "base_not_found_or_not_allowed"}), 404
+        return jsonify({
+            "ok": False,
+            "error": "base_not_found_or_not_allowed",
+            "message": "找不到此資料夾，可能 NAS 尚未掛載、案件已歸檔到其他位置、或路徑拼寫有誤",
+            "diagnostic": diag,
+        }), 404
 
     target = _safe_join_under(base_real, relative)
     if target is None:
