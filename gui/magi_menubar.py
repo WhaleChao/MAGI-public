@@ -100,7 +100,7 @@ if _HAS_APPKIT:
     _RED    = NSColor.systemRedColor()
     _GRAY   = NSColor.labelColor()        # 使用 labelColor 獲得最強烈的黑/白適應對比
     _CYAN   = NSColor.systemBlueColor()   # Blue 在淺色底比 Teal 清晰
-    # 加粗預設字體重量 (原本 0.0 -> 0.3) 讓字體在淺色背景下更顯眼
+    # 加粗預設字型重量 (原本 0.0 -> 0.3) 讓字型在淺色背景下更顯眼
     _FONT   = NSFont.monospacedSystemFontOfSize_weight_(12.0, 0.3)
     _FONT_S = NSFont.monospacedSystemFontOfSize_weight_(11.0, 0.2)
     _FONT_B = NSFont.monospacedSystemFontOfSize_weight_(12.0, 0.6)

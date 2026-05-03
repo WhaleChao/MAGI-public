@@ -6,8 +6,8 @@ from PyQt5.QtWidgets import (
     QHBoxLayout, QLabel, QLineEdit, QComboBox, QPushButton, QFileDialog
 )
 from docx import Document
-from docx.shared import Pt  # 用于设置字体大小
-from docx.oxml.ns import qn  # 用于设置字体类型
+from docx.shared import Pt  # 用於設定字型大小
+from docx.oxml.ns import qn  # 用於設定字型類型
 
 class CreditorEditor(QMainWindow):
     def __init__(self):
@@ -25,18 +25,18 @@ class CreditorEditor(QMainWindow):
         bank_data = []
         company_data = []
         
-        # 获取当前脚本所在的目录
+        # 取得目前指令稿所在的目錄
         current_dir = os.path.dirname(os.path.abspath(__file__))
         document_dir = os.path.join(current_dir, "document")
         bank_file = os.path.join(document_dir, "all adress - bank.csv")
         company_file = os.path.join(document_dir, "all adress - company.csv")
 
-        # 讀取銀行CSV文件
+        # 讀取銀行CSV檔案
         with open(bank_file, newline='', encoding='utf-8') as csvfile:
             reader = csv.reader(csvfile)
             bank_data = [(row[0], row[1]) for row in reader]
 
-        # 讀取公司CSV文件
+        # 讀取公司CSV檔案
         with open(company_file, newline='', encoding='utf-8') as csvfile:
             reader = csv.reader(csvfile)
             company_data = [(row[0], row[1]) for row in reader]
@@ -75,16 +75,16 @@ class CreditorEditor(QMainWindow):
         creditor_name.addItems([name for name, _ in self.bank_data + self.company_data])
         creditor_name.setEditable(True)
         address_label = QLabel("")
-        address_input = QLineEdit()  # 用于手动输入地址的输入框
+        address_input = QLineEdit()  # 用於手動輸入地址的輸入框
         address_input.setPlaceholderText("輸入地址")
-        address_input.setVisible(False)  # 默认隐藏
+        address_input.setVisible(False)  # 預設隱藏
 
         def update_address():
             name = creditor_name.currentText()
             address = next((addr for n, addr in self.bank_data + self.company_data if n == name), "")
             if address:
                 address_label.setText(address)
-                address_input.setText(address)  # 确保输入框也有地址
+                address_input.setText(address)  # 確保輸入框也有地址
                 address_input.setVisible(False)
             else:
                 address_label.setText("")
@@ -102,7 +102,7 @@ class CreditorEditor(QMainWindow):
 
         row_layout.addWidget(creditor_name)
         row_layout.addWidget(address_label)
-        row_layout.addWidget(address_input)  # 添加用于手动输入地址的输入框
+        row_layout.addWidget(address_input)  # 加入用於手動輸入地址的輸入框
         row_layout.addWidget(amount_edit)
         row_layout.addWidget(debt_type)
 
@@ -112,7 +112,7 @@ class CreditorEditor(QMainWindow):
     def update_total_sum(self):
         total_sum = 0
         for row in self.row_inputs:
-            amount = row[3].text()  # 更新index以获取正确的输入框
+            amount = row[3].text()  # 更新 index 以取得正確的輸入框
             if amount.strip():
                 try:
                     total_sum += int(amount)
@@ -139,7 +139,7 @@ class CreditorEditor(QMainWindow):
         run._element.rPr.rFonts.set(qn('w:eastAsia'), '標楷體')  # 设置中文字体
         run.font.size = Pt(16)
 
-        # 获取第二个表格
+        # 取得第二個表格
         second_table = doc.tables[1]
 
         # 删除未使用的代号行
@@ -161,11 +161,11 @@ class CreditorEditor(QMainWindow):
             new_row = second_table.add_row().cells
 
             new_row[0].text = name.currentText()
-            new_row[1].text = address_input.text()  # 使用输入框中的地址
+            new_row[1].text = address_input.text()  # 使用輸入框中的地址
             new_row[2].text = amount_edit.text()
             new_row[3].text = debt_type.currentText()
 
-            # 更新CSV文件
+            # 更新CSV檔案
             self.update_csv(name.currentText(), address_input.text())
 
         default_filename = "03_債權人清冊.docx"
@@ -173,7 +173,7 @@ class CreditorEditor(QMainWindow):
         
         if save_path:
             if os.path.exists(save_path):
-                os.remove(save_path)  # 确保目标文件未被占用
+                os.remove(save_path)  # 確保目標檔案未被佔用
             try:
                 doc.save(save_path)
                 print(f"檔案已存檔到: {save_path}")
@@ -186,7 +186,7 @@ class CreditorEditor(QMainWindow):
         bank_file = os.path.join(document_dir, "all adress - bank.csv")
         company_file = os.path.join(document_dir, "all adress - company.csv")
         
-        # 确定应该更新哪个CSV文件
+        # 確定應該更新哪個CSV檔案
         if "銀行" in name:
             file_to_update = bank_file
             existing_data = self.bank_data
@@ -199,7 +199,7 @@ class CreditorEditor(QMainWindow):
             print(f"{name} 已經存在於 {file_to_update} 中，未新增。")
             return
 
-        # 追加新的内容
+        # 附加新的內容
         with open(file_to_update, 'a', newline='', encoding='utf-8') as csvfile:
             writer = csv.writer(csvfile)
             writer.writerow([name, address])

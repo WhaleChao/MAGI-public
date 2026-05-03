@@ -465,7 +465,7 @@ body.theme-dark .badge {
 }
 
 /* ── Apple 系統風格微調（2026-05-02）── */
-/* 套用系統字體（PingFang TC 已在原 body 定義，這裡補 Apple 優先順序） */
+/* 套用系統字型（PingFang TC 已在原 body 定義，這裡補 Apple 優先順序） */
 body {
     font-family: var(--apple-font);
 }

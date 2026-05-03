@@ -121,10 +121,10 @@ def add_watermark(image_path, output_path, number, total):
     img = Image.open(image_path)
     draw = ImageDraw.Draw(img)
     
-    # 根據圖片尺寸決定字體大小（圖片寬度的 5%）
+    # 根據圖片尺寸決定字型大小（圖片寬度的 5%）
     font_size = max(30, img.width // 20)
     
-    # 嘗試載入字體，失敗就用預設
+    # 嘗試載入字型，失敗就用預設
     try:
         font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", font_size)
     except:

@@ -107,7 +107,7 @@ class TestStatutesVdbOverlapGuard:
         src_path = MAGI_ROOT / "skills/statutes-vdb/action.py"
         src = src_path.read_text(encoding="utf-8")
         assert "statutes_vdb_bg_fill.pid" in src, (
-            "background_fill overlap guard 應用 statutes_vdb_bg_fill.pid lock file"
+            "background_fill overlap guard 應使用 statutes_vdb_bg_fill.pid lock file"
         )
         assert "os.kill(_existing_pid, 0)" in src, (
             "lock guard 要用 signal 0 檢查 PID 是否還活著"

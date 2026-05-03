@@ -336,7 +336,7 @@ def build_supplement_docx(
         if isinstance(filled[key], str) and "【聲證O】" in filled[key]:
             filled[key] = filled[key].replace("【聲證O】", label_to_proof.get(key, "【聲證O】"))
 
-    # ── 3. 應用欄位到文件 ────────────────────────────────────────────────────
+    # ── 3. 套用欄位到文件 ────────────────────────────────────────────────────
     deleted_fields = [k for k, v in filled.items() if v is None]
     _apply_fields_to_doc(doc, filled, deleted_fields)
 

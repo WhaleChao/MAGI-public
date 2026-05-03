@@ -51,7 +51,7 @@
 - 待辦清理 GCal 事件（clear_google_calendar_events, line 4086）
 
 ### 1.3 文件生成 — OSC 5 種書類（LegalAidFrame buttons, line 30037）
-原版以外部 `.app`（robot 子應用）方式啟動，按鈕呼叫 `_launch_exe_in_program_dir`：
+原版以外部 `.app`（robot 子應用程式）方式啟動，按鈕呼叫 `_launch_exe_in_program_dir`：
 1. 撰寫聲請狀（01_撰寫聲請狀）
 2. 撰寫財產及收入狀況說明書（02_撰寫財產及收入狀況說明書）
 3. 撰寫債權人清冊（03_撰寫債權人清冊）
@@ -271,7 +271,7 @@ Tab JS 檔：accounting.js / admin.js / calendar.js / cases.js / dashboard.js / 
 
 | 子功能 | 原版 | 網頁版 | 狀態 | 補強難度 |
 |---|---|---|---|---|
-| **PDF overlay 標記正本/副本/繕本** | `_add_overlays_and_stamp` (osc.py:25984) PyMuPDF + china-ss 16/12 字體 | `skills/doc-producer/action.py mark_copy_type()`（邏輯與原版幾乎一致） | ✅ **後端完整** | — |
+| **PDF overlay 標記正本/副本/繕本** | `_add_overlays_and_stamp` (osc.py:25984) PyMuPDF + china-ss 16/12 字型 | `skills/doc-producer/action.py mark_copy_type()`（邏輯與原版幾乎一致） | ✅ **後端完整** | — |
 | **附委任狀旗標** | 同上 | 同上 | ✅ 後端完整 | — |
 | **繕本已送對造旗標** | 同上 | 同上 | ✅ 後端完整 | — |
 | **DOCX→PDF→蓋章→合併 一條龍** | `finalize_and_generate_pdf` (osc.py:~26150) | `doc-producer produce()` (action.py:269) | ✅ 後端完整 | — |
