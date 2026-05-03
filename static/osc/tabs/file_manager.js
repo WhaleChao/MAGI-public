@@ -26,17 +26,18 @@
     // ── Icons ──────────────────────────────────────────────────────────
     const ICON_FOLDER = '📂';
     const ICON_BY_EXT = {
-        '.pdf': '📕', '.doc': '📘', '.docx': '📘',
-        '.xls': '📊', '.xlsx': '📊', '.csv': '📊', '.tsv': '📊',
-        '.ppt': '📙', '.pptx': '📙',
+        '.pdf': '📕', '.doc': '📘', '.docx': '📘', '.odt': '📘',
+        '.xls': '📊', '.xlsx': '📊', '.csv': '📊', '.tsv': '📊', '.ods': '📊', '.numbers': '📊',
+        '.ppt': '📙', '.pptx': '📙', '.odp': '📙', '.key': '📙',
         '.jpg': '🖼', '.jpeg': '🖼', '.png': '🖼', '.gif': '🖼', '.webp': '🖼',
-        '.bmp': '🖼', '.tiff': '🖼', '.tif': '🖼', '.heic': '🖼', '.heif': '🖼', '.svg': '🖼',
-        '.mp3': '🎵', '.wav': '🎵', '.m4a': '🎵', '.aac': '🎵', '.flac': '🎵', '.ogg': '🎵',
-        '.mp4': '🎬', '.mov': '🎬', '.webm': '🎬', '.m4v': '🎬', '.avi': '🎬', '.mkv': '🎬',
-        '.zip': '🗜', '.7z': '🗜', '.rar': '🗜', '.tar': '🗜', '.gz': '🗜',
-        '.eml': '📧', '.msg': '📧',
+        '.bmp': '🖼', '.tiff': '🖼', '.tif': '🖼', '.heic': '🖼', '.heif': '🖼', '.svg': '🖼', '.ico': '🖼',
+        '.mp3': '🎵', '.wav': '🎵', '.m4a': '🎵', '.aac': '🎵', '.flac': '🎵', '.ogg': '🎵', '.opus': '🎵',
+        '.mp4': '🎬', '.mov': '🎬', '.webm': '🎬', '.m4v': '🎬', '.avi': '🎬', '.mkv': '🎬', '.flv': '🎬',
+        '.zip': '🗜', '.7z': '🗜', '.rar': '🗜', '.tar': '🗜', '.gz': '🗜', '.bz2': '🗜', '.xz': '🗜',
+        '.eml': '📧', '.msg': '📧', '.mbox': '📧',
         '.txt': '📝', '.md': '📝', '.json': '📝', '.log': '📝', '.xml': '📝', '.yml': '📝', '.yaml': '📝',
-        '.py': '📝', '.js': '📝', '.html': '📝', '.css': '📝', '.sql': '📝',
+        '.py': '📝', '.js': '📝', '.ts': '📝', '.html': '📝', '.css': '📝', '.sql': '📝', '.sh': '📝',
+        '.exe': '⚙', '.dmg': '💿', '.iso': '💿', '.app': '⚙', '.dll': '⚙',
     };
     function iconFor(entry) {
         if (entry.type === 'dir') return ICON_FOLDER;
@@ -84,14 +85,14 @@
         const parts = (FM.currentRel || '').split('/').filter(Boolean);
         const pieces = [];
         pieces.push('<span class="crumb' + (parts.length === 0 ? ' current' : '')
-            + '" data-rel="">🏠 根目錄</span>');
+            + '" data-rel="" title="根目錄">🏠 根目錄</span>');
         let acc = '';
         parts.forEach((p, i) => {
             acc = acc ? acc + '/' + p : p;
             const last = i === parts.length - 1;
-            pieces.push('<span class="sep">/</span>');
+            pieces.push('<span class="sep">›</span>');
             pieces.push('<span class="crumb' + (last ? ' current' : '')
-                + '" data-rel="' + escapeHTML(acc) + '">' + escapeHTML(p) + '</span>');
+                + '" data-rel="' + escapeHTML(acc) + '" title="' + escapeHTML(p) + '">' + escapeHTML(p) + '</span>');
         });
         bc.innerHTML = pieces.join('');
         bc.querySelectorAll('.crumb').forEach(el => {

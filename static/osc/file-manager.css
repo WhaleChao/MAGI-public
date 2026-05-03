@@ -28,27 +28,34 @@
     min-height: 70vh;
 }
 
-/* breadcrumb */
+/* breadcrumb (Phase 2 commit 12 polish) */
 .fm-breadcrumb {
     display: flex;
     flex-wrap: wrap;
     align-items: center;
     gap: 4px;
     margin-bottom: 10px;
-    padding: 8px 10px;
-    background: rgba(0, 122, 255, 0.04);
-    border-radius: 6px;
+    padding: 8px 12px;
+    background: linear-gradient(90deg, rgba(0, 122, 255, 0.05), rgba(0, 122, 255, 0.02));
+    border-radius: 8px;
     font-size: 13px;
     line-height: 1.4;
+    border: 1px solid rgba(0, 122, 255, 0.08);
 }
 
 .fm-breadcrumb .crumb {
     color: var(--apple-blue, #007aff);
     cursor: pointer;
     text-decoration: none;
-    padding: 2px 6px;
-    border-radius: 4px;
+    padding: 3px 8px;
+    border-radius: 5px;
     transition: background 0.12s;
+    max-width: 220px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    display: inline-block;
+    vertical-align: middle;
 }
 
 .fm-breadcrumb .crumb:hover {
@@ -60,11 +67,21 @@
     color: var(--text-primary, #1d1d1f);
     cursor: default;
     font-weight: 600;
+    background: rgba(0, 0, 0, 0.04);
 }
 
 .fm-breadcrumb .sep {
     color: var(--text-secondary, #8e8e93);
     user-select: none;
+    font-size: 14px;
+    margin: 0 2px;
+}
+
+/* === File-name truncation tooltip (commit 12) === */
+.fm-name, .fm-grid-name, .fm-compact-name { cursor: default; }
+.fm-row .fm-name { max-width: 520px; }
+@media (max-width: 900px) {
+    .fm-row .fm-name { max-width: 280px; }
 }
 
 /* toolbar */
