@@ -2746,7 +2746,7 @@ def _sanitize_summary(text: str) -> str:
         "", s, flags=re.MULTILINE,
     )
 
-    # Remove WFGY-style chain-of-thought reasoning that local models sometimes generate
+    # Remove WFGY-style chain-of-thought reasoning that TAIDE sometimes generates
     # Patterns: "辨識到潛在混淆", "釐清", "核心語意", "錨定", "Low -", "步驟一"
     _cot_patterns = re.compile(
         r"^[-\s]*(?:辨識到潛在混淆|釐清|核心語意|錨定|聚焦|檢視|批判|調整|"
@@ -3002,7 +3002,35 @@ def _summarize_judgment(full_text: str, case_reason: str, timeout_sec: int = 420
         except Exception as codex_exc:
             skill_err += f" | codex_exc:{codex_exc}"
 
-        # ── oMLX fallback：Codex 不可用時走本機推理 ──
+        # ── NIM fallback：Codex 失敗時走免費 NVIDIA NIM（70B 默認，>20K 字自動 405B）──
+        # nim_heavy.run_nim_chat 內建 semaphore (NVIDIA_NIM_MAX_CONCURRENT, 預設 3)、
+        # daily budget (NVIDIA_NIM_DAILY_BUDGET, 預設 500)、circuit breaker、PII scrub。
+        # 由 NVIDIA_NIM_ENABLE=1 開關；JUDGMENT_NIM_INGEST=1 額外控制 ingestion 是否走 NIM。
+        if _env("NVIDIA_NIM_ENABLE", "0") in ("1", "true", "True", "yes", "YES") and \
+           _env("JUDGMENT_NIM_INGEST", "1") in ("1", "true", "True", "yes", "YES"):
+            try:
+                from skills.bridge.nim_heavy import run_nim_chat
+                nim_r = run_nim_chat(
+                    prompt=chunk_prompt,
+                    timeout_sec=max(60, int(timeout_sec)),
+                    task_type="summary",
+                    require_pii_scrub=_env("NVIDIA_NIM_REQUIRE_PII_SCRUB", "1") in ("1", "true", "True"),
+                )
+                if nim_r.get("success"):
+                    nim_text = _sanitize_summary(str(nim_r.get("response") or "").strip())
+                    if nim_text:
+                        logger.info(f"Chunk {idx+1} summarized via NIM ({nim_r.get('model', '')})")
+                        try:
+                            from skills.bridge.distill_collector import collect_summary_pair
+                            collect_summary_pair(chunk_prompt, nim_text, case_reason, "nvidia_nim_ingest")
+                        except Exception:
+                            logging.getLogger(__name__).debug("silent-catch nim distill", exc_info=True)
+                        return idx, nim_text, None, False, "nvidia_nim"
+                skill_err += f" | nim:{nim_r.get('error', 'empty')}"
+            except Exception as nim_exc:
+                skill_err += f" | nim_exc:{nim_exc}"
+
+        # ── oMLX fallback：Codex/NIM 都不可用時走本機推理 ──
         gateway = _get_inference_gateway()
         if gateway:
             g = gateway.dispatch(

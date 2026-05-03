@@ -7,9 +7,16 @@ weekend_resummary.py — 週末 NIM 批次重摘要
 安全機制：
 - PID lock 防止多進程同時跑
 - SIGTERM/SIGINT graceful shutdown
-- 連續失敗 backoff（3 連敗等 60s，5 連敗停止）
+- 連續失敗 backoff（5 連敗等 120s，15 連敗停止；皆可 env 覆寫）
 - 短文 (<1KB) 跳過不浪費 NIM 額度
 - NIM 日預算防呆（WEEKEND_RESUMMARY_BUDGET_CAP）
+
+可調 env：
+  MAGI_RESUMMARY_TIMEOUT_SEC      單次 NIM timeout（預設 240）
+  MAGI_RESUMMARY_MAX_FAILS         連續失敗中止閾值（預設 15）
+  MAGI_RESUMMARY_BACKOFF_THRESHOLD 連續失敗開始 backoff（預設 5）
+  MAGI_RESUMMARY_BACKOFF_SEC       backoff 等待秒數（預設 120）
+  MAGI_RESUMMARY_HEAVY=0           切 70B 加速（預設 1=405B）
 
 用法：
   python weekend_resummary.py                    # 摘要所有尚未完成的
@@ -49,12 +56,16 @@ LOCK_PATH = Path.home() / ".cache/judgment_collector/resummary.pid"
 # ── 參數 ──────────────────────────────────────────────────────────────
 MIN_TEXT_LEN = 1000         # 全文太短跳過（之前 500 太小，短裁定浪費額度）
 INTER_REQUEST_DELAY = 1.5   # NIM 請求間隔（秒；rate limit 較寬，但仍給點 buffer）
-SUMMARY_TIMEOUT_SEC = 120
+# 2026-05-03：原 120s 過緊，實測 405B p50≈60-80s p99≈110s+，舊值導致大批次 timeout
+# 連續觸發 → 5 連敗即斷（8/300 早夭）。所有閾值改 env 可調，預設值放寬。
+SUMMARY_TIMEOUT_SEC = int(os.environ.get("MAGI_RESUMMARY_TIMEOUT_SEC", "240") or "240")
 RESUMMARY_SESSION_ID = "weekend-resummary-batch"  # 獨立 session，避免跟 gateway 主 session 衝突
 BATCH_NOTIFY_EVERY = 50
-MAX_CONSECUTIVE_FAILS = 5   # 連續 N 次失敗就停止
-BACKOFF_THRESHOLD = 3       # 連續 N 次失敗開始 backoff
-BACKOFF_SECONDS = 60        # backoff 等待秒數
+MAX_CONSECUTIVE_FAILS = int(os.environ.get("MAGI_RESUMMARY_MAX_FAILS", "15") or "15")
+BACKOFF_THRESHOLD = int(os.environ.get("MAGI_RESUMMARY_BACKOFF_THRESHOLD", "5") or "5")
+BACKOFF_SECONDS = int(os.environ.get("MAGI_RESUMMARY_BACKOFF_SEC", "120") or "120")
+# 405B 為預設（distillation 純度需求）；MAGI_RESUMMARY_HEAVY=0 可切 70B 加速。
+RESUMMARY_USE_HEAVY = os.environ.get("MAGI_RESUMMARY_HEAVY", "1").strip().lower() not in ("0", "false", "no", "off")
 
 STRUCTURE_HEADERS = ["實務見解", "法院見解", "適用法條", "法院認為", "應解為"]
 
@@ -216,7 +227,7 @@ def _nim_summarize(prompt: str) -> tuple:
         # require_pii_scrub 預設由 NVIDIA_NIM_REQUIRE_PII_SCRUB 控制（=1）
         r = gw.chat(
             prompt=prompt,
-            heavy=True,
+            heavy=RESUMMARY_USE_HEAVY,
             timeout=SUMMARY_TIMEOUT_SEC,
             task_type="judgment_summary",
             session_id=RESUMMARY_SESSION_ID,
@@ -237,25 +248,29 @@ def _nim_summarize(prompt: str) -> tuple:
         return False, "", f"nim_summarize exception: {e}"
 
 
-def _extract_citations_if_enabled(text: str) -> str:
-    """若 MAGI_RESUMMARY_ENABLE_CITATION=1，解析 <CITATIONS> block 並保留 prose。
-    預設關閉（enable_citation=False，不影響既有摘要流程）。
-    """
-    import os as _os
-    if _os.environ.get("MAGI_RESUMMARY_ENABLE_CITATION", "0").strip() != "1":
-        return text
-    try:
-        from skills.bridge.citation_format import parse_citations
-        parsed = parse_citations(text)
-        return parsed.prose  # 移除 <CITATIONS> 後的乾淨文字
-    except Exception:
-        return text
+def _is_valid_empty_summary(text: str) -> bool:
+    """合法的「無見解」回覆：模型按 prompt 規則回「本判決無可擷取之實務見解」/「案由不符」。
+    這類回覆視為成功（不寫入蒸餾），不可當失敗。"""
+    if not text:
+        return False
+    head = text[:80]
+    return ("無可擷取" in head) or ("案由不符" in head)
 
 
 def _is_quality_summary(text: str) -> bool:
-    if len(text) < 100:
+    """品質檢查 — 與 PROMPT_TEMPLATE 對齊（要求 ## 實務見解、## 適用法條 2 個 header）。
+    舊版要求 >= 3 個 header，但 prompt 只請求 2 個 → 完美回答也必 fail，是設計 bug。"""
+    if not text:
         return False
-    return sum(1 for h in STRUCTURE_HEADERS if h in text) >= 3
+    # 合法的空摘要：直接視為通過（caller 自行決定是否寫入 distill）
+    if _is_valid_empty_summary(text):
+        return True
+    header_count = sum(1 for h in STRUCTURE_HEADERS if h in text)
+    if header_count >= 2 and len(text) >= 40:
+        return True
+    if header_count >= 1 and len(text) >= 100:
+        return True
+    return False
 
 
 def _collect_for_distill(prompt: str, response: str, case_reason: str) -> None:
@@ -456,12 +471,20 @@ def main():
                 "at": time.strftime("%Y-%m-%dT%H:%M:%S"),
                 "len": len(summary),
             }
-            _collect_for_distill(prompt, summary, case_reason)
-            distill_count += 1
-            logger.info(
-                "%d/%d OK: %s (reason=%s, summary=%d chars, provider=nvidia_nim)",
-                i + 1, len(entries), slug, case_reason, len(summary),
-            )
+            # 合法的空摘要（無可擷取 / 案由不符）視為成功，但不寫入蒸餾
+            # 避免訓練集被「無見解」的樣本稀釋
+            if not _is_valid_empty_summary(summary):
+                _collect_for_distill(prompt, summary, case_reason)
+                distill_count += 1
+                logger.info(
+                    "%d/%d OK: %s (reason=%s, summary=%d chars, distill=YES)",
+                    i + 1, len(entries), slug, case_reason, len(summary),
+                )
+            else:
+                logger.info(
+                    "%d/%d OK-EMPTY: %s (reason=%s, no extractable opinion)",
+                    i + 1, len(entries), slug, case_reason,
+                )
         else:
             fail_count += 1
             consecutive_fails += 1

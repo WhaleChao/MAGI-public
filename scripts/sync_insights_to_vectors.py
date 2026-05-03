@@ -141,6 +141,13 @@ def sync(dry_run: bool = False, quiet: bool = False):
     remote_cur.close()
     remote_conn.close()
 
+    # Dedup window: 只比對近 N 天（避免日量上千時 O(n²) 爆炸）。
+    # 0 = 不限。預設 30 天，可由 INSIGHT_DEDUP_WINDOW_DAYS 覆寫。
+    try:
+        dedup_window_days = int(os.environ.get("INSIGHT_DEDUP_WINDOW_DAYS", "30") or "30")
+    except Exception:
+        dedup_window_days = 30
+
     if not insights:
         if not quiet:
             print("沒有可同步的見解")
@@ -217,13 +224,42 @@ def sync(dry_run: bool = False, quiet: bool = False):
     local_conn.close()
 
     # 4. Semantic dedup: flag near-duplicate insights within same case_reason
-    dedup_flagged = _flag_semantic_dupes(insights, quiet=quiet)
+    #    只在近 dedup_window_days 內的見解之間比對，避免全表 O(n²)。
+    if dedup_window_days > 0:
+        cutoff_iso = (
+            __import__("datetime").datetime.now() -
+            __import__("datetime").timedelta(days=dedup_window_days)
+        ).strftime("%Y-%m-%d")
+        dedup_pool = [
+            ins for ins in insights
+            if str(ins.get("extracted_date") or "")[:10] >= cutoff_iso
+        ]
+    else:
+        dedup_pool = insights
+    dedup_flagged = _flag_semantic_dupes(dedup_pool, quiet=quiet)
+
+    # Append run summary to ingestion log (cron 健康監測用)
+    try:
+        log_path = Path(os.path.dirname(__file__)).parent / ".agent" / "insight_sync_log.jsonl"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps({
+                "ts": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                "candidates": len(insights),
+                "new": len(new_insights),
+                "inserted": inserted,
+                "dedup_flagged": dedup_flagged,
+                "dedup_pool_size": len(dedup_pool),
+                "elapsed_sec": round(time.time() - t0, 2),
+            }, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
 
     elapsed = time.time() - t0
     if not quiet:
         print(f"\n✅ 同步完成！寫入 {inserted} / {len(new_insights)} 筆")
         if dedup_flagged:
-            print(f"   ⚠️  標記 {dedup_flagged} 筆疑似重複見解")
+            print(f"   ⚠️  標記 {dedup_flagged} 筆疑似重複見解（近 {dedup_window_days} 天）")
         print(f"   耗時: {elapsed:.1f} 秒")
     else:
         parts = [f"insight_sync: {inserted} new vectors"]

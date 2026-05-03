@@ -313,15 +313,22 @@ def run_nim_chat(
     finally:
         _nim_semaphore.release()
 
+    # 錯誤回應：把 response body 一併寫入 usage log（之前只記 status code，
+    # 害 http_400 等錯誤完全無從診斷）。body 截斷到 300 chars 防止 log 爆。
+    err_body = (r.text or "")[:300].replace("\n", " ").strip()
     if r.status_code == 429:
         _cb_record_429(f"http_429:{(r.text or '')[:100]}")
         record_nim_outcome(False, int((time.monotonic() - t0) * 1000), "http_429")
-        _log_usage({"ts": started_iso, "model": chosen_model, "ok": False, "error": "http_429", "task": task_type})
+        _log_usage({"ts": started_iso, "model": chosen_model, "ok": False,
+                    "error": "http_429", "error_body": err_body,
+                    "prompt_chars": len(prompt or ""), "task": task_type})
         return _fail("nim_rate_limit_429")
     if r.status_code != 200:
         record_nim_outcome(False, int((time.monotonic() - t0) * 1000), f"http_{r.status_code}")
-        _log_usage({"ts": started_iso, "model": chosen_model, "ok": False, "error": f"http_{r.status_code}", "task": task_type})
-        return _fail(f"nim_http_{r.status_code}:{(r.text or '')[:200]}")
+        _log_usage({"ts": started_iso, "model": chosen_model, "ok": False,
+                    "error": f"http_{r.status_code}", "error_body": err_body,
+                    "prompt_chars": len(prompt or ""), "task": task_type})
+        return _fail(f"nim_http_{r.status_code}:{err_body[:200]}")
 
     try:
         data = r.json()
