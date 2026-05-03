@@ -3708,6 +3708,95 @@ return (() => {
                     continue
         return False
 
+    def _hydrate_cloud_placeholder(self, path: str, timeout_sec: float = 60.0) -> bool:
+        """Force-download macOS Synology Drive / iCloud cloud-only placeholder file.
+
+        macOS CloudStorage shows the full size in stat() but `st_blocks * 512` 是 0
+        when the file is still a placeholder. Browser's set_input_files() triggers
+        hydration on read, but the portal's AJAX upload times out (30-40s) before
+        the cloud download finishes — causing "上傳未確認: waiting" failures.
+
+        Strategy:
+          1. Check if `st_blocks * 512 < st_size * 0.5` → likely placeholder
+          2. Trigger hydration via `brctl download` (Apple File Provider) and
+             read the file to /dev/null (forces sync read)
+          3. Poll up to timeout_sec until `st_blocks * 512 >= st_size * 0.9`
+          4. Returns True if fully on disk, False if still missing
+
+        Caller should still attempt upload either way (best-effort).
+        """
+        try:
+            st = os.stat(path)
+        except OSError as _e:
+            self.log(f"  ⚠️ hydrate: stat 失敗 {os.path.basename(path)}: {_e}")
+            return False
+        size = int(getattr(st, "st_size", 0) or 0)
+        blocks = int(getattr(st, "st_blocks", 0) or 0)
+        on_disk = blocks * 512
+        if size <= 0:
+            return True
+        if on_disk >= int(size * 0.9):
+            return True  # already fully on disk
+
+        basename = os.path.basename(path)
+        self.log(f"  ☁️ 偵測到 cloud placeholder（disk={on_disk}/{size} bytes），開始 hydrate: {basename}")
+        # Try brctl download (best — Apple File Provider native)
+        try:
+            import subprocess as _sp
+            _sp.run(["brctl", "download", path], capture_output=True, timeout=10)
+        except Exception as _e:
+            logging.getLogger(__name__).debug("brctl download failed: %s", _e)
+        # Force-read in background to keep CloudStorage hydration progressing
+        try:
+            import threading as _th
+            def _read_drain():
+                try:
+                    with open(path, "rb") as _f:
+                        while _f.read(1 << 20):
+                            pass
+                except Exception:
+                    pass
+            _t = _th.Thread(target=_read_drain, daemon=True)
+            _t.start()
+        except Exception:
+            logging.getLogger(__name__).debug("read-drain hydrate failed", exc_info=True)
+        # Poll
+        import time as _t_mod
+        deadline = _t_mod.monotonic() + max(5.0, float(timeout_sec))
+        last_blocks = blocks
+        stuck_polls = 0
+        while _t_mod.monotonic() < deadline:
+            _t_mod.sleep(1.0)
+            try:
+                st2 = os.stat(path)
+                cur_blocks = int(getattr(st2, "st_blocks", 0) or 0)
+                cur_on_disk = cur_blocks * 512
+                if cur_on_disk >= int(size * 0.9):
+                    self.log(f"  ☁️ ✅ hydrate 完成: {basename} ({cur_on_disk}/{size} bytes)")
+                    return True
+                if cur_blocks == last_blocks:
+                    stuck_polls += 1
+                else:
+                    stuck_polls = 0
+                    last_blocks = cur_blocks
+                # Re-trigger brctl every 10s if no progress
+                if stuck_polls > 0 and stuck_polls % 10 == 0:
+                    try:
+                        import subprocess as _sp
+                        _sp.run(["brctl", "download", path], capture_output=True, timeout=5)
+                    except Exception:
+                        pass
+            except OSError:
+                pass
+        # Timeout — log final state
+        try:
+            st3 = os.stat(path)
+            final_on_disk = int(getattr(st3, "st_blocks", 0) or 0) * 512
+            self.log(f"  ☁️ ⚠️ hydrate 逾時: {basename} (disk={final_on_disk}/{size} bytes，將仍嘗試上傳)")
+        except Exception:
+            pass
+        return False
+
     def _upload_supporting_files(self, files: List[str], workflow: str = "") -> Dict[str, Any]:
         """
         Upload PDF files on the current workflow page.
@@ -4245,6 +4334,15 @@ return (() => {
                 ) or {}
                 _before_rows = int((_before_snap or {}).get("rows") or 0)
                 _before_sig = str((_before_snap or {}).get("sig") or "")
+
+                # 3.5) Hydrate cloud placeholder before sending to <input type="file">.
+                # macOS Synology Drive / iCloud 的 cloud-only placeholder 在 send_keys 觸發
+                # 後才會開始下載；portal AJAX upload (30-40s) 等不到就 timeout。
+                # 預先 hydrate 解決石金市 2026-05-04 開辦失敗（disk=0/4448911 bytes）。
+                try:
+                    self._hydrate_cloud_placeholder(str(p), timeout_sec=60.0)
+                except Exception as _hy_err:
+                    logging.getLogger(__name__).debug("hydrate failed: %s", _hy_err)
 
                 # 4) Find <input type="file"> and send file path via send_keys
                 _file_input = _find_file_input()
