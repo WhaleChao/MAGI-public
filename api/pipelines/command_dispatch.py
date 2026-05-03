@@ -85,6 +85,41 @@ _RE_TIMEOUT_SEC = re.compile(r"(\d{2,4})\s*(?:秒|sec|s)")
 _RE_TARGET_GB = re.compile(r"(\d+(?:\.\d+)?)\s*gb")
 _RE_TOLERANCE_GB = re.compile(r"[±\+\-]\s*(\d+(?:\.\d+)?)\s*gb")
 _RE_JSON_TAIL = re.compile(r"(\{[\s\S]*\})\s*$")
+# Sentinel-aware subprocess result parser (keep in sync with api/domains/laf_flow.py).
+# laf_orchestrator.py portal-draft / portal-submit modes wrap printed JSON between
+# these markers to avoid greedy regex eating logger / Playwright noise.
+_MAGI_RESULT_SENTINEL_START = "===MAGI_RESULT_JSON_START==="
+_MAGI_RESULT_SENTINEL_END = "===MAGI_RESULT_JSON_END==="
+
+
+def _parse_subprocess_json(stdout_text: str):
+    """Sentinel-first JSON extractor. Returns parsed dict or None.
+
+    Priority: sentinel block > whole-stdout json.loads > legacy greedy regex.
+    """
+    if not stdout_text:
+        return None
+    s_idx = stdout_text.rfind(_MAGI_RESULT_SENTINEL_START)
+    if s_idx >= 0:
+        body_start = s_idx + len(_MAGI_RESULT_SENTINEL_START)
+        e_idx = stdout_text.find(_MAGI_RESULT_SENTINEL_END, body_start)
+        if e_idx > body_start:
+            block = stdout_text[body_start:e_idx].strip()
+            try:
+                return json.loads(block)
+            except Exception:
+                pass
+    try:
+        return json.loads(stdout_text)
+    except Exception:
+        pass
+    m = _RE_JSON_TAIL.search(stdout_text)
+    if m:
+        try:
+            return json.loads(m.group(1))
+        except Exception:
+            pass
+    return None
 _RE_PAYMENT_DISMISS = re.compile(r"^(.+?)\s*(?:已經繳費了|已經繳費|繳費完畢了|已繳費|繳費完畢|繳費了)\s*$")
 _RE_CASE_NUMBER = re.compile(r"(\d{2,3})\s*(?:年度?)?\s*([^\d\s年月日]+)\s*(?:字)?\s*(?:第)?\s*(\d+)\s*(?:號)?")
 _RE_CASE_TYPE_STRIP = re.compile(r"(字第|字|第)")
@@ -1275,17 +1310,7 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
                 if proc.returncode != 0:
                     result_text = f"❌ 法扶{payload_obj.get('action_label','回報')}流程失敗（code={proc.returncode}）\n{(stderr_text or stdout_text)[:1200]}"
                 else:
-                    data = None
-                    if stdout_text:
-                        try:
-                            data = json.loads(stdout_text)
-                        except Exception:
-                            m2 = _RE_JSON_TAIL.search(stdout_text)
-                            if m2:
-                                try:
-                                    data = json.loads(m2.group(1))
-                                except Exception:
-                                    data = None
+                    data = _parse_subprocess_json(stdout_text)
                     if isinstance(data, dict):
                         if data.get("ok"):
                             identity = data.get("identity") if isinstance(data.get("identity"), dict) else {}
@@ -1507,6 +1532,33 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
                                 )
                             elif err == "portal_draft_failed":
                                 detail = str(data.get("detail") or data.get("message") or "").strip()
+                                # 把 subprocess stderr / stdout 完整 dump，方便事後追查 portal 為何失敗
+                                try:
+                                    from api.runtime_paths import get_magi_root_dir as _grd
+                                    _diag_dir = os.path.join(str(_grd()), ".runtime")
+                                    os.makedirs(_diag_dir, exist_ok=True)
+                                    _fail_path = os.path.join(_diag_dir, "laf_portal_draft_failures.jsonl")
+                                    _fail_record = {
+                                        "ts": __import__("time").time(),
+                                        "ts_iso": __import__("time").strftime("%Y-%m-%dT%H:%M:%S"),
+                                        "action": payload_obj.get("action"),
+                                        "client_name": payload_obj.get("client_name"),
+                                        "laf_case_no": payload_obj.get("laf_case_no"),
+                                        "case_number": payload_obj.get("case_number"),
+                                        "detail": detail,
+                                        "stderr_tail": stderr_text[-4000:] if stderr_text else "",
+                                        "stdout_tail": stdout_text[-4000:] if stdout_text else "",
+                                        "data": data if isinstance(data, dict) else None,
+                                    }
+                                    with open(_fail_path, "a", encoding="utf-8") as _fp:
+                                        _fp.write(json.dumps(_fail_record, ensure_ascii=False, default=str) + "\n")
+                                    logger.warning(
+                                        "[LAF portal_draft_failed] action=%s client=%s laf_no=%s — stderr/stdout dumped to %s",
+                                        payload_obj.get("action"), payload_obj.get("client_name"),
+                                        payload_obj.get("laf_case_no"), _fail_path,
+                                    )
+                                except Exception as _dump_err:
+                                    logger.warning("portal_draft_failed dump failed: %s", _dump_err)
                                 result_text = (
                                     f"❌ 法扶{payload_obj.get('action_label','回報')}表單填寫失敗。\n"
                                     "可能原因：法扶網站登入逾時、頁面載入異常或按鈕找不到。\n"
@@ -1718,17 +1770,7 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
                 if proc.returncode != 0:
                     result_text = f"❌ 閱卷查核失敗（code={proc.returncode}）\n{(stderr_text or stdout_text)[:1200]}"
                 else:
-                    data = None
-                    if stdout_text:
-                        try:
-                            data = json.loads(stdout_text)
-                        except Exception:
-                            m2 = _RE_JSON_TAIL.search(stdout_text)
-                            if m2:
-                                try:
-                                    data = json.loads(m2.group(1))
-                                except Exception:
-                                    data = None
+                    data = _parse_subprocess_json(stdout_text)
 
                     if isinstance(data, dict):
                         if data.get("success"):
@@ -1906,17 +1948,7 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
                 if proc.returncode != 0:
                     result_text = f"❌ 閱卷聲請失敗（code={proc.returncode}）\n{(stderr_text or stdout_text)[:1200]}"
                 else:
-                    data = None
-                    if stdout_text:
-                        try:
-                            data = json.loads(stdout_text)
-                        except Exception:
-                            m2 = _RE_JSON_TAIL.search(stdout_text)
-                            if m2:
-                                try:
-                                    data = json.loads(m2.group(1))
-                                except Exception:
-                                    data = None
+                    data = _parse_subprocess_json(stdout_text)
 
                     if isinstance(data, dict):
                         if data.get("success"):
@@ -2065,17 +2097,7 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
                 if proc.returncode != 0:
                     result_text = f"❌ 筆錄流程失敗（code={proc.returncode}）\n{(stderr_text or stdout_text)[:1200]}"
                 else:
-                    data = None
-                    if stdout_text:
-                        try:
-                            data = json.loads(stdout_text)
-                        except Exception:
-                            m2 = _RE_JSON_TAIL.search(stdout_text)
-                            if m2:
-                                try:
-                                    data = json.loads(m2.group(1))
-                                except Exception:
-                                    data = None
+                    data = _parse_subprocess_json(stdout_text)
 
                     if isinstance(data, dict):
                         if data.get("success"):
@@ -2251,17 +2273,7 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
                 if proc.returncode != 0:
                     result_text = f"❌ 閱卷流程失敗（code={proc.returncode}）\n{(stderr_text or stdout_text)[:1200]}"
                 else:
-                    data = None
-                    if stdout_text:
-                        try:
-                            data = json.loads(stdout_text)
-                        except Exception:
-                            m2 = _RE_JSON_TAIL.search(stdout_text)
-                            if m2:
-                                try:
-                                    data = json.loads(m2.group(1))
-                                except Exception:
-                                    data = None
+                    data = _parse_subprocess_json(stdout_text)
 
                     if isinstance(data, dict):
                         if data.get("success"):
