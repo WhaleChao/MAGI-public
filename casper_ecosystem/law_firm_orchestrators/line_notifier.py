@@ -500,11 +500,33 @@ class LAFNotifier:
             return False
 
     def _resolve_dc_channel_id(self, topic_key: str) -> str:
-        """topic_key → DC channel id（從 env：MAGI_DC_CHANNEL_<UPPER_TOPIC>）。"""
+        """topic_key → DC channel id。
+
+        優先序：
+        1. env MAGI_DC_CHANNEL_<UPPER_TOPIC>（手動覆寫）
+        2. .agent/discord_channel_map.json（setup_channels 產生，含 laf_go_live/
+           laf_closing/laf_fee/laf_inquiry/laf_condition/filereview_* 等子頻道）
+        """
         if not topic_key:
             return ""
         env_key = f"MAGI_DC_CHANNEL_{topic_key.upper()}"
-        return (self._env.get(env_key, "") or "").strip()
+        env_val = (self._env.get(env_key, "") or "").strip()
+        if env_val:
+            return env_val
+        try:
+            map_path = os.path.join(
+                os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+                ".agent", "discord_channel_map.json",
+            )
+            if os.path.exists(map_path):
+                with open(map_path, "r", encoding="utf-8") as f:
+                    cmap = json.load(f) or {}
+                cid = (cmap.get(topic_key) or "").strip()
+                if cid:
+                    return cid
+        except Exception as e:
+            logger.warning("Failed to read discord_channel_map.json: %s", e)
+        return ""
 
     def _push_discord(self, text: str, *, topic_key: str = "") -> bool:
         """Send message to Discord：優先 bot+channel_id（topic 路由），fallback webhook。"""

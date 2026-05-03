@@ -1798,14 +1798,17 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
             confirm_files.append(open_doc)
         if poa_doc and os.path.isfile(poa_doc):
             confirm_files.append(poa_doc)
+        # 路由：尚未真正開辦（缺開辦通知 + 委任狀）→ laf_dispatch（派案頻道）；
+        # 已具備可開辦條件 → laf_go_live（開辦頻道）
+        _topic_route = "laf_go_live" if (opening_notice_count > 0 or poa_count > 0) else "laf_dispatch"
         if confirm_files:
             try:
-                self.notifier.notify_admin_with_files(notify_msg, confirm_files, topic_key="laf_go_live")
+                self.notifier.notify_admin_with_files(notify_msg, confirm_files, topic_key=_topic_route)
             except Exception as nf_e:
                 logger.warning("Failed to send go_live confirmation files: %s", nf_e)
-                self.notifier.notify_admin(notify_msg, topic_key="laf_go_live")
+                self.notifier.notify_admin(notify_msg, topic_key=_topic_route)
         else:
-            self.notifier.notify_admin(notify_msg, topic_key="laf_go_live")
+            self.notifier.notify_admin(notify_msg, topic_key=_topic_route)
 
         self._log_event(laf_number, "go_live", {
             "client_name": client_name,
