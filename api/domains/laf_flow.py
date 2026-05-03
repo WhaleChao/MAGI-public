@@ -22,6 +22,52 @@ _MAGI_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")
 
 
 # ---------------------------------------------------------------------------
+# Subprocess result parser (sentinel-aware)
+# ---------------------------------------------------------------------------
+_MAGI_RESULT_SENTINEL_START = "===MAGI_RESULT_JSON_START==="
+_MAGI_RESULT_SENTINEL_END = "===MAGI_RESULT_JSON_END==="
+
+
+def _parse_subprocess_result(stdout_text: str):
+    """Parse JSON result from a laf_orchestrator.py subprocess.
+
+    Priority:
+      1. Sentinel-delimited block (new — robust against logger noise / Playwright
+         warnings printed before the JSON output).
+      2. Whole-string json.loads (back-compat for older subprocess builds).
+      3. Greedy regex (last-resort fallback).
+
+    Returns (data_dict_or_None, parse_method_str).
+    """
+    if not stdout_text:
+        return None, "empty_stdout"
+    # 1) Sentinel-delimited block — preferred
+    s_idx = stdout_text.rfind(_MAGI_RESULT_SENTINEL_START)
+    if s_idx >= 0:
+        body_start = s_idx + len(_MAGI_RESULT_SENTINEL_START)
+        e_idx = stdout_text.find(_MAGI_RESULT_SENTINEL_END, body_start)
+        if e_idx > body_start:
+            block = stdout_text[body_start:e_idx].strip()
+            try:
+                return json.loads(block), "sentinel"
+            except Exception as _e:
+                logger.warning("sentinel block JSON parse failed: %s; block_head=%r", _e, block[:200])
+    # 2) Whole stdout
+    try:
+        return json.loads(stdout_text), "whole_stdout"
+    except Exception:
+        pass
+    # 3) Last-resort greedy regex (legacy)
+    m = re.search(r"(\{[\s\S]*\})\s*$", stdout_text)
+    if m:
+        try:
+            return json.loads(m.group(1)), "regex_fallback"
+        except Exception:
+            pass
+    return None, "parse_failed"
+
+
+# ---------------------------------------------------------------------------
 # LAF submit pending persistence
 # ---------------------------------------------------------------------------
 
@@ -307,20 +353,11 @@ def handle_laf_submit_confirmation_if_any(orch, user_id: str, platform: str, rol
             proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_sec, env=env)
             stdout_text = (proc.stdout or "").strip()
             stderr_text = (proc.stderr or "").strip()
-            if proc.returncode != 0:
+            data, _parse_method = _parse_subprocess_result(stdout_text)
+            if proc.returncode != 0 and not (isinstance(data, dict) and data.get("ok")):
+                # \u771f\u6b63\u5931\u6557\uff1areturncode \u975e\u96f6\u4e14 result \u4e5f\u4e0d\u662f ok=True
                 text = f"\u274c \u958b\u8fa6\u9001\u51fa\u5931\u6557\uff08\u78ba\u8a8d\u78bc {token_id}\uff0ccode={proc.returncode}\uff09\n{(stderr_text or stdout_text)[:1200]}"
             else:
-                data = None
-                if stdout_text:
-                    try:
-                        data = json.loads(stdout_text)
-                    except Exception:
-                        m2 = re.search(r"(\{[\s\S]*\})\s*$", stdout_text)
-                        if m2:
-                            try:
-                                data = json.loads(m2.group(1))
-                            except Exception:
-                                data = None
                 if isinstance(data, dict) and data.get("ok"):
                     identity = data.get("identity") if isinstance(data.get("identity"), dict) else {}
                     cname = str(identity.get("client_name") or payload_obj.get("client_name") or "").strip()

@@ -3084,9 +3084,9 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                 self.notifier.notify_admin(notify_msg, topic_key="laf_go_live")
         return ok
 
-    def execute_portal_go_live_submit(self, case_number: str, client_name: str = "", fields: Optional[dict] = None) -> bool:
+    def execute_portal_go_live_submit(self, case_number: str, client_name: str = "", fields: Optional[dict] = None, *, suppress_notify: bool = False) -> bool:
         ok = self.execute_portal_workflow_submit("go_live", case_number, client_name, fields)
-        if ok and (not self.dry_run):
+        if ok and (not self.dry_run) and (not suppress_notify):
             self.notifier.notify_admin(f"✅ 已送出開辦回報 — {client_name or '-'}（{case_number or '-'}）", topic_key="laf_go_live")
         return ok
 
@@ -4021,6 +4021,76 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         # 供 portal retry seed 與結案流程正確判斷是否已抓到酬金領款單。
         return super()._scan_case_folder_docs(case_folder)
 
+    def _dump_missing_docs_diagnostics(
+        self,
+        *,
+        mode: str,
+        case_folder: str,
+        gl_dir: str,
+        gl_docs: dict,
+        missing: list,
+        is_consumer_debt: bool,
+    ) -> None:
+        """記錄 missing_required_docs 失敗時的實際資料夾內容，供事後追查。
+
+        2026-05-04 新增：解決 Synology Drive cloud-only placeholder 或路徑翻譯
+        錯誤造成的「檔案明明在但 scan 不到」誤報。寫入 .runtime/laf_go_live_missing_diagnostics.jsonl。
+        """
+        try:
+            from api.runtime_paths import get_magi_root_dir as _grd
+            runtime_dir = os.path.join(str(_grd()), ".runtime")
+        except Exception:
+            runtime_dir = os.path.join(_MAGI_ROOT, ".runtime")
+        try:
+            os.makedirs(runtime_dir, exist_ok=True)
+        except Exception:
+            pass
+        diag_path = os.path.join(runtime_dir, "laf_go_live_missing_diagnostics.jsonl")
+        # 取實際 listdir 結果（含每個檔案的 size + mtime）
+        listdir_entries = []
+        try:
+            if os.path.isdir(gl_dir):
+                for fn in sorted(os.listdir(gl_dir)):
+                    full = os.path.join(gl_dir, fn)
+                    try:
+                        st = os.stat(full)
+                        listdir_entries.append({
+                            "name": fn,
+                            "size": int(st.st_size),
+                            "mtime": float(st.st_mtime),
+                            "is_file": os.path.isfile(full),
+                            "is_dir": os.path.isdir(full),
+                        })
+                    except OSError as _e:
+                        listdir_entries.append({"name": fn, "stat_error": str(_e)})
+        except OSError as _e:
+            listdir_entries.append({"listdir_error": str(_e)})
+        record = {
+            "ts": time.time(),
+            "ts_iso": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime()),
+            "mode": mode,
+            "case_folder": case_folder,
+            "gl_dir": gl_dir,
+            "gl_dir_exists": os.path.isdir(gl_dir),
+            "is_consumer_debt": bool(is_consumer_debt),
+            "missing": list(missing or []),
+            "scanner_opening_notice": list(gl_docs.get("opening_notice_files") or []),
+            "scanner_poa": list(gl_docs.get("poa_files") or []),
+            "raw_listdir": listdir_entries,
+        }
+        try:
+            with open(diag_path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
+        except OSError:
+            pass
+        try:
+            logger.warning(
+                "[LAF go_live missing_required_docs] mode=%s missing=%s gl_dir=%s entries=%d",
+                mode, missing, gl_dir, len(listdir_entries),
+            )
+        except Exception:
+            pass
+
     @staticmethod
     def _classify_doc_file(fn: str, full_path: str, out: dict) -> None:
         """Classify a single document file into the appropriate category."""
@@ -4554,6 +4624,14 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                 if _need_poa and not _gl_docs["poa_files"]:
                     missing.append("委任狀")
                 hint = "請將開辦通知書放入 02_開辦資料 資料夾" if _is_consumer_debt else "請將開辦通知與委任狀放入 02_開辦資料 資料夾"
+                self._dump_missing_docs_diagnostics(
+                    mode="portal_draft",
+                    case_folder=case_folder,
+                    gl_dir=_gl_dir,
+                    gl_docs=_gl_docs,
+                    missing=missing,
+                    is_consumer_debt=_is_consumer_debt,
+                )
                 return {
                     "ok": False,
                     "error": "missing_required_docs",
@@ -5353,6 +5431,14 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
             if _need_poa and not _gl_docs["poa_files"]:
                 missing.append("委任狀")
             hint = "請將開辦通知書放入 02_開辦資料 資料夾" if _is_consumer_debt else "請將開辦通知與委任狀放入 02_開辦資料 資料夾"
+            self._dump_missing_docs_diagnostics(
+                mode="portal_submit",
+                case_folder=case_folder,
+                gl_dir=_gl_dir,
+                gl_docs=_gl_docs,
+                missing=missing,
+                is_consumer_debt=_is_consumer_debt,
+            )
             return {"ok": False, "error": "missing_required_docs", "action": act, "identity": identity, "missing": missing, "hint": hint}
 
         open_doc = _gl_docs["opening_notice_files"][0]
@@ -5380,7 +5466,9 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         go_live_upload = self._find_go_live_upload_files(case_folder, is_consumer_debt=_is_consumer_debt)
         if go_live_upload:
             fields.setdefault("upload_files", go_live_upload)
-        ok = self.execute_portal_go_live_submit(laf_no, cname, fields)
+        # 由 portal-submit subprocess 觸發 → API 端會發送詳細確認訊息（含截圖 URL +
+        # token），子程序內就不再重複發 "已送出開辦回報"，避免雙重通知。
+        ok = self.execute_portal_go_live_submit(laf_no, cname, fields, suppress_notify=True)
         return {
             "ok": bool(ok),
             "action": act,
@@ -7174,6 +7262,30 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
 _PORTAL_LOCK_FD = None
 
 
+# =============================================================================
+# Subprocess result sentinel
+# -----------------------------------------------------------------------------
+# CLI modes that hand stdout JSON back to the API layer (portal-draft /
+# portal-submit) MUST emit the JSON between these markers. The API parser then
+# extracts the sentinel-delimited block, avoiding the legacy
+# `re.search(r"(\{[\s\S]*\})\s*$")` greedy-match which can swallow logger /
+# Playwright noise printed before the result and corrupt the JSON.
+# =============================================================================
+_MAGI_RESULT_SENTINEL_START = "===MAGI_RESULT_JSON_START==="
+_MAGI_RESULT_SENTINEL_END = "===MAGI_RESULT_JSON_END==="
+
+
+def _print_result_with_sentinel(result: dict) -> None:
+    """Print result JSON wrapped in MAGI_RESULT sentinel markers."""
+    try:
+        body = json.dumps(result, ensure_ascii=False, indent=2, default=str)
+    except Exception as _e:
+        body = json.dumps({"ok": False, "error": f"json_dumps_failed: {_e}"}, ensure_ascii=False)
+    print(_MAGI_RESULT_SENTINEL_START)
+    print(body)
+    print(_MAGI_RESULT_SENTINEL_END)
+
+
 def _acquire_portal_lock(wait_sec: int = 900):
     """取得 LAF portal 全域檔案鎖；同時間只允許一個 portal-draft/submit 跑。
 
@@ -7363,7 +7475,7 @@ def main():
                 if isinstance(parsed, dict):
                     fields = parsed
             except Exception as e:
-                print(json.dumps({"ok": False, "error": f"invalid_fields_json: {e}"}, ensure_ascii=False, indent=2))
+                _print_result_with_sentinel({"ok": False, "error": f"invalid_fields_json: {e}"})
                 return
         # 取互斥鎖，避免與另一個 portal-draft/submit 並發搶 LAF session
         _acquire_portal_lock(wait_sec=int(os.environ.get("MAGI_LAF_PORTAL_LOCK_WAIT_SEC", "2400")))
@@ -7379,7 +7491,7 @@ def main():
             )
         finally:
             _release_portal_lock()
-        print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
+        _print_result_with_sentinel(result)
         # Explicitly close the browser before exit to prevent Playwright async loop hang.
         try:
             orchestrator.close()
@@ -7395,7 +7507,7 @@ def main():
                 if isinstance(parsed, dict):
                     fields = parsed
             except Exception as e:
-                print(json.dumps({"ok": False, "error": f"invalid_fields_json: {e}"}, ensure_ascii=False, indent=2))
+                _print_result_with_sentinel({"ok": False, "error": f"invalid_fields_json: {e}"})
                 return
         _acquire_portal_lock(wait_sec=int(os.environ.get("MAGI_LAF_PORTAL_LOCK_WAIT_SEC", "2400")))
         try:
@@ -7409,9 +7521,10 @@ def main():
             )
         finally:
             _release_portal_lock()
-        print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
+        _print_result_with_sentinel(result)
         # Force exit to bypass Playwright asyncio cleanup hang (same fix as portal-draft).
         # JSON result is already printed above; os._exit skips Python teardown.
+        import sys as _sys; _sys.stdout.flush()
         import os as _os
         _os._exit(0 if result.get("ok") else 1)
 
