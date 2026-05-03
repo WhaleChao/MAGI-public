@@ -151,17 +151,41 @@ def _probe_external_closed_roots() -> list[str]:
 
 
 def _get_default_closed_share_roots() -> list[str]:
-    """取得結案歸檔根目錄列表（TTL cached 60 秒，免重複 stat）。"""
+    """取得結案歸檔根目錄列表（TTL cached 60 秒，免重複 stat）。
+
+    2026-05-03 加：cache miss 時若 probe 全失敗（可能 NAS 還沒掛起來），
+    觸發一次 ensure_nas_mounts() 再 probe，避免 60s window 內所有請求都
+    看到 stale empty cache。
+    """
     now = time.time()
     if _CLOSED_ROOT_CACHE["roots"] is not None and now < _CLOSED_ROOT_CACHE["expires"]:
-        return list(_CLOSED_ROOT_CACHE["roots"])
+        # 若 cache 是「全 inaccessible」狀態，每 5 秒（短 TTL）再試一次，
+        # 不要等 60s。避免 NAS 剛 mount 起來但 cache 還在 stale window 內
+        cached = list(_CLOSED_ROOT_CACHE["roots"])
+        if cached and any(_is_dir_accessible(r) for r in cached):
+            return cached
+        # cache 全 inaccessible → 給機會 re-probe（每 5 秒）
+        if now < _CLOSED_ROOT_CACHE.get("retry_after", 0):
+            return cached
     roots = _probe_external_closed_roots()
-    # 若都 probe 失敗，保底回傳 canonical 路徑（讓上層 log 一致）
+    # 第一次 probe 全空 → 嘗試觸發 NAS mount 再 probe 一次
+    if not roots:
+        try:
+            from api.nas_mount_guard import ensure_nas_mounts
+            ensure_nas_mounts()
+            roots = _probe_external_closed_roots()
+        except Exception:
+            pass
+    # 若仍空 → 保底回傳 canonical 路徑
     if not roots:
         roots = [
             str(_HOME / "Library/CloudStorage/SynologyDrive-homes/lumi"),
             _discover_volume("lumi", "lumi"),
         ]
+        # 全空 → 5 秒後就可以 re-probe（不等 60s）
+        _CLOSED_ROOT_CACHE["retry_after"] = now + 5
+    else:
+        _CLOSED_ROOT_CACHE.pop("retry_after", None)
     _CLOSED_ROOT_CACHE["roots"] = tuple(roots)
     _CLOSED_ROOT_CACHE["expires"] = now + _CLOSED_ROOT_TTL
     return list(roots)
