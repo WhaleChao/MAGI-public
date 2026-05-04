@@ -3916,7 +3916,16 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                 return f"已於民國{date_roc}遞送聲請狀至法院。"
             return ""
 
+        # open_roc：開辦通知書日期 = 首次實質討論案情日期
+        # 法扶實質開辦標準：訴訟代理及辯護「遞送委任狀」、調解/和解/消債/法律文件/諮詢
+        # 「首次實質討論案情」。對律師而言開辦通知書上的日期就是首次實質討論案情日期，
+        # 無論案件類別都應一併寫進 selRemark（對訴訟類也只是雙保險，無害）。
+        open_roc = self._iso_to_roc(open_doc_date) if open_doc_date else ""
+
         if not date_roc:
+            # 沒有委任狀/書狀/回執日期 — 至少回報首次實質討論案情日期
+            if open_roc:
+                return f"已於民國{open_roc}首次實質討論案情。"
             return ""
 
         # 從檔名提取實際文件種類（如「委任狀」「上訴狀」等）
@@ -3925,14 +3934,19 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         # 根據文件來源生成不同措辭
         if doc_type == "回執":
             # date_roc 是收到回執的日期（不是寄出日期），措辭要反映這個語義
-            return f"已寄出{doc_name}予法院，民國{date_roc}收受回執。"
+            base = f"已寄出{doc_name}予法院，民國{date_roc}收受回執"
         elif doc_type == "書狀":
-            return f"已於民國{date_roc}遞送{doc_name}至法院。"
+            base = f"已於民國{date_roc}遞送{doc_name}至法院"
         else:
             # 委任狀（預設）
             if source == "receipt":
-                return f"已於民國{date_roc}以掛號郵寄{doc_name}至法院。"
-            return f"已於民國{date_roc}遞送{doc_name}至法院。"
+                base = f"已於民國{date_roc}以掛號郵寄{doc_name}至法院"
+            else:
+                base = f"已於民國{date_roc}遞送{doc_name}至法院"
+
+        if open_roc:
+            return f"已於民國{open_roc}首次實質討論案情。{base}。"
+        return f"{base}。"
 
     def _find_go_live_upload_files(self, case_folder: str, is_consumer_debt: bool = False) -> list:
         """找開辦上傳檔案。
@@ -4670,10 +4684,15 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
             elif _is_consumer_debt:
                 default_remark = f"已簽署開辦通知書（開辦日期 {open_date}）。"
             else:
-                # fallback: 用委任狀遞出日期
+                # fallback: 沒拿到 _detect_poa_submission_info 結果，自己組
                 poa_roc = self._iso_to_roc(poa_date) if poa_date else ""
-                if poa_roc:
+                open_roc = self._iso_to_roc(open_date) if open_date else ""
+                if poa_roc and open_roc:
+                    default_remark = f"已於民國{open_roc}首次實質討論案情，民國{poa_roc}遞送委任狀至法院。"
+                elif poa_roc:
                     default_remark = f"已於民國{poa_roc}遞送委任狀至法院。"
+                elif open_roc:
+                    default_remark = f"已於民國{open_roc}首次實質討論案情。"
                 else:
                     default_remark = f"已簽署開辦通知書（開辦日期 {open_date}）。"
             fields.setdefault("remark", default_remark)

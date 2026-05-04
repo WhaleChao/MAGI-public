@@ -1285,7 +1285,9 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
 
         def run_laf_report(uid: str, payload_obj: dict, platform_name: str):
             action = str(payload_obj.get("action") or "").strip()
-            cmd = [skill_python, laf_script, "--mode", "portal-draft", "--action", action]
+            # --no-notify: 由 parent 端統一發 1 張截圖到 Discord（含 mirror）；
+            # 子程序不要再用 notify_admin_with_files 自己再發一張，避免使用者收到 3 張同樣的圖。
+            cmd = [skill_python, laf_script, "--mode", "portal-draft", "--action", action, "--no-notify"]
             if payload_obj.get("laf_case_no"):
                 cmd.extend(["--laf-case-no", str(payload_obj.get("laf_case_no"))])
             if payload_obj.get("case_number"):
