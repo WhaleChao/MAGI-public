@@ -1708,7 +1708,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
 
                         if go_live_upload_files and (go_live_remark or _is_consumer_debt):
                             if not go_live_remark and _is_consumer_debt:
-                                go_live_remark = "已簽署開辦通知書。"
+                                go_live_remark = "已首次實質討論案情。"
                             fields = {
                                 "sel_result": "1",  # 已開辦
                                 "remark": go_live_remark,
@@ -3904,14 +3904,15 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         doc_type = submission_info.get("source_doc_type", "委任狀")
         src_file = submission_info.get("source_file", "")
 
-        # 消費者債務清理 — 開辦通知書簽署日優先（律師親簽日期是「開辦日期」的依據）
+        # 消費者債務清理 — 開辦通知書簽署日 = 首次實質討論案情日（法扶實質開辦標準）
+        # 統一用語：消債/訴訟代理一律寫「首次實質討論案情」，不再用「簽署接案通知書」。
         if is_consumer_debt:
             # open_doc_date 是 ISO format（_extract_best_date_from_doc 回傳）
             open_roc = self._iso_to_roc(open_doc_date) if open_doc_date else ""
             if open_roc and date_roc:
-                return f"已於民國{open_roc}簽署接案通知書，民國{date_roc}遞送聲請狀至法院。"
+                return f"已於民國{open_roc}首次實質討論案情。已於民國{date_roc}遞送聲請狀至法院。"
             if open_roc:
-                return f"已於民國{open_roc}簽署接案通知書。"
+                return f"已於民國{open_roc}首次實質討論案情。"
             if date_roc:
                 return f"已於民國{date_roc}遞送聲請狀至法院。"
             return ""
@@ -4682,19 +4683,24 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                     open_doc_date=open_date or "",
                 )
             elif _is_consumer_debt:
-                default_remark = f"已簽署開辦通知書（開辦日期 {open_date}）。"
+                # 消債：簽署開辦通知書 = 首次實質討論案情。統一用語。
+                _open_roc_cd = self._iso_to_roc(open_date) if open_date else ""
+                default_remark = (
+                    f"已於民國{_open_roc_cd}首次實質討論案情。"
+                    if _open_roc_cd else f"已首次實質討論案情（開辦日期 {open_date}）。"
+                )
             else:
                 # fallback: 沒拿到 _detect_poa_submission_info 結果，自己組
                 poa_roc = self._iso_to_roc(poa_date) if poa_date else ""
                 open_roc = self._iso_to_roc(open_date) if open_date else ""
                 if poa_roc and open_roc:
-                    default_remark = f"已於民國{open_roc}首次實質討論案情，民國{poa_roc}遞送委任狀至法院。"
+                    default_remark = f"已於民國{open_roc}首次實質討論案情。已於民國{poa_roc}遞送委任狀至法院。"
                 elif poa_roc:
                     default_remark = f"已於民國{poa_roc}遞送委任狀至法院。"
                 elif open_roc:
                     default_remark = f"已於民國{open_roc}首次實質討論案情。"
                 else:
-                    default_remark = f"已簽署開辦通知書（開辦日期 {open_date}）。"
+                    default_remark = f"已首次實質討論案情（開辦日期 {open_date}）。"
             fields.setdefault("remark", default_remark)
             # 找出要上傳的檔案（開辦通知書、消債不需委任狀）
             go_live_upload = self._find_go_live_upload_files(case_folder, is_consumer_debt=_is_consumer_debt)
@@ -5474,13 +5480,25 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
 
         fields = dict(fields or {})
         fields.setdefault("sel_result", "1")
+        # 統一用語：消債/訴訟代理一律寫「首次實質討論案情」（= 開辦通知書日）
+        _open_roc_sub = self._iso_to_roc(open_date) if open_date else ""
+        _poa_roc_sub = self._iso_to_roc(poa_date) if poa_date else ""
         if _is_consumer_debt:
-            fields.setdefault("remark", f"已簽署開辦通知書（開辦日期 {open_date}）。")
-        else:
             fields.setdefault(
                 "remark",
-                f"CASPER 開辦資料判讀：開辦日期 {open_date}；委任狀遞出日期 {poa_date}。",
+                f"已於民國{_open_roc_sub}首次實質討論案情。" if _open_roc_sub
+                else f"已首次實質討論案情（開辦日期 {open_date}）。",
             )
+        else:
+            if _open_roc_sub and _poa_roc_sub:
+                _r = f"已於民國{_open_roc_sub}首次實質討論案情。已於民國{_poa_roc_sub}遞送委任狀至法院。"
+            elif _open_roc_sub:
+                _r = f"已於民國{_open_roc_sub}首次實質討論案情。"
+            elif _poa_roc_sub:
+                _r = f"已於民國{_poa_roc_sub}遞送委任狀至法院。"
+            else:
+                _r = f"CASPER 開辦資料判讀：開辦日期 {open_date}；委任狀遞出日期 {poa_date}。"
+            fields.setdefault("remark", _r)
         # 找出要上傳的檔案
         go_live_upload = self._find_go_live_upload_files(case_folder, is_consumer_debt=_is_consumer_debt)
         if go_live_upload:
