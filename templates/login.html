@@ -1,10 +1,10 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="zh-Hant">
 
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>MAGI Login</title>
+    <title>MAGI 登入</title>
     <style>
         body {
             background-color: #0d0d0d;
@@ -16,6 +16,22 @@
             min-height: 100vh;
             margin: 0;
             padding: 20px 14px;
+        }
+
+        .login-clock {
+            position: fixed;
+            top: 18px;
+            right: 22px;
+            min-height: 34px;
+            display: inline-flex;
+            align-items: center;
+            padding: 0 12px;
+            border: 1px solid rgba(85, 239, 196, 0.28);
+            border-radius: 6px;
+            background: rgba(30, 39, 46, 0.86);
+            color: #55efc4;
+            font: 700 0.86rem/1 monospace;
+            white-space: nowrap;
         }
 
         .container {
@@ -67,8 +83,13 @@
             margin-top: 15px;
         }
         @media (max-width: 480px) {
+            .login-clock {
+                position: static;
+                margin: 0 auto 14px;
+            }
             body {
                 align-items: flex-start;
+                flex-direction: column;
                 padding: 14px;
             }
             .container {
@@ -83,6 +104,7 @@
 </head>
 
 <body>
+    <time class="login-clock" id="login-clock" datetime="">--:--:--</time>
     <div class="container">
         <h2>MAGI GATEWAY</h2>
         {% with messages = get_flashed_messages() %}
@@ -91,12 +113,33 @@
         {% endif %}
         {% endwith %}
         <form method="post">
-            <input type="text" name="username" placeholder="Username" required>
-            <input type="password" name="password" placeholder="Password" required>
-            <button type="submit">LOGIN</button>
+            <input type="text" name="username" placeholder="帳號" required>
+            <input type="password" name="password" placeholder="密碼" required>
+            <button type="submit">登入</button>
         </form>
-        <a href="{{ url_for('register') }}">Initialize New User</a>
+        <a href="{{ url_for('register') }}">建立新使用者</a>
     </div>
+    <script>
+        (function () {
+            const clock = document.getElementById("login-clock");
+            if (!clock) return;
+            const render = () => {
+                const now = new Date();
+                clock.setAttribute("datetime", now.toISOString());
+                clock.textContent = new Intl.DateTimeFormat("zh-TW", {
+                    year: "numeric",
+                    month: "2-digit",
+                    day: "2-digit",
+                    hour: "2-digit",
+                    minute: "2-digit",
+                    second: "2-digit",
+                    hour12: false,
+                }).format(now);
+            };
+            render();
+            window.setInterval(render, 1000);
+        })();
+    </script>
 </body>
 
 </html>

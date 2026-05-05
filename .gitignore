@@ -80,6 +80,7 @@ docs/CLAUDE_FIX_LOG_ARCHIVE_*.md
 # .runtime/ 含 portal session、Chrome cookies、debug 截圖（當事人資料）、
 # DB dump、conversation history SQLite、issue agenda 等 runtime state
 .runtime/
+runtime/supplement_cache/*.json
 # 筆錄手動補件佇列含案號 + 法院名 + 案件類型
 static/transcript_manual_queue.jsonl
 # Sonnet/Opus session 自動筆記（可能含案件思考）
@@ -146,6 +147,7 @@ casper_ecosystem/law_firm_orchestrators/.draft_processed_emails.json
 # Local Claude/Codex worktrees and generated intelligence reports
 .claude/worktrees/
 static/worldmonitor_reports/intel_*.md
+static/worldmonitor_reports/intel_*.json
 
 # Config files with secrets (legalbridge included)
 **/legalbridge_config.json
@@ -155,6 +157,8 @@ skills/memory/index_cache/
 
 # Judgment collector cache (auto-generated)
 skills/judgment-collector/judgments.json
+skills/judgment-collector/judgments.json.bak.*
+skills/pdf-namer/_case_index.json
 
 # Model binaries
 models/

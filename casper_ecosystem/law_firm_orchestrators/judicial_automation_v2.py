@@ -25,6 +25,7 @@ import base64
 import tempfile
 import threading
 import traceback
+import ssl
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional, Dict, List, Any, Tuple
@@ -32,6 +33,7 @@ from dataclasses import dataclass, field
 
 import importlib.util
 import urllib.parse
+import urllib.request
 
 _MAGI_ROOT = Path(__file__).resolve().parents[2]
 if str(_MAGI_ROOT) not in sys.path:
@@ -39,6 +41,23 @@ if str(_MAGI_ROOT) not in sys.path:
 
 from api.case_path_mapper import translate_case_path_to_local
 from skills.engine.legal_web_adapter import format_legal_web_engine_log, resolve_legal_web_engine
+
+
+def _safe_print(*args, **kwargs) -> None:
+    try:
+        print(*args, **kwargs)
+    except BrokenPipeError:
+        pass
+
+
+def _safe_log_callback(callback, message: str) -> None:
+    if not callback:
+        return
+    try:
+        callback(message)
+    except BrokenPipeError:
+        pass
+
 
 # Shared browser helper (P2-5: consolidate duplicate _dismiss_password_expiry_alert)
 try:
@@ -306,7 +325,7 @@ class CaptchaSolver:
         self.dddd_ocr = None
         
         # ★ 診斷輸出：確認模組可用性
-        print(f"[CaptchaSolver-Judicial] DDDDOCR_AVAILABLE={DDDDOCR_AVAILABLE}, RAPIDOCR_AVAILABLE={RAPIDOCR_AVAILABLE}")
+        _safe_print(f"[CaptchaSolver-Judicial] DDDDOCR_AVAILABLE={DDDDOCR_AVAILABLE}, RAPIDOCR_AVAILABLE={RAPIDOCR_AVAILABLE}")
         
         # Lazy Load ddddocr
         if DDDDOCR_AVAILABLE:
@@ -340,15 +359,15 @@ class CaptchaSolver:
                                 break
                         
                         if onnx_path:
-                            print(f"📦 [ddddocr-judicial] Found frozen model: {onnx_path}")
+                            _safe_print(f"📦 [ddddocr-judicial] Found frozen model: {onnx_path}")
                             onnx_kwargs['import_onnx_path'] = onnx_path
                         else:
-                            print(f"⚠️ [ddddocr-judicial] frozen model not found in: {possible_paths}")
+                            _safe_print(f"⚠️ [ddddocr-judicial] frozen model not found in: {possible_paths}")
 
                     self.dddd_ocr = ddddocr.DdddOcr(**onnx_kwargs)
                     # print("✅ ddddocr 初始化成功")
                 except Exception as e:
-                    print(f"⚠️ ddddocr 初始化失敗: {e}")
+                    logging.getLogger("judicial").warning("ddddocr 初始化失敗: %s", e)
 
         # Lazy Load RapidOCR (與 ddddocr 並行，雙引擎互補)
         if RAPIDOCR_AVAILABLE:
@@ -363,7 +382,7 @@ class CaptchaSolver:
                 try:
                     self.ocr = RapidOCR()
                 except Exception as e:
-                    print(f"⚠️ RapidOCR 初始化失敗: {e}")
+                    logging.getLogger("judicial").warning("RapidOCR 初始化失敗: %s", e)
     
     def solve_from_element(self, driver, img_element) -> str:
         """從 Selenium 元素識別驗證碼（ddddocr + RapidOCR 雙引擎並行）"""
@@ -378,7 +397,7 @@ class CaptchaSolver:
                     if res:
                         candidates.append(res)
                 except Exception as e:
-                    print(f"ddddocr 識別失敗: {e}")
+                    logging.getLogger("judicial").warning("ddddocr 識別失敗: %s", e)
             if self.ocr:
                 try:
                     from PIL import Image as _PIL_Image
@@ -391,14 +410,14 @@ class CaptchaSolver:
                         if text:
                             candidates.append(text)
                 except Exception as e:
-                    print(f"RapidOCR 識別失敗: {e}")
+                    logging.getLogger("judicial").warning("RapidOCR 識別失敗: %s", e)
             if not candidates:
                 return ""
             # 回傳字元數最多的結果
             candidates.sort(key=lambda s: len(s), reverse=True)
             return candidates[0]
         except Exception as e:
-            print(f"驗證碼識別失敗: {e}")
+            logging.getLogger("judicial").warning("驗證碼識別失敗: %s", e)
             return ""
     
     def solve_from_url(self, driver, captcha_url: str) -> str:
@@ -421,7 +440,7 @@ class CaptchaSolver:
                     res = re.sub(r'[^A-Za-z0-9]', '', res)
                     return res
                 except Exception as e:
-                    print(f"ddddocr 識別失敗: {e}")
+                    logging.getLogger("judicial").warning("ddddocr 識別失敗: %s", e)
 
             if not self.ocr:
                 return ""
@@ -440,7 +459,7 @@ class CaptchaSolver:
             return ""
             
         except Exception as e:
-            print(f"驗證碼識別失敗: {e}")
+            logging.getLogger("judicial").warning("驗證碼識別失敗: %s", e)
             return ""
 
 
@@ -473,9 +492,8 @@ class LawyerSSO:
     def log(self, message: str):
         timestamp = datetime.now().strftime("%H:%M:%S")
         full_msg = f"[{timestamp}] [SSO] {message}"
-        print(full_msg)
-        if self.log_callback:
-            self.log_callback(full_msg)
+        _safe_print(full_msg)
+        _safe_log_callback(self.log_callback, full_msg)
     
     def _setup_driver(self):
         """設定 WebDriver（Playwright 優先，Selenium 回退）"""
@@ -918,6 +936,9 @@ class CourtRecordDownloader:
         self.logged_in = False
         self.web_engine_profile = resolve_legal_web_engine("judicial_transcript_v2", interactive_required=True)
         self._engine_logged = False
+        self._last_pdf_fetch_count = 0
+        self._last_pdf_known_duplicate_count = 0
+        self._last_no_new_files_reason = ""
 
         # ★ Cookie 持久化：成功登入後存檔，下次直接沿用 session
         _runtime_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
@@ -1042,9 +1063,8 @@ class CourtRecordDownloader:
     def log(self, message: str):
         timestamp = datetime.now().strftime("%H:%M:%S")
         full_msg = f"[{timestamp}] [筆錄] {message}"
-        print(full_msg)
-        if self.log_callback:
-            self.log_callback(full_msg)
+        _safe_print(full_msg)
+        _safe_log_callback(self.log_callback, full_msg)
     
     def _setup_driver(self):
         """設置 WebDriver（Playwright 優先，Selenium 回退；含反爬蟲措施）"""
@@ -1133,6 +1153,16 @@ class CourtRecordDownloader:
 
         self.driver = webdriver.Chrome(options=options)
         self.driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+        try:
+            # Headless Chrome sometimes ignores download.default_directory for
+            # form/JS-triggered downloads unless CDP download behavior is enabled.
+            self.driver.execute_cdp_cmd(
+                "Page.setDownloadBehavior",
+                {"behavior": "allow", "downloadPath": self.download_folder},
+            )
+            self.log(f"  ✓ Selenium headless 下載路徑已啟用: {self.download_folder}")
+        except Exception as e:
+            self.log(f"  ⚠️ 設定 Selenium CDP 下載路徑失敗(可忽略): {e}")
 
         try:
             page_timeout = int(os.environ.get("MAGI_SELENIUM_PAGELOAD_TIMEOUT_SEC", "45") or "45")
@@ -2126,7 +2156,12 @@ class CourtRecordDownloader:
             
             count = len(downloaded_files)
             if count == 0:
-                self.log(f"  ⚠️ 未下載任何檔案 (未偵測到新檔案)")
+                if getattr(self, "_last_no_new_files_reason", "") == "known_duplicates":
+                    self.log(
+                        f"  ℹ️ 已確認 PDF 可取回，但 {getattr(self, '_last_pdf_known_duplicate_count', 0)} 份皆為已知檔案"
+                    )
+                else:
+                    self.log(f"  ⚠️ 未下載任何檔案 (未偵測到新檔案)")
             else:
                 self.log(f"  ✅ 下載完成，本次新增 {count} 個檔案")
             return downloaded_files
@@ -2179,6 +2214,102 @@ class CourtRecordDownloader:
         except Exception:
             # 沒有 alert
             return 'no_alert'
+
+    def _extract_pdf_link_datamap_index(self, link, fallback_index: int) -> int:
+        """Extract datamap index from ezlawyer's doChkDownloadEB(type,index)."""
+        try:
+            onclick = link.get_attribute("onclick") or ""
+            match = re.search(r"doChkDownloadEB\s*\(\s*\d+\s*,\s*(\d+)\s*\)", onclick)
+            if match:
+                return int(match.group(1))
+        except Exception:
+            pass
+        return fallback_index
+
+    def _download_pdf_via_query_form_post(self, datamap_index: int) -> Optional[str]:
+        """Fallback for ezlawyer PDF links that submit queryForm via JavaScript."""
+        try:
+            payload_json = self.driver.execute_script(
+                """
+                var idx = arguments[0];
+                var form = document.querySelector('#queryForm');
+                if (!form) return '';
+                var doquery = document.querySelector('#doquery');
+                var datamap = document.querySelector('#datamap');
+                var dw = document.querySelector('#dw');
+                if (doquery) doquery.value = '2';
+                if (datamap) datamap.value = String(idx);
+                if (dw) dw.value = '';
+                return JSON.stringify({
+                    action: form.action || '/eb/user/downloadEB3',
+                    fields: Array.from(new FormData(form).entries()).map(function(pair) {
+                        return [String(pair[0] || ''), String(pair[1] || '')];
+                    })
+                });
+                """,
+                datamap_index,
+            )
+            if not payload_json:
+                return None
+            payload = json.loads(payload_json)
+            action = str(payload.get("action") or "https://www.ezlawyer.com.tw/eb/user/downloadEB3")
+            fields = [(str(k), str(v)) for k, v in (payload.get("fields") or []) if str(k)]
+            if not fields:
+                return None
+
+            cookies = []
+            try:
+                for cookie in self.driver.get_cookies() or []:
+                    name = str(cookie.get("name") or "").strip()
+                    value = str(cookie.get("value") or "")
+                    if name:
+                        cookies.append(f"{name}={value}")
+            except Exception:
+                cookies = []
+
+            body = urllib.parse.urlencode(fields, doseq=True).encode("utf-8")
+            request = urllib.request.Request(
+                action,
+                data=body,
+                headers={
+                    "Content-Type": "application/x-www-form-urlencoded",
+                    "User-Agent": "Mozilla/5.0",
+                    "Referer": "https://www.ezlawyer.com.tw/eb/user/downloadEB2",
+                    "Cookie": "; ".join(cookies),
+                },
+            )
+            ssl_context = ssl._create_unverified_context()
+            with urllib.request.urlopen(request, timeout=45, context=ssl_context) as response:
+                blob = response.read()
+                content_type = (response.headers.get("content-type") or "").lower()
+                disposition = response.headers.get("content-disposition") or ""
+
+            if not blob or (not blob.startswith(b"%PDF") and "pdf" not in content_type):
+                snippet = blob[:120].decode("utf-8", "replace") if blob else ""
+                self.log(f"    ⚠️ queryForm POST 未回 PDF (idx={datamap_index}, ct={content_type}, body={snippet[:60]})")
+                return None
+
+            filename = ""
+            match = re.search(r"filename\\*?=(?:UTF-8''|\"?)([^\";]+)", disposition, re.I)
+            if match:
+                filename = urllib.parse.unquote(match.group(1).strip().strip('"'))
+            if not filename.lower().endswith(".pdf"):
+                filename = f"ezlawyer_transcript_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{datamap_index}.pdf"
+            filename = re.sub(r'[\\\\/:*?"<>|]+', "_", filename)
+            target = os.path.join(self.download_folder, filename)
+            if os.path.exists(target):
+                base, ext = os.path.splitext(filename)
+                target = os.path.join(
+                    self.download_folder,
+                    f"{base}_{datetime.now().strftime('%H%M%S_%f')}{ext or '.pdf'}",
+                )
+            with open(target, "wb") as f:
+                f.write(blob)
+            self.log(f"    ✅ queryForm POST 下載完成: {os.path.basename(target)}")
+            return target
+        except Exception as e:
+            self.log(f"    ⚠️ queryForm POST 下載失敗 (idx={datamap_index}): {e}")
+            return None
     
     def _process_search_results(self, transcript_folder: str = None, case: CourtCase = None) -> List[str]:
         """處理搜尋結果並下載筆錄"""
@@ -2473,6 +2604,9 @@ class CourtRecordDownloader:
         downloaded_files = []
         clicked_count = start_index
         total_pdfs = 0
+        self._last_pdf_fetch_count = 0
+        self._last_pdf_known_duplicate_count = 0
+        self._last_no_new_files_reason = ""
         
         try:
             # 取得 PDF 總數
@@ -2503,6 +2637,7 @@ class CourtRecordDownloader:
             
             # 防止伺服器過載：每次點擊後等待
             CLICK_DELAY = 3  # 秒，避免 502 錯誤
+            clicked_datamap_indices: List[int] = []
             
             while clicked_count < total_pdfs:
                 try:
@@ -2550,6 +2685,7 @@ class CourtRecordDownloader:
                         link_index = 0
                     
                     link = pdf_links[link_index]
+                    datamap_index = self._extract_pdf_link_datamap_index(link, clicked_count)
                     
                     self.log(f"    📥 下載 PDF #{clicked_count+1}/{total_pdfs} (頁面剩餘 {current_link_count} 個連結)...")
                     
@@ -2579,6 +2715,7 @@ class CourtRecordDownloader:
                     # 處理可能出現的 alert
                     self._handle_alert()
                     
+                    clicked_datamap_indices.append(datamap_index)
                     clicked_count += 1
                     
                 except StaleElementReferenceException:
@@ -2604,6 +2741,19 @@ class CourtRecordDownloader:
                         break
                     time.sleep(2)
                     waited += 2
+
+                # ezlawyer's PDF links are JavaScript form submits. In headless
+                # browser contexts they can silently no-op, so verify whether any
+                # PDF landed and fall back to the same queryForm POST with the
+                # authenticated browser cookies.
+                current_pdf_files = {
+                    f for f in os.listdir(self.download_folder)
+                    if f.lower().endswith(".pdf")
+                }
+                if not (current_pdf_files - {f for f in existing_files if f.lower().endswith(".pdf")}):
+                    for datamap_index in clicked_datamap_indices:
+                        if self._download_pdf_via_query_form_post(datamap_index):
+                            self._last_pdf_fetch_count += 1
             
             # 檢查新下載的檔案
             current_files = set(os.listdir(self.download_folder))
@@ -2618,6 +2768,7 @@ class CourtRecordDownloader:
                 filepath = os.path.join(self.download_folder, filename)
                 md5 = self._calculate_file_md5(filepath)
                 if md5 and md5 in md5_records:
+                    self._last_pdf_known_duplicate_count += 1
                     known = md5_records[md5].get("filename", "?")
                     self.log(f"    ℹ️ 已知檔案（{known}），跳過: {filename}")
                     try:
@@ -2627,6 +2778,9 @@ class CourtRecordDownloader:
                 else:
                     downloaded_files.append(filepath)
                     self.log(f"    ✅ 下載完成: {filename}")
+
+            if not downloaded_files and self._last_pdf_fetch_count and self._last_pdf_known_duplicate_count:
+                self._last_no_new_files_reason = "known_duplicates"
 
         except Exception as e:
             self.log(f"    ⚠️ 下載 PDF 時發生錯誤: {e}")
@@ -3876,7 +4030,7 @@ class FileReviewManager:
             from file_review_automation import FileReviewManager as RealManager
             return RealManager(*args, **kwargs)
         except ImportError:
-            print("⚠️ 無法載入 file_review_automation 模組，請確保該檔案存在。")
+            _safe_print("⚠️ 無法載入 file_review_automation 模組，請確保該檔案存在。")
             return super(FileReviewManager, cls).__new__(cls)
             
     def __init__(self, *args, **kwargs):
@@ -3910,7 +4064,7 @@ class TranscriptAutoDownloader:
         # (MacFix) 強制修正 Windows 路徑
         if sys.platform == 'darwin' and (raw_download_folder.lower().startswith('k:') or '\\' in raw_download_folder):
              raw_download_folder = './筆錄下載'
-             print(f"⚠️ [Mac修正] 偵測到 Windows 路徑，已強制重置為: {raw_download_folder}")
+             _safe_print(f"⚠️ [Mac修正] 偵測到 Windows 路徑，已強制重置為: {raw_download_folder}")
              
         self.download_folder = os.path.abspath(raw_download_folder)
         
@@ -4018,9 +4172,9 @@ class TranscriptAutoDownloader:
                     if isinstance(loaded, dict):
                         records.update(loaded)
             except (json.JSONDecodeError, UnicodeDecodeError) as e:
-                print(f"⚠️ Processed log corrupted ({log_path}): {e}", file=sys.stderr)
+                _safe_print(f"⚠️ Processed log corrupted ({log_path}): {e}", file=sys.stderr)
             except Exception as e:
-                print(f"⚠️ Failed to load processed log ({log_path}): {e}", file=sys.stderr)
+                _safe_print(f"⚠️ Failed to load processed log ({log_path}): {e}", file=sys.stderr)
         try:
             from skills.ops.dedup_db import list_done as _dd_list
             for row in _dd_list("transcript_original_processed", limit=10000):
@@ -4043,7 +4197,7 @@ class TranscriptAutoDownloader:
             with open(log_path, 'w', encoding='utf-8') as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
         except Exception as e:
-            print(f"⚠️ Failed to save processed log ({log_path}): {e}", file=sys.stderr)
+            _safe_print(f"⚠️ Failed to save processed log ({log_path}): {e}", file=sys.stderr)
         try:
             from skills.ops.dedup_db import mark_done as _dd_mark
             for case_number, filenames in (data or {}).items():
@@ -4466,9 +4620,8 @@ class TranscriptAutoDownloader:
 
         timestamp = datetime.now().strftime("%H:%M:%S")
         full_msg = f"[{timestamp}] [筆錄自動] {message}"
-        print(full_msg)
-        if self.log_callback:
-            self.log_callback(full_msg)
+        _safe_print(full_msg)
+        _safe_log_callback(self.log_callback, full_msg)
     
     def _check_and_run_first_time_setup(self):
         """檢查是否需要執行首次初始化（只執行一次）"""

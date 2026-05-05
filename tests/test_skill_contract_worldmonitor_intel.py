@@ -131,8 +131,19 @@ class TestMissingData:
 
     def test_collect_markets_no_api_key(self):
         mod = _load_module()
-        with patch.object(mod, "FINNHUB_KEY", ""):
-            market_data, status = mod.collect_markets()
+        sample = b"Symbol,Date,Time,Open,High,Low,Close,Volume\nAAPL.US,2026-05-04,22:00:21,100,110,90,105,12345\n"
+        with patch.object(mod, "_fetch", return_value=sample):
+            with patch.object(mod, "FINNHUB_KEY", ""):
+                market_data, status = mod.collect_markets()
+        assert market_data
+        assert status["ok"] is True
+        assert "免金鑰" in status["detail"]
+
+    def test_collect_markets_no_api_key_and_no_public_feed(self):
+        mod = _load_module()
+        with patch.object(mod, "_fetch", return_value=None):
+            with patch.object(mod, "FINNHUB_KEY", ""):
+                market_data, status = mod.collect_markets()
         assert market_data == {}
         assert status["ok"] is False
 

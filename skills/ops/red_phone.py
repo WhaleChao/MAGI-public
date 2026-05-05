@@ -1014,9 +1014,10 @@ def _mirror_to_discord(
         "可下載通知：0 封",
         "待歸檔：0 份",
     ]
+    _HAS_WARNING = any(p in _s for p in ("⚠️", "❌", "失敗", "錯誤", "異常", "逾期", "需處理"))
     # 如果是「[INFO] 💰 繳費單檢查完成\n- 繳費相關信件：0 封 (已通知 0 封)\n- 入口列表待繳費：0 件」這種
     # 且沒有實質數字變化（>0），則靜默
-    if any(p in _s for p in _CLEAN_PATTERNS):
+    if (not _HAS_WARNING) and any(p in _s for p in _CLEAN_PATTERNS):
         # 檢查是否有任何大於 0 的正則匹配（如「待歸檔：6 份」則不靜默）
         # 這裡用簡易邏輯：如果訊息中有「：0」或「 0 」且沒有大於 0 的數字
         _has_actual_count = False

@@ -32,7 +32,8 @@ fi
 PROFILE_FILE="/Users/ai/.omlx/active_profile"
 MODELS_TEXT_DIR="/Users/ai/.omlx/models-text"
 E4B_SRC="/Users/ai/.omlx/models/gemma-4-e4b-it-4bit"
-B26_SRC="/Users/ai/.omlx/models/gemma-4-26b-a4b-it-UD-4bit"
+B26_SRC="/Users/ai/.omlx/models/gemma-4-26b-a4b-it-4bit"
+B26_LEGACY_SRC="/Users/ai/.omlx/models/gemma-4-26b-a4b-it-UD-4bit"
 UID_NUM=$(id -u)
 LOG="/opt/homebrew/var/log/omlx_switch.log"
 LOCKDIR="/tmp/omlx_switch.lock.d"
@@ -89,6 +90,20 @@ if [ "$MODE" != "status" ]; then
     fi
 fi
 
+# ---- Layer 3: 檢查 pause 狀態（人工介入或反覆 abort 已觸發 TTL pause）----
+# status / auto 模式不受 pause 影響（前者為唯讀，後者有冪等檢查）
+GATEKEEPER="/Users/ai/Desktop/MAGI_v2/scripts/ops/omlx_switch_gatekeeper.py"
+GATEKEEPER_PY="/Users/ai/Desktop/MAGI_v2/venv/bin/python3"
+if [ "$MODE" != "status" ] && [ -x "$GATEKEEPER" ] && [ -x "$GATEKEEPER_PY" ]; then
+    if ! MAGI_USE_RUNTIME_DIR=1 "$GATEKEEPER_PY" "$GATEKEEPER" check-paused 2>&1 | while read ln; do log "$ln"; done; then
+        :  # while read wraps around pipeline; real exit code fetched below
+    fi
+    if ! MAGI_USE_RUNTIME_DIR=1 "$GATEKEEPER_PY" "$GATEKEEPER" check-paused >/dev/null 2>&1; then
+        log "⚠️  omlx switch 處於 pause 狀態，跳過本次 $MODE 觸發"
+        exit 0
+    fi
+fi
+
 # ---- 通知管理員（寫旗標檔，由 MAGI daemon 掃到後發 DC）----
 notify_admin() {
     local msg="$1"
@@ -134,7 +149,30 @@ preflight_memory_check() {
     log "preflight: 可用記憶體 ${avail}GB，${mode_name} 需求 ${required_gb}GB"
     if [ "$avail" -lt "$required_gb" ]; then
         notify_admin "$mode_name 切換前可用記憶體不足（${avail}GB < ${required_gb}GB），已中止以避免當機"
+        if [ -x "$GATEKEEPER" ] && [ -x "$GATEKEEPER_PY" ]; then
+            MAGI_USE_RUNTIME_DIR=1 "$GATEKEEPER_PY" "$GATEKEEPER" register-abort \
+                --reason mem_insufficient --mode "$mode_name" \
+                --extra "avail=${avail}GB,required=${required_gb}GB" >/dev/null 2>&1 || true
+        fi
         exit 2
+    fi
+}
+
+# ---- Layer 3: 檢查既有 omlx serve 的 RSS 是否已經失控 ----
+preflight_oomlx_rss_check() {
+    local max_gb="$1"
+    local mode_name="$2"
+    if [ ! -x "$GATEKEEPER" ] || [ ! -x "$GATEKEEPER_PY" ]; then
+        return 0
+    fi
+    MAGI_USE_RUNTIME_DIR=1 "$GATEKEEPER_PY" "$GATEKEEPER" check-rss-before-switch \
+        --max-model-memory-gb "$max_gb" --mode "$mode_name" 2>&1 | while read ln; do log "$ln"; done || true
+    MAGI_USE_RUNTIME_DIR=1 "$GATEKEEPER_PY" "$GATEKEEPER" check-rss-before-switch \
+        --max-model-memory-gb "$max_gb" --mode "$mode_name" >/dev/null 2>&1
+    local rc=$?
+    if [ "$rc" -eq 3 ]; then
+        log "⚠️  Layer 3 RSS 檢查觸發 abort（rc=3），不進行 $mode_name 切換"
+        exit 3
     fi
 }
 
@@ -154,7 +192,14 @@ heartbeat_check() {
     count=$(count_mlx_processes)
     log "heartbeat: ${mode_name} 實際 MLX process 數 = ${count}（上限 ${upper_limit}）"
     if [ "$count" -gt "$upper_limit" ]; then
-        notify_admin "${mode_name} 切換後偵測到 ${count} 個 MLX process（上限 ${upper_limit}），疑似重複實例，請手動確認"
+        notify_admin "${mode_name} 切換後偵測到 ${count} 個 MLX process（上限 ${upper_limit}），疑似重複實例，啟動 Layer 1 reaper"
+    fi
+    local reaper="/Users/ai/Desktop/MAGI_v2/scripts/ops/omlx_heartbeat_reaper.py"
+    local py="/Users/ai/Desktop/MAGI_v2/venv/bin/python3"
+    if [ -x "$reaper" ] && [ -x "$py" ]; then
+        "$py" "$reaper" --expected-ports "$expected_ports" --mode-name "$mode_name" 2>&1 | while read ln; do log "$ln"; done || true
+    else
+        log "Layer 1 reaper 不可用（path=$reaper），跳過"
     fi
 }
 
@@ -165,6 +210,14 @@ check_model_src() {
         log "❌ ERROR: 模型目錄不存在: $src"
         exit 1
     fi
+}
+
+bootstrap_omlx_main() {
+    local label="$1"
+    local plist="$HOME/Library/LaunchAgents/com.magi.omlx.plist"
+    launchctl bootstrap "gui/$UID_NUM" "$plist" 2>&1 | grep -v "^$" | while read line; do log "$label bootstrap: $line"; done || true
+    sleep 2
+    launchctl kickstart -kp "gui/$UID_NUM/com.magi.omlx" 2>&1 | grep -v "^$" | while read line; do log "$label kickstart: $line"; done || true
 }
 
 get_active_profile() {
@@ -186,6 +239,8 @@ case "$MODE" in
 
     echo "day" > "$PROFILE_FILE"
 
+    preflight_oomlx_rss_check 6 "DAY"
+
     # 重啟 oMLX E4B（降低記憶體）
     launchctl bootout "gui/$UID_NUM/com.magi.omlx" 2>/dev/null || true
     wait_port_closed 8080 15
@@ -197,7 +252,7 @@ case "$MODE" in
         ~/Library/LaunchAgents/com.magi.omlx.plist 2>/dev/null || true
     /usr/libexec/PlistBuddy -c "Set :EnvironmentVariables:OMLX_TEXT_MAX_PROCESS_MEMORY 10GB" \
         ~/Library/LaunchAgents/com.magi.omlx.plist 2>/dev/null || true
-    launchctl bootstrap "gui/$UID_NUM" ~/Library/LaunchAgents/com.magi.omlx.plist
+    bootstrap_omlx_main "DAY"
 
     # 啟動 Phi-4 和 SmolLM3（若模型已下載）
     if [ -d "/Users/ai/.omlx/models/Phi-4-mini-instruct-4bit" ]; then
@@ -241,6 +296,9 @@ case "$MODE" in
 
   night)
     log "→ NIGHT mode (26B only)"
+    if [ ! -d "$B26_SRC" ] && [ -d "$B26_LEGACY_SRC" ]; then
+        B26_SRC="$B26_LEGACY_SRC"
+    fi
     check_model_src "$B26_SRC"
 
     # 停止 Phi-4 和 SmolLM3
@@ -254,18 +312,20 @@ case "$MODE" in
     ln -sf "$B26_SRC" "$MODELS_TEXT_DIR/gemma-4-26b-a4b-it-4bit"
     echo "night" > "$PROFILE_FILE"
 
+    preflight_oomlx_rss_check 16 "NIGHT"
+
     # 重啟 oMLX 26B（模型實際約 14.63GB；MODEL 需高於模型大小，否則 completion 回 507）
     launchctl bootout "gui/$UID_NUM/com.magi.omlx" 2>/dev/null || true
     wait_port_closed 8080 30
-    # 所有舊 process 都 bootout 後才檢查記憶體
-    preflight_memory_check 10 "NIGHT"
+    log "等待記憶體回收（10s）..."
+    sleep 10
+    # 所有舊 process 都 bootout 後才檢查記憶體（門檻 8GB：26B ceiling=16GB，系統本身 6-8GB）
+    preflight_memory_check 8 "NIGHT"
     /usr/libexec/PlistBuddy -c "Set :EnvironmentVariables:OMLX_TEXT_MAX_MODEL_MEMORY 16GB" \
         ~/Library/LaunchAgents/com.magi.omlx.plist 2>/dev/null || true
     /usr/libexec/PlistBuddy -c "Set :EnvironmentVariables:OMLX_TEXT_MAX_PROCESS_MEMORY 18GB" \
         ~/Library/LaunchAgents/com.magi.omlx.plist 2>/dev/null || true
-    launchctl bootstrap "gui/$UID_NUM" ~/Library/LaunchAgents/com.magi.omlx.plist || true
-    sleep 3
-    launchctl kickstart -kp "gui/$UID_NUM/com.magi.omlx" 2>&1 | grep -v "^$" | while read line; do log "kickstart: $line"; done || true
+    bootstrap_omlx_main "NIGHT"
 
     sleep 120
     curl -sf http://127.0.0.1:8080/v1/models >/dev/null 2>&1 && log "8080 OK (26B)" || log "8080 FAIL — still loading, will be ready in ~1min"

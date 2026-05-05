@@ -2,7 +2,7 @@
 const state = {
     dashboard: null,
     cases: [],
-    laf: { checklist: [], lifecycle: [], emails: [] },
+    laf: { checklist: [], lifecycle: [], emails: [], cases: [], selectedCaseId: "", selectedWorkbench: null },
     clients: [],
     meetings: [],
     calendarEvents: [],
@@ -30,6 +30,8 @@ const state = {
     adminSettings: [],
     adminCaseReasons: [],
     adminCourts: [],
+    caseCourtOptions: [],
+    caseCourtOptionsLoaded: false,
     adminBranches: [],
     adminUserSettings: [],
     adminMemoryKeywords: [],
@@ -40,8 +42,12 @@ const state = {
     lafWizardResult: null,
     archivePreview: [],
     activeTab: "dashboard",
+    caseType: "全部",
+    caseKind: "全部",
     caseCategory: "全部",
+    caseStatusScope: "all",
     wb: { mode: null, id: null, data: null },
     folderUpload: null,
-    sort: { col: null, dir: 1, type: "string" }
+    sort: { col: null, dir: 1, type: "string" },
+    lafSort: { col: "case_number", dir: 1, type: "string" }
 };

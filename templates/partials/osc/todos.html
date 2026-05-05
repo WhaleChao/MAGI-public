@@ -20,10 +20,7 @@
                     </div>
                 </div>
                 <div class="field-grid cols-4" style="margin-top:10px;">
-                    <div class="field">
-                        <label for="todo_id">ID</label>
-                        <input id="todo_id" placeholder="更新時使用">
-                    </div>
+                    <input id="todo_id" type="hidden">
                     <div class="field">
                         <label for="todo_case_number">案件編號</label>
                         <input id="todo_case_number" placeholder="案件編號（必填）">
@@ -48,10 +45,7 @@
                         <label for="todo_status">狀態</label>
                         <input id="todo_status" placeholder="pending / completed">
                     </div>
-                    <div class="field">
-                        <label for="todo_source_file">來源檔案</label>
-                        <input id="todo_source_file" placeholder="來源檔名（選填）">
-                    </div>
+                    <input id="todo_source_file" type="hidden">
                 </div>
                 <div class="field" style="margin-top:10px;">
                     <label for="todo_desc">描述</label>
@@ -81,4 +75,3 @@
                 <div id="todosEmpty" class="muted" style="text-align:center;padding:24px;display:none;">沒有資料</div>
             </div>
         </section>
-

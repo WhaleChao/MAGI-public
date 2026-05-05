@@ -151,6 +151,104 @@ def test_list_endpoint_reachable(client, endpoint):
     assert r.status_code < 500, f"{endpoint} 回 {r.status_code}"
 
 
+def test_cases_default_status_scope_is_all(client):
+    """案件清單 API 預設顯示全部狀態，避免使用者以為案件消失。"""
+    calls = []
+
+    def fake_exec(sql, params=(), fetch="none"):
+        if "FROM cases" in sql:
+            calls.append((sql, params))
+        return _make_fake_exec({"cases": []})(sql, params, fetch)
+
+    with patch("api.blueprints.osc_cases._osc_exec", side_effect=fake_exec):
+        r = client.get("/api/osc/cases?limit=5")
+
+    assert r.status_code == 200
+    assert calls, "應查詢 cases"
+    sql, params = calls[-1]
+    assert "status LIKE" not in sql
+    assert "%進行%" not in params
+    assert "%結案中%" not in params
+    assert "%待報結%" not in params
+
+
+def test_cases_filters_split_type_and_kind(client):
+    """案件分類(case_type)與案件種類(case_category)要分開篩選。"""
+    calls = []
+
+    def fake_exec(sql, params=(), fetch="none"):
+        if "FROM cases" in sql:
+            calls.append((sql, params))
+        return _make_fake_exec({"cases": []})(sql, params, fetch)
+
+    with patch("api.blueprints.osc_cases._osc_exec", side_effect=fake_exec):
+        r = client.get("/api/osc/cases?limit=5&case_type=刑事&case_kind=法律扶助案件")
+
+    assert r.status_code == 200
+    sql, params = calls[-1]
+    assert "case_type = %s" in sql
+    assert "case_category = %s" in sql
+    assert "刑事" in params
+    assert "法律扶助案件" in params
+
+
+def test_cases_legacy_category_still_maps_to_case_kind(client):
+    """舊的 category=一般案件 仍要相容，但語意是案件種類。"""
+    calls = []
+
+    def fake_exec(sql, params=(), fetch="none"):
+        if "FROM cases" in sql:
+            calls.append((sql, params))
+        return _make_fake_exec({"cases": []})(sql, params, fetch)
+
+    with patch("api.blueprints.osc_cases._osc_exec", side_effect=fake_exec):
+        r = client.get("/api/osc/cases?limit=5&category=一般案件")
+
+    assert r.status_code == 200
+    sql, params = calls[-1]
+    assert "case_category = %s" in sql
+    assert "NOT (" not in sql
+    assert "一般案件" in params
+
+
+def test_large_file_content_uses_streaming_response(client, tmp_path):
+    """超過記憶體預覽門檻的大型 PDF 不應回 File too large。"""
+    big_pdf = tmp_path / "large.pdf"
+    with big_pdf.open("wb") as f:
+        f.seek((58 * 1024 * 1024) - 1)
+        f.write(b"\0")
+
+    with patch("api.blueprints.osc_cases._osc_local_path_candidates", return_value=[str(big_pdf)]), \
+         patch("api.blueprints.osc_cases._osc_is_safe_local_path", return_value=True):
+        r = client.get(f"/api/osc/files/content?path={big_pdf}&inline=1")
+
+    assert r.status_code == 200
+    assert r.content_type.startswith("application/pdf")
+    assert r.headers.get("Content-Length") == str(big_pdf.stat().st_size)
+
+
+def test_case_workbench_upload_allows_legal_pdf_over_50mb(client, tmp_path, monkeypatch):
+    """案件工作台上傳需支援常見大型卷證 PDF。"""
+    monkeypatch.setenv("PAPERCLIP_UPLOAD_MAX_PER_FILE_MB", "128")
+    monkeypatch.setenv("PAPERCLIP_UPLOAD_MAX_TOTAL_MB", "128")
+
+    with patch("api.blueprints.osc_cases._osc_resolve_existing_local_path", return_value=str(tmp_path)), \
+         patch("api.blueprints.osc_cases._osc_is_safe_local_path", return_value=True):
+        r = client.post(
+            "/api/osc/files/upload",
+            data={
+                "folder_path": str(tmp_path),
+                "file": (BytesIO(b"x" * (52 * 1024 * 1024)), "large.pdf"),
+            },
+            content_type="multipart/form-data",
+        )
+
+    assert r.status_code == 200
+    data = r.get_json()
+    assert data["ok"] is True
+    assert data["saved"][0]["file_name"] == "large.pdf"
+
+
 # ── 3. 消債書狀生成（osc_debt） ───────────────────────────────────────────────
 
 

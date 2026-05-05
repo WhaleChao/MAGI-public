@@ -131,6 +131,7 @@ from mbcmd.sector_cmd import (
 )
 from mbcmd.comps_cmd import _fetch_comps_metrics, _cmd_comps as _cmd_comps_impl
 from mbcmd.export_cmd import _cmd_export as _cmd_export_impl
+from delivery import deliver_market_report
 
 
 # ── Thin wrappers to preserve original call signatures ────────────
@@ -182,6 +183,8 @@ def _predict_one(item: WatchItem, params: Dict[str, float], mode: str = "quick")
 def _maybe_notify(text: str, notify: bool) -> bool:
     if not notify:
         return False
+    if "MAGI 每日股價預測" in str(text or ""):
+        return deliver_market_report(text, notify=notify, magi_root=MAGI_ROOT, notify_log=_notify_log)
     for p in (str(MAGI_ROOT), str(MAGI_ROOT.parent)):
         if p and p not in sys.path:
             sys.path.insert(0, p)

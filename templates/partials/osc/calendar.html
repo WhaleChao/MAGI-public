@@ -3,7 +3,7 @@
                 <div class="section-head">
                     <div>
                         <h3>事務所行事曆</h3>
-                        <div class="section-note">管理 calendar_events。上方用時間與案號篩選，下方維護單筆事件。</div>
+                        <div class="section-note">管理開庭、會議、期限與案件行程。上方可用時間與案號篩選，下方維護單筆行程。</div>
                     </div>
                 </div>
                 <div class="soft-block">
@@ -39,10 +39,7 @@
                             <label for="cal_id">ID</label>
                             <input id="cal_id" placeholder="更新時使用">
                         </div>
-                        <div class="field">
-                            <label for="cal_event_id">Event ID</label>
-                            <input id="cal_event_id" placeholder="留空自動產生">
-                        </div>
+                        <input id="cal_event_id" type="hidden">
                         <div class="field">
                             <label for="cal_title">標題</label>
                             <input id="cal_title" placeholder="標題（必填）">
@@ -84,10 +81,7 @@
                         <label for="cal_description">描述</label>
                         <textarea id="cal_description" placeholder="description"></textarea>
                     </div>
-                    <div class="field" style="margin-top:10px;">
-                        <label for="cal_raw_data">原始資料</label>
-                        <textarea id="cal_raw_data" placeholder="raw_data（JSON 或文字）"></textarea>
-                    </div>
+                    <textarea id="cal_raw_data" hidden></textarea>
                 </div>
                 <div class="toolbar">
                     <button class="btn primary" id="calSaveBtn">儲存事件</button>
@@ -131,4 +125,3 @@
                 </div>
             </div>
         </section>
-

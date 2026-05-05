@@ -1,41 +1,101 @@
         <section id="cases" class="view">
-            <div class="card">
-                <div class="section-head">
+            <div class="case-page">
+                <div class="case-hero">
                     <div>
                         <h3>案件管理</h3>
-                        <div class="section-note">先用分類與搜尋縮小範圍，再於下方建立或編輯單筆案件資料。</div>
+                        <div class="section-note">先依案件分類與案件種類縮小範圍；法扶的細部統計與回報仍在左側「法扶管理」。</div>
+                    </div>
+                    <div class="case-hero-actions">
+                        <button class="btn primary" id="caseNewBtn" type="button">新增案件</button>
+                        <button class="btn" data-tab-jump="laf" type="button">法扶管理</button>
+                        <button class="btn" data-tab-jump="drafts" type="button">書狀草擬</button>
                     </div>
                 </div>
-                <div class="soft-block">
+
+                <div class="case-summary-strip">
+                    <div class="case-summary-item">
+                        <span>目前顯示</span>
+                        <strong id="caseVisibleCount">0</strong>
+                    </div>
+                    <div class="case-summary-item">
+                        <span>結案中 / 已結案</span>
+                        <strong id="caseClosingVisibleCount">0</strong>
+                    </div>
+                </div>
+
+                <div class="case-filter-panel">
+                    <div class="case-filter-main">
+                        <div class="field case-search-field">
+                            <label for="casesQ">搜尋案件</label>
+                            <input id="casesQ" placeholder="案號 / 當事人 / 法院 / 地檢署 / 法扶案號">
+                        </div>
+                        <div class="inline-actions case-search-actions">
+                            <button class="btn primary" id="casesSearchBtn">搜尋</button>
+                            <button class="btn" id="casesRefreshBtn">重新整理</button>
+                        </div>
+                    </div>
                     <div class="field">
                         <label>案件分類</label>
-                        <div class="chip-row" id="caseCategoryTabs">
-                            <button class="chip active" data-cat="全部">全部</button>
-                            <button class="chip" data-cat="一般案件">一般案件</button>
-                            <button class="chip" data-cat="法律扶助案件">法律扶助案件</button>
-                            <button class="chip" data-cat="消費者債務清理">消費者債務清理</button>
-                            <button class="chip" data-cat="指定辯護案件">指定辯護案件</button>
-                            <button class="chip" data-cat="無償案件">無償案件</button>
+                        <div class="chip-row" id="caseTypeTabs">
+                            <button class="chip active" data-type="全部">全部分類</button>
+                            <button class="chip" data-type="刑事">刑事</button>
+                            <button class="chip" data-type="民事">民事</button>
+                            <button class="chip" data-type="行政">行政</button>
+                            <button class="chip" data-type="非訟">非訟</button>
+                            <button class="chip" data-type="消費者債務清理">消費者債務清理</button>
                         </div>
                     </div>
-                    <div class="field-grid cols-4" style="margin-top:10px;">
-                        <div class="field" style="grid-column: span 2;">
-                            <label for="casesQ">案件搜尋</label>
-                            <input id="casesQ" placeholder="案號 / 當事人 / 法扶案號 / 法院案號">
+                    <div class="field">
+                        <label>案件種類</label>
+                        <div class="chip-row" id="caseKindTabs">
+                            <button class="chip active" data-kind="全部">全部種類</button>
+                            <button class="chip" data-kind="一般案件">一般</button>
+                            <button class="chip" data-kind="法律扶助案件">法扶</button>
+                            <button class="chip" data-kind="消費者債務清理">消費者債務清理</button>
+                            <button class="chip" data-kind="指定辯護案件">指定辯護</button>
+                            <button class="chip" data-kind="無償案件">無償</button>
                         </div>
-                        <div class="field">
-                            <label>操作</label>
-                            <div class="inline-actions">
-                                <button class="btn" id="casesSearchBtn">搜尋</button>
-                                <button class="btn" id="casesRefreshBtn">重新整理</button>
-                                <button class="btn" id="casesImportCsvBtn">📥 匯入 CSV</button>
-                                <button class="btn" id="casesExportCsvBtn">📤 匯出 CSV</button>
-                                <input type="file" id="casesImportCsvFile" accept=".csv" style="display:none">
-                            </div>
+                    </div>
+                    <div class="field">
+                        <label>案件狀態</label>
+                        <div class="chip-row" id="caseStatusTabs">
+                            <button class="chip active" data-scope="all">全部狀態</button>
+                            <button class="chip" data-scope="working">進行中 / 結案中</button>
+                            <button class="chip" data-scope="active">進行中</button>
+                            <button class="chip" data-scope="closing">結案中</button>
+                            <button class="chip" data-scope="closed">已結案</button>
+                        </div>
+                    </div>
+                    <div class="case-filter-foot">
+                        <div class="sort-bar" id="caseSortBar">
+                            <label>排序</label>
+                            <select id="caseSortCol">
+                                <option value="">預設</option>
+                                <option value="case_number">案號</option>
+                                <option value="client_name">當事人</option>
+                                <option value="court_name">法院 / 地檢署</option>
+                                <option value="case_type">案件分類</option>
+                                <option value="case_category">案件種類</option>
+                                <option value="case_reason">案由</option>
+                                <option value="court_case_no">法院案號</option>
+                                <option value="status">狀態</option>
+                            </select>
+                            <button class="sort-dir-btn" id="caseSortDir" title="切換升降冪">▲</button>
+                        </div>
+                        <div class="inline-actions">
+                            <button class="btn" id="casesImportCsvBtn">匯入 CSV</button>
+                            <button class="btn" id="casesExportCsvBtn">匯出 CSV</button>
+                            <button class="btn" id="caseViewToggle">切換表格</button>
+                            <input type="file" id="casesImportCsvFile" accept=".csv" style="display:none">
                         </div>
                     </div>
                 </div>
-                <div class="soft-block">
+
+                <details class="case-editor-panel" id="caseEditorPanel">
+                    <summary>
+                        <span>新增 / 編輯案件資料</span>
+                        <small>建案時先填案件編號、當事人、案件分類、案件種類與資料夾；其餘可日後補齊。</small>
+                    </summary>
                     <div class="field-grid cols-4">
                         <div class="field">
                             <label for="case_id">ID</label>
@@ -66,8 +126,8 @@
                             <input id="case_category" placeholder="例：一般案件、法律扶助案件">
                         </div>
                         <div class="field">
-                            <label for="case_type">案件類型</label>
-                            <input id="case_type" placeholder="例：刑事、民事、家事">
+                            <label for="case_type">案件分類</label>
+                            <input id="case_type" placeholder="例：刑事、民事、行政、非訟">
                         </div>
                         <div class="field">
                             <label for="case_stage">審級 / 階段</label>
@@ -84,6 +144,11 @@
                         <div class="field">
                             <label for="case_application_no">申請編號</label>
                             <input id="case_application_no" placeholder="法扶申請流水號">
+                        </div>
+                        <div class="field">
+                            <label for="case_court_name">法院 / 地檢署</label>
+                            <input id="case_court_name" list="caseCourtOptions" placeholder="可輸入或選擇法院、地檢署名稱">
+                            <datalist id="caseCourtOptions"></datalist>
                         </div>
                         <div class="field">
                             <label for="case_court_case_no">法院案號</label>
@@ -107,29 +172,18 @@
                             <input id="case_notes" placeholder="備註說明">
                         </div>
                     </div>
-                </div>
-                <div class="toolbar" style="margin-top:8px;">
-                    <button class="btn primary" id="caseSaveBtn">儲存案件</button>
-                    <button class="btn warn" id="caseResetBtn">清空表單</button>
-                </div>
-            </div>
-            <div style="margin-top:8px;">
-                <div class="toolbar" style="margin-bottom:8px; flex-wrap:wrap; gap:8px;">
-                    <div class="sort-bar" id="caseSortBar">
-                        <label>排序</label>
-                        <select id="caseSortCol">
-                            <option value="">預設</option>
-                            <option value="case_number">案號</option>
-                            <option value="client_name">當事人</option>
-                            <option value="case_category">案件種類</option>
-                            <option value="case_reason">案由</option>
-                            <option value="court_case_no">法院案號</option>
-                            <option value="status">狀態</option>
-                        </select>
-                        <button class="sort-dir-btn" id="caseSortDir" title="切換升降冪">▲</button>
+                    <div class="toolbar" style="margin-top:8px;">
+                        <button class="btn primary" id="caseSaveBtn">儲存案件</button>
+                        <button class="btn warn" id="caseResetBtn">清空表單</button>
                     </div>
-                    <div class="muted" style="font-size:11px;">雙擊卡片開啟 NAS 資料夾 · 拖曳可排序</div>
-                    <button class="btn" id="caseViewToggle" style="margin-left:auto;">切換表格</button>
+                </details>
+
+                <div class="case-list-head">
+                    <div>
+                        <h3>案件卡片</h3>
+                        <div class="section-note">點案件卡片即可開啟該案資料夾；工作台、書狀、法扶回報集中在同一個案件脈絡。</div>
+                    </div>
+                    <div class="muted">拖曳卡片可調整順序</div>
                 </div>
                 <div id="casesCardGrid" class="card-grid"></div>
                 <div id="casesTableWrap" class="table-wrap" style="display:none;">
@@ -138,8 +192,10 @@
                             <tr>
                                 <th data-sort="case_number">案號</th>
                                 <th data-sort="client_name">當事人</th>
+                                <th data-sort="case_type">案件分類</th>
                                 <th data-sort="case_category">案件種類</th>
                                 <th data-sort="case_reason">案由</th>
+                                <th data-sort="court_name">法院 / 地檢署</th>
                                 <th data-sort="court_case_no">法院案號</th>
                                 <th data-sort="laf_case_no">法扶案號</th>
                                 <th data-sort="status">狀態</th>
@@ -149,35 +205,38 @@
                         <tbody id="casesBody"></tbody>
                     </table>
                 </div>
-            </div>
 
-            <section class="card" id="caseChecklistSection">
-                <div class="section-head">
-                    <div>
-                        <h3>📑 案件補正清單</h3>
-                        <div class="section-note">記錄法院通知補正項目；不需 item_key，純文字標籤。</div>
-                    </div>
-                    <div class="inline-actions">
-                        <input id="caseChecklistCaseNumber" placeholder="案件編號" style="width:180px">
-                        <button class="btn" id="caseChecklistLoadBtn">載入</button>
-                    </div>
-                </div>
-                <div class="table-wrap">
-                    <table>
-                        <thead><tr><th>項目</th><th>狀態</th><th>備註</th><th>操作</th></tr></thead>
-                        <tbody id="caseChecklistBody"><tr><td colspan="4" class="muted">輸入案號並按「載入」</td></tr></tbody>
-                    </table>
-                </div>
-                <div class="soft-block" style="margin-top:10px">
-                    <div class="field-grid cols-3">
-                        <div class="field"><label>新增項目</label><input id="caseChecklistNewLabel"></div>
-                        <div class="field"><label>狀態</label>
-                            <select id="caseChecklistNewStatus"><option>待補</option><option>已備齊</option><option>不適用</option></select>
+                <details class="case-checklist-panel" id="caseChecklistSection">
+                    <summary>
+                        <span>案件補正清單</span>
+                        <small>仍保留原本全域管理；日常建議從案件卡片的工作台開啟。</small>
+                    </summary>
+                    <div class="section-head">
+                        <div>
+                            <h3>案件補正清單</h3>
+                            <div class="section-note">記錄法院通知補正項目；不需 item_key，純文字標籤。</div>
                         </div>
-                        <div class="field"><label>備註</label><input id="caseChecklistNewNotes"></div>
+                        <div class="inline-actions">
+                            <input id="caseChecklistCaseNumber" placeholder="案件編號" style="width:180px">
+                            <button class="btn" id="caseChecklistLoadBtn">載入</button>
+                        </div>
                     </div>
-                    <div class="toolbar"><button class="btn primary" id="caseChecklistAddBtn">➕ 新增項目</button></div>
-                </div>
-            </section>
+                    <div class="table-wrap">
+                        <table>
+                            <thead><tr><th>項目</th><th>狀態</th><th>備註</th><th>操作</th></tr></thead>
+                            <tbody id="caseChecklistBody"><tr><td colspan="4" class="muted">輸入案號並按「載入」</td></tr></tbody>
+                        </table>
+                    </div>
+                    <div class="soft-block" style="margin-top:10px">
+                        <div class="field-grid cols-3">
+                            <div class="field"><label>新增項目</label><input id="caseChecklistNewLabel"></div>
+                            <div class="field"><label>狀態</label>
+                                <select id="caseChecklistNewStatus"><option>待補</option><option>已備齊</option><option>不適用</option></select>
+                            </div>
+                            <div class="field"><label>備註</label><input id="caseChecklistNewNotes"></div>
+                        </div>
+                        <div class="toolbar"><button class="btn primary" id="caseChecklistAddBtn">新增項目</button></div>
+                    </div>
+                </details>
+            </div>
         </section>
-

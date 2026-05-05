@@ -1,112 +1,48 @@
         <section id="laf" class="view">
-            <div class="card">
-                <h3>法扶資料（進度 / 補件 / 信件）</h3>
-                <div class="toolbar">
-                    <input id="lafQ" placeholder="搜尋：案號 / 事件 / 主旨 / 狀態 / 關鍵字">
-                    <input id="lafCaseNumber" placeholder="案件編號（選填）">
-                    <button class="btn" id="lafSearchBtn">搜尋</button>
-                    <button class="btn" id="lafRefreshBtn">重新整理</button>
-                </div>
-                <div class="stat-grid" style="margin-top: 12px;">
-                    <div class="stat-card">
-                        <div class="k">補件清單</div>
-                        <div id="lafChecklistCount" class="v">0</div>
-                    </div>
-                    <div class="stat-card">
-                        <div class="k">流程紀錄</div>
-                        <div id="lafLifecycleCount" class="v">0</div>
-                    </div>
-                    <div class="stat-card">
-                        <div class="k">法扶信件</div>
-                        <div id="lafEmailCount" class="v">0</div>
-                    </div>
-                </div>
-            </div>
-            <div class="card">
-                <h3>法扶補件/清單</h3>
-                <div class="table-wrap">
-                    <table>
-                        <thead>
-                            <tr>
-                                <th>更新時間</th>
-                                <th>案號</th>
-                                <th>項目鍵</th>
-                                <th>項目</th>
-                                <th>狀態</th>
-                                <th>備註</th>
-                            </tr>
-                        </thead>
-                        <tbody id="lafChecklistBody"></tbody>
-                    </table>
-                </div>
-            </div>
-            <div class="card">
-                <h3>法扶流程紀錄</h3>
-                <div class="table-wrap">
-                    <table>
-                        <thead>
-                            <tr>
-                                <th>建立時間</th>
-                                <th>案號</th>
-                                <th>事件</th>
-                                <th>狀態</th>
-                                <th>完成時間</th>
-                                <th>內容</th>
-                            </tr>
-                        </thead>
-                        <tbody id="lafLifecycleBody"></tbody>
-                    </table>
-                </div>
-            </div>
-            <div class="card">
-                <h3>法扶信件紀錄</h3>
-                <div class="table-wrap">
-                    <table>
-                        <thead>
-                            <tr>
-                                <th>收到時間</th>
-                                <th>案號</th>
-                                <th>狀態</th>
-                                <th>寄件人</th>
-                                <th>主旨</th>
-                                <th>錯誤</th>
-                            </tr>
-                        </thead>
-                        <tbody id="lafEmailBody"></tbody>
-                    </table>
-                </div>
-            </div>
-
-            <section class="card" id="lafChecklistSection">
-                <div class="section-head">
-                    <div>
-                        <h3>📋 補件清單</h3>
-                        <div class="section-note">逐項追蹤法扶申請所需補件，狀態：待補 / 已備齊 / 不適用。</div>
-                    </div>
-                    <div class="inline-actions">
-                        <input id="lafChecklistCaseNumber" placeholder="案件編號 (例如 2026-0017)" style="width:180px">
-                        <button class="btn" id="lafChecklistLoadBtn">載入</button>
-                        <button class="btn primary" id="lafChecklistSeedBtn">填入預設清單</button>
-                    </div>
-                </div>
-                <div class="table-wrap">
-                    <table>
-                        <thead>
-                            <tr><th>項目</th><th>狀態</th><th>備註</th><th>更新時間</th><th>操作</th></tr>
-                        </thead>
-                        <tbody id="lafChecklistMgmtBody"><tr><td colspan="5" class="muted">輸入案號並按「載入」</td></tr></tbody>
-                    </table>
-                </div>
-                <div class="soft-block" style="margin-top:10px">
-                    <div class="field-grid cols-3">
-                        <div class="field"><label>新增項目（標籤）</label><input id="lafChecklistNewLabel" placeholder="自訂補件項目"></div>
-                        <div class="field"><label>狀態</label>
-                            <select id="lafChecklistNewStatus"><option>待補</option><option>已備齊</option><option>不適用</option></select>
+            <div class="laf-workbench">
+                <aside class="laf-master-pane card">
+                    <div class="laf-pane-head">
+                        <div>
+                            <h3>法律扶助案件列表</h3>
+                            <div class="muted">左側選案件，右側顯示該案開辦、報結、閱卷與書狀統計。</div>
                         </div>
-                        <div class="field"><label>備註</label><input id="lafChecklistNewNotes" placeholder="可選"></div>
                     </div>
-                    <div class="toolbar"><button class="btn primary" id="lafChecklistAddBtn">➕ 新增項目</button></div>
-                </div>
-            </section>
-        </section>
+                    <div class="laf-action-row">
+                        <button class="btn" data-act="laf-scan">掃描派案</button>
+                        <button class="btn" data-act="laf-batch-in-progress">全部改為進行中</button>
+                    </div>
+                    <div class="toolbar laf-search-row">
+                        <input id="lafQ" placeholder="搜尋案號、當事人、案件分類或法扶狀態">
+                        <input id="lafCaseNumber" placeholder="指定本所案號（選填）">
+                        <button class="btn primary" id="lafSearchBtn">搜尋</button>
+                        <button class="btn" id="lafRefreshBtn">重新整理</button>
+                    </div>
+                    <div class="laf-mini-stats">
+                        <div><span id="lafCaseCount">0</span><small>法扶案件</small></div>
+                        <div><span id="lafChecklistCount">0</span><small>補件項目</small></div>
+                        <div><span id="lafLifecycleCount">0</span><small>流程紀錄</small></div>
+                        <div><span id="lafEmailCount">0</span><small>法扶信件</small></div>
+                    </div>
+                    <div class="laf-case-list-wrap">
+                        <table class="laf-case-list">
+                            <thead>
+                                <tr>
+                                    <th data-sort="case_number">本所案號</th>
+                                    <th data-sort="client_name">當事人</th>
+                                    <th data-sort="case_type">案件分類</th>
+                                    <th data-sort="legal_aid_status">法扶狀態</th>
+                                </tr>
+                            </thead>
+                            <tbody id="lafCaseBody"></tbody>
+                        </table>
+                    </div>
+                </aside>
 
+                <div id="lafDetailPanel" class="laf-detail-pane card">
+                    <div class="empty-state">
+                        <h3>請從左側選擇法扶案件</h3>
+                        <p>選取後會在這裡顯示原 OSC 單機版的開辦資料、報結資料彙總、閱卷統計與書狀列表。</p>
+                    </div>
+                </div>
+            </div>
+        </section>

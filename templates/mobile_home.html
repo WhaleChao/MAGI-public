@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="theme-color" content="#0f766e">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-title" content="MAGI">
+    <meta name="apple-mobile-web-app-status-bar-style" content="default">
+    <title>MAGI Mobile</title>
+    <link rel="manifest" href="/mobile/manifest.webmanifest">
+    <link rel="icon" href="{{ url_for('static', filename='mobile/magi-mobile.svg') }}" type="image/svg+xml">
+    <link rel="apple-touch-icon" href="{{ url_for('static', filename='mobile/magi-mobile.svg') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='mobile/mobile.css') }}?v=20260505-mobile-v1">
+</head>
+<body>
+    <main class="mobile-shell">
+        <header class="mobile-hero">
+            <div>
+                <span class="eyebrow">MAGI Mobile</span>
+                <h1>MAGI</h1>
+                <p>透過 Tailscale 連線到這台電腦，操作 MAGI、Paperclip 與內部後台。</p>
+            </div>
+            <span class="status-pill{% if mobile.tailscale_online %} is-online{% endif %}">
+                {% if mobile.tailscale_online %}Tailscale 已連線{% else %}Tailscale 待確認{% endif %}
+            </span>
+        </header>
+
+        <section class="connection-card">
+            <span>連線網址</span>
+            <strong>{{ mobile.base_url }}</strong>
+        </section>
+
+        <section class="action-grid" aria-label="手機入口">
+            <a class="action-card primary" href="/osc">
+                <span>案件與檔案</span>
+                <strong>Paperclip</strong>
+            </a>
+            <a class="action-card" href="/golem">
+                <span>對話與總覽</span>
+                <strong>MAGI</strong>
+            </a>
+            <a class="action-card" href="/intel">
+                <span>每日摘要</span>
+                <strong>全球新聞網</strong>
+            </a>
+            <a class="action-card" href="/research">
+                <span>研究來源</span>
+                <strong>研究</strong>
+            </a>
+            <a class="action-card admin" href="/mobile-admin">
+                <span>系統設定</span>
+                <strong>手機後台</strong>
+            </a>
+            <a class="action-card admin" href="/magi-adjust">
+                <span>NERV 設定</span>
+                <strong>MAGI 調整</strong>
+            </a>
+        </section>
+
+        <section class="install-card">
+            <h2>內部安裝</h2>
+            <p>Android 可包成 APK；iPhone 可先用 Safari 加入主畫面，之後若要 IPA 再用同一套連線設定打包。</p>
+        </section>
+    </main>
+    <script src="{{ url_for('static', filename='mobile/mobile.js') }}?v=20260505-mobile-v1"></script>
+</body>
+</html>

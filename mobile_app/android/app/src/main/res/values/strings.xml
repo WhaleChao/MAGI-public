@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">MAGI Mobile</string>
+    <string name="title_activity_main">MAGI Mobile</string>
+    <string name="package_name">tw.local.magi.mobile</string>
+    <string name="custom_url_scheme">tw.local.magi.mobile</string>
+</resources>

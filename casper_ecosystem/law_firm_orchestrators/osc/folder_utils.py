@@ -49,6 +49,7 @@ TYPE_FOLDER_MAP = {
 }
 
 _ILLEGAL_CHARS = re.compile(r'[<>:"|?*\\/]')
+_ATTACHED_CIVIL_TOKENS = ("刑事附帶民事", "附帶民事", "附民")
 
 
 def sanitize_folder_name(name: str) -> str:
@@ -74,6 +75,25 @@ def build_case_folder_name(
     return sanitize_folder_name("-".join(filter(None, parts)))
 
 
+def resolve_type_folder(case_type: str = "", case_stage: str = "", case_reason: str = "") -> str:
+    """Resolve the second-level case folder from explicit type first, then safe fallbacks."""
+    explicit = (case_type or "").strip()
+    text = " ".join(filter(None, [explicit, (case_stage or "").strip(), (case_reason or "").strip()]))
+
+    if any(token in text for token in _ATTACHED_CIVIL_TOKENS):
+        return "民事"
+    if "消費者債務清理" in explicit:
+        return "消費者債務清理"
+    if explicit in TYPE_FOLDER_MAP:
+        return TYPE_FOLDER_MAP[explicit]
+    for token in ("民事", "刑事", "行政", "非訟", "法律顧問"):
+        if token in explicit:
+            return TYPE_FOLDER_MAP[token]
+    if "消費者債務清理" in text:
+        return "消費者債務清理"
+    return "其他"
+
+
 def build_full_case_path(
     base_path: str,
     case_number: str,
@@ -84,7 +104,7 @@ def build_full_case_path(
     case_reason: str = "",
 ) -> str:
     category_folder = CATEGORY_FOLDER_MAP.get(case_category, "其他案件")
-    type_folder = TYPE_FOLDER_MAP.get(case_type, "其他")
+    type_folder = resolve_type_folder(case_type, case_stage, case_reason)
     folder_name = build_case_folder_name(
         case_number,
         client_name,

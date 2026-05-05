@@ -314,6 +314,9 @@ def test_nerv_skill_routes_and_codex_controls(tmp_path, monkeypatch):
 
     router_mod = types.ModuleType("skills.bridge.embedding_router")
     router_mod.get_router = lambda: types.SimpleNamespace(is_ready=True, rebuild_cache=lambda: None)
+    bridge_mod = types.ModuleType("skills.bridge")
+    bridge_mod.__path__ = []
+    monkeypatch.setitem(sys.modules, "skills.bridge", bridge_mod)
     monkeypatch.setitem(sys.modules, "skills.bridge.embedding_router", router_mod)
 
     semantic_mod = types.ModuleType("skills.bridge.semantic_router")
@@ -382,6 +385,56 @@ def test_nerv_skill_routes_and_codex_controls(tmp_path, monkeypatch):
     response = client.post("/api/codex-distributed/toggle", headers={"X-User-ID": "u1"}, json={"command": "enable"})
     assert response.status_code == 200
     assert response.get_json()["status"]["mode"] == "auto"
+
+
+def test_nerv_remote_access_status_and_actions(tmp_path, monkeypatch):
+    from api.blueprints import admin_runtime as mod
+
+    app, _, _ = _make_app(tmp_path, monkeypatch)
+    client = app.test_client()
+
+    original_exists = mod.os.path.exists
+
+    def _exists(path):
+        if str(path) == "/opt/homebrew/bin/tailscale":
+            return True
+        return original_exists(path)
+
+    def _run(args, capture_output=True, text=True, timeout=4):
+        if args[:2] == ["launchctl", "list"]:
+            return types.SimpleNamespace(
+                returncode=0,
+                stdout="123\t0\torg.chromium.chromoting\n456\t0\thomebrew.mxcl.tailscale\n",
+                stderr="",
+            )
+        if args and args[-1] == "--json":
+            return types.SimpleNamespace(
+                returncode=0,
+                stdout=json.dumps({"Self": {"TailscaleIPs": ["100.64.1.2"], "DNSName": "magi.tailnet.test."}}),
+                stderr="",
+            )
+        return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    launched = []
+    monkeypatch.setattr(mod.shutil, "which", lambda name: "/opt/homebrew/bin/tailscale" if name == "tailscale" else None)
+    monkeypatch.setattr(mod.os.path, "exists", _exists)
+    monkeypatch.setattr(mod.subprocess, "run", _run)
+    monkeypatch.setattr(mod.subprocess, "Popen", lambda cmd, cwd=None: launched.append((cmd, cwd)) or types.SimpleNamespace(pid=1))
+
+    response = client.get("/api/nerv/remote-access", headers={"X-User-ID": "u1"})
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data["tailscale"]["ip"] == "100.64.1.2"
+    assert data["google_remote_desktop"]["access_url"].startswith("https://remotedesktop.google.com")
+    assert data["policy"]["public_vnc_exposed"] is False
+
+    response = client.post(
+        "/api/nerv/remote-access/action",
+        headers={"X-User-ID": "u1"},
+        json={"action": "open_google_remote_desktop"},
+    )
+    assert response.status_code == 200
+    assert launched[-1][0] == ["open", "https://remotedesktop.google.com/access"]
 
 
 def test_operational_issue_health_reconciles_recovered_and_false_positive(tmp_path, monkeypatch):

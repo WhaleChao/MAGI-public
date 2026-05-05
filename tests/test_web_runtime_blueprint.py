@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sys
 import types
+from io import BytesIO
 from pathlib import Path
 
 from flask import Flask
@@ -217,3 +218,38 @@ def test_osc_chat_poll_and_judgments_routes(tmp_path):
     response = client.get("/api/osc/judgments_legacy", headers={"X-User-ID": "u1"})
     assert response.status_code == 200
     assert response.get_json() == [{"id": 1}]
+
+
+def test_osc_chat_upload_extracts_file_and_routes_to_orchestrator(tmp_path, monkeypatch):
+    from api.blueprints import web_runtime as mod
+
+    orchestrator = _Orchestrator(reply="upload reply")
+    monkeypatch.setattr(
+        mod,
+        "_extract_chat_upload_text",
+        lambda path, filename: {
+            "success": True,
+            "text": "這是檔案內容",
+            "kind": "txt",
+            "title": filename,
+            "error": "",
+        },
+    )
+
+    app = _make_app(tmp_path, orchestrator=orchestrator, normalize=lambda text, platform=None: text)
+    client = app.test_client()
+    response = client.post(
+        "/api/osc/chat/upload",
+        headers={"X-User-ID": "u1"},
+        data={"message": "請摘要", "file": (BytesIO("測試".encode("utf-8")), "note.txt")},
+        content_type="multipart/form-data",
+    )
+
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data["reply"] == "upload reply"
+    assert data["filename"] == "note.txt"
+    assert data["kind"] == "txt"
+    assert "note.txt" in orchestrator.calls[0]["message"]
+    assert "這是檔案內容" in orchestrator.calls[0]["message"]
+    assert (tmp_path / ".agent" / "chat_uploads").is_dir()

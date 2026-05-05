@@ -81,6 +81,11 @@ else:
         ("lumi",  "/Volumes/lumi"),
     ]
 _USER_MOUNT_ROOT = os.path.expanduser("~/.magi_mounts")
+_SYNOLOGY_DRIVE_CANDIDATES = (
+    os.path.expanduser("~/Library/CloudStorage/SynologyDrive-homes"),
+    os.path.expanduser("~/Library/CloudStorage/SynologyDrive-home"),
+    os.path.expanduser("~/SynologyDrive"),
+)
 
 # 背景監控 thread 名稱（用於偵測是否在線）
 MONITOR_THREADS = [
@@ -321,7 +326,7 @@ def _get_node_ip(name: str) -> str:
 def _get_disk_usage(path: str) -> tuple:
     """Return (used_gb, total_gb, percent) for a mount point, or None."""
     try:
-        if not os.path.ismount(path):
+        if not (os.path.ismount(path) or os.path.isdir(path)):
             return None
         st = os.statvfs(path)
         total = st.f_blocks * st.f_frsize
@@ -333,6 +338,16 @@ def _get_disk_usage(path: str) -> tuple:
         return (used_gb, total_gb, pct)
     except Exception:
         return None
+
+
+def _synology_drive_fallback_path() -> str:
+    for path in _SYNOLOGY_DRIVE_CANDIDATES:
+        try:
+            if os.path.isdir(path) and os.listdir(path):
+                return path
+        except OSError:
+            continue
+    return ""
 
 
 def _load_cron_jobs() -> list:
@@ -695,21 +710,31 @@ class MAGIMenuBar(rumps.App):
         # 各卷掛載 + 容量
         shares = {}
         any_mounted = False
+        any_synology_drive = False
         for share_name, mount_path in NAS_SHARES:
             # 檢查 /Volumes/<share>, -1, -2, 以及 ~/.magi_mounts/<share>
             actual_path = mount_path
+            mode = "smb"
             user_path = os.path.join(_USER_MOUNT_ROOT, share_name)
             for candidate in (mount_path, mount_path + "-1", mount_path + "-2", user_path):
                 if os.path.ismount(candidate):
                     actual_path = candidate
                     break
             mounted = os.path.ismount(actual_path)
+            if not mounted and share_name == "homes":
+                fallback_path = _synology_drive_fallback_path()
+                if fallback_path:
+                    actual_path = fallback_path
+                    mounted = True
+                    mode = "synology_drive"
+                    any_synology_drive = True
             if mounted:
                 any_mounted = True
             disk = _get_disk_usage(actual_path) if mounted else None
-            shares[share_name] = {"mounted": mounted, "path": actual_path, "disk": disk}
+            shares[share_name] = {"mounted": mounted, "path": actual_path, "disk": disk, "mode": mode}
         cache["nas"] = {
             "lan": lan_ok, "vpn": vpn_ok, "mounted": any_mounted,
+            "synology_drive": any_synology_drive,
             "shares": shares,
         }
 
@@ -860,6 +885,8 @@ class MAGIMenuBar(rumps.App):
             _set_colored_title(self.nas_status_item, "  🟢 網路硬碟  區網掛載", None)
         elif nas.get("vpn") and nas.get("mounted"):
             _set_colored_title(self.nas_status_item, "  🟢 網路硬碟  VPN掛載", None)
+        elif nas.get("synology_drive"):
+            _set_colored_title(self.nas_status_item, "  🟢 網路硬碟  同步可用", None)
         elif nas.get("mounted"):
             _set_colored_title(self.nas_status_item, "  🟡 網路硬碟  連線不穩", None)
         elif nas.get("lan") or nas.get("vpn"):
@@ -874,17 +901,18 @@ class MAGIMenuBar(rumps.App):
             item = self.nas_share_items[share_name]
             if si.get("mounted"):
                 disk = si.get("disk")
+                mode_label = "同步可用" if si.get("mode") == "synology_drive" else "已掛載"
                 if disk:
                     used_gb, total_gb, pct = disk
                     bar = _mem_bar(pct, 6)
                     _set_colored_title(
                         item,
-                        f"    {bar} {share_name}  {used_gb:.0f}/{total_gb:.0f}G ({pct:.0f}%)",
+                        f"    {bar} {share_name}  {mode_label} {used_gb:.0f}/{total_gb:.0f}G ({pct:.0f}%)",
                         None,
                         small=True,
                     )
                 else:
-                    _set_colored_title(item, f"    🟢 {share_name}  已掛載", None, small=True)
+                    _set_colored_title(item, f"    🟢 {share_name}  {mode_label}", None, small=True)
             else:
                 _set_colored_title(item, f"    🔴 {share_name}  未掛載", None, small=True)
 
@@ -943,7 +971,7 @@ class MAGIMenuBar(rumps.App):
         else:
             expected = len(SERVICES) + len(OMLX_ENGINES)
         nodes_ok = nodes_up >= 1 if REMOTE_NODES else True
-        if total == expected and zombies == 0 and nodes_ok:
+        if total >= expected and zombies == 0 and nodes_ok:
             self.title = " MAGI " if not _night_mode else " MAGI \U0001f319"
         elif core_up >= 2:
             self.title = " MAGI \u26a0"

@@ -267,9 +267,22 @@ def _db_schema_chk_nb_guard() -> Dict[str, Any]:
         return out
 
     wanted = []
+    if _env_on("MAGI_SINGLE_MACHINE", True) or _env_on("MAGI_PREFER_LOCAL_DB", True):
+        wanted.append(
+            (
+                "OSC_ENV_LOCAL",
+                {
+                    "host": str(os.environ.get("OSC_DB_HOST") or os.environ.get("DB_HOST") or "127.0.0.1"),
+                    "port": int(os.environ.get("OSC_DB_PORT") or os.environ.get("DB_PORT") or "3306"),
+                    "user": str(os.environ.get("OSC_DB_USER") or os.environ.get("DB_USER") or "casper_service"),
+                    "password": str(os.environ.get("OSC_DB_PASSWORD") or os.environ.get("DB_PASSWORD") or ""),
+                    "database": str(os.environ.get("OSC_DB_NAME") or os.environ.get("DB_NAME") or "law_firm_data"),
+                },
+            )
+        )
     wanted_names = set(
         x.strip()
-        for x in str(os.environ.get("MAGI_SCHEMA_GUARD_PROFILES", "Studio_VPN_Remote,Home_Local_Test")).split(",")
+        for x in str(os.environ.get("MAGI_SCHEMA_GUARD_PROFILES", "Studio_Local,Home_Local_Test,Studio_VPN_Remote")).split(",")
         if x.strip()
     )
     for p in _load_mariadb_profiles():
@@ -1689,6 +1702,18 @@ def _big_brain_health_probe() -> Dict[str, Any]:
         "inference_probe": {},
         "error": "",
     }
+    if _env_on("MAGI_SINGLE_MACHINE", True) or _env_on("MAGI_AVOID_DISTRIBUTED", True):
+        out.update(
+            {
+                "ok": True,
+                "status": "single_machine_skipped",
+                "mode_before": "local",
+                "mode_after": "local",
+                "error": "",
+                "single_machine": True,
+            }
+        )
+        return out
     try:
         if MAGI_ROOT_DIR not in sys.path:
             sys.path.insert(0, MAGI_ROOT_DIR)
@@ -2875,7 +2900,7 @@ def _laf_condition_draft_one_shot(max_cases: int = 0) -> Dict[str, Any]:
         import laf_orchestrator as lo  # type: ignore
 
         orchestrator = lo.LAFOrchestrator(dry_run=False)
-        result = orchestrator.run_condition_drafts(max_cases=int(max_cases or 2))
+        result = orchestrator.run_condition_drafts(max_cases=int(max_cases), suppress_notify=True)
         if isinstance(result, dict):
             out.update(result)
             out["ok"] = bool(result.get("ok", True))
@@ -5002,12 +5027,14 @@ def main() -> int:
 
     def _read_kill_reason() -> str:
         """讀取外部程序在發送 SIGTERM 前寫入的中斷原因檔。"""
-        try:
-            reason = read_kill_reason(os.getpid(), root=MAGI_ROOT_DIR, delete=True)
-            if reason:
-                return reason
-        except Exception:
-            logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 5481, exc_info=True)
+        for _ in range(5):
+            try:
+                reason = read_kill_reason(os.getpid(), root=MAGI_ROOT_DIR, delete=True)
+                if reason:
+                    return reason
+            except Exception:
+                logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 5481, exc_info=True)
+            time.sleep(0.1)
         # Clean up stale per-PID files (orphans whose target process is long gone)
         try:
             cleanup_stale_kill_reason_files(root=MAGI_ROOT_DIR, max_age_seconds=3600)

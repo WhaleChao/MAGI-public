@@ -60,6 +60,9 @@ def test_register_core_blueprints_exposes_dashboard_routes(monkeypatch):
     routes = {rule.rule for rule in app.url_map.iter_rules()}
     assert "/dashboard" in routes
     assert "/dashboard/nerv" in routes
+    assert "/magi-adjust" in routes
+    assert "/golem" in routes
+    assert "/api/golem/status" in routes
     assert "/intel" in routes
     assert "/openclaw" in routes
 

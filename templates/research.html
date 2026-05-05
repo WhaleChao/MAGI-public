@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>研究 — MAGI</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='golem/golem-console.css') }}?v=20260505-research-v1">
+</head>
+<body>
+    <header class="topbar">
+        <div>
+            <div class="eyebrow">MAGI</div>
+            <h1>研究</h1>
+        </div>
+        <nav class="topnav" aria-label="研究頁面導覽">
+            <a href="/dashboard">返回 MAGI</a>
+            <a href="/intel">全球新聞網</a>
+            <a href="/osc">Paperclip</a>
+        </nav>
+    </header>
+
+    <main class="console-shell research-shell">
+        <section class="research-hero">
+            <div>
+                <span class="system-pill">每日研究來源</span>
+                <h2>研究</h2>
+                <p>整理原本會經由 DC topic 回報的研究命名空間、來源網址與每日爬蟲目標。</p>
+            </div>
+            <div class="research-stats" aria-label="研究統計">
+                <div><strong>{{ research.namespace_count }}</strong><span>命名空間</span></div>
+                <div><strong>{{ research.source_total }}</strong><span>研究來源</span></div>
+                <div><strong>{{ research.crawl_targets|length }}</strong><span>每日爬蟲</span></div>
+            </div>
+        </section>
+
+        <section class="research-layout">
+            <section class="research-main" aria-label="研究命名空間">
+                {% for ns in research.namespaces %}
+                <article class="research-card">
+                    <div class="research-card-head">
+                        <div>
+                            <h3>{{ ns.name }}</h3>
+                            <p>DC topic：{{ ns.topic_key }}</p>
+                        </div>
+                        <span>{{ ns.sources|length }} 個來源</span>
+                    </div>
+                    <div class="keyword-strip">
+                        {% for keyword in ns.keywords[:8] %}
+                        <span>{{ keyword }}</span>
+                        {% endfor %}
+                    </div>
+                    <details class="source-details">
+                        <summary>查看研究連結</summary>
+                        <div class="source-list">
+                            {% for source in ns.sources %}
+                            <a href="{{ source.url }}" target="_blank" rel="noopener noreferrer">
+                                <strong>{{ source.note or source.url }}</strong>
+                                <span>{{ source.type }}{% if source.lang %} · {{ source.lang }}{% endif %}</span>
+                            </a>
+                            {% endfor %}
+                        </div>
+                    </details>
+                </article>
+                {% else %}
+                <article class="research-card">
+                    <h3>尚無研究命名空間</h3>
+                    <p>目前沒有可整理的研究來源。</p>
+                </article>
+                {% endfor %}
+            </section>
+
+            <aside class="research-side" aria-label="每日爬蟲與最近摘要">
+                <section class="research-card compact-list">
+                    <div class="research-card-head">
+                        <h3>每日爬蟲目標</h3>
+                        <span>{{ research.crawl_targets|length }}</span>
+                    </div>
+                    {% for target in research.crawl_targets %}
+                    <a href="{{ target.url }}" target="_blank" rel="noopener noreferrer">
+                        <strong>{{ target.note or target.url }}</strong>
+                        <span>{{ target.url }}</span>
+                    </a>
+                    {% else %}
+                    <p>尚無每日爬蟲目標。</p>
+                    {% endfor %}
+                </section>
+
+                <section class="research-card compact-list">
+                    <div class="research-card-head">
+                        <h3>最近摘要紀錄</h3>
+                    </div>
+                    {% for digest in research.digests %}
+                    <div class="digest-row">
+                        <strong>{{ digest.namespace }}</strong>
+                        <span>{{ digest.count or 0 }} 則 · {{ digest.ts }}</span>
+                    </div>
+                    {% else %}
+                    <p>尚無摘要紀錄。</p>
+                    {% endfor %}
+                </section>
+            </aside>
+        </section>
+    </main>
+</body>
+</html>

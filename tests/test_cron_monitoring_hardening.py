@@ -70,6 +70,60 @@ def test_autopilot_user_active_defer_defined_before_first_call():
     assert first_definition < first_call
 
 
+def test_daemon_autopilot_orphan_grace_matches_nightly_timeout():
+    source = Path("daemon.py").read_text(encoding="utf-8")
+
+    assert '"MAGI_ORPHAN_GRACE_AUTOPILOT_SEC", "21600"' in source
+    assert '"skills/magi-autopilot/action.py"' in source
+
+
+def test_daemon_force_reaper_still_respects_worker_grace():
+    source = Path("daemon.py").read_text(encoding="utf-8")
+    phase3 = source[source.index("if _is_worker_cmd(cmd):") : source.index("# Phase 4: Stale")]
+
+    assert "force only widens PPID matching" in phase3
+    assert "if etimes < _grace_for_cmd(cmd):" in phase3
+    assert "if (not force) and etimes < _grace_for_cmd(cmd):" not in phase3
+
+
+def test_autopilot_sigterm_waits_for_kill_reason_file():
+    source = Path("skills/magi-autopilot/action.py").read_text(encoding="utf-8")
+    read_reason = source[source.index("def _read_kill_reason") : source.index("def _term_handler")]
+
+    assert "for _ in range(5):" in read_reason
+    assert "time.sleep(0.1)" in read_reason
+
+
+def test_single_machine_policy_skips_distributed_probe_paths():
+    brain = Path("skills/brain_manager/action.py").read_text(encoding="utf-8")
+    autopilot = Path("skills/magi-autopilot/action.py").read_text(encoding="utf-8")
+    melchior = Path("skills/bridge/melchior_client.py").read_text(encoding="utf-8")
+
+    assert "MAGI_SINGLE_MACHINE" in brain
+    assert "if not _distributed_enabled():" in brain
+    assert "distributed disabled by MAGI_SINGLE_MACHINE/MAGI_AVOID_DISTRIBUTED" in brain
+    assert "single_machine_skipped" in autopilot
+    assert "MAGI_SINGLE_MACHINE" in melchior
+
+
+def test_single_machine_schema_guard_uses_local_osc_env_first():
+    source = Path("skills/magi-autopilot/action.py").read_text(encoding="utf-8")
+    guard = source[source.index("def _db_schema_chk_nb_guard") : source.index("def _remember_run_event")]
+
+    assert "OSC_ENV_LOCAL" in guard
+    assert '"casper_service"' in guard
+    assert "Studio_Local,Home_Local_Test,Studio_VPN_Remote" in guard
+
+
+def test_cron_uses_repo_omlx_switch_and_single_health_report_time():
+    jobs = Path("cron_jobs.json").read_text(encoding="utf-8")
+
+    assert "/Users/ai/Library/Application Support/MAGI/bin/omlx_switch_model.sh" not in jobs
+    assert "/Users/ai/Desktop/MAGI_v2/config/bin/omlx_switch_model.sh" in jobs
+    assert '"id": "job_health_report"' in jobs
+    assert '"cron": "30 6 * * *"' in jobs
+
+
 def test_obsidian_known_malformed_pdf_hints_include_fitz_xref_errors():
     import skills.obsidian.action as action
 

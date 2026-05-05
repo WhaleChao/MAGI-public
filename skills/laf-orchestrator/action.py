@@ -86,9 +86,21 @@ def _run_orchestrator(args_list, timeout=300, extra_env=None):
         )
         stdout = (r.stdout or "").strip()
         stderr = (r.stderr or "").strip()
-        # Try to extract JSON from stdout (last valid JSON block)
+        # Try to extract JSON from stdout.  The orchestrator wraps portal
+        # results in sentinel markers because verbose browser logs may appear
+        # around a multi-line JSON object.
         result = None
+        start = "===MAGI_RESULT_JSON_START==="
+        end = "===MAGI_RESULT_JSON_END==="
+        if start in stdout and end in stdout:
+            try:
+                block = stdout.split(start, 1)[1].split(end, 1)[0].strip()
+                result = json.loads(block)
+            except Exception:
+                result = None
         for line in reversed(stdout.splitlines()):
+            if result is not None:
+                break
             line = line.strip()
             if line.startswith("{"):
                 try:
@@ -460,6 +472,7 @@ def main():
             client_name=args.client,
             reason=args.reason,
             fields_json=args.fields_json,
+            suppress_notify=bool(getattr(args, 'no_notify', False)),
         )
         print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
         return 0 if result.get("success") else 1

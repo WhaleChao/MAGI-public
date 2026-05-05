@@ -26,6 +26,7 @@ import os
 import shutil
 import subprocess
 import time
+import textwrap
 import zipfile
 from email import policy
 from pathlib import Path
@@ -100,11 +101,118 @@ def _cache_lru_cleanup():
 # ── Office → PDF ────────────────────────────────────────────────────────
 
 
+def _write_text_pdf(lines: list[str], out_path: Path, *, title: str) -> Optional[str]:
+    """Write a simple browser-renderable PDF for Office fallback preview."""
+    try:
+        from reportlab.lib.pagesizes import A4
+        from reportlab.pdfbase import pdfmetrics
+        from reportlab.pdfbase.cidfonts import UnicodeCIDFont
+        from reportlab.pdfgen import canvas
+    except Exception as e:
+        _log.error("office fallback PDF unavailable: %s", e)
+        return None
+
+    try:
+        font_name = "STSong-Light"
+        try:
+            pdfmetrics.registerFont(UnicodeCIDFont(font_name))
+        except Exception:
+            font_name = "Helvetica"
+
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        c = canvas.Canvas(str(out_path), pagesize=A4)
+        width, height = A4
+        margin = 42
+        y = height - margin
+
+        c.setFont(font_name, 13)
+        c.drawString(margin, y, title[:80])
+        y -= 24
+        c.setFont(font_name, 10)
+        c.drawString(margin, y, "LibreOffice 轉檔逾時或失敗，MAGI 已改用文字預覽。")
+        y -= 26
+
+        c.setFont(font_name, 11)
+        for raw in lines or ["（文件沒有可抽取的文字內容）"]:
+            chunks = textwrap.wrap(str(raw), width=58, replace_whitespace=False, drop_whitespace=False) or [""]
+            for line in chunks:
+                if y < margin:
+                    c.showPage()
+                    c.setFont(font_name, 11)
+                    y = height - margin
+                c.drawString(margin, y, line[:120])
+                y -= 16
+        c.save()
+        return str(out_path) if out_path.exists() else None
+    except Exception as e:
+        _log.error("office fallback PDF failed: %s", e)
+        return None
+
+
+def _extract_office_text(path: str) -> list[str]:
+    ext = Path(path).suffix.lower()
+    lines: list[str] = []
+    if ext in {".docx", ".doc"}:
+        try:
+            from docx import Document
+            doc = Document(path)
+            for p in doc.paragraphs:
+                text = (p.text or "").strip()
+                if text:
+                    lines.append(text)
+            for table in doc.tables:
+                for row in table.rows:
+                    cells = [(cell.text or "").strip().replace("\n", " ") for cell in row.cells]
+                    if any(cells):
+                        lines.append(" | ".join(cells))
+        except Exception as e:
+            lines.append(f"DOCX 文字抽取失敗：{e}")
+    elif ext in {".xlsx", ".xls", ".ods"}:
+        try:
+            import openpyxl
+            wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
+            for ws in wb.worksheets[:5]:
+                lines.append(f"[{ws.title}]")
+                for row in ws.iter_rows(max_row=80, values_only=True):
+                    cells = ["" if v is None else str(v) for v in row]
+                    if any(cells):
+                        lines.append(" | ".join(cells))
+        except Exception as e:
+            lines.append(f"試算表文字抽取失敗：{e}")
+    elif ext in {".pptx", ".ppt", ".odp"}:
+        try:
+            from pptx import Presentation
+            prs = Presentation(path)
+            for i, slide in enumerate(prs.slides, start=1):
+                lines.append(f"[投影片 {i}]")
+                for shape in slide.shapes:
+                    text = (getattr(shape, "text", "") or "").strip()
+                    if text:
+                        lines.extend([s.strip() for s in text.splitlines() if s.strip()])
+        except Exception as e:
+            lines.append(f"簡報文字抽取失敗：{e}")
+    return lines
+
+
+def _preview_office_text_fallback(path: str) -> Optional[str]:
+    key = _cache_key(path)
+    cached = CACHE_DIR / f"{key}.fallback.pdf"
+    if cached.exists():
+        os.utime(cached, None)
+        return str(cached)
+    title = f"文字預覽：{Path(path).name}"
+    lines = _extract_office_text(path)
+    result = _write_text_pdf(lines, cached, title=title)
+    if result:
+        _cache_lru_cleanup()
+    return result
+
+
 def preview_office_to_pdf(path: str) -> Optional[str]:
     soffice = _soffice_path()
     if not soffice:
         _log.warning("preview_office_to_pdf: soffice binary not found")
-        return None
+        return _preview_office_text_fallback(path)
     key = _cache_key(path)
     cached = CACHE_DIR / f"{key}.pdf"
     if cached.exists():
@@ -122,19 +230,19 @@ def preview_office_to_pdf(path: str) -> Optional[str]:
         )
         if proc.returncode != 0:
             _log.error("soffice convert failed rc=%s err=%s", proc.returncode, proc.stderr[:200])
-            return None
+            return _preview_office_text_fallback(path)
     except subprocess.TimeoutExpired:
         _log.error("soffice convert timeout for %s", path)
-        return None
+        return _preview_office_text_fallback(path)
     except OSError as e:
         _log.error("soffice convert OSError: %s", e)
-        return None
+        return _preview_office_text_fallback(path)
 
     # soffice writes <basename_no_ext>.pdf
     src_stem = Path(path).stem
     out_default = CACHE_DIR / f"{src_stem}.pdf"
     if not out_default.exists():
-        return None
+        return _preview_office_text_fallback(path)
     try:
         out_default.rename(cached)
     except OSError:

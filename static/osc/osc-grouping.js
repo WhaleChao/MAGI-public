@@ -16,6 +16,10 @@ function bindSidebarGroups() {
             const children = document.querySelector(`[data-group-children="${groupName}"]`);
             const wasOpen = children && !children.hasAttribute('hidden');
             toggleGroup(groupName, !wasOpen);
+            const isMobilePaperclip = window.matchMedia && window.matchMedia("(max-width: 760px)").matches;
+            if (isMobilePaperclip) {
+                return;
+            }
             // 展開時自動點第一個 sub-tab（如果尚未 active）
             if (children && !children.hasAttribute('hidden')) {
                 const firstSub = children.querySelector('.tab-btn[data-tab]');

@@ -11,6 +11,9 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import shutil
+import socket
+import subprocess
 import time
 from api.thread_pools import io_pool
 from datetime import datetime
@@ -243,6 +246,107 @@ def create_admin_runtime_blueprint(
     def _load_status_payload() -> dict[str, Any]:
         return json.loads(status_file.read_text(encoding="utf-8"))
 
+    def _run_status_command(args: list[str], *, timeout: int = 4) -> subprocess.CompletedProcess:
+        return subprocess.run(args, capture_output=True, text=True, timeout=timeout)
+
+    def _launchctl_list_contains(label: str) -> bool:
+        try:
+            result = _run_status_command(["launchctl", "list"], timeout=4)
+            text = f"{getattr(result, 'stdout', '')}\n{getattr(result, 'stderr', '')}"
+            return label in text
+        except Exception:
+            return False
+
+    def _cloudflare_tunnel_url() -> str:
+        candidates = [
+            agent_dir / "cloudflare_tunnel_url.txt",
+            root / ".agent" / "cloudflare_tunnel_url.txt",
+            root / "logs" / "cloudflared.log",
+        ]
+        import re as _re
+        for path in candidates:
+            try:
+                text = path.read_text(encoding="utf-8", errors="ignore")
+            except Exception:
+                continue
+            match = _re.search(r"https://[a-z0-9-]+\.trycloudflare\.com", text)
+            if match:
+                return match.group(0)
+        return ""
+
+    def _tailscale_status() -> dict[str, Any]:
+        tailscale_bin = shutil.which("tailscale") or "/opt/homebrew/bin/tailscale"
+        installed = bool(tailscale_bin and os.path.exists(tailscale_bin))
+        payload: dict[str, Any] = {
+            "installed": installed,
+            "running": _launchctl_list_contains("tailscale") or _launchctl_list_contains("homebrew.mxcl.tailscale"),
+            "ip": "",
+            "dns_name": "",
+            "status": "offline",
+        }
+        if not installed:
+            return payload
+        try:
+            result = _run_status_command([tailscale_bin, "status", "--json"], timeout=5)
+            raw = getattr(result, "stdout", "") or ""
+            if getattr(result, "returncode", 1) == 0 and raw.strip():
+                data = json.loads(raw)
+                self_node = data.get("Self") or {}
+                ips = self_node.get("TailscaleIPs") or []
+                payload["ip"] = str(ips[0] if ips else "")
+                payload["dns_name"] = str(self_node.get("DNSName") or "").rstrip(".")
+                payload["running"] = True
+        except Exception:
+            logger.debug("silent-catch in _tailscale_status", exc_info=True)
+        payload["status"] = "online" if payload.get("running") else "offline"
+        return payload
+
+    def _chrome_remote_desktop_status() -> dict[str, Any]:
+        host_app = Path("/Library/PrivilegedHelperTools/ChromeRemoteDesktopHost.app")
+        config_path = Path("/Library/PrivilegedHelperTools/org.chromium.chromoting.json")
+        enabled_flag = Path("/Library/PrivilegedHelperTools/org.chromium.chromoting.me2me_enabled")
+        running = _launchctl_list_contains("org.chromium.chromoting")
+        installed = host_app.exists()
+        return {
+            "installed": installed,
+            "configured": config_path.exists() or enabled_flag.exists(),
+            "running": running,
+            "status": "online" if installed and running else ("ready" if installed else "missing"),
+            "access_url": "https://remotedesktop.google.com/access",
+            "setup_url": "https://remotedesktop.google.com/headless",
+        }
+
+    def _mac_screen_sharing_status(tailscale: dict[str, Any]) -> dict[str, Any]:
+        running = _launchctl_list_contains("com.apple.screensharing") or _launchctl_list_contains("RemoteDesktop")
+        host = str(tailscale.get("dns_name") or tailscale.get("ip") or socket.gethostname() or "").strip()
+        vnc_url = f"vnc://{host}" if host else ""
+        return {
+            "running": running,
+            "status": "online" if running else "manual",
+            "vnc_url": vnc_url,
+        }
+
+    def _remote_access_payload() -> dict[str, Any]:
+        tailscale = _tailscale_status()
+        chrome_remote = _chrome_remote_desktop_status()
+        screen_sharing = _mac_screen_sharing_status(tailscale)
+        cloudflare_url = _cloudflare_tunnel_url()
+        return {
+            "ok": True,
+            "hostname": socket.gethostname(),
+            "google_remote_desktop": chrome_remote,
+            "tailscale": tailscale,
+            "screen_sharing": screen_sharing,
+            "cloudflare": {
+                "status": "online" if cloudflared_alive() else "offline",
+                "url": cloudflare_url,
+            },
+            "policy": {
+                "public_vnc_exposed": False,
+                "message": "只提供已驗證遠端工具入口；不開放裸 VNC 到公網。",
+            },
+        }
+
     @bp.route("/dashboard/nerv/api/health")
     @login_required
     def nerv_api_health():
@@ -372,6 +476,7 @@ def create_admin_runtime_blueprint(
             "office_app": _office_app,
             "caddy_proxy": _caddy_proxy,
             "skills": _skills,
+            "remote_access": _remote_access_payload,
         }
         futures = {name: io_pool.submit(fn) for name, fn in checks.items()}
         for name, future in futures.items():
@@ -399,6 +504,53 @@ def create_admin_runtime_blueprint(
                 results["faiss"] = {"ok": False, "vectors": 0}
 
         return jsonify(results)
+
+    @bp.route("/api/nerv/remote-access", methods=["GET"])
+    def api_nerv_remote_access():
+        auth_error = require_json_auth()
+        if auth_error:
+            return auth_error
+        try:
+            return jsonify(_remote_access_payload())
+        except Exception as exc:
+            logger.error("NERV remote access status failed: %s", exc, exc_info=True)
+            return jsonify({"ok": False, "error": str(exc)}), 500
+
+    @bp.route("/api/nerv/remote-access/action", methods=["POST"])
+    def api_nerv_remote_access_action():
+        auth_error = require_json_auth(admin=True)
+        if auth_error:
+            return auth_error
+        payload = request.get_json(silent=True) or {}
+        action = str(payload.get("action") or "").strip()
+        actions = {
+            "open_google_remote_desktop": [
+                "open",
+                "https://remotedesktop.google.com/access",
+            ],
+            "open_google_remote_setup": [
+                "open",
+                "https://remotedesktop.google.com/headless",
+            ],
+            "open_screen_sharing_settings": [
+                "open",
+                "x-apple.systempreferences:com.apple.Screen-Sharing-Settings.extension",
+            ],
+            "open_tailscale": [
+                "open",
+                "-a",
+                "Tailscale",
+            ],
+        }
+        cmd = actions.get(action)
+        if not cmd:
+            return jsonify({"ok": False, "error": "unsupported_action"}), 400
+        try:
+            subprocess.Popen(cmd, cwd=str(root))
+            return jsonify({"ok": True, "action": action, "remote_access": _remote_access_payload()})
+        except Exception as exc:
+            logger.error("NERV remote access action failed: %s", exc, exc_info=True)
+            return jsonify({"ok": False, "error": str(exc)}), 500
 
     @bp.route("/api/system-test", methods=["POST"])
     @login_required
@@ -1058,17 +1210,10 @@ def create_admin_runtime_blueprint(
             checks["operational_health"] = {"ok": False, "detail": str(exc)[:120]}
 
         try:
-            from api.nas_mount_guard import _SHARES, _is_mounted, _USER_MOUNT_ROOT
-            import os as _os_health
+            from api.nas_mount_guard import _SHARES, get_share_available_path
 
             def _nas_check(share_name, vol):
-                if _is_mounted(vol):
-                    return True
-                for suffix in ("-1", "-2"):
-                    if _is_mounted(vol + suffix):
-                        return True
-                user_vol = _os_health.path.join(_USER_MOUNT_ROOT, share_name)
-                return _is_mounted(user_vol)
+                return bool(get_share_available_path(share_name, vol))
 
             checks["nas"] = {vol.split("/")[-1]: _nas_check(name, vol) for name, vol in _SHARES}
         except Exception:

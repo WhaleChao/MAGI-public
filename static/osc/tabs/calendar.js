@@ -64,7 +64,28 @@ function parseDate(s) {
 function fmtDate(d) { return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; }
 function fmtTime(d) { return `${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`; }
 function sameDay(a, b) { return a.getFullYear()===b.getFullYear() && a.getMonth()===b.getMonth() && a.getDate()===b.getDate(); }
-function evtColor(e) { return e.color || '#0ea5e9'; }
+function evtColor(e) {
+    const raw = String(e.color || "").trim();
+    const googleColors = {
+        "1": "#7986cb", "2": "#33b679", "3": "#8e24aa", "4": "#e67c73",
+        "5": "#f6c026", "6": "#f5511d", "7": "#039be5", "8": "#616161",
+        "9": "#3f51b5", "10": "#0b8043", "11": "#d60000",
+    };
+    if (googleColors[raw]) return googleColors[raw];
+    if (/^#?[0-9a-f]{6}$/i.test(raw)) return raw.startsWith("#") ? raw : `#${raw}`;
+    return "#0ea5e9";
+}
+function eventTextColor(bg) {
+    const s = String(bg || "").trim();
+    const hex = s.match(/^#?([0-9a-f]{6})$/i);
+    if (!hex) return "#fff";
+    const n = parseInt(hex[1], 16);
+    const r = (n >> 16) & 255;
+    const g = (n >> 8) & 255;
+    const b = n & 255;
+    const luminance = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
+    return luminance > 0.62 ? "#0f172a" : "#fff";
+}
 
 function eventsForDay(events, day) {
     const dayStr = fmtDate(day);
@@ -81,7 +102,8 @@ function eventsForDay(events, day) {
 function evtPill(e, showTime) {
     const s = parseDate(e.start_date);
     const timeStr = (showTime && s) ? `<span class="evt-time">${fmtTime(s)}</span> ` : '';
-    return `<div class="cal-evt" style="background:${evtColor(e)}" title="${esc(e.title)}${e.location ? ' @ '+esc(e.location) : ''}" data-act="cal-edit" data-id="${Number(e.id)}">${timeStr}${esc(e.title)}</div>`;
+    const bg = evtColor(e);
+    return `<div class="cal-evt" style="background:${esc(bg)};color:${eventTextColor(bg)}" title="${esc(e.title)}${e.location ? ' @ '+esc(e.location) : ''}" data-act="cal-edit" data-id="${Number(e.id)}">${timeStr}${esc(e.title)}</div>`;
 }
 
 function renderCalMonth(grid, titleEl, d, events) {

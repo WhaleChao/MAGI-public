@@ -1,0 +1,14 @@
+{
+  "appId": "tw.local.magi.mobile",
+  "appName": "MAGI Mobile",
+  "webDir": "www",
+  "server": {
+    "url": "https://aimac-mini.tail6738b7.ts.net",
+    "cleartext": false
+  },
+  "plugins": {
+    "SplashScreen": {
+      "launchAutoHide": true
+    }
+  }
+}

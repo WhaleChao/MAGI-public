@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>全球情報 — MAGI</title>
+    <title>全球新聞網 — MAGI</title>
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
         body {
@@ -76,10 +76,13 @@
 
         .report-card {
             background: #fff;
-            border-radius: 16px;
+            border-radius: 12px;
             box-shadow: 0 2px 12px rgba(0,0,0,0.06);
             margin-bottom: 20px;
             overflow: hidden;
+        }
+        .report-card.is-warning {
+            border: 1px solid rgba(255,149,0,0.35);
         }
         .report-header {
             padding: 16px 20px;
@@ -99,6 +102,7 @@
         .report-name {
             font-size: 0.82rem;
             color: #6E6E73;
+            overflow-wrap: anywhere;
         }
         .report-latest-badge {
             margin-left: auto;
@@ -119,6 +123,118 @@
             max-height: 600px;
             overflow-y: auto;
         }
+        .report-warning {
+            margin: 16px 20px 0;
+            padding: 12px 14px;
+            border-radius: 10px;
+            background: rgba(255,149,0,0.12);
+            color: #7A3E00;
+            font-size: 0.86rem;
+            line-height: 1.5;
+        }
+        .report-meta {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 0.74rem;
+            color: #8E8E93;
+        }
+        .report-document {
+            padding: 20px;
+            display: grid;
+            gap: 18px;
+        }
+        .report-stats {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+        }
+        .stat-pill {
+            border: 1px solid #D1E7DD;
+            background: #F3FBF7;
+            color: #0F5132;
+            border-radius: 999px;
+            padding: 5px 10px;
+            font-size: 0.78rem;
+            font-weight: 600;
+        }
+        .summary-section {
+            border-top: 1px solid #F2F2F7;
+            padding-top: 16px;
+        }
+        .summary-section h2,
+        .source-panel h2,
+        .news-panel h2 {
+            font-size: 1rem;
+            line-height: 1.35;
+            margin-bottom: 10px;
+            color: #1D1D1F;
+        }
+        .summary-list,
+        .source-list,
+        .news-list {
+            list-style: none;
+            display: grid;
+            gap: 10px;
+        }
+        .summary-list li {
+            border-left: 3px solid #007AFF;
+            padding-left: 10px;
+            color: #3A3A3C;
+            font-size: 0.9rem;
+            line-height: 1.65;
+        }
+        .source-panel,
+        .news-panel {
+            border-top: 1px solid #F2F2F7;
+            padding-top: 16px;
+        }
+        .source-list li {
+            color: #6E6E73;
+            font-size: 0.82rem;
+            line-height: 1.45;
+        }
+        .news-item {
+            border: 1px solid #E5E5EA;
+            border-radius: 10px;
+            padding: 12px;
+            background: #FBFBFD;
+        }
+        .news-source {
+            display: inline-block;
+            font-size: 0.72rem;
+            font-weight: 700;
+            color: #007AFF;
+            margin-bottom: 4px;
+        }
+        .news-title {
+            font-size: 0.92rem;
+            font-weight: 650;
+            line-height: 1.45;
+            color: #1D1D1F;
+        }
+        .news-summary {
+            margin-top: 5px;
+            color: #6E6E73;
+            font-size: 0.84rem;
+            line-height: 1.55;
+        }
+        .source-link {
+            display: inline-flex;
+            margin-top: 8px;
+            color: #007AFF;
+            font-size: 0.82rem;
+            font-weight: 600;
+            text-decoration: none;
+        }
+        .source-link:hover { text-decoration: underline; }
+        .legacy-note {
+            border-left: 3px solid #8E8E93;
+            padding-left: 10px;
+            color: #3A3A3C;
+            font-size: 0.9rem;
+            line-height: 1.6;
+        }
         .report-body::-webkit-scrollbar { width: 5px; }
         .report-body::-webkit-scrollbar-track { background: transparent; }
         .report-body::-webkit-scrollbar-thumb { background: #D1D1D6; border-radius: 3px; }
@@ -137,10 +253,10 @@
 </head>
 <body>
     <nav class="nav">
-        <span class="nav-title">🌐 全球情報</span>
-        <a href="/dashboard">← 主控台</a>
+        <span class="nav-title">全球新聞網</span>
+        <a href="/dashboard">返回 MAGI</a>
         <div class="nav-right">
-            <span style="font-size:0.78rem;color:#6E6E73;">每 6 小時更新</span>
+            <span style="font-size:0.78rem;color:#6E6E73;">每日更新</span>
             <form method="POST" action="/api/skills/run" style="display:inline;">
                 <input type="hidden" name="skill" value="worldmonitor-intel">
                 <input type="hidden" name="task" value="collect">
@@ -151,28 +267,86 @@
 
     <div class="page-wrap">
         <div class="page-header">
-            <h1>全球情報摘要</h1>
-            <p>由 MAGI Melchior 分析 BBC、NHK、Al Jazeera 等來源的每日情資</p>
+            <h1>全球新聞網</h1>
+            <p>由 MAGI Melchior 分析 BBC、NHK、Al Jazeera 等來源的每日新聞</p>
         </div>
 
         {% if reports %}
             {% for report in reports %}
-            <div class="report-card">
+            <div class="report-card{% if report.is_placeholder %} is-warning{% endif %}">
                 <div class="report-header">
                     <span class="report-date">{{ report.date_display }}</span>
                     <span class="report-name">{{ report.name }}</span>
+                    <span class="report-meta">{{ report.size_bytes }} bytes</span>
                     {% if loop.first %}
                     <span class="report-latest-badge">最新</span>
                     {% endif %}
                 </div>
-                <div class="report-body">{{ report.content }}</div>
+                {% if report.warning %}
+                <div class="report-warning">{{ report.warning }}</div>
+                {% endif %}
+                <article class="report-document">
+                    {% if report.meta %}
+                    <div class="report-stats">
+                        {% for key, value in report.meta.items() %}
+                        <span class="stat-pill">{{ key }}：{{ value }}</span>
+                        {% endfor %}
+                    </div>
+                    {% endif %}
+
+                    {% if report.sections %}
+                        {% for section in report.sections %}
+                        <section class="summary-section">
+                            <h2>{{ section.title }}</h2>
+                            <ul class="summary-list">
+                                {% for item in section["items"] %}
+                                <li>{{ item }}</li>
+                                {% endfor %}
+                            </ul>
+                        </section>
+                        {% endfor %}
+                    {% else %}
+                        <p class="legacy-note">{{ report.summary_text }}</p>
+                    {% endif %}
+
+                    {% if report.news_items %}
+                    <section class="news-panel">
+                        <h2>新聞來源與原文</h2>
+                        <ul class="news-list">
+                            {% for item in report.news_items %}
+                            <li class="news-item">
+                                <span class="news-source">{{ item.source }}</span>
+                                <div class="news-title">{{ item.title }}</div>
+                                {% if item.summary %}
+                                <p class="news-summary">{{ item.summary }}</p>
+                                {% endif %}
+                                {% if item.link %}
+                                <a class="source-link" href="{{ item.link }}" target="_blank" rel="noopener noreferrer">閱讀原文</a>
+                                {% endif %}
+                            </li>
+                            {% endfor %}
+                        </ul>
+                    </section>
+                    {% endif %}
+
+                    {% if report.source_health %}
+                    <section class="source-panel">
+                        <h2>來源狀態</h2>
+                        <ul class="source-list">
+                            {% for item in report.source_health %}
+                            <li>{{ item }}</li>
+                            {% endfor %}
+                        </ul>
+                    </section>
+                    {% endif %}
+                </article>
             </div>
             {% endfor %}
         {% else %}
             <div class="empty-state">
                 <div class="icon">🌐</div>
-                <h2>尚無情報</h2>
-                <p>點「立即更新」執行首次情報收集</p>
+                <h2>尚無新聞報告</h2>
+                <p>點「立即更新」執行首次新聞收集</p>
             </div>
         {% endif %}
     </div>

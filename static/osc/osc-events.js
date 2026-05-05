@@ -35,6 +35,7 @@ function bindTabs() {
             };
 
             if (tabId === "dashboard") _withLoading("載入儀表板...", loadDashboard);
+            if (tabId === "magiModules") renderCaseMagiActions(activeCaseMagiModuleKey());
             if (tabId === "cases") _withLoading("載入案件...", loadCases);
             if (tabId === "laf") _withLoading("載入法扶清單...", loadLaf);
             if (tabId === "clients") _withLoading("載入當事人...", loadClients);
@@ -47,12 +48,26 @@ function bindTabs() {
                 loadDocumentKeywords();
                 loadDocumentReplacements();
             }
+            if (tabId === "pdfTools") {
+                const pdfPath = document.getElementById("pdfToolPath");
+                if (pdfPath && !pdfPath.value) {
+                    const status = document.getElementById("pdfToolStatus");
+                    if (status) {
+                        status.hidden = false;
+                        status.className = "status-banner";
+                        status.textContent = "請從案件資料夾或書狀索引帶入 PDF，或直接貼上 PDF 路徑。";
+                    }
+                }
+            }
             if (tabId === "drafts") _withLoading("載入書狀草擬...", loadDraftComposer);
             if (tabId === "forms") {
                 const now = new Date();
                 const d = now.toISOString().slice(0, 10);
                 if (!document.getElementById("formDate").value) document.getElementById("formDate").value = d;
                 syncFormTypeFields();
+            }
+            if (tabId === "fileManager" && window.FileManager && typeof window.FileManager.loadCaseShortcuts === "function") {
+                window.FileManager.loadCaseShortcuts();
             }
             if (tabId === "lafWizard") {
                 // no-op: user-triggered actions only
@@ -83,14 +98,34 @@ function bindTabs() {
     });
 }
 
+function jumpToPaperclipTab(tabId) {
+    if (!tabId) return;
+    if (typeof autoExpandGroupForTab === "function") {
+        try { autoExpandGroupForTab(tabId); } catch (e) { console.warn("autoExpandGroupForTab failed:", e); }
+    }
+    const btn = document.querySelector(`.tab-btn[data-tab="${tabId}"]`);
+    if (btn) {
+        btn.click();
+        return;
+    }
+    const targetView = document.getElementById(tabId);
+    if (!targetView) return;
+    document.querySelectorAll(".tab-btn").forEach(b => b.classList.remove("active"));
+    document.querySelectorAll(".view").forEach(v => v.classList.remove("active"));
+    targetView.classList.add("active");
+    state.activeTab = tabId;
+}
+
 async function dispatchDelegatedAction(act, t) {
     const id = t.dataset.id;
     if (act === "case-edit") return await editCase(id);
     if (act === "case-del") return await delCase(id);
     if (act === "case-open") return await openCaseFolder(id);
-    if (act === "case-open-fm") return await openCaseInFileManager(id);
+    if (act === "case-open-fm") return await openCaseFolder(id);
     if (act === "case-workbench") return await openCaseWorkbench(id);
     if (act === "case-address-label") return addressLabelDialog(id);
+    if (act === "case-magi-tab") return jumpToPaperclipTab(t.dataset.tab || "");
+    if (act === "case-magi-command") return await runCaseMagiPreset(t.dataset.command || "", t.dataset.label || t.textContent.trim(), t.dataset.context === "1", t);
 
     if (act === "client-edit") return await editClient(id);
     if (act === "client-del") return await delClient(id);
@@ -107,6 +142,19 @@ async function dispatchDelegatedAction(act, t) {
     if (act === "doc-open") return await openDocumentPath(t.dataset.path || "");
     if (act === "doc-copy") return await copyDocumentPath(t.dataset.path || "");
     if (act === "doc-stamp") return await stampDocument(t.dataset.path || "");
+    if (act === "doc-pdf-tool") return setPdfToolPath(t.dataset.path || "");
+    if (act === "laf-open-checklist") return await openLafChecklistCase(t.dataset.case || "");
+    if (act === "laf-select-case") return await openLafCaseDetail(id);
+    if (act === "laf-status-update") return await updateLafCaseStatus(id);
+    if (act === "laf-scan") return await runLafScan();
+    if (act === "laf-batch-in-progress") return await batchLafStatusToInProgress();
+    if (act === "laf-open-doc-keyword") return await openLafKeywordDoc(id, t.dataset.keyword || "");
+    if (act === "laf-debt-tool") return openLafDebtTool(id, t.dataset.module || "");
+    if (act === "laf-case-action") return await runLafCaseAction(id, t.dataset.action || "");
+    if (act === "laf-export-activity") return downloadLafActivityCsv();
+    if (act === "laf-checklist-reload") return await reloadLafChecklistFromModal();
+    if (act === "laf-checklist-seed") return await seedLafChecklistFromModal();
+    if (act === "laf-checklist-add") return await addLafChecklistFromModal();
     if (act === "doc-tpl-edit") return await editDocumentTemplate(Number(id));
     if (act === "doc-tpl-del") return await delDocumentTemplate(Number(id));
     if (act === "doc-kw-edit") return await editDocumentKeyword(Number(id));
@@ -230,7 +278,11 @@ function bindGlobalDelegates() {
             const dirEl = document.getElementById(dirMap[viewId]);
             if (dirEl) dirEl.textContent = state.sort.dir === 1 ? '▲' : '▼';
 
-            if (viewId === "cases") renderCases();
+            if (viewId === "laf") {
+                state.lafSort = { col, dir: state.sort.dir, type };
+                renderLafCaseList(state.laf?.cases || []);
+            }
+            else if (viewId === "cases") renderCases();
             else if (viewId === "clients") renderClients();
             else if (viewId === "meetings") renderMeetings();
             else if (viewId === "calendar") renderCalendarEvents();
@@ -268,6 +320,16 @@ function bindEvents() {
         ["docClosingOverviewBtn", () => runDocCaseAction("closing_overview"), "結案資料彙整"],
         ["docLafProgressBtn", () => runDocCaseAction("laf_progress_summary"), "法扶進度盤點"],
         ["docLafClosingBtn", () => runDocCaseAction("laf_closing_status"), "結案狀況盤點"],
+        ["pdfInfoBtn", () => runPdfTool("info"), "PDF 資訊檢查"],
+        ["pdfUploadBtn", uploadPdfToolFile, "PDF 上傳"],
+        ["pdfTextBtn", () => runPdfTool("extract_text"), "PDF 抽出文字"],
+        ["pdfRotateBtn", () => runPdfTool("rotate"), "PDF 旋轉頁面"],
+        ["pdfExtractBtn", () => runPdfTool("extract_pages"), "PDF 擷取頁面"],
+        ["pdfSplitBtn", () => runPdfTool("split_ranges"), "PDF 拆分範圍"],
+        ["pdfMergeBtn", () => runPdfTool("merge"), "PDF 合併"],
+        ["pdfWatermarkBtn", () => runPdfTool("watermark"), "PDF 加浮水印"],
+        ["pdfOptimizeBtn", () => runPdfTool("optimize"), "PDF 最佳化"],
+        ["pdfEncryptBtn", () => runPdfTool("encrypt"), "PDF 加密副本"],
         ["lafWizardPreviewBtn", () => runLafWizard("preview"), "法扶精靈預覽"],
         ["lafWizardDraftBtn", () => runLafWizard("draft"), "法扶精靈存檔"],
         ["lafWizardSubmitBtn", () => runLafWizard("submit"), "法扶精靈送出"],
@@ -337,9 +399,30 @@ function bindEvents() {
         ["adminActivityLogsRefreshBtn", loadAdminActivityLogs, "活動紀錄重新整理"],
     ].forEach(([buttonId, fn, actionLabel]) => bindBusyClick(buttonId, fn, { actionLabel }));
 
-    document.getElementById("caseResetBtn").addEventListener("click", () => clearFields(["case_id", "case_case_number", "case_client_name", "case_client_phone", "case_client_email", "case_client_id_number", "case_category", "case_type", "case_stage", "case_reason", "case_laf_case_no", "case_application_no", "case_court_case_no", "case_status", "case_folder_path", "case_notes"]));
-    document.querySelectorAll("#caseCategoryTabs .chip").forEach(btn => {
-        btn.addEventListener("click", () => setCaseCategory(btn.dataset.cat || "全部"));
+    document.getElementById("caseResetBtn").addEventListener("click", () => clearFields(["case_id", "case_case_number", "case_client_name", "case_client_phone", "case_client_email", "case_client_id_number", "case_category", "case_type", "case_stage", "case_reason", "case_laf_case_no", "case_application_no", "case_court_name", "case_court_case_no", "case_status", "case_folder_path", "case_notes"]));
+    const caseNewBtn = document.getElementById("caseNewBtn");
+    if (caseNewBtn) caseNewBtn.addEventListener("click", prepareNewCase);
+    const caseMagiRunBtn = document.getElementById("caseMagiRunBtn");
+    if (caseMagiRunBtn) caseMagiRunBtn.addEventListener("click", runCaseMagiModule);
+    document.querySelectorAll("[data-magi-module]").forEach(btn => {
+        if (btn._magiModuleBound) return;
+        btn._magiModuleBound = true;
+        btn.addEventListener("click", () => selectCaseMagiModule(btn.dataset.magiModule || "laf"));
+    });
+    renderCaseMagiActions(activeCaseMagiModuleKey());
+    document.querySelectorAll("[data-tab-jump]").forEach(btn => {
+        if (btn._tabJumpBound) return;
+        btn._tabJumpBound = true;
+        btn.addEventListener("click", () => jumpToPaperclipTab(btn.dataset.tabJump || ""));
+    });
+    document.querySelectorAll("#caseTypeTabs .chip").forEach(btn => {
+        btn.addEventListener("click", () => setCaseType(btn.dataset.type || "全部"));
+    });
+    document.querySelectorAll("#caseKindTabs .chip").forEach(btn => {
+        btn.addEventListener("click", () => setCaseKind(btn.dataset.kind || "全部"));
+    });
+    document.querySelectorAll("#caseStatusTabs .chip").forEach(btn => {
+        btn.addEventListener("click", () => setCaseStatusScope(btn.dataset.scope || "working"));
     });
 
     // Cases CSV

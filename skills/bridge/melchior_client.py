@@ -180,6 +180,9 @@ def _avoid_distributed() -> bool:
     Runtime switch: keep distributed inference disabled unless explicitly turned off.
     This is checked dynamically so ops can flip env without code changes.
     """
+    single = os.environ.get("MAGI_SINGLE_MACHINE")
+    if single is not None and str(single).strip().lower() in {"1", "true", "yes", "on"}:
+        return True
     raw = os.environ.get("MAGI_AVOID_DISTRIBUTED")
     if raw is None:
         return bool(MAGI_AVOID_DISTRIBUTED_DEFAULT)

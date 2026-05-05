@@ -197,8 +197,14 @@ def _get_default_closed_roots() -> list[str]:
 
 
 # 保留名稱相容（module 級 list 導出，但避免使用 — 改用 _get_* 函式取得最新）
-# 這些只在 import 時產生一次，caller 若要動態同步必須呼叫 _get_default_closed_*()
-_DEFAULT_CLOSED_SHARE_ROOTS = _get_default_closed_share_roots()
+# 這些只在 import 時產生一次。不要在 import 階段 probe / 掛載結案 NAS，
+# 否則單純開進行中案件也可能被離線的結案磁碟拖住。
+_DEFAULT_CLOSED_SHARE_ROOTS = [
+    str(_HOME / "Library/CloudStorage/SynologyDrive-homes/lumi"),
+    str(_HOME / "SynologyDrive/homes/lumi"),
+    str(_HOME / "SynologyDrive/lumi"),
+    "/Volumes/lumi/lumi",
+]
 _DEFAULT_ACTIVE_ROOTS = [
     root.rstrip("/") + "/01_案件" for root in _DEFAULT_ACTIVE_SHARE_ROOTS
 ]
@@ -427,13 +433,22 @@ def local_synology_path_candidates(path: str, cfg: Optional[dict] = None) -> lis
             candidates.append(volume)
 
     active_roots = default_synology_share_roots(include_closed=False, cfg=cfg)
-    all_roots = default_synology_share_roots(include_closed=True, cfg=cfg)
-    closed_roots = all_roots[len(active_roots) :]
+    import re as _re
+    needs_closed_roots = (
+        s.startswith("Y:/")
+        or s.startswith("Y:\\")
+        or "/03_工作資料/10_結案" in s
+        or "\\03_工作資料\\10_結案" in s
+        or bool(_re.match(r"^/Volumes/lumi(?:-\d+)?/lumi/", s))
+    )
+    closed_roots: list[str] = []
+    if needs_closed_roots:
+        all_roots = default_synology_share_roots(include_closed=True, cfg=cfg)
+        closed_roots = all_roots[len(active_roots) :]
 
     candidates.extend(_expand_from_prefix(s, _ACTIVE_SHARE_PREFIXES, active_roots))
     candidates.extend(_expand_from_prefix(s, _CLOSED_SHARE_PREFIXES, closed_roots))
 
-    import re as _re
     # 支援 /Volumes/homes/lumi63181107/ 和 /Volumes/homes-N/lumi63181107/
     _homes_match = _re.match(r"^/Volumes/homes(?:-\d+)?/lumi63181107/(.*)$", s)
     if _homes_match:

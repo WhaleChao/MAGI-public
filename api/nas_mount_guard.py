@@ -54,16 +54,39 @@ _SYNOLOGY_DRIVE_CANDIDATES = (
 
 def _synology_drive_available() -> bool:
     """檢查 SynologyDrive 本地同步是否可用（MAGI 的 NAS fallback 路徑）。"""
+    return bool(get_synology_drive_fallback_path())
+
+
+def get_synology_drive_fallback_path() -> str:
+    """回傳可用的 Synology Drive 本地同步根目錄；沒有則回空字串。"""
     for p in _SYNOLOGY_DRIVE_CANDIDATES:
         try:
             if os.path.isdir(p):
                 # 目錄存在且有內容 → 視為 fallback 可用
                 entries = os.listdir(p)
                 if entries:
-                    return True
+                    return p
         except OSError:
             continue
-    return False
+    return ""
+
+
+def get_share_available_path(share_name: str, volume_path: str) -> str:
+    """回傳 share 目前可用路徑，包含 SMB 掛載與 Synology Drive fallback。"""
+    user_mount = os.path.join(_USER_MOUNT_ROOT, share_name)
+    for candidate in (volume_path, f"{volume_path}-1", f"{volume_path}-2", user_mount):
+        if _is_mounted(candidate):
+            try:
+                if candidate == user_mount or _is_correct_host(candidate):
+                    return candidate
+            except Exception:
+                if candidate == user_mount:
+                    return candidate
+    if share_name == "homes":
+        fallback = get_synology_drive_fallback_path()
+        if fallback:
+            return fallback
+    return ""
 
 
 def _ping_ok(host: str, timeout: int = 2) -> bool:
@@ -403,16 +426,9 @@ def _ensure_nas_mounts_locked() -> dict[str, bool]:
     for share_name, volume_path in _SHARES:
         short_name = volume_path.split("/")[-1]
 
-        # 檢查正名、-N 後綴、user-level mount 是否有可用掛載
-        user_mount = os.path.join(_USER_MOUNT_ROOT, share_name)
-        effective_path = volume_path
-        for candidate in (volume_path, f"{volume_path}-1", f"{volume_path}-2", user_mount):
-            if _is_mounted(candidate) and _is_correct_host(candidate):
-                effective_path = candidate
-                break
-
         # 已掛載且指向已知 NAS IP → 不動（無論 LAN 或 Tailscale）
-        if _is_mounted(effective_path) and _is_correct_host(effective_path):
+        effective_path = get_share_available_path(share_name, volume_path)
+        if effective_path:
             results[short_name] = True
             continue
 
@@ -496,8 +512,6 @@ def start_nas_mount_guard(interval: int = 120) -> None:
     global _guard_thread
     if _guard_thread is not None and _guard_thread.is_alive():
         return
-
-    ensure_nas_mounts()
 
     _guard_thread = threading.Thread(
         target=_guard_loop,

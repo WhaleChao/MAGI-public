@@ -16,6 +16,7 @@ import os
 import re
 import subprocess
 import threading
+import uuid
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
@@ -23,6 +24,7 @@ from typing import Any
 
 from flask import Blueprint, jsonify, render_template, request
 from flask_login import current_user, login_required
+from werkzeug.utils import secure_filename
 
 
 def _parse_etime_to_sec(raw: str) -> int:
@@ -77,6 +79,21 @@ def _process_monitor_markers(magi_root: Path) -> tuple[list[str], list[str], dic
         "rpc-server": "RPC Worker",
     }
     return worker_markers, core_markers, core_labels
+
+
+def _chat_upload_dir(magi_root: Path) -> Path:
+    path = magi_root / ".agent" / "chat_uploads"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _extract_chat_upload_text(path: Path, filename: str) -> dict[str, Any]:
+    try:
+        from api.handlers.document_handler import extract_text_from_uploaded_file
+
+        return extract_text_from_uploaded_file(str(path), filename=filename)
+    except Exception as exc:
+        return {"success": False, "text": "", "kind": "", "title": filename, "error": str(exc)}
 
 
 def _collect_process_monitor(
@@ -183,6 +200,46 @@ def _collect_process_monitor(
         "duplicates": sorted(duplicates, key=lambda x: x.get("count", 0), reverse=True),
         "guardian_state": guardian_state,
     }
+
+
+_MAGI_MODULE_COMMANDS = {
+    "laf": {
+        "label": "法扶",
+        "commands": ("法扶指令", "二階段批次", "批次二階段", "二階段掃描", "報結掃描", "自動報結掃描", "批次報結", "結案掃描"),
+    },
+    "file_review": {
+        "label": "閱卷",
+        "commands": ("檢查閱卷信箱", "閱卷信箱", "閱卷郵件", "下載閱卷", "閱卷下載", "閱卷到期檢查", "閱卷到期", "閱卷期限"),
+    },
+    "transcript": {
+        "label": "筆錄",
+        "commands": ("下載筆錄", "筆錄下載", "調閱筆錄", "筆錄調閱", "筆錄同步", "同步筆錄", "筆錄全同步", "筆錄更名", "更名筆錄"),
+    },
+}
+
+
+def _allowed_magi_module_command(module_key: str, command: str) -> tuple[bool, str]:
+    meta = _MAGI_MODULE_COMMANDS.get(module_key)
+    if not meta:
+        return False, "unknown_module"
+    text = str(command or "").strip()
+    if not text:
+        return False, "empty_command"
+    for prefix in meta["commands"]:
+        if text == prefix or text.startswith(prefix + " ") or text.startswith(prefix + "　"):
+            return True, ""
+    return False, "unsupported_command"
+
+
+def _magi_module_runs_in_background(module_key: str, command: str) -> bool:
+    text = str(command or "").strip()
+    if module_key == "file_review":
+        return True
+    if module_key == "transcript":
+        return True
+    if module_key == "laf" and text != "法扶指令":
+        return True
+    return False
 
 
 def create_web_runtime_blueprint(
@@ -377,6 +434,146 @@ def create_web_runtime_blueprint(
         except Exception:
             logger.debug("silent-catch in osc_chat_api", exc_info=True)
         return jsonify({"reply": reply})
+
+    @bp.route("/api/osc/magi-modules/run", methods=["POST"])
+    @login_required
+    def osc_magi_modules_run_api():
+        data = request.get_json(silent=True) or {}
+        module_key = str(data.get("module") or "").strip()
+        command = str(data.get("command") or "").strip()
+        ok, reason = _allowed_magi_module_command(module_key, command)
+        if not ok:
+            meta = _MAGI_MODULE_COMMANDS.get(module_key)
+            return jsonify(
+                {
+                    "ok": False,
+                    "error": reason,
+                    "message": "此頁籤只接受法扶、閱卷、筆錄三模組的正式命令。",
+                    "module": module_key,
+                    "allowed_commands": list(meta["commands"]) if meta else [],
+                }
+            ), 400
+
+        meta = _MAGI_MODULE_COMMANDS[module_key]
+        if _magi_module_runs_in_background(module_key, command):
+            user_id = str(current_user.id)
+            role = current_user.role
+
+            def _run_background_module() -> None:
+                try:
+                    orchestrator.process_message(
+                        user_id=user_id,
+                        message=command,
+                        platform="WEB",
+                        role=role,
+                    )
+                except Exception:
+                    logger.exception("MAGI module background command failed: %s %s", module_key, command[:80])
+
+            thread = threading.Thread(target=_run_background_module, daemon=True)
+            thread.start()
+            return jsonify(
+                {
+                    "ok": True,
+                    "background": True,
+                    "module": module_key,
+                    "module_label": meta["label"],
+                    "command": command,
+                    "reply": f"已啟動{meta['label']}模組：{command}\\n背景作業完成後會由 MAGI 通知或寫入對應紀錄。",
+                }
+            ), 202
+
+        reply = orchestrator.process_message(
+            user_id=str(current_user.id),
+            message=command,
+            platform="WEB",
+            role=current_user.role,
+        )
+        try:
+            if normalize_output_text:
+                reply = normalize_output_text(str(reply or ""), platform="WEB")
+        except Exception:
+            logger.debug("silent-catch in osc_magi_modules_run_api", exc_info=True)
+        return jsonify(
+            {
+                "ok": True,
+                "module": module_key,
+                "module_label": meta["label"],
+                "command": command,
+                "reply": reply,
+            }
+        )
+
+    @bp.route("/api/osc/chat/upload", methods=["POST"])
+    @login_required
+    def osc_chat_upload_api():
+        msg = (request.form.get("message") or "").strip()
+        file = request.files.get("file")
+        if not file or not file.filename:
+            return jsonify({"error": "請先選擇檔案"}), 400
+
+        max_mb = int(os.environ.get("MAGI_WEB_CHAT_UPLOAD_MAX_MB", "200") or "200")
+        content_length = int(request.content_length or 0)
+        if max_mb > 0 and content_length > max_mb * 1024 * 1024:
+            return jsonify({"error": f"檔案過大，請選擇 {max_mb}MB 以下的檔案"}), 413
+
+        original_name = Path(file.filename).name
+        safe_name = secure_filename(original_name) or f"upload_{uuid.uuid4().hex}"
+        stored_name = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}_{safe_name}"
+        target = _chat_upload_dir(root) / stored_name
+        try:
+            file.save(target)
+        except Exception as exc:
+            return jsonify({"error": f"檔案儲存失敗：{exc}"}), 500
+
+        extracted = _extract_chat_upload_text(target, original_name)
+        if not extracted.get("success"):
+            return jsonify(
+                {
+                    "error": f"檔案已接收，但無法讀取內容：{extracted.get('error') or 'extract_failed'}",
+                    "filename": original_name,
+                    "path": str(target),
+                }
+            ), 422
+
+        text = str(extracted.get("text") or "").strip()
+        max_chars = int(os.environ.get("MAGI_WEB_CHAT_UPLOAD_TEXT_MAX_CHARS", "120000") or "120000")
+        truncated = False
+        if max_chars > 0 and len(text) > max_chars:
+            text = text[:max_chars]
+            truncated = True
+
+        user_instruction = msg or "請摘要這份檔案，必要時整理成可翻譯或分析的重點。"
+        prompt = (
+            f"{user_instruction}\n\n"
+            f"[上傳檔案]\n"
+            f"檔名：{original_name}\n"
+            f"類型：{extracted.get('kind') or 'file'}\n"
+            f"儲存位置：{target}\n"
+            f"內容{'（因長度限制已截斷）' if truncated else ''}：\n"
+            f"{text}"
+        )
+        reply = orchestrator.process_message(
+            user_id=str(current_user.id),
+            message=prompt,
+            platform="WEB",
+            role=current_user.role,
+        )
+        try:
+            if normalize_output_text:
+                reply = normalize_output_text(str(reply or ""), platform="WEB")
+        except Exception:
+            logger.debug("silent-catch in osc_chat_upload_api", exc_info=True)
+        return jsonify(
+            {
+                "reply": reply,
+                "filename": original_name,
+                "path": str(target),
+                "kind": extracted.get("kind") or "",
+                "chars": len(text),
+                "truncated": truncated,
+            }
+        )
 
     @bp.route("/api/osc/poll", methods=["GET"])
     @login_required

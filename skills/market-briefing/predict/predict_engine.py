@@ -195,7 +195,12 @@ def _predict_one(
                 }
                 committee_result = committee_callback(item, mode, market_data)
                 if committee_result:
+                    committee_result = dict(committee_result)
+                    committee_line = str(committee_result.pop("line", "") or "").strip()
                     out.update(committee_result)
+                    if committee_line:
+                        out["committee_line"] = committee_line
+                        out["line"] = f"{out['line']}\n  {committee_line}"
             except Exception as ce:
                 logging.getLogger(__name__).error(
                     "Committee callback failed for %s: %s", item.symbol, ce

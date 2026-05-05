@@ -1,0 +1,48 @@
+        <section id="magiModules" class="view">
+            <div class="case-page">
+                <div class="case-hero">
+                    <div>
+                        <h3>MAGI 三模組</h3>
+                        <div class="section-note">法扶、閱卷、筆錄三個 Python 模組集中在這裡啟動；案件管理頁只保留案件業務。</div>
+                    </div>
+                    <div class="case-hero-actions">
+                        <button class="btn" data-tab-jump="laf" type="button">法扶管理</button>
+                        <button class="btn" data-tab-jump="documents" type="button">書狀索引</button>
+                        <button class="btn" data-tab-jump="pdfTools" type="button">PDF 工具</button>
+                    </div>
+                </div>
+
+                <div class="case-magi-launcher magi-module-page">
+                    <div class="case-magi-head">
+                        <div>
+                            <h3>模組啟動台</h3>
+                            <div class="section-note">先選擇模組，再按下常用指令；下方會顯示 MAGI 回覆或背景啟動狀態。</div>
+                        </div>
+                        <span class="badge" id="caseMagiSelected">閱卷與卷證</span>
+                    </div>
+                    <div class="case-module-grid" aria-label="MAGI 法律業務三模組">
+                        <button class="case-module-card" type="button" data-magi-module="laf">
+                            <span class="module-k">法扶</span>
+                            <strong>法扶案件辦理</strong>
+                            <span>開辦、二階段、報結與狀態提醒。</span>
+                        </button>
+                        <button class="case-module-card active" type="button" data-magi-module="file_review">
+                            <span class="module-k">閱卷</span>
+                            <strong>閱卷與卷證</strong>
+                            <span>信箱檢查、下載與期限檢查。</span>
+                        </button>
+                        <button class="case-module-card" type="button" data-magi-module="transcript">
+                            <span class="module-k">筆錄</span>
+                            <strong>筆錄調閱與整理</strong>
+                            <span>同步、全同步與檔名整理。</span>
+                        </button>
+                    </div>
+                    <div id="caseMagiActions" class="case-magi-command-grid" aria-label="MAGI 模組指令"></div>
+                    <div class="case-magi-custom">
+                        <input id="caseMagiPrompt" placeholder="輸入此模組支援的命令，例如：檢查閱卷信箱">
+                        <button class="btn primary" id="caseMagiRunBtn" type="button">啟動模組</button>
+                    </div>
+                    <div id="caseMagiResult" class="case-magi-result">尚未啟動。</div>
+                </div>
+            </div>
+        </section>

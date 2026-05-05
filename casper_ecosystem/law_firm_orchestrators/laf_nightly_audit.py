@@ -1351,10 +1351,12 @@ def _run_go_live_drafts(can_go_live_cases: List[dict], max_cases: int = 3, db=No
                 })
                 if ok:
                     ok_count += 1
-                elif err == "portal_draft_failed" and db and case.get("id"):
-                    # portal 找不到開辦表單 → 很可能已手動開辦，自動修正 DB
-                    logger.info("🔄 %s portal 無開辦表單，推斷已開辦 → 自動更新 DB", display)
-                    _update_laf_status(db, case, "進行中")
+                elif err == "portal_draft_failed":
+                    # Do not infer "already opened" from a generic portal failure.
+                    # The same error is used for login timeout, DOM drift, upload
+                    # rejection, and missing buttons.  Auto-updating DB here can
+                    # hide a real pending go_live case.
+                    logger.warning("⚠️ %s 開辦暫存失敗；不自動更新 DB，需人工確認 portal 狀態", display)
             except Exception as e:
                 logger.error("go_live draft failed for %s: %s", display, e)
                 results.append({
@@ -1873,9 +1875,9 @@ def format_audit_report(
     go_live_result = status.get("go_live_draft_result") or {}
     go_live_auto_fixed = [
         it for it in (go_live_result.get("items") or [])
-        if not it.get("ok") and it.get("error") == "portal_draft_failed"
+        if it.get("portal_status") == "already_opened"
     ]
-    # 從 can_go_live 去掉已被自動修正的（portal 確認已開辦）
+    # 從 can_go_live 去掉已被明確確認已開辦的案件。
     _auto_fixed_lafs = {it.get("laf_case_number") for it in go_live_auto_fixed}
     can_go_live_remaining = [
         c for c in can_go_live

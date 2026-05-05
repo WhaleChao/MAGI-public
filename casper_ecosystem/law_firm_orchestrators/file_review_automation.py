@@ -287,7 +287,7 @@ class CaptchaSolver:
             img_data = img_element.screenshot_as_png
             return self.solve_png_bytes(img_data)
         except Exception as e:
-            print(f"驗證碼識別失敗: {e}")
+            logging.getLogger("file_review").warning("驗證碼識別失敗: %s", e)
             return ""
 
     def solve_png_base64(self, png_base64: str) -> str:
@@ -342,7 +342,7 @@ class CaptchaSolver:
             return ""
             
         except Exception as e:
-            print(f"驗證碼識別失敗: {e}")
+            logging.getLogger("file_review").warning("驗證碼識別失敗: %s", e)
             return ""
 
 
@@ -407,9 +407,15 @@ class LawyerPortalSSO:
     def log(self, message: str):
         timestamp = datetime.now().strftime("%H:%M:%S")
         full_msg = f"[{timestamp}] [閱卷SSO] {message}"
-        print(full_msg, file=sys.stderr)
+        try:
+            print(full_msg, file=sys.stderr)
+        except BrokenPipeError:
+            pass
         if self.log_callback:
-            self.log_callback(full_msg)
+            try:
+                self.log_callback(full_msg)
+            except BrokenPipeError:
+                pass
 
     @staticmethod
     def _looks_like_driver_bootstrap_error(exc: Exception) -> bool:
@@ -1262,6 +1268,8 @@ class FileReviewManager:
         self.driver = None
         self.last_login_error_code = ""
         self.last_login_error_detail = ""
+        self.last_navigation_error_code = ""
+        self.last_navigation_error_detail = ""
         self._last_upload_screenshot = None  # 最後一次上傳成功的截圖路徑
         self.gmail_service = None
         self._last_gmail_error = ""
@@ -2734,9 +2742,15 @@ class FileReviewManager:
     def log(self, message: str):
         timestamp = datetime.now().strftime("%H:%M:%S")
         full_msg = f"[{timestamp}] [閱卷] {message}"
-        print(full_msg, file=sys.stderr)
+        try:
+            print(full_msg, file=sys.stderr)
+        except BrokenPipeError:
+            pass
         if self.log_callback:
-            self.log_callback(full_msg)
+            try:
+                self.log_callback(full_msg)
+            except BrokenPipeError:
+                pass
     
     # ---------- Gmail 監控 ----------
     
@@ -3356,6 +3370,14 @@ class FileReviewManager:
             return False
         
         try:
+            self.last_navigation_error_code = ""
+            self.last_navigation_error_detail = ""
+
+            def _nav_fail(code: str, detail: str = "") -> bool:
+                self.last_navigation_error_code = str(code or "navigate_failed").strip()
+                self.last_navigation_error_detail = str(detail or "").strip()[:500]
+                return False
+
             # ★ 優化: 設定短暫等待 (3s) 以確保元素偵測穩定
             self.driver.implicitly_wait(3)
             
@@ -3418,7 +3440,7 @@ class FileReviewManager:
 
                 if elem is None:
                     self.log("  ⚠️ 找不到閱卷連結 (已搜尋所有路徑)")
-                    return False
+                    return _nav_fail("review_link_not_found")
 
                 # 延長 popup 等待至 25s（OLA portal 在高延遲時 window.open 需 10-20s）
                 new_window = self.driver.click_link_and_wait_for_popup(elem, timeout_ms=25000)
@@ -3428,27 +3450,31 @@ class FileReviewManager:
                 else:
                     # Fallback: link might navigate same-page rather than open popup
                     _cur = (self.driver.current_url or "").lower()
-                    if any(k in _cur for k in ["ola.", "eefile.", "judicial.gov.tw/ola"]):
+                    if any(k in _cur for k in ["ola.", "judicial.gov.tw/ola", "/ola/"]):
+                        clicked = True
+                        new_window = self.driver.current_window_handle
                         self.log("  ✓ 已直接導航到閱卷系統 (同頁面)")
-                        return True
                     # 第二次嘗試：重新找連結元素再點一次（portal 偶爾需要兩次觸發）
-                    self.log("  ⚠️ 第一次 popup 等待逾時，重新嘗試 (timeout_ms=25000)…")
+                    if not clicked:
+                        self.log("  ⚠️ 第一次 popup 等待逾時，重新嘗試 (timeout_ms=25000)…")
                     try:
                         import time as _t2
-                        _t2.sleep(2)
-                        elem2 = _find_link_elem()
-                        if elem2 is None:
-                            self.driver.switch_to.default_content()
-                            try:
-                                self.driver.switch_to.frame("mainFrame")
-                                elem2 = _find_link_elem()
-                            except Exception:
+                        if not clicked:
+                            _t2.sleep(2)
+                            elem2 = _find_link_elem()
+                            if elem2 is None:
                                 self.driver.switch_to.default_content()
-                        if elem2:
-                            new_window2 = self.driver.click_link_and_wait_for_popup(elem2, timeout_ms=25000)
-                            if new_window2:
-                                self.log("  ✓ Playwright: 第二次嘗試捕獲新視窗")
-                                return True
+                                try:
+                                    self.driver.switch_to.frame("mainFrame")
+                                    elem2 = _find_link_elem()
+                                except Exception:
+                                    self.driver.switch_to.default_content()
+                            if elem2:
+                                new_window2 = self.driver.click_link_and_wait_for_popup(elem2, timeout_ms=25000)
+                                if new_window2:
+                                    new_window = new_window2
+                                    clicked = True
+                                    self.log("  ✓ Playwright: 第二次嘗試捕獲新視窗")
                     except Exception as _retry_err:
                         self.log(f"  ⚠️ 第二次嘗試異常: {_retry_err}")
                     # ---- context.pages fallback ----
@@ -3458,32 +3484,33 @@ class FileReviewManager:
                     # ⚠️ 守則：不要再動這段邏輯，已根修 navigate_failed 間歇性問題。
                     try:
                         import time as _t_fallback
-                        _t_fallback.sleep(3)  # 給 window.open() 最後 3s 完成
-                        _cur_handles = set(self.driver.window_handles)
-                        _new_handles = _cur_handles - original_windows
-                        if _new_handles:
-                            _fallback_win = next(iter(_new_handles))
-                            self.log(f"  ✓ context.pages fallback: 找到延遲出現的新視窗 {_fallback_win}")
-                            # 補追蹤到 _popup_pages（讓後續 switch_to.window 可用）
-                            try:
-                                _ctx = getattr(self.driver, '_context', None)
-                                if _ctx:
-                                    for _p in _ctx.pages:
-                                        if str(id(_p)) == _fallback_win:
-                                            if _p not in getattr(self.driver, '_popup_pages', []):
-                                                self.driver._popup_pages.append(_p)
-                                            break
-                            except Exception:
-                                pass
-                            new_window = _fallback_win
-                            clicked = True
-                        else:
-                            self.log("  ⚠️ context.pages fallback: 仍無新視窗")
+                        if not clicked:
+                            _t_fallback.sleep(3)  # 給 window.open() 最後 3s 完成
+                            _cur_handles = set(self.driver.window_handles)
+                            _new_handles = _cur_handles - original_windows
+                            if _new_handles:
+                                _fallback_win = next(iter(_new_handles))
+                                self.log(f"  ✓ context.pages fallback: 找到延遲出現的新視窗 {_fallback_win}")
+                                # 補追蹤到 _popup_pages（讓後續 switch_to.window 可用）
+                                try:
+                                    _ctx = getattr(self.driver, '_context', None)
+                                    if _ctx:
+                                        for _p in _ctx.pages:
+                                            if str(id(_p)) == _fallback_win:
+                                                if _p not in getattr(self.driver, '_popup_pages', []):
+                                                    self.driver._popup_pages.append(_p)
+                                                break
+                                except Exception:
+                                    pass
+                                new_window = _fallback_win
+                                clicked = True
+                            else:
+                                self.log("  ⚠️ context.pages fallback: 仍無新視窗")
                     except Exception as _fb_err:
                         self.log(f"  ⚠️ context.pages fallback 異常: {_fb_err}")
                     if not clicked:
                         self.log("  ⚠️ 等待新視窗逾時 (Playwright expect_popup)")
-                        return False
+                        return _nav_fail("popup_timeout", "Playwright expect_popup/context.pages did not observe OLA window")
 
             else:
                 # ---- Selenium 路徑：現有邏輯 ----
@@ -3512,7 +3539,7 @@ class FileReviewManager:
 
                 if not clicked:
                     self.log("  ⚠️ 找不到閱卷連結 (已搜尋所有路徑)")
-                    return False
+                    return _nav_fail("review_link_not_found")
 
                 try:
                     WebDriverWait(self.driver, 12).until(EC.new_window_is_opened(original_windows))
@@ -3521,7 +3548,7 @@ class FileReviewManager:
                         new_window = _new_set.pop()
                     else:
                         self.log("  ⚠️ 未偵測到新視窗")
-                        return False
+                        return _nav_fail("new_window_not_detected")
                 except TimeoutException:
                     # Fallback: poll window_handles directly (works for Playwright
                     # where popup registration may lag behind the EC check)
@@ -3535,18 +3562,19 @@ class FileReviewManager:
                             _cur = (self.driver.current_url or "").lower()
                         except Exception:
                             _cur = ""
-                        if any(k in _cur for k in ["ola.", "eefile.", "judicial.gov.tw/ola"]):
+                        if any(k in _cur for k in ["ola.", "judicial.gov.tw/ola", "/ola/"]):
+                            new_window = self.driver.current_window_handle
                             self.log("  ✓ 頁面已直接導航到閱卷系統 (same-tab)")
-                            return True
                         self.log("  ⚠️ 等待新視窗逾時")
-                        return False
+                        if not new_window:
+                            return _nav_fail("new_window_timeout")
 
             # 2. 切換到新視窗並關閉舊視窗（Playwright / Selenium 共用路徑）
             old_window = next(iter(original_windows), None)
             self.driver.switch_to.window(new_window)
             self.log("  ✓ 切換到新視窗")
 
-            if old_window:
+            if old_window and old_window != new_window:
                 try:
                     self.driver.switch_to.window(old_window)
                     self.driver.close()
@@ -3609,7 +3637,7 @@ class FileReviewManager:
                             continue
                         else:
                             self.log(f"  ❌ 重試 {max_refresh_retries} 次後仍為錯誤頁面")
-                            return False
+                            return _nav_fail("ola_error_page", current_url)
                     else:
                         # 頁面正常
                         if refresh_attempt > 0:
@@ -3772,7 +3800,11 @@ class FileReviewManager:
 
             if not found_menu:
                 self.log("  ⚠️ 所有方法均無法找到「線上閱卷作業」選單")
-                return False
+                try:
+                    _detail = f"url={self.driver.current_url}; title={self.driver.title}"
+                except Exception:
+                    _detail = ""
+                return _nav_fail("review_menu_not_found", _detail)
 
             # 5. 等待子選單出現
             time.sleep(1)  # give menu animation time
@@ -3830,12 +3862,14 @@ class FileReviewManager:
 
             if not submenu_found:
                 self.log("  ⚠️ 子選單展開失敗，無法進入列表頁")
-                return False
+                return _nav_fail("review_submenu_not_found")
 
             return True
 
         except Exception as e:
             self.log(f"  ⚠️ 導航失敗: {e}")
+            self.last_navigation_error_code = "navigation_exception"
+            self.last_navigation_error_detail = str(e)[:500]
             import traceback
             traceback.print_exc()
             return False
@@ -3910,6 +3944,15 @@ class FileReviewManager:
 
     def _switch_to_review_list_v1(self) -> bool:
         """切回閱卷列表頁的 main-content -> v1 frame。"""
+        pw_page = getattr(self.driver, "_page", None) if self.driver else None
+        if pw_page is not None:
+            hit = self._find_playwright_review_list_frame(click_list=False)
+            if hit.get("frame") is not None:
+                try:
+                    self.driver._active_frame = hit["frame"]
+                except Exception:
+                    pass
+                return True
         try:
             self.driver.switch_to.default_content()
             main_iframe = self.driver.find_element(By.XPATH, "//iframe[@name='main-content'] | //iframe[@id='main-content']")
@@ -3988,6 +4031,151 @@ class FileReviewManager:
                 return True
         return False
 
+    @staticmethod
+    def _review_list_verify_js() -> str:
+        return """
+        () => {
+          const body = ((document.body && document.body.innerText) || '') + '';
+          const rows = Array.from(document.querySelectorAll("tr#trdata, table#tablecontext tbody tr"));
+          const hasTable = !!document.querySelector("table#tablecontext, tr#trdata");
+          const hasMarkers = body.indexOf('聲請登錄清單') >= 0 || body.indexOf('序次') >= 0
+            || body.indexOf('聲請時間') >= 0 || body.indexOf('對象法院') >= 0
+            || body.indexOf('線上下載') >= 0 || body.indexOf('繳費') >= 0;
+          return {
+            has_list_markers: hasMarkers,
+            has_table: hasTable,
+            tr_count: rows.length,
+            body_preview: body.replace(/\\s+/g, ' ').trim().slice(0, 220),
+            title: document.title || ''
+          };
+        }
+        """
+
+    @staticmethod
+    def _review_list_click_js() -> str:
+        return """
+        () => {
+          const nodes = Array.from(document.querySelectorAll("a,button,input[type='button'],input[type='submit']"));
+          const hit = nodes.find((n) => {
+            const txt = ((n.innerText || n.value || n.title || '') + '').replace(/\\s+/g, '');
+            return txt.indexOf('列表式查看') >= 0;
+          });
+          if (!hit) return false;
+          try { hit.scrollIntoView({block: 'center'}); } catch (e) {}
+          hit.click();
+          return true;
+        }
+        """
+
+    @staticmethod
+    def _review_list_rows_js() -> str:
+        return """
+        () => {
+          function hasOnlineDownload(row) {
+            const inputSel = "input[type='button'][title='線上下載'],input[type='button'][value='線上下載']";
+            if (row.querySelector(inputSel)) return true;
+            const nodes = Array.from(row.querySelectorAll("button,a,input[type='button'],input[type='submit'],input[type='image'],img"));
+            return nodes.some((n) => {
+              const name = ((n.name || '') + '').toLowerCase();
+              if (name === 'btn_pay') return false;
+              const txt = ((n.innerText || n.value || n.title || n.alt || '') + '').replace(/\\s+/g, '');
+              if (txt.indexOf('線上下載') >= 0) return true;
+              if (txt.indexOf('下載卷宗') >= 0) return true;
+              const onclick = ((n.getAttribute && n.getAttribute('onclick')) || '') + '';
+              if (onclick.indexOf('doViewFile') >= 0) return true;
+              if (onclick.indexOf('doDownload') >= 0) return true;
+              if (onclick.indexOf('downloadFile') >= 0) return true;
+              return false;
+            });
+          }
+
+          function getRowJson(row) {
+            try {
+              if (row.dataset && row.dataset.json) {
+                try { return JSON.parse(row.dataset.json); } catch (e) {}
+              }
+            } catch (e) {}
+            try {
+              if (typeof window.$ !== 'undefined') {
+                const d = window.$(row).data('json');
+                if (d && typeof d === 'object') return d;
+              }
+            } catch (e) {}
+            return {};
+          }
+
+          const rows = Array.from(document.querySelectorAll("tr#trdata, table#tablecontext tbody tr"));
+          return rows.map((row) => {
+            const d = getRowJson(row) || {};
+            return {
+              row_text: ((row.innerText || '') + '').trim(),
+              has_online_download: hasOnlineDownload(row),
+              row_json: d,
+            };
+          });
+        }
+        """
+
+    def _find_playwright_review_list_frame(self, click_list: bool = False) -> Dict[str, Any]:
+        """Find OLA review-list content across Playwright frames and pin it active."""
+        pw_page = getattr(self.driver, "_page", None) if self.driver else None
+        if pw_page is None:
+            return {}
+
+        try:
+            frames = list(pw_page.frames)
+        except Exception:
+            return {}
+
+        if click_list:
+            for frame in frames:
+                try:
+                    if frame.evaluate(self._review_list_click_js()):
+                        time.sleep(1.0)
+                        break
+                except Exception:
+                    continue
+            try:
+                frames = list(pw_page.frames)
+            except Exception:
+                pass
+
+        best: Dict[str, Any] = {}
+        best_score = -1
+        diagnostics: List[Dict[str, Any]] = []
+        for frame in frames:
+            try:
+                check = frame.evaluate(self._review_list_verify_js()) or {}
+            except Exception:
+                continue
+            try:
+                name = frame.name
+            except Exception:
+                name = ""
+            try:
+                url = frame.url
+            except Exception:
+                url = ""
+            check.update({"frame_name": name, "frame_url": url})
+            diagnostics.append({k: check.get(k) for k in ("frame_name", "frame_url", "has_list_markers", "has_table", "tr_count", "body_preview")})
+            score = (
+                int(bool(check.get("has_list_markers")))
+                + int(bool(check.get("has_table"))) * 2
+                + int(check.get("tr_count") or 0) * 3
+            )
+            if score > best_score:
+                best_score = score
+                best = {"frame": frame, "check": check, "diagnostics": diagnostics}
+
+        check = best.get("check") or {}
+        if check.get("has_list_markers") or check.get("has_table") or int(check.get("tr_count") or 0) > 0:
+            try:
+                self.driver._active_frame = best.get("frame")
+            except Exception:
+                pass
+            return best
+        return {"diagnostics": diagnostics}
+
     def _open_review_list_v1(self) -> bool:
         """
         進入「列表式查看」，並切到 main-content -> v1。
@@ -3995,6 +4183,16 @@ class FileReviewManager:
         """
         if not self.driver:
             return False
+        pw_page = getattr(self.driver, "_page", None)
+        if pw_page is not None:
+            hit = self._find_playwright_review_list_frame(click_list=True)
+            if hit.get("frame") is not None:
+                check = hit.get("check") or {}
+                self.log(
+                    "  ✓ 已定位 OLA 列表 frame: %s rows=%s"
+                    % (check.get("frame_name") or "(unnamed)", check.get("tr_count", 0))
+                )
+                return True
         try:
             self.driver.switch_to.default_content()
             list_view_btn = None
@@ -4052,80 +4250,59 @@ class FileReviewManager:
             if not self.logged_in:
                 if not self.login():
                     out["error"] = "sso_login_failed"
+                    out["error_code"] = str(getattr(self, "last_login_error_code", "") or "sso_login_failed")
+                    out["error_detail"] = str(getattr(self, "last_login_error_detail", "") or "")[:500]
                     return out
 
             if not self.navigate_to_file_review():
                 out["error"] = "navigate_failed"
+                out["error_code"] = str(getattr(self, "last_navigation_error_code", "") or "navigate_failed")
+                out["error_detail"] = str(getattr(self, "last_navigation_error_detail", "") or "")[:500]
                 return out
 
             if not self._open_review_list_v1():
                 out["error"] = "list_view_unavailable"
                 return out
 
-            # Post-navigation verification: confirm we're on the list page
-            _page_check = self.driver.execute_script("""
-                var body = (document.body ? document.body.innerText : '') || '';
-                var hasList = body.indexOf('聲請登錄清單') >= 0 || body.indexOf('序次') >= 0
-                           || body.indexOf('聲請時間') >= 0 || body.indexOf('對象法院') >= 0;
-                var trCount = document.querySelectorAll('tr#trdata, table#tablecontext tbody tr').length;
-                return {has_list_markers: hasList, tr_count: trCount};
-            """) or {}
-            if not _page_check.get("has_list_markers") and _page_check.get("tr_count", 0) == 0:
+            # Post-navigation verification: confirm we're on the list page.
+            # Playwright runs against OLA's real frame tree; Selenium's current
+            # frame can drift back to the shell page after menu navigation.
+            _pw_hit = self._find_playwright_review_list_frame(click_list=False)
+            _page_check = (_pw_hit.get("check") if isinstance(_pw_hit, dict) else None) or {}
+            if not _page_check:
+                _page_check = self.driver.execute_script("""
+                    var body = (document.body ? document.body.innerText : '') || '';
+                    var hasList = body.indexOf('聲請登錄清單') >= 0 || body.indexOf('序次') >= 0
+                               || body.indexOf('聲請時間') >= 0 || body.indexOf('對象法院') >= 0
+                               || body.indexOf('線上下載') >= 0 || body.indexOf('繳費') >= 0;
+                    var trCount = document.querySelectorAll('tr#trdata, table#tablecontext tbody tr').length;
+                    var hasTable = !!document.querySelector('table#tablecontext, tr#trdata');
+                    return {
+                        has_list_markers: hasList,
+                        has_table: hasTable,
+                        tr_count: trCount,
+                        body_preview: body.replace(/\\s+/g, ' ').trim().slice(0, 220)
+                    };
+                """) or {}
+            if (not _page_check.get("has_list_markers")
+                    and not _page_check.get("has_table")
+                    and _page_check.get("tr_count", 0) == 0):
                 self.log("  ⚠️ 列表頁驗證失敗：頁面無列表特徵 (markers=%s, rows=%s)" % (
                     _page_check.get("has_list_markers"), _page_check.get("tr_count")))
                 out["error"] = "list_page_verification_failed"
+                out["error_detail"] = {
+                    "page_check": _page_check,
+                    "frame_diagnostics": (_pw_hit or {}).get("diagnostics", [])[:8] if isinstance(_pw_hit, dict) else [],
+                }
                 return out
 
-            rows_data = self.driver.execute_script(
-                """
-                function hasOnlineDownload(row) {
-                  // 嚴格只認「線上下載」按鈕；btn_pay 是「繳費」按鈕，不可視為可下載
-                  // （之前誤把 btn_pay 加進 selector，導致每筆待繳費案件都被誤分類為 downloadable）
-                  const inputSel = "input[type='button'][title='線上下載'],input[type='button'][value='線上下載']";
-                  if (row.querySelector(inputSel)) return true;
-                  // 擴大兼容：button/a/input 含「線上下載」或「下載卷宗」等文字 + onclick 含 doViewFile / doDownload
-                  const nodes = Array.from(row.querySelectorAll("button,a,input[type='button'],input[type='submit'],input[type='image'],img"));
-                  return nodes.some((n) => {
-                    const name = ((n.name || '') + '').toLowerCase();
-                    if (name === 'btn_pay') return false;  // 排除繳費按鈕
-                    const txt = ((n.innerText || n.value || n.title || n.alt || '') + '').replace(/\\s+/g, '');
-                    if (txt.indexOf('線上下載') >= 0) return true;
-                    if (txt.indexOf('下載卷宗') >= 0) return true;
-                    // 圖示按鈕（無文字）— 看 onclick / src
-                    const onclick = ((n.getAttribute && n.getAttribute('onclick')) || '') + '';
-                    if (onclick.indexOf('doViewFile') >= 0) return true;
-                    if (onclick.indexOf('doDownload') >= 0) return true;
-                    if (onclick.indexOf('downloadFile') >= 0) return true;
-                    return false;
-                  });
-                }
-
-                function getRowJson(row) {
-                  try {
-                    if (row.dataset && row.dataset.json) {
-                      try { return JSON.parse(row.dataset.json); } catch (e) {}
-                    }
-                  } catch (e) {}
-                  try {
-                    if (typeof window.$ !== 'undefined') {
-                      const d = window.$(row).data('json');
-                      if (d && typeof d === 'object') return d;
-                    }
-                  } catch (e) {}
-                  return {};
-                }
-
-                const rows = Array.from(document.querySelectorAll("tr#trdata, table#tablecontext tbody tr"));
-                return rows.map((row) => {
-                  const d = getRowJson(row) || {};
-                  return {
-                    row_text: ((row.innerText || '') + '').trim(),
-                    has_online_download: hasOnlineDownload(row),
-                    row_json: d,
-                  };
-                });
-                """
-            ) or []
+            if isinstance(_pw_hit, dict) and _pw_hit.get("frame") is not None:
+                try:
+                    rows_data = _pw_hit["frame"].evaluate(self._review_list_rows_js()) or []
+                except Exception:
+                    rows_data = self.driver.execute_script("return (%s)();" % self._review_list_rows_js()) or []
+            else:
+                rows_data = self.driver.execute_script("return (%s)();" % self._review_list_rows_js()) or []
 
             norm_target = self._normalize_case_keyword(target_case_number or "")
             items: List[Dict[str, Any]] = []

@@ -15,7 +15,7 @@ import subprocess
 import sys
 import threading
 import time
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 import requests
 
@@ -66,8 +66,19 @@ BRAIN_SWITCH_LOCK = threading.RLock()
 BRAIN_AUTO_FALLBACK_LOCAL = os.environ.get("BRAIN_AUTO_FALLBACK_LOCAL", "1") != "0"
 
 
+def _distributed_enabled() -> bool:
+    """Single-machine deployments keep Melchior/remote probing fully opt-in."""
+    avoid = str(os.environ.get("MAGI_AVOID_DISTRIBUTED", "1") or "1").strip().lower()
+    single = str(os.environ.get("MAGI_SINGLE_MACHINE", "1") or "1").strip().lower()
+    if single not in {"0", "false", "no", "off"}:
+        return False
+    return avoid in {"0", "false", "no", "off"}
+
+
 def _remote_agent_reachable(timeout_sec: Optional[float] = None) -> bool:
     """Fast preflight for Melchior agent reachability to avoid long switch retries."""
+    if not _distributed_enabled():
+        return False
     try:
         timeout_val = float(
             timeout_sec
@@ -832,6 +843,10 @@ def get_brain_mode() -> str:
     omlx_running = _is_process_running("omlx")
     if not local_running and omlx_running:
         local_running = True
+    if not _distributed_enabled():
+        if local_running:
+            return "local"
+        return "offline"
 
     if rpc_running and not local_running:
         return "distributed"
@@ -850,6 +865,15 @@ def restart_inference_engine(mode: str, force: bool = False):
     """
     target = _normalize_mode(mode)
     if target not in {"local", "distributed"}:
+        return False, ""
+    if target == "distributed" and not _distributed_enabled():
+        logger.info("Distributed mode disabled by single-machine policy; keeping local oMLX.")
+        _write_state("local", True, LOCAL_API_ENDPOINT, "distributed disabled by MAGI_SINGLE_MACHINE/MAGI_AVOID_DISTRIBUTED")
+        local_ok, local_msg = check_local_health()
+        if local_ok:
+            return True, LOCAL_API_ENDPOINT
+        logger.error(local_msg)
+        _write_state("local", False, "", local_msg)
         return False, ""
 
     with BRAIN_SWITCH_LOCK:
@@ -941,6 +965,11 @@ def switch_brain_mode(mode: str, force: bool = False):
     normalized = _normalize_mode(mode)
     if normalized not in {"local", "distributed"}:
         return f"Error: Invalid mode '{mode}'. Use 'local' or 'distributed'."
+    if normalized == "distributed" and not _distributed_enabled():
+        success, url = restart_inference_engine("local", force=force)
+        if success:
+            return f"Distributed mode is disabled by single-machine policy. Staying on local mode. Active API: {url}"
+        return "Failed to confirm local mode under single-machine policy. Check logs for safety warnings."
 
     success, url = restart_inference_engine(normalized, force=force)
     if success:
@@ -980,6 +1009,8 @@ def get_brain_status():
     Human-readable brain status for UI/command output.
     """
     mode = get_brain_mode()
+    if not _distributed_enabled() and mode == "distributed":
+        mode = "local"
 
     if mode == "distributed":
         remote_ok, remote_msg = check_remote_health()
@@ -1057,12 +1088,18 @@ def _cli() -> int:
         print(json.dumps({"skill": "brain_manager", "tasks": ["status", "status-text", "runtime", "mode", "switch", "repair", "calibrate"], "description": "CASPER brain manager — 管理本地/分散式推論引擎"}, ensure_ascii=False, indent=2))
         return 0
     if task == "status":
-        print(json.dumps({"ok": True, "mode": get_brain_mode(), "status": get_brain_status(), "runtime": get_melchior_runtime_status()}, ensure_ascii=False))
+        runtime = {"distributed_enabled": _distributed_enabled(), "single_machine": not _distributed_enabled()}
+        if _distributed_enabled():
+            runtime.update(get_melchior_runtime_status())
+        print(json.dumps({"ok": True, "mode": get_brain_mode(), "status": get_brain_status(), "runtime": runtime}, ensure_ascii=False))
         return 0
     if task == "status-text":
         print(get_brain_status())
         return 0
     if task == "runtime":
+        if not _distributed_enabled():
+            print(json.dumps({"ok": True, "runtime": {"distributed_enabled": False, "single_machine": True, "status": "skipped"}}, ensure_ascii=False))
+            return 0
         print(json.dumps({"ok": True, "runtime": get_melchior_runtime_status()}, ensure_ascii=False))
         return 0
     if task == "mode":

@@ -637,7 +637,10 @@ def cmd_db_smoke(prefer_profile: str = "") -> dict:
 
 
 def _ok(payload: dict) -> int:
-    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    try:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    except BrokenPipeError:
+        pass
     return 0
 
 
@@ -3723,7 +3726,14 @@ def cmd_check_emails(notify: bool = True, notify_empty: bool = True) -> dict:
                         if len(dl_items) > 10:
                             review_lines.append(f"  ...（另有 {len(dl_items) - 10} 件）")
                 else:
-                    review_lines.append(f"- ⚠️ 入口列表探測失敗：{str(portal_summary.get('error') or '')[:120]}")
+                    _portal_err = str(portal_summary.get("error") or "")[:120]
+                    _portal_code = str(portal_summary.get("error_code") or "").strip()
+                    _portal_detail = str(portal_summary.get("error_detail") or "").strip()
+                    if _portal_code and _portal_code != _portal_err:
+                        _portal_err = f"{_portal_err} / {_portal_code}" if _portal_err else _portal_code
+                    if _portal_detail:
+                        _portal_err = f"{_portal_err}（{_portal_detail[:160]}）" if _portal_err else _portal_detail[:160]
+                    review_lines.append(f"- ⚠️ 入口列表探測失敗：{_portal_err}")
             if recent_payment_activity:
                 payment_lines.append("")
                 payment_lines.extend(_format_recent_activity_block("🗂️ 最近繳費處理", recent_payment_activity, limit=6))
@@ -4116,7 +4126,14 @@ def cmd_downloadable_probe(days: int = 30, notify: bool = False,
         downloadable_count = len(gmail_downloadable)
         msg = f"可下載判定完成（Gmail 回退）：通知 {count} 封，可下載型 {downloadable_count} 封"
         if portal_r.get("error"):
-            msg += f"；入口列表探測失敗：{portal_r.get('error')}"
+            _portal_err = str(portal_r.get("error") or "")
+            _portal_code = str(portal_r.get("error_code") or "").strip()
+            _portal_detail = str(portal_r.get("error_detail") or "").strip()
+            if _portal_code and _portal_code != _portal_err:
+                _portal_err = f"{_portal_err} / {_portal_code}" if _portal_err else _portal_code
+            if _portal_detail:
+                _portal_err = f"{_portal_err}（{_portal_detail[:160]}）" if _portal_err else _portal_detail[:160]
+            msg += f"；入口列表探測失敗：{_portal_err}"
         out = {
             "success": bool(gmail_r.get("success")),
             "source": source,
@@ -4611,7 +4628,10 @@ def main() -> int:
             raw = sys.stdin.read().strip()
             cmd_data = json.loads(raw) if raw else {}
         except Exception:
-            print(json.dumps({"success": False, "error": "invalid JSON input"}))
+            try:
+                print(json.dumps({"success": False, "error": "invalid JSON input"}))
+            except BrokenPipeError:
+                pass
             return 1
         cmd_name = cmd_data.get("cmd", "")
         if cmd_name == "upload_payment_proof_from_image":
@@ -4619,9 +4639,15 @@ def main() -> int:
                 image_path=cmd_data.get("image_path", ""),
                 notify=cmd_data.get("notify", True),
             )
-            print(json.dumps(r, ensure_ascii=False))
+            try:
+                print(json.dumps(r, ensure_ascii=False))
+            except BrokenPipeError:
+                pass
             return 0 if r.get("success") else 1
-        print(json.dumps({"success": False, "error": f"unknown json-cmd: {cmd_name}"}))
+        try:
+            print(json.dumps({"success": False, "error": f"unknown json-cmd: {cmd_name}"}))
+        except BrokenPipeError:
+            pass
         return 1
 
     task = (args.task or "").strip()

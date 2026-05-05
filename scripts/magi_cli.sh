@@ -137,7 +137,10 @@ cmd_status() {
         vol_list="/Volumes/homes /Volumes/lumi"
     fi
     for vol in $vol_list; do
-        # 接受 /Volumes/<share> 或 /Volumes/<share>-1、/Volumes/<share>-2 等 macOS automount suffix
+        # 接受 /Volumes/<share>、user-level fallback，以及 Synology Drive 同步路徑。
+        # nas_mount_guard / case_path_mapper 都支援這些路徑；status 也要同一套判斷。
+        local share_name
+        share_name="$(basename "$vol")"
         local mounted_path=""
         for candidate in "$vol" "${vol}-1" "${vol}-2"; do
             if mount | grep -q "$candidate"; then
@@ -145,12 +148,20 @@ cmd_status() {
                 break
             fi
         done
+        if [ -z "$mounted_path" ]; then
+            local user_mount="$HOME/.magi_mounts/$share_name"
+            if mount | grep -q "$user_mount"; then
+                mounted_path="$user_mount"
+            fi
+        fi
         if [ -n "$mounted_path" ]; then
             local usage
             usage=$(df -h "$mounted_path" 2>/dev/null | tail -1 | awk '{print $3"/"$2" ("$5")"}')
-            printf "  ${GREEN}●${NC} %-18s %s\n" "$(basename $vol)" "$usage"
+            printf "  ${GREEN}●${NC} %-18s %s\n" "$share_name" "$usage"
+        elif [ -d "$HOME/Library/CloudStorage/SynologyDrive-$share_name" ]; then
+            printf "  ${GREEN}●${NC} %-18s Synology Drive sync\n" "$share_name"
         else
-            printf "  ${RED}○${NC} %-18s ${RED}NOT MOUNTED${NC}\n" "$(basename $vol)"
+            printf "  ${RED}○${NC} %-18s ${RED}NOT MOUNTED${NC}\n" "$share_name"
         fi
     done
     echo ""

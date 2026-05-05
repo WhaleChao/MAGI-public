@@ -1,0 +1,63 @@
+<section id="pdfTools" class="view">
+    <div class="card" id="pdfToolCard">
+        <div class="section-head">
+            <div>
+                <h3>PDF 工具</h3>
+                <div class="section-note">處理案件 PDF、閱卷資料與附件：抽文字、旋轉、擷取、拆分、合併、浮水印、最佳化與加密。</div>
+            </div>
+        </div>
+        <div class="soft-block">
+            <div class="pdf-upload-strip">
+                <div class="field">
+                    <label for="pdfToolUpload">上傳 PDF</label>
+                    <input id="pdfToolUpload" type="file" accept="application/pdf,.pdf">
+                </div>
+                <button class="btn primary" id="pdfUploadBtn">上傳並帶入工具</button>
+                <div class="section-note">上傳後會存到 Paperclip 的暫存工作區，可直接抽文字、拆分、合併或加浮水印。</div>
+            </div>
+            <div class="field-grid cols-4">
+                <div class="field" style="grid-column: span 2;">
+                    <label for="pdfToolPath">PDF 路徑</label>
+                    <input id="pdfToolPath" placeholder="從案件檔案、檔案管理、書狀索引帶入，或直接貼上 PDF 路徑">
+                </div>
+                <div class="field">
+                    <label for="pdfToolPages">頁碼 / 範圍</label>
+                    <input id="pdfToolPages" placeholder="例：1,3-5；留空代表全部">
+                </div>
+                <div class="field">
+                    <label for="pdfToolAngle">旋轉角度</label>
+                    <select id="pdfToolAngle">
+                        <option value="90">90</option>
+                        <option value="180">180</option>
+                        <option value="270">270</option>
+                    </select>
+                </div>
+                <div class="field" style="grid-column: span 2;">
+                    <label for="pdfToolOtherPaths">合併 PDF 路徑</label>
+                    <input id="pdfToolOtherPaths" placeholder="可用逗號或換行分隔多份 PDF">
+                </div>
+                <div class="field">
+                    <label for="pdfToolWatermark">浮水印文字</label>
+                    <input id="pdfToolWatermark" placeholder="例：閱卷用、草稿">
+                </div>
+                <div class="field">
+                    <label for="pdfToolPassword">加密密碼</label>
+                    <input id="pdfToolPassword" type="password" placeholder="開啟密碼">
+                </div>
+            </div>
+            <div class="toolbar" style="margin-top:10px; margin-bottom:0; flex-wrap:wrap;">
+                <button class="btn" id="pdfInfoBtn">檢查資訊</button>
+                <button class="btn" id="pdfTextBtn">抽出文字</button>
+                <button class="btn" id="pdfRotateBtn">旋轉頁面</button>
+                <button class="btn" id="pdfExtractBtn">擷取頁面</button>
+                <button class="btn" id="pdfSplitBtn">拆分範圍</button>
+                <button class="btn" id="pdfMergeBtn">合併 PDF</button>
+                <button class="btn" id="pdfWatermarkBtn">加浮水印</button>
+                <button class="btn" id="pdfOptimizeBtn">最佳化</button>
+                <button class="btn warn" id="pdfEncryptBtn">加密副本</button>
+            </div>
+            <div id="pdfToolStatus" class="status-banner" hidden style="margin-top:10px;"></div>
+            <div id="pdfToolOutputs" class="soft-block" hidden style="margin-top:10px;"></div>
+        </div>
+    </div>
+</section>

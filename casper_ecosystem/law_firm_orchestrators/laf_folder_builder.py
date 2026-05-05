@@ -285,6 +285,9 @@ class LAFFolderBuilder:
             return "行政"
         if "非訟" in text:
             return "非訟"
+        # 刑事附帶民事本質上是民事求償／移送民事庭處理，資料夾不可因「刑事」兩字建到刑事根目錄。
+        if any(token in text for token in ("刑事附帶民事", "附帶民事", "附民")):
+            return "民事"
         # 刑事獨有關鍵字（已剔除「上訴」「執行」等民刑共用詞）
         _CRIMINAL_ONLY = (
             "刑事", "偵查", "自訴", "起訴", "公訴", "交保", "羈押",

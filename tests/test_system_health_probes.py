@@ -252,7 +252,7 @@ def test_magi_doctor_local_llm_probe_retries_after_timeout(monkeypatch):
     assert len(post_calls) == 2
 
 
-def test_worldmonitor_store_to_memory_uses_source_signature(monkeypatch):
+def test_worldmonitor_store_to_memory_uses_source_signature(monkeypatch, tmp_path):
     module = _load_worldmonitor_module()
     calls = []
 
@@ -267,6 +267,7 @@ def test_worldmonitor_store_to_memory_uses_source_signature(monkeypatch):
 
     monkeypatch.setitem(sys.modules, "skills.memory.mem_bridge", fake_mem_bridge)
     monkeypatch.setattr(memory_pkg, "mem_bridge", fake_mem_bridge, raising=False)
+    monkeypatch.setattr(module, "MAGI_DIR", str(tmp_path))
 
     assert module._store_to_memory(
         "payload",
@@ -330,6 +331,32 @@ def test_worldmonitor_collect_and_analyze_emits_degraded_report(monkeypatch):
     assert stored["content"] == report
 
 
+def test_worldmonitor_collect_and_analyze_uses_structured_fallback_when_melchior_fails(monkeypatch):
+    module = _load_worldmonitor_module()
+
+    monkeypatch.setattr(
+        module,
+        "collect_news",
+        lambda: ([
+            {"source": "BBC World", "title": "Hormuz tensions rise", "summary": "Shipping routes face new pressure."},
+            {"source": "NHK Asia", "title": "Japan and Asia monitor regional risk", "summary": "Officials discuss energy security."},
+        ], [{"source": "BBC World", "ok": True, "count": 1, "error": ""}]),
+    )
+    monkeypatch.setattr(
+        module,
+        "collect_markets",
+        lambda: ({}, {"ok": False, "detail": "FINNHUB_API_KEY 未設定，市場行情已停用"}),
+    )
+    monkeypatch.setattr(module, "_reason_with_melchior", lambda prompt: "[推理失敗] HTTP Error 404: Not Found")
+    monkeypatch.setattr(module, "_store_to_memory", lambda content, metadata=None: True)
+
+    report = module.collect_and_analyze(use_melchior=True)
+
+    assert "[推理失敗]" not in report
+    assert "重大事件概述" in report
+    assert "對台灣與亞太的潛在影響" in report
+
+
 def test_dashboard_openclaw_button_targets_local_route():
     dashboard_path = MAGI_ROOT / "templates" / "dashboard.html"
     text = dashboard_path.read_text(encoding="utf-8")
@@ -338,14 +365,14 @@ def test_dashboard_openclaw_button_targets_local_route():
     assert "window.open('/openclaw'" in text
 
 
-def test_openclaw_alias_redirects_to_nerv_dashboard():
+def test_openclaw_alias_redirects_to_magi_adjust():
     from api.server import app
 
     client = app.test_client()
     response = client.get("/openclaw", base_url="http://localhost", follow_redirects=False)
 
     assert response.status_code in {301, 302, 303, 307, 308}
-    assert response.headers["Location"].endswith("/dashboard/nerv")
+    assert response.headers["Location"].endswith("/magi-adjust")
 
 
 def test_worldmonitor_alias_redirects_to_intel_panel():

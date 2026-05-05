@@ -196,7 +196,7 @@ async function loadDraftInsights() {
         const caseNumber = encodeURIComponent((document.getElementById("draftInsightsCaseFilter").value || "").trim());
         const caseReason = encodeURIComponent((document.getElementById("draftInsightsReasonFilter").value || "").trim());
         const data = await api(`/api/osc/insights?limit=120&q=${q}&case_number=${caseNumber}&case_reason=${caseReason}`);
-        state.draft.insights = data.items || [];
+        state.draft.insights = filterDisplayableInsights(data.items || []);
         renderDraftInsights();
         setDraftStatus(`實務見解搜尋完成，共 ${state.draft.insights.length} 筆。`);
     });

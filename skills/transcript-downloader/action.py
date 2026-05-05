@@ -275,7 +275,10 @@ def _eventlog(event: str, *, ok: Optional[bool] = None, payload: Optional[dict] 
 
 
 def _ok(payload: dict) -> int:
-    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    try:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    except BrokenPipeError:
+        pass
     return 0
 
 
@@ -1023,7 +1026,10 @@ def cmd_download(case_number: str, out_folder: str = "", headless: bool = True,
                 return out
 
             if downloaded_count == 0:
-                msg = "⚠️ 筆錄查詢完成，但目前沒有可下載的新檔案 — " + case_number
+                if str(getattr(downloader, "_last_no_new_files_reason", "") or "") == "known_duplicates":
+                    msg = "✅ 筆錄查詢完成，法院端 PDF 可取回；本次皆為已知檔案 — " + case_number
+                else:
+                    msg = "⚠️ 筆錄查詢完成，但目前沒有可下載的新檔案 — " + case_number
                 _notify(msg, notify)
                 _safe_flow_step_status(flow_id, "dedup", status="succeeded", detail="no new files after dedup", ok=True, metadata={"downloaded_count": 0, "noop": True})
                 _safe_flow_step_status(flow_id, "archive", status="skipped", detail="no new files to archive", skipped=True, ok=True)

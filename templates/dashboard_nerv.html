@@ -3,10 +3,8 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>MAGI SYSTEM - NERV Status</title>
+<title>MAGI 調整頁面</title>
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Orbitron:wght@400;700&display=swap');
-
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body {
   background: #0a0a0c;
@@ -573,6 +571,67 @@ body::after {
 .fold-btn:hover {
   border-color: #ff6600;
 }
+.remote-access-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+.remote-access-card {
+  border: 1px solid #2f2218;
+  background: rgba(255, 102, 0, 0.035);
+  padding: 10px;
+  min-width: 0;
+}
+.remote-access-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.remote-access-title {
+  color: #ffcc88;
+  font-size: 0.74em;
+  letter-spacing: 1px;
+}
+.remote-access-meta {
+  color: #8e715f;
+  font-size: 0.64em;
+  line-height: 1.5;
+  word-break: break-word;
+}
+.remote-access-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+.remote-access-link {
+  border: 1px solid #5a3212;
+  background: #120b07;
+  color: #ffcc88;
+  padding: 6px 9px;
+  font-size: 0.68em;
+  font-family: 'Share Tech Mono', monospace;
+  text-decoration: none;
+  cursor: pointer;
+}
+.remote-access-link.primary {
+  border-color: #00aaff66;
+  color: #9edcff;
+  background: rgba(0, 170, 255, 0.08);
+}
+.remote-access-link:hover {
+  border-color: #ff6600;
+}
+.remote-access-status {
+  min-height: 16px;
+  margin-top: 8px;
+  font-size: 0.66em;
+  color: #888;
+}
+.remote-access-status.ok { color: #00ff41; }
+.remote-access-status.warn { color: #ffcc00; }
+.remote-access-status.error { color: #ff6a6a; }
 .skill-launcher-actions {
   display: flex;
   gap: 6px;
@@ -1012,6 +1071,7 @@ body::after {
   .magi-triangle { width: 280px; height: 260px; }
   .skill-grid { grid-template-columns: 1fr; }
   .runtime-grid { grid-template-columns: 1fr; }
+  .remote-access-grid { grid-template-columns: 1fr; }
   .skill-modal {
     padding: 12px;
   }
@@ -1114,12 +1174,12 @@ body::after {
 </head>
 <body>
 <div class="nerv-header">
-  <a href="/dashboard" class="back-link">&lt; DASHBOARD</a>
+  <a href="/dashboard" class="back-link">&lt; 返回 MAGI</a>
   <h1>MAGI SYSTEM</h1>
   <div class="subtitle">SUPER COMPUTER SYSTEM STATUS</div>
   <div class="timestamp" id="ts">--:--:--</div>
 </div>
-<div class="warning-bar">CLASSIFIED --- NERV HEADQUARTERS --- AUTHORIZED PERSONNEL ONLY</div>
+<div class="warning-bar">MAGI 調整頁面 --- 系統設定與進階功能 --- AUTHORIZED PERSONNEL ONLY</div>
 
 <div class="main-grid">
   <!-- Left: Infrastructure -->
@@ -1189,7 +1249,7 @@ body::after {
     <details class="nerv-fold">
       <summary>
         <span class="nerv-fold-title">技能模組 SKILL MODULES</span>
-        <span class="nerv-fold-meta">預設折疊，展開後可查看清單與開啟編輯器</span>
+        <span class="nerv-fold-meta">預設折疊，展開後可檢視清單與開啟編輯器</span>
       </summary>
       <div class="nerv-fold-body">
         <div class="fold-actions">
@@ -1221,6 +1281,22 @@ body::after {
             </div>
           </div>
         </div>
+      </div>
+    </details>
+
+    <details class="nerv-fold" open>
+      <summary>
+        <span class="nerv-fold-title">遠端操作 REMOTE ACCESS</span>
+        <span class="nerv-fold-meta">Google 遠端桌面與本機螢幕共享入口</span>
+      </summary>
+      <div class="nerv-fold-body">
+        <div id="remote-access-panel" class="remote-access-grid">
+          <div class="remote-access-card">
+            <div class="remote-access-head"><div class="indicator gray"></div><div class="remote-access-title">Loading...</div></div>
+            <div class="remote-access-meta">正在讀取遠端連線狀態</div>
+          </div>
+        </div>
+        <div id="remote-access-status" class="remote-access-status"></div>
       </div>
     </details>
   </div>
@@ -1283,7 +1359,7 @@ body::after {
           <button type="button" onclick="saveSkillDoc()">儲存至 MAGI</button>
           <button type="button" onclick="closeSkillModal()">完成</button>
         </div>
-        <div id="skill-editor-status" class="skill-editor-status">點選技能後即可查看或修改內容。</div>
+        <div id="skill-editor-status" class="skill-editor-status">點選技能後即可檢視或修改內容。</div>
         <div class="skill-editor-hint">儲存位置：`MAGI/skills/&lt;skill-name&gt;/SKILL.md`。存檔後 MAGI 會直接從這份檔案讀取。</div>
         <textarea id="skill-editor-content" spellcheck="false" placeholder="# SKILL.md"></textarea>
       </div>
@@ -1427,6 +1503,140 @@ function statusColor(s) {
 function nodeHTML(label, status, meta) {
   const c = statusColor(status);
   return `<div class="node-item"><div class="indicator ${c}"></div><span class="label">${escapeHtml(label)}</span><span class="meta">${escapeHtml(meta || '')}</span></div>`;
+}
+
+function remoteButtonHTML(label, onclick, primary = false) {
+  return `<button type="button" class="remote-access-link ${primary ? 'primary' : ''}" onclick="${onclick}">${escapeHtml(label)}</button>`;
+}
+
+function jsArg(value) {
+  return JSON.stringify(String(value || '')).replace(/</g, '\\u003c').replace(/>/g, '\\u003e');
+}
+
+function remoteAnchorHTML(label, href, primary = false) {
+  if (!href) return '';
+  return `<a class="remote-access-link ${primary ? 'primary' : ''}" href="${escapeHtml(href)}" target="_blank" rel="noopener noreferrer">${escapeHtml(label)}</a>`;
+}
+
+function setRemoteAccessStatus(text, cls = '') {
+  const el = document.getElementById('remote-access-status');
+  if (!el) return;
+  el.className = `remote-access-status ${cls}`;
+  el.textContent = text || '';
+}
+
+function remoteCardHTML(title, status, meta, actionsHTML = '') {
+  return `
+    <div class="remote-access-card">
+      <div class="remote-access-head">
+        <div class="indicator ${statusColor(status)}"></div>
+        <div class="remote-access-title">${escapeHtml(title)}</div>
+      </div>
+      <div class="remote-access-meta">${escapeHtml(meta || '')}</div>
+      ${actionsHTML ? `<div class="remote-access-actions">${actionsHTML}</div>` : ''}
+    </div>
+  `;
+}
+
+function renderRemoteAccess(data) {
+  const panel = document.getElementById('remote-access-panel');
+  if (!panel) return;
+  const remote = data || {};
+  const google = remote.google_remote_desktop || {};
+  const tailscale = remote.tailscale || {};
+  const screen = remote.screen_sharing || {};
+  const cloudflare = remote.cloudflare || {};
+  const googleMeta = [
+    google.installed ? '主機已安裝' : '主機尚未安裝',
+    google.configured ? '已設定' : '尚未完成設定',
+    google.running ? '服務執行中' : '服務未執行',
+  ].join(' · ');
+  const tailscaleMeta = [
+    tailscale.running ? 'Tailscale 已連線' : 'Tailscale 未連線',
+    tailscale.ip ? `IP ${tailscale.ip}` : '',
+    tailscale.dns_name || '',
+  ].filter(Boolean).join(' · ');
+  const screenMeta = [
+    screen.running ? 'macOS 螢幕共享可能已啟用' : '需到系統設定確認螢幕共享',
+    screen.vnc_url || '',
+  ].filter(Boolean).join(' · ');
+  const cloudflareMeta = [
+    cloudflare.status === 'online' ? 'MAGI tunnel online' : 'MAGI tunnel offline',
+    cloudflare.url || '',
+  ].filter(Boolean).join(' · ');
+  panel.innerHTML = [
+    remoteCardHTML(
+      'Google 遠端桌面',
+      google.status === 'online' ? 'online' : (google.installed ? 'local' : 'offline'),
+      googleMeta,
+      [
+        remoteAnchorHTML('開啟遠端桌面', google.access_url || 'https://remotedesktop.google.com/access', true),
+        remoteButtonHTML('在本機開啟', "runRemoteAccessAction('open_google_remote_desktop')"),
+        remoteButtonHTML('主機設定', "runRemoteAccessAction('open_google_remote_setup')"),
+      ].join('')
+    ),
+    remoteCardHTML(
+      'Tailscale 私有連線',
+      tailscale.status || 'offline',
+      tailscaleMeta || '尚未取得 Tailscale 狀態',
+      [
+        tailscale.ip ? remoteButtonHTML('複製 IP', `copyRemoteAccessText(${jsArg(tailscale.ip)}, '已複製 Tailscale IP')`) : '',
+        tailscale.dns_name ? remoteButtonHTML('複製名稱', `copyRemoteAccessText(${jsArg(tailscale.dns_name)}, '已複製 Tailscale 名稱')`) : '',
+        remoteButtonHTML('開啟 Tailscale', "runRemoteAccessAction('open_tailscale')"),
+      ].join('')
+    ),
+    remoteCardHTML(
+      'macOS 螢幕共享',
+      screen.status || 'manual',
+      screenMeta || '可作為備援遠端方式',
+      [
+        remoteAnchorHTML('開啟 VNC', screen.vnc_url || '', true),
+        screen.vnc_url ? remoteButtonHTML('複製 VNC', `copyRemoteAccessText(${jsArg(screen.vnc_url)}, '已複製 VNC 連線位址')`) : '',
+        remoteButtonHTML('系統設定', "runRemoteAccessAction('open_screen_sharing_settings')"),
+      ].join('')
+    ),
+    remoteCardHTML(
+      'MAGI 外部入口',
+      cloudflare.status || 'offline',
+      cloudflareMeta || '目前沒有外部網址',
+      cloudflare.url ? remoteButtonHTML('複製網址', `copyRemoteAccessText(${jsArg(cloudflare.url)}, '已複製 MAGI 外部網址')`) : ''
+    ),
+  ].join('');
+}
+
+async function fetchRemoteAccess() {
+  try {
+    const response = await fetch('/api/nerv/remote-access');
+    const data = await parseJsonApiResponse(response, '遠端連線狀態暫不可得');
+    renderRemoteAccess(data);
+  } catch (e) {
+    setRemoteAccessStatus(e.message || '遠端連線狀態讀取失敗', 'error');
+  }
+}
+
+async function runRemoteAccessAction(action) {
+  setRemoteAccessStatus('正在開啟遠端工具...', 'warn');
+  try {
+    const response = await fetch('/api/nerv/remote-access/action', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({action}),
+    });
+    const data = await parseJsonApiResponse(response, '遠端工具開啟失敗');
+    renderRemoteAccess(data.remote_access || data);
+    setRemoteAccessStatus('已送出開啟指令。', 'ok');
+  } catch (e) {
+    setRemoteAccessStatus(e.message || '遠端工具開啟失敗', 'error');
+  }
+}
+
+async function copyRemoteAccessText(text, doneText) {
+  try {
+    await navigator.clipboard.writeText(text || '');
+    setRemoteAccessStatus(doneText || '已複製。', 'ok');
+  } catch (e) {
+    setRemoteAccessStatus('瀏覽器不允許自動複製，請手動選取。', 'warn');
+  }
 }
 
 function codexButtonHTML(label, onclick, tone = 'default', disabled = false) {
@@ -1790,7 +2000,7 @@ async function fetchProductRuntime(showMessage = false) {
     const lineEl = document.getElementById('runtime-status-line');
     if (lineEl) {
       lineEl.textContent = e.message === '請重新登入 dashboard'
-        ? '請重新登入後再查看產品切換設定。'
+        ? '請重新登入後再檢視產品切換設定。'
         : '產品切換設定暫不可得。';
     }
   }
@@ -2094,7 +2304,7 @@ function currentSkillItems() {
 const SKILL_META = {
   // 法律業務
   'judgment-collector':       { zh: '裁判書收集', desc: '擷取法院裁判書', cat: '法律業務' },
-  'file-review-orchestrator': { zh: '閱卷自動化', desc: '閱卷排程與追蹤', cat: '法律業務' },
+  'file-review-orchestrator': { zh: '閱卷自動化', desc: '閱卷時程與追蹤', cat: '法律業務' },
   'pdf-namer':                { zh: 'PDF 命名', desc: 'OCR + 自動重命名', cat: '法律業務' },
   'pdf-annotator':            { zh: 'PDF 標註', desc: '文件自動標註', cat: '法律業務' },
   'law_review':               { zh: '法律校正', desc: '法律術語檢查', cat: '法律業務' },
@@ -2108,7 +2318,7 @@ const SKILL_META = {
   'laf-refine-case':          { zh: '法扶校潤', desc: '案件資料校潤', cat: '法扶系統' },
   'laf-withdrawal-report':    { zh: '法扶撤案', desc: '撤案報告產出', cat: '法扶系統' },
   // 情報分析
-  'worldmonitor-intel':       { zh: '全球監控', desc: 'RSS+市場即時追蹤', cat: '情報分析' },
+  'worldmonitor-intel':       { zh: '全球新聞網', desc: 'RSS+市場即時追蹤', cat: '情報分析' },
   'translator':               { zh: '多語翻譯', desc: '中英日韓翻譯', cat: '情報分析' },
   'market-briefing':          { zh: '市場簡報', desc: '每日市場摘要', cat: '情報分析' },
   'crawler-targets':          { zh: '網頁擷取', desc: '網路資料擷取', cat: '情報分析' },
@@ -2122,7 +2332,7 @@ const SKILL_META = {
   'iron-dome':                { zh: '鐵穹防禦', desc: '安全防護系統', cat: '系統維運' },
   'iron_dome':                { zh: '鐵穹核心', desc: '防護引擎', cat: '系統維運' },
   'db-dual-sync':             { zh: 'DB 同步', desc: '雙向資料同步', cat: '系統維運' },
-  'osc-orchestrator':         { zh: '案件排程', desc: '案件總排程器', cat: '系統維運' },
+  'osc-orchestrator':         { zh: '案件時程', desc: '案件時程管理', cat: '系統維運' },
   'osc-scan-folder':          { zh: '資料夾掃描', desc: '案件檔案偵測', cat: '系統維運' },
   'obsidian':                 { zh: 'Obsidian', desc: '知識庫同步', cat: '系統維運' },
   'mock-test':                { zh: '模擬測試', desc: '系統功能驗證', cat: '系統維運' },
@@ -2322,7 +2532,7 @@ async function loadSkillDoc(skillName, encoded = false) {
   } catch (e) {
     resetSkillVersionsPanel(`${resolvedName} 的版本快照目前無法讀取。`);
     setSkillEditorStatus(
-      e.message === '請重新登入 dashboard' ? '請重新登入後再查看 SKILL。' : `${resolvedName} 讀取失敗，請稍後再試。`,
+      e.message === '請重新登入 dashboard' ? '請重新登入後再檢視 SKILL。' : `${resolvedName} 讀取失敗，請稍後再試。`,
       'error'
     );
   }
@@ -2388,7 +2598,7 @@ async function fetchSkillVersions(skillName = activeSkillName, options = {}) {
   } catch (e) {
     if (!options.quiet) {
       setSkillVersionStatus(
-        e.message === '請重新登入 dashboard' ? '請重新登入後再查看版本快照。' : `${resolvedName} 的版本快照暫不可得。`,
+        e.message === '請重新登入 dashboard' ? '請重新登入後再檢視版本快照。' : `${resolvedName} 的版本快照暫不可得。`,
         'warn'
       );
     }
@@ -2462,7 +2672,7 @@ function render(data) {
   document.getElementById('infra-nodes').innerHTML = [
     nodeHTML('MAGI Server', data.magi_server?.status, `PID ${data.magi_server?.pid || '?'}`),
     nodeHTML('Cloudflared (LINE only)', data.cloudflared?.status, ''),
-    nodeHTML('Worldmonitor', data.worldmonitor?.status, ''),
+    nodeHTML('全球新聞網', data.worldmonitor?.status, ''),
   ].join('');
 
   // Engines
@@ -2495,6 +2705,7 @@ function render(data) {
     : nodeHTML('No models', 'red', '');
 
   renderOfficeNodes(data);
+  renderRemoteAccess(data.remote_access);
   renderCommandStrip();
   renderSkillTree();
 }
@@ -2529,6 +2740,8 @@ fetchProductRuntime();
 setInterval(() => fetchProductRuntime(), 30000);
 fetchNervSkills();
 setInterval(() => fetchNervSkills(), 30000);
+fetchRemoteAccess();
+setInterval(() => fetchRemoteAccess(), 30000);
 renderSkillTemplatePreview();
 
 // ===== MAGI 聊天 =====

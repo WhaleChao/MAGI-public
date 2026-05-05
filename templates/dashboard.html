@@ -870,22 +870,12 @@
     <!-- THREE COLUMN LAYOUT -->
     <div class="main-three-col">
 
-    <!-- LEFT COLUMN: External Nodes (靠左垂直排列) -->
+    <!-- LEFT COLUMN: Local service status -->
     <div class="left-col" id="left-ext-nodes">
         <div class="ext-node-card" id="card-keeper">
             <span class="sub-label">KEEPER-4</span>
             <h3>資料庫</h3>
             <div class="status" id="status-keeper">連線中...</div>
-        </div>
-        <div class="ext-node-card" id="card-remote-mother">
-            <span class="sub-label">EXTERNAL</span>
-            <h3>遠端推論</h3>
-            <div class="status" id="status-remote-mother">連線中...</div>
-        </div>
-        <div class="ext-node-card" id="card-remote-melchior">
-            <span class="sub-label">EXTERNAL</span>
-            <h3>分散式分析</h3>
-            <div class="status" id="status-remote-melchior">連線中...</div>
         </div>
         <!-- Iron Dome status -->
         <div class="ext-node-card left-card" style="border-color: var(--magi-red); background: rgba(255,0,0,0.04);">
@@ -961,6 +951,7 @@
             <a class="sb-btn" href="/ops/process-monitor">[ 程序監控 ]</a>
             <button class="sb-btn" onclick="openMemoryPanel()">[ 向量記憶 ]</button>
             <a class="sb-btn" href="/dashboard/nerv" style="color:#007AFF;">[ NERV 系統狀態 ]</a>
+            <a class="sb-btn" href="/golem" style="color:#0f766e;">[ 系統總覽 ]</a>
             <a class="sb-btn" href="/dashboard/website" style="color:#0984e3;">[ 個人網站管理 ]</a>
         </div>
         <div class="right-col-section">
@@ -1110,6 +1101,7 @@
                 <a class="sb-btn" href="/ops/process-monitor">[ 程序監控 ]</a>
                 <button class="sb-btn" onclick="openMemoryPanel()">[ 向量記憶 ]</button>
                 <a class="sb-btn" href="/dashboard/nerv" style="color:#007AFF;">[ NERV 系統狀態 ]</a>
+                <a class="sb-btn" href="/golem" style="color:#0f766e;">[ 系統總覽 ]</a>
                 <a class="sb-btn" href="/dashboard/website" style="color:#0984e3;">[ 個人網站管理 ]</a>
             </div>
         </div>
@@ -1463,7 +1455,7 @@
                 const el = document.getElementById('skill-interview-history-right');
                 if (!el) return;
                 el.innerHTML = `<div style="color: rgba(29,29,31,0.5);">${escapeHtml(
-                    e.message === '請重新登入 dashboard' ? '請重新登入後查看生成紀錄。' : '目前無法讀取生成紀錄。'
+                    e.message === '請重新登入 dashboard' ? '請重新登入後檢視生成紀錄。' : '目前無法讀取生成紀錄。'
                 )}</div>`;
             }
         }
@@ -1572,7 +1564,7 @@
             metaEl.innerHTML = lines.map(line => `<div>${line}</div>`).join('');
             noteEl.innerText = report.can_toggle
                 ? '可在這裡或通訊軟體用 codex 指令切換。'
-                : '目前帳號只有查看權限。';
+                : '目前帳號只有檢視權限。';
             setCodexButtonState(!!report.can_toggle);
             renderCodexFeatureButtons(report);
         }
@@ -1597,7 +1589,7 @@
                 const noteEl = document.getElementById('codex-note-right');
                 if (noteEl) {
                     noteEl.innerText = e.message === '請重新登入 dashboard'
-                        ? '請重新登入後再查看或切換。'
+                        ? '請重新登入後再檢視或切換。'
                         : '狀態稍後會自動重試。';
                 }
                 const container = document.getElementById('codex-features-right');
@@ -1684,10 +1676,9 @@
                 updateNode('local-balthasar', data.nodes.casper);
                 updateNode('local-casper', data.nodes.casper);
 
-                // Update external units
+                // Update local service units. Remote inference nodes are intentionally
+                // hidden because they are long-term offline and noisy on the dashboard.
                 updateNode('keeper', data.nodes.keeper);
-                updateNode('remote-mother', data.nodes.balthasar);
-                updateNode('remote-melchior', data.nodes.melchior);
 
                 // Skills
                 if (data.skills) {

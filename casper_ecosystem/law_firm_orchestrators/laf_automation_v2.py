@@ -62,6 +62,27 @@ from api.runtime_paths import (
 from api.case_path_mapper import local_case_path_candidates, preferred_case_roots, translate_case_path_to_local
 from skills.engine.legal_web_adapter import format_legal_web_engine_log, resolve_legal_web_engine
 
+
+def _safe_print(*args, **kwargs) -> None:
+    try:
+        print(*args, **kwargs)
+    except BrokenPipeError:
+        pass
+
+
+def _safe_log_callback(callback, message: str) -> None:
+    if not callback:
+        return
+    try:
+        callback(message)
+    except BrokenPipeError:
+        pass
+
+
+def _safe_logger(callback=None):
+    return lambda message: _safe_log_callback(callback or _safe_print, str(message))
+
+
 # ==============================================================================
 # Event log (MemBridge / local JSONL) - best-effort
 # ==============================================================================
@@ -721,7 +742,12 @@ class LAFCaseTypeParser:
                     info.case_reason, extracted_stage = cls._extract_stage_from_reason(
                         info.case_reason, info.case_stage)
                     if extracted_stage in ['再審', '抗告', '非常上訴']:
-                        print(f"DEBUG: 從案由提取階段: {original_reason} -> 案由={info.case_reason}, 階段={extracted_stage}")
+                        logging.getLogger(__name__).debug(
+                            "從案由提取階段: %s -> 案由=%s, 階段=%s",
+                            original_reason,
+                            info.case_reason,
+                            extracted_stage,
+                        )
                         info.case_stage = extracted_stage
                 
                 # (V-MacFix) 根據案由修正案件類型
@@ -735,7 +761,11 @@ class LAFCaseTypeParser:
                     # 2. 刑事關鍵字
                     criminal_keywords = ['強盜', '殺人', '毒品', '槍砲', '竊盜', '傷害', '詐欺', '侵占', '背信', '貪污', '賄賂', '妨害性自主', '公共危險', '過失致死', '非常上訴']
                     if info.case_type == '民事' and any(k in info.case_reason for k in criminal_keywords):
-                        print(f"DEBUG: 修正案件類型 (關鍵字) {info.case_type} -> 刑事, 案由: {info.case_reason}")
+                        logging.getLogger(__name__).debug(
+                            "修正案件類型 (關鍵字) %s -> 刑事, 案由: %s",
+                            info.case_type,
+                            info.case_reason,
+                        )
                         info.case_type = '刑事'
                         if info.case_stage not in ['再審', '非常上訴']:
                             if '再審' in original_reason or '非常上訴' in original_reason:
@@ -914,15 +944,12 @@ class CaptchaSolver:
         self.ocr_engine = None
         self.dddd_ocr = None
         self.callback_on_fail = callback_on_fail
-        self.log_callback = log_callback or print
+        self.log_callback = _safe_logger(log_callback)
         self._init_ocr()
     
     def log(self, msg):
         """統一輸出日誌"""
-        if self.log_callback:
-            self.log_callback(msg)
-        else:
-            print(msg)
+        _safe_log_callback(self.log_callback, msg)
 
     def _init_ocr(self):
         """初始化 OCR 引擎"""
@@ -1246,7 +1273,7 @@ class LAFWebAutomation:
         self.download_folder = Path(download_folder)
         self.headless = headless
         self.on_captcha_fail = on_captcha_fail
-        self.log = log_callback or print
+        self.log = _safe_logger(log_callback)
         self.mock_mode = bool(mock_mode) or os.environ.get("LAF_MOCK_MODE", "0").strip().lower() in {"1", "true", "yes", "on"}
 
         # Base URL (production vs sandbox)
@@ -2257,6 +2284,29 @@ class LAFWebAutomation:
             src = self.driver.page_source or ""
             cur = self.driver.current_url or ""
             if "changePwReminderResult" not in src and "請每90天變更一次使用者密碼" not in src:
+                return False
+
+            reminder_state = self.driver.execute_script("""
+                function visible(el) {
+                    if (!el) return false;
+                    var s = window.getComputedStyle(el);
+                    var r = el.getBoundingClientRect();
+                    return s.display !== 'none' && s.visibility !== 'hidden'
+                        && s.opacity !== '0' && r.width > 0 && r.height > 0;
+                }
+                var bodyText = document.body ? (document.body.innerText || '') : '';
+                var loginVisible = Array.from(document.querySelectorAll(
+                    "input[name='user_id'], input[name='user_pass'], input[name='capText'], #loginLink"
+                )).some(visible);
+                var reminderVisible = bodyText.indexOf('請每90天變更一次使用者密碼') >= 0
+                    || Array.from(document.querySelectorAll('#remindLater, #changeNow')).some(visible);
+                return {loginVisible: loginVisible, reminderVisible: reminderVisible};
+            """) or {}
+            # The login page itself contains hidden reminder inputs/forms. Treat it
+            # as a reminder page only when the reminder is actually visible.
+            if not reminder_state.get("reminderVisible"):
+                return False
+            if reminder_state.get("loginVisible") and "toLogin" in cur:
                 return False
 
             self.log("  🔐 偵測到密碼變更提醒頁，選擇三個月後再提醒。")
@@ -6635,6 +6685,7 @@ return null;
             self.last_upload_result = {
                 "ok": True,
                 "workflow": str(workflow or ""),
+                "status": "already_in_progress",
                 "requested": 0,
                 "uploaded": 0,
                 "failed": 0,
@@ -7054,7 +7105,7 @@ return null;
                 "closing":   [{"applyno": ..., "status": ..., "row_text": ...}, ...],
                 "condition": [...],
                 "go_live":   [...],
-                "case_status": [...],
+                "case_status": [],  # backward-compatible key; not part of 暫存區掃描
             }
         """
         result: Dict[str, list] = {"closing": [], "condition": [], "go_live": [], "case_status": []}
@@ -7070,7 +7121,6 @@ return null;
         result["go_live"] = self._query_list_page_all_items(
             "/lafcsp/toNotOpenedCase", "未開辦",
         )
-        result["case_status"] = self.query_case_status_drafts(proc_status="T")
         return result
 
     def _query_list_page_all_items(self, url_path: str, label: str) -> list:
@@ -7318,7 +7368,7 @@ class LAFGmailMonitor:
         self.token_path = token_path
         self.callback = callback
         self.general_callback = general_callback
-        self.log = log_callback or print
+        self.log = _safe_logger(log_callback)
         
         self.service = None
         self.credentials = None
@@ -8416,7 +8466,7 @@ class OSCCaseCreator:
         """
         self.db_manager = db_manager
         self.target_folder = target_folder or './法扶資料'
-        self.log = log_callback or print
+        self.log = _safe_logger(log_callback)
         
         os.makedirs(self.target_folder, exist_ok=True)
 
@@ -9317,7 +9367,7 @@ class LAFAutomationManager:
         self.config = config
         self.db_manager = db_manager
         self.discord = discord_notifier
-        self.log = log_callback or print
+        self.log = _safe_logger(log_callback)
         self.gemini_client = gemini_client
         
         # 元件

@@ -4936,6 +4936,19 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                 "upload_bundle": upload_bundle,
                 "preview": self._last_portal_artifact,
             }
+            try:
+                upload_status = (
+                    (self._last_portal_artifact or {})
+                    .get("upload_result", {})
+                    .get("status", "")
+                )
+                if upload_status:
+                    result["portal_status"] = upload_status
+                if upload_status == "already_in_progress":
+                    result["noop"] = True
+                    result["message"] = "portal_already_has_draft_in_progress"
+            except Exception:
+                pass
             if not ok:
                 result["error"] = "portal_draft_failed"
                 result["detail"] = str(getattr(self, "_last_portal_error", "") or "")
@@ -5845,7 +5858,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                 break
         return out
 
-    def run_condition_drafts(self, max_cases: int = 0) -> dict:
+    def run_condition_drafts(self, max_cases: int = 0, *, suppress_notify: bool = True) -> dict:
         """
         自動尋找「調解不成立證明書」已到位案件並執行 WF5 暫存。
         僅暫存，不送出。
@@ -5876,34 +5889,21 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                     "upload_files": (upload_bundle.get("pdf_files") or []),
                     "upload_mode": "replace",
                 },
+                suppress_notify=suppress_notify,
             )
-            # ★ 連續失敗自動 mark manual_done：portal 拒絕通常代表已報結/已轉入/不再可暫存
-            # 連 2 次以上 portal condition draft save failed → 自動標記，下次 nightly 跳過
-            if not ok and self.db:
-                try:
-                    fail_q = (
-                        "SELECT COUNT(*) AS cnt FROM `laf_lifecycle_log` "
-                        "WHERE `case_number` = %s "
-                        "AND `event_type` = 'condition' "
-                        "AND `status` = 'error' "
-                        "AND `event_data` LIKE %s"
-                    )
-                    fail_row = self.db.fetch_one(fail_q, (laf_case_no, "%portal condition draft save failed%"), as_dict=True)
-                    fail_cnt = int((fail_row or {}).get("cnt") or 0) if isinstance(fail_row, dict) else 0
-                    if fail_cnt >= 2:
-                        # 自動寫入 manual_done 標記（避免下次 nightly 再嘗試）
-                        try:
-                            self.db.execute_write(
-                                "INSERT INTO `laf_lifecycle_log` (`case_number`, `event_type`, `event_data`, `status`) VALUES (%s, %s, %s, %s)",
-                                (laf_case_no, "condition_manual_done",
-                                 '{"auto_marked": true, "reason": "portal condition draft save failed >= 2 times — assumed already 報結/轉入/不可再暫存"}',
-                                 "manual_done"),
-                            )
-                            logger.info("  🔒 已自動標記 condition_manual_done: %s（連續失敗 %d 次）", laf_case_no, fail_cnt)
-                        except Exception as _ie:
-                            logger.warning("auto-mark condition_manual_done failed: %s", _ie)
-                except Exception:
-                    pass
+            err_detail = ""
+            if not ok:
+                err_detail = str(getattr(self, "_last_portal_error", "") or "portal_draft_failed")
+                logger.warning("condition draft failed for %s: %s", laf_case_no, err_detail)
+            portal_status = ""
+            try:
+                portal_status = (
+                    (self._last_portal_artifact or {})
+                    .get("upload_result", {})
+                    .get("status", "")
+                )
+            except Exception:
+                portal_status = ""
             results.append(
                 {
                     "ok": bool(ok),
@@ -5911,6 +5911,9 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                     "osc_case_number": c.get("osc_case_number", ""),
                     "client_name": client_name,
                     "upload_files": len((upload_bundle.get("pdf_files") or [])),
+                    "error": "" if ok else err_detail,
+                    "portal_status": portal_status,
+                    "noop": bool(portal_status == "already_in_progress"),
                 }
             )
             if ok:

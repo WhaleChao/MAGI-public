@@ -149,7 +149,10 @@ REAPER_GRACE_PERIODS = {
     "skills/translator/action.py": int(os.environ.get("MAGI_ORPHAN_GRACE_TRANSLATOR_SEC", "180") or "180"),
     "skills/translator/action.py --task _translate_inner": int(os.environ.get("MAGI_ORPHAN_GRACE_TRANSLATOR_INNER_SEC", "120") or "120"),
     # Coordinator
-    "skills/magi-autopilot/action.py": int(os.environ.get("MAGI_ORPHAN_GRACE_AUTOPILOT_SEC", "2400") or "2400"),
+    # Coordinator nightly runs have their own 6h overall timeout.  If launchd or
+    # the daemon restarts mid-run, the parent can become PPID=1 while still
+    # legitimately executing; keep the reaper grace aligned with that timeout.
+    "skills/magi-autopilot/action.py": int(os.environ.get("MAGI_ORPHAN_GRACE_AUTOPILOT_SEC", "21600") or "21600"),
     # Short-lived NLP sidecars — should exit in <20s; cut grace short so orphans are reaped fast
     "chinese_nlp_sidecar.py": 30,          # pkuseg sidecar, should die in <20s
     # Background subprocesses (fire-and-forget)
@@ -1099,7 +1102,9 @@ def reap_orphan_workers(*, force: bool = False, dry_run: bool = False) -> str:
         if _is_worker_cmd(cmd):
             if (not force) and ppid != 1:
                 continue
-            if (not force) and etimes < _grace_for_cmd(cmd):
+            # Even startup force scans must not kill fresh legitimate workers.
+            # force only widens PPID matching; age/grace remains the safety gate.
+            if etimes < _grace_for_cmd(cmd):
                 continue
             reason = "ORPHAN_EXPIRED"
             if not dry_run:
@@ -1577,6 +1582,13 @@ if __name__ == "__main__":
                     logger.warning("oMLX reviewer %s launchctl failed: %s", _label, _lctl_err)
                     continue
                 logger.info("✅ oMLX reviewer %s kicked on port %d", _label, _port)
+            try:
+                _profile_file = os.path.expanduser("~/.omlx/active_profile")
+                os.makedirs(os.path.dirname(_profile_file), exist_ok=True)
+                with open(_profile_file, "w", encoding="utf-8") as _f:
+                    _f.write("day\n")
+            except Exception as _profile_err:
+                logger.warning("⚠️ active_profile update failed after day reviewer startup: %s", _profile_err)
             logger.info("✅ 三哲人審查員啟動完成（日間模式）")
         except Exception as e:
             logger.warning("⚠️ oMLX reviewers kickstart failed: %s", e)

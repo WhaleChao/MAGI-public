@@ -8,19 +8,26 @@ First modularization slice for the page layer that was previously embedded in
 This blueprint keeps the existing behavior for:
   - /static/worldmonitor_reports -> /intel
   - /worldmonitor -> /intel
-  - /openclaw -> /dashboard/nerv
+  - /openclaw -> /magi-adjust
   - /intel -> worldmonitor report index
   - /dashboard
   - /dashboard/nerv
+  - /magi-adjust
 
 The module is intentionally dependency-light and does not import server.py.
 """
 
 from __future__ import annotations
 
+import json
+import html
+import os
+import re
+import subprocess
+from datetime import datetime
 from pathlib import Path
 
-from flask import Blueprint, Response, redirect, render_template, request, url_for
+from flask import Blueprint, Response, jsonify, redirect, render_template, request, url_for
 from flask_login import current_user, login_required
 
 import requests as _requests
@@ -31,26 +38,277 @@ _MAGI_ROOT = Path(__file__).resolve().parents[2]
 _WORLDMONITOR_REPORT_DIR = _MAGI_ROOT / "static" / "worldmonitor_reports"
 
 
-def _iter_worldmonitor_reports(limit: int = 20) -> list[dict]:
+def _strip_trailing_dot(value: str) -> str:
+    return str(value or "").strip().rstrip(".")
+
+
+def _load_tailscale_status() -> dict:
+    try:
+        result = subprocess.run(
+            ["tailscale", "status", "--json"],
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            data = json.loads(result.stdout)
+            return data if isinstance(data, dict) else {}
+    except Exception:
+        pass
+    return {}
+
+
+def _load_tailscale_serve_url() -> str:
+    try:
+        result = subprocess.run(
+            ["tailscale", "serve", "status", "--json"],
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+        if result.returncode != 0 or not result.stdout.strip():
+            return ""
+        data = json.loads(result.stdout)
+        web = data.get("Web") if isinstance(data, dict) else {}
+        if not isinstance(web, dict):
+            return ""
+        for host, config in web.items():
+            if isinstance(config, dict) and config.get("Handlers"):
+                host = _strip_trailing_dot(str(host).split(":")[0])
+                return f"https://{host}" if host else ""
+    except Exception:
+        pass
+    return ""
+
+
+def _build_mobile_app_config() -> dict:
+    status = _load_tailscale_status()
+    self_node = status.get("Self") if isinstance(status, dict) else {}
+    dns_name = _strip_trailing_dot((self_node or {}).get("DNSName") or "")
+    ips = (self_node or {}).get("TailscaleIPs") or []
+    tailscale_ip = str(ips[0]) if ips else ""
+    configured_url = (
+        os.environ.get("MAGI_MOBILE_BASE_URL")
+        or os.environ.get("MAGI_TAILSCALE_URL")
+        or _load_tailscale_serve_url()
+        or (f"https://{dns_name}" if dns_name else "")
+        or (f"http://{tailscale_ip}:5002" if tailscale_ip else "")
+        or "http://127.0.0.1:5002"
+    ).rstrip("/")
+    routes = [
+        {"label": "MAGI", "path": "/golem", "kind": "core"},
+        {"label": "Paperclip", "path": "/osc", "kind": "core"},
+        {"label": "全球新聞網", "path": "/intel", "kind": "info"},
+        {"label": "研究", "path": "/research", "kind": "info"},
+        {"label": "MAGI 調整", "path": "/magi-adjust", "kind": "admin"},
+        {"label": "手機後台", "path": "/mobile-admin", "kind": "admin"},
+    ]
+    return {
+        "app_name": "MAGI Mobile",
+        "base_url": configured_url,
+        "tailscale_dns": dns_name,
+        "tailscale_ip": tailscale_ip,
+        "tailscale_online": bool((self_node or {}).get("Online")),
+        "routes": routes,
+        "android_package": "tw.local.magi.mobile",
+        "ios_bundle_id": "tw.local.magi.mobile",
+    }
+
+
+def _parse_worldmonitor_timestamp(entry: Path) -> datetime | None:
     import re as _re
+
+    match = _re.match(r"intel_(\d{8})_(\d{4,6})$", entry.stem)
+    if not match:
+        return None
+    date_bits, time_bits = match.groups()
+    if len(time_bits) == 4:
+        time_bits = f"{time_bits}00"
+    try:
+        return datetime.strptime(f"{date_bits}_{time_bits}", "%Y%m%d_%H%M%S")
+    except ValueError:
+        return None
+
+
+def _worldmonitor_sort_key(entry: Path) -> tuple[float, str]:
+    parsed_at = _parse_worldmonitor_timestamp(entry)
+    if parsed_at is not None:
+        return (parsed_at.timestamp(), entry.name)
+    try:
+        return (entry.stat().st_mtime, entry.name)
+    except OSError:
+        return (0, entry.name)
+
+
+def _format_worldmonitor_date(entry: Path) -> str:
+    parsed_at = _parse_worldmonitor_timestamp(entry)
+    if parsed_at is not None:
+        return parsed_at.strftime("%Y-%m-%d %H:%M")
+    return entry.stem.replace("intel_", "")
+
+
+def _is_placeholder_worldmonitor_report(content: str) -> bool:
+    compact = content.strip().lower()
+    return compact in {"", "payload", "null", "none", "{}", "[]"}
+
+
+def _is_failed_worldmonitor_report(content: str) -> bool:
+    retired_source_failures = (
+        "AP News: FAIL",
+        "Reuters World: FAIL",
+        "FINNHUB_API_KEY 未設定，市場行情已停用",
+    )
+    return (
+        "[推理失敗]" in content
+        or "Melchior reasoning failed" in content
+        or any(marker in content for marker in retired_source_failures)
+    )
+
+
+def _clean_worldmonitor_text(text: str) -> str:
+    cleaned = html.unescape(str(text or "")).strip()
+    cleaned = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", cleaned)
+    cleaned = cleaned.replace("**", "").replace("__", "")
+    cleaned = cleaned.strip(" -\t")
+    return cleaned
+
+
+def _load_worldmonitor_sidecar(entry: Path) -> dict:
+    sidecar = entry.with_suffix(".json")
+    try:
+        if sidecar.is_file():
+            data = json.loads(sidecar.read_text(encoding="utf-8"))
+            return data if isinstance(data, dict) else {}
+    except Exception:
+        pass
+    return {}
+
+
+def _parse_worldmonitor_markdown(content: str) -> dict:
+    meta: dict[str, str] = {}
+    sections: list[dict] = []
+    source_health: list[str] = []
+    current: dict | None = None
+    in_details = False
+    in_source_health = False
+
+    for raw_line in str(content or "").splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if line.startswith("<details"):
+            in_details = True
+            continue
+        if in_details:
+            continue
+        if line.startswith("**") and "**:" in line:
+            key, _, value = line.partition(":")
+            meta[_clean_worldmonitor_text(key)] = _clean_worldmonitor_text(value)
+            continue
+        if line.startswith("## "):
+            title = _clean_worldmonitor_text(line.lstrip("#").strip())
+            in_source_health = "來源健康" in title
+            if in_source_health:
+                current = None
+                continue
+            if title in {"全球新聞", "市場數據"}:
+                current = None
+                continue
+            current = {"title": title, "items": []}
+            sections.append(current)
+            continue
+        if line.startswith("- "):
+            item = _clean_worldmonitor_text(line[2:])
+            if in_source_health:
+                source_health.append(item)
+            elif current is not None and item:
+                current["items"].append(item)
+
+    sections = [section for section in sections if section.get("items")]
+    return {"meta": meta, "sections": sections, "source_health": source_health}
+
+
+def _normalise_worldmonitor_news_items(sidecar: dict, limit: int = 30) -> list[dict]:
+    raw_items = sidecar.get("news_items") if isinstance(sidecar, dict) else []
+    if not isinstance(raw_items, list):
+        return []
+    items: list[dict] = []
+    for raw in raw_items:
+        if not isinstance(raw, dict):
+            continue
+        title = _clean_worldmonitor_text(raw.get("title") or "")
+        if not title:
+            continue
+        items.append({
+            "source": _clean_worldmonitor_text(raw.get("source") or "來源"),
+            "title": title,
+            "summary": _clean_worldmonitor_text(raw.get("summary") or ""),
+            "link": str(raw.get("link") or raw.get("url") or "").strip(),
+            "date": _clean_worldmonitor_text(raw.get("date") or ""),
+        })
+        if len(items) >= limit:
+            break
+    return items
+
+
+def _iter_worldmonitor_reports(limit: int = 20) -> list[dict]:
     reports: list[dict] = []
     if not _WORLDMONITOR_REPORT_DIR.is_dir():
         return reports
-    for entry in sorted(_WORLDMONITOR_REPORT_DIR.iterdir(), reverse=True):
+    entries = [
+        entry
+        for entry in _WORLDMONITOR_REPORT_DIR.iterdir()
+        if entry.is_file() and entry.suffix.lower() == ".md"
+    ]
+    for entry in sorted(entries, key=_worldmonitor_sort_key, reverse=True):
         if len(reports) >= limit:
             break
-        if not entry.is_file() or entry.suffix.lower() != ".md":
-            continue
         try:
-            content = entry.read_text(encoding="utf-8")[:8000]
+            full_content = entry.read_text(encoding="utf-8")
+            content = full_content[:8000]
+            read_error = ""
         except Exception:
+            full_content = ""
             content = "(讀取失敗)"
-        # Extract date from filename: intel_20260415_130000.md
-        date_display = entry.stem.replace("intel_", "")
-        m = _re.match(r"(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})", date_display)
-        if m:
-            date_display = f"{m.group(1)}-{m.group(2)}-{m.group(3)} {m.group(4)}:{m.group(5)}"
-        reports.append({"name": entry.name, "content": content, "date_display": date_display})
+            read_error = "檔案讀取失敗"
+        is_placeholder = _is_placeholder_worldmonitor_report(full_content)
+        warning = ""
+        if read_error:
+            warning = read_error
+        elif is_placeholder:
+            warning = "這份報告只有測試內容，沒有新聞摘要或分析。請按「立即更新」重新產生。"
+        if is_placeholder or _is_failed_worldmonitor_report(full_content):
+            continue
+        parsed = _parse_worldmonitor_markdown(full_content)
+        sidecar = _load_worldmonitor_sidecar(entry)
+        source_health = parsed["source_health"]
+        if not source_health and isinstance(sidecar.get("news_statuses"), list):
+            healthy = sum(1 for item in sidecar["news_statuses"] if isinstance(item, dict) and item.get("ok"))
+            total = len(sidecar["news_statuses"])
+            source_health = [f"新聞來源：{healthy}/{total} 成功"]
+            for item in sidecar["news_statuses"]:
+                if not isinstance(item, dict):
+                    continue
+                state = "OK" if item.get("ok") else "FAIL"
+                detail = f"{item.get('count', 0)} 篇" if item.get("ok") else item.get("error") or "fetch failed"
+                source_health.append(f"{item.get('source', 'unknown')}: {state} ({detail})")
+            market_status = sidecar.get("market_status") if isinstance(sidecar.get("market_status"), dict) else {}
+            if market_status:
+                state = "OK" if market_status.get("ok") else "DEGRADED"
+                source_health.append(f"市場資料：{state} ({market_status.get('detail') or '未提供'})")
+        reports.append({
+            "name": entry.name,
+            "content": content,
+            "summary_text": _clean_worldmonitor_text(content[:1200]),
+            "meta": parsed["meta"],
+            "sections": parsed["sections"],
+            "source_health": source_health,
+            "news_items": _normalise_worldmonitor_news_items(sidecar),
+            "date_display": _format_worldmonitor_date(entry),
+            "is_placeholder": is_placeholder,
+            "warning": warning,
+            "size_bytes": entry.stat().st_size if entry.exists() else 0,
+        })
     return reports
 
 
@@ -69,7 +327,7 @@ def worldmonitor_entry():
 @dashboard_pages_bp.route("/openclaw")
 @dashboard_pages_bp.route("/openclaw-gateway")
 def openclaw_entry():
-    return redirect(url_for("dashboard_pages.dashboard_nerv"))
+    return redirect("/magi-adjust")
 
 
 @dashboard_pages_bp.route("/intel")
@@ -79,16 +337,156 @@ def intel_panel():
     return render_template("intel.html", reports=reports)
 
 
+def _read_json_file(path: Path, default):
+    try:
+        if path.exists():
+            with open(path, "r", encoding="utf-8") as fh:
+                return json.load(fh)
+    except Exception:
+        pass
+    return default
+
+
+def _load_research_dashboard() -> dict:
+    rb_root = _MAGI_ROOT / ".runtime" / "research_brief"
+    ns_dir = rb_root / "namespaces"
+    namespaces: list[dict] = []
+    if ns_dir.is_dir():
+        for entry in sorted(ns_dir.glob("*.json"), key=lambda p: p.stem):
+            data = _read_json_file(entry, {})
+            if not isinstance(data, dict):
+                continue
+            sources = data.get("sources") if isinstance(data.get("sources"), list) else []
+            keywords = data.get("keywords") if isinstance(data.get("keywords"), list) else []
+            namespaces.append({
+                "name": data.get("namespace") or entry.stem,
+                "topic_key": data.get("topic_key") or "research_daily",
+                "keywords": [str(k) for k in keywords if str(k).strip()],
+                "sources": [
+                    {
+                        "url": str(s.get("url") or "").strip(),
+                        "type": str(s.get("type") or "html").strip(),
+                        "lang": str(s.get("lang") or "").strip(),
+                        "note": str(s.get("note") or "").strip(),
+                    }
+                    for s in sources
+                    if isinstance(s, dict) and str(s.get("url") or "").strip()
+                ],
+            })
+
+    crawler_state = _read_json_file(_MAGI_ROOT / "_crawl_targets.json", {"targets": []})
+    crawl_targets = crawler_state.get("targets") if isinstance(crawler_state, dict) else []
+    if not isinstance(crawl_targets, list):
+        crawl_targets = []
+
+    digest_rows: list[dict] = []
+    last_digest = rb_root / "last_digest.jsonl"
+    try:
+        if last_digest.exists():
+            rows = last_digest.read_text(encoding="utf-8").splitlines()[-12:]
+            for raw in reversed(rows):
+                try:
+                    item = json.loads(raw)
+                except Exception:
+                    continue
+                if isinstance(item, dict):
+                    digest_rows.append(item)
+    except Exception:
+        digest_rows = []
+
+    source_total = sum(len(ns["sources"]) for ns in namespaces)
+    return {
+        "namespaces": namespaces,
+        "crawl_targets": [t for t in crawl_targets if isinstance(t, dict)],
+        "digests": digest_rows,
+        "namespace_count": len(namespaces),
+        "source_total": source_total,
+    }
+
+
+@dashboard_pages_bp.route("/research")
+@dashboard_pages_bp.route("/magi-research")
+@login_required
+def research_panel():
+    return render_template("research.html", research=_load_research_dashboard(), user=current_user)
+
+
 @dashboard_pages_bp.route("/dashboard")
 @login_required
 def dashboard():
-    return render_template("dashboard.html", user=current_user)
+    return redirect(url_for("dashboard_pages.golem_console"))
+
+
+@dashboard_pages_bp.route("/dashboard/legacy")
+@login_required
+def dashboard_legacy():
+    return redirect(url_for("dashboard_pages.golem_console"))
 
 
 @dashboard_pages_bp.route("/dashboard/nerv")
+@dashboard_pages_bp.route("/magi-adjust")
+@dashboard_pages_bp.route("/magi-settings")
 @login_required
-def dashboard_nerv():
+def magi_adjust():
     return render_template("dashboard_nerv.html", user=current_user)
+
+
+@dashboard_pages_bp.route("/golem")
+@dashboard_pages_bp.route("/dashboard/golem")
+@login_required
+def golem_console():
+    return render_template("golem_console.html", user=current_user)
+
+
+@dashboard_pages_bp.route("/mobile")
+@dashboard_pages_bp.route("/app")
+@login_required
+def mobile_home():
+    return render_template("mobile_home.html", user=current_user, mobile=_build_mobile_app_config())
+
+
+@dashboard_pages_bp.route("/mobile-admin")
+@dashboard_pages_bp.route("/app-admin")
+@login_required
+def mobile_admin():
+    return render_template("mobile_admin.html", user=current_user, mobile=_build_mobile_app_config())
+
+
+@dashboard_pages_bp.route("/mobile/config.json")
+@login_required
+def mobile_config_json():
+    return jsonify(_build_mobile_app_config())
+
+
+@dashboard_pages_bp.route("/mobile/manifest.webmanifest")
+def mobile_manifest():
+    config = _build_mobile_app_config()
+    manifest = {
+        "name": "MAGI Mobile",
+        "short_name": "MAGI",
+        "description": "MAGI 與 Paperclip 內部行動入口",
+        "id": "/mobile",
+        "start_url": "/mobile",
+        "scope": "/",
+        "display": "standalone",
+        "orientation": "portrait",
+        "theme_color": "#0f766e",
+        "background_color": "#f4f6f2",
+        "icons": [
+            {
+                "src": "/static/mobile/magi-mobile.svg",
+                "sizes": "any",
+                "type": "image/svg+xml",
+                "purpose": "any maskable",
+            }
+        ],
+        "shortcuts": [
+            {"name": item["label"], "url": item["path"]}
+            for item in config["routes"]
+            if item["kind"] in {"core", "admin"}
+        ],
+    }
+    return jsonify(manifest)
 
 
 @dashboard_pages_bp.route("/dashboard/website")

@@ -111,7 +111,9 @@ def main():
         # We programmatically point the file manager at TEST_BASE via JS.
         page.evaluate(f"""
             (async () => {{
-                if (window.PaperclipFM && window.PaperclipFM.openBase) {{
+                if (window.FileManager && window.FileManager.openWithBasePath) {{
+                    await window.FileManager.openWithBasePath({json.dumps(TEST_BASE)}, {{label: 'LIVE 驗證資料夾'}});
+                }} else if (window.PaperclipFM && window.PaperclipFM.openBase) {{
                     await window.PaperclipFM.openBase({json.dumps(TEST_BASE)});
                 }} else if (window.PaperclipFM && window.PaperclipFM.navigateToCase) {{
                     await window.PaperclipFM.navigateToCase({json.dumps(TEST_BASE)});
