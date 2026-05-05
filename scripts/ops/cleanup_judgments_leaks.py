@@ -55,6 +55,11 @@ try:
 except Exception:
     pass
 
+from api.osc.insight_filters import (  # noqa: E402
+    is_non_extractable_legal_insight,
+    non_extractable_legal_insight_sql_where,
+)
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(message)s")
 logger = logging.getLogger("cleanup-judgments")
 
@@ -66,6 +71,9 @@ _LEAK_SIGNATURES = [
     "嚴格依照", "逐字擷取", "好的，作為", "請您提供", "請直接輸出校正",
     "請提供完整的判決書", "我將為您服務", "將為您服務",
     "您提供的文本片段", "我將嚴格依照", "我將依循以下步驟",
+    "請提供您需要我摘要的判決書全文", "請您現在貼上判決書",
+    "請將判決書貼於此", "判決書貼於下方", "原始資料未提供全文文字",
+    "已存原始 JSON",
 ]
 
 _PREAMBLE_LINE_PATTERNS = [
@@ -107,7 +115,7 @@ _CONTENT_RE = re.compile("|".join(_CONTENT_MARKERS))
 
 
 def has_leak(s: str) -> bool:
-    return any(m in (s or "") for m in _LEAK_SIGNATURES)
+    return any(m in (s or "") for m in _LEAK_SIGNATURES) or is_non_extractable_legal_insight(s)
 
 
 def has_real_content(s: str) -> bool:
@@ -257,6 +265,10 @@ def cleanup_json(apply: bool, conn) -> Dict[str, Any]:
         summary = str(e.get("summary", "") or "")
         leaked = has_leak(summary)
 
+        if is_non_extractable_legal_insight(summary):
+            stats["pure_preamble_dropped"] += 1
+            continue
+
         if not leaked:
             stats["clean_kept"] += 1
             new_entry = dict(e)
@@ -325,12 +337,22 @@ def cleanup_db(apply: bool, conn) -> Dict[str, Any]:
         "scanned": 0,
         "cleaned_updated": 0,
         "pure_preamble_nulled": 0,
+        "legal_insights_deleted": 0,
         "unchanged": 0,
     }
     if not conn:
         return {"error": "no db connection"}
 
     cur = conn.cursor(dictionary=True)
+
+    normalized_legal = (
+        "REPLACE(REPLACE(REPLACE(REPLACE(CONCAT_WS('', "
+        "`court_reference`, `insight_text`, `document_name`, `case_reason`, `raw_text`"
+        "), ' ', ''), '\\n', ''), '\\r', ''), '\\t', '')"
+    )
+    li_where, li_params = non_extractable_legal_insight_sql_where(normalized_legal)
+    cur.execute(f"SELECT COUNT(*) AS c FROM legal_insights WHERE {li_where}", li_params)
+    stats["legal_insights_deleted"] = int((cur.fetchone() or {}).get("c") or 0)
 
     ors = " OR ".join(["summary LIKE %s"] * len(_LEAK_SIGNATURES))
     params = [f"%{m}%" for m in _LEAK_SIGNATURES]
@@ -347,7 +369,7 @@ def cleanup_db(apply: bool, conn) -> Dict[str, Any]:
         jid = r["jid"]
         summary = r["summary"] or ""
         cleaned = strip_preamble(summary)
-        if len(cleaned) < 30 or not has_real_content(cleaned):
+        if is_non_extractable_legal_insight(summary) or len(cleaned) < 30 or not has_real_content(cleaned):
             updates.append((None, jid))  # NULL out for resummary
             stats["pure_preamble_nulled"] += 1
         elif cleaned != summary.strip():
@@ -358,8 +380,10 @@ def cleanup_db(apply: bool, conn) -> Dict[str, Any]:
 
     cur.close()
 
-    if apply and updates:
+    if apply and (updates or stats["legal_insights_deleted"]):
         up_cur = conn.cursor()
+        if stats["legal_insights_deleted"]:
+            up_cur.execute(f"DELETE FROM legal_insights WHERE {li_where}", li_params)
         for new_val, jid in updates:
             up_cur.execute(
                 "UPDATE court_judgments SET summary=%s WHERE jid=%s",

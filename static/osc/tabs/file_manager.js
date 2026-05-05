@@ -1,6 +1,6 @@
 /* ==========================================================================
    Paperclip NAS File Manager — Phase 1 (UI shell)
-   - Sidebar item 📁 NAS 檔案 → activates this tab
+   - Sidebar item 📁 檔案管理 → activates this tab
    - Dual-pane: left = lazy-load tree, right = entries (folders before files)
    - Breadcrumb (clickable)
    - Hidden-file toggle, refresh, "open in case folder via case picker (TODO Phase 2)"
@@ -15,12 +15,24 @@
         basePath: '',          // current root (NAS path string)
         currentRel: '',        // relative path under base
         showHidden: false,
-        viewMode: 'detail',    // detail | grid | compact (Phase 2 commit 7)
+        viewMode: (() => {
+            try { return localStorage.getItem('fmViewMode') || 'detail'; }
+            catch (_) { return 'detail'; }
+        })(),    // detail | grid | compact
         sort: 'mtime_desc',    // mtime_desc | mtime_asc | name_asc | name_desc | size_desc | size_asc | type_group
+        rootLabel: '',
         loading: false,
         lastEntries: { folders: [], files: [] },
+        lastHiddenCount: 0,
+        hasLoadedEntries: false,
+        navSeq: 0,
+        treeSeq: 0,
         selectedRel: null,
         selectedType: null,
+        selectedName: '',
+        movePending: null,
+        lastCaseResults: [],
+        driveRoots: [],
     };
 
     // ── Icons ──────────────────────────────────────────────────────────
@@ -59,6 +71,34 @@
         el.textContent = msg;
     }
 
+    function pathBaseName(path) {
+        return String(path || '').replace(/[\\/]+$/, '').split(/[\\/]/).filter(Boolean).pop() || '';
+    }
+
+    function caseRootLabel(meta) {
+        const m = meta || {};
+        const label = String(m.label || '').trim();
+        if (label) return label;
+        const caseNumber = String(m.caseNumber || m.case_number || '').trim();
+        const clientName = String(m.clientName || m.client_name || '').trim();
+        return [caseNumber, clientName].filter(Boolean).join(' ');
+    }
+
+    function rootDisplayName() {
+        return FM.rootLabel || pathBaseName(FM.basePath) || '目前資料夾';
+    }
+
+    function viewModeLabel(view) {
+        return view === 'grid' ? '卡片' : (view === 'compact' ? '清單' : '詳細');
+    }
+
+    function updateViewModeStatus() {
+        const el = document.getElementById('fmViewModeStatus');
+        if (el) el.textContent = '目前：' + viewModeLabel(FM.viewMode);
+        const main = document.getElementById('fmEntriesArea');
+        if (main) main.dataset.viewMode = FM.viewMode;
+    }
+
     // ── API helpers ────────────────────────────────────────────────────
     async function apiBrowse(basePath, relativePath) {
         const url = '/api/osc/folders/browse?'
@@ -78,14 +118,276 @@
         return r.json();
     }
 
+    async function apiCaseSearch(query) {
+        const q = (query || '').trim();
+        const statusScope = q ? 'all' : 'working';
+        const url = '/api/osc/cases?limit=120&category=全部&status_scope=' + encodeURIComponent(statusScope)
+            + (q ? '&q=' + encodeURIComponent(q) : '');
+        const r = await fetch(url, { credentials: 'same-origin' });
+        return r.json();
+    }
+
+    async function apiDriveRoots() {
+        const r = await fetch('/api/osc/folders/roots', { credentials: 'same-origin' });
+        return r.json();
+    }
+
+    function caseResultMeta(c) {
+        return [
+            c.case_number,
+            c.laf_case_no ? '法扶 ' + c.laf_case_no : '',
+            c.court_case_no,
+            c.case_reason,
+        ].filter(Boolean).join(' / ');
+    }
+
+    function renderCaseResults(items, query) {
+        const box = document.getElementById('fmCaseSearchResults');
+        if (!box) return;
+        FM.lastCaseResults = items || [];
+        if (!items || !items.length) {
+            const msg = (query || '').trim()
+                ? '找不到符合「' + escapeHTML(query) + '」的案件。'
+                : '目前沒有進行中 / 結案中的案件。';
+            box.innerHTML = '<div class="fm-case-empty">' + msg + '</div>';
+            return;
+        }
+        box.innerHTML = items.map(c => {
+            const title = c.client_name || c.case_number || c.id || '未命名案件';
+            const sub = caseResultMeta(c);
+            const status = c.status || '進行中';
+            const folderKnown = (c.folder_path || '').trim() ? '有資料夾' : '待建立資料夾';
+            return '<button type="button" class="fm-case-item" data-fm-case-id="' + escapeHTML(c.id) + '">'
+                + '<div class="fm-case-main">'
+                + '<div class="fm-case-title" title="' + escapeHTML(title) + '">' + escapeHTML(title) + '</div>'
+                + '<div class="fm-case-sub" title="' + escapeHTML(sub) + '">' + escapeHTML(sub || '尚無案號資料') + '</div>'
+                + '</div>'
+                + '<div class="fm-case-tags">'
+                + '<span class="fm-case-status">' + escapeHTML(status) + '</span>'
+                + '<span class="fm-case-folder">' + escapeHTML(folderKnown) + '</span>'
+                + '</div>'
+                + '</button>';
+        }).join('');
+        box.querySelectorAll('[data-fm-case-id]').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const id = btn.dataset.fmCaseId || '';
+                box.querySelectorAll('.fm-case-item.active').forEach(n => n.classList.remove('active'));
+                btn.classList.add('active');
+                if (typeof openCaseInFileManager === 'function') openCaseInFileManager(id);
+            });
+        });
+    }
+
+    async function searchCases(query) {
+        const box = document.getElementById('fmCaseSearchResults');
+        if (!box) return;
+        const q = (query || '').trim();
+        if (!q) {
+            FM.lastCaseResults = [];
+            box.innerHTML = '<div class="fm-case-empty">也可以直接從下方「進行中案件 / 已結案案件」資料夾慢慢展開。</div>';
+            return;
+        }
+        box.innerHTML = '<div class="fm-case-empty">案件載入中...</div>';
+        try {
+            const data = await apiCaseSearch(q);
+            renderCaseResults((data && data.items) || [], q);
+        } catch (e) {
+            box.innerHTML = '<div class="muted">案件入口載入失敗：' + escapeHTML(e.message || e) + '</div>';
+        }
+    }
+
+    const loadCaseShortcuts = () => searchCases(document.getElementById('fmCaseSearchInput')?.value || '');
+
+    function rootById(rootId) {
+        return (FM.driveRoots || []).find(r => r.id === rootId) || null;
+    }
+
+    function renderRootBreadcrumb() {
+        const bc = document.getElementById('fmBreadcrumb');
+        if (!bc) return;
+        bc.innerHTML = '<span class="crumb current" data-rel="">案件資料夾</span>';
+    }
+
+    function renderDriveOverview(roots) {
+        const main = document.getElementById('fmEntriesArea');
+        if (!main) return;
+        const items = (roots || []).filter(r => r.path);
+        if (!items.length) {
+            main.innerHTML = '<div class="fm-empty">找不到案件母資料夾路徑，請到「進階」手動開啟路徑。</div>';
+            updateSelectionControls();
+            return;
+        }
+        main.innerHTML = '<div class="fm-drive-overview">'
+            + items.map(r => {
+                const childCount = (r.children || []).length;
+                const status = r.exists ? (childCount + ' 個分類') : '路徑未連線';
+                return '<button type="button" class="fm-drive-root-card" data-root-id="' + escapeHTML(r.id) + '">'
+                    + '<span class="fm-drive-root-icon">📁</span>'
+                    + '<span class="fm-drive-root-main">'
+                    + '<strong>' + escapeHTML(r.label) + '</strong>'
+                    + '<span>' + escapeHTML(r.folder_name || '') + '</span>'
+                    + '<em>' + escapeHTML(status) + '</em>'
+                    + '</span>'
+                    + '</button>';
+            }).join('')
+            + '</div>';
+        main.querySelectorAll('[data-root-id]').forEach(btn => {
+            btn.addEventListener('click', () => openDriveRoot(btn.dataset.rootId || ''));
+        });
+        updateSelectionControls();
+    }
+
+    function renderDriveTree(roots) {
+        const tree = document.getElementById('fmTree');
+        if (!tree) return;
+        const items = (roots || []).filter(r => r.path);
+        if (!items.length) {
+            tree.innerHTML = '<div class="fm-empty">找不到案件母資料夾</div>';
+            return;
+        }
+        tree.innerHTML = '';
+        items.forEach(root => tree.appendChild(makeDriveRootNode(root)));
+    }
+
+    function makeDriveRootNode(root) {
+        const wrap = document.createElement('div');
+        const head = document.createElement('div');
+        head.className = 'fm-tree-node fm-drive-root-node';
+        head.dataset.rootId = root.id || '';
+        const tw = document.createElement('span');
+        tw.className = 'tw';
+        tw.textContent = '▶';
+        head.appendChild(tw);
+        const lbl = document.createElement('span');
+        lbl.textContent = '📁 ' + (root.label || root.folder_name || '案件資料夾');
+        head.appendChild(lbl);
+        wrap.appendChild(head);
+
+        let expanded = false;
+        let childWrap = null;
+        head.addEventListener('click', async () => {
+            if (!root.path) return;
+            if (!expanded) {
+                expanded = true;
+                tw.textContent = '▼';
+                childWrap = document.createElement('div');
+                childWrap.className = 'fm-tree-children';
+                childWrap.innerHTML = '<div class="fm-loading-inline">載入分類…</div>';
+                wrap.appendChild(childWrap);
+                const children = (root.children && root.children.length)
+                    ? root.children
+                    : ((await apiTree(root.path, '')).children || []);
+                childWrap.innerHTML = '';
+                if (!children.length) {
+                    childWrap.innerHTML = '<div class="fm-loading-inline">（沒有分類資料夾）</div>';
+                } else {
+                    children.forEach(c => childWrap.appendChild(makeDriveChildNode(root, c)));
+                }
+            } else {
+                expanded = false;
+                tw.textContent = '▶';
+                if (childWrap) { childWrap.remove(); childWrap = null; }
+            }
+            openDriveRoot(root.id || '');
+        });
+        return wrap;
+    }
+
+    function makeDriveChildNode(root, node) {
+        const wrap = document.createElement('div');
+        const head = document.createElement('div');
+        head.className = 'fm-tree-node';
+        head.dataset.rootId = root.id || '';
+        head.dataset.rel = node.relative_path || '';
+        const tw = document.createElement('span');
+        tw.className = 'tw';
+        tw.textContent = node.has_subdirs ? '▶' : '';
+        head.appendChild(tw);
+        const lbl = document.createElement('span');
+        lbl.textContent = '📁 ' + node.name;
+        head.appendChild(lbl);
+        wrap.appendChild(head);
+
+        let expanded = false;
+        let childWrap = null;
+        head.addEventListener('click', async (ev) => {
+            ev.stopPropagation();
+            await openDrivePath(root, node.relative_path || '');
+            if (!node.has_subdirs) return;
+            if (!expanded) {
+                expanded = true;
+                tw.textContent = '▼';
+                childWrap = document.createElement('div');
+                childWrap.className = 'fm-tree-children';
+                childWrap.innerHTML = '<div class="fm-loading-inline">…</div>';
+                wrap.appendChild(childWrap);
+                const data = await apiTree(root.path, node.relative_path || '');
+                childWrap.innerHTML = '';
+                ((data && data.children) || []).forEach(c => childWrap.appendChild(makeDriveChildNode(root, c)));
+                if (!childWrap.children.length) childWrap.innerHTML = '<div class="fm-loading-inline">（無子資料夾）</div>';
+            } else {
+                expanded = false;
+                tw.textContent = '▶';
+                if (childWrap) { childWrap.remove(); childWrap = null; }
+            }
+        });
+        return wrap;
+    }
+
+    async function loadDriveRoots() {
+        const tree = document.getElementById('fmTree');
+        if (tree) tree.innerHTML = '<div class="fm-loading-inline">載入母資料夾…</div>';
+        try {
+            const data = await apiDriveRoots();
+            FM.driveRoots = (data && data.items) || [];
+            renderRootBreadcrumb();
+            renderDriveTree(FM.driveRoots);
+            renderDriveOverview(FM.driveRoots);
+        } catch (e) {
+            if (tree) tree.innerHTML = '<div class="fm-empty">母資料夾載入失敗：' + escapeHTML(e.message || e) + '</div>';
+        }
+    }
+
+    function showDriveOverview() {
+        FM.navSeq++;
+        FM.treeSeq++;
+        FM.basePath = '';
+        FM.currentRel = '';
+        FM.rootLabel = '';
+        FM.selectedRel = null;
+        FM.selectedType = null;
+        FM.selectedName = '';
+        cancelMovePending(false);
+        FM.hasLoadedEntries = false;
+        FM.lastEntries = { folders: [], files: [] };
+        FM.lastHiddenCount = 0;
+        setStatus('');
+        renderRootBreadcrumb();
+        renderDriveTree(FM.driveRoots);
+        renderDriveOverview(FM.driveRoots);
+    }
+
+    async function openDriveRoot(rootId) {
+        const root = rootById(rootId);
+        if (!root || !root.path) return;
+        await setRoot(root.path, { label: root.label || root.folder_name });
+    }
+
+    async function openDrivePath(root, rel) {
+        if (!root || !root.path) return;
+        await setRoot(root.path, { label: root.label || root.folder_name });
+        if (rel) await navigateTo(rel);
+    }
+
     // ── Render: breadcrumb ─────────────────────────────────────────────
     function renderBreadcrumb() {
         const bc = document.getElementById('fmBreadcrumb');
         if (!bc) return;
         const parts = (FM.currentRel || '').split('/').filter(Boolean);
         const pieces = [];
+        const rootName = rootDisplayName();
         pieces.push('<span class="crumb' + (parts.length === 0 ? ' current' : '')
-            + '" data-rel="" title="根目錄">🏠 根目錄</span>');
+            + '" data-rel="" title="' + escapeHTML(rootName) + '">📁 ' + escapeHTML(rootName) + '</span>');
         let acc = '';
         parts.forEach((p, i) => {
             acc = acc ? acc + '/' + p : p;
@@ -144,16 +446,20 @@
                   + '</details>'
                 : '';
             main.innerHTML = '<div class="fm-empty">⚠️ ' + escapeHTML(friendly) + diagHtml + '</div>';
+            updateSelectionControls();
             return;
         }
         FM.lastEntries.folders = data.folders || [];
         FM.lastEntries.files = data.files || [];
+        FM.lastHiddenCount = data.hidden_count || 0;
+        FM.hasLoadedEntries = true;
 
         const folders = sortEntries(FM.lastEntries.folders);
         const files = sortEntries(FM.lastEntries.files);
 
         if (folders.length === 0 && files.length === 0) {
             main.innerHTML = '<div class="fm-empty">此資料夾為空</div>';
+            updateSelectionControls();
             return;
         }
 
@@ -168,6 +474,30 @@
         main.innerHTML = html;
         bindEntryClicks(main);
         if (typeof bindContextMenu === 'function') bindContextMenu();
+        updateSelectionControls();
+    }
+
+    function applyViewMode(view, rerender) {
+        FM.viewMode = view || 'detail';
+        try { localStorage.setItem('fmViewMode', FM.viewMode); } catch (_) {}
+        document.querySelectorAll('.fm-view-btn').forEach(btn => {
+            btn.classList.toggle('active', btn.dataset.view === FM.viewMode);
+        });
+        updateViewModeStatus();
+        const label = viewModeLabel(FM.viewMode);
+        if (rerender && FM.hasLoadedEntries) {
+            renderEntries({
+                folders: FM.lastEntries.folders,
+                files: FM.lastEntries.files,
+                hidden_count: FM.lastHiddenCount,
+                ok: true,
+            });
+            setStatus('已切換為「' + label + '」檢視。');
+            setTimeout(() => setStatus(''), 1200);
+        } else if (rerender) {
+            setStatus('已切換為「' + label + '」檢視；開啟資料夾後會套用。');
+            setTimeout(() => setStatus(''), 1600);
+        }
     }
 
     function renderDetail(folders, files, data) {
@@ -287,17 +617,45 @@
     function selectEntry(rel, type, el) {
         FM.selectedRel = rel;
         FM.selectedType = type;
+        FM.selectedName = (el && el.dataset && el.dataset.name) || pathBaseName(rel);
         const main = document.getElementById('fmEntriesArea');
         if (main) main.querySelectorAll('.selected').forEach(n => n.classList.remove('selected'));
         if (el) el.classList.add('selected');
+        updateSelectionControls();
+    }
+
+    function clearSelection() {
+        FM.selectedRel = null;
+        FM.selectedType = null;
+        FM.selectedName = '';
+        const main = document.getElementById('fmEntriesArea');
+        if (main) main.querySelectorAll('.selected').forEach(n => n.classList.remove('selected'));
+        updateSelectionControls();
+    }
+
+    function updateSelectionControls() {
+        const nameEl = document.getElementById('fmSelectedName');
+        const moveBtn = document.getElementById('fmMoveBtn');
+        const trashBtn = document.getElementById('fmTrashBtn');
+        const hasSelection = !!(FM.basePath && FM.selectedRel);
+        if (nameEl) {
+            nameEl.textContent = hasSelection ? ('已選取：' + (FM.selectedName || pathBaseName(FM.selectedRel))) : '尚未選取檔案';
+            nameEl.title = hasSelection ? FM.selectedRel : '';
+        }
+        if (moveBtn) moveBtn.disabled = !hasSelection;
+        if (trashBtn) trashBtn.disabled = !hasSelection;
+        updateMovePendingBar();
     }
 
     // ── Render: tree (lazy-load) ──────────────────────────────────────
     async function renderTreeRoot() {
         const root = document.getElementById('fmTree');
         if (!root) return;
+        const seq = ++FM.treeSeq;
+        const baseAtStart = FM.basePath;
         root.innerHTML = '<div class="fm-loading-inline">載入樹狀…</div>';
         const data = await apiTree(FM.basePath, '');
+        if (seq !== FM.treeSeq || baseAtStart !== FM.basePath) return;
         if (!data || data.ok === false) {
             const friendly = (data && data.message) || (data && data.error) || '未知錯誤';
             const diagHtml = (data && data.diagnostic && data.diagnostic.candidates && data.diagnostic.candidates.length)
@@ -309,7 +667,7 @@
             return;
         }
         root.innerHTML = '';
-        const homeNode = makeTreeNode({ name: '🏠 根目錄', relative_path: '', has_subdirs: true }, true);
+        const homeNode = makeTreeNode({ name: rootDisplayName(), relative_path: '', has_subdirs: true }, true);
         root.appendChild(homeNode);
         const childrenWrap = document.createElement('div');
         childrenWrap.className = 'fm-tree-children';
@@ -329,7 +687,7 @@
         tw.textContent = node.has_subdirs ? '▶' : '';
         head.appendChild(tw);
         const lbl = document.createElement('span');
-        lbl.textContent = (isRoot ? '' : '📁 ') + node.name;
+        lbl.textContent = '📁 ' + node.name;
         head.appendChild(lbl);
         wrap.appendChild(head);
 
@@ -337,7 +695,7 @@
         let childWrap = null;
         head.addEventListener('click', async (ev) => {
             ev.stopPropagation();
-            if (!isRoot) navigateTo(node.relative_path || '');
+            navigateTo(node.relative_path || '');
             highlightTree(node.relative_path || '');
             if (!node.has_subdirs) return;
             if (!expanded) {
@@ -377,10 +735,16 @@
     // ── Navigation ────────────────────────────────────────────────────
     async function navigateTo(rel) {
         if (!FM.basePath) return;
-        if (FM.loading) return;
+        const seq = ++FM.navSeq;
+        const baseAtStart = FM.basePath;
         FM.loading = true;
+        FM.selectedRel = null;
+        FM.selectedType = null;
+        FM.selectedName = '';
+        updateSelectionControls();
         setStatus('載入中…');
         const data = await apiBrowse(FM.basePath, rel);
+        if (seq !== FM.navSeq || baseAtStart !== FM.basePath) return;
         FM.loading = false;
         if (!data || data.ok === false) {
             setStatus('載入失敗：' + ((data && data.error) || '未知錯誤'), true);
@@ -394,13 +758,23 @@
         highlightTree(FM.currentRel);
     }
 
-    async function setRoot(basePath) {
+    async function setRoot(basePath, meta) {
         if (!basePath) {
             setStatus('請輸入 NAS 案件資料夾路徑（例：Z:\\lumi63181107\\01_案件\\...）', true);
             return;
         }
+        FM.navSeq++;
+        FM.treeSeq++;
         FM.basePath = basePath;
+        FM.rootLabel = caseRootLabel(meta) || pathBaseName(basePath) || '目前資料夾';
         FM.currentRel = '';
+        FM.selectedRel = null;
+        FM.selectedType = null;
+        FM.selectedName = '';
+        cancelMovePending(false);
+        FM.hasLoadedEntries = false;
+        FM.lastEntries = { folders: [], files: [] };
+        FM.lastHiddenCount = 0;
         setStatus('解析路徑…');
         await renderTreeRoot();
         await navigateTo('');
@@ -422,6 +796,23 @@
         const r = (rel || '').replace(/\//g, sep);
         if (!r) return FM.basePath;
         return FM.basePath.replace(/[\\/]+$/, '') + sep + r;
+    }
+
+    function isPdfName(nameOrRel) {
+        return /\.pdf$/i.test(String(nameOrRel || ''));
+    }
+
+    function openPdfToolFromFileManager(rel) {
+        const fullPath = buildLocalPath(rel);
+        const pdfTab = document.querySelector('.tab-btn[data-tab="pdfTools"]');
+        if (pdfTab) pdfTab.click();
+        window.setTimeout(() => {
+            if (typeof setPdfToolPath === 'function') {
+                setPdfToolPath(fullPath);
+            } else {
+                setStatus('PDF 工具尚未載入，請切到 PDF 工具後再試一次。', true);
+            }
+        }, 80);
     }
 
     let _previewBlobUrl = null;
@@ -617,6 +1008,128 @@
         });
         return r.json();
     }
+    async function apiMove(basePath, sourceRelativePath, targetRelativePath) {
+        const r = await fetch('/api/osc/folders/move', {
+            method: 'POST', credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                base_path: basePath,
+                source_relative_path: sourceRelativePath,
+                target_relative_path: targetRelativePath || '',
+            }),
+        });
+        return r.json();
+    }
+    async function apiShareFile(fullPath) {
+        const r = await fetch('/api/osc/files/share', {
+            method: 'POST', credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ path: fullPath }),
+        });
+        return r.json();
+    }
+
+    async function createShareLink(rel, name) {
+        if (!rel) {
+            setStatus('請先選取要分享的檔案。', true);
+            return;
+        }
+        const fullPath = buildLocalPath(rel);
+        const r = await apiShareFile(fullPath);
+        if (!r || !r.ok) {
+            setStatus('分享連結建立失敗：' + ((r && r.error) || '未知'), true);
+            return;
+        }
+        try {
+            await navigator.clipboard.writeText(r.url);
+            setStatus('已建立並複製分享連結：' + (name || pathBaseName(rel)));
+        } catch (e) {
+            window.prompt('分享連結（不含檔案路徑）：', r.url);
+            setStatus('已建立分享連結：' + (name || pathBaseName(rel)));
+        }
+        setTimeout(() => setStatus(''), 3500);
+    }
+
+    function updateMovePendingBar() {
+        const bar = document.getElementById('fmMovePendingBar');
+        const nameEl = document.getElementById('fmMovePendingName');
+        const hereBtn = document.getElementById('fmMoveHereBtn');
+        if (!bar) return;
+        const pending = FM.movePending;
+        bar.hidden = !pending;
+        if (nameEl && pending) {
+            nameEl.textContent = pending.name || pathBaseName(pending.rel);
+            nameEl.title = pending.rel;
+        }
+        if (hereBtn && pending) {
+            const target = FM.currentRel || '';
+            const fromParent = parentRel(pending.rel);
+            const invalidNested = pending.type === 'dir' && (target === pending.rel || target.startsWith(pending.rel + '/'));
+            hereBtn.disabled = !FM.basePath || target === fromParent || invalidNested;
+            hereBtn.title = invalidNested ? '不能把資料夾移到自己底下' : (target === fromParent ? '已在這個資料夾' : '移到目前資料夾');
+        }
+    }
+
+    function parentRel(rel) {
+        const parts = String(rel || '').split('/').filter(Boolean);
+        parts.pop();
+        return parts.join('/');
+    }
+
+    function startMoveSelected(rel, type, name) {
+        if (!FM.basePath || !rel) {
+            setStatus('請先選取要移動的檔案或資料夾。', true);
+            return;
+        }
+        FM.movePending = {
+            basePath: FM.basePath,
+            rel,
+            type: type || FM.selectedType || 'file',
+            name: name || FM.selectedName || pathBaseName(rel),
+        };
+        updateMovePendingBar();
+        setStatus('已準備移動「' + FM.movePending.name + '」；請切到目標資料夾後按「移到目前資料夾」。');
+    }
+
+    function cancelMovePending(showStatus) {
+        FM.movePending = null;
+        updateMovePendingBar();
+        if (showStatus) {
+            setStatus('已取消移動。');
+            setTimeout(() => setStatus(''), 1200);
+        }
+    }
+
+    async function movePendingHere() {
+        const pending = FM.movePending;
+        if (!pending) return;
+        if (!FM.basePath || FM.basePath !== pending.basePath) {
+            setStatus('目標資料夾不在同一個案件根目錄，請重新選取。', true);
+            return;
+        }
+        const target = FM.currentRel || '';
+        const fromParent = parentRel(pending.rel);
+        if (target === fromParent) {
+            setStatus('這個檔案已經在目前資料夾。', true);
+            return;
+        }
+        if (pending.type === 'dir' && (target === pending.rel || target.startsWith(pending.rel + '/'))) {
+            setStatus('不能把資料夾移到自己底下。', true);
+            return;
+        }
+        const r = await apiMove(FM.basePath, pending.rel, target);
+        if (r && r.ok) {
+            const movedName = pending.name || pathBaseName(pending.rel);
+            FM.movePending = null;
+            clearSelection();
+            setStatus('已移動到目前資料夾：' + movedName);
+            await navigateTo(target);
+            setTimeout(() => setStatus(''), 2500);
+        } else {
+            setStatus('移動失敗：' + ((r && r.error) || '未知'), true);
+        }
+        updateMovePendingBar();
+    }
 
     // ── Context menu + keyboard (Phase 2 commit 11) ──────────────────
     function bindContextMenu() {
@@ -642,9 +1155,12 @@
         const items = [];
         if (type === 'file') {
             items.push({ label: '👁 預覽', act: 'preview' });
+            if (isPdfName(name || rel)) items.push({ label: 'PDF 工具', act: 'pdf-tool' });
             items.push({ label: '⬇ 下載', act: 'download' });
+            items.push({ label: '🔗 分享連結', act: 'share' });
             items.push({ sep: true });
         }
+        items.push({ label: '移動到其他資料夾', act: 'move' });
         items.push({ label: '✏ 重命名 (F2)', act: 'rename' });
         items.push({ label: '📋 複製路徑', act: 'copy-path' });
         items.push({ sep: true });
@@ -680,6 +1196,7 @@
     async function runContextAction(act, rel, type, name) {
         const fullPath = buildLocalPath(rel);
         if (act === 'preview' && type === 'file') return openPreview(rel, name);
+        if (act === 'pdf-tool' && type === 'file') return openPdfToolFromFileManager(rel);
         if (act === 'download') {
             const url = '/api/osc/files/content?path=' + encodeURIComponent(fullPath);
             const a = document.createElement('a');
@@ -690,6 +1207,7 @@
             a.remove();
             return;
         }
+        if (act === 'share' && type === 'file') return createShareLink(rel, name);
         if (act === 'copy-path') {
             try {
                 await navigator.clipboard.writeText(fullPath);
@@ -700,6 +1218,7 @@
             }
             return;
         }
+        if (act === 'move') return startMoveSelected(rel, type, name);
         if (act === 'rename') return renameSelected(rel, name);
         if (act === 'trash') return trashSelected(rel, name);
     }
@@ -1041,6 +1560,9 @@
         const inp = document.getElementById('fmBasePathInput');
         const goBtn = document.getElementById('fmBasePathGoBtn');
         const refreshBtn = document.getElementById('fmRefreshBtn');
+        const caseRefreshBtn = document.getElementById('fmCaseRefreshBtn');
+        const caseSearchInput = document.getElementById('fmCaseSearchInput');
+        const rootOverviewBtn = document.getElementById('fmRootOverviewBtn');
         const hiddenToggle = document.getElementById('fmShowHiddenToggle');
 
         if (goBtn && !goBtn._fmBound) {
@@ -1054,6 +1576,34 @@
             refreshBtn._fmBound = true;
             refreshBtn.addEventListener('click', () => navigateTo(FM.currentRel));
         }
+        if (caseRefreshBtn && !caseRefreshBtn._fmBound) {
+            caseRefreshBtn._fmBound = true;
+            caseRefreshBtn.addEventListener('click', loadCaseShortcuts);
+        }
+        if (rootOverviewBtn && !rootOverviewBtn._fmBound) {
+            rootOverviewBtn._fmBound = true;
+            rootOverviewBtn.addEventListener('click', () => {
+                if (FM.driveRoots && FM.driveRoots.length) showDriveOverview();
+                else loadDriveRoots();
+            });
+        }
+        if (caseSearchInput && !caseSearchInput._fmBound) {
+            caseSearchInput._fmBound = true;
+            let searchTimer = null;
+            caseSearchInput.addEventListener('input', () => {
+                window.clearTimeout(searchTimer);
+                searchTimer = window.setTimeout(() => searchCases(caseSearchInput.value), 220);
+            });
+            caseSearchInput.addEventListener('keydown', (e) => {
+                if (e.key !== 'Enter') return;
+                e.preventDefault();
+                if (FM.lastCaseResults && FM.lastCaseResults.length === 1 && typeof openCaseInFileManager === 'function') {
+                    openCaseInFileManager(FM.lastCaseResults[0].id);
+                } else {
+                    searchCases(caseSearchInput.value);
+                }
+            });
+        }
         if (hiddenToggle && !hiddenToggle._fmBound) {
             hiddenToggle._fmBound = true;
             hiddenToggle.addEventListener('change', () => {
@@ -1064,39 +1614,75 @@
 
         // Phase 2 commit 7: view modes + sort
         const sortSelect = document.getElementById('fmSortSelect');
-        const viewBtns = document.querySelectorAll('.fm-view-btn');
+        const viewGroup = document.querySelector('.fm-toolbar-group[aria-label="檢視模式"]');
         if (sortSelect && !sortSelect._fmBound) {
             sortSelect._fmBound = true;
             sortSelect.addEventListener('change', () => {
                 FM.sort = sortSelect.value;
+                if (!FM.hasLoadedEntries) return;
                 renderEntries({
                     folders: FM.lastEntries.folders,
                     files: FM.lastEntries.files,
-                    hidden_count: 0, ok: true,
+                    hidden_count: FM.lastHiddenCount, ok: true,
                 });
             });
         }
-        viewBtns.forEach(b => {
-            if (b._fmBound) return;
-            b._fmBound = true;
-            b.addEventListener('click', () => {
-                viewBtns.forEach(x => x.classList.remove('active'));
-                b.classList.add('active');
-                FM.viewMode = b.dataset.view;
-                renderEntries({
-                    folders: FM.lastEntries.folders,
-                    files: FM.lastEntries.files,
-                    hidden_count: 0, ok: true,
-                });
+        if (viewGroup && !viewGroup._fmBound) {
+            viewGroup._fmBound = true;
+            viewGroup.addEventListener('click', (ev) => {
+                const btn = ev.target.closest('.fm-view-btn');
+                if (!btn) return;
+                ev.preventDefault();
+                applyViewMode(btn.dataset.view || 'detail', true);
+            });
+        }
+        document.querySelectorAll('.fm-view-btn').forEach(btn => {
+            if (btn._fmBoundDirect) return;
+            btn._fmBoundDirect = true;
+            btn.addEventListener('click', (ev) => {
+                ev.preventDefault();
+                ev.stopPropagation();
+                applyViewMode(btn.dataset.view || 'detail', true);
             });
         });
+        applyViewMode(FM.viewMode, false);
 
         // Phase 2 commit 8: preview modal close handlers
         const previewClose = document.getElementById('fmPreviewClose');
+        const previewMove = document.getElementById('fmPreviewMove');
+        const previewTrash = document.getElementById('fmPreviewTrash');
+        const previewShare = document.getElementById('fmPreviewShare');
         const previewModal = document.getElementById('fmPreviewModal');
         if (previewClose && !previewClose._fmBound) {
             previewClose._fmBound = true;
             previewClose.addEventListener('click', closePreview);
+        }
+        if (previewMove && !previewMove._fmBound) {
+            previewMove._fmBound = true;
+            previewMove.addEventListener('click', () => {
+                const rel = FM.selectedRel;
+                const type = FM.selectedType;
+                const name = FM.selectedName || pathBaseName(rel);
+                closePreview();
+                startMoveSelected(rel, type, name);
+            });
+        }
+        if (previewTrash && !previewTrash._fmBound) {
+            previewTrash._fmBound = true;
+            previewTrash.addEventListener('click', () => {
+                const rel = FM.selectedRel;
+                const name = FM.selectedName || pathBaseName(rel);
+                closePreview();
+                trashSelected(rel, name);
+            });
+        }
+        if (previewShare && !previewShare._fmBound) {
+            previewShare._fmBound = true;
+            previewShare.addEventListener('click', () => {
+                const rel = FM.selectedRel;
+                const name = FM.selectedName || pathBaseName(rel);
+                createShareLink(rel, name);
+            });
         }
         if (previewModal && !previewModal._fmBound) {
             previewModal._fmBound = true;
@@ -1117,6 +1703,10 @@
         const mkdirBtn = document.getElementById('fmMkdirBtn');
         const uploadBtn = document.getElementById('fmUploadBtn');
         const uploadFolderBtn = document.getElementById('fmUploadFolderBtn');
+        const moveBtn = document.getElementById('fmMoveBtn');
+        const trashBtn = document.getElementById('fmTrashBtn');
+        const moveHereBtn = document.getElementById('fmMoveHereBtn');
+        const moveCancelBtn = document.getElementById('fmMoveCancelBtn');
         const fileInput = document.getElementById('fmFileInput');
         const folderInput = document.getElementById('fmFolderInput');
         const queueClose = document.getElementById('fmUploadQueueClose');
@@ -1139,6 +1729,22 @@
             uploadFolderBtn._fmBound = true;
             uploadFolderBtn.addEventListener('click', () => folderInput && folderInput.click());
         }
+        if (moveBtn && !moveBtn._fmBound) {
+            moveBtn._fmBound = true;
+            moveBtn.addEventListener('click', () => startMoveSelected(FM.selectedRel, FM.selectedType, FM.selectedName));
+        }
+        if (trashBtn && !trashBtn._fmBound) {
+            trashBtn._fmBound = true;
+            trashBtn.addEventListener('click', () => trashSelected(FM.selectedRel, FM.selectedName));
+        }
+        if (moveHereBtn && !moveHereBtn._fmBound) {
+            moveHereBtn._fmBound = true;
+            moveHereBtn.addEventListener('click', movePendingHere);
+        }
+        if (moveCancelBtn && !moveCancelBtn._fmBound) {
+            moveCancelBtn._fmBound = true;
+            moveCancelBtn.addEventListener('click', () => cancelMovePending(true));
+        }
         if (fileInput && !fileInput._fmBound) {
             fileInput._fmBound = true;
             fileInput.addEventListener('change', () => {
@@ -1157,6 +1763,7 @@
             queueClose._fmBound = true;
             queueClose.addEventListener('click', hideQueue);
         }
+        updateSelectionControls();
         bindDropZone();
 
         // Phase 2 commit 11: keyboard shortcuts (F2 rename / Del trash)
@@ -1182,6 +1789,10 @@
                 }
             });
         }
+        if (!FM._caseShortcutsLoaded) {
+            FM._caseShortcutsLoaded = true;
+            loadDriveRoots();
+        }
     };
 
     // Auto-init when this tab becomes visible
@@ -1195,13 +1806,17 @@
     }
 
     // Allow other tabs to open this view with a preset case folder
-    FM.openWithBasePath = function (basePath) {
+    FM.openWithBasePath = async function (basePath, meta) {
         // 防呆：若 FM.init 還沒跑（DOM listener race），這裡補一次
         if (!FM._initialized) {
             try { FM.init(); FM._initialized = true; } catch (e) { console.warn('FM.init in openWithBasePath:', e); }
         }
         const inp = document.getElementById('fmBasePathInput');
         if (inp) inp.value = basePath;
-        setRoot(basePath);
+        await setRoot(basePath, meta);
+        const shell = document.querySelector('#fileManager .fm-shell');
+        if (shell) shell.scrollIntoView({ behavior: 'smooth', block: 'start' });
     };
+    FM.loadCaseShortcuts = loadCaseShortcuts;
+    FM.loadDriveRoots = loadDriveRoots;
 })();

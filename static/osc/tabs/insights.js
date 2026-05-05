@@ -2,7 +2,7 @@
 async function loadInsights() {
     const q = encodeURIComponent((document.getElementById("insightsQ").value || "").trim());
     const data = await api(`/api/osc/insights?q=${q}`);
-    state.insights = data.items || [];
+    state.insights = filterDisplayableInsights(data.items || []);
     renderInsights();
 }
 
@@ -21,7 +21,7 @@ function renderInsights() {
             `<button class="btn" data-act="insight-copy" data-id="${esc(r.id)}">複製全文</button>`
         ];
         if (hasLookupKeys) {
-            actions.push(`<button class="btn" data-act="insight-fetch" data-id="${esc(r.id)}">抓全文摘要</button>`);
+            actions.push(`<button class="btn" data-act="insight-fetch" data-id="${esc(r.id)}">從來源補抓</button>`);
         }
         if (hasUrl) {
             actions.push(`<a class="btn ghost" target="_blank" href="${esc(r.url)}">來源</a>`);
@@ -49,11 +49,10 @@ function renderInsights() {
 
 function needHydrateInsight(item) {
     if (!item) return false;
-    const hasUrl = !!String(item.url || "").trim();
     const full = String(item.full_text || "");
     if (!full.trim()) return true;
     if (full.length < 260) return true;
-    return hasUrl;
+    return false;
 }
 
 async function hydrateInsightByDetail(id) {
@@ -78,22 +77,8 @@ async function toggleInsight(id) {
     if (needHydrateInsight(item)) {
         try {
             await hydrateInsightByDetail(id);
-            const refreshedItem = state.insights.find(x => String(x.id) === String(id));
-            if (
-                needHydrateInsight(refreshedItem) &&
-                refreshedItem &&
-                (
-                    (refreshedItem.url || "").trim() ||
-                    (refreshedItem.case_number || "").trim() ||
-                    (refreshedItem.title || "").trim()
-                )
-            ) {
-                await fetchInsightFullById(id, { silent: true });
-                const refreshed = await api(`/api/osc/insights?q=${encodeURIComponent((document.getElementById("insightsQ").value || "").trim())}`);
-                state.insights = refreshed.items || [];
-            }
         } catch (e) {
-            alert(`抓全文失敗，先顯示現有內容：${e.message}`);
+            alert(`讀取見解庫內容失敗，先顯示列表現有內容：${e.message}`);
         }
     }
     const tr = document.getElementById(`insightRow_${id}`);
@@ -124,13 +109,13 @@ async function fetchInsightFullById(id, opts = {}) {
         case_reason: (item.case_reason || "").trim(),
     };
     if (!body.url && !body.case_number && !body.title) {
-        if (!silent) alert("這筆見解沒有可用的來源網址、標題或案號，無法補抓全文。");
+        if (!silent) alert("這筆見解沒有來源網址、標題或案號，無法從來源網站補抓。");
         return;
     }
     const data = await api("/api/osc/insights/fetch-full", "POST", body);
     if (!silent) {
         const source = (data?.item?.source || "").trim();
-        showToast(source ? `已補抓判決全文（${source}）。` : "已補抓判決全文並寫入見解庫。", "ok");
+        showToast(source ? `已取得判決全文（${source}），並寫入見解庫。` : "已取得判決全文，並寫入見解庫。", "ok");
     }
     await loadInsights();
     await loadMeta();
@@ -153,7 +138,7 @@ async function fetchInsightFullManual() {
     await loadInsights();
     await loadMeta();
     const source = (data?.item?.source || "").trim();
-    showToast(source ? `全文與摘要已完成（${source}）。` : "全文與摘要已完成。", "ok");
+    showToast(source ? `已取得全文與摘要（${source}）。` : "已取得全文與摘要。", "ok");
 }
 
 async function saveInsight() {

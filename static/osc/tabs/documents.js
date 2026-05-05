@@ -3,34 +3,57 @@ async function loadLaf() {
     const q = encodeURIComponent((document.getElementById("lafQ").value || "").trim());
     const caseNumber = encodeURIComponent((document.getElementById("lafCaseNumber").value || "").trim());
     const data = await api(`/api/osc/laf?limit=500&q=${q}&case_number=${caseNumber}`);
+    const casesData = await api(`/api/osc/laf/cases?limit=500&q=${q}`);
     const items = data.items || {};
     state.laf = {
         checklist: items.checklist || [],
         lifecycle: items.lifecycle || [],
         emails: items.emails || [],
+        cases: casesData.items || [],
+        selectedCaseId: state.laf?.selectedCaseId || "",
+        selectedWorkbench: state.laf?.selectedWorkbench || null,
     };
 
-    document.getElementById("lafChecklistCount").textContent = String((data.counts || {}).checklist || 0);
-    document.getElementById("lafLifecycleCount").textContent = String((data.counts || {}).lifecycle || 0);
-    document.getElementById("lafEmailCount").textContent = String((data.counts || {}).emails || 0);
+    const setText = (id, value) => {
+        const el = document.getElementById(id);
+        if (el) el.textContent = String(value);
+    };
+    setText("lafCaseCount", state.laf.cases.length);
+    setText("lafChecklistCount", (data.counts || {}).checklist || 0);
+    setText("lafLifecycleCount", (data.counts || {}).lifecycle || 0);
+    setText("lafEmailCount", (data.counts || {}).emails || 0);
+    renderLafCaseList(state.laf.cases);
+
+    const selectedStillVisible = state.laf.selectedCaseId && state.laf.cases.some(x => String(x.id) === String(state.laf.selectedCaseId));
+    const nextCaseId = selectedStillVisible ? state.laf.selectedCaseId : (state.laf.cases[0]?.id || "");
+    if (nextCaseId) {
+        await openLafCaseDetail(nextCaseId, { silent: true });
+    } else {
+        renderLafEmptyDetail("目前沒有符合條件的法扶案件。");
+    }
+
+    renderLafCaseSummary(state.laf.checklist, state.laf.lifecycle, state.laf.emails);
 
     const checklistBody = document.getElementById("lafChecklistBody");
-    if (!state.laf.checklist.length) {
-        checklistBody.innerHTML = `<tr><td colspan="6" class="muted">沒有法扶補件資料</td></tr>`;
-    } else {
-        checklistBody.innerHTML = state.laf.checklist.map(r => `
+    if (checklistBody) {
+        if (!state.laf.checklist.length) {
+            checklistBody.innerHTML = `<tr><td colspan="6" class="muted">沒有法扶補件資料</td></tr>`;
+        } else {
+            checklistBody.innerHTML = state.laf.checklist.map(r => `
         <tr>
             <td>${esc(r.last_updated)}</td>
             <td>${esc(r.case_number)}</td>
-            <td>${esc(r.item_key)}</td>
             <td>${esc(r.item_label)}</td>
             <td>${esc(r.status)}</td>
             <td>${esc(r.notes || "")}</td>
+            <td><button class="btn" data-act="laf-open-checklist" data-case="${esc(r.case_number || "")}">管理</button></td>
         </tr>
     `).join("");
+        }
     }
 
     const lifecycleBody = document.getElementById("lafLifecycleBody");
+    if (!lifecycleBody) return;
     if (!state.laf.lifecycle.length) {
         lifecycleBody.innerHTML = `<tr><td colspan="6" class="muted">沒有法扶流程紀錄</td></tr>`;
     } else {
@@ -41,12 +64,13 @@ async function loadLaf() {
             <td>${esc(r.event_type)}</td>
             <td>${esc(r.status)}</td>
             <td>${esc(r.completed_at || "")}</td>
-            <td>${esc(r.event_data || "")}</td>
+            <td title="${esc(r.event_data || "")}">${esc(shortText(r.event_data || "", 120))}</td>
         </tr>
     `).join("");
     }
 
     const emailBody = document.getElementById("lafEmailBody");
+    if (!emailBody) return;
     if (!state.laf.emails.length) {
         emailBody.innerHTML = `<tr><td colspan="6" class="muted">沒有法扶信件紀錄</td></tr>`;
     } else {
@@ -60,6 +84,525 @@ async function loadLaf() {
             <td>${esc(r.error_message || "")}</td>
         </tr>
     `).join("");
+    }
+}
+
+function lafStatusClass(status) {
+    const s = String(status || "").trim();
+    if (s.includes("未開辦")) return "pending";
+    if (s.includes("進行")) return "active";
+    if (s.includes("待報結") || s.includes("結案中")) return "closing";
+    if (s.includes("已結案")) return "closed";
+    return "";
+}
+
+function renderLafCaseList(cases = []) {
+    const body = document.getElementById("lafCaseBody");
+    if (!body) return;
+    if (!cases.length) {
+        body.innerHTML = `<tr><td colspan="4" class="muted">沒有法扶案件。請調整搜尋或按「掃描派案」。</td></tr>`;
+        return;
+    }
+    const sort = state.lafSort || { col: "case_number", dir: 1, type: "string" };
+    const rows = applySort(cases.map(c => ({
+        ...c,
+        legal_aid_status: c.legal_aid_status || c.status || "未開辦",
+        case_type: c.case_type || c.case_reason || c.case_category || "",
+    })), sort.col, sort.dir, sort.type);
+    body.innerHTML = rows.map(c => {
+        const status = c.legal_aid_status || c.status || "未開辦";
+        const type = c.case_type || c.case_reason || c.case_category || "";
+        const pending = Number(c.pending_laf_items || 0);
+        const pendingText = pending ? ` · 待補 ${pending}` : "";
+        return `
+            <tr data-act="laf-select-case" data-id="${esc(c.id)}" class="${String(c.id) === String(state.laf?.selectedCaseId || "") ? "active" : ""}">
+                <td>${esc(c.case_number || "")}</td>
+                <td>${esc(c.client_name || "")}</td>
+                <td>${esc(shortText(type, 24))}</td>
+                <td><span class="laf-status-pill ${lafStatusClass(status)}">${esc(status)}${esc(pendingText)}</span></td>
+            </tr>
+        `;
+    }).join("");
+
+    document.querySelectorAll("#laf th[data-sort]").forEach(th => {
+        th.innerHTML = th.textContent.replace(/ [▲▼]/g, "") + (sort.col === th.dataset.sort ? (sort.dir === 1 ? " ▲" : " ▼") : "");
+    });
+}
+
+function renderLafEmptyDetail(message) {
+    const panel = document.getElementById("lafDetailPanel");
+    if (!panel) return;
+    panel.innerHTML = `
+        <div class="empty-state">
+            <div>
+                <h3>${esc(message || "請從左側選擇法扶案件")}</h3>
+                <p>選取案件後會顯示原 OSC 單機版的開辦資料、報結資料彙總、閱卷統計與書狀列表。</p>
+            </div>
+        </div>
+    `;
+}
+
+function isConsumerDebtCase(c = {}) {
+    const text = `${c.case_type || ""} ${c.case_reason || ""} ${c.case_category || ""}`;
+    return text.includes("消費者債務清理") || text.includes("消債") || text.includes("債務清理");
+}
+
+function lafFilterDocs(docs = [], keywords = []) {
+    return (docs || []).filter(d => {
+        const haystack = `${d.file_name || ""} ${d.subfolder_name || ""} ${d.reason || ""}`;
+        return keywords.some(k => haystack.includes(k));
+    });
+}
+
+function renderLafDocList(docs = [], keywords = [], empty = "尚未索引到相關文件") {
+    const hits = lafFilterDocs(docs, keywords).slice(0, 12);
+    if (!hits.length) return `<div class="muted">${esc(empty)}</div>`;
+    return `<div class="laf-compact-list">${hits.map(d => `
+        <div class="laf-compact-item">
+            <div class="name" title="${esc(d.file_name || "")}">${esc(d.file_name || "")}</div>
+            <div class="sub" title="${esc(d.subfolder_name || d.file_path || "")}">${esc(d.subfolder_name || d.file_path || "")}</div>
+            <div class="actions">
+                <a class="btn slim" href="${fileContentUrl(d.file_path || "", true)}" target="_blank" rel="noopener noreferrer">預覽</a>
+                <button class="btn slim" data-act="doc-open" data-path="${esc(d.file_path || "")}">開啟</button>
+            </div>
+        </div>
+    `).join("")}</div>`;
+}
+
+function lafCollectEvents(data = {}, keyword) {
+    const rows = [];
+    (data.meetings || []).forEach(m => {
+        const text = `${m.type || ""} ${m.notes || ""} ${m.location || ""}`;
+        if (text.includes(keyword)) rows.push({ date: m.datetime || "", summary: `${m.type || keyword} ${m.location || ""}`.trim() });
+    });
+    (data.todos || []).forEach(t => {
+        const text = `${t.todo_type || ""} ${t.description || ""}`;
+        if (text.includes(keyword)) rows.push({ date: `${t.todo_date || ""} ${t.todo_time || ""}`.trim(), summary: t.description || t.todo_type || keyword });
+    });
+    return rows;
+}
+
+function renderLafEventStats(data = {}) {
+    const configs = ["開庭", "會議", "律見", "電話聯繫"];
+    return `<div class="laf-event-grid">${configs.map(label => {
+        const rows = lafCollectEvents(data, label);
+        const latest = rows[0]?.date || "未記錄";
+        return `<div class="laf-event-card"><span>${esc(label)}</span><strong>${rows.length}</strong><small class="muted">${esc(shortText(latest, 18))}</small></div>`;
+    }).join("")}</div>`;
+}
+
+function renderLafReviewStats(data = {}) {
+    const docs = lafFilterDocs(data.documents || [], ["閱卷", "OCR", "卷證", "電子卷"]);
+    const dates = Array.from(new Set(docs.map(d => String(d.modified_date || "").slice(0, 10)).filter(Boolean))).sort().reverse();
+    return `
+        <div class="laf-status-row">
+            <strong>閱卷次數：${docs.length}</strong>
+            <button class="btn slim" data-act="case-open" data-id="${esc(data.case?.id || "")}">開啟案件資料夾</button>
+            <button class="btn slim" data-act="laf-open-doc-keyword" data-id="${esc(data.case?.id || "")}" data-keyword="閱卷">開啟閱卷資料</button>
+        </div>
+        <div class="muted">${dates.length ? `日期：${esc(dates.slice(0, 8).join("、"))}` : "尚未索引到閱卷日期。"}</div>
+        ${renderLafDocList(data.documents || [], ["閱卷", "OCR", "卷證", "電子卷"], "尚未索引到閱卷資料")}
+    `;
+}
+
+function renderLafProgressRows(rows = []) {
+    if (!rows.length) return `<div class="muted">目前無法扶流程紀錄。</div>`;
+    return `<div class="table-wrap"><table>
+        <thead><tr><th>時間</th><th>事件</th><th>狀態</th><th>內容</th></tr></thead>
+        <tbody>${rows.slice(0, 10).map(r => `<tr>
+            <td>${esc(r.created_at || "")}</td>
+            <td>${esc(r.event_type || "")}</td>
+            <td>${esc(r.status || "")}</td>
+            <td title="${esc(r.event_data || "")}">${esc(shortText(r.event_data || "", 100))}</td>
+        </tr>`).join("")}</tbody>
+    </table></div>`;
+}
+
+function renderLafEmailRows(caseNumber) {
+    const emails = (state.laf?.emails || []).filter(e => String(e.case_number || "") === String(caseNumber || "")).slice(0, 8);
+    if (!emails.length) return `<div class="muted">目前無法扶信件紀錄。</div>`;
+    return `<div class="laf-compact-list">${emails.map(e => `
+        <div class="laf-compact-item">
+            <div class="name">${esc(e.received_at || "")}</div>
+            <div class="sub" title="${esc(e.subject || "")}">${esc(e.subject || "")}</div>
+            <div><span class="laf-status-pill">${esc(e.status || "")}</span></div>
+        </div>
+    `).join("")}</div>`;
+}
+
+function renderLafOpenDocButtons(c, docs) {
+    const names = ["委任狀", "接案通知書", "預付酬金領款單"];
+    if (isConsumerDebtCase(c)) names.push("應備資料", "附條件第二階段預付酬金領款單");
+    return names.map(name => {
+        const found = lafFilterDocs(docs, [name]).length;
+        return `<button class="btn" data-act="laf-open-doc-keyword" data-id="${esc(c.id)}" data-keyword="${esc(name)}">${esc(name)}${found ? ` (${found})` : ""}</button>`;
+    }).join("");
+}
+
+function renderLafDebtTools(c) {
+    if (!isConsumerDebtCase(c)) return "";
+    const tools = [
+        ["聲請狀", "application"],
+        ["財產及收入狀況說明書", "asset_statement"],
+        ["債權人清冊", "creditor_list"],
+        ["合併 PDF", "pdf_merge"],
+        ["陳報狀", "report"],
+        ["補件陳報狀", "supplement"],
+    ];
+    return `
+        <div class="laf-debt-tools">
+            <h4>消債羅伯特</h4>
+            <div class="laf-button-grid">
+                <button class="btn" data-act="laf-open-checklist" data-case="${esc(c.case_number || "")}">開啟/編輯應備事項表</button>
+                ${tools.map(([label, key]) => `<button class="btn" data-act="laf-debt-tool" data-id="${esc(c.id)}" data-module="${esc(key)}">${esc(label)}</button>`).join("")}
+            </div>
+        </div>
+    `;
+}
+
+async function openLafCaseDetail(caseId, options = {}) {
+    const id = String(caseId || "").trim();
+    if (!id) return;
+    state.laf.selectedCaseId = id;
+    renderLafCaseList(state.laf.cases || []);
+    const panel = document.getElementById("lafDetailPanel");
+    if (panel && !options.silent) panel.innerHTML = `<div class="empty-state"><h3>載入法扶案件中...</h3></div>`;
+    const data = await api(`/api/osc/cases/${encodeURIComponent(id)}/workbench`);
+    state.laf.selectedWorkbench = data;
+    renderLafCaseDetail(data);
+}
+
+function renderLafCaseDetail(data = {}) {
+    const panel = document.getElementById("lafDetailPanel");
+    if (!panel) return;
+    const c = data.case || {};
+    const s = data.stats || {};
+    const status = c.legal_aid_status || c.status || "未開辦";
+    const pending = (data.legal_aid_checklist || []).filter(isLafPending);
+    panel.innerHTML = `
+        <div class="laf-detail-head">
+            <div>
+                <h3>${esc(c.case_number || "")} - ${esc(c.client_name || "")}</h3>
+                <div class="muted">案件分類：${esc(c.case_type || c.case_reason || c.case_category || "未標示")}｜法扶案號：${esc(c.laf_case_no || "")}</div>
+            </div>
+            <span class="laf-status-pill ${lafStatusClass(status)}">${esc(status)}</span>
+        </div>
+
+        <div class="laf-detail-section">
+            <h4>案件狀態</h4>
+            <div class="laf-status-row">
+                <select id="lafStatusSelect">
+                    ${["未開辦", "進行中", "已結案，待報結", "已結案"].map(x => `<option value="${esc(x)}" ${x === status ? "selected" : ""}>${esc(x)}</option>`).join("")}
+                </select>
+                <button class="btn primary" data-act="laf-status-update" data-id="${esc(c.id)}">更新狀態</button>
+                <button class="btn" data-act="case-open" data-id="${esc(c.id)}">開啟案件資料夾</button>
+                <button class="btn" data-act="case-workbench" data-id="${esc(c.id)}">完整案件工作台</button>
+            </div>
+        </div>
+
+        <div class="laf-detail-section">
+            <h4>開辦資料</h4>
+            <div class="laf-button-grid">${renderLafOpenDocButtons(c, data.documents || [])}</div>
+            ${renderLafDebtTools(c)}
+        </div>
+
+        <div class="laf-detail-section">
+            <h4>報結資料彙總</h4>
+            <div class="laf-button-grid">
+                <button class="btn" data-act="laf-open-doc-keyword" data-id="${esc(c.id)}" data-keyword="結案酬金領款單">開啟結案酬金領款單</button>
+                <button class="btn" data-act="laf-export-activity" data-id="${esc(c.id)}">匯出活動記錄</button>
+                <a class="btn" href="/api/osc/cases/${encodeURIComponent(c.id || "")}/address-label?recipient=laf&mode=preview" target="_blank" rel="noopener noreferrer">列印法扶地址</a>
+                <button class="btn warn" data-act="laf-case-action" data-id="${esc(c.id)}" data-action="laf_closing_status">結案狀況盤點</button>
+            </div>
+            <div class="stat-grid" style="margin-top:10px;">
+                <div class="stat-card"><div class="k">待補項目</div><div class="v">${pending.length}</div></div>
+                <div class="stat-card"><div class="k">流程紀錄</div><div class="v">${(data.laf_progress || []).length}</div></div>
+                <div class="stat-card"><div class="k">索引文件</div><div class="v">${esc(s.docs_indexed || 0)}</div></div>
+                <div class="stat-card"><div class="k">待辦事項</div><div class="v">${esc(s.todo_pending || 0)}</div></div>
+            </div>
+        </div>
+
+        <div class="laf-detail-section">
+            <h4>Google 行事曆 / 待辦統計</h4>
+            ${renderLafEventStats(data)}
+        </div>
+
+        <div class="laf-detail-section">
+            <h4>閱卷資料統計</h4>
+            ${renderLafReviewStats(data)}
+        </div>
+
+        <div class="laf-detail-grid">
+            <div class="laf-detail-section">
+                <h4>我方歷次書狀</h4>
+                ${renderLafDocList(data.documents || [], ["我方歷次書狀", "書狀", "聲請狀", "陳報狀"])}
+            </div>
+            <div class="laf-detail-section">
+                <h4>判決書</h4>
+                ${renderLafDocList(data.documents || [], ["判決", "裁定", "判決書"])}
+            </div>
+        </div>
+
+        <div class="laf-detail-grid">
+            <div class="laf-detail-section">
+                <h4>法扶流程紀錄</h4>
+                ${renderLafProgressRows(data.laf_progress || [])}
+            </div>
+            <div class="laf-detail-section">
+                <h4>法扶信件紀錄</h4>
+                ${renderLafEmailRows(c.case_number)}
+            </div>
+        </div>
+    `;
+}
+
+async function updateLafCaseStatus(caseId) {
+    const id = String(caseId || "").trim();
+    const status = (document.getElementById("lafStatusSelect")?.value || "").trim();
+    if (!id || !status) return;
+    const caseStatus = status === "未開辦" || status === "進行中" ? "進行中" : "已結案";
+    await api(`/api/osc/cases/${encodeURIComponent(id)}`, "PUT", {
+        legal_aid_status: status,
+        status: caseStatus,
+    });
+    showToast(`法扶狀態已更新為「${status}」。`, "ok", 2600);
+    await loadLaf();
+}
+
+async function runLafScan() {
+    const result = await api("/api/osc/laf-backfill", "POST", {});
+    if (!result || result.ok === false) throw new Error(result?.error || "掃描派案失敗");
+    showToast("法扶派案掃描完成。", "ok", 3200);
+    await loadLaf();
+}
+
+async function batchLafStatusToInProgress() {
+    if (!confirm("確定要將所有未開辦的法扶案件改為「進行中」嗎？")) return;
+    const result = await api("/api/osc/laf/batch-status", "POST", { legal_aid_status: "進行中" });
+    if (!result || result.ok === false) throw new Error(result?.error || "批次更新失敗");
+    showToast("已批次更新未開辦法扶案件。", "ok", 3200);
+    await loadLaf();
+}
+
+async function openLafKeywordDoc(caseId, keyword) {
+    const data = state.laf?.selectedWorkbench?.case?.id === caseId
+        ? state.laf.selectedWorkbench
+        : await api(`/api/osc/cases/${encodeURIComponent(caseId)}/workbench`);
+    const hit = lafFilterDocs(data.documents || [], [keyword])[0];
+    if (!hit?.file_path) {
+        showToast(`索引未命中「${keyword}」，改搜案件資料夾。`, "warn", 2600);
+        const found = await api(`/api/osc/cases/${encodeURIComponent(caseId)}/file-search?q=${encodeURIComponent(keyword)}&limit=30`);
+        showLafFileSearchResults(caseId, keyword, found);
+        return;
+    }
+    await openDocumentPath(hit.file_path);
+}
+
+function showLafFileSearchResults(caseId, keyword, data = {}) {
+    const items = data.items || [];
+    const caseLabel = [data.case?.case_number, data.case?.client_name].filter(Boolean).join(" - ");
+    const title = `文件查找｜${keyword}`;
+    const rows = items.map(file => {
+        const path = file.file_path || "";
+        const isPdf = file.is_pdf || String(path).toLowerCase().endsWith(".pdf");
+        return `
+            <div class="laf-file-result">
+                <div class="laf-file-main">
+                    <strong title="${esc(file.relative_path || file.file_name || "")}">${esc(file.file_name || "")}</strong>
+                    <span>${esc(file.relative_path || "")}</span>
+                    <small>${esc(file.size_label || "")}${file.modified_date ? `｜${esc(file.modified_date)}` : ""}</small>
+                </div>
+                <div class="laf-file-actions">
+                    <a class="btn slim" href="${fileContentUrl(path, true)}" target="_blank" rel="noopener noreferrer">預覽</a>
+                    <a class="btn slim" href="${fileContentUrl(path)}" target="_blank" rel="noopener noreferrer">下載</a>
+                    ${isPdf ? `<button class="btn slim" data-act="doc-pdf-tool" data-path="${esc(path)}">PDF 工具</button>` : ""}
+                    <button class="btn slim" data-act="doc-open" data-path="${esc(path)}">本機開啟</button>
+                    <button class="btn slim" data-act="doc-copy" data-path="${esc(path)}">複製路徑</button>
+                </div>
+            </div>
+        `;
+    }).join("");
+    const body = items.length ? rows : `
+        <div class="empty-state">
+            <h3>尚未找到「${esc(keyword)}」</h3>
+            <p>索引與案件資料夾都沒有命中。可以先開啟案件資料夾確認檔名，或進 PDF 工具上傳處理。</p>
+        </div>
+    `;
+    wbShow(title, `
+        <div class="soft-block">
+            <div class="case-list-head">
+                <div>
+                    <h3>${esc(caseLabel || "案件資料夾")}</h3>
+                    <div class="section-note">索引未命中時，MAGI 會直接搜尋本機同步的案件資料夾。找到 PDF/文件後可預覽、下載或帶入 PDF 工具。</div>
+                </div>
+                <div class="inline-actions">
+                    <button class="btn" data-act="case-open" data-id="${esc(caseId)}">開啟案件資料夾</button>
+                    <button class="btn" data-act="case-magi-tab" data-tab="pdfTools">PDF 工具</button>
+                </div>
+            </div>
+            <div class="laf-file-result-list">${body}</div>
+        </div>
+    `);
+}
+
+function openLafDebtTool(caseId, moduleKey) {
+    const wb = state.laf?.selectedWorkbench;
+    const c = wb?.case || {};
+    const params = new URLSearchParams();
+    if (c.case_number) params.set("case_number", c.case_number);
+    if (moduleKey) params.set("module", moduleKey);
+    window.location.href = `/osc/debt?${params.toString()}`;
+}
+
+async function runLafCaseAction(caseId, action) {
+    const result = await api(`/api/osc/cases/${encodeURIComponent(caseId)}/quick-action`, "POST", { action });
+    if (!result || result.ok === false) throw new Error(result?.error || "法扶案件盤點失敗");
+    showToast(result.message || "已完成法扶案件盤點。", "ok", 3200);
+    if (result.reply) {
+        alert(result.reply);
+    }
+}
+
+function downloadLafActivityCsv() {
+    const data = state.laf?.selectedWorkbench;
+    if (!data?.case) return;
+    const rows = [["類型", "日期", "內容", "狀態"]];
+    (data.meetings || []).forEach(x => rows.push(["會議", x.datetime || "", `${x.type || ""} ${x.location || ""} ${x.notes || ""}`.trim(), x.status || ""]));
+    (data.todos || []).forEach(x => rows.push(["待辦", `${x.todo_date || ""} ${x.todo_time || ""}`.trim(), x.description || x.todo_type || "", x.status || ""]));
+    (data.laf_progress || []).forEach(x => rows.push(["法扶流程", x.created_at || "", `${x.event_type || ""} ${x.event_data || ""}`.trim(), x.status || ""]));
+    const csv = rows.map(row => row.map(cell => `"${String(cell || "").replaceAll('"', '""')}"`).join(",")).join("\n");
+    const blob = new Blob(["\ufeff" + csv], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `法扶活動記錄_${data.case.case_number || data.case.id}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+}
+
+function isLafPending(row) {
+    const status = String(row?.status || "").trim();
+    if (!status) return true;
+    return !["已備齊", "不適用", "完成", "已完成"].includes(status);
+}
+
+function renderLafCaseSummary(checklist = [], lifecycle = [], emails = []) {
+    const target = document.getElementById("lafCaseSummary");
+    if (!target) return;
+    if (!checklist.length && !lifecycle.length && !emails.length) {
+        target.innerHTML = `<div class="muted">沒有可整理的法扶資料。</div>`;
+        return;
+    }
+    const grouped = new Map();
+    const ensure = (caseNumber) => {
+        const key = String(caseNumber || "未標示案號").trim() || "未標示案號";
+        if (!grouped.has(key)) grouped.set(key, { caseNumber: key, checklist: [], lifecycle: [], emails: [] });
+        return grouped.get(key);
+    };
+    checklist.forEach(row => ensure(row.case_number).checklist.push(row));
+    lifecycle.forEach(row => ensure(row.case_number).lifecycle.push(row));
+    emails.forEach(row => ensure(row.case_number).emails.push(row));
+
+    const cases = Array.from(grouped.values()).sort((a, b) => {
+        const ap = a.checklist.filter(isLafPending).length;
+        const bp = b.checklist.filter(isLafPending).length;
+        if (ap !== bp) return bp - ap;
+        return String(a.caseNumber).localeCompare(String(b.caseNumber), "zh-Hant");
+    });
+
+    target.innerHTML = cases.slice(0, 24).map(group => {
+        const pending = group.checklist.filter(isLafPending);
+        const done = group.checklist.length - pending.length;
+        const latest = [
+            ...group.checklist.map(x => x.last_updated),
+            ...group.lifecycle.map(x => x.created_at),
+            ...group.emails.map(x => x.received_at),
+        ].filter(Boolean).sort().pop() || "";
+        const needed = pending.length
+            ? pending.slice(0, 5).map(item => {
+                const note = item.notes ? `：${item.notes}` : "";
+                return `<div class="needed-item">${esc(item.item_label || item.item_key || "未命名項目")}${esc(note)}</div>`;
+            }).join("")
+            : `<div class="needed-item muted">目前沒有待補項目。</div>`;
+        const emailHint = group.emails[0]?.subject ? `<div class="case-meta">最近信件：${esc(group.emails[0].subject)}</div>` : "";
+        return `
+            <div class="laf-case-card ${pending.length ? "" : "done"}">
+                <div class="case-line">
+                    <div class="case-title">${esc(group.caseNumber)}</div>
+                    <div class="case-badge">${pending.length ? `待補 ${pending.length}` : "已整理"}</div>
+                </div>
+                <div class="needed-list">${needed}</div>
+                <div class="case-meta">已備齊/不適用：${done}｜最後更新：${esc(latest || "未記錄")}</div>
+                ${emailHint}
+                <div class="toolbar" style="margin:10px 0 0;">
+                    <button class="btn primary" data-act="laf-open-checklist" data-case="${esc(group.caseNumber)}">打開補件管理</button>
+                </div>
+            </div>
+        `;
+    }).join("");
+}
+
+async function openLafChecklistCase(caseNumber) {
+    const value = String(caseNumber || "").trim();
+    if (!value || value === "未標示案號") {
+        showToast("這筆資料沒有案號，無法直接帶入補件管理。", "warn");
+        return;
+    }
+    const html = `
+        <div class="card">
+            <h3>應備事項表 / 法扶補件清單</h3>
+            <div class="toolbar">
+                <input id="lafChecklistCaseNumber" value="${esc(value)}" readonly>
+                <button class="btn" data-act="laf-checklist-reload">重新載入</button>
+                <button class="btn primary" data-act="laf-checklist-seed">填入預設項目</button>
+            </div>
+            <div class="table-wrap">
+                <table class="compact-table">
+                    <thead><tr><th>項目</th><th>狀態</th><th>備註</th><th>更新時間</th><th>操作</th></tr></thead>
+                    <tbody id="lafChecklistMgmtBody"><tr><td colspan="5" class="muted">載入中...</td></tr></tbody>
+                </table>
+            </div>
+            <div class="soft-block" style="margin-top:10px">
+                <div class="field-grid cols-3">
+                    <div class="field"><label>新增項目</label><input id="lafChecklistNewLabel" placeholder="自訂補件項目"></div>
+                    <div class="field"><label>狀態</label><select id="lafChecklistNewStatus"><option>待補</option><option>已備齊</option><option>不適用</option></select></div>
+                    <div class="field"><label>備註</label><input id="lafChecklistNewNotes" placeholder="可選"></div>
+                </div>
+                <div class="toolbar"><button class="btn primary" data-act="laf-checklist-add">新增項目</button></div>
+            </div>
+        </div>
+    `;
+    wbShow(`應備事項表｜${value}`, html);
+    await loadLafChecklistInWorkbench(value);
+}
+
+async function loadLafChecklistInWorkbench(caseNumber) {
+    const value = String(caseNumber || document.getElementById("lafChecklistCaseNumber")?.value || "").trim();
+    const tbody = document.getElementById("lafChecklistMgmtBody");
+    if (!value || !tbody) return;
+    tbody.innerHTML = `<tr><td colspan="5" class="muted">載入中...</td></tr>`;
+    const data = await api(`/api/osc/checklists/legal-aid?case_number=${encodeURIComponent(value)}`);
+    if (!data || data.ok === false) throw new Error(data?.error || "載入應備事項表失敗");
+    renderLafChecklistRows(value, data.items || []);
+}
+
+async function reloadLafChecklistFromModal() {
+    await loadLafChecklistInWorkbench();
+}
+
+async function seedLafChecklistFromModal() {
+    if (typeof seedLafChecklist === "function") {
+        seedLafChecklist();
+        window.setTimeout(() => loadLafChecklistInWorkbench().catch(err => showToast(err.message, "warn")), 700);
+    }
+}
+
+async function addLafChecklistFromModal() {
+    if (typeof addLafChecklistItem === "function") {
+        addLafChecklistItem();
+        window.setTimeout(() => loadLafChecklistInWorkbench().catch(err => showToast(err.message, "warn")), 700);
     }
 }
 
@@ -81,6 +624,9 @@ async function loadDocuments() {
         const stampBtn = stampable
             ? `<button class="btn" data-act="doc-stamp" data-path="${esc(fp)}" title="蓋章製作正本/副本/繕本">📋 蓋章</button>`
             : "";
+        const pdfBtn = ext === "pdf"
+            ? `<button class="btn" data-act="doc-pdf-tool" data-path="${esc(fp)}" title="帶入 PDF 工具">PDF 工具</button>`
+            : "";
         return `
     <tr>
         <td>${esc(r.timestamp)}</td>
@@ -93,9 +639,91 @@ async function loadDocuments() {
             <button class="btn" data-act="doc-open" data-path="${esc(fp)}">開啟</button>
             <button class="btn" data-act="doc-copy" data-path="${esc(fp)}">複製路徑</button>
             ${stampBtn}
+            ${pdfBtn}
         </td>
     </tr>`;
     }).join("");
+}
+
+function setPdfToolPath(path) {
+    const input = document.getElementById("pdfToolPath");
+    if (input) input.value = path || "";
+    const pdfTab = document.querySelector('.tab-btn[data-tab="pdfTools"]');
+    if (pdfTab && state.activeTab !== "pdfTools") pdfTab.click();
+    const card = document.getElementById("pdfToolCard");
+    if (card) window.setTimeout(() => card.scrollIntoView({ behavior: "smooth", block: "start" }), 60);
+    const status = document.getElementById("pdfToolStatus");
+    if (status) {
+        status.hidden = false;
+        status.className = "status-banner";
+        status.textContent = path ? `已帶入 PDF：${path.split(/[\\/]/).pop()}` : "請指定 PDF 路徑。";
+    }
+}
+
+function pdfToolPayload(action) {
+    return {
+        action,
+        file_path: (document.getElementById("pdfToolPath")?.value || "").trim(),
+        pages: (document.getElementById("pdfToolPages")?.value || "").trim(),
+        ranges: (document.getElementById("pdfToolPages")?.value || "").trim(),
+        angle: Number(document.getElementById("pdfToolAngle")?.value || 90),
+        other_paths: (document.getElementById("pdfToolOtherPaths")?.value || "").trim(),
+        text: (document.getElementById("pdfToolWatermark")?.value || "").trim(),
+        password: (document.getElementById("pdfToolPassword")?.value || "").trim(),
+    };
+}
+
+function renderPdfToolResult(result) {
+    const status = document.getElementById("pdfToolStatus");
+    const outputs = document.getElementById("pdfToolOutputs");
+    if (status) {
+        status.hidden = false;
+        status.className = "status-banner";
+        status.textContent = result.message || "PDF 操作完成。";
+    }
+    if (!outputs) return;
+    const files = result.outputs || [];
+    const info = result.item;
+    if (info) {
+        outputs.hidden = false;
+        outputs.innerHTML = `
+            <div><b>${esc(info.file_name || "")}</b></div>
+            <div class="muted">頁數：${esc(info.page_count)}｜大小：${formatBytes(info.size)}｜加密：${info.encrypted ? "是" : "否"}</div>
+            <div class="muted">標題：${esc((info.metadata || {}).title || "未設定")}</div>
+        `;
+        return;
+    }
+    outputs.hidden = !files.length;
+    outputs.innerHTML = files.map(path => `
+        <div style="display:flex; gap:8px; align-items:center; margin-top:6px; flex-wrap:wrap;">
+            <span style="flex:1; min-width:220px;">${esc(path)}</span>
+            <button class="btn" data-act="doc-open" data-path="${esc(path)}">開啟</button>
+            <button class="btn" data-act="doc-copy" data-path="${esc(path)}">複製路徑</button>
+        </div>
+    `).join("");
+}
+
+async function runPdfTool(action) {
+    const result = await api("/api/osc/pdf/action", "POST", pdfToolPayload(action));
+    if (!result || !result.ok) throw new Error(result?.error || "PDF 操作失敗");
+    renderPdfToolResult(result);
+    showToast(result.message || "PDF 操作完成。", "ok", 3200);
+}
+
+async function uploadPdfToolFile() {
+    const input = document.getElementById("pdfToolUpload");
+    const file = input?.files?.[0];
+    if (!file) {
+        showToast("請先選擇 PDF 檔案。", "warn");
+        return;
+    }
+    const form = new FormData();
+    form.append("file", file);
+    const result = await apiForm("/api/osc/pdf/upload", form);
+    if (!result || !result.ok) throw new Error(result?.error || "PDF 上傳失敗");
+    setPdfToolPath(result.path || "");
+    renderPdfToolResult(result);
+    showToast(result.message || "PDF 已上傳。", "ok", 3200);
 }
 
 // ── 蓋章製作（呼叫後端 doc-producer skill）──
@@ -484,16 +1112,19 @@ async function loadArchivePreview() {
 }
 
 async function executeArchiveMove() {
+    const force = !!document.getElementById("archiveForce").checked;
     const picks = Array.from(document.querySelectorAll(".archive-pick:checked")).map(el => String(el.dataset.id || "").trim()).filter(Boolean);
     if (!picks.length) {
         alert("請先勾選要搬移的案件。");
         return;
     }
     if (!confirm(`確定搬移 ${picks.length} 筆已結案案件？`)) return;
-    const force = !!document.getElementById("archiveForce").checked;
     const data = await api("/api/osc/archive-wizard/execute", "POST", { confirm: true, case_ids: picks, force });
     const s = data.summary || {};
-    alert(`搬移完成：已搬移 ${s.moved || 0}，略過 ${s.skipped || 0}，錯誤 ${s.errors || 0}`);
+    const skipped = (data.skipped || []).slice(0, 3).map(x => `${x.case_number || x.id || "-"}：${x.reason || x.error || "略過"}`);
+    const errors = (data.errors || []).slice(0, 3).map(x => `${x.case_number || x.id || "-"}：${x.error || "錯誤"}`);
+    const detail = skipped.concat(errors).join("\n");
+    alert(`搬移完成：已搬移 ${s.moved || 0}，略過 ${s.skipped || 0}，錯誤 ${s.errors || 0}${detail ? "\n\n" + detail : ""}`);
     await loadArchivePreview();
     await loadCases();
     await loadMeta();

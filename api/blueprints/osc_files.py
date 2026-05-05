@@ -20,12 +20,16 @@ import logging
 import mimetypes
 import os
 import re
+import hashlib
+import json
+import secrets
 import shutil
+import time
 from datetime import datetime
 from pathlib import Path
 
 from flask import Blueprint, request, jsonify, send_file
-from flask_login import login_required
+from flask_login import current_user, login_required
 
 from api.osc.utils import (
     _osc_is_safe_local_path,
@@ -61,6 +65,68 @@ _BLOCKED_UPLOAD_EXTS = {
     ".exe", ".bat", ".cmd", ".sh", ".ps1", ".scr",
     ".msi", ".app", ".pkg", ".dmg", ".com", ".vbs",
 }
+
+_SHARE_STORE_PATH = Path(os.environ.get("MAGI_OSC_FILE_SHARE_STORE", "") or (
+    Path(__file__).resolve().parents[2] / ".runtime" / "osc_file_shares.json"
+))
+_DEFAULT_SHARE_TTL_SEC = int(os.environ.get("MAGI_OSC_FILE_SHARE_TTL_SEC", str(7 * 24 * 3600)) or str(7 * 24 * 3600))
+_MAX_SHARE_TTL_SEC = int(os.environ.get("MAGI_OSC_FILE_SHARE_MAX_TTL_SEC", str(30 * 24 * 3600)) or str(30 * 24 * 3600))
+
+
+def _load_share_store() -> dict:
+    try:
+        if _SHARE_STORE_PATH.exists():
+            data = json.loads(_SHARE_STORE_PATH.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                return data
+    except Exception:
+        _log.debug("silent-catch load share store", exc_info=True)
+    return {"shares": {}}
+
+
+def _save_share_store(data: dict) -> None:
+    _SHARE_STORE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    tmp = _SHARE_STORE_PATH.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(_SHARE_STORE_PATH)
+
+
+def _prune_share_store(data: dict) -> dict:
+    now = int(time.time())
+    shares = data.setdefault("shares", {})
+    for token_hash, row in list(shares.items()):
+        try:
+            if int(row.get("expires_at") or 0) <= now:
+                shares.pop(token_hash, None)
+        except Exception:
+            shares.pop(token_hash, None)
+    return data
+
+
+def _share_token_hash(token: str) -> str:
+    return hashlib.sha256(str(token or "").encode("utf-8")).hexdigest()
+
+
+def _resolve_safe_file(path_str: str) -> str:
+    local = _osc_resolve_existing_local_path(path_str, prefer_dir=False)
+    if not local or not _osc_is_safe_local_path(local) or not os.path.isfile(local):
+        return ""
+    return local
+
+
+def _send_local_file(local: str, *, inline: bool):
+    mime, _ = mimetypes.guess_type(local)
+    resp = send_file(
+        local,
+        mimetype=mime or "application/octet-stream",
+        as_attachment=not inline,
+        download_name=os.path.basename(local),
+        conditional=True,
+    )
+    resp.headers["X-Robots-Tag"] = "noindex, nofollow, noarchive"
+    resp.headers["Referrer-Policy"] = "no-referrer"
+    resp.headers["Cache-Control"] = "private, max-age=300"
+    return resp
 
 
 def _is_hidden_name(name: str) -> bool:
@@ -170,6 +236,75 @@ def _entry_dict(name: str, full_path: str, base_real: str, *, summarize: bool) -
 
 
 # ── routes ──────────────────────────────────────────────────────────────
+
+
+def _root_child_dirs(path_str: str, *, limit: int = 240) -> list[dict]:
+    base_real = _resolve_target_dir(path_str)
+    if not base_real:
+        return []
+    children: list[dict] = []
+    try:
+        for name in sorted(os.listdir(base_real), key=str.lower):
+            if _is_hidden_name(name):
+                continue
+            full = os.path.join(base_real, name)
+            if not os.path.isdir(full):
+                continue
+            has_subdirs = False
+            try:
+                for sub in os.listdir(full):
+                    if _is_hidden_name(sub):
+                        continue
+                    if os.path.isdir(os.path.join(full, sub)):
+                        has_subdirs = True
+                        break
+            except OSError:
+                pass
+            children.append({
+                "name": name,
+                "relative_path": _osc_relpath_under(base_real, full),
+                "has_subdirs": has_subdirs,
+            })
+            if len(children) >= limit:
+                break
+    except OSError:
+        return []
+    return children
+
+
+@osc_files_bp.route("/api/osc/folders/roots", methods=["GET"])
+@login_required
+def osc_folder_roots_api():
+    """Return the two business-facing case folder roots for the file manager."""
+    try:
+        from api.case_path_mapper import default_case_roots, preferred_case_roots
+        roots = preferred_case_roots(include_closed=True) or default_case_roots(include_closed=True)
+    except Exception:
+        roots = []
+    active = roots[0] if roots else ""
+    closed = roots[1] if len(roots) > 1 else ""
+    items = [
+        {
+            "id": "active",
+            "label": "進行中案件",
+            "folder_name": "01_案件",
+            "path": active,
+            "hint": "依案件種類分類的目前案件資料夾",
+        },
+        {
+            "id": "closed",
+            "label": "已結案案件",
+            "folder_name": "03_工作資料 / 10_結案",
+            "path": closed,
+            "hint": "已結案或歸檔案件資料夾",
+        },
+    ]
+    for item in items:
+        local = _resolve_target_dir(item["path"]) if item["path"] else ""
+        item["local_path"] = local
+        item["exists"] = bool(local)
+        item["children"] = _root_child_dirs(item["path"]) if item["path"] else []
+    return jsonify({"ok": True, "items": items})
 
 
 _CHUNK_TMP_DIR = Path(os.path.expanduser("~/.cache/paperclip-uploads"))
@@ -521,13 +656,14 @@ def osc_folders_move_api():
     payload = request.get_json(silent=True) or {}
     base = str(payload.get("base_path") or "").strip()
     src_rel = str(payload.get("source_relative_path") or "").strip().strip("/")
-    dst_rel = str(payload.get("target_relative_path") or "").strip().strip("/")
+    dst_raw = payload.get("target_relative_path")
+    dst_rel = str(dst_raw or "").strip().strip("/")
     to_trash = bool(payload.get("to_trash"))
     if not base:
         return jsonify({"ok": False, "error": "base_path required"}), 400
     if not src_rel:
         return jsonify({"ok": False, "error": "source_relative_path required"}), 400
-    if not to_trash and not dst_rel:
+    if not to_trash and dst_raw is None:
         return jsonify({"ok": False, "error": "target_relative_path or to_trash required"}), 400
 
     base_real = _resolve_target_dir(base)
@@ -737,6 +873,78 @@ def osc_files_info_api():
         "kind": osc_preview.categorize(local),
         "local_path": local,
     })
+
+
+@osc_files_bp.route("/api/osc/files/share", methods=["POST"])
+@login_required
+def osc_files_share_create_api():
+    """Create an opaque public token for one file.
+
+    The public URL intentionally contains only a random token, never the NAS path,
+    case folder, filename-derived slug, or OSC route name.
+    """
+    payload = request.get_json(silent=True) or {}
+    raw = str(payload.get("path") or "").strip()
+    if not raw:
+        return jsonify({"ok": False, "error": "path required"}), 400
+    local = _resolve_safe_file(raw)
+    if not local:
+        return jsonify({"ok": False, "error": "file_not_found_or_not_allowed"}), 404
+    try:
+        ttl = int(payload.get("ttl_sec") or _DEFAULT_SHARE_TTL_SEC)
+    except Exception:
+        ttl = _DEFAULT_SHARE_TTL_SEC
+    ttl = max(300, min(ttl, _MAX_SHARE_TTL_SEC))
+    token = secrets.token_urlsafe(32)
+    token_hash = _share_token_hash(token)
+    now = int(time.time())
+    try:
+        st = os.stat(local)
+    except OSError as e:
+        return jsonify({"ok": False, "error": f"stat_failed: {e}"}), 500
+    data = _prune_share_store(_load_share_store())
+    data.setdefault("shares", {})[token_hash] = {
+        "path": local,
+        "name": os.path.basename(local),
+        "size": int(st.st_size),
+        "created_at": now,
+        "expires_at": now + ttl,
+        "created_by": str(getattr(current_user, "id", "") or ""),
+        "downloads": 0,
+    }
+    _save_share_store(data)
+    public_url = request.host_url.rstrip("/") + "/s/" + token
+    return jsonify({
+        "ok": True,
+        "url": public_url,
+        "expires_at": datetime.fromtimestamp(now + ttl).isoformat(timespec="seconds"),
+        "name": os.path.basename(local),
+        "size": int(st.st_size),
+        "size_label": _osc_human_size(int(st.st_size)),
+    })
+
+
+@osc_files_bp.route("/s/<token>", methods=["GET"])
+def osc_files_public_share_api(token):
+    """Serve a shared file by opaque token; does not require login."""
+    t = str(token or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9_\-]{24,128}", t):
+        return jsonify({"ok": False, "error": "not_found"}), 404
+    data = _prune_share_store(_load_share_store())
+    row = data.get("shares", {}).get(_share_token_hash(t))
+    if not isinstance(row, dict):
+        _save_share_store(data)
+        return jsonify({"ok": False, "error": "not_found"}), 404
+    local = _resolve_safe_file(str(row.get("path") or ""))
+    if not local:
+        data.get("shares", {}).pop(_share_token_hash(t), None)
+        _save_share_store(data)
+        return jsonify({"ok": False, "error": "not_found"}), 404
+    row["downloads"] = int(row.get("downloads") or 0) + 1
+    row["last_accessed_at"] = int(time.time())
+    _save_share_store(data)
+    inline = str(request.args.get("inline") or "").strip().lower() in {"1", "true", "yes"}
+    return _send_local_file(local, inline=inline)
 
 
 @osc_files_bp.route("/api/osc/folders/browse", methods=["GET"])

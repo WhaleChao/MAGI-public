@@ -27,6 +27,7 @@ from api.osc.utils import (
     _osc_pick_best_manifest_item,
     _osc_summarize_legal_insight,
 )
+from api.osc.insight_filters import displayable_insight_item, is_non_extractable_legal_insight
 
 logger = logging.getLogger(__name__)
 
@@ -55,28 +56,36 @@ def _osc_collect_insights():
                 # insight_text = 結構化法律見解萃取結果；raw_text = 判決原文
                 insight_text = (r.get("insight_text") or "").strip()
                 raw_text = (r.get("raw_text") or "").strip()
+                if is_non_extractable_legal_insight(
+                    title,
+                    r.get("court_reference"),
+                    insight_text,
+                    raw_text,
+                    r.get("case_reason"),
+                ):
+                    continue
                 full_text = raw_text or insight_text
                 summary = (insight_text or full_text[:500])[:350]
                 ts = r.get("extracted_date")
                 source_file = str(r.get("source_file") or "").strip()
                 source_url = source_file if source_file.lower().startswith(("http://", "https://")) else ""
-                items.append(
-                    {
-                        "id": f"li-{r.get('id')}",
-                        "source_type": "legal_insights",
-                        "source": "見解庫",
-                        "title": title,
-                        "summary": summary,
-                        "insight_text": insight_text,
-                        "full_text": full_text,
-                        "url": source_url,
-                        "case_number": r.get("case_number") or "",
-                        "case_reason": r.get("case_reason") or "",
-                        "court": r.get("court_reference") or r.get("court_type") or "",
-                        "timestamp": _osc_json_value(ts) if ts else "",
-                        "sort_ts": _osc_parse_dt(ts).timestamp() if _osc_parse_dt(ts) else 0,
-                    }
-                )
+                item = {
+                    "id": f"li-{r.get('id')}",
+                    "source_type": "legal_insights",
+                    "source": "見解庫",
+                    "title": title,
+                    "summary": summary,
+                    "insight_text": insight_text,
+                    "full_text": full_text,
+                    "url": source_url,
+                    "case_number": r.get("case_number") or "",
+                    "case_reason": r.get("case_reason") or "",
+                    "court": r.get("court_reference") or r.get("court_type") or "",
+                    "timestamp": _osc_json_value(ts) if ts else "",
+                    "sort_ts": _osc_parse_dt(ts).timestamp() if _osc_parse_dt(ts) else 0,
+                }
+                if displayable_insight_item(item):
+                    items.append(item)
         except Exception:
             logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, "_osc_collect_insights:legal_insights", exc_info=True)
 
@@ -92,25 +101,35 @@ def _osc_collect_insights():
             )
             for r in (cur.fetchall() or []):
                 title = f"{(r.get('court_name') or '').strip()} {(r.get('case_number') or '').strip()}".strip() or "裁判見解"
+                if not (r.get("summary") or "").strip():
+                    continue
                 full_text = (r.get("full_text") or r.get("summary") or "").strip()
                 summary = (r.get("summary") or full_text[:350] or "").strip()
+                if is_non_extractable_legal_insight(
+                    title,
+                    summary,
+                    full_text,
+                    r.get("case_type"),
+                    r.get("court_name"),
+                ):
+                    continue
                 ts = r.get("crawled_at") or r.get("judgment_date")
-                items.append(
-                    {
-                        "id": f"cj-{r.get('id')}",
-                        "source_type": "court_judgments",
-                        "source": "裁判書",
-                        "title": title,
-                        "summary": summary,
-                        "full_text": full_text,
-                        "url": r.get("source_url") or "",
-                        "case_number": r.get("case_number") or "",
-                        "case_reason": r.get("case_type") or "",
-                        "court": r.get("court_name") or "",
-                        "timestamp": _osc_json_value(ts) if ts else "",
-                        "sort_ts": _osc_parse_dt(ts).timestamp() if _osc_parse_dt(ts) else 0,
-                    }
-                )
+                item = {
+                    "id": f"cj-{r.get('id')}",
+                    "source_type": "court_judgments",
+                    "source": "裁判書",
+                    "title": title,
+                    "summary": summary,
+                    "full_text": full_text,
+                    "url": r.get("source_url") or "",
+                    "case_number": r.get("case_number") or "",
+                    "case_reason": r.get("case_type") or "",
+                    "court": r.get("court_name") or "",
+                    "timestamp": _osc_json_value(ts) if ts else "",
+                    "sort_ts": _osc_parse_dt(ts).timestamp() if _osc_parse_dt(ts) else 0,
+                }
+                if displayable_insight_item(item):
+                    items.append(item)
         except Exception:
             logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, "_osc_collect_insights:court_judgments", exc_info=True)
     finally:
@@ -136,23 +155,32 @@ def _osc_collect_insights():
                     if not isinstance(r, dict):
                         continue
                     full_text = (r.get("full_text") or r.get("summary") or "").strip()
+                    summary = (r.get("summary") or "")[:350]
+                    if is_non_extractable_legal_insight(
+                        r.get("title"),
+                        summary,
+                        full_text,
+                        r.get("case_reason"),
+                        r.get("court_name"),
+                    ):
+                        continue
                     ts = r.get("timestamp")
-                    items.append(
-                        {
-                            "id": f"json-{i}",
-                            "source_type": "judgments_json",
-                            "source": r.get("source") or "爬蟲快照",
-                            "title": r.get("title") or "裁判資料",
-                            "summary": (r.get("summary") or "")[:350],
-                            "full_text": full_text,
-                            "url": r.get("url") or "",
-                            "case_number": r.get("case_number") or "",
-                            "case_reason": r.get("case_reason") or "",
-                            "court": r.get("court_name") or "",
-                            "timestamp": ts or "",
-                            "sort_ts": _osc_parse_dt(ts).timestamp() if _osc_parse_dt(ts) else 0,
-                        }
-                    )
+                    item = {
+                        "id": f"json-{i}",
+                        "source_type": "judgments_json",
+                        "source": r.get("source") or "爬蟲快照",
+                        "title": r.get("title") or "裁判資料",
+                        "summary": summary,
+                        "full_text": full_text,
+                        "url": r.get("url") or "",
+                        "case_number": r.get("case_number") or "",
+                        "case_reason": r.get("case_reason") or "",
+                        "court": r.get("court_name") or "",
+                        "timestamp": ts or "",
+                        "sort_ts": _osc_parse_dt(ts).timestamp() if _osc_parse_dt(ts) else 0,
+                    }
+                    if displayable_insight_item(item):
+                        items.append(item)
     except Exception as e:
         logger.warning(f"osc insights json merge failed: {e}")
 

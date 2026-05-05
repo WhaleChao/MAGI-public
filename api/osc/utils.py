@@ -28,9 +28,11 @@ from flask_login import current_user
 from api.runtime_paths import get_config_path, get_orch_dir
 from api.case_path_mapper import (
     local_synology_path_candidates,
+    default_synology_share_roots,
     preferred_synology_share_roots,
     translate_local_path_to_canonical,
 )
+from api.osc.insight_filters import is_non_extractable_legal_insight
 
 try:
     from api.tw_output_guard import normalize_output_text as _normalize_output_text
@@ -414,13 +416,67 @@ def _osc_local_path_candidates(path_str: str) -> list[str]:
 
 
 def _osc_allowed_local_roots() -> list[str]:
-    roots = preferred_synology_share_roots(include_closed=True) + ["/Volumes"]
+    roots = default_synology_share_roots(include_closed=False) + [
+        str(Path.home() / "Library/CloudStorage/SynologyDrive-homes/lumi"),
+        str(Path.home() / "SynologyDrive/homes/lumi"),
+        str(Path.home() / "SynologyDrive/lumi"),
+        "/Volumes/homes/lumi63181107",
+        "/Volumes/lumi/lumi",
+        "/Volumes/lumi-1/lumi",
+        "/Volumes/lumi-2/lumi",
+    ]
     out = []
     for root in roots:
         rp = os.path.realpath(root)
         if rp not in out:
             out.append(rp)
     return out
+
+
+def _osc_stat_quick(path_str: str, timeout: float = 1.5):
+    """os.stat with a timeout guard for stale SMB /Volumes paths."""
+    p = str(path_str or "")
+    if not p.startswith("/Volumes/"):
+        return os.stat(p)
+    import threading
+    result = {"stat": None, "error": None}
+
+    def _run():
+        try:
+            result["stat"] = os.stat(p)
+        except Exception as exc:
+            result["error"] = exc
+
+    thread = threading.Thread(target=_run, daemon=True)
+    thread.start()
+    thread.join(timeout=timeout)
+    if thread.is_alive():
+        raise TimeoutError(f"stat timeout: {p}")
+    if result["error"] is not None:
+        raise result["error"]
+    return result["stat"]
+
+
+def _osc_exists_quick(path_str: str) -> bool:
+    try:
+        _osc_stat_quick(path_str)
+        return True
+    except Exception:
+        return False
+
+
+def _osc_isdir_quick(path_str: str) -> bool:
+    try:
+        return bool(_osc_stat_quick(path_str).st_mode & 0o40000)
+    except Exception:
+        return False
+
+
+def _osc_isfile_quick(path_str: str) -> bool:
+    try:
+        return bool(_osc_stat_quick(path_str).st_mode & 0o100000)
+    except Exception:
+        return False
 
 
 def _osc_is_safe_local_path(path_str: str, *, allow_missing: bool = False) -> bool:
@@ -431,11 +487,9 @@ def _osc_is_safe_local_path(path_str: str, *, allow_missing: bool = False) -> bo
         real = os.path.realpath(p)
     except Exception:
         return False
-    if not allow_missing and not os.path.exists(real):
-        return False
     for root in _osc_allowed_local_roots():
         if real == root or real.startswith(root + os.sep):
-            return True
+            return bool(allow_missing or _osc_exists_quick(real))
     return False
 
 
@@ -449,11 +503,11 @@ def _osc_resolve_existing_local_path(path_str: str, *, prefer_dir: Optional[bool
             real = os.path.realpath(cand)
             if not _osc_is_safe_local_path(real):
                 continue
-            if not os.path.exists(real):
+            if not _osc_exists_quick(real):
                 continue
-            if prefer_dir is True and not os.path.isdir(real):
+            if prefer_dir is True and not _osc_isdir_quick(real):
                 continue
-            if prefer_dir is False and not os.path.isfile(real):
+            if prefer_dir is False and not _osc_isfile_quick(real):
                 continue
             return real
         except Exception:
@@ -482,6 +536,24 @@ def _osc_human_size(size: int) -> str:
     return f"{n:.1f}{unit}" if unit != "B" else f"{int(n)}B"
 
 
+_OSC_HIDDEN_FILE_PATTERNS = (
+    re.compile(r"^\.DS_Store$"),
+    re.compile(r"^Thumbs\.db$", re.IGNORECASE),
+    re.compile(r"^~\$.*"),
+    re.compile(r"^\._.*"),
+    re.compile(r"^\.synology.*", re.IGNORECASE),
+    re.compile(r"^\.DocumentRevisions.*", re.IGNORECASE),
+    re.compile(r"^.*\.tmp$", re.IGNORECASE),
+    re.compile(r"^\.Spotlight.*"),
+    re.compile(r"^\.Trashes$"),
+    re.compile(r"^\.fseventsd$"),
+)
+
+
+def _osc_is_hidden_folder_entry(name: str) -> bool:
+    return any(pattern.match(name or "") for pattern in _OSC_HIDDEN_FILE_PATTERNS)
+
+
 def _osc_folder_entries(base_path: str, relative_path: str = "", limit: int = 240) -> dict:
     base_real = os.path.realpath(base_path)
     target_real = os.path.realpath(os.path.join(base_real, relative_path or ""))
@@ -496,7 +568,8 @@ def _osc_folder_entries(base_path: str, relative_path: str = "", limit: int = 24
         names = sorted(os.listdir(target_real), key=lambda n: (not os.path.isdir(os.path.join(target_real, n)), n.lower()))
     except Exception as e:
         return {"ok": False, "error": str(e)}
-    for name in names[:max(1, int(limit or 240))]:
+    visible_names = [name for name in names if not _osc_is_hidden_folder_entry(name)]
+    for name in visible_names[:max(1, int(limit or 240))]:
         full = os.path.join(target_real, name)
         try:
             is_dir = os.path.isdir(full)
@@ -937,7 +1010,12 @@ def _osc_lookup_fulltext_fallback(title: str = "", case_number: str = "", url: s
             )
             if row:
                 txt = (row.get("insight_text") or row.get("raw_text") or "").strip()
-                if len(txt) >= 300:
+                if len(txt) >= 300 and not is_non_extractable_legal_insight(
+                    row.get("document_name"),
+                    row.get("case_reason"),
+                    row.get("source_file"),
+                    txt,
+                ):
                     return {
                         "ok": True,
                         "text": txt,
@@ -1466,6 +1544,12 @@ def _osc_summarize_legal_insight(full_text: str) -> str:
         cleaned = _clean_output(raw)
         if not cleaned:
             return False
+        try:
+            from api.osc.insight_filters import is_non_extractable_legal_insight
+            if is_non_extractable_legal_insight(cleaned):
+                return False
+        except Exception:
+            logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, "_osc_summarize:_usable_filter", exc_info=True)
         if any(marker in cleaned for marker in bad_markers):
             return False
         if "爭點" in cleaned and ("法院見解" in cleaned or "可援引" in cleaned or "可直接引用" in cleaned):

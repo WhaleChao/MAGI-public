@@ -2,30 +2,44 @@
     <div class="card">
         <div class="section-head">
             <div>
-                <h3>📁 NAS 檔案總管</h3>
+                <h3>📁 檔案管理</h3>
                 <div class="section-note">在瀏覽器內巡覽 NAS 案件資料夾，支援拖放上傳、全檔類預覽、下載、新建資料夾。</div>
             </div>
         </div>
-        <div class="soft-block">
-            <div class="field-grid cols-3" style="align-items:end;">
-                <div class="field" style="grid-column: span 2;">
-                    <label for="fmBasePathInput">NAS 案件資料夾路徑</label>
-                    <input id="fmBasePathInput" placeholder="Z:\lumi63181107\01_案件\... 或 /Users/ai/SynologyDrive/...">
-                </div>
-                <div class="field">
-                    <label>&nbsp;</label>
-                    <div class="inline-actions">
-                        <button class="btn" id="fmBasePathGoBtn">開啟</button>
-                        <button class="btn" id="fmRefreshBtn">重新整理</button>
-                    </div>
+        <div class="soft-block fm-case-finder">
+            <div class="field fm-case-search-field">
+                <label for="fmCaseSearchInput">搜尋案件（快速跳轉）</label>
+                <div class="fm-case-search-line">
+                    <input id="fmCaseSearchInput" placeholder="輸入當事人、案件編號、法扶案號、法院案號">
                 </div>
             </div>
+            <div id="fmCaseSearchResults" class="fm-case-results" aria-live="polite">
+                <div class="fm-case-empty">也可以直接從下方「進行中案件 / 已結案案件」資料夾慢慢展開。</div>
+            </div>
+
+            <details class="fm-advanced-path">
+                <summary>進階：手動開啟案件資料夾路徑</summary>
+                <div class="field-grid cols-3" style="align-items:end;">
+                    <div class="field" style="grid-column: span 2;">
+                        <label for="fmBasePathInput">案件資料夾路徑</label>
+                        <input id="fmBasePathInput" placeholder="Z:\lumi63181107\01_案件\... 或 /Users/ai/SynologyDrive/...">
+                    </div>
+                    <div class="field">
+                        <label>&nbsp;</label>
+                        <div class="inline-actions">
+                            <button class="btn" id="fmBasePathGoBtn">開啟</button>
+                        </div>
+                    </div>
+                </div>
+            </details>
+
             <div class="fm-toolbar">
                 <div class="fm-toolbar-group" role="group" aria-label="檢視模式">
-                    <button class="btn-mini fm-view-btn active" data-view="detail" title="詳細檢視">📋 詳細</button>
-                    <button class="btn-mini fm-view-btn" data-view="grid" title="網格檢視">🔲 網格</button>
-                    <button class="btn-mini fm-view-btn" data-view="compact" title="清單檢視">≡ 清單</button>
+                    <button type="button" class="btn-mini fm-view-btn active" data-view="detail" title="詳細檢視">📋 詳細</button>
+                    <button type="button" class="btn-mini fm-view-btn" data-view="grid" title="卡片檢視">▦ 卡片</button>
+                    <button type="button" class="btn-mini fm-view-btn" data-view="compact" title="清單檢視">≡ 清單</button>
                 </div>
+                <span id="fmViewModeStatus" class="fm-view-status">目前：詳細</span>
                 <div class="fm-toolbar-group">
                     <label for="fmSortSelect" class="fm-toolbar-label">排序：</label>
                     <select id="fmSortSelect" class="fm-mini-select">
@@ -46,14 +60,31 @@
                 </label>
                 <div class="fm-toolbar-spacer"></div>
                 <div class="fm-toolbar-group">
+                    <button class="btn-mini" id="fmRootOverviewBtn" title="回到進行中與已結案母資料夾">母資料夾</button>
+                    <button class="btn-mini" id="fmRefreshBtn" title="重新整理目前資料夾">↻ 重新整理</button>
                     <button class="btn-mini" id="fmMkdirBtn" title="新增資料夾">＋ 資料夾</button>
                     <button class="btn-mini" id="fmUploadBtn" title="上傳檔案">⬆ 上傳</button>
                     <button class="btn-mini" id="fmUploadFolderBtn" title="上傳資料夾">⬆ 資料夾</button>
+                </div>
+                <div class="fm-toolbar-group fm-selection-actions" aria-label="已選檔案操作">
+                    <span id="fmSelectedName" class="fm-selected-name">尚未選取檔案</span>
+                    <button class="btn-mini" id="fmMoveBtn" title="先選檔案，再移到其他資料夾" disabled>移動</button>
+                    <button class="btn-mini danger" id="fmTrashBtn" title="移到回收區，不會永久刪除" disabled>移到回收區</button>
                 </div>
             </div>
         </div>
 
         <div id="fmStatus" class="fm-status" style="display:none;"></div>
+        <div id="fmMovePendingBar" class="fm-move-pending" hidden>
+            <div class="fm-move-text">
+                <strong>準備移動：</strong><span id="fmMovePendingName"></span>
+                <small>請切到正確資料夾後，按「移到目前資料夾」。</small>
+            </div>
+            <div class="fm-move-actions">
+                <button class="btn-mini primary" id="fmMoveHereBtn">移到目前資料夾</button>
+                <button class="btn-mini" id="fmMoveCancelBtn">取消</button>
+            </div>
+        </div>
 
         <!-- hidden file inputs (Phase 2 commit 9) -->
         <input type="file" id="fmFileInput" multiple style="display:none;">
@@ -98,6 +129,9 @@
                 <div class="fm-modal-head">
                     <span id="fmPreviewTitle" class="fm-modal-title">預覽</span>
                     <span class="fm-modal-spacer"></span>
+                    <button class="btn-mini" id="fmPreviewMove" title="移動目前預覽的檔案">移動</button>
+                    <button class="btn-mini danger" id="fmPreviewTrash" title="移到回收區，不會永久刪除">移到回收區</button>
+                    <button class="btn-mini" id="fmPreviewShare" title="建立不含檔案路徑的分享連結">分享連結</button>
                     <a id="fmPreviewDownload" class="btn-mini" download>⬇ 下載</a>
                     <button class="fm-modal-close" id="fmPreviewClose" title="關閉 (Esc)">✕</button>
                 </div>
@@ -109,11 +143,11 @@
 
         <div class="fm-shell">
             <div class="fm-sidebar" id="fmTree">
-                <div class="fm-empty">尚未開啟資料夾</div>
+                <div class="fm-empty">母資料夾載入中...</div>
             </div>
             <div class="fm-main">
                 <div id="fmBreadcrumb" class="fm-breadcrumb">
-                    <span class="crumb current" data-rel="">尚未開啟</span>
+                    <span class="crumb current" data-rel="">案件資料夾</span>
                 </div>
                 <div id="fmDropZone" class="fm-dropzone" style="display:none;">
                     <div class="fm-dropzone-inner">
@@ -122,7 +156,7 @@
                     </div>
                 </div>
                 <div id="fmEntriesArea">
-                    <div class="fm-empty">輸入 NAS 路徑後按「開啟」</div>
+                    <div class="fm-empty">母資料夾載入中...</div>
                 </div>
             </div>
         </div>

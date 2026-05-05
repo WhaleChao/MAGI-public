@@ -18,6 +18,7 @@ from pathlib import Path
 from api.model_config import TEXT_PRIMARY_MODEL
 from api.runtime_paths import ensure_path_on_sys_path, get_orch_dir
 from api.case_path_mapper import preferred_case_roots
+from api.osc.insight_filters import displayable_insight_item, is_non_extractable_legal_insight
 
 # ---------------------------------------------------------------------------
 # Lazy back-references into server helpers.
@@ -189,7 +190,7 @@ def _osc_resolve_draft_insights(payload: dict) -> list[dict]:
     selected = payload.get("selected_insights") or payload.get("insights") or []
     if not selected:
         selected = [{"id": x} for x in (payload.get("selected_insight_ids") or [])]
-    lookup = {str(it.get("id")): it for it in _osc_collect_insights()}
+    lookup = {str(it.get("id")): it for it in _osc_collect_insights() if displayable_insight_item(it)}
     out = []
     for raw in (selected or [])[:10]:
         if isinstance(raw, str):
@@ -209,6 +210,8 @@ def _osc_resolve_draft_insights(payload: dict) -> list[dict]:
         if not title:
             title = "實務見解"
         if not (summary or full_text):
+            continue
+        if is_non_extractable_legal_insight(title, summary, full_text, case_reason, court):
             continue
         out.append(
             {
@@ -669,6 +672,16 @@ def _osc_build_archive_preview(limit: int = 300) -> dict:
         if os.path.exists(c):
             archive_local = c
             break
+    if not archive_local:
+        try:
+            from api.nas_mount_guard import ensure_nas_mounts
+            ensure_nas_mounts()
+            for c in archive_local_candidates:
+                if os.path.exists(c):
+                    archive_local = c
+                    break
+        except Exception:
+            logging.getLogger(__name__).debug("silent-catch archive preview mount retry", exc_info=True)
     if (not archive_local) and archive_local_candidates:
         archive_local = archive_local_candidates[0]
     items = []
@@ -681,6 +694,16 @@ def _osc_build_archive_preview(limit: int = 300) -> dict:
             if c and os.path.exists(c):
                 source_local = c
                 break
+        if not source_local:
+            try:
+                from api.nas_mount_guard import ensure_nas_mounts
+                ensure_nas_mounts()
+                for c in local_candidates:
+                    if c and os.path.exists(c):
+                        source_local = c
+                        break
+            except Exception:
+                logging.getLogger(__name__).debug("silent-catch archive source mount retry", exc_info=True)
         folder_name = os.path.basename(source_local.rstrip("/")) if source_local else os.path.basename(source_norm.rstrip("/"))
         target_local = os.path.join(archive_local, folder_name) if archive_local and folder_name else ""
         target_exists = bool(target_local and os.path.exists(target_local))

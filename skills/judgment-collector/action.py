@@ -97,6 +97,58 @@ _JUNK_KEYWORDS = (
     "模型忙碌",
 )
 
+_SUMMARY_REJECT_MARKERS = (
+    "原始資料未提供全文文字",
+    "已存原始 JSON",
+    "請提供您需要我摘要的判決書全文",
+    "請您提供需要我處理的判決書全文",
+    "請您提供需要分析的判決書全文",
+    "請您提供原始的判決書片段",
+    "請您提供判決書全文",
+    "請提供完整的判決書",
+    "請將判決書貼於此",
+    "請您將判決書貼於下方",
+    "請您現在貼上判決書",
+    "判決書貼於下方",
+)
+
+_SUMMARY_PROMPT_ECHO_MARKERS = (
+    "請您現在貼上",
+    "請將判決書貼",
+    "判決書貼於下方",
+    "我已理解",
+    "我將會",
+    "我將立即",
+    "我將為您",
+    "AI 助理",
+    "AI助理",
+    "作為 MAGI",
+    "作為MAGI",
+    "MAGI 系統",
+    "MAGI系統",
+)
+
+_SUMMARY_PROMPT_ECHO_CONTEXT = (
+    "判決書",
+    "實務見解",
+    "引用裁判",
+    "適用法條",
+    "逐字擷取",
+    "嚴格依照",
+    "輸出格式",
+)
+
+
+def _summary_is_prompt_echo(text: str) -> bool:
+    s = re.sub(r"\s+", "", str(text or ""))
+    if not s:
+        return True
+    if any(re.sub(r"\s+", "", marker) in s for marker in _SUMMARY_REJECT_MARKERS):
+        return True
+    has_echo = any(re.sub(r"\s+", "", marker) in s for marker in _SUMMARY_PROMPT_ECHO_MARKERS)
+    has_context = any(re.sub(r"\s+", "", marker) in s for marker in _SUMMARY_PROMPT_ECHO_CONTEXT)
+    return bool(has_echo and has_context)
+
 
 def _upsert_judgments_json(
     title: str,
@@ -110,7 +162,7 @@ def _upsert_judgments_json(
     """Append a quality-checked LLM summary to judgments.json (dedup by title)."""
     if not summary or len(summary) < 30:
         return False
-    if any(kw in summary for kw in _JUNK_KEYWORDS):
+    if any(kw in summary for kw in _JUNK_KEYWORDS) or _summary_is_prompt_echo(summary):
         return False
     try:
         existing = []
@@ -121,6 +173,7 @@ def _upsert_judgments_json(
         existing = [
             d for d in existing
             if not any(kw in str(d.get("summary", "")) for kw in _JUNK_KEYWORDS)
+            and not _summary_is_prompt_echo(str(d.get("summary", "")))
             and d.get("summary_type") != "preview"
         ]
         # Dedup by normalized title
@@ -1449,6 +1502,7 @@ def _upsert_court_judgment(
     jid = hashlib.sha1(jid_seed.encode("utf-8", errors="ignore")).hexdigest()[:40]
     court_name, case_no = _parse_court_case_from_title(title)
     judgment_date = _parse_judgment_date_from_text(full_text) or _parse_judgment_date_from_text(title)
+    safe_summary = "" if _summary_is_prompt_echo(summary) else str(summary or "")
     try:
         cur = conn.cursor()
         cur.execute(
@@ -1472,7 +1526,7 @@ def _upsert_court_judgment(
                 case_no or None,
                 (case_type or None),
                 judgment_date,
-                (summary or None),
+                (safe_summary or None),
                 (full_text or None),
                 (url or None),
             ),
@@ -1502,6 +1556,7 @@ def _upsert_court_judgment_by_jid(
     j = str(jid or "").strip()
     if not j:
         return False
+    safe_summary = "" if _summary_is_prompt_echo(summary) else str(summary or "")
     try:
         cur = conn.cursor()
         cur.execute(
@@ -1525,7 +1580,7 @@ def _upsert_court_judgment_by_jid(
                 (case_number or None),
                 (case_type or None),
                 judgment_date,
-                (summary or None),
+                (safe_summary or None),
                 (full_text or None),
                 (source_url or None),
             ),
@@ -2213,6 +2268,9 @@ def _is_degraded_summary(text: str, expected_reason: str = "") -> bool:
     ]
     if any(f in s for f in flags):
         return True
+    if _summary_is_prompt_echo(s):
+        logger.warning("Prompt echo / missing-source response detected in summary (len=%d)", len(s))
+        return True
 
     # ── Prompt leakage guard ──
     # LLM sometimes echoes back the system prompt instead of generating a summary.
@@ -2697,6 +2755,13 @@ def _sanitize_summary(text: str) -> str:
     _leak_patterns = [
         r"^.*你是資深法律研究助理.*$",
         r"^.*你是一位精確的法律助理.*$",
+        r"^.*作為\s*MAGI\s*系統的.*AI\s*助理.*$",
+        r"^.*我已理解您的(?:需求|要求|指示).*$",
+        r"^.*我將(?:會|立即|為您).*$",
+        r"^.*請您提供.*判決書.*$",
+        r"^.*請提供.*判決書.*$",
+        r"^.*請.*貼上判決書.*$",
+        r"^.*判決書貼於下方.*$",
         r"^.*專精司法見解分析.*$",
         r"^.*【摘要格式要求】.*$",
         r"^.*【注意事項】.*$",
@@ -3565,7 +3630,7 @@ def collect(
                 conn,
                 title=title,
                 url=url,
-                summary=summary,
+                summary="" if is_degraded_summary else summary,
                 full_text=full_text,
                 case_type=case_type,
             )
@@ -4142,7 +4207,7 @@ def official_api_day_process(
                 case_number=case_no or jid,
                 case_type=case_type,
                 judgment_date=judgment_date,
-                summary=summary,
+                summary="" if is_degraded_summary else summary,
                 full_text=full_text,
                 source_url=source_url,
             )
