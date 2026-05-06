@@ -15,13 +15,119 @@ import shutil
 import socket
 import subprocess
 import time
+from html import escape
 from api.thread_pools import io_pool
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
-from flask import Blueprint, current_app, jsonify, request
+from flask import Blueprint, Response, current_app, jsonify, request
 from flask_login import current_user, login_required
+
+
+def _wants_json_response() -> bool:
+    accept = request.headers.get("Accept") or ""
+    if not accept:
+        return True
+    if request.is_json or request.headers.get("X-Requested-With") == "XMLHttpRequest":
+        return True
+    best = request.accept_mimetypes.best_match(["application/json", "text/html"])
+    if best == "text/html" and request.accept_mimetypes[best] >= request.accept_mimetypes["application/json"]:
+        return False
+    return True
+
+
+def _render_health_html(checks: dict[str, Any]) -> Response:
+    def ok_badge(ok: Any) -> str:
+        if ok is True:
+            return '<span class="badge ok">正常</span>'
+        if ok is False:
+            return '<span class="badge bad">需檢查</span>'
+        return '<span class="badge warn">未知</span>'
+
+    status = str(checks.get("status") or "unknown")
+    status_text = "正常" if status == "operational" else "需檢查"
+    timestamp = datetime.fromtimestamp(float(checks.get("timestamp") or time.time())).strftime("%Y/%m/%d %H:%M:%S")
+    system = checks.get("system") if isinstance(checks.get("system"), dict) else {}
+    nas = checks.get("nas") if isinstance(checks.get("nas"), dict) else {}
+    omlx = checks.get("omlx") if isinstance(checks.get("omlx"), dict) else {}
+    db = checks.get("db") if isinstance(checks.get("db"), dict) else {}
+    faiss = checks.get("faiss") if isinstance(checks.get("faiss"), dict) else {}
+    audit = checks.get("operational_audit") if isinstance(checks.get("operational_audit"), dict) else {}
+    op = checks.get("operational_health") if isinstance(checks.get("operational_health"), dict) else {}
+
+    services = [
+        ("主狀態", status == "operational", status_text),
+        ("資料庫", db.get("ok"), db.get("detail") or "MariaDB"),
+        ("推論服務", omlx.get("ok"), ", ".join(omlx.get("models") or []) or "模型狀態"),
+        ("OCR", (checks.get("ocr") or {}).get("ok") if isinstance(checks.get("ocr"), dict) else None, (checks.get("ocr") or {}).get("engine", "")),
+        ("向量資料庫", faiss.get("ok"), f"{faiss.get('vectors', '暖機中')} vectors"),
+        ("日常稽核", audit.get("ok"), "最近檢查"),
+        ("維運健康", op.get("ok"), ", ".join(op.get("degraded_reasons") or []) or "無重大異常"),
+    ]
+    nas_rows = "".join(
+        f"<li><strong>{escape(str(name))}</strong>{ok_badge(bool(ok))}</li>"
+        for name, ok in sorted(nas.items())
+    ) or "<li>尚未回報</li>"
+    service_cards = "".join(
+        f"""
+        <article class="card">
+          <div class="card-title">{escape(name)}{ok_badge(ok)}</div>
+          <p>{escape(str(detail or ""))}</p>
+        </article>
+        """
+        for name, ok, detail in services
+    )
+    html = f"""<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>系統健康狀態 | MAGI</title>
+  <style>
+    :root {{ color-scheme: light dark; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }}
+    body {{ margin: 0; background: #f5f7fb; color: #172033; }}
+    main {{ max-width: 1080px; margin: 0 auto; padding: 24px; }}
+    header {{ display: flex; justify-content: space-between; gap: 16px; align-items: center; margin-bottom: 18px; }}
+    h1 {{ font-size: 24px; margin: 0; }}
+    .time {{ color: #5e6b81; font-size: 14px; }}
+    .grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }}
+    .card, .panel {{ background: #fff; border: 1px solid #dbe3ef; border-radius: 8px; padding: 14px; }}
+    .card-title {{ display: flex; justify-content: space-between; gap: 12px; font-weight: 700; }}
+    p {{ margin: 10px 0 0; color: #536176; line-height: 1.5; word-break: break-word; }}
+    .badge {{ border-radius: 999px; padding: 3px 8px; font-size: 12px; white-space: nowrap; }}
+    .ok {{ background: #e5f8ed; color: #14743d; }}
+    .bad {{ background: #ffe8e8; color: #b42318; }}
+    .warn {{ background: #fff4d6; color: #8a5b00; }}
+    ul {{ margin: 8px 0 0; padding: 0; list-style: none; display: grid; gap: 8px; }}
+    li {{ display: flex; justify-content: space-between; gap: 12px; border-top: 1px solid #eef2f7; padding-top: 8px; }}
+    a {{ color: #1264d8; text-decoration: none; }}
+    @media (prefers-color-scheme: dark) {{
+      body {{ background: #111827; color: #e6edf7; }}
+      .card, .panel {{ background: #182235; border-color: #2d3b52; }}
+      p, .time {{ color: #b8c3d4; }}
+      li {{ border-color: #2d3b52; }}
+    }}
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <div>
+        <h1>MAGI 系統健康狀態</h1>
+        <div class="time">更新時間：{escape(timestamp)}｜運行 {escape(str(checks.get("uptime_seconds", "-")))} 秒</div>
+      </div>
+      <a href="/golem">返回 MAGI</a>
+    </header>
+    <section class="grid">{service_cards}</section>
+    <section class="panel" style="margin-top:12px">
+      <strong>NAS 掛載</strong>
+      <ul>{nas_rows}</ul>
+    </section>
+  </main>
+</body>
+</html>"""
+    return Response(html, mimetype="text/html")
 
 
 def _safe_epoch(value: Any) -> float:
@@ -1231,6 +1337,8 @@ def create_admin_runtime_blueprint(
         if checks.get("operational_health", {}).get("ok") is False:
             degraded = True
         checks["status"] = "degraded" if degraded else "operational"
+        if not _wants_json_response():
+            return _render_health_html(checks), 200
         return jsonify(checks), 200
 
     @bp.route("/api/transcribe", methods=["POST"])

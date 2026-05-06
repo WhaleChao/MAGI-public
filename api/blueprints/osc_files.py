@@ -21,14 +21,17 @@ import mimetypes
 import os
 import re
 import hashlib
+import io
 import json
 import secrets
 import shutil
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import quote
 
-from flask import Blueprint, request, jsonify, send_file
+from flask import Blueprint, request, jsonify, send_file, Response
 from flask_login import current_user, login_required
 
 from api.osc.utils import (
@@ -69,6 +72,9 @@ _BLOCKED_UPLOAD_EXTS = {
 _SHARE_STORE_PATH = Path(os.environ.get("MAGI_OSC_FILE_SHARE_STORE", "") or (
     Path(__file__).resolve().parents[2] / ".runtime" / "osc_file_shares.json"
 ))
+_SHARE_PUBLIC_BASE_FILE = Path(os.environ.get("MAGI_OSC_FILE_SHARE_PUBLIC_BASE_FILE", "") or (
+    Path(__file__).resolve().parents[2] / ".runtime" / "osc_share_public_base_url.txt"
+))
 _DEFAULT_SHARE_TTL_SEC = int(os.environ.get("MAGI_OSC_FILE_SHARE_TTL_SEC", str(7 * 24 * 3600)) or str(7 * 24 * 3600))
 _MAX_SHARE_TTL_SEC = int(os.environ.get("MAGI_OSC_FILE_SHARE_MAX_TTL_SEC", str(30 * 24 * 3600)) or str(30 * 24 * 3600))
 
@@ -86,7 +92,9 @@ def _load_share_store() -> dict:
 
 def _save_share_store(data: dict) -> None:
     _SHARE_STORE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    tmp = _SHARE_STORE_PATH.with_suffix(".json.tmp")
+    tmp = _SHARE_STORE_PATH.with_name(
+        f"{_SHARE_STORE_PATH.name}.{os.getpid()}.{threading.get_ident()}.{secrets.token_hex(4)}.tmp"
+    )
     tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
     tmp.replace(_SHARE_STORE_PATH)
 
@@ -107,6 +115,43 @@ def _share_token_hash(token: str) -> str:
     return hashlib.sha256(str(token or "").encode("utf-8")).hexdigest()
 
 
+def _env_truthy(name: str) -> bool:
+    return str(os.environ.get(name) or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _share_public_base_url() -> str:
+    """Independent public base for shared-file links.
+
+    Deliberately do not fall back to MAGI_PUBLIC_BASE_URL: that value is the
+    MAGI/Paperclip console URL, and copying it would disclose the console host.
+    """
+    env_value = str(os.environ.get("MAGI_OSC_FILE_SHARE_PUBLIC_BASE_URL") or "").strip().rstrip("/")
+    if env_value:
+        return env_value
+    try:
+        file_value = _SHARE_PUBLIC_BASE_FILE.read_text(encoding="utf-8").strip().rstrip("/")
+        if file_value:
+            return file_value
+    except Exception:
+        _log.debug("silent-catch load share public base", exc_info=True)
+    return ""
+
+
+def _request_host_is_local() -> bool:
+    host = str(request.host or "").split(":", 1)[0].strip("[]").lower()
+    return host in {"localhost", "127.0.0.1", "::1"}
+
+
+def _share_url_for_token(token: str) -> tuple[str, str]:
+    path = "/s/" + token
+    base = _share_public_base_url()
+    if base:
+        return base + path, "independent_share_base"
+    if _env_truthy("MAGI_OSC_FILE_SHARE_ALLOW_CONSOLE_BASE") or _request_host_is_local():
+        return request.host_url.rstrip("/") + path, "console_base"
+    return "", "share_public_base_required"
+
+
 def _resolve_safe_file(path_str: str) -> str:
     local = _osc_resolve_existing_local_path(path_str, prefer_dir=False)
     if not local or not _osc_is_safe_local_path(local) or not os.path.isfile(local):
@@ -114,18 +159,58 @@ def _resolve_safe_file(path_str: str) -> str:
     return local
 
 
+def _read_file_with_retry(local_file: str, *, max_attempts: int = 7) -> bytes:
+    """Read a NAS-backed file with a short retry for macOS SMB EDEADLK/EAGAIN."""
+    last_exc: OSError | None = None
+    for attempt in range(max_attempts):
+        try:
+            with open(local_file, "rb") as f:
+                return f.read()
+        except OSError as e:
+            last_exc = e
+            if e.errno in (11, 35) and attempt < max_attempts - 1:
+                time.sleep(0.25 * (2 ** attempt))
+                continue
+            raise
+    if last_exc:
+        raise last_exc
+    return b""
+
+
 def _send_local_file(local: str, *, inline: bool):
     mime, _ = mimetypes.guess_type(local)
+    name = os.path.basename(local)
+    if request.method == "HEAD":
+        try:
+            st = os.stat(local)
+        except OSError as e:
+            return jsonify({"ok": False, "error": f"stat_failed: {e}"}), 503
+        disposition = "inline" if inline else "attachment"
+        ascii_name = name.encode("ascii", "ignore").decode("ascii") or "download"
+        resp = Response(status=200, mimetype=mime or "application/octet-stream")
+        resp.headers["Content-Disposition"] = (
+            f'{disposition}; filename="{ascii_name}"; filename*=UTF-8\'\'{quote(name)}'
+        )
+        resp.headers["Content-Length"] = str(int(st.st_size))
+        resp.headers["X-Robots-Tag"] = "noindex, nofollow, noarchive"
+        resp.headers["Referrer-Policy"] = "no-referrer"
+        resp.headers["Cache-Control"] = "private, max-age=300"
+        return resp
+    try:
+        data = _read_file_with_retry(local)
+    except OSError as e:
+        _log.warning("share read failed: errno=%s file=%s", getattr(e, "errno", None), local)
+        return jsonify({"ok": False, "error": f"read_failed: {e}"}), 503
     resp = send_file(
-        local,
+        io.BytesIO(data),
         mimetype=mime or "application/octet-stream",
         as_attachment=not inline,
-        download_name=os.path.basename(local),
-        conditional=True,
+        download_name=name,
     )
     resp.headers["X-Robots-Tag"] = "noindex, nofollow, noarchive"
     resp.headers["Referrer-Policy"] = "no-referrer"
     resp.headers["Cache-Control"] = "private, max-age=300"
+    resp.headers["Content-Length"] = str(len(data))
     return resp
 
 
@@ -902,6 +987,13 @@ def osc_files_share_create_api():
         st = os.stat(local)
     except OSError as e:
         return jsonify({"ok": False, "error": f"stat_failed: {e}"}), 500
+    public_url, url_mode = _share_url_for_token(token)
+    if not public_url:
+        return jsonify({
+            "ok": False,
+            "error": "share_public_base_required",
+            "message": "為避免分享連結洩漏 MAGI/Paperclip 主控台外網網址，請先設定獨立分享入口 MAGI_OSC_FILE_SHARE_PUBLIC_BASE_URL。",
+        }), 409
     data = _prune_share_store(_load_share_store())
     data.setdefault("shares", {})[token_hash] = {
         "path": local,
@@ -913,10 +1005,10 @@ def osc_files_share_create_api():
         "downloads": 0,
     }
     _save_share_store(data)
-    public_url = request.host_url.rstrip("/") + "/s/" + token
     return jsonify({
         "ok": True,
         "url": public_url,
+        "url_mode": url_mode,
         "expires_at": datetime.fromtimestamp(now + ttl).isoformat(timespec="seconds"),
         "name": os.path.basename(local),
         "size": int(st.st_size),

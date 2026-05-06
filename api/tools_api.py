@@ -234,6 +234,10 @@ TRANSCRIBE_METRICS_PATH = os.environ.get(
 # 兩者預設皆為 0（向後相容）；captcha 類型一律繞過（v2 §4 紅線）
 _VISION_OCR_CONSENSUS_ENABLE = os.environ.get("MAGI_VISION_OCR_CONSENSUS_ENABLE", "0").strip() in {"1", "true", "on", "yes"}
 _SHORTCUT_OCR_CONSENSUS_ENABLE = os.environ.get("MAGI_SHORTCUT_OCR_CONSENSUS_ENABLE", "0").strip() in {"1", "true", "on", "yes"}
+
+
+def _nemotron_parse_enabled() -> bool:
+    return os.environ.get("MAGI_NEMOTRON_PARSE_ENABLE", "0").strip().lower() in {"1", "true", "on", "yes"}
 EXTERNAL_CHAT_METRICS_PATH = os.path.join(_MAGI_ROOT, "static", "external_chat_metrics.jsonl")
 
 # P0-13: CORS 改為 allowlist，不再允許所有來源。
@@ -1649,7 +1653,7 @@ def api_vision():
     timeout_sec = int(data.get("timeout_sec") or os.environ.get("MAGI_VISION_TIMEOUT_SEC", "90") or "90")
 
     # ── Phase G: OCR consensus opt-in（captcha 絕不走此路徑，§4 紅線）──────────
-    if _VISION_OCR_CONSENSUS_ENABLE and task_type in {"ocr", "text", "scan"} and not is_captcha:
+    if (_VISION_OCR_CONSENSUS_ENABLE or _nemotron_parse_enabled()) and task_type in {"ocr", "text", "scan"} and not is_captcha:
         _consensus_result = None
         try:
             from skills.engine.ocr.consensus import run_consensus as _run_consensus
@@ -2210,7 +2214,7 @@ def api_shortcut_ocr():
         timeout_sec = int(request.args.get("timeout_sec") or os.environ.get("MAGI_VISION_TIMEOUT_SEC", "90") or "90")
 
         # ── Phase G: shortcut/ocr consensus opt-in（captcha 絕不走此路徑）──────
-        if _SHORTCUT_OCR_CONSENSUS_ENABLE:
+        if _SHORTCUT_OCR_CONSENSUS_ENABLE or _nemotron_parse_enabled():
             try:
                 from skills.engine.ocr.consensus import run_consensus as _run_consensus
                 from api.platforms.runtime_dir import atomic_append_jsonl as _arj, metrics as _rmetrics

@@ -144,6 +144,26 @@ def test_vision_consensus_flag_on_ocr_task(monkeypatch, vision_client):
     assert data["task_type"] == "vision"   # effective_task for non-captcha
 
 
+def test_vision_nemotron_enable_routes_to_consensus(monkeypatch, vision_client):
+    tools_api, client, img = vision_client
+    monkeypatch.setattr(tools_api, "_VISION_OCR_CONSENSUS_ENABLE", False)
+    monkeypatch.setenv("MAGI_NEMOTRON_PARSE_ENABLE", "1")
+
+    import skills.engine.ocr.consensus as _cons_mod
+    monkeypatch.setattr(_cons_mod, "run_consensus", _fake_consensus_result("Nemotron文字"))
+
+    resp = client.post(
+        "/vision",
+        json={"image_path": img, "task_type": "ocr"},
+    )
+
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["success"] is True
+    assert data["route"] == "ocr_consensus"
+    assert "Nemotron文字" in data["description"]
+
+
 # ── Test 3: /vision captcha → consensus NEVER called (§4 red-line) ──────────
 
 def test_vision_captcha_never_uses_consensus(monkeypatch, vision_client):

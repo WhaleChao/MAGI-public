@@ -9,11 +9,15 @@ function syncFormTypeFields() {
     });
 }
 
-function msg(role, text) {
+function msg(role, text, html) {
     const box = document.getElementById("messages");
     const div = document.createElement("div");
     div.className = `msg ${role}`;
-    div.textContent = text;
+    if (role !== "user" && (html || role === "casper")) {
+        div.innerHTML = html || renderWebReplyHtml(text || "");
+    } else {
+        div.textContent = text;
+    }
     box.appendChild(div);
     box.scrollTop = box.scrollHeight;
 }
@@ -26,7 +30,7 @@ async function sendChat() {
     msg("user", text);
     try {
         const data = await api("/api/osc/chat", "POST", { message: text });
-        msg("casper", data.reply || "(無回覆)");
+        msg("casper", data.reply || "(無回覆)", data.reply_html || "");
     } catch (e) {
         msg("sys", `送出失敗：${e.message}`);
     }
@@ -453,4 +457,9 @@ function showCustomDialog(title, bodyHtml) {
         window.alert([title, txt].filter(Boolean).join("\n\n"));
         return null;
     }
+}
+
+function showWebReplyDialog(title, text, html) {
+    const body = `<div class="osc-web-reply-dialog">${html || renderWebReplyHtml(text || "")}</div>`;
+    return showCustomDialog(title || "MAGI 回覆", body);
 }

@@ -471,12 +471,16 @@
         }
     }
 
-    function appendMagiMessage(role, text) {
+    function appendMagiMessage(role, text, html) {
         const box = $("magi-chat-messages");
         if (!box) return;
         const row = document.createElement("div");
         row.className = `chat-message ${role}`;
-        row.textContent = text;
+        if (html && role !== "user") {
+            row.innerHTML = html;
+        } else {
+            row.textContent = text;
+        }
         box.appendChild(row);
         box.scrollTop = box.scrollHeight;
     }
@@ -510,7 +514,7 @@
                     body: JSON.stringify({ message: text }),
                 });
             }
-            appendMagiMessage("assistant", data.reply || "MAGI 已收到，但沒有回傳內容。");
+            appendMagiMessage("assistant", data.reply || "MAGI 已收到，但沒有回傳內容。", data.reply_html || "");
             if (state) state.textContent = "就緒";
         } catch (error) {
             appendMagiMessage("system", `送出失敗：${error.message}`);

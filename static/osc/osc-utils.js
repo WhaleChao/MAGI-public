@@ -3,6 +3,118 @@ function esc(v) {
     return String(v ?? "").replace(/[&<>\"']/g, s => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;" }[s]));
 }
 
+function safeWebUrl(rawUrl) {
+    const text = String(rawUrl || "").trim();
+    try {
+        const parsed = new URL(text, window.location.origin);
+        if (["http:", "https:", "mailto:"].includes(parsed.protocol)) return text;
+    } catch { }
+    return "";
+}
+
+function formatWebInlineText(text) {
+    const raw = String(text || "");
+    const linkRe = /\[([^\]]{1,180})\]\(([^)\s]{1,600})\)/g;
+    let html = "";
+    let pos = 0;
+    const fmt = chunk => esc(chunk)
+        .replace(/`([^`]{1,160})`/g, "<code>$1</code>")
+        .replace(/\*\*([^*]{1,220})\*\*/g, "<strong>$1</strong>")
+        .replace(/__([^_]{1,220})__/g, "<strong>$1</strong>");
+    let match;
+    while ((match = linkRe.exec(raw)) !== null) {
+        html += fmt(raw.slice(pos, match.index));
+        const url = safeWebUrl(match[2]);
+        html += url
+            ? `<a href="${esc(url)}" target="_blank" rel="noopener noreferrer">${fmt(match[1])}</a>`
+            : fmt(match[1]);
+        pos = match.index + match[0].length;
+    }
+    html += fmt(raw.slice(pos));
+    return html;
+}
+
+function renderWebReplyHtml(text) {
+    const raw = String(text || "").replace(/\r\n/g, "\n").replace(/\r/g, "\n").trim();
+    if (!raw) return '<div class="web-reply"><p>沒有可顯示內容。</p></div>';
+    const blocks = [];
+    let listType = "";
+    let inCode = false;
+    let codeLines = [];
+    const closeList = () => {
+        if (listType) {
+            blocks.push(`</${listType}>`);
+            listType = "";
+        }
+    };
+    const openList = kind => {
+        if (listType !== kind) {
+            closeList();
+            blocks.push(`<${kind}>`);
+            listType = kind;
+        }
+    };
+    raw.split("\n").forEach(rawLine => {
+        const line = rawLine.trim();
+        if (line.startsWith("```")) {
+            if (inCode) {
+                blocks.push(`<pre><code>${esc(codeLines.join("\n"))}</code></pre>`);
+                codeLines = [];
+                inCode = false;
+            } else {
+                closeList();
+                inCode = true;
+                codeLines = [];
+            }
+            return;
+        }
+        if (inCode) {
+            codeLines.push(rawLine);
+            return;
+        }
+        if (!line) {
+            closeList();
+            return;
+        }
+        if (/^[━─=\-_*]{4,}$/.test(line) || /^#{2,6}$/.test(line)) {
+            closeList();
+            blocks.push("<hr>");
+            return;
+        }
+        let headingLine = line;
+        const wrappedHeading = headingLine.match(/^\*\*(#{1,6}\s*[^*]+?)\*\*$/);
+        if (wrappedHeading) headingLine = wrappedHeading[1].trim();
+        headingLine = headingLine.replace(/\*\*$/, "").trim();
+        const heading = headingLine.match(/^(#{1,6})\s*(.+)$/);
+        if (heading) {
+            const title = heading[2].replace(/^#+|#+$/g, "").trim();
+            if (title) {
+                closeList();
+                const level = heading[1].length === 1 ? 3 : 4;
+                blocks.push(`<h${level}>${formatWebInlineText(title)}</h${level}>`);
+                return;
+            }
+        }
+        const unordered = line.match(/^[-*•]\s+(.+)$/);
+        if (unordered) {
+            openList("ul");
+            blocks.push(`<li>${formatWebInlineText(unordered[1])}</li>`);
+            return;
+        }
+        const ordered = line.match(/^\d+[.)、]\s+(.+)$/);
+        if (ordered) {
+            openList("ol");
+            blocks.push(`<li>${formatWebInlineText(ordered[1])}</li>`);
+            return;
+        }
+        closeList();
+        blocks.push(`<p>${formatWebInlineText(line)}</p>`);
+    });
+    if (inCode) blocks.push(`<pre><code>${esc(codeLines.join("\n"))}</code></pre>`);
+    closeList();
+    return `<div class="web-reply">${blocks.join("")}</div>`;
+}
+
 function textify(v) {
     if (v === null || v === undefined) return "";
     if (typeof v === "string") return v;
@@ -77,6 +189,36 @@ function isLocalConsole() {
 function fileContentUrl(path, inline = false) {
     const q = encodeURIComponent(String(path || "").trim());
     return `/api/osc/files/content?path=${q}${inline ? "&inline=1" : ""}`;
+}
+
+async function shareFileLink(path, label = "檔案") {
+    const rawPath = String(path || "").trim();
+    if (!rawPath) {
+        showToast("請先選取要分享的檔案。", "warn");
+        return null;
+    }
+    const resp = await fetch("/api/osc/files/share", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: rawPath }),
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok || !data.ok || !data.url) {
+        const msg = data.error === "share_public_base_required"
+            ? "尚未設定獨立分享入口。為避免洩漏 MAGI/Paperclip 主控台外網網址，請先到 MAGI 調整頁面設定分享入口。"
+            : (data.message || data.error || `HTTP ${resp.status}`);
+        showToast(`分享連結建立失敗：${msg}`, "error");
+        return null;
+    }
+    try {
+        await navigator.clipboard.writeText(data.url);
+        showToast(`已建立並複製分享連結：${label || data.name || "檔案"}`, "ok", 3500);
+    } catch {
+        window.prompt("分享連結（不含檔案路徑）：", data.url);
+        showToast(`已建立分享連結：${label || data.name || "檔案"}`, "ok", 3500);
+    }
+    return data;
 }
 
 function isEditableTextFile(path) {

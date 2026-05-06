@@ -71,7 +71,7 @@ ALLOWLIST = [
 # Directories always skipped (non-.py or binary trees)
 # ---------------------------------------------------------------------------
 
-SKIP_DIRS = {".git", "__pycache__", "node_modules", ".venv", "venv", ".agent",
+SKIP_DIRS = {".git", ".claude", "__pycache__", "node_modules", ".venv", "venv", ".agent",
              "cache", "exports", "_autopilot_runs"}
 
 

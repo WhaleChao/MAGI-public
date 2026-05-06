@@ -3,6 +3,7 @@ Regression test: Bug #1 — proxy timeout should use MAGI_TOOLS_API_PROXY_TIMEOU
 and default to >= 250 seconds (must exceed orchestrator COMPLEX-tier 240s upper bound).
 """
 import os
+import re
 import sys
 import unittest
 from unittest.mock import patch, MagicMock
@@ -48,6 +49,35 @@ class TestProxyTimeoutEnvVar(unittest.TestCase):
                          "Hardcoded timeout=30 still present in _fallback_to_tools_api — Bug #1 not fixed")
         self.assertIn("_proxy_timeout", fallback_section,
                       "_proxy_timeout variable not found in _fallback_to_tools_api")
+
+    def test_tools_api_fallback_whitelist_covers_tools_api_routes(self):
+        """Every Tools API route group should be reachable through the main server fallback."""
+        server_path = os.path.join(_MAGI_ROOT, "api", "server.py")
+        tools_path = os.path.join(_MAGI_ROOT, "api", "tools_api.py")
+        with open(server_path, "r", encoding="utf-8") as f:
+            server_source = f.read()
+        with open(tools_path, "r", encoding="utf-8") as f:
+            tools_source = f.read()
+
+        match = re.search(r"_TOOLS_API_FALLBACK_PATHS\s*=\s*\{(?P<body>.*?)\}", server_source, re.S)
+        self.assertIsNotNone(match, "Cannot find _TOOLS_API_FALLBACK_PATHS")
+        whitelist = {
+            item
+            for quoted in re.findall(r"""["']([^"']+)["']""", match.group("body"))
+            for item in [quoted.strip()]
+            if item
+        }
+        routes = re.findall(r"""@app\.route\(\s*["']([^"']+)["']""", tools_source)
+        missing = []
+        for route in routes:
+            path = route.lstrip("/")
+            first_seg = path.split("/")[0] if path else ""
+            first_two = "/".join(path.split("/")[:2]) if "/" in path else ""
+            if first_seg in whitelist or first_two in whitelist:
+                continue
+            missing.append(route)
+
+        self.assertEqual(missing, [], f"Tools API routes missing main-server fallback: {missing}")
 
 
 if __name__ == "__main__":

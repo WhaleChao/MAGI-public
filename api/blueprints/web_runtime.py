@@ -12,10 +12,12 @@ runtime objects injected from the main server bootstrap:
 from __future__ import annotations
 
 import json
+import html
 import os
 import re
 import subprocess
 import threading
+import urllib.parse
 import uuid
 from collections import defaultdict
 from datetime import datetime
@@ -94,6 +96,138 @@ def _extract_chat_upload_text(path: Path, filename: str) -> dict[str, Any]:
         return extract_text_from_uploaded_file(str(path), filename=filename)
     except Exception as exc:
         return {"success": False, "text": "", "kind": "", "title": filename, "error": str(exc)}
+
+
+def _safe_web_url(raw_url: str) -> str:
+    text = str(raw_url or "").strip()
+    try:
+        parsed = urllib.parse.urlparse(text)
+    except Exception:
+        return ""
+    if parsed.scheme.lower() not in {"http", "https", "mailto"}:
+        return ""
+    return text
+
+
+def _format_web_inline(text: str) -> str:
+    """Render a small, safe Markdown subset for MAGI web chat replies."""
+    raw = str(text or "")
+    pieces: list[str] = []
+    pos = 0
+    link_re = re.compile(r"\[([^\]]{1,180})\]\(([^)\s]{1,600})\)")
+
+    def _format_without_links(chunk: str) -> str:
+        escaped = html.escape(chunk)
+        escaped = re.sub(r"`([^`]{1,160})`", r"<code>\1</code>", escaped)
+        escaped = re.sub(r"\*\*([^*]{1,220})\*\*", r"<strong>\1</strong>", escaped)
+        escaped = re.sub(r"__([^_]{1,220})__", r"<strong>\1</strong>", escaped)
+        return escaped
+
+    for match in link_re.finditer(raw):
+        pieces.append(_format_without_links(raw[pos:match.start()]))
+        label = _format_without_links(match.group(1))
+        url = _safe_web_url(match.group(2))
+        if url:
+            pieces.append(
+                f'<a href="{html.escape(url, quote=True)}" target="_blank" rel="noopener noreferrer">{label}</a>'
+            )
+        else:
+            pieces.append(label)
+        pos = match.end()
+    pieces.append(_format_without_links(raw[pos:]))
+    return "".join(pieces)
+
+
+def format_web_reply_html(reply: str) -> str:
+    """
+    Convert Discord/Telegram-style Markdown into readable, safe HTML for the web UI.
+
+    The messaging platforms still receive the original text; this is only a display
+    layer for /golem and other browser chat surfaces.
+    """
+    text = str(reply or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    if not text:
+        return '<div class="web-reply"><p>MAGI 沒有回傳內容。</p></div>'
+
+    blocks: list[str] = []
+    list_type: str | None = None
+    in_code = False
+    code_lines: list[str] = []
+
+    def close_list() -> None:
+        nonlocal list_type
+        if list_type:
+            blocks.append(f"</{list_type}>")
+            list_type = None
+
+    def open_list(kind: str) -> None:
+        nonlocal list_type
+        if list_type != kind:
+            close_list()
+            blocks.append(f"<{kind}>")
+            list_type = kind
+
+    for raw_line in text.split("\n"):
+        line = raw_line.strip()
+        if line.startswith("```"):
+            if in_code:
+                blocks.append(f"<pre><code>{html.escape('\\n'.join(code_lines))}</code></pre>")
+                code_lines = []
+                in_code = False
+            else:
+                close_list()
+                in_code = True
+                code_lines = []
+            continue
+        if in_code:
+            code_lines.append(raw_line)
+            continue
+        if not line:
+            close_list()
+            continue
+        if re.fullmatch(r"[━─=\-_*]{4,}", line):
+            close_list()
+            blocks.append("<hr>")
+            continue
+        if re.fullmatch(r"#{2,6}", line):
+            close_list()
+            blocks.append("<hr>")
+            continue
+        heading_line = line
+        wrapped_heading = re.fullmatch(r"\*\*(#{1,6}\s*[^*]+?)\*\*", heading_line)
+        if wrapped_heading:
+            heading_line = wrapped_heading.group(1).strip()
+        heading_line = re.sub(r"\*\*$", "", heading_line).strip()
+        heading = re.match(r"^(#{1,6})\s*(.+)$", heading_line)
+        if heading:
+            close_list()
+            title = heading.group(2).strip("# ").strip()
+            if title:
+                level = 3 if len(heading.group(1)) == 1 else 4
+                blocks.append(f"<h{level}>{_format_web_inline(title)}</h{level}>")
+                continue
+        bold_heading = re.fullmatch(r"(?:[^\w\u4e00-\u9fff]{0,3}\s*)?\*\*([^*]{1,80})\*\*", line)
+        if bold_heading:
+            close_list()
+            blocks.append(f"<h4>{_format_web_inline(bold_heading.group(1))}</h4>")
+            continue
+        unordered = re.match(r"^[-*•]\s+(.+)$", line)
+        if unordered:
+            open_list("ul")
+            blocks.append(f"<li>{_format_web_inline(unordered.group(1))}</li>")
+            continue
+        ordered = re.match(r"^\d+[.)、]\s+(.+)$", line)
+        if ordered:
+            open_list("ol")
+            blocks.append(f"<li>{_format_web_inline(ordered.group(1))}</li>")
+            continue
+        close_list()
+        blocks.append(f"<p>{_format_web_inline(line)}</p>")
+
+    if in_code:
+        blocks.append(f"<pre><code>{html.escape('\\n'.join(code_lines))}</code></pre>")
+    close_list()
+    return f'<div class="web-reply">{"".join(blocks)}</div>'
 
 
 def _collect_process_monitor(
@@ -433,7 +567,7 @@ def create_web_runtime_blueprint(
                 reply = normalize_output_text(str(reply or ""), platform="WEB")
         except Exception:
             logger.debug("silent-catch in osc_chat_api", exc_info=True)
-        return jsonify({"reply": reply})
+        return jsonify({"reply": reply, "reply_html": format_web_reply_html(str(reply or ""))})
 
     @bp.route("/api/osc/magi-modules/run", methods=["POST"])
     @login_required
@@ -501,6 +635,7 @@ def create_web_runtime_blueprint(
                 "module_label": meta["label"],
                 "command": command,
                 "reply": reply,
+                "reply_html": format_web_reply_html(str(reply or "")),
             }
         )
 
@@ -567,6 +702,7 @@ def create_web_runtime_blueprint(
         return jsonify(
             {
                 "reply": reply,
+                "reply_html": format_web_reply_html(str(reply or "")),
                 "filename": original_name,
                 "path": str(target),
                 "kind": extracted.get("kind") or "",

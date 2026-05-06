@@ -134,8 +134,71 @@ def _convert_via_docx2pdf(input_path, output_path):
 
 # ── PDF copy-type marking ──
 
-def mark_copy_type(input_pdf, output_pdf=None, copy_type="正本", add_poa=False, add_sent_to_opponent=False):
-    # type: (str, Optional[str], str, bool, bool) -> Dict
+
+def _add_stamp_image_to_last_page(doc, stamp_image, stamp_center=None):
+    # type: (object, Optional[str], Optional[dict]) -> None
+    """Place the configured lawyer stamp image near the signature area."""
+    if not stamp_image or not os.path.isfile(stamp_image) or len(doc) < 1:
+        return
+    import fitz
+
+    stamp_path = stamp_image
+    temp_stamp = None
+    try:
+        try:
+            from PIL import Image
+
+            img = Image.open(stamp_image).convert("RGBA")
+            pixels = []
+            for r, g, b, a in img.getdata():
+                if r > 245 and g > 245 and b > 245:
+                    pixels.append((r, g, b, 0))
+                else:
+                    pixels.append((r, g, b, int(a * 0.62)))
+            img.putdata(pixels)
+            fd, temp_stamp = tempfile.mkstemp(prefix="magi_stamp_", suffix=".png")
+            os.close(fd)
+            img.save(temp_stamp)
+            stamp_path = temp_stamp
+        except Exception:
+            stamp_path = stamp_image
+
+        page = doc[-1]
+        width = 82.0
+        try:
+            from PIL import Image
+
+            with Image.open(stamp_image) as raw:
+                aspect = raw.height / raw.width if raw.width else 1.0
+        except Exception:
+            aspect = 1.0
+        height = max(48.0, width * aspect)
+        center_x = page.rect.width - 144
+        center_y = page.rect.height - 144
+        if isinstance(stamp_center, dict):
+            try:
+                center_x = float(stamp_center.get("x"))
+                center_y = float(stamp_center.get("y"))
+            except Exception:
+                center_x = page.rect.width - 144
+                center_y = page.rect.height - 144
+        rect = fitz.Rect(
+            center_x - width / 2,
+            center_y - height / 2,
+            center_x + width / 2,
+            center_y + height / 2,
+        )
+        page.insert_image(rect, filename=stamp_path, overlay=True)
+    finally:
+        if temp_stamp:
+            try:
+                os.unlink(temp_stamp)
+            except OSError:
+                pass
+
+
+def mark_copy_type(input_pdf, output_pdf=None, copy_type="正本", add_poa=False, add_sent_to_opponent=False, stamp_image=None, stamp_center=None):
+    # type: (str, Optional[str], str, bool, bool, Optional[str], Optional[dict]) -> Dict
     """Add copy-type label (正本/副本/繕本) to top-right corner of first page."""
     import fitz
 
@@ -143,7 +206,7 @@ def mark_copy_type(input_pdf, output_pdf=None, copy_type="正本", add_poa=False
     if not os.path.isfile(input_pdf):
         return {"success": False, "output": "", "error": "輸入 PDF 不存在: %s" % input_pdf}
 
-    valid_types = ("正本", "副本", "繕本")
+    valid_types = ("正本", "副本", "繕本", "留底")
     if copy_type not in valid_types:
         return {
             "success": False,
@@ -201,7 +264,7 @@ def mark_copy_type(input_pdf, output_pdf=None, copy_type="正本", add_poa=False
 
         # Sub-label: 繕本已送對造
         if add_sent_to_opponent:
-            sub_text2 = "繕本已送達對造"
+            sub_text2 = "繕本已送對造"
             _tw_sub2 = fitz.get_text_length(sub_text2, fontname=font_main, fontsize=font_size_sub)
             page.insert_text(
                 (x_start - _tw_sub2, y_pos),
@@ -210,6 +273,8 @@ def mark_copy_type(input_pdf, output_pdf=None, copy_type="正本", add_poa=False
                 fontsize=font_size_sub,
                 color=(0, 0, 0),
             )
+
+        _add_stamp_image_to_last_page(doc, stamp_image, stamp_center=stamp_center)
 
         os.makedirs(os.path.dirname(os.path.abspath(output_pdf)), exist_ok=True)
         doc.save(output_pdf)
@@ -266,8 +331,8 @@ def merge_pdfs(input_paths, output_path):
 
 # ── Full produce pipeline ──
 
-def produce(input_path, copy_type="正本", add_poa=False, add_sent_to_opponent=False, merge_with=None, output_dir=None):
-    # type: (str, str, bool, bool, Optional[List[str]], Optional[str]) -> Dict
+def produce(input_path, copy_type="正本", add_poa=False, add_sent_to_opponent=False, merge_with=None, output_dir=None, stamp_image=None, stamp_center=None):
+    # type: (str, str, bool, bool, Optional[List[str]], Optional[str], Optional[str], Optional[dict]) -> Dict
     """Full pipeline: convert DOCX→PDF → mark copy type → optionally merge."""
     input_path = os.path.abspath(input_path)
     if not os.path.isfile(input_path):
@@ -310,6 +375,8 @@ def produce(input_path, copy_type="正本", add_poa=False, add_sent_to_opponent=
         copy_type=copy_type,
         add_poa=add_poa,
         add_sent_to_opponent=add_sent_to_opponent,
+        stamp_image=stamp_image,
+        stamp_center=stamp_center,
     )
     if not result["success"]:
         return {"success": False, "outputs": outputs, "error": "標記失敗: %s" % result["error"]}
@@ -396,7 +463,7 @@ def _self_test():
         results["mark_text_check"] = {
             "has_copy_type": "正本" in marked_text,
             "has_poa": "附委任狀" in marked_text,
-            "has_sent_to_opponent": "繕本已送達對造" in marked_text,
+            "has_sent_to_opponent": "繕本已送對造" in marked_text,
         }
 
         # -- Test 3: Merge test --
@@ -477,6 +544,8 @@ def main():
             copy_type=payload.get("copy_type", "正本"),
             add_poa=payload.get("add_poa", False),
             add_sent_to_opponent=payload.get("add_sent_to_opponent", False),
+            stamp_image=payload.get("stamp_image"),
+            stamp_center=payload.get("stamp_center"),
         )
     elif task == "merge":
         result = merge_pdfs(
@@ -491,6 +560,8 @@ def main():
             add_sent_to_opponent=payload.get("add_sent_to_opponent", False),
             merge_with=payload.get("merge_with"),
             output_dir=payload.get("output_dir"),
+            stamp_image=payload.get("stamp_image"),
+            stamp_center=payload.get("stamp_center"),
         )
     else:
         result = {"success": False, "error": "未知 task: %s" % task}

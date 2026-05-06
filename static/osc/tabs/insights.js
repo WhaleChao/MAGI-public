@@ -36,7 +36,7 @@ function renderInsights() {
             <td class="actions">${actions.join("")}</td>
         </tr>
         <tr id="insightRow_${esc(r.id)}" style="display:none;">
-            <td colspan="6"><div class="insight-full">${esc(r.full_text || "(無全文)")}</div></td>
+            <td colspan="6"><div class="insight-full">${renderWebReplyHtml(r.full_text || "(無全文)")}</div></td>
         </tr>
     `;
     }).join("");
@@ -68,7 +68,7 @@ async function hydrateInsightByDetail(id) {
     const tr = document.getElementById(`insightRow_${id}`);
     if (tr) {
         const box = tr.querySelector(".insight-full");
-        if (box) box.textContent = state.insights[idx].full_text || "(無全文)";
+        if (box) box.innerHTML = renderWebReplyHtml(state.insights[idx].full_text || "(無全文)");
     }
 }
 

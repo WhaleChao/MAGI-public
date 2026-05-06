@@ -39,6 +39,21 @@ function isLegalAidCaseRow(row = {}) {
     return text.includes("法律扶助案件") || text.includes("法律扶助") || text.includes("法扶");
 }
 
+function wbTodoDoneStatus(status) {
+    const text = String(status || '').trim().toLowerCase();
+    return ['completed', 'done', '已完成', '完成', 'cancelled', 'canceled', '取消'].includes(text);
+}
+
+function wbRenderTodoActions(todo = {}) {
+    const id = Number(todo.id);
+    if (!id) return '';
+    const done = wbTodoDoneStatus(todo.status);
+    const toggle = done
+        ? `<button class="btn" data-act="todo-reopen" data-id="${id}">重新待辦</button>`
+        : `<button class="btn primary" data-act="todo-complete" data-id="${id}">已完成</button>`;
+    return `<div class="actions inline-actions">${toggle}<button class="btn" data-act="wb-todo-edit" data-id="${id}">編輯</button></div>`;
+}
+
 function renderCases() {
     const body = document.getElementById("casesBody");
     const cardGrid = document.getElementById("casesCardGrid");
@@ -243,7 +258,13 @@ async function sendCaseMagiCommand(command, options = {}) {
             module: activeCaseMagiModuleKey(),
             command: message,
         });
-        if (resultEl) resultEl.textContent = data.reply || data.message || "(MAGI 沒有回覆內容)";
+        if (resultEl) {
+            if (data.reply_html) {
+                resultEl.innerHTML = data.reply_html;
+            } else {
+                resultEl.innerHTML = renderWebReplyHtml(data.reply || data.message || "(MAGI 沒有回覆內容)");
+            }
+        }
     } catch (e) {
         if (resultEl) resultEl.textContent = `啟動失敗：${e.message || e}`;
         throw e;
@@ -624,6 +645,9 @@ function renderCaseFolderBrowser(data) {
         const downloadBtn = isDir
             ? ""
             : `<a class="btn slim" href="${fileContentUrl(targetPath)}" target="_blank" rel="noopener noreferrer">下載</a>`;
+        const shareBtn = isDir
+            ? ""
+            : `<button class="btn slim" data-act="wb-file-share" data-id="${esc(c.id || "")}" data-path="${esc(targetPath)}" data-name="${esc(item.name || "")}">分享連結</button>`;
         const editBtn = (!isDir && isEditableTextFile(targetPath))
             ? `<button class="btn slim" data-act="wb-file-edit" data-id="${esc(c.id || "")}" data-path="${esc(targetPath)}" data-return-path="${esc(rel)}">編輯</button>`
             : "";
@@ -633,7 +657,7 @@ function renderCaseFolderBrowser(data) {
             <td>${esc(item.name || "")}</td>
             <td>${esc(item.modified_at || "")}</td>
             <td>${esc(item.size_label || formatBytes(item.size) || "")}</td>
-            <td><div class="wb-folder-actions">${openBtn}${editBtn}${downloadBtn}</div></td>
+            <td><div class="wb-folder-actions">${openBtn}${editBtn}${shareBtn}${downloadBtn}</div></td>
         </tr>
         `;
     }).join("") : `<tr><td colspan="5" class="muted">目前資料夾沒有可列出的內容</td></tr>`;
@@ -838,8 +862,9 @@ async function wbQuickAction(action) {
     if (state.wb.mode !== "case") return;
     const data = await api(`/api/osc/cases/${encodeURIComponent(state.wb.id)}/quick-action`, "POST", { action });
     const text = data.reply || "已完成動作";
-    wbSetStatus(text, "ok");
-    showToast(text, "ok");
+    wbSetStatus("已完成動作，結果已開啟。", "ok");
+    showToast("已完成動作。", "ok");
+    showWebReplyDialog("MAGI 案件整理", text, data.reply_html || "");
 }
 
 async function saveWorkbenchCase() {
@@ -927,6 +952,7 @@ function renderDocsByKeyword(docs, keywords) {
                 <td>${esc(x.subfolder_name || "")}</td>
                 <td class="actions">
                     <a class="btn slim" href="${fileContentUrl(x.file_path || "", true)}" target="_blank" rel="noopener noreferrer">預覽</a>
+                    <button class="btn slim" type="button" data-act="wb-file-share" data-path="${esc(x.file_path || "")}" data-name="${esc(x.file_name || "")}">分享連結</button>
                     <a class="btn slim" href="${fileContentUrl(x.file_path || "")}" target="_blank" rel="noopener noreferrer">下載</a>
                     <button class="btn slim" type="button" data-act="wb-folder-copy-path" data-path="${esc(x.file_path || "")}">複製路徑</button>
                 </td>
@@ -965,7 +991,7 @@ async function openClientWorkbench(id, statusText = "") {
         <div class="table-wrap"><table>
             <thead><tr><th>日期</th><th>案號</th><th>類型</th><th>描述</th><th>狀態</th><th>操作</th></tr></thead>
             <tbody>
-                ${todoRows.map(t => `<tr><td>${esc(t.todo_date)} ${esc(t.todo_time)}</td><td>${esc(t.case_number)}</td><td>${esc(t.todo_type)}</td><td>${esc(t.description)}</td><td>${esc(t.status)}</td><td class="actions"><button class="btn" data-act="wb-todo-edit" data-id="${Number(t.id)}">編輯</button></td></tr>`).join("") || `<tr><td colspan="6" class="muted">目前沒有待辦</td></tr>`}
+                ${todoRows.map(t => `<tr><td>${esc(t.todo_date)} ${esc(t.todo_time)}</td><td>${esc(t.case_number)}</td><td>${esc(t.todo_type)}</td><td>${esc(t.description)}</td><td>${esc(t.status)}</td><td>${wbRenderTodoActions(t)}</td></tr>`).join("") || `<tr><td colspan="6" class="muted">目前沒有待辦</td></tr>`}
             </tbody>
         </table></div>
     </div>
@@ -1063,7 +1089,7 @@ async function openCaseWorkbench(id, statusText = "") {
         <div class="table-wrap"><table>
             <thead><tr><th>日期</th><th>類型</th><th>描述</th><th>狀態</th><th>操作</th></tr></thead>
             <tbody>
-                ${(data.todos || []).map(t => `<tr><td>${esc(t.todo_date)} ${esc(t.todo_time)}</td><td>${esc(t.todo_type)}</td><td>${esc(t.description)}</td><td>${esc(t.status)}</td><td><button class="btn" data-act="wb-todo-edit" data-id="${Number(t.id)}">編輯</button></td></tr>`).join("") || `<tr><td colspan="5" class="muted">沒有待辦</td></tr>`}
+                ${(data.todos || []).map(t => `<tr><td>${esc(t.todo_date)} ${esc(t.todo_time)}</td><td>${esc(t.todo_type)}</td><td>${esc(t.description)}</td><td>${esc(t.status)}</td><td>${wbRenderTodoActions(t)}</td></tr>`).join("") || `<tr><td colspan="5" class="muted">沒有待辦</td></tr>`}
             </tbody>
         </table></div>
     </div>

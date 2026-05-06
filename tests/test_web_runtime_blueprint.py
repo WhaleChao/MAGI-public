@@ -207,6 +207,7 @@ def test_osc_chat_poll_and_judgments_routes(tmp_path):
     response = client.post("/api/osc/chat", headers={"X-User-ID": "u1"}, json={"message": "你好"})
     assert response.status_code == 200
     assert response.get_json()["reply"] == "WEB:reply text"
+    assert response.get_json()["reply_html"].startswith('<div class="web-reply">')
     assert orchestrator.calls[0]["platform"] == "WEB"
     assert orchestrator.calls[0]["role"] == "admin"
 
@@ -253,3 +254,45 @@ def test_osc_chat_upload_extracts_file_and_routes_to_orchestrator(tmp_path, monk
     assert "note.txt" in orchestrator.calls[0]["message"]
     assert "這是檔案內容" in orchestrator.calls[0]["message"]
     assert (tmp_path / ".agent" / "chat_uploads").is_dir()
+
+
+def test_web_reply_html_renders_discord_markdown_safely():
+    from api.blueprints.web_runtime import format_web_reply_html
+
+    html = format_web_reply_html(
+        "🤖 **MAGI 功能總覽**\n"
+        "━━━━━━━━━━━━\n"
+        "- `查判決`：搜尋判決\n"
+        "- [原文](https://example.test/a)\n"
+        "- [危險](javascript:alert(1))\n"
+        "<script>alert(1)</script>"
+    )
+
+    assert '<div class="web-reply">' in html
+    assert "<h4>" in html
+    assert "<ul>" in html
+    assert "<code>查判決</code>" in html
+    assert 'href="https://example.test/a"' in html
+    assert "javascript:alert" not in html
+    assert "<script>" not in html
+    assert "&lt;script&gt;alert(1)&lt;/script&gt;" in html
+
+
+def test_web_reply_html_cleans_practice_insight_hash_headings():
+    from api.blueprints.web_runtime import format_web_reply_html
+
+    html = format_web_reply_html(
+        "###實務見解\n"
+        "法院見解摘要。\n"
+        "###\n"
+        "**## 引用裁判**\n"
+        "- 最高法院 112 年度台上字第 1 號\n"
+        "## 實務見解**"
+    )
+
+    assert "<h4>實務見解</h4>" in html
+    assert "<h4>引用裁判</h4>" in html
+    assert "法院見解摘要。" in html
+    assert "最高法院 112 年度台上字第 1 號" in html
+    assert "###" not in html
+    assert "##" not in html

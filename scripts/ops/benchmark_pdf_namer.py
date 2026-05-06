@@ -26,22 +26,27 @@ import logging
 logging.basicConfig(level=logging.WARNING)
 
 
-def _warmup_phi4(timeout_sec: int = 90) -> bool:
-    """Pre-load phi4 on port 8082 to avoid cold-start timeout in benchmark.
+def _warmup_vision_model(timeout_sec: int = 90) -> bool:
+    """Pre-load the currently configured vision model before the benchmark.
 
-    phi4 (Melchior, MAGI-02) runs on port 8082 with loaded_count=0 after idle.
-    First request triggers model load (~30-60s). This warmup fires a cheap
-    dummy request before the real benchmark so the subsequent PDF-namer calls
-    don't timeout waiting for model initialization.
+    Day mode usually points at Phi-4 on port 8082.  Night mode may only keep
+    the 26B text model alive on port 8080, so this must honor the configured
+    MAGI_OMLX_VISION_URL instead of assuming 8082.
 
-    Returns True if phi4 is responsive, False if still unreachable after timeout.
+    Returns True if the configured endpoint is responsive, False otherwise.
     """
     import requests
 
-    phi4_base = os.environ.get("MAGI_OMLX_VISION_URL", "http://127.0.0.1:8082").rstrip("/")
-    models_url = f"{phi4_base}/v1/models"
-    chat_url = f"{phi4_base}/v1/chat/completions"
-    phi4_model = os.environ.get("MAGI_OMLX_VISION_MODEL", "Phi-4-mini-instruct-4bit")
+    default_base = os.environ.get("MAGI_OMLX_CHAT_URL") or os.environ.get("OMLX_URL") or "http://127.0.0.1:8080"
+    vision_base = os.environ.get("MAGI_OMLX_VISION_URL", default_base).rstrip("/")
+    models_url = f"{vision_base}/v1/models"
+    chat_url = f"{vision_base}/v1/chat/completions"
+    vision_model = (
+        os.environ.get("MAGI_OMLX_VISION_MODEL")
+        or os.environ.get("MAGI_OMLX_CHAT_MODEL")
+        or os.environ.get("OMLX_MODEL")
+        or "gemma-4-26b-a4b-it-4bit"
+    )
 
     deadline = time.time() + timeout_sec
     attempt = 0
@@ -50,12 +55,12 @@ def _warmup_phi4(timeout_sec: int = 90) -> bool:
         try:
             r = requests.get(models_url, timeout=5)
             if r.status_code == 200:
-                # Port is up; fire a minimal chat to trigger model load if needed
+                # Port is up; fire a minimal chat to trigger model load if needed.
                 try:
                     requests.post(
                         chat_url,
                         json={
-                            "model": phi4_model,
+                            "model": vision_model,
                             "messages": [{"role": "user", "content": "ping"}],
                             "max_tokens": 5,
                         },
@@ -63,14 +68,14 @@ def _warmup_phi4(timeout_sec: int = 90) -> bool:
                     )
                 except Exception:
                     pass  # timeout here is OK — model is loading; will be ready for real calls
-                print(f"[warmup] phi4 responsive after attempt {attempt}")
+                print(f"[warmup] vision endpoint {vision_base} responsive after attempt {attempt}")
                 return True
         except Exception as exc:
             if attempt == 1:
-                print(f"[warmup] phi4 not yet available ({exc.__class__.__name__}), waiting...",
+                print(f"[warmup] vision endpoint {vision_base} not yet available ({exc.__class__.__name__}), waiting...",
                       file=sys.stderr)
         time.sleep(5)
-    print(f"[warmup] phi4 still unreachable after {timeout_sec}s — benchmark may have degraded results",
+    print(f"[warmup] vision endpoint {vision_base} still unreachable after {timeout_sec}s — benchmark may have degraded results",
           file=sys.stderr)
     return False
 
@@ -134,10 +139,10 @@ def main():
         print(f"[SKIP] NAS not mounted at {case_root}. Skipping benchmark.")
         sys.exit(0)
 
-    # Pre-warm phi4 (port 8082 / OMLX_VISION_BASE) before hitting it with 100 PDFs.
-    # If phi4 is cold-starting (loaded_count=0), the first real request can timeout
+    # Pre-warm the configured vision endpoint before hitting it with many PDFs.
+    # If the model is cold-starting, the first real request can timeout,
     # causing every PDF to fail → format_valid_rate=0% → spurious FAIL.
-    _warmup_phi4(timeout_sec=90)
+    _warmup_vision_model(timeout_sec=90)
 
     try:
         sys.path.insert(0, os.path.join(MAGI_ROOT, "skills", "pdf-namer"))

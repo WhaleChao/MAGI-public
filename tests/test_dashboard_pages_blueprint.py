@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from pathlib import Path
 import json
+from pathlib import Path
 
 from flask import Flask
 from flask_login import LoginManager, UserMixin
@@ -182,6 +182,106 @@ def test_intel_page_lists_recent_reports(tmp_path, monkeypatch):
     assert "Beta report" in body or "Alpha report" in body
 
 
+def test_intel_refresh_runs_local_worldmonitor_skill(tmp_path, monkeypatch):
+    from api.blueprints import dashboard_pages as mod
+
+    template_dir = tmp_path / "templates"
+    template_dir.mkdir()
+    for name in ("dashboard.html", "dashboard_nerv.html", "intel.html"):
+        (template_dir / name).write_text("{{ user.id }}", encoding="utf-8")
+
+    root = tmp_path / "magi"
+    action_path = root / "skills" / "worldmonitor-intel" / "action.py"
+    action_path.parent.mkdir(parents=True)
+    action_path.write_text("print('ok')\n", encoding="utf-8")
+    monkeypatch.setattr(mod, "_MAGI_ROOT", root)
+
+    calls = []
+
+    class _Result:
+        returncode = 0
+        stdout = "updated"
+        stderr = ""
+
+    def _fake_run(cmd, **kwargs):
+        calls.append((cmd, kwargs))
+        return _Result()
+
+    monkeypatch.setattr(mod.subprocess, "run", _fake_run)
+
+    app = _make_app(template_dir)
+    client = app.test_client()
+    response = client.post("/api/intel/refresh", headers={"X-User-ID": "u1"}, follow_redirects=False)
+
+    assert response.status_code == 302
+    assert response.location.endswith("/intel?refresh=ok")
+    assert calls
+    assert calls[0][0][-2:] == ["--task", "collect"]
+    assert calls[0][1]["cwd"] == str(root)
+
+
+def test_intel_refresh_returns_json_for_ajax(tmp_path, monkeypatch):
+    from api.blueprints import dashboard_pages as mod
+
+    template_dir = tmp_path / "templates"
+    template_dir.mkdir()
+    for name in ("dashboard.html", "dashboard_nerv.html", "intel.html"):
+        (template_dir / name).write_text("{{ user.id }}", encoding="utf-8")
+
+    root = tmp_path / "magi"
+    action_path = root / "skills" / "worldmonitor-intel" / "action.py"
+    action_path.parent.mkdir(parents=True)
+    action_path.write_text("print('ok')\n", encoding="utf-8")
+    monkeypatch.setattr(mod, "_MAGI_ROOT", root)
+    monkeypatch.setattr(
+        mod.subprocess,
+        "run",
+        lambda *args, **kwargs: type("Result", (), {"returncode": 0, "stdout": "updated", "stderr": ""})(),
+    )
+
+    app = _make_app(template_dir)
+    client = app.test_client()
+    response = client.post(
+        "/api/intel/refresh",
+        headers={"X-User-ID": "u1", "Accept": "application/json"},
+    )
+
+    assert response.status_code == 200
+    assert response.get_json() == {"ok": True, "message": "updated"}
+
+
+def test_intel_legacy_skills_run_form_routes_to_worldmonitor_refresh(tmp_path, monkeypatch):
+    from api.blueprints import dashboard_pages as mod
+
+    template_dir = tmp_path / "templates"
+    template_dir.mkdir()
+    for name in ("dashboard.html", "dashboard_nerv.html", "intel.html"):
+        (template_dir / name).write_text("{{ user.id }}", encoding="utf-8")
+
+    root = tmp_path / "magi"
+    action_path = root / "skills" / "worldmonitor-intel" / "action.py"
+    action_path.parent.mkdir(parents=True)
+    action_path.write_text("print('ok')\n", encoding="utf-8")
+    monkeypatch.setattr(mod, "_MAGI_ROOT", root)
+    monkeypatch.setattr(
+        mod.subprocess,
+        "run",
+        lambda *args, **kwargs: type("Result", (), {"returncode": 0, "stdout": "updated", "stderr": ""})(),
+    )
+
+    app = _make_app(template_dir)
+    client = app.test_client()
+    response = client.post(
+        "/api/skills/run",
+        data={"skill": "worldmonitor-intel", "task": "collect"},
+        headers={"X-User-ID": "u1"},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 302
+    assert response.location.endswith("/intel?refresh=ok")
+
+
 def test_intel_reports_are_sorted_by_filename_time_and_skip_placeholder(tmp_path, monkeypatch):
     from api.blueprints import dashboard_pages as mod
 
@@ -291,8 +391,73 @@ def test_research_dashboard_loads_namespaces_crawler_targets_and_digests(tmp_pat
     assert payload["namespace_count"] == 1
     assert payload["source_total"] == 1
     assert payload["namespaces"][0]["topic_key"] == "research_interpretation"
+    assert payload["namespaces"][0]["sources"][0]["is_feed"] is True
+    assert payload["namespaces"][0]["sources"][0]["open_url"].startswith("/research/rss-preview?")
     assert payload["crawl_targets"][0]["note"] == "每日目標"
     assert payload["digests"][0]["namespace"] == "通譯"
+
+
+def test_research_rss_preview_parses_feed_instead_of_showing_xml(tmp_path, monkeypatch):
+    from api.blueprints import dashboard_pages as mod
+
+    template_dir = tmp_path / "templates"
+    template_dir.mkdir()
+    (template_dir / "rss_preview.html").write_text(
+        "{{ feed.title }} {% for item in feed['items'] %}{{ item.title }} {{ item.link }} {% endfor %}",
+        encoding="utf-8",
+    )
+    (template_dir / "research.html").write_text(
+        "{% for ns in research.namespaces %}{% for source in ns.sources %}{{ source.open_url }} {% endfor %}{% endfor %}",
+        encoding="utf-8",
+    )
+    root = tmp_path / "magi"
+    ns_dir = root / ".runtime" / "research_brief" / "namespaces"
+    ns_dir.mkdir(parents=True)
+    (ns_dir / "通譯.json").write_text(
+        json.dumps({
+            "namespace": "通譯",
+            "sources": [{"url": "https://criticallink.org/feed/", "type": "rss", "note": "Critical Link"}],
+        }, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(mod, "_MAGI_ROOT", root)
+
+    rss_xml = b"""<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0"><channel><title>Critical Link International</title>
+<item><title>Second International Conference</title><link>https://criticallink.org/event/</link>
+<description><![CDATA[<p>Tokyo conference summary.</p>]]></description></item>
+</channel></rss>"""
+
+    class _Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self, _limit=-1):
+            return rss_xml
+
+    monkeypatch.setattr(mod.urllib.request, "urlopen", lambda *_a, **_k: _Response())
+
+    app = _make_app(template_dir)
+    client = app.test_client()
+
+    research_response = client.get("/research", headers={"X-User-ID": "u1"})
+    assert research_response.status_code == 200
+    research_body = research_response.get_data(as_text=True)
+    assert "/research/rss-preview?" in research_body
+    assert "https://criticallink.org/feed/" not in research_body
+
+    preview_response = client.get(
+        "/research/rss-preview?url=https%3A%2F%2Fcriticallink.org%2Ffeed%2F",
+        headers={"X-User-ID": "u1"},
+    )
+    assert preview_response.status_code == 200
+    body = preview_response.get_data(as_text=True)
+    assert "Critical Link International" in body
+    assert "Second International Conference" in body
+    assert "<?xml" not in body
 
 
 def test_worldmonitor_cron_is_daily():

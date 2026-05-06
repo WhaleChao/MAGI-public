@@ -666,6 +666,72 @@ h1 {
     border-left: 4px solid var(--green);
 }
 
+.chat-message .web-reply {
+    display: grid;
+    gap: 8px;
+}
+
+.chat-message .web-reply p,
+.chat-message .web-reply ul,
+.chat-message .web-reply ol,
+.chat-message .web-reply h3,
+.chat-message .web-reply h4,
+.chat-message .web-reply pre {
+    margin: 0;
+}
+
+.chat-message .web-reply h3,
+.chat-message .web-reply h4 {
+    font-size: 0.95rem;
+    line-height: 1.35;
+    color: var(--text);
+}
+
+.chat-message .web-reply ul,
+.chat-message .web-reply ol {
+    padding-left: 1.25rem;
+    display: grid;
+    gap: 5px;
+}
+
+.chat-message .web-reply li {
+    line-height: 1.55;
+}
+
+.chat-message .web-reply a {
+    color: var(--accent);
+    font-weight: 700;
+    text-decoration: none;
+}
+
+.chat-message .web-reply a:hover {
+    text-decoration: underline;
+}
+
+.chat-message .web-reply code {
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    padding: 1px 4px;
+    background: var(--surface-2);
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.chat-message .web-reply pre {
+    max-width: 100%;
+    overflow: auto;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 8px;
+    background: var(--surface-2);
+}
+
+.chat-message .web-reply hr {
+    width: 100%;
+    border: 0;
+    border-top: 1px solid var(--line);
+    margin: 2px 0;
+}
+
 .chat-actions {
     display: grid;
     grid-template-columns: 1.4fr 0.8fr;

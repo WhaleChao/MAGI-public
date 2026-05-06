@@ -61,6 +61,7 @@ def test_pdf_routes_registered(app):
     assert "/api/osc/pdf/info" in rules
     assert "/api/osc/pdf/action" in rules
     assert "/api/osc/pdf/upload" in rules
+    assert "/api/osc/pdf/calendar-scan" in rules
 
 
 def test_pdf_info(client, sample_pdf):
@@ -166,3 +167,62 @@ def test_pdf_rotate_extract_split_merge_watermark_optimize_encrypt(client, sampl
         assert enc_doc.page_count == 3
     finally:
         enc_doc.close()
+
+
+def test_pdf_calendar_scan_preview_detects_hearing(client, tmp_path, monkeypatch):
+    path = tmp_path / "20260501 6月12日上午10時30分開庭.pdf"
+    doc = fitz.open()
+    page = doc.new_page()
+    page.insert_text((72, 72), "臺灣花蓮地方法院通知 定於民國115年6月12日上午10時30分開庭", fontsize=12)
+    doc.save(path)
+    doc.close()
+
+    monkeypatch.setattr("api.blueprints.osc_pdf._osc_exec", lambda *a, **k: (None, {}))
+    r = client.post(
+        "/api/osc/pdf/calendar-scan",
+        json={"file_path": str(path), "case_number": "2026-0001", "client_name": "王小明", "write": False},
+    )
+
+    assert r.status_code == 200
+    body = r.get_json()
+    assert body["ok"] is True
+    assert body["todo_count"] >= 1
+    todo = body["items"][0]["todos"][0]
+    assert todo["type"] == "開庭"
+    assert todo["date"] == "2026-06-12"
+    assert todo["time"] == "10:30"
+    assert body["items"][0]["events"][0]["case_number"] == "2026-0001"
+
+
+def test_pdf_calendar_scan_write_inserts_todo_and_calendar(client, tmp_path, monkeypatch):
+    path = tmp_path / "20260501 裁定（應於10日內補正）.pdf"
+    doc = fitz.open()
+    page = doc.new_page()
+    page.insert_text((72, 72), "本裁定送達後10日內補正", fontsize=12)
+    doc.save(path)
+    doc.close()
+
+    calls = []
+
+    def fake_exec(sql, params=(), fetch="none"):
+        calls.append((sql, params, fetch))
+        if fetch == "all":
+            return [], {}
+        if fetch == "one":
+            return None, {}
+        return {"lastrowid": 1, "rowcount": 1}, {}
+
+    monkeypatch.setattr("api.blueprints.osc_pdf._osc_exec", fake_exec)
+    r = client.post(
+        "/api/osc/pdf/calendar-scan",
+        json={"file_path": str(path), "case_number": "2026-0002", "client_name": "林小華", "write": True},
+    )
+
+    assert r.status_code == 200
+    body = r.get_json()
+    assert body["ok"] is True
+    assert body["todo_inserted"] >= 1
+    assert body["event_inserted"] >= 1
+    joined_sql = "\n".join(c[0] for c in calls)
+    assert "INSERT INTO case_todos" in joined_sql
+    assert "INSERT INTO calendar_events" in joined_sql

@@ -2751,14 +2751,19 @@ renderSkillTemplatePreview();
   const sendBtn = document.getElementById('nerv-chat-send');
   const clearBtn = document.getElementById('nerv-chat-clear');
   if (!box || !input) return;
-  function appendMsg(role, text) {
+  function appendMsg(role, text, html) {
     const d = document.createElement('div');
     d.style.margin = '4px 0';
     d.style.whiteSpace = 'pre-wrap';
     if (role === 'user') { d.style.color = '#00aaff'; d.style.borderLeft = '2px solid #00aaff'; d.style.paddingLeft = '6px'; }
     else if (role === 'magi') { d.style.color = '#ff8800'; d.style.borderLeft = '2px solid #ff8800'; d.style.paddingLeft = '6px'; }
     else { d.style.color = '#ff6600'; }
-    d.textContent = text;
+    if (html && role !== 'user') {
+      d.style.whiteSpace = 'normal';
+      d.innerHTML = html;
+    } else {
+      d.textContent = text;
+    }
     box.appendChild(d);
     box.scrollTop = box.scrollHeight;
   }
@@ -2770,7 +2775,7 @@ renderSkillTemplatePreview();
     try {
       const r = await fetch('/api/osc/chat', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({message: text}) });
       const data = await r.json();
-      appendMsg('magi', data.reply || '(無回覆)');
+      appendMsg('magi', data.reply || '(無回覆)', data.reply_html || '');
     } catch(e) { appendMsg('sys', '送出失敗：' + e.message); }
   }
   sendBtn.addEventListener('click', send);

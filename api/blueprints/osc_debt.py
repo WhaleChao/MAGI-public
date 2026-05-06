@@ -25,6 +25,8 @@ import shutil
 import tempfile
 import time
 import uuid
+import glob as _glob
+from urllib.parse import quote
 
 from flask import Blueprint, jsonify, request, send_file
 
@@ -68,8 +70,167 @@ def _save_doc(doc, form_type: str, data: dict) -> dict:
         "filename": os.path.basename(docx_path),
         "path": docx_path,
         "url": f"/exports/{os.path.basename(docx_path)}",
+        "download_url": f"/api/osc/files/content?path={quote(docx_path)}",
+        "share_path": docx_path,
         "message": f"已產生 {base_name}",
     }
+
+
+def _is_path_under(path: str, parent: str) -> bool:
+    try:
+        return os.path.commonpath([os.path.realpath(path), os.path.realpath(parent)]) == os.path.realpath(parent)
+    except Exception:
+        return False
+
+
+def _debt_allowed_import_roots() -> list[str]:
+    roots = [_export_dir()]
+    try:
+        from api.osc.utils import _osc_allowed_local_roots
+
+        roots.extend(str(p) for p in _osc_allowed_local_roots())
+    except Exception:
+        logger.debug("cannot load OSC allowed roots for debt import", exc_info=True)
+    return [os.path.realpath(r) for r in roots if r and os.path.isdir(r)]
+
+
+def _validate_import_doc_path(raw_path: str) -> str:
+    path = os.path.realpath(str(raw_path or "").strip())
+    if not path:
+        return ""
+    if not os.path.isfile(path):
+        raise ValueError("選取的文件不存在")
+    if not path.lower().endswith(".docx"):
+        raise ValueError("只能選擇 DOCX 文件")
+    if not any(_is_path_under(path, root) for root in _debt_allowed_import_roots()):
+        raise ValueError("文件不在允許的案件資料夾或 MAGI 匯出資料夾內")
+    return path
+
+
+def _debt_file_meta(path: str, kind: str, source: str = "") -> dict:
+    stat = os.stat(path)
+    return {
+        "path": os.path.realpath(path),
+        "name": os.path.basename(path),
+        "kind": kind,
+        "source": source or "匯出檔",
+        "folder": os.path.dirname(os.path.realpath(path)),
+        "modified_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(stat.st_mtime)),
+        "mtime": stat.st_mtime,
+        "size": stat.st_size,
+    }
+
+
+def _dedupe_doc_candidates(items: list[dict], limit: int = 80) -> list[dict]:
+    seen = set()
+    out = []
+    for item in sorted(items, key=lambda x: x.get("mtime") or 0, reverse=True):
+        key = item.get("path")
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        out.append(item)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _debt_find_import_docs_in_folder(folder: str, source: str = "", max_depth: int = 3, max_dirs: int = 260) -> tuple[list[dict], list[dict]]:
+    asset_docs: list[dict] = []
+    creditor_docs: list[dict] = []
+    root = os.path.realpath(folder)
+    visited = 0
+    if not os.path.isdir(root):
+        return asset_docs, creditor_docs
+    for dirpath, dirnames, filenames in os.walk(root):
+        visited += 1
+        if visited > max_dirs:
+            dirnames[:] = []
+            break
+        rel = os.path.relpath(dirpath, root)
+        depth = 0 if rel == "." else rel.count(os.sep) + 1
+        if depth >= max_depth:
+            dirnames[:] = []
+        for filename in filenames:
+            if not filename.lower().endswith(".docx"):
+                continue
+            path = os.path.join(dirpath, filename)
+            if "02_" in filename and "財產" in filename and "說明書" in filename:
+                asset_docs.append(_debt_file_meta(path, "asset_doc", source))
+            elif "03_" in filename and "債權人清冊" in filename:
+                creditor_docs.append(_debt_file_meta(path, "creditor_doc", source))
+    return asset_docs, creditor_docs
+
+
+def _debt_import_candidates() -> dict:
+    asset_docs: list[dict] = []
+    creditor_docs: list[dict] = []
+
+    export_path = _export_dir()
+    for pattern in ("02_財產*說明書*.docx", "*財產及收入狀況說明書*.docx"):
+        for path in _glob.glob(os.path.join(export_path, pattern)):
+            if os.path.isfile(path):
+                asset_docs.append(_debt_file_meta(path, "asset_doc", "MAGI 匯出檔"))
+    for pattern in ("03_債權人清冊*.docx", "*債權人清冊*.docx"):
+        for path in _glob.glob(os.path.join(export_path, pattern)):
+            if os.path.isfile(path):
+                creditor_docs.append(_debt_file_meta(path, "creditor_doc", "MAGI 匯出檔"))
+
+    try:
+        from api.case_path_mapper import translate_case_path_to_local
+        from api.osc.utils import _osc_exec
+
+        rows, _ = _osc_exec(
+            """
+            SELECT id, case_number, client_name, folder_path
+            FROM cases
+            WHERE folder_path IS NOT NULL
+              AND folder_path <> ''
+              AND (
+                case_type = '消費者債務清理'
+                OR case_category = '消費者債務清理'
+                OR case_reason LIKE '%%消債%%'
+                OR case_reason LIKE '%%更生%%'
+                OR case_reason LIKE '%%清算%%'
+              )
+            ORDER BY created_date DESC
+            LIMIT 120
+            """,
+            fetch="all",
+        )
+        for row in rows or []:
+            raw_folder = str(row.get("folder_path") or "").strip()
+            if not raw_folder:
+                continue
+            try:
+                local_folder = translate_case_path_to_local(raw_folder, require_existing=False)
+            except Exception:
+                local_folder = raw_folder.replace("\\", "/")
+            source = f"案件：{row.get('case_number') or ''} {row.get('client_name') or ''}".strip()
+            found_assets, found_creditors = _debt_find_import_docs_in_folder(local_folder, source)
+            asset_docs.extend(found_assets)
+            creditor_docs.extend(found_creditors)
+    except Exception:
+        logger.debug("掃描消債案件資料夾失敗", exc_info=True)
+
+    asset_docs = _dedupe_doc_candidates(asset_docs)
+    creditor_docs = _dedupe_doc_candidates(creditor_docs)
+    folder_map: dict[str, dict] = {}
+    for item in asset_docs:
+        folder_map.setdefault(item["folder"], {"folder": item["folder"], "label": item["source"], "asset_doc": None, "creditor_doc": None})
+        folder_map[item["folder"]]["asset_doc"] = item
+    for item in creditor_docs:
+        folder_map.setdefault(item["folder"], {"folder": item["folder"], "label": item["source"], "asset_doc": None, "creditor_doc": None})
+        folder_map[item["folder"]]["creditor_doc"] = item
+    folders = [
+        item for item in folder_map.values()
+        if item.get("asset_doc") or item.get("creditor_doc")
+    ]
+    folders.sort(
+        key=lambda x: max((x.get("asset_doc") or {}).get("mtime") or 0, (x.get("creditor_doc") or {}).get("mtime") or 0),
+        reverse=True,
+    )
+    return {"asset_docs": asset_docs, "creditor_docs": creditor_docs, "folders": folders[:80]}
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -117,6 +278,13 @@ def debt_source_status():
 
     status = get_robot_source_status()
     return jsonify(status), (200 if status.get("ok") else 500)
+
+
+@osc_debt_bp.route("/api/osc/debt/import-candidates", methods=["GET"])
+def debt_import_candidates():
+    """列出可帶入聲請狀的財產說明書與債權人清冊，讓網頁端可像單機版一樣先選來源。"""
+    candidates = _debt_import_candidates()
+    return jsonify({"ok": True, **candidates})
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -263,11 +431,12 @@ def debt_generate_document():
         generate_creditor_list,
         generate_report,
         generate_supplement,
+        save_address_to_csv,
     )
 
     payload = request.get_json(force=True, silent=True) or {}
     form_type = str(payload.get("form_type", "")).strip()
-    data = payload.get("data") or {}
+    data = payload.get("data") or payload.get("fields") or {}
 
     generators = {
         "application": generate_application,
@@ -280,6 +449,18 @@ def debt_generate_document():
     if form_type not in generators:
         return jsonify({"ok": False, "error": f"不支援的表單類型: {form_type}"}), 400
 
+    saved_addresses = 0
+    if form_type == "creditor_list":
+        for creditor in data.get("creditors") or []:
+            name = str(creditor.get("name") or "").strip()
+            address = str(creditor.get("address") or "").strip()
+            if name and address:
+                try:
+                    if save_address_to_csv(name, address, "bank"):
+                        saved_addresses += 1
+                except Exception:
+                    logger.debug("記錄債權人地址失敗: %s", name[:1] + "**", exc_info=True)
+
     try:
         doc = generators[form_type](data)
     except FileNotFoundError as e:
@@ -290,6 +471,8 @@ def debt_generate_document():
 
     try:
         result = _save_doc(doc, form_type, data)
+        if form_type == "creditor_list":
+            result["saved_addresses"] = saved_addresses
         return jsonify(result)
     except Exception as e:
         return jsonify({"ok": False, "error": f"儲存失敗: {e}"}), 500
@@ -314,10 +497,11 @@ def debt_batch_generate():
         generate_creditor_list,
         generate_report,
         generate_supplement,
+        save_address_to_csv,
     )
 
     payload = request.get_json(force=True, silent=True) or {}
-    data = payload.get("data") or {}
+    data = payload.get("data") or payload.get("fields") or {}
     types = payload.get("types") or ["application", "asset_statement", "creditor_list", "report"]
 
     generators = {
@@ -330,14 +514,23 @@ def debt_batch_generate():
 
     results = []
     errors = []
+    saved_addresses = 0
 
     for form_type in types:
         if form_type not in generators:
             errors.append({"form_type": form_type, "error": "不支援的類型"})
             continue
         try:
+            if form_type == "creditor_list":
+                for creditor in data.get("creditors") or []:
+                    name = str(creditor.get("name") or "").strip()
+                    address = str(creditor.get("address") or "").strip()
+                    if name and address and save_address_to_csv(name, address, "bank"):
+                        saved_addresses += 1
             doc = generators[form_type](data)
             result = _save_doc(doc, form_type, data)
+            if form_type == "creditor_list":
+                result["saved_addresses"] = saved_addresses
             results.append(result)
         except Exception as e:
             logger.exception("批次產生失敗: %s", form_type)
@@ -347,6 +540,7 @@ def debt_batch_generate():
         "ok": len(results) > 0,
         "results": results,
         "errors": errors,
+        "saved_addresses": saved_addresses,
         "message": f"已產生 {len(results)} 份文件" + (f"，{len(errors)} 份失敗" if errors else ""),
     })
 
@@ -364,11 +558,11 @@ def debt_auto_import():
     2. multipart/form-data 上傳 asset_doc / creditor_doc → 直接讀取上傳檔案
     """
     from api.debt_document_generator import auto_import_from_docs
-    import glob as _glob
 
     # 模式一：檢查是否有上傳檔案
     paths = {}
     temp_dir = None
+    payload = request.get_json(force=True, silent=True) if request.is_json else None
 
     if request.files:
         temp_dir = tempfile.mkdtemp(prefix="magi_debt_import_")
@@ -378,8 +572,24 @@ def debt_auto_import():
                 save_path = os.path.join(temp_dir, f.filename)
                 f.save(save_path)
                 paths[key] = save_path
+            form_path = request.form.get(f"{key}_path")
+            if not paths.get(key) and form_path:
+                try:
+                    paths[key] = _validate_import_doc_path(form_path)
+                except ValueError as exc:
+                    return jsonify({"ok": False, "error": str(exc)}), 400
 
-    # 模式二：無上傳檔案時，掃描 exports/ 目錄找最新文件
+    # 模式二：網頁選擇既有 DOCX 檔案
+    if not paths and isinstance(payload, dict):
+        try:
+            if payload.get("asset_doc_path"):
+                paths["asset_doc"] = _validate_import_doc_path(payload.get("asset_doc_path"))
+            if payload.get("creditor_doc_path"):
+                paths["creditor_doc"] = _validate_import_doc_path(payload.get("creditor_doc_path"))
+        except ValueError as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 400
+
+    # 模式三：無指定檔案時，沿用舊行為，掃描 exports/ 目錄找最新文件
     if not paths:
         export_path = _export_dir()
         # 找最新的財產說明書
@@ -411,9 +621,9 @@ def debt_auto_import():
         )
         found_files = []
         if paths.get("asset_doc"):
-            found_files.append("財產說明書")
+            found_files.append(os.path.basename(paths["asset_doc"]))
         if paths.get("creditor_doc"):
-            found_files.append("債權人清冊")
+            found_files.append(os.path.basename(paths["creditor_doc"]))
         result["imported_from"] = found_files
         return jsonify({"ok": True, **result})
     except Exception as e:
@@ -502,6 +712,9 @@ def debt_merge_pdf():
     return jsonify({
         "ok": True,
         "filename": os.path.basename(output_path),
+        "path": output_path,
         "url": f"/exports/{os.path.basename(output_path)}",
+        "download_url": f"/api/osc/files/content?path={quote(output_path)}",
+        "share_path": output_path,
         "message": f"已合併 {len(file_paths)} 個檔案",
     })

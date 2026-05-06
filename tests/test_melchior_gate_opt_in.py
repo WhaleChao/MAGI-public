@@ -32,7 +32,18 @@ def test_flag_off_uses_legacy_path(monkeypatch):
     assert "melchior" not in _rhg.get_gate().all_status()
 
 
-def test_flag_on_registers_melchior(monkeypatch):
+def test_remote_gate_opt_in_is_retired_by_default(monkeypatch):
+    monkeypatch.setenv("MAGI_USE_REMOTE_HEALTH_GATE", "1")
+    monkeypatch.setenv("MAGI_AVOID_DISTRIBUTED", "1")
+    with patch("api.platforms.remote_health_gate.requests") as rq:
+        resp = MagicMock(); resp.status_code = 200
+        rq.get.return_value = resp
+        result = _mc._remote_online_quick()
+    assert "melchior" not in _rhg.get_gate().all_status()
+    assert result is False
+
+
+def test_legacy_forced_opt_in_registers_melchior(monkeypatch):
     monkeypatch.setenv("MAGI_USE_REMOTE_HEALTH_GATE", "1")
     monkeypatch.setenv("MAGI_AVOID_DISTRIBUTED", "0")
     with patch("api.platforms.remote_health_gate.requests") as rq:

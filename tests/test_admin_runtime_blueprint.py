@@ -197,6 +197,12 @@ def test_dashboard_nerv_health_status_and_logs(tmp_path, monkeypatch):
     assert health["faiss"]["vectors"] == 9
     assert health["attachment_jobs"]["active"] == 1
 
+    response = client.get("/health", headers={"Accept": "text/html"})
+    assert response.status_code == 200
+    assert response.content_type.startswith("text/html")
+    assert "MAGI 系統健康狀態" in response.get_data(as_text=True)
+    assert response.get_json(silent=True) is None
+
 
 def test_health_reports_omlx_8083_unmanaged_as_degraded(tmp_path, monkeypatch):
     import subprocess as _subprocess

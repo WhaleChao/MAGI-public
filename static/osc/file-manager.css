@@ -246,7 +246,8 @@
 body.theme-dark .fm-toolbar .btn-mini,
 body.theme-dark .fm-view-btn,
 body.theme-dark .fm-move-pending .btn-mini,
-body.theme-dark .fm-modal-head .btn-mini {
+body.theme-dark .fm-modal-head .btn-mini,
+body.theme-dark .fm-action-btn {
     background: #1e293b;
     border-color: #475569;
     color: #f8fafc;
@@ -255,10 +256,16 @@ body.theme-dark .fm-modal-head .btn-mini {
 body.theme-dark .fm-toolbar .btn-mini:hover,
 body.theme-dark .fm-view-btn:hover,
 body.theme-dark .fm-move-pending .btn-mini:hover,
-body.theme-dark .fm-modal-head .btn-mini:hover {
+body.theme-dark .fm-modal-head .btn-mini:hover,
+body.theme-dark .fm-action-btn:hover {
     background: #263449;
     border-color: #64748b;
     color: #fff;
+}
+
+body.theme-dark .fm-action-btn.share {
+    color: #7dd3fc;
+    border-color: rgba(125, 211, 252, 0.42);
 }
 
 body.theme-dark .fm-toolbar .btn-mini.active,
@@ -376,6 +383,44 @@ body.theme-dark .fm-move-pending {
     margin-top: 4px;
 }
 
+.fm-file-actions {
+    display: inline-flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 4px;
+    flex-wrap: wrap;
+}
+
+.fm-grid-item .fm-file-actions {
+    justify-content: center;
+    margin-top: 8px;
+}
+
+.fm-action-btn {
+    appearance: none;
+    border: 1px solid var(--apple-border, rgba(0, 0, 0, 0.14));
+    border-radius: 6px;
+    background: var(--card-bg, #fff);
+    color: var(--text-primary, #1d1d1f);
+    cursor: pointer;
+    font-size: 12px;
+    line-height: 1.2;
+    padding: 4px 8px;
+    white-space: nowrap;
+    transition: background 0.12s, border-color 0.12s, color 0.12s;
+}
+
+.fm-action-btn:hover {
+    background: rgba(0, 122, 255, 0.08);
+    border-color: rgba(0, 122, 255, 0.3);
+}
+
+.fm-action-btn.share {
+    color: var(--apple-blue, #007aff);
+    border-color: rgba(0, 122, 255, 0.3);
+    font-weight: 700;
+}
+
 /* === Compact (one-line list) view === */
 .fm-compact {
     list-style: none;
@@ -406,6 +451,11 @@ body.theme-dark .fm-move-pending {
     color: var(--text-secondary, #6c6c70);
     font-size: 11px;
     flex-shrink: 0;
+}
+
+.fm-compact-item .fm-file-actions {
+    margin-left: auto;
+    flex: 0 0 auto;
 }
 
 .fm-row.selected { background: rgba(0, 122, 255, 0.12) !important; }
@@ -443,6 +493,16 @@ body.theme-dark .fm-move-pending {
     font-size: 11px;
     text-transform: uppercase;
     letter-spacing: 0.04em;
+}
+
+.fm-table .fm-actions-head {
+    width: 190px;
+    text-align: right;
+}
+
+.fm-actions-cell {
+    text-align: right;
+    white-space: nowrap;
 }
 
 .fm-row {

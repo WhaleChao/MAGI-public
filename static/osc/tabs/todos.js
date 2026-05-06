@@ -6,6 +6,11 @@ async function loadTodos() {
     renderTodos();
 }
 
+function isTodoDone(status) {
+    const text = String(status || '').trim().toLowerCase();
+    return ['completed', 'done', '已完成', '完成', 'cancelled', 'canceled', '取消'].includes(text);
+}
+
 function renderTodos() {
     const grid = document.getElementById("todosCardGrid");
     const emptyEl = document.getElementById("todosEmpty");
@@ -22,7 +27,7 @@ function renderTodos() {
     // Classify: overdue, today, future, completed
     const classified = state.todos.map(r => {
         const dateStr = r.todo_date || '';
-        const isDone = (r.status || '').toLowerCase().includes('completed') || (r.status || '').toLowerCase().includes('完成');
+        const isDone = isTodoDone(r.status);
         let group = 3; // future
         if (isDone) group = 4;
         else if (dateStr && dateStr < todayStr) group = 1; // overdue
@@ -66,6 +71,9 @@ function renderTodos() {
             </div>
             ${r.description ? `<div class="todo-desc">${esc(r.description)}</div>` : ''}
             <div class="todo-actions">
+                ${r._group === 4
+                    ? `<button class="btn" data-act="todo-reopen" data-id="${Number(r.id)}">重新待辦</button>`
+                    : `<button class="btn primary" data-act="todo-complete" data-id="${Number(r.id)}">已完成</button>`}
                 <button class="btn" data-act="todo-edit" data-id="${Number(r.id)}">編輯</button>
                 <button class="btn danger" data-act="todo-del" data-id="${Number(r.id)}">刪除</button>
             </div>
@@ -101,6 +109,22 @@ async function delTodo(id) {
     await api(`/api/osc/todos/${id}`, "DELETE");
     await loadTodos();
     await loadMeta();
+}
+
+async function setTodoDone(id, done = true) {
+    if (!id) return;
+    await api(`/api/osc/todos/${Number(id)}`, "PUT", { status: done ? "已完成" : "待處理" });
+    showToast(done ? "已標記為完成，業務概覽不再顯示。" : "已重新列為待辦。", "ok", 2600);
+    const reloads = [];
+    if (typeof loadTodos === "function") reloads.push(loadTodos().catch(() => {}));
+    if (typeof loadDashboard === "function") reloads.push(loadDashboard().catch(() => {}));
+    if (typeof loadMeta === "function") reloads.push(loadMeta().catch(() => {}));
+    await Promise.all(reloads);
+    if (state.wb?.mode === "case" && typeof openCaseWorkbench === "function") {
+        await openCaseWorkbench(state.wb.id, done ? "已標記待辦為完成。" : "已重新列為待辦。");
+    } else if (state.wb?.mode === "client" && typeof openClientWorkbench === "function") {
+        await openClientWorkbench(state.wb.id, done ? "已標記待辦為完成。" : "已重新列為待辦。");
+    }
 }
 
 async function saveTodo() {

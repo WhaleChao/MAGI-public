@@ -1,6 +1,6 @@
 {
-  "scan_time": "2026-05-01T21:00:31.915649",
-  "elapsed_sec": 30.0,
+  "scan_time": "2026-05-06T21:01:25.389640",
+  "elapsed_sec": 31.9,
   "mode": "full",
   "checks": [
     {
@@ -10,10 +10,52 @@
       "total_extra_entries": 50,
       "top_dupes": [
         {
+          "hash": "0002ea73d9b93f94da43cc83fedc8a8d",
+          "count": 2,
+          "ids": "999299,999300",
+          "min_content_len": 3395
+        },
+        {
           "hash": "00276979ff4701a365470b7a8c714f45",
           "count": 2,
           "ids": "997833,997834",
           "min_content_len": 2674
+        },
+        {
+          "hash": "0027ded51fca38440c2751cf722f3762",
+          "count": 2,
+          "ids": "1002954,1002955",
+          "min_content_len": 1540
+        },
+        {
+          "hash": "0035be916cfad534c41a41f6b3b50022",
+          "count": 2,
+          "ids": "1003564,1003565",
+          "min_content_len": 2584
+        },
+        {
+          "hash": "006a788c05a480083410753271150455",
+          "count": 2,
+          "ids": "1003338,1003339",
+          "min_content_len": 918
+        },
+        {
+          "hash": "006b719d11026fe535ec235dab32996e",
+          "count": 2,
+          "ids": "1005248,1005249",
+          "min_content_len": 4026
+        },
+        {
+          "hash": "0073986fcd699588780d2d7e67f939be",
+          "count": 2,
+          "ids": "1003678,1003679",
+          "min_content_len": 827
+        },
+        {
+          "hash": "00759f192093a145c658258c3d98dbce",
+          "count": 2,
+          "ids": "1004082,1004083",
+          "min_content_len": 1806
         },
         {
           "hash": "00840210395290a34122a11415333d7a",
@@ -22,63 +64,77 @@
           "min_content_len": 626
         },
         {
-          "hash": "013412a620557fea0c881aab73d7c138",
+          "hash": "0086a8b871ccfcc05bcbc5c8c21e9f65",
           "count": 2,
-          "ids": "997617,997618",
-          "min_content_len": 3603
-        },
-        {
-          "hash": "04040b4dc5a6cc0b7f6707b9f1d95d22",
-          "count": 2,
-          "ids": "998258,998259",
-          "min_content_len": 801
-        },
-        {
-          "hash": "045239a767bc84031d53f80dc75b6afb",
-          "count": 2,
-          "ids": "997811,997812",
-          "min_content_len": 4752
-        },
-        {
-          "hash": "04898a7a486db7aa0340c0123493ac77",
-          "count": 2,
-          "ids": "999068,999069",
-          "min_content_len": 911
-        },
-        {
-          "hash": "05242237007d2b0bcbc414802c6d27a7",
-          "count": 2,
-          "ids": "997392,997393",
-          "min_content_len": 669
-        },
-        {
-          "hash": "05993780301cc8689295b7b82ba9554b",
-          "count": 2,
-          "ids": "998942,998943",
-          "min_content_len": 3114
-        },
-        {
-          "hash": "063db1a1766b155c5dfd4bda712b8187",
-          "count": 2,
-          "ids": "999225,999226",
-          "min_content_len": 2609
-        },
-        {
-          "hash": "06b197ad77f7c4ecd04cd3fa2f32d46e",
-          "count": 2,
-          "ids": "998798,998799",
-          "min_content_len": 766
+          "ids": "1003376,1003377",
+          "min_content_len": 2462
         }
       ],
       "cleanup_plan": {
         "mode": "dry_run",
         "groups": [
           {
+            "hash": "0002ea73d9b93f94da43cc83fedc8a8d",
+            "count": 2,
+            "keep_id": 999299,
+            "remove_ids": [
+              999300
+            ]
+          },
+          {
             "hash": "00276979ff4701a365470b7a8c714f45",
             "count": 2,
             "keep_id": 997833,
             "remove_ids": [
               997834
+            ]
+          },
+          {
+            "hash": "0027ded51fca38440c2751cf722f3762",
+            "count": 2,
+            "keep_id": 1002954,
+            "remove_ids": [
+              1002955
+            ]
+          },
+          {
+            "hash": "0035be916cfad534c41a41f6b3b50022",
+            "count": 2,
+            "keep_id": 1003564,
+            "remove_ids": [
+              1003565
+            ]
+          },
+          {
+            "hash": "006a788c05a480083410753271150455",
+            "count": 2,
+            "keep_id": 1003338,
+            "remove_ids": [
+              1003339
+            ]
+          },
+          {
+            "hash": "006b719d11026fe535ec235dab32996e",
+            "count": 2,
+            "keep_id": 1005248,
+            "remove_ids": [
+              1005249
+            ]
+          },
+          {
+            "hash": "0073986fcd699588780d2d7e67f939be",
+            "count": 2,
+            "keep_id": 1003678,
+            "remove_ids": [
+              1003679
+            ]
+          },
+          {
+            "hash": "00759f192093a145c658258c3d98dbce",
+            "count": 2,
+            "keep_id": 1004082,
+            "remove_ids": [
+              1004083
             ]
           },
           {
@@ -90,11 +146,315 @@
             ]
           },
           {
+            "hash": "0086a8b871ccfcc05bcbc5c8c21e9f65",
+            "count": 2,
+            "keep_id": 1003376,
+            "remove_ids": [
+              1003377
+            ]
+          },
+          {
+            "hash": "00ca28562649b065d04c65b59dd15818",
+            "count": 2,
+            "keep_id": 1002634,
+            "remove_ids": [
+              1002635
+            ]
+          },
+          {
+            "hash": "00d1bdd422fe064a90c3b60f41bb72c1",
+            "count": 2,
+            "keep_id": 1000564,
+            "remove_ids": [
+              1000565
+            ]
+          },
+          {
+            "hash": "0101311818418e247f54dc938976cf84",
+            "count": 2,
+            "keep_id": 1004160,
+            "remove_ids": [
+              1004161
+            ]
+          },
+          {
+            "hash": "01192273fcae9b70acdcc61eafefbc95",
+            "count": 2,
+            "keep_id": 1002046,
+            "remove_ids": [
+              1002047
+            ]
+          },
+          {
             "hash": "013412a620557fea0c881aab73d7c138",
             "count": 2,
             "keep_id": 997617,
             "remove_ids": [
               997618
+            ]
+          },
+          {
+            "hash": "015ee629ba4384ce9dba9673e19226df",
+            "count": 2,
+            "keep_id": 1002108,
+            "remove_ids": [
+              1002109
+            ]
+          },
+          {
+            "hash": "01823d38a1fcfc4f13c659bf5d9d0cc0",
+            "count": 2,
+            "keep_id": 1003432,
+            "remove_ids": [
+              1003433
+            ]
+          },
+          {
+            "hash": "01877b109cbdc90a5781d35802d0451e",
+            "count": 2,
+            "keep_id": 1003796,
+            "remove_ids": [
+              1003797
+            ]
+          },
+          {
+            "hash": "01bb9755c7a35c9cea6f4ec13301bf22",
+            "count": 2,
+            "keep_id": 1000340,
+            "remove_ids": [
+              1000341
+            ]
+          },
+          {
+            "hash": "020643ed0d1021e26d7053ae1aabc432",
+            "count": 2,
+            "keep_id": 999890,
+            "remove_ids": [
+              999891
+            ]
+          },
+          {
+            "hash": "020ebf3864eaa04a52d18cb913c1df11",
+            "count": 2,
+            "keep_id": 1001276,
+            "remove_ids": [
+              1001277
+            ]
+          },
+          {
+            "hash": "0210b6ad5ced6041e55476078efab7f0",
+            "count": 2,
+            "keep_id": 1004414,
+            "remove_ids": [
+              1004415
+            ]
+          },
+          {
+            "hash": "0228c1bdfe20af9a6932400d83a88305",
+            "count": 2,
+            "keep_id": 1003690,
+            "remove_ids": [
+              1003691
+            ]
+          },
+          {
+            "hash": "025fd2f620c87805eacdefcc7bd12152",
+            "count": 2,
+            "keep_id": 999349,
+            "remove_ids": [
+              999350
+            ]
+          },
+          {
+            "hash": "0266374fe9905b1275a5a52ffd53a6b2",
+            "count": 2,
+            "keep_id": 999552,
+            "remove_ids": [
+              999553
+            ]
+          },
+          {
+            "hash": "0267113f7fce1318a0086d4ba941c9e3",
+            "count": 2,
+            "keep_id": 1002750,
+            "remove_ids": [
+              1002751
+            ]
+          },
+          {
+            "hash": "027a5bc825d7db1415903944ce62a13a",
+            "count": 2,
+            "keep_id": 999626,
+            "remove_ids": [
+              999627
+            ]
+          },
+          {
+            "hash": "028db7fc1538ecddf53ec854e24258ec",
+            "count": 2,
+            "keep_id": 1002384,
+            "remove_ids": [
+              1002385
+            ]
+          },
+          {
+            "hash": "02be38147d7b9afa49d4e600eddec998",
+            "count": 2,
+            "keep_id": 1002564,
+            "remove_ids": [
+              1002565
+            ]
+          },
+          {
+            "hash": "02d6042a69bbfdd09ecb070b5d34a58b",
+            "count": 2,
+            "keep_id": 999409,
+            "remove_ids": [
+              999410
+            ]
+          },
+          {
+            "hash": "02e1a604e8766494457bc4326b319dcf",
+            "count": 2,
+            "keep_id": 1005118,
+            "remove_ids": [
+              1005119
+            ]
+          },
+          {
+            "hash": "030b7164dc786d209d136243d34e6c04",
+            "count": 2,
+            "keep_id": 1003356,
+            "remove_ids": [
+              1003357
+            ]
+          },
+          {
+            "hash": "032529b746101697350a9e16d288d156",
+            "count": 2,
+            "keep_id": 1004572,
+            "remove_ids": [
+              1004573
+            ]
+          },
+          {
+            "hash": "03271011729c62858f1fca890cb6df5c",
+            "count": 2,
+            "keep_id": 1001420,
+            "remove_ids": [
+              1001421
+            ]
+          },
+          {
+            "hash": "0334e1a9bbc0bf1ab41d9d572a177915",
+            "count": 2,
+            "keep_id": 1000060,
+            "remove_ids": [
+              1000061
+            ]
+          },
+          {
+            "hash": "033b000fa79a3b97b565224076d0dc42",
+            "count": 2,
+            "keep_id": 1004838,
+            "remove_ids": [
+              1004839
+            ]
+          },
+          {
+            "hash": "0355197a1cfd5f4c48ee52a70e08dd69",
+            "count": 2,
+            "keep_id": 1003416,
+            "remove_ids": [
+              1003417
+            ]
+          },
+          {
+            "hash": "037341567705a617a73c23f42da4ad40",
+            "count": 2,
+            "keep_id": 1002804,
+            "remove_ids": [
+              1002805
+            ]
+          },
+          {
+            "hash": "037cdf2c14f6f57640541b9e9e59e962",
+            "count": 2,
+            "keep_id": 1002994,
+            "remove_ids": [
+              1002995
+            ]
+          },
+          {
+            "hash": "03802c1f54ba4691fce3a7416d1d68a6",
+            "count": 2,
+            "keep_id": 1002652,
+            "remove_ids": [
+              1002653
+            ]
+          },
+          {
+            "hash": "038273d593a10e15d66ea26159ce0a7d",
+            "count": 2,
+            "keep_id": 999988,
+            "remove_ids": [
+              999989
+            ]
+          },
+          {
+            "hash": "038fd4bf4ac21767b05010ce5402bd55",
+            "count": 2,
+            "keep_id": 1001194,
+            "remove_ids": [
+              1001195
+            ]
+          },
+          {
+            "hash": "0395bde2eef18b5b928058953e9bf6f8",
+            "count": 2,
+            "keep_id": 1003156,
+            "remove_ids": [
+              1003157
+            ]
+          },
+          {
+            "hash": "03984decb7d730c085942fb68137036e",
+            "count": 2,
+            "keep_id": 1000456,
+            "remove_ids": [
+              1000457
+            ]
+          },
+          {
+            "hash": "03d3eef8f400a0b4794f955496e6725b",
+            "count": 2,
+            "keep_id": 1005096,
+            "remove_ids": [
+              1005097
+            ]
+          },
+          {
+            "hash": "03de89b337d273cf4ca9a43973024a6d",
+            "count": 2,
+            "keep_id": 1002984,
+            "remove_ids": [
+              1002985
+            ]
+          },
+          {
+            "hash": "03eb32b659b80b627aee1362e0e85aa2",
+            "count": 2,
+            "keep_id": 1000574,
+            "remove_ids": [
+              1000575
+            ]
+          },
+          {
+            "hash": "03fad380c7ee511fc84cfb393b0c9be8",
+            "count": 2,
+            "keep_id": 1004750,
+            "remove_ids": [
+              1004751
             ]
           },
           {
@@ -106,371 +466,11 @@
             ]
           },
           {
-            "hash": "045239a767bc84031d53f80dc75b6afb",
+            "hash": "0407b382bda37ec4124b95c75ac0d917",
             "count": 2,
-            "keep_id": 997811,
+            "keep_id": 1004854,
             "remove_ids": [
-              997812
-            ]
-          },
-          {
-            "hash": "04898a7a486db7aa0340c0123493ac77",
-            "count": 2,
-            "keep_id": 999068,
-            "remove_ids": [
-              999069
-            ]
-          },
-          {
-            "hash": "05242237007d2b0bcbc414802c6d27a7",
-            "count": 2,
-            "keep_id": 997392,
-            "remove_ids": [
-              997393
-            ]
-          },
-          {
-            "hash": "05993780301cc8689295b7b82ba9554b",
-            "count": 2,
-            "keep_id": 998942,
-            "remove_ids": [
-              998943
-            ]
-          },
-          {
-            "hash": "063db1a1766b155c5dfd4bda712b8187",
-            "count": 2,
-            "keep_id": 999225,
-            "remove_ids": [
-              999226
-            ]
-          },
-          {
-            "hash": "06b197ad77f7c4ecd04cd3fa2f32d46e",
-            "count": 2,
-            "keep_id": 998798,
-            "remove_ids": [
-              998799
-            ]
-          },
-          {
-            "hash": "070444523019e768adab573202570c92",
-            "count": 2,
-            "keep_id": 998964,
-            "remove_ids": [
-              998965
-            ]
-          },
-          {
-            "hash": "071717ec40bb747713e00585010abbd6",
-            "count": 2,
-            "keep_id": 998081,
-            "remove_ids": [
-              998082
-            ]
-          },
-          {
-            "hash": "072a046d6ab4a34ada15b4c4f7ac70ec",
-            "count": 2,
-            "keep_id": 998564,
-            "remove_ids": [
-              998565
-            ]
-          },
-          {
-            "hash": "07a647f209efd149e263cf06866e4864",
-            "count": 2,
-            "keep_id": 998216,
-            "remove_ids": [
-              998217
-            ]
-          },
-          {
-            "hash": "07d51a6ce164973298b04f71d6c762fb",
-            "count": 2,
-            "keep_id": 997613,
-            "remove_ids": [
-              997614
-            ]
-          },
-          {
-            "hash": "0832a5623c97c0d0502d2b4a9a7e82e7",
-            "count": 2,
-            "keep_id": 997961,
-            "remove_ids": [
-              997962
-            ]
-          },
-          {
-            "hash": "0868583a063d417084f50522f8694e63",
-            "count": 2,
-            "keep_id": 997729,
-            "remove_ids": [
-              997730
-            ]
-          },
-          {
-            "hash": "089fd39ae23f2e26ad0799ef8448f67c",
-            "count": 2,
-            "keep_id": 998468,
-            "remove_ids": [
-              998469
-            ]
-          },
-          {
-            "hash": "08cc7c2a12831bf2c294042f679c27f9",
-            "count": 2,
-            "keep_id": 997893,
-            "remove_ids": [
-              997894
-            ]
-          },
-          {
-            "hash": "08dc2935ba90673b4752f9892e87441a",
-            "count": 2,
-            "keep_id": 998438,
-            "remove_ids": [
-              998439
-            ]
-          },
-          {
-            "hash": "09765c4d5f136eb3ca6e577c511af95c",
-            "count": 2,
-            "keep_id": 998655,
-            "remove_ids": [
-              998656
-            ]
-          },
-          {
-            "hash": "099613304dfaa326670ec1629e853d22",
-            "count": 2,
-            "keep_id": 998659,
-            "remove_ids": [
-              998660
-            ]
-          },
-          {
-            "hash": "09b745aae161984977afe256fb58f7be",
-            "count": 2,
-            "keep_id": 998420,
-            "remove_ids": [
-              998421
-            ]
-          },
-          {
-            "hash": "09fc084a7cb34ad5ceab7bce8e4dd1e5",
-            "count": 2,
-            "keep_id": 998398,
-            "remove_ids": [
-              998399
-            ]
-          },
-          {
-            "hash": "0a2ec0d896d495862c4d58c06b188e1d",
-            "count": 2,
-            "keep_id": 999171,
-            "remove_ids": [
-              999172
-            ]
-          },
-          {
-            "hash": "0af1ffeab76853ab62f5b9be35614e55",
-            "count": 2,
-            "keep_id": 997889,
-            "remove_ids": [
-              997890
-            ]
-          },
-          {
-            "hash": "0b26ac4f0cab48eba14099438f2d17c5",
-            "count": 2,
-            "keep_id": 998922,
-            "remove_ids": [
-              998923
-            ]
-          },
-          {
-            "hash": "0b6351c845c80c847ba91d27d11e059f",
-            "count": 2,
-            "keep_id": 998510,
-            "remove_ids": [
-              998511
-            ]
-          },
-          {
-            "hash": "0b70af057b53bea0416e134f234256c1",
-            "count": 2,
-            "keep_id": 997955,
-            "remove_ids": [
-              997956
-            ]
-          },
-          {
-            "hash": "0bc91a09f5b8d8224ac1def587597492",
-            "count": 2,
-            "keep_id": 998448,
-            "remove_ids": [
-              998449
-            ]
-          },
-          {
-            "hash": "0bee1d4ecca39d34b051c839e0cef0ce",
-            "count": 2,
-            "keep_id": 997625,
-            "remove_ids": [
-              997626
-            ]
-          },
-          {
-            "hash": "0c037edc58de1cf8de562b0b06e730d5",
-            "count": 2,
-            "keep_id": 998320,
-            "remove_ids": [
-              998321
-            ]
-          },
-          {
-            "hash": "0c5cf864e21fd2c68543fa3909c25dcb",
-            "count": 2,
-            "keep_id": 998452,
-            "remove_ids": [
-              998453
-            ]
-          },
-          {
-            "hash": "0cbb814e0a32ca0d56b5662dda59d8ad",
-            "count": 2,
-            "keep_id": 998196,
-            "remove_ids": [
-              998197
-            ]
-          },
-          {
-            "hash": "0cc92a49fae9d7f060f11deb555e10b5",
-            "count": 2,
-            "keep_id": 998308,
-            "remove_ids": [
-              998309
-            ]
-          },
-          {
-            "hash": "0cfecabd2a9ce5acbe3af36ff811c4c6",
-            "count": 2,
-            "keep_id": 998113,
-            "remove_ids": [
-              998114
-            ]
-          },
-          {
-            "hash": "0d6f02c1cbd92234f064041afded565b",
-            "count": 2,
-            "keep_id": 998677,
-            "remove_ids": [
-              998678
-            ]
-          },
-          {
-            "hash": "0d9dc3030e5ac9db8d78374371846310",
-            "count": 2,
-            "keep_id": 997460,
-            "remove_ids": [
-              997461
-            ]
-          },
-          {
-            "hash": "0e2c8d87423328141bdc5a5e09c9ef95",
-            "count": 2,
-            "keep_id": 997727,
-            "remove_ids": [
-              997728
-            ]
-          },
-          {
-            "hash": "0e335e4ead4957f499f89c7bcaa6fe54",
-            "count": 2,
-            "keep_id": 997579,
-            "remove_ids": [
-              997580
-            ]
-          },
-          {
-            "hash": "0e7af36715a23d56856046c6d1906594",
-            "count": 2,
-            "keep_id": 998948,
-            "remove_ids": [
-              998949
-            ]
-          },
-          {
-            "hash": "0e7f92b0e57115758fd90b190f82a8d0",
-            "count": 2,
-            "keep_id": 998512,
-            "remove_ids": [
-              998513
-            ]
-          },
-          {
-            "hash": "0ee4d60352fce6587334710e652c4d54",
-            "count": 2,
-            "keep_id": 998155,
-            "remove_ids": [
-              998156
-            ]
-          },
-          {
-            "hash": "0f31873860a2e996380c3e2839be44cd",
-            "count": 2,
-            "keep_id": 998073,
-            "remove_ids": [
-              998074
-            ]
-          },
-          {
-            "hash": "0fae45d88fcfd388d87cc99c6025be45",
-            "count": 2,
-            "keep_id": 998679,
-            "remove_ids": [
-              998680
-            ]
-          },
-          {
-            "hash": "0fd6717e730598d269a8dbe032a73694",
-            "count": 2,
-            "keep_id": 999263,
-            "remove_ids": [
-              999264
-            ]
-          },
-          {
-            "hash": "108396fa9a97a1ea79652c80ad2e776a",
-            "count": 2,
-            "keep_id": 998673,
-            "remove_ids": [
-              998674
-            ]
-          },
-          {
-            "hash": "11109822463f6a7f3d270155cc007476",
-            "count": 2,
-            "keep_id": 998089,
-            "remove_ids": [
-              998090
-            ]
-          },
-          {
-            "hash": "1127bd5f942aa692ee95c21ef9d715da",
-            "count": 2,
-            "keep_id": 997386,
-            "remove_ids": [
-              997387
-            ]
-          },
-          {
-            "hash": "1171f83494a6eeb68102a68fb1c8b9b3",
-            "count": 2,
-            "keep_id": 998121,
-            "remove_ids": [
-              998122
+              1004855
             ]
           }
         ],
@@ -478,26 +478,26 @@
         "estimated_delete_documents": 50,
         "estimated_delete_vectors": 50,
         "sql_preview": [
+          "DELETE FROM vectors WHERE doc_id IN (999300);",
+          "DELETE FROM documents WHERE id IN (999300);",
           "DELETE FROM vectors WHERE doc_id IN (997834);",
           "DELETE FROM documents WHERE id IN (997834);",
+          "DELETE FROM vectors WHERE doc_id IN (1002955);",
+          "DELETE FROM documents WHERE id IN (1002955);",
+          "DELETE FROM vectors WHERE doc_id IN (1003565);",
+          "DELETE FROM documents WHERE id IN (1003565);",
+          "DELETE FROM vectors WHERE doc_id IN (1003339);",
+          "DELETE FROM documents WHERE id IN (1003339);",
+          "DELETE FROM vectors WHERE doc_id IN (1005249);",
+          "DELETE FROM documents WHERE id IN (1005249);",
+          "DELETE FROM vectors WHERE doc_id IN (1003679);",
+          "DELETE FROM documents WHERE id IN (1003679);",
+          "DELETE FROM vectors WHERE doc_id IN (1004083);",
+          "DELETE FROM documents WHERE id IN (1004083);",
           "DELETE FROM vectors WHERE doc_id IN (998084);",
           "DELETE FROM documents WHERE id IN (998084);",
-          "DELETE FROM vectors WHERE doc_id IN (997618);",
-          "DELETE FROM documents WHERE id IN (997618);",
-          "DELETE FROM vectors WHERE doc_id IN (998259);",
-          "DELETE FROM documents WHERE id IN (998259);",
-          "DELETE FROM vectors WHERE doc_id IN (997812);",
-          "DELETE FROM documents WHERE id IN (997812);",
-          "DELETE FROM vectors WHERE doc_id IN (999069);",
-          "DELETE FROM documents WHERE id IN (999069);",
-          "DELETE FROM vectors WHERE doc_id IN (997393);",
-          "DELETE FROM documents WHERE id IN (997393);",
-          "DELETE FROM vectors WHERE doc_id IN (998943);",
-          "DELETE FROM documents WHERE id IN (998943);",
-          "DELETE FROM vectors WHERE doc_id IN (999226);",
-          "DELETE FROM documents WHERE id IN (999226);",
-          "DELETE FROM vectors WHERE doc_id IN (998799);",
-          "DELETE FROM documents WHERE id IN (998799);"
+          "DELETE FROM vectors WHERE doc_id IN (1003377);",
+          "DELETE FROM documents WHERE id IN (1003377);"
         ],
         "notes": [
           "先備份再刪除；本計畫預設只輸出，不自動執行。",
@@ -513,7 +513,7 @@
     {
       "check": "insight_quality",
       "status": "warn",
-      "total_insights": 143,
+      "total_insights": 131,
       "degraded": 0,
       "too_short": 1,
       "empty": 0,
@@ -522,54 +522,39 @@
         "substantive_body_too_short": 1
       },
       "sample_issue_ids": [
-        401
+        437
       ],
-      "healthy": 142,
-      "health_pct": 99.3
+      "healthy": 130,
+      "health_pct": 99.2
     },
     {
       "check": "wiki_staleness",
       "status": "warn",
-      "stale_cases": 4,
-      "up_to_date": 72,
+      "stale_cases": 1,
+      "up_to_date": 77,
       "details": [
         {
-          "case": "2026-0021",
-          "client": "李滿金",
-          "synthesized_at": "2026-04-16T03:39:39.472361"
-        },
-        {
-          "case": "2025-0050",
-          "client": "呂幸春",
-          "synthesized_at": "2026-04-29T03:45:51.507656"
-        },
-        {
-          "case": "2025-0070",
-          "client": "李嘉玲",
-          "synthesized_at": "2026-04-29T03:54:12.626369"
-        },
-        {
-          "case": "2026-0030",
-          "client": "沈筱筑",
-          "synthesized_at": "2026-04-29T03:47:46.633180"
+          "case": "2026-0037",
+          "client": "馬碌枝Uli Mangququ",
+          "synthesized_at": "2026-04-29T03:40:19.795759"
         }
       ]
     },
     {
       "check": "orphan_notes",
       "status": "warn",
-      "total_on_disk": 1070,
-      "total_in_index": 1062,
-      "unindexed": 8,
+      "total_on_disk": 1111,
+      "total_in_index": 1096,
+      "unindexed": 15,
       "orphaned_index_entries": 0,
       "zero_chunk_notes": 0,
       "zero_chunk_verified_in_db": 662,
       "sample_unindexed": [
+        "30_Index/2026-0041.md",
         "30_Wiki/2025-0042-陳金龍/overview.md",
+        "30_Wiki/2025-0047-黃彩庭/overview.md",
         "30_Wiki/2026-0031-黃鎮洲/overview.md",
-        "30_Wiki/2026-0037-馬碌枝Uli Mangququ/overview.md",
-        "30_Wiki/2026-0039-周潔林/overview.md",
-        "MAGI/品質報告/知識品質報告_20260426.md"
+        "30_Wiki/2026-0036-石金市/overview.md"
       ],
       "sample_orphaned": [],
       "sample_zero_chunk": []
@@ -577,8 +562,8 @@
     {
       "check": "contradiction_scan",
       "status": "warn",
-      "cases_with_contradictions": 6,
-      "clean_cases": 70,
+      "cases_with_contradictions": 7,
+      "clean_cases": 71,
       "details": [
         {
           "case": "2025-0003-蕭仁俊",
@@ -601,9 +586,14 @@
           "excerpt": ""
         },
         {
-          "case": "2026-0021-李滿金",
-          "warning_count": 1,
+          "case": "2026-0030-沈筱筑",
+          "warning_count": 0,
           "excerpt": ""
+        },
+        {
+          "case": "2026-0036-石金市",
+          "warning_count": 2,
+          "excerpt": "* **矛盾點：** [若不同文件描述同一事件但有差異，標記 ⚠️ 並列出兩個版本] → 來源：[文件名]\n* **資訊缺口：** [若有資訊缺失，提出待補充事項] → 來源：[待補充]\n\n---\n\n---"
         },
         {
           "case": "2026-0039-周潔林",

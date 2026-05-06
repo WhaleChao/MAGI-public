@@ -505,7 +505,7 @@
         if (folders.length > 0) {
             html += '<div class="fm-section-title">📁 資料夾 (' + folders.length + ')</div>';
             html += '<table class="fm-table"><thead><tr>'
-                + '<th>名稱</th><th>內容</th><th>修改時間</th></tr></thead><tbody>';
+                + '<th>名稱</th><th>內容</th><th>修改時間</th><th class="fm-actions-head">操作</th></tr></thead><tbody>';
             for (const f of folders) {
                 const meta = (f.child_files != null)
                     ? (f.child_files + ' 檔 ' + (f.child_folders ? '/ ' + f.child_folders + ' 子夾 ' : '')
@@ -516,6 +516,7 @@
                     + escapeHTML(f.name) + '">' + escapeHTML(f.name) + '</span></td>'
                     + '<td class="fm-meta">' + escapeHTML(meta) + '</td>'
                     + '<td class="fm-meta">' + escapeHTML(f.modified_at || '') + '</td>'
+                    + '<td class="fm-actions-cell">' + fileActionButtons(f) + '</td>'
                     + '</tr>';
             }
             html += '</tbody></table>';
@@ -523,13 +524,14 @@
         if (files.length > 0) {
             html += '<div class="fm-section-title">📄 檔案 (' + files.length + ')</div>';
             html += '<table class="fm-table"><thead><tr>'
-                + '<th>名稱</th><th>大小</th><th>修改時間</th></tr></thead><tbody>';
+                + '<th>名稱</th><th>大小</th><th>修改時間</th><th class="fm-actions-head">操作</th></tr></thead><tbody>';
             for (const f of files) {
                 html += '<tr class="fm-row file" data-rel="' + escapeHTML(f.relative_path) + '" data-type="file" data-name="' + escapeHTML(f.name) + '">'
                     + '<td><span class="fm-icon">' + iconFor(f) + '</span><span class="fm-name" title="'
                     + escapeHTML(f.name) + '">' + escapeHTML(f.name) + '</span></td>'
                     + '<td class="fm-meta">' + escapeHTML(f.size_label || '') + '</td>'
                     + '<td class="fm-meta">' + escapeHTML(f.modified_at || '') + '</td>'
+                    + '<td class="fm-actions-cell">' + fileActionButtons(f) + '</td>'
                     + '</tr>';
             }
             html += '</tbody></table>';
@@ -565,6 +567,7 @@
             + '<span class="fm-grid-icon">' + iconFor(f) + '</span>'
             + '<div class="fm-grid-name" title="' + escapeHTML(f.name) + '">' + escapeHTML(f.name) + '</div>'
             + '<div class="fm-grid-meta">' + escapeHTML(meta) + '</div>'
+            + fileActionButtons(f)
             + '</div>';
     }
 
@@ -586,7 +589,28 @@
             + '<span class="fm-icon">' + iconFor(f) + '</span>'
             + '<span class="fm-compact-name" title="' + escapeHTML(f.name) + '">' + escapeHTML(f.name) + '</span>'
             + '<span class="fm-compact-meta">' + escapeHTML(meta) + '</span>'
+            + fileActionButtons(f)
             + '</li>';
+    }
+
+    function fileActionButtons(entry) {
+        const rel = escapeHTML(entry.relative_path || '');
+        const name = escapeHTML(entry.name || pathBaseName(entry.relative_path));
+        const type = entry.type || '';
+        if (type === 'dir') {
+            return '<div class="fm-file-actions">'
+                + '<button type="button" class="fm-action-btn" data-fm-action="open" data-rel="' + rel
+                + '" data-type="dir" data-name="' + name + '" title="開啟資料夾">開啟</button>'
+                + '</div>';
+        }
+        return '<div class="fm-file-actions">'
+            + '<button type="button" class="fm-action-btn" data-fm-action="preview" data-rel="' + rel
+            + '" data-type="file" data-name="' + name + '" title="預覽檔案">預覽</button>'
+            + '<button type="button" class="fm-action-btn share" data-fm-action="share" data-rel="' + rel
+            + '" data-type="file" data-name="' + name + '" title="建立並複製分享連結">分享</button>'
+            + '<button type="button" class="fm-action-btn" data-fm-action="download" data-rel="' + rel
+            + '" data-type="file" data-name="' + name + '" title="下載檔案">下載</button>'
+            + '</div>';
     }
 
     function hiddenHint(n) {
@@ -601,6 +625,7 @@
             const rel = el.dataset.rel;
             const type = el.dataset.type;
             el.addEventListener('click', (ev) => {
+                if (ev.target.closest('.fm-action-btn')) return;
                 if (ev.shiftKey || ev.metaKey || ev.ctrlKey) return;
                 selectEntry(rel, type, el);
                 if (type === 'dir') {
@@ -637,13 +662,16 @@
         const nameEl = document.getElementById('fmSelectedName');
         const moveBtn = document.getElementById('fmMoveBtn');
         const trashBtn = document.getElementById('fmTrashBtn');
+        const shareBtn = document.getElementById('fmShareBtn');
         const hasSelection = !!(FM.basePath && FM.selectedRel);
+        const hasFileSelection = hasSelection && FM.selectedType === 'file';
         if (nameEl) {
             nameEl.textContent = hasSelection ? ('已選取：' + (FM.selectedName || pathBaseName(FM.selectedRel))) : '尚未選取檔案';
             nameEl.title = hasSelection ? FM.selectedRel : '';
         }
         if (moveBtn) moveBtn.disabled = !hasSelection;
         if (trashBtn) trashBtn.disabled = !hasSelection;
+        if (shareBtn) shareBtn.disabled = !hasFileSelection;
         updateMovePendingBar();
     }
 
@@ -1037,7 +1065,10 @@
         const fullPath = buildLocalPath(rel);
         const r = await apiShareFile(fullPath);
         if (!r || !r.ok) {
-            setStatus('分享連結建立失敗：' + ((r && r.error) || '未知'), true);
+            const msg = r && r.error === 'share_public_base_required'
+                ? '尚未設定獨立分享入口。為避免洩漏 MAGI/Paperclip 主控台外網網址，請先到 MAGI 調整頁面設定分享入口。'
+                : ((r && (r.message || r.error)) || '未知');
+            setStatus('分享連結建立失敗：' + msg, true);
             return;
         }
         try {
@@ -1221,6 +1252,24 @@
         if (act === 'move') return startMoveSelected(rel, type, name);
         if (act === 'rename') return renameSelected(rel, name);
         if (act === 'trash') return trashSelected(rel, name);
+    }
+
+    async function runFileAction(act, rel, type, name) {
+        if (!rel) return;
+        const el = document.querySelector('#fmEntriesArea [data-rel="' + cssEsc(rel) + '"]');
+        if (el) selectEntry(rel, type, el);
+        if (act === 'open' && type === 'dir') return navigateTo(rel);
+        if (act === 'preview' && type === 'file') return openPreview(rel, name);
+        if (act === 'share' && type === 'file') return createShareLink(rel, name);
+        if (act === 'download' && type === 'file') {
+            const url = '/api/osc/files/content?path=' + encodeURIComponent(buildLocalPath(rel));
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = name || '';
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+        }
     }
 
     async function renameSelected(rel, oldName) {
@@ -1705,6 +1754,7 @@
         const uploadFolderBtn = document.getElementById('fmUploadFolderBtn');
         const moveBtn = document.getElementById('fmMoveBtn');
         const trashBtn = document.getElementById('fmTrashBtn');
+        const shareBtn = document.getElementById('fmShareBtn');
         const moveHereBtn = document.getElementById('fmMoveHereBtn');
         const moveCancelBtn = document.getElementById('fmMoveCancelBtn');
         const fileInput = document.getElementById('fmFileInput');
@@ -1736,6 +1786,21 @@
         if (trashBtn && !trashBtn._fmBound) {
             trashBtn._fmBound = true;
             trashBtn.addEventListener('click', () => trashSelected(FM.selectedRel, FM.selectedName));
+        }
+        if (shareBtn && !shareBtn._fmBound) {
+            shareBtn._fmBound = true;
+            shareBtn.addEventListener('click', () => createShareLink(FM.selectedRel, FM.selectedName));
+        }
+        const entriesArea = document.getElementById('fmEntriesArea');
+        if (entriesArea && !entriesArea._fmActionBound) {
+            entriesArea._fmActionBound = true;
+            entriesArea.addEventListener('click', (ev) => {
+                const btn = ev.target.closest('.fm-action-btn');
+                if (!btn) return;
+                ev.preventDefault();
+                ev.stopPropagation();
+                runFileAction(btn.dataset.fmAction, btn.dataset.rel, btn.dataset.type, btn.dataset.name);
+            });
         }
         if (moveHereBtn && !moveHereBtn._fmBound) {
             moveHereBtn._fmBound = true;

@@ -3088,6 +3088,44 @@ def _collapse_portal_items(
     }
 
 
+def _format_portal_probe_error(result: dict) -> str:
+    """Turn portal probe diagnostics into a business-readable one-line reason."""
+    error = str((result or {}).get("error") or "").strip()
+    code = str((result or {}).get("error_code") or "").strip()
+    label_map = {
+        "sso_login_failed": "法院單一登入失敗，請重新登入或確認驗證碼",
+        "navigate_failed": "無法進入閱卷系統入口",
+        "list_view_unavailable": "找不到入口列表頁",
+        "list_page_auth_required": "法院入口要求重新登入或權限確認",
+        "list_page_verification_failed": "入口列表沒有正確載入，可能法院端空白或頁面改版",
+        "portal_probe_not_run": "入口列表尚未執行探測",
+    }
+    base = label_map.get(error) or label_map.get(code) or error or code or "未知原因"
+    if "missing credentials" in base:
+        base = "尚未設定法院入口帳號密碼"
+    elif code and code not in {error, base} and code not in label_map:
+        base = f"{base}（{code}）"
+
+    detail = (result or {}).get("error_detail")
+    preview = ""
+    if isinstance(detail, dict):
+        page_check = detail.get("page_check") if isinstance(detail.get("page_check"), dict) else {}
+        preview = str(page_check.get("body_preview") or "").strip()
+        if not preview:
+            diagnostics = detail.get("frame_diagnostics")
+            if isinstance(diagnostics, list):
+                for frame in diagnostics:
+                    if isinstance(frame, dict) and str(frame.get("body_preview") or "").strip():
+                        preview = str(frame.get("body_preview") or "").strip()
+                        break
+    elif detail:
+        preview = str(detail).strip()
+    if preview:
+        preview = re.sub(r"\s+", " ", preview)[:90]
+        return f"{base}；頁面顯示：{preview}"
+    return base
+
+
 def _parse_iso_datetime(val: str) -> Optional[datetime]:
     s = str(val or "").strip()
     if not s:
@@ -3726,14 +3764,7 @@ def cmd_check_emails(notify: bool = True, notify_empty: bool = True) -> dict:
                         if len(dl_items) > 10:
                             review_lines.append(f"  ...（另有 {len(dl_items) - 10} 件）")
                 else:
-                    _portal_err = str(portal_summary.get("error") or "")[:120]
-                    _portal_code = str(portal_summary.get("error_code") or "").strip()
-                    _portal_detail = str(portal_summary.get("error_detail") or "").strip()
-                    if _portal_code and _portal_code != _portal_err:
-                        _portal_err = f"{_portal_err} / {_portal_code}" if _portal_err else _portal_code
-                    if _portal_detail:
-                        _portal_err = f"{_portal_err}（{_portal_detail[:160]}）" if _portal_err else _portal_detail[:160]
-                    review_lines.append(f"- ⚠️ 入口列表探測失敗：{_portal_err}")
+                    review_lines.append(f"- ⚠️ 入口列表探測失敗：{_format_portal_probe_error(portal_summary)}")
             if recent_payment_activity:
                 payment_lines.append("")
                 payment_lines.extend(_format_recent_activity_block("🗂️ 最近繳費處理", recent_payment_activity, limit=6))
@@ -4126,14 +4157,7 @@ def cmd_downloadable_probe(days: int = 30, notify: bool = False,
         downloadable_count = len(gmail_downloadable)
         msg = f"可下載判定完成（Gmail 回退）：通知 {count} 封，可下載型 {downloadable_count} 封"
         if portal_r.get("error"):
-            _portal_err = str(portal_r.get("error") or "")
-            _portal_code = str(portal_r.get("error_code") or "").strip()
-            _portal_detail = str(portal_r.get("error_detail") or "").strip()
-            if _portal_code and _portal_code != _portal_err:
-                _portal_err = f"{_portal_err} / {_portal_code}" if _portal_err else _portal_code
-            if _portal_detail:
-                _portal_err = f"{_portal_err}（{_portal_detail[:160]}）" if _portal_err else _portal_detail[:160]
-            msg += f"；入口列表探測失敗：{_portal_err}"
+            msg += f"；入口列表探測失敗：{_format_portal_probe_error(portal_r)}"
         out = {
             "success": bool(gmail_r.get("success")),
             "source": source,

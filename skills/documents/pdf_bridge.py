@@ -547,6 +547,10 @@ def _extract_text_ocr(pdf_path: str, max_pages: int, ocr_page_limit: Optional[in
             str(os.environ.get("MAGI_PDF_OCR_CONSENSUS_SHADOW", "0")).strip().lower()
             in {"1", "true", "yes", "on"}
         )
+        _nemotron_parse_enable = (
+            str(os.environ.get("MAGI_NEMOTRON_PARSE_ENABLE", "0")).strip().lower()
+            in {"1", "true", "yes", "on"}
+        )
 
         def _run_consensus_for_page(page_num, img_path):
             """呼叫 skills.engine.ocr.consensus.run_consensus，失敗回 None。
@@ -634,7 +638,7 @@ def _extract_text_ocr(pdf_path: str, max_pages: int, ocr_page_limit: Optional[in
             page_num, img_path = page_info
 
             # --- flag 完全關閉：走純舊路徑（零影響） ---
-            if not _consensus_enable and not _consensus_shadow:
+            if not _consensus_enable and not _consensus_shadow and not _nemotron_parse_enable:
                 txt = _ocr_single_page_legacy(page_num, img_path)
                 if txt:
                     return page_num, f"--- 第 {page_num} 頁 (OCR) ---\n{_normalize_extracted_text(txt)}"

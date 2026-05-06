@@ -21,6 +21,7 @@ import threading
 import logging
 import urllib.request
 import urllib.error
+from html import escape
 from collections import defaultdict, deque
 from datetime import datetime
 from pathlib import Path
@@ -642,8 +643,52 @@ _TOOLS_API_FALLBACK_PATHS = {
     "health", "summarize", "search", "research", "fetch", "vision",
     "melchior", "skills", "collab", "council", "remember", "recall",
     "clients", "meetings", "legal", "alert", "definitions", "laf",
-    "iron-dome", "code", "connections", "sages", "osc/external",
+    "iron-dome", "code", "connections", "sages", "shortcut", "jobs",
+    "osc/external", "static/exports", "api/audit_log",
 }
+
+
+def _request_wants_json_response() -> bool:
+    accept = request.headers.get("Accept") or ""
+    if not accept:
+        return True
+    if request.is_json or request.headers.get("X-Requested-With") == "XMLHttpRequest":
+        return True
+    best = request.accept_mimetypes.best_match(["application/json", "text/html"])
+    if best == "text/html" and request.accept_mimetypes[best] >= request.accept_mimetypes["application/json"]:
+        return False
+    return True
+
+
+def _browser_error_page(title: str, message: str, *, status: int) -> Response:
+    html = f"""<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{escape(title)} | MAGI</title>
+  <style>
+    body {{ margin: 0; min-height: 100vh; display: grid; place-items: center; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f5f7fb; color: #172033; }}
+    main {{ width: min(560px, calc(100vw - 32px)); background: #fff; border: 1px solid #dbe3ef; border-radius: 8px; padding: 24px; }}
+    h1 {{ margin: 0 0 10px; font-size: 22px; }}
+    p {{ margin: 0 0 18px; color: #536176; line-height: 1.6; }}
+    a {{ color: #1264d8; text-decoration: none; }}
+    @media (prefers-color-scheme: dark) {{
+      body {{ background: #111827; color: #e6edf7; }}
+      main {{ background: #182235; border-color: #2d3b52; }}
+      p {{ color: #b8c3d4; }}
+    }}
+  </style>
+</head>
+<body>
+  <main>
+    <h1>{escape(title)}</h1>
+    <p>{escape(message)}</p>
+    <a href="/golem">返回 MAGI</a>
+  </main>
+</body>
+</html>"""
+    return Response(html, status=status, mimetype="text/html")
 
 
 @app.errorhandler(404)
@@ -653,6 +698,8 @@ def _fallback_to_tools_api(error):
     first_seg = path.split("/")[0] if path else ""
     first_two = "/".join(path.split("/")[:2]) if "/" in path else ""
     if first_seg not in _TOOLS_API_FALLBACK_PATHS and first_two not in _TOOLS_API_FALLBACK_PATHS:
+        if not _request_wants_json_response():
+            return _browser_error_page("找不到頁面", f"找不到這個位置：{request.path}", status=404)
         return jsonify({"error": "not_found", "path": request.path}), 404
 
     from api.routing.service_registry import get_service_url
@@ -689,6 +736,12 @@ def _fallback_to_tools_api(error):
         err_ct = "application/json; charset=utf-8"
         if getattr(e, "headers", None):
             err_ct = e.headers.get("Content-Type", err_ct)
+        if not _request_wants_json_response() and "application/json" in (err_ct or "").lower():
+            return _browser_error_page(
+                "服務回傳錯誤",
+                f"輔助服務暫時無法完成這個請求（HTTP {int(getattr(e, 'code', 500))}）。",
+                status=int(getattr(e, "code", 500)),
+            )
         return Response(
             err_body or json.dumps({"success": False, "error": f"tools_api_http_{getattr(e, 'code', 500)}"}).encode(),
             status=int(getattr(e, "code", 500)),
@@ -696,6 +749,12 @@ def _fallback_to_tools_api(error):
         )
     except Exception as e:
         logger.warning("tools_api fallback proxy failed: %s", e)
+        if not _request_wants_json_response():
+            return _browser_error_page(
+                "服務暫時無法連線",
+                "MAGI 的輔助服務目前沒有回應，請稍後再試。",
+                status=502,
+            )
         return jsonify({"success": False, "error": f"tools_api_unreachable: {type(e).__name__}"}), 502
 
 
@@ -823,13 +882,21 @@ def callback():
 # ---------------------------------------------------------------------------
 # Startup Hooks
 # ---------------------------------------------------------------------------
-if not _SERVER_STARTUP_HOOKS_DISABLED:
+def _run_startup_hooks_background():
     try:
         from api.startup import run_startup_hooks
         run_startup_hooks(app, orchestrator)
         logger.info("Startup hooks completed")
     except Exception as e:
         logger.error("Startup hooks failed: %s", e)
+
+
+if not _SERVER_STARTUP_HOOKS_DISABLED:
+    threading.Thread(
+        target=_run_startup_hooks_background,
+        daemon=True,
+        name="server-startup-hooks",
+    ).start()
 
 # ---------------------------------------------------------------------------
 # Main

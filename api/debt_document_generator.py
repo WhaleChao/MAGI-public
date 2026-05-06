@@ -568,12 +568,41 @@ def _set_font_style(run, font_name='標楷體', size_pt=12, bold=False):
     font.bold = bold
 
 
+def _parse_amount_text(value: str) -> Optional[int]:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    cleaned = re.sub(r"[^\d.-]", "", text.replace(",", ""))
+    if not cleaned or cleaned in {"-", ".", "-."}:
+        return None
+    try:
+        return int(float(cleaned))
+    except Exception:
+        return None
+
+
 def load_address_data() -> dict:
     """
-    載入銀行 / 公司地址 CSV，回傳 {名稱: 地址} 字典。
+    載入銀行 / 公司地址資料，回傳 {名稱: 地址} 字典。
     改善：原本分散在 03_C.py 的 CSV 讀取邏輯，統一為單一函式。
     """
     address_map = {}
+    for filename in ["all adress - bank.json", "all adress - company.json"]:
+        filepath = os.path.join(_TEMPLATE_DIR, filename)
+        if not os.path.exists(filepath):
+            continue
+        try:
+            raw = json.loads(open(filepath, encoding="utf-8").read() or "[]")
+            items = raw.get("items", []) if isinstance(raw, dict) else raw
+            for item in items or []:
+                if not isinstance(item, dict):
+                    continue
+                name = str(item.get("name") or "").strip()
+                address = str(item.get("address") or "").strip()
+                if name and address:
+                    address_map[name] = address
+        except Exception as e:
+            logger.warning("讀取地址 JSON 失敗 %s: %s", filename, e)
     for filename in ["all adress - bank.csv", "all adress - company.csv"]:
         filepath = os.path.join(_TEMPLATE_DIR, filename)
         if not os.path.exists(filepath):
@@ -595,7 +624,28 @@ def get_address_options() -> dict:
     """回傳前端下拉選項所需的地址資料"""
     banks = []
     companies = []
+    seen = {"bank": set(), "company": set()}
+
+    for filename, target, key in [("all adress - bank.json", banks, "bank"), ("all adress - company.json", companies, "company")]:
+        filepath = os.path.join(_TEMPLATE_DIR, filename)
+        if not os.path.exists(filepath):
+            continue
+        try:
+            raw = json.loads(open(filepath, encoding="utf-8").read() or "[]")
+            items = raw.get("items", []) if isinstance(raw, dict) else raw
+            for item in items or []:
+                if not isinstance(item, dict):
+                    continue
+                name = str(item.get("name") or "").strip()
+                address = str(item.get("address") or "").strip()
+                if name and address and name not in seen[key]:
+                    target.append({"name": name, "address": address, "source": "json", "updated_at": item.get("updated_at", "")})
+                    seen[key].add(name)
+        except Exception as _e:
+            logging.getLogger("magi.debt_doc").warning("Failed to load JSON %s: %s", filepath, _e)
+
     for filename, target in [("all adress - bank.csv", banks), ("all adress - company.csv", companies)]:
+        key = "bank" if "bank" in filename else "company"
         filepath = os.path.join(_TEMPLATE_DIR, filename)
         if not os.path.exists(filepath):
             continue
@@ -604,11 +654,47 @@ def get_address_options() -> dict:
                 reader = csv.reader(f)
                 next(reader, None)
                 for row in reader:
-                    if len(row) >= 2:
-                        target.append({"name": row[0].strip(), "address": row[1].strip()})
+                    name = row[0].strip() if len(row) >= 1 else ""
+                    address = row[1].strip() if len(row) >= 2 else ""
+                    if name and address and name not in seen[key]:
+                        target.append({"name": name, "address": address, "source": "csv"})
+                        seen[key].add(name)
         except Exception as _e:
             logging.getLogger("magi.debt_doc").warning("Failed to load CSV %s: %s", filepath, _e)
     return {"banks": banks, "companies": companies}
+
+
+def _save_address_to_json(creditor_name: str, address: str, csv_type: str = "bank") -> bool:
+    filename = "all adress - bank.json" if csv_type == "bank" else "all adress - company.json"
+    filepath = os.path.join(_TEMPLATE_DIR, filename)
+    payload = {"version": 1, "kind": csv_type, "items": []}
+    if os.path.exists(filepath):
+        try:
+            raw = json.loads(open(filepath, encoding="utf-8").read() or "{}")
+            if isinstance(raw, list):
+                payload["items"] = raw
+            elif isinstance(raw, dict):
+                payload.update(raw)
+                items = raw.get("items") or []
+                payload["items"] = items if isinstance(items, list) else []
+        except Exception:
+            logger.warning("地址 JSON 讀取失敗，將重建: %s", filepath)
+    now = datetime.now().isoformat(timespec="seconds")
+    updated = False
+    for item in payload["items"]:
+        if str(item.get("name") or "").strip() == creditor_name:
+            item["address"] = address
+            item["type"] = csv_type
+            item["updated_at"] = now
+            updated = True
+            break
+    if not updated:
+        payload["items"].append({"name": creditor_name, "address": address, "type": csv_type, "updated_at": now})
+    payload["updated_at"] = now
+    with open(filepath, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+        f.write("\n")
+    return True
 
 
 def get_expense_reference(expense_type: str) -> Optional[int]:
@@ -634,11 +720,18 @@ def save_address_to_csv(creditor_name: str, address: str, csv_type: str = "bank"
     filename = "all adress - bank.csv" if csv_type == "bank" else "all adress - company.csv"
     filepath = os.path.join(_TEMPLATE_DIR, filename)
 
-    if not os.path.exists(filepath):
-        logger.warning("地址 CSV 檔案不存在: %s", filepath)
-        return False
+    try:
+        json_ok = _save_address_to_json(creditor_name, address, csv_type)
+    except Exception as e:
+        logger.error("保存地址到 JSON 失敗: %s", e)
+        json_ok = False
 
     try:
+        if not os.path.exists(filepath):
+            os.makedirs(os.path.dirname(filepath), exist_ok=True)
+            with open(filepath, "w", newline="", encoding="utf-8") as f:
+                csv.writer(f).writerow(["name", "address"])
+
         # 讀取現有資料
         existing_rows = []
         with open(filepath, newline='', encoding='utf-8') as f:
@@ -651,7 +744,10 @@ def save_address_to_csv(creditor_name: str, address: str, csv_type: str = "bank"
         for row in existing_rows:
             if len(row) >= 1 and row[0].strip() == creditor_name:
                 # 更新地址
-                row[1] = address if len(row) > 1 else address
+                if len(row) > 1:
+                    row[1] = address
+                else:
+                    row.append(address)
                 break
         else:
             # 新增記錄
@@ -668,7 +764,7 @@ def save_address_to_csv(creditor_name: str, address: str, csv_type: str = "bank"
         return True
     except Exception as e:
         logger.error("保存地址到 CSV 失敗: %s", e)
-        return False
+        return json_ok
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -768,6 +864,7 @@ def generate_asset_statement(data: dict[str, Any]) -> "Document":
     # 先移除所有標記行（原本用 markers 列表）
     markers = set()
     for prefix in "ABCDEFGHIJKLMNOPQRS":
+        markers.add(prefix)
         for suffix in range(4):
             markers.add(f"{prefix}{suffix}")
 
@@ -798,8 +895,8 @@ def generate_asset_statement(data: dict[str, Any]) -> "Document":
             logger.warning("找不到表格: %s", headers)
             continue
 
-        # 清除資料行（保留表頭和最後一行）
-        while len(target_table.rows) > 2:
+        # 清除資料行，只保留表頭。舊模板會留下 A/F 等標記列，網頁版產出時不可保留。
+        while len(target_table.rows) > 1:
             target_table._element.remove(target_table.rows[1]._element)
 
         if not items:
@@ -825,10 +922,10 @@ def generate_asset_statement(data: dict[str, Any]) -> "Document":
             total_row[0].text = "總計"
 
             if section_key == "income":
-                total = sum(int(item.get("amount", 0) or 0) for item in items if str(item.get("amount", "")).strip())
+                total = sum(_parse_amount_text(item.get("amount", 0)) or 0 for item in items)
                 total_row[2].text = str(total)
             elif section_key == "expenses":
-                total = sum(int(item.get("total", 0) or 0) for item in items if str(item.get("total", "")).strip())
+                total = sum(_parse_amount_text(item.get("total", 0)) or 0 for item in items)
                 total_row[2].text = str(total)
 
     return doc
@@ -890,6 +987,7 @@ def generate_creditor_list(data: dict[str, Any]) -> "Document":
         # 移除標記行
         markers = set()
         for prefix in "BCDEFGH":
+            markers.add(prefix)
             for suffix in range(4):
                 markers.add(f"{prefix}{suffix}")
 
@@ -1095,17 +1193,107 @@ def auto_import_from_docs(asset_statement_path: str, creditor_list_path: str) ->
 
     extracted_data = {}
 
+    def _row_texts(row) -> list[str]:
+        return [cell.text.strip() for cell in row.cells]
+
+    def _last_amount_in_row(row) -> Optional[int]:
+        for text in reversed(_row_texts(row)):
+            amount = _parse_amount_text(text)
+            if amount is not None:
+                return amount
+        return None
+
+    def _find_total_by_label(doc, label: str) -> Optional[int]:
+        for table in doc.tables:
+            for row in table.rows:
+                texts = _row_texts(row)
+                if any(label in text for text in texts):
+                    amount = _last_amount_in_row(row)
+                    if amount is not None:
+                        return amount
+        return None
+
+    def _extract_asset_total(doc) -> Optional[int]:
+        # 相容原單機版：第五個表格內「總計」列最後一格。
+        if len(doc.tables) >= 5:
+            for row in doc.tables[4].rows:
+                texts = _row_texts(row)
+                if texts and "總計" in texts[0]:
+                    amount = _last_amount_in_row(row)
+                    if amount is not None:
+                        return amount
+
+        # 相容不同模板版本：全文件掃描「總計」列，避開模板標記字母。
+        total = _find_total_by_label(doc, "總計")
+        if total is not None:
+            return total
+
+        # 若沒有總計列，嘗試加總可辨識的財產金額欄位。
+        amount_sum = 0
+        found_amount = False
+        for table in doc.tables:
+            if not table.rows:
+                continue
+            headers = _row_texts(table.rows[0])
+            amount_indexes = [
+                idx for idx, header in enumerate(headers)
+                if any(key in header for key in ("金額", "公告現值", "總價額"))
+            ]
+            if not amount_indexes:
+                continue
+            for row in table.rows[1:]:
+                texts = _row_texts(row)
+                if not texts or texts[0] in {"無", "總計"}:
+                    continue
+                for idx in amount_indexes:
+                    if idx < len(texts):
+                        amount = _parse_amount_text(texts[idx])
+                        if amount is not None:
+                            amount_sum += amount
+                            found_amount = True
+        return amount_sum if found_amount else None
+
+    def _extract_debt_total(doc) -> Optional[int]:
+        if doc.tables:
+            first_table = doc.tables[0]
+            for row in first_table.rows:
+                for text in _row_texts(row)[1:]:
+                    amount = _parse_amount_text(text)
+                    if amount is not None:
+                        return amount
+        return _find_total_by_label(doc, "債權總金額") or _find_total_by_label(doc, "債務總金額")
+
+    def _extract_max_creditor(doc) -> str:
+        if len(doc.tables) < 2:
+            return ""
+        table = doc.tables[1]
+        headers = _row_texts(table.rows[0]) if table.rows else []
+        amount_idx = 2
+        for idx, header in enumerate(headers):
+            if any(key in header for key in ("債權額", "金額", "債權總額")):
+                amount_idx = idx
+                break
+
+        max_value = -1
+        bank_name = ""
+        for row in table.rows[1:]:
+            texts = _row_texts(row)
+            if not texts or texts[0] in {"", "無"}:
+                continue
+            amount = _parse_amount_text(texts[amount_idx]) if amount_idx < len(texts) else _last_amount_in_row(row)
+            if amount is not None and amount > max_value:
+                max_value = amount
+                bank_name = texts[0]
+        return bank_name
+
     try:
         # 從財產說明書抽取資產總額（對應原 01_A.py 的 load_documents）
         # 原邏輯：讀取第五個表格（index 4），找到「總計」行的最後一個 cell
         if asset_statement_path and os.path.exists(asset_statement_path):
             asset_doc = Document(asset_statement_path)
-            if len(asset_doc.tables) >= 5:
-                table_five = asset_doc.tables[4]
-                for row in table_five.rows:
-                    if "總計" in row.cells[0].text:
-                        extracted_data["asset_total"] = row.cells[-1].text.strip()
-                        break
+            asset_total = _extract_asset_total(asset_doc)
+            if asset_total is not None:
+                extracted_data["asset_total"] = asset_total
             logger.info("從財產說明書讀取資料: %s", asset_statement_path)
     except Exception as e:
         logger.error("讀取財產說明書失敗: %s", e)
@@ -1119,28 +1307,14 @@ def auto_import_from_docs(asset_statement_path: str, creditor_list_path: str) ->
             creditor_doc = Document(creditor_list_path)
             if creditor_doc.tables:
                 # 讀取總金額
-                first_table = creditor_doc.tables[0]
-                try:
-                    raw = first_table.cell(0, 1).text.strip().replace(",", "")
-                    extracted_data["debt_total"] = int(raw) if raw.isdigit() else raw
-                except Exception:
-                    logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 1061, exc_info=True)
+                debt_total = _extract_debt_total(creditor_doc)
+                if debt_total is not None:
+                    extracted_data["debt_total"] = debt_total
 
                 # 讀取最大債權銀行
-                if len(creditor_doc.tables) >= 2:
-                    second_table = creditor_doc.tables[1]
-                    max_value = -1
-                    bank_name = ""
-                    for row in second_table.rows:
-                        try:
-                            value = int(row.cells[2].text.strip().replace(",", ""))
-                            if value > max_value and row.cells[0].text.strip():
-                                max_value = value
-                                bank_name = row.cells[0].text.strip()
-                        except (ValueError, IndexError):
-                            continue
-                    if bank_name:
-                        extracted_data["max_bank"] = bank_name
+                bank_name = _extract_max_creditor(creditor_doc)
+                if bank_name:
+                    extracted_data["max_bank"] = bank_name
 
             logger.info("從債權人清冊讀取資料: %s", creditor_list_path)
     except Exception as e:

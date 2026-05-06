@@ -54,6 +54,24 @@
             cursor: pointer;
         }
         .refresh-btn:hover { background: #0066CC; }
+        .status-banner {
+            border-radius: 12px;
+            padding: 12px 14px;
+            margin-bottom: 18px;
+            font-size: 0.88rem;
+            line-height: 1.45;
+            border: 1px solid transparent;
+        }
+        .status-banner.ok {
+            background: #F3FBF7;
+            border-color: #D1E7DD;
+            color: #0F5132;
+        }
+        .status-banner.failed {
+            background: #FFF4E5;
+            border-color: #FFD8A8;
+            color: #7A3E00;
+        }
 
         .page-wrap {
             max-width: 900px;
@@ -257,9 +275,7 @@
         <a href="/dashboard">返回 MAGI</a>
         <div class="nav-right">
             <span style="font-size:0.78rem;color:#6E6E73;">每日更新</span>
-            <form method="POST" action="/api/skills/run" style="display:inline;">
-                <input type="hidden" name="skill" value="worldmonitor-intel">
-                <input type="hidden" name="task" value="collect">
+            <form method="POST" action="/api/intel/refresh" style="display:inline;">
                 <button type="submit" class="refresh-btn">立即更新</button>
             </form>
         </div>
@@ -270,6 +286,11 @@
             <h1>全球新聞網</h1>
             <p>由 MAGI Melchior 分析 BBC、NHK、Al Jazeera 等來源的每日新聞</p>
         </div>
+        {% if request.args.get('refresh') == 'ok' %}
+        <div class="status-banner ok">全球新聞已完成更新，最新報告已重新整理在下方。</div>
+        {% elif request.args.get('refresh') == 'failed' %}
+        <div class="status-banner failed">全球新聞更新沒有完成，請稍後再試或檢查 MAGI 服務狀態。</div>
+        {% endif %}
 
         {% if reports %}
             {% for report in reports %}

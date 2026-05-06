@@ -138,10 +138,13 @@ async function dispatchDelegatedAction(act, t) {
 
     if (act === "todo-edit") return await editTodo(Number(id));
     if (act === "todo-del") return await delTodo(Number(id));
+    if (act === "todo-complete") return await setTodoDone(Number(id), true);
+    if (act === "todo-reopen") return await setTodoDone(Number(id), false);
 
     if (act === "doc-open") return await openDocumentPath(t.dataset.path || "");
     if (act === "doc-copy") return await copyDocumentPath(t.dataset.path || "");
     if (act === "doc-stamp") return await stampDocument(t.dataset.path || "");
+    if (act === "doc-finalize") return await finalizeDocument(t.dataset.path || "");
     if (act === "doc-pdf-tool") return setPdfToolPath(t.dataset.path || "");
     if (act === "laf-open-checklist") return await openLafChecklistCase(t.dataset.case || "");
     if (act === "laf-select-case") return await openLafCaseDetail(id);
@@ -209,6 +212,7 @@ async function dispatchDelegatedAction(act, t) {
     if (act === "wb-folder-open") return await openCaseFolder(id, t.dataset.path || "");
     if (act === "wb-folder-upload") return promptFolderUpload(id, t.dataset.folderPath || "", t.dataset.path || "");
     if (act === "wb-folder-copy-path") return await copyText(t.dataset.path || "", "路徑已複製。");
+    if (act === "wb-file-share") return await shareFileLink(t.dataset.path || "", t.dataset.name || "檔案");
     if (act === "wb-file-edit") return await openTextFileEditor(id, t.dataset.path || "", t.dataset.returnPath || "");
     if (act === "wb-file-save") return await saveTextFileEditor(id, t.dataset.path || "", t.dataset.returnPath || "");
     if (act === "wb-file-editor-back") return await openCaseFolder(id, t.dataset.path || "");
@@ -330,6 +334,10 @@ function bindEvents() {
         ["pdfWatermarkBtn", () => runPdfTool("watermark"), "PDF 加浮水印"],
         ["pdfOptimizeBtn", () => runPdfTool("optimize"), "PDF 最佳化"],
         ["pdfEncryptBtn", () => runPdfTool("encrypt"), "PDF 加密副本"],
+        ["pdfCalendarPreviewBtn", () => runPdfCalendarScan(false, false), "PDF 行程掃描"],
+        ["pdfCalendarWriteBtn", () => runPdfCalendarScan(true, false), "PDF 行程寫入"],
+        ["pdfCalendarWriteSyncBtn", () => runPdfCalendarScan(true, true), "PDF 行程寫入並同步"],
+        ["pdfCalendarAllCasesBtn", runAllCasePdfCalendarScan, "全部案件 PDF 行程掃描"],
         ["lafWizardPreviewBtn", () => runLafWizard("preview"), "法扶精靈預覽"],
         ["lafWizardDraftBtn", () => runLafWizard("draft"), "法扶精靈存檔"],
         ["lafWizardSubmitBtn", () => runLafWizard("submit"), "法扶精靈送出"],

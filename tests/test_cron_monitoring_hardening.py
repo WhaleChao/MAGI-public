@@ -61,6 +61,63 @@ def test_nightly_health_report_surfaces_top_level_autopilot_failure(tmp_path, mo
     assert "無步驟資料可供判定" not in text
 
 
+def test_nightly_health_report_prefers_nightly_over_later_self_test(tmp_path, monkeypatch):
+    import scripts.nightly_health_report as report
+    from datetime import datetime
+
+    today = datetime.now().strftime("%Y%m%d")
+    nightly_dir = tmp_path / f"{today}_010000_nightly"
+    self_test_dir = tmp_path / f"{today}_101710_self_test"
+    nightly_dir.mkdir()
+    self_test_dir.mkdir()
+    (nightly_dir / "report.json").write_text(
+        json.dumps(
+            {
+                "ok": True,
+                "details": {
+                    "steps": {
+                        "pdf_nightly_train": {"ok": True, "parsed": {"message": "trained"}},
+                    }
+                },
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (self_test_dir / "report.json").write_text(
+        json.dumps({"task": "self_test", "ok": True, "details": {"db_schema_guard": {"ok": True}}}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(report, "AUTOPILOT_RUNS_DIR", str(tmp_path))
+    monkeypatch.setattr(report, "DELIVERY_LOG", str(tmp_path / "missing.jsonl"))
+
+    assert report._find_latest_nightly_run() == str(nightly_dir)
+    text = report.generate_report()
+    assert "PDF 視覺訓練" in text
+    assert "無法解析步驟結果" not in text
+    assert "無步驟資料可供判定" not in text
+
+
+def test_nightly_health_report_handles_self_test_without_parse_warning(tmp_path, monkeypatch):
+    import scripts.nightly_health_report as report
+    from datetime import datetime
+
+    today = datetime.now().strftime("%Y%m%d")
+    run_dir = tmp_path / f"{today}_101710_self_test"
+    run_dir.mkdir()
+    (run_dir / "report.json").write_text(
+        json.dumps({"task": "self_test", "ok": True, "details": {"db_schema_guard": {"ok": True}}}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(report, "AUTOPILOT_RUNS_DIR", str(tmp_path))
+    monkeypatch.setattr(report, "DELIVERY_LOG", str(tmp_path / "missing.jsonl"))
+
+    text = report.generate_report()
+    assert "self_test" in text
+    assert "無法解析步驟結果" not in text
+    assert "無步驟資料可供判定" not in text
+
+
 def test_autopilot_user_active_defer_defined_before_first_call():
     source = Path("skills/magi-autopilot/action.py").read_text(encoding="utf-8")
     run_start = source.index("def run_nightly")

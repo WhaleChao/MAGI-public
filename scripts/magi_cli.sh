@@ -40,6 +40,28 @@ _check_port() {
     fi
 }
 
+_wait_for_pattern() {
+    local pattern="$1" max_wait="${2:-20}" i
+    for i in $(seq 1 "$max_wait"); do
+        if pgrep -f "$pattern" >/dev/null 2>&1; then
+            return 0
+        fi
+        sleep 1
+    done
+    return 1
+}
+
+_wait_for_port() {
+    local port="$1" max_wait="${2:-20}" i
+    for i in $(seq 1 "$max_wait"); do
+        if lsof -ti:"$port" -sTCP:LISTEN >/dev/null 2>&1; then
+            return 0
+        fi
+        sleep 1
+    done
+    return 1
+}
+
 _launchctl_present() {
     local label="$1"
     launchctl list "$label" >/dev/null 2>&1
@@ -225,7 +247,13 @@ cmd_start() {
         echo "  Starting status bar..."
         launchctl bootstrap gui/$(id -u) "$MENUBAR_PLIST" 2>/dev/null || launchctl load "$MENUBAR_PLIST" 2>/dev/null || true
     fi
-    sleep 3
+    echo "  Waiting for web services..."
+    _wait_for_pattern "api/server.py" 30 || true
+    _wait_for_port 5002 30 || true
+    _wait_for_pattern "api/tools_api.py" 20 || true
+    _wait_for_port 5003 20 || true
+    _wait_for_pattern "api/discord_bot.py" 20 || true
+    sleep 1
     cmd_status
 }
 

@@ -15,6 +15,7 @@ from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 import pytest
+import fitz
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -50,7 +51,7 @@ FAKE_QUOTATION = {
     "date": "2026-04-28",
     "expiry": "2026-05-28",
     "items": json.dumps([
-        {"name": "法律諮詢", "qty": 2, "unit_price": 3000, "subtotal": 6000},
+        {"item": "法律諮詢服務", "description": "提供專業法律意見及案件分析", "unit": "式", "cost": 3000, "qty": 2},
     ]),
     "subtotal": 6000,
     "discount": 0,
@@ -58,6 +59,12 @@ FAKE_QUOTATION = {
     "total": 6000,
     "status": "draft",
     "notes": "請於期限前確認",
+    "extended_data": json.dumps({
+        "contact": "王經理",
+        "lawyer": "喬政翔律師",
+        "specialist": "林稚芳法務專員",
+        "specialist_phone": "03-8357-186；0937-753-800",
+    }),
 }
 
 
@@ -143,3 +150,49 @@ def test_pdf_handles_chinese_client_name(client):
     assert resp.status_code == 200
     assert resp.mimetype == "application/pdf"
     assert resp.data[:4] == b"%PDF"
+
+
+def test_pdf_uses_standalone_osc_layout_text(client):
+    """PDF text should expose the same user-facing sections as standalone OSC."""
+    def fake_exec(sql, params=(), fetch="all"):
+        if fetch == "one" and "quotations" in sql:
+            return (FAKE_QUOTATION, None)
+        if fetch == "one":
+            return (None, None)
+        return ([], None)
+
+    def fake_setting(key, default=""):
+        values = {
+            "company_name": "偵理法律事務所",
+            "company_name_en": "ZHENLI LAW FIRM",
+            "bank_name": "第一銀行",
+            "bank_account_name": "偵理法律事務所",
+            "bank_account_number": "801-10-072526",
+            "logo_path": "",
+            "business_card_path": "",
+        }
+        return values.get(key, default or "")
+
+    with patch("api.blueprints.osc_cases._osc_exec", side_effect=fake_exec), \
+         patch("api.blueprints.osc_cases._osc_get_setting_value", side_effect=fake_setting):
+        resp = client.get("/api/osc/quotations/q-20260428-abc/export-pdf")
+
+    assert resp.status_code == 200
+    doc = fitz.open(stream=resp.data, filetype="pdf")
+    try:
+        text = "\n".join(page.get_text("text") for page in doc)
+        image_count = sum(len(page.get_images(full=True)) for page in doc)
+    finally:
+        doc.close()
+    for phrase in [
+        "法律服務報價單",
+        "當事人姓名",
+        "本報價單有效期限",
+        "本案承辦律師",
+        "服務內容",
+        "付款方式與帳戶資訊",
+        "本報價於當事人確認及付款後生效",
+        "補充說明",
+    ]:
+        assert phrase in text
+    assert image_count >= 1

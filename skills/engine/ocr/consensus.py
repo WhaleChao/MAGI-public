@@ -56,6 +56,13 @@ def _env_float(key: str, default: float) -> float:
         return default
 
 
+def _env_bool(key: str, default: bool = False) -> bool:
+    raw = os.environ.get(key)
+    if raw is None:
+        return default
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+
 # --- 信心度計算 -------------------------------------------------------------
 
 def _compute_confidence(
@@ -213,6 +220,22 @@ def _select_text(
     return vision.corrected_text or vision.raw_text
 
 
+def _select_best_text(results: Dict[str, OCRProviderResult]) -> str:
+    """Select the highest-quality successful provider output."""
+    successful = [r for r in results.values() if r and r.success]
+    if not successful:
+        return ""
+    successful.sort(
+        key=lambda r: (
+            float(r.quality_score or 0.0),
+            len(r.corrected_text or r.raw_text or ""),
+        ),
+        reverse=True,
+    )
+    best = successful[0]
+    return best.corrected_text or best.raw_text
+
+
 # --- 主入口 -----------------------------------------------------------------
 
 def run_consensus(
@@ -241,9 +264,12 @@ def run_consensus(
             f"image file not found: {image_path!r}"
         )
 
-    # 並行執行兩個 provider
+    nemotron_enabled = _env_bool("MAGI_NEMOTRON_PARSE_ENABLE", False) and task_type != "captcha"
+
+    # 並行執行 provider。Nemotron Parse 是明確啟用後的第三 provider。
     tess_result: Optional[OCRProviderResult] = None
     vision_result: Optional[OCRProviderResult] = None
+    nemotron_result: Optional[OCRProviderResult] = None
 
     def _run_tess() -> OCRProviderResult:
         return tesseract_provider.run(
@@ -259,9 +285,19 @@ def run_consensus(
             timeout_sec=max(timeout_sec * 0.85, 10.0),
         )
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+    def _run_nemotron() -> OCRProviderResult:
+        from skills.engine.ocr import nemotron_parse_provider
+
+        return nemotron_parse_provider.run(
+            image_path,
+            task_type=task_type,
+            timeout_sec=max(timeout_sec * 0.95, 10.0),
+        )
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=3 if nemotron_enabled else 2) as executor:
         fut_tess = executor.submit(_run_tess)
         fut_vision = executor.submit(_run_vision)
+        fut_nemotron = executor.submit(_run_nemotron) if nemotron_enabled else None
 
         remaining = timeout_sec - (time.monotonic() - t0)
 
@@ -295,24 +331,42 @@ def run_consensus(
                 f"executor error: {type(e).__name__}: {e}",
             )
 
+        if fut_nemotron is not None:
+            remaining = timeout_sec - (time.monotonic() - t0)
+            try:
+                nemotron_result = fut_nemotron.result(timeout=max(remaining, 1.0))
+            except concurrent.futures.TimeoutError:
+                nemotron_result = OCRProviderResult.failure(
+                    "nemotron_parse_mlx",
+                    f"consensus timeout after {timeout_sec}s",
+                    timed_out=True,
+                )
+            except Exception as e:
+                nemotron_result = OCRProviderResult.failure(
+                    "nemotron_parse_mlx",
+                    f"executor error: {type(e).__name__}: {e}",
+                )
+
     # 至此兩個結果均非 None
     provider_results: Dict[str, OCRProviderResult] = {
         "tesseract": tess_result,
         "apple_vision": vision_result,
     }
+    if nemotron_result is not None:
+        provider_results["nemotron_parse_mlx"] = nemotron_result
 
-    # 兩邊都失敗
-    if not tess_result.success and not vision_result.success:
+    # 全部失敗
+    if not any(r.success for r in provider_results.values()):
         duration = time.monotonic() - t0
-        both_timed_out = tess_result.timed_out and vision_result.timed_out
+        all_timed_out = all(r.timed_out for r in provider_results.values())
         return OCRConsensusResult(
             success=False,
             provider_results=provider_results,
             error=(
-                "consensus timeout: both providers timed out"
-                if both_timed_out
-                else f"both providers failed: tess={tess_result.error!r}; "
-                     f"vision={vision_result.error!r}"
+                "consensus timeout: all providers timed out"
+                if all_timed_out
+                else "all providers failed: "
+                + "; ".join(f"{name}={r.error!r}" for name, r in provider_results.items())
             ),
             duration_sec=round(duration, 3),
         )
@@ -322,8 +376,14 @@ def run_consensus(
         tess_result, vision_result
     )
 
-    # 選出最佳文字
-    selected_text = _select_text(tess_result, vision_result)
+    # 選出最佳文字。未啟用 Nemotron 時保留原兩-provider 行為。
+    if nemotron_result is not None and nemotron_result.success:
+        selected_text = _select_best_text(provider_results)
+        confidence = max(confidence, round(float(nemotron_result.quality_score or 0.0), 4))
+        warnings = [w for w in warnings if w != "both providers failed"]
+        warnings.append("nemotron_parse_mlx enabled")
+    else:
+        selected_text = _select_text(tess_result, vision_result)
 
     # 對 selected_text 再做一次修正（不依賴任何 provider 的 corrected_text）
     if task_type == "captcha":

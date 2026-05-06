@@ -24,6 +24,10 @@ import html
 import os
 import re
 import subprocess
+import sys
+import urllib.parse
+import urllib.request
+import xml.etree.ElementTree as ET
 from datetime import datetime
 from pathlib import Path
 
@@ -173,6 +177,96 @@ def _clean_worldmonitor_text(text: str) -> str:
     return cleaned
 
 
+def _strip_markup_text(text: str, limit: int = 360) -> str:
+    cleaned = html.unescape(str(text or ""))
+    cleaned = re.sub(r"<[^>]+>", " ", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned[:limit].rstrip()
+
+
+def _xml_child_text(node: ET.Element, *names: str) -> str:
+    for name in names:
+        child = node.find(name)
+        if child is not None and child.text:
+            return str(child.text).strip()
+    for child in list(node):
+        local = child.tag.rsplit("}", 1)[-1] if "}" in child.tag else child.tag
+        if local in names and child.text:
+            return str(child.text).strip()
+    return ""
+
+
+def _xml_child_link(node: ET.Element) -> str:
+    link_text = _xml_child_text(node, "link")
+    if link_text:
+        return link_text
+    for child in list(node):
+        local = child.tag.rsplit("}", 1)[-1] if "}" in child.tag else child.tag
+        if local == "link":
+            href = str(child.attrib.get("href") or "").strip()
+            if href:
+                return href
+    return ""
+
+
+def _parse_research_feed(raw: bytes, source_url: str) -> dict:
+    root = ET.fromstring(raw)
+    channel = root.find("channel")
+    feed_node = channel if channel is not None else root
+    title = _xml_child_text(feed_node, "title") or source_url
+    site_link = _xml_child_link(feed_node) or source_url
+    updated = _xml_child_text(feed_node, "lastBuildDate", "updated", "pubDate")
+
+    candidates = feed_node.findall("item")
+    if not candidates:
+        candidates = [
+            child for child in list(feed_node)
+            if (child.tag.rsplit("}", 1)[-1] if "}" in child.tag else child.tag) == "entry"
+        ]
+
+    items: list[dict] = []
+    for item in candidates[:30]:
+        item_title = _strip_markup_text(_xml_child_text(item, "title"), limit=180)
+        link = _xml_child_link(item)
+        summary = _strip_markup_text(
+            _xml_child_text(item, "description", "summary", "content"),
+            limit=420,
+        )
+        pub_date = _strip_markup_text(_xml_child_text(item, "pubDate", "published", "updated"), limit=120)
+        if not item_title and not link:
+            continue
+        items.append({
+            "title": item_title or link,
+            "link": link,
+            "summary": summary,
+            "date": pub_date,
+        })
+    return {
+        "title": _strip_markup_text(title, limit=160),
+        "site_link": site_link,
+        "source_url": source_url,
+        "updated": _strip_markup_text(updated, limit=120),
+        "items": items,
+    }
+
+
+def _fetch_research_feed(source_url: str, timeout: int = 12) -> dict:
+    req = urllib.request.Request(
+        source_url,
+        headers={
+            "User-Agent": "MAGI Research Preview/1.0",
+            "Accept": "application/rss+xml, application/atom+xml, text/xml, application/xml, */*",
+        },
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as response:
+        raw = response.read(2_000_000)
+    return _parse_research_feed(raw, source_url)
+
+
+def _normalise_source_url(url: str) -> str:
+    return str(url or "").strip().rstrip("/")
+
+
 def _load_worldmonitor_sidecar(entry: Path) -> dict:
     sidecar = entry.with_suffix(".json")
     try:
@@ -312,6 +406,33 @@ def _iter_worldmonitor_reports(limit: int = 20) -> list[dict]:
     return reports
 
 
+def _run_worldmonitor_collect(timeout: int = 240) -> tuple[bool, str]:
+    """Run the local worldmonitor skill from the web app without exposing /skills/run."""
+    action_path = _MAGI_ROOT / "skills" / "worldmonitor-intel" / "action.py"
+    if not action_path.is_file():
+        return False, "找不到全球新聞網技能程式。"
+
+    bundled_python = _MAGI_ROOT / "venv" / "bin" / "python"
+    python_bin = os.environ.get("MAGI_SKILL_PYTHON") or (str(bundled_python) if bundled_python.exists() else sys.executable)
+    try:
+        result = subprocess.run(
+            [python_bin, str(action_path), "--task", "collect"],
+            cwd=str(_MAGI_ROOT),
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        return False, "全球新聞更新逾時，請稍後再試。"
+    except Exception as exc:
+        return False, f"全球新聞更新啟動失敗：{exc}"
+
+    output = "\n".join(part for part in (result.stdout, result.stderr) if part).strip()
+    if result.returncode != 0:
+        return False, output[-1200:] or "全球新聞更新失敗。"
+    return True, output[-1200:] or "全球新聞已更新。"
+
+
 @dashboard_pages_bp.route("/static/worldmonitor_reports")
 @dashboard_pages_bp.route("/static/worldmonitor_reports/")
 def worldmonitor_reports_redirect():
@@ -335,6 +456,42 @@ def openclaw_entry():
 def intel_panel():
     reports = _iter_worldmonitor_reports()
     return render_template("intel.html", reports=reports)
+
+
+def _intel_refresh_response(ok: bool, message: str):
+    wants_json = (
+        request.is_json
+        or request.headers.get("X-Requested-With") == "XMLHttpRequest"
+        or request.accept_mimetypes.best == "application/json"
+    )
+    if wants_json:
+        return jsonify({"ok": ok, "message": message}), 200 if ok else 500
+    return redirect(url_for("dashboard_pages.intel_panel", refresh="ok" if ok else "failed"))
+
+
+@dashboard_pages_bp.route("/api/intel/refresh", methods=["POST"])
+@login_required
+def intel_refresh():
+    ok, message = _run_worldmonitor_collect()
+    return _intel_refresh_response(ok, message)
+
+
+@dashboard_pages_bp.route("/api/skills/run", methods=["POST"])
+@login_required
+def api_skills_run_compat():
+    """Compatibility for the old Global News button; generic skill runs stay on Tools API."""
+    data = request.get_json(silent=True) if request.is_json else None
+    data = data if isinstance(data, dict) else request.form
+    skill = str(data.get("skill") or "").strip()
+    task = str(data.get("task") or "").strip()
+    if skill == "worldmonitor-intel" and task == "collect":
+        ok, message = _run_worldmonitor_collect()
+        return _intel_refresh_response(ok, message)
+    return jsonify({
+        "ok": False,
+        "error": "unsupported_main_site_skill_route",
+        "message": "主網站只保留全球新聞網舊按鈕相容；其他技能請使用 Tools API /skills/run。",
+    }), 400
 
 
 def _read_json_file(path: Path, default):
@@ -362,17 +519,28 @@ def _load_research_dashboard() -> dict:
                 "name": data.get("namespace") or entry.stem,
                 "topic_key": data.get("topic_key") or "research_daily",
                 "keywords": [str(k) for k in keywords if str(k).strip()],
-                "sources": [
-                    {
-                        "url": str(s.get("url") or "").strip(),
-                        "type": str(s.get("type") or "html").strip(),
-                        "lang": str(s.get("lang") or "").strip(),
-                        "note": str(s.get("note") or "").strip(),
-                    }
-                    for s in sources
-                    if isinstance(s, dict) and str(s.get("url") or "").strip()
-                ],
+                "sources": [],
             })
+            for s in sources:
+                if not isinstance(s, dict):
+                    continue
+                source_url = str(s.get("url") or "").strip()
+                if not source_url:
+                    continue
+                source_type = str(s.get("type") or "html").strip()
+                is_feed = source_type.lower() in {"rss", "atom", "feed"}
+                namespaces[-1]["sources"].append({
+                    "url": source_url,
+                    "open_url": (
+                        "/research/rss-preview?" + urllib.parse.urlencode({"url": source_url})
+                        if is_feed
+                        else source_url
+                    ),
+                    "is_feed": is_feed,
+                    "type": source_type,
+                    "lang": str(s.get("lang") or "").strip(),
+                    "note": str(s.get("note") or "").strip(),
+                })
 
     crawler_state = _read_json_file(_MAGI_ROOT / "_crawl_targets.json", {"targets": []})
     crawl_targets = crawler_state.get("targets") if isinstance(crawler_state, dict) else []
@@ -409,6 +577,40 @@ def _load_research_dashboard() -> dict:
 @login_required
 def research_panel():
     return render_template("research.html", research=_load_research_dashboard(), user=current_user)
+
+
+@dashboard_pages_bp.route("/research/rss-preview")
+@login_required
+def research_rss_preview():
+    source_url = str(request.args.get("url") or "").strip()
+    known_sources = {
+        _normalise_source_url(source.get("url"))
+        for namespace in _load_research_dashboard().get("namespaces", [])
+        for source in namespace.get("sources", [])
+        if source.get("is_feed")
+    }
+    if not source_url or _normalise_source_url(source_url) not in known_sources:
+        feed = {
+            "title": "找不到研究來源",
+            "source_url": source_url,
+            "site_link": "",
+            "updated": "",
+            "items": [],
+            "error": "這個 RSS 不在 MAGI 的研究來源清單中。",
+        }
+        return render_template("rss_preview.html", feed=feed, user=current_user), 404
+    try:
+        feed = _fetch_research_feed(source_url)
+    except Exception as exc:
+        feed = {
+            "title": source_url,
+            "source_url": source_url,
+            "site_link": source_url,
+            "updated": "",
+            "items": [],
+            "error": f"RSS 讀取失敗：{exc}",
+        }
+    return render_template("rss_preview.html", feed=feed, user=current_user)
 
 
 @dashboard_pages_bp.route("/dashboard")

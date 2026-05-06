@@ -4036,15 +4036,36 @@ class FileReviewManager:
         return """
         () => {
           const body = ((document.body && document.body.innerText) || '') + '';
-          const rows = Array.from(document.querySelectorAll("tr#trdata, table#tablecontext tbody tr"));
-          const hasTable = !!document.querySelector("table#tablecontext, tr#trdata");
+          const strictRows = Array.from(document.querySelectorAll("tr#trdata, table#tablecontext tbody tr"));
+          const genericRows = Array.from(document.querySelectorAll("table tbody tr, [role='row'], .el-table__row, .v-data-table__tr"));
+          const hasSpecificTable = !!document.querySelector("table#tablecontext, tr#trdata");
           const hasMarkers = body.indexOf('聲請登錄清單') >= 0 || body.indexOf('序次') >= 0
             || body.indexOf('聲請時間') >= 0 || body.indexOf('對象法院') >= 0
-            || body.indexOf('線上下載') >= 0 || body.indexOf('繳費') >= 0;
+            || body.indexOf('線上下載') >= 0 || body.indexOf('繳費') >= 0
+            || body.indexOf('閱卷') >= 0 || body.indexOf('電子卷證') >= 0
+            || body.indexOf('當事人') >= 0 || body.indexOf('案號') >= 0
+            || body.indexOf('申請狀態') >= 0 || body.indexOf('下載期限') >= 0
+            || body.indexOf('查詢結果') >= 0;
+          const hasEmptyState = body.indexOf('查無資料') >= 0 || body.indexOf('查無符合') >= 0
+            || body.indexOf('無符合資料') >= 0 || body.indexOf('目前無') >= 0
+            || body.indexOf('尚無') >= 0 || body.indexOf('沒有資料') >= 0
+            || body.indexOf('無可下載') >= 0 || body.indexOf('無待下載') >= 0;
+          const hasAuthMarkers = body.indexOf('請重新登入') >= 0 || body.indexOf('登入逾時') >= 0
+            || body.indexOf('驗證碼') >= 0 || body.indexOf('自然人憑證登入') >= 0
+            || body.indexOf('會員登入') >= 0 || body.indexOf('使用者代號') >= 0
+            || body.indexOf('密碼') >= 0 || body.indexOf('無權限') >= 0;
+          const trCount = strictRows.length || (hasMarkers ? genericRows.length : 0);
+          const hasTable = hasSpecificTable || (hasMarkers && !!document.querySelector('table, [role="table"], .el-table, .v-data-table'));
+          const isValidList = !hasAuthMarkers && (hasMarkers || hasEmptyState || hasTable || trCount > 0);
           return {
             has_list_markers: hasMarkers,
             has_table: hasTable,
-            tr_count: rows.length,
+            has_empty_state: hasEmptyState,
+            has_auth_markers: hasAuthMarkers,
+            is_valid_list: isValidList,
+            tr_count: trCount,
+            strict_tr_count: strictRows.length,
+            body_len: body.trim().length,
             body_preview: body.replace(/\\s+/g, ' ').trim().slice(0, 220),
             title: document.title || ''
           };
@@ -4140,41 +4161,62 @@ class FileReviewManager:
             except Exception:
                 pass
 
-        best: Dict[str, Any] = {}
-        best_score = -1
-        diagnostics: List[Dict[str, Any]] = []
-        for frame in frames:
-            try:
-                check = frame.evaluate(self._review_list_verify_js()) or {}
-            except Exception:
-                continue
-            try:
-                name = frame.name
-            except Exception:
-                name = ""
-            try:
-                url = frame.url
-            except Exception:
-                url = ""
-            check.update({"frame_name": name, "frame_url": url})
-            diagnostics.append({k: check.get(k) for k in ("frame_name", "frame_url", "has_list_markers", "has_table", "tr_count", "body_preview")})
-            score = (
-                int(bool(check.get("has_list_markers")))
-                + int(bool(check.get("has_table"))) * 2
-                + int(check.get("tr_count") or 0) * 3
-            )
-            if score > best_score:
-                best_score = score
-                best = {"frame": frame, "check": check, "diagnostics": diagnostics}
+        last_diagnostics: List[Dict[str, Any]] = []
+        deadline = time.time() + 6.0
+        while True:
+            best: Dict[str, Any] = {}
+            best_score = -1
+            diagnostics: List[Dict[str, Any]] = []
+            for frame in frames:
+                try:
+                    check = frame.evaluate(self._review_list_verify_js()) or {}
+                except Exception:
+                    continue
+                try:
+                    name = frame.name
+                except Exception:
+                    name = ""
+                try:
+                    url = frame.url
+                except Exception:
+                    url = ""
+                check.update({"frame_name": name, "frame_url": url})
+                diagnostics.append({
+                    k: check.get(k)
+                    for k in (
+                        "frame_name", "frame_url", "has_list_markers", "has_table",
+                        "has_empty_state", "has_auth_markers", "is_valid_list",
+                        "tr_count", "strict_tr_count", "body_len", "body_preview",
+                    )
+                })
+                score = (
+                    int(bool(check.get("is_valid_list"))) * 10
+                    + int(bool(check.get("has_empty_state"))) * 4
+                    + int(bool(check.get("has_table"))) * 3
+                    + int(bool(check.get("has_list_markers"))) * 2
+                    + min(int(check.get("tr_count") or 0), 20)
+                    + min(int(check.get("body_len") or 0), 200) / 1000.0
+                    - int(bool(check.get("has_auth_markers"))) * 20
+                )
+                if score > best_score:
+                    best_score = score
+                    best = {"frame": frame, "check": check, "diagnostics": diagnostics}
 
-        check = best.get("check") or {}
-        if check.get("has_list_markers") or check.get("has_table") or int(check.get("tr_count") or 0) > 0:
+            last_diagnostics = diagnostics
+            check = best.get("check") or {}
+            if check.get("is_valid_list") or check.get("has_empty_state"):
+                try:
+                    self.driver._active_frame = best.get("frame")
+                except Exception:
+                    pass
+                return best
+            if time.time() >= deadline:
+                return {"diagnostics": last_diagnostics, "check": check}
+            time.sleep(0.5)
             try:
-                self.driver._active_frame = best.get("frame")
+                frames = list(pw_page.frames)
             except Exception:
                 pass
-            return best
-        return {"diagnostics": diagnostics}
 
     def _open_review_list_v1(self) -> bool:
         """
@@ -4274,19 +4316,50 @@ class FileReviewManager:
                     var body = (document.body ? document.body.innerText : '') || '';
                     var hasList = body.indexOf('聲請登錄清單') >= 0 || body.indexOf('序次') >= 0
                                || body.indexOf('聲請時間') >= 0 || body.indexOf('對象法院') >= 0
-                               || body.indexOf('線上下載') >= 0 || body.indexOf('繳費') >= 0;
-                    var trCount = document.querySelectorAll('tr#trdata, table#tablecontext tbody tr').length;
-                    var hasTable = !!document.querySelector('table#tablecontext, tr#trdata');
+                               || body.indexOf('線上下載') >= 0 || body.indexOf('繳費') >= 0
+                               || body.indexOf('閱卷') >= 0 || body.indexOf('電子卷證') >= 0
+                               || body.indexOf('當事人') >= 0 || body.indexOf('案號') >= 0
+                               || body.indexOf('申請狀態') >= 0 || body.indexOf('下載期限') >= 0
+                               || body.indexOf('查詢結果') >= 0;
+                    var hasEmptyState = body.indexOf('查無資料') >= 0 || body.indexOf('查無符合') >= 0
+                                  || body.indexOf('無符合資料') >= 0 || body.indexOf('目前無') >= 0
+                                  || body.indexOf('尚無') >= 0 || body.indexOf('沒有資料') >= 0
+                                  || body.indexOf('無可下載') >= 0 || body.indexOf('無待下載') >= 0;
+                    var hasAuthMarkers = body.indexOf('請重新登入') >= 0 || body.indexOf('登入逾時') >= 0
+                                      || body.indexOf('驗證碼') >= 0 || body.indexOf('自然人憑證登入') >= 0
+                                      || body.indexOf('會員登入') >= 0 || body.indexOf('使用者代號') >= 0
+                                      || body.indexOf('密碼') >= 0 || body.indexOf('無權限') >= 0;
+                    var strictTrCount = document.querySelectorAll('tr#trdata, table#tablecontext tbody tr').length;
+                    var genericTrCount = document.querySelectorAll('table tbody tr, [role="row"], .el-table__row, .v-data-table__tr').length;
+                    var trCount = strictTrCount || (hasList ? genericTrCount : 0);
+                    var hasTable = !!document.querySelector('table#tablecontext, tr#trdata') || (hasList && !!document.querySelector('table, [role="table"], .el-table, .v-data-table'));
                     return {
                         has_list_markers: hasList,
                         has_table: hasTable,
+                        has_empty_state: hasEmptyState,
+                        has_auth_markers: hasAuthMarkers,
+                        is_valid_list: !hasAuthMarkers && (hasList || hasEmptyState || hasTable || trCount > 0),
                         tr_count: trCount,
+                        strict_tr_count: strictTrCount,
+                        body_len: body.trim().length,
                         body_preview: body.replace(/\\s+/g, ' ').trim().slice(0, 220)
                     };
                 """) or {}
-            if (not _page_check.get("has_list_markers")
-                    and not _page_check.get("has_table")
-                    and _page_check.get("tr_count", 0) == 0):
+            if _page_check.get("has_auth_markers"):
+                self.log("  ⚠️ 列表頁驗證失敗：法院入口要求重新登入或權限確認")
+                out["error"] = "list_page_auth_required"
+                out["error_detail"] = {
+                    "page_check": _page_check,
+                    "frame_diagnostics": (_pw_hit or {}).get("diagnostics", [])[:8] if isinstance(_pw_hit, dict) else [],
+                }
+                return out
+            if not (
+                _page_check.get("is_valid_list")
+                or _page_check.get("has_empty_state")
+                or _page_check.get("has_list_markers")
+                or _page_check.get("has_table")
+                or int(_page_check.get("tr_count") or 0) > 0
+            ):
                 self.log("  ⚠️ 列表頁驗證失敗：頁面無列表特徵 (markers=%s, rows=%s)" % (
                     _page_check.get("has_list_markers"), _page_check.get("tr_count")))
                 out["error"] = "list_page_verification_failed"

@@ -91,6 +91,32 @@
         .toast.success { background: #166534; }
         .toast.error { background: #991b1b; }
 
+        /* ── Import dialog ── */
+        .modal-backdrop { position: fixed; inset: 0; z-index: 9000; display: none; align-items: center; justify-content: center; background: rgba(15,23,42,.42); padding: 20px; }
+        .modal-backdrop.show { display: flex; }
+        .modal-card { width: min(860px, 100%); max-height: min(760px, 92vh); overflow: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 14px; box-shadow: 0 18px 52px rgba(15,23,42,.25); }
+        .modal-head { display: flex; justify-content: space-between; gap: 16px; align-items: flex-start; padding: 18px 20px; border-bottom: 1px solid var(--line); }
+        .modal-head h2 { font-size: 18px; line-height: 1.3; margin: 0; }
+        .modal-head p { margin-top: 4px; color: var(--muted); font-size: 13px; line-height: 1.45; }
+        .modal-body { padding: 18px 20px; display: grid; gap: 16px; }
+        .modal-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+        .modal-section { border: 1px solid var(--line); background: var(--panel-2); border-radius: 10px; padding: 12px; display: grid; gap: 8px; }
+        .modal-section label { display: block; color: var(--muted); font-size: 12px; font-weight: 700; margin-bottom: 4px; }
+        .modal-section select, .modal-section input[type="file"] { width: 100%; font-size: 13px; }
+        .modal-note { color: var(--muted); font-size: 12px; line-height: 1.5; }
+        .modal-actions { display: flex; justify-content: flex-end; gap: 8px; padding: 14px 20px 18px; border-top: 1px solid var(--line); }
+        .import-status { color: var(--muted); font-size: 13px; line-height: 1.5; min-height: 20px; }
+        .generated-list { display: grid; gap: 10px; }
+        .generated-item { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; align-items: center; padding: 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel-2); }
+        .generated-name { font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .generated-meta { margin-top: 4px; font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .generated-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+        @media (max-width: 760px) { .modal-grid { grid-template-columns: 1fr; } }
+        @media (max-width: 760px) {
+            .generated-item { grid-template-columns: 1fr; }
+            .generated-actions { justify-content: flex-start; }
+        }
+
         /* ── Responsive ── */
         @media (max-width: 768px) {
             .sidebar { width: 60px; }
@@ -436,12 +462,73 @@
 
 <div class="toast" id="toast"></div>
 
+<div class="modal-backdrop" id="debtImportModal" role="dialog" aria-modal="true" aria-labelledby="debtImportTitle">
+    <div class="modal-card">
+        <div class="modal-head">
+            <div>
+                <h2 id="debtImportTitle">選擇要帶入聲請狀的文件</h2>
+                <p>請選擇同一案件資料夾，或分別指定財產說明書與債權人清冊。也可以直接上傳 DOCX。</p>
+            </div>
+            <button class="btn btn-sm" type="button" onclick="closeImportDialog()">關閉</button>
+        </div>
+        <div class="modal-body">
+            <div class="modal-section">
+                <label for="import-folder-select">同一案件資料夾</label>
+                <select id="import-folder-select" onchange="onImportFolderSelected()">
+                    <option value="">載入中...</option>
+                </select>
+                <div class="modal-note">選這裡會自動套用該資料夾內最新的 02 財產說明書與 03 債權人清冊。</div>
+            </div>
+            <div class="modal-grid">
+                <div class="modal-section">
+                    <label for="import-asset-select">財產及收入狀況說明書 DOCX</label>
+                    <select id="import-asset-select"></select>
+                    <label for="import-asset-file">或上傳財產說明書</label>
+                    <input id="import-asset-file" type="file" accept=".docx">
+                </div>
+                <div class="modal-section">
+                    <label for="import-creditor-select">債權人清冊 DOCX</label>
+                    <select id="import-creditor-select"></select>
+                    <label for="import-creditor-file">或上傳債權人清冊</label>
+                    <input id="import-creditor-file" type="file" accept=".docx">
+                </div>
+            </div>
+            <div class="import-status" id="import-status">正在讀取可用文件...</div>
+        </div>
+        <div class="modal-actions">
+            <button class="btn" type="button" onclick="closeImportDialog()">取消</button>
+            <button class="btn btn-primary" type="button" onclick="applyImportSelection()">帶入聲請狀</button>
+        </div>
+    </div>
+</div>
+
+<div class="modal-backdrop" id="generatedFilesModal" role="dialog" aria-modal="true" aria-labelledby="generatedFilesTitle">
+    <div class="modal-card">
+        <div class="modal-head">
+            <div>
+                <h2 id="generatedFilesTitle">文件已產生</h2>
+                <p>可直接下載 Word / PDF，或建立不含檔案路徑的分享連結。</p>
+            </div>
+            <button class="btn btn-sm" type="button" onclick="closeGeneratedFilesDialog()">關閉</button>
+        </div>
+        <div class="modal-body">
+            <div class="generated-list" id="generatedFilesList"></div>
+            <div class="import-status" id="generated-files-status"></div>
+        </div>
+        <div class="modal-actions">
+            <button class="btn" type="button" onclick="closeGeneratedFilesDialog()">完成</button>
+        </div>
+    </div>
+</div>
+
 <script>
 // ────────────────────────────────────────────────────────────────
 // Global State
 // ────────────────────────────────────────────────────────────────
 let fileList = [];
 let selectedFileIndex = -1;
+let debtImportCandidates = null;
+let generatedFilesCache = [];
 
 // ────────────────────────────────────────────────────────────────
 // Navigation
@@ -517,6 +604,88 @@ async function apiCall(method, endpoint, data = null) {
     }
 }
 
+function escapeHtml(v) {
+    return String(v ?? '').replace(/[&<>"']/g, s => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[s]));
+}
+
+function fileContentUrl(path, inline = false) {
+    const q = encodeURIComponent(String(path || '').trim());
+    return `/api/osc/files/content?path=${q}${inline ? '&inline=1' : ''}`;
+}
+
+function normalizeGeneratedItem(item) {
+    if (!item) return null;
+    const path = String(item.share_path || item.path || '').trim();
+    return {
+        filename: item.filename || (path ? path.split('/').pop() : '文件'),
+        form_type: item.form_type || '',
+        path,
+        url: item.url || '',
+        download_url: item.download_url || (path ? fileContentUrl(path) : item.url || ''),
+    };
+}
+
+function closeGeneratedFilesDialog() {
+    document.getElementById('generatedFilesModal').classList.remove('show');
+}
+
+async function shareGeneratedFile(path, label) {
+    const status = document.getElementById('generated-files-status');
+    if (!path) {
+        showToast('這份文件缺少可分享路徑', 'error');
+        return;
+    }
+    status.textContent = '正在建立分享連結...';
+    try {
+        const resp = await fetch('/api/osc/files/share', {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ path }),
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok || !data.ok || !data.url) {
+            const msg = data.error === 'share_public_base_required'
+                ? '尚未設定獨立分享入口，為避免洩漏 MAGI/Paperclip 主控台外網網址，請先到 MAGI 調整頁面設定分享入口。'
+                : (data.message || data.error || `HTTP ${resp.status}`);
+            throw new Error(msg);
+        }
+        try {
+            await navigator.clipboard.writeText(data.url);
+            status.textContent = `已複製分享連結：${label || data.name || '文件'}`;
+            showToast('已建立並複製分享連結', 'success');
+        } catch {
+            window.prompt('分享連結（不含檔案路徑）：', data.url);
+            status.textContent = `已建立分享連結：${label || data.name || '文件'}`;
+        }
+    } catch (err) {
+        status.textContent = '分享連結建立失敗：' + err.message;
+        showToast('分享連結建立失敗: ' + err.message, 'error');
+    }
+}
+
+function showGeneratedFiles(items, title = '文件已產生') {
+    const normalized = (Array.isArray(items) ? items : [items]).map(normalizeGeneratedItem).filter(Boolean);
+    if (!normalized.length) return;
+    document.getElementById('generatedFilesTitle').textContent = title;
+    document.getElementById('generated-files-status').textContent = '';
+    document.getElementById('generatedFilesList').innerHTML = normalized.map((item, idx) => {
+        const openBtn = item.url ? `<a class="btn btn-sm" href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer">開啟</a>` : '';
+        const downloadBtn = item.download_url ? `<a class="btn btn-sm btn-primary" href="${escapeHtml(item.download_url)}" download>下載</a>` : '';
+        const shareBtn = item.path ? `<button class="btn btn-sm" type="button" onclick="shareGeneratedFile(generatedFilesCache[${idx}].path, generatedFilesCache[${idx}].filename)">分享連結</button>` : '';
+        return `
+            <div class="generated-item">
+                <div>
+                    <div class="generated-name" title="${escapeHtml(item.filename)}">${escapeHtml(item.filename)}</div>
+                    <div class="generated-meta" title="${escapeHtml(item.path)}">${escapeHtml(item.path || 'MAGI 匯出檔')}</div>
+                </div>
+                <div class="generated-actions">${openBtn}${downloadBtn}${shareBtn}</div>
+            </div>`;
+    }).join('');
+    generatedFilesCache = normalized;
+    document.getElementById('generatedFilesModal').classList.add('show');
+}
+
 async function loadCourtList() {
     const result = await apiCall('GET', '/api/osc/debt/courts');
     if (result && result.courts) {
@@ -571,8 +740,9 @@ async function generateDoc(formType) {
     });
 
     if (result && result.ok) {
-        showToast(result.message || '文件產生成功', 'success');
-        if (result.url) window.open(result.url, '_blank');
+        const addressNote = result.saved_addresses ? `；已記錄 ${result.saved_addresses} 筆銀行地址` : '';
+        showToast((result.message || '文件產生成功') + addressNote, 'success');
+        showGeneratedFiles(result);
     }
 }
 
@@ -628,29 +798,117 @@ function collectCreditorListData() {
     return { creditors: creditors };
 }
 
+function formatImportOption(item) {
+    const source = item.source ? `${item.source}｜` : '';
+    return `${source}${item.name}（${item.modified_at || ''}）`;
+}
+
+function populateImportSelect(id, items, placeholder) {
+    const sel = document.getElementById(id);
+    sel.innerHTML = `<option value="">${placeholder}</option>`;
+    (items || []).forEach(item => {
+        const opt = document.createElement('option');
+        opt.value = item.path;
+        opt.textContent = formatImportOption(item);
+        opt.title = item.path;
+        sel.appendChild(opt);
+    });
+}
+
+async function loadImportCandidates() {
+    const status = document.getElementById('import-status');
+    status.textContent = '正在讀取可用文件...';
+    const res = await fetch('/api/osc/debt/import-candidates');
+    const data = await res.json();
+    if (!res.ok || !data.ok) throw new Error(data.error || '讀取可用文件失敗');
+    debtImportCandidates = data;
+
+    const folderSel = document.getElementById('import-folder-select');
+    folderSel.innerHTML = '<option value="">-- 手動分別選擇文件 --</option>';
+    (data.folders || []).forEach((folder, idx) => {
+        const opt = document.createElement('option');
+        opt.value = String(idx);
+        const hasAsset = folder.asset_doc ? '財產' : '缺財產';
+        const hasCreditor = folder.creditor_doc ? '清冊' : '缺清冊';
+        opt.textContent = `${folder.label || '資料夾'}｜${hasAsset}／${hasCreditor}`;
+        opt.title = folder.folder || '';
+        folderSel.appendChild(opt);
+    });
+
+    populateImportSelect('import-asset-select', data.asset_docs || [], '-- 選擇財產說明書 --');
+    populateImportSelect('import-creditor-select', data.creditor_docs || [], '-- 選擇債權人清冊 --');
+    status.textContent = `找到 ${(data.asset_docs || []).length} 份財產說明書、${(data.creditor_docs || []).length} 份債權人清冊。`;
+}
+
+function onImportFolderSelected() {
+    const idx = document.getElementById('import-folder-select').value;
+    if (idx === '' || !debtImportCandidates) return;
+    const folder = (debtImportCandidates.folders || [])[Number(idx)];
+    if (!folder) return;
+    if (folder.asset_doc) document.getElementById('import-asset-select').value = folder.asset_doc.path;
+    if (folder.creditor_doc) document.getElementById('import-creditor-select').value = folder.creditor_doc.path;
+}
+
 async function autoImportData() {
+    const modal = document.getElementById('debtImportModal');
+    modal.classList.add('show');
+    document.getElementById('import-asset-file').value = '';
+    document.getElementById('import-creditor-file').value = '';
     try {
-        const res = await fetch('/api/osc/debt/auto-import', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: '{}'
-        });
-        const result = await res.json();
-
-        if (!result.ok) {
-            showToast(result.error || '帶入失敗', 'error');
-            return;
-        }
-
-        if (result.name) document.getElementById('app-name').value = result.name;
-        if (result.address) document.getElementById('app-address').value = result.address;
-        if (result.asset_total != null) document.getElementById('app-asset-total').value = result.asset_total;
-        if (result.debt_total != null) document.getElementById('app-debt-total').value = result.debt_total;
-        if (result.max_bank) document.getElementById('app-max-bank').value = result.max_bank;
-
-        const sources = result.imported_from ? result.imported_from.join('、') : '';
-        showToast(`已從${sources || '已有文件'}帶入資料`, 'success');
+        await loadImportCandidates();
     } catch (err) {
+        document.getElementById('import-status').textContent = '讀取失敗：' + err.message;
+        showToast('讀取可用文件失敗: ' + err.message, 'error');
+    }
+}
+
+function closeImportDialog() {
+    document.getElementById('debtImportModal').classList.remove('show');
+}
+
+function applyImportedData(result) {
+    if (result.name) document.getElementById('app-name').value = result.name;
+    if (result.address) document.getElementById('app-address').value = result.address;
+    if (result.asset_total != null) document.getElementById('app-asset-total').value = result.asset_total;
+    if (result.debt_total != null) document.getElementById('app-debt-total').value = result.debt_total;
+    if (result.max_bank) document.getElementById('app-max-bank').value = result.max_bank;
+    const sources = result.imported_from ? result.imported_from.join('、') : '';
+    showToast(`已從${sources || '選取文件'}帶入資料`, 'success');
+}
+
+async function applyImportSelection() {
+    const status = document.getElementById('import-status');
+    const assetFile = document.getElementById('import-asset-file').files[0];
+    const creditorFile = document.getElementById('import-creditor-file').files[0];
+    const assetPath = document.getElementById('import-asset-select').value;
+    const creditorPath = document.getElementById('import-creditor-select').value;
+    if (!assetFile && !creditorFile && !assetPath && !creditorPath) {
+        showToast('請至少選擇一份財產說明書或債權人清冊', 'error');
+        return;
+    }
+    status.textContent = '正在讀取文件並帶入聲請狀...';
+    try {
+        let res;
+        if (assetFile || creditorFile) {
+            const fd = new FormData();
+            if (assetFile) fd.append('asset_doc', assetFile);
+            else if (assetPath) fd.append('asset_doc_path', assetPath);
+            if (creditorFile) fd.append('creditor_doc', creditorFile);
+            else if (creditorPath) fd.append('creditor_doc_path', creditorPath);
+            res = await fetch('/api/osc/debt/auto-import', { method: 'POST', body: fd });
+        } else {
+            res = await fetch('/api/osc/debt/auto-import', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ asset_doc_path: assetPath, creditor_doc_path: creditorPath })
+            });
+        }
+        const result = await res.json();
+        if (!res.ok || !result.ok) throw new Error(result.error || '帶入失敗');
+        applyImportedData(result);
+        closeImportDialog();
+    } catch (err) {
+        status.textContent = '帶入失敗：' + err.message;
         showToast('帶入失敗: ' + err.message, 'error');
     }
 }
@@ -1001,7 +1259,7 @@ async function generateReport() {
 
     if (result && result.ok) {
         showToast('陳報狀產生成功', 'success');
-        if (result.url) window.open(result.url, '_blank');
+        showGeneratedFiles(result);
     }
 }
 
@@ -1055,7 +1313,7 @@ async function generateSupplement() {
 
     if (result && result.ok) {
         showToast(result.message || '補件書狀產生成功', 'success');
-        if (result.url) window.open(result.url, '_blank');
+        showGeneratedFiles(result);
     }
 }
 
@@ -1122,8 +1380,8 @@ async function mergePDF() {
         if (!res.ok) throw new Error('合併失敗');
         const result = await res.json();
         if (result.ok && result.url) {
-            window.open(result.url, '_blank');
             showToast(result.message || 'PDF 合併成功', 'success');
+            showGeneratedFiles(result, 'PDF 已合併');
         } else {
             showToast(result.error || '合併失敗', 'error');
         }
@@ -1164,11 +1422,7 @@ async function batchGenerate() {
 
     if (result && result.ok) {
         showToast(result.message || '文件已產生', 'success');
-        if (result.results) {
-            result.results.forEach(r => {
-                if (r.url) window.open(r.url, '_blank');
-            });
-        }
+        if (result.results) showGeneratedFiles(result.results, '批次文件已產生');
     }
 }
 

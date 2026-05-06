@@ -459,7 +459,7 @@ async function runLafCaseAction(caseId, action) {
     if (!result || result.ok === false) throw new Error(result?.error || "法扶案件盤點失敗");
     showToast(result.message || "已完成法扶案件盤點。", "ok", 3200);
     if (result.reply) {
-        alert(result.reply);
+        showWebReplyDialog("法扶案件盤點", result.reply, result.reply_html || "");
     }
 }
 
@@ -624,6 +624,9 @@ async function loadDocuments() {
         const stampBtn = stampable
             ? `<button class="btn" data-act="doc-stamp" data-path="${esc(fp)}" title="蓋章製作正本/副本/繕本">📋 蓋章</button>`
             : "";
+        const finalizeBtn = stampable
+            ? `<button class="btn" data-act="doc-finalize" data-path="${esc(fp)}" title="產生正本、繕本、留底，並合併同資料夾證據 PDF">定稿合併</button>`
+            : "";
         const pdfBtn = ext === "pdf"
             ? `<button class="btn" data-act="doc-pdf-tool" data-path="${esc(fp)}" title="帶入 PDF 工具">PDF 工具</button>`
             : "";
@@ -639,6 +642,7 @@ async function loadDocuments() {
             <button class="btn" data-act="doc-open" data-path="${esc(fp)}">開啟</button>
             <button class="btn" data-act="doc-copy" data-path="${esc(fp)}">複製路徑</button>
             ${stampBtn}
+            ${finalizeBtn}
             ${pdfBtn}
         </td>
     </tr>`;
@@ -703,11 +707,105 @@ function renderPdfToolResult(result) {
     `).join("");
 }
 
+function renderPdfCalendarScanResult(result) {
+    const status = document.getElementById("pdfToolStatus");
+    const outputs = document.getElementById("pdfToolOutputs");
+    if (status) {
+        status.hidden = false;
+        status.className = "status-banner";
+        status.textContent = result.message || "PDF 行程掃描完成。";
+    }
+    if (!outputs) return;
+    const items = result.items || [];
+    outputs.hidden = false;
+    if (!items.length) {
+        outputs.innerHTML = `<div class="muted">沒有掃描到 PDF 或行程資料。</div>`;
+        return;
+    }
+    outputs.innerHTML = items.map(item => {
+        const todos = item.todos || [];
+        const rows = todos.map(t => `
+            <tr>
+                <td>${esc(t.date || "-")} ${esc(t.time || "")}</td>
+                <td>${esc(t.type || "待辦")}</td>
+                <td>${esc(t.description || "")}</td>
+            </tr>
+        `).join("") || `<tr><td colspan="3" class="muted">未偵測到待辦或庭期</td></tr>`;
+        return `
+            <div class="soft-block" style="margin-top:8px;">
+                <div><b>${esc(item.file_name || item.path || "")}</b></div>
+                <div class="muted">案件：${esc(item.case_number || "未判斷")}｜當事人：${esc(item.client_name || "-")}｜文字層：${item.text_available ? "可讀取" : "未讀取到文字，可能需要 OCR 或先用 PDF 命名流程處理"}</div>
+                ${item.write_warning ? `<div class="status-banner warn" style="margin-top:6px;">${esc(item.write_warning)}</div>` : ""}
+                <div class="table-wrap" style="margin-top:8px;">
+                    <table class="compact-table">
+                        <thead><tr><th>日期時間</th><th>類型</th><th>內容</th></tr></thead>
+                        <tbody>${rows}</tbody>
+                    </table>
+                </div>
+            </div>
+        `;
+    }).join("");
+}
+
 async function runPdfTool(action) {
     const result = await api("/api/osc/pdf/action", "POST", pdfToolPayload(action));
     if (!result || !result.ok) throw new Error(result?.error || "PDF 操作失敗");
     renderPdfToolResult(result);
     showToast(result.message || "PDF 操作完成。", "ok", 3200);
+}
+
+async function runPdfCalendarScan(write = false, syncGoogle = false) {
+    const filePath = (document.getElementById("pdfToolPath")?.value || "").trim();
+    if (!filePath) {
+        showToast("請先填入 PDF 或資料夾路徑。", "warn");
+        return;
+    }
+    const result = await api("/api/osc/pdf/calendar-scan", "POST", {
+        file_path: filePath,
+        case_number: (document.getElementById("pdfCalendarCaseNumber")?.value || "").trim(),
+        client_name: (document.getElementById("pdfCalendarClientName")?.value || "").trim(),
+        write,
+        write_todos: true,
+        write_calendar: true,
+        recursive: true,
+        max_pages: 8,
+    });
+    if (!result || !result.ok) throw new Error(result?.error || "PDF 行程掃描失敗");
+    renderPdfCalendarScanResult(result);
+    if (write) {
+        await Promise.all([
+            typeof loadTodos === "function" ? loadTodos().catch(() => {}) : Promise.resolve(),
+            typeof loadCalendarEvents === "function" ? loadCalendarEvents().catch(() => {}) : Promise.resolve(),
+            typeof loadDashboard === "function" ? loadDashboard().catch(() => {}) : Promise.resolve(),
+            typeof loadMeta === "function" ? loadMeta().catch(() => {}) : Promise.resolve(),
+        ]);
+    }
+    if (write && syncGoogle) {
+        try {
+            const sync = await api("/api/osc/gcal/sync", "POST", { dry_run: false });
+            showToast(sync?.ok ? "已寫入並同步 Google Calendar。" : (sync?.error || "Google 同步未完成。"), sync?.ok ? "ok" : "warn", 4200);
+        } catch (e) {
+            showToast(`已寫入 Paperclip，但 Google 同步未完成：${e.message || e}`, "warn", 5000);
+        }
+    } else {
+        showToast(result.message || "PDF 行程掃描完成。", "ok", 3600);
+    }
+}
+
+async function runAllCasePdfCalendarScan() {
+    if (!confirm("將掃描所有進行中案件資料夾內的法院通知、程序裁定與判決書 PDF。先只做預覽，不會寫入。是否繼續？")) return;
+    const result = await api("/api/osc/pdf/calendar-scan", "POST", {
+        all_cases: true,
+        write: false,
+        write_todos: true,
+        write_calendar: true,
+        recursive: true,
+        max_pages: 8,
+        limit: 1200,
+    });
+    if (!result || !result.ok) throw new Error(result?.error || "全部案件 PDF 掃描失敗");
+    renderPdfCalendarScanResult(result);
+    showToast(result.message || "全部案件 PDF 掃描完成。", "ok", 4200);
 }
 
 async function uploadPdfToolFile() {
@@ -727,6 +825,86 @@ async function uploadPdfToolFile() {
 }
 
 // ── 蓋章製作（呼叫後端 doc-producer skill）──
+function pickStampCenter(path, options = {}) {
+    return new Promise(async (resolve) => {
+        let preview;
+        try {
+            preview = await api("/api/osc/documents/stamp-preview", "POST", {
+                file_path: path,
+                normalize: Boolean(options.normalize),
+            });
+            if (!preview || preview.ok === false) throw new Error(preview?.error || "無法產生預覽");
+        } catch (err) {
+            showToast(`蓋章預覽失敗：${err.message || err}`, "warn", 5200);
+            resolve(null);
+            return;
+        }
+
+        const overlay = document.createElement("div");
+        overlay.className = "stamp-pick-overlay";
+        overlay.style.cssText = [
+            "position:fixed",
+            "inset:0",
+            "z-index:9999",
+            "background:rgba(15,23,42,.72)",
+            "display:flex",
+            "align-items:center",
+            "justify-content:center",
+            "padding:22px",
+        ].join(";");
+        overlay.innerHTML = `
+            <div class="stamp-pick-dialog" style="width:min(940px,96vw);max-height:94vh;background:var(--panel,#fff);color:var(--text,#172033);border:1px solid var(--line,#dbe3ef);border-radius:12px;box-shadow:0 20px 60px rgba(0,0,0,.28);display:flex;flex-direction:column;overflow:hidden">
+                <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 14px;border-bottom:1px solid var(--line,#dbe3ef)">
+                    <div>
+                        <div style="font-weight:700">動手蓋章</div>
+                        <div class="muted" style="font-size:13px;margin-top:2px">請在最後一頁點選律師章中心位置；不點則可使用預設位置。</div>
+                    </div>
+                    <button class="btn" type="button" data-stamp-cancel>取消</button>
+                </div>
+                <div style="padding:14px;overflow:auto;background:var(--bg,#f5f7fb);text-align:center">
+                    <div style="display:inline-block;position:relative;line-height:0;max-width:100%">
+                        <img alt="最後一頁預覽" data-stamp-preview src="${preview.image_data}" style="max-width:100%;height:auto;border:1px solid var(--line,#dbe3ef);background:#fff;cursor:crosshair">
+                        <div data-stamp-marker style="display:none;position:absolute;width:24px;height:24px;margin-left:-12px;margin-top:-12px;border:2px solid #ef4444;border-radius:50%;box-shadow:0 0 0 2px rgba(255,255,255,.9);pointer-events:none"></div>
+                    </div>
+                </div>
+                <div style="display:flex;align-items:center;justify-content:flex-end;gap:8px;padding:12px 14px;border-top:1px solid var(--line,#dbe3ef)">
+                    <button class="btn" type="button" data-stamp-default>使用預設位置</button>
+                    <button class="btn primary" type="button" data-stamp-apply disabled>套用點選位置</button>
+                </div>
+            </div>
+        `;
+
+        let picked = null;
+        const cleanup = (value) => {
+            overlay.remove();
+            resolve(value);
+        };
+        const img = overlay.querySelector("[data-stamp-preview]");
+        const marker = overlay.querySelector("[data-stamp-marker]");
+        const applyBtn = overlay.querySelector("[data-stamp-apply]");
+        img.addEventListener("click", (ev) => {
+            const rect = img.getBoundingClientRect();
+            const px = Math.max(0, Math.min(rect.width, ev.clientX - rect.left));
+            const py = Math.max(0, Math.min(rect.height, ev.clientY - rect.top));
+            picked = {
+                x: px * Number(preview.page_width) / rect.width,
+                y: py * Number(preview.page_height) / rect.height,
+            };
+            marker.style.display = "block";
+            marker.style.left = `${px}px`;
+            marker.style.top = `${py}px`;
+            applyBtn.disabled = false;
+        });
+        overlay.querySelector("[data-stamp-default]").addEventListener("click", () => cleanup(null));
+        overlay.querySelector("[data-stamp-cancel]").addEventListener("click", () => cleanup({ cancelled: true }));
+        applyBtn.addEventListener("click", () => cleanup(picked));
+        overlay.addEventListener("click", (ev) => {
+            if (ev.target === overlay) cleanup({ cancelled: true });
+        });
+        document.body.appendChild(overlay);
+    });
+}
+
 async function stampDocument(path) {
     if (!path) return;
     const ext = (path.split(".").pop() || "").toLowerCase();
@@ -752,6 +930,12 @@ async function stampDocument(path) {
         addSent = confirm("正本是否加註「繕本已送對造」？");
     }
 
+    let stampCenter = null;
+    if (confirm("是否要手動點選律師章位置？\n\n選「確定」會開啟最後一頁預覽；選「取消」則使用預設位置。")) {
+        stampCenter = await pickStampCenter(path, { normalize: false });
+        if (stampCenter?.cancelled) return;
+    }
+
     const fileLabel = path.split(/[\\/]/).pop() || path;
     showToast(`蓋章中：${fileLabel} → ${copyType}${addPoa ? "（附委任狀）" : ""}${addSent ? "（繕本已送對造）" : ""}`, "info", 2400);
 
@@ -761,6 +945,7 @@ async function stampDocument(path) {
             copy_type: copyType,
             add_poa: addPoa,
             add_sent_to_opponent: addSent,
+            stamp_center: stampCenter || undefined,
         });
         if (result && result.ok) {
             const out = result.output_path || "（無輸出路徑）";
@@ -772,6 +957,53 @@ async function stampDocument(path) {
         }
     } catch (err) {
         showToast(`蓋章失敗：${err.message || err}`, "warn", 4000);
+    }
+}
+
+async function finalizeDocument(path) {
+    if (!path) return;
+    const ext = (path.split(".").pop() || "").toLowerCase();
+    if (!["pdf", "docx", "doc"].includes(ext)) {
+        showToast("僅支援 PDF / DOCX 定稿合併", "warn");
+        return;
+    }
+    const copiesRaw = prompt("請輸入需要產生的繕本份數：", "1");
+    if (copiesRaw === null) return;
+    const numCopies = Number.parseInt(copiesRaw, 10);
+    if (!Number.isFinite(numCopies) || numCopies < 0) {
+        showToast("繕本份數必須是 0 以上整數。", "warn");
+        return;
+    }
+    const addSent = numCopies > 0 ? confirm("正本是否加註「繕本已送對造」？") : false;
+    const addPoa = confirm("正本是否加註「附委任狀」？");
+    const includeEvidence = confirm("是否合併同資料夾內已編號的證據 PDF（例如 原證1、附件二）？");
+    let stampCenter = null;
+    if (confirm("是否要手動點選律師章位置？\n\n選「確定」會開啟最後一頁預覽；選「取消」則使用預設位置。")) {
+        stampCenter = await pickStampCenter(path, { normalize: true });
+        if (stampCenter?.cancelled) return;
+    }
+    const fileLabel = path.split(/[\\/]/).pop() || path;
+    showToast(`定稿合併中：${fileLabel}`, "info", 2600);
+    try {
+        const result = await api("/api/osc/documents/finalize", "POST", {
+            file_path: path,
+            num_copies: numCopies,
+            add_poa: addPoa,
+            add_sent_to_opponent: addSent,
+            include_evidence: includeEvidence,
+            stamp_center: stampCenter || undefined,
+        });
+        if (!result || result.ok === false) throw new Error(result?.error || "定稿合併失敗");
+        const out = result.output_path || "";
+        showToast(`✅ 定稿合併完成：${out.split(/[\\/]/).pop()}`, "ok", 5200);
+        renderPdfToolResult({
+            ok: true,
+            message: result.message || "定稿合併完成。",
+            outputs: out ? [out] : [],
+        });
+        try { await copyText(out, "已複製定稿 PDF 路徑到剪貼簿。"); } catch (_) {}
+    } catch (err) {
+        showToast(`定稿合併失敗：${err.message || err}`, "warn", 5200);
     }
 }
 
@@ -975,7 +1207,7 @@ async function runDocCaseAction(action) {
         return;
     }
     const data = await api(`/api/osc/cases/${encodeURIComponent(caseId)}/quick-action`, "POST", { action });
-    alert(data.reply || "已完成");
+    showWebReplyDialog("MAGI 文件整理", data.reply || "已完成", data.reply_html || "");
 }
 
 function collectFormPayload() {
@@ -1066,7 +1298,15 @@ async function runLafWizard(mode) {
     const sum = document.getElementById("lafWizardSummary");
     const rs = data.result || {};
     sum.textContent = `模式：${data.mode || "-"} ｜ 動作：${data.action || "-"} ｜ 結果：${data.ok ? "成功" : "失敗"}${rs.error ? ` ｜ 錯誤：${rs.error}` : ""}`;
-    document.getElementById("lafWizardResult").textContent = JSON.stringify(data, null, 2);
+    const resultBox = document.getElementById("lafWizardResult");
+    const lines = [
+        data.ok ? "法扶作業已完成。" : "法扶作業未完成。",
+        data.message || "",
+        rs.message || "",
+        rs.error ? `錯誤：${rs.error}` : "",
+        data.artifact ? "已產生可檢視的預覽檔案，請使用下方連結開啟。" : "",
+    ].filter(Boolean);
+    resultBox.innerHTML = renderWebReplyHtml(lines.join("\n"));
     const links = document.getElementById("lafWizardLinks");
     links.innerHTML = "";
     const art = data.artifact || {};

@@ -416,7 +416,10 @@ def _osc_local_path_candidates(path_str: str) -> list[str]:
 
 
 def _osc_allowed_local_roots() -> list[str]:
+    magi_root = Path(__file__).resolve().parents[2]
     roots = default_synology_share_roots(include_closed=False) + [
+        str(magi_root / "exports"),
+        str(magi_root / "static" / "exports"),
         str(Path.home() / "Library/CloudStorage/SynologyDrive-homes/lumi"),
         str(Path.home() / "SynologyDrive/homes/lumi"),
         str(Path.home() / "SynologyDrive/lumi"),

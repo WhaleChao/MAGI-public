@@ -754,7 +754,8 @@ def _remote_online_quick() -> bool:
     if _avoid_distributed():
         return False
 
-        # --- NEW: RemoteHealthGate opt-in path ---
+    # --- Retired remote Melchior path ---
+    # Kept only for explicit legacy opt-in during migration tests.
     if os.environ.get("MAGI_USE_REMOTE_HEALTH_GATE", "0").strip().lower() in {"1", "true", "on", "yes"}:
         try:
             from api.platforms.remote_health_gate import get_gate, PeerConfig

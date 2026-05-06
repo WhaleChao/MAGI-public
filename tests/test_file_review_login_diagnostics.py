@@ -143,3 +143,88 @@ def test_navigate_playwright_second_popup_continues_to_menu(monkeypatch, tmp_pat
     assert mgr.navigate_to_file_review() is True
     assert "popup-2" in mgr.driver.switched
     assert mgr.last_navigation_error_code == ""
+
+
+def test_probe_downloadable_accepts_empty_review_list_frame(monkeypatch, tmp_path):
+    class FakeFrame:
+        name = "v1"
+        url = "https://eefile.judicial.gov.tw/ola/review-list"
+
+        def evaluate(self, script):
+            if "hasOnlineDownload" in script:
+                return []
+            return {
+                "has_list_markers": True,
+                "has_table": False,
+                "has_empty_state": True,
+                "has_auth_markers": False,
+                "is_valid_list": True,
+                "tr_count": 0,
+                "strict_tr_count": 0,
+                "body_len": 18,
+                "body_preview": "聲請登錄清單 查無資料",
+                "title": "閱卷",
+            }
+
+    class FakePage:
+        frames = [FakeFrame()]
+
+    class FakeSwitch:
+        def default_content(self):
+            return None
+
+    class FakeDriver:
+        def __init__(self):
+            self._page = FakePage()
+            self._active_frame = None
+            self.switch_to = FakeSwitch()
+
+    mgr = mod.FileReviewManager(download_folder=str(tmp_path), headless=True)
+    mgr.driver = FakeDriver()
+    mgr.logged_in = True
+    monkeypatch.setattr(mgr, "navigate_to_file_review", lambda: True)
+    monkeypatch.setattr(mgr, "_open_review_list_v1", lambda: True)
+
+    result = mgr.probe_downloadable_from_portal()
+
+    assert result["success"] is True
+    assert result["count"] == 0
+    assert result["downloadable_count"] == 0
+    assert mgr.driver._active_frame is mgr.driver._page.frames[0]
+
+
+def test_probe_downloadable_reports_auth_frame_as_login_required(monkeypatch, tmp_path):
+    class FakeSwitch:
+        def default_content(self):
+            return None
+
+    class FakeDriver:
+        switch_to = FakeSwitch()
+
+    mgr = mod.FileReviewManager(download_folder=str(tmp_path), headless=True)
+    mgr.driver = FakeDriver()
+    mgr.logged_in = True
+    monkeypatch.setattr(mgr, "navigate_to_file_review", lambda: True)
+    monkeypatch.setattr(mgr, "_open_review_list_v1", lambda: True)
+    monkeypatch.setattr(
+        mgr,
+        "_find_playwright_review_list_frame",
+        lambda click_list=False: {
+            "check": {
+                "has_list_markers": False,
+                "has_table": False,
+                "has_empty_state": False,
+                "has_auth_markers": True,
+                "is_valid_list": False,
+                "tr_count": 0,
+                "body_preview": "會員登入 驗證碼 密碼",
+            },
+            "diagnostics": [{"frame_name": "", "body_preview": "會員登入 驗證碼 密碼"}],
+        },
+    )
+
+    result = mgr.probe_downloadable_from_portal()
+
+    assert result["success"] is False
+    assert result["error"] == "list_page_auth_required"
+    assert result["error_detail"]["page_check"]["has_auth_markers"] is True

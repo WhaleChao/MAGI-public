@@ -786,6 +786,33 @@ def _start_laf_gmail_monitor():
 # 7. Main startup entry point
 # ============================================================================
 
+def _cleanup_old_exports(days: int = 30) -> int:
+    """Remove stale generated export files without importing api.server."""
+    try:
+        cutoff = time.time() - max(1, int(days)) * 86400
+        cleaned = 0
+        export_roots = {
+            EXPORTS_DIR,
+            os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "exports")),
+        }
+        for root in export_roots:
+            if not root or not os.path.isdir(root):
+                continue
+            for dirpath, _dirnames, filenames in os.walk(root):
+                for filename in filenames:
+                    path = os.path.join(dirpath, filename)
+                    try:
+                        if os.path.getmtime(path) < cutoff:
+                            os.remove(path)
+                            cleaned += 1
+                    except Exception:
+                        logger.debug("silent-catch at %s:%s", __name__, "_cleanup_old_exports/file", exc_info=True)
+        return cleaned
+    except Exception:
+        logger.debug("silent-catch at %s:%s", __name__, "_cleanup_old_exports", exc_info=True)
+        return 0
+
+
 def run_startup_hooks(app, orchestrator):
     """
     Run all startup hooks: FAISS preload, oMLX warmup, cloudflared tunnel,
@@ -814,14 +841,12 @@ def run_startup_hooks(app, orchestrator):
         logger.info("Server startup hooks disabled by MAGI_DISABLE_SERVER_STARTUP_HOOKS")
         return
 
-    # Cleanup old export files (>30 days)
-    try:
-        from api.server import cleanup_old_exports
-        _n_cleaned = cleanup_old_exports(days=30)
-        if _n_cleaned:
-            logger.info("Startup: cleaned %d old exports", _n_cleaned)
-    except Exception:
-        pass
+    # Cleanup old export files (>30 days). Keep this local to avoid importing
+    # api.server while server.py is running as __main__, which double-initializes
+    # routes, orchestrators, and startup hooks.
+    _n_cleaned = _cleanup_old_exports(days=30)
+    if _n_cleaned:
+        logger.info("Startup: cleaned %d old exports", _n_cleaned)
 
     # Pre-load FAISS index in background
     threading.Thread(target=_preload_faiss, daemon=True, name="faiss-preload").start()

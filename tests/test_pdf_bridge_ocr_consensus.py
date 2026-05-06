@@ -226,6 +226,50 @@ class TestFlagOff:
             # consensus 不應被呼叫
             mock_consensus.assert_not_called()
 
+    def test_nemotron_enable_calls_consensus_even_when_pdf_flags_off(self, tmp_path, monkeypatch):
+        """MAGI_NEMOTRON_PARSE_ENABLE=1 → PDF OCR 會進 consensus 路徑。"""
+        monkeypatch.setenv("MAGI_PDF_OCR_CONSENSUS_ENABLE", "0")
+        monkeypatch.setenv("MAGI_PDF_OCR_CONSENSUS_SHADOW", "0")
+        monkeypatch.setenv("MAGI_NEMOTRON_PARSE_ENABLE", "1")
+
+        from skills.documents import pdf_bridge
+        import importlib
+        importlib.reload(pdf_bridge)
+
+        consensus_result = _make_consensus_result(corrected_text="NEMOTRON_CONSENSUS_TEXT")
+        fake_pdf = tmp_path / "test.pdf"
+        fake_pdf.write_bytes(b"%PDF-1.4\n")
+
+        def _sp_side_effect(cmd, **kwargs):
+            cmd_list = list(cmd)
+            if "pdftoppm" in str(cmd_list[0]):
+                prefix = cmd_list[-1]
+                td_dir = Path(prefix).parent
+                dest = td_dir / "page-1.png"
+                dest.write_bytes(b"\x89PNG\r\n" + b"X" * 50)
+                m = MagicMock()
+                m.returncode = 0
+                m.stderr = ""
+                return m
+            if "tesseract" in str(cmd_list[0]):
+                m = MagicMock()
+                m.stdout = "legacy_text"
+                m.returncode = 0
+                return m
+            m = MagicMock()
+            m.returncode = 0
+            m.stdout = ""
+            m.stderr = ""
+            return m
+
+        with patch("subprocess.run", side_effect=_sp_side_effect), \
+             patch("skills.engine.ocr.consensus.run_consensus", return_value=consensus_result) as mock_consensus:
+            text, pages = pdf_bridge._extract_text_ocr(str(fake_pdf), max_pages=1)
+
+        mock_consensus.assert_called_once()
+        assert "NEMOTRON_CONSENSUS_TEXT" in text
+        assert pages == 1
+
     def test_flag_off_returns_legacy_text(self, tmp_path, monkeypatch):
         """flag off 時回傳的文字來自 tesseract。"""
         monkeypatch.setenv("MAGI_PDF_OCR_CONSENSUS_ENABLE", "0")

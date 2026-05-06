@@ -123,3 +123,33 @@ def test_recent_activity_backlog_is_seeded_then_only_new_items_surface(tmp_path)
         [new_record], download_folder, "recent_review_download_activity"
     )
     assert after_mark == []
+
+
+def test_portal_probe_error_is_business_readable():
+    module = _load_action_module()
+
+    text = module._format_portal_probe_error(
+        {
+            "error": "list_page_verification_failed",
+            "error_detail": {
+                "page_check": {
+                    "has_list_markers": False,
+                    "has_table": False,
+                    "tr_count": 0,
+                    "body_preview": "",
+                },
+                "frame_diagnostics": [
+                    {
+                        "frame_name": "",
+                        "frame_url": "https://ola.judicial.gov.tw/",
+                        "body_preview": "會員登入 驗證碼 密碼",
+                    }
+                ],
+            },
+        }
+    )
+
+    assert "入口列表沒有正確載入" in text
+    assert "會員登入 驗證碼 密碼" in text
+    assert "{" not in text
+    assert "frame_diagnostics" not in text

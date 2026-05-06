@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import logging
+import base64
 import mimetypes
 import os
 import re
@@ -19,6 +20,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import csv
+import html as html_lib
 import io
 
 from flask import Blueprint, request, jsonify, send_file, Response
@@ -70,6 +72,20 @@ osc_bp = Blueprint("osc_cases", __name__)
 # ---------------------------------------------------------------------------
 
 _MAGI_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+_OSC_RESOURCE_PHOTO_DIR = os.path.join(_MAGI_ROOT, "resources", "osc", "photo")
+
+
+def _osc_photo_path(filename: str) -> str:
+    return os.path.join(_OSC_RESOURCE_PHOTO_DIR, filename)
+
+
+def _osc_existing_resource_path(setting_key: str, filename: str, fallback: str = "") -> str:
+    configured = str(_osc_get_setting_value(setting_key, "") or "").strip()
+    candidates = [configured, _osc_photo_path(filename), fallback]
+    for candidate in candidates:
+        if candidate and os.path.exists(candidate):
+            return candidate
+    return configured or _osc_photo_path(filename) or fallback
 
 
 def _get_orchestrator():
@@ -83,6 +99,147 @@ def _get_normalize_output_text():
         return normalize_output_text
     except Exception:
         return None
+
+
+def _format_web_reply_html(reply: str) -> str:
+    try:
+        from api.blueprints.web_runtime import format_web_reply_html
+
+        return format_web_reply_html(reply)
+    except Exception:
+        return f'<div class="web-reply"><p>{html_lib.escape(str(reply or ""))}</p></div>'
+
+
+def _current_user_context() -> tuple[str, str]:
+    try:
+        user_id = str(getattr(current_user, "id", "") or "web")
+    except Exception:
+        user_id = "web"
+    try:
+        role = str(getattr(current_user, "role", "") or "user")
+    except Exception:
+        role = "user"
+    return user_id, role
+
+
+def _quick_action_rows(sql: str, params: tuple = (), fetch: str = "all"):
+    try:
+        rows, _ = _osc_exec(sql, params, fetch=fetch)
+        return rows or ([] if fetch == "all" else {})
+    except Exception:
+        _log.debug("quick action context query failed", exc_info=True)
+        return [] if fetch == "all" else {}
+
+
+def _osc_todo_done_statuses() -> tuple[str, ...]:
+    return ("completed", "done", "已完成", "完成", "cancelled", "canceled", "取消")
+
+
+def _osc_is_todo_done_status(status: str) -> bool:
+    text = str(status or "").strip().lower()
+    return text in {s.lower() for s in _osc_todo_done_statuses()}
+
+
+def _build_quick_action_native_reply(action: str, case: dict) -> str:
+    case_number = str(case.get("case_number") or "").strip()
+    client_name = str(case.get("client_name") or "").strip()
+    laf_no = str(case.get("laf_case_no") or "").strip()
+    doc_terms = {
+        "laf_closing_status": ["結案", "酬金", "領款", "判決", "裁定", "調解不成立", "收據"],
+        "laf_progress_summary": ["接案", "開辦", "應備", "補件", "回報", "法扶"],
+        "closing_overview": ["結案", "判決", "裁定", "收據", "繳費"],
+        "generate_power_of_attorney": ["委任狀", "委任契約"],
+        "generate_receipt": ["收據", "領款"],
+    }.get(action, [])
+
+    docs = []
+    if case_number:
+        docs = _quick_action_rows(
+            """
+            SELECT title, file_name, file_path, doc_type, created_at
+            FROM document_index
+            WHERE case_number=%s
+            ORDER BY created_at DESC, id DESC
+            LIMIT 80
+            """,
+            (case_number,),
+        )
+    matched_docs = []
+    for doc in docs or []:
+        blob = " ".join(str(doc.get(k) or "") for k in ("title", "file_name", "file_path", "doc_type"))
+        if not doc_terms or any(term in blob for term in doc_terms):
+            matched_docs.append(doc)
+
+    todos = []
+    if case_number:
+        todos = _quick_action_rows(
+            """
+            SELECT todo_type, todo_date, description, status
+            FROM case_todos
+            WHERE case_number=%s
+            ORDER BY todo_date DESC, id DESC
+            LIMIT 20
+            """,
+            (case_number,),
+        )
+
+    pending_todos = [t for t in (todos or []) if not _osc_is_todo_done_status(t.get("status") or "")]
+    action_title = {
+        "laf_closing_status": "法扶結案狀況盤點",
+        "laf_progress_summary": "法扶進度盤點",
+        "closing_overview": "結案資料彙整",
+        "generate_power_of_attorney": "委任狀草稿檢查",
+        "generate_receipt": "收據草稿檢查",
+    }.get(action, "案件盤點")
+
+    missing = []
+    if action == "laf_closing_status":
+        if not laf_no:
+            missing.append("法扶案號未填，報結前請先補入。")
+        if not matched_docs:
+            missing.append("尚未在索引中找到結案酬金領款單、判決/裁定或結案相關文件。")
+        if pending_todos:
+            missing.append(f"尚有 {len(pending_todos)} 筆待辦未完成，報結前請確認。")
+    elif action == "laf_progress_summary":
+        if not laf_no:
+            missing.append("法扶案號未填。")
+        if not matched_docs:
+            missing.append("尚未在索引中找到開辦/應備/補件相關文件。")
+    elif action == "closing_overview" and not matched_docs:
+        missing.append("尚未在索引中找到判決、裁定、收據或結案相關文件。")
+
+    lines = [
+        f"# {action_title}",
+        "",
+        "## 案件",
+        f"- 案件編號：{case_number or '-'}",
+        f"- 當事人：{client_name or '-'}",
+        f"- 案件種類：{case.get('case_category') or '-'}",
+        f"- 案由：{case.get('case_reason') or '-'}",
+        f"- 法扶案號：{laf_no or '-'}",
+        "",
+        "## 已找到的相關文件",
+    ]
+    if matched_docs:
+        for doc in matched_docs[:10]:
+            label = doc.get("title") or doc.get("file_name") or doc.get("file_path") or "未命名文件"
+            lines.append(f"- {label}")
+    else:
+        lines.append("- 尚未找到符合本次盤點關鍵字的文件。")
+
+    lines.extend(["", "## 待辦狀況"])
+    if pending_todos:
+        for todo in pending_todos[:8]:
+            lines.append(f"- {todo.get('todo_date') or '-'}｜{todo.get('todo_type') or '待辦'}｜{todo.get('description') or ''}".rstrip("｜"))
+    else:
+        lines.append("- 目前沒有查到未完成待辦。")
+
+    lines.extend(["", "## 建議下一步"])
+    if missing:
+        lines.extend(f"- {item}" for item in missing)
+    else:
+        lines.append("- 目前沒有明顯缺漏；請人工確認文件內容與法扶系統狀態後再送出。")
+    return "\n".join(lines)
 
 
 def _get_text_primary_model():
@@ -1194,6 +1351,20 @@ def osc_case_quick_action_api(row_id):
     }
     if action not in action_map:
         return jsonify({"ok": False, "error": "unsupported_action"}), 400
+    native_actions = {"closing_overview", "laf_progress_summary", "laf_closing_status"}
+    if action in native_actions:
+        reply_text = _build_quick_action_native_reply(action, case)
+        return jsonify(
+            {
+                "ok": True,
+                "action": action,
+                "case": case,
+                "reply": reply_text,
+                "reply_html": _format_web_reply_html(reply_text),
+                "native": True,
+                "message": "已完成案件盤點。",
+            }
+        )
     prompt = (
         f"{action_map[action]}\n\n"
         f"案件編號: {case.get('case_number') or ''}\n"
@@ -1207,17 +1378,40 @@ def osc_case_quick_action_api(row_id):
     try:
         orchestrator = _get_orchestrator()
         _normalize_output_text = _get_normalize_output_text()
+        user_id, role = _current_user_context()
         reply = orchestrator.process_message(
-            user_id=str(current_user.id),
+            user_id=user_id,
             message=prompt,
             platform="WEB",
-            role=current_user.role,
+            role=role,
         )
         if _normalize_output_text:
             reply = _normalize_output_text(str(reply or ""), platform="WEB")
-        return jsonify({"ok": True, "action": action, "case": case, "reply": str(reply or "")})
+        reply_text = str(reply or "")
+        return jsonify(
+            {
+                "ok": True,
+                "action": action,
+                "case": case,
+                "reply": reply_text,
+                "reply_html": _format_web_reply_html(reply_text),
+            }
+        )
     except Exception as e:
-        return jsonify({"ok": False, "error": str(e)}), 500
+        _log.warning("quick action MAGI fallback used: action=%s case=%s error=%s", action, row_id, e)
+        reply_text = _build_quick_action_native_reply(action, case)
+        return jsonify(
+            {
+                "ok": True,
+                "action": action,
+                "case": case,
+                "reply": reply_text,
+                "reply_html": _format_web_reply_html(reply_text),
+                "fallback": True,
+                "warning": "MAGI 推論暫時不可用，已改用本機案件資料盤點。",
+                "message": "已完成案件盤點（本機資料模式）。",
+            }
+        )
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1419,8 +1613,8 @@ def osc_case_workbench_api(row_id):
     )
     stats = {
         "todo_total": len(todos),
-        "todo_pending": len([t for t in todos if str(t.get("status") or "").lower() not in {"completed", "done", "已完成"}]),
-        "todo_completed": len([t for t in todos if str(t.get("status") or "").lower() in {"completed", "done", "已完成"}]),
+        "todo_pending": len([t for t in todos if not _osc_is_todo_done_status(t.get("status") or "")]),
+        "todo_completed": len([t for t in todos if _osc_is_todo_done_status(t.get("status") or "")]),
         "meeting_total": len(meetings),
         "laf_items": len(legal_aid),
         "docs_indexed": len(docs),
@@ -1506,7 +1700,7 @@ def osc_dashboard_api():
         """
         SELECT id, case_number, client_name, todo_type, todo_date, todo_time, description, status
         FROM case_todos
-        WHERE status IS NULL OR status='' OR LOWER(status) NOT IN ('completed', 'done')
+        WHERE status IS NULL OR status='' OR LOWER(status) NOT IN ('completed', 'done', '已完成', '完成', 'cancelled', 'canceled', '取消')
         ORDER BY COALESCE(todo_date, CURDATE()) ASC, id DESC
         LIMIT 20
         """,
@@ -2330,12 +2524,94 @@ def _osc_read_file_with_retry(local_file: str, *, max_attempts: int = 4) -> byte
     return b""
 
 
+def _osc_wants_json_response() -> bool:
+    accept = str(request.headers.get("Accept") or "")
+    if request.is_json or request.headers.get("X-Requested-With") == "XMLHttpRequest":
+        return True
+    if "application/json" in accept:
+        return True
+    if "text/html" in accept:
+        return False
+    return True
+
+
+def _osc_download_error_response(message: str, status: int = 400):
+    """Return JSON for API calls, but a readable page for direct browser downloads."""
+    if _osc_wants_json_response():
+        return jsonify({"ok": False, "error": message}), status
+    safe_message = html_lib.escape(str(message or "操作失敗"))
+    body = f"""<!doctype html>
+<html lang="zh-TW">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Paperclip 檔案操作失敗</title>
+  <style>
+    body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background:#f5f7fb; color:#1f2937; margin:0; }}
+    main {{ max-width: 640px; margin: 14vh auto; padding: 28px; background:white; border:1px solid #d8dee9; border-radius:12px; box-shadow:0 12px 30px rgba(15,23,42,.08); }}
+    h1 {{ font-size: 22px; margin:0 0 12px; }}
+    p {{ line-height:1.7; margin:0 0 18px; }}
+    button {{ border:1px solid #0ea5e9; background:#0ea5e9; color:white; border-radius:8px; padding:9px 14px; cursor:pointer; }}
+  </style>
+</head>
+<body>
+  <main>
+    <h1>檔案操作沒有完成</h1>
+    <p>{safe_message}</p>
+    <button onclick="history.length > 1 ? history.back() : window.close()">返回上一頁</button>
+  </main>
+</body>
+</html>"""
+    return Response(body, status=status, content_type="text/html; charset=utf-8")
+
+
+def _osc_stage_file_with_retry(local_file: str, *, max_attempts: int = 4) -> str:
+    """Copy a NAS-backed large file to local temp storage before Flask sends it.
+
+    Direct `send_file("/Volumes/...")` can hit macOS SMB EDEADLK while Werkzeug
+    streams the file. Staging keeps the browser response on a local file handle.
+    """
+    last_exc: Exception | None = None
+    tmp_dir = os.path.join(tempfile.gettempdir(), "paperclip-downloads")
+    os.makedirs(tmp_dir, exist_ok=True)
+    suffix = os.path.splitext(local_file)[1] or ".bin"
+    for attempt in range(max_attempts):
+        tmp_path = ""
+        try:
+            fd, tmp_path = tempfile.mkstemp(prefix="osc-download-", suffix=suffix, dir=tmp_dir)
+            with os.fdopen(fd, "wb") as out, open(local_file, "rb") as src:
+                shutil.copyfileobj(src, out, length=4 * 1024 * 1024)
+            return tmp_path
+        except OSError as e:
+            last_exc = e
+            if tmp_path:
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
+            if e.errno in (11, 35) and attempt < max_attempts - 1:
+                time.sleep(0.25 * (2 ** attempt))
+                continue
+            raise
+        except Exception as e:
+            last_exc = e
+            if tmp_path:
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
+            raise
+    if last_exc:
+        raise last_exc
+    raise OSError("stage_file_failed")
+
+
 @osc_bp.route("/api/osc/files/content", methods=["GET"])
 @login_required
 def osc_file_content_api():
     raw = str(request.args.get("path") or "").strip()
     if not raw:
-        return jsonify({"ok": False, "error": "path required"}), 400
+        return _osc_download_error_response("缺少檔案路徑。", 400)
     # 改為枚舉所有 candidate，遇 EDEADLK / 開檔失敗時 fallback 到下一個（NAS↔Synology 雙向）
     candidates = _osc_local_path_candidates(raw)
     norm = _osc_norm_path(raw).replace("\\", "/")
@@ -2351,43 +2627,29 @@ def osc_file_content_api():
         except Exception:
             continue
     if not existing_candidates:
-        return jsonify({"ok": False, "error": "file_not_found"}), 404
+        return _osc_download_error_response("找不到檔案，可能已移動、刪除，或 NAS 尚未完成同步。", 404)
 
     inline = str(request.args.get("inline") or "").strip() in {"1", "true", "yes"}
-    import io
-
     last_err: Exception | None = None
     chosen: str = ""
-    file_bytes: bytes | None = None
-    memory_limit_mb = max(1, int(os.environ.get("PAPERCLIP_FILE_MEMORY_PREVIEW_MAX_MB", "50") or "50"))
-    memory_limit = memory_limit_mb * 1024 * 1024
+    staged_file: str = ""
     for local_file in existing_candidates:
         try:
-            file_size = os.path.getsize(local_file)
-        except OSError:
-            file_size = 0
-        if file_size > memory_limit:
-            # Large PDFs/videos should still open/download. Avoid reading them into memory.
-            chosen = local_file
-            file_bytes = None
-            break
-        try:
-            file_bytes = _osc_read_file_with_retry(local_file)
+            staged_file = _osc_stage_file_with_retry(local_file)
             chosen = local_file
             break
         except OSError as e:
             last_err = e
-            _log.warning("osc_file_content_api read failed (errno=%s) on %s, trying next candidate", e.errno, local_file)
+            _log.warning("osc_file_content_api stage failed (errno=%s) on %s, trying next candidate", e.errno, local_file)
             continue
     if not chosen:
         _log.error("osc_file_content_api: all candidates failed; last_err=%s; tried=%s", last_err, existing_candidates)
-        return jsonify({"ok": False, "error": f"send_file_error: {last_err}"}), 500
+        return _osc_download_error_response(f"檔案讀取失敗：{last_err}", 500)
 
     mime, _ = mimetypes.guess_type(chosen)
     try:
-        file_obj = io.BytesIO(file_bytes) if file_bytes is not None else chosen
         resp = send_file(
-            file_obj,
+            staged_file,
             mimetype=mime or "application/octet-stream",
             as_attachment=not inline,
             download_name=os.path.basename(chosen),
@@ -2398,10 +2660,23 @@ def osc_file_content_api():
             resp.headers["Cache-Control"] = "private, max-age=300"
         except OSError:
             pass
+        if staged_file:
+            def _cleanup_staged_file():
+                try:
+                    os.remove(staged_file)
+                except OSError:
+                    pass
+
+            resp.call_on_close(_cleanup_staged_file)
         return resp
     except Exception as e:
+        if staged_file:
+            try:
+                os.remove(staged_file)
+            except OSError:
+                pass
         _log.error("osc_file_content_api send_file error: %s - file=%s", e, chosen)
-        return jsonify({"ok": False, "error": f"send_file_error: {e}"}), 500
+        return _osc_download_error_response(f"檔案傳送失敗：{e}", 500)
 
 
 @osc_bp.route("/api/osc/files/text", methods=["GET", "PUT"])
@@ -3520,8 +3795,11 @@ def osc_todo_detail_api(row_id):
         if k in payload:
             sets.append(f"{k}=%s")
             vals.append((payload.get(k) or "").strip() or None)
-    if "status" in payload and str(payload.get("status")).strip().lower() == "completed":
-        sets.append("completed_date=NOW()")
+    if "status" in payload:
+        if _osc_is_todo_done_status(payload.get("status") or ""):
+            sets.append("completed_date=COALESCE(completed_date, NOW())")
+        else:
+            sets.append("completed_date=NULL")
     if not sets:
         return jsonify({"ok": False, "error": "no fields"}), 400
     vals.append(row_id)
@@ -3941,6 +4219,118 @@ def osc_forms_export_api():
 # ══════════════════════════════════════════════════════════════════════════════
 
 
+def _osc_load_doc_producer_action():
+    import importlib.util
+
+    skill_script = os.path.join(_MAGI_ROOT, "skills", "doc-producer", "action.py")
+    spec = importlib.util.spec_from_file_location("magi_doc_producer_action", skill_script)
+    if not spec or not spec.loader:
+        raise RuntimeError("doc-producer action.py cannot be loaded")
+    doc_producer = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(doc_producer)
+    return doc_producer
+
+
+def _osc_stamp_center_from_payload(payload: dict) -> dict[str, float] | None:
+    raw = payload.get("stamp_center") or payload.get("manual_stamp_coords")
+    if raw in (None, "", False):
+        return None
+    if isinstance(raw, (list, tuple)) and len(raw) >= 2:
+        raw = {"x": raw[0], "y": raw[1]}
+    if not isinstance(raw, dict):
+        raise ValueError("stamp_center must be {x, y}")
+    try:
+        x = float(raw.get("x"))
+        y = float(raw.get("y"))
+    except Exception as exc:
+        raise ValueError("stamp_center.x/y must be numbers") from exc
+    if x < 0 or y < 0:
+        raise ValueError("stamp_center.x/y must be positive")
+    return {"x": x, "y": y}
+
+
+def _osc_prepare_stamp_preview_pdf(src: Path, *, normalize: bool, output_dir: Path) -> tuple[Path, list[Path]]:
+    doc_producer = _osc_load_doc_producer_action()
+    convert_docx_to_pdf = doc_producer.convert_docx_to_pdf
+
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    temp_files: list[Path] = []
+    ext = src.suffix.lower()
+    preview_pdf = output_dir / f"{src.stem}_{stamp}_stamp_preview_base.pdf"
+    temp_files.append(preview_pdf)
+    if ext == ".pdf":
+        shutil.copy2(src, preview_pdf)
+    elif ext in {".docx", ".doc"}:
+        converted = convert_docx_to_pdf(str(src), str(preview_pdf))
+        if not converted.get("success"):
+            raise RuntimeError(f"DOCX 轉 PDF 失敗：{converted.get('error') or ''}")
+    else:
+        raise ValueError(f"unsupported file type: {ext} (only .pdf/.docx/.doc)")
+
+    if normalize:
+        rotated = output_dir / f"{src.stem}_{stamp}_stamp_preview_rotated.pdf"
+        temp_files.append(rotated)
+        _osc_rotate_pdf_to_portrait(preview_pdf, rotated)
+        return rotated, temp_files
+    return preview_pdf, temp_files
+
+
+@osc_bp.route("/api/osc/documents/stamp-preview", methods=["POST"])
+@login_required
+def osc_documents_stamp_preview_api():
+    """回傳書狀最後一頁預覽，供網頁版手動點選律師章位置。"""
+    import fitz
+
+    payload = request.get_json(silent=True) or {}
+    file_path = (payload.get("file_path") or "").strip()
+    normalize = bool(payload.get("normalize"))
+    if not file_path:
+        return jsonify({"ok": False, "error": "file_path required"}), 400
+
+    candidates = _osc_local_path_candidates(file_path)
+    abs_path = _osc_resolve_existing_local_path(candidates)
+    if not abs_path:
+        return jsonify({"ok": False, "error": f"file not found: {file_path}"}), 404
+    if not _osc_is_safe_local_path(abs_path):
+        return jsonify({"ok": False, "error": f"file not in allowed roots: {abs_path}"}), 403
+
+    src = Path(abs_path)
+    temp_files: list[Path] = []
+    try:
+        preview_pdf, temp_files = _osc_prepare_stamp_preview_pdf(src, normalize=normalize, output_dir=src.parent)
+        with fitz.open(preview_pdf) as doc:
+            if doc.page_count < 1:
+                return jsonify({"ok": False, "error": "PDF has no pages"}), 400
+            page_index = doc.page_count - 1
+            page = doc[page_index]
+            matrix = fitz.Matrix(1.45, 1.45)
+            pix = page.get_pixmap(matrix=matrix, alpha=False)
+            image_bytes = pix.tobytes("png")
+            image_data = "data:image/png;base64," + base64.b64encode(image_bytes).decode("ascii")
+            return jsonify(
+                {
+                    "ok": True,
+                    "image_data": image_data,
+                    "page_index": page_index,
+                    "page_width": page.rect.width,
+                    "page_height": page.rect.height,
+                    "rendered_width": pix.width,
+                    "rendered_height": pix.height,
+                    "normalize": normalize,
+                }
+            )
+    except Exception as e:
+        _log.exception("stamp preview failed")
+        return jsonify({"ok": False, "error": f"產生蓋章預覽失敗：{e}"}), 500
+    finally:
+        for temp_path in temp_files:
+            try:
+                if temp_path.exists():
+                    temp_path.unlink()
+            except Exception:
+                _log.debug("silent-catch cleanup stamp preview temp: %s", temp_path, exc_info=True)
+
+
 @osc_bp.route("/api/osc/documents/stamp", methods=["POST"])
 @login_required
 def osc_documents_stamp_api():
@@ -3963,6 +4353,10 @@ def osc_documents_stamp_api():
     copy_type = (payload.get("copy_type") or "正本").strip()
     add_poa = bool(payload.get("add_poa"))
     add_sent_to_opponent = bool(payload.get("add_sent_to_opponent"))
+    try:
+        stamp_center = _osc_stamp_center_from_payload(payload)
+    except ValueError as e:
+        return jsonify({"ok": False, "error": str(e)}), 400
 
     if not file_path:
         return jsonify({"ok": False, "error": "file_path required"}), 400
@@ -3987,7 +4381,10 @@ def osc_documents_stamp_api():
             "copy_type": copy_type,
             "add_poa": add_poa,
             "add_sent_to_opponent": add_sent_to_opponent,
+            "stamp_image": _osc_photo_path("lawyer_stamp.png"),
         }
+        if stamp_center:
+            skill_payload["stamp_center"] = stamp_center
     elif ext in (".docx", ".doc"):
         task = "produce"
         skill_payload = {
@@ -3995,7 +4392,10 @@ def osc_documents_stamp_api():
             "copy_type": copy_type,
             "add_poa": add_poa,
             "add_sent_to_opponent": add_sent_to_opponent,
+            "stamp_image": _osc_photo_path("lawyer_stamp.png"),
         }
+        if stamp_center:
+            skill_payload["stamp_center"] = stamp_center
     else:
         return jsonify(
             {"ok": False, "error": f"unsupported file type: {ext} (only .pdf/.docx/.doc)"}
@@ -4062,6 +4462,7 @@ def osc_documents_stamp_api():
                     "add_sent_to_opponent": add_sent_to_opponent,
                     "output": output_path,
                     "task": task,
+                    "stamp_center": stamp_center,
                 },
                 ensure_ascii=False,
             ),
@@ -4077,9 +4478,231 @@ def osc_documents_stamp_api():
             "copy_type": copy_type,
             "add_poa": add_poa,
             "add_sent_to_opponent": add_sent_to_opponent,
+            "stamp_center": stamp_center,
             "task": task,
         }
     )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Document finalization (正本/繕本/留底 + 證據編號 + 合併)
+# 對應原版 osc.py:26446 finalize_and_generate_pdf → generate_final_pdf_part*
+# ══════════════════════════════════════════════════════════════════════════════
+
+_OSC_EVIDENCE_RE = re.compile(
+    r"^(?P<type>原證|被證|告證|甲證|乙證|上證|被上證|相證|抗證|聲證|附證|附件|陳件|證據|證物)\s*(?P<num_str>[\d一二三四五六七八九十]*)"
+)
+
+
+def _osc_parse_evidence_number(num_str: str) -> int:
+    if not num_str:
+        return 0
+    try:
+        return int(num_str)
+    except ValueError:
+        mapping = {"一": 1, "二": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9, "十": 10}
+        if num_str in mapping:
+            return mapping[num_str]
+        if num_str.endswith("十") and len(num_str) <= 2:
+            if len(num_str) == 1:
+                return 10
+            return mapping.get(num_str[0], 99) * 10
+    return 999
+
+
+def _osc_collect_evidence_pdfs(folder: Path, *, source_path: Path, max_num: int = 50) -> list[tuple[int, str, Path, str]]:
+    items: list[tuple[int, int, str, Path, str]] = []
+    if not folder.is_dir():
+        return []
+    for pdf_path in folder.glob("*.pdf"):
+        if pdf_path.resolve() == source_path.resolve():
+            continue
+        stem = pdf_path.stem
+        if "_temp" in stem or stem.endswith("_含證據"):
+            continue
+        match = _OSC_EVIDENCE_RE.search(stem)
+        if not match:
+            continue
+        evid_type = match.group("type")
+        num_str = match.group("num_str") or ""
+        number = _osc_parse_evidence_number(num_str)
+        priority = 0 if number < max_num and evid_type in {"附件", "附證"} else (1 if number < max_num else 2)
+        items.append((priority, number, evid_type, pdf_path, num_str))
+    items.sort(key=lambda x: (x[0], x[1], x[2], x[3].name))
+    return [(number, evid_type, pdf_path, num_str) for _, number, evid_type, pdf_path, num_str in items]
+
+
+def _osc_rotate_pdf_to_portrait(input_path: Path, output_path: Path) -> None:
+    import fitz
+
+    with fitz.open(input_path) as src:
+        out = fitz.open()
+        try:
+            for page in src:
+                if page.rect.width > page.rect.height:
+                    page.set_rotation((page.rotation + 90) % 360)
+                out.insert_pdf(src, from_page=page.number, to_page=page.number)
+            out.save(output_path, garbage=4, deflate=True, clean=True)
+        finally:
+            out.close()
+
+
+def _osc_add_vertical_evidence_label(input_path: Path, output_path: Path, evid_type: str, num_str: str, font_size: float = 10.0) -> None:
+    import fitz
+
+    label = f"{evid_type}{num_str}"
+    with fitz.open(input_path) as doc:
+        if doc.page_count:
+            page = doc[0]
+            x_start = page.rect.width * 0.96
+            y_cursor = page.rect.height * 0.04
+            for char in label:
+                page.insert_text((x_start, y_cursor), char, fontsize=font_size, fontname="china-ss", color=(0, 0, 0))
+                y_cursor += font_size * 1.3
+        doc.save(output_path, garbage=4, deflate=True, clean=True)
+
+
+@osc_bp.route("/api/osc/documents/finalize", methods=["POST"])
+@login_required
+def osc_documents_finalize_api():
+    """定稿書狀：產生正本、指定份數繕本、留底，並把同資料夾證據 PDF 編號後合併。"""
+    import fitz
+
+    payload = request.get_json(silent=True) or {}
+    file_path = (payload.get("file_path") or "").strip()
+    if not file_path:
+        return jsonify({"ok": False, "error": "file_path required"}), 400
+
+    candidates = _osc_local_path_candidates(file_path)
+    abs_path = _osc_resolve_existing_local_path(candidates)
+    if not abs_path:
+        return jsonify({"ok": False, "error": f"file not found: {file_path}"}), 404
+    if not _osc_is_safe_local_path(abs_path):
+        return jsonify({"ok": False, "error": f"file not in allowed roots: {abs_path}"}), 403
+
+    try:
+        num_copies = max(0, min(20, int(payload.get("num_copies") if payload.get("num_copies") is not None else 1)))
+    except Exception:
+        return jsonify({"ok": False, "error": "num_copies must be integer"}), 400
+    add_poa = bool(payload.get("add_poa"))
+    add_sent_to_opponent = bool(payload.get("add_sent_to_opponent"))
+    include_evidence = payload.get("include_evidence", True) is not False
+    try:
+        stamp_center = _osc_stamp_center_from_payload(payload)
+    except ValueError as e:
+        return jsonify({"ok": False, "error": str(e)}), 400
+
+    src = Path(abs_path)
+    ext = src.suffix.lower()
+    if ext not in {".pdf", ".docx", ".doc"}:
+        return jsonify({"ok": False, "error": f"unsupported file type: {ext} (only .pdf/.docx/.doc)"}), 400
+
+    try:
+        doc_producer = _osc_load_doc_producer_action()
+        convert_docx_to_pdf = doc_producer.convert_docx_to_pdf
+        mark_copy_type = doc_producer.mark_copy_type
+    except Exception as e:
+        return jsonify({"ok": False, "error": f"doc-producer skill unavailable: {e}"}), 500
+
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    output_dir = src.parent
+    base_name = src.stem
+    temp_files: list[Path] = []
+    outputs: dict[str, object] = {}
+
+    try:
+        base_pdf = output_dir / f"{base_name}_{stamp}_base_temp.pdf"
+        temp_files.append(base_pdf)
+        if ext == ".pdf":
+            shutil.copy2(src, base_pdf)
+        else:
+            converted = convert_docx_to_pdf(str(src), str(base_pdf))
+            if not converted.get("success"):
+                return jsonify({"ok": False, "error": f"DOCX 轉 PDF 失敗：{converted.get('error') or ''}"}), 500
+
+        rotated_base = output_dir / f"{base_name}_{stamp}_rotated_base_temp.pdf"
+        temp_files.append(rotated_base)
+        _osc_rotate_pdf_to_portrait(base_pdf, rotated_base)
+
+        components: list[Path] = []
+        copy_specs: list[tuple[str, bool, bool]] = [("正本", add_poa, add_sent_to_opponent)]
+        copy_specs.extend(("繕本", False, False) for _ in range(num_copies))
+        copy_specs.append(("留底", False, False))
+
+        copy_counts: dict[str, int] = {}
+        for copy_type, poa, sent in copy_specs:
+            copy_counts[copy_type] = copy_counts.get(copy_type, 0) + 1
+            suffix = copy_type if copy_counts[copy_type] == 1 else f"{copy_type}{copy_counts[copy_type]}"
+            out_path = output_dir / f"{base_name}_{stamp}_{suffix}.pdf"
+            temp_files.append(out_path)
+            marked = mark_copy_type(
+                str(rotated_base),
+                output_pdf=str(out_path),
+                copy_type=copy_type,
+                add_poa=poa,
+                add_sent_to_opponent=sent,
+                stamp_image=_osc_photo_path("lawyer_stamp.png"),
+                stamp_center=stamp_center,
+            )
+            if not marked.get("success"):
+                return jsonify({"ok": False, "error": f"{copy_type} 標記失敗：{marked.get('error') or ''}"}), 500
+            components.append(out_path)
+
+        evidence_outputs: list[Path] = []
+        if include_evidence:
+            for _, evid_type, evid_path, num_str in _osc_collect_evidence_pdfs(src.parent, source_path=src):
+                rotated_evidence = output_dir / f"{base_name}_{stamp}_rotated_evid_{evid_type}{num_str}.pdf"
+                labeled_evidence = output_dir / f"{base_name}_{stamp}_evid_labeled_{evid_type}{num_str}.pdf"
+                temp_files.extend([rotated_evidence, labeled_evidence])
+                _osc_rotate_pdf_to_portrait(evid_path, rotated_evidence)
+                _osc_add_vertical_evidence_label(rotated_evidence, labeled_evidence, evid_type, num_str)
+                evidence_outputs.append(labeled_evidence)
+
+        merged = fitz.open()
+        try:
+            for component in components:
+                with fitz.open(component) as comp_doc:
+                    merged.insert_pdf(comp_doc)
+                for evidence in evidence_outputs:
+                    with fitz.open(evidence) as evid_doc:
+                        merged.insert_pdf(evid_doc)
+            copies_text = f"(正{num_copies}繕留存)" if num_copies > 0 else "(正留存)"
+            final_path = output_dir / f"{base_name}_{stamp}{copies_text}_含證據.pdf"
+            merged.save(final_path, garbage=4, deflate=True, clean=True)
+        finally:
+            merged.close()
+
+        outputs = {
+            "final": str(final_path),
+            "copies": [str(p) for p in components],
+            "evidence": [str(p) for p in evidence_outputs],
+            "evidence_count": len(evidence_outputs),
+            "num_copies": num_copies,
+            "stamp_center": stamp_center,
+            "final_meta": _export_file_meta(str(final_path)),
+        }
+
+        try:
+            _osc_log_activity(
+                "finalize_document",
+                "document",
+                str(src),
+                json.dumps(outputs, ensure_ascii=False),
+            )
+        except Exception:
+            _log.debug("silent-catch _osc_log_activity finalize", exc_info=True)
+
+        return jsonify({"ok": True, "input_path": str(src), "output_path": str(final_path), "outputs": outputs, "message": "定稿 PDF 已產出並合併完成"})
+    except Exception as e:
+        _log.exception("document finalize failed")
+        return jsonify({"ok": False, "error": f"定稿 PDF 產生失敗：{e}"}), 500
+    finally:
+        for temp_path in temp_files:
+            try:
+                if temp_path.exists():
+                    temp_path.unlink()
+            except Exception:
+                _log.debug("silent-catch cleanup finalize temp: %s", temp_path, exc_info=True)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -5152,6 +5775,10 @@ def osc_backup_delete(filename):
 def _osc_find_font() -> str:
     """Return a path to a CJK TrueType/TrueType Collection font available on macOS."""
     candidates = [
+        os.path.join(_MAGI_ROOT, "font", "NotoSansTC-VariableFont_wght.ttf"),
+        os.path.join(_MAGI_ROOT, "font", "static", "NotoSansTC-Regular.ttf"),
+        "/Applications/Paperclip.app/Contents/Resources/font/NotoSansTC-VariableFont_wght.ttf",
+        "/Applications/Paperclip.app/Contents/Resources/font/static/NotoSansTC-Regular.ttf",
         "/System/Library/Fonts/PingFang.ttc",
         "/System/Library/Fonts/STHeiti Medium.ttc",
         "/System/Library/Fonts/Hiragino Sans GB.ttc",
@@ -5164,20 +5791,22 @@ def _osc_find_font() -> str:
 
 
 def _osc_build_quotation_pdf(row: dict) -> bytes:
-    """Generate a PDF for the given quotation row and return raw bytes."""
+    """Generate a PDF using the same layout as the standalone OSC quotation exporter."""
     from io import BytesIO
     from reportlab.lib.pagesizes import A4
-    from reportlab.lib.units import mm
+    from reportlab.lib.units import cm
     from reportlab.lib import colors
     from reportlab.platypus import (
         SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, HRFlowable,
     )
+    from reportlab.platypus import Image as ReportlabImage
     from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.enums import TA_LEFT, TA_CENTER, TA_RIGHT
     from reportlab.pdfbase import pdfmetrics
     from reportlab.pdfbase.ttfonts import TTFont
 
     font_path = _osc_find_font()
-    font_name = "PingFang"
+    font_name = "NotoSansTC"
     if font_path:
         try:
             pdfmetrics.registerFont(TTFont(font_name, font_path))
@@ -5190,74 +5819,121 @@ def _osc_build_quotation_pdf(row: dict) -> bytes:
     doc = SimpleDocTemplate(
         buf,
         pagesize=A4,
-        topMargin=20 * mm,
-        bottomMargin=20 * mm,
-        leftMargin=20 * mm,
-        rightMargin=20 * mm,
+        rightMargin=1.5 * cm,
+        leftMargin=1.5 * cm,
+        topMargin=1.5 * cm,
+        bottomMargin=1.5 * cm,
     )
 
     styles = getSampleStyleSheet()
-    title_style = ParagraphStyle(
-        "Title2",
-        fontName=font_name,
-        fontSize=18,
-        alignment=1,
-        spaceAfter=8,
-        leading=24,
-    )
-    h2_style = ParagraphStyle(
-        "H2",
-        fontName=font_name,
-        fontSize=12,
-        spaceAfter=4,
-        leading=16,
-    )
-    normal_style = ParagraphStyle(
-        "Normal2",
-        fontName=font_name,
-        fontSize=10,
-        spaceAfter=2,
-        leading=14,
-    )
-    small_style = ParagraphStyle(
-        "Small",
-        fontName=font_name,
-        fontSize=9,
-        spaceAfter=2,
-        leading=13,
-    )
+    company_style = ParagraphStyle("Company", parent=styles["Heading1"], fontName=font_name, fontSize=20, alignment=TA_LEFT, leading=24)
+    title_style = ParagraphStyle("CustomTitle", parent=styles["Heading1"], fontName=font_name, fontSize=18, alignment=TA_CENTER, spaceAfter=15, leading=24)
+    subtitle_style = ParagraphStyle("Subtitle", parent=styles["Normal"], fontName="Helvetica", fontSize=10, alignment=TA_LEFT, leading=12)
+    normal_style = ParagraphStyle("CustomNormal", parent=styles["Normal"], fontName=font_name, fontSize=10, leading=14)
+    table_text_style = ParagraphStyle("QuotationTableText", parent=styles["Normal"], fontName=font_name, fontSize=9, leading=12)
+    total_style = ParagraphStyle("QuotationTotal", parent=normal_style, alignment=TA_RIGHT, fontSize=12, leading=16)
 
     story = []
 
-    # Firm info from settings
-    firm_name = _osc_get_setting_value("firm_name", "")
-    firm_address = _osc_get_setting_value("firm_address", "")
-    firm_phone = _osc_get_setting_value("firm_phone", "")
-    if firm_name:
-        story.append(Paragraph(firm_name, h2_style))
-    if firm_address:
-        story.append(Paragraph(firm_address, small_style))
-    if firm_phone:
-        story.append(Paragraph(f"電話：{firm_phone}", small_style))
-    if firm_name or firm_address or firm_phone:
-        story.append(HRFlowable(width="100%", thickness=0.5, spaceAfter=8))
+    company_name = (
+        _osc_get_setting_value("company_name", "")
+        or _osc_get_setting_value("firm_name", "")
+        or "偵理法律事務所"
+    )
+    company_name_en = _osc_get_setting_value("company_name_en", "") or "ZHENLI LAW FIRM"
+    logo_path = _osc_existing_resource_path(
+        "logo_path",
+        "logo.png",
+        "/Applications/Paperclip.app/Contents/Resources/photo/logo.png",
+    )
+    card_path = _osc_existing_resource_path(
+        "business_card_path",
+        "namecard.png",
+        "/Applications/Paperclip.app/Contents/Resources/photo/namecard.png",
+    )
 
-    # Title
+    try:
+        if logo_path and os.path.exists(logo_path):
+            logo_img = ReportlabImage(str(logo_path), width=2 * cm, height=2 * cm)
+            title_data = [[logo_img, [Paragraph(company_name, company_style), Paragraph(company_name_en, subtitle_style)]]]
+        else:
+            logo_text = Paragraph("⚖", ParagraphStyle("LogoText", parent=normal_style, fontSize=30, alignment=TA_CENTER))
+            title_data = [[logo_text, [Paragraph(company_name, company_style), Paragraph(company_name_en, subtitle_style)]]]
+        title_table = Table(title_data, colWidths=[2.5 * cm, 15.5 * cm])
+        title_table.setStyle(TableStyle([
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("LEFTPADDING", (0, 0), (-1, -1), 0),
+        ]))
+        story.append(title_table)
+    except Exception:
+        story.append(Paragraph(company_name, company_style))
+
+    story.append(HRFlowable(width="100%", thickness=1, color=colors.grey))
+    story.append(Spacer(1, 0.3 * cm))
     story.append(Paragraph("法律服務報價單", title_style))
-    story.append(Spacer(1, 6 * mm))
 
-    # Client info
+    extended_raw = row.get("extended_data") or {}
+    if isinstance(extended_raw, str):
+        try:
+            extended = json.loads(extended_raw)
+        except Exception:
+            extended = {}
+    elif isinstance(extended_raw, dict):
+        extended = extended_raw
+    else:
+        extended = {}
+
     client_name = str(row.get("client_name") or "")
     project_name = str(row.get("project_name") or "")
-    row_id = str(row.get("id") or "")
-    date_str = str(row.get("date") or "")
-    story.append(Paragraph(f"客戶姓名：{client_name}", normal_style))
-    story.append(Paragraph(f"案件編號：{row_id}", normal_style))
-    story.append(Paragraph(f"項目名稱：{project_name}", normal_style))
-    story.append(Paragraph(f"報價日期：{date_str}", normal_style))
-    story.append(Spacer(1, 6 * mm))
+    contact = str(row.get("contact") or extended.get("contact") or "")
+    phone = str(row.get("phone") or "")
+    email = str(row.get("email") or "")
+    address = str(row.get("address") or "")
+    lawyer = str(extended.get("lawyer") or _osc_get_setting_value("default_lawyer", "") or "喬政翔律師")
+    specialist = str(extended.get("specialist") or _osc_get_setting_value("default_specialist", "") or "林稚芳法務專員")
+    specialist_phone = str(extended.get("specialist_phone") or _osc_get_setting_value("specialist_phone", "") or "03-8357-186；0937-753-800")
 
-    # Items table
+    def _fmt_date(value: object) -> str:
+        text = str(value or "").strip()
+        if not text:
+            return ""
+        text = text.split(" ")[0].replace("-", "/")
+        parts = text.split("/")
+        if len(parts) == 3 and all(parts):
+            return f"{parts[0]} 年 {parts[1]} 月 {parts[2]} 日"
+        return str(value or "")
+
+    raw_date = str(row.get("date") or "")
+    raw_expiry = str(row.get("expiry") or "")
+    date_for_calc = raw_date.split(" ")[0].replace("-", "/")
+    expiry_for_calc = raw_expiry.split(" ")[0].replace("-", "/")
+    formatted_date = _fmt_date(raw_date)
+
+    info_data = [
+        [Paragraph(f"當事人姓名：{client_name}", normal_style), Paragraph(f"當事人聯絡人：{contact}", normal_style)],
+        [Paragraph(f"當事人電話：{phone}", normal_style), Paragraph(f"事務所聯絡人：{specialist}", normal_style)],
+    ]
+    if address:
+        info_data.append([Paragraph(f"當事人地址：{address}", normal_style), ""])
+    info_data.append([Paragraph(f"Email：{email}", normal_style), Paragraph(f"報價日期：{formatted_date}", normal_style)])
+    info_table = Table(info_data, colWidths=[9 * cm, 9 * cm])
+    info_table.setStyle(TableStyle([
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 0),
+    ]))
+    story.append(info_table)
+    story.append(Spacer(1, 0.3 * cm))
+
+    try:
+        days = (datetime.strptime(expiry_for_calc, "%Y/%m/%d") - datetime.strptime(date_for_calc, "%Y/%m/%d")).days
+    except Exception:
+        days = 30
+    story.append(Paragraph(f"* 本報價單有效期限為 {days} 天", normal_style))
+    story.append(Paragraph(f"● 本案承辦律師：{lawyer}", normal_style))
+    story.append(Paragraph(f"● 本案承辦專員：{specialist}（聯絡：{specialist_phone}）", normal_style))
+    story.append(Paragraph("感謝您的信任，希望有機會能提供您專業的法律服務", normal_style))
+    story.append(Spacer(1, 0.5 * cm))
+
     items_raw = row.get("items") or "[]"
     if isinstance(items_raw, str):
         try:
@@ -5269,64 +5945,103 @@ def _osc_build_quotation_pdf(row: dict) -> bytes:
     else:
         items = []
 
-    table_data = [["項次", "項目", "數量", "單價", "小計"]]
+    table_data = [
+        [
+            Paragraph("<b>項目</b>", table_text_style),
+            Paragraph("<b>服務內容</b>", table_text_style),
+            Paragraph("<b>單位</b>", table_text_style),
+            Paragraph("<b>單價</b>", table_text_style),
+            Paragraph("<b>金額</b>", table_text_style),
+        ]
+    ]
     for idx, it in enumerate(items, 1):
         if not isinstance(it, dict):
             continue
-        name = str(it.get("name") or it.get("item") or it.get("description") or "")
-        qty = str(it.get("qty") or it.get("quantity") or 1)
-        unit_price = str(it.get("unit_price") or it.get("price") or 0)
-        subtotal = str(it.get("subtotal") or it.get("amount") or "")
+        name = str(it.get("item") or it.get("name") or it.get("service") or "")
+        desc = str(it.get("description") or it.get("desc") or "")
+        service_content = name + (f" （{desc}）" if desc else "")
+        unit = str(it.get("unit") or "式")
+        qty = it.get("qty") or it.get("quantity") or 1
+        unit_price = it.get("cost") if it.get("cost") is not None else (it.get("unit_price") or it.get("price") or 0)
+        subtotal = it.get("subtotal") or it.get("amount") or ""
         try:
             if not subtotal:
-                subtotal = str(float(qty) * float(unit_price))
+                subtotal = float(qty or 0) * float(unit_price or 0)
         except Exception:
             pass
-        table_data.append([str(idx), name, qty, unit_price, subtotal])
+        try:
+            qty_text = f"{int(float(qty))} {unit}"
+        except Exception:
+            qty_text = f"{qty} {unit}".strip()
+        try:
+            unit_price_text = f"{float(unit_price or 0):,.0f} 元"
+        except Exception:
+            unit_price_text = str(unit_price or "")
+        try:
+            subtotal_text = f"{float(subtotal or 0):,.0f} 元"
+        except Exception:
+            subtotal_text = str(subtotal or "")
+        table_data.append([
+            Paragraph(str(idx), table_text_style),
+            Paragraph(service_content, table_text_style),
+            Paragraph(qty_text, table_text_style),
+            Paragraph(unit_price_text, table_text_style),
+            Paragraph(subtotal_text, table_text_style),
+        ])
 
     if len(table_data) > 1:
-        col_widths = [15 * mm, 80 * mm, 20 * mm, 30 * mm, 30 * mm]
-        tbl = Table(table_data, colWidths=col_widths)
+        tbl = Table(table_data, colWidths=[1.5 * cm, 9 * cm, 2 * cm, 3 * cm, 3 * cm])
         tbl.setStyle(TableStyle([
             ("FONTNAME", (0, 0), (-1, -1), font_name),
             ("FONTSIZE", (0, 0), (-1, -1), 9),
-            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#d0d8e8")),
-            ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
-            ("ALIGN", (2, 0), (-1, -1), "RIGHT"),
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#34495e")),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+            ("GRID", (0, 0), (-1, -1), 1, colors.black),
+            ("ALIGN", (0, 0), (-1, 0), "CENTER"),
             ("ALIGN", (0, 0), (0, -1), "CENTER"),
-            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f5f5f5")]),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
         ]))
         story.append(tbl)
-        story.append(Spacer(1, 4 * mm))
+        story.append(Spacer(1, 0.5 * cm))
 
-    # Total
-    discount = row.get("discount") or 0
-    tax = row.get("tax") or 0
-    total = row.get("total") or 0
-    story.append(Paragraph(f"折扣：{discount}", normal_style))
-    story.append(Paragraph(f"稅額：{tax}", normal_style))
-    story.append(Paragraph(f"<b>總計：{total}</b>", normal_style))
-    story.append(Spacer(1, 6 * mm))
+    try:
+        total_text = f"NT$ {float(row.get('total') or 0):,.0f}"
+    except Exception:
+        total_text = str(row.get("total") or "")
+    story.append(Paragraph(f"<b>總價：{total_text}</b>", total_style))
+    story.append(Spacer(1, 0.5 * cm))
 
-    # Notes
+    bank_name = _osc_get_setting_value("bank_name", "") or "您的銀行"
+    bank_account_name = _osc_get_setting_value("bank_account_name", "") or "您的戶名"
+    bank_account_number = _osc_get_setting_value("bank_account_number", "") or "您的帳號"
+    remittance_account_info = (
+        f"• 銀行名稱：{bank_name}\n"
+        f"• 戶名：{bank_account_name}\n"
+        f"• 帳號：{bank_account_number}"
+    )
+    account_paragraph = Paragraph(
+        "<b>付款方式與帳戶資訊</b><br/><br/>"
+        "本報價於當事人確認及付款後生效<br/><br/>"
+        + remittance_account_info.replace("\n", "<br/>"),
+        normal_style,
+    )
+    if card_path and os.path.exists(card_path):
+        card_image = ReportlabImage(str(card_path), width=6 * cm, height=9.6 * cm)
+    else:
+        card_image = Paragraph("找不到名片圖", normal_style)
+    bottom_table = Table([[card_image, account_paragraph]], colWidths=[7 * cm, 11 * cm])
+    bottom_table.setStyle(TableStyle([
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("LEFTPADDING", (1, 0), (1, 0), 10),
+    ]))
+    story.append(bottom_table)
+
     notes = str(row.get("notes") or "")
     if notes:
-        story.append(Paragraph("備註：", h2_style))
-        story.append(Paragraph(notes, normal_style))
-        story.append(Spacer(1, 6 * mm))
-
-    # Signature area
-    story.append(HRFlowable(width="100%", thickness=0.5, spaceAfter=12))
-    sig_data = [
-        [Paragraph("客戶簽名：___________________", normal_style),
-         Paragraph("律師簽名：___________________", normal_style)],
-    ]
-    sig_tbl = Table(sig_data, colWidths=[85 * mm, 85 * mm])
-    sig_tbl.setStyle(TableStyle([
-        ("FONTNAME", (0, 0), (-1, -1), font_name),
-        ("VALIGN", (0, 0), (-1, -1), "TOP"),
-    ]))
-    story.append(sig_tbl)
+        story.append(Spacer(1, 0.5 * cm))
+        story.append(Paragraph("<b>補充說明</b>", normal_style))
+        story.append(HRFlowable(width="100%", thickness=0.5, color=colors.lightgrey))
+        story.append(Paragraph(notes.replace("\n", "<br/>"), normal_style))
 
     doc.build(story)
     return buf.getvalue()
@@ -5338,13 +6053,13 @@ def osc_quotation_export_pdf(row_id):
     """Export a quotation as PDF and return as attachment."""
     row, _ = _osc_exec("SELECT * FROM quotations WHERE id=%s", (row_id,), fetch="one")
     if not row:
-        return jsonify({"ok": False, "error": "Quotation not found"}), 404
+        return _osc_download_error_response("找不到這份報價單。", 404)
 
     try:
         pdf_bytes = _osc_build_quotation_pdf(row)
     except Exception as e:
         logging.exception("PDF generation error for quotation %s", row_id)
-        return jsonify({"ok": False, "error": str(e)}), 500
+        return _osc_download_error_response(f"報價單 PDF 產生失敗：{e}", 500)
 
     today = datetime.now().strftime("%Y%m%d")
     safe_name = (row.get("client_name") or row_id or "quotation").replace("/", "_")
@@ -5432,12 +6147,12 @@ def osc_case_address_label(row_id):
     recipient = (request.args.get("recipient") or "").strip().lower()
 
     if recipient not in ("court", "defendant", "laf"):
-        return jsonify({"ok": False, "error": "recipient must be court/defendant/laf"}), 400
+        return _osc_download_error_response("請選擇法院、對造或法扶分會。", 400)
 
     # Load case
     case, _ = _osc_exec("SELECT * FROM cases WHERE id=%s", (row_id,), fetch="one")
     if not case:
-        return jsonify({"ok": False, "error": "Case not found"}), 404
+        return _osc_download_error_response("找不到案件資料。", 404)
 
     case_number = str(case.get("case_number") or "")
     client_name = str(case.get("client_name") or "")
@@ -5453,7 +6168,7 @@ def osc_case_address_label(row_id):
     if recipient == "court":
         court_name = str(case.get("court_name") or "").strip()
         if not court_name:
-            return jsonify({"ok": False, "error": "案件未設定法院/地檢署名稱"}), 400
+            return _osc_download_error_response("案件未設定法院或地檢署名稱，請先編輯案件資料。", 400)
         receiver_name = court_name
         # Try to look up address from courts table
         court_row, _ = _osc_exec(
@@ -5473,7 +6188,7 @@ def osc_case_address_label(row_id):
             # Fallback: try notes
             notes = str(case.get("notes") or "")
             if not notes.strip():
-                return jsonify({"ok": False, "error": "案件無對造資料"}), 400
+                return _osc_download_error_response("案件沒有對造資料，請先補入對造姓名與地址。", 400)
             receiver_name = client_name or case_number
             receiver_address = notes[:80]
         else:
@@ -5484,7 +6199,7 @@ def osc_case_address_label(row_id):
     elif recipient == "laf":
         laf_branch = str(case.get("laf_branch") or "").strip()
         if not laf_branch:
-            return jsonify({"ok": False, "error": "案件未設定法扶分會"}), 400
+            return _osc_download_error_response("案件未設定法扶分會，請先編輯案件資料。", 400)
         receiver_name = laf_branch
         branch_row, _ = _osc_exec(
             "SELECT address FROM legal_aid_branches WHERE name=%s LIMIT 1",
@@ -5499,7 +6214,7 @@ def osc_case_address_label(row_id):
         )
     except Exception as e:
         logging.exception("Address label generation error for case %s", row_id)
-        return jsonify({"ok": False, "error": str(e)}), 500
+        return _osc_download_error_response(f"地址標籤產生失敗：{e}", 500)
 
     today = datetime.now().strftime("%Y%m%d")
     filename = f"地址標籤_{case_number or row_id}_{recipient}.png"

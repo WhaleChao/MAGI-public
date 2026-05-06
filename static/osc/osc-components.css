@@ -167,7 +167,6 @@ body.theme-dark .case-module-card.active span:last-child {
     min-height: 48px;
     max-height: 280px;
     overflow: auto;
-    white-space: pre-wrap;
     border: 1px solid var(--line);
     border-radius: 8px;
     background: var(--panel-2);
@@ -1364,8 +1363,96 @@ body.theme-dark .chip.active {
     margin: 8px 0;
     padding: 8px 10px;
     border-radius: 8px;
-    white-space: pre-wrap;
     line-height: 1.45;
+}
+
+.msg:not(:has(.web-reply)) {
+    white-space: pre-wrap;
+}
+
+.case-magi-result .web-reply,
+.msg .web-reply,
+.insight-full .web-reply,
+.osc-web-reply-dialog .web-reply {
+    display: grid;
+    gap: 8px;
+    white-space: normal;
+}
+
+.case-magi-result .web-reply h3,
+.case-magi-result .web-reply h4,
+.msg .web-reply h3,
+.msg .web-reply h4,
+.insight-full .web-reply h3,
+.insight-full .web-reply h4,
+.osc-web-reply-dialog .web-reply h3,
+.osc-web-reply-dialog .web-reply h4 {
+    margin: 4px 0 0;
+    color: var(--text);
+    font-size: 15px;
+    line-height: 1.35;
+}
+
+.case-magi-result .web-reply p,
+.case-magi-result .web-reply ul,
+.case-magi-result .web-reply ol,
+.msg .web-reply p,
+.msg .web-reply ul,
+.msg .web-reply ol,
+.insight-full .web-reply p,
+.insight-full .web-reply ul,
+.insight-full .web-reply ol,
+.osc-web-reply-dialog .web-reply p,
+.osc-web-reply-dialog .web-reply ul,
+.osc-web-reply-dialog .web-reply ol {
+    margin: 0;
+}
+
+.case-magi-result .web-reply ul,
+.case-magi-result .web-reply ol,
+.msg .web-reply ul,
+.msg .web-reply ol,
+.insight-full .web-reply ul,
+.insight-full .web-reply ol,
+.osc-web-reply-dialog .web-reply ul,
+.osc-web-reply-dialog .web-reply ol {
+    padding-left: 20px;
+}
+
+.case-magi-result .web-reply li,
+.msg .web-reply li,
+.insight-full .web-reply li,
+.osc-web-reply-dialog .web-reply li {
+    margin: 3px 0;
+}
+
+.case-magi-result .web-reply a,
+.msg .web-reply a,
+.insight-full .web-reply a,
+.osc-web-reply-dialog .web-reply a {
+    color: var(--accent);
+    text-decoration: underline;
+    text-underline-offset: 2px;
+}
+
+.case-magi-result .web-reply hr,
+.msg .web-reply hr,
+.insight-full .web-reply hr,
+.osc-web-reply-dialog .web-reply hr {
+    width: 100%;
+    border: 0;
+    border-top: 1px solid var(--line);
+    margin: 3px 0;
+}
+
+.case-magi-result .web-reply code,
+.msg .web-reply code,
+.insight-full .web-reply code,
+.osc-web-reply-dialog .web-reply code {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    padding: 1px 4px;
 }
 
 .msg.user {

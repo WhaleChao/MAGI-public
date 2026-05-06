@@ -21,6 +21,14 @@
                     <input id="pdfToolPath" placeholder="從案件檔案、檔案管理、書狀索引帶入，或直接貼上 PDF 路徑">
                 </div>
                 <div class="field">
+                    <label for="pdfCalendarCaseNumber">案件編號</label>
+                    <input id="pdfCalendarCaseNumber" placeholder="選填，寫入待辦時建議填寫">
+                </div>
+                <div class="field">
+                    <label for="pdfCalendarClientName">當事人</label>
+                    <input id="pdfCalendarClientName" placeholder="選填">
+                </div>
+                <div class="field">
                     <label for="pdfToolPages">頁碼 / 範圍</label>
                     <input id="pdfToolPages" placeholder="例：1,3-5；留空代表全部">
                 </div>
@@ -55,6 +63,13 @@
                 <button class="btn" id="pdfWatermarkBtn">加浮水印</button>
                 <button class="btn" id="pdfOptimizeBtn">最佳化</button>
                 <button class="btn warn" id="pdfEncryptBtn">加密副本</button>
+                <button class="btn" id="pdfCalendarPreviewBtn">掃描行程</button>
+                <button class="btn primary" id="pdfCalendarWriteBtn">寫入待辦與行事曆</button>
+                <button class="btn warn" id="pdfCalendarWriteSyncBtn">寫入並同步 Google</button>
+                <button class="btn" id="pdfCalendarAllCasesBtn">掃描全部案件 PDF</button>
+            </div>
+            <div class="section-note" style="margin-top:8px;">
+                「掃描行程」可讀取單一 PDF 或資料夾，先預覽開庭、補正、繳費、上訴等日期；確認後再寫入 Paperclip 待辦與行事曆。
             </div>
             <div id="pdfToolStatus" class="status-banner" hidden style="margin-top:10px;"></div>
             <div id="pdfToolOutputs" class="soft-block" hidden style="margin-top:10px;"></div>

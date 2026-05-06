@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import logging
 import os
+from html import escape
 
-from flask import Flask, jsonify, request
+from flask import Flask, Response, jsonify, request
 from flask_login import LoginManager
 
 from api.blueprints.dashboard_pages import dashboard_pages_bp
@@ -32,6 +33,37 @@ def create_base_app() -> Flask:
 def install_error_handlers(app: Flask) -> Flask:
     @app.errorhandler(500)
     def handle_500(e):
+        accept = str(request.headers.get("Accept") or "")
+        wants_json = (
+            request.is_json
+            or request.headers.get("X-Requested-With") == "XMLHttpRequest"
+            or "application/json" in accept
+            or "text/html" not in accept
+        )
+        if not wants_json:
+            body = f"""<!doctype html>
+<html lang="zh-TW">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MAGI 系統暫時忙碌</title>
+  <style>
+    body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background:#f5f7fb; color:#1f2937; margin:0; }}
+    main {{ max-width: 640px; margin: 14vh auto; padding: 28px; background:white; border:1px solid #d8dee9; border-radius:12px; box-shadow:0 12px 30px rgba(15,23,42,.08); }}
+    h1 {{ font-size: 22px; margin:0 0 12px; }}
+    p {{ line-height:1.7; margin:0 0 18px; }}
+    button {{ border:1px solid #0ea5e9; background:#0ea5e9; color:white; border-radius:8px; padding:9px 14px; cursor:pointer; }}
+  </style>
+</head>
+<body>
+  <main>
+    <h1>系統暫時忙碌</h1>
+    <p>{escape("操作沒有完成，請回上一頁稍後再試；若重複發生，請通知 MAGI 檢查服務紀錄。")}</p>
+    <button onclick="history.length > 1 ? history.back() : location.href='/dashboard'">返回上一頁</button>
+  </main>
+</body>
+</html>"""
+            return Response(body, status=500, content_type="text/html; charset=utf-8")
         return jsonify({"error": "internal_server_error", "message": "系統暫時忙碌，請稍後再試"}), 500
 
     return app

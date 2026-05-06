@@ -53,9 +53,9 @@
                         <summary>查看研究連結</summary>
                         <div class="source-list">
                             {% for source in ns.sources %}
-                            <a href="{{ source.url }}" target="_blank" rel="noopener noreferrer">
+                            <a href="{{ source.open_url }}" {% if not source.is_feed %}target="_blank" rel="noopener noreferrer"{% endif %}>
                                 <strong>{{ source.note or source.url }}</strong>
-                                <span>{{ source.type }}{% if source.lang %} · {{ source.lang }}{% endif %}</span>
+                                <span>{{ source.type }}{% if source.lang %} · {{ source.lang }}{% endif %}{% if source.is_feed %} · MAGI 預覽{% endif %}</span>
                             </a>
                             {% endfor %}
                         </div>

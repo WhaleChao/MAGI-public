@@ -45,7 +45,10 @@ def _find_latest_nightly_run() -> str | None:
         candidates.extend(glob.glob(pattern))
     candidates.sort(reverse=True)
 
-    for d in candidates:
+    nightly_candidates = [d for d in candidates if os.path.basename(d).endswith("_nightly")]
+    ordered_candidates = nightly_candidates + [d for d in candidates if d not in nightly_candidates]
+
+    for d in ordered_candidates:
         if os.path.isdir(d):
             # 檢查是否有 nightly 相關的輸出
             report_path = os.path.join(d, "report.json")
@@ -92,6 +95,13 @@ def _parse_step_results(run_dir: str) -> dict:
                     "ok": False,
                     "skipped": False,
                     "detail": detail[:240],
+                }
+            if not results and report.get("task") == "self_test":
+                results["_nightly_run"] = {
+                    "name": "夜間主流程",
+                    "ok": bool(report.get("ok")),
+                    "skipped": True,
+                    "detail": "最近一筆是 self_test，未代表夜間排程",
                 }
             return results
         except Exception:

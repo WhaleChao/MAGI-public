@@ -4,9 +4,11 @@ from __future__ import annotations
 
 from pathlib import Path
 from unittest.mock import patch
+import builtins
+import errno
 
 from flask import Flask
-from flask_login import LoginManager
+from flask_login import LoginManager, UserMixin
 
 
 def _client():
@@ -14,7 +16,15 @@ def _client():
     app.config["TESTING"] = True
     app.config["LOGIN_DISABLED"] = True
     app.secret_key = "test"
-    LoginManager().init_app(app)
+    login = LoginManager()
+    login.init_app(app)
+
+    class TestUser(UserMixin):
+        id = "test-user"
+
+    @login.user_loader
+    def _load_user(_user_id):
+        return TestUser()
 
     from api.blueprints.osc_files import osc_files_bp
 
@@ -103,3 +113,131 @@ def test_move_file_to_case_root_is_allowed(tmp_path: Path):
     assert data["new_relative_path"] == "要移回根目錄.txt"
     assert not src.exists()
     assert (tmp_path / "要移回根目錄.txt").read_text(encoding="utf-8") == "root-target"
+
+
+def test_share_file_creates_opaque_download_link(tmp_path: Path, monkeypatch):
+    client = _client()
+    src = tmp_path / "卷證.pdf"
+    src.write_bytes(b"%PDF-share")
+
+    from api.blueprints import osc_files as mod
+
+    monkeypatch.setattr(mod, "_SHARE_STORE_PATH", tmp_path / "shares.json")
+    with patch("api.blueprints.osc_files._resolve_safe_file", return_value=str(src)):
+        r = client.post("/api/osc/files/share", json={"path": str(src), "ttl_sec": 600})
+
+        assert r.status_code == 200
+        data = r.get_json()
+        assert data["ok"] is True
+        assert "/s/" in data["url"]
+        assert "卷證" not in data["url"]
+
+        token = data["url"].rstrip("/").split("/s/", 1)[1]
+        download = client.get(f"/s/{token}")
+
+    assert download.status_code == 200
+    assert download.data == b"%PDF-share"
+
+
+def test_external_console_host_requires_independent_share_base(tmp_path: Path, monkeypatch):
+    client = _client()
+    src = tmp_path / "卷證.pdf"
+    src.write_bytes(b"%PDF-share")
+
+    from api.blueprints import osc_files as mod
+
+    monkeypatch.delenv("MAGI_OSC_FILE_SHARE_PUBLIC_BASE_URL", raising=False)
+    monkeypatch.delenv("MAGI_OSC_FILE_SHARE_ALLOW_CONSOLE_BASE", raising=False)
+    monkeypatch.setattr(mod, "_SHARE_STORE_PATH", tmp_path / "shares.json")
+    monkeypatch.setattr(mod, "_SHARE_PUBLIC_BASE_FILE", tmp_path / "missing_share_base.txt")
+    with patch("api.blueprints.osc_files._resolve_safe_file", return_value=str(src)):
+        r = client.post(
+            "/api/osc/files/share",
+            base_url="https://aimac-mini.tail6738b7.ts.net",
+            json={"path": str(src), "ttl_sec": 600},
+        )
+
+    assert r.status_code == 409
+    data = r.get_json()
+    assert data["ok"] is False
+    assert data["error"] == "share_public_base_required"
+    assert not (tmp_path / "shares.json").exists()
+
+
+def test_external_share_uses_independent_share_base(tmp_path: Path, monkeypatch):
+    client = _client()
+    src = tmp_path / "卷證.pdf"
+    src.write_bytes(b"%PDF-share")
+
+    from api.blueprints import osc_files as mod
+
+    monkeypatch.setenv("MAGI_OSC_FILE_SHARE_PUBLIC_BASE_URL", "https://paperclip-share.example.test")
+    monkeypatch.setattr(mod, "_SHARE_STORE_PATH", tmp_path / "shares.json")
+    monkeypatch.setattr(mod, "_SHARE_PUBLIC_BASE_FILE", tmp_path / "ignored_share_base.txt")
+    with patch("api.blueprints.osc_files._resolve_safe_file", return_value=str(src)):
+        r = client.post(
+            "/api/osc/files/share",
+            base_url="https://aimac-mini.tail6738b7.ts.net",
+            json={"path": str(src), "ttl_sec": 600},
+        )
+
+    assert r.status_code == 200
+    data = r.get_json()
+    assert data["ok"] is True
+    assert data["url"].startswith("https://paperclip-share.example.test/s/")
+    assert "aimac-mini.tail6738b7.ts.net" not in data["url"]
+    assert data["url_mode"] == "independent_share_base"
+
+
+def test_share_download_retries_macos_smb_deadlock(tmp_path: Path, monkeypatch):
+    from api.blueprints import osc_files as mod
+
+    src = tmp_path / "卷證.pdf"
+    src.write_bytes(b"%PDF-share")
+    attempts = {"n": 0}
+
+    class FakeFile:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            attempts["n"] += 1
+            if attempts["n"] == 1:
+                raise OSError(errno.EDEADLK, "Resource deadlock avoided")
+            return b"%PDF-share"
+
+    def fake_open(path, mode="r", *args, **kwargs):
+        if str(path) == str(src) and mode == "rb":
+            return FakeFile()
+        return builtins.open(path, mode, *args, **kwargs)
+
+    monkeypatch.setattr(mod, "open", fake_open, raising=False)
+
+    assert mod._read_file_with_retry(str(src)) == b"%PDF-share"
+    assert attempts["n"] == 2
+
+
+def test_share_head_does_not_read_dataless_file(tmp_path: Path, monkeypatch):
+    client = _client()
+    src = tmp_path / "卷證.pdf"
+    src.write_bytes(b"%PDF-share")
+
+    from api.blueprints import osc_files as mod
+
+    monkeypatch.setattr(mod, "_SHARE_STORE_PATH", tmp_path / "shares.json")
+    with patch("api.blueprints.osc_files._resolve_safe_file", return_value=str(src)):
+        r = client.post("/api/osc/files/share", json={"path": str(src), "ttl_sec": 600})
+        token = r.get_json()["url"].rstrip("/").split("/s/", 1)[1]
+
+        def fail_open(*_args, **_kwargs):
+            raise AssertionError("HEAD should not read the shared file")
+
+        monkeypatch.setattr(mod, "open", fail_open, raising=False)
+        head = client.head(f"/s/{token}")
+
+    assert head.status_code == 200
+    assert head.data == b""
+    assert head.headers["Content-Length"] == str(src.stat().st_size)
