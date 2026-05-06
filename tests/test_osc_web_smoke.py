@@ -395,6 +395,41 @@ def test_large_file_content_uses_streaming_response(client, tmp_path):
     assert r.headers.get("Content-Length") == str(big_pdf.stat().st_size)
 
 
+def test_file_content_streams_staged_file_without_send_file(client, tmp_path, monkeypatch):
+    """PDF 下載/預覽不得再依賴 Werkzeug send_file，避免 macOS SMB EDEADLK。"""
+    from api.blueprints import osc_cases as mod
+
+    pdf = tmp_path / "卷證.pdf"
+    payload = b"%PDF-streaming-response"
+    pdf.write_bytes(payload)
+
+    def fail_send_file(*_args, **_kwargs):
+        raise AssertionError("osc file content should stream staged files directly")
+
+    monkeypatch.setattr(mod, "send_file", fail_send_file)
+    with patch("api.blueprints.osc_cases._osc_local_path_candidates", return_value=[str(pdf)]), \
+         patch("api.blueprints.osc_cases._osc_is_safe_local_path", return_value=True):
+        r = client.get(f"/api/osc/files/content?path={pdf}&inline=1")
+
+    assert r.status_code == 200
+    assert r.data == payload
+    assert r.headers["Content-Disposition"].startswith("inline")
+    assert r.headers["Accept-Ranges"] == "bytes"
+
+
+def test_file_content_supports_pdf_range_requests(client, tmp_path):
+    pdf = tmp_path / "range.pdf"
+    pdf.write_bytes(b"0123456789abcdef")
+
+    with patch("api.blueprints.osc_cases._osc_local_path_candidates", return_value=[str(pdf)]), \
+         patch("api.blueprints.osc_cases._osc_is_safe_local_path", return_value=True):
+        r = client.get(f"/api/osc/files/content?path={pdf}&inline=1", headers={"Range": "bytes=2-5"})
+
+    assert r.status_code == 206
+    assert r.data == b"2345"
+    assert r.headers["Content-Range"] == "bytes 2-5/16"
+
+
 def test_large_file_content_stages_nas_file_when_direct_read_deadlocks(client, tmp_path, monkeypatch):
     """大型 NAS 檔案若第一次開檔 EDEADLK，應 retry 並從本機暫存檔下載。"""
     from api.blueprints import osc_cases as mod

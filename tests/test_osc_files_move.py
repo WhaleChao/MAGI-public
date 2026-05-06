@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from urllib.parse import urlencode
 from unittest.mock import patch
 import builtins
 import errno
@@ -137,6 +138,47 @@ def test_share_file_creates_opaque_download_link(tmp_path: Path, monkeypatch):
 
     assert download.status_code == 200
     assert download.data == b"%PDF-share"
+
+
+def test_share_download_streams_without_send_file(tmp_path: Path, monkeypatch):
+    client = _client()
+    src = tmp_path / "卷證.pdf"
+    src.write_bytes(b"%PDF-share-stream")
+
+    from api.blueprints import osc_files as mod
+
+    def fail_send_file(*_args, **_kwargs):
+        raise AssertionError("shared files should stream staged files directly")
+
+    monkeypatch.setattr(mod, "send_file", fail_send_file)
+    monkeypatch.setattr(mod, "_SHARE_STORE_PATH", tmp_path / "shares.json")
+    with patch("api.blueprints.osc_files._resolve_safe_file", return_value=str(src)):
+        r = client.post("/api/osc/files/share", json={"path": str(src), "ttl_sec": 600})
+        token = r.get_json()["url"].rstrip("/").split("/s/", 1)[1]
+        download = client.get(f"/s/{token}", headers={"Range": "bytes=5-9"})
+
+    assert download.status_code == 206
+    assert download.data == b"share"
+    assert download.headers["Content-Range"].endswith(f"/{src.stat().st_size}")
+
+
+def test_pdf_preview_content_url_is_encoded(tmp_path: Path):
+    client = _client()
+    src = tmp_path / "卷證 A&B#1.pdf"
+    src.write_bytes(b"%PDF-preview")
+
+    query = urlencode({"path": str(src)})
+    with patch("api.blueprints.osc_files._osc_resolve_existing_local_path", return_value=str(src)), \
+         patch("api.blueprints.osc_files._osc_is_safe_local_path", return_value=True):
+        r = client.get(f"/api/osc/files/preview?{query}")
+
+    assert r.status_code == 200
+    data = r.get_json()
+    assert data["ok"] is True
+    assert data["kind"] == "pdf"
+    assert "%26" in data["content_url"]
+    assert "%23" in data["content_url"]
+    assert "A&B#1" not in data["content_url"]
 
 
 def test_external_console_host_requires_independent_share_base(tmp_path: Path, monkeypatch):

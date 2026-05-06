@@ -18,6 +18,7 @@ import time
 import uuid
 from datetime import date, datetime, timedelta
 from pathlib import Path
+from urllib.parse import quote
 
 import csv
 import html as html_lib
@@ -2641,6 +2642,95 @@ def _osc_stage_file_with_retry(local_file: str, *, max_attempts: int | None = No
     raise OSError("stage_file_failed")
 
 
+def _osc_cleanup_file_once(path: str) -> None:
+    try:
+        os.remove(path)
+    except FileNotFoundError:
+        pass
+    except OSError:
+        pass
+
+
+def _osc_content_disposition(filename: str, *, inline: bool) -> str:
+    disposition = "inline" if inline else "attachment"
+    ascii_name = filename.encode("ascii", "ignore").decode("ascii") or "download"
+    return f'{disposition}; filename="{ascii_name}"; filename*=UTF-8\'\'{quote(filename)}'
+
+
+def _osc_stream_staged_file(staged_file: str, *, download_name: str, mime: str | None, inline: bool):
+    """Stream a local staged file without Werkzeug send_file.
+
+    macOS SMB/Tailscale backed files can surface EDEADLK through send_file even
+    after staging. A small explicit streamer keeps PDF preview/download paths on
+    a normal local file descriptor and still supports browser byte ranges.
+    """
+    try:
+        size = os.path.getsize(staged_file)
+    except OSError as e:
+        _osc_cleanup_file_once(staged_file)
+        return _osc_download_error_response(f"檔案暫存讀取失敗：{e}", 500)
+
+    start = 0
+    end = max(0, size - 1)
+    status = 200
+    range_header = str(request.headers.get("Range") or "").strip()
+    if range_header.startswith("bytes=") and size > 0:
+        spec = range_header[6:].split(",", 1)[0].strip()
+        try:
+            left, _, right = spec.partition("-")
+            if left == "":
+                suffix_len = int(right)
+                if suffix_len <= 0:
+                    raise ValueError("invalid suffix range")
+                start = max(0, size - suffix_len)
+            else:
+                start = int(left)
+                if right:
+                    end = min(size - 1, int(right))
+            if start < 0 or start >= size or end < start:
+                raise ValueError("invalid byte range")
+            status = 206
+        except Exception:
+            _osc_cleanup_file_once(staged_file)
+            resp = Response(status=416)
+            resp.headers["Content-Range"] = f"bytes */{size}"
+            resp.headers["Accept-Ranges"] = "bytes"
+            return resp
+
+    length = 0 if size == 0 else end - start + 1
+
+    if request.method == "HEAD":
+        _osc_cleanup_file_once(staged_file)
+        resp = Response(status=status, mimetype=mime or "application/octet-stream")
+    else:
+        def _iter_file():
+            try:
+                with open(staged_file, "rb") as fh:
+                    fh.seek(start)
+                    remaining = length
+                    while remaining > 0:
+                        chunk = fh.read(min(1024 * 1024, remaining))
+                        if not chunk:
+                            break
+                        remaining -= len(chunk)
+                        yield chunk
+            finally:
+                _osc_cleanup_file_once(staged_file)
+
+        resp = Response(_iter_file(), status=status, mimetype=mime or "application/octet-stream")
+        resp.call_on_close(lambda: _osc_cleanup_file_once(staged_file))
+
+    resp.headers["Content-Disposition"] = _osc_content_disposition(download_name, inline=inline)
+    resp.headers["Accept-Ranges"] = "bytes"
+    resp.headers["Content-Length"] = str(length)
+    if status == 206:
+        resp.headers["Content-Range"] = f"bytes {start}-{end}/{size}"
+    resp.headers["Cache-Control"] = "private, max-age=300"
+    resp.headers["X-Robots-Tag"] = "noindex, nofollow, noarchive"
+    resp.headers["Referrer-Policy"] = "no-referrer"
+    return resp
+
+
 @osc_bp.route("/api/osc/files/content", methods=["GET"])
 @login_required
 def osc_file_content_api():
@@ -2683,33 +2773,21 @@ def osc_file_content_api():
 
     mime, _ = mimetypes.guess_type(chosen)
     try:
-        resp = send_file(
+        resp = _osc_stream_staged_file(
             staged_file,
-            mimetype=mime or "application/octet-stream",
-            as_attachment=not inline,
+            mime=mime or "application/octet-stream",
+            inline=inline,
             download_name=os.path.basename(chosen),
         )
         try:
             st = os.stat(chosen)
             resp.headers["ETag"] = f'"{int(st.st_mtime)}-{st.st_size}"'
-            resp.headers["Cache-Control"] = "private, max-age=300"
         except OSError:
             pass
-        if staged_file:
-            def _cleanup_staged_file():
-                try:
-                    os.remove(staged_file)
-                except OSError:
-                    pass
-
-            resp.call_on_close(_cleanup_staged_file)
         return resp
     except Exception as e:
         if staged_file:
-            try:
-                os.remove(staged_file)
-            except OSError:
-                pass
+            _osc_cleanup_file_once(staged_file)
         _log.error("osc_file_content_api send_file error: %s - file=%s", e, chosen)
         return _osc_download_error_response(f"檔案傳送失敗：{e}", 500)
 

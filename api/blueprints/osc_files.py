@@ -244,6 +244,88 @@ def _read_file_with_retry(local_file: str, *, max_attempts: int = 7) -> bytes:
             pass
 
 
+def _cleanup_file_once(path: str) -> None:
+    try:
+        os.remove(path)
+    except FileNotFoundError:
+        pass
+    except OSError:
+        pass
+
+
+def _content_disposition(filename: str, *, inline: bool) -> str:
+    disposition = "inline" if inline else "attachment"
+    ascii_name = filename.encode("ascii", "ignore").decode("ascii") or "download"
+    return f'{disposition}; filename="{ascii_name}"; filename*=UTF-8\'\'{quote(filename)}'
+
+
+def _stream_staged_file(staged_file: str, *, download_name: str, mime: str | None, inline: bool):
+    try:
+        size = os.path.getsize(staged_file)
+    except OSError as e:
+        _cleanup_file_once(staged_file)
+        return jsonify({"ok": False, "error": f"staged_stat_failed: {e}"}), 503
+
+    start = 0
+    end = max(0, size - 1)
+    status = 200
+    range_header = str(request.headers.get("Range") or "").strip()
+    if range_header.startswith("bytes=") and size > 0:
+        spec = range_header[6:].split(",", 1)[0].strip()
+        try:
+            left, _, right = spec.partition("-")
+            if left == "":
+                suffix_len = int(right)
+                if suffix_len <= 0:
+                    raise ValueError("invalid suffix range")
+                start = max(0, size - suffix_len)
+            else:
+                start = int(left)
+                if right:
+                    end = min(size - 1, int(right))
+            if start < 0 or start >= size or end < start:
+                raise ValueError("invalid byte range")
+            status = 206
+        except Exception:
+            _cleanup_file_once(staged_file)
+            resp = Response(status=416)
+            resp.headers["Content-Range"] = f"bytes */{size}"
+            resp.headers["Accept-Ranges"] = "bytes"
+            return resp
+
+    length = 0 if size == 0 else end - start + 1
+    if request.method == "HEAD":
+        _cleanup_file_once(staged_file)
+        resp = Response(status=status, mimetype=mime or "application/octet-stream")
+    else:
+        def _iter_file():
+            try:
+                with open(staged_file, "rb") as fh:
+                    fh.seek(start)
+                    remaining = length
+                    while remaining > 0:
+                        chunk = fh.read(min(1024 * 1024, remaining))
+                        if not chunk:
+                            break
+                        remaining -= len(chunk)
+                        yield chunk
+            finally:
+                _cleanup_file_once(staged_file)
+
+        resp = Response(_iter_file(), status=status, mimetype=mime or "application/octet-stream")
+        resp.call_on_close(lambda: _cleanup_file_once(staged_file))
+
+    resp.headers["Content-Disposition"] = _content_disposition(download_name, inline=inline)
+    resp.headers["Accept-Ranges"] = "bytes"
+    resp.headers["Content-Length"] = str(length)
+    if status == 206:
+        resp.headers["Content-Range"] = f"bytes {start}-{end}/{size}"
+    resp.headers["X-Robots-Tag"] = "noindex, nofollow, noarchive"
+    resp.headers["Referrer-Policy"] = "no-referrer"
+    resp.headers["Cache-Control"] = "private, max-age=300"
+    return resp
+
+
 def _send_local_file(local: str, *, inline: bool):
     mime, _ = mimetypes.guess_type(local)
     name = os.path.basename(local)
@@ -252,13 +334,10 @@ def _send_local_file(local: str, *, inline: bool):
             st = os.stat(local)
         except OSError as e:
             return jsonify({"ok": False, "error": f"stat_failed: {e}"}), 503
-        disposition = "inline" if inline else "attachment"
-        ascii_name = name.encode("ascii", "ignore").decode("ascii") or "download"
         resp = Response(status=200, mimetype=mime or "application/octet-stream")
-        resp.headers["Content-Disposition"] = (
-            f'{disposition}; filename="{ascii_name}"; filename*=UTF-8\'\'{quote(name)}'
-        )
+        resp.headers["Content-Disposition"] = _content_disposition(name, inline=inline)
         resp.headers["Content-Length"] = str(int(st.st_size))
+        resp.headers["Accept-Ranges"] = "bytes"
         resp.headers["X-Robots-Tag"] = "noindex, nofollow, noarchive"
         resp.headers["Referrer-Policy"] = "no-referrer"
         resp.headers["Cache-Control"] = "private, max-age=300"
@@ -269,28 +348,7 @@ def _send_local_file(local: str, *, inline: bool):
     except OSError as e:
         _log.warning("share stage failed: errno=%s file=%s", getattr(e, "errno", None), local)
         return jsonify({"ok": False, "error": f"read_failed: {e}"}), 503
-    resp = send_file(
-        staged_file,
-        mimetype=mime or "application/octet-stream",
-        as_attachment=not inline,
-        download_name=name,
-    )
-    resp.headers["X-Robots-Tag"] = "noindex, nofollow, noarchive"
-    resp.headers["Referrer-Policy"] = "no-referrer"
-    resp.headers["Cache-Control"] = "private, max-age=300"
-    try:
-        resp.headers["Content-Length"] = str(os.path.getsize(staged_file))
-    except OSError:
-        pass
-
-    def _cleanup_staged_file():
-        try:
-            os.remove(staged_file)
-        except OSError:
-            pass
-
-    resp.call_on_close(_cleanup_staged_file)
-    return resp
+    return _stream_staged_file(staged_file, mime=mime or "application/octet-stream", inline=inline, download_name=name)
 
 
 def _is_hidden_name(name: str) -> bool:
@@ -964,9 +1022,10 @@ def osc_files_preview_api():
     kind = osc_preview.categorize(local)
 
     if kind in ("pdf", "image", "audio", "video", "text"):
+        encoded_path = quote(raw, safe="")
         return jsonify({
             "ok": True, "kind": kind,
-            "content_url": f"/api/osc/files/content?path={request.args.get('path')}&inline=1",
+            "content_url": f"/api/osc/files/content?path={encoded_path}&inline=1",
             "name": os.path.basename(local),
         })
 
