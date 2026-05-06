@@ -1269,8 +1269,8 @@ body::after {
 
     <details class="nerv-fold" open>
       <summary>
-        <span class="nerv-fold-title">PRODUCT SWITCHBOARD</span>
-        <span class="nerv-fold-meta">三個產品的 Codex 與 LAF portal 切換</span>
+        <span class="nerv-fold-title">HEAVY API SWITCHBOARD</span>
+        <span class="nerv-fold-meta">NVIDIA API 與大型任務開關</span>
       </summary>
       <div class="nerv-fold-body">
         <div class="product-switchboard compact-scroll" style="max-height: 248px;">
@@ -1325,9 +1325,10 @@ body::after {
 
     <div class="panel-title" style="margin-top:18px;">MAGI 對話</div>
     <div id="nerv-chat-messages" style="min-height:100px; max-height:200px; overflow-y:auto; background:rgba(0,0,0,0.35); border:1px solid #331a00; border-radius:2px; padding:8px; margin-bottom:8px; font-size:0.75em; line-height:1.5;">
-      <div style="color:#ff8800;">系統已就緒，可直接用自然語句指示 MAGI。</div>
+      <div style="color:#ff8800;">系統已就緒，可直接用自然語句指示 MAGI。大型翻譯、長文摘要、複雜法律分析可在開頭加上 @heavy 或 @重型，啟用 NVIDIA API 路徑。</div>
     </div>
-    <textarea id="nerv-chat-input" placeholder="輸入指示（Enter 送出）" style="width:100%; min-height:40px; background:rgba(0,0,0,0.4); color:#ccc; border:1px solid #331a00; border-radius:2px; padding:6px 8px; font-family:'Share Tech Mono',monospace; font-size:0.75em; resize:vertical; box-sizing:border-box;"></textarea>
+    <textarea id="nerv-chat-input" placeholder="輸入指示（大型任務可用 @heavy 或 @重型；Enter 送出）" style="width:100%; min-height:40px; background:rgba(0,0,0,0.4); color:#ccc; border:1px solid #331a00; border-radius:2px; padding:6px 8px; font-family:'Share Tech Mono',monospace; font-size:0.75em; resize:vertical; box-sizing:border-box;"></textarea>
+    <div style="color:#9a7a55; font-size:0.68em; line-height:1.45; margin-top:5px;">HEAVY 命令：<code>@heavy 摘要這份大型卷證</code>、<code>@重型 翻譯這份長文</code>。只有在 NERV 的 NVIDIA API 開關啟用且已設定金鑰時會優先使用 API。</div>
     <div style="display:flex; gap:6px; margin-top:6px;">
       <button id="nerv-chat-send" style="background:transparent; color:#ff8800; border:1px solid #ff880044; padding:4px 10px; cursor:pointer; font-family:'Share Tech Mono',monospace; font-size:0.72em;">送出</button>
       <button id="nerv-chat-clear" style="background:transparent; color:#666; border:1px solid #333; padding:4px 10px; cursor:pointer; font-family:'Share Tech Mono',monospace; font-size:0.72em;">清空</button>
@@ -1421,34 +1422,28 @@ body::after {
 <script>
 const REFRESH_MS = 5000;
 let lastData = null;
-let codexDistributedState = null;
+let heavyRuntimeState = null;
 let productRuntimeState = null;
 let skillCatalog = [];
 let activeSkillName = '';
 let isNewSkillDraft = false;
 let activeSkillVersions = [];
 let activeSkillSidePanel = 'template';
-const CODEX_FEATURE_LABELS = {
-  summary: '摘要',
-  translate: '翻譯',
-  vision: '視覺/OCR',
-  intent: '意圖路由',
-  transcript: '逐字稿',
-};
 const PRODUCT_RUNTIME_LABELS = {
   file_review: { title: '閱卷 FILE REVIEW', subtitle: '閱卷通知、繳費單辨識與 portal 流程' },
   transcript: { title: '筆錄 TRANSCRIPT', subtitle: '法院筆錄下載、OCR 與案件同步' },
   laf: { title: '法扶 LAF', subtitle: '法扶 workflow 與 portal test/prod 切換' },
 };
 const ROUTING_ROWS = [
-  { task: '摘要產生', feature: 'summary', localModel: 'Gemma-4 26B', codexModel: 'Codex 摘要鏈路' },
-  { task: '影像辨識', feature: 'vision', localModel: 'GLM-OCR-bf16 (port 8082)', codexModel: 'Codex Vision/OCR' },
-  { task: '文字辨識 OCR', feature: 'vision', localModel: 'GLM-OCR-bf16 (port 8082)', codexModel: 'Codex OCR route' },
-  { task: '筆錄整理', feature: 'transcript', localModel: 'Whisper + Gemma-4 26B', codexModel: 'Codex Transcript route' },
+  { task: '摘要產生', heavy: true, localModel: 'Gemma-4 26B', heavyModel: 'NVIDIA NIM API' },
+  { task: '大型翻譯', heavy: true, localModel: 'Gemma-4 26B', heavyModel: 'NVIDIA NIM API' },
+  { task: '影像辨識', localModel: 'macOS Vision / 26B 補強' },
+  { task: '文字辨識 OCR', localModel: 'macOS Vision OCR' },
+  { task: '筆錄整理', heavy: true, localModel: 'Whisper + Gemma-4 26B', heavyModel: 'NVIDIA NIM API' },
   { task: '程式產生', localModel: 'Gemma-4 26B' },
   { task: '向量嵌入', localModel: 'ModernBERT' },
-  { task: '意圖/通用', feature: 'intent', localModel: 'Gemma-4 26B', codexModel: 'Codex Router' },
-  { task: '法律分析', localModel: 'Gemma-4 26B' },
+  { task: '意圖/通用', localModel: 'Gemma-4 26B' },
+  { task: '複雜法律分析', heavy: true, localModel: 'Gemma-4 26B', heavyModel: 'NVIDIA NIM API' },
 ];
 
 function escapeHtml(value) {
@@ -1485,8 +1480,8 @@ async function parseJsonApiResponse(response, unavailableMessage) {
   return payload;
 }
 
-async function parseCodexApiResponse(response) {
-  return parseJsonApiResponse(response, 'Codex sidecar 暫不可得');
+async function parseHeavyApiResponse(response) {
+  return parseJsonApiResponse(response, 'NVIDIA HEAVY 狀態暫不可得');
 }
 
 async function parseSkillApiResponse(response) {
@@ -1639,136 +1634,90 @@ async function copyRemoteAccessText(text, doneText) {
   }
 }
 
-function codexButtonHTML(label, onclick, tone = 'default', disabled = false) {
+function nervMiniButtonHTML(label, onclick, tone = 'default', disabled = false) {
   const border = tone === 'danger' ? '#7a1d00' : '#5a3212';
   const color = tone === 'danger' ? '#ff8a66' : '#ffcc88';
   const disabledStyle = disabled ? 'opacity:0.45;cursor:not-allowed;' : 'cursor:pointer;';
   return `<button ${disabled ? 'disabled' : ''} onclick="${onclick}" style="border:1px solid ${border};background:#120b07;color:${color};padding:5px 8px;font-size:0.68em;font-family:'Share Tech Mono',monospace;${disabledStyle}">${label}</button>`;
 }
 
-function codexFeatureState(report, feature) {
-  if (!report) {
-    return { mode: 'local', ready: false, label: 'LOCAL', detail: '狀態暫不可得，先走本地模型' };
-  }
-  const enabled = !!(report.enabled && report.features && report.features[feature]);
-  if (!enabled) {
-    return { mode: 'local', ready: false, label: 'LOCAL', detail: '此功能未切到 Codex，維持本地模型' };
-  }
-  if (report.oauth_ready && report.runtime_ready) {
-    return { mode: 'codex', ready: true, label: 'CODEX', detail: 'Codex sidecar ready' };
-  }
-  const wait = report.runtime_cooldown_remaining_sec || 0;
-  return {
-    mode: 'fallback',
-    ready: false,
-    label: 'CODEX→LOCAL',
-    detail: report.oauth_ready ? `runtime cooldown ${wait}s，暫時回退本地` : 'OAuth blocked，暫時回退本地',
-  };
-}
-
-function codexEngineMeta(report) {
+function heavyEngineMeta(report) {
   if (!report) {
     return { status: 'offline', meta: 'status unavailable' };
   }
-  if (!report.oauth_ready) {
-    return { status: 'error', meta: 'oauth blocked' };
-  }
   if (!report.enabled) {
-    return { status: 'local', meta: '手動關閉' };
+    return { status: report.configured ? 'local' : 'offline', meta: report.configured ? 'API 已設定，HEAVY 關閉' : '尚未設定 API 金鑰' };
   }
-  if (!report.runtime_ready) {
-    return { status: 'offline', meta: `cooldown ${report.runtime_cooldown_remaining_sec || 0}s` };
-  }
-  const features = Object.entries(report.features || {})
-    .filter(([, on]) => !!on)
-    .map(([name]) => CODEX_FEATURE_LABELS[name] || name);
-  return {
-    status: 'online',
-    meta: features.length ? features.join(' / ') : 'ready',
-  };
+  return { status: report.configured ? 'online' : 'error', meta: report.configured ? 'HEAVY 任務可使用 API' : '開關已開但缺少金鑰' };
 }
 
-function codexEngineRowHTML(report) {
-  const meta = codexEngineMeta(report);
-  const canToggle = !!(report && report.can_toggle);
-  const enabledFeatures = Object.entries((report && report.features) || {})
-    .filter(([, on]) => !!on)
-    .map(([name]) => CODEX_FEATURE_LABELS[name] || name);
-  const featureText = enabledFeatures.length ? enabledFeatures.join(' / ') : '目前走本地 MAGI';
-  const runtimeText = report
-    ? `${report.oauth_ready ? 'OAuth ready' : 'OAuth blocked'} · ${report.runtime_ready ? 'runtime ready' : `cooldown ${report.runtime_cooldown_remaining_sec || 0}s`}`
+function heavyEngineRowHTML(report) {
+  const meta = heavyEngineMeta(report);
+  const canToggle = !!(report && report.can_edit);
+  const hintText = report
+    ? `${report.description || ''} · 金鑰 ${report.configured ? report.masked || '已設定' : '未設定'}`
     : 'status unavailable';
-  const hintText = report && report.last_error ? `${featureText} · ${report.last_error}` : `${featureText} · ${runtimeText}`;
   return `
     <div class="node-item node-item-stack">
       <div class="indicator ${statusColor(meta.status)}"></div>
       <div class="engine-stack">
         <div class="engine-row-head">
-          <span class="label">Codex Sidecar</span>
+          <span class="label">NVIDIA HEAVY API</span>
           <span class="meta">${escapeHtml(meta.meta)}</span>
         </div>
         <div class="engine-inline-status">${escapeHtml(hintText)}</div>
         <div class="engine-inline-actions">
-          ${codexButtonHTML('開啟', "setCodexDistributedMode('on')", 'default', !canToggle)}
-          ${codexButtonHTML('關閉', "setCodexDistributedMode('off')", 'danger', !canToggle)}
-          ${codexButtonHTML('刷新', 'fetchCodexDistributedStatus()')}
+          ${nervMiniButtonHTML('啟用 HEAVY', 'setHeavyRuntimeEnabled(true)', 'default', !canToggle)}
+          ${nervMiniButtonHTML('關閉 HEAVY', 'setHeavyRuntimeEnabled(false)', 'danger', !canToggle)}
+          ${nervMiniButtonHTML('刷新', 'fetchHeavyRuntime()')}
         </div>
       </div>
     </div>
   `;
 }
 
-function codexFeatureButtonHTML(feature, label, report) {
-  const canToggle = !!(report && report.can_toggle);
-  const state = codexFeatureState(report, feature);
-  const on = state.mode === 'codex' || state.mode === 'fallback';
-  const disabledAttr = canToggle ? '' : 'disabled';
-  const title = `${label} · ${state.detail}`;
-  return `<button type="button" class="engine-feature-btn ${on ? '' : 'off'}" ${disabledAttr} title="${escapeHtml(title)}" onclick="toggleCodexFeature('${feature}')">${escapeHtml(label)} ${on ? 'ON' : 'OFF'}</button>`;
-}
-
-function codexFeaturePanelHTML(report) {
-  const states = Object.entries(CODEX_FEATURE_LABELS)
-    .map(([feature, label]) => codexFeatureState(report, feature));
-  const activeCount = states.filter((item) => item.mode !== 'local').length;
-  const statusText = activeCount
-    ? `${activeCount} 項功能已切到 Codex`
-    : '目前沒有功能切到 Codex';
+function heavyCommandPanelHTML(report) {
+  const on = !!(report && report.enabled);
+  const statusText = on
+    ? 'HEAVY 命令會優先使用 NVIDIA API'
+    : 'HEAVY 命令目前回到本機 26B';
   return `
     <div class="node-item node-item-stack">
-      <div class="indicator ${activeCount ? 'green' : 'yellow'}"></div>
+      <div class="indicator ${on ? 'green' : 'yellow'}"></div>
       <div class="engine-stack">
         <div class="engine-row-head">
-          <span class="label">CODEX 單點切換</span>
-          <span class="meta">原 Ollama 位置</span>
+          <span class="label">HEAVY 命令說明</span>
+          <span class="meta">@heavy / @重型</span>
         </div>
         <div class="engine-inline-status">${escapeHtml(statusText)}</div>
         <div class="engine-feature-grid">
-          ${Object.entries(CODEX_FEATURE_LABELS).map(([feature, label]) => codexFeatureButtonHTML(feature, label, report)).join('')}
+          <button type="button" class="engine-feature-btn ${on ? '' : 'off'}" disabled>長文摘要</button>
+          <button type="button" class="engine-feature-btn ${on ? '' : 'off'}" disabled>大型翻譯</button>
+          <button type="button" class="engine-feature-btn ${on ? '' : 'off'}" disabled>複雜法律分析</button>
         </div>
-        <div class="engine-inline-note">單項切換會即時反映到中央推論分派，方便你看目前是走本地還是 Codex。</div>
+        <div class="engine-inline-note">範例：@heavy 請摘要這份大型卷證。未啟用 API 時仍可使用本機模型處理。</div>
       </div>
     </div>
   `;
 }
 
 function routingRowHTML(row, report) {
-  const state = row.feature ? codexFeatureState(report, row.feature) : { mode: 'local', ready: false, label: 'LOCAL', detail: '固定本地模型' };
-  if (state.mode === 'codex') {
+  const heavyOn = !!(report && report.enabled && report.configured);
+  if (row.heavy && heavyOn) {
     return `
       <div class="route-row">
         <span class="task">${escapeHtml(row.task)}</span>
-        <span class="path"><span class="engine remote">CODEX</span></span>
-        <span class="model">${escapeHtml(row.codexModel || 'Codex route')}</span>
+        <span class="path"><span class="engine remote">NVIDIA</span></span>
+        <span class="model">${escapeHtml(row.heavyModel || 'NVIDIA NIM API')}</span>
       </div>
     `;
   }
-  if (state.mode === 'fallback') {
+  if (row.heavy && report && report.enabled && !report.configured) {
     return `
       <div class="route-row">
         <span class="task">${escapeHtml(row.task)}</span>
-        <span class="path"><span class="engine remote">CODEX</span><span class="arrow">→</span><span class="engine fallback">LOCAL</span></span>
-        <span class="model">${escapeHtml(state.detail)}</span>
+        <span class="path"><span class="engine remote">NVIDIA</span><span class="arrow">→</span><span class="engine fallback">LOCAL</span></span>
+        <span class="model">缺少 API 金鑰，回到 26B</span>
       </div>
     `;
   }
@@ -1784,7 +1733,7 @@ function routingRowHTML(row, report) {
 function renderRoutingTable() {
   const table = document.getElementById('routing-table');
   if (!table) return;
-  table.innerHTML = ROUTING_ROWS.map((row) => routingRowHTML(row, codexDistributedState)).join('');
+  table.innerHTML = ROUTING_ROWS.map((row) => routingRowHTML(row, heavyRuntimeState)).join('');
 }
 
 function renderEngineNodes(data) {
@@ -1801,14 +1750,14 @@ function renderEngineNodes(data) {
           </div>
           <div class="engine-inline-status">一鍵開啟新技能草稿，並自動帶入撰寫範本。</div>
           <div class="skill-launcher-actions">
-            ${codexButtonHTML('新增', 'startNewSkill()')}
-            ${codexButtonHTML('問答精靈', 'openSkillInterviewWizard()')}
+            ${nervMiniButtonHTML('新增', 'startNewSkill()')}
+            ${nervMiniButtonHTML('問答精靈', 'openSkillInterviewWizard()')}
           </div>
         </div>
       </div>
     `,
-    codexFeaturePanelHTML(codexDistributedState),
-    codexEngineRowHTML(codexDistributedState),
+    heavyCommandPanelHTML(heavyRuntimeState),
+    heavyEngineRowHTML(heavyRuntimeState),
   ].join('');
 }
 
@@ -1824,49 +1773,44 @@ function renderOfficeNodes(data) {
   ].join('');
 }
 
-async function fetchCodexDistributedStatus() {
+async function fetchHeavyRuntime() {
   try {
-    const response = await fetch('/api/codex-distributed/status');
-    const report = await parseCodexApiResponse(response);
-    codexDistributedState = report;
+    const response = await fetch('/api/nerv/heavy-runtime');
+    const report = await parseHeavyApiResponse(response);
+    heavyRuntimeState = report;
   } catch (e) {
-    codexDistributedState = null;
-    console.warn('Codex status unavailable:', e.message);
+    heavyRuntimeState = null;
+    console.warn('HEAVY runtime unavailable:', e.message);
   }
   if (lastData) {
     renderEngineNodes(lastData);
   }
   renderRoutingTable();
+  renderProductRuntime();
   renderCommandStrip();
 }
 
-async function setCodexDistributedMode(command, features = null) {
-  const canToggle = !!(codexDistributedState && codexDistributedState.can_toggle);
+async function setHeavyRuntimeEnabled(enabled) {
+  const canToggle = !!(heavyRuntimeState && heavyRuntimeState.can_edit);
   if (!canToggle) {
-    alert('只有管理員可以切換 Codex sidecar。');
+    alert('只有管理員可以切換 HEAVY API。');
     return;
   }
   try {
-    const response = await fetch('/api/codex-distributed/toggle', {
+    const response = await fetch('/api/nerv/heavy-runtime', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ command, features }),
+      body: JSON.stringify({ enabled }),
     });
-    const report = await parseCodexApiResponse(response);
-    codexDistributedState = report;
+    const report = await parseHeavyApiResponse(response);
+    heavyRuntimeState = report;
     if (lastData) renderEngineNodes(lastData);
     renderRoutingTable();
     renderCommandStrip();
   } catch (e) {
-    alert(`Codex sidecar 切換失敗: ${e.message}`);
-    await fetchCodexDistributedStatus();
+    alert(`HEAVY API 切換失敗: ${e.message}`);
+    await fetchHeavyRuntime();
   }
-}
-
-async function toggleCodexFeature(feature) {
-  const features = (codexDistributedState && codexDistributedState.features) || {};
-  const isOn = !!features[feature];
-  await setCodexDistributedMode(isOn ? 'off' : 'on', [feature]);
 }
 
 function runtimeFieldId(product, field) {
@@ -1882,12 +1826,12 @@ function productRuntimeCardHTML(product, report, canEdit) {
   const meta = PRODUCT_RUNTIME_LABELS[product] || { title: product, subtitle: '' };
   const profile = (report && report.profile) || {};
   const portal = report && report.portal;
-  const codexMode = profile.codex_mode || 'auto';
   const portalEnv = profile.portal_env || 'production';
   const executeBaseUrl = portal && portal.execute_base_url ? portal.execute_base_url : 'n/a';
   const compareText = portal && portal.compare_enabled ? (portal.compare_base_url || 'enabled') : 'off';
   const executeEnv = portal && portal.execute_env ? portal.execute_env : 'local';
   const disableAttr = canEdit ? '' : 'disabled';
+  const heavyLabel = heavyRuntimeState && heavyRuntimeState.enabled && heavyRuntimeState.configured ? 'HEAVY ON' : 'LOCAL';
   const portalRow = product === 'laf'
     ? `
       <div class="runtime-row">
@@ -1913,7 +1857,7 @@ function productRuntimeCardHTML(product, report, canEdit) {
           <div class="runtime-card-title">${escapeHtml(meta.title)}</div>
           <div class="runtime-card-subtitle">${escapeHtml(meta.subtitle)}</div>
         </div>
-        <div class="runtime-badge">${escapeHtml(codexMode.toUpperCase())}</div>
+        <div class="runtime-badge">${escapeHtml(heavyLabel)}</div>
       </div>
       <div class="runtime-band">
         <div>
@@ -1924,17 +1868,15 @@ function productRuntimeCardHTML(product, report, canEdit) {
       </div>
       <div class="runtime-controls">
         <div class="runtime-row">
-          <label for="${runtimeFieldId(product, 'codex_mode')}">Codex 辨識模式</label>
-          <select id="${runtimeFieldId(product, 'codex_mode')}" class="runtime-select" ${disableAttr}>
-            <option value="auto" ${codexMode === 'auto' ? 'selected' : ''}>auto</option>
-            <option value="local" ${codexMode === 'local' ? 'selected' : ''}>local</option>
-            <option value="codex" ${codexMode === 'codex' ? 'selected' : ''}>codex</option>
+          <label>NVIDIA HEAVY</label>
+          <select class="runtime-select" disabled>
+            <option>${heavyLabel}</option>
           </select>
         </div>
         ${portalRow}
       </div>
       <div class="runtime-meta">
-        <div>辨識路徑: ${escapeHtml(codexMode)}</div>
+        <div>大型任務: ${escapeHtml(heavyLabel)}（全域開關於本區上方控制）</div>
         ${product === 'laf' ? `<div>compare target: ${escapeHtml(compareText)}</div>` : ''}
       </div>
       <div class="runtime-actions">
@@ -1950,16 +1892,16 @@ function renderCommandStrip() {
   const data = lastData || {};
   const products = (productRuntimeState && productRuntimeState.products) || {};
   const productModes = ['file_review', 'transcript', 'laf']
-    .map((name) => (products[name] && products[name].profile && products[name].profile.codex_mode) || 'auto')
+    .map((name) => (products[name] && products[name].portal && products[name].portal.execute_env) || 'local')
     .join(' / ');
   const lafPortal = (products.laf && products.laf.portal && products.laf.portal.execute_env) || 'n/a';
   const systemValue = data.magi_server?.status === 'online' ? 'GREEN' : 'ALERT';
   const inferenceValue = data.omlx?.status === 'online' ? `${data.omlx?.count || 0} MODELS` : 'DEGRADED';
-  const codexValue = codexDistributedState && codexDistributedState.enabled ? 'CODEX ON' : 'LOCAL ONLY';
+  const heavyValue = heavyRuntimeState && heavyRuntimeState.enabled && heavyRuntimeState.configured ? 'HEAVY API ON' : 'LOCAL 26B';
   const opsValue = data.line_webhook?.status === 'online' && data.cloudflared?.status === 'online' ? 'READY' : 'CHECK';
   strip.innerHTML = [
     `<div class="command-chip"><div class="command-chip-label">SYSTEM</div><div class="command-chip-value">${escapeHtml(systemValue)}</div><div class="command-chip-meta">server ${escapeHtml(data.magi_server?.status || 'unknown')} · db ${escapeHtml(data.mysql?.status || 'unknown')}</div></div>`,
-    `<div class="command-chip"><div class="command-chip-label">INFERENCE</div><div class="command-chip-value">${escapeHtml(inferenceValue)}</div><div class="command-chip-meta">${escapeHtml(codexValue)} · oMLX ${escapeHtml(data.omlx?.status || 'unknown')}</div></div>`,
+    `<div class="command-chip"><div class="command-chip-label">INFERENCE</div><div class="command-chip-value">${escapeHtml(inferenceValue)}</div><div class="command-chip-meta">${escapeHtml(heavyValue)} · oMLX ${escapeHtml(data.omlx?.status || 'unknown')}</div></div>`,
     `<div class="command-chip"><div class="command-chip-label">PRODUCTS</div><div class="command-chip-value">${escapeHtml(lafPortal.toUpperCase())}</div><div class="command-chip-meta">modes ${escapeHtml(productModes)}</div></div>`,
     `<div class="command-chip"><div class="command-chip-label">OPERATIONS</div><div class="command-chip-value">${escapeHtml(opsValue)}</div><div class="command-chip-meta">line ${escapeHtml(data.line_webhook?.status || 'unknown')} · cf webhook-only ${escapeHtml(data.cloudflared?.status || 'unknown')}</div></div>`,
   ].join('');
@@ -1978,10 +1920,90 @@ function renderProductRuntime() {
   lineEl.textContent = canEdit
     ? `設定檔：${productRuntimeState.runtime_path || ''}`
     : `設定檔：${productRuntimeState.runtime_path || ''} · 目前為唯讀檢視`;
-  gridEl.innerHTML = ['file_review', 'transcript', 'laf']
+  gridEl.innerHTML = [
+    heavyRuntimeCardHTML(canEdit),
+    ...['file_review', 'transcript', 'laf']
     .map((name) => productRuntimeCardHTML(name, productRuntimeState.products[name], canEdit))
-    .join('');
+  ].join('');
   renderCommandStrip();
+}
+
+function heavyRuntimeCardHTML(canEdit) {
+  const state = heavyRuntimeState || {};
+  const enabled = !!state.enabled;
+  const configured = !!state.configured;
+  const disableAttr = canEdit ? '' : 'disabled';
+  const badge = enabled && configured ? 'API ON' : enabled ? '缺少金鑰' : 'API OFF';
+  return `
+    <div class="runtime-card">
+      <div class="runtime-card-head">
+        <div>
+          <div class="runtime-card-title">NVIDIA HEAVY API</div>
+          <div class="runtime-card-subtitle">大型摘要、長文翻譯、複雜法律分析的 API 路徑</div>
+        </div>
+        <div class="runtime-badge">${escapeHtml(badge)}</div>
+      </div>
+      <div class="runtime-band">
+        <div>
+          <div class="runtime-band-label">COMMAND</div>
+          <div class="runtime-band-value">@heavy / @重型</div>
+        </div>
+        <div class="runtime-band-code">${enabled ? 'ON' : 'OFF'}</div>
+      </div>
+      <div class="runtime-controls">
+        <div class="runtime-row">
+          <label for="heavy-runtime-enabled">HEAVY 任務</label>
+          <select id="heavy-runtime-enabled" class="runtime-select" ${disableAttr}>
+            <option value="1" ${enabled ? 'selected' : ''}>啟用 NVIDIA API</option>
+            <option value="0" ${!enabled ? 'selected' : ''}>關閉，使用本機 26B</option>
+          </select>
+        </div>
+        <div class="runtime-row">
+          <label for="heavy-runtime-api-key">NVIDIA API 金鑰</label>
+          <input id="heavy-runtime-api-key" class="runtime-select" type="password" placeholder="${configured ? state.masked || '已設定' : 'nvapi-...'}" ${disableAttr}>
+        </div>
+      </div>
+      <div class="runtime-meta">
+        <div>${escapeHtml(state.description || 'HEAVY 任務會優先嘗試 NVIDIA API。')}</div>
+        <div>狀態：${configured ? `已設定 ${escapeHtml(state.masked || '')}` : '尚未設定金鑰'}</div>
+      </div>
+      <div class="runtime-actions">
+        <button class="runtime-btn" ${disableAttr} onclick="saveHeavyRuntime()">套用 HEAVY 設定</button>
+      </div>
+    </div>
+  `;
+}
+
+async function saveHeavyRuntime() {
+  const canEdit = !!(heavyRuntimeState && heavyRuntimeState.can_edit);
+  if (!canEdit) {
+    alert('只有管理員可以修改 HEAVY API。');
+    return;
+  }
+  const enabledEl = document.getElementById('heavy-runtime-enabled');
+  const keyEl = document.getElementById('heavy-runtime-api-key');
+  const payload = { enabled: enabledEl ? enabledEl.value === '1' : false };
+  const apiKey = keyEl && keyEl.value ? keyEl.value.trim() : '';
+  if (apiKey) payload.api_key = apiKey;
+  const lineEl = document.getElementById('runtime-status-line');
+  if (lineEl) lineEl.textContent = '正在套用 HEAVY API 設定...';
+  try {
+    const response = await fetch('/api/nerv/heavy-runtime', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    heavyRuntimeState = await parseHeavyApiResponse(response);
+    if (keyEl) keyEl.value = '';
+    renderProductRuntime();
+    if (lastData) renderEngineNodes(lastData);
+    renderRoutingTable();
+    if (lineEl) lineEl.textContent = 'HEAVY API 設定已套用。';
+  } catch (e) {
+    if (lineEl) lineEl.textContent = 'HEAVY API 設定儲存失敗。';
+    alert(`HEAVY API 設定儲存失敗: ${e.message}`);
+    await fetchHeavyRuntime();
+  }
 }
 
 async function fetchProductRuntime(showMessage = false) {
@@ -2012,9 +2034,12 @@ async function saveProductRuntime(product) {
     alert('只有管理員可以修改產品切換。');
     return;
   }
+  if (product !== 'laf') {
+    alert('閱卷與筆錄目前使用全域 HEAVY API 開關，不需要個別套用。');
+    return;
+  }
   const payload = {
     product,
-    codex_mode: runtimeFieldValue(product, 'codex_mode'),
   };
   if (product === 'laf') {
     payload.portal_env = runtimeFieldValue(product, 'portal_env');
@@ -2734,8 +2759,8 @@ document.addEventListener('keydown', (event) => {
 
 poll();
 setInterval(poll, REFRESH_MS);
-fetchCodexDistributedStatus();
-setInterval(fetchCodexDistributedStatus, 15000);
+fetchHeavyRuntime();
+setInterval(fetchHeavyRuntime, 15000);
 fetchProductRuntime();
 setInterval(() => fetchProductRuntime(), 30000);
 fetchNervSkills();

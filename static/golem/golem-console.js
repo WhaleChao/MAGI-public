@@ -570,7 +570,7 @@
     if (magiChatClear) {
         magiChatClear.addEventListener("click", () => {
             const box = $("magi-chat-messages");
-            if (box) box.innerHTML = '<div class="chat-message system">對話已清空，可直接輸入新的指示。</div>';
+            if (box) box.innerHTML = '<div class="chat-message system">對話已清空，可直接輸入新的指示。大型任務可在開頭加上 @heavy 或 @重型。</div>';
             clearMagiChatFile();
         });
     }

@@ -346,8 +346,91 @@ def create_admin_runtime_blueprint(
     root = Path(magi_root) if magi_root else Path(__file__).resolve().parents[2]
     static_dir = root / "static"
     agent_dir = root / ".agent"
+    env_path = root / ".env"
     status_file = static_dir / "magi_status.json"
     server_log_path = agent_dir / "server.log"
+
+    def _is_current_user_admin() -> bool:
+        try:
+            checker = getattr(current_user, "is_admin", None)
+            if callable(checker):
+                return bool(checker())
+            return str(getattr(current_user, "role", "") or "").lower() == "admin"
+        except Exception:
+            return False
+
+    def _parse_env_file(path: Path) -> dict[str, str]:
+        values: dict[str, str] = {}
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except FileNotFoundError:
+            return values
+        for raw in lines:
+            line = raw.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            values[key.strip()] = value.strip().strip("'\"")
+        return values
+
+    def _write_env_values(path: Path, updates: dict[str, str]) -> Path:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            original = path.read_text(encoding="utf-8").splitlines()
+        except FileNotFoundError:
+            original = []
+        backup = path.with_suffix(path.suffix + f".bak-{datetime.now().strftime('%Y%m%d%H%M%S')}")
+        if path.exists():
+            shutil.copy2(path, backup)
+        else:
+            backup.write_text("", encoding="utf-8")
+
+        seen: set[str] = set()
+        out: list[str] = []
+        for raw in original:
+            stripped = raw.strip()
+            if stripped and not stripped.startswith("#") and "=" in stripped:
+                key = stripped.split("=", 1)[0].strip()
+                if key in updates:
+                    out.append(f"{key}={updates[key]}")
+                    seen.add(key)
+                    continue
+            out.append(raw)
+        missing = [key for key in updates if key not in seen]
+        if missing and out and out[-1].strip():
+            out.append("")
+        for key in missing:
+            out.append(f"{key}={updates[key]}")
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp.write_text("\n".join(out).rstrip() + "\n", encoding="utf-8")
+        tmp.replace(path)
+        return backup
+
+    def _mask_secret(value: str) -> str:
+        text = str(value or "").strip()
+        if not text:
+            return ""
+        if len(text) <= 12:
+            return "*" * len(text)
+        return f"{text[:8]}...{text[-4:]}"
+
+    def _nerv_heavy_runtime_payload() -> dict[str, Any]:
+        env_values = _parse_env_file(env_path)
+        key_value = os.environ.get("NVIDIA_NIM_API_KEY") or env_values.get("NVIDIA_NIM_API_KEY", "")
+        enabled_raw = os.environ.get("NVIDIA_NIM_ENABLE") or env_values.get("NVIDIA_NIM_ENABLE", "0")
+        enabled = str(enabled_raw).strip().lower() in {"1", "true", "yes", "on"}
+        return {
+            "ok": True,
+            "can_edit": _is_current_user_admin(),
+            "env_path": str(env_path),
+            "enabled": enabled,
+            "configured": bool(str(key_value or "").strip()),
+            "masked": _mask_secret(key_value),
+            "env_key": "NVIDIA_NIM_API_KEY",
+            "enable_key": "NVIDIA_NIM_ENABLE",
+            "command_prefixes": ["@heavy", "@重型"],
+            "description": "HEAVY 任務會優先嘗試 NVIDIA NIM API；未啟用或 API 不可用時回到本機 26B。",
+        }
 
     def _load_status_payload() -> dict[str, Any]:
         return json.loads(status_file.read_text(encoding="utf-8"))
@@ -894,6 +977,38 @@ def create_admin_runtime_blueprint(
             return jsonify(response)
         except Exception as exc:
             logger.error("NERV product runtime save failed: %s", exc, exc_info=True)
+            return jsonify({"ok": False, "error": str(exc)}), 500
+
+    @bp.route("/api/nerv/heavy-runtime", methods=["GET", "POST"])
+    def api_nerv_heavy_runtime():
+        auth_error = require_json_auth(admin=request.method == "POST")
+        if auth_error:
+            return auth_error
+        if request.method == "GET":
+            return jsonify(_nerv_heavy_runtime_payload())
+
+        payload = request.get_json(silent=True) or {}
+        updates: dict[str, str] = {}
+        if "enabled" in payload:
+            updates["NVIDIA_NIM_ENABLE"] = "1" if bool(payload.get("enabled")) else "0"
+        api_key = str(payload.get("api_key") or "").strip()
+        if api_key:
+            if not api_key.startswith("nvapi-"):
+                return jsonify({"ok": False, "error": "invalid_prefix:nvapi-"}), 400
+            updates["NVIDIA_NIM_API_KEY"] = api_key
+        if not updates:
+            return jsonify({"ok": False, "error": "empty_updates"}), 400
+        try:
+            backup = _write_env_values(env_path, updates)
+            for key, value in updates.items():
+                os.environ[key] = value
+            response = _nerv_heavy_runtime_payload()
+            response["saved"] = True
+            response["backup"] = str(backup)
+            response["restart_hint"] = "目前網頁程序已更新環境變數；背景工作或 daemon 若已載入舊環境，建議重啟 MAGI。"
+            return jsonify(response)
+        except Exception as exc:
+            logger.error("NERV heavy runtime save failed: %s", exc, exc_info=True)
             return jsonify({"ok": False, "error": str(exc)}), 500
 
     @bp.route("/api/nerv/skills/<skill_name>", methods=["GET", "POST"])

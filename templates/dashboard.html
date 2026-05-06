@@ -981,9 +981,9 @@
         <div class="right-col-section">
             <h3 style="color: var(--magi-green); border-color: rgba(46,204,113,0.3);">MAGI 對話</h3>
             <div id="magi-chat-messages" style="min-height:120px; max-height:220px; overflow-y:auto; background:rgba(0,0,0,0.3); border:1px solid rgba(46,204,113,0.15); border-radius:4px; padding:8px; margin-bottom:8px; font-size:0.75rem; line-height:1.5;">
-                <div style="color:var(--magi-green);">系統已就緒，可直接用自然語句指示 MAGI。</div>
+                <div style="color:var(--magi-green);">系統已就緒，可直接用自然語句指示 MAGI。大型翻譯、長文摘要、複雜法律分析可在開頭加上 @heavy 或 @重型，讓 MAGI 優先使用 NVIDIA API。</div>
             </div>
-            <textarea id="magi-chat-input" placeholder="輸入指示（Enter 送出，Shift+Enter 換行）" style="width:100%; min-height:48px; background:rgba(0,0,0,0.4); color:#fff; border:1px solid rgba(46,204,113,0.3); border-radius:4px; padding:6px 8px; font-family:monospace; font-size:0.78rem; resize:vertical; box-sizing:border-box;"></textarea>
+            <textarea id="magi-chat-input" placeholder="輸入指示（大型任務可用 @heavy 或 @重型；Enter 送出，Shift+Enter 換行）" style="width:100%; min-height:48px; background:rgba(0,0,0,0.4); color:#fff; border:1px solid rgba(46,204,113,0.3); border-radius:4px; padding:6px 8px; font-family:monospace; font-size:0.78rem; resize:vertical; box-sizing:border-box;"></textarea>
             <div style="display:flex; gap:6px; margin-top:6px;">
                 <button class="sb-btn" id="magi-chat-send" style="color:var(--magi-green);">[ 送出 ]</button>
                 <button class="sb-btn" id="magi-chat-clear">[ 清空 ]</button>
@@ -1299,14 +1299,6 @@
             window.open('/intel', '_blank', 'noopener,noreferrer');
         }
 
-        const CODEX_FEATURE_LABELS = {
-            summary: '摘要',
-            translate: '翻譯',
-            vision: '視覺/OCR',
-            intent: '意圖路由',
-            transcript: '逐字稿',
-        };
-        let codexDistributedState = null;
         let skillInterviewStateRight = null;
 
         async function parseJsonApiResponse(response, unavailableMessage) {
@@ -1334,10 +1326,6 @@
                 throw new Error(payload.error || unavailableMessage);
             }
             return payload;
-        }
-
-        async function parseCodexApiResponse(response) {
-            return parseJsonApiResponse(response, 'Codex sidecar 狀態暫不可得');
         }
 
         function escapeHtml(value) {
@@ -1515,116 +1503,6 @@
 
         async function cancelSkillInterviewRight() {
             await submitSkillInterviewReplyRight('取消');
-        }
-
-        function setCodexButtonState(canToggle) {
-            const ids = ['btn-codex-on-right', 'btn-codex-off-right'];
-            ids.forEach(id => {
-                const el = document.getElementById(id);
-                if (el) el.disabled = !canToggle;
-            });
-        }
-
-        function renderCodexFeatureButtons(report) {
-            const container = document.getElementById('codex-features-right');
-            if (!container) return;
-            const features = (report && report.features) || {};
-            const canToggle = !!(report && report.can_toggle);
-            container.innerHTML = Object.entries(CODEX_FEATURE_LABELS).map(([key, label]) => {
-                const on = !!features[key];
-                const border = on ? 'rgba(46,204,113,0.45)' : 'rgba(9,132,227,0.3)';
-                const bg = on ? 'rgba(46,204,113,0.12)' : 'rgba(0,0,0,0.02)';
-                const color = on ? 'var(--magi-green)' : 'var(--text-main)';
-                const disabledAttr = canToggle ? '' : 'disabled';
-                return `<button class="sb-btn" ${disabledAttr} onclick="toggleCodexFeature('${key}')" style="border-color:${border}; background:${bg}; color:${color};">[ ${label}: ${on ? 'ON' : 'OFF'} ]</button>`;
-            }).join('');
-        }
-
-        function renderCodexDistributedStatus(report) {
-            const modeEl = document.getElementById('codex-mode-right');
-            const metaEl = document.getElementById('codex-meta-right');
-            const noteEl = document.getElementById('codex-note-right');
-            if (!modeEl || !metaEl || !noteEl) return;
-            const enabledFeatures = Object.entries((report && report.features) || {})
-                .filter(([, on]) => !!on)
-                .map(([name]) => CODEX_FEATURE_LABELS[name] || name);
-            const runtimeText = report.runtime_ready
-                ? 'ready'
-                : `cooldown ${report.runtime_cooldown_remaining_sec || 0}s`;
-            modeEl.innerText = `${report.mode_label || '-'} (${report.mode_code || '-'})`;
-            modeEl.style.color = report.enabled ? 'var(--magi-green)' : 'var(--magi-blue)';
-            const lines = [
-                `全域開關: ${report.enabled ? '開啟' : '關閉'}`,
-                `功能: ${enabledFeatures.length ? enabledFeatures.join(' / ') : '無'}`,
-                `Runtime: ${runtimeText}`,
-                `OAuth: ${report.oauth_ready ? '可用' : '不可用'}`,
-            ];
-            if (report.last_success_at) lines.push(`最近成功: ${report.last_success_at}`);
-            if (report.last_error) lines.push(`最近錯誤: ${report.last_error}`);
-            metaEl.innerHTML = lines.map(line => `<div>${line}</div>`).join('');
-            noteEl.innerText = report.can_toggle
-                ? '可在這裡或通訊軟體用 codex 指令切換。'
-                : '目前帳號只有檢視權限。';
-            setCodexButtonState(!!report.can_toggle);
-            renderCodexFeatureButtons(report);
-        }
-
-        async function fetchCodexDistributedStatus() {
-            const modeEl = document.getElementById('codex-mode-right');
-            const metaEl = document.getElementById('codex-meta-right');
-            try {
-                const response = await fetch('/api/codex-distributed/status');
-                const report = await parseCodexApiResponse(response);
-                codexDistributedState = report;
-                renderCodexDistributedStatus(report);
-            } catch (e) {
-                codexDistributedState = null;
-                if (modeEl) {
-                    modeEl.innerText = 'Codex sidecar 暫不可得';
-                    modeEl.style.color = 'var(--magi-blue)';
-                }
-                if (metaEl) {
-                    metaEl.innerHTML = '<div>目前先維持本地模式顯示。</div>';
-                }
-                const noteEl = document.getElementById('codex-note-right');
-                if (noteEl) {
-                    noteEl.innerText = e.message === '請重新登入 dashboard'
-                        ? '請重新登入後再檢視或切換。'
-                        : '狀態稍後會自動重試。';
-                }
-                const container = document.getElementById('codex-features-right');
-                if (container) {
-                    container.innerHTML = '';
-                }
-                setCodexButtonState(false);
-            }
-        }
-
-        async function setCodexDistributedMode(command, features = null) {
-            const canToggle = !!(codexDistributedState && codexDistributedState.can_toggle);
-            if (!canToggle) {
-                alert('只有管理員可以切換 Codex sidecar。');
-                return;
-            }
-            try {
-                const response = await fetch('/api/codex-distributed/toggle', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ command, features }),
-                });
-                const report = await parseCodexApiResponse(response);
-                codexDistributedState = report;
-                renderCodexDistributedStatus(report);
-            } catch (e) {
-                alert(`Codex sidecar 切換失敗: ${e.message}`);
-                await fetchCodexDistributedStatus();
-            }
-        }
-
-        async function toggleCodexFeature(feature) {
-            const features = (codexDistributedState && codexDistributedState.features) || {};
-            const isOn = !!features[feature];
-            await setCodexDistributedMode(isOn ? 'off' : 'on', [feature]);
         }
 
         function openOpenClaw() {
@@ -2129,7 +2007,7 @@
                 if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
             });
             clearBtn.addEventListener('click', function() {
-                box.innerHTML = '<div style="color:var(--magi-green);">對話畫面已清空。</div>';
+                box.innerHTML = '<div style="color:var(--magi-green);">對話畫面已清空。大型任務可在開頭加上 @heavy 或 @重型。</div>';
             });
             // poll
             async function poll() {

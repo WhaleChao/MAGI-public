@@ -86,7 +86,7 @@ def _make_app(tmp_path: Path, monkeypatch, *, attachment_queue=None):
         return updates
 
     def _nerv_payload():
-        return {"ok": True, "products": {"laf": {"profile": {"codex_mode": "auto"}}}}
+        return {"ok": True, "products": {"laf": {"profile": {"portal_env": "prod"}}}}
 
     class _MysqlConnector:
         @staticmethod
@@ -305,7 +305,9 @@ def test_system_self_repair_and_transcribe_routes(tmp_path, monkeypatch):
     assert response.get_json()["taigi_hint"] is True
 
 
-def test_nerv_skill_routes_and_codex_controls(tmp_path, monkeypatch):
+def test_nerv_skill_routes_and_heavy_runtime_controls(tmp_path, monkeypatch):
+    monkeypatch.delenv("NVIDIA_NIM_ENABLE", raising=False)
+    monkeypatch.delenv("NVIDIA_NIM_API_KEY", raising=False)
     app, orchestrator, product_updates = _make_app(tmp_path, monkeypatch)
     client = app.test_client()
 
@@ -329,11 +331,6 @@ def test_nerv_skill_routes_and_codex_controls(tmp_path, monkeypatch):
     semantic_mod._SKILLS_CACHE = "x"
     semantic_mod._SKILLS_CACHE_TS = 1.0
     monkeypatch.setitem(sys.modules, "skills.bridge.semantic_router", semantic_mod)
-
-    llm_direct_mod = types.ModuleType("skills.bridge.llm_direct")
-    llm_direct_mod.public_status_report = lambda: {"mode": "auto"}
-    llm_direct_mod.apply_manual_command = lambda command, features=None: None
-    monkeypatch.setitem(sys.modules, "skills.bridge.llm_direct", llm_direct_mod)
 
     response = client.get("/api/nerv/skill-interview", headers={"X-User-ID": "u1"})
     assert response.status_code == 200
@@ -371,10 +368,30 @@ def test_nerv_skill_routes_and_codex_controls(tmp_path, monkeypatch):
     response = client.post(
         "/api/nerv/product-runtime",
         headers={"X-User-ID": "u1"},
-        json={"product": "laf", "portal_env": "prod", "codex_mode": "manual"},
+        json={"product": "laf", "portal_env": "prod"},
     )
     assert response.status_code == 200
     assert product_updates["laf"]["portal_env"] == "prod"
+
+    response = client.get("/api/nerv/heavy-runtime", headers={"X-User-ID": "u1"})
+    assert response.status_code == 200
+    heavy = response.get_json()
+    assert heavy["enabled"] is False
+    assert heavy["configured"] is False
+    assert heavy["command_prefixes"] == ["@heavy", "@重型"]
+
+    response = client.post(
+        "/api/nerv/heavy-runtime",
+        headers={"X-User-ID": "u1"},
+        json={"enabled": True, "api_key": "nvapi-testkey1234567890"},
+    )
+    assert response.status_code == 200
+    heavy = response.get_json()
+    assert heavy["enabled"] is True
+    assert heavy["configured"] is True
+    env_text = (tmp_path / ".env").read_text(encoding="utf-8")
+    assert "NVIDIA_NIM_ENABLE=1" in env_text
+    assert "NVIDIA_NIM_API_KEY=nvapi-testkey1234567890" in env_text
 
     response = client.get("/api/nerv/skills/demo-skill", headers={"X-User-ID": "u1"})
     assert response.status_code == 200
@@ -383,14 +400,6 @@ def test_nerv_skill_routes_and_codex_controls(tmp_path, monkeypatch):
     response = client.post("/api/nerv/skills/demo-skill", headers={"X-User-ID": "u1"}, json={"content": "# Updated"})
     assert response.status_code == 200
     assert "Updated" in response.get_json()["skill"]["summary"]
-
-    response = client.get("/api/codex-distributed/status", headers={"X-User-ID": "u1"})
-    assert response.status_code == 200
-    assert response.get_json()["status"]["mode"] == "auto"
-
-    response = client.post("/api/codex-distributed/toggle", headers={"X-User-ID": "u1"}, json={"command": "enable"})
-    assert response.status_code == 200
-    assert response.get_json()["status"]["mode"] == "auto"
 
 
 def test_nerv_remote_access_status_and_actions(tmp_path, monkeypatch):
