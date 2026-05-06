@@ -485,6 +485,76 @@
         box.scrollTop = box.scrollHeight;
     }
 
+    function artifactCardsHtml(artifacts) {
+        const rows = Array.isArray(artifacts) ? artifacts : [];
+        if (!rows.length) return "";
+        return `
+            <div class="magi-artifact-list">
+                <div class="magi-artifact-title">MAGI 已產生成果檔案</div>
+                ${rows.map((item) => {
+                    const path = String(item.share_path || item.path || "");
+                    const downloadUrl = String(item.download_url || "#");
+                    const previewUrl = String(item.preview_url || downloadUrl);
+                    const format = String(item.format || "").toUpperCase();
+                    return `
+                        <div class="magi-artifact-card">
+                            <div>
+                                <div class="magi-artifact-name">${escapeHtml(item.label || item.filename || "成果檔案")}</div>
+                                <div class="magi-artifact-meta">${escapeHtml(item.filename || "")} · ${escapeHtml(format)} · ${escapeHtml(item.size_label || "")}</div>
+                                <div class="magi-artifact-share-result" aria-live="polite"></div>
+                            </div>
+                            <div class="magi-artifact-actions">
+                                <a href="${escapeAttr(previewUrl)}" target="_blank" rel="noopener">預覽</a>
+                                <a href="${escapeAttr(downloadUrl)}" download>下載</a>
+                                ${path ? `<button type="button" class="magi-artifact-share" data-path="${escapeAttr(path)}">分享連結</button>` : ""}
+                            </div>
+                        </div>
+                    `;
+                }).join("")}
+            </div>
+        `;
+    }
+
+    function appendMagiReply(data) {
+        const replyHtml = data.reply_html || "";
+        const artifactsHtml = artifactCardsHtml(data.artifacts || []);
+        appendMagiMessage("assistant", data.reply || "MAGI 已收到，但沒有回傳內容。", `${replyHtml}${artifactsHtml}`);
+    }
+
+    async function shareArtifact(button) {
+        const path = String(button && button.dataset ? button.dataset.path || "" : "");
+        if (!path) return;
+        const card = button.closest(".magi-artifact-card");
+        const result = card ? card.querySelector(".magi-artifact-share-result") : null;
+        button.disabled = true;
+        if (result) result.textContent = "正在建立分享連結...";
+        try {
+            const data = await fetchJson("/api/osc/files/share", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ path }),
+            });
+            const url = data.url || "";
+            if (navigator.clipboard && url) {
+                await navigator.clipboard.writeText(url);
+            }
+            if (result) {
+                result.innerHTML = url
+                    ? `分享連結已複製：<a href="${escapeAttr(url)}" target="_blank" rel="noopener">${escapeHtml(url)}</a>`
+                    : "分享連結已建立。";
+            }
+        } catch (error) {
+            const msg = String(error.message || "");
+            if (result) {
+                result.textContent = msg.includes("share_public_base_required")
+                    ? "尚未設定獨立分享網址，為避免洩漏 MAGI 主控台網址，暫不建立外部分享連結。"
+                    : `分享失敗：${msg}`;
+            }
+        } finally {
+            button.disabled = false;
+        }
+    }
+
     async function sendMagiChat(event) {
         event.preventDefault();
         const input = $("magi-chat-input");
@@ -514,7 +584,7 @@
                     body: JSON.stringify({ message: text }),
                 });
             }
-            appendMagiMessage("assistant", data.reply || "MAGI 已收到，但沒有回傳內容。", data.reply_html || "");
+            appendMagiReply(data);
             if (state) state.textContent = "就緒";
         } catch (error) {
             appendMagiMessage("system", `送出失敗：${error.message}`);
@@ -549,6 +619,13 @@
     if (apiKeyForm) apiKeyForm.addEventListener("submit", saveNvidiaApiKey);
     const magiChatForm = $("magi-chat-form");
     if (magiChatForm) magiChatForm.addEventListener("submit", sendMagiChat);
+    const magiChatMessages = $("magi-chat-messages");
+    if (magiChatMessages) {
+        magiChatMessages.addEventListener("click", (event) => {
+            const button = event.target && event.target.closest ? event.target.closest(".magi-artifact-share") : null;
+            if (button) shareArtifact(button);
+        });
+    }
     const magiChatInput = $("magi-chat-input");
     if (magiChatInput) {
         magiChatInput.addEventListener("keydown", (event) => {

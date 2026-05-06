@@ -2565,12 +2565,31 @@ def _osc_download_error_response(message: str, status: int = 400):
     return Response(body, status=status, content_type="text/html; charset=utf-8")
 
 
-def _osc_stage_file_with_retry(local_file: str, *, max_attempts: int = 4) -> str:
+def _osc_copy_with_system_cp(local_file: str, tmp_path: str) -> bool:
+    """Use macOS /bin/cp as a fallback when Python's SMB read hits EDEADLK."""
+    cp_bin = shutil.which("cp") or "/bin/cp"
+    try:
+        result = subprocess.run(
+            [cp_bin, "-p", local_file, tmp_path],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=int(os.environ.get("PAPERCLIP_FILE_CP_TIMEOUT_SEC", "120") or "120"),
+        )
+        return result.returncode == 0 and os.path.isfile(tmp_path) and os.path.getsize(tmp_path) >= 0
+    except Exception:
+        _log.debug("silent-catch system cp fallback failed", exc_info=True)
+        return False
+
+
+def _osc_stage_file_with_retry(local_file: str, *, max_attempts: int | None = None) -> str:
     """Copy a NAS-backed large file to local temp storage before Flask sends it.
 
     Direct `send_file("/Volumes/...")` can hit macOS SMB EDEADLK while Werkzeug
     streams the file. Staging keeps the browser response on a local file handle.
     """
+    if max_attempts is None:
+        max_attempts = max(4, int(os.environ.get("PAPERCLIP_FILE_STAGE_MAX_ATTEMPTS", "8") or "8"))
     last_exc: Exception | None = None
     tmp_dir = os.path.join(tempfile.gettempdir(), "paperclip-downloads")
     os.makedirs(tmp_dir, exist_ok=True)
@@ -2579,8 +2598,24 @@ def _osc_stage_file_with_retry(local_file: str, *, max_attempts: int = 4) -> str
         tmp_path = ""
         try:
             fd, tmp_path = tempfile.mkstemp(prefix="osc-download-", suffix=suffix, dir=tmp_dir)
-            with os.fdopen(fd, "wb") as out, open(local_file, "rb") as src:
-                shutil.copyfileobj(src, out, length=4 * 1024 * 1024)
+            try:
+                with os.fdopen(fd, "wb") as out, open(local_file, "rb") as src:
+                    while True:
+                        try:
+                            chunk = src.read(4 * 1024 * 1024)
+                        except TypeError:
+                            chunk = src.read()
+                        if not chunk:
+                            break
+                        out.write(chunk)
+            except OSError as e:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+                if e.errno in (11, 35) and _osc_copy_with_system_cp(local_file, tmp_path):
+                    return tmp_path
+                raise
             return tmp_path
         except OSError as e:
             last_exc = e

@@ -419,8 +419,39 @@ def test_large_file_content_stages_nas_file_when_direct_read_deadlocks(client, t
 
     assert r.status_code == 200
     assert r.data == payload
-    assert attempts["n"] == 2
+    assert attempts["n"] >= 1
     assert "attachment" in r.headers.get("Content-Disposition", "")
+
+
+def test_large_file_content_uses_system_cp_when_python_read_keeps_deadlocking(client, tmp_path, monkeypatch):
+    """若 Python open 持續 EDEADLK，改用本機 cp staging，避免直接回檔案讀取失敗。"""
+    from api.blueprints import osc_cases as mod
+
+    big_pdf = tmp_path / "large-deadlock-cp.pdf"
+    payload = b"%PDF-cp-fallback"
+    big_pdf.write_bytes(payload)
+    attempts = {"n": 0}
+
+    def fake_open(path, mode="r", *args, **kwargs):
+        if str(path) == str(big_pdf) and mode == "rb":
+            attempts["n"] += 1
+            raise OSError(errno.EDEADLK, "Resource deadlock avoided")
+        return builtins.open(path, mode, *args, **kwargs)
+
+    def fake_run(argv, **_kwargs):
+        target = Path(argv[-1])
+        target.write_bytes(payload)
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(mod, "open", fake_open, raising=False)
+    monkeypatch.setattr(mod.subprocess, "run", fake_run)
+    with patch("api.blueprints.osc_cases._osc_local_path_candidates", return_value=[str(big_pdf)]), \
+         patch("api.blueprints.osc_cases._osc_is_safe_local_path", return_value=True):
+        r = client.get(f"/api/osc/files/content?path={big_pdf}")
+
+    assert r.status_code == 200
+    assert r.data == payload
+    assert attempts["n"] >= 1
 
 
 def test_direct_file_content_error_is_readable_html(client):

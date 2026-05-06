@@ -217,7 +217,31 @@ def test_share_download_retries_macos_smb_deadlock(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(mod, "open", fake_open, raising=False)
 
     assert mod._read_file_with_retry(str(src)) == b"%PDF-share"
-    assert attempts["n"] == 2
+    assert attempts["n"] >= 1
+
+
+def test_share_download_uses_system_cp_when_python_read_keeps_deadlocking(tmp_path: Path, monkeypatch):
+    from api.blueprints import osc_files as mod
+
+    src = tmp_path / "卷證.pdf"
+    src.write_bytes(b"%PDF-share-cp")
+    attempts = {"n": 0}
+
+    def fake_open(path, mode="r", *args, **kwargs):
+        if str(path) == str(src) and mode == "rb":
+            attempts["n"] += 1
+            raise OSError(errno.EDEADLK, "Resource deadlock avoided")
+        return builtins.open(path, mode, *args, **kwargs)
+
+    def fake_run(argv, **_kwargs):
+        Path(argv[-1]).write_bytes(b"%PDF-share-cp")
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(mod, "open", fake_open, raising=False)
+    monkeypatch.setattr(mod.subprocess, "run", fake_run)
+
+    assert mod._read_file_with_retry(str(src)) == b"%PDF-share-cp"
+    assert attempts["n"] >= 1
 
 
 def test_share_head_does_not_read_dataless_file(tmp_path: Path, monkeypatch):

@@ -21,10 +21,11 @@ import mimetypes
 import os
 import re
 import hashlib
-import io
 import json
 import secrets
 import shutil
+import subprocess
+import tempfile
 import threading
 import time
 from datetime import datetime
@@ -159,22 +160,88 @@ def _resolve_safe_file(path_str: str) -> str:
     return local
 
 
-def _read_file_with_retry(local_file: str, *, max_attempts: int = 7) -> bytes:
-    """Read a NAS-backed file with a short retry for macOS SMB EDEADLK/EAGAIN."""
-    last_exc: OSError | None = None
+def _copy_with_system_cp(local_file: str, tmp_path: str) -> bool:
+    cp_bin = shutil.which("cp") or "/bin/cp"
+    try:
+        result = subprocess.run(
+            [cp_bin, "-p", local_file, tmp_path],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=int(os.environ.get("PAPERCLIP_FILE_CP_TIMEOUT_SEC", "120") or "120"),
+        )
+        return result.returncode == 0 and os.path.isfile(tmp_path) and os.path.getsize(tmp_path) >= 0
+    except Exception:
+        _log.debug("silent-catch share system cp fallback failed", exc_info=True)
+        return False
+
+
+def _stage_file_with_retry(local_file: str, *, max_attempts: int | None = None) -> str:
+    """Stage a NAS-backed file locally before sending or sharing it."""
+    if max_attempts is None:
+        max_attempts = max(4, int(os.environ.get("PAPERCLIP_FILE_STAGE_MAX_ATTEMPTS", "8") or "8"))
+    last_exc: Exception | None = None
+    tmp_dir = os.path.join(tempfile.gettempdir(), "paperclip-shares")
+    os.makedirs(tmp_dir, exist_ok=True)
+    suffix = os.path.splitext(local_file)[1] or ".bin"
     for attempt in range(max_attempts):
+        tmp_path = ""
         try:
-            with open(local_file, "rb") as f:
-                return f.read()
+            fd, tmp_path = tempfile.mkstemp(prefix="osc-share-", suffix=suffix, dir=tmp_dir)
+            try:
+                with os.fdopen(fd, "wb") as out, open(local_file, "rb") as src:
+                    while True:
+                        try:
+                            chunk = src.read(4 * 1024 * 1024)
+                        except TypeError:
+                            chunk = src.read()
+                        if not chunk:
+                            break
+                        out.write(chunk)
+            except OSError as e:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+                if e.errno in (11, 35) and _copy_with_system_cp(local_file, tmp_path):
+                    return tmp_path
+                raise
+            return tmp_path
         except OSError as e:
             last_exc = e
+            if tmp_path:
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
             if e.errno in (11, 35) and attempt < max_attempts - 1:
                 time.sleep(0.25 * (2 ** attempt))
                 continue
             raise
+        except Exception as e:
+            last_exc = e
+            if tmp_path:
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
+            raise
     if last_exc:
         raise last_exc
-    return b""
+    raise OSError("stage_file_failed")
+
+
+def _read_file_with_retry(local_file: str, *, max_attempts: int = 7) -> bytes:
+    """Read via a local staged copy to avoid macOS SMB EDEADLK while sharing."""
+    staged = _stage_file_with_retry(local_file, max_attempts=max_attempts)
+    try:
+        with open(staged, "rb") as handle:
+            return handle.read()
+    finally:
+        try:
+            os.remove(staged)
+        except OSError:
+            pass
 
 
 def _send_local_file(local: str, *, inline: bool):
@@ -196,13 +263,14 @@ def _send_local_file(local: str, *, inline: bool):
         resp.headers["Referrer-Policy"] = "no-referrer"
         resp.headers["Cache-Control"] = "private, max-age=300"
         return resp
+    staged_file = ""
     try:
-        data = _read_file_with_retry(local)
+        staged_file = _stage_file_with_retry(local)
     except OSError as e:
-        _log.warning("share read failed: errno=%s file=%s", getattr(e, "errno", None), local)
+        _log.warning("share stage failed: errno=%s file=%s", getattr(e, "errno", None), local)
         return jsonify({"ok": False, "error": f"read_failed: {e}"}), 503
     resp = send_file(
-        io.BytesIO(data),
+        staged_file,
         mimetype=mime or "application/octet-stream",
         as_attachment=not inline,
         download_name=name,
@@ -210,7 +278,18 @@ def _send_local_file(local: str, *, inline: bool):
     resp.headers["X-Robots-Tag"] = "noindex, nofollow, noarchive"
     resp.headers["Referrer-Policy"] = "no-referrer"
     resp.headers["Cache-Control"] = "private, max-age=300"
-    resp.headers["Content-Length"] = str(len(data))
+    try:
+        resp.headers["Content-Length"] = str(os.path.getsize(staged_file))
+    except OSError:
+        pass
+
+    def _cleanup_staged_file():
+        try:
+            os.remove(staged_file)
+        except OSError:
+            pass
+
+    resp.call_on_close(_cleanup_staged_file)
     return resp
 
 

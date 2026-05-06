@@ -732,6 +732,74 @@ h1 {
     margin: 2px 0;
 }
 
+.magi-artifact-list {
+    display: grid;
+    gap: 8px;
+    margin-top: 10px;
+    padding-top: 10px;
+    border-top: 1px solid var(--line);
+}
+
+.magi-artifact-title {
+    color: var(--muted);
+    font-size: 0.78rem;
+    font-weight: 800;
+}
+
+.magi-artifact-card {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 10px;
+    align-items: center;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: var(--surface-2);
+    padding: 8px;
+}
+
+.magi-artifact-name {
+    color: var(--text);
+    font-weight: 800;
+    line-height: 1.35;
+}
+
+.magi-artifact-meta,
+.magi-artifact-share-result {
+    color: var(--muted);
+    font-size: 0.75rem;
+    line-height: 1.45;
+}
+
+.magi-artifact-share-result a {
+    color: var(--blue);
+    overflow-wrap: anywhere;
+}
+
+.magi-artifact-actions {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 6px;
+}
+
+.magi-artifact-actions a,
+.magi-artifact-actions button {
+    min-height: 30px;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: var(--surface);
+    color: var(--blue);
+    padding: 5px 8px;
+    font: 800 0.76rem/1 var(--font);
+    text-decoration: none;
+    cursor: pointer;
+}
+
+.magi-artifact-actions button:disabled {
+    cursor: wait;
+    opacity: 0.65;
+}
+
 .chat-actions {
     display: grid;
     grid-template-columns: 1.4fr 0.8fr;

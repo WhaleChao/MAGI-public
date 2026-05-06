@@ -207,6 +207,7 @@ def test_osc_chat_poll_and_judgments_routes(tmp_path):
     response = client.post("/api/osc/chat", headers={"X-User-ID": "u1"}, json={"message": "你好"})
     assert response.status_code == 200
     assert response.get_json()["reply"] == "WEB:reply text"
+    assert response.get_json()["artifacts"] == []
     assert response.get_json()["reply_html"].startswith('<div class="web-reply">')
     assert orchestrator.calls[0]["platform"] == "WEB"
     assert orchestrator.calls[0]["role"] == "admin"
@@ -249,11 +250,32 @@ def test_osc_chat_upload_extracts_file_and_routes_to_orchestrator(tmp_path, monk
     assert response.status_code == 200
     data = response.get_json()
     assert data["reply"] == "upload reply"
+    assert data["artifacts"]
+    assert any(item["format"] == "docx" for item in data["artifacts"])
+    assert any(item["format"] == "md" for item in data["artifacts"])
+    for item in data["artifacts"]:
+        assert Path(item["path"]).is_file()
+        assert "/api/osc/files/content?" in item["download_url"]
+        assert item["share_path"] == item["path"]
     assert data["filename"] == "note.txt"
     assert data["kind"] == "txt"
     assert "note.txt" in orchestrator.calls[0]["message"]
     assert "這是檔案內容" in orchestrator.calls[0]["message"]
     assert (tmp_path / ".agent" / "chat_uploads").is_dir()
+    assert (tmp_path / "static" / "exports" / "magi_outputs").is_dir()
+
+
+def test_osc_chat_translation_command_creates_web_delivery_artifacts(tmp_path):
+    orchestrator = _Orchestrator(reply="這是一段翻譯完成的內容。")
+    app = _make_app(tmp_path, orchestrator=orchestrator, normalize=lambda text, platform=None: text)
+    client = app.test_client()
+
+    response = client.post("/api/osc/chat", headers={"X-User-ID": "u1"}, json={"message": "請翻譯這段文字"})
+
+    assert response.status_code == 200
+    data = response.get_json()
+    assert [item["format"] for item in data["artifacts"]][:1] == ["docx"]
+    assert any("translation_" in item["filename"] for item in data["artifacts"])
 
 
 def test_web_reply_html_renders_discord_markdown_safely():

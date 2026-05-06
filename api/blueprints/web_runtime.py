@@ -89,6 +89,12 @@ def _chat_upload_dir(magi_root: Path) -> Path:
     return path
 
 
+def _magi_web_outputs_dir(magi_root: Path) -> Path:
+    path = magi_root / "static" / "exports" / "magi_outputs"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
 def _extract_chat_upload_text(path: Path, filename: str) -> dict[str, Any]:
     try:
         from api.handlers.document_handler import extract_text_from_uploaded_file
@@ -107,6 +113,159 @@ def _safe_web_url(raw_url: str) -> str:
     if parsed.scheme.lower() not in {"http", "https", "mailto"}:
         return ""
     return text
+
+
+def _artifact_download_url(path: Path, *, inline: bool = False) -> str:
+    query = urllib.parse.urlencode({"path": str(path), "inline": "1" if inline else "0"})
+    return f"/api/osc/files/content?{query}"
+
+
+def _web_delivery_kind(instruction: str) -> tuple[str, str]:
+    text = str(instruction or "").lower()
+    if any(token in text for token in ("翻譯", "translate", "translation", "譯成")):
+        return "translation", "翻譯稿"
+    if any(token in text for token in ("摘要", "summary", "summarize", "整理重點", "重點整理")):
+        return "summary", "摘要報告"
+    return "magi", "MAGI 處理結果"
+
+
+def _should_create_web_delivery_artifacts(
+    instruction: str,
+    reply: str,
+    *,
+    source_filename: str = "",
+) -> bool:
+    text = f"{instruction}\n{source_filename}".lower()
+    if not str(reply or "").strip():
+        return False
+    if any(token in text for token in ("翻譯", "translate", "translation", "譯成")):
+        return True
+    if any(token in text for token in ("摘要", "summary", "summarize", "整理重點", "重點整理")):
+        return True
+    return bool(source_filename and len(str(reply or "")) >= 900)
+
+
+def _clean_artifact_filename(value: str, fallback: str = "magi") -> str:
+    text = str(value or "").strip()
+    text = re.sub(r"[\\/:*?\"<>|]+", "_", text)
+    text = re.sub(r"\s+", "_", text).strip("._ ")
+    return text[:80] or fallback
+
+
+def _artifact_size_label(size: int) -> str:
+    value = float(max(0, int(size or 0)))
+    for unit in ("B", "KB", "MB", "GB"):
+        if value < 1024 or unit == "GB":
+            return f"{value:.1f} {unit}" if unit != "B" else f"{int(value)} B"
+        value /= 1024
+    return f"{int(size)} B"
+
+
+def _artifact_dict(path: Path, *, label: str, fmt: str) -> dict[str, Any]:
+    try:
+        size = path.stat().st_size
+    except OSError:
+        size = 0
+    return {
+        "label": label,
+        "format": fmt,
+        "filename": path.name,
+        "path": str(path),
+        "share_path": str(path),
+        "download_url": _artifact_download_url(path),
+        "preview_url": _artifact_download_url(path, inline=True),
+        "size": size,
+        "size_label": _artifact_size_label(size),
+    }
+
+
+def _reply_to_docx(path: Path, *, title: str, reply: str, instruction: str, source_filename: str = "") -> bool:
+    try:
+        from docx import Document
+    except Exception:
+        return False
+
+    doc = Document()
+    doc.add_heading(title, 0)
+    meta = doc.add_paragraph()
+    meta.add_run("產生時間：").bold = True
+    meta.add_run(datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    if source_filename:
+        p = doc.add_paragraph()
+        p.add_run("來源檔案：").bold = True
+        p.add_run(source_filename)
+    if instruction:
+        p = doc.add_paragraph()
+        p.add_run("使用者指示：").bold = True
+        p.add_run(instruction)
+    doc.add_paragraph("")
+    doc.add_heading("內容", level=1)
+
+    for raw in str(reply or "").replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+        line = raw.strip()
+        if not line:
+            continue
+        heading = re.match(r"^(#{1,6})\s+(.+)$", line)
+        if heading:
+            level = min(3, max(1, len(heading.group(1))))
+            doc.add_heading(heading.group(2).strip("*# "), level=level)
+            continue
+        bullet = re.match(r"^[-*•]\s+(.+)$", line)
+        if bullet:
+            doc.add_paragraph(bullet.group(1), style="List Bullet")
+            continue
+        ordered = re.match(r"^\d+[.)、]\s+(.+)$", line)
+        if ordered:
+            doc.add_paragraph(ordered.group(1), style="List Number")
+            continue
+        doc.add_paragraph(line.strip("*"))
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    doc.save(str(path))
+    return True
+
+
+def _create_web_delivery_artifacts(
+    magi_root: Path,
+    *,
+    instruction: str,
+    reply: str,
+    source_filename: str = "",
+) -> list[dict[str, Any]]:
+    if not _should_create_web_delivery_artifacts(instruction, reply, source_filename=source_filename):
+        return []
+
+    kind, title_label = _web_delivery_kind(instruction)
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    source_stem = _clean_artifact_filename(Path(source_filename).stem if source_filename else "", "web")
+    base_name = f"{kind}_{stamp}_{source_stem}_{uuid.uuid4().hex[:8]}"
+    output_dir = _magi_web_outputs_dir(magi_root)
+    title = f"MAGI {title_label}"
+    generated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    body = str(reply or "").strip()
+    instruction_text = str(instruction or "").strip()
+    source_line = f"\n- 來源檔案：{source_filename}" if source_filename else ""
+    md_text = (
+        f"# {title}\n\n"
+        f"- 產生時間：{generated_at}{source_line}\n"
+        f"- 使用者指示：{instruction_text or '未提供'}\n\n"
+        f"## 內容\n\n{body}\n"
+    )
+
+    artifacts: list[dict[str, Any]] = []
+    md_path = output_dir / f"{base_name}.md"
+    md_path.write_text(md_text, encoding="utf-8")
+    artifacts.append(_artifact_dict(md_path, label=f"{title_label} Markdown", fmt="md"))
+
+    txt_path = output_dir / f"{base_name}.txt"
+    txt_path.write_text(body + "\n", encoding="utf-8")
+    artifacts.append(_artifact_dict(txt_path, label=f"{title_label} 純文字", fmt="txt"))
+
+    docx_path = output_dir / f"{base_name}.docx"
+    if _reply_to_docx(docx_path, title=title, reply=body, instruction=instruction_text, source_filename=source_filename):
+        artifacts.insert(0, _artifact_dict(docx_path, label=f"{title_label} Word", fmt="docx"))
+
+    return artifacts
 
 
 def _format_web_inline(text: str) -> str:
@@ -567,7 +726,8 @@ def create_web_runtime_blueprint(
                 reply = normalize_output_text(str(reply or ""), platform="WEB")
         except Exception:
             logger.debug("silent-catch in osc_chat_api", exc_info=True)
-        return jsonify({"reply": reply, "reply_html": format_web_reply_html(str(reply or ""))})
+        artifacts = _create_web_delivery_artifacts(root, instruction=msg, reply=str(reply or ""))
+        return jsonify({"reply": reply, "reply_html": format_web_reply_html(str(reply or "")), "artifacts": artifacts})
 
     @bp.route("/api/osc/magi-modules/run", methods=["POST"])
     @login_required
@@ -699,10 +859,17 @@ def create_web_runtime_blueprint(
                 reply = normalize_output_text(str(reply or ""), platform="WEB")
         except Exception:
             logger.debug("silent-catch in osc_chat_upload_api", exc_info=True)
+        artifacts = _create_web_delivery_artifacts(
+            root,
+            instruction=user_instruction,
+            reply=str(reply or ""),
+            source_filename=original_name,
+        )
         return jsonify(
             {
                 "reply": reply,
                 "reply_html": format_web_reply_html(str(reply or "")),
+                "artifacts": artifacts,
                 "filename": original_name,
                 "path": str(target),
                 "kind": extracted.get("kind") or "",
