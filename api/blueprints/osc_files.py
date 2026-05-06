@@ -138,18 +138,13 @@ def _share_public_base_url() -> str:
     return ""
 
 
-def _request_host_is_local() -> bool:
-    host = str(request.host or "").split(":", 1)[0].strip("[]").lower()
-    return host in {"localhost", "127.0.0.1", "::1"}
-
-
 def _share_url_for_token(token: str) -> tuple[str, str]:
     path = "/s/" + token
     base = _share_public_base_url()
     if base:
         return base + path, "independent_share_base"
-    if _env_truthy("MAGI_OSC_FILE_SHARE_ALLOW_CONSOLE_BASE") or _request_host_is_local():
-        return request.host_url.rstrip("/") + path, "console_base"
+    if _env_truthy("MAGI_OSC_FILE_SHARE_ALLOW_CONSOLE_BASE"):
+        return request.host_url.rstrip("/") + path, "console_base_explicit"
     return "", "share_public_base_required"
 
 

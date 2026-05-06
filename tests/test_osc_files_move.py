@@ -124,12 +124,14 @@ def test_share_file_creates_opaque_download_link(tmp_path: Path, monkeypatch):
     from api.blueprints import osc_files as mod
 
     monkeypatch.setattr(mod, "_SHARE_STORE_PATH", tmp_path / "shares.json")
+    monkeypatch.setenv("MAGI_OSC_FILE_SHARE_PUBLIC_BASE_URL", "https://paperclip-share.example.test")
     with patch("api.blueprints.osc_files._resolve_safe_file", return_value=str(src)):
         r = client.post("/api/osc/files/share", json={"path": str(src), "ttl_sec": 600})
 
         assert r.status_code == 200
         data = r.get_json()
         assert data["ok"] is True
+        assert data["url"].startswith("https://paperclip-share.example.test/s/")
         assert "/s/" in data["url"]
         assert "卷證" not in data["url"]
 
@@ -152,6 +154,7 @@ def test_share_download_streams_without_send_file(tmp_path: Path, monkeypatch):
 
     monkeypatch.setattr(mod, "send_file", fail_send_file)
     monkeypatch.setattr(mod, "_SHARE_STORE_PATH", tmp_path / "shares.json")
+    monkeypatch.setenv("MAGI_OSC_FILE_SHARE_PUBLIC_BASE_URL", "https://paperclip-share.example.test")
     with patch("api.blueprints.osc_files._resolve_safe_file", return_value=str(src)):
         r = client.post("/api/osc/files/share", json={"path": str(src), "ttl_sec": 600})
         token = r.get_json()["url"].rstrip("/").split("/s/", 1)[1]
@@ -181,7 +184,7 @@ def test_pdf_preview_content_url_is_encoded(tmp_path: Path):
     assert "A&B#1" not in data["content_url"]
 
 
-def test_external_console_host_requires_independent_share_base(tmp_path: Path, monkeypatch):
+def test_share_requires_independent_base_even_on_localhost(tmp_path: Path, monkeypatch):
     client = _client()
     src = tmp_path / "卷證.pdf"
     src.write_bytes(b"%PDF-share")
@@ -195,7 +198,7 @@ def test_external_console_host_requires_independent_share_base(tmp_path: Path, m
     with patch("api.blueprints.osc_files._resolve_safe_file", return_value=str(src)):
         r = client.post(
             "/api/osc/files/share",
-            base_url="https://aimac-mini.tail6738b7.ts.net",
+            base_url="http://127.0.0.1:5002",
             json={"path": str(src), "ttl_sec": 600},
         )
 
@@ -204,6 +207,31 @@ def test_external_console_host_requires_independent_share_base(tmp_path: Path, m
     assert data["ok"] is False
     assert data["error"] == "share_public_base_required"
     assert not (tmp_path / "shares.json").exists()
+
+
+def test_console_share_base_requires_explicit_override(tmp_path: Path, monkeypatch):
+    client = _client()
+    src = tmp_path / "卷證.pdf"
+    src.write_bytes(b"%PDF-share")
+
+    from api.blueprints import osc_files as mod
+
+    monkeypatch.delenv("MAGI_OSC_FILE_SHARE_PUBLIC_BASE_URL", raising=False)
+    monkeypatch.setenv("MAGI_OSC_FILE_SHARE_ALLOW_CONSOLE_BASE", "1")
+    monkeypatch.setattr(mod, "_SHARE_STORE_PATH", tmp_path / "shares.json")
+    monkeypatch.setattr(mod, "_SHARE_PUBLIC_BASE_FILE", tmp_path / "missing_share_base.txt")
+    with patch("api.blueprints.osc_files._resolve_safe_file", return_value=str(src)):
+        r = client.post(
+            "/api/osc/files/share",
+            base_url="http://127.0.0.1:5002",
+            json={"path": str(src), "ttl_sec": 600},
+        )
+
+    assert r.status_code == 200
+    data = r.get_json()
+    assert data["ok"] is True
+    assert data["url"].startswith("http://127.0.0.1:5002/s/")
+    assert data["url_mode"] == "console_base_explicit"
 
 
 def test_external_share_uses_independent_share_base(tmp_path: Path, monkeypatch):
@@ -294,6 +322,7 @@ def test_share_head_does_not_read_dataless_file(tmp_path: Path, monkeypatch):
     from api.blueprints import osc_files as mod
 
     monkeypatch.setattr(mod, "_SHARE_STORE_PATH", tmp_path / "shares.json")
+    monkeypatch.setenv("MAGI_OSC_FILE_SHARE_PUBLIC_BASE_URL", "https://paperclip-share.example.test")
     with patch("api.blueprints.osc_files._resolve_safe_file", return_value=str(src)):
         r = client.post("/api/osc/files/share", json={"path": str(src), "ttl_sec": 600})
         token = r.get_json()["url"].rstrip("/").split("/s/", 1)[1]
@@ -307,3 +336,13 @@ def test_share_head_does_not_read_dataless_file(tmp_path: Path, monkeypatch):
     assert head.status_code == 200
     assert head.data == b""
     assert head.headers["Content-Length"] == str(src.stat().st_size)
+
+
+def test_share_gateway_only_accepts_opaque_share_paths():
+    from scripts.share_gateway import TOKEN_RE
+
+    assert TOKEN_RE.fullmatch("/s/" + ("A" * 32))
+    assert not TOKEN_RE.fullmatch("/osc")
+    assert not TOKEN_RE.fullmatch("/login")
+    assert not TOKEN_RE.fullmatch("/api/osc/files/content")
+    assert not TOKEN_RE.fullmatch("/s/too-short")
