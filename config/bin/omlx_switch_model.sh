@@ -42,6 +42,14 @@ ADMIN_NOTIFY_FILE="/tmp/omlx_switch_alert.txt"
 
 log() { printf '%s [switch] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" | tee -a "$LOG"; }
 
+plist_set_env() {
+    local key="$1"
+    local value="$2"
+    local plist="$HOME/Library/LaunchAgents/com.magi.omlx.plist"
+    /usr/libexec/PlistBuddy -c "Set :EnvironmentVariables:${key} ${value}" "$plist" 2>/dev/null || \
+        /usr/libexec/PlistBuddy -c "Add :EnvironmentVariables:${key} string ${value}" "$plist" 2>/dev/null || true
+}
+
 # ---- A1: mkdir 原子互斥鎖（macOS 無 flock CLI）----
 # mkdir 對已存在目錄會失敗，作為原子性互斥；PID 檔記錄持有者以便 stale 清理
 acquire_lock() {
@@ -248,10 +256,13 @@ case "$MODE" in
     preflight_memory_check 4 "DAY"
     # 日間：E4B 5.10GB + KV cache need 6.38GB → MODEL=8GB / PROCESS=10GB
     # 之前 6GB/6GB 會被 process_memory_enforcer 在啟動時強殺（2026-04-26 09:03/09:07 兩次 SIGABRT）
-    /usr/libexec/PlistBuddy -c "Set :EnvironmentVariables:OMLX_TEXT_MAX_MODEL_MEMORY 8GB" \
-        ~/Library/LaunchAgents/com.magi.omlx.plist 2>/dev/null || true
-    /usr/libexec/PlistBuddy -c "Set :EnvironmentVariables:OMLX_TEXT_MAX_PROCESS_MEMORY 10GB" \
-        ~/Library/LaunchAgents/com.magi.omlx.plist 2>/dev/null || true
+    plist_set_env OMLX_TEXT_MAX_MODEL_MEMORY 8GB
+    plist_set_env OMLX_TEXT_MAX_PROCESS_MEMORY 10GB
+    plist_set_env OMLX_TEXT_INITIAL_CACHE_BLOCKS 8
+    plist_set_env OMLX_TEXT_HOT_CACHE_MAX_SIZE 512MB
+    plist_set_env OMLX_TEXT_MAX_TOKENS 8192
+    plist_set_env OMLX_TEXT_MAX_CONTEXT_WINDOW 8192
+    plist_set_env OMLX_PAGED_CACHE_DIR /Users/ai/.omlx/cache-e4b
     bootstrap_omlx_main "DAY"
 
     # 啟動 Phi-4 和 SmolLM3（若模型已下載）
@@ -321,10 +332,13 @@ case "$MODE" in
     sleep 10
     # 所有舊 process 都 bootout 後才檢查記憶體（門檻 8GB：26B ceiling=16GB，系統本身 6-8GB）
     preflight_memory_check 8 "NIGHT"
-    /usr/libexec/PlistBuddy -c "Set :EnvironmentVariables:OMLX_TEXT_MAX_MODEL_MEMORY 16GB" \
-        ~/Library/LaunchAgents/com.magi.omlx.plist 2>/dev/null || true
-    /usr/libexec/PlistBuddy -c "Set :EnvironmentVariables:OMLX_TEXT_MAX_PROCESS_MEMORY 18GB" \
-        ~/Library/LaunchAgents/com.magi.omlx.plist 2>/dev/null || true
+    plist_set_env OMLX_TEXT_MAX_MODEL_MEMORY 16GB
+    plist_set_env OMLX_TEXT_MAX_PROCESS_MEMORY 17GB
+    plist_set_env OMLX_TEXT_INITIAL_CACHE_BLOCKS 2
+    plist_set_env OMLX_TEXT_HOT_CACHE_MAX_SIZE 512MB
+    plist_set_env OMLX_TEXT_MAX_TOKENS 8192
+    plist_set_env OMLX_TEXT_MAX_CONTEXT_WINDOW 8192
+    plist_set_env OMLX_PAGED_CACHE_DIR /Users/ai/.omlx/cache-26b
     bootstrap_omlx_main "NIGHT"
 
     sleep 120
