@@ -934,7 +934,13 @@ function renderChecklist(rows) {
             ${items.map(x => `<tr><td>${esc(x.item_label || x.item_key || "")}</td><td>${esc(x.status || "")}</td><td>${esc(x.notes || "")}</td><td>${esc(x.last_updated || "")}</td></tr>`).join("")}
         </tbody>
     </table></div>
-`;
+    `;
+}
+
+function isPendingChecklistItem(item) {
+    const status = String((item && item.status) || "");
+    if (!status) return true;
+    return status.includes("待") || status.includes("缺") || status.includes("補");
 }
 
 function renderDocsByKeyword(docs, keywords) {
@@ -997,7 +1003,7 @@ async function openClientWorkbench(id, statusText = "") {
     </div>
     <div class="grid-2">
         <div class="card"><h3>法扶進度</h3>${renderLafProgress(data.laf_progress || [])}</div>
-        <div class="card"><h3>法扶補件/案件清單</h3>${renderChecklist(data.legal_aid_checklist || [])}${renderChecklist(data.case_checklist || [])}</div>
+        <div class="card"><h3>法扶補件/案件補正清單</h3>${renderChecklist(data.legal_aid_checklist || [])}${renderChecklist(data.case_checklist || [])}</div>
     </div>
 `;
     wbShow(`當事人工作台｜${c.name || id}`, modalHtml);
@@ -1010,7 +1016,10 @@ async function openCaseWorkbench(id, statusText = "") {
     await loadCaseCourtOptions();
     state.wb = { mode: "case", id, data };
     const s = data.stats || {};
-    const pendingChecklist = (data.legal_aid_checklist || []).filter(x => String(x.status || "").includes("待") || String(x.status || "").includes("缺"));
+    const pendingChecklist = [
+        ...(data.legal_aid_checklist || []),
+        ...(data.case_checklist || []),
+    ].filter(isPendingChecklistItem);
     const modalHtml = `
     <div class="card">
         <div class="grid-3">
