@@ -21,6 +21,7 @@ import json
 import csv
 import argparse
 import logging
+import re
 import xml.etree.ElementTree as ET
 from datetime import datetime
 from pathlib import Path
@@ -486,6 +487,50 @@ def _fallback_news_analysis(news: List[Dict], markets: Dict, source_health: str)
     ])
     return "\n".join(lines)
 
+
+def _analysis_needs_grounded_fallback(text: str) -> bool:
+    """Reject chatty or poorly structured model output for the public report."""
+    cleaned = str(text or "").strip()
+    if cleaned.startswith("[推理失敗]") or len(cleaned) < 40:
+        return True
+    chatty_markers = (
+        "我是 MAGI",
+        "我是MAGI",
+        "情報分析員 Melchior",
+        "我已接收",
+        "我已審閱",
+        "好的，",
+        "以下是為您準備",
+    )
+    if any(marker in cleaned for marker in chatty_markers):
+        return True
+    required = ("重大事件概述", "對台灣", "風險評估")
+    return not all(marker in cleaned for marker in required)
+
+
+def _normalize_analysis_markdown(text: str) -> str:
+    """Trim model prose to the first useful section and keep headings parser-friendly."""
+    cleaned = str(text or "").strip()
+    match = re.search(r"(?m)^#{1,3}\s*(?:\d+[\.)]\s*)?重大事件概述", cleaned)
+    if match:
+        cleaned = cleaned[match.start():].strip()
+    cleaned = re.sub(r"(?m)^#{1,3}\s*\d+[\.)]\s*", "## ", cleaned)
+    cleaned = re.sub(r"(?m)^###\s+", "## ", cleaned)
+    return cleaned
+
+
+def render_plain_text_report(markdown_report: str) -> str:
+    """Render a copy-friendly text report while keeping the stored .md report structured."""
+    text = str(markdown_report or "")
+    text = re.sub(r"<details><summary>原始資料</summary>.*?</details>", "", text, flags=re.S)
+    text = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r"\1", text)
+    text = text.replace("**", "").replace("__", "")
+    text = re.sub(r"(?m)^#{1,6}\s*", "", text)
+    text = re.sub(r"(?m)^---+$", "", text)
+    text = re.sub(r"(?m)^_\s*(.*?)\s*_$", r"\1", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
 # ---------------------------------------------------------------------------
 # Main pipeline
 # ---------------------------------------------------------------------------
@@ -551,14 +596,17 @@ def collect_and_analyze(use_melchior: bool = True) -> str:
     if source_health:
         raw_report = f"{raw_report}\n\n{source_health}" if raw_report else source_health
 
-    # 3. Melchior analysis
+    # 3. Analysis. Cron/web refresh uses grounded fallback to avoid chatty or invented prose.
     if use_melchior:
         logger.info("🧠 Sending to Melchior for analysis...")
-        prompt = f"""以下是剛收集的全球情報。請分析並產出摘要：
-1. 重大事件概述（3-5 條）
-2. 對台灣/亞太的潛在影響
-3. 值得關注的發展趨勢
-4. 風險評估（低/中/高）
+        prompt = f"""你是 MAGI 的新聞摘要器。請只根據下方來源內容整理，不要加入來源未明示的事件、日期、病名、地點或推測。
+禁止自我介紹、寒暄、說「我已接收」、說「以下是」。
+請只輸出下列 Markdown 區塊，每個區塊用 2 到 5 個短項目，項目必須使用 "- " 開頭：
+
+## 重大事件概述
+## 對台灣與亞太的潛在影響
+## 值得關注的發展趨勢
+## 風險評估
 
 收集時間：{datetime.now().strftime('%Y-%m-%d %H:%M')}
 來源健康：
@@ -566,14 +614,22 @@ def collect_and_analyze(use_melchior: bool = True) -> str:
 
 {raw_report}"""
         analysis = _reason_with_melchior(prompt)
-        if analysis.strip().startswith("[推理失敗]") or len(analysis.strip()) < 40:
-            logger.warning("Melchior unavailable; using structured fallback analysis")
+        if _analysis_needs_grounded_fallback(analysis):
+            logger.warning("Melchior output unusable; using grounded structured fallback analysis")
             analysis = _fallback_news_analysis(news, markets, source_health)
-        final = f"""# 🌐 MAGI 全球情報摘要
+            analysis_label = "來源整理"
+        else:
+            analysis = _normalize_analysis_markdown(analysis)
+            analysis_label = "Melchior"
+    else:
+        analysis = _fallback_news_analysis(news, markets, source_health)
+        analysis_label = "來源整理"
+
+    final = f"""# 🌐 MAGI 全球情報摘要
 **時間**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 **新聞來源**: {len(news)} 篇 | **市場**: {len([k for k in markets if not k.startswith('_')])} 檔
 **資料可用性**: {'正常' if news or markets else '降級'}
-**分析**: Melchior
+**分析**: {analysis_label}
 
 ---
 
@@ -587,16 +643,6 @@ def collect_and_analyze(use_melchior: bool = True) -> str:
 
 {raw_report[:3000]}
 </details>"""
-    else:
-        final = f"""# 🌐 原始報告
-**時間**: {datetime.now().strftime('%Y-%m-%d %H:%M')}
-**資料可用性**: {'正常' if news or markets else '降級'}
-
-{source_health}
-
----
-
-{raw_report}"""
 
     # 4. Store
     _store_to_memory(final, metadata={
@@ -616,6 +662,7 @@ def main():
     parser = argparse.ArgumentParser(description="MAGI worldmonitor-intel")
     parser.add_argument("--task", required=True, choices=["collect", "recall", "status", "help"])
     parser.add_argument("--no-reasoning", action="store_true")
+    parser.add_argument("--plain-output", action="store_true", help="print a copy-friendly plain text report")
     parser.add_argument("--query", default=None)
     parser.add_argument("--top-k", type=int, default=5)
     args = parser.parse_args()
@@ -626,7 +673,7 @@ def main():
 
     if args.task == "collect":
         report = collect_and_analyze(use_melchior=not args.no_reasoning)
-        print("\n" + report)
+        print("\n" + (render_plain_text_report(report) if args.plain_output else report))
     elif args.task == "recall":
         try:
             from skills.memory import mem_bridge

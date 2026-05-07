@@ -216,7 +216,7 @@ def test_intel_refresh_runs_local_worldmonitor_skill(tmp_path, monkeypatch):
     assert response.status_code == 302
     assert response.location.endswith("/intel?refresh=ok")
     assert calls
-    assert calls[0][0][-2:] == ["--task", "collect"]
+    assert calls[0][0][-4:] == ["--task", "collect", "--no-reasoning", "--plain-output"]
     assert calls[0][1]["cwd"] == str(root)
 
 
@@ -367,6 +367,32 @@ def test_intel_report_loads_readable_sections_and_source_links(tmp_path, monkeyp
     assert reports[0]["source_health"][0] == "新聞來源：1/1 成功"
 
 
+def test_intel_report_parser_handles_numbered_markdown_sections():
+    from api.blueprints import dashboard_pages as mod
+
+    parsed = mod._parse_worldmonitor_markdown(
+        """# 🌐 MAGI 全球情報摘要
+**時間**: 2026-05-07 08:00:00
+
+---
+
+## 1. 重大事件概述
+1. [BBC World] 第一則新聞：摘要
+2. [NHK Asia] 第二則新聞：摘要
+
+## 2. 對台灣與亞太的潛在影響
+- 供應鏈與能源價格需觀察。
+
+## 🩺 來源健康狀態
+1. 新聞來源：2/2 成功
+"""
+    )
+
+    assert parsed["sections"][0]["title"] == "重大事件概述"
+    assert parsed["sections"][0]["items"] == ["[BBC World] 第一則新聞：摘要", "[NHK Asia] 第二則新聞：摘要"]
+    assert parsed["source_health"] == ["新聞來源：2/2 成功"]
+
+
 def test_research_dashboard_loads_namespaces_crawler_targets_and_digests(tmp_path, monkeypatch):
     from api.blueprints import dashboard_pages as mod
 
@@ -466,4 +492,5 @@ def test_worldmonitor_cron_is_daily():
     job = next(item for item in jobs if item.get("id") == "job_worldmonitor_intel")
 
     assert job["cron"] == "0 8 * * *"
+    assert "worldmonitor-intel/action.py --task collect --no-reasoning --plain-output" in job["command"]
     assert "每日" in job["desc"]
