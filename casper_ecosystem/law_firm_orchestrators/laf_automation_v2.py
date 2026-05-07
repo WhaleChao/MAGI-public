@@ -1555,6 +1555,14 @@ class LAFWebAutomation:
             return webdriver.Chrome(options=chrome_options)
         except Exception as e:
             self.log(f"⚠️ 建立 Chrome Driver 失敗: {e}")
+            if getattr(self, "browser_profile_dir", ""):
+                old_profile = self.browser_profile_dir
+                self.log("  ↪️ persistent profile 啟動失敗，改用臨時 Chrome profile 重試")
+                self.browser_profile_dir = ""
+                try:
+                    return self._create_chrome_driver(binary_path)
+                finally:
+                    self.browser_profile_dir = old_profile
             return webdriver.Chrome(options=chrome_options)
     
     def _create_edge_driver(self, binary_path: str = None):
@@ -7154,6 +7162,7 @@ return null;
             time.sleep(2.0)
 
             rows = self.driver.find_elements(By.CSS_SELECTOR, "table tbody tr")
+            skipped_without_applyno = 0
             for row in rows:
                 txt = row.text.strip()
                 if not txt or "查無" in txt or "無資料" in txt or len(txt) < 5:
@@ -7162,6 +7171,9 @@ return null;
                 m = re.search(r"\d{6,8}-[A-Za-z]-\d{3}", txt)
                 if m:
                     applyno = m.group(0)
+                if not applyno:
+                    skipped_without_applyno += 1
+                    continue
                 status = ""
                 for kw in ("暫存", "待轉入", "已轉入"):
                     if kw in txt:
@@ -7173,7 +7185,10 @@ return null;
                     "row_text": txt.replace("\n", " | ")[:200],
                 })
 
-            self.log(f"🔍 {label}：找到 {len(items)} 筆")
+            msg = f"🔍 {label}：找到 {len(items)} 筆"
+            if skipped_without_applyno:
+                msg += f"（已忽略 {skipped_without_applyno} 列無案號表單/說明文字）"
+            self.log(msg)
         except Exception as e:
             self.log(f"⚠️ {label}查詢異常: {e}")
 

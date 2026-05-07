@@ -47,23 +47,26 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger("LAFNightlyAudit")
+_SKIP_IMPORT_PROBES = "pytest" in sys.modules or os.getenv("MAGI_SKIP_IMPORT_PROBES") == "1"
 
 # ── DB Failover: 獨立 process 需自行偵測，daemon 的 monitor 不會跑在這裡 ──
-try:
-    from api.db_failover import probe_remote, _switch_to_local
-    if not probe_remote(force=True):
-        _switch_to_local()
-        logger.info("DB Failover: 遠端 DB 不可達，已切換至本機")
-except Exception as _e:
-    logger.warning("DB Failover 初始化跳過: %s", _e)
+if not _SKIP_IMPORT_PROBES:
+    try:
+        from api.db_failover import probe_remote, _switch_to_local
+        if not probe_remote(force=True):
+            _switch_to_local()
+            logger.info("DB Failover: 遠端 DB 不可達，已切換至本機")
+    except Exception as _e:
+        logger.warning("DB Failover 初始化跳過: %s", _e)
 
 # ── NAS Mount: 獨立 process 需自行確保掛載 ──
-try:
-    from api.nas_mount_guard import ensure_nas_mounts
-    _nas_status = ensure_nas_mounts()
-    logger.info("NAS mount 狀態: %s", _nas_status)
-except Exception as _e:
-    logger.warning("NAS mount guard 跳過: %s", _e)
+if not _SKIP_IMPORT_PROBES:
+    try:
+        from api.nas_mount_guard import ensure_nas_mounts
+        _nas_status = ensure_nas_mounts()
+        logger.info("NAS mount 狀態: %s", _nas_status)
+    except Exception as _e:
+        logger.warning("NAS mount guard 跳過: %s", _e)
 
 # NAS case root paths (macOS local mount)
 _CASE_ROOTS = preferred_case_roots(include_closed=True)
@@ -1690,6 +1693,31 @@ def _save_draft_state(state: dict):
             pass
 
 
+def _sanitize_portal_pending_items(items: List[dict], label: str = "") -> List[dict]:
+    """Drop Portal form/help rows that do not represent a real LAF case."""
+    clean: List[dict] = []
+    dropped = 0
+    for raw in items or []:
+        if not isinstance(raw, dict):
+            dropped += 1
+            continue
+        item = dict(raw)
+        applyno = str(item.get("applyno") or "").strip()
+        row_text = str(item.get("row_text") or "")
+        if not LAF_NO_RE.fullmatch(applyno):
+            match = LAF_NO_RE.search(row_text)
+            applyno = match.group(0) if match else ""
+        if not applyno:
+            dropped += 1
+            continue
+        item["applyno"] = applyno
+        clean.append(item)
+    if dropped:
+        suffix = f"（{label}）" if label else ""
+        logger.warning("Portal 暫存掃描%s已忽略 %d 列無案號表單/說明文字", suffix, dropped)
+    return clean
+
+
 def scan_portal_pending_drafts(db=None) -> dict:
     """
     登入法扶 Portal，掃描案件狀態區與既有 workflow 清單頁，
@@ -1732,7 +1760,7 @@ def scan_portal_pending_drafts(db=None) -> dict:
 
         # 案件狀態區：統一來源，專門提醒仍停留在「暫存」的回報
         result["case_status_drafts"] = [
-            it for it in portal.get("case_status", [])
+            it for it in _sanitize_portal_pending_items(portal.get("case_status", []), "案件狀態區")
             if it.get("status") == "暫存"
         ]
 
@@ -1744,11 +1772,11 @@ def scan_portal_pending_drafts(db=None) -> dict:
         ]
         if not result["closing_drafts"]:
             result["closing_drafts"] = [
-                it for it in portal.get("closing", [])
+                it for it in _sanitize_portal_pending_items(portal.get("closing", []), "結案")
                 if it.get("status") == "暫存"
             ]
-        result["condition_pending"] = portal.get("condition", [])
-        result["go_live_pending"] = portal.get("go_live", [])
+        result["condition_pending"] = _sanitize_portal_pending_items(portal.get("condition", []), "二階段")
+        result["go_live_pending"] = _sanitize_portal_pending_items(portal.get("go_live", []), "開辦")
 
     except Exception as e:
         logger.error("Portal 暫存掃描失敗: %s", e)
@@ -1976,9 +2004,9 @@ def format_audit_report(
 
     # Portal 暫存/待處理全清單掃描結果
     pd = status.get("portal_drafts") or {}
-    pd_closing = pd.get("closing_drafts", [])
-    pd_condition = pd.get("condition_pending", [])
-    pd_go_live = pd.get("go_live_pending", [])
+    pd_closing = _sanitize_portal_pending_items(pd.get("closing_drafts", []), "報告/結案")
+    pd_condition = _sanitize_portal_pending_items(pd.get("condition_pending", []), "報告/二階段")
+    pd_go_live = _sanitize_portal_pending_items(pd.get("go_live_pending", []), "報告/開辦")
     pd_resolved = pd.get("auto_resolved", [])
 
     has_portal_pending = bool(pd_closing or pd_condition or pd_go_live)
@@ -2245,8 +2273,10 @@ def run_audit(notify: bool = True, dry_run: bool = False) -> dict:
     portal_still_missing = [f for f in portal_new_files if f.get("new_count", 0) > 0]
     _pd = status.get("portal_drafts") or {}
     _has_portal_pending = bool(
-        _pd.get("closing_drafts") or _pd.get("case_status_drafts")
-        or _pd.get("condition_pending") or _pd.get("go_live_pending")
+        _sanitize_portal_pending_items(_pd.get("closing_drafts", []), "摘要/結案")
+        or _sanitize_portal_pending_items(_pd.get("case_status_drafts", []), "摘要/案件狀態區")
+        or _sanitize_portal_pending_items(_pd.get("condition_pending", []), "摘要/二階段")
+        or _sanitize_portal_pending_items(_pd.get("go_live_pending", []), "摘要/開辦")
     )
     has_issues = bool(
         missing_laf or status["not_started"] or status["can_go_live"]
@@ -2272,10 +2302,10 @@ def run_audit(notify: bool = True, dry_run: bool = False) -> dict:
         "portal_new_files_count": len(portal_new_files),
         "portal_auto_downloaded": sum(f.get("auto_downloaded", 0) for f in portal_new_files),
         "portal_still_missing_count": len(portal_still_missing),
-        "portal_pending_closing_drafts": len(_pd.get("closing_drafts", [])),
-        "portal_pending_case_status_drafts": len(_pd.get("case_status_drafts", [])),
-        "portal_pending_condition": len(_pd.get("condition_pending", [])),
-        "portal_pending_go_live": len(_pd.get("go_live_pending", [])),
+        "portal_pending_closing_drafts": len(_sanitize_portal_pending_items(_pd.get("closing_drafts", []))),
+        "portal_pending_case_status_drafts": len(_sanitize_portal_pending_items(_pd.get("case_status_drafts", []))),
+        "portal_pending_condition": len(_sanitize_portal_pending_items(_pd.get("condition_pending", []))),
+        "portal_pending_go_live": len(_sanitize_portal_pending_items(_pd.get("go_live_pending", []))),
         "portal_auto_resolved": len(_pd.get("auto_resolved", [])),
         "total_cases": len(status["all_cases"]),
         "report": report,

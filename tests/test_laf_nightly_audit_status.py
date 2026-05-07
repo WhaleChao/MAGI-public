@@ -151,6 +151,58 @@ class TestSkipPendingCompatibility:
         assert '"已報結（待轉入）"' in src or "'已報結（待轉入）'" in src
 
 
+# ── Portal pending draft row filtering ───────────────────────────────────────
+
+class TestPortalPendingDraftFiltering:
+    """確認 Portal 表單/說明文字不會被誤報成待送出案件。"""
+
+    def test_format_report_drops_go_live_form_rows_without_applyno(self):
+        from casper_ecosystem.law_firm_orchestrators.laf_nightly_audit import format_audit_report
+
+        status = {
+            "all_cases": [{}],
+            "not_started": [],
+            "can_go_live": [],
+            "pending_close": [],
+            "can_close": [],
+            "portal_drafts": {
+                "go_live_pending": [
+                    {"applyno": "", "row_text": "分會別 | 申請編號"},
+                    {"applyno": "", "row_text": "受扶助人姓名 | 承辦人電話與分機"},
+                    {"applyno": "", "row_text": "檢付檔案 | 上傳檔案"},
+                    {"applyno": "", "row_text": "說明 | 上傳的檔案型別限於pdf、word、excel"},
+                ]
+            },
+        }
+
+        report = format_audit_report([], [], status)
+
+        assert "開辦待送出" not in report
+        assert "分會別" not in report
+        assert "所有法扶案件狀態正常" in report
+
+    def test_format_report_keeps_real_go_live_applyno(self):
+        from casper_ecosystem.law_firm_orchestrators.laf_nightly_audit import format_audit_report
+
+        status = {
+            "all_cases": [{}],
+            "not_started": [],
+            "can_go_live": [],
+            "pending_close": [],
+            "can_close": [],
+            "portal_drafts": {
+                "go_live_pending": [
+                    {"applyno": "1150206-A-042", "row_text": "1150206-A-042 | 蕭仁俊 | 暫存"}
+                ]
+            },
+        }
+
+        report = format_audit_report([], [], status)
+
+        assert "開辦待送出（Portal 仍有未開辦案件）：1 件" in report
+        assert "1150206-A-042" in report
+
+
 # ── laf_handler._STATUS_MAP ───────────────────────────────────────────────────
 
 class TestLafHandlerStatusMap:
