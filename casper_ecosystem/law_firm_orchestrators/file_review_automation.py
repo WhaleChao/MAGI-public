@@ -4429,6 +4429,9 @@ class FileReviewManager:
                     payid = str(row_json.get("p_payid") or "").strip()
                     rowid = str(row_json.get("rowid") or "").strip()
                     applydt = str(row_json.get("applydt") or "").strip()
+                    isdown = str(row_json.get("isdown") or "").strip().upper()
+                    downdt = str(row_json.get("downdt") or "").strip()
+                    downtm = str(row_json.get("downtm") or "").strip()
                     fee = str(row_json.get("procfee") or row_json.get("fee") or "").strip()
                     item = {
                         "status": status,
@@ -4447,6 +4450,9 @@ class FileReviewManager:
                         "payid": payid,
                         "rowid": rowid,
                         "applydt": applydt,
+                        "isdown": isdown,
+                        "downdt": downdt,
+                        "downtm": downtm,
                         "fee": fee,
                     }
                     items.append(item)
@@ -6099,8 +6105,22 @@ class FileReviewManager:
                     else:
                         # 情境 2：有下載按鈕 → 用 button-level (rowid) dedup
                         if row_id_for_dedup and self._is_rowid_clicked(row_id_for_dedup):
-                            self.log(f"  ⏭️ [按鈕已點過] 跳過 rowid={row_id_for_dedup} ({party_label}/{yyidno_for_dedup})——button registry 已有紀錄")
-                            continue
+                            isdown_flag = ""
+                            downdt_flag = ""
+                            try:
+                                if isinstance(row_json, dict):
+                                    isdown_flag = str(row_json.get("isdown") or "").strip().upper()
+                                    downdt_flag = str(row_json.get("downdt") or "").strip()
+                            except Exception:
+                                pass
+                            if not isdown_flag and not downdt_flag:
+                                if self._case_review_folder_has_files(case_info):
+                                    self.log(f"  ⏭️ [已歸檔] 跳過 rowid={row_id_for_dedup} ({party_label}/{yyidno_for_dedup})——法院端仍顯示未下載，但案件資料夾已有卷宗")
+                                    continue
+                                self.log(f"  ℹ️ [registry stale] rowid={row_id_for_dedup} 已記錄，但法院端顯示未下載且本機未找到卷宗，續跑: {party_label}/{yyidno_for_dedup}")
+                            else:
+                                self.log(f"  ⏭️ [按鈕已點過] 跳過 rowid={row_id_for_dedup} ({party_label}/{yyidno_for_dedup})——button registry 已有紀錄")
+                                continue
                         if self._case_review_folder_has_files(case_info):
                             self.log(f"  ℹ️ [追加上傳偵測] 資料夾已有舊閱卷資料，但 portal 仍顯示「線上下載」且此 rowid 未點過，續跑（檔名/hash dedup 會擋重複）: {yyidno_for_dedup} ({party_label})")
                     
@@ -7784,10 +7804,31 @@ class FileReviewManager:
                 if hit:
                     return hit
 
+        # B) Safe fallback: same party folder plus the exact court-case tokens
+        # already appearing somewhere inside that case folder. This handles
+        # active/closed duplicate party names without enabling broad risky scans.
+        if court_case_no and party and self._looks_like_human_party_name(party):
+            y, ct, num = self._parse_court_case_no(court_case_no)
+            if y and ct and num:
+                hits = []
+                for r in roots:
+                    hit = self._scan_by_party_folder_and_court_tokens(r, party, y, ct, num)
+                    if hit:
+                        hits.append(hit)
+                hits = list(dict.fromkeys(hits))
+                if len(hits) == 1:
+                    return hits[0]
+                if len(hits) > 1:
+                    self.log(
+                        f"  ⚠️ 同名當事人「{party}」有多個資料夾含案號 {court_case_no}，"
+                        "為避免誤歸檔改列待歸檔"
+                    )
+                    return ""
+
         if not self.allow_risky_case_scan:
             return ""
 
-        # B) 法院案號
+        # C) 法院案號
         if court_case_no:
             y, ct, num = self._parse_court_case_no(court_case_no)
             if y and ct and num:
@@ -7796,13 +7837,109 @@ class FileReviewManager:
                     if hit:
                         return hit
 
-        # C) 當事人（最後手段，容易撞名）
+        # D) 當事人（最後手段，容易撞名）
         if party:
             for r in roots:
                 hit = self._scan_by_party_name(r, party)
                 if hit:
                     return hit
 
+        return ""
+
+    def _scan_by_party_folder_and_court_tokens(self, root: str, party: str, year: str, case_type: str, num: str,
+                                               max_depth: int = 5, max_dirs: int = 4000,
+                                               inspect_depth: int = 4, max_entries: int = 800) -> str:
+        """
+        Low-risk folder resolver for duplicate party names.
+
+        A folder is eligible only when its case-folder basename contains the
+        party name and an existing child path contains the exact court-case
+        tokens. If several folders match, prefer the folder year corresponding
+        to the ROC court-case year, e.g. 115 -> 2026.
+        """
+        party_norm = self._norm(party)
+        target_year = self._norm(year)
+        target_type = self._norm(case_type)
+        try:
+            target_num = str(int(str(num).strip()))
+        except Exception:
+            target_num = self._norm(num)
+        if not (root and party_norm and target_year and target_type and target_num):
+            return ""
+
+        try:
+            gregorian_year = str(int(str(year)) + 1911)
+        except Exception:
+            gregorian_year = ""
+
+        def _tokens_match(text: str) -> bool:
+            s = self._norm(text)
+            if not (target_year in s and target_type in s):
+                return False
+            nums = re.findall(r"\d+", s)
+            for n in nums:
+                try:
+                    if str(int(n)) == target_num:
+                        return True
+                except Exception:
+                    continue
+            return False
+
+        def _folder_has_case_tokens(folder: str) -> bool:
+            visited = 0
+            stack = [(folder, 0)]
+            while stack and visited < max_entries:
+                cur, depth = stack.pop()
+                visited += 1
+                if _tokens_match(cur):
+                    return True
+                if depth >= inspect_depth:
+                    continue
+                try:
+                    with os.scandir(cur) as it:
+                        for e in it:
+                            if _tokens_match(e.name):
+                                return True
+                            if e.is_dir(follow_symlinks=False):
+                                stack.append((e.path, depth + 1))
+                except Exception:
+                    continue
+            return False
+
+        candidates: List[tuple[int, str]] = []
+        import time as _time
+        visited = 0
+        stack = [(root, 0)]
+        while stack and visited < max_dirs:
+            cur, depth = stack.pop()
+            visited += 1
+            if visited % 50 == 0:
+                _time.sleep(0.03)
+            try:
+                base = os.path.basename(cur)
+                base_norm = self._norm(base)
+                if depth > 0 and party_norm in base_norm and _folder_has_case_tokens(cur):
+                    score = 100
+                    if gregorian_year and base.startswith(gregorian_year):
+                        score += 50
+                    if re.match(r"^\d{4}-\d{4}-", base):
+                        score += 10
+                    candidates.append((score, cur))
+                    continue
+                if depth >= max_depth:
+                    continue
+                with os.scandir(cur) as it:
+                    for e in it:
+                        if e.is_dir(follow_symlinks=False):
+                            stack.append((e.path, depth + 1))
+            except Exception:
+                continue
+
+        if not candidates:
+            return ""
+        candidates.sort(key=lambda x: (-x[0], x[1]))
+        if len(candidates) == 1 or candidates[0][0] > candidates[1][0]:
+            return candidates[0][1]
         return ""
 
     @staticmethod

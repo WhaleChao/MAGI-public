@@ -2383,7 +2383,13 @@ def cmd_download(case_number: str = "", notify: bool = True, flow_id: str = "") 
             )
 
             # ── Post-download: auto-bookmark downloaded PDFs ──
-            if review_downloaded:
+            #
+            # Large OLA batches can contain dozens of long PDFs. Bookmarking is
+            # useful enrichment, but it must not keep the background download
+            # job from reaching a clean terminal state after the court files are
+            # already downloaded and archived.
+            auto_bookmark_enabled = _truthy(os.environ.get("MAGI_FILE_REVIEW_AUTO_BOOKMARK", "0"))
+            if review_downloaded and auto_bookmark_enabled:
                 _auto_bookmark_pdfs(review_downloaded)
 
             payment_count = len(payment_downloaded)
@@ -3013,7 +3019,14 @@ def _filter_not_yet_downloaded(dl_items: list, download_folder: str) -> list:
         rowid = str(it.get("rowid") or "").strip()
         # Button-level：rowid 已點過 → 跳過
         if rowid and rowid in clicked_rowids:
-            continue
+            # Portal is authoritative for this surface.  If OLA still shows the
+            # online-download button and has no download date, the local click
+            # registry is stale (often caused by a prior empty popup/payment-only
+            # run) and must not suppress notification.
+            portal_isdown = str(it.get("isdown") or "").strip().upper()
+            portal_downdt = str(it.get("downdt") or "").strip()
+            if portal_isdown or portal_downdt:
+                continue
         if not case_num:
             result.append(it)
             continue
