@@ -141,6 +141,201 @@ def _osc_is_todo_done_status(status: str) -> bool:
     return text in {s.lower() for s in _osc_todo_done_statuses()}
 
 
+_LAF_ACTIVITY_LABELS = ("開庭", "會議", "律見", "閱卷", "電話聯繫")
+_LAF_EVENT_EXCLUSION_KEYWORDS = ("聲請改期", "聲請改期中", "不出席", "取消", "改期", "不到庭")
+_LAF_MEETING_EXCLUSION_KEYWORDS = ("U會議", "Ｕ會議", "u會議", "ｕ會議")
+_LAF_COURT_KEYWORDS = ("開庭", "準備程序", "言詞辯論", "審理", "調解", "宣判", "庭期")
+_LAF_REVIEW_PAYMENT_KEYWORDS = ("繳費單", "規費繳款", "規費", "繳款單", "繳費收據", "繳費憑證")
+_LAF_REVIEW_FILE_EXTENSIONS = {".pdf", ".doc", ".docx", ".jpg", ".jpeg", ".png", ".tif", ".tiff", ".zip", ".txt"}
+
+
+def _laf_parse_date_token(value: str) -> date | None:
+    text = str(value or "")
+    for token in re.findall(r"(?:20\d{2}|1[01]\d)[-_.年/]?\d{1,2}[-_.月/]?\d{1,2}", text):
+        digits = re.sub(r"\D", "", token)
+        candidates: list[tuple[int, int, int]] = []
+        if len(digits) == 8:
+            candidates.append((int(digits[:4]), int(digits[4:6]), int(digits[6:8])))
+        elif len(digits) == 7:
+            candidates.append((int(digits[:3]) + 1911, int(digits[3:5]), int(digits[5:7])))
+        for y, m, d in candidates:
+            try:
+                return date(y, m, d)
+            except ValueError:
+                continue
+    return None
+
+
+def _laf_file_date(path: str) -> date | None:
+    try:
+        st = os.stat(path)
+        ts = getattr(st, "st_birthtime", None) or st.st_mtime
+        return datetime.fromtimestamp(ts).date()
+    except OSError:
+        return None
+
+
+def _laf_is_review_payment_file(name: str) -> bool:
+    return any(k in str(name or "") for k in _LAF_REVIEW_PAYMENT_KEYWORDS)
+
+
+def _laf_is_review_content_file(name: str) -> bool:
+    if not name or name.startswith(".") or name.startswith("~$"):
+        return False
+    if name in {".DS_Store", "Thumbs.db", ".gitkeep"}:
+        return False
+    ext = os.path.splitext(name)[1].lower()
+    if ext and ext not in _LAF_REVIEW_FILE_EXTENSIONS:
+        return False
+    return not _laf_is_review_payment_file(name)
+
+
+def _laf_find_review_folder(case_folder: str) -> str:
+    base = str(case_folder or "").strip()
+    if not base or not os.path.isdir(base):
+        return ""
+    try:
+        for name in os.listdir(base):
+            full = os.path.join(base, name)
+            if os.path.isdir(full) and "閱卷" in name:
+                return full
+    except OSError:
+        return ""
+    try:
+        for root, dirs, _files in os.walk(base):
+            depth = os.path.relpath(root, base).count(os.sep)
+            if depth >= 2:
+                dirs[:] = []
+                continue
+            for name in dirs:
+                if "閱卷" in name:
+                    return os.path.join(root, name)
+    except OSError:
+        return ""
+    return ""
+
+
+def _laf_collect_review_dates_from_folder(case_folder: str) -> dict:
+    """Return OSC-style review dates from 閱卷資料, excluding payment-only date folders."""
+    review_folder = _laf_find_review_folder(case_folder)
+    if not review_folder:
+        return {"count": 0, "dates": [], "items": [], "source": "folder_missing", "review_folder": ""}
+    by_date: dict[date, dict] = {}
+    skipped_payment_only: list[str] = []
+    try:
+        for root, dirs, files in os.walk(review_folder):
+            dirs[:] = [d for d in dirs if d and not d.startswith(".")]
+            visible_files = [f for f in files if f and not f.startswith(".") and f not in {".DS_Store", "Thumbs.db", ".gitkeep"}]
+            if not visible_files:
+                continue
+            content_files = [f for f in visible_files if _laf_is_review_content_file(f)]
+            rel_dir = os.path.relpath(root, review_folder)
+            date_hint = _laf_parse_date_token(os.path.basename(root)) or _laf_parse_date_token(rel_dir)
+            if not content_files:
+                if date_hint:
+                    skipped_payment_only.append(rel_dir.replace("\\", "/"))
+                continue
+            for name in content_files:
+                full = os.path.join(root, name)
+                found_date = date_hint or _laf_parse_date_token(name) or _laf_file_date(full)
+                if not found_date:
+                    continue
+                bucket = by_date.setdefault(found_date, {"date": found_date.isoformat(), "files": []})
+                bucket["files"].append({
+                    "file_name": name,
+                    "file_path": _osc_norm_path(full),
+                    "relative_path": os.path.relpath(full, review_folder).replace("\\", "/"),
+                })
+    except OSError as exc:
+        return {"count": 0, "dates": [], "items": [], "source": "folder_error", "error": str(exc), "review_folder": review_folder}
+    dates = sorted(by_date.keys(), reverse=True)
+    return {
+        "count": len(dates),
+        "dates": [d.isoformat() for d in dates],
+        "items": [by_date[d] for d in dates],
+        "source": "review_folder",
+        "review_folder": review_folder,
+        "skipped_payment_only": skipped_payment_only,
+    }
+
+
+def _laf_event_date_text(row: dict) -> str:
+    if row.get("datetime"):
+        return str(row.get("datetime") or "")
+    return f"{row.get('todo_date') or ''} {row.get('todo_time') or ''}".strip()
+
+
+def _laf_event_summary(row: dict) -> str:
+    return str(row.get("summary") or row.get("description") or row.get("notes") or row.get("type") or row.get("todo_type") or "").strip()
+
+
+def _laf_classify_activity(summary: str, *, case_reason_keyword: str = "", apply_reason_filter: bool = False) -> str:
+    text = str(summary or "")
+    if not text or any(k in text for k in _LAF_EVENT_EXCLUSION_KEYWORDS):
+        return ""
+    if any(k in text for k in _LAF_MEETING_EXCLUSION_KEYWORDS):
+        return ""
+    if any(k in text for k in _LAF_COURT_KEYWORDS):
+        if apply_reason_filter and case_reason_keyword and case_reason_keyword not in text:
+            return ""
+        return "開庭"
+    if any(k in text for k in ("會議", "來所提供資料", "視訊會議", "碰面", "線上面談", "來所面談", "開會", "來所交資料", "臨時來所")):
+        return "會議"
+    if "律見" in text:
+        return "律見"
+    if "閱卷" in text:
+        return "閱卷"
+    if any(k in text for k in ("電話聯繫", "通話", "電聯")):
+        return "電話聯繫"
+    return ""
+
+
+def _laf_build_activity_stats(case: dict, todos: list[dict], meetings: list[dict], review_stats: dict) -> dict:
+    stats = {label: [] for label in _LAF_ACTIVITY_LABELS}
+    client_name = str(case.get("client_name") or "").strip()
+    case_reason = str(case.get("case_reason") or case.get("case_type") or "").strip()
+    case_reason_keyword = case_reason[:2] if case_reason else ""
+    apply_reason_filter = False
+    if client_name:
+        try:
+            row, _ = _osc_exec(
+                "SELECT COUNT(*) AS cnt FROM cases WHERE client_name=%s AND COALESCE(status, '') NOT IN ('已結案', '結案', 'closed', 'Closed')",
+                (client_name,),
+                fetch="one",
+            )
+            apply_reason_filter = int((row or {}).get("cnt") or 0) > 1
+        except Exception:
+            _log.debug("silent-catch at %s:%s", __name__, "_laf_build_activity_stats:active_case_count", exc_info=True)
+    candidates = []
+    for m in meetings or []:
+        summary = f"{m.get('type') or ''} {m.get('location') or ''} {m.get('notes') or ''}".strip()
+        candidates.append({**m, "summary": summary, "_source": "會議"})
+    for t in todos or []:
+        source = "Google Calendar" if str(t.get("source_file") or "").startswith("gcal_import:") else "待辦"
+        summary = f"{t.get('todo_type') or ''} {t.get('description') or ''}".strip()
+        candidates.append({**t, "summary": summary, "_source": source})
+    seen = set()
+    for row in candidates:
+        summary = _laf_event_summary(row)
+        label = _laf_classify_activity(summary, case_reason_keyword=case_reason_keyword, apply_reason_filter=apply_reason_filter)
+        if not label:
+            continue
+        date_text = _laf_event_date_text(row)
+        key = (label, date_text) if re.search(r"\d{1,2}:\d{2}", date_text) else (label, date_text, summary)
+        if key in seen:
+            continue
+        seen.add(key)
+        stats[label].append({"date": date_text, "summary": summary, "source": row.get("_source") or ""})
+    if review_stats.get("dates"):
+        stats["閱卷"] = [{"date": d, "summary": "閱卷 (檔案紀錄)", "source": "閱卷資料夾"} for d in review_stats.get("dates", [])]
+    for rows in stats.values():
+        rows.sort(key=lambda x: str(x.get("date") or ""), reverse=True)
+    return {
+        label: {"count": len(rows), "rows": rows, "latest": rows[0].get("date") if rows else ""}
+        for label, rows in stats.items()
+    }
+
+
 def _build_quick_action_native_reply(action: str, case: dict) -> str:
     case_number = str(case.get("case_number") or "").strip()
     client_name = str(case.get("client_name") or "").strip()
@@ -1595,11 +1790,27 @@ def osc_case_workbench_api(row_id):
         (case_number,),
         fetch="all",
     )
+    folder_path = (case.get("folder_path") or "").strip() or _osc_guess_case_folder(case_number)
+    normalized_folder_path = _osc_norm_path(folder_path) if folder_path else ""
+    local_case_folder = _osc_resolve_existing_local_path(normalized_folder_path, prefer_dir=True) if normalized_folder_path else ""
+    review_stats = _laf_collect_review_dates_from_folder(local_case_folder) if local_case_folder else {
+        "count": 0,
+        "dates": [],
+        "items": [],
+        "source": "folder_missing",
+        "review_folder": "",
+    }
+    if normalized_folder_path:
+        review_stats["folder_path"] = normalized_folder_path
+        review_stats["local_case_folder"] = local_case_folder
+    activity_stats = _laf_build_activity_stats(case, todos or [], meetings or [], review_stats)
     stats = {
         "todo_total": len(todos),
         "todo_pending": len([t for t in todos if not _osc_is_todo_done_status(t.get("status") or "")]),
         "todo_completed": len([t for t in todos if _osc_is_todo_done_status(t.get("status") or "")]),
         "meeting_total": len(meetings),
+        "laf_activity_total": sum(int(v.get("count") or 0) for v in activity_stats.values()),
+        "laf_review_count": int(review_stats.get("count") or 0),
         "laf_items": len(legal_aid),
         "docs_indexed": len(docs),
         "opponents_total": len(opponents),
@@ -1614,6 +1825,8 @@ def osc_case_workbench_api(row_id):
             "meetings": meetings,
             "legal_aid_checklist": legal_aid,
             "laf_progress": lifecycle,
+            "laf_activity_stats": activity_stats,
+            "laf_review_stats": review_stats,
             "documents": docs,
             "opponents": opponents,
             "pdf_generation_log": pdf_generation_log,

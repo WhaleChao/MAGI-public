@@ -897,6 +897,14 @@ table.laf-case-list {
     display: grid;
     gap: 5px;
     align-content: start;
+    cursor: pointer;
+}
+
+.laf-event-card:hover,
+.laf-event-card:focus {
+    border-color: var(--accent);
+    outline: none;
+    box-shadow: 0 4px 14px rgba(14, 165, 233, 0.1);
 }
 
 .laf-event-card strong {
@@ -944,6 +952,42 @@ table.laf-case-list {
 .laf-event-more {
     color: var(--muted);
     font-size: 12px;
+}
+
+.laf-event-more {
+    font-weight: 600;
+    color: var(--accent);
+}
+
+.laf-event-full-list {
+    display: grid;
+    gap: 8px;
+}
+
+.laf-event-full-row {
+    display: grid;
+    grid-template-columns: minmax(130px, 0.9fr) auto;
+    gap: 4px 10px;
+    padding: 10px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: var(--panel);
+}
+
+.laf-event-full-row time {
+    font-weight: 700;
+    overflow-wrap: anywhere;
+}
+
+.laf-event-full-row span {
+    color: var(--muted);
+    justify-self: end;
+}
+
+.laf-event-full-row p {
+    grid-column: 1 / -1;
+    margin: 0;
+    overflow-wrap: anywhere;
 }
 
 .laf-compact-list {

@@ -153,6 +153,7 @@ async function dispatchDelegatedAction(act, t) {
     if (act === "laf-open-doc-keyword") return await openLafKeywordDoc(id, t.dataset.keyword || "");
     if (act === "laf-debt-tool") return openLafDebtTool(id, t.dataset.module || "");
     if (act === "laf-sync-number") return await syncLafNumberForCase(id);
+    if (act === "laf-event-detail") return openLafEventDetailDialog(t.dataset.label || "");
     if (act === "laf-case-action") return await runLafCaseAction(id, t.dataset.action || "");
     if (act === "laf-export-activity") return downloadLafActivityCsv();
     if (act === "laf-checklist-reload") return await reloadLafChecklistFromModal();
@@ -295,6 +296,13 @@ function bindGlobalDelegates() {
             else if (viewId === "accounting") renderTransactions();
             else if (viewId === "insights") renderInsights();
         }
+    });
+    document.addEventListener("keydown", async (e) => {
+        if (e.key !== "Enter" && e.key !== " ") return;
+        const t = e.target.closest("[data-act='laf-event-detail']");
+        if (!t) return;
+        e.preventDefault();
+        await dispatchDelegatedAction("laf-event-detail", t);
     });
 }
 
