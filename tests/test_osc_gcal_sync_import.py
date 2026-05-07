@@ -96,3 +96,34 @@ def test_import_gcal_events_reads_all_visible_calendars(monkeypatch):
     assert writes[0][2] == "開庭"
     assert writes[0][6] == "gcal_import:whalelawyer@gmail.com"
     assert writes[0][7] == "whale-event-1"
+
+
+def test_run_sync_accepts_dict_rows_from_osc_exec(monkeypatch):
+    module = _load_gcal_sync_module()
+
+    monkeypatch.setattr(module, "_load_creds", lambda: type("Creds", (), {"valid": True})())
+    monkeypatch.setattr(module, "_build_service", lambda creds: _FakeService())
+    monkeypatch.setattr(module, "import_gcal_events_to_todos", lambda service, dry_run=False: {"imported": 0, "import_errors": []})
+
+    def fake_osc_exec(sql, params=(), fetch="all"):
+        if "SELECT value FROM settings" in sql:
+            return {"value": "primary"}, []
+        if "FROM case_todos" in sql:
+            return [
+                {
+                    "id": 99,
+                    "case_number": "2026-0001",
+                    "client_name": "測試",
+                    "description": "開庭",
+                    "todo_date": "2026-05-20",
+                    "google_calendar_id": "",
+                }
+            ], []
+        return [], []
+
+    monkeypatch.setattr(module, "_osc_exec_sql", fake_osc_exec)
+
+    stats = module.run_sync(dry_run=True)
+
+    assert stats["pushed"] == 1
+    assert stats["errors"] == []

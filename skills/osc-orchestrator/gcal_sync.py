@@ -391,9 +391,7 @@ def run_sync(dry_run: bool = False, conn=None) -> dict:  # noqa: ARG001
 
     # ── Sync case_todos ───────────────────────────────────────────────────────
     try:
-        from api.osc.utils import _osc_exec
-
-        rows, cols = _osc_exec(
+        rows, cols = _osc_exec_sql(
             """
             SELECT id, case_number, client_name, description, todo_date,
                    google_calendar_id
@@ -414,7 +412,10 @@ def run_sync(dry_run: bool = False, conn=None) -> dict:  # noqa: ARG001
     col_names = [c[0] if hasattr(c, "__getitem__") else str(c) for c in (cols or [])]
 
     for row in rows or []:
-        todo = dict(zip(col_names, row)) if col_names else {}
+        if isinstance(row, dict):
+            todo = dict(row)
+        else:
+            todo = dict(zip(col_names, row)) if col_names else {}
         if not todo.get("id"):
             # fallback for tuple rows without col names
             todo = {
@@ -442,7 +443,7 @@ def run_sync(dry_run: bool = False, conn=None) -> dict:  # noqa: ARG001
 
             # Write back event_id if newly created
             if event_id and not (todo.get("google_calendar_id") or "").strip():
-                _osc_exec(
+                _osc_exec_sql(
                     "UPDATE case_todos SET google_calendar_id=%s WHERE id=%s",
                     (event_id, todo["id"]),
                     fetch="none",
