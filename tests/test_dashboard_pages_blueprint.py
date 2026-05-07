@@ -113,7 +113,7 @@ def test_mobile_config_and_manifest_routes(tmp_path, monkeypatch):
             "app_name": "MAGI Mobile",
             "base_url": "https://magi.tailnet.test",
             "tailscale_dns": "magi.tailnet.test",
-            "tailscale_ip": "100.64.1.2",
+            "tailscale_ip": "198.51.100.2",
             "tailscale_online": True,
             "android_package": "tw.local.magi.mobile",
             "ios_bundle_id": "tw.local.magi.mobile",

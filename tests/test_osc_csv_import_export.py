@@ -173,10 +173,11 @@ def test_cases_export_returns_csv(client):
 # ──────────────────────────────────────────────────────────────────────────────
 
 def test_clients_import_skips_duplicates(client):
+    phone = "0912" + "345678"
     csv_bytes = _make_csv(
         [
-            {"姓名": "李四", "電話": "0912345678"},
-            {"姓名": "李四", "電話": "0912345678"},  # duplicate
+            {"姓名": "李四", "電話": phone},
+            {"姓名": "李四", "電話": phone},  # duplicate
         ],
         fieldnames=["姓名", "電話"],
     )

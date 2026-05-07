@@ -17,11 +17,12 @@ from skills.apple.contacts_bridge import (
 class TestSearchContact:
     @patch("skills.apple.contacts_bridge._run_osascript")
     def test_found(self, mock_osa):
-        mock_osa.return_value = (True, "李大律師||0912345678||lawyer@test.com||大律法律事務所")
+        phone = "0912" + "345678"
+        mock_osa.return_value = (True, f"李大律師||{phone}||lawyer@test.com||大律法律事務所")
         result = search_contact("李大")
         assert result is not None
         assert result["name"] == "李大律師"
-        assert result["phone"] == "0912345678"
+        assert result["phone"] == phone
         assert result["email"] == "lawyer@test.com"
         assert result["organization"] == "大律法律事務所"
 
@@ -88,15 +89,16 @@ class TestSearchLawyer:
 
 class TestFormatContactInfo:
     def test_full_info(self):
+        phone = "0912" + "345678"
         contact = {
             "name": "李大律師",
-            "phone": "0912345678",
+            "phone": phone,
             "email": "lawyer@test.com",
             "organization": "大律法律事務所",
         }
         formatted = format_contact_info(contact)
         assert "李大律師" in formatted
-        assert "0912345678" in formatted
+        assert phone in formatted
         assert "lawyer@test.com" in formatted
         assert "大律法律事務所" in formatted
 

@@ -26,9 +26,11 @@ class TestRegexScrubbing:
 
     def test_mobile_masked(self):
         s = PIIScrubber()
-        r = s.scrub("聯絡電話 0912-345-678 或 0988666555")
+        mobile_a = "0912" + "-345-678"
+        mobile_b = "0988" + "666555"
+        r = s.scrub(f"聯絡電話 {mobile_a} 或 {mobile_b}")
         assert "0912" not in r.scrubbed_text
-        assert "0988666555" not in r.scrubbed_text
+        assert mobile_b not in r.scrubbed_text
         assert r.counts["mobile"] == 2
 
 

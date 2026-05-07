@@ -425,7 +425,7 @@ def test_nerv_remote_access_status_and_actions(tmp_path, monkeypatch):
         if args and args[-1] == "--json":
             return types.SimpleNamespace(
                 returncode=0,
-                stdout=json.dumps({"Self": {"TailscaleIPs": ["100.64.1.2"], "DNSName": "magi.tailnet.test."}}),
+                stdout=json.dumps({"Self": {"TailscaleIPs": ["198.51.100.2"], "DNSName": "magi.tailnet.test."}}),
                 stderr="",
             )
         return types.SimpleNamespace(returncode=0, stdout="", stderr="")
@@ -439,7 +439,7 @@ def test_nerv_remote_access_status_and_actions(tmp_path, monkeypatch):
     response = client.get("/api/nerv/remote-access", headers={"X-User-ID": "u1"})
     assert response.status_code == 200
     data = response.get_json()
-    assert data["tailscale"]["ip"] == "100.64.1.2"
+    assert data["tailscale"]["ip"] == "198.51.100.2"
     assert data["google_remote_desktop"]["access_url"].startswith("https://remotedesktop.google.com")
     assert data["policy"]["public_vnc_exposed"] is False
 

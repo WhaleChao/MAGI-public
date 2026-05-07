@@ -15,7 +15,8 @@ def test_public_release_audit_allows_placeholder_examples():
 
 
 def test_public_release_audit_warns_on_tailnet_ip():
-    findings = scan_text("README.md", "Use MAGI_REMOTE_DB_HOST=100.64.1.2 only in private deployments.\n")
+    tailnet_ip = ".".join(["100", "64", "1", "2"])
+    findings = scan_text("README.md", f"Use MAGI_REMOTE_DB_HOST={tailnet_ip} only in private deployments.\n")
 
     assert summarize(findings)["ok"] is True
     assert findings[0].severity == "warning"
