@@ -560,7 +560,24 @@ async function openLafChecklistCase(caseNumber) {
         return;
     }
     wbShow(`消債應備事項表｜${value}`, `<div class="card"><h3>消債案件應備文件確認表</h3><div class="muted">載入中...</div></div>`);
-    await loadLafDebtRequiredChecklist(value);
+    try {
+        await loadLafDebtRequiredChecklist(value);
+    } catch (e) {
+        const msg = e?.message || "載入應備事項表失敗";
+        const body = document.getElementById("wbBody");
+        if (body) {
+            body.innerHTML = `
+                <div class="card">
+                    <h3>消債案件應備文件確認表</h3>
+                    <div class="status-banner error">無法載入表格：${esc(msg)}</div>
+                    <div class="muted">請重新整理頁面；若仍失敗，請重啟 MAGI 後端讓新版 API 生效。</div>
+                    <div class="toolbar"><button class="btn primary" data-act="laf-checklist-reload">重新載入</button></div>
+                    <input type="hidden" id="debtReqCaseNumber" value="${esc(value)}">
+                </div>
+            `;
+        }
+        showToast(`應備事項表載入失敗：${msg}`, "err", 5000);
+    }
 }
 
 function debtReqItemVisible(item, toggles) {
