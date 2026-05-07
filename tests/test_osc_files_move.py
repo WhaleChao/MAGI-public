@@ -346,3 +346,25 @@ def test_share_gateway_only_accepts_opaque_share_paths():
     assert not TOKEN_RE.fullmatch("/login")
     assert not TOKEN_RE.fullmatch("/api/osc/files/content")
     assert not TOKEN_RE.fullmatch("/s/too-short")
+
+
+def test_share_gateway_forwards_mobile_range_without_session_headers():
+    from scripts.share_gateway import build_upstream_headers
+
+    headers = build_upstream_headers(
+        {
+            "User-Agent": "Mobile Safari",
+            "Range": "bytes=0-1023",
+            "If-Range": '"etag"',
+            "Cookie": "session=secret",
+            "Authorization": "Bearer secret",
+        },
+        "203.0.113.10",
+    )
+
+    assert headers["User-Agent"] == "Mobile Safari"
+    assert headers["Range"] == "bytes=0-1023"
+    assert headers["If-Range"] == '"etag"'
+    assert headers["X-Paperclip-Share-Gateway"] == "1"
+    assert "Cookie" not in headers
+    assert "Authorization" not in headers

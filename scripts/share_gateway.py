@@ -18,6 +18,12 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
 TOKEN_RE = re.compile(r"^/s/[A-Za-z0-9_-]{24,128}$")
+FORWARDED_REQUEST_HEADERS = {
+    "accept": "Accept",
+    "accept-language": "Accept-Language",
+    "if-range": "If-Range",
+    "range": "Range",
+}
 HOP_BY_HOP_HEADERS = {
     "connection",
     "keep-alive",
@@ -31,6 +37,35 @@ HOP_BY_HOP_HEADERS = {
     "transfer-encoding",
     "upgrade",
 }
+
+
+def _header_get(headers, name: str) -> str:
+    value = headers.get(name)
+    if value:
+        return value
+    lower_name = name.lower()
+    for key in headers:
+        if str(key).lower() == lower_name:
+            return headers.get(key) or ""
+    return ""
+
+
+def build_upstream_headers(client_headers, client_ip: str) -> dict[str, str]:
+    """Forward only download-safe headers needed by mobile browsers.
+
+    Do not forward cookies or authorization: the public gateway must stay a
+    narrow `/s/<token>` file pipe rather than a console session proxy.
+    """
+    headers = {
+        "User-Agent": _header_get(client_headers, "User-Agent") or "PaperclipShareGateway/1.0",
+        "X-Forwarded-For": client_ip,
+        "X-Paperclip-Share-Gateway": "1",
+    }
+    for source, target in FORWARDED_REQUEST_HEADERS.items():
+        value = _header_get(client_headers, source)
+        if value:
+            headers[target] = value
+    return headers
 
 
 class ShareGatewayHandler(BaseHTTPRequestHandler):
@@ -81,11 +116,7 @@ class ShareGatewayHandler(BaseHTTPRequestHandler):
         if parsed.query:
             target_url += "?" + parsed.query
 
-        headers = {
-            "User-Agent": "PaperclipShareGateway/1.0",
-            "X-Forwarded-For": self.client_address[0],
-            "X-Paperclip-Share-Gateway": "1",
-        }
+        headers = build_upstream_headers(self.headers, self.client_address[0])
         req = urllib.request.Request(target_url, method=self.command, headers=headers)
         try:
             with urllib.request.urlopen(req, timeout=self.server.upstream_timeout) as resp:
