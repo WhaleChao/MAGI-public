@@ -6297,18 +6297,6 @@ class FileReviewManager:
                         self.log("  ❌ 嘗試多次仍無法開啟彈窗，跳過此項目")
                         continue
 
-                    # ★ Button-level dedup：成功點擊下載按鈕後登錄 rowid，避免下次同 button 被重複點擊
-                    try:
-                        if row_id_for_dedup:
-                            _info_for_reg = {
-                                "case_number": (case_info.get("case_number") if isinstance(case_info, dict) else "") or yyidno_for_dedup,
-                                "party": (case_info.get("party") if isinstance(case_info, dict) else "") or party_label,
-                            }
-                            self._register_rowid_clicked(row_id_for_dedup, _info_for_reg)
-                            self.log(f"  ✓ 已登錄 rowid: {row_id_for_dedup}")
-                    except Exception as _rrc_e:
-                        self.log(f"  ⚠️ 登錄 rowid 失敗: {_rrc_e}")
-
                     # 處理彈窗 (傳入記錄的視窗清單以偵測新視窗)
                     self.log("  進入彈窗內容處理...")
                     
@@ -6404,6 +6392,28 @@ class FileReviewManager:
                             download_meta_by_file[srcp] = dict(case_meta)
                             # ★ 將檔案登錄到 registry
                             self._register_downloaded(nf, yyidno=yyidno_reg, case_info=case_meta)
+
+                        # Button-level dedup must mean "this review-download button produced
+                        # a review artifact", not merely "a popup opened".  OLA can show the
+                        # online-review popup before the clerk has attached files; registering
+                        # at popup-open time hides the case forever.  Payment slips are tracked
+                        # by payment_registry and must not consume the review rowid either.
+                        review_files = [
+                            p for p in new_for_case
+                            if "繳費單" not in os.path.basename(str(p))
+                        ]
+                        if review_files and row_id_for_dedup:
+                            try:
+                                _info_for_reg = {
+                                    "case_number": (case_info.get("case_number") if isinstance(case_info, dict) else "") or yyidno_for_dedup,
+                                    "party": (case_info.get("party") if isinstance(case_info, dict) else "") or party_label,
+                                }
+                                self._register_rowid_clicked(row_id_for_dedup, _info_for_reg)
+                                self.log(f"  ✓ 已登錄 rowid: {row_id_for_dedup}")
+                            except Exception as _rrc_e:
+                                self.log(f"  ⚠️ 登錄 rowid 失敗: {_rrc_e}")
+                        elif row_id_for_dedup:
+                            self.log(f"  ℹ️ 未登錄 rowid={row_id_for_dedup}：本次未取得卷宗檔案")
                     
                     # 重要: 恢復 frame context 以便點擊下一個下載按鈕
                     # 結構: 根頁面 → main-content iframe → v1 iframe
