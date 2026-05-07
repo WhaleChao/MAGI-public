@@ -173,13 +173,42 @@ function lafCollectEvents(data = {}, keyword) {
     const rows = [];
     (data.meetings || []).forEach(m => {
         const text = `${m.type || ""} ${m.notes || ""} ${m.location || ""}`;
-        if (text.includes(keyword)) rows.push({ date: m.datetime || "", summary: `${m.type || keyword} ${m.location || ""}`.trim() });
+        if (text.includes(keyword)) {
+            rows.push({
+                date: m.datetime || "",
+                summary: `${m.type || keyword} ${m.location || ""}`.trim(),
+                source: "會議",
+            });
+        }
     });
     (data.todos || []).forEach(t => {
         const text = `${t.todo_type || ""} ${t.description || ""}`;
-        if (text.includes(keyword)) rows.push({ date: `${t.todo_date || ""} ${t.todo_time || ""}`.trim(), summary: t.description || t.todo_type || keyword });
+        if (text.includes(keyword)) {
+            const source = String(t.source_file || "").startsWith("gcal_import:") ? "Google Calendar" : "待辦";
+            rows.push({
+                date: `${t.todo_date || ""} ${t.todo_time || ""}`.trim(),
+                summary: t.description || t.todo_type || keyword,
+                source,
+            });
+        }
     });
-    return rows;
+    return rows.sort((a, b) => String(b.date || "").localeCompare(String(a.date || "")));
+}
+
+function renderLafEventLines(rows = []) {
+    if (!rows.length) return `<div class="laf-event-empty">尚未記錄</div>`;
+    return `
+        <div class="laf-event-lines">
+            ${rows.slice(0, 5).map(row => `
+                <div class="laf-event-line">
+                    <time>${esc(row.date || "未標示時間")}</time>
+                    <span>${esc(row.source || "")}</span>
+                    <p title="${esc(row.summary || "")}">${esc(shortText(row.summary || "", 52))}</p>
+                </div>
+            `).join("")}
+            ${rows.length > 5 ? `<div class="laf-event-more">另有 ${rows.length - 5} 筆</div>` : ""}
+        </div>
+    `;
 }
 
 function renderLafEventStats(data = {}) {
@@ -187,7 +216,14 @@ function renderLafEventStats(data = {}) {
     return `<div class="laf-event-grid">${configs.map(label => {
         const rows = lafCollectEvents(data, label);
         const latest = rows[0]?.date || "未記錄";
-        return `<div class="laf-event-card"><span>${esc(label)}</span><strong>${rows.length}</strong><small class="muted">${esc(shortText(latest, 18))}</small></div>`;
+        return `
+            <div class="laf-event-card">
+                <span>${esc(label)}</span>
+                <strong>${rows.length}</strong>
+                <small class="muted">最近：${esc(shortText(latest, 24))}</small>
+                ${renderLafEventLines(rows)}
+            </div>
+        `;
     }).join("")}</div>`;
 }
 

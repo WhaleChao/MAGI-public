@@ -894,11 +894,56 @@ table.laf-case-list {
     background: var(--panel);
     padding: 10px;
     min-width: 0;
+    display: grid;
+    gap: 5px;
+    align-content: start;
 }
 
 .laf-event-card strong {
     display: block;
     font-size: 18px;
+}
+
+.laf-event-lines {
+    display: grid;
+    gap: 6px;
+    margin-top: 4px;
+    padding-top: 6px;
+    border-top: 1px solid var(--line);
+}
+
+.laf-event-line {
+    display: grid;
+    grid-template-columns: minmax(96px, 0.9fr) auto;
+    gap: 3px 8px;
+    min-width: 0;
+    font-size: 12px;
+    line-height: 1.4;
+}
+
+.laf-event-line time {
+    color: var(--text);
+    font-weight: 600;
+    overflow-wrap: anywhere;
+}
+
+.laf-event-line span {
+    color: var(--muted);
+    justify-self: end;
+    white-space: nowrap;
+}
+
+.laf-event-line p {
+    grid-column: 1 / -1;
+    margin: 0;
+    color: var(--muted);
+    overflow-wrap: anywhere;
+}
+
+.laf-event-empty,
+.laf-event-more {
+    color: var(--muted);
+    font-size: 12px;
 }
 
 .laf-compact-list {
