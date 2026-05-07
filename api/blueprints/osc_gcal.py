@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 osc_gcal_bp = Blueprint("osc_gcal", __name__)
 
-SCOPES = ["https://www.googleapis.com/auth/calendar.events"]
+SCOPES = ["https://www.googleapis.com/auth/calendar"]
 TOKEN_PATH = Path.home() / ".magi" / "google" / "token.json"
 MAGI_PORT = int(os.environ.get("MAGI_PORT", "5002"))
 
@@ -92,6 +92,7 @@ def gcal_status():
     except Exception:
         pass
     info["calendar_id"] = _get_setting("gcal_calendar_id") or "primary"
+    info["import_calendar_ids"] = _get_setting("gcal_import_calendar_ids") or "全部可讀日曆"
     return jsonify(info)
 
 

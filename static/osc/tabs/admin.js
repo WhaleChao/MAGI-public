@@ -483,8 +483,12 @@ async function loadGcalStatus() {
     if (!statusEl) return;
     try {
         const data = await api("/api/osc/gcal/status");
+        const calInput = document.getElementById("gcalCalendarId");
+        const importInput = document.getElementById("gcalImportCalendarIds");
+        if (calInput && data?.calendar_id && !calInput.value) calInput.value = data.calendar_id;
+        if (importInput && data?.import_calendar_ids && data.import_calendar_ids !== "全部可讀日曆" && !importInput.value) importInput.value = data.import_calendar_ids;
         if (data && data.connected) {
-            statusEl.textContent = `✅ 已連線 Google Calendar（calendar_id: ${data.calendar_id || "primary"}）${data.expires_at ? " | 到期：" + data.expires_at : ""}`;
+            statusEl.textContent = `✅ 已連線 Google Calendar（推送：${data.calendar_id || "primary"}｜匯入：${data.import_calendar_ids || "全部可讀日曆"}）${data.expires_at ? " | 到期：" + data.expires_at : ""}`;
         } else {
             statusEl.textContent = "⚪ 尚未授權 Google Calendar";
         }
@@ -497,6 +501,7 @@ async function saveGcalCreds() {
     const clientId = (document.getElementById("gcalClientId").value || "").trim();
     const clientSecret = (document.getElementById("gcalClientSecret").value || "").trim();
     const calendarId = (document.getElementById("gcalCalendarId").value || "").trim() || "primary";
+    const importCalendarIds = (document.getElementById("gcalImportCalendarIds")?.value || "").trim();
     const statusEl = document.getElementById("gcalStatus");
 
     if (!clientId || !clientSecret) {
@@ -507,8 +512,9 @@ async function saveGcalCreds() {
         await api("/api/osc/settings", "POST", { key: "gcal_client_id", value: clientId, description: "Google Calendar OAuth client_id（P4）" });
         await api("/api/osc/settings", "POST", { key: "gcal_client_secret", value: clientSecret, description: "Google Calendar OAuth client_secret（P4）" });
         await api("/api/osc/settings", "POST", { key: "gcal_calendar_id", value: calendarId, description: "Google Calendar target calendar id（P4）" });
+        await api("/api/osc/settings", "POST", { key: "gcal_import_calendar_ids", value: importCalendarIds, description: "Google Calendar import calendar IDs；空白代表全部可讀日曆" });
         showToast("GCal 憑證已儲存", "ok");
-        if (statusEl) statusEl.textContent = "✅ 憑證已儲存，可點「連線授權」開始 OAuth 流程";
+        if (statusEl) statusEl.textContent = "✅ 憑證已儲存，可點「連線授權」開始 OAuth 流程；若曾用舊版授權，請重新授權以允許讀取其他日曆。";
     } catch (err) {
         if (statusEl) statusEl.textContent = `❌ 儲存失敗：${err.message}`;
     }
@@ -537,7 +543,7 @@ async function syncGcal(dryRun) {
         const res = await api("/api/osc/gcal/sync", "POST", { dry_run: dryRun });
         if (res && res.ok) {
             const mode = dryRun ? "Dry-run" : "同步";
-            const msg = `${mode} 完成 — 推送 ${res.pushed ?? 0} 筆，略過 ${res.skipped ?? 0} 筆${res.errors && res.errors.length ? `（${res.errors.length} 錯誤）` : ""}`;
+            const msg = `${mode} 完成 — 匯入 ${res.imported ?? 0} 筆，推送 ${res.pushed ?? 0} 筆，略過 ${res.skipped ?? 0} 筆${(res.errors && res.errors.length) || (res.import_errors && res.import_errors.length) ? `（${(res.errors || []).length + (res.import_errors || []).length} 錯誤）` : ""}`;
             if (statusEl) statusEl.textContent = (dryRun ? "🔍 " : "✅ ") + msg;
             showToast(msg, "ok");
         } else {
