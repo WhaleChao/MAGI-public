@@ -234,6 +234,7 @@ Automates the full lifecycle of Legal Aid Foundation cases:
 | **Portal go-live** | Auto-fills case opening forms, uploads commission letter + LAF notice |
 | **Pending drafts** | Scans portal for unsigned drafts, surfaces to lawyer |
 | **Closing** | Drafts case-closing submissions with correct remark format; supports `引用OOO的會議` (inherit another case's meeting count) and `OOO就是結案文件` (specify any file as closing basis by keyword) |
+| **Consumer-debt checklist** | OSC LAF tab restores the conditional consumer-debt required-document checklist, copyable client text, and LAF number detection/sync |
 | **Batch ops** | Bulk query / batch closing / batch audit via natural-language commands |
 | **Smart lookup** | Disambiguates multiple cases by status priority + keyword filtering |
 

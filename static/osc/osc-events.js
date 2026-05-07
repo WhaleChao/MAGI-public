@@ -152,11 +152,13 @@ async function dispatchDelegatedAction(act, t) {
     if (act === "laf-batch-in-progress") return await batchLafStatusToInProgress();
     if (act === "laf-open-doc-keyword") return await openLafKeywordDoc(id, t.dataset.keyword || "");
     if (act === "laf-debt-tool") return openLafDebtTool(id, t.dataset.module || "");
+    if (act === "laf-sync-number") return await syncLafNumberForCase(id);
     if (act === "laf-case-action") return await runLafCaseAction(id, t.dataset.action || "");
     if (act === "laf-export-activity") return downloadLafActivityCsv();
     if (act === "laf-checklist-reload") return await reloadLafChecklistFromModal();
-    if (act === "laf-checklist-seed") return await seedLafChecklistFromModal();
-    if (act === "laf-checklist-add") return await addLafChecklistFromModal();
+    if (act === "debt-req-save") return await saveDebtReqChecklist();
+    if (act === "debt-req-text") return generateDebtReqCopyText();
+    if (act === "debt-req-custom-add") return addDebtReqCustomRow();
     if (act === "doc-tpl-edit") return await editDocumentTemplate(Number(id));
     if (act === "doc-tpl-del") return await delDocumentTemplate(Number(id));
     if (act === "doc-kw-edit") return await editDocumentKeyword(Number(id));

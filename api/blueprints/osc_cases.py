@@ -3322,7 +3322,7 @@ def osc_laf_cases_api():
                 SELECT COUNT(*)
                 FROM legal_aid_checklists lac
                 WHERE lac.case_number = cases.case_number
-                  AND COALESCE(lac.status, '') NOT IN ('已備齊', '不適用', '完成', '已完成')
+                  AND COALESCE(lac.status, '') NOT IN ('已備齊', '不適用', '完成', '已完成', '已繳', '免附')
             ) AS pending_laf_items
         FROM cases
         WHERE {" AND ".join(where)}
@@ -5294,6 +5294,230 @@ def _laf_default_checklist_items():
         ("expense_receipt", "裁判費新臺幣 1,000 元 (備齊後支付)"),
         ("income_expense_table", "以月為單位之一年收支表"),
     ]
+
+
+def _laf_debt_required_spec():
+    """OSC 原消債應備事項表規格，保留條件式展開邏輯。"""
+    items = dict(_laf_default_checklist_items())
+    links = {
+        "household_reg_self": "戶籍謄本申請教學:\nhttps://reurl.cc/LnKNl3\nhttps://reurl.cc/WOKDNy",
+        "jcic_credit_report": "聯徵信用報告與債權人清冊申請教學:\nhttps://reurl.cc/nYG7vd\nhttps://reurl.cc/axK1d3\nhttps://reurl.cc/yA9kv2",
+        "tax_list_self": "所得清單與財產清冊申請教學:\nhttps://reurl.cc/0WME4x",
+        "property_list_self": "所得清單與財產清冊申請教學:\nhttps://reurl.cc/0WME4x",
+        "labor_insurance_self": "勞保清冊申請教學:\nhttps://reurl.cc/MzKR6L",
+        "insurance_list_self": "壽險公會投保紀錄申請教學:\nhttps://reurl.cc/mYKlR1\nhttps://reurl.cc/7VzR45\nhttps://reurl.cc/Y3K8Yl",
+        "stock_investment_self": "證券集保紀錄申請教學:\n網路申請：\nhttps://investor.tdcc.com.tw/QDSIO/",
+        "income_expense_table": "收支明細表範本:\nhttps://reurl.cc/K91M9q",
+        "business_tax_return": "營利事業申報書(401報表)申請教學:\nhttps://reurl.cc/koKlpn",
+        "bank_assoc_inquiry": "銀行公會存款查詢申請教學:\nhttps://www.ba.org.tw/PublicInformation/BusinessDetail/31",
+        "income_affidavit": "收入切結書範本:\nhttps://reurl.cc/6qnNqb",
+        "residence_consent_form": "居住親屬房屋同意書範本:\nhttps://reurl.cc/Y3K830",
+        "rental_contract": "房租收據範本:\nhttps://reurl.cc/rYOLYr",
+    }
+
+    def it(key):
+        return {"item_key": key, "item_label": items[key], "link": links.get(key, "")}
+
+    return {
+        "status_options": ["待補", "已繳", "免附"],
+        "toggles": [
+            {"key": "dependents_parents", "label": "有扶養父母"},
+            {"key": "dependents_children", "label": "有扶養子女"},
+            {"key": "rental", "label": "有租屋居住"},
+            {"key": "resides_relative_property", "label": "居住親屬房產"},
+            {"key": "litigation", "label": "有其他訴訟/強執"},
+            {"key": "negotiation", "label": "曾與銀行協商/調解"},
+            {"key": "has_business", "label": "五年內有營業"},
+            {"key": "passbook_issue", "label": "存摺無法補登"},
+            {"key": "no_payslip", "label": "無法提供薪資單"},
+            {"key": "other_items", "label": "其他自訂項目"},
+        ],
+        "sections": [
+            {"key": "basic", "title": "基本資料", "items": [it("household_reg_self"), it("jcic_credit_report")]},
+            {
+                "key": "self_assets",
+                "title": "本人財產證明",
+                "items": [
+                    it("tax_list_self"), it("property_list_self"), it("labor_insurance_self"),
+                    {**it("income_proof_self"), "hide_when": "no_payslip"},
+                    {**it("income_affidavit"), "show_when": "no_payslip"},
+                    {**it("bank_book_self"), "hide_when": "passbook_issue"},
+                    {**it("bank_assoc_inquiry"), "show_when": "passbook_issue"},
+                    it("insurance_list_self"), it("insurance_policy_self"),
+                    it("stock_investment_self"), {**it("business_tax_return"), "show_when": "has_business"},
+                ],
+            },
+            {
+                "key": "parents",
+                "title": "扶養父母資料",
+                "show_when": "dependents_parents",
+                "items": [it("household_reg_parents"), it("tax_list_parents"), it("property_list_parents")],
+            },
+            {
+                "key": "children",
+                "title": "扶養子女資料",
+                "show_when": "dependents_children",
+                "items": [
+                    it("household_reg_children"), it("tax_list_children"),
+                    it("property_list_children"), it("student_cert_children"),
+                ],
+            },
+            {
+                "key": "special",
+                "title": "其他特殊狀況文件",
+                "items": [
+                    {**it("rental_contract"), "show_when": "rental"},
+                    {**it("relative_building_transcript"), "show_when": "resides_relative_property"},
+                    {**it("residence_consent_form"), "show_when": "resides_relative_property"},
+                    {**it("relative_land_transcript"), "show_when": "resides_relative_property"},
+                    {**it("court_documents"), "show_when": "litigation"},
+                    {**it("negotiation_docs"), "show_when": "negotiation"},
+                ],
+            },
+            {
+                "key": "fees",
+                "title": "費用與其他",
+                "items": [it("expense_receipt"), it("income_expense_table")],
+            },
+            {"key": "custom", "title": "其他自訂項目", "show_when": "other_items", "items": []},
+        ],
+    }
+
+
+def _laf_debt_known_item_keys() -> set[str]:
+    keys = set()
+    for section in _laf_debt_required_spec()["sections"]:
+        keys.update(str(item.get("item_key") or "") for item in section.get("items") or [])
+    return {k for k in keys if k}
+
+
+def _laf_number_candidates_for_case(case: dict) -> dict:
+    laf_no_re = re.compile(r"\d{6,8}-[A-Za-z]-\d{3}")
+    priority_keywords = ("開辦通知書", "接案通知書", "准予扶助證明書", "委任狀")
+    folder = str(case.get("folder_path") or "").strip()
+    roots = [p for p in _osc_local_path_candidates(folder) if p and os.path.isdir(p)]
+    out = {"candidates": [], "source": "", "scanned_roots": roots[:3]}
+    priority = set()
+    fallback = set()
+    for root in roots[:3]:
+        scan_dirs = [os.path.join(root, "01_法扶資料"), os.path.join(root, "02_開辦資料"), root]
+        for scan_dir in [p for p in scan_dirs if os.path.isdir(p)]:
+            try:
+                for dirpath, _dirnames, filenames in os.walk(scan_dir):
+                    for filename in filenames:
+                        matches = laf_no_re.findall(filename)
+                        if not matches:
+                            continue
+                        if any(keyword in filename for keyword in priority_keywords):
+                            priority.update(matches)
+                        else:
+                            fallback.update(matches)
+            except Exception:
+                continue
+            if priority:
+                break
+        if priority:
+            break
+    chosen = sorted(priority or fallback)
+    out["candidates"] = chosen
+    out["source"] = "開辦通知書/接案通知書" if priority else ("案件資料夾" if fallback else "")
+    return out
+
+
+@osc_bp.route("/api/osc/checklists/debt-required", methods=["GET"])
+@login_required
+def osc_laf_debt_required_get():
+    case_number = request.args.get("case_number", "").strip()
+    if not case_number:
+        return jsonify({"ok": False, "error": "case_number 必填"}), 400
+    case, _ = _osc_exec("SELECT * FROM cases WHERE case_number=%s LIMIT 1", (case_number,), fetch="one")
+    rows, _ = _osc_exec(
+        "SELECT id, case_number, item_key, item_label, status, notes, last_updated "
+        "FROM legal_aid_checklists WHERE case_number=%s ORDER BY last_updated DESC, id DESC",
+        (case_number,), fetch="all",
+    )
+    candidates = _laf_number_candidates_for_case(case or {}) if case else {"candidates": [], "source": "", "scanned_roots": []}
+    return jsonify({
+        "ok": True,
+        "case": case or {"case_number": case_number},
+        "spec": _laf_debt_required_spec(),
+        "items": rows or [],
+        "laf_number_candidates": candidates,
+    })
+
+
+@osc_bp.route("/api/osc/checklists/debt-required/save", methods=["POST"])
+@login_required
+def osc_laf_debt_required_save():
+    data = request.get_json(silent=True) or {}
+    case_number = (data.get("case_number") or "").strip()
+    if not case_number:
+        return jsonify({"ok": False, "error": "case_number 必填"}), 400
+    raw_items = data.get("items") or []
+    if not isinstance(raw_items, list):
+        return jsonify({"ok": False, "error": "items must be list"}), 400
+    active_keys: set[str] = set()
+    saved = 0
+    for item in raw_items:
+        if not isinstance(item, dict):
+            continue
+        item_key = str(item.get("item_key") or "").strip()
+        item_label = str(item.get("item_label") or "").strip()
+        if not item_key or not item_label:
+            continue
+        status = str(item.get("status") or "待補").strip() or "待補"
+        notes = str(item.get("notes") or "").strip()
+        active_keys.add(item_key)
+        _osc_exec(
+            "INSERT INTO legal_aid_checklists (case_number, item_key, item_label, status, notes, last_updated) "
+            "VALUES (%s, %s, %s, %s, %s, NOW()) "
+            "ON DUPLICATE KEY UPDATE item_label=VALUES(item_label), status=VALUES(status), notes=VALUES(notes), last_updated=NOW()",
+            (case_number, item_key, item_label, status, notes),
+            fetch="none",
+        )
+        saved += 1
+    known_keys = _laf_debt_known_item_keys()
+    db_rows, _ = _osc_exec(
+        "SELECT item_key FROM legal_aid_checklists WHERE case_number=%s",
+        (case_number,),
+        fetch="all",
+    )
+    deleted = 0
+    for row in db_rows or []:
+        key = str(row.get("item_key") if isinstance(row, dict) else row[0]).strip()
+        if (key in known_keys or key.startswith("custom_item_")) and key not in active_keys:
+            _osc_exec(
+                "DELETE FROM legal_aid_checklists WHERE case_number=%s AND item_key=%s",
+                (case_number, key),
+                fetch="none",
+            )
+            deleted += 1
+    return jsonify({"ok": True, "saved_count": saved, "deleted_count": deleted})
+
+
+@osc_bp.route("/api/osc/cases/<row_id>/laf-number/sync", methods=["POST"])
+@login_required
+def osc_case_laf_number_sync(row_id):
+    case, _ = _osc_exec("SELECT * FROM cases WHERE id=%s", ((row_id or "").strip(),), fetch="one")
+    if not case:
+        return jsonify({"ok": False, "error": "case_not_found"}), 404
+    payload = request.get_json(silent=True) or {}
+    manual = str(payload.get("laf_case_no") or "").strip()
+    candidates = _laf_number_candidates_for_case(case)
+    chosen = manual
+    if not chosen:
+        if len(candidates["candidates"]) == 1:
+            chosen = candidates["candidates"][0]
+        elif len(candidates["candidates"]) > 1:
+            return jsonify({"ok": False, "error": "multiple_candidates", **candidates}), 409
+        else:
+            return jsonify({"ok": False, "error": "laf_number_not_found", **candidates}), 404
+    _osc_exec(
+        "UPDATE cases SET laf_case_no=%s, application_no=CASE WHEN application_no IS NULL OR application_no='' THEN %s ELSE application_no END, updated_at=NOW() WHERE id=%s",
+        (chosen, chosen, case.get("id")),
+        fetch="none",
+    )
+    return jsonify({"ok": True, "laf_case_no": chosen, "source": candidates.get("source") or ("手動輸入" if manual else "")})
 
 
 # ── 1A. legal_aid_checklists endpoints (5) ───────────────────────────────────

@@ -2034,3 +2034,31 @@ body.theme-dark .btn.selected-toggle {
     border-color: #86efac;
     color: #166534;
 }
+
+.check-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    gap: 8px 12px;
+}
+
+.checkline {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 32px;
+    font-size: 14px;
+}
+
+.debt-req-section .compact-table th:first-child,
+.debt-req-section .compact-table td:first-child {
+    width: 58%;
+}
+
+.sticky-actions {
+    position: sticky;
+    bottom: 0;
+    background: var(--panel);
+    border-top: 1px solid var(--line);
+    padding-block: 10px;
+    z-index: 2;
+}
