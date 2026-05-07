@@ -334,6 +334,7 @@ def test_worldmonitor_collect_and_analyze_emits_degraded_report(monkeypatch):
 def test_worldmonitor_collect_and_analyze_uses_structured_fallback_when_melchior_fails(monkeypatch):
     module = _load_worldmonitor_module()
 
+    monkeypatch.setattr(module, "_translate_to_zh_hant", lambda text, timeout_sec=8: f"繁中：{text}")
     monkeypatch.setattr(
         module,
         "collect_news",
@@ -360,6 +361,7 @@ def test_worldmonitor_collect_and_analyze_uses_structured_fallback_when_melchior
 def test_worldmonitor_collect_without_reasoning_still_emits_readable_summary(monkeypatch):
     module = _load_worldmonitor_module()
 
+    monkeypatch.setattr(module, "_translate_to_zh_hant", lambda text, timeout_sec=8: f"繁中：{text}")
     monkeypatch.setattr(
         module,
         "collect_news",
@@ -386,6 +388,7 @@ def test_worldmonitor_collect_without_reasoning_still_emits_readable_summary(mon
 def test_worldmonitor_rejects_chatty_melchior_output(monkeypatch):
     module = _load_worldmonitor_module()
 
+    monkeypatch.setattr(module, "_translate_to_zh_hant", lambda text, timeout_sec=8: f"繁中：{text}")
     monkeypatch.setattr(
         module,
         "collect_news",
@@ -427,6 +430,21 @@ def test_worldmonitor_plain_text_output_strips_markdown_shell():
     assert "**" not in plain
     assert "<details>" not in plain
     assert "BBC World：市場關注供應鏈。" in plain
+
+
+def test_worldmonitor_structured_fallback_translates_source_digest(monkeypatch):
+    module = _load_worldmonitor_module()
+
+    monkeypatch.setattr(module, "_translate_to_zh_hant", lambda text, timeout_sec=8: "亞洲供應鏈面臨壓力。港口與能源航線仍受關注。")
+
+    report = module._fallback_news_analysis(
+        [{"source": "BBC World", "title": "Asia supply chains face pressure", "summary": "Ports and energy routes remain under scrutiny."}],
+        {},
+        "## 🩺 來源健康狀態\n- 新聞來源：1/1 成功",
+    )
+
+    assert "BBC World：亞洲供應鏈面臨壓力" in report
+    assert "Asia supply chains face pressure" not in report
 
 
 def test_dashboard_openclaw_button_targets_local_route():

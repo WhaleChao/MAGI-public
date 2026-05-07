@@ -22,6 +22,8 @@ import csv
 import argparse
 import logging
 import re
+import urllib.parse
+import urllib.request
 import xml.etree.ElementTree as ET
 from datetime import datetime
 from pathlib import Path
@@ -43,6 +45,8 @@ FINNHUB_KEY = os.environ.get("FINNHUB_API_KEY", "")
 if not FINNHUB_KEY:
     logger.info("FINNHUB_API_KEY 未設定，將改用 MAGI 免金鑰公開行情來源。")
 FETCH_TIMEOUT = 15
+SUMMARY_TRANSLATION_ENABLED = os.environ.get("MAGI_WORLDMONITOR_TRANSLATE_SUMMARY", "1").lower() not in {"0", "false", "no"}
+_SUMMARY_TRANSLATION_CACHE: Dict[str, str] = {}
 
 # ---------------------------------------------------------------------------
 # Public news RSS feeds (no API key needed)
@@ -71,7 +75,6 @@ STOOQ_MARKET_SYMBOLS = {
 # ---------------------------------------------------------------------------
 def _fetch(url: str, timeout: int = FETCH_TIMEOUT) -> Optional[bytes]:
     try:
-        import urllib.request
         req = urllib.request.Request(url, headers={
             "User-Agent": "MAGI-worldmonitor-intel/2.0",
             "Accept": "application/rss+xml, application/xml, application/json, text/xml, */*"
@@ -418,6 +421,52 @@ def _render_source_health(news_statuses: List[Dict], market_status: Dict) -> str
     return "\n".join(lines)
 
 
+def _contains_latin_or_kana(text: str) -> bool:
+    return bool(re.search(r"[A-Za-z\u3040-\u30ff]", text or ""))
+
+
+def _translate_to_zh_hant(text: str, timeout_sec: int = 8) -> str:
+    """Translate a short source-grounded snippet to Traditional Chinese."""
+    source = re.sub(r"\s+", " ", str(text or "")).strip()
+    if not source or not SUMMARY_TRANSLATION_ENABLED or not _contains_latin_or_kana(source):
+        return source
+    cached = _SUMMARY_TRANSLATION_CACHE.get(source)
+    if cached:
+        return cached
+
+    try:
+        q = urllib.parse.quote(source[:650])
+        url = (
+            "https://translate.googleapis.com/translate_a/single"
+            f"?client=gtx&sl=auto&tl=zh-TW&dt=t&q={q}"
+        )
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=max(3, timeout_sec)) as resp:
+            raw = resp.read().decode("utf-8", "ignore")
+        data = json.loads(raw)
+        parts = []
+        if isinstance(data, list) and data and isinstance(data[0], list):
+            for seg in data[0]:
+                if isinstance(seg, list) and seg and seg[0]:
+                    parts.append(str(seg[0]))
+        translated = "".join(parts).strip()
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("worldmonitor summary translation failed: %s", exc)
+        translated = ""
+
+    result = translated or source
+    _SUMMARY_TRANSLATION_CACHE[source] = result
+    return result
+
+
+def _news_digest_zh(item: Dict) -> str:
+    title = str(item.get("title") or "").strip()
+    summary = str(item.get("summary") or "").strip()
+    text = title if not summary else f"{title}：{summary}"
+    translated = _translate_to_zh_hant(text)
+    return translated[:220].rstrip(" ，、；：")
+
+
 def _fallback_news_analysis(news: List[Dict], markets: Dict, source_health: str) -> str:
     """Generate a readable Traditional Chinese summary when local LLM inference is unavailable."""
     source_counts: Dict[str, int] = {}
@@ -426,14 +475,9 @@ def _fallback_news_analysis(news: List[Dict], markets: Dict, source_health: str)
         source_counts[source] = source_counts.get(source, 0) + 1
 
     def _line(item: Dict) -> str:
-        title = str(item.get("title") or "").strip()
-        summary = str(item.get("summary") or "").strip()
         source = str(item.get("source") or "來源").strip()
-        link = str(item.get("link") or "").strip()
-        text = title if not summary else f"{title}：{summary}"
-        if link:
-            return f"- [{source}] [{text[:220]}]({link})"
-        return f"- [{source}] {text[:220]}"
+        text = _news_digest_zh(item)
+        return f"- {source}：{text}"
 
     asia_terms = ("Taiwan", "台灣", "亞太", "Asia", "Japan", "日本", "Korea", "韓", "China", "中國", "NHK", "Hormuz", "伊朗", "Ukraine", "Russia", "俄")
     asia_items = [
