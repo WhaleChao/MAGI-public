@@ -12,6 +12,7 @@ OSC 消費者債務清理 API Blueprint
   POST /api/osc/debt/merge-pdf            → 合併 PDF 檔案
   POST /api/osc/debt/batch-generate       → 批次產生所有文件
   POST /api/osc/debt/auto-import          → 從已有文件自動帶入資料
+  POST /api/osc/debt/supplement-checklist → 同步消債補件項目到 OSC 案件補正清單
   POST /api/osc/debt/validate             → 驗證表單資料
   GET  /api/osc/debt/expense-reference    → 取得法定費用參考金額
   GET  /api/osc/debt/source-status        → 取得六模組源碼與文件模板路徑狀態
@@ -73,6 +74,100 @@ def _save_doc(doc, form_type: str, data: dict) -> dict:
         "download_url": f"/api/osc/files/content?path={quote(docx_path)}",
         "share_path": docx_path,
         "message": f"已產生 {base_name}",
+    }
+
+
+def _debt_osc_exec(sql, params=(), fetch="none"):
+    from api.osc.utils import _osc_exec
+
+    return _osc_exec(sql, params, fetch=fetch)
+
+
+def _first_debt_value(data: dict, keys: tuple[str, ...]) -> str:
+    for key in keys:
+        val = data.get(key)
+        if val is not None:
+            text = str(val).strip()
+            if text:
+                return text
+    return ""
+
+
+def _debt_supplement_items(data: dict) -> list:
+    for key in ("items", "supplement_items", "pending_items", "missing_items"):
+        items = data.get(key)
+        if isinstance(items, list):
+            return items
+    return []
+
+
+def _normalize_debt_supplement_item(item) -> dict:
+    if isinstance(item, str):
+        label = item.strip()
+        return {"item_label": label, "notes": ""}
+    if not isinstance(item, dict):
+        return {"item_label": "", "notes": ""}
+
+    category = str(item.get("category") or item.get("name") or item.get("item_label") or "").strip()
+    period = str(item.get("period") or item.get("description") or item.get("content") or "").strip()
+    fallback = str(item.get("label") or item.get("text") or item.get("required") or "").strip()
+    label = category or fallback
+    if period and period != label:
+        label = f"{label}（{period}）" if label else period
+
+    note_parts = []
+    for note_key, note_label in (
+        ("attachment", "附件"),
+        ("selected", "附件"),
+        ("party", "當事人"),
+        ("source_file", "來源"),
+        ("reason", "原因"),
+        ("notes", "備註"),
+    ):
+        val = str(item.get(note_key) or "").strip()
+        if val:
+            note_parts.append(f"{note_label}: {val}")
+    return {"item_label": label.strip(), "notes": "；".join(note_parts)}
+
+
+def _sync_debt_supplement_checklist(data: dict) -> dict:
+    case_number = _first_debt_value(
+        data,
+        ("case_number", "case_no", "court_case_no", "court_case_number", "application_case_no", "A2"),
+    )
+    if not case_number:
+        return {"ok": False, "synced": 0, "skipped": 0, "error": "缺少 case_number/case_no，無法同步 OSC 案件補正清單"}
+
+    status = str(data.get("status") or data.get("item_status") or "待補").strip() or "待補"
+    items = _debt_supplement_items(data)
+    if not items:
+        return {"ok": True, "case_number": case_number, "synced": 0, "skipped": 0, "items": []}
+
+    synced = 0
+    skipped = 0
+    normalized_items = []
+    for raw_item in items:
+        item = _normalize_debt_supplement_item(raw_item)
+        label = item["item_label"]
+        if not label:
+            skipped += 1
+            continue
+        _debt_osc_exec(
+            "INSERT INTO case_checklists (case_number, item_label, status, notes, is_active) "
+            "VALUES (%s,%s,%s,%s,1) "
+            "ON DUPLICATE KEY UPDATE status=VALUES(status), notes=VALUES(notes), is_active=1",
+            (case_number, label, status, item["notes"]),
+            fetch="none",
+        )
+        normalized_items.append({"item_label": label, "status": status, "notes": item["notes"]})
+        synced += 1
+
+    return {
+        "ok": True,
+        "case_number": case_number,
+        "synced": synced,
+        "skipped": skipped,
+        "items": normalized_items,
     }
 
 
@@ -473,9 +568,25 @@ def debt_generate_document():
         result = _save_doc(doc, form_type, data)
         if form_type == "creditor_list":
             result["saved_addresses"] = saved_addresses
+        if form_type == "supplement":
+            result["checklist_sync"] = _sync_debt_supplement_checklist(data)
         return jsonify(result)
     except Exception as e:
         return jsonify({"ok": False, "error": f"儲存失敗: {e}"}), 500
+
+
+@osc_debt_bp.route("/api/osc/debt/supplement-checklist", methods=["POST"])
+def debt_supplement_checklist():
+    payload = request.get_json(force=True, silent=True) or {}
+    data = payload.get("data") if isinstance(payload.get("data"), dict) else payload
+    try:
+        result = _sync_debt_supplement_checklist(data or {})
+    except Exception as e:
+        logger.exception("消債補件清單同步失敗")
+        return jsonify({"ok": False, "error": str(e)}), 500
+    if not result.get("ok"):
+        return jsonify(result), 400
+    return jsonify(result)
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -531,6 +642,8 @@ def debt_batch_generate():
             result = _save_doc(doc, form_type, data)
             if form_type == "creditor_list":
                 result["saved_addresses"] = saved_addresses
+            if form_type == "supplement":
+                result["checklist_sync"] = _sync_debt_supplement_checklist(data)
             results.append(result)
         except Exception as e:
             logger.exception("批次產生失敗: %s", form_type)
