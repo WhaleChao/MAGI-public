@@ -6114,6 +6114,13 @@ class FileReviewManager:
                             except Exception:
                                 pass
                             if not isdown_flag and not downdt_flag:
+                                if (
+                                    yyidno_for_dedup
+                                    and self.enable_case_level_download_skip
+                                    and self._is_yyidno_fully_downloaded(yyidno_for_dedup)
+                                ):
+                                    self.log(f"  ⏭️ [已下載] 跳過 rowid={row_id_for_dedup} ({party_label}/{yyidno_for_dedup})——法院端仍顯示未下載，但 registry 已有卷宗")
+                                    continue
                                 if self._case_review_folder_has_files(case_info):
                                     self.log(f"  ⏭️ [已歸檔] 跳過 rowid={row_id_for_dedup} ({party_label}/{yyidno_for_dedup})——法院端仍顯示未下載，但案件資料夾已有卷宗")
                                     continue
