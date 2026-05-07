@@ -165,6 +165,27 @@ def test_share_download_streams_without_send_file(tmp_path: Path, monkeypatch):
     assert download.headers["Content-Range"].endswith(f"/{src.stat().st_size}")
 
 
+def test_share_download_chinese_pdf_has_mobile_safe_ascii_filename(tmp_path: Path, monkeypatch):
+    client = _client()
+    src = tmp_path / "支出表.pdf"
+    src.write_bytes(b"%PDF-share-filename")
+
+    from api.blueprints import osc_files as mod
+
+    monkeypatch.setattr(mod, "_SHARE_STORE_PATH", tmp_path / "shares.json")
+    monkeypatch.setenv("MAGI_OSC_FILE_SHARE_PUBLIC_BASE_URL", "https://paperclip-share.example.test")
+    with patch("api.blueprints.osc_files._resolve_safe_file", return_value=str(src)):
+        r = client.post("/api/osc/files/share", json={"path": str(src), "ttl_sec": 600})
+        token = r.get_json()["url"].rstrip("/").split("/s/", 1)[1]
+        download = client.get(f"/s/{token}")
+
+    assert download.status_code == 200
+    cd = download.headers["Content-Disposition"]
+    assert 'filename="paperclip.pdf"' in cd
+    assert "filename*=UTF-8''" in cd
+    assert "%E6%94%AF%E5%87%BA%E8%A1%A8.pdf" in cd
+
+
 def test_pdf_preview_content_url_is_encoded(tmp_path: Path):
     client = _client()
     src = tmp_path / "卷證 A&B#1.pdf"

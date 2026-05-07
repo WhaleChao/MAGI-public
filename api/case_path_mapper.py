@@ -433,6 +433,9 @@ def local_synology_path_candidates(path: str, cfg: Optional[dict] = None) -> lis
             candidates.append(volume)
 
     active_roots = default_synology_share_roots(include_closed=False, cfg=cfg)
+    # 本機 SynologyDrive 檔案可能只是 macOS File Provider 的 dataless 佔位檔。
+    # 將任何已知進行中案件根路徑互相映射，讓下載端點可改讀 /Volumes/homes 的 SMB 真檔案。
+    candidates.extend(_expand_from_prefix(s, active_roots, active_roots))
     import re as _re
     needs_closed_roots = (
         s.startswith("Y:/")

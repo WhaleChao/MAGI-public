@@ -158,6 +158,7 @@ def _resolve_safe_file(path_str: str) -> str:
 def _copy_with_system_cp(local_file: str, tmp_path: str) -> bool:
     cp_bin = shutil.which("cp") or "/bin/cp"
     try:
+        expected_size = os.path.getsize(local_file)
         result = subprocess.run(
             [cp_bin, "-p", local_file, tmp_path],
             stdout=subprocess.PIPE,
@@ -165,7 +166,7 @@ def _copy_with_system_cp(local_file: str, tmp_path: str) -> bool:
             text=True,
             timeout=int(os.environ.get("PAPERCLIP_FILE_CP_TIMEOUT_SEC", "120") or "120"),
         )
-        return result.returncode == 0 and os.path.isfile(tmp_path) and os.path.getsize(tmp_path) >= 0
+        return result.returncode == 0 and os.path.isfile(tmp_path) and os.path.getsize(tmp_path) == expected_size
     except Exception:
         _log.debug("silent-catch share system cp fallback failed", exc_info=True)
         return False
@@ -176,6 +177,7 @@ def _stage_file_with_retry(local_file: str, *, max_attempts: int | None = None) 
     if max_attempts is None:
         max_attempts = max(4, int(os.environ.get("PAPERCLIP_FILE_STAGE_MAX_ATTEMPTS", "8") or "8"))
     last_exc: Exception | None = None
+    expected_size = os.path.getsize(local_file)
     tmp_dir = os.path.join(tempfile.gettempdir(), "paperclip-shares")
     os.makedirs(tmp_dir, exist_ok=True)
     suffix = os.path.splitext(local_file)[1] or ".bin"
@@ -201,6 +203,10 @@ def _stage_file_with_retry(local_file: str, *, max_attempts: int | None = None) 
                 if e.errno in (11, 35) and _copy_with_system_cp(local_file, tmp_path):
                     return tmp_path
                 raise
+            if os.path.getsize(tmp_path) != expected_size:
+                raise OSError(
+                    f"staged copy incomplete: expected {expected_size} bytes, got {os.path.getsize(tmp_path)} bytes"
+                )
             return tmp_path
         except OSError as e:
             last_exc = e
@@ -250,7 +256,17 @@ def _cleanup_file_once(path: str) -> None:
 
 def _content_disposition(filename: str, *, inline: bool) -> str:
     disposition = "inline" if inline else "attachment"
-    ascii_name = filename.encode("ascii", "ignore").decode("ascii") or "download"
+    suffix = Path(filename or "").suffix
+    if not suffix or not re.fullmatch(r"\.[A-Za-z0-9]{1,12}", suffix):
+        suffix = ".bin"
+    ascii_raw = filename.encode("ascii", "ignore").decode("ascii").replace("/", "_").replace("\\", "_")
+    ascii_raw = re.sub(r"[^A-Za-z0-9._ -]+", "_", ascii_raw)
+    ascii_suffix = Path(ascii_raw).suffix
+    if not ascii_suffix or not re.fullmatch(r"\.[A-Za-z0-9]{1,12}", ascii_suffix):
+        ascii_suffix = suffix
+    raw_stem = ascii_raw[:-len(ascii_suffix)] if ascii_raw.lower().endswith(ascii_suffix.lower()) else Path(ascii_raw).stem
+    stem = re.sub(r"[^A-Za-z0-9._ -]+", "_", raw_stem).strip(" .-_")
+    ascii_name = (stem or "paperclip") + ascii_suffix
     return f'{disposition}; filename="{ascii_name}"; filename*=UTF-8\'\'{quote(filename)}'
 
 

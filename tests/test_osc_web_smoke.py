@@ -430,6 +430,60 @@ def test_file_content_supports_pdf_range_requests(client, tmp_path):
     assert r.headers["Content-Range"] == "bytes 2-5/16"
 
 
+def test_file_content_chinese_pdf_has_mobile_safe_ascii_filename(client, tmp_path):
+    pdf = tmp_path / "楊曉琳-案.pdf"
+    pdf.write_bytes(b"%PDF-mobile-filename")
+
+    with patch("api.blueprints.osc_cases._osc_local_path_candidates", return_value=[str(pdf)]), \
+         patch("api.blueprints.osc_cases._osc_is_safe_local_path", return_value=True):
+        r = client.get(f"/api/osc/files/content?path={pdf}")
+
+    assert r.status_code == 200
+    cd = r.headers["Content-Disposition"]
+    assert 'filename="paperclip.pdf"' in cd
+    assert "filename*=UTF-8''" in cd
+    assert "%E6%A5%8A%E6%9B%89%E7%90%B3-%E6%A1%88.pdf" in cd
+
+
+def test_file_content_head_uses_stat_without_staging(client, tmp_path, monkeypatch):
+    from api.blueprints import osc_cases as mod
+
+    pdf = tmp_path / "楊曉琳-案.pdf"
+    pdf.write_bytes(b"%PDF-head-mobile")
+
+    def fail_stage(_path):
+        raise AssertionError("HEAD should not stage or hydrate the file")
+
+    monkeypatch.setattr(mod, "_osc_stage_file_with_retry", fail_stage)
+    with patch("api.blueprints.osc_cases._osc_local_path_candidates", return_value=[str(pdf)]), \
+         patch("api.blueprints.osc_cases._osc_is_safe_local_path", return_value=True):
+        r = client.head(f"/api/osc/files/content?path={pdf}")
+
+    assert r.status_code == 200
+    assert r.data == b""
+    assert r.headers["Content-Length"] == str(pdf.stat().st_size)
+    assert 'filename="paperclip.pdf"' in r.headers["Content-Disposition"]
+
+
+def test_file_content_prefers_hydrated_volume_candidate_over_dataless_cloud(client, tmp_path, monkeypatch):
+    from api.blueprints import osc_cases as mod
+
+    cloud = tmp_path / "CloudStorage" / "楊曉琳-案.pdf"
+    volume = tmp_path / "Volumes" / "楊曉琳-案.pdf"
+    cloud.parent.mkdir()
+    volume.parent.mkdir()
+    cloud.write_bytes(b"")
+    volume.write_bytes(b"%PDF-volume-copy")
+
+    monkeypatch.setattr(mod, "_osc_is_dataless_file", lambda path: str(path) == str(cloud))
+    with patch("api.blueprints.osc_cases._osc_local_path_candidates", return_value=[str(cloud), str(volume)]), \
+         patch("api.blueprints.osc_cases._osc_is_safe_local_path", return_value=True):
+        r = client.get(f"/api/osc/files/content?path={cloud}")
+
+    assert r.status_code == 200
+    assert r.data == b"%PDF-volume-copy"
+
+
 def test_large_file_content_stages_nas_file_when_direct_read_deadlocks(client, tmp_path, monkeypatch):
     """大型 NAS 檔案若第一次開檔 EDEADLK，應 retry 並從本機暫存檔下載。"""
     from api.blueprints import osc_cases as mod

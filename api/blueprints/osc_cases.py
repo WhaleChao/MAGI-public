@@ -2570,6 +2570,7 @@ def _osc_copy_with_system_cp(local_file: str, tmp_path: str) -> bool:
     """Use macOS /bin/cp as a fallback when Python's SMB read hits EDEADLK."""
     cp_bin = shutil.which("cp") or "/bin/cp"
     try:
+        expected_size = os.path.getsize(local_file)
         result = subprocess.run(
             [cp_bin, "-p", local_file, tmp_path],
             stdout=subprocess.PIPE,
@@ -2577,9 +2578,16 @@ def _osc_copy_with_system_cp(local_file: str, tmp_path: str) -> bool:
             text=True,
             timeout=int(os.environ.get("PAPERCLIP_FILE_CP_TIMEOUT_SEC", "120") or "120"),
         )
-        return result.returncode == 0 and os.path.isfile(tmp_path) and os.path.getsize(tmp_path) >= 0
+        return result.returncode == 0 and os.path.isfile(tmp_path) and os.path.getsize(tmp_path) == expected_size
     except Exception:
         _log.debug("silent-catch system cp fallback failed", exc_info=True)
+        return False
+
+
+def _osc_is_dataless_file(path: str) -> bool:
+    try:
+        return bool(getattr(os.stat(path), "st_flags", 0) & 0x40000000)
+    except Exception:
         return False
 
 
@@ -2592,6 +2600,7 @@ def _osc_stage_file_with_retry(local_file: str, *, max_attempts: int | None = No
     if max_attempts is None:
         max_attempts = max(4, int(os.environ.get("PAPERCLIP_FILE_STAGE_MAX_ATTEMPTS", "8") or "8"))
     last_exc: Exception | None = None
+    expected_size = os.path.getsize(local_file)
     tmp_dir = os.path.join(tempfile.gettempdir(), "paperclip-downloads")
     os.makedirs(tmp_dir, exist_ok=True)
     suffix = os.path.splitext(local_file)[1] or ".bin"
@@ -2617,6 +2626,10 @@ def _osc_stage_file_with_retry(local_file: str, *, max_attempts: int | None = No
                 if e.errno in (11, 35) and _osc_copy_with_system_cp(local_file, tmp_path):
                     return tmp_path
                 raise
+            if os.path.getsize(tmp_path) != expected_size:
+                raise OSError(
+                    f"staged copy incomplete: expected {expected_size} bytes, got {os.path.getsize(tmp_path)} bytes"
+                )
             return tmp_path
         except OSError as e:
             last_exc = e
@@ -2653,7 +2666,17 @@ def _osc_cleanup_file_once(path: str) -> None:
 
 def _osc_content_disposition(filename: str, *, inline: bool) -> str:
     disposition = "inline" if inline else "attachment"
-    ascii_name = filename.encode("ascii", "ignore").decode("ascii") or "download"
+    suffix = Path(filename or "").suffix
+    if not suffix or not re.fullmatch(r"\.[A-Za-z0-9]{1,12}", suffix):
+        suffix = ".bin"
+    ascii_raw = filename.encode("ascii", "ignore").decode("ascii").replace("/", "_").replace("\\", "_")
+    ascii_raw = re.sub(r"[^A-Za-z0-9._ -]+", "_", ascii_raw)
+    ascii_suffix = Path(ascii_raw).suffix
+    if not ascii_suffix or not re.fullmatch(r"\.[A-Za-z0-9]{1,12}", ascii_suffix):
+        ascii_suffix = suffix
+    raw_stem = ascii_raw[:-len(ascii_suffix)] if ascii_raw.lower().endswith(ascii_suffix.lower()) else Path(ascii_raw).stem
+    stem = re.sub(r"[^A-Za-z0-9._ -]+", "_", raw_stem).strip(" .-_")
+    ascii_name = (stem or "paperclip") + ascii_suffix
     return f'{disposition}; filename="{ascii_name}"; filename*=UTF-8\'\'{quote(filename)}'
 
 
@@ -2742,19 +2765,51 @@ def osc_file_content_api():
     norm = _osc_norm_path(raw).replace("\\", "/")
     if norm and norm not in candidates:
         candidates.append(norm)
-    existing_candidates = []
-    for cand in candidates:
+    def _existing_file_candidates(candidate_paths: list[str]) -> list[str]:
+        found: list[str] = []
+        for cand in candidate_paths:
+            try:
+                real = os.path.realpath(cand)
+                if _osc_is_safe_local_path(real) and os.path.isfile(real):
+                    if real not in found:
+                        found.append(real)
+            except Exception:
+                continue
+        return found
+
+    existing_candidates = _existing_file_candidates(candidates)
+    if existing_candidates and all(_osc_is_dataless_file(p) for p in existing_candidates):
         try:
-            real = os.path.realpath(cand)
-            if _osc_is_safe_local_path(real) and os.path.isfile(real):
-                if real not in existing_candidates:
-                    existing_candidates.append(real)
+            from api.nas_mount_guard import ensure_nas_mounts
+            ensure_nas_mounts()
+            remapped = _osc_local_path_candidates(raw)
+            if norm and norm not in remapped:
+                remapped.append(norm)
+            existing_candidates = _existing_file_candidates(remapped) or existing_candidates
         except Exception:
-            continue
+            _log.debug("silent-catch dataless file NAS remap failed", exc_info=True)
     if not existing_candidates:
         return _osc_download_error_response("找不到檔案，可能已移動、刪除，或 NAS 尚未完成同步。", 404)
+    existing_candidates.sort(key=lambda p: (1 if _osc_is_dataless_file(p) else 0, 0 if p.startswith("/Volumes/") else 1))
 
     inline = str(request.args.get("inline") or "").strip() in {"1", "true", "yes"}
+    if request.method == "HEAD":
+        chosen = existing_candidates[0]
+        mime, _ = mimetypes.guess_type(chosen)
+        try:
+            st = os.stat(chosen)
+        except OSError as e:
+            return _osc_download_error_response(f"檔案讀取失敗：{e}", 500)
+        resp = Response(status=200, mimetype=mime or "application/octet-stream")
+        resp.headers["Content-Disposition"] = _osc_content_disposition(os.path.basename(chosen), inline=inline)
+        resp.headers["Accept-Ranges"] = "bytes"
+        resp.headers["Content-Length"] = str(int(st.st_size))
+        resp.headers["Cache-Control"] = "private, max-age=300"
+        resp.headers["X-Robots-Tag"] = "noindex, nofollow, noarchive"
+        resp.headers["Referrer-Policy"] = "no-referrer"
+        resp.headers["ETag"] = f'"{int(st.st_mtime)}-{st.st_size}"'
+        return resp
+
     last_err: Exception | None = None
     chosen: str = ""
     staged_file: str = ""

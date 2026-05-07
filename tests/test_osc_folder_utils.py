@@ -2,6 +2,7 @@ from casper_ecosystem.law_firm_orchestrators.osc.folder_utils import (
     build_full_case_path,
     resolve_type_folder,
 )
+from api.case_path_mapper import local_synology_path_candidates
 
 
 def test_attached_civil_folder_stays_under_civil_even_with_criminal_words():
@@ -20,3 +21,9 @@ def test_build_full_case_path_uses_civil_folder_for_attached_civil_laf_case():
         case_reason="刑事附帶民事",
     )
     assert "/法扶案件/民事/" in path
+
+
+def test_cloudstorage_homes_path_also_maps_to_smb_volume_candidate():
+    path = "/Users/ai/Library/CloudStorage/SynologyDrive-homes/01_案件/法扶案件/民事/測試案/卷證.pdf"
+    candidates = local_synology_path_candidates(path)
+    assert "/Volumes/homes/lumi63181107/01_案件/法扶案件/民事/測試案/卷證.pdf" in candidates
