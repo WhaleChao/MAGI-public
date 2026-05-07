@@ -8,6 +8,7 @@ import importlib.util
 import json
 import platform
 import shutil
+import subprocess
 import sys
 import urllib.error
 import urllib.request
@@ -27,8 +28,39 @@ class Check:
     fix: str = ""
 
 
+def _project_python() -> Path | None:
+    candidates = [
+        REPO_ROOT / ".venv" / ("Scripts/python.exe" if platform.system() == "Windows" else "bin/python"),
+        REPO_ROOT / "venv" / ("Scripts/python.exe" if platform.system() == "Windows" else "bin/python"),
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return None
+
+
 def _package_available(module_name: str) -> bool:
-    return importlib.util.find_spec(module_name) is not None
+    if importlib.util.find_spec(module_name) is not None:
+        return True
+
+    project_python = _project_python()
+    if not project_python or Path(sys.executable).absolute() == project_python.absolute():
+        return False
+
+    probe = (
+        "import importlib.util, sys; "
+        f"sys.exit(0 if importlib.util.find_spec({module_name!r}) else 1)"
+    )
+    try:
+        return subprocess.run(
+            [str(project_python), "-c", probe],
+            cwd=REPO_ROOT,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=5,
+        ).returncode == 0
+    except Exception:
+        return False
 
 
 def _disk_free_gb(path: Path) -> float:
@@ -75,9 +107,10 @@ def collect_report(*, live: bool = True) -> dict[str, Any]:
     checks.append(Check("memory", "pass" if ram >= 16 else "warn", f"{ram} GB RAM", "16 GB+ is recommended; 32 GB+ is better for local models."))
     checks.append(Check("git", "pass" if shutil.which("git") else "fail", shutil.which("git") or "missing", "Install Git."))
 
+    project_python = _project_python()
     venv_path = REPO_ROOT / ".venv"
     legacy_venv = REPO_ROOT / "venv"
-    checks.append(Check("virtualenv", "pass" if venv_path.exists() or legacy_venv.exists() else "warn", str(venv_path if venv_path.exists() else legacy_venv), "Run scripts/install_magi.py --yes."))
+    checks.append(Check("virtualenv", "pass" if project_python else "warn", str(project_python or venv_path if venv_path.exists() else legacy_venv), "Run scripts/install_magi.py --yes."))
 
     for module, pip_name in (
         ("flask", "flask"),
@@ -110,6 +143,8 @@ def collect_report(*, live: bool = True) -> dict[str, Any]:
             "release": platform.release(),
             "machine": machine,
             "python": platform.python_version(),
+            "python_executable": sys.executable,
+            "project_python": str(project_python) if project_python else None,
             "repo": str(REPO_ROOT),
         },
         "summary": {"pass": sum(1 for c in checks if c.status == "pass"), "warn": warned, "fail": failed},

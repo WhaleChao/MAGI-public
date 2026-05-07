@@ -79,8 +79,8 @@ def summarize_pdf(pdf_path, max_chars=8000, *, progress_callback=None):
 
 | 位置 | 問題 | 修法 |
 |------|------|------|
-| `server.py` ~行 138 | `DB_PASSWORD` fallback = `"Magi_IronDome_2026!"` | 改為無 fallback，缺 .env 直接報錯 |
-| `server.py` ~行 90 | Flask secret = `"MAGI_CASPER_SECRET_KEY_2026"` | 同上 |
+| `server.py` ~行 138 | `DB_PASSWORD` 曾有 hardcoded fallback | 改為無 fallback，缺 .env 直接報錯 |
+| `server.py` ~行 90 | Flask secret 曾有 hardcoded fallback | 同上 |
 | 多處 `config.json` 路徑 | fallback 搜索鏈太長，容易讀到舊設定 | 統一只讀 `.env` |
 
 ```python
