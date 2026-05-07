@@ -18,9 +18,9 @@ logger = logging.getLogger("KeeperDBSync")
 # Config
 try:
     from api.routing.node_registry import get_node_ip as _get_node_ip
-    _db_fallback = _get_node_ip("nas") or "100.121.61.74"
+    _db_fallback = _get_node_ip("nas") or ""
 except Exception:
-    _db_fallback = "100.121.61.74"
+    _db_fallback = ""
 REMOTE_HOST = os.environ.get("DB_HOST", _db_fallback)
 REMOTE_USER = os.environ.get("DB_USER", "casper_service")
 REMOTE_PASS = os.environ.get("DB_PASSWORD", "")
@@ -31,7 +31,7 @@ LOCAL_PASS = "" # No password for user 'ai' (Socket Auth)
 
 def sync_keeper_db():
     """
-    Syncs the database from Remote Keeper (100.121.61.74) to Local Casper.
+    Syncs the database from Remote Keeper (MAGI_REMOTE_DB_HOST) to Local Casper.
     Method: mysqldump | mysql
     
     Returns:

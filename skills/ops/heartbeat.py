@@ -27,7 +27,7 @@ NODES = {
         "openclaw_config": "/Users/ai/.openclaw/openclaw.json"
     },
     "balthasar": {
-        "ip": _node_ip_or("balthasar", "100.118.235.126"),
+        "ip": _node_ip_or("balthasar", ""),
         "name": "Balthasar",
         "role": "Coordinator (Mobile)",
         "type": "flask",
@@ -35,7 +35,7 @@ NODES = {
     },
     "keeper": {
         # 2026-04-30：DB 已遷至本機（MAGI_PREFER_LOCAL_DB=1 + OSC_DB_HOST=127.0.0.1）。
-        # 不再使用 NAS 遠端 DB，舊 fallback 100.121.61.74（已下線的 desktop-jj06fa3）失效。
+        # 不再使用 NAS 遠端 DB，舊 fallback MAGI_REMOTE_DB_HOST（已下線的 desktop-jj06fa3）失效。
         "ip": os.environ.get("OSC_DB_HOST") or os.environ.get("MAGI_REMOTE_DB_HOST") or "127.0.0.1",
         "name": "Keeper",
         "role": "Database (Iron Dome)",
@@ -44,7 +44,7 @@ NODES = {
         "model": "MariaDB 10.11"
     },
     "melchior": {
-        "ip": _node_ip_or("melchior", "100.116.54.16"),
+        "ip": _node_ip_or("melchior", ""),
         "name": "Melchior",
         "role": "Scientist (Code)",
         "type": "api",

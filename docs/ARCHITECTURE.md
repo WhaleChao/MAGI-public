@@ -201,7 +201,7 @@ api/routing/node_registry.get_node_ip("melchior")
     │     └─ Yes → return JSON value
     │
     └─ Fallback: hardcoded default in registry module
-          └─ return "100.116.54.16"
+          └─ return "MAGI_MELCHIOR_IP"
 ```
 
 ---

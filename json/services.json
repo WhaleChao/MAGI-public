@@ -42,6 +42,16 @@
         "port": "MAGI_OMLX_EMBED_PORT"
       }
     },
+    "mlx_mtp_inference": {
+      "description": "MLX/VLM Gemma 4 MTP draft inference sidecar",
+      "host": "127.0.0.1",
+      "port": 8090,
+      "protocol": "http",
+      "env_override": {
+        "host": "MAGI_MLX_MTP_HOST",
+        "port": "MAGI_MLX_MTP_PORT"
+      }
+    },
     "ollama": {
       "description": "Ollama local inference",
       "host": "127.0.0.1",

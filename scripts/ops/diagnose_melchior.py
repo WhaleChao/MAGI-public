@@ -2,7 +2,7 @@ import requests
 import json
 import time
 
-MELCHIOR_HOST = "100.116.54.16"
+MELCHIOR_HOST = ""
 PORT = 5002
 URL = f"http://{MELCHIOR_HOST}:{PORT}/api/generate_image"
 

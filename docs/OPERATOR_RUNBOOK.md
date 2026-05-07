@@ -1,6 +1,6 @@
 # MAGI Operator Runbook v2
 
-版本：v2.0 | 日期：2026-04-05
+版本：v2.1 | 日期：2026-05-07
 
 ---
 
@@ -16,6 +16,8 @@ MAGI（Multi-Agent Governance Infrastructure）是一套多代理治理基礎設
 - **Channels** — LINE Bot、Discord Bot、Telegram Bot
 - **Status Bar** — macOS 選單列即時監控（gui/magi_menubar.py）
 - **CLI** — `magi` 命令列管理工具（scripts/magi_cli.sh）
+- **MTP Sidecar** — Gemma 4 E4B assistant / draft model sidecar（FastAPI，port 8090）
+- **Public Release Gate** — `scripts/public_release_audit.py` 公開前敏感資訊稽核
 
 ---
 
@@ -33,9 +35,32 @@ MAGI（Multi-Agent Governance Infrastructure）是一套多代理治理基礎設
 
 ## 3. 首次安裝
 
+### 新手安裝（建議）
+
 ```bash
 # 1. Clone repo
-git clone https://github.com/WhaleChao/MAGI.git && cd MAGI
+git clone https://github.com/WhaleChao/MAGI-v2.git && cd MAGI-v2
+
+# 2. 先預演，不改動系統
+python3 scripts/install_magi.py --dry-run --check-live
+
+# 3. 正式安裝 core + optional dependencies
+python3 scripts/install_magi.py --yes
+
+# 4. 偵測本機硬體、Python 套件、MLX/MTP sidecar、模型目錄
+python3 scripts/magi_doctor.py
+
+# 5. 建立本機設定檔
+cp .env.example .env
+```
+
+`scripts/install_magi.py` 預設採 dry-run，只有傳入 `--yes` 才會建立 `.venv`、安裝 requirements 並執行 doctor。`scripts/magi_doctor.py --json` 可輸出機器可讀報告，適合附在 issue 或遠端協助紀錄。
+
+### 維運者手動安裝
+
+```bash
+# 1. Clone repo
+git clone https://github.com/WhaleChao/MAGI-v2.git && cd MAGI-v2
 
 # 2. Bootstrap（自動建立 venv、安裝依賴、引導設定）
 bin/bootstrap
@@ -89,6 +114,9 @@ kill $(cat rpc_server.pid 2>/dev/null)
 magi status                             # 完整系統儀表板
 curl http://127.0.0.1:5002/health       # Server health
 curl http://127.0.0.1:5003/health       # Tools API health
+curl http://127.0.0.1:8090/health       # Gemma 4 E4B / MTP sidecar health
+python3 scripts/magi_doctor.py          # 新手偵測精靈
+python3 scripts/public_release_audit.py # 公開前敏感資訊稽核
 python3 skills/ops/system_test.py       # 12 項系統測試
 python3 skills/magi-doctor/action.py --task diagnose  # 完整診斷
 ```
@@ -113,6 +141,7 @@ MAGI 使用 macOS LaunchAgents 管理程序生命週期。所有 plist 位於 `~
 | `com.magi.daemon` | 主程序 daemon（啟動 server、discord、tools_api） | 常駐 |
 | `com.magi.menubar` | macOS 選單列健康監控 | 常駐 |
 | `com.magi.omlx` | Gemma-4 26B 推理引擎（port 8080） | 常駐 |
+| `com.magi.mlx-mtp` | Gemma 4 E4B assistant / MTP sidecar（port 8090） | 常駐 |
 | `com.magi.omlx-embed` | ModernBERT embedding（port 8081） | 常駐 |
 | `com.magi.db-proxy` | SSH tunnel 至遠端 MariaDB | 常駐 |
 | `com.magi.smb-reconnect` | NAS 網路中斷自動重連 | 常駐 |
@@ -165,7 +194,26 @@ MAGI_ENABLE_LINE=1       # 啟用 LINE Bot
 MAGI_ENABLE_DISCORD=0    # 停用 Discord Bot
 MAGI_ENABLE_TELEGRAM=0   # 停用 Telegram Bot
 MAGI_ENABLE_REMOTE_DB=0  # 停用遠端 DB 同步
+MAGI_ENABLE_MTP_DRAFT=1  # 允許 oMLX provider 帶 draft/MTP metadata
 ```
+
+### Gemma 4 E4B / MTP Sidecar
+
+```bash
+# 前台啟動
+python3 scripts/serve_mlx_mtp.py --host 127.0.0.1 --port 8090
+
+# launchd 啟動（macOS）
+cp config/launchagents/com.magi.mlx-mtp.plist ~/Library/LaunchAgents/
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.magi.mlx-mtp.plist
+launchctl kickstart -k gui/$(id -u)/com.magi.mlx-mtp
+
+# 驗證
+curl http://127.0.0.1:8090/health
+python3 scripts/live_magi_mtp_eval.py --all-tools
+```
+
+Live acceptance 的門檻是：JSON tool route、ReAct 真實工具呼叫、全部工具選擇案例、工具混淆 guard 皆通過，且 hallucination safety 的 unsafe rate 必須在可接受範圍內。
 
 ### 安全相關
 
@@ -177,6 +225,28 @@ MAGI_FORCE_HTTPS=1                             # 啟用 Secure cookie
 
 ---
 
+## 6A. 公開發布檢查
+
+公開前必跑：
+
+```bash
+python3 scripts/public_release_audit.py
+python3 scripts/install_magi.py --dry-run --check-live
+git status --short
+```
+
+本公開版已移除 git 追蹤中的私有 runtime / operator artifacts：
+
+- `.claude/`
+- `.claire/`
+- `.runtime/`
+- `runtime/supplement_cache/`
+- `docs/deploy/`
+
+若 `public_release_audit.py` 回報 error，不得 push。warning 多為測試假資料或私網範例，仍應人工快速複核。
+
+---
+
 ## 7. 資料庫操作
 
 ### DB 容錯機制
@@ -184,7 +254,7 @@ MAGI_FORCE_HTTPS=1                             # 啟用 Secure cookie
 MAGI v2 支援遠端/本地雙活資料庫容錯：
 
 ```
-遠端 DB (Keeper: 100.121.61.74:3306)
+遠端 DB (Keeper: MAGI_REMOTE_DB_HOST:3306)
     │
     ├─ 正常：遠端直連
     ├─ 斷線：自動切換至本地 DB
@@ -281,6 +351,45 @@ magi start
 2. 直接測試: `curl http://localhost:8080/v1/models`
 3. 檢查模型是否載入: 看 log 中的 inference timeout
 4. 重啟 oMLX: `launchctl kickstart -k gui/$(id -u)/com.magi.omlx`
+
+### Gemma 4 MTP benchmark / rollback
+
+目前 `omlx serve --help` 未顯示 draft model 參數；MTP 預設關閉，需先用 benchmark 驗證 runtime 或 sidecar。
+
+```bash
+# E4B baseline
+python3 scripts/benchmark_gemma4_mtp.py \
+  --tasks benchmarks/gemma4_mtp/e4b_tasks.jsonl \
+  --model gemma-4-e4b-it-4bit \
+  --variant baseline \
+  --probe-runtime
+
+# MTP-capable runtime / sidecar 驗證
+python3 scripts/benchmark_gemma4_mtp.py \
+  --tasks benchmarks/gemma4_mtp/e4b_tasks.jsonl \
+  --model gemma-4-e4b-it-4bit \
+  --variant mtp \
+  --base-url http://127.0.0.1:8090/v1 \
+  --draft-model gemma-4-E4B-it-assistant-bf16
+
+# Live acceptance：sidecar health + JSON 工具路由 + ReAct 工具呼叫 + 幻覺安全
+python3 scripts/live_magi_mtp_eval.py \
+  --base-url http://127.0.0.1:8090/v1 \
+  --max-unsafe-rate 0
+
+# 啟動 MLX/VLM MTP sidecar（手動）
+python3 scripts/serve_mlx_mtp.py --host 127.0.0.1 --port 8090
+
+# 啟動 MLX/VLM MTP sidecar（launchd）
+cp config/launchagents/com.magi.mlx-mtp.plist ~/Library/LaunchAgents/
+launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.magi.mlx-mtp.plist 2>/dev/null || true
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.magi.mlx-mtp.plist
+launchctl kickstart -k gui/$(id -u)/com.magi.mlx-mtp
+
+# 立即 rollback
+export MAGI_ENABLE_MTP_DRAFT=0
+launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.magi.mlx-mtp.plist 2>/dev/null || true
+```
 
 ### 狀態列不更新
 

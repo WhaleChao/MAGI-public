@@ -2,7 +2,7 @@ import requests
 import time
 import json
 
-MELCHIOR_IP = "100.116.54.16"
+MELCHIOR_IP = ""
 AGENT_PORT = 5002
 BASE_URL = f"http://{MELCHIOR_IP}:{AGENT_PORT}"
 

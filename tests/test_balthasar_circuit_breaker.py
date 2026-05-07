@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """Balthasar circuit breaker + Synology Drive fallback audit marker.
 
-Scenario (2026-04-19): Tailscale peer 100.118.235.126:5002 (Balthasar) unreachable;
+Scenario (2026-04-19): Tailscale peer MAGI_BALTHASAR_IP:5002 (Balthasar) unreachable;
 every captcha/date_extract probe wasted ~1.2s on timeout. With circuit breaker the
 first 2 failures arm the circuit, and subsequent calls short-circuit to "down"
 within μs. A JSON audit marker is dropped into Synology Drive for lawyer visibility.
@@ -96,7 +96,7 @@ def test_threshold_failures_trip_circuit_and_short_circuit_later_calls(tmp_path,
 def test_circuit_trip_writes_synology_audit_marker(tmp_path, monkeypatch):
     monkeypatch.setenv("SYNOLOGY_BALTHASAR_FALLBACK_DIR", str(tmp_path))
     gw = _make_gw()
-    gw.session.get.side_effect = TimeoutError("ConnectTimeoutError(100.118.235.126 port=5002)")
+    gw.session.get.side_effect = TimeoutError("ConnectTimeoutError(MAGI_BALTHASAR_IP port=5002)")
 
     for _ in range(2):
         gw._can_try_remote_balthasar()

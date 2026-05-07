@@ -68,6 +68,9 @@ ai = [
     "numpy>=1.24",
     "faiss-cpu>=1.7",
 ]
+mlx = [
+    "mlx-vlm>=0.5.0; platform_system == 'Darwin' and platform_machine == 'arm64'",
+]
 # Google APIs
 google = [
     "google-api-python-client>=2.100",
@@ -94,7 +97,7 @@ dev = [
 ]
 # 完整安裝
 all = [
-    "magi[channels,pdf,docs,ocr,browser,ai,google,utils,gui]",
+    "magi[channels,pdf,docs,ocr,browser,ai,mlx,google,utils,gui]",
 ]
 
 [project.scripts]

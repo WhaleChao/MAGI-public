@@ -44,7 +44,7 @@ if patch_mysql_connector_for_stability:
     patch_mysql_connector_for_stability()
 
 # ---------- DB configs ----------
-# 2026-04-25: 遠端 DB (100.121.61.74) 已故障，所有資料回收到本機 MariaDB。
+# 2026-04-25: 遠端 DB (MAGI_REMOTE_DB_HOST) 已故障，所有資料回收到本機 MariaDB。
 # 為避免 cron 環境 OSC_DB_HOST 被誤注入舊遠端值，這裡明確強制 127.0.0.1。
 # 若未來確認遠端恢復需切回，移除下方 _force_local 並注釋還原即可。
 _force_local = os.environ.get("MAGI_INSIGHT_SYNC_FORCE_LOCAL", "1") == "1"

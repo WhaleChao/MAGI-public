@@ -247,7 +247,7 @@ class TestNodeRegistry:
                 "nas": {
                     "role": "storage",
                     "tailscale_ip": "100.1.1.1",
-                    "lan_ip": "192.168.1.3",
+                    "lan_ip": "",
                     "env_override": {}
                 }
             }
@@ -384,6 +384,7 @@ class TestRealRegistryFiles:
         names = {s.name for s in services}
         assert "magi_server" in names
         assert "tools_api" in names
+        assert "mlx_mtp_inference" in names
 
     def test_models_json_loads(self):
         from api.routing.model_registry import list_roles, get_role_model, reload

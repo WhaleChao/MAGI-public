@@ -309,9 +309,9 @@ def collect_connectivity() -> Dict[str, Any]:
     if b_remote_enabled:
         try:
             from api.routing.node_registry import get_node_ip as _get_node_ip
-            _b_default = _get_node_ip("balthasar") or "100.118.235.126"
+            _b_default = _get_node_ip("balthasar") or ""
         except Exception:
-            _b_default = "100.118.235.126"
+            _b_default = ""
         b_host = str(os.environ.get("BALTHASAR_HOST", _b_default)).strip()
         b_port = int(os.environ.get("BALTHASAR_PORT", "5002") or "5002")
         fallbacks = [x.strip() for x in str(os.environ.get("BALTHASAR_FALLBACK_HOSTS", "") or "").split(",") if x.strip()]

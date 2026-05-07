@@ -8,6 +8,7 @@ from .nvidia_nim import NvidiaNimProvider
 from .ollama import OllamaProvider
 from .omlx import OmlxProvider
 from .openai import OpenAIProvider
+from .mlx_mtp import MlxMtpProvider
 
 
 def build_provider_registry(*, session=None, config: dict[str, dict[str, Any]] | None = None) -> dict[str, ProviderAdapter]:
@@ -18,6 +19,7 @@ def build_provider_registry(*, session=None, config: dict[str, dict[str, Any]] |
         AnthropicProvider(session=session, **config.get("anthropic", {})),
         OllamaProvider(session=session, **config.get("ollama", {})),
         NvidiaNimProvider(session=session, **config.get("nvidia_nim", {})),
+        MlxMtpProvider(session=session, **config.get("mlx_mtp", {})),
     ]
     return {adapter.name: adapter for adapter in adapters}
 
@@ -33,6 +35,7 @@ def list_provider_names() -> list[str]:
 __all__ = [
     "AnthropicProvider",
     "NvidiaNimProvider",
+    "MlxMtpProvider",
     "OllamaProvider",
     "OmlxProvider",
     "OpenAICompatibleProvider",

@@ -23,8 +23,8 @@ logger = logging.getLogger("IronDomeSync")
 # Node Registry (Tailscale IPs)
 MAGI_NODES = {
     "casper": {"ip": "127.0.0.1", "port": 5002, "role": "Governor"},
-    "melchior": {"ip": "100.116.54.16", "port": 5002, "role": "Scientist"},
-    "balthasar": {"ip": "100.118.235.126", "port": 5002, "role": "Coordinator"},
+    "melchior": {"ip": "", "port": 5002, "role": "Scientist"},
+    "balthasar": {"ip": "", "port": 5002, "role": "Coordinator"},
 }
 
 # Current node identity

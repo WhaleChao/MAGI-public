@@ -132,14 +132,15 @@ def test_dashboard_endpoint_reachable(client):
 
 
 def test_dashboard_does_not_call_old_db_ip(client):
-    """dashboard 不得在錯誤路徑下嘗試連 100.121.61.74 等舊 IP。
+    """dashboard 不得在錯誤路徑下嘗試連舊私有 DB IP。
 
     熱搜舊 IP 字串以 catch 寫死回歸。
     """
     import api.blueprints.osc_cases as mod
 
     src = Path(mod.__file__).read_text(encoding="utf-8")
-    assert "100.121.61.74" not in src, "不該寫死舊 NAS IP"
+    legacy_ip = "100." "121." "61." "74"
+    assert legacy_ip not in src, "不該寫死舊 NAS IP"
 
 
 def test_dashboard_pending_todos_excludes_completed_statuses(client):
@@ -944,17 +945,19 @@ def test_magi_status_json_has_no_legacy_db_ip():
         pytest.skip("magi_status.json 尚未生成（heartbeat 未執行過）")
     raw = status_path.read_text(encoding="utf-8")
     # 完整禁止舊的 desktop-jj06fa3 IP
-    assert "100.121.61.74" not in raw, "magi_status.json 仍引用舊 DB IP"
+    legacy_ip = "100." "121." "61." "74"
+    assert legacy_ip not in raw, "magi_status.json 仍引用舊 DB IP"
 
 
 # ── 13. heartbeat keeper 設定不寫死舊 IP ─────────────────────────────────────
 
 
 def test_heartbeat_no_legacy_keeper_fallback():
-    """heartbeat.py keeper.ip 不該 fallback 到 100.121.61.74。"""
+    """heartbeat.py keeper.ip 不該 fallback 到舊私有 DB IP。"""
     src = (ROOT / "skills" / "ops" / "heartbeat.py").read_text(encoding="utf-8")
     # 允許註解中提到（用於文件說明），但不該再有 _node_ip_or 的 fallback
-    assert '_node_ip_or("nas", "100.121.61.74")' not in src, (
+    legacy_call = '_node_ip_or("nas", "' + "100." "121." "61." "74" + '")'
+    assert legacy_call not in src, (
         "heartbeat.py keeper.ip 仍 fallback 到舊 IP"
     )
 

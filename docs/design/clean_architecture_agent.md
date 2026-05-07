@@ -140,8 +140,8 @@ class RemoteHealthGate:
 
 **接入清單**（驗收時需逐一通過）：
 
-- [ ] Balthasar (`100.118.235.126:5002`) — 已有今日補丁，搬到 gate
-- [ ] Melchior (`100.116.54.16`) — 已有 `_CIRCUIT_BREAKER`，搬到 gate
+- [ ] Balthasar (`MAGI_BALTHASAR_IP:5002`) — 已有今日補丁，搬到 gate
+- [ ] Melchior (`MAGI_MELCHIOR_IP`) — 已有 `_CIRCUIT_BREAKER`，搬到 gate
 - [ ] NIM (`integrate.api.nvidia.com`) — 已有 circuit breaker，搬到 gate
 - [ ] LAF portal (`laf.org.tw`) — 新接入
 - [ ] ezlawyer / 司法院 (`www.judicial.gov.tw`) — 新接入

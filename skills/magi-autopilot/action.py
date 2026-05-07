@@ -155,7 +155,7 @@ def _resolve_remote_db_endpoint() -> Tuple[str, int]:
     Resolve remote DB endpoint with this order:
     1) MAGI_REMOTE_DB_HOST/PORT
     2) code/json/config.json profile Studio_VPN_Remote
-    3) fallback 100.121.61.74:3306
+    3) fallback MAGI_REMOTE_DB_HOST:3306
     """
     host = (os.environ.get("MAGI_REMOTE_DB_HOST", "") or "").strip()
     port_raw = (os.environ.get("MAGI_REMOTE_DB_PORT", "") or "").strip()
@@ -187,9 +187,9 @@ def _resolve_remote_db_endpoint() -> Tuple[str, int]:
     if not host:
         try:
             from api.routing.node_registry import get_node_ip as _get_node_ip
-            host = _get_node_ip("nas") or "100.121.61.74"
+            host = _get_node_ip("nas") or ""
         except Exception:
-            host = "100.121.61.74"
+            host = ""
     try:
         port = int(port_raw or "3306")
     except Exception:

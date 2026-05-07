@@ -13,6 +13,7 @@ MAGI v2 is a locally-deployed AI operations platform built for a Taiwanese law f
 ## Table of Contents
 
 - [Quick Start](#quick-start)
+- [Current Public Status](#current-public-status)
 - [Architecture](#architecture)
   - [Three-Model Inference — Day / Night](#three-model-inference--day--night)
   - [Three-Philosopher Ensemble Review](#three-philosopher-ensemble-review)
@@ -42,19 +43,32 @@ MAGI v2 is a locally-deployed AI operations platform built for a Taiwanese law f
 
 ```bash
 # 1. Clone
-git clone https://github.com/WhaleChao/MAGI.git && cd MAGI
+git clone https://github.com/WhaleChao/MAGI-v2.git && cd MAGI-v2
 
-# 2. Python environment (Python 3.9+ required)
-python3 -m venv venv && source venv/bin/activate
-pip install -r requirements.txt
-pip install -r requirements-optional.txt  # MarkItDown, Scrapling, RapidOCR, etc.
+# 2. Beginner-safe installer dry run
+python3 scripts/install_magi.py --dry-run --check-live
 
-# 3. Copy and fill environment
+# 3. Install when the plan looks correct
+python3 scripts/install_magi.py --yes
+source .venv/bin/activate  # or source venv/bin/activate on existing installs
+
+# 4. Copy and fill environment
 cp .env.example .env   # fill in tokens / DB creds
 
-# 4. Start
+# 5. Run diagnostics
+python3 scripts/magi_doctor.py
+
+# 6. Start
 launchctl load ~/Library/LaunchAgents/com.magi.daemon.plist
 magi status
+```
+
+Existing operators can still use the manual flow:
+
+```bash
+python3 -m venv venv && source venv/bin/activate
+pip install -r requirements.txt
+pip install -r requirements-optional.txt
 ```
 
 ### Linux / Windows (Ollama backend)
@@ -63,6 +77,31 @@ magi status
 ollama pull gemma2:9b          # or any supported model
 MAGI_ALLOW_CLOUD_MODELS=1 python daemon.py
 ```
+
+---
+
+## Current Public Status
+
+This branch is prepared for public release with private runtime material removed from git tracking. Local-only folders such as `.runtime/`, `.claude/`, `.claire/`, `runtime/supplement_cache/`, and operator deployment notes are ignored and should stay private.
+
+Public readiness checks:
+
+```bash
+python3 scripts/public_release_audit.py
+python3 scripts/magi_doctor.py --json
+python3 scripts/install_magi.py --dry-run --check-live
+```
+
+The public audit blocks high-confidence secrets and private tracked paths. It may still emit warnings for synthetic test phone numbers or RFC/private-network examples; warnings are informational unless `--strict` is used.
+
+Gemma 4 E4B / MTP support is available through the MLX sidecar:
+
+```bash
+python3 scripts/serve_mlx_mtp.py --host 127.0.0.1 --port 8090
+curl http://127.0.0.1:8090/health
+```
+
+Live acceptance is covered by `scripts/live_magi_mtp_eval.py`. The latest local verification exercised JSON routing, ReAct real tool calls, all ReAct tool-selection paths, tool-confusion guards, and hallucination abstention checks.
 
 ---
 
@@ -430,8 +469,8 @@ Key environment variables (set in `.env`):
 | `MAGI_LAF_OCR_CONSENSUS_SHADOW` | `1` | LAFVision shadow mode (3-module protection; 1-week observation required) |
 | `MAGI_LAF_OCR_CONSENSUS_ENABLE` | `0` | LAFVision full switch (do NOT enable without shadow review) |
 | `MAGI_OBSIDIAN_OCR_CONSENSUS_ENABLE` | `0` | Obsidian PDF OCR fallback consensus |
-| `MAGI_NAS_HOST` | `192.168.1.3` | NAS LAN IP |
-| `MAGI_NAS_TAILSCALE_HOST` | `100.111.10.126` | NAS Tailscale IP (auto-fallback) |
+| `MAGI_NAS_HOST` | `MAGI_NAS_HOST` | NAS LAN IP |
+| `MAGI_NAS_TAILSCALE_HOST` | `MAGI_NAS_TAILSCALE_HOST` | NAS Tailscale IP (auto-fallback) |
 | `MAGI_AVOID_DISTRIBUTED` | `1` | Run single-node only |
 | `MAGI_COMMITTEE_LIGHT_MODEL` | *(E4B)* | Analyst agents model |
 | `MAGI_COMMITTEE_HEAVY_MODEL` | *(26B)* | Risk / Portfolio manager model |
@@ -468,7 +507,7 @@ Key environment variables (set in `.env`):
 | **API framework** | Flask · Flask-Login · Flask-SocketIO |
 | **Scheduling** | Internal CronScheduler in `discord_bot.py` (cron_jobs.json) |
 | **Channels** | LINE Messaging API · Discord.py · python-telegram-bot |
-| **NAS** | SMB via LAN (192.168.1.3) with Tailscale fallback (100.111.10.126) |
+| **NAS** | SMB via LAN (MAGI_NAS_HOST) with Tailscale fallback (MAGI_NAS_TAILSCALE_HOST) |
 | **Calendar** | Google Calendar API (OAuth2, auto-refresh) |
 | **Security** | Iron Dome rule engine · tw_output_guard · trust-badge leak detector |
 | **Testing** | pytest (1 336 tests) |

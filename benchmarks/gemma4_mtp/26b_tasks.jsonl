@@ -1,0 +1,3 @@
+{"name":"judgment_issue_summary","category":"heavy_summary","expect_json":false,"max_tokens":768,"messages":[{"role":"user","content":"請用台灣法律用語整理下列裁判爭點：原告主張被告未依買賣契約交付機器設備，請求返還價金及損害賠償；被告抗辯原告未完成驗收且仍積欠尾款。法院須判斷契約解除是否合法、給付遲延是否可歸責、損害額是否有證明。請輸出爭點、雙方主張、證據缺口、可能結論。"}]}
+{"name":"legal_claim_basis","category":"legal_reasoning","expect_json":false,"max_tokens":768,"messages":[{"role":"user","content":"客戶說承攬人裝修延誤三個月，且部分工程瑕疵，但合約只有約定完工日，沒有違約金。請分析可主張的請求權基礎、舉證重點、可能抗辯，以及不確定處。"}]}
+{"name":"e4b_verify_json","category":"verify","expect_json":true,"max_tokens":512,"messages":[{"role":"system","content":"你是二階段驗證器。只輸出 JSON，欄位為 valid、risks、rewrite。"},{"role":"user","content":"待驗證結論：『只要對方逾期交屋，買方一定可以解除契約並請求全部價金雙倍返還。』請檢查是否過度武斷，並改寫成較安全的法律助理說法。"}]}

@@ -568,7 +568,7 @@ class MAGIMenuBar(rumps.App):
             ip = _get_node_ip(reg_key)
             if not ip:
                 # Hardcoded fallback
-                _fb = {"melchior": "100.116.54.16", "balthasar": "100.118.235.126", "nas": "100.121.61.74"}
+                _fb = {"melchior": "", "balthasar": "", "nas": ""}
                 ip = _fb.get(reg_key, "")
             if not ip:
                 nodes[display_name] = {"online": False, "ip": "", "detail": "無 IP"}
@@ -699,10 +699,10 @@ class MAGIMenuBar(rumps.App):
         try:
             from api.routing.node_registry import get_node as _get_node
             _nas = _get_node("nas")
-            _nas_lan = (_nas.lan_ip if _nas else None) or "192.168.1.3"
-            _nas_ts = (_nas.tailscale_ip if _nas else None) or "100.111.10.126"
+            _nas_lan = (_nas.lan_ip if _nas else None) or ""
+            _nas_ts = (_nas.tailscale_ip if _nas else None) or ""
         except Exception:
-            _nas_lan, _nas_ts = "192.168.1.3", "100.111.10.126"
+            _nas_lan, _nas_ts = "", ""
         lan_ip = os.environ.get("MAGI_NAS_HOST", _nas_lan)
         ts_ip = os.environ.get("MAGI_NAS_TAILSCALE_HOST", _nas_ts)
         lan_ok = _tcp(lan_ip, 445, timeout=1)
@@ -744,7 +744,7 @@ class MAGIMenuBar(rumps.App):
             fo = get_failover_status()
             cache["db"] = {
                 "remote": fo.get("remote_ok") if fo.get("remote_ok") is not None else _tcp(
-                    os.environ.get("MAGI_REMOTE_DB_HOST", "100.121.61.74"), 3306, 2),
+                    os.environ.get("MAGI_REMOTE_DB_HOST", ""), 3306, 2),
                 "local": _tcp("127.0.0.1", 3306, 2),
                 "failover_active": fo.get("failover_active", False),
                 "syncing": fo.get("syncing", False),
@@ -752,7 +752,7 @@ class MAGIMenuBar(rumps.App):
             }
         except Exception:
             # Fallback: raw TCP check
-            remote_host = os.environ.get("MAGI_REMOTE_DB_HOST", "100.121.61.74")
+            remote_host = os.environ.get("MAGI_REMOTE_DB_HOST", "")
             cache["db"] = {
                 "remote": _tcp(remote_host, 3306, 2),
                 "local": _tcp("127.0.0.1", 3306, 2),

@@ -32,9 +32,9 @@ DEFAULT_SYNC_MODE = os.environ.get("MELCHIOR_SYNC_MODE", "auto").strip().lower()
 
 try:
     from api.routing.node_registry import get_node_ip as _get_node_ip
-    MELCHIOR_HOST = os.environ.get("MELCHIOR_HOST") or _get_node_ip("melchior") or "100.116.54.16"
+    MELCHIOR_HOST = os.environ.get("MELCHIOR_HOST") or _get_node_ip("melchior") or ""
 except Exception:
-    MELCHIOR_HOST = os.environ.get("MELCHIOR_HOST", "100.116.54.16")
+    MELCHIOR_HOST = os.environ.get("MELCHIOR_HOST", "")
 MELCHIOR_PORT = int(os.environ.get("MELCHIOR_PORT", "5002"))
 MELCHIOR_OLLAMA_PORT = int(os.environ.get("MELCHIOR_OLLAMA_PORT", "11434"))
 MELCHIOR_BASE = f"http://{MELCHIOR_HOST}:{MELCHIOR_PORT}"

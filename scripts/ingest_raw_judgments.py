@@ -20,7 +20,7 @@ try:
     from api.routing.datastore_registry import get_connection_params as _get_conn
     _ds = _get_conn("remote_mariadb")
     DB_CONFIG = {
-        "host": _ds.get("host", "100.121.61.74"),
+        "host": _ds.get("host", ""),
         "port": _ds.get("port", 3306),
         "user": _ds.get("user", "root"),
         "password": _ds.get("password", _db_password),
@@ -29,7 +29,7 @@ try:
     }
 except Exception:
     DB_CONFIG = {
-        "host": "100.121.61.74",
+        "host": "",
         "port": 3306,
         "user": "root",
         "password": _db_password,

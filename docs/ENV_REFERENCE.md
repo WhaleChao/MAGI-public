@@ -90,6 +90,16 @@
 | `MAGI_MAIN_MODEL` | string | `llama3.1:8b` | 主要推理模型 |
 | `CASPER_LOCAL_MODEL` | string | `llama3.1:8b` | 本地推理模型 |
 | `CASPER_CLASSIFIER_MODEL` | string | `gemma-4-e4b-it-4bit` | 意圖分類模型 |
+| `MAGI_ENABLE_MTP_DRAFT` | bool | `0` | 啟用 Gemma 4 MTP / speculative decoding draft 欄位（需 runtime 支援） |
+| `MAGI_E4B_DRAFT_MODEL` | string | `gemma-4-E4B-it-assistant-bf16` | E4B target 對應 assistant / draft model |
+| `MAGI_26B_DRAFT_MODEL` | string | `gemma-4-26B-A4B-it-assistant-bf16` | 26B A4B target 對應 assistant / draft model |
+| `MAGI_MTP_DRAFT_KIND` | string | `mtp` | draft decoding 類型 |
+| `MAGI_MTP_BLOCK_SIZE` | int | `4` | MTP draft block size（需 benchmark 後調整） |
+| `MAGI_HEAVY_AUTO_UPGRADE` | bool | `0` | 允許長文 / 低信心任務自動升級 26B（預設關閉） |
+| `MAGI_HEAVY_MIN_CHARS` | int | `6000` | 自動升級 26B 的文字長度門檻 |
+| `MAGI_MLX_MTP_HOST` | string | `127.0.0.1` | MLX/VLM MTP sidecar host |
+| `MAGI_MLX_MTP_PORT` | int | `8090` | MLX/VLM MTP sidecar port |
+| `MLX_MTP_BASE_URL` | string | `http://127.0.0.1:8090/v1` | `mlx_mtp` provider OpenAI-compatible base URL |
 <!-- MAGI_OPENCLAW_PRIMARY_MODEL / MAGI_OPENCLAW_FALLBACK_MODEL rows
      removed 2026-04-20 (cleanup plan Phase 5): OpenClaw Gateway chain
      has been deleted. Text-model routing is now handled by

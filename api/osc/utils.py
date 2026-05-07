@@ -657,9 +657,9 @@ def _osc_smb_candidates(path_str: str) -> list[str]:
         try:
             from api.routing.node_registry import get_node as _get_nas_node
             _nas = _get_nas_node("nas")
-            host = (os.environ.get("MAGI_NAS_HOST") or (_nas.lan_ip if _nas else None) or "192.168.1.3").strip()
+            host = (os.environ.get("MAGI_NAS_HOST") or (_nas.lan_ip if _nas else None) or "").strip()
         except Exception:
-            host = (os.environ.get("MAGI_NAS_HOST") or "192.168.1.3").strip()
+            host = (os.environ.get("MAGI_NAS_HOST") or "").strip()
     p = _osc_norm_path(path_str).replace("\\", "/")
     if p.startswith("/Users/") or p.startswith("/Volumes/"):
         p = translate_local_path_to_canonical(p).replace("\\", "/")
@@ -713,7 +713,7 @@ def _osc_windows_unc_candidates(path_str: str) -> list[str]:
         from api.nas_mount_guard import resolve_nas_host
         host = resolve_nas_host()
     except Exception:
-        host = (os.environ.get("MAGI_NAS_HOST") or "192.168.1.3").strip() or "192.168.1.3"
+        host = (os.environ.get("MAGI_NAS_HOST") or "").strip() or ""
     candidates: list[str] = []
     norm = _osc_norm_path(path_str)
     np = norm.replace("/", "\\")

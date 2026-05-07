@@ -14,9 +14,9 @@ _MAGI_ROOT = os.path.abspath(os.path.dirname(os.path.dirname(os.path.dirname(__f
 # MELCHIOR_HOST should be the Tailscale IP of the Windows machine
 try:
     from api.routing.node_registry import get_node_ip as _get_node_ip
-    MELCHIOR_HOST = os.environ.get("MELCHIOR_HOST") or _get_node_ip("melchior") or "100.116.54.16"
+    MELCHIOR_HOST = os.environ.get("MELCHIOR_HOST") or _get_node_ip("melchior") or ""
 except Exception:
-    MELCHIOR_HOST = os.environ.get("MELCHIOR_HOST", "100.116.54.16")
+    MELCHIOR_HOST = os.environ.get("MELCHIOR_HOST", "")
 MELCHIOR_PORT = os.environ.get("MELCHIOR_PORT", "5002")
 MELCHIOR_URL = f"http://{MELCHIOR_HOST}:{MELCHIOR_PORT}/api/generate"
 VISION_MODEL = TEXT_PRIMARY_MODEL  # text-model fallback when vision-specific route is unavailable

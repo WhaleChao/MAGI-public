@@ -33,6 +33,7 @@ webdriver-manager>=4.0
 # -- AI / Embeddings --
 numpy>=1.24
 faiss-cpu>=1.7
+mlx-vlm>=0.5.0; platform_system == "Darwin" and platform_machine == "arm64"
 
 # -- Google APIs (for Calendar integration) --
 google-api-python-client>=2.100

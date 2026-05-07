@@ -19,7 +19,7 @@
     "remote_mariadb": {
       "description": "Remote MariaDB on NAS/server",
       "driver": "mariadb",
-      "host": "100.121.61.74",
+      "host": null,
       "port": 3306,
       "database": "magi_brain",
       "env_override": {

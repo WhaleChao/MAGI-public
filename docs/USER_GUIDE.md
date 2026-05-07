@@ -541,9 +541,9 @@ oMLX Inference:
   ● Embed (BERT)       port 8081  PID 1235
 
 Remote Nodes:
-  ● Melchior           100.116.54.16:8080
-  ○ Balthasar          100.118.235.126:5002  DOWN
-  ● Keeper             100.121.61.74:3306
+  ● Melchior           MAGI_MELCHIOR_IP:8080
+  ○ Balthasar          MAGI_BALTHASAR_IP:5002  DOWN
+  ● Keeper             MAGI_REMOTE_DB_HOST:3306
 
 NAS Mounts:
   ● homes              1.2T/3.6T (34%)

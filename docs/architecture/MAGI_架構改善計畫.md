@@ -292,7 +292,7 @@ logger.info("pdf_summary_complete",
 
 ## 3.5 MySQL → SQLite 遷移評估
 
-**現況**：MySQL 在遠端 Keeper 節點（Tailscale `100.121.61.74`），需要 VPN 連線
+**現況**：MySQL 在遠端 Keeper 節點（Tailscale `MAGI_REMOTE_DB_HOST`），需要 VPN 連線
 
 **風險**：
 - VPN 斷線 → MAGI 寫入失敗

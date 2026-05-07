@@ -12,9 +12,9 @@ LOCAL_HOST = "127.0.0.1"
 LOCAL_PORT = 3306
 try:
     from api.routing.node_registry import get_node_ip as _get_node_ip
-    REMOTE_HOST = _get_node_ip("nas") or "100.121.61.74"
+    REMOTE_HOST = _get_node_ip("nas") or ""
 except Exception:
-    REMOTE_HOST = "100.121.61.74"
+    REMOTE_HOST = ""
 REMOTE_PORT = 3306
 DB_USER = os.environ.get("MAGI_SYNC_DB_USER", "python_user")
 DB_PASS = os.environ.get("MAGI_SYNC_DB_PASS", "")

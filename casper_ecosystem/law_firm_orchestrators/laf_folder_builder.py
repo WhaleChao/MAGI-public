@@ -106,10 +106,10 @@ class LAFFolderBuilder:
             comment = m.get("comment", "")
             if "進行中" in comment or "Active" in comment:
                 self.windows_base = m.get("windows_prefix", "")  # Z:/lumi63181107/01_案件
-                self.mac_smb_base = m.get("mac_smb_prefix", "")  # smb://192.168.1.3/homes/...
+                self.mac_smb_base = m.get("mac_smb_prefix", "")  # smb://MAGI_NAS_HOST/homes/...
 
         # Derive local mount path from smb path
-        # smb://192.168.1.3/homes/lumi63181107/01_案件 → /Users/ai/SynologyDrive/01_案件
+        # smb://MAGI_NAS_HOST/homes/lumi63181107/01_案件 → /Users/ai/SynologyDrive/01_案件
         # But the actual local path depends on how the user has mounted it.
         # We'll try a few common patterns:
         self._detect_local_mount()

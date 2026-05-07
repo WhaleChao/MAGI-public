@@ -26,9 +26,9 @@ logger = logging.getLogger("magi.db_failover")
 # ── 設定 ──────────────────────────────────────────────────────
 try:
     from api.routing.node_registry import get_node_ip as _get_node_ip
-    _REMOTE_HOST = os.getenv("MAGI_REMOTE_DB_HOST") or _get_node_ip("nas") or "100.121.61.74"
+    _REMOTE_HOST = os.getenv("MAGI_REMOTE_DB_HOST") or _get_node_ip("nas") or ""
 except Exception:
-    _REMOTE_HOST = os.getenv("MAGI_REMOTE_DB_HOST", "100.121.61.74")
+    _REMOTE_HOST = os.getenv("MAGI_REMOTE_DB_HOST", "")
 _REMOTE_PORT = int(os.getenv("MAGI_REMOTE_DB_PORT", "3306"))
 _LOCAL_HOST = "127.0.0.1"
 _LOCAL_PORT = 3306
@@ -82,6 +82,11 @@ def _tcp_check(host: str, port: int, timeout: int = _PROBE_TIMEOUT) -> bool:
 def probe_remote(force: bool = False) -> bool:
     """檢查遠端 DB 是否可達（帶快取）。"""
     global _remote_ok, _last_probe
+    if not _REMOTE_HOST:
+        with _lock:
+            _remote_ok = False
+            _last_probe = time.time()
+        return False
     now = time.time()
     if not force and _remote_ok is not None and (now - _last_probe) < PROBE_INTERVAL:
         return _remote_ok
@@ -114,6 +119,9 @@ def _switch_to_local():
 def _switch_to_remote():
     """切回遠端 DB。"""
     global _active_host, _active_port, _failover_active, _last_switch
+    if not _REMOTE_HOST:
+        logger.info("DB FAILOVER: remote DB host is not configured; staying local")
+        return
     with _lock:
         if not _failover_active:
             return
@@ -133,6 +141,9 @@ def _switch_to_remote():
 def _sync_local_to_remote() -> bool:
     """Bidirectional sync using table-aware merge instead of dump-and-restore."""
     global _syncing
+    if not _REMOTE_HOST:
+        logger.info("DB SYNC: remote DB host is not configured; skipping")
+        return False
     if _syncing:
         return False
     _syncing = True

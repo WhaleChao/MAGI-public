@@ -10,9 +10,9 @@
       "env_override": null
     },
     "melchior": {
-      "description": "Remote inference node (Mac Studio)",
+      "description": "Remote inference node",
       "role": "inference",
-      "tailscale_ip": "100.116.54.16",
+      "tailscale_ip": null,
       "lan_ip": null,
       "services": {
         "inference": {"port": 5002, "protocol": "http"},
@@ -26,7 +26,7 @@
     "balthasar": {
       "description": "Remote inference node (secondary)",
       "role": "inference",
-      "tailscale_ip": "100.118.235.126",
+      "tailscale_ip": null,
       "lan_ip": null,
       "services": {
         "inference": {"port": 5002, "protocol": "http"}
@@ -37,10 +37,10 @@
       }
     },
     "nas": {
-      "description": "Synology NAS storage",
+      "description": "Optional NAS storage",
       "role": "storage",
-      "tailscale_ip": "100.111.10.126",
-      "lan_ip": "192.168.1.3",
+      "tailscale_ip": null,
+      "lan_ip": null,
       "env_override": {
         "tailscale_ip": "MAGI_NAS_TAILSCALE_IP",
         "lan_ip": "MAGI_NAS_LAN_IP"

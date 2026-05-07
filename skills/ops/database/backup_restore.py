@@ -119,7 +119,7 @@ def _choose_remote_profile(profiles: Dict[str, DBProfile]) -> DBProfile:
         return p
     return DBProfile(
         name="Studio_VPN_Remote",
-        host=_q(os.environ.get("MAGI_REMOTE_DB_HOST"), _remote_db_ip_or("100.121.61.74")),
+        host=_q(os.environ.get("MAGI_REMOTE_DB_HOST"), _remote_db_ip_or("")),
         port=int(os.environ.get("MAGI_REMOTE_DB_PORT") or 3306),
         user=_q(os.environ.get("MAGI_REMOTE_DB_USER"), "casper_service"),
         password=_q(os.environ.get("MAGI_REMOTE_DB_PASSWORD"), ""),

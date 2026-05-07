@@ -45,9 +45,9 @@ RPC_START_SCRIPT = os.environ.get(
 
 try:
     from api.routing.node_registry import get_node_ip as _get_node_ip
-    MELCHIOR_IP = os.environ.get("MELCHIOR_HOST") or _get_node_ip("melchior") or "100.116.54.16"
+    MELCHIOR_IP = os.environ.get("MELCHIOR_HOST") or _get_node_ip("melchior") or ""
 except Exception:
-    MELCHIOR_IP = os.environ.get("MELCHIOR_HOST", "100.116.54.16")
+    MELCHIOR_IP = os.environ.get("MELCHIOR_HOST", "")
 MELCHIOR_API_PORT = int(os.environ.get("MELCHIOR_API_PORT", "8080"))
 MELCHIOR_AGENT_PORT = int(os.environ.get("MELCHIOR_AGENT_PORT") or os.environ.get("MELCHIOR_PORT", "5002"))
 MELCHIOR_OLLAMA_PORT = int(os.environ.get("MELCHIOR_OLLAMA_PORT", "11434"))

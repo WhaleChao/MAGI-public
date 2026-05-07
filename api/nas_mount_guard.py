@@ -26,11 +26,11 @@ logger = logging.getLogger("magi.nas_mount_guard")
 try:
     from api.routing.node_registry import get_node as _get_nas_node
     _nas_node = _get_nas_node("nas")
-    _NAS_LAN_HOST = os.getenv("MAGI_NAS_HOST") or (_nas_node.lan_ip if _nas_node else None) or "192.168.1.3"
-    _NAS_TS_HOST = os.getenv("MAGI_NAS_TAILSCALE_HOST") or (_nas_node.tailscale_ip if _nas_node else None) or "100.111.10.126"
+    _NAS_LAN_HOST = os.getenv("MAGI_NAS_HOST") or (_nas_node.lan_ip if _nas_node else None) or ""
+    _NAS_TS_HOST = os.getenv("MAGI_NAS_TAILSCALE_HOST") or (_nas_node.tailscale_ip if _nas_node else None) or ""
 except Exception:
-    _NAS_LAN_HOST = os.getenv("MAGI_NAS_HOST", "192.168.1.3")
-    _NAS_TS_HOST = os.getenv("MAGI_NAS_TAILSCALE_HOST", "100.111.10.126")
+    _NAS_LAN_HOST = os.getenv("MAGI_NAS_HOST", "")
+    _NAS_TS_HOST = os.getenv("MAGI_NAS_TAILSCALE_HOST", "")
 NAS_USER = os.getenv("MAGI_NAS_USER", "lumi63181107")
 
 # 動態解析結果快取（host, expiry_time）

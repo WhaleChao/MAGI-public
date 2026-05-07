@@ -20,7 +20,7 @@ System for dynamic intelligence scaling, allowing Casper to switch between a low
 
 The system automatically enforces:
 1.  **RAM Check**: Local switch requires >6GB Free RAM (Mac).
-2.  **API Check**: Distributed switch requires Melchior API (`100.116.54.16:8080`) to be online.
+2.  **API Check**: Distributed switch requires Melchior API (`MAGI_MELCHIOR_IP:8080`) to be online.
 3.  **Cool-down**: 2-3s delay between switches to flush VRAM.
 
 ## 🕹️ Instructions (Triggers)
@@ -38,7 +38,7 @@ Casper (OpenClaw) should use this skill when the user explicitly requests a mode
 from skills.brain_manager.action import switch_brain_mode
 status = switch_brain_mode("distributed")
 print(status)
-# Output: "Successfully switched to distributed mode. Active API: http://100.116.54.16:8080/v1"
+# Output: "Successfully switched to distributed mode. Active API: http://MAGI_MELCHIOR_IP:8080/v1"
 ```
 
 ### 2. Switch to Local Brain
@@ -83,4 +83,4 @@ print(status)
 -   **Controller**: `skills/brain_manager/action.py`
 -   **RPC Binary**: `~/Desktop/MAGI_v2/bin/rpc-server`
 -   **Startup Script**: `~/Desktop/MAGI_v2/start_rpc.sh`
--   **Remote API**: `http://100.116.54.16:8080/v1`
+-   **Remote API**: `http://MAGI_MELCHIOR_IP:8080/v1`

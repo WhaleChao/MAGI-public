@@ -61,7 +61,7 @@ logger = logging.getLogger("InferenceGateway")
 # ---------------------------------------------------------------------------
 # Balthasar circuit breaker state (2026-04-19)
 # ---------------------------------------------------------------------------
-# When Tailscale peer 100.118.235.126:5002 (Balthasar) is unreachable, the
+# When Tailscale peer MAGI_BALTHASAR_IP:5002 (Balthasar) is unreachable, the
 # health probe has no upstream protection and every captcha/date_extract call
 # wastes ~1.2s on the timeout. We cache the "down" state for BALTHASAR_CB_TTL_SEC
 # and log a Synology Drive audit marker when the circuit trips so the lawyer has
@@ -218,17 +218,17 @@ class InferenceGateway:
         if not self.melchior_url:
             try:
                 from api.routing.node_registry import get_node_ip as _get_node_ip
-                host = os.environ.get("MELCHIOR_HOST") or _get_node_ip("melchior") or "100.116.54.16"
+                host = os.environ.get("MELCHIOR_HOST") or _get_node_ip("melchior") or ""
             except Exception:
-                host = os.environ.get("MELCHIOR_HOST", "100.116.54.16")
+                host = os.environ.get("MELCHIOR_HOST", "")
             port = int(os.environ.get("MELCHIOR_PORT", "5002"))
             self.melchior_url = f"http://{host}:{port}"
 
         try:
             from api.routing.node_registry import get_node_ip as _get_node_ip2
-            _b_fallback = _get_node_ip2("balthasar") or "100.118.235.126"
+            _b_fallback = _get_node_ip2("balthasar") or ""
         except Exception:
-            _b_fallback = "100.118.235.126"
+            _b_fallback = ""
         b_host = (os.environ.get("BALTHASAR_HOST") or str(getattr(balthasar_bridge, "BALTHASAR_HOST", _b_fallback))).strip()
         b_port = int(os.environ.get("BALTHASAR_PORT") or str(getattr(balthasar_bridge, "BALTHASAR_PORT", "5002")) or "5002")
         self.balthasar_url = f"http://{b_host}:{b_port}"

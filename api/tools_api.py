@@ -1474,11 +1474,13 @@ def sages_status():
     # Check Melchior (via /v1/models API)
     try:
         from api.routing.node_registry import get_node_ip
-        melchior_host = os.environ.get("MELCHIOR_HOST") or get_node_ip("melchior") or "100.116.54.16"
+        melchior_host = os.environ.get("MELCHIOR_HOST") or get_node_ip("melchior") or ""
     except Exception:
-        melchior_host = os.environ.get("MELCHIOR_HOST", "100.116.54.16")
+        melchior_host = os.environ.get("MELCHIOR_HOST", "")
     melchior_api_port = os.environ.get("MELCHIOR_API_PORT", "8080")
     try:
+        if not melchior_host:
+            raise RuntimeError("MELCHIOR_HOST is not configured")
         r = _get_session().get(f"http://{melchior_host}:{melchior_api_port}/v1/models", timeout=3)
         if r.status_code == 200:
             data = r.json().get("data", [])

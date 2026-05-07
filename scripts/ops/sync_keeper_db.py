@@ -25,9 +25,9 @@ logger = logging.getLogger("KeeperDBSync")
 # Config
 try:
     from api.routing.node_registry import get_node_ip as _get_node_ip
-    REMOTE_HOST = _get_node_ip("nas") or "100.121.61.74"
+    REMOTE_HOST = _get_node_ip("nas") or ""
 except Exception:
-    REMOTE_HOST = "100.121.61.74"
+    REMOTE_HOST = ""
 REMOTE_USER = "magi_agent"
 REMOTE_PASS = os.environ.get("DB_PASSWORD", "")
 DB_NAME = "law_firm_data"

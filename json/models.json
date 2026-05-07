@@ -54,6 +54,16 @@
       "description": "Text embedding",
       "model": "modernbert-embed-4bit",
       "env_override": "MAGI_OMLX_EMBED_MODEL"
+    },
+    "e4b_draft": {
+      "description": "Gemma 4 E4B MTP assistant / draft model",
+      "model": "gemma-4-E4B-it-assistant-bf16",
+      "env_override": "MAGI_E4B_DRAFT_MODEL"
+    },
+    "26b_draft": {
+      "description": "Gemma 4 26B A4B MTP assistant / draft model",
+      "model": "gemma-4-26B-A4B-it-assistant-bf16",
+      "env_override": "MAGI_26B_DRAFT_MODEL"
     }
   },
   "aliases": {

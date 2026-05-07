@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib
 from dataclasses import dataclass
 
 import pytest
@@ -26,8 +27,8 @@ def test_provider_registry_lists_all_known_adapters():
 
     registry = build_provider_registry()
 
-    assert set(registry) == {"omlx", "openai", "anthropic", "ollama", "nvidia_nim"}
-    assert list_provider_names() == ["anthropic", "nvidia_nim", "ollama", "omlx", "openai"]
+    assert set(registry) == {"omlx", "openai", "anthropic", "ollama", "nvidia_nim", "mlx_mtp"}
+    assert list_provider_names() == ["anthropic", "mlx_mtp", "nvidia_nim", "ollama", "omlx", "openai"]
     assert get_provider_adapter("omlx") is not None
 
 
@@ -52,6 +53,28 @@ def test_omlx_provider_builds_openai_style_payload_and_health_url():
     assert health.available is True
     assert health.status_code == 200
     assert health.payload["url"] == url
+
+
+def test_omlx_provider_adds_draft_fields_only_when_enabled(monkeypatch):
+    monkeypatch.setenv("MAGI_ENABLE_MTP_DRAFT", "1")
+    monkeypatch.setenv("MAGI_E4B_DRAFT_MODEL", "e4b-draft")
+
+    import api.model_config as model_config
+    import providers.omlx as omlx_mod
+
+    importlib.reload(model_config)
+    reloaded_omlx = importlib.reload(omlx_mod)
+
+    provider = reloaded_omlx.OmlxProvider(model="gemma-4-e4b-it-4bit")
+    payload = provider.build_chat_payload("hello")
+
+    assert payload["draft_model"] == "e4b-draft"
+    assert payload["draft_kind"] == "mtp"
+    assert "draft_block_size" in payload
+
+    monkeypatch.setenv("MAGI_ENABLE_MTP_DRAFT", "0")
+    importlib.reload(model_config)
+    importlib.reload(omlx_mod)
 
 
 def test_openai_provider_requires_key_and_builds_payload(monkeypatch):
@@ -123,3 +146,15 @@ def test_ollama_provider_builds_payload_and_health_check():
 
     assert health.available is True
     assert health.status_code == 200
+
+
+def test_mlx_mtp_provider_builds_draft_payload():
+    from providers.mlx_mtp import MlxMtpProvider
+
+    provider = MlxMtpProvider(base_url="http://127.0.0.1:8090/v1", model="gemma-4-e4b-it-4bit")
+    payload = provider.build_chat_payload("hello", max_tokens=16)
+
+    assert payload["model"] == "gemma-4-e4b-it-4bit"
+    assert payload["draft_model"]
+    assert payload["draft_kind"] == "mtp"
+    assert payload["draft_block_size"] >= 1

@@ -9,7 +9,7 @@ Usage::
     from api.routing.node_registry import get_node, get_node_url
 
     melchior = get_node("melchior")
-    url = get_node_url("melchior", service="inference")  # "http://100.116.54.16:5002"
+    url = get_node_url("melchior", service="inference")  # "http://MAGI_MELCHIOR_IP:5002"
 """
 
 from __future__ import annotations

@@ -26,9 +26,9 @@ from skills.ops import health_probes as _health_probes
 
 try:
     from api.routing.node_registry import get_node_ip as _get_node_ip
-    _REMOTE_DB_FALLBACK_IP = _get_node_ip("nas") or "100.121.61.74"
+    _REMOTE_DB_FALLBACK_IP = _get_node_ip("nas") or ""
 except Exception:
-    _REMOTE_DB_FALLBACK_IP = "100.121.61.74"
+    _REMOTE_DB_FALLBACK_IP = ""
 
 MAGI_DIR = str(get_magi_root_dir())
 if MAGI_DIR not in sys.path:

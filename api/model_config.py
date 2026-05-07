@@ -33,6 +33,62 @@ OCR_MODEL = _clean(os.environ.get("MAGI_OMLX_OCR_MODEL"), DEFAULT_OCR_MODEL)
 EMBED_MODEL = _clean(os.environ.get("MAGI_OMLX_EMBED_MODEL"), DEFAULT_EMBED_MODEL)
 DEFAULT_MODEL_ALIAS = _clean(os.environ.get("MAGI_DEFAULT_MODEL"), TEXT_PRIMARY_MODEL)
 
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    value = str(os.environ.get(name, "")).strip().lower()
+    if not value:
+        return bool(default)
+    return value in {"1", "true", "yes", "on"}
+
+
+def _env_int(name: str, default: int) -> int:
+    value = str(os.environ.get(name, "")).strip()
+    if not value:
+        return int(default)
+    try:
+        return int(value)
+    except ValueError:
+        return int(default)
+
+
+MTP_DRAFT_ENABLED = _env_bool("MAGI_ENABLE_MTP_DRAFT", False)
+E4B_DRAFT_MODEL = _clean(os.environ.get("MAGI_E4B_DRAFT_MODEL"), "gemma-4-E4B-it-assistant-bf16")
+TEXT_26B_DRAFT_MODEL = _clean(
+    os.environ.get("MAGI_26B_DRAFT_MODEL"),
+    "gemma-4-26B-A4B-it-assistant-bf16",
+)
+MTP_DRAFT_KIND = _clean(os.environ.get("MAGI_MTP_DRAFT_KIND"), "mtp")
+MTP_BLOCK_SIZE = _env_int("MAGI_MTP_BLOCK_SIZE", 4)
+HEAVY_AUTO_UPGRADE = _env_bool("MAGI_HEAVY_AUTO_UPGRADE", False)
+HEAVY_MIN_CHARS = _env_int("MAGI_HEAVY_MIN_CHARS", 6000)
+
+
+def resolve_draft_model(target_model: str = "") -> str:
+    """Return the configured MTP assistant model for a target model."""
+    target = str(target_model or TEXT_PRIMARY_MODEL).lower()
+    if "26b" in target or "a4b" in target:
+        return TEXT_26B_DRAFT_MODEL
+    return E4B_DRAFT_MODEL
+
+
+def mtp_draft_payload(target_model: str = "") -> dict[str, object]:
+    """Build optional request metadata for MTP-capable local runtimes.
+
+    The default MAGI runtime keeps this disabled because the current oMLX
+    server does not advertise draft-model CLI support. Sidecars or newer
+    OpenAI-compatible runtimes can opt in with MAGI_ENABLE_MTP_DRAFT=1.
+    """
+    if not MTP_DRAFT_ENABLED:
+        return {}
+    draft_model = resolve_draft_model(target_model)
+    if not draft_model:
+        return {}
+    return {
+        "draft_model": draft_model,
+        "draft_kind": MTP_DRAFT_KIND,
+        "draft_block_size": MTP_BLOCK_SIZE,
+    }
+
 TEXT_MODEL_ALIASES = {
     "",
     "gemma-4",

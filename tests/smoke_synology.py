@@ -433,7 +433,7 @@ def test_translation_pipeline() -> Dict:
 def test_image_generation_config() -> Dict:
     """Image generation should be configured (either Melchior SD or OpenAI key)."""
     openai_key = os.environ.get("OPENAI_API_KEY", "").strip()
-    melchior_host = os.environ.get("MELCHIOR_HOST", "100.116.54.16").strip()
+    melchior_host = os.environ.get("MELCHIOR_HOST", "").strip()
     has_openai = bool(openai_key and openai_key.startswith("sk-"))
     has_melchior = bool(melchior_host)
     ok = has_openai or has_melchior

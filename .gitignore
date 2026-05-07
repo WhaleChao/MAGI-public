@@ -4,6 +4,7 @@ __pycache__/
 *.log
 .DS_Store
 *.plist
+!config/launchagents/com.magi.mlx-mtp.plist
 *.db
 .env
 .env.*
@@ -46,6 +47,7 @@ _eventlog.jsonl
 _crawl_targets.json
 _statutes_vdb_state.json
 _judicial_smoke/
+.magi_benchmarks/
 active_tasks.json
 backups/
 
@@ -81,6 +83,9 @@ docs/CLAUDE_FIX_LOG_ARCHIVE_*.md
 # DB dump、conversation history SQLite、issue agenda 等 runtime state
 .runtime/
 runtime/supplement_cache/*.json
+.claude/
+.claire/
+docs/deploy/
 # 筆錄手動補件佇列含案號 + 法院名 + 案件類型
 static/transcript_manual_queue.jsonl
 # Sonnet/Opus session 自動筆記（可能含案件思考）

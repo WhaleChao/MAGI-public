@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 Bidirectional sync for law_firm_data between:
-- Remote Keeper DB (default 100.121.61.74:3306)
+- Remote Keeper DB (default MAGI_REMOTE_DB_HOST:3306)
 - Local fallback DB (from Studio_Local/Home_Local_Test profile)
 
 Policy:
@@ -117,7 +117,7 @@ def _choose_remote_profile(profiles: Dict[str, DBProfile]) -> DBProfile:
         return p
     return DBProfile(
         name="Studio_VPN_Remote",
-        host=os.environ.get("MAGI_REMOTE_DB_HOST") or _remote_db_ip_or("100.121.61.74"),
+        host=os.environ.get("MAGI_REMOTE_DB_HOST") or _remote_db_ip_or(""),
         port=int(os.environ.get("MAGI_REMOTE_DB_PORT", "3306")),
         user=os.environ.get("MAGI_REMOTE_DB_USER", "python_user"),
         password=os.environ.get("MAGI_REMOTE_DB_PASSWORD", ""),

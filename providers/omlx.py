@@ -3,7 +3,7 @@ from __future__ import annotations
 import requests
 
 from .base import OpenAICompatibleProvider, ProviderHealth
-from api.model_config import TEXT_PRIMARY_MODEL
+from api.model_config import MTP_DRAFT_ENABLED, TEXT_PRIMARY_MODEL, mtp_draft_payload
 
 
 class OmlxProvider(OpenAICompatibleProvider):
@@ -25,6 +25,11 @@ class OmlxProvider(OpenAICompatibleProvider):
         headers["Authorization"] = f"Bearer {self.api_key or 'omlx-local'}"
         return headers
 
+    def build_chat_payload(self, messages, **kwargs) -> dict:
+        payload = super().build_chat_payload(messages, **kwargs)
+        payload.update(mtp_draft_payload(str(payload.get("model") or self.model)))
+        return payload
+
     def healthcheck(self, *, timeout: float = 5.0):
         try:
             resp = requests.get(self.build_url(self.health_path), headers=self.build_headers(), timeout=float(timeout))
@@ -39,7 +44,11 @@ class OmlxProvider(OpenAICompatibleProvider):
                 model=self.model,
                 status_code=getattr(resp, "status_code", 200),
                 detail=f"{count} models",
-                payload={"models": models},
+                payload={
+                    "models": models,
+                    "mtp_draft_enabled": MTP_DRAFT_ENABLED,
+                    "draft_payload": mtp_draft_payload(self.model),
+                },
             )
         except Exception as exc:
             return ProviderHealth(
