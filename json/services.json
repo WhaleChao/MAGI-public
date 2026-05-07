@@ -1,0 +1,66 @@
+{
+  "_schema_version": "1.0.0",
+  "_description": "MAGI service endpoint registry. All host/port/URL definitions centralized here.",
+  "services": {
+    "magi_server": {
+      "description": "Main MAGI Flask server",
+      "host": "127.0.0.1",
+      "port": 5002,
+      "protocol": "http",
+      "env_override": {
+        "host": "MAGI_SERVER_HOST",
+        "port": "MAGI_SERVER_PORT"
+      }
+    },
+    "tools_api": {
+      "description": "Tools API sidecar",
+      "host": "127.0.0.1",
+      "port": 5003,
+      "protocol": "http",
+      "env_override": {
+        "host": "MAGI_TOOLS_API_HOST",
+        "port": "MAGI_TOOLS_API_PORT"
+      }
+    },
+    "omlx_inference": {
+      "description": "oMLX local inference endpoint",
+      "host": "127.0.0.1",
+      "port": 8080,
+      "protocol": "http",
+      "env_override": {
+        "host": "MAGI_OMLX_HOST",
+        "port": "MAGI_OMLX_PORT"
+      }
+    },
+    "omlx_embedding": {
+      "description": "oMLX embedding endpoint",
+      "host": "127.0.0.1",
+      "port": 8081,
+      "protocol": "http",
+      "env_override": {
+        "host": "MAGI_OMLX_EMBED_HOST",
+        "port": "MAGI_OMLX_EMBED_PORT"
+      }
+    },
+    "mlx_mtp_inference": {
+      "description": "MLX/VLM Gemma 4 MTP draft inference sidecar",
+      "host": "127.0.0.1",
+      "port": 8090,
+      "protocol": "http",
+      "env_override": {
+        "host": "MAGI_MLX_MTP_HOST",
+        "port": "MAGI_MLX_MTP_PORT"
+      }
+    },
+    "ollama": {
+      "description": "Ollama local inference",
+      "host": "127.0.0.1",
+      "port": 11434,
+      "protocol": "http",
+      "env_override": {
+        "host": "OLLAMA_HOST",
+        "port": "OLLAMA_PORT"
+      }
+    }
+  }
+}

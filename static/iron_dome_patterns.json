@@ -1,0 +1,53 @@
+{
+  "version": "2026-03-06T05:45:44.245779",
+  "source_node": "casper",
+  "hash": "f26f34049fa000b9497efce986e1ee18",
+  "patterns": {
+    "prompt_injection": [
+      "ignore\\s+(all\\s+)?previous\\s+instructions",
+      "disregard\\s+(all\\s+)?previous\\s+instructions",
+      "forget\\s+(all\\s+)?previous\\s+instructions",
+      "you\\s+are\\s+now\\s+unrestricted",
+      "you\\s+are\\s+now\\s+jailbroken",
+      "roleplay\\s+as\\s+dan",
+      "pretend\\s+(you\\s+are|to\\s+be)\\s+a\\s+.*(unrestricted|evil|unfiltered)",
+      "system\\s+override",
+      "admin\\s+override",
+      "developer\\s+mode\\s+(enabled|on|activate)",
+      "do\\s+anything\\s+now",
+      "safety\\s+protocols?\\s+disabled",
+      "bypass\\s+(all\\s+)?safety",
+      "忽略(所有)?之前(的)?指令",
+      "無視(所有)?先前(的)?指示",
+      "你現在(是|已經)?(一個)?不受限(的|制)?",
+      "假裝(你是|成為).*不受限",
+      "系統覆蓋",
+      "管理員覆蓋"
+    ],
+    "dangerous_commands": [
+      "rm\\s+-rf",
+      "rm\\s+-r\\s+/",
+      "rm\\s+--no-preserve-root",
+      "mkfs\\.",
+      "mkfs\\s+",
+      "dd\\s+if=.+of=/dev/",
+      ":(){ :|:& };:",
+      "chmod\\s+-R\\s+777\\s+/",
+      "mv\\s+.+\\s+/dev/null",
+      ">\\s*/dev/sda",
+      "DROP\\s+DATABASE",
+      "DROP\\s+TABLE",
+      "TRUNCATE\\s+TABLE",
+      "DELETE\\s+FROM\\s+\\w+\\s*(;|$)",
+      "eval\\s*\\(",
+      "exec\\s*\\(",
+      "os\\.system\\s*\\(",
+      "subprocess\\.call",
+      "subprocess\\.Popen",
+      "nc\\s+-e\\s+/bin/",
+      "bash\\s+-i\\s+>&\\s*/dev/tcp",
+      "/dev/tcp/",
+      "python\\s+-c\\s+.+socket"
+    ]
+  }
+}

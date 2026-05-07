@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ feed.title }} — RSS 預覽 | MAGI</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='golem/golem-console.css') }}?v=20260505-research-v1">
+    <style>
+        .rss-shell { max-width: 980px; margin: 0 auto; }
+        .rss-source { color: var(--muted, #667085); overflow-wrap: anywhere; }
+        .rss-list { display: grid; gap: 12px; margin-top: 18px; }
+        .rss-item { border: 1px solid rgba(148,163,184,0.35); border-radius: 8px; padding: 14px; background: rgba(255,255,255,0.76); }
+        .rss-item h3 { font-size: 1rem; line-height: 1.4; margin: 0; }
+        .rss-item p { margin: 8px 0 0; color: var(--muted, #667085); line-height: 1.55; }
+        .rss-meta { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 8px; font-size: 0.82rem; color: var(--muted, #667085); }
+        .rss-link { display: inline-flex; margin-top: 10px; color: #0b84ff; font-weight: 650; text-decoration: none; }
+        .rss-link:hover { text-decoration: underline; }
+        .rss-error { border: 1px solid rgba(245,158,11,0.45); background: rgba(245,158,11,0.12); color: #92400e; border-radius: 8px; padding: 12px 14px; margin-top: 16px; }
+        body.theme-dark .rss-item { background: rgba(15,23,42,0.72); }
+    </style>
+</head>
+<body>
+    <header class="topbar">
+        <div>
+            <div class="eyebrow">MAGI 研究來源</div>
+            <h1>RSS 預覽</h1>
+        </div>
+        <nav class="topnav" aria-label="RSS 預覽導覽">
+            <a href="/research">返回研究</a>
+            <a href="/dashboard">返回 MAGI</a>
+        </nav>
+    </header>
+
+    <main class="console-shell rss-shell">
+        <section class="research-card">
+            <div class="research-card-head">
+                <div>
+                    <h2>{{ feed.title }}</h2>
+                    <p class="rss-source">{{ feed.source_url }}</p>
+                </div>
+                {% if feed.updated %}
+                <span>{{ feed.updated }}</span>
+                {% endif %}
+            </div>
+            {% if feed.error %}
+            <div class="rss-error">{{ feed.error }}</div>
+            {% endif %}
+            {% if feed["items"] %}
+            <div class="rss-list">
+                {% for item in feed["items"] %}
+                <article class="rss-item">
+                    <h3>{{ item.title }}</h3>
+                    <div class="rss-meta">
+                        {% if item.date %}<span>{{ item.date }}</span>{% endif %}
+                    </div>
+                    {% if item.summary %}
+                    <p>{{ item.summary }}</p>
+                    {% endif %}
+                    {% if item.link %}
+                    <a class="rss-link" href="{{ item.link }}" target="_blank" rel="noopener noreferrer">閱讀原文</a>
+                    {% endif %}
+                </article>
+                {% endfor %}
+            </div>
+            {% elif not feed.error %}
+            <p>這個 RSS 目前沒有可顯示的項目。</p>
+            {% endif %}
+        </section>
+    </main>
+</body>
+</html>

@@ -1,0 +1,98 @@
+        <section id="meetings" class="view">
+            <div class="card">
+                <div class="section-head">
+                    <div>
+                        <h3>會議管理</h3>
+                        <div class="section-note">整理會議安排、地點與備註。欄位與行事曆資料可對照使用。</div>
+                    </div>
+                </div>
+                <div class="field-grid cols-4">
+                    <div class="field" style="grid-column: span 2;">
+                        <label for="meetingsQ">搜尋</label>
+                        <input id="meetingsQ" placeholder="案號 / 當事人 / 類型 / 備註">
+                    </div>
+                    <div class="field">
+                        <label>操作</label>
+                        <div class="inline-actions">
+                            <button class="btn" id="meetingsSearchBtn">搜尋</button>
+                            <button class="btn" id="meetingsRefreshBtn">重新整理</button>
+                        </div>
+                    </div>
+                </div>
+                <div class="field-grid cols-4" style="margin-top:10px;">
+                    <div class="field">
+                        <label for="meeting_id">ID</label>
+                        <input id="meeting_id" placeholder="更新時使用">
+                    </div>
+                    <div class="field">
+                        <label for="meeting_case_number">案件編號</label>
+                        <input id="meeting_case_number" placeholder="案件編號（選填）">
+                    </div>
+                    <div class="field">
+                        <label for="meeting_client_name">當事人</label>
+                        <input id="meeting_client_name" placeholder="當事人（必填）">
+                    </div>
+                    <div class="field">
+                        <label for="meeting_type">會議類型</label>
+                        <input id="meeting_type" placeholder="會議類型（必填）">
+                    </div>
+                    <div class="field">
+                        <label for="meeting_datetime">日期時間</label>
+                        <input id="meeting_datetime" type="datetime-local" placeholder="日期時間">
+                    </div>
+                    <div class="field">
+                        <label for="meeting_duration">分鐘</label>
+                        <input id="meeting_duration" type="number" placeholder="預設 60">
+                    </div>
+                    <div class="field">
+                        <label for="meeting_location">地點</label>
+                        <input id="meeting_location" placeholder="地點（選填）">
+                    </div>
+                    <div class="field">
+                        <label for="meeting_status">狀態</label>
+                        <input id="meeting_status" placeholder="例：scheduled、done">
+                    </div>
+                </div>
+                <div class="field" style="margin-top:10px;">
+                    <label for="meeting_notes">備註</label>
+                    <textarea id="meeting_notes" placeholder="備註（選填）"></textarea>
+                </div>
+                <div class="toolbar" style="margin-top:8px;">
+                    <button class="btn primary" id="meetingSaveBtn">儲存會議</button>
+                    <button class="btn warn" id="meetingResetBtn">清空表單</button>
+                </div>
+            </div>
+            <div class="card">
+                <div class="toolbar" style="margin-bottom:8px;">
+                    <div class="sort-bar">
+                        <label>排序</label>
+                        <select id="meetingSortCol">
+                            <option value="">預設</option>
+                            <option value="datetime" data-type="date">時間</option>
+                            <option value="case_number">案號</option>
+                            <option value="client_name">當事人</option>
+                            <option value="meeting_type">類型</option>
+                            <option value="status">狀態</option>
+                        </select>
+                        <button class="sort-dir-btn" id="meetingSortDir">▲</button>
+                    </div>
+                </div>
+                <div class="table-wrap">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th data-sort="datetime" data-type="date">時間</th>
+                                <th data-sort="case_number">案號</th>
+                                <th data-sort="client_name">當事人</th>
+                                <th data-sort="meeting_type">類型</th>
+                                <th data-sort="location">地點</th>
+                                <th data-sort="status">狀態</th>
+                                <th>操作</th>
+                            </tr>
+                        </thead>
+                        <tbody id="meetingsBody"></tbody>
+                    </table>
+                </div>
+            </div>
+        </section>
+

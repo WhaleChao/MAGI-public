@@ -1,0 +1,627 @@
+diff --git a/casper_ecosystem/law_firm_orchestrators/laf_orchestrator.py b/casper_ecosystem/law_firm_orchestrators/laf_orchestrator.py
+index 6938fbb..c827079 100644
+--- a/casper_ecosystem/law_firm_orchestrators/laf_orchestrator.py
++++ b/casper_ecosystem/law_firm_orchestrators/laf_orchestrator.py
+@@ -1506,26 +1506,42 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
+ 
+     @staticmethod
+     def _match_inquiry_reason(reason: str) -> str:
+-        """Map user's inquiry reason to portal rsm_reqsubj2 value."""
++        """Map user's inquiry reason to portal reqsubj2 value.
++
++        Portal actual option values (confirmed 20260326):
++          0007: 資力不合標準
++          0008: 案件顯無理由或其他不應扶助者
++          0009: 有終止事由
++          0010: 本案管轄有問題
++          0117: 其他
++        """
+         r = reason.lower()
+         if any(k in r for k in ('資力', '經濟', '收入')):
+             return '0007'  # 資力不合標準
+         if any(k in r for k in ('顯無理由', '不可能', '無理由')):
+-            return '0008'  # 案件顯無理由
++            return '0008'  # 案件顯無理由或其他不應扶助者
+         if any(k in r for k in ('終止', '撤止', '中止')):
+             return '0009'  # 有終止事由
++        if any(k in r for k in ('管轄', '移轉管轄', '移送')):
++            return '0010'  # 本案管轄有問題
+         return '0117'  # 其他
+ 
+     @staticmethod
+     def _match_fee_type(reason: str) -> tuple:
+-        """Map user's fee description to portal lgfee_reqsubj1/2 values."""
++        """Map user's fee description to portal lgfee_reqsubj1/2 values.
++
++        Portal actual option values (confirmed 20260326):
++          reqsubj1: 0116 (訴訟費用及必要費用之處理)
++          reqsubj2: 0120 (支付裁判費) | 0121 (支付裁判費以外之費用)
++          reqsubj3 (when reqsubj2=0120): 0132|0133|0134|0135|0136
++        """
+         r = reason.lower()
+         subj1 = '0116'  # 訴訟費用及必要費用之處理 (default primary)
+         if any(k in r for k in ('裁判費',)):
+             return subj1, '0120'  # 支付裁判費
+-        if any(k in r for k in ('鑑定', '新鑑')):
+-            return subj1, '新鑑費用及必要費用之處理'
+-        return subj1, '其他'
++        if any(k in r for k in ('鑑定', '新鑑', '必要費用', '其他費用')):
++            return subj1, '0121'  # 支付裁判費以外之費用
++        return subj1, '0121'  # 預設歸類為裁判費以外之費用
+ 
+     # ==================================================================
+     # Closing Report Flow (Admin-in-the-Loop)
+@@ -2196,12 +2212,21 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
+             for r in _query_candidates("TRIM(`case_number`) = %s", (out["case_number"],)):
+                 _merge_row(r, "case_number")
+         if req_client:
++            # Exact match first
+             for r in _query_candidates(
+                 "LOWER(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(TRIM(`client_name`), ' ', ''), '　', ''), '·', ''), '・', ''), '‧', ''), '．', '')) = %s "
+                 "AND (TRIM(COALESCE(`legal_aid_number`, '')) <> '' OR TRIM(COALESCE(`case_number`, '')) <> '')",
+                 (req_client,),
+             ):
+                 _merge_row(r, "client_name")
++            # Prefix match — handles foreign name suffixes, e.g. "[當事人N]" matches "[當事人N]Ayka lku"
++            if not candidate_map and len(req_client) >= 2:
++                for r in _query_candidates(
++                    "LOWER(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(TRIM(`client_name`), ' ', ''), '　', ''), '·', ''), '・', ''), '‧', ''), '．', '')) LIKE %s "
++                    "AND (TRIM(COALESCE(`legal_aid_number`, '')) <> '' OR TRIM(COALESCE(`case_number`, '')) <> '')",
++                    (req_client + "%",),
++                ):
++                    _merge_row(r, "client_name")
+ 
+         candidates = list(candidate_map.values())
+         out["candidate_count"] = len(candidates)
+@@ -2213,11 +2238,12 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
+             c_case = norm(cand.get("case_number", ""))
+             c_client = norm(cand.get("client_name", ""))
+             conflict = ""
+-            if req_laf and c_laf != req_laf:
++            # Empty DB field = unknown, not a conflict; only reject actual mismatches
++            if req_laf and c_laf and c_laf != req_laf:
+                 conflict = "laf_case_number_mismatch"
+-            elif req_case and c_case != req_case:
++            elif req_case and c_case and c_case != req_case:
+                 conflict = "case_number_mismatch"
+-            elif req_client and c_client != req_client:
++            elif req_client and c_client and c_client != req_client and not c_client.startswith(req_client):
+                 conflict = "client_name_mismatch"
+             if conflict:
+                 rejected.append(
+@@ -2237,7 +2263,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
+             if req_case and c_case == req_case:
+                 score += 90
+                 matched.append("case_number")
+-            if req_client and c_client == req_client:
++            if req_client and (c_client == req_client or c_client.startswith(req_client)):
+                 score += 40
+                 matched.append("client_name")
+             score += 5 * len(cand.get("_signals") or [])
+@@ -2267,7 +2293,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
+                     out["needs_manual_confirm"] = True
+                     out["manual_reason"] = "fallback_case_number_conflict"
+                     return out
+-                if req_client and guessed_client and norm(guessed_client) != req_client:
++                if req_client and guessed_client and norm(guessed_client) != req_client and not norm(guessed_client).startswith(req_client):
+                     out["needs_manual_confirm"] = True
+                     out["manual_reason"] = "fallback_client_name_conflict"
+                     return out
+@@ -2304,7 +2330,19 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
+             return out
+ 
+         matched = list(top.get("matched") or [])
+-        if self.require_case_signal_for_auto and ("laf_case_number" not in matched) and ("case_number" not in matched):
++        # Relax the strong-signal requirement when there is exactly ONE candidate
++        # and client_name matches — this means the DB unambiguously identified the case.
++        _sole_candidate_client_match = (
++            len(filtered) == 1
++            and "client_name" in matched
++            and top.get("laf_case_number")
++        )
++        if (
++            self.require_case_signal_for_auto
++            and ("laf_case_number" not in matched)
++            and ("case_number" not in matched)
++            and not _sole_candidate_client_match
++        ):
+             out["needs_manual_confirm"] = True
+             out["manual_reason"] = "missing_strong_identity_signal"
+             out["top_candidates"] = [
+@@ -2317,6 +2355,11 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
+                 for c in filtered[:5]
+             ]
+             return out
++        elif _sole_candidate_client_match:
++            # Clear the early "missing_case_or_laf_signal" flag — DB lookup
++            # unambiguously resolved the case via sole client_name match.
++            out["needs_manual_confirm"] = False
++            out["manual_reason"] = ""
+ 
+         out["case_number"] = str(top.get("case_number") or out["case_number"]).strip()
+         out["client_name"] = str(top.get("client_name") or out["client_name"]).strip()
+@@ -2652,7 +2695,16 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
+         if ext == ".pdf":
+             try:
+                 if os.path.abspath(src) != str(dst_pdf):
+-                    shutil.copy2(src, dst_pdf)
++                    try:
++                        shutil.copy2(src, dst_pdf)
++                    except OSError:
++                        # Fallback: buffered copy for NAS files with stale FD
++                        with open(src, "rb") as fin, open(str(dst_pdf), "wb") as fout:
++                            while True:
++                                chunk = fin.read(1024 * 1024)
++                                if not chunk:
++                                    break
++                                fout.write(chunk)
+                 return str(dst_pdf)
+             except Exception:
+                 return src
+@@ -2677,21 +2729,32 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
+             ]
+         )
+         if soffice:
+-            try:
+-                subprocess.run(
+-                    [soffice, "--headless", "--convert-to", "pdf", "--outdir", str(out_root), src],
+-                    check=False,
+-                    stdout=subprocess.PIPE,
+-                    stderr=subprocess.PIPE,
+-                    timeout=60,
+-                )
+-                cand = out_root / (Path(src).stem + ".pdf")
+-                if cand.exists():
+-                    if cand != dst_pdf:
+-                        shutil.move(str(cand), str(dst_pdf))
+-                    return str(dst_pdf)
+-            except Exception as e:
+-                logger.warning("LibreOffice convert failed (%s): %s", src, e)
++            _lo_timeout = int(os.environ.get("MAGI_SOFFICE_TIMEOUT", "180") or "180")
++            for _attempt in range(2):
++                try:
++                    if _attempt > 0:
++                        # Kill stale soffice before retry
++                        subprocess.run(["pkill", "-f", "soffice"], capture_output=True, timeout=5)
++                        import time as _t; _t.sleep(2)
++                    subprocess.run(
++                        [soffice, "--headless", "--convert-to", "pdf", "--outdir", str(out_root), src],
++                        check=False,
++                        stdout=subprocess.PIPE,
++                        stderr=subprocess.PIPE,
++                        timeout=_lo_timeout,
++                    )
++                    cand = out_root / (Path(src).stem + ".pdf")
++                    if cand.exists():
++                        if cand != dst_pdf:
++                            shutil.move(str(cand), str(dst_pdf))
++                        return str(dst_pdf)
++                except subprocess.TimeoutExpired:
++                    logger.warning("LibreOffice convert timeout (attempt %d, %ds): %s", _attempt + 1, _lo_timeout, src)
++                    if _attempt == 0:
++                        continue  # retry after killing stale process
++                except Exception as e:
++                    logger.warning("LibreOffice convert failed (%s): %s", src, e)
++                    break
+ 
+         textutil = self._find_first_existing(
+             [
+@@ -2809,7 +2872,16 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
+             try:
+                 dst = os.path.join(staging_dir, os.path.basename(src_pdf))
+                 if os.path.abspath(src_pdf) != os.path.abspath(dst):
+-                    shutil.copy2(src_pdf, dst)
++                    try:
++                        shutil.copy2(src_pdf, dst)
++                    except OSError:
++                        # Fallback: buffered copy for NAS files with stale FD
++                        with open(src_pdf, "rb") as fin, open(dst, "wb") as fout:
++                            while True:
++                                chunk = fin.read(1024 * 1024)
++                                if not chunk:
++                                    break
++                                fout.write(chunk)
+                 else:
+                     dst = src_pdf
+                 if dst not in dedup:
+@@ -3121,6 +3193,9 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
+                 subj1, subj2 = self._match_fee_type(reason or "")
+                 fields.setdefault("lgfee_reqsubj1", subj1)
+                 fields.setdefault("lgfee_reqsubj2", subj2)
++            # reqsubj3 only visible when reqsubj2=0120 (支付裁判費); portal values: 0132-0136
++            if fields.get("lgfee_reqsubj2") == "0120" and "lgfee_reqsubj3" not in fields:
++                fields.setdefault("lgfee_reqsubj3", "0132")  # 預設：三千元以下之訴訟費用律師聲請本會墊付
+             receipt_name = os.path.basename(docs["pink_receipt_files"][0])
+             upload_bundle = self._collect_selected_upload_pdfs(
+                 docs["pink_receipt_files"],
+@@ -3262,9 +3337,13 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
+             }
+ 
+         counts = self._gather_case_counts(osc_no or close_case_no, cname)
+-        if override_basis_files:
+-            override_basis_files = self._sort_closing_basis_files(override_basis_files)
+-            closing_meta = self._infer_closing_metadata_from_docs(override_basis_files)
++        # Use override or doc-scan basis files for metadata extraction
++        _meta_basis = override_basis_files or basis_files
++        if _meta_basis:
++            _meta_basis = self._sort_closing_basis_files(_meta_basis)
++            closing_meta = self._infer_closing_metadata_from_docs(
++                _meta_basis, client_name=cname, folder_path=str(folder or "")
++            )
+             for key in (
+                 "court_kind",
+                 "court_name",
+@@ -3275,10 +3354,12 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
+                 "closing_result_doc",
+                 "closing_doc_type",
+                 "judg_eff",
++                "sentence_term",
++                "reprieve_term",
+             ):
+                 if str(closing_meta.get(key) or "").strip():
+                     counts[key] = closing_meta.get(key)
+-            for src in override_basis_files:
++            for src in _meta_basis:
+                 dt = self._extract_best_date_from_doc(src, is_poa=False)
+                 if dt:
+                     counts["judg_dt"] = dt
+@@ -3295,6 +3376,8 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
+             "closing_result_doc",
+             "closing_doc_type",
+             "judg_eff",
++            "sentence_term",
++            "reprieve_term",
+         ):
+             if str(fields.get(key) or "").strip():
+                 counts[key] = fields.get(key)
+@@ -3303,6 +3386,15 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
+         has_mediation_success = bool(docs.get("mediation_success_files"))
+         counts["has_mediation_success"] = has_mediation_success
+ 
++        # 結案類型 (casekd) 級聯選單路徑推算
++        # Portal 使用 casekd → level1 → level2 → ... 的級聯下拉選單，
++        # 選定後由 setClcate() 組合成 clcate 文字欄位。
++        # 這裡根據案件屬性推算文字路徑，由 automation 端透過 AJAX 匹配實際 option value。
++        counts["closing_clcate_path"] = self._determine_clcate_path(
++            case_info=identity, counts=counts,
++            has_mediation=has_mediation_success,
++        )
++
+         _cr_reason = str(counts.get("case_reason") or "").strip()
+         _is_inv_case = any(kw in _cr_reason for kw in ("偵查", "偵辦", "毒品")) if _cr_reason else False
+         _disc_total = int(counts.get("meeting_count", 0) or 0) + int(counts.get("contact_count", 0) or 0)
+@@ -3764,6 +3856,153 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
+             "items": results,
+         }
+ 
++    # ==================================================================
++    # Auto Closing Draft (報結自動暫存)
++    # ==================================================================
++
++    def _was_closing_drafted_recently(self, case_number: str, days: int = 30) -> bool:
++        """Check if a closing draft was already saved for this case recently."""
++        if not self.db or not case_number:
++            return False
++        try:
++            q = (
++                "SELECT COUNT(*) AS cnt FROM `laf_lifecycle_log` "
++                "WHERE `case_number` = %s "
++                "AND `event_type` = 'closing' "
++                "AND `status` IN ('draft','success','pending') "
++                "AND `created_at` >= DATE_SUB(NOW(), INTERVAL %s DAY)"
++            )
++            row = self.db.fetch_one(q, (case_number, int(days)), as_dict=True)
++            if isinstance(row, dict):
++                return int(row.get("cnt") or 0) > 0
++            if isinstance(row, (tuple, list)) and row:
++                return int(row[0] or 0) > 0
++        except Exception:
++            return False
++        return False
++
++    def _get_pending_closing_draft_cases(self, max_cases: int = 3) -> List[dict]:
++        """
++        Find LAF cases ready for auto closing draft:
++        - legal_aid_status in (進行中, 已開辦)
++        - 10_判決書 has files
++        - Not already drafted recently
++        """
++        if not self.db:
++            return []
++        try:
++            q = """
++                SELECT `case_number`, `client_name`, `legal_aid_number`,
++                       `folder_path`, `case_reason`
++                FROM `cases`
++                WHERE `case_category` = '法律扶助案件'
++                  AND (`legal_aid_number` IS NOT NULL AND TRIM(`legal_aid_number`) <> '')
++                  AND TRIM(COALESCE(`legal_aid_status`, '')) IN ('進行中', '已開辦')
++                ORDER BY `id` DESC
++                LIMIT 200
++            """
++            rows = self.db.fetch_all(q, as_dict=True) or []
++        except Exception as e:
++            logger.warning("Query pending closing draft cases failed: %s", e)
++            return []
++
++        out: List[dict] = []
++        for r in rows:
++            if not isinstance(r, dict):
++                continue
++            laf_no = (r.get("legal_aid_number") or "").strip()
++            osc_no = (r.get("case_number") or "").strip()
++            client = (r.get("client_name") or "").strip()
++            folder = self._to_local_case_folder(r.get("folder_path") or "")
++            if not laf_no or not folder or not os.path.isdir(folder):
++                continue
++            # Must have judgment files
++            judg_dir = os.path.join(folder, "10_判決書")
++            if not os.path.isdir(judg_dir):
++                continue
++            try:
++                has_file = any(not fn.startswith(".") for fn in os.listdir(judg_dir))
++            except OSError:
++                continue
++            if not has_file:
++                continue
++            # Dedup
++            if self._was_closing_drafted_recently(laf_no, days=30):
++                continue
++            if osc_no and self._was_closing_drafted_recently(osc_no, days=30):
++                continue
++            # Collect judgment PDFs as closing_basis_files
++            basis = []
++            allowed_ext = {".pdf", ".jpg", ".jpeg", ".png", ".tif", ".tiff"}
++            try:
++                judg_files = sorted(os.listdir(judg_dir))
++            except OSError:
++                continue
++            for fn in judg_files:
++                if fn.startswith("."):
++                    continue
++                if Path(fn).suffix.lower() in allowed_ext:
++                    basis.append(os.path.join(judg_dir, fn))
++            out.append({
++                "osc_case_number": osc_no,
++                "laf_case_number": laf_no,
++                "client_name": client,
++                "folder_path": folder,
++                "case_reason": (r.get("case_reason") or "").strip(),
++                "closing_basis_files": basis,
++            })
++            if len(out) >= int(max_cases):
++                break
++        return out
++
++    def run_closing_drafts(self, max_cases: int = 3) -> dict:
++        """
++        自動找「10_判決書已到位」的進行中法扶案件，
++        呼叫既有 execute_portal_action_draft(action=closing) 暫存。
++        僅暫存，不送出。
++        """
++        candidates = self._get_pending_closing_draft_cases(max_cases=max_cases)
++        if not candidates:
++            return {"ok": True, "scanned": 0, "processed": 0, "items": [],
++                    "message": "no_pending_closing_draft_cases"}
++
++        results = []
++        ok_count = 0
++        for c in candidates:
++            laf_no = c["laf_case_number"]
++            osc_no = c.get("osc_case_number", "")
++            client = c.get("client_name", "")
++            basis = c.get("closing_basis_files", [])
++
++            display = f"{client}（{laf_no}）" if client else laf_no
++            logger.info("📋 Auto closing draft: %s", display)
++
++            r = self.execute_portal_action_draft(
++                action="closing",
++                laf_case_number=laf_no,
++                case_number=osc_no,
++                client_name=client,
++                reason="系統自動暫存，請律師確認",
++                fields={"closing_basis_files": basis},
++            )
++            ok = bool(r.get("ok"))
++            results.append({
++                "ok": ok,
++                "laf_case_number": laf_no,
++                "osc_case_number": osc_no,
++                "client_name": client,
++                "error": r.get("error", ""),
++            })
++            if ok:
++                ok_count += 1
++
++        return {
++            "ok": ok_count == len(candidates),
++            "scanned": len(candidates),
++            "processed": ok_count,
++            "items": results,
++        }
++
+     def run_condition_mark_by_mediation(self, max_scan: int = 8000) -> dict:
+         """
+         全量掃描案件資料夾；若偵測到「調解不成立證明書 / 調解不成立」，
+@@ -3952,6 +4191,133 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
+             logger.error("Query failed: %s", e)
+             return []
+ 
++    # ------------------------------------------------------------------
++    # 結案類型 (casekd) 級聯選單路徑推算
++    # ------------------------------------------------------------------
++    def _determine_clcate_path(self, case_info: dict, counts: dict,
++                               has_mediation: bool = False) -> list:
++        """
++        根據案件屬性推算法扶 Portal 結案類型的級聯選單路徑。
++
++        Portal 使用 casekd → level1 → level2 → ... 級聯 select，每層選項由
++        AJAX /lafcsp/getPLS12ByFnode 動態載入。這裡回傳文字標籤陣列，由
++        automation 端透過 AJAX 匹配實際 option value 並設值。
++
++        Returns:
++            list of str — 每個元素對應一層 select 的文字標籤
++            例如: ["扶助種類為訴訟代理或辯護", "民/家事案件", "消債事件程序", "更生程序"]
++        """
++        path = []
++        _case_code = str(counts.get("court_case_code") or "").strip()
++        _closing_result = str(counts.get("closing_result") or "").strip()
++        _doc_type = str(counts.get("closing_doc_type") or "").strip()
++        _case_reason = str(case_info.get("case_reason") or counts.get("case_reason") or "").strip()
++
++        # --- Level 0: casekd ---
++        # 依扶助種類判斷
++        _aid_type = str(case_info.get("aid_type") or "").strip()
++        if any(k in _aid_type for k in ("調解", "和解")):
++            path.append("扶助種類為調解或和解")
++            return path  # 調解/和解通常只有一層
++        elif "法律文件" in _aid_type:
++            path.append("扶助種類為法律文件之撰擬")
++            return path
++        elif "法律諮詢" in _aid_type or "研究性" in _aid_type:
++            path.append("研究性法律諮詢")
++            return path
++        else:
++            path.append("扶助種類為訴訟代理或辯護")
++
++        # --- Level 1: 案件類型 ---
++        # 刑事案字判斷：「訴」和「聲」過於寬泛（民事也用），需配合 case_reason 確認
++        _strict_criminal_codes = ("易", "矚訴", "金訴", "原訴", "原易", "偵", "少偵", "軍偵",
++                                  "訴緝", "易緝", "聲簡", "毒聲", "聲羈")
++        _ambiguous_criminal = ("訴", "聲")  # 需配合 case_reason
++        _civil_exclusions = ("消債", "家", "婚", "親", "繼", "司", "調", "存證", "非訟")
++        _has_civil_exclusion = any(k in _case_code for k in _civil_exclusions)
++        _is_criminal = (
++            (any(k == _case_code for k in _strict_criminal_codes) or
++             any(_case_code.startswith(k) for k in _strict_criminal_codes))
++            and not _has_civil_exclusion
++        ) or (
++            any(k == _case_code for k in _ambiguous_criminal)
++            and not _has_civil_exclusion
++            and any(k in _case_reason for k in ("刑事", "偵查", "毒品", "竊盜", "傷害", "詐欺", "公訴", "辯護"))
++        )
++
++        _is_juvenile = any(k in _case_code for k in ("少調", "少護", "少偵"))
++        _is_admin = any(k in _case_code for k in ("訴更", "簡上", "行訴")) and "行政" in _case_reason
++        _is_debt = any(k in _case_code for k in ("消債更", "消債清", "消債調", "消債抗"))
++
++        if _is_juvenile:
++            path.append("少年事件")
++        elif _is_admin:
++            path.append("行政訴訟")
++        elif _is_debt or "消費者債務清理" in _case_reason:
++            path.append("民/家事案件")
++        elif _is_criminal or any(k in _case_reason for k in ("偵查", "刑事", "毒品", "竊盜", "傷害", "詐欺")):
++            path.append("刑事案件")
++        else:
++            # 預設：民/家事
++            path.append("民/家事案件")
++
++        # --- Level 2: 細項 ---
++        if _is_debt or "消費者債務清理" in _case_reason:
++            path.append("消債事件程序")
++
++            # --- Level 3: 消債子類 ---
++            if "消債更" in _case_code or "更生" in _case_reason:
++                path.append("更生程序")
++                # --- Level 4: 更生結果 ---
++                _r = _closing_result.lower()
++                if "認可" in _closing_result and "更生方案" in _closing_result:
++                    path.append("更生方案經法院裁定認可確定")
++                elif "駁回" in _closing_result:
++                    path.append("法院駁回更生聲請確定")
++                elif "撤回" in _closing_result:
++                    path.append("撤回更生聲請")
++                # else: 不加第4層，讓使用者手動選
++
++            elif "消債清" in _case_code or "清算" in _case_reason:
++                path.append("清算程序")
++                if "免責" in _closing_result and "不免責" not in _closing_result:
++                    path.append("免責裁定")
++                elif "不免責" in _closing_result:
++                    path.append("不免責裁定")
++                elif "終結" in _closing_result:
++                    path.append("清算程序終結")
++                elif "駁回" in _closing_result:
++                    path.append("法院駁回清算聲請確定")
++
++            elif "消債調" in _case_code or "協商" in _case_reason:
++                path.append("前置協商/調解程序")
++                if has_mediation or "成立" in _closing_result:
++                    path.append("調解成立")
++                elif "不成立" in _closing_result:
++                    path.append("調解不成立")
++                elif "協商成立" in _closing_result:
++                    path.append("協商成立")
++
++        elif _is_criminal or "刑事" in (path[1] if len(path) > 1 else ""):
++            # 刑事案件：依結果判斷
++            if "不起訴" in _closing_result:
++                path.append("不起訴處分")
++            elif "緩起訴" in _closing_result:
++                path.append("緩起訴處分")
++            elif "無罪" in _closing_result:
++                path.append("無罪判決")
++            elif "免訴" in _closing_result:
++                path.append("免訴判決")
++            elif "有期徒刑" in _closing_result or "拘役" in _closing_result:
++                path.append("有罪判決")
++            elif _doc_type == "判決":
++                path.append("有罪判決")
++
++        # 家事案件等其他類型目前不深入推算，留待使用者手動選擇
++
++        logger.info("  📋 Clcate path: %s", " → ".join(path))
++        return path
++
+     def _gather_case_counts(self, case_number: str, client_name: str = "") -> dict:
+         """
+         Gather all counts needed for a closing report.
+@@ -3964,6 +4330,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
+         counts = {
+             "meeting_count": 0,
+             "contact_count": 0,
++            "inq_count": 0,
+             "court_count": 0,
+             "document_count": 0,
+         }
+@@ -3991,6 +4358,18 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
+             if result:
+                 counts["contact_count"] = result[0] if isinstance(result, tuple) else result.get("cnt", 0)
+ 
++            # 2b. Inq count (律見次數 — from case_todos)
++            result = self.db.fetch_one(
++                """SELECT COUNT(*) as cnt FROM `case_todos`
++                   WHERE `case_number` = %s
++                   AND (`todo_type` LIKE '%%律見%%' OR `todo_type` LIKE '%%律師接見%%'
++                        OR `todo_type` LIKE '%%接見%%')
++                   AND `status` = 'completed'""",
++                (case_number,)
++            )
++            if result:
++                counts["inq_count"] = result[0] if isinstance(result, tuple) else result.get("cnt", 0)
++
+             # 3. Court date count (from case_todos — hearings)
+             result = self.db.fetch_one(
+                 """SELECT COUNT(*) as cnt FROM `case_todos`
+@@ -4284,7 +4663,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
+ 
+ def main():
+     parser = argparse.ArgumentParser(description="LAF Case Lifecycle Orchestrator")
+-    parser.add_argument("--mode", choices=["monitor", "closing", "condition-draft", "condition-mark-done", "condition-mark-by-mediation", "portal-draft", "portal-submit", "dry-run", "test-notify"],
++    parser.add_argument("--mode", choices=["monitor", "closing", "closing-draft", "condition-draft", "condition-mark-done", "condition-mark-by-mediation", "portal-draft", "portal-submit", "dry-run", "test-notify"],
+                         default="dry-run",
+                         help="monitor=watch Gmail, closing=process 待報結, dry-run=preview")
+     parser.add_argument("--case", type=str, default=None,
+@@ -4335,6 +4714,10 @@ def main():
+         else:
+             orchestrator.run_closing()
+ 
++    elif args.mode == "closing-draft":
++        r = orchestrator.run_closing_drafts(max_cases=int(args.max_cases or 3))
++        print(json.dumps(r, ensure_ascii=False, indent=2))
++
+     elif args.mode == "condition-draft":
+         r = orchestrator.run_condition_drafts(max_cases=int(args.max_cases or 3))
+         print(json.dumps(r, ensure_ascii=False, indent=2))

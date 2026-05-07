@@ -1,0 +1,1455 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>消債羅伯特 | MAGI</title>
+    <style>
+        :root {
+            --bg: #f0f2f5; --panel: #ffffff; --panel-2: #f8f9fb;
+            --line: #e2e8f0; --text: #1e293b; --muted: #64748b;
+            --accent: #0ea5e9; --accent-2: #f59e0b; --danger: #ef4444; --ok: #22c55e;
+            --sidebar-bg: #1e293b; --sidebar-text: #cbd5e1; --sidebar-accent: #38bdf8;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        html, body { height: 100%; font-family: "PingFang TC","Noto Sans TC",system-ui,sans-serif; font-size: 14px; color: var(--text); }
+        body { display: flex; background: var(--bg); overflow: hidden; }
+
+        /* ── Sidebar ── */
+        .sidebar { width: 240px; background: var(--sidebar-bg); color: var(--sidebar-text); display: flex; flex-direction: column; flex-shrink: 0; overflow-y: auto; }
+        .sidebar-logo { padding: 20px 16px 12px; font-size: 18px; font-weight: 700; color: #fff; letter-spacing: 1px; }
+        .sidebar-logo span { color: var(--sidebar-accent); }
+        .sidebar-nav { flex: 1; overflow-y: auto; padding: 8px 12px; display: flex; flex-direction: column; gap: 4px; }
+        .nav-btn { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border: none; background: transparent; color: var(--sidebar-text); border-radius: 8px; cursor: pointer; font-size: 13px; font-weight: 500; text-align: left; transition: all .15s; white-space: nowrap; }
+        .nav-btn:hover { background: rgba(255,255,255,.08); color: #f1f5f9; }
+        .nav-btn.active { background: var(--sidebar-accent); color: #fff; font-weight: 600; }
+        .nav-btn .icon { font-size: 18px; width: 24px; text-align: center; flex-shrink: 0; }
+        .sidebar-footer { padding: 12px 16px; border-top: 1px solid rgba(255,255,255,.08); font-size: 11px; color: rgba(255,255,255,.3); margin-top: auto; }
+        .sidebar-footer a { color: var(--sidebar-accent); text-decoration: none; }
+
+        /* ── Main area ── */
+        .main { flex: 1; display: flex; flex-direction: column; min-width: 0; height: 100vh; }
+        .topbar { display: flex; justify-content: space-between; align-items: center; padding: 12px 24px; border-bottom: 1px solid var(--line); background: var(--panel); flex-shrink: 0; }
+        .topbar-title { font-size: 20px; font-weight: 700; }
+        .topbar-actions { display: flex; gap: 8px; }
+        .content { flex: 1; overflow-y: auto; padding: 24px; }
+
+        /* ── Form panels ── */
+        .form-panel { display: none; }
+        .form-panel.active { display: block; }
+        .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 20px 24px; margin-bottom: 16px; }
+        .card-title { font-size: 16px; font-weight: 600; margin-bottom: 4px; }
+        .card-desc { font-size: 13px; color: var(--muted); margin-bottom: 16px; }
+
+        /* ── Form elements ── */
+        .form-row { display: flex; gap: 12px; margin-bottom: 12px; flex-wrap: wrap; }
+        .form-group { flex: 1; min-width: 200px; }
+        .form-group label { display: block; font-size: 12px; font-weight: 600; color: var(--muted); margin-bottom: 4px; text-transform: uppercase; letter-spacing: .5px; }
+        .form-group input, .form-group select, .form-group textarea {
+            width: 100%; padding: 8px 12px; border: 1px solid var(--line); border-radius: 8px; font-size: 13px; color: var(--text); background: var(--panel-2);
+        }
+        .form-group textarea { min-height: 80px; resize: vertical; font-family: inherit; }
+        .form-group input:focus, .form-group select:focus, .form-group textarea:focus {
+            outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(14,165,233,.12);
+        }
+
+        /* ── Dynamic table ── */
+        .dyn-table { width: 100%; border-collapse: collapse; margin-bottom: 12px; font-size: 13px; }
+        .dyn-table th { background: var(--panel-2); font-size: 12px; font-weight: 600; color: var(--muted); padding: 8px 10px; text-align: left; border-bottom: 2px solid var(--line); }
+        .dyn-table td { padding: 6px 8px; border-bottom: 1px solid var(--line); }
+        .dyn-table input, .dyn-table select { width: 100%; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; font-size: 13px; background: #fff; }
+        .dyn-table input:focus, .dyn-table select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 2px rgba(14,165,233,.08); }
+        .dyn-table .btn-remove { background: none; border: none; color: var(--danger); cursor: pointer; font-size: 16px; padding: 4px; }
+        .total-row { font-weight: 600; background: #f0fdf4; }
+        .total-row td { padding: 8px 10px; }
+
+        /* ── Buttons ── */
+        .btn { display: inline-flex; align-items: center; gap: 6px; padding: 8px 16px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel); color: var(--text); font-size: 13px; font-weight: 500; cursor: pointer; transition: all .15s; }
+        .btn:hover { background: var(--panel-2); }
+        .btn-primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+        .btn-primary:hover { background: #0284c7; }
+        .btn-success { background: var(--ok); color: #fff; border-color: var(--ok); }
+        .btn-danger { background: var(--danger); color: #fff; border-color: var(--danger); }
+        .btn-sm { padding: 5px 10px; font-size: 12px; }
+
+        /* ── File upload ── */
+        .file-drop { border: 2px dashed var(--line); border-radius: 12px; padding: 40px 20px; text-align: center; color: var(--muted); cursor: pointer; transition: all .2s; }
+        .file-drop:hover, .file-drop.dragover { border-color: var(--accent); background: rgba(14,165,233,.04); }
+        .file-list { list-style: none; margin-top: 12px; }
+        .file-list li { display: flex; justify-content: space-between; align-items: center; padding: 8px 12px; background: var(--panel-2); border-radius: 8px; margin-bottom: 6px; font-size: 13px; user-select: none; }
+        .file-list li.selected { background: rgba(14,165,233,.15); border-left: 3px solid var(--accent); }
+
+        /* ── Checkbox grid ── */
+        .checkbox-group { display: flex; flex-direction: column; gap: 8px; }
+        .checkbox-item { display: flex; align-items: center; gap: 8px; }
+        .checkbox-item input[type="checkbox"] { width: 16px; height: 16px; cursor: pointer; }
+        .checkbox-item label { cursor: pointer; font-size: 13px; }
+
+        /* ── Toast / Status ── */
+        .toast { position: fixed; bottom: 24px; right: 24px; background: var(--text); color: #fff; padding: 12px 20px; border-radius: 10px; font-size: 13px; z-index: 9999; opacity: 0; transform: translateY(20px); transition: all .3s; box-shadow: 0 4px 12px rgba(0,0,0,.15); }
+        .toast.show { opacity: 1; transform: translateY(0); }
+        .toast.success { background: #166534; }
+        .toast.error { background: #991b1b; }
+
+        /* ── Import dialog ── */
+        .modal-backdrop { position: fixed; inset: 0; z-index: 9000; display: none; align-items: center; justify-content: center; background: rgba(15,23,42,.42); padding: 20px; }
+        .modal-backdrop.show { display: flex; }
+        .modal-card { width: min(860px, 100%); max-height: min(760px, 92vh); overflow: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 14px; box-shadow: 0 18px 52px rgba(15,23,42,.25); }
+        .modal-head { display: flex; justify-content: space-between; gap: 16px; align-items: flex-start; padding: 18px 20px; border-bottom: 1px solid var(--line); }
+        .modal-head h2 { font-size: 18px; line-height: 1.3; margin: 0; }
+        .modal-head p { margin-top: 4px; color: var(--muted); font-size: 13px; line-height: 1.45; }
+        .modal-body { padding: 18px 20px; display: grid; gap: 16px; }
+        .modal-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+        .modal-section { border: 1px solid var(--line); background: var(--panel-2); border-radius: 10px; padding: 12px; display: grid; gap: 8px; }
+        .modal-section label { display: block; color: var(--muted); font-size: 12px; font-weight: 700; margin-bottom: 4px; }
+        .modal-section select, .modal-section input[type="file"] { width: 100%; font-size: 13px; }
+        .modal-note { color: var(--muted); font-size: 12px; line-height: 1.5; }
+        .modal-actions { display: flex; justify-content: flex-end; gap: 8px; padding: 14px 20px 18px; border-top: 1px solid var(--line); }
+        .import-status { color: var(--muted); font-size: 13px; line-height: 1.5; min-height: 20px; }
+        .generated-list { display: grid; gap: 10px; }
+        .generated-item { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; align-items: center; padding: 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel-2); }
+        .generated-name { font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .generated-meta { margin-top: 4px; font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .generated-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+        @media (max-width: 760px) { .modal-grid { grid-template-columns: 1fr; } }
+        @media (max-width: 760px) {
+            .generated-item { grid-template-columns: 1fr; }
+            .generated-actions { justify-content: flex-start; }
+        }
+
+        /* ── Responsive ── */
+        @media (max-width: 768px) {
+            .sidebar { width: 60px; }
+            .sidebar-logo, .nav-btn span, .sidebar-footer { display: none; }
+            .nav-btn { justify-content: center; padding: 12px; }
+            .form-row { flex-direction: column; }
+            .form-group { min-width: 100%; }
+        }
+    </style>
+</head>
+<body>
+
+<!-- ══ Sidebar ══ -->
+<aside class="sidebar">
+    <div class="sidebar-logo"><span>MAGI</span> 消債羅伯特</div>
+    <nav class="sidebar-nav" id="sidebarNav">
+        <button class="nav-btn active" data-panel="application"><span class="icon">📋</span><span>聲請狀</span></button>
+        <button class="nav-btn" data-panel="asset_statement"><span class="icon">💰</span><span>財產說明書</span></button>
+        <button class="nav-btn" data-panel="creditor_list"><span class="icon">🏦</span><span>債權人清冊</span></button>
+        <button class="nav-btn" data-panel="report"><span class="icon">📝</span><span>陳報狀</span></button>
+        <button class="nav-btn" data-panel="supplement"><span class="icon">🧾</span><span>補件書狀</span></button>
+        <button class="nav-btn" data-panel="pdf_merge"><span class="icon">📎</span><span>合併PDF</span></button>
+        <button class="nav-btn" data-panel="batch_generate"><span class="icon">⚡</span><span>一鍵產生</span></button>
+    </nav>
+    <div class="sidebar-footer">
+        <a href="/osc">← 返回 Paperclip</a>
+    </div>
+</aside>
+
+<!-- ══ Main ══ -->
+<div class="main">
+    <header class="topbar">
+        <div class="topbar-title" id="topbarTitle">消費者債務清理聲請狀</div>
+        <div class="topbar-actions">
+            <button class="btn btn-primary" id="topActionBtn" onclick="topAction()">📄 產生文件</button>
+        </div>
+    </header>
+
+    <div class="content" id="contentArea">
+
+        <!-- ═══ 1. 聲請狀 ═══ -->
+        <div class="form-panel active" id="panel-application">
+            <div class="card">
+                <div class="card-title">聲請人基本資料</div>
+                <div class="card-desc">填寫聲請人基本資料並選擇已有文件以帶入資訊</div>
+                <div class="form-row">
+                    <div class="form-group"><label>姓名</label><input type="text" id="app-name" placeholder="輸入姓名"></div>
+                    <div class="form-group"><label>地址</label><input type="text" id="app-address" placeholder="輸入地址"></div>
+                </div>
+                <div class="form-row">
+                    <div class="form-group"><label>資產總價值</label><input type="number" id="app-asset-total" value="0"></div>
+                    <div class="form-group"><label>債務總金額</label><input type="number" id="app-debt-total" value="0"></div>
+                </div>
+                <div class="form-row">
+                    <div class="form-group"><label>最大債權銀行</label><input type="text" id="app-max-bank" placeholder="最大債權銀行名稱"></div>
+                </div>
+                <div class="form-row">
+                    <div class="form-group"><label>執行法院名稱</label><select id="app-exec-court"></select></div>
+                    <div class="form-group"><label>執行案號</label><input type="text" id="app-exec-case" placeholder="輸入執行案號"></div>
+                </div>
+                <div class="form-row">
+                    <div class="form-group"><label>聲請法院名稱</label><select id="app-court"></select></div>
+                </div>
+                <div class="form-row">
+                    <div class="form-group" style="min-width:100%"><label>附件名稱</label>
+                        <textarea id="app-attachments" placeholder="已有財產收入狀況說明書、債權人清冊等，請輸入其餘附件名稱"></textarea>
+                    </div>
+                </div>
+                <div style="margin-top:16px;padding-top:16px;border-top:1px solid var(--line)">
+                    <button class="btn btn-primary" onclick="autoImportData()">📥 從已有文件帶入</button>
+                    <small style="display:block;color:var(--muted);margin-top:4px">系統將讀取已產生的財產說明書與債權人清冊</small>
+                </div>
+            </div>
+        </div>
+
+        <!-- ═══ 2. 財產說明書 ═══ -->
+        <div class="form-panel" id="panel-asset_statement">
+            <div class="card">
+                <div class="card-title">財產及收入狀況說明書</div>
+                <div class="card-desc">詳細填寫資產、收入、支出及扶養資訊</div>
+
+                <!-- 保險 -->
+                <div style="margin-bottom:20px;padding-bottom:20px;border-bottom:1px solid var(--line)">
+                    <h3 style="font-size:14px;font-weight:600;margin-bottom:12px">保險</h3>
+                    <table class="dyn-table" id="assetInsuranceTable"><thead><tr><th>公司名稱</th><th>保險類型</th><th>保單號</th><th>金額</th><th></th></tr></thead><tbody id="assetInsuranceBody"></tbody></table>
+                    <button class="btn btn-sm" onclick="addAssetRow('insurance')">＋ 新增保險</button>
+                </div>
+
+                <!-- 不動產 -->
+                <div style="margin-bottom:20px;padding-bottom:20px;border-bottom:1px solid var(--line)">
+                    <h3 style="font-size:14px;font-weight:600;margin-bottom:12px">不動產</h3>
+                    <table class="dyn-table" id="assetLandTable"><thead><tr><th>位置</th><th>價值</th><th>持分比</th><th>備註</th><th></th></tr></thead><tbody id="assetLandBody"></tbody></table>
+                    <button class="btn btn-sm" onclick="addAssetRow('land')">＋ 新增不動產</button>
+                </div>
+
+                <!-- 車輛 -->
+                <div style="margin-bottom:20px;padding-bottom:20px;border-bottom:1px solid var(--line)">
+                    <h3 style="font-size:14px;font-weight:600;margin-bottom:12px">車輛</h3>
+                    <table class="dyn-table" id="assetVehicleTable"><thead><tr><th>車輛類型</th><th>牌號</th><th>年份</th><th>備註</th><th></th></tr></thead><tbody id="assetVehicleBody"></tbody></table>
+                    <button class="btn btn-sm" onclick="addAssetRow('vehicle')">＋ 新增車輛</button>
+                </div>
+
+                <!-- 股票/基金 -->
+                <div style="margin-bottom:20px;padding-bottom:20px;border-bottom:1px solid var(--line)">
+                    <h3 style="font-size:14px;font-weight:600;margin-bottom:12px">股票/基金</h3>
+                    <table class="dyn-table" id="assetStockTable"><thead><tr><th>公司名稱</th><th>股數/份數</th><th>備註</th><th></th></tr></thead><tbody id="assetStockBody"></tbody></table>
+                    <button class="btn btn-sm" onclick="addAssetRow('stock')">＋ 新增股票</button>
+                </div>
+
+                <!-- 收入 -->
+                <div style="margin-bottom:20px;padding-bottom:20px;border-bottom:1px solid var(--line)">
+                    <h3 style="font-size:14px;font-weight:600;margin-bottom:12px">收入</h3>
+                    <table class="dyn-table" id="assetIncomeTable"><thead><tr><th>收入類型</th><th>收入來源</th><th>金額</th><th></th></tr></thead><tbody id="assetIncomeBody"></tbody></table>
+                    <button class="btn btn-sm" onclick="addAssetRow('income')">＋ 新增收入</button>
+                    <div style="margin-top:8px;padding:8px;background:var(--panel-2);border-radius:6px">
+                        <strong>合計：</strong><span id="incomeTotal" style="color:var(--accent);font-weight:600">0</span> 元/月
+                    </div>
+                </div>
+
+                <!-- 支出 -->
+                <div style="margin-bottom:20px;padding-bottom:20px;border-bottom:1px solid var(--line)">
+                    <h3 style="font-size:14px;font-weight:600;margin-bottom:12px">月度支出</h3>
+                    <table class="dyn-table" id="assetExpenseTable"><thead><tr><th>支出類別</th><th>金額</th><th>備註</th><th></th></tr></thead><tbody id="assetExpenseBody"></tbody></table>
+                    <button class="btn btn-sm" onclick="addAssetRow('expense')">＋ 新增支出</button>
+                    <div style="margin-top:8px;padding:8px;background:var(--panel-2);border-radius:6px">
+                        <div><strong>月合計：</strong><span id="expenseMonthly" style="color:var(--accent);font-weight:600">0</span> 元</div>
+                        <div><strong>年合計(估)：</strong><span id="expenseYearly" style="color:var(--accent);font-weight:600">0</span> 元</div>
+                    </div>
+                </div>
+
+                <!-- 扶養人 -->
+                <div style="margin-bottom:20px">
+                    <h3 style="font-size:14px;font-weight:600;margin-bottom:12px">扶養人</h3>
+                    <table class="dyn-table" id="assetDependentTable"><thead><tr><th>姓名</th><th>關係</th><th>扶養比例</th><th>扶養額</th><th></th></tr></thead><tbody id="assetDependentBody"></tbody></table>
+                    <button class="btn btn-sm" onclick="addAssetRow('dependent')">＋ 新增扶養人</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- ═══ 3. 債權人清冊 ═══ -->
+        <div class="form-panel" id="panel-creditor_list">
+            <div class="card">
+                <div class="card-title">債權人清冊</div>
+                <div class="card-desc">新增債權人資料，系統將自動計算總金額</div>
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+                    <div style="font-size:16px;font-weight:600">債權總金額：<span id="creditor-total" style="color:var(--accent)">0</span> 元</div>
+                    <button class="btn btn-sm btn-primary" onclick="addCreditorRow()">＋ 新增債權人</button>
+                </div>
+                <table class="dyn-table" id="creditorTable">
+                    <thead><tr><th>債權人名稱</th><th>地址</th><th>債權額</th><th>債務類型</th><th></th></tr></thead>
+                    <tbody id="creditorBody"></tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- ═══ 4. 陳報狀 ═══ -->
+        <div class="form-panel" id="panel-report">
+            <!-- 步驟一：選擇案件 -->
+            <div class="card">
+                <div class="card-title">步驟一：選擇案件</div>
+                <div class="card-desc">選擇當事人後，系統自動掃描證據資料夾偵測可填寫項目</div>
+                <div class="form-row">
+                    <div class="form-group" style="flex:2"><label>消債案件</label>
+                        <select id="rpt-case-select" onchange="onCaseSelected()">
+                            <option value="">-- 請選擇案件 --</option>
+                        </select>
+                    </div>
+                    <div class="form-group" style="flex:1;align-self:flex-end">
+                        <button class="btn btn-primary" onclick="scanEvidence()" id="btnScanEvidence" disabled>🔍 掃描證據資料</button>
+                    </div>
+                </div>
+                <div id="scan-status" style="display:none;margin-top:12px;padding:12px;border-radius:8px;font-size:13px"></div>
+            </div>
+
+            <!-- 證據偵測結果 -->
+            <div class="card" id="evidence-result-card" style="display:none">
+                <div class="card-title">證據偵測結果</div>
+                <div class="card-desc" id="evidence-summary"></div>
+                <div id="evidence-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:8px"></div>
+            </div>
+
+            <!-- 步驟二：基本資訊 -->
+            <div class="card">
+                <div class="card-title">步驟二：基本案件資訊</div>
+                <div class="form-row">
+                    <div class="form-group"><label>陳報狀號碼</label><input type="text" id="rpt-A1" placeholder="陳報狀號碼（如：一）"></div>
+                    <div class="form-group"><label>案號</label><input type="text" id="rpt-A2" placeholder="案號"></div>
+                </div>
+                <div class="form-row">
+                    <div class="form-group"><label>股別</label><input type="text" id="rpt-A3" placeholder="股別"></div>
+                    <div class="form-group"><label>聲請人姓名</label><input type="text" id="rpt-A4" placeholder="聲請人姓名"></div>
+                </div>
+            </div>
+
+            <!-- 步驟三：陳報詳述 -->
+            <div class="card">
+                <div class="card-title">步驟三：陳報詳述</div>
+                <div class="form-row">
+                    <div class="form-group" style="min-width:100%"><label>借款原因</label>
+                        <textarea id="rpt-B1" placeholder="聲請人因OO原因而陸續向債權人商借款項...">聲請人因OO原因而陸續向債權人商借款項，以解其燃眉之急，然因債務及利息循環增生，以致聲請人陷入難以償還之境地，故僅能向 鈞院聲請更生。</textarea>
+                    </div>
+                </div>
+                <div class="form-row">
+                    <div class="form-group" style="min-width:100%"><label>調解不成立原因</label>
+                        <textarea id="rpt-B2" placeholder="就調解不成立之原因...">就調解不成立之原因，係因聲請人債權人繁多，且除銀行外，尚有民間債權人，雖銀行同意以每月新臺幣（下同）Ｏ萬塊之方式償還，惟前開民間債權人並未出席調解，如依照聲請人與前開民間債權人之約定，聲請人依然須以每月約Ｏ萬元之金額償還之，前開債務實已讓聲請人不堪負荷，且已積欠數額未繳納，而僅能向 鈞院聲請更生。</textarea>
+                    </div>
+                </div>
+                <div class="form-row">
+                    <div class="form-group" style="min-width:100%"><label>更生方案</label>
+                        <textarea id="rpt-B3" placeholder="就更生方案部分...">就更生方案部分，聲請人每月現收入為O元；必要性支出為O元，如依消費者債務清理條例第64條之1之規定，聲請人之收入扣除必要支出後之餘額為O元，現聲請人願以72期，每月1期，每期O元之方式償還債務，前開每月期數之金額已超出消費者債務清理條例第64條之1之規定，而已為盡力清償，故懇請 鈞院得依法准許聲請人之聲請。</textarea>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 步驟四：證據欄位（由掃描結果動態填入，也可手動調整） -->
+            <div class="card">
+                <div class="card-title">步驟四：證據與附件欄位</div>
+                <div class="card-desc">以下為依掃描結果自動建議的選項，您可手動修改</div>
+
+                <div class="form-row">
+                    <div class="form-group"><label>C1 聲請前兩年收入</label><select id="rpt-C1"></select></div>
+                    <div class="form-group"><label>C2 目前工作情形</label><select id="rpt-C2"></select></div>
+                </div>
+                <div class="form-row">
+                    <div class="form-group"><label>C3 受資助情形</label><select id="rpt-C3"></select></div>
+                    <div class="form-group"><label>D1 現居地資料</label><select id="rpt-D1"></select></div>
+                </div>
+                <div class="form-row">
+                    <div class="form-group" style="min-width:100%"><label>D2 同住之人</label>
+                        <textarea id="rpt-D2">聲請人現與『OO關係之人』一同居住，此有聲請人之全戶戶籍謄本【聲證O】可稽。</textarea>
+                    </div>
+                </div>
+                <div class="form-row">
+                    <div class="form-group"><label>D3 家庭成員</label><select id="rpt-D3"></select></div>
+                    <div class="form-group"><label>D4 全戶戶籍謄本</label><select id="rpt-D4"></select></div>
+                </div>
+                <div class="form-row">
+                    <div class="form-group"><label>D5 家族系統表</label><select id="rpt-D5"></select></div>
+                    <div class="form-group"><label>D7 年金及健保</label><select id="rpt-D7"></select></div>
+                </div>
+                <div class="form-row">
+                    <div class="form-group"><label>D8 勞保資料</label><select id="rpt-D8"></select></div>
+                    <div class="form-group"><label>D10 集保公司</label><select id="rpt-D10"></select></div>
+                </div>
+                <div class="form-row">
+                    <div class="form-group"><label>D11 壽險資料</label><select id="rpt-D11"></select></div>
+                    <div class="form-group"><label>D12 社福津貼</label><select id="rpt-D12"></select></div>
+                </div>
+                <div class="form-row">
+                    <div class="form-group"><label>D14 公司營運</label><select id="rpt-D14"></select></div>
+                    <div class="form-group"><label>D15 財產說明書等</label><select id="rpt-D15"></select></div>
+                </div>
+                <div class="form-row">
+                    <div class="form-group"><label>E1 審理法院</label><select id="rpt-E1"></select></div>
+                </div>
+            </div>
+
+            <div style="display:flex;gap:8px;margin-bottom:16px">
+                <button class="btn btn-primary" onclick="generateReport()">📄 產生陳報狀</button>
+            </div>
+        </div>
+
+        <!-- ═══ 5. 補件書狀 ═══ -->
+        <div class="form-panel" id="panel-supplement">
+            <div class="card">
+                <div class="card-title">補件書狀</div>
+                <div class="card-desc">整理補正命令項目並產生補件陳報狀</div>
+                <div class="form-row">
+                    <div class="form-group"><label>法院</label><select id="sup-court"></select></div>
+                    <div class="form-group"><label>案號</label><input type="text" id="sup-case-no" placeholder="例如 113年度司消債更字第1號"></div>
+                </div>
+                <div class="form-row">
+                    <div class="form-group"><label>股別</label><input type="text" id="sup-branch"></div>
+                    <div class="form-group"><label>聲請人</label><input type="text" id="sup-applicant"></div>
+                </div>
+                <div class="form-row">
+                    <div class="form-group"><label>程序</label><select id="sup-procedure"><option>更生</option><option>清算</option></select></div>
+                    <div class="form-group"><label>書狀序號</label><input type="number" id="sup-brief-no" value="1"></div>
+                </div>
+                <table class="dyn-table">
+                    <thead><tr><th>補件類別</th><th>期間/內容</th><th>附件</th><th></th></tr></thead>
+                    <tbody id="supplementBody"></tbody>
+                </table>
+                <button class="btn btn-sm" onclick="addSupplementRow()">＋ 新增補件項目</button>
+                <div class="form-row" style="margin-top:12px">
+                    <div class="form-group" style="min-width:100%"><label>其他說明</label><textarea id="sup-notes"></textarea></div>
+                </div>
+                <button class="btn btn-primary" onclick="generateSupplement()">📄 產生補件書狀</button>
+            </div>
+        </div>
+
+        <!-- ═══ 6. 合併 PDF ═══ -->
+        <div class="form-panel" id="panel-pdf_merge">
+            <div class="card">
+                <div class="card-title">合併PDF檔案</div>
+                <div class="card-desc">上傳多個PDF或DOCX檔案，合併為單一PDF（奇數頁自動補空白頁）</div>
+                <div class="file-drop" id="fileDrop" ondrop="handleFileDrop(event)" ondragover="event.preventDefault(); this.classList.add('dragover')" ondragleave="this.classList.remove('dragover')" onclick="document.getElementById('fileInput').click()">
+                    📂 點擊或拖曳檔案至此<br><small>支援 PDF / DOCX</small>
+                </div>
+                <input type="file" id="fileInput" multiple accept=".pdf,.docx" style="display:none" onchange="handleFileSelect(this.files)">
+                <ul class="file-list" id="fileList"></ul>
+                <div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap">
+                    <button class="btn btn-sm" onclick="moveFile(-1)">↑ 上移</button>
+                    <button class="btn btn-sm" onclick="moveFile(1)">↓ 下移</button>
+                    <button class="btn btn-sm btn-danger" onclick="removeSelectedFile()">✕ 移除</button>
+                    <button class="btn btn-sm btn-primary" style="margin-left:auto" onclick="mergePDF()">📦 合併 PDF</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- ═══ 7. 一鍵產生 ═══ -->
+        <div class="form-panel" id="panel-batch_generate">
+            <div class="card">
+                <div class="card-title">一鍵產生全部文件</div>
+                <div class="card-desc">填寫基本資訊後一次性產生所有必要文件</div>
+
+                <h4 style="font-size:13px;font-weight:600;margin:12px 0 8px">基本資訊</h4>
+                <div class="form-row">
+                    <div class="form-group"><label>姓名</label><input type="text" id="batch-name" placeholder="聲請人姓名"></div>
+                    <div class="form-group"><label>地址</label><input type="text" id="batch-address" placeholder="聲請人地址"></div>
+                </div>
+                <div class="form-row">
+                    <div class="form-group"><label>聲請法院</label><select id="batch-court"></select></div>
+                </div>
+
+                <h4 style="font-size:13px;font-weight:600;margin:16px 0 8px">選擇要產生的文件</h4>
+                <div class="checkbox-group">
+                    <div class="checkbox-item"><input type="checkbox" id="batch-check-application" checked><label for="batch-check-application">消費者債務清理聲請狀</label></div>
+                    <div class="checkbox-item"><input type="checkbox" id="batch-check-asset" checked><label for="batch-check-asset">財產及收入狀況說明書</label></div>
+                    <div class="checkbox-item"><input type="checkbox" id="batch-check-creditor" checked><label for="batch-check-creditor">債權人清冊</label></div>
+                    <div class="checkbox-item"><input type="checkbox" id="batch-check-report"><label for="batch-check-report">陳報狀</label></div>
+                    <div class="checkbox-item"><input type="checkbox" id="batch-check-supplement"><label for="batch-check-supplement">補件書狀</label></div>
+                </div>
+
+                <div style="margin-top:16px;padding-top:16px;border-top:1px solid var(--line)">
+                    <button class="btn btn-primary" onclick="batchGenerate()">⚡ 一鍵產生</button>
+                </div>
+            </div>
+        </div>
+
+    </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<div class="modal-backdrop" id="debtImportModal" role="dialog" aria-modal="true" aria-labelledby="debtImportTitle">
+    <div class="modal-card">
+        <div class="modal-head">
+            <div>
+                <h2 id="debtImportTitle">選擇要帶入聲請狀的文件</h2>
+                <p>請選擇同一案件資料夾，或分別指定財產說明書與債權人清冊。也可以直接上傳 DOCX。</p>
+            </div>
+            <button class="btn btn-sm" type="button" onclick="closeImportDialog()">關閉</button>
+        </div>
+        <div class="modal-body">
+            <div class="modal-section">
+                <label for="import-folder-select">同一案件資料夾</label>
+                <select id="import-folder-select" onchange="onImportFolderSelected()">
+                    <option value="">載入中...</option>
+                </select>
+                <div class="modal-note">選這裡會自動套用該資料夾內最新的 02 財產說明書與 03 債權人清冊。</div>
+            </div>
+            <div class="modal-grid">
+                <div class="modal-section">
+                    <label for="import-asset-select">財產及收入狀況說明書 DOCX</label>
+                    <select id="import-asset-select"></select>
+                    <label for="import-asset-file">或上傳財產說明書</label>
+                    <input id="import-asset-file" type="file" accept=".docx">
+                </div>
+                <div class="modal-section">
+                    <label for="import-creditor-select">債權人清冊 DOCX</label>
+                    <select id="import-creditor-select"></select>
+                    <label for="import-creditor-file">或上傳債權人清冊</label>
+                    <input id="import-creditor-file" type="file" accept=".docx">
+                </div>
+            </div>
+            <div class="import-status" id="import-status">正在讀取可用文件...</div>
+        </div>
+        <div class="modal-actions">
+            <button class="btn" type="button" onclick="closeImportDialog()">取消</button>
+            <button class="btn btn-primary" type="button" onclick="applyImportSelection()">帶入聲請狀</button>
+        </div>
+    </div>
+</div>
+
+<div class="modal-backdrop" id="generatedFilesModal" role="dialog" aria-modal="true" aria-labelledby="generatedFilesTitle">
+    <div class="modal-card">
+        <div class="modal-head">
+            <div>
+                <h2 id="generatedFilesTitle">文件已產生</h2>
+                <p>可直接下載 Word / PDF，或建立不含檔案路徑的分享連結。</p>
+            </div>
+            <button class="btn btn-sm" type="button" onclick="closeGeneratedFilesDialog()">關閉</button>
+        </div>
+        <div class="modal-body">
+            <div class="generated-list" id="generatedFilesList"></div>
+            <div class="import-status" id="generated-files-status"></div>
+        </div>
+        <div class="modal-actions">
+            <button class="btn" type="button" onclick="closeGeneratedFilesDialog()">完成</button>
+        </div>
+    </div>
+</div>
+
+<script>
+// ────────────────────────────────────────────────────────────────
+// Global State
+// ────────────────────────────────────────────────────────────────
+let fileList = [];
+let selectedFileIndex = -1;
+let debtImportCandidates = null;
+let generatedFilesCache = [];
+
+// ────────────────────────────────────────────────────────────────
+// Navigation
+// ────────────────────────────────────────────────────────────────
+function showPanel(panelId) {
+    document.querySelectorAll('.form-panel').forEach(p => p.classList.remove('active'));
+    document.getElementById('panel-' + panelId)?.classList.add('active');
+
+    document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
+    document.querySelector(`[data-panel="${panelId}"]`)?.classList.add('active');
+
+    const titles = {
+        'application': '消費者債務清理聲請狀',
+        'asset_statement': '財產及收入狀況說明書',
+        'creditor_list': '債權人清冊',
+        'report': '陳報狀',
+        'supplement': '補件書狀',
+        'pdf_merge': '合併PDF',
+        'batch_generate': '一鍵產生全部文件'
+    };
+    document.getElementById('topbarTitle').textContent = titles[panelId] || '消債羅伯特';
+    updateTopButton(panelId);
+}
+
+function updateTopButton(panelId) {
+    const btn = document.getElementById('topActionBtn');
+    const actions = {
+        'application': '📄 產生聲請狀',
+        'asset_statement': '📄 產生說明書',
+        'creditor_list': '📄 產生清冊',
+        'report': '📄 產生陳報狀',
+        'supplement': '📄 產生補件書狀',
+        'pdf_merge': '📦 合併 PDF',
+        'batch_generate': '⚡ 一鍵產生'
+    };
+    btn.textContent = actions[panelId] || '📄 產生文件';
+}
+
+document.querySelectorAll('.nav-btn').forEach(btn => {
+    btn.addEventListener('click', (e) => showPanel(e.currentTarget.dataset.panel));
+});
+
+// ────────────────────────────────────────────────────────────────
+// Top Action Button
+// ────────────────────────────────────────────────────────────────
+function topAction() {
+    const activePanel = document.querySelector('.form-panel.active').id;
+    const panelMap = {
+        'panel-application': () => generateDoc('application'),
+        'panel-asset_statement': () => generateDoc('asset_statement'),
+        'panel-creditor_list': () => generateDoc('creditor_list'),
+        'panel-report': () => generateReport(),
+        'panel-supplement': () => generateSupplement(),
+        'panel-pdf_merge': () => mergePDF(),
+        'panel-batch_generate': () => batchGenerate()
+    };
+    panelMap[activePanel]?.();
+}
+
+// ────────────────────────────────────────────────────────────────
+// API Helpers
+// ────────────────────────────────────────────────────────────────
+async function apiCall(method, endpoint, data = null) {
+    try {
+        const opts = { method, headers: { 'Content-Type': 'application/json' } };
+        if (data) opts.body = JSON.stringify(data);
+        const res = await fetch(endpoint, opts);
+        if (!res.ok) throw new Error(`API error: ${res.status}`);
+        return await res.json();
+    } catch (err) {
+        showToast('API 錯誤: ' + err.message, 'error');
+        return null;
+    }
+}
+
+function escapeHtml(v) {
+    return String(v ?? '').replace(/[&<>"']/g, s => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[s]));
+}
+
+function fileContentUrl(path, inline = false) {
+    const q = encodeURIComponent(String(path || '').trim());
+    return `/api/osc/files/content?path=${q}${inline ? '&inline=1' : ''}`;
+}
+
+function normalizeGeneratedItem(item) {
+    if (!item) return null;
+    const path = String(item.share_path || item.path || '').trim();
+    return {
+        filename: item.filename || (path ? path.split('/').pop() : '文件'),
+        form_type: item.form_type || '',
+        path,
+        url: item.url || '',
+        download_url: item.download_url || (path ? fileContentUrl(path) : item.url || ''),
+    };
+}
+
+function closeGeneratedFilesDialog() {
+    document.getElementById('generatedFilesModal').classList.remove('show');
+}
+
+async function shareGeneratedFile(path, label) {
+    const status = document.getElementById('generated-files-status');
+    if (!path) {
+        showToast('這份文件缺少可分享路徑', 'error');
+        return;
+    }
+    status.textContent = '正在建立分享連結...';
+    try {
+        const resp = await fetch('/api/osc/files/share', {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ path }),
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok || !data.ok || !data.url) {
+            const msg = data.error === 'share_public_base_required'
+                ? '尚未設定獨立分享入口，為避免洩漏 MAGI/Paperclip 主控台外網網址，請先到 MAGI 調整頁面設定分享入口。'
+                : (data.message || data.error || `HTTP ${resp.status}`);
+            throw new Error(msg);
+        }
+        try {
+            await navigator.clipboard.writeText(data.url);
+            status.textContent = `已複製分享連結：${label || data.name || '文件'}`;
+            showToast('已建立並複製分享連結', 'success');
+        } catch {
+            window.prompt('分享連結（不含檔案路徑）：', data.url);
+            status.textContent = `已建立分享連結：${label || data.name || '文件'}`;
+        }
+    } catch (err) {
+        status.textContent = '分享連結建立失敗：' + err.message;
+        showToast('分享連結建立失敗: ' + err.message, 'error');
+    }
+}
+
+function showGeneratedFiles(items, title = '文件已產生') {
+    const normalized = (Array.isArray(items) ? items : [items]).map(normalizeGeneratedItem).filter(Boolean);
+    if (!normalized.length) return;
+    document.getElementById('generatedFilesTitle').textContent = title;
+    document.getElementById('generated-files-status').textContent = '';
+    document.getElementById('generatedFilesList').innerHTML = normalized.map((item, idx) => {
+        const openBtn = item.url ? `<a class="btn btn-sm" href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer">開啟</a>` : '';
+        const downloadBtn = item.download_url ? `<a class="btn btn-sm btn-primary" href="${escapeHtml(item.download_url)}" download>下載</a>` : '';
+        const shareBtn = item.path ? `<button class="btn btn-sm" type="button" onclick="shareGeneratedFile(generatedFilesCache[${idx}].path, generatedFilesCache[${idx}].filename)">分享連結</button>` : '';
+        return `
+            <div class="generated-item">
+                <div>
+                    <div class="generated-name" title="${escapeHtml(item.filename)}">${escapeHtml(item.filename)}</div>
+                    <div class="generated-meta" title="${escapeHtml(item.path)}">${escapeHtml(item.path || 'MAGI 匯出檔')}</div>
+                </div>
+                <div class="generated-actions">${openBtn}${downloadBtn}${shareBtn}</div>
+            </div>`;
+    }).join('');
+    generatedFilesCache = normalized;
+    document.getElementById('generatedFilesModal').classList.add('show');
+}
+
+async function loadCourtList() {
+    const result = await apiCall('GET', '/api/osc/debt/courts');
+    if (result && result.courts) {
+        const courts = result.courts;
+        const selects = ['app-court', 'app-exec-court', 'batch-court', 'rpt-E1', 'sup-court'];
+        selects.forEach(id => {
+            const sel = document.getElementById(id);
+            if (sel) {
+                sel.innerHTML = '<option value="">-- 選擇法院 --</option>';
+                courts.forEach(c => {
+                    const opt = document.createElement('option');
+                    opt.value = typeof c === 'string' ? c : (c.id || c.name);
+                    opt.textContent = typeof c === 'string' ? c : c.name;
+                    sel.appendChild(opt);
+                });
+            }
+        });
+    }
+}
+
+// ────────────────────────────────────────────────────────────────
+// Application (聲請狀)
+// ────────────────────────────────────────────────────────────────
+async function generateDoc(formType) {
+    let data = {};
+
+    if (formType === 'application') {
+        data = {
+            name: document.getElementById('app-name').value,
+            address: document.getElementById('app-address').value,
+            asset_total: parseFloat(document.getElementById('app-asset-total').value) || 0,
+            debt_total: parseFloat(document.getElementById('app-debt-total').value) || 0,
+            max_creditor_bank: document.getElementById('app-max-bank').value,
+            execution_court: document.getElementById('app-exec-court').value,
+            execution_case_no: document.getElementById('app-exec-case').value,
+            application_court: document.getElementById('app-court').value,
+            attachments: document.getElementById('app-attachments').value
+        };
+        if (!data.name || !data.address || !data.application_court) {
+            showToast('請填寫必填欄位（姓名、地址、法院）', 'error');
+            return;
+        }
+    } else if (formType === 'asset_statement') {
+        data = collectAssetStatementData();
+    } else if (formType === 'creditor_list') {
+        data = collectCreditorListData();
+    }
+
+    const result = await apiCall('POST', '/api/osc/debt/generate', {
+        form_type: formType,
+        data: data
+    });
+
+    if (result && result.ok) {
+        const addressNote = result.saved_addresses ? `；已記錄 ${result.saved_addresses} 筆銀行地址` : '';
+        showToast((result.message || '文件產生成功') + addressNote, 'success');
+        showGeneratedFiles(result);
+    }
+}
+
+function collectAssetStatementData() {
+    const data = { insurance: [], land: [], vehicles: [], stocks: [], income: [], expenses: [], dependents: [] };
+
+    document.querySelectorAll('#assetInsuranceBody tr').forEach(row => {
+        const inputs = row.querySelectorAll('input');
+        if (inputs[0]?.value) data.insurance.push({ company: inputs[0].value, type: inputs[1]?.value, policy_no: inputs[2]?.value, amount: inputs[3]?.value });
+    });
+    document.querySelectorAll('#assetLandBody tr').forEach(row => {
+        const inputs = row.querySelectorAll('input');
+        if (inputs[0]?.value) data.land.push({ location: inputs[0].value, value: inputs[1]?.value, ratio: inputs[2]?.value, note: inputs[3]?.value });
+    });
+    document.querySelectorAll('#assetVehicleBody tr').forEach(row => {
+        const inputs = row.querySelectorAll('input');
+        if (inputs[0]?.value) data.vehicles.push({ type: inputs[0].value, plate: inputs[1]?.value, year: inputs[2]?.value, note: inputs[3]?.value });
+    });
+    document.querySelectorAll('#assetStockBody tr').forEach(row => {
+        const inputs = row.querySelectorAll('input');
+        if (inputs[0]?.value) data.stocks.push({ company: inputs[0].value, shares: inputs[1]?.value, note: inputs[2]?.value });
+    });
+    document.querySelectorAll('#assetIncomeBody tr').forEach(row => {
+        const inputs = row.querySelectorAll('input');
+        if (inputs[0]?.value) data.income.push({ type: inputs[0].value, source: inputs[1]?.value, amount: inputs[2]?.value });
+    });
+    document.querySelectorAll('#assetExpenseBody tr').forEach(row => {
+        const inputs = row.querySelectorAll('input');
+        if (inputs[0]?.value) data.expenses.push({ category: inputs[0].value, monthly: inputs[1]?.value, note: inputs[2]?.value });
+    });
+    document.querySelectorAll('#assetDependentBody tr').forEach(row => {
+        const inputs = row.querySelectorAll('input');
+        if (inputs[0]?.value) data.dependents.push({ name: inputs[0].value, relation: inputs[1]?.value, ratio: inputs[2]?.value, amount: inputs[3]?.value });
+    });
+
+    return data;
+}
+
+function collectCreditorListData() {
+    const creditors = [];
+    document.querySelectorAll('#creditorBody tr').forEach(row => {
+        const inputs = row.querySelectorAll('input');
+        const select = row.querySelector('select');
+        if (inputs[0]?.value) {
+            creditors.push({
+                name: inputs[0].value,
+                address: inputs[1]?.value,
+                amount: inputs[2]?.value,
+                debt_type: select?.value
+            });
+        }
+    });
+    return { creditors: creditors };
+}
+
+function formatImportOption(item) {
+    const source = item.source ? `${item.source}｜` : '';
+    return `${source}${item.name}（${item.modified_at || ''}）`;
+}
+
+function populateImportSelect(id, items, placeholder) {
+    const sel = document.getElementById(id);
+    sel.innerHTML = `<option value="">${placeholder}</option>`;
+    (items || []).forEach(item => {
+        const opt = document.createElement('option');
+        opt.value = item.path;
+        opt.textContent = formatImportOption(item);
+        opt.title = item.path;
+        sel.appendChild(opt);
+    });
+}
+
+async function loadImportCandidates() {
+    const status = document.getElementById('import-status');
+    status.textContent = '正在讀取可用文件...';
+    const res = await fetch('/api/osc/debt/import-candidates');
+    const data = await res.json();
+    if (!res.ok || !data.ok) throw new Error(data.error || '讀取可用文件失敗');
+    debtImportCandidates = data;
+
+    const folderSel = document.getElementById('import-folder-select');
+    folderSel.innerHTML = '<option value="">-- 手動分別選擇文件 --</option>';
+    (data.folders || []).forEach((folder, idx) => {
+        const opt = document.createElement('option');
+        opt.value = String(idx);
+        const hasAsset = folder.asset_doc ? '財產' : '缺財產';
+        const hasCreditor = folder.creditor_doc ? '清冊' : '缺清冊';
+        opt.textContent = `${folder.label || '資料夾'}｜${hasAsset}／${hasCreditor}`;
+        opt.title = folder.folder || '';
+        folderSel.appendChild(opt);
+    });
+
+    populateImportSelect('import-asset-select', data.asset_docs || [], '-- 選擇財產說明書 --');
+    populateImportSelect('import-creditor-select', data.creditor_docs || [], '-- 選擇債權人清冊 --');
+    status.textContent = `找到 ${(data.asset_docs || []).length} 份財產說明書、${(data.creditor_docs || []).length} 份債權人清冊。`;
+}
+
+function onImportFolderSelected() {
+    const idx = document.getElementById('import-folder-select').value;
+    if (idx === '' || !debtImportCandidates) return;
+    const folder = (debtImportCandidates.folders || [])[Number(idx)];
+    if (!folder) return;
+    if (folder.asset_doc) document.getElementById('import-asset-select').value = folder.asset_doc.path;
+    if (folder.creditor_doc) document.getElementById('import-creditor-select').value = folder.creditor_doc.path;
+}
+
+async function autoImportData() {
+    const modal = document.getElementById('debtImportModal');
+    modal.classList.add('show');
+    document.getElementById('import-asset-file').value = '';
+    document.getElementById('import-creditor-file').value = '';
+    try {
+        await loadImportCandidates();
+    } catch (err) {
+        document.getElementById('import-status').textContent = '讀取失敗：' + err.message;
+        showToast('讀取可用文件失敗: ' + err.message, 'error');
+    }
+}
+
+function closeImportDialog() {
+    document.getElementById('debtImportModal').classList.remove('show');
+}
+
+function applyImportedData(result) {
+    if (result.name) document.getElementById('app-name').value = result.name;
+    if (result.address) document.getElementById('app-address').value = result.address;
+    if (result.asset_total != null) document.getElementById('app-asset-total').value = result.asset_total;
+    if (result.debt_total != null) document.getElementById('app-debt-total').value = result.debt_total;
+    if (result.max_bank) document.getElementById('app-max-bank').value = result.max_bank;
+    const sources = result.imported_from ? result.imported_from.join('、') : '';
+    showToast(`已從${sources || '選取文件'}帶入資料`, 'success');
+}
+
+async function applyImportSelection() {
+    const status = document.getElementById('import-status');
+    const assetFile = document.getElementById('import-asset-file').files[0];
+    const creditorFile = document.getElementById('import-creditor-file').files[0];
+    const assetPath = document.getElementById('import-asset-select').value;
+    const creditorPath = document.getElementById('import-creditor-select').value;
+    if (!assetFile && !creditorFile && !assetPath && !creditorPath) {
+        showToast('請至少選擇一份財產說明書或債權人清冊', 'error');
+        return;
+    }
+    status.textContent = '正在讀取文件並帶入聲請狀...';
+    try {
+        let res;
+        if (assetFile || creditorFile) {
+            const fd = new FormData();
+            if (assetFile) fd.append('asset_doc', assetFile);
+            else if (assetPath) fd.append('asset_doc_path', assetPath);
+            if (creditorFile) fd.append('creditor_doc', creditorFile);
+            else if (creditorPath) fd.append('creditor_doc_path', creditorPath);
+            res = await fetch('/api/osc/debt/auto-import', { method: 'POST', body: fd });
+        } else {
+            res = await fetch('/api/osc/debt/auto-import', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ asset_doc_path: assetPath, creditor_doc_path: creditorPath })
+            });
+        }
+        const result = await res.json();
+        if (!res.ok || !result.ok) throw new Error(result.error || '帶入失敗');
+        applyImportedData(result);
+        closeImportDialog();
+    } catch (err) {
+        status.textContent = '帶入失敗：' + err.message;
+        showToast('帶入失敗: ' + err.message, 'error');
+    }
+}
+
+// ────────────────────────────────────────────────────────────────
+// Asset Statement (財產說明書)
+// ────────────────────────────────────────────────────────────────
+function addAssetRow(type) {
+    const tables = {
+        'insurance': { id: 'assetInsuranceBody', cols: ['company', 'type', 'policy', 'amount'] },
+        'land': { id: 'assetLandBody', cols: ['location', 'value', 'ratio', 'note'] },
+        'vehicle': { id: 'assetVehicleBody', cols: ['type', 'plate', 'year', 'note'] },
+        'stock': { id: 'assetStockBody', cols: ['company', 'shares', 'note'] },
+        'income': { id: 'assetIncomeBody', cols: ['type', 'source', 'amount'] },
+        'expense': { id: 'assetExpenseBody', cols: ['category', 'amount', 'note'] },
+        'dependent': { id: 'assetDependentBody', cols: ['name', 'relation', 'ratio', 'amount'] }
+    };
+
+    const table = tables[type];
+    if (!table) return;
+
+    const tbody = document.getElementById(table.id);
+    const row = tbody.insertRow();
+    table.cols.forEach(col => {
+        const cell = row.insertCell();
+        const input = document.createElement('input');
+        input.type = ['amount', 'ratio', 'value', 'shares'].includes(col) ? 'number' : 'text';
+        input.placeholder = col;
+        input.onchange = () => updateAssetTotals();
+        cell.appendChild(input);
+    });
+    const cell = row.insertCell();
+    const btn = document.createElement('button');
+    btn.className = 'btn-remove';
+    btn.textContent = '✕';
+    btn.onclick = () => { row.remove(); updateAssetTotals(); };
+    cell.appendChild(btn);
+}
+
+function updateAssetTotals() {
+    let incomeSum = 0;
+    document.querySelectorAll('#assetIncomeBody tr').forEach(row => {
+        const amount = parseFloat(row.cells[2]?.querySelector('input')?.value) || 0;
+        incomeSum += amount;
+    });
+    document.getElementById('incomeTotal').textContent = incomeSum.toLocaleString();
+
+    let expenseSum = 0;
+    document.querySelectorAll('#assetExpenseBody tr').forEach(row => {
+        const amount = parseFloat(row.cells[1]?.querySelector('input')?.value) || 0;
+        expenseSum += amount;
+    });
+    document.getElementById('expenseMonthly').textContent = expenseSum.toLocaleString();
+    document.getElementById('expenseYearly').textContent = (expenseSum * 12).toLocaleString();
+}
+
+// ────────────────────────────────────────────────────────────────
+// Creditor List (債權人清冊)
+// ────────────────────────────────────────────────────────────────
+let addressCache = null;
+
+async function loadAddressData() {
+    if (addressCache) return addressCache;
+    const result = await apiCall('GET', '/api/osc/debt/address-data');
+    if (result && result.ok) {
+        addressCache = result;
+    }
+    return addressCache;
+}
+
+function addCreditorRow() {
+    const tbody = document.getElementById('creditorBody');
+    const row = tbody.insertRow();
+
+    const nameCell = row.insertCell();
+    const nameInput = document.createElement('input');
+    nameInput.type = 'text';
+    nameInput.placeholder = '債權人名稱';
+    nameInput.onchange = () => autoFillAddress(nameInput, row);
+    nameCell.appendChild(nameInput);
+
+    const addrCell = row.insertCell();
+    const addrInput = document.createElement('input');
+    addrInput.type = 'text';
+    addrInput.placeholder = '地址';
+    addrCell.appendChild(addrInput);
+
+    const amtCell = row.insertCell();
+    const amtInput = document.createElement('input');
+    amtInput.type = 'number';
+    amtInput.placeholder = '0';
+    amtInput.value = 0;
+    amtInput.onchange = () => updateCreditorTotal();
+    amtCell.appendChild(amtInput);
+
+    const typeCell = row.insertCell();
+    const typeSelect = document.createElement('select');
+    ['信用卡', '信用貸款', '信用卡及信用貸款'].forEach(t => {
+        const opt = document.createElement('option');
+        opt.value = t;
+        opt.textContent = t;
+        typeSelect.appendChild(opt);
+    });
+    typeCell.appendChild(typeSelect);
+
+    const rmCell = row.insertCell();
+    const rmBtn = document.createElement('button');
+    rmBtn.className = 'btn-remove';
+    rmBtn.textContent = '✕';
+    rmBtn.onclick = () => { row.remove(); updateCreditorTotal(); };
+    rmCell.appendChild(rmBtn);
+}
+
+async function autoFillAddress(nameInput, row) {
+    const name = nameInput.value.trim();
+    if (!name) return;
+
+    const data = await loadAddressData();
+    if (!data) return;
+
+    // Search in banks and companies
+    const allEntries = [
+        ...(data.banks || []),
+        ...(data.companies || [])
+    ];
+
+    const match = allEntries.find(entry => {
+        const entryName = entry.name || '';
+        return entryName.includes(name) || name.includes(entryName);
+    });
+
+    if (match) {
+        const addrInput = row.cells[1]?.querySelector('input');
+        if (addrInput) {
+            addrInput.value = match.address || '';
+        }
+    }
+}
+
+function updateCreditorTotal() {
+    let total = 0;
+    document.querySelectorAll('#creditorBody tr').forEach(row => {
+        const amt = parseFloat(row.cells[2]?.querySelector('input')?.value) || 0;
+        total += amt;
+    });
+    document.getElementById('creditor-total').textContent = total.toLocaleString();
+}
+
+// ────────────────────────────────────────────────────────────────
+// Report (陳報狀) — 證據掃描 + 自動填入
+// ────────────────────────────────────────────────────────────────
+let reportOptions = {};   // 由後端 schema 或 scan 回傳
+let selectedCaseId = '';
+
+async function loadDebtCases() {
+    const result = await apiCall('GET', '/api/osc/debt/cases');
+    if (!result || !result.ok) return;
+    const sel = document.getElementById('rpt-case-select');
+    sel.innerHTML = '<option value="">-- 請選擇案件 --</option>';
+    (result.cases || []).forEach(c => {
+        const opt = document.createElement('option');
+        opt.value = c.id;
+        opt.textContent = `${c.case_number || ''} ${c.client_name || ''}`.trim() +
+            (c.court_case_no ? ` (${c.court_case_no})` : '');
+        opt.dataset.clientName = c.client_name || '';
+        opt.dataset.courtCaseNo = c.court_case_no || '';
+        sel.appendChild(opt);
+    });
+}
+
+function onCaseSelected() {
+    const sel = document.getElementById('rpt-case-select');
+    selectedCaseId = sel.value;
+    document.getElementById('btnScanEvidence').disabled = !selectedCaseId;
+    if (selectedCaseId) {
+        const opt = sel.options[sel.selectedIndex];
+        document.getElementById('rpt-A4').value = opt.dataset.clientName || '';
+        scanEvidence();
+    }
+}
+
+async function loadReportOptions() {
+    const result = await apiCall('GET', '/api/osc/debt/schema/report');
+    if (result && result.ok && result.schema && result.schema.fields) {
+        result.schema.fields.forEach(f => {
+            if (f.options) reportOptions[f.key] = f.options;
+        });
+    }
+    populateReportSelects();
+}
+
+function populateReportSelects() {
+    const selectFields = {
+        'C1': reportOptions['C1'] || [],
+        'C2': reportOptions['C2'] || [],
+        'C3': reportOptions['C3'] || [],
+        'D1': reportOptions['D1'] || [],
+        'D3': reportOptions['D3'] || ['刪除此項', '聲請人現家庭成員分別為『OO關係之人』，共O人。'],
+        'D4': reportOptions['D4'] || [],
+        'D5': reportOptions['D5'] || [],
+        'D7': reportOptions['D7'] || [],
+        'D8': reportOptions['D8'] || [],
+        'D10': reportOptions['D10'] || [],
+        'D11': reportOptions['D11'] || [],
+        'D12': reportOptions['D12'] || [],
+        'D14': reportOptions['D14'] || [],
+        'D15': reportOptions['D15'] || [],
+    };
+
+    for (const [key, options] of Object.entries(selectFields)) {
+        const sel = document.getElementById(`rpt-${key}`);
+        if (!sel) continue;
+        sel.innerHTML = '';
+        options.forEach((opt, idx) => {
+            const o = document.createElement('option');
+            o.value = idx;
+            // 截短顯示，避免太長
+            o.textContent = opt.length > 50 ? opt.substring(0, 50) + '…' : opt;
+            o.title = opt;
+            sel.appendChild(o);
+        });
+    }
+
+    // E1 法院 — 從 reportOptions 或 loadCourtList 取得
+    const e1 = document.getElementById('rpt-E1');
+    if (e1 && e1.options.length <= 1) {
+        if (reportOptions['E1'] && reportOptions['E1'].length > 0) {
+            e1.innerHTML = '<option value="">-- 選擇法院 --</option>';
+            reportOptions['E1'].forEach(c => {
+                const o = document.createElement('option');
+                o.value = typeof c === 'string' ? c : (c.id || c.name);
+                o.textContent = typeof c === 'string' ? c : c.name;
+                e1.appendChild(o);
+            });
+        } else {
+            // fallback: 從已載入的法院清單複製
+            const courtSel = document.getElementById('app-court');
+            if (courtSel && courtSel.options.length > 1) {
+                e1.innerHTML = courtSel.innerHTML;
+            }
+        }
+    }
+}
+
+async function scanEvidence() {
+    if (!selectedCaseId) {
+        showToast('請先選擇案件', 'error');
+        return;
+    }
+
+    const statusDiv = document.getElementById('scan-status');
+    statusDiv.style.display = 'block';
+    statusDiv.style.background = 'var(--panel-2)';
+    statusDiv.textContent = '⏳ 正在掃描證據資料夾...';
+
+    const result = await apiCall('GET', `/api/osc/debt/scan-evidence/${selectedCaseId}`);
+
+    if (!result || !result.ok) {
+        statusDiv.style.background = '#fef2f2';
+        statusDiv.textContent = '❌ ' + (result?.error || '掃描失敗');
+        document.getElementById('evidence-result-card').style.display = 'none';
+        return;
+    }
+
+    statusDiv.style.background = '#f0fdf4';
+    statusDiv.textContent = `✅ ${result.summary}（共 ${result.file_count} 個檔案）`;
+
+    // 更新案件資訊到表單
+    if (result.case) {
+        if (result.case.client_name) document.getElementById('rpt-A4').value = result.case.client_name;
+    }
+
+    // 若後端提供了 report_options，覆蓋前端的
+    if (result.report_options) {
+        reportOptions = { ...reportOptions, ...result.report_options };
+        populateReportSelects();
+    }
+
+    // 顯示偵測結果卡片
+    const resultCard = document.getElementById('evidence-result-card');
+    resultCard.style.display = 'block';
+    document.getElementById('evidence-summary').textContent = result.summary;
+
+    const grid = document.getElementById('evidence-grid');
+    grid.innerHTML = '';
+
+    const matches = result.matches || {};
+    for (const [field, info] of Object.entries(matches)) {
+        const div = document.createElement('div');
+        div.style.cssText = `padding:10px 12px;border-radius:8px;border:1px solid var(--line);font-size:12px;
+            background:${info.found ? '#f0fdf4' : 'var(--panel-2)'}`;
+        const icon = info.found ? '✅' : '⬜';
+        const filesHtml = info.found
+            ? `<div style="color:var(--muted);margin-top:4px;font-size:11px">${info.matched_files.slice(0, 3).join('、')}${info.matched_files.length > 3 ? '...' : ''}</div>`
+            : '';
+        div.innerHTML = `<strong>${icon} ${field}</strong> ${info.description}${filesHtml}`;
+        grid.appendChild(div);
+
+        // 自動帶入建議選項
+        if (info.found && info.suggested_option_index != null) {
+            const sel = document.getElementById(`rpt-${field}`);
+            if (sel && info.suggested_option_index < sel.options.length) {
+                sel.selectedIndex = info.suggested_option_index;
+            }
+        }
+    }
+}
+
+async function generateReport() {
+    // 收集所有欄位
+    const data = {
+        A1: document.getElementById('rpt-A1').value,
+        A2: document.getElementById('rpt-A2').value,
+        A3: document.getElementById('rpt-A3').value,
+        A4: document.getElementById('rpt-A4').value,
+        B1: document.getElementById('rpt-B1').value,
+        B2: document.getElementById('rpt-B2').value,
+        B3: document.getElementById('rpt-B3').value,
+        D2: document.getElementById('rpt-D2').value,
+        E1: document.getElementById('rpt-E1').value,
+    };
+
+    // 選項欄位 — 傳 index 值，讓後端從 REPORT_OPTIONS 取實際文字
+    const selectFields = ['C1', 'C2', 'C3', 'D1', 'D3', 'D4', 'D5', 'D7', 'D8', 'D10', 'D11', 'D12', 'D14', 'D15'];
+    selectFields.forEach(key => {
+        const sel = document.getElementById(`rpt-${key}`);
+        if (sel) {
+            const idx = parseInt(sel.value);
+            // 如果選項文字是「刪除此項」，傳 null
+            const optText = sel.options[sel.selectedIndex]?.title || sel.options[sel.selectedIndex]?.textContent || '';
+            if (optText === '刪除此項') {
+                data[key] = null;
+            } else {
+                data[key] = idx;
+            }
+        }
+    });
+
+    if (!data.A4) {
+        showToast('請填寫聲請人姓名', 'error');
+        return;
+    }
+
+    const result = await apiCall('POST', '/api/osc/debt/generate', {
+        form_type: 'report',
+        data: data
+    });
+
+    if (result && result.ok) {
+        showToast('陳報狀產生成功', 'success');
+        showGeneratedFiles(result);
+    }
+}
+
+// ────────────────────────────────────────────────────────────────
+// Supplement (補件書狀)
+// ────────────────────────────────────────────────────────────────
+function addSupplementRow(item = {}) {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+        <td><input type="text" value="${item.category || ''}" placeholder="例如 勞保資料"></td>
+        <td><input type="text" value="${item.period || ''}" placeholder="例如 111年至112年"></td>
+        <td><input type="text" value="${item.attachment || ''}" placeholder="附件名稱"></td>
+        <td><button class="btn-remove" onclick="this.closest('tr').remove()">✕</button></td>
+    `;
+    document.getElementById('supplementBody').appendChild(tr);
+}
+
+async function generateSupplement() {
+    const items = [];
+    document.querySelectorAll('#supplementBody tr').forEach(row => {
+        const inputs = row.querySelectorAll('input');
+        if (inputs[0]?.value || inputs[1]?.value || inputs[2]?.value) {
+            items.push({
+                category: inputs[0]?.value || '',
+                period: inputs[1]?.value || '',
+                attachment: inputs[2]?.value || ''
+            });
+        }
+    });
+
+    const data = {
+        court: document.getElementById('sup-court').value,
+        case_no: document.getElementById('sup-case-no').value,
+        branch: document.getElementById('sup-branch').value,
+        applicant: document.getElementById('sup-applicant').value,
+        procedure: document.getElementById('sup-procedure').value,
+        brief_no: document.getElementById('sup-brief-no').value,
+        items,
+        notes: document.getElementById('sup-notes').value
+    };
+
+    if (!data.applicant) {
+        showToast('請填寫聲請人', 'error');
+        return;
+    }
+
+    const result = await apiCall('POST', '/api/osc/debt/generate', {
+        form_type: 'supplement',
+        data
+    });
+
+    if (result && result.ok) {
+        showToast(result.message || '補件書狀產生成功', 'success');
+        showGeneratedFiles(result);
+    }
+}
+
+// ────────────────────────────────────────────────────────────────
+// PDF Merge
+// ────────────────────────────────────────────────────────────────
+function handleFileDrop(e) {
+    e.preventDefault();
+    e.currentTarget.classList.remove('dragover');
+    handleFileSelect(e.dataTransfer.files);
+}
+
+function handleFileSelect(files) {
+    Array.from(files).forEach(file => {
+        if (file.name.endsWith('.pdf') || file.name.endsWith('.docx')) {
+            fileList.push(file);
+        }
+    });
+    renderFileList();
+}
+
+function renderFileList() {
+    const ul = document.getElementById('fileList');
+    ul.innerHTML = '';
+    fileList.forEach((f, i) => {
+        const li = document.createElement('li');
+        li.textContent = f.name + ' (' + (f.size / 1024).toFixed(1) + ' KB)';
+        li.onclick = () => { selectedFileIndex = i; renderFileList(); };
+        if (i === selectedFileIndex) li.classList.add('selected');
+        ul.appendChild(li);
+    });
+}
+
+function moveFile(dir) {
+    if (selectedFileIndex < 0) return;
+    const newIdx = selectedFileIndex + dir;
+    if (newIdx < 0 || newIdx >= fileList.length) return;
+    [fileList[selectedFileIndex], fileList[newIdx]] = [fileList[newIdx], fileList[selectedFileIndex]];
+    selectedFileIndex = newIdx;
+    renderFileList();
+}
+
+function removeSelectedFile() {
+    if (selectedFileIndex < 0) return;
+    fileList.splice(selectedFileIndex, 1);
+    selectedFileIndex = -1;
+    renderFileList();
+}
+
+async function mergePDF() {
+    if (fileList.length === 0) {
+        showToast('請先上傳檔案', 'error');
+        return;
+    }
+
+    const formData = new FormData();
+    fileList.forEach(f => formData.append('files[]', f));
+
+    try {
+        const res = await fetch('/api/osc/debt/merge-pdf', {
+            method: 'POST',
+            body: formData
+        });
+        if (!res.ok) throw new Error('合併失敗');
+        const result = await res.json();
+        if (result.ok && result.url) {
+            showToast(result.message || 'PDF 合併成功', 'success');
+            showGeneratedFiles(result, 'PDF 已合併');
+        } else {
+            showToast(result.error || '合併失敗', 'error');
+        }
+    } catch (err) {
+        showToast('PDF 合併失敗: ' + err.message, 'error');
+    }
+}
+
+// ────────────────────────────────────────────────────────────────
+// Batch Generate
+// ────────────────────────────────────────────────────────────────
+async function batchGenerate() {
+    const name = document.getElementById('batch-name').value;
+    const address = document.getElementById('batch-address').value;
+    const court = document.getElementById('batch-court').value;
+
+    if (!name || !address || !court) {
+        showToast('請填寫基本資訊', 'error');
+        return;
+    }
+
+    const types = [];
+    if (document.getElementById('batch-check-application').checked) types.push('application');
+    if (document.getElementById('batch-check-asset').checked) types.push('asset_statement');
+    if (document.getElementById('batch-check-creditor').checked) types.push('creditor_list');
+    if (document.getElementById('batch-check-report').checked) types.push('report');
+    if (document.getElementById('batch-check-supplement').checked) types.push('supplement');
+
+    if (types.length === 0) {
+        showToast('請至少選擇一種文件類型', 'error');
+        return;
+    }
+
+    const result = await apiCall('POST', '/api/osc/debt/batch-generate', {
+        data: { name, address, court },
+        types: types
+    });
+
+    if (result && result.ok) {
+        showToast(result.message || '文件已產生', 'success');
+        if (result.results) showGeneratedFiles(result.results, '批次文件已產生');
+    }
+}
+
+// ────────────────────────────────────────────────────────────────
+// Toast
+// ────────────────────────────────────────────────────────────────
+function showToast(msg, type = 'info') {
+    const toast = document.getElementById('toast');
+    toast.textContent = msg;
+    toast.className = 'toast show ' + type;
+    setTimeout(() => toast.classList.remove('show'), 3000);
+}
+
+// ────────────────────────────────────────────────────────────────
+// Initialization
+// ────────────────────────────────────────────────────────────────
+document.addEventListener('DOMContentLoaded', () => {
+    loadCourtList();
+    loadDebtCases();
+    loadReportOptions();
+    addSupplementRow();
+
+    // Set today's date for any date inputs that exist
+    const today = new Date().toISOString().split('T')[0];
+    document.querySelectorAll('input[type="date"]').forEach(el => { el.value = today; });
+});
+</script>
+
+</body>
+</html>

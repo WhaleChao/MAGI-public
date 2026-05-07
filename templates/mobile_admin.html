@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="theme-color" content="#0f766e">
+    <title>MAGI 手機後台</title>
+    <link rel="manifest" href="/mobile/manifest.webmanifest">
+    <link rel="icon" href="{{ url_for('static', filename='mobile/magi-mobile.svg') }}" type="image/svg+xml">
+    <link rel="stylesheet" href="{{ url_for('static', filename='mobile/mobile.css') }}?v=20260505-mobile-v1">
+</head>
+<body>
+    <main class="mobile-shell">
+        <header class="mobile-hero compact">
+            <div>
+                <span class="eyebrow">Mobile Admin</span>
+                <h1>手機後台</h1>
+                <p>集中管理手機 App 連線、MAGI 設定與 Paperclip 行動入口。</p>
+            </div>
+            <a class="small-link" href="/mobile">返回手機入口</a>
+        </header>
+
+        <section class="admin-panel">
+            <h2>Tailscale 連線</h2>
+            <dl class="settings-list">
+                <div>
+                    <dt>App 連線網址</dt>
+                    <dd>{{ mobile.base_url }}</dd>
+                </div>
+                <div>
+                    <dt>Tailnet DNS</dt>
+                    <dd>{{ mobile.tailscale_dns or "未取得" }}</dd>
+                </div>
+                <div>
+                    <dt>Tailscale IP</dt>
+                    <dd>{{ mobile.tailscale_ip or "未取得" }}</dd>
+                </div>
+                <div>
+                    <dt>Android 套件名稱</dt>
+                    <dd>{{ mobile.android_package }}</dd>
+                </div>
+                <div>
+                    <dt>iOS Bundle ID</dt>
+                    <dd>{{ mobile.ios_bundle_id }}</dd>
+                </div>
+            </dl>
+        </section>
+
+        <section class="admin-panel">
+            <h2>後台功能</h2>
+            <div class="admin-links">
+                <a href="/magi-adjust">MAGI 調整與 AI 金鑰</a>
+                <a href="/health">系統健康狀態</a>
+                <a href="/osc">Paperclip 案件管理</a>
+                <a href="/dashboard/website">個人網站管理</a>
+                <a href="/mobile/config.json">App 設定 JSON</a>
+            </div>
+        </section>
+
+        <section class="admin-panel">
+            <h2>內部 App 打包</h2>
+            <p class="muted">Android APK 使用 <code>mobile_app/</code> 的 Capacitor 設定，預設連到上方 Tailscale 網址。iPhone 目前可先用 PWA 加入主畫面。</p>
+        </section>
+    </main>
+    <script src="{{ url_for('static', filename='mobile/mobile.js') }}?v=20260505-mobile-v1"></script>
+</body>
+</html>

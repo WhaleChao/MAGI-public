@@ -1,0 +1,17 @@
+{
+  "generated_at": "2026-03-12T17:52:20.155076",
+  "elapsed_sec": 120.0,
+  "overall_ok": false,
+  "suites": [
+    {
+      "suite": "coreroutes",
+      "label": "Core Routes Smoke",
+      "passed": 0,
+      "failed": 0,
+      "total": 0,
+      "failures": [],
+      "ok": false,
+      "rc": -1
+    }
+  ]
+}

@@ -1,0 +1,328 @@
+venv/
+.venv*/
+__pycache__/
+*.log
+.DS_Store
+*.plist
+!config/launchagents/com.magi.mlx-mtp.plist
+*.db
+.env
+.env.*
+.agent/
+.runtime_site_packages/
+cache/
+downloads/
+logs/
+_logs/
+connections.json
+CONNECTION_SECRETS.md
+tests/fixtures/
+tests/tmp_qa/
+/test_*.py
+verify_*.py
+*.wav
+*.aiff
+test_*.jpg
+test_*.png
+
+.cache/
+archive/
+reports/
+static/exports/
+static/images/gen_*.png
+static/system_test_report.json
+nightly_core_change_pending.json
+nightly_council_agenda.md
+nightly_council_minutes.md
+
+# ============================
+# Runtime outputs — NEVER in source tree
+# ============================
+_autopilot_runs/
+_autopilot_state.json
+_autopilot.lock
+_db_backups/
+_debug_reports/
+_eventlog.jsonl
+_crawl_targets.json
+_statutes_vdb_state.json
+_judicial_smoke/
+.magi_benchmarks/
+active_tasks.json
+backups/
+
+# Browser profiles (may contain credentials / session data)
+.laf_chrome_profile/
+casper_ecosystem/law_firm_orchestrators/.laf_chrome_profile/
+
+# Sensitive training data
+skills/pdf-namer/training_data.json
+
+# Ignore large caching and font blobs
+skills/legal_attest/generator/res/TW-Kai-98_1.ttf
+skills/memory/index_cache/mem_index.faiss
+
+# Private Data & Debug
+法扶資料/
+筆錄下載/
+閱卷下載/
+_待查核檔/
+laf_downloads/
+.tmp_file_review_email_parse/
+debug_*.png
+debug_*.html
+exports/
+
+# 2026-04-25: Personal/business memory & customer data — 禁止對外推送
+# CLAUDE.md 含完整客戶姓名、案號、法扶 ID 與業務記錄，僅本機使用
+CLAUDE.md
+CLAUDE.md.archive-*
+docs/CLAUDE_FIX_LOG_ARCHIVE.md
+docs/CLAUDE_FIX_LOG_ARCHIVE_*.md
+# .runtime/ 含 portal session、Chrome cookies、debug 截圖（當事人資料）、
+# DB dump、conversation history SQLite、issue agenda 等 runtime state
+.runtime/
+runtime/supplement_cache/*.json
+.claude/
+.claire/
+docs/deploy/
+# 筆錄手動補件佇列含案號 + 法院名 + 案件類型
+static/transcript_manual_queue.jsonl
+# Sonnet/Opus session 自動筆記（可能含案件思考）
+session-*.md
+SESSION-*.md
+
+# Work records & audit reports (moved to docs/, session-specific)
+docs/codex/
+docs/claude/
+docs/audit/
+docs/records/
+
+# Debug form captures
+apply_form_*.png
+apply_form_*.html
+apply_form_inside_*.html
+
+# Config files with secrets (OSC GUI manages these locally)
+casper_ecosystem/law_firm_orchestrators/config.json
+casper_ecosystem/law_firm_orchestrators/json/config.json
+**/config.json
+json/config.json
+
+# Credentials and tokens — NEVER commit these
+*.pickle
+credentials.json
+*_token.json
+*_token.pickle
+**/*credentials*
+**/*secret*
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+
+# Browser capture data (may contain form credentials)
+casper_ecosystem/law_firm_orchestrators/_laf_formal_capture_profile_*/
+casper_ecosystem/law_firm_orchestrators/laf_guided_capture_*/
+casper_ecosystem/law_firm_orchestrators/json.pre_magi_json_*/
+
+# Mock/test data for automation
+casper_ecosystem/law_firm_orchestrators/eefile_mock/
+casper_ecosystem/law_firm_orchestrators/laf_mock/
+casper_ecosystem/law_firm_orchestrators/eefile_snapshot_*/
+casper_ecosystem/law_firm_orchestrators/apply_form_*
+
+# Runtime state files
+static/daemon.lock
+static/openclaw_cron_runner.lock
+static/process_guardian_state.json
+static/file_review_auto_state.json
+static/openclaw_cron_runner_state.json
+static/magi_status.json
+static/doctor_report.json
+static/guardian_control.json
+static/system_test_report.json
+.brain_state.json
+rpc_server.pid
+cron_jobs.json
+cron_jobs.json.bak.*
+casper_ecosystem/law_firm_orchestrators/.draft_processed_emails.json
+
+# Local Claude/Codex worktrees and generated intelligence reports
+.claude/worktrees/
+static/worldmonitor_reports/intel_*.md
+static/worldmonitor_reports/intel_*.json
+
+# Config files with secrets (legalbridge included)
+**/legalbridge_config.json
+
+# Memory index cache (binary, auto-generated)
+skills/memory/index_cache/
+
+# Judgment collector cache (auto-generated)
+skills/judgment-collector/judgments.json
+skills/judgment-collector/judgments.json.bak.*
+skills/pdf-namer/_case_index.json
+
+# Model binaries
+models/
+*.gguf
+
+# Skills background job state
+skills/*/_bg_jobs/
+skills/pdf-namer/_bg_jobs/
+skills/file-review-orchestrator/_bg_jobs/
+
+# Auto-generated skill versions
+skills/.versions/generated-magi/
+ACE-Step-1.5
+musicgen_venv/
+node_modules/
+build/
+.smoke_outputs/
+.magi_doc_runs/
+magi.egg-info/
+bin/
+dist/
+*.pickle*
+config.json.pre_*
+
+# Autopilot kill reason temp files
+_autopilot_kill_reason_*
+
+# Auto-extracted code skill directories (large, auto-generated)
+skills/code-*
+
+# Import audit reports (generated, not source)
+IMPORT_AUDIT_*.md
+IMPORT_AUDIT_*.txt
+CIRCULAR_IMPORTS_DETAILS.txt
+
+# Generated manuals & reports (docx/xlsx in repo root)
+*.xlsx
+*.docx
+# 消債 5 種書類 docx 範本必須入庫（無此檔則 /api/osc/debt/generate 全失敗）
+!templates/debt_templates/*.docx
+
+# ============================
+# MAGI_v2 額外排除
+# ============================
+
+# OpenClaw 殘留（已退役）
+.openclaw/
+openclaw.json
+skills/ops/openclaw_cron_runner.py
+skills/ops/openclaw_updater.py
+scripts/ops/toggle_codex_distributed_mode.py
+scripts/ops/check_codex_distributed_health.py
+
+# Lawsnote（商業授權，不可公開）
+skills/lawsnote*/
+**/lawsnote*
+
+# OpenClawOffice
+OpenClawOffice/
+StarOffice/
+
+# 案件資料（隱私）
+法扶資料/
+判決/
+DATA/
+casper_ecosystem/
+
+# 大型快取和備份
+.embed_cache/
+skills/bridge/.embed_cache/
+*.faiss
+_archive/
+
+# 測試產出
+tests/fixtures/
+tests/tmp_qa/
+tests/stress_test_output/
+screenshot_sorted_output/
+
+# Runtime state (不是 source code)
+*.lock
+*.pid
+*_state.json
+telegram_poll_offset.json
+telegram_channel_state.json
+
+# LAF portal evidence (含帳號欄位)
+docs/laf_portal_evidence/
+
+# Old skill versions (auto-generated, large)
+skills/.versions/
+
+# Backup files
+*.bak
+*.py.bak
+
+# PDF manuals (large binary)
+MAGI_使用手冊.pdf
+MAGI_功能介紹手冊.pdf
+
+# MAGI Launcher app (binary)
+MAGI Launcher.app/
+
+# StarOffice static assets (large spritesheets/fonts)
+static/star-office/*.webp
+static/star-office/*.png
+static/star-office/*.zip
+static/star-office/fonts/*.woff2
+static/star-office/fonts/*.zip
+
+# Legal attestation font (large)
+skills/legal_attest/generator/res/*.ttf
+skills/legal_attest/generator/res/*.pdf
+
+# Metrics data (auto-generated)
+_metrics/
+
+# Test/validation reports (auto-generated)
+static/full_validation_*
+static/integration_smoke_*
+static/product_validation_*
+static/repair_report.*
+static/skills_purify_*
+static/smoke_three_channels_*
+
+# Non-MAGI documents
+刑事政策.pdf
+LAF_結案修復驗證指南.md
+MAGI_重構部署指南.md
+
+# OpenClaw check scripts (deprecated)
+check_codex_distributed_health.sh
+check_openclaw_*.sh
+toggle_codex_distributed_mode.sh
+
+# Runtime state (not source)
+.brain_ngl_hint.json
+magi_status.json
+Caddyfile_openclaw
+_autopilot_kill_log.jsonl
+
+# Personal website nested repository
+whalechao.github.io/
+
+# === R3 RuntimeDir (2026-04-19) ===
+# runtime state 不入庫（schedule 定義入庫，state 不入庫）
+.runtime/cron_state.json
+.runtime/pending/
+.runtime/metrics/
+
+# live 測試污染
+_laf_smoke/
+scratch/
+.agent/server.log.*
+.agent/daemon.log.*
+
+# Runtime metrics & auto-generated reports (2026-04-20)
+static/external_chat_metrics.jsonl
+static/nightly_regression_latest.json
+skills/pdf-namer/_learned_filename_rules.json
+skills/pdf-namer/_nightly_report.json
+.backup/

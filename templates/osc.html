@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Paperclip | MAGI</title>
+    <link rel="stylesheet" href="/static/osc/osc-theme.css">
+    <link rel="stylesheet" href="/static/osc/osc-components.css?v=20260506-web-reply-v1">
+    <link rel="stylesheet" href="/static/osc/osc-responsive.css?v=20260505-paperclip-mobile-v1">
+    <link rel="stylesheet" href="/static/osc/file-manager.css?v=20260505-file-share-v1">
+</head>
+
+<body>
+    <div class="layout-sidebar">
+        <div class="paperclip-mobile-bar" aria-label="Paperclip 手機導覽">
+            <button id="paperclipMobileMenuBtn" class="paperclip-menu-btn" type="button" aria-expanded="false" aria-controls="paperclipNav">選單</button>
+            <div class="paperclip-mobile-title">Paperclip</div>
+            <a class="paperclip-mobile-home" href="/dashboard">MAGI</a>
+        </div>
+        <div class="sidebar-brand" style="padding: 16px 16px 8px;">
+            <div class="title" style="color: var(--sidebar-accent); font-weight: 800; font-size: 18px; line-height: 1.2;">📎 Paperclip</div>
+            <div class="muted" style="margin-top: 4px; font-size: 11px; color: rgba(148,163,184,0.6);">MAGI 事務所系統</div>
+        </div>
+        <div class="sidebar-home-row" style="padding: 8px 16px 0;">
+            <a class="sidebar-home-link" href="/dashboard">← 返回 MAGI</a>
+        </div>
+        <nav id="paperclipNav" class="sidebar-nav tabs">
+            <!-- 業務概覽（單一 view）-->
+            <button class="tab-btn group-single active" data-tab="dashboard">
+                <span class="group-icon">📊</span><span>業務概覽</span>
+            </button>
+
+            <button class="tab-btn group-single" data-tab="magiModules">
+                <span class="group-icon">🧩</span><span>MAGI 三模組</span>
+            </button>
+
+            <!-- 案件（5 sub-tab）-->
+            <div class="sidebar-group" data-group="case">
+                <button class="group-btn" data-group-toggle="case">
+                    <span class="group-icon">📁</span>
+                    <span class="group-label">案件</span>
+                    <span class="group-arrow">▶</span>
+                </button>
+                <div class="group-children" data-group-children="case" hidden>
+                    <button class="tab-btn sub-tab" data-tab="cases"><span class="sub-icon">📋</span> 案件列表</button>
+                    <button class="tab-btn sub-tab" data-tab="clients"><span class="sub-icon">👥</span> 當事人</button>
+                    <button class="tab-btn sub-tab" data-tab="meetings"><span class="sub-icon">📅</span> 會議紀錄</button>
+                    <button class="tab-btn sub-tab" data-tab="calendar"><span class="sub-icon">📆</span> 行事曆</button>
+                    <button class="tab-btn sub-tab" data-tab="todos"><span class="sub-icon">✅</span> 待辦事項</button>
+                </div>
+            </div>
+
+            <!-- 書狀（3 sub-tab + 消債羅伯特連結）-->
+            <div class="sidebar-group" data-group="document">
+                <button class="group-btn" data-group-toggle="document">
+                    <span class="group-icon">✍️</span>
+                    <span class="group-label">書狀</span>
+                    <span class="group-arrow">▶</span>
+                </button>
+                <div class="group-children" data-group-children="document" hidden>
+                    <button class="tab-btn sub-tab" data-tab="drafts"><span class="sub-icon">🤖</span> AI 草擬</button>
+                    <button class="tab-btn sub-tab" data-tab="documents"><span class="sub-icon">📄</span> 書狀索引</button>
+                    <button class="tab-btn sub-tab" data-tab="pdfTools"><span class="sub-icon">📕</span> PDF 工具</button>
+                    <button class="tab-btn sub-tab" data-tab="forms"><span class="sub-icon">🖨</span> 委任 / 收據</button>
+                    <a href="/osc/debt" class="tab-btn sub-tab" style="text-decoration:none;"><span class="sub-icon">🤖</span> 消債羅伯特</a>
+                </div>
+            </div>
+
+            <!-- 法扶（2 sub-tab）-->
+            <div class="sidebar-group" data-group="laf-group">
+                <button class="group-btn" data-group-toggle="laf-group">
+                    <span class="group-icon">🏦</span>
+                    <span class="group-label">法扶</span>
+                    <span class="group-arrow">▶</span>
+                </button>
+                <div class="group-children" data-group-children="laf-group" hidden>
+                    <button class="tab-btn sub-tab" data-tab="laf"><span class="sub-icon">📋</span> 法扶管理</button>
+                    <button class="tab-btn sub-tab" data-tab="lafWizard"><span class="sub-icon">⚖️</span> 回報精靈</button>
+                </div>
+            </div>
+
+            <!-- 結案歸檔（單一）-->
+            <button class="tab-btn group-single" data-tab="archiveWizard">
+                <span class="group-icon">📦</span><span>結案歸檔</span>
+            </button>
+
+            <!-- 帳務（2 sub-tab）-->
+            <div class="sidebar-group" data-group="finance">
+                <button class="group-btn" data-group-toggle="finance">
+                    <span class="group-icon">💰</span>
+                    <span class="group-label">帳務</span>
+                    <span class="group-arrow">▶</span>
+                </button>
+                <div class="group-children" data-group-children="finance" hidden>
+                    <button class="tab-btn sub-tab" data-tab="accounting"><span class="sub-icon">📒</span> 帳務收支</button>
+                    <button class="tab-btn sub-tab" data-tab="quotations"><span class="sub-icon">🧾</span> 報價單</button>
+                </div>
+            </div>
+
+            <!-- 系統設定（單一）-->
+            <button class="tab-btn group-single" data-tab="admin">
+                <span class="group-icon">⚙️</span><span>系統設定</span>
+            </button>
+        </nav>
+        <div class="sidebar-status" style="padding: 12px 16px; border-top: 1px solid rgba(255,255,255,0.08);">
+            <span id="dbBadge" class="badge" style="background:rgba(255,255,255,0.08);border-color:rgba(255,255,255,0.15);color:var(--sidebar-text);font-size:11px;">連線中...</span>
+        </div>
+    </div>
+
+    <div class="layout-main">
+        <header>
+            <div id="pageTitle" class="title">業務概覽</div>
+            <div class="global-search">
+                <input id="globalSearchInput" placeholder="全域搜尋案件、當事人、案號..." autocomplete="off">
+            </div>
+            <div class="meta">
+                <span id="countBadge" class="badge">狀態載入中...</span>
+                <button id="themeToggleBtn" type="button" title="切換深色 / 淺色主題">🌙</button>
+            </div>
+        </header>
+
+        {% include "partials/osc/dashboard.html" %}
+        {% include "partials/osc/magiModules.html" %}
+        {% include "partials/osc/cases.html" %}
+        {% include "partials/osc/laf.html" %}
+        {% include "partials/osc/documents.html" %}
+        {% include "partials/osc/pdfTools.html" %}
+        {% include "partials/osc/drafts.html" %}
+        {% include "partials/osc/forms.html" %}
+        {% include "partials/osc/lafWizard.html" %}
+        {% include "partials/osc/archiveWizard.html" %}
+        {% include "partials/osc/accounting.html" %}
+        {% include "partials/osc/quotations.html" %}
+        {% include "partials/osc/clients.html" %}
+        {% include "partials/osc/meetings.html" %}
+        {% include "partials/osc/calendar.html" %}
+        {% include "partials/osc/todos.html" %}
+        {% include "partials/osc/admin.html" %}
+        {% include "partials/osc/fileManager.html" %}
+
+        <div id="wbMask" class="modal-mask">
+            <div class="modal">
+                <div class="modal-head">
+                    <div id="wbTitle" class="modal-title">工作台</div>
+                    <button class="btn" id="wbCloseBtn">關閉</button>
+                </div>
+                <div id="wbStatus" class="status-banner" hidden></div>
+                <div id="wbBody"></div>
+            </div>
+        </div>
+        <input id="wbFolderUploadInput" type="file" hidden>
+        <div id="toastStack" class="toast-stack" aria-live="polite" aria-atomic="true"></div>
+
+        <!-- UX v3 P3: 全域 loading overlay -->
+        <div id="tabLoadingOverlay" hidden>
+            <div class="spinner"></div>
+            <div class="loading-text">載入中...</div>
+        </div>
+    </div>
+
+    <script src="/static/osc/osc-state.js?v=20260505-case-court-v1"></script>
+    <script src="/static/osc/osc-utils.js?v=20260506-web-reply-v1"></script>
+    <script src="/static/osc/osc-ui.js?v=20260506-web-reply-v1"></script>
+    <script src="/static/osc/osc-grouping.js?v=20260505-paperclip-mobile-v1"></script>
+    <script src="/static/osc/osc-mobile.js?v=20260505-paperclip-mobile-v1"></script>
+    <script src="/static/osc/tabs/dashboard.js?v=20260506-todo-actions-v1"></script>
+    <script src="/static/osc/tabs/cases.js?v=20260506-todo-actions-v1"></script>
+    <script src="/static/osc/tabs/calendar.js?v=20260504-calendar-todo-contrast-v3"></script>
+    <script src="/static/osc/tabs/todos.js?v=20260506-todo-actions-v1"></script>
+    <script src="/static/osc/tabs/admin.js"></script>
+    <script src="/static/osc/tabs/drafts.js?v=20260504-insight-filter-v1"></script>
+    <script src="/static/osc/tabs/documents.js?v=20260507-manual-stamp-v1"></script>
+    <script src="/static/osc/tabs/accounting.js"></script>
+    <script src="/static/osc/tabs/checklists.js"></script>
+    <script src="/static/osc/tabs/file_manager.js?v=20260505-file-share-v2"></script>
+    <script src="/static/osc/osc-events.js?v=20260507-manual-stamp-v1"></script>
+</body>
+
+</html>

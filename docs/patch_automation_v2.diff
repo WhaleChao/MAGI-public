@@ -1,0 +1,1113 @@
+diff --git a/casper_ecosystem/law_firm_orchestrators/laf_automation_v2.py b/casper_ecosystem/law_firm_orchestrators/laf_automation_v2.py
+index 88d159d..708debd 100644
+--- a/casper_ecosystem/law_firm_orchestrators/laf_automation_v2.py
++++ b/casper_ecosystem/law_firm_orchestrators/laf_automation_v2.py
+@@ -1470,6 +1470,70 @@ class LAFWebAutomation:
+             return {}
+         return artifact
+ 
++    def _dismiss_post_login_popups(self):
++        """
++        關閉登入後可能出現的彈窗（如密碼變更提醒）。
++
++        Portal 在登入後會顯示 Bootstrap Modal 提醒律師變更密碼，
++        內含「關閉」和「前往修改」按鈕。MAGI 需要點擊「關閉」才能繼續操作。
++        """
++        try:
++            # Switch to content frame if in frameset
++            self._switch_to_content_frame_if_any()
++            time.sleep(1.0)
++
++            # Try to find and close password change reminder modal
++            # The modal typically has a "關閉" button or a close (X) button
++            dismissed = self.driver.execute_script("""
++                // Look for Bootstrap modal close buttons
++                var buttons = document.querySelectorAll(
++                    '.modal .btn-default, .modal .btn-secondary, .modal [data-dismiss="modal"], '
++                    + '.modal .close, .modal button'
++                );
++                for (var i = 0; i < buttons.length; i++) {
++                    var txt = (buttons[i].textContent || '').trim();
++                    if (txt === '關閉' || txt === '取消' || txt === 'Close' || txt === '×') {
++                        buttons[i].click();
++                        return 'dismissed: ' + txt;
++                    }
++                }
++                // Also try clicking overlay/backdrop to close
++                var backdrop = document.querySelector('.modal-backdrop');
++                if (backdrop) {
++                    // Try to hide modal via jQuery
++                    if (typeof jQuery !== 'undefined') {
++                        jQuery('.modal').modal('hide');
++                        return 'dismissed via jQuery';
++                    }
++                }
++                // Check if modal exists but no close button found
++                var modal = document.querySelector('.modal.show, .modal.in, .modal[style*="display: block"]');
++                if (modal) {
++                    // Force hide
++                    modal.style.display = 'none';
++                    modal.classList.remove('show', 'in');
++                    if (backdrop) backdrop.remove();
++                    document.body.classList.remove('modal-open');
++                    return 'force-hidden';
++                }
++                return 'no_modal';
++            """)
++            if dismissed and dismissed != 'no_modal':
++                self.log(f"  🔒 Post-login popup: {dismissed}")
++                time.sleep(0.5)
++        except Exception as e:
++            self.log(f"  ⚠️ Post-login popup check: {e}")
++
++        # Also handle JS alert dialogs
++        try:
++            from selenium.common.exceptions import NoAlertPresentException
++            alert = self.driver.switch_to.alert
++            alert_text = (alert.text or "").strip()
++            self.log(f"  ⚠️ Post-login alert: {alert_text[:80]}")
++            alert.accept()
++        except Exception:
++            pass
++
+     def login(self) -> bool:
+         """登入 LAF 律師線上操作系統"""
+         retry_count = 0
+@@ -1505,6 +1569,7 @@ class LAFWebAutomation:
+                     if any(m in src0 for m in main_markers) or ("toMainPage" in (self.driver.current_url or "")):
+                         self.log("✅ LAF 已登入（沿用既有 session）")
+                         _eventlog("laf:portal:login", ok=True, payload={"method": "session_reuse"}, tags={"base_url": self.base_url})
++                        self._dismiss_post_login_popups()
+                         return True
+                 except Exception:
+                     pass
+@@ -1720,6 +1785,7 @@ class LAFWebAutomation:
+                 # 1) URL 判斷
+                 if 'toMainPage' in current_url:
+                     self.log('✅ LAF 登入成功！')
++                    self._dismiss_post_login_popups()
+                     return True
+ 
+                 # 2) 內容判斷（有些情況 URL 仍停在 processLogin，但頁面已是主頁）
+@@ -1731,12 +1797,14 @@ class LAFWebAutomation:
+                 main_markers = ["自動登出", "案件狀態區", "待處理案件", "追蹤案件", "最新公告"]
+                 if any(m in src for m in main_markers):
+                     self.log("✅ LAF 登入成功！（以頁面內容判斷）")
++                    self._dismiss_post_login_popups()
+                     return True
+ 
+                 # 2-1) frameset 判斷：有些登入成功後會導到 frameset（contentFrame/footerFrame）
+                 try:
+                     if self.driver.find_elements(By.CSS_SELECTOR, "frame[name='contentFrame'], frame[name='footerFrame']"):
+                         self.log("✅ LAF 登入成功！（以 frameset 判斷）")
++                        self._dismiss_post_login_popups()
+                         return True
+                 except Exception:
+                     pass
+@@ -1751,6 +1819,7 @@ class LAFWebAutomation:
+                     src2 = (self.driver.page_source or "")
+                     if any(m in src2 for m in main_markers):
+                         self.log("✅ LAF 登入成功！（以 contentFrame 內容判斷）")
++                        self._dismiss_post_login_popups()
+                         return True
+                 except Exception:
+                     pass
+@@ -2548,6 +2617,7 @@ return (() => {
+                 "fee": "LGFEE",
+                 "inquiry": "RSM",
+                 "withdrawal": "PB_doc",
++                "closing": "CR_CS",
+             }.get(wf, "")
+             js_candidates = [
+                 f"if (typeof linkUpload === 'function') {{ try {{ linkUpload('{token}'); return true; }} catch(e) {{}} }} return false;" if token else "",
+@@ -2988,6 +3058,119 @@ return null;
+ 
+         return True
+ 
++    def _fill_casekd_cascade(self, clcate_path: list) -> bool:
++        """
++        填寫結案類型級聯選單 (casekd → level1 → level2 → ...)。
++
++        Portal 使用 AJAX 動態載入每層選項：
++        GET /lafcsp/getPLS12ByFnode?category=L41A_1&fnode=<parent_value>
++
++        Args:
++            clcate_path: 文字標籤陣列，如 ["扶助種類為訴訟代理或辯護", "民/家事案件", ...]
++        """
++        if not clcate_path or not self.driver:
++            return False
++
++        self.log(f"  📋 Filling casekd cascade: {' → '.join(clcate_path)}")
++        import json
++        _path_json = json.dumps(clcate_path, ensure_ascii=False)
++
++        try:
++            result = self.driver.execute_script(f"""
++                var path = {_path_json};
++                var selectNames = ['casekd', 'level1', 'level2', 'level3', 'level4',
++                                   'level5', 'level6', 'level7', 'level8', 'level9'];
++                var results = {{}};
++                var lastValue = '';
++
++                for (var step = 0; step < path.length && step < selectNames.length; step++) {{
++                    var selName = selectNames[step];
++                    var targetText = path[step];
++                    var sel = document.getElementsByName(selName)[0] ||
++                              document.getElementById(selName);
++                    if (!sel) {{
++                        results[selName] = 'NOT_FOUND';
++                        break;
++                    }}
++
++                    // Enable the select (portal disables them initially)
++                    sel.disabled = false;
++                    sel.removeAttribute('disabled');
++
++                    // If this is not casekd (level 0), we need to load options via AJAX first
++                    if (step > 0 && lastValue) {{
++                        // Synchronous AJAX to get child options
++                        var xhr = new XMLHttpRequest();
++                        xhr.open('GET', '/lafcsp/getPLS12ByFnode?category=L41A_1&fnode=' + lastValue, false);
++                        xhr.send(null);
++                        if (xhr.status === 200) {{
++                            try {{
++                                var data = JSON.parse(xhr.responseText);
++                                // Clear and repopulate the select
++                                sel.innerHTML = '<option value="">請選擇</option>';
++                                for (var i = 0; i < data.length; i++) {{
++                                    var opt = document.createElement('option');
++                                    opt.value = data[i].seq || data[i].value || '';
++                                    opt.textContent = data[i].nodenm || data[i].text || '';
++                                    sel.appendChild(opt);
++                                }}
++                            }} catch(e) {{
++                                results[selName] = 'AJAX_PARSE_ERROR: ' + e.message;
++                                break;
++                            }}
++                        }} else {{
++                            results[selName] = 'AJAX_FAILED: ' + xhr.status;
++                            break;
++                        }}
++                    }}
++
++                    // Find and select the option matching targetText
++                    var matched = false;
++                    for (var j = 0; j < sel.options.length; j++) {{
++                        var optText = sel.options[j].textContent.trim();
++                        if (optText === targetText || optText.indexOf(targetText) >= 0 ||
++                            targetText.indexOf(optText) >= 0) {{
++                            sel.selectedIndex = j;
++                            lastValue = sel.options[j].value;
++                            matched = true;
++                            results[selName] = optText + ' (' + lastValue + ')';
++                            // Fire change event
++                            sel.dispatchEvent(new Event('change', {{bubbles: true}}));
++                            break;
++                        }}
++                    }}
++                    if (!matched) {{
++                        results[selName] = 'NO_MATCH for: ' + targetText;
++                        break;
++                    }}
++                }}
++
++                // Now set the clcate display field
++                var allText = '';
++                for (var k = 0; k < selectNames.length; k++) {{
++                    var s = document.getElementsByName(selectNames[k])[0];
++                    if (s && s.selectedIndex > 0) {{
++                        var t = s.options[s.selectedIndex].textContent.trim();
++                        allText += (allText ? '、' : '') + t;
++                    }}
++                }}
++                var clcateEl = document.getElementsByName('clcate')[0] ||
++                               document.getElementById('clcate');
++                if (clcateEl && allText) {{
++                    clcateEl.readOnly = false;
++                    clcateEl.removeAttribute('readonly');
++                    clcateEl.value = allText;
++                    results.clcate = allText;
++                }}
++
++                return results;
++            """)
++            self.log(f"  📋 Casekd cascade result: {result}")
++            return bool(result and result.get("clcate"))
++        except Exception as e:
++            self.log(f"  ❌ Casekd cascade failed: {e}")
++            return False
++
+     def fill_closing_report(self, counts: Dict[str, Any], zero_reasons: Dict[str, str] = None) -> bool:
+         """
+         填寫報結次數與理由欄位（暫存/送出前置）。
+@@ -3016,130 +3199,179 @@ return null;
+                 except Exception:
+                     applyno = ""
+                 
+-                self.log("  🔧 Phase 0: Setting Page 1 defaults via JS...")
+-                # Calculate Taiwan Date
++                self.log("  🔧 Phase 0: Setting Page 1 fields via JS...")
++                # Use counts to fill Page 1 court info
+                 import datetime
+-                today = datetime.date.today()
+-                tw_year = today.year - 1911
+-                tw_date = f"{tw_year}/{today.month:02d}/{today.day:02d}"
++                _judg_dt_raw = str((counts or {}).get("judg_dt") or "").strip()
++                if _judg_dt_raw:
++                    # Convert ISO date (2026-03-16) to Taiwan date (1150316)
++                    try:
++                        _dt = datetime.datetime.strptime(_judg_dt_raw, "%Y-%m-%d").date()
++                        _tw_dt = f"{_dt.year - 1911}{_dt.month:02d}{_dt.day:02d}"
++                    except Exception:
++                        _tw_dt = _judg_dt_raw.replace("/", "").replace("-", "")
++                else:
++                    _today = datetime.date.today()
++                    _tw_dt = f"{_today.year - 1911}{_today.month:02d}{_today.day:02d}"
++
++                _court_kind = str((counts or {}).get("court_kind") or "法院").strip()
++                _rel_court1 = {"法院": "法院", "檢察署": "檢察署"}.get(_court_kind, "法院")
++                _court_name = str((counts or {}).get("court_name") or "").strip()
++                _judg_eff = str((counts or {}).get("judg_eff") or "").strip()
++                # judg_eff 驗證：只允許法扶表單上實際存在的選項
++                _valid_judg_eff = ("對受扶助人較有利", "對受扶助人較不利", "其他")
++                if _judg_eff not in _valid_judg_eff:
++                    _judg_eff = "其他"
++                _appellee = str((counts or {}).get("appellee") or "無").strip()
++                _court_year = str((counts or {}).get("court_case_year") or "").strip()
++                _court_code = str((counts or {}).get("court_case_code") or "").strip()
++                _court_no = str((counts or {}).get("court_case_no") or "").strip()
++                # 刑期 / 緩刑（刑事案件 Page 1 欄位）
++                _sentence_term = str((counts or {}).get("sentence_term") or "").strip()
++                _reprieve_term = str((counts or {}).get("reprieve_term") or "").strip()
+ 
+                 js_fill = f"""
+-                function setVal(name, val) {{
+-                    var el = document.getElementsByName(name)[0];
+-                    if(el && !el.value) {{
++                function _fire(el) {{ el.dispatchEvent(new Event('change', {{bubbles:true}})); }}
++                function setVal(name, val, forceOverwrite) {{
++                    // Set ALL elements with the same name (hidden + visible)
++                    // to avoid server picking the empty visible one
++                    var els = document.getElementsByName(name);
++                    if (!els.length) {{
++                        var byId = document.getElementById(name);
++                        if (!byId) return false;
++                        els = [byId];
++                    }}
++                    var set = 0;
++                    for (var i = 0; i < els.length; i++) {{
++                        var el = els[i];
++                        if (!forceOverwrite && el.value && el.value.trim()) continue;
++                        if (el.readOnly) el.readOnly = false;
+                         el.value = val;
+-                        $(el).trigger('change');
+-                        return true;
++                        _fire(el);
++                        set++;
+                     }}
+-                    return false;
++                    return set > 0;
+                 }}
+-                var r1 = setVal('is_citizen_judge', '否');
+-                var r2 = setVal('judg_eff', '對受扶助人較有利');
+-                var r3 = setVal('rel_court1', '無');
+-                var r4 = setVal('judg_dt', '{tw_date}');
+-                var r5 = setVal('appellee', '無');
+-                return [r1, r2, r3, r4, r5];
++                function setSelect(name, val) {{
++                    var els = document.getElementsByName(name);
++                    if (!els.length) {{
++                        var byId = document.getElementById(name);
++                        if (!byId) return false;
++                        els = [byId];
++                    }}
++                    var set = 0;
++                    for (var j = 0; j < els.length; j++) {{
++                        var el = els[j];
++                        if (el.tagName === 'SELECT') {{
++                            for (var i = 0; i < el.options.length; i++) {{
++                                if (el.options[i].value === val || el.options[i].text === val) {{
++                                    el.selectedIndex = i;
++                                    _fire(el);
++                                    set++;
++                                    break;
++                                }}
++                            }}
++                            if (set === 0) {{ el.value = val; _fire(el); set++; }}
++                        }} else {{
++                            el.value = val;
++                            _fire(el);
++                            set++;
++                        }}
++                    }}
++                    return set > 0;
++                }}
++                var results = {{}};
++                results.is_citizen_judge = setSelect('is_citizen_judge', '否');
++                results.judg_eff = setSelect('judg_eff', '{_judg_eff}');
++                results.rel_court1 = setSelect('rel_court1', '{_rel_court1}');
++                results.rel_court2 = setVal('rel_court2', '{_court_name}', true);
++                results.judg_dt = setVal('judg_dt', '{_tw_dt}', true);
++                results.appellee = setVal('appellee', '{_appellee}', true);
++
++                // 刑期 / 緩刑（刑事案件才有此欄位，非刑事 Page 1 無此 input）
++                if ('{_sentence_term}') results.terms = setVal('terms', '{_sentence_term}', false);
++                if ('{_reprieve_term}') results.reprieve = setVal('reprieve', '{_reprieve_term}', false);
++
++                // Fill first case number row
++                var years = document.getElementsByName('year');
++                var codes = document.getElementsByName('relcode');
++                var nos = document.getElementsByName('relno');
++                if (years.length > 0 && !years[0].value) years[0].value = '{_court_year}';
++                if (codes.length > 0 && !codes[0].value) codes[0].value = '{_court_code}';
++                if (nos.length > 0 && !nos[0].value) nos[0].value = '{_court_no}';
++                results.case_no = '{_court_year} {_court_code} {_court_no}';
++
++                // Remove disabled from judg_dt (portal may disable it)
++                var jdt = document.getElementsByName('judg_dt');
++                for (var i = 0; i < jdt.length; i++) {{
++                    jdt[i].disabled = false; jdt[i].readOnly = false;
++                    jdt[i].removeAttribute('disabled'); jdt[i].removeAttribute('readonly');
++                }}
++
++                return results;
+                 """
+                 res = self.driver.execute_script(js_fill)
+-                # Phase 0: JS Results (is_citizen_judge, judg_eff, rel_court1, judg_dt, appellee) -> {res}
+-                self.log(f"  🔧 Phase 0: JS Results -> {{res}}")
+-
+-                # FORCE NAVIGATION TO PAGE 2 using toPrevious() logic
+-                # function toPrevious(){   
+-                #    document.forms[0].action='/lafcsp/toClosedSummaryLawyer';
+-                #    $("#fromPage").val('CR1');
+-                #    document.forms[0].submit();
+-                # }
++                self.log(f"  🔧 Phase 0: Page 1 JS fill -> {res}")
++
++                # Phase 0b: Fill casekd cascade (結案類型)
++                _clcate_path = list((counts or {}).get("closing_clcate_path") or [])
++                if _clcate_path:
++                    self._fill_casekd_cascade(_clcate_path)
++                else:
++                    self.log("  ⚠️ No closing_clcate_path provided, skipping casekd cascade")
++
++                # Navigate to Page 2 via toPrevious()
++                # IMPORTANT: Do NOT save Page 1 separately via save_btn/checkData('0') first!
++                # save_btn triggers form.submit() to insertClosedSummaryBasic, which consumes
++                # the session state. After that, toPrevious() would redirect to login.
++                # toPrevious() sets form.action to toClosedSummaryLawyer and POST-submits,
++                # which saves Page 1 data AND navigates to Page 2 in one step.
++                from selenium.common.exceptions import NoAlertPresentException
++
++                self.log("  🚀 Navigating to Page 2 via toPrevious()...")
+                 try:
+-                    self.log("  🚀 Attempting forced navigation to Page 2 via custom JS...")
+-                    self.driver.execute_script("""
+-                        document.forms[0].action='/lafcsp/toClosedSummaryLawyer';
+-                        if ($("#fromPage").length > 0) {
+-                            $("#fromPage").val('CR1');
+-                        }
+-                        document.forms[0].submit();
+-                    """)
+-                    
+-                    # Check for alert after submit
+-                    try:
+-                        from selenium.common.exceptions import NoAlertPresentException
+-                        alert = self.driver.switch_to.alert
+-                        alert_text = alert.text
+-                        self.log(f"  ⚠️ Alert detected after Submit: {alert_text}")
+-                        alert.accept()
+-                    except NoAlertPresentException:
+-                        pass
++                    # Call toPrevious() directly — it sets form.action to
++                    # toClosedSummaryLawyer and submits. This saves Page 1
++                    # data and navigates to Page 2 in one step.
++                    self.driver.execute_script("toPrevious();")
++                    self.log("  🚀 toPrevious() executed")
+                 except Exception as e:
+-                    self.log(f"  ❌ Error during forced navigation: {e}")
+-                    # No fallback, as exit_btn goes to list
+-                
++                    self.log(f"  ⚠️ toPrevious() exception (expected during nav): {e}")
++
++                # Wait for Page 2 to load
+                 time.sleep(5.0)
+ 
+-                # Wait for Page 2 identifier (meet_times)
++                # Handle alert/confirm dialogs
++                try:
++                    alert = self.driver.switch_to.alert
++                    alert_text = (alert.text or "").strip()
++                    self.log(f"  ⚠️ Alert during navigation: {alert_text}")
++                    alert.accept()
++                    time.sleep(1.0)
++                except NoAlertPresentException:
++                    pass
++                except Exception:
++                    pass
++
++                time.sleep(3.0)
++                self._switch_to_content_frame_if_any()
++
++                # Wait for Page 2 identifier (meet_times or URL)
+                 try:
+-                    WebDriverWait(self.driver, 10).until(
+-                        lambda d: len(d.find_elements("id", "meet_times")) > 0 or "toClosedSummaryLawyer" in d.current_url
++                    WebDriverWait(self.driver, 20).until(
++                        lambda d: len(d.find_elements("id", "meet_times")) > 0
++                        or "toClosedSummaryLawyer" in d.current_url
++                        or "meet_times" in (d.page_source or "")
++                    )
++                    # Wait for document ready (don't require jQuery — fill code uses vanilla JS)
++                    WebDriverWait(self.driver, 15).until(
++                        lambda d: d.execute_script("return document.readyState") == "complete"
+                     )
+                     on_page2 = True
+                     self.log("✅ 已進入報結第二頁 (Handling Info)")
+-                except Exception:
+-                    self.log("⚠️ 無法確認是否進入第二頁，先補做第一頁存檔，再重開第二頁...")
+-                    saved_page1 = False
+-                    save_mode = ""
+-                    try:
+-                        save_mode = str(
+-                            self.driver.execute_script(
+-                                """
+-                                try {
+-                                    if (typeof checkData === 'function') {
+-                                        checkData('0');
+-                                        return 'checkData(0)';
+-                                    }
+-                                    var form = document.forms[0];
+-                                    if (!form) return 'no_form';
+-                                    form.submit();
+-                                    return 'submit';
+-                                } catch (e) {
+-                                    return 'error:' + e;
+-                                }
+-                                """
+-                            )
+-                            or ""
+-                        ).strip()
+-                        time.sleep(1.5)
+-                        WebDriverWait(self.driver, 12).until(
+-                            lambda d: ("存檔成功" in (d.page_source or ""))
+-                            or ("已存檔" in (d.page_source or ""))
+-                            or ("insertClosedSummaryBasic" in (d.current_url or ""))
+-                            or ("saveClosedSummaryCitizenJudge" in (d.current_url or ""))
+-                        )
+-                        saved_page1 = True
+-                        self.log(f"✅ 第一頁補存檔完成 ({save_mode or 'fallback'})")
+-                    except Exception as e:
+-                        self.log(f"❌ 第一頁補存檔失敗: {e}")
+-                    if not saved_page1:
+-                        self._save_page_debug_html("closing_page1_save_failed")
+-                        return False
+-
+-                    fallback_url = ""
+-                    if applyno:
+-                        fallback_url = f"{self.base_url}/lafcsp/toClosedSummaryLawyer?applyno={urllib.parse.quote(applyno)}&fromPage=CR1"
+-                    elif self.mock_mode:
+-                        fallback_url = f"{self.base_url}/lafcsp/toClosedSummaryLawyer"
+-                    if fallback_url:
+-                        try:
+-                            self.driver.get(fallback_url)
+-                            time.sleep(1.0)
+-                            self._switch_to_content_frame_if_any()
+-                            WebDriverWait(self.driver, 10).until(
+-                                lambda d: len(d.find_elements("id", "meet_times")) > 0
+-                                or "toClosedSummaryLawyer" in (d.current_url or "")
+-                                or "meet_times" in (d.page_source or "")
+-                            )
+-                            on_page2 = True
+-                            self.log(f"✅ fallback 已開啟報結第二頁: {fallback_url}")
+-                        except Exception as e:
+-                            self.log(f"❌ fallback 開啟報結第二頁失敗: {e}")
++                except Exception as e:
++                    self.log(f"⚠️ 無法確認是否進入第二頁: {e}")
++                    self._save_page_debug_html("closing_page2_wait_failed")
+                     if not on_page2:
+                         self._save_page_debug_html("closing_page2_open_failed")
+                         return False
+@@ -3169,56 +3401,129 @@ return null;
+         # 3. Fill Fields (Page 2)
+         # Mapping: key -> (selectors, input_type)
+         # Hidden fields (court/review) need JS injection
+-        
+-        # Normal inputs
++
++        # Normal inputs (may have readonly attribute — remove via JS first)
++        # meet_times=面談, tel_times=電話討論, inq_times=律見, wc_times=書狀
+         mapping = [
+             ("meeting_count", ["meet_times"], "id"),
+             ("contact_count", ["tel_times"], "id"),
++            ("inq_count", ["inq_times"], "id"),
+             ("document_count", ["wc_times"], "id"),
+         ]
+-        
++
++        # Remove readonly/disabled from all target fields first (portal sets
++        # readonly on these inputs; Selenium send_keys silently ignores readonly).
++        try:
++            _ids_to_unlock = [s[0] for _, s, _ in mapping]
++            _ids_to_unlock.append("noarrivereason")
++            for _fid in _ids_to_unlock:
++                self.driver.execute_script(f"""
++                    var el = document.getElementById('{_fid}');
++                    if (el) {{ el.readOnly = false; el.removeAttribute('readonly');
++                               el.disabled = false; el.removeAttribute('disabled'); }}
++                """)
++            self.log("  🔓 Removed readonly/disabled from Page 2 input fields")
++        except Exception as e:
++            self.log(f"  ⚠️ Failed to remove readonly: {e}")
++
+         for key, selector_val, by_type in mapping:
+             if key not in (counts or {}):
+                 continue
+             v = counts.get(key, "")
+             if v is None or v == "":
+                 continue
+-            
++
+             # Ensure string & strip
+             val_str = str(v).strip()
+-            
+-            # Locate
++
++            # Locate and fill (use JS fallback if send_keys fails)
+             try:
+                 elm = None
+                 if by_type == "id":
+                     elms = self.driver.find_elements("id", selector_val[0])
+                     if elms: elm = elms[0]
+-                
++
+                 if elm:
+-                    elm.clear()
+-                    elm.send_keys(val_str)
++                    try:
++                        elm.clear()
++                        elm.send_keys(val_str)
++                    except Exception:
++                        # Fallback: JS injection for stubborn readonly fields
++                        self.driver.execute_script(
++                            f"var el = document.getElementById('{selector_val[0]}');"
++                            f"if (el) {{ el.value = '{val_str}'; }}"
++                        )
+                     self.log(f"  ✍️ {key} ({selector_val[0]}) = {val_str}")
+                 else:
+                     self.log(f"  ⚠️ 找不到欄位：{key}")
+             except Exception as e:
+                 self.log(f"  ❌ 填寫 {key} 失敗：{e}")
+ 
++        # 3a. Trigger calculateTimes() to update disc_times (hidden auto-sum field).
++        # disc_times = meet_times + tel_times + inq_times; it's only recalculated
++        # via onblur on those inputs, which Selenium send_keys does NOT fire.
++        # Also call addZero() to zero-pad each field to 2 digits.
++        try:
++            self.driver.execute_script("""
++                // Zero-pad and recalculate disc_times
++                if (typeof addZero === 'function') {
++                    if (document.getElementById('meet_times')) addZero('meet_times', 2);
++                    if (document.getElementById('tel_times')) addZero('tel_times', 2);
++                    if (document.getElementById('inq_times')) addZero('inq_times', 2);
++                    if (document.getElementById('wc_times')) addZero('wc_times', 2);
++                }
++                if (typeof calculateTimes === 'function' && document.getElementById('meet_times')) {
++                    calculateTimes(document.getElementById('meet_times'));
++                }
++            """)
++            self.log("  🔧 (JS) Triggered calculateTimes() → disc_times recalculated")
++        except Exception as e:
++            self.log(f"  ⚠️ calculateTimes() trigger failed: {e}")
++
+         # Hidden/Calculated fields (Court & Review)
+-        # Requires JS injection because they are hidden inputs + display spans
+-        hidden_map = [
+-            ("court_count", "ap_times", "ap_timesShow"),
+-            ("review_count", "viewsheet_times", "viewsheet_timesShow"),
+-        ]
+-        
+-        for key, hidden_id, show_id in hidden_map:
+-            if key in (counts or {}):
+-                v = str(counts.get(key, "0")).strip()
+-                try:
+-                    js = f"$('#{hidden_id}').val('{v}'); $('#{show_id}').text('{v}');"
+-                    self.driver.execute_script(js)
+-                    self.log(f"  🔧 (JS) {key} -> {hidden_id}={v}")
+-                except Exception as e:
+-                    self.log(f"  ❌ JS 設定 {key} 失敗：{e}")
++        # ap_times 是 lawyerap_times + isap_times 的加總（hidden field）。
++        # 實際可編輯的欄位是 lawyerap_times（扶助律師開庭次數），
++        # 填完後要觸發 calculateTimes() 來自動更新 ap_times 與 ap_timesShow。
++        # viewsheet_times 同樣是 hidden，先直接設 hidden + display。
++        if "court_count" in (counts or {}):
++            v = str(counts.get("court_count", "0")).strip()
++            try:
++                js = f"""
++                    // 填寫 lawyerap_times（扶助律師開庭次數，可編輯欄位）
++                    var la = document.getElementById('lawyerap_times');
++                    if (la) {{ la.value = '{v}'; la.dispatchEvent(new Event('change', {{bubbles:true}})); }}
++                    // 同步更新 hidden ap_times 與 display ap_timesShow
++                    var h = document.getElementById('ap_times');
++                    if (h) h.value = '{v}';
++                    var s = document.getElementById('ap_timesShow');
++                    if (s) {{
++                        var numEl = s.querySelector('strong.num') || s;
++                        numEl.textContent = '{v}';
++                    }}
++                    // 嘗試觸發 calculateTimes（如果存在）
++                    if (typeof calculateTimes === 'function' && la) calculateTimes(la);
++                """
++                self.driver.execute_script(js)
++                self.log(f"  🔧 (JS) court_count -> lawyerap_times={v}, ap_times={v}")
++            except Exception as e:
++                self.log(f"  ❌ JS 設定 court_count 失敗：{e}")
++
++        if "review_count" in (counts or {}):
++            v = str(counts.get("review_count", "0")).strip()
++            try:
++                js = f"""
++                    var h = document.getElementById('viewsheet_times');
++                    if (h) h.value = '{v}';
++                    var s = document.getElementById('viewsheet_timesShow');
++                    if (s) {{
++                        var numEl = s.querySelector('strong.num') || s;
++                        numEl.textContent = '{v}';
++                    }}
++                """
++                self.driver.execute_script(js)
++                self.log(f"  🔧 (JS) review_count -> viewsheet_times={v}")
++            except Exception as e:
++                self.log(f"  ❌ JS 設定 review_count 失敗：{e}")
+ 
+         # 3b. Select fields: 費用是否已請領完畢 / 是否達成調解和解
+         # These are <select> elements that may be disabled — enable via JS first.
+@@ -3226,7 +3531,7 @@ return null;
+             # islgfee: 費用是否已請領完畢 → 一律選「是」
+             self.driver.execute_script("""
+                 var el = document.getElementById('islgfee') || document.getElementsByName('islgfee')[0];
+-                if (el) { el.disabled = false; el.value = '是'; $(el).trigger('change'); }
++                if (el) { el.disabled = false; el.value = '是'; el.dispatchEvent(new Event('change', {bubbles: true})); }
+             """)
+             self.log("  ✍️ islgfee (費用是否已請領完畢) = 是")
+         except Exception as e:
+@@ -3238,35 +3543,30 @@ return null;
+             med_val = "是" if (counts or {}).get("has_mediation_success") else "否"
+             self.driver.execute_script(f"""
+                 var el = document.getElementById('is_med_by_ly') || document.getElementsByName('is_med_by_ly')[0];
+-                if (el) {{ el.disabled = false; el.value = '{med_val}'; $(el).trigger('change'); }}
++                if (el) {{ el.disabled = false; el.value = '{med_val}'; el.dispatchEvent(new Event('change', {{bubbles: true}})); }}
+             """)
+             self.log(f"  ✍️ is_med_by_ly (是否達成調解/和解) = {med_val}")
+         except Exception as e:
+             self.log(f"  ⚠️ 設定 is_med_by_ly 失敗：{e}")
+ 
+-        # 4. Reason Fields (Textareas)
+-        # Usually looking for "說明" or "備註" or specific IDs if known.
+-        # Capturing general textareas for zero-count reasons.
+-        for key, reason in (zero_reasons or {}).items():
+-            r = (reason or "").strip()
+-            if not r:
+-                continue
+-            
+-            # Heuristic match for reason fields
+-            # Since we don't have exact map, try common reason keywords
+-            labels = []
+-            if key == "meeting_count": labels = ["開會", "會議"]
+-            elif key == "contact_count": labels = ["聯繫", "聯絡"]
+-            elif key == "court_count": labels = ["開庭", "出庭"]
+-            # ... etc ...
+-            
+-            # Simple fallback to any visible textarea if specific label search fails
+-            # (Refining this would require more HTML analysis of reasons, assuming generic handling for now)
+-            ok = self._set_field_by_label(labels or ["說明", "備註"], r, kind="textarea")
+-            if ok:
+-                self.log(f"  📝 {key} 理由已填入")
+-            else:
+-                self.log(f"  ⚠️ 找不到理由欄位：{key}")
++        # 4. noarrivereason: required when any count is 0
++        # This is the "扶助律師特別說明" textarea
++        _noarrive_reason = str((counts or {}).get("noarrivereason") or "").strip()
++        if not _noarrive_reason:
++            # Build from zero_reasons
++            parts = [str(v).strip() for v in (zero_reasons or {}).values() if str(v).strip()]
++            _noarrive_reason = "; ".join(parts) if parts else ""
++        if _noarrive_reason:
++            try:
++                ta = self.driver.find_elements("id", "noarrivereason")
++                if ta:
++                    ta[0].clear()
++                    ta[0].send_keys(_noarrive_reason)
++                    self.log(f"  ✍️ noarrivereason = {_noarrive_reason[:60]}...")
++                else:
++                    self.log("  ⚠️ 找不到 noarrivereason textarea")
++            except Exception as e:
++                self.log(f"  ❌ 填寫 noarrivereason 失敗: {e}")
+ 
+         return True
+ 
+@@ -3304,6 +3604,17 @@ return null;
+         # Capture Page 1 HTML before navigation (Debug)
+         self._save_page_debug_html("closing_page1")
+ 
++        # Upload supporting files on Page 1 BEFORE navigating to Page 2.
++        # The upload panel (linkUpload('CR_CS')) only exists on Page 1.
++        # After toPrevious() navigates to Page 2, upload is no longer available.
++        up_files = list(upload_files or [])
++        if up_files:
++            self.log(f"📎 報結附件上傳（第一頁）：共 {len(up_files)} 份 PDF")
++            up_res = self._upload_supporting_files(up_files, workflow="closing")
++            self._save_page_debug_html("closing_page1_uploaded")
++            if not up_res.get("ok"):
++                self.log("⚠️ 報結附件上傳失敗，繼續暫存（附件可稍後補上傳）")
++
+         if not self.fill_closing_report(counts=counts or {}, zero_reasons=zero_reasons or {}):
+             self.log("❌ 報結第二頁填寫前置失敗")
+             self._save_page_debug_html("closing_fill_failed")
+@@ -3312,56 +3623,118 @@ return null;
+         # Capture Page 2 HTML after fill (Debug)
+         self._save_page_debug_html("closing_page2_filled")
+ 
+-        # Upload supporting files (我方歷次書狀/判決書 PDF)
+-        up_files = list(upload_files or [])
+-        if up_files:
+-            self.log(f"📎 報結附件上傳：共 {len(up_files)} 份 PDF")
+-            up_res = self._upload_supporting_files(up_files, workflow="closing")
+-            self._save_page_debug_html("closing_page2_uploaded")
+-            if not up_res.get("ok"):
+-                self.log("❌ 報結附件上傳失敗（未成功上傳任何檔案）")
+-                return False
+-
+-        # 嘗試點擊暫存 (doTempSave / #save_btn)
+-        clicked = False
++        # 嘗試暫存 via doTempSave()
++        # doTempSave() calls checkData() (validation) then form.submit()
++        # Messages appear in Bootstrap modals (#dialog-msg #msgPart), not JS alerts
++        self.log("  💾 Calling doTempSave()...")
++        save_attempted = False
+         try:
+-            # Page 2 specific save
+-            clicked = bool(self.driver.execute_script("if (typeof doTempSave === 'function') { doTempSave(); return true; } return false;"))
+-        except Exception:
+-            clicked = False
+-        
+-        if not clicked:
+-            # Try ID click
+-            try:
+-                btn = self.driver.find_element("id", "save_btn")
+-                if btn and btn.is_displayed():
+-                    btn.click()
+-                    clicked = True
+-            except Exception:
+-                pass
+-
+-        if not clicked:
+-            # Fallback to general text
+-            clicked = self._click_button_by_text(["存檔", "暫存", "保存", "儲存"])
++            has_fn = self.driver.execute_script("return typeof doTempSave === 'function'")
++            if has_fn:
++                self.driver.execute_script("doTempSave();")
++                save_attempted = True
++                self.log("  💾 doTempSave() called")
++            else:
++                # Fallback: try save_btn click
++                try:
++                    btn = self.driver.find_element("id", "save_btn")
++                    if btn and btn.is_displayed():
++                        btn.click()
++                        save_attempted = True
++                        self.log("  💾 save_btn clicked")
++                except Exception:
++                    pass
++                if not save_attempted:
++                    save_attempted = self._click_button_by_text(["存檔", "暫存", "保存", "儲存"])
++        except Exception as e:
++            self.log(f"  ⚠️ doTempSave exception: {e}")
+ 
+-        if not clicked:
+-            self.log("❌ 找不到『存檔』按鈕")
+-            # Save debug HTML on failure
++        if not save_attempted:
++            self.log("❌ 找不到暫存方法")
+             self._save_page_debug_html("closing_save_failed")
+             return False
+ 
+-        time.sleep(2.0)
++        # Wait for form submission and server response
++        time.sleep(4.0)
+ 
+-        # Best-effort success marker
++        # Check for validation error in Bootstrap modal (checkData failed)
++        try:
++            modal_msg = self.driver.execute_script("""
++                var el = document.getElementById('msgPart');
++                return el ? el.textContent || el.innerText : '';
++            """) or ""
++            if modal_msg.strip():
++                self.log(f"  ℹ️ Modal message: {modal_msg.strip()[:100]}")
++                if "存檔成功" in modal_msg or "暫存成功" in modal_msg or "儲存成功" in modal_msg:
++                    self.log("✅ 報結存檔完成（Modal 確認成功）")
++                    self._save_page_debug_html("closing_save_success")
++                    return True
++                elif "錯誤" in modal_msg or "失敗" in modal_msg:
++                    self.log(f"❌ 報結存檔失敗: {modal_msg.strip()[:200]}")
++                    self._save_page_debug_html("closing_save_error")
++                    return False
++        except Exception:
++            pass
++
++        # Check page source for success message (after form submit + response)
+         try:
+             src = (self.driver.page_source or "")
+         except Exception:
+             src = ""
+-        if any(k in src for k in ["存檔成功", "暫存成功", "成功"]):
++
++        if any(k in src for k in ["存檔成功", "暫存成功"]):
+             self.log("✅ 報結存檔完成（偵測到成功訊息）")
++            self._save_page_debug_html("closing_save_success")
+             return True
+-        self.log("✅ 已執行存檔動作（未偵測到明確成功訊息，請以平台結果為準）")
+-        return True
++
++        # Check URL for redirect to list page
++        try:
++            cur_url = self.driver.current_url or ""
++        except Exception:
++            cur_url = ""
++        if "updateClosedSummaryLawyer" in cur_url:
++            # Form was submitted — check if response contains success
++            if "存檔成功" in src or "暫存成功" in src:
++                self.log("✅ 報結存檔完成（更新回應頁確認成功）")
++                return True
++
++        # Also check for JS alert (just in case)
++        try:
++            from selenium.common.exceptions import NoAlertPresentException
++            alert = self.driver.switch_to.alert
++            alert_text = (alert.text or "").strip()
++            self.log(f"  ℹ️ Alert: {alert_text}")
++            alert.accept()
++            if any(k in alert_text for k in ["存檔成功", "暫存成功", "儲存成功"]):
++                self.log("✅ 報結存檔完成（Alert 確認成功）")
++                return True
++        except Exception:
++            pass
++
++        # URL 跳回清單頁不代表存檔成功（可能是表單驗證失敗後的導向），
++        # 必須透過 query_closing_status() 確認資料庫實際有紀錄。
++        if "toClosedReport" in cur_url:
++            self.log("  ℹ️ 已返回結案清單頁，但未偵測到明確成功訊息，進行資料庫驗證...")
++            try:
++                laf_no = laf_case_number
++                status = self.query_closing_status(laf_no)
++                closing_status = (status.get("closing") or {}).get("status", "")
++                if closing_status in ("暫存", "待轉入", "已轉入"):
++                    self.log(f"✅ 報結存檔完成（資料庫驗證：{closing_status}）")
++                    self._save_page_debug_html("closing_save_verified")
++                    return True
++                else:
++                    self.log(f"❌ 報結存檔失敗（資料庫查無有效紀錄，狀態：'{closing_status}'）")
++                    self._save_page_debug_html("closing_save_db_mismatch")
++                    return False
++            except Exception as e:
++                self.log(f"⚠️ 報結資料庫驗證異常: {e}")
++                self._save_page_debug_html("closing_save_verify_error")
++                return False
++
++        self.log("❌ 報結存檔結果不明確（未偵測到成功訊息或跳轉）")
++        self._save_page_debug_html("closing_save_unclear")
++        return False
+ 
+     def final_submit_closing_report(self, laf_case_number: str) -> bool:
+         """
+@@ -3415,7 +3788,7 @@ return null;
+                 # 將改為「僅填寫不送出」。
+                 "list_url": f"{self.base_url}/lafcsp/toGoLiveQuery",
+                 "query_funcs": ["toGoLiveQuery", "toGoLive"],
+-                "draft_js": ["doSave('toNotOpenedCase')", "doSave('toNOC')", "doSave()"],
++                "draft_js": ["doUpdate()", "doSave('toNotOpenedCase')", "doSave('toNOC')", "doSave()"],
+                 "draft_buttons": ["存檔", "暫存", "保存", "儲存"],
+                 "submit_buttons": ["確定", "送出", "提交"],
+             },
+@@ -3625,56 +3998,144 @@ return null;
+ 
+         wf = (workflow or "").strip().lower()
+         if wf == "withdrawal":
+-            _set_any(["#pb_reason", "select[name='pb_reason']"], data.get("pb_reason"), ["撤回原因"], kind="input")
+-            _set_any(["#pb_date", "input[name='pb_date']"], data.get("pb_date"), ["撤回日期"], kind="input")
+-            _set_any(["#pb_desc", "#pb_remark", "textarea[name='pb_desc']", "textarea[name='remark']"], data.get("desc") or data.get("reason_text"), ["說明", "備註", "原因"], kind="textarea")
++            # 撤回 — 實際 HTML 欄位名稱：pb_rec_dt（非 pb_date）、rsn_desc（非 pb_desc）
++            # 注意：無 pb_reason SELECT，也無 pb_proc_desc textarea（只有一個 rsn_desc）
+             _set_any(
+-                [
+-                    "#pb_proc_desc",
+-                    "#pb_process_desc",
+-                    "textarea[name='pb_proc_desc']",
+-                    "textarea[name='proc_desc']",
+-                    "textarea[name='pb_process_desc']",
+-                ],
+-                data.get("reason_text") or data.get("desc"),
+-                ["案件辦理情形", "辦理情形", "處理情形"],
++                ["#pb_rec_dt", "input[name='pb_rec_dt']", "#pb_date", "input[name='pb_date']"],
++                data.get("pb_date") or data.get("pb_rec_dt"),
++                ["撤回日期", "收件日期"],
++                kind="input",
++            )
++            _set_any(
++                ["#rsn_desc", "textarea[name='rsn_desc']", "#pb_desc", "textarea[name='pb_desc']", "textarea[name='remark']"],
++                data.get("desc") or data.get("reason_text"),
++                ["說明", "備註", "原因", "案件辦理情形"],
+                 kind="textarea",
+             )
+-            self._set_radio_value("pb_lawyer_status", str(data.get("pb_lawyer_status") or "N"))
++            # Portal actual radio name is "lawy_status" (confirmed from HTML snapshot 20260222)
++            _pb_status = str(data.get("pb_lawyer_status") or data.get("lawy_status") or "N")
++            if not self._set_radio_value("lawy_status", _pb_status):
++                self._set_radio_value("pb_lawyer_status", _pb_status)
+ 
+         elif wf == "inquiry":
+-            # 疑義回報
+-            _set_any(["#rsm_reqsubj1", "select[name='rsm_reqsubj1']"], data.get("rsm_reqsubj1") or "0001", ["主旨"], kind="input")
+-            
+-            # 主旨2：若無提供則預設 0117 (其他)，避免空值
++            # 疑義 — 實際 HTML 欄位名稱是通用的 reqsubj1/reqsubj2/reqdesc（無 rsm_ 前綴）
++            _set_any(
++                ["#reqsubj1", "select[name='reqsubj1']", "#rsm_reqsubj1", "select[name='rsm_reqsubj1']"],
++                data.get("rsm_reqsubj1") or "0001",
++                ["主旨"],
++                kind="input",
++            )
++
+             req2 = data.get("rsm_reqsubj2")
+             if not req2:
+-                req2 = "0117" 
+-            _set_any(["#rsm_reqsubj2", "select[name='rsm_reqsubj2']"], req2, ["疑義類型", "主旨"], kind="input")
+-            
+-            # 說明：必填
++                req2 = "0117"
++            _set_any(
++                ["select[name='reqsubj2']", "#reqsubj2", "#rsm_reqsubj2", "select[name='rsm_reqsubj2']"],
++                req2,
++                ["疑義類型", "主旨"],
++                kind="input",
++            )
++
+             desc = data.get("desc") or data.get("reason_text") or "（律師未提供詳細說明，請補填）"
+-            _set_any(["#rsm_desc", "textarea[name='rsm_desc']", "textarea[name='desc']"], desc, ["問題", "說明", "備註"], kind="textarea")
+-            
+-            # 辦理情形：預設 N (未辦理) 或 P (辦理中)
+-            status = str(data.get("rsm_lawyer_status") or "N")
+-            if not self._set_radio_value("rsm_lawyer_status", status):
+-                # Fallback: maybe checkbox or select
+-                _set_any(["#rsm_lawyer_status", "select[name='rsm_lawyer_status']"], status)
++            _set_any(
++                ["#reqdesc", "textarea[name='reqdesc']", "#rsm_desc", "textarea[name='rsm_desc']", "textarea[name='desc']"],
++                desc,
++                ["問題", "說明", "備註"],
++                kind="textarea",
++            )
++
++            # 律師意見 (comments) — separate textarea in inquiry form (confirmed from HTML snapshot 20260219)
++            _comments = data.get("comments") or data.get("rsm_comments")
++            if _comments:
++                _set_any(
++                    ["#comments", "textarea[name='comments']", "#rsm_comments", "textarea[name='rsm_comments']"],
++                    _comments,
++                    ["意見", "律師意見"],
++                    kind="textarea",
++                )
++
++            # Portal actual radio name is "lawy_status" (confirmed from HTML snapshot 20260219)
++            status = str(data.get("rsm_lawyer_status") or data.get("lawy_status") or "N")
++            if not self._set_radio_value("lawy_status", status):
++                if not self._set_radio_value("rsm_lawyer_status", status):
++                    _set_any(["#rsm_lawyer_status", "select[name='rsm_lawyer_status']"], status)
+ 
+         elif wf == "condition":
+-            _set_any(["#at_ctype", "select[name='at_ctype']"], data.get("at_ctype") or data.get("condition_type"), ["啟動", "體現法建議"], kind="input")
+-            _set_any(["#conditionrsn", "textarea[name='conditionrsn']", "textarea[name='condition_reason']"], data.get("conditionrsn") or data.get("condition_reason"), ["附條件原因", "原因", "說明"], kind="textarea")
++            # 二階段 — 實際 HTML 中 at_ctype 與 conditionrsn 是 readonly INPUT（非 SELECT/TEXTAREA）
++            # 先嘗試解除 readonly 後填值，若失敗則用 JS 強制設定
++            try:
++                self.driver.execute_script("""
++                    var el = document.querySelector('#at_ctype, input[name="at_ctype"]');
++                    if (el) { el.removeAttribute('readonly'); el.readOnly = false; }
++                    var el2 = document.querySelector('#conditionrsn, input[name="conditionrsn"], textarea[name="conditionrsn"]');
++                    if (el2) { el2.removeAttribute('readonly'); el2.readOnly = false; }
++                """)
++            except Exception:
++                pass
++            _set_any(
++                ["#at_ctype", "input[name='at_ctype']", "select[name='at_ctype']"],
++                data.get("at_ctype") or data.get("condition_type"),
++                ["啟動", "體現法建議"],
++                kind="input",
++            )
++            _set_any(
++                ["#conditionrsn", "input[name='conditionrsn']", "textarea[name='conditionrsn']", "textarea[name='condition_reason']"],
++                data.get("conditionrsn") or data.get("condition_reason"),
++                ["附條件原因", "原因", "說明"],
++                kind="textarea",
++            )
+ 
+         elif wf == "fee":
+-            _set_any(["#lgfee_reqsubj1", "select[name='lgfee_reqsubj1']"], data.get("lgfee_reqsubj1"), ["主旨"], kind="input")
+-            _set_any(["#lgfee_reqsubj2", "select[name='lgfee_reqsubj2']"], data.get("lgfee_reqsubj2"), ["主旨", "費用"], kind="input")
+-            _set_any(["#lgfee_desc", "textarea[name='lgfee_desc']", "textarea[name='desc']"], data.get("desc") or data.get("reason_text"), ["說明", "費用", "備註"], kind="textarea")
+-            self._set_radio_value("lgfee_lawyer_status", str(data.get("lgfee_lawyer_status") or "N"))
++            # 費用 — 實際 HTML 欄位名稱是通用的 reqsubj1/reqsubj2/reqdesc（無 lgfee_ 前綴）
++            _set_any(
++                ["#reqsubj1", "select[name='reqsubj1']", "#lgfee_reqsubj1", "select[name='lgfee_reqsubj1']"],
++                data.get("lgfee_reqsubj1"),
++                ["主旨"],
++                kind="input",
++            )
++            _set_any(
++                ["select[name='reqsubj2']", "#reqsubj2", "#lgfee_reqsubj2", "select[name='lgfee_reqsubj2']"],
++                data.get("lgfee_reqsubj2"),
++                ["主旨", "費用"],
++                kind="input",
++            )
++            _set_any(
++                ["#reqdesc", "textarea[name='reqdesc']", "#lgfee_desc", "textarea[name='lgfee_desc']", "textarea[name='desc']"],
++                data.get("desc") or data.get("reason_text"),
++                ["說明", "費用", "備註"],
++                kind="textarea",
++            )
++            # reqsubj3 — third-level select, shown only when reqsubj2=0120 (支付裁判費)
++            _subj3 = data.get("lgfee_reqsubj3") or data.get("reqsubj3")
++            if _subj3:
++                _set_any(
++                    ["select[name='reqsubj3']", "#reqsubj3", "#lgfee_reqsubj3", "select[name='lgfee_reqsubj3']"],
++                    _subj3,
++                    ["主旨", "費用類型"],
++                    kind="input",
++                )
++            # Note: fee form has NO lawy_status radio (confirmed from HTML snapshot 20260219).
++            # Attempt gracefully in case portal adds it later.
++            _fee_status = data.get("lgfee_lawyer_status") or data.get("lawy_status")
++            if _fee_status:
++                if not self._set_radio_value("lawy_status", str(_fee_status)):
++                    self._set_radio_value("lgfee_lawyer_status", str(_fee_status))
+ 
+         elif wf == "go_live":
+-            _set_any(["#toNotOpenedCase_selResult", "#noc_selResult", "select[name='selResult']", "select[name='result']"], data.get("sel_result") or data.get("result") or "1", ["回報狀態"], kind="input")
+-            _set_any(["#noc_remark", "textarea[name='noc_remark']", "textarea[name='remark']"], data.get("remark") or data.get("desc"), ["說明", "備註"], kind="textarea")
++            # 開辦 — selResult 正確，但 remark 的實際 ID 是 #selRemark（非 #noc_remark）
++            # doSave 不存在，實際用 doUpdate()
++            _set_any(
++                ["#selResult", "select[name='selResult']", "#toNotOpenedCase_selResult", "#noc_selResult", "select[name='result']"],
++                data.get("sel_result") or data.get("result") or "1",
++                ["回報狀態"],
++                kind="input",
++            )
++            _set_any(
++                ["#selRemark", "textarea[name='selRemark']", "#noc_remark", "textarea[name='noc_remark']", "textarea[name='remark']"],
++                data.get("remark") or data.get("desc"),
++                ["說明", "備註"],
++                kind="textarea",
++            )
+ 
+         else:
+             self.log(f"⚠️ 無可填欄位映射（workflow={workflow}）")

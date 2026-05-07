@@ -1,0 +1,39 @@
+        <section id="archiveWizard" class="view">
+            <div class="card" style="background:linear-gradient(135deg,#fef3c7 0%,#fde68a 100%);border-left:4px solid #f59e0b;">
+                <h3 style="margin:0 0 8px;">📦 結案歸檔精靈</h3>
+                <div class="muted" style="font-size:13px;line-height:1.55;">
+                    把已結案案件從 <code>01_案件/</code> 對應分類資料夾移到 <code>05_結案歸檔/</code>。
+                    請先 <strong>預覽</strong> 確認來源／目標路徑，再勾選實際要搬的項目，最後 <strong>執行搬移</strong>（僅勾選項目）。
+                    <br>注意：覆蓋既有目標檔需勾選「目標已存在時仍覆蓋」（慎用）。
+                </div>
+            </div>
+            <div class="card">
+                <h3>已結案搬移向導（先預覽再執行）</h3>
+                <div class="toolbar">
+                    <button class="btn" id="archivePreviewBtn">重新預覽</button>
+                    <button class="btn primary" id="archiveExecuteBtn">執行搬移（僅勾選項目）</button>
+                    <label style="display:flex;align-items:center;gap:4px;"><input type="checkbox"
+                            id="archiveForce">目標已存在時仍覆蓋（慎用）</label>
+                </div>
+                <div id="archiveSummary" class="muted">尚未預覽</div>
+            </div>
+            <div class="card">
+                <div class="table-wrap">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>選取</th>
+                                <th>案號</th>
+                                <th>當事人</th>
+                                <th>狀態</th>
+                                <th>來源</th>
+                                <th>目標</th>
+                                <th>判定</th>
+                            </tr>
+                        </thead>
+                        <tbody id="archiveBody"></tbody>
+                    </table>
+                </div>
+            </div>
+        </section>
+

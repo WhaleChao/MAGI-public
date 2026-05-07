@@ -1,0 +1,4 @@
+# shell=True / os.system(f...) / os.popen() grandfather list
+# 格式：<relpath>:<lineno>   （不可在 key 後面加 # 行內註解，另起一行加 # 說明）
+# R2 Phase 3 (2026-04-20)：daemon.py 所有 shell=True / os.system 已清除。
+# grandfather 列表現為空。若 CI gate 偵測到新增，請先用 SafeProcess.run() 重寫再 push。

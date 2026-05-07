@@ -1,0 +1,585 @@
+"""
+Discord 多頻道路由器
+===================
+依 topic_key 將通知分流到不同 Discord 子頻道。
+
+頻道映射可透過以下方式設定（優先級由高至低）：
+1. 環境變數 MAGI_DC_CHANNEL_MAP (JSON)
+2. .agent/discord_channel_map.json
+3. config.json → discord.channelMap
+4. !magi setup_channels 自動建立
+
+映射格式: { "topic_key": "channel_id", ... }
+
+預設頻道規劃（業務＋動作）:
+  閱卷-繳費   filereview_payment     繳費通知、逾期提醒
+  閱卷-下載   filereview_download    卷宗/繳費單下載完成
+  閱卷-聲請   filereview_apply       聲請閱卷進度
+  筆錄-通知   transcript             筆錄下載完成
+  法扶-派案   laf_dispatch           新案派案通知、審查結果
+  法扶-結案   laf_closing            結案回報、酬金領款
+  逐字稿      verbatim               音訊轉文字、逐字稿產出
+  摘要        summary                文件/PDF 摘要產出
+  翻譯        translation            文件翻譯產出
+  一般        general                預設 fallback 頻道
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import os
+import re
+from typing import Optional
+
+logger = logging.getLogger("discord_channel_router")
+
+_MAGI_ROOT = os.path.abspath(os.path.dirname(os.path.dirname(__file__)))
+_AGENT_DIR = os.path.join(_MAGI_ROOT, ".agent")
+_CHANNEL_MAP_FILE = os.path.join(_AGENT_DIR, "discord_channel_map.json")
+
+# ───────── topic_key → sub_topic 映射 ─────────
+# red_phone.py 已定義 canonical topic_key (filereview, transcript, laf, ...),
+# 這裡進一步細分為 sub_topic 用於 DC 頻道路由。
+
+# 從 red_phone 借用 canonical 化函數
+try:
+    from skills.ops.red_phone import _canonical_topic_key
+except ImportError:
+    _ZH_TOPIC_MAP = {
+        "法扶": "laf", "法律扶助": "laf",
+        "閱卷": "filereview", "筆錄": "transcript",
+        "翻譯": "translation", "摘要": "summary",
+        "判決": "judgment", "逐字稿": "verbatim",
+        "通知": "alert", "巡檢": "nightly", "夜間": "nightly",
+        "市場": "market", "系統": "check",
+    }
+
+    def _canonical_topic_key(key: str) -> str:
+        k = str(key or "").strip().lower()
+        return _ZH_TOPIC_MAP.get(k, k)
+
+
+# ───────── 訊息內容 → 細分 sub_topic ─────────
+
+def _infer_sub_topic(message: str, topic_key: str, source: str = "") -> str:
+    """
+    根據 topic_key + 訊息內容，推斷更細的 sub_topic 用於頻道路由。
+
+    Returns: sub_topic string (e.g. "filereview_payment", "laf_dispatch")
+    """
+    canonical = _canonical_topic_key(topic_key)
+    if not canonical:
+        try:
+            from skills.ops.red_phone import _infer_topic_key
+            canonical = _infer_topic_key(message, source, "")
+        except ImportError:
+            pass
+    
+    s = str(message or "").lower()
+    src = str(source or "").lower()
+
+    if canonical in ("filereview", "filereview_payment", "filereview_download", "filereview_apply"):
+        # 已經有明確 sub_topic 的直接返回
+        if canonical in ("filereview_payment", "filereview_download", "filereview_apply"):
+            return canonical
+        # 閱卷類：依動作細分
+        if any(k in s for k in ["聲請", "apply", "申請閱卷", "填寫完成", "紙本", "預約", "郵寄",
+                                 "確認碼", "confirm", "待確認送出", "預覽"]):
+            return "filereview_apply"
+        if any(k in s for k in ["繳費", "逾期", "到期", "待繳", "payment", "繳費單"]):
+            return "filereview_payment"
+        if any(k in s for k in ["下載完成", "已下載", "download", "歸檔"]):
+            return "filereview_download"
+        if any(k in s for k in ["信箱檢查完成", "閱卷信箱"]):
+            return "filereview_download"
+        # 預設 fallback：聲請比下載更常出現
+        return "filereview_apply"
+
+    if canonical == "laf":
+        # 法扶類：依動作細分
+        if any(k in s for k in ["派案", "dispatch", "新案"]):
+            return "laf_dispatch"
+        if any(k in s for k in ["審查結果", "review_result", "准予扶助"]):
+            return "laf_dispatch"
+        if any(k in s for k in ["結案", "closing", "報結"]):
+            return "laf_closing"
+        if any(k in s for k in ["酬金", "領款", "費用", "fee"]):
+            return "laf_fee"
+        if any(k in s for k in ["疑義", "inquiry", "不合標準"]):
+            return "laf_inquiry"
+        if any(k in s for k in ["二階段", "附條件", "condition"]):
+            return "laf_condition"
+        if any(k in s for k in ["進度回報", "laf_progress", "未結案件進度", "confirm_token", "確認碼"]):
+            return "laf_progress"
+        if any(k in s for k in ["開辦", "go_live", "go-live", "進行中"]):
+            # 如果包含「巡檢」或「報告」等報告字眼，改轉 laf_general
+            if any(k in s for k in ["巡檢", "報告", "報告", "待開辦", "逾期"]):
+                return "laf_general"
+            return "laf_go_live"
+        if any(k in s for k in ["巡檢", "報告", "待辦", "彙報", "案件總數"]):
+            return "laf_general"
+        if any(k in s for k in ["重試", "retry", "exhausted", "達上限"]):
+            # 依原因區分：開辦文件失敗 → laf_go_live，結案文件失敗 → laf_closing，其他 → laf_general
+            if any(k in s for k in ["opening_docs", "missing_opening", "開辦文件", "portal_not_listed"]):
+                return "laf_go_live"
+            if any(k in s for k in ["closing_docs", "missing_closing", "結案文件"]):
+                return "laf_closing"
+            return "laf_general"
+        return "laf_general"
+
+    if canonical == "transcript":
+        return "transcript"
+
+    if canonical == "verbatim":
+        return "verbatim"
+
+    if canonical == "summary":
+        return "summary"
+
+    if canonical == "translation":
+        return "translation"
+
+    if canonical == "filing":
+        return "filing"
+
+    # ───────── 研究通訊命名空間路由 ─────────
+    if canonical in ("research_daily", "research_interpretation", "research_ethno",
+                     "research_humanrights", "research_language", "research_eastasia"):
+        return canonical
+
+    # 其他 topic 直接返回 canonical
+    return canonical or "general"
+
+
+# ───────── sub_topic → fallback chain ─────────
+# 當特定 sub_topic 的頻道沒設定時，回退到更廣的 topic
+
+_FALLBACK_CHAIN: dict[str, list[str]] = {
+    "filereview_payment": ["filereview", "general"],
+    "filereview_download": ["filereview", "general"],
+    "filereview_apply": ["filereview", "general"],
+    "filereview": ["general"],
+    "laf_dispatch": ["laf", "general"],
+    "laf_go_live": ["laf_dispatch", "laf", "general"],
+    "laf_fee": ["laf", "general"],
+    "laf_inquiry": ["laf", "general"],
+    "laf_condition": ["laf", "general"],
+    "laf_progress": ["laf", "general"],
+    "laf_closing": ["laf", "general"],
+    "laf_general": ["laf", "general"],
+    "laf": ["general"],
+    "transcript": ["general"],
+    "verbatim": ["general"],
+    "summary": ["general"],
+    "translation": ["general"],
+    "judgment": ["general"],
+    "alert": ["general"],
+    "check": ["general"],
+    "nightly": ["general"],
+    "market": [],  # 股票資訊不發 Discord (2026-04-20)
+    "filing": ["general"],
+    "research_daily": ["general"],
+    "research_interpretation": ["research_daily", "general"],
+    "research_ethno": ["research_daily", "general"],
+    "research_humanrights": ["research_daily", "general"],
+    "research_language": ["research_daily", "general"],
+    "research_eastasia": ["research_daily", "general"],
+}
+
+
+# ───────── Channel Map 載入/儲存 ─────────
+
+def _load_channel_map() -> dict[str, str]:
+    """
+    從多個來源載入 DC 頻道映射（merge, 後面的覆蓋前面的）。
+    Returns: { sub_topic_or_topic: "channel_id_string", ... }
+    """
+    merged: dict[str, str] = {}
+
+    # 1. config.json → discord.channelMap
+    try:
+        from api.runtime_paths import get_config_path
+        cfg_path = str(get_config_path("config.json"))
+        if os.path.exists(cfg_path):
+            with open(cfg_path, "r", encoding="utf-8") as f:
+                cfg = json.load(f) or {}
+            dc = cfg.get("discord") or {}
+            raw = dc.get("channelMap") or {}
+            if isinstance(raw, dict):
+                for k, v in raw.items():
+                    ck = str(k or "").strip()
+                    cv = str(v or "").strip()
+                    if ck and cv:
+                        merged[ck] = cv
+    except Exception:
+        logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 161, exc_info=True)
+
+    # 2. .agent/discord_channel_map.json
+    try:
+        if os.path.exists(_CHANNEL_MAP_FILE):
+            with open(_CHANNEL_MAP_FILE, "r", encoding="utf-8") as f:
+                raw = json.load(f) or {}
+            if isinstance(raw, dict):
+                for k, v in raw.items():
+                    if k.startswith("_"):  # skip _mirror, _servers metadata
+                        continue
+                    ck = str(k or "").strip()
+                    cv = str(v or "").strip() if isinstance(v, str) else ""
+                    if ck and cv:
+                        merged[ck] = cv
+    except Exception:
+        logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 175, exc_info=True)
+
+    # 3. 環境變數 MAGI_DC_CHANNEL_MAP
+    env_json = os.environ.get("MAGI_DC_CHANNEL_MAP", "").strip()
+    if env_json:
+        try:
+            raw = json.loads(env_json)
+            if isinstance(raw, dict):
+                for k, v in raw.items():
+                    ck = str(k or "").strip()
+                    cv = str(v or "").strip()
+                    if ck and cv:
+                        merged[ck] = cv
+        except Exception:
+            logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 189, exc_info=True)
+
+    return merged
+
+
+def _load_all_routed_channel_ids() -> set[str]:
+    """
+    回傳所有已路由的頻道 ID（含 production + _mirror）。
+    用於 discord_bot on_message 過濾：mirror 頻道的訊息也應被處理。
+    """
+    ids: set[str] = set()
+    # production channels
+    for v in _load_channel_map().values():
+        if v:
+            ids.add(str(v))
+    # mirror channels from .agent/discord_channel_map.json
+    try:
+        if os.path.exists(_CHANNEL_MAP_FILE):
+            with open(_CHANNEL_MAP_FILE, "r", encoding="utf-8") as f:
+                raw = json.load(f) or {}
+            mirror = raw.get("_mirror")
+            if isinstance(mirror, dict):
+                for v in mirror.values():
+                    if v:
+                        ids.add(str(v))
+    except Exception:
+        logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, "_load_all_routed_channel_ids", exc_info=True)
+    return ids
+
+
+def _reverse_lookup_channel(channel_id: str) -> str:
+    """
+    從頻道 ID 反查 sub_topic key（含 production + _mirror）。
+    回傳 sub_topic（如 'filereview_payment'），找不到回空字串。
+    """
+    ch = str(channel_id)
+    # 1. production channel map
+    for k, v in _load_channel_map().items():
+        if str(v) == ch:
+            return k
+    # 2. mirror channels
+    try:
+        if os.path.exists(_CHANNEL_MAP_FILE):
+            with open(_CHANNEL_MAP_FILE, "r", encoding="utf-8") as f:
+                raw = json.load(f) or {}
+            mirror = raw.get("_mirror")
+            if isinstance(mirror, dict):
+                for k, v in mirror.items():
+                    if str(v) == ch:
+                        return k
+    except Exception:
+        pass
+    return ""
+
+
+def save_channel_map(channel_map: dict[str, str]) -> str:
+    """儲存頻道映射到 .agent/discord_channel_map.json。"""
+    os.makedirs(_AGENT_DIR, exist_ok=True)
+    clean = {}
+    for k, v in (channel_map or {}).items():
+        ck = str(k or "").strip()
+        cv = str(v or "").strip()
+        if ck and cv:
+            clean[ck] = cv
+    with open(_CHANNEL_MAP_FILE, "w", encoding="utf-8") as f:
+        json.dump(clean, f, ensure_ascii=False, indent=2)
+    return _CHANNEL_MAP_FILE
+
+
+# ───────── 主路由函數 ─────────
+
+def resolve_discord_channel(
+    message: str,
+    *,
+    topic_key: str = "",
+    source: str = "",
+    fallback_channel_id: str = "",
+) -> tuple[str, str]:
+    """
+    解析訊息應該發送到哪個 DC 頻道。
+
+    Returns: (resolved_sub_topic, channel_id)
+        - channel_id 可能為空字串（表示未設定，使用預設頻道）
+    """
+    sub_topic = _infer_sub_topic(message, topic_key, source)
+    cmap = _load_channel_map()
+
+    if not cmap:
+        return sub_topic, fallback_channel_id
+
+    # 嘗試 sub_topic → fallback chain
+    if sub_topic in cmap:
+        val = cmap[sub_topic]
+        # 空字串 = 靜默（不發 DC）
+        if val == "":
+            return sub_topic, "__SILENT__"
+        return sub_topic, val
+
+    for fb in _FALLBACK_CHAIN.get(sub_topic, []):
+        if fb in cmap:
+            val = cmap[fb]
+            if val == "":
+                return sub_topic, "__SILENT__"
+            return sub_topic, val
+
+    return sub_topic, cmap.get("general", fallback_channel_id)
+
+
+# ───────── 預設頻道定義 (for auto-setup) ─────────
+
+DEFAULT_CHANNELS: list[dict] = [
+    {
+        "name": "閱卷-繳費",
+        "key": "filereview_payment",
+        "topic": "繳費通知、逾期提醒、繳費單下載",
+    },
+    {
+        "name": "閱卷-下載",
+        "key": "filereview_download",
+        "topic": "卷宗下載完成、歸檔結果、信箱掃描報告",
+    },
+    {
+        "name": "閱卷-聲請",
+        "key": "filereview_apply",
+        "topic": "聲請閱卷進度與結果",
+    },
+    {
+        "name": "筆錄-通知",
+        "key": "transcript",
+        "topic": "筆錄下載完成、筆錄摘要",
+    },
+    {
+        "name": "法扶-派案",
+        "key": "laf_dispatch",
+        "topic": "新案派案通知、審查結果通知",
+    },
+    {
+        "name": "法扶-開辦",
+        "key": "laf_go_live",
+        "topic": "開辦回報進度、開辦確認、開辦通知書",
+    },
+    {
+        "name": "法扶-費用",
+        "key": "laf_fee",
+        "topic": "費用支付回報、酬金領款、費用申報",
+    },
+    {
+        "name": "法扶-疑義",
+        "key": "laf_inquiry",
+        "topic": "疑義回報、資力不合、撤回等",
+    },
+    {
+        "name": "法扶-二階段",
+        "key": "laf_condition",
+        "topic": "二階段回報、附條件審查、調解證明",
+    },
+    {
+        "name": "法扶-進度回報",
+        "key": "laf_progress",
+        "topic": "未結案件進度自動回報，含 confirm_token 兩階段確認",
+        "category": "法扶自動化",
+        "autocomplete": True,
+        "aliases": ["🔄 進度回報"],
+    },
+    {
+        "name": "法扶-一般",
+        "key": "laf_general",
+        "topic": "法扶巡檢報告、待辦清單、系統自動提醒",
+    },
+    {
+        "name": "法扶-結案",
+        "key": "laf_closing",
+        "topic": "結案回報、報結結果、領款狀態",
+    },
+    {
+        "name": "逐字稿",
+        "key": "verbatim",
+        "topic": "音訊轉文字、逐字稿產出結果",
+    },
+    {
+        "name": "摘要",
+        "key": "summary",
+        "topic": "文件摘要、PDF 摘要產出結果",
+    },
+    {
+        "name": "翻譯",
+        "key": "translation",
+        "topic": "文件翻譯產出結果",
+    },
+    {
+        "name": "歸檔通知",
+        "key": "filing",
+        "topic": "檔案命名、PDF 手續、CASPER 歸檔報告與結果",
+    },
+    {
+        "name": "裁判",
+        "key": "judgment",
+        "topic": "判決書搜集、裁判資料彙整",
+    },
+    {
+        "name": "研究-每日摘要",
+        "key": "research_daily",
+        "topic": "研究爬蟲每日合併摘要（所有命名空間）",
+        "category": "📚 研究通訊",
+    },
+    {
+        "name": "研究-通譯",
+        "key": "research_interpretation",
+        "topic": "法庭通譯、司法口譯、通譯倫理研究與新聞",
+        "category": "📚 研究通訊",
+    },
+    {
+        "name": "研究-族群人類學",
+        "key": "research_ethno",
+        "topic": "族群、原住民族、人類學、文化研究相關新聞與論文",
+        "category": "📚 研究通訊",
+    },
+    {
+        "name": "研究-人權公約",
+        "key": "research_humanrights",
+        "topic": "兩公約、UN 公約、區域人權機制、NGO 人權報告",
+        "category": "📚 研究通訊",
+    },
+    {
+        "name": "研究-語言政策",
+        "key": "research_language",
+        "topic": "語言權、少數語言、瀕危語言、多元文化政策",
+        "category": "📚 研究通訊",
+    },
+    {
+        "name": "研究-東亞",
+        "key": "research_eastasia",
+        "topic": "日韓港 法學與語言學（多語來源）",
+        "category": "📚 研究通訊",
+    },
+    {
+        "name": "一般",
+        "key": "general",
+        "topic": "系統狀態、其他通知",
+    },
+]
+
+
+def _channel_name_candidates(channel_def: dict) -> list[str]:
+    """Return all acceptable existing names for a channel definition."""
+    candidates: list[str] = []
+    primary = str(channel_def.get("name") or "").strip()
+    if primary:
+        candidates.append(primary)
+    for alias in channel_def.get("aliases") or []:
+        val = str(alias or "").strip()
+        if val and val not in candidates:
+            candidates.append(val)
+    return candidates
+
+
+def get_mirror_channel_id(sub_topic: str) -> str:
+    """
+    查詢 mirror（測試伺服器）對應的頻道 ID。
+    用於雙伺服器同時發送：正式伺服器 + 測試伺服器。
+
+    Returns: mirror channel_id string, or "" if no mirror configured.
+    """
+    try:
+        if os.path.exists(_CHANNEL_MAP_FILE):
+            with open(_CHANNEL_MAP_FILE, "r", encoding="utf-8") as f:
+                raw = json.load(f) or {}
+            mirror = raw.get("_mirror")
+            if isinstance(mirror, dict):
+                # Try exact sub_topic, then fallback chain
+                if sub_topic in mirror:
+                    return str(mirror[sub_topic])
+                for fb in _FALLBACK_CHAIN.get(sub_topic, []):
+                    if fb in mirror:
+                        return str(mirror[fb])
+                return str(mirror.get("general", ""))
+    except Exception:
+        pass
+    return ""
+
+
+async def auto_setup_channels(guild, category_name: str = "📋 MAGI 通知") -> dict[str, str]:
+    """
+    在 Discord guild 中自動建立分類與子頻道。
+    全 guild 搜尋同名頻道，避免跨 category 重複建立。
+
+    Parameters:
+        guild: discord.Guild 物件
+        category_name: 建立新頻道時使用的預設分類名稱
+
+    Returns: { sub_topic: channel_id_str, ... }
+    """
+    import discord  # noqa
+
+    # 建立「全 guild」頻道名稱索引，避免跨 category 重複建立
+    all_text_channels = {ch.name: ch for ch in guild.text_channels}
+
+    # 各 channel_def 的 category override
+    category_cache: dict[str, object] = {}
+
+    async def _get_or_create_category(cname: str):
+        if cname in category_cache:
+            return category_cache[cname]
+        for cat in guild.categories:
+            if cat.name == cname:
+                category_cache[cname] = cat
+                return cat
+        cat = await guild.create_category(cname)
+        logger.info("✅ Created Discord category: %s", cname)
+        category_cache[cname] = cat
+        return cat
+
+    channel_map: dict[str, str] = {}
+
+    for ch_def in DEFAULT_CHANNELS:
+        name = ch_def["name"]
+        key = ch_def["key"]
+        topic = ch_def.get("topic", "")
+        target_cat_name = ch_def.get("category", category_name)
+        candidates = _channel_name_candidates(ch_def)
+
+        existing_name = next((candidate for candidate in candidates if candidate in all_text_channels), "")
+        if existing_name:
+            ch = all_text_channels[existing_name]
+            logger.info("  ↳ Channel already exists: #%s (id=%s) for key=%s", existing_name, ch.id, key)
+        else:
+            target_cat = await _get_or_create_category(target_cat_name)
+            ch = await guild.create_text_channel(
+                name=name,
+                category=target_cat,
+                topic=topic,
+            )
+            logger.info("  ✅ Created channel: #%s (id=%s)", name, ch.id)
+
+        channel_map[key] = str(ch.id)
+
+    # 儲存映射
+    save_channel_map(channel_map)
+    logger.info("✅ Discord channel map saved: %s", channel_map)
+    return channel_map

@@ -1,0 +1,12 @@
+{"ts": "2026-02-16T21:40:52.204660", "reason": "case_number_mismatch", "payload": {"filename": "20250101 臺灣臺北地方法院 113年度訴字第1號 10日內補正.pdf", "case_number": "2025-0001", "case_folder_name": "2025-9999-測試-一審-案由"}}
+{"ts": "2026-02-18T11:26:50.588797", "reason": "missing_case_number", "payload": {"path": "/tmp/ref_small.pdf"}}
+{"ts": "2026-03-05T14:13:19.166948", "reason": "missing_case_number", "payload": {"path": "/Users/ai/Library/CloudStorage/SynologyDrive-homes/02_掃描檔案/01_掃描檔放置區/頁面擷取自-Scan.pdf"}}
+{"ts": "2026-03-05T14:13:19.168076", "reason": "missing_case_number", "payload": {"path": "/Users/ai/Library/CloudStorage/SynologyDrive-homes/02_掃描檔案/01_掃描檔放置區/頁面擷取自-Scan-4.pdf"}}
+{"ts": "2026-03-05T14:13:19.168346", "reason": "missing_case_number", "payload": {"path": "/Users/ai/Library/CloudStorage/SynologyDrive-homes/02_掃描檔案/01_掃描檔放置區/頁面擷取自-Scan-3.pdf"}}
+{"ts": "2026-03-05T14:13:19.168485", "reason": "missing_case_number", "payload": {"path": "/Users/ai/Library/CloudStorage/SynologyDrive-homes/02_掃描檔案/01_掃描檔放置區/頁面擷取自-Scan-2.pdf"}}
+{"ts": "2026-03-06T15:08:34.154770", "reason": "missing_case_number", "payload": {"path": "/Users/ai/Library/CloudStorage/SynologyDrive-homes/02_掃描檔案/01_掃描檔放置區/20260306 無償委任證明書(黃宥茹).pdf"}}
+{"ts": "2026-03-06T15:08:34.155033", "reason": "missing_case_number", "payload": {"path": "/Users/ai/Library/CloudStorage/SynologyDrive-homes/02_掃描檔案/01_掃描檔放置區/20260306 消費者債務清理更生聲請狀存底(林里).pdf"}}
+{"ts": "2026-03-06T15:08:34.162196", "reason": "missing_case_number", "payload": {"path": "/Users/ai/Library/CloudStorage/SynologyDrive-homes/02_掃描檔案/01_掃描檔放置區/20260306 消費者債務清理更生聲請狀存底(許柏恩).pdf"}}
+{"ts": "2026-03-06T15:08:34.162456", "reason": "missing_case_number", "payload": {"path": "/Users/ai/Library/CloudStorage/SynologyDrive-homes/02_掃描檔案/01_掃描檔放置區/20260306 調解不成立證明書([當事人L]).pdf"}}
+{"ts": "2026-03-06T15:08:34.162775", "reason": "missing_case_number", "payload": {"path": "/Users/ai/Library/CloudStorage/SynologyDrive-homes/02_掃描檔案/01_掃描檔放置區/20260306 檢察官補充理由書五(游秀鈴).pdf"}}
+{"ts": "2026-03-06T15:08:34.163089", "reason": "missing_case_number", "payload": {"path": "/Users/ai/Library/CloudStorage/SynologyDrive-homes/02_掃描檔案/01_掃描檔放置區/20260306 繳費收據(陳偉傑).pdf"}}

@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MAGI</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='golem/golem-console.css') }}?v=20260506-web-chat-format-v1">
+</head>
+<body>
+    <header class="topbar">
+        <div>
+            <div class="eyebrow">MAGI</div>
+            <h1>MAGI</h1>
+        </div>
+        <nav class="topnav" aria-label="MAGI navigation">
+            <time class="top-clock" id="top-clock" datetime="">--:--:--</time>
+            <a href="/golem">MAGI</a>
+            <a href="/osc">Paperclip</a>
+            <a href="/mobile">手機</a>
+            <a href="/research">研究</a>
+            <a href="/magi-adjust">MAGI 調整</a>
+            <button id="themeToggleBtn" type="button" title="切換日間 / 夜間模式">🌙</button>
+        </nav>
+    </header>
+
+    <main class="console-shell">
+        <section class="hero-band" aria-label="MAGI 系統總覽">
+            <div class="magi-core" aria-label="三 MAGI 系統">
+                <svg class="magi-lines" viewBox="0 0 660 320" preserveAspectRatio="xMidYMid meet" aria-hidden="true">
+                    <line class="magi-line-top" x1="330" y1="82" x2="330" y2="96"></line>
+                    <line class="magi-line-left" x1="279" y1="212" x2="150" y2="238"></line>
+                    <line class="magi-line-right" x1="381" y1="212" x2="510" y2="238"></line>
+                </svg>
+                <div class="magi-center">
+                    <span>MAGI</span>
+                    <strong id="vote-count-element">3</strong>
+                    <span>共識核心</span>
+                </div>
+                <div class="magi-node melchior-node">
+                    <span>MELCHIOR-1</span>
+                    <strong>分析</strong>
+                    <em id="status-local-melchior">同步中</em>
+                </div>
+                <div class="magi-node balthasar-node">
+                    <span>BALTHASAR-2</span>
+                    <strong>推論</strong>
+                    <em id="status-local-balthasar">同步中</em>
+                </div>
+                <div class="magi-node casper-node">
+                    <span>CASPER-3</span>
+                    <strong>主控</strong>
+                    <em id="status-local-casper">同步中</em>
+                </div>
+            </div>
+
+            <div class="hero-copy">
+                <span class="system-pill" id="golem-health-pill">同步中</span>
+                <h2>MAGI</h2>
+                <p id="golem-root">案件管理、MAGI 對話、系統狀態與調整入口集中於此。</p>
+                <div class="primary-actions" aria-label="核心操作">
+                    <a class="primary-link" href="/osc">Paperclip 案件管理</a>
+                    <a class="primary-link" href="/magi-adjust">MAGI 調整</a>
+                    <a class="primary-link" href="https://whalechao.github.io" target="_blank" rel="noopener noreferrer">個人 GitHub 頁面</a>
+                    <a class="primary-link" href="/intel">全球新聞網</a>
+                    <a class="primary-link" href="/research">研究</a>
+                    <a class="primary-link" href="/mobile-admin">手機後台</a>
+                </div>
+            </div>
+        </section>
+
+        <section class="overview-grid">
+            <div class="main-flow">
+                <section class="intel-panel magi-chat-panel" id="magi-chat-panel">
+                    <div class="panel-heading compact">
+                        <h3>MAGI 對話</h3>
+                        <span id="magi-chat-state">就緒</span>
+                    </div>
+                    <div id="magi-chat-messages" class="magi-chat-messages" aria-live="polite">
+                        <div class="chat-message system">可以直接輸入案件、文件、行程或分析需求。大型翻譯、長文摘要、複雜法律分析可在開頭加上 @heavy 或 @重型，讓 MAGI 優先使用 NVIDIA API。</div>
+                    </div>
+                    <form id="magi-chat-form" class="magi-chat-form">
+                        <label for="magi-chat-input">輸入指示</label>
+                        <textarea id="magi-chat-input" rows="3" placeholder="例如：@heavy 請摘要這份大型卷證，或請幫我整理今天需要處理的案件事項"></textarea>
+                        <div class="chat-file-row">
+                            <label class="file-pick-button" for="magi-chat-file">選擇檔案</label>
+                            <input id="magi-chat-file" type="file">
+                            <span id="magi-chat-file-name">尚未選擇檔案</span>
+                        </div>
+                        <div class="chat-actions">
+                            <button type="submit">送出</button>
+                            <button type="button" id="magi-chat-clear">清空</button>
+                        </div>
+                    </form>
+                </section>
+
+                <aside class="legal-links-panel" id="legal-links" aria-label="外部網站">
+                    <div class="panel-heading compact">
+                        <h3>外部網站</h3>
+                    </div>
+                    <div class="external-grid">
+                        <a href="https://portal.ezlawyer.com.tw/" target="_blank" rel="noopener noreferrer">律師單一登入</a>
+                        <a href="https://record.ezlawyer.com.tw/" target="_blank" rel="noopener noreferrer">筆錄調閱系統</a>
+                        <a href="https://www.laf.org.tw/" target="_blank" rel="noopener noreferrer">法扶基金會</a>
+                        <a href="https://law.moj.gov.tw/" target="_blank" rel="noopener noreferrer">全國法規資料庫</a>
+                        <a href="https://judgment.judicial.gov.tw/FJUD/default.aspx" target="_blank" rel="noopener noreferrer">司法院裁判書查詢</a>
+                        <a href="https://calendar.google.com/" target="_blank" rel="noopener noreferrer">Google 日曆</a>
+                        <a href="https://mail.google.com/" target="_blank" rel="noopener noreferrer">Gmail</a>
+                        <a href="https://drive.google.com/" target="_blank" rel="noopener noreferrer">Google 雲端硬碟</a>
+                        <a href="https://whalechao.github.io" target="_blank" rel="noopener noreferrer">個人 GitHub 頁面</a>
+                        <a href="/dashboard/website">個人網站管理</a>
+                        <a href="/intel">全球新聞網</a>
+                        <a href="/research">研究</a>
+                    </div>
+                </aside>
+            </div>
+
+            <aside class="side-flow" aria-label="系統資訊">
+                <section class="status-card">
+                    <div class="panel-heading compact">
+                        <h3>系統檢查</h3>
+                        <button type="button" class="icon-button" id="refresh-btn" title="重新整理">↻</button>
+                    </div>
+                    <div id="diagnostic-summary" class="diagnostic-summary">正在讀取 MAGI 系統總覽...</div>
+                    <div class="quick-actions" aria-label="快速指令">
+                        <button type="button" data-command="status">狀態</button>
+                        <button type="button" data-command="logs">紀錄</button>
+                        <button type="button" data-command="market">股票</button>
+                        <button type="button" data-command="memory">記憶</button>
+                    </div>
+                    <details class="collapsible-panel service-details">
+                        <summary><span>服務狀態</span></summary>
+                        <div id="node-list" class="node-list"></div>
+                    </details>
+                </section>
+
+                <details class="intel-panel collapsible-panel log-details" aria-label="最近系統紀錄">
+                    <summary><span>最近系統紀錄</span></summary>
+                    <section class="log-band">
+                        <div class="log-column">
+                            <div class="section-kicker">網頁服務紀錄</div>
+                            <pre id="server-log"></pre>
+                        </div>
+                        <div class="log-column">
+                            <div class="section-kicker">守護程序紀錄</div>
+                            <pre id="daemon-log"></pre>
+                        </div>
+                    </section>
+                </details>
+            </aside>
+        </section>
+
+        <section class="resource-row" aria-label="附加資訊">
+            <details class="intel-panel collapsible-panel skill-panel">
+                <summary>
+                    <span>MAGI 能力概覽</span>
+                    <span id="skill-count">--</span>
+                </summary>
+                <div id="skill-summary" class="skill-summary"></div>
+                <p class="skill-overview-note">完整技能與工程設定請至 MAGI 調整頁面檢視。</p>
+            </details>
+
+            <details class="intel-panel collapsible-panel">
+                <summary>
+                    <span>股票完整報告</span>
+                </summary>
+                <div id="market-list" class="file-list"></div>
+            </details>
+
+            <details class="intel-panel collapsible-panel">
+                <summary>
+                    <span>最近匯出檔</span>
+                </summary>
+                <div id="export-list" class="file-list"></div>
+            </details>
+        </section>
+    </main>
+
+    <script src="{{ url_for('static', filename='golem/golem-console.js') }}?v=20260506-web-chat-format-v1"></script>
+</body>
+</html>

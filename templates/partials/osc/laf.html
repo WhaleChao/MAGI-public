@@ -1,0 +1,48 @@
+        <section id="laf" class="view">
+            <div class="laf-workbench">
+                <aside class="laf-master-pane card">
+                    <div class="laf-pane-head">
+                        <div>
+                            <h3>法律扶助案件列表</h3>
+                            <div class="muted">左側選案件，右側顯示該案開辦、報結、閱卷與書狀統計。</div>
+                        </div>
+                    </div>
+                    <div class="laf-action-row">
+                        <button class="btn" data-act="laf-scan">掃描派案</button>
+                        <button class="btn" data-act="laf-batch-in-progress">全部改為進行中</button>
+                    </div>
+                    <div class="toolbar laf-search-row">
+                        <input id="lafQ" placeholder="搜尋案號、當事人、案件分類或法扶狀態">
+                        <input id="lafCaseNumber" placeholder="指定本所案號（選填）">
+                        <button class="btn primary" id="lafSearchBtn">搜尋</button>
+                        <button class="btn" id="lafRefreshBtn">重新整理</button>
+                    </div>
+                    <div class="laf-mini-stats">
+                        <div><span id="lafCaseCount">0</span><small>法扶案件</small></div>
+                        <div><span id="lafChecklistCount">0</span><small>補件項目</small></div>
+                        <div><span id="lafLifecycleCount">0</span><small>流程紀錄</small></div>
+                        <div><span id="lafEmailCount">0</span><small>法扶信件</small></div>
+                    </div>
+                    <div class="laf-case-list-wrap">
+                        <table class="laf-case-list">
+                            <thead>
+                                <tr>
+                                    <th data-sort="case_number">本所案號</th>
+                                    <th data-sort="client_name">當事人</th>
+                                    <th data-sort="case_type">案件分類</th>
+                                    <th data-sort="legal_aid_status">法扶狀態</th>
+                                </tr>
+                            </thead>
+                            <tbody id="lafCaseBody"></tbody>
+                        </table>
+                    </div>
+                </aside>
+
+                <div id="lafDetailPanel" class="laf-detail-pane card">
+                    <div class="empty-state">
+                        <h3>請從左側選擇法扶案件</h3>
+                        <p>選取後會在這裡顯示原 OSC 單機版的開辦資料、報結資料彙總、閱卷統計與書狀列表。</p>
+                    </div>
+                </div>
+            </div>
+        </section>

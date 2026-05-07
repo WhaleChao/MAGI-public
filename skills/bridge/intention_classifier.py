@@ -1,0 +1,385 @@
+import logging
+import os
+import re
+import time
+from collections import deque
+
+from api.model_config import TEXT_PRIMARY_MODEL
+
+# Configure Logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("IntentionClassifier")
+
+# Model identifier — used for persistent cache invalidation (not for LLM calls)
+MODEL_NAME = os.environ.get("CASPER_CLASSIFIER_MODEL", TEXT_PRIMARY_MODEL)
+
+
+_CACHE_PERSIST_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+    ".agent", "intent_classifier_cache.json",
+)
+_CACHE_SCHEMA_VERSION = 2
+_CACHE_POLICY_VERSION = 2
+_PERSISTABLE_INTENTS = {"CHAT"}
+
+
+class IntentionClassifier:
+    def __init__(self, use_llm=None, cache_size=256):
+        # use_llm 參數保留以相容既有呼叫端（已不實際呼叫 LLM）
+        if use_llm is None:
+            use_llm = False
+        self.use_llm = use_llm
+        self.cache_size = cache_size
+        self._cache = {}
+        self._cache_order = deque()
+        self._load_persistent_cache()
+        logger.info(f"🔮 Intention Classifier Initialized (Regex+Embedding ensemble, cached={len(self._cache)})")
+
+    @staticmethod
+    def _is_persistable_intent(value) -> bool:
+        return str(value or "").strip().upper() in _PERSISTABLE_INTENTS
+
+    def _load_persistent_cache(self):
+        """Load cached intent results from disk on startup."""
+        try:
+            if os.path.exists(_CACHE_PERSIST_PATH):
+                import json
+                with open(_CACHE_PERSIST_PATH, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if not isinstance(data, dict):
+                    return
+                if int(data.get("schema_version") or 0) != _CACHE_SCHEMA_VERSION:
+                    return
+                if int(data.get("policy_version") or 0) != _CACHE_POLICY_VERSION:
+                    return
+                if str(data.get("model") or "") != MODEL_NAME:
+                    return
+                if bool(data.get("use_llm")) != bool(self.use_llm):
+                    return
+                items = data.get("items", {})
+                if isinstance(items, dict):
+                    # Only load low-risk intents that remain valid under this policy.
+                    for key, value in list(items.items())[:self.cache_size]:
+                        if not self._is_persistable_intent(value):
+                            continue
+                        self._cache[key] = value
+                        self._cache_order.append(key)
+        except Exception as e:
+            logger.debug("Intent classifier cache load skipped: %s", e)
+
+    def _save_persistent_cache(self):
+        """Persist safe cache entries immediately to avoid fossilizing bad routes."""
+        self._flush_cache()
+
+    def _flush_cache(self):
+        """Force write cache to disk."""
+        try:
+            import json
+            os.makedirs(os.path.dirname(_CACHE_PERSIST_PATH), exist_ok=True)
+            items = {
+                key: value
+                for key, value in self._cache.items()
+                if self._is_persistable_intent(value)
+            }
+            payload = {
+                "schema_version": _CACHE_SCHEMA_VERSION,
+                "policy_version": _CACHE_POLICY_VERSION,
+                "model": MODEL_NAME,
+                "use_llm": bool(self.use_llm),
+                "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                "items": items,
+            }
+            import tempfile
+            fd, tmp = tempfile.mkstemp(
+                dir=os.path.dirname(_CACHE_PERSIST_PATH), suffix=".tmp"
+            )
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(payload, f, ensure_ascii=False)
+            os.replace(tmp, _CACHE_PERSIST_PATH)
+        except Exception as e:
+            logger.debug("Intent classifier cache save failed: %s", e)
+
+    def _cache_get(self, key):
+        return self._cache.get(key)
+
+    def _cache_set(self, key, value, confidence: float = 1.0):
+        value = str(value or "").strip().upper()
+        if not self._is_persistable_intent(value):
+            if key in self._cache:
+                self._cache.pop(key, None)
+                try:
+                    self._cache_order.remove(key)
+                except ValueError:
+                    pass
+                self._save_persistent_cache()
+            return
+        # Only cache high-confidence results to prevent persistent misrouting
+        try:
+            from api.routing.route_policy import should_cache_intent
+            if not should_cache_intent(value, confidence):
+                return
+        except ImportError:
+            pass
+        if key in self._cache and self._cache[key] == value:
+            return
+        self._cache[key] = value
+        self._cache_order.append(key)
+        if len(self._cache_order) > self.cache_size:
+            oldest = self._cache_order.popleft()
+            self._cache.pop(oldest, None)
+        self._save_persistent_cache()
+
+    # Pre-compiled regex patterns for _check_regex_rules (avoid per-message re.compile overhead)
+    _RE_CHAT = re.compile(r"(你覺得|你認為|心情|閒聊|聊聊|笑話|開玩笑|早安|晚安|哈囉|你好|你會做什麼|你能做什麼|你可以做什麼)", re.IGNORECASE)
+    _RE_DANGER = re.compile(r"(rm\s+-rf|drop\s+table|delete\s+from|truncate\s+table)", re.IGNORECASE)
+    _RE_SYS_CTRL = re.compile(r"\b(reboot|restart|shutdown|update|upgrade|deploy|rollback)\b", re.IGNORECASE)
+    _RE_SEARCH_CMD = re.compile(r"^(search|find|query|check|lookup|research|fetch|grab)\s", re.IGNORECASE)
+    _RE_TRANSLATE_CMD = re.compile(r"^(translate|翻譯)\s", re.IGNORECASE)
+    _RE_CN_ACTION = re.compile(r"^(?:執行|進行|開始|啟動)\s*(?:網路研究|網路搜尋|搜尋|研究|爬蟲)")
+    _RE_CN_RESEARCH = re.compile(r"^(?:網路研究|網路搜尋)\s*[:：]?\s*\S")
+    _RE_HELP_CMD = re.compile(r"(幫我|麻煩|請|我要|我想|我需要).*(同步|下載|新增|移除|設定|關閉|開啟|切換|執行|啟動|停止|重啟|翻譯|摘要|檢查|掃描|找判決|跑夜間任務|夜間任務|校準|修理|逐字稿|轉錄|分析|辨識)", re.IGNORECASE)
+    _RE_QUESTION_END = re.compile(r"[嗎呢？?]$")
+    _RE_LEGAL_OPS = re.compile(r"(同步筆錄|閱卷|法扶|大腦模式|夜間任務|自動巡檢|新增爬蟲|移除爬蟲|翻譯檔案|完整翻譯|摘要翻譯)", re.IGNORECASE)
+    _RE_MODEL_Q = re.compile(r"(目前模型|現在.*模型|用哪個模型|使用.*模型|model status|系統狀態|status)", re.IGNORECASE)
+    _RE_QUERY_TERMS = re.compile(r"(查一下|找一下|有沒有|多少|何時|最新|進度|為什麼|怎麼|如何|下週|今天|明天|想知道|我想知道)", re.IGNORECASE)
+    _RE_QUERY_PARTICLE = re.compile(r"[？?]|(嗎|呢|為何|怎麼|如何|想知道|我想知道)")
+    _RE_IMPLICIT_Q = re.compile(r"(現在|目前|今天|明天|下週|這週).{0,10}(天氣|氣溫|溫度|匯率|價格|股價|指數|新聞|進度)")
+    _RE_RULE = re.compile(r"^(規則|rule)\s*[:：]?\s*", re.IGNORECASE)
+    _RE_GENERAL_CMD = re.compile(r"(幫我找|幫我查|幫我搜|請搜尋|網路搜尋|網路研究|抓取|讀取網頁|翻譯|translate|執行|啟動|停止|重啟|切換|生成圖片|畫圖)", re.IGNORECASE)
+    _RE_MEMORY_CMD = re.compile(r"^記住\s*[:：]?\s*\S")
+    _RE_MEMORY_STORE = re.compile(r"(歸入|存入|寫入|加入).*(向量|資料庫|記憶|memory)")
+    _RE_VISION_CMD = re.compile(r"(逐字稿|語音轉文字|轉錄音訊|音訊轉文字|分析.*(?:圖|照片|截圖|圖片)|(?:圖|照片|截圖).*(?:分析|辨識|描述)|看圖說話|OCR|文字辨識)", re.IGNORECASE)
+    _RE_LEGAL_EN = re.compile(r"\b(meeting|court|schedule|laf|agenda|calendar|hearing)\b", re.IGNORECASE)
+
+    def _check_regex_rules(self, text):
+        """
+        Fast-path regex rules for obvious commands.
+        Returns intent or None.
+        """
+        text = text.strip()
+
+        if not text:
+            return "CHAT"
+
+        if self._RE_CHAT.search(text):
+            return "CHAT"
+        if self._RE_DANGER.search(text):
+            return "DANGER"
+        if text.startswith("/") or text.startswith("!") or text.lower().startswith("@magi"):
+            return "CMD"
+        if self._RE_SYS_CTRL.search(text):
+            return "CMD"
+        if self._RE_SEARCH_CMD.search(text):
+            return "CMD"
+        if self._RE_TRANSLATE_CMD.search(text):
+            return "CMD"
+        if self._RE_CN_ACTION.search(text):
+            return "CMD"
+        if self._RE_CN_RESEARCH.search(text):
+            return "CMD"
+        if self._RE_LEGAL_OPS.search(text):
+            return "CMD"
+        if self._RE_HELP_CMD.search(text):
+            if self._RE_QUESTION_END.search(text.strip()):
+                return "QUERY"
+            return "CMD"
+        if self._RE_MODEL_Q.search(text):
+            return "QUERY"
+        if self._RE_QUERY_TERMS.search(text) and self._RE_QUERY_PARTICLE.search(text):
+            return "QUERY"
+        if self._RE_IMPLICIT_Q.search(text):
+            return "QUERY"
+        if self._RE_RULE.search(text):
+            return "CHAT"
+        if self._RE_GENERAL_CMD.search(text):
+            return "CMD"
+        if self._RE_MEMORY_CMD.search(text):
+            return "CMD"
+        if self._RE_MEMORY_STORE.search(text):
+            return "CMD"
+        if self._RE_VISION_CMD.search(text):
+            return "CMD"
+        if self._RE_LEGAL_EN.search(text):
+            return "CMD"
+
+        return None
+
+    def _heuristic_classify(self, text):
+        """
+        Lightweight scoring fallback when regex is inconclusive.
+        """
+        t = text.lower().strip()
+        if not t:
+            return "CHAT"
+
+        query_terms = [
+            "what", "who", "when", "where", "why", "how", "latest", "news", "price",
+            "什麼", "誰", "何時", "哪裡", "為何", "怎麼", "最新", "新聞", "多少", "查詢", "介紹",
+            "翻譯", "摘要", "查", "分析", "辨識", "檢查", "幫我查",
+        ]
+        cmd_terms = [
+            "please", "run", "execute", "open", "switch", "restart", "generate",
+            "執行", "啟動", "打開", "切換", "建立", "修改", "刪除", "畫",
+            "同步", "下載", "新增", "移除", "關閉", "開啟", "掃描", "重啟",
+        ]
+        chat_terms = [
+            "hello", "hi", "thanks", "thank you", "lol", "haha",
+            "哈囉", "你好", "謝謝", "早安", "晚安", "聊天",
+            "還活著", "過得好", "你是誰", "在嗎", "忙嗎",
+        ]
+
+        query_score = sum(1 for k in query_terms if k in t)
+        cmd_score = sum(1 for k in cmd_terms if k in t)
+        chat_score = sum(1 for k in chat_terms if k in t)
+
+        if "?" in t or "？" in t:
+            query_score += 1
+        if re.search(r"(嗎|呢|如何|怎麼|為何|多少|有沒有|進度|最新)", t):
+            query_score += 1
+        if re.search(r"(幫我|請|麻煩|我要|我想|我需要).*(同步|下載|新增|移除|設定|關閉|開啟|切換|執行|翻譯|摘要|檢查)", t):
+            # Don't boost CMD score if the sentence is a question
+            if not re.search(r"[嗎呢？?]", t):
+                cmd_score += 2
+
+        if cmd_score >= 2 and cmd_score >= query_score:
+            return "CMD"
+        if query_score >= 2:
+            return "QUERY"
+        if chat_score > 0 and cmd_score == 0:
+            return "CHAT"
+        if query_score == 1 and cmd_score == 0:
+            return "QUERY"
+        return "CHAT"
+
+    def _embedding_classify(self, text: str) -> tuple:
+        """
+        Use EmbeddingRouter to infer intent from skill-matching score.
+        Returns (intent, confidence) or (None, 0.0) if unavailable.
+        Replaces slow LLM fallback — runs in ~0.1s vs 15s.
+        """
+        try:
+            from skills.bridge.embedding_router import route
+            result = route(text)
+            if result is None:
+                return (None, 0.0)
+            _skill, score, tier = result
+            if tier == "DIRECT":
+                return ("CMD", score)
+            elif score > 0.5:
+                return ("QUERY", score)
+            else:
+                return ("CHAT", 1.0 - score)
+        except Exception as e:
+            logger.debug(f"EmbeddingRouter classify fallback: {e}")
+            return (None, 0.0)
+
+    def classify_detailed(self, text) -> dict:
+        """
+        Determines the intent of the message.
+        Returns routing metadata with intent/confidence/method.
+
+        Pipeline (Regex + Embedding ensemble, 完全不呼叫 LLM):
+          1. Cache hit → return immediately
+          2. DANGER regex → 最高優先，命中即返回
+          3. Regex conf >= 0.9 → 直接返回
+          4. Embedding Router (conf >= 0.7) → ~0.1s（vs 原 LLM 15s）
+          5. Heuristic → 兜底
+        """
+        key = (text or "").strip().lower()
+        cached = self._cache_get(key)
+        if cached:
+            return {
+                "intent": cached,
+                "confidence": 0.99,
+                "method": "cache",
+                "reason": "cache_hit",
+                "candidates": [{"method": "cache", "intent": cached, "confidence": 0.99}],
+            }
+
+        # --- Layer 1: Regex (high confidence but not absolute) ---
+        regex_intent = self._check_regex_rules(text)
+        candidates = []
+        if regex_intent:
+            candidates.append({"method": "regex", "intent": regex_intent, "confidence": 0.90})
+            # DANGER from regex is always authoritative
+            if regex_intent == "DANGER":
+                logger.info(f"⚡ Regex Matched: DANGER")
+                self._cache_set(key, "DANGER")
+                return {
+                    "intent": "DANGER",
+                    "confidence": 1.0,
+                    "method": "regex",
+                    "reason": "regex_danger",
+                    "candidates": candidates,
+                }
+            # For non-DANGER, regex is a strong signal but check embedding too
+            regex_conf = 0.9
+        else:
+            regex_conf = 0.0
+
+        # --- Layer 2: Regex 高信心（非 DANGER 且 regex 命中）---
+        if regex_conf >= 0.9 and regex_intent:
+            logger.info(f"⚡ Regex Matched: {regex_intent}")
+            self._cache_set(key, regex_intent, confidence=0.90)
+            return {
+                "intent": regex_intent,
+                "confidence": regex_conf,
+                "method": "regex",
+                "reason": "regex_high_confidence",
+                "candidates": candidates,
+            }
+
+        # --- Layer 3: Embedding Router（取代 LLM，~0.1s vs 15s）---
+        embed_intent, embed_conf = self._embedding_classify(text)
+        heuristic_intent = self._heuristic_classify(text)
+        if embed_intent:
+            candidates.append({"method": "embedding", "intent": embed_intent, "confidence": round(float(embed_conf), 3)})
+        candidates.append({"method": "heuristic", "intent": heuristic_intent, "confidence": 0.55})
+
+        if embed_intent and embed_conf >= 0.7:
+            logger.info(f"🧭 Embedding Classified: {embed_intent} (conf={embed_conf:.2f})")
+            self._cache_set(key, embed_intent, confidence=float(embed_conf))
+            return {
+                "intent": embed_intent,
+                "confidence": float(embed_conf),
+                "method": "embedding",
+                "reason": "embedding_classified",
+                "candidates": candidates,
+            }
+
+        # --- Layer 4: Heuristic fallback（兜底，不呼叫 LLM）---
+        logger.info(f"📊 Heuristic Fallback: {heuristic_intent}")
+        self._cache_set(key, heuristic_intent, confidence=0.55)
+        return {
+            "intent": heuristic_intent,
+            "confidence": 0.55,
+            "method": "heuristic",
+            "reason": "heuristic_fallback",
+            "candidates": candidates,
+        }
+
+    def classify(self, text):
+        result = self.classify_detailed(text)
+        return str(result.get("intent") or "CHAT")
+
+    def _ask_llm(self, text):
+        """
+        Stub — LLM 分類已於 2026-04-26 移除。
+        改用 Regex + Embedding ensemble（classify_detailed 的 Layer 2-3）。
+        方法保留以相容既有 monkeypatch（test_routing.py）。
+        """
+        return ""
+
+
+if __name__ == "__main__":
+    classifier = IntentionClassifier()
+    tests = [
+        "Hello there!",
+        "Check the latest court dates",
+        "/restart system",
+        "What represents the number 42?",
+        "rm -rf /",
+    ]
+
+    for phrase in tests:
+        print(f"[{phrase}] -> {classifier.classify(phrase)}")
