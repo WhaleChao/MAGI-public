@@ -39,6 +39,98 @@ def worldmonitor_job(repo_root: Path = REPO_ROOT, python_path: Path | None = Non
     }
 
 
+def business_jobs(repo_root: Path = REPO_ROOT, python_path: Path | None = None) -> list[dict[str, Any]]:
+    """Core single-machine business jobs that must exist on fresh installs."""
+    python_bin = python_path or default_python_path(repo_root)
+    run_with_env = repo_root / "scripts" / "ops" / "run_with_env.py"
+    return [
+        {
+            "id": "job_laf_pending_scan",
+            "cron": "30 8 * * *",
+            "command": "@MAGI 法扶未開辦掃描",
+            "desc": "法扶未開辦/待報結案件提醒（08:30）",
+            "channel_id": None,
+            "last_run": None,
+            "last_run_minute": None,
+            "enabled": True,
+        },
+        {
+            "id": "job_laf_nightly_audit",
+            "cron": "50 2 * * *",
+            "command": f"{python_bin} {repo_root / 'scripts' / 'laf_nightly_audit.py'}",
+            "desc": "法扶夜間審計",
+            "channel_id": None,
+            "last_run": None,
+            "last_run_minute": None,
+            "enabled": True,
+            "no_catchup": True,
+        },
+        {
+            "id": "job_laf_condition_dedup_scan",
+            "cron": "35 8 * * *",
+            "command": f"{python_bin} {repo_root / 'casper_ecosystem' / 'law_firm_orchestrators' / 'laf_orchestrator.py'} --mode condition-mark-by-mediation",
+            "desc": "法扶二階段去重標記（每日 08:35；調解/和解已完成者不重報）",
+            "channel_id": None,
+            "last_run": None,
+            "last_run_minute": None,
+            "enabled": True,
+            "no_catchup": True,
+        },
+        {
+            "id": "job_laf_condition_draft",
+            "cron": "40 8 * * *",
+            "command": f"{python_bin} {repo_root / 'casper_ecosystem' / 'law_firm_orchestrators' / 'laf_orchestrator.py'} --mode condition-draft --max-cases 3",
+            "desc": "法扶二階段批次暫存（每日 08:40；永久去重，不重報）",
+            "channel_id": None,
+            "last_run": None,
+            "last_run_minute": None,
+            "enabled": True,
+            "no_catchup": True,
+        },
+        {
+            "id": "job_file_review_check",
+            "cron": "0 10,15 * * 1-5",
+            "command": f"{python_bin} {repo_root / 'skills' / 'file-review-orchestrator' / 'action.py'} --task download",
+            "desc": "閱卷通知與下載檢查（平日 10:00, 15:00；下載前去重）",
+            "channel_id": None,
+            "last_run": None,
+            "last_run_minute": None,
+            "enabled": True,
+        },
+        {
+            "id": "job_transcript_sync",
+            "cron": "0 6,21 * * *",
+            "command": f"{python_bin} {repo_root / 'skills' / 'transcript-downloader' / 'action.py'} --task sync",
+            "desc": "筆錄同步（每日 06:00, 21:00）",
+            "channel_id": None,
+            "last_run": None,
+            "last_run_minute": None,
+            "enabled": True,
+        },
+        {
+            "id": "job_transcript_self_test",
+            "cron": "5 3 * * *",
+            "command": f"{python_bin} {repo_root / 'skills' / 'transcript-downloader' / 'action.py'} --task self_test",
+            "desc": "筆錄系統健康檢查（daily 03:00，驗證 import/credentials/DB/網站可達）",
+            "channel_id": None,
+            "last_run": None,
+            "last_run_minute": None,
+            "enabled": True,
+        },
+        {
+            "id": "job_business_module_live_check",
+            "cron": "10 3 * * *",
+            "command": f"{python_bin} {run_with_env} MAGI_BUSINESS_LIVE_CHECK_NOTIFY=1 -- {python_bin} {repo_root / 'scripts' / 'ops' / 'business_module_live_check.py'}",
+            "desc": "業務三模組 LIVE/健康檢查（法扶/閱卷/筆錄）",
+            "channel_id": None,
+            "last_run": None,
+            "last_run_minute": None,
+            "enabled": True,
+            "no_catchup": True,
+        },
+    ]
+
+
 def load_jobs(path: Path) -> list[dict[str, Any]]:
     if not path.exists():
         return []
@@ -52,17 +144,35 @@ def load_jobs(path: Path) -> list[dict[str, Any]]:
 def seed_jobs(repo_root: Path = REPO_ROOT, *, python_path: Path | None = None) -> dict[str, Any]:
     cron_path = repo_root / "cron_jobs.json"
     jobs = load_jobs(cron_path)
-    job = worldmonitor_job(repo_root, python_path)
+    desired_jobs = [worldmonitor_job(repo_root, python_path), *business_jobs(repo_root, python_path)]
     changed = False
 
-    for idx, existing in enumerate(jobs):
-        if existing.get("id") == job["id"]:
-            if existing != job:
-                jobs[idx] = {**existing, **job}
-                changed = True
-            break
-    else:
-        jobs.append(job)
+    for job in desired_jobs:
+        for idx, existing in enumerate(jobs):
+            if existing.get("id") == job["id"]:
+                merged = {**existing, **job}
+                if existing != merged:
+                    jobs[idx] = merged
+                    changed = True
+                break
+        else:
+            jobs.append(job)
+            changed = True
+
+    # Remove the old single-job seed drift by making the three business
+    # modules part of the install contract, not hand-edited local state.
+    seen: set[str] = set()
+    deduped: list[dict[str, Any]] = []
+    for job in jobs:
+        job_id = str(job.get("id") or "")
+        if job_id and job_id in seen:
+            changed = True
+            continue
+        if job_id:
+            seen.add(job_id)
+        deduped.append(job)
+    if len(deduped) != len(jobs):
+        jobs = deduped
         changed = True
 
     if changed:

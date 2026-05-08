@@ -38,3 +38,17 @@ def test_autopilot_zero_max_cases_remains_unlimited():
     src = _read("skills/magi-autopilot/action.py")
     assert "run_condition_drafts(max_cases=int(max_cases), suppress_notify=True)" in src
     assert "run_condition_drafts(max_cases=int(max_cases or 2))" not in src
+
+
+def test_production_laf_nightly_scans_case_status_drafts():
+    src = _read("scripts/laf_nightly_audit.py")
+    assert '"case_status_drafts": []' in src
+    assert 'portal.get("case_status", [])' in src
+    assert "portal_pending_case_status_drafts" in src
+
+
+def test_closing_batch_uses_permanent_dedup_after_draft():
+    src = _read("casper_ecosystem/law_firm_orchestrators/laf_orchestrator.py")
+    block = src.split("def _was_closing_drafted_recently", 1)[1].split("def _get_pending_closing_draft_cases", 1)[0]
+    assert "permanent dedup signals" in block
+    assert "DATE_SUB(NOW()" not in block

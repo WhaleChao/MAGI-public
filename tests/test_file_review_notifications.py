@@ -18,7 +18,7 @@ def _load_action_module():
     name = f"file_review_action_test_{uuid.uuid4().hex}"
     spec = importlib.util.spec_from_file_location(name, MODULE_PATH)
     module = importlib.util.module_from_spec(spec)
-    with patch("builtins.print"), patch(
+    with patch("builtins.print"), patch.object(sys, "argv", [str(MODULE_PATH)]), patch(
         "api.runtime_paths.get_skill_python", return_value=Path(sys.executable)
     ), patch("api.product_runtime.apply_product_runtime_env", return_value={}):
         assert spec.loader is not None

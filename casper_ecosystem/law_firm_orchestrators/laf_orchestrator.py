@@ -5938,7 +5938,13 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
     # ==================================================================
 
     def _was_closing_drafted_recently(self, case_number: str, days: int = 30) -> bool:
-        """Check if a closing draft was already saved for this case recently."""
+        """Check if a closing draft was already saved for this case.
+
+        Closing drafts are admin-in-the-loop: once MAGI has created one,
+        repeated batch runs must not keep re-drafting/re-reporting the same
+        case. The ``days`` argument is retained for callers, but successful
+        draft/pending records are treated as permanent dedup signals.
+        """
         if not self.db or not case_number:
             return False
         try:
@@ -5946,10 +5952,9 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                 "SELECT COUNT(*) AS cnt FROM `laf_lifecycle_log` "
                 "WHERE `case_number` = %s "
                 "AND `event_type` = 'closing' "
-                "AND `status` IN ('draft','success','pending') "
-                "AND `created_at` >= DATE_SUB(NOW(), INTERVAL %s DAY)"
+                "AND `status` IN ('draft','success','pending')"
             )
-            row = self.db.fetch_one(q, (case_number, int(days)), as_dict=True)
+            row = self.db.fetch_one(q, (case_number,), as_dict=True)
             if isinstance(row, dict):
                 return int(row.get("cnt") or 0) > 0
             if isinstance(row, (tuple, list)) and row:

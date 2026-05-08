@@ -4113,7 +4113,7 @@ def cmd_downloadable_probe(days: int = 30, notify: bool = False,
         portal_r = {"success": False, "error": str(e)[:240]}
 
     portal_ok = bool(portal_r.get("success"))
-    force_gmail = (os.environ.get("MAGI_FILE_REVIEW_PROBE_WITH_GMAIL", "0") or "").strip().lower() in {"1", "true", "yes", "on"}
+    force_gmail = (os.environ.get("MAGI_FILE_REVIEW_PROBE_WITH_GMAIL", "1") or "").strip().lower() in {"1", "true", "yes", "on"}
     want_gmail = force_gmail or (not portal_ok)
     if want_gmail:
         gmail_r = cmd_preview_emails(days=day_n)

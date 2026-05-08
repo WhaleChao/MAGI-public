@@ -1229,7 +1229,7 @@ def _sanitize_portal_pending_items(items: List[dict], label: str = "") -> List[d
 
 def scan_portal_pending_drafts(db=None) -> dict:
     """
-    登入法扶 Portal，掃描結案回報、條件是否成就、未開辦三個清單頁，
+    登入法扶 Portal，掃描案件狀態區與既有 workflow 清單頁，
     找出仍有暫存/待處理的案件。
 
     與上次巡檢結果比對：
@@ -1239,6 +1239,7 @@ def scan_portal_pending_drafts(db=None) -> dict:
     Returns:
         {
             "closing_drafts":   [{"applyno": ..., "status": ..., "row_text": ...}],
+            "case_status_drafts": [...],
             "condition_pending": [...],
             "go_live_pending":   [...],
             "progress_pending":  [...],
@@ -1248,6 +1249,7 @@ def scan_portal_pending_drafts(db=None) -> dict:
     """
     result = {
         "closing_drafts": [],
+        "case_status_drafts": [],
         "condition_pending": [],
         "go_live_pending": [],
         "progress_pending": [],
@@ -1267,11 +1269,23 @@ def scan_portal_pending_drafts(db=None) -> dict:
 
         portal = laf.query_pending_drafts_all()
 
-        # 結案：只取「暫存」的（待轉入/已轉入 不算待處理）
-        result["closing_drafts"] = [
-            it for it in _sanitize_portal_pending_items(portal.get("closing", []), "結案")
+        # 案件狀態區：統一來源，專門提醒仍停留在「暫存」的回報。
+        result["case_status_drafts"] = [
+            it for it in _sanitize_portal_pending_items(portal.get("case_status", []), "案件狀態區")
             if it.get("status") == "暫存"
         ]
+
+        # 結案提醒優先採用「案件狀態區 > 回報狀態=暫存」的結案回報；
+        # 若 portal 版本異動導致抓不到，再退回舊的結案清單頁。
+        result["closing_drafts"] = [
+            it for it in result["case_status_drafts"]
+            if it.get("reply_type") == "結案回報"
+        ]
+        if not result["closing_drafts"]:
+            result["closing_drafts"] = [
+                it for it in _sanitize_portal_pending_items(portal.get("closing", []), "結案")
+                if it.get("status") == "暫存"
+            ]
         result["condition_pending"] = _sanitize_portal_pending_items(portal.get("condition", []), "二階段")
         result["go_live_pending"] = _sanitize_portal_pending_items(portal.get("go_live", []), "開辦")
         result["progress_pending"] = _sanitize_portal_pending_items(portal.get("progress", []), "進度")
@@ -1309,7 +1323,8 @@ def scan_portal_pending_drafts(db=None) -> dict:
             })
             logger.info("✅ %s %s草稿已確認送出（Portal 已無資料）", applyno, label)
 
-    # 自動回寫 DB：已送出的結案案件 → 更新為「已報結」
+    # 自動回寫 DB：已送出的結案案件 → 更新為「已結案」+ 副狀態「待轉入」
+    # （案件已送出 portal，法扶正在審核中；deprecated: 舊版寫「已報結」）
     if db and result["auto_resolved"]:
         for item in result["auto_resolved"]:
             if item["workflow"] != "closing":
@@ -1319,17 +1334,17 @@ def scan_portal_pending_drafts(db=None) -> dict:
                 row = db.fetch_one(
                     "SELECT `id`, `legal_aid_status` FROM `cases` "
                     "WHERE (`legal_aid_number` = %s OR `case_number` = %s) "
-                    "AND `legal_aid_status` = '已結案，待送出' LIMIT 1",
+                    "AND `legal_aid_status` IN ('已結案，待送出', '已結案，待報結') LIMIT 1",
                     (applyno, applyno),
                     as_dict=True,
                 )
                 if row and isinstance(row, dict) and row.get("id"):
                     db.execute(
-                        "UPDATE `cases` SET `legal_aid_status` = '已報結', "
+                        "UPDATE `cases` SET `legal_aid_status` = '已結案', "
                         "`updated_at` = NOW() WHERE `id` = %s",
                         (row["id"],),
                     )
-                    logger.info("  DB 更新: %s → 已報結", applyno)
+                    logger.info("  DB 更新: %s → 已結案/待轉入", applyno)
             except Exception as e:
                 logger.warning("  DB 更新失敗 (%s): %s", applyno, e)
 
@@ -1343,7 +1358,8 @@ def scan_portal_pending_drafts(db=None) -> dict:
     })
 
     logger.info(
-        "Portal 暫存掃描完成：結案暫存=%d, 條件待處理=%d, 開辦待處理=%d, 進度待回報=%d, 自動確認送出=%d",
+        "Portal 暫存掃描完成：案件狀態區暫存=%d, 結案暫存=%d, 條件待處理=%d, 開辦待處理=%d, 進度待回報=%d, 自動確認送出=%d",
+        len(result["case_status_drafts"]),
         len(result["closing_drafts"]),
         len(result["condition_pending"]),
         len(result["go_live_pending"]),
@@ -1508,18 +1524,29 @@ def format_audit_report(
 
     # Portal 暫存/待處理全清單掃描結果
     pd = status.get("portal_drafts") or {}
+    pd_case_status = _sanitize_portal_pending_items(pd.get("case_status_drafts", []), "報告/案件狀態區")
     pd_closing = _sanitize_portal_pending_items(pd.get("closing_drafts", []), "報告/結案")
     pd_condition = _sanitize_portal_pending_items(pd.get("condition_pending", []), "報告/二階段")
     pd_go_live = _sanitize_portal_pending_items(pd.get("go_live_pending", []), "報告/開辦")
     pd_progress = _sanitize_portal_pending_items(pd.get("progress_pending", []), "報告/進度")
     pd_resolved = pd.get("auto_resolved", [])
 
-    has_portal_pending = bool(pd_closing or pd_condition or pd_go_live or pd_progress)
+    has_portal_pending = bool(pd_case_status or pd_closing or pd_condition or pd_go_live or pd_progress)
 
     if pd_resolved:
         lines.append(f"✅ 以下案件已確認送出（Portal 已無暫存，不再提醒）：{len(pd_resolved)} 件")
         for it in pd_resolved[:10]:
             lines.append(f"  • {it['applyno']}（{it['label']}）")
+        lines.append("")
+
+    other_case_status = [
+        it for it in pd_case_status
+        if it.get("reply_type") != "結案回報"
+    ]
+    if other_case_status:
+        lines.append(f"📝 案件狀態區仍有暫存回報：{len(other_case_status)} 件")
+        for it in other_case_status[:10]:
+            lines.append(f"  • {it.get('applyno', '?')} — {it.get('row_text', '')[:80]}")
         lines.append("")
 
     if pd_closing:
@@ -1727,7 +1754,8 @@ def run_audit(notify: bool = True, dry_run: bool = False) -> dict:
     portal_still_missing = [f for f in portal_new_files if f.get("new_count", 0) > 0]
     _pd = status.get("portal_drafts") or {}
     _has_portal_pending = bool(
-        _sanitize_portal_pending_items(_pd.get("closing_drafts", []), "摘要/結案")
+        _sanitize_portal_pending_items(_pd.get("case_status_drafts", []), "摘要/案件狀態區")
+        or _sanitize_portal_pending_items(_pd.get("closing_drafts", []), "摘要/結案")
         or _sanitize_portal_pending_items(_pd.get("condition_pending", []), "摘要/二階段")
         or _sanitize_portal_pending_items(_pd.get("go_live_pending", []), "摘要/開辦")
         or _sanitize_portal_pending_items(_pd.get("progress_pending", []), "摘要/進度")
@@ -1758,6 +1786,7 @@ def run_audit(notify: bool = True, dry_run: bool = False) -> dict:
         "portal_new_files_count": len(portal_new_files),
         "portal_auto_downloaded": sum(f.get("auto_downloaded", 0) for f in portal_new_files),
         "portal_still_missing_count": len(portal_still_missing),
+        "portal_pending_case_status_drafts": len(_sanitize_portal_pending_items(_pd.get("case_status_drafts", []))),
         "portal_pending_closing_drafts": len(_sanitize_portal_pending_items(_pd.get("closing_drafts", []))),
         "portal_pending_condition": len(_sanitize_portal_pending_items(_pd.get("condition_pending", []))),
         "portal_pending_go_live": len(_sanitize_portal_pending_items(_pd.get("go_live_pending", []))),

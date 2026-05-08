@@ -48,8 +48,8 @@ LOG_STATE_PATH = Path(os.environ.get("MAGI_FILE_REVIEW_AUTO_STATE", os.path.join
 INTERVAL_SEC = int(os.environ.get("MAGI_FILE_REVIEW_AUTO_INTERVAL_SEC", "3600") or "3600")
 CHECK_TIMEOUT_SEC = int(os.environ.get("MAGI_FILE_REVIEW_AUTO_CHECK_TIMEOUT_SEC", "600") or "600")
 DOWNLOAD_TIMEOUT_SEC = int(os.environ.get("MAGI_FILE_REVIEW_AUTO_DOWNLOAD_TIMEOUT_SEC", "600") or "600")
-RUN_ON_START = str(os.environ.get("MAGI_FILE_REVIEW_AUTO_RUN_ON_START", "0")).strip().lower() in {"1", "true", "yes", "on"}
-AUTO_DOWNLOAD = str(os.environ.get("MAGI_FILE_REVIEW_AUTO_DOWNLOAD", "0")).strip().lower() in {"1", "true", "yes", "on"}
+RUN_ON_START = str(os.environ.get("MAGI_FILE_REVIEW_AUTO_RUN_ON_START", "1")).strip().lower() in {"1", "true", "yes", "on"}
+AUTO_DOWNLOAD = str(os.environ.get("MAGI_FILE_REVIEW_AUTO_DOWNLOAD", "1")).strip().lower() in {"1", "true", "yes", "on"}
 START_DELAY_SEC = int(os.environ.get("MAGI_FILE_REVIEW_AUTO_START_DELAY_SEC", "20") or "20")
 STALE_DOWNLOAD_SEC = int(os.environ.get("MAGI_FILE_REVIEW_AUTO_STALE_DOWNLOAD_SEC", "1200") or "1200")
 
@@ -283,7 +283,7 @@ def _run_cycle() -> Dict[str, Any]:
     env.setdefault("MAGI_PREFER_LOCAL_DB", "0")
     env.setdefault("MAGI_ALLOW_HUMAN_CAPTCHA_FALLBACK", "0")
     env.setdefault("MAGI_CAPTCHA_DOUBLE_CHECK", "1")
-    env.setdefault("MAGI_FILE_REVIEW_PROBE_WITH_GMAIL", "0")
+    env.setdefault("MAGI_FILE_REVIEW_PROBE_WITH_GMAIL", "1")
     env.setdefault("MAGI_FILE_REVIEW_DOWNLOAD_MAX_RUNTIME_SEC", os.environ.get("MAGI_FILE_REVIEW_AUTO_MAX_RUNTIME_SEC", "600"))
     env.setdefault("MAGI_SELENIUM_PAGELOAD_TIMEOUT_SEC", os.environ.get("MAGI_FILE_REVIEW_AUTO_PAGELOAD_TIMEOUT_SEC", "35"))
     env.setdefault("MAGI_SELENIUM_SCRIPT_TIMEOUT_SEC", os.environ.get("MAGI_FILE_REVIEW_AUTO_SCRIPT_TIMEOUT_SEC", "35"))

@@ -20,10 +20,15 @@ def test_install_plan_uses_requested_venv_dir():
     assert str(venv_python(venv_dir)) in plan[1].command
 
 
-def test_seed_cron_jobs_creates_worldmonitor_daily_job(tmp_path):
+def test_seed_cron_jobs_creates_worldmonitor_and_business_jobs(tmp_path):
     result = seed_jobs(tmp_path, python_path=tmp_path / ".venv" / "bin" / "python")
     cron_text = (tmp_path / "cron_jobs.json").read_text(encoding="utf-8")
 
     assert result["ok"] is True
     assert "job_worldmonitor_intel" in cron_text
     assert "worldmonitor-intel/action.py --task collect --no-reasoning --plain-output" in cron_text
+    assert "job_laf_nightly_audit" in cron_text
+    assert "job_laf_condition_draft" in cron_text
+    assert "job_file_review_check" in cron_text
+    assert "job_transcript_sync" in cron_text
+    assert "job_business_module_live_check" in cron_text
