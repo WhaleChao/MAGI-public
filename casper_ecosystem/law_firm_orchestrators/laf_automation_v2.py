@@ -681,8 +681,8 @@ class LAFCaseTypeParser:
         info = LAFCaseInfo()
         info.subject = subject
         
-        # 非派案類信件直接跳過（回報、結案、撤回等不應觸發開辦流程）
-        _non_dispatch_keywords = ['律師回報', '回報(附條件)', '回報（附條件）', '結案回報', '撤回扶助']
+        # 非派案類信件直接跳過；「回報(結案/附條件)」與進度提醒是業務通知，下面會解析。
+        _non_dispatch_keywords = ['撤回扶助']
         if any(kw in subject for kw in _non_dispatch_keywords):
             return None
 
@@ -821,6 +821,61 @@ class LAFCaseTypeParser:
             
             info.has_attachment = True  # 這類信通常有附件
             info.needs_download = False  # 不需從系統下載
+            return info
+
+        # 4. 審核回報格式：通知喬政翔律師回報(結案|附條件)...
+        # 範例：通知喬政翔律師回報(結案)1140905-K-001-陳瀚-刑事二審辯護-詐欺等之資料，業經分會轉入系統
+        report_result_match = re.search(
+            r'回報[（(](結案|附條件)[)）].*?(\d{7}-[A-Z]-\d{3})(.*)$',
+            subject,
+        )
+        if report_result_match:
+            report_kind = (report_result_match.group(1) or "").strip()
+            info.notification_type = "結案回報通知" if report_kind == "結案" else "附條件回報通知"
+            info.branch = "待確認"
+            info.laf_case_number = (report_result_match.group(2) or "").strip()
+            tail = (report_result_match.group(3) or "").strip(" -")
+            tail = re.sub(r'之資料.*$', '', tail).strip()
+            parts = [p.strip() for p in tail.split('-') if p.strip()]
+
+            if parts:
+                info.client_name = parts[0]
+
+            if len(parts) >= 2:
+                info.laf_case_type = parts[1]
+                info.case_type, info.case_stage = cls._determine_case_type(info.laf_case_type)
+            else:
+                info.case_type = "民事"
+                info.case_stage = "一審"
+                info.laf_case_type = "一般案件"
+
+            if len(parts) >= 3:
+                raw_reason = "-".join(parts[2:])
+                info.case_reason = cls._cleanup_reason(raw_reason)
+            else:
+                info.case_reason = "待確認"
+
+            if report_kind == "附條件" and (not info.case_reason or info.case_reason == "待確認"):
+                info.case_reason = "附條件審查"
+
+            info.needs_download = True
+            return info
+
+        # 5. 進度回報提醒格式：提醒！請扶助律師回報案件辦理進度
+        progress_match = re.search(
+            r'回報案件辦理進度.*?[（(]([^()（）]+)[)）].*?[（(](\d{7}-[A-Z]-\d{3})[)）]',
+            subject,
+        )
+        if progress_match:
+            info.notification_type = "進度回報"
+            info.branch = "待確認"
+            info.client_name = (progress_match.group(1) or "").strip()
+            info.laf_case_number = (progress_match.group(2) or "").strip()
+            info.case_type = "民事"
+            info.case_stage = "一審"
+            info.case_reason = "案件辦理進度"
+            info.laf_case_type = "一般案件"
+            info.needs_download = False
             return info
 
         return None
@@ -9658,17 +9713,46 @@ class LAFAutomationManager:
                 }
                 self.db_manager.add_laf_email_record(record_data)
 
-            # 發送 Discord 通知
+            notify_title = f"📧 法扶{case_info.notification_type}"
+            notify_body = (
+                f"分會: {case_info.branch}\n"
+                f"當事人: {case_info.client_name}\n"
+                f"法扶案號: {case_info.laf_case_number}\n"
+                f"案件類型: {case_info.case_type} ({case_info.case_stage})\n"
+                f"案由: {case_info.case_reason}"
+            )
+            notification_type = str(case_info.notification_type or "")
+            if "結案" in notification_type:
+                topic_key = "laf_closing"
+            elif "進度" in notification_type:
+                topic_key = "laf_progress"
+            else:
+                topic_key = "laf"
+
+            # 發送通知；one-shot 背景流程通常沒有 Discord notifier，需使用 LAFNotifier fallback。
+            notify_ok = False
             if self.discord:
-                self.discord.send_message(
-                    f"📧 法扶{case_info.notification_type}",
+                discord_body = (
                     f"**分會:** {case_info.branch}\n"
                     f"**當事人:** {case_info.client_name}\n"
                     f"**法扶案號:** {case_info.laf_case_number}\n"
                     f"**案件類型:** {case_info.case_type} ({case_info.case_stage})\n"
-                    f"**案由:** {case_info.case_reason}",
+                    f"**案由:** {case_info.case_reason}"
+                )
+                self.discord.send_message(
+                    notify_title,
+                    discord_body,
                     color=0x00ff00
                 )
+                notify_ok = True
+            else:
+                try:
+                    from line_notifier import LAFNotifier
+                    notify_ok = bool(LAFNotifier().notify_admin(f"{notify_title}\n{notify_body}", topic_key=topic_key))
+                except Exception as notify_error:
+                    self.log(f"  ⚠️ 法扶通知 fallback 失敗: {notify_error}")
+
+            if notify_ok:
                 # ★ 標記為已通知
                 self._notified_cases.add(notification_key)
                 self._save_notified_cases()
