@@ -2748,6 +2748,37 @@ def _load_primary_config_path() -> str:
     return str(get_config_path("config.json"))
 
 
+def _laf_case_should_use_orchestrator(case_info: Any) -> bool:
+    """Return True for LAF email types that need the robust portal workflow."""
+    parts = []
+    for attr in ("notification_type", "subject", "snippet", "body"):
+        try:
+            parts.append(str(getattr(case_info, attr, "") or ""))
+        except Exception:
+            continue
+    text = "\n".join(parts)
+    if not text.strip():
+        return False
+
+    normalized = re.sub(r"\s+", "", text)
+    if re.search(r"回報[（(](結案|附條件)[)）]", normalized):
+        return True
+
+    route_markers = (
+        "結案回報通知",
+        "附條件回報通知",
+        "審核結果通知",
+        "審查結果通知",
+        "審查通知",
+        "案件辦理進度",
+        "進度回報",
+        "業經分會轉入系統",
+        "主動通知有案件派案已超過",
+        "已超過一年半仍未回報",
+    )
+    return any(marker in normalized for marker in route_markers)
+
+
 def _laf_one_shot(max_results: int = 15, general_max: int = 15) -> Dict[str, Any]:
     """
     一次性法扶流程：
@@ -2755,7 +2786,7 @@ def _laf_one_shot(max_results: int = 15, general_max: int = 15) -> Dict[str, Any
     - 掃描一般信件規則（專員來信等）
     - 需要下載者：嘗試登入法扶系統下載 + 建案/歸檔
     """
-    out: Dict[str, Any] = {"ok": True, "cases": 0, "processed": 0, "general": 0, "errors": []}
+    out: Dict[str, Any] = {"ok": True, "cases": 0, "processed": 0, "routed": 0, "general": 0, "errors": []}
     try:
         max_results = int(os.environ.get("MAGI_LAF_EMAIL_MAX_RESULTS", str(max_results)) or str(max_results))
     except Exception:
@@ -2801,10 +2832,18 @@ def _laf_one_shot(max_results: int = 15, general_max: int = 15) -> Dict[str, Any
 
         cases = manager.gmail_monitor.check_emails(max_results=max_results)
         out["cases"] = len(cases or [])
+        orchestrator = None
         for ci in (cases or []):
             try:
-                # Queue decision logic + attachment handling
-                manager._on_new_case(ci)
+                if _laf_case_should_use_orchestrator(ci):
+                    if orchestrator is None:
+                        import laf_orchestrator as lo_route  # type: ignore
+                        orchestrator = lo_route.LAFOrchestrator(dry_run=False)
+                    orchestrator.on_new_email(ci)
+                    out["routed"] = int(out.get("routed") or 0) + 1
+                else:
+                    # Queue decision logic + attachment handling for first dispatch/opening notices.
+                    manager._on_new_case(ci)
             except Exception as e:
                 out["errors"].append(f"on_new_case: {e}")
 

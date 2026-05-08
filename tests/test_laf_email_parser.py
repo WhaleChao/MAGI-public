@@ -1,6 +1,19 @@
 """Regression tests for LAF Gmail subject classification."""
 
+import importlib.util
+import sys
+from pathlib import Path
 from types import SimpleNamespace
+
+
+def _load_autopilot_action_module():
+    path = Path(__file__).resolve().parents[1] / "skills" / "magi-autopilot" / "action.py"
+    spec = importlib.util.spec_from_file_location("magi_autopilot_action_for_laf_tests", path)
+    module = importlib.util.module_from_spec(spec)
+    assert spec and spec.loader
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
 
 
 def test_casper_laf_parser_handles_closing_transfer_notice():
@@ -78,3 +91,36 @@ def test_casper_notified_laf_email_still_queues_download(tmp_path):
     manager._on_new_case(case_info)
 
     assert manager.task_queue.get_nowait() is case_info
+
+
+def test_laf_one_shot_routes_result_and_progress_emails_to_orchestrator():
+    action = _load_autopilot_action_module()
+
+    closing = SimpleNamespace(
+        notification_type="結案回報通知",
+        subject="通知喬政翔律師回報(結案)1150128-I-011-陳文明-刑事偵查中辯護-詐欺之資料，業經分會轉入系統",
+        snippet="",
+        body="",
+    )
+    progress = SimpleNamespace(
+        notification_type="進度回報",
+        subject="【提醒！請扶助律師回報案件辦理進度】(李明志)-(1131106-I-007)",
+        snippet="",
+        body="",
+    )
+
+    assert action._laf_case_should_use_orchestrator(closing) is True
+    assert action._laf_case_should_use_orchestrator(progress) is True
+
+
+def test_laf_one_shot_keeps_dispatch_on_laf_automation_manager():
+    action = _load_autopilot_action_module()
+
+    dispatch = SimpleNamespace(
+        notification_type="派案通知",
+        subject="【法扶派案通知】1150501-A-001-王小明-刑事偵查中辯護-詐欺",
+        snippet="",
+        body="",
+    )
+
+    assert action._laf_case_should_use_orchestrator(dispatch) is False

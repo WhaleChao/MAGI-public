@@ -1591,6 +1591,7 @@ def main() -> int:
     if task == "self_test":
         # Verify imports, config, DB, and ezlawyer site reachability (no login)
         import urllib.request as _urllib_req
+        import ssl as _ssl
         errors = []
         warnings = []
         checks = {}
@@ -1627,8 +1628,27 @@ def main() -> int:
                 method="HEAD",
             )
             _req.add_header("User-Agent", "MAGI-self-test/1.0")
-            with _urllib_req.urlopen(_req, timeout=10) as _resp:
-                checks["site_reachable"] = _resp.status < 500
+            _ctx = None
+            try:
+                import certifi as _certifi
+                _ctx = _ssl.create_default_context(cafile=_certifi.where())
+            except Exception:
+                _ctx = _ssl.create_default_context()
+            try:
+                with _urllib_req.urlopen(_req, timeout=10, context=_ctx) as _resp:
+                    checks["site_reachable"] = _resp.status < 500
+                    checks["site_tls_verified"] = True
+            except Exception as _tls_e:
+                _reason = getattr(_tls_e, "reason", _tls_e)
+                if not isinstance(_reason, _ssl.SSLCertVerificationError):
+                    raise
+                # This is a no-login reachability probe. Some local Python installs
+                # miss the ezlawyer CA chain, so confirm network reachability without
+                # turning the business health check red.
+                _fallback_ctx = _ssl._create_unverified_context()
+                with _urllib_req.urlopen(_req, timeout=10, context=_fallback_ctx) as _resp:
+                    checks["site_reachable"] = _resp.status < 500
+                    checks["site_tls_verified"] = False
         except Exception as e:
             warnings.append("ezlawyer site unreachable: " + str(e)[:80])
             checks["site_reachable"] = False
