@@ -11,6 +11,8 @@ import json
 import logging
 import os
 import re
+import shutil
+import subprocess
 import sys
 import threading
 import time
@@ -644,6 +646,74 @@ def _export_form_pdf_reportlab(title: str, preview_text: str, pdf_path: str) -> 
     return meta
 
 
+def _find_soffice_binary() -> str:
+    candidates = [
+        (os.environ.get("MAGI_SOFFICE_BIN") or "").strip(),
+        shutil.which("soffice"),
+        shutil.which("libreoffice"),
+        "/Applications/LibreOffice.app/Contents/MacOS/soffice",
+        "/Applications/LibreOffice.app/Contents/MacOS/libreoffice",
+    ]
+    for candidate in candidates:
+        if candidate and os.path.exists(candidate):
+            return candidate
+    return ""
+
+
+def _export_docx_pdf(docx_path: str, stem: str) -> dict:
+    source = os.path.abspath(str(docx_path or ""))
+    if not source or not os.path.exists(source):
+        return {"success": False, "error": "docx_missing"}
+    soffice = _find_soffice_binary()
+    if not soffice:
+        return {"success": False, "error": "soffice_unavailable"}
+    try:
+        os.makedirs(EXPORTS_DIR, exist_ok=True)
+        target = os.path.join(EXPORTS_DIR, f"{stem}.pdf")
+        default_pdf = os.path.join(EXPORTS_DIR, os.path.splitext(os.path.basename(source))[0] + ".pdf")
+        for old in {target, default_pdf}:
+            try:
+                if old and os.path.exists(old):
+                    os.remove(old)
+            except OSError:
+                pass
+        env = dict(os.environ)
+        env.setdefault("HOME", os.path.expanduser("~"))
+        result = subprocess.run(
+            [
+                soffice,
+                "--headless",
+                "--nologo",
+                "--nofirststartwizard",
+                "--convert-to",
+                "pdf",
+                "--outdir",
+                EXPORTS_DIR,
+                source,
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=int(os.environ.get("MAGI_DOCX_PDF_TIMEOUT", "90") or "90"),
+            env=env,
+        )
+        if result.returncode != 0:
+            err = (result.stderr or result.stdout or "").strip()
+            return {"success": False, "error": f"soffice_failed: {err}"}
+        produced = default_pdf if os.path.exists(default_pdf) else target
+        if produced != target and os.path.exists(produced):
+            os.replace(produced, target)
+        if (not os.path.exists(target)) or os.path.getsize(target) < 64:
+            err = (result.stderr or result.stdout or "").strip()
+            return {"success": False, "error": f"soffice_pdf_not_generated: {err}"}
+        meta = _export_file_meta(target)
+        meta["renderer"] = "libreoffice"
+        meta["source_docx"] = source
+        return meta
+    except Exception as e:
+        return {"success": False, "error": f"docx_pdf_convert_failed: {e}"}
+
+
 def _export_form_pdf(title: str, preview_text: str, stem: str) -> dict:
     txt = str(preview_text or "").strip()
     if not txt:
@@ -687,7 +757,15 @@ def _export_osc_form_files(title: str, preview_text: str, suggested_filename: st
     full_stem = f"{stem}_{stamp}_{token}"
     txt = _clean_document_export_text(txt)
     docx_meta = _export_form_docx(txt, full_stem, title=title)
-    pdf_meta = _export_form_pdf(title, txt, full_stem)
+    if docx_meta.get("success"):
+        pdf_meta = _export_docx_pdf(str(docx_meta.get("path") or ""), full_stem)
+    else:
+        pdf_meta = {"success": False, "error": "docx_unavailable_for_pdf"}
+    if not pdf_meta.get("success"):
+        fallback_pdf_meta = _export_form_pdf(title, txt, full_stem)
+        if fallback_pdf_meta.get("success"):
+            fallback_pdf_meta["warning"] = str(pdf_meta.get("error") or "docx_pdf_convert_failed")
+            pdf_meta = fallback_pdf_meta
     errors = []
     if not docx_meta.get("success"):
         errors.append({"type": "docx", "error": str(docx_meta.get("error") or "docx_failed")})

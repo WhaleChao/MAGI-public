@@ -89,3 +89,40 @@ def test_export_osc_form_files_produces_docx_and_pdf(tmp_path, monkeypatch):
     assert Path(result["export_docx"]["path"]).exists()
     assert result["export_pdf"]["success"] is True
     assert Path(result["export_pdf"]["path"]).exists()
+
+
+def test_export_osc_form_files_prefers_pdf_converted_from_docx(tmp_path, monkeypatch):
+    from api import startup
+
+    docx_path = tmp_path / "source.docx"
+    docx_path.write_bytes(b"docx")
+    pdf_path = tmp_path / "source.pdf"
+
+    monkeypatch.setattr(startup, "EXPORTS_DIR", str(tmp_path))
+    monkeypatch.setattr(startup, "_export_form_docx", lambda text, stem, title="": {
+        "success": True,
+        "path": str(docx_path),
+        "filename": docx_path.name,
+        "url": "",
+    })
+
+    def fake_docx_pdf(path, stem):
+        assert path == str(docx_path)
+        pdf_path.write_bytes(b"%PDF-1.4\nok")
+        return {
+            "success": True,
+            "path": str(pdf_path),
+            "filename": pdf_path.name,
+            "url": "",
+            "renderer": "libreoffice",
+            "source_docx": path,
+        }
+
+    monkeypatch.setattr(startup, "_export_docx_pdf", fake_docx_pdf)
+    monkeypatch.setattr(startup, "_export_form_pdf", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("text pdf fallback should not run")))
+
+    result = startup._export_osc_form_files("民事準備書狀", "一、內容。", "docx-first")
+
+    assert result["success"] is True
+    assert result["export_pdf"]["renderer"] == "libreoffice"
+    assert result["export_pdf"]["source_docx"] == str(docx_path)
