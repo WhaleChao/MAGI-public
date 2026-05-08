@@ -4409,8 +4409,7 @@ class LAFAutomationManager:
             if not _already_notified:
                 _already_notified = notification_key in self._notified_cases
             if _already_notified:
-                self.log(f"  ⏭️ 案件已通知過，跳過 Discord: {case_info.client_name} ({notification_key[-8:]}...)")
-                return
+                self.log(f"  ⏭️ 案件已通知過，僅跳過通知，仍檢查下載/歸檔: {case_info.client_name} ({notification_key[-8:]}...)")
             
             # 0. 記錄到資料庫 (避免重複處理)
             if self.db_manager:
@@ -4441,29 +4440,30 @@ class LAFAutomationManager:
             else:
                 topic_key = "laf"
 
-            # 發送通知；one-shot 背景流程通常沒有 Discord notifier，需使用 LAFNotifier fallback。
             notify_ok = False
-            if self.discord:
-                discord_body = (
-                    f"**分會:** {case_info.branch}\n"
-                    f"**當事人:** {case_info.client_name}\n"
-                    f"**法扶案號:** {case_info.laf_case_number}\n"
-                    f"**案件類型:** {case_info.case_type} ({case_info.case_stage})\n"
-                    f"**案由:** {case_info.case_reason}"
-                )
-                self.discord.send_message(
-                    notify_title,
-                    discord_body,
-                    color=0x00ff00
-                )
-                notify_ok = True
-            else:
-                try:
-                    ensure_orch_on_sys_path()
-                    from line_notifier import LAFNotifier  # type: ignore
-                    notify_ok = bool(LAFNotifier().notify_admin(f"{notify_title}\n{notify_body}", topic_key=topic_key))
-                except Exception as notify_error:
-                    self.log(f"  ⚠️ 法扶通知 fallback 失敗: {notify_error}")
+            if not _already_notified:
+                # 發送通知；one-shot 背景流程通常沒有 Discord notifier，需使用 LAFNotifier fallback。
+                if self.discord:
+                    discord_body = (
+                        f"**分會:** {case_info.branch}\n"
+                        f"**當事人:** {case_info.client_name}\n"
+                        f"**法扶案號:** {case_info.laf_case_number}\n"
+                        f"**案件類型:** {case_info.case_type} ({case_info.case_stage})\n"
+                        f"**案由:** {case_info.case_reason}"
+                    )
+                    self.discord.send_message(
+                        notify_title,
+                        discord_body,
+                        color=0x00ff00
+                    )
+                    notify_ok = True
+                else:
+                    try:
+                        ensure_orch_on_sys_path()
+                        from line_notifier import LAFNotifier  # type: ignore
+                        notify_ok = bool(LAFNotifier().notify_admin(f"{notify_title}\n{notify_body}", topic_key=topic_key))
+                    except Exception as notify_error:
+                        self.log(f"  ⚠️ 法扶通知 fallback 失敗: {notify_error}")
 
             if notify_ok:
                 # ★ 標記為已通知

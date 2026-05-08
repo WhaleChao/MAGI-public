@@ -1,5 +1,7 @@
 """Regression tests for LAF Gmail subject classification."""
 
+from types import SimpleNamespace
+
 
 def test_casper_laf_parser_handles_closing_transfer_notice():
     from casper_ecosystem.law_firm_orchestrators.laf_automation_v2 import LAFCaseTypeParser
@@ -44,3 +46,35 @@ def test_legacy_laf_parser_matches_closing_transfer_notice():
     assert info.client_name == "鄭羢允"
     assert info.case_type == "消費者債務清理"
     assert info.needs_download is True
+
+
+def test_casper_notified_laf_email_still_queues_download(tmp_path):
+    from casper_ecosystem.law_firm_orchestrators.laf_automation_v2 import LAFAutomationManager
+
+    manager = LAFAutomationManager(
+        config={"laf": {"download_folder": str(tmp_path), "auto_create_case": True}},
+        db_manager=None,
+        discord_notifier=None,
+        log_callback=lambda _msg: None,
+    )
+    manager._notified_cases_file = str(tmp_path / "notified_laf_cases.json")
+    manager._notified_cases = {"MSG-CLOSING"}
+
+    case_info = SimpleNamespace(
+        message_id="MSG-CLOSING",
+        branch="宜蘭",
+        notification_type="結案回報通知",
+        client_name="陳文明",
+        laf_case_number="1150128-I-011",
+        case_type="刑事",
+        case_stage="偵查",
+        case_reason="詐欺",
+        sender="laf.server@msa.hinet.net",
+        received_at="2026-05-08 18:25:27",
+        needs_download=True,
+        has_attachment=False,
+    )
+
+    manager._on_new_case(case_info)
+
+    assert manager.task_queue.get_nowait() is case_info
