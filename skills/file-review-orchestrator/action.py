@@ -3709,6 +3709,46 @@ def _filter_urgent_pending_payments(items: list, days: int = 7,
     return {"overdue": overdue, "urgent": urgent, "unknown": unknown}
 
 
+def _should_emit_payment_check_notice(
+    *,
+    pay_hits: int,
+    pay_notified: int,
+    portal_pending: int,
+    portal_pending_changed: bool,
+    portal_probe_ok: bool,
+) -> bool:
+    """Only emit payment-check notices for actionable payment work."""
+    if int(pay_notified or 0) > 0:
+        return True
+    if int(portal_pending or 0) > 0 and bool(portal_pending_changed):
+        return True
+    # If the portal was not verified, keep Gmail payment hits visible so a portal
+    # outage does not hide a real payment notice.
+    if not portal_probe_ok and int(pay_hits or 0) > 0:
+        return True
+    return False
+
+
+def _save_portal_notify_state(
+    state_path: str,
+    *,
+    portal_downloadable: int,
+    portal_pickup: int,
+    portal_pending: int,
+) -> None:
+    try:
+        os.makedirs(os.path.dirname(state_path), exist_ok=True)
+        with open(state_path, "w", encoding="utf-8") as _pf:
+            json.dump({
+                "portal_downloadable": int(portal_downloadable or 0),
+                "portal_court_pickup": int(portal_pickup or 0),
+                "portal_pending": int(portal_pending or 0),
+                "notified_at": datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
+            }, _pf, ensure_ascii=False)
+    except Exception:
+        logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 2630, exc_info=True)
+
+
 def cmd_check_emails(notify: bool = True, notify_empty: bool = True) -> dict:
     """Scan Gmail for payment notices and delivery notifications."""
     _eventlog("filereview:gmail_check:start")
@@ -3923,13 +3963,14 @@ def cmd_check_emails(notify: bool = True, notify_empty: bool = True) -> dict:
             _portal_downloadable_changed = (portal_downloadable != _prev_downloadable)
             _portal_pickup_changed = (portal_pickup != _prev_pickup)
             _portal_pending_changed = (portal_pending != _prev_pending)
+            _portal_probe_ok = bool(portal_summary.get("success")) if with_portal else False
 
-            payment_signal = bool(
-                pay_hits > 0
-                or pay_notified > 0
-                or (portal_pending > 0 and _portal_pending_changed)
-                # recent_payment_activity 不再單獨觸發摘要推送
-                # 避免每小時重複推送同一份「最近繳費處理」清單
+            payment_signal = _should_emit_payment_check_notice(
+                pay_hits=pay_hits,
+                pay_notified=pay_notified,
+                portal_pending=portal_pending,
+                portal_pending_changed=_portal_pending_changed,
+                portal_probe_ok=_portal_probe_ok,
             )
             review_signal = bool(
                 dl_hits > 0
@@ -3978,8 +4019,7 @@ def cmd_check_emails(notify: bool = True, notify_empty: bool = True) -> dict:
             # 定期檢查但沒有新資訊時，只發 TG（quiet_cron 不在 DC mirror 白名單中）；
             # 有新的、需要使用者處理的資訊時才鏡像到 DC。
             _has_new_actionable_info = bool(
-                pay_hits > 0            # 有新繳費信件
-                or pay_notified > 0     # 有剛通知的繳費
+                payment_signal          # 有真正待處理的繳費資訊
                 or dl_hits > 0          # 有新閱卷通知信件
                 or pickup_hits > 0      # 有新到院閱卷通知信件
                 or ready_cnt > 0        # 有待下載佇列
@@ -4006,22 +4046,19 @@ def cmd_check_emails(notify: bool = True, notify_empty: bool = True) -> dict:
                             creds["download_folder"],
                             "recent_review_download_activity",
                         )
-                        # 保存門戶通知狀態，避免下次重複通知同樣數量
-                        try:
-                            os.makedirs(os.path.dirname(_portal_state_path), exist_ok=True)
-                            with open(_portal_state_path, "w", encoding="utf-8") as _pf:
-                                json.dump({
-                                    "portal_downloadable": portal_downloadable,
-                                    "portal_court_pickup": portal_pickup,
-                                    "portal_pending": portal_pending,
-                                    "notified_at": datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
-                                }, _pf, ensure_ascii=False)
-                        except Exception:
-                            logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 2630, exc_info=True)
                     if warn_message:
                         _notify(warn_message, True)
                 else:
                     _notify(msg, True, topic_key="quiet_cron")
+            if _portal_probe_ok and (notify or portal_pending == 0):
+                # 即使待繳費歸零且不發通知，也要寫入 0；否則舊的非零狀態
+                # 會讓下一次真正出現待繳費時被誤判成「沒有變動」。
+                _save_portal_notify_state(
+                    _portal_state_path,
+                    portal_downloadable=portal_downloadable,
+                    portal_pickup=portal_pickup,
+                    portal_pending=portal_pending,
+                )
             out = {
                 "success": True,
                 "message": msg,

@@ -209,3 +209,58 @@ def test_file_review_manager_waiting_or_denied_rows_are_not_court_pickup():
 
     assert FileReviewManager._is_court_pickup_row(waiting, "聲請閱卷") is False
     assert FileReviewManager._is_court_pickup_row(denied, "") is False
+
+
+def test_payment_check_notice_stays_quiet_when_portal_has_no_pending_payment():
+    module = _load_action_module()
+
+    assert module._should_emit_payment_check_notice(
+        pay_hits=7,
+        pay_notified=0,
+        portal_pending=0,
+        portal_pending_changed=True,
+        portal_probe_ok=True,
+    ) is False
+
+
+def test_payment_check_notice_emits_for_real_or_unverified_payment_work():
+    module = _load_action_module()
+
+    assert module._should_emit_payment_check_notice(
+        pay_hits=0,
+        pay_notified=0,
+        portal_pending=2,
+        portal_pending_changed=True,
+        portal_probe_ok=True,
+    ) is True
+    assert module._should_emit_payment_check_notice(
+        pay_hits=1,
+        pay_notified=0,
+        portal_pending=0,
+        portal_pending_changed=False,
+        portal_probe_ok=False,
+    ) is True
+    assert module._should_emit_payment_check_notice(
+        pay_hits=0,
+        pay_notified=1,
+        portal_pending=0,
+        portal_pending_changed=False,
+        portal_probe_ok=True,
+    ) is True
+
+
+def test_portal_notify_state_can_record_zero_pending_without_notification(tmp_path):
+    module = _load_action_module()
+    state_path = tmp_path / ".portal_notify_state.json"
+
+    module._save_portal_notify_state(
+        str(state_path),
+        portal_downloadable=6,
+        portal_pickup=29,
+        portal_pending=0,
+    )
+
+    data = json.loads(state_path.read_text(encoding="utf-8"))
+    assert data["portal_downloadable"] == 6
+    assert data["portal_court_pickup"] == 29
+    assert data["portal_pending"] == 0
