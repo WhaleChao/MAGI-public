@@ -28,7 +28,7 @@ function bindTabs() {
                     if (ret && typeof ret.then === "function") {
                         ret.finally(() => hideLoading());
                     } else {
-                        // 同步或不返回 Promise：給最少 200ms spinner，提示有反應
+                        // 同步或沒有回傳 Promise：給最少 200ms spinner，提示有反應
                         setTimeout(hideLoading, 200);
                     }
                 } catch (e) { console.warn(`${label} failed:`, e); hideLoading(); }
@@ -330,8 +330,8 @@ function bindEvents() {
         ["todosSearchBtn", loadTodos, "待辦搜尋"],
         ["todosRefreshBtn", loadTodos, "待辦重新整理"],
         ["todoSaveBtn", saveTodo, "待辦儲存"],
-        ["docsSearchBtn", loadDocuments, "文件搜尋"],
-        ["docsRefreshBtn", loadDocuments, "文件重新整理"],
+        ["docsSearchBtn", loadDocuments, "檔案搜尋"],
+        ["docsRefreshBtn", loadDocuments, "檔案重新整理"],
         ["docGeneratePoaBtn", () => runDocCaseAction("generate_power_of_attorney"), "製作委任狀"],
         ["docGenerateReceiptBtn", () => runDocCaseAction("generate_receipt"), "製作收據"],
         ["docClosingOverviewBtn", () => runDocCaseAction("closing_overview"), "結案資料彙整"],
@@ -485,7 +485,7 @@ function bindEvents() {
     document.getElementById("meetingResetBtn").addEventListener("click", () => clearFields(["meeting_id", "meeting_case_number", "meeting_client_name", "meeting_type", "meeting_datetime", "meeting_duration", "meeting_location", "meeting_notes", "meeting_status"]));
     document.getElementById("calResetBtn").addEventListener("click", () => clearFields(["cal_id", "cal_event_id", "cal_title", "cal_case_number", "cal_start_date", "cal_end_date", "cal_location", "cal_color", "cal_is_all_day", "cal_reminder_minutes", "cal_summary", "cal_description", "cal_raw_data"]));
     document.getElementById("todoResetBtn").addEventListener("click", () => clearFields(["todo_id", "todo_case_number", "todo_client_name", "todo_type", "todo_date", "todo_time", "todo_desc", "todo_status", "todo_source_file"]));
-    document.getElementById("docsKind").addEventListener("change", () => runBusyAction("docsSearchBtn", loadDocuments, { actionLabel: "文件搜尋" }));
+    document.getElementById("docsKind").addEventListener("change", () => runBusyAction("docsSearchBtn", loadDocuments, { actionLabel: "檔案搜尋" }));
 
     document.getElementById("draftMetaRefreshBtn").addEventListener("click", () => loadDraftMeta().catch(reportDraftError));
     document.getElementById("draftCaseSearchBtn").addEventListener("click", () => searchDraftCases().catch(reportDraftError));
@@ -620,7 +620,7 @@ function bindEvents() {
         { inputs: ["meetingsQ"], buttonId: "meetingsSearchBtn", fn: loadMeetings, actionLabel: "會議搜尋" },
         { inputs: ["calQ"], buttonId: "calSearchBtn", fn: loadCalendarEvents, actionLabel: "行事曆搜尋" },
         { inputs: ["todosQ"], buttonId: "todosSearchBtn", fn: loadTodos, actionLabel: "待辦搜尋" },
-        { inputs: ["docsQ", "docsCaseNumber"], buttonId: "docsSearchBtn", fn: loadDocuments, actionLabel: "文件搜尋" },
+        { inputs: ["docsQ", "docsCaseNumber"], buttonId: "docsSearchBtn", fn: loadDocuments, actionLabel: "檔案搜尋" },
         { inputs: ["docTplQ", "docTplCaseNumber", "docTplTypeFilter"], buttonId: "docTplSearchBtn", fn: loadDocumentTemplates, actionLabel: "書狀模板搜尋" },
         { inputs: ["docKwQ", "docKwCaseNumber", "docKwCategoryFilter"], buttonId: "docKwSearchBtn", fn: loadDocumentKeywords, actionLabel: "書狀關鍵字搜尋" },
         { inputs: ["docRpQ", "docRpCaseNumber"], buttonId: "docRpSearchBtn", fn: loadDocumentReplacements, actionLabel: "替換紀錄搜尋" },

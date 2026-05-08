@@ -718,7 +718,7 @@ function renderTextFileEditor(caseId, rawPath, content, returnPath = "") {
         <h3>文字檔編輯器</h3>
         <div class="wb-breadcrumb">${esc(rawPath)}</div>
         <div class="toolbar" style="margin-top:10px;">
-            <button class="btn slim" data-act="wb-file-editor-back" data-id="${esc(caseId)}" data-path="${esc(returnPath)}">返回資料夾</button>
+            <button class="btn slim" data-act="wb-file-editor-back" data-id="${esc(caseId)}" data-path="${esc(returnPath)}">回到資料夾</button>
             <a class="btn slim" href="${fileContentUrl(rawPath)}" target="_blank" rel="noopener noreferrer">下載原檔</a>
             <button class="btn primary" data-act="wb-file-save" data-id="${esc(caseId)}" data-path="${esc(rawPath)}" data-return-path="${esc(returnPath)}">儲存回本機</button>
         </div>
@@ -948,7 +948,7 @@ function renderDocsByKeyword(docs, keywords) {
         const s = `${d.file_name || ""} ${d.subfolder_name || ""} ${d.reason || ""}`;
         return keywords.some(k => s.includes(k));
     });
-    if (!hits.length) return `<div class="muted">尚未索引到相關文件</div>`;
+    if (!hits.length) return `<div class="muted">尚未索引到相關檔案</div>`;
     return `
     <div class="table-wrap"><table>
         <thead><tr><th>檔名</th><th>子資料夾</th><th>操作</th></tr></thead>
@@ -1037,7 +1037,7 @@ async function openCaseWorkbench(id, statusText = "") {
         <div class="stat-card"><div class="k">待處理</div><div class="v">${esc(s.todo_pending || 0)}</div></div>
         <div class="stat-card"><div class="k">已完成</div><div class="v">${esc(s.todo_completed || 0)}</div></div>
         <div class="stat-card"><div class="k">會議</div><div class="v">${esc(s.meeting_total || 0)}</div></div>
-        <div class="stat-card"><div class="k">索引文件</div><div class="v">${esc(s.docs_indexed || 0)}</div></div>
+        <div class="stat-card"><div class="k">索引檔案</div><div class="v">${esc(s.docs_indexed || 0)}</div></div>
     </div>
     <div class="card">
         <h3>快捷功能（委任狀/收據/結案整理）</h3>
@@ -1069,7 +1069,7 @@ async function openCaseWorkbench(id, statusText = "") {
             ${renderDocsByKeyword(data.documents || [], ["委任", "委託", "開辦通知", "開辦資料", "接案通知", "法扶資料"])}
         </div>
         <div class="card">
-            <h3>判決/結案相關文件</h3>
+            <h3>判決/結案相關檔案</h3>
             ${renderDocsByKeyword(data.documents || [], ["判決", "裁定", "調解不成立", "結案", "收據", "繳費", "法院通知"])}
         </div>
     </div>
@@ -1084,11 +1084,11 @@ async function openCaseWorkbench(id, statusText = "") {
             </table></div>
         </div>
         <div class="card">
-            <h3>PDF 生成紀錄</h3>
+            <h3>PDF 產生紀錄</h3>
             <div class="table-wrap"><table>
                 <thead><tr><th>時間</th><th>檔名</th><th>狀態</th><th>錯誤</th></tr></thead>
                 <tbody>
-                    ${(data.pdf_generation_log || []).map(x => `<tr><td>${esc(x.log_timestamp || "")}</td><td>${esc(x.file_name || "")}</td><td>${esc(x.status || "")}</td><td>${esc(shortText(x.error_message, 60))}</td></tr>`).join("") || `<tr><td colspan="4" class="muted">尚無 PDF 生成紀錄</td></tr>`}
+                    ${(data.pdf_generation_log || []).map(x => `<tr><td>${esc(x.log_timestamp || "")}</td><td>${esc(x.file_name || "")}</td><td>${esc(x.status || "")}</td><td>${esc(shortText(x.error_message, 60))}</td></tr>`).join("") || `<tr><td colspan="4" class="muted">尚無 PDF 產生紀錄</td></tr>`}
                 </tbody>
             </table></div>
         </div>
@@ -1104,7 +1104,7 @@ async function openCaseWorkbench(id, statusText = "") {
     </div>
 `;
     wbShow(`案件工作台｜${c.case_number || id}`, modalHtml);
-    wbSetStatus(statusText || `已載入案件工作台，待辦 ${s.todo_total || 0} 筆、索引文件 ${s.docs_indexed || 0} 份。`, statusText ? "ok" : "info");
+    wbSetStatus(statusText || `已載入案件工作台，待辦 ${s.todo_total || 0} 筆、索引檔案 ${s.docs_indexed || 0} 份。`, statusText ? "ok" : "info");
 }
 
 // ── Card drag-and-drop ──

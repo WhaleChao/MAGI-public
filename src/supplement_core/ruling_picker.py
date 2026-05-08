@@ -13,7 +13,7 @@ from .exceptions import CourtNoticeFolderMissingError
 # ── doc_type_guess 規則 ───────────────────────────────────────────────────────
 
 def _guess_doc_type(filename: str) -> str:
-    """依檔名關鍵字猜測文件類型。"""
+    """依檔名關鍵字猜測檔案類型。"""
     if "補正" in filename:
         return "補正裁定"
     if "裁定" in filename:

@@ -232,7 +232,7 @@ async function delRecurringExpense(id) {
 
 const QT_PRESETS = {
     consult: { item: "法律諮詢", description: "面談、線上諮詢與初步法律分析", unit: "小時", qty: 1, unit_price: 5000 },
-    draft: { item: "書狀代擬", description: "起訴狀、答辯狀、聲請狀或存證信函等文件代擬", unit: "件", qty: 1, unit_price: 30000 },
+    draft: { item: "書狀代擬", description: "起訴狀、答辯狀、聲請狀或存證信函等文書代擬", unit: "件", qty: 1, unit_price: 30000 },
     litigation: { item: "訴訟代理", description: "第一審程序代理；未含裁判費、規費、郵資與差旅費", unit: "審級", qty: 1, unit_price: 80000 },
     contract: { item: "契約審閱", description: "契約風險分析、條款修訂建議與一次討論", unit: "件", qty: 1, unit_price: 20000 },
 };

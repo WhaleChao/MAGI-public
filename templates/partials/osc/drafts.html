@@ -4,19 +4,19 @@
                     <div class="section-head">
                         <div>
                             <h3>AI 書狀草擬</h3>
-                            <div class="section-note">對應桌面版 DraftGenerationFrame。建議流程：先載入案件、挑參考素材、預覽 Prompt，再正式生成與匯出。</div>
+                            <div class="section-note">對應桌面版 DraftGenerationFrame。建議流程：先載入案件、挑參考素材、預覽 Prompt，再正式產生與匯出。</div>
                         </div>
                         <div class="inline-actions">
                             <span id="draftProviderBadge" class="badge">設定載入中...</span>
                             <span id="draftTemplateBadge" class="badge">模板檢查中...</span>
-                            <button class="btn" id="draftMetaRefreshBtn">刷新設定</button>
+                            <button class="btn" id="draftMetaRefreshBtn">重新整理設定</button>
                         </div>
                     </div>
                     <ul class="flow-list">
                         <li>1. 搜尋案件並載入欄位</li>
                         <li>2. 指定書狀類型與案件事實</li>
                         <li>3. 加入參考書狀與實務見解</li>
-                        <li>4. 先預覽 Prompt，再正式生成</li>
+                        <li>4. 先預覽 Prompt，再正式產生</li>
                     </ul>
                 </div>
                 <div class="draft-main-grid">
@@ -79,7 +79,7 @@
                             </div>
                             <div class="field">
                                 <label for="draftSuggestedName">匯出檔名</label>
-                                <input id="draftSuggestedName" placeholder="可留空，系統自動生成">
+                                <input id="draftSuggestedName" placeholder="可留空，系統自動產生">
                             </div>
                         </div>
                         <div class="field" style="margin-top:12px;">
@@ -90,7 +90,7 @@
                         <div class="sticky-actions">
                             <div class="inline-actions" style="margin-top:10px;">
                                 <button class="btn" id="draftPreviewBtn">預覽 Prompt</button>
-                                <button class="btn primary" id="draftGenerateBtn">開始生成</button>
+                                <button class="btn primary" id="draftGenerateBtn">開始產生</button>
                                 <button class="btn" id="draftCopyBtn">複製結果</button>
                                 <button class="btn warn" id="draftExportBtn">匯出 DOCX/PDF</button>
                                 <button class="btn ghost" id="draftClearBtn">清除結果</button>
@@ -121,7 +121,7 @@
                             <div class="selection-item">
                                 <div class="meta-text">
                                     <div>實務見解建議控制在 3-5 筆</div>
-                                    <div class="muted">太多摘要會壓縮案件事實比重，反而讓生成結果失焦。</div>
+                                    <div class="muted">太多摘要會壓縮案件事實比重，反而讓產生結果失焦。</div>
                                 </div>
                             </div>
                             <div class="selection-item">
@@ -147,7 +147,7 @@
                     </div>
                     <div class="field-grid cols-3">
                         <div class="field">
-                            <label for="draftDocsQ">文件搜尋</label>
+                            <label for="draftDocsQ">檔案搜尋</label>
                             <input id="draftDocsQ" placeholder="檔名 / 路徑 / 關鍵字">
                         </div>
                         <div class="field">
@@ -155,9 +155,9 @@
                             <input id="draftDocsCaseFilter" placeholder="預設帶入上方案號">
                         </div>
                         <div class="field">
-                            <label for="draftDocsKind">文件類型</label>
+                            <label for="draftDocsKind">檔案類型</label>
                             <select id="draftDocsKind">
-                                <option value="all">全部文件</option>
+                                <option value="all">全部檔案</option>
                                 <option value="poa">委任狀/委託書</option>
                                 <option value="receipt">收據/繳費</option>
                                 <option value="laf">法扶資料/開辦資料</option>
@@ -218,11 +218,11 @@
                 <div class="card">
                     <div class="section-head">
                         <div>
-                            <h3>生成結果 <span id="draftModeIndicator" class="draft-mode-indicator" style="display:none;"></span></h3>
+                            <h3>產生結果 <span id="draftModeIndicator" class="draft-mode-indicator" style="display:none;"></span></h3>
                             <div class="section-note">可直接在這裡人工修稿，再按匯出。若結果偏題，先回頭修案件事實或減少參考素材。</div>
                         </div>
                     </div>
-                    <textarea id="draftResult" class="mono-textarea" placeholder="生成結果將顯示在這裡。"></textarea>
+                    <textarea id="draftResult" class="mono-textarea" placeholder="產生結果將顯示在這裡。"></textarea>
                     <div class="draft-result-meta">
                         <span class="result-hint" id="draftResultHint">匯出前可直接在上方修改內容。</span>
                         <span class="char-count" id="draftCharCount">0 字</span>
@@ -230,4 +230,3 @@
                 </div>
             </div>
         </section>
-

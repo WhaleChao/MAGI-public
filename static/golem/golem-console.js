@@ -11,7 +11,7 @@
         summarize_text: "文字摘要",
         translate_text: "翻譯",
         ocr_image: "圖片文字辨識",
-        parse_document: "文件解析",
+        parse_document: "檔案解析",
         search_memory: "記憶查找",
         stock_analysis: "股票分析",
     };
@@ -23,7 +23,7 @@
         summarize_text: "把長篇文字整理成重點摘要。",
         translate_text: "協助翻譯文字內容。",
         ocr_image: "從圖片或掃描檔擷取文字。",
-        parse_document: "讀取文件內容並整理可用資訊。",
+        parse_document: "讀取檔案內容並整理可用資訊。",
         search_memory: "從既有記憶與資料庫中查找相關內容。",
         stock_analysis: "整理股票與市場分析報告。",
     };
@@ -145,7 +145,7 @@
         }
         if (payload.memory) {
             lines.push("", "向量記憶：");
-            lines.push(`- 文件數：${payload.memory.doc_count || 0}`);
+            lines.push(`- 檔案數：${payload.memory.doc_count || 0}`);
             lines.push(`- 來源數：${payload.memory.source_count || 0}`);
             lines.push(`- 更新時間：${payload.memory.updated || "尚無資料"}`);
         }
@@ -260,9 +260,9 @@
         if (text.includes("judgment")) return "裁判查詢";
         if (text.includes("statute")) return "法規查詢";
         if (text.includes("ocr")) return "文字辨識";
-        if (text.includes("export")) return "匯出文件";
+        if (text.includes("export")) return "匯出檔案";
         if (text.includes("translate")) return "翻譯";
-        if (text.includes("doc") || text.includes("pdf") || text.includes("file")) return "文件處理";
+        if (text.includes("doc") || text.includes("pdf") || text.includes("file")) return "檔案處理";
         if (text.includes("case") || text.includes("laf") || text.includes("law")) return "案件與法律資料";
         if (text.includes("market") || text.includes("stock")) return "股票分析";
         if (text.includes("memory")) return "記憶查找";
@@ -284,7 +284,7 @@
         if (haystack.includes("client")) return "協助查找或整理客戶與案件資料。";
         if (haystack.includes("meeting") || haystack.includes("calendar")) return "協助處理行程與時間安排。";
         if (haystack.includes("mail") || haystack.includes("gmail")) return "協助處理郵件內容。";
-        if (haystack.includes("document") || haystack.includes("pdf") || haystack.includes("file")) return "協助讀取、整理或產生文件。";
+        if (haystack.includes("document") || haystack.includes("pdf") || haystack.includes("file")) return "協助讀取、整理或產生檔案。";
         if (haystack.includes("stock") || haystack.includes("market")) return "整理市場資訊與分析結果。";
         if (haystack.includes("memory")) return "查找 MAGI 已儲存的資料。";
         return "提供 MAGI 自動化工作能力。";
@@ -293,7 +293,7 @@
     function skillCategory(item) {
         const raw = `${String((item && item.name) || "")} ${String((item && item.description) || "")}`.toLowerCase();
         if (raw.includes("client") || raw.includes("case") || raw.includes("laf") || raw.includes("law") || raw.includes("judgment") || raw.includes("statute")) return "案件與法律";
-        if (raw.includes("doc") || raw.includes("pdf") || raw.includes("file") || raw.includes("ocr") || raw.includes("summar") || raw.includes("translat")) return "文件處理";
+        if (raw.includes("doc") || raw.includes("pdf") || raw.includes("file") || raw.includes("ocr") || raw.includes("summar") || raw.includes("translat")) return "檔案處理";
         if (raw.includes("search") || raw.includes("research") || raw.includes("url") || raw.includes("web")) return "資料查找";
         if (raw.includes("meeting") || raw.includes("calendar") || raw.includes("mail") || raw.includes("gmail")) return "辦公協作";
         if (raw.includes("stock") || raw.includes("market")) return "市場分析";
@@ -490,7 +490,7 @@
         if (!rows.length) return "";
         return `
             <div class="magi-artifact-list">
-                <div class="magi-artifact-title">MAGI 已產生成果檔案</div>
+                <div class="magi-artifact-title">MAGI 已產出成果檔案</div>
                 ${rows.map((item) => {
                     const path = String(item.share_path || item.path || "");
                     const downloadUrl = String(item.download_url || "#");

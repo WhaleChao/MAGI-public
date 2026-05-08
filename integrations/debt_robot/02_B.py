@@ -70,7 +70,7 @@ class TableEditor(QMainWindow):
             header_layout.addWidget(header_label)
         layout.addLayout(header_layout)
 
-        # 添加顯示總計的標籤
+        # 新增顯示總計的標籤
         total_sum_layout = QHBoxLayout()
         total_sum_label = QLabel("總計：")
         total_sum_layout.addWidget(total_sum_label)
@@ -102,7 +102,7 @@ class TableEditor(QMainWindow):
                 row_layout.addWidget(combo)
             else:
                 line_edit = QLineEdit()
-                line_edit.textChanged.connect(self.update_total_sum)  # 添加文本改變事件來更新總計
+                line_edit.textChanged.connect(self.update_total_sum)  # 新增文字變更事件來更新總計
                 inputs.append(line_edit)
                 row_layout.addWidget(line_edit)
         layout.insertLayout(layout.count() - 1, row_layout)
@@ -122,7 +122,7 @@ class TableEditor(QMainWindow):
         grid_layout = QGridLayout()
         layout.addLayout(grid_layout)
 
-        # 添加標題行
+        # 新增標題行
         for i, header in enumerate(headers):
             grid_layout.addWidget(QLabel(header), 0, i)
 
@@ -139,7 +139,7 @@ class TableEditor(QMainWindow):
         add_button.clicked.connect(lambda: row_inputs.append(self.add_expense_row(grid_layout, row_num)))
         save_button.clicked.connect(self.save_document)
 
-        # 添加顯示總計的標籤
+        # 新增顯示總計的標籤
         total_sum_layout = QHBoxLayout()
         total_sum_label = QLabel("總計：")
         total_sum_layout.addWidget(total_sum_label)
@@ -152,7 +152,7 @@ class TableEditor(QMainWindow):
     def add_expense_row(self, grid_layout, row_num, category="", amount=""):
         category_label = QLabel(category)
         amount_edit = QLineEdit(amount)
-        total_label = QLabel("")  # 初始化为空
+        total_label = QLabel("")  # 初始化為空
 
         # 計算每行的總額
         def update_total():
@@ -162,7 +162,7 @@ class TableEditor(QMainWindow):
                 total_label.setText(str(total_value))
                 self.update_total_sum()  # 更新總計
             except ValueError:
-                total_label.setText("")  # 沒有输入有效数字时不显示
+                total_label.setText("")  # 沒有輸入有效數字時不顯示
 
         amount_edit.textChanged.connect(update_total)
 
@@ -252,7 +252,7 @@ class TableEditor(QMainWindow):
                             row_cells = table.add_row().cells
                             for j, input_field in enumerate(inputs):
                                 row_cells[j].text = self.get_input_text(input_field)
-                        # 在表格末尾插入一行用于显示总计
+                        # 在表格末尾插入一列用於顯示總計
                         total_row = table.add_row().cells
                         total_row[0].text = "總計"
                         if headers[0] == '種類' and headers == ['種類', '來源', '總額／元']:
@@ -272,7 +272,7 @@ class TableEditor(QMainWindow):
             print(f"檔案已存到: {save_path}")
 
     def get_input_text(self, input_field):
-        # 根據控件類型返回文本
+        # 根據控制項類型回傳文字
         if isinstance(input_field, QLineEdit):
             return input_field.text().strip()
         elif isinstance(input_field, QComboBox):

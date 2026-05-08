@@ -275,7 +275,7 @@ def load_text(pdf_path: str, *, force_refresh: bool = False) -> dict:
                     page_texts.append(text)
                 page_confidences.append(conf)
             except SupplementError:
-                # ImportError → 直接重抛（無法繼續）
+                # ImportError → 直接重新拋出（無法繼續）
                 raise
             except Exception:
                 failed_pages.append(page_num)

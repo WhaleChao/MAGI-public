@@ -526,7 +526,7 @@ class SupplementGenerator(QMainWindow):
 
         QMessageBox.information(
             self, "✅ 完成",
-            f"書狀資料夾已建立：\n{folder_path}\n\n文件：{os.path.basename(docx_path)}"
+            f"書狀資料夾已建立：\n{folder_path}\n\n檔案：{os.path.basename(docx_path)}"
         )
 
 

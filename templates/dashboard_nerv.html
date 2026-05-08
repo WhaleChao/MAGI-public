@@ -1174,7 +1174,7 @@ body::after {
 </head>
 <body>
 <div class="nerv-header">
-  <a href="/dashboard" class="back-link">&lt; 返回 MAGI</a>
+  <a href="/dashboard" class="back-link">&lt; 回到 MAGI</a>
   <h1>MAGI SYSTEM</h1>
   <div class="subtitle">SUPER COMPUTER SYSTEM STATUS</div>
   <div class="timestamp" id="ts">--:--:--</div>
@@ -1400,7 +1400,7 @@ body::after {
         </div>
         <div id="skill-side-section-versions" class="skill-side-section">
           <div class="skill-template-title">版本快照 VERSIONS</div>
-          <div class="skill-template-copy">每次問答生成或手動儲存後，都可以在這裡看最近版本。管理員可直接回滾到指定快照。</div>
+          <div class="skill-template-copy">每次問答產生或手動儲存後，都可以在這裡看最近版本。管理員可直接回滾到指定快照。</div>
           <div class="skill-wizard-actions">
             <button type="button" onclick="refreshSkillVersions()">重新整理版本</button>
           </div>
@@ -1669,7 +1669,7 @@ function heavyEngineRowHTML(report) {
         <div class="engine-inline-actions">
           ${nervMiniButtonHTML('啟用 HEAVY', 'setHeavyRuntimeEnabled(true)', 'default', !canToggle)}
           ${nervMiniButtonHTML('關閉 HEAVY', 'setHeavyRuntimeEnabled(false)', 'danger', !canToggle)}
-          ${nervMiniButtonHTML('刷新', 'fetchHeavyRuntime()')}
+          ${nervMiniButtonHTML('重新整理', 'fetchHeavyRuntime()')}
         </div>
       </div>
     </div>
@@ -2014,7 +2014,7 @@ async function fetchProductRuntime(showMessage = false) {
     renderProductRuntime();
     if (showMessage) {
       const lineEl = document.getElementById('runtime-status-line');
-      if (lineEl) lineEl.textContent = `設定已刷新 · ${payload.runtime_path || ''}`;
+      if (lineEl) lineEl.textContent = `設定已重新整理 · ${payload.runtime_path || ''}`;
     }
   } catch (e) {
     productRuntimeState = null;
@@ -2331,13 +2331,13 @@ const SKILL_META = {
   'judgment-collector':       { zh: '裁判書收集', desc: '擷取法院裁判書', cat: '法律業務' },
   'file-review-orchestrator': { zh: '閱卷自動化', desc: '閱卷時程與追蹤', cat: '法律業務' },
   'pdf-namer':                { zh: 'PDF 命名', desc: 'OCR + 自動重命名', cat: '法律業務' },
-  'pdf-annotator':            { zh: 'PDF 標註', desc: '文件自動標註', cat: '法律業務' },
+  'pdf-annotator':            { zh: 'PDF 標註', desc: '文書自動標註', cat: '法律業務' },
   'law_review':               { zh: '法律校正', desc: '法律術語檢查', cat: '法律業務' },
   'judicial-web-search':      { zh: '裁判檢索', desc: '司法院裁判查詢', cat: '法律業務' },
   'judicial-flow-search-archive': { zh: '流程查詢', desc: '司法流程查詢', cat: '法律業務' },
   'statutes-vdb':             { zh: '法條向量庫', desc: '法規語意搜尋', cat: '法律業務' },
   'labor-law-calculator':     { zh: '勞動計算', desc: '資遣費/加班費', cat: '法律業務' },
-  'legal_attest':             { zh: '認證文件', desc: '法律文件認證', cat: '法律業務' },
+  'legal_attest':             { zh: '認證文書', desc: '法律文書認證', cat: '法律業務' },
   'laf-orchestrator':         { zh: '法扶流程', desc: '法扶案件管理', cat: '法扶系統' },
   'laf-portal-automation':    { zh: '法扶入口', desc: '法扶平台自動化', cat: '法扶系統' },
   'laf-refine-case':          { zh: '法扶校潤', desc: '案件資料校潤', cat: '法扶系統' },
@@ -2361,13 +2361,13 @@ const SKILL_META = {
   'osc-scan-folder':          { zh: '資料夾掃描', desc: '案件檔案偵測', cat: '系統維運' },
   'obsidian':                 { zh: 'Obsidian', desc: '知識庫同步', cat: '系統維運' },
   'mock-test':                { zh: '模擬測試', desc: '系統功能驗證', cat: '系統維運' },
-  // 文件處理
-  'transcript-downloader':    { zh: '筆錄下載', desc: '法院筆錄擷取', cat: '文件處理' },
-  'transcript-indexer':       { zh: '筆錄索引', desc: '筆錄全文索引', cat: '文件處理' },
-  'gmail-drafts':             { zh: 'Gmail 草稿', desc: '郵件自動草擬', cat: '文件處理' },
+  // 檔案處理
+  'transcript-downloader':    { zh: '筆錄下載', desc: '法院筆錄擷取', cat: '檔案處理' },
+  'transcript-indexer':       { zh: '筆錄索引', desc: '筆錄全文索引', cat: '檔案處理' },
+  'gmail-drafts':             { zh: 'Gmail 草稿', desc: '郵件自動草擬', cat: '檔案處理' },
 };
 
-const CAT_ORDER = ['法律業務', '法扶系統', '文件處理', '情報分析', '投資追蹤', '系統維運', '其他模組'];
+const CAT_ORDER = ['法律業務', '法扶系統', '檔案處理', '情報分析', '投資追蹤', '系統維運', '其他模組'];
 
 function categorizeSkills(skills) {
   const cats = {};
@@ -2442,7 +2442,7 @@ async function fetchNervSkills(options = {}) {
         setSkillEditorStatus('目前選取的 SKILL 已不存在，請重新選一個。', 'warn');
       }
     } else if (options.showRefreshStatus && isSkillModalOpen()) {
-      setSkillEditorStatus(`已刷新 ${skillCatalog.length} 個 SKILL。`, 'ok');
+      setSkillEditorStatus(`已重新整理 ${skillCatalog.length} 個 SKILL。`, 'ok');
     }
   } catch (e) {
     skillCatalog = [];

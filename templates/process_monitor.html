@@ -191,7 +191,7 @@
     <div class="top">
       <h1>MAGI 程序監控頁（單一路徑守護）</h1>
       <div class="links">
-        <button class="btn" onclick="loadData()">立即刷新</button>
+        <button class="btn" onclick="loadData()">立即重新整理</button>
         <button class="btn" id="guardianBtn" onclick="toggleGuardian()">守護程序：載入中</button>
         <a href="/dashboard">主控台</a>
         <a href="/osc">Paperclip</a>
@@ -292,12 +292,12 @@
         { t: '標籤', f: r => r.label || '-' },
         { t: 'PID', f: r => r.pid },
         { t: 'PPID', f: r => r.ppid },
-        { t: '運行時間', f: r => r.age || '-' },
+        { t: '執行時間', f: r => r.age || '-' },
         { t: '命令', f: r => r.cmd || '-', cls: 'cmd' },
       ]);
       document.getElementById('orphanWrap').innerHTML = table(d.orphans || [], [
         { t: 'PID', f: r => r.pid },
-        { t: '運行秒數', f: r => r.age_sec || 0 },
+        { t: '執行秒數', f: r => r.age_sec || 0 },
         { t: '命令', f: r => r.cmd || '-', cls: 'cmd' },
       ]);
 

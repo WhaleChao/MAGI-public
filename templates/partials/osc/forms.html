@@ -3,19 +3,19 @@
                 <div class="card">
                     <div class="section-head">
                         <div>
-                            <h3>文件產生器</h3>
+                            <h3>文書產生器</h3>
                             <div class="section-note">可產生委任狀、契約書、收據與存證信函。先填基本欄位，再預覽內容，確認後匯出。</div>
                         </div>
                     </div>
                     <ul class="flow-list">
-                        <li>1. 選文件類型</li>
+                        <li>1. 選文書類型</li>
                         <li>2. 填案件與金額欄位</li>
                         <li>3. 先預覽再匯出</li>
                     </ul>
                     <div class="soft-block">
                         <div class="field-grid cols-4">
                             <div class="field">
-                                <label for="formType">文件類型</label>
+                                <label for="formType">文書類型</label>
                                 <select id="formType" onchange="(function(){
                                     const isLal = document.getElementById('formType').value === 'legal_attest';
                                     document.getElementById('formSenderNameField').style.display = isLal ? '' : 'none';
@@ -112,4 +112,3 @@
                 </div>
             </div>
         </section>
-

@@ -47,6 +47,6 @@ async function loadDashboard() {
         "dashboardPdfLogBody",
         (data.recent_pdf_logs || []).map(r => `<tr><td>${esc(r.log_timestamp)}</td><td>${esc(r.case_number)}</td><td>${esc(r.file_name || "")}</td><td>${esc(r.status || "")}</td><td>${esc(shortText(r.error_message, 80))}</td></tr>`),
         5,
-        "目前沒有 PDF 生成紀錄"
+        "目前沒有 PDF 產生紀錄"
     );
 }

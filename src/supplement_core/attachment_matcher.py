@@ -30,7 +30,7 @@ _SOURCE_FOLDERS: list[tuple[str, str]] = [
     ("subfolder_evidence", "07_證據資料"),
 ]
 
-# OCR category → 用於識別文件類型的關鍵字
+# OCR category → 用於識別檔案類型的關鍵字
 _CATEGORY_KEYWORDS: dict[str, list[str]] = {
     "綜所稅清單": ["綜合所得稅", "綜所稅", "各類所得"],
     "勞保異動": ["勞保異動", "勞工保險", "投保資料"],

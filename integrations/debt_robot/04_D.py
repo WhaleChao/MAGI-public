@@ -5,17 +5,17 @@ from PyPDF2 import PdfReader, PdfWriter
 from docx2pdf import convert
 from datetime import datetime
 
-# 檢查頁數是否為奇數並添加空白頁
+# 檢查頁數是否為奇數並新增空白頁
 def add_blank_page_if_needed(pdf_writer, pdf_reader):
     if len(pdf_reader.pages) % 2 != 0:
         pdf_writer.add_blank_page()
 
-# 合併單個PDF檔案並檢查是否需要添加空白頁
+# 合併單一 PDF 檔案並檢查是否需要新增空白頁
 def merge_single_pdf(pdf_writer, pdf_file):
     pdf_reader = PdfReader(pdf_file)
     for page_num in range(len(pdf_reader.pages)):
         pdf_writer.add_page(pdf_reader.pages[page_num])
-    # 檢查並添加空白頁（如果需要）
+    # 檢查並新增空白頁（如果需要）
     add_blank_page_if_needed(pdf_writer, pdf_reader)
 
 # 合併PDF檔案
@@ -69,7 +69,7 @@ def remove_file():
     if selection:
         listbox.delete(selection[0])
 
-# 合併PDF或轉換後的DOCX並保存
+# 合併 PDF 或轉換後的 DOCX 並儲存
 def merge_and_save():
     file_list = listbox.get(0, tk.END)
     if not file_list:
@@ -89,17 +89,17 @@ def merge_and_save():
     current_date = datetime.now().strftime("%Y%m%d")
     default_filename = f"{current_date}_消費者債務清理調解聲請狀及附件.pdf"
     
-    # 打開保存對話框，讓使用者選擇保存位置
+    # 開啟儲存對話框，讓使用者選擇儲存位置
     output_file = filedialog.asksaveasfilename(
         initialfile=default_filename,  # 設定預設檔案名稱
         defaultextension=".pdf",
         filetypes=[("PDF Files", "*.pdf")],
-        title="保存合併的 PDF 檔案"
+        title="儲存合併的 PDF 檔案"
     )
     
     if output_file:
         merge_pdfs(pdf_list, output_file)
-        messagebox.showinfo("成功", f"PDF 檔案已成功合併並保存至：{output_file}")
+        messagebox.showinfo("成功", f"PDF 檔案已成功合併並儲存至：{output_file}")
 
 # 建立主介面
 root = tk.Tk()
@@ -134,8 +134,8 @@ move_down_button.grid(row=0, column=1, padx=5, pady=5)
 remove_button = tk.Button(button_frame, text="移除", command=remove_file)
 remove_button.grid(row=0, column=2, padx=5, pady=5)
 
-# 合併並保存按鈕
-merge_button = tk.Button(root, text="合併並保存 PDF", command=merge_and_save)
+# 合併並儲存按鈕
+merge_button = tk.Button(root, text="合併並儲存 PDF", command=merge_and_save)
 merge_button.pack(pady=10)
 
 # 啟動主迴圈

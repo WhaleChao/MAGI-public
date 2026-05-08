@@ -971,9 +971,9 @@
                 <button class="sb-btn" onclick="submitSkillInterviewReplyRight()">[ 送出回答 ]</button>
             </div>
             <div id="skill-interview-status-right" class="wizard-status">尚未啟動問答精靈。</div>
-            <div id="skill-interview-output-right" class="wizard-output">點「啟動」後，這裡會顯示目前題目與生成結果。</div>
+            <div id="skill-interview-output-right" class="wizard-output">點「啟動」後，這裡會顯示目前題目與產生結果。</div>
             <div class="wizard-history">
-                <div style="color: var(--magi-blue); margin-bottom: 6px;">最近生成紀錄</div>
+                <div style="color: var(--magi-blue); margin-bottom: 6px;">最近產生紀錄</div>
                 <div id="skill-interview-history-right">讀取中...</div>
             </div>
         </div>
@@ -1347,7 +1347,7 @@
         function setSkillInterviewOutputRight(message) {
             const el = document.getElementById('skill-interview-output-right');
             if (!el) return;
-            el.textContent = message || '點「啟動」後，這裡會顯示目前題目與生成結果。';
+            el.textContent = message || '點「啟動」後，這裡會顯示目前題目與產生結果。';
         }
 
         function renderSkillInterviewHistoryRight(items) {
@@ -1355,7 +1355,7 @@
             if (!el) return;
             const rows = Array.isArray(items) ? items : [];
             if (!rows.length) {
-                el.innerHTML = '<div style="color: rgba(29,29,31,0.55);">目前還沒有生成紀錄。</div>';
+                el.innerHTML = '<div style="color: rgba(29,29,31,0.55);">目前還沒有產生紀錄。</div>';
                 return;
             }
             const labels = {
@@ -1406,7 +1406,7 @@
                 setSkillInterviewOutputRight(message);
             } else if (!options.quiet) {
                 setSkillInterviewStatusRight('尚未啟動問答精靈。', 'warn');
-                setSkillInterviewOutputRight('點「啟動」後，這裡會顯示目前題目與生成結果。');
+                setSkillInterviewOutputRight('點「啟動」後，這裡會顯示目前題目與產生結果。');
             }
 
             if (replyEl && !interview.active) {
@@ -1437,13 +1437,13 @@
         async function fetchSkillInterviewHistoryRight() {
             try {
                 const response = await fetch('/api/skills/interview-history?limit=8');
-                const payload = await parseJsonApiResponse(response, '生成紀錄暫不可得');
+                const payload = await parseJsonApiResponse(response, '產生紀錄暫不可得');
                 renderSkillInterviewHistoryRight(payload.history || []);
             } catch (e) {
                 const el = document.getElementById('skill-interview-history-right');
                 if (!el) return;
                 el.innerHTML = `<div style="color: rgba(29,29,31,0.5);">${escapeHtml(
-                    e.message === '請重新登入 dashboard' ? '請重新登入後檢視生成紀錄。' : '目前無法讀取生成紀錄。'
+                    e.message === '請重新登入 dashboard' ? '請重新登入後檢視產生紀錄。' : '目前無法讀取產生紀錄。'
                 )}</div>`;
             }
         }
@@ -1818,7 +1818,7 @@
             }
         });
 
-        /* bfcache 修復：從 OSC 按返回/前進回來時先重算版面，persisted 時再強制重載 */
+        /* bfcache 修復：從 OSC 按回到/前進回來時先重算版面，persisted 時再強制重載 */
         window.addEventListener('pageshow', function(e) {
             window.requestAnimationFrame(() => {
                 repairDashboardLayout();
@@ -2207,7 +2207,7 @@
             <!-- Stats Bar -->
             <div id="mem-stats" style="display:flex; gap:15px; margin-bottom:20px; flex-wrap:wrap;">
                 <div style="border:1px solid #007AFF; padding:10px 15px; min-width:140px; text-align:center;">
-                    <div style="font-size:0.7rem; color:var(--magi-blue);">文件總數</div>
+                    <div style="font-size:0.7rem; color:var(--magi-blue);">檔案總數</div>
                     <div id="mem-stat-vectors" style="font-size:1.5rem; color:#007AFF; font-weight:bold;">--</div>
                     <div id="mem-stat-docs-sub" style="font-size:0.65rem; color:var(--magi-blue); margin-top:2px;">--</div>
                 </div>

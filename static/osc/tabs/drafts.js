@@ -135,7 +135,7 @@ function renderDraftDocuments() {
     const selectedIds = new Set((state.draft.selectedDocuments || []).map(x => String(x.id)));
     const items = state.draft.documents || [];
     if (!items.length) {
-        body.innerHTML = `<tr><td colspan="5" class="muted">沒有文件資料</td></tr>`;
+        body.innerHTML = `<tr><td colspan="5" class="muted">沒有檔案資料</td></tr>`;
         renderDraftDocSelections();
         return;
     }
@@ -256,14 +256,14 @@ async function previewDraftPrompt() {
         updateDraftCharCount();
         setDraftModeIndicator("preview");
         const warningCount = (data.warnings || []).length;
-        setDraftStatus(`Prompt 預覽完成。文件警告：${warningCount} 筆。`, warningCount ? "warn" : "info");
+        setDraftStatus(`Prompt 預覽完成。檔案警告：${warningCount} 筆。`, warningCount ? "warn" : "info");
     });
 }
 
 async function generateDraft() {
-    await withBusy("draftGenerateBtn", "生成中...", async () => {
+    await withBusy("draftGenerateBtn", "產生中...", async () => {
         const payload = collectDraftPayload();
-        setDraftStatus("正在呼叫 AI 生成書狀，請稍候...");
+        setDraftStatus("正在呼叫 AI 產生書狀，請稍候...");
         const data = await api("/api/osc/drafts/generate", "POST", payload);
         const text = data.draft_text || "";
         document.getElementById("draftResult").value = text;
@@ -274,7 +274,7 @@ async function generateDraft() {
             document.getElementById("draftSuggestedName").value = data.suggested_filename;
         }
         const degraded = text.includes("系統降級回覆") || text.includes("忙碌或逾時");
-        setDraftStatus(`生成完成。Provider: ${data.provider || "-"}${data.model ? ` / ${data.model}` : ""}`, degraded ? "warn" : "info");
+        setDraftStatus(`產生完成。Provider: ${data.provider || "-"}${data.model ? ` / ${data.model}` : ""}`, degraded ? "warn" : "info");
     });
 }
 
@@ -283,7 +283,7 @@ async function copyDraftResult() {
     if (!text) return alert("沒有可複製內容");
     try {
         await navigator.clipboard.writeText(text);
-        setDraftStatus("已複製生成結果到剪貼簿。");
+        setDraftStatus("已複製產生結果到剪貼簿。");
     } catch {
         alert("複製失敗，請手動複製");
     }
@@ -312,7 +312,7 @@ async function exportDraftResult() {
 function clearDraftResult() {
     document.getElementById("draftResult").value = "";
     state.draft.result = "";
-    setDraftStatus("已清除生成結果。");
+    setDraftStatus("已清除產生結果。");
     updateDraftCharCount();
     setDraftModeIndicator(null);
 }
@@ -338,7 +338,7 @@ function setDraftModeIndicator(mode) {
         el.textContent = "Prompt 預覽";
     } else {
         el.className = "draft-mode-indicator generated";
-        el.textContent = "AI 生成結果";
+        el.textContent = "AI 產生結果";
     }
 }
 
