@@ -17,6 +17,8 @@ Author: Claude (Anthropic)
 Date: 2025-12
 """
 
+from __future__ import annotations
+
 import os
 import queue
 import sys
@@ -76,6 +78,16 @@ _PROGRESS_PRIORITY_TYPES = frozenset({
     "fee", "withdrawal", "condition",
     "派案通知", "審核結果通知", "審查結果通知", "審查通知", "派案",
 })
+
+
+def _laf_target_subfolder_for_attachment(filename: str) -> str:
+    """Return the OSC subfolder for a downloaded LAF attachment."""
+    fname = os.path.basename(filename or "")
+    if "結案酬金領款單" in fname or "結案審查通知書" in fname:
+        return "03_結案資料"
+    if "附條件第二階段預付酬金領款單" in fname or "二階段" in fname:
+        return "02_開辦資料"
+    return "01_法扶資料"
 
 
 def _classify_progress_email(subject: str, snippet: str) -> bool:
@@ -3386,16 +3398,7 @@ class OSCCaseCreator:
         if not files:
             return
         
-        # 定義檔案分類規則
-        def get_target_subfolder(fname):
-            # 結案酬金領款單 → 03_結案資料
-            if '結案酬金領款單' in fname:
-                return '03_結案資料'
-            # 附條件第二階段預付酬金領款單 → 02_開辦資料
-            if '附條件第二階段預付酬金領款單' in fname:
-                return '02_開辦資料'
-            # 其他全部 → 01_法扶資料 (包含預付酬金領款單、結案回報書、准予扶助證明書等)
-            return '01_法扶資料'
+        get_target_subfolder = _laf_target_subfolder_for_attachment
         
         for file_path in files:
             if not os.path.exists(file_path):
@@ -3877,16 +3880,7 @@ class OSCCaseCreator:
             
             # 8. 處理檔案 (ZIP 解壓縮/分類)
             if files:
-                # 定義檔案分類規則
-                # ★ 結案酬金領款單 → 03_結案資料（代表案件真正結束）
-                # ★ 附條件第二階段預付酬金領款單 → 02_開辦資料
-                # ★ 其餘全部 → 01_法扶資料
-                def get_target_subfolder(fname):
-                    if '結案酬金領款單' in fname:
-                        return '03_結案資料'
-                    if '附條件第二階段預付酬金領款單' in fname or '二階段' in fname:
-                        return '02_開辦資料'
-                    return '01_法扶資料'
+                get_target_subfolder = _laf_target_subfolder_for_attachment
 
                 for file_path in files:
                     if not os.path.exists(file_path):

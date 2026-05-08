@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 import logging
 import base64
+import hashlib
 import mimetypes
 import os
 import re
@@ -466,9 +467,9 @@ def _get_text_primary_model():
     return TEXT_PRIMARY_MODEL
 
 
-def _get_preferred_case_roots():
+def _get_preferred_case_roots(*, include_closed: bool = False):
     from api.case_path_mapper import preferred_case_roots
-    return preferred_case_roots()
+    return preferred_case_roots(include_closed=include_closed)
 
 
 def _get_translate_local_path_to_canonical():
@@ -1059,6 +1060,112 @@ def _osc_archive_item_for_row(row: dict) -> dict:
     }
 
 
+def _osc_iter_case_dirs_at_depth(root: str):
+    """Yield standard OSC case directories under root/category/type/case."""
+    if not root or not os.path.isdir(root):
+        return
+    try:
+        categories = os.scandir(root)
+    except OSError:
+        return
+    with categories:
+        for category in categories:
+            if category.name.startswith("."):
+                continue
+            try:
+                if not category.is_dir(follow_symlinks=False):
+                    continue
+            except OSError:
+                continue
+            try:
+                case_types = os.scandir(category.path)
+            except OSError:
+                continue
+            with case_types:
+                for case_type in case_types:
+                    if case_type.name.startswith("."):
+                        continue
+                    try:
+                        if not case_type.is_dir(follow_symlinks=False):
+                            continue
+                    except OSError:
+                        continue
+                    try:
+                        case_dirs = os.scandir(case_type.path)
+                    except OSError:
+                        continue
+                    with case_dirs:
+                        for case_dir in case_dirs:
+                            if case_dir.name.startswith("."):
+                                continue
+                            try:
+                                if case_dir.is_dir(follow_symlinks=False):
+                                    yield case_dir.path
+                            except OSError:
+                                continue
+
+
+def _osc_find_closed_case_folder(case_number: str, *, folder_name: str = "") -> str:
+    case_number = str(case_number or "").strip()
+    folder_name = str(folder_name or "").strip()
+    if not case_number and not folder_name:
+        return ""
+    active_roots = _get_preferred_case_roots(include_closed=False)
+    all_roots = _get_preferred_case_roots(include_closed=True)
+    closed_roots = all_roots[len(active_roots):] if len(all_roots) >= len(active_roots) else []
+    archive_base, archive_local = _osc_archive_local_base()
+    if archive_local:
+        closed_roots.insert(0, archive_local)
+    seen_roots: set[str] = set()
+    exact: list[str] = []
+    case_id_matches: list[str] = []
+    for root in closed_roots:
+        root = str(root or "").rstrip("/")
+        if not root or root in seen_roots:
+            continue
+        seen_roots.add(root)
+        for case_dir in _osc_iter_case_dirs_at_depth(root) or []:
+            name = os.path.basename(case_dir.rstrip("/"))
+            if folder_name and name == folder_name:
+                exact.append(case_dir)
+            elif case_number and (name == case_number or name.startswith(f"{case_number}-")):
+                case_id_matches.append(case_dir)
+    if exact:
+        return exact[0]
+    unique = _osc_unique_strings(case_id_matches)
+    return unique[0] if len(unique) == 1 else ""
+
+
+def _osc_effective_case_folder_for_row(row: dict, *, update_db: bool = False) -> dict:
+    row = row or {}
+    raw = (row.get("folder_path") or "").strip() or _osc_guess_case_folder(row.get("case_number") or "")
+    norm = _osc_norm_path(raw) if raw else ""
+    local = _osc_resolve_existing_local_path(norm, prefer_dir=True) if norm else ""
+    is_closed = _osc_is_closed_case_status(row.get("status") or "")
+    if local and (not is_closed or "10_結案" in norm.replace("\\", "/")):
+        return {"folder_path": norm, "local_folder": local, "source": "db_or_guess", "updated": False}
+
+    if is_closed:
+        folder_name = os.path.basename(norm.replace("\\", "/").rstrip("/")) if norm else ""
+        closed_local = _osc_find_closed_case_folder(row.get("case_number") or "", folder_name=folder_name)
+        if closed_local:
+            translate_local_path_to_canonical = _get_translate_local_path_to_canonical()
+            canonical = translate_local_path_to_canonical(closed_local) or closed_local
+            updated = False
+            if update_db and row.get("id"):
+                try:
+                    _osc_exec("UPDATE cases SET folder_path=%s, updated_at=NOW() WHERE id=%s", (canonical, row.get("id")), fetch="none")
+                    updated = True
+                except Exception:
+                    _log.debug("silent-catch closed case folder path db update", exc_info=True)
+            return {"folder_path": _osc_norm_path(canonical), "local_folder": closed_local, "source": "closed_archive", "updated": updated}
+
+    if local:
+        return {"folder_path": norm, "local_folder": local, "source": "db_or_guess", "updated": False}
+
+    return {"folder_path": norm, "local_folder": "", "source": "missing", "updated": False}
+
+
 def _osc_tree_signature(path: str) -> dict:
     files = 0
     dirs = 0
@@ -1186,6 +1293,123 @@ def _osc_copy_to_temp_and_swap(src: str, dst: str, *, force: bool) -> dict:
     }
 
 
+def _osc_sha256_file(path: str) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _osc_conflict_copy_path(path: str, stamp: str) -> str:
+    base, ext = os.path.splitext(path)
+    candidate = f"{base}__active_residue_{stamp}{ext}"
+    n = 2
+    while os.path.exists(candidate):
+        candidate = f"{base}__active_residue_{stamp}_{n}{ext}"
+        n += 1
+    return candidate
+
+
+def _osc_copy_file_for_nas(src_file: str, dst_file: str, *, strict_hash: bool = False) -> None:
+    os.makedirs(os.path.dirname(dst_file), exist_ok=True)
+    shutil.copyfile(src_file, dst_file)
+    try:
+        st = os.stat(src_file)
+        os.utime(dst_file, (st.st_atime, st.st_mtime))
+    except OSError:
+        pass
+    same_size = os.path.getsize(src_file) == os.path.getsize(dst_file)
+    same_hash = (not strict_hash) or _osc_sha256_file(src_file) == _osc_sha256_file(dst_file)
+    if not same_size or not same_hash:
+        raise RuntimeError(f"copy verification failed: {dst_file}")
+
+
+def _osc_merge_existing_archive_source(src: str, dst: str) -> dict:
+    """Merge residual active folder contents into an existing closed folder.
+
+    Closed-case archiving can be triggered after the target folder already
+    exists, for example when portal/LAF files were archived first and active
+    drafting files are still under 01_案件.  In that case, keeping the active
+    folder creates a misleading duplicate for coworkers, so merge safely:
+    identical files are skipped, conflicting names are preserved with a suffix,
+    and the source folder is removed only after verification succeeds.
+    """
+    if not os.path.isdir(src) or not os.path.isdir(dst):
+        return {"ok": False, "reason": "target_exists", "target": dst}
+
+    src_sig = _osc_tree_signature(src)
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    copied: list[str] = []
+    duplicates: list[str] = []
+    conflicts: list[str] = []
+    skipped: list[str] = []
+    strict_hash = os.environ.get("MAGI_ARCHIVE_STRICT_HASH", "0").strip().lower() in {"1", "true", "yes", "on"}
+    verify_pairs: list[tuple[str, str]] = []
+
+    for root, _dirnames, filenames in os.walk(src):
+        rel_root = os.path.relpath(root, src)
+        for filename in filenames:
+            if filename in {".DS_Store", ".gitkeep"} or filename.startswith("._"):
+                skipped.append(os.path.join(rel_root, filename) if rel_root != "." else filename)
+                continue
+            src_file = os.path.join(root, filename)
+            rel = os.path.normpath(os.path.join(rel_root, filename)) if rel_root != "." else filename
+            dst_file = os.path.join(dst, rel)
+            try:
+                os.makedirs(os.path.dirname(dst_file), exist_ok=True)
+                final_dst = dst_file
+                if os.path.exists(dst_file):
+                    same_size = os.path.getsize(src_file) == os.path.getsize(dst_file)
+                    same_file = same_size and (not strict_hash or _osc_sha256_file(src_file) == _osc_sha256_file(dst_file))
+                    if same_file:
+                        duplicates.append(rel)
+                        verify_pairs.append((src_file, dst_file))
+                        continue
+                    final_dst = _osc_conflict_copy_path(dst_file, stamp)
+                    conflicts.append(os.path.relpath(final_dst, dst))
+                else:
+                    copied.append(rel)
+                _osc_copy_file_for_nas(src_file, final_dst, strict_hash=strict_hash)
+                verify_pairs.append((src_file, final_dst))
+            except Exception as e:
+                return {
+                    "ok": False,
+                    "reason": "merge_failed",
+                    "error": f"{rel}: {e}",
+                    "source_signature": src_sig,
+                }
+
+    for src_file, dst_file in verify_pairs:
+        try:
+            if not os.path.exists(dst_file):
+                return {"ok": False, "reason": "merge_verify_failed", "error": f"missing target: {dst_file}"}
+            same_size = os.path.getsize(src_file) == os.path.getsize(dst_file)
+            same_hash = (not strict_hash) or _osc_sha256_file(src_file) == _osc_sha256_file(dst_file)
+            if not same_size or not same_hash:
+                return {"ok": False, "reason": "merge_verify_failed", "error": f"copy mismatch: {dst_file}"}
+        except Exception as e:
+            return {"ok": False, "reason": "merge_verify_failed", "error": str(e)}
+
+    cleanup_error = ""
+    try:
+        shutil.rmtree(src)
+    except Exception as e:
+        cleanup_error = str(e)
+
+    return {
+        "ok": True,
+        "reason": "merged_existing_target",
+        "source_signature": src_sig,
+        "target_signature": _osc_tree_signature(dst),
+        "copied": copied,
+        "duplicates": duplicates,
+        "conflicts": conflicts,
+        "skipped": skipped,
+        "source_cleanup_error": cleanup_error,
+    }
+
+
 def _osc_move_archive_item(it: dict, *, force: bool = False) -> dict:
     cid = str(it.get("id") or "").strip()
     src = str(it.get("source_local") or "").strip()
@@ -1211,7 +1435,32 @@ def _osc_move_archive_item(it: dict, *, force: bool = False) -> dict:
         _osc_exec("UPDATE cases SET folder_path=%s, updated_at=NOW() WHERE id=%s", (src, cid), fetch="none")
         return {"ok": True, "id": cid, "case_number": case_number, "from": src, "to": src, "reason": "already_in_archive_base"}
     if os.path.exists(dst) and not force:
-        return {"ok": False, "id": cid, "case_number": case_number, "reason": "target_exists", "target": dst}
+        merged = _osc_merge_existing_archive_source(src, dst)
+        if not merged.get("ok"):
+            return {
+                "ok": False,
+                "id": cid,
+                "case_number": case_number,
+                "reason": merged.get("reason") or "target_exists",
+                "target": dst,
+                "from": src,
+                "to": dst,
+                "detail": merged,
+            }
+        _osc_exec("UPDATE cases SET folder_path=%s, updated_at=NOW() WHERE id=%s", (dst, cid), fetch="none")
+        return {
+            "ok": True,
+            "id": cid,
+            "case_number": case_number,
+            "from": src,
+            "to": dst,
+            "reason": merged.get("reason") or "merged_existing_target",
+            "source_cleanup_error": merged.get("source_cleanup_error") or "",
+            "copied": merged.get("copied") or [],
+            "duplicates": merged.get("duplicates") or [],
+            "conflicts": merged.get("conflicts") or [],
+            "skipped": merged.get("skipped") or [],
+        }
     try:
         moved = _osc_copy_to_temp_and_swap(src, dst, force=force)
         if not moved.get("ok"):
@@ -1281,12 +1530,11 @@ def osc_case_open_folder_api(row_id):
       決定是否彈警告
     """
     row_id = (row_id or "").strip()
-    row, _ = _osc_exec("SELECT id, case_number, client_name, folder_path FROM cases WHERE id=%s", (row_id,), fetch="one")
+    row, _ = _osc_exec("SELECT id, case_number, client_name, status, folder_path FROM cases WHERE id=%s", (row_id,), fetch="one")
     if not row:
         return jsonify({"ok": False, "error_kind": "case_not_found", "message": "找不到案件"}), 404
-    folder_path = (row.get("folder_path") or "").strip()
-    if not folder_path:
-        folder_path = _osc_guess_case_folder(row.get("case_number") or "")
+    resolved = _osc_effective_case_folder_for_row(row, update_db=True)
+    folder_path = resolved.get("folder_path") or ""
     if not folder_path:
         return jsonify({
             "ok": False,
@@ -1306,6 +1554,9 @@ def osc_case_open_folder_api(row_id):
         "ok": True,
         "case": case_info,
         "folder_path": norm,
+        "local_folder": resolved.get("local_folder") or "",
+        "folder_source": resolved.get("source") or "",
+        "folder_path_updated": bool(resolved.get("updated")),
         # 主要候選（前端依 platform 選用）
         "candidates": {
             "smb_url": smb_candidates,
@@ -1383,18 +1634,17 @@ def osc_case_create_folder_api(row_id):
 @login_required
 def osc_case_folder_browser_api(row_id):
     row_id = (row_id or "").strip()
-    row, _ = _osc_exec("SELECT id, case_number, client_name, folder_path FROM cases WHERE id=%s", (row_id,), fetch="one")
+    row, _ = _osc_exec("SELECT id, case_number, client_name, status, folder_path FROM cases WHERE id=%s", (row_id,), fetch="one")
     if not row:
         return jsonify({"ok": False, "error": "case_not_found"}), 404
-    folder_path = (row.get("folder_path") or "").strip()
-    if not folder_path:
-        folder_path = _osc_guess_case_folder(row.get("case_number") or "")
+    resolved = _osc_effective_case_folder_for_row(row, update_db=True)
+    folder_path = resolved.get("folder_path") or ""
     if not folder_path:
         return jsonify({"ok": False, "error": "folder_path_empty"}), 400
     norm = _osc_norm_path(folder_path)
     smb_candidates = _osc_smb_candidates(norm)
     local_candidates = _osc_local_path_candidates(norm)
-    local_folder = _osc_resolve_existing_local_path(norm, prefer_dir=True)
+    local_folder = resolved.get("local_folder") or _osc_resolve_existing_local_path(norm, prefer_dir=True)
     rel = (request.args.get("path") or "").strip().strip("/")
     payload = {
         "ok": True,
@@ -1404,6 +1654,8 @@ def osc_case_folder_browser_api(row_id):
         "smb_candidates": smb_candidates,
         "local_folder": local_folder,
         "folder_exists": bool(local_folder),
+        "folder_source": resolved.get("source") or "",
+        "folder_path_updated": bool(resolved.get("updated")),
     }
     if not local_folder:
         payload["entries"] = []
@@ -1446,19 +1698,20 @@ def osc_case_file_search_api(row_id):
     except (TypeError, ValueError):
         limit = 30
     row, _ = _osc_exec(
-        "SELECT id, case_number, client_name, folder_path FROM cases WHERE id=%s",
+        "SELECT id, case_number, client_name, status, folder_path FROM cases WHERE id=%s",
         (row_id,),
         fetch="one",
     )
     if not row:
         return jsonify({"ok": False, "error": "case_not_found", "items": []}), 404
 
-    folder_path = (row.get("folder_path") or "").strip() or _osc_guess_case_folder(row.get("case_number") or "")
+    resolved = _osc_effective_case_folder_for_row(row, update_db=True)
+    folder_path = resolved.get("folder_path") or ""
     if not folder_path:
         return jsonify({"ok": False, "error": "folder_path_empty", "items": [], "case": row}), 200
 
     norm = _osc_norm_path(folder_path)
-    local_folder = _osc_resolve_existing_local_path(norm, prefer_dir=True)
+    local_folder = resolved.get("local_folder") or _osc_resolve_existing_local_path(norm, prefer_dir=True)
     local_candidates = _osc_local_path_candidates(norm)
     if not local_folder:
         return jsonify({
@@ -1467,6 +1720,7 @@ def osc_case_file_search_api(row_id):
             "items": [],
             "folder_path": norm,
             "local_candidates": local_candidates,
+            "folder_source": resolved.get("source") or "",
             "case": {"id": row.get("id"), "case_number": row.get("case_number"), "client_name": row.get("client_name")},
         }), 200
 
@@ -1533,6 +1787,8 @@ def osc_case_file_search_api(row_id):
         "folder_path": norm,
         "local_folder": local_folder,
         "local_candidates": local_candidates,
+        "folder_source": resolved.get("source") or "",
+        "folder_path_updated": bool(resolved.get("updated")),
         "case": {"id": row.get("id"), "case_number": row.get("case_number"), "client_name": row.get("client_name")},
     })
 
