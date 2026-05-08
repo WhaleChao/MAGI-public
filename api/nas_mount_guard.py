@@ -376,7 +376,7 @@ def _ensure_volume_mount_point(volume_path: str) -> None:
     策略（依序嘗試）：
     1. 目錄已存在且 owner 正確 → 直接返回
     2. owner 不符 → 只有在互動環境（有 GUI/TTY）才觸發 osascript 彈窗；
-       daemon 環境靜默跳過（由開機時 com.magi.nas-mountpoints LaunchDaemon 預先 chown）
+       daemon 環境靜默跳過，避免在 /Volumes 預先建立普通資料夾造成 homes-1/lumi-1
     3. 目錄不存在 → 先嘗試 mkdir（若 /Volumes 可寫），再 osascript（互動環境），
        最後靜默放棄（mount_smbfs 會 fallback 到 ~/.magi_mounts）
     """
@@ -394,7 +394,8 @@ def _ensure_volume_mount_point(volume_path: str) -> None:
                         capture_output=True, text=True, timeout=10,
                     )
                 else:
-                    # daemon 環境：靜默略過，開機 LaunchDaemon (com.magi.nas-mountpoints) 已預先 chown
+                    # daemon 環境：靜默略過；不要自動建立 /Volumes/<share> 普通資料夾，
+                    # 否則 Finder/osascript 會改掛成 <share>-1，OSC 會吃錯路徑。
                     logger.debug("_ensure_volume_mount_point: %s owned by root, skipping GUI chown in daemon context", volume_path)
         except Exception:
             pass

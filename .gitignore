@@ -211,6 +211,7 @@ CIRCULAR_IMPORTS_DETAILS.txt
 
 # OpenClaw 殘留（已退役）
 .openclaw/
+.openclaw_archived_*/
 openclaw.json
 skills/ops/openclaw_cron_runner.py
 skills/ops/openclaw_updater.py
@@ -266,6 +267,7 @@ MAGI_功能介紹手冊.pdf
 
 # MAGI Launcher app (binary)
 MAGI Launcher.app/
+Paperclip_rebuild/
 
 # StarOffice static assets (large spritesheets/fonts)
 static/star-office/*.webp

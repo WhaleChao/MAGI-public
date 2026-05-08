@@ -1667,10 +1667,17 @@ if __name__ == "__main__":
                         pass
 
             _watch_folders = []
-            # NAS case folders
+            # Do not recursively watch the NAS case root by default.  SMB event
+            # watching can degrade into a broad directory crawl on reconnect,
+            # which is exactly the kind of NAS load spike OSC must avoid.
+            _nas_watch_enabled = str(os.environ.get("MAGI_ENABLE_NAS_FSWATCHER", "")).strip().lower() in {
+                "1", "true", "yes", "on",
+            }
             _nas_cases = "/Volumes/homes/lumi63181107/01_案件"
-            if os.path.isdir(_nas_cases):
+            if _nas_watch_enabled and os.path.isdir(_nas_cases):
                 _watch_folders.append(_nas_cases)
+            elif os.path.isdir(_nas_cases):
+                logger.info("ℹ️ FSEvents watcher: NAS root available but disabled (set MAGI_ENABLE_NAS_FSWATCHER=1 to enable)")
             # Local scan staging area
             _local_scan = os.path.join(_MAGI_ROOT, "閱卷下載")
             if os.path.isdir(_local_scan):

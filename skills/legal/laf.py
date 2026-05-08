@@ -2866,6 +2866,12 @@ class LAFGmailMonitor:
         """在法扶 Gmail monitor 的 poll cycle 內順便掃閱卷信件。
         使用動態 import 避免 circular，失敗不影響法扶 monitor。"""
         _log = _logging.getLogger(__name__)
+        enabled = str(os.environ.get("MAGI_ENABLE_BACKGROUND_FILE_REVIEW_CHECK", "0")).strip().lower() in {
+            "1", "true", "yes", "on",
+        }
+        if not enabled:
+            _log.info("[閱卷] background file review email scan disabled (set MAGI_ENABLE_BACKGROUND_FILE_REVIEW_CHECK=1 to enable)")
+            return
         _log.info("[閱卷] file review email scan integrated in LAF monitor cycle — starting")
         try:
             import sys as _sys

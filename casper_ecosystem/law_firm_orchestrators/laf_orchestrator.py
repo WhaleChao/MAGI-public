@@ -369,15 +369,23 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         # and must not block the critical email monitor.
         monitor.start_monitor(interval_seconds=interval)
 
-        # Portal retries run after monitor is already active
-        # 注意：portal retry loop 使用獨立的 _PORTAL_RETRY_LOOP_INTERVAL（預設 3600s = 1 小時）
-        # 而不是 Gmail check interval（300s = 5 分鐘），避免頻繁重試快速打爆 30 次上限
-        try:
-            self._seed_pending_portal_retries_from_case_inventory(limit=80)
-            self._retry_pending_portal_downloads(max_items=6)
-            self._ensure_pending_portal_retry_loop(interval_seconds=_PORTAL_RETRY_LOOP_INTERVAL)
-        except Exception as e:
-            logger.warning("Portal retry setup failed (non-fatal): %s", e)
+        # Portal retries are intentionally opt-in.  On restart this path can
+        # touch multiple case folders and remote portal sessions at once; that
+        # is too much surprise load for NAS/OSC during ordinary MAGI boot.
+        _retry_on_start = str(os.environ.get("MAGI_LAF_PORTAL_RETRY_ON_START", "0")).strip().lower() in {
+            "1", "true", "yes", "on",
+        }
+        if _retry_on_start:
+            # 注意：portal retry loop 使用獨立的 _PORTAL_RETRY_LOOP_INTERVAL（預設 3600s = 1 小時）
+            # 而不是 Gmail check interval（300s = 5 分鐘），避免頻繁重試快速打爆 30 次上限
+            try:
+                self._seed_pending_portal_retries_from_case_inventory(limit=80)
+                self._retry_pending_portal_downloads(max_items=6)
+                self._ensure_pending_portal_retry_loop(interval_seconds=_PORTAL_RETRY_LOOP_INTERVAL)
+            except Exception as e:
+                logger.warning("Portal retry setup failed (non-fatal): %s", e)
+        else:
+            logger.info("Portal retry on startup disabled (set MAGI_LAF_PORTAL_RETRY_ON_START=1 to enable)")
 
     def _load_pending_portal_downloads(self) -> Dict[str, dict]:
         path = self._portal_retry_state_path

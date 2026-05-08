@@ -49,6 +49,25 @@ def _save_cron_state(state: Dict[str, Dict[str, str]]) -> None:
 
 logger = logging.getLogger("CronScheduler")
 
+_DEFAULT_CATCHUP_SKIP_IDS = {
+    # These jobs can scan NAS/case folders or open portal automation. Running
+    # them immediately after reboot stacks IO on top of SMB remount recovery.
+    "job_laf_nightly_audit",
+    "job_pdf_namer_nightly",
+    "job_weekend_bookmark",
+    "job_nightly_bookmark_regex",
+    "job_benchmark_pdf_namer",
+    "job_obsidian_ingest",
+    "job_osc_scan_cases",
+    "job_insight_sync",
+}
+
+
+def _catchup_skip_ids() -> set[str]:
+    raw = os.environ.get("MAGI_CRON_CATCHUP_SKIP_IDS", "").strip()
+    extra = {x.strip() for x in raw.split(",") if x.strip()}
+    return _DEFAULT_CATCHUP_SKIP_IDS | extra
+
 JOB_FILE = f"{_MAGI_ROOT}/cron_jobs.json"
 
 class CronScheduler:
@@ -419,6 +438,8 @@ class CronScheduler:
             if not job.get("enabled", True):
                 continue
             if job.get("no_catchup", False):
+                continue
+            if str(job.get("id") or "") in _catchup_skip_ids():
                 continue
             try:
                 parts = job["cron"].split()

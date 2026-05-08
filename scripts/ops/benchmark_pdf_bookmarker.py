@@ -19,6 +19,10 @@ FALLBACK_ROOTS = [
     FALLBACK_ROOT,
 ]
 MAX_PDFS = int(os.environ.get("MAGI_PDF_BOOKMARKER_BENCHMARK_MAX_PDFS", "20") or "20")
+ALLOW_NAS_SCAN = os.environ.get("MAGI_BENCHMARK_ALLOW_NAS_SCAN", "").strip().lower() in {
+    "1", "true", "yes", "on",
+}
+MAX_SCAN_DIRS = int(os.environ.get("MAGI_BENCHMARK_MAX_SCAN_DIRS", "500"))
 RECALL_THRESHOLD = 0.85
 EMPTY_FAILURE_THRESHOLD = 0.10
 LABEL_MATCH_THRESHOLD = 0.80
@@ -46,7 +50,12 @@ def _load_module(module_name, path):
 
 def find_pdfs(root, limit=MAX_PDFS):
     pdfs = []
+    visited_dirs = 0
     for dirpath, dirnames, files in os.walk(root):
+        visited_dirs += 1
+        if visited_dirs > MAX_SCAN_DIRS:
+            dirnames[:] = []
+            break
         depth = dirpath[len(root):].count(os.sep)
         if depth >= 5:
             dirnames[:] = []
@@ -60,7 +69,10 @@ def find_pdfs(root, limit=MAX_PDFS):
 
 
 def _select_case_root():
-    for candidate in [NAS_CASE_ROOT, *FALLBACK_ROOTS]:
+    candidates = [*FALLBACK_ROOTS]
+    if ALLOW_NAS_SCAN:
+        candidates.append(NAS_CASE_ROOT)
+    for candidate in candidates:
         if os.path.isdir(candidate):
             return candidate
     return ""

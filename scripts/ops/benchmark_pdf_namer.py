@@ -92,6 +92,10 @@ FALLBACK_ROOTS = [
     FALLBACK_ROOT,
 ]
 MAX_PDFS = int(os.environ.get("MAGI_PDF_NAMER_BENCHMARK_MAX_PDFS", "100"))
+ALLOW_NAS_SCAN = os.environ.get("MAGI_BENCHMARK_ALLOW_NAS_SCAN", "").strip().lower() in {
+    "1", "true", "yes", "on",
+}
+MAX_SCAN_DIRS = int(os.environ.get("MAGI_BENCHMARK_MAX_SCAN_DIRS", "500"))
 OUTPUT_PATH = os.path.join(MAGI_ROOT, ".runtime", "benchmark_pdf_namer_latest.json")
 
 
@@ -118,8 +122,13 @@ HOLDING_THRESHOLD = _threshold_from_env("MAGI_PDF_NAMER_HOLDING_THRESHOLD", 0.50
 def find_pdfs(root: str, limit: int = MAX_PDFS):
     """Scan NAS for PDF files with depth limit."""
     pdfs = []
+    visited_dirs = 0
     try:
         for dirpath, dirnames, files in os.walk(root):
+            visited_dirs += 1
+            if visited_dirs > MAX_SCAN_DIRS:
+                dirnames.clear()
+                break
             depth = dirpath[len(root):].count(os.sep)
             if depth >= 5:
                 dirnames.clear()
@@ -137,7 +146,10 @@ def find_pdfs(root: str, limit: int = MAX_PDFS):
 
 
 def _select_case_root() -> str:
-    for candidate in [NAS_CASE_ROOT, *FALLBACK_ROOTS]:
+    candidates = [*FALLBACK_ROOTS]
+    if ALLOW_NAS_SCAN:
+        candidates.append(NAS_CASE_ROOT)
+    for candidate in candidates:
         if os.path.isdir(candidate):
             return candidate
     return ""

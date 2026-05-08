@@ -30,6 +30,12 @@
         <string>1</string>
         <key>MAGI_WATCHDOG_KILL_MODE</key>
         <string>shadow</string>
+        <key>MAGI_WATCHDOG_REAP_STALE_PLAYWRIGHT</key>
+        <string>1</string>
+        <key>MAGI_WATCHDOG_STALE_PLAYWRIGHT_MODE</key>
+        <string>enforce</string>
+        <key>MAGI_WATCHDOG_STALE_PLAYWRIGHT_SEC</key>
+        <string>2700</string>
     </dict>
     <key>StandardOutPath</key>
     <string>/tmp/magi-memory-watchdog.log</string>
