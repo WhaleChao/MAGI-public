@@ -373,12 +373,97 @@ def _find_chrome_binary() -> str:
     return ""
 
 
-def _export_form_docx(preview_text: str, stem: str) -> dict:
-    txt = str(preview_text or "").strip()
+def _clean_document_export_text(text: str) -> str:
+    txt = ihtml.unescape(str(text or ""))
+    txt = txt.replace("<br>", "\n").replace("<br/>", "\n").replace("<br />", "\n")
+    txt = re.sub(r"^\s*```[a-zA-Z0-9_-]*\s*$", "", txt, flags=re.MULTILINE)
+    txt = re.sub(r"^#{1,6}\s*", "", txt, flags=re.MULTILINE)
+    txt = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r"\1", txt)
+    txt = re.sub(r"\*\*(.+?)\*\*", r"\1", txt)
+    txt = re.sub(r"__(.+?)__", r"\1", txt)
+    txt = re.sub(r"(?<!\*)\*(?!\s)(.+?)(?<!\s)\*(?!\*)", r"\1", txt)
+    txt = re.sub(r"(?<!_)_(?!\s)(.+?)(?<!\s)_(?!_)", r"\1", txt)
+    txt = re.sub(r"`([^`]+)`", r"\1", txt)
+    txt = re.sub(r"^\s*>\s?", "", txt, flags=re.MULTILINE)
+
+    lines: list[str] = []
+    for raw in txt.splitlines():
+        line = raw.strip()
+        if re.match(r"^\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$", line):
+            continue
+        if "|" in line and line.count("|") >= 2:
+            cells = [c.strip() for c in line.strip("|").split("|")]
+            line = "　".join(c for c in cells if c)
+        line = re.sub(r"^\s*[-*+]\s+", "", line)
+        lines.append(line)
+
+    txt = "\n".join(lines)
+    txt = re.sub(r"[ \t]+\n", "\n", txt)
+    txt = re.sub(r"\n{3,}", "\n\n", txt)
+    return txt.strip()
+
+
+def _set_docx_font(run, *, size_pt: int = 14, bold: bool = False, font_name: str = "標楷體") -> None:
+    from docx.shared import Pt  # type: ignore
+    from docx.oxml.ns import qn  # type: ignore
+
+    run.font.name = font_name
+    run.font.size = Pt(size_pt)
+    run.font.bold = bold
+    try:
+        run._element.rPr.rFonts.set(qn("w:eastAsia"), font_name)
+    except Exception:
+        logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, "_set_docx_font", exc_info=True)
+
+
+def _looks_like_pleading_title(line: str) -> bool:
+    text = str(line or "").strip()
+    return bool(text and len(text) <= 24 and text.endswith("狀"))
+
+
+def _is_meta_or_salutation_line(line: str) -> bool:
+    text = str(line or "").strip()
+    if not text:
+        return False
+    return bool(
+        re.match(r"^(案號|股別|案由|法院|當事人|原告|被告|聲請人|相對人|上訴人|被上訴人|具狀人|撰狀人|受任人|此致|謹呈|中華民國)", text)
+    )
+
+
+def _is_signature_line(line: str) -> bool:
+    text = str(line or "").strip()
+    return bool(re.match(r"^(具狀人|撰狀人|受任人|代理人|中華民國)", text))
+
+
+def _add_pleading_paragraph(doc, text: str, *, align: str = "body", bold: bool = False, size_pt: int = 14) -> None:
+    from docx.enum.text import WD_ALIGN_PARAGRAPH  # type: ignore
+    from docx.shared import Pt  # type: ignore
+
+    p = doc.add_paragraph()
+    pf = p.paragraph_format
+    pf.line_spacing = 1.5
+    pf.space_before = Pt(0)
+    pf.space_after = Pt(3)
+    if align == "center":
+        p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    elif align == "right":
+        p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+    else:
+        p.alignment = WD_ALIGN_PARAGRAPH.LEFT
+        if align == "body":
+            pf.first_line_indent = Pt(28)
+    run = p.add_run(text)
+    _set_docx_font(run, size_pt=size_pt, bold=bold)
+
+
+def _export_form_docx(preview_text: str, stem: str, title: str = "") -> dict:
+    txt = _clean_document_export_text(preview_text)
     if not txt:
         return {"success": False, "error": "empty_text"}
     try:
         from docx import Document  # type: ignore
+        from docx.shared import Cm, Pt  # type: ignore
+        from docx.oxml.ns import qn  # type: ignore
     except Exception as e:
         return {"success": False, "error": f"python_docx_unavailable: {e}"}
     try:
@@ -386,8 +471,53 @@ def _export_form_docx(preview_text: str, stem: str) -> dict:
         filename = f"{stem}.docx"
         path = os.path.join(EXPORTS_DIR, filename)
         doc = Document()
-        for line in txt.splitlines():
-            doc.add_paragraph(line)
+        section = doc.sections[0]
+        section.page_width = Cm(21)
+        section.page_height = Cm(29.7)
+        section.top_margin = Cm(2.2)
+        section.bottom_margin = Cm(2.0)
+        section.left_margin = Cm(2.5)
+        section.right_margin = Cm(2.5)
+
+        normal = doc.styles["Normal"]
+        normal.font.name = "標楷體"
+        normal.font.size = Pt(14)
+        try:
+            normal._element.rPr.rFonts.set(qn("w:eastAsia"), "標楷體")
+        except Exception:
+            logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, "_export_form_docx", exc_info=True)
+
+        lines = [ln.strip() for ln in txt.splitlines()]
+        nonempty = [ln for ln in lines if ln]
+        doc_title = str(title or "").strip() or "OSC 文件"
+        skip_first_title = False
+        if nonempty and _looks_like_pleading_title(nonempty[0]):
+            doc_title = nonempty[0]
+            skip_first_title = True
+        _add_pleading_paragraph(doc, doc_title, align="center", bold=True, size_pt=20)
+
+        blank_pending = False
+        first_seen = False
+        for line in lines:
+            if skip_first_title and not first_seen and line == doc_title:
+                first_seen = True
+                continue
+            if not line:
+                blank_pending = True
+                continue
+            first_seen = True
+            if blank_pending:
+                spacer = doc.add_paragraph()
+                spacer.paragraph_format.space_after = Pt(2)
+                blank_pending = False
+            if _is_signature_line(line):
+                _add_pleading_paragraph(doc, line, align="right", size_pt=14)
+            elif _is_meta_or_salutation_line(line):
+                _add_pleading_paragraph(doc, line, align="left", size_pt=14)
+            elif _looks_like_pleading_title(line):
+                _add_pleading_paragraph(doc, line, align="center", bold=True, size_pt=18)
+            else:
+                _add_pleading_paragraph(doc, line, align="body", size_pt=14)
         doc.save(path)
         return _export_file_meta(path)
     except Exception as e:
@@ -396,28 +526,132 @@ def _export_form_docx(preview_text: str, stem: str) -> dict:
 
 def _render_form_text_to_html(title: str, text: str) -> str:
     safe_title = ihtml.escape(str(title or "OSC \u6587\u4ef6"))
-    safe_text = ihtml.escape(str(text or ""))
+    lines = _clean_document_export_text(text).splitlines()
+    body_parts = []
+    first_title_skipped = False
+    for raw in lines:
+        line = raw.strip()
+        if not line:
+            body_parts.append("<div class='spacer'></div>")
+            continue
+        if (not first_title_skipped) and _looks_like_pleading_title(line) and line == str(title or "").strip():
+            first_title_skipped = True
+            continue
+        first_title_skipped = True
+        cls = "body"
+        if _is_signature_line(line):
+            cls = "signature"
+        elif _is_meta_or_salutation_line(line):
+            cls = "meta"
+        elif _looks_like_pleading_title(line):
+            cls = "subheading"
+        body_parts.append(f"<p class='{cls}'>{ihtml.escape(line)}</p>")
     return (
         "<!doctype html><html><head><meta charset='utf-8'>"
         f"<title>{safe_title}</title>"
         "<style>"
-        "body{font-family:'Noto Sans TC','PingFang TC','Microsoft JhengHei',sans-serif;"
-        "margin:36px;color:#111;line-height:1.6;}"
-        "h1{margin:0 0 16px;font-size:24px;}"
-        "pre{white-space:pre-wrap;word-wrap:break-word;font-family:inherit;font-size:15px;margin:0;}"
+        "@page{size:A4;margin:22mm 25mm 20mm 25mm;}"
+        "body{font-family:'BiauKai','DFKai-SB','標楷體','Noto Serif CJK TC',serif;"
+        "color:#111;line-height:1.85;font-size:16pt;}"
+        "h1{margin:0 0 18px;text-align:center;font-size:22pt;font-weight:700;}"
+        "p{margin:0 0 6px;}"
+        ".body{text-indent:2em;}"
+        ".meta{text-indent:0;}"
+        ".signature{text-align:right;text-indent:0;}"
+        ".subheading{text-align:center;font-size:18pt;font-weight:700;text-indent:0;margin-top:8px;}"
+        ".spacer{height:10px;}"
         "</style></head><body>"
-        f"<h1>{safe_title}</h1><pre>{safe_text}</pre></body></html>"
+        f"<h1>{safe_title}</h1>{''.join(body_parts)}</body></html>"
     )
+
+
+def _wrap_pdf_line(text: str, max_width: float, font_name: str, size_pt: int) -> list[str]:
+    from reportlab.pdfbase.pdfmetrics import stringWidth  # type: ignore
+
+    source = str(text or "")
+    lines: list[str] = []
+    current = ""
+    for char in source:
+        candidate = current + char
+        if current and stringWidth(candidate, font_name, size_pt) > max_width:
+            lines.append(current)
+            current = char
+        else:
+            current = candidate
+    if current:
+        lines.append(current)
+    return lines or [""]
+
+
+def _export_form_pdf_reportlab(title: str, preview_text: str, pdf_path: str) -> dict:
+    from reportlab.lib.pagesizes import A4  # type: ignore
+    from reportlab.pdfbase import pdfmetrics  # type: ignore
+    from reportlab.pdfbase.cidfonts import UnicodeCIDFont  # type: ignore
+    from reportlab.pdfgen import canvas  # type: ignore
+
+    font_name = "MSung-Light"
+    try:
+        pdfmetrics.registerFont(UnicodeCIDFont(font_name))
+    except Exception:
+        font_name = "STSong-Light"
+        pdfmetrics.registerFont(UnicodeCIDFont(font_name))
+
+    width, height = A4
+    left = 72
+    right = 72
+    top = 62
+    bottom = 56
+    content_width = width - left - right
+    y = height - top
+    c = canvas.Canvas(pdf_path, pagesize=A4)
+
+    def ensure_space(amount: float) -> None:
+        nonlocal y
+        if y - amount < bottom:
+            c.showPage()
+            c.setFont(font_name, 14)
+            y = height - top
+
+    c.setFont(font_name, 20)
+    c.drawCentredString(width / 2, y, str(title or "OSC 文件"))
+    y -= 34
+    c.setFont(font_name, 14)
+
+    for raw in _clean_document_export_text(preview_text).splitlines():
+        line = raw.strip()
+        if not line:
+            y -= 10
+            continue
+        if _looks_like_pleading_title(line) and line == str(title or "").strip():
+            continue
+        if _is_signature_line(line):
+            ensure_space(20)
+            c.drawRightString(width - right, y, line)
+            y -= 23
+            continue
+        prefix = "" if _is_meta_or_salutation_line(line) else "　　"
+        wrapped = _wrap_pdf_line(prefix + line, content_width, font_name, 14)
+        for part in wrapped:
+            ensure_space(20)
+            c.drawString(left, y, part)
+            y -= 23
+
+    c.save()
+    if (not os.path.exists(pdf_path)) or os.path.getsize(pdf_path) < 64:
+        return {"success": False, "error": "pdf_not_generated"}
+    meta = _export_file_meta(pdf_path)
+    meta["renderer"] = "reportlab"
+    return meta
 
 
 def _export_form_pdf(title: str, preview_text: str, stem: str) -> dict:
     txt = str(preview_text or "").strip()
     if not txt:
         return {"success": False, "error": "empty_text"}
+    pdf_name = f"{stem}.pdf"
+    pdf_path = os.path.join(EXPORTS_DIR, pdf_name)
     try:
         os.makedirs(EXPORTS_DIR, exist_ok=True)
-        pdf_name = f"{stem}.pdf"
-        pdf_path = os.path.join(EXPORTS_DIR, pdf_name)
 
         # Render HTML
         html_content = _render_form_text_to_html(title, txt)
@@ -433,6 +667,13 @@ def _export_form_pdf(title: str, preview_text: str, stem: str) -> dict:
     except Exception as e:
         import traceback
         err_msg = traceback.format_exc()
+        try:
+            fallback = _export_form_pdf_reportlab(title, txt, pdf_path)
+            if fallback.get("success"):
+                fallback["warning"] = f"weasyprint_failed_fallback_reportlab: {e}"
+                return fallback
+        except Exception as fallback_e:
+            return {"success": False, "error": f"weasyprint_failed: {e}\n{err_msg}\nreportlab_failed: {fallback_e}"}
         return {"success": False, "error": f"weasyprint_failed: {e}\n{err_msg}"}
 
 
@@ -444,7 +685,8 @@ def _export_osc_form_files(title: str, preview_text: str, suggested_filename: st
     token = uuid.uuid4().hex[:8]
     stem = _safe_export_stem(suggested_filename, fallback="osc_form")
     full_stem = f"{stem}_{stamp}_{token}"
-    docx_meta = _export_form_docx(txt, full_stem)
+    txt = _clean_document_export_text(txt)
+    docx_meta = _export_form_docx(txt, full_stem, title=title)
     pdf_meta = _export_form_pdf(title, txt, full_stem)
     errors = []
     if not docx_meta.get("success"):

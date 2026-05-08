@@ -133,14 +133,18 @@ def _get_draft_prompt_template() -> str:
 def _osc_clean_draft_output(text: str) -> str:
     cleaned = ihtml.unescape(str(text or ""))
     cleaned = cleaned.replace("<br>", "\n").replace("<br/>", "\n").replace("<br />", "\n")
+    # Keep the text inside fenced Markdown blocks. Some local models wrap the
+    # whole pleading in ```text fences; deleting the block would erase the draft.
+    cleaned = re.sub(r"^\s*```[a-zA-Z0-9_-]*\s*$", "", cleaned, flags=re.MULTILINE)
     cleaned = re.sub(r"^#+\s*", "", cleaned, flags=re.MULTILINE)
     cleaned = re.sub(r"\*\*(.+?)\*\*", r"\1", cleaned)
     cleaned = re.sub(r"\*(.+?)\*", r"\1", cleaned)
     cleaned = re.sub(r"__(.+?)__", r"\1", cleaned)
     cleaned = re.sub(r"_(.+?)_", r"\1", cleaned)
     cleaned = re.sub(r"^[-*_]{3,}\s*$", "", cleaned, flags=re.MULTILINE)
-    cleaned = re.sub(r"```(?:[\s\S]*?)```", "", cleaned)
     cleaned = re.sub(r"`(.+?)`", r"\1", cleaned)
+    cleaned = re.sub(r"^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$", "", cleaned, flags=re.MULTILINE)
+    cleaned = re.sub(r"^\s*>\s?", "", cleaned, flags=re.MULTILINE)
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
     return cleaned.strip()
 
