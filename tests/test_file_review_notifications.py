@@ -153,3 +153,59 @@ def test_portal_probe_error_is_business_readable():
     assert "會員登入 驗證碼 密碼" in text
     assert "{" not in text
     assert "frame_diagnostics" not in text
+
+
+def test_court_pickup_portal_row_does_not_become_pending_payment(tmp_path):
+    module = _load_action_module()
+    item = {
+        "status": "pending_payment",
+        "paystatus": "2",
+        "status_name": "法院回覆同意",
+        "result_text": "鑫源企業社請至本院閱覽紙本卷宗，不另製發繳費單。",
+        "party": "鑫源企業社",
+        "court_case_no": "115年度聲字第123號",
+        "rowid": "CP001",
+    }
+
+    assert module._portal_item_is_court_pickup_ready(item) is True
+    assert module._portal_item_is_actionable_pending(item) is False
+
+    collapsed = module._collapse_portal_items([item], download_folder=str(tmp_path))
+
+    assert collapsed["court_pickup_count"] == 1
+    assert collapsed["pending_payment_count"] == 0
+    assert collapsed["items"][0]["status"] == "court_pickup"
+
+
+def test_file_review_manager_court_pickup_row_is_not_pending_payment():
+    from casper_ecosystem.law_firm_orchestrators.file_review_automation import FileReviewManager
+
+    row_json = {
+        "paystatus": "2",
+        "status": "3",
+        "statusnm": "法院回覆同意",
+        "result": "鑫源企業社請至本院閱覽紙本卷宗，不另製發繳費單。",
+        "clnm": "鑫源企業社",
+        "yyidno": "115聲123",
+    }
+
+    assert FileReviewManager._is_court_pickup_row(row_json, "") is True
+    assert FileReviewManager._is_pending_payment_row(row_json, "") is False
+
+
+def test_file_review_manager_waiting_or_denied_rows_are_not_court_pickup():
+    from casper_ecosystem.law_firm_orchestrators.file_review_automation import FileReviewManager
+
+    waiting = {
+        "status": "2",
+        "statusnm": "待法院回覆",
+        "result": "尚未回覆",
+    }
+    denied = {
+        "status": "4",
+        "statusnm": "法院回覆不同意",
+        "result": "不同意聲請，原因【已到院閱卷】",
+    }
+
+    assert FileReviewManager._is_court_pickup_row(waiting, "聲請閱卷") is False
+    assert FileReviewManager._is_court_pickup_row(denied, "") is False

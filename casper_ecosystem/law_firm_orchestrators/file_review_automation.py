@@ -4285,6 +4285,7 @@ class FileReviewManager:
             "success": False,
             "count": 0,
             "downloadable_count": 0,
+            "court_pickup_count": 0,
             "pending_payment_count": 0,
             "items": [],
         }
@@ -4380,6 +4381,7 @@ class FileReviewManager:
             norm_target = self._normalize_case_keyword(target_case_number or "")
             items: List[Dict[str, Any]] = []
             downloadable_count = 0
+            court_pickup_count = 0
             pending_payment_count = 0
 
             for row_data in rows_data:
@@ -4409,6 +4411,7 @@ class FileReviewManager:
                     if norm_target and norm_target not in self._normalize_case_keyword(probe_text):
                         continue
 
+                    court_pickup = self._is_court_pickup_row(row_json, row_text=row_text)
                     pending_payment = self._is_pending_payment_row(row_json, row_text=row_text)
                     has_download = bool(row_data.get("has_online_download"))
 
@@ -4416,6 +4419,9 @@ class FileReviewManager:
                     if has_download:
                         status = "downloadable"
                         downloadable_count += 1
+                    elif court_pickup:
+                        status = "court_pickup"
+                        court_pickup_count += 1
                     elif pending_payment:
                         status = "pending_payment"
                         pending_payment_count += 1
@@ -4466,6 +4472,7 @@ class FileReviewManager:
                     "success": True,
                     "count": len(items),
                     "downloadable_count": downloadable_count,
+                    "court_pickup_count": court_pickup_count,
                     "pending_payment_count": pending_payment_count,
                     "items": items,
                 }
@@ -4532,10 +4539,72 @@ class FileReviewManager:
         return row_json
 
     @staticmethod
+    def _is_court_pickup_notice_text(text: str) -> bool:
+        """判斷是否為到院/紙本閱卷通知，這類不應走繳費單下載。"""
+        normalized = re.sub(r"\s+", "", str(text or ""))
+        if not normalized:
+            return False
+        pickup_keywords = (
+            "到院閱卷",
+            "來院閱卷",
+            "現場閱卷",
+            "本院閱卷",
+            "法院閱卷",
+            "紙本閱卷",
+            "閱紙本卷",
+            "閱覽紙本卷",
+            "至本院閱卷",
+            "至法院閱卷",
+            "請至本院",
+            "請至法院",
+            "可至本院",
+            "親至本院",
+            "親至法院",
+            "洽本院",
+            "臨櫃",
+            "時段閱卷",
+        )
+        no_payment_keywords = (
+            "無需繳費",
+            "不需繳費",
+            "免繳費",
+            "無繳費單",
+            "不另製發繳費單",
+            "不製發繳費單",
+        )
+        payment_keywords = ("待繳費", "繳費期限", "繳費單", "線上下載", "複製電子卷證費用", "處理費")
+        has_pickup_signal = any(kw in normalized for kw in pickup_keywords)
+        has_no_payment_signal = any(kw in normalized for kw in no_payment_keywords)
+        if not (has_pickup_signal or has_no_payment_signal):
+            return False
+        if any(kw in normalized for kw in payment_keywords) and not has_no_payment_signal:
+            return False
+        return True
+
+    @staticmethod
+    def _is_court_pickup_row(row_json: dict, row_text: str = "") -> bool:
+        """判斷是否為可到院/紙本閱卷列。"""
+        if not isinstance(row_json, dict):
+            row_json = {}
+        status = str(row_json.get("status") or "").strip()
+        statusnm = str(row_json.get("statusnm") or "").strip()
+        result = str(row_json.get("result") or "")
+        combined = f"{statusnm}\n{result}\n{row_json.get('clnm') or ''}"
+        normalized = re.sub(r"\s+", "", combined)
+        if any(kw in normalized for kw in ("不同意", "取消閱卷", "尚未回覆", "待法院回覆")):
+            return False
+        approved = ("同意" in statusnm and "不同意" not in statusnm) or status in {"3", ""}
+        if not approved:
+            return False
+        return FileReviewManager._is_court_pickup_notice_text(combined)
+
+    @staticmethod
     def _is_pending_payment_row(row_json: dict, row_text: str = "") -> bool:
         """判斷是否為待繳費列。"""
         if not isinstance(row_json, dict):
             row_json = {}
+        if FileReviewManager._is_court_pickup_row(row_json, row_text=row_text):
+            return False
         paystatus = str(row_json.get("paystatus") or "").strip()
         payment = str(row_json.get("payment") or "").strip().upper()
         status = str(row_json.get("status") or "").strip()
@@ -12117,7 +12186,9 @@ class FileReviewManager:
                     msg_type = typ
                     if typ == "auto":
                         t = self._normalize_case_text(f"{subject} {snippet}")
-                        if any(k in t for k in ["繳費單", "待繳費", "繳費期限", "含繳費單"]):
+                        if self._is_court_pickup_notice_text(t):
+                            msg_type = "court_pickup"
+                        elif any(k in t for k in ["繳費單", "待繳費", "繳費期限", "含繳費單"]):
                             msg_type = "payment"
                         elif any(k in t for k in ["線上下載", "交付核閱", "核閱通知", "下載期限"]):
                             msg_type = "download"
@@ -12146,6 +12217,7 @@ class FileReviewManager:
             "payment_hits": 0,
             "payment_notified": 0,
             "download_hits": 0,
+            "pickup_hits": 0,
             "ready_to_download_count": 0,
             "errors": [],
         }
@@ -12172,12 +12244,14 @@ class FileReviewManager:
             r_pay = self._scan_and_process_emails(query_payment, "payment")
             summary["payment_hits"] += r_pay.get("hits", 0)
             summary["payment_notified"] += r_pay.get("notified", 0)
+            summary["pickup_hits"] += r_pay.get("pickup_hits", 0)
             summary["errors"].extend(r_pay.get("errors", []))
 
             # B. 下載通知
             query_download = f"(法院 完成 線上 交付 核閱 通知 OR 線上下載 OR 交付核閱 OR 核閱通知) after:{check_date}{_excl_laf}"
             r_dl = self._scan_and_process_emails(query_download, "download")
             summary["download_hits"] += r_dl.get("hits", 0)
+            summary["pickup_hits"] += r_dl.get("pickup_hits", 0)
             summary["errors"].extend(r_dl.get("errors", []))
 
             # C. 備援掃描（主旨格式改版/插空白時）
@@ -12186,6 +12260,7 @@ class FileReviewManager:
             summary["payment_hits"] += r_auto.get("payment_hits", 0)
             summary["payment_notified"] += r_auto.get("payment_notified", 0)
             summary["download_hits"] += r_auto.get("download_hits", 0)
+            summary["pickup_hits"] += r_auto.get("pickup_hits", 0)
             summary["errors"].extend(r_auto.get("errors", []))
 
             summary["ready_to_download_count"] = len(self.ready_to_download)
@@ -12200,7 +12275,7 @@ class FileReviewManager:
         """掃描並處理特定類型的郵件，回傳統計。"""
         # 統計：hits=命中數, notified=成功通知數
         # auto 模式可能同時產出 payment 和 download，用複合 key 回傳
-        stats = {"hits": 0, "notified": 0, "download_hits": 0,
+        stats = {"hits": 0, "notified": 0, "download_hits": 0, "pickup_hits": 0,
                  "payment_hits": 0, "payment_notified": 0, "errors": []}
         try:
             self.log(f"  🔍 [DEBUG] 執行搜尋 query: {query}")
@@ -12270,8 +12345,10 @@ class FileReviewManager:
 
                 # 根據類型處理（auto 模式先由內容自動分類）
                 msg_type = type
-                if type == "auto":
-                    t = self._normalize_case_text(f"{subject} {body}")
+                t = self._normalize_case_text(f"{subject} {body}")
+                if self._is_court_pickup_notice_text(t):
+                    msg_type = "court_pickup"
+                elif type == "auto":
                     if any(k in t for k in ["繳費單", "待繳費", "繳費期限", "含繳費單"]):
                         msg_type = "payment"
                     elif any(k in t for k in ["線上下載", "交付核閱", "核閱通知", "下載期限"]):
@@ -12359,6 +12436,12 @@ class FileReviewManager:
 
                     # 標記已處理 (下載成功後再標記可能更好，但在這裡標記代表「已讀」)
                     # processed_emails 是 set，只記錄 msg_id
+                    self.processed_emails.add(msg_id)
+                    self._save_processed_emails()
+
+                elif msg_type == "court_pickup":
+                    stats["pickup_hits"] += 1
+                    self.log(f"  發現可到院閱卷通知: {resolved_case_no}")
                     self.processed_emails.add(msg_id)
                     self._save_processed_emails()
 
