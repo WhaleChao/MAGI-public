@@ -9,7 +9,10 @@ __pycache__/
 .env
 .env.*
 .agent/
+.codex_tmp_*/
+.openclaw_archived_*/
 .runtime_site_packages/
+Paperclip_rebuild/
 cache/
 downloads/
 logs/

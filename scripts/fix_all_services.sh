@@ -76,9 +76,9 @@ else
     fi
 fi
 
-# ── 4. oMLX Watchdog ──
+# ── 4. oMLX Watchdog / Restore ──
 echo ""
-echo "🔍 [4/5] 檢查 oMLX Watchdog..."
+echo "🔍 [4/5] 檢查 oMLX Watchdog / Restore..."
 if launchctl print "gui/$(id -u)/com.magi.omlx-watchdog" &>/dev/null; then
     echo "✅ Watchdog 正在監控"
 else
@@ -89,6 +89,17 @@ else
         echo "✅ Watchdog 已啟動"
     else
         echo "❌ Watchdog 安裝失敗"
+    fi
+fi
+if launchctl print "gui/$(id -u)/com.magi.omlx-restore" &>/dev/null; then
+    echo "✅ Restore LaunchAgent 已安裝"
+else
+    echo "⚠️ Restore LaunchAgent 未安裝，重新安裝..."
+    python3 "${MAGI_ROOT}/scripts/install_omlx_restore.py" 2>/dev/null
+    if launchctl print "gui/$(id -u)/com.magi.omlx-restore" &>/dev/null; then
+        echo "✅ Restore LaunchAgent 已啟動"
+    else
+        echo "❌ Restore LaunchAgent 安裝失敗"
     fi
 fi
 
