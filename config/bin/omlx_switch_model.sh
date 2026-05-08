@@ -7,26 +7,34 @@ set -euo pipefail
 MODE="${1:-day}"
 
 # ---- auto 模式：依當前時間自動選 day / night（在 lock 之前解析）----
-# day 窗口：07:00-21:59（對齊 job_omlx_switch_day=07:00 / job_omlx_switch_night=21:50）
-# 重要：auto 模式有冪等檢查 — 若 models-text 已對應正確模型則跳過切換（避免重開機 90s 後不必要 bootout）
+# day 窗口：06:55-21:49（對齊 job_omlx_switch_day=06:55 / job_omlx_switch_night=21:50）
+# 重要：auto 模式有冪等檢查 — 需「實際 API 模型」與 models-text 都對應正確才跳過切換
 if [ "$MODE" = "auto" ]; then
-    current_hour=$(date +%H | sed 's/^0*//' | awk '{if($0=="") print 0; else print $0+0}')
-    if [ "$current_hour" -ge 7 ] && [ "$current_hour" -lt 22 ]; then
+    current_hour=$((10#$(date +%H)))
+    current_minute=$((10#$(date +%M)))
+    current_total_min=$((current_hour * 60 + current_minute))
+    if [ "$current_total_min" -ge 415 ] && [ "$current_total_min" -lt 1310 ]; then
         MODE="day"
         EXPECTED_MODEL_KEYWORD="e4b"
     else
         MODE="night"
         EXPECTED_MODEL_KEYWORD="26b"
     fi
-    printf '%s [switch] auto → %s (hour=%02d)\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$MODE" "$current_hour" | tee -a "/opt/homebrew/var/log/omlx_switch.log"
-    # 冪等檢查：若 models-text 已含正確模型且 oMLX 已在線，跳過切換
+    printf '%s [switch] auto → %s (time=%02d:%02d)\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$MODE" "$current_hour" "$current_minute" | tee -a "/opt/homebrew/var/log/omlx_switch.log"
+    # 冪等檢查：若 API 實際模型與 models-text 都正確且 oMLX 已在線，跳過切換
     current_model_in_dir=$(ls "/Users/ai/.omlx/models-text/" 2>/dev/null | tr '[:upper:]' '[:lower:]' | head -1)
+    current_model_api=$(
+        curl -sf --max-time 3 http://127.0.0.1:8080/v1/models 2>/dev/null | \
+        python3 -c 'import json,sys; data=json.load(sys.stdin); print(((data.get("data") or [{}])[0].get("id") or "").lower())' 2>/dev/null || true
+    )
     omlx_online=$(curl -sf --max-time 3 http://127.0.0.1:8080/v1/models >/dev/null 2>&1 && echo "yes" || echo "no")
-    if echo "$current_model_in_dir" | grep -qi "$EXPECTED_MODEL_KEYWORD" && [ "$omlx_online" = "yes" ]; then
-        printf '%s [switch] auto: 已是 %s 模式且 oMLX 在線，跳過切換\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$MODE" | tee -a "/opt/homebrew/var/log/omlx_switch.log"
+    if echo "$current_model_in_dir" | grep -qi "$EXPECTED_MODEL_KEYWORD" && \
+       echo "$current_model_api" | grep -qi "$EXPECTED_MODEL_KEYWORD" && \
+       [ "$omlx_online" = "yes" ]; then
+        printf '%s [switch] auto: 已是 %s 模式（api=%s, dir=%s），跳過切換\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$MODE" "$current_model_api" "$current_model_in_dir" | tee -a "/opt/homebrew/var/log/omlx_switch.log"
         exit 0
     fi
-    printf '%s [switch] auto: 需切換（current_model=%s, online=%s）\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$current_model_in_dir" "$omlx_online" | tee -a "/opt/homebrew/var/log/omlx_switch.log"
+    printf '%s [switch] auto: 需切換（api=%s, dir=%s, online=%s）\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$current_model_api" "$current_model_in_dir" "$omlx_online" | tee -a "/opt/homebrew/var/log/omlx_switch.log"
 fi
 
 PROFILE_FILE="/Users/ai/.omlx/active_profile"

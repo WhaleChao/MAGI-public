@@ -14,21 +14,31 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MAGI_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-echo "🔧 修復 oMLX Watchdog..."
+echo "🔧 修復 oMLX Watchdog / Profile Restore..."
 echo "   MAGI_ROOT: ${MAGI_ROOT}"
 
 # Step 1: 執行 installer
 echo "📦 重新安裝 watchdog LaunchAgent..."
 python3 "${MAGI_ROOT}/scripts/install_omlx_watchdog.py"
+echo "📦 重新安裝 restore LaunchAgent..."
+python3 "${MAGI_ROOT}/scripts/install_omlx_restore.py"
 
 # Step 2: 驗證
 PLIST="$HOME/Library/LaunchAgents/com.magi.omlx-watchdog.plist"
+RESTORE_PLIST="$HOME/Library/LaunchAgents/com.magi.omlx-restore.plist"
 RUNTIME_SCRIPT="$HOME/Library/Application Support/MAGI/bin/omlx_watchdog.sh"
 
 if [ -f "${PLIST}" ]; then
     echo "✅ LaunchAgent plist 已安裝：${PLIST}"
 else
     echo "❌ LaunchAgent plist 未找到"
+    exit 1
+fi
+
+if [ -f "${RESTORE_PLIST}" ]; then
+    echo "✅ Restore LaunchAgent 已安裝：${RESTORE_PLIST}"
+else
+    echo "❌ Restore LaunchAgent 未找到"
     exit 1
 fi
 
@@ -76,5 +86,5 @@ echo "════════════════════════�
 echo "修復完成！變更摘要："
 echo "  1. Watchdog 腳本複製到受信任路徑"
 echo "  2. LaunchAgent plist 已更新"
-echo "  3. 已嘗試重啟 watchdog 和 oMLX"
+echo "  3. 已嘗試重啟 watchdog / restore 和 oMLX"
 echo "═══════════════════════════════════════"

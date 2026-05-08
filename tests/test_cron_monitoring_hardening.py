@@ -182,6 +182,37 @@ def test_cron_uses_repo_omlx_switch_and_single_health_report_time():
     assert '"cron": "30 6 * * *"' in jobs
 
 
+def test_omlx_auto_switch_checks_real_api_model_and_2150_boundary():
+    source = Path("config/bin/omlx_switch_model.sh").read_text(encoding="utf-8")
+
+    assert "current_total_min" in source
+    assert '"$current_total_min" -lt 1310' in source
+    assert "current_model_api" in source
+    assert "127.0.0.1:8080/v1/models" in source
+    assert 'echo "$current_model_api" | grep -qi "$EXPECTED_MODEL_KEYWORD"' in source
+
+
+def test_daemon_self_heals_omlx_profile_without_active_profile_lie():
+    source = Path("daemon.py").read_text(encoding="utf-8")
+    reviewer_block = source[source.index("# 2.55 oMLX 三哲人審查員") : source.index("# 2.6 OpenClaw cron bridge")]
+
+    assert "def _ensure_omlx_time_profile_async" in source
+    assert "omlx_switch_model.sh" in source
+    assert '"auto"' in source
+    assert "if not _is_omlx_night_window():" in reviewer_block
+    assert "active_profile" not in reviewer_block
+
+
+def test_omlx_restore_installer_uses_canonical_repo_switch():
+    source = Path("scripts/install_omlx_restore.py").read_text(encoding="utf-8")
+
+    assert "LABEL = \"com.magi.omlx-restore\"" in source
+    assert "config\" / \"bin\" / \"omlx_switch_model.sh\"" in source
+    assert "Application Support\" / \"MAGI\" / \"bin\" / \"omlx_switch_model.sh\"" not in source
+    assert "sleep 90 && exec" in source
+    assert "run_with_env.py" in source
+
+
 def test_judicial_daytime_cron_batches_are_bounded():
     jobs = json.loads(Path("cron_jobs.json").read_text(encoding="utf-8"))
     by_id = {job["id"]: job for job in jobs}
