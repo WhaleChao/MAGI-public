@@ -173,6 +173,8 @@ def _clean_worldmonitor_text(text: str) -> str:
     cleaned = html.unescape(str(text or "")).strip()
     cleaned = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", cleaned)
     cleaned = cleaned.replace("**", "").replace("__", "")
+    cleaned = re.sub(r"^#{1,6}\s*", "", cleaned)
+    cleaned = re.sub(r"^\d+[\.)]\s*", "", cleaned)
     cleaned = cleaned.strip(" -\t")
     return cleaned
 
@@ -299,6 +301,8 @@ def _parse_worldmonitor_markdown(content: str) -> dict:
             key, _, value = line.partition(":")
             meta[_clean_worldmonitor_text(key)] = _clean_worldmonitor_text(value)
             continue
+        if line in {"---", "----"}:
+            continue
         if line.startswith("## "):
             title = _clean_worldmonitor_text(line.lstrip("#").strip())
             in_source_health = "來源健康" in title
@@ -311,8 +315,9 @@ def _parse_worldmonitor_markdown(content: str) -> dict:
             current = {"title": title, "items": []}
             sections.append(current)
             continue
-        if line.startswith("- "):
-            item = _clean_worldmonitor_text(line[2:])
+        item_match = re.match(r"^(?:[-*•]|\d+[\.)])\s+(.+)$", line)
+        if item_match:
+            item = _clean_worldmonitor_text(item_match.group(1))
             if in_source_health:
                 source_health.append(item)
             elif current is not None and item:
@@ -416,7 +421,7 @@ def _run_worldmonitor_collect(timeout: int = 240) -> tuple[bool, str]:
     python_bin = os.environ.get("MAGI_SKILL_PYTHON") or (str(bundled_python) if bundled_python.exists() else sys.executable)
     try:
         result = subprocess.run(
-            [python_bin, str(action_path), "--task", "collect"],
+            [python_bin, str(action_path), "--task", "collect", "--no-reasoning", "--plain-output"],
             cwd=str(_MAGI_ROOT),
             capture_output=True,
             text=True,

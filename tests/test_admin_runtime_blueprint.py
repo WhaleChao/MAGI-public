@@ -164,6 +164,14 @@ def test_dashboard_nerv_health_status_and_logs(tmp_path, monkeypatch):
     nas_mod = types.ModuleType("api.nas_mount_guard")
     nas_mod._SHARES = [("homes", "/Volumes/homes")]
     nas_mod._is_mounted = lambda vol: True
+    nas_mod.get_share_status = lambda share, vol: {
+        "mounted": True,
+        "mounted_path": vol,
+        "fallback": False,
+        "fallback_path": "",
+        "available": True,
+        "mode": "smb",
+    }
     monkeypatch.setitem(sys.modules, "api.nas_mount_guard", nas_mod)
 
     psutil_mod = types.ModuleType("psutil")
@@ -239,6 +247,14 @@ def test_health_reports_omlx_8083_unmanaged_as_degraded(tmp_path, monkeypatch):
     nas_mod._SHARES = [("homes", "/Volumes/homes")]
     nas_mod._is_mounted = lambda vol: True
     nas_mod._USER_MOUNT_ROOT = "/tmp"
+    nas_mod.get_share_status = lambda share, vol: {
+        "mounted": True,
+        "mounted_path": vol,
+        "fallback": False,
+        "fallback_path": "",
+        "available": True,
+        "mode": "smb",
+    }
     monkeypatch.setitem(sys.modules, "api.nas_mount_guard", nas_mod)
 
     psutil_mod = types.ModuleType("psutil")

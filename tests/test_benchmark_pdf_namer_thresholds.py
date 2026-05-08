@@ -37,5 +37,18 @@ def test_thresholds_pass_when_all_metrics_are_good():
         quality_pass_rate=1.0,
         overall_pass_rate=1.0,
         empty_rate=0.0,
+        error_rate=0.0,
     )
     assert failed == []
+
+
+def test_thresholds_fail_when_runtime_errors_are_high():
+    mod = _load_module()
+    failed = mod._collect_threshold_failures(
+        format_valid_rate=1.0,
+        quality_pass_rate=1.0,
+        overall_pass_rate=1.0,
+        empty_rate=0.0,
+        error_rate=0.2,
+    )
+    assert any("error_rate" in item for item in failed)

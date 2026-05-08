@@ -1431,12 +1431,11 @@ def create_admin_runtime_blueprint(
             checks["operational_health"] = {"ok": False, "detail": str(exc)[:120]}
 
         try:
-            from api.nas_mount_guard import _SHARES, get_share_available_path
+            from api.nas_mount_guard import _SHARES, get_share_status
 
-            def _nas_check(share_name, vol):
-                return bool(get_share_available_path(share_name, vol))
-
-            checks["nas"] = {vol.split("/")[-1]: _nas_check(name, vol) for name, vol in _SHARES}
+            nas_detail = {vol.split("/")[-1]: get_share_status(name, vol) for name, vol in _SHARES}
+            checks["nas"] = {name: bool(detail.get("mounted")) for name, detail in nas_detail.items()}
+            checks["nas_detail"] = nas_detail
         except Exception:
             logger.debug("silent-catch in health nas", exc_info=True)
 
@@ -1450,6 +1449,8 @@ def create_admin_runtime_blueprint(
             degraded = True
         # 2026-04-25 P2-7: operational_health degradation also marks degraded
         if checks.get("operational_health", {}).get("ok") is False:
+            degraded = True
+        if any(ok is False for ok in checks.get("nas", {}).values()):
             degraded = True
         checks["status"] = "degraded" if degraded else "operational"
         if not _wants_json_response():

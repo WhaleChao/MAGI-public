@@ -82,7 +82,6 @@ def test_model_allowlist() -> bool:
         return False
 
     allowed_cases = [
-        "meta/llama-3.1-405b-instruct",
         "meta/llama-3.3-70b-instruct",
         "mistralai/mistral-large-2-instruct",
         "google/gemma-3-27b-it",

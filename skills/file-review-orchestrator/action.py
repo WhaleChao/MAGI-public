@@ -2276,6 +2276,16 @@ def cmd_download(case_number: str = "", notify: bool = True, flow_id: str = "") 
         logger.warning("download case_number format not recognized, fallback to all: %s", case_number)
         case_number = ""
 
+    if not case_number and _truthy(os.environ.get("MAGI_FILE_REVIEW_BLOCK_BULK_DOWNLOAD", "0")):
+        msg = (
+            "已依 MAGI_FILE_REVIEW_BLOCK_BULK_DOWNLOAD 設定阻擋未指定案號的批次閱卷下載。"
+            "請指定案號執行單案下載，或移除此環境變數。"
+        )
+        out = {"success": False, "error": "bulk_download_blocked_by_env", "message": msg}
+        _eventlog("filereview:download:blocked", ok=False, payload=out, tags={})
+        _notify("⚠️ " + msg, notify)
+        return out
+
     _eventlog("filereview:download:start", payload={"case_number": case_number, "notify": bool(notify)}, tags={"case_number": case_number} if case_number else {})
     cancelled = _check_flow_cancelled(flow_id, "portal_login", detail="before download login")
     if cancelled:
@@ -2579,6 +2589,16 @@ def cmd_download_background(case_number: str = "", notify: bool = True, flow_id:
     creds = _get_credentials(cfg)
     if not creds["username"] or not creds["password"]:
         return {"success": False, "error": "missing credentials — set MAGI_JUDICIAL_EEFILE_USERNAME/PASSWORD in .env"}
+
+    case_number = str(case_number or "").strip()
+    if not case_number and _truthy(os.environ.get("MAGI_FILE_REVIEW_BLOCK_BULK_DOWNLOAD", "0")):
+        msg = (
+            "已依 MAGI_FILE_REVIEW_BLOCK_BULK_DOWNLOAD 設定阻擋未指定案號的背景批次閱卷下載。"
+            "請指定案號，或移除此環境變數。"
+        )
+        _safe_flow_step_status(flow_id, "queue", status="blocked", detail=msg, ok=False)
+        _notify("⚠️ " + msg, notify)
+        return {"success": False, "error": "bulk_download_blocked_by_env", "message": msg}
 
     cancelled = _check_flow_cancelled(flow_id, "queue", detail="before queue spawn")
     if cancelled:

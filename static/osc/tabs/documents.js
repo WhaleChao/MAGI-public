@@ -170,16 +170,79 @@ function renderLafDocList(docs = [], keywords = [], empty = "尚未索引到相�
 }
 
 function lafCollectEvents(data = {}, keyword) {
+    const statRows = data.laf_activity_stats?.[keyword]?.rows;
+    if (Array.isArray(statRows)) {
+        return statRows.map(row => ({
+            date: row.date || "",
+            summary: row.summary || keyword,
+            source: row.source || "",
+        })).sort((a, b) => String(b.date || "").localeCompare(String(a.date || "")));
+    }
     const rows = [];
     (data.meetings || []).forEach(m => {
         const text = `${m.type || ""} ${m.notes || ""} ${m.location || ""}`;
-        if (text.includes(keyword)) rows.push({ date: m.datetime || "", summary: `${m.type || keyword} ${m.location || ""}`.trim() });
+        if (text.includes(keyword)) {
+            rows.push({
+                date: m.datetime || "",
+                summary: `${m.type || keyword} ${m.location || ""}`.trim(),
+                source: "會議",
+            });
+        }
     });
     (data.todos || []).forEach(t => {
         const text = `${t.todo_type || ""} ${t.description || ""}`;
-        if (text.includes(keyword)) rows.push({ date: `${t.todo_date || ""} ${t.todo_time || ""}`.trim(), summary: t.description || t.todo_type || keyword });
+        if (text.includes(keyword)) {
+            const source = String(t.source_file || "").startsWith("gcal_import:") ? "Google Calendar" : "待辦";
+            rows.push({
+                date: `${t.todo_date || ""} ${t.todo_time || ""}`.trim(),
+                summary: t.description || t.todo_type || keyword,
+                source,
+            });
+        }
     });
-    return rows;
+    return rows.sort((a, b) => String(b.date || "").localeCompare(String(a.date || "")));
+}
+
+function renderLafEventLines(rows = []) {
+    if (!rows.length) return `<div class="laf-event-empty">尚未記錄</div>`;
+    return `
+        <div class="laf-event-lines">
+            ${rows.slice(0, 5).map(row => `
+                <div class="laf-event-line">
+                    <time>${esc(row.date || "未標示時間")}</time>
+                    <span>${esc(row.source || "")}</span>
+                    <p title="${esc(row.summary || "")}">${esc(shortText(row.summary || "", 52))}</p>
+                </div>
+            `).join("")}
+            ${rows.length > 5 ? `<div class="laf-event-more">另有 ${rows.length - 5} 筆</div>` : ""}
+        </div>
+    `;
+}
+
+function openLafEventDetailDialog(label) {
+    const data = state.laf?.selectedWorkbench || {};
+    const rows = lafCollectEvents(data, label);
+    const caseInfo = data.case || {};
+    const body = rows.length
+        ? `<div class="laf-event-full-list">${rows.map(row => `
+            <div class="laf-event-full-row">
+                <time>${esc(row.date || "未標示時間")}</time>
+                <span>${esc(row.source || "")}</span>
+                <p>${esc(row.summary || "")}</p>
+            </div>
+        `).join("")}</div>`
+        : `<div class="muted">這個案件目前沒有「${esc(label)}」紀錄。</div>`;
+    wbShow(`${label}明細｜${caseInfo.case_number || ""} ${caseInfo.client_name || ""}`.trim(), `
+        <div class="card">
+            <div class="laf-detail-head">
+                <div>
+                    <h3>${esc(label)}明細</h3>
+                    <div class="muted">${esc(caseInfo.case_number || "")} ${esc(caseInfo.client_name || "")}｜共 ${rows.length} 筆</div>
+                </div>
+            </div>
+            ${body}
+        </div>
+    `);
 }
 
 function renderLafEventStats(data = {}) {
@@ -187,21 +250,44 @@ function renderLafEventStats(data = {}) {
     return `<div class="laf-event-grid">${configs.map(label => {
         const rows = lafCollectEvents(data, label);
         const latest = rows[0]?.date || "未記錄";
-        return `<div class="laf-event-card"><span>${esc(label)}</span><strong>${rows.length}</strong><small class="muted">${esc(shortText(latest, 18))}</small></div>`;
+        return `
+            <div class="laf-event-card" data-act="laf-event-detail" data-label="${esc(label)}" role="button" tabindex="0" title="查看${esc(label)}完整明細">
+                <span>${esc(label)}</span>
+                <strong>${rows.length}</strong>
+                <small class="muted">最近：${esc(shortText(latest, 24))}</small>
+                ${renderLafEventLines(rows)}
+            </div>
+        `;
     }).join("")}</div>`;
 }
 
 function renderLafReviewStats(data = {}) {
+    const reviewRows = lafCollectEvents(data, "閱卷");
+    const reviewStats = data.laf_review_stats || {};
+    const count = Number(data.laf_activity_stats?.["閱卷"]?.count ?? reviewStats.count ?? reviewRows.length ?? 0);
+    const dates = reviewStats.dates || reviewRows.map(r => r.date).filter(Boolean);
+    const skipped = reviewStats.skipped_payment_only || [];
+    const items = reviewStats.items || [];
     const docs = lafFilterDocs(data.documents || [], ["閱卷", "OCR", "卷證", "電子卷"]);
-    const dates = Array.from(new Set(docs.map(d => String(d.modified_date || "").slice(0, 10)).filter(Boolean))).sort().reverse();
+    const fileRows = items.length
+        ? `<div class="laf-compact-list">${items.slice(0, 8).map(item => `
+            <div class="laf-compact-item">
+                <div class="name">${esc(item.date || "")}</div>
+                <div class="sub" title="${esc((item.files || []).map(f => f.relative_path || f.file_name || "").join("、"))}">
+                    ${esc((item.files || []).map(f => f.relative_path || f.file_name || "").slice(0, 3).join("、") || "有效閱卷資料")}
+                </div>
+            </div>
+        `).join("")}</div>`
+        : renderLafDocList(data.documents || [], ["閱卷", "OCR", "卷證", "電子卷"], "尚未索引到閱卷資料");
     return `
         <div class="laf-status-row">
-            <strong>閱卷次數：${docs.length}</strong>
+            <strong>閱卷次數：${count}</strong>
             <button class="btn slim" data-act="case-open" data-id="${esc(data.case?.id || "")}">開啟案件資料夾</button>
             <button class="btn slim" data-act="laf-open-doc-keyword" data-id="${esc(data.case?.id || "")}" data-keyword="閱卷">開啟閱卷資料</button>
         </div>
         <div class="muted">${dates.length ? `日期：${esc(dates.slice(0, 8).join("、"))}` : "尚未索引到閱卷日期。"}</div>
-        ${renderLafDocList(data.documents || [], ["閱卷", "OCR", "卷證", "電子卷"], "尚未索引到閱卷資料")}
+        ${skipped.length ? `<div class="muted">已排除只有繳費單的資料夾：${esc(skipped.slice(0, 6).join("、"))}</div>` : ""}
+        ${fileRows}
     `;
 }
 
@@ -241,6 +327,7 @@ function renderLafOpenDocButtons(c, docs) {
 
 function renderLafDebtTools(c) {
     if (!isConsumerDebtCase(c)) return "";
+    const lafNo = c.laf_case_no || c.legal_aid_number || c.application_no || "";
     const tools = [
         ["聲請狀", "application"],
         ["財產及收入狀況說明書", "asset_statement"],
@@ -252,6 +339,10 @@ function renderLafDebtTools(c) {
     return `
         <div class="laf-debt-tools">
             <h4>消債羅伯特</h4>
+            <div class="laf-status-row">
+                <strong>法扶字號：${esc(lafNo || "尚未帶入")}</strong>
+                <button class="btn slim" data-act="laf-sync-number" data-id="${esc(c.id || "")}">自動帶入/生成字號</button>
+            </div>
             <div class="laf-button-grid">
                 <button class="btn" data-act="laf-open-checklist" data-case="${esc(c.case_number || "")}">開啟/編輯應備事項表</button>
                 ${tools.map(([label, key]) => `<button class="btn" data-act="laf-debt-tool" data-id="${esc(c.id)}" data-module="${esc(key)}">${esc(label)}</button>`).join("")}
@@ -485,7 +576,11 @@ function downloadLafActivityCsv() {
 function isLafPending(row) {
     const status = String(row?.status || "").trim();
     if (!status) return true;
-    return !["已備齊", "不適用", "完成", "已完成"].includes(status);
+    return !["已備齊", "不適用", "完成", "已完成", "已繳", "免附"].includes(status);
+}
+
+function isLafDebtDoneStatus(status) {
+    return ["已備齊", "不適用", "完成", "已完成", "已繳", "免附"].includes(String(status || "").trim());
 }
 
 function renderLafCaseSummary(checklist = [], lifecycle = [], emails = []) {
@@ -550,59 +645,274 @@ async function openLafChecklistCase(caseNumber) {
         showToast("這筆資料沒有案號，無法直接帶入補件管理。", "warn");
         return;
     }
-    const html = `
-        <div class="card">
-            <h3>應備事項表 / 法扶補件清單</h3>
-            <div class="toolbar">
-                <input id="lafChecklistCaseNumber" value="${esc(value)}" readonly>
-                <button class="btn" data-act="laf-checklist-reload">重新載入</button>
-                <button class="btn primary" data-act="laf-checklist-seed">填入預設項目</button>
-            </div>
-            <div class="table-wrap">
-                <table class="compact-table">
-                    <thead><tr><th>項目</th><th>狀態</th><th>備註</th><th>更新時間</th><th>操作</th></tr></thead>
-                    <tbody id="lafChecklistMgmtBody"><tr><td colspan="5" class="muted">載入中...</td></tr></tbody>
-                </table>
-            </div>
-            <div class="soft-block" style="margin-top:10px">
-                <div class="field-grid cols-3">
-                    <div class="field"><label>新增項目</label><input id="lafChecklistNewLabel" placeholder="自訂補件項目"></div>
-                    <div class="field"><label>狀態</label><select id="lafChecklistNewStatus"><option>待補</option><option>已備齊</option><option>不適用</option></select></div>
-                    <div class="field"><label>備註</label><input id="lafChecklistNewNotes" placeholder="可選"></div>
+    wbShow(`消債應備事項表｜${value}`, `<div class="card"><h3>消債案件應備文件確認表</h3><div class="muted">載入中...</div></div>`);
+    try {
+        await loadLafDebtRequiredChecklist(value);
+    } catch (e) {
+        const msg = e?.message || "載入應備事項表失敗";
+        const body = document.getElementById("wbBody");
+        if (body) {
+            body.innerHTML = `
+                <div class="card">
+                    <h3>消債案件應備文件確認表</h3>
+                    <div class="status-banner error">無法載入表格：${esc(msg)}</div>
+                    <div class="muted">請重新整理頁面；若仍失敗，請重啟 MAGI 後端讓新版 API 生效。</div>
+                    <div class="toolbar"><button class="btn primary" data-act="laf-checklist-reload">重新載入</button></div>
+                    <input type="hidden" id="debtReqCaseNumber" value="${esc(value)}">
                 </div>
-                <div class="toolbar"><button class="btn primary" data-act="laf-checklist-add">新增項目</button></div>
-            </div>
-        </div>
-    `;
-    wbShow(`應備事項表｜${value}`, html);
-    await loadLafChecklistInWorkbench(value);
-}
-
-async function loadLafChecklistInWorkbench(caseNumber) {
-    const value = String(caseNumber || document.getElementById("lafChecklistCaseNumber")?.value || "").trim();
-    const tbody = document.getElementById("lafChecklistMgmtBody");
-    if (!value || !tbody) return;
-    tbody.innerHTML = `<tr><td colspan="5" class="muted">載入中...</td></tr>`;
-    const data = await api(`/api/osc/checklists/legal-aid?case_number=${encodeURIComponent(value)}`);
-    if (!data || data.ok === false) throw new Error(data?.error || "載入應備事項表失敗");
-    renderLafChecklistRows(value, data.items || []);
-}
-
-async function reloadLafChecklistFromModal() {
-    await loadLafChecklistInWorkbench();
-}
-
-async function seedLafChecklistFromModal() {
-    if (typeof seedLafChecklist === "function") {
-        seedLafChecklist();
-        window.setTimeout(() => loadLafChecklistInWorkbench().catch(err => showToast(err.message, "warn")), 700);
+            `;
+        }
+        showToast(`應備事項表載入失敗：${msg}`, "err", 5000);
     }
 }
 
-async function addLafChecklistFromModal() {
-    if (typeof addLafChecklistItem === "function") {
-        addLafChecklistItem();
-        window.setTimeout(() => loadLafChecklistInWorkbench().catch(err => showToast(err.message, "warn")), 700);
+function debtReqItemVisible(item, toggles) {
+    if (item.show_when && !toggles[item.show_when]) return false;
+    if (item.hide_when && toggles[item.hide_when]) return false;
+    return true;
+}
+
+function debtReqRowsByKey(rows) {
+    const byKey = new Map();
+    (rows || []).forEach(r => byKey.set(String(r.item_key || ""), r));
+    return byKey;
+}
+
+function debtReqBuildStateFromRows(_spec, rows) {
+    const keys = new Set((rows || []).map(r => String(r.item_key || "")));
+    return {
+        dependents_parents: keys.has("household_reg_parents"),
+        dependents_children: keys.has("household_reg_children"),
+        rental: keys.has("rental_contract"),
+        resides_relative_property: keys.has("relative_building_transcript") || keys.has("residence_consent_form"),
+        litigation: keys.has("court_documents"),
+        negotiation: keys.has("negotiation_docs"),
+        has_business: keys.has("business_tax_return"),
+        passbook_issue: keys.has("bank_assoc_inquiry"),
+        no_payslip: keys.has("income_affidavit"),
+        other_items: [...keys].some(k => k.startsWith("custom_item_")),
+    };
+}
+
+async function loadLafDebtRequiredChecklist(caseNumber) {
+    const value = String(caseNumber || document.getElementById("debtReqCaseNumber")?.value || "").trim();
+    if (!value) return;
+    const data = await api(`/api/osc/checklists/debt-required?case_number=${encodeURIComponent(value)}`);
+    if (!data || data.ok === false) throw new Error(data?.error || "載入應備事項表失敗");
+    state.lafDebtRequired = data;
+    renderLafDebtRequiredChecklist(data);
+}
+
+function renderLafDebtRequiredChecklist(data) {
+    const c = data.case || {};
+    const spec = data.spec || {};
+    const rows = data.items || [];
+    const byKey = debtReqRowsByKey(rows);
+    const toggles = debtReqBuildStateFromRows(spec, rows);
+    const candidates = (data.laf_number_candidates || {}).candidates || [];
+    const selectedCaseId = state.laf?.selectedWorkbench?.case?.id || c.id || "";
+    const toggleHtml = (spec.toggles || []).map(t => `
+        <label class="checkline"><input type="checkbox" class="debt-req-toggle" data-key="${esc(t.key)}" ${toggles[t.key] ? "checked" : ""}> ${esc(t.label)}</label>
+    `).join("");
+    const sectionsHtml = (spec.sections || []).map(section => renderDebtReqSection(section, byKey, toggles, spec.status_options || ["待補", "已繳", "免附"])).join("");
+    const customRows = rows.filter(r => String(r.item_key || "").startsWith("custom_item_"));
+    const html = `
+        <div class="card">
+            <div class="laf-detail-head">
+                <div>
+                    <h3>消債案件應備文件確認表</h3>
+                    <div class="muted">本所案號：${esc(c.case_number || "")}｜法院案號：${esc(c.court_case_no || c.court_case_number || "")}｜法扶字號：${esc(c.laf_case_no || c.legal_aid_number || c.application_no || "")}</div>
+                </div>
+                <button class="btn" data-act="laf-checklist-reload">重新載入</button>
+            </div>
+            <input type="hidden" id="debtReqCaseNumber" value="${esc(c.case_number || "")}">
+            <input type="hidden" id="debtReqCaseId" value="${esc(selectedCaseId || "")}">
+            <div class="soft-block">
+                <div class="field-grid cols-3">
+                    <div class="field"><label>法扶字號</label><input id="debtReqLafNo" value="${esc(c.laf_case_no || c.legal_aid_number || c.application_no || "")}" placeholder="例：1150320-E-014"></div>
+                    <div class="field"><label>候選字號</label><input value="${esc(candidates.join("、"))}" readonly></div>
+                    <div class="field"><label>來源</label><input value="${esc((data.laf_number_candidates || {}).source || "未找到")}" readonly></div>
+                </div>
+                <div class="toolbar">
+                    <button class="btn primary" data-act="laf-sync-number" data-id="${esc(selectedCaseId || "")}">自動帶入/生成字號</button>
+                </div>
+            </div>
+            <div class="soft-block">
+                <h4>請根據當事人狀況勾選</h4>
+                <div class="check-grid">${toggleHtml}</div>
+            </div>
+            <div id="debtReqSections">${sectionsHtml}</div>
+            <div class="soft-block" id="debtReqCustomBox">
+                <h4>其他自訂項目</h4>
+                <div id="debtReqCustomRows">${customRows.map((r, idx) => renderDebtReqCustomRow(idx + 1, r)).join("")}</div>
+                <button class="btn" data-act="debt-req-custom-add">新增自訂項目</button>
+            </div>
+            <div class="toolbar sticky-actions">
+                <button class="btn primary" data-act="debt-req-save">儲存進度</button>
+                <button class="btn" data-act="debt-req-text">產生可複製文字</button>
+            </div>
+            <div id="debtReqTextBox"></div>
+        </div>
+    `;
+    const modalBody = document.getElementById("wbBody")
+        || document.querySelector("#wbModal .modal-body, #wbModalBody")
+        || document.querySelector(".modal-body");
+    if (modalBody) modalBody.innerHTML = html;
+    bindDebtReqToggleRender();
+}
+
+function renderDebtReqSection(section, byKey, toggles, statusOptions) {
+    if (section.show_when && !toggles[section.show_when]) return "";
+    const visibleItems = (section.items || []).filter(item => debtReqItemVisible(item, toggles));
+    if (!visibleItems.length || section.key === "custom") return "";
+    return `
+        <div class="laf-detail-section debt-req-section" data-section="${esc(section.key || "")}">
+            <h4>${esc(section.title || "")}</h4>
+            <div class="table-wrap"><table class="compact-table">
+                <thead><tr><th>文件項目</th><th>狀態</th><th>備註</th></tr></thead>
+                <tbody>${visibleItems.map(item => {
+                    const saved = byKey.get(String(item.item_key || "")) || {};
+                    const status = saved.status || "待補";
+                    return `<tr class="debt-req-row" data-key="${esc(item.item_key || "")}" data-label="${esc(item.item_label || "")}" data-link="${esc(item.link || "")}">
+                        <td>${esc(item.item_label || "")}${item.link ? `<div class="muted">${esc(shortText(item.link, 80))}</div>` : ""}</td>
+                        <td><select class="debt-req-status">${statusOptions.map(s => `<option value="${esc(s)}" ${s === status ? "selected" : ""}>${esc(s)}</option>`).join("")}</select></td>
+                        <td><input class="debt-req-notes" value="${esc(saved.notes || "")}" placeholder="備註"></td>
+                    </tr>`;
+                }).join("")}</tbody>
+            </table></div>
+        </div>
+    `;
+}
+
+function renderDebtReqCustomRow(idx, row = {}) {
+    const status = row.status || "待補";
+    return `
+        <div class="field-grid cols-3 debt-req-custom-row" data-key="${esc(row.item_key || `custom_item_${idx}`)}">
+            <div class="field"><label>項目</label><input class="debt-req-custom-label" value="${esc(row.item_label || "")}" placeholder="自訂文件"></div>
+            <div class="field"><label>狀態</label><select class="debt-req-custom-status">${["待補", "已繳", "免附"].map(s => `<option value="${esc(s)}" ${s === status ? "selected" : ""}>${esc(s)}</option>`).join("")}</select></div>
+            <div class="field"><label>備註</label><input class="debt-req-custom-notes" value="${esc(row.notes || "")}" placeholder="備註"></div>
+        </div>
+    `;
+}
+
+function collectDebtReqToggles() {
+    const out = {};
+    document.querySelectorAll(".debt-req-toggle").forEach(input => {
+        out[input.dataset.key] = input.checked;
+    });
+    return out;
+}
+
+function bindDebtReqToggleRender() {
+    document.querySelectorAll(".debt-req-toggle").forEach(input => {
+        input.addEventListener("change", () => {
+            const data = state.lafDebtRequired;
+            if (!data) return;
+            const toggles = collectDebtReqToggles();
+            const byKey = debtReqRowsByKey([...(data.items || []), ...collectDebtReqItems({ includeHidden: true })]);
+            document.getElementById("debtReqSections").innerHTML = (data.spec.sections || [])
+                .map(section => renderDebtReqSection(section, byKey, toggles, data.spec.status_options || ["待補", "已繳", "免附"]))
+                .join("");
+            const customBox = document.getElementById("debtReqCustomBox");
+            if (customBox) customBox.style.display = toggles.other_items ? "" : "none";
+        });
+    });
+    const customBox = document.getElementById("debtReqCustomBox");
+    if (customBox) customBox.style.display = collectDebtReqToggles().other_items ? "" : "none";
+}
+
+function collectDebtReqItems(options = {}) {
+    const items = [];
+    document.querySelectorAll(".debt-req-row").forEach(row => {
+        if (!options.includeHidden && row.offsetParent === null) return;
+        items.push({
+            item_key: row.dataset.key || "",
+            item_label: row.dataset.label || "",
+            status: row.querySelector(".debt-req-status")?.value || "待補",
+            notes: row.querySelector(".debt-req-notes")?.value || "",
+            link: row.dataset.link || "",
+        });
+    });
+    if (collectDebtReqToggles().other_items || options.includeHidden) {
+        document.querySelectorAll(".debt-req-custom-row").forEach((row, idx) => {
+            const label = row.querySelector(".debt-req-custom-label")?.value?.trim() || "";
+            if (!label) return;
+            items.push({
+                item_key: row.dataset.key || `custom_item_${idx + 1}`,
+                item_label: label,
+                status: row.querySelector(".debt-req-custom-status")?.value || "待補",
+                notes: row.querySelector(".debt-req-custom-notes")?.value || "",
+            });
+        });
+    }
+    return items;
+}
+
+async function reloadLafChecklistFromModal() {
+    await loadLafDebtRequiredChecklist();
+}
+
+async function saveDebtReqChecklist() {
+    const caseNumber = (document.getElementById("debtReqCaseNumber")?.value || "").trim();
+    const items = collectDebtReqItems();
+    const result = await api("/api/osc/checklists/debt-required/save", "POST", { case_number: caseNumber, items });
+    if (!result || result.ok === false) throw new Error(result?.error || "儲存應備事項表失敗");
+    showToast(`已儲存 ${result.saved_count || 0} 項，移除 ${result.deleted_count || 0} 項未啟用資料。`, "ok");
+    await loadLafDebtRequiredChecklist(caseNumber);
+    await loadLaf();
+}
+
+function addDebtReqCustomRow() {
+    const box = document.getElementById("debtReqCustomRows");
+    if (!box) return;
+    const idx = box.querySelectorAll(".debt-req-custom-row").length + 1;
+    box.insertAdjacentHTML("beforeend", renderDebtReqCustomRow(idx));
+}
+
+async function syncLafNumberForCase(caseId) {
+    const id = String(caseId || document.getElementById("debtReqCaseId")?.value || state.laf?.selectedWorkbench?.case?.id || "").trim();
+    if (!id) return showToast("找不到案件 ID，無法自動帶入字號。", "warn");
+    const manual = (document.getElementById("debtReqLafNo")?.value || "").trim();
+    const result = await api(`/api/osc/cases/${encodeURIComponent(id)}/laf-number/sync`, "POST", manual ? { laf_case_no: manual } : {});
+    if (!result || result.ok === false) {
+        if (result?.error === "multiple_candidates") {
+            showToast(`找到多個候選字號：${(result.candidates || []).join("、")}，請手動填入後再按一次。`, "warn", 5200);
+            return;
+        }
+        throw new Error(result?.error || "自動帶入字號失敗");
+    }
+    showToast(`已帶入法扶字號：${result.laf_case_no}`, "ok");
+    await openLafCaseDetail(id, { silent: true });
+    const caseNumber = document.getElementById("debtReqCaseNumber")?.value || "";
+    if (caseNumber) await loadLafDebtRequiredChecklist(caseNumber);
+}
+
+function generateDebtReqCopyText() {
+    const items = collectDebtReqItems();
+    const pending = items.filter(item => !isLafDebtDoneStatus(item.status));
+    const received = items.filter(item => isLafDebtDoneStatus(item.status));
+    let text = "您好，關於您的債務清理案件，目前文件準備進度如下：\n\n";
+    if (pending.length) {
+        text += "【尚需補正的文件】\n";
+        text += pending.map((item, idx) => {
+            const note = item.notes ? ` [${item.notes}]` : "";
+            const link = item.link ? `\n${item.link}` : "";
+            return `${idx + 1}. ${item.item_label}${note}${link}`;
+        }).join("\n\n") + "\n\n";
+    }
+    if (received.length) {
+        text += "【已收到或免附的文件】\n";
+        text += received.map(item => `✓ ${item.item_label}`).join("\n") + "\n\n";
+    }
+    text += pending.length
+        ? "再請您盡快準備以上尚需補正的文件，並影印給我們；如有問題，請再聯繫，感謝您。"
+        : "目前您應備的文件皆已備齊，感謝您的配合！";
+    const box = document.getElementById("debtReqTextBox");
+    if (box) {
+        box.innerHTML = `<div class="soft-block"><h4>可複製文字</h4><textarea style="width:100%;min-height:240px;">${esc(text)}</textarea></div>`;
+        const ta = box.querySelector("textarea");
+        ta?.focus();
+        ta?.select();
     }
 }
 

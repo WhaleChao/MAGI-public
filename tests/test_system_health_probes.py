@@ -334,6 +334,7 @@ def test_worldmonitor_collect_and_analyze_emits_degraded_report(monkeypatch):
 def test_worldmonitor_collect_and_analyze_uses_structured_fallback_when_melchior_fails(monkeypatch):
     module = _load_worldmonitor_module()
 
+    monkeypatch.setattr(module, "_translate_to_zh_hant", lambda text, timeout_sec=8: f"繁中：{text}")
     monkeypatch.setattr(
         module,
         "collect_news",
@@ -355,6 +356,95 @@ def test_worldmonitor_collect_and_analyze_uses_structured_fallback_when_melchior
     assert "[推理失敗]" not in report
     assert "重大事件概述" in report
     assert "對台灣與亞太的潛在影響" in report
+
+
+def test_worldmonitor_collect_without_reasoning_still_emits_readable_summary(monkeypatch):
+    module = _load_worldmonitor_module()
+
+    monkeypatch.setattr(module, "_translate_to_zh_hant", lambda text, timeout_sec=8: f"繁中：{text}")
+    monkeypatch.setattr(
+        module,
+        "collect_news",
+        lambda: ([
+            {"source": "BBC World", "title": "Asia supply chains face pressure", "summary": "Ports and energy routes remain under scrutiny."},
+        ], [{"source": "BBC World", "ok": True, "count": 1, "error": ""}]),
+    )
+    monkeypatch.setattr(
+        module,
+        "collect_markets",
+        lambda: ({"SPY": {"price": 500.0, "change_pct": 0.5}}, {"ok": True, "detail": "1/1 quotes"}),
+    )
+    monkeypatch.setattr(module, "_reason_with_melchior", lambda prompt: "SHOULD NOT RUN")
+    monkeypatch.setattr(module, "_store_to_memory", lambda content, metadata=None: True)
+
+    report = module.collect_and_analyze(use_melchior=False)
+
+    assert "重大事件概述" in report
+    assert "對台灣與亞太的潛在影響" in report
+    assert "**分析**: 來源整理" in report
+    assert "SHOULD NOT RUN" not in report
+
+
+def test_worldmonitor_rejects_chatty_melchior_output(monkeypatch):
+    module = _load_worldmonitor_module()
+
+    monkeypatch.setattr(module, "_translate_to_zh_hant", lambda text, timeout_sec=8: f"繁中：{text}")
+    monkeypatch.setattr(
+        module,
+        "collect_news",
+        lambda: ([
+            {"source": "BBC World", "title": "Asia officials monitor trade risk", "summary": "Regional officials discuss resilience."},
+        ], [{"source": "BBC World", "ok": True, "count": 1, "error": ""}]),
+    )
+    monkeypatch.setattr(module, "collect_markets", lambda: ({}, {"ok": True, "detail": "no symbols"}))
+    monkeypatch.setattr(module, "_reason_with_melchior", lambda prompt: "好的，我是 MAGI 系統的情報分析員 Melchior。我已接收並審閱。")
+    monkeypatch.setattr(module, "_store_to_memory", lambda content, metadata=None: True)
+
+    report = module.collect_and_analyze(use_melchior=True)
+
+    assert "我是 MAGI" not in report
+    assert "我已接收" not in report
+    assert "**分析**: 來源整理" in report
+
+
+def test_worldmonitor_plain_text_output_strips_markdown_shell():
+    module = _load_worldmonitor_module()
+
+    plain = module.render_plain_text_report(
+        """# 🌐 MAGI 全球情報摘要
+**時間**: 2026-05-07 08:00:00
+**分析**: 來源整理
+
+---
+
+## 重大事件概述
+- [BBC World](https://example.test)：市場關注供應鏈。
+
+<details><summary>原始資料</summary>
+## 📰 全球新聞
+- raw markdown
+</details>"""
+    )
+
+    assert "# " not in plain
+    assert "**" not in plain
+    assert "<details>" not in plain
+    assert "BBC World：市場關注供應鏈。" in plain
+
+
+def test_worldmonitor_structured_fallback_translates_source_digest(monkeypatch):
+    module = _load_worldmonitor_module()
+
+    monkeypatch.setattr(module, "_translate_to_zh_hant", lambda text, timeout_sec=8: "亞洲供應鏈面臨壓力。港口與能源航線仍受關注。")
+
+    report = module._fallback_news_analysis(
+        [{"source": "BBC World", "title": "Asia supply chains face pressure", "summary": "Ports and energy routes remain under scrutiny."}],
+        {},
+        "## 🩺 來源健康狀態\n- 新聞來源：1/1 成功",
+    )
+
+    assert "BBC World：亞洲供應鏈面臨壓力" in report
+    assert "Asia supply chains face pressure" not in report
 
 
 def test_dashboard_openclaw_button_targets_local_route():

@@ -45,6 +45,7 @@ def build_install_plan(*, include_optional: bool = True, venv_dir: Path = VENV_D
         InstallStep("create_venv", [python, "-m", "venv", str(venv_dir)], description="Create an isolated Python environment."),
         InstallStep("upgrade_pip", [pip_python, "-m", "pip", "install", "--upgrade", "pip", "wheel"], description="Upgrade packaging tools."),
         InstallStep("install_core", [pip_python, "-m", "pip", "install", "-r", str(REPO_ROOT / "requirements.txt")], description="Install MAGI core dependencies."),
+        InstallStep("seed_cron_jobs", [pip_python, str(REPO_ROOT / "scripts" / "seed_cron_jobs.py")], description="Create local daily job definitions such as worldmonitor-intel."),
         InstallStep("doctor", [pip_python, str(REPO_ROOT / "scripts" / "magi_doctor.py"), "--json"], description="Verify the installation."),
     ]
     if include_optional:

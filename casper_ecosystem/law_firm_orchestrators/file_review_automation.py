@@ -6747,10 +6747,14 @@ class FileReviewManager:
             if download_btns:
                 # (SmartDL) 預先掃描目標資料夾
                 review_root_folder = None
+                review_file_index = {}
                 if target_case_folder:
                     review_root_folder = self._find_review_folder(target_case_folder)
                     if review_root_folder:
                         self.log(f"  🔍 智慧檢查啟用: 將掃描 {os.path.basename(review_root_folder)} 避免重複下載")
+                        review_file_index = self._build_existing_review_file_index(review_root_folder)
+                        if review_file_index:
+                            self.log(f"  🔍 已建立既有閱卷檔案索引: {len(review_file_index)} 組檔名特徵")
 
                 # ★ 重要: 在切換到任何 iframe 之前，取得主視窗 handle
                 self.driver.switch_to.default_content()
@@ -6779,58 +6783,25 @@ class FileReviewManager:
                         # (SmartDL) 檢查檔案是否已存在
                         if review_root_folder and self.enable_preclick_smart_skip:
                             try:
-                                # 嘗試從按鈕所在的列提取檔名
-                                # 通常結構: tr -> td -> button
-                                # 檔名通常在同一 tr 的某個 td 內，或者 button 的 title/onclick 屬性中
                                 row = btn.find_element(By.XPATH, "./ancestor::tr")
-                                row_text = row.text
-                                
-                                # 因為檔名可能不完整，我們檢查 row text 是否包含 "pdf"
-                                # 這裡做一個簡單的啟發式檢查：如果 row text 切割出的任何字串出現在資料夾中
-                                
-                                # 更精確的方法：嘗試找到帶有 .pdf 的連結或文字
-                                filename_candidates = []
-                                try:
-                                    # 找同一列的連結
-                                    links = row.find_elements(By.TAG_NAME, "a")
-                                    for link in links:
-                                        txt = link.text.strip()
-                                        if txt: filename_candidates.append(txt)
-                                except Exception as e: logger.debug("Failed to find filename links in row: %s", e)
-                                
-                                # 如果沒連結，用 row text 分割
-                                if not filename_candidates:
-                                    parts = row_text.split()
-                                    filename_candidates = [p for p in parts if len(p) > 3]
-                                
-                                # 檢查候選檔名
-                                found_existing = False
-                                for candidate in filename_candidates:
-                                    # 假如 candidate 是 "筆錄.pdf"，我們就找是否有這個檔案
-                                    # 如果 candidate 不含副檔名，我們加上 .pdf 試試
-                                    check_names = [candidate]
-                                    if not candidate.lower().endswith('.pdf'):
-                                        check_names.append(candidate + ".pdf")
-                                        
-                                    for name in check_names:
-                                        existing_path = self._find_file_recursively(review_root_folder, name)
-                                        if existing_path:
-                                            self.log(f"  ⏭️ [智慧跳過] 檔案已存在: {name} -> {existing_path}")
-                                            try:
-                                                self._last_smart_skipped_files.append({
-                                                    "file": name,
-                                                    "existing_path": existing_path,
-                                                    "review_root_folder": review_root_folder,
-                                                })
-                                            except Exception:
-                                                logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 5640, exc_info=True)
-                                            found_existing = True
-                                            break
-                                    if found_existing: break
-                                
-                                if found_existing:
-                                    continue # 跳過此按鈕的點擊
-                                    
+                                matched = self._popup_download_already_exists(
+                                    row=row,
+                                    button=btn,
+                                    existing_index=review_file_index,
+                                    review_root_folder=review_root_folder,
+                                )
+                                if matched:
+                                    display_name, existing_path = matched
+                                    self.log(f"  ⏭️ [智慧跳過] 檔案已存在: {display_name} -> {existing_path}")
+                                    try:
+                                        self._last_smart_skipped_files.append({
+                                            "file": display_name,
+                                            "existing_path": existing_path,
+                                            "review_root_folder": review_root_folder,
+                                        })
+                                    except Exception:
+                                        logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 5640, exc_info=True)
+                                    continue
                             except Exception as smart_e:
                                 self.log(f"  ⚠️ 智慧檢查失敗 (不影響下載): {smart_e}")
 
@@ -8906,6 +8877,159 @@ class FileReviewManager:
         except Exception:
             logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 7344, exc_info=True)
 
+        return None
+
+    @staticmethod
+    def _clean_review_filename_text(value: str) -> str:
+        """Return a filename-ish token from portal text/attributes."""
+        text = html.unescape(str(value or "")).strip()
+        if not text:
+            return ""
+        text = urllib.parse.unquote(text)
+        if "://" in text:
+            try:
+                text = os.path.basename(urllib.parse.urlparse(text).path)
+            except Exception:
+                text = os.path.basename(text)
+        text = text.split("?", 1)[0].split("#", 1)[0]
+        text = os.path.basename(text.replace("\\", "/"))
+        text = re.sub(r"^\s*(?:下載|線上下載|檔名|文件名稱|附件)\s*[:：]?\s*", "", text)
+        text = re.sub(r"\s+", " ", text).strip(" \t\r\n\"'[]【】")
+        return text
+
+    @classmethod
+    def _review_filename_keys(cls, filename: str) -> List[str]:
+        """Build forgiving keys for duplicate detection before clicking download."""
+        cleaned = cls._clean_review_filename_text(filename)
+        if not cleaned:
+            return []
+        without_chrome_suffix = re.sub(r"\s*\(\d+\)(?=(?:\.[^.]+)?$)", "", cleaned)
+        stem, ext = os.path.splitext(without_chrome_suffix)
+        raw_variants = {
+            cleaned,
+            without_chrome_suffix,
+            stem,
+        }
+        keys = []
+        for raw in raw_variants:
+            raw = (raw or "").strip().lower()
+            if not raw:
+                continue
+            normalized = re.sub(r"[^0-9a-z\u3400-\u9fff]+", "", raw)
+            for key in (raw, normalized):
+                if key and key not in keys:
+                    keys.append(key)
+        return keys
+
+    def _build_existing_review_file_index(self, root_folder: str) -> Dict[str, str]:
+        """Index existing files under the review folder using exact and normalized keys."""
+        index: Dict[str, str] = {}
+        if not root_folder or not os.path.exists(root_folder):
+            return index
+        _max_depth = 4
+        _visited = 0
+        _stack = [(root_folder, 0)]
+        ignored_ext = {".crdownload", ".download", ".part", ".tmp"}
+        try:
+            while _stack:
+                cur, depth = _stack.pop()
+                _visited += 1
+                if _visited % 50 == 0:
+                    time.sleep(0.05)
+                if _visited > 1000:
+                    break
+                try:
+                    with os.scandir(cur) as it:
+                        for e in it:
+                            if e.is_file(follow_symlinks=False):
+                                if os.path.splitext(e.name)[1].lower() in ignored_ext:
+                                    continue
+                                for key in self._review_filename_keys(e.name):
+                                    index.setdefault(key, e.path)
+                            elif e.is_dir(follow_symlinks=False) and depth < _max_depth:
+                                _stack.append((e.path, depth + 1))
+                except Exception:
+                    continue
+        except Exception:
+            logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 7351, exc_info=True)
+        return index
+
+    def _extract_popup_download_filename_candidates(self, row=None, button=None) -> List[str]:
+        """Extract likely filenames from the portal download row without requiring one DOM shape."""
+        candidates: List[str] = []
+
+        def _add(value):
+            text = self._clean_review_filename_text(value)
+            if not text:
+                return
+            if text in {"下載", "線上下載", "單檔批次下載", "檢視", "開啟"}:
+                return
+            if len(text) < 2:
+                return
+            if text not in candidates:
+                candidates.append(text)
+
+        def _attrs(el):
+            for attr in (
+                "download", "title", "aria-label", "data-filename", "data-file",
+                "data-name", "href", "onclick", "value",
+            ):
+                try:
+                    val = el.get_attribute(attr)
+                except Exception:
+                    val = ""
+                if val:
+                    _add(val)
+
+        for el in (button, row):
+            if el is not None:
+                _attrs(el)
+                try:
+                    _add(el.text)
+                except Exception:
+                    pass
+
+        if row is not None:
+            try:
+                xpath_locator = getattr(By, "XPATH", "xpath")
+                cells = row.find_elements(xpath_locator, ".//td|.//th|.//a|.//span")
+            except Exception:
+                cells = []
+            for cell in cells:
+                try:
+                    _add(cell.text)
+                except Exception:
+                    pass
+                _attrs(cell)
+
+        combined = "\n".join(candidates)
+        for match in re.findall(r"[\w\u3400-\u9fff（）()【】\[\]\-_. ]+\.(?:pdf|docx?|xlsx?|zip|jpg|jpeg|png|tiff?)", combined, flags=re.I):
+            _add(match)
+
+        return candidates
+
+    def _popup_download_already_exists(
+        self,
+        row=None,
+        button=None,
+        existing_index: Optional[Dict[str, str]] = None,
+        review_root_folder: str = "",
+    ) -> Optional[Tuple[str, str]]:
+        """Return (candidate, existing_path) when the popup row is already archived."""
+        index = existing_index or {}
+        candidates = self._extract_popup_download_filename_candidates(row=row, button=button)
+        for candidate in candidates:
+            keys = self._review_filename_keys(candidate)
+            if not keys and "." not in candidate:
+                keys = self._review_filename_keys(candidate + ".pdf")
+            for key in keys:
+                existing_path = index.get(key)
+                if existing_path:
+                    return candidate, existing_path
+            if review_root_folder:
+                exact = self._find_file_recursively(review_root_folder, candidate)
+                if exact:
+                    return candidate, exact
         return None
 
     def _file_exists_recursively(self, root_folder: str, filename: str) -> bool:

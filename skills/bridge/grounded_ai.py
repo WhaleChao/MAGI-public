@@ -744,9 +744,18 @@ def _generate_local(prompt, temperature=0.4, timeout=90, num_ctx=6144, stream=Fa
     except Exception as e:
         logger.debug("oMLX fallthrough: %s", e)
 
-    # Fallback: call oMLX /v1/chat/completions directly (OpenAI-compatible format)
+    # Fallback: call oMLX /v1/chat/completions directly (OpenAI-compatible format).
+    # Resolve against /v1/models first so stale env values do not trigger 404.
+    local_model = LOCAL_MODEL_NAME
+    try:
+        models_fn = getattr(melchior_client, "_local_openai_v1_models", None)
+        pick_fn = getattr(melchior_client, "_pick_openai_model", None)
+        if callable(models_fn) and callable(pick_fn):
+            local_model = pick_fn(LOCAL_MODEL_NAME, models_fn(timeout=3)) or LOCAL_MODEL_NAME
+    except Exception:
+        local_model = LOCAL_MODEL_NAME
     payload = {
-        "model": LOCAL_MODEL_NAME,
+        "model": local_model,
         "messages": [{"role": "user", "content": prompt}],
         "temperature": temperature,
         "max_tokens": 2048,

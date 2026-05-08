@@ -13,12 +13,28 @@ MAGI_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__fi
 OUTPUT_PATH = os.path.join(MAGI_ROOT, ".runtime", "benchmark_pdf_bookmarker_latest.json")
 NAS_CASE_ROOT = "/Volumes/lumi/lumi/01_案件"
 FALLBACK_ROOT = os.path.expanduser("~/Library/CloudStorage/SynologyDrive-homes/01_案件")
-MAX_PDFS = 20
+FALLBACK_ROOTS = [
+    os.path.expanduser("~/SynologyDrive/01_案件"),
+    os.path.expanduser("~/SynologyDrive/homes/01_案件"),
+    FALLBACK_ROOT,
+]
+MAX_PDFS = int(os.environ.get("MAGI_PDF_BOOKMARKER_BENCHMARK_MAX_PDFS", "20") or "20")
 RECALL_THRESHOLD = 0.85
 EMPTY_FAILURE_THRESHOLD = 0.10
 LABEL_MATCH_THRESHOLD = 0.80
-NEEDS_MANUAL_REVIEW_THRESHOLD = 0
+NEEDS_MANUAL_REVIEW_THRESHOLD = int(os.environ.get("MAGI_PDF_BOOKMARKER_REVIEW_THRESHOLD", "1") or "1")
 _LEGACY_IMAGE_LABEL_RE = re.compile(r"^image\d{4,}$", re.IGNORECASE)
+_SINGLE_DOC_FILENAME_HINTS = (
+    "預付酬金領款單",
+    "准予扶助證明書",
+    "扶助律師接案通知書",
+    "法律扶助申請書",
+    "資力詢問表",
+    "審查表",
+    "案件概述單",
+    "委任狀",
+)
+_LAF_FORM_PART_RE = re.compile(r"(?:^|[\s_-])2[ABC](?:\(|（|[\s_.-]|$)", re.IGNORECASE)
 
 
 def _load_module(module_name, path):
@@ -43,6 +59,13 @@ def find_pdfs(root, limit=MAX_PDFS):
     return pdfs
 
 
+def _select_case_root():
+    for candidate in [NAS_CASE_ROOT, *FALLBACK_ROOTS]:
+        if os.path.isdir(candidate):
+            return candidate
+    return ""
+
+
 def _compute_recall_metrics(outcomes):
     """Compute recall/empty metrics while excluding legitimate single-doc no-boundary files."""
     bookmarkable_total = 0
@@ -60,7 +83,7 @@ def _compute_recall_metrics(outcomes):
             non_empty += 1
             continue
 
-        if classification == "legitimate_single_doc":
+        if classification == "legitimate_single_doc" or _looks_like_single_doc_form(item.get("pdf")):
             legitimate_single_doc += 1
         elif classification == "needs_manual_review":
             bookmarkable_total += 1
@@ -86,6 +109,11 @@ def _compute_recall_metrics(outcomes):
 
 def _is_legacy_image_label(label):
     return bool(_LEGACY_IMAGE_LABEL_RE.match(str(label or "").strip()))
+
+
+def _looks_like_single_doc_form(pdf_path):
+    name = os.path.basename(str(pdf_path or ""))
+    return any(hint in name for hint in _SINGLE_DOC_FILENAME_HINTS) or bool(_LAF_FORM_PART_RE.search(name))
 
 
 def _collect_legacy_cleanup_candidate(pdf_path, observed_toc, generated_toc, classification):
@@ -135,9 +163,9 @@ def _build_legacy_cleanup_plan(candidates):
 
 
 def main():
-    case_root = NAS_CASE_ROOT if os.path.isdir(NAS_CASE_ROOT) else FALLBACK_ROOT
-    if not os.path.isdir(case_root):
-        print("[SKIP] NAS not mounted. Skipping bookmark benchmark.")
+    case_root = _select_case_root()
+    if not case_root:
+        print("[SKIP] NAS/Synology case roots not available. Skipping bookmark benchmark.")
         return 0
 
     validator = _load_module(

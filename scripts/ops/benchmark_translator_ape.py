@@ -83,6 +83,26 @@ SUITE = [
 _CRITICAL_VALIDATOR_REASONS = {"numbers_missing", "case_numbers_missing"}
 
 
+def _int_env(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name, "") or default)
+    except ValueError:
+        return default
+
+
+def _selected_suite() -> list[dict]:
+    max_cases = _int_env("MAGI_TRANSLATOR_APE_BENCH_MAX_CASES", len(SUITE))
+    return SUITE[: max(1, min(len(SUITE), max_cases))]
+
+
+def _llm_timeout() -> int:
+    return max(45, _int_env("MAGI_TRANSLATOR_APE_BENCH_LLM_TIMEOUT_SEC", 90))
+
+
+def _skip_gtx() -> bool:
+    return os.environ.get("MAGI_TRANSLATOR_APE_BENCH_SKIP_GTX", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _term_hit_rate(text: str, expected: list) -> float:
     if not expected:
         return 1.0
@@ -95,7 +115,7 @@ def _bench_gtx(item):
     t0 = time.monotonic()
     r = _translate({
         "text": item["zh"], "source_lang": "zh-Hant", "target_lang": "en",
-        "mode": "full", "export": "0", "llm_timeout": 45, "timeout_sec": 90,
+        "mode": "full", "export": "0", "llm_timeout": _llm_timeout(), "timeout_sec": _llm_timeout() + 45,
     })
     return {
         "id": item["id"], "stage": "gtx_primary",
@@ -122,7 +142,7 @@ def _bench_ape(item):
     t0 = time.monotonic()
     r = translate_with_ape(
         item["zh"], source_lang="zh-Hant", target_lang="en",
-        llm_timeout=45, apple_timeout=10.0,
+        llm_timeout=_llm_timeout(), apple_timeout=10.0,
     )
     return {
         "id": item["id"], "stage": "apple_ape",
@@ -247,15 +267,18 @@ def main() -> int:
     _warmup_omlx(timeout_sec=60)
 
     os.environ.setdefault("MAGI_TRANSLATOR_APE", "1")
+    suite = _selected_suite()
     rows = []
-    for item in SUITE:
-        rows.append(_bench_gtx(item))
+    for item in suite:
+        if not _skip_gtx():
+            rows.append(_bench_gtx(item))
         rows.append(_bench_apple_baseline(item))
         rows.append(_bench_ape(item))
 
-    gtx_hit = sum(r["term_hit_rate"] for r in rows if r["stage"] == "gtx_primary") / len(SUITE)
-    base_hit = sum(r["term_hit_rate"] for r in rows if r["stage"] == "apple_baseline") / len(SUITE)
-    ape_hit = sum(r["term_hit_rate"] for r in rows if r["stage"] == "apple_ape") / len(SUITE)
+    gtx_rows = [r for r in rows if r["stage"] == "gtx_primary"]
+    gtx_hit = (sum(r["term_hit_rate"] for r in gtx_rows) / len(gtx_rows)) if gtx_rows else None
+    base_hit = sum(r["term_hit_rate"] for r in rows if r["stage"] == "apple_baseline") / len(suite)
+    ape_hit = sum(r["term_hit_rate"] for r in rows if r["stage"] == "apple_ape") / len(suite)
     ape_degraded = sum(1 for r in rows if r["stage"] == "apple_ape" and r.get("degraded"))
 
     case_results = _evaluate_case_results(rows)
@@ -267,9 +290,9 @@ def main() -> int:
         "success": not has_failures,
         "ok": not has_failures,
         "has_failures": has_failures,
-        "cases": len(SUITE),
+        "cases": len(suite),
         "avg_term_hit_rate": {
-            "gtx_primary": round(gtx_hit, 3),
+            "gtx_primary": round(gtx_hit, 3) if gtx_hit is not None else None,
             "apple_baseline": round(base_hit, 3),
             "apple_ape": round(ape_hit, 3),
         },
@@ -289,7 +312,7 @@ def main() -> int:
     regressed = (
         bool(summary.get("has_failures"))
         or not summary["ape_beats_baseline"]
-        or ape_degraded > len(SUITE) // 2
+        or ape_degraded > len(suite) // 2
     )
     if regressed:
         _send_dc_alert(summary)

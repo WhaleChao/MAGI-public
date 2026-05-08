@@ -1,5 +1,5 @@
 """
-OSC → Google Calendar 單向同步
+OSC ↔ Google Calendar 同步
 ================================
 push_todo_to_gcal       : 推送 case_todos 待辦到 GCal（全天事件）
 push_calendar_event_to_gcal : 推送 calendar_events 到 GCal（時段事件）
@@ -10,22 +10,24 @@ run_sync                : 主入口，回 stats dict
   calendar_events.google_event_id → 同上
 
 政策：
-  - 單向 MAGI → GCal，不實作反向
-  - dry_run=True 時不呼叫任何 GCal write API
+  - MAGI → GCal 推送至 settings.gcal_calendar_id
+  - GCal → MAGI 匯入會掃 settings.gcal_import_calendar_ids；未設定時掃使用者可見的所有日曆
+  - dry_run=True 時不呼叫任何 GCal write API，也不寫入 DB
   - 掃未來 30 天內、未刪除的 todo / calendar_event
 """
 
 from __future__ import annotations
 
 import logging
+import re
 import sys
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
 
-SCOPES = ["https://www.googleapis.com/auth/calendar.events"]
+SCOPES = ["https://www.googleapis.com/auth/calendar"]
 TOKEN_PATH = Path.home() / ".magi" / "google" / "token.json"
 
 # ── credentials helpers ───────────────────────────────────────────────────────
@@ -55,6 +57,18 @@ def _build_service(creds):
     return build("calendar", "v3", credentials=creds, cache_discovery=False)
 
 
+def _split_calendar_ids(raw: str | None) -> list[str]:
+    values = [x.strip() for x in re.split(r"[,;\n]+", raw or "") if x.strip()]
+    seen: set[str] = set()
+    out: list[str] = []
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        out.append(value)
+    return out
+
+
 # ── DB helpers ────────────────────────────────────────────────────────────────
 
 
@@ -82,6 +96,18 @@ def _osc_exec_sql(sql: str, params: tuple = (), fetch: str = "all"):
     from api.osc.utils import _osc_exec
 
     return _osc_exec(sql, params, fetch=fetch)
+
+
+def _get_setting_value(key: str, default: str = "") -> str:
+    try:
+        row, _ = _osc_exec_sql("SELECT value FROM settings WHERE `key`=%s", (key,), fetch="one")
+        if row:
+            if isinstance(row, dict):
+                return str(row.get("value") or default)
+            return str(row[0] or default)
+    except Exception as exc:
+        logger.debug("setting lookup failed for %s: %s", key, exc)
+    return default
 
 
 # ── event builders ────────────────────────────────────────────────────────────
@@ -128,6 +154,163 @@ def _make_cal_event(ev: dict) -> dict:
             "overrides": [{"method": "popup", "minutes": 1440}],
         },
     }
+
+
+def _list_import_calendar_ids(service, configured: str = "") -> list[str]:
+    explicit = _split_calendar_ids(configured)
+    if explicit:
+        return explicit
+    try:
+        items = (
+            service.calendarList()
+            .list(minAccessRole="reader", showHidden=True)
+            .execute()
+            .get("items", [])
+        )
+        return [str(item.get("id") or "").strip() for item in items if item.get("id")]
+    except Exception as exc:
+        logger.warning("calendarList lookup failed, falling back to primary: %s", exc)
+        return ["primary"]
+
+
+def _event_start_date_time(event: dict) -> tuple[str, str]:
+    start = event.get("start") or {}
+    if not isinstance(start, dict):
+        return "", ""
+    date_only = str(start.get("date") or "").strip()
+    if date_only:
+        return date_only, ""
+    date_time = str(start.get("dateTime") or "").strip()
+    if not date_time:
+        return "", ""
+    day = date_time[:10]
+    match = re.search(r"T(\d{2}:\d{2})", date_time)
+    return day, (match.group(1) if match else "")
+
+
+def _classify_todo_type(summary: str) -> str:
+    for kw, todo_type in [
+        ("開庭", "開庭"),
+        ("期日", "期日"),
+        ("調解", "調解"),
+        ("期限", "期限"),
+        ("補正", "補正"),
+        ("繳費", "繳費"),
+        ("閱卷", "閱卷"),
+        ("筆錄", "筆錄"),
+        ("提出", "提出"),
+        ("答辯", "答辯"),
+        ("法扶", "法扶"),
+    ]:
+        if kw in summary:
+            return todo_type
+    return "行事曆事件"
+
+
+def _extract_case_number(summary: str, description: str) -> str:
+    case_number_re = re.compile(
+        r"(\d{4}-\d{4}|\d{2,3}年度?[^\s，,。；;：:]{0,8}字第?\d+號?|\d{2,3}[^\s，,。；;：:]{1,8}\d+號?)"
+    )
+    for text in (summary or "", description or ""):
+        match = case_number_re.search(text)
+        if match:
+            return match.group(1).strip()
+    return ""
+
+
+def import_gcal_events_to_todos(service, *, dry_run: bool = False, lookback_days: int = 30, lookahead_days: int = 180) -> dict:
+    stats: dict[str, Any] = {
+        "imported": 0,
+        "import_skipped": 0,
+        "import_errors": [],
+        "import_calendars": [],
+    }
+    configured_ids = _get_setting_value("gcal_import_calendar_ids", "")
+    calendar_ids = _list_import_calendar_ids(service, configured_ids)
+    stats["import_calendars"] = calendar_ids[:20]
+
+    now = datetime.now(timezone.utc)
+    time_min = (now - timedelta(days=max(0, lookback_days))).strftime("%Y-%m-%dT%H:%M:%SZ")
+    time_max = (now + timedelta(days=max(1, lookahead_days))).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    existing_ids: set[str] = set()
+    try:
+        rows, _ = _osc_exec_sql(
+            """
+            SELECT google_calendar_id
+            FROM case_todos
+            WHERE google_calendar_id IS NOT NULL AND google_calendar_id != ''
+            """,
+            fetch="all",
+        )
+        for row in rows or []:
+            gid = row.get("google_calendar_id") if isinstance(row, dict) else row[0]
+            if gid:
+                existing_ids.add(str(gid))
+    except Exception as exc:
+        stats["import_errors"].append(f"existing query failed: {exc}")
+        return stats
+
+    for calendar_id in calendar_ids:
+        try:
+            page_token = None
+            while True:
+                list_kwargs = {
+                    "calendarId": calendar_id,
+                    "timeMin": time_min,
+                    "timeMax": time_max,
+                    "singleEvents": True,
+                    "orderBy": "startTime",
+                    "showDeleted": False,
+                    "maxResults": 250,
+                }
+                if page_token:
+                    list_kwargs["pageToken"] = page_token
+                response = service.events().list(**list_kwargs).execute()
+                for event in response.get("items", []) or []:
+                    event_id = str(event.get("id") or "").strip()
+                    if not event_id or event_id in existing_ids:
+                        stats["import_skipped"] += 1
+                        continue
+                    summary = str(event.get("summary") or "").strip()
+                    if not summary:
+                        stats["import_skipped"] += 1
+                        continue
+                    description = str(event.get("description") or "").strip()
+                    start_date, start_time = _event_start_date_time(event)
+                    if not start_date:
+                        stats["import_skipped"] += 1
+                        continue
+                    if dry_run:
+                        stats["imported"] += 1
+                        continue
+                    _osc_exec_sql(
+                        """
+                        INSERT INTO case_todos
+                          (case_number, client_name, todo_type, todo_date, todo_time,
+                           description, source_file, status, google_calendar_id)
+                        VALUES (%s,%s,%s,%s,%s,%s,%s,'pending',%s)
+                        """,
+                        (
+                            _extract_case_number(summary, description),
+                            "",
+                            _classify_todo_type(summary),
+                            start_date,
+                            start_time or None,
+                            summary[:500],
+                            f"gcal_import:{calendar_id}",
+                            event_id,
+                        ),
+                        fetch="none",
+                    )
+                    existing_ids.add(event_id)
+                    stats["imported"] += 1
+                page_token = response.get("nextPageToken")
+                if not page_token:
+                    break
+        except Exception as exc:
+            stats["import_errors"].append(f"{calendar_id}: {exc}")
+    return stats
 
 
 # ── push helpers ──────────────────────────────────────────────────────────────
@@ -194,29 +377,21 @@ def run_sync(dry_run: bool = False, conn=None) -> dict:  # noqa: ARG001
         stats["errors"].append("No valid GCal credentials. Run OAuth first.")
         return stats
 
-    # Read calendar_id from settings
-    try:
-        from api.osc.utils import _osc_exec
-
-        row, _ = _osc_exec(
-            "SELECT value FROM settings WHERE `key`=%s",
-            ("gcal_calendar_id",),
-            fetch="one",
-        )
-        calendar_id = (row[0] if row else None) or "primary"
-    except Exception:
-        calendar_id = "primary"
+    calendar_id = _get_setting_value("gcal_calendar_id", "primary") or "primary"
 
     service = _build_service(creds)
+
+    try:
+        stats.update(import_gcal_events_to_todos(service, dry_run=dry_run))
+    except Exception as exc:
+        stats.setdefault("import_errors", []).append(str(exc))
 
     horizon = (date.today() + timedelta(days=30)).isoformat()
     today_str = date.today().isoformat()
 
     # ── Sync case_todos ───────────────────────────────────────────────────────
     try:
-        from api.osc.utils import _osc_exec
-
-        rows, cols = _osc_exec(
+        rows, cols = _osc_exec_sql(
             """
             SELECT id, case_number, client_name, description, todo_date,
                    google_calendar_id
@@ -237,7 +412,10 @@ def run_sync(dry_run: bool = False, conn=None) -> dict:  # noqa: ARG001
     col_names = [c[0] if hasattr(c, "__getitem__") else str(c) for c in (cols or [])]
 
     for row in rows or []:
-        todo = dict(zip(col_names, row)) if col_names else {}
+        if isinstance(row, dict):
+            todo = dict(row)
+        else:
+            todo = dict(zip(col_names, row)) if col_names else {}
         if not todo.get("id"):
             # fallback for tuple rows without col names
             todo = {
@@ -265,7 +443,7 @@ def run_sync(dry_run: bool = False, conn=None) -> dict:  # noqa: ARG001
 
             # Write back event_id if newly created
             if event_id and not (todo.get("google_calendar_id") or "").strip():
-                _osc_exec(
+                _osc_exec_sql(
                     "UPDATE case_todos SET google_calendar_id=%s WHERE id=%s",
                     (event_id, todo["id"]),
                     fetch="none",

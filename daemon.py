@@ -297,6 +297,18 @@ def _kill_existing_daemons() -> int:
     This is the nuclear option — ensures no zombie daemons survive.
     """
     my_pid = os.getpid()
+    ancestor_pids = set()
+    parent_pid = os.getppid()
+    while parent_pid and parent_pid > 1:
+        ancestor_pids.add(parent_pid)
+        try:
+            parent_info = subprocess.run(
+                ["ps", "-p", str(parent_pid), "-o", "ppid="],
+                capture_output=True, text=True, timeout=1,
+            )
+            parent_pid = int((parent_info.stdout or "0").strip() or "0")
+        except Exception:
+            break
     killed = 0
     try:
         result = subprocess.run(
@@ -310,6 +322,8 @@ def _kill_existing_daemons() -> int:
             pid = int(pid_str)
             if pid == my_pid:
                 continue
+            if pid in ancestor_pids:
+                continue
             # Verify it's actually a daemon.py process (not some other script matching the pattern)
             try:
                 cmd_result = subprocess.run(
@@ -321,6 +335,8 @@ def _kill_existing_daemons() -> int:
                     continue
                 # Don't kill Claude Code or other tools that might have "daemon.py" in args
                 if "claude" in cmdline.lower() or "grep" in cmdline.lower() or "pgrep" in cmdline.lower():
+                    continue
+                if "magi_cli.sh" in cmdline or "launchctl" in cmdline:
                     continue
             except Exception:
                 continue  # Skip if we can't verify
@@ -1620,7 +1636,7 @@ if __name__ == "__main__":
         if _wa_busy:
             logger.info(f"ℹ️ WebsiteAdmin port {_wa_port} already in use — skipping (likely surviving child)")
         else:
-            start_process("WebsiteAdmin", f"{_PYTHON} {_website_admin} --port {_wa_port} --password whalelawyer")
+            start_process("WebsiteAdmin", f"{_PYTHON} {_website_admin} --port {_wa_port}")
             logger.info(f"✅ Website Admin Server started on port {_wa_port}")
 
     # 3. Start Keeper Sync Daemon (as background thread)

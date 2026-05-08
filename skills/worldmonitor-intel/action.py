@@ -21,6 +21,9 @@ import json
 import csv
 import argparse
 import logging
+import re
+import urllib.parse
+import urllib.request
 import xml.etree.ElementTree as ET
 from datetime import datetime
 from pathlib import Path
@@ -42,6 +45,8 @@ FINNHUB_KEY = os.environ.get("FINNHUB_API_KEY", "")
 if not FINNHUB_KEY:
     logger.info("FINNHUB_API_KEY 未設定，將改用 MAGI 免金鑰公開行情來源。")
 FETCH_TIMEOUT = 15
+SUMMARY_TRANSLATION_ENABLED = os.environ.get("MAGI_WORLDMONITOR_TRANSLATE_SUMMARY", "1").lower() not in {"0", "false", "no"}
+_SUMMARY_TRANSLATION_CACHE: Dict[str, str] = {}
 
 # ---------------------------------------------------------------------------
 # Public news RSS feeds (no API key needed)
@@ -70,7 +75,6 @@ STOOQ_MARKET_SYMBOLS = {
 # ---------------------------------------------------------------------------
 def _fetch(url: str, timeout: int = FETCH_TIMEOUT) -> Optional[bytes]:
     try:
-        import urllib.request
         req = urllib.request.Request(url, headers={
             "User-Agent": "MAGI-worldmonitor-intel/2.0",
             "Accept": "application/rss+xml, application/xml, application/json, text/xml, */*"
@@ -310,9 +314,9 @@ def _reason_with_melchior(prompt: str, max_tokens: int = 2048) -> str:
         if not model:
             try:
                 from api.model_config import TEXT_PRIMARY_MODEL as _tpm
-                model = _tpm or "gemma-4-e4b-it-4bit"
+                model = _tpm or "gemma-4-26b-a4b-it-4bit"
             except Exception:
-                model = "gemma-4-e4b-it-4bit"
+                model = "gemma-4-26b-a4b-it-4bit"
 
         payload = json.dumps({
             "model": model,
@@ -417,6 +421,52 @@ def _render_source_health(news_statuses: List[Dict], market_status: Dict) -> str
     return "\n".join(lines)
 
 
+def _contains_latin_or_kana(text: str) -> bool:
+    return bool(re.search(r"[A-Za-z\u3040-\u30ff]", text or ""))
+
+
+def _translate_to_zh_hant(text: str, timeout_sec: int = 8) -> str:
+    """Translate a short source-grounded snippet to Traditional Chinese."""
+    source = re.sub(r"\s+", " ", str(text or "")).strip()
+    if not source or not SUMMARY_TRANSLATION_ENABLED or not _contains_latin_or_kana(source):
+        return source
+    cached = _SUMMARY_TRANSLATION_CACHE.get(source)
+    if cached:
+        return cached
+
+    try:
+        q = urllib.parse.quote(source[:650])
+        url = (
+            "https://translate.googleapis.com/translate_a/single"
+            f"?client=gtx&sl=auto&tl=zh-TW&dt=t&q={q}"
+        )
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=max(3, timeout_sec)) as resp:
+            raw = resp.read().decode("utf-8", "ignore")
+        data = json.loads(raw)
+        parts = []
+        if isinstance(data, list) and data and isinstance(data[0], list):
+            for seg in data[0]:
+                if isinstance(seg, list) and seg and seg[0]:
+                    parts.append(str(seg[0]))
+        translated = "".join(parts).strip()
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("worldmonitor summary translation failed: %s", exc)
+        translated = ""
+
+    result = translated or source
+    _SUMMARY_TRANSLATION_CACHE[source] = result
+    return result
+
+
+def _news_digest_zh(item: Dict) -> str:
+    title = str(item.get("title") or "").strip()
+    summary = str(item.get("summary") or "").strip()
+    text = title if not summary else f"{title}：{summary}"
+    translated = _translate_to_zh_hant(text)
+    return translated[:220].rstrip(" ，、；：")
+
+
 def _fallback_news_analysis(news: List[Dict], markets: Dict, source_health: str) -> str:
     """Generate a readable Traditional Chinese summary when local LLM inference is unavailable."""
     source_counts: Dict[str, int] = {}
@@ -425,14 +475,9 @@ def _fallback_news_analysis(news: List[Dict], markets: Dict, source_health: str)
         source_counts[source] = source_counts.get(source, 0) + 1
 
     def _line(item: Dict) -> str:
-        title = str(item.get("title") or "").strip()
-        summary = str(item.get("summary") or "").strip()
         source = str(item.get("source") or "來源").strip()
-        link = str(item.get("link") or "").strip()
-        text = title if not summary else f"{title}：{summary}"
-        if link:
-            return f"- [{source}] [{text[:220]}]({link})"
-        return f"- [{source}] {text[:220]}"
+        text = _news_digest_zh(item)
+        return f"- {source}：{text}"
 
     asia_terms = ("Taiwan", "台灣", "亞太", "Asia", "Japan", "日本", "Korea", "韓", "China", "中國", "NHK", "Hormuz", "伊朗", "Ukraine", "Russia", "俄")
     asia_items = [
@@ -485,6 +530,50 @@ def _fallback_news_analysis(news: List[Dict], markets: Dict, source_health: str)
         "_註：本段為 MAGI 在本機推理服務不可用時產生的結構式摘要。_",
     ])
     return "\n".join(lines)
+
+
+def _analysis_needs_grounded_fallback(text: str) -> bool:
+    """Reject chatty or poorly structured model output for the public report."""
+    cleaned = str(text or "").strip()
+    if cleaned.startswith("[推理失敗]") or len(cleaned) < 40:
+        return True
+    chatty_markers = (
+        "我是 MAGI",
+        "我是MAGI",
+        "情報分析員 Melchior",
+        "我已接收",
+        "我已審閱",
+        "好的，",
+        "以下是為您準備",
+    )
+    if any(marker in cleaned for marker in chatty_markers):
+        return True
+    required = ("重大事件概述", "對台灣", "風險評估")
+    return not all(marker in cleaned for marker in required)
+
+
+def _normalize_analysis_markdown(text: str) -> str:
+    """Trim model prose to the first useful section and keep headings parser-friendly."""
+    cleaned = str(text or "").strip()
+    match = re.search(r"(?m)^#{1,3}\s*(?:\d+[\.)]\s*)?重大事件概述", cleaned)
+    if match:
+        cleaned = cleaned[match.start():].strip()
+    cleaned = re.sub(r"(?m)^#{1,3}\s*\d+[\.)]\s*", "## ", cleaned)
+    cleaned = re.sub(r"(?m)^###\s+", "## ", cleaned)
+    return cleaned
+
+
+def render_plain_text_report(markdown_report: str) -> str:
+    """Render a copy-friendly text report while keeping the stored .md report structured."""
+    text = str(markdown_report or "")
+    text = re.sub(r"<details><summary>原始資料</summary>.*?</details>", "", text, flags=re.S)
+    text = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r"\1", text)
+    text = text.replace("**", "").replace("__", "")
+    text = re.sub(r"(?m)^#{1,6}\s*", "", text)
+    text = re.sub(r"(?m)^---+$", "", text)
+    text = re.sub(r"(?m)^_\s*(.*?)\s*_$", r"\1", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
 
 # ---------------------------------------------------------------------------
 # Main pipeline
@@ -551,14 +640,17 @@ def collect_and_analyze(use_melchior: bool = True) -> str:
     if source_health:
         raw_report = f"{raw_report}\n\n{source_health}" if raw_report else source_health
 
-    # 3. Melchior analysis
+    # 3. Analysis. Cron/web refresh uses grounded fallback to avoid chatty or invented prose.
     if use_melchior:
         logger.info("🧠 Sending to Melchior for analysis...")
-        prompt = f"""以下是剛收集的全球情報。請分析並產出摘要：
-1. 重大事件概述（3-5 條）
-2. 對台灣/亞太的潛在影響
-3. 值得關注的發展趨勢
-4. 風險評估（低/中/高）
+        prompt = f"""你是 MAGI 的新聞摘要器。請只根據下方來源內容整理，不要加入來源未明示的事件、日期、病名、地點或推測。
+禁止自我介紹、寒暄、說「我已接收」、說「以下是」。
+請只輸出下列 Markdown 區塊，每個區塊用 2 到 5 個短項目，項目必須使用 "- " 開頭：
+
+## 重大事件概述
+## 對台灣與亞太的潛在影響
+## 值得關注的發展趨勢
+## 風險評估
 
 收集時間：{datetime.now().strftime('%Y-%m-%d %H:%M')}
 來源健康：
@@ -566,14 +658,22 @@ def collect_and_analyze(use_melchior: bool = True) -> str:
 
 {raw_report}"""
         analysis = _reason_with_melchior(prompt)
-        if analysis.strip().startswith("[推理失敗]") or len(analysis.strip()) < 40:
-            logger.warning("Melchior unavailable; using structured fallback analysis")
+        if _analysis_needs_grounded_fallback(analysis):
+            logger.warning("Melchior output unusable; using grounded structured fallback analysis")
             analysis = _fallback_news_analysis(news, markets, source_health)
-        final = f"""# 🌐 MAGI 全球情報摘要
+            analysis_label = "來源整理"
+        else:
+            analysis = _normalize_analysis_markdown(analysis)
+            analysis_label = "Melchior"
+    else:
+        analysis = _fallback_news_analysis(news, markets, source_health)
+        analysis_label = "來源整理"
+
+    final = f"""# 🌐 MAGI 全球情報摘要
 **時間**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 **新聞來源**: {len(news)} 篇 | **市場**: {len([k for k in markets if not k.startswith('_')])} 檔
 **資料可用性**: {'正常' if news or markets else '降級'}
-**分析**: Melchior
+**分析**: {analysis_label}
 
 ---
 
@@ -587,16 +687,6 @@ def collect_and_analyze(use_melchior: bool = True) -> str:
 
 {raw_report[:3000]}
 </details>"""
-    else:
-        final = f"""# 🌐 原始報告
-**時間**: {datetime.now().strftime('%Y-%m-%d %H:%M')}
-**資料可用性**: {'正常' if news or markets else '降級'}
-
-{source_health}
-
----
-
-{raw_report}"""
 
     # 4. Store
     _store_to_memory(final, metadata={
@@ -616,6 +706,7 @@ def main():
     parser = argparse.ArgumentParser(description="MAGI worldmonitor-intel")
     parser.add_argument("--task", required=True, choices=["collect", "recall", "status", "help"])
     parser.add_argument("--no-reasoning", action="store_true")
+    parser.add_argument("--plain-output", action="store_true", help="print a copy-friendly plain text report")
     parser.add_argument("--query", default=None)
     parser.add_argument("--top-k", type=int, default=5)
     args = parser.parse_args()
@@ -626,7 +717,7 @@ def main():
 
     if args.task == "collect":
         report = collect_and_analyze(use_melchior=not args.no_reasoning)
-        print("\n" + report)
+        print("\n" + (render_plain_text_report(report) if args.plain_output else report))
     elif args.task == "recall":
         try:
             from skills.memory import mem_bridge

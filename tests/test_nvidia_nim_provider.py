@@ -3,7 +3,7 @@
 覆蓋：
 1. 白名單正反測試（Meta/Mistral/Gemma 通過；DeepSeek/Qwen/MiniMax 等中國模型攔截）
 2. Adapter 註冊進 provider registry
-3. 預設模型為 Llama-3.1-405B
+3. 預設模型為 Llama-3.3-70B
 """
 from __future__ import annotations
 
@@ -14,8 +14,8 @@ from providers.nvidia_nim import NvidiaNimProvider
 
 
 class TestNvidiaNimAllowList:
-    def test_llama_405b_allowed(self):
-        assert NvidiaNimProvider.is_model_allowed("meta/llama-3.1-405b-instruct") is True
+    def test_eol_llama_405b_blocked(self):
+        assert NvidiaNimProvider.is_model_allowed("meta/llama-3.1-405b-instruct") is False
 
     def test_llama_70b_allowed(self):
         assert NvidiaNimProvider.is_model_allowed("meta/llama-3.3-70b-instruct") is True
@@ -62,9 +62,9 @@ class TestNvidiaNimRegistration:
         assert "nvidia_nim" in registry
         assert isinstance(registry["nvidia_nim"], NvidiaNimProvider)
 
-    def test_default_model_is_llama_405b(self):
+    def test_default_model_is_llama_33_70b(self):
         adapter = NvidiaNimProvider()
-        assert adapter.default_model == "meta/llama-3.1-405b-instruct"
+        assert adapter.default_model == "meta/llama-3.3-70b-instruct"
 
     def test_base_url_default(self):
         adapter = NvidiaNimProvider()

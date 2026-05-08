@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import re
 from pathlib import Path
 
 
@@ -179,6 +180,27 @@ def test_cron_uses_repo_omlx_switch_and_single_health_report_time():
     assert "/Users/ai/Desktop/MAGI_v2/config/bin/omlx_switch_model.sh" in jobs
     assert '"id": "job_health_report"' in jobs
     assert '"cron": "30 6 * * *"' in jobs
+
+
+def test_judicial_daytime_cron_batches_are_bounded():
+    jobs = json.loads(Path("cron_jobs.json").read_text(encoding="utf-8"))
+    by_id = {job["id"]: job for job in jobs}
+    expected_caps = {
+        "job_judicial_api_morning": (200, 80, 7200),
+        "job_judicial_api_noon": (220, 120, 7200),
+        "job_judicial_api_afternoon": (220, 120, 7200),
+        "job_judicial_api_evening": (180, 80, 7200),
+        "job_judicial_api_backlog_clear": (80, 30, 1800),
+    }
+
+    for job_id, (max_docs, summarize_max, timeout_sec) in expected_caps.items():
+        job = by_id[job_id]
+        match = re.search(r"official_api_day_process (\{.*?\})'", job["command"])
+        assert match, job_id
+        payload = json.loads(match.group(1).replace(r"\"", '"'))
+        assert payload["max_docs"] == max_docs
+        assert payload["summarize_max"] == summarize_max
+        assert job["timeout_sec"] == timeout_sec
 
 
 def test_obsidian_known_malformed_pdf_hints_include_fitz_xref_errors():

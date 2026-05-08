@@ -28,6 +28,9 @@ logger = logging.getLogger("NvidiaNimHeavy")
 MAGI_ROOT = Path(__file__).resolve().parents[2]
 USAGE_LOG_PATH = MAGI_ROOT / ".runtime" / "nvidia_nim_usage.jsonl"
 STATE_PATH = MAGI_ROOT / ".runtime" / "nvidia_nim_state.json"
+NIM_EOL_MODELS = {
+    "meta/llama-3.1-405b-instruct",
+}
 
 # ── 執行期狀態（單進程內）────────────────────────────────────
 _state_lock = threading.Lock()
@@ -153,10 +156,14 @@ def _log_usage(payload: Dict[str, Any]) -> None:
 
 
 def _pick_model(task_type: str, heavy: bool = False) -> str:
-    heavy_model = os.environ.get("NVIDIA_NIM_MODEL", "meta/llama-3.1-405b-instruct").strip()
+    heavy_model = os.environ.get("NVIDIA_NIM_MODEL", "meta/llama-3.3-70b-instruct").strip()
     fast_model = os.environ.get("NVIDIA_NIM_MODEL_FAST", "meta/llama-3.3-70b-instruct").strip()
-    # heavy flag 或長 prompt（另由 caller 判斷）→ 405B；否則 70B
+    # heavy flag 或長 prompt（另由 caller 判斷）→ heavy model；否則 fast model。
+    # 2026-05: NVIDIA 已讓 3.1 405B EOL，舊 .env 仍指向它時要自動避開。
     chosen = heavy_model if heavy else fast_model
+    if chosen in NIM_EOL_MODELS:
+        logger.warning("NIM model %s is EOL; falling back to %s", chosen, fast_model)
+        chosen = fast_model
     if not NvidiaNimProvider.is_model_allowed(chosen):
         logger.error("NIM model %s not in allow list, falling back to 70b", chosen)
         chosen = "meta/llama-3.3-70b-instruct"
@@ -255,6 +262,9 @@ def run_nim_chat(
         len(prompt or "") >= int(os.environ.get("NVIDIA_NIM_HEAVY_THRESHOLD_CHARS", "20000") or "20000")
     )
     chosen_model = model or _pick_model(task_type, heavy=auto_heavy)
+    if chosen_model in NIM_EOL_MODELS:
+        logger.warning("NIM model %s is EOL; falling back to meta/llama-3.3-70b-instruct", chosen_model)
+        chosen_model = "meta/llama-3.3-70b-instruct"
     if not NvidiaNimProvider.is_model_allowed(chosen_model):
         return _fail(f"nim_model_not_allowed:{chosen_model}")
 

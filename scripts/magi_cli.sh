@@ -21,12 +21,32 @@ RPC_PLIST="$HOME/Library/LaunchAgents/$RPC_LABEL.plist"
 _check() {
     local name="$1" pattern="$2"
     local pid
-    pid=$(pgrep -f "$pattern" 2>/dev/null | head -1 || true)
+    pid=$(_find_process_by_pattern "$pattern")
     if [ -n "$pid" ]; then
         printf "  ${GREEN}●${NC} %-18s PID %-6s\n" "$name" "$pid"
     else
         printf "  ${RED}○${NC} %-18s ${RED}DOWN${NC}\n" "$name"
     fi
+}
+
+_find_process_by_pattern() {
+    local pattern="$1"
+    { ps -axo pid=,command= | awk -v pat="$pattern" '
+        index($0, pat) &&
+        $0 ~ /[Pp]ython|Python\.app/ &&
+        $0 !~ /^ *[0-9]+ +\/bin\/(zsh|bash)( |$)/ &&
+        $0 !~ /^ *[0-9]+ +\/usr\/bin\/(zsh|bash)( |$)/ &&
+        $0 !~ /awk -v pat=/ &&
+        $0 !~ /[r]g / &&
+        $0 !~ /[p]grep/ &&
+        $0 !~ /magi_cli\.sh/ &&
+        $0 !~ /\/bin\/(zsh|bash) -lc/ &&
+        $0 !~ /\/bin\/bash -c/ &&
+        $0 !~ /codex/ {
+            print $1
+            exit
+        }
+    '; } 2>/dev/null || true
 }
 
 _check_port() {
@@ -43,7 +63,7 @@ _check_port() {
 _wait_for_pattern() {
     local pattern="$1" max_wait="${2:-20}" i
     for i in $(seq 1 "$max_wait"); do
-        if pgrep -f "$pattern" >/dev/null 2>&1; then
+        if [ -n "$(_find_process_by_pattern "$pattern")" ]; then
             return 0
         fi
         sleep 1
@@ -65,6 +85,89 @@ _wait_for_port() {
 _launchctl_present() {
     local label="$1"
     launchctl list "$label" >/dev/null 2>&1
+}
+
+_magi_root() {
+    local root
+    root=$(/usr/libexec/PlistBuddy -c 'Print :EnvironmentVariables:MAGI_ROOT' "$PLIST" 2>/dev/null || true)
+    if [ -n "${root:-}" ] && [ -f "$root/daemon.py" ]; then
+        echo "$root"
+        return 0
+    fi
+    if [ -f "./daemon.py" ]; then
+        pwd
+        return 0
+    fi
+    echo "$HOME/Desktop/MAGI_v2"
+}
+
+_start_daemon_direct() {
+    local root py
+    root=$(_magi_root)
+    py="$root/venv/bin/python3"
+    if [ ! -x "$py" ]; then
+        py="$root/.venv/bin/python"
+    fi
+    if [ ! -x "$py" ]; then
+        py="python3"
+    fi
+    MAGI_ROOT_VALUE="$root" MAGI_PY_VALUE="$py" "$py" - <<'PY'
+import os
+import subprocess
+from pathlib import Path
+
+root = os.environ["MAGI_ROOT_VALUE"]
+py = os.environ["MAGI_PY_VALUE"]
+env = os.environ.copy()
+env["MAGI_ROOT"] = root
+env["MAGI_ROOT_DIR"] = root
+stdout = open("/tmp/magi-daemon-stdout.log", "ab", buffering=0)
+stderr = open("/tmp/magi-daemon.log", "ab", buffering=0)
+proc = subprocess.Popen(
+    [py, str(Path(root) / "daemon.py")],
+    cwd=str(Path.home()),
+    stdout=stdout,
+    stderr=stderr,
+    env=env,
+    start_new_session=True,
+    close_fds=True,
+)
+print(proc.pid)
+PY
+}
+
+_start_menubar_direct() {
+    local root py
+    root=$(_magi_root)
+    py="$root/venv/bin/python3"
+    if [ ! -x "$py" ]; then
+        py="$root/.venv/bin/python"
+    fi
+    if [ ! -x "$py" ]; then
+        py="python3"
+    fi
+    MAGI_ROOT_VALUE="$root" MAGI_PY_VALUE="$py" "$py" - <<'PY'
+import os
+import subprocess
+from pathlib import Path
+
+root = os.environ["MAGI_ROOT_VALUE"]
+py = os.environ["MAGI_PY_VALUE"]
+env = os.environ.copy()
+env["MAGI_ROOT"] = root
+env["MAGI_ROOT_DIR"] = root
+stdout = open("/tmp/magi-menubar.log", "ab", buffering=0)
+proc = subprocess.Popen(
+    [py, str(Path(root) / "gui" / "magi_menubar.py")],
+    cwd=str(Path.home()),
+    stdout=stdout,
+    stderr=stdout,
+    env=env,
+    start_new_session=True,
+    close_fds=True,
+)
+print(proc.pid)
+PY
 }
 
 _check_port_with_label() {
@@ -120,7 +223,7 @@ cmd_status() {
     echo "═══ MAGI System Status ═══"
     echo ""
     echo "Core Services:"
-    _check "Daemon"       "daemon.py"
+    _check "Daemon"       "/daemon.py"
     _check "Server"       "api/server.py"
     _check "Discord Bot"  "api/discord_bot.py"
     _check "Tools API"    "api/tools_api.py"
@@ -159,8 +262,7 @@ cmd_status() {
         vol_list="/Volumes/homes /Volumes/lumi"
     fi
     for vol in $vol_list; do
-        # 接受 /Volumes/<share>、user-level fallback，以及 Synology Drive 同步路徑。
-        # nas_mount_guard / case_path_mapper 都支援這些路徑；status 也要同一套判斷。
+        # 先顯示真正 SMB mount；Synology Drive 只列為 fallback，避免誤判成已掛載。
         local share_name
         share_name="$(basename "$vol")"
         local mounted_path=""
@@ -180,8 +282,10 @@ cmd_status() {
             local usage
             usage=$(df -h "$mounted_path" 2>/dev/null | tail -1 | awk '{print $3"/"$2" ("$5")"}')
             printf "  ${GREEN}●${NC} %-18s %s\n" "$share_name" "$usage"
+        elif [ "$share_name" = "lumi" ] && { [ -d "$HOME/SynologyDrive/01_案件" ] || [ -d "$HOME/Library/CloudStorage/SynologyDrive-homes/01_案件" ]; }; then
+            printf "  ${YELLOW}◐${NC} %-18s ${YELLOW}FALLBACK: Synology Drive sync; SMB NOT MOUNTED${NC}\n" "$share_name"
         elif [ -d "$HOME/Library/CloudStorage/SynologyDrive-$share_name" ]; then
-            printf "  ${GREEN}●${NC} %-18s Synology Drive sync\n" "$share_name"
+            printf "  ${YELLOW}◐${NC} %-18s ${YELLOW}FALLBACK: Synology Drive sync; SMB NOT MOUNTED${NC}\n" "$share_name"
         else
             printf "  ${RED}○${NC} %-18s ${RED}NOT MOUNTED${NC}\n" "$share_name"
         fi
@@ -246,12 +350,34 @@ cmd_start() {
     if [ -f "$MENUBAR_PLIST" ]; then
         echo "  Starting status bar..."
         launchctl bootstrap gui/$(id -u) "$MENUBAR_PLIST" 2>/dev/null || launchctl load "$MENUBAR_PLIST" 2>/dev/null || true
+        sleep 3
+        if [ -z "$(_find_process_by_pattern "gui/magi_menubar.py")" ]; then
+            echo "  LaunchAgent did not bring status bar up; starting status bar directly..."
+            launchctl bootout gui/$(id -u)/$MENUBAR_LABEL 2>/dev/null || launchctl unload "$MENUBAR_PLIST" 2>/dev/null || true
+            pkill -f "gui/magi_menubar.py" 2>/dev/null || true
+            _start_menubar_direct >/dev/null
+        fi
     fi
     echo "  Waiting for web services..."
-    _wait_for_pattern "api/server.py" 30 || true
-    _wait_for_port 5002 30 || true
-    _wait_for_pattern "api/tools_api.py" 20 || true
-    _wait_for_port 5003 20 || true
+    local need_direct=0
+    _wait_for_pattern "api/server.py" 30 || need_direct=1
+    _wait_for_port 5002 30 || need_direct=1
+    _wait_for_pattern "api/tools_api.py" 20 || need_direct=1
+    _wait_for_port 5003 20 || need_direct=1
+    if [ "$need_direct" = "1" ]; then
+        echo "  LaunchAgent did not bring web services up; starting daemon directly..."
+        launchctl bootout gui/$(id -u)/$LABEL 2>/dev/null || launchctl unload "$PLIST" 2>/dev/null || true
+        pkill -f "daemon.py" 2>/dev/null || true
+        pkill -f "api/server.py" 2>/dev/null || true
+        pkill -f "api/discord_bot.py" 2>/dev/null || true
+        pkill -f "api/tools_api.py" 2>/dev/null || true
+        sleep 2
+        _start_daemon_direct
+        _wait_for_pattern "api/server.py" 60 || true
+        _wait_for_port 5002 60 || true
+        _wait_for_pattern "api/tools_api.py" 30 || true
+        _wait_for_port 5003 30 || true
+    fi
     _wait_for_pattern "api/discord_bot.py" 20 || true
     sleep 1
     cmd_status
@@ -278,6 +404,9 @@ cmd_stop() {
     pkill -f "api/server.py" 2>/dev/null || true
     pkill -f "api/discord_bot.py" 2>/dev/null || true
     pkill -f "api/tools_api.py" 2>/dev/null || true
+    pkill -f "skills/ops/file_review_auto_worker.py" 2>/dev/null || true
+    pkill -f "skills/ops/heartbeat.py" 2>/dev/null || true
+    pkill -f "whalechao.github.io/admin/admin_server.py" 2>/dev/null || true
     pkill -f "gui/magi_menubar.py" 2>/dev/null || true
     pkill -f "rpc-server" 2>/dev/null || true
     sleep 2
@@ -292,14 +421,14 @@ cmd_restart() {
 
 cmd_menubar() {
     echo "Restarting status bar..."
-    # Use launchctl kickstart -k to force restart
-    launchctl kickstart -k gui/$(id -u)/$MENUBAR_LABEL 2>/dev/null || {
-        # Fallback: kill and let KeepAlive restart it
-        pkill -f "gui/magi_menubar.py" 2>/dev/null || true
-        sleep 2
-        launchctl bootstrap gui/$(id -u) "$MENUBAR_PLIST" 2>/dev/null || launchctl load "$MENUBAR_PLIST" 2>/dev/null || true
-    }
-    sleep 2
+    # macOS 26 + Homebrew Python 3.14 can crash during launchd getpath.
+    # Keep launchd from respawning the bash wrapper, then start the GUI process
+    # directly in the current GUI user session.
+    launchctl bootout gui/$(id -u)/$MENUBAR_LABEL 2>/dev/null || launchctl unload "$MENUBAR_PLIST" 2>/dev/null || true
+    pkill -f "gui/magi_menubar.py" 2>/dev/null || true
+    sleep 1
+    _start_menubar_direct >/dev/null
+    sleep 4
     _check "Status Bar" "gui/magi_menubar.py"
 }
 

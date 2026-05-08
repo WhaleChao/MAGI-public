@@ -65,7 +65,7 @@ def tmp_token(tmp_path):
         "token_uri": "https://oauth2.googleapis.com/token",
         "client_id": "fake_client_id.apps.googleusercontent.com",
         "client_secret": "fake_secret",
-        "scopes": ["https://www.googleapis.com/auth/calendar.events"],
+        "scopes": ["https://www.googleapis.com/auth/calendar"],
         "expiry": "2099-01-01T00:00:00Z",
     }
     token_file.write_text(json.dumps(token_data))
@@ -120,12 +120,13 @@ class TestGcalStatus:
         with (
             patch("api.blueprints.osc_gcal.TOKEN_PATH", tmp_token),
             patch("api.blueprints.osc_gcal._load_creds", return_value=creds),
-            patch("api.blueprints.osc_gcal._get_setting", return_value="primary"),
+            patch("api.blueprints.osc_gcal._get_setting", side_effect=lambda key: {"gcal_calendar_id": "primary", "gcal_import_calendar_ids": "primary, whalelawyer@gmail.com"}.get(key)),
         ):
             rv = client.get("/api/osc/gcal/status")
         assert rv.status_code == 200
         data = rv.get_json()
         assert data["connected"] is True
+        assert data["import_calendar_ids"] == "primary, whalelawyer@gmail.com"
 
 
 class TestGcalAuthStart:

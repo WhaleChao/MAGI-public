@@ -16,15 +16,14 @@ class NvidiaNimProvider(OpenAICompatibleProvider):
     base_url_env = "NVIDIA_NIM_BASE_URL"
     api_key_env = "NVIDIA_NIM_API_KEY"
     model_env = "NVIDIA_NIM_MODEL"
-    # Plan A 決議：405B 為重型主力（128K context、多語含中文）
-    default_model = "meta/llama-3.1-405b-instruct"
+    # 2026-05: 3.1 405B 已 EOL；預設改用目前可用的 3.3 70B。
+    default_model = "meta/llama-3.3-70b-instruct"
     health_path = "/models"
     requires_api_key = True
 
     # 白名單 — 任何 PR 必須保證新增的 entry 不是中國模型
     ALLOWED_MODELS = frozenset({
         # Meta Llama 系（多語、128K context）
-        "meta/llama-3.1-405b-instruct",      # 重型主力
         "meta/llama-3.3-70b-instruct",       # 一般兜底
         "meta/llama-3.1-70b-instruct",
         "meta/llama-3.1-8b-instruct",
