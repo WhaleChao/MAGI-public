@@ -81,6 +81,8 @@ function bindTabs() {
                 loadRecurringExpenses();
             }
             if (tabId === "quotations") {
+                if (!document.querySelector("#qtItemsBody tr")) resetQuotationForm();
+                if (!document.querySelector("#qtTplItemsBody tr")) resetQuotationTemplateForm();
                 _withLoading("載入報價單...", loadQuotations);
                 loadQuotationTemplates();
             }
@@ -375,9 +377,14 @@ function bindEvents() {
         ["qtSearchBtn", loadQuotations, "報價搜尋"],
         ["qtRefreshBtn", loadQuotations, "報價重新整理"],
         ["qtSaveBtn", saveQuotation, "報價儲存"],
+        ["qtNewBtn", () => { resetQuotationForm(); }, "新增報價"],
+        ["qtApplyTemplateBtn", () => { applySelectedQuotationTemplate(); }, "套用報價模板"],
+        ["qtAddItemBtn", () => { addQuotationItem("qt", {}); }, "新增報價項目"],
+        ["qtPreviewPdfBtn", () => { downloadCurrentQuotationPdf(); }, "下載報價 PDF"],
         ["qtTplSearchBtn", loadQuotationTemplates, "報價模板搜尋"],
         ["qtTplRefreshBtn", loadQuotationTemplates, "報價模板重新整理"],
         ["qtTplSaveBtn", saveQuotationTemplate, "報價模板儲存"],
+        ["qtTplAddItemBtn", () => { addQuotationItem("qtTpl", {}); }, "新增報價模板項目"],
         ["insightsSearchBtn", loadInsights, "實務見解搜尋"],
         ["insightsRefreshBtn", loadInsights, "實務見解重新整理"],
         ["insightSaveBtn", saveInsight, "新增見解"],
@@ -539,11 +546,51 @@ function bindEvents() {
     });
     document.getElementById("txRecurringOnlyActive").addEventListener("change", () => runBusyAction("txRecurringSearchBtn", loadRecurringExpenses, { actionLabel: "固定支出搜尋" }));
     document.getElementById("qtResetBtn").addEventListener("click", () => {
-        clearFields(["qt_id", "qt_client_name", "qt_project_name", "qt_contact", "qt_phone", "qt_email", "qt_address", "qt_tax_id", "qt_date", "qt_expiry", "qt_subtotal", "qt_discount", "qt_tax", "qt_total", "qt_status", "qt_notes", "qt_items", "qt_extended_data"]);
+        resetQuotationForm();
     });
     document.getElementById("qtTplResetBtn").addEventListener("click", () => {
-        clearFields(["qtTplId", "qtTplName", "qtTplDefault", "qtTplDescription", "qtTplItems", "qtTplNotes"]);
+        resetQuotationTemplateForm();
     });
+    document.getElementById("qt_discount").addEventListener("input", recalcQuotationTotals);
+    document.getElementById("qt_tax").addEventListener("input", recalcQuotationTotals);
+    document.querySelectorAll("[data-qt-preset]").forEach(btn => {
+        btn.addEventListener("click", () => applyQuotationPreset(btn.dataset.qtPreset, "qt"));
+    });
+    document.querySelectorAll("[data-qt-tpl-preset]").forEach(btn => {
+        btn.addEventListener("click", () => applyQuotationPreset(btn.dataset.qtTplPreset, "qtTpl"));
+    });
+    const qtItemsBody = document.getElementById("qtItemsBody");
+    if (qtItemsBody) {
+        qtItemsBody.addEventListener("input", e => {
+            if (e.target && e.target.matches(".qt-item-field")) {
+                updateQuotationRowAmount(e.target);
+                recalcQuotationTotals();
+            }
+        });
+        qtItemsBody.addEventListener("click", e => {
+            const btn = e.target && e.target.closest('[data-act="qt-item-del"]');
+            if (!btn) return;
+            btn.closest("tr")?.remove();
+            if (!qtItemsBody.querySelector("tr")) addQuotationItem("qt", {});
+            recalcQuotationTotals();
+        });
+    }
+    const qtTplItemsBody = document.getElementById("qtTplItemsBody");
+    if (qtTplItemsBody) {
+        qtTplItemsBody.addEventListener("input", e => {
+            if (e.target && e.target.matches(".qtTpl-item-field")) {
+                updateQuotationRowAmount(e.target);
+                syncTemplateItemsField();
+            }
+        });
+        qtTplItemsBody.addEventListener("click", e => {
+            const btn = e.target && e.target.closest('[data-act="qtTpl-item-del"]');
+            if (!btn) return;
+            btn.closest("tr")?.remove();
+            if (!qtTplItemsBody.querySelector("tr")) addQuotationItem("qtTpl", {});
+            syncTemplateItemsField();
+        });
+    }
     document.getElementById("adminSettingResetBtn").addEventListener("click", () => clearFields(["adminSettingKey", "adminSettingValue", "adminSettingDescription"]));
     document.getElementById("adminReasonResetBtn").addEventListener("click", () => clearFields(["adminReasonId", "adminReasonType", "adminReasonText", "adminReasonCommon"]));
     document.getElementById("adminCourtResetBtn").addEventListener("click", () => clearFields(["adminCourtId", "adminCourtName", "adminCourtType", "adminCourtAddress"]));

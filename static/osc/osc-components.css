@@ -2154,3 +2154,44 @@ body.theme-dark .btn.selected-toggle {
     padding-block: 10px;
     z-index: 2;
 }
+
+.muted-field input[readonly] {
+    background: color-mix(in srgb, var(--panel) 82%, var(--line));
+    color: var(--muted);
+}
+
+#qtItemsBody input,
+#qtTplItemsBody input {
+    width: 100%;
+    min-width: 0;
+    padding: 8px 10px;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: var(--panel);
+    color: var(--text);
+    font: inherit;
+}
+
+#qtItemsBody td:nth-child(1),
+#qtTplItemsBody td:nth-child(1) {
+    min-width: 150px;
+}
+
+#qtItemsBody td:nth-child(2),
+#qtTplItemsBody td:nth-child(2) {
+    min-width: 260px;
+}
+
+#qtItemsBody td:nth-child(3),
+#qtTplItemsBody td:nth-child(3) {
+    width: 84px;
+}
+
+#qtItemsBody td:nth-child(4),
+#qtItemsBody td:nth-child(5),
+#qtItemsBody td:nth-child(6),
+#qtTplItemsBody td:nth-child(4),
+#qtTplItemsBody td:nth-child(5),
+#qtTplItemsBody td:nth-child(6) {
+    width: 110px;
+}
