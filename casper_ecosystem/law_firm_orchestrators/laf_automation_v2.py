@@ -7113,10 +7113,11 @@ return null;
                 "closing":   [{"applyno": ..., "status": ..., "row_text": ...}, ...],
                 "condition": [...],
                 "go_live":   [...],
+                "progress":  [...],
                 "case_status": [],  # backward-compatible key; not part of 暫存區掃描
             }
         """
-        result: Dict[str, list] = {"closing": [], "condition": [], "go_live": [], "case_status": []}
+        result: Dict[str, list] = {"closing": [], "condition": [], "go_live": [], "progress": [], "case_status": []}
         if not self.driver:
             return result
 
@@ -7128,6 +7129,9 @@ return null;
         )
         result["go_live"] = self._query_list_page_all_items(
             "/lafcsp/toNotOpenedCase", "未開辦",
+        )
+        result["progress"] = self._query_list_page_all_items(
+            "/lafcsp/toNotClosedCase", "未結案件進度回報",
         )
         return result
 

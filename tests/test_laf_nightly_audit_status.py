@@ -203,6 +203,91 @@ class TestPortalPendingDraftFiltering:
         assert "1150206-A-042" in report
 
 
+# ── LAF progress report reminders ────────────────────────────────────────────
+
+class TestLafProgressReminders:
+    """確認進度回報會納入夜巡提醒。"""
+
+    def test_scan_flags_in_progress_case_over_18_months(self, monkeypatch):
+        from casper_ecosystem.law_firm_orchestrators.laf_nightly_audit import scan_laf_reporting_status
+
+        class FakeDB:
+            def fetch_all(self, *_args, **_kwargs):
+                return [
+                    {
+                        "id": 1,
+                        "case_number": "1140806-J-002",
+                        "client_name": "測試甲",
+                        "case_type": "民事",
+                        "case_reason": "法扶測試",
+                        "status": "進行中",
+                        "folder_path": "",
+                        "legal_aid_number": "1140806-J-002",
+                        "laf_case_no": "",
+                        "application_no": "",
+                        "legal_aid_status": "進行中",
+                        "legal_aid_startup_deadline": None,
+                        "start_date": "2024-01-01",
+                        "end_date": None,
+                    },
+                    {
+                        "id": 2,
+                        "case_number": "1150101-J-001",
+                        "client_name": "測試乙",
+                        "case_type": "民事",
+                        "case_reason": "法扶測試",
+                        "status": "進行中",
+                        "folder_path": "",
+                        "legal_aid_number": "1150101-J-001",
+                        "laf_case_no": "",
+                        "application_no": "",
+                        "legal_aid_status": "進行中",
+                        "legal_aid_startup_deadline": None,
+                        "start_date": "2026-01-01",
+                        "end_date": None,
+                    },
+                ]
+
+        monkeypatch.setenv("MAGI_LAF_PROGRESS_DUE_DAYS", "548")
+        status = scan_laf_reporting_status(FakeDB())
+
+        assert len(status["progress_overdue"]) == 1
+        assert status["progress_overdue"][0]["case_number"] == "1140806-J-002"
+        assert status["progress_overdue"][0]["days_since_assignment"] >= 548
+
+    def test_format_report_shows_portal_and_db_progress_reminders(self):
+        from casper_ecosystem.law_firm_orchestrators.laf_nightly_audit import format_audit_report
+
+        status = {
+            "all_cases": [{}],
+            "not_started": [],
+            "can_go_live": [],
+            "pending_close": [],
+            "can_close": [],
+            "progress_overdue": [
+                {
+                    "case_number": "1130101-J-001",
+                    "client_name": "測試甲",
+                    "legal_aid_number": "1130101-J-001",
+                    "assignment_date": "2024-01-01",
+                    "days_since_assignment": 858,
+                }
+            ],
+            "portal_drafts": {
+                "progress_pending": [
+                    {"applyno": "1140806-J-002", "row_text": "1140806-J-002 | 測試乙 | 需進度回報"}
+                ]
+            },
+        }
+
+        report = format_audit_report([], [], status)
+
+        assert "法扶官網要求進度回報：1 件" in report
+        assert "進行中逾 18 個月，需確認進度回報：1 件" in report
+        assert "1140806-J-002" in report
+        assert "1130101-J-001" in report
+
+
 # ── laf_handler._STATUS_MAP ───────────────────────────────────────────────────
 
 class TestLafHandlerStatusMap:

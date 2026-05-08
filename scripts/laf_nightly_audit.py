@@ -111,7 +111,15 @@ _NAME_FIXES = str.maketrans({"餘": "余"})
 def _get_db():
     """Get DatabaseManager instance."""
     try:
-        from osc import DatabaseManager
+        try:
+            from osc import DatabaseManager
+        except Exception:
+            import importlib.util as _ilu
+            _osc_path = os.path.join(PROJECT_ROOT, "osc.py")
+            _spec = _ilu.spec_from_file_location("magi_root_osc", _osc_path)
+            _mod = _ilu.module_from_spec(_spec)
+            _spec.loader.exec_module(_mod)
+            DatabaseManager = _mod.DatabaseManager
         config_path = get_config_path("config.json")
         with open(config_path, encoding="utf-8") as f:
             config = json.load(f)
@@ -227,6 +235,35 @@ def _case_laf_number(case: dict) -> str:
 
 def _case_label(case: dict) -> str:
     return _case_laf_number(case) or str(case.get("case_number") or "").strip()
+
+
+def _parse_case_date(value) -> Optional[date]:
+    if not value:
+        return None
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    text = str(value).strip()
+    if not text:
+        return None
+    for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%Y.%m.%d"):
+        try:
+            return datetime.strptime(text[:10], fmt).date()
+        except Exception:
+            continue
+    return None
+
+
+def _case_assignment_date(case: dict) -> Optional[date]:
+    assigned = _parse_case_date(case.get("start_date"))
+    if assigned:
+        return assigned
+    deadline = _parse_case_date(case.get("legal_aid_startup_deadline"))
+    if deadline:
+        # 開辦期限通常是派案後約 30 天；沒有派案日欄位時用期限反推，作為保底提醒。
+        return deadline - timedelta(days=30)
+    return None
 
 
 def _is_truncated_laf_number(val: str) -> bool:
@@ -641,6 +678,7 @@ def scan_laf_reporting_status(db) -> dict:
             "can_go_live": [...],     # 有開辦資料，可回報開辦但還沒
             "pending_close": [...],   # 已結案但尚未報結
             "can_close": [...],       # 有判決書，可報結但還沒
+            "progress_overdue": [...],# 進行中且派案超過 18 個月，需確認進度回報
             "all_cases": [...],       # 所有法扶案件
         }
     """
@@ -658,13 +696,18 @@ def scan_laf_reporting_status(db) -> dict:
         all_cases = db.fetch_all(query, (), as_dict=True) or []
     except Exception as e:
         logger.error("scan_laf_reporting_status failed: %s", e)
-        return {"not_started": [], "can_go_live": [], "pending_close": [], "can_close": [], "all_cases": []}
+        return {"not_started": [], "can_go_live": [], "pending_close": [], "can_close": [], "progress_overdue": [], "all_cases": []}
 
     today = date.today()
     not_started = []      # 未開辦且已逾期
     can_go_live = []      # 有開辦資料可回報
     pending_close = []    # DB 狀態=結案 但法扶未報結
     can_close = []        # 有判決書可報結
+    progress_overdue = [] # 進行中且派案超過提醒門檻
+    try:
+        progress_due_days = int(os.environ.get("MAGI_LAF_PROGRESS_DUE_DAYS", "548") or "548")
+    except Exception:
+        progress_due_days = 548
 
     for case in all_cases:
         laf_status = _normalize_status_text(case.get("legal_aid_status") or "")
@@ -711,11 +754,25 @@ def scan_laf_reporting_status(db) -> dict:
             if has_judgment:
                 can_close.append(case)
 
+        # E. 進行中案件：派案/建案超過 18 個月仍未結案，應提醒確認進度回報
+        if laf_status in ("進行中", "已開辦") and osc_status not in ("結案", "已結案"):
+            assigned = _case_assignment_date(case)
+            if assigned:
+                days_since = (today - assigned).days
+                if days_since >= progress_due_days:
+                    progress_overdue.append({
+                        **case,
+                        "assignment_date": assigned.isoformat(),
+                        "days_since_assignment": days_since,
+                        "progress_due_days": progress_due_days,
+                    })
+
     return {
         "not_started": not_started,
         "can_go_live": can_go_live,
         "pending_close": pending_close,
         "can_close": can_close,
+        "progress_overdue": progress_overdue,
         "all_cases": all_cases,
     }
 
@@ -1184,6 +1241,7 @@ def scan_portal_pending_drafts(db=None) -> dict:
             "closing_drafts":   [{"applyno": ..., "status": ..., "row_text": ...}],
             "condition_pending": [...],
             "go_live_pending":   [...],
+            "progress_pending":  [...],
             "auto_resolved":     [{"applyno": ..., "workflow": ..., "label": ...}],
             "error": str or None,
         }
@@ -1192,6 +1250,7 @@ def scan_portal_pending_drafts(db=None) -> dict:
         "closing_drafts": [],
         "condition_pending": [],
         "go_live_pending": [],
+        "progress_pending": [],
         "auto_resolved": [],
         "error": None,
     }
@@ -1215,6 +1274,7 @@ def scan_portal_pending_drafts(db=None) -> dict:
         ]
         result["condition_pending"] = _sanitize_portal_pending_items(portal.get("condition", []), "二階段")
         result["go_live_pending"] = _sanitize_portal_pending_items(portal.get("go_live", []), "開辦")
+        result["progress_pending"] = _sanitize_portal_pending_items(portal.get("progress", []), "進度")
 
     except Exception as e:
         logger.error("Portal 暫存掃描失敗: %s", e)
@@ -1231,11 +1291,13 @@ def scan_portal_pending_drafts(db=None) -> dict:
     cur_closing = {it["applyno"] for it in result["closing_drafts"] if it.get("applyno")}
     cur_condition = {it["applyno"] for it in result["condition_pending"] if it.get("applyno")}
     cur_go_live = {it["applyno"] for it in result["go_live_pending"] if it.get("applyno")}
+    cur_progress = {it["applyno"] for it in result["progress_pending"] if it.get("applyno")}
 
     for wf, label, cur_set in [
         ("closing", "結案", cur_closing),
         ("condition", "二階段", cur_condition),
         ("go_live", "開辦", cur_go_live),
+        ("progress", "進度", cur_progress),
     ]:
         prev_set = set(prev_state.get(wf, []))
         resolved = prev_set - cur_set
@@ -1277,13 +1339,15 @@ def scan_portal_pending_drafts(db=None) -> dict:
         "closing": sorted(cur_closing),
         "condition": sorted(cur_condition),
         "go_live": sorted(cur_go_live),
+        "progress": sorted(cur_progress),
     })
 
     logger.info(
-        "Portal 暫存掃描完成：結案暫存=%d, 條件待處理=%d, 開辦待處理=%d, 自動確認送出=%d",
+        "Portal 暫存掃描完成：結案暫存=%d, 條件待處理=%d, 開辦待處理=%d, 進度待回報=%d, 自動確認送出=%d",
         len(result["closing_drafts"]),
         len(result["condition_pending"]),
         len(result["go_live_pending"]),
+        len(result["progress_pending"]),
         len(result["auto_resolved"]),
     )
     return result
@@ -1447,9 +1511,10 @@ def format_audit_report(
     pd_closing = _sanitize_portal_pending_items(pd.get("closing_drafts", []), "報告/結案")
     pd_condition = _sanitize_portal_pending_items(pd.get("condition_pending", []), "報告/二階段")
     pd_go_live = _sanitize_portal_pending_items(pd.get("go_live_pending", []), "報告/開辦")
+    pd_progress = _sanitize_portal_pending_items(pd.get("progress_pending", []), "報告/進度")
     pd_resolved = pd.get("auto_resolved", [])
 
-    has_portal_pending = bool(pd_closing or pd_condition or pd_go_live)
+    has_portal_pending = bool(pd_closing or pd_condition or pd_go_live or pd_progress)
 
     if pd_resolved:
         lines.append(f"✅ 以下案件已確認送出（Portal 已無暫存，不再提醒）：{len(pd_resolved)} 件")
@@ -1475,12 +1540,27 @@ def format_audit_report(
             lines.append(f"  • {it.get('applyno', '?')} — {it.get('row_text', '')[:80]}")
         lines.append("")
 
+    if pd_progress:
+        lines.append(f"🚨 法扶官網要求進度回報：{len(pd_progress)} 件")
+        for it in pd_progress[:10]:
+            lines.append(f"  • {it.get('applyno', '?')} — {it.get('row_text', '')[:80]}")
+        lines.append("")
+
+    progress_overdue = status.get("progress_overdue", [])
+    if progress_overdue:
+        lines.append(f"⚠️ 進行中逾 18 個月，需確認進度回報：{len(progress_overdue)} 件")
+        for c in sorted(progress_overdue, key=lambda x: x.get("days_since_assignment", 0), reverse=True)[:10]:
+            assigned = c.get("assignment_date") or "日期不明"
+            days_since = c.get("days_since_assignment", "?")
+            lines.append(f"  • {_case_label(c)} {c.get('client_name', '?')} — 派案/建案 {assigned}，已 {days_since} 天")
+        lines.append("")
+
     # 全部正常
     # portal_pending_transfer 是「已送件等法扶審核」，不算需處理
     # portal_new_files 只有仍缺檔的才算需處理
     portal_still_missing = [f for f in portal_new_files if f.get("new_count", 0) > 0]
     if not (still_missing or not_started or can_go_live or portal_unreported or portal_drafted
-            or can_close or portal_still_missing or has_portal_pending):
+            or can_close or progress_overdue or portal_still_missing or has_portal_pending):
         lines.append("✅ 所有法扶案件狀態正常，無需處理。")
 
     return "\n".join(lines)
@@ -1650,11 +1730,13 @@ def run_audit(notify: bool = True, dry_run: bool = False) -> dict:
         _sanitize_portal_pending_items(_pd.get("closing_drafts", []), "摘要/結案")
         or _sanitize_portal_pending_items(_pd.get("condition_pending", []), "摘要/二階段")
         or _sanitize_portal_pending_items(_pd.get("go_live_pending", []), "摘要/開辦")
+        or _sanitize_portal_pending_items(_pd.get("progress_pending", []), "摘要/進度")
     )
     has_issues = bool(
         missing_laf or status["not_started"] or status["can_go_live"]
         or status.get("portal_unreported") or status.get("portal_drafted")
-        or status["can_close"] or portal_still_missing or _has_portal_pending
+        or status["can_close"] or status.get("progress_overdue")
+        or portal_still_missing or _has_portal_pending
     )
     if notify and not dry_run:
         send_report(report, has_issues=has_issues)
@@ -1667,6 +1749,7 @@ def run_audit(notify: bool = True, dry_run: bool = False) -> dict:
         "not_started_count": len(status["not_started"]),
         "can_go_live_count": len(status["can_go_live"]),
         "pending_close_count": len(status["pending_close"]),
+        "progress_overdue_count": len(status.get("progress_overdue", [])),
         "portal_drafted_count": len(status.get("portal_drafted", [])),
         "portal_approved_count": len(status.get("portal_approved", [])),
         "portal_unreported_count": len(status.get("portal_unreported", [])),
@@ -1678,6 +1761,7 @@ def run_audit(notify: bool = True, dry_run: bool = False) -> dict:
         "portal_pending_closing_drafts": len(_sanitize_portal_pending_items(_pd.get("closing_drafts", []))),
         "portal_pending_condition": len(_sanitize_portal_pending_items(_pd.get("condition_pending", []))),
         "portal_pending_go_live": len(_sanitize_portal_pending_items(_pd.get("go_live_pending", []))),
+        "portal_pending_progress": len(_sanitize_portal_pending_items(_pd.get("progress_pending", []))),
         "portal_auto_resolved": len(_pd.get("auto_resolved", [])),
         "total_cases": len(status["all_cases"]),
         "report": report,
