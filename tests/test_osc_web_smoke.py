@@ -198,6 +198,24 @@ def test_paperclip_todo_complete_buttons_are_visible_in_all_todo_surfaces():
     assert "20260506-todo-actions-v1" in osc_html
 
 
+def test_laf_closed_scope_uses_case_status_not_laf_status(client):
+    calls = []
+
+    def fake_exec(sql, params=(), fetch="none"):
+        calls.append((sql, params, fetch))
+        if fetch == "all":
+            return [], {"host": "test"}
+        return {"rowcount": 0}, {"host": "test"}
+
+    with patch("api.blueprints.osc_cases._osc_exec", side_effect=fake_exec):
+        r = client.get("/api/osc/laf/cases?status_scope=closed")
+
+    assert r.status_code == 200
+    sql = calls[-1][0]
+    assert "status LIKE '%已結案%'" in sql
+    assert "legal_aid_status='已結案'" not in sql
+
+
 # ── 2. 各 tab 列表 endpoint 可達 ──────────────────────────────────────────────
 
 LIST_ENDPOINTS = [

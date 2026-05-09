@@ -1030,6 +1030,20 @@ def _osc_archive_local_base() -> tuple[str, str]:
     return archive_base, archive_local
 
 
+def _osc_archive_relative_parent(source_path: str) -> str:
+    """Preserve OSC's category/type path when moving from 01_案件 to 10_結案."""
+    norm = _osc_norm_path(source_path).replace("\\", "/").strip("/")
+    if not norm:
+        return ""
+    parts = [p for p in norm.split("/") if p]
+    try:
+        idx = len(parts) - 1 - list(reversed(parts)).index("01_案件")
+    except ValueError:
+        return ""
+    rel_parts = parts[idx + 1 : -1]
+    return os.path.join(*rel_parts) if rel_parts else ""
+
+
 def _osc_archive_item_for_row(row: dict) -> dict:
     archive_base, archive_local = _osc_archive_local_base()
     source_raw = (row.get("folder_path") or "").strip() or _osc_guess_case_folder(row.get("case_number") or "")
@@ -1041,7 +1055,8 @@ def _osc_archive_item_for_row(row: dict) -> dict:
             source_local = candidate
             break
     folder_name = os.path.basename(source_local.rstrip("/")) if source_local else os.path.basename(source_norm.rstrip("/"))
-    target_local = os.path.join(archive_local, folder_name) if archive_local and folder_name else ""
+    rel_parent = _osc_archive_relative_parent(source_local or source_norm)
+    target_local = os.path.join(archive_local, rel_parent, folder_name) if archive_local and folder_name else ""
     target_exists = bool(target_local and os.path.exists(target_local))
     source_exists = bool(source_local and os.path.exists(source_local))
     return {
@@ -3821,7 +3836,10 @@ def osc_laf_cases_api():
             """
         )
     elif status_scope in {"closed", "archived"}:
-        where.append("(status LIKE '%已結案%' OR legal_aid_status='已結案')")
+        # `legal_aid_status=已結案` only means the LAF workflow is closed.
+        # The court/client matter can still be active or split into another
+        # procedure, so archive views must be driven by the case status itself.
+        where.append("status LIKE '%已結案%'")
 
     sql = f"""
         SELECT
@@ -4698,7 +4716,10 @@ def osc_forms_preview_api():
     form_type = (payload.get("form_type") or "").strip()
     if not form_type:
         return jsonify({"ok": False, "error": "form_type required"}), 400
-    case_row = _osc_get_case_identity_by_payload(payload)
+    try:
+        case_row = _osc_get_case_identity_by_payload(payload)
+    except ValueError as e:
+        return jsonify({"ok": False, "error": str(e)}), 400
     fields = payload.get("fields") or {}
     if form_type == "legal_attest":
         content = fields.get("notes") or "(內文空白)"
@@ -4737,7 +4758,10 @@ def osc_forms_export_api():
     form_type = (payload.get("form_type") or "").strip()
     if not form_type:
         return jsonify({"ok": False, "error": "form_type required"}), 400
-    case_row = _osc_get_case_identity_by_payload(payload)
+    try:
+        case_row = _osc_get_case_identity_by_payload(payload)
+    except ValueError as e:
+        return jsonify({"ok": False, "error": str(e)}), 400
     fields = payload.get("fields") or {}
     if form_type == "legal_attest":
         from skills.legal_attest.generator import core
@@ -5722,7 +5746,10 @@ def osc_laf_wizard_run_api():
     if mode == "submit" and (not getattr(current_user, "is_admin", lambda: False)()):
         return jsonify({"ok": False, "error": "admin_required_for_submit"}), 403
 
-    ident = _osc_prepare_laf_identity(payload)
+    try:
+        ident = _osc_prepare_laf_identity(payload)
+    except ValueError as e:
+        return jsonify({"ok": False, "error": str(e), "mode": mode, "action": action}), 400
     fields = payload.get("fields") or {}
     if not isinstance(fields, dict):
         fields = {}

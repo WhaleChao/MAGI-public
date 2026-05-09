@@ -143,6 +143,33 @@ wait_port_closed() {
     return 1
 }
 
+clear_stale_8080_owner() {
+    # A previous Docker/llama-server placeholder can survive with an empty
+    # `-m` argument, returning /health OK but /v1/models=[] and blocking oMLX.
+    local pids pid cmd
+    pids=$(lsof -tiTCP:8080 -sTCP:LISTEN 2>/dev/null || true)
+    [ -z "$pids" ] && return 0
+    for pid in $pids; do
+        cmd=$(ps -p "$pid" -o command= 2>/dev/null || true)
+        [ -z "$cmd" ] && continue
+        if echo "$cmd" | grep -q "omlx serve"; then
+            continue
+        fi
+        if echo "$cmd" | grep -q "llama-server"; then
+            log "⚠️  port 8080 被 stale llama-server 佔用，清除後再啟動 oMLX（pid=$pid）"
+            kill "$pid" 2>/dev/null || true
+            sleep 2
+            if kill -0 "$pid" 2>/dev/null; then
+                log "⚠️  stale llama-server 未退出，強制清除（pid=$pid）"
+                kill -9 "$pid" 2>/dev/null || true
+                sleep 1
+            fi
+        else
+            log "⚠️  port 8080 被非 oMLX 程序佔用，保守不清除: pid=$pid cmd=$cmd"
+        fi
+    done
+}
+
 # ---- B1: 啟動前記憶體守門 ----
 # 輸出可用記憶體（GB），用 vm_stat 算 free + inactive
 available_memory_gb() {
@@ -259,6 +286,7 @@ case "$MODE" in
 
     # 重啟 oMLX E4B（降低記憶體）
     launchctl bootout "gui/$UID_NUM/com.magi.omlx" 2>/dev/null || true
+    clear_stale_8080_owner
     wait_port_closed 8080 15
     # bootout 後才檢查記憶體（避免舊 process 佔用干擾判斷）
     preflight_memory_check 4 "DAY"
@@ -335,6 +363,7 @@ case "$MODE" in
 
     # 重啟 oMLX 26B（模型實際約 14.63GB；MODEL 需高於模型大小，否則 completion 回 507）
     launchctl bootout "gui/$UID_NUM/com.magi.omlx" 2>/dev/null || true
+    clear_stale_8080_owner
     wait_port_closed 8080 30
     log "等待記憶體回收（10s）..."
     sleep 10

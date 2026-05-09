@@ -482,18 +482,31 @@ def _osc_get_case_identity_by_payload(payload: dict) -> dict:
             fetch="one",
         )
     if (not row) and client_name:
-        row, _ = _osc_exec(
+        rows, _ = _osc_exec(
             """
             SELECT id, case_number, client_name, case_category, case_stage, case_reason, status, folder_path,
                    laf_case_no, application_no, court_case_no
             FROM cases
             WHERE client_name=%s
             ORDER BY updated_at DESC, created_date DESC
-            LIMIT 1
+            LIMIT 5
             """,
             (client_name,),
-            fetch="one",
+            fetch="all",
         )
+        rows = list(rows or [])
+        if len(rows) == 1:
+            row = rows[0]
+        elif len(rows) > 1:
+            labels = []
+            for r in rows:
+                bits = [
+                    str(r.get("case_number") or "").strip(),
+                    str(r.get("case_stage") or "").strip(),
+                    str(r.get("case_reason") or "").strip(),
+                ]
+                labels.append("-".join([x for x in bits if x]) or str(r.get("id") or ""))
+            raise ValueError(f"ambiguous_client_name: {client_name} ({'、'.join(labels)})")
     return row or {}
 
 
@@ -657,6 +670,20 @@ def _osc_get_closed_archive_base() -> str:
     return str(Path.home() / "Library" / "CloudStorage" / "SynologyDrive-homes" / "99_結案案件")
 
 
+def _osc_archive_relative_parent(source_path: str) -> str:
+    """Preserve OSC's category/type path when moving from 01_案件 to 10_結案."""
+    norm = _osc_norm_path(source_path).replace("\\", "/").strip("/")
+    if not norm:
+        return ""
+    parts = [p for p in norm.split("/") if p]
+    try:
+        idx = len(parts) - 1 - list(reversed(parts)).index("01_案件")
+    except ValueError:
+        return ""
+    rel_parts = parts[idx + 1 : -1]
+    return os.path.join(*rel_parts) if rel_parts else ""
+
+
 def _osc_build_archive_preview(limit: int = 300) -> dict:
     rows, _ = _osc_exec(
         """
@@ -709,7 +736,8 @@ def _osc_build_archive_preview(limit: int = 300) -> dict:
             except Exception:
                 logging.getLogger(__name__).debug("silent-catch archive source mount retry", exc_info=True)
         folder_name = os.path.basename(source_local.rstrip("/")) if source_local else os.path.basename(source_norm.rstrip("/"))
-        target_local = os.path.join(archive_local, folder_name) if archive_local and folder_name else ""
+        rel_parent = _osc_archive_relative_parent(source_local or source_norm)
+        target_local = os.path.join(archive_local, rel_parent, folder_name) if archive_local and folder_name else ""
         target_exists = bool(target_local and os.path.exists(target_local))
         source_exists = bool(source_local and os.path.exists(source_local))
         item = {
