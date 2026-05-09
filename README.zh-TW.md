@@ -91,7 +91,25 @@ python3 scripts/magi_doctor.py --json
 python3 scripts/install_magi.py --dry-run --check-live
 ```
 
-`public_release_audit.py` 會阻擋高可信度 secret 與被追蹤的私有路徑；測試資料中的假電話或私網範例可能只列為 warning，可用來人工複核。
+`public_release_audit.py` 會阻擋高可信度 secret 與被追蹤的私有路徑。正式發布與商用部署請使用 `--strict`；發布分支預期應通過 `0 errors / 0 warnings`。
+
+正式商用文件：
+
+- [商用上線檢核指南](docs/COMMERCIAL_READINESS.md)
+- [服務條款範本](docs/TERMS_OF_SERVICE.md)
+- [隱私權政策](docs/PRIVACY_POLICY.md)
+- [資料保存政策](docs/DATA_RETENTION_POLICY.md)
+- [第三方套件 BOM](docs/THIRD_PARTY_BOM.md)
+- [安全政策](SECURITY.md)
+- [支援政策](SUPPORT.md)
+
+私用正式環境商用檢核：
+
+```bash
+./venv/bin/python scripts/ops/commercial_readiness_live.py --strict-public
+```
+
+只有公開安裝包、不含私有 DB 的檢核才使用 `--skip-db`。
 
 Gemma 4 E4B / MTP 已接入 MLX sidecar：
 

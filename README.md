@@ -92,7 +92,25 @@ python3 scripts/magi_doctor.py --json
 python3 scripts/install_magi.py --dry-run --check-live
 ```
 
-The public audit blocks high-confidence secrets and private tracked paths. It may still emit warnings for synthetic test phone numbers or RFC/private-network examples; warnings are informational unless `--strict` is used.
+The public audit blocks high-confidence secrets and private tracked paths. For release and commercial use, run it with `--strict`; the release branch is expected to pass with `0 errors / 0 warnings`.
+
+Commercial readiness documents:
+
+- [Commercial readiness guide](docs/COMMERCIAL_READINESS.md)
+- [Terms of service template](docs/TERMS_OF_SERVICE.md)
+- [Privacy policy](docs/PRIVACY_POLICY.md)
+- [Data retention policy](docs/DATA_RETENTION_POLICY.md)
+- [Third-party bill of materials](docs/THIRD_PARTY_BOM.md)
+- [Security policy](SECURITY.md)
+- [Support policy](SUPPORT.md)
+
+Commercial production gate:
+
+```bash
+./venv/bin/python scripts/ops/commercial_readiness_live.py --strict-public
+```
+
+Use `--skip-db` only for public installability checks that intentionally do not include a private production database.
 
 Gemma 4 E4B / MTP support is available through the MLX sidecar:
 
