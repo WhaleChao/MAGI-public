@@ -104,6 +104,7 @@ function renderCases() {
                 <div class="card-actions">
                     <button class="btn primary" data-act="case-open" data-id="${esc(r.id)}">資料夾</button>
                     <button class="btn" data-act="case-workbench" data-id="${esc(r.id)}">工作台</button>
+                    <button class="btn" data-act="case-doc-finalize" data-id="${esc(r.id)}">書狀定稿</button>
                     <button class="btn" data-act="case-edit" data-id="${esc(r.id)}">編輯</button>
                     <button class="btn" data-act="case-address-label" data-id="${esc(r.id)}">地址標籤</button>
                     <button class="btn danger" data-act="case-del" data-id="${esc(r.id)}">刪除</button>
@@ -129,6 +130,7 @@ function renderCases() {
         <td class="actions">
             <button class="btn primary" data-act="case-open" data-id="${esc(r.id)}">資料夾</button>
             <button class="btn" data-act="case-workbench" data-id="${esc(r.id)}">工作台</button>
+            <button class="btn" data-act="case-doc-finalize" data-id="${esc(r.id)}">書狀定稿</button>
             <button class="btn" data-act="case-edit" data-id="${esc(r.id)}">編輯</button>
             <button class="btn" data-act="case-address-label" data-id="${esc(r.id)}">📮 地址標籤</button>
             <button class="btn danger" data-act="case-del" data-id="${esc(r.id)}">刪除</button>
@@ -968,6 +970,112 @@ function renderDocsByKeyword(docs, keywords) {
 `;
 }
 
+function caseDocIsStampable(doc = {}) {
+    const path = String(doc.file_path || doc.path || "");
+    const ext = (path.split(".").pop() || "").toLowerCase();
+    return ["pdf", "docx", "doc"].includes(ext);
+}
+
+function renderCaseStampableDocuments(c = {}, docs = [], options = {}) {
+    const rows = (docs || []).filter(caseDocIsStampable).slice(0, 120);
+    const caseId = c.id || options.caseId || "";
+    const caseNumber = c.case_number || options.caseNumber || "";
+    const searchBox = options.searchBox ? `
+        <div class="toolbar" style="margin:8px 0;">
+            <input id="caseDocFinalizeQ" value="${esc(options.q || "")}" placeholder="在本案書狀內搜尋檔名 / 類型" style="max-width:360px;">
+            <button class="btn primary" data-act="case-doc-finalize-search" data-id="${esc(caseId)}">搜尋</button>
+            <button class="btn" data-act="case-doc-index" data-case="${esc(caseNumber)}">開全域書狀索引</button>
+        </div>
+    ` : "";
+    if (!rows.length) {
+        return `
+            ${searchBox}
+            <div class="muted">本案目前沒有可蓋章的 PDF / DOCX / DOC。可先按「資料夾」確認檔案是否已放入案件資料夾，或重新掃描書狀索引。</div>
+        `;
+    }
+    return `
+        ${searchBox}
+        <div class="table-wrap"><table>
+            <thead><tr><th>時間</th><th>類型</th><th>檔名</th><th>位置</th><th>操作</th></tr></thead>
+            <tbody>
+                ${rows.map(d => {
+                    const path = d.file_path || d.path || "";
+                    const ext = (path.split(".").pop() || "").toLowerCase();
+                    const pdfTool = ext === "pdf"
+                        ? `<button class="btn slim" data-act="doc-pdf-tool" data-path="${esc(path)}">PDF 工具</button>`
+                        : "";
+                    return `<tr>
+                        <td>${esc(d.timestamp || d.modified_at || "")}</td>
+                        <td>${esc(d.kind_label || d.kind || d.source || "")}</td>
+                        <td title="${esc(d.file_name || "")}">${esc(d.file_name || path.split(/[\\/]/).pop() || "")}</td>
+                        <td title="${esc(path)}">${esc(d.subfolder_name || path)}</td>
+                        <td class="actions">
+                            <button class="btn slim" data-act="doc-open" data-path="${esc(path)}">開啟</button>
+                            <button class="btn slim" data-act="doc-copy" data-path="${esc(path)}">複製路徑</button>
+                            <button class="btn slim primary" data-act="doc-stamp" data-path="${esc(path)}">蓋章</button>
+                            <button class="btn slim warn" data-act="doc-finalize" data-path="${esc(path)}">定稿合併</button>
+                            ${pdfTool}
+                        </td>
+                    </tr>`;
+                }).join("")}
+            </tbody>
+        </table></div>
+    `;
+}
+
+async function loadCaseForDocumentFinalizer(id) {
+    const fromState = (state.cases || []).find(r => String(r.id) === String(id));
+    if (fromState && fromState.case_number) return fromState;
+    const data = await api(`/api/osc/cases/${encodeURIComponent(id)}`);
+    return data.item || data.case || {};
+}
+
+async function openCaseDocumentFinalizer(id, q = "") {
+    const c = await loadCaseForDocumentFinalizer(id);
+    const caseNumber = String(c.case_number || "").trim();
+    if (!caseNumber) {
+        showToast("此案件沒有本所案號，無法篩選書狀。", "warn");
+        return;
+    }
+    state.wb = { mode: "case-doc-finalizer", id, data: { case: c, q } };
+    wbShow(`書狀定稿｜${caseNumber} ${c.client_name || ""}`.trim(), `
+        <div class="card">
+            <h3>本案可蓋章書狀</h3>
+            <div class="muted">只列出 ${esc(caseNumber)} 的 PDF / DOCX / DOC，可直接做正本、副本、繕本或定稿合併。</div>
+            <div class="muted" style="margin-top:8px;">載入中...</div>
+        </div>
+    `);
+    wbSetStatus("正在讀取本案書狀索引。", "info");
+    const data = await api(`/api/osc/documents?limit=300&case_number=${encodeURIComponent(caseNumber)}&q=${encodeURIComponent(q || "")}`);
+    const docs = data.items || [];
+    state.wb.data = { case: c, documents: docs, q };
+    const body = document.getElementById("wbBody");
+    if (body) {
+        body.innerHTML = `
+            <div class="card">
+                <h3>本案可蓋章書狀</h3>
+                <div class="muted">案件：${esc(caseNumber)}｜當事人：${esc(c.client_name || "")}｜共 ${docs.filter(caseDocIsStampable).length} 份可處理檔案</div>
+                ${renderCaseStampableDocuments(c, docs, { searchBox: true, q, caseId: id, caseNumber })}
+            </div>
+        `;
+    }
+    wbSetStatus(`已載入 ${docs.filter(caseDocIsStampable).length} 份可蓋章書狀。`, "ok");
+}
+
+async function refreshCaseDocumentFinalizer(id) {
+    const q = (document.getElementById("caseDocFinalizeQ")?.value || "").trim();
+    await openCaseDocumentFinalizer(id || state.wb?.id || "", q);
+}
+
+async function openCaseDocumentIndex(caseNumber) {
+    const value = String(caseNumber || "").trim();
+    const tab = document.querySelector('.tab-btn[data-tab="documents"]');
+    if (tab) tab.click();
+    const input = document.getElementById("docsCaseNumber");
+    if (input) input.value = value;
+    if (typeof loadDocuments === "function") await loadDocuments();
+}
+
 async function openClientWorkbench(id, statusText = "") {
     const data = await api(`/api/osc/clients/${encodeURIComponent(id)}/workbench`);
     const c = data.client || {};
@@ -1065,15 +1173,20 @@ async function openCaseWorkbench(id, statusText = "") {
     </div>
     <div class="grid-2">
         <div class="card">
+            <h3>書狀定稿 / 蓋章</h3>
+            <div class="muted">只列本案 PDF / DOCX / DOC；可直接做正本、副本、繕本或定稿合併。</div>
+            ${renderCaseStampableDocuments(c, data.documents || [], { caseId: id, caseNumber: c.case_number || "" })}
+        </div>
+        <div class="card">
             <h3>委任狀/開辦資料</h3>
             ${renderDocsByKeyword(data.documents || [], ["委任", "委託", "開辦通知", "開辦資料", "接案通知", "法扶資料"])}
         </div>
+    </div>
+    <div class="grid-2">
         <div class="card">
             <h3>判決/結案相關文件</h3>
             ${renderDocsByKeyword(data.documents || [], ["判決", "裁定", "調解不成立", "結案", "收據", "繳費", "法院通知"])}
         </div>
-    </div>
-    <div class="grid-2">
         <div class="card">
             <h3>對造資料</h3>
             <div class="table-wrap"><table>

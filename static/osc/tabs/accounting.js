@@ -230,6 +230,194 @@ async function delRecurringExpense(id) {
     await loadMeta();
 }
 
+const QT_PRESETS = {
+    consult: { item: "法律諮詢", description: "面談、線上諮詢與初步法律分析", unit: "小時", qty: 1, unit_price: 5000 },
+    draft: { item: "書狀代擬", description: "起訴狀、答辯狀、聲請狀或存證信函等文書代擬", unit: "件", qty: 1, unit_price: 30000 },
+    litigation: { item: "訴訟代理", description: "第一審程序代理；未含裁判費、規費、郵資與差旅費", unit: "審級", qty: 1, unit_price: 80000 },
+    contract: { item: "契約審閱", description: "契約風險分析、條款修訂建議與一次討論", unit: "件", qty: 1, unit_price: 20000 },
+};
+
+function qtToday() {
+    return new Date().toISOString().slice(0, 10);
+}
+
+function qtDateAfter(days) {
+    const d = new Date();
+    d.setDate(d.getDate() + days);
+    return d.toISOString().slice(0, 10);
+}
+
+function qtStatusLabel(status) {
+    const s = String(status || "").trim();
+    return ({ draft: "待確認", sent: "待確認", accepted: "已確認", paid: "已收款", rejected: "未成交" }[s] || s || "待確認");
+}
+
+function qtNumber(value) {
+    const n = Number(String(value ?? "").replace(/,/g, ""));
+    return Number.isFinite(n) ? n : 0;
+}
+
+function parseQuotationItems(raw) {
+    if (Array.isArray(raw)) return raw.map(normalizeQuotationItem);
+    const text = String(raw || "").trim();
+    if (!text) return [];
+    try {
+        const parsed = JSON.parse(text);
+        if (Array.isArray(parsed)) return parsed.map(normalizeQuotationItem);
+        if (Array.isArray(parsed.items)) return parsed.items.map(normalizeQuotationItem);
+        if (typeof parsed.items === "string") return parseQuotationItems(parsed.items);
+        if (typeof parsed.content === "string") return parseQuotationItems(parsed.content);
+    } catch { }
+    return text.split(/\n+/).map(line => line.trim()).filter(Boolean).map(line => ({
+        item: line, description: "", unit: "式", qty: 1, unit_price: 0, amount: 0
+    }));
+}
+
+function normalizeQuotationItem(item) {
+    const it = item && typeof item === "object" ? item : {};
+    const qty = qtNumber(it.qty ?? it.quantity ?? 1) || 1;
+    const unitPrice = qtNumber(it.unit_price ?? it.price ?? it.cost ?? 0);
+    const rawAmount = it.amount ?? it.subtotal;
+    const amount = String(rawAmount ?? "").trim() === "" ? qty * unitPrice : qtNumber(rawAmount);
+    return {
+        item: String(it.item || it.name || it.service || "").trim(),
+        description: String(it.description || it.desc || "").trim(),
+        unit: String(it.unit || "式").trim() || "式",
+        qty,
+        unit_price: unitPrice,
+        amount,
+    };
+}
+
+function quotationRowHtml(item = {}, scope = "qt") {
+    const it = normalizeQuotationItem(item);
+    const deleteButton = scope === "qtTpl"
+        ? '<button class="btn danger" type="button" data-act="qtTpl-item-del">刪除</button>'
+        : '<button class="btn danger" type="button" data-act="qt-item-del">刪除</button>';
+    return `
+        <tr>
+            <td><input class="${scope}-item-field" data-key="item" value="${esc(it.item)}" placeholder="例如：書狀代擬"></td>
+            <td><input class="${scope}-item-field" data-key="description" value="${esc(it.description)}" placeholder="服務範圍、排除事項"></td>
+            <td><input class="${scope}-item-field" data-key="unit" value="${esc(it.unit || "式")}"></td>
+            <td><input class="${scope}-item-field" data-key="qty" type="number" step="0.01" value="${esc(it.qty || 1)}"></td>
+            <td><input class="${scope}-item-field" data-key="unit_price" type="number" step="1" value="${esc(it.unit_price || 0)}"></td>
+            <td><input class="${scope}-item-field" data-key="amount" type="number" step="1" value="${esc(it.amount || 0)}"></td>
+            <td>${deleteButton}</td>
+        </tr>
+    `;
+}
+
+function renderQuotationItems(items, scope = "qt") {
+    const body = document.getElementById(scope === "qt" ? "qtItemsBody" : "qtTplItemsBody");
+    if (!body) return;
+    const rows = (items && items.length ? items : [QT_PRESETS.consult]).map(item => quotationRowHtml(item, scope));
+    body.innerHTML = rows.join("");
+    if (scope === "qt") recalcQuotationTotals();
+    else syncTemplateItemsField();
+}
+
+function collectQuotationItems(scope = "qt") {
+    const body = document.getElementById(scope === "qt" ? "qtItemsBody" : "qtTplItemsBody");
+    if (!body) return [];
+    return Array.from(body.querySelectorAll("tr")).map(row => {
+        const item = {};
+        row.querySelectorAll(`[data-key]`).forEach(input => {
+            item[input.dataset.key] = input.value;
+        });
+        const qty = qtNumber(item.qty) || 1;
+        const unitPrice = qtNumber(item.unit_price);
+        const amount = qtNumber(item.amount) || qty * unitPrice;
+        return {
+            item: String(item.item || "").trim(),
+            description: String(item.description || "").trim(),
+            unit: String(item.unit || "式").trim() || "式",
+            qty,
+            unit_price: unitPrice,
+            amount,
+        };
+    }).filter(item => item.item || item.description || item.amount);
+}
+
+function updateQuotationRowAmount(input) {
+    if (!input || !["qty", "unit_price"].includes(input.dataset.key || "")) return;
+    const row = input.closest("tr");
+    if (!row) return;
+    const qty = qtNumber(row.querySelector('[data-key="qty"]')?.value) || 1;
+    const unitPrice = qtNumber(row.querySelector('[data-key="unit_price"]')?.value);
+    const amountEl = row.querySelector('[data-key="amount"]');
+    if (amountEl) amountEl.value = String(Math.round(qty * unitPrice));
+}
+
+function recalcQuotationTotals() {
+    const items = collectQuotationItems("qt");
+    const subtotal = items.reduce((sum, item) => sum + qtNumber(item.amount), 0);
+    const discount = qtNumber(document.getElementById("qt_discount")?.value);
+    const tax = qtNumber(document.getElementById("qt_tax")?.value);
+    const total = Math.max(0, subtotal - discount + tax);
+    const subtotalEl = document.getElementById("qt_subtotal");
+    const totalEl = document.getElementById("qt_total");
+    const itemsEl = document.getElementById("qt_items");
+    if (subtotalEl) subtotalEl.value = String(Math.round(subtotal));
+    if (totalEl) totalEl.value = String(Math.round(total));
+    if (itemsEl) itemsEl.value = JSON.stringify(items);
+}
+
+function syncTemplateItemsField() {
+    const el = document.getElementById("qtTplItems");
+    if (el) el.value = JSON.stringify(collectQuotationItems("qtTpl"));
+}
+
+function addQuotationItem(scope = "qt", item = {}) {
+    const body = document.getElementById(scope === "qt" ? "qtItemsBody" : "qtTplItemsBody");
+    if (!body) return;
+    body.insertAdjacentHTML("beforeend", quotationRowHtml(item, scope));
+    if (scope === "qt") recalcQuotationTotals();
+    else syncTemplateItemsField();
+}
+
+function applyQuotationPreset(key, scope = "qt") {
+    const preset = QT_PRESETS[key] || QT_PRESETS.consult;
+    addQuotationItem(scope, preset);
+}
+
+function resetQuotationForm() {
+    clearFields(["qt_id", "qt_client_name", "qt_project_name", "qt_contact", "qt_phone", "qt_email", "qt_address", "qt_tax_id", "qt_subtotal", "qt_discount", "qt_tax", "qt_total", "qt_notes", "qt_items", "qt_extended_data"]);
+    const dateEl = document.getElementById("qt_date");
+    const expiryEl = document.getElementById("qt_expiry");
+    const statusEl = document.getElementById("qt_status");
+    if (dateEl) dateEl.value = qtToday();
+    if (expiryEl) expiryEl.value = qtDateAfter(30);
+    if (statusEl) statusEl.value = "待確認";
+    renderQuotationItems([QT_PRESETS.consult], "qt");
+}
+
+function resetQuotationTemplateForm() {
+    clearFields(["qtTplId", "qtTplName", "qtTplDescription", "qtTplItems", "qtTplNotes"]);
+    const def = document.getElementById("qtTplDefault");
+    if (def) def.value = "0";
+    renderQuotationItems([QT_PRESETS.consult], "qtTpl");
+}
+
+function applySelectedQuotationTemplate() {
+    const select = document.getElementById("qtTemplateSelect");
+    const id = select ? select.value : "";
+    if (!id) return alert("請先選擇模板");
+    const tpl = (state.quotationTemplates || []).find(x => String(x.id) === String(id));
+    if (!tpl) return alert("找不到模板，請重新整理模板");
+    const items = parseQuotationItems(tpl.items);
+    renderQuotationItems(items.length ? items : [QT_PRESETS.consult], "qt");
+    const projectEl = document.getElementById("qt_project_name");
+    const notesEl = document.getElementById("qt_notes");
+    if (projectEl && !projectEl.value) projectEl.value = tpl.name || "";
+    if (notesEl && !notesEl.value) notesEl.value = tpl.notes || "";
+}
+
+function downloadCurrentQuotationPdf() {
+    const id = (document.getElementById("qt_id")?.value || "").trim();
+    if (!id) return alert("請先儲存報價單，再下載 PDF");
+    window.open(`/api/osc/quotations/${encodeURIComponent(id)}/export-pdf`, "_blank", "noopener");
+}
+
 async function loadQuotations() {
     const q = encodeURIComponent((document.getElementById("qtQ").value || "").trim());
     const status = encodeURIComponent((document.getElementById("qtStatusFilter").value || "").trim());

@@ -569,7 +569,16 @@ def debt_generate_document():
         if form_type == "creditor_list":
             result["saved_addresses"] = saved_addresses
         if form_type == "supplement":
-            result["checklist_sync"] = _sync_debt_supplement_checklist(data)
+            try:
+                result["checklist_sync"] = _sync_debt_supplement_checklist(data)
+            except Exception as sync_err:
+                logger.warning("消債補件清單同步未完成，但文件已產出: %s", sync_err)
+                result["checklist_sync"] = {
+                    "ok": False,
+                    "synced": 0,
+                    "skipped": 0,
+                    "error": str(sync_err),
+                }
         return jsonify(result)
     except Exception as e:
         return jsonify({"ok": False, "error": f"儲存失敗: {e}"}), 500
