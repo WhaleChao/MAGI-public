@@ -120,9 +120,14 @@ def _notify(text: str) -> None:
     if str(os.environ.get("MAGI_BUSINESS_LIVE_CHECK_NOTIFY", "0")).lower() not in {"1", "true", "yes", "on"}:
         return
     try:
-        from skills.ops.red_phone import send_telegram_push
+        from skills.ops.red_phone import send_telegram_push_with_status
 
-        send_telegram_push(text)
+        send_telegram_push_with_status(
+            text,
+            severity="warning",
+            source="business_module_live_check",
+            topic_key="check",
+        )
     except Exception:
         pass
 

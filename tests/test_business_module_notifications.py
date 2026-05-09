@@ -1,0 +1,23 @@
+from __future__ import annotations
+
+import sys
+import types
+
+
+def test_business_live_check_notifies_system_topic(monkeypatch):
+    from scripts.ops import business_module_live_check
+
+    calls = []
+
+    fake_red_phone = types.SimpleNamespace(
+        send_telegram_push_with_status=lambda *args, **kwargs: calls.append((args, kwargs)) or {"telegram": True}
+    )
+    monkeypatch.setenv("MAGI_BUSINESS_LIVE_CHECK_NOTIFY", "1")
+    monkeypatch.setitem(sys.modules, "skills.ops.red_phone", fake_red_phone)
+
+    business_module_live_check._notify("📋 業務三模組 LIVE/健康檢查\n✅ laf_portal_live: 二階段 0")
+
+    assert calls
+    assert calls[0][1]["topic_key"] == "check"
+    assert calls[0][1]["source"] == "business_module_live_check"
+

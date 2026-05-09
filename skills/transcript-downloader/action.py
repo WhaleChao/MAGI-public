@@ -542,6 +542,7 @@ def _summarize_download_results(results: dict, *, max_cases: int = 20) -> Tuple[
     normalized_rows = [r for r in rows if isinstance(r, dict)]
     ok_rows = [r for r in normalized_rows if bool(r.get("success"))]
     failed_rows = [r for r in normalized_rows if not bool(r.get("success"))]
+    downloaded_rows = []
     total_files = 0
     case_summaries = []
     for row in ok_rows:
@@ -549,6 +550,8 @@ def _summarize_download_results(results: dict, *, max_cases: int = 20) -> Tuple[
         file_list = files if isinstance(files, list) else []
         file_count = len(file_list)
         total_files += file_count
+        if file_count > 0:
+            downloaded_rows.append(row)
         case_summaries.append(
             {
                 "case_number": str(row.get("case_number") or "").strip(),
@@ -559,16 +562,18 @@ def _summarize_download_results(results: dict, *, max_cases: int = 20) -> Tuple[
             }
         )
 
-    lines = [f"📥 筆錄批次下載完成（{total_files} 份，{len(ok_rows)} 案）"]
-    for idx, row in enumerate(ok_rows[:max_cases], start=1):
+    lines = [f"📥 筆錄批次下載完成（{total_files} 份，{len(downloaded_rows)} 案有新檔 / 掃描 {len(ok_rows)} 案）"]
+    for idx, row in enumerate(downloaded_rows[:max_cases], start=1):
         files = row.get("files")
         file_list = files if isinstance(files, list) else []
         lines.append(f"{idx}. {_case_label(row)}（{len(file_list)} 份）")
-        for fp in file_list[:2]:
+        for fp in file_list[:10]:
             lines.append(f"- {os.path.basename(str(fp))}")
-    remaining = len(ok_rows) - min(len(ok_rows), max_cases)
+        if len(file_list) > 10:
+            lines.append(f"...其餘 {len(file_list) - 10} 份略")
+    remaining = len(downloaded_rows) - min(len(downloaded_rows), max_cases)
     if remaining > 0:
-        lines.append(f"...其餘 {remaining} 案略")
+        lines.append(f"...其餘 {remaining} 個有新檔案件略")
     # 區分「查無筆錄」(正常) 和「下載失敗」(需確認)
     no_data_rows = [r for r in failed_rows if not r.get("error")]
     error_rows   = [r for r in failed_rows if r.get("error")]
@@ -581,10 +586,11 @@ def _summarize_download_results(results: dict, *, max_cases: int = 20) -> Tuple[
 
     summary = {
         "downloaded_count": total_files,
-        "downloaded_cases_count": len(ok_rows),
+        "downloaded_cases_count": len(downloaded_rows),
+        "scanned_cases_count": len(ok_rows),
         "no_data_cases_count": len(no_data_rows),
         "failed_cases_count": len(error_rows),
-        "cases": case_summaries[:50],
+        "cases": [r for r in case_summaries if int(r.get("file_count") or 0) > 0][:50],
     }
     return "\n".join(lines), summary
 
