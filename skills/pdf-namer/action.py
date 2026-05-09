@@ -1486,6 +1486,62 @@ def _apply_naming_guards(result: dict, source_hint: str = "") -> dict:
     return result
 
 
+_ARCHIVED_NAME_FOLDERS = (
+    "法院通知或程序裁定",
+    "判決書",
+    "對方歷次書狀",
+    "對造歷次書狀",
+)
+
+
+def _maybe_preserve_archived_filename(pdf_path: str) -> Optional[dict]:
+    """Keep already-filed PDFs stable when their filename is already meaningful.
+
+    Archived case folders are treated as a golden naming surface: re-running
+    pdf-namer on them should not propose churn just because a newer OCR engine
+    phrases a summary differently.
+    """
+    if str(os.environ.get("MAGI_PDF_NAMER_PRESERVE_ARCHIVED_NAMES", "1")).strip().lower() in {"0", "false", "no", "off"}:
+        return None
+    path_text = str(pdf_path or "")
+    if not any(folder in path_text for folder in _ARCHIVED_NAME_FOLDERS):
+        return None
+    basename = os.path.basename(path_text)
+    if not basename.lower().endswith(".pdf"):
+        return None
+    stem = basename[:-4]
+    has_date = bool(
+        re.search(r"(^|[^0-9])(\d{7,8}|\d{2,3}[./-]\d{1,2}[./-]\d{1,2})(?=$|[^0-9])", stem)
+    )
+    has_case_no = bool(RE_CASE_NUMBER.search(stem))
+    generic_names = {"閱卷通知", "民事裁定", "刑事判決", "通知書", "函文"}
+    if stem in generic_names or not (has_date or has_case_no):
+        return None
+    try:
+        from naming_validator import validate_filename as _validate_filename
+    except Exception:
+        _validate_filename = None
+    format_ok = True
+    warnings = []
+    if _validate_filename is not None:
+        format_ok, warnings = _validate_filename(basename)
+    result = {
+        "filename": basename,
+        "date": _extract_any_date(stem) or _extract_roc_date(stem),
+        "date_method": "archived_filename",
+        "court": _extract_court_name(stem),
+        "case_number": _extract_case_number(stem),
+        "doc_type": _extract_doc_type(stem) or "",
+        "party": _extract_name(stem, default_name="") or "",
+        "format_ok": bool(format_ok),
+        "quality_ok": True,
+        "preserved_archived_name": True,
+    }
+    if warnings:
+        result["warnings"] = warnings
+    return result
+
+
 def generate_name_proposal(pdf_path: str, case_name: str = None, return_structured: bool = False):
     """Propose a filename following the standard convention:
     {YYYYMMDD} {法院全名}{案號}{文件類型}（{當事人}）.pdf
@@ -1620,6 +1676,10 @@ def generate_name_proposal(pdf_path: str, case_name: str = None, return_structur
     if not os.path.exists(pdf_path):
         return empty_result if return_structured else None
 
+    preserved = _maybe_preserve_archived_filename(pdf_path)
+    if preserved:
+        return preserved if return_structured else preserved["filename"]
+
     doc = fitz.open(pdf_path)
     if doc.needs_pass:
         try:
@@ -1643,14 +1703,14 @@ def generate_name_proposal(pdf_path: str, case_name: str = None, return_structur
         native = page.get_text() or ""
         text = native
         if len(text.strip()) < 50:
-            text = _prefer_opendataloader_if_better(text, pdf_path, context=f"page_{page_idx + 1}_pre_ocr")
+            text = _prefer_opendataloader_if_better(text, pdf_path, context=f"page_{page_idx + 1}_pre_ocr", page_idx=page_idx)
         if len(text.strip()) < 50:
             if _PDF_OCR_CONSENSUS:
                 # Phase 2B: multi-engine consensus
                 text = _ocr_consensus(page, pdf_path=pdf_path, page_idx=page_idx)
             elif HAS_OCR:
                 text = _ocr_page_rapid(page)
-        text = _prefer_opendataloader_if_better(text, pdf_path, context=f"page_{page_idx + 1}")
+        text = _prefer_opendataloader_if_better(text, pdf_path, context=f"page_{page_idx + 1}", page_idx=page_idx)
         return page, native, text
 
     # Check if page 0 is an envelope (公文封)
@@ -1660,10 +1720,10 @@ def generate_name_proposal(pdf_path: str, case_name: str = None, return_structur
         p0 = doc[0]
         p0_text = p0.get_text() or ""
         if len(p0_text.strip()) < 50:
-            p0_text = _prefer_opendataloader_if_better(p0_text, pdf_path, context="envelope_probe_pre_ocr")
+            p0_text = _prefer_opendataloader_if_better(p0_text, pdf_path, context="envelope_probe_pre_ocr", page_idx=0)
         if len(p0_text.strip()) < 50 and HAS_OCR:
             p0_text = _ocr_page_rapid(p0)
-        p0_text = _prefer_opendataloader_if_better(p0_text, pdf_path, context="envelope_probe")
+        p0_text = _prefer_opendataloader_if_better(p0_text, pdf_path, context="envelope_probe", page_idx=0)
         if _is_envelope_page(p0_text):
             envelope_page = p0
             logger.info("Page 1: detected as envelope (text markers)")
@@ -2448,7 +2508,13 @@ def _prefer_chandra_if_better(current_text: str, pdf_path: str, page_idx: int = 
     return current_text
 
 
-def _prefer_opendataloader_if_better(current_text: str, pdf_path: str = "", *, context: str = "") -> str:
+def _prefer_opendataloader_if_better(
+    current_text: str,
+    pdf_path: str = "",
+    *,
+    context: str = "",
+    page_idx: Optional[int] = None,
+) -> str:
     """Use OpenDataLoader when native/OCR text is weak or too short."""
     if not pdf_path or _opendataloader_provider is None:
         return current_text
@@ -2457,7 +2523,10 @@ def _prefer_opendataloader_if_better(current_text: str, pdf_path: str = "", *, c
     if current_score >= _OPENDATALOADER_MIN_SCORE and len(current.strip()) >= 250:
         return current_text
     try:
-        result = _opendataloader_provider.run_pdf(pdf_path, task_type="legal")
+        kwargs = {"task_type": "legal"}
+        if page_idx is not None:
+            kwargs["page_indexes"] = [page_idx]
+        result = _opendataloader_provider.run_pdf(pdf_path, **kwargs)
     except Exception as exc:
         logger.debug("[opendataloader] provider failed: %s", exc)
         return current_text
@@ -3243,19 +3312,19 @@ def batch_ocr_pages(pdf_paths: list) -> dict:
             # Fallback: oMLX Gemma vision (slower but handles edge cases)
             def _ocr_page(page_idx: int) -> str:
                 native = (doc[page_idx].get_text() or "") if page_idx < doc.page_count else ""
-                preferred = _prefer_opendataloader_if_better(native, pdf_path, context=f"batch_page_{page_idx + 1}_pre_ocr")
+                preferred = _prefer_opendataloader_if_better(native, pdf_path, context=f"batch_page_{page_idx + 1}_pre_ocr", page_idx=page_idx)
                 if preferred and preferred != native and len(preferred.strip()) >= 120:
                     return preferred
                 # Phase 2B: multi-engine consensus when MAGI_PDF_OCR_CONSENSUS=1
                 if _PDF_OCR_CONSENSUS and page_idx < doc.page_count:
                     text = _ocr_consensus(doc[page_idx], pdf_path=pdf_path, page_idx=page_idx)
-                    return _prefer_opendataloader_if_better(text, pdf_path, context=f"batch_page_{page_idx + 1}")
+                    return _prefer_opendataloader_if_better(text, pdf_path, context=f"batch_page_{page_idx + 1}", page_idx=page_idx)
                 # Default: macOS Vision primary → oMLX Gemma vision fallback
                 text = _macos_vision_ocr_page(pdf_path, page_idx)
                 if not text and page_idx < doc.page_count:
                     text = _glm_ocr_page(doc[page_idx], dpi=200)
                 text = _prefer_chandra_if_better(text, pdf_path, page_idx)
-                text = _prefer_opendataloader_if_better(text, pdf_path, context=f"batch_page_{page_idx + 1}")
+                text = _prefer_opendataloader_if_better(text, pdf_path, context=f"batch_page_{page_idx + 1}", page_idx=page_idx)
                 return text
 
             if pages["envelope"]:
