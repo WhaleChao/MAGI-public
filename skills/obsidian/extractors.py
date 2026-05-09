@@ -135,6 +135,31 @@ _OCR_MAX_PAGES = 20          # cap OCR rendering to avoid stalling on huge PDFs
 _OCR_DPI = 200               # resolution for page rendering
 
 
+def _maybe_opendataloader_pdf(path: Path, current_text: str = "") -> Optional[Dict]:
+    """Use OpenDataLoader PDF when the current extractor is weak."""
+    if str(os.environ.get("MAGI_OPENDATALOADER_PDF_ENABLE", "auto")).strip().lower() in {"0", "false", "no", "off", "disabled"}:
+        return None
+    current = str(current_text or "").strip()
+    if len(current) >= 500:
+        return None
+    try:
+        from skills.engine.ocr import opendataloader_provider
+
+        result = opendataloader_provider.run_pdf(str(path), task_type="legal")
+    except Exception as exc:
+        logger.debug("opendataloader provider failed for %s: %s", path, exc)
+        return None
+    text = (getattr(result, "corrected_text", "") or getattr(result, "raw_text", "") or "").strip()
+    if not getattr(result, "success", False) or len(text) < max(_OCR_MIN_CHARS, len(current) + 100):
+        return None
+    return {
+        "success": True,
+        "text": text[:MAX_TEXT_CHARS],
+        "pages": None,
+        "method": getattr(result, "provider", "opendataloader_pdf"),
+    }
+
+
 def _extract_pdf(path: Path) -> Dict:
     page_count: Optional[int] = None
 
@@ -150,6 +175,9 @@ def _extract_pdf(path: Path) -> Dict:
                     texts.append(t)
         combined = "\n\n".join(texts)
         if len(combined.strip()) >= _OCR_MIN_CHARS:
+            odl = _maybe_opendataloader_pdf(path, combined)
+            if odl:
+                return odl
             return {"success": True, "text": combined[:MAX_TEXT_CHARS], "pages": page_count, "method": "pdfplumber"}
     except Exception as e:
         logger.debug("pdfplumber failed for %s: %s", path, e)
@@ -167,6 +195,9 @@ def _extract_pdf(path: Path) -> Dict:
         doc.close()
         combined = "\n\n".join(texts)
         if len(combined.strip()) >= _OCR_MIN_CHARS:
+            odl = _maybe_opendataloader_pdf(path, combined)
+            if odl:
+                return odl
             return {"success": True, "text": combined[:MAX_TEXT_CHARS], "pages": page_count, "method": "pymupdf"}
     except Exception as e:
         logger.debug("pymupdf failed for %s: %s", path, e)
@@ -184,11 +215,18 @@ def _extract_pdf(path: Path) -> Dict:
                     texts.append(t)
             combined = "\n\n".join(texts)
             if len(combined.strip()) >= _OCR_MIN_CHARS:
+                odl = _maybe_opendataloader_pdf(path, combined)
+                if odl:
+                    return odl
                 return {"success": True, "text": combined[:MAX_TEXT_CHARS], "pages": page_count, "method": "pypdf2"}
     except Exception as e:
         logger.debug("pypdf2 failed for %s: %s", path, e)
 
     # ── OCR fallback: render pages with PyMuPDF + tesseract ──────────
+    odl = _maybe_opendataloader_pdf(path, "")
+    if odl:
+        return odl
+
     result = _extract_pdf_ocr(path, page_count)
     if result is not None:
         return result

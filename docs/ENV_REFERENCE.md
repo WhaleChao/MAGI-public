@@ -114,3 +114,13 @@
 | `MAGI_LOG_DIR` | path | `{root}/.agent` | Log 目錄 |
 | `MAGI_CONFIG_DIR` | path | `{root}` | 設定目錄 |
 | `MAGI_EXPORTS_DIR` | path | `{root}/static/exports` | 匯出目錄 |
+
+### Tier 8: PDF / OCR Extraction
+
+| Variable | Type | Default | Description |
+|----------|------|---------|-------------|
+| `MAGI_OPENDATALOADER_PDF_ENABLE` | bool/auto | `auto` | 啟用 OpenDataLoader PDF 作為版面感知文字/OCR 供應器；缺套件或 Java 時自動退回原流程 |
+| `MAGI_OPENDATALOADER_PDF_HYBRID` | string | — | OpenDataLoader hybrid OCR 模式；留空時只用預設轉換 |
+| `MAGI_OPENDATALOADER_PDF_MAX_CHARS` | int | `24000` | 每份 PDF 從 OpenDataLoader 讀入 MAGI 的最大字元數 |
+| `MAGI_PDF_NAMER_OPENDATALOADER_MIN_SCORE` | float | `0.55` | PDF 命名採用 OpenDataLoader 結果的最低品質分數 |
+| `MAGI_PDF_NAMER_OPENDATALOADER_MIN_GAIN` | float | `0.08` | PDF 命名改用 OpenDataLoader 結果所需的最低品質增益 |

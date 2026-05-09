@@ -23,6 +23,7 @@ EbookLib>=0.18
 
 # -- OCR --
 rapidocr-onnxruntime>=1.3
+opendataloader-pdf>=2.4.3  # optional layout-aware PDF OCR/text extraction; requires Java 11+
 
 # -- Web Scraping & Browser Automation --
 beautifulsoup4>=4.12
