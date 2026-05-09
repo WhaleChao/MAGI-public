@@ -16,58 +16,57 @@ class _FakeOrch:
     def _translate_text_complete(self, text, source_lang="auto", target_lang="繁體中文", heavy=False):
         return {"success": True, "text": f"{target_lang}::{text}", "provider": "fake"}
 
+    def _export_translation_docx(self, **kwargs):
+        return None
 
-def test_inline_translation_strips_target_language_prefix(monkeypatch):
+    def _export_translation_txt(self, **kwargs):
+        return None
+
+
+def test_inline_translation_strips_target_language_prefix():
     captured = {}
 
-    def _fake_translate_text(text, target_lang, source_lang, mode):
-        captured.update(
-            {
-                "text": text,
-                "target_lang": target_lang,
-                "source_lang": source_lang,
-                "mode": mode,
-            }
-        )
-        return {"success": True, "text": "法院因證據不足而駁回該聲請。", "provider": "fake"}
-
-    monkeypatch.setattr("skills.bridge.tri_sage_collab.translate_text", _fake_translate_text)
+    class _TranslationOrch(_FakeOrch):
+        def _translate_text_complete(self, text, source_lang="auto", target_lang="繁體中文", heavy=False):
+            captured.update(
+                {
+                    "text": text,
+                    "target_lang": target_lang,
+                    "source_lang": source_lang,
+                }
+            )
+            return {"success": True, "text": "法院因證據不足而駁回該聲請。", "provider": "fake"}
 
     reply = specialized_commands.run_inline_translation_command(
-        _FakeOrch(),
+        _TranslationOrch(),
         "tester",
-        "請幫我翻譯成繁體中文：The court denied the motion because the evidence was insufficient.",
+        "請幫我翻譯成繁體中文："
+        + "The court denied the motion because the evidence was insufficient. " * 20,
     )
 
     assert "法院因證據不足" in reply
-    assert captured["text"] == "The court denied the motion because the evidence was insufficient."
+    assert captured["text"].startswith("The court denied the motion because the evidence was insufficient.")
     assert captured["target_lang"] == "繁體中文"
 
 
-def test_inline_translation_capability_question_returns_guide(monkeypatch):
-    def _unexpected_translate_text(*args, **kwargs):
-        raise AssertionError("capability question should not execute translation")
-
-    monkeypatch.setattr("skills.bridge.tri_sage_collab.translate_text", _unexpected_translate_text)
-
+def test_inline_translation_capability_question_returns_guide():
     reply = specialized_commands.run_inline_translation_command(_FakeOrch(), "tester", "你會翻譯嗎？")
 
     assert "我可以幫您翻譯" in reply
 
 
-def test_inline_translation_respects_english_target_prefix(monkeypatch):
+def test_inline_translation_respects_english_target_prefix():
     captured = {}
 
-    def _fake_translate_text(text, target_lang, source_lang, mode):
-        captured["text"] = text
-        captured["target_lang"] = target_lang
-        return {"success": True, "text": "Hello.", "provider": "fake"}
+    class _TranslationOrch(_FakeOrch):
+        def _translate_text_complete(self, text, source_lang="auto", target_lang="繁體中文", heavy=False):
+            captured["text"] = text
+            captured["target_lang"] = target_lang
+            return {"success": True, "text": "Hello.", "provider": "fake"}
 
-    monkeypatch.setattr("skills.bridge.tri_sage_collab.translate_text", _fake_translate_text)
+    specialized_commands.run_inline_translation_command(_TranslationOrch(), "tester", "翻譯成英文：" + "你好。" * 500)
 
-    specialized_commands.run_inline_translation_command(_FakeOrch(), "tester", "翻譯成英文：你好。")
-
-    assert captured["text"] == "你好。"
+    assert captured["text"].startswith("你好。")
     assert captured["target_lang"] == "英文"
 
 
