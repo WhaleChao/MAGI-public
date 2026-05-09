@@ -14,7 +14,7 @@ import os
 import tempfile
 import time
 from pathlib import Path
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, Optional, Sequence, Tuple
 
 from skills.engine.ocr.legal_corrector import correct_legal_text
 from skills.engine.ocr.legal_entities import extract_entities
@@ -22,7 +22,7 @@ from skills.engine.ocr.ocr_schema import OCRProviderResult
 from skills.engine.ocr.quality import compute_quality_score
 
 
-_CACHE: Dict[Tuple[str, int, int, str], OCRProviderResult] = {}
+_CACHE: Dict[Tuple[str, int, int, str, str], OCRProviderResult] = {}
 
 
 def _enabled() -> bool:
@@ -80,7 +80,44 @@ def _read_output_text(output_dir: Path, limit: int) -> str:
     return "\n\n".join(chunks)[:limit].strip()
 
 
-def run_pdf(pdf_path: str, *, task_type: str = "legal", timeout_sec: float | None = None) -> OCRProviderResult:
+def _page_key(page_indexes: Optional[Sequence[int]]) -> str:
+    if not page_indexes:
+        return "all"
+    return ",".join(str(int(p)) for p in page_indexes)
+
+
+def _materialize_page_subset(path: Path, page_indexes: Optional[Sequence[int]], work_dir: Path) -> Path:
+    if not page_indexes:
+        return path
+    try:
+        import fitz  # type: ignore
+    except Exception as exc:
+        raise RuntimeError(f"PyMuPDF unavailable for page subset: {exc}") from exc
+
+    src = fitz.open(str(path))
+    try:
+        dst = fitz.open()
+        for raw_idx in page_indexes:
+            idx = int(raw_idx)
+            if 0 <= idx < src.page_count:
+                dst.insert_pdf(src, from_page=idx, to_page=idx)
+        if dst.page_count <= 0:
+            raise ValueError("page subset is empty")
+        subset = work_dir / f"{path.stem}_pages_{_page_key(page_indexes).replace(',', '_')}.pdf"
+        dst.save(str(subset))
+        dst.close()
+        return subset
+    finally:
+        src.close()
+
+
+def run_pdf(
+    pdf_path: str,
+    *,
+    task_type: str = "legal",
+    timeout_sec: float | None = None,
+    page_indexes: Optional[Sequence[int]] = None,
+) -> OCRProviderResult:
     """Extract text from a PDF using OpenDataLoader when available."""
 
     if not _enabled():
@@ -96,7 +133,8 @@ def run_pdf(pdf_path: str, *, task_type: str = "legal", timeout_sec: float | Non
         return OCRProviderResult.failure("opendataloader_pdf", f"stat failed: {type(exc).__name__}: {exc}")
 
     hybrid = _hybrid_mode()
-    key = (str(path.resolve()), int(stat.st_mtime), int(stat.st_size), hybrid)
+    page_scope = _page_key(page_indexes)
+    key = (str(path.resolve()), int(stat.st_mtime), int(stat.st_size), hybrid, page_scope)
     cached = _CACHE.get(key)
     if cached is not None:
         return cached
@@ -111,8 +149,10 @@ def run_pdf(pdf_path: str, *, task_type: str = "legal", timeout_sec: float | Non
 
     try:
         with tempfile.TemporaryDirectory(prefix="magi_opendataloader_pdf_") as td:
+            work_dir = Path(td)
+            input_pdf = _materialize_page_subset(path, page_indexes, work_dir)
             kwargs: dict[str, Any] = {
-                "input_path": [str(path)],
+                "input_path": [str(input_pdf)],
                 "output_dir": td,
                 "format": "markdown,json",
             }
