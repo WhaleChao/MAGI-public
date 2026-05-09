@@ -384,7 +384,7 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
             return f"❌ 摘要補跑流程失敗: {e}"
 
     if any(k in message for k in ["查判決", "找判決", "判決搜尋", "搜尋判決", "收集判決", "判決搜集", "搜尋最高法院判決", "實務見解", "法律見解", "法院見解"]):
-        if orch._looks_like_capability_question(message):
+        if orch._looks_like_capability_question(message) or re.search(r"(你會|可以|能不能|可否).{0,8}(查判決|找判決|判決搜尋)", message):
             return (
                 "✅ **我可以幫您查判決！**\n\n"
                 "• 直接輸入：`查判決 傷害`\n"

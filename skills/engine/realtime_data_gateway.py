@@ -98,6 +98,11 @@ _WEATHER_NEGATIVE = re.compile(
     r"提醒|記事|行程|開會|會議|事項|備忘|memo|remind|schedule",
     re.IGNORECASE,
 )
+_REALTIME_CAPABILITY_QUESTION = re.compile(
+    r"(?:你|magi|MAGI).{0,8}(?:會|可以|能不能|能否|可否|能).{0,24}"
+    r"(?:天氣|氣象|股票|股價|追蹤股票|匯率)",
+    re.IGNORECASE,
+)
 
 
 def classify_realtime_query(text: str) -> Optional[str]:
@@ -108,6 +113,8 @@ def classify_realtime_query(text: str) -> Optional[str]:
     也不走 weather，避免提醒查詢誤進天氣路徑。
     """
     lowered = (text or "").lower()
+    if _REALTIME_CAPABILITY_QUESTION.search(text or ""):
+        return None
     if any(k in lowered for k in _WEATHER_KEYWORDS):
         # 負面條件：提醒/行程類 → 不走 weather
         if _WEATHER_NEGATIVE.search(text):

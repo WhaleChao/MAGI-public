@@ -893,6 +893,19 @@ def process_message_inner(orch, user_id, message, platform="LINE", role="user", 
         collab_status = orch._get_collaboration_status()
         return f"{node_status}\n\n{brain_status}\n\n{collab_status}"
 
+    # 2.6.5. Authoritative realtime data (weather/stock/fx) before generic
+    # semantic routing. This prevents weather questions from drifting into
+    # calendar/court reminders or LLM-generated estimates.
+    try:
+        from skills.engine.realtime_data_gateway import handle_realtime_query
+        realtime = handle_realtime_query(message)
+        if isinstance(realtime, dict):
+            reply = realtime.get("reply") or realtime.get("refusal")
+            if reply:
+                return str(reply)
+    except Exception as e:
+        logger.warning(f"Realtime data gateway skipped: {e}")
+
     # 2.7. Schedule/Meeting Query (High Priority) - Check before LLM
     # Use exact set for shortest phrases; longer ones use startswith/contains but with length guard
     _SCHEDULE_EXACT = {"今天行程", "明天行程", "本週行程", "這週行程", "今天會議", "明天會議",
@@ -1177,7 +1190,7 @@ def process_message_inner(orch, user_id, message, platform="LINE", role="user", 
 
     # 2.7.75 Judgment Collector / Search
     if any(k in msg_lower for k in ["查判決", "找判決", "判決搜尋", "搜尋判決", "實務見解", "法律見解", "法院見解"]):
-        if orch._looks_like_capability_question(message):
+        if orch._looks_like_capability_question(message) or re.search(r"(你會|可以|能不能|可否).{0,8}(查判決|找判決|判決搜尋)", message):
             return (
                 "✅ **我可以幫您查判決！**\n\n"
                 "• 直接輸入：`查判決 傷害`\n"

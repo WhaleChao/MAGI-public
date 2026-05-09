@@ -287,7 +287,7 @@ case "$MODE" in
     # 重啟 oMLX E4B（降低記憶體）
     launchctl bootout "gui/$UID_NUM/com.magi.omlx" 2>/dev/null || true
     clear_stale_8080_owner
-    wait_port_closed 8080 15
+    wait_port_closed 8080 15 || true
     # bootout 後才檢查記憶體（避免舊 process 佔用干擾判斷）
     preflight_memory_check 4 "DAY"
     # 日間：E4B 5.10GB + KV cache need 6.38GB → MODEL=8GB / PROCESS=10GB
@@ -307,7 +307,7 @@ case "$MODE" in
         ln -sf "/Users/ai/.omlx/models/Phi-4-mini-instruct-4bit" \
                "/Users/ai/.omlx/models-text-phi4/Phi-4-mini-instruct-4bit"
         launchctl bootout "gui/$UID_NUM/com.magi.omlx-phi4" 2>/dev/null || true
-        wait_port_closed 8082 10
+        wait_port_closed 8082 10 || true
         launchctl bootstrap "gui/$UID_NUM" ~/Library/LaunchAgents/com.magi.omlx-phi4.plist 2>/dev/null || true
         sleep 2
         launchctl kickstart -kp "gui/$UID_NUM/com.magi.omlx-phi4" 2>/dev/null || true
@@ -322,7 +322,7 @@ case "$MODE" in
         ln -sf "/Users/ai/.omlx/models/$SMOL_MODEL" \
                "/Users/ai/.omlx/models-text-smol/$SMOL_MODEL"
         launchctl bootout "gui/$UID_NUM/com.magi.omlx-smol" 2>/dev/null || true
-        wait_port_closed 8083 10
+        wait_port_closed 8083 10 || true
         launchctl bootstrap "gui/$UID_NUM" ~/Library/LaunchAgents/com.magi.omlx-smol.plist 2>/dev/null || true
         sleep 2
         launchctl kickstart -kp "gui/$UID_NUM/com.magi.omlx-smol" 2>/dev/null || true
@@ -351,8 +351,8 @@ case "$MODE" in
     # 停止 Phi-4 和 SmolLM3
     launchctl bootout "gui/$UID_NUM/com.magi.omlx-phi4" 2>/dev/null || true
     launchctl bootout "gui/$UID_NUM/com.magi.omlx-smol" 2>/dev/null || true
-    wait_port_closed 8082 15
-    wait_port_closed 8083 15
+    wait_port_closed 8082 15 || true
+    wait_port_closed 8083 15 || true
 
     # 更新 models-text symlink → 26B
     rm -f "$MODELS_TEXT_DIR"/*
@@ -364,7 +364,7 @@ case "$MODE" in
     # 重啟 oMLX 26B（模型實際約 14.63GB；MODEL 需高於模型大小，否則 completion 回 507）
     launchctl bootout "gui/$UID_NUM/com.magi.omlx" 2>/dev/null || true
     clear_stale_8080_owner
-    wait_port_closed 8080 30
+    wait_port_closed 8080 30 || true
     log "等待記憶體回收（10s）..."
     sleep 10
     # 所有舊 process 都 bootout 後才檢查記憶體（門檻 8GB：26B ceiling=16GB，系統本身 6-8GB）

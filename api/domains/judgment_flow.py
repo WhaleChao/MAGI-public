@@ -429,6 +429,19 @@ def run_judgment_collector_command(orch, message: str, notify: bool = False) -> 
     if not isinstance(data, dict):
         return str(data)[:1500]
     if not data.get("success"):
+        query = str(payload.get("case_reason") or payload.get("case_number") or "").strip()
+        fallback = _search_local_judgment_archive(
+            query,
+            limit=int(os.environ.get("MAGI_JUDGMENT_CHAT_MAX_RESULTS", "12") or "12"),
+        )
+        if fallback.get("success"):
+            return format_judgment_collect_result({
+                "success": True,
+                "case_reason": query,
+                "count": len(fallback.get("items") or []),
+                "items": fallback.get("items") or [],
+                "source_label": fallback.get("source_label", "本地實務見解庫"),
+            })
         return f"\u274c \u5224\u6c7a\u641c\u5c0b\u5931\u6557\uff1a{str(data.get('error') or 'unknown')[:280]}"
     return format_judgment_collect_result(data)
 

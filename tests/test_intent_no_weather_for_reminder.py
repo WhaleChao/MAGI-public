@@ -30,6 +30,12 @@ class TestNoWeatherForReminder(unittest.TestCase):
         "颱風來了嗎",
     ]
 
+    CAPABILITY_PROMPTS = [
+        "你會追蹤股票嗎？",
+        "你可以查天氣嗎？",
+        "MAGI 能不能查匯率？",
+    ]
+
     def test_reminder_prompts_not_weather(self):
         """Reminder-style prompts (含「提醒」「開會」「會議」「備忘」) must not classify as weather."""
         for prompt in self.REMINDER_PROMPTS:
@@ -46,6 +52,15 @@ class TestNoWeatherForReminder(unittest.TestCase):
             self.assertEqual(
                 result, "weather",
                 f"Weather prompt '{prompt}' was NOT classified as weather (got: {result})"
+            )
+
+    def test_capability_prompts_stay_on_help_routes(self):
+        """Capability questions should explain features instead of firing live data APIs."""
+        for prompt in self.CAPABILITY_PROMPTS:
+            result = classify_realtime_query(prompt)
+            self.assertIsNone(
+                result,
+                f"Capability prompt '{prompt}' was incorrectly classified as realtime (got: {result})"
             )
 
 
