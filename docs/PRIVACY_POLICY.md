@@ -1,16 +1,24 @@
 # MAGI Privacy Policy
 
 **Effective Date:** March 19, 2026
-**Last Updated:** March 19, 2026
-**Version:** 1.0
+**Last Updated:** May 9, 2026
+**Version:** 1.1
+
+**Status:** Commercial deployment template. The public source package is
+local-first and does not send data to a MAGI-operated cloud service by itself.
+For a hosted, managed, or paid deployment, the actual operator must fill in its
+legal entity, contact point, deployment region, subprocessors, retention
+schedule, and customer-specific commitments before launch.
 
 ---
 
 ## 1. Introduction
 
-This Privacy Policy describes how MAGI ("we," "us," "our," or the "Company") collects, uses, discloses, and otherwise processes personal information in connection with our Multi-Agent Governance Infrastructure platform (the "Service").
+This Privacy Policy describes how MAGI ("we," "us," "our," the "Company," or the deployment operator) collects, uses, discloses, and otherwise processes personal information in connection with the Multi-Agent Governance Infrastructure platform (the "Service").
 
-We are committed to protecting your privacy and ensuring transparency about how we handle your data. This policy applies to all users of MAGI, including individuals, organizations, and automated systems.
+MAGI can be self-hosted by a customer or operated as a managed service. In a self-hosted deployment, the customer usually controls the infrastructure and data. In a managed deployment, the operator may process data on the customer's behalf according to a separate order form, data processing agreement, or service contract.
+
+We are committed to protecting privacy and ensuring transparency about how data is handled. This policy applies to users of the Service, including individuals, organizations, and automated systems, where the operator has adopted this policy for a deployment.
 
 ---
 
@@ -44,7 +52,17 @@ We are committed to protecting your privacy and ensuring transparency about how 
 - Operating system and language preferences
 - User agent strings
 
-### 2.2 Information Collected Automatically
+### 2.2 Local-First Default
+
+The public MAGI package is designed to run locally. Unless an operator enables
+external integrations, data remains on the operator-controlled machine, database,
+NAS/file storage, and configured messaging or portal accounts.
+
+Optional integrations may send data to third parties, for example messaging
+platforms, calendars, email providers, model APIs, or court/legal portals. The
+operator must disclose which integrations are enabled for each deployment.
+
+### 2.3 Information Collected Automatically
 
 #### System & Performance Data
 - API call frequency and response times
@@ -66,12 +84,19 @@ We are committed to protecting your privacy and ensuring transparency about how 
 - Log files containing request/response data
 - Network performance metrics
 
-### 2.3 Data From Third-Party Sources
+### 2.4 Data From Third-Party Sources
 
 - Authentication data from SSO providers (Google, LDAP, OAuth)
 - User information from organization directory integrations
 - Judicial records from public court databases
 - Judicial API feeds and webhooks
+
+### 2.5 Data Not Needed by the Public Repository
+
+Do not commit or publish `.env`, DB backups, OAuth tokens, portal screenshots,
+downloaded case material, runtime logs, customer files, or NAS paths. The public
+release audit is designed to help detect accidental disclosure before publishing
+source code.
 
 ---
 

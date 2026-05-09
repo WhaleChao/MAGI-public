@@ -43,7 +43,7 @@ MAGI v2 is a locally-deployed AI operations platform built for a Taiwanese law f
 
 ```bash
 # 1. Clone
-git clone https://github.com/WhaleChao/MAGI-v2.git && cd MAGI-v2
+git clone https://github.com/WhaleChao/MAGI-public.git && cd MAGI-public
 
 # 2. Beginner-safe installer dry run
 python3 scripts/install_magi.py --dry-run --check-live
@@ -92,7 +92,25 @@ python3 scripts/magi_doctor.py --json
 python3 scripts/install_magi.py --dry-run --check-live
 ```
 
-The public audit blocks high-confidence secrets and private tracked paths. It may still emit warnings for synthetic test phone numbers or RFC/private-network examples; warnings are informational unless `--strict` is used.
+The public audit blocks high-confidence secrets and private tracked paths. For release and commercial use, run it with `--strict`; the current public branch is expected to pass with `0 errors / 0 warnings`.
+
+Commercial readiness documents:
+
+- [Commercial readiness guide](docs/COMMERCIAL_READINESS.md)
+- [Terms of service template](docs/TERMS_OF_SERVICE.md)
+- [Privacy policy](docs/PRIVACY_POLICY.md)
+- [Data retention policy](docs/DATA_RETENTION_POLICY.md)
+- [Third-party bill of materials](docs/THIRD_PARTY_BOM.md)
+- [Security policy](SECURITY.md)
+- [Support policy](SUPPORT.md)
+
+Commercial installability gate:
+
+```bash
+python3 scripts/ops/commercial_readiness_live.py --strict-public --skip-db
+```
+
+Use the private production checkout without `--skip-db` to verify live DB backup readability and restore confirmation gating.
 
 Gemma 4 E4B / MTP support is available through the MLX sidecar:
 
