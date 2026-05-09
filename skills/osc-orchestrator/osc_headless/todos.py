@@ -121,7 +121,16 @@ def get_default_patterns() -> Dict[str, List[Dict]]:
             {"pattern": r"(\d+)日.*?閱卷", "pattern_type": "relative", "days": None},
         ],
         "開庭": [
-            {"pattern": r"(\d{1,2})月(\d{1,2})日([上下])午(\d{1,2})時(\d*)分?.*?(開庭|準備程序)", "pattern_type": "absolute_time", "days": None},
+            {
+                "pattern": r"(?:定|訂)於?(?:民國)?(\d{2,3})年(\d{1,2})月(\d{1,2})日([上下])午(\d{1,2})時(\d*)分?.*?(開庭|準備程序|言詞辯論|調解|審理|宣判)?",
+                "pattern_type": "absolute_time_roc",
+                "days": None,
+            },
+            {
+                "pattern": r"(?:定|訂)?於?(\d{1,2})月(\d{1,2})日([上下])午(\d{1,2})時(\d*)分?.*?(開庭|準備程序|言詞辯論|調解|審理|宣判)?",
+                "pattern_type": "absolute_time",
+                "days": None,
+            },
         ],
     }
 
@@ -213,22 +222,32 @@ def extract_todos_from_filename(
                     todo["description"] = f"📝 {days}日內{todo_type} ({document_date.strftime('%m/%d')}文到)"
                     todos.append(todo)
 
-                elif pattern_type in ("absolute", "absolute_time"):
-                    month, day = int(m.group(1)), int(m.group(2))
-                    year_to_use = base_year
+                elif pattern_type in ("absolute", "absolute_time", "absolute_time_roc"):
+                    if pattern_type == "absolute_time_roc":
+                        year_to_use = int(m.group(1)) + 1911
+                        month, day = int(m.group(2)), int(m.group(3))
+                        period_group = 4
+                    else:
+                        month, day = int(m.group(1)), int(m.group(2))
+                        year_to_use = base_year
+                        period_group = 3
 
-                    roc_match = re.search(r"(\d{3})年度?", filename)
-                    if roc_match:
-                        explicit_year = int(roc_match.group(1)) + 1911
-                        if abs(explicit_year - year_to_use) < 2:
-                            year_to_use = explicit_year
+                        roc_match = re.search(r"(\d{3})年度?", filename)
+                        if roc_match:
+                            explicit_year = int(roc_match.group(1)) + 1911
+                            if abs(explicit_year - year_to_use) < 2:
+                                year_to_use = explicit_year
 
                     dt = datetime(year_to_use, month, day, 9, 0)
 
-                    if pattern_type == "absolute_time" and len(m.groups()) >= 4:
-                        period = m.group(3)
-                        hour_str = m.group(4)
-                        minute_str = m.group(5) if len(m.groups()) >= 5 and m.group(5) else "0"
+                    if pattern_type in ("absolute_time", "absolute_time_roc") and len(m.groups()) >= period_group + 1:
+                        period = m.group(period_group)
+                        hour_str = m.group(period_group + 1)
+                        minute_str = m.group(period_group + 2) if len(m.groups()) >= period_group + 2 and m.group(period_group + 2) else "0"
+                        proc = m.group(period_group + 3) if len(m.groups()) >= period_group + 3 else ""
+                        if proc and proc != "開庭":
+                            todo["type"] = proc
+                            todo["deadline_type"] = proc
                         hour, minute = int(hour_str), int(minute_str)
                         original_hour = hour
                         if period == "下" and hour != 12:
@@ -236,7 +255,7 @@ def extract_todos_from_filename(
                         elif period == "上" and hour == 12:
                             hour = 0
                         dt = dt.replace(hour=hour, minute=minute)
-                        todo["description"] = f"⚖️ {month}月{day}日 {period}午{original_hour}時{minute:02d}分 {todo_type}"
+                        todo["description"] = f"⚖️ {month}月{day}日 {period}午{original_hour}時{minute:02d}分 {todo['type']}"
                     else:
                         todo["description"] = f"⚖️ {month}月{day}日 {todo_type}"
 
