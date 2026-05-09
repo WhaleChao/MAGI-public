@@ -20,3 +20,10 @@ def test_public_release_audit_warns_on_tailnet_ip():
 
     assert summarize(findings)["ok"] is True
     assert findings[0].severity == "warning"
+
+
+def test_public_release_audit_allows_intentional_test_fixture_pii():
+    findings = scan_text("tests/test_fixture.py", "assert row['phone'] == '0912345678'\n")
+
+    assert summarize(findings)["ok"] is True
+    assert findings == []

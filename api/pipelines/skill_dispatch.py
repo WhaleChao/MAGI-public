@@ -685,7 +685,7 @@ def dispatch_client_management(message, user_id="", platform=""):
     if text.startswith("新增當事人") or text.startswith("建立當事人"):
         rest = _re.sub(r"^(?:新增當事人|建立當事人)\s*", "", text).strip()
         if not rest:
-            return "請提供當事人資訊，例如：新增當事人 張三 0212345678 台北市"
+            return "請提供當事人資訊，例如：新增當事人 張三 09XX123456 台北市"
         parts = rest.split()
         name = parts[0] if parts else ""
         phone = parts[1] if len(parts) > 1 and _re.match(r"^0\d{8,9}$", parts[1]) else ""
