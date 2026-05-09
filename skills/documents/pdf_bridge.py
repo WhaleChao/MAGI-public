@@ -753,6 +753,38 @@ def _maybe_use_ocr(text: str, pdf_path: str, max_pages: int) -> tuple[str, int] 
         logger.warning("⚠️ Full OCR extraction failed after successful probe: %s", e)
     return None
 
+
+def _maybe_use_opendataloader(text: str, pdf_path: str) -> str:
+    """Prefer OpenDataLoader PDF text when current extraction quality is weak."""
+    if str(os.environ.get("MAGI_OPENDATALOADER_PDF_ENABLE", "auto")).strip().lower() in {"0", "false", "no", "off", "disabled"}:
+        return text
+    current = str(text or "")
+    current_stats = _text_quality_stats(current)
+    if current_stats["score"] >= 0.60 and len(_strip_page_markers(current)) >= 500:
+        return text
+    try:
+        from skills.engine.ocr import opendataloader_provider
+
+        result = opendataloader_provider.run_pdf(pdf_path, task_type="legal")
+    except Exception as exc:
+        logger.debug("OpenDataLoader PDF provider failed: %s", exc)
+        return text
+    candidate = (getattr(result, "corrected_text", "") or getattr(result, "raw_text", "") or "").strip()
+    if not getattr(result, "success", False) or not candidate:
+        if getattr(result, "error", None) and "disabled" not in str(result.error):
+            logger.debug("OpenDataLoader PDF unavailable: %s", result.error)
+        return text
+    candidate_stats = _text_quality_stats(candidate)
+    if candidate_stats["score"] >= current_stats["score"] + 0.03 or len(candidate) > max(len(current) * 1.35, 500):
+        logger.info(
+            "✅ Prefer OpenDataLoader PDF text: src_score=%.3f odl_score=%.3f chars=%d",
+            current_stats["score"],
+            candidate_stats["score"],
+            len(candidate),
+        )
+        return candidate
+    return text
+
 def extract_text(pdf_path: str, max_pages: int = 0) -> str:
     """
     Extract text content from a PDF file.
@@ -771,6 +803,9 @@ def extract_text(pdf_path: str, max_pages: int = 0) -> str:
         try:
             pdftotext_text, pdftotext_pages = _extract_text_pdftotext(pdf_path, max_pages=max_pages)
             if _is_meaningful_text(pdftotext_text):
+                odl_text = _maybe_use_opendataloader(pdftotext_text, pdf_path)
+                if odl_text != pdftotext_text:
+                    return odl_text
                 ocr_preferred = _maybe_use_ocr(pdftotext_text, pdf_path, max_pages=max_pages)
                 if ocr_preferred:
                     ocr_text, ocr_pages = ocr_preferred
@@ -783,14 +818,25 @@ def extract_text(pdf_path: str, max_pages: int = 0) -> str:
 
         fitz_text, fitz_pages = _extract_text_fitz(pdf_path, max_pages=max_pages)
         if _is_meaningful_text(fitz_text):
+            odl_text = _maybe_use_opendataloader(fitz_text, pdf_path)
+            if odl_text != fitz_text:
+                return odl_text
             logger.info(f"✅ Extracted via fitz: {fitz_pages} pages, {len(fitz_text)} chars")
             return fitz_text
 
         logger.warning("⚠️ fitz extracted little/no text, fallback to pdfplumber")
         plumber_text, plumber_pages = _extract_text_pdfplumber(pdf_path, max_pages=max_pages)
         if _is_meaningful_text(plumber_text):
+            odl_text = _maybe_use_opendataloader(plumber_text, pdf_path)
+            if odl_text != plumber_text:
+                return odl_text
             logger.info(f"✅ Extracted via pdfplumber: {plumber_pages} pages, {len(plumber_text)} chars")
             return plumber_text
+
+        odl_text = _maybe_use_opendataloader("", pdf_path)
+        if _is_meaningful_text(odl_text):
+            logger.info("✅ Extracted via OpenDataLoader PDF: %d chars", len(odl_text))
+            return odl_text
 
         logger.warning("⚠️ pdfplumber extracted little/no text, fallback to OCR")
         ocr_text, ocr_pages = _extract_text_ocr(pdf_path, max_pages=max_pages)

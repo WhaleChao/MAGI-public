@@ -57,6 +57,11 @@ try:
 except Exception:
     HAS_TESSERACT = False
 
+try:
+    from skills.engine.ocr import opendataloader_provider as _opendataloader_provider
+except Exception:
+    _opendataloader_provider = None
+
 # Setup logging
 logging.basicConfig(
     level=logging.INFO,
@@ -102,6 +107,7 @@ DOC_TYPES = [
     # 法院裁判 / 命令 — must precede 對造/相對人 to avoid false match
     "支付命令", "判決", "判决", "裁定",
     "起訴書", "起诉书", "不起訴處分書", "不起诉处分书", "聲請簡易判決處刑書", "声请简易判决处刑书",
+    "民事準備書狀", "刑事準備書狀", "行政準備書狀", "準備書狀",
     "声请书", "聲請書", "陈报状", "陳報狀", "答辯狀", "答辩状", "抗告狀", "上訴狀",
     # 對造書狀 (Opponent) — after specific doc types to avoid false match on 相對人
     "對造書狀", "對造", "相對人", "原告書狀", "被告訴狀",
@@ -133,6 +139,8 @@ DOC_TYPE_MAP = {
     "判決": "判決", "判决": "判決",
     "支付命令": "支付命令",
     "裁定": "裁定",
+    "民事準備書狀": "民事準備書狀", "刑事準備書狀": "刑事準備書狀",
+    "行政準備書狀": "行政準備書狀", "準備書狀": "準備書狀",
     "聲請書": "聲請書", "声请书": "聲請書",
     "陳報狀": "陳報狀", "陈报状": "陳報狀",
     "答辯狀": "答辯狀", "答辩状": "答辯狀",
@@ -1635,11 +1643,14 @@ def generate_name_proposal(pdf_path: str, case_name: str = None, return_structur
         native = page.get_text() or ""
         text = native
         if len(text.strip()) < 50:
+            text = _prefer_opendataloader_if_better(text, pdf_path, context=f"page_{page_idx + 1}_pre_ocr")
+        if len(text.strip()) < 50:
             if _PDF_OCR_CONSENSUS:
                 # Phase 2B: multi-engine consensus
                 text = _ocr_consensus(page, pdf_path=pdf_path, page_idx=page_idx)
             elif HAS_OCR:
                 text = _ocr_page_rapid(page)
+        text = _prefer_opendataloader_if_better(text, pdf_path, context=f"page_{page_idx + 1}")
         return page, native, text
 
     # Check if page 0 is an envelope (公文封)
@@ -1648,8 +1659,11 @@ def generate_name_proposal(pdf_path: str, case_name: str = None, return_structur
     if doc.page_count > 2:
         p0 = doc[0]
         p0_text = p0.get_text() or ""
+        if len(p0_text.strip()) < 50:
+            p0_text = _prefer_opendataloader_if_better(p0_text, pdf_path, context="envelope_probe_pre_ocr")
         if len(p0_text.strip()) < 50 and HAS_OCR:
             p0_text = _ocr_page_rapid(p0)
+        p0_text = _prefer_opendataloader_if_better(p0_text, pdf_path, context="envelope_probe")
         if _is_envelope_page(p0_text):
             envelope_page = p0
             logger.info("Page 1: detected as envelope (text markers)")
@@ -2359,6 +2373,14 @@ try:
     _CHANDRA_OCR_MIN_SCORE = float(os.environ.get("MAGI_CHANDRA_OCR_MIN_SCORE", "0.45") or "0.45")
 except (TypeError, ValueError):
     _CHANDRA_OCR_MIN_SCORE = 0.45
+try:
+    _OPENDATALOADER_MIN_SCORE = float(os.environ.get("MAGI_PDF_NAMER_OPENDATALOADER_MIN_SCORE", "0.55") or "0.55")
+except (TypeError, ValueError):
+    _OPENDATALOADER_MIN_SCORE = 0.55
+try:
+    _OPENDATALOADER_MIN_GAIN = float(os.environ.get("MAGI_PDF_NAMER_OPENDATALOADER_MIN_GAIN", "0.08") or "0.08")
+except (TypeError, ValueError):
+    _OPENDATALOADER_MIN_GAIN = 0.08
 
 
 def _score_ocr_text(text: str) -> float:
@@ -2423,6 +2445,40 @@ def _prefer_chandra_if_better(current_text: str, pdf_path: str, page_idx: int = 
             current_score,
         )
         return chandra_text
+    return current_text
+
+
+def _prefer_opendataloader_if_better(current_text: str, pdf_path: str = "", *, context: str = "") -> str:
+    """Use OpenDataLoader when native/OCR text is weak or too short."""
+    if not pdf_path or _opendataloader_provider is None:
+        return current_text
+    current = current_text or ""
+    current_score = _score_ocr_text(current)
+    if current_score >= _OPENDATALOADER_MIN_SCORE and len(current.strip()) >= 250:
+        return current_text
+    try:
+        result = _opendataloader_provider.run_pdf(pdf_path, task_type="legal")
+    except Exception as exc:
+        logger.debug("[opendataloader] provider failed: %s", exc)
+        return current_text
+    if not result.success or not (result.corrected_text or result.raw_text or "").strip():
+        if result.error and "disabled" not in str(result.error):
+            logger.debug("[opendataloader] unavailable for %s: %s", context or "pdf", result.error)
+        return current_text
+    candidate = (result.corrected_text or result.raw_text or "").strip()
+    candidate_score = _score_ocr_text(candidate)
+    enough_gain = candidate_score >= current_score + _OPENDATALOADER_MIN_GAIN
+    enough_length = len(candidate) > max(len(current.strip()) * 1.35, 300)
+    if enough_gain or enough_length:
+        logger.info(
+            "[opendataloader] selected for %s score %.3f > %.3f len=%d duration=%.2fs",
+            context or os.path.basename(pdf_path),
+            candidate_score,
+            current_score,
+            len(candidate),
+            result.duration_sec,
+        )
+        return candidate
     return current_text
 
 
@@ -3062,6 +3118,7 @@ def extract_text(pdf_path: str) -> Tuple[str, bool]:
             if (i < ocr_pages) and len(t.strip()) < 50 and HAS_OCR:
                 t = _ocr_page_rapid(page)
             text += t + "\n"
+        text = _prefer_opendataloader_if_better(text, pdf_path, context="extract_text")
         return text, True
     except Exception as e:
         logger.error(f"Text extraction failed: {e}")
@@ -3185,14 +3242,20 @@ def batch_ocr_pages(pdf_paths: list) -> dict:
             # Primary OCR: macOS Vision framework (fast, high quality, no GPU)
             # Fallback: oMLX Gemma vision (slower but handles edge cases)
             def _ocr_page(page_idx: int) -> str:
+                native = (doc[page_idx].get_text() or "") if page_idx < doc.page_count else ""
+                preferred = _prefer_opendataloader_if_better(native, pdf_path, context=f"batch_page_{page_idx + 1}_pre_ocr")
+                if preferred and preferred != native and len(preferred.strip()) >= 120:
+                    return preferred
                 # Phase 2B: multi-engine consensus when MAGI_PDF_OCR_CONSENSUS=1
                 if _PDF_OCR_CONSENSUS and page_idx < doc.page_count:
-                    return _ocr_consensus(doc[page_idx], pdf_path=pdf_path, page_idx=page_idx)
+                    text = _ocr_consensus(doc[page_idx], pdf_path=pdf_path, page_idx=page_idx)
+                    return _prefer_opendataloader_if_better(text, pdf_path, context=f"batch_page_{page_idx + 1}")
                 # Default: macOS Vision primary → oMLX Gemma vision fallback
                 text = _macos_vision_ocr_page(pdf_path, page_idx)
                 if not text and page_idx < doc.page_count:
                     text = _glm_ocr_page(doc[page_idx], dpi=200)
                 text = _prefer_chandra_if_better(text, pdf_path, page_idx)
+                text = _prefer_opendataloader_if_better(text, pdf_path, context=f"batch_page_{page_idx + 1}")
                 return text
 
             if pages["envelope"]:
