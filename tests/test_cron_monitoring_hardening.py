@@ -5,6 +5,19 @@ import json
 import re
 from pathlib import Path
 
+import pytest
+
+
+def _cron_jobs_text_or_skip() -> str:
+    path = Path("cron_jobs.json")
+    if not path.exists():
+        pytest.skip("cron_jobs.json is local runtime state and is not present in clean CI checkouts")
+    return path.read_text(encoding="utf-8")
+
+
+def _cron_jobs_or_skip() -> list[dict]:
+    return json.loads(_cron_jobs_text_or_skip())
+
 
 def test_cron_result_policy_suppresses_structured_success_payload():
     from skills.ops.cron_result_policy import should_log_cron_issue
@@ -174,7 +187,7 @@ def test_single_machine_schema_guard_uses_local_osc_env_first():
 
 
 def test_cron_uses_repo_omlx_switch_and_single_health_report_time():
-    jobs = Path("cron_jobs.json").read_text(encoding="utf-8")
+    jobs = _cron_jobs_text_or_skip()
 
     assert "/Users/ai/Library/Application Support/MAGI/bin/omlx_switch_model.sh" not in jobs
     assert "/Users/ai/Desktop/MAGI_v2/config/bin/omlx_switch_model.sh" in jobs
@@ -214,7 +227,7 @@ def test_omlx_restore_installer_uses_canonical_repo_switch():
 
 
 def test_judicial_daytime_cron_batches_are_bounded():
-    jobs = json.loads(Path("cron_jobs.json").read_text(encoding="utf-8"))
+    jobs = _cron_jobs_or_skip()
     by_id = {job["id"]: job for job in jobs}
     expected_caps = {
         "job_judicial_api_morning": (200, 80, 7200),
