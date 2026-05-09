@@ -106,6 +106,8 @@ def _infer_case_from_path(path: Path) -> dict[str, str]:
 
 
 def _load_todo_patterns() -> dict[str, list[dict[str, Any]]]:
+    _extract, get_default_patterns = _load_headless_todo_helpers()
+    defaults = get_default_patterns()
     try:
         rows, _ = _osc_exec(
             """
@@ -130,11 +132,16 @@ def _load_todo_patterns() -> dict[str, list[dict[str, Any]]]:
                 }
             )
         if patterns:
+            for todo_type, items in defaults.items():
+                patterns.setdefault(todo_type, [])
+                seen = {str(item.get("pattern") or "") for item in patterns[todo_type]}
+                for item in items:
+                    if str(item.get("pattern") or "") not in seen:
+                        patterns[todo_type].append(item)
             return patterns
     except Exception:
         pass
-    _extract, get_default_patterns = _load_headless_todo_helpers()
-    return get_default_patterns()
+    return defaults
 
 
 def _parse_roc_or_ad_date(year: str, month: str, day: str) -> datetime | None:

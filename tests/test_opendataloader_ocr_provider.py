@@ -104,6 +104,60 @@ def test_pdf_namer_preserves_archived_golden_filename(monkeypatch):
     assert result["preserved_archived_name"] is True
 
 
+def test_pdf_namer_selects_content_after_envelope_pages(monkeypatch):
+    action_path = Path(__file__).resolve().parents[1] / "skills" / "pdf-namer" / "action.py"
+    spec = importlib.util.spec_from_file_location("pdf_namer_action_page_select", action_path)
+    action = importlib.util.module_from_spec(spec)
+    assert spec and spec.loader
+    spec.loader.exec_module(action)
+
+    class FakePage:
+        def __init__(self, text):
+            self._text = text
+
+        def get_text(self):
+            return self._text
+
+    class FakeDoc:
+        def __init__(self):
+            self.pages = [
+                FakePage("臺灣臺北地方法院 公文封\n受送達人姓名：王大明\n郵務送達"),
+                FakePage("訴訟當事人注意事項\n法院程序與訴訟權益\n送達方式"),
+                FakePage("臺灣臺北地方法院刑事庭通知書\n案號：114年度訴字第972號\n被告王大明\n訂4月1日下午2時30分審理"),
+            ]
+            self.page_count = len(self.pages)
+
+        def __getitem__(self, idx):
+            return self.pages[idx]
+
+    pages = action._select_pages_scored(
+        FakeDoc(),
+        pdf_path="/cases/2025-0001/09_法院通知或程序裁定/scan.pdf",
+    )
+
+    assert pages["envelope_idx"] == 0
+    assert pages["content_idx"] == 2
+
+
+def test_filename_training_records_envelope_page_profiles(tmp_path, monkeypatch):
+    action_path = Path(__file__).resolve().parents[1] / "skills" / "pdf-namer" / "action.py"
+    spec = importlib.util.spec_from_file_location("pdf_namer_action_training_profiles", action_path)
+    action = importlib.util.module_from_spec(spec)
+    assert spec and spec.loader
+    spec.loader.exec_module(action)
+    monkeypatch.setattr(action, "LEARNED_RULES_PATH", str(tmp_path / "learned.json"))
+    folder = tmp_path / "2025-0001-王大明" / "09_法院通知或程序裁定"
+    folder.mkdir(parents=True)
+    (folder / "20260316 臺北地方法院114年度訴字第972號刑事庭通知書（王大明；訂4月1日下午2時30分審理）.pdf").write_text("x")
+
+    payload = action.build_filename_learning_rules(case_root=str(tmp_path), min_token_count=1)
+
+    profile = payload["page_selection_profiles"]["法院通知"]
+    assert profile["envelope_prone"] is True
+    assert profile["scan_first_pages_for_envelope"] == 2
+    assert profile["content_search_window"] >= 3
+
+
 def test_pdf_bridge_uses_opendataloader_for_empty_text(monkeypatch, tmp_path):
     from skills.documents import pdf_bridge
 
