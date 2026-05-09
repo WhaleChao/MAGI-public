@@ -220,7 +220,7 @@ def _run_task_with_timeout(task: TaskSpec, timeout_sec: int) -> Dict[str, Any]:
             exported_exists = True
             head = _read_head(p, n=1800)
             has_header = "MAGI Translation Output" in head and "[Translated Text]" in head
-            has_summary = "【摘要】" in head
+            has_summary = "摘要" in head
             export_ok = has_header and ("翻譯失敗" not in head)
 
     expected_summary = task.prompt_kind == "translate_summary"

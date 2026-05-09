@@ -30,8 +30,10 @@ if str(_MAGI_ROOT) not in sys.path:
 if str(_SKILL_DIR) not in sys.path:
     sys.path.insert(0, str(_SKILL_DIR))
 
-from committee import HedgeFundCommittee
-from models.signals import TradingAction
+try:
+    from committee import HedgeFundCommittee
+except Exception:  # Public builds may omit the private committee signal models.
+    HedgeFundCommittee = None  # type: ignore[assignment]
 
 
 try:
@@ -159,6 +161,8 @@ def _cmd_export(state: Dict[str, Any], mode: str = "deep") -> str:
 def _predict_one(item: WatchItem, params: Dict[str, float], mode: str = "quick") -> Dict[str, Any]:
     """Wrapper that injects committee callback for deep mode."""
     def _committee_cb(wi: WatchItem, m: str, market_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        if HedgeFundCommittee is None:
+            return None
         try:
             committee = HedgeFundCommittee()
             state_res = committee.run_analysis(wi.symbol, wi.label, market_data)

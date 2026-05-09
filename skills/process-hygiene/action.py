@@ -58,6 +58,15 @@ STUCK_THRESHOLDS = {
 
 DEFAULT_STUCK_SEC = 3600
 
+# 這些服務預期可由 launchd 或 MAGI CLI 以 PPID=1 常駐執行；
+# 不應被當作孤兒或卡死程序，否則週報會反覆誤報。
+MANAGED_LONG_RUNNING_SCRIPTS = [
+    "gui/magi_menubar.py",
+    "scripts/ops/memory_watchdog.py",
+    "scripts/share_tunnel_supervisor.py",
+    "scripts/serve_mlx_mtp.py",
+]
+
 
 # ---------------------------------------------------------------------------
 # 工具函式
@@ -131,6 +140,10 @@ def _pid_alive(pid: int) -> bool:
         return True
     except (ProcessLookupError, PermissionError):
         return False
+
+
+def _is_managed_long_running(cmd: str) -> bool:
+    return any(marker in (cmd or "") for marker in MANAGED_LONG_RUNNING_SCRIPTS)
 
 
 def _safe_kill(pid: int, sig: int = signal.SIGTERM) -> bool:
@@ -268,6 +281,8 @@ def scan_orphans(procs: List[Dict]) -> List[Dict]:
             continue
         if "python" not in p["command"].lower():
             continue
+        if _is_managed_long_running(p["command"]):
+            continue
         # 父程序不存在或為 launchd
         if p["ppid"] == 1 or p["ppid"] not in all_pids:
             # 排除 daemon 本身（它的父程序就是 launchd）
@@ -295,6 +310,8 @@ def scan_stuck(procs: List[Dict]) -> List[Dict]:
         if not _is_magi_process(p["command"]):
             continue
         if "python" not in p["command"].lower():
+            continue
+        if _is_managed_long_running(p["command"]):
             continue
         # 排除常駐程序
         if any(s in p["command"] for s in ["daemon.py", "server.py", "discord_bot.py",

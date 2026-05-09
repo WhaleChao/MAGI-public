@@ -463,12 +463,13 @@ def handle_multimedia(orch, user_id, prompt, attachment) -> str:
         summary_length = orch._detect_summary_length(prompt or "")
         summary_pref = orch._detect_summary_target_pref(prompt_lower)
         disable_txt = any(k in prompt_lower for k in ["不要txt", "不需要txt", "no txt", "inline", "直接貼上"])
-        explicit_txt = any(k in prompt_lower for k in ["txt", "文字檔", "檔案", "download", "下載"])
+        explicit_txt = any(k in prompt_lower for k in ["txt", "文字檔", "純文字", "text file"])
+        explicit_file = any(k in prompt_lower for k in ["檔案", "download", "下載"])
         try:
             summary_txt_default = os.environ.get("MAGI_FILE_SUMMARY_EXPORT_TXT_DEFAULT", "1").strip().lower() in {"1", "true", "yes", "on"}
         except Exception:
             summary_txt_default = True
-        summary_force_txt = (not disable_txt) and (explicit_txt or summary_txt_default)
+        summary_force_txt = (not disable_txt) and (explicit_txt or explicit_file or summary_txt_default)
 
         if wants_translate:
             extracted = orch._extract_text_from_uploaded_file(path, filename=filename)
@@ -570,15 +571,26 @@ def handle_multimedia(orch, user_id, prompt, attachment) -> str:
                 export_body = f"【{_sl_tag}（來源：{summary_source_label}）】\n{summary_text}\n\n【全文翻譯】\n{translated_text}".strip()
 
             if not disable_txt:
-                exported_reply = orch._export_translation_docx(
-                    source_text=src_text,
-                    translated_text=translated_text,
-                    source_chunks=_src_chunks,
-                    translated_chunks=_tgt_chunks,
-                    title=(filename or os.path.basename(path)),
-                    prefix="file_translate",
-                    user_id=str(user_id or ""),
-                )
+                exported_reply = None
+                if explicit_txt:
+                    exported_reply = orch._export_translation_txt(
+                        translated_text=export_body,
+                        source=(filename or os.path.basename(path)),
+                        provider=str(rr.get("provider") or "tri-sage"),
+                        mode="file_translate_with_summary" if wants_summary else "file_full_translation",
+                        prefix="file_translate",
+                        user_id=str(user_id or ""),
+                    )
+                if not exported_reply:
+                    exported_reply = orch._export_translation_docx(
+                        source_text=src_text,
+                        translated_text=translated_text,
+                        source_chunks=_src_chunks,
+                        translated_chunks=_tgt_chunks,
+                        title=(filename or os.path.basename(path)),
+                        prefix="file_translate",
+                        user_id=str(user_id or ""),
+                    )
                 if not exported_reply:
                     exported_reply = orch._export_translation_txt(
                         translated_text=export_body,

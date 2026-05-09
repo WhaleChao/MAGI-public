@@ -98,6 +98,10 @@ _WEATHER_NEGATIVE = re.compile(
     r"提醒|記事|行程|開會|會議|事項|備忘|memo|remind|schedule",
     re.IGNORECASE,
 )
+_STOCK_MANAGEMENT_NEGATIVE = re.compile(
+    r"追蹤|清單|watchlist|晨報|預測|技術分析|macd|rsi|布林|新增|設定|移除|取消",
+    re.IGNORECASE,
+)
 _REALTIME_CAPABILITY_QUESTION = re.compile(
     r"(?:你|magi|MAGI).{0,8}(?:會|可以|能不能|能否|可否|能).{0,24}"
     r"(?:天氣|氣象|股票|股價|追蹤股票|匯率)",
@@ -122,6 +126,8 @@ def classify_realtime_query(text: str) -> Optional[str]:
         else:
             return "weather"
     if any(k in lowered for k in _STOCK_KEYWORDS):
+        if _STOCK_MANAGEMENT_NEGATIVE.search(text or ""):
+            return None
         return "stock"
     if any(k in lowered for k in _FX_KEYWORDS):
         return "fx_rate"
