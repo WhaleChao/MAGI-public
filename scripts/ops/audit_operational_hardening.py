@@ -206,6 +206,8 @@ def audit_git() -> dict[str, Any]:
     generated_prefixes = (
         "?? static/worldmonitor_reports/",
         " D static/worldmonitor_reports/",
+        " M static/translator_ape_latest.json",
+        "?? static/translator_ape_latest.json",
         "?? cron_jobs.json.bak.",
         "?? .claude/worktrees/",
     )
