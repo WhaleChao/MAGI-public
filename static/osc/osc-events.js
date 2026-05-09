@@ -125,6 +125,9 @@ async function dispatchDelegatedAction(act, t) {
     if (act === "case-open") return await openCaseFolder(id);
     if (act === "case-open-fm") return await openCaseFolder(id);
     if (act === "case-workbench") return await openCaseWorkbench(id);
+    if (act === "case-doc-finalize") return await openCaseDocumentFinalizer(id);
+    if (act === "case-doc-finalize-search") return await refreshCaseDocumentFinalizer(id);
+    if (act === "case-doc-index") return await openCaseDocumentIndex(t.dataset.case || "");
     if (act === "case-address-label") return addressLabelDialog(id);
     if (act === "case-magi-tab") return jumpToPaperclipTab(t.dataset.tab || "");
     if (act === "case-magi-command") return await runCaseMagiPreset(t.dataset.command || "", t.dataset.label || t.textContent.trim(), t.dataset.context === "1", t);
@@ -179,6 +182,8 @@ async function dispatchDelegatedAction(act, t) {
     if (act === "tx-rec-del") return await delRecurringExpense(Number(id));
     if (act === "qt-edit") return await editQuotation(id);
     if (act === "qt-del") return await delQuotation(id);
+    if (act === "qt-item-del") return;
+    if (act === "qtTpl-item-del") return;
     if (act === "qt-tpl-edit") return await editQuotationTemplate(Number(id));
     if (act === "qt-tpl-del") return await delQuotationTemplate(Number(id));
 

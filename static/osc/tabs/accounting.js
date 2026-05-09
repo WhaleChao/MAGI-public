@@ -291,6 +291,9 @@ function normalizeQuotationItem(item) {
 
 function quotationRowHtml(item = {}, scope = "qt") {
     const it = normalizeQuotationItem(item);
+    const deleteButton = scope === "qtTpl"
+        ? '<button class="btn danger" type="button" data-act="qtTpl-item-del">刪除</button>'
+        : '<button class="btn danger" type="button" data-act="qt-item-del">刪除</button>';
     return `
         <tr>
             <td><input class="${scope}-item-field" data-key="item" value="${esc(it.item)}" placeholder="例如：書狀代擬"></td>
@@ -299,7 +302,7 @@ function quotationRowHtml(item = {}, scope = "qt") {
             <td><input class="${scope}-item-field" data-key="qty" type="number" step="0.01" value="${esc(it.qty || 1)}"></td>
             <td><input class="${scope}-item-field" data-key="unit_price" type="number" step="1" value="${esc(it.unit_price || 0)}"></td>
             <td><input class="${scope}-item-field" data-key="amount" type="number" step="1" value="${esc(it.amount || 0)}"></td>
-            <td><button class="btn danger" type="button" data-act="${scope}-item-del">刪除</button></td>
+            <td>${deleteButton}</td>
         </tr>
     `;
 }

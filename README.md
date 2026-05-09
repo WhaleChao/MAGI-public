@@ -234,7 +234,12 @@ Automates the full lifecycle of Legal Aid Foundation cases:
 | **Portal go-live** | Auto-fills case opening forms, uploads commission letter + LAF notice |
 | **Pending drafts** | Scans portal for unsigned drafts, surfaces to lawyer |
 | **Closing** | Drafts case-closing submissions with correct remark format; supports `引用OOO的會議` (inherit another case's meeting count) and `OOO就是結案檔案` (specify any file as closing basis by keyword) |
+| **Document finalisation** | OSC document index can produce stamped 正本 / 副本 / 繕本 files, including manual stamp placement and final PDF merge |
 | **Consumer-debt checklist** | OSC LAF tab restores the conditional consumer-debt required-document checklist, copyable client text, and LAF number detection/sync |
+| **Checklist CRUD** | OSC LAF tab provides editable legal-aid required-item checklists; case cards retain a separate case supplement checklist |
+| **CSV exchange** | Cases and clients can be imported/exported as UTF-8 CSV from the Paperclip UI |
+| **Office outputs** | Case cards can generate address-label PNG files; quotations can be exported as PDF |
+| **Theme toggle** | Paperclip includes a persisted light/dark theme switch for long drafting sessions |
 | **Batch ops** | Bulk query / batch closing / batch audit via natural-language commands |
 | **Smart lookup** | Disambiguates multiple cases by status priority + keyword filtering |
 

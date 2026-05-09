@@ -370,6 +370,8 @@ function renderLafCaseDetail(data = {}) {
     const s = data.stats || {};
     const status = c.legal_aid_status || c.status || "未開辦";
     const pending = (data.legal_aid_checklist || []).filter(isLafPending);
+    const checklistCaseInput = document.getElementById("lafChecklistCaseNumber");
+    if (checklistCaseInput && c.case_number) checklistCaseInput.value = c.case_number;
     panel.innerHTML = `
         <div class="laf-detail-head">
             <div>
