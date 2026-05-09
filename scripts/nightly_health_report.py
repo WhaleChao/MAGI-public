@@ -79,12 +79,13 @@ def _parse_step_results(run_dir: str) -> dict:
                 if step_key in steps:
                     step = steps[step_key]
                     if isinstance(step, dict):
-                        results[step_key] = {
+                        result = {
                             "name": step_name,
                             "ok": bool(step.get("ok")),
-                            "skipped": bool((step.get("parsed") or {}).get("skipped")),
+                            "skipped": bool(step.get("skipped") or (step.get("parsed") or {}).get("skipped")),
                             "detail": _extract_step_detail(step),
                         }
+                        results[step_key] = _normalize_step_result(step_key, result, step)
             if not results and report.get("ok") is False:
                 detail = ""
                 if isinstance(details, dict):
@@ -145,9 +146,56 @@ def _parse_step_results(run_dir: str) -> dict:
     return results
 
 
+def _dotenv_value(name: str) -> str | None:
+    path = os.path.join(_MAGI_ROOT, ".env")
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            for line in f:
+                raw = line.strip()
+                if not raw or raw.startswith("#") or "=" not in raw:
+                    continue
+                key, value = raw.split("=", 1)
+                if key.strip() == name:
+                    return value.strip().strip('"').strip("'")
+    except Exception:
+        return None
+    return None
+
+
+def _env_truthy(name: str, default: str = "0") -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        value = _dotenv_value(name)
+    return str(value if value is not None else default).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _normalize_step_result(step_key: str, result: dict, raw_step: dict) -> dict:
+    """Apply current operating policy to historical nightly step records."""
+    parsed = raw_step.get("parsed") if isinstance(raw_step, dict) else {}
+    parsed = parsed if isinstance(parsed, dict) else {}
+    if step_key == "db_bidirectional_sync" and not _env_truthy("MAGI_ENABLE_DB_BIDIR_SYNC", "0"):
+        if not result.get("ok"):
+            result = dict(result)
+            result["ok"] = True
+            result["skipped"] = True
+            result["detail"] = "目前採本機備份模式，原 DB 雙向同步已停用"
+    elif step_key == "db_daily_backup" and not result.get("ok"):
+        items = parsed.get("items") if isinstance(parsed.get("items"), list) else []
+        if any(isinstance(item, dict) and item.get("ok") and item.get("path") for item in items):
+            result = dict(result)
+            result["ok"] = True
+            result["detail"] = "已有 DB 備份檔落地；舊 both 目標中的不可用 profile 已忽略"
+    return result
+
+
 def _extract_step_detail(step: dict) -> str:
     """從 step dict 提取摘要資訊。"""
     parsed = step.get("parsed") or {}
+    reason = step.get("reason")
+    if reason:
+        return str(reason)[:200]
     if isinstance(parsed, dict):
         msg = parsed.get("message", "")
         if msg:

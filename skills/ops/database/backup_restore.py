@@ -46,16 +46,22 @@ def _remote_db_ip_or(fallback: str) -> str:
     except Exception:
         return fallback
 
-# --- Load .env for subprocess/cron credential access ---
-try:
-    from dotenv import load_dotenv as _load_dotenv
-    _load_dotenv()
-except Exception:
-    logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 44, exc_info=True)
-
 CONFIG_CANDIDATES = [str(p) for p in config_candidates("config.json")]
 
 DEFAULT_BACKUP_DIR = str(get_magi_root_dir() / "_db_backups" / "law_firm_data")
+_DOTENV_LOADED = False
+
+
+def _ensure_dotenv_loaded() -> None:
+    global _DOTENV_LOADED
+    if _DOTENV_LOADED:
+        return
+    _DOTENV_LOADED = True
+    try:
+        from dotenv import load_dotenv as _load_dotenv
+        _load_dotenv()
+    except Exception:
+        logging.getLogger(__name__).debug("silent-catch dotenv load", exc_info=True)
 
 
 @dataclass
@@ -78,6 +84,7 @@ def _q(v: Any, default: str = "") -> str:
 
 
 def _load_profiles() -> Dict[str, DBProfile]:
+    _ensure_dotenv_loaded()
     cfg: Dict[str, Any] = {}
     for p in CONFIG_CANDIDATES:
         pp = Path(p)
@@ -114,6 +121,7 @@ def _load_profiles() -> Dict[str, DBProfile]:
 
 
 def _choose_remote_profile(profiles: Dict[str, DBProfile]) -> DBProfile:
+    _ensure_dotenv_loaded()
     p = profiles.get("Studio_VPN_Remote")
     if p:
         return p
@@ -129,12 +137,31 @@ def _choose_remote_profile(profiles: Dict[str, DBProfile]) -> DBProfile:
 
 
 def _choose_local_profile(profiles: Dict[str, DBProfile]) -> DBProfile:
+    if not profiles:
+        _ensure_dotenv_loaded()
     for name in ("Studio_Local", "Home_Local_Test"):
         p = profiles.get(name)
         if not p:
             continue
         if _ping_db(p):
             return p
+    remote = profiles.get("Studio_VPN_Remote") or _choose_remote_profile(profiles)
+    if (
+        os.environ.get("MAGI_LOCAL_DB_ALLOW_LOOPBACK_REMOTE_FALLBACK", "1").strip().lower()
+        in {"1", "true", "yes", "on"}
+        and remote
+        and remote.host.strip().lower() in {"127.0.0.1", "localhost", "::1"}
+        and _ping_db(remote)
+    ):
+        return DBProfile(
+            name=f"{remote.name}_as_local",
+            host=remote.host,
+            port=remote.port,
+            user=remote.user,
+            password=remote.password,
+            database=remote.database,
+            connection_timeout=remote.connection_timeout,
+        )
     return DBProfile(
         name="Studio_Local",
         host=_q(os.environ.get("MAGI_LOCAL_DB_HOST"), "127.0.0.1"),

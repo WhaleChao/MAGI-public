@@ -132,6 +132,84 @@ def test_nightly_health_report_handles_self_test_without_parse_warning(tmp_path,
     assert "無步驟資料可供判定" not in text
 
 
+def test_nightly_health_report_honors_top_level_skipped_steps(tmp_path, monkeypatch):
+    import scripts.nightly_health_report as report
+    from datetime import datetime
+
+    today = datetime.now().strftime("%Y%m%d")
+    run_dir = tmp_path / f"{today}_220000_nightly"
+    run_dir.mkdir()
+    (run_dir / "report.json").write_text(
+        json.dumps(
+            {
+                "task": "nightly",
+                "ok": True,
+                "details": {
+                    "steps": {
+                        "judicial_api_night_pull": {
+                            "ok": False,
+                            "skipped": True,
+                            "reason": "disabled_by_operator",
+                        }
+                    }
+                },
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(report, "AUTOPILOT_RUNS_DIR", str(tmp_path))
+    monkeypatch.setattr(report, "DELIVERY_LOG", str(tmp_path / "missing.jsonl"))
+
+    text = report.generate_report()
+    assert "⏭️ 司法院 API 夜間拉取：disabled_by_operator" in text
+    assert "有 1 個步驟失敗" not in text
+
+
+def test_nightly_health_report_reclassifies_local_backup_mode_db_steps(tmp_path, monkeypatch):
+    import scripts.nightly_health_report as report
+    from datetime import datetime
+
+    today = datetime.now().strftime("%Y%m%d")
+    run_dir = tmp_path / f"{today}_220001_nightly"
+    run_dir.mkdir()
+    (run_dir / "report.json").write_text(
+        json.dumps(
+            {
+                "task": "nightly",
+                "ok": True,
+                "details": {
+                    "steps": {
+                        "db_bidirectional_sync": {
+                            "ok": False,
+                            "parsed": {"ok": False, "error": "remote unavailable"},
+                        },
+                        "db_daily_backup": {
+                            "ok": False,
+                            "parsed": {
+                                "ok": False,
+                                "target": "both",
+                                "items": [{"ok": True, "path": "/tmp/db.sql.gz"}],
+                                "errors": ["local: db unreachable"],
+                            },
+                        },
+                    }
+                },
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("MAGI_ENABLE_DB_BIDIR_SYNC", "0")
+    monkeypatch.setattr(report, "AUTOPILOT_RUNS_DIR", str(tmp_path))
+    monkeypatch.setattr(report, "DELIVERY_LOG", str(tmp_path / "missing.jsonl"))
+
+    text = report.generate_report()
+    assert "⏭️ DB 雙向同步：目前採本機備份模式" in text
+    assert "✅ DB 每日備份：已有 DB 備份檔落地" in text
+    assert "有 1 個步驟失敗" not in text
+
+
 def test_autopilot_user_active_defer_defined_before_first_call():
     source = Path("skills/magi-autopilot/action.py").read_text(encoding="utf-8")
     run_start = source.index("def run_nightly")
@@ -184,6 +262,17 @@ def test_single_machine_schema_guard_uses_local_osc_env_first():
     assert "OSC_ENV_LOCAL" in guard
     assert '"casper_service"' in guard
     assert "Studio_Local,Home_Local_Test,Studio_VPN_Remote" in guard
+
+
+def test_nightly_db_defaults_are_local_backup_without_bidir_sync():
+    source = Path("skills/magi-autopilot/action.py").read_text(encoding="utf-8")
+    defaults = source[source.index("MAGI_ENABLE_DB_BIDIR_SYNC") - 80 : source.index("# Nightly 可以做較完整")]
+
+    assert 'os.environ.setdefault("MAGI_ENABLE_DB_BIDIR_SYNC", "0")' in defaults
+    assert 'os.environ.setdefault("MAGI_ENABLE_DB_DAILY_BACKUP", "1")' in defaults
+    assert 'os.environ.setdefault("MAGI_DB_BACKUP_TARGET", "local")' in defaults
+    assert 'os.environ.get("MAGI_ENABLE_DB_BIDIR_SYNC", "0")' in source
+    assert 'os.environ.get("MAGI_DB_BACKUP_TARGET", "local")' in source
 
 
 def test_cron_uses_repo_omlx_switch_and_single_health_report_time():

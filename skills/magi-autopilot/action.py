@@ -3652,8 +3652,9 @@ def run_nightly(run_dir: str) -> Dict[str, Any]:
     os.environ.setdefault("MAGI_ENABLE_JUDGMENT_CRAWL", "1")
     os.environ.setdefault("MAGI_ENABLE_JUDICIAL_API_NIGHT_PULL", "1")
     os.environ.setdefault("MAGI_ENABLE_SCAN_FOLDER", "1")
+    os.environ.setdefault("MAGI_ENABLE_DB_BIDIR_SYNC", "0")
     os.environ.setdefault("MAGI_ENABLE_DB_DAILY_BACKUP", "1")
-    os.environ.setdefault("MAGI_DB_BACKUP_TARGET", "both")
+    os.environ.setdefault("MAGI_DB_BACKUP_TARGET", "local")
     os.environ.setdefault("MAGI_DB_BACKUP_KEEP_DAYS", "30")
     # Nightly 可以做較完整的大腦修復循環。
     os.environ.setdefault("MAGI_BIG_BRAIN_REMOTE_REPAIR", "1")
@@ -4021,8 +4022,9 @@ def run_nightly(run_dir: str) -> Dict[str, Any]:
     # - Remote DB is source-of-truth when online.
     # - Local DB rows created during remote outage are pushed back automatically.
     try:
-        # Keep remote/local DBs converged by default (upsert-only, no delete).
-        db_sync_enabled = os.environ.get("MAGI_ENABLE_DB_BIDIR_SYNC", "1").strip().lower() in {"1", "true", "yes", "on"}
+        # The original remote DB may be permanently unavailable. Default to
+        # local-only backups; operators can explicitly opt back into bidir sync.
+        db_sync_enabled = os.environ.get("MAGI_ENABLE_DB_BIDIR_SYNC", "0").strip().lower() in {"1", "true", "yes", "on"}
         db_sync_script = f"{_MAGI_ROOT}/skills/ops/database/sync_bidirectional.py"
         if db_sync_enabled and os.path.exists(db_sync_script):
             cmd = [
@@ -4048,7 +4050,7 @@ def run_nightly(run_dir: str) -> Dict[str, Any]:
         elif not db_sync_enabled:
             _record_skip(
                 "db_bidirectional_sync",
-                "略過：MAGI_ENABLE_DB_BIDIR_SYNC=0",
+                "略過：MAGI_ENABLE_DB_BIDIR_SYNC=0（原 DB 故障時採本機備份模式）",
                 {
                     "requested_sec": 0,
                     "allocated_sec": 0,
@@ -4065,9 +4067,9 @@ def run_nightly(run_dir: str) -> Dict[str, Any]:
         db_backup_enabled = os.environ.get("MAGI_ENABLE_DB_DAILY_BACKUP", "1").strip().lower() in {"1", "true", "yes", "on"}
         db_backup_script = f"{_MAGI_ROOT}/skills/ops/database/backup_restore.py"
         if db_backup_enabled and os.path.exists(db_backup_script):
-            backup_target = (os.environ.get("MAGI_DB_BACKUP_TARGET", "both") or "both").strip().lower()
+            backup_target = (os.environ.get("MAGI_DB_BACKUP_TARGET", "local") or "local").strip().lower()
             if backup_target not in {"remote", "local", "both"}:
-                backup_target = "both"
+                backup_target = "local"
             try:
                 keep_days = int(os.environ.get("MAGI_DB_BACKUP_KEEP_DAYS", "30") or "30")
             except Exception:
