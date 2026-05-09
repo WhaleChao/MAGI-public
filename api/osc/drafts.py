@@ -687,13 +687,13 @@ def _osc_archive_relative_parent(source_path: str) -> str:
 def _osc_build_archive_preview(limit: int = 300) -> dict:
     rows, _ = _osc_exec(
         """
-        SELECT id, case_number, client_name, status, folder_path, updated_at
+        SELECT id, case_number, client_name, status, legal_aid_status, folder_path, updated_at
         FROM cases
-        WHERE (status LIKE %s OR status LIKE %s OR LOWER(status)='closed')
+        WHERE (status LIKE %s OR status LIKE %s OR LOWER(status)='closed' OR legal_aid_status=%s)
         ORDER BY updated_at DESC, created_date DESC
         LIMIT %s
         """,
-        ("%結案%", "%Closed%", int(limit)),
+        ("%結案%", "%Closed%", "已結案", int(limit)),
         fetch="all",
     )
     archive_base = _osc_get_closed_archive_base()
@@ -745,6 +745,7 @@ def _osc_build_archive_preview(limit: int = 300) -> dict:
             "case_number": r.get("case_number") or "",
             "client_name": r.get("client_name") or "",
             "status": r.get("status") or "",
+            "legal_aid_status": r.get("legal_aid_status") or "",
             "source_path": source_norm,
             "source_local": source_local,
             "source_exists": source_exists,

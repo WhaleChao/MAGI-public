@@ -4,12 +4,14 @@ import pytest
 
 
 def test_closed_case_status_detection():
-    from api.blueprints.osc_cases import _osc_is_closed_case_status
+    from api.blueprints.osc_cases import _osc_is_closed_case_status, _osc_is_laf_final_closed_status
 
     assert _osc_is_closed_case_status("已結案")
     assert _osc_is_closed_case_status("已結案，待報結")
     assert _osc_is_closed_case_status("closed")
     assert not _osc_is_closed_case_status("進行中")
+    assert _osc_is_laf_final_closed_status("已結案")
+    assert not _osc_is_laf_final_closed_status("已結案，待報結")
 
 
 def test_auto_archive_closed_case_moves_folder(tmp_path, monkeypatch):
@@ -124,6 +126,53 @@ def test_auto_archive_closed_case_preserves_osc_category_path(tmp_path, monkeypa
     assert target.exists()
     assert (target / "note.txt").read_text(encoding="utf-8") == "case file"
     assert not source.exists()
+    assert updates and updates[-1][1][0] == str(target)
+
+
+def test_auto_archive_laf_final_closed_moves_only_exact_folder(tmp_path, monkeypatch):
+    from api.blueprints import osc_cases as mod
+
+    source = tmp_path / "01_案件" / "法扶案件" / "刑事" / "2025-0010-劉信義-一審-殺人"
+    source_mirror = tmp_path / "Volumes" / "homes" / "lumi63181107" / "01_案件" / "法扶案件" / "刑事" / source.name
+    other_same_client = tmp_path / "01_案件" / "法扶案件" / "刑事" / "2026-0028-劉信義-一審-殺人"
+    source.mkdir(parents=True)
+    source_mirror.mkdir(parents=True)
+    other_same_client.mkdir(parents=True)
+    (source / "note.txt").write_text("closed laf case", encoding="utf-8")
+    (source_mirror / "mirror.txt").write_text("mirror residue", encoding="utf-8")
+    (other_same_client / "active.txt").write_text("active case", encoding="utf-8")
+    archive = tmp_path / "10_結案"
+    archive.mkdir()
+    updates = []
+
+    def fake_exec(sql, params=(), fetch="none"):
+        if fetch == "one":
+            return {
+                "id": "case-1",
+                "case_number": "2025-0010",
+                "client_name": "劉信義",
+                "status": "進行中",
+                "legal_aid_status": "已結案",
+                "folder_path": str(source),
+            }, None
+        updates.append((sql, params, fetch))
+        return {"rowcount": 1}, None
+
+    monkeypatch.setattr(mod, "_osc_exec", fake_exec)
+    monkeypatch.setattr(mod, "_osc_get_closed_archive_base", lambda: str(archive))
+    monkeypatch.setattr(mod, "_osc_local_path_candidates", lambda raw: [str(source), str(source_mirror)] if "2025-0010" in str(raw) else [str(raw)])
+    monkeypatch.setattr(mod, "_osc_norm_path", lambda raw: str(raw))
+
+    result = mod._osc_auto_archive_closed_case("case-1")
+
+    target = archive / "法扶案件" / "刑事" / source.name
+    assert result["ok"] is True
+    assert target.exists()
+    assert not source.exists()
+    assert not source_mirror.exists()
+    assert (target / "mirror.txt").read_text(encoding="utf-8") == "mirror residue"
+    assert other_same_client.exists()
+    assert (other_same_client / "active.txt").read_text(encoding="utf-8") == "active case"
     assert updates and updates[-1][1][0] == str(target)
 
 
@@ -262,7 +311,8 @@ def test_folder_browser_lists_closed_archive_when_active_path_is_stale(tmp_path,
                 "id": "case-1",
                 "case_number": "2025-0010",
                 "client_name": "劉信義",
-                "status": "已結案",
+                "status": "進行中",
+                "legal_aid_status": "已結案",
                 "folder_path": str(stale),
             }, None
         updates.append((sql, params, fetch))

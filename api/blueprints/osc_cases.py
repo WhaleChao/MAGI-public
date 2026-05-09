@@ -883,7 +883,7 @@ def osc_cases_api():
         if auto_create_folder:
             folder_resp = _osc_auto_create_folder_for_case(row_id, payload, case_category)
             resp["folder"] = folder_resp
-        if _osc_is_closed_case_status(status_value):
+        if _osc_is_closed_case_status(status_value) or _osc_is_laf_final_closed_status(payload.get("legal_aid_status") or ""):
             resp["archive"] = _osc_auto_archive_closed_case(row_id)
         return jsonify(resp)
     except Exception as e:
@@ -925,7 +925,7 @@ def osc_cases_api():
         vals2.append(target.get("id"))
         result, _ = _osc_exec(f"UPDATE cases SET {','.join(sets)} WHERE id=%s", tuple(vals2), fetch="none")
         resp = {"ok": True, "result": result, "id": target.get("id"), "mode": "upsert"}
-        if _osc_is_closed_case_status(update_payload.get("status") or ""):
+        if _osc_is_closed_case_status(update_payload.get("status") or "") or _osc_is_laf_final_closed_status(update_payload.get("legal_aid_status") or ""):
             resp["archive"] = _osc_auto_archive_closed_case(str(target.get("id") or ""))
         return jsonify(resp)
 
@@ -973,7 +973,10 @@ def osc_case_detail_api(row_id):
     vals.append(row_id)
     result, _ = _osc_exec(f"UPDATE cases SET {','.join(sets)} WHERE id=%s", tuple(vals), fetch="none")
     resp = {"ok": True, "result": result}
-    if "status" in payload and _osc_is_closed_case_status(payload.get("status") or ""):
+    if (
+        ("status" in payload and _osc_is_closed_case_status(payload.get("status") or ""))
+        or ("legal_aid_status" in payload and _osc_is_laf_final_closed_status(payload.get("legal_aid_status") or ""))
+    ):
         resp["archive"] = _osc_auto_archive_closed_case(row_id)
     return jsonify(resp)
 
@@ -1005,6 +1008,15 @@ def _osc_is_closed_case_status(status: str) -> bool:
     text = str(status or "").strip()
     lower = text.lower()
     return bool(text and ("結案" in text or "報結" in text or lower in {"closed", "close", "done"}))
+
+
+def _osc_is_laf_final_closed_status(status: str) -> bool:
+    return str(status or "").strip() == "已結案"
+
+
+def _osc_should_archive_case_row(row: dict) -> bool:
+    row = row or {}
+    return _osc_is_closed_case_status(row.get("status") or "") or _osc_is_laf_final_closed_status(row.get("legal_aid_status") or "")
 
 
 def _osc_archive_local_base() -> tuple[str, str]:
@@ -1049,9 +1061,10 @@ def _osc_archive_item_for_row(row: dict) -> dict:
     source_raw = (row.get("folder_path") or "").strip() or _osc_guess_case_folder(row.get("case_number") or "")
     source_norm = _osc_norm_path(source_raw)
     local_candidates = _osc_local_path_candidates(source_norm)
+    source_candidates = _osc_unique_strings([c for c in local_candidates if c and os.path.exists(c)])
     source_local = ""
-    for candidate in local_candidates:
-        if candidate and os.path.exists(candidate):
+    for candidate in source_candidates:
+        if candidate:
             source_local = candidate
             break
     folder_name = os.path.basename(source_local.rstrip("/")) if source_local else os.path.basename(source_norm.rstrip("/"))
@@ -1064,10 +1077,12 @@ def _osc_archive_item_for_row(row: dict) -> dict:
         "case_number": row.get("case_number") or "",
         "client_name": row.get("client_name") or "",
         "status": row.get("status") or "",
+        "legal_aid_status": row.get("legal_aid_status") or "",
         "archive_base": archive_base,
         "archive_local": archive_local,
         "source_path": source_norm,
         "source_local": source_local,
+        "source_candidates": source_candidates,
         "source_exists": source_exists,
         "target_local": target_local,
         "target_exists": target_exists,
@@ -1156,7 +1171,7 @@ def _osc_effective_case_folder_for_row(row: dict, *, update_db: bool = False) ->
     raw = (row.get("folder_path") or "").strip() or _osc_guess_case_folder(row.get("case_number") or "")
     norm = _osc_norm_path(raw) if raw else ""
     local = _osc_resolve_existing_local_path(norm, prefer_dir=True) if norm else ""
-    is_closed = _osc_is_closed_case_status(row.get("status") or "")
+    is_closed = _osc_should_archive_case_row(row)
     if local and (not is_closed or "10_結案" in norm.replace("\\", "/")):
         return {"folder_path": norm, "local_folder": local, "source": "db_or_guess", "updated": False}
 
@@ -1408,7 +1423,8 @@ def _osc_merge_existing_archive_source(src: str, dst: str) -> dict:
 
     cleanup_error = ""
     try:
-        shutil.rmtree(src)
+        if os.path.exists(src):
+            shutil.rmtree(src)
     except Exception as e:
         cleanup_error = str(e)
 
@@ -1423,6 +1439,43 @@ def _osc_merge_existing_archive_source(src: str, dst: str) -> dict:
         "skipped": skipped,
         "source_cleanup_error": cleanup_error,
     }
+
+
+def _osc_cleanup_residual_archive_sources(source_candidates, primary_src: str, dst: str, archive_local: str = "") -> list[dict]:
+    """Remove duplicate active-path views after a successful archive move."""
+    cleaned: list[dict] = []
+    primary_abs = os.path.abspath(primary_src) if primary_src else ""
+    dst_abs = os.path.abspath(dst) if dst else ""
+    archive_abs = os.path.abspath(archive_local) if archive_local else ""
+    target_name = os.path.basename(dst.rstrip(os.sep)) if dst else ""
+    seen: set[str] = set()
+    for raw in source_candidates or []:
+        candidate = str(raw or "").strip()
+        if not candidate or not os.path.exists(candidate):
+            continue
+        cand_abs = os.path.abspath(candidate)
+        if cand_abs in seen or cand_abs in {primary_abs, dst_abs}:
+            continue
+        seen.add(cand_abs)
+        if target_name and os.path.basename(candidate.rstrip(os.sep)) != target_name:
+            cleaned.append({"path": candidate, "ok": False, "reason": "name_mismatch"})
+            continue
+        try:
+            if archive_abs and os.path.commonpath([archive_abs, cand_abs]) == archive_abs:
+                cleaned.append({"path": candidate, "ok": True, "reason": "already_under_archive"})
+                continue
+        except ValueError:
+            pass
+        if os.path.isdir(candidate):
+            merged = _osc_merge_existing_archive_source(candidate, dst)
+            cleaned.append({"path": candidate, "ok": bool(merged.get("ok")), "reason": merged.get("reason") or "", "detail": merged})
+        else:
+            try:
+                os.remove(candidate)
+                cleaned.append({"path": candidate, "ok": True, "reason": "removed_file"})
+            except Exception as e:
+                cleaned.append({"path": candidate, "ok": False, "reason": "remove_failed", "error": str(e)})
+    return cleaned
 
 
 def _osc_move_archive_item(it: dict, *, force: bool = False) -> dict:
@@ -1462,6 +1515,7 @@ def _osc_move_archive_item(it: dict, *, force: bool = False) -> dict:
                 "to": dst,
                 "detail": merged,
             }
+        residual_cleanup = _osc_cleanup_residual_archive_sources(it.get("source_candidates") or [], src, dst, archive_local)
         _osc_exec("UPDATE cases SET folder_path=%s, updated_at=NOW() WHERE id=%s", (dst, cid), fetch="none")
         return {
             "ok": True,
@@ -1475,6 +1529,7 @@ def _osc_move_archive_item(it: dict, *, force: bool = False) -> dict:
             "duplicates": merged.get("duplicates") or [],
             "conflicts": merged.get("conflicts") or [],
             "skipped": merged.get("skipped") or [],
+            "residual_cleanup": residual_cleanup,
         }
     try:
         moved = _osc_copy_to_temp_and_swap(src, dst, force=force)
@@ -1489,6 +1544,7 @@ def _osc_move_archive_item(it: dict, *, force: bool = False) -> dict:
                 "to": dst,
                 "detail": moved,
             }
+        residual_cleanup = _osc_cleanup_residual_archive_sources(it.get("source_candidates") or [], src, dst, archive_local)
         _osc_exec("UPDATE cases SET folder_path=%s, updated_at=NOW() WHERE id=%s", (dst, cid), fetch="none")
         return {
             "ok": True,
@@ -1499,6 +1555,7 @@ def _osc_move_archive_item(it: dict, *, force: bool = False) -> dict:
             "reason": moved.get("reason") or "moved",
             "replaced_backup": moved.get("replaced_backup") or "",
             "source_cleanup_error": moved.get("source_cleanup_error") or "",
+            "residual_cleanup": residual_cleanup,
         }
     except Exception as e:
         return {
@@ -1514,14 +1571,20 @@ def _osc_move_archive_item(it: dict, *, force: bool = False) -> dict:
 
 def _osc_auto_archive_closed_case(row_id: str, *, force: bool = False) -> dict:
     row, _ = _osc_exec(
-        "SELECT id, case_number, client_name, status, folder_path, updated_at FROM cases WHERE id=%s",
+        "SELECT id, case_number, client_name, status, legal_aid_status, folder_path, updated_at FROM cases WHERE id=%s",
         (row_id,),
         fetch="one",
     )
     if not row:
         return {"ok": False, "reason": "case_not_found"}
-    if not _osc_is_closed_case_status(row.get("status") or ""):
-        return {"ok": True, "skipped": True, "reason": "status_not_closed", "status": row.get("status") or ""}
+    if not _osc_should_archive_case_row(row):
+        return {
+            "ok": True,
+            "skipped": True,
+            "reason": "status_not_closed",
+            "status": row.get("status") or "",
+            "legal_aid_status": row.get("legal_aid_status") or "",
+        }
     item = _osc_archive_item_for_row(row)
     moved = _osc_move_archive_item(item, force=force)
     moved["archive_base"] = item.get("archive_base")
@@ -1545,7 +1608,7 @@ def osc_case_open_folder_api(row_id):
       決定是否彈警告
     """
     row_id = (row_id or "").strip()
-    row, _ = _osc_exec("SELECT id, case_number, client_name, status, folder_path FROM cases WHERE id=%s", (row_id,), fetch="one")
+    row, _ = _osc_exec("SELECT id, case_number, client_name, status, legal_aid_status, folder_path FROM cases WHERE id=%s", (row_id,), fetch="one")
     if not row:
         return jsonify({"ok": False, "error_kind": "case_not_found", "message": "找不到案件"}), 404
     resolved = _osc_effective_case_folder_for_row(row, update_db=True)
@@ -1649,7 +1712,7 @@ def osc_case_create_folder_api(row_id):
 @login_required
 def osc_case_folder_browser_api(row_id):
     row_id = (row_id or "").strip()
-    row, _ = _osc_exec("SELECT id, case_number, client_name, status, folder_path FROM cases WHERE id=%s", (row_id,), fetch="one")
+    row, _ = _osc_exec("SELECT id, case_number, client_name, status, legal_aid_status, folder_path FROM cases WHERE id=%s", (row_id,), fetch="one")
     if not row:
         return jsonify({"ok": False, "error": "case_not_found"}), 404
     resolved = _osc_effective_case_folder_for_row(row, update_db=True)
@@ -1713,7 +1776,7 @@ def osc_case_file_search_api(row_id):
     except (TypeError, ValueError):
         limit = 30
     row, _ = _osc_exec(
-        "SELECT id, case_number, client_name, status, folder_path FROM cases WHERE id=%s",
+        "SELECT id, case_number, client_name, status, legal_aid_status, folder_path FROM cases WHERE id=%s",
         (row_id,),
         fetch="one",
     )
@@ -3826,20 +3889,21 @@ def osc_laf_cases_api():
         where.append(
             """
             (
-                status IS NULL OR status = ''
-                OR status LIKE '%進行%'
-                OR status LIKE '%結案中%'
-                OR status LIKE '%待報結%'
-                OR legal_aid_status IS NULL OR legal_aid_status = ''
-                OR legal_aid_status IN ('未開辦', '進行中', '已結案，待報結')
+                (
+                    status IS NULL OR status = ''
+                    OR status LIKE '%進行%'
+                    OR status LIKE '%結案中%'
+                    OR status LIKE '%待報結%'
+                    OR legal_aid_status IS NULL OR legal_aid_status = ''
+                    OR legal_aid_status IN ('未開辦', '進行中', '已結案，待報結')
+                )
+                AND COALESCE(legal_aid_status, '') <> '已結案'
+                AND COALESCE(status, '') NOT LIKE '%已結案%'
             )
             """
         )
     elif status_scope in {"closed", "archived"}:
-        # `legal_aid_status=已結案` only means the LAF workflow is closed.
-        # The court/client matter can still be active or split into another
-        # procedure, so archive views must be driven by the case status itself.
-        where.append("status LIKE '%已結案%'")
+        where.append("(status LIKE '%已結案%' OR legal_aid_status='已結案')")
 
     sql = f"""
         SELECT

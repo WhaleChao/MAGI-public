@@ -149,7 +149,7 @@ def update_laf_status_after_action(orch, *, case_number: str = "", client_name: 
                     rows = filtered
                 elif filtered:
                     rows = filtered
-        if len(rows) > 1 and action_label.startswith("\u624b\u52d5"):
+        if len(rows) > 1:
             lines = [f"\u26a0\ufe0f \u627e\u5230 {len(rows)} \u4ef6\u300c{client_name}\u300d\u7684\u6cd5\u6276\u6848\u4ef6\uff0c\u8acb\u6307\u5b9a\u6848\u865f\u6216\u52a0\u4e0a\u6848\u7531\uff1a"]
             for r in rows:
                 laf = r.get("legal_aid_number") or ""
@@ -167,6 +167,13 @@ def update_laf_status_after_action(orch, *, case_number: str = "", client_name: 
             "UPDATE cases SET legal_aid_status = %s WHERE id = %s",
             (new_status, row["id"]),
         )
+        if str(new_status or "").strip() == "已結案":
+            try:
+                from api.blueprints.osc_cases import _osc_auto_archive_closed_case
+                archive_result = _osc_auto_archive_closed_case(str(row["id"]))
+                logger.info("📦 LAF 已結案封存結果（%s）：%s", row.get("case_number"), archive_result)
+            except Exception as archive_error:
+                logger.warning("LAF 已結案自動封存失敗（%s）：%s", row.get("case_number"), archive_error)
         logger.info("\U0001f4dd %s \u2192 DB legal_aid_status\u300c%s\u300d\u2192\u300c%s\u300d\uff08%s %s\uff09",
                     action_label, old, new_status, row.get("case_number"), row.get("client_name"))
         return True
