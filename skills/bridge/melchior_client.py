@@ -82,10 +82,8 @@ _OMLX_MODEL_ALIAS = {
     "gemma4": TEXT_PRIMARY_MODEL,
     "gemma-4-26b": TEXT_PRIMARY_MODEL,
     "gemma-4-26b-a4b": TEXT_PRIMARY_MODEL,
-    "gemma-4-26b-a4b-it-4bit": TEXT_PRIMARY_MODEL,
     "gemma-4-e2b-it-local-bf16": TEXT_PRIMARY_MODEL,
     "gemma-4-e4b-it-bf16": TEXT_PRIMARY_MODEL,
-    "gemma-4-26b-a4b-it-4bit": TEXT_PRIMARY_MODEL,
     "gemma4:26b": TEXT_PRIMARY_MODEL,
     "gemma-3-12b": "gemma-3-12b-it-4bit",
     "gemma3-12b": "gemma-3-12b-it-4bit",
@@ -526,7 +524,8 @@ def _chat_omlx(
                 f"omlx_model_unavailable:{use_model}; available={','.join(available_on_base)}",
             )
     else:
-        use_model = _resolve_omlx_chat_model(raw_model)
+        available_on_base = list_omlx_models_for_base(_base, force_refresh=True)
+        use_model = _resolve_omlx_chat_model(raw_model, available_models=available_on_base)
     messages = []
     if system_prompt:
         messages.append({"role": "system", "content": system_prompt})
@@ -562,6 +561,13 @@ def _chat_omlx(
 
     try:
         data = _post_json(f"{_base}/v1/chat/completions", payload, timeout=max(10, int(timeout)))
+        if data.get("_failed") and "404" in str(data.get("error") or ""):
+            refreshed = list_omlx_models_for_base(_base, force_refresh=True)
+            retry_model = _resolve_omlx_chat_model(raw_model, available_models=refreshed)
+            if retry_model and retry_model != use_model:
+                payload["model"] = retry_model
+                use_model = retry_model
+                data = _post_json(f"{_base}/v1/chat/completions", payload, timeout=max(10, int(timeout)))
         choices = data.get("choices") or []
         text = ""
         if choices and isinstance(choices, list):

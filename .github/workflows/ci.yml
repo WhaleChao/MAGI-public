@@ -1,0 +1,33 @@
+name: MAGI Public CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  smoke:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Syntax check
+        run: |
+          python -m py_compile \
+            api/model_config.py \
+            api/pipelines/message_pipeline.py \
+            api/pipelines/message_router.py \
+            skills/bridge/melchior_client.py \
+            skills/bridge/inference_gateway.py \
+            scripts/ops/audit_operational_hardening.py
+      - name: Fast unit tests
+        run: |
+          python -m pip install -U pip pytest requests python-dotenv
+          python -m pytest -q \
+            tests/test_arithmetic_fast_path.py \
+            tests/test_model_config.py \
+            tests/test_smoke_core_routes.py \
+            tests/test_intent_no_weather_for_reminder.py \
+            tests/test_public_release_audit.py

@@ -14,6 +14,7 @@ import os
 import subprocess
 import sys
 import time
+import urllib.request
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
@@ -77,6 +78,33 @@ def _load_cron_last_run_ts() -> dict[str, float]:
     return out
 
 
+def _current_omlx_models() -> list[str]:
+    try:
+        with urllib.request.urlopen("http://127.0.0.1:8080/v1/models", timeout=3) as resp:
+            data = json.loads(resp.read().decode("utf-8", errors="replace"))
+        return [
+            str(item.get("id") or "").strip()
+            for item in (data.get("data") or [])
+            if isinstance(item, dict) and str(item.get("id") or "").strip()
+        ]
+    except Exception:
+        return []
+
+
+def _latest_operational_audit_is_green(issue_ts: float) -> bool:
+    path = ROOT / ".runtime" / "operational_hardening_audit_latest.json"
+    if not path.exists() or path.stat().st_mtime <= issue_ts:
+        return False
+    data = _load_json(path, {})
+    cron = data.get("cron") if isinstance(data, dict) else {}
+    gmail = data.get("gmail_monitor") if isinstance(data, dict) else {}
+    return (
+        int((cron or {}).get("parse_failure_count") or 0) == 0
+        and int((cron or {}).get("collision_count") or 0) == 0
+        and bool((gmail or {}).get("ok", True))
+    )
+
+
 def _classify_issue_row(
     row: dict[str, Any],
     *,
@@ -94,6 +122,12 @@ def _classify_issue_row(
     job_id = _cron_job_from_issue_command(row.get("command"))
     if not job_id:
         return "stale" if ts < active_cutoff else "active_unresolved"
+    err = str(row.get("error") or "")
+    if job_id == "job_omlx_switch_day" and "port 8080" in err:
+        if any("gemma-4-e4b" in model.lower() for model in _current_omlx_models()):
+            return "recovered"
+    if job_id == "job_operational_hardening_audit" and _latest_operational_audit_is_green(ts):
+        return "recovered"
     if latest_cron_issue_ts_by_job.get(job_id, ts) > ts:
         return "superseded"
     if cron_last_run_ts.get(job_id, 0.0) > ts:
@@ -294,7 +328,7 @@ def main() -> int:
         "cron_parse_failures": report["cron"]["parse_failure_count"],
         "cron_collisions": report["cron"]["collision_count"],
         "dirty_count": report["git"]["dirty_count"],
-        "recent_issues": report["issue_agenda"]["recent_count"],
+        "recent_issues": int(report["issue_agenda"].get("recent_count") or 0),
         "gmail_monitor_mode": report["gmail_monitor"]["mode"],
         "json_out": str(out),
     }, ensure_ascii=False))
