@@ -131,6 +131,51 @@ def business_jobs(repo_root: Path = REPO_ROOT, python_path: Path | None = None) 
     ]
 
 
+def operational_jobs(repo_root: Path = REPO_ROOT, python_path: Path | None = None) -> list[dict[str, Any]]:
+    """Core operational safeguards that keep a single-node MAGI self-correcting."""
+    python_bin = python_path or default_python_path(repo_root)
+    run_with_env = repo_root / "scripts" / "ops" / "run_with_env.py"
+    omlx_switch = repo_root / "config" / "bin" / "omlx_switch_model.sh"
+    return [
+        {
+            "id": "job_omlx_profile_guard",
+            "cron": "*/15 * * * *",
+            "command": f"{python_bin} {run_with_env} -- /bin/bash {omlx_switch} auto",
+            "desc": "oMLX 日夜模型 profile guard（每 15 分鐘冪等檢查，漏跑切換時自動修復）",
+            "channel_id": None,
+            "last_run": None,
+            "last_run_minute": None,
+            "enabled": True,
+            "timeout_sec": 1800,
+            "no_catchup": True,
+        },
+        {
+            "id": "job_distill_train_gemma",
+            "cron": "0 11 * * 0",
+            "command": f"{python_bin} {repo_root / 'scripts' / 'nightly_distill_gemma.py'}",
+            "desc": "Gemma E4B 知識蒸餾（週日 11:00，validation-gated，僅產出 pending deploy）",
+            "channel_id": None,
+            "last_run": None,
+            "last_run_minute": None,
+            "enabled": True,
+            "long_job": True,
+            "timeout_sec": 5400,
+        },
+        {
+            "id": "pdfnamer_docling_layout",
+            "cron": "40 2 * * *",
+            "command": f"{python_bin} {run_with_env} MAGI_PDF_NAMER_DOCLING_ENABLED=1 -- {python_bin} {repo_root / 'skills' / 'pdf-namer' / 'nightly_layout.py'}",
+            "desc": "夜間 docling layout sidecar 補跑（最近 24h 命名 PDF，bounded scan）",
+            "channel_id": None,
+            "last_run": None,
+            "last_run_minute": None,
+            "enabled": True,
+            "timeout_sec": 1800,
+            "no_catchup": True,
+        },
+    ]
+
+
 def load_jobs(path: Path) -> list[dict[str, Any]]:
     if not path.exists():
         return []
@@ -144,7 +189,11 @@ def load_jobs(path: Path) -> list[dict[str, Any]]:
 def seed_jobs(repo_root: Path = REPO_ROOT, *, python_path: Path | None = None) -> dict[str, Any]:
     cron_path = repo_root / "cron_jobs.json"
     jobs = load_jobs(cron_path)
-    desired_jobs = [worldmonitor_job(repo_root, python_path), *business_jobs(repo_root, python_path)]
+    desired_jobs = [
+        worldmonitor_job(repo_root, python_path),
+        *business_jobs(repo_root, python_path),
+        *operational_jobs(repo_root, python_path),
+    ]
     changed = False
 
     for job in desired_jobs:

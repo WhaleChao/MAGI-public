@@ -277,11 +277,19 @@ def test_nightly_db_defaults_are_local_backup_without_bidir_sync():
 
 def test_cron_uses_repo_omlx_switch_and_single_health_report_time():
     jobs = _cron_jobs_text_or_skip()
+    parsed_jobs = json.loads(jobs)
+    by_id = {job["id"]: job for job in parsed_jobs}
 
     assert "/Users/ai/Library/Application Support/MAGI/bin/omlx_switch_model.sh" not in jobs
     assert "/Users/ai/Desktop/MAGI_v2/config/bin/omlx_switch_model.sh" in jobs
     assert '"id": "job_health_report"' in jobs
     assert '"cron": "30 6 * * *"' in jobs
+    assert by_id["job_omlx_profile_guard"]["cron"] == "*/15 * * * *"
+    assert "omlx_switch_model.sh auto" in by_id["job_omlx_profile_guard"]["command"]
+    assert by_id["job_omlx_profile_guard"]["timeout_sec"] >= 1800
+    assert by_id["job_distill_train_gemma"]["enabled"] is True
+    assert "validation-gated" in by_id["job_distill_train_gemma"]["desc"]
+    assert "MAGI_PDF_NAMER_DOCLING_ENABLED=1" in by_id["pdfnamer_docling_layout"]["command"]
 
 
 def test_omlx_auto_switch_checks_real_api_model_and_2150_boundary():
@@ -292,6 +300,9 @@ def test_omlx_auto_switch_checks_real_api_model_and_2150_boundary():
     assert "current_model_api" in source
     assert "127.0.0.1:8080/v1/models" in source
     assert 'echo "$current_model_api" | grep -qi "$EXPECTED_MODEL_KEYWORD"' in source
+    assert 'launchctl enable "gui/$UID_NUM/com.magi.omlx"' in source
+    assert "wait_model_ready 8080 \"e4b\"" in source
+    assert "wait_model_ready 8080 \"26b\"" in source
 
 
 def test_daemon_self_heals_omlx_profile_without_active_profile_lie():

@@ -91,6 +91,42 @@ def _current_omlx_models() -> list[str]:
         return []
 
 
+def audit_omlx_profile() -> dict[str, Any]:
+    """Verify that the live oMLX model matches the current day/night policy."""
+    now = datetime.now()
+    minutes = now.hour * 60 + now.minute
+    expected_profile = "day" if 415 <= minutes < 1310 else "night"
+    expected_keyword = "e4b" if expected_profile == "day" else "26b"
+    models = _current_omlx_models()
+    active_profile = ""
+    try:
+        active_profile = (Path.home() / ".omlx" / "active_profile").read_text(encoding="utf-8").strip()
+    except Exception:
+        active_profile = ""
+    model_dir_hint = ""
+    try:
+        model_dir = Path.home() / ".omlx" / "models-text"
+        model_dir_hint = " ".join(sorted(p.name.lower() for p in model_dir.iterdir()))
+    except Exception:
+        model_dir_hint = ""
+    live_text = " ".join(models).lower()
+    ok = (
+        expected_keyword in live_text
+        and expected_keyword in model_dir_hint.lower()
+        and active_profile == expected_profile
+    )
+    return {
+        "ok": ok,
+        "expected_profile": expected_profile,
+        "expected_keyword": expected_keyword,
+        "active_profile": active_profile,
+        "models": models,
+        "model_dir_hint": model_dir_hint,
+        "time": now.strftime("%Y-%m-%d %H:%M"),
+        "remediation": "Run config/bin/omlx_switch_model.sh auto; cron job_omlx_profile_guard should keep this idempotently repaired.",
+    }
+
+
 def _latest_operational_audit_is_green(issue_ts: float) -> bool:
     path = ROOT / ".runtime" / "operational_hardening_audit_latest.json"
     if not path.exists() or path.stat().st_mtime <= issue_ts:
@@ -327,6 +363,7 @@ def main() -> int:
         "git": audit_git(),
         "issue_agenda": audit_issue_agenda(),
         "gmail_monitor": audit_gmail_monitor_mode(),
+        "omlx_profile": audit_omlx_profile(),
     }
     out = Path(args.json_out)
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -338,6 +375,9 @@ def main() -> int:
         "dirty_count": report["git"]["dirty_count"],
         "recent_issues": int(report["issue_agenda"].get("recent_count") or 0),
         "gmail_monitor_mode": report["gmail_monitor"]["mode"],
+        "omlx_profile_ok": report["omlx_profile"]["ok"],
+        "omlx_expected": report["omlx_profile"]["expected_profile"],
+        "omlx_models": report["omlx_profile"]["models"],
         "json_out": str(out),
     }, ensure_ascii=False))
 
@@ -345,6 +385,7 @@ def main() -> int:
         report["cron"]["parse_failure_count"] > 0
         or report["cron"]["collision_count"] > 0
         or not report["gmail_monitor"]["ok"]
+        or not report["omlx_profile"]["ok"]
     ):
         return 1
     return 0

@@ -32,3 +32,8 @@ def test_seed_cron_jobs_creates_worldmonitor_and_business_jobs(tmp_path):
     assert "job_file_review_check" in cron_text
     assert "job_transcript_sync" in cron_text
     assert "job_business_module_live_check" in cron_text
+    assert "job_omlx_profile_guard" in cron_text
+    assert "omlx_switch_model.sh auto" in cron_text
+    assert "job_distill_train_gemma" in cron_text
+    assert "pdfnamer_docling_layout" in cron_text
+    assert "MAGI_PDF_NAMER_DOCLING_ENABLED=1" in cron_text

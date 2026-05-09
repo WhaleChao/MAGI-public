@@ -258,9 +258,32 @@ check_model_src() {
 bootstrap_omlx_main() {
     local label="$1"
     local plist="$HOME/Library/LaunchAgents/com.magi.omlx.plist"
+    launchctl enable "gui/$UID_NUM/com.magi.omlx" 2>&1 | grep -v "^$" | while read line; do log "$label enable: $line"; done || true
     launchctl bootstrap "gui/$UID_NUM" "$plist" 2>&1 | grep -v "^$" | while read line; do log "$label bootstrap: $line"; done || true
     sleep 2
     launchctl kickstart -kp "gui/$UID_NUM/com.magi.omlx" 2>&1 | grep -v "^$" | while read line; do log "$label kickstart: $line"; done || true
+}
+
+wait_model_ready() {
+    local port="$1"
+    local keyword="$2"
+    local timeout="${3:-90}"
+    local waited=0
+    local model_id=""
+    while [ "$waited" -lt "$timeout" ]; do
+        model_id=$(
+            curl -sf --max-time 3 "http://127.0.0.1:${port}/v1/models" 2>/dev/null | \
+            python3 -c 'import json,sys; data=json.load(sys.stdin); print(((data.get("data") or [{}])[0].get("id") or "").lower())' 2>/dev/null || true
+        )
+        if echo "$model_id" | grep -qi "$keyword"; then
+            log "${port} OK (${model_id})"
+            return 0
+        fi
+        sleep 5
+        waited=$((waited + 5))
+    done
+    log "❌ ${port} model not ready or wrong after ${timeout}s (expected=${keyword}, actual=${model_id:-down})"
+    return 1
 }
 
 get_active_profile() {
@@ -331,9 +354,11 @@ case "$MODE" in
         log "⚠️  SmolLM3 模型尚未下載，跳過"
     fi
 
-    # 等待服務啟動
-    sleep 20
-    curl -sf http://127.0.0.1:8080/v1/models >/dev/null 2>&1 && log "8080 (E4B) OK" || log "8080 FAIL（可能還在啟動中）"
+    # 等待服務啟動；主 8080 必須真的是 E4B，避免 active_profile=day 但仍無主模型的假成功。
+    if ! wait_model_ready 8080 "e4b" 90; then
+        notify_admin "DAY 切換後 8080 未載入 E4B，請檢查 launchd/oMLX log"
+        exit 4
+    fi
     curl -sf http://127.0.0.1:8082/v1/models >/dev/null 2>&1 && log "8082 (Phi-4) OK" || log "8082 未就緒（模型可能仍在載入）"
     curl -sf http://127.0.0.1:8083/v1/models >/dev/null 2>&1 && log "8083 (SmolLM3) OK" || log "8083 未就緒（模型可能仍在載入）"
 
@@ -378,8 +403,10 @@ case "$MODE" in
     plist_set_env OMLX_PAGED_CACHE_DIR /Users/ai/.omlx/cache-26b
     bootstrap_omlx_main "NIGHT"
 
-    sleep 120
-    curl -sf http://127.0.0.1:8080/v1/models >/dev/null 2>&1 && log "8080 OK (26B)" || log "8080 FAIL — still loading, will be ready in ~1min"
+    if ! wait_model_ready 8080 "26b" 180; then
+        notify_admin "NIGHT 切換後 8080 未載入 26B，請檢查 launchd/oMLX log"
+        exit 4
+    fi
 
     # heartbeat 背景執行
     ( heartbeat_check 1 "NIGHT" ) &
