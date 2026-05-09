@@ -209,10 +209,16 @@ def audit_git() -> dict[str, Any]:
         "?? cron_jobs.json.bak.",
         "?? .claude/worktrees/",
     )
-    generated = [line for line in lines if line.startswith(generated_prefixes)]
+    generated = [
+        line for line in lines
+        if line.startswith(generated_prefixes)
+        or "__pycache__/" in line
+        or line.endswith(".pyc")
+    ]
     source = [line for line in lines if line not in generated]
     return {
-        "dirty_count": len(lines),
+        "dirty_count": len(source),
+        "raw_dirty_count": len(lines),
         "source_or_review_count": len(source),
         "generated_or_runtime_count": len(generated),
         "source_or_review": source,
