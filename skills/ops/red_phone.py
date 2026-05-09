@@ -619,6 +619,11 @@ def _canonical_topic_key(key: str) -> str:
         "鐵穹": "alert",
         "警報": "alert",
         "警告": "alert",
+        "self_repair": "alert",
+        "self-repair": "alert",
+        "repair": "alert",
+        "quiet_cron": "check",
+        "quiet-cron": "check",
     }
     return aliases.get(k, k)
 
@@ -704,6 +709,25 @@ def _load_topic_map() -> dict[str, int]:
 
 def _infer_topic_key(message: str, source: str, severity: str) -> str:
     s = (str(source or "") + " " + str(message or "")).lower()
+    src = str(source or "").strip().lower()
+    if src in {
+        "business_module_live_check",
+        "nightly_regression",
+        "mock_test",
+    }:
+        return "check"
+    if src in {
+        "nightly_distill_gemma",
+        "weekend_resummary",
+        "nightly_health_report",
+    }:
+        return "nightly"
+    if src in {
+        "disk_low_water_alarm",
+        "backup_market_watchlist",
+        "outbox",
+    }:
+        return "alert"
     if any(
         k in s
         for k in [
@@ -819,7 +843,13 @@ def _save_outbox(items: list[dict]) -> None:
         logger.warning("[RED PHONE] failed to save outbox: %s", e)
 
 
-def _enqueue_outbox(message: str, severity: str, source: str, last_error: str = "") -> str:
+def _enqueue_outbox(
+    message: str,
+    severity: str,
+    source: str,
+    last_error: str = "",
+    topic_key: str = "",
+) -> str:
     entry_id = f"rp_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
     now_ts = time.time()
     entry = {
@@ -828,6 +858,7 @@ def _enqueue_outbox(message: str, severity: str, source: str, last_error: str = 
         "updated_at": datetime.now().isoformat(),
         "severity": str(severity or "warning"),
         "source": str(source or "direct"),
+        "topic_key": str(topic_key or ""),
         "message": str(message or ""),
         "attempts": 0,
         "next_retry_at": now_ts,
@@ -927,6 +958,7 @@ def _flush_outbox(max_items: int = 8) -> dict:
             str(entry.get("message") or ""),
             severity=str(entry.get("severity") or "warning"),
             source="outbox",
+            topic_key=str(entry.get("topic_key") or ""),
             queue_on_fail=False,
         )
         if result.get("telegram"):
@@ -998,7 +1030,7 @@ def _mirror_to_discord(
         # "market" 已從 DC 鏡像中移除 (2026-04-20)：股票資訊不發 Discord
         "verbatim", "summary", "translation", "filing",
     }
-    _resolved_topic = _canonical_topic_key(topic_key)
+    _resolved_topic = _canonical_topic_key(topic_key) if topic_key else _infer_topic_key(message, source, severity)
     if _resolved_topic and _resolved_topic not in _DC_MIRROR_ALLOWED_TOPICS:
         return False
 
@@ -1050,7 +1082,13 @@ def send_telegram_push_with_status(
         err = "telegram token/admin ids missing"
         queued_id = ""
         if queue_on_fail:
-            queued_id = _enqueue_outbox(message, severity=severity, source=source, last_error=err)
+            queued_id = _enqueue_outbox(
+                message,
+                severity=severity,
+                source=source,
+                last_error=err,
+                topic_key=topic_key or resolved_topic,
+            )
         return {
             "telegram": False,
             "acked": 0,
@@ -1106,7 +1144,13 @@ def send_telegram_push_with_status(
 
     queued_id = ""
     if queue_on_fail:
-        queued_id = _enqueue_outbox(safe_message, severity=severity, source=source, last_error=last_error)
+        queued_id = _enqueue_outbox(
+            safe_message,
+            severity=severity,
+            source=source,
+            last_error=last_error,
+            topic_key=topic_key or resolved_topic,
+        )
     _append_delivery_log(
         {
             "event": "failed",

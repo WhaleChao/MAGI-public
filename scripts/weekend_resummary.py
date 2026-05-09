@@ -284,7 +284,13 @@ def _collect_for_distill(prompt: str, response: str, case_reason: str) -> None:
 def _notify_progress(message: str) -> None:
     try:
         from skills.ops.red_phone import send_telegram_push_with_status
-        send_telegram_push_with_status(message)
+        send_telegram_push_with_status(
+            message,
+            severity="info",
+            source="weekend_resummary",
+            topic_key="nightly",
+            queue_on_fail=True,
+        )
     except Exception:
         pass
 

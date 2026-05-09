@@ -125,8 +125,14 @@ def _notify(msg: str):
         magi_dir = Path(__file__).resolve().parent.parent.parent
         if str(magi_dir) not in sys.path:
             sys.path.insert(0, str(magi_dir))
-        from ops.red_phone import send_telegram_push_with_status  # type: ignore
-        send_telegram_push_with_status(msg, topic="check")
+        from skills.ops.red_phone import send_telegram_push_with_status  # type: ignore
+        send_telegram_push_with_status(
+            msg,
+            severity="info",
+            source="mock_test",
+            topic_key="check",
+            queue_on_fail=True,
+        )
     except Exception as e:
         print(f"[notify] 發送失敗: {e}")
 

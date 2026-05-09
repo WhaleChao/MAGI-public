@@ -310,7 +310,13 @@ def deploy_model(version: str) -> int:
 def _notify(message: str) -> None:
     try:
         from skills.ops.red_phone import send_telegram_push_with_status
-        send_telegram_push_with_status(message)
+        send_telegram_push_with_status(
+            message,
+            severity="info",
+            source="nightly_distill_gemma",
+            topic_key="nightly",
+            queue_on_fail=True,
+        )
     except Exception as e:
         logger.warning("Notification failed: %s", e)
 
