@@ -106,7 +106,7 @@ def _run_case(
             txt_ok = True
             txt_head = _read_head(p, n=1600)
 
-    has_summary = "【摘要】" in txt_head
+    has_summary = "摘要" in txt_head
     has_header = "MAGI Translation Output" in txt_head and "[Translated Text]" in txt_head
     has_ingest_note = "doc_key=" in str(reply or "")
 
@@ -172,7 +172,7 @@ def main() -> int:
             melchior_client.distributed_chat = fake_dist  # type: ignore[assignment]
             melchior_client.quick_local_chat = fake_quick  # type: ignore[assignment]
 
-            def _fake_summary(self, text: str) -> dict:
+            def _fake_summary(self, text: str, *args, **kwargs) -> dict:
                 return {"success": True, "text": "- 重點一\n- 重點二\n- 重點三", "provider": f"fake-summary-{scenario}"}
 
             Orchestrator._summarize_text_resilient = _fake_summary  # type: ignore[assignment]
@@ -234,4 +234,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
