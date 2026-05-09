@@ -82,7 +82,7 @@ def _is_private_host(host: str) -> bool:
         return False
     if h in {"localhost", "127.0.0.1"}:
         return True
-    # Allow Tailscale CGNAT (100.64.0.0/10) and common RFC1918.
+    # Allow Tailscale CGNAT and common RFC1918 private ranges.
     m = re.match(r"^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$", h)
     if not m:
         return False

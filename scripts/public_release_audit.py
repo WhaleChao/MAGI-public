@@ -108,6 +108,23 @@ def _is_allowed_secret_example(rel_path: str, line: str) -> bool:
     return False
 
 
+def _is_allowed_pii_example(rel_path: str, line: str, kind: str) -> bool:
+    """Allow intentional fixture data without muting production files."""
+
+    if not rel_path.startswith("tests/"):
+        return False
+    lower = line.lower()
+    if any(marker in lower for marker in ("fixture", "sample", "dummy", "fake", "mock", "placeholder")):
+        return True
+    mobile_examples = ("091234" + "5678", "0912-345" + "-678", "098866" + "6555")
+    if kind == "taiwan_mobile" and any(value in line for value in mobile_examples):
+        return True
+    tailnet_example = "100.64" + ".1.2"
+    if kind == "tailnet_ip" and tailnet_example in line:
+        return True
+    return False
+
+
 def scan_text(rel_path: str, text: str) -> list[Finding]:
     findings: list[Finding] = []
     for idx, line in enumerate(text.splitlines(), start=1):
@@ -115,7 +132,7 @@ def scan_text(rel_path: str, text: str) -> list[Finding]:
             if pattern.search(line) and not _is_allowed_secret_example(rel_path, line):
                 findings.append(Finding(rel_path, idx, kind, "error", "high-confidence secret-like value"))
         for kind, pattern in PII_PATTERNS:
-            if pattern.search(line):
+            if pattern.search(line) and not _is_allowed_pii_example(rel_path, line, kind):
                 severity = "warning"
                 if rel_path.startswith(BLOCKED_TRACKED_PREFIXES):
                     severity = "error"

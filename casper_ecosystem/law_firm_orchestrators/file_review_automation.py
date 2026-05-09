@@ -10321,7 +10321,7 @@ class FileReviewManager:
             self.log("  填寫案件資料 (JS 注入模式)...")
             
             lawyer_id = case_info.get('lawyer_id', '103台檢11712')
-            phone = case_info.get('phone', '0905130216')
+            phone = (case_info.get('phone') or os.environ.get('MAGI_FILE_REVIEW_DEFAULT_PHONE') or '').strip()
             self._last_apply_for_review_uploads = {}
             
             try:
