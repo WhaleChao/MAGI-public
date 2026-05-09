@@ -72,6 +72,25 @@ LINE_LAST_BASE_URL_FILE = os.environ.get(
     os.path.join(AGENT_DIR, "line_last_base_url.json"),
 )
 
+
+def _load_dotenv_value(key: str, default: str = "") -> str:
+    env_value = os.environ.get(key)
+    if env_value is not None:
+        return env_value
+    env_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".env"))
+    try:
+        with open(env_path, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, v = line.split("=", 1)
+                if k.strip() == key:
+                    return v.strip().strip('"').strip("'")
+    except Exception:
+        pass
+    return default
+
 # Export directory
 EXPORTS_DIR = os.environ.get(
     "MAGI_EXPORTS_DIR",
@@ -499,15 +518,32 @@ def _public_url_for_local_file(local_path: str) -> str:
 # 5. Cloudflared tunnel management
 # ============================================================================
 
-def _is_cloudflared_alive() -> bool:
-    """Check if cloudflared tunnel process is actually running (not pgrep self-match)."""
+def _cloudflared_pids_for_port(port: str) -> list[str]:
+    """Return cloudflared PIDs for the MAGI webhook tunnel port only."""
     import subprocess
     try:
+        pattern = f"cloudflared tunnel --url http://127.0.0.1:{str(port).strip()}"
         result = subprocess.run(
-            ["pgrep", "-f", "/opt/homebrew/bin/cloudflared tunnel"],
-            capture_output=True, timeout=3,
+            ["pgrep", "-f", pattern],
+            capture_output=True, text=True, timeout=3,
         )
-        return result.returncode == 0
+        return [p.strip() for p in (result.stdout or "").splitlines() if p.strip()]
+    except Exception:
+        return []
+
+
+def _magi_webhook_port() -> str:
+    return (
+        os.environ.get("MAGI_SERVER_PORT")
+        or _load_dotenv_value("MAGI_SERVER_PORT")
+        or "5002"
+    ).strip()
+
+
+def _is_cloudflared_alive() -> bool:
+    """Check if the MAGI webhook cloudflared tunnel is actually running."""
+    try:
+        return bool(_cloudflared_pids_for_port(_magi_webhook_port()))
     except Exception:
         return False
 
@@ -521,22 +557,17 @@ def _ensure_cloudflared():
         log_path = os.path.join(os.path.dirname(__file__), "..", "logs", "cloudflared.log")
         os.makedirs(os.path.dirname(log_path), exist_ok=True)
         already_running = False
+        _cf_local_port = _magi_webhook_port()
 
-        # Count running cloudflared instances; kill all if >1 (prevent accumulation)
-        try:
-            result = subprocess.run(
-                ["pgrep", "-f", "/opt/homebrew/bin/cloudflared tunnel"],
-                capture_output=True, text=True, timeout=3,
-            )
-            cf_pids = [p.strip() for p in (result.stdout or "").strip().splitlines() if p.strip()]
-        except Exception:
-            cf_pids = []
+        # Count only the MAGI webhook tunnel. Other tunnels, such as Paperclip
+        # sharing, may legitimately run on different ports.
+        cf_pids = _cloudflared_pids_for_port(_cf_local_port)
 
         if len(cf_pids) > 1:
-            logger.warning("cloudflared: Found %d instances, killing all to restart cleanly", len(cf_pids))
+            logger.warning("cloudflared: Found %d MAGI webhook instances, restarting port %s cleanly", len(cf_pids), _cf_local_port)
             try:
-                subprocess.run(["pkill", "-f", "/opt/homebrew/bin/cloudflared tunnel"],
-                               capture_output=True, timeout=3)
+                for pid in cf_pids:
+                    subprocess.run(["kill", pid], capture_output=True, timeout=3)
                 _time.sleep(1)
             except Exception:
                 pass
@@ -560,17 +591,12 @@ def _ensure_cloudflared():
 
         if not already_running:
             try:
-                subprocess.run(["pkill", "-f", "/opt/homebrew/bin/cloudflared tunnel"],
+                subprocess.run(["pkill", "-f", f"cloudflared tunnel --url http://127.0.0.1:{_cf_local_port}"],
                                capture_output=True, timeout=3)
             except Exception:
                 logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, "_ensure_cloudflared/pkill", exc_info=True)
             logger.info("Starting cloudflared tunnel...")
             _cf_log_fh = open(log_path, "w")  # kept open for cloudflared's lifetime
-            _cf_local_port = (
-                os.environ.get("MAGI_SERVER_PORT")
-                or _load_dotenv_value("MAGI_SERVER_PORT")
-                or "5002"
-            ).strip()
             logger.info("cloudflared → local port %s", _cf_local_port)
             _cf_proc = subprocess.Popen(
                 ["/opt/homebrew/bin/cloudflared", "tunnel", "--url", f"http://127.0.0.1:{_cf_local_port}", "--no-autoupdate"],

@@ -770,6 +770,11 @@ def index():
     return redirect(url_for("dashboard_pages.dashboard"))
 
 
+@app.route("/favicon.ico")
+def favicon():
+    return Response(status=204)
+
+
 @app.route("/login", methods=["GET", "POST"])
 def login():
     if request.method == "POST":

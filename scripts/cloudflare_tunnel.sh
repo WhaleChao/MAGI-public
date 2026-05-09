@@ -6,7 +6,7 @@ set -euo pipefail
 MAGI_ROOT="${MAGI_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
 LOG="$MAGI_ROOT/logs/cloudflared.log"
 LINE_TOKEN="${MAGI_LINE_CHANNEL_ACCESS_TOKEN:-}"
-LOCAL_PORT="${1:-18790}"
+LOCAL_PORT="${1:-${MAGI_SERVER_PORT:-5002}}"
 
 if [ -z "$LINE_TOKEN" ]; then
   source "$MAGI_ROOT/.env" 2>/dev/null || true
@@ -18,8 +18,8 @@ if [ -z "$LINE_TOKEN" ]; then
   exit 1
 fi
 
-# Kill any existing tunnel
-pkill -f "cloudflared tunnel" 2>/dev/null || true
+# Kill only the MAGI webhook tunnel for this port; other tunnels may be in use.
+pkill -f "cloudflared tunnel --url http://127.0.0.1:${LOCAL_PORT}" 2>/dev/null || true
 sleep 1
 
 # Start tunnel and capture output
