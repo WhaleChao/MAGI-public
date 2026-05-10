@@ -26,13 +26,9 @@ jobs:
             skills/bridge/melchior_client.py \
             skills/bridge/inference_gateway.py \
             scripts/ops/audit_operational_hardening.py \
-            scripts/ops/smoke_test_full.py
+            scripts/ops/smoke_test_full.py \
+            scripts/ops/run_test_suite.py
       - name: Fast unit tests
         run: |
           python -m pip install -U pip pytest requests python-dotenv
-          python -m pytest -q \
-            tests/test_arithmetic_fast_path.py \
-            tests/test_model_config.py \
-            tests/test_smoke_core_routes.py \
-            tests/test_cron_monitoring_hardening.py \
-            tests/test_intent_no_weather_for_reminder.py
+          python scripts/ops/run_test_suite.py --suite ci

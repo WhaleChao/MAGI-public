@@ -16,6 +16,20 @@ integrations, and any portal automation used in production.
 
 ## Required Gates Before Each Commercial Release
 
+Preferred single entrypoint:
+
+```bash
+./venv/bin/python scripts/ops/run_test_suite.py --suite ci
+./venv/bin/python scripts/ops/run_test_suite.py --suite smoke50
+./venv/bin/python scripts/ops/run_test_suite.py --suite production-live --json-out .runtime/production_live_latest.json
+./venv/bin/python scripts/ops/run_test_suite.py --suite commercial-release --json-out .runtime/commercial_release_latest.json
+```
+
+The suite definitions live in `config/test_matrix.json`; see
+`docs/TESTING_SYSTEM.md` for the acceptance rule and coverage boundaries.
+
+Legacy direct commands remain available:
+
 Public source package:
 
 ```bash
