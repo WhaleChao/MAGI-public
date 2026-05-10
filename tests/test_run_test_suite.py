@@ -10,7 +10,7 @@ from scripts.ops import run_test_suite
 def test_resolve_command_replaces_tokens():
     command = run_test_suite.resolve_command(["{python}", "{root}", "x"])
     assert command[0] == sys.executable
-    assert command[1].endswith("MAGI_v2")
+    assert command[1] == str(run_test_suite.MAGI_ROOT)
     assert command[2] == "x"
 
 

@@ -189,6 +189,13 @@ def run_suite(matrix: dict[str, Any], matrix_path: Path, suite: str, *, dry_run:
         report.results.append(asdict(result))
         detail = result.message or f"exit={result.returncode}"
         print(f"[{status}] {result.id} ({result.elapsed_sec:.2f}s) {detail}")
+        if not result.ok and not result.skipped:
+            if result.stdout_tail:
+                print("  stdout_tail:")
+                print("\n".join("    " + line for line in result.stdout_tail.splitlines()[-40:]))
+            if result.stderr_tail:
+                print("  stderr_tail:")
+                print("\n".join("    " + line for line in result.stderr_tail.splitlines()[-40:]))
     report.elapsed_sec = round(time.time() - start, 3)
     report.ok = report.failed == 0
     print(
