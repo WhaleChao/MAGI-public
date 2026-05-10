@@ -350,6 +350,28 @@ def test_judicial_daytime_cron_batches_are_bounded():
         assert job["timeout_sec"] == timeout_sec
 
 
+def test_judicial_night_pull_is_deduped_and_locked():
+    source = Path("skills/judgment-collector/action.py").read_text(encoding="utf-8")
+
+    assert "judicial_api_night_pull.lock" in source
+    assert "judicial_api_night_pull_already_running" in source
+    assert '_env("JUDICIAL_API_REFRESH_EXISTING", "0")' in source
+
+
+def test_local_nightly_autopilot_timeout_covers_midnight_pull():
+    jobs = _cron_jobs_or_skip()
+    by_id = {job["id"]: job for job in jobs}
+
+    assert by_id["job_nightly_autopilot"]["timeout_sec"] >= 28800
+
+
+def test_cron_scheduler_has_hardcoded_timeouts_for_runtime_only_jobs():
+    source = Path("api/discord_bot.py").read_text(encoding="utf-8")
+
+    assert '"job_nightly_autopilot": 28800' in source
+    assert '"job_weekend_bookmark": 21600' in source
+
+
 def test_obsidian_known_malformed_pdf_hints_include_fitz_xref_errors():
     import skills.obsidian.action as action
 

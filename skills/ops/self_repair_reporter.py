@@ -18,6 +18,7 @@ import os
 import re
 import sys
 import time
+from urllib import request as _urlrequest
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -43,6 +44,7 @@ _LOOKBACK_DAYS = int(os.environ.get("MAGI_REPAIR_REPORTER_LOOKBACK_DAYS", "7"))
 _PERSIST_THRESHOLD = int(os.environ.get("MAGI_REPAIR_REPORTER_PERSIST_THRESHOLD", "3"))
 _REPORT_MAX_JOBS = int(os.environ.get("MAGI_REPAIR_REPORTER_MAX_JOBS", "15"))
 _DRY_RUN = os.environ.get("MAGI_REPAIR_REPORTER_DRY_RUN", "0") == "1"
+_STALE_HOURS = int(os.environ.get("MAGI_REPAIR_REPORTER_STALE_HOURS", "48") or "48")
 
 try:
     from api.platforms.runtime_dir import root as _rt_root
@@ -157,6 +159,110 @@ def _group_records(records: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
     return groups
 
 
+def _parse_ts(value: Any) -> float:
+    if isinstance(value, (int, float)):
+        return float(value)
+    text = str(value or "").strip()
+    if not text:
+        return 0.0
+    try:
+        return float(text)
+    except Exception:
+        pass
+    for fmt in ("%Y-%m-%dT%H:%M:%S.%f", "%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%dT%H:%M:%S"):
+        try:
+            dt = datetime.strptime(text, fmt)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=datetime.now().astimezone().tzinfo)
+            return dt.timestamp()
+        except Exception:
+            continue
+    try:
+        return datetime.fromisoformat(text).timestamp()
+    except Exception:
+        return 0.0
+
+
+def _load_cron_last_run_ts() -> Dict[str, float]:
+    state_path = _STATE_PATH.parent / "cron_state.json"
+    try:
+        data = _json.loads(state_path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    out: Dict[str, float] = {}
+    if not isinstance(data, dict):
+        return out
+    for job_id, value in data.items():
+        if not isinstance(value, dict):
+            continue
+        ts = _parse_ts(value.get("last_run"))
+        if ts:
+            out[str(job_id)] = ts
+    return out
+
+
+def _load_cron_job_map() -> Dict[str, Dict[str, Any]]:
+    cron_path = Path(_PROJECT_ROOT) / "cron_jobs.json"
+    try:
+        data = _json.loads(cron_path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    if not isinstance(data, list):
+        return {}
+    return {str(job.get("id") or ""): job for job in data if isinstance(job, dict) and job.get("id")}
+
+
+def _current_omlx_models(timeout_sec: float = 1.5) -> List[str]:
+    try:
+        with _urlrequest.urlopen("http://127.0.0.1:8080/v1/models", timeout=timeout_sec) as resp:
+            payload = _json.loads(resp.read().decode("utf-8", errors="ignore"))
+        return [str(item.get("id") or "") for item in payload.get("data") or [] if isinstance(item, dict)]
+    except Exception:
+        return []
+
+
+def _annotate_group_status(groups: Dict[str, Dict[str, Any]], *, now_ts: Optional[float] = None) -> None:
+    now_ts = float(now_ts or time.time())
+    stale_sec = max(1, _STALE_HOURS) * 3600.0
+    cron_last_run = _load_cron_last_run_ts()
+    cron_jobs = _load_cron_job_map()
+    current_omlx_models = _current_omlx_models()
+    for group in groups.values():
+        job = str(group.get("job") or "")
+        last_ts = float(group.get("last_ts") or 0)
+        last_success_ts = cron_last_run.get(job, 0.0)
+        sample_error = str(group.get("sample_error") or "")
+        if job == "job_omlx_switch_day" and any("e4b" in model.lower() for model in current_omlx_models):
+            group["status"] = "recovered"
+            group["status_reason"] = "目前 8080 已是日間 E4B"
+        elif job == "job_omlx_switch_night" and any("26b" in model.lower() for model in current_omlx_models):
+            group["status"] = "recovered"
+            group["status_reason"] = "目前 8080 已是夜間 26B"
+        elif (
+            job == "job_nightly_autopilot"
+            and int((cron_jobs.get(job) or {}).get("timeout_sec") or 0) >= 28800
+            and ("judicial_api_night_thread" in sample_error or "exit=-9" in sample_error)
+        ):
+            group["status"] = "recovered"
+            group["status_reason"] = "nightly timeout 已調整為 8 小時"
+        elif (
+            job == "job_weekend_bookmark"
+            and int((cron_jobs.get(job) or {}).get("timeout_sec") or 0) >= 21600
+            and ("exit=-15" in sample_error or "timeout" in sample_error.lower())
+        ):
+            group["status"] = "recovered"
+            group["status_reason"] = "週末書籤 timeout 已調整為 6 小時"
+        elif last_success_ts > last_ts + 30:
+            group["status"] = "recovered"
+            group["status_reason"] = "cron 後續已再執行"
+        elif last_ts and (now_ts - last_ts) > stale_sec:
+            group["status"] = "stale"
+            group["status_reason"] = f"超過 {_STALE_HOURS} 小時未復發"
+        else:
+            group["status"] = "active"
+            group["status_reason"] = "仍在觀察期"
+
+
 def _is_persistent(group: Dict[str, Any]) -> bool:
     """True if this job has failed on ≥ PERSIST_THRESHOLD distinct calendar days."""
     return len(group["days_seen"]) >= _PERSIST_THRESHOLD
@@ -173,9 +279,13 @@ def _build_report(groups: Dict[str, Dict[str, Any]]) -> str:
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
     lookback = _LOOKBACK_DAYS
 
-    persistent = [g for g in groups.values() if _is_persistent(g)]
-    recurring = [g for g in groups.values() if not _is_persistent(g) and g["count"] >= 2]
-    one_off = [g for g in groups.values() if g["count"] == 1]
+    active_groups = [g for g in groups.values() if g.get("status", "active") == "active"]
+    recovered_groups = [g for g in groups.values() if g.get("status") == "recovered"]
+    stale_groups = [g for g in groups.values() if g.get("status") == "stale"]
+
+    persistent = [g for g in active_groups if _is_persistent(g)]
+    recurring = [g for g in active_groups if not _is_persistent(g) and g["count"] >= 2]
+    one_off = [g for g in active_groups if g["count"] == 1]
 
     persistent.sort(key=lambda g: -g["count"])
     recurring.sort(key=lambda g: -g["count"])
@@ -187,7 +297,13 @@ def _build_report(groups: Dict[str, Dict[str, Any]]) -> str:
     ]
 
     total_records = sum(g["count"] for g in groups.values())
-    lines.append(f"📊 總計：{total_records} 筆失敗 / {len(groups)} 種問題 / {len(persistent)} 個持續性故障")
+    active_records = sum(g["count"] for g in active_groups)
+    lines.append(
+        f"📊 總計：{total_records} 筆失敗 / {len(groups)} 種問題；"
+        f"待處理 {active_records} 筆 / {len(active_groups)} 種，持續性故障 {len(persistent)} 個"
+    )
+    if recovered_groups or stale_groups:
+        lines.append(f"🧹 已降噪：已恢復 {len(recovered_groups)} 種 / 舊紀錄 {len(stale_groups)} 種")
     lines.append("")
 
     # --- Persistent failures ---
@@ -222,6 +338,18 @@ def _build_report(groups: Dict[str, Dict[str, Any]]) -> str:
         lines.append(f"ℹ️ 單次失敗：{len(one_off)} 個（略）")
         lines.append("")
 
+    if recovered_groups or stale_groups:
+        lines.append("✅ 已恢復或過期的重複失敗（不列為待處理）")
+        quieted = sorted(recovered_groups + stale_groups, key=lambda g: float(g.get("last_ts") or 0), reverse=True)
+        for g in quieted[:5]:
+            lines.append(
+                f"  • {g['job']} — {g['error_label']} × {g['count']} 次，"
+                f"最後：{_fmt_ts(g['last_ts'])}（{g.get('status_reason', '已降噪')}）"
+            )
+        if len(quieted) > 5:
+            lines.append(f"  …另 {len(quieted) - 5} 個已降噪問題略")
+        lines.append("")
+
     # --- Sample errors for persistent ---
     if persistent:
         lines.append("🔍 持續性故障樣本錯誤")
@@ -253,6 +381,8 @@ def _build_report(groups: Dict[str, Dict[str, Any]]) -> str:
 
     if not groups:
         lines.append("✅ 過去 7 天無任何失敗記錄！")
+    elif not active_groups:
+        lines.append("✅ 過去 7 天的失敗均已恢復或過期，暫無待處理故障。")
 
     return "\n".join(lines)
 
@@ -296,12 +426,14 @@ def run_report(*, dry_run: bool = False, force: bool = False) -> Dict[str, Any]:
     records = _load_agenda(lookback_sec)
 
     groups = _group_records(records)
+    _annotate_group_status(groups)
     # Convert days_seen sets to counts for serialisation
     for g in groups.values():
         g["days_seen_count"] = len(g["days_seen"])
         g["days_seen"] = sorted(g["days_seen"])
 
-    persistent_count = sum(1 for g in groups.values() if g["days_seen_count"] >= _PERSIST_THRESHOLD)
+    active_groups = [g for g in groups.values() if g.get("status", "active") == "active"]
+    persistent_count = sum(1 for g in active_groups if g["days_seen_count"] >= _PERSIST_THRESHOLD)
     total_failures = sum(g["count"] for g in groups.values())
 
     report_text = _build_report(
@@ -315,6 +447,9 @@ def run_report(*, dry_run: bool = False, force: bool = False) -> Dict[str, Any]:
         "groups_count": len(groups),
         "persistent_count": persistent_count,
         "total_failures": total_failures,
+        "active_groups_count": len(active_groups),
+        "recovered_groups_count": sum(1 for g in groups.values() if g.get("status") == "recovered"),
+        "stale_groups_count": sum(1 for g in groups.values() if g.get("status") == "stale"),
         "lookback_days": _LOOKBACK_DAYS,
         "dry_run": dry_run,
         "report_text": report_text,

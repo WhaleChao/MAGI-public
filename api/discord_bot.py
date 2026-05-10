@@ -609,10 +609,16 @@ async def bg_scheduler_loop():
                                       "job_self_repair_reporter"}  # JSONL 讀取 + TG 發送，保守給 7200s
                         # 2026-04-25: 支援 cron_jobs.json 自定義 timeout_sec / long_job，
                         # 免於每加新長任務都要動 _LONG_JOBS hardcoded set。
-                        # 優先順序：timeout_sec > long_job=true > _LONG_JOBS (legacy)
+                        # 優先順序：timeout_sec > hardcoded override > long_job=true > _LONG_JOBS (legacy)
+                        _LONG_JOB_TIMEOUTS = {
+                            "job_nightly_autopilot": 28800,  # 22:00 啟動，需跨過 00:00 司法院夜拉
+                            "job_weekend_bookmark": 21600,   # 週末卷宗 PDF/NAS 掃描可能超過 2h
+                        }
                         _custom_timeout = job.get("timeout_sec")
                         if isinstance(_custom_timeout, (int, float)) and _custom_timeout > 0:
                             _timeout = int(_custom_timeout)
+                        elif job.get("id") in _LONG_JOB_TIMEOUTS:
+                            _timeout = _LONG_JOB_TIMEOUTS[job.get("id")]
                         elif job.get("long_job") is True:
                             _timeout = 7200
                         else:

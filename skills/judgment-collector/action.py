@@ -3934,6 +3934,26 @@ def official_api_night_pull(
             "auth_success": None,
         }
 
+    lock_fh = None
+    try:
+        import fcntl
+
+        lock_path = os.path.join(CACHE_ROOT, "judicial_api_night_pull.lock")
+        lock_fh = open(lock_path, "w", encoding="utf-8")
+        fcntl.flock(lock_fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        lock_fh.write(f"{os.getpid()} {datetime.now().isoformat()}\n")
+        lock_fh.flush()
+    except BlockingIOError:
+        return {
+            "success": True,
+            "skipped": True,
+            "reason": "judicial_api_night_pull_already_running",
+            "message": "略過：司法院 API 夜間拉取已在執行，避免重複下載與 API/NAS 負載。",
+            "auth_success": None,
+        }
+    except Exception as lock_exc:
+        logger.warning("night_pull: lock unavailable, continuing without lock: %s", lock_exc)
+
     # Auth with retry (transient server failures may return 驗證失敗 even with valid creds)
     token = ""
     auth_attempts = int(os.environ.get("JUDICIAL_API_AUTH_RETRIES", "3") or "3")
@@ -3982,7 +4002,7 @@ def official_api_night_pull(
     token_refreshes = 0
     jdoc_retry_max = int(os.environ.get("JUDICIAL_API_JDOC_RETRY_MAX", "2") or "2")
     jdoc_retry_delay = float(os.environ.get("JUDICIAL_API_JDOC_RETRY_DELAY", "1.5") or "1.5")
-    refresh_existing = (_env("JUDICIAL_API_REFRESH_EXISTING", "1") or "1").lower() in {
+    refresh_existing = (_env("JUDICIAL_API_REFRESH_EXISTING", "0") or "0").lower() in {
         "1", "true", "yes", "on"
     }
 
