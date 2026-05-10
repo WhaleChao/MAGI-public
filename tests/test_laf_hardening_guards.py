@@ -52,3 +52,10 @@ def test_closing_batch_uses_permanent_dedup_after_draft():
     block = src.split("def _was_closing_drafted_recently", 1)[1].split("def _get_pending_closing_draft_cases", 1)[0]
     assert "permanent dedup signals" in block
     assert "DATE_SUB(NOW()" not in block
+
+
+def test_condition_batch_uses_permanent_dedup_after_draft():
+    src = _read("casper_ecosystem/law_firm_orchestrators/laf_orchestrator.py")
+    block = src.split("def _was_condition_drafted_recently", 1)[1].split("def _get_pending_condition_cases", 1)[0]
+    assert "永久 dedup" in block
+    assert "DATE_SUB(NOW()" not in block

@@ -86,7 +86,7 @@ updated: 2026-03-09
 - **繳費單通知**（2026-03-25 修正）：
   - 文字通知走 `red_phone.send_telegram_push_with_status()`（TG 推送 + DC mirror），**不用 Discord webhook**
   - PDF 附件：TG 走 `LAFNotifier._push_telegram_document()`，DC 走 `red_phone.send_discord_bot_file()`（Bot API multipart upload）
-  - 冷卻 6 小時（`PAYMENT_NOTIFY_COOLDOWN_HOURS`），同案件 6 小時內不重複通知
+  - 繳費通知 key（`web_payment:*`）永久去重；非繳費通知才套用 `PAYMENT_NOTIFY_COOLDOWN_HOURS`
   - 已繳費跳過：`_has_payment_proof_uploaded` 檢查 `paystatus`/`p_status`/`payment`/`statusnm`/`result` 多欄位
 
 ## 背景執行策略
