@@ -3026,6 +3026,121 @@ def _portal_item_has_uploaded_proof(item: dict, proof_case_tokens: Set[str]) -> 
     return False
 
 
+def _portal_payment_notice_keys(item: dict) -> List[str]:
+    if not isinstance(item, dict):
+        return []
+    keys: List[str] = []
+    party = str(item.get("party") or item.get("client_name") or "").strip()
+    for field in ("court_case_no", "case_number", "showyyidno", "yyidno"):
+        raw = str(item.get(field) or "").strip()
+        if not raw:
+            continue
+        keys.append(f"web_payment:{raw}")
+        norm = _normalize_case_token(raw)
+        if norm:
+            keys.append(f"web_payment:case:{norm}")
+            if party:
+                keys.append(f"web_payment:case:{norm}:{party}")
+    payid = str(item.get("payid") or item.get("p_payid") or "").strip()
+    if payid:
+        keys.append(f"web_payment:payid:{payid}")
+    rowid = str(item.get("rowid") or "").strip()
+    if rowid:
+        keys.append(f"web_payment:rowid:{rowid}")
+    out: List[str] = []
+    seen: Set[str] = set()
+    for key in keys:
+        if key and key not in seen:
+            seen.add(key)
+            out.append(key)
+    return out
+
+
+def _load_payment_notified_keys(download_folder: str) -> Set[str]:
+    path = os.path.join(download_folder or DEFAULT_DOWNLOAD_FOLDER, "notified_cases.json")
+    if not os.path.exists(path):
+        return set()
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f) or {}
+    except Exception:
+        return set()
+    if isinstance(data, list):
+        return {str(x) for x in data if str(x).startswith("web_payment:")}
+    if isinstance(data, dict):
+        return {str(k) for k in data.keys() if str(k).startswith("web_payment:")}
+    return set()
+
+
+def _load_processed_payment_tokens(download_folder: str) -> Set[str]:
+    """Load case/party tokens for payment slips that already have local files."""
+    path = os.path.join(download_folder or DEFAULT_DOWNLOAD_FOLDER, "payment_registry.json")
+    if not os.path.exists(path):
+        return set()
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f) or {}
+    except Exception:
+        return set()
+    tokens: Set[str] = set()
+    for key, entry in (data or {}).items():
+        if not isinstance(entry, dict):
+            continue
+        files = [str(x).strip() for x in (entry.get("file_paths") or []) if str(x).strip()]
+        has_existing_file = any(os.path.isfile(fp) for fp in files)
+        if not has_existing_file:
+            names = [str(x).strip() for x in (entry.get("files") or []) if str(x).strip()]
+            has_existing_file = bool(names)
+        if not has_existing_file:
+            continue
+        party = str(entry.get("party") or "").strip()
+        for raw in (entry.get("case_number"), entry.get("yyidno"), entry.get("showyyidno")):
+            norm = _normalize_case_token(raw or "")
+            if not norm:
+                continue
+            tokens.add(norm)
+            if party:
+                tokens.add(f"{norm}:{party}")
+        norm_key = _normalize_case_token(str(key or ""))
+        if norm_key:
+            tokens.add(norm_key)
+    return tokens
+
+
+def _portal_item_has_processed_payment(item: dict, processed_tokens: Set[str]) -> bool:
+    if not processed_tokens or not isinstance(item, dict):
+        return False
+    party = str(item.get("party") or item.get("client_name") or "").strip()
+    for field in ("court_case_no", "case_number", "showyyidno", "yyidno"):
+        norm = _normalize_case_token(item.get(field) or "")
+        if not norm:
+            continue
+        if norm in processed_tokens:
+            return True
+        if party and f"{norm}:{party}" in processed_tokens:
+            return True
+    return False
+
+
+def _is_portal_payment_notice_seen(item: dict, download_folder: str,
+                                   notified_keys: Optional[Set[str]] = None,
+                                   processed_tokens: Optional[Set[str]] = None) -> bool:
+    keys = _portal_payment_notice_keys(item)
+    if not keys:
+        return False
+    notified = notified_keys if notified_keys is not None else _load_payment_notified_keys(download_folder)
+    if any(key in notified for key in keys):
+        return True
+    try:
+        from skills.ops.dedup_db import is_done as _dd_is_done
+        if any(_dd_is_done("filereview_payment", key) for key in keys):
+            return True
+    except Exception:
+        pass
+    tokens = processed_tokens if processed_tokens is not None else _load_processed_payment_tokens(download_folder)
+    return _portal_item_has_processed_payment(item, tokens)
+
+
 def _portal_item_priority(item: dict) -> tuple:
     if not isinstance(item, dict):
         return (-1, "", "", "")
@@ -3658,14 +3773,17 @@ def _is_portal_item_dismissed(item: dict, dismissed_payments: dict) -> bool:
 
 
 def _filter_urgent_pending_payments(items: list, days: int = 7,
-                                    dismissed_payments: Optional[dict] = None) -> dict:
+                                    dismissed_payments: Optional[dict] = None,
+                                    download_folder: str = "",
+                                    notified_keys: Optional[Set[str]] = None,
+                                    processed_tokens: Optional[Set[str]] = None) -> dict:
     """
     過濾未繳費案件，分為三組：
     - overdue: 已逾期（繳費期限在今天之前）
     - urgent: N 天內到期
     - unknown: 無期限資料
     回傳 dict: {"overdue": [...], "urgent": [...], "unknown": [...]}
-    會跳過已在 dismissed_payments 中標記為已處理的案件。
+    會跳過已在 dismissed_payments / notified_cases / payment_registry 中標記為已處理的案件。
     """
     from datetime import datetime as _dt, date as _date
     _dismissed = dismissed_payments or {}
@@ -3677,6 +3795,16 @@ def _filter_urgent_pending_payments(items: list, days: int = 7,
         # ── 跳過已標記為已繳費（dismissed）的案件 ──
         if _dismissed and _is_portal_item_dismissed(it, _dismissed):
             logger.debug("skip dismissed portal item: %s | %s",
+                         it.get("court_case_no") or it.get("case_number") or "-",
+                         it.get("party") or "?")
+            continue
+        if download_folder and _is_portal_payment_notice_seen(
+            it,
+            download_folder,
+            notified_keys=notified_keys,
+            processed_tokens=processed_tokens,
+        ):
+            logger.debug("skip already-notified/processed portal payment: %s | %s",
                          it.get("court_case_no") or it.get("case_number") or "-",
                          it.get("party") or "?")
             continue
@@ -3882,11 +4010,17 @@ def cmd_check_emails(notify: bool = True, notify_empty: bool = True) -> dict:
                     )
                     # 列出未繳費案件明細（分逾期/即將到期/無期限）
                     portal_items = portal_effective.get("items") or []
+                    _payment_notified_keys = _load_payment_notified_keys(creds["download_folder"])
+                    _processed_payment_tokens = _load_processed_payment_tokens(creds["download_folder"])
                     groups = _filter_urgent_pending_payments(portal_items, days=14,
-                                                            dismissed_payments=_dismissed_map)
+                                                            dismissed_payments=_dismissed_map,
+                                                            download_folder=creds["download_folder"],
+                                                            notified_keys=_payment_notified_keys,
+                                                            processed_tokens=_processed_payment_tokens)
                     overdue = groups.get("overdue", [])
                     urgent = groups.get("urgent", [])
                     unknown = groups.get("unknown", [])
+                    portal_payment_due_count = len(overdue) + len(urgent) + len(unknown)
 
                     def _fmt_payment_items(items, limit=15):
                         lines = []
@@ -3964,11 +4098,15 @@ def cmd_check_emails(notify: bool = True, notify_empty: bool = True) -> dict:
             _portal_pickup_changed = (portal_pickup != _prev_pickup)
             _portal_pending_changed = (portal_pending != _prev_pending)
             _portal_probe_ok = bool(portal_summary.get("success")) if with_portal else False
+            try:
+                portal_payment_due_count
+            except NameError:
+                portal_payment_due_count = 0
 
             payment_signal = _should_emit_payment_check_notice(
                 pay_hits=pay_hits,
                 pay_notified=pay_notified,
-                portal_pending=portal_pending,
+                portal_pending=portal_payment_due_count,
                 portal_pending_changed=_portal_pending_changed,
                 portal_probe_ok=_portal_probe_ok,
             )

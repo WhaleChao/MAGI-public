@@ -264,3 +264,103 @@ def test_portal_notify_state_can_record_zero_pending_without_notification(tmp_pa
     assert data["portal_downloadable"] == 6
     assert data["portal_court_pickup"] == 29
     assert data["portal_pending"] == 0
+
+
+def _roc_compact(days_from_now: int = 3) -> str:
+    dt = datetime.now() + timedelta(days=days_from_now)
+    return f"{dt.year - 1911:03d}{dt.month:02d}{dt.day:02d}"
+
+
+def test_processed_payment_registry_suppresses_old_pdf_resend(tmp_path):
+    from casper_ecosystem.law_firm_orchestrators.file_review_automation import FileReviewManager
+
+    pdf = tmp_path / "繳費單_吳志炳_114.原交易.000049.pdf"
+    pdf.write_bytes(b"%PDF-1.4\n")
+    mgr = FileReviewManager(download_folder=str(tmp_path), headless=True)
+    row = {
+        "rowid": "995588",
+        "yyidno": "114.原交易.000049",
+        "showyyidno": "114年度原交易字第000049號",
+        "clnm": "吳志炳",
+        "paylimitdt": _roc_compact(3),
+        "paystatus": "2",
+        "status": "3",
+        "statusnm": "法院回覆同意",
+        "result": "待繳費",
+    }
+    mgr.payment_registry = {
+        "rowid:995588": {
+            "processed_at": "2026-04-10T14:04:02",
+            "yyidno": "114.原交易.000049",
+            "case_number": "114.原交易.000049",
+            "rowid": "995588",
+            "party": "吳志炳",
+            "files": [pdf.name],
+            "file_paths": [str(pdf)],
+        }
+    }
+
+    with patch.object(mgr, "notify_payment_needed", side_effect=AssertionError("must not resend old PDF")):
+        assert mgr._notify_payment_if_needed(row, case_info={"party": "吳志炳"}, file_paths=None) is True
+
+    saved = json.loads((tmp_path / "notified_cases.json").read_text(encoding="utf-8"))
+    assert "web_payment:case:114原交易49:吳志炳" in saved
+
+
+def test_portal_pending_payment_skips_legacy_notified_case(tmp_path):
+    module = _load_action_module()
+    (tmp_path / "notified_cases.json").write_text(
+        json.dumps({"web_payment:114年度原交易字第000049號": "2026-04-10T14:04:02"}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    item = {
+        "status": "pending_payment",
+        "paystatus": "2",
+        "status_name": "法院回覆同意",
+        "result_text": "待繳費",
+        "party": "吳志炳",
+        "court_case_no": "114年度原交易字第000049號",
+        "pay_deadline": _roc_compact(3),
+    }
+
+    groups = module._filter_urgent_pending_payments(
+        [item],
+        days=14,
+        download_folder=str(tmp_path),
+    )
+
+    assert groups == {"overdue": [], "urgent": [], "unknown": []}
+
+
+def test_portal_pending_payment_skips_payment_registry_case(tmp_path):
+    module = _load_action_module()
+    pdf = tmp_path / "繳費單_吳志炳_114.原交易.000049.pdf"
+    pdf.write_bytes(b"%PDF-1.4\n")
+    (tmp_path / "payment_registry.json").write_text(
+        json.dumps({
+            "rowid:995588": {
+                "case_number": "114.原交易.000049",
+                "party": "吳志炳",
+                "files": [pdf.name],
+                "file_paths": [str(pdf)],
+            }
+        }, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    item = {
+        "status": "pending_payment",
+        "paystatus": "2",
+        "status_name": "法院回覆同意",
+        "result_text": "待繳費",
+        "party": "吳志炳",
+        "court_case_no": "114年度原交易字第000049號",
+        "pay_deadline": _roc_compact(3),
+    }
+
+    groups = module._filter_urgent_pending_payments(
+        [item],
+        days=14,
+        download_folder=str(tmp_path),
+    )
+
+    assert groups == {"overdue": [], "urgent": [], "unknown": []}

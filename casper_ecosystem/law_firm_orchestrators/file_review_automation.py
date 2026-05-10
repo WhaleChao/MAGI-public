@@ -1677,7 +1677,10 @@ class FileReviewManager:
         except Exception as e:
             self.log(f"⚠️ 無法儲存 Email 記錄: {e}")
 
-    # 繳費通知冷卻時間（同案件通知間隔，30 天）
+    # 繳費通知冷卻時間（同案件通知間隔，30 天）。
+    # 注意：web_payment keys are permanent in practice; the cooldown only
+    # applies to legacy/non-payment keys.  Payment slips are separately deduped
+    # by payment_registry so an old PDF is never re-sent just because TTL passed.
     PAYMENT_NOTIFY_COOLDOWN_HOURS = 720
 
     def _load_notified_cases(self) -> set:
@@ -1692,7 +1695,10 @@ class FileReviewManager:
                 # 新格式 (dict: {key: ISO_timestamp}) — 清除超過冷卻時間的
                 if isinstance(data, dict):
                     cutoff = (datetime.now() - timedelta(hours=self.PAYMENT_NOTIFY_COOLDOWN_HOURS)).isoformat()
-                    return {k for k, v in data.items() if str(v) >= cutoff}
+                    return {
+                        k for k, v in data.items()
+                        if str(k).startswith("web_payment:") or str(v) >= cutoff
+                    }
             except Exception:
                 logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 1330, exc_info=True)
         return set()
@@ -1720,7 +1726,10 @@ class FileReviewManager:
                     existing[key] = now_iso
             # 清除超過冷卻時間的記錄
             cutoff = (datetime.now() - timedelta(hours=self.PAYMENT_NOTIFY_COOLDOWN_HOURS)).isoformat()
-            existing = {k: v for k, v in existing.items() if str(v) >= cutoff}
+            existing = {
+                k: v for k, v in existing.items()
+                if str(k).startswith("web_payment:") or str(v) >= cutoff
+            }
             with open(self.notified_cases_file, 'w', encoding='utf-8') as f:
                 json.dump(existing, f, ensure_ascii=False)
         except Exception as e:
@@ -2204,6 +2213,70 @@ class FileReviewManager:
 
         return bool(self._resolve_payment_registry_files(row_json))
 
+    def _payment_case_notify_keys(self, row_json: dict = None, case_info: dict = None) -> List[str]:
+        """Return all stable notification keys for a payment row.
+
+        We keep both old and new key formats because historical notifications
+        used ``web_payment:{raw_case_no}``, while portal rows use
+        ``web_payment:case:{normalized_case}:{party}``.
+        """
+        row_json = row_json or {}
+        case_info = case_info or {}
+        keys: List[str] = []
+        reg_key = self._payment_registry_key(row_json)
+        if reg_key:
+            keys.append(f"web_payment:{reg_key}")
+
+        raw_candidates = [
+            row_json.get("yyidno"),
+            row_json.get("showyyidno"),
+            row_json.get("c60yyidno"),
+            case_info.get("case_number"),
+            case_info.get("showyyidno"),
+        ]
+        party = str(row_json.get("clnm") or case_info.get("party") or "").strip()
+        for raw in raw_candidates:
+            raw_text = str(raw or "").strip()
+            if not raw_text:
+                continue
+            keys.append(f"web_payment:{raw_text}")
+            norm = self._normalize_case_keyword_loose(raw_text)
+            if norm:
+                keys.append(f"web_payment:case:{norm}")
+                if party:
+                    keys.append(f"web_payment:case:{norm}:{party}")
+
+        deduped: List[str] = []
+        seen: set[str] = set()
+        for key in keys:
+            if key and key not in seen:
+                seen.add(key)
+                deduped.append(key)
+        return deduped
+
+    def _seed_payment_notification_dedup(self, row_json: dict = None, case_info: dict = None,
+                                         reason: str = "payment_registry_processed") -> None:
+        """Persist dedup keys for an already handled payment slip."""
+        keys = self._payment_case_notify_keys(row_json, case_info)
+        if not keys:
+            return
+        changed = False
+        for key in keys:
+            if key not in self.notified_cases:
+                self.notified_cases.add(key)
+                changed = True
+            try:
+                from skills.ops.dedup_db import mark_done as _dd_mark
+                _dd_mark("filereview_payment", key, metadata={
+                    "reason": reason,
+                    "case_number": str((row_json or {}).get("yyidno") or (row_json or {}).get("showyyidno") or (case_info or {}).get("case_number") or ""),
+                    "party": str((row_json or {}).get("clnm") or (case_info or {}).get("party") or ""),
+                })
+            except Exception:
+                pass
+        if changed:
+            self._save_notified_cases()
+
     def _mark_payment_processed(self, row_json: dict, files: Optional[List[str]] = None, case_info: Optional[dict] = None):
         key = self._payment_registry_key(row_json)
         if not key:
@@ -2419,7 +2492,20 @@ class FileReviewManager:
         party = str(row_json.get("clnm") or case_info.get("party") or "").strip()
         notify_key_case = f"web_payment:case:{yyidno_norm}:{party}" if yyidno_norm else ""
         if not notify_key:
-            notify_key = notify_key_case or f"web_payment:{yyidno or 'unknown'}"
+            notify_key = notify_key_case or f"web_payment:{yyidno_raw or 'unknown'}"
+
+        payment_notify_keys = self._payment_case_notify_keys(row_json, case_info)
+
+        # 已處理過且本輪沒有新檔案：只補齊 dedup 記錄，不重送舊 PDF。
+        # 這避免 30 天 TTL 到期後，把 registry 內的舊繳費單又送一次。
+        if file_paths is None and self._is_payment_processed(row_json):
+            self._seed_payment_notification_dedup(
+                row_json,
+                case_info,
+                reason="skip_existing_payment_registry",
+            )
+            self.log(f"  ℹ️ 繳費單已在 registry 處理過，跳過舊 PDF 補發: {notify_key_case or notify_key}")
+            return True
 
         # 手動標記已繳費 → 永久跳過
         if self._is_payment_dismissed(notify_key, notify_key_case):
@@ -2436,6 +2522,15 @@ class FileReviewManager:
             return True
         if notify_key_case and notify_key_case in self.notified_cases:
             return True
+        if any(key in self.notified_cases for key in payment_notify_keys):
+            return True
+        try:
+            from skills.ops.dedup_db import is_done as _dd_is_done
+            if any(_dd_is_done("filereview_payment", key) for key in payment_notify_keys):
+                self._seed_payment_notification_dedup(row_json, case_info, reason="dedup_db_seen")
+                return True
+        except Exception:
+            pass
 
         if file_paths is None:
             file_paths = self._resolve_payment_registry_files(row_json)
@@ -2477,6 +2572,13 @@ class FileReviewManager:
             self.notified_cases.add(notify_key)
             if notify_key_case:
                 self.notified_cases.add(notify_key_case)
+            for key in payment_notify_keys:
+                self.notified_cases.add(key)
+            self._seed_payment_notification_dedup(
+                row_json,
+                case_info,
+                reason="notification_sent",
+            )
             self._save_notified_cases()
         elif _notify_result is False:
             # False means the send was attempted but failed
