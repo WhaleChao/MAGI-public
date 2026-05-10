@@ -85,9 +85,38 @@ PROMPT_ECHO_CONTEXT_MARKERS = (
     "輸出格式",
 )
 
+EXTRACTIVE_FAST_DIGEST_MARKERS = (
+    "摘要類型",
+    "抽取式快篩",
+    "主文摘錄",
+    "理由摘錄",
+    "未經LLM改寫",
+    "未經 LLM 改寫",
+)
+
+EXTRACTIVE_FAST_DIGEST_NOTICE = "抽取式快篩，僅供定位原文；引用或生成書狀前請核對裁判全文。"
+
 
 def normalize_insight_marker_text(value: object) -> str:
     return re.sub(r"\s+", "", str(value or ""))
+
+
+def is_extractive_fast_judgment_digest(*values: object) -> bool:
+    combined = normalize_insight_marker_text(" ".join(str(v or "") for v in values))
+    if not combined:
+        return False
+    return "抽取式快篩" in combined and ("主文摘錄" in combined or "理由摘錄" in combined)
+
+
+def mark_extractive_fast_digest_summary(summary: object) -> str:
+    text = str(summary or "").strip()
+    if not text:
+        return text
+    if not is_extractive_fast_judgment_digest(text):
+        return text
+    if EXTRACTIVE_FAST_DIGEST_NOTICE in text:
+        return text
+    return f"【{EXTRACTIVE_FAST_DIGEST_NOTICE}】\n{text}"
 
 
 def is_non_extractable_legal_insight(*values: object) -> bool:

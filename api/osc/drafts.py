@@ -18,7 +18,11 @@ from pathlib import Path
 from api.model_config import TEXT_PRIMARY_MODEL
 from api.runtime_paths import ensure_path_on_sys_path, get_orch_dir
 from api.case_path_mapper import preferred_case_roots
-from api.osc.insight_filters import displayable_insight_item, is_non_extractable_legal_insight
+from api.osc.insight_filters import (
+    displayable_insight_item,
+    is_extractive_fast_judgment_digest,
+    is_non_extractable_legal_insight,
+)
 
 # ---------------------------------------------------------------------------
 # Lazy back-references into server helpers.
@@ -216,6 +220,9 @@ def _osc_resolve_draft_insights(payload: dict) -> list[dict]:
         if not (summary or full_text):
             continue
         if is_non_extractable_legal_insight(title, summary, full_text, case_reason, court):
+            continue
+        if is_extractive_fast_judgment_digest(summary):
+            # 快篩摘要只能協助定位原文，不能直接作為書狀可引用見解。
             continue
         out.append(
             {

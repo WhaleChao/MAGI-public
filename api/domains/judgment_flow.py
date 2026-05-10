@@ -15,6 +15,11 @@ import subprocess
 import sys
 from typing import Any, Dict, List, Optional, Tuple
 
+from api.osc.insight_filters import (
+    is_extractive_fast_judgment_digest,
+    mark_extractive_fast_digest_summary,
+)
+
 logger = logging.getLogger("Orchestrator")
 
 _MAGI_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
@@ -257,6 +262,7 @@ def _search_local_judgment_archive(query: str, limit: int = 3) -> Dict[str, Any]
             continue
         summary = str(row.get("summary_text") or "").strip()
         is_degraded = "系統降級回覆" in summary
+        is_fast_digest = is_extractive_fast_judgment_digest(summary)
         court_name = str(row.get("court_name") or "").strip()
         case_number = str(row.get("case_number") or "").strip()
         title_parts = [p for p in [court_name, case_number] if p]
@@ -267,6 +273,7 @@ def _search_local_judgment_archive(query: str, limit: int = 3) -> Dict[str, Any]
                 "summary_preview": summary,
                 "url": str(row.get("source_url") or "").strip(),
                 "is_degraded": is_degraded,
+                "is_fast_digest": is_fast_digest,
                 "source": "court_judgments_local",
             }
         )
@@ -304,12 +311,14 @@ def _search_local_judgment_archive(query: str, limit: int = 3) -> Dict[str, Any]
                         continue
                     summary = str(row.get("summary_text") or "").strip()
                     is_degraded = "系統降級回覆" in summary
+                    is_fast_digest = is_extractive_fast_judgment_digest(summary)
                     items.append(
                         {
                             "title": str(row.get("judgment_title") or "").strip(),
                             "summary_preview": summary,
                             "url": str(row.get("judgment_url") or "").strip(),
                             "is_degraded": is_degraded,
+                            "is_fast_digest": is_fast_digest,
                             "source": "judgment_archive_legacy",
                         }
                     )
@@ -317,9 +326,10 @@ def _search_local_judgment_archive(query: str, limit: int = 3) -> Dict[str, Any]
             logger.debug("legacy judgment_archive secondary fallback failed: %s", exc)
 
     items = [item for item in items if item.get("title")]
-    non_degraded_items = [item for item in items if not item.get("is_degraded")]
+    authoritative_items = [item for item in items if not item.get("is_degraded") and not item.get("is_fast_digest")]
+    fast_digest_items = [item for item in items if not item.get("is_degraded") and item.get("is_fast_digest")]
     degraded_items = [item for item in items if item.get("is_degraded")]
-    items = non_degraded_items[: max(1, int(limit))] or degraded_items[: max(1, int(limit))]
+    items = (authoritative_items + fast_digest_items)[: max(1, int(limit))] or degraded_items[: max(1, int(limit))]
     if not items:
         return {"success": False, "error": "no_local_archive_matches"}
     return {"success": True, "source_label": "本地實務見解庫", "items": items[: max(1, int(limit))]}
@@ -345,6 +355,9 @@ def format_practical_insight_result(query: str, judgments: Dict[str, Any], statu
         for row in items[:3]:
             title = str(row.get("title") or "").strip()
             summary = str(row.get("summary_full") or row.get("summary_preview") or "").strip()
+            is_fast_digest = bool(row.get("is_fast_digest")) or is_extractive_fast_judgment_digest(summary)
+            if is_fast_digest:
+                summary = mark_extractive_fast_digest_summary(summary)
             if len(summary) > 180:
                 summary = summary[:180] + "…"
             if title:

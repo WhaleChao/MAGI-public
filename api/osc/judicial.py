@@ -27,7 +27,12 @@ from api.osc.utils import (
     _osc_pick_best_manifest_item,
     _osc_summarize_legal_insight,
 )
-from api.osc.insight_filters import displayable_insight_item, is_non_extractable_legal_insight
+from api.osc.insight_filters import (
+    displayable_insight_item,
+    is_extractive_fast_judgment_digest,
+    is_non_extractable_legal_insight,
+    mark_extractive_fast_digest_summary,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -105,6 +110,7 @@ def _osc_collect_insights():
                     continue
                 full_text = (r.get("full_text") or r.get("summary") or "").strip()
                 summary = (r.get("summary") or full_text[:350] or "").strip()
+                is_fast_digest = is_extractive_fast_judgment_digest(summary)
                 if is_non_extractable_legal_insight(
                     title,
                     summary,
@@ -117,14 +123,16 @@ def _osc_collect_insights():
                 item = {
                     "id": f"cj-{r.get('id')}",
                     "source_type": "court_judgments",
-                    "source": "裁判書",
+                    "source": "裁判書（抽取式快篩）" if is_fast_digest else "裁判書",
                     "title": title,
-                    "summary": summary,
+                    "summary": mark_extractive_fast_digest_summary(summary) if is_fast_digest else summary,
                     "full_text": full_text,
                     "url": r.get("source_url") or "",
                     "case_number": r.get("case_number") or "",
                     "case_reason": r.get("case_type") or "",
                     "court": r.get("court_name") or "",
+                    "quality": "fast_extractive" if is_fast_digest else "authoritative_summary",
+                    "draft_eligible": not is_fast_digest,
                     "timestamp": _osc_json_value(ts) if ts else "",
                     "sort_ts": _osc_parse_dt(ts).timestamp() if _osc_parse_dt(ts) else 0,
                 }

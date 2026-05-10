@@ -988,6 +988,10 @@ def _osc_lookup_fulltext_fallback(title: str = "", case_number: str = "", url: s
     cn = (case_number or "").strip()
     u = (url or "").strip()
     try:
+        from api.osc.insight_filters import is_extractive_fast_judgment_digest
+    except Exception:
+        is_extractive_fast_judgment_digest = lambda *values: False
+    try:
         params = []
         clauses = []
         if cn:
@@ -1056,7 +1060,10 @@ def _osc_lookup_fulltext_fallback(title: str = "", case_number: str = "", url: s
                 fetch="one",
             )
             if row:
-                txt = (row.get("full_text") or row.get("summary") or "").strip()
+                summary_text = (row.get("summary") or "").strip()
+                if is_extractive_fast_judgment_digest(summary_text) and not (row.get("full_text") or "").strip():
+                    return {"ok": False, "error": "fast_digest_without_full_text"}
+                txt = (row.get("full_text") or summary_text).strip()
                 if len(txt) >= 300:
                     return {
                         "ok": True,

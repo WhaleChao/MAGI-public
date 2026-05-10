@@ -106,3 +106,31 @@ def test_format_practical_insight_prefers_non_degraded_items():
 
     assert "正常摘要案例" in text
     assert "系統降級回覆" not in text
+
+
+def test_practical_insight_labels_extractive_fast_digest():
+    fast_digest = (
+        "## 摘要類型\n"
+        "抽取式快篩（主文與理由均取自裁判原文；未經 LLM 改寫）\n\n"
+        "## 主文摘錄\n"
+        "被告應給付原告新臺幣十萬元。\n\n"
+        "## 理由摘錄\n"
+        "法院認為被告應負損害賠償責任。"
+    )
+    text = judgment_flow.format_practical_insight_result(
+        "侵權行為",
+        {
+            "success": True,
+            "source_label": "本地實務見解庫",
+            "items": [
+                {
+                    "title": "臺灣高等法院 114年度上字第1號",
+                    "summary_preview": fast_digest,
+                }
+            ],
+        },
+        {"ok": True, "items": []},
+    )
+
+    assert "抽取式快篩，僅供定位原文" in text
+    assert "引用或生成書狀前請核對裁判全文" in text
