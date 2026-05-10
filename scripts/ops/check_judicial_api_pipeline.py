@@ -3,11 +3,18 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import sys
 import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
+
+MAGI_ROOT = Path(__file__).resolve().parents[2]
+if str(MAGI_ROOT) not in sys.path:
+    sys.path.insert(0, str(MAGI_ROOT))
+
+from api.domains.judicial_api_backlog import build_backlog_interpretation, format_backlog_notice
 
 # --- Load .env for subprocess/cron credential access ---
 try:
@@ -23,7 +30,6 @@ WARNING_EXIT = 10
 RISK_EXIT = 20
 UNKNOWN_EXIT = 30
 
-MAGI_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CACHE_ROOT = Path.home() / ".cache" / "judgment_collector" / "judicial_api"
 DEFAULT_PULL_STATE = DEFAULT_CACHE_ROOT / "pull_state.json"
 DEFAULT_PROCESS_STATE = DEFAULT_CACHE_ROOT / "process_state.json"
@@ -184,12 +190,14 @@ def latest_process_summary(process_state_path: Path) -> dict:
     process_state = load_json(process_state_path)
     updated_at = parse_iso(str(process_state.get("updated_at") or ""))
     processed_map = process_state.get("processed") if isinstance(process_state.get("processed"), dict) else {}
+    last_run = process_state.get("last_run") if isinstance(process_state.get("last_run"), dict) else {}
     return {
         "exists": process_state_path.exists(),
         "path": str(process_state_path),
         "updated_at": iso_or_empty(updated_at),
         "updated_age_hours": rounded(age_hours(updated_at)),
         "processed_entries": len(processed_map),
+        "last_run": last_run,
     }
 
 
@@ -208,6 +216,37 @@ def normalized_summary(normalized_root: Path) -> dict:
         "latest_at": iso_or_empty(newest_dt),
         "latest_age_hours": rounded(age_hours(newest_dt)),
     }
+
+
+def scheduled_day_process_capacity(cron_path: Path) -> dict:
+    try:
+        jobs = json.loads(cron_path.read_text(encoding="utf-8"))
+    except Exception:
+        jobs = []
+    if not isinstance(jobs, list):
+        return {"runs_per_day": 0, "daily_max_docs": 0, "avg_batch": 0}
+    runs = 0
+    daily_max_docs = 0
+    for job in jobs:
+        if not isinstance(job, dict) or not job.get("enabled", True):
+            continue
+        cmd = str(job.get("command") or "")
+        if "official_api_day_process" not in cmd:
+            continue
+        m = re.search(r"official_api_day_process\s+(\{.*?\})", cmd)
+        if not m:
+            continue
+        try:
+            payload = json.loads(m.group(1).replace('\\"', '"'))
+        except Exception:
+            payload = {}
+        runs += 1
+        try:
+            daily_max_docs += int(payload.get("max_docs") or 0)
+        except Exception:
+            pass
+    avg = int(round(daily_max_docs / runs)) if runs > 0 else 0
+    return {"runs_per_day": runs, "daily_max_docs": daily_max_docs, "avg_batch": avg}
 
 
 def build_report() -> dict:
@@ -239,6 +278,7 @@ def build_report() -> dict:
     process = latest_process_summary(process_state_path)
     backlog = backlog_status(cache_root, process_state_path, raw_root)
     normalized = normalized_summary(normalized_root)
+    scheduled_capacity = scheduled_day_process_capacity(MAGI_ROOT / "cron_jobs.json")
 
     reasons: list[str] = []
     status = "PIPELINE_HEALTHY"
@@ -269,6 +309,38 @@ def build_report() -> dict:
 
     backlog_count = int(backlog.get("backlog_count") or 0)
     oldest_backlog_age_hours = float(backlog.get("oldest_backlog_age_hours") or 0.0)
+    last_run = process.get("last_run") if isinstance(process.get("last_run"), dict) else {}
+    try:
+        configured_batch = max(
+            int(last_run.get("max_docs") or 0),
+            int(scheduled_capacity.get("avg_batch") or 0),
+            int(os.environ.get("JDG_API_DAY_MAX_PROCESS", "200") or "200"),
+        )
+    except Exception:
+        configured_batch = 200
+    try:
+        runs_per_day = int(os.environ.get("JUDICIAL_API_DAY_RUNS_PER_DAY") or scheduled_capacity.get("runs_per_day") or "5")
+    except Exception:
+        runs_per_day = 5
+    backlog_interpretation = build_backlog_interpretation(
+        backlog_before=last_run.get("backlog_before", backlog_count),
+        backlog_remaining=backlog_count,
+        handled=last_run.get("handled", 0),
+        db_upserts=last_run.get("db_upserts", 0),
+        archive_upserts=last_run.get("archive_upserts", 0),
+        vector_ingested=last_run.get("vector_ingested", 0),
+        summarized=last_run.get("summarized", 0),
+        errors=last_run.get("errors", 0),
+        oldest_age_hours=backlog.get("oldest_backlog_age_hours"),
+        newest_age_hours=backlog.get("newest_backlog_age_hours"),
+        raw_total=backlog.get("raw_total"),
+        unreadable_count=backlog.get("unreadable_count"),
+        skipped_low_value=last_run.get("skipped_low_value", 0),
+        skipped_missing_text=last_run.get("skipped_missing_text", 0),
+        max_docs=configured_batch,
+        runs_per_day=runs_per_day,
+        cache_root=str(raw_root),
+    )
     if backlog_count > 0 and (not process["exists"] or not process["updated_at"]):
         status = "PROCESS_NEVER_RUN"
         exit_code = RISK_EXIT
@@ -305,11 +377,13 @@ def build_report() -> dict:
             "process_stale_hours": process_stale_hours,
             "backlog_warn_count": backlog_warn_count,
             "backlog_risk_age_hours": backlog_risk_age_hours,
+            "scheduled_day_capacity": scheduled_capacity,
         },
         "credentials": credentials,
         "pull": pull,
         "process": process,
         "backlog": backlog,
+        "backlog_interpretation": backlog_interpretation,
         "normalized": normalized,
         "reasons": reasons,
     }
@@ -345,13 +419,17 @@ def print_human(report: dict) -> None:
     )
 
     backlog = report["backlog"]
-    print(
-        "backlog: "
-        f"raw_total={backlog.get('raw_total', '-')}"
-        f" | pending={backlog.get('backlog_count', '-')}"
-        f" | unreadable={backlog.get('unreadable_count', '-')}"
-        f" | oldest_age_hours={backlog.get('oldest_backlog_age_hours') if backlog.get('oldest_backlog_age_hours') is not None else '-'}"
-    )
+    interpretation = report.get("backlog_interpretation") if isinstance(report.get("backlog_interpretation"), dict) else {}
+    if interpretation:
+        print(format_backlog_notice("backlog:", interpretation))
+    else:
+        print(
+            "backlog: "
+            f"raw_total={backlog.get('raw_total', '-')}"
+            f" | pending={backlog.get('backlog_count', '-')}"
+            f" | unreadable={backlog.get('unreadable_count', '-')}"
+            f" | oldest_age_hours={backlog.get('oldest_backlog_age_hours') if backlog.get('oldest_backlog_age_hours') is not None else '-'}"
+        )
     if backlog.get("pending_examples"):
         print("pending examples:")
         for item in backlog["pending_examples"]:

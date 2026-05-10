@@ -330,20 +330,23 @@ def test_judicial_daytime_cron_batches_are_bounded():
     jobs = _cron_jobs_or_skip()
     by_id = {job["id"]: job for job in jobs}
     expected_caps = {
-        "job_judicial_api_morning": (200, 80, 7200),
-        "job_judicial_api_noon": (220, 120, 7200),
-        "job_judicial_api_afternoon": (220, 120, 7200),
-        "job_judicial_api_evening": (180, 80, 7200),
-        "job_judicial_api_backlog_clear": (80, 30, 1800),
+        "job_judicial_api_morning": (300, 60, 7200, "llm", False, True),
+        "job_judicial_api_noon": (2000, 2000, 7200, "extractive", True, False),
+        "job_judicial_api_afternoon": (2000, 2000, 7200, "extractive", True, False),
+        "job_judicial_api_evening": (2000, 2000, 7200, "extractive", True, False),
+        "job_judicial_api_backlog_clear": (2500, 2500, 7200, "extractive", True, False),
     }
 
-    for job_id, (max_docs, summarize_max, timeout_sec) in expected_caps.items():
+    for job_id, (max_docs, summarize_max, timeout_sec, summary_mode, skip_assets, vector_ingest) in expected_caps.items():
         job = by_id[job_id]
         match = re.search(r"official_api_day_process (\{.*?\})'", job["command"])
         assert match, job_id
         payload = json.loads(match.group(1).replace(r"\"", '"'))
         assert payload["max_docs"] == max_docs
         assert payload["summarize_max"] == summarize_max
+        assert payload["summary_mode"] == summary_mode
+        assert payload["skip_assets"] is skip_assets
+        assert payload["vector_ingest"] is vector_ingest
         assert job["timeout_sec"] == timeout_sec
 
 

@@ -1593,6 +1593,7 @@ def _judicial_api_pipeline_report() -> Dict[str, Any]:
         "pull",
         "process",
         "backlog",
+        "backlog_interpretation",
         "normalized",
         "reasons",
     ]:
@@ -1612,6 +1613,11 @@ def _format_judicial_api_pipeline_lines(pipeline: Any) -> list[str]:
     latest_pull = pull.get("latest") if isinstance(pull.get("latest"), dict) else {}
     process = pipeline.get("process") if isinstance(pipeline.get("process"), dict) else {}
     backlog = pipeline.get("backlog") if isinstance(pipeline.get("backlog"), dict) else {}
+    backlog_interpretation = (
+        pipeline.get("backlog_interpretation")
+        if isinstance(pipeline.get("backlog_interpretation"), dict)
+        else {}
+    )
     normalized = pipeline.get("normalized") if isinstance(pipeline.get("normalized"), dict) else {}
     reasons = list(pipeline.get("reasons") or [])[:3]
     error = str(pipeline.get("error") or "").strip()
@@ -1656,10 +1662,16 @@ def _format_judicial_api_pipeline_lines(pipeline: Any) -> list[str]:
     pending = backlog.get("backlog_count")
     oldest_pending = backlog.get("oldest_backlog_age_hours")
     if raw_total is not None or pending is not None:
-        backlog_line = f"- Raw backlog：pending={pending if pending is not None else '-'} / raw_total={raw_total if raw_total is not None else '-'}"
+        headline = str(backlog_interpretation.get("headline") or "").strip()
+        backlog_line = f"- Backlog：pending={pending if pending is not None else '-'} / raw_total={raw_total if raw_total is not None else '-'}"
         if oldest_pending is not None:
-            backlog_line += f" / oldest={oldest_pending}h"
+            backlog_line += f" / 最老約 {oldest_pending}h"
+        if headline:
+            backlog_line += f" / 判讀：{headline}"
         lines.append(backlog_line)
+    for item in list(backlog_interpretation.get("suggestions") or [])[:1]:
+        if str(item).strip():
+            lines.append(f"- 建議：{str(item).strip()}")
 
     normalized_count = normalized.get("count")
     normalized_ts = str(normalized.get("latest_at") or "").strip()

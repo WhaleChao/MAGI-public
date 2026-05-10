@@ -30,6 +30,7 @@ Usage
 -----
     python3 scripts/ops/cleanup_judgments_leaks.py --dry-run
     python3 scripts/ops/cleanup_judgments_leaks.py --apply
+    python3 scripts/ops/cleanup_judgments_leaks.py --apply --enrich-json-fulltext
     python3 scripts/ops/cleanup_judgments_leaks.py --apply --scope json
     python3 scripts/ops/cleanup_judgments_leaks.py --apply --scope db
 """
@@ -73,7 +74,9 @@ _LEAK_SIGNATURES = [
     "您提供的文本片段", "我將嚴格依照", "我將依循以下步驟",
     "請提供您需要我摘要的判決書全文", "請您現在貼上判決書",
     "請將判決書貼於此", "判決書貼於下方", "原始資料未提供全文文字",
-    "已存原始 JSON",
+    "已存原始 JSON", "輸出內容：嚴格依照", "語言規範：全程使用",
+    "而非創設新的法律見解", "而非闡述某個具有高度爭議性",
+    "若需擷取量刑考量因素",
 ]
 
 _PREAMBLE_LINE_PATTERNS = [
@@ -149,6 +152,10 @@ def has_real_content(s: str) -> bool:
             "我將立即為您",
             "為您服務",
             "若內文無引用",
+            "輸出內容",
+            "語言規範",
+            "而非創設新的法律見解",
+            "若需擷取量刑考量因素",
         )):
             continue
         # Count CJK chars
@@ -241,7 +248,7 @@ def _get_db_conn():
 
 
 # ── JSON cleanup ──
-def cleanup_json(apply: bool, conn) -> Dict[str, Any]:
+def cleanup_json(apply: bool, conn, *, enrich_fulltext: bool = False) -> Dict[str, Any]:
     if not JSON_PATH.exists():
         return {"error": "judgments.json not found"}
 
@@ -283,8 +290,9 @@ def cleanup_json(apply: bool, conn) -> Dict[str, Any]:
             new_entry["summary"] = cleaned
             new_entry["_was_cleaned"] = True
 
-        # Enrich with full_text from DB
-        if db_cur and url:
+        # Enriching full_text is useful for private local repair runs, but unsafe for
+        # public repo artifacts.  Keep it opt-in so cleanup does not leak case text.
+        if enrich_fulltext and db_cur and url:
             jid = url_to_jid(url)
             db_cur.execute(
                 "SELECT jid, full_text FROM court_judgments WHERE jid=%s LIMIT 1",
@@ -337,6 +345,7 @@ def cleanup_db(apply: bool, conn) -> Dict[str, Any]:
         "scanned": 0,
         "cleaned_updated": 0,
         "pure_preamble_nulled": 0,
+        "archive_summary_nulled": 0,
         "legal_insights_deleted": 0,
         "unchanged": 0,
     }
@@ -393,6 +402,33 @@ def cleanup_db(apply: bool, conn) -> Dict[str, Any]:
         up_cur.close()
         logger.info("DB updates applied: %d rows", len(updates))
 
+    archive_updates: List[int] = []
+    cur = conn.cursor(dictionary=True)
+    archive_ors = " OR ".join(["summary_text LIKE %s"] * len(_LEAK_SIGNATURES))
+    archive_params = [f"%{m}%" for m in _LEAK_SIGNATURES]
+    cur.execute(
+        f"SELECT id, summary_text FROM judgment_archive WHERE summary_text IS NOT NULL AND ({archive_ors})",
+        tuple(archive_params),
+    )
+    for r in cur.fetchall() or []:
+        summary = str(r.get("summary_text") or "")
+        cleaned = strip_preamble(summary)
+        if is_non_extractable_legal_insight(summary) or len(cleaned) < 30 or not has_real_content(cleaned):
+            archive_updates.append(int(r.get("id") or 0))
+    cur.close()
+    archive_updates = [x for x in archive_updates if x > 0]
+    stats["archive_summary_nulled"] = len(archive_updates)
+    if apply and archive_updates:
+        up_cur = conn.cursor()
+        placeholders = ",".join(["%s"] * len(archive_updates))
+        up_cur.execute(
+            f"UPDATE judgment_archive SET summary_text=NULL, is_degraded=1 WHERE id IN ({placeholders})",
+            tuple(archive_updates),
+        )
+        conn.commit()
+        up_cur.close()
+        logger.info("Archive summaries nulled: %d", len(archive_updates))
+
     return stats
 
 
@@ -401,6 +437,11 @@ def main() -> int:
     ap.add_argument("--apply", action="store_true", help="實際寫入變更（否則 dry-run）")
     ap.add_argument("--dry-run", action="store_true", help="只列印統計，不寫入")
     ap.add_argument("--scope", choices=["json", "db", "both"], default="both")
+    ap.add_argument(
+        "--enrich-json-fulltext",
+        action="store_true",
+        help="將 DB 全文回填到 judgments.json（僅限私用本機修復；公開版不要使用）",
+    )
     args = ap.parse_args()
 
     apply = args.apply and not args.dry_run
@@ -412,7 +453,7 @@ def main() -> int:
     result: Dict[str, Any] = {"mode": mode, "scope": args.scope}
 
     if args.scope in ("json", "both"):
-        result["json"] = cleanup_json(apply, conn)
+        result["json"] = cleanup_json(apply, conn, enrich_fulltext=bool(args.enrich_json_fulltext))
     if args.scope in ("db", "both"):
         result["db"] = cleanup_db(apply, conn)
 

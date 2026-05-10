@@ -150,11 +150,7 @@ def build_cleanup_report(*, include_generic_procedural: bool = False, limit: int
         cleanup_category = decision.category in CLEANUP_CATEGORIES or (
             include_generic_procedural and decision.category == "procedural_ruling"
         )
-        can_delete_skip = (
-            decision.disposition == SKIP_SUMMARY
-            and cleanup_category
-            and (_summary_is_low_value(row.get("summary")) or decision.category in ALWAYS_DELETE_SKIP_CATEGORIES)
-        )
+        can_delete_skip = decision.disposition == SKIP_SUMMARY and cleanup_category
         can_delete_missing_text = (not _is_upper_protected(row)) and _is_missing_text_low_value(row)
         if can_delete_skip or can_delete_missing_text:
             if can_delete_missing_text and not can_delete_skip:

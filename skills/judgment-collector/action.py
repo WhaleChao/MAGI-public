@@ -40,6 +40,9 @@ if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 from api.runtime_paths import get_orch_dir, get_skill_python
 from api.case_path_mapper import preferred_case_roots, translate_case_path_to_local
+from api.domains.judicial_api_backlog import build_backlog_interpretation, format_backlog_notice
+from api.domains.judgment_value_filter import SKIP_SUMMARY, classify_judgment_record
+from api.osc.insight_filters import is_non_extractable_legal_insight
 try:
     from dotenv import load_dotenv
 except Exception:
@@ -110,6 +113,11 @@ _SUMMARY_REJECT_MARKERS = (
     "請您將判決書貼於下方",
     "請您現在貼上判決書",
     "判決書貼於下方",
+    "輸出內容：嚴格依照",
+    "語言規範：全程使用",
+    "而非創設新的法律見解",
+    "而非闡述某個具有高度爭議性",
+    "若需擷取量刑考量因素",
 )
 
 _SUMMARY_PROMPT_ECHO_MARKERS = (
@@ -120,6 +128,8 @@ _SUMMARY_PROMPT_ECHO_MARKERS = (
     "我將會",
     "我將立即",
     "我將為您",
+    "輸出內容",
+    "語言規範",
     "AI 助理",
     "AI助理",
     "作為 MAGI",
@@ -148,6 +158,19 @@ def _summary_is_prompt_echo(text: str) -> bool:
     has_echo = any(re.sub(r"\s+", "", marker) in s for marker in _SUMMARY_PROMPT_ECHO_MARKERS)
     has_context = any(re.sub(r"\s+", "", marker) in s for marker in _SUMMARY_PROMPT_ECHO_CONTEXT)
     return bool(has_echo and has_context)
+
+
+def _summary_is_bad_storage_value(text: str) -> bool:
+    s = str(text or "").strip()
+    if not s:
+        return True
+    return _summary_is_prompt_echo(s) or is_non_extractable_legal_insight(s)
+
+
+def _safe_summary_for_storage(summary: str, *, is_degraded: bool = False) -> tuple[str, bool]:
+    s = str(summary or "").strip()
+    bad = bool(is_degraded or _summary_is_bad_storage_value(s))
+    return ("" if bad else s, bad)
 
 
 def _upsert_judgments_json(
@@ -371,6 +394,9 @@ JDG_API_DAY_MAX_PROCESS = int(_env("JUDICIAL_API_DAY_MAX_PROCESS", "200") or "20
 JDG_API_DAY_SUMMARY_MAX = int(_env("JUDICIAL_API_DAY_SUMMARY_MAX", "80") or "80")
 JDG_API_DAY_SUMMARY_TIMEOUT_SEC = int(_env("JUDICIAL_API_DAY_SUMMARY_TIMEOUT_SEC", "240") or "240")
 JDG_API_DAY_VECTOR_MAX_CHARS = int(_env("JUDICIAL_API_DAY_VECTOR_MAX_CHARS", "12000") or "12000")
+JDG_API_DAY_SUMMARY_MODE = _env("JUDICIAL_API_DAY_SUMMARY_MODE", "llm").lower() or "llm"
+JDG_API_DAY_SKIP_ASSETS = _env("JUDICIAL_API_DAY_SKIP_ASSETS", "0").lower() in {"1", "true", "yes", "on"}
+JDG_API_FAST_BACKLOG_THRESHOLD = int(_env("JUDICIAL_API_FAST_BACKLOG_THRESHOLD", "5000") or "5000")
 JDG_API_ROOT = os.path.join(CACHE_ROOT, "judicial_api")
 JDG_API_RAW_ROOT = os.path.join(JDG_API_ROOT, "raw")
 JDG_API_NORMALIZED_ROOT = os.path.join(JDG_API_ROOT, "normalized")
@@ -817,6 +843,73 @@ def _download_jdg_assets(*, jid: str, fields: dict, target_dir: str) -> dict:
             else:
                 out["failed"].append({"kind": "attachment", "title": title or fname, "url": url, "error": resp.get("error")})
     return out
+
+
+def _extractive_judgment_summary(full_text: str, case_reason: str = "", *, max_chars: int = 1400) -> str:
+    """Fast, source-bound digest for backlog catch-up.  Main sections quote court text only."""
+    text = re.sub(r"\r\n?", "\n", str(full_text or "")).strip()
+    if len(text) < 120:
+        return ""
+    compact = re.sub(r"[ \t]+", " ", text)
+
+    def _section(start_pat: str, end_pat: str = "", limit: int = 700) -> str:
+        start = re.search(start_pat, compact)
+        if not start:
+            return ""
+        chunk = compact[start.end():]
+        if end_pat:
+            end = re.search(end_pat, chunk)
+            if end:
+                chunk = chunk[: end.start()]
+        chunk = re.sub(r"\n{2,}", "\n", chunk).strip(" ：:\n\t")
+        return chunk[:limit].strip()
+
+    holding = _section(r"主\s*文", r"(?:事實及理由|事實|理由|中\s*華\s*民\s*國)", 420)
+    reason = ""
+    reason_text = _section(r"(?:事實及理由|理由)", r"中\s*華\s*民\s*國", 1200)
+    if reason_text:
+        signals = (
+            r"(?:本院認為|本院認|本院審酌|經查|惟查|按[，,]|次按|又按|查|準此|是以)"
+            r".{30,260}?(?:。|；)"
+        )
+        picks = [m.group(0).strip() for m in re.finditer(signals, reason_text)]
+        if picks:
+            dedup: list[str] = []
+            seen: set[str] = set()
+            for p in picks:
+                key = re.sub(r"\s+", "", p)[:80]
+                if key in seen:
+                    continue
+                seen.add(key)
+                dedup.append(p)
+                if len(dedup) >= 3:
+                    break
+            reason = "\n".join(f"- {p}" for p in dedup)
+        else:
+            first = reason_text[:520].strip()
+            reason = f"- {first}" if first else ""
+
+    statutes = sorted(set(re.findall(r"(?:民法|刑法|民事訴訟法|刑事訴訟法|行政訴訟法|家事事件法|消費者債務清理條例|非訟事件法)?第\d+(?:-\d+)?條(?:之\d+)?", compact)))
+    statutes_line = "、".join(statutes[:12]) if statutes else "未明確抽得"
+    title_line = next((ln.strip() for ln in compact.split("\n") if ln.strip()), "")
+
+    parts = [
+        "## 摘要類型",
+        "抽取式快篩（主文與理由均取自裁判原文；未經 LLM 改寫）",
+        "",
+        "## 主文摘錄",
+        holding or (reason_text[:360].strip() if reason_text else compact[:360].strip()),
+        "",
+        "## 理由摘錄",
+        reason or "- 未抽得明確理由段落；請開啟全文確認。",
+        "",
+        "## 適用法條",
+        statutes_line,
+    ]
+    if case_reason or title_line:
+        parts.extend(["", "## 來源", f"{case_reason or '裁判書'}｜{title_line[:120]}"])
+    out = "\n".join(parts).strip()
+    return out[:max_chars].strip()
 
 
 def _remove_jdg_material_by_jid(conn, jid: str) -> dict:
@@ -1495,6 +1588,7 @@ def _upsert_court_judgment(
     summary: str,
     full_text: str,
     case_type: str,
+    commit: bool = True,
 ) -> Optional[str]:
     if not conn:
         return None
@@ -1502,7 +1596,7 @@ def _upsert_court_judgment(
     jid = hashlib.sha1(jid_seed.encode("utf-8", errors="ignore")).hexdigest()[:40]
     court_name, case_no = _parse_court_case_from_title(title)
     judgment_date = _parse_judgment_date_from_text(full_text) or _parse_judgment_date_from_text(title)
-    safe_summary = "" if _summary_is_prompt_echo(summary) else str(summary or "")
+    safe_summary, _ = _safe_summary_for_storage(summary)
     try:
         cur = conn.cursor()
         cur.execute(
@@ -1531,7 +1625,8 @@ def _upsert_court_judgment(
                 (url or None),
             ),
         )
-        conn.commit()
+        if commit:
+            conn.commit()
         cur.close()
         return jid
     except Exception as e:
@@ -1550,13 +1645,14 @@ def _upsert_court_judgment_by_jid(
     summary: str,
     full_text: str,
     source_url: str,
+    commit: bool = True,
 ) -> bool:
     if not conn:
         return False
     j = str(jid or "").strip()
     if not j:
         return False
-    safe_summary = "" if _summary_is_prompt_echo(summary) else str(summary or "")
+    safe_summary, _ = _safe_summary_for_storage(summary)
     try:
         cur = conn.cursor()
         cur.execute(
@@ -1585,7 +1681,8 @@ def _upsert_court_judgment_by_jid(
                 (source_url or None),
             ),
         )
-        conn.commit()
+        if commit:
+            conn.commit()
         cur.close()
         return True
     except Exception as e:
@@ -1866,9 +1963,16 @@ def backfill_archive_summaries(
     return result
 
 
-def _store_judgment(conn, row: dict) -> Optional[int]:
+def _store_judgment(conn, row: dict, *, commit: bool = True) -> Optional[int]:
     if not conn:
         return None
+    row = dict(row or {})
+    safe_summary, is_bad = _safe_summary_for_storage(
+        str(row.get("summary_text") or ""),
+        is_degraded=bool(row.get("is_degraded", False)),
+    )
+    row["summary_text"] = safe_summary
+    row["is_degraded"] = bool(row.get("is_degraded", False) or is_bad)
     try:
         cur = conn.cursor()
         cur.execute(
@@ -1893,7 +1997,8 @@ def _store_judgment(conn, row: dict) -> Optional[int]:
                 row.get("source_jid", ""),
             ),
         )
-        conn.commit()
+        if commit:
+            conn.commit()
         rid = cur.lastrowid
         cur.close()
         return rid
@@ -1902,10 +2007,17 @@ def _store_judgment(conn, row: dict) -> Optional[int]:
         return None
 
 
-def _upsert_judgment_archive_by_source_jid(conn, *, source_jid: str, row: dict) -> Optional[int]:
+def _upsert_judgment_archive_by_source_jid(conn, *, source_jid: str, row: dict, commit: bool = True) -> Optional[int]:
     sid = str(source_jid or "").strip()
+    row = dict(row or {})
+    safe_summary, is_bad = _safe_summary_for_storage(
+        str(row.get("summary_text") or ""),
+        is_degraded=bool(row.get("is_degraded", False)),
+    )
+    row["summary_text"] = safe_summary
+    row["is_degraded"] = bool(row.get("is_degraded", False) or is_bad)
     if (not conn) or (not sid):
-        return _store_judgment(conn, row)
+        return _store_judgment(conn, row, commit=commit)
     try:
         cur = conn.cursor(dictionary=True)
         cur.execute(
@@ -1918,7 +2030,7 @@ def _upsert_judgment_archive_by_source_jid(conn, *, source_jid: str, row: dict) 
             row2 = dict(row or {})
             row2["source_jid"] = sid
             row2.setdefault("source", "judicial_api")
-            return _store_judgment(conn, row2)
+            return _store_judgment(conn, row2, commit=commit)
 
         rid = int(hit.get("id") or 0)
         cur = conn.cursor()
@@ -1948,7 +2060,8 @@ def _upsert_judgment_archive_by_source_jid(conn, *, source_jid: str, row: dict) 
         )
         # 注意：casper_service 帳號無 DELETE 權限，跳過重複清理。
         # 同 source_jid 的舊列會保留但不影響查詢（SELECT 時已用 ORDER BY id DESC LIMIT 1）。
-        conn.commit()
+        if commit:
+            conn.commit()
         cur.close()
         return rid
     except Exception as e:
@@ -1956,7 +2069,7 @@ def _upsert_judgment_archive_by_source_jid(conn, *, source_jid: str, row: dict) 
         row2 = dict(row or {})
         row2["source_jid"] = sid
         row2.setdefault("source", "judicial_api")
-        return _store_judgment(conn, row2)
+        return _store_judgment(conn, row2, commit=commit)
 
 
 def _update_summary_by_text_path(
@@ -1973,6 +2086,10 @@ def _update_summary_by_text_path(
     """
     if (not conn) or (not full_text_path) or (not summary_text):
         return 0
+    safe_summary, safe_bad = _safe_summary_for_storage(summary_text, is_degraded=bool(is_degraded))
+    if safe_bad or not safe_summary:
+        return 0
+    summary_text = safe_summary
     try:
         cur = conn.cursor()
         # 先用 full_text_path 精準更新；若沒有命中，再 fallback title/case_reason。
@@ -2267,6 +2384,9 @@ def _is_degraded_summary(text: str, expected_reason: str = "") -> bool:
         "timeout",
     ]
     if any(f in s for f in flags):
+        return True
+    if is_non_extractable_legal_insight(s):
+        logger.warning("Non-extractable legal insight placeholder detected in summary (len=%d)", len(s))
         return True
     if _summary_is_prompt_echo(s):
         logger.warning("Prompt echo / missing-source response detected in summary (len=%d)", len(s))
@@ -4060,6 +4180,9 @@ def official_api_day_process(
     *,
     max_docs: int = JDG_API_DAY_MAX_PROCESS,
     summarize_max: int = JDG_API_DAY_SUMMARY_MAX,
+    summary_mode: str = JDG_API_DAY_SUMMARY_MODE,
+    skip_assets: Optional[bool] = None,
+    vector_ingest: Optional[bool] = None,
     force: bool = False,
     notify: bool = False,
 ) -> dict:
@@ -4087,6 +4210,16 @@ def official_api_day_process(
     if not isinstance(processed_map, dict):
         processed_map = {}
     backlog_before_info = _jdg_backlog_status(processed_map)
+    backlog_before_count = int(backlog_before_info.get("backlog_count") or 0)
+    mode = str(summary_mode or JDG_API_DAY_SUMMARY_MODE or "llm").strip().lower()
+    if mode not in {"llm", "extractive", "none", "auto"}:
+        mode = "llm"
+    if mode == "auto" and backlog_before_count >= max(1, JDG_API_FAST_BACKLOG_THRESHOLD):
+        mode = "extractive"
+    skip_assets_effective = JDG_API_DAY_SKIP_ASSETS if skip_assets is None else bool(skip_assets)
+    if backlog_before_count >= max(1, JDG_API_FAST_BACKLOG_THRESHOLD) and mode in {"extractive", "none"}:
+        skip_assets_effective = True
+    vector_ingest_effective = (mode == "llm") if vector_ingest is None else bool(vector_ingest)
 
     conn = _get_db()
     if conn:
@@ -4102,6 +4235,9 @@ def official_api_day_process(
     errors: list[str] = []
     remove_marked = 0
     remove_cleanups = 0
+    skipped_low_value = 0
+    skipped_missing_text = 0
+    assets_skipped = 0
     report_items: list[dict] = []
 
     for raw_path in files:
@@ -4150,6 +4286,32 @@ def official_api_day_process(
             case_reason = fields["jtitle"] or "裁判書"
             case_type = "行政" if ("行政" in court_name) else "一般"
 
+            if not full_text:
+                skipped_missing_text += 1
+                processed_map[rel] = raw_hash
+                report_items.append({"jid": jid, "status": "skipped_missing_full_text", "title": title[:120]})
+                continue
+
+            value_decision = classify_judgment_record(
+                jid=jid,
+                court_name=court_name,
+                case_number=case_no,
+                case_reason=case_reason,
+                title=title,
+                full_text=full_text,
+            )
+            if value_decision.disposition == SKIP_SUMMARY:
+                skipped_low_value += 1
+                processed_map[rel] = raw_hash
+                report_items.append({
+                    "jid": jid,
+                    "status": "skipped_low_value",
+                    "reason": value_decision.reason,
+                    "category": value_decision.category,
+                    "title": title[:120],
+                })
+                continue
+
             day_tag = (judgment_date or datetime.now().strftime("%Y-%m-%d")).replace("-", "")
             txt_dir = os.path.join(JDG_API_NORMALIZED_ROOT, day_tag)
             os.makedirs(txt_dir, exist_ok=True)
@@ -4158,12 +4320,21 @@ def official_api_day_process(
             text_out = full_text or (json.dumps(payload, ensure_ascii=False))
             with open(text_path, "w", encoding="utf-8") as f:
                 f.write(text_out)
-            asset_info = _download_jdg_assets(jid=jid, fields=fields, target_dir=txt_dir)
+            if skip_assets_effective:
+                assets_skipped += 1
+                asset_info = {"pdf_path": "", "attachments": [], "failed": [], "skipped": True}
+            else:
+                asset_info = _download_jdg_assets(jid=jid, fields=fields, target_dir=txt_dir)
 
             summary = ""
             summary_meta = {"is_degraded": True, "route": "unset", "error": ""}
             is_degraded_summary = True
-            if full_text and summarized < int(summarize_max):
+            if full_text and summarized < int(summarize_max) and mode == "extractive":
+                summary = _extractive_judgment_summary(full_text, case_reason)
+                summary_meta = {"is_degraded": False, "route": "extractive_backlog", "error": ""}
+                is_degraded_summary = bool(_is_degraded_summary(summary, case_reason) or len(summary.strip()) < 80)
+                summarized += 1
+            elif full_text and summarized < int(summarize_max) and mode == "llm":
                 summary = _summarize_judgment(
                     full_text,
                     case_reason,
@@ -4210,6 +4381,7 @@ def official_api_day_process(
                 summary="" if is_degraded_summary else summary,
                 full_text=full_text,
                 source_url=source_url,
+                commit=False,
             )
             if ok_upsert:
                 db_upserts += 1
@@ -4233,6 +4405,7 @@ def official_api_day_process(
                         "source": "judicial_api",
                         "source_jid": jid,
                     },
+                    commit=False,
                 )
                 if archive_id:
                     archive_upserts += 1
@@ -4242,7 +4415,7 @@ def official_api_day_process(
                 f"日期: {judgment_date or fields['jdate']}\n案由: {case_reason}\n\n"
                 f"摘要:\n{summary[:3000]}\n\n全文節錄:\n{text_out[:max(800, int(JDG_API_DAY_VECTOR_MAX_CHARS))]}"
             )
-            if _remember_judgment_memory(mem_payload, source=f"judicial_api:{jid}", is_degraded=is_degraded_summary):
+            if vector_ingest_effective and _remember_judgment_memory(mem_payload, source=f"judicial_api:{jid}", is_degraded=is_degraded_summary):
                 vector_ingested += 1
 
             processed_map[rel] = raw_hash
@@ -4260,6 +4433,10 @@ def official_api_day_process(
 
     if conn:
         try:
+            conn.commit()
+        except Exception as e:
+            logger.warning("official_api_day_process final commit failed: %s", e)
+        try:
             conn.close()
         except Exception:
             logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 3811, exc_info=True)
@@ -4268,17 +4445,52 @@ def official_api_day_process(
     if len(processed_map) > 200000:
         keys = list(processed_map.keys())[-120000:]
         processed_map = {k: processed_map[k] for k in keys if k in processed_map}
-    proc_state = {"processed": processed_map, "updated_at": datetime.now().isoformat()}
+    proc_state = {
+        "processed": processed_map,
+        "updated_at": datetime.now().isoformat(),
+        "last_run": {
+            "handled": handled,
+            "db_upserts": db_upserts,
+            "archive_upserts": archive_upserts,
+            "vector_ingested": vector_ingested,
+            "summarized": summarized,
+            "remove_marked": remove_marked,
+            "remove_cleanups": remove_cleanups,
+            "skipped_low_value": skipped_low_value,
+            "skipped_missing_text": skipped_missing_text,
+            "assets_skipped": assets_skipped,
+            "summary_mode": mode,
+            "skip_assets": skip_assets_effective,
+            "vector_ingest": vector_ingest_effective,
+            "errors": len(errors),
+            "backlog_before": int(backlog_before_info.get("backlog_count") or 0),
+            "max_docs": int(max_docs),
+        },
+    }
     _save_json_file(JDG_API_PROCESS_STATE_PATH, proc_state)
     backlog_after_info = _jdg_backlog_status(processed_map)
     backlog_remaining = int(backlog_after_info.get("backlog_count") or 0)
 
-    msg = (
-        f"白天整理完成：處理 {handled}、court_judgments upsert {db_upserts}、archive upsert {archive_upserts}、向量入庫 {vector_ingested}、"
-        f"摘要 {summarized}、移除標記 {remove_marked}、清理 {remove_cleanups}、錯誤 {len(errors)}。"
+    interpretation = build_backlog_interpretation(
+        backlog_before=int(backlog_before_info.get("backlog_count") or 0),
+        backlog_remaining=backlog_remaining,
+        handled=handled,
+        db_upserts=db_upserts,
+        archive_upserts=archive_upserts,
+        vector_ingested=vector_ingested,
+        summarized=summarized,
+        errors=len(errors),
+        oldest_age_hours=backlog_after_info.get("oldest_backlog_age_hours"),
+        newest_age_hours=backlog_after_info.get("newest_backlog_age_hours"),
+        raw_total=backlog_after_info.get("raw_total"),
+        unreadable_count=backlog_after_info.get("unreadable_count"),
+        skipped_low_value=skipped_low_value,
+        skipped_missing_text=skipped_missing_text,
+        max_docs=max_docs,
+        runs_per_day=_env("JUDICIAL_API_DAY_RUNS_PER_DAY", "5"),
+        cache_root=JDG_API_ROOT,
     )
-    if backlog_remaining > 0:
-        msg += f" 尚有 raw backlog {backlog_remaining} 份待消化。"
+    msg = format_backlog_notice("白天整理完成", interpretation)
     _eventlog(
         "judgment:official_api:day_process",
         ok=(len(errors) == 0),
@@ -4290,9 +4502,16 @@ def official_api_day_process(
             "summarized": summarized,
             "remove_marked": remove_marked,
             "remove_cleanups": remove_cleanups,
+            "skipped_low_value": skipped_low_value,
+            "skipped_missing_text": skipped_missing_text,
+            "assets_skipped": assets_skipped,
+            "summary_mode": mode,
+            "skip_assets": skip_assets_effective,
+            "vector_ingest": vector_ingest_effective,
             "errors": len(errors),
             "backlog_before": int(backlog_before_info.get("backlog_count") or 0),
             "backlog_remaining": backlog_remaining,
+            "backlog_status": interpretation.get("status"),
         },
     )
     try:
@@ -4307,11 +4526,7 @@ def official_api_day_process(
         oldest_age = float(backlog_after_info.get("oldest_backlog_age_hours") or 0.0)
         if backlog_remaining >= max(1, backlog_alert_threshold) or oldest_age >= max(0.5, backlog_age_threshold):
             _notify(
-                "⚠️ 司法院 API 晨間整理仍有 backlog\n"
-                f"- backlog: {backlog_remaining} 份\n"
-                f"- oldest_age_hours: {oldest_age:.2f}\n"
-                f"- 處理: {handled} / DB upsert: {db_upserts} / archive upsert: {archive_upserts}\n"
-                f"- 快取目錄: {JDG_API_ROOT}",
+                format_backlog_notice("⚠️ 司法院 API 晨間整理：backlog 需要判讀", interpretation),
                 True,
             )
     if notify:
@@ -4326,12 +4541,19 @@ def official_api_day_process(
         "summarized": summarized,
         "remove_marked": remove_marked,
         "remove_cleanups": remove_cleanups,
+        "skipped_low_value": skipped_low_value,
+        "skipped_missing_text": skipped_missing_text,
+        "assets_skipped": assets_skipped,
+        "summary_mode": mode,
+        "skip_assets": skip_assets_effective,
+        "vector_ingest": vector_ingest_effective,
         "errors": errors[:50],
         "items_preview": report_items[:30],
         "backlog_before": int(backlog_before_info.get("backlog_count") or 0),
         "backlog_remaining": backlog_remaining,
         "backlog_before_info": backlog_before_info,
         "backlog_after_info": backlog_after_info,
+        "backlog_interpretation": interpretation,
     }
 
 
@@ -4937,9 +5159,24 @@ def main() -> int:
             summarize_max = int(payload.get("summarize_max", JDG_API_DAY_SUMMARY_MAX))
         except Exception:
             summarize_max = JDG_API_DAY_SUMMARY_MAX
+        summary_mode = str(payload.get("summary_mode") or JDG_API_DAY_SUMMARY_MODE or "llm")
+        skip_assets = payload.get("skip_assets")
+        if skip_assets is None:
+            skip_assets = payload.get("skip_asset_downloads")
+        vector_ingest = payload.get("vector_ingest")
+        if vector_ingest is None:
+            vector_ingest = payload.get("vector")
         force = bool(payload.get("force", False))
         notify = bool(payload.get("notify", False))
-        r = official_api_day_process(max_docs=max_docs, summarize_max=summarize_max, force=force, notify=notify)
+        r = official_api_day_process(
+            max_docs=max_docs,
+            summarize_max=summarize_max,
+            summary_mode=summary_mode,
+            skip_assets=skip_assets if skip_assets is not None else None,
+            vector_ingest=vector_ingest if vector_ingest is not None else None,
+            force=force,
+            notify=notify,
+        )
         return _ok(r)
 
     if task.startswith("official_api_auto") or task.startswith("裁判API自動模式"):
