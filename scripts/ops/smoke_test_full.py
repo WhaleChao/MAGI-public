@@ -632,6 +632,106 @@ def test_ci_pipeline():
 
 
 # ══════════════════════════════════════════════════════════════
+# 14. OPS LIVE GUARDS
+# ══════════════════════════════════════════════════════════════
+
+def _run_cmd(cmd: list[str], timeout: int = 10, cwd: Optional[Path] = None) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        cmd,
+        cwd=str(cwd or MAGI_ROOT),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        timeout=timeout,
+        check=False,
+    )
+
+def _process_lines(pattern: str) -> list[str]:
+    proc = _run_cmd(["pgrep", "-fl", pattern], timeout=3)
+    if proc.returncode not in (0, 1):
+        return []
+    return [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+
+def test_judicial_api_pipeline_health():
+    checker = MAGI_ROOT / "scripts" / "ops" / "check_judicial_api_pipeline.py"
+    if not checker.exists():
+        return False, "check_judicial_api_pipeline.py missing"
+    proc = _run_cmd([sys.executable, str(checker), "--json"], timeout=90)
+    try:
+        data = json.loads(proc.stdout)
+    except Exception:
+        if not os.environ.get("MAGI_JUDICIAL_API_USER") and not os.environ.get("JUDICIAL_API_USER"):
+            return True, "Judicial API not configured in this environment"
+        return False, (proc.stderr or proc.stdout)[:120]
+    status = data.get("status")
+    backlog = data.get("backlog") if isinstance(data.get("backlog"), dict) else {}
+    ok = proc.returncode == 0 and status == "PIPELINE_HEALTHY"
+    return ok, f"{status}; backlog={backlog.get('backlog_count', '-')}"
+
+def test_omlx_aux_models_available():
+    ports = {
+        "embed": "8081",
+        "phi4": "8082",
+        "smol": "8083",
+    }
+    results = []
+    for name, port in ports.items():
+        try:
+            code, body = _http_get(f"http://127.0.0.1:{port}/v1/models", timeout=3)
+            data = json.loads(body)
+            count = len(data.get("data", [])) if isinstance(data.get("data"), list) else 0
+            results.append(f"{name}:{count}")
+        except Exception:
+            if os.environ.get("MAGI_REQUIRE_ALL_OMLX_MODELS", "0").lower() in {"1", "true", "yes"}:
+                results.append(f"{name}:down")
+            else:
+                results.append(f"{name}:optional")
+    ok = all(not item.endswith(":down") for item in results)
+    return ok, ", ".join(results)
+
+def test_mlx_mtp_sidecar_health():
+    try:
+        code, body = _http_get("http://127.0.0.1:8090/health", timeout=3)
+        data = json.loads(body)
+        ok = code == 200 and bool(data.get("ok", True))
+        model = data.get("model") or "-"
+        draft = data.get("draft_model") or "-"
+        return ok, f"model={model}; draft={draft}"
+    except Exception as e:
+        if os.environ.get("MAGI_REQUIRE_MLX_MTP", "1").lower() in {"0", "false", "no"}:
+            return True, "MLX MTP optional"
+        return False, str(e)[:120]
+
+def test_menubar_process_running():
+    lines = _process_lines(r"gui/magi_menubar.py")
+    if lines:
+        return True, f"{len(lines)} process"
+    if sys.platform != "darwin" or os.environ.get("CI"):
+        return True, "not a desktop live environment"
+    if os.environ.get("MAGI_REQUIRE_MENUBAR", "1").lower() in {"0", "false", "no"}:
+        return True, "menubar optional"
+    return False, "magi_menubar.py not running"
+
+def test_nas_lumi_mount_guard():
+    candidates = [
+        Path(os.environ.get("MAGI_LUMI_MOUNT", "")),
+        Path("/Volumes/homes"),
+        Path("/Volumes/lumi"),
+    ]
+    existing = [str(path) for path in candidates if str(path) != "." and path.exists()]
+    if existing:
+        return True, "mounted: " + ", ".join(existing[:3])
+    if os.environ.get("MAGI_REQUIRE_NAS_MOUNT", "0").lower() in {"1", "true", "yes"}:
+        return False, "LUMI/NAS mount not found"
+    return True, "NAS mount optional in this environment"
+
+def test_no_desktop_git_add_noise():
+    lines = _process_lines(r"git add --")
+    noisy = [line for line in lines if "/Users/ai/Desktop" in line or ".openclaw_archived" in line or "Paperclip_rebuild" in line]
+    return not noisy, "no noisy git add" if not noisy else noisy[0][:160]
+
+
+# ══════════════════════════════════════════════════════════════
 # MAIN
 # ══════════════════════════════════════════════════════════════
 
@@ -767,6 +867,16 @@ def main():
     run_test(".gitignore coverage", "hygiene", test_gitignore_coverage)
     run_test("LICENSE exists", "hygiene", test_license_exists)
     run_test("CI pipeline", "hygiene", test_ci_pipeline)
+    print()
+
+    # ── 14. Ops Live Guards ──
+    print("── 14. Ops Live Guards ──")
+    run_test("Judicial API pipeline healthy", "ops", test_judicial_api_pipeline_health)
+    run_test("Auxiliary oMLX models", "ops", test_omlx_aux_models_available)
+    run_test("MLX MTP sidecar health", "ops", test_mlx_mtp_sidecar_health)
+    run_test("Menubar process running", "ops", test_menubar_process_running)
+    run_test("NAS LUMI mount guard", "ops", test_nas_lumi_mount_guard)
+    run_test("No Desktop git-add noise", "ops", test_no_desktop_git_add_noise)
     print()
 
     # ── Cleanup ──
