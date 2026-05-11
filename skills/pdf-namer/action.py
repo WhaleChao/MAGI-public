@@ -734,6 +734,20 @@ def _ocr_image_bytes_tesseract(img_bytes: bytes, timeout_sec: int = 6, psm: int 
         with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
             tmp_path = f.name
             f.write(img_bytes)
+        try:
+            from skills.engine.ocr import tesseract_provider
+
+            result = tesseract_provider.run(
+                tmp_path,
+                langs="chi_tra+eng",
+                psm=int(psm or 6),
+                task_type="legal",
+                timeout_sec=max(2, int(timeout_sec)),
+            )
+            if result and result.success:
+                return (result.corrected_text or result.raw_text or "").strip()
+        except Exception:
+            pass
         cmd = [
             "tesseract",
             tmp_path,

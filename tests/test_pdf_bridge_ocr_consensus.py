@@ -72,6 +72,20 @@ def _make_subprocess_result(stdout: str = "tesseract_text", returncode: int = 0)
     return m
 
 
+def _make_provider_result(text: str = "provider_tesseract_text"):
+    """模擬 shared tesseract provider 的回傳值。"""
+    from skills.engine.ocr.ocr_schema import OCRProviderResult
+
+    return OCRProviderResult(
+        success=True,
+        provider="tesseract",
+        raw_text=text,
+        corrected_text=text,
+        quality_score=0.8,
+        duration_sec=0.01,
+    )
+
+
 # ---------------------------------------------------------------------------
 # fixtures
 # ---------------------------------------------------------------------------
@@ -304,7 +318,8 @@ class TestFlagOff:
             m.stderr = ""
             return m
 
-        with patch("subprocess.run", side_effect=_sp_side_effect):
+        with patch("subprocess.run", side_effect=_sp_side_effect), \
+             patch("skills.engine.ocr.tesseract_provider.run", return_value=_make_provider_result("legacy_tesseract_output\n")):
             text, pages = pdf_bridge._extract_text_ocr(str(fake_pdf), max_pages=1)
 
         assert "legacy_tesseract_output" in text
@@ -397,6 +412,7 @@ class TestConsensusEnable:
             raise RuntimeError("consensus engine crashed")
 
         with patch("subprocess.run", side_effect=_sp_side_effect), \
+             patch("skills.engine.ocr.tesseract_provider.run", return_value=_make_provider_result("FALLBACK_LEGACY_TEXT")), \
              patch("skills.engine.ocr.consensus.run_consensus", side_effect=_failing_consensus):
             text, pages = pdf_bridge._extract_text_ocr(str(fake_pdf), max_pages=1)
 
@@ -448,6 +464,7 @@ class TestShadowMode:
         mock_consensus = MagicMock(return_value=consensus_result)
 
         with patch("subprocess.run", side_effect=_sp_side_effect), \
+             patch("skills.engine.ocr.tesseract_provider.run", return_value=_make_provider_result("SHADOW_LEGACY_TEXT")), \
              patch("skills.engine.ocr.consensus.run_consensus", mock_consensus):
             text, pages = pdf_bridge._extract_text_ocr(str(fake_pdf), max_pages=1)
 

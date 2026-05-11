@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 from unittest.mock import patch
 
@@ -87,6 +88,36 @@ def test_tesseract_provider_uses_preprocessed_when_quality_improves(mock_check, 
     assert result.success is True
     assert "臺灣花蓮地方法院" in result.raw_text
     assert mock_run.call_count == 2
+
+
+@patch("skills.engine.ocr.tesseract_provider.run")
+def test_pdf_namer_tesseract_bytes_uses_shared_provider(mock_provider, tmp_path):
+    import importlib.util
+    from skills.engine.ocr.ocr_schema import OCRProviderResult
+
+    skill_dir = Path(__file__).resolve().parent.parent / "skills" / "pdf-namer"
+    spec = importlib.util.spec_from_file_location("pdf_namer_ocr_provider_test", skill_dir / "action.py")
+    mod = importlib.util.module_from_spec(spec)
+    sys_path_added = False
+    if str(skill_dir) not in sys.path:
+        sys.path.insert(0, str(skill_dir))
+        sys_path_added = True
+    try:
+        spec.loader.exec_module(mod)  # type: ignore[union-attr]
+        mock_provider.return_value = OCRProviderResult(
+            success=True,
+            provider="tesseract",
+            raw_text="shared provider text",
+            corrected_text="shared provider text",
+        )
+        assert mod._ocr_image_bytes_tesseract(b"\x89PNG\r\n", timeout_sec=2, psm=6) == "shared provider text"
+        assert mock_provider.called
+    finally:
+        if sys_path_added:
+            try:
+                sys.path.remove(str(skill_dir))
+            except ValueError:
+                pass
 
 
 @patch("skills.engine.ocr.tesseract_provider._safe_run")

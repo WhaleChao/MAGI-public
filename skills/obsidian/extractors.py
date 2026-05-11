@@ -249,11 +249,6 @@ def _extract_pdf_ocr(path: Path, page_count_hint: Optional[int] = None) -> Optio
         in {"1", "true", "yes", "on"}
     )
 
-    # Check tesseract availability (needed for both legacy and consensus paths)
-    if not shutil.which("tesseract"):
-        logger.debug("tesseract not found on PATH; skipping OCR fallback for %s", path)
-        return None
-
     try:
         import fitz
     except ImportError:
@@ -299,7 +294,8 @@ def _extract_pdf_ocr(path: Path, page_count_hint: Optional[int] = None) -> Optio
         import tempfile
         tmp_path = None
         try:
-            from skills.engine.ocr import consensus as _ocr_mod
+            import importlib
+            _ocr_mod = importlib.import_module("skills.engine.ocr.consensus")
             fd, tmp_path = tempfile.mkstemp(suffix=".png")
             try:
                 os.write(fd, img_data_bytes)
@@ -321,22 +317,35 @@ def _extract_pdf_ocr(path: Path, page_count_hint: Optional[int] = None) -> Optio
                 except OSError:
                     pass
 
-    # --- single-page legacy OCR (original logic) ------------------------------
+    # --- single-page legacy OCR (now through shared MAGI provider) ------------
     def _legacy_ocr_page(png_data):
+        import tempfile
+        tmp_path = None
         try:
-            proc = subprocess.run(
-                ["tesseract", "-", "-", "-l", "chi_tra+eng"],
-                input=png_data,
-                capture_output=True,
-                timeout=60,
+            from skills.engine.ocr import tesseract_provider
+
+            fd, tmp_path = tempfile.mkstemp(suffix=".png")
+            try:
+                os.write(fd, png_data)
+            finally:
+                os.close(fd)
+            result = tesseract_provider.run(
+                tmp_path,
+                langs="chi_tra+eng",
+                task_type="legal",
+                timeout_sec=60,
             )
-            if proc.returncode == 0:
-                return proc.stdout.decode("utf-8", errors="replace").strip()
-            return None
-        except subprocess.TimeoutExpired:
-            return None
+            if result and result.success:
+                return (result.corrected_text or result.raw_text or "").strip()
+            return ""
         except Exception:
-            return None
+            return ""
+        finally:
+            if tmp_path:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
 
     try:
         import hashlib as _hashlib
@@ -354,27 +363,9 @@ def _extract_pdf_ocr(path: Path, page_count_hint: Optional[int] = None) -> Optio
 
             if not _consensus_enable:
                 # --- flag off: pure legacy path (zero change) ---
-                try:
-                    proc = subprocess.run(
-                        ["tesseract", "-", "-", "-l", "chi_tra+eng"],
-                        input=png_data,
-                        capture_output=True,
-                        timeout=60,
-                    )
-                    if proc.returncode == 0:
-                        text = proc.stdout.decode("utf-8", errors="replace").strip()
-                        if text:
-                            ocr_texts.append(text)
-                    else:
-                        logger.debug(
-                            "tesseract returned %d for page %d of %s: %s",
-                            proc.returncode, i + 1, path,
-                            proc.stderr.decode("utf-8", errors="replace")[:200],
-                        )
-                except subprocess.TimeoutExpired:
-                    logger.warning("tesseract timed out on page %d of %s", i + 1, path)
-                except Exception as e:
-                    logger.debug("tesseract error on page %d of %s: %s", i + 1, path, e)
+                text = _legacy_ocr_page(png_data)
+                if text:
+                    ocr_texts.append(text)
             else:
                 # --- flag on: consensus path, fallback to legacy ---
                 img_hash = _hashlib.sha256(png_data).hexdigest()[:16]

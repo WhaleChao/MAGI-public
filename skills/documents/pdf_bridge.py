@@ -616,6 +616,23 @@ def _extract_text_ocr(pdf_path: str, max_pages: int, ocr_page_limit: Optional[in
         def _ocr_single_page_legacy(page_num, img_path):
             """既有 OCR 路徑（Tesseract + Vision upgrade）。"""
             def _tess(path: Path) -> str:
+                try:
+                    from skills.engine.ocr import tesseract_provider
+
+                    provider_result = tesseract_provider.run(
+                        str(path),
+                        langs=langs,
+                        psm=int(psm or 6),
+                        task_type="legal",
+                        timeout_sec=tess_timeout,
+                    )
+                    if provider_result and provider_result.success:
+                        return _normalize_extracted_text(
+                            provider_result.corrected_text or provider_result.raw_text or ""
+                        )
+                except Exception as exc:
+                    logger.debug("PDF OCR shared tesseract_provider unavailable: %s", exc)
+
                 ocr = subprocess.run(
                     [
                         tesseract_bin,
