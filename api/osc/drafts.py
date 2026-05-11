@@ -328,7 +328,7 @@ def _osc_build_draft_context(payload: dict) -> dict:
     reference_style, references, warnings = _osc_collect_draft_reference_style(body)
     custom_template = _osc_get_setting_value("draft_prompt_template", "").strip()
     template = custom_template if custom_template else _get_draft_prompt_template()
-    learning_guidance = learning_guidance_for_prompt(doc_type=doc_type, case_number=case_number)
+    learning_guidance = learning_guidance_for_prompt(doc_type=doc_type, case_number=case_number, reason=reason)
     values = {
         "doc_type": doc_type or "(未指定)",
         "case_number": case_number or "(待填)",

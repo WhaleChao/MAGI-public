@@ -39,6 +39,10 @@ def _one_line(text: str, limit: int = 120) -> str:
     return value[: limit - 1].rstrip() + "…"
 
 
+def _norm_key(text: str) -> str:
+    return re.sub(r"[\s　,，、。．.／/\\|｜:：;；()（）【】\[\]「」『』\"']", "", str(text or ""))
+
+
 def _diff_lessons(original: str, corrected: str, limit: int = 10) -> list[dict]:
     original_lines = [x.strip() for x in original.splitlines() if x.strip()]
     corrected_lines = [x.strip() for x in corrected.splitlines() if x.strip()]
@@ -136,31 +140,44 @@ def draft_learning_summary() -> dict:
     events = _iter_events(300)
     by_doc: dict[str, int] = {}
     by_case: dict[str, int] = {}
+    by_reason: dict[str, int] = {}
     for event in events:
         doc = str(event.get("doc_type") or "未指定")
         case = str(event.get("case_number") or "未指定")
+        reason = str(event.get("reason") or "未指定")
         by_doc[doc] = by_doc.get(doc, 0) + 1
         by_case[case] = by_case.get(case, 0) + 1
+        by_reason[reason] = by_reason.get(reason, 0) + 1
     return {
         "count": len(events),
         "latest_at": events[0].get("created_at") if events else "",
         "by_doc_type": by_doc,
         "by_case_number": by_case,
+        "by_reason": by_reason,
     }
 
 
-def learning_guidance_for_prompt(doc_type: str = "", case_number: str = "", limit: int = 5) -> str:
+def learning_guidance_for_prompt(doc_type: str = "", case_number: str = "", reason: str = "", limit: int = 5) -> str:
     doc = str(doc_type or "").strip()
     case = str(case_number or "").strip()
+    reason_key = _norm_key(reason)
     events = _iter_events(120)
     scored: list[tuple[int, float, dict]] = []
     now = time.time()
     for idx, event in enumerate(events):
+        event_case = str(event.get("case_number") or "").strip()
+        event_reason_key = _norm_key(event.get("reason") or "")
+        same_case = bool(case and event_case and event_case == case)
+        same_reason = bool(reason_key and event_reason_key and event_reason_key == reason_key)
+        if not same_case and not same_reason:
+            continue
         score = 0
+        if same_case:
+            score += 10
+        if same_reason:
+            score += 8
         if doc and str(event.get("doc_type") or "") == doc:
             score += 4
-        if case and str(event.get("case_number") or "") == case:
-            score += 3
         score += max(0, 2 - idx // 20)
         scored.append((score, now - idx, event))
     picked = [x[2] for x in sorted(scored, key=lambda x: (-x[0], -x[1]))[:limit]]
