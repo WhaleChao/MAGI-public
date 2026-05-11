@@ -93,6 +93,36 @@ def test_saas_overview_exposes_ten_capabilities(monkeypatch, tmp_path):
         "client_portal",
         "operations_report",
     }
+    assert result["integration"]["principle"].startswith("事務所營運工作台只做跨模組總控")
+    assert all(x.get("owner") and x.get("source") and x.get("role") for x in result["capabilities"])
+    assert {x["target_tab"] for x in result["integration"]["items"]} >= {"todos", "clients", "documents", "drafts"}
+
+
+def test_risk_dashboard_marks_source_module():
+    from api.osc import saas_workbench
+
+    def fake_exec(sql, params=(), fetch="all"):
+        if "FROM case_todos" in sql:
+            return (
+                [
+                    {
+                        "id": 1,
+                        "case_number": "2026-0001",
+                        "client_name": "王小明",
+                        "todo_type": "開庭",
+                        "todo_date": "2026-05-01",
+                        "description": "準備資料",
+                        "status": "",
+                    }
+                ],
+                None,
+            )
+        return ([], None)
+
+    result = saas_workbench.build_risk_dashboard(fake_exec, limit=5)
+
+    assert result["items"][0]["owner"] == "待辦事項"
+    assert result["items"][0]["target_tab"] == "todos"
 
 
 @pytest.fixture

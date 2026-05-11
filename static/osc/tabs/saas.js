@@ -26,6 +26,7 @@ async function loadSaasWorkbench() {
 function renderSaasWorkbench() {
     const data = state.saas.overview || {};
     renderSaasCapabilities(data.capabilities || []);
+    renderSaasIntegration(data.integration || {});
     renderSaasRisk(data.risk || {});
     renderSaasOps(data.operations || {}, data.audit || {});
     renderSaasTimeline(data.timeline || {});
@@ -40,19 +41,39 @@ function renderSaasCapabilities(items) {
         <div class="stat-card">
             <div class="stat-label">${esc(x.title)}</div>
             <div class="stat-value" style="font-size:16px;">${saasBadge(x.status)}</div>
+            <div class="muted" style="margin-top:6px;">主體：${esc(x.owner || "既有模組")}</div>
+            <div class="muted">${esc(shortText(x.role || "", 72))}</div>
+            ${x.tab && x.tab !== "saasWorkbench" ? `<button class="btn slim" style="margin-top:8px;" data-act="tab-jump" data-tab="${esc(x.tab)}">進入原功能</button>` : ""}
         </div>
     `).join("");
 }
 
+function renderSaasIntegration(integration) {
+    const note = document.getElementById("saasIntegrationNote");
+    if (note) note.textContent = integration.principle || "事務所營運工作台只做跨模組總控。";
+    const host = document.getElementById("saasIntegrationGrid");
+    if (!host) return;
+    const items = integration.items || [];
+    host.innerHTML = items.length ? items.map(x => `
+        <div class="stat-card">
+            <div class="stat-label">${esc(x.area || "")}</div>
+            <div class="stat-value" style="font-size:15px;">${esc(x.mode || "")}</div>
+            <div class="muted" style="margin-top:6px;">來源：${esc(x.source || "")}</div>
+            ${x.target_tab ? `<button class="btn slim" style="margin-top:8px;" data-act="tab-jump" data-tab="${esc(x.target_tab)}">回原模組</button>` : ""}
+        </div>
+    `).join("") : `<div class="muted">尚未載入整合關係。</div>`;
+}
+
 function renderSaasRisk(risk) {
     const rows = (risk.items || []).map(x => `<tr>
+        <td>${esc(x.owner || x.type || "")}</td>
         <td>${esc(x.severity || "")}</td>
         <td style="white-space:nowrap">${esc(x.date || "")}</td>
         <td style="white-space:nowrap">${esc(x.case_number || "")}</td>
         <td>${esc(shortText(x.title || "", 42))}</td>
         <td>${esc(shortText(x.reason || x.detail || "", 70))}</td>
     </tr>`);
-    renderSimpleRows("saasRiskBody", rows, 5, "目前沒有風險項目");
+    renderSimpleRows("saasRiskBody", rows, 6, "目前沒有風險項目");
 }
 
 function renderSaasOps(ops, audit) {

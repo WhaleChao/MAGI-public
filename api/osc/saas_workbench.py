@@ -1,4 +1,4 @@
-"""SaaS-style control plane helpers for OSC/Paperclip.
+"""Office operations control-plane helpers for OSC/Paperclip.
 
 The workbench deliberately reuses existing OSC tables and runtime JSONL files.
 It adds a unified operating layer without forcing a DB migration on the user's
@@ -25,16 +25,105 @@ MAX_TEXT = 60000
 ExecFn = Callable[..., tuple[Any, Any]]
 
 CAPABILITIES = [
-    {"key": "learning_center", "title": "修正學習中心", "status": "enabled"},
-    {"key": "quality_gate", "title": "品質/幻覺審核層", "status": "enabled"},
-    {"key": "risk_dashboard", "title": "期限與風險儀表板", "status": "enabled"},
-    {"key": "document_timeline", "title": "文件證據索引 / 事實時間線", "status": "enabled"},
-    {"key": "external_packet", "title": "對外文件產生包", "status": "enabled"},
-    {"key": "intake_funnel", "title": "收案 / 諮詢漏斗", "status": "enabled"},
-    {"key": "conflict_check", "title": "利益衝突檢查", "status": "enabled"},
-    {"key": "client_portal", "title": "客戶 / 當事人入口", "status": "packet_mode"},
-    {"key": "light_audit", "title": "輕量權限與高風險操作紀錄", "status": "high_risk_only"},
-    {"key": "operations_report", "title": "營運報表", "status": "enabled"},
+    {
+        "key": "learning_center",
+        "title": "修正學習中心",
+        "status": "enabled",
+        "owner": "AI 草擬",
+        "tab": "drafts",
+        "source": "draft_learning JSONL",
+        "role": "彙整既有人工改正，不另建第二套學習庫",
+    },
+    {
+        "key": "quality_gate",
+        "title": "品質/幻覺審核層",
+        "status": "enabled",
+        "owner": "AI 草擬",
+        "tab": "drafts",
+        "source": "書狀輸出文字與來源文件",
+        "role": "作為草擬輸出前的審核層",
+    },
+    {
+        "key": "risk_dashboard",
+        "title": "期限與風險儀表板",
+        "status": "enabled",
+        "owner": "待辦事項 / 行事曆 / 法扶管理",
+        "tab": "todos",
+        "source": "case_todos、calendar_events、cases",
+        "role": "只聚合既有待辦、行程與法扶案件狀態",
+    },
+    {
+        "key": "document_timeline",
+        "title": "文件證據索引 / 事實時間線",
+        "status": "enabled",
+        "owner": "書狀索引",
+        "tab": "documents",
+        "source": "document_index",
+        "role": "沿用書狀索引，不另掃資料夾",
+    },
+    {
+        "key": "external_packet",
+        "title": "對外文件產生包",
+        "status": "enabled",
+        "owner": "案件列表 / 應備事項表",
+        "tab": "cases",
+        "source": "cases 與既有 checklist 邏輯",
+        "role": "輸出可複製文字，不取代正式案件資料",
+    },
+    {
+        "key": "intake_funnel",
+        "title": "收案 / 諮詢漏斗",
+        "status": "enabled",
+        "owner": "事務所營運",
+        "tab": "saasWorkbench",
+        "source": "runtime intake JSONL",
+        "role": "原本沒有正式收案前入口，僅保留諮詢紀錄；轉正式案件後仍進 cases",
+    },
+    {
+        "key": "conflict_check",
+        "title": "利益衝突檢查",
+        "status": "enabled",
+        "owner": "當事人 / 對造 / 案件列表",
+        "tab": "clients",
+        "source": "clients、opponents、cases",
+        "role": "查既有當事人、對造與案件，不另建名冊",
+    },
+    {
+        "key": "client_portal",
+        "title": "客戶 / 當事人入口",
+        "status": "packet_mode",
+        "owner": "案件列表 / 應備事項表",
+        "tab": "cases",
+        "source": "cases 與 checklist",
+        "role": "目前只開資料包模式，公開上傳入口保留但不啟用",
+    },
+    {
+        "key": "light_audit",
+        "title": "輕量權限與高風險操作紀錄",
+        "status": "high_risk_only",
+        "owner": "系統設定",
+        "tab": "admin",
+        "source": "activity_logs",
+        "role": "只顯示刪除、歸檔、搬移、匯出、分享等高風險紀錄",
+    },
+    {
+        "key": "operations_report",
+        "title": "營運報表",
+        "status": "enabled",
+        "owner": "業務概覽",
+        "tab": "dashboard",
+        "source": "OSC 既有資料表彙總",
+        "role": "補強概覽，不取代各模組明細頁",
+    },
+]
+
+INTEGRATION_MATRIX = [
+    {"area": "期限與風險", "source": "待辦事項、行事曆、法扶管理", "target_tab": "todos", "mode": "聚合顯示"},
+    {"area": "利益衝突", "source": "當事人、對造、案件列表", "target_tab": "clients", "mode": "查詢既有資料"},
+    {"area": "文件時間線", "source": "書狀索引", "target_tab": "documents", "mode": "引用索引"},
+    {"area": "修正學習", "source": "AI 草擬的人工改正紀錄", "target_tab": "drafts", "mode": "彙整顯示"},
+    {"area": "對外資料包", "source": "案件資料與應備事項", "target_tab": "cases", "mode": "產生可複製文字"},
+    {"area": "高風險紀錄", "source": "系統活動紀錄", "target_tab": "admin", "mode": "只開高風險稽核"},
 ]
 
 
@@ -109,6 +198,8 @@ def _risk_from_todo(row: dict, today: date) -> dict:
     return {
         "type": "todo",
         "severity": severity,
+        "owner": "待辦事項",
+        "target_tab": "todos",
         "reason": reason,
         "case_number": row.get("case_number") or "",
         "client_name": row.get("client_name") or "",
@@ -139,6 +230,8 @@ def _risk_from_calendar(row: dict, today: date) -> dict:
     return {
         "type": "calendar",
         "severity": severity,
+        "owner": "行事曆",
+        "target_tab": "calendar",
         "reason": reason,
         "case_number": row.get("case_number") or "",
         "client_name": "",
@@ -197,6 +290,8 @@ def build_risk_dashboard(exec_fn: ExecFn, *, limit: int = 30) -> dict:
             risks.append({
                 "type": "laf",
                 "severity": "high",
+                "owner": "法扶管理",
+                "target_tab": "laf",
                 "reason": f"法扶進行中 {age} 天，需確認進度/報結",
                 "case_number": row.get("case_number") or "",
                 "client_name": row.get("client_name") or "",
@@ -529,6 +624,10 @@ def build_saas_overview(exec_fn: ExecFn, *, case_number: str = "") -> dict:
     return {
         "ok": True,
         "capabilities": CAPABILITIES,
+        "integration": {
+            "principle": "事務所營運工作台只做跨模組總控；資料主體仍在既有模組，避免疊床架屋。",
+            "items": INTEGRATION_MATRIX,
+        },
         "risk": risk,
         "timeline": timeline,
         "operations": ops,

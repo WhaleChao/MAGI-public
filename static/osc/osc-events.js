@@ -130,6 +130,7 @@ async function dispatchDelegatedAction(act, t) {
     if (act === "case-doc-finalize-search") return await refreshCaseDocumentFinalizer(id);
     if (act === "case-doc-index") return await openCaseDocumentIndex(t.dataset.case || "");
     if (act === "case-address-label") return addressLabelDialog(id);
+    if (act === "tab-jump") return jumpToPaperclipTab(t.dataset.tab || t.dataset.tabJump || "");
     if (act === "case-magi-tab") return jumpToPaperclipTab(t.dataset.tab || "");
     if (act === "case-magi-command") return await runCaseMagiPreset(t.dataset.command || "", t.dataset.label || t.textContent.trim(), t.dataset.context === "1", t);
 

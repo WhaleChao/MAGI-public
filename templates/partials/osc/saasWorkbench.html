@@ -3,7 +3,7 @@
                 <div class="section-head">
                     <div>
                         <h3>事務所營運工作台</h3>
-                        <div class="section-note">把學習、風險、收案、衝突、文件時間線、對外資料包與營運報表收在同一處。</div>
+                        <div class="section-note">這裡是跨模組總控；資料主體仍在案件、待辦、行事曆、法扶、書狀索引與 AI 草擬，避免重複建一套。</div>
                     </div>
                     <div class="inline-actions">
                         <input id="saasCaseNumber" placeholder="案件編號 / 法院案號">
@@ -14,17 +14,33 @@
                 <div class="summary-grid" id="saasCapabilityGrid"></div>
             </div>
 
+            <div class="card">
+                <div class="section-head">
+                    <div>
+                        <h3>功能整合關係</h3>
+                        <div class="section-note">每個區塊都標示原始模組；需要細修時直接回到原功能操作。</div>
+                    </div>
+                </div>
+                <div id="saasIntegrationNote" class="status-banner">載入整合關係中。</div>
+                <div class="summary-grid" id="saasIntegrationGrid"></div>
+            </div>
+
             <div class="grid-2">
                 <div class="card">
                     <div class="section-head">
                         <div>
                             <h3>期限與風險</h3>
-                            <div class="section-note">以逾期、近日到期、法扶長期未結等風險排序。</div>
+                            <div class="section-note">來源：待辦事項、行事曆、法扶管理。這裡只排序提醒，明細仍回原模組處理。</div>
+                        </div>
+                        <div class="inline-actions">
+                            <button class="btn" data-act="tab-jump" data-tab="todos">待辦事項</button>
+                            <button class="btn" data-act="tab-jump" data-tab="calendar">行事曆</button>
+                            <button class="btn" data-act="tab-jump" data-tab="laf">法扶管理</button>
                         </div>
                     </div>
                     <div class="table-wrap">
                         <table>
-                            <thead><tr><th>風險</th><th>日期</th><th>案件</th><th>事項</th><th>原因</th></tr></thead>
+                            <thead><tr><th>來源</th><th>風險</th><th>日期</th><th>案件</th><th>事項</th><th>原因</th></tr></thead>
                             <tbody id="saasRiskBody"></tbody>
                         </table>
                     </div>
@@ -33,8 +49,9 @@
                     <div class="section-head">
                         <div>
                             <h3>營運報表</h3>
-                            <div class="section-note">不含計時，聚焦案件、待辦、文件、法扶與自動化成效。</div>
+                            <div class="section-note">來源：業務概覽與既有 OSC 資料表。不含計時。</div>
                         </div>
+                        <button class="btn" data-act="tab-jump" data-tab="dashboard">業務概覽</button>
                     </div>
                     <div class="summary-grid" id="saasOpsGrid"></div>
                     <div class="selection-list" id="saasAuditList" style="margin-top:12px;"></div>
@@ -46,9 +63,13 @@
                     <div class="section-head">
                         <div>
                             <h3>利益衝突檢查</h3>
-                            <div class="section-note">建立新案前先查當事人、對造、關係人、公司、電話與 Email。</div>
+                            <div class="section-note">來源：當事人、對造、案件列表。只查既有名冊，不另建衝突名冊。</div>
                         </div>
-                        <button class="btn primary" id="saasConflictBtn">檢查</button>
+                        <div class="inline-actions">
+                            <button class="btn" data-act="tab-jump" data-tab="clients">當事人</button>
+                            <button class="btn" data-act="tab-jump" data-tab="cases">案件列表</button>
+                            <button class="btn primary" id="saasConflictBtn">檢查</button>
+                        </div>
                     </div>
                     <div class="field-grid cols-2">
                         <div class="field"><label for="saasConflictClient">當事人</label><input id="saasConflictClient"></div>
@@ -85,9 +106,12 @@
                     <div class="section-head">
                         <div>
                             <h3>品質 / 幻覺審核</h3>
-                            <div class="section-note">檢查假案號、內部案號外洩、提示詞外洩、待確認欄位與引用來源。</div>
+                            <div class="section-note">來源：AI 草擬。這裡是輸出前審核；正式書狀生成仍在 AI 草擬頁處理。</div>
                         </div>
-                        <button class="btn primary" id="saasQualityBtn">檢查文字</button>
+                        <div class="inline-actions">
+                            <button class="btn" data-act="tab-jump" data-tab="drafts">AI 草擬</button>
+                            <button class="btn primary" id="saasQualityBtn">檢查文字</button>
+                        </div>
                     </div>
                     <div class="field-grid cols-2">
                         <div class="field"><label for="saasQualityCase">案號</label><input id="saasQualityCase"></div>
@@ -103,9 +127,13 @@
                     <div class="section-head">
                         <div>
                             <h3>對外資料包 / 客戶入口</h3>
-                            <div class="section-note">目前以可複製資料包模式運作，公開上傳入口保留設計但預設不開啟。</div>
+                            <div class="section-note">來源：案件資料與應備事項表。只產生可複製文字，不取代案件或法扶清單。</div>
                         </div>
-                        <button class="btn primary" id="saasPacketBtn">產生資料包</button>
+                        <div class="inline-actions">
+                            <button class="btn" data-act="tab-jump" data-tab="cases">案件列表</button>
+                            <button class="btn" data-act="tab-jump" data-tab="laf">法扶管理</button>
+                            <button class="btn primary" id="saasPacketBtn">產生資料包</button>
+                        </div>
                     </div>
                     <div class="field-grid cols-2">
                         <div class="field"><label for="saasPacketCase">案件編號</label><input id="saasPacketCase"></div>
@@ -125,8 +153,9 @@
                     <div class="section-head">
                         <div>
                             <h3>文件證據時間線</h3>
-                            <div class="section-note">從書狀索引抓出文件、證據與程序資料，供書狀與附件清單使用。</div>
+                            <div class="section-note">來源：書狀索引。這裡只做時間線視圖，不重掃、不重建文件資料。</div>
                         </div>
+                        <button class="btn" data-act="tab-jump" data-tab="documents">書狀索引</button>
                     </div>
                     <div class="table-wrap">
                         <table>
@@ -139,8 +168,9 @@
                     <div class="section-head">
                         <div>
                             <h3>修正學習中心</h3>
-                            <div class="section-note">彙整人工改正紀錄；跨案使用須同案由，避免混亂記憶。</div>
+                            <div class="section-note">來源：AI 草擬的人工改正紀錄；跨案使用須同案由，避免混亂記憶。</div>
                         </div>
+                        <button class="btn" data-act="tab-jump" data-tab="drafts">AI 草擬</button>
                     </div>
                     <div id="saasLearningList" class="selection-list"></div>
                 </div>
