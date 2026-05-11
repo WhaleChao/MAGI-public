@@ -512,6 +512,9 @@ function bindEvents() {
     document.getElementById("draftGenerateBtn").addEventListener("click", () => generateDraft().catch(reportDraftError));
     document.getElementById("draftCopyBtn").addEventListener("click", () => copyDraftResult().catch(reportDraftError));
     document.getElementById("draftExportBtn").addEventListener("click", () => exportDraftResult().catch(reportDraftError));
+    document.getElementById("draftFeedbackRefreshBtn").addEventListener("click", () => loadDraftFeedback().catch(reportDraftError));
+    document.getElementById("draftFeedbackSaveBtn").addEventListener("click", () => submitDraftFeedback().catch(reportDraftError));
+    document.getElementById("draftResult").addEventListener("input", updateDraftCharCount);
     document.getElementById("draftClearBtn").addEventListener("click", clearDraftResult);
     document.getElementById("draftDocType").addEventListener("change", () => {
         if (!(document.getElementById("draftSuggestedName").value || "").trim()) {

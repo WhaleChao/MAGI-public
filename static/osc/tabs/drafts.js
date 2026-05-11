@@ -67,6 +67,7 @@ async function loadDraftMeta() {
         const docTypes = data.doc_types || [];
         select.innerHTML = [`<option value="">請選擇書狀類型</option>`, ...docTypes.map(v => `<option value="${esc(v)}">${esc(v)}</option>`)].join("");
         if (current && docTypes.includes(current)) select.value = current;
+        await loadDraftFeedback();
         setDraftStatus("已同步草擬設定。");
     });
 }
@@ -239,6 +240,8 @@ async function previewDraftPrompt() {
         const text = data.prompt_preview || "";
         document.getElementById("draftResult").value = text;
         state.draft.result = text;
+        state.draft.originalResult = "";
+        state.draft.resultMode = "preview";
         updateDraftCharCount();
         setDraftModeIndicator("preview");
         const warningCount = (data.warnings || []).length;
@@ -254,6 +257,11 @@ async function generateDraft() {
         const text = data.draft_text || "";
         document.getElementById("draftResult").value = text;
         state.draft.result = text;
+        state.draft.originalResult = text;
+        state.draft.resultMode = "generated";
+        state.draft.lastProvider = data.provider || "";
+        state.draft.lastModel = data.model || "";
+        updateDraftFeedbackPanel();
         updateDraftCharCount();
         setDraftModeIndicator("generated");
         if (data.suggested_filename && !(document.getElementById("draftSuggestedName").value || "").trim()) {
@@ -295,12 +303,100 @@ async function exportDraftResult() {
     });
 }
 
+async function loadDraftFeedback() {
+    const panel = document.getElementById("draftFeedbackList");
+    if (panel) panel.innerHTML = `<div class="muted">讀取修正紀錄...</div>`;
+    try {
+        const data = await api("/api/osc/drafts/feedback?limit=8");
+        state.draft.feedback = data.items || [];
+        state.draft.feedbackSummary = data.summary || {};
+        updateDraftFeedbackPanel();
+    } catch (e) {
+        if (panel) panel.innerHTML = `<div class="muted">修正紀錄讀取失敗：${esc(e.message || e)}</div>`;
+    }
+}
+
+function currentDraftCorrectionDelta() {
+    const original = state.draft.originalResult || "";
+    const corrected = document.getElementById("draftResult")?.value || "";
+    return {
+        original,
+        corrected,
+        changed: !!original && original.trim() !== corrected.trim(),
+        charDelta: corrected.length - original.length,
+    };
+}
+
+function renderDraftLessons(items) {
+    if (!items || !items.length) return `<div class="muted">尚無修正紀錄；記錄後會自動回到下一次 Prompt。</div>`;
+    return items.map(x => {
+        const stats = x.stats || {};
+        const lessons = (x.lessons || []).slice(0, 2).map(l => {
+            const before = l.before ? `原：${esc(l.before)}` : "";
+            const after = l.after ? `改：${esc(l.after)}` : "";
+            return `<div class="muted">${before}${before && after ? " / " : ""}${after}</div>`;
+        }).join("");
+        return `
+            <div class="selection-item">
+                <div class="meta-text">
+                    <div>${esc(x.doc_type || "書狀")} ${esc(x.case_number || "")}</div>
+                    <div class="muted">${esc(x.note || "人工修正")}｜字數 ${Number(stats.original_chars || 0)} → ${Number(stats.corrected_chars || 0)}</div>
+                    ${lessons}
+                </div>
+            </div>
+        `;
+    }).join("");
+}
+
+function updateDraftFeedbackPanel() {
+    const delta = currentDraftCorrectionDelta();
+    const deltaEl = document.getElementById("draftCorrectionDelta");
+    if (deltaEl) {
+        if (!state.draft.originalResult) {
+            deltaEl.textContent = "尚未產生 AI 原稿。";
+        } else if (!delta.changed) {
+            deltaEl.textContent = "尚未偵測到修正。";
+        } else {
+            deltaEl.textContent = `已偵測到修正：字數差 ${delta.charDelta >= 0 ? "+" : ""}${delta.charDelta}`;
+        }
+    }
+    const list = document.getElementById("draftFeedbackList");
+    if (list) list.innerHTML = renderDraftLessons(state.draft.feedback || []);
+    const summary = document.getElementById("draftFeedbackSummary");
+    if (summary) {
+        const s = state.draft.feedbackSummary || {};
+        summary.textContent = `已累積 ${Number(s.count || 0)} 筆修正${s.latest_at ? `，最新 ${String(s.latest_at).slice(0, 10)}` : ""}`;
+    }
+}
+
+async function submitDraftFeedback() {
+    await withBusy("draftFeedbackSaveBtn", "記錄中...", async () => {
+        const delta = currentDraftCorrectionDelta();
+        if (!delta.original) return alert("請先產生一次 AI 書狀，再修改結果。");
+        if (!delta.changed) return alert("尚未偵測到修正內容。");
+        const payload = collectDraftPayload();
+        payload.original_text = delta.original;
+        payload.corrected_text = delta.corrected;
+        payload.note = (document.getElementById("draftFeedbackNote").value || "").trim();
+        payload.provider = state.draft.lastProvider || "";
+        payload.model = state.draft.lastModel || "";
+        const data = await api("/api/osc/drafts/feedback", "POST", payload);
+        state.draft.originalResult = delta.corrected;
+        document.getElementById("draftFeedbackNote").value = "";
+        setDraftStatus(`已記錄修正：${(data.event?.lessons || []).length} 條差異會進入後續學習。`);
+        await loadDraftFeedback();
+    });
+}
+
 function clearDraftResult() {
     document.getElementById("draftResult").value = "";
     state.draft.result = "";
+    state.draft.originalResult = "";
+    state.draft.resultMode = "";
     setDraftStatus("已清除產生結果。");
     updateDraftCharCount();
     setDraftModeIndicator(null);
+    updateDraftFeedbackPanel();
 }
 
 function updateDraftCharCount() {
@@ -308,6 +404,8 @@ function updateDraftCharCount() {
     if (!el) return;
     const text = (document.getElementById("draftResult").value || "");
     el.textContent = `${text.length} 字`;
+    state.draft.result = text;
+    updateDraftFeedbackPanel();
 }
 
 function setDraftModeIndicator(mode) {
@@ -352,6 +450,7 @@ async function loadDraftComposer() {
         renderDraftInsights();
         renderDraftDocSelections();
         renderDraftInsightSelections();
+        updateDraftFeedbackPanel();
     } catch (e) {
         setDraftStatus(`草擬頁初始化失敗：${e.message}`, "warn");
     }

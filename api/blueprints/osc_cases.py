@@ -63,6 +63,11 @@ from api.osc.drafts import (
     _osc_prepare_laf_identity, _osc_enrich_portal_preview,
     _osc_get_closed_archive_base, _osc_build_archive_preview,
 )
+from api.osc.draft_learning import (
+    draft_learning_summary,
+    recent_draft_feedback,
+    record_draft_feedback,
+)
 
 _log = logging.getLogger(__name__)
 logger = _log  # alias used by some routes
@@ -554,6 +559,9 @@ _OSC_DRAFT_PROMPT_TEMPLATE = """你是一位專業的台灣律師助理，請根
 
 ## 書寫風格參考（以下為過往類似書狀的格式範例）
 {reference_style}
+
+## 使用者修正學習紀錄
+{learning_guidance}
 
 ## 要求
 1. 請按照上述參考風格撰寫完整的{doc_type}，狀頭、當事人欄、具狀人欄應貼近參考書狀格式。
@@ -2862,6 +2870,39 @@ def osc_drafts_generate_api():
             {"provider": provider, "error": str(e)},
         )
         return jsonify({"ok": False, "error": str(e), "prompt_preview": prompt, "warnings": ctx.get("warnings") or []}), 500
+
+
+@osc_bp.route("/api/osc/drafts/feedback", methods=["GET"])
+@login_required
+def osc_drafts_feedback_recent_api():
+    limit = max(1, min(50, int(request.args.get("limit") or "12")))
+    return jsonify({"ok": True, "summary": draft_learning_summary(), "items": recent_draft_feedback(limit)})
+
+
+@osc_bp.route("/api/osc/drafts/feedback", methods=["POST"])
+@login_required
+def osc_drafts_feedback_post_api():
+    payload = request.get_json() or {}
+    actor = getattr(current_user, "id", "") or getattr(current_user, "email", "") or ""
+    result = record_draft_feedback(payload, actor=str(actor))
+    if not result.get("ok"):
+        return jsonify(result), 400
+    event = result.get("event") or {}
+    try:
+        _osc_log_activity(
+            "draft:feedback",
+            "drafts",
+            str(payload.get("case_number") or ""),
+            {
+                "doc_type": payload.get("doc_type") or "",
+                "event_id": event.get("id") or "",
+                "stats": event.get("stats") or {},
+                "lessons": len(event.get("lessons") or []),
+            },
+        )
+    except Exception:
+        logger.debug("silent-catch at %s:%s", __name__, "osc_drafts_feedback_post_api", exc_info=True)
+    return jsonify(result)
 
 
 @osc_bp.route("/api/osc/drafts/export", methods=["POST"])

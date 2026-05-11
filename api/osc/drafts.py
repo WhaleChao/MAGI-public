@@ -23,6 +23,7 @@ from api.osc.insight_filters import (
     is_extractive_fast_judgment_digest,
     is_non_extractable_legal_insight,
 )
+from api.osc.draft_learning import learning_guidance_for_prompt
 
 # ---------------------------------------------------------------------------
 # Lazy back-references into server helpers.
@@ -127,7 +128,12 @@ def _get_runtime_config() -> dict:
 
 
 def _get_draft_prompt_template() -> str:
-    return _srv()._OSC_DRAFT_PROMPT_TEMPLATE
+    server_template = getattr(_srv(), "_OSC_DRAFT_PROMPT_TEMPLATE", "")
+    if server_template:
+        return server_template
+    # Blueprint-owned constant is the canonical source after server.py split.
+    from api.blueprints.osc_cases import _OSC_DRAFT_PROMPT_TEMPLATE
+    return _OSC_DRAFT_PROMPT_TEMPLATE
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -322,6 +328,7 @@ def _osc_build_draft_context(payload: dict) -> dict:
     reference_style, references, warnings = _osc_collect_draft_reference_style(body)
     custom_template = _osc_get_setting_value("draft_prompt_template", "").strip()
     template = custom_template if custom_template else _get_draft_prompt_template()
+    learning_guidance = learning_guidance_for_prompt(doc_type=doc_type, case_number=case_number)
     values = {
         "doc_type": doc_type or "(未指定)",
         "case_number": case_number or "(待填)",
@@ -333,8 +340,11 @@ def _osc_build_draft_context(payload: dict) -> dict:
         "case_facts": case_facts or "(未提供)",
         "legal_insights": legal_insights or "(無)",
         "reference_style": reference_style or "(無參考範本)",
+        "learning_guidance": learning_guidance,
     }
     prompt = _osc_render_draft_template(template, values)
+    if "{learning_guidance}" not in template and learning_guidance and "尚無人工修正紀錄" not in learning_guidance:
+        prompt = f"{prompt.rstrip()}\n\n## 使用者修正學習紀錄\n{learning_guidance}\n"
     suggested_filename = str(body.get("suggested_filename") or "").strip()
     if not suggested_filename:
         parts = [doc_type or "書狀草稿", case_number or case_row.get("case_number") or "未命名"]

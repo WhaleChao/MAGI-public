@@ -17,6 +17,7 @@
                         <li>2. 指定書狀類型與案件事實</li>
                         <li>3. 加入參考書狀與實務見解</li>
                         <li>4. 先預覽 Prompt，再正式產生</li>
+                        <li>5. 修稿後記錄修正，讓下一次草擬套用你的改法</li>
                     </ul>
                 </div>
                 <div class="draft-main-grid">
@@ -126,8 +127,8 @@
                             </div>
                             <div class="selection-item">
                                 <div class="meta-text">
-                                    <div>若 provider 設為 Gemini 但政策關閉雲端模型</div>
-                                    <div class="muted">web 版會自動降級回 CASPER，畫面會顯示有效 provider。</div>
+                                    <div>人工修正會進入下一次草擬</div>
+                                    <div class="muted" id="draftFeedbackSummary">修正紀錄載入中...</div>
                                 </div>
                             </div>
                         </div>
@@ -228,6 +229,36 @@
                         <span class="result-hint" id="draftResultHint">匯出前可直接在上方修改內容。</span>
                         <span class="char-count" id="draftCharCount">0 字</span>
                     </div>
+                </div>
+                <div class="grid-2">
+                <div class="card">
+                    <div class="section-head">
+                        <div>
+                            <h3>修正學習</h3>
+                            <div class="section-note">產生後在上方直接修稿，再記錄差異；MAGI 會把最近修正帶進下一次 Prompt。</div>
+                        </div>
+                        <div class="inline-actions">
+                            <button class="btn" id="draftFeedbackRefreshBtn">重新整理</button>
+                            <button class="btn primary" id="draftFeedbackSaveBtn">記錄修正</button>
+                        </div>
+                    </div>
+                    <div class="field">
+                        <label for="draftFeedbackNote">修正重點</label>
+                        <textarea id="draftFeedbackNote" placeholder="例如：狀頭要用三欄格式、不要把內部案號寫進法院案號、此類案件結尾要列具狀人與代理人。" style="min-height:96px;"></textarea>
+                    </div>
+                    <div id="draftCorrectionDelta" class="status-banner">尚未產生 AI 原稿。</div>
+                </div>
+                <div class="card">
+                    <div class="section-head">
+                        <div>
+                            <h3>最近學到的修正</h3>
+                            <div class="section-note">這些摘要會自動加入後續草擬脈絡。</div>
+                        </div>
+                    </div>
+                    <div id="draftFeedbackList" class="selection-list">
+                        <div class="muted">修正紀錄載入中...</div>
+                    </div>
+                </div>
                 </div>
             </div>
         </section>
