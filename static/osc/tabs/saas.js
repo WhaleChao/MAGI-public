@@ -64,6 +64,23 @@ function renderSaasIntegration(integration) {
     `).join("") : `<div class="muted">尚未載入整合關係。</div>`;
 }
 
+function saasActionButtons(actions) {
+    const items = (actions || []).filter(x => x && x.act);
+    if (!items.length) return "";
+    return `<div class="inline-actions">${items.map(x => {
+        const attrs = [
+            `data-${"act"}="${esc(x.act)}"`,
+            x.id !== undefined ? `data-id="${esc(x.id)}"` : "",
+            x.tab ? `data-tab="${esc(x.tab)}"` : "",
+            x.case ? `data-case="${esc(x.case)}"` : "",
+            x.path ? `data-path="${esc(x.path)}"` : "",
+            x.keyword ? `data-keyword="${esc(x.keyword)}"` : "",
+            x.module ? `data-module="${esc(x.module)}"` : "",
+        ].filter(Boolean).join(" ");
+        return `<button class="btn slim" ${attrs}>${esc(x.label || "開啟")}</button>`;
+    }).join("")}</div>`;
+}
+
 function renderSaasRisk(risk) {
     const rows = (risk.items || []).map(x => `<tr>
         <td>${esc(x.owner || x.type || "")}</td>
@@ -72,8 +89,9 @@ function renderSaasRisk(risk) {
         <td style="white-space:nowrap">${esc(x.case_number || "")}</td>
         <td>${esc(shortText(x.title || "", 42))}</td>
         <td>${esc(shortText(x.reason || x.detail || "", 70))}</td>
+        <td>${saasActionButtons(x.actions || [])}</td>
     </tr>`);
-    renderSimpleRows("saasRiskBody", rows, 6, "目前沒有風險項目");
+    renderSimpleRows("saasRiskBody", rows, 7, "目前沒有風險項目");
 }
 
 function renderSaasOps(ops, audit) {
@@ -117,8 +135,9 @@ function renderSaasTimeline(timeline) {
         <td>${esc(x.kind || "")}</td>
         <td>${esc(shortText(x.title || "", 60))}</td>
         <td>${esc(shortText(x.evidence_hint || "", 60))}</td>
+        <td>${saasActionButtons(x.actions || [])}</td>
     </tr>`);
-    renderSimpleRows("saasTimelineBody", rows, 5, "尚無文件索引資料");
+    renderSimpleRows("saasTimelineBody", rows, 6, "尚無文件索引資料");
 }
 
 function renderSaasLearning(learning) {
@@ -161,7 +180,7 @@ async function runSaasConflictCheck() {
     const host = document.getElementById("saasConflictResult");
     host.innerHTML = `
         <div class="selection-item"><div class="meta-text"><div>風險：${esc(data.risk)}</div><div class="muted">${esc(data.summary || "")}</div></div></div>
-        ${(data.matches || []).slice(0, 12).map(x => `<div class="selection-item"><div class="meta-text"><div>${esc(x.term)}｜${esc(x.side)}｜${esc(x.case_number || x.client_name || x.opponent_name || "")}</div><div class="muted">${esc(x.case_reason || x.status || x.notes || "")}</div></div></div>`).join("")}
+        ${(data.matches || []).slice(0, 12).map(x => `<div class="selection-item"><div class="meta-text"><div>${esc(x.term)}｜${esc(x.side)}｜${esc(x.case_number || x.client_name || x.opponent_name || "")}</div><div class="muted">${esc(x.case_reason || x.status || x.notes || "")}</div>${saasActionButtons(x.actions || [])}</div></div>`).join("")}
     `;
 }
 

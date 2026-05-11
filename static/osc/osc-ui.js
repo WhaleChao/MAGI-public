@@ -302,6 +302,11 @@ function getDelegatedActionFeedback(act, button) {
         meta.flash = false;
         meta.showToast = false;
         meta.applyWorkbenchStatus = false;
+    } else if (act.startsWith("saas-")) {
+        meta.busyLabel = "載入原功能...";
+        meta.successLabel = "已帶入";
+        meta.showToast = true;
+        meta.applyWorkbenchStatus = false;
     } else if (act === "wb-case-action") {
         meta.busyLabel = "處理中...";
         meta.successLabel = "已送出";

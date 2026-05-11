@@ -151,6 +151,14 @@ def _safe_int(value: Any) -> int:
         return 0
 
 
+def _action(label: str, act: str, **attrs: Any) -> dict:
+    out = {"label": label, "act": act}
+    for key, value in attrs.items():
+        if value not in (None, ""):
+            out[key] = value
+    return out
+
+
 def _rows(exec_fn: ExecFn, sql: str, params: tuple = ()) -> list[dict]:
     try:
         rows, _ = exec_fn(sql, params, fetch="all") if params else exec_fn(sql, fetch="all")
@@ -207,6 +215,10 @@ def _risk_from_todo(row: dict, today: date) -> dict:
         "date": raw_date,
         "detail": row.get("description") or "",
         "id": row.get("id"),
+        "actions": [
+            _action("編輯待辦", "saas-todo-edit", id=row.get("id")),
+            _action("標記完成", "saas-todo-complete", id=row.get("id")),
+        ],
     }
 
 
@@ -239,6 +251,7 @@ def _risk_from_calendar(row: dict, today: date) -> dict:
         "date": raw_date,
         "detail": row.get("location") or row.get("description") or "",
         "id": row.get("id"),
+        "actions": [_action("編輯行程", "saas-cal-edit", id=row.get("id"))],
     }
 
 
@@ -299,6 +312,10 @@ def build_risk_dashboard(exec_fn: ExecFn, *, limit: int = 30) -> dict:
                 "date": created,
                 "detail": row.get("status") or "",
                 "id": row.get("id"),
+                "actions": [
+                    _action("法扶明細", "saas-laf-detail", id=row.get("id")),
+                    _action("更新狀態", "saas-laf-status", id=row.get("id")),
+                ],
             })
     order = {"critical": 0, "high": 1, "medium": 2, "low": 3}
     risks.sort(key=lambda x: (order.get(x.get("severity"), 9), x.get("date") or "9999"))
@@ -340,6 +357,10 @@ def build_document_timeline(exec_fn: ExecFn, *, case_number: str = "", limit: in
             "title": row.get("file_name") or "文件",
             "path": row.get("file_path") or "",
             "evidence_hint": evidence_hint(row.get("file_name") or "", kind),
+            "actions": [
+                _action("開啟", "doc-open", path=row.get("file_path") or ""),
+                _action("複製路徑", "doc-copy", path=row.get("file_path") or ""),
+            ],
         })
     return {"items": items, "count": len(items)}
 
@@ -407,7 +428,16 @@ def conflict_check(exec_fn: ExecFn, payload: dict) -> dict:
                 side = "client"
             if term and term in str(row.get("notes") or ""):
                 side = "opponent"
-            matches.append({"term": term, "source": "cases", "side": side, **row})
+            matches.append({
+                "term": term,
+                "source": "cases",
+                "side": side,
+                "actions": [
+                    _action("編輯案件", "saas-case-edit", id=row.get("id")),
+                    _action("案件工作台", "case-workbench", id=row.get("id")),
+                ],
+                **row,
+            })
         client_rows = _rows(
             exec_fn,
             """
@@ -420,7 +450,13 @@ def conflict_check(exec_fn: ExecFn, payload: dict) -> dict:
             (like, like, like, like),
         )
         for row in client_rows:
-            matches.append({"term": term, "source": "clients", "side": "client_record", **row})
+            matches.append({
+                "term": term,
+                "source": "clients",
+                "side": "client_record",
+                "actions": [_action("編輯當事人", "saas-client-edit", id=row.get("id"))],
+                **row,
+            })
         opponent_rows = _rows(
             exec_fn,
             """
@@ -433,7 +469,13 @@ def conflict_check(exec_fn: ExecFn, payload: dict) -> dict:
             (like, like),
         )
         for row in opponent_rows:
-            matches.append({"term": term, "source": "opponents", "side": "opponent", **row})
+            matches.append({
+                "term": term,
+                "source": "opponents",
+                "side": "opponent",
+                "actions": [_action("編輯對造", "saas-opponent-edit", id=row.get("id"))],
+                **row,
+            })
 
     risk = "clear"
     if any(x.get("side") == "opponent" for x in matches):

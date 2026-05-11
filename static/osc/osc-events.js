@@ -119,6 +119,12 @@ function jumpToPaperclipTab(tabId) {
     state.activeTab = tabId;
 }
 
+async function jumpToPaperclipTabAndRun(tabId, fn) {
+    jumpToPaperclipTab(tabId);
+    await new Promise(resolve => setTimeout(resolve, 40));
+    return await fn();
+}
+
 async function dispatchDelegatedAction(act, t) {
     const id = t.dataset.id;
     if (act === "case-edit") return await editCase(id);
@@ -147,6 +153,29 @@ async function dispatchDelegatedAction(act, t) {
     if (act === "todo-del") return await delTodo(Number(id));
     if (act === "todo-complete") return await setTodoDone(Number(id), true);
     if (act === "todo-reopen") return await setTodoDone(Number(id), false);
+
+    if (act === "saas-todo-edit") return await jumpToPaperclipTabAndRun("todos", () => editTodo(Number(id)));
+    if (act === "saas-todo-complete") {
+        await setTodoDone(Number(id), true);
+        if (typeof loadSaasWorkbench === "function") await loadSaasWorkbench();
+        return;
+    }
+    if (act === "saas-cal-edit") return await jumpToPaperclipTabAndRun("calendar", () => editCalendarEvent(Number(id)));
+    if (act === "saas-laf-detail") {
+        return await jumpToPaperclipTabAndRun("laf", async () => {
+            if (typeof loadLaf === "function") await loadLaf();
+            return await openLafCaseDetail(id);
+        });
+    }
+    if (act === "saas-laf-status") {
+        return await jumpToPaperclipTabAndRun("laf", async () => {
+            if (typeof loadLaf === "function") await loadLaf();
+            return await openLafCaseDetail(id);
+        });
+    }
+    if (act === "saas-case-edit") return await jumpToPaperclipTabAndRun("cases", () => editCase(id));
+    if (act === "saas-client-edit") return await jumpToPaperclipTabAndRun("clients", () => editClient(id));
+    if (act === "saas-opponent-edit") return await jumpToPaperclipTabAndRun("admin", () => editAdminOpponent(Number(id)));
 
     if (act === "doc-open") return await openDocumentPath(t.dataset.path || "");
     if (act === "doc-copy") return await copyDocumentPath(t.dataset.path || "");

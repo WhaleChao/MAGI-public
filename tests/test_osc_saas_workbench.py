@@ -48,6 +48,7 @@ def test_conflict_check_flags_opponent_records():
 
     assert result["risk"] == "high"
     assert result["matches"][0]["side"] == "opponent"
+    assert result["matches"][0]["actions"][0]["act"] == "saas-opponent-edit"
 
 
 def test_intake_runtime_record_is_local_jsonl(tmp_path, monkeypatch):
@@ -123,6 +124,51 @@ def test_risk_dashboard_marks_source_module():
 
     assert result["items"][0]["owner"] == "待辦事項"
     assert result["items"][0]["target_tab"] == "todos"
+    assert {x["act"] for x in result["items"][0]["actions"]} == {"saas-todo-edit", "saas-todo-complete"}
+
+
+def test_document_timeline_reuses_document_actions():
+    from api.osc import saas_workbench
+
+    def fake_exec(sql, params=(), fetch="all"):
+        if "FROM document_index" in sql:
+            return (
+                [
+                    {
+                        "id": 3,
+                        "case_number": "2026-0001",
+                        "file_name": "準備書狀.pdf",
+                        "file_path": "/tmp/準備書狀.pdf",
+                        "subfolder_name": "我方歷次書狀",
+                        "reason": "",
+                        "party": "",
+                        "modified_date": "2026-05-11 10:00:00",
+                    }
+                ],
+                None,
+            )
+        return ([], None)
+
+    result = saas_workbench.build_document_timeline(fake_exec)
+
+    assert result["items"][0]["actions"][0]["act"] == "doc-open"
+    assert result["items"][0]["actions"][1]["act"] == "doc-copy"
+
+
+def test_saas_generated_edit_actions_have_dispatch_handlers():
+    root = Path(__file__).resolve().parents[1]
+    events_js = (root / "static/osc/osc-events.js").read_text(encoding="utf-8")
+    for act in [
+        "saas-todo-edit",
+        "saas-todo-complete",
+        "saas-cal-edit",
+        "saas-laf-detail",
+        "saas-laf-status",
+        "saas-case-edit",
+        "saas-client-edit",
+        "saas-opponent-edit",
+    ]:
+        assert f'if (act === "{act}")' in events_js
 
 
 @pytest.fixture
