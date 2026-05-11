@@ -1,4 +1,4 @@
-/* tabs/saas.js – SaaS workbench */
+/* tabs/saas.js - office operations workbench */
 function saasSetStatus(text, tone = "info") {
     const el = document.getElementById("saasStatus");
     if (!el) return;
@@ -20,7 +20,7 @@ async function loadSaasWorkbench() {
     const data = await api(`/api/osc/saas/overview${caseNumber ? `?case_number=${caseNumber}` : ""}`);
     state.saas.overview = data;
     renderSaasWorkbench();
-    saasSetStatus("SaaS 工作台已更新。", "ok");
+    saasSetStatus("事務所營運工作台已更新。", "ok");
 }
 
 function renderSaasWorkbench() {

@@ -1,6 +1,6 @@
-# MAGI SaaS Roadmap
+# MAGI 事務所營運工作台 Roadmap
 
-本文件定義 MAGI / Paperclip 事務所 SaaS 化的十項完工範圍。計時功能不列入本期。
+本文件定義 MAGI / Paperclip 事務所營運工作台的十項完工範圍。計時功能不列入本期。
 
 ## 完工定義
 
@@ -49,7 +49,7 @@
 
 ## 目前落地入口
 
-- 前端：Paperclip 側欄 `SaaS 工作台`
+- 前端：Paperclip 側欄 `事務所營運`
 - API：
   - `GET /api/osc/saas/overview`
   - `POST /api/osc/saas/conflict-check`
@@ -57,4 +57,3 @@
   - `POST /api/osc/saas/quality-check`
   - `POST /api/osc/saas/client-packet`
   - `GET /api/osc/saas/timeline`
-
