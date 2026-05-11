@@ -36,6 +36,7 @@ function bindTabs() {
 
             if (tabId === "dashboard") _withLoading("載入儀表板...", loadDashboard);
             if (tabId === "magiModules") renderCaseMagiActions(activeCaseMagiModuleKey());
+            if (tabId === "saasWorkbench") _withLoading("載入 SaaS 工作台...", loadSaasWorkbench);
             if (tabId === "cases") _withLoading("載入案件...", loadCases);
             if (tabId === "laf") _withLoading("載入法扶清單...", loadLaf);
             if (tabId === "clients") _withLoading("載入當事人...", loadClients);
@@ -318,6 +319,12 @@ function bindGlobalDelegates() {
 function bindEvents() {
     [
         ["dashboardRefreshBtn", loadDashboard, "儀表板重新整理"],
+        ["saasRefreshBtn", loadSaasWorkbench, "SaaS 工作台重新整理"],
+        ["saasConflictBtn", runSaasConflictCheck, "利益衝突檢查"],
+        ["saasIntakeBtn", runSaasIntake, "建立諮詢紀錄"],
+        ["saasQualityBtn", runSaasQualityCheck, "品質檢查"],
+        ["saasPacketBtn", runSaasClientPacket, "產生對外資料包"],
+        ["saasPacketCopyBtn", copySaasPacket, "複製對外資料包"],
         ["casesSearchBtn", loadCases, "案件搜尋"],
         ["casesRefreshBtn", loadCases, "案件重新整理"],
         ["caseSaveBtn", saveCase, "案件儲存"],

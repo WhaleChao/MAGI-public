@@ -68,6 +68,14 @@ from api.osc.draft_learning import (
     recent_draft_feedback,
     record_draft_feedback,
 )
+from api.osc.saas_workbench import (
+    build_client_packet,
+    build_document_timeline,
+    build_saas_overview,
+    conflict_check,
+    quality_check,
+    record_intake,
+)
 
 _log = logging.getLogger(__name__)
 logger = _log  # alias used by some routes
@@ -2334,6 +2342,67 @@ def osc_dashboard_api():
             "recent_pdf_logs": recent_pdf_logs or [],
         }
     )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SaaS workbench
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+@osc_bp.route("/api/osc/saas/overview", methods=["GET"])
+@login_required
+def osc_saas_overview_api():
+    case_number = (request.args.get("case_number") or "").strip()
+    return jsonify(build_saas_overview(_osc_exec, case_number=case_number))
+
+
+@osc_bp.route("/api/osc/saas/conflict-check", methods=["POST"])
+@login_required
+def osc_saas_conflict_check_api():
+    payload = request.get_json() or {}
+    return jsonify(conflict_check(_osc_exec, payload))
+
+
+@osc_bp.route("/api/osc/saas/intake", methods=["POST"])
+@login_required
+def osc_saas_intake_api():
+    payload = request.get_json() or {}
+    result = record_intake(_osc_exec, payload, actor=_osc_current_actor())
+    try:
+        _osc_log_activity(
+            "saas:intake",
+            "intake",
+            str((result.get("event") or {}).get("id") or ""),
+            {
+                "client_name": payload.get("client_name") or "",
+                "case_reason": payload.get("case_reason") or payload.get("reason") or "",
+                "conflict_risk": (result.get("conflict") or {}).get("risk") or "",
+            },
+        )
+    except Exception:
+        logger.debug("silent-catch at %s:%s", __name__, "osc_saas_intake_api", exc_info=True)
+    return jsonify(result)
+
+
+@osc_bp.route("/api/osc/saas/quality-check", methods=["POST"])
+@login_required
+def osc_saas_quality_check_api():
+    payload = request.get_json() or {}
+    return jsonify(quality_check(payload))
+
+
+@osc_bp.route("/api/osc/saas/client-packet", methods=["POST"])
+@login_required
+def osc_saas_client_packet_api():
+    payload = request.get_json() or {}
+    return jsonify(build_client_packet(_osc_exec, payload))
+
+
+@osc_bp.route("/api/osc/saas/timeline", methods=["GET"])
+@login_required
+def osc_saas_timeline_api():
+    case_number = (request.args.get("case_number") or "").strip()
+    return jsonify({"ok": True, **build_document_timeline(_osc_exec, case_number=case_number)})
 
 
 # ══════════════════════════════════════════════════════════════════════════════

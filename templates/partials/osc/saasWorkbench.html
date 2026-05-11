@@ -1,0 +1,148 @@
+        <section id="saasWorkbench" class="view">
+            <div class="card">
+                <div class="section-head">
+                    <div>
+                        <h3>SaaS 工作台</h3>
+                        <div class="section-note">把學習、風險、收案、衝突、文件時間線、對外資料包與營運報表收在同一處。</div>
+                    </div>
+                    <div class="inline-actions">
+                        <input id="saasCaseNumber" placeholder="案件編號 / 法院案號">
+                        <button class="btn" id="saasRefreshBtn">重新整理</button>
+                    </div>
+                </div>
+                <div id="saasStatus" class="status-banner">SaaS 工作台待命中。</div>
+                <div class="summary-grid" id="saasCapabilityGrid"></div>
+            </div>
+
+            <div class="grid-2">
+                <div class="card">
+                    <div class="section-head">
+                        <div>
+                            <h3>期限與風險</h3>
+                            <div class="section-note">以逾期、近日到期、法扶長期未結等風險排序。</div>
+                        </div>
+                    </div>
+                    <div class="table-wrap">
+                        <table>
+                            <thead><tr><th>風險</th><th>日期</th><th>案件</th><th>事項</th><th>原因</th></tr></thead>
+                            <tbody id="saasRiskBody"></tbody>
+                        </table>
+                    </div>
+                </div>
+                <div class="card">
+                    <div class="section-head">
+                        <div>
+                            <h3>營運報表</h3>
+                            <div class="section-note">不含計時，聚焦案件、待辦、文件、法扶與自動化成效。</div>
+                        </div>
+                    </div>
+                    <div class="summary-grid" id="saasOpsGrid"></div>
+                    <div class="selection-list" id="saasAuditList" style="margin-top:12px;"></div>
+                </div>
+            </div>
+
+            <div class="grid-2">
+                <div class="card">
+                    <div class="section-head">
+                        <div>
+                            <h3>利益衝突檢查</h3>
+                            <div class="section-note">建立新案前先查當事人、對造、關係人、公司、電話與 Email。</div>
+                        </div>
+                        <button class="btn primary" id="saasConflictBtn">檢查</button>
+                    </div>
+                    <div class="field-grid cols-2">
+                        <div class="field"><label for="saasConflictClient">當事人</label><input id="saasConflictClient"></div>
+                        <div class="field"><label for="saasConflictOpponent">對造 / 相對人</label><input id="saasConflictOpponent"></div>
+                        <div class="field"><label for="saasConflictRelated">關係人 / 公司</label><input id="saasConflictRelated"></div>
+                        <div class="field"><label for="saasConflictContact">電話 / Email</label><input id="saasConflictContact"></div>
+                    </div>
+                    <div id="saasConflictResult" class="selection-list" style="margin-top:12px;"></div>
+                </div>
+                <div class="card">
+                    <div class="section-head">
+                        <div>
+                            <h3>收案 / 諮詢漏斗</h3>
+                            <div class="section-note">記錄潛在案件摘要，同步做衝突風險提示。</div>
+                        </div>
+                        <button class="btn primary" id="saasIntakeBtn">建立諮詢紀錄</button>
+                    </div>
+                    <div class="field-grid cols-2">
+                        <div class="field"><label for="saasIntakeClient">當事人</label><input id="saasIntakeClient"></div>
+                        <div class="field"><label for="saasIntakeOpponent">對造</label><input id="saasIntakeOpponent"></div>
+                        <div class="field"><label for="saasIntakeReason">案由</label><input id="saasIntakeReason"></div>
+                        <div class="field"><label for="saasIntakeContact">聯絡方式</label><input id="saasIntakeContact"></div>
+                    </div>
+                    <div class="field" style="margin-top:12px;">
+                        <label for="saasIntakeSummary">諮詢摘要 / 下一步</label>
+                        <textarea id="saasIntakeSummary" style="min-height:120px;"></textarea>
+                    </div>
+                    <div id="saasIntakeResult" class="selection-list" style="margin-top:12px;"></div>
+                </div>
+            </div>
+
+            <div class="grid-2">
+                <div class="card">
+                    <div class="section-head">
+                        <div>
+                            <h3>品質 / 幻覺審核</h3>
+                            <div class="section-note">檢查假案號、內部案號外洩、提示詞外洩、待確認欄位與引用來源。</div>
+                        </div>
+                        <button class="btn primary" id="saasQualityBtn">檢查文字</button>
+                    </div>
+                    <div class="field-grid cols-2">
+                        <div class="field"><label for="saasQualityCase">案號</label><input id="saasQualityCase"></div>
+                        <div class="field"><label for="saasQualityReason">案由</label><input id="saasQualityReason"></div>
+                    </div>
+                    <div class="field" style="margin-top:12px;">
+                        <label for="saasQualityText">要檢查的文字</label>
+                        <textarea id="saasQualityText" style="min-height:180px;"></textarea>
+                    </div>
+                    <div id="saasQualityResult" class="selection-list" style="margin-top:12px;"></div>
+                </div>
+                <div class="card">
+                    <div class="section-head">
+                        <div>
+                            <h3>對外資料包 / 客戶入口</h3>
+                            <div class="section-note">目前以可複製資料包模式運作，公開上傳入口保留設計但預設不開啟。</div>
+                        </div>
+                        <button class="btn primary" id="saasPacketBtn">產生資料包</button>
+                    </div>
+                    <div class="field-grid cols-2">
+                        <div class="field"><label for="saasPacketCase">案件編號</label><input id="saasPacketCase"></div>
+                        <div class="field"><label for="saasPacketClient">當事人</label><input id="saasPacketClient"></div>
+                        <div class="field" style="grid-column:span 2;"><label for="saasPacketReason">案由</label><input id="saasPacketReason"></div>
+                    </div>
+                    <div class="field" style="margin-top:12px;">
+                        <label for="saasPacketText">可複製文字</label>
+                        <textarea id="saasPacketText" readonly style="min-height:180px;"></textarea>
+                    </div>
+                    <button class="btn" id="saasPacketCopyBtn">複製資料包</button>
+                </div>
+            </div>
+
+            <div class="grid-2">
+                <div class="card">
+                    <div class="section-head">
+                        <div>
+                            <h3>文件證據時間線</h3>
+                            <div class="section-note">從書狀索引抓出文件、證據與程序資料，供書狀與附件清單使用。</div>
+                        </div>
+                    </div>
+                    <div class="table-wrap">
+                        <table>
+                            <thead><tr><th>日期</th><th>案件</th><th>類型</th><th>文件</th><th>用途</th></tr></thead>
+                            <tbody id="saasTimelineBody"></tbody>
+                        </table>
+                    </div>
+                </div>
+                <div class="card">
+                    <div class="section-head">
+                        <div>
+                            <h3>修正學習中心</h3>
+                            <div class="section-note">彙整人工改正紀錄；跨案使用須同案由，避免混亂記憶。</div>
+                        </div>
+                    </div>
+                    <div id="saasLearningList" class="selection-list"></div>
+                </div>
+            </div>
+        </section>

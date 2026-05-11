@@ -31,6 +31,13 @@ const state = {
         feedback: [],
         feedbackSummary: null,
     },
+    saas: {
+        overview: null,
+        conflict: null,
+        intake: null,
+        quality: null,
+        packet: null,
+    },
     adminSettings: [],
     adminCaseReasons: [],
     adminCourts: [],
