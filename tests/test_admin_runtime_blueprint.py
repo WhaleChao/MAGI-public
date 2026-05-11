@@ -470,6 +470,7 @@ def test_nerv_remote_access_status_and_actions(tmp_path, monkeypatch):
 
 def test_operational_issue_health_reconciles_recovered_and_false_positive(tmp_path, monkeypatch):
     from api.blueprints.admin_runtime import _compute_operational_issue_health
+    import api.blueprints.admin_runtime as mod
 
     now = 2_000_000.0
     runtime_dir = tmp_path / ".runtime"
@@ -516,7 +517,8 @@ def test_operational_issue_health_reconciles_recovered_and_false_positive(tmp_pa
             "severity": "High",
             "source": "disk_low_water_alarm",
             "command": "cron:job_disk_low_water_alarm",
-            "error": "磁碟低水位告警",
+            "error": "磁碟低水位告警：可用空間 12.0 GB（閾值 30.0 GB）。",
+            "context": {"free_gb": 12.0, "threshold_gb": 30.0, "severity": "High"},
         },
     ]
     issue_path = runtime_dir / "issue_agenda.jsonl"
@@ -535,14 +537,20 @@ def test_operational_issue_health_reconciles_recovered_and_false_positive(tmp_pa
     )
 
     monkeypatch.setenv("MAGI_OPERATIONAL_ACTIVE_ISSUE_WINDOW_SEC", "3600")
+    monkeypatch.setattr(
+        mod.shutil,
+        "disk_usage",
+        lambda _path: type("Usage", (), {"free": 50 * 1024 * 1024 * 1024})(),
+    )
     summary = _compute_operational_issue_health(tmp_path, now)
     assert summary["raw_cron_failures_24h"] == 5
     assert summary["active_cron_failures_24h"] == 1
     assert summary["active_distinct_jobs_24h"] == 1
     assert summary["false_positive_cron_failures_24h"] == 1
-    assert summary["active_high_severity_24h"] == 2
+    assert summary["active_high_severity_24h"] == 1
     assert summary["inactive_cron_failures_24h"] == 3
     assert summary["recovered_cron_failures_24h"] == 1
     assert summary["superseded_cron_failures_24h"] == 1
     assert summary["stale_cron_failures_24h"] == 1
+    assert summary["recovered_non_cron_high_severity_24h"] == 1
     assert summary["inactive_or_noise_cron_failures_24h"] == 4

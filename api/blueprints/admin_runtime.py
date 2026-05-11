@@ -11,6 +11,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -228,6 +229,45 @@ def _load_cron_last_run_ts(root: Path) -> dict[str, float]:
     return out
 
 
+def _issue_context_threshold_gb(row: dict[str, Any]) -> float:
+    raw = row.get("context")
+    if isinstance(raw, dict):
+        for key in ("threshold_gb", "threshold_warn_gb", "threshold_critical_gb"):
+            try:
+                value = float(raw.get(key) or 0)
+            except Exception:
+                value = 0.0
+            if value > 0:
+                return value
+    text = f"{raw or ''} {row.get('error') or row.get('error_msg') or ''}"
+    for pattern in (
+        r"threshold_gb['\"]?\s*:\s*([0-9]+(?:\.[0-9]+)?)",
+        r"閾值\s*([0-9]+(?:\.[0-9]+)?)\s*GB",
+    ):
+        m = re.search(pattern, text)
+        if m:
+            try:
+                return float(m.group(1))
+            except Exception:
+                return 0.0
+    return 0.0
+
+
+def _is_recovered_non_cron_issue(row: dict[str, Any], root: Path) -> bool:
+    command = str(row.get("command") or "")
+    source = str(row.get("source") or "")
+    if command != "alarm:disk_low_water" and source != "disk_low_water_alarm":
+        return False
+    threshold_gb = _issue_context_threshold_gb(row)
+    if threshold_gb <= 0:
+        return False
+    try:
+        current_free_gb = shutil.disk_usage(str(root)).free / 1024 / 1024 / 1024
+    except Exception:
+        return False
+    return current_free_gb >= threshold_gb
+
+
 def _compute_operational_issue_health(root: Path, now_ts: float) -> dict[str, Any]:
     cutoff_24h = now_ts - 86400
     active_window_sec = int(os.environ.get("MAGI_OPERATIONAL_ACTIVE_ISSUE_WINDOW_SEC", "21600") or "21600")
@@ -258,6 +298,7 @@ def _compute_operational_issue_health(root: Path, now_ts: float) -> dict[str, An
     recovered_cron_failures = 0
     superseded_cron_failures = 0
     stale_cron_failures = 0
+    recovered_non_cron_high_severity = 0
 
     for row in rows:
         ts = float(row.get("_ts") or 0.0)
@@ -268,6 +309,9 @@ def _compute_operational_issue_health(root: Path, now_ts: float) -> dict[str, An
             raw_high_severity += 1
 
         if not is_cron:
+            if is_high and _is_recovered_non_cron_issue(row, root):
+                recovered_non_cron_high_severity += 1
+                continue
             if is_high and ts >= active_cutoff:
                 active_high_severity += 1
             continue
@@ -310,6 +354,7 @@ def _compute_operational_issue_health(root: Path, now_ts: float) -> dict[str, An
         "recovered_cron_failures_24h": recovered_cron_failures,
         "superseded_cron_failures_24h": superseded_cron_failures,
         "stale_cron_failures_24h": stale_cron_failures,
+        "recovered_non_cron_high_severity_24h": recovered_non_cron_high_severity,
         "inactive_or_noise_cron_failures_24h": (
             inactive_cron_failures + false_positive_cron_failures
         ),
@@ -1408,6 +1453,9 @@ def create_admin_runtime_blueprint(
                     "superseded_cron_failures": int(issue_health.get("superseded_cron_failures_24h", 0)),
                     "stale_cron_failures": int(issue_health.get("stale_cron_failures_24h", 0)),
                     "false_positive_cron_failures": int(issue_health.get("false_positive_cron_failures_24h", 0)),
+                    "recovered_non_cron_high_severity": int(
+                        issue_health.get("recovered_non_cron_high_severity_24h", 0)
+                    ),
                     "inactive_or_noise_cron_failures": int(
                         issue_health.get("inactive_or_noise_cron_failures_24h", 0)
                     ),
