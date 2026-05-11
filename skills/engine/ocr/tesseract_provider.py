@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 import tempfile
 import time
 import threading
@@ -165,6 +166,51 @@ PSM_SINGLE_BLOCK = 6     # 單一均勻文字區塊
 PSM_SINGLE_LINE = 7      # 單行文字
 
 
+def _run_tesseract_image(
+    *,
+    bin_path: str,
+    image_path: str,
+    langs: str,
+    psm: int,
+    timeout_sec: float,
+) -> Tuple[bool, str, Optional[str], bool]:
+    """Run tesseract once and return (ok, stdout, error, timed_out)."""
+    try:
+        r = _safe_run(
+            [
+                bin_path,
+                image_path,
+                "stdout",
+                "-l", langs,
+                "--psm", str(psm),
+            ],
+            timeout_sec=timeout_sec,
+        )
+    except PermissionError as e:
+        return False, "", f"SafeProcess blocked: {e}", False
+    except Exception as e:
+        return False, "", f"run error: {type(e).__name__}: {e}", False
+
+    timed_out = getattr(r, "timed_out", False)
+    if timed_out:
+        return False, "", f"timeout after {timeout_sec}s", True
+    return True, (r.stdout or "").strip(), None, False
+
+
+def _ocr_noise_score(text: str) -> float:
+    body = str(text or "")
+    if not body.strip():
+        return 1.0
+    chars = max(1, len(body))
+    odd_chars = len([c for c in body if c in "�`´‘’“”|{}[]<>"])
+    tokens = [t for t in body.split() if t]
+    suspicious = 0
+    for tok in tokens:
+        if "\\" in tok or re.search(r"[A-Za-z]\d+[A-Za-z]|\d+[A-Za-z]{2,}", tok):
+            suspicious += 1
+    return min(1.0, (odd_chars / chars) + (suspicious / max(1, len(tokens))))
+
+
 def run(
     image_path: str,
     psm: Optional[int] = None,
@@ -207,35 +253,68 @@ def run(
             f"image file not found: {image_path!r}",
         )
 
-    try:
-        r = _safe_run(
-            [
-                bin_path,
-                image_path,
-                "stdout",
-                "-l", effective_langs,
-                "--psm", str(effective_psm),
-            ],
-            timeout_sec=timeout_sec,
-        )
-    except PermissionError as e:
-        # SafeProcess 白名單被擋
-        return OCRProviderResult.failure("tesseract", f"SafeProcess blocked: {e}")
-    except Exception as e:
-        return OCRProviderResult.failure("tesseract", f"run error: {type(e).__name__}: {e}")
-
-    timed_out = getattr(r, "timed_out", False)
+    ok, raw_text, error, timed_out = _run_tesseract_image(
+        bin_path=bin_path,
+        image_path=image_path,
+        langs=effective_langs,
+        psm=effective_psm,
+        timeout_sec=timeout_sec,
+    )
     if timed_out:
         return OCRProviderResult.failure(
             "tesseract",
-            f"timeout after {timeout_sec}s",
+            error or f"timeout after {timeout_sec}s",
             timed_out=True,
         )
+    if not ok:
+        return OCRProviderResult.failure("tesseract", error or "tesseract run failed")
 
-    raw_text = (r.stdout or "").strip()
+    raw_score = compute_quality_score(raw_text)
+
+    # pdfcraft-inspired OCR preprocessing: render/scan images are normalized,
+    # lightly deskewed and upscaled, then accepted only if OCR quality improves.
+    if (
+        task_type != "captcha"
+        and _env_bool("MAGI_TESSERACT_PREPROCESS_ENABLE", default=True)
+    ):
+        try:
+            quality_skip = float(os.environ.get("MAGI_TESSERACT_PREPROCESS_SKIP_QUALITY", "0.42") or "0.42")
+            gain_needed = float(os.environ.get("MAGI_TESSERACT_PREPROCESS_GAIN", "0.025") or "0.025")
+        except Exception:
+            quality_skip, gain_needed = 0.42, 0.025
+
+        if raw_score < quality_skip:
+            try:
+                from skills.engine.ocr.preprocess import preprocess_image
+
+                with tempfile.TemporaryDirectory(prefix="magi_tess_pre_") as td:
+                    pre = preprocess_image(image_path, output_dir=td)
+                    if pre.ok and pre.changed and pre.output_path and os.path.isfile(pre.output_path):
+                        p_ok, p_text, _p_error, _p_timeout = _run_tesseract_image(
+                            bin_path=bin_path,
+                            image_path=pre.output_path,
+                            langs=effective_langs,
+                            psm=effective_psm,
+                            timeout_sec=max(5.0, timeout_sec * 0.8),
+                        )
+                        if p_ok and not _p_timeout:
+                            p_score = compute_quality_score(p_text)
+                            raw_noise = _ocr_noise_score(raw_text)
+                            p_noise = _ocr_noise_score(p_text)
+                            if (
+                                (not raw_text and p_text)
+                                or p_score >= raw_score + gain_needed
+                                or (p_score >= raw_score and p_noise <= max(0.0, raw_noise - 0.005))
+                                or (p_score >= raw_score and len(p_text) >= len(raw_text) * 1.2)
+                            ):
+                                raw_text = p_text
+                                raw_score = p_score
+            except Exception:
+                # Preprocessing is an optimization only; raw OCR remains valid.
+                pass
 
     # quality score
-    q_score = compute_quality_score(raw_text)
+    q_score = raw_score
 
     # deterministic correction（captcha 會自動 bypass）
     correction = correct_legal_text(raw_text, task_type=task_type)

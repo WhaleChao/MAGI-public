@@ -615,22 +615,56 @@ def _extract_text_ocr(pdf_path: str, max_pages: int, ocr_page_limit: Optional[in
 
         def _ocr_single_page_legacy(page_num, img_path):
             """既有 OCR 路徑（Tesseract + Vision upgrade）。"""
-            ocr = subprocess.run(
-                [
-                    tesseract_bin,
-                    str(img_path),
-                    "stdout",
-                    "-l",
-                    langs,
-                    "--psm",
-                    psm,
-                ],
-                capture_output=True,
-                text=True,
-                timeout=tess_timeout,
-                check=False,
-            )
-            txt = _normalize_extracted_text(ocr.stdout or "")
+            def _tess(path: Path) -> str:
+                ocr = subprocess.run(
+                    [
+                        tesseract_bin,
+                        str(path),
+                        "stdout",
+                        "-l",
+                        langs,
+                        "--psm",
+                        psm,
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=tess_timeout,
+                    check=False,
+                )
+                return _normalize_extracted_text(ocr.stdout or "")
+
+            txt = _tess(img_path)
+            if str(os.environ.get("MAGI_PDF_OCR_PREPROCESS_ENABLE", "1")).strip().lower() in {"1", "true", "yes", "on"}:
+                try:
+                    base_stats = _text_quality_stats(txt)
+                    quality_skip = float(os.environ.get("MAGI_PDF_OCR_PREPROCESS_SKIP_QUALITY", "0.36") or "0.36")
+                    gain_needed = float(os.environ.get("MAGI_PDF_OCR_PREPROCESS_GAIN", "0.025") or "0.025")
+                    if base_stats["score"] < quality_skip:
+                        from skills.engine.ocr.preprocess import preprocess_image
+
+                        pre = preprocess_image(str(img_path), output_dir=td)
+                        if pre.ok and pre.changed and pre.output_path:
+                            pre_txt = _tess(Path(pre.output_path))
+                            pre_stats = _text_quality_stats(pre_txt)
+                            if (
+                                (not txt and pre_txt)
+                                or pre_stats["score"] >= base_stats["score"] + gain_needed
+                                or (
+                                    pre_stats["score"] >= base_stats["score"]
+                                    and len(pre_txt) >= len(txt) * 1.2
+                                )
+                            ):
+                                logger.info(
+                                    "✅ OCR preprocessing upgraded page %s: raw=%.3f pre=%.3f angle=%.2f scale=%.2f",
+                                    page_num,
+                                    base_stats["score"],
+                                    pre_stats["score"],
+                                    pre.angle_deg,
+                                    pre.scale,
+                                )
+                                txt = pre_txt
+                except Exception as e:
+                    logger.debug("PDF OCR preprocessing skipped on page %s: %s", page_num, e)
             txt = _maybe_upgrade_with_vision(page_num, img_path, txt)
             return txt
 
