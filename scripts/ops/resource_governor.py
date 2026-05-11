@@ -25,7 +25,6 @@ if str(MAGI_ROOT) not in sys.path:
     sys.path.insert(0, str(MAGI_ROOT))
 
 from api.platforms import runtime_dir  # noqa: E402
-from scripts.ops import memory_watchdog  # noqa: E402
 
 
 DEFAULT_WARN_DISK_GB = float(os.environ.get("MAGI_RESOURCE_WARN_DISK_GB", "30"))
@@ -37,6 +36,12 @@ DEFAULT_SWAP_CRITICAL_GB = float(os.environ.get("MAGI_RESOURCE_SWAP_CRITICAL_GB"
 DEFAULT_FREE_WARN_GB = float(os.environ.get("MAGI_RESOURCE_FREE_WARN_GB", "6"))
 DEFAULT_FREE_CORE_ONLY_GB = float(os.environ.get("MAGI_RESOURCE_FREE_CORE_ONLY_GB", "4"))
 DEFAULT_FREE_CRITICAL_GB = float(os.environ.get("MAGI_RESOURCE_FREE_CRITICAL_GB", "2"))
+
+
+def _memory_watchdog():
+    from scripts.ops import memory_watchdog  # noqa: WPS433
+
+    return memory_watchdog
 
 
 @dataclass
@@ -61,6 +66,7 @@ class ResourceDecision:
 
 def collect_snapshot(path: Path = MAGI_ROOT) -> ResourceSnapshot:
     usage = shutil.disk_usage(path)
+    memory_watchdog = _memory_watchdog()
     mem = memory_watchdog.read_memory()
     return ResourceSnapshot(
         disk_free_gb=round(usage.free / (1024 ** 3), 2),
@@ -141,6 +147,7 @@ def append_metric(decision: ResourceDecision) -> Path:
 def safe_cleanup(*, enforce: bool) -> list[dict[str, Any]]:
     """Run safe cleanup only. No user data, DB, NAS, or model files are removed."""
     actions: list[dict[str, Any]] = []
+    memory_watchdog = _memory_watchdog()
     old_mode = os.environ.get("MAGI_WATCHDOG_STALE_PLAYWRIGHT_MODE")
     try:
         os.environ["MAGI_WATCHDOG_STALE_PLAYWRIGHT_MODE"] = "enforce" if enforce else "shadow"

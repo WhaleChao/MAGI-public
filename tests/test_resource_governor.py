@@ -3,6 +3,10 @@ from __future__ import annotations
 from scripts.ops import resource_governor as rg
 
 
+def test_import_does_not_load_memory_watchdog():
+    assert not hasattr(rg, "memory_watchdog")
+
+
 def test_classify_normal_resources():
     snap = rg.ResourceSnapshot(
         disk_free_gb=80,
