@@ -203,6 +203,57 @@ def check_stability_observer(py: str) -> Check:
     return Check("stability_observer_once", passed, "pass" if passed else "fail", "24h window snapshot generated", elapsed, artifact)
 
 
+def check_resource_governor(py: str) -> Check:
+    ok, payload, raw, elapsed = _run_json(
+        [py, "scripts/ops/resource_governor.py", "--json", "status"],
+        timeout=45,
+        allow_nonzero=True,
+    )
+    if not ok:
+        return Check("resource_governor", False, "fail", raw, elapsed)
+    level = str(payload.get("level") or "unknown")
+    snap = payload.get("snapshot") or {}
+    detail = (
+        f"level={level} disk_free={snap.get('disk_free_gb')}GB "
+        f"swap={snap.get('swap_used_gb')}GB free_plus_inactive={snap.get('free_plus_inactive_gb')}GB"
+    )
+    # throttle/core_only are operational warnings, not release blockers by themselves.
+    passed = level != "critical"
+    return Check("resource_governor", passed, "pass" if level == "normal" else ("warn" if passed else "fail"), detail, elapsed)
+
+
+def check_model_live_gate(py: str) -> Check:
+    ok, payload, raw, elapsed = _run_json(
+        [
+            py,
+            "scripts/ops/model_live_gate.py",
+            "--expect",
+            "auto",
+            "--json",
+            "--json-out",
+            ".runtime/model_live_gate_latest.json",
+        ],
+        timeout=45,
+    )
+    if not ok:
+        return Check("model_live_gate", False, "fail", raw, elapsed)
+    endpoints = payload.get("endpoints") or []
+    endpoint_text = ", ".join(
+        f"{e.get('port')}={e.get('model_id') or 'down'}"
+        for e in endpoints
+        if isinstance(e, dict)
+    )
+    passed = bool(payload.get("ok"))
+    status = "pass" if passed and not payload.get("degraded") else ("warn" if passed else "fail")
+    detail = (
+        f"expected={payload.get('expected_profile')} active={payload.get('active_profile')} "
+        f"degraded={payload.get('degraded')} endpoints=[{endpoint_text}]"
+    )
+    if payload.get("failures"):
+        detail += " failures=" + "; ".join(str(x) for x in payload.get("failures") or [])
+    return Check("model_live_gate", passed, status, detail, elapsed, artifact=str(MAGI_ROOT / ".runtime" / "model_live_gate_latest.json"))
+
+
 def run_gate(*, json_out: Path, strict_public: bool, skip_backup: bool, skip_db: bool) -> dict[str, Any]:
     py = _python()
     checks = [
@@ -210,6 +261,8 @@ def run_gate(*, json_out: Path, strict_public: bool, skip_backup: bool, skip_db:
         check_installer_dry_run(py),
         check_public_release_audit(py, strict=strict_public),
         check_process_hygiene(py),
+        check_resource_governor(py),
+        check_model_live_gate(py),
         check_stability_observer(py),
     ]
     if not skip_db:

@@ -341,12 +341,23 @@ def build_report() -> dict:
         runs_per_day=runs_per_day,
         cache_root=str(raw_root),
     )
+    interpretation_status = str(backlog_interpretation.get("status") or "")
+    interpretation_reduced = int(backlog_interpretation.get("reduced") or 0)
+    interpretation_handled = int(backlog_interpretation.get("handled") or 0)
+
     if backlog_count > 0 and (not process["exists"] or not process["updated_at"]):
         status = "PROCESS_NEVER_RUN"
         exit_code = RISK_EXIT
         reasons.append("已有 raw backlog，但尚未找到晨間整理狀態檔。")
     elif backlog_count >= max(1, backlog_warn_count):
-        if oldest_backlog_age_hours >= backlog_risk_age_hours:
+        if interpretation_status == "CATCHING_UP" and (interpretation_reduced > 0 or interpretation_handled > 0):
+            if status == "PIPELINE_HEALTHY":
+                status = "BACKLOG_CATCHING_UP"
+                exit_code = WARNING_EXIT
+            reasons.append(
+                f"raw backlog 尚有 {backlog_count} 份，但本輪正在消化（消化 {interpretation_reduced}，處理 {interpretation_handled}）。"
+            )
+        elif oldest_backlog_age_hours >= backlog_risk_age_hours:
             status = "BACKLOG_STALE"
             exit_code = RISK_EXIT
             reasons.append(

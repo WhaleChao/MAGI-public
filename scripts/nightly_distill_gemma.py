@@ -334,6 +334,23 @@ def cleanup_old_adapters(keep: int = MAX_OLD_ADAPTERS) -> None:
         shutil.rmtree(d, ignore_errors=True)
 
 
+def _resource_allows_training() -> tuple[bool, str]:
+    """Block training/deploy under resource pressure; bad models are cheaper than a wedged MAGI."""
+    try:
+        from scripts.ops import resource_governor
+
+        decision = resource_governor.classify(resource_governor.collect_snapshot())
+        if decision.level in {"core_only", "critical"}:
+            return False, (
+                f"resource_governor={decision.level}; "
+                f"reasons={','.join(decision.reasons)}"
+            )
+        return True, f"resource_governor={decision.level}"
+    except Exception as exc:
+        logger.warning("Resource governor unavailable; training proceeds conservatively: %s", exc)
+        return True, "resource_governor_unavailable"
+
+
 # ── 主流程 ────────────────────────────────────────────────────────────
 def main() -> int:
     global _start_time
@@ -360,6 +377,12 @@ def main() -> int:
     logger.info("=" * 60)
     logger.info("Gemma E4B 知識蒸餾訓練開始")
     logger.info("=" * 60)
+
+    allowed, resource_msg = _resource_allows_training()
+    logger.info("Resource preflight: %s", resource_msg)
+    if not allowed:
+        _notify(f"Gemma 蒸餾：資源壓力過高，跳過本輪訓練（{resource_msg}）")
+        return 0
 
     DISTILL_DIR.mkdir(parents=True, exist_ok=True)
 

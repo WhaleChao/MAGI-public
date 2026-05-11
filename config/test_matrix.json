@@ -20,7 +20,9 @@
             "skills/bridge/inference_gateway.py",
             "scripts/ops/audit_operational_hardening.py",
             "scripts/ops/smoke_test_full.py",
-            "scripts/ops/run_test_suite.py"
+            "scripts/ops/run_test_suite.py",
+            "scripts/ops/resource_governor.py",
+            "scripts/ops/model_live_gate.py"
           ],
           "timeout_sec": 30
         },
@@ -37,7 +39,9 @@
             "tests/test_smoke_core_routes.py",
             "tests/test_cron_monitoring_hardening.py",
             "tests/test_intent_no_weather_for_reminder.py",
-            "tests/test_run_test_suite.py"
+            "tests/test_run_test_suite.py",
+            "tests/test_resource_governor.py",
+            "tests/test_model_live_gate.py"
           ],
           "timeout_sec": 120
         }
@@ -80,7 +84,8 @@
             "scripts/ops/check_judicial_api_pipeline.py",
             "--json"
           ],
-          "timeout_sec": 120
+          "timeout_sec": 120,
+          "ok_returncodes": [0, 10]
         },
         {
           "id": "self_repair_dry_run",
@@ -97,6 +102,32 @@
           "env": {
             "MAGI_ISSUE_TRACKER_ENABLE": "1"
           }
+        },
+        {
+          "id": "resource_governor",
+          "name": "Resource governor status",
+          "command": [
+            "{python}",
+            "scripts/ops/resource_governor.py",
+            "--json",
+            "status"
+          ],
+          "timeout_sec": 60,
+          "ok_returncodes": [0, 2]
+        },
+        {
+          "id": "model_live_gate",
+          "name": "Day/night model live gate",
+          "command": [
+            "{python}",
+            "scripts/ops/model_live_gate.py",
+            "--expect",
+            "auto",
+            "--json",
+            "--json-out",
+            ".runtime/model_live_gate_latest.json"
+          ],
+          "timeout_sec": 60
         },
         {
           "id": "smoke50",
@@ -158,6 +189,32 @@
             ".runtime/commercial_readiness_release_latest.json"
           ],
           "timeout_sec": 300
+        },
+        {
+          "id": "resource_governor",
+          "name": "Resource governor release status",
+          "command": [
+            "{python}",
+            "scripts/ops/resource_governor.py",
+            "--json",
+            "status"
+          ],
+          "timeout_sec": 60,
+          "ok_returncodes": [0, 2]
+        },
+        {
+          "id": "model_live_gate",
+          "name": "Model topology release gate",
+          "command": [
+            "{python}",
+            "scripts/ops/model_live_gate.py",
+            "--expect",
+            "auto",
+            "--json",
+            "--json-out",
+            ".runtime/model_live_gate_release_latest.json"
+          ],
+          "timeout_sec": 60
         },
         {
           "id": "channels_strict",

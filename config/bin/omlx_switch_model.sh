@@ -191,6 +191,18 @@ preflight_memory_check() {
     avail=$(available_memory_gb)
     log "preflight: 可用記憶體 ${avail}GB，${mode_name} 需求 ${required_gb}GB"
     if [ "$avail" -lt "$required_gb" ]; then
+        local governor="/Users/ai/Desktop/MAGI_v2/scripts/ops/resource_governor.py"
+        if [ -x "$GATEKEEPER_PY" ] && [ -f "$governor" ]; then
+            log "preflight: 記憶體不足，先執行 resource_governor safe cleanup 後重試"
+            MAGI_USE_RUNTIME_DIR=1 "$GATEKEEPER_PY" "$governor" prepare-switch \
+                --mode "$mode_name" --required-free-gb "$required_gb" --enforce --json 2>&1 | \
+                while read ln; do log "[resource_governor] $ln"; done || true
+            sleep 15
+            avail=$(available_memory_gb)
+            log "preflight retry: 可用記憶體 ${avail}GB，${mode_name} 需求 ${required_gb}GB"
+        fi
+    fi
+    if [ "$avail" -lt "$required_gb" ]; then
         notify_admin "$mode_name 切換前可用記憶體不足（${avail}GB < ${required_gb}GB），已中止以避免當機"
         if [ -x "$GATEKEEPER" ] && [ -x "$GATEKEEPER_PY" ]; then
             MAGI_USE_RUNTIME_DIR=1 "$GATEKEEPER_PY" "$GATEKEEPER" register-abort \
