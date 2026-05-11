@@ -1,6 +1,15 @@
 from pathlib import Path
 
 
+def test_doc_kind_supports_pleading_filter():
+    from api.osc.judicial import _osc_doc_kind_label, _osc_doc_kind_match
+
+    blob = "02_我方歷次書狀 20260114_民事聲請調查證據狀(鑫源企業社)清稿.docx"
+
+    assert _osc_doc_kind_match("pleading", blob) is True
+    assert _osc_doc_kind_label(blob) == "書狀"
+
+
 def test_clean_draft_output_keeps_fenced_pleading_text():
     from api.osc.drafts import _osc_clean_draft_output
 
@@ -47,12 +56,16 @@ def test_export_form_docx_uses_pleading_layout(tmp_path, monkeypatch):
     paragraphs = [p for p in doc.paragraphs if p.text.strip()]
     assert paragraphs[0].text == "民事準備書狀"
     assert paragraphs[0].alignment == 1  # CENTER
-    assert paragraphs[1].text.startswith("案號：")
-    assert paragraphs[1].paragraph_format.first_line_indent is None
-    assert paragraphs[2].text.startswith("一、")
+    assert round(doc.sections[0].left_margin.cm, 1) == 1.8
+    assert round(doc.sections[0].right_margin.cm, 1) == 1.8
+    assert doc.tables
+    table_text = "\n".join(cell.text for row in doc.tables[0].rows for cell in row.cells)
+    assert "案號" in table_text
+    assert "113年度訴字第100號　股別：義股" in table_text
+    assert paragraphs[1].text.startswith("一、")
+    assert paragraphs[1].paragraph_format.first_line_indent is not None
+    assert paragraphs[2].text.startswith("（一）")
     assert paragraphs[2].paragraph_format.first_line_indent is not None
-    assert paragraphs[3].text.startswith("（一）")
-    assert paragraphs[3].paragraph_format.first_line_indent is not None
     assert paragraphs[-1].text.startswith("中華民國")
     assert paragraphs[-1].alignment == 2  # RIGHT
     assert all("```" not in p.text and "#" not in p.text for p in paragraphs)
@@ -67,7 +80,9 @@ def test_export_html_strips_markdown_and_applies_body_classes():
     )
 
     assert "<h1>民事起訴狀</h1>" in html
-    assert "class='meta'>案號：" in html
+    assert "class='meta-table'" in html
+    assert "class='meta-label'>案號" in html
+    assert "<td>113年度訴字第1號</td>" in html
     assert "class='body'>一、請求內容。" in html
     assert "class='signature'>具狀人：測試" in html
     assert "# 民事起訴狀" not in html

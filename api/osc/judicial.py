@@ -204,6 +204,7 @@ def _osc_collect_insights():
 
 _OSC_DOC_KIND_KEYWORDS = {
     "all": [],
+    "pleading": ["書狀", "起訴狀", "答辯狀", "準備狀", "聲請", "陳報狀", "上訴狀", "抗告狀", "狀"],
     "poa": ["委任", "委託", "委任狀", "委任书", "委託書"],
     "receipt": ["收據", "收执", "收執", "繳費", "訴訟中費用", "粉紅"],
     "laf": ["法扶", "法律扶助", "接案通知", "開辦資料", "開辦通知"],
@@ -225,6 +226,8 @@ def _osc_doc_kind_match(kind: str, blob: str) -> bool:
 
 def _osc_doc_kind_label(blob: str) -> str:
     b = str(blob or "")
+    if _osc_doc_kind_match("pleading", b):
+        return "書狀"
     if _osc_doc_kind_match("poa", b):
         return "委任狀/委託書"
     if _osc_doc_kind_match("receipt", b):

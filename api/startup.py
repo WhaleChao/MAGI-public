@@ -456,15 +456,156 @@ def _is_signature_line(line: str) -> bool:
     return bool(re.match(r"^(具狀人|撰狀人|受任人|代理人|中華民國)", text))
 
 
+_PLEADING_META_LABELS = {
+    "案號",
+    "股別",
+    "案由",
+    "法院",
+    "原告",
+    "被告",
+    "聲請人",
+    "相對人",
+    "債權人",
+    "債務人",
+    "上訴人",
+    "被上訴人",
+    "抗告人",
+    "受任人",
+    "當事人",
+    "法定代理人",
+    "訴訟代理人",
+    "代理人",
+    "代表人",
+    "住",
+    "設",
+    "住所",
+    "居所",
+    "電話",
+    "傳真",
+    "手機",
+}
+
+
+def _split_pleading_meta_line(line: str) -> tuple[str, str] | None:
+    text = str(line or "").strip()
+    if not text:
+        return None
+    m = re.match(r"^(.{1,18}?)\s*[：:]\s*(.*)$", text)
+    if not m:
+        return None
+    label = re.sub(r"[\s　]+", "", m.group(1) or "")
+    if label not in _PLEADING_META_LABELS:
+        return None
+    return label, (m.group(2) or "").strip()
+
+
+def _collect_pleading_meta_rows(lines: list[str], start: int = 0) -> tuple[list[tuple[str, str]], int]:
+    rows: list[tuple[str, str]] = []
+    i = start
+    blank_seen = False
+    while i < len(lines):
+        line = str(lines[i] or "").strip()
+        if not line:
+            blank_seen = True
+            i += 1
+            continue
+        split = _split_pleading_meta_line(line)
+        if not split:
+            break
+        if blank_seen and rows and split[0] not in {
+            "原告",
+            "被告",
+            "聲請人",
+            "相對人",
+            "債權人",
+            "債務人",
+            "上訴人",
+            "被上訴人",
+            "抗告人",
+        }:
+            break
+        rows.append(split)
+        blank_seen = False
+        i += 1
+    return rows, i
+
+
+def _set_paragraph_distribute_alignment(paragraph) -> None:
+    try:
+        from docx.oxml import OxmlElement  # type: ignore
+        from docx.oxml.ns import qn  # type: ignore
+
+        ppr = paragraph._p.get_or_add_pPr()
+        jc = ppr.find(qn("w:jc"))
+        if jc is None:
+            jc = OxmlElement("w:jc")
+            ppr.append(jc)
+        jc.set(qn("w:val"), "distribute")
+    except Exception:
+        logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, "_set_paragraph_distribute_alignment", exc_info=True)
+
+
+def _set_table_borders_none(table) -> None:
+    try:
+        from docx.oxml import OxmlElement  # type: ignore
+        from docx.oxml.ns import qn  # type: ignore
+
+        tbl_pr = table._tbl.tblPr
+        borders = tbl_pr.first_child_found_in("w:tblBorders")
+        if borders is None:
+            borders = OxmlElement("w:tblBorders")
+            tbl_pr.append(borders)
+        for edge in ("top", "left", "bottom", "right", "insideH", "insideV"):
+            tag = "w:" + edge
+            element = borders.find(qn(tag))
+            if element is None:
+                element = OxmlElement(tag)
+                borders.append(element)
+            element.set(qn("w:val"), "nil")
+    except Exception:
+        logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, "_set_table_borders_none", exc_info=True)
+
+
+def _add_pleading_meta_table(doc, rows: list[tuple[str, str]]) -> None:
+    from docx.enum.table import WD_TABLE_ALIGNMENT, WD_CELL_VERTICAL_ALIGNMENT  # type: ignore
+    from docx.shared import Cm, Pt  # type: ignore
+
+    if not rows:
+        return
+    table = doc.add_table(rows=0, cols=3)
+    table.alignment = WD_TABLE_ALIGNMENT.LEFT
+    table.autofit = False
+    _set_table_borders_none(table)
+    widths = (Cm(3.25), Cm(0.35), Cm(13.1))
+    for label, value in rows:
+        cells = table.add_row().cells
+        for idx, width in enumerate(widths):
+            cells[idx].width = width
+            cells[idx].vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.TOP
+        values = (label, "：", value)
+        for idx, cell in enumerate(cells):
+            p = cell.paragraphs[0]
+            pf = p.paragraph_format
+            pf.line_spacing = Pt(26)
+            pf.space_before = Pt(0)
+            pf.space_after = Pt(0)
+            if idx == 0 and len(label) <= 6:
+                _set_paragraph_distribute_alignment(p)
+            run = p.add_run(values[idx])
+            _set_docx_font(run, size_pt=16)
+    spacer = doc.add_paragraph()
+    spacer.paragraph_format.space_after = Pt(2)
+
+
 def _add_pleading_paragraph(doc, text: str, *, align: str = "body", bold: bool = False, size_pt: int = 14) -> None:
     from docx.enum.text import WD_ALIGN_PARAGRAPH  # type: ignore
     from docx.shared import Pt  # type: ignore
 
     p = doc.add_paragraph()
     pf = p.paragraph_format
-    pf.line_spacing = 1.5
+    pf.line_spacing = Pt(26)
     pf.space_before = Pt(0)
-    pf.space_after = Pt(3)
+    pf.space_after = Pt(2)
     if align == "center":
         p.alignment = WD_ALIGN_PARAGRAPH.CENTER
     elif align == "right":
@@ -495,10 +636,10 @@ def _export_form_docx(preview_text: str, stem: str, title: str = "") -> dict:
         section = doc.sections[0]
         section.page_width = Cm(21)
         section.page_height = Cm(29.7)
-        section.top_margin = Cm(2.2)
-        section.bottom_margin = Cm(2.0)
-        section.left_margin = Cm(2.5)
-        section.right_margin = Cm(2.5)
+        section.top_margin = Cm(1.8)
+        section.bottom_margin = Cm(1.8)
+        section.left_margin = Cm(1.8)
+        section.right_margin = Cm(1.8)
 
         normal = doc.styles["Normal"]
         normal.font.name = "標楷體"
@@ -515,11 +656,25 @@ def _export_form_docx(preview_text: str, stem: str, title: str = "") -> dict:
         if nonempty and _looks_like_pleading_title(nonempty[0]):
             doc_title = nonempty[0]
             skip_first_title = True
-        _add_pleading_paragraph(doc, doc_title, align="center", bold=True, size_pt=20)
+        _add_pleading_paragraph(doc, doc_title, align="center", bold=True, size_pt=26)
+
+        start_idx = 0
+        if skip_first_title:
+            for idx, line in enumerate(lines):
+                if line == doc_title:
+                    start_idx = idx + 1
+                    break
+        meta_rows, meta_end = _collect_pleading_meta_rows(lines, start=start_idx)
+        if meta_rows:
+            _add_pleading_meta_table(doc, meta_rows)
 
         blank_pending = False
         first_seen = False
-        for line in lines:
+        for idx, line in enumerate(lines):
+            if idx < meta_end:
+                if skip_first_title and not first_seen and line == doc_title:
+                    first_seen = True
+                continue
             if skip_first_title and not first_seen and line == doc_title:
                 first_seen = True
                 continue
@@ -550,7 +705,27 @@ def _render_form_text_to_html(title: str, text: str) -> str:
     lines = _clean_document_export_text(text).splitlines()
     body_parts = []
     first_title_skipped = False
-    for raw in lines:
+    start_idx = 0
+    for idx, raw in enumerate(lines):
+        if _looks_like_pleading_title(raw) and raw.strip() == str(title or "").strip():
+            start_idx = idx + 1
+            first_title_skipped = True
+            break
+    meta_rows, meta_end = _collect_pleading_meta_rows(lines, start=start_idx)
+    if meta_rows:
+        body_parts.append("<table class='meta-table'><tbody>")
+        for label, value in meta_rows:
+            body_parts.append(
+                "<tr>"
+                f"<td class='meta-label'>{ihtml.escape(label)}</td>"
+                "<td class='meta-colon'>：</td>"
+                f"<td>{ihtml.escape(value)}</td>"
+                "</tr>"
+            )
+        body_parts.append("</tbody></table>")
+    for idx, raw in enumerate(lines):
+        if idx < meta_end:
+            continue
         line = raw.strip()
         if not line:
             body_parts.append("<div class='spacer'></div>")
@@ -576,6 +751,10 @@ def _render_form_text_to_html(title: str, text: str) -> str:
         "color:#111;line-height:1.85;font-size:16pt;}"
         "h1{margin:0 0 18px;text-align:center;font-size:22pt;font-weight:700;}"
         "p{margin:0 0 6px;}"
+        "table.meta-table{width:100%;border-collapse:collapse;margin:0 0 10px;}"
+        ".meta-table td{border:0;padding:0 3px 0 0;vertical-align:top;line-height:1.7;}"
+        ".meta-label{width:3.2cm;text-align:justify;text-align-last:justify;}"
+        ".meta-colon{width:.35cm;}"
         ".body{text-indent:2em;}"
         ".meta{text-indent:0;}"
         ".signature{text-align:right;text-indent:0;}"

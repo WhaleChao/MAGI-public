@@ -52,20 +52,6 @@ function renderDraftCases() {
     })].join("");
 }
 
-function renderDraftCases() {
-    const select = document.getElementById("draftCaseSelect");
-    const items = state.draft.cases || [];
-    if (!items.length) {
-        select.innerHTML = `<option value="">查無案件</option>`;
-        return;
-    }
-    select.innerHTML = [`<option value="">請選擇案件</option>`, ...items.map(r => {
-        const label = [r.client_name, r.case_number, r.case_reason].filter(Boolean).join("｜");
-        const selected = String(state.draft.selectedCaseId || "") === String(r.id) ? " selected" : "";
-        return `<option value="${esc(r.id)}"${selected}>${esc(label)}</option>`;
-    })].join("");
-}
-
 async function loadDraftMeta() {
     await withBusy("draftMetaRefreshBtn", "讀取中...", async () => {
         const data = await api("/api/osc/drafts/meta");
