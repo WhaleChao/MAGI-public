@@ -2,7 +2,7 @@ from pathlib import Path
 
 from scripts.install_magi import build_install_plan, venv_python
 from scripts.magi_doctor import collect_report
-from scripts.seed_cron_jobs import seed_jobs
+from scripts.seed_cron_jobs import default_python_path, seed_jobs
 
 
 def test_doctor_collect_report_without_live_probe_has_expected_shape():
@@ -37,3 +37,18 @@ def test_seed_cron_jobs_creates_worldmonitor_and_business_jobs(tmp_path):
     assert "job_distill_train_gemma" in cron_text
     assert "pdfnamer_docling_layout" in cron_text
     assert "MAGI_PDF_NAMER_DOCLING_ENABLED=1" in cron_text
+
+
+def test_seed_cron_jobs_default_python_matches_safe_process(tmp_path, monkeypatch):
+    monkeypatch.delenv("MAGI_CRON_PYTHON", raising=False)
+    monkeypatch.delenv("MAGI_VENV_DIR", raising=False)
+
+    result = seed_jobs(tmp_path)
+    cron_text = (tmp_path / "cron_jobs.json").read_text(encoding="utf-8")
+
+    assert result["ok"] is True
+    assert str(default_python_path(tmp_path)) == str(tmp_path / "venv" / "bin" / "python3")
+    assert f"{tmp_path}/.venv/bin/python" not in cron_text
+    assert f"{tmp_path}/venv/bin/python3" in cron_text
+    assert '"id": "job_resource_governor"' in cron_text
+    assert '"cron": "20 * * * *"' in cron_text

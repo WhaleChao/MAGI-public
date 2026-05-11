@@ -18,10 +18,10 @@ def default_python_path(repo_root: Path = REPO_ROOT) -> Path:
     env_python = os.environ.get("MAGI_CRON_PYTHON")
     if env_python:
         return Path(env_python).expanduser()
-    venv_dir = Path(os.environ.get("MAGI_VENV_DIR", repo_root / ".venv")).expanduser()
+    venv_dir = Path(os.environ.get("MAGI_VENV_DIR", repo_root / "venv")).expanduser()
     if platform.system() == "Windows":
         return venv_dir / "Scripts" / "python.exe"
-    return venv_dir / "bin" / "python"
+    return venv_dir / "bin" / "python3"
 
 
 def worldmonitor_job(repo_root: Path = REPO_ROOT, python_path: Path | None = None) -> dict[str, Any]:
@@ -151,7 +151,7 @@ def operational_jobs(repo_root: Path = REPO_ROOT, python_path: Path | None = Non
         },
         {
             "id": "job_resource_governor",
-            "cron": "5 * * * *",
+            "cron": "20 * * * *",
             "command": f"{python_bin} {repo_root / 'scripts' / 'ops' / 'resource_governor.py'} --json status",
             "desc": "MAGI 資源治理守門（磁碟/swap/記憶體分級，重型任務降級依據）",
             "channel_id": None,
