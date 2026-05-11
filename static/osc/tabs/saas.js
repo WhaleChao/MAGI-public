@@ -98,8 +98,10 @@ function renderSaasOps(ops, audit) {
     const host = document.getElementById("saasOpsGrid");
     if (host) {
         const items = [
+            ["案件總數", ops.total_cases],
             ["進行中案件", ops.active_cases],
             ["已結案", ops.closed_cases],
+            ["報結/送出中", ops.closing_pending_cases],
             ["待辦", ops.pending_todos],
             ["逾期待辦", ops.overdue_todos],
             ["文件索引", ops.documents],

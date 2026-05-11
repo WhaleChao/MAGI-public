@@ -21,6 +21,7 @@ from api.osc.draft_learning import draft_learning_summary, recent_draft_feedback
 ROOT = Path(__file__).resolve().parents[2]
 INTAKE_PATH = ROOT / ".runtime" / "osc_saas_intake_events.jsonl"
 MAX_TEXT = 60000
+CLOSED_CASE_STATUSES = ("已結案", "已結案，待報結", "已結案待報結", "已結案，待送出")
 
 ExecFn = Callable[..., tuple[Any, Any]]
 
@@ -181,7 +182,8 @@ def _count(exec_fn: ExecFn, sql: str, params: tuple = ()) -> int:
 
 def _status_open_sql(alias: str = "") -> str:
     p = f"{alias}." if alias else ""
-    return f"({p}status IS NULL OR {p}status='' OR {p}status NOT IN ('已結案','已結案，待報結','完成','completed','done','cancelled','canceled'))"
+    closed = "','".join(CLOSED_CASE_STATUSES + ("完成", "completed", "done", "cancelled", "canceled"))
+    return f"({p}status IS NULL OR {p}status='' OR {p}status NOT IN ('{closed}'))"
 
 
 def _risk_from_todo(row: dict, today: date) -> dict:
@@ -616,16 +618,20 @@ def recent_intakes(limit: int = 20) -> list[dict]:
 
 
 def build_operations_report(exec_fn: ExecFn) -> dict:
+    total = _count(exec_fn, "SELECT COUNT(*) AS c FROM cases")
     active = _count(exec_fn, f"SELECT COUNT(*) AS c FROM cases WHERE {_status_open_sql()}")
-    closed = _count(exec_fn, "SELECT COUNT(*) AS c FROM cases WHERE status IN ('已結案','已結案，待報結')")
+    closing_pending = _count(exec_fn, "SELECT COUNT(*) AS c FROM cases WHERE status IN ('已結案，待報結','已結案待報結','已結案，待送出')")
+    closed = _count(exec_fn, "SELECT COUNT(*) AS c FROM cases WHERE status='已結案'")
     pending = _count(exec_fn, f"SELECT COUNT(*) AS c FROM case_todos WHERE {_status_open_sql()}")
     overdue = _count(exec_fn, f"SELECT COUNT(*) AS c FROM case_todos WHERE {_status_open_sql()} AND todo_date < CURDATE()")
     docs = _count(exec_fn, "SELECT COUNT(*) AS c FROM document_index")
     insights = _count(exec_fn, "SELECT COUNT(*) AS c FROM legal_insights")
     laf = _count(exec_fn, "SELECT COUNT(*) AS c FROM cases WHERE case_category='法律扶助案件' OR case_reason LIKE '%法扶%' OR case_reason LIKE '%法律扶助%'")
     return {
+        "total_cases": total,
         "active_cases": active,
         "closed_cases": closed,
+        "closing_pending_cases": closing_pending,
         "pending_todos": pending,
         "overdue_todos": overdue,
         "documents": docs,

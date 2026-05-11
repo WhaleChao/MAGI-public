@@ -99,6 +99,33 @@ def test_saas_overview_exposes_ten_capabilities(monkeypatch, tmp_path):
     assert {x["target_tab"] for x in result["integration"]["items"]} >= {"todos", "clients", "documents", "drafts"}
 
 
+def test_operations_report_separates_total_active_and_closing_pending(monkeypatch, tmp_path):
+    from api.osc import draft_learning, saas_workbench
+
+    monkeypatch.setattr(draft_learning, "EVENTS_PATH", tmp_path / "learning.jsonl")
+    monkeypatch.setattr(saas_workbench, "INTAKE_PATH", tmp_path / "intake.jsonl")
+
+    def fake_exec(sql, params=(), fetch="one"):
+        if "COUNT(*) AS c FROM cases" in sql and "WHERE" not in sql:
+            return ({"c": 182}, None)
+        if "COUNT(*) AS c FROM cases" in sql and "NOT IN" in sql:
+            return ({"c": 143}, None)
+        if "COUNT(*) AS c FROM cases" in sql and "已結案，待送出" in sql:
+            return ({"c": 1}, None)
+        if "COUNT(*) AS c FROM cases" in sql and "status='已結案'" in sql:
+            return ({"c": 38}, None)
+        if "COUNT(*) AS c" in sql:
+            return ({"c": 0}, None)
+        return ([], None)
+
+    result = saas_workbench.build_operations_report(fake_exec)
+
+    assert result["total_cases"] == 182
+    assert result["active_cases"] == 143
+    assert result["closed_cases"] == 38
+    assert result["closing_pending_cases"] == 1
+
+
 def test_risk_dashboard_marks_source_module():
     from api.osc import saas_workbench
 
