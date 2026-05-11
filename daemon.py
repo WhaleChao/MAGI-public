@@ -691,6 +691,73 @@ _BACKOFF_MAX  = 300         # cap at 5 minutes
 _HEALTHY_THRESHOLD = 60     # if process ran > 60s, reset failure count
 _MAX_CONSECUTIVE_FAILURES = 10  # stop restarting after this many rapid failures
 
+_HTTP_LIVENESS_ENDPOINTS = {
+    "Server": "http://127.0.0.1:5002/health",
+    "ToolsAPI": "http://127.0.0.1:5003/health",
+}
+_HTTP_LIVENESS_INTERVAL_SEC = float(os.environ.get("MAGI_DAEMON_HTTP_LIVENESS_INTERVAL_SEC", "30"))
+_HTTP_LIVENESS_TIMEOUT_SEC = float(os.environ.get("MAGI_DAEMON_HTTP_LIVENESS_TIMEOUT_SEC", "4"))
+_HTTP_LIVENESS_MIN_UPTIME_SEC = float(os.environ.get("MAGI_DAEMON_HTTP_LIVENESS_MIN_UPTIME_SEC", "75"))
+_HTTP_LIVENESS_FAILURE_THRESHOLD = int(os.environ.get("MAGI_DAEMON_HTTP_LIVENESS_FAILURE_THRESHOLD", "3"))
+_http_liveness_failures: Dict[str, int] = {}
+_http_liveness_last_probe: Dict[str, float] = {}
+
+
+def _probe_http_liveness(name: str, url: str) -> tuple[bool, str]:
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "MAGI-daemon-liveness/1.0"})
+        with urllib.request.urlopen(req, timeout=_HTTP_LIVENESS_TIMEOUT_SEC) as resp:
+            status = getattr(resp, "status", 0) or 0
+            resp.read(512)
+        if 200 <= int(status) < 500:
+            return True, f"http_{status}"
+        return False, f"http_{status}"
+    except Exception as e:
+        return False, f"{type(e).__name__}: {e}"
+
+
+def _maybe_probe_http_liveness(name: str, rec: Dict[str, Any], now: float) -> bool:
+    """Restart alive-but-wedged HTTP services after repeated health timeouts."""
+    url = _HTTP_LIVENESS_ENDPOINTS.get(name)
+    if not url:
+        return False
+    started = rec.get("started", 0) or 0
+    if now - started < _HTTP_LIVENESS_MIN_UPTIME_SEC:
+        return False
+    last = _http_liveness_last_probe.get(name, 0)
+    if now - last < _HTTP_LIVENESS_INTERVAL_SEC:
+        return False
+    _http_liveness_last_probe[name] = now
+
+    ok, detail = _probe_http_liveness(name, url)
+    if ok:
+        if _http_liveness_failures.get(name):
+            logger.info("✅ %s HTTP liveness recovered (%s)", name, detail)
+        _http_liveness_failures[name] = 0
+        return False
+
+    failures = _http_liveness_failures.get(name, 0) + 1
+    _http_liveness_failures[name] = failures
+    logger.warning(
+        "⚠️ %s HTTP liveness failed %d/%d: %s",
+        name,
+        failures,
+        _HTTP_LIVENESS_FAILURE_THRESHOLD,
+        detail,
+    )
+    if failures < _HTTP_LIVENESS_FAILURE_THRESHOLD:
+        return False
+
+    _http_liveness_failures[name] = 0
+    logger.error("🧯 %s appears wedged while process is alive — restarting service group", name)
+    if name in _ORCHESTRATOR_GROUP:
+        _coordinated_restart(name)
+    else:
+        command = rec.get("command")
+        if command:
+            start_process(name, command)
+    return True
+
 # ── CronScheduler Fallback ──
 # When Discord Bot is unavailable, daemon runs CronScheduler independently.
 _cron_fallback_running = False
@@ -885,6 +952,10 @@ def monitor_processes():
         proc = rec.get("proc")
         command = rec.get("command")
         if not proc:
+            continue
+        if proc.poll() is None:
+            if _maybe_probe_http_liveness(name, rec, now):
+                continue
             continue
         if proc.poll() is not None:
             if not command:

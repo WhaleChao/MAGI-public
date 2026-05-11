@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import sys
 import time
 import argparse
@@ -40,6 +41,16 @@ METRICS_KEEP_TAIL = int(os.environ.get("MAGI_DISK_METRICS_KEEP_TAIL", "1000"))
 OMLX_CACHE_KEEP_DAYS = int(os.environ.get("MAGI_DISK_OMLX_KEEP_DAYS", "7"))
 OMLX_CACHE_MAX_DELETE_BYTES = int(float(os.environ.get("MAGI_DISK_OMLX_MAX_DELETE_GB", "20")) * 1024 * 1024 * 1024)
 TMP_MAX_AGE_HOURS = int(os.environ.get("MAGI_DISK_TMP_MAX_AGE_HOURS", "48"))
+DB_BACKUP_KEEP_LATEST = int(os.environ.get("MAGI_DISK_DB_BACKUP_KEEP_LATEST", "8"))
+BUILD_ARTIFACT_MAX_AGE_DAYS = int(os.environ.get("MAGI_DISK_BUILD_ARTIFACT_MAX_AGE_DAYS", "7"))
+BUILD_ARTIFACT_LOW_WATER_GB = float(os.environ.get("MAGI_DISK_BUILD_ARTIFACT_LOW_WATER_GB", "20"))
+BUILD_ARTIFACT_CLEANUP_ENABLE = os.environ.get(
+    "MAGI_DISK_BUILD_ARTIFACT_CLEANUP_ENABLE", "1"
+).strip().lower() in {"1", "true", "on", "yes"}
+GIT_TMP_PACK_MAX_AGE_HOURS = int(os.environ.get("MAGI_DISK_GIT_TMP_PACK_MAX_AGE_HOURS", "24"))
+GIT_TMP_PACK_CLEANUP_ENABLE = os.environ.get(
+    "MAGI_DISK_GIT_TMP_PACK_CLEANUP_ENABLE", "1"
+).strip().lower() in {"1", "true", "on", "yes"}
 
 # 受保護名單（即使符合 pattern 也不動）
 _PROTECTED_METRICS_NAMES = frozenset({
@@ -258,6 +269,234 @@ def cleanup_tmp(dry_run: bool) -> List[Dict[str, Any]]:
     return [info]
 
 
+# ---- local DB backups ---------------------------------------------------
+
+def cleanup_db_backups(dry_run: bool) -> List[Dict[str, Any]]:
+    """Prune local DB backup bursts while preserving recent restore points."""
+    backup_dir = MAGI_ROOT / "_db_backups" / "law_firm_data"
+    if not backup_dir.is_dir():
+        return []
+
+    groups: Dict[str, List[Path]] = {}
+    for f in backup_dir.glob("*.sql.gz"):
+        name = f.name
+        label = "other"
+        if name.startswith("law_firm_data_local_"):
+            label = "local"
+        elif name.startswith("law_firm_data_remote_"):
+            label = "remote"
+        groups.setdefault(label, []).append(f)
+
+    actions: List[Dict[str, Any]] = []
+    keep_latest = max(1, DB_BACKUP_KEEP_LATEST)
+    for label, files in sorted(groups.items()):
+        files = sorted(files, key=lambda p: p.stat().st_mtime if p.exists() else 0, reverse=True)
+        keep = set(files[:keep_latest])
+        candidates = [p for p in files if p not in keep]
+        deleted_bytes = 0
+        deleted_files = 0
+        candidate_bytes = 0
+        for f in candidates:
+            try:
+                size = f.stat().st_size
+            except OSError:
+                continue
+            candidate_bytes += size
+            meta = Path(str(f) + ".meta.json")
+            if dry_run:
+                continue
+            try:
+                f.unlink()
+                deleted_files += 1
+                deleted_bytes += size
+                if meta.exists():
+                    meta.unlink()
+            except OSError as e:
+                _log(f"DB backup remove failed: {f} ({e})")
+        info = {
+            "label": label,
+            "dir": str(backup_dir),
+            "keep_latest": keep_latest,
+            "kept_files": len(keep),
+            "candidate_files": len(candidates),
+            "candidate_bytes": candidate_bytes,
+            "deleted_files": deleted_files,
+            "deleted_bytes": deleted_bytes,
+            "dry_run": dry_run,
+        }
+        _log(
+            f"DB backups {label}: {'would prune' if dry_run else 'pruned'} "
+            f"{len(candidates)} files, {candidate_bytes / 1024 / 1024:.2f} MB "
+            f"(keep latest {keep_latest})"
+        )
+        actions.append(info)
+    return actions
+
+
+# ---- build artifacts ----------------------------------------------------
+
+def _disk_free_gb(path: Path = MAGI_ROOT) -> float:
+    try:
+        return shutil.disk_usage(path).free / 1024 / 1024 / 1024
+    except OSError:
+        return -1.0
+
+
+def cleanup_build_artifacts(dry_run: bool) -> List[Dict[str, Any]]:
+    """Remove rebuildable packaging artifacts when stale or disk is low."""
+    if not BUILD_ARTIFACT_CLEANUP_ENABLE:
+        return [{"enabled": False, "reason": "MAGI_DISK_BUILD_ARTIFACT_CLEANUP_ENABLE=0"}]
+
+    now = time.time()
+    cutoff = now - max(1, BUILD_ARTIFACT_MAX_AGE_DAYS) * 86400
+    free_gb = _disk_free_gb(MAGI_ROOT)
+    low_water = 0 <= free_gb < BUILD_ARTIFACT_LOW_WATER_GB
+    targets = [
+        MAGI_ROOT / "build" / "Paperclip",
+        MAGI_ROOT / "dist" / "Paperclip",
+        MAGI_ROOT / "dist" / "Paperclip.app",
+    ]
+    actions: List[Dict[str, Any]] = []
+    for target in targets:
+        if not target.exists():
+            continue
+        try:
+            st = target.stat()
+        except OSError:
+            continue
+        stale = st.st_mtime < cutoff
+        should_remove = low_water or stale
+        try:
+            size = sum(p.stat().st_size for p in target.rglob("*") if p.is_file()) if target.is_dir() else st.st_size
+        except OSError:
+            size = 0
+        info = {
+            "path": str(target),
+            "size_bytes": size,
+            "stale": stale,
+            "low_water": low_water,
+            "free_gb": round(free_gb, 2),
+            "threshold_gb": BUILD_ARTIFACT_LOW_WATER_GB,
+            "deleted": False,
+            "dry_run": dry_run,
+        }
+        if not should_remove:
+            info["skipped"] = True
+            info["reason"] = "not_stale_and_disk_above_low_water"
+            actions.append(info)
+            continue
+        if dry_run:
+            actions.append(info)
+            _log(f"DRY-RUN build artifact remove: {target} ({size / 1024 / 1024:.2f} MB)")
+            continue
+        try:
+            if target.is_dir():
+                shutil.rmtree(target)
+            else:
+                target.unlink()
+            info["deleted"] = True
+            _log(f"REMOVED build artifact: {target} ({size / 1024 / 1024:.2f} MB)")
+        except OSError as e:
+            info["error"] = str(e)
+            _log(f"build artifact remove failed: {target} ({e})")
+        actions.append(info)
+    return actions
+
+
+# ---- stale git temp packs ----------------------------------------------
+
+def _git_tmp_pack_roots() -> List[Path]:
+    raw = os.environ.get("MAGI_DISK_GIT_TMP_PACK_ROOTS", "")
+    if raw.strip():
+        return [Path(p).expanduser().resolve() for p in raw.split(os.pathsep) if p.strip()]
+    roots = [MAGI_ROOT]
+    parent = MAGI_ROOT.parent
+    if parent != MAGI_ROOT:
+        roots.append(parent)
+    return roots
+
+
+def _git_process_running() -> bool:
+    try:
+        import subprocess
+        out = subprocess.run(
+            ["ps", "-axo", "command="],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=5,
+        ).stdout
+    except Exception:
+        return True
+    for line in (out or "").splitlines():
+        cmd = line.strip()
+        if not cmd:
+            continue
+        base = Path(cmd.split()[0]).name
+        if base == "git":
+            return True
+    return False
+
+
+def cleanup_stale_git_tmp_packs(dry_run: bool) -> List[Dict[str, Any]]:
+    """Remove stale .git/objects/pack/tmp_pack_* files from failed git operations."""
+    if not GIT_TMP_PACK_CLEANUP_ENABLE:
+        return [{"enabled": False, "reason": "MAGI_DISK_GIT_TMP_PACK_CLEANUP_ENABLE=0"}]
+    if _git_process_running():
+        return [{"skipped": True, "reason": "git_process_running", "dry_run": dry_run}]
+
+    cutoff = time.time() - max(1, GIT_TMP_PACK_MAX_AGE_HOURS) * 3600
+    actions: List[Dict[str, Any]] = []
+    seen: set[Path] = set()
+    for root in _git_tmp_pack_roots():
+        git_pack = root / ".git" / "objects" / "pack"
+        if git_pack in seen:
+            continue
+        seen.add(git_pack)
+        if not git_pack.is_dir():
+            continue
+        candidate_count = 0
+        candidate_bytes = 0
+        deleted_count = 0
+        deleted_bytes = 0
+        for f in git_pack.glob("tmp_pack_*"):
+            if not f.is_file():
+                continue
+            try:
+                st = f.stat()
+            except OSError:
+                continue
+            if st.st_mtime >= cutoff:
+                continue
+            candidate_count += 1
+            candidate_bytes += st.st_size
+            if dry_run:
+                continue
+            try:
+                f.unlink()
+                deleted_count += 1
+                deleted_bytes += st.st_size
+            except OSError as e:
+                _log(f"git tmp_pack remove failed: {f} ({e})")
+        info = {
+            "root": str(root),
+            "pack_dir": str(git_pack),
+            "candidate_files": candidate_count,
+            "candidate_bytes": candidate_bytes,
+            "deleted_files": deleted_count,
+            "deleted_bytes": deleted_bytes,
+            "max_age_hours": GIT_TMP_PACK_MAX_AGE_HOURS,
+            "dry_run": dry_run,
+        }
+        if candidate_count:
+            _log(
+                f"git tmp_pack {git_pack}: {'would remove' if dry_run else 'removed'} "
+                f"{candidate_count} files, {candidate_bytes / 1024 / 1024:.2f} MB"
+            )
+        actions.append(info)
+    return actions
+
+
 # ---- server.log 回報 ----------------------------------------------------
 
 def report_agent_logs(_dry_run: bool) -> List[Dict[str, Any]]:
@@ -295,6 +534,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         "metrics": cleanup_metrics(dry_run),
         "omlx_cache": cleanup_omlx_cache(dry_run),
         "tmp": cleanup_tmp(dry_run),
+        "db_backups": cleanup_db_backups(dry_run),
+        "build_artifacts": cleanup_build_artifacts(dry_run),
+        "git_tmp_packs": cleanup_stale_git_tmp_packs(dry_run),
         "agent_logs": report_agent_logs(dry_run),
     }
     # 寫 summary 到 runtime/metrics（自己也透過 runtime_dir 管理）

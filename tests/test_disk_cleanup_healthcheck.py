@@ -249,6 +249,76 @@ def test_main_apply_arg_overrides_env_dry_run(sandbox, monkeypatch):
     monkeypatch.setattr(dc, "cleanup_metrics", lambda dry_run: calls.append(dry_run) or [])
     monkeypatch.setattr(dc, "cleanup_omlx_cache", lambda dry_run: [])
     monkeypatch.setattr(dc, "cleanup_tmp", lambda dry_run: [{"candidate_count": 0}])
+    monkeypatch.setattr(dc, "cleanup_db_backups", lambda dry_run: [])
+    monkeypatch.setattr(dc, "cleanup_build_artifacts", lambda dry_run: [])
+    monkeypatch.setattr(dc, "cleanup_stale_git_tmp_packs", lambda dry_run: [])
     monkeypatch.setattr(dc, "report_agent_logs", lambda dry_run: [])
     assert dc.main(["--apply"]) == 0
     assert calls == [False]
+
+
+def test_db_backup_cleanup_keeps_latest_per_kind(sandbox, monkeypatch):
+    backup_dir = sandbox["magi"] / "_db_backups" / "law_firm_data"
+    backup_dir.mkdir(parents=True)
+    now = time.time()
+    files = []
+    for i in range(5):
+        f = backup_dir / f"law_firm_data_local_20260511_12000{i}.sql.gz"
+        f.write_bytes(b"x" * (i + 1))
+        Path(str(f) + ".meta.json").write_text("{}", encoding="utf-8")
+        os.utime(f, (now + i, now + i))
+        files.append(f)
+    remote = backup_dir / "law_firm_data_remote_20260511_120000.sql.gz"
+    remote.write_bytes(b"remote")
+    monkeypatch.setattr(dc, "DB_BACKUP_KEEP_LATEST", 2, raising=True)
+
+    actions = dc.cleanup_db_backups(dry_run=False)
+
+    remaining = sorted(p.name for p in backup_dir.glob("*.sql.gz"))
+    assert remaining == [
+        "law_firm_data_local_20260511_120003.sql.gz",
+        "law_firm_data_local_20260511_120004.sql.gz",
+        "law_firm_data_remote_20260511_120000.sql.gz",
+    ]
+    assert not Path(str(files[0]) + ".meta.json").exists()
+    local = next(a for a in actions if a["label"] == "local")
+    assert local["deleted_files"] == 3
+
+
+def test_build_artifact_cleanup_removes_when_disk_low(sandbox, monkeypatch):
+    artifact = sandbox["magi"] / "dist" / "Paperclip.app"
+    artifact.mkdir(parents=True)
+    (artifact / "binary").write_bytes(b"x" * 100)
+    monkeypatch.setattr(dc, "BUILD_ARTIFACT_CLEANUP_ENABLE", True, raising=True)
+    monkeypatch.setattr(dc, "BUILD_ARTIFACT_LOW_WATER_GB", 20, raising=True)
+    monkeypatch.setattr(dc, "_disk_free_gb", lambda _path: 5.0)
+
+    actions = dc.cleanup_build_artifacts(dry_run=False)
+
+    assert not artifact.exists()
+    assert any(a["deleted"] is True and a["low_water"] is True for a in actions)
+
+
+def test_git_tmp_pack_cleanup_removes_stale_temp_packs(sandbox, monkeypatch):
+    pack_dir = sandbox["magi"] / ".git" / "objects" / "pack"
+    pack_dir.mkdir(parents=True)
+    old = pack_dir / "tmp_pack_old"
+    fresh = pack_dir / "tmp_pack_fresh"
+    keep = pack_dir / "pack-real.pack"
+    for p in (old, fresh, keep):
+        p.write_bytes(b"x" * 10)
+    now = time.time()
+    os.utime(old, (now - 48 * 3600, now - 48 * 3600))
+    os.utime(fresh, (now, now))
+    os.utime(keep, (now - 48 * 3600, now - 48 * 3600))
+    monkeypatch.setattr(dc, "GIT_TMP_PACK_CLEANUP_ENABLE", True, raising=True)
+    monkeypatch.setattr(dc, "GIT_TMP_PACK_MAX_AGE_HOURS", 24, raising=True)
+    monkeypatch.setattr(dc, "_git_tmp_pack_roots", lambda: [sandbox["magi"]])
+    monkeypatch.setattr(dc, "_git_process_running", lambda: False)
+
+    actions = dc.cleanup_stale_git_tmp_packs(dry_run=False)
+
+    assert not old.exists()
+    assert fresh.exists()
+    assert keep.exists()
+    assert actions[0]["deleted_files"] == 1
