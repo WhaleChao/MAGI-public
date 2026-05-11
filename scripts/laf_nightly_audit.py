@@ -1735,7 +1735,7 @@ def format_audit_report(
 # ─── 4. 通知發送 ──────────────────────────────────────────────
 
 def send_report(report_text: str, has_issues: bool = False):
-    """透過 red_phone 發送 Telegram 通知。"""
+    """透過 red_phone 發送巡檢通知。"""
     try:
         sys.path.insert(0, os.path.join(PROJECT_ROOT, "skills", "ops"))
         from red_phone import alert_admin
@@ -1746,7 +1746,8 @@ def send_report(report_text: str, has_issues: bool = False):
             source="laf_nightly_audit",
             # 如果沒有問題，DC 鏡像會被 red_phone 的 filter 攔截（clean status report）
             # 若未來需要強制靜默，可在 topic_key 傳入 "__SILENT__"
-            topic_key="laf",
+            # 巡檢是法扶一般營運報告，不是派案/開辦/二階段通知。
+            topic_key="laf_general",
         )
         logger.info("Telegram notification sent: %s", result.get("telegram", False))
     except Exception as e:

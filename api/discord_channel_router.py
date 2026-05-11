@@ -37,6 +37,7 @@ logger = logging.getLogger("discord_channel_router")
 _MAGI_ROOT = os.path.abspath(os.path.dirname(os.path.dirname(__file__)))
 _AGENT_DIR = os.path.join(_MAGI_ROOT, ".agent")
 _CHANNEL_MAP_FILE = os.path.join(_AGENT_DIR, "discord_channel_map.json")
+_SYSTEM_SILENT_SOURCES = {"business_module_live_check", "nightly_regression", "mock_test"}
 
 # ───────── topic_key → sub_topic 映射 ─────────
 # red_phone.py 已定義 canonical topic_key (filereview, transcript, laf, ...),
@@ -79,6 +80,9 @@ def _infer_sub_topic(message: str, topic_key: str, source: str = "") -> str:
     s = str(message or "").lower()
     src = str(source or "").lower()
 
+    if src in _SYSTEM_SILENT_SOURCES:
+        return "check"
+
     if canonical in ("filereview", "filereview_payment", "filereview_download", "filereview_apply"):
         # 已經有明確 sub_topic 的直接返回
         if canonical in ("filereview_payment", "filereview_download", "filereview_apply"):
@@ -98,10 +102,23 @@ def _infer_sub_topic(message: str, topic_key: str, source: str = "") -> str:
 
     if canonical == "laf":
         # 法扶類：依動作細分
+        if src == "laf_nightly_audit" or any(
+            k in s
+            for k in [
+                "法扶夜間巡檢報告",
+                "巡檢報告",
+                "案件總數",
+                "自動補填法扶案號",
+                "仍待確認法扶案號",
+            ]
+        ):
+            return "laf_general"
         if any(k in s for k in ["派案", "dispatch", "新案"]):
             return "laf_dispatch"
         if any(k in s for k in ["審查結果", "review_result", "准予扶助"]):
             return "laf_dispatch"
+        if any(k in s for k in ["進度回報", "laf_progress", "未結案件進度", "confirm_token", "確認碼"]):
+            return "laf_progress"
         if any(k in s for k in ["結案", "closing", "報結"]):
             return "laf_closing"
         if any(k in s for k in ["酬金", "領款", "費用", "fee"]):
@@ -110,8 +127,6 @@ def _infer_sub_topic(message: str, topic_key: str, source: str = "") -> str:
             return "laf_inquiry"
         if any(k in s for k in ["二階段", "附條件", "condition"]):
             return "laf_condition"
-        if any(k in s for k in ["進度回報", "laf_progress", "未結案件進度", "confirm_token", "確認碼"]):
-            return "laf_progress"
         if any(k in s for k in ["開辦", "go_live", "go-live", "進行中"]):
             # 如果包含「巡檢」或「報告」等報告字眼，改轉 laf_general
             if any(k in s for k in ["巡檢", "報告", "報告", "待開辦", "逾期"]):
@@ -328,6 +343,8 @@ def resolve_discord_channel(
         - channel_id 可能為空字串（表示未設定，使用預設頻道）
     """
     sub_topic = _infer_sub_topic(message, topic_key, source)
+    if str(source or "").strip().lower() in _SYSTEM_SILENT_SOURCES:
+        return sub_topic, "__SILENT__"
     cmap = _load_channel_map()
 
     if not cmap:

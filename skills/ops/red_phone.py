@@ -564,6 +564,23 @@ def _canonical_topic_key(key: str) -> str:
         "legal_aid": "laf",
         "legal-aid": "laf",
         "法扶": "laf",
+        "laf_general": "laf_general",
+        "laf-general": "laf_general",
+        "法扶一般": "laf_general",
+        "laf_dispatch": "laf_dispatch",
+        "laf-dispatch": "laf_dispatch",
+        "laf_go_live": "laf_go_live",
+        "laf-go-live": "laf_go_live",
+        "laf_closing": "laf_closing",
+        "laf-closing": "laf_closing",
+        "laf_fee": "laf_fee",
+        "laf-fee": "laf_fee",
+        "laf_inquiry": "laf_inquiry",
+        "laf-inquiry": "laf_inquiry",
+        "laf_condition": "laf_condition",
+        "laf-condition": "laf_condition",
+        "laf_progress": "laf_progress",
+        "laf-progress": "laf_progress",
         # 判決
         "judgment": "judgment",
         "judgments": "judgment",
@@ -798,6 +815,7 @@ def _resolve_thread_id(message: str, source: str, severity: str, topic_key: str 
         "filereview_download": "filereview",
         "filereview_apply": "filereview",
         "laf_dispatch": "laf",
+        "laf_general": "laf",
         "laf_closing": "laf",
         "judicial_api": "judgment",
     }
@@ -1022,10 +1040,14 @@ def _mirror_to_discord(
     """
     if not (os.environ.get("MAGI_DC_MIRROR_ENABLED", "1").strip().lower() in {"1", "true", "yes", "on"}):
         return False
+    _src = str(source or "").strip().lower()
+    # 系統/健康檢查只留在內部通知，不鏡像到業務 DC 頻道。
+    if _src in {"business_module_live_check", "nightly_regression", "mock_test"}:
+        return False
     # DC 對外開放，僅鏡像業務相關通知；系統內部（alert/check/nightly）不發 DC
     _DC_MIRROR_ALLOWED_TOPICS = {
         "filereview", "filereview_payment", "filereview_download", "filereview_apply",
-        "laf", "laf_dispatch", "laf_go_live", "laf_closing", "laf_fee", "laf_inquiry", "laf_condition",
+        "laf", "laf_general", "laf_dispatch", "laf_go_live", "laf_closing", "laf_fee", "laf_inquiry", "laf_condition", "laf_progress",
         "transcript", "judgment",
         # "market" 已從 DC 鏡像中移除 (2026-04-20)：股票資訊不發 Discord
         "verbatim", "summary", "translation", "filing",

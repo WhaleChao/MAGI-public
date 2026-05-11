@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 import types
+import pytest
 
 
 def test_business_live_check_notifies_system_topic(monkeypatch):
@@ -21,3 +22,17 @@ def test_business_live_check_notifies_system_topic(monkeypatch):
     assert calls[0][1]["topic_key"] == "check"
     assert calls[0][1]["source"] == "business_module_live_check"
 
+
+def test_business_live_check_help_does_not_run_live_checks(monkeypatch):
+    from scripts.ops import business_module_live_check
+
+    monkeypatch.setattr(
+        business_module_live_check,
+        "_laf_portal_live",
+        lambda: pytest.fail("--help should not start LAF portal live scan"),
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        business_module_live_check.main(["--help"])
+
+    assert exc.value.code == 0

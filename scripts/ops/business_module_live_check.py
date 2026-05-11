@@ -13,6 +13,7 @@ import json
 import os
 import subprocess
 import sys
+import argparse
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -132,10 +133,20 @@ def _notify(text: str) -> None:
         pass
 
 
-def main() -> int:
+def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Run non-destructive MAGI business module LIVE/health checks.")
+    parser.add_argument("--skip-laf-live", action="store_true", help="Skip live LAF portal login/scan.")
+    parser.add_argument("--notify", action="store_true", help="Send the summary through the internal check topic.")
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = _parse_args(argv)
+    if args.notify:
+        os.environ["MAGI_BUSINESS_LIVE_CHECK_NOTIFY"] = "1"
+
     results = [
         _run("laf_self_test", [PYTHON, str(REPO_ROOT / "skills" / "laf-orchestrator" / "action.py"), "--task", "self_test"], timeout=120),
-        _laf_portal_live(),
         _run("file_review_self_test", [PYTHON, str(REPO_ROOT / "skills" / "file-review-orchestrator" / "action.py"), "--task", "self_test"], timeout=120),
         _run(
             "file_review_downloadable_probe",
@@ -145,6 +156,10 @@ def main() -> int:
         _run("transcript_self_test", [PYTHON, str(REPO_ROOT / "skills" / "transcript-downloader" / "action.py"), "--task", "self_test"], timeout=120),
         _run("transcript_db_probe", [PYTHON, str(REPO_ROOT / "skills" / "transcript-downloader" / "action.py"), "--task", "db_probe"], timeout=180),
     ]
+    if args.skip_laf_live:
+        results.insert(1, {"name": "laf_portal_live", "ok": True, "skipped": True, "parsed": {"error": None}})
+    else:
+        results.insert(1, _laf_portal_live())
     ok = all(bool(r.get("ok")) for r in results)
     out = {"ok": ok, "success": ok, "results": results, "message": _summarize(results)}
     _notify(out["message"])
