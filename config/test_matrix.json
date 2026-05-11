@@ -22,7 +22,8 @@
             "scripts/ops/smoke_test_full.py",
             "scripts/ops/run_test_suite.py",
             "scripts/ops/resource_governor.py",
-            "scripts/ops/model_live_gate.py"
+            "scripts/ops/model_live_gate.py",
+            "casper_ecosystem/law_firm_orchestrators/laf_vision.py"
           ],
           "timeout_sec": 30
         },
@@ -41,7 +42,8 @@
             "tests/test_intent_no_weather_for_reminder.py",
             "tests/test_run_test_suite.py",
             "tests/test_resource_governor.py",
-            "tests/test_model_live_gate.py"
+            "tests/test_model_live_gate.py",
+            "tests/test_laf_vision_ocr_consensus.py"
           ],
           "timeout_sec": 120
         }

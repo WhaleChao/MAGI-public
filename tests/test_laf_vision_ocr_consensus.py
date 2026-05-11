@@ -1,13 +1,14 @@
 # -*- coding: utf-8 -*-
 """
-Phase F 測試：LAFVision OCR 共識接入（shadow-only）
+LAFVision OCR 共識接入（guarded-write）
 
 測試範圍：
   1. extract_start_date() flag-off → 行為 bit-for-bit 與原邏輯相同
   2. extract_start_date_with_metadata() flag-off → dict 格式正確，date 與舊方法一致
-  3. shadow 模式 → consensus 被呼叫，但回傳值仍以 legacy 為準
-  4. enable + date critical_conflict → date=None, writable=False, confidence=0.0
-  5. enable + date 一致 → date 有值, confidence >= 0.75, writable=True
+  3. 預設模式 → guarded consensus enabled
+  4. shadow 模式 → consensus 被呼叫，但回傳值仍以 legacy 為準
+  5. enable + date critical_conflict → date=None, writable=False, confidence=0.0
+  6. enable + date 一致 → date 有值, confidence >= 0.75, writable=True
 
 禁止事項（Three-Module Protection Compliance）：
   - 不得在 module level import api.server / api.tools_api / daemon
@@ -119,6 +120,70 @@ def laf_vision_cls(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# Test 0: default guarded consensus mode
+# ---------------------------------------------------------------------------
+
+class TestDefaultGuardedMode:
+    """When flags are absent, LAFVision should use guarded consensus by default."""
+
+    def test_default_mode_is_enabled(self, laf_vision_cls, monkeypatch):
+        monkeypatch.delenv("MAGI_LAF_OCR_CONSENSUS_ENABLE", raising=False)
+        monkeypatch.delenv("MAGI_LAF_OCR_CONSENSUS_SHADOW", raising=False)
+
+        instance = laf_vision_cls()
+        instance._extract_via_legacy = MagicMock(return_value="2025-03-15")
+        instance._run_consensus_ocr = MagicMock(
+            return_value=_make_consensus_result(
+                confidence=0.88,
+                writable=True,
+                corrected_text="115年3月15日律師受任",
+            )
+        )
+        instance._write_consensus_metrics = MagicMock()
+        instance.gateway = MagicMock()
+        instance.gateway.dispatch = MagicMock(return_value={"success": True, "analysis": "2026-03-15"})
+
+        result = instance.extract_start_date_with_metadata("/fake/image.png")
+        assert result["provider_trace"].get("mode") == "enabled"
+        assert result["writable"] is True
+        assert result["date"] == "2026-03-15"
+
+    def test_extract_start_date_requires_writable_in_enabled_mode(self, laf_vision_cls, monkeypatch):
+        monkeypatch.delenv("MAGI_LAF_OCR_CONSENSUS_ENABLE", raising=False)
+        monkeypatch.delenv("MAGI_LAF_OCR_CONSENSUS_SHADOW", raising=False)
+
+        instance = laf_vision_cls()
+        instance.extract_start_date_with_metadata = MagicMock(
+            return_value={
+                "success": True,
+                "date": "2026-03-15",
+                "writable": False,
+                "provider_trace": {"mode": "enabled"},
+            }
+        )
+
+        assert instance.extract_start_date("/fake/image.png") is None
+
+    def test_extract_text_uses_consensus_by_default(self, laf_vision_cls, monkeypatch, tmp_path):
+        monkeypatch.delenv("MAGI_LAF_OCR_CONSENSUS_ENABLE", raising=False)
+        monkeypatch.delenv("MAGI_LAF_OCR_CONSENSUS_SHADOW", raising=False)
+
+        img = tmp_path / "laf.png"
+        img.write_bytes(b"fake image bytes")
+        instance = laf_vision_cls()
+        instance._run_consensus_ocr = MagicMock(
+            return_value=_make_consensus_result(
+                confidence=0.92,
+                writable=True,
+                corrected_text="法律扶助申請書 當事人 王小明",
+            )
+        )
+        instance._write_consensus_metrics = MagicMock()
+
+        assert instance.extract_text(str(img)) == "法律扶助申請書 當事人 王小明"
+
+
+# ---------------------------------------------------------------------------
 # Test 1: extract_start_date() flag-off — pure legacy path
 # ---------------------------------------------------------------------------
 
@@ -127,7 +192,7 @@ class TestExtractStartDateFlagOff:
 
     def test_returns_date_string_when_legacy_succeeds(self, laf_vision_cls, monkeypatch):
         """flag off → returns string from legacy, not None."""
-        monkeypatch.delenv("MAGI_LAF_OCR_CONSENSUS_ENABLE", raising=False)
+        monkeypatch.setenv("MAGI_LAF_OCR_CONSENSUS_ENABLE", "0")
         monkeypatch.delenv("MAGI_LAF_OCR_CONSENSUS_SHADOW", raising=False)
 
         instance = laf_vision_cls()
@@ -140,7 +205,7 @@ class TestExtractStartDateFlagOff:
 
     def test_returns_none_when_legacy_fails(self, laf_vision_cls, monkeypatch):
         """flag off → returns None when legacy returns None."""
-        monkeypatch.delenv("MAGI_LAF_OCR_CONSENSUS_ENABLE", raising=False)
+        monkeypatch.setenv("MAGI_LAF_OCR_CONSENSUS_ENABLE", "0")
         monkeypatch.delenv("MAGI_LAF_OCR_CONSENSUS_SHADOW", raising=False)
 
         instance = laf_vision_cls()
@@ -151,7 +216,7 @@ class TestExtractStartDateFlagOff:
 
     def test_consensus_not_called_when_flag_off(self, laf_vision_cls, monkeypatch):
         """flag off → _run_consensus_ocr must NOT be called."""
-        monkeypatch.delenv("MAGI_LAF_OCR_CONSENSUS_ENABLE", raising=False)
+        monkeypatch.setenv("MAGI_LAF_OCR_CONSENSUS_ENABLE", "0")
         monkeypatch.delenv("MAGI_LAF_OCR_CONSENSUS_SHADOW", raising=False)
 
         instance = laf_vision_cls()
@@ -163,7 +228,7 @@ class TestExtractStartDateFlagOff:
 
     def test_return_type_is_str_or_none(self, laf_vision_cls, monkeypatch):
         """Return type must be Optional[str] — never a dict or other type."""
-        monkeypatch.delenv("MAGI_LAF_OCR_CONSENSUS_ENABLE", raising=False)
+        monkeypatch.setenv("MAGI_LAF_OCR_CONSENSUS_ENABLE", "0")
         monkeypatch.delenv("MAGI_LAF_OCR_CONSENSUS_SHADOW", raising=False)
 
         instance = laf_vision_cls()
@@ -181,7 +246,7 @@ class TestExtractStartDateWithMetadataFlagOff:
 
     def test_dict_schema_present(self, laf_vision_cls, monkeypatch):
         """Required keys must be present in returned dict."""
-        monkeypatch.delenv("MAGI_LAF_OCR_CONSENSUS_ENABLE", raising=False)
+        monkeypatch.setenv("MAGI_LAF_OCR_CONSENSUS_ENABLE", "0")
         monkeypatch.delenv("MAGI_LAF_OCR_CONSENSUS_SHADOW", raising=False)
 
         instance = laf_vision_cls()
@@ -193,7 +258,7 @@ class TestExtractStartDateWithMetadataFlagOff:
 
     def test_date_matches_legacy(self, laf_vision_cls, monkeypatch):
         """dict['date'] must equal what legacy returns, so extract_start_date() wrapper is equivalent."""
-        monkeypatch.delenv("MAGI_LAF_OCR_CONSENSUS_ENABLE", raising=False)
+        monkeypatch.setenv("MAGI_LAF_OCR_CONSENSUS_ENABLE", "0")
         monkeypatch.delenv("MAGI_LAF_OCR_CONSENSUS_SHADOW", raising=False)
 
         instance = laf_vision_cls()
@@ -208,7 +273,7 @@ class TestExtractStartDateWithMetadataFlagOff:
 
     def test_mode_is_legacy_in_provider_trace(self, laf_vision_cls, monkeypatch):
         """provider_trace['mode'] must be 'legacy' when both flags off."""
-        monkeypatch.delenv("MAGI_LAF_OCR_CONSENSUS_ENABLE", raising=False)
+        monkeypatch.setenv("MAGI_LAF_OCR_CONSENSUS_ENABLE", "0")
         monkeypatch.delenv("MAGI_LAF_OCR_CONSENSUS_SHADOW", raising=False)
 
         instance = laf_vision_cls()
@@ -219,7 +284,7 @@ class TestExtractStartDateWithMetadataFlagOff:
 
     def test_no_raw_text_in_result(self, laf_vision_cls, monkeypatch):
         """Result dict must NOT contain raw OCR text (only date strings allowed)."""
-        monkeypatch.delenv("MAGI_LAF_OCR_CONSENSUS_ENABLE", raising=False)
+        monkeypatch.setenv("MAGI_LAF_OCR_CONSENSUS_ENABLE", "0")
         monkeypatch.delenv("MAGI_LAF_OCR_CONSENSUS_SHADOW", raising=False)
 
         instance = laf_vision_cls()
@@ -243,7 +308,7 @@ class TestShadowMode:
     def test_shadow_calls_consensus(self, laf_vision_cls, monkeypatch):
         """In shadow mode, _run_consensus_ocr must be called."""
         monkeypatch.setenv("MAGI_LAF_OCR_CONSENSUS_SHADOW", "1")
-        monkeypatch.delenv("MAGI_LAF_OCR_CONSENSUS_ENABLE", raising=False)
+        monkeypatch.setenv("MAGI_LAF_OCR_CONSENSUS_ENABLE", "0")
 
         instance = laf_vision_cls()
         instance._extract_via_legacy = MagicMock(return_value="2024-05-10")
@@ -256,7 +321,7 @@ class TestShadowMode:
     def test_shadow_returns_legacy_date(self, laf_vision_cls, monkeypatch):
         """In shadow mode, date in result must come from legacy, not consensus text."""
         monkeypatch.setenv("MAGI_LAF_OCR_CONSENSUS_SHADOW", "1")
-        monkeypatch.delenv("MAGI_LAF_OCR_CONSENSUS_ENABLE", raising=False)
+        monkeypatch.setenv("MAGI_LAF_OCR_CONSENSUS_ENABLE", "0")
 
         instance = laf_vision_cls()
         legacy_date = "2024-05-10"
@@ -271,7 +336,7 @@ class TestShadowMode:
     def test_shadow_mode_in_provider_trace(self, laf_vision_cls, monkeypatch):
         """provider_trace must indicate shadow mode."""
         monkeypatch.setenv("MAGI_LAF_OCR_CONSENSUS_SHADOW", "1")
-        monkeypatch.delenv("MAGI_LAF_OCR_CONSENSUS_ENABLE", raising=False)
+        monkeypatch.setenv("MAGI_LAF_OCR_CONSENSUS_ENABLE", "0")
 
         instance = laf_vision_cls()
         instance._extract_via_legacy = MagicMock(return_value="2024-05-10")
@@ -284,7 +349,7 @@ class TestShadowMode:
     def test_shadow_writes_metrics(self, laf_vision_cls, monkeypatch):
         """Shadow mode must call _write_consensus_metrics."""
         monkeypatch.setenv("MAGI_LAF_OCR_CONSENSUS_SHADOW", "1")
-        monkeypatch.delenv("MAGI_LAF_OCR_CONSENSUS_ENABLE", raising=False)
+        monkeypatch.setenv("MAGI_LAF_OCR_CONSENSUS_ENABLE", "0")
 
         instance = laf_vision_cls()
         instance._extract_via_legacy = MagicMock(return_value="2024-05-10")
@@ -493,7 +558,7 @@ class TestThreeModuleProtection:
 
     def test_extract_start_date_return_type_is_optional_str(self, laf_vision_cls, monkeypatch):
         """extract_start_date() must always return str or None, never a dict."""
-        monkeypatch.delenv("MAGI_LAF_OCR_CONSENSUS_ENABLE", raising=False)
+        monkeypatch.setenv("MAGI_LAF_OCR_CONSENSUS_ENABLE", "0")
         monkeypatch.delenv("MAGI_LAF_OCR_CONSENSUS_SHADOW", raising=False)
 
         instance = laf_vision_cls()
@@ -503,7 +568,7 @@ class TestThreeModuleProtection:
 
     def test_extract_start_date_returns_none_not_dict(self, laf_vision_cls, monkeypatch):
         """When legacy returns None, extract_start_date() must return None (not {})."""
-        monkeypatch.delenv("MAGI_LAF_OCR_CONSENSUS_ENABLE", raising=False)
+        monkeypatch.setenv("MAGI_LAF_OCR_CONSENSUS_ENABLE", "0")
         monkeypatch.delenv("MAGI_LAF_OCR_CONSENSUS_SHADOW", raising=False)
 
         instance = laf_vision_cls()

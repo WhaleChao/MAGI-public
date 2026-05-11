@@ -493,8 +493,8 @@ Key environment variables (set in `.env`):
 | `MAGI_SHORTCUT_OCR_CONSENSUS_ENABLE` | `1` | `/shortcut/ocr` consensus (mimetype stays `text/plain`) |
 | `MAGI_PDF_OCR_CONSENSUS_SHADOW` | `1` | pdf_bridge shadow mode — run new consensus for metrics, return legacy text |
 | `MAGI_PDF_OCR_CONSENSUS_ENABLE` | `0` | pdf_bridge full switch (leave `0` until shadow metrics confirm parity) |
-| `MAGI_LAF_OCR_CONSENSUS_SHADOW` | `1` | LAFVision shadow mode (3-module protection; 1-week observation required) |
-| `MAGI_LAF_OCR_CONSENSUS_ENABLE` | `0` | LAFVision full switch (do NOT enable without shadow review) |
+| `MAGI_LAF_OCR_CONSENSUS_SHADOW` | `0` | LAFVision shadow mode (observe only; production default is off) |
+| `MAGI_LAF_OCR_CONSENSUS_ENABLE` | `1` | LAFVision guarded-write OCR consensus (auto-adopt high-confidence output; conflicts/low-confidence stay non-writable) |
 | `MAGI_OBSIDIAN_OCR_CONSENSUS_ENABLE` | `0` | Obsidian PDF OCR fallback consensus |
 | `MAGI_NAS_HOST` | `MAGI_NAS_HOST` | NAS LAN IP |
 | `MAGI_NAS_TAILSCALE_HOST` | `MAGI_NAS_TAILSCALE_HOST` | NAS Tailscale IP (auto-fallback) |
