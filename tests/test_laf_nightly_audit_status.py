@@ -288,6 +288,165 @@ class TestLafProgressReminders:
         assert "1130101-J-001" in report
 
 
+class TestLafGoLiveReadiness:
+    """確認開辦資料放在 01_法扶資料 時也能被認列。"""
+
+    def test_notice_and_poa_in_laf_folder_are_go_live_ready_not_overdue(self, tmp_path):
+        from casper_ecosystem.law_firm_orchestrators.laf_nightly_audit import scan_laf_reporting_status
+
+        laf_dir = tmp_path / "case" / "01_法扶資料"
+        laf_dir.mkdir(parents=True)
+        (laf_dir / "准予扶助證明書_1141223-E-021_1141226.pdf").write_bytes(b"%PDF-1.4\n")
+        (laf_dir / "委任狀_1141223-E-021_1141226.pdf").write_bytes(b"%PDF-1.4\n")
+
+        class FakeDB:
+            def fetch_all(self, *_args, **_kwargs):
+                return [
+                    {
+                        "id": 1,
+                        "case_number": "2025-0133",
+                        "client_name": "吳志炳",
+                        "case_type": "刑事",
+                        "case_reason": "公共危險",
+                        "status": "進行中",
+                        "folder_path": str(tmp_path / "case"),
+                        "legal_aid_number": "1141223-E-021",
+                        "laf_case_no": "1141223-E-021",
+                        "application_no": "1141223-E-021",
+                        "legal_aid_status": "未開辦",
+                        "legal_aid_startup_deadline": "2026-02-23",
+                        "start_date": "2025-12-26",
+                        "end_date": None,
+                    }
+                ]
+
+        status = scan_laf_reporting_status(FakeDB())
+
+        assert [c["case_number"] for c in status["can_go_live"]] == ["2025-0133"]
+        assert status["not_started"] == []
+
+    def test_portal_empty_go_live_list_marks_db_in_progress(self):
+        from casper_ecosystem.law_firm_orchestrators.laf_nightly_audit import (
+            _resolve_go_live_cases_from_portal,
+        )
+
+        class FakeDB:
+            def __init__(self):
+                self.writes = []
+
+            def execute_write(self, sql, params):
+                self.writes.append((sql, params))
+                return True
+
+        case = {
+            "id": 1,
+            "case_number": "2026-0040",
+            "client_name": "張宥涵",
+            "legal_aid_number": "1150421-E-016",
+            "laf_case_no": "",
+            "application_no": "",
+            "legal_aid_status": "未開辦",
+        }
+        status = {"can_go_live": [case], "portal_drafts": {"error": None, "go_live_pending": []}}
+        db = FakeDB()
+
+        resolved = _resolve_go_live_cases_from_portal(status, db)
+
+        assert resolved[0]["portal_status"] == "already_opened"
+        assert status["can_go_live"] == []
+        assert db.writes
+
+
+# ── Portal attachment filename parsing ───────────────────────────────────────
+
+class TestPortalAttachmentFilenameParsing:
+    """確認法扶官網附件清單被黏在一起時，缺檔判斷仍正確。"""
+
+    def test_splits_glued_pdf_list_before_missing_check(self):
+        from casper_ecosystem.law_firm_orchestrators.laf_nightly_audit import _find_missing_portal_files
+
+        expected = [
+            "結案審查通知書_1131224-T-022_1150508.pdf2. 結案酬金領款單_1131224-T-022_1150508.pdf"
+        ]
+        existing = ["結案審查通知書_1131224-T-022_1150508.pdf"]
+
+        missing = _find_missing_portal_files(expected, existing)
+
+        assert missing == ["結案酬金領款單_1131224-T-022_1150508.pdf"]
+
+    def test_no_false_missing_when_all_split_files_exist(self):
+        from casper_ecosystem.law_firm_orchestrators.laf_nightly_audit import _find_missing_portal_files
+
+        expected = [
+            "1. 結案審查通知書_1131224-T-022_1150508.pdf2. 結案酬金領款單_1131224-T-022_1150508.pdf"
+        ]
+        existing = [
+            "結案審查通知書_1131224-T-022_1150508.pdf",
+            "結案酬金領款單_1131224-T-022_1150508.pdf",
+        ]
+
+        assert _find_missing_portal_files(expected, existing) == []
+
+    def test_downloaded_zip_is_extracted_for_missing_check(self, tmp_path):
+        import zipfile
+        from casper_ecosystem.law_firm_orchestrators.laf_nightly_audit import (
+            _find_missing_portal_files,
+            _move_downloaded_to_case_folder,
+        )
+
+        case_root = tmp_path / "case"
+        download_dir = tmp_path / "downloads"
+        download_dir.mkdir()
+        zip_path = download_dir / "1131224-T-022.zip"
+        expected = [
+            "結案審查通知書_1131224-T-022_1150508.pdf",
+            "結案酬金領款單_1131224-T-022_1150508.pdf",
+        ]
+        with zipfile.ZipFile(zip_path, "w") as zf:
+            for name in expected:
+                zf.writestr(name, b"%PDF-1.4\n")
+
+        moved, failed = _move_downloaded_to_case_folder([str(zip_path)], str(case_root))
+        existing = [p.name for p in case_root.glob("*/*") if p.is_file()]
+
+        assert failed == []
+        assert set(expected).issubset(set(moved))
+        assert _find_missing_portal_files(expected, existing) == []
+
+
+class TestLafNumberBackfillResilience:
+    """主 DB 回填成功時，不應被輔助索引建檔失敗拖成待回填。"""
+
+    def test_index_failure_does_not_cancel_primary_backfill(self, monkeypatch):
+        import casper_ecosystem.law_firm_orchestrators.laf_nightly_audit as mod
+
+        case = {
+            "id": 1,
+            "case_number": "2025-0051",
+            "client_name": "莊宸銘",
+            "case_type": "民事",
+            "case_reason": "消費者債務清理",
+            "legal_aid_number": "",
+            "laf_case_no": "",
+            "application_no": "",
+        }
+
+        db = MagicMock()
+        db.check_laf_case_exists.side_effect = RuntimeError("index table unavailable")
+
+        monkeypatch.setattr(
+            mod,
+            "_inspect_laf_number_candidates",
+            lambda _case: {
+                "candidate_numbers": {"1131224-T-022"},
+                "source_label": "案件資料夾",
+            },
+        )
+        monkeypatch.setattr(mod, "_update_case_laf_number", lambda _db, _case, _laf_no: True)
+
+        assert mod.try_backfill_laf_number(db, case) == "1131224-T-022"
+
+
 # ── laf_handler._STATUS_MAP ───────────────────────────────────────────────────
 
 class TestLafHandlerStatusMap:

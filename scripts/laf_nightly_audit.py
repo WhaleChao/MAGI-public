@@ -178,6 +178,32 @@ def _normalize_file_label(value: str) -> str:
     return text.lower()
 
 
+def _split_portal_file_labels(values: List[str]) -> List[str]:
+    """Split portal attachment labels into real PDF filenames.
+
+    LAF portal rows sometimes collapse an ordered list into one text node, for
+    example: ``a.pdf2. b.pdf``.  Treating that as one expected filename creates
+    a fake "missing file" alert after one file has already been downloaded.
+    """
+    filenames: List[str] = []
+    seen: set[str] = set()
+    for raw in values or []:
+        text = re.sub(r"\s+", " ", str(raw or "")).strip()
+        if not text:
+            continue
+        matches = re.findall(r"[^,，;；\n\r]*?\.pdf", text, flags=re.IGNORECASE)
+        candidates = matches or [text]
+        for item in candidates:
+            name = re.sub(r"^\s*\d+\s*[.)、．]\s*", "", item).strip(" 、，;；")
+            if not name:
+                continue
+            key = _normalize_file_label(name)
+            if key and key not in seen:
+                seen.add(key)
+                filenames.append(name)
+    return filenames
+
+
 def _inspect_laf_number_candidates(case: dict) -> dict:
     """Inspect a case folder and return candidate legal-aid numbers."""
     folder = _to_mac_path((case.get("folder_path") or "").strip())
@@ -402,7 +428,7 @@ def _find_missing_portal_files(expected_files: List[str], existing_files: List[s
     normalized_existing = [_normalize_file_label(name) for name in existing_files]
     missing: List[str] = []
 
-    for expected in expected_files:
+    for expected in _split_portal_file_labels(expected_files):
         expected_name = str(expected or "").strip()
         if not expected_name:
             continue
@@ -502,13 +528,21 @@ def try_backfill_laf_number(db, case: dict) -> Optional[str]:
     if len(chosen) == 1:
         laf_no = chosen.pop()
         try:
-            _update_case_laf_number(db, case, laf_no)
-            db.check_laf_case_exists(
-                laf_case_number=laf_no,
-                client_name=case.get("client_name", ""),
-                case_type=case.get("case_type", ""),
-                case_reason=case.get("case_reason", ""),
-            )
+            if not _update_case_laf_number(db, case, laf_no):
+                logger.error("backfill DB update returned false for %s -> %s", case["case_number"], laf_no)
+                return None
+            try:
+                db.check_laf_case_exists(
+                    laf_case_number=laf_no,
+                    client_name=case.get("client_name", ""),
+                    case_type=case.get("case_type", ""),
+                    case_reason=case.get("case_reason", ""),
+                )
+            except Exception as index_error:
+                logger.warning(
+                    "法扶案號已回填，但 legal_aid_cases 輔助索引更新失敗 %s -> %s: %s",
+                    case["case_number"], laf_no, index_error,
+                )
             logger.info("✅ 補填法扶案號: %s -> %s (%s)%s",
                         case["case_number"], laf_no, case.get("client_name"),
                         f" [from {inspected['source_label']}]" if inspected["source_label"] else "")
@@ -642,7 +676,9 @@ def backfill_from_case_list(db, missing_cases: List[dict]) -> List[dict]:
 
         # 補填 DB
         try:
-            _update_case_laf_number(db, case, chosen_no)
+            if not _update_case_laf_number(db, case, chosen_no):
+                logger.error("接案清冊補填 DB update returned false %s -> %s", case["case_number"], chosen_no)
+                continue
             logger.info(
                 "✅ 接案清冊補填: %s %s → %s",
                 case["case_number"], client, chosen_no,
@@ -664,6 +700,19 @@ def backfill_from_case_list(db, missing_cases: List[dict]) -> List[dict]:
         pass
 
     return backfilled
+
+
+def _is_placeholder_client_name(name: str) -> bool:
+    s = str(name or "").strip()
+    if not s:
+        return True
+    if s.startswith("-"):
+        return True
+    if any(c in s for c in ")(<>[]{}!@#$%^&*+=|\\;:\"'?/`~"):
+        return True
+    if any(token in s for token in ("案情", "文件", "卷宗", "附件", "信件", "資料夾")):
+        return True
+    return len(s) > 30
 
 
 # ─── 2. 掃描開辦/結案狀態 ─────────────────────────────────────
@@ -719,8 +768,26 @@ def scan_laf_reporting_status(db) -> dict:
         # 轉換路徑
         mac_folder = _to_mac_path(folder)
 
+        has_go_live_notice = False
+        has_go_live_poa = False
+        if laf_status in ("未開辦", "", None) and mac_folder:
+            has_go_live_notice = _folder_has_file(
+                mac_folder,
+                "02_開辦資料",
+                ("開辦通知書", "接案通知書", "准予扶助證明書"),
+            )
+            has_go_live_poa = _folder_has_file(mac_folder, "02_開辦資料", ("委任狀",))
+            if not has_go_live_notice:
+                has_go_live_notice = _folder_has_file(
+                    mac_folder,
+                    "01_法扶資料",
+                    ("開辦通知書", "接案通知書", "准予扶助證明書"),
+                )
+            if not has_go_live_poa:
+                has_go_live_poa = _folder_has_file(mac_folder, "01_法扶資料", ("委任狀",))
+
         # A. 未開辦且已逾期
-        if laf_status in ("未開辦", "", None) and laf_no:
+        if laf_status in ("未開辦", "", None) and laf_no and not (has_go_live_notice and has_go_live_poa):
             if deadline_raw:
                 try:
                     dl = deadline_raw if isinstance(deadline_raw, date) else datetime.strptime(str(deadline_raw)[:10], "%Y-%m-%d").date()
@@ -733,13 +800,13 @@ def scan_laf_reporting_status(db) -> dict:
                     pass
 
         # B. 有開辦資料但尚未回報開辦
-        if laf_status in ("未開辦", "", None) and mac_folder:
-            has_notice = _folder_has_file(mac_folder, "02_開辦資料", ("開辦通知書", "接案通知書", "准予扶助證明書"))
-            has_poa = _folder_has_file(mac_folder, "02_開辦資料", ("委任狀",))
-            if not has_notice:
-                has_notice = _folder_has_file(mac_folder, "01_法扶資料", ("開辦通知書", "接案通知書", "准予扶助證明書"))
-            if has_notice and has_poa:
-                can_go_live.append(case)
+        if (
+            laf_status in ("未開辦", "", None)
+            and has_go_live_notice
+            and has_go_live_poa
+            and not _is_placeholder_client_name(case.get("client_name") or "")
+        ):
+            can_go_live.append(case)
 
         # C. OSC 已結案但 DB 法扶狀態未標記已結案（需上法扶網站確認是否已報結）
         _skip_pending = ("已結案", "已報結", "結案", "已結案，待報結", "已結案，待送出", "已報結（待轉入）")
@@ -865,7 +932,12 @@ def _run_closing_drafts(max_cases: int = 5) -> dict:
         return {"ok": False, "error": str(e), "scanned": 0, "processed": 0, "items": []}
 
 
-def _run_go_live_drafts(can_go_live_cases: List[dict], max_cases: int = 3, db=None) -> dict:
+def _run_go_live_drafts(
+    can_go_live_cases: List[dict],
+    max_cases: int = 3,
+    db=None,
+    suppress_notify: bool = False,
+) -> dict:
     """對已有開辦通知書+委任狀的案件，自動填寫開辦表單並截圖（不送出）。
     若 portal 找不到開辦表單（已被開辦），自動回寫 DB 為「進行中」。
     """
@@ -888,6 +960,7 @@ def _run_go_live_drafts(can_go_live_cases: List[dict], max_cases: int = 3, db=No
                     laf_case_number=laf_no,
                     case_number=osc_no,
                     client_name=client,
+                    suppress_notify=suppress_notify,
                 )
                 ok = bool(r.get("ok"))
                 err = str(r.get("error") or "")
@@ -1040,26 +1113,56 @@ def _move_downloaded_to_case_folder(
         (moved_files, failed_files) — 各自包含檔案名稱
     """
     import shutil
+    import zipfile
     moved, failed = [], []
+
+    def _move_regular_file(src_path: str, display_name: str) -> bool:
+        subfolder = _classify_portal_file(display_name)
+        target_dir = os.path.join(case_root, subfolder)
+        os.makedirs(target_dir, exist_ok=True)
+        dest = os.path.join(target_dir, display_name)
+        if os.path.abspath(src_path) == os.path.abspath(dest):
+            logger.info("  ⏭️ 檔案已在正確位置: %s", display_name)
+            return True
+        if os.path.exists(dest):
+            logger.info("  ⏭️ 檔案已存在，跳過: %s", display_name)
+            try:
+                os.remove(src_path)
+            except Exception:
+                pass
+            return True
+        shutil.move(src_path, dest)
+        logger.info("  ✅ 已移至 %s/%s", subfolder, display_name)
+        return True
+
     for fpath in downloaded_paths:
         fname = os.path.basename(fpath)
-        subfolder = _classify_portal_file(fname)
-        target_dir = os.path.join(case_root, subfolder)
         try:
-            os.makedirs(target_dir, exist_ok=True)
-            dest = os.path.join(target_dir, fname)
-            if os.path.exists(dest):
-                # 同名檔案已存在，視為成功
-                logger.info("  ⏭️ 檔案已存在，跳過: %s", fname)
-                moved.append(fname)
-                try:
-                    os.remove(fpath)
-                except Exception:
-                    pass
+            if zipfile.is_zipfile(fpath):
+                with zipfile.ZipFile(fpath) as zf:
+                    for member in zf.infolist():
+                        if member.is_dir():
+                            continue
+                        member_name = os.path.basename(member.filename)
+                        if not member_name:
+                            continue
+                        subfolder = _classify_portal_file(member_name)
+                        target_dir = os.path.join(case_root, subfolder)
+                        os.makedirs(target_dir, exist_ok=True)
+                        dest = os.path.join(target_dir, member_name)
+                        if os.path.exists(dest):
+                            logger.info("  ⏭️ ZIP 內檔案已存在，跳過: %s", member_name)
+                            moved.append(member_name)
+                            continue
+                        with zf.open(member) as src, open(dest, "wb") as out:
+                            shutil.copyfileobj(src, out)
+                        moved.append(member_name)
+                        logger.info("  ✅ ZIP 展開至 %s/%s", subfolder, member_name)
+                _move_regular_file(fpath, fname)
                 continue
-            shutil.move(fpath, dest)
-            moved.append(fname)
-            logger.info("  ✅ 已移至 %s/%s", subfolder, fname)
+
+            if _move_regular_file(fpath, fname):
+                moved.append(fname)
         except Exception as e:
             failed.append(fname)
             logger.warning("  ⚠️ 移動失敗 %s: %s", fname, e)
@@ -1091,7 +1194,7 @@ def scan_portal_new_files(all_cases: List[dict]) -> List[dict]:
         for dc in downloadable:
             laf_no = (dc.get("case_number") or "").strip()
             client = dc.get("client_name", "")
-            file_list = dc.get("file_list") or []
+            file_list = _split_portal_file_labels(dc.get("file_list") or [])
 
             if not laf_no:
                 continue
@@ -1367,6 +1470,42 @@ def scan_portal_pending_drafts(db=None) -> dict:
         len(result["auto_resolved"]),
     )
     return result
+
+
+def _resolve_go_live_cases_from_portal(status: dict, db) -> list[dict]:
+    portal = status.get("portal_drafts") or {}
+    if portal.get("error"):
+        return []
+    pending_laf = {
+        str(it.get("applyno") or "").strip()
+        for it in _sanitize_portal_pending_items(portal.get("go_live_pending", []), "開辦")
+        if str(it.get("applyno") or "").strip()
+    }
+    resolved: list[dict] = []
+    remaining: list[dict] = []
+    for case in status.get("can_go_live", []) or []:
+        laf_no = _case_laf_number(case)
+        if not laf_no or laf_no in pending_laf:
+            remaining.append(case)
+            continue
+        try:
+            if db and case.get("id"):
+                _update_laf_status(db, case, "進行中")
+        except Exception as e:
+            logger.warning("go_live portal resolve DB update failed for %s: %s", laf_no, e)
+            remaining.append(case)
+            continue
+        resolved.append({
+            "laf_case_number": laf_no,
+            "osc_case_number": case.get("case_number", ""),
+            "client_name": case.get("client_name", ""),
+            "portal_status": "already_opened",
+            "ok": True,
+        })
+    if resolved:
+        status["can_go_live"] = remaining
+        logger.info("Portal 未開辦清單已無資料，DB 自動修正為進行中: %d 件", len(resolved))
+    return resolved
 
 
 # ─── 3. 報告格式化 ────────────────────────────────────────────
@@ -1673,6 +1812,43 @@ def run_audit(notify: bool = True, dry_run: bool = False) -> dict:
         backfilled.extend(caselist_backfilled)
         logger.info("自動補填成功（接案清冊）: %d", len(caselist_backfilled))
 
+    # 2c. Placeholder 案件 reconcile：派案 email 不完整建立的臨時案件，
+    # 先用已下載的法扶文件/同法扶案號乾淨案件修正，避免夜間巡檢重複留下假資料夾。
+    reconcile_result = {}
+    if not dry_run:
+        try:
+            _old_skip_import_probes = os.environ.get("MAGI_SKIP_IMPORT_PROBES")
+            os.environ["MAGI_SKIP_IMPORT_PROBES"] = "1"
+            try:
+                from casper_ecosystem.law_firm_orchestrators.laf_nightly_audit import (  # type: ignore
+                    reconcile_placeholder_cases,
+                )
+            finally:
+                if _old_skip_import_probes is None:
+                    os.environ.pop("MAGI_SKIP_IMPORT_PROBES", None)
+                else:
+                    os.environ["MAGI_SKIP_IMPORT_PROBES"] = _old_skip_import_probes
+
+            notifier = None
+            if notify:
+                try:
+                    from line_notifier import LAFNotifier  # type: ignore
+                    notifier = LAFNotifier()
+                except Exception:
+                    notifier = None
+            reconcile_result = reconcile_placeholder_cases(db, force=True, notifier=notifier)
+            if reconcile_result.get("reconciled"):
+                logger.info(
+                    "✅ Placeholder reconcile: %d 筆已修正（rename %d, skip %d）",
+                    len(reconcile_result.get("reconciled") or []),
+                    len(reconcile_result.get("renamed") or []),
+                    len(reconcile_result.get("rename_skipped") or []),
+                )
+            elif reconcile_result.get("error"):
+                logger.warning("Placeholder reconcile 失敗: %s", reconcile_result.get("error"))
+        except Exception as _rc_e:
+            logger.warning("Placeholder reconcile 跳過: %s", _rc_e)
+
     # 3. 掃描開辦/結案狀態
     status = scan_laf_reporting_status(db)
     logger.info(
@@ -1727,16 +1903,8 @@ def run_audit(notify: bool = True, dry_run: bool = False) -> dict:
             ]
             logger.info("已從 can_close 移除 %d 件已暫存案件", len(_drafted_laf_nos))
 
-    # 3e. 可開辦案件自動暫存（填寫表單+截圖，不送出）
-    go_live_draft_result = {}
-    if status["can_go_live"] and not dry_run:
-        go_live_draft_result = _run_go_live_drafts(status["can_go_live"], max_cases=3, db=db)
-        status["go_live_draft_result"] = go_live_draft_result
-        logger.info("開辦自動暫存結果: processed=%d/%d",
-                     go_live_draft_result.get("processed", 0),
-                     go_live_draft_result.get("total", 0))
-
-    # 3f. Portal 暫存/待處理全清單掃描（結案、二階段、開辦）
+    # 3e. Portal 暫存/待處理全清單掃描（結案、二階段、開辦）。
+    # 先掃 portal，再決定是否需要開辦暫存；避免 DB 未開辦但 portal 已無未開辦列時誤打草稿。
     portal_drafts = {}
     if not dry_run:
         portal_drafts = scan_portal_pending_drafts(db=db)
@@ -1744,7 +1912,35 @@ def run_audit(notify: bool = True, dry_run: bool = False) -> dict:
     else:
         status["portal_drafts"] = {}
 
+    # 3f. 可開辦案件自動暫存（填寫表單+截圖，不送出）
+    go_live_draft_result = {}
+    portal_go_live_resolved = _resolve_go_live_cases_from_portal(status, db) if not dry_run else []
+    if status["can_go_live"] and not dry_run:
+        go_live_draft_result = _run_go_live_drafts(
+            status["can_go_live"],
+            max_cases=3,
+            db=db,
+            suppress_notify=not notify,
+        )
+        logger.info("開辦自動暫存結果: processed=%d/%d",
+                     go_live_draft_result.get("processed", 0),
+                     go_live_draft_result.get("total", 0))
+    if portal_go_live_resolved:
+        items = list(go_live_draft_result.get("items") or [])
+        items.extend(portal_go_live_resolved)
+        go_live_draft_result = {
+            **go_live_draft_result,
+            "ok": True,
+            "items": items,
+            "processed": go_live_draft_result.get("processed", 0),
+            "total": go_live_draft_result.get("total", 0) + len(portal_go_live_resolved),
+            "auto_resolved": len(portal_go_live_resolved),
+        }
+    status["go_live_draft_result"] = go_live_draft_result
+
     # 4. 格式化報告
+    backfilled_case_numbers = {b["case_number"] for b in backfilled}
+    final_missing_laf = [c for c in missing_laf if c["case_number"] not in backfilled_case_numbers]
     report = format_audit_report(missing_laf, backfilled, status)
 
     # 5. 儲存報告
@@ -1761,7 +1957,7 @@ def run_audit(notify: bool = True, dry_run: bool = False) -> dict:
         or _sanitize_portal_pending_items(_pd.get("progress_pending", []), "摘要/進度")
     )
     has_issues = bool(
-        missing_laf or status["not_started"] or status["can_go_live"]
+        final_missing_laf or status["not_started"] or status["can_go_live"]
         or status.get("portal_unreported") or status.get("portal_drafted")
         or status["can_close"] or status.get("progress_overdue")
         or portal_still_missing or _has_portal_pending
@@ -1772,7 +1968,8 @@ def run_audit(notify: bool = True, dry_run: bool = False) -> dict:
     logger.info("🌙 法扶夜間巡檢完成")
     return {
         "ok": True,
-        "missing_laf_count": len(missing_laf),
+        "missing_laf_count": len(final_missing_laf),
+        "initial_missing_laf_count": len(missing_laf),
         "backfilled_count": len(backfilled),
         "not_started_count": len(status["not_started"]),
         "can_go_live_count": len(status["can_go_live"]),

@@ -4044,6 +4044,28 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         # 供 portal retry seed 與結案流程正確判斷是否已抓到酬金領款單。
         return super()._scan_case_folder_docs(case_folder)
 
+    def _scan_go_live_docs(self, case_folder: str) -> tuple[dict, str]:
+        """Scan go-live source folders.
+
+        Newer LAF portal downloads often land opening notices and POAs in
+        01_法扶資料.  The legacy portal draft path only looked at 02_開辦資料,
+        which made nightly audit and actual draft execution disagree.
+        """
+        base = self._to_local_case_folder(case_folder) or case_folder
+        docs = self._empty_docs_map()
+        scanned_dirs: list[str] = []
+        for subdir in ("02_開辦資料", "01_法扶資料"):
+            scan_dir = os.path.join(base, subdir)
+            if not os.path.isdir(scan_dir):
+                continue
+            scanned_dirs.append(scan_dir)
+            part = self._scan_case_folder_docs(scan_dir)
+            for key, value in (part or {}).items():
+                if isinstance(value, list):
+                    docs.setdefault(key, [])
+                    docs[key].extend(x for x in value if x not in docs[key])
+        return docs, " + ".join(scanned_dirs) if scanned_dirs else os.path.join(base, "02_開辦資料")
+
     def _dump_missing_docs_diagnostics(
         self,
         *,
@@ -4634,9 +4656,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         if act == "go_live":
             if not case_folder:
                 return {"ok": False, "error": "missing_case_folder", "action": act, "identity": identity}
-            # 開辦只認 02_開辦資料 內的文件
-            _gl_dir = os.path.join(self._to_local_case_folder(case_folder) or case_folder, "02_開辦資料")
-            _gl_docs = self._scan_case_folder_docs(_gl_dir) if os.path.isdir(_gl_dir) else self._empty_docs_map()
+            _gl_docs, _gl_dir = self._scan_go_live_docs(case_folder)
             _is_consumer_debt = self._is_consumer_debt_case_folder(case_folder)
             # 消債案件只需開辦通知書（簽名即可）；一般案件需要開辦通知書 + 委任狀
             _need_poa = not _is_consumer_debt
@@ -4646,7 +4666,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                     missing.append("開辦通知書/接案通知書")
                 if _need_poa and not _gl_docs["poa_files"]:
                     missing.append("委任狀")
-                hint = "請將開辦通知書放入 02_開辦資料 資料夾" if _is_consumer_debt else "請將開辦通知與委任狀放入 02_開辦資料 資料夾"
+                hint = "請將開辦通知書放入 01_法扶資料或 02_開辦資料" if _is_consumer_debt else "請將開辦通知與委任狀放入 01_法扶資料或 02_開辦資料"
                 self._dump_missing_docs_diagnostics(
                     mode="portal_draft",
                     case_folder=case_folder,
@@ -5465,9 +5485,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
             return {"ok": False, "error": "missing_target", "action": act, "identity": identity}
         if not case_folder:
             return {"ok": False, "error": "missing_case_folder", "action": act, "identity": identity}
-        # 開辦只認 02_開辦資料 內的文件
-        _gl_dir = os.path.join(self._to_local_case_folder(case_folder) or case_folder, "02_開辦資料")
-        _gl_docs = self._scan_case_folder_docs(_gl_dir) if os.path.isdir(_gl_dir) else self._empty_docs_map()
+        _gl_docs, _gl_dir = self._scan_go_live_docs(case_folder)
         _is_consumer_debt = self._is_consumer_debt_case_folder(case_folder)
         _need_poa = not _is_consumer_debt
         if not _gl_docs["opening_notice_files"] or (_need_poa and not _gl_docs["poa_files"]):
@@ -5476,7 +5494,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                 missing.append("開辦通知書/接案通知書")
             if _need_poa and not _gl_docs["poa_files"]:
                 missing.append("委任狀")
-            hint = "請將開辦通知書放入 02_開辦資料 資料夾" if _is_consumer_debt else "請將開辦通知與委任狀放入 02_開辦資料 資料夾"
+            hint = "請將開辦通知書放入 01_法扶資料或 02_開辦資料" if _is_consumer_debt else "請將開辦通知與委任狀放入 01_法扶資料或 02_開辦資料"
             self._dump_missing_docs_diagnostics(
                 mode="portal_submit",
                 case_folder=case_folder,
