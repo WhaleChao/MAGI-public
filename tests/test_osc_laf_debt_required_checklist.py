@@ -135,3 +135,86 @@ def test_laf_number_sync_uses_single_candidate_when_manual_number_is_empty():
     assert body["ok"] is True
     assert body["laf_case_no"] == "1150320-E-014"
     assert updates == [("1150320-E-014", "1150320-E-014", 17)]
+
+
+def test_laf_status_mapping_archives_only_final_closed_status():
+    from api.blueprints.osc_cases import _osc_case_status_for_laf_status, _osc_normalize_laf_status
+
+    assert _osc_normalize_laf_status("結案待報結") == "已結案，待報結"
+    assert _osc_case_status_for_laf_status("已結案，待報結") == "進行中"
+    assert _osc_case_status_for_laf_status("已結案") == "已結案"
+
+
+def test_laf_status_endpoint_noop_does_not_write():
+    app = _build_app()
+    writes = []
+
+    def fake_exec(sql, params=(), fetch="all", **_kw):
+        if "FROM cases WHERE id=%s" in sql:
+            return {
+                "id": "17",
+                "case_number": "2026-0017",
+                "client_name": "測試人",
+                "status": "進行中",
+                "legal_aid_status": "進行中",
+                "folder_path": "/tmp/case",
+            }, {"host": "test"}
+        if sql.lstrip().startswith("UPDATE cases"):
+            writes.append(params)
+        return None, {"host": "test"}
+
+    with patch("api.blueprints.osc_cases._osc_exec", side_effect=fake_exec), patch(
+        "api.blueprints.osc_cases._osc_effective_case_folder_for_row",
+        return_value={"folder_path": "/tmp/case", "source": "db_or_guess"},
+    ):
+        r = app.test_client().post(
+            "/api/osc/cases/17/laf-status",
+            json={"legal_aid_status": "進行中", "sync_case_status": False},
+        )
+
+    body = r.get_json()
+    assert r.status_code == 200
+    assert body["ok"] is True
+    assert body["changed"] is False
+    assert writes == []
+
+
+def test_laf_status_endpoint_final_closed_updates_and_archives():
+    app = _build_app()
+    writes = []
+
+    def fake_exec(sql, params=(), fetch="all", **_kw):
+        if "FROM cases WHERE id=%s" in sql:
+            return {
+                "id": "17",
+                "case_number": "2026-0017",
+                "client_name": "測試人",
+                "status": "進行中",
+                "legal_aid_status": "進行中",
+                "folder_path": "/tmp/case",
+            }, {"host": "test"}
+        if sql.lstrip().startswith("UPDATE cases"):
+            writes.append(params)
+        return None, {"host": "test"}
+
+    with patch("api.blueprints.osc_cases._osc_exec", side_effect=fake_exec), patch(
+        "api.blueprints.osc_cases._osc_log_activity"
+    ) as log_activity, patch(
+        "api.blueprints.osc_cases._osc_auto_archive_closed_case",
+        return_value={"ok": True, "skipped": True},
+    ) as archive, patch(
+        "api.blueprints.osc_cases._osc_effective_case_folder_for_row",
+        return_value={"folder_path": "/tmp/case", "source": "closed_archive"},
+    ):
+        r = app.test_client().post(
+            "/api/osc/cases/17/laf-status",
+            json={"legal_aid_status": "已結案", "sync_case_status": True},
+        )
+
+    body = r.get_json()
+    assert r.status_code == 200
+    assert body["ok"] is True
+    assert body["changed"] is True
+    assert writes == [("已結案", "已結案", "17")]
+    archive.assert_called_once_with("17")
+    log_activity.assert_called_once()

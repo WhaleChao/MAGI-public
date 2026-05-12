@@ -1068,6 +1068,32 @@ def _osc_is_laf_final_closed_status(status: str) -> bool:
     return str(status or "").strip() == "已結案"
 
 
+_LAF_STATUS_OPTIONS = ("未開辦", "進行中", "已結案，待報結", "已結案")
+
+
+def _osc_normalize_laf_status(status: str) -> str:
+    text = str(status or "").strip()
+    if text in _LAF_STATUS_OPTIONS:
+        return text
+    if "待報結" in text or ("報結" in text and "已" not in text and "完成" not in text):
+        return "已結案，待報結"
+    if text == "結案" or "已結案" in text or "已報結" in text or "報結完成" in text or text.lower() in {"closed", "done"}:
+        return "已結案"
+    if "開辦" in text and "未" in text:
+        return "未開辦"
+    if "進行" in text or "開辦" in text:
+        return "進行中"
+    return ""
+
+
+def _osc_case_status_for_laf_status(legal_aid_status: str) -> str:
+    """Keep folder archiving tied to final LAF closure only."""
+    normalized = _osc_normalize_laf_status(legal_aid_status)
+    if normalized == "已結案":
+        return "已結案"
+    return "進行中"
+
+
 def _osc_should_archive_case_row(row: dict) -> bool:
     row = row or {}
     return _osc_is_closed_case_status(row.get("status") or "") or _osc_is_laf_final_closed_status(row.get("legal_aid_status") or "")
@@ -4174,6 +4200,87 @@ def osc_laf_batch_status_api():
         fetch="none",
     )
     return jsonify({"ok": True, "result": result})
+
+
+@osc_bp.route("/api/osc/cases/<row_id>/laf-status", methods=["POST"])
+@login_required
+def osc_laf_case_status_api(row_id):
+    """Update the LAF workflow status without losing the case/folder distinction."""
+    payload = request.get_json() or {}
+    row_id = (row_id or "").strip()
+    target = _osc_normalize_laf_status(payload.get("legal_aid_status") or payload.get("status") or "")
+    if not row_id:
+        return jsonify({"ok": False, "error": "invalid id"}), 400
+    if not target:
+        return jsonify({"ok": False, "error": "invalid legal_aid_status", "allowed": list(_LAF_STATUS_OPTIONS)}), 400
+
+    sync_case_status = payload.get("sync_case_status")
+    if isinstance(sync_case_status, str):
+        sync_case_status = sync_case_status.strip().lower() not in {"0", "false", "no", "off"}
+    else:
+        sync_case_status = True if sync_case_status is None else bool(sync_case_status)
+    note = str(payload.get("note") or "").strip()
+    row, _ = _osc_exec(
+        "SELECT id, case_number, client_name, status, legal_aid_status, folder_path FROM cases WHERE id=%s",
+        (row_id,),
+        fetch="one",
+    )
+    if not row:
+        return jsonify({"ok": False, "error": "not found"}), 404
+
+    old_laf_status = str(row.get("legal_aid_status") or "").strip()
+    old_case_status = str(row.get("status") or "").strip()
+    next_case_status = _osc_case_status_for_laf_status(target) if sync_case_status else old_case_status
+    changed = old_laf_status != target or (sync_case_status and old_case_status != next_case_status)
+
+    if not changed:
+        folder = _osc_effective_case_folder_for_row(
+            {**row, "legal_aid_status": target, "status": next_case_status},
+            update_db=False,
+        )
+        return jsonify({
+            "ok": True,
+            "changed": False,
+            "case": {**row, "legal_aid_status": target, "status": next_case_status},
+            "folder": folder,
+        })
+
+    sets = ["legal_aid_status=%s"]
+    vals = [target]
+    if sync_case_status:
+        sets.append("status=%s")
+        vals.append(next_case_status)
+    sets.append("updated_at=NOW()")
+    vals.append(row_id)
+    result, _ = _osc_exec(f"UPDATE cases SET {','.join(sets)} WHERE id=%s", tuple(vals), fetch="none")
+
+    details = {
+        "case_number": row.get("case_number") or "",
+        "client_name": row.get("client_name") or "",
+        "old_legal_aid_status": old_laf_status,
+        "new_legal_aid_status": target,
+        "old_status": old_case_status,
+        "new_status": next_case_status if sync_case_status else old_case_status,
+        "note": note,
+    }
+    _osc_log_activity("laf_status:update", "cases", row_id, details)
+
+    updated_row = {**row, "legal_aid_status": target}
+    if sync_case_status:
+        updated_row["status"] = next_case_status
+    resp = {"ok": True, "changed": True, "result": result, "case": updated_row}
+    if _osc_is_laf_final_closed_status(target):
+        resp["archive"] = _osc_auto_archive_closed_case(row_id)
+        row_after_archive, _ = _osc_exec(
+            "SELECT id, case_number, client_name, status, legal_aid_status, folder_path FROM cases WHERE id=%s",
+            (row_id,),
+            fetch="one",
+        )
+        if row_after_archive:
+            updated_row = row_after_archive
+            resp["case"] = row_after_archive
+    resp["folder"] = _osc_effective_case_folder_for_row(updated_row, update_db=True)
+    return jsonify(resp)
 
 
 # ══════════════════════════════════════════════════════════════════════════════

@@ -369,6 +369,7 @@ function renderLafCaseDetail(data = {}) {
     const c = data.case || {};
     const s = data.stats || {};
     const status = c.legal_aid_status || c.status || "未開辦";
+    const caseStatus = c.status || "進行中";
     const pending = (data.legal_aid_checklist || []).filter(isLafPending);
     const checklistCaseInput = document.getElementById("lafChecklistCaseNumber");
     if (checklistCaseInput && c.case_number) checklistCaseInput.value = c.case_number;
@@ -387,10 +388,12 @@ function renderLafCaseDetail(data = {}) {
                 <select id="lafStatusSelect">
                     ${["未開辦", "進行中", "已結案，待報結", "已結案"].map(x => `<option value="${esc(x)}" ${x === status ? "selected" : ""}>${esc(x)}</option>`).join("")}
                 </select>
+                <label class="inline-check"><input type="checkbox" id="lafStatusSyncCase" checked> 同步案件狀態</label>
                 <button class="btn primary" data-act="laf-status-update" data-id="${esc(c.id)}">更新狀態</button>
                 <button class="btn" data-act="case-open" data-id="${esc(c.id)}">開啟案件資料夾</button>
 	                <button class="btn" data-act="case-workbench" data-id="${esc(c.id)}">完整案件處理</button>
             </div>
+            <div class="muted">法扶狀態：${esc(status)}｜案件狀態：${esc(caseStatus)}</div>
         </div>
 
         <div class="laf-detail-section">
@@ -452,14 +455,17 @@ function renderLafCaseDetail(data = {}) {
 async function updateLafCaseStatus(caseId) {
     const id = String(caseId || "").trim();
     const status = (document.getElementById("lafStatusSelect")?.value || "").trim();
+    const syncCaseStatus = !!document.getElementById("lafStatusSyncCase")?.checked;
     if (!id || !status) return;
-    const caseStatus = status === "未開辦" || status === "進行中" ? "進行中" : "已結案";
-    await api(`/api/osc/cases/${encodeURIComponent(id)}`, "PUT", {
+    const result = await api(`/api/osc/cases/${encodeURIComponent(id)}/laf-status`, "POST", {
         legal_aid_status: status,
-        status: caseStatus,
+        sync_case_status: syncCaseStatus,
     });
-    showToast(`法扶狀態已更新為「${status}」。`, "ok", 2600);
+    const changed = result?.changed !== false;
+    const folderSource = result?.folder?.source ? `；資料夾：${result.folder.source}` : "";
+    showToast(changed ? `法扶狀態已更新為「${status}」${folderSource}。` : `法扶狀態已是「${status}」。`, "ok", 3200);
     await loadLaf();
+    await openLafCaseDetail(id, { silent: true });
 }
 
 async function runLafScan() {

@@ -691,6 +691,15 @@ body.theme-dark .todo-card .todo-badge.done {
     align-items: center;
 }
 
+.laf-status-row .inline-check {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    min-height: 36px;
+    font-size: 13px;
+    color: var(--muted);
+}
+
 .laf-file-result-list {
     display: grid;
     gap: 8px;
