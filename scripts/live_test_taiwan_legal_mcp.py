@@ -40,6 +40,9 @@ def main() -> int:
     reply = judgment_flow.run_practical_insight_command(None, "實務見解 預售屋遲延交屋", notify=False)
     if "台灣法律資料庫 MCP" not in reply and "相關判決" not in reply:
         raise AssertionError("practical insight reply did not include judgment section")
+    direct_regulation = judgment_flow.run_judgment_collector_command(None, "查法條 民法第184條", notify=False)
+    if "台灣法律資料庫 MCP" not in direct_regulation or "民法" not in direct_regulation:
+        raise AssertionError("direct regulation query did not use Taiwan legal MCP")
 
     result = {
         "ok": True,
@@ -48,6 +51,7 @@ def main() -> int:
         "regulation_articles": len(reg.get("articles") or []),
         "judgment_items": len(judgments.get("items") or []),
         "reply_preview": reply[:500],
+        "direct_regulation_preview": direct_regulation[:240],
     }
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0
@@ -55,4 +59,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

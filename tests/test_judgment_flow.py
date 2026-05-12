@@ -42,6 +42,32 @@ def test_run_judgment_collector_routes_practical_insight(monkeypatch):
     assert judgment_flow.run_judgment_collector_command(object(), "實務見解 侵權行為", notify=False) == "PRACTICAL"
 
 
+def test_legal_research_request_includes_regulation_and_constitutional_queries():
+    assert judgment_flow._is_legal_research_request("查法條 民法第184條")
+    assert judgment_flow._is_legal_research_request("查釋字 748")
+    assert judgment_flow._is_legal_research_request("查裁判 預售屋遲延交屋")
+
+
+def test_direct_regulation_query_uses_mcp(monkeypatch):
+    monkeypatch.setattr(judgment_flow, "taiwan_legal_mcp_enabled", lambda: True)
+    monkeypatch.setattr(judgment_flow, "taiwan_legal_mcp_available", lambda: True)
+    monkeypatch.setattr(
+        judgment_flow,
+        "call_taiwan_legal_tool",
+        lambda tool, **kwargs: {
+            "success": True,
+            "law": {"name": kwargs["law_name"]},
+            "articles": [{"article_no": kwargs["article_no"], "content": "因故意或過失，不法侵害他人權利者，負損害賠償責任。"}],
+            "source_url": "https://law.moj.gov.tw/example",
+        },
+    )
+
+    text = judgment_flow.run_judgment_collector_command(None, "查法條 民法第184條", notify=False)
+    assert "台灣法律資料庫 MCP" in text
+    assert "民法" in text
+    assert "第 184 條" in text
+
+
 def test_practical_insight_falls_back_to_local_archive(monkeypatch):
     def _fake_run_skill_json(skill_script, task, timeout_sec):
         if "judgment-collector" in skill_script:
@@ -116,6 +142,45 @@ def test_practical_insight_augments_with_taiwan_legal_mcp(monkeypatch):
     text = judgment_flow.run_practical_insight_command(None, "實務見解 遲延交屋", notify=False)
     assert "本地見解" in text
     assert "MCP 司法院見解" in text
+    assert "台灣法律資料庫 MCP" in text
+
+
+def test_judgment_search_success_also_augments_with_mcp(monkeypatch):
+    def _fake_run_skill_json(skill_script, task, timeout_sec):
+        return {
+            "success": True,
+            "source_label": "原判決搜尋",
+            "items": [
+                {
+                    "title": "原搜尋結果",
+                    "summary_preview": "原搜尋摘要。",
+                    "url": "https://judgment.local/original",
+                }
+            ],
+        }
+
+    monkeypatch.setattr(judgment_flow, "_run_skill_json", _fake_run_skill_json)
+    monkeypatch.setattr(judgment_flow, "taiwan_legal_mcp_enabled", lambda: True)
+    monkeypatch.setattr(judgment_flow, "taiwan_legal_mcp_available", lambda: True)
+    monkeypatch.setattr(
+        judgment_flow,
+        "search_practical_judgments_via_mcp",
+        lambda query, case_type="", limit=3, fulltext_limit=1: {
+            "success": True,
+            "source_label": "台灣法律資料庫 MCP（司法院公開資料）",
+            "items": [
+                {
+                    "title": "MCP 補強結果",
+                    "summary_preview": "MCP 補強摘要。",
+                    "url": "https://judgment.judicial.gov.tw/example",
+                }
+            ],
+        },
+    )
+
+    text = judgment_flow.run_judgment_collector_command(None, "查判決 遲延交屋", notify=False)
+    assert "原搜尋結果" in text
+    assert "MCP 補強結果" in text
     assert "台灣法律資料庫 MCP" in text
 
 

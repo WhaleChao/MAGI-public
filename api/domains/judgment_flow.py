@@ -20,6 +20,7 @@ from api.osc.insight_filters import (
     mark_extractive_fast_digest_summary,
 )
 from api.osc.taiwan_legal_mcp import (
+    call_taiwan_legal_tool,
     merge_judgment_sources,
     search_practical_judgments_via_mcp,
     taiwan_legal_mcp_available,
@@ -123,6 +124,9 @@ def format_judgment_collect_result(payload: dict) -> str:
     reason = str(payload.get("case_reason") or payload.get("case_number") or "").strip()
     _reason_label = reason or "\u6848\u4ef6"
     lines = [f"\U0001f4da \u5224\u6c7a\u641c\u5c0b\u5b8c\u6210\uff1a{_reason_label}"]
+    source_label = str(payload.get("source_label") or "").strip()
+    if source_label:
+        lines.append(f"來源：{source_label}")
     court_level = str(payload.get("court_level") or "").strip()
     if court_level:
         lines.append(f"\u6cd5\u9662\uff1a{court_level}")
@@ -200,6 +204,128 @@ def _run_skill_json(skill_script: str, task: str, timeout_sec: int) -> Dict[str,
 def _is_practical_insight_request(message: str) -> bool:
     text = str(message or "")
     return any(keyword in text for keyword in ["實務見解", "法律見解", "法院見解"])
+
+
+def _is_legal_research_request(message: str) -> bool:
+    text = str(message or "")
+    if _is_practical_insight_request(text):
+        return True
+    return any(
+        keyword in text
+        for keyword in [
+            "查判決",
+            "找判決",
+            "判決搜尋",
+            "搜尋判決",
+            "收集判決",
+            "判決搜集",
+            "搜尋最高法院判決",
+            "查裁判",
+            "找裁判",
+            "裁判搜尋",
+            "搜尋裁判",
+            "查法院",
+            "法院判決",
+            "最高法院",
+            "最高行政法院",
+            "大法庭",
+            "查法規",
+            "查法條",
+            "法規查詢",
+            "法條查詢",
+            "釋字",
+            "憲判",
+        ]
+    )
+
+
+def _mcp_lookup_allowed() -> bool:
+    return taiwan_legal_mcp_enabled() and taiwan_legal_mcp_available()
+
+
+def _augment_judgments_with_mcp(
+    query: str,
+    judgments: Dict[str, Any],
+    *,
+    case_type: str = "",
+    limit: int = 3,
+) -> Dict[str, Any]:
+    if not _mcp_lookup_allowed():
+        return judgments
+    mcp_judgments = search_practical_judgments_via_mcp(
+        query,
+        case_type=case_type,
+        limit=int(os.environ.get("MAGI_TAIWAN_LEGAL_MCP_MAX_RESULTS", str(limit)) or str(limit)),
+        fulltext_limit=int(os.environ.get("MAGI_TAIWAN_LEGAL_MCP_FULLTEXT_LIMIT", "1") or "1"),
+    )
+    if mcp_judgments.get("success"):
+        return merge_judgment_sources(judgments, mcp_judgments, limit=limit)
+    if not judgments.get("success"):
+        return mcp_judgments
+    return judgments
+
+
+def _extract_regulation_query(message: str) -> Tuple[str, str]:
+    text = re.sub(r"^@MAGI\s*", "", str(message or ""), flags=re.IGNORECASE).strip()
+    text = re.sub(r"^(?:幫我|請|麻煩|幫忙|可以幫我|協助我)\s*", "", text).strip()
+    text = re.sub(r"^(?:查法規|查法條|法規查詢|法條查詢|查詢法規|查詢法條)\s*", "", text).strip(" ：:，,。；;")
+    match = re.search(r"(?P<law>[\u4e00-\u9fff]{1,24}?)(?:第)?\s*(?P<article>\d+(?:-\d+)?)\s*條", text)
+    if match:
+        return match.group("law").strip(), match.group("article").strip()
+    return text.strip(), ""
+
+
+def _format_regulation_mcp_result(query: str, result: Dict[str, Any]) -> str:
+    if not result.get("success") and not result.get("ok"):
+        return f"❌ 查不到法規資料：{result.get('error') or query}"
+    law = result.get("law") if isinstance(result.get("law"), dict) else {}
+    law_name = str(law.get("name") or query or "法規").strip()
+    lines = [f"📘 法規查詢：{law_name}", "來源：台灣法律資料庫 MCP（全國法規資料庫）"]
+    for article in (result.get("articles") or [])[:5]:
+        if not isinstance(article, dict):
+            continue
+        number = str(article.get("article_no") or article.get("number") or "").strip()
+        content = str(article.get("content") or article.get("text") or "").strip()
+        if number:
+            lines.append(f"\n【第 {number} 條】")
+        if content:
+            lines.append(content[:900])
+    source_url = str(result.get("source_url") or "").strip()
+    if source_url:
+        lines.append(f"\n{source_url}")
+    return "\n".join(lines)
+
+
+def _format_interpretation_mcp_result(query: str, result: Dict[str, Any]) -> str:
+    if not result.get("success") and not result.get("ok"):
+        return f"❌ 查不到釋憲/憲法法庭資料：{result.get('error') or query}"
+    title = str(result.get("case_id") or result.get("number") or result.get("title") or query).strip()
+    lines = [f"⚖️ 釋憲／憲法法庭查詢：{title}", "來源：台灣法律資料庫 MCP（憲法法庭公開資料）"]
+    for key in ["date", "issue", "holding", "summary", "explanation", "main_text"]:
+        value = str(result.get(key) or "").strip()
+        if value:
+            lines.append(f"\n【{key}】\n{value[:900]}")
+    source_url = str(result.get("source_url") or "").strip()
+    if source_url:
+        lines.append(f"\n{source_url}")
+    return "\n".join(lines)
+
+
+def _run_direct_taiwan_legal_mcp_lookup(message: str) -> str:
+    if not _mcp_lookup_allowed():
+        return ""
+    text = str(message or "")
+    if any(k in text for k in ["查法規", "查法條", "法規查詢", "法條查詢", "查詢法規", "查詢法條"]):
+        law_name, article_no = _extract_regulation_query(text)
+        if not law_name:
+            return "🔎 請提供法規名稱或條號，例如：`查法條 民法第184條`。"
+        result = call_taiwan_legal_tool("query_regulation", law_name=law_name, article_no=article_no)
+        return _format_regulation_mcp_result(" ".join(part for part in [law_name, article_no] if part), result)
+    if "釋字" in text or "憲判" in text:
+        cleaned = re.sub(r"^(?:查|查詢|找|搜尋)\s*", "", text).strip(" ：:，,。；;")
+        result = call_taiwan_legal_tool("get_interpretation", case_id=cleaned)
+        return _format_interpretation_mcp_result(cleaned, result)
+    return ""
 
 
 def _format_statute_items(items: List[Dict[str, Any]]) -> List[str]:
@@ -407,7 +533,7 @@ def run_practical_insight_command(orch, message: str, notify: bool = False) -> s
         fallback = _search_local_judgment_archive(query, limit=3)
         if fallback.get("success"):
             judgments = fallback
-    if taiwan_legal_mcp_enabled() and taiwan_legal_mcp_available():
+    if _mcp_lookup_allowed():
         primary_items = judgments.get("items") if isinstance(judgments.get("items"), list) else []
         should_augment = str(os.environ.get("MAGI_TAIWAN_LEGAL_MCP_AUGMENT", "1")).strip().lower() not in {
             "0",
@@ -416,14 +542,12 @@ def run_practical_insight_command(orch, message: str, notify: bool = False) -> s
             "off",
         }
         if should_augment or (not judgments.get("success")) or len(primary_items) < 2:
-            mcp_judgments = search_practical_judgments_via_mcp(
+            judgments = _augment_judgments_with_mcp(
                 query,
+                judgments,
                 case_type=str(payload.get("case_type") or ""),
                 limit=int(os.environ.get("MAGI_TAIWAN_LEGAL_MCP_MAX_RESULTS", "3") or "3"),
-                fulltext_limit=int(os.environ.get("MAGI_TAIWAN_LEGAL_MCP_FULLTEXT_LIMIT", "1") or "1"),
             )
-            if mcp_judgments.get("success"):
-                judgments = merge_judgment_sources(judgments, mcp_judgments, limit=3)
     statutes = _run_skill_json(
         statutes_script,
         "search " + json.dumps({"query": query, "top_k": 5}, ensure_ascii=False),
@@ -435,6 +559,9 @@ def run_practical_insight_command(orch, message: str, notify: bool = False) -> s
 def run_judgment_collector_command(orch, message: str, notify: bool = False) -> str:
     if _is_practical_insight_request(message):
         return run_practical_insight_command(orch, message, notify=notify)
+    direct = _run_direct_taiwan_legal_mcp_lookup(message)
+    if direct:
+        return direct
     payload, err = extract_judgment_collect_payload(message)
     if not payload:
         return err
@@ -471,6 +598,11 @@ def run_judgment_collector_command(orch, message: str, notify: bool = False) -> 
             limit=int(os.environ.get("MAGI_JUDGMENT_CHAT_MAX_RESULTS", "12") or "12"),
         )
         if fallback.get("success"):
+            fallback = _augment_judgments_with_mcp(
+                query,
+                fallback,
+                limit=int(os.environ.get("MAGI_JUDGMENT_CHAT_MAX_RESULTS", "12") or "12"),
+            )
             return format_judgment_collect_result({
                 "success": True,
                 "case_reason": query,
@@ -478,7 +610,26 @@ def run_judgment_collector_command(orch, message: str, notify: bool = False) -> 
                 "items": fallback.get("items") or [],
                 "source_label": fallback.get("source_label", "本地實務見解庫"),
             })
+        mcp_fallback = _augment_judgments_with_mcp(
+            query,
+            {"success": False, "error": str(data.get("error") or "collector_failed")},
+            limit=int(os.environ.get("MAGI_JUDGMENT_CHAT_MAX_RESULTS", "12") or "12"),
+        )
+        if mcp_fallback.get("success"):
+            return format_judgment_collect_result({
+                "success": True,
+                "case_reason": query,
+                "count": len(mcp_fallback.get("items") or []),
+                "items": mcp_fallback.get("items") or [],
+                "source_label": mcp_fallback.get("source_label", "台灣法律資料庫 MCP（司法院公開資料）"),
+            })
         return f"\u274c \u5224\u6c7a\u641c\u5c0b\u5931\u6557\uff1a{str(data.get('error') or 'unknown')[:280]}"
+    query = str(payload.get("case_reason") or payload.get("case_number") or "").strip()
+    data = _augment_judgments_with_mcp(
+        query,
+        data,
+        limit=int(os.environ.get("MAGI_JUDGMENT_CHAT_MAX_RESULTS", "12") or "12"),
+    )
     return format_judgment_collect_result(data)
 
 

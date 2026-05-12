@@ -1189,13 +1189,14 @@ def process_message_inner(orch, user_id, message, platform="LINE", role="user", 
         return orch._run_labor_law_command(message)
 
     # 2.7.75 Judgment Collector / Search
-    if any(k in msg_lower for k in ["查判決", "找判決", "判決搜尋", "搜尋判決", "實務見解", "法律見解", "法院見解"]):
-        if orch._looks_like_capability_question(message) or re.search(r"(你會|可以|能不能|可否).{0,8}(查判決|找判決|判決搜尋)", message):
+    if any(k in msg_lower for k in ["查判決", "找判決", "判決搜尋", "搜尋判決", "查裁判", "找裁判", "裁判搜尋", "搜尋裁判", "查法規", "查法條", "法規查詢", "法條查詢", "釋字", "憲判", "實務見解", "法律見解", "法院見解"]):
+        if orch._looks_like_capability_question(message) or re.search(r"(你會|可以|能不能|可否).{0,8}(查判決|找判決|判決搜尋|查裁判|查法規|查法條)", message):
             return (
                 "✅ **我可以幫您查判決！**\n\n"
                 "• 直接輸入：`查判決 傷害`\n"
                 "• 也可提供案號：`查判決 113年度上訴字第12號`\n"
-                "• 實務見解整理：`實務見解 預售屋遲延交屋`"
+                "• 實務見解整理：`實務見解 預售屋遲延交屋`\n"
+                "• 法規/釋憲：`查法條 民法第184條`、`查釋字 748`"
             )
         return orch._run_judgment_collector_command(message, notify=False)
 
