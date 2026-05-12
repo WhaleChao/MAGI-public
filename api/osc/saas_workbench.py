@@ -436,7 +436,7 @@ def conflict_check(exec_fn: ExecFn, payload: dict) -> dict:
                 "side": side,
                 "actions": [
                     _action("編輯案件", "saas-case-edit", id=row.get("id")),
-                    _action("案件工作台", "case-workbench", id=row.get("id")),
+                    _action("案件處理", "case-workbench", id=row.get("id")),
                 ],
                 **row,
             })

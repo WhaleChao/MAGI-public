@@ -103,7 +103,7 @@ function renderCases() {
                 </div>
                 <div class="card-actions">
                     <button class="btn primary" data-act="case-open" data-id="${esc(r.id)}">資料夾</button>
-                    <button class="btn" data-act="case-workbench" data-id="${esc(r.id)}">工作台</button>
+                    <button class="btn" data-act="case-workbench" data-id="${esc(r.id)}">案件處理</button>
                     <button class="btn" data-act="case-doc-finalize" data-id="${esc(r.id)}">書狀定稿</button>
                     <button class="btn" data-act="case-edit" data-id="${esc(r.id)}">編輯</button>
                     <button class="btn" data-act="case-address-label" data-id="${esc(r.id)}">地址標籤</button>
@@ -129,7 +129,7 @@ function renderCases() {
         <td>${esc(r.status)}</td>
         <td class="actions">
             <button class="btn primary" data-act="case-open" data-id="${esc(r.id)}">資料夾</button>
-            <button class="btn" data-act="case-workbench" data-id="${esc(r.id)}">工作台</button>
+            <button class="btn" data-act="case-workbench" data-id="${esc(r.id)}">案件處理</button>
             <button class="btn" data-act="case-doc-finalize" data-id="${esc(r.id)}">書狀定稿</button>
             <button class="btn" data-act="case-edit" data-id="${esc(r.id)}">編輯</button>
             <button class="btn" data-act="case-address-label" data-id="${esc(r.id)}">📮 地址標籤</button>
@@ -855,8 +855,8 @@ async function wbSaveTodoAndRefresh() {
     }
     if (id) await api(`/api/osc/todos/${Number(id)}`, "PUT", body);
     else await api(`/api/osc/todos`, "POST", body);
-    if (state.wb.mode === "client") await openClientWorkbench(state.wb.id, "已儲存待辦並重新整理工作台。");
-    if (state.wb.mode === "case") await openCaseWorkbench(state.wb.id, "已儲存待辦並重新整理工作台。");
+    if (state.wb.mode === "client") await openClientWorkbench(state.wb.id, "已儲存待辦並重新整理處理面板。");
+    if (state.wb.mode === "case") await openCaseWorkbench(state.wb.id, "已儲存待辦並重新整理處理面板。");
     await loadMeta();
 }
 
@@ -905,7 +905,7 @@ async function saveWorkbenchCase() {
     await loadCases();
     await loadMeta();
     if (state.wb.mode === "case") {
-        await openCaseWorkbench(id, "案件資料已儲存並重新整理工作台。");
+        await openCaseWorkbench(id, "案件資料已儲存並重新整理處理面板。");
     }
 }
 
@@ -1091,11 +1091,11 @@ async function openClientWorkbench(id, statusText = "") {
         </div>
     </div>
     <div class="card">
-        <h3>當事人案件（可開工作台或直接瀏覽案件資料夾）</h3>
+        <h3>當事人案件（可開案件處理或直接瀏覽案件資料夾）</h3>
         <div class="table-wrap"><table>
             <thead><tr><th>案號</th><th>案件種類</th><th>案由</th><th>法院案號</th><th>法扶案號</th><th>狀態</th><th>操作</th></tr></thead>
             <tbody id="wbClientCasesBody">
-                ${caseRows.map(r => `<tr class="row-clickable" data-case-id="${esc(r.id)}"><td>${esc(r.case_number)}</td><td>${esc(r.case_category)}</td><td>${esc(r.case_reason)}</td><td>${esc(r.court_case_no)}</td><td>${esc(r.laf_case_no)}</td><td>${esc(r.status)}</td><td class="actions"><button class="btn" data-act="wb-case-workbench" data-id="${esc(r.id)}">案件工作台</button><button class="btn" data-act="wb-case-open" data-id="${esc(r.id)}">開資料夾</button></td></tr>`).join("") || `<tr><td colspan="7" class="muted">查無案件</td></tr>`}
+	                ${caseRows.map(r => `<tr class="row-clickable" data-case-id="${esc(r.id)}"><td>${esc(r.case_number)}</td><td>${esc(r.case_category)}</td><td>${esc(r.case_reason)}</td><td>${esc(r.court_case_no)}</td><td>${esc(r.laf_case_no)}</td><td>${esc(r.status)}</td><td class="actions"><button class="btn" data-act="wb-case-workbench" data-id="${esc(r.id)}">案件處理</button><button class="btn" data-act="wb-case-open" data-id="${esc(r.id)}">開資料夾</button></td></tr>`).join("") || `<tr><td colspan="7" class="muted">查無案件</td></tr>`}
             </tbody>
         </table></div>
     </div>
@@ -1114,8 +1114,8 @@ async function openClientWorkbench(id, statusText = "") {
         <div class="card"><h3>法扶補件/案件補正清單</h3>${renderChecklist(data.legal_aid_checklist || [])}${renderChecklist(data.case_checklist || [])}</div>
     </div>
 `;
-    wbShow(`當事人工作台｜${c.name || id}`, modalHtml);
-    wbSetStatus(statusText || `已載入當事人工作台，共 ${caseRows.length} 筆案件、${todoRows.length} 筆待辦。`, statusText ? "ok" : "info");
+    wbShow(`當事人處理面板｜${c.name || id}`, modalHtml);
+    wbSetStatus(statusText || `已載入當事人處理面板，共 ${caseRows.length} 筆案件、${todoRows.length} 筆待辦。`, statusText ? "ok" : "info");
 }
 
 async function openCaseWorkbench(id, statusText = "") {
@@ -1216,8 +1216,8 @@ async function openCaseWorkbench(id, statusText = "") {
         </table></div>
     </div>
 `;
-    wbShow(`案件工作台｜${c.case_number || id}`, modalHtml);
-    wbSetStatus(statusText || `已載入案件工作台，待辦 ${s.todo_total || 0} 筆、索引檔案 ${s.docs_indexed || 0} 份。`, statusText ? "ok" : "info");
+    wbShow(`案件處理面板｜${c.case_number || id}`, modalHtml);
+    wbSetStatus(statusText || `已載入案件處理面板，待辦 ${s.todo_total || 0} 筆、索引檔案 ${s.docs_indexed || 0} 份。`, statusText ? "ok" : "info");
 }
 
 // ── Card drag-and-drop ──
@@ -1335,7 +1335,7 @@ function renderClients() {
         <td>${esc(r.address)}</td>
         <td>${esc(r.status)}</td>
         <td class="actions">
-            <button class="btn" data-act="client-workbench" data-id="${esc(r.id)}">工作台</button>
+	            <button class="btn" data-act="client-workbench" data-id="${esc(r.id)}">處理面板</button>
             <button class="btn" data-act="client-edit" data-id="${esc(r.id)}">編輯</button>
             <button class="btn danger" data-act="client-del" data-id="${esc(r.id)}">刪除</button>
         </td>

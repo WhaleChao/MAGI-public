@@ -389,7 +389,7 @@ function renderLafCaseDetail(data = {}) {
                 </select>
                 <button class="btn primary" data-act="laf-status-update" data-id="${esc(c.id)}">更新狀態</button>
                 <button class="btn" data-act="case-open" data-id="${esc(c.id)}">開啟案件資料夾</button>
-                <button class="btn" data-act="case-workbench" data-id="${esc(c.id)}">完整案件工作台</button>
+	                <button class="btn" data-act="case-workbench" data-id="${esc(c.id)}">完整案件處理</button>
             </div>
         </div>
 

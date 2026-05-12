@@ -36,7 +36,7 @@ function bindTabs() {
 
             if (tabId === "dashboard") _withLoading("載入儀表板...", loadDashboard);
             if (tabId === "magiModules") renderCaseMagiActions(activeCaseMagiModuleKey());
-            if (tabId === "saasWorkbench") _withLoading("載入所務管理工作台...", loadSaasWorkbench);
+            if (tabId === "saasWorkbench") _withLoading("載入所務管理總覽...", loadSaasWorkbench);
             if (tabId === "cases") _withLoading("載入案件...", loadCases);
             if (tabId === "laf") _withLoading("載入法扶清單...", loadLaf);
             if (tabId === "clients") _withLoading("載入當事人...", loadClients);
@@ -263,7 +263,7 @@ async function dispatchDelegatedAction(act, t) {
         ["wb_todo_id", "wb_todo_case_number", "wb_todo_client_name", "wb_todo_type", "wb_todo_date", "wb_todo_time", "wb_todo_status", "wb_todo_source_file", "wb_todo_desc"].forEach(x => {
             const el = document.getElementById(x); if (el) el.value = "";
         });
-        wbSetStatus("已清空工作台待辦表單。", "ok");
+        wbSetStatus("已清空處理面板待辦表單。", "ok");
     }
 }
 
@@ -349,7 +349,7 @@ function bindGlobalDelegates() {
 function bindEvents() {
     [
         ["dashboardRefreshBtn", loadDashboard, "儀表板重新整理"],
-        ["saasRefreshBtn", loadSaasWorkbench, "所務管理工作台重新整理"],
+        ["saasRefreshBtn", loadSaasWorkbench, "所務管理總覽重新整理"],
         ["saasConflictBtn", runSaasConflictCheck, "利益衝突檢查"],
         ["saasIntakeBtn", runSaasIntake, "建立諮詢紀錄"],
         ["saasQualityBtn", runSaasQualityCheck, "品質檢查"],
