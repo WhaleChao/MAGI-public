@@ -20,7 +20,7 @@ async function loadSaasWorkbench() {
     const data = await api(`/api/osc/saas/overview${caseNumber ? `?case_number=${caseNumber}` : ""}`);
     state.saas.overview = data;
     renderSaasWorkbench();
-    saasSetStatus("事務所營運工作台已更新。", "ok");
+    saasSetStatus("所務管理工作台已更新。", "ok");
 }
 
 function renderSaasWorkbench() {

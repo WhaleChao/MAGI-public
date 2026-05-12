@@ -73,9 +73,9 @@ CAPABILITIES = [
     },
     {
         "key": "intake_funnel",
-        "title": "收案 / 諮詢漏斗",
+        "title": "諮詢／接案追蹤",
         "status": "enabled",
-        "owner": "事務所營運",
+        "owner": "所務管理",
         "tab": "saasWorkbench",
         "source": "runtime intake JSONL",
         "role": "原本沒有正式收案前入口，僅保留諮詢紀錄；轉正式案件後仍進 cases",
@@ -109,7 +109,7 @@ CAPABILITIES = [
     },
     {
         "key": "operations_report",
-        "title": "營運報表",
+        "title": "所務統計",
         "status": "enabled",
         "owner": "業務概覽",
         "tab": "dashboard",

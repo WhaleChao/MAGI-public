@@ -104,6 +104,10 @@ def test_saas_workbench_template_has_actionable_entry_links():
 
     assert "資料來源與處理入口" in html
     assert "功能整合關係" not in html
+    assert "所務管理工作台" in html
+    assert "諮詢／接案追蹤" in html
+    assert "事務所營運" not in html
+    assert "漏斗" not in html
     for tab in ["cases", "clients", "todos", "calendar", "laf", "documents", "drafts"]:
         assert f'data-tab="{tab}"' in html
 
