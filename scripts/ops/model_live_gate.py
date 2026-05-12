@@ -101,7 +101,7 @@ def build_report(expect: str = "auto", *, require_aux: bool = True) -> ModelGate
             warnings.append("night profile has auxiliary models still online")
 
     active = active_profile()
-    if active and active != expected:
+    if active and active != expected and not (expected == "night" and active == "night-e4b-degraded"):
         failures.append(f"active_profile expected {expected}, got {active}")
 
     degraded = False
@@ -109,7 +109,7 @@ def build_report(expect: str = "auto", *, require_aux: bool = True) -> ModelGate
     if expected == "day" and not failures and (not by_port[8082].ok or not by_port[8083].ok):
         degraded = True
         degraded_reason = "day_auxiliary_missing"
-    if failures and expected == "night" and _has_keyword(by_port[8080], "e4b"):
+    if expected == "night" and _has_keyword(by_port[8080], "e4b"):
         degraded = True
         degraded_reason = "night_fell_back_to_e4b"
 

@@ -468,7 +468,7 @@ def run_report(*, dry_run: bool = False, force: bool = False) -> Dict[str, Any]:
             report_text,
             severity="info",
             source="self_repair_reporter",
-            topic_key="general",
+            topic_key="self_repair",
         )
         result["sent"] = bool(sent)
     except Exception as e:

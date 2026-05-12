@@ -187,6 +187,7 @@ available_memory_gb() {
 preflight_memory_check() {
     local required_gb="$1"
     local mode_name="$2"
+    local on_fail="${3:-exit}"
     local avail
     avail=$(available_memory_gb)
     log "preflight: 可用記憶體 ${avail}GB，${mode_name} 需求 ${required_gb}GB"
@@ -194,8 +195,8 @@ preflight_memory_check() {
         local governor="/Users/ai/Desktop/MAGI_v2/scripts/ops/resource_governor.py"
         if [ -x "$GATEKEEPER_PY" ] && [ -f "$governor" ]; then
             log "preflight: 記憶體不足，先執行 resource_governor safe cleanup 後重試"
-            MAGI_USE_RUNTIME_DIR=1 "$GATEKEEPER_PY" "$governor" prepare-switch \
-                --mode "$mode_name" --required-free-gb "$required_gb" --enforce --json 2>&1 | \
+            MAGI_USE_RUNTIME_DIR=1 "$GATEKEEPER_PY" "$governor" --json prepare-switch \
+                --mode "$mode_name" --required-free-gb "$required_gb" --enforce 2>&1 | \
                 while read ln; do log "[resource_governor] $ln"; done || true
             sleep 15
             avail=$(available_memory_gb)
@@ -209,8 +210,35 @@ preflight_memory_check() {
                 --reason mem_insufficient --mode "$mode_name" \
                 --extra "avail=${avail}GB,required=${required_gb}GB" >/dev/null 2>&1 || true
         fi
+        if [ "$on_fail" = "return" ]; then
+            return 2
+        fi
         exit 2
     fi
+    return 0
+}
+
+start_night_e4b_fallback() {
+    log "⚠️  NIGHT 26B 記憶體不足，降級啟動 E4B 主模型，避免 MAGI 無主模型"
+    check_model_src "$E4B_SRC"
+    rm -f "$MODELS_TEXT_DIR"/*
+    ln -sf "$E4B_SRC" "$MODELS_TEXT_DIR/gemma-4-e4b-it-4bit"
+    rm -f /Users/ai/.omlx/models-text-e4b/*
+    ln -sf "$E4B_SRC" "/Users/ai/.omlx/models-text-e4b/gemma-4-e4b-it-4bit"
+    plist_set_env OMLX_TEXT_MAX_MODEL_MEMORY 8GB
+    plist_set_env OMLX_TEXT_MAX_PROCESS_MEMORY 10GB
+    plist_set_env OMLX_TEXT_INITIAL_CACHE_BLOCKS 8
+    plist_set_env OMLX_TEXT_HOT_CACHE_MAX_SIZE 512MB
+    plist_set_env OMLX_TEXT_MAX_TOKENS 8192
+    plist_set_env OMLX_TEXT_MAX_CONTEXT_WINDOW 8192
+    plist_set_env OMLX_PAGED_CACHE_DIR /Users/ai/.omlx/cache-e4b
+    bootstrap_omlx_main "NIGHT-FALLBACK-E4B"
+    if ! wait_model_ready 8080 "e4b" 90; then
+        notify_admin "NIGHT fallback E4B 也未載入，請檢查 launchd/oMLX log"
+        exit 4
+    fi
+    echo "night-e4b-degraded" > "$PROFILE_FILE"
+    notify_admin "NIGHT 26B 記憶體不足，已降級啟動 E4B；待記憶體恢復後下次夜間切換會再嘗試 26B"
 }
 
 # ---- Layer 3: 檢查既有 omlx serve 的 RSS 是否已經失控 ----
@@ -315,8 +343,6 @@ case "$MODE" in
     rm -f /Users/ai/.omlx/models-text-e4b/*
     ln -sf "$E4B_SRC" "/Users/ai/.omlx/models-text-e4b/gemma-4-e4b-it-4bit"
 
-    echo "day" > "$PROFILE_FILE"
-
     preflight_oomlx_rss_check 6 "DAY"
 
     # 重啟 oMLX E4B（降低記憶體）
@@ -371,6 +397,7 @@ case "$MODE" in
         notify_admin "DAY 切換後 8080 未載入 E4B，請檢查 launchd/oMLX log"
         exit 4
     fi
+    echo "day" > "$PROFILE_FILE"
     curl -sf http://127.0.0.1:8082/v1/models >/dev/null 2>&1 && log "8082 (Phi-4) OK" || log "8082 未就緒（模型可能仍在載入）"
     curl -sf http://127.0.0.1:8083/v1/models >/dev/null 2>&1 && log "8083 (SmolLM3) OK" || log "8083 未就緒（模型可能仍在載入）"
 
@@ -394,7 +421,6 @@ case "$MODE" in
     # 更新 models-text symlink → 26B
     rm -f "$MODELS_TEXT_DIR"/*
     ln -sf "$B26_SRC" "$MODELS_TEXT_DIR/gemma-4-26b-a4b-it-4bit"
-    echo "night" > "$PROFILE_FILE"
 
     preflight_oomlx_rss_check 16 "NIGHT"
 
@@ -405,7 +431,12 @@ case "$MODE" in
     log "等待記憶體回收（10s）..."
     sleep 10
     # 所有舊 process 都 bootout 後才檢查記憶體（門檻 8GB：26B ceiling=16GB，系統本身 6-8GB）
-    preflight_memory_check 8 "NIGHT"
+    if ! preflight_memory_check 8 "NIGHT" return; then
+        start_night_e4b_fallback
+        ( heartbeat_check 1 "NIGHT-FALLBACK-E4B" ) &
+        log "Switch to $MODE complete (active_profile=$(get_active_profile))"
+        exit 0
+    fi
     plist_set_env OMLX_TEXT_MAX_MODEL_MEMORY 16GB
     plist_set_env OMLX_TEXT_MAX_PROCESS_MEMORY 17GB
     plist_set_env OMLX_TEXT_INITIAL_CACHE_BLOCKS 2
@@ -419,6 +450,7 @@ case "$MODE" in
         notify_admin "NIGHT 切換後 8080 未載入 26B，請檢查 launchd/oMLX log"
         exit 4
     fi
+    echo "night" > "$PROFILE_FILE"
 
     # heartbeat 背景執行
     ( heartbeat_check 1 "NIGHT" ) &

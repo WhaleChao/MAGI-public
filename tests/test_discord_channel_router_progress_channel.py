@@ -124,6 +124,7 @@ def test_system_health_source_overrides_accidental_business_topic(monkeypatch):
 
     assert router._infer_sub_topic(msg, "laf_condition", "business_module_live_check") == "check"
 
+    monkeypatch.setattr(router, "_load_notification_preferences", lambda: {"live_check": "system_only", "system_health": "system_only"})
     monkeypatch.setattr(router, "_load_channel_map", lambda: {"laf_condition": "111", "general": "999"})
 
     assert router.resolve_discord_channel(
@@ -132,6 +133,15 @@ def test_system_health_source_overrides_accidental_business_topic(monkeypatch):
         source="business_module_live_check",
         fallback_channel_id="999",
     ) == ("check", "__SILENT__")
+
+    monkeypatch.setattr(router, "_load_channel_map", lambda: {"check": "222", "laf_condition": "111", "general": "999"})
+
+    assert router.resolve_discord_channel(
+        msg,
+        topic_key="laf_condition",
+        source="business_module_live_check",
+        fallback_channel_id="999",
+    ) == ("check", "222")
 
 
 def test_system_only_notification_pref_requires_explicit_system_channel(monkeypatch):
@@ -157,6 +167,67 @@ def test_system_only_notification_pref_requires_explicit_system_channel(monkeypa
     ) == ("nightly", "777")
 
 
+def test_judicial_api_and_resummary_never_fall_back_to_business_or_general(monkeypatch):
+    monkeypatch.setattr(router, "_load_notification_preferences", lambda: {"nightly_report": "system_only"})
+    monkeypatch.setattr(
+        router,
+        "_load_channel_map",
+        lambda: {
+            "judgment": "444",
+            "general": "999",
+        },
+    )
+
+    for topic_key, source in [
+        ("judicial_api", "judgment_collector"),
+        ("judgment_resummary", "weekend_resummary"),
+    ]:
+        assert router.resolve_discord_channel(
+            "☀️ 白天整理完成：處理 200、摘要 80。尚有 raw backlog 68999 份待消化。",
+            topic_key=topic_key,
+            source=source,
+            fallback_channel_id="999",
+        ) == ("nightly", "__SILENT__")
+
+    monkeypatch.setattr(
+        router,
+        "_load_channel_map",
+        lambda: {
+            "nightly": "777",
+            "judgment": "444",
+            "general": "999",
+        },
+    )
+
+    assert router.resolve_discord_channel(
+        "⚠️ 司法院 API 晨間整理仍有 backlog",
+        topic_key="judicial_api",
+        source="judgment_collector",
+        fallback_channel_id="999",
+    ) == ("nightly", "777")
+
+
+def test_quiet_cron_and_self_repair_use_system_policies(monkeypatch):
+    monkeypatch.setattr(router, "_load_notification_preferences", lambda: {"system_health": "system_only"})
+    monkeypatch.setattr(router, "_load_channel_map", lambda: {"general": "999"})
+
+    assert router.resolve_discord_channel(
+        "信箱檢查完成，沒有新資料",
+        topic_key="quiet_cron",
+        source="file_review_orchestrator",
+        fallback_channel_id="999",
+    ) == ("check", "__SILENT__")
+
+    monkeypatch.setattr(router, "_load_channel_map", lambda: {"alert": "888", "general": "999"})
+
+    assert router.resolve_discord_channel(
+        "MAGI 自我修復週報",
+        topic_key="self_repair",
+        source="self_repair_weekly",
+        fallback_channel_id="999",
+    ) == ("alert", "888")
+
+
 def test_laf_general_notification_pref_can_block_general_fallback(monkeypatch):
     msg = "📋 法扶夜間巡檢報告\n📊 法扶案件總數：125"
 
@@ -178,3 +249,17 @@ def test_laf_general_notification_pref_can_block_general_fallback(monkeypatch):
         source="laf_nightly_audit",
         fallback_channel_id="999",
     ) == ("laf_general", "333")
+
+
+def test_business_notification_preference_can_silence_non_system_topics(monkeypatch):
+    msg = "📥 卷宗下載完成（2 個檔案）"
+
+    monkeypatch.setattr(router, "_load_notification_preferences", lambda: {"business": "silent"})
+    monkeypatch.setattr(router, "_load_channel_map", lambda: {"filereview_download": "111", "general": "999"})
+
+    assert router.resolve_discord_channel(
+        msg,
+        topic_key="filereview",
+        source="file_review_orchestrator",
+        fallback_channel_id="999",
+    ) == ("filereview_download", "__SILENT__")

@@ -40,11 +40,15 @@ _CHANNEL_MAP_FILE = os.path.join(_AGENT_DIR, "discord_channel_map.json")
 _NOTIFICATION_PREFS_FILE = os.path.join(_MAGI_ROOT, ".runtime", "osc_saas_notification_prefs.json")
 _SYSTEM_SILENT_SOURCES = {"business_module_live_check", "nightly_regression", "mock_test"}
 _DEFAULT_NOTIFICATION_PREFS = {
+    "business": "enabled",
     "laf_general": "enabled",
     "laf_dispatch": "enabled",
     "system_health": "system_only",
     "nightly_report": "system_only",
+    "live_check": "system_only",
+    "discord_business_channels": "business_only",
 }
+_NIGHTLY_SYSTEM_TOPICS = {"judicial_api", "judgment_resummary"}
 
 # ───────── topic_key → sub_topic 映射 ─────────
 # red_phone.py 已定義 canonical topic_key (filereview, transcript, laf, ...),
@@ -89,6 +93,13 @@ def _infer_sub_topic(message: str, topic_key: str, source: str = "") -> str:
 
     if src in _SYSTEM_SILENT_SOURCES:
         return "check"
+
+    if canonical in _NIGHTLY_SYSTEM_TOPICS:
+        return "nightly"
+    if canonical == "quiet_cron":
+        return "check"
+    if canonical == "self_repair":
+        return "alert"
 
     if canonical in ("filereview", "filereview_payment", "filereview_download", "filereview_apply"):
         # 已經有明確 sub_topic 的直接返回
@@ -355,6 +366,8 @@ def _notification_policy_for(sub_topic: str, source: str = "") -> str:
     prefs = _load_notification_preferences()
     src = str(source or "").strip().lower()
     topic = str(sub_topic or "").strip()
+    if src == "business_module_live_check":
+        return prefs.get("live_check", prefs.get("system_health", "system_only"))
     if topic == "laf_dispatch":
         return prefs.get("laf_dispatch", "enabled")
     if topic == "laf_general":
@@ -363,7 +376,7 @@ def _notification_policy_for(sub_topic: str, source: str = "") -> str:
         return prefs.get("nightly_report", "system_only")
     if topic in {"check", "alert"} or src in _SYSTEM_SILENT_SOURCES:
         return prefs.get("system_health", "system_only")
-    return "enabled"
+    return prefs.get("business", "enabled")
 
 
 def _explicit_channel_id(cmap: dict[str, str], key: str) -> str:
@@ -387,8 +400,6 @@ def resolve_discord_channel(
         - channel_id 可能為空字串（表示未設定，使用預設頻道）
     """
     sub_topic = _infer_sub_topic(message, topic_key, source)
-    if str(source or "").strip().lower() in _SYSTEM_SILENT_SOURCES:
-        return sub_topic, "__SILENT__"
     cmap = _load_channel_map()
     policy = _notification_policy_for(sub_topic, source)
     if policy == "silent":

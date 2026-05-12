@@ -706,9 +706,25 @@ async def check_line_health(client):
         _LINE_HEALTH_LAST_ALERT_TS = now
         logger.error(f"🚨 LINE Monitoring Alert: {msg}")
         try:
-            channel = client.get_channel(int(DISCORD_CHANNEL_ID)) if DISCORD_CHANNEL_ID else None
+            routed_channel_id = DISCORD_CHANNEL_ID
+            try:
+                from api.discord_channel_router import resolve_discord_channel
+
+                _, routed_channel_id = resolve_discord_channel(
+                    msg,
+                    topic_key="alert",
+                    source="line_health",
+                    fallback_channel_id=DISCORD_CHANNEL_ID,
+                )
+            except Exception:
+                logging.getLogger(__name__).debug(
+                    "silent-catch at %s:%s", __name__, "line_health_route", exc_info=True
+                )
+            if routed_channel_id == "__SILENT__":
+                return
+            channel = client.get_channel(int(routed_channel_id)) if routed_channel_id else None
             if channel:
-                await channel.send(f"🚨 **LINE Connection Alert**: {msg}")
+                await channel.send(f"🚨 **MAGI LINE Connection Alert**: {msg}")
         except Exception:
             logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 576, exc_info=True)
 
@@ -745,10 +761,7 @@ async def check_line_health(client):
             await _alert_once("LINE channel access token missing in env")
             return
 
-        endpoint = os.environ.get(
-            "MAGI_LINE_WEBHOOK_ENDPOINT",
-            "https://aimac-mini.tail6738b7.ts.net/callback",
-        ).strip()
+        endpoint = os.environ.get("MAGI_LINE_WEBHOOK_ENDPOINT", "").strip()
         headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
         async with aiohttp.ClientSession() as session:
             # Prefer current configured endpoint from LINE console.
@@ -761,6 +774,9 @@ async def check_line_health(client):
                     if r_get.status == 200:
                         payload = await r_get.json()
                         endpoint = (payload.get("endpoint") or endpoint).strip() or endpoint
+                        if not endpoint:
+                            await _alert_once("LINE webhook endpoint is not configured")
+                            return
                     else:
                         txt = (await r_get.text())[:240]
                         await _alert_once(f"LINE endpoint query failed: HTTP {r_get.status} {txt}")
