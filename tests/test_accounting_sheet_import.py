@@ -100,3 +100,26 @@ def test_parse_colleague_month_sheet_multiple_sections():
     assert rows[1].type == "支出"
     assert rows[1].category == "郵資"
     assert rows[1].description == "掛號｜郵局"
+
+
+def test_fixed_expense_overlap_skips_payroll(monkeypatch):
+    from api.osc.accounting_sheet_import import AccountingSheetRow, is_fixed_expense_overlap
+
+    def fake_helpers():
+        def fake_exec(sql, params=(), fetch="none"):
+            return [
+                {"id": 1, "category": "人事費", "sub_type": "薪資", "description": "政翔薪水", "amount": 45800.0}
+            ], {}
+
+        return fake_exec, lambda ref: ref
+
+    monkeypatch.setattr("api.osc.accounting_sheet_import._get_osc_helpers", fake_helpers)
+    row = AccountingSheetRow(
+        source_row=23,
+        date="2026-05-25",
+        type="支出",
+        amount=46800.0,
+        category="薪資",
+        description="主持律師薪資",
+    )
+    assert is_fixed_expense_overlap(row) is True

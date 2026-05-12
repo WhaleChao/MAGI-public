@@ -90,6 +90,26 @@ class SheetsAuthorizationRequired(AccountingImportError):
     pass
 
 
+FIXED_EXPENSE_SKIP_CATEGORIES = {"薪資", "保險", "房租", "租金支出", "人事費"}
+FIXED_EXPENSE_SKIP_KEYWORDS = (
+    "主持律師薪資",
+    "法務專員薪資",
+    "薪資",
+    "薪水",
+    "勞工保險",
+    "勞保",
+    "全民健康保險",
+    "健保",
+    "勞工退休金",
+    "勞退",
+    "房租",
+    "辦公室租金",
+    "台北事務所",
+    "臺北事務所",
+    "花蓮事務所",
+)
+
+
 def _repo_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
@@ -652,12 +672,58 @@ def resolve_accounting_case_ref(ref: str | None) -> str | None:
     return text
 
 
+def is_fixed_expense_overlap(row: AccountingSheetRow) -> bool:
+    """Return True when a colleague-sheet row is already covered by recurring expenses."""
+    if row.type != "支出":
+        return False
+    haystack = " ".join(
+        str(v or "")
+        for v in [row.category, row.sub_type, row.description, row.case_ref]
+    )
+    if row.category not in FIXED_EXPENSE_SKIP_CATEGORIES and not any(k in haystack for k in FIXED_EXPENSE_SKIP_KEYWORDS):
+        return False
+    _osc_exec, _ = _get_osc_helpers()
+    active, _ = _osc_exec(
+        """
+        SELECT id, category, sub_type, description, amount
+        FROM recurring_expenses
+        WHERE is_active=1
+          AND (
+               category IN ('人事費','租金支出')
+            OR sub_type IN ('薪資','勞保','勞退','健保','辦公室租金')
+            OR description LIKE '%薪水%'
+            OR description LIKE '%健保%'
+            OR description LIKE '%勞保%'
+            OR description LIKE '%勞退%'
+            OR description LIKE '%辦公室%'
+          )
+        """,
+        fetch="all",
+    )
+    if not active:
+        return False
+    # Any active fixed expense in the same semantic family means the imported
+    # colleague row is only evidence, not another payable transaction.
+    if any(k in haystack for k in ("薪資", "薪水", "主持律師", "法務專員")):
+        return any(str(r.get("sub_type") or "") == "薪資" for r in active)
+    if any(k in haystack for k in ("勞工保險", "勞保")):
+        return any(str(r.get("sub_type") or "") == "勞保" for r in active)
+    if any(k in haystack for k in ("全民健康保險", "健保")):
+        return any(str(r.get("sub_type") or "") == "健保" for r in active)
+    if any(k in haystack for k in ("勞工退休金", "勞退")):
+        return any(str(r.get("sub_type") or "") == "勞退" for r in active)
+    if any(k in haystack for k in ("房租", "租金", "台北事務所", "臺北事務所", "花蓮事務所")):
+        return any(str(r.get("sub_type") or "") == "辦公室租金" for r in active)
+    return False
+
+
 def import_rows(rows: list[AccountingSheetRow], *, month: str, dry_run: bool = True) -> dict[str, Any]:
     _osc_exec, _osc_resolve_case_id = _get_osc_helpers()
     ensure_import_schema()
     imported: list[dict[str, Any]] = []
     duplicates: list[dict[str, Any]] = []
     existing_matches: list[dict[str, Any]] = []
+    fixed_expense_skips: list[dict[str, Any]] = []
     for row in rows:
         exists, _ = _osc_exec(
             "SELECT fingerprint, transaction_id FROM accounting_import_records WHERE fingerprint=%s",
@@ -667,6 +733,10 @@ def import_rows(rows: list[AccountingSheetRow], *, month: str, dry_run: bool = T
         row_dict = asdict(row)
         if exists:
             duplicates.append(row_dict)
+            continue
+        if is_fixed_expense_overlap(row):
+            row_dict["skip_reason"] = "covered_by_recurring_expense"
+            fixed_expense_skips.append(row_dict)
             continue
         case_id = resolve_accounting_case_ref(row.case_ref)
         existing_tx, _ = _osc_exec(
@@ -746,9 +816,11 @@ def import_rows(rows: list[AccountingSheetRow], *, month: str, dry_run: bool = T
         "importable_count": len(imported),
         "duplicate_count": len(duplicates),
         "existing_count": len(existing_matches),
+        "fixed_expense_skip_count": len(fixed_expense_skips),
         "items": imported,
         "duplicates": duplicates[:20],
         "existing_matches": existing_matches[:20],
+        "fixed_expense_skips": fixed_expense_skips[:20],
     }
 
 
@@ -818,6 +890,7 @@ def main(argv: list[str] | None = None) -> int:
             "importable_count": sum(int(r.get("importable_count") or 0) for r in results),
             "duplicate_count": sum(int(r.get("duplicate_count") or 0) for r in results),
             "existing_count": sum(int(r.get("existing_count") or 0) for r in results),
+            "fixed_expense_skip_count": sum(int(r.get("fixed_expense_skip_count") or 0) for r in results),
         }
     except SheetsAuthorizationRequired as exc:
         print(json.dumps({"ok": False, "error": "auth_required", "message": str(exc)}, ensure_ascii=False, indent=2))
