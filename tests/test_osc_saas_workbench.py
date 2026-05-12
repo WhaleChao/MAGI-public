@@ -94,9 +94,18 @@ def test_saas_overview_exposes_ten_capabilities(monkeypatch, tmp_path):
         "client_portal",
         "operations_report",
     }
-    assert result["integration"]["principle"].startswith("事務所營運工作台只做跨模組總控")
+    assert result["integration"]["principle"].startswith("這裡集中顯示常用資訊")
     assert all(x.get("owner") and x.get("source") and x.get("role") for x in result["capabilities"])
     assert {x["target_tab"] for x in result["integration"]["items"]} >= {"todos", "clients", "documents", "drafts"}
+
+
+def test_saas_workbench_template_has_actionable_entry_links():
+    html = Path("templates/partials/osc/saasWorkbench.html").read_text(encoding="utf-8")
+
+    assert "資料來源與處理入口" in html
+    assert "功能整合關係" not in html
+    for tab in ["cases", "clients", "todos", "calendar", "laf", "documents", "drafts"]:
+        assert f'data-tab="{tab}"' in html
 
 
 def test_operations_report_separates_total_active_and_closing_pending(monkeypatch, tmp_path):

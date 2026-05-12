@@ -673,7 +673,7 @@ def build_saas_overview(exec_fn: ExecFn, *, case_number: str = "") -> dict:
         "ok": True,
         "capabilities": CAPABILITIES,
         "integration": {
-            "principle": "事務所營運工作台只做跨模組總控；資料主體仍在既有模組，避免疊床架屋。",
+            "principle": "這裡集中顯示常用資訊；實際新增與修改仍在各對應頁籤完成。",
             "items": INTEGRATION_MATRIX,
         },
         "risk": risk,

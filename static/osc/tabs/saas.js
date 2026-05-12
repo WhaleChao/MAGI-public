@@ -50,18 +50,35 @@ function renderSaasCapabilities(items) {
 
 function renderSaasIntegration(integration) {
     const note = document.getElementById("saasIntegrationNote");
-    if (note) note.textContent = integration.principle || "事務所營運工作台只做跨模組總控。";
+    if (note) note.textContent = integration.principle || "這裡集中顯示常用資訊；實際新增與修改仍在各對應頁籤完成。";
     const host = document.getElementById("saasIntegrationGrid");
     if (!host) return;
-    const items = integration.items || [];
+    const items = (integration.items || []).length ? integration.items : [
+        {area: "案件資料", mode: "新增、查詢、開資料夾", source: "案件列表、當事人", target_tabs: [{tab: "cases", label: "案件列表"}, {tab: "clients", label: "當事人"}]},
+        {area: "期限與待辦", mode: "待辦、日曆、風險提醒", source: "待辦事項、行事曆", target_tabs: [{tab: "todos", label: "待辦事項"}, {tab: "calendar", label: "行事曆"}]},
+        {area: "法扶流程", mode: "派案、開辦、二階段、結案", source: "法扶管理", target_tab: "laf", target_label: "法扶管理"},
+        {area: "文件與書狀", mode: "索引、草擬、人工修正學習", source: "書狀索引、AI 草擬", target_tabs: [{tab: "documents", label: "書狀索引"}, {tab: "drafts", label: "AI 草擬"}]},
+    ];
     host.innerHTML = items.length ? items.map(x => `
         <div class="stat-card">
             <div class="stat-label">${esc(x.area || "")}</div>
             <div class="stat-value" style="font-size:15px;">${esc(x.mode || "")}</div>
             <div class="muted" style="margin-top:6px;">來源：${esc(x.source || "")}</div>
-            ${x.target_tab ? `<button class="btn slim" style="margin-top:8px;" data-act="tab-jump" data-tab="${esc(x.target_tab)}">回原模組</button>` : ""}
+            ${saasIntegrationButtons(x)}
         </div>
-    `).join("") : `<div class="muted">尚未載入整合關係。</div>`;
+    `).join("") : `<div class="muted">目前沒有資料來源設定。</div>`;
+}
+
+function saasIntegrationButtons(item) {
+    const targets = Array.isArray(item?.target_tabs) && item.target_tabs.length
+        ? item.target_tabs
+        : item?.target_tab
+            ? [{tab: item.target_tab, label: item.target_label || "前往處理"}]
+            : [];
+    if (!targets.length) return "";
+    return `<div class="inline-actions" style="margin-top:8px;">${targets.map(x => `
+        <button class="btn slim" data-act="tab-jump" data-tab="${esc(x.tab)}">${esc(x.label || "前往處理")}</button>
+    `).join("")}</div>`;
 }
 
 function saasActionButtons(actions) {

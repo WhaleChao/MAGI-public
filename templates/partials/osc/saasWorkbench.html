@@ -3,7 +3,7 @@
                 <div class="section-head">
                     <div>
                         <h3>事務所營運工作台</h3>
-                        <div class="section-note">這裡是跨模組總控；資料主體仍在案件、待辦、行事曆、法扶、書狀索引與 AI 草擬，避免重複建一套。</div>
+                        <div class="section-note">這裡集中顯示事務所常用資訊；要新增或修改資料，可從各區塊按鈕前往對應頁籤處理。</div>
                     </div>
                     <div class="inline-actions">
                         <input id="saasCaseNumber" placeholder="案件編號 / 法院案號">
@@ -17,12 +17,46 @@
             <div class="card">
                 <div class="section-head">
                     <div>
-                        <h3>功能整合關係</h3>
-                        <div class="section-note">每個區塊都標示原始模組；需要細修時直接回到原功能操作。</div>
+                        <h3>資料來源與處理入口</h3>
+                        <div class="section-note">每張卡片會顯示資料從哪裡來；要修改內容，按下按鈕前往對應頁籤。</div>
                     </div>
                 </div>
-                <div id="saasIntegrationNote" class="status-banner">載入整合關係中。</div>
-                <div class="summary-grid" id="saasIntegrationGrid"></div>
+                <div id="saasIntegrationNote" class="status-banner">下方入口可直接前往常用功能；載入後會顯示每個區塊的資料來源。</div>
+                <div class="summary-grid" id="saasIntegrationGrid">
+                    <div class="stat-card">
+                        <div class="stat-label">案件資料</div>
+                        <div class="stat-value" style="font-size:15px;">新增、查詢、開資料夾</div>
+                        <div class="muted" style="margin-top:6px;">來源：案件列表、當事人</div>
+                        <div class="inline-actions" style="margin-top:8px;">
+                            <button class="btn slim" data-act="tab-jump" data-tab="cases">案件列表</button>
+                            <button class="btn slim" data-act="tab-jump" data-tab="clients">當事人</button>
+                        </div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-label">期限與待辦</div>
+                        <div class="stat-value" style="font-size:15px;">待辦、日曆、風險提醒</div>
+                        <div class="muted" style="margin-top:6px;">來源：待辦事項、行事曆</div>
+                        <div class="inline-actions" style="margin-top:8px;">
+                            <button class="btn slim" data-act="tab-jump" data-tab="todos">待辦事項</button>
+                            <button class="btn slim" data-act="tab-jump" data-tab="calendar">行事曆</button>
+                        </div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-label">法扶流程</div>
+                        <div class="stat-value" style="font-size:15px;">派案、開辦、二階段、結案</div>
+                        <div class="muted" style="margin-top:6px;">來源：法扶管理</div>
+                        <button class="btn slim" style="margin-top:8px;" data-act="tab-jump" data-tab="laf">法扶管理</button>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-label">文件與書狀</div>
+                        <div class="stat-value" style="font-size:15px;">索引、草擬、人工修正學習</div>
+                        <div class="muted" style="margin-top:6px;">來源：書狀索引、AI 草擬</div>
+                        <div class="inline-actions" style="margin-top:8px;">
+                            <button class="btn slim" data-act="tab-jump" data-tab="documents">書狀索引</button>
+                            <button class="btn slim" data-act="tab-jump" data-tab="drafts">AI 草擬</button>
+                        </div>
+                    </div>
+                </div>
             </div>
 
             <div class="grid-2">
@@ -30,7 +64,7 @@
                     <div class="section-head">
                         <div>
                             <h3>期限與風險</h3>
-                            <div class="section-note">來源：待辦事項、行事曆、法扶管理。這裡只排序提醒，明細仍回原模組處理。</div>
+                            <div class="section-note">來源：待辦事項、行事曆、法扶管理。這裡只排序提醒，明細仍回對應頁籤處理。</div>
                         </div>
                         <div class="inline-actions">
                             <button class="btn" data-act="tab-jump" data-tab="todos">待辦事項</button>
