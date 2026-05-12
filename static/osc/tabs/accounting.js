@@ -51,6 +51,68 @@ async function loadAccountingSummary() {
     document.getElementById("txTopCategory").textContent = top ? `${top.category} (${fmtAmount(top.total)})` : "-";
 }
 
+function accountingImportMonthValue() {
+    const el = document.getElementById("accountingImportMonth");
+    if (!el) return "";
+    if (!el.value) el.value = new Date().toISOString().slice(0, 7);
+    return el.value;
+}
+
+function renderAccountingImportResult(data) {
+    const box = document.getElementById("accountingImportResult");
+    if (!box) return;
+    const conflicts = data.fixed_expense_conflicts || [];
+    const skips = data.fixed_expense_skips || [];
+    const existing = data.existing_matches || [];
+    const duplicates = data.duplicates || [];
+    const rows = [
+        ["可匯入", data.importable_count || 0],
+        ["已匯入過", data.duplicate_count || 0],
+        ["DB 已有相同紀錄", data.existing_count || 0],
+        ["固定支出已跳過", data.fixed_expense_skip_count || 0],
+        ["固定支出金額不一致", data.fixed_expense_conflict_count || 0],
+    ];
+    const conflictHtml = conflicts.length ? `
+        <div class="soft-block" style="margin-top:10px;">
+            <strong>需要確認的固定支出</strong>
+            <ul>
+                ${conflicts.map(x => {
+                    const m = x.fixed_expense_match || {};
+                    const recurring = (m.recurring || []).map(r => `${esc(r.description || r.sub_type || r.category)}：${fmtAmount(r.amount)}`).join("、");
+                    return `<li>${esc(x.date)}｜${esc(x.category || "")}｜${esc(x.description || "")}｜同事表 ${fmtAmount(x.amount)}；固定支出 ${esc(recurring || fmtAmount(m.recurring_amount_total || 0))}</li>`;
+                }).join("")}
+            </ul>
+        </div>` : "";
+    const sample = [...skips.slice(0, 6), ...existing.slice(0, 4), ...duplicates.slice(0, 4)];
+    const sampleHtml = sample.length ? `
+        <div class="muted" style="margin-top:10px;">
+            對帳樣本：${sample.map(x => `${esc(x.date || "")} ${esc(x.category || "")} ${esc(x.description || "")}`).join("；")}
+        </div>` : "";
+    box.innerHTML = `
+        <div class="stat-grid">
+            ${rows.map(([k, v]) => `<div class="stat-card"><div class="k">${esc(k)}</div><div class="v">${fmtAmount(v)}</div></div>`).join("")}
+        </div>
+        <div class="muted" style="margin-top:10px;">月份：${esc(data.month || accountingImportMonthValue())}；${data.dry_run ? "目前是預覽，尚未寫入。" : "已完成匯入與對帳。"}</div>
+        ${conflictHtml}
+        ${sampleHtml}
+    `;
+}
+
+async function previewAccountingImport() {
+    const month = encodeURIComponent(accountingImportMonthValue());
+    const data = await api(`/api/osc/accounting/import/google-sheet?month=${month}`);
+    renderAccountingImportResult(data);
+}
+
+async function runAccountingImport() {
+    const month = accountingImportMonthValue();
+    if (!confirm(`確定匯入 ${month} 的同事帳務表？固定支出會跳過，不會重複入帳。`)) return;
+    const data = await api(`/api/osc/accounting/import/google-sheet`, "POST", { month, commit: true });
+    renderAccountingImportResult(data);
+    await loadTransactions();
+    await loadMeta();
+}
+
 async function applyAccountingPeriod() {
     const now = new Date();
     const y = now.getFullYear();
@@ -221,6 +283,18 @@ async function saveRecurringExpense() {
     });
     await loadRecurringExpenses();
     await loadMeta();
+}
+
+async function syncRecurringGenerated() {
+    const id = (document.getElementById("txRecurringId").value || "").trim();
+    if (!id) return alert("請先選擇一筆固定支出");
+    const amount = (document.getElementById("txRecurringAmount").value || "0").trim();
+    const description = (document.getElementById("txRecurringDescription").value || "").trim();
+    if (!confirm(`確定同步今年已產生的「${description || id}」固定支出金額？`)) return;
+    const data = await api(`/api/osc/accounting/recurring/${Number(id)}/sync-generated`, "POST", { amount });
+    alert(`已同步 ${data.updated_count || 0} 筆固定支出紀錄`);
+    await loadTransactions();
+    await loadAccountingSummary();
 }
 
 async function delRecurringExpense(id) {

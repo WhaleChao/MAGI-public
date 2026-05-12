@@ -1,5 +1,6 @@
 from api.osc.accounting_sheet_import import (
     AccountingSheetRow,
+    fixed_expense_overlap_details,
     month_window,
     parse_date,
     parse_sheet_values,
@@ -123,3 +124,75 @@ def test_fixed_expense_overlap_skips_payroll(monkeypatch):
         description="主持律師薪資",
     )
     assert is_fixed_expense_overlap(row) is True
+
+
+def test_fixed_expense_overlap_reports_amount_conflict(monkeypatch):
+    def fake_helpers():
+        def fake_exec(sql, params=(), fetch="none"):
+            return [
+                {"id": 1, "category": "人事費", "sub_type": "薪資", "description": "政翔薪水", "amount": 45800.0}
+            ], {}
+
+        return fake_exec, lambda ref: ref
+
+    monkeypatch.setattr("api.osc.accounting_sheet_import._get_osc_helpers", fake_helpers)
+    row = AccountingSheetRow(
+        source_row=23,
+        date="2026-05-25",
+        type="支出",
+        amount=46800.0,
+        category="薪資",
+        description="主持律師薪資",
+    )
+    details = fixed_expense_overlap_details(row)
+    assert details is not None
+    assert details["family"] == "薪資"
+    assert details["amount_conflict"] is True
+
+
+def test_recurring_sync_generated_route(monkeypatch):
+    from flask import Flask
+    from flask_login import LoginManager, UserMixin
+
+    from api.blueprints.osc_accounting import osc_accounting_bp
+
+    app = Flask(__name__)
+    app.config["TESTING"] = True
+    app.config["LOGIN_DISABLED"] = True
+    app.secret_key = "test"
+    login = LoginManager(app)
+
+    class User(UserMixin):
+        id = "test"
+
+    @login.user_loader
+    def _load(_user_id):
+        return User()
+
+    app.register_blueprint(osc_accounting_bp)
+    calls = []
+
+    def fake_helpers():
+        def fake_exec(sql, params=(), fetch="none"):
+            calls.append((sql, params, fetch))
+            if "FROM recurring_expenses" in sql:
+                return {
+                    "id": 9,
+                    "category": "人事費",
+                    "sub_type": "薪資",
+                    "description": "政翔薪水",
+                    "amount": 46800.0,
+                }, {}
+            if sql.strip().startswith("UPDATE case_transactions"):
+                return {"rowcount": 5}, {}
+            if "FROM case_transactions" in sql:
+                return [], {}
+            return {}, {}
+
+        return fake_exec, lambda x: x, lambda *a, **k: None, lambda x: x, lambda v, d=0: int(v or d)
+
+    monkeypatch.setattr("api.blueprints.osc_accounting._get_osc_helpers", fake_helpers)
+    resp = app.test_client().post("/api/osc/accounting/recurring/9/sync-generated", json={"amount": 46800})
+    assert resp.status_code == 200
+    assert resp.get_json()["updated_count"] == 5
+    assert any("[固定] 政翔薪水" in str(params) for _, params, _ in calls)
