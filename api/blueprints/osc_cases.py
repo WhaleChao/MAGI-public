@@ -4931,6 +4931,78 @@ def osc_todos_api():
     return jsonify({"ok": True, "result": result})
 
 
+def _osc_complete_todos_before(cutoff_date: str, *, status: str = "已完成") -> dict:
+    """Mark stale dated todos as completed in bulk."""
+    cutoff = str(cutoff_date or "").strip()
+    if not re.match(r"^\d{4}-\d{2}-\d{2}$", cutoff):
+        raise ValueError("cutoff_date must be YYYY-MM-DD")
+    done_statuses = tuple(s.lower() for s in _osc_todo_done_statuses())
+    placeholders = ",".join(["%s"] * len(done_statuses))
+    count_row, _ = _osc_exec(
+        f"""
+        SELECT COUNT(*) AS c
+        FROM case_todos
+        WHERE todo_date IS NOT NULL
+          AND todo_date < %s
+          AND (status IS NULL OR status='' OR LOWER(status) NOT IN ({placeholders}))
+        """,
+        (cutoff, *done_statuses),
+        fetch="one",
+    )
+    result, _ = _osc_exec(
+        f"""
+        UPDATE case_todos
+        SET status=%s, completed_date=COALESCE(completed_date, NOW())
+        WHERE todo_date IS NOT NULL
+          AND todo_date < %s
+          AND (status IS NULL OR status='' OR LOWER(status) NOT IN ({placeholders}))
+        """,
+        (status, cutoff, *done_statuses),
+        fetch="none",
+    )
+    return {
+        "cutoff_date": cutoff,
+        "matched": _osc_safe_int((count_row or {}).get("c")),
+        "updated": _osc_safe_int((result or {}).get("rowcount")),
+        "status": status,
+    }
+
+
+@osc_bp.route("/api/osc/todos/bulk-complete-before", methods=["POST"])
+@login_required
+def osc_todos_bulk_complete_before_api():
+    payload = request.get_json() or {}
+    cutoff = (payload.get("cutoff_date") or "2026-02-01").strip()
+    status = (payload.get("status") or "已完成").strip() or "已完成"
+    dry_run = bool(payload.get("dry_run"))
+    try:
+        if dry_run:
+            done_statuses = tuple(s.lower() for s in _osc_todo_done_statuses())
+            placeholders = ",".join(["%s"] * len(done_statuses))
+            row, _ = _osc_exec(
+                f"""
+                SELECT COUNT(*) AS c
+                FROM case_todos
+                WHERE todo_date IS NOT NULL
+                  AND todo_date < %s
+                  AND (status IS NULL OR status='' OR LOWER(status) NOT IN ({placeholders}))
+                """,
+                (cutoff, *done_statuses),
+                fetch="one",
+            )
+            return jsonify({"ok": True, "dry_run": True, "cutoff_date": cutoff, "matched": _osc_safe_int((row or {}).get("c"))})
+        result = _osc_complete_todos_before(cutoff, status=status)
+        _osc_log_activity(
+            "todos:bulk_complete_before",
+            "case_todos",
+            "",
+            {"cutoff_date": cutoff, "updated": result.get("updated"), "status": status},
+        )
+        return jsonify({"ok": True, **result})
+    except ValueError as e:
+        return jsonify({"ok": False, "error": str(e)}), 400
+
+
 @osc_bp.route("/api/osc/todos/<int:row_id>", methods=["GET", "PUT", "DELETE"])
 @login_required
 def osc_todo_detail_api(row_id):
