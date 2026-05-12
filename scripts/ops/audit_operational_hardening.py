@@ -141,7 +141,7 @@ def audit_cron() -> dict[str, Any]:
             j for j in grouped
             if not (j.get("command") or "").strip().startswith("@MAGI")
         ]
-        if len(grouped) > 1 and heavy:
+        if len(heavy) > 1:
             collisions.append({
                 "cron": cron,
                 "jobs": [
@@ -172,13 +172,27 @@ def audit_git() -> dict[str, Any]:
     generated_prefixes = (
         "?? static/worldmonitor_reports/",
         " D static/worldmonitor_reports/",
+        " M static/translator_ape_latest.json",
+        "?? static/translator_ape_latest.json",
+        " M static/knowledge_lint_latest.json",
+        "?? static/knowledge_lint_latest.json",
+        " M json/processed_laf_emails.json",
+        "?? json/processed_laf_emails.json",
+        " M skills/pdf-namer/db_rules_cache.json",
+        "?? skills/pdf-namer/db_rules_cache.json",
         "?? cron_jobs.json.bak.",
         "?? .claude/worktrees/",
     )
-    generated = [line for line in lines if line.startswith(generated_prefixes)]
+    generated = [
+        line for line in lines
+        if line.startswith(generated_prefixes)
+        or "__pycache__/" in line
+        or line.endswith(".pyc")
+    ]
     source = [line for line in lines if line not in generated]
     return {
-        "dirty_count": len(lines),
+        "dirty_count": len(source),
+        "raw_dirty_count": len(lines),
         "source_or_review_count": len(source),
         "generated_or_runtime_count": len(generated),
         "source_or_review": source,

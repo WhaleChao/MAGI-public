@@ -15,6 +15,7 @@ import shutil
 import socket
 import subprocess
 import time
+import urllib.request
 from html import escape
 from api.thread_pools import io_pool
 from datetime import datetime
@@ -164,6 +165,40 @@ def _is_false_positive_cron_issue(row: dict[str, Any]) -> bool:
     return ("\"success\": true" in err_lower) or ("✅" in err)
 
 
+def _current_omlx_model_ids() -> list[str]:
+    try:
+        with urllib.request.urlopen("http://127.0.0.1:8080/v1/models", timeout=2) as resp:
+            data = json.loads(resp.read().decode("utf-8", errors="replace"))
+        return [
+            str(item.get("id") or "").strip()
+            for item in (data.get("data") or [])
+            if isinstance(item, dict) and str(item.get("id") or "").strip()
+        ]
+    except Exception:
+        return []
+
+
+def _expected_omlx_keyword_now() -> str:
+    now = datetime.now()
+    minutes = now.hour * 60 + now.minute
+    return "e4b" if 415 <= minutes < 1310 else "26b"
+
+
+def _is_omlx_switch_recovered() -> bool:
+    expected = _expected_omlx_keyword_now()
+    return any(expected in model.lower() for model in _current_omlx_model_ids())
+
+
+def _is_resource_governor_recovered() -> bool:
+    try:
+        from scripts.ops import resource_governor
+
+        decision = resource_governor.classify(resource_governor.collect_snapshot())
+        return bool(getattr(decision, "ok", False))
+    except Exception:
+        return False
+
+
 def _classify_cron_issue(
     row: dict[str, Any],
     *,
@@ -181,6 +216,11 @@ def _classify_cron_issue(
 
     latest_issue_ts = latest_cron_issue_ts_by_job.get(job_id, ts)
     last_run_ts = cron_last_run_ts.get(job_id, 0.0)
+    if job_id in {"job_omlx_switch_day", "job_omlx_switch_night", "job_omlx_profile_guard"}:
+        if _is_omlx_switch_recovered():
+            return "recovered"
+    if job_id == "job_resource_governor" and _is_resource_governor_recovered():
+        return "recovered"
     if latest_issue_ts > ts:
         return "superseded"
     if last_run_ts > ts:
