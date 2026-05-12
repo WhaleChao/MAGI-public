@@ -14,6 +14,11 @@ commercially ready merely because the repository builds; the operator must also
 verify the actual machine, model services, DB, NAS/file storage, channel
 integrations, and any portal automation used in production.
 
+MAGI's first commercial shape is **single-host / local-first**. A different
+machine is a different MAGI instance. Multi-tenant hosting, electronic
+signatures, and a public upload portal are not enabled scope for this release;
+NERV (`/dashboard/nerv` or `/nerv`) is the status page for each host.
+
 ## Required Gates Before Each Commercial Release
 
 Preferred single entrypoint:
@@ -56,6 +61,8 @@ Acceptance target:
 - Google Calendar import dry-run is clean: coworker/manual events are skipped,
   OSC events require a leading OSC case number, and LAF activity-count events
   are matched only through DB-confirmed LAF case identity.
+- NERV reports the target host's model, OCR, DB, NAS, and background-service
+  status without critical errors.
 - Backup drill verifies a readable local backup and keeps restore
   confirmation-gated.
 - Portal automation uses draft-only or explicit-confirmation mode unless the

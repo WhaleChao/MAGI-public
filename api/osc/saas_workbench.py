@@ -22,6 +22,7 @@ ROOT = Path(__file__).resolve().parents[2]
 INTAKE_PATH = ROOT / ".runtime" / "osc_saas_intake_events.jsonl"
 MAX_TEXT = 60000
 CLOSED_CASE_STATUSES = ("已結案", "已結案，待報結", "已結案待報結", "已結案，待送出")
+NOT_NEEDED_FOR_SINGLE_HOST = ("多租戶", "電子簽章", "公開上傳入口")
 
 ExecFn = Callable[..., tuple[Any, Any]]
 
@@ -68,6 +69,17 @@ CAPABILITIES = [
         "role": "用既有書狀索引整理案件文件時間線，不等同書狀索引頁",
     },
     {
+        "key": "nerv_status_page",
+        "title": "NERV 上線狀態",
+        "status": "enabled",
+        "owner": "NERV",
+        "tab": "",
+        "primary_action": {"act": "open-url", "url": "/dashboard/nerv", "label": "開啟 NERV"},
+        "secondary_actions": [{"act": "open-url", "url": "/dashboard/nerv/api/health", "label": "健康檢查"}],
+        "source": "NERV health API",
+        "role": "作為正式上線狀態頁，顯示推理、OCR、DB、NAS 與背景服務健康度",
+    },
+    {
         "key": "external_packet",
         "title": "對外資料",
         "status": "enabled",
@@ -98,16 +110,6 @@ CAPABILITIES = [
         "role": "查既有當事人、對造與案件，不另建名冊",
     },
     {
-        "key": "client_portal",
-        "title": "當事人入口",
-        "status": "packet_mode",
-        "owner": "案件列表 / 應備事項表",
-        "tab": "cases",
-        "primary_action": {"act": "saas-section-jump", "section": "saasPacketSection", "label": "產生對外資料"},
-        "source": "cases 與 checklist",
-        "role": "目前只產生可複製文字，公開上傳入口保留但不啟用",
-    },
-    {
         "key": "light_audit",
         "title": "輕量權限與高風險操作紀錄",
         "status": "high_risk_only",
@@ -126,6 +128,75 @@ CAPABILITIES = [
         "primary_action": {"act": "saas-section-jump", "section": "saasOpsSection", "label": "查看統計"},
         "source": "OSC 既有資料表彙總",
         "role": "補強概覽，不取代各模組明細頁",
+    },
+]
+
+READINESS_CHECKS = [
+    {
+        "key": "single_host_boundary",
+        "title": "部署邊界",
+        "status": "ready",
+        "detail": "每台主機是一個獨立 MAGI；不做共用多租戶資料庫。",
+        "actions": [{"act": "open-url", "url": "/dashboard/nerv", "label": "NERV 狀態"}],
+    },
+    {
+        "key": "nerv_status",
+        "title": "上線狀態頁",
+        "status": "ready",
+        "detail": "NERV 已提供健康檢查與服務狀態，作為正式上線狀態頁。",
+        "actions": [
+            {"act": "open-url", "url": "/dashboard/nerv", "label": "開啟 NERV"},
+            {"act": "open-url", "url": "/dashboard/nerv/api/health", "label": "健康 API"},
+        ],
+    },
+    {
+        "key": "high_risk_controls",
+        "title": "高風險操作",
+        "status": "guarded",
+        "detail": "送出、還原、結案搬移、批次清理與大量匯入保留人工確認與高風險紀錄。",
+        "actions": [{"act": "tab-jump", "tab": "admin", "label": "系統設定"}],
+    },
+    {
+        "key": "workflow_templates",
+        "title": "流程樣板",
+        "status": "ready",
+        "detail": "案件、法扶、消債、書狀、帳務與行事曆使用同一套既有資料表，不再疊第二套。",
+        "actions": [{"act": "tab-jump", "tab": "cases", "label": "案件列表"}],
+    },
+    {
+        "key": "notification_routing",
+        "title": "通知路由",
+        "status": "ready",
+        "detail": "業務通知與系統通知分流；法扶巡檢應走法扶一般或系統通知，不送派案頻道。",
+        "actions": [{"act": "tab-jump", "tab": "admin", "label": "通知設定"}],
+    },
+    {
+        "key": "import_export",
+        "title": "匯入 / 匯出",
+        "status": "ready",
+        "detail": "案件、當事人、帳務、書狀與法扶活動已保留匯入匯出或可複製文字出口。",
+        "actions": [{"act": "tab-jump", "tab": "cases", "label": "案件匯入匯出"}],
+    },
+    {
+        "key": "ai_provenance",
+        "title": "AI 來源標示",
+        "status": "guarded",
+        "detail": "回答、記憶、實務見解與書狀草擬保留來源標示；引用前仍提示核對全文。",
+        "actions": [{"act": "tab-jump", "tab": "drafts", "label": "AI 草擬"}],
+    },
+    {
+        "key": "support_diagnostics",
+        "title": "維運診斷",
+        "status": "ready",
+        "detail": "public audit、smoke50、production-live 與 commercial-release 作為交付前檢查。",
+        "actions": [{"act": "open-url", "url": "/dashboard/nerv", "label": "查看狀態"}],
+    },
+    {
+        "key": "not_needed_scope",
+        "title": "本版不啟用",
+        "status": "not_needed",
+        "detail": "多租戶、電子簽章、公開上傳入口暫不納入；對外聯絡維持私人 LINE 與可複製文字。",
+        "actions": [{"act": "saas-section-jump", "section": "saasPacketSection", "label": "對外資料"}],
     },
 ]
 
@@ -683,6 +754,53 @@ def high_risk_activity(exec_fn: ExecFn, *, limit: int = 30) -> dict:
     }
 
 
+def _file_ready(path: str) -> bool:
+    return (ROOT / path).exists()
+
+
+def build_product_readiness(exec_fn: ExecFn) -> dict:
+    """Return the single-host product-readiness map used by the OSC page.
+
+    This is intentionally lightweight: it only checks local files/routes that
+    should exist in every checkout and DB-backed counts that are safe to read.
+    The live health of services remains NERV's job.
+    """
+
+    checks = [dict(item) for item in READINESS_CHECKS]
+    file_checks = {
+        "nerv_status": _file_ready("templates/dashboard_nerv.html") and _file_ready("api/blueprints/admin_runtime.py"),
+        "workflow_templates": _file_ready("api/osc/saas_workbench.py") and _file_ready("api/osc/laf_activity_stats.py"),
+        "notification_routing": _file_ready("api/discord_channel_router.py"),
+        "import_export": _file_ready("api/blueprints/osc_cases.py") and _file_ready("api/osc/accounting_sheet_import.py"),
+        "ai_provenance": _file_ready("api/session/provenance.py") and _file_ready("api/answer_provenance.py"),
+        "support_diagnostics": _file_ready("scripts/ops/run_test_suite.py") and _file_ready("scripts/ops/commercial_readiness_live.py"),
+    }
+    for item in checks:
+        key = item.get("key")
+        if key in file_checks and not file_checks[key]:
+            item["status"] = "needs_attention"
+            item["detail"] = f"{item['detail']}（本機缺少必要檔案，請先檢查安裝。）"
+
+    high_risk_count = len(high_risk_activity(exec_fn, limit=5).get("items") or [])
+    operations = build_operations_report(exec_fn)
+    return {
+        "mode": "single_host",
+        "mode_label": "單主機 MAGI",
+        "not_needed": list(NOT_NEEDED_FOR_SINGLE_HOST),
+        "status_page": {"label": "NERV 上線狀態", "url": "/dashboard/nerv", "health_api": "/dashboard/nerv/api/health"},
+        "summary": {
+            "ready": sum(1 for x in checks if x.get("status") == "ready"),
+            "guarded": sum(1 for x in checks if x.get("status") == "guarded"),
+            "not_needed": sum(1 for x in checks if x.get("status") == "not_needed"),
+            "needs_attention": sum(1 for x in checks if x.get("status") == "needs_attention"),
+            "high_risk_recent": high_risk_count,
+            "total_cases": operations.get("total_cases", 0),
+            "pending_todos": operations.get("pending_todos", 0),
+        },
+        "checks": checks,
+    }
+
+
 def build_saas_overview(exec_fn: ExecFn, *, case_number: str = "") -> dict:
     risk = build_risk_dashboard(exec_fn)
     timeline = build_document_timeline(exec_fn, case_number=case_number)
@@ -691,6 +809,7 @@ def build_saas_overview(exec_fn: ExecFn, *, case_number: str = "") -> dict:
     return {
         "ok": True,
         "capabilities": CAPABILITIES,
+        "readiness": build_product_readiness(exec_fn),
         "integration": {
             "principle": "這裡集中顯示常用資訊；實際新增與修改仍在各對應頁籤完成。",
             "items": INTEGRATION_MATRIX,

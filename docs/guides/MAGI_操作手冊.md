@@ -64,7 +64,9 @@ python3 scripts/install_magi.py --dry-run --check-live
 - audit 不得有 error 或 warning。
 - `.env`、OAuth token、DB dump、案件資料、portal 截圖、NAS 掛載資訊不得進 git。
 - MAGI daemon、OSC 網頁、DB、NAS、Google Calendar OAuth、LINE / Telegram / Discord 至少要跑過一次 live smoke。
+- NERV 是上線狀態頁，可從 `/dashboard/nerv` 或 `/nerv` 開啟；交付前請確認推理、OCR、DB、NAS 與背景服務不是錯誤狀態。
 - 法扶、閱卷、筆錄、批次搬檔、DB 還原都應保留確認碼或人工確認；不要為了方便直接改成自動送出。
+- 本版採單主機部署；多租戶、電子簽章、公開上傳入口不啟用。對外溝通仍用既有 LINE 等通道，MAGI 只產生可複製的對外資料。
 
 ---
 

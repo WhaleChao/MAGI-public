@@ -98,9 +98,11 @@ Before publishing or handing MAGI to another operator, treat these as go/no-go g
 
 - README files, the operator guide, terms, privacy policy, data-retention policy, and third-party bill of materials are current.
 - The daemon starts, and `/health`, the main OSC tabs, messaging channels, DB, NAS/file storage, and Google Calendar OAuth all pass live checks.
+- NERV (`/dashboard/nerv` or `/nerv`) is the production status page for the target host; use it to confirm model, OCR, DB, NAS, and background-service health before handoff.
 - `scripts/public_release_audit.py --strict` has no errors or warnings. Install-only packages without a private DB may use the dedicated `--skip-db` installability check.
 - `.env`, OAuth tokens, DB dumps, case/client material, portal screenshots, NAS paths, and runtime reports are not tracked by git.
 - LAF, court file review, transcript, and calendar workflows are high-risk workflows; production submission, DB restore, and bulk file movement must remain confirmation-gated.
+- This release is single-host by design. Multi-tenant service, electronic signatures, and a public upload portal are outside the enabled scope; operators should use the built-in "對外資料" copy text with their existing communication channel.
 
 Commercial readiness documents:
 

@@ -11,6 +11,10 @@ function saasBadge(status) {
         enabled: "已開啟",
         packet_mode: "可複製文字",
         high_risk_only: "高風險紀錄",
+        ready: "已就緒",
+        guarded: "需確認",
+        not_needed: "不啟用",
+        needs_attention: "需處理",
     }[status] || status || "未設定";
     return `<span class="badge">${esc(label)}</span>`;
 }
@@ -21,6 +25,15 @@ function buildSaasFallbackOverview(error) {
         ok: false,
         error: error?.message || "not_found",
         capabilities: [],
+        readiness: {
+            mode_label: "單主機 MAGI",
+            status_page: {label: "NERV 上線狀態", url: "/dashboard/nerv"},
+            summary: {ready: 0, guarded: 0, not_needed: 3, needs_attention: 0},
+            checks: [
+                {title: "NERV 上線狀態", status: "ready", detail: "請開啟 NERV 查看即時服務狀態。", actions: [{act: "open-url", url: "/dashboard/nerv", label: "開啟 NERV"}]},
+                {title: "本版不啟用", status: "not_needed", detail: "多租戶、電子簽章、公開上傳入口暫不納入。", actions: []},
+            ],
+        },
         integration: {
             principle: "MAGI 暫時讀不到管理工具 API；下方先保留各功能入口，正式資料請以各頁籤為準。",
             items: [],
@@ -63,6 +76,7 @@ async function loadSaasWorkbench(_options = {}) {
 
 function renderSaasWorkbench() {
     const data = state.saas.overview || {};
+    renderSaasReadiness(data.readiness || {});
     renderSaasCapabilities(data.capabilities || []);
     renderSaasIntegration(data.integration || {});
     renderSaasRisk(data.risk || {});
@@ -70,6 +84,37 @@ function renderSaasWorkbench() {
     renderSaasTimeline(data.timeline || {});
     renderSaasLearning(data.learning || {});
     renderSaasIntakes(data.intake || {});
+}
+
+function renderSaasReadiness(readiness) {
+    const host = document.getElementById("saasReadinessGrid");
+    if (!host) return;
+    const summary = readiness.summary || {};
+    const checks = readiness.checks || [];
+    const statusPage = readiness.status_page || {};
+    const headline = `
+        <div class="stat-card">
+            <div class="stat-label">開放前檢查</div>
+            <div class="stat-value" style="font-size:16px;">${esc(readiness.mode_label || "單主機 MAGI")}</div>
+            <div class="muted" style="margin-top:6px;">NERV 作為正式上線狀態頁；多租戶、電子簽章、公開上傳入口不啟用。</div>
+            <div class="inline-actions" style="margin-top:8px;">
+                <button class="btn slim" data-act="open-url" data-url="${esc(statusPage.url || "/dashboard/nerv")}">${esc(statusPage.label || "開啟 NERV")}</button>
+                <button class="btn slim" data-act="open-url" data-url="${esc(statusPage.health_api || "/dashboard/nerv/api/health")}">健康 API</button>
+            </div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-label">檢查結果</div>
+            <div class="stat-value" style="font-size:16px;">就緒 ${Number(summary.ready || 0)} / 需確認 ${Number(summary.guarded || 0)}</div>
+            <div class="muted" style="margin-top:6px;">不啟用 ${Number(summary.not_needed || 0)}；需處理 ${Number(summary.needs_attention || 0)}；近期高風險紀錄 ${Number(summary.high_risk_recent || 0)}</div>
+        </div>`;
+    host.innerHTML = headline + checks.map(x => `
+        <div class="stat-card">
+            <div class="stat-label">${esc(x.title || "")}</div>
+            <div class="stat-value" style="font-size:16px;">${saasBadge(x.status)}</div>
+            <div class="muted" style="margin-top:6px;">${esc(shortText(x.detail || "", 92))}</div>
+            ${saasActionButtons(x.actions || [])}
+        </div>
+    `).join("");
 }
 
 function renderSaasCapabilities(items) {
@@ -145,6 +190,7 @@ function saasActionButtons(actions) {
             x.path ? `data-path="${esc(x.path)}"` : "",
             x.keyword ? `data-keyword="${esc(x.keyword)}"` : "",
             x.module ? `data-module="${esc(x.module)}"` : "",
+            x.url ? `data-url="${esc(x.url)}"` : "",
         ].filter(Boolean).join(" ");
         return `<button class="btn slim" ${attrs}>${esc(x.label || "開啟")}</button>`;
     }).join("")}</div>`;

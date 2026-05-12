@@ -631,6 +631,7 @@ def dashboard_legacy():
 
 
 @dashboard_pages_bp.route("/dashboard/nerv")
+@dashboard_pages_bp.route("/nerv")
 @dashboard_pages_bp.route("/magi-adjust")
 @dashboard_pages_bp.route("/magi-settings")
 @login_required

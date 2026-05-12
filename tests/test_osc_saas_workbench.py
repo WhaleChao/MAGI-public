@@ -91,9 +91,14 @@ def test_saas_overview_exposes_ten_capabilities(monkeypatch, tmp_path):
         "quality_gate",
         "risk_dashboard",
         "conflict_check",
-        "client_portal",
+        "nerv_status_page",
         "operations_report",
     }
+    assert result["readiness"]["mode"] == "single_host"
+    assert result["readiness"]["status_page"]["url"] == "/dashboard/nerv"
+    assert "多租戶" in result["readiness"]["not_needed"]
+    assert "公開上傳入口" in result["readiness"]["not_needed"]
+    assert {x["key"] for x in result["readiness"]["checks"]} >= {"nerv_status", "not_needed_scope"}
     assert result["integration"]["principle"].startswith("這裡集中顯示常用資訊")
     assert all(x.get("owner") and x.get("source") and x.get("role") for x in result["capabilities"])
     target_tabs = {
@@ -110,6 +115,8 @@ def test_saas_overview_exposes_ten_capabilities(monkeypatch, tmp_path):
     assert timeline["primary_action"]["section"] == "saasTimelineSection"
     assert timeline["secondary_actions"][0]["tab"] == "documents"
     assert timeline["title"] == "文件證據時間線"
+    nerv = next(x for x in result["capabilities"] if x["key"] == "nerv_status_page")
+    assert nerv["primary_action"]["act"] == "open-url"
     assert "對外資料" in {x["title"] for x in result["capabilities"]}
 
 
@@ -117,6 +124,7 @@ def test_saas_workbench_template_has_actionable_entry_links():
     html = Path("templates/partials/osc/saasWorkbench.html").read_text(encoding="utf-8")
 
     assert "資料來源與處理入口" in html
+    assert 'id="saasReadinessGrid"' in html
     assert "功能整合關係" not in html
     assert "管理工具" in html
     assert "事務總覽" not in html
@@ -128,6 +136,8 @@ def test_saas_workbench_template_has_actionable_entry_links():
     assert "漏斗" not in html
     assert "重命名" not in html
     assert "對外文件產生包" not in html
+    assert "當事人入口" not in html
+    assert "客戶入口" not in html
     assert "資料包" not in html
     assert 'id="saasTimelineSection"' in html
     for tab in ["cases", "clients", "todos", "calendar", "laf", "documents", "drafts"]:
@@ -288,6 +298,7 @@ def test_saas_routes_smoke(saas_client):
     resp = saas_client.get("/api/osc/saas/overview")
     assert resp.status_code == 200
     assert len(resp.get_json()["capabilities"]) == 10
+    assert resp.get_json()["readiness"]["mode"] == "single_host"
 
     resp = saas_client.post(
         "/api/osc/saas/quality-check",

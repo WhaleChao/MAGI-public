@@ -136,6 +136,11 @@ async function dispatchDelegatedAction(act, t) {
     if (act === "case-doc-index") return await openCaseDocumentIndex(t.dataset.case || "");
     if (act === "case-address-label") return addressLabelDialog(id);
     if (act === "tab-jump") return jumpToPaperclipTab(t.dataset.tab || t.dataset.tabJump || "");
+    if (act === "open-url") {
+        const url = t.dataset.url || "";
+        if (url) window.open(url, "_blank", "noopener");
+        return;
+    }
     if (act === "saas-section-jump") {
         await jumpToPaperclipTabAndRun("dashboard", async () => {
             const sectionId = t.dataset.section || t.dataset.tab || "";
