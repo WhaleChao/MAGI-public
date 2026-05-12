@@ -69,12 +69,20 @@ from api.osc.draft_learning import (
     record_draft_feedback,
 )
 from api.osc.saas_workbench import (
+    build_ai_governance,
     build_client_packet,
+    build_diagnostic_pack,
     build_document_timeline,
+    build_notification_preferences,
+    build_onboarding_status,
     build_saas_overview,
+    build_workflow_templates,
     conflict_check,
     quality_check,
     record_intake,
+    render_operations_report_text,
+    save_notification_preferences,
+    update_onboarding_status,
 )
 
 _log = logging.getLogger(__name__)
@@ -2624,6 +2632,66 @@ def osc_saas_client_packet_api():
 def osc_saas_timeline_api():
     case_number = (request.args.get("case_number") or "").strip()
     return jsonify({"ok": True, **build_document_timeline(_osc_exec, case_number=case_number)})
+
+
+@osc_bp.route("/api/osc/saas/onboarding", methods=["GET", "POST"])
+@login_required
+def osc_saas_onboarding_api():
+    if request.method == "GET":
+        return jsonify(build_onboarding_status())
+    payload = request.get_json() or {}
+    result = update_onboarding_status(payload, actor=_osc_current_actor())
+    status = 200 if result.get("ok") else 400
+    try:
+        _osc_log_activity("saas:onboarding", "onboarding", str(payload.get("key") or ""), payload)
+    except Exception:
+        logger.debug("silent-catch at %s:%s", __name__, "osc_saas_onboarding_api", exc_info=True)
+    return jsonify(result), status
+
+
+@osc_bp.route("/api/osc/saas/notification-prefs", methods=["GET", "POST"])
+@login_required
+def osc_saas_notification_prefs_api():
+    if request.method == "GET":
+        return jsonify(build_notification_preferences())
+    payload = request.get_json() or {}
+    result = save_notification_preferences(payload)
+    try:
+        _osc_log_activity("saas:notification_prefs", "notification_preferences", "single_host", payload)
+    except Exception:
+        logger.debug("silent-catch at %s:%s", __name__, "osc_saas_notification_prefs_api", exc_info=True)
+    return jsonify(result)
+
+
+@osc_bp.route("/api/osc/saas/workflow-templates", methods=["GET"])
+@login_required
+def osc_saas_workflow_templates_api():
+    return jsonify(build_workflow_templates())
+
+
+@osc_bp.route("/api/osc/saas/ai-governance", methods=["GET"])
+@login_required
+def osc_saas_ai_governance_api():
+    return jsonify(build_ai_governance())
+
+
+@osc_bp.route("/api/osc/saas/operations-report", methods=["GET"])
+@login_required
+def osc_saas_operations_report_api():
+    return jsonify(render_operations_report_text(_osc_exec))
+
+
+@osc_bp.route("/api/osc/saas/diagnostic-pack", methods=["GET"])
+@login_required
+def osc_saas_diagnostic_pack_api():
+    payload = build_diagnostic_pack(_osc_exec)
+    body = json.dumps(payload, ensure_ascii=False, indent=2)
+    filename = f"magi_diagnostic_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+    return Response(
+        body,
+        mimetype="application/json; charset=utf-8",
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
+    )
 
 
 # ══════════════════════════════════════════════════════════════════════════════

@@ -37,7 +37,14 @@ logger = logging.getLogger("discord_channel_router")
 _MAGI_ROOT = os.path.abspath(os.path.dirname(os.path.dirname(__file__)))
 _AGENT_DIR = os.path.join(_MAGI_ROOT, ".agent")
 _CHANNEL_MAP_FILE = os.path.join(_AGENT_DIR, "discord_channel_map.json")
+_NOTIFICATION_PREFS_FILE = os.path.join(_MAGI_ROOT, ".runtime", "osc_saas_notification_prefs.json")
 _SYSTEM_SILENT_SOURCES = {"business_module_live_check", "nightly_regression", "mock_test"}
+_DEFAULT_NOTIFICATION_PREFS = {
+    "laf_general": "enabled",
+    "laf_dispatch": "enabled",
+    "system_health": "system_only",
+    "nightly_report": "system_only",
+}
 
 # ───────── topic_key → sub_topic 映射 ─────────
 # red_phone.py 已定義 canonical topic_key (filereview, transcript, laf, ...),
@@ -327,6 +334,43 @@ def save_channel_map(channel_map: dict[str, str]) -> str:
     return _CHANNEL_MAP_FILE
 
 
+def _load_notification_preferences() -> dict[str, str]:
+    prefs = dict(_DEFAULT_NOTIFICATION_PREFS)
+    try:
+        if os.path.exists(_NOTIFICATION_PREFS_FILE):
+            with open(_NOTIFICATION_PREFS_FILE, "r", encoding="utf-8") as f:
+                raw = json.load(f) or {}
+            if isinstance(raw, dict):
+                for key, value in raw.items():
+                    if key in prefs and str(value or ""):
+                        prefs[key] = str(value)
+    except Exception:
+        logging.getLogger(__name__).debug(
+            "silent-catch at %s:%s", __name__, "_load_notification_preferences", exc_info=True
+        )
+    return prefs
+
+
+def _notification_policy_for(sub_topic: str, source: str = "") -> str:
+    prefs = _load_notification_preferences()
+    src = str(source or "").strip().lower()
+    topic = str(sub_topic or "").strip()
+    if topic == "laf_dispatch":
+        return prefs.get("laf_dispatch", "enabled")
+    if topic == "laf_general":
+        return prefs.get("laf_general", "enabled")
+    if topic == "nightly" or "nightly" in src:
+        return prefs.get("nightly_report", "system_only")
+    if topic in {"check", "alert"} or src in _SYSTEM_SILENT_SOURCES:
+        return prefs.get("system_health", "system_only")
+    return "enabled"
+
+
+def _explicit_channel_id(cmap: dict[str, str], key: str) -> str:
+    val = cmap.get(key, "")
+    return str(val or "").strip()
+
+
 # ───────── 主路由函數 ─────────
 
 def resolve_discord_channel(
@@ -346,6 +390,14 @@ def resolve_discord_channel(
     if str(source or "").strip().lower() in _SYSTEM_SILENT_SOURCES:
         return sub_topic, "__SILENT__"
     cmap = _load_channel_map()
+    policy = _notification_policy_for(sub_topic, source)
+    if policy == "silent":
+        return sub_topic, "__SILENT__"
+    if policy == "system_only":
+        explicit = _explicit_channel_id(cmap, sub_topic)
+        if explicit:
+            return sub_topic, explicit
+        return sub_topic, "__SILENT__"
 
     if not cmap:
         return sub_topic, fallback_channel_id

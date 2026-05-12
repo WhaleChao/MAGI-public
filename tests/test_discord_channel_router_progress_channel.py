@@ -132,3 +132,49 @@ def test_system_health_source_overrides_accidental_business_topic(monkeypatch):
         source="business_module_live_check",
         fallback_channel_id="999",
     ) == ("check", "__SILENT__")
+
+
+def test_system_only_notification_pref_requires_explicit_system_channel(monkeypatch):
+    msg = "☀️ 白天整理完成：處理 200、摘要 80"
+
+    monkeypatch.setattr(router, "_load_notification_preferences", lambda: {"nightly_report": "system_only"})
+    monkeypatch.setattr(router, "_load_channel_map", lambda: {"general": "999"})
+
+    assert router.resolve_discord_channel(
+        msg,
+        topic_key="nightly",
+        source="job_judicial_api_noon",
+        fallback_channel_id="999",
+    ) == ("nightly", "__SILENT__")
+
+    monkeypatch.setattr(router, "_load_channel_map", lambda: {"nightly": "777", "general": "999"})
+
+    assert router.resolve_discord_channel(
+        msg,
+        topic_key="nightly",
+        source="job_judicial_api_noon",
+        fallback_channel_id="999",
+    ) == ("nightly", "777")
+
+
+def test_laf_general_notification_pref_can_block_general_fallback(monkeypatch):
+    msg = "📋 法扶夜間巡檢報告\n📊 法扶案件總數：125"
+
+    monkeypatch.setattr(router, "_load_notification_preferences", lambda: {"laf_general": "system_only"})
+    monkeypatch.setattr(router, "_load_channel_map", lambda: {"general": "999", "laf_dispatch": "111"})
+
+    assert router.resolve_discord_channel(
+        msg,
+        topic_key="laf",
+        source="laf_nightly_audit",
+        fallback_channel_id="999",
+    ) == ("laf_general", "__SILENT__")
+
+    monkeypatch.setattr(router, "_load_channel_map", lambda: {"laf_general": "333", "general": "999"})
+
+    assert router.resolve_discord_channel(
+        msg,
+        topic_key="laf",
+        source="laf_nightly_audit",
+        fallback_channel_id="999",
+    ) == ("laf_general", "333")

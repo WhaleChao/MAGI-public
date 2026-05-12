@@ -55,6 +55,11 @@ function buildSaasFallbackOverview(error) {
         learning: {recent: []},
         intake: {recent: []},
         audit: {items: []},
+        onboarding: {items: [], summary: {}},
+        notification_preferences: {items: [], prefs: {}, policy: ""},
+        workflow_templates: {templates: []},
+        ai_governance: {policies: [], provenance_files: []},
+        operations_text: "",
     };
 }
 
@@ -84,6 +89,10 @@ function renderSaasWorkbench() {
     renderSaasTimeline(data.timeline || {});
     renderSaasLearning(data.learning || {});
     renderSaasIntakes(data.intake || {});
+    renderSaasOnboarding(data.onboarding || {});
+    renderSaasNotificationPrefs(data.notification_preferences || {});
+    renderSaasWorkflowTemplates(data.workflow_templates || {});
+    renderSaasGovernance(data.ai_governance || {}, data.operations_text || "");
 }
 
 function renderSaasReadiness(readiness) {
@@ -141,7 +150,8 @@ function saasCapabilityButtons(item) {
         const act = action.act || "tab-jump";
         const tab = action.tab || "";
         const section = action.section || action.target || "";
-        return `<button class="btn slim" data-${"act"}="${esc(act)}"${tab ? ` data-tab="${esc(tab)}"` : ""}${section ? ` data-section="${esc(section)}"` : ""}>${esc(action.label || "查看")}</button>`;
+        const url = action.url || "";
+        return `<button class="btn slim" data-${"act"}="${esc(act)}"${tab ? ` data-tab="${esc(tab)}"` : ""}${section ? ` data-section="${esc(section)}"` : ""}${url ? ` data-url="${esc(url)}"` : ""}>${esc(action.label || "查看")}</button>`;
     }).join("")}</div>`;
 }
 
@@ -194,6 +204,73 @@ function saasActionButtons(actions) {
         ].filter(Boolean).join(" ");
         return `<button class="btn slim" ${attrs}>${esc(x.label || "開啟")}</button>`;
     }).join("")}</div>`;
+}
+
+function renderSaasOnboarding(onboarding) {
+    const summaryEl = document.getElementById("saasOnboardingSummary");
+    const list = document.getElementById("saasOnboardingList");
+    if (!list) return;
+    const summary = onboarding.summary || {};
+    if (summaryEl) {
+        const ready = summary.ready ? "已完成必要檢查" : "仍有必要檢查未完成";
+        summaryEl.textContent = `${ready}：${Number(summary.required_done || 0)} / ${Number(summary.required || 0)}`;
+        summaryEl.className = `status-banner${summary.ready ? " ok" : " warn"}`;
+    }
+    const items = onboarding.items || [];
+    list.innerHTML = items.length ? items.map(x => `
+        <label class="selection-item" style="cursor:pointer;">
+            <input type="checkbox" data-saas-onboarding="${esc(x.key || "")}" ${x.done ? "checked" : ""}>
+            <div class="meta-text">
+                <div>${esc(x.title || "")}</div>
+                <div class="muted">${esc(x.category || "")}${x.required ? "｜必要" : ""}${x.updated_at ? "｜" + esc(x.updated_at) : ""}</div>
+            </div>
+        </label>
+    `).join("") : `<div class="muted">尚無導入檢查項目。</div>`;
+}
+
+function renderSaasNotificationPrefs(data) {
+    const policy = document.getElementById("saasNotificationPolicy");
+    const list = document.getElementById("saasNotificationList");
+    if (!list) return;
+    if (policy) policy.textContent = data.policy || "通知偏好載入完成。";
+    const labels = {enabled: "啟用", system_only: "只送系統通知", business_only: "只送業務", silent: "不主動推播"};
+    list.innerHTML = (data.items || []).map(x => `
+        <div class="field">
+            <label for="saasNotify_${esc(x.key)}">${esc(x.title || x.key || "")}</label>
+            <select id="saasNotify_${esc(x.key)}" data-saas-notify="${esc(x.key)}">
+                ${(x.options || []).map(opt => `<option value="${esc(opt)}" ${opt === x.value ? "selected" : ""}>${esc(labels[opt] || opt)}</option>`).join("")}
+            </select>
+        </div>
+    `).join("") || `<div class="muted">尚無通知偏好。</div>`;
+}
+
+function renderSaasWorkflowTemplates(data) {
+    const list = document.getElementById("saasWorkflowList");
+    if (!list) return;
+    const templates = data.templates || [];
+    list.innerHTML = templates.length ? templates.map(t => `
+        <div class="selection-item">
+            <div class="meta-text">
+                <div>${esc(t.title || "")}｜${esc(t.scope || "")}</div>
+                <div class="muted">${(t.steps || []).map((s, i) => `${i + 1}. ${esc(s)}`).join("　")}</div>
+                ${saasActionButtons(t.entry_actions || [])}
+            </div>
+        </div>
+    `).join("") : `<div class="muted">尚無流程樣板。</div>`;
+}
+
+function renderSaasGovernance(governance, reportText) {
+    const list = document.getElementById("saasGovernanceList");
+    const text = document.getElementById("saasOpsReportText");
+    if (text) text.value = reportText || "";
+    if (!list) return;
+    const policies = (governance.policies || []).map(x => `
+        <div class="selection-item"><div class="meta-text"><div>${esc(x)}</div></div></div>
+    `).join("");
+    const files = (governance.provenance_files || []).map(x => `
+        <div class="selection-item"><div class="meta-text"><div>${x.ready ? "已啟用" : "需檢查"}｜${esc(x.path || "")}</div></div></div>
+    `).join("");
+    list.innerHTML = policies + files || `<div class="muted">尚無 AI 來源治理資訊。</div>`;
 }
 
 function renderSaasRisk(risk) {
@@ -347,4 +424,44 @@ async function copySaasPacket() {
     if (!text.trim()) return showToast("沒有可複製的對外資料。", "warn");
     await navigator.clipboard.writeText(text);
     showToast("已複製對外資料。", "ok");
+}
+
+async function reloadSaasOnboarding() {
+    const data = await api("/api/osc/saas/onboarding");
+    const overview = state.saas.overview || {};
+    overview.onboarding = data;
+    state.saas.overview = overview;
+    renderSaasOnboarding(data);
+}
+
+async function toggleSaasOnboarding(key, done) {
+    const data = await api("/api/osc/saas/onboarding", "POST", {key, done});
+    const overview = state.saas.overview || {};
+    overview.onboarding = data;
+    state.saas.overview = overview;
+    renderSaasOnboarding(data);
+}
+
+async function saveSaasNotificationPrefs() {
+    const prefs = {};
+    document.querySelectorAll("[data-saas-notify]").forEach(el => {
+        prefs[el.dataset.saasNotify] = el.value;
+    });
+    const data = await api("/api/osc/saas/notification-prefs", "POST", {prefs});
+    const overview = state.saas.overview || {};
+    overview.notification_preferences = data;
+    state.saas.overview = overview;
+    renderSaasNotificationPrefs(data);
+    showToast("通知偏好已儲存。", "ok");
+}
+
+function downloadSaasDiagnosticPack() {
+    window.open("/api/osc/saas/diagnostic-pack", "_blank", "noopener");
+}
+
+async function copySaasOpsReport() {
+    const text = document.getElementById("saasOpsReportText")?.value || "";
+    if (!text.trim()) return showToast("沒有可複製的統計文字。", "warn");
+    await navigator.clipboard.writeText(text);
+    showToast("已複製事務統計文字。", "ok");
 }

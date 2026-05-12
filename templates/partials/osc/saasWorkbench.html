@@ -61,6 +61,57 @@
             </div>
 
             <div class="grid-2">
+                <div class="card" id="saasOnboardingSection">
+                    <div class="section-head">
+                        <div>
+                            <h3>導入檢查</h3>
+                            <div class="section-note">交付前逐項確認；勾選結果只存在本機 runtime，不進 git。</div>
+                        </div>
+                        <div class="inline-actions">
+                            <button class="btn" id="saasOnboardingRefreshBtn">重新載入</button>
+                            <button class="btn warn" id="saasDiagnosticBtn">下載診斷</button>
+                        </div>
+                    </div>
+                    <div id="saasOnboardingSummary" class="status-banner">導入檢查載入中。</div>
+                    <div id="saasOnboardingList" class="selection-list"></div>
+                </div>
+                <div class="card" id="saasNotificationSection">
+                    <div class="section-head">
+                        <div>
+                            <h3>通知偏好</h3>
+                            <div class="section-note">用來約束通知分流；系統健康與 live 檢查不應送進業務 Discord 頻道。</div>
+                        </div>
+                        <button class="btn primary" id="saasNotificationSaveBtn">儲存通知偏好</button>
+                    </div>
+                    <div id="saasNotificationPolicy" class="status-banner">通知偏好載入中。</div>
+                    <div id="saasNotificationList" class="field-grid cols-2"></div>
+                </div>
+            </div>
+
+            <div class="grid-2">
+                <div class="card" id="saasWorkflowSection">
+                    <div class="section-head">
+                        <div>
+                            <h3>流程樣板</h3>
+                            <div class="section-note">常用流程的檢核步驟；真正新增或修改資料仍回各功能頁籤。</div>
+                        </div>
+                    </div>
+                    <div id="saasWorkflowList" class="selection-list"></div>
+                </div>
+                <div class="card" id="saasGovernanceSection">
+                    <div class="section-head">
+                        <div>
+                            <h3>AI 來源治理</h3>
+                            <div class="section-note">回答與書狀草擬都必須保留來源核對規則，避免把摘要當全文。</div>
+                        </div>
+                        <button class="btn" id="saasOpsReportCopyBtn">複製統計文字</button>
+                    </div>
+                    <div id="saasGovernanceList" class="selection-list"></div>
+                    <textarea id="saasOpsReportText" readonly style="min-height:160px; margin-top:12px;"></textarea>
+                </div>
+            </div>
+
+            <div class="grid-2">
                 <div class="card" id="saasRiskSection">
                     <div class="section-head">
                         <div>

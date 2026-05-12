@@ -20,6 +20,9 @@ from api.osc.draft_learning import draft_learning_summary, recent_draft_feedback
 
 ROOT = Path(__file__).resolve().parents[2]
 INTAKE_PATH = ROOT / ".runtime" / "osc_saas_intake_events.jsonl"
+ONBOARDING_PATH = ROOT / ".runtime" / "osc_saas_onboarding.json"
+NOTIFICATION_PREFS_PATH = ROOT / ".runtime" / "osc_saas_notification_prefs.json"
+WORKFLOW_TEMPLATES_PATH = ROOT / ".runtime" / "osc_saas_workflow_templates.json"
 MAX_TEXT = 60000
 CLOSED_CASE_STATUSES = ("已結案", "已結案，待報結", "已結案待報結", "已結案，待送出")
 NOT_NEEDED_FOR_SINGLE_HOST = ("多租戶", "電子簽章", "公開上傳入口")
@@ -129,6 +132,46 @@ CAPABILITIES = [
         "source": "OSC 既有資料表彙總",
         "role": "補強概覽，不取代各模組明細頁",
     },
+    {
+        "key": "onboarding_checklist",
+        "title": "導入檢查",
+        "status": "enabled",
+        "owner": "管理工具",
+        "tab": "",
+        "primary_action": {"act": "saas-section-jump", "section": "saasOnboardingSection", "label": "勾選檢查"},
+        "source": "runtime onboarding state",
+        "role": "把交付前檢查做成可勾選清單，避免只靠文件記憶",
+    },
+    {
+        "key": "notification_preferences",
+        "title": "通知偏好",
+        "status": "enabled",
+        "owner": "系統通知",
+        "tab": "",
+        "primary_action": {"act": "saas-section-jump", "section": "saasNotificationSection", "label": "調整通知"},
+        "source": "notification preference JSON",
+        "role": "明確區分業務、法扶與系統通知，降低誤送頻道風險",
+    },
+    {
+        "key": "workflow_templates",
+        "title": "流程樣板",
+        "status": "enabled",
+        "owner": "案件 / 法扶 / 書狀",
+        "tab": "",
+        "primary_action": {"act": "saas-section-jump", "section": "saasWorkflowSection", "label": "查看樣板"},
+        "source": "workflow templates",
+        "role": "將常見流程列成可複製步驟，仍使用既有案件與法扶功能落地",
+    },
+    {
+        "key": "diagnostics_export",
+        "title": "維運診斷匯出",
+        "status": "enabled",
+        "owner": "NERV / 管理工具",
+        "tab": "",
+        "primary_action": {"act": "download-url", "url": "/api/osc/saas/diagnostic-pack", "label": "下載診斷"},
+        "source": "readiness, operations, audit",
+        "role": "一鍵輸出不含金鑰的診斷 JSON，方便檢查上線狀態",
+    },
 ]
 
 READINESS_CHECKS = [
@@ -215,6 +258,67 @@ INTEGRATION_MATRIX = [
     {"area": "修正學習", "source": "AI 草擬的人工改正紀錄", "target_tab": "drafts", "mode": "彙整顯示"},
     {"area": "對外資料", "source": "案件資料與應備事項", "target_tab": "cases", "mode": "產生可複製文字"},
     {"area": "高風險紀錄", "source": "系統活動紀錄", "target_tab": "admin", "mode": "只開高風險稽核"},
+    {"area": "上線檢查", "source": "NERV、導入檢查、診斷匯出", "target_tab": "saasOnboardingSection", "mode": "狀態確認 / JSON 匯出"},
+]
+
+DEFAULT_ONBOARDING_ITEMS = [
+    {"key": "public_audit", "title": "public audit strict 通過", "category": "交付", "required": True},
+    {"key": "daemon_health", "title": "MAGI daemon、NERV、Tools API 正常", "category": "服務", "required": True},
+    {"key": "db_backup", "title": "本機 DB 備份可讀取且還原需確認", "category": "資料", "required": True},
+    {"key": "nas_mounts", "title": "NAS 掛載名稱正確，未掛成 -1", "category": "資料", "required": True},
+    {"key": "calendar_scope", "title": "Google Calendar 匯入只抓 OSC 與法扶計數行程", "category": "行事曆", "required": True},
+    {"key": "channel_routes", "title": "法扶一般、法扶派案、系統通知分流確認", "category": "通知", "required": True},
+    {"key": "laf_guard", "title": "法扶送出、報結與批次搬移仍需人工確認", "category": "法扶", "required": True},
+    {"key": "ai_sources", "title": "AI 回答與書狀草擬保留來源核對提示", "category": "AI", "required": True},
+]
+
+DEFAULT_NOTIFICATION_PREFS = {
+    "business": "enabled",
+    "laf_general": "enabled",
+    "laf_dispatch": "enabled",
+    "system_health": "system_only",
+    "nightly_report": "system_only",
+    "live_check": "system_only",
+    "discord_business_channels": "business_only",
+}
+
+DEFAULT_WORKFLOW_TEMPLATES = [
+    {
+        "key": "laf_new_case",
+        "title": "法扶新案",
+        "scope": "法律扶助案件",
+        "steps": ["建立案件", "下載官網附件", "補齊法扶案號", "確認開辦資料", "人工確認後送出開辦"],
+        "entry_actions": [{"act": "tab-jump", "tab": "laf", "label": "法扶管理"}],
+    },
+    {
+        "key": "debt_case",
+        "title": "消債更生 / 清算",
+        "scope": "消債事件",
+        "steps": ["建立應備事項表", "產生可複製補件文字", "追蹤所得與財產清單年度", "整理債權人清冊", "產生書狀草稿"],
+        "entry_actions": [{"act": "tab-jump", "tab": "laf", "label": "法扶管理"}, {"act": "tab-jump", "tab": "drafts", "label": "AI 草擬"}],
+    },
+    {
+        "key": "pleading_final",
+        "title": "書狀定稿",
+        "scope": "書狀製作",
+        "steps": ["選定案件", "載入同案由學習紀錄", "核對引用來源", "匯出 DOCX/PDF", "人工比對完稿"],
+        "entry_actions": [{"act": "tab-jump", "tab": "drafts", "label": "AI 草擬"}, {"act": "tab-jump", "tab": "documents", "label": "書狀索引"}],
+    },
+    {
+        "key": "closing_archive",
+        "title": "結案歸檔",
+        "scope": "案件資料夾",
+        "steps": ["確認案件狀態", "比對同名不同案", "預覽搬移", "人工確認執行", "驗證原路徑已清乾淨且結案區可開啟"],
+        "entry_actions": [{"act": "tab-jump", "tab": "archive", "label": "結案歸檔"}],
+    },
+]
+
+APPROVAL_MATRIX = [
+    {"operation": "法扶送出 / 報結", "level": "manual_confirm", "reason": "會對外提交資料"},
+    {"operation": "DB 還原", "level": "manual_confirm", "reason": "可能覆蓋正式資料"},
+    {"operation": "結案批次搬移", "level": "preview_then_confirm", "reason": "涉及 NAS 檔案搬移"},
+    {"operation": "大量匯入 / 清理", "level": "dry_run_then_confirm", "reason": "可能造成重複或刪除"},
+    {"operation": "AI 書狀引用", "level": "source_required", "reason": "引用前需核對裁判全文與來源文件"},
 ]
 
 
@@ -268,6 +372,23 @@ def _row(exec_fn: ExecFn, sql: str, params: tuple = ()) -> dict:
 
 def _count(exec_fn: ExecFn, sql: str, params: tuple = ()) -> int:
     return _safe_int(_row(exec_fn, sql, params).get("c"))
+
+
+def _read_json(path: Path, default: Any) -> Any:
+    try:
+        if path.exists():
+            data = json.loads(path.read_text(encoding="utf-8"))
+            return data if data is not None else default
+    except Exception:
+        pass
+    return default
+
+
+def _write_json(path: Path, data: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+    tmp.replace(path)
 
 
 def _status_open_sql(alias: str = "") -> str:
@@ -754,6 +875,155 @@ def high_risk_activity(exec_fn: ExecFn, *, limit: int = 30) -> dict:
     }
 
 
+def build_onboarding_status() -> dict:
+    state = _read_json(ONBOARDING_PATH, {})
+    done = state.get("done") if isinstance(state, dict) else {}
+    if not isinstance(done, dict):
+        done = {}
+    items = []
+    for item in DEFAULT_ONBOARDING_ITEMS:
+        key = item["key"]
+        row = dict(item)
+        row["done"] = bool(done.get(key))
+        row["updated_at"] = (done.get(key) or {}).get("updated_at") if isinstance(done.get(key), dict) else ""
+        items.append(row)
+    required = [x for x in items if x.get("required")]
+    done_required = [x for x in required if x.get("done")]
+    return {
+        "ok": True,
+        "items": items,
+        "summary": {
+            "total": len(items),
+            "required": len(required),
+            "done": sum(1 for x in items if x.get("done")),
+            "required_done": len(done_required),
+            "ready": len(required) == len(done_required),
+        },
+    }
+
+
+def update_onboarding_status(payload: dict, *, actor: str = "") -> dict:
+    key = _text(payload.get("key"), 80)
+    valid = {x["key"] for x in DEFAULT_ONBOARDING_ITEMS}
+    if key not in valid:
+        return {"ok": False, "error": "unknown_onboarding_item"}
+    state = _read_json(ONBOARDING_PATH, {})
+    if not isinstance(state, dict):
+        state = {}
+    done = state.get("done")
+    if not isinstance(done, dict):
+        done = {}
+    if bool(payload.get("done")):
+        done[key] = {"actor": _text(actor, 120), "updated_at": datetime.now(timezone.utc).isoformat()}
+    else:
+        done.pop(key, None)
+    state["done"] = done
+    _write_json(ONBOARDING_PATH, state)
+    return build_onboarding_status()
+
+
+def build_notification_preferences() -> dict:
+    prefs = _read_json(NOTIFICATION_PREFS_PATH, {})
+    if not isinstance(prefs, dict):
+        prefs = {}
+    merged = dict(DEFAULT_NOTIFICATION_PREFS)
+    merged.update({str(k): str(v) for k, v in prefs.items() if k in DEFAULT_NOTIFICATION_PREFS})
+    items = [
+        {"key": "business", "title": "一般業務通知", "value": merged["business"], "options": ["enabled", "silent"]},
+        {"key": "laf_general", "title": "法扶一般 / 巡檢", "value": merged["laf_general"], "options": ["enabled", "system_only", "silent"]},
+        {"key": "laf_dispatch", "title": "法扶派案", "value": merged["laf_dispatch"], "options": ["enabled", "silent"]},
+        {"key": "system_health", "title": "系統健康 / live 檢查", "value": merged["system_health"], "options": ["system_only", "silent"]},
+        {"key": "nightly_report", "title": "夜間報告", "value": merged["nightly_report"], "options": ["system_only", "enabled", "silent"]},
+        {"key": "live_check", "title": "三模組 live 檢查", "value": merged["live_check"], "options": ["system_only", "silent"]},
+    ]
+    return {"ok": True, "prefs": merged, "items": items, "policy": "system_only 不送業務 Discord 頻道；enabled 依路由器分流；silent 不主動推播。"}
+
+
+def save_notification_preferences(payload: dict) -> dict:
+    incoming = payload.get("prefs") if isinstance(payload.get("prefs"), dict) else payload
+    current = build_notification_preferences()["prefs"]
+    allowed_values = {"enabled", "system_only", "business_only", "silent"}
+    for key, value in (incoming or {}).items():
+        if key not in DEFAULT_NOTIFICATION_PREFS:
+            continue
+        value = str(value or "").strip()
+        if value in allowed_values:
+            current[key] = value
+    _write_json(NOTIFICATION_PREFS_PATH, current)
+    return build_notification_preferences()
+
+
+def build_workflow_templates() -> dict:
+    overrides = _read_json(WORKFLOW_TEMPLATES_PATH, {})
+    custom = overrides.get("templates") if isinstance(overrides, dict) else []
+    templates = [dict(x) for x in DEFAULT_WORKFLOW_TEMPLATES]
+    if isinstance(custom, list):
+        by_key = {x["key"]: x for x in templates}
+        for item in custom:
+            if not isinstance(item, dict) or not item.get("key"):
+                continue
+            base = by_key.get(str(item["key"]), {})
+            merged = {**base, **item}
+            by_key[str(item["key"])] = merged
+        templates = list(by_key.values())
+    return {"ok": True, "templates": templates, "count": len(templates)}
+
+
+def build_ai_governance() -> dict:
+    provenance_files = [
+        {"path": "api/session/provenance.py", "ready": _file_ready("api/session/provenance.py")},
+        {"path": "api/answer_provenance.py", "ready": _file_ready("api/answer_provenance.py")},
+        {"path": "api/verification/answer_verifier.py", "ready": _file_ready("api/verification/answer_verifier.py")},
+    ]
+    return {
+        "ok": True,
+        "policies": [
+            "法律回答需標示來源；沒有來源時回覆查不到或請使用者補資料。",
+            "書狀引用裁判前需核對全文，不可只依摘要或片段生成。",
+            "人工修正學習限同案由使用，不同案由不可混記。",
+            "疑似提示詞、思考標記、內部案號外洩會被品質檢查攔下。",
+        ],
+        "provenance_files": provenance_files,
+        "ready": all(x["ready"] for x in provenance_files),
+    }
+
+
+def render_operations_report_text(exec_fn: ExecFn) -> dict:
+    ops = build_operations_report(exec_fn)
+    lines = [
+        "MAGI 事務統計",
+        f"產生時間：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+        "",
+        f"案件總數：{ops['total_cases']}",
+        f"進行中案件：{ops['active_cases']}",
+        f"已結案：{ops['closed_cases']}",
+        f"報結/送出中：{ops['closing_pending_cases']}",
+        f"待辦：{ops['pending_todos']}",
+        f"逾期待辦：{ops['overdue_todos']}",
+        f"文件索引：{ops['documents']}",
+        f"實務見解：{ops['legal_insights']}",
+        f"法扶案件：{ops['legal_aid_cases']}",
+        f"學習紀錄：{ops.get('automation', {}).get('learning_events', 0)}",
+    ]
+    return {"ok": True, "text": "\n".join(lines), "operations": ops}
+
+
+def build_diagnostic_pack(exec_fn: ExecFn) -> dict:
+    return {
+        "ok": True,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "scope": "single_host_magi",
+        "readiness": build_product_readiness(exec_fn),
+        "operations": build_operations_report(exec_fn),
+        "onboarding": build_onboarding_status(),
+        "notification_preferences": build_notification_preferences(),
+        "workflow_templates": build_workflow_templates(),
+        "ai_governance": build_ai_governance(),
+        "audit": high_risk_activity(exec_fn, limit=20),
+        "redaction": "No secrets, tokens, DB dumps, or case file contents are included.",
+    }
+
+
 def _file_ready(path: str) -> bool:
     return (ROOT / path).exists()
 
@@ -798,6 +1068,7 @@ def build_product_readiness(exec_fn: ExecFn) -> dict:
             "pending_todos": operations.get("pending_todos", 0),
         },
         "checks": checks,
+        "approval_matrix": APPROVAL_MATRIX,
     }
 
 
@@ -817,7 +1088,12 @@ def build_saas_overview(exec_fn: ExecFn, *, case_number: str = "") -> dict:
         "risk": risk,
         "timeline": timeline,
         "operations": ops,
+        "operations_text": render_operations_report_text(exec_fn)["text"],
         "learning": learning,
         "intake": {"recent": recent_intakes(8)},
         "audit": high_risk_activity(exec_fn, limit=12),
+        "onboarding": build_onboarding_status(),
+        "notification_preferences": build_notification_preferences(),
+        "workflow_templates": build_workflow_templates(),
+        "ai_governance": build_ai_governance(),
     }

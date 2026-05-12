@@ -141,6 +141,11 @@ async function dispatchDelegatedAction(act, t) {
         if (url) window.open(url, "_blank", "noopener");
         return;
     }
+    if (act === "download-url") {
+        const url = t.dataset.url || "";
+        if (url) window.open(url, "_blank", "noopener");
+        return;
+    }
     if (act === "saas-section-jump") {
         await jumpToPaperclipTabAndRun("dashboard", async () => {
             const sectionId = t.dataset.section || t.dataset.tab || "";
@@ -371,6 +376,10 @@ function bindEvents() {
         ["saasQualityBtn", runSaasQualityCheck, "品質檢查"],
         ["saasPacketBtn", runSaasClientPacket, "產生對外資料"],
         ["saasPacketCopyBtn", copySaasPacket, "複製對外資料"],
+        ["saasOnboardingRefreshBtn", reloadSaasOnboarding, "導入檢查重新載入"],
+        ["saasNotificationSaveBtn", saveSaasNotificationPrefs, "通知偏好儲存"],
+        ["saasDiagnosticBtn", downloadSaasDiagnosticPack, "診斷下載"],
+        ["saasOpsReportCopyBtn", copySaasOpsReport, "事務統計複製"],
         ["casesSearchBtn", loadCases, "案件搜尋"],
         ["casesRefreshBtn", loadCases, "案件重新整理"],
         ["caseSaveBtn", saveCase, "案件儲存"],
@@ -609,6 +618,14 @@ function bindEvents() {
         });
     });
     document.getElementById("txRecurringOnlyActive").addEventListener("change", () => runBusyAction("txRecurringSearchBtn", loadRecurringExpenses, { actionLabel: "固定支出搜尋" }));
+    document.addEventListener("change", e => {
+        const el = e.target && e.target.closest("[data-saas-onboarding]");
+        if (!el) return;
+        toggleSaasOnboarding(el.dataset.saasOnboarding || "", el.checked).catch(err => {
+            showToast(`導入檢查更新失敗：${err.message}`, "warn");
+            el.checked = !el.checked;
+        });
+    });
     document.getElementById("qtResetBtn").addEventListener("click", () => {
         resetQuotationForm();
     });

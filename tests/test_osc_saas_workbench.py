@@ -75,6 +75,9 @@ def test_saas_overview_exposes_ten_capabilities(monkeypatch, tmp_path):
 
     monkeypatch.setattr(draft_learning, "EVENTS_PATH", tmp_path / "learning.jsonl")
     monkeypatch.setattr(saas_workbench, "INTAKE_PATH", tmp_path / "intake.jsonl")
+    monkeypatch.setattr(saas_workbench, "ONBOARDING_PATH", tmp_path / "onboarding.json")
+    monkeypatch.setattr(saas_workbench, "NOTIFICATION_PREFS_PATH", tmp_path / "notify.json")
+    monkeypatch.setattr(saas_workbench, "WORKFLOW_TEMPLATES_PATH", tmp_path / "workflow.json")
 
     def fake_exec(*args, **kwargs):
         sql = args[0]
@@ -85,7 +88,7 @@ def test_saas_overview_exposes_ten_capabilities(monkeypatch, tmp_path):
     result = saas_workbench.build_saas_overview(fake_exec)
 
     assert result["ok"] is True
-    assert len(result["capabilities"]) == 10
+    assert len(result["capabilities"]) == 14
     assert {x["key"] for x in result["capabilities"]} >= {
         "learning_center",
         "quality_gate",
@@ -93,6 +96,10 @@ def test_saas_overview_exposes_ten_capabilities(monkeypatch, tmp_path):
         "conflict_check",
         "nerv_status_page",
         "operations_report",
+        "onboarding_checklist",
+        "notification_preferences",
+        "workflow_templates",
+        "diagnostics_export",
     }
     assert result["readiness"]["mode"] == "single_host"
     assert result["readiness"]["status_page"]["url"] == "/dashboard/nerv"
@@ -118,6 +125,11 @@ def test_saas_overview_exposes_ten_capabilities(monkeypatch, tmp_path):
     nerv = next(x for x in result["capabilities"] if x["key"] == "nerv_status_page")
     assert nerv["primary_action"]["act"] == "open-url"
     assert "對外資料" in {x["title"] for x in result["capabilities"]}
+    assert result["onboarding"]["summary"]["required"] >= 1
+    assert result["notification_preferences"]["prefs"]["system_health"] == "system_only"
+    assert result["workflow_templates"]["count"] >= 4
+    assert result["ai_governance"]["policies"]
+    assert "MAGI 事務統計" in result["operations_text"]
 
 
 def test_saas_workbench_template_has_actionable_entry_links():
@@ -125,6 +137,10 @@ def test_saas_workbench_template_has_actionable_entry_links():
 
     assert "資料來源與處理入口" in html
     assert 'id="saasReadinessGrid"' in html
+    assert 'id="saasOnboardingSection"' in html
+    assert 'id="saasNotificationSection"' in html
+    assert 'id="saasWorkflowSection"' in html
+    assert 'id="saasGovernanceSection"' in html
     assert "功能整合關係" not in html
     assert "管理工具" in html
     assert "事務總覽" not in html
@@ -257,6 +273,48 @@ def test_saas_generated_edit_actions_have_dispatch_handlers():
         "saas-opponent-edit",
     ]:
         assert f'if (act === "{act}")' in events_js
+    for fn in [
+        "reloadSaasOnboarding",
+        "saveSaasNotificationPrefs",
+        "downloadSaasDiagnosticPack",
+        "copySaasOpsReport",
+    ]:
+        assert fn in events_js or fn in (root / "static/osc/tabs/saas.js").read_text(encoding="utf-8")
+
+
+def test_onboarding_and_notification_preferences_persist(tmp_path, monkeypatch):
+    from api.osc import saas_workbench
+
+    monkeypatch.setattr(saas_workbench, "ONBOARDING_PATH", tmp_path / "onboarding.json")
+    monkeypatch.setattr(saas_workbench, "NOTIFICATION_PREFS_PATH", tmp_path / "notify.json")
+
+    result = saas_workbench.update_onboarding_status({"key": "public_audit", "done": True}, actor="tester")
+    assert result["ok"] is True
+    assert any(x["key"] == "public_audit" and x["done"] for x in result["items"])
+
+    prefs = saas_workbench.save_notification_preferences({"system_health": "silent", "laf_general": "system_only"})
+    assert prefs["prefs"]["system_health"] == "silent"
+    assert prefs["prefs"]["laf_general"] == "system_only"
+
+
+def test_diagnostic_pack_is_redacted_and_complete(tmp_path, monkeypatch):
+    from api.osc import draft_learning, saas_workbench
+
+    monkeypatch.setattr(draft_learning, "EVENTS_PATH", tmp_path / "learning.jsonl")
+    monkeypatch.setattr(saas_workbench, "INTAKE_PATH", tmp_path / "intake.jsonl")
+    monkeypatch.setattr(saas_workbench, "ONBOARDING_PATH", tmp_path / "onboarding.json")
+    monkeypatch.setattr(saas_workbench, "NOTIFICATION_PREFS_PATH", tmp_path / "notify.json")
+
+    def fake_exec(sql, params=(), fetch="one"):
+        if "COUNT(*) AS c" in sql:
+            return ({"c": 0}, None)
+        return ([], None)
+
+    pack = saas_workbench.build_diagnostic_pack(fake_exec)
+    assert pack["ok"] is True
+    assert pack["scope"] == "single_host_magi"
+    assert pack["redaction"].startswith("No secrets")
+    assert "readiness" in pack and "notification_preferences" in pack and "ai_governance" in pack
 
 
 @pytest.fixture
@@ -268,6 +326,9 @@ def saas_client(monkeypatch, tmp_path):
 
     monkeypatch.setattr(draft_learning, "EVENTS_PATH", tmp_path / "learning.jsonl")
     monkeypatch.setattr(saas_workbench, "INTAKE_PATH", tmp_path / "intake.jsonl")
+    monkeypatch.setattr(saas_workbench, "ONBOARDING_PATH", tmp_path / "onboarding.json")
+    monkeypatch.setattr(saas_workbench, "NOTIFICATION_PREFS_PATH", tmp_path / "notify.json")
+    monkeypatch.setattr(saas_workbench, "WORKFLOW_TEMPLATES_PATH", tmp_path / "workflow.json")
 
     def fake_exec(sql, params=(), fetch="all"):
         if "COUNT(*) AS c" in sql:
@@ -297,7 +358,7 @@ def saas_client(monkeypatch, tmp_path):
 def test_saas_routes_smoke(saas_client):
     resp = saas_client.get("/api/osc/saas/overview")
     assert resp.status_code == 200
-    assert len(resp.get_json()["capabilities"]) == 10
+    assert len(resp.get_json()["capabilities"]) == 14
     assert resp.get_json()["readiness"]["mode"] == "single_host"
 
     resp = saas_client.post(
@@ -310,3 +371,28 @@ def test_saas_routes_smoke(saas_client):
     resp = saas_client.post("/api/osc/saas/client-packet", json={"client_name": "王小明", "reason": "消債更生"})
     assert resp.status_code == 200
     assert "債權人清冊" in resp.get_json()["copy_text"]
+
+    resp = saas_client.get("/api/osc/saas/onboarding")
+    assert resp.status_code == 200
+    assert resp.get_json()["summary"]["required"] >= 1
+
+    resp = saas_client.post("/api/osc/saas/notification-prefs", json={"system_health": "silent"})
+    assert resp.status_code == 200
+    assert resp.get_json()["prefs"]["system_health"] == "silent"
+
+    resp = saas_client.get("/api/osc/saas/workflow-templates")
+    assert resp.status_code == 200
+    assert resp.get_json()["count"] >= 4
+
+    resp = saas_client.get("/api/osc/saas/ai-governance")
+    assert resp.status_code == 200
+    assert resp.get_json()["policies"]
+
+    resp = saas_client.get("/api/osc/saas/operations-report")
+    assert resp.status_code == 200
+    assert "MAGI 事務統計" in resp.get_json()["text"]
+
+    resp = saas_client.get("/api/osc/saas/diagnostic-pack")
+    assert resp.status_code == 200
+    assert resp.mimetype == "application/json"
+    assert resp.get_json()["redaction"].startswith("No secrets")
