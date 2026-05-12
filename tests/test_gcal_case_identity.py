@@ -58,3 +58,64 @@ def test_infer_case_identity_prefers_explicit_case_number(monkeypatch):
     monkeypatch.setattr(mod, "_osc_exec_sql", fake_exec)
 
     assert mod._infer_case_identity("[2026-0035] 任意事項", "") == ("2026-0035", "陳鏈棠")
+
+
+def test_extract_leading_osc_case_number_only_accepts_prefix():
+    mod = _load_module()
+
+    assert mod._extract_leading_osc_case_number("[2026-0035] 陳鏈棠面談", "") == "2026-0035"
+    assert mod._extract_leading_osc_case_number("2026-0035：陳鏈棠面談", "") == "2026-0035"
+    assert mod._extract_leading_osc_case_number("法扶 2026-0035 開庭", "") == ""
+
+
+def test_infer_osc_owned_event_identity_does_not_use_client_name_fallback(monkeypatch):
+    mod = _load_module()
+
+    def fake_exec(sql, params=(), fetch="all"):
+        if "WHERE case_number=%s" in sql:
+            return {"case_number": params[0], "client_name": "陳鏈棠"}, None
+        raise AssertionError(sql)
+
+    monkeypatch.setattr(mod, "_osc_exec_sql", fake_exec)
+
+    assert mod._infer_osc_owned_event_identity("[2026-0035] 任意事項", "") == ("2026-0035", "陳鏈棠")
+    assert mod._infer_osc_owned_event_identity("陳鏈棠面談＠全家宜蘭縣府店", "") == ("", "")
+
+
+def test_infer_laf_reportable_event_identity_allows_countable_laf_events():
+    mod = _load_module()
+    mod._LAF_IDENTITY_CACHE = [
+        {
+            "case_number": "2026-0035",
+            "client_name": "陳鏈棠",
+            "laf_case_no": "1150409-I-004",
+            "start_date": "2026-04-09",
+            "case_reason": "消債",
+        }
+    ]
+
+    assert mod._infer_laf_reportable_event_identity("陳鏈棠來所面談", "", "2026-05-01") == ("2026-0035", "陳鏈棠")
+    assert mod._infer_laf_reportable_event_identity("陳鏈棠生日", "", "2026-05-01") == ("", "")
+
+
+def test_infer_laf_reportable_event_identity_skips_ambiguous_client_events():
+    mod = _load_module()
+    mod._LAF_IDENTITY_CACHE = [
+        {
+            "case_number": "2026-0035",
+            "client_name": "陳鏈棠",
+            "laf_case_no": "1150409-I-004",
+            "start_date": "2026-04-09",
+            "case_reason": "消債",
+        },
+        {
+            "case_number": "2026-0036",
+            "client_name": "陳鏈棠",
+            "laf_case_no": "1150410-I-005",
+            "start_date": "2026-04-10",
+            "case_reason": "監護",
+        },
+    ]
+
+    assert mod._infer_laf_reportable_event_identity("陳鏈棠來所面談", "", "2026-05-01") == ("", "")
+    assert mod._infer_laf_reportable_event_identity("陳鏈棠消債來所面談", "", "2026-05-01") == ("2026-0035", "陳鏈棠")

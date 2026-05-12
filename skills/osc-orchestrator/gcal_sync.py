@@ -30,6 +30,18 @@ logger = logging.getLogger(__name__)
 SCOPES = ["https://www.googleapis.com/auth/calendar"]
 TOKEN_PATH = Path.home() / ".magi" / "google" / "token.json"
 _CASE_IDENTITY_CACHE: list[dict[str, str]] | None = None
+_LAF_IDENTITY_CACHE: list[dict[str, str]] | None = None
+OSC_CASE_PREFIX_RE = re.compile(
+    r"^\s*(?:\[(20\d{2}-\d{4})\]|(20\d{2}-\d{4})(?=$|[\s：:｜|／/\\\-–—_、，,。；;\]\)]))"
+)
+LAF_NO_RE = re.compile(r"\d{6,8}-[A-Za-z]-\d{3}")
+LAF_EVENT_EXCLUSION_KEYWORDS = (
+    "聲請改期", "聲請改期中", "不出席", "取消", "改期", "不到庭",
+    "法扶開辦末日", "法扶上訴", "法扶再議",
+    "宣判", "宣示判決", "停班", "停課", "放假", "颱風", "天然災害",
+)
+LAF_MEETING_EXCLUSION_KEYWORDS = ("U會議", "Ｕ會議", "u會議", "ｕ會議")
+LAF_COURT_KEYWORDS = ("開庭", "準備程序", "言詞辯論", "審理", "審理程序", "調解", "訊問", "協商程序", "調查", "調查程序", "庭期")
 
 # ── credentials helpers ───────────────────────────────────────────────────────
 
@@ -219,6 +231,15 @@ def _extract_case_number(summary: str, description: str) -> str:
     return ""
 
 
+def _extract_leading_osc_case_number(summary: str, description: str = "") -> str:
+    """Return the OSC system case number only when it is the event prefix."""
+    for text in (summary or "", description or ""):
+        match = OSC_CASE_PREFIX_RE.search(text)
+        if match:
+            return str(match.group(1) or match.group(2) or "").strip()
+    return ""
+
+
 def _load_case_identity_cache() -> list[dict[str, str]]:
     global _CASE_IDENTITY_CACHE
     if _CASE_IDENTITY_CACHE is not None:
@@ -254,6 +275,59 @@ def _load_case_identity_cache() -> list[dict[str, str]]:
     return cache
 
 
+def _load_laf_identity_cache() -> list[dict[str, str]]:
+    global _LAF_IDENTITY_CACHE
+    if _LAF_IDENTITY_CACHE is not None:
+        return _LAF_IDENTITY_CACHE
+    try:
+        rows, _ = _osc_exec_sql(
+            """
+            SELECT case_number, client_name, laf_case_no, application_no, start_date, approval_date, case_reason, case_type
+            FROM cases
+            WHERE COALESCE(client_name, '') != ''
+              AND COALESCE(status, '') NOT IN ('已結案', '結案', 'closed', 'Closed')
+              AND (
+                    COALESCE(laf_case_no, '') != ''
+                 OR COALESCE(application_no, '') REGEXP '^[0-9]{6,8}-[A-Za-z]-[0-9]{3}$'
+                 OR case_category='法律扶助案件'
+                 OR case_reason LIKE '%法扶%'
+                 OR case_reason LIKE '%法律扶助%'
+                 OR COALESCE(legal_aid_status, '') != ''
+              )
+            ORDER BY CHAR_LENGTH(client_name) DESC, case_number DESC
+            LIMIT 1000
+            """,
+            fetch="all",
+        )
+    except Exception as exc:
+        logger.debug("LAF identity cache failed: %s", exc)
+        rows = []
+    cache: list[dict[str, str]] = []
+    for row in rows or []:
+        if isinstance(row, dict):
+            case_number = str(row.get("case_number") or "").strip()
+            client_name = str(row.get("client_name") or "").strip()
+            laf_case_no = str(row.get("laf_case_no") or row.get("application_no") or "").strip()
+            start_date = str(row.get("start_date") or row.get("approval_date") or "").strip()[:10]
+            case_reason = str(row.get("case_reason") or row.get("case_type") or "").strip()
+        else:
+            case_number = str(row[0] or "").strip()
+            client_name = str(row[1] or "").strip()
+            laf_case_no = str(row[2] or row[3] or "").strip()
+            start_date = str(row[4] or row[5] or "").strip()[:10]
+            case_reason = str(row[6] or row[7] or "").strip()
+        if case_number and client_name:
+            cache.append({
+                "case_number": case_number,
+                "client_name": client_name,
+                "laf_case_no": laf_case_no,
+                "start_date": start_date,
+                "case_reason": case_reason,
+            })
+    _LAF_IDENTITY_CACHE = cache
+    return cache
+
+
 def _infer_case_identity(summary: str, description: str, event_date: str = "") -> tuple[str, str]:
     text = f"{summary or ''}\n{description or ''}"
     case_number = _extract_case_number(summary, description)
@@ -279,6 +353,78 @@ def _infer_case_identity(summary: str, description: str, event_date: str = "") -
         if name and name in text:
             return case["case_number"], name
     return "", ""
+
+
+def _classify_laf_reportable_activity(summary: str) -> str:
+    text = str(summary or "")
+    if not text or any(k in text for k in LAF_EVENT_EXCLUSION_KEYWORDS):
+        return ""
+    if any(k in text for k in LAF_MEETING_EXCLUSION_KEYWORDS):
+        return ""
+    if any(k in text for k in LAF_COURT_KEYWORDS):
+        return "開庭"
+    if any(k in text for k in ("會議", "會面", "來所", "來所提供資料", "視訊會議", "碰面", "面談", "線上面談", "來所面談", "開會", "交資料", "來所交資料", "臨時來所")):
+        return "會議"
+    if "律見" in text:
+        return "律見"
+    if any(k in text for k in ("閱卷", "影卷", "調卷")):
+        return "閱卷"
+    if any(k in text for k in ("電話", "電話聯繫", "通話", "電聯", "聯繫", "聯絡")):
+        return "電話聯繫"
+    return ""
+
+
+def _infer_laf_reportable_event_identity(summary: str, description: str, event_date: str = "") -> tuple[str, str]:
+    text = f"{summary or ''}\n{description or ''}"
+    if not _classify_laf_reportable_activity(text):
+        return "", ""
+    explicit_case = _extract_case_number(summary, description)
+    explicit_laf = LAF_NO_RE.search(text)
+    matches = []
+    for case in _load_laf_identity_cache():
+        if event_date and case.get("start_date") and event_date[:10] < str(case.get("start_date")):
+            continue
+        if explicit_case and explicit_case == case.get("case_number"):
+            return case["case_number"], case["client_name"]
+        if explicit_laf and explicit_laf.group(0) == case.get("laf_case_no"):
+            return case["case_number"], case["client_name"]
+        client_name = case.get("client_name") or ""
+        if client_name and client_name in text:
+            matches.append(case)
+    if len(matches) == 1:
+        return matches[0]["case_number"], matches[0]["client_name"]
+    if len(matches) > 1:
+        for case in matches:
+            reason_hint = str(case.get("case_reason") or "").strip()[:2]
+            if reason_hint and reason_hint in text:
+                return case["case_number"], case["client_name"]
+    return "", ""
+
+
+def _infer_osc_owned_event_identity(summary: str, description: str) -> tuple[str, str]:
+    case_number = _extract_leading_osc_case_number(summary, description)
+    if not case_number:
+        return "", ""
+    try:
+        row, _ = _osc_exec_sql(
+            "SELECT case_number, client_name FROM cases WHERE case_number=%s LIMIT 1",
+            (case_number,),
+            fetch="one",
+        )
+        if row:
+            if isinstance(row, dict):
+                return str(row.get("case_number") or case_number), str(row.get("client_name") or "")
+            return str(row[0] or case_number), str(row[1] or "")
+    except Exception:
+        logger.debug("OSC-owned event case lookup failed", exc_info=True)
+    return case_number, ""
+
+
+def _infer_importable_event_identity(summary: str, description: str, event_date: str = "") -> tuple[str, str]:
+    case_number, client_name = _infer_osc_owned_event_identity(summary, description)
+    if case_number:
+        return case_number, client_name
+    return _infer_laf_reportable_event_identity(summary, description, event_date)
 
 
 def import_gcal_events_to_todos(service, *, dry_run: bool = False, lookback_days: int = 730, lookahead_days: int = 180) -> dict:
@@ -344,10 +490,13 @@ def import_gcal_events_to_todos(service, *, dry_run: bool = False, lookback_days
                     if not start_date:
                         stats["import_skipped"] += 1
                         continue
+                    case_number, client_name = _infer_importable_event_identity(summary, description, start_date)
+                    if not case_number:
+                        stats["import_skipped"] += 1
+                        continue
                     if dry_run:
                         stats["imported"] += 1
                         continue
-                    case_number, client_name = _infer_case_identity(summary, description, start_date)
                     _osc_exec_sql(
                         """
                         INSERT INTO case_todos
