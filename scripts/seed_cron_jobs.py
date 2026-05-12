@@ -29,7 +29,7 @@ def worldmonitor_job(repo_root: Path = REPO_ROOT, python_path: Path | None = Non
     action_path = repo_root / "skills" / "worldmonitor-intel" / "action.py"
     return {
         "id": "job_worldmonitor_intel",
-        "cron": "10 8 * * *",
+        "cron": "0 8 * * *",
         "command": f"{python_bin} {action_path} --task collect --no-reasoning --plain-output",
         "desc": "每日全球新聞網收集摘要（worldmonitor-intel）",
         "channel_id": None,

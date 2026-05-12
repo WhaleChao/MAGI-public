@@ -610,7 +610,7 @@ def test_direct_quotation_pdf_error_is_readable_html(client):
 
 
 def test_case_workbench_upload_allows_legal_pdf_over_50mb(client, tmp_path, monkeypatch):
-    """案件工作台上傳需支援常見大型卷證 PDF。"""
+    """案件處理頁上傳需支援常見大型卷證 PDF。"""
     monkeypatch.setenv("PAPERCLIP_UPLOAD_MAX_PER_FILE_MB", "128")
     monkeypatch.setenv("PAPERCLIP_UPLOAD_MAX_TOTAL_MB", "128")
 

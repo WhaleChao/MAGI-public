@@ -214,7 +214,7 @@ def _format_statute_items(items: List[Dict[str, Any]]) -> List[str]:
 def _search_local_judgment_archive(query: str, limit: int = 3) -> Dict[str, Any]:
     """本地實務見解庫 fallback（判決-搜尋）。
 
-    2026-04-21 後：主查詢來源改為 `court_judgments`（與 OSC 面板同一張表）。
+    2026-04-21 後：主查詢來源改為 `court_judgments`（與 OSC 查詢頁同一張表）。
     `judgment_archive` 已由 `scripts/ops/merge_judgment_archive_to_court.py` 合併
     至 `court_judgments`；仍留的 662 筆無 jid 舊案作為 secondary fallback。
     """

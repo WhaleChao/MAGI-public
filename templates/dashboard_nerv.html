@@ -1485,7 +1485,7 @@ async function parseHeavyApiResponse(response) {
 }
 
 async function parseSkillApiResponse(response) {
-  return parseJsonApiResponse(response, 'SKILL 工作台暫不可得');
+  return parseJsonApiResponse(response, 'SKILL 工具頁暫不可得');
 }
 
 function statusColor(s) {
@@ -2449,7 +2449,7 @@ async function fetchNervSkills(options = {}) {
     renderSkillTree();
     if (isSkillModalOpen()) {
       setSkillEditorStatus(
-        e.message === '請重新登入 dashboard' ? '請重新登入後再使用 SKILL 工作台。' : 'SKILL 工作台暫不可得，先保留目前內容。',
+        e.message === '請重新登入 dashboard' ? '請重新登入後再使用 SKILL 工具頁。' : 'SKILL 工具頁暫不可得，先保留目前內容。',
         'warn'
       );
     }

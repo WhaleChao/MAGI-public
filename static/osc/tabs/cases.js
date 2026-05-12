@@ -855,8 +855,8 @@ async function wbSaveTodoAndRefresh() {
     }
     if (id) await api(`/api/osc/todos/${Number(id)}`, "PUT", body);
     else await api(`/api/osc/todos`, "POST", body);
-    if (state.wb.mode === "client") await openClientWorkbench(state.wb.id, "已儲存待辦並重新整理處理面板。");
-    if (state.wb.mode === "case") await openCaseWorkbench(state.wb.id, "已儲存待辦並重新整理處理面板。");
+    if (state.wb.mode === "client") await openClientWorkbench(state.wb.id, "已儲存待辦並重新整理處理頁。");
+    if (state.wb.mode === "case") await openCaseWorkbench(state.wb.id, "已儲存待辦並重新整理處理頁。");
     await loadMeta();
 }
 
@@ -905,7 +905,7 @@ async function saveWorkbenchCase() {
     await loadCases();
     await loadMeta();
     if (state.wb.mode === "case") {
-        await openCaseWorkbench(id, "案件資料已儲存並重新整理處理面板。");
+        await openCaseWorkbench(id, "案件資料已儲存並重新整理處理頁。");
     }
 }
 
@@ -1114,8 +1114,8 @@ async function openClientWorkbench(id, statusText = "") {
         <div class="card"><h3>法扶補件/案件補正清單</h3>${renderChecklist(data.legal_aid_checklist || [])}${renderChecklist(data.case_checklist || [])}</div>
     </div>
 `;
-    wbShow(`當事人處理面板｜${c.name || id}`, modalHtml);
-    wbSetStatus(statusText || `已載入當事人處理面板，共 ${caseRows.length} 筆案件、${todoRows.length} 筆待辦。`, statusText ? "ok" : "info");
+    wbShow(`當事人處理頁｜${c.name || id}`, modalHtml);
+    wbSetStatus(statusText || `已載入當事人處理頁，共 ${caseRows.length} 筆案件、${todoRows.length} 筆待辦。`, statusText ? "ok" : "info");
 }
 
 async function openCaseWorkbench(id, statusText = "") {
@@ -1216,8 +1216,8 @@ async function openCaseWorkbench(id, statusText = "") {
         </table></div>
     </div>
 `;
-    wbShow(`案件處理面板｜${c.case_number || id}`, modalHtml);
-    wbSetStatus(statusText || `已載入案件處理面板，待辦 ${s.todo_total || 0} 筆、索引檔案 ${s.docs_indexed || 0} 份。`, statusText ? "ok" : "info");
+    wbShow(`案件處理頁｜${c.case_number || id}`, modalHtml);
+    wbSetStatus(statusText || `已載入案件處理頁，待辦 ${s.todo_total || 0} 筆、索引檔案 ${s.docs_indexed || 0} 份。`, statusText ? "ok" : "info");
 }
 
 // ── Card drag-and-drop ──
@@ -1335,7 +1335,7 @@ function renderClients() {
         <td>${esc(r.address)}</td>
         <td>${esc(r.status)}</td>
         <td class="actions">
-	            <button class="btn" data-act="client-workbench" data-id="${esc(r.id)}">處理面板</button>
+	            <button class="btn" data-act="client-workbench" data-id="${esc(r.id)}">處理頁</button>
             <button class="btn" data-act="client-edit" data-id="${esc(r.id)}">編輯</button>
             <button class="btn danger" data-act="client-del" data-id="${esc(r.id)}">刪除</button>
         </td>

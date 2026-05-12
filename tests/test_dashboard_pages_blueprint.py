@@ -159,7 +159,7 @@ def test_intel_page_lists_recent_reports(tmp_path, monkeypatch):
     
     # Add the missing intel.html mock template
     (template_dir / "intel.html").write_text(
-        "🌐 全球情報面板\n{% for report in reports %}{{ report.name }} {{ report.content }}\n{% endfor %}", 
+        "🌐 全球情報總覽\n{% for report in reports %}{{ report.name }} {{ report.content }}\n{% endfor %}",
         encoding="utf-8"
     )
 
@@ -177,7 +177,7 @@ def test_intel_page_lists_recent_reports(tmp_path, monkeypatch):
 
     assert response.status_code == 200
     body = response.get_data(as_text=True)
-    assert "🌐 全球情報面板" in body
+    assert "🌐 全球情報總覽" in body
     assert "beta.md" in body or "alpha.md" in body
     assert "Beta report" in body or "Alpha report" in body
 
