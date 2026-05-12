@@ -46,3 +46,38 @@ def test_laf_activity_stats_uses_osc_exclusions_and_time_dedup(monkeypatch):
     assert stats["電話聯繫"]["count"] == 1
     assert stats["閱卷"]["count"] == 2
     assert stats["閱卷"]["rows"][0]["source"] == "閱卷資料夾"
+
+
+def test_laf_income_tax_year_pair_switches_in_may():
+    assert mod._laf_income_tax_year_pair(mod.date(2026, 4, 30)) == (112, 113)
+    assert mod._laf_income_tax_year_pair(mod.date(2026, 5, 1)) == (113, 114)
+    assert mod._laf_income_tax_year_pair(mod.date(2027, 5, 1)) == (114, 115)
+
+
+def test_laf_activity_stats_counts_calendar_meeting_and_excludes_laf_admin(monkeypatch):
+    monkeypatch.setattr(mod, "_osc_exec", lambda *args, **kwargs: ({"cnt": 1}, {}))
+    case = {"client_name": "陳鏈棠", "case_reason": "更生"}
+    todos = [
+        {
+            "todo_type": "行事曆事件",
+            "todo_date": "2026-04-29",
+            "todo_time": "17:30:00",
+            "description": "陳鏈棠面談＠全家宜蘭縣府店",
+            "source_file": "gcal_import",
+        },
+    ]
+    calendar_events = [
+        {
+            "title": "【法扶開辦末日】2026-0035 陳鏈棠",
+            "start_date": "2026-06-09 00:00:00",
+        },
+        {
+            "title": "陳鏈棠面談＠全家宜蘭縣府店",
+            "start_date": "2026-04-29 17:30:00",
+        },
+    ]
+
+    stats = mod._laf_build_activity_stats(case, todos, [], {"dates": []}, calendar_events)
+
+    assert stats["會議"]["count"] == 1
+    assert stats["會議"]["rows"][0]["source"] == "Google Calendar"

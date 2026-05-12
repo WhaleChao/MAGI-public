@@ -29,6 +29,7 @@ logger = logging.getLogger(__name__)
 
 SCOPES = ["https://www.googleapis.com/auth/calendar"]
 TOKEN_PATH = Path.home() / ".magi" / "google" / "token.json"
+_CASE_IDENTITY_CACHE: list[dict[str, str]] | None = None
 
 # ── credentials helpers ───────────────────────────────────────────────────────
 
@@ -218,6 +219,59 @@ def _extract_case_number(summary: str, description: str) -> str:
     return ""
 
 
+def _load_case_identity_cache() -> list[dict[str, str]]:
+    global _CASE_IDENTITY_CACHE
+    if _CASE_IDENTITY_CACHE is not None:
+        return _CASE_IDENTITY_CACHE
+    try:
+        rows, _ = _osc_exec_sql(
+            """
+            SELECT case_number, client_name
+            FROM cases
+            WHERE COALESCE(client_name, '') != ''
+              AND COALESCE(status, '') NOT IN ('已結案', '結案', 'closed', 'Closed')
+            ORDER BY CHAR_LENGTH(client_name) DESC, case_number DESC
+            LIMIT 1000
+            """,
+            fetch="all",
+        )
+    except Exception as exc:
+        logger.debug("case identity cache failed: %s", exc)
+        rows = []
+    cache: list[dict[str, str]] = []
+    for row in rows or []:
+        case_number = str((row.get("case_number") if isinstance(row, dict) else row[0]) or "").strip()
+        client_name = str((row.get("client_name") if isinstance(row, dict) else row[1]) or "").strip()
+        if case_number and client_name:
+            cache.append({"case_number": case_number, "client_name": client_name})
+    _CASE_IDENTITY_CACHE = cache
+    return cache
+
+
+def _infer_case_identity(summary: str, description: str) -> tuple[str, str]:
+    text = f"{summary or ''}\n{description or ''}"
+    case_number = _extract_case_number(summary, description)
+    if case_number:
+        try:
+            row, _ = _osc_exec_sql(
+                "SELECT case_number, client_name FROM cases WHERE case_number=%s LIMIT 1",
+                (case_number,),
+                fetch="one",
+            )
+            if row:
+                if isinstance(row, dict):
+                    return str(row.get("case_number") or case_number), str(row.get("client_name") or "")
+                return str(row[0] or case_number), str(row[1] or "")
+        except Exception:
+            logger.debug("case lookup by number failed", exc_info=True)
+        return case_number, ""
+    for case in _load_case_identity_cache():
+        name = case["client_name"]
+        if name and name in text:
+            return case["case_number"], name
+    return "", ""
+
+
 def import_gcal_events_to_todos(service, *, dry_run: bool = False, lookback_days: int = 30, lookahead_days: int = 180) -> dict:
     stats: dict[str, Any] = {
         "imported": 0,
@@ -284,6 +338,7 @@ def import_gcal_events_to_todos(service, *, dry_run: bool = False, lookback_days
                     if dry_run:
                         stats["imported"] += 1
                         continue
+                    case_number, client_name = _infer_case_identity(summary, description)
                     _osc_exec_sql(
                         """
                         INSERT INTO case_todos
@@ -292,8 +347,8 @@ def import_gcal_events_to_todos(service, *, dry_run: bool = False, lookback_days
                         VALUES (%s,%s,%s,%s,%s,%s,%s,'pending',%s)
                         """,
                         (
-                            _extract_case_number(summary, description),
-                            "",
+                            case_number,
+                            client_name,
                             _classify_todo_type(summary),
                             start_date,
                             start_time or None,

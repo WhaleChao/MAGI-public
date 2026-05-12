@@ -156,7 +156,10 @@ def _osc_is_todo_done_status(status: str) -> bool:
 
 
 _LAF_ACTIVITY_LABELS = ("開庭", "會議", "律見", "閱卷", "電話聯繫")
-_LAF_EVENT_EXCLUSION_KEYWORDS = ("聲請改期", "聲請改期中", "不出席", "取消", "改期", "不到庭")
+_LAF_EVENT_EXCLUSION_KEYWORDS = (
+    "聲請改期", "聲請改期中", "不出席", "取消", "改期", "不到庭",
+    "法扶開辦末日", "法扶上訴", "法扶再議",
+)
 _LAF_MEETING_EXCLUSION_KEYWORDS = ("U會議", "Ｕ會議", "u會議", "ｕ會議")
 _LAF_COURT_KEYWORDS = ("開庭", "準備程序", "言詞辯論", "審理", "調解", "宣判", "庭期")
 _LAF_REVIEW_PAYMENT_KEYWORDS = ("繳費單", "規費繳款", "規費", "繳款單", "繳費收據", "繳費憑證")
@@ -304,7 +307,7 @@ def _laf_classify_activity(summary: str, *, case_reason_keyword: str = "", apply
         if apply_reason_filter and case_reason_keyword and case_reason_keyword not in text:
             return ""
         return "開庭"
-    if any(k in text for k in ("會議", "來所提供資料", "視訊會議", "碰面", "線上面談", "來所面談", "開會", "來所交資料", "臨時來所")):
+    if any(k in text for k in ("會議", "會面", "來所", "來所提供資料", "視訊會議", "碰面", "面談", "線上面談", "來所面談", "開會", "交資料", "來所交資料", "臨時來所")):
         return "會議"
     if "律見" in text:
         return "律見"
@@ -315,7 +318,13 @@ def _laf_classify_activity(summary: str, *, case_reason_keyword: str = "", apply
     return ""
 
 
-def _laf_build_activity_stats(case: dict, todos: list[dict], meetings: list[dict], review_stats: dict) -> dict:
+def _laf_build_activity_stats(
+    case: dict,
+    todos: list[dict],
+    meetings: list[dict],
+    review_stats: dict,
+    calendar_events: list[dict] | None = None,
+) -> dict:
     stats = {label: [] for label in _LAF_ACTIVITY_LABELS}
     client_name = str(case.get("client_name") or "").strip()
     case_reason = str(case.get("case_reason") or case.get("case_type") or "").strip()
@@ -342,8 +351,22 @@ def _laf_build_activity_stats(case: dict, todos: list[dict], meetings: list[dict
         candidates.append({**m, "summary": summary, "_source": "會議"})
     for t in todos or []:
         source = "Google Calendar" if str(t.get("source_file") or "").startswith("gcal_import:") else "待辦"
+        if str(t.get("source_file") or "") == "gcal_import":
+            source = "Google Calendar"
         summary = f"{t.get('todo_type') or ''} {t.get('description') or ''}".strip()
         candidates.append({**t, "summary": summary, "_source": source})
+    for ev in calendar_events or []:
+        summary = " ".join(
+            str(ev.get(k) or "").strip()
+            for k in ("title", "summary", "description", "location")
+            if str(ev.get(k) or "").strip()
+        )
+        candidates.append({
+            **ev,
+            "datetime": ev.get("start_date") or ev.get("event_date") or "",
+            "summary": summary,
+            "_source": "Google Calendar",
+        })
 
     seen = set()
     for row in candidates:
@@ -2125,20 +2148,51 @@ def osc_case_workbench_api(row_id):
     if not case:
         return jsonify({"ok": False, "error": "case_not_found"}), 404
     case_number = (case.get("case_number") or "").strip()
+    client_name = (case.get("client_name") or "").strip()
+    laf_no = (case.get("laf_case_no") or case.get("legal_aid_number") or case.get("application_no") or "").strip()
+    start_date = str(case.get("start_date") or case.get("approval_date") or "").strip().split(" ")[0]
+    client_like = f"%{client_name}%" if client_name else ""
+    case_like = f"%{case_number}%" if case_number else ""
+    laf_like = f"%{laf_no}%" if laf_no else ""
+    activity_since_clause = ""
+    activity_since_params: list[str] = []
+    if start_date:
+        activity_since_clause = " AND (todo_date IS NULL OR todo_date >= %s)"
+        activity_since_params.append(start_date)
     todos, _ = _osc_exec(
-        """
+        f"""
         SELECT id, case_number, client_name, todo_type, todo_date, todo_time, description, status, source_file, created_date, completed_date
-        FROM case_todos WHERE case_number=%s ORDER BY todo_date DESC, id DESC LIMIT 800
+        FROM case_todos
+        WHERE case_number=%s
+           OR (
+                %s != ''
+                AND COALESCE(case_number, '') = ''
+                AND (client_name LIKE %s OR description LIKE %s)
+                {activity_since_clause}
+           )
+        ORDER BY todo_date DESC, id DESC LIMIT 800
         """,
-        (case_number,),
+        tuple([case_number, client_name, client_like, client_like] + activity_since_params),
         fetch="all",
     )
+    meeting_since_clause = ""
+    meeting_since_params: list[str] = []
+    if start_date:
+        meeting_since_clause = " AND (datetime IS NULL OR datetime >= %s)"
+        meeting_since_params.append(start_date)
     meetings, _ = _osc_exec(
-        """
+        f"""
         SELECT id, case_number, client_name, type, datetime, duration, location, notes, status
-        FROM meetings WHERE case_number=%s ORDER BY datetime DESC, id DESC LIMIT 800
+        FROM meetings
+        WHERE case_number=%s
+           OR (
+                %s != ''
+                AND (client_name LIKE %s OR notes LIKE %s)
+                {meeting_since_clause}
+           )
+        ORDER BY datetime DESC, id DESC LIMIT 800
         """,
-        (case_number,),
+        tuple([case_number, client_name, client_like, client_like] + meeting_since_params),
         fetch="all",
     )
     legal_aid, _ = _osc_exec(
@@ -2181,6 +2235,31 @@ def osc_case_workbench_api(row_id):
         (case_number,),
         fetch="all",
     )
+    cal_params: list[str] = [case_number]
+    cal_where = ["case_number=%s"]
+    if client_name:
+        cal_where.append("(title LIKE %s OR summary LIKE %s OR description LIKE %s OR location LIKE %s)")
+        cal_params.extend([client_like, client_like, client_like, client_like])
+    if case_number:
+        cal_where.append("(title LIKE %s OR summary LIKE %s OR description LIKE %s)")
+        cal_params.extend([case_like, case_like, case_like])
+    if laf_no:
+        cal_where.append("(title LIKE %s OR summary LIKE %s OR description LIKE %s)")
+        cal_params.extend([laf_like, laf_like, laf_like])
+    cal_date_clause = ""
+    if start_date:
+        cal_date_clause = " AND (start_date IS NULL OR start_date >= %s)"
+        cal_params.append(start_date)
+    calendar_events, _ = _osc_exec(
+        f"""
+        SELECT id, event_id, title, summary, description, start_date, end_date, location, is_all_day, case_number, raw_data
+        FROM calendar_events
+        WHERE ({' OR '.join(cal_where)}){cal_date_clause}
+        ORDER BY start_date DESC, id DESC LIMIT 800
+        """,
+        tuple(cal_params),
+        fetch="all",
+    )
     folder_path = (case.get("folder_path") or "").strip() or _osc_guess_case_folder(case_number)
     normalized_folder_path = _osc_norm_path(folder_path) if folder_path else ""
     local_case_folder = _osc_resolve_existing_local_path(normalized_folder_path, prefer_dir=True) if normalized_folder_path else ""
@@ -2194,7 +2273,7 @@ def osc_case_workbench_api(row_id):
     if normalized_folder_path:
         review_stats["folder_path"] = normalized_folder_path
         review_stats["local_case_folder"] = local_case_folder
-    activity_stats = _laf_build_activity_stats(case, todos or [], meetings or [], review_stats)
+    activity_stats = _laf_build_activity_stats(case, todos or [], meetings or [], review_stats, calendar_events or [])
     stats = {
         "todo_total": len(todos),
         "todo_pending": len([t for t in todos if not _osc_is_todo_done_status(t.get("status") or "")]),
@@ -2214,6 +2293,7 @@ def osc_case_workbench_api(row_id):
             "stats": stats,
             "todos": todos,
             "meetings": meetings,
+            "calendar_events": calendar_events,
             "legal_aid_checklist": legal_aid,
             "laf_progress": lifecycle,
             "laf_activity_stats": activity_stats,
@@ -6181,15 +6261,24 @@ def osc_labor_law_parse_files():
 
 # ── Checklist defaults ────────────────────────────────────────────────────────
 
-def _laf_default_checklist_items():
-    """生成法扶預設清單，所得清單年度依當下時間動態。"""
-    from datetime import datetime
-    now = datetime.now()
+def _laf_income_tax_year_pair(today: date | datetime | None = None) -> tuple[int, int]:
+    """Return ROC years for consumer-debt income lists.
+
+    Taiwan usually makes the prior year's income list available in May, so
+    May 115 should request ROC 113 and 114 for the two years before filing.
+    """
+    now = today or datetime.now()
     roc = now.year - 1911
-    if now.month >= 7:
+    if now.month >= 5:
         latest, previous = roc - 1, roc - 2
     else:
         latest, previous = roc - 2, roc - 3
+    return previous, latest
+
+
+def _laf_default_checklist_items():
+    """生成法扶預設清單，所得清單年度依當下時間動態。"""
+    previous, latest = _laf_income_tax_year_pair()
 
     return [
         ("household_reg_self", "最近一個月之全戶戶籍謄本(記事勿省略)"),
