@@ -1065,16 +1065,18 @@ def _osc_is_closed_case_status(status: str) -> bool:
 
 
 def _osc_is_laf_final_closed_status(status: str) -> bool:
-    return str(status or "").strip() == "已結案"
+    return str(status or "").strip() in {"已結案", "已結案，待送出"}
 
 
-_LAF_STATUS_OPTIONS = ("未開辦", "進行中", "已結案，待報結", "已結案")
+_LAF_STATUS_OPTIONS = ("未開辦", "進行中", "已結案，待報結", "已結案，待送出", "已結案")
 
 
 def _osc_normalize_laf_status(status: str) -> str:
     text = str(status or "").strip()
     if text in _LAF_STATUS_OPTIONS:
         return text
+    if "待送出" in text or "暫存" in text:
+        return "已結案，待送出"
     if "待報結" in text or ("報結" in text and "已" not in text and "完成" not in text):
         return "已結案，待報結"
     if text == "結案" or "已結案" in text or "已報結" in text or "報結完成" in text or text.lower() in {"closed", "done"}:
@@ -1089,7 +1091,7 @@ def _osc_normalize_laf_status(status: str) -> str:
 def _osc_case_status_for_laf_status(legal_aid_status: str) -> str:
     """Keep folder archiving tied to final LAF closure only."""
     normalized = _osc_normalize_laf_status(legal_aid_status)
-    if normalized == "已結案":
+    if normalized in {"已結案", "已結案，待送出"}:
         return "已結案"
     return "進行中"
 
@@ -1150,6 +1152,14 @@ def _osc_archive_item_for_row(row: dict) -> dict:
     folder_name = os.path.basename(source_local.rstrip("/")) if source_local else os.path.basename(source_norm.rstrip("/"))
     rel_parent = _osc_archive_relative_parent(source_local or source_norm)
     target_local = os.path.join(archive_local, rel_parent, folder_name) if archive_local and folder_name else ""
+    already_under_archive = False
+    if archive_local and source_local:
+        try:
+            already_under_archive = os.path.commonpath([os.path.abspath(archive_local), os.path.abspath(source_local)]) == os.path.abspath(archive_local)
+        except ValueError:
+            already_under_archive = False
+    if already_under_archive:
+        target_local = source_local
     target_exists = bool(target_local and os.path.exists(target_local))
     source_exists = bool(source_local and os.path.exists(source_local))
     return {
@@ -1166,7 +1176,8 @@ def _osc_archive_item_for_row(row: dict) -> dict:
         "source_exists": source_exists,
         "target_local": target_local,
         "target_exists": target_exists,
-        "ready": bool(source_exists and target_local and (not target_exists)),
+        "already_under_archive": already_under_archive,
+        "ready": bool(source_exists and target_local and (not target_exists) and (not already_under_archive)),
     }
 
 
@@ -1276,6 +1287,10 @@ def _osc_effective_case_folder_for_row(row: dict, *, update_db: bool = False) ->
     return {"folder_path": norm, "local_folder": "", "source": "missing", "updated": False}
 
 
+def _osc_archive_ignored_name(name: str) -> bool:
+    return name in {".DS_Store", ".gitkeep", "Thumbs.db"} or name.startswith("._") or name.startswith(".BC.T_")
+
+
 def _osc_tree_signature(path: str) -> dict:
     files = 0
     dirs = 0
@@ -1288,6 +1303,8 @@ def _osc_tree_signature(path: str) -> dict:
         except OSError:
             return {"exists": True, "files": 1, "dirs": 0, "size": 0}
     for root, dirnames, filenames in os.walk(path):
+        dirnames[:] = [d for d in dirnames if not _osc_archive_ignored_name(d)]
+        filenames = [f for f in filenames if not _osc_archive_ignored_name(f)]
         dirs += len(dirnames)
         files += len(filenames)
         for filename in filenames:
@@ -1296,6 +1313,35 @@ def _osc_tree_signature(path: str) -> dict:
             except OSError:
                 pass
     return {"exists": True, "files": files, "dirs": dirs, "size": size}
+
+
+def _osc_copytree_for_nas(src: str, dst: str) -> None:
+    """Copy a folder without macOS metadata operations that often fail on SMB/NAS."""
+    os.makedirs(dst, exist_ok=True)
+    for root, dirnames, filenames in os.walk(src):
+        dirnames[:] = [d for d in dirnames if not _osc_archive_ignored_name(d)]
+        filenames = [f for f in filenames if not _osc_archive_ignored_name(f)]
+        rel_root = os.path.relpath(root, src)
+        dst_root = dst if rel_root == "." else os.path.join(dst, rel_root)
+        os.makedirs(dst_root, exist_ok=True)
+        for dirname in dirnames:
+            os.makedirs(os.path.join(dst_root, dirname), exist_ok=True)
+        for filename in filenames:
+            src_file = os.path.join(root, filename)
+            dst_file = os.path.join(dst_root, filename)
+            os.makedirs(os.path.dirname(dst_file), exist_ok=True)
+            shutil.copyfile(src_file, dst_file)
+            try:
+                st = os.stat(src_file)
+                os.utime(dst_file, (st.st_atime, st.st_mtime))
+            except OSError:
+                pass
+
+
+def _osc_should_avoid_ditto_for_archive(src: str, dst: str) -> bool:
+    joined = f"{src}\n{dst}"
+    markers = ("/Volumes/", "SynologyDrive-", "/Network/")
+    return any(marker in joined for marker in markers)
 
 
 def _osc_copy_to_temp_and_swap(src: str, dst: str, *, force: bool) -> dict:
@@ -1316,7 +1362,7 @@ def _osc_copy_to_temp_and_swap(src: str, dst: str, *, force: bool) -> dict:
     try:
         if os.path.isdir(src):
             copy_timeout = max(30, int(os.environ.get("MAGI_ARCHIVE_COPY_TIMEOUT_SEC", "300") or "300"))
-            ditto = shutil.which("ditto")
+            ditto = None if _osc_should_avoid_ditto_for_archive(src, dst) else shutil.which("ditto")
             if ditto:
                 cp = subprocess.run(
                     [ditto, src, tmp_dst],
@@ -1327,18 +1373,27 @@ def _osc_copy_to_temp_and_swap(src: str, dst: str, *, force: bool) -> dict:
                 if cp.returncode != 0:
                     shutil.rmtree(tmp_dst, ignore_errors=True)
                     detail = (cp.stderr or cp.stdout or "").strip()[-800:]
-                    return {
-                        "ok": False,
-                        "reason": "copy_failed",
-                        "error": detail or f"ditto_exit_{cp.returncode}",
-                        "source_signature": src_sig,
-                    }
+                    try:
+                        _osc_copytree_for_nas(src, tmp_dst)
+                    except Exception as fallback_exc:
+                        shutil.rmtree(tmp_dst, ignore_errors=True)
+                        return {
+                            "ok": False,
+                            "reason": "copy_failed",
+                            "error": f"{detail or f'ditto_exit_{cp.returncode}'}; fallback_failed: {fallback_exc}",
+                            "source_signature": src_sig,
+                        }
             else:
-                shutil.copytree(src, tmp_dst, symlinks=True)
+                _osc_copytree_for_nas(src, tmp_dst)
         else:
             os.makedirs(tmp_dst, exist_ok=True)
             tmp_file = os.path.join(tmp_dst, os.path.basename(dst))
-            shutil.copy2(src, tmp_file)
+            shutil.copyfile(src, tmp_file)
+            try:
+                st = os.stat(src)
+                os.utime(tmp_file, (st.st_atime, st.st_mtime))
+            except OSError:
+                pass
             tmp_dst = tmp_file
     except subprocess.TimeoutExpired as e:
         shutil.rmtree(tmp_dst, ignore_errors=True)
@@ -1457,10 +1512,11 @@ def _osc_merge_existing_archive_source(src: str, dst: str) -> dict:
     strict_hash = os.environ.get("MAGI_ARCHIVE_STRICT_HASH", "0").strip().lower() in {"1", "true", "yes", "on"}
     verify_pairs: list[tuple[str, str]] = []
 
-    for root, _dirnames, filenames in os.walk(src):
+    for root, dirnames, filenames in os.walk(src):
+        dirnames[:] = [d for d in dirnames if not _osc_archive_ignored_name(d)]
         rel_root = os.path.relpath(root, src)
         for filename in filenames:
-            if filename in {".DS_Store", ".gitkeep"} or filename.startswith("._"):
+            if _osc_archive_ignored_name(filename):
                 skipped.append(os.path.join(rel_root, filename) if rel_root != "." else filename)
                 continue
             src_file = os.path.join(root, filename)
@@ -1558,6 +1614,21 @@ def _osc_cleanup_residual_archive_sources(source_candidates, primary_src: str, d
     return cleaned
 
 
+def _osc_update_archived_case_folder(cid: str, folder_path: str, item: dict) -> None:
+    """Persist closed folder path and keep case status aligned with archive state."""
+    status = str((item or {}).get("status") or "").strip()
+    laf_status = str((item or {}).get("legal_aid_status") or "").strip()
+    should_mark_closed = _osc_is_closed_case_status(status) or _osc_is_laf_final_closed_status(laf_status)
+    if should_mark_closed:
+        _osc_exec(
+            "UPDATE cases SET folder_path=%s, status=%s, updated_at=NOW() WHERE id=%s",
+            (folder_path, "已結案", cid),
+            fetch="none",
+        )
+    else:
+        _osc_exec("UPDATE cases SET folder_path=%s, updated_at=NOW() WHERE id=%s", (folder_path, cid), fetch="none")
+
+
 def _osc_move_archive_item(it: dict, *, force: bool = False) -> dict:
     cid = str(it.get("id") or "").strip()
     src = str(it.get("source_local") or "").strip()
@@ -1580,7 +1651,7 @@ def _osc_move_archive_item(it: dict, *, force: bool = False) -> dict:
     except ValueError:
         already_under_archive = False
     if already_under_archive:
-        _osc_exec("UPDATE cases SET folder_path=%s, updated_at=NOW() WHERE id=%s", (src, cid), fetch="none")
+        _osc_update_archived_case_folder(cid, src, it)
         return {"ok": True, "id": cid, "case_number": case_number, "from": src, "to": src, "reason": "already_in_archive_base"}
     if os.path.exists(dst) and not force:
         merged = _osc_merge_existing_archive_source(src, dst)
@@ -1596,7 +1667,7 @@ def _osc_move_archive_item(it: dict, *, force: bool = False) -> dict:
                 "detail": merged,
             }
         residual_cleanup = _osc_cleanup_residual_archive_sources(it.get("source_candidates") or [], src, dst, archive_local)
-        _osc_exec("UPDATE cases SET folder_path=%s, updated_at=NOW() WHERE id=%s", (dst, cid), fetch="none")
+        _osc_update_archived_case_folder(cid, dst, it)
         return {
             "ok": True,
             "id": cid,
@@ -1625,7 +1696,7 @@ def _osc_move_archive_item(it: dict, *, force: bool = False) -> dict:
                 "detail": moved,
             }
         residual_cleanup = _osc_cleanup_residual_archive_sources(it.get("source_candidates") or [], src, dst, archive_local)
-        _osc_exec("UPDATE cases SET folder_path=%s, updated_at=NOW() WHERE id=%s", (dst, cid), fetch="none")
+        _osc_update_archived_case_folder(cid, dst, it)
         return {
             "ok": True,
             "id": cid,

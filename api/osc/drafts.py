@@ -755,6 +755,14 @@ def _osc_build_archive_preview(limit: int = 300) -> dict:
         folder_name = os.path.basename(source_local.rstrip("/")) if source_local else os.path.basename(source_norm.rstrip("/"))
         rel_parent = _osc_archive_relative_parent(source_local or source_norm)
         target_local = os.path.join(archive_local, rel_parent, folder_name) if archive_local and folder_name else ""
+        already_under_archive = False
+        if archive_local and source_local:
+            try:
+                already_under_archive = os.path.commonpath([os.path.abspath(archive_local), os.path.abspath(source_local)]) == os.path.abspath(archive_local)
+            except ValueError:
+                already_under_archive = False
+        if already_under_archive:
+            target_local = source_local
         target_exists = bool(target_local and os.path.exists(target_local))
         source_exists = bool(source_local and os.path.exists(source_local))
         item = {
@@ -768,10 +776,13 @@ def _osc_build_archive_preview(limit: int = 300) -> dict:
             "source_exists": source_exists,
             "target_local": target_local,
             "target_exists": target_exists,
-            "ready": bool(source_exists and target_local and (not target_exists)),
+            "already_under_archive": already_under_archive,
+            "ready": bool(source_exists and target_local and (not target_exists) and (not already_under_archive)),
             "updated_at": r.get("updated_at"),
         }
-        if not source_exists:
+        if already_under_archive:
+            item["reason"] = "已在結案區"
+        elif not source_exists:
             item["reason"] = "來源資料夾不存在或未同步到本機"
         elif target_exists:
             item["reason"] = "封存目標已存在"

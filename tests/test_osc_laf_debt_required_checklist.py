@@ -141,7 +141,9 @@ def test_laf_status_mapping_archives_only_final_closed_status():
     from api.blueprints.osc_cases import _osc_case_status_for_laf_status, _osc_normalize_laf_status
 
     assert _osc_normalize_laf_status("結案待報結") == "已結案，待報結"
+    assert _osc_normalize_laf_status("報結暫存") == "已結案，待送出"
     assert _osc_case_status_for_laf_status("已結案，待報結") == "進行中"
+    assert _osc_case_status_for_laf_status("已結案，待送出") == "已結案"
     assert _osc_case_status_for_laf_status("已結案") == "已結案"
 
 

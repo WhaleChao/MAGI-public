@@ -11,6 +11,7 @@ def test_closed_case_status_detection():
     assert _osc_is_closed_case_status("closed")
     assert not _osc_is_closed_case_status("進行中")
     assert _osc_is_laf_final_closed_status("已結案")
+    assert _osc_is_laf_final_closed_status("已結案，待送出")
     assert not _osc_is_laf_final_closed_status("已結案，待報結")
 
 
@@ -127,6 +128,32 @@ def test_auto_archive_closed_case_preserves_osc_category_path(tmp_path, monkeypa
     assert (target / "note.txt").read_text(encoding="utf-8") == "case file"
     assert not source.exists()
     assert updates and updates[-1][1][0] == str(target)
+
+
+def test_archive_item_already_under_archive_is_not_ready(tmp_path, monkeypatch):
+    from api.blueprints import osc_cases as mod
+
+    archive = tmp_path / "10_結案"
+    archived = archive / "法扶案件" / "民事" / "2025-0029-測試當事人-一審-勞雇契約"
+    archived.mkdir(parents=True)
+
+    monkeypatch.setattr(mod, "_osc_get_closed_archive_base", lambda: str(archive))
+    monkeypatch.setattr(mod, "_osc_local_path_candidates", lambda raw: [str(raw)])
+    monkeypatch.setattr(mod, "_osc_norm_path", lambda raw: str(raw))
+
+    item = mod._osc_archive_item_for_row(
+        {
+            "id": "case-1",
+            "case_number": "2025-0029",
+            "client_name": "測試當事人",
+            "status": "已結案",
+            "folder_path": str(archived),
+        }
+    )
+
+    assert item["already_under_archive"] is True
+    assert item["ready"] is False
+    assert item["target_local"] == str(archived)
 
 
 def test_auto_archive_laf_final_closed_moves_only_exact_folder(tmp_path, monkeypatch):
