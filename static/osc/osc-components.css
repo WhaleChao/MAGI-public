@@ -1769,6 +1769,19 @@ body.theme-dark .btn.selected-toggle {
     color: #166534;
 }
 
+.focus-flash {
+    animation: paperclipFocusFlash 1.2s ease-out;
+}
+
+@keyframes paperclipFocusFlash {
+    0% {
+        box-shadow: 0 0 0 3px rgba(14, 165, 233, 0.28);
+    }
+    100% {
+        box-shadow: none;
+    }
+}
+
 .wb-folder-meta {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));

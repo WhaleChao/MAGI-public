@@ -136,6 +136,18 @@ async function dispatchDelegatedAction(act, t) {
     if (act === "case-doc-index") return await openCaseDocumentIndex(t.dataset.case || "");
     if (act === "case-address-label") return addressLabelDialog(id);
     if (act === "tab-jump") return jumpToPaperclipTab(t.dataset.tab || t.dataset.tabJump || "");
+    if (act === "saas-section-jump") {
+        await jumpToPaperclipTabAndRun("dashboard", async () => {
+            const sectionId = t.dataset.section || t.dataset.tab || "";
+            const target = sectionId ? document.getElementById(sectionId) : null;
+            if (target) {
+                target.scrollIntoView({behavior: "smooth", block: "start"});
+                target.classList.add("focus-flash");
+                setTimeout(() => target.classList.remove("focus-flash"), 1200);
+            }
+        });
+        return;
+    }
     if (act === "case-magi-tab") return jumpToPaperclipTab(t.dataset.tab || "");
     if (act === "case-magi-command") return await runCaseMagiPreset(t.dataset.command || "", t.dataset.label || t.textContent.trim(), t.dataset.context === "1", t);
 

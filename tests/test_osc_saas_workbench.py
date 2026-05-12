@@ -96,7 +96,21 @@ def test_saas_overview_exposes_ten_capabilities(monkeypatch, tmp_path):
     }
     assert result["integration"]["principle"].startswith("這裡集中顯示常用資訊")
     assert all(x.get("owner") and x.get("source") and x.get("role") for x in result["capabilities"])
-    assert {x["target_tab"] for x in result["integration"]["items"]} >= {"todos", "clients", "documents", "drafts"}
+    target_tabs = {
+        x["target_tab"]
+        for x in result["integration"]["items"]
+        if x.get("target_tab")
+    }
+    for item in result["integration"]["items"]:
+        for target in item.get("target_tabs") or []:
+            target_tabs.add(target["tab"])
+    assert target_tabs >= {"todos", "clients", "documents", "drafts", "saasTimelineSection"}
+    timeline = next(x for x in result["capabilities"] if x["key"] == "document_timeline")
+    assert timeline["primary_action"]["act"] == "saas-section-jump"
+    assert timeline["primary_action"]["section"] == "saasTimelineSection"
+    assert timeline["secondary_actions"][0]["tab"] == "documents"
+    assert timeline["title"] == "文件證據時間線"
+    assert "對外資料包" in {x["title"] for x in result["capabilities"]}
 
 
 def test_saas_workbench_template_has_actionable_entry_links():
@@ -112,6 +126,8 @@ def test_saas_workbench_template_has_actionable_entry_links():
     assert "工作台" not in html
     assert "面板" not in html
     assert "漏斗" not in html
+    assert "對外文件產生包" not in html
+    assert 'id="saasTimelineSection"' in html
     for tab in ["cases", "clients", "todos", "calendar", "laf", "documents", "drafts"]:
         assert f'data-tab="{tab}"' in html
 

@@ -81,9 +81,23 @@ function renderSaasCapabilities(items) {
             <div class="stat-value" style="font-size:16px;">${saasBadge(x.status)}</div>
             <div class="muted" style="margin-top:6px;">主體：${esc(x.owner || "既有模組")}</div>
             <div class="muted">${esc(shortText(x.role || "", 72))}</div>
-            ${x.tab ? `<button class="btn slim" style="margin-top:8px;" data-act="tab-jump" data-tab="${esc(x.tab)}">進入功能</button>` : ""}
+            ${saasCapabilityButtons(x)}
         </div>
     `).join("");
+}
+
+function saasCapabilityButtons(item) {
+    const actions = [];
+    if (item?.primary_action) actions.push(item.primary_action);
+    if (Array.isArray(item?.secondary_actions)) actions.push(...item.secondary_actions);
+    if (!actions.length && item?.tab) actions.push({act: "tab-jump", tab: item.tab, label: "進入功能"});
+    if (!actions.length) return "";
+    return `<div class="inline-actions" style="margin-top:8px;">${actions.map(action => {
+        const act = action.act || "tab-jump";
+        const tab = action.tab || "";
+        const section = action.section || action.target || "";
+        return `<button class="btn slim" data-act="${esc(act)}"${tab ? ` data-tab="${esc(tab)}"` : ""}${section ? ` data-section="${esc(section)}"` : ""}>${esc(action.label || "查看")}</button>`;
+    }).join("")}</div>`;
 }
 
 function renderSaasIntegration(integration) {
@@ -115,7 +129,7 @@ function saasIntegrationButtons(item) {
             : [];
     if (!targets.length) return "";
     return `<div class="inline-actions" style="margin-top:8px;">${targets.map(x => `
-        <button class="btn slim" data-act="tab-jump" data-tab="${esc(x.tab)}">${esc(x.label || "前往處理")}</button>
+        <button class="btn slim" data-act="${esc(x.act || "tab-jump")}" data-tab="${esc(x.tab)}" data-section="${esc(x.section || x.tab || "")}">${esc(x.label || "前往處理")}</button>
     `).join("")}</div>`;
 }
 
