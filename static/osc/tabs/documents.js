@@ -1677,12 +1677,27 @@ async function executeArchiveMove() {
         return;
     }
     if (!confirm(`確定搬移 ${picks.length} 筆已結案案件？`)) return;
-    const data = await api("/api/osc/archive-wizard/execute", "POST", { confirm: true, case_ids: picks, force });
-    const s = data.summary || {};
-    const skipped = (data.skipped || []).slice(0, 3).map(x => `${x.case_number || x.id || "-"}：${x.reason || x.error || "略過"}`);
-    const errors = (data.errors || []).slice(0, 3).map(x => `${x.case_number || x.id || "-"}：${x.error || "錯誤"}`);
-    const detail = skipped.concat(errors).join("\n");
-    alert(`搬移完成：已搬移 ${s.moved || 0}，略過 ${s.skipped || 0}，錯誤 ${s.errors || 0}${detail ? "\n\n" + detail : ""}`);
+    const summaryEl = document.getElementById("archiveSummary");
+    const total = { moved: 0, skipped: 0, errors: 0 };
+    const details = [];
+    for (let i = 0; i < picks.length; i += 1) {
+        const id = picks[i];
+        if (summaryEl) summaryEl.textContent = `結案搬移中：${i + 1} / ${picks.length}（案件 ID ${id}）`;
+        try {
+            const data = await api("/api/osc/archive-wizard/execute", "POST", { confirm: true, case_ids: [id], force, max_items: 1 });
+            const s = data.summary || {};
+            total.moved += Number(s.moved || 0);
+            total.skipped += Number(s.skipped || 0);
+            total.errors += Number(s.errors || 0);
+            (data.skipped || []).forEach(x => details.push(`${x.case_number || x.id || id}：${x.reason || x.error || "略過"}`));
+            (data.errors || []).forEach(x => details.push(`${x.case_number || x.id || id}：${x.error || "錯誤"}`));
+        } catch (err) {
+            total.errors += 1;
+            details.push(`${id}：${err.message || err}`);
+        }
+    }
+    const detail = details.slice(0, 8).join("\n");
+    alert(`搬移完成：已搬移 ${total.moved}，略過 ${total.skipped}，錯誤 ${total.errors}${detail ? "\n\n" + detail : ""}`);
     await loadArchivePreview();
     await loadCases();
     await loadMeta();

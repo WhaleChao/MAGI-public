@@ -1673,6 +1673,24 @@ def _osc_auto_archive_closed_case(row_id: str, *, force: bool = False) -> dict:
     return moved
 
 
+def _osc_archive_items_for_case_ids(case_ids: list[str]) -> list[dict]:
+    ids = [str(x).strip() for x in (case_ids or []) if str(x).strip()]
+    if not ids:
+        return []
+    placeholders = ",".join(["%s"] * len(ids))
+    rows, _ = _osc_exec(
+        f"""
+        SELECT id, case_number, client_name, status, legal_aid_status, folder_path, updated_at
+        FROM cases
+        WHERE id IN ({placeholders})
+        """,
+        tuple(ids),
+        fetch="all",
+    )
+    by_id = {str(r.get("id")): r for r in (rows or [])}
+    return [_osc_archive_item_for_row(by_id[cid]) for cid in ids if cid in by_id]
+
+
 @osc_bp.route("/api/osc/cases/<row_id>/open-folder", methods=["POST"])
 @login_required
 def osc_case_open_folder_api(row_id):
@@ -6214,32 +6232,55 @@ def osc_archive_wizard_execute_api():
     if not bool(payload.get("confirm")):
         return jsonify({"ok": False, "error": "confirm_required"}), 400
     force = bool(payload.get("force"))
+    max_items = max(1, min(50, _osc_safe_int(payload.get("max_items"), 50)))
     case_ids = payload.get("case_ids") or []
     if isinstance(case_ids, str):
         case_ids = [x.strip() for x in case_ids.split(",") if x.strip()]
     case_ids = [str(x).strip() for x in case_ids if str(x).strip()]
 
-    preview = _osc_build_archive_preview(limit=1000)
-    items = preview.get("items") or []
-    pick = [it for it in items if (not case_ids) or (str(it.get("id")) in set(case_ids))]
+    if case_ids:
+        items = _osc_archive_items_for_case_ids(case_ids)
+        found_ids = {str(it.get("id")) for it in items}
+        missing = [cid for cid in case_ids if cid not in found_ids]
+    else:
+        preview = _osc_build_archive_preview(limit=max_items)
+        items = preview.get("items") or []
+        missing = []
+    pick = items[:max_items]
     moved = []
     skipped = []
-    errors = []
+    errors = [{"id": cid, "error": "case_not_found"} for cid in missing]
 
     for it in pick:
+        started = time.time()
         try:
             result = _osc_move_archive_item(it, force=force)
+            result["duration_ms"] = int((time.time() - started) * 1000)
             if result.get("ok"):
                 moved.append(result)
             else:
                 skipped.append(result)
         except Exception as e:
-            errors.append({"id": it.get("id"), "case_number": it.get("case_number"), "error": str(e)})
+            errors.append(
+                {
+                    "id": it.get("id"),
+                    "case_number": it.get("case_number"),
+                    "error": str(e),
+                    "duration_ms": int((time.time() - started) * 1000),
+                }
+            )
 
     return jsonify(
         {
             "ok": not errors,
-            "summary": {"selected": len(pick), "moved": len(moved), "skipped": len(skipped), "errors": len(errors)},
+            "summary": {
+                "requested": len(case_ids) if case_ids else len(items),
+                "selected": len(pick),
+                "moved": len(moved),
+                "skipped": len(skipped),
+                "errors": len(errors),
+                "limited": max(0, len(items) - len(pick)),
+            },
             "moved": moved,
             "skipped": skipped,
             "errors": errors,
