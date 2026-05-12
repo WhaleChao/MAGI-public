@@ -2,7 +2,7 @@
 
 [English](README.md)
 
-MAGI v2 是一套部署於本地硬體的 AI 作業平台，專為台灣法律事務所的日常營運設計。全系統在單台 Apple Silicon 節點上執行，結合 Flask 控制平面、60+ 模組化技能、三哲人 ensemble 推理流程、ReAct Agentic 工具呼叫引擎、定時排程、本地 LLM 推理，以及深度法務工作流程自動化——全部整合於一個程式碼庫。
+MAGI v2 是一套部署於本地硬體的 AI 作業平台，專為台灣法律事務所的日常業務設計。全系統在單台 Apple Silicon 節點上執行，結合 Flask 控制平面、60+ 模組化技能、三哲人 ensemble 推理流程、ReAct Agentic 工具呼叫引擎、定時排程、本地 LLM 推理，以及深度法務工作流程自動化——全部整合於一個程式碼庫。
 
 **macOS 原生。** 生產環境在 Apple Silicon 透過 [oMLX](https://github.com/omlx/omlx) 以三模型日夜輪換架構執行。Windows / Linux 透過 Ollama 亦可支援。
 
@@ -98,7 +98,7 @@ python3 scripts/install_magi.py --dry-run --check-live
 - [商用上線檢核指南](docs/COMMERCIAL_READINESS.md)
 - [服務條款範本](docs/TERMS_OF_SERVICE.md)
 - [隱私權政策](docs/PRIVACY_POLICY.md)
-- [資料保存政策](docs/DATA_RETENTION_POLICY.md)
+- [資料保留政策](docs/DATA_RETENTION_POLICY.md)
 - [第三方套件 BOM](docs/THIRD_PARTY_BOM.md)
 - [安全政策](SECURITY.md)
 - [支援政策](SUPPORT.md)
@@ -570,7 +570,7 @@ MAGI_v2/
 | `8081` | oMLX Embedding — ModernBERT-embed-4bit |
 | `8082` | oMLX 文字 — Phi-4-mini-instruct（Melchior，僅日間） |
 | `8083` | oMLX 文字 — SmolLM3-3B（Balthasar，僅日間） |
-| `8088` | Website Admin 管理面板 |
+| `8088` | Website Admin 管理頁 |
 | `50052` | gRPC RPC Worker |
 
 ---

@@ -364,8 +364,8 @@ function bindEvents() {
         ["saasConflictBtn", runSaasConflictCheck, "利益衝突檢查"],
         ["saasIntakeBtn", runSaasIntake, "建立諮詢紀錄"],
         ["saasQualityBtn", runSaasQualityCheck, "品質檢查"],
-        ["saasPacketBtn", runSaasClientPacket, "產生對外資料包"],
-        ["saasPacketCopyBtn", copySaasPacket, "複製對外資料包"],
+        ["saasPacketBtn", runSaasClientPacket, "產生對外資料"],
+        ["saasPacketCopyBtn", copySaasPacket, "複製對外資料"],
         ["casesSearchBtn", loadCases, "案件搜尋"],
         ["casesRefreshBtn", loadCases, "案件重新整理"],
         ["caseSaveBtn", saveCase, "案件儲存"],
@@ -793,7 +793,7 @@ function initThemeToggle() {
 async function boot() {
     // bug fix 2026-05-02：原本 await loadMeta() 在 init chain 之後，任一 init 拋例外
     // 整個 boot() 不繼續，dbBadge 卡「連線中」永不更新（律師外網看到的問題）
-    // 改：loadMeta fire-and-forget + 每個 init 包 try/catch（一個壞不影響其他）
+    // 改：loadMeta fire-and-forget + 每個 init 各自 try/catch（一個壞不影響其他）
     const _safeLoadMeta = () => {
         try {
             loadMeta().catch((e) => {

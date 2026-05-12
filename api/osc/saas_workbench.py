@@ -69,11 +69,11 @@ CAPABILITIES = [
     },
     {
         "key": "external_packet",
-        "title": "對外資料包",
+        "title": "對外資料",
         "status": "enabled",
         "owner": "案件列表 / 應備事項表",
         "tab": "cases",
-        "primary_action": {"act": "saas-section-jump", "section": "saasPacketSection", "label": "產生資料包"},
+        "primary_action": {"act": "saas-section-jump", "section": "saasPacketSection", "label": "產生對外資料"},
         "source": "cases 與既有 checklist 邏輯",
         "role": "輸出可複製文字，不取代正式案件資料",
     },
@@ -99,13 +99,13 @@ CAPABILITIES = [
     },
     {
         "key": "client_portal",
-        "title": "客戶 / 當事人入口",
+        "title": "當事人入口",
         "status": "packet_mode",
         "owner": "案件列表 / 應備事項表",
         "tab": "cases",
-        "primary_action": {"act": "saas-section-jump", "section": "saasPacketSection", "label": "產生資料包"},
+        "primary_action": {"act": "saas-section-jump", "section": "saasPacketSection", "label": "產生對外資料"},
         "source": "cases 與 checklist",
-        "role": "目前只開資料包模式，公開上傳入口保留但不啟用",
+        "role": "目前只產生可複製文字，公開上傳入口保留但不啟用",
     },
     {
         "key": "light_audit",
@@ -142,7 +142,7 @@ INTEGRATION_MATRIX = [
         "mode": "時間線彙整 / 索引明細分流",
     },
     {"area": "修正學習", "source": "AI 草擬的人工改正紀錄", "target_tab": "drafts", "mode": "彙整顯示"},
-    {"area": "對外資料包", "source": "案件資料與應備事項", "target_tab": "cases", "mode": "產生可複製文字"},
+    {"area": "對外資料", "source": "案件資料與應備事項", "target_tab": "cases", "mode": "產生可複製文字"},
     {"area": "高風險紀錄", "source": "系統活動紀錄", "target_tab": "admin", "mode": "只開高風險稽核"},
 ]
 
@@ -583,7 +583,7 @@ def build_client_packet(exec_fn: ExecFn, payload: dict) -> dict:
         "checklist": checklist,
         "copy_text": "\n".join(lines),
         "portal_mode": "packet_only",
-        "portal_note": "目前先產生可複製的當事人資料包；公開上傳入口保留設計但預設不開啟。",
+        "portal_note": "目前先產生可複製的當事人資料；公開上傳入口保留設計但預設不開啟。",
     }
 
 

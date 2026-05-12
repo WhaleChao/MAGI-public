@@ -9,7 +9,7 @@ function saasSetStatus(text, tone = "info") {
 function saasBadge(status) {
     const label = {
         enabled: "已開啟",
-        packet_mode: "資料包模式",
+        packet_mode: "可複製文字",
         high_risk_only: "高風險紀錄",
     }[status] || status || "未設定";
     return `<span class="badge">${esc(label)}</span>`;
@@ -298,7 +298,7 @@ async function runSaasClientPacket() {
 
 async function copySaasPacket() {
     const text = document.getElementById("saasPacketText").value || "";
-    if (!text.trim()) return showToast("沒有可複製的資料包。", "warn");
+    if (!text.trim()) return showToast("沒有可複製的對外資料。", "warn");
     await navigator.clipboard.writeText(text);
-    showToast("已複製對外資料包。", "ok");
+    showToast("已複製對外資料。", "ok");
 }
