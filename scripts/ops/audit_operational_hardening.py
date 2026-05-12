@@ -211,7 +211,7 @@ def audit_cron() -> dict[str, Any]:
             j for j in grouped
             if not (j.get("command") or "").strip().startswith("@MAGI")
         ]
-        if len(grouped) > 1 and heavy:
+        if len(heavy) > 1:
             collisions.append({
                 "cron": cron,
                 "jobs": [
@@ -244,6 +244,12 @@ def audit_git() -> dict[str, Any]:
         " D static/worldmonitor_reports/",
         " M static/translator_ape_latest.json",
         "?? static/translator_ape_latest.json",
+        " M static/knowledge_lint_latest.json",
+        "?? static/knowledge_lint_latest.json",
+        " M json/processed_laf_emails.json",
+        "?? json/processed_laf_emails.json",
+        " M skills/pdf-namer/db_rules_cache.json",
+        "?? skills/pdf-namer/db_rules_cache.json",
         "?? cron_jobs.json.bak.",
         "?? .claude/worktrees/",
     )

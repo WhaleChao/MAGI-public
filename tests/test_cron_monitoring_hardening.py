@@ -41,6 +41,54 @@ def test_cron_result_policy_keeps_real_failure():
     assert should_log_cron_issue(1, "", "Traceback: boom") is True
 
 
+def test_operational_audit_ignores_macro_cron_companions(tmp_path, monkeypatch):
+    import scripts.ops.audit_operational_hardening as audit
+
+    jobs = [
+        {
+            "id": "job_worldmonitor_intel",
+            "enabled": True,
+            "cron": "0 8 * * *",
+            "command": "/venv/bin/python skills/worldmonitor-intel/action.py",
+        },
+        {
+            "id": "job_gcal_sync",
+            "enabled": True,
+            "cron": "0 8 * * *",
+            "command": "@MAGI 日曆同步",
+        },
+    ]
+    (tmp_path / "cron_jobs.json").write_text(json.dumps(jobs), encoding="utf-8")
+
+    monkeypatch.setattr(audit, "ROOT", tmp_path)
+
+    report = audit.audit_cron()
+
+    assert report["collision_count"] == 0
+
+
+def test_operational_audit_treats_runtime_cache_as_generated(monkeypatch):
+    import scripts.ops.audit_operational_hardening as audit
+
+    class _Proc:
+        stdout = "\n".join(
+            [
+                " M json/processed_laf_emails.json",
+                " M skills/pdf-namer/db_rules_cache.json",
+                " M static/knowledge_lint_latest.json",
+                " M static/translator_ape_latest.json",
+            ]
+        )
+        stderr = ""
+
+    monkeypatch.setattr(audit.subprocess, "run", lambda *args, **kwargs: _Proc())
+
+    report = audit.audit_git()
+
+    assert report["dirty_count"] == 0
+    assert report["generated_or_runtime_count"] == 4
+
+
 def test_nightly_health_report_surfaces_top_level_autopilot_failure(tmp_path, monkeypatch):
     import scripts.nightly_health_report as report
     from datetime import datetime, timedelta

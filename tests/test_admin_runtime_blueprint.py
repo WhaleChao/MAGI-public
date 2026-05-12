@@ -554,3 +554,44 @@ def test_operational_issue_health_reconciles_recovered_and_false_positive(tmp_pa
     assert summary["stale_cron_failures_24h"] == 1
     assert summary["recovered_non_cron_high_severity_24h"] == 1
     assert summary["inactive_or_noise_cron_failures_24h"] == 4
+
+
+def test_operational_issue_health_treats_live_recovered_guards_as_inactive(tmp_path, monkeypatch):
+    from api.blueprints.admin_runtime import _compute_operational_issue_health
+    import api.blueprints.admin_runtime as mod
+
+    runtime_dir = tmp_path / ".runtime"
+    runtime_dir.mkdir()
+    now = 2_000_000.0
+    issue_rows = [
+        {
+            "ts": now - 120,
+            "severity": "High",
+            "source": "discord_bot.cron_scheduler",
+            "command": "cron:job_omlx_switch_day",
+            "error": "exit=4 stdout_tail=8080 model not ready",
+        },
+        {
+            "ts": now - 60,
+            "severity": "High",
+            "source": "discord_bot.cron_scheduler",
+            "command": "cron:job_resource_governor",
+            "error": "exit=2 stdout_tail=critical resource governor",
+        },
+    ]
+    (runtime_dir / "issue_agenda.jsonl").write_text(
+        "\n".join(json.dumps(row, ensure_ascii=False) for row in issue_rows) + "\n",
+        encoding="utf-8",
+    )
+    (runtime_dir / "cron_state.json").write_text("{}", encoding="utf-8")
+
+    monkeypatch.setenv("MAGI_OPERATIONAL_ACTIVE_ISSUE_WINDOW_SEC", "3600")
+    monkeypatch.setattr(mod, "_is_omlx_switch_recovered", lambda: True)
+    monkeypatch.setattr(mod, "_is_resource_governor_recovered", lambda: True)
+
+    summary = _compute_operational_issue_health(tmp_path, now)
+
+    assert summary["raw_cron_failures_24h"] == 2
+    assert summary["active_cron_failures_24h"] == 0
+    assert summary["recovered_cron_failures_24h"] == 2
+    assert summary["inactive_or_noise_cron_failures_24h"] == 2
