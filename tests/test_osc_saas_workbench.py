@@ -115,6 +115,14 @@ def test_saas_workbench_template_has_actionable_entry_links():
         assert f'data-tab="{tab}"' in html
 
 
+def test_dashboard_laf_case_labels_are_consistent():
+    html = Path("templates/partials/osc/dashboard.html").read_text(encoding="utf-8")
+
+    assert "未結法扶案件" in html
+    assert "已結法扶案件" in html
+    assert "未結法扶</div>" not in html
+
+
 def test_operations_report_separates_total_active_and_closing_pending(monkeypatch, tmp_path):
     from api.osc import draft_learning, saas_workbench
 
