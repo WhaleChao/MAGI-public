@@ -282,7 +282,9 @@ def _load_laf_identity_cache() -> list[dict[str, str]]:
     try:
         rows, _ = _osc_exec_sql(
             """
-            SELECT case_number, client_name, laf_case_no, application_no, start_date, approval_date, case_reason, case_type
+            SELECT case_number, client_name, laf_case_no, application_no,
+                   start_date, approval_date, case_reason, case_type,
+                   case_category, legal_aid_status
             FROM cases
             WHERE COALESCE(client_name, '') != ''
               AND COALESCE(status, '') NOT IN ('已結案', '結案', 'closed', 'Closed')
@@ -310,12 +312,16 @@ def _load_laf_identity_cache() -> list[dict[str, str]]:
             laf_case_no = str(row.get("laf_case_no") or row.get("application_no") or "").strip()
             start_date = str(row.get("start_date") or row.get("approval_date") or "").strip()[:10]
             case_reason = str(row.get("case_reason") or row.get("case_type") or "").strip()
+            case_category = str(row.get("case_category") or "").strip()
+            legal_aid_status = str(row.get("legal_aid_status") or "").strip()
         else:
             case_number = str(row[0] or "").strip()
             client_name = str(row[1] or "").strip()
             laf_case_no = str(row[2] or row[3] or "").strip()
             start_date = str(row[4] or row[5] or "").strip()[:10]
             case_reason = str(row[6] or row[7] or "").strip()
+            case_category = str(row[8] or "").strip() if len(row) > 8 else ""
+            legal_aid_status = str(row[9] or "").strip() if len(row) > 9 else ""
         if case_number and client_name:
             cache.append({
                 "case_number": case_number,
@@ -323,6 +329,8 @@ def _load_laf_identity_cache() -> list[dict[str, str]]:
                 "laf_case_no": laf_case_no,
                 "start_date": start_date,
                 "case_reason": case_reason,
+                "case_category": case_category,
+                "legal_aid_status": legal_aid_status,
             })
     _LAF_IDENTITY_CACHE = cache
     return cache
@@ -374,6 +382,20 @@ def _classify_laf_reportable_activity(summary: str) -> str:
     return ""
 
 
+def _is_laf_identity_case(case: dict[str, str]) -> bool:
+    laf_case_no = str(case.get("laf_case_no") or "").strip()
+    category = str(case.get("case_category") or "").strip()
+    status = str(case.get("legal_aid_status") or "").strip()
+    reason = str(case.get("case_reason") or "").strip()
+    return bool(
+        LAF_NO_RE.fullmatch(laf_case_no)
+        or category == "法律扶助案件"
+        or "法扶" in reason
+        or "法律扶助" in reason
+        or status
+    )
+
+
 def _infer_laf_reportable_event_identity(summary: str, description: str, event_date: str = "") -> tuple[str, str]:
     text = f"{summary or ''}\n{description or ''}"
     if not _classify_laf_reportable_activity(text):
@@ -382,6 +404,8 @@ def _infer_laf_reportable_event_identity(summary: str, description: str, event_d
     explicit_laf = LAF_NO_RE.search(text)
     matches = []
     for case in _load_laf_identity_cache():
+        if not _is_laf_identity_case(case):
+            continue
         if event_date and case.get("start_date") and event_date[:10] < str(case.get("start_date")):
             continue
         if explicit_case and explicit_case == case.get("case_number"):

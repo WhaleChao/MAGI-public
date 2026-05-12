@@ -119,3 +119,29 @@ def test_infer_laf_reportable_event_identity_skips_ambiguous_client_events():
 
     assert mod._infer_laf_reportable_event_identity("陳鏈棠來所面談", "", "2026-05-01") == ("", "")
     assert mod._infer_laf_reportable_event_identity("陳鏈棠消債來所面談", "", "2026-05-01") == ("2026-0035", "陳鏈棠")
+
+
+def test_infer_laf_reportable_event_identity_prefers_db_laf_case_over_same_name_regular_case():
+    mod = _load_module()
+    mod._LAF_IDENTITY_CACHE = [
+        {
+            "case_number": "2026-0035",
+            "client_name": "陳鏈棠",
+            "laf_case_no": "1150409-I-004",
+            "start_date": "2026-04-09",
+            "case_reason": "消債",
+            "case_category": "法律扶助案件",
+            "legal_aid_status": "進行中",
+        },
+        {
+            "case_number": "2026-0099",
+            "client_name": "陳鏈棠",
+            "laf_case_no": "",
+            "start_date": "2026-04-01",
+            "case_reason": "民事損害賠償",
+            "case_category": "一般案件",
+            "legal_aid_status": "",
+        },
+    ]
+
+    assert mod._infer_laf_reportable_event_identity("陳鏈棠來所面談", "", "2026-05-01") == ("2026-0035", "陳鏈棠")
