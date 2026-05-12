@@ -226,7 +226,7 @@ def _load_case_identity_cache() -> list[dict[str, str]]:
     try:
         rows, _ = _osc_exec_sql(
             """
-            SELECT case_number, client_name
+            SELECT case_number, client_name, start_date, approval_date
             FROM cases
             WHERE COALESCE(client_name, '') != ''
               AND COALESCE(status, '') NOT IN ('已結案', '結案', 'closed', 'Closed')
@@ -242,13 +242,19 @@ def _load_case_identity_cache() -> list[dict[str, str]]:
     for row in rows or []:
         case_number = str((row.get("case_number") if isinstance(row, dict) else row[0]) or "").strip()
         client_name = str((row.get("client_name") if isinstance(row, dict) else row[1]) or "").strip()
+        start_date = str((row.get("start_date") if isinstance(row, dict) else row[2]) or "").strip()[:10]
+        approval_date = str((row.get("approval_date") if isinstance(row, dict) else row[3]) or "").strip()[:10]
         if case_number and client_name:
-            cache.append({"case_number": case_number, "client_name": client_name})
+            cache.append({
+                "case_number": case_number,
+                "client_name": client_name,
+                "start_date": start_date or approval_date,
+            })
     _CASE_IDENTITY_CACHE = cache
     return cache
 
 
-def _infer_case_identity(summary: str, description: str) -> tuple[str, str]:
+def _infer_case_identity(summary: str, description: str, event_date: str = "") -> tuple[str, str]:
     text = f"{summary or ''}\n{description or ''}"
     case_number = _extract_case_number(summary, description)
     if case_number:
@@ -267,12 +273,15 @@ def _infer_case_identity(summary: str, description: str) -> tuple[str, str]:
         return case_number, ""
     for case in _load_case_identity_cache():
         name = case["client_name"]
+        start_date = str(case.get("start_date") or "").strip()[:10]
+        if event_date and start_date and event_date[:10] < start_date:
+            continue
         if name and name in text:
             return case["case_number"], name
     return "", ""
 
 
-def import_gcal_events_to_todos(service, *, dry_run: bool = False, lookback_days: int = 30, lookahead_days: int = 180) -> dict:
+def import_gcal_events_to_todos(service, *, dry_run: bool = False, lookback_days: int = 730, lookahead_days: int = 180) -> dict:
     stats: dict[str, Any] = {
         "imported": 0,
         "import_skipped": 0,
@@ -338,7 +347,7 @@ def import_gcal_events_to_todos(service, *, dry_run: bool = False, lookback_days
                     if dry_run:
                         stats["imported"] += 1
                         continue
-                    case_number, client_name = _infer_case_identity(summary, description)
+                    case_number, client_name = _infer_case_identity(summary, description, start_date)
                     _osc_exec_sql(
                         """
                         INSERT INTO case_todos

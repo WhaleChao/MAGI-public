@@ -159,9 +159,10 @@ _LAF_ACTIVITY_LABELS = ("開庭", "會議", "律見", "閱卷", "電話聯繫")
 _LAF_EVENT_EXCLUSION_KEYWORDS = (
     "聲請改期", "聲請改期中", "不出席", "取消", "改期", "不到庭",
     "法扶開辦末日", "法扶上訴", "法扶再議",
+    "宣判", "宣示判決", "停班", "停課", "放假", "颱風", "天然災害",
 )
 _LAF_MEETING_EXCLUSION_KEYWORDS = ("U會議", "Ｕ會議", "u會議", "ｕ會議")
-_LAF_COURT_KEYWORDS = ("開庭", "準備程序", "言詞辯論", "審理", "調解", "宣判", "庭期")
+_LAF_COURT_KEYWORDS = ("開庭", "準備程序", "言詞辯論", "審理", "審理程序", "調解", "訊問", "協商程序", "調查", "調查程序", "庭期")
 _LAF_REVIEW_PAYMENT_KEYWORDS = ("繳費單", "規費繳款", "規費", "繳款單", "繳費收據", "繳費憑證")
 _LAF_REVIEW_FILE_EXTENSIONS = {".pdf", ".doc", ".docx", ".jpg", ".jpeg", ".png", ".tif", ".tiff", ".zip", ".txt"}
 
@@ -297,6 +298,16 @@ def _laf_event_summary(row: dict) -> str:
     return str(row.get("summary") or row.get("description") or row.get("notes") or row.get("type") or row.get("todo_type") or "").strip()
 
 
+def _laf_event_reportable_date(row: dict, *, case_start: date | None = None) -> bool:
+    date_text = _laf_event_date_text(row)
+    parsed = _laf_parse_date_token(date_text)
+    if parsed and case_start and parsed < case_start:
+        return False
+    if parsed and parsed > date.today():
+        return False
+    return True
+
+
 def _laf_classify_activity(summary: str, *, case_reason_keyword: str = "", apply_reason_filter: bool = False) -> str:
     text = str(summary or "")
     if not text or any(k in text for k in _LAF_EVENT_EXCLUSION_KEYWORDS):
@@ -311,9 +322,9 @@ def _laf_classify_activity(summary: str, *, case_reason_keyword: str = "", apply
         return "會議"
     if "律見" in text:
         return "律見"
-    if "閱卷" in text:
+    if any(k in text for k in ("閱卷", "影卷", "調卷")):
         return "閱卷"
-    if any(k in text for k in ("電話聯繫", "通話", "電聯")):
+    if any(k in text for k in ("電話", "電話聯繫", "通話", "電聯", "聯繫", "聯絡")):
         return "電話聯繫"
     return ""
 
@@ -328,6 +339,7 @@ def _laf_build_activity_stats(
     stats = {label: [] for label in _LAF_ACTIVITY_LABELS}
     client_name = str(case.get("client_name") or "").strip()
     case_reason = str(case.get("case_reason") or case.get("case_type") or "").strip()
+    case_start = _laf_parse_date_token(str(case.get("start_date") or case.get("approval_date") or ""))
     case_reason_keyword = case_reason[:2] if case_reason else ""
     apply_reason_filter = False
     if client_name:
@@ -370,6 +382,8 @@ def _laf_build_activity_stats(
 
     seen = set()
     for row in candidates:
+        if not _laf_event_reportable_date(row, case_start=case_start):
+            continue
         summary = _laf_event_summary(row)
         label = _laf_classify_activity(summary, case_reason_keyword=case_reason_keyword, apply_reason_filter=apply_reason_filter)
         if not label:

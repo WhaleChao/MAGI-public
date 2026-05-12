@@ -81,3 +81,20 @@ def test_laf_activity_stats_counts_calendar_meeting_and_excludes_laf_admin(monke
 
     assert stats["會議"]["count"] == 1
     assert stats["會議"]["rows"][0]["source"] == "Google Calendar"
+
+
+def test_laf_activity_stats_excludes_judgment_announcement_and_future_events(monkeypatch):
+    monkeypatch.setattr(mod, "_osc_exec", lambda *args, **kwargs: ({"cnt": 1}, {}))
+    case = {"client_name": "測試人", "case_reason": "民事"}
+    todos = [
+        {"todo_type": "宣判", "todo_date": "2026-05-01", "todo_time": "10:00", "description": "測試人 宣示判決"},
+        {"todo_type": "調查", "todo_date": "2026-05-02", "todo_time": "10:00", "description": "測試人 調查程序"},
+        {"todo_type": "電話聯絡", "todo_date": "2026-05-03", "todo_time": "11:00", "description": "測試人 電話聯絡"},
+        {"todo_type": "開庭", "todo_date": "2099-01-01", "todo_time": "09:30", "description": "測試人 開庭"},
+    ]
+
+    stats = mod._laf_build_activity_stats(case, todos, [], {"dates": []}, [])
+
+    assert stats["開庭"]["count"] == 1
+    assert stats["開庭"]["rows"][0]["summary"] == "調查 測試人 調查程序"
+    assert stats["電話聯繫"]["count"] == 1

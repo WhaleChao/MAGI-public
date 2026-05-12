@@ -6522,47 +6522,132 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         # 日期清單（供報結頁面用 doAdd*Dt() 新增日期列）
         counts["court_dates"] = []
         counts["review_dates"] = []
+        _assign_day = ""
+        if self.db and case_number:
+            try:
+                _case_row = self.db.fetch_one(
+                    "SELECT start_date, approval_date FROM cases WHERE case_number = %s OR legal_aid_number = %s LIMIT 1",
+                    (case_number, case_number),
+                    as_dict=True,
+                )
+                _assign_raw = (_case_row or {}).get("start_date") or (_case_row or {}).get("approval_date")
+                if _assign_raw:
+                    _assign_day = str(_assign_raw)[:10]
+            except Exception:
+                _assign_day = ""
+        _todo_start_sql = " AND (`todo_date` IS NULL OR `todo_date` >= %s)" if _assign_day else ""
+        _meeting_start_sql = " AND (`datetime` IS NULL OR DATE(`datetime`) >= %s)" if _assign_day else ""
 
         try:
             # 1. Meeting count (from meetings table)
+            _meeting_params = [case_number]
+            if _assign_day:
+                _meeting_params.append(_assign_day)
             result = self.db.fetch_one(
-                "SELECT COUNT(*) as cnt FROM `meetings` WHERE `case_number` = %s",
-                (case_number,)
+                f"""SELECT COUNT(*) as cnt FROM `meetings`
+                   WHERE `case_number` = %s
+                   {_meeting_start_sql}
+                   AND (`datetime` IS NULL OR DATE(`datetime`) <= CURDATE())
+                   AND COALESCE(`status`, '') NOT IN ('cancelled', 'canceled', '取消')""",
+                tuple(_meeting_params)
             )
             if result:
                 counts["meeting_count"] = result[0] if isinstance(result, tuple) else result.get("cnt", 0)
 
-            # 2. Contact count (from case_todos — type like '聯繫' or '通話')
+            _todo_meeting_params = [case_number]
+            if _assign_day:
+                _todo_meeting_params.append(_assign_day)
             result = self.db.fetch_one(
-                """SELECT COUNT(*) as cnt FROM `case_todos`
+                f"""SELECT COUNT(DISTINCT CONCAT(COALESCE(`todo_date`, ''), '|', COALESCE(`todo_time`, ''), '|', COALESCE(`description`, ''))) as cnt
+                   FROM `case_todos`
                    WHERE `case_number` = %s
-                   AND (`todo_type` LIKE '%%聯繫%%' OR `todo_type` LIKE '%%通話%%'
-                        OR `todo_type` LIKE '%%接見%%' OR `todo_type` LIKE '%%會面%%')""",
-                (case_number,)
+                   {_todo_start_sql}
+                   AND (`todo_date` IS NULL OR `todo_date` <= CURDATE())
+                   AND (
+                        `todo_type` LIKE '%%會議%%'
+                        OR `todo_type` LIKE '%%會面%%'
+                        OR `todo_type` LIKE '%%面談%%'
+                        OR `todo_type` LIKE '%%開會%%'
+                        OR `todo_type` LIKE '%%視訊%%'
+                        OR `description` LIKE '%%會議%%'
+                        OR `description` LIKE '%%會面%%'
+                        OR `description` LIKE '%%面談%%'
+                        OR `description` LIKE '%%開會%%'
+                        OR `description` LIKE '%%視訊%%'
+                   )
+                   AND COALESCE(`description`, '') NOT LIKE '%%U會議%%'
+                   AND COALESCE(`description`, '') NOT LIKE '%%Ｕ會議%%'
+                   AND COALESCE(`status`, '') NOT IN ('cancelled', 'canceled', '取消')""",
+                tuple(_todo_meeting_params),
+            )
+            if result:
+                counts["meeting_count"] = max(
+                    int(counts.get("meeting_count", 0) or 0),
+                    int(result[0] if isinstance(result, tuple) else result.get("cnt", 0) or 0),
+                )
+
+            # 2. Contact count (from case_todos — phone/contact only; meeting/接見 are counted elsewhere)
+            _contact_params = [case_number]
+            if _assign_day:
+                _contact_params.append(_assign_day)
+            result = self.db.fetch_one(
+                f"""SELECT COUNT(*) as cnt FROM `case_todos`
+                   WHERE `case_number` = %s
+                   {_todo_start_sql}
+                   AND (`todo_type` LIKE '%%電話%%' OR `todo_type` LIKE '%%聯繫%%'
+                        OR `todo_type` LIKE '%%聯絡%%' OR `todo_type` LIKE '%%通話%%'
+                        OR `todo_type` LIKE '%%電聯%%')
+                   AND (`todo_date` IS NULL OR `todo_date` <= CURDATE())
+                   AND COALESCE(`status`, '') NOT IN ('cancelled', 'canceled', '取消')""",
+                tuple(_contact_params)
             )
             if result:
                 counts["contact_count"] = result[0] if isinstance(result, tuple) else result.get("cnt", 0)
 
             # 2b. Inq count (律見次數 — from case_todos)
+            _inq_params = [case_number]
+            if _assign_day:
+                _inq_params.append(_assign_day)
             result = self.db.fetch_one(
-                """SELECT COUNT(*) as cnt FROM `case_todos`
+                f"""SELECT COUNT(*) as cnt FROM `case_todos`
                    WHERE `case_number` = %s
+                   {_todo_start_sql}
                    AND (`todo_type` LIKE '%%律見%%' OR `todo_type` LIKE '%%律師接見%%'
                         OR `todo_type` LIKE '%%接見%%')
-                   AND `status` = 'completed'""",
-                (case_number,)
+                   AND (`status` = 'completed' OR `source_file` LIKE 'gcal_import%%')
+                   AND (`todo_date` IS NULL OR `todo_date` <= CURDATE())
+                   AND COALESCE(`status`, '') NOT IN ('cancelled', 'canceled', '取消')""",
+                tuple(_inq_params)
             )
             if result:
                 counts["inq_count"] = result[0] if isinstance(result, tuple) else result.get("cnt", 0)
 
             # 3. Court dates (from case_todos — hearings)
+            _court_params = [case_number]
+            if _assign_day:
+                _court_params.append(_assign_day)
             _court_rows = self.db.fetch_all(
-                """SELECT `todo_date` FROM `case_todos`
+                f"""SELECT `todo_date` FROM `case_todos`
                    WHERE `case_number` = %s
-                   AND `todo_type` IN ('言詞辯論', '準備程序', '審理程序', '調解', '開庭', '訊問')
-                   AND `status` = 'completed'
+                   {_todo_start_sql}
+                   AND (
+                        `todo_type` IN ('言詞辯論', '準備程序', '審理程序', '調解', '開庭', '訊問', '協商程序', '調查', '調查程序')
+                        OR `todo_type` LIKE '%%言詞辯論%%'
+                        OR `todo_type` LIKE '%%準備程序%%'
+                        OR `todo_type` LIKE '%%審理%%'
+                        OR `todo_type` LIKE '%%調解%%'
+                        OR `todo_type` LIKE '%%開庭%%'
+                        OR `todo_type` LIKE '%%訊問%%'
+                        OR `todo_type` LIKE '%%協商程序%%'
+                        OR `todo_type` LIKE '%%調查%%'
+                   )
+                   AND (`status` = 'completed' OR `source_file` LIKE 'gcal_import%%')
+                   AND (`todo_date` IS NULL OR `todo_date` <= CURDATE())
+                   AND COALESCE(`description`, '') NOT LIKE '%%宣判%%'
+                   AND COALESCE(`description`, '') NOT LIKE '%%宣示判決%%'
+                   AND COALESCE(`status`, '') NOT IN ('cancelled', 'canceled', '取消')
                    ORDER BY `todo_date`""",
-                (case_number,)
+                tuple(_court_params)
             ) or []
             _seen_court = set()
             for row in _court_rows:
@@ -6575,13 +6660,19 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
             counts["court_count"] = len(counts["court_dates"])
 
             # 4. Review dates (閱卷 — from case_todos)
+            _review_params = [case_number]
+            if _assign_day:
+                _review_params.append(_assign_day)
             _review_rows = self.db.fetch_all(
-                """SELECT `todo_date` FROM `case_todos`
+                f"""SELECT `todo_date` FROM `case_todos`
                    WHERE `case_number` = %s
+                   {_todo_start_sql}
                    AND (`todo_type` LIKE '%%閱卷%%' OR `todo_type` LIKE '%%review%%')
-                   AND `status` = 'completed'
+                   AND (`status` = 'completed' OR `source_file` LIKE 'gcal_import%%')
+                   AND (`todo_date` IS NULL OR `todo_date` <= CURDATE())
+                   AND COALESCE(`status`, '') NOT IN ('cancelled', 'canceled', '取消')
                    ORDER BY `todo_date`""",
-                (case_number,)
+                tuple(_review_params)
             ) or []
             _seen_review = set()
             for row in _review_rows:
@@ -6598,9 +6689,9 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
             if _doc_key:
                 result = self.db.fetch_one(
                     r"""SELECT COUNT(DISTINCT `subfolder_name`) as cnt FROM `document_index`
-                       WHERE `case_full_name` LIKE %s
+                       WHERE (`case_number` = %s OR `case_full_name` LIKE %s)
                        AND `file_path` LIKE '%%04\_我方歷次書狀%%'""",
-                    (f"{_doc_key}%",)
+                    (_doc_key, f"{_doc_key}%")
                 )
                 if result:
                     counts["document_count"] = result[0] if isinstance(result, tuple) else result.get("cnt", 0)
@@ -6615,6 +6706,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         if _zero_keys and self.db and client_name:
             try:
                 import re as _re
+                from datetime import date as _date
                 _cn_parts = _re.findall(r'[\u4e00-\u9fff]+', client_name)
                 _cn_only = "".join(_cn_parts) if _cn_parts else client_name
 
@@ -6650,17 +6742,19 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
 
                 if _events:
                     # 用 OSC 相同的關鍵字分類
-                    _court_kw = ["開庭", "言詞辯論", "準備程序", "調解", "訊問", "審理"]
+                    _court_kw = ["開庭", "言詞辯論", "準備程序", "調解", "訊問", "審理", "審理程序", "協商程序", "調查", "調查程序"]
                     _meet_kw = ["會議", "來所", "碰面", "視訊", "面談", "開會", "交資料", "律見", "接見", "律師接見"]
-                    _tel_kw = ["電話聯繫", "通話", "電聯", "聯繫", "聯絡"]
+                    _tel_kw = ["電話", "電話聯繫", "通話", "電聯", "聯繫", "聯絡"]
                     _review_kw = ["閱卷", "影卷", "調卷"]
-                    _excl_kw = ["聲請改期", "改期", "取消", "不出席", "不到庭"]
+                    _excl_kw = ["聲請改期", "改期", "取消", "不出席", "不到庭", "宣判", "宣示判決", "法扶開辦末日", "法扶上訴", "法扶再議", "停班", "停課", "放假", "颱風", "天然災害", "U會議", "Ｕ會議"]
 
                     _c_court = 0; _c_meet = 0; _c_tel = 0; _c_review = 0
                     _court_dates_cal = []; _review_dates_cal = []
                     for summary, start_date in _events:
                         s = str(summary or "")
                         if any(ex in s for ex in _excl_kw):
+                            continue
+                        if str(start_date or "")[:10] > _date.today().isoformat():
                             continue
                         if any(k in s for k in _court_kw):
                             _c_court += 1
@@ -6706,6 +6800,57 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
             except Exception as e:
                 logger.warning("GCal API fallback for zero counts failed: %s", e)
 
+        if int(counts.get("review_count", 0) or 0) <= 0:
+            try:
+                _case_row = self.db.fetch_one(
+                    "SELECT folder_path FROM cases WHERE case_number = %s OR legal_aid_number = %s LIMIT 1",
+                    (case_number, case_number),
+                    as_dict=True,
+                )
+                _folder_path = str((_case_row or {}).get("folder_path") or "").strip()
+                if _folder_path and hasattr(self.db, "translate_path_to_local"):
+                    _folder_path = self.db.translate_path_to_local(_folder_path) or _folder_path
+                _review_count_from_folder = 0
+                _review_dates_from_folder: list[str] = []
+                _review_dir_used = ""
+                if _folder_path and os.path.isdir(_folder_path):
+                    for _review_dir_name in ("06_閱卷資料", "04_閱卷資料", "03_閱卷資料"):
+                        _review_dir = os.path.join(_folder_path, _review_dir_name)
+                        if not os.path.isdir(_review_dir):
+                            continue
+                        try:
+                            for _sub in os.listdir(_review_dir):
+                                _sub_path = os.path.join(_review_dir, _sub)
+                                if not os.path.isdir(_sub_path) or _sub.startswith("."):
+                                    continue
+                                _has_real_files = False
+                                try:
+                                    for _fn in os.listdir(_sub_path):
+                                        _fn_lower = _fn.lower()
+                                        if _fn_lower.startswith("."):
+                                            continue
+                                        if any(_k in _fn for _k in ("繳費", "規費", "繳款單", "繳費單")):
+                                            continue
+                                        _has_real_files = True
+                                        break
+                                except OSError:
+                                    pass
+                                if _has_real_files:
+                                    _review_count_from_folder += 1
+                                    _review_dates_from_folder.append(str(_sub)[:10])
+                        except OSError:
+                            pass
+                        if _review_count_from_folder > 0:
+                            _review_dir_used = _review_dir_name
+                            break
+                if _review_count_from_folder > 0:
+                    counts["review_count"] = _review_count_from_folder
+                    if not counts.get("review_dates"):
+                        counts["review_dates"] = _review_dates_from_folder
+                    logger.info("  📂 閱卷次數從資料夾補齊: %d (from %s, 排除純繳費單目錄)", _review_count_from_folder, _review_dir_used)
+            except Exception as e:
+                logger.warning("Review folder fallback failed: %s", e)
+
         return counts
 
     def _gcal_fallback_counts(self, counts: dict, zero_keys: list, case_number: str, client_name: str) -> None:
@@ -6750,7 +6895,24 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
             return
 
         now = datetime.now(timezone.utc)
-        time_min = (now - timedelta(days=730)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        time_min_dt = now - timedelta(days=730)
+        _assign_day = ""
+        try:
+            if self.db and case_number:
+                _case_row = self.db.fetch_one(
+                    "SELECT start_date, approval_date FROM cases WHERE case_number = %s OR legal_aid_number = %s LIMIT 1",
+                    (case_number, case_number),
+                    as_dict=True,
+                )
+                _assign_raw = (_case_row or {}).get("start_date") or (_case_row or {}).get("approval_date")
+                if _assign_raw:
+                    _assign_day = str(_assign_raw)[:10]
+                    _assign_dt = datetime.strptime(_assign_day, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+                    if _assign_dt > time_min_dt:
+                        time_min_dt = _assign_dt
+        except Exception as e:
+            logger.debug("GCal assignment-date lookup failed: %s", e)
+        time_min = time_min_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
         time_max = (now + timedelta(days=30)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
         # 搜尋所有日曆（primary + 其他日曆），不只 primary
@@ -6801,11 +6963,11 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         logger.info("  📅 GCal API: total %d events for '%s' across %d calendars (raw=%d, dedup=%d)",
                     len(events), _cn_only, len(cal_ids), _raw_total, _raw_total - len(events))
 
-        _court_kw = ["開庭", "言詞辯論", "準備程序", "調解", "訊問", "審理"]
+        _court_kw = ["開庭", "言詞辯論", "準備程序", "調解", "訊問", "審理", "審理程序", "協商程序", "調查", "調查程序"]
         _meet_kw = ["會議", "來所", "碰面", "視訊", "面談", "開會", "交資料", "律見", "接見", "律師接見"]
-        _tel_kw = ["電話聯繫", "通話", "電聯", "聯繫", "聯絡"]
+        _tel_kw = ["電話", "電話聯繫", "通話", "電聯", "聯繫", "聯絡"]
         _review_kw = ["閱卷", "影卷", "調卷"]
-        _excl_kw = ["聲請改期", "改期", "取消", "不出席", "不到庭"]
+        _excl_kw = ["聲請改期", "改期", "取消", "不出席", "不到庭", "宣判", "宣示判決", "法扶開辦末日", "法扶上訴", "法扶再議", "停班", "停課", "放假", "颱風", "天然災害", "U會議", "Ｕ會議"]
 
         _c_court = 0; _c_meet = 0; _c_tel = 0; _c_review = 0
         _court_dates_gcal = []; _review_dates_gcal = []
@@ -6813,14 +6975,18 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         # 「王淑婷審理」vs「[2025-0024] 王淑婷 - 審理程序」同是 2026-03-12 一場庭）
         _seen_court_dates: set = set()
         _seen_review_dates: set = set()
-        _seen_meet_dates: set = set()
-        _seen_tel_dates: set = set()
+        _seen_meet_slots: set = set()
+        _seen_tel_slots: set = set()
         for ev in events:
             summary = ev.get("summary", "")
             if any(ex in summary for ex in _excl_kw):
                 continue
             start = ev.get("start", {}).get("dateTime") or ev.get("start", {}).get("date", "")
             _dk = (start or "")[:10]
+            if _assign_day and _dk and _dk < _assign_day:
+                continue
+            if _dk and _dk > datetime.now(timezone.utc).strftime("%Y-%m-%d"):
+                continue
             if any(k in summary for k in _court_kw):
                 if _dk and _dk in _seen_court_dates:
                     continue
@@ -6836,17 +7002,19 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                     _seen_review_dates.add(_dk)
                     _review_dates_gcal.append(_dk)
             elif any(k in summary for k in _meet_kw):
-                if _dk and _dk in _seen_meet_dates:
+                _slot = (start or "")[:16] if start else _dk
+                if _slot and _slot in _seen_meet_slots:
                     continue
                 _c_meet += 1
-                if _dk:
-                    _seen_meet_dates.add(_dk)
+                if _slot:
+                    _seen_meet_slots.add(_slot)
             elif any(k in summary for k in _tel_kw):
-                if _dk and _dk in _seen_tel_dates:
+                _slot = (start or "")[:16] if start else _dk
+                if _slot and _slot in _seen_tel_slots:
                     continue
                 _c_tel += 1
-                if _dk:
-                    _seen_tel_dates.add(_dk)
+                if _slot:
+                    _seen_tel_slots.add(_slot)
 
         # Take max across all sources: GCal API is live and usually most complete.
         # 只補值 when GCal 數字 > 目前值（避免 GCal 關鍵字漏配造成倒退）

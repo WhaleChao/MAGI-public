@@ -24,13 +24,27 @@ def test_infer_case_identity_from_client_name(monkeypatch):
         if "FROM cases" in sql and "WHERE case_number=%s" in sql:
             return None, None
         return [
-            {"case_number": "2026-0035", "client_name": "陳鏈棠"},
-            {"case_number": "2026-0036", "client_name": "王小明"},
+            {"case_number": "2026-0035", "client_name": "陳鏈棠", "start_date": "2026-04-14", "approval_date": None},
+            {"case_number": "2026-0036", "client_name": "王小明", "start_date": "2026-04-01", "approval_date": None},
         ], None
 
     monkeypatch.setattr(mod, "_osc_exec_sql", fake_exec)
 
     assert mod._infer_case_identity("陳鏈棠面談＠全家宜蘭縣府店", "") == ("2026-0035", "陳鏈棠")
+
+
+def test_infer_case_identity_does_not_attach_name_event_before_case_start(monkeypatch):
+    mod = _load_module()
+    mod._CASE_IDENTITY_CACHE = None
+
+    def fake_exec(sql, params=(), fetch="all"):
+        return [
+            {"case_number": "2026-0035", "client_name": "陳鏈棠", "start_date": "2026-04-14", "approval_date": None},
+        ], None
+
+    monkeypatch.setattr(mod, "_osc_exec_sql", fake_exec)
+
+    assert mod._infer_case_identity("陳鏈棠面談＠全家宜蘭縣府店", "", "2026-04-01") == ("", "")
 
 
 def test_infer_case_identity_prefers_explicit_case_number(monkeypatch):
