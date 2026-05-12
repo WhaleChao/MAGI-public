@@ -15,12 +15,50 @@ function saasBadge(status) {
     return `<span class="badge">${esc(label)}</span>`;
 }
 
-async function loadSaasWorkbench() {
+function buildSaasFallbackOverview(error) {
+    const s = state.dashboard?.stats || {};
+    return {
+        ok: false,
+        error: error?.message || "not_found",
+        capabilities: [],
+        integration: {
+            principle: "MAGI 暫時讀不到管理工具 API；下方先保留各功能入口，正式資料請以各頁籤為準。",
+            items: [],
+        },
+        risk: {items: []},
+        timeline: {items: []},
+        operations: {
+            total_cases: 0,
+            active_cases: s.active_cases || 0,
+            closed_cases: (Number(s.closed_regular || 0) + Number(s.closed_legal_aid || 0)),
+            closing_pending_cases: 0,
+            pending_todos: (state.dashboard?.pending_todos || []).length,
+            overdue_todos: 0,
+            documents: 0,
+            legal_insights: 0,
+            legal_aid_cases: s.legal_aid_cases || 0,
+            automation: {learning_events: 0},
+        },
+        learning: {recent: []},
+        intake: {recent: []},
+        audit: {items: []},
+    };
+}
+
+async function loadSaasWorkbench(_options = {}) {
     const caseNumber = encodeURIComponent((document.getElementById("saasCaseNumber")?.value || "").trim());
-    const data = await api(`/api/osc/saas/overview${caseNumber ? `?case_number=${caseNumber}` : ""}`);
-    state.saas.overview = data;
-    renderSaasWorkbench();
-    saasSetStatus("事務總覽已更新。", "ok");
+    try {
+        const data = await api(`/api/osc/saas/overview${caseNumber ? `?case_number=${caseNumber}` : ""}`);
+        state.saas.overview = data;
+        renderSaasWorkbench();
+        saasSetStatus("管理工具已更新。", "ok");
+    } catch (error) {
+        console.warn("loadSaasWorkbench failed:", error);
+        state.saas.overview = buildSaasFallbackOverview(error);
+        renderSaasWorkbench();
+        const reason = String(error?.message || "not_found").replace(/^not_found$/, "找不到管理工具 API，請重啟 MAGI 後端讓新版路由生效");
+        saasSetStatus(`MAGI 無法更新管理工具：${reason}`, "warn");
+    }
 }
 
 function renderSaasWorkbench() {
@@ -43,7 +81,7 @@ function renderSaasCapabilities(items) {
             <div class="stat-value" style="font-size:16px;">${saasBadge(x.status)}</div>
             <div class="muted" style="margin-top:6px;">主體：${esc(x.owner || "既有模組")}</div>
             <div class="muted">${esc(shortText(x.role || "", 72))}</div>
-            ${x.tab && x.tab !== "saasWorkbench" ? `<button class="btn slim" style="margin-top:8px;" data-act="tab-jump" data-tab="${esc(x.tab)}">進入原功能</button>` : ""}
+            ${x.tab ? `<button class="btn slim" style="margin-top:8px;" data-act="tab-jump" data-tab="${esc(x.tab)}">進入功能</button>` : ""}
         </div>
     `).join("");
 }

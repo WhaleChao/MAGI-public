@@ -221,6 +221,29 @@ def test_tmp_cleanup_skips_protected_state_files(sandbox, monkeypatch, tmp_path)
     assert protected.exists()  # 受保護
 
 
+def test_tmp_cleanup_preserves_json_files(sandbox, monkeypatch, tmp_path):
+    fake_tmp = tmp_path / "tmp_json"
+    fake_tmp.mkdir()
+    old_json = fake_tmp / "magi_standalone_state.json"
+    old_log = fake_tmp / "magi_debug.log"
+    for p in (old_json, old_log):
+        p.write_bytes(b"x")
+    now = time.time()
+    os.utime(old_json, (now - 96 * 3600, now - 96 * 3600))
+    os.utime(old_log, (now - 96 * 3600, now - 96 * 3600))
+    real_iterdir = dc.Path.iterdir
+
+    def guarded(self):
+        if str(self) == "/tmp":
+            return (fake_tmp / p.name for p in fake_tmp.iterdir())
+        return real_iterdir(self)
+
+    monkeypatch.setattr(dc.Path, "iterdir", guarded, raising=False)
+    dc.cleanup_tmp(dry_run=False)
+    assert old_json.exists()
+    assert not old_log.exists()
+
+
 # ---------- main pipeline ----------------------------------------------
 
 def test_main_dry_run_writes_summary(sandbox, monkeypatch):
@@ -297,6 +320,24 @@ def test_build_artifact_cleanup_removes_when_disk_low(sandbox, monkeypatch):
 
     assert not artifact.exists()
     assert any(a["deleted"] is True and a["low_water"] is True for a in actions)
+
+
+def test_build_artifact_cleanup_preserves_standalone_json(sandbox, monkeypatch):
+    artifact = sandbox["magi"] / "dist" / "Paperclip.app"
+    data = artifact / "Contents" / "Resources" / "holidays_config.json"
+    data.parent.mkdir(parents=True, exist_ok=True)
+    data.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(dc, "BUILD_ARTIFACT_CLEANUP_ENABLE", True, raising=True)
+    monkeypatch.setattr(dc, "BUILD_ARTIFACT_LOW_WATER_GB", 20, raising=True)
+    monkeypatch.setattr(dc, "_disk_free_gb", lambda _path: 5.0)
+
+    actions = dc.cleanup_build_artifacts(dry_run=False)
+
+    assert artifact.exists()
+    assert any(
+        a.get("skipped") is True and a.get("reason") == "contains_preserved_standalone_content"
+        for a in actions
+    )
 
 
 def test_git_tmp_pack_cleanup_removes_stale_temp_packs(sandbox, monkeypatch):

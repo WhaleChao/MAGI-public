@@ -104,7 +104,8 @@ def test_saas_workbench_template_has_actionable_entry_links():
 
     assert "資料來源與處理入口" in html
     assert "功能整合關係" not in html
-    assert "事務總覽" in html
+    assert "管理工具" in html
+    assert "事務總覽" not in html
     assert "諮詢／接案追蹤" in html
     assert "所務" not in html
     assert "事務所營運" not in html
@@ -113,6 +114,14 @@ def test_saas_workbench_template_has_actionable_entry_links():
     assert "漏斗" not in html
     for tab in ["cases", "clients", "todos", "calendar", "laf", "documents", "drafts"]:
         assert f'data-tab="{tab}"' in html
+
+
+def test_saas_tools_are_embedded_in_dashboard_not_separate_nav():
+    osc = Path("templates/osc.html").read_text(encoding="utf-8")
+    dashboard = Path("templates/partials/osc/dashboard.html").read_text(encoding="utf-8")
+
+    assert 'data-tab="saasWorkbench"' not in osc
+    assert 'include "partials/osc/saasWorkbench.html"' in dashboard
 
 
 def test_dashboard_laf_case_labels_are_consistent():

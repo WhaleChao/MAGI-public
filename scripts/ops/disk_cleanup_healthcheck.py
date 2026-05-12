@@ -9,13 +9,14 @@ Layer 4 — 磁碟自動清理健檢
 管轄範圍：
   - .runtime/metrics/*.jsonl (含巢狀 ocr.jsonl/ 子目錄)：> 10MB → rotate 保留 tail 1000 行
   - ~/.omlx/cache-*/：保留 atime ≥ 7 天以內的檔，其餘視為可釋放
-  - /tmp/magi_*、/tmp/omlx_* 與 *.png / *.json / *.log：mtime > 48h 刪除
+  - /tmp/magi_*、/tmp/omlx_* 與 *.png / *.log / *.txt / *.tmp：mtime > 48h 刪除
   - .agent/server.log*：僅回報總大小，既有 rotate 機制已處理
 
 紅線：
   - 不碰六模組資料（LAF / 閱卷 / 筆錄 / 摘要 / 翻譯 / 逐字稿）
   - 不碰 runtime pending/*（正在等律師確認碼的檔案）
   - 不碰 cron_state.json
+  - 不碰單機版 JSON / pickle / db / sqlite 狀態檔
 """
 from __future__ import annotations
 
@@ -51,6 +52,13 @@ GIT_TMP_PACK_MAX_AGE_HOURS = int(os.environ.get("MAGI_DISK_GIT_TMP_PACK_MAX_AGE_
 GIT_TMP_PACK_CLEANUP_ENABLE = os.environ.get(
     "MAGI_DISK_GIT_TMP_PACK_CLEANUP_ENABLE", "1"
 ).strip().lower() in {"1", "true", "on", "yes"}
+PRESERVED_STANDALONE_SUFFIXES = frozenset({
+    ".json",
+    ".pickle",
+    ".db",
+    ".sqlite",
+    ".sqlite3",
+})
 
 # 受保護名單（即使符合 pattern 也不動）
 _PROTECTED_METRICS_NAMES = frozenset({
@@ -209,7 +217,7 @@ def cleanup_omlx_cache(dry_run: bool) -> List[Dict[str, Any]]:
 # ---- /tmp cleanup -------------------------------------------------------
 
 _TMP_PREFIXES = ("magi_", "omlx_")
-_TMP_SUFFIXES = (".png", ".json", ".log", ".jsonl", ".txt", ".tmp")
+_TMP_SUFFIXES = (".png", ".log", ".txt", ".tmp")
 
 
 def cleanup_tmp(dry_run: bool) -> List[Dict[str, Any]]:
@@ -342,6 +350,20 @@ def _disk_free_gb(path: Path = MAGI_ROOT) -> float:
         return -1.0
 
 
+def _has_preserved_standalone_content(path: Path) -> bool:
+    """Do not remove bundled standalone resources/state as build trash."""
+    try:
+        if path.is_file():
+            return path.suffix.lower() in PRESERVED_STANDALONE_SUFFIXES
+        if path.is_dir():
+            for child in path.rglob("*"):
+                if child.is_file() and child.suffix.lower() in PRESERVED_STANDALONE_SUFFIXES:
+                    return True
+    except OSError:
+        return True
+    return False
+
+
 def cleanup_build_artifacts(dry_run: bool) -> List[Dict[str, Any]]:
     """Remove rebuildable packaging artifacts when stale or disk is low."""
     if not BUILD_ARTIFACT_CLEANUP_ENABLE:
@@ -384,6 +406,12 @@ def cleanup_build_artifacts(dry_run: bool) -> List[Dict[str, Any]]:
             info["skipped"] = True
             info["reason"] = "not_stale_and_disk_above_low_water"
             actions.append(info)
+            continue
+        if _has_preserved_standalone_content(target):
+            info["skipped"] = True
+            info["reason"] = "contains_preserved_standalone_content"
+            actions.append(info)
+            _log(f"SKIP build artifact with standalone JSON/state: {target}")
             continue
         if dry_run:
             actions.append(info)

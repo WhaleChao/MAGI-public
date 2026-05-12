@@ -49,4 +49,7 @@ async function loadDashboard() {
         5,
         "目前沒有 PDF 產生紀錄"
     );
+    if (typeof loadSaasWorkbench === "function") {
+        await loadSaasWorkbench({ embedded: true });
+    }
 }

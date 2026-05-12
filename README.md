@@ -319,7 +319,7 @@ NAS status checks both `/Volumes/` and `~/.magi_mounts/` (Tailscale fallback pat
 | NAS / Files | PDF namer (nightly), weekend bookmark, transcript sync, weekly legal crawl |
 | Market | Market briefing (weekday 08:30), world monitor (every 6h), hedge fund committee |
 | Infrastructure | oMLX day/night switch, OSC case index/scan, gcal sync, smoke chat check |
-| **Disk hygiene (2026-04-25)** | **`disk_low_water_alarm`** (hourly :05 — High <30 GB / Critical <10 GB → `self_repair`), **`weekly_cache_cleanup`** (Sun 04:00 — Vision/HF cache atime >14 d) |
+| **Disk hygiene (2026-05-12)** | **`disk_low_water_alarm`** (hourly :05 — High <30 GB / Critical <10 GB → `self_repair`), **`weekly_cache_cleanup`** (Sun 04:00 — remove retired Ollama root and rebuildable caches; protect MAGI DB, NAS, model roots, training outputs, standalone JSON/pickle/db state files, and judicial raw backlog) |
 
 ### Self-repair loop & autonomy guards (2026-04-21 → 2026-04-25)
 
@@ -330,7 +330,7 @@ NAS status checks both `/Volumes/` and `~/.magi_mounts/` (Tailscale fallback pat
 - **Portal retry guard (2026-05-08)** — the LAF Gmail monitor no longer retries pending portal downloads at every MAGI boot, preventing surprise NAS/portal batches after restart; set `MAGI_LAF_PORTAL_RETRY_ON_START=1` to enable. `file_review_auto_worker` is the single background owner for file-review checks/downloads and now runs on startup plus every hour by default; set `MAGI_FILE_REVIEW_AUTO_DOWNLOAD=0` or `MAGI_FILE_REVIEW_AUTO_RUN_ON_START=0` only for maintenance windows.
 - **Cron catch-up guard (2026-05-08)** — startup catch-up skips NAS/case-index/portal-heavy jobs such as OSC scan, Obsidian ingest, PDF benchmark, and LAF nightly audit so reboot recovery does not flood the NAS.
 - **Layer 3 — `omlx_switch_gatekeeper.py`** — preflight RSS check + TTL pause (≤24 h) before oMLX day/night switch. **Enforce by default.**
-- **Layer 4 — `disk_cleanup_healthcheck.py`** (cron 03:45) — JSONL rotation + LRU cache prune. Default `MAGI_DISK_CLEANUP_DRY_RUN=1`.
+- **Layer 4 — `disk_cleanup_healthcheck.py`** (cron 03:45) — JSONL rotation + LRU cache prune. Default `MAGI_DISK_CLEANUP_DRY_RUN=1`. Build outputs that still contain standalone state files (JSON / pickle / db / sqlite) are skipped so Paperclip / MAGI portable data is not removed by mistake.
 
 ---
 
