@@ -128,6 +128,18 @@ def business_jobs(repo_root: Path = REPO_ROOT, python_path: Path | None = None) 
             "enabled": True,
             "no_catchup": True,
         },
+        {
+            "id": "job_accounting_sheet_import",
+            "cron": "20 9 * * 1,5",
+            "command": f"{python_bin} {run_with_env} -- {python_bin} {repo_root / 'scripts' / 'import_accounting_sheet.py'} --commit --include-previous --account-hint zl.hualien",
+            "desc": "同事帳務 Google Sheet 匯入（每週一、五 09:20；跳過標識俊儒，檢查本月與前月並去重）",
+            "channel_id": None,
+            "last_run": None,
+            "last_run_minute": None,
+            "enabled": True,
+            "no_catchup": True,
+            "timeout_sec": 300,
+        },
     ]
 
 

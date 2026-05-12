@@ -165,6 +165,37 @@ def osc_accounting_summary_api():
     return jsonify({"ok": True, "totals": totals or {}, "by_category": by_category or []})
 
 
+@osc_accounting_bp.route("/api/osc/accounting/import/google-sheet", methods=["GET", "POST"])
+@login_required
+def osc_accounting_google_sheet_import_api():
+    from api.osc.accounting_sheet_import import (
+        DEFAULT_ACCOUNT_HINT,
+        DEFAULT_GID,
+        DEFAULT_SPREADSHEET_ID,
+        SheetsAuthorizationRequired,
+        run_import,
+    )
+
+    payload = request.get_json(silent=True) or {}
+    month = (payload.get("month") or request.args.get("month") or "").strip() or None
+    commit = bool(payload.get("commit")) if request.method == "POST" else False
+    auth = bool(payload.get("auth")) if request.method == "POST" else False
+    try:
+        result = run_import(
+            month=month,
+            dry_run=not commit,
+            spreadsheet_id=(payload.get("spreadsheet_id") or request.args.get("spreadsheet_id") or DEFAULT_SPREADSHEET_ID),
+            gid=int(payload.get("gid") or request.args.get("gid") or DEFAULT_GID),
+            interactive=auth,
+            account_hint=(payload.get("account_hint") or request.args.get("account_hint") or DEFAULT_ACCOUNT_HINT),
+        )
+    except SheetsAuthorizationRequired as exc:
+        return jsonify({"ok": False, "error": "auth_required", "message": str(exc)}), 428
+    except Exception as exc:
+        return jsonify({"ok": False, "error": type(exc).__name__, "message": str(exc)}), 500
+    return jsonify(result)
+
+
 # ── Expense Defaults ─────────────────────────────────────────────────
 
 @osc_accounting_bp.route("/api/osc/accounting/defaults", methods=["GET", "POST"])
