@@ -3645,7 +3645,7 @@ class OSCCaseCreator:
                                             break
                                 else:
                                     roots = preferred_case_roots(include_closed=False)
-                                    search_root = roots[0] if roots else "Z:/lumi63181107/01_案件"
+                                    search_root = roots[0] if roots else "Z:/MAGI_NAS_SHARE/01_案件"
                             
                             if search_root and os.path.exists(search_root):
                                 self.log(f"     🔍 搜尋範圍: {search_root}")

@@ -400,7 +400,7 @@ def _osc_norm_path(path_str: str) -> str:
     s2 = s.replace("/", "\\")
     up = s2.upper()
     if up.startswith("K:\\SYNOLOGYDRIVE"):
-        return s2.replace("K:\\SynologyDrive", "Z:\\lumi63181107").replace("K:\\SYNOLOGYDRIVE", "Z:\\lumi63181107")
+        return s2.replace("K:\\SynologyDrive", "Z:\\MAGI_NAS_SHARE").replace("K:\\SYNOLOGYDRIVE", "Z:\\MAGI_NAS_SHARE")
     if up.startswith("K:\\LUMI"):
         return "Z:" + s2[2:]
     if up.startswith("K:"):
@@ -423,7 +423,7 @@ def _osc_allowed_local_roots() -> list[str]:
         str(Path.home() / "Library/CloudStorage/SynologyDrive-homes/lumi"),
         str(Path.home() / "SynologyDrive/homes/lumi"),
         str(Path.home() / "SynologyDrive/lumi"),
-        "/Volumes/homes/lumi63181107",
+        "/Volumes/homes/MAGI_NAS_SHARE",
         "/Volumes/lumi/lumi",
         "/Volumes/lumi-1/lumi",
         "/Volumes/lumi-2/lumi",
@@ -665,9 +665,9 @@ def _osc_smb_candidates(path_str: str) -> list[str]:
         p = translate_local_path_to_canonical(p).replace("\\", "/")
     out: list[str] = []
     rel = ""
-    if p.startswith("Z:/lumi63181107"):
-        rel = p[len("Z:/lumi63181107"):].lstrip("/")
-        for base in [f"smb://{host}/SynologyDrive", f"smb://{host}/home", f"smb://{host}/homes/lumi63181107"]:
+    if p.startswith("Z:/MAGI_NAS_SHARE"):
+        rel = p[len("Z:/MAGI_NAS_SHARE"):].lstrip("/")
+        for base in [f"smb://{host}/SynologyDrive", f"smb://{host}/home", f"smb://{host}/homes/MAGI_NAS_SHARE"]:
             out.append(f"{base}/{rel}" if rel else base)
     elif p.startswith("Y:/"):
         rel = p[len("Y:/"):].lstrip("/")
@@ -706,7 +706,7 @@ def _osc_windows_unc_candidates(path_str: str) -> list[str]:
     """
     Return Windows UNC \\\\nas-host\\share\\... candidates for NAS browsing on Win.
 
-    Maps Y:\\lumi\\... and Z:\\lumi63181107\\... back to NAS shares.
+    Maps Y:\\lumi\\... and Z:\\MAGI_NAS_SHARE\\... back to NAS shares.
     Used by web UI on Windows clients (Explorer / file:// fallback).
     """
     try:
@@ -726,12 +726,12 @@ def _osc_windows_unc_candidates(path_str: str) -> list[str]:
             candidates.append(f"\\\\{host}\\lumi\\lumi\\{sub}")
         else:
             candidates.append(f"\\\\{host}\\{rel}")
-    # Z:\lumi63181107\... → \\nas-host\homes\lumi63181107\... + \\nas-host\SynologyDrive\...
+    # Z:\MAGI_NAS_SHARE\... → \\nas-host\homes\MAGI_NAS_SHARE\... + \\nas-host\SynologyDrive\...
     elif np.upper().startswith("Z:\\"):
         rel = np[3:]
-        if rel.lower().startswith("lumi63181107\\"):
-            sub = rel[len("lumi63181107\\"):]
-            candidates.append(f"\\\\{host}\\homes\\lumi63181107\\{sub}")
+        if rel.lower().startswith("MAGI_NAS_SHARE\\"):
+            sub = rel[len("MAGI_NAS_SHARE\\"):]
+            candidates.append(f"\\\\{host}\\homes\\MAGI_NAS_SHARE\\{sub}")
             candidates.append(f"\\\\{host}\\SynologyDrive\\{sub}")
             candidates.append(f"\\\\{host}\\home\\{sub}")
         else:

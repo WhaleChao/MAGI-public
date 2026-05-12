@@ -1618,7 +1618,7 @@ if __name__ == "__main__":
         if _wa_busy:
             logger.info(f"ℹ️ WebsiteAdmin port {_wa_port} already in use — skipping (likely surviving child)")
         else:
-            start_process("WebsiteAdmin", f"{_PYTHON} {_website_admin} --port {_wa_port} --password whalelawyer")
+            start_process("WebsiteAdmin", f"{_PYTHON} {_website_admin} --port {_wa_port} --password operator-mailbox")
             logger.info(f"✅ Website Admin Server started on port {_wa_port}")
 
     # 3. Start Keeper Sync Daemon (as background thread)
@@ -1650,7 +1650,7 @@ if __name__ == "__main__":
 
             _watch_folders = []
             # NAS case folders
-            _nas_cases = "/Volumes/homes/lumi63181107/01_案件"
+            _nas_cases = "/Volumes/homes/MAGI_NAS_SHARE/01_案件"
             if os.path.isdir(_nas_cases):
                 _watch_folders.append(_nas_cases)
             # Local scan staging area

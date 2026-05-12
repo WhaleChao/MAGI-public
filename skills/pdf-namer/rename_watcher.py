@@ -44,7 +44,7 @@ def _init_case_roots() -> list:
         pass
     return [
         "/Users/ai/Library/CloudStorage/SynologyDrive-homes/01_案件",
-        "/Volumes/homes/lumi63181107/01_案件",
+        "/Volumes/homes/MAGI_NAS_SHARE/01_案件",
     ]
 
 CASE_ROOTS = _init_case_roots()

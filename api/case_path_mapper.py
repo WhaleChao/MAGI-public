@@ -53,7 +53,7 @@ def _discover_volume(base: str, subdir: str = "") -> str:
 
     Args:
         base: 預設掛載名稱，如 "homes" 或 "lumi"
-        subdir: 掛載點下的子目錄，如 "lumi63181107" 或 "lumi"
+        subdir: 掛載點下的子目錄，如 "MAGI_NAS_SHARE" 或 "lumi"
     Returns:
         實際可存取的完整路徑，或 canonical 路徑供上層判斷
     """
@@ -78,7 +78,7 @@ _DEFAULT_ACTIVE_SHARE_ROOTS = [
     str(_HOME / "Library/CloudStorage/SynologyDrive-homes"),
     str(_HOME / "SynologyDrive/homes"),
     str(_HOME / "SynologyDrive"),
-    _discover_volume("homes", "lumi63181107"),
+    _discover_volume("homes", "MAGI_NAS_SHARE"),
 ]
 
 
@@ -212,24 +212,24 @@ _DEFAULT_CLOSED_ROOTS = [
     root.rstrip("/") + "/03_工作資料/10_結案" for root in _DEFAULT_CLOSED_SHARE_ROOTS
 ]
 _ACTIVE_PREFIXES = [
-    "Z:/lumi63181107/01_案件",
+    "Z:/MAGI_NAS_SHARE/01_案件",
     "K:/SynologyDrive/01_案件",
 ]
 _CLOSED_PREFIXES = [
     "Y:/lumi/03_工作資料/10_結案",
-    "Y:/lumi63181107/03_工作資料/10_結案",
+    "Y:/MAGI_NAS_SHARE/03_工作資料/10_結案",
 ]
 _ACTIVE_SHARE_PREFIXES = [
-    "Z:/lumi63181107",
+    "Z:/MAGI_NAS_SHARE",
     "K:/SynologyDrive",
 ]
 _CLOSED_SHARE_PREFIXES = [
     "Y:/lumi",
-    "Y:/lumi63181107",
+    "Y:/MAGI_NAS_SHARE",
 ]
-_CANONICAL_ACTIVE_CASE_PREFIX = "Z:/lumi63181107/01_案件"
+_CANONICAL_ACTIVE_CASE_PREFIX = "Z:/MAGI_NAS_SHARE/01_案件"
 _CANONICAL_CLOSED_CASE_PREFIX = "Y:/lumi/03_工作資料/10_結案"
-_CANONICAL_ACTIVE_SHARE_PREFIX = "Z:/lumi63181107"
+_CANONICAL_ACTIVE_SHARE_PREFIX = "Z:/MAGI_NAS_SHARE"
 _CANONICAL_CLOSED_SHARE_PREFIX = "Y:/lumi"
 
 
@@ -452,8 +452,8 @@ def local_synology_path_candidates(path: str, cfg: Optional[dict] = None) -> lis
     candidates.extend(_expand_from_prefix(s, _ACTIVE_SHARE_PREFIXES, active_roots))
     candidates.extend(_expand_from_prefix(s, _CLOSED_SHARE_PREFIXES, closed_roots))
 
-    # 支援 /Volumes/homes/lumi63181107/ 和 /Volumes/homes-N/lumi63181107/
-    _homes_match = _re.match(r"^/Volumes/homes(?:-\d+)?/lumi63181107/(.*)$", s)
+    # 支援 /Volumes/homes/MAGI_NAS_SHARE/ 和 /Volumes/homes-N/MAGI_NAS_SHARE/
+    _homes_match = _re.match(r"^/Volumes/homes(?:-\d+)?/MAGI_NAS_SHARE/(.*)$", s)
     if _homes_match:
         rel = _homes_match.group(1).lstrip("/")
         for root in _DEFAULT_ACTIVE_SHARE_ROOTS[1:]:
@@ -468,7 +468,7 @@ def local_synology_path_candidates(path: str, cfg: Optional[dict] = None) -> lis
 
     # 動態 fallback: user-level mount (nas_mount_guard 掛到 ~/.magi_mounts/)
     _user_mount_root = str(_HOME / ".magi_mounts")
-    for prefix, subpath_start in [("Y:/lumi/", "lumi/"), ("Y:/lumi63181107/", "lumi63181107/")]:
+    for prefix, subpath_start in [("Y:/lumi/", "lumi/"), ("Y:/MAGI_NAS_SHARE/", "MAGI_NAS_SHARE/")]:
         if s.startswith(prefix):
             rel = s[len(prefix):]
             user_candidate = os.path.join(_user_mount_root, "lumi", subpath_start.rstrip("/"), rel)

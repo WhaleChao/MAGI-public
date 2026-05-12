@@ -51,10 +51,11 @@ python3 scripts/install_magi.py --dry-run --check-live
 python3 scripts/install_magi.py --yes
 source .venv/bin/activate  # 既有安裝也可能使用 source venv/bin/activate
 
-# 4. 複製並填寫環境變數
-cp .env.example .env   # 填入 token / DB 憑證
+# 4. 建立第一次使用 checklist 與本機 .env（不會輸出金鑰內容）
+python3 scripts/first_run_setup.py --write-env
+python3 scripts/first_run_setup.py --json
 
-# 5. 執行偵測精靈
+# 5. 編輯 .env 後執行偵測精靈
 python3 scripts/magi_doctor.py
 
 # 6. 啟動
@@ -86,12 +87,13 @@ MAGI_ALLOW_CLOUD_MODELS=1 python daemon.py
 公開前檢查：
 
 ```bash
-python3 scripts/public_release_audit.py
+python3 scripts/public_release_audit.py --public-isolation
+python3 scripts/first_run_setup.py --public --json
 python3 scripts/magi_doctor.py --json
 python3 scripts/install_magi.py --dry-run --check-live
 ```
 
-`public_release_audit.py` 會阻擋高可信度 secret 與被追蹤的私有路徑；測試資料中的假電話或私網範例可能只列為 warning，可用來人工複核。
+`first_run_setup.py` 是第一次使用者的引導入口：可建立本機 `.env`、列出缺少的必要設定、保留下一步命令，且不會列印 token 或密碼。`public_release_audit.py` 會阻擋高可信度 secret 與被追蹤的私有路徑；公開推送前請加上 `--public-isolation`，一併阻擋私有法律資料庫整合與私人信箱/NAS 標記。正式發布請使用 `--strict`；公開分支應通過 `0 errors / 0 warnings`。
 
 Gemma 4 E4B / MTP 已接入 MLX sidecar：
 

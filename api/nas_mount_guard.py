@@ -31,7 +31,7 @@ try:
 except Exception:
     _NAS_LAN_HOST = os.getenv("MAGI_NAS_HOST", "")
     _NAS_TS_HOST = os.getenv("MAGI_NAS_TAILSCALE_HOST", "")
-NAS_USER = os.getenv("MAGI_NAS_USER", "lumi63181107")
+NAS_USER = os.getenv("MAGI_NAS_USER", "MAGI_NAS_SHARE")
 
 # 動態解析結果快取（host, expiry_time）
 _resolved_host: Optional[str] = None

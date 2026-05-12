@@ -20,3 +20,20 @@ def test_public_release_audit_warns_on_tailnet_ip():
 
     assert summarize(findings)["ok"] is True
     assert findings[0].severity == "warning"
+
+
+def test_public_release_audit_blocks_private_integration_markers():
+    findings = scan_text(
+        "skills/example/action.py",
+        "provider = 'lawsnote'\nmail='whalelawyer@example.com'\n",
+        public_isolation=True,
+    )
+
+    assert {f.kind for f in findings} >= {"private_legal_database_marker", "private_mailbox_marker"}
+    assert all(f.severity == "error" for f in findings)
+
+
+def test_public_release_audit_allows_gitignore_private_marker_rules():
+    findings = scan_text(".gitignore", "skills/lawsnote*/\n**/lawsnote*\n", public_isolation=True)
+
+    assert findings == []

@@ -25,7 +25,7 @@ logger.addHandler(ch)
 
 DB_PATH = os.path.expanduser("~/.magi_nas_ocr_queue.db")
 
-NAS_ROOT = "/Volumes/homes/lumi63181107/01_案件"
+NAS_ROOT = "/Volumes/homes/MAGI_NAS_SHARE/01_案件"
 ARCHIVE_SUBDIR = "_Archive_No_OCR"
 
 # OCR Tool Path

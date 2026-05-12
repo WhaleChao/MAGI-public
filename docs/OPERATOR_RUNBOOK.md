@@ -47,14 +47,15 @@ python3 scripts/install_magi.py --dry-run --check-live
 # 3. 正式安裝 core + optional dependencies
 python3 scripts/install_magi.py --yes
 
-# 4. 偵測本機硬體、Python 套件、MLX/MTP sidecar、模型目錄
-python3 scripts/magi_doctor.py
+# 4. 產生第一次使用 checklist 與本機 .env
+python3 scripts/first_run_setup.py --write-env
+python3 scripts/first_run_setup.py --json
 
-# 5. 建立本機設定檔
-cp .env.example .env
+# 5. 編輯 .env 後，偵測本機硬體、Python 套件、MLX/MTP sidecar、模型目錄
+python3 scripts/magi_doctor.py
 ```
 
-`scripts/install_magi.py` 預設採 dry-run，只有傳入 `--yes` 才會建立 `.venv`、安裝 requirements 並執行 doctor。`scripts/magi_doctor.py --json` 可輸出機器可讀報告，適合附在 issue 或遠端協助紀錄。
+`scripts/install_magi.py` 預設採 dry-run，只有傳入 `--yes` 才會建立 `.venv`、安裝 requirements 並執行 doctor。`scripts/first_run_setup.py` 會建立不進 git 的 `.env`、補上本機隨機 secret、列出缺少的必要設定，且不輸出 token 或密碼。`scripts/magi_doctor.py --json` 可輸出機器可讀報告，適合附在 issue 或遠端協助紀錄。
 
 ### 維運者手動安裝
 
@@ -230,7 +231,8 @@ MAGI_FORCE_HTTPS=1                             # 啟用 Secure cookie
 公開前必跑：
 
 ```bash
-python3 scripts/public_release_audit.py
+python3 scripts/public_release_audit.py --public-isolation --strict
+python3 scripts/first_run_setup.py --public --json
 python3 scripts/install_magi.py --dry-run --check-live
 git status --short
 ```
@@ -243,7 +245,7 @@ git status --short
 - `runtime/supplement_cache/`
 - `docs/deploy/`
 
-若 `public_release_audit.py` 回報 error，不得 push。warning 多為測試假資料或私網範例，仍應人工快速複核。
+若 `public_release_audit.py --public-isolation --strict` 回報 error 或 warning，不得 push。公開版隔離會阻擋私有法律資料庫整合、私人信箱與私人 NAS 標記；`.gitignore` 中保留忽略規則不算違規。
 
 ---
 

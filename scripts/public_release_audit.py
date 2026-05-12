@@ -79,6 +79,12 @@ PII_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("tailnet_ip", re.compile(r"\b100\.(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d{1,3}\.\d{1,3}\b")),
 )
 
+PUBLIC_ISOLATION_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("private_legal_database_marker", re.compile(r"lawsnote", re.IGNORECASE)),
+    ("private_mailbox_marker", re.compile(r"whalelawyer", re.IGNORECASE)),
+    ("private_nas_marker", re.compile(r"lumi63181107", re.IGNORECASE)),
+)
+
 
 def _git_ls_files(repo_root: Path = REPO_ROOT) -> list[str]:
     proc = subprocess.run(
@@ -108,9 +114,17 @@ def _is_allowed_secret_example(rel_path: str, line: str) -> bool:
     return False
 
 
-def scan_text(rel_path: str, text: str) -> list[Finding]:
+def scan_text(rel_path: str, text: str, *, public_isolation: bool = False) -> list[Finding]:
     findings: list[Finding] = []
     for idx, line in enumerate(text.splitlines(), start=1):
+        if public_isolation:
+            for kind, pattern in PUBLIC_ISOLATION_PATTERNS:
+                if rel_path in {".gitignore", "scripts/public_release_audit.py", "scripts/first_run_setup.py"}:
+                    continue
+                if rel_path.startswith("tests/"):
+                    continue
+                if pattern.search(line):
+                    findings.append(Finding(rel_path, idx, kind, "error", "private integration marker must not be published"))
         for kind, pattern in SECRET_PATTERNS:
             if pattern.search(line) and not _is_allowed_secret_example(rel_path, line):
                 findings.append(Finding(rel_path, idx, kind, "error", "high-confidence secret-like value"))
@@ -123,7 +137,12 @@ def scan_text(rel_path: str, text: str) -> list[Finding]:
     return findings
 
 
-def scan_tracked_files(paths: Iterable[str] | None = None, repo_root: Path = REPO_ROOT) -> list[Finding]:
+def scan_tracked_files(
+    paths: Iterable[str] | None = None,
+    repo_root: Path = REPO_ROOT,
+    *,
+    public_isolation: bool = False,
+) -> list[Finding]:
     tracked = list(paths) if paths is not None else _git_ls_files(repo_root)
     findings: list[Finding] = []
     for rel_path in tracked:
@@ -136,7 +155,7 @@ def scan_tracked_files(paths: Iterable[str] | None = None, repo_root: Path = REP
             text = abs_path.read_text(encoding="utf-8")
         except UnicodeDecodeError:
             continue
-        findings.extend(scan_text(rel_path, text))
+        findings.extend(scan_text(rel_path, text, public_isolation=public_isolation))
     return findings
 
 
@@ -155,9 +174,10 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Scan tracked files before public release.")
     parser.add_argument("--json", action="store_true", help="print machine-readable JSON")
     parser.add_argument("--strict", action="store_true", help="treat warnings as failures")
+    parser.add_argument("--public-isolation", action="store_true", help="also block private integrations and private mailbox/NAS markers")
     args = parser.parse_args(argv)
 
-    findings = scan_tracked_files()
+    findings = scan_tracked_files(public_isolation=args.public_isolation)
     if args.strict:
         findings = [
             Finding(f.path, f.line, f.kind, "error" if f.severity == "warning" else f.severity, f.detail)
