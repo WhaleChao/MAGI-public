@@ -78,6 +78,7 @@ Y_DRIVE_ROOT = _CASE_ROOTS[1] if len(_CASE_ROOTS) > 1 else (_FALLBACK_CASE_ROOTS
 Y_DRIVE_LAF = os.path.join(Y_DRIVE_ROOT, "法扶案件")
 REPORT_DIR = os.path.join(PROJECT_ROOT, "reports")
 _DRAFT_STATE_FILE = os.path.join(REPORT_DIR, "_portal_draft_state.json")
+_PROGRESS_COOLDOWN_FILE = os.path.join(REPORT_DIR, "_laf_progress_report_cooldown.json")
 
 # LAF case number regex
 LAF_NO_RE = re.compile(r"\d{6,8}-[A-Za-z]-\d{3}")
@@ -261,6 +262,137 @@ def _case_laf_number(case: dict) -> str:
 
 def _case_label(case: dict) -> str:
     return _case_laf_number(case) or str(case.get("case_number") or "").strip()
+
+
+def _case_identity_key(case: dict) -> str:
+    """穩定識別同一法扶案件，優先用法扶案號。"""
+    if not isinstance(case, dict):
+        return ""
+    return _case_laf_number(case) or str(case.get("case_number") or "").strip() or str(case.get("id") or "").strip()
+
+
+def _progress_cooldown_days() -> int:
+    try:
+        return max(1, int(os.environ.get("MAGI_LAF_PROGRESS_COOLDOWN_DAYS", "90") or "90"))
+    except Exception:
+        return 90
+
+
+def _load_progress_cooldowns() -> dict:
+    try:
+        if not os.path.exists(_PROGRESS_COOLDOWN_FILE):
+            return {}
+        with open(_PROGRESS_COOLDOWN_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except Exception as e:
+        logger.warning("讀取進度回報冷卻清單失敗: %s", e)
+        return {}
+
+
+def _save_progress_cooldowns(state: dict) -> None:
+    try:
+        os.makedirs(os.path.dirname(_PROGRESS_COOLDOWN_FILE), exist_ok=True)
+        tmp = _PROGRESS_COOLDOWN_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(state or {}, f, ensure_ascii=False, indent=2, sort_keys=True)
+        os.replace(tmp, _PROGRESS_COOLDOWN_FILE)
+    except Exception as e:
+        logger.warning("儲存進度回報冷卻清單失敗: %s", e)
+
+
+def _progress_cooldown_key(case: dict) -> str:
+    return _case_identity_key(case)
+
+
+def _progress_cooldown_active(case: dict, state: Optional[dict] = None, today: Optional[date] = None) -> Optional[dict]:
+    key = _progress_cooldown_key(case)
+    if not key:
+        return None
+    data = (state if isinstance(state, dict) else _load_progress_cooldowns()).get(key)
+    if not isinstance(data, dict):
+        return None
+    until_raw = str(data.get("cooldown_until") or "").strip()
+    if not until_raw:
+        return None
+    try:
+        until = datetime.strptime(until_raw[:10], "%Y-%m-%d").date()
+    except Exception:
+        return None
+    if (today or date.today()) <= until:
+        return data
+    return None
+
+
+def mark_progress_reported(target: str, *, db=None, actor: str = "user", note: str = "") -> dict:
+    """將「進行中逾 18 個月」進度回報提醒冷卻 90 天。"""
+    target = str(target or "").strip()
+    if not target:
+        return {"ok": False, "error": "missing_target"}
+    if db is None:
+        try:
+            from laf_orchestrator import _get_db_manager
+            db = _get_db_manager()
+        except Exception as e:
+            return {"ok": False, "error": "db_unavailable", "detail": str(e)}
+    if db is None:
+        return {"ok": False, "error": "db_unavailable"}
+    like = f"%{target}%"
+    try:
+        rows = db.fetch_all(
+            """
+            SELECT `id`, `case_number`, `client_name`, `legal_aid_number`, `laf_case_no`, `application_no`,
+                   `legal_aid_status`, `status`, `start_date`, `legal_aid_startup_deadline`
+            FROM `cases`
+            WHERE (`case_category` = '法律扶助案件' OR `case_reason` LIKE '%法扶%' OR `case_reason` LIKE '%法律扶助%')
+              AND (
+                `legal_aid_number` = %s OR `laf_case_no` = %s OR `application_no` = %s OR `case_number` = %s
+                OR `client_name` LIKE %s
+              )
+            ORDER BY `case_number` DESC
+            LIMIT 20
+            """,
+            (target, target, target, target, like),
+            as_dict=True,
+        ) or []
+    except Exception as e:
+        return {"ok": False, "error": "db_query_failed", "detail": str(e)}
+    if not rows:
+        return {"ok": False, "error": "case_not_found", "target": target}
+    exact = [
+        r for r in rows
+        if target in {_case_laf_number(r), str(r.get("case_number") or "").strip()}
+        or target == str(r.get("client_name") or "").strip()
+    ]
+    candidates = exact or rows
+    if len(candidates) > 1 and not any(target in {_case_laf_number(r), str(r.get("case_number") or "").strip()} for r in candidates):
+        return {
+            "ok": False,
+            "error": "ambiguous_target",
+            "target": target,
+            "candidates": [
+                {"case_number": r.get("case_number"), "client_name": r.get("client_name"), "laf_case_number": _case_laf_number(r)}
+                for r in candidates[:8]
+            ],
+        }
+    case = candidates[0]
+    key = _progress_cooldown_key(case)
+    if not key:
+        return {"ok": False, "error": "missing_case_key"}
+    today = date.today()
+    until = today + timedelta(days=_progress_cooldown_days())
+    state = _load_progress_cooldowns()
+    state[key] = {
+        "case_number": str(case.get("case_number") or "").strip(),
+        "client_name": str(case.get("client_name") or "").strip(),
+        "laf_case_number": _case_laf_number(case),
+        "reported_at": today.isoformat(),
+        "cooldown_until": until.isoformat(),
+        "actor": str(actor or "user"),
+        "note": str(note or "")[:500],
+    }
+    _save_progress_cooldowns(state)
+    return {"ok": True, "case": state[key], "cooldown_until": until.isoformat()}
 
 
 def _parse_case_date(value) -> Optional[date]:
@@ -745,7 +877,7 @@ def scan_laf_reporting_status(db) -> dict:
         all_cases = db.fetch_all(query, (), as_dict=True) or []
     except Exception as e:
         logger.error("scan_laf_reporting_status failed: %s", e)
-        return {"not_started": [], "can_go_live": [], "pending_close": [], "can_close": [], "progress_overdue": [], "all_cases": []}
+        return {"not_started": [], "can_go_live": [], "pending_close": [], "can_close": [], "progress_overdue": [], "progress_suppressed": [], "all_cases": []}
 
     today = date.today()
     not_started = []      # 未開辦且已逾期
@@ -753,6 +885,8 @@ def scan_laf_reporting_status(db) -> dict:
     pending_close = []    # DB 狀態=結案 但法扶未報結
     can_close = []        # 有判決書可報結
     progress_overdue = [] # 進行中且派案超過提醒門檻
+    progress_suppressed = [] # 已由使用者確認回報，冷卻中
+    progress_cooldowns = _load_progress_cooldowns()
     try:
         progress_due_days = int(os.environ.get("MAGI_LAF_PROGRESS_DUE_DAYS", "548") or "548")
     except Exception:
@@ -827,12 +961,17 @@ def scan_laf_reporting_status(db) -> dict:
             if assigned:
                 days_since = (today - assigned).days
                 if days_since >= progress_due_days:
-                    progress_overdue.append({
+                    item = {
                         **case,
                         "assignment_date": assigned.isoformat(),
                         "days_since_assignment": days_since,
                         "progress_due_days": progress_due_days,
-                    })
+                    }
+                    cooldown = _progress_cooldown_active(case, progress_cooldowns, today)
+                    if cooldown:
+                        progress_suppressed.append({**item, "cooldown": cooldown})
+                    else:
+                        progress_overdue.append(item)
 
     return {
         "not_started": not_started,
@@ -840,6 +979,7 @@ def scan_laf_reporting_status(db) -> dict:
         "pending_close": pending_close,
         "can_close": can_close,
         "progress_overdue": progress_overdue,
+        "progress_suppressed": progress_suppressed,
         "all_cases": all_cases,
     }
 
@@ -938,9 +1078,21 @@ def _run_go_live_drafts(
     db=None,
     suppress_notify: bool = False,
 ) -> dict:
-    """對已有開辦通知書+委任狀的案件，自動填寫開辦表單並截圖（不送出）。
-    若 portal 找不到開辦表單（已被開辦），自動回寫 DB 為「進行中」。
+    """對已有開辦通知書+委任狀的案件，自動預填開辦表單並截圖（不送出）。
+
+    開辦在法扶 Portal 沒有暫存狀態；夜間巡檢預設不進入表單。
+    只有明確設定 MAGI_LAF_AUTO_GO_LIVE_PREFILL=1 時，才做預填截圖供人工確認。
     """
+    allow_prefill = str(os.environ.get("MAGI_LAF_AUTO_GO_LIVE_PREFILL", "0")).strip().lower() in {"1", "true", "yes", "on"}
+    if not allow_prefill:
+        return {
+            "ok": True,
+            "skipped": True,
+            "reason": "go_live_has_no_draft",
+            "total": len(can_go_live_cases),
+            "processed": 0,
+            "items": [],
+        }
     try:
         from laf_orchestrator import LAFOrchestrator
         orch = LAFOrchestrator(dry_run=False)
@@ -953,7 +1105,7 @@ def _run_go_live_drafts(
             if not laf_no and not client:
                 continue
             display = f"{client}（{laf_no or osc_no}）" if client else (laf_no or osc_no)
-            logger.info("📋 Auto go_live draft: %s", display)
+            logger.info("📋 Auto go_live prefill: %s", display)
             try:
                 r = orch.execute_portal_action_draft(
                     action="go_live",
@@ -973,14 +1125,14 @@ def _run_go_live_drafts(
                 })
                 if ok:
                     ok_count += 1
-                elif err == "portal_draft_failed":
+                elif err in {"portal_draft_failed", "portal_prefill_failed"}:
                     # Do not infer "already opened" from a generic portal failure.
                     # The same error is used for login timeout, DOM drift, upload
                     # rejection, and missing buttons.  Auto-updating DB here can
                     # hide a real pending go_live case.
-                    logger.warning("⚠️ %s 開辦暫存失敗；不自動更新 DB，需人工確認 portal 狀態", display)
+                    logger.warning("⚠️ %s 開辦預填失敗；不自動更新 DB，需人工確認 portal 狀態", display)
             except Exception as e:
-                logger.error("go_live draft failed for %s: %s", display, e)
+                logger.error("go_live prefill failed for %s: %s", display, e)
                 results.append({
                     "ok": False,
                     "laf_case_number": laf_no,
@@ -989,7 +1141,7 @@ def _run_go_live_drafts(
                 })
         return {"ok": ok_count > 0, "total": len(can_go_live_cases), "processed": ok_count, "items": results}
     except Exception as e:
-        logger.error("開辦自動暫存失敗: %s", e)
+        logger.error("開辦自動預填失敗: %s", e)
         return {"ok": False, "error": str(e), "total": 0, "processed": 0, "items": []}
 
 
@@ -1715,10 +1867,20 @@ def format_audit_report(
     progress_overdue = status.get("progress_overdue", [])
     if progress_overdue:
         lines.append(f"⚠️ 進行中逾 18 個月，需確認進度回報：{len(progress_overdue)} 件")
-        for c in sorted(progress_overdue, key=lambda x: x.get("days_since_assignment", 0), reverse=True)[:10]:
+        for c in sorted(progress_overdue, key=lambda x: x.get("days_since_assignment", 0), reverse=True):
             assigned = c.get("assignment_date") or "日期不明"
             days_since = c.get("days_since_assignment", "?")
             lines.append(f"  • {_case_label(c)} {c.get('client_name', '?')} — 派案/建案 {assigned}，已 {days_since} 天")
+        lines.append("  👉 若已回報，可回覆「<案號/姓名> 已回報」；MAGI 會冷卻 90 天後再提醒。")
+        lines.append("")
+
+    progress_suppressed = status.get("progress_suppressed", [])
+    if progress_suppressed:
+        lines.append(f"✅ 已確認進度回報，冷卻中：{len(progress_suppressed)} 件")
+        for c in sorted(progress_suppressed, key=lambda x: x.get("days_since_assignment", 0), reverse=True)[:10]:
+            cooldown = c.get("cooldown") if isinstance(c.get("cooldown"), dict) else {}
+            until = cooldown.get("cooldown_until") or "日期不明"
+            lines.append(f"  • {_case_label(c)} {c.get('client_name', '?')} — 下次提醒 {until}")
         lines.append("")
 
     # 全部正常
@@ -1905,7 +2067,7 @@ def run_audit(notify: bool = True, dry_run: bool = False) -> dict:
             logger.info("已從 can_close 移除 %d 件已暫存案件", len(_drafted_laf_nos))
 
     # 3e. Portal 暫存/待處理全清單掃描（結案、二階段、開辦）。
-    # 先掃 portal，再決定是否需要開辦暫存；避免 DB 未開辦但 portal 已無未開辦列時誤打草稿。
+    # 先掃 portal，再確認 DB 未開辦但 portal 已無未開辦列時是否可自動修正。
     portal_drafts = {}
     if not dry_run:
         portal_drafts = scan_portal_pending_drafts(db=db)
@@ -1913,19 +2075,30 @@ def run_audit(notify: bool = True, dry_run: bool = False) -> dict:
     else:
         status["portal_drafts"] = {}
 
-    # 3f. 可開辦案件自動暫存（填寫表單+截圖，不送出）
+    # 3f. 可開辦案件預填（開辦沒有暫存；預設不在夜間巡檢自動開表單）
     go_live_draft_result = {}
     portal_go_live_resolved = _resolve_go_live_cases_from_portal(status, db) if not dry_run else []
-    if status["can_go_live"] and not dry_run:
+    _auto_go_live_prefill = str(os.environ.get("MAGI_LAF_AUTO_GO_LIVE_PREFILL", "0")).strip().lower() in {"1", "true", "yes", "on"}
+    if status["can_go_live"] and not dry_run and _auto_go_live_prefill:
         go_live_draft_result = _run_go_live_drafts(
             status["can_go_live"],
             max_cases=3,
             db=db,
             suppress_notify=not notify,
         )
-        logger.info("開辦自動暫存結果: processed=%d/%d",
+        logger.info("開辦自動預填結果: processed=%d/%d",
                      go_live_draft_result.get("processed", 0),
                      go_live_draft_result.get("total", 0))
+    elif status["can_go_live"] and not dry_run:
+        go_live_draft_result = {
+            "ok": True,
+            "skipped": True,
+            "reason": "go_live_has_no_draft",
+            "total": len(status["can_go_live"]),
+            "processed": 0,
+            "items": [],
+        }
+        logger.info("開辦沒有暫存；夜巡僅列入可回報清單，不自動預填。")
     if portal_go_live_resolved:
         items = list(go_live_draft_result.get("items") or [])
         items.extend(portal_go_live_resolved)

@@ -16,6 +16,24 @@ def test_go_live_nightly_does_not_update_db_on_generic_portal_draft_failed():
         src = _read(rel)
         assert 'elif err == "portal_draft_failed" and db and case.get("id")' not in src
         assert "不自動更新 DB" in src
+        assert "MAGI_LAF_AUTO_GO_LIVE_PREFILL" in src
+        assert "go_live_has_no_draft" in src
+
+
+def test_go_live_never_uses_draft_failure_wording():
+    src = _read("casper_ecosystem/law_firm_orchestrators/laf_orchestrator.py")
+    assert "開辦預填失敗" in src
+    assert "❌ {wf} 暫存失敗" in src
+    assert "portal {wf} draft save failed" not in src
+
+
+def test_laf_duplicate_check_uses_all_laf_number_columns():
+    src = _read("casper_ecosystem/law_firm_orchestrators/laf_orchestrator.py")
+    block = src.split("def _check_duplicate", 1)[1].split("def _update_legal_aid_number", 1)[0]
+    assert "`legal_aid_number`" in block
+    assert "`laf_case_no`" in block
+    assert "`application_no`" in block
+    assert "Duplicate matched by=laf_number_columns" in block
 
 
 def test_condition_batch_does_not_auto_mark_manual_done_after_failures():

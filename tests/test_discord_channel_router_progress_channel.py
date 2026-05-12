@@ -106,7 +106,7 @@ def test_laf_progress_confirmation_still_routes_to_progress_channel():
 def test_laf_routing_matrix_keeps_business_notifications_separated():
     samples = [
         ("📥 新法扶派案已建立\n案號: 1150505-W-002", "laf_dispatch"),
-        ("[INFO] ❌ go_live 暫存失敗 — 1150421-E-016\n原因：portal go_live draft save failed", "laf_go_live"),
+        ("[INFO] ❌ 開辦預填失敗 — 1150421-E-016\n原因：portal go_live prefill failed", "laf_go_live"),
         ("法扶二階段回報待確認：附條件審查需補資料", "laf_condition"),
         ("法扶費用通知：酬金領款單已下載", "laf_fee"),
         ("法扶疑義回報：資力不合標準待處理", "laf_inquiry"),

@@ -286,6 +286,74 @@ class TestLafProgressReminders:
         assert "進行中逾 18 個月，需確認進度回報：1 件" in report
         assert "1140806-J-002" in report
         assert "1130101-J-001" in report
+        assert "已回報" in report
+
+    def test_format_report_lists_all_progress_reminders(self):
+        from casper_ecosystem.law_firm_orchestrators.laf_nightly_audit import format_audit_report
+
+        status = {
+            "all_cases": [{}],
+            "not_started": [],
+            "can_go_live": [],
+            "pending_close": [],
+            "can_close": [],
+            "progress_overdue": [
+                {
+                    "case_number": f"11301{i:02d}-J-001",
+                    "client_name": f"測試{i}",
+                    "legal_aid_number": f"11301{i:02d}-J-001",
+                    "assignment_date": "2024-01-01",
+                    "days_since_assignment": 700 + i,
+                }
+                for i in range(13)
+            ],
+            "portal_drafts": {},
+        }
+
+        report = format_audit_report([], [], status)
+
+        assert "進行中逾 18 個月，需確認進度回報：13 件" in report
+        assert "1130100-J-001" in report
+        assert "1130112-J-001" in report
+        assert "...及其他" not in report
+
+    def test_progress_reported_cooldown_suppresses_reminder(self, tmp_path, monkeypatch):
+        import casper_ecosystem.law_firm_orchestrators.laf_nightly_audit as audit
+
+        cooldown_file = tmp_path / "progress_cooldown.json"
+        monkeypatch.setattr(audit, "_PROGRESS_COOLDOWN_FILE", str(cooldown_file))
+        monkeypatch.setenv("MAGI_LAF_PROGRESS_DUE_DAYS", "1")
+
+        class FakeDB:
+            def fetch_all(self, *_args, **_kwargs):
+                return [
+                    {
+                        "id": 1,
+                        "case_number": "1130101-J-001",
+                        "client_name": "測試甲",
+                        "case_type": "民事",
+                        "case_reason": "法扶測試",
+                        "status": "進行中",
+                        "folder_path": "",
+                        "legal_aid_number": "1130101-J-001",
+                        "laf_case_no": "",
+                        "application_no": "",
+                        "legal_aid_status": "進行中",
+                        "legal_aid_startup_deadline": None,
+                        "start_date": "2024-01-01",
+                        "end_date": None,
+                    }
+                ]
+
+        marked = audit.mark_progress_reported("1130101-J-001", db=FakeDB(), actor="test")
+        assert marked["ok"] is True
+
+        status = audit.scan_laf_reporting_status(FakeDB())
+        assert status["progress_overdue"] == []
+        assert len(status["progress_suppressed"]) == 1
+
+        report = audit.format_audit_report([], [], status)
+        assert "已確認進度回報，冷卻中：1 件" in report
 
 
 class TestLafGoLiveReadiness:

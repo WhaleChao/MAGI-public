@@ -1177,6 +1177,46 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
     if any(k in msg_lower for k in ["法扶回報指令", "法扶指令", "回報指令"]):
         return orch._laf_report_command_help()
 
+    # 法扶 18 個月進度提醒冷卻：「陳○○已回報」「1150101-A-001 已完成進度回報」
+    _progress_reported_hit = any(k in message for k in ("已回報", "已經回報", "已完成回報", "進度已回報", "進度回報已完成"))
+    if _progress_reported_hit and role == "admin":
+        _target = ""
+        _m = re.search(
+            r"(?P<target>\d{6,8}-[A-Za-z]-\d{3}|\d{4}-\d{4}|[一-龥A-Za-z][一-龥A-Za-z0-9_.\\- ]{1,40}?)"
+            r"\s*(?:的)?(?:法扶)?(?:進度)?(?:已經|已)?(?:完成)?回報",
+            message,
+        )
+        if not _m:
+            _m = re.search(
+                r"(?:進度)?(?:已經|已)(?:完成)?回報\s*"
+                r"(?P<target>\d{6,8}-[A-Za-z]-\d{3}|\d{4}-\d{4}|[一-龥A-Za-z][一-龥A-Za-z0-9_.\\- ]{1,40})",
+                message,
+            )
+        if _m:
+            _target = str(_m.group("target") or "").strip(" ，,。；;：:")
+        if _target:
+            try:
+                _orch_dir = os.path.join(_MAGI_ROOT, "casper_ecosystem", "law_firm_orchestrators")
+                if _orch_dir not in sys.path:
+                    sys.path.insert(0, _orch_dir)
+                from laf_nightly_audit import mark_progress_reported
+                _res = mark_progress_reported(_target, actor=str(user_id or "admin"), note=message)
+                if _res.get("ok"):
+                    _case = _res.get("case") if isinstance(_res.get("case"), dict) else {}
+                    _name = _case.get("client_name") or _target
+                    _laf = _case.get("laf_case_number") or _case.get("case_number") or ""
+                    return f"✅ 已將 {_name}{'（' + _laf + '）' if _laf else ''} 的進度回報提醒冷卻至 {_res.get('cooldown_until')}。"
+                if _res.get("error") == "ambiguous_target":
+                    cands = _res.get("candidates") if isinstance(_res.get("candidates"), list) else []
+                    lines = [f"⚠️ 找到多筆「{_target}」相關法扶案件，請改用法扶案號或案件編號："]
+                    for c in cands[:8]:
+                        lines.append(f"  • {c.get('case_number') or '-'} {c.get('client_name') or '-'} {c.get('laf_case_number') or ''}".rstrip())
+                    return "\n".join(lines)
+                return f"❌ 找不到 {_target} 的法扶案件，無法設定進度回報冷卻。"
+            except Exception as _pre:
+                logger.warning("LAF progress reported cooldown failed: %s", _pre)
+                return f"❌ 進度回報冷卻設定失敗：{_pre}"
+
     # ── 法扶批次操作：二階段批次 / 自動報結掃描 ───────────────────
     _is_batch_condition = any(k in message for k in ("二階段批次", "批次二階段", "二階段掃描"))
     _is_batch_closing = any(k in message for k in ("自動報結掃描", "報結掃描", "批次報結", "結案掃描", "批次結案"))
@@ -1531,6 +1571,13 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
                                     "⚠️ 結案回報暫停：以下統計 <= 0，需要你提供原因後才能存檔。\n"
                                     f"欄位：{low_txt}\n"
                                     "請回覆：`<當事人/案號> 結案回報 原因 <理由>`"
+                                )
+                            elif err == "portal_prefill_failed":
+                                detail = str(data.get("detail") or data.get("message") or "").strip()
+                                result_text = (
+                                    f"❌ 法扶{payload_obj.get('action_label','回報')}預填失敗。\n"
+                                    "開辦沒有暫存流程；MAGI 只會先填寫並截圖，確認後才送出。\n"
+                                    f"{'原因：' + detail if detail else '請稍後重試，或手動在法扶系統確認。'}"
                                 )
                             elif err == "portal_draft_failed":
                                 detail = str(data.get("detail") or data.get("message") or "").strip()

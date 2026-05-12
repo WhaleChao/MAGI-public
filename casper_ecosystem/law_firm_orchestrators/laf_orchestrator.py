@@ -1458,6 +1458,21 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
             if '清算' not in case_reason:
                 case_reason = '更生'
 
+        _PLACEHOLDER_INVALID_CHARS = set(")(<>[]{}!@#$%^&*+=|\\;:\"'?/`~")
+        _PLACEHOLDER_NOISE_TOKENS = ("案情", "文件", "卷宗", "附件", "信件", "資料夾")
+        _PLACEHOLDER_REASON_TOKENS = {"", "待確認", "未確認"}
+        _name_for_placeholder = str(client_name or "").strip()
+        _reason_for_placeholder = str(case_reason or "").strip()
+        _name_bad = (
+            not _name_for_placeholder
+            or any(c in _PLACEHOLDER_INVALID_CHARS for c in _name_for_placeholder)
+            or "--" in _name_for_placeholder
+            or any(tok in _name_for_placeholder for tok in _PLACEHOLDER_NOISE_TOKENS)
+            or len(_name_for_placeholder) > 30
+        )
+        _reason_bad = _reason_for_placeholder in _PLACEHOLDER_REASON_TOKENS
+        _is_placeholder_case = bool(_name_bad or _reason_bad)
+
         # Dedup: skip if same laf_number already processed in this session
         if laf_number and laf_number in self._go_live_dedup:
             logger.info("⏭️ Go-Live dedup: %s (%s) already processed this session", client_name, laf_number)
@@ -1503,10 +1518,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                 _existing_name = str(existing.get("client_name") or "").strip()
                 _existing_reason = str(existing.get("case_reason") or "").strip()
                 _existing_stage = str(existing.get("case_stage") or "").strip()
-                # 重用本函數已偵測過的 placeholder 規則（line ~1450 的 inline helper）
-                _PLACEHOLDER_INVALID_CHARS = set(")(<>[]{}!@#$%^&*+=|\\;:\"'?/`~")
-                _PLACEHOLDER_NOISE_TOKENS = ("案情", "文件", "卷宗", "附件", "信件", "資料夾")
-                _PLACEHOLDER_REASON_TOKENS = {"", "待確認", "未確認"}
+                # 重用本函數已偵測過的 placeholder 規則
                 _existing_name_bad = (
                     not _existing_name
                     or any(c in _PLACEHOLDER_INVALID_CHARS for c in _existing_name)
@@ -1663,17 +1675,14 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         submission_info: dict = {}
         go_live_remark = ""
         go_live_upload_file = ""
-        go_live_draft_ok = False
+        go_live_prefill_ok = False
 
         # Placeholder 偵測：派案 email 解析不完整（client_name 含特殊字元 / case_reason='待確認'）
-        # 條件還沒齊 → 不啟動 portal go_live draft（避免錯資料送出）
+        # 條件還沒齊 → 不啟動 portal go_live prefill（避免錯資料送出）
         # 等接案清冊 reconcile_placeholder_cases() 修正後，下次自然 retry 才開辦
         # NOTE: 規則 mirror laf_nightly_audit._is_placeholder_*；這裡 inline 避免 import 整個 module
         _is_placeholder_case = False
         try:
-            _PLACEHOLDER_INVALID_CHARS = set(")(<>[]{}!@#$%^&*+=|\\;:\"'?/`~")
-            _PLACEHOLDER_NOISE_TOKENS = ("案情", "文件", "卷宗", "附件", "信件", "資料夾")
-            _PLACEHOLDER_REASON_TOKENS = {"", "待確認", "未確認"}
             _name = str(client_name or "").strip()
             _reason = str(case_reason or "").strip()
             _name_bad = (
@@ -1687,7 +1696,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
             _is_placeholder_case = bool(_name_bad or _reason_bad)
             if _is_placeholder_case:
                 logger.info(
-                    "  ⏸️ Placeholder 案件偵測（client=%r, reason=%r）— 跳過 portal go_live draft，"
+                    "  ⏸️ Placeholder 案件偵測（client=%r, reason=%r）— 跳過 portal go_live prefill，"
                     "等 reconcile_placeholder 修正後再開辦",
                     client_name, case_reason,
                 )
@@ -1722,10 +1731,10 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                                 "remark": go_live_remark,
                                 "upload_files": go_live_upload_files,
                             }
-                            go_live_draft_ok = self.execute_portal_go_live_draft(
+                            go_live_prefill_ok = self.execute_portal_go_live_draft(
                                 laf_number, client_name, fields
                             )
-                            logger.info("  📋 開辦 draft 結果: %s", go_live_draft_ok)
+                            logger.info("  📋 開辦預填結果: %s", go_live_prefill_ok)
             except Exception as gl_e:
                 logger.error("  ❌ 開辦自動化失敗: %s", gl_e)
 
@@ -1736,7 +1745,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                     "⚠️ 派案 email 資料不完整（當事人/案由），已建立臨時資料夾。"
                     "系統會每小時自動從接案清冊修正 DB 與資料夾名稱後再啟動開辦。"
                 )
-            elif go_live_draft_ok:
+            elif go_live_prefill_ok:
                 go_live_reminder = "✅ 開辦表單已自動填寫（未送出），截圖已傳送，請確認後回覆。"
             elif docs_ready_for_go_live:
                 if submission_info.get("confidence") == "low":
@@ -1827,7 +1836,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
             "vision_date": extracted_date,
             "poa_submit_date": submission_info.get("date_iso") or poa_submit_date,
             "submission_source": submission_info.get("source", ""),
-            "go_live_draft_ok": go_live_draft_ok,
+            "go_live_prefill_ok": go_live_prefill_ok,
         }, "success")
         _eventlog(
             "laf:go_live:done",
@@ -1836,7 +1845,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                 "case_type": case_type, "case_reason": case_reason,
                 "is_duplicate": existing is not None,
                 "vision_date": extracted_date,
-                "go_live_draft_ok": go_live_draft_ok,
+                "go_live_prefill_ok": go_live_prefill_ok,
                 "submission_confidence": submission_info.get("confidence", ""),
             },
             tags={"laf_case_no": laf_number, "client_name": client_name},
@@ -2881,23 +2890,28 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         suppress_notify: bool = False,
     ) -> bool:
         """
-        通用法扶 workflow 暫存（只暫存不送出）。
+        通用法扶 workflow 填寫。
+        go_live（開辦）沒有暫存狀態，只能預填截圖或正式送出；其他 workflow 仍可暫存。
         workflow: go_live | condition | inquiry | withdrawal | fee
         """
         wf = (workflow or "").strip()
+        is_go_live = wf == "go_live"
+        workflow_label = "開辦預填" if is_go_live else f"{wf} 暫存"
+        portal_status = "prefilled" if is_go_live else "draft_saved"
+        event_status = "prefill" if is_go_live else "draft"
         self._last_portal_error = ""
         if not wf:
             self._last_portal_error = "missing_workflow"
             return False
         if not case_number and not client_name:
-            logger.warning("Portal %s draft skipped: missing case_number/client_name", wf)
+            logger.warning("Portal %s skipped: missing case_number/client_name", workflow_label)
             self._last_portal_error = "missing case_number/client_name"
             return False
         if self.dry_run:
-            logger.info("  [DRY RUN] Would save %s draft for %s/%s", wf, case_number, client_name)
+            logger.info("  [DRY RUN] Would prepare %s for %s/%s", workflow_label, case_number, client_name)
             return True
 
-        logger.info("🌐 Executing portal %s draft for %s (%s)", wf, client_name or "-", case_number or "-")
+        logger.info("🌐 Executing portal %s for %s (%s)", workflow_label, client_name or "-", case_number or "-")
         self._last_portal_artifact = {}
         try:
             from laf_automation_v2 import LAFWebAutomation, _export_file_to_static
@@ -2923,7 +2937,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                 fields=fields or {},
             )
             if not ok:
-                raise RuntimeError(f"portal {wf} draft save failed")
+                raise RuntimeError(f"portal {wf} {'prefill' if is_go_live else 'draft save'} failed")
             raw_art = getattr(automation, "last_debug_artifact", {}) or {}
             upload_res = getattr(automation, "last_upload_result", {}) or {}
             if isinstance(raw_art, dict) and raw_art:
@@ -2953,7 +2967,13 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
             self._last_portal_error = str(e)
             try:
                 if not suppress_notify:
-                    self.notifier.notify_admin(f"❌ {wf} 暫存失敗 — {case_number or client_name}\n原因：{e}")
+                    if is_go_live:
+                        self.notifier.notify_admin(
+                            f"❌ 開辦預填失敗 — {case_number or client_name}\n原因：{e}",
+                            topic_key="laf_go_live",
+                        )
+                    else:
+                        self.notifier.notify_admin(f"❌ {wf} 暫存失敗 — {case_number or client_name}\n原因：{e}")
             except Exception:
                 logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 2110, exc_info=True)
             self._log_event(case_number or client_name, wf, {"error": str(e), "fields": fields or {}}, "error")
@@ -2962,8 +2982,8 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         self._log_event(
             case_number or client_name,
             wf,
-            {"portal_status": "draft_saved", "fields": fields or {}, "artifact": self._last_portal_artifact},
-            "draft",
+            {"portal_status": portal_status, "fields": fields or {}, "artifact": self._last_portal_artifact},
+            event_status,
         )
         return True
 
@@ -4745,7 +4765,8 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                 "preview": self._last_portal_artifact,
             }
             if not ok:
-                result["error"] = "portal_draft_failed"
+                result["error"] = "portal_prefill_failed"
+                result["detail"] = str(getattr(self, "_last_portal_error", "") or "")
             return result
 
         if act == "withdrawal":
@@ -7048,12 +7069,19 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
             # Strategy 1: LAF number exact match
             if laf_number:
                 result = self.db.fetch_one(
-                    "SELECT * FROM `cases` WHERE `legal_aid_number` = %s LIMIT 1",
-                    (laf_number,), as_dict=True
+                    """
+                    SELECT * FROM `cases`
+                    WHERE TRIM(COALESCE(`legal_aid_number`, '')) = %s
+                       OR TRIM(COALESCE(`laf_case_no`, '')) = %s
+                       OR TRIM(COALESCE(`application_no`, '')) = %s
+                    ORDER BY `created_date` DESC
+                    LIMIT 1
+                    """,
+                    (laf_number, laf_number, laf_number), as_dict=True
                 )
                 if result:
                     logger.debug(
-                        "Duplicate matched by=legal_aid_number, laf_no=%s, client=%s, row_id=%s",
+                        "Duplicate matched by=laf_number_columns, laf_no=%s, client=%s, row_id=%s",
                         laf_number, result.get("client_name"), result.get("id")
                     )
                     return result

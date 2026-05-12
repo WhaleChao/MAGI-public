@@ -6139,7 +6139,7 @@ return null;
 
 
     # ==============================================================================
-    # 通用 workflow（開辦/二階段/疑義/撤回）自動化：僅暫存，不送出
+    # 通用 workflow（開辦/二階段/疑義/撤回）自動化：不自動送出
     # ==============================================================================
 
     def _workflow_meta(self, workflow: str) -> Dict[str, Any]:
@@ -6728,8 +6728,11 @@ return null;
 
     def save_workflow_draft(self, workflow: str, laf_case_number: str = "", client_name: str = "", fields: Dict[str, Any] = None) -> bool:
         """
-        通用 workflow 暫存（只暫存，不送出）。
-        支援：go_live / condition / inquiry / withdrawal / fee
+        通用 workflow 填寫。
+        支援：go_live / condition / inquiry / withdrawal / fee。
+
+        注意：go_live（開辦）在法扶 Portal 上沒有暫存狀態，只有「確定」送出。
+        因此 go_live 只做預填、上傳與截圖，絕不尋找或點擊存檔/暫存按鈕。
         """
         meta = self._workflow_meta(workflow)
         if not meta:
@@ -6770,6 +6773,13 @@ return null;
                 self.log(f"❌ {meta.get('name','workflow')}附件上傳失敗（未成功上傳任何檔案）")
                 self._save_page_debug_html(f"{workflow}_upload_failed")
                 return False
+
+        # 開辦沒有暫存鈕，預填後停在畫面給人工確認；正式送出走 submit_workflow().
+        if wf == "go_live":
+            self.log(f"✅ {meta.get('name','workflow')}資料已預填（未送出，無暫存步驟）")
+            self._wait_workflow_preview_ready(workflow, wf_fields, timeout_sec=10.0)
+            self._save_page_debug_html(f"{workflow}_prefill_ok", force=True)
+            return True
 
         # ===== 結案資料彙整（撤回/疑義專用） =====
         # 如果 fields 包含 closing_counts，表示需要填寫辦理情形

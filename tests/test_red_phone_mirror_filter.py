@@ -88,7 +88,7 @@ def test_system_sources_infer_non_business_topics():
 def test_laf_reports_and_actions_infer_separate_topics(monkeypatch):
     assert red_phone._infer_topic_key("📋 法扶夜間巡檢報告\n📊 法扶案件總數：125", "laf_nightly_audit", "warning") == "laf_general"
     assert red_phone._infer_topic_key("📥 新法扶派案已建立\n案號: 1150505-W-002", "laf_monitor", "info") == "laf_dispatch"
-    assert red_phone._infer_topic_key("❌ go_live 暫存失敗 — 1150421-E-016", "laf_orchestrator", "warning") == "laf_go_live"
+    assert red_phone._infer_topic_key("❌ 開辦預填失敗 — 1150421-E-016", "laf_orchestrator", "warning") == "laf_go_live"
     assert red_phone._infer_topic_key("法扶二階段回報待確認：附條件審查需補資料", "laf_orchestrator", "warning") == "laf_condition"
     assert red_phone._infer_topic_key("未結案件進度回報：請確認送出 confirm_token=ABC123", "laf_orchestrator", "warning") == "laf_progress"
 
