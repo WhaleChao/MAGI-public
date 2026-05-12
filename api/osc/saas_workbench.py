@@ -48,7 +48,7 @@ CAPABILITIES = [
     },
     {
         "key": "risk_dashboard",
-        "title": "期限與風險儀表板",
+        "title": "期限與風險",
         "status": "enabled",
         "owner": "待辦事項 / 行事曆 / 法扶管理",
         "tab": "todos",

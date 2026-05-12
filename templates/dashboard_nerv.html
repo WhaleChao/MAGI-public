@@ -1463,7 +1463,7 @@ async function parseJsonApiResponse(response, unavailableMessage) {
   const raw = await response.text();
   const contentType = (response.headers.get('content-type') || '').toLowerCase();
   if (!contentType.includes('application/json')) {
-    if (response.status === 401) throw new Error('請重新登入 dashboard');
+    if (response.status === 401) throw new Error('請重新登入 MAGI');
     throw new Error(unavailableMessage);
   }
   let payload = {};
@@ -1473,7 +1473,7 @@ async function parseJsonApiResponse(response, unavailableMessage) {
     throw new Error(unavailableMessage);
   }
   if (!response.ok || payload.ok === false) {
-    if (payload.error === 'auth_required') throw new Error('請重新登入 dashboard');
+    if (payload.error === 'auth_required') throw new Error('請重新登入 MAGI');
     if (payload.error === 'admin_required') throw new Error('只有管理員可以切換');
     throw new Error(unavailableMessage);
   }
@@ -2021,7 +2021,7 @@ async function fetchProductRuntime(showMessage = false) {
     renderProductRuntime();
     const lineEl = document.getElementById('runtime-status-line');
     if (lineEl) {
-      lineEl.textContent = e.message === '請重新登入 dashboard'
+      lineEl.textContent = e.message === '請重新登入 MAGI'
         ? '請重新登入後再檢視產品切換設定。'
         : '產品切換設定暫不可得。';
     }
@@ -2059,7 +2059,7 @@ async function saveProductRuntime(product) {
     await poll();
   } catch (e) {
     if (lineEl) {
-      lineEl.textContent = e.message === '請重新登入 dashboard'
+      lineEl.textContent = e.message === '請重新登入 MAGI'
         ? '請重新登入後再修改產品切換。'
         : `${product} 設定儲存失敗。`;
     }
@@ -2279,7 +2279,7 @@ async function fetchSkillInterviewState(options = {}) {
   } catch (e) {
     if (!options.quiet) {
       setSkillWizardStatus(
-        e.message === '請重新登入 dashboard' ? '請重新登入後再使用問答精靈。' : '問答精靈目前暫時沒有連上。',
+        e.message === '請重新登入 MAGI' ? '請重新登入後再使用問答精靈。' : '問答精靈目前暫時沒有連上。',
         'warn'
       );
       setSkillWizardPrompt('目前無法讀取問答精靈狀態。若要先工作，可以直接編輯左側 SKILL.md。');
@@ -2449,7 +2449,7 @@ async function fetchNervSkills(options = {}) {
     renderSkillTree();
     if (isSkillModalOpen()) {
       setSkillEditorStatus(
-        e.message === '請重新登入 dashboard' ? '請重新登入後再使用 SKILL 工具頁。' : 'SKILL 工具頁暫不可得，先保留目前內容。',
+        e.message === '請重新登入 MAGI' ? '請重新登入後再使用 SKILL 工具頁。' : 'SKILL 工具頁暫不可得，先保留目前內容。',
         'warn'
       );
     }
@@ -2489,7 +2489,7 @@ async function startSkillInterviewWizard() {
     await renderSkillInterviewResponse(payload);
   } catch (e) {
     setSkillWizardStatus(
-      e.message === '請重新登入 dashboard'
+      e.message === '請重新登入 MAGI'
         ? '請重新登入後再使用問答精靈。'
         : '問答精靈目前沒有連上，你可以先直接編輯左側 SKILL.md，稍後再試一次。',
       'warn'
@@ -2517,7 +2517,7 @@ async function submitSkillInterviewReply(messageOverride = '') {
     await renderSkillInterviewResponse(payload);
   } catch (e) {
     setSkillWizardStatus(
-      e.message === '請重新登入 dashboard'
+      e.message === '請重新登入 MAGI'
         ? '請重新登入後再送出回答。'
         : '問答精靈暫時沒有收下這題，先保留你的文字；你也可以直接改左側 SKILL.md。',
       'warn'
@@ -2557,7 +2557,7 @@ async function loadSkillDoc(skillName, encoded = false) {
   } catch (e) {
     resetSkillVersionsPanel(`${resolvedName} 的版本快照目前無法讀取。`);
     setSkillEditorStatus(
-      e.message === '請重新登入 dashboard' ? '請重新登入後再檢視 SKILL。' : `${resolvedName} 讀取失敗，請稍後再試。`,
+      e.message === '請重新登入 MAGI' ? '請重新登入後再檢視 SKILL。' : `${resolvedName} 讀取失敗，請稍後再試。`,
       'error'
     );
   }
@@ -2598,7 +2598,7 @@ async function saveSkillDoc() {
     await poll();
   } catch (e) {
     setSkillEditorStatus(
-      e.message === '請重新登入 dashboard' ? '請重新登入後再儲存 SKILL。' : `儲存 ${skillName} 失敗，請稍後再試。`,
+      e.message === '請重新登入 MAGI' ? '請重新登入後再儲存 SKILL。' : `儲存 ${skillName} 失敗，請稍後再試。`,
       'error'
     );
   }
@@ -2623,7 +2623,7 @@ async function fetchSkillVersions(skillName = activeSkillName, options = {}) {
   } catch (e) {
     if (!options.quiet) {
       setSkillVersionStatus(
-        e.message === '請重新登入 dashboard' ? '請重新登入後再檢視版本快照。' : `${resolvedName} 的版本快照暫不可得。`,
+        e.message === '請重新登入 MAGI' ? '請重新登入後再檢視版本快照。' : `${resolvedName} 的版本快照暫不可得。`,
         'warn'
       );
     }
@@ -2666,7 +2666,7 @@ async function rollbackSkillVersion(encodedVersionId) {
   } catch (e) {
     setSkillVersionStatus(
       e.message === '只有管理員可以操作' ? '只有管理員可以回滾技能版本。'
-        : e.message === '請重新登入 dashboard' ? '請重新登入後再回滾技能版本。'
+        : e.message === '請重新登入 MAGI' ? '請重新登入後再回滾技能版本。'
         : `回滾失敗：${e.message}`,
       'error'
     );
@@ -2712,7 +2712,7 @@ function render(data) {
   ].join('') +
   '<div style="margin-top:12px;border-top:1px solid #1a1a00;padding-top:8px;">' +
   '<div class="panel-title">快速連結</div>' +
-  '<div class="node-item"><a href="/dashboard" style="color:#ff8800;font-size:0.78em;text-decoration:none;">&#9654; 主控台 Dashboard</a></div>' +
+  '<div class="node-item"><a href="/dashboard" style="color:#ff8800;font-size:0.78em;text-decoration:none;">&#9654; MAGI</a></div>' +
   '<div class="node-item"><a href="/osc" style="color:#ff8800;font-size:0.78em;text-decoration:none;">&#9654; 案件管理</a></div>' +
   '</div>';
 

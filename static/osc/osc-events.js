@@ -359,7 +359,7 @@ function bindGlobalDelegates() {
 
 function bindEvents() {
     [
-        ["dashboardRefreshBtn", loadDashboard, "儀表板重新整理"],
+        ["dashboardRefreshBtn", loadDashboard, "MAGI 重新整理"],
         ["saasRefreshBtn", loadSaasWorkbench, "管理工具重新整理"],
         ["saasConflictBtn", runSaasConflictCheck, "利益衝突檢查"],
         ["saasIntakeBtn", runSaasIntake, "建立諮詢紀錄"],
