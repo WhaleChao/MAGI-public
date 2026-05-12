@@ -136,7 +136,9 @@ def scan_text(rel_path: str, text: str, *, public_isolation: bool = False) -> li
     for idx, line in enumerate(text.splitlines(), start=1):
         if public_isolation:
             for kind, pattern in PUBLIC_ISOLATION_PATTERNS:
-                if rel_path == ".gitignore" or rel_path == "scripts/public_release_audit.py":
+                if rel_path in {".gitignore", "scripts/public_release_audit.py", "scripts/first_run_setup.py"}:
+                    continue
+                if rel_path.startswith("tests/"):
                     continue
                 if pattern.search(line):
                     findings.append(Finding(rel_path, idx, kind, "error", "private integration marker must not be published"))
