@@ -127,6 +127,20 @@ python3 scripts/serve_mlx_mtp.py --host 127.0.0.1 --port 8090
 curl http://127.0.0.1:8090/health
 ```
 
+### 2026-05 Stabilization Highlights
+
+Recent hardening work is reflected in the public docs and live gates:
+
+- **LAF**: consumer-debt checklists restore OSC conditional logic; income-list years are derived from the filing year. LAF status can be adjusted in the web UI, and closed cases can be archived while folders/files remain openable.
+- **LAF closing**: enforcement cases can close with enforcement orders found under the judgment folder; same-name/different-procedure cases are no longer closed by name alone. Long-running progress reminders support 90-day cooldowns.
+- **Activity counts**: hearings, meetings, detention visits, file review, and phone contact counts combine OSC todos, Google Calendar, meeting records, and review-folder evidence; review folders containing only payment slips are excluded.
+- **PDF / OCR**: PDF naming supports envelope-page skipping, multi-engine OCR consensus, legal-text correction, and training feedback for court notices, procedural rulings, judgments, opposing-party pleadings, and judgment folders.
+- **Pleadings**: OSC pleading generation includes Word/PDF layout safeguards and case-reason-scoped correction learning.
+- **Accounting**: Google Sheets imports can exclude coworker-tagged rows, deduplicate recurring fixed expenses, and run on Monday/Friday schedules.
+- **Legal research**: the Taiwan legal MCP adapter is available as a practical-opinion source; misses are reported as misses rather than filled by the model.
+- **Office overview**: the web UI links cases, todos, LAF, pleading index, public-facing data, and business overview without duplicating the source modules.
+- **Operations**: smoke50, commercial live gates, public secret audit, disk low-water alarms, cache cleanup, NAS mount guards, and notification-routing checks are part of the release discipline.
+
 Live acceptance is covered by `scripts/live_magi_mtp_eval.py`. The latest local verification exercised JSON routing, ReAct real tool calls, all ReAct tool-selection paths, tool-confusion guards, and hallucination abstention checks.
 
 ---

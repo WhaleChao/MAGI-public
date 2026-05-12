@@ -97,7 +97,7 @@ python3 scripts/install_magi.py --dry-run --check-live
 
 - README、操作手冊、服務條款、隱私權政策、資料保留政策與第三方套件清單均已更新。
 - MAGI daemon 可啟動，`/health`、OSC 主要頁籤、訊息頻道、DB、NAS、Google Calendar OAuth 均通過 live 檢查。
-- `scripts/public_release_audit.py --strict` 不得有 error 或 warning；若只有安裝包、不含私有 DB，可另外用 `--skip-db` 跑安裝檢查。
+- `scripts/public_release_audit.py --strict` 不得有 error 或 warning；若只有公開安裝版本、不含私有 DB，可另外用 `--skip-db` 跑安裝檢查。
 - `.env`、OAuth token、DB dump、案件資料、portal 截圖、NAS 路徑與 runtime 報告不得被 git 追蹤。
 - 法扶、閱卷、筆錄與日曆同步屬於高風險流程；正式送出、還原 DB、批次搬檔仍需確認碼或人工確認。
 
@@ -117,7 +117,7 @@ python3 scripts/install_magi.py --dry-run --check-live
 ./venv/bin/python scripts/ops/commercial_readiness_live.py --strict-public
 ```
 
-只有公開安裝包、不含私有 DB 的檢核才使用 `--skip-db`。
+只有公開安裝版本、不含私有 DB 的檢核才使用 `--skip-db`。
 
 Gemma 4 E4B / MTP 已接入 MLX sidecar：
 
@@ -127,6 +127,20 @@ curl http://127.0.0.1:8090/health
 ```
 
 `scripts/live_magi_mtp_eval.py` 用於 live acceptance：涵蓋 JSON 工具路由、ReAct 真實工具呼叫、全部 ReAct 工具選擇、工具混淆防護，以及幻覺/不確定時 abstain 檢查。
+
+### 2026-05 穩定化摘要
+
+近期修復已納入公開版文件與 live gate：
+
+- **法扶**：消債應備事項表恢復 OSC 條件邏輯；所得清單依聲請年度自動推算，例如 115 年 5 月後為 113、114 年，隔年自動變成 114、115 年。法扶狀態可在網頁版調整，結案案件可搬到結案區且仍可開資料夾/檔案。
+- **法扶結案**：強制執行類案件可用「判決書」資料夾內的執行命令作為結案依據；同名不同程序不會只靠姓名誤判結案。進度逾 18 個月提醒支援 90 天冷卻。
+- **活動計數**：開庭、會議、律見、閱卷、電話聯繫會用 OSC、Google Calendar、會議資料、閱卷資料夾交叉統計；閱卷日期排除只有繳費單的資料夾。
+- **PDF / OCR**：PDF 命名支援信封頁排除、多引擎 OCR 共識、法律文字修正與訓練資料回饋；法院通知、程序裁定、判決、對方歷次書狀與判決書資料夾均納入抽測。
+- **書狀**：OSC 書狀產生已加入 Word/PDF 排版保護與同案由修正學習；使用者改稿後可回饋差異，同案由才會套用經驗。
+- **帳務**：Google 試算表匯入可排除非本人標識資料，固定支出與試算表項目會去重，週一/週五排程匯入；薪資等固定支出可在 MAGI 帳務設定修正。
+- **實務見解**：台灣法律資料 MCP 可作為法律見解查詢來源；查不到時回報查不到，不以模型補編。
+- **所務總覽**：網頁版整合案件、待辦、法扶、書狀索引、對外資料與業務概覽入口，避免重複建立功能。
+- **維運**：50 項 smoke、商用 live gate、公開 secret audit、磁碟低水位告警、快取清理、NAS 掛載守門與通知分流檢查已納入上線前門檻。
 
 ---
 
@@ -636,7 +650,7 @@ skills/transcript-downloader/action.py --task self_test
 | **記憶系統** | 8 | 58 | 記憶寫入政策、接地驗證與 query 增強、Graph-RAG recall、假記憶回歸測試、助理發言升級保護、溯源追蹤 |
 | **驗證與安全** | 6 | 49 | 幻覺回歸（22 情境）、答案驗證器、授權閘門、輸出守衛（trust-badge 洩漏）、安全基線 |
 | **資料與持久化** | 6 | 45 | 任務佇列（SQLite）、embedding 路由器、遷移框架、DB helper、向量處理流程 NLP |
-| **CI / 打包** | 2 | 29 | Hardcode 檢查器、console-script 目標驗證 |
+| **CI / 發布封裝** | 2 | 29 | Hardcode 檢查器、console-script 目標驗證 |
 
 CI 閘門：
 - `scripts/ci/check_hardcodes.py` — 提交的程式碼中有任何 IP / 憑證即失敗。

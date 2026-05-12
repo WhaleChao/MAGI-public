@@ -1,6 +1,6 @@
 # MAGI Operator Runbook v2
 
-版本：v2.1 | 日期：2026-05-07
+版本：v2.2 | 日期：2026-05-12
 
 ---
 
@@ -12,7 +12,7 @@ MAGI（Multi-Agent Governance Infrastructure）是一套多代理治理基礎設
 - **Tools API** — 外部工具 HTTP API（Flask，port 5003）
 - **Orchestrator** — 自然語言路由與任務編排引擎（委派至 pipelines/ + domains/）
 - **Routing Layer** — 統一路由層（api/routing/，含 Registry 系統）
-- **Skills** — 67+ 可插拔技能模組
+- **Skills** — 70+ 可插拔技能模組
 - **Channels** — LINE Bot、Discord Bot、Telegram Bot
 - **Status Bar** — macOS 選單列即時監控（gui/magi_menubar.py）
 - **CLI** — `magi` 命令列管理工具（scripts/magi_cli.sh）
@@ -29,7 +29,7 @@ MAGI（Multi-Agent Governance Infrastructure）是一套多代理治理基礎設
 | Python | 3.12+ |
 | Database | MariaDB 10.6+ / MySQL 8.0+ |
 | RAM | 8 GB（建議 16 GB） |
-| Disk | 10 GB（不含模型檔案） |
+| Disk | 30 GB 可用空間建議值；低於 10 GB 視為緊急 |
 
 ---
 
@@ -111,7 +111,7 @@ kill $(cat rpc_server.pid 2>/dev/null)
 ### 健康檢查
 
 ```bash
-magi status                             # 完整系統儀表板
+magi status                             # 完整系統狀態
 curl http://127.0.0.1:5002/health       # Server health
 curl http://127.0.0.1:5003/health       # Tools API health
 curl http://127.0.0.1:8090/health       # Gemma 4 E4B / MTP sidecar health
@@ -120,6 +120,18 @@ python3 scripts/public_release_audit.py # 公開前敏感資訊稽核
 python3 skills/ops/system_test.py       # 12 項系統測試
 python3 skills/magi-doctor/action.py --task diagnose  # 完整診斷
 ```
+
+### 對外 / 商用 live gate
+
+```bash
+./venv/bin/python scripts/ops/run_test_suite.py --suite ci
+./venv/bin/python scripts/ops/run_test_suite.py --suite smoke50
+./venv/bin/python scripts/ops/run_test_suite.py --suite production-live --json-out .runtime/production_live_latest.json
+./venv/bin/python scripts/ops/run_test_suite.py --suite commercial-release --json-out .runtime/commercial_release_latest.json
+./venv/bin/python scripts/public_release_audit.py --strict
+```
+
+`smoke50` 是基本冒煙測試；`production-live` 與 `commercial-release` 才是交付他人使用前的 live 門檻。
 
 ### 查看 Logs
 
@@ -243,7 +255,20 @@ git status --short
 - `runtime/supplement_cache/`
 - `docs/deploy/`
 
-若 `public_release_audit.py` 回報 error，不得 push。warning 多為測試假資料或私網範例，仍應人工快速複核。
+若 `public_release_audit.py --strict` 回報 error 或 warning，不得 push。公開安裝版本若不含私有 DB，可另用 `--skip-db` 做安裝性檢查，但正式環境不得跳過 DB / NAS / channel live gate。
+
+### 6B. Google Calendar / 法扶計數檢查
+
+- 一般 OSC 事件匯入要求標題或描述開頭有 OSC 案件系統編號。
+- 法扶活動計數可接受同事手動行程，但必須由 DB 判斷為法扶案件，且內容屬於開庭、會議、律見、閱卷、電話聯繫。
+- 同名多案要靠 `laf_case_no`、`application_no`、`case_category=法律扶助案件`、`legal_aid_status`、案由或 OSC 編號消歧。仍無法消歧時跳過，不猜測。
+- live 檢查可用 GCal dry-run；不得為了補數字手動把不明事件寫入 `case_todos`。
+
+### 6C. NAS / 磁碟安全
+
+- `/Volumes/lumi`、`/Volumes/homes` 不得預先建立空目錄，避免 macOS 掛成 `lumi-1` / `homes-1`。
+- 可重建快取可清；Paperclip / 單機版 JSON、pickle、db、sqlite 狀態檔不可清。
+- 退役 Ollama root 可清，但正式模型、訓練成果、司法 raw backlog、DB backup、NAS 資料不可清。
 
 ---
 
@@ -337,6 +362,8 @@ magi start
 | `ModuleNotFoundError` | 依賴未安裝 | `venv/bin/pip install -r requirements.txt` |
 | `Connection refused (DB)` | 資料庫未啟動或連線資訊錯誤 | 檢查 DB 服務狀態與 .env 設定 |
 | `Address already in use` | Port 5002/5003 被佔用 | `lsof -i :5002` 找出佔用程序 |
+| 網頁 `not_found` | daemon 尚未載入新版 route | 重啟 MAGI daemon 後重試 |
+| 結案搬移 HTTP 502 | 搬檔耗時或 NAS 掛載異常 | 查搬移任務狀態、確認 `/Volumes/lumi` 正確掛載 |
 
 ### LINE Bot 不回應
 
@@ -419,7 +446,7 @@ magi zombie              # 自動偵測並清理
 | DB 連線 | `magi status` Database 段 | 容錯切換時 |
 | NAS 掛載 | `magi status` NAS Mounts 段 | NOT MOUNTED |
 | 遠端節點 | `magi status` Remote Nodes 段 | DOWN |
-| 磁碟空間 | `df -h` | < 10% 可用 |
+| 磁碟空間 | `df -h` / `disk_low_water_alarm` | < 30 GB 警告；< 10 GB 緊急 |
 | Log 大小 | `du -sh .agent/` | > 500 MB |
 | 推理延遲 | Log 中的 inference_ms | > 30s 平均 |
 | 排程任務 | 狀態列 Cron Jobs 子選單 | 超過 25 小時未執行 |
