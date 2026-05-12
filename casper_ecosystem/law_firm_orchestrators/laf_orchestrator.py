@@ -2541,7 +2541,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                 logger.warning("  ⚠️ 無法產生結案報告：%s 缺少結案基礎文件 (%s)", case_number, folder_path)
                 self.notifier.notify_admin(
                     f"⚠️ 無法產生結案報告：\n案號：{case_number}\n當事人：{client_name}\n"
-                    "原因：`10_判決書` 資料夾中找不到「起訴書/判決/裁定/不起訴處分書」檔案，請補齊後再試。"
+                    "原因：`10_判決書` 資料夾中找不到「起訴書/判決/裁定/不起訴處分書/確定證明書」檔案；強制執行案件可放入執行命令。"
                 )
                 return
         # 註：不再檢查 office_receipt_files（收文章/回執）。
@@ -2680,6 +2680,8 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         zero_reasons: dict = None,
         upload_files: Optional[List[str]] = None,
         client_name: str = "",
+        *,
+        suppress_notify: bool = False,
     ):
         """
         Execute portal closing: fill form and SAVE DRAFT (暫存).
@@ -2813,10 +2815,11 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                 pass
         except Exception as e:
             # Do not silently pass. Report to admin and mark an error event.
-            try:
-                self.notifier.notify_admin(f"❌ 報結暫存失敗 — {case_number}\n原因：{e}", topic_key="laf_closing")
-            except Exception:
-                logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 1970, exc_info=True)
+            if not suppress_notify:
+                try:
+                    self.notifier.notify_admin(f"❌ 報結暫存失敗 — {case_number}\n原因：{e}", topic_key="laf_closing")
+                except Exception:
+                    logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 1970, exc_info=True)
             self._log_event(case_number, "closing", {"error": str(e)}, "error")
             return False
         self._log_event(case_number, "closing", {
@@ -2877,7 +2880,8 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
             lines.append("🔒 安全政策：目前僅暫存，不會代為送出。")
         else:
             lines.append("可回覆「送出」由 CASPER 代為送出（請先確認平台畫面）。")
-        self.notifier.notify_admin("\n".join(lines), topic_key="laf_closing")
+        if not suppress_notify:
+            self.notifier.notify_admin("\n".join(lines), topic_key="laf_closing")
         return True
 
     def execute_portal_workflow_draft(
@@ -5161,10 +5165,11 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
             override_basis_files = normalized_override_files
 
         basis_files = override_basis_files or list(docs.get("closing_basis_files") or [])
-        # 結案只檢查結案依據文件（判決/裁定/不起訴）；收文章/回執是「開辦」才需要的內部驗證。
+        # 結案只檢查結案依據文件；強制執行案件可用執行命令作為結案依據。
+        # 收文章/回執是「開辦」才需要的內部驗證。
         missing = []
         if not basis_files:
-            missing.append("結案依據文件（起訴書/判決/裁定/不起訴處分書/確定證明書）")
+            missing.append("結案依據文件（起訴書/判決/裁定/不起訴處分書/確定證明書；強制執行案件可用執行命令）")
         if missing:
             return {
                 "ok": False,
@@ -5410,6 +5415,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
             zero_reasons,
             upload_files=(fields.get("upload_files") or upload_bundle.get("pdf_files") or []),
             client_name=cname,
+            suppress_notify=suppress_notify,
         )
         if ok and not self.dry_run:
             # 暫存成功 → 回寫 DB status（dry-run 不寫）

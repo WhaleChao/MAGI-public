@@ -40,6 +40,10 @@ _CLOSING_BASIS_KEYWORDS = (
     "併辦意旨書", "追加起訴書",
 )
 
+_ENFORCEMENT_CLOSING_KEYWORDS = (
+    "執行命令", "債權憑證", "執行結果", "終結執行",
+)
+
 _OFFICE_RECEIPT_KEYWORDS = (
     "收文章", "法院章", "回執", "收件回執", "送達證書",
     "郵局回執", "掛號回執",
@@ -413,7 +417,8 @@ class LAFOrchestratorDocumentMixin:
             out.setdefault("receipt_files", []).append(full_path)
 
         # ── Closing basis files (判決/裁定/不起訴處分書 etc.) ──
-        if any(k in fn for k in _CLOSING_BASIS_KEYWORDS):
+        is_enforcement_basis = LAFOrchestratorDocumentMixin._is_enforcement_closing_basis(fn, full_path, subdir)
+        if any(k in fn for k in _CLOSING_BASIS_KEYWORDS) or is_enforcement_basis:
             # Exclude templates/drafts
             if "範本" not in fn and "模板" not in fn and "草稿" not in fn:
                 out.setdefault("closing_basis_files", []).append(full_path)
@@ -484,8 +489,17 @@ class LAFOrchestratorDocumentMixin:
     # ==================================================================
 
     @staticmethod
+    def _is_enforcement_closing_basis(fn: str, full_path: str = "", subdir: str = "") -> bool:
+        text = f"{fn} {full_path} {subdir}"
+        in_judgment_folder = "10_判決書" in text or "/判決書/" in text.replace("\\", "/")
+        is_enforcement_case = any(k in text for k in ("強制執行", "司執", "執行"))
+        has_enforcement_doc = any(k in fn for k in _ENFORCEMENT_CLOSING_KEYWORDS)
+        return bool(in_judgment_folder and is_enforcement_case and has_enforcement_doc)
+
+    @staticmethod
     def _closing_basis_sort_key(path: str) -> tuple:
         """Sort key for closing basis files: prioritize 判決 > 裁定 > 不起訴處分書."""
+        path_text = str(path or "")
         fn = os.path.basename(str(path or ""))
         # Priority: lower = earlier
         if "判決" in fn:
@@ -504,9 +518,12 @@ class LAFOrchestratorDocumentMixin:
             priority = 5
         elif "和解" in fn or "調解" in fn:
             priority = 6
+        elif LAFOrchestratorDocumentMixin._is_enforcement_closing_basis(fn, str(path or "")):
+            priority = 7
         else:
             priority = 9
-        return (priority, fn)
+        folder_priority = 0 if "10_判決書" in path_text else 1
+        return (priority, folder_priority, fn)
 
     def _sort_closing_basis_files(self, files: List[str]) -> List[str]:
         """Sort closing basis files by document type priority."""
@@ -551,6 +568,8 @@ class LAFOrchestratorDocumentMixin:
             meta["closing_doc_type"] = "和解筆錄"
         elif "調解" in fn:
             meta["closing_doc_type"] = "調解筆錄"
+        elif self._is_enforcement_closing_basis(fn, str(best or ""), folder_path):
+            meta["closing_doc_type"] = "執行命令"
         else:
             meta["closing_doc_type"] = ""
 
