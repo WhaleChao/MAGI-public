@@ -52,10 +52,11 @@ python3 scripts/install_magi.py --dry-run --check-live
 python3 scripts/install_magi.py --yes
 source .venv/bin/activate  # or source venv/bin/activate on existing installs
 
-# 4. Copy and fill environment
-cp .env.example .env   # fill in tokens / DB creds
+# 4. Create the first-run checklist and local .env without printing secrets
+python3 scripts/first_run_setup.py --write-env
+python3 scripts/first_run_setup.py --json
 
-# 5. Run diagnostics
+# 5. Edit .env, then run diagnostics
 python3 scripts/magi_doctor.py
 
 # 6. Start
@@ -87,12 +88,13 @@ This branch is prepared for public release with private runtime material removed
 Public readiness checks:
 
 ```bash
-python3 scripts/public_release_audit.py
+python3 scripts/public_release_audit.py --public-isolation
+python3 scripts/first_run_setup.py --public --json
 python3 scripts/magi_doctor.py --json
 python3 scripts/install_magi.py --dry-run --check-live
 ```
 
-The public audit blocks high-confidence secrets and private tracked paths. For release and commercial use, run it with `--strict`; the release branch is expected to pass with `0 errors / 0 warnings`.
+`first_run_setup.py` is the guided entrypoint for a first-time operator: it can create a local `.env`, list missing required settings, keep next commands in a machine-readable checklist, and never prints token or password values. The public audit blocks high-confidence secrets and private tracked paths; before pushing to the public project, add `--public-isolation` to also block Lawsnote private integrations and private mailbox/NAS markers. For release and commercial use, run it with `--strict`; the release branch is expected to pass with `0 errors / 0 warnings`.
 
 Before publishing or handing MAGI to another operator, treat these as go/no-go gates:
 

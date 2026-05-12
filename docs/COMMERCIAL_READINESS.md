@@ -38,7 +38,8 @@ Legacy direct commands remain available:
 Public source package:
 
 ```bash
-python3 scripts/public_release_audit.py --strict
+python3 scripts/first_run_setup.py --public --json
+python3 scripts/public_release_audit.py --public-isolation --strict
 python3 scripts/ops/commercial_readiness_live.py --strict-public --skip-db
 ```
 
@@ -56,6 +57,7 @@ Private production checkout:
 Acceptance target:
 
 - No public audit errors or warnings in strict mode.
+- First-run checklist public mode has no private-integration findings.
 - No failing live-gate checks.
 - No warning in strict channel smoke.
 - Google Calendar import dry-run is clean: coworker/manual events are skipped,
