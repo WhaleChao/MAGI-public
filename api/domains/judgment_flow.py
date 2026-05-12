@@ -19,6 +19,12 @@ from api.osc.insight_filters import (
     is_extractive_fast_judgment_digest,
     mark_extractive_fast_digest_summary,
 )
+from api.osc.taiwan_legal_mcp import (
+    merge_judgment_sources,
+    search_practical_judgments_via_mcp,
+    taiwan_legal_mcp_available,
+    taiwan_legal_mcp_enabled,
+)
 
 logger = logging.getLogger("Orchestrator")
 
@@ -401,6 +407,23 @@ def run_practical_insight_command(orch, message: str, notify: bool = False) -> s
         fallback = _search_local_judgment_archive(query, limit=3)
         if fallback.get("success"):
             judgments = fallback
+    if taiwan_legal_mcp_enabled() and taiwan_legal_mcp_available():
+        primary_items = judgments.get("items") if isinstance(judgments.get("items"), list) else []
+        should_augment = str(os.environ.get("MAGI_TAIWAN_LEGAL_MCP_AUGMENT", "1")).strip().lower() not in {
+            "0",
+            "false",
+            "no",
+            "off",
+        }
+        if should_augment or (not judgments.get("success")) or len(primary_items) < 2:
+            mcp_judgments = search_practical_judgments_via_mcp(
+                query,
+                case_type=str(payload.get("case_type") or ""),
+                limit=int(os.environ.get("MAGI_TAIWAN_LEGAL_MCP_MAX_RESULTS", "3") or "3"),
+                fulltext_limit=int(os.environ.get("MAGI_TAIWAN_LEGAL_MCP_FULLTEXT_LIMIT", "1") or "1"),
+            )
+            if mcp_judgments.get("success"):
+                judgments = merge_judgment_sources(judgments, mcp_judgments, limit=3)
     statutes = _run_skill_json(
         statutes_script,
         "search " + json.dumps({"query": query, "top_k": 5}, ensure_ascii=False),

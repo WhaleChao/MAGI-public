@@ -78,6 +78,47 @@ def test_practical_insight_falls_back_to_local_archive(monkeypatch):
     assert "臺灣高等法院 侵權行為損害賠償" in text
 
 
+def test_practical_insight_augments_with_taiwan_legal_mcp(monkeypatch):
+    def _fake_run_skill_json(skill_script, task, timeout_sec):
+        if "judgment-collector" in skill_script:
+            return {
+                "success": True,
+                "source_label": "本地實務見解庫",
+                "items": [
+                    {
+                        "title": "本地見解",
+                        "summary_preview": "本地摘要。",
+                        "url": "https://judgment.local/1",
+                    }
+                ],
+            }
+        return {"ok": True, "items": []}
+
+    monkeypatch.setattr(judgment_flow, "_run_skill_json", _fake_run_skill_json)
+    monkeypatch.setattr(judgment_flow, "taiwan_legal_mcp_enabled", lambda: True)
+    monkeypatch.setattr(judgment_flow, "taiwan_legal_mcp_available", lambda: True)
+    monkeypatch.setattr(
+        judgment_flow,
+        "search_practical_judgments_via_mcp",
+        lambda query, case_type="", limit=3, fulltext_limit=1: {
+            "success": True,
+            "source_label": "台灣法律資料庫 MCP（司法院公開資料）",
+            "items": [
+                {
+                    "title": "MCP 司法院見解",
+                    "summary_preview": "MCP 摘要。",
+                    "url": "https://judgment.judicial.gov.tw/example",
+                }
+            ],
+        },
+    )
+
+    text = judgment_flow.run_practical_insight_command(None, "實務見解 遲延交屋", notify=False)
+    assert "本地見解" in text
+    assert "MCP 司法院見解" in text
+    assert "台灣法律資料庫 MCP" in text
+
+
 def test_format_practical_insight_prefers_non_degraded_items():
     text = judgment_flow.format_practical_insight_result(
         "侵權行為",

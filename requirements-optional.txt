@@ -31,6 +31,12 @@ playwright>=1.40
 selenium>=4.15
 webdriver-manager>=4.0
 
+# -- Taiwan public legal data MCP (optional external adapter) --
+mcp[cli]>=1.0.0
+aiosqlite>=0.20
+tenacity>=8.0
+truststore>=0.9
+
 # -- AI / Embeddings --
 numpy>=1.24
 faiss-cpu>=1.7
