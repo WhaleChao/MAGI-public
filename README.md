@@ -94,6 +94,16 @@ python3 scripts/install_magi.py --dry-run --check-live
 
 The public audit blocks high-confidence secrets and private tracked paths. It may still emit warnings for synthetic test phone numbers or RFC/private-network examples; warnings are informational unless `--strict` is used.
 
+Before handing MAGI to another operator, confirm the daemon, OSC pages, messaging
+channels, database, file storage, and Google Calendar checks on the target host.
+NERV (`/dashboard/nerv` or `/nerv`) is the host status page for model, OCR, DB,
+NAS/file storage, and background-service health.
+
+This public release is single-host by design. Multi-tenant service, electronic
+signatures, and a public upload portal are outside the enabled scope; operators
+should use the built-in "對外資料" copy text with their existing communication
+channel.
+
 Gemma 4 E4B / MTP support is available through the MLX sidecar:
 
 ```bash

@@ -85,6 +85,10 @@ def test_dashboard_pages_render_with_login_required(tmp_path, monkeypatch):
     assert response.status_code == 200
     assert b"nerv u1" in response.data
 
+    response = client.get("/nerv", headers={"X-User-ID": "u1"})
+    assert response.status_code == 200
+    assert b"nerv u1" in response.data
+
     response = client.get("/magi-adjust", headers={"X-User-ID": "u1"})
     assert response.status_code == 200
     assert b"nerv u1" in response.data

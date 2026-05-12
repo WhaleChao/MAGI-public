@@ -49,6 +49,16 @@ LINE / Telegram / Discord 三邊任一邊都通，內容會同步進系統記憶
 
 ---
 
+## 1.5 對外開放前檢查（管理員）
+
+交給新使用者或同事前，請先確認 public audit、doctor、install dry-run
+與 live smoke 都通過。NERV 是上線狀態頁，可從 `/dashboard/nerv`
+或 `/nerv` 開啟；交付前請確認推理、OCR、DB、NAS 與背景服務不是錯誤狀態。
+
+本版採單主機部署；多租戶、電子簽章、公開上傳入口不啟用。對外溝通仍用既有 LINE 等通道，MAGI 只產生可複製的對外資料。
+
+---
+
 ## 2. 最常用的 30 句
 
 | # | 直接這樣說 | 做什麼 |
