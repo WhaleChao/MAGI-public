@@ -93,6 +93,14 @@ python3 scripts/install_magi.py --dry-run --check-live
 
 `public_release_audit.py` 會阻擋高可信度 secret 與被追蹤的私有路徑。正式發布與商用部署請使用 `--strict`；發布分支預期應通過 `0 errors / 0 warnings`。
 
+公開或交付他人使用前，請把以下檢查視為 go/no-go 門檻：
+
+- README、操作手冊、服務條款、隱私權政策、資料保留政策與第三方套件清單均已更新。
+- MAGI daemon 可啟動，`/health`、OSC 主要頁籤、訊息頻道、DB、NAS、Google Calendar OAuth 均通過 live 檢查。
+- `scripts/public_release_audit.py --strict` 不得有 error 或 warning；若只有安裝包、不含私有 DB，可另外用 `--skip-db` 跑安裝檢查。
+- `.env`、OAuth token、DB dump、案件資料、portal 截圖、NAS 路徑與 runtime 報告不得被 git 追蹤。
+- 法扶、閱卷、筆錄與日曆同步屬於高風險流程；正式送出、還原 DB、批次搬檔仍需確認碼或人工確認。
+
 正式商用文件：
 
 - [商用上線檢核指南](docs/COMMERCIAL_READINESS.md)
@@ -257,9 +265,19 @@ MAGI 依時段自動切換模型組合：
 | **事務所輸出** | 案件卡片可產生地址標籤 PNG；報價單可匯出 PDF |
 | **主題切換** | Paperclip 提供可記憶偏好的淺色 / 深色主題切換 |
 | **批次作業** | 透過自然語言指令執行批次查詢 / 結案 / 稽核 |
-| **智慧辨識** | 依狀態優先順序 + 關鍵字過濾，自動消除多案歧義 |
+| **智慧辨識** | 依 DB 案件種類、法扶案號、狀態優先順序與關鍵字過濾，自動消除多案歧義 |
+| **法扶活動計數** | 開庭、會議、律見、閱卷、電話聯繫統計會優先使用 OSC/法扶案件資料；同名一般案件不會被混入法扶回報 |
 
 NAS 資料夾結構依案件類型（法扶 / 一般 / 無償 / 指定辯護）分別處理。
+
+### Google Calendar / OSC 行事曆同步規則
+
+MAGI 可以同時讀取多個 Google Calendar，但匯入 OSC 待辦時採白名單規則，避免把同事手動登錄、節日或私人提醒混入案件資料：
+
+- 一般 OSC 事件：標題或描述必須以 OSC 案件系統編號開頭，例如 `[2026-0035] 開庭` 或 `2026-0035：開庭`。
+- 法扶活動計數：即使標題不是 OSC 編號開頭，只要事件可由 DB 判斷為法扶案件，且內容屬於開庭、會議、律見、閱卷、電話聯繫，仍可匯入供進度回報統計。
+- 同名案件：若同一當事人有一般案件與法扶案件，MAGI 會依 DB 的 `laf_case_no`、`application_no`、`case_category=法律扶助案件`、`legal_aid_status` 與案由判斷法扶案件；只有多件法扶案件仍無法由案由、法扶案號或 OSC 編號分辨時才跳過。
+- 已匯入的 Google Calendar event id 會去重，避免同一事件重複建立待辦。
 
 ### 電子閱卷
 

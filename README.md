@@ -94,6 +94,14 @@ python3 scripts/install_magi.py --dry-run --check-live
 
 The public audit blocks high-confidence secrets and private tracked paths. For release and commercial use, run it with `--strict`; the release branch is expected to pass with `0 errors / 0 warnings`.
 
+Before publishing or handing MAGI to another operator, treat these as go/no-go gates:
+
+- README files, the operator guide, terms, privacy policy, data-retention policy, and third-party bill of materials are current.
+- The daemon starts, and `/health`, the main OSC tabs, messaging channels, DB, NAS/file storage, and Google Calendar OAuth all pass live checks.
+- `scripts/public_release_audit.py --strict` has no errors or warnings. Install-only packages without a private DB may use the dedicated `--skip-db` installability check.
+- `.env`, OAuth tokens, DB dumps, case/client material, portal screenshots, NAS paths, and runtime reports are not tracked by git.
+- LAF, court file review, transcript, and calendar workflows are high-risk workflows; production submission, DB restore, and bulk file movement must remain confirmation-gated.
+
 Commercial readiness documents:
 
 - [Commercial readiness guide](docs/COMMERCIAL_READINESS.md)
@@ -259,9 +267,19 @@ Automates the full lifecycle of Legal Aid Foundation cases:
 | **Office outputs** | Case cards can generate address-label PNG files; quotations can be exported as PDF |
 | **Theme toggle** | Paperclip includes a persisted light/dark theme switch for long drafting sessions |
 | **Batch ops** | Bulk query / batch closing / batch audit via natural-language commands |
-| **Smart lookup** | Disambiguates multiple cases by status priority + keyword filtering |
+| **Smart lookup** | Disambiguates multiple cases using DB case type, LAF number, legal-aid status, status priority, and keyword filtering |
+| **LAF activity counts** | Court hearings, meetings, detention visits, file review, and phone-contact counts are matched to LAF cases through DB-backed identity rules; same-name regular cases are not mixed into LAF reports |
 
 NAS folder structure is respected for each case category (法扶 / 一般 / 無償 / 指定辯護).
+
+### Google Calendar / OSC Sync Rules
+
+MAGI can read multiple Google calendars, but OSC todo import is intentionally narrow so coworker-entered events, holidays, and private reminders do not pollute case records:
+
+- General OSC events must begin with the OSC system case number, for example `[2026-0035] Hearing` or `2026-0035: Hearing`.
+- LAF activity-count events may still be imported when the DB identifies the target as a Legal Aid Foundation case and the event text is a reportable activity: hearing, meeting, detention visit, file review, or phone contact.
+- Same-name cases are resolved through DB fields such as `laf_case_no`, `application_no`, `case_category=法律扶助案件`, `legal_aid_status`, and case-reason hints. MAGI skips only when multiple LAF cases for the same client remain indistinguishable.
+- Imported Google Calendar event ids are deduplicated to avoid repeated todos.
 
 ### Court File Review
 

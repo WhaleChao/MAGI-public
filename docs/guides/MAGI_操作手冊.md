@@ -1,7 +1,7 @@
 # MAGI 操作手冊
 
-> 版本：2026-04-25 重寫版
-> 系統現況：72 個技能模組、53 條定時任務、三入口（LINE / Telegram / Discord）全綠
+> 版本：2026-05-12 對外開放前整理版
+> 系統現況：公開版已加入 secret audit、live gate、磁碟清理、Google Calendar 匯入防誤抓、法扶計數防混案規則
 > 適用對象：律師本人 + 受邀的事務所同仁
 > 全文採台灣用語
 
@@ -46,6 +46,25 @@ LINE / Telegram / Discord 三邊任一邊都通，內容會同步進系統記憶
 - 寫文書、查判決：在電腦前用 Discord
 - 出庭時用 LINE 快速回報
 - 看晨間摘要：Telegram 訊息排版最乾淨
+
+---
+
+## 1.5 對外開放前檢查（管理員）
+
+交給新使用者或同事前，請先確認：
+
+```bash
+python3 scripts/public_release_audit.py --strict
+python3 scripts/magi_doctor.py --json
+python3 scripts/install_magi.py --dry-run --check-live
+./venv/bin/python scripts/ops/commercial_readiness_live.py --strict-public
+```
+
+合格標準：
+- audit 不得有 error 或 warning。
+- `.env`、OAuth token、DB dump、案件資料、portal 截圖、NAS 掛載資訊不得進 git。
+- MAGI daemon、OSC 網頁、DB、NAS、Google Calendar OAuth、LINE / Telegram / Discord 至少要跑過一次 live smoke。
+- 法扶、閱卷、筆錄、批次搬檔、DB 還原都應保留確認碼或人工確認；不要為了方便直接改成自動送出。
 
 ---
 
@@ -267,6 +286,27 @@ LINE / Telegram / Discord 三邊任一邊都通，內容會同步進系統記憶
 
 > 排庭資料晚上 08:00 自動同步到 Google 行事曆，不會重複建立同一筆。
 
+#### Google Calendar 匯入 OSC 的規則
+
+事務所可能同時有同事手動登錄、Google 節日、私人提醒與 OSC 自動建立事件。MAGI 匯入 OSC 待辦時會先過濾，避免把不屬於案件的行程混進案件統計。
+
+會匯入：
+- 標題或描述最前面是 OSC 案件系統編號，例如 `[2026-0035] 開庭`、`2026-0035：調解`。
+- 法扶案件需要計數的活動：開庭、會議、律見、閱卷、電話聯繫。這類事件即使不是 OSC 編號開頭，也會用 DB 判斷是否為法扶案件後才匯入。
+
+不會匯入：
+- `王心怡閱卷` 這類只有姓名、沒有法扶案件可辨識的手動事件。
+- `法扶 2026-0035 開庭` 這類 OSC 編號不在開頭的一般事件。
+- 節日、停班停課、私人提醒、行政採購、同事內部備忘。
+
+同名多案時：
+- 如果同一當事人同時有一般案件與法扶案件，MAGI 會用 DB 的法扶案號、案件種類、法扶狀態與案由判斷法扶案件。
+- 如果同一當事人有多件法扶案件，且事件文字沒有法扶案號、OSC 編號或案由線索，MAGI 會跳過，不會硬塞到其中一案。
+
+建議同事手動登行事曆時：
+- 一般 OSC 案件請在標題開頭寫 `[2026-xxxx]`。
+- 法扶計數行程請至少寫清楚當事人姓名與活動類型，例如 `陳鏈棠來所面談`、`陳鏈棠電話聯繫`；同名多案時請加法扶案號或案由。
+
 ---
 
 ## 9. AI 文書草擬
@@ -281,7 +321,7 @@ LINE / Telegram / Discord 三邊任一邊都通，內容會同步進系統記憶
 | `草擬上訴狀 <案號>` | 上訴狀 |
 | `草擬抗告狀 <案號>` | 抗告狀 |
 
-> 走本機 Ollama Gemma E4B 模型；如要更強請加 `@heavy`。
+> 走本機 oMLX / MLX Gemma E4B 模型；如要更強請加 `@heavy`。Ollama 已非主要路徑，只有相容環境才會作為備援。
 
 ---
 
@@ -419,9 +459,10 @@ MAGI 用三個本機模型分工，自動依時段切換：
 - Google Calendar OAuth token
 
 ### 16.4 GitHub repo 隱私狀態
-- 倉庫設為 Private
-- 歷史已清掉所有當事人姓名 + 業務記憶
-- `.runtime/`、`CLAUDE.md`、`cron_jobs.json` 在 `.gitignore`，不會推送
+- 公開版倉庫不得包含私有 runtime、當事人資料、業務記憶、OAuth token、DB dump 或 portal 截圖。
+- 私用正式環境仍應使用私有 checkout 與私有 `.env`。
+- `.runtime/`、`.claude/`、`.claire/`、`runtime/supplement_cache/`、部署手札與各類本機快取應維持 `.gitignore` 保護。
+- Paperclip / 單機版需要的 JSON、pickle、db、sqlite 狀態檔不要用一般快取清理規則刪除。
 
 ---
 
@@ -447,6 +488,18 @@ MAGI 用三個本機模型分工，自動依時段切換：
 - 凌晨自動切夜間模式（21:50）會短暫不可用
 - 早上 07:00 切日間模式同樣短暫不可用
 - `cool start` 後第一次推理會比較慢（10–20 秒）
+
+### 17.5 OSC 行事曆或法扶計數看起來不準
+1. 先確認 Google Calendar 事件是否符合匯入規則：一般事件標題開頭要有 `[2026-xxxx]`；法扶計數事件要能從 DB 判斷為法扶案件。
+2. 同名多案請在事件標題加上法扶案號、OSC 編號或案由，避免 MAGI 為了安全跳過。
+3. 到 OSC 案件卡片查看 `法扶活動統計` 下方明細，確認每一筆來源與日期。
+4. 若同事手動事件被匯入，先不要手動改 DB；請管理員跑 GCal dry-run 或檢查 `source_file=gcal_import:*` 的待辦。
+
+### 17.6 網頁顯示 not_found / 502 / API 未啟動
+1. 先跑 `magi status`，確認 daemon、DB、NAS、模型 sidecar 都是綠燈。
+2. 若剛更新程式，請重啟 MAGI daemon，讓新版 Flask route 載入。
+3. 若是結案搬移或 NAS 開資料夾失敗，先確認 `/Volumes/lumi` 或 Tailscale fallback 掛載正確，不要掛成 `lumi-1` / `homes-1`。
+4. 若只有單一頁籤錯誤，保留畫面文字與時間，交給管理員查 `.runtime/issue_agenda.jsonl`。
 
 ---
 

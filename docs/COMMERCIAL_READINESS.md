@@ -53,6 +53,9 @@ Acceptance target:
 - No public audit errors or warnings in strict mode.
 - No failing live-gate checks.
 - No warning in strict channel smoke.
+- Google Calendar import dry-run is clean: coworker/manual events are skipped,
+  OSC events require a leading OSC case number, and LAF activity-count events
+  are matched only through DB-confirmed LAF case identity.
 - Backup drill verifies a readable local backup and keeps restore
   confirmation-gated.
 - Portal automation uses draft-only or explicit-confirmation mode unless the
@@ -145,6 +148,10 @@ Before launch, publish or provide:
 - [ ] DB backup exists, is readable, and restore requires confirmation.
 - [ ] NAS/file storage is mounted at the expected path.
 - [ ] Portal automation is draft-only or explicitly confirmed.
+- [ ] Calendar import rules are documented for operators and staff. Same-name
+      cases must resolve through DB case type, LAF number, legal-aid status, or
+      case-reason hints; unresolved same-name LAF events must be skipped rather
+      than guessed.
 - [ ] Terms, privacy policy, support path, and security disclosure path are
       published.
 - [ ] Third-party license and API terms have been reviewed for paid use.
