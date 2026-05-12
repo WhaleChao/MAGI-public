@@ -1306,7 +1306,7 @@
             const contentType = (response.headers.get('content-type') || '').toLowerCase();
             if (!contentType.includes('application/json')) {
                 if (response.status === 401) {
-                    throw new Error('請重新登入 dashboard');
+                    throw new Error('請重新登入 MAGI');
                 }
                 throw new Error(unavailableMessage);
             }
@@ -1318,7 +1318,7 @@
             }
             if (!response.ok || payload.ok === false) {
                 if (payload.error === 'auth_required') {
-                    throw new Error('請重新登入 dashboard');
+                    throw new Error('請重新登入 MAGI');
                 }
                 if (payload.error === 'admin_required') {
                     throw new Error('只有管理員可以操作');
@@ -1426,7 +1426,7 @@
             } catch (e) {
                 if (!options.quiet) {
                     setSkillInterviewStatusRight(
-                        e.message === '請重新登入 dashboard' ? '請重新登入後再使用問答精靈。' : '問答精靈目前暫時沒有連上。',
+                        e.message === '請重新登入 MAGI' ? '請重新登入後再使用問答精靈。' : '問答精靈目前暫時沒有連上。',
                         'warn'
                     );
                     setSkillInterviewOutputRight('目前無法讀取問答精靈狀態。若要先工作，可以直接到 NERV 編輯 SKILL。');
@@ -1443,7 +1443,7 @@
                 const el = document.getElementById('skill-interview-history-right');
                 if (!el) return;
                 el.innerHTML = `<div style="color: rgba(29,29,31,0.5);">${escapeHtml(
-                    e.message === '請重新登入 dashboard' ? '請重新登入後檢視產生紀錄。' : '目前無法讀取產生紀錄。'
+                    e.message === '請重新登入 MAGI' ? '請重新登入後檢視產生紀錄。' : '目前無法讀取產生紀錄。'
                 )}</div>`;
             }
         }
@@ -1466,7 +1466,7 @@
                 await renderSkillInterviewStateRight(payload);
             } catch (e) {
                 setSkillInterviewStatusRight(
-                    e.message === '請重新登入 dashboard'
+                    e.message === '請重新登入 MAGI'
                         ? '請重新登入後再使用問答精靈。'
                         : '問答精靈目前沒有連上，你可以先到 NERV 直接編輯 SKILL。',
                     'warn'
@@ -1493,7 +1493,7 @@
                 await renderSkillInterviewStateRight(payload);
             } catch (e) {
                 setSkillInterviewStatusRight(
-                    e.message === '請重新登入 dashboard'
+                    e.message === '請重新登入 MAGI'
                         ? '請重新登入後再送出回答。'
                         : '問答精靈暫時沒有收下這題，你也可以先到 NERV 直接編輯 SKILL。',
                     'warn'

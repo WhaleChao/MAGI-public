@@ -1222,7 +1222,7 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
             except Exception as e:
                 reply = f"❌ 法扶{label}批次失敗：{type(e).__name__}: {e}"
                 try:
-                    orch._notify(reply, topic_key="laf")
+                    orch._notify(reply, topic_key=f"laf_{action_type}" if action_type == "condition" else "laf_closing")
                 except Exception:
                     pass
 

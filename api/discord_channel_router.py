@@ -182,7 +182,7 @@ _FALLBACK_CHAIN: dict[str, list[str]] = {
     "laf_condition": ["laf", "general"],
     "laf_progress": ["laf", "general"],
     "laf_closing": ["laf", "general"],
-    "laf_general": ["laf", "general"],
+    "laf_general": ["general"],
     "laf": ["general"],
     "transcript": ["general"],
     "verbatim": ["general"],

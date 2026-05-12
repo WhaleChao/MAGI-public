@@ -1192,7 +1192,7 @@
             items.push({ sep: true });
         }
         items.push({ label: '移動到其他資料夾', act: 'move' });
-        items.push({ label: '✏ 重命名 (F2)', act: 'rename' });
+        items.push({ label: '✏ 重新命名 (F2)', act: 'rename' });
         items.push({ label: '📋 複製路徑', act: 'copy-path' });
         items.push({ sep: true });
         items.push({ label: '🗑 移到回收桶 (Del)', act: 'trash', danger: true });
@@ -1279,8 +1279,8 @@
         const trimmed = newName.trim();
         if (!trimmed || trimmed === oldName) return;
         const r = await apiRename(FM.basePath, rel, trimmed);
-        if (r && r.ok) { setStatus('已重命名為：' + trimmed); refresh(); setTimeout(() => setStatus(''), 2500); }
-        else setStatus('重命名失敗：' + ((r && r.error) || '未知'), true);
+        if (r && r.ok) { setStatus('已重新命名為：' + trimmed); refresh(); setTimeout(() => setStatus(''), 2500); }
+        else setStatus('重新命名失敗：' + ((r && r.error) || '未知'), true);
     }
 
     async function trashSelected(rel, name) {

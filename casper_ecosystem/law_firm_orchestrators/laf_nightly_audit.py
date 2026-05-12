@@ -1459,15 +1459,15 @@ def reconcile_placeholder_cases(db, *, force: bool = False,
                 lines.append(f"  案由: 「{r.get('old_case_reason', '')}」 → 「{r.get('new_case_reason', '')}」")
                 rr = r.get("rename_result") or {}
                 if rr.get("renamed"):
-                    lines.append(f"  📁 資料夾已 rename → {os.path.basename(rr['new'])}")
+                    lines.append(f"  📁 資料夾已重新命名 → {os.path.basename(rr['new'])}")
                 elif rr.get("reason", "").startswith("folder_open"):
                     proc = rr["reason"].split(":", 1)[-1] if ":" in rr["reason"] else "?"
                     lines.append(f"  ⚠️ 資料夾正開啟（{proc}），DB 已更新但資料夾未 rename。")
                     lines.append(f"     請關閉相關應用後手動重跑：reconcile_placeholder --laf-no {r['laf_no']}")
                 elif rr.get("reason"):
-                    lines.append(f"  ⚠️ 資料夾 rename 跳過：{rr['reason']}（DB 已更新）")
+                    lines.append(f"  ⚠️ 資料夾重新命名跳過：{rr['reason']}（DB 已更新）")
             try:
-                notifier.notify_admin("\n".join(lines), topic_key="laf")
+                notifier.notify_admin("\n".join(lines), topic_key="laf_general")
             except TypeError:
                 notifier.notify_admin("\n".join(lines))
         except Exception as e:
@@ -2558,7 +2558,7 @@ def send_report(report_text: str, has_issues: bool = False):
             message=report_text,
             severity=severity,
             source="laf_nightly_audit",
-            topic_key="laf",
+            topic_key="laf_general",
         )
         logger.info("Telegram notification sent: %s", result.get("telegram", False))
     except Exception as e:

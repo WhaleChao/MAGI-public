@@ -54,6 +54,15 @@ def test_laf_income_tax_year_pair_switches_in_may():
     assert mod._laf_income_tax_year_pair(mod.date(2027, 5, 1)) == (114, 115)
 
 
+def test_case_workbench_excludes_pre_start_name_only_gcal_rows():
+    src = Path("api/blueprints/osc_cases.py").read_text(encoding="utf-8")
+
+    assert "source_file LIKE 'gcal_import%%'" in src
+    assert "AND todo_date < %s" in src
+    assert "AND description NOT LIKE %s" in src
+    assert "assigned_todo_clause" in src
+
+
 def test_laf_activity_stats_counts_calendar_meeting_and_excludes_laf_admin(monkeypatch):
     monkeypatch.setattr(mod, "_osc_exec", lambda *args, **kwargs: ({"cnt": 1}, {}))
     case = {"client_name": "陳鏈棠", "case_reason": "更生"}

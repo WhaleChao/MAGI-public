@@ -126,6 +126,7 @@ def test_saas_workbench_template_has_actionable_entry_links():
     assert "工作台" not in html
     assert "面板" not in html
     assert "漏斗" not in html
+    assert "重命名" not in html
     assert "對外文件產生包" not in html
     assert "資料包" not in html
     assert 'id="saasTimelineSection"' in html

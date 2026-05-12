@@ -2170,14 +2170,26 @@ def osc_case_workbench_api(row_id):
     laf_like = f"%{laf_no}%" if laf_no else ""
     activity_since_clause = ""
     activity_since_params: list[str] = []
+    assigned_todo_clause = "case_number=%s"
+    assigned_todo_params: list[str] = [case_number]
     if start_date:
         activity_since_clause = " AND (todo_date IS NULL OR todo_date >= %s)"
         activity_since_params.append(start_date)
+        assigned_todo_clause = """
+            case_number=%s
+            AND NOT (
+                source_file LIKE 'gcal_import%%'
+                AND todo_date IS NOT NULL
+                AND todo_date < %s
+                AND description NOT LIKE %s
+            )
+        """
+        assigned_todo_params.extend([start_date, case_like])
     todos, _ = _osc_exec(
         f"""
         SELECT id, case_number, client_name, todo_type, todo_date, todo_time, description, status, source_file, created_date, completed_date
         FROM case_todos
-        WHERE case_number=%s
+        WHERE ({assigned_todo_clause})
            OR (
                 %s != ''
                 AND COALESCE(case_number, '') = ''
@@ -2186,7 +2198,7 @@ def osc_case_workbench_api(row_id):
            )
         ORDER BY todo_date DESC, id DESC LIMIT 800
         """,
-        tuple([case_number, client_name, client_like, client_like] + activity_since_params),
+        tuple(assigned_todo_params + [client_name, client_like, client_like] + activity_since_params),
         fetch="all",
     )
     meeting_since_clause = ""

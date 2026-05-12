@@ -2332,7 +2332,7 @@ def task_laf_pending_scan(payload: Dict[str, Any]) -> Dict[str, Any]:
     try:
         sys.path.insert(0, os.path.join(SKILL_DIR, "..", ".."))
         from skills.ops.red_phone import alert_admin
-        alert_admin(msg, severity="info", topic_key="laf")
+        alert_admin(msg, severity="info", topic_key="laf_general")
         result["notified"] = True
     except Exception as e:
         result["notified"] = False

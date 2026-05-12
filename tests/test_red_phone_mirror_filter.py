@@ -85,6 +85,28 @@ def test_system_sources_infer_non_business_topics():
     assert red_phone._canonical_topic_key("quiet_cron") == "check"
 
 
+def test_laf_reports_and_actions_infer_separate_topics(monkeypatch):
+    assert red_phone._infer_topic_key("📋 法扶夜間巡檢報告\n📊 法扶案件總數：125", "laf_nightly_audit", "warning") == "laf_general"
+    assert red_phone._infer_topic_key("📥 新法扶派案已建立\n案號: 1150505-W-002", "laf_monitor", "info") == "laf_dispatch"
+    assert red_phone._infer_topic_key("❌ go_live 暫存失敗 — 1150421-E-016", "laf_orchestrator", "warning") == "laf_go_live"
+    assert red_phone._infer_topic_key("法扶二階段回報待確認：附條件審查需補資料", "laf_orchestrator", "warning") == "laf_condition"
+    assert red_phone._infer_topic_key("未結案件進度回報：請確認送出 confirm_token=ABC123", "laf_orchestrator", "warning") == "laf_progress"
+
+
+def test_laf_general_telegram_fallback_does_not_use_laf_business_topic(monkeypatch):
+    monkeypatch.setattr(red_phone, "_load_topic_map", lambda: {"laf": 111, "general": 999})
+
+    topic, thread_id = red_phone._resolve_thread_id(
+        "📋 法扶夜間巡檢報告\n📊 法扶案件總數：125",
+        "laf_nightly_audit",
+        "warning",
+        topic_key="laf_general",
+    )
+
+    assert topic == "laf_general"
+    assert thread_id == 999
+
+
 def test_outbox_preserves_topic_key(tmp_path, monkeypatch):
     outbox_path = tmp_path / "outbox.json"
     monkeypatch.setattr(red_phone, "RED_PHONE_OUTBOX_FILE", str(outbox_path))

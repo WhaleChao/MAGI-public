@@ -85,7 +85,7 @@ CAPABILITIES = [
         "tab": "dashboard",
         "primary_action": {"act": "saas-section-jump", "section": "saasIntakeSection", "label": "建立紀錄"},
         "source": "runtime intake JSONL",
-        "role": "原本沒有正式收案前入口，僅保留諮詢紀錄；轉正式案件後仍進 cases",
+        "role": "原本沒有正式接案前入口，僅保留諮詢紀錄；轉正式案件後仍進 cases",
     },
     {
         "key": "conflict_check",

@@ -79,6 +79,24 @@ def test_laf_nightly_audit_report_routes_to_laf_general_before_progress_keyword(
     )
 
 
+def test_laf_general_discord_fallback_does_not_use_laf_business_channel(monkeypatch):
+    msg = "📋 法扶夜間巡檢報告\n📊 法扶案件總數：125"
+
+    monkeypatch.setattr(
+        router,
+        "_load_channel_map",
+        lambda: {
+            "laf": "444",
+            "general": "555",
+        },
+    )
+
+    assert router.resolve_discord_channel(msg, topic_key="laf_general", source="laf_nightly_audit") == (
+        "laf_general",
+        "555",
+    )
+
+
 def test_laf_progress_confirmation_still_routes_to_progress_channel():
     msg = "未結案件進度回報：請確認送出，confirm_token=ABC123"
 

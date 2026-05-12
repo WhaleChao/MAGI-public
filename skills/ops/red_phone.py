@@ -768,6 +768,28 @@ def _infer_topic_key(message: str, source: str, severity: str) -> str:
                              "派案", "開辦", "扶助", "laf_", "待報結",
                              "費用", "疑義", "二階段", "附條件",
                              "closing_report", "laf_closing", "laf_dispatch"]):
+        if src == "laf_nightly_audit" or any(k in s for k in [
+            "法扶夜間巡檢報告",
+            "巡檢報告",
+            "案件總數",
+            "自動補填法扶案號",
+            "仍待確認法扶案號",
+        ]):
+            return "laf_general"
+        if any(k in s for k in ["進度回報", "laf_progress", "未結案件進度", "confirm_token"]):
+            return "laf_progress"
+        if any(k in s for k in ["新法扶派案", "派案已建立", "派案", "dispatch", "新案", "審查結果", "准予扶助"]):
+            return "laf_dispatch"
+        if any(k in s for k in ["go_live", "go-live", "開辦", "開辦回報", "開辦暫存"]):
+            return "laf_go_live"
+        if any(k in s for k in ["二階段", "附條件", "condition"]):
+            return "laf_condition"
+        if any(k in s for k in ["費用", "酬金", "領款", "fee"]):
+            return "laf_fee"
+        if any(k in s for k in ["疑義", "inquiry", "不合標準"]):
+            return "laf_inquiry"
+        if any(k in s for k in ["報結", "結案", "closing", "待報結", "closing_report", "laf_closing"]):
+            return "laf_closing"
         return "laf"
     if any(k in s for k in ["判決", "judgment", "司法院", "裁判"]):
         return "judgment"
@@ -815,7 +837,7 @@ def _resolve_thread_id(message: str, source: str, severity: str, topic_key: str 
         "filereview_download": "filereview",
         "filereview_apply": "filereview",
         "laf_dispatch": "laf",
-        "laf_general": "laf",
+        "laf_general": "general",
         "laf_closing": "laf",
         "judicial_api": "judgment",
     }

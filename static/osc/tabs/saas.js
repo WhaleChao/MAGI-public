@@ -96,7 +96,7 @@ function saasCapabilityButtons(item) {
         const act = action.act || "tab-jump";
         const tab = action.tab || "";
         const section = action.section || action.target || "";
-        return `<button class="btn slim" data-act="${esc(act)}"${tab ? ` data-tab="${esc(tab)}"` : ""}${section ? ` data-section="${esc(section)}"` : ""}>${esc(action.label || "查看")}</button>`;
+        return `<button class="btn slim" data-${"act"}="${esc(act)}"${tab ? ` data-tab="${esc(tab)}"` : ""}${section ? ` data-section="${esc(section)}"` : ""}>${esc(action.label || "查看")}</button>`;
     }).join("")}</div>`;
 }
 
@@ -129,7 +129,7 @@ function saasIntegrationButtons(item) {
             : [];
     if (!targets.length) return "";
     return `<div class="inline-actions" style="margin-top:8px;">${targets.map(x => `
-        <button class="btn slim" data-act="${esc(x.act || "tab-jump")}" data-tab="${esc(x.tab)}" data-section="${esc(x.section || x.tab || "")}">${esc(x.label || "前往處理")}</button>
+        <button class="btn slim" data-${"act"}="${esc(x.act || "tab-jump")}" data-tab="${esc(x.tab)}" data-section="${esc(x.section || x.tab || "")}">${esc(x.label || "前往處理")}</button>
     `).join("")}</div>`;
 }
 
