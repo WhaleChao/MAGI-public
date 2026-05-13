@@ -76,6 +76,7 @@ from api.osc.saas_workbench import (
     build_notification_preferences,
     build_onboarding_status,
     build_saas_overview,
+    build_task_boards,
     build_workflow_templates,
     conflict_check,
     quality_check,
@@ -2632,6 +2633,13 @@ def osc_saas_client_packet_api():
 def osc_saas_timeline_api():
     case_number = (request.args.get("case_number") or "").strip()
     return jsonify({"ok": True, **build_document_timeline(_osc_exec, case_number=case_number)})
+
+
+@osc_bp.route("/api/osc/saas/task-boards", methods=["GET"])
+@login_required
+def osc_saas_task_boards_api():
+    case_number = (request.args.get("case_number") or "").strip()
+    return jsonify(build_task_boards(_osc_exec, case_number=case_number))
 
 
 @osc_bp.route("/api/osc/saas/onboarding", methods=["GET", "POST"])

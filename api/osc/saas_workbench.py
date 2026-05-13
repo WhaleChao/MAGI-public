@@ -26,6 +26,7 @@ WORKFLOW_TEMPLATES_PATH = ROOT / ".runtime" / "osc_saas_workflow_templates.json"
 MAX_TEXT = 60000
 CLOSED_CASE_STATUSES = ("已結案", "已結案，待報結", "已結案待報結", "已結案，待送出")
 NOT_NEEDED_FOR_SINGLE_HOST = ("多租戶", "電子簽章", "公開上傳入口")
+TASK_REFRESH_INTERVAL_HOURS = 6
 
 ExecFn = Callable[..., tuple[Any, Any]]
 
@@ -313,6 +314,57 @@ DEFAULT_WORKFLOW_TEMPLATES = [
     },
 ]
 
+LEGAL_WORKFLOW_AGENTS = [
+    {
+        "key": "legal_research_agent",
+        "title": "實務見解檢索代理",
+        "scope": "法律問題、書狀引用、裁判檢索",
+        "steps": ["確認案由與爭點", "先查本機實務見解與裁判全文", "必要時查 MCP 法律資料庫", "列出可引用來源", "無來源時明示查不到"],
+        "guardrails": ["不得把摘要當全文", "引用前須保留裁判字號與來源", "查不到不得補故事"],
+        "review_gate": "律師核對全文後才能放入正式書狀。",
+        "entry_actions": [{"act": "tab-jump", "tab": "drafts", "label": "AI 草擬"}],
+    },
+    {
+        "key": "pleading_review_agent",
+        "title": "書狀覆核代理",
+        "scope": "草稿到定稿",
+        "steps": ["比對同案由學習紀錄", "檢查狀頭與案號", "檢查引用來源", "檢查格式與段落", "輸出需人工確認清單"],
+        "guardrails": ["同案由才套用學習", "不得跨程序混用範本", "含待確認欄位不得視為完成"],
+        "review_gate": "人工確認後才匯出 DOCX/PDF。",
+        "entry_actions": [{"act": "tab-jump", "tab": "drafts", "label": "AI 草擬"}, {"act": "tab-jump", "tab": "documents", "label": "書狀索引"}],
+    },
+    {
+        "key": "laf_compliance_agent",
+        "title": "法扶回報代理",
+        "scope": "法扶開辦、活動計數、報結",
+        "steps": ["確認法扶案號", "統計律見、閱卷、聯繫、開庭", "排除同名不同案", "產生可複製回報文字", "需送出時保留人工確認"],
+        "guardrails": ["法扶送出不自動提交", "同名多案需看案件種類與案號", "結案搬移先預覽後執行"],
+        "review_gate": "對外提交前必須人工按確認。",
+        "entry_actions": [{"act": "tab-jump", "tab": "laf", "label": "法扶管理"}],
+    },
+]
+
+PRACTICE_AREA_PROFILES = [
+    {
+        "key": "debt_profile",
+        "title": "消債事件設定檔",
+        "scope": "更生 / 清算 / 調解",
+        "rules": ["所得清單依聲請前兩年度動態推算", "應備事項表沿用 OSC 邏輯", "債權人清冊與財產資料需分項追蹤"],
+    },
+    {
+        "key": "criminal_profile",
+        "title": "刑事案件設定檔",
+        "scope": "閱卷、律見、開庭、筆錄",
+        "rules": ["閱卷次數以資料夾有效內容優先", "純繳費單資料夾不列入閱卷", "筆錄下載只顯示實際有新增者"],
+    },
+    {
+        "key": "civil_profile",
+        "title": "民事案件設定檔",
+        "scope": "一般民事、強制執行、家事",
+        "rules": ["同名不同程序不得混案", "強制執行可用判決書資料夾內執行命令作為結案依據", "書狀引用需回到來源文件"],
+    },
+]
+
 APPROVAL_MATRIX = [
     {"operation": "法扶送出 / 報結", "level": "manual_confirm", "reason": "會對外提交資料"},
     {"operation": "DB 還原", "level": "manual_confirm", "reason": "可能覆蓋正式資料"},
@@ -416,11 +468,13 @@ def _risk_from_todo(row: dict, today: date) -> dict:
             severity, reason = "high", f"{delta} 天內到期"
         else:
             severity, reason = "medium", f"{delta} 天後"
+    source_file = str(row.get("source_file") or "").strip()
+    is_calendar_import = source_file.startswith("gcal_import")
     return {
         "type": "todo",
         "severity": severity,
-        "owner": "待辦事項",
-        "target_tab": "todos",
+        "owner": "行事曆匯入" if is_calendar_import else "OSC 建立待辦",
+        "target_tab": "calendar" if is_calendar_import else "todos",
         "reason": reason,
         "case_number": row.get("case_number") or "",
         "client_name": row.get("client_name") or "",
@@ -473,7 +527,7 @@ def build_risk_dashboard(exec_fn: ExecFn, *, limit: int = 30) -> dict:
     todos = _rows(
         exec_fn,
         f"""
-        SELECT id, case_number, client_name, todo_type, todo_date, todo_time, description, status
+        SELECT id, case_number, client_name, todo_type, todo_date, todo_time, description, status, source_file
         FROM case_todos
         WHERE {_status_open_sql()}
         ORDER BY COALESCE(todo_date, CURDATE()) ASC, id DESC
@@ -538,6 +592,137 @@ def build_risk_dashboard(exec_fn: ExecFn, *, limit: int = 30) -> dict:
             "critical": sum(1 for x in risks if x.get("severity") == "critical"),
             "high": sum(1 for x in risks if x.get("severity") == "high"),
             "medium": sum(1 for x in risks if x.get("severity") == "medium"),
+        },
+    }
+
+
+def _todo_board_item(row: dict, *, imported_calendar: bool = False) -> dict:
+    date_part = str(row.get("todo_date") or "").strip()
+    time_part = str(row.get("todo_time") or "").strip()
+    return {
+        "id": row.get("id"),
+        "source": "gcal_import" if imported_calendar else "case_todos",
+        "source_label": "行事曆匯入" if imported_calendar else "OSC 建立",
+        "case_number": row.get("case_number") or "",
+        "client_name": row.get("client_name") or "",
+        "date": date_part,
+        "time": time_part,
+        "title": row.get("todo_type") or ("行事曆事件" if imported_calendar else "待辦"),
+        "detail": row.get("description") or row.get("source_file") or "",
+        "status": row.get("status") or "",
+        "sort_key": f"{date_part or '9999-99-99'} {time_part or '99:99'}",
+        "actions": [
+            _action("編輯", "saas-todo-edit", id=row.get("id")),
+            _action("完成", "saas-todo-complete", id=row.get("id")),
+        ],
+    }
+
+
+def _calendar_board_item(row: dict) -> dict:
+    raw_date = str(row.get("start_date") or "").strip()
+    return {
+        "id": row.get("id"),
+        "source": "calendar_events",
+        "source_label": "行事曆事件",
+        "case_number": row.get("case_number") or "",
+        "client_name": "",
+        "date": raw_date[:10],
+        "time": raw_date[11:16] if len(raw_date) >= 16 else "",
+        "title": row.get("title") or row.get("summary") or "行事曆事件",
+        "detail": row.get("location") or row.get("description") or "",
+        "status": "",
+        "sort_key": raw_date or "9999-99-99 99:99",
+        "actions": [_action("編輯", "saas-cal-edit", id=row.get("id"))],
+    }
+
+
+def build_task_boards(exec_fn: ExecFn, *, case_number: str = "", limit: int = 20) -> dict:
+    """Return separate to-do boards for OSC-created items and calendar items.
+
+    Google Calendar imports are stored in ``case_todos`` with source_file
+    ``gcal_import``.  They must stay on the calendar board so the operations
+    page does not misread imported/manual calendar work as OSC-created work.
+    """
+
+    case_clause = ""
+    case_params: list[Any] = []
+    if case_number:
+        case_clause = " AND (case_number=%s OR case_number LIKE %s OR description LIKE %s)"
+        like = f"%{case_number}%"
+        case_params = [case_number, like, like]
+
+    osc_todos = _rows(
+        exec_fn,
+        f"""
+        SELECT id, case_number, client_name, todo_type, todo_date, todo_time, description, status, source_file, created_date
+        FROM case_todos
+        WHERE {_status_open_sql()}
+          AND (source_file IS NULL OR source_file='' OR source_file NOT LIKE 'gcal_import%%')
+          {case_clause}
+        ORDER BY COALESCE(todo_date, CURDATE()) ASC, COALESCE(todo_time, '23:59') ASC, id DESC
+        LIMIT %s
+        """,
+        tuple(case_params + [limit]),
+    )
+    imported_calendar_todos = _rows(
+        exec_fn,
+        f"""
+        SELECT id, case_number, client_name, todo_type, todo_date, todo_time, description, status, source_file, created_date
+        FROM case_todos
+        WHERE {_status_open_sql()}
+          AND source_file LIKE 'gcal_import%%'
+          {case_clause}
+        ORDER BY COALESCE(todo_date, CURDATE()) ASC, COALESCE(todo_time, '23:59') ASC, id DESC
+        LIMIT %s
+        """,
+        tuple(case_params + [limit]),
+    )
+    cal_clause = ""
+    cal_params: list[Any] = []
+    if case_number:
+        cal_clause = " AND (case_number=%s OR title LIKE %s OR summary LIKE %s OR description LIKE %s)"
+        like = f"%{case_number}%"
+        cal_params = [case_number, like, like, like]
+    calendar_events = _rows(
+        exec_fn,
+        f"""
+        SELECT id, case_number, title, summary, start_date, end_date, description, location, is_all_day
+        FROM calendar_events
+        WHERE start_date >= %s
+          {cal_clause}
+        ORDER BY start_date ASC, id ASC
+        LIMIT %s
+        """,
+        tuple([date.today() - timedelta(days=1)] + cal_params + [limit]),
+    )
+    calendar_items = [_calendar_board_item(x) for x in calendar_events] + [
+        _todo_board_item(x, imported_calendar=True) for x in imported_calendar_todos
+    ]
+    calendar_items.sort(key=lambda x: x.get("sort_key") or "")
+    return {
+        "ok": True,
+        "refresh": {
+            "interval_hours": TASK_REFRESH_INTERVAL_HOURS,
+            "cron_id": "job_osc_events_refresh",
+            "policy": "每 6 小時更新 OSC 建立待辦與行事曆事件；頁面重新整理時只讀已更新資料。",
+        },
+        "osc_todos": {
+            "title": "OSC 建立待辦",
+            "source": "case_todos（排除 gcal_import）",
+            "items": [_todo_board_item(x) for x in osc_todos],
+            "count": len(osc_todos),
+            "entry_actions": [{"act": "tab-jump", "tab": "todos", "label": "待辦事項"}],
+        },
+        "calendar_events": {
+            "title": "行事曆事件",
+            "source": "calendar_events + case_todos.source_file=gcal_import",
+            "items": calendar_items[:limit],
+            "count": len(calendar_items),
+            "source_counts": {
+                "calendar_events": len(calendar_events),
+                "gcal_import": len(imported_calendar_todos),
+            },
+            "entry_actions": [{"act": "tab-jump", "tab": "calendar", "label": "行事曆"}],
         },
     }
 
@@ -966,7 +1151,19 @@ def build_workflow_templates() -> dict:
             merged = {**base, **item}
             by_key[str(item["key"])] = merged
         templates = list(by_key.values())
-    return {"ok": True, "templates": templates, "count": len(templates)}
+    return {
+        "ok": True,
+        "templates": templates,
+        "legal_workflow_agents": [dict(x) for x in LEGAL_WORKFLOW_AGENTS],
+        "practice_profiles": [dict(x) for x in PRACTICE_AREA_PROFILES],
+        "count": len(templates),
+        "reference": {
+            "name": "claude-for-legal",
+            "url": "https://github.com/anthropics/claude-for-legal",
+            "import_mode": "conceptual_patterns_only",
+            "note": "移植其法律工作流代理、案由設定檔、來源與覆核護欄的設計；不複製外部程式碼。",
+        },
+    }
 
 
 def build_ai_governance() -> dict:
@@ -1015,6 +1212,7 @@ def build_diagnostic_pack(exec_fn: ExecFn) -> dict:
         "scope": "single_host_magi",
         "readiness": build_product_readiness(exec_fn),
         "operations": build_operations_report(exec_fn),
+        "task_boards": build_task_boards(exec_fn, limit=8),
         "onboarding": build_onboarding_status(),
         "notification_preferences": build_notification_preferences(),
         "workflow_templates": build_workflow_templates(),
@@ -1066,6 +1264,7 @@ def build_product_readiness(exec_fn: ExecFn) -> dict:
             "high_risk_recent": high_risk_count,
             "total_cases": operations.get("total_cases", 0),
             "pending_todos": operations.get("pending_todos", 0),
+            "task_refresh_interval_hours": TASK_REFRESH_INTERVAL_HOURS,
         },
         "checks": checks,
         "approval_matrix": APPROVAL_MATRIX,
@@ -1074,6 +1273,7 @@ def build_product_readiness(exec_fn: ExecFn) -> dict:
 
 def build_saas_overview(exec_fn: ExecFn, *, case_number: str = "") -> dict:
     risk = build_risk_dashboard(exec_fn)
+    task_boards = build_task_boards(exec_fn, case_number=case_number)
     timeline = build_document_timeline(exec_fn, case_number=case_number)
     ops = build_operations_report(exec_fn)
     learning = {"summary": draft_learning_summary(), "recent": recent_draft_feedback(8)}
@@ -1085,6 +1285,7 @@ def build_saas_overview(exec_fn: ExecFn, *, case_number: str = "") -> dict:
             "principle": "這裡集中顯示常用資訊；實際新增與修改仍在各對應頁籤完成。",
             "items": INTEGRATION_MATRIX,
         },
+        "task_boards": task_boards,
         "risk": risk,
         "timeline": timeline,
         "operations": ops,

@@ -38,6 +38,11 @@ function buildSaasFallbackOverview(error) {
             principle: "MAGI 暫時讀不到管理工具 API；下方先保留各功能入口，正式資料請以各頁籤為準。",
             items: [],
         },
+        task_boards: {
+            refresh: {interval_hours: 6, policy: "每 6 小時更新 OSC 建立待辦與行事曆事件。"},
+            osc_todos: {items: [], count: 0},
+            calendar_events: {items: [], count: 0},
+        },
         risk: {items: []},
         timeline: {items: []},
         operations: {
@@ -84,6 +89,7 @@ function renderSaasWorkbench() {
     renderSaasReadiness(data.readiness || {});
     renderSaasCapabilities(data.capabilities || []);
     renderSaasIntegration(data.integration || {});
+    renderSaasTaskBoards(data.task_boards || {});
     renderSaasRisk(data.risk || {});
     renderSaasOps(data.operations || {}, data.audit || {});
     renderSaasTimeline(data.timeline || {});
@@ -248,7 +254,10 @@ function renderSaasWorkflowTemplates(data) {
     const list = document.getElementById("saasWorkflowList");
     if (!list) return;
     const templates = data.templates || [];
-    list.innerHTML = templates.length ? templates.map(t => `
+    const agents = data.legal_workflow_agents || [];
+    const profiles = data.practice_profiles || [];
+    const ref = data.reference || {};
+    const templateHtml = templates.length ? templates.map(t => `
         <div class="selection-item">
             <div class="meta-text">
                 <div>${esc(t.title || "")}｜${esc(t.scope || "")}</div>
@@ -257,6 +266,31 @@ function renderSaasWorkflowTemplates(data) {
             </div>
         </div>
     `).join("") : `<div class="muted">尚無流程樣板。</div>`;
+    const agentHtml = agents.length ? `
+        <div class="section-note" style="margin-top:12px;">法律工作流代理：採用 ${esc(ref.name || "legal workflow")} 的工作流、設定檔與覆核護欄概念；不複製外部程式碼。</div>
+        ${agents.map(a => `
+            <div class="selection-item">
+                <div class="meta-text">
+                    <div>${esc(a.title || "")}｜${esc(a.scope || "")}</div>
+                    <div class="muted">流程：${(a.steps || []).map((s, i) => `${i + 1}. ${esc(s)}`).join("　")}</div>
+                    <div class="muted">護欄：${(a.guardrails || []).map(esc).join("、")}｜${esc(a.review_gate || "")}</div>
+                    ${saasActionButtons(a.entry_actions || [])}
+                </div>
+            </div>
+        `).join("")}
+    ` : "";
+    const profileHtml = profiles.length ? `
+        <div class="section-note" style="margin-top:12px;">案由設定檔：同案由才套用學習與流程規則，避免不同程序互相污染。</div>
+        ${profiles.map(p => `
+            <div class="selection-item">
+                <div class="meta-text">
+                    <div>${esc(p.title || "")}｜${esc(p.scope || "")}</div>
+                    <div class="muted">${(p.rules || []).map(esc).join("、")}</div>
+                </div>
+            </div>
+        `).join("")}
+    ` : "";
+    list.innerHTML = templateHtml + agentHtml + profileHtml;
 }
 
 function renderSaasGovernance(governance, reportText) {
@@ -271,6 +305,36 @@ function renderSaasGovernance(governance, reportText) {
         <div class="selection-item"><div class="meta-text"><div>${x.ready ? "已啟用" : "需檢查"}｜${esc(x.path || "")}</div></div></div>
     `).join("");
     list.innerHTML = policies + files || `<div class="muted">尚無 AI 來源治理資訊。</div>`;
+}
+
+function renderSaasTaskBoards(boards) {
+    const refresh = boards.refresh || {};
+    const refreshEl = document.getElementById("saasTaskRefreshPolicy");
+    if (refreshEl) {
+        refreshEl.textContent = refresh.policy || `每 ${Number(refresh.interval_hours || 6)} 小時更新 OSC 建立待辦與行事曆事件。`;
+    }
+    const renderBoard = (tbodyId, board, emptyText) => {
+        const rows = (board.items || []).map(x => `<tr>
+            <td style="white-space:nowrap">${esc([x.date || "", x.time || ""].filter(Boolean).join(" "))}</td>
+            <td style="white-space:nowrap">${esc(x.case_number || "")}</td>
+            <td>${esc(x.client_name || x.source_label || "")}</td>
+            <td>${esc(shortText(x.title || "", 40))}</td>
+            <td>${esc(shortText(x.detail || "", 72))}</td>
+            <td>${saasActionButtons(x.actions || [])}</td>
+        </tr>`);
+        renderSimpleRows(tbodyId, rows, 6, emptyText);
+    };
+    const oscSummary = document.getElementById("saasOscTodoSummary");
+    const calSummary = document.getElementById("saasCalendarEventSummary");
+    const osc = boards.osc_todos || {};
+    const cal = boards.calendar_events || {};
+    if (oscSummary) oscSummary.textContent = `${Number(osc.count || 0)} 筆｜來源：${osc.source || "case_todos"}`;
+    if (calSummary) {
+        const counts = cal.source_counts || {};
+        calSummary.textContent = `${Number(cal.count || 0)} 筆｜calendar_events ${Number(counts.calendar_events || 0)}，日曆匯入 ${Number(counts.gcal_import || 0)}`;
+    }
+    renderBoard("saasOscTodoBody", osc, "目前沒有 OSC 建立待辦");
+    renderBoard("saasCalendarEventBody", cal, "目前沒有行事曆事件");
 }
 
 function renderSaasRisk(risk) {

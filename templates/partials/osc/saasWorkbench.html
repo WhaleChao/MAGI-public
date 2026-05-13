@@ -111,6 +111,50 @@
                 </div>
             </div>
 
+            <div class="card" id="saasTaskBoardSection">
+                <div class="section-head">
+                    <div>
+                        <h3>事件待辦</h3>
+                        <div class="section-note">行事曆事件與 OSC 建立待辦分開顯示；避免 Google 日曆匯入被誤認成 OSC 自建待辦。</div>
+                    </div>
+                    <div class="inline-actions">
+                        <button class="btn" data-act="tab-jump" data-tab="calendar">行事曆</button>
+                        <button class="btn" data-act="tab-jump" data-tab="todos">待辦事項</button>
+                    </div>
+                </div>
+                <div id="saasTaskRefreshPolicy" class="status-banner">每 6 小時更新 OSC 建立待辦與行事曆事件。</div>
+                <div class="grid-2">
+                    <div>
+                        <div class="section-head">
+                            <div>
+                                <h3>OSC 建立待辦</h3>
+                                <div id="saasOscTodoSummary" class="section-note">來源：case_todos（排除日曆匯入）。</div>
+                            </div>
+                        </div>
+                        <div class="table-wrap">
+                            <table>
+                                <thead><tr><th>時間</th><th>案件</th><th>當事人</th><th>事項</th><th>內容</th><th>操作</th></tr></thead>
+                                <tbody id="saasOscTodoBody"></tbody>
+                            </table>
+                        </div>
+                    </div>
+                    <div>
+                        <div class="section-head">
+                            <div>
+                                <h3>行事曆事件</h3>
+                                <div id="saasCalendarEventSummary" class="section-note">來源：calendar_events 與 Google 日曆匯入。</div>
+                            </div>
+                        </div>
+                        <div class="table-wrap">
+                            <table>
+                                <thead><tr><th>時間</th><th>案件</th><th>來源</th><th>事項</th><th>內容</th><th>操作</th></tr></thead>
+                                <tbody id="saasCalendarEventBody"></tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
             <div class="grid-2">
                 <div class="card" id="saasRiskSection">
                     <div class="section-head">
