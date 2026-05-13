@@ -57,7 +57,7 @@ def test_first_run_write_env_generates_local_secrets(tmp_path, monkeypatch):
                 "FLASK_SECRET_KEY=<random-hex-string>",
                 "MAGI_API_KEY=<random-hex-string>",
                 "MAGI_ROOT_DIR=/path/to/MAGI_v2",
-                "MAGI_SKILL_PYTHON=/path/to/MAGI_v2/venv/bin/python3",
+                "MAGI_SKILL_PYTHON=/path/to/MAGI_v2/.venv/bin/python",
             ]
         ),
         encoding="utf-8",
@@ -71,6 +71,7 @@ def test_first_run_write_env_generates_local_secrets(tmp_path, monkeypatch):
     assert result["created"] is True
     assert "<random-hex-string>" not in text
     assert f"MAGI_ROOT_DIR={tmp_path}" in text
+    assert f"MAGI_SKILL_PYTHON={tmp_path}/.venv/bin/python" in text
 
 
 def test_first_run_public_mode_flags_private_markers(monkeypatch, tmp_path):
@@ -114,3 +115,16 @@ def test_seed_cron_jobs_default_python_matches_safe_process(tmp_path, monkeypatc
     assert f"{tmp_path}/venv/bin/python3" in cron_text
     assert '"id": "job_resource_governor"' in cron_text
     assert '"cron": "20 * * * *"' in cron_text
+
+
+def test_seed_cron_jobs_prefers_dotvenv_when_created_by_installer(tmp_path, monkeypatch):
+    monkeypatch.delenv("MAGI_CRON_PYTHON", raising=False)
+    monkeypatch.delenv("MAGI_VENV_DIR", raising=False)
+    (tmp_path / ".venv").mkdir()
+
+    result = seed_jobs(tmp_path)
+    cron_text = (tmp_path / "cron_jobs.json").read_text(encoding="utf-8")
+
+    assert result["ok"] is True
+    assert str(default_python_path(tmp_path)) == str(tmp_path / ".venv" / "bin" / "python")
+    assert f"{tmp_path}/.venv/bin/python" in cron_text

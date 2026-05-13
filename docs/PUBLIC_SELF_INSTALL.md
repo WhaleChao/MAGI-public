@@ -13,14 +13,18 @@ This guide is for external operators installing the public MAGI package on their
 ```bash
 git clone https://github.com/WhaleChao/MAGI-public.git
 cd MAGI-public
-python3 scripts/first_run_setup.py --write-env --public
-python3 scripts/install_magi.py --dry-run --check-live
-python3 scripts/install_magi.py --yes
+python3 scripts/customer_install_wizard.py --public
+python3 scripts/customer_install_wizard.py --public --yes
 source .venv/bin/activate
 python3 scripts/magi_doctor.py --json
 ```
 
-The installer dry run is intentionally conservative. It prints the steps it would run, then stops. Run `--yes` only after the plan matches the target machine.
+The customer install wizard is intentionally conservative. Without `--yes`, it previews the plan and writes a machine-readable report. With `--yes`, it creates `.env` when missing, generates local secrets, installs dependencies, seeds local scheduled jobs, runs diagnostics, runs public-release checks, and writes `.runtime/customer_install_wizard_latest.json`. It never prints token or password values.
+
+Use `--check-live` only when the target host's model services are already
+running and you want the wizard to include live readiness probes during a
+preview. Production go-live should still run the full commercial readiness
+gate after customer-specific `.env` values are complete.
 
 ## Required Local Configuration
 
@@ -55,6 +59,7 @@ Before giving the installation to an operator, all commands below should pass:
 
 ```bash
 python3 scripts/public_release_audit.py --public-isolation --strict
+python3 scripts/customer_install_wizard.py --public --no-live
 python3 scripts/first_run_setup.py --public --json
 python3 scripts/magi_doctor.py --json
 python3 scripts/install_magi.py --dry-run --check-live

@@ -45,21 +45,18 @@ MAGI v2 is a locally-deployed AI operations platform built for a Taiwanese law f
 # 1. Clone
 git clone https://github.com/WhaleChao/MAGI-public.git && cd MAGI-public
 
-# 2. Beginner-safe installer dry run
-python3 scripts/install_magi.py --dry-run --check-live
+# 2. Run the customer install wizard
+#    Omit --yes first if you want to preview the plan without changing anything.
+python3 scripts/customer_install_wizard.py --public --yes
 
-# 3. Install when the plan looks correct
-python3 scripts/install_magi.py --yes
+# 3. Activate the local environment
 source .venv/bin/activate  # or source venv/bin/activate on existing installs
 
-# 4. Create the first-run checklist and local .env without printing secrets
-python3 scripts/first_run_setup.py --write-env --public
+# 4. Fill customer-specific .env values, then recheck
 python3 scripts/first_run_setup.py --public --json
-
-# 5. Edit .env, then run diagnostics
 python3 scripts/magi_doctor.py
 
-# 6. Start
+# 5. Start
 launchctl load ~/Library/LaunchAgents/com.magi.daemon.plist
 magi status
 ```
@@ -89,12 +86,13 @@ Public readiness checks:
 
 ```bash
 python3 scripts/public_release_audit.py --public-isolation --strict
+python3 scripts/customer_install_wizard.py --public --no-live
 python3 scripts/first_run_setup.py --public --json
 python3 scripts/magi_doctor.py --json
 python3 scripts/install_magi.py --dry-run --check-live
 ```
 
-`first_run_setup.py` is the guided entrypoint for a first-time operator: it can create a local `.env`, list missing required settings, keep next commands in a machine-readable checklist, and never prints token or password values. The public audit blocks high-confidence secrets and private tracked paths; before pushing to the public project, add `--public-isolation` to also block private legal-source integrations and private mailbox/NAS markers. For release and commercial use, run it with `--strict`; the release branch is expected to pass with `0 errors / 0 warnings`.
+`customer_install_wizard.py` is the one-command customer entrypoint: it creates a local `.env`, generates local secrets, installs dependencies when `--yes` is present, seeds local scheduled jobs, runs diagnostics, writes `.runtime/customer_install_wizard_latest.json`, and never prints token or password values. `first_run_setup.py` remains the lower-level checklist tool. The public audit blocks high-confidence secrets and private tracked paths; before pushing to the public project, add `--public-isolation` to also block private legal-source integrations and private mailbox/NAS markers. For release and commercial use, run it with `--strict`; the release branch is expected to pass with `0 errors / 0 warnings`.
 
 Before publishing or handing MAGI to another operator, treat these as go/no-go gates:
 
@@ -111,8 +109,7 @@ Public self-install flow:
 ```bash
 git clone https://github.com/WhaleChao/MAGI-public.git
 cd MAGI-public
-python3 scripts/first_run_setup.py --write-env --public
-python3 scripts/install_magi.py --dry-run --check-live
+python3 scripts/customer_install_wizard.py --public --yes
 python3 scripts/public_release_audit.py --public-isolation --strict
 ```
 

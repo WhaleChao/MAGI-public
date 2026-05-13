@@ -18,9 +18,16 @@ def default_python_path(repo_root: Path = REPO_ROOT) -> Path:
     env_python = os.environ.get("MAGI_CRON_PYTHON")
     if env_python:
         return Path(env_python).expanduser()
-    venv_dir = Path(os.environ.get("MAGI_VENV_DIR", repo_root / "venv")).expanduser()
+    if os.environ.get("MAGI_VENV_DIR"):
+        venv_dir = Path(os.environ["MAGI_VENV_DIR"]).expanduser()
+    elif (repo_root / ".venv").exists():
+        venv_dir = repo_root / ".venv"
+    else:
+        venv_dir = repo_root / "venv"
     if platform.system() == "Windows":
         return venv_dir / "Scripts" / "python.exe"
+    if venv_dir.name == ".venv":
+        return venv_dir / "bin" / "python"
     return venv_dir / "bin" / "python3"
 
 

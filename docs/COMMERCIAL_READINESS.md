@@ -38,10 +38,20 @@ Legacy direct commands remain available:
 Public source package:
 
 ```bash
+python3 scripts/customer_install_wizard.py --public --yes
 python3 scripts/first_run_setup.py --public --json
 python3 scripts/public_release_audit.py --public-isolation --strict
 python3 scripts/ops/commercial_readiness_live.py --strict-public --skip-db
 ```
+
+For external customer onboarding, `scripts/customer_install_wizard.py` is the
+preferred entrypoint. It handles the repeatable chores automatically: local
+`.env` creation, secret generation, dependency installation, scheduled-job
+seeding, diagnostics, and public audit. When `--check-live` is added, it also
+runs the installability readiness report against the current host. It
+still leaves customer-owned credentials, storage paths, OAuth accounts, and
+production DB verification to the operator because those values cannot be
+generated safely by MAGI.
 
 Private production checkout:
 
