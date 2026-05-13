@@ -608,6 +608,31 @@ def test_large_file_content_uses_system_cp_when_python_read_keeps_deadlocking(cl
     assert attempts["n"] >= 1
 
 
+def test_file_content_stages_even_when_source_stat_deadlocks(client, tmp_path, monkeypatch):
+    """SMB 若在 stat/getsize 階段先 EDEADLK，仍應暫存後完成下載。"""
+    from api.blueprints import osc_cases as mod
+
+    pdf = tmp_path / "stat-deadlock.pdf"
+    payload = b"%PDF-stat-deadlock"
+    pdf.write_bytes(payload)
+    attempts = {"n": 0}
+
+    def flaky_stat(path, **_kwargs):
+        if str(path) == str(pdf):
+            attempts["n"] += 1
+            raise OSError(errno.EDEADLK, "Resource deadlock avoided")
+        return mod.os.stat(path)
+
+    monkeypatch.setattr(mod, "_osc_stat_with_retry", flaky_stat)
+    with patch("api.blueprints.osc_cases._osc_local_path_candidates", return_value=[str(pdf)]), \
+         patch("api.blueprints.osc_cases._osc_is_safe_local_path", return_value=True):
+        r = client.get(f"/api/osc/files/content?path={pdf}")
+
+    assert r.status_code == 200
+    assert r.data == payload
+    assert attempts["n"] >= 1
+
+
 def test_direct_file_content_error_is_readable_html(client):
     r = client.get("/api/osc/files/content", headers={"Accept": "text/html"})
 

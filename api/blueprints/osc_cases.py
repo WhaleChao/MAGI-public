@@ -3746,7 +3746,7 @@ def _osc_copy_with_system_cp(local_file: str, tmp_path: str) -> bool:
     """Use macOS /bin/cp as a fallback when Python's SMB read hits EDEADLK."""
     cp_bin = shutil.which("cp") or "/bin/cp"
     try:
-        expected_size = os.path.getsize(local_file)
+        expected_size = _osc_safe_source_size_for_stage(local_file)
         result = subprocess.run(
             [cp_bin, "-p", local_file, tmp_path],
             stdout=subprocess.PIPE,
@@ -3754,10 +3754,46 @@ def _osc_copy_with_system_cp(local_file: str, tmp_path: str) -> bool:
             text=True,
             timeout=int(os.environ.get("PAPERCLIP_FILE_CP_TIMEOUT_SEC", "120") or "120"),
         )
-        return result.returncode == 0 and os.path.isfile(tmp_path) and os.path.getsize(tmp_path) == expected_size
+        if result.returncode != 0 or not os.path.isfile(tmp_path):
+            return False
+        if expected_size is None:
+            return os.path.getsize(tmp_path) >= 0
+        return os.path.getsize(tmp_path) == expected_size
     except Exception:
         _log.debug("silent-catch system cp fallback failed", exc_info=True)
         return False
+
+
+def _osc_is_transient_smb_error(exc: OSError) -> bool:
+    return int(getattr(exc, "errno", 0) or 0) in (11, 35)
+
+
+def _osc_stat_with_retry(local_file: str, *, max_attempts: int | None = None):
+    """Retry stat/getsize too; SMB can raise EDEADLK before content reads begin."""
+    if max_attempts is None:
+        max_attempts = max(2, int(os.environ.get("PAPERCLIP_FILE_STAT_MAX_ATTEMPTS", "4") or "4"))
+    last_exc: OSError | None = None
+    for attempt in range(max_attempts):
+        try:
+            return os.stat(local_file)
+        except OSError as e:
+            last_exc = e
+            if _osc_is_transient_smb_error(e) and attempt < max_attempts - 1:
+                time.sleep(0.25 * (2 ** attempt))
+                continue
+            raise
+    if last_exc:
+        raise last_exc
+
+
+def _osc_safe_source_size_for_stage(local_file: str) -> int | None:
+    try:
+        return int(_osc_stat_with_retry(local_file).st_size)
+    except OSError as e:
+        if _osc_is_transient_smb_error(e):
+            _log.warning("source stat failed with transient SMB error; staging without size precheck: %s", local_file)
+            return None
+        raise
 
 
 def _osc_is_dataless_file(path: str) -> bool:
@@ -3776,7 +3812,7 @@ def _osc_stage_file_with_retry(local_file: str, *, max_attempts: int | None = No
     if max_attempts is None:
         max_attempts = max(4, int(os.environ.get("PAPERCLIP_FILE_STAGE_MAX_ATTEMPTS", "8") or "8"))
     last_exc: Exception | None = None
-    expected_size = os.path.getsize(local_file)
+    expected_size = _osc_safe_source_size_for_stage(local_file)
     tmp_dir = os.path.join(tempfile.gettempdir(), "paperclip-downloads")
     os.makedirs(tmp_dir, exist_ok=True)
     suffix = os.path.splitext(local_file)[1] or ".bin"
@@ -3802,7 +3838,7 @@ def _osc_stage_file_with_retry(local_file: str, *, max_attempts: int | None = No
                 if e.errno in (11, 35) and _osc_copy_with_system_cp(local_file, tmp_path):
                     return tmp_path
                 raise
-            if os.path.getsize(tmp_path) != expected_size:
+            if expected_size is not None and os.path.getsize(tmp_path) != expected_size:
                 raise OSError(
                     f"staged copy incomplete: expected {expected_size} bytes, got {os.path.getsize(tmp_path)} bytes"
                 )
@@ -3985,10 +4021,20 @@ def osc_file_content_api():
     if request.method == "HEAD":
         chosen = existing_candidates[0]
         mime, _ = mimetypes.guess_type(chosen)
+        staged_for_head = ""
         try:
-            st = os.stat(chosen)
+            st = _osc_stat_with_retry(chosen)
         except OSError as e:
-            return _osc_download_error_response(f"檔案讀取失敗：{e}", 500)
+            if not _osc_is_transient_smb_error(e):
+                return _osc_download_error_response(f"檔案讀取失敗：{e}", 500)
+            try:
+                staged_for_head = _osc_stage_file_with_retry(chosen)
+                st = os.stat(staged_for_head)
+            except OSError as stage_e:
+                return _osc_download_error_response(f"檔案讀取失敗：{stage_e}", 500)
+            finally:
+                if staged_for_head:
+                    _osc_cleanup_file_once(staged_for_head)
         resp = Response(status=200, mimetype=mime or "application/octet-stream")
         resp.headers["Content-Disposition"] = _osc_content_disposition(os.path.basename(chosen), inline=inline)
         resp.headers["Accept-Ranges"] = "bytes"
