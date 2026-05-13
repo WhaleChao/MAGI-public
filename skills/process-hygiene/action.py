@@ -344,8 +344,11 @@ def scan_ports() -> List[Dict]:
     issues = []
     for port, desc in MAGI_PORTS.items():
         try:
+            # Only LISTEN sockets own a MAGI service port. Plain `lsof -ti :port`
+            # also returns short-lived CLOSED client sockets and can falsely
+            # fail commercial readiness while the managed service is healthy.
             out = subprocess.run(
-                ["lsof", "-ti", f":{port}"],
+                ["lsof", "-ti", f"TCP:{port}", "-sTCP:LISTEN"],
                 capture_output=True, text=True, timeout=5,
             )
             pids = [int(p.strip()) for p in (out.stdout or "").strip().split("\n")
