@@ -8,6 +8,7 @@ const state = {
     calendarEvents: [],
     todos: [],
     documents: [],
+    templateFolder: null,
     docTemplates: [],
     docKeywords: [],
     docReplacements: [],

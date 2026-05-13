@@ -2421,15 +2421,13 @@ def cmd_download(case_number: str = "", notify: bool = True, flow_id: str = "") 
                 if review_count <= 0:
                     if smart_skipped:
                         lines = [header, f"已存在跳過 {len(smart_skipped)} 份："]
-                        for it in smart_skipped[:10]:
+                        for it in smart_skipped:
                             fn = (it.get("file") or "").strip()
                             ep = (it.get("existing_path") or "").strip()
                             if fn and ep:
                                 lines.append(f"- {fn} -> {ep}")
                             elif fn:
                                 lines.append(f"- {fn}")
-                        if len(smart_skipped) > 10:
-                            lines.append(f"...（其餘 {len(smart_skipped) - 10} 份略）")
                         return "\n".join(lines).strip(), {}
                     return "", {}
 
@@ -2472,10 +2470,8 @@ def cmd_download(case_number: str = "", notify: bool = True, flow_id: str = "") 
                         lines.append("")
                 else:
                     # Fallback: list filenames only
-                    for fp in review_downloaded[:20]:
+                    for fp in review_downloaded:
                         lines.append(f"- {os.path.basename(str(fp))}")
-                    if len(review_downloaded) > 20:
-                        lines.append(f"...（其餘 {len(review_downloaded) - 20} 份略）")
 
                 detail = "\n".join([x for x in lines]).strip()
                 if unresolved_review_items:
@@ -2483,36 +2479,20 @@ def cmd_download(case_number: str = "", notify: bool = True, flow_id: str = "") 
 
                 if smart_skipped:
                     detail += f"\n\n已存在跳過 {len(smart_skipped)} 份："
-                    for it in smart_skipped[:10]:
+                    for it in smart_skipped:
                         fn = (it.get("file") or "").strip()
                         ep = (it.get("existing_path") or "").strip()
                         if fn and ep:
                             detail += f"\n- {fn} -> {ep}"
                         elif fn:
                             detail += f"\n- {fn}"
-                    if len(smart_skipped) > 10:
-                        detail += f"\n...（其餘 {len(smart_skipped) - 10} 份略）"
 
-                # LINE 長度保護：過長就輸出 TXT，訊息只放摘要 + 下載連結/路徑
-                if len(detail) <= 900:
-                    return detail, {}
-
-                short_lines = [header]
-                shown = 0
-                for line in detail.splitlines()[1:]:
-                    if not line.strip():
-                        continue
-                    short_lines.append(line)
-                    shown += 1
-                    if shown >= 8:
-                        break
-                exported = export_txt(detail, prefix="magi_filereview") if export_txt else {}
-                if exported and exported.get("success") and (exported.get("url") or exported.get("path")):
-                    link = exported.get("url") or exported.get("path")
-                    short_lines.append(f"明細：{link}")
-                else:
-                    short_lines.append("（明細過長，已省略）")
-                return "\n".join(short_lines).strip(), (exported or {})
+                exported = {}
+                if len(detail) > 900 and export_txt:
+                    exported = export_txt(detail, prefix="magi_filereview") or {}
+                    if exported.get("success") and (exported.get("url") or exported.get("path")):
+                        detail += f"\n\n完整明細：{exported.get('url') or exported.get('path')}"
+                return detail, (exported or {})
 
             msg, exported = _format_download_message()
             # 繳費單已改走獨立繳費通知，這裡不再發通知

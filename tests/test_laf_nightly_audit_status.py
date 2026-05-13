@@ -9,6 +9,7 @@ Unit tests for:
 """
 import sys
 import os
+from datetime import date, timedelta
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -347,6 +348,8 @@ class TestLafProgressReminders:
 
         marked = audit.mark_progress_reported("1130101-J-001", db=FakeDB(), actor="test")
         assert marked["ok"] is True
+        assert marked["cooldown_until"] == (date.today() + timedelta(days=60)).isoformat()
+        assert marked["calendar"]["skipped"] == "db_write_unavailable"
 
         status = audit.scan_laf_reporting_status(FakeDB())
         assert status["progress_overdue"] == []
@@ -354,6 +357,7 @@ class TestLafProgressReminders:
 
         report = audit.format_audit_report([], [], status)
         assert "已確認進度回報，冷卻中：1 件" in report
+        assert "60 天" in report or "下次提醒" in report
 
 
 class TestLafGoLiveReadiness:

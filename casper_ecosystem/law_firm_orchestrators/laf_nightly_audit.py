@@ -295,9 +295,9 @@ def _case_identity_key(case: dict) -> str:
 
 def _progress_cooldown_days() -> int:
     try:
-        return max(1, int(os.environ.get("MAGI_LAF_PROGRESS_COOLDOWN_DAYS", "90") or "90"))
+        return max(1, int(os.environ.get("MAGI_LAF_PROGRESS_COOLDOWN_DAYS", "60") or "60"))
     except Exception:
-        return 90
+        return 60
 
 
 def _load_progress_cooldowns() -> dict:
@@ -321,6 +321,131 @@ def _save_progress_cooldowns(state: dict) -> None:
         os.replace(tmp, _PROGRESS_COOLDOWN_FILE)
     except Exception as e:
         logger.warning("儲存進度回報冷卻清單失敗: %s", e)
+
+
+def _sync_progress_report_reminder_to_calendar(db, case: dict, due_date: date, *, actor: str = "", note: str = "") -> dict:
+    """Create/update the 60-day progress report reminder in OSC todos and Google Calendar."""
+    if db is None or not hasattr(db, "execute_write"):
+        return {"ok": False, "skipped": "db_write_unavailable"}
+    case_number = str(case.get("case_number") or "").strip()
+    client_name = str(case.get("client_name") or "").strip()
+    laf_no = _case_laf_number(case)
+    key = _progress_cooldown_key(case)
+    if not case_number or not due_date or not key:
+        return {"ok": False, "skipped": "missing_case_or_due_date"}
+
+    todo_type = "法扶進度回報確認"
+    source_file = f"laf_progress_report_cooldown:{key}"
+    description = (
+        f"{client_name} 法扶進度回報 60 日後再次確認。"
+        f"{' 法扶案號：' + laf_no if laf_no else ''}"
+        f" 系統案號：{case_number}。"
+    )
+    if note:
+        description += f" 原回覆：{str(note)[:180]}"
+
+    try:
+        existing = db.fetch_one(
+            """
+            SELECT id, google_calendar_id FROM case_todos
+            WHERE case_number=%s AND todo_type=%s AND todo_date=%s AND source_file=%s
+            LIMIT 1
+            """,
+            (case_number, todo_type, due_date.isoformat(), source_file),
+            as_dict=True,
+        )
+    except Exception:
+        existing = None
+
+    todo_id = 0
+    google_calendar_id = ""
+    try:
+        if existing:
+            todo_id = int((existing or {}).get("id") or 0)
+            google_calendar_id = str((existing or {}).get("google_calendar_id") or "").strip()
+            db.execute_write(
+                """
+                UPDATE case_todos
+                SET client_name=%s, description=%s, status='pending'
+                WHERE id=%s
+                """,
+                (client_name, description, todo_id),
+            )
+        else:
+            db.execute_write(
+                """
+                INSERT INTO case_todos
+                  (case_number, client_name, todo_type, todo_date, todo_time, description, source_file, status)
+                VALUES (%s,%s,%s,%s,NULL,%s,%s,'pending')
+                """,
+                (case_number, client_name, todo_type, due_date.isoformat(), description, source_file),
+            )
+            row = db.fetch_one(
+                """
+                SELECT id, google_calendar_id FROM case_todos
+                WHERE case_number=%s AND todo_type=%s AND todo_date=%s AND source_file=%s
+                ORDER BY id DESC LIMIT 1
+                """,
+                (case_number, todo_type, due_date.isoformat(), source_file),
+                as_dict=True,
+            )
+            todo_id = int((row or {}).get("id") or 0)
+            google_calendar_id = str((row or {}).get("google_calendar_id") or "").strip()
+    except Exception as e:
+        return {"ok": False, "error": f"todo_write_failed:{type(e).__name__}: {str(e)[:160]}"}
+
+    out = {"ok": True, "todo_id": todo_id, "google_calendar_id": google_calendar_id, "due_date": due_date.isoformat()}
+    if google_calendar_id or todo_id <= 0:
+        return out
+
+    try:
+        from api.runtime_paths import get_config_path as _get_config_path
+        try:
+            from skills.osc_orchestrator.action import _build_google_calendar_service, _todo_to_gcal_event
+        except Exception:
+            from action import _build_google_calendar_service, _todo_to_gcal_event  # type: ignore
+
+        credentials_path = os.environ.get("MAGI_GOOGLE_CREDENTIALS_PATH", "").strip() or str(_get_config_path("credentials.json"))
+        token_path = os.environ.get("MAGI_GOOGLE_CALENDAR_TOKEN_PATH", "").strip() or str(_get_config_path("google_calendar_token.json"))
+        svc = _build_google_calendar_service(credentials_path, token_path, interactive=False)
+        if not svc.get("ok"):
+            out["gcal_skipped"] = svc.get("error", "gcal_service_unavailable")
+            return out
+
+        calendar_id = "primary"
+        try:
+            setting = db.fetch_one("SELECT value FROM settings WHERE `key`=%s", ("gcal_calendar_id",), as_dict=True)
+            calendar_id = str((setting or {}).get("value") or "").strip() or "primary"
+        except Exception:
+            calendar_id = "primary"
+
+        body = _todo_to_gcal_event(
+            {
+                "id": todo_id,
+                "case_number": case_number,
+                "client_name": client_name,
+                "todo_type": todo_type,
+                "todo_date": due_date.isoformat(),
+                "todo_time": None,
+                "description": description,
+                "source_file": source_file,
+            },
+            tz=os.environ.get("MAGI_TIME_ZONE") or "Asia/Taipei",
+        )
+        body["summary"] = f"⚖️ {client_name} 法扶進度回報確認".strip()
+        body.setdefault("reminders", {"useDefault": True})
+        created = svc["service"].events().insert(calendarId=calendar_id, body=body).execute()
+        event_id = str((created or {}).get("id") or "").strip()
+        if event_id:
+            db.execute_write(
+                "UPDATE case_todos SET google_calendar_id=%s WHERE id=%s AND (google_calendar_id IS NULL OR google_calendar_id='')",
+                (event_id, todo_id),
+            )
+            out["google_calendar_id"] = event_id
+            out["calendar_id"] = calendar_id
+    except Exception as e:
+        out["gcal_error"] = f"{type(e).__name__}: {str(e)[:180]}"
+    return out
 
 
 def _progress_cooldown_key(case: dict) -> str:
@@ -348,7 +473,7 @@ def _progress_cooldown_active(case: dict, state: Optional[dict] = None, today: O
 
 def mark_progress_reported(target: str, *, db=None, actor: str = "user", note: str = "") -> dict:
     """
-    將「進行中逾 18 個月」進度回報提醒冷卻 90 天。
+    將「進行中逾 18 個月」進度回報提醒冷卻 60 天，並登上行事曆。
 
     target 可為法扶案號、OSC 案號或當事人姓名；姓名若命中多案會要求補案號。
     """
@@ -427,7 +552,10 @@ def mark_progress_reported(target: str, *, db=None, actor: str = "user", note: s
         "note": str(note or "")[:500],
     }
     _save_progress_cooldowns(state)
-    return {"ok": True, "case": state[key], "cooldown_until": until.isoformat()}
+    calendar = _sync_progress_report_reminder_to_calendar(db, case, until, actor=actor, note=note)
+    state[key]["calendar"] = calendar
+    _save_progress_cooldowns(state)
+    return {"ok": True, "case": state[key], "cooldown_until": until.isoformat(), "calendar": calendar}
 
 
 def _parse_case_date(value) -> Optional[date]:
@@ -2237,7 +2365,7 @@ def scan_portal_new_files(all_cases: List[dict]) -> List[dict]:
                     "file_count": len(file_list),
                     "new_count": len(still_missing),
                     "auto_downloaded": auto_downloaded_count,
-                    "missing_files": still_missing[:10],
+                    "missing_files": still_missing,
                     "is_new_case": not matched_cases,
                 })
 
@@ -2502,7 +2630,7 @@ def format_audit_report(
     # 補填結果
     if backfilled:
         lines.append(f"✅ 自動補填法扶案號：{len(backfilled)} 件")
-        for b in backfilled[:10]:
+        for b in backfilled:
             src_label = f"（{b['source']}）" if b.get("source") else ""
             lines.append(f"  • {b['case_number']} {b['client_name']} → {b['laf_no']}{src_label}")
         lines.append("")
@@ -2511,26 +2639,23 @@ def format_audit_report(
     still_missing = [c for c in missing_laf if c["case_number"] not in {b["case_number"] for b in backfilled}]
     if still_missing:
         lines.append(f"⚠️ 仍待確認法扶案號：{len(still_missing)} 件（已查進行中與結案資料夾）")
-        for c in still_missing[:10]:
+        for c in still_missing:
             inspected = _inspect_laf_number_candidates(c)
             candidate_numbers = sorted(inspected["candidate_numbers"])
             if len(candidate_numbers) == 1:
                 lines.append(f"  • {c['case_number']} {c.get('client_name', '?')} — 已找到 {candidate_numbers[0]}，待回填")
             elif len(candidate_numbers) > 1:
-                joined = "、".join(candidate_numbers[:3])
-                suffix = " 等" if len(candidate_numbers) > 3 else ""
-                lines.append(f"  • {c['case_number']} {c.get('client_name', '?')} — 找到多個候選案號：{joined}{suffix}")
+                joined = "、".join(candidate_numbers)
+                lines.append(f"  • {c['case_number']} {c.get('client_name', '?')} — 找到多個候選案號：{joined}")
             else:
                 lines.append(f"  • {c['case_number']} {c.get('client_name', '?')} — 未找到案號")
-        if len(still_missing) > 10:
-            lines.append(f"  ...及其他 {len(still_missing) - 10} 件")
         lines.append("")
 
     # 逾期未開辦
     not_started = status.get("not_started", [])
     if not_started:
         lines.append(f"🚨 逾期未開辦：{len(not_started)} 件")
-        for c in sorted(not_started, key=lambda x: x.get("days_overdue", 0), reverse=True)[:10]:
+        for c in sorted(not_started, key=lambda x: x.get("days_overdue", 0), reverse=True):
             lines.append(f"  • {_case_label(c)} {c.get('client_name', '?')} — 逾期 {c.get('days_overdue', '?')} 天")
         lines.append("")
 
@@ -2549,13 +2674,13 @@ def format_audit_report(
     ]
     if can_go_live_remaining:
         lines.append(f"📤 可回報開辦（資料齊全）：{len(can_go_live_remaining)} 件")
-        for c in can_go_live_remaining[:10]:
+        for c in can_go_live_remaining:
             lines.append(f"  • {_case_label(c)} {c.get('client_name', '?')}")
         lines.append("")
 
     if go_live_auto_fixed:
         lines.append(f"🔄 Portal 確認已開辦（DB 已自動修正為「進行中」）：{len(go_live_auto_fixed)} 件")
-        for it in go_live_auto_fixed[:10]:
+        for it in go_live_auto_fixed:
             lines.append(f"  • {it.get('laf_case_number', '?')} {it.get('client_name', '?')}")
         lines.append("")
 
@@ -2567,7 +2692,7 @@ def format_audit_report(
 
     if portal_approved:
         lines.append(f"✅ 法扶已通過報結（已轉入）：{len(portal_approved)} 件")
-        for entry in portal_approved[:10]:
+        for entry in portal_approved:
             c = entry["case"]
             lines.append(f"  • {_case_label(c)} {c.get('client_name', '?')} — {entry.get('portal_info', '')}")
         lines.append("")
@@ -2575,14 +2700,14 @@ def format_audit_report(
     if portal_pending_transfer:
         # 已送件、法扶審核中 — 不需任何操作
         lines.append(f"⏳ 已送件，法扶審核中（待轉入）：{len(portal_pending_transfer)} 件（不需處理）")
-        for entry in portal_pending_transfer[:10]:
+        for entry in portal_pending_transfer:
             c = entry["case"]
             lines.append(f"  • {_case_label(c)} {c.get('client_name', '?')}")
         lines.append("")
 
     if portal_drafted:
         lines.append(f"📝 法扶網站已暫存，請上 lawyer.laf.org.tw 確認送出：{len(portal_drafted)} 件")
-        for entry in portal_drafted[:10]:
+        for entry in portal_drafted:
             c = entry["case"]
             lines.append(f"  • {_case_label(c)} {c.get('client_name', '?')} — {entry.get('portal_info', '')}")
         lines.append("  👉 送出後回覆 MAGI「<案號> 已報結」更新狀態")
@@ -2590,7 +2715,7 @@ def format_audit_report(
 
     if portal_unreported:
         lines.append(f"🚨 確認未報結（需處理）：{len(portal_unreported)} 件")
-        for entry in portal_unreported[:10]:
+        for entry in portal_unreported:
             c = entry["case"]
             lines.append(f"  • {_case_label(c)} {c.get('client_name', '?')}")
         lines.append("")
@@ -2600,7 +2725,7 @@ def format_audit_report(
     any_portal_result = portal_drafted or portal_approved or portal_pending_transfer or portal_unreported
     if pending_close and not any_portal_result:
         lines.append(f"📝 已結案，需確認法扶報結狀態：{len(pending_close)} 件")
-        for c in pending_close[:10]:
+        for c in pending_close:
             lines.append(f"  • {_case_label(c)} {c.get('client_name', '?')}")
         lines.append("")
 
@@ -2608,7 +2733,7 @@ def format_audit_report(
     can_close = status.get("can_close", [])
     if can_close:
         lines.append(f"📄 有判決書可報結：{len(can_close)} 件")
-        for c in can_close[:10]:
+        for c in can_close:
             lines.append(f"  • {_case_label(c)} {c.get('client_name', '?')}")
         lines.append("")
 
@@ -2629,9 +2754,9 @@ def format_audit_report(
         if total_still_missing > 0:
             still_missing_cases = [f for f in portal_new_files if f.get("new_count", 0) > 0]
             lines.append(f"⚠️ 法扶官網仍缺文件：{len(still_missing_cases)} 件")
-            for f in still_missing_cases[:10]:
+            for f in still_missing_cases:
                 _mf = f.get("missing_files") or []
-                _mf_txt = "：" + "、".join(str(x) for x in _mf[:3]) if _mf else ""
+                _mf_txt = "：" + "、".join(str(x) for x in _mf) if _mf else ""
                 lines.append(f"  • {f['laf_no']} {f['client_name']} — 尚缺 {f['new_count']} 份文件{_mf_txt}")
             lines.append("")
         elif total_auto > 0 and total_still_missing == 0:
@@ -2650,13 +2775,13 @@ def format_audit_report(
 
     if pd_resolved:
         lines.append(f"✅ 以下案件已確認送出（Portal 已無暫存，不再提醒）：{len(pd_resolved)} 件")
-        for it in pd_resolved[:10]:
+        for it in pd_resolved:
             lines.append(f"  • {it['applyno']}（{it['label']}）")
         lines.append("")
 
     if pd_closing:
         lines.append(f"📝 案件狀態區仍有已暫存結案回報（請確認報結情形）：{len(pd_closing)} 件")
-        for it in pd_closing[:10]:
+        for it in pd_closing:
             detail_bits = [it.get("reply_type", "結案回報")]
             if it.get("first_reply_date"):
                 detail_bits.append(f"首次 {it['first_reply_date']}")
@@ -2669,19 +2794,19 @@ def format_audit_report(
 
     if pd_condition:
         lines.append(f"📝 二階段（附條件）待回報：{len(pd_condition)} 件")
-        for it in pd_condition[:10]:
+        for it in pd_condition:
             lines.append(f"  • {it.get('applyno', '?')} — {it.get('row_text', '')[:80]}")
         lines.append("")
 
     if pd_go_live:
         lines.append(f"📝 開辦待送出（Portal 仍有未開辦案件）：{len(pd_go_live)} 件")
-        for it in pd_go_live[:10]:
+        for it in pd_go_live:
             lines.append(f"  • {it.get('applyno', '?')} — {it.get('row_text', '')[:80]}")
         lines.append("")
 
     if pd_progress:
         lines.append(f"🚨 法扶官網要求進度回報：{len(pd_progress)} 件")
-        for it in pd_progress[:10]:
+        for it in pd_progress:
             lines.append(f"  • {it.get('applyno', '?')} — {it.get('row_text', '')[:80]}")
         lines.append("")
 
@@ -2692,13 +2817,13 @@ def format_audit_report(
             assigned = c.get("assignment_date") or "日期不明"
             days_since = c.get("days_since_assignment", "?")
             lines.append(f"  • {_case_label(c)} {c.get('client_name', '?')} — 派案/建案 {assigned}，已 {days_since} 天")
-        lines.append("  👉 若已回報，可回覆「<案號/姓名> 已回報」；MAGI 會冷卻 90 天後再提醒。")
+        lines.append("  👉 若已回報，可回覆「<案號/姓名> 已回報」；MAGI 會冷卻 60 天後再提醒，並登上行事曆。")
         lines.append("")
 
     progress_suppressed = status.get("progress_suppressed", [])
     if progress_suppressed:
         lines.append(f"✅ 已確認進度回報，冷卻中：{len(progress_suppressed)} 件")
-        for c in sorted(progress_suppressed, key=lambda x: x.get("days_since_assignment", 0), reverse=True)[:10]:
+        for c in sorted(progress_suppressed, key=lambda x: x.get("days_since_assignment", 0), reverse=True):
             cooldown = c.get("cooldown") if isinstance(c.get("cooldown"), dict) else {}
             until = cooldown.get("cooldown_until") or "日期不明"
             lines.append(f"  • {_case_label(c)} {c.get('client_name', '?')} — 下次提醒 {until}")

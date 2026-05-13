@@ -248,6 +248,7 @@ def test_task_boards_split_calendar_imports_from_osc_todos():
 
     def fake_exec(sql, params=(), fetch="all"):
         if "FROM case_todos" in sql and "NOT LIKE 'gcal_import" in sql:
+            assert "COALESCE(todo_type, '') <> '行事曆事件'" in sql
             return (
                 [
                     {
@@ -265,6 +266,7 @@ def test_task_boards_split_calendar_imports_from_osc_todos():
                 None,
             )
         if "FROM case_todos" in sql and "source_file LIKE 'gcal_import" in sql:
+            assert "todo_type='行事曆事件'" in sql
             return (
                 [
                     {

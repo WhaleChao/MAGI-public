@@ -195,7 +195,7 @@ def test_paperclip_todo_complete_buttons_are_visible_in_all_todo_surfaces():
     assert 'data-act="todo-complete"' in cases_js
     assert 'data-act="todo-reopen"' in cases_js
     assert "wbRenderTodoActions(t)" in cases_js
-    assert "20260506-todo-actions-v1" in osc_html
+    assert "20260513-todo-source-split-v1" in osc_html
 
 
 def test_laf_closed_scope_includes_final_laf_status(client):
@@ -236,6 +236,7 @@ LIST_ENDPOINTS = [
     "/api/osc/case-reason-templates",
     "/api/osc/settings",
     "/api/osc/documents",
+    "/api/osc/template-folder",
     "/api/osc/document-templates",
     "/api/osc/document-keywords",
     "/api/osc/document-replacements",
@@ -277,6 +278,51 @@ def test_cases_default_status_scope_is_all(client):
     assert "%進行%" not in params
     assert "%結案中%" not in params
     assert "%待報結%" not in params
+
+
+def test_template_folder_endpoint_lists_template_case_folder(client, tmp_path):
+    folder = tmp_path / "0000-0000-範本-消費者債務清理"
+    (folder / "02_各種書狀").mkdir(parents=True)
+    sample = folder / "聲請狀範本.docx"
+    sample.write_text("template", encoding="utf-8")
+
+    fake = _make_fake_exec(
+        {
+            "cases": [
+                {
+                    "id": "template-case-0000-0000-0001",
+                    "case_number": "0000-0000",
+                    "client_name": "範本",
+                    "folder_path": str(folder),
+                    "updated_at": "2026-05-13 12:00:00",
+                }
+            ]
+        }
+    )
+    with patch("api.blueprints.osc_cases._osc_exec", side_effect=fake), \
+         patch("api.osc.utils._osc_is_safe_local_path", return_value=True):
+        r = client.get("/api/osc/template-folder")
+
+    assert r.status_code == 200
+    data = r.get_json()
+    assert data["ok"] is True
+    assert data["exists"] is True
+    assert data["local_folder"] == str(folder)
+    names = {item["name"] for item in data["entries"]}
+    assert {"02_各種書狀", "聲請狀範本.docx"} <= names
+
+
+def test_template_folder_uses_folder_open_action():
+    html = (ROOT / "templates" / "partials" / "osc" / "templateFolder.html").read_text(encoding="utf-8")
+    js = (ROOT / "static" / "osc" / "tabs" / "documents.js").read_text(encoding="utf-8")
+    events = (ROOT / "static" / "osc" / "osc-events.js").read_text(encoding="utf-8")
+
+    assert 'id="templateFolder"' in html
+    assert 'data-act="template-folder-open"' in js
+    assert 'data-act="wb-file-share"' in js
+    assert 'fileContentUrl(path, true)' in js
+    assert 'fileContentUrl(path)' in js
+    assert 'if (act === "template-folder-open") return await loadTemplateFolder' in events
 
 
 def test_cases_filters_split_type_and_kind(client):

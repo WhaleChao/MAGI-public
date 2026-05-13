@@ -777,6 +777,33 @@ def osc_meta_api():
 # Cases CRUD
 # ══════════════════════════════════════════════════════════════════════════════
 
+_OSC_TEMPLATE_DISPLAY_VALUE = "—"
+
+
+def _osc_is_template_case(row: dict | None) -> bool:
+    if not isinstance(row, dict):
+        return False
+    client_name = str(row.get("client_name") or "").strip()
+    case_number = str(row.get("case_number") or "").strip()
+    folder_path = str(row.get("folder_path") or "").strip()
+    if client_name == "範本":
+        return True
+    if "範本" in client_name and case_number.startswith("0000"):
+        return True
+    return "0000-0000-範本" in folder_path
+
+
+def _osc_normalize_template_case_row(row: dict | None) -> dict | None:
+    if not isinstance(row, dict) or not _osc_is_template_case(row):
+        return row
+    out = dict(row)
+    out["case_category"] = _OSC_TEMPLATE_DISPLAY_VALUE
+    out["case_type"] = _OSC_TEMPLATE_DISPLAY_VALUE
+    out["case_reason"] = _OSC_TEMPLATE_DISPLAY_VALUE
+    out["status"] = _OSC_TEMPLATE_DISPLAY_VALUE
+    out["is_template_case"] = True
+    return out
+
 
 @osc_bp.route("/api/osc/cases", methods=["GET", "POST"])
 @login_required
@@ -894,6 +921,7 @@ def osc_cases_api():
         sql += " ORDER BY updated_at DESC, created_date DESC LIMIT %s"
         params.append(limit)
         rows, _ = _osc_exec(sql, tuple(params), fetch="all")
+        rows = [_osc_normalize_template_case_row(r) for r in (rows or [])]
         return jsonify({"ok": True, "items": rows})
 
     payload = request.get_json() or {}
@@ -912,13 +940,30 @@ def osc_cases_api():
     ).strip()
     if not client_name:
         return jsonify({"ok": False, "error": "client_name required"}), 400
+    is_template_payload = _osc_is_template_case(
+        {
+            "client_name": client_name,
+            "case_number": case_number,
+            "folder_path": payload.get("folder_path") or "",
+        }
+    )
     case_category = _osc_norm_case_category(payload.get("case_category") or payload.get("category") or "")
+    if is_template_payload:
+        case_category = _OSC_TEMPLATE_DISPLAY_VALUE
     cols = [
         "id", "case_number", "client_name", "client_phone", "client_email", "client_id_number",
         "case_category", "case_type", "case_stage", "case_reason",
         "laf_case_no", "application_no", "court_name", "court_case_no", "status", "notes", "folder_path"
     ]
     status_value = (payload.get("status") or "進行中").strip() or "進行中"
+    if is_template_payload:
+        status_value = _OSC_TEMPLATE_DISPLAY_VALUE
+    case_type_value = (payload.get("case_type") or payload.get("type") or "").strip() or None
+    if is_template_payload:
+        case_type_value = _OSC_TEMPLATE_DISPLAY_VALUE
+    case_reason_value = (payload.get("case_reason") or "").strip() or None
+    if is_template_payload:
+        case_reason_value = _OSC_TEMPLATE_DISPLAY_VALUE
     vals = [
         row_id,
         case_number or None,
@@ -927,9 +972,9 @@ def osc_cases_api():
         (payload.get("client_email") or "").strip() or None,
         (payload.get("client_id_number") or "").strip() or None,
         case_category or None,
-        (payload.get("case_type") or payload.get("type") or "").strip() or None,
+        case_type_value,
         (payload.get("case_stage") or "").strip() or None,
-        (payload.get("case_reason") or "").strip() or None,
+        case_reason_value,
         (payload.get("laf_case_no") or payload.get("legal_aid_number") or "").strip() or None,
         (payload.get("application_no") or "").strip() or None,
         (payload.get("court_name") or payload.get("court") or "").strip() or None,
@@ -966,14 +1011,14 @@ def osc_cases_api():
         update_payload = {
             "client_name": client_name,
             "case_category": case_category or None,
-            "case_type": (payload.get("case_type") or payload.get("type") or "").strip() or None,
+            "case_type": case_type_value,
             "case_stage": (payload.get("case_stage") or "").strip() or None,
-            "case_reason": (payload.get("case_reason") or "").strip() or None,
+            "case_reason": case_reason_value,
             "laf_case_no": (payload.get("laf_case_no") or payload.get("legal_aid_number") or "").strip() or None,
             "application_no": (payload.get("application_no") or "").strip() or None,
             "court_name": (payload.get("court_name") or payload.get("court") or "").strip() or None,
             "court_case_no": (payload.get("court_case_no") or payload.get("court_case_number") or "").strip() or None,
-            "status": (payload.get("status") or "進行中").strip() or "進行中",
+            "status": status_value,
             "notes": (payload.get("notes") or "").strip() or None,
             "folder_path": translate_local_path_to_canonical((payload.get("folder_path") or "").strip()) or None,
         }
@@ -1004,11 +1049,21 @@ def osc_case_detail_api(row_id):
         row, _ = _osc_exec("SELECT * FROM cases WHERE id=%s", (row_id,), fetch="one")
         if not row:
             return jsonify({"ok": False, "error": "not found"}), 404
+        row = _osc_normalize_template_case_row(row)
         return jsonify({"ok": True, "item": row})
     if request.method == "DELETE":
         result, _ = _osc_exec("DELETE FROM cases WHERE id=%s", (row_id,), fetch="none")
         return jsonify({"ok": True, "result": result})
     payload = request.get_json() or {}
+    current_row, _ = _osc_exec("SELECT id, case_number, client_name, folder_path FROM cases WHERE id=%s", (row_id,), fetch="one")
+    template_update = _osc_is_template_case(
+        {
+            **(current_row or {}),
+            "client_name": payload.get("client_name") or (current_row or {}).get("client_name") or "",
+            "case_number": payload.get("case_number") or (current_row or {}).get("case_number") or "",
+            "folder_path": payload.get("folder_path") or (current_row or {}).get("folder_path") or "",
+        }
+    )
     allowed = [
         "case_number", "client_name", "client_name_en", "client_phone", "client_email", "client_id_number",
         "case_category", "case_type", "case_stage", "case_reason",
@@ -1029,6 +1084,8 @@ def osc_case_detail_api(row_id):
                 v = (payload.get("legal_aid_number") or "").strip() or None
             if k == "folder_path" and v:
                 v = translate_local_path_to_canonical(v) or v
+            if template_update and k in {"case_category", "case_type", "case_reason", "status"}:
+                v = _OSC_TEMPLATE_DISPLAY_VALUE
             vals.append(v)
     if not sets:
         return jsonify({"ok": False, "error": "no fields"}), 400
@@ -2516,9 +2573,32 @@ def osc_dashboard_api():
     )
     pending_todos, _ = _osc_exec(
         """
-        SELECT id, case_number, client_name, todo_type, todo_date, todo_time, description, status
+        SELECT id, case_number, client_name, todo_type, todo_date, todo_time, description, status, source_file
         FROM case_todos
         WHERE status IS NULL OR status='' OR LOWER(status) NOT IN ('completed', 'done', '已完成', '完成', 'cancelled', 'canceled', '取消')
+        ORDER BY COALESCE(todo_date, CURDATE()) ASC, id DESC
+        LIMIT 20
+        """,
+        fetch="all",
+    )
+    pending_osc_todos, _ = _osc_exec(
+        """
+        SELECT id, case_number, client_name, todo_type, todo_date, todo_time, description, status, source_file
+        FROM case_todos
+        WHERE (status IS NULL OR status='' OR LOWER(status) NOT IN ('completed', 'done', '已完成', '完成', 'cancelled', 'canceled', '取消'))
+          AND (source_file IS NULL OR source_file='' OR source_file NOT LIKE 'gcal_import%%')
+          AND COALESCE(todo_type, '') <> '行事曆事件'
+        ORDER BY COALESCE(todo_date, CURDATE()) ASC, id DESC
+        LIMIT 20
+        """,
+        fetch="all",
+    )
+    pending_calendar_todos, _ = _osc_exec(
+        """
+        SELECT id, case_number, client_name, todo_type, todo_date, todo_time, description, status, source_file
+        FROM case_todos
+        WHERE (status IS NULL OR status='' OR LOWER(status) NOT IN ('completed', 'done', '已完成', '完成', 'cancelled', 'canceled', '取消'))
+          AND (source_file LIKE 'gcal_import%%' OR todo_type='行事曆事件')
         ORDER BY COALESCE(todo_date, CURDATE()) ASC, id DESC
         LIMIT 20
         """,
@@ -2567,6 +2647,8 @@ def osc_dashboard_api():
             },
             "recent_cases": recent_cases or [],
             "pending_todos": pending_todos or [],
+            "pending_osc_todos": pending_osc_todos or [],
+            "pending_calendar_todos": pending_calendar_todos or [],
             "upcoming_calendar": upcoming_calendar or [],
             "recent_activity": recent_activity or [],
             "recent_pdf_logs": recent_pdf_logs or [],
@@ -3450,6 +3532,103 @@ def osc_documents_api():
     return jsonify({"ok": True, "items": out})
 
 
+def _osc_template_folder_candidates(raw_path: str) -> list[str]:
+    env_path = str(os.environ.get("MAGI_OSC_TEMPLATE_FOLDER") or "").strip()
+    desktop_path = str(Path.home() / "Desktop" / "0000-0000-範本-消費者債務清理")
+    seeds = [raw_path, env_path, desktop_path]
+    candidates: list[str] = []
+    for seed in seeds:
+        seed = str(seed or "").strip()
+        if not seed:
+            continue
+        if os.path.isabs(seed) or seed.lower().startswith("smb://"):
+            candidates.append(seed)
+        try:
+            candidates.extend(_osc_local_path_candidates(seed))
+        except Exception:
+            pass
+        norm = _osc_norm_path(seed)
+        if norm:
+            candidates.append(norm)
+    out: list[str] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        p = str(candidate or "").strip()
+        if not p or p in seen:
+            continue
+        seen.add(p)
+        out.append(p)
+    return out
+
+
+def _osc_path_is_dir_quick(path_str: str) -> bool:
+    try:
+        if str(path_str or "").startswith("/Volumes/"):
+            return bool(_osc_resolve_existing_local_path(path_str, prefer_dir=True))
+        return os.path.isdir(path_str)
+    except Exception:
+        return False
+
+
+@osc_bp.route("/api/osc/template-folder", methods=["GET"])
+@login_required
+def osc_template_folder_api():
+    relative_path = str(request.args.get("relative_path") or "").strip().strip("/")
+    rows, _ = _osc_exec(
+        """
+        SELECT id, case_number, client_name, folder_path, updated_at
+        FROM cases
+        WHERE id=%s OR client_name=%s OR case_number=%s OR folder_path LIKE %s
+        ORDER BY updated_at DESC
+        LIMIT 20
+        """,
+        ("template-case-0000-0000-0001", "範本", "0000-0000", "%0000-0000-範本%"),
+        fetch="all",
+    )
+    template_row = None
+    for row in rows or []:
+        if _osc_is_template_case(row):
+            template_row = row
+            break
+    raw_path = str((template_row or {}).get("folder_path") or "").strip()
+    candidates = _osc_template_folder_candidates(raw_path)
+    local_folder = next((p for p in candidates if _osc_path_is_dir_quick(p)), "")
+    folder_path = _osc_norm_path(raw_path) if raw_path else (local_folder or candidates[0] if candidates else "")
+    listing = {"ok": True, "entries": [], "current_relative_path": "", "parent_relative_path": ""}
+    if local_folder:
+        listing = _osc_folder_entries(local_folder, relative_path, limit=500)
+        if not listing.get("ok"):
+            return jsonify(
+                {
+                    "ok": False,
+                    "error": listing.get("error") or "folder_list_failed",
+                    "folder_path": folder_path,
+                    "local_folder": local_folder,
+                    "exists": True,
+                    "candidates": candidates,
+                    "smb_candidates": _osc_smb_candidates(folder_path),
+                    "case": _osc_normalize_template_case_row(template_row) if template_row else None,
+                    "entries": [],
+                }
+            ), 400
+    return jsonify(
+        {
+            "ok": True,
+            "folder_path": folder_path,
+            "local_folder": local_folder,
+            "exists": bool(local_folder),
+            "candidates": candidates,
+            "smb_candidates": _osc_smb_candidates(folder_path),
+            "case": _osc_normalize_template_case_row(template_row) if template_row else None,
+            "base_path": listing.get("base_path") or local_folder,
+            "current_path": listing.get("current_path") or local_folder,
+            "current_relative_path": listing.get("current_relative_path") or "",
+            "parent_relative_path": listing.get("parent_relative_path") or "",
+            "entries": listing.get("entries") or [],
+        }
+    )
+
+
 @osc_bp.route("/api/osc/documents/open", methods=["POST"])
 @login_required
 def osc_documents_open_api():
@@ -3773,6 +3952,17 @@ def osc_file_content_api():
             except Exception:
                 continue
         return found
+    def _existing_dir_candidates(candidate_paths: list[str]) -> list[str]:
+        found: list[str] = []
+        for cand in candidate_paths:
+            try:
+                real = os.path.realpath(cand)
+                if _osc_is_safe_local_path(real) and os.path.isdir(real):
+                    if real not in found:
+                        found.append(real)
+            except Exception:
+                continue
+        return found
 
     existing_candidates = _existing_file_candidates(candidates)
     if existing_candidates and all(_osc_is_dataless_file(p) for p in existing_candidates):
@@ -3786,6 +3976,8 @@ def osc_file_content_api():
         except Exception:
             _log.debug("silent-catch dataless file NAS remap failed", exc_info=True)
     if not existing_candidates:
+        if _existing_dir_candidates(candidates):
+            return _osc_download_error_response("這是資料夾，不是檔案。請使用「開啟」按鈕，不要用預覽或下載。", 400)
         return _osc_download_error_response("找不到檔案，可能已移動、刪除，或 NAS 尚未完成同步。", 404)
     existing_candidates.sort(key=lambda p: (1 if _osc_is_dataless_file(p) else 0, 0 if p.startswith("/Volumes/") else 1))
 
@@ -4976,14 +5168,21 @@ def osc_meeting_detail_api(row_id):
 def osc_todos_api():
     if request.method == "GET":
         q = (request.args.get("q") or "").strip()
+        source = (request.args.get("source") or "").strip().lower()
         limit = max(1, min(500, int(request.args.get("limit") or "200")))
+        source_clause = ""
+        if source == "osc":
+            source_clause = " AND (source_file IS NULL OR source_file='' OR source_file NOT LIKE 'gcal_import%%') AND COALESCE(todo_type, '') <> '行事曆事件'"
+        elif source in {"gcal", "calendar"}:
+            source_clause = " AND (source_file LIKE 'gcal_import%%' OR todo_type='行事曆事件')"
         if q:
             like = f"%{q}%"
             rows, _ = _osc_exec(
-                """
+                f"""
                 SELECT id, case_number, client_name, todo_type, todo_date, todo_time, description, status, source_file, created_date, completed_date
                 FROM case_todos
-                WHERE case_number LIKE %s OR client_name LIKE %s OR todo_type LIKE %s OR description LIKE %s
+                WHERE (case_number LIKE %s OR client_name LIKE %s OR todo_type LIKE %s OR description LIKE %s)
+                {source_clause}
                 ORDER BY todo_date DESC, id DESC
                 LIMIT %s
                 """,
@@ -4992,9 +5191,11 @@ def osc_todos_api():
             )
         else:
             rows, _ = _osc_exec(
-                """
+                f"""
                 SELECT id, case_number, client_name, todo_type, todo_date, todo_time, description, status, source_file, created_date, completed_date
                 FROM case_todos
+                WHERE 1=1
+                {source_clause}
                 ORDER BY todo_date DESC, id DESC
                 LIMIT %s
                 """,

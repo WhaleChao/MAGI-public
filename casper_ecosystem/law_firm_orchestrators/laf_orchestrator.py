@@ -4403,6 +4403,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
             "action": (action or "").strip(),
             "pleading_source_files": [],
             "judgment_pdf_files": [],
+            "procedural_ruling_pdf_files": [],
             "pdf_files": [],
             "converted": [],
             "failed": [],
@@ -4414,6 +4415,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
 
         plead_root = os.path.join(root, "04_我方歷次書狀")
         judgment_root = os.path.join(root, "10_判決書")
+        court_notice_root = os.path.join(root, "09_法院通知或程序裁定")
         run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
         safe_laf = re.sub(r"[^\w\-]+", "_", (laf_case_no or "").strip()) or "unknown"
         safe_act = re.sub(r"[^\w\-]+", "_", (action or "").strip()) or "workflow"
@@ -4516,6 +4518,25 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                         judgment_pdfs.append(full)
         result["judgment_pdf_files"] = judgment_pdfs
 
+        procedural_ruling_pdfs: List[str] = []
+        is_consumer_debt_closing = (
+            (action or "").strip().lower() == "closing"
+            and ("消費者債務清理" in root or "消債" in root)
+        )
+        if is_consumer_debt_closing and os.path.isdir(court_notice_root):
+            for base, _dirs, files in os.walk(court_notice_root):
+                for fn in sorted(files):
+                    if fn.startswith(".") or fn.startswith("~"):
+                        continue
+                    if not fn.lower().endswith(".pdf"):
+                        continue
+                    if not any(k in fn for k in ("裁定", "確定證明書", "執行命令", "調解筆錄", "和解筆錄")):
+                        continue
+                    full = os.path.join(base, fn)
+                    if os.path.isfile(full):
+                        procedural_ruling_pdfs.append(full)
+        result["procedural_ruling_pdf_files"] = procedural_ruling_pdfs
+
         out_pdf: List[str] = []
         converted: List[dict] = []
         failed: List[dict] = []
@@ -4531,7 +4552,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
             elif not pdf:
                 failed.append({"source": src, "error": "convert_failed"})
 
-        for src_pdf in judgment_pdfs[: max(1, max_files)]:
+        for src_pdf in (judgment_pdfs + procedural_ruling_pdfs)[: max(1, max_files)]:
             try:
                 dst = os.path.join(staging_dir, os.path.basename(src_pdf))
                 if os.path.abspath(src_pdf) != os.path.abspath(dst):
@@ -6541,6 +6562,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
             "inq_count": 0,
             "court_count": 0,
             "document_count": 0,
+            "mediation_contact_count": 0,
         }
 
         if not self.db:
@@ -6759,30 +6781,45 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                         _date_clause = " AND start_date >= %s"
                         _params.append(_assign_dt.strip().split(' ')[0])
 
-                _name_clause = " AND (summary LIKE %s)"
-                _params.append(f"%{_cn_only}%")
+                _name_clause = " AND (summary LIKE %s OR title LIKE %s OR description LIKE %s OR case_number = %s)"
+                _params.extend([f"%{_cn_only}%", f"%{_cn_only}%", f"%{_cn_only}%", case_number])
 
                 _events = self.db.fetch_all(
-                    f"SELECT summary, start_date FROM calendar_events WHERE 1=1{_date_clause}{_name_clause}",
+                    f"SELECT title, summary, description, start_date FROM calendar_events WHERE 1=1{_date_clause}{_name_clause}",
                     tuple(_params)
                 ) or []
 
                 if _events:
                     # 用 OSC 相同的關鍵字分類
-                    _court_kw = ["開庭", "言詞辯論", "準備程序", "調解", "訊問", "審理", "審理程序", "協商程序", "調查", "調查程序"]
+                    _court_kw = ["開庭", "言詞辯論", "準備程序", "調解", "調解庭", "訊問", "詢問庭", "審理", "審理程序", "審查庭", "免責庭", "協商程序", "調查", "調查程序"]
                     _meet_kw = ["會議", "來所", "碰面", "視訊", "面談", "開會", "交資料", "律見", "接見", "律師接見"]
                     _tel_kw = ["電話", "電話聯繫", "通話", "電聯", "聯繫", "聯絡"]
                     _review_kw = ["閱卷", "影卷", "調卷"]
+                    _mediation_kw = ["調解", "調解庭", "和解", "調和解"]
                     _excl_kw = ["聲請改期", "改期", "取消", "不出席", "不到庭", "宣判", "宣示判決", "法扶開辦末日", "法扶上訴", "法扶再議", "停班", "停課", "放假", "颱風", "天然災害", "U會議", "Ｕ會議"]
 
-                    _c_court = 0; _c_meet = 0; _c_tel = 0; _c_review = 0
+                    _c_court = 0; _c_meet = 0; _c_tel = 0; _c_review = 0; _c_mediation = 0
                     _court_dates_cal = []; _review_dates_cal = []
-                    for summary, start_date in _events:
-                        s = str(summary or "")
+                    _seen_mediation_slots: set = set()
+                    for row in _events:
+                        if isinstance(row, dict):
+                            start_date = row.get("start_date")
+                            s = " ".join(
+                                str(row.get(k) or "")
+                                for k in ("title", "summary", "description")
+                            )
+                        else:
+                            title, summary, description, start_date = row
+                            s = " ".join(str(v or "") for v in (title, summary, description))
                         if any(ex in s for ex in _excl_kw):
                             continue
                         if str(start_date or "")[:10] > _date.today().isoformat():
                             continue
+                        if any(k in s for k in _mediation_kw):
+                            _slot = str(start_date or "")[:16] if start_date else s[:80]
+                            if _slot and _slot not in _seen_mediation_slots:
+                                _c_mediation += 1
+                                _seen_mediation_slots.add(_slot)
                         if any(k in s for k in _court_kw):
                             _c_court += 1
                             if start_date:
@@ -6815,6 +6852,9 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                         if not counts["review_dates"]:
                             counts["review_dates"] = _review_dates_cal
                         logger.info("  📅 Calendar 補 review_count: %d (dates: %s)", _c_review, _review_dates_cal)
+                    if _c_mediation > int(counts.get("mediation_contact_count", 0) or 0):
+                        counts["mediation_contact_count"] = _c_mediation
+                        logger.info("  📅 Calendar 補 mediation_contact_count: %d", _c_mediation)
             except Exception as e:
                 logger.warning("Calendar fallback for zero counts failed: %s", e)
 
@@ -6822,7 +6862,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         # 傳全部 keys 讓 _gcal_fallback_counts 自己判斷是否 > 目前值
         if client_name:
             try:
-                _all_keys = ["meeting_count", "contact_count", "court_count", "review_count"]
+                _all_keys = ["meeting_count", "contact_count", "court_count", "review_count", "mediation_contact_count"]
                 self._gcal_fallback_counts(counts, _all_keys, case_number, client_name)
             except Exception as e:
                 logger.warning("GCal API fallback for zero counts failed: %s", e)
@@ -6915,14 +6955,16 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
             return
         service = svc_result["service"]
 
-        # 查最近 2 年事件，按當事人姓名過濾
+        # 按當事人姓名過濾；舊案若有派案日，必須從派案日往後查全期間，
+        # 否則超過 OSC 建置時間的法扶案件會漏掉早期開庭、會議與聯繫紀錄。
         _cn_parts = _re.findall(r'[\u4e00-\u9fff]+', client_name)
         _cn_only = "".join(_cn_parts) if _cn_parts else client_name
         if not _cn_only:
             return
 
         now = datetime.now(timezone.utc)
-        time_min_dt = now - timedelta(days=730)
+        fallback_days = int(os.environ.get("MAGI_LAF_GCAL_LOOKBACK_DAYS", "730") or "730")
+        time_min_dt = now - timedelta(days=fallback_days)
         _assign_day = ""
         try:
             if self.db and case_number:
@@ -6935,8 +6977,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                 if _assign_raw:
                     _assign_day = str(_assign_raw)[:10]
                     _assign_dt = datetime.strptime(_assign_day, "%Y-%m-%d").replace(tzinfo=timezone.utc)
-                    if _assign_dt > time_min_dt:
-                        time_min_dt = _assign_dt
+                    time_min_dt = _assign_dt
         except Exception as e:
             logger.debug("GCal assignment-date lookup failed: %s", e)
         time_min = time_min_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -6990,13 +7031,14 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         logger.info("  📅 GCal API: total %d events for '%s' across %d calendars (raw=%d, dedup=%d)",
                     len(events), _cn_only, len(cal_ids), _raw_total, _raw_total - len(events))
 
-        _court_kw = ["開庭", "言詞辯論", "準備程序", "調解", "訊問", "審理", "審理程序", "協商程序", "調查", "調查程序"]
+        _court_kw = ["開庭", "言詞辯論", "準備程序", "調解", "調解庭", "訊問", "詢問庭", "審理", "審理程序", "審查庭", "免責庭", "協商程序", "調查", "調查程序"]
         _meet_kw = ["會議", "來所", "碰面", "視訊", "面談", "開會", "交資料", "律見", "接見", "律師接見"]
         _tel_kw = ["電話", "電話聯繫", "通話", "電聯", "聯繫", "聯絡"]
         _review_kw = ["閱卷", "影卷", "調卷"]
+        _mediation_kw = ["調解", "調解庭", "和解", "調和解"]
         _excl_kw = ["聲請改期", "改期", "取消", "不出席", "不到庭", "宣判", "宣示判決", "法扶開辦末日", "法扶上訴", "法扶再議", "停班", "停課", "放假", "颱風", "天然災害", "U會議", "Ｕ會議"]
 
-        _c_court = 0; _c_meet = 0; _c_tel = 0; _c_review = 0
+        _c_court = 0; _c_meet = 0; _c_tel = 0; _c_review = 0; _c_mediation = 0
         _court_dates_gcal = []; _review_dates_gcal = []
         # 同日同類事件只算一次（不同日曆用不同 summary 的情形常見，例如
         # 「王淑婷審理」vs「[2025-0024] 王淑婷 - 審理程序」同是 2026-03-12 一場庭）
@@ -7004,6 +7046,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         _seen_review_dates: set = set()
         _seen_meet_slots: set = set()
         _seen_tel_slots: set = set()
+        _seen_mediation_slots: set = set()
         for ev in events:
             summary = ev.get("summary", "")
             if any(ex in summary for ex in _excl_kw):
@@ -7014,6 +7057,11 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                 continue
             if _dk and _dk > datetime.now(timezone.utc).strftime("%Y-%m-%d"):
                 continue
+            if any(k in summary for k in _mediation_kw):
+                _slot = (start or "")[:16] if start else _dk
+                if _slot and _slot not in _seen_mediation_slots:
+                    _c_mediation += 1
+                    _seen_mediation_slots.add(_slot)
             if any(k in summary for k in _court_kw):
                 if _dk and _dk in _seen_court_dates:
                     continue
@@ -7062,6 +7110,9 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
             if _review_dates_gcal:
                 counts["review_dates"] = _review_dates_gcal
             logger.info("  📅 GCal API 補 review_count: %d", _c_review)
+        if "mediation_contact_count" in zero_keys and _c_mediation > int(counts.get("mediation_contact_count", 0) or 0):
+            counts["mediation_contact_count"] = _c_mediation
+            logger.info("  📅 GCal API 補 mediation_contact_count: %d", _c_mediation)
 
     def _check_duplicate(self, laf_number, client_name, case_type, case_reason):
         """Check if case already exists in DB."""

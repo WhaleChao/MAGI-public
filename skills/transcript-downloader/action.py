@@ -530,12 +530,14 @@ def _case_label(row: dict) -> str:
     return court_case_no or case_no or "未判斷案件"
 
 
-def _summarize_download_results(results: dict, *, max_cases: int = 20) -> Tuple[str, dict]:
+def _summarize_download_results(results: dict, *, max_cases: int = 0) -> Tuple[str, dict]:
     try:
-        max_cases = int(os.environ.get("MAGI_TRANSCRIPT_NOTIFY_MAX_CASES", str(max_cases)) or str(max_cases))
+        env_max = int(os.environ.get("MAGI_TRANSCRIPT_NOTIFY_MAX_CASES", str(max_cases)) or str(max_cases))
     except Exception:
-        max_cases = int(max_cases)
-    max_cases = max(5, min(max_cases, 50))
+        env_max = int(max_cases)
+    # 0 means no case cap.  The notification layer now chunks long messages, so
+    # the transcript report can stay complete instead of silently hiding files.
+    max_cases = max(0, min(env_max, 200))
     rows = results.get("cases") if isinstance(results, dict) else []
     if not isinstance(rows, list):
         rows = []
@@ -558,22 +560,20 @@ def _summarize_download_results(results: dict, *, max_cases: int = 20) -> Tuple[
                 "court_case_number": str(row.get("court_case_number") or "").strip(),
                 "client_name": str(row.get("client_name") or "").strip(),
                 "file_count": file_count,
-                "files": [str(fp) for fp in file_list[:10]],
+                "files": [str(fp) for fp in file_list],
             }
         )
 
     lines = [f"📥 筆錄批次下載完成（{total_files} 份，{len(downloaded_rows)} 案有新檔 / 掃描 {len(ok_rows)} 案）"]
-    for idx, row in enumerate(downloaded_rows[:max_cases], start=1):
+    shown_rows = downloaded_rows if max_cases == 0 else downloaded_rows[:max_cases]
+    for idx, row in enumerate(shown_rows, start=1):
         files = row.get("files")
         file_list = files if isinstance(files, list) else []
         lines.append(f"{idx}. {_case_label(row)}（{len(file_list)} 份）")
-        for fp in file_list[:10]:
+        for fp in file_list:
             lines.append(f"- {os.path.basename(str(fp))}")
-        if len(file_list) > 10:
-            lines.append(f"...其餘 {len(file_list) - 10} 份略")
-    remaining = len(downloaded_rows) - min(len(downloaded_rows), max_cases)
-    if remaining > 0:
-        lines.append(f"...其餘 {remaining} 個有新檔案件略")
+    if max_cases > 0 and len(downloaded_rows) > max_cases:
+        lines.append(f"⚠️ 尚有 {len(downloaded_rows) - max_cases} 個有新檔案件未列出；請提高 MAGI_TRANSCRIPT_NOTIFY_MAX_CASES。")
     # 區分「查無筆錄」(正常) 和「下載失敗」(需確認)
     no_data_rows = [r for r in failed_rows if not r.get("error")]
     error_rows   = [r for r in failed_rows if r.get("error")]
@@ -590,7 +590,7 @@ def _summarize_download_results(results: dict, *, max_cases: int = 20) -> Tuple[
         "scanned_cases_count": len(ok_rows),
         "no_data_cases_count": len(no_data_rows),
         "failed_cases_count": len(error_rows),
-        "cases": [r for r in case_summaries if int(r.get("file_count") or 0) > 0][:50],
+        "cases": [r for r in case_summaries if int(r.get("file_count") or 0) > 0],
     }
     return "\n".join(lines), summary
 

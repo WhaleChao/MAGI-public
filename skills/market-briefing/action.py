@@ -158,6 +158,11 @@ def _cmd_export(state: Dict[str, Any], mode: str = "deep") -> str:
     return _cmd_export_impl(state, mode=mode)
 
 
+def _format_committee_reasoning(reasoning: Any) -> str:
+    text = " ".join(str(reasoning or "").split())
+    return text or "委員會未提供細部理由。"
+
+
 def _predict_one(item: WatchItem, params: Dict[str, float], mode: str = "quick") -> Dict[str, Any]:
     """Wrapper that injects committee callback for deep mode."""
     def _committee_cb(wi: WatchItem, m: str, market_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -170,11 +175,12 @@ def _predict_one(item: WatchItem, params: Dict[str, float], mode: str = "quick")
             if final:
                 action_icons = {"BUY": "🚀 [看多]", "SELL": "🩸 [看空]", "HOLD": "⚖️ [持平]", "NEUTRAL": "⚪ [觀察]"}
                 icon = action_icons.get(final.action.value, "⚪")
+                reasoning = _format_committee_reasoning(final.reasoning)
                 return {
                     "committee_verdict": final.action.value,
                     "line": (
                         f"{icon} {wi.label}：委員會綜合評級【{final.action.value}】 (信心 {final.confidence*100:.0f}%)\n"
-                        f"  委員會論點：{final.reasoning[:120]}..."
+                        f"  委員會論點：{reasoning}"
                     ),
                 }
         except Exception as ce:

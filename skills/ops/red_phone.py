@@ -113,6 +113,43 @@ def _preview_text(text: str, limit: int = 180) -> str:
     return s[:limit] + "..."
 
 
+def _split_text_by_lines(text: str, limit: int) -> list[str]:
+    """Split long notification text without dropping content."""
+    safe_limit = max(200, int(limit))
+    source = str(text or "")
+    if len(source) <= safe_limit:
+        return [source]
+
+    chunks: list[str] = []
+    current = ""
+    for raw_line in source.splitlines(keepends=True):
+        line = raw_line
+        while len(line) > safe_limit:
+            if current:
+                chunks.append(current.rstrip("\n"))
+                current = ""
+            chunks.append(line[:safe_limit])
+            line = line[safe_limit:]
+        candidate = current + line
+        if len(candidate) > safe_limit:
+            if current:
+                chunks.append(current.rstrip("\n"))
+            current = line
+        else:
+            current = candidate
+    if current:
+        chunks.append(current.rstrip("\n"))
+    return chunks or [source[:safe_limit]]
+
+
+def _numbered_chunks(text: str, limit: int, *, reserve: int = 18) -> list[str]:
+    chunks = _split_text_by_lines(text, max(200, int(limit) - reserve))
+    if len(chunks) <= 1:
+        return chunks
+    total = len(chunks)
+    return [f"({idx}/{total})\n{chunk}" for idx, chunk in enumerate(chunks, start=1)]
+
+
 def _load_runtime_config() -> dict:
     # Keep this lightweight and optional; do not import server.py here.
     candidates = [
@@ -195,22 +232,29 @@ def _send_line_push_real(message: str, user_id: str) -> bool:
     if not token or not user_id:
         return False
     safe_message = _guard_text(message, platform="LINE")
-    payload = {
-        "to": user_id,
-        "messages": [{"type": "text", "text": safe_message[:5000]}],
-    }
+    chunks = _numbered_chunks(safe_message, 4900)
+    batches = [chunks[i:i + 5] for i in range(0, len(chunks), 5)]
+    if not batches:
+        batches = [[""]]
+    ok_any = False
     try:
-        req = urlrequest.Request(
-            "https://api.line.me/v2/bot/message/push",
-            data=json.dumps(payload).encode("utf-8"),
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {token}",
-            },
-            method="POST",
-        )
-        with urlrequest.urlopen(req, timeout=10) as resp:
-            return getattr(resp, "status", 0) == 200
+        for batch in batches:
+            payload = {
+                "to": user_id,
+                "messages": [{"type": "text", "text": chunk} for chunk in batch],
+            }
+            req = urlrequest.Request(
+                "https://api.line.me/v2/bot/message/push",
+                data=json.dumps(payload).encode("utf-8"),
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {token}",
+                },
+                method="POST",
+            )
+            with urlrequest.urlopen(req, timeout=10) as resp:
+                ok_any = getattr(resp, "status", 0) == 200 or ok_any
+        return ok_any
     except Exception as e:
         logger.error(f"[RED PHONE] LINE push error: {e}")
         return False
@@ -919,53 +963,63 @@ def _send_telegram_once(
 ) -> dict:
     acked = []
     errors = []
+    chunks = _numbered_chunks(message, 3900)
     for chat_id in admin_ids:
-        payload_obj = {"chat_id": str(chat_id), "text": message}
-        if thread_id and int(thread_id) > 0:
-            payload_obj["message_thread_id"] = int(thread_id)
-        payload = json.dumps(payload_obj, ensure_ascii=False).encode("utf-8")
-        try:
-            req = urlrequest.Request(
-                f"https://api.telegram.org/bot{token}/sendMessage",
-                data=payload,
-                headers={"Content-Type": "application/json"},
-                method="POST",
-            )
-            with urlrequest.urlopen(req, timeout=max(4, int(timeout_sec))):
-                pass
-            acked.append(str(chat_id))
-        except HTTPError as e:
-            body = ""
+        sent_all = True
+        for chunk in chunks:
+            payload_obj = {"chat_id": str(chat_id), "text": chunk}
+            if thread_id and int(thread_id) > 0:
+                payload_obj["message_thread_id"] = int(thread_id)
+            payload = json.dumps(payload_obj, ensure_ascii=False).encode("utf-8")
             try:
-                body = (e.read() or b"").decode("utf-8", "ignore")
-            except Exception:
+                req = urlrequest.Request(
+                    f"https://api.telegram.org/bot{token}/sendMessage",
+                    data=payload,
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                with urlrequest.urlopen(req, timeout=max(4, int(timeout_sec))):
+                    pass
+            except HTTPError as e:
                 body = ""
-            can_retry_without_thread = (
-                bool(thread_id)
-                and int(getattr(e, "code", 0) or 0) in {400, 403}
-                and ("message thread not found" in body.lower() or "message_thread_id" in body.lower())
-            )
-            if can_retry_without_thread:
                 try:
-                    retry_payload = json.dumps({"chat_id": str(chat_id), "text": message}, ensure_ascii=False).encode("utf-8")
-                    req2 = urlrequest.Request(
-                        f"https://api.telegram.org/bot{token}/sendMessage",
-                        data=retry_payload,
-                        headers={"Content-Type": "application/json"},
-                        method="POST",
-                    )
-                    with urlrequest.urlopen(req2, timeout=max(4, int(timeout_sec))):
-                        pass
-                    acked.append(str(chat_id))
-                    continue
-                except Exception as retry_e:
-                    errors.append(f"{chat_id}:thread_fallback_failed:{type(retry_e).__name__}")
-                    continue
-            errors.append(f"{chat_id}:HTTP{getattr(e, 'code', 'ERR')}")
-        except URLError as e:
-            errors.append(f"{chat_id}:URLError:{e.reason}")
-        except Exception as e:
-            errors.append(f"{chat_id}:{type(e).__name__}")
+                    body = (e.read() or b"").decode("utf-8", "ignore")
+                except Exception:
+                    body = ""
+                can_retry_without_thread = (
+                    bool(thread_id)
+                    and int(getattr(e, "code", 0) or 0) in {400, 403}
+                    and ("message thread not found" in body.lower() or "message_thread_id" in body.lower())
+                )
+                if can_retry_without_thread:
+                    try:
+                        retry_payload = json.dumps({"chat_id": str(chat_id), "text": chunk}, ensure_ascii=False).encode("utf-8")
+                        req2 = urlrequest.Request(
+                            f"https://api.telegram.org/bot{token}/sendMessage",
+                            data=retry_payload,
+                            headers={"Content-Type": "application/json"},
+                            method="POST",
+                        )
+                        with urlrequest.urlopen(req2, timeout=max(4, int(timeout_sec))):
+                            pass
+                        continue
+                    except Exception as retry_e:
+                        errors.append(f"{chat_id}:thread_fallback_failed:{type(retry_e).__name__}")
+                        sent_all = False
+                        break
+                errors.append(f"{chat_id}:HTTP{getattr(e, 'code', 'ERR')}")
+                sent_all = False
+                break
+            except URLError as e:
+                errors.append(f"{chat_id}:URLError:{e.reason}")
+                sent_all = False
+                break
+            except Exception as e:
+                errors.append(f"{chat_id}:{type(e).__name__}")
+                sent_all = False
+                break
+        if sent_all:
+            acked.append(str(chat_id))
     return {
         "ok_any": bool(acked),
         "acked": acked,

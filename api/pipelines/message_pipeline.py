@@ -1044,12 +1044,10 @@ def process_message_inner(orch, user_id, message, platform="LINE", role="user", 
                 if not targets:
                     return "📭 目前沒有自訂爬蟲目標。"
                 lines = ["🕸️ 自訂爬蟲目標："]
-                for idx, t in enumerate(targets[:20], 1):
+                for idx, t in enumerate(targets, 1):
                     u = str((t or {}).get("url") or "").strip()
                     n = str((t or {}).get("note") or "").strip()
                     lines.append(f"{idx}. {u}" + (f"（{n}）" if n else ""))
-                if len(targets) > 20:
-                    lines.append(f"...其餘 {len(targets) - 20} 筆")
                 return "\n".join(lines)
 
             if task_value.startswith("add "):

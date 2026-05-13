@@ -417,6 +417,10 @@ def _osc_local_path_candidates(path_str: str) -> list[str]:
 
 def _osc_allowed_local_roots() -> list[str]:
     magi_root = Path(__file__).resolve().parents[2]
+    template_roots = [
+        os.environ.get("MAGI_OSC_TEMPLATE_FOLDER", ""),
+        str(Path.home() / "Desktop" / "0000-0000-範本-消費者債務清理"),
+    ]
     roots = default_synology_share_roots(include_closed=False) + [
         str(magi_root / "exports"),
         str(magi_root / "static" / "exports"),
@@ -427,7 +431,7 @@ def _osc_allowed_local_roots() -> list[str]:
         "/Volumes/lumi/lumi",
         "/Volumes/lumi-1/lumi",
         "/Volumes/lumi-2/lumi",
-    ]
+    ] + [p for p in template_roots if str(p or "").strip()]
     out = []
     for root in roots:
         rp = os.path.realpath(root)

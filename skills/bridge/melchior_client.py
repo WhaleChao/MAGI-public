@@ -757,12 +757,15 @@ def _remote_online_quick() -> bool:
       4. Ollama /api/tags (is the LLM engine responsive?)
     Returns False if any check fails → caller will use local Ollama.
     """
-    if _avoid_distributed():
+    remote_gate_enabled = os.environ.get("MAGI_USE_REMOTE_HEALTH_GATE", "0").strip().lower() in {"1", "true", "on", "yes"}
+    avoid_raw = os.environ.get("MAGI_AVOID_DISTRIBUTED")
+    remote_gate_forced = remote_gate_enabled and str(avoid_raw).strip().lower() in {"0", "false", "off", "no"}
+    if _avoid_distributed() and not remote_gate_forced:
         return False
 
     # --- Retired remote Melchior path ---
     # Kept only for explicit legacy opt-in during migration tests.
-    if os.environ.get("MAGI_USE_REMOTE_HEALTH_GATE", "0").strip().lower() in {"1", "true", "on", "yes"}:
+    if remote_gate_enabled:
         try:
             from api.platforms.remote_health_gate import get_gate, PeerConfig
             gate = get_gate()

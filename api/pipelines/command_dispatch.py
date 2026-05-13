@@ -1206,7 +1206,9 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
                     _case = _res.get("case") if isinstance(_res.get("case"), dict) else {}
                     _name = _case.get("client_name") or _target
                     _laf = _case.get("laf_case_number") or _case.get("case_number") or ""
-                    return f"✅ 已將 {_name}{'（' + _laf + '）' if _laf else ''} 的進度回報提醒冷卻至 {_res.get('cooldown_until')}。"
+                    _cal = _res.get("calendar") if isinstance(_res.get("calendar"), dict) else {}
+                    _cal_note = "，並已登上行事曆" if _cal.get("google_calendar_id") or _cal.get("todo_id") else ""
+                    return f"✅ 已將 {_name}{'（' + _laf + '）' if _laf else ''} 的進度回報提醒冷卻至 {_res.get('cooldown_until')}（60 日）{_cal_note}。"
                 if _res.get("error") == "ambiguous_target":
                     cands = _res.get("candidates") if isinstance(_res.get("candidates"), list) else []
                     lines = [f"⚠️ 找到多筆「{_target}」相關法扶案件，請改用法扶案號或案件編號："]
@@ -2112,8 +2114,6 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
                     for row in cases:
                         if not isinstance(row, dict):
                             continue
-                        if shown >= 6:
-                            break
                         case_no = str(row.get("case_number") or "").strip()
                         court_case_no = str(row.get("court_case_number") or "").strip()
                         party = str(row.get("client_name") or "").strip()
@@ -2122,17 +2122,14 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
                         files = row.get("files")
                         file_list = files if isinstance(files, list) else []
                         lines.append(f"{shown + 1}. {label}（{len(file_list)} 份）")
-                        for fp in file_list[:2]:
+                        for fp in file_list:
                             bn = _basename(fp) or str(fp).strip()
                             if bn:
                                 lines.append(f"- {bn}")
                         shown += 1
-                    remaining = len([r for r in cases if isinstance(r, dict)]) - shown
-                    if remaining > 0:
-                        lines.append(f"...其餘 {remaining} 案略")
                 elif isinstance(payload.get("files"), list) and payload.get("files"):
                     lines.append("檔案：")
-                    for fp in payload.get("files", [])[:5]:
+                    for fp in payload.get("files", []):
                         bn = _basename(fp) or str(fp).strip()
                         if bn:
                             lines.append(f"- {bn}")
@@ -2282,14 +2279,12 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
                         lines.append("案件明細：")
                         idx = 0
                         for (party, court_case_no, folder), grouped_items in groups.items():
-                            if idx >= 6:
-                                break
                             label_parts = [x for x in [party, court_case_no] if x]
                             if not label_parts and folder:
                                 label_parts.append(os.path.basename(folder))
                             label = "｜".join(label_parts) if label_parts else "未判斷案件"
                             lines.append(f"{idx + 1}. {label}（{len(grouped_items)} 份）")
-                            for it in grouped_items[:2]:
+                            for it in grouped_items:
                                 fn = str(it.get("file") or "").strip()
                                 dst = str(it.get("dst") or "").strip()
                                 if fn:
@@ -2297,12 +2292,9 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
                                 elif dst:
                                     lines.append(f"- {_basename(dst) or dst}")
                             idx += 1
-                        remaining = len(groups) - idx
-                        if remaining > 0:
-                            lines.append(f"...其餘 {remaining} 案略")
                 elif isinstance(payload.get("files"), list) and payload.get("files"):
                     lines.append("檔案：")
-                    for fp in payload.get("files", [])[:5]:
+                    for fp in payload.get("files", []):
                         bn = _basename(fp) or str(fp).strip()
                         if bn:
                             lines.append(f"- {bn}")

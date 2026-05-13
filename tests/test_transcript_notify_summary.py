@@ -57,3 +57,24 @@ def test_transcript_summary_lists_only_cases_with_downloads():
     assert summary["scanned_cases_count"] == 3
     assert [case["client_name"] for case in summary["cases"]] == ["陳瀚"]
 
+
+def test_transcript_summary_keeps_all_downloaded_files_by_default():
+    mod = _load_transcript_action()
+    files = [f"/tmp/file_{idx:02d}.pdf" for idx in range(15)]
+    msg, summary = mod._summarize_download_results(
+        {
+            "cases": [
+                {
+                    "success": True,
+                    "client_name": "測試當事人",
+                    "court_case_number": "115年度測字第1號",
+                    "files": files,
+                }
+            ]
+        }
+    )
+
+    assert "file_00.pdf" in msg
+    assert "file_14.pdf" in msg
+    assert "其餘" not in msg
+    assert summary["cases"][0]["files"] == files

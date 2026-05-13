@@ -967,6 +967,89 @@ async function loadDocuments() {
     }).join("");
 }
 
+function templateFolderFullPath(basePath, relativePath) {
+    const base = String(basePath || "").replace(/[\\/]+$/, "");
+    const rel = String(relativePath || "").replace(/^[/\\]+/, "");
+    if (!rel) return base;
+    const sep = base.includes("\\") ? "\\" : "/";
+    return base + sep + rel.replace(/\//g, sep);
+}
+
+async function loadTemplateFolder(relativePath = "") {
+    const status = document.getElementById("templateFolderStatus");
+    const pathInput = document.getElementById("templateFolderPath");
+    const existsInput = document.getElementById("templateFolderExists");
+    const actions = document.getElementById("templateFolderActions");
+    const body = document.getElementById("templateFolderBody");
+    if (status) {
+        status.hidden = false;
+        status.className = "status-banner";
+        status.textContent = "範本資料夾載入中。";
+    }
+    const rel = String(relativePath || "").replace(/^\/+|\/+$/g, "");
+    const data = await api(`/api/osc/template-folder?relative_path=${encodeURIComponent(rel)}`);
+    state.templateFolder = data;
+    const basePath = data.base_path || data.local_folder || data.folder_path || (data.candidates || [])[0] || "";
+    const currentRel = data.current_relative_path || rel || "";
+    const currentPath = data.current_path || templateFolderFullPath(basePath, currentRel);
+    if (pathInput) pathInput.value = currentPath || data.folder_path || "";
+    if (existsInput) existsInput.value = data.exists ? "可瀏覽" : "尚未找到資料夾";
+    if (status) {
+        status.className = data.exists ? "status-banner ok" : "status-banner warn";
+        status.textContent = data.exists
+            ? `目前位置：${currentRel || "根目錄"}｜共 ${Number((data.entries || []).length)} 個項目。`
+            : "尚未找到可瀏覽的範本資料夾；請確認 NAS 掛載或本機範本資料夾是否存在。";
+    }
+    if (actions) {
+        const parentRel = data.parent_relative_path || "";
+        actions.innerHTML = basePath ? `
+            <button class="btn" data-act="template-folder-open" data-path="">根目錄</button>
+            <button class="btn" data-act="template-folder-open" data-path="${esc(parentRel)}"${currentRel ? "" : " disabled"}>上一層</button>
+            <button class="btn" data-act="doc-copy" data-path="${esc(currentPath)}">複製目前路徑</button>
+        ` : `<span class="muted">沒有可用路徑。</span>`;
+    }
+    if (!body) return;
+    const entries = data.entries || [];
+    if (!entries.length) {
+        const note = data.exists ? "目前資料夾沒有可列出的範本。" : "尚未找到範本資料夾。";
+        body.innerHTML = `<tr><td colspan="5" class="muted">${esc(note)}</td></tr>`;
+        return;
+    }
+    body.innerHTML = entries.map(item => {
+        const isDir = item.type === "dir" || item.is_dir;
+        const path = templateFolderFullPath(basePath, item.relative_path || "");
+        const type = isDir ? "資料夾" : "檔案";
+        const icon = isDir ? "📁" : "📄";
+        const openBtn = isDir
+            ? `<button class="btn slim" data-act="template-folder-open" data-path="${esc(item.relative_path || "")}">進入</button>`
+            : `<a class="btn slim" href="${fileContentUrl(path, true)}" target="_blank" rel="noopener noreferrer">開啟</a>`;
+        const previewBtn = isDir
+            ? ""
+            : `<a class="btn slim" href="${fileContentUrl(path, true)}" target="_blank" rel="noopener noreferrer">預覽</a>`;
+        const downloadBtn = isDir
+            ? ""
+            : `<a class="btn slim" href="${fileContentUrl(path)}" target="_blank" rel="noopener noreferrer">下載</a>`;
+        const shareBtn = isDir
+            ? ""
+            : `<button class="btn slim" data-act="wb-file-share" data-path="${esc(path)}" data-name="${esc(item.name || "")}">分享連結</button>`;
+        return `
+            <tr>
+                <td title="${esc(path)}">${icon} ${esc(item.name || "")}</td>
+                <td>${type}</td>
+                <td>${esc(item.size_label || "")}</td>
+                <td>${esc(item.modified_at || item.modified || "")}</td>
+                <td class="actions">
+                    ${openBtn}
+                    <button class="btn" data-act="doc-copy" data-path="${esc(path)}">複製路徑</button>
+                    ${previewBtn}
+                    ${downloadBtn}
+                    ${shareBtn}
+                </td>
+            </tr>
+        `;
+    }).join("");
+}
+
 function setPdfToolPath(path) {
     const input = document.getElementById("pdfToolPath");
     if (input) input.value = path || "";
@@ -1505,6 +1588,24 @@ async function openDocumentPath(path) {
     const smb = (data.smb_candidates || [])[0] || "";
     if (smb) window.open(smb, "_blank");
     alert(`無法直接開啟，請手動使用路徑：\n${path}`);
+}
+
+async function openFolderPath(path) {
+    const rawPath = String(path || "").trim();
+    if (!rawPath) return;
+    try {
+        const data = await api("/api/osc/documents/open", "POST", { path: rawPath });
+        const result = data.open_result || {};
+        if (result.ok) return;
+        const smb = (data.smb_candidates || [])[0] || "";
+        if (smb) {
+            window.open(smb, "_blank");
+            return;
+        }
+        alert(`無法直接開啟資料夾，請手動使用路徑：\n${rawPath}`);
+    } catch (err) {
+        alert(`資料夾開啟失敗：${err.message || err}\n${rawPath}`);
+    }
 }
 
 async function copyDocumentPath(path) {

@@ -48,6 +48,7 @@ function bindTabs() {
                 loadDocumentKeywords();
                 loadDocumentReplacements();
             }
+            if (tabId === "templateFolder") _withLoading("載入範本資料夾...", loadTemplateFolder);
             if (tabId === "pdfTools") {
                 const pdfPath = document.getElementById("pdfToolPath");
                 if (pdfPath && !pdfPath.value) {
@@ -199,7 +200,9 @@ async function dispatchDelegatedAction(act, t) {
     if (act === "saas-opponent-edit") return await jumpToPaperclipTabAndRun("admin", () => editAdminOpponent(Number(id)));
 
     if (act === "doc-open") return await openDocumentPath(t.dataset.path || "");
+    if (act === "doc-open-folder") return await openFolderPath(t.dataset.path || "");
     if (act === "doc-copy") return await copyDocumentPath(t.dataset.path || "");
+    if (act === "template-folder-open") return await loadTemplateFolder(t.dataset.path || "");
     if (act === "doc-stamp") return await stampDocument(t.dataset.path || "");
     if (act === "doc-finalize") return await finalizeDocument(t.dataset.path || "");
     if (act === "doc-pdf-tool") return setPdfToolPath(t.dataset.path || "");
@@ -399,6 +402,7 @@ function bindEvents() {
         ["todoSaveBtn", saveTodo, "待辦儲存"],
         ["docsSearchBtn", loadDocuments, "檔案搜尋"],
         ["docsRefreshBtn", loadDocuments, "檔案重新整理"],
+        ["templateFolderRefreshBtn", loadTemplateFolder, "範本資料夾重新整理"],
         ["docGeneratePoaBtn", () => runDocCaseAction("generate_power_of_attorney"), "製作委任狀"],
         ["docGenerateReceiptBtn", () => runDocCaseAction("generate_receipt"), "製作收據"],
         ["docClosingOverviewBtn", () => runDocCaseAction("closing_overview"), "結案資料彙整"],

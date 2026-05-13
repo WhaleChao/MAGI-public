@@ -361,6 +361,8 @@ class LAFOrchestratorDocumentMixin:
             except OSError:
                 continue
             for fn in entries:
+                if fn.startswith(".") or fn.startswith("~"):
+                    continue
                 ext = Path(fn).suffix.lower()
                 if ext not in allowed:
                     # Check one level deeper for dated sub-folders
@@ -368,6 +370,8 @@ class LAFOrchestratorDocumentMixin:
                     if os.path.isdir(sub_sub):
                         try:
                             for fn2 in os.listdir(sub_sub):
+                                if fn2.startswith(".") or fn2.startswith("~"):
+                                    continue
                                 if Path(fn2).suffix.lower() in allowed:
                                     self._classify_doc_file_enhanced(
                                         fn2, os.path.join(sub_sub, fn2), out, subdir
@@ -386,6 +390,8 @@ class LAFOrchestratorDocumentMixin:
     def _classify_doc_file_enhanced(fn: str, full_path: str, out: dict,
                                       subdir: str = "") -> None:
         """Enhanced classification covering opening, closing, withdrawal, receipts."""
+        if fn.startswith(".") or fn.startswith("~"):
+            return
         # ── Opening documents ──
         # 主要關鍵字：開辦通知書 / 接案通知書 / 准予扶助證明書
         # 補充：在 02_開辦資料 路徑下檔名含「開辦資料」/「開辦」也視為 opening notice

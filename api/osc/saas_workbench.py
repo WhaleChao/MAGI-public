@@ -613,6 +613,7 @@ def build_task_boards(exec_fn: ExecFn, *, case_number: str = "", limit: int = 20
         FROM case_todos
         WHERE {_status_open_sql()}
           AND (source_file IS NULL OR source_file='' OR source_file NOT LIKE 'gcal_import%%')
+          AND COALESCE(todo_type, '') <> '行事曆事件'
           {case_clause}
         ORDER BY COALESCE(todo_date, CURDATE()) ASC, COALESCE(todo_time, '23:59') ASC, id DESC
         LIMIT %s
@@ -625,7 +626,7 @@ def build_task_boards(exec_fn: ExecFn, *, case_number: str = "", limit: int = 20
         SELECT id, case_number, client_name, todo_type, todo_date, todo_time, description, status, source_file, created_date
         FROM case_todos
         WHERE {_status_open_sql()}
-          AND source_file LIKE 'gcal_import%%'
+          AND (source_file LIKE 'gcal_import%%' OR todo_type='行事曆事件')
           {case_clause}
         ORDER BY COALESCE(todo_date, CURDATE()) ASC, COALESCE(todo_time, '23:59') ASC, id DESC
         LIMIT %s

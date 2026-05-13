@@ -1,7 +1,7 @@
 {
-  "scan_time": "2026-05-11T08:32:26.613090",
-  "elapsed_sec": 32.2,
-  "mode": "quick",
+  "scan_time": "2026-05-12T21:01:27.548452",
+  "elapsed_sec": 34.5,
+  "mode": "full",
   "checks": [
     {
       "check": "duplicate_vectors",
@@ -264,6 +264,14 @@
             ]
           },
           {
+            "hash": "00f9affc657a44888672037b9257c912",
+            "count": 2,
+            "keep_id": 1008570,
+            "remove_ids": [
+              1008571
+            ]
+          },
+          {
             "hash": "0101311818418e247f54dc938976cf84",
             "count": 2,
             "keep_id": 1004160,
@@ -478,14 +486,6 @@
             "remove_ids": [
               999627
             ]
-          },
-          {
-            "hash": "028db7fc1538ecddf53ec854e24258ec",
-            "count": 2,
-            "keep_id": 1002384,
-            "remove_ids": [
-              1002385
-            ]
           }
         ],
         "groups_planned": 50,
@@ -552,22 +552,57 @@
     {
       "check": "wiki_staleness",
       "status": "warn",
-      "stale_cases": 1,
-      "up_to_date": 79,
+      "stale_cases": 8,
+      "up_to_date": 72,
       "details": [
+        {
+          "case": "2025-0128",
+          "client": "黃珊珊",
+          "synthesized_at": "2026-05-06T03:36:55.228972"
+        },
+        {
+          "case": "2025-0078",
+          "client": "陳瀚",
+          "synthesized_at": "2026-05-12T03:37:23.889321"
+        },
+        {
+          "case": "2025-0081",
+          "client": "謝千億",
+          "synthesized_at": "2026-05-12T03:39:33.011147"
+        },
+        {
+          "case": "2025-0009",
+          "client": "田鄧志良",
+          "synthesized_at": "2026-05-12T03:41:37.795861"
+        },
+        {
+          "case": "2026-0021",
+          "client": "李滿金",
+          "synthesized_at": "2026-05-12T03:43:43.802452"
+        },
+        {
+          "case": "2026-0028",
+          "client": "劉信義",
+          "synthesized_at": "2026-05-12T03:45:50.637031"
+        },
         {
           "case": "2025-0002",
           "client": "游秀鈴",
-          "synthesized_at": "2026-05-06T03:37:49.826504"
+          "synthesized_at": "2026-05-12T03:46:21.912408"
+        },
+        {
+          "case": "2026-0039",
+          "client": "周潔林",
+          "synthesized_at": "2026-05-12T03:48:27.795437"
         }
       ]
     },
     {
       "check": "orphan_notes",
       "status": "warn",
-      "total_on_disk": 1147,
+      "total_on_disk": 1148,
       "total_in_index": 1124,
-      "unindexed": 23,
+      "unindexed": 24,
       "orphaned_index_entries": 0,
       "zero_chunk_notes": 0,
       "zero_chunk_verified_in_db": 661,
@@ -583,15 +618,68 @@
     },
     {
       "check": "contradiction_scan",
-      "status": "skip",
-      "reason": "llm disabled"
+      "status": "warn",
+      "cases_with_contradictions": 12,
+      "clean_cases": 68,
+      "details": [
+        {
+          "case": "2025-0002-游秀鈴",
+          "warning_count": 1,
+          "excerpt": "- **資訊缺口**：目前所有文件僅為法院的開庭通知書，缺乏起訴書、偵查筆錄或辯護理由書等實體內容，故無法得知具體案由、犯罪事實及法律爭點。\n- **資訊缺口**：需確認案件的具體罪名與事實經過。\n\n---"
+        },
+        {
+          "case": "2025-0003-蕭仁俊",
+          "warning_count": 2,
+          "excerpt": ""
+        },
+        {
+          "case": "2025-0023-陳志仁",
+          "warning_count": 2,
+          "excerpt": "*   **矛盾點：** [若不同文件描述同一事實但有差異，請標記 ⚠️ 並列出兩種版本] → 來源：[文件名]\n*   **資訊缺口：** [若有\n\n---"
+        },
+        {
+          "case": "2025-0042-陳金龍",
+          "warning_count": 1,
+          "excerpt": "*   **矛盾事實：** [若發現不同文件描述不一致之處] → 來源：待補充\n*   **資訊缺口：** [若案件關鍵資訊缺失] → 來源：待補充\n\n---"
+        },
+        {
+          "case": "2025-0050-呂幸春",
+          "warning_count": 1,
+          "excerpt": "- **資訊缺口**：目前文件僅涉及更生程序的啟動與車輛登記指令，關於債務總額、債權人名單及具體更生計畫內容等核心資訊尚未在現有文件中呈現。\n- **資訊缺口**：需確認該「小客車」之車籍資料與更生計畫中關於財產處分之關聯性。\n\n---"
+        },
+        {
+          "case": "2025-0064-賴麗卿Sera Cang",
+          "warning_count": 1,
+          "excerpt": "- **資訊缺口**：\n    - 由於「20260505 民事消債執行陳報狀(賴麗卿)存底」檔案讀取失敗，無法確認當事人針對法院要求所提交的具體內容。\n    - 需確認法院函件中「說明二、三」之具體要求內容，以對照當事人提交的陳報狀是否已完整回應法院需求。\n- **待確認事項**：\n    - 需確認當事人（賴麗卿）是否已於規定期限內完成陳報。\n\n---"
+        },
+        {
+          "case": "2025-0084-王台銘",
+          "warning_count": 1,
+          "excerpt": "- **資訊缺口**：目前無法得知法院要求補正的具體事項（說明一所示事項內容），需檢視該 PDF 完整內容以確定補正方向。\n- **資訊缺口**：需確認案件實際年份與文號之關聯性（文件標題提及 2026 年，但文號為 115 年度，可能涉及年份轉換或輸入錯誤，需核實）。\n\n---"
+        },
+        {
+          "case": "2026-0016-曾亞玲",
+          "warning_count": 0,
+          "excerpt": ""
+        },
+        {
+          "case": "2026-0030-沈筱筑",
+          "warning_count": 0,
+          "excerpt": ""
+        },
+        {
+          "case": "2026-0034-陳文明",
+          "warning_count": 1,
+          "excerpt": "- [事項]：[說明資訊缺口或文件間的矛盾點]\n\n---\n\n**請提供文件內容，我將隨時待命為您處理。**\n\n---"
+        }
+      ]
     }
   ],
   "summary": {
     "total_checks": 5,
     "ok": 0,
-    "warn": 4,
+    "warn": 5,
     "error": 0,
-    "skip": 1
+    "skip": 0
   }
 }
