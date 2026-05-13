@@ -14,6 +14,7 @@ import argparse
 import json
 import os
 import shutil
+import subprocess
 import sys
 import time
 from dataclasses import asdict, dataclass, field
@@ -52,6 +53,7 @@ class ResourceSnapshot:
     free_gb: float
     inactive_gb: float
     free_plus_inactive_gb: float
+    memory_free_percent: float = -1.0
     timestamp: str = field(default_factory=lambda: time.strftime("%Y-%m-%d %H:%M:%S"))
 
 
@@ -75,7 +77,31 @@ def collect_snapshot(path: Path = MAGI_ROOT) -> ResourceSnapshot:
         free_gb=round(mem.free_gb, 2),
         inactive_gb=round(mem.inactive_gb, 2),
         free_plus_inactive_gb=round(mem.free_plus_inactive_gb, 2),
+        memory_free_percent=_read_memory_free_percent(),
     )
+
+
+def _read_memory_free_percent() -> float:
+    """Return macOS memory_pressure free percentage, or -1 when unavailable."""
+    try:
+        proc = subprocess.run(
+            ["memory_pressure", "-Q"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except Exception:
+        return -1.0
+    for line in (proc.stdout or "").splitlines():
+        if "System-wide memory free percentage:" not in line:
+            continue
+        try:
+            return float(line.rsplit(":", 1)[1].strip().rstrip("%"))
+        except Exception:
+            return -1.0
+    return -1.0
 
 
 def classify(snapshot: ResourceSnapshot) -> ResourceDecision:
@@ -97,18 +123,21 @@ def classify(snapshot: ResourceSnapshot) -> ResourceDecision:
     elif snapshot.disk_free_gb < DEFAULT_WARN_DISK_GB:
         raise_to("throttle", f"disk_free<{DEFAULT_WARN_DISK_GB:g}GB")
 
-    if snapshot.swap_used_gb > DEFAULT_SWAP_CRITICAL_GB:
+    memory_pressure_healthy = snapshot.memory_free_percent >= 25.0
+    swap_is_probably_stale = memory_pressure_healthy and snapshot.free_plus_inactive_gb >= DEFAULT_FREE_CRITICAL_GB
+
+    if snapshot.swap_used_gb > DEFAULT_SWAP_CRITICAL_GB and not swap_is_probably_stale:
         raise_to("critical", f"swap_used>{DEFAULT_SWAP_CRITICAL_GB:g}GB")
-    elif snapshot.swap_used_gb > DEFAULT_SWAP_CORE_ONLY_GB:
+    elif snapshot.swap_used_gb > DEFAULT_SWAP_CORE_ONLY_GB and not swap_is_probably_stale:
         raise_to("core_only", f"swap_used>{DEFAULT_SWAP_CORE_ONLY_GB:g}GB")
-    elif snapshot.swap_used_gb > DEFAULT_SWAP_WARN_GB:
+    elif snapshot.swap_used_gb > DEFAULT_SWAP_WARN_GB and not swap_is_probably_stale:
         raise_to("throttle", f"swap_used>{DEFAULT_SWAP_WARN_GB:g}GB")
 
     if snapshot.free_plus_inactive_gb < DEFAULT_FREE_CRITICAL_GB:
         raise_to("critical", f"free_plus_inactive<{DEFAULT_FREE_CRITICAL_GB:g}GB")
-    elif snapshot.free_plus_inactive_gb < DEFAULT_FREE_CORE_ONLY_GB:
+    elif snapshot.free_plus_inactive_gb < DEFAULT_FREE_CORE_ONLY_GB and not memory_pressure_healthy:
         raise_to("core_only", f"free_plus_inactive<{DEFAULT_FREE_CORE_ONLY_GB:g}GB")
-    elif snapshot.free_plus_inactive_gb < DEFAULT_FREE_WARN_GB:
+    elif snapshot.free_plus_inactive_gb < DEFAULT_FREE_WARN_GB and not memory_pressure_healthy:
         raise_to("throttle", f"free_plus_inactive<{DEFAULT_FREE_WARN_GB:g}GB")
 
     if level in {"throttle", "core_only", "critical"}:
@@ -196,7 +225,8 @@ def _print_human(decision: ResourceDecision) -> None:
     print(f"MAGI Resource Governor: {decision.level.upper()} ok={decision.ok}")
     print(
         f"disk={s.disk_free_gb:.2f}/{s.disk_total_gb:.2f}GB free, "
-        f"swap={s.swap_used_gb:.2f}GB, free+inactive={s.free_plus_inactive_gb:.2f}GB"
+        f"swap={s.swap_used_gb:.2f}GB, free+inactive={s.free_plus_inactive_gb:.2f}GB, "
+        f"memory_free={s.memory_free_percent:.0f}%"
     )
     if decision.reasons:
         print("reasons: " + ", ".join(decision.reasons))

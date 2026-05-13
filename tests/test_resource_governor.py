@@ -53,6 +53,37 @@ def test_classify_critical_when_swap_too_high():
     assert "do_not_start_26b" in decision.actions
 
 
+def test_classify_ignores_stale_swap_when_memory_pressure_is_healthy():
+    snap = rg.ResourceSnapshot(
+        disk_free_gb=52,
+        disk_total_gb=460,
+        swap_used_gb=22,
+        free_gb=0.5,
+        inactive_gb=4.5,
+        free_plus_inactive_gb=5,
+        memory_free_percent=39,
+    )
+    decision = rg.classify(snap)
+    assert decision.ok is True
+    assert decision.level == "normal"
+    assert decision.actions == []
+
+
+def test_classify_ignores_low_inactive_when_memory_pressure_is_healthy():
+    snap = rg.ResourceSnapshot(
+        disk_free_gb=52,
+        disk_total_gb=460,
+        swap_used_gb=22,
+        free_gb=0.2,
+        inactive_gb=3.4,
+        free_plus_inactive_gb=3.6,
+        memory_free_percent=34,
+    )
+    decision = rg.classify(snap)
+    assert decision.ok is True
+    assert decision.level == "normal"
+
+
 def test_prepare_switch_records_failure_after_cleanup(monkeypatch, tmp_path):
     before = rg.ResourceSnapshot(16, 460, 20, 1, 1, 2)
     after = rg.ResourceSnapshot(16, 460, 20, 1, 1.5, 2.5)
