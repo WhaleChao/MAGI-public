@@ -59,7 +59,7 @@ def test_discord_mirror_blocks_system_health_even_with_business_topic(monkeypatc
     assert calls == []
 
 
-def test_discord_mirror_allows_laf_general_audit_report(monkeypatch):
+def test_discord_mirror_blocks_laf_general_audit_report(monkeypatch):
     sent = {}
 
     def fake_send(message, severity, *, topic_key="", source=""):
@@ -74,8 +74,27 @@ def test_discord_mirror_allows_laf_general_audit_report(monkeypatch):
 
     msg = "📋 法扶夜間巡檢報告\n⚠️ 進行中逾 18 個月，需確認進度回報：13 件"
 
-    assert red_phone._mirror_to_discord(msg, topic_key="laf_general", source="laf_nightly_audit") is True
-    assert sent["topic_key"] == "laf_general"
+    assert red_phone._mirror_to_discord(msg, topic_key="laf_general", source="laf_nightly_audit") is False
+    assert sent == {}
+
+
+def test_discord_mirror_allows_laf_progress_reminder(monkeypatch):
+    sent = {}
+
+    def fake_send(message, severity, *, topic_key="", source=""):
+        sent["message"] = message
+        sent["severity"] = severity
+        sent["topic_key"] = topic_key
+        sent["source"] = source
+        return True
+
+    monkeypatch.setenv("MAGI_DC_MIRROR_ENABLED", "1")
+    monkeypatch.setattr(red_phone, "_send_discord_bot_message", fake_send)
+
+    msg = "📣 法扶進度回報提醒\n⚠️ 進行中逾 18 個月，需確認進度回報：1 件"
+
+    assert red_phone._mirror_to_discord(msg, topic_key="laf_progress", source="laf_progress_reminder") is True
+    assert sent["topic_key"] == "laf_progress"
 
 
 def test_system_sources_infer_non_business_topics():

@@ -368,6 +368,8 @@ def _notification_policy_for(sub_topic: str, source: str = "") -> str:
     topic = str(sub_topic or "").strip()
     if src == "business_module_live_check":
         return prefs.get("live_check", prefs.get("system_health", "system_only"))
+    if src == "laf_nightly_audit" and topic == "laf_general":
+        return "silent"
     if topic == "laf_dispatch":
         return prefs.get("laf_dispatch", "enabled")
     if topic == "laf_general":
