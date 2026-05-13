@@ -99,14 +99,19 @@ def _get_vault_path() -> Optional[Path]:
     return None
 
 
+def _load_env() -> None:
+    try:
+        from dotenv import load_dotenv
+
+        load_dotenv(dotenv_path=Path(MAGI_ROOT) / ".env")
+    except Exception:
+        pass
+
+
 def _db_connect(db_name: str = "magi_brain"):
     """Connect to MariaDB."""
     import mysql.connector
-    try:
-        from dotenv import load_dotenv
-        load_dotenv()
-    except Exception:
-        pass
+    _load_env()
 
     if db_name == "magi_brain":
         return mysql.connector.connect(
@@ -401,9 +406,28 @@ def _load_cleanup_summary() -> Dict:
 
 
 def _write_cleanup_summary(summary: Dict) -> None:
+    def _compact_for_latest_report(data: Dict) -> Dict:
+        safe = _json_safe(data)
+        if not isinstance(safe, dict):
+            return safe
+        try:
+            plan = safe.get("cleanup_plan") or {}
+            groups = plan.get("groups") or []
+            if isinstance(groups, list) and len(groups) > 50:
+                plan["groups_sample"] = groups[:50]
+                plan["groups_omitted"] = len(groups) - 50
+                plan.pop("groups", None)
+            preview = plan.get("sql_preview") or []
+            if isinstance(preview, list) and len(preview) > 20:
+                plan["sql_preview"] = preview[:20]
+                plan["sql_preview_omitted"] = len(preview) - 20
+        except Exception:
+            return safe
+        return safe
+
     REPORT_DIR.mkdir(parents=True, exist_ok=True)
     CLEANUP_REPORT_PATH.write_text(
-        json.dumps(_json_safe(summary), ensure_ascii=False, indent=2),
+        json.dumps(_compact_for_latest_report(summary), ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
 
@@ -591,6 +615,7 @@ def _restore_faiss_files(faiss_backup: Dict) -> Dict:
 
 def _rebuild_faiss_index() -> Dict:
     try:
+        _load_env()
         from skills.memory.faiss_index import FAISSMemoryIndex
 
         idx = FAISSMemoryIndex.get_instance()
@@ -1000,7 +1025,16 @@ def check_orphan_notes() -> Dict:
     except Exception:
         return {"check": "orphan_notes", "status": "error", "error": "cannot read index"}
 
-    notes_in_index = set(idx.get("notes", {}).keys())
+    def _is_ignored_note_path(rel: str) -> bool:
+        # Generated diagnostics are useful audit artifacts but poor retrieval
+        # corpus material; requiring vector rows for every daily report creates
+        # recurring false orphan warnings and pollutes legal retrieval.
+        return str(rel).startswith("MAGI/品質報告/")
+
+    notes_in_index = {
+        rel for rel in set(idx.get("notes", {}).keys())
+        if not _is_ignored_note_path(rel)
+    }
 
     # Find actual .md files in the vault.  The index legitimately contains
     # dashboard/wiki/index notes too, so comparing it only against 20_Notes
@@ -1010,7 +1044,10 @@ def check_orphan_notes() -> Dict:
         rel_parts = md.relative_to(vault).parts
         if any(part in {".obsidian", ".trash", ".git", "node_modules", "__pycache__"} for part in rel_parts):
             continue
-        actual_notes.add(str(md.relative_to(vault)))
+        rel = str(md.relative_to(vault))
+        if _is_ignored_note_path(rel):
+            continue
+        actual_notes.add(rel)
 
     # Notes on disk but not indexed
     unindexed = actual_notes - notes_in_index
@@ -1072,7 +1109,65 @@ def check_contradiction_scan(use_llm: bool = True) -> Dict:
 
     # Read existing wiki overviews and check for ⚠️ markers
     contradictions = []
+    info_gap_cases = 0
+    template_noise_cases = 0
     clean_cases = 0
+
+    def _section_excerpt(content: str) -> str:
+        match = re.search(r"##\s*⚠️.*?\n(.+?)(?=\n##|\Z)", content, re.DOTALL)
+        if match:
+            return match.group(1).strip()
+        match = re.search(r"##\s*矛盾與待補事項.*?\n(.+?)(?=\n##|\Z)", content, re.DOTALL)
+        return match.group(1).strip() if match else ""
+
+    def _is_template_noise(text: str) -> bool:
+        normalized = re.sub(r"\s+", "", text or "")
+        if not normalized:
+            return False
+        markers = (
+            "[若不同文件描述同一事實但有差異",
+            "[若有",
+            "[事項]",
+            "[說明資訊缺口",
+            "請提供文件內容",
+            "我將隨時待命",
+            "來源：[文件名]",
+            "來源：待補充",
+        )
+        return any(marker in normalized for marker in markers)
+
+    def _is_actual_contradiction(content: str, excerpt: str, warning_count: int) -> bool:
+        hay = re.sub(r"\s+", "", (excerpt or content or ""))
+        if not hay:
+            return False
+        if _is_template_noise(hay):
+            return False
+        contradiction_terms = (
+            "⚠️矛盾",
+            "矛盾點",
+            "矛盾事實",
+            "互相矛盾",
+            "前後矛盾",
+            "版本一",
+            "版本二",
+            "兩種版本",
+            "互有出入",
+            "記載不一致",
+            "陳述不一致",
+            "相互衝突",
+        )
+        if any(term in hay for term in contradiction_terms):
+            return True
+        # A warning icon alone is often used by old wiki pages for information gaps.
+        return warning_count > 0 and ("不一致" in hay or "衝突" in hay)
+
+    def _is_info_gap_only(content: str, excerpt: str) -> bool:
+        hay = re.sub(r"\s+", "", (excerpt or content or ""))
+        if not hay:
+            return False
+        gap_terms = ("資訊缺口", "待確認事項", "待補事項", "未見資料", "待補充")
+        contradiction_terms = ("矛盾", "不一致", "衝突", "兩種版本")
+        return any(term in hay for term in gap_terms) and not any(term in hay for term in contradiction_terms)
 
     for case_dir in sorted(wiki_dir.iterdir()):
         if not case_dir.is_dir():
@@ -1088,19 +1183,20 @@ def check_contradiction_scan(use_llm: bool = True) -> Dict:
 
         # Count ⚠️ markers
         warning_count = content.count("⚠️")
-        # Check for contradiction section
-        has_contradiction_section = "矛盾" in content or "待確認" in content
+        excerpt = _section_excerpt(content)
 
-        if warning_count > 0 or has_contradiction_section:
-            # Extract the contradiction section
-            match = re.search(r"##\s*⚠️.*?\n(.+?)(?=\n##|\Z)", content, re.DOTALL)
-            excerpt = match.group(1).strip()[:300] if match else ""
-
+        if _is_actual_contradiction(content, excerpt, warning_count):
             contradictions.append({
                 "case": case_dir.name,
                 "warning_count": warning_count,
-                "excerpt": excerpt,
+                "excerpt": excerpt[:300],
             })
+        elif _is_template_noise(excerpt):
+            template_noise_cases += 1
+            clean_cases += 1
+        elif _is_info_gap_only(content, excerpt):
+            info_gap_cases += 1
+            clean_cases += 1
         else:
             clean_cases += 1
 
@@ -1108,6 +1204,8 @@ def check_contradiction_scan(use_llm: bool = True) -> Dict:
         "check": "contradiction_scan",
         "status": "warn" if contradictions else "ok",
         "cases_with_contradictions": len(contradictions),
+        "info_gap_only_cases": info_gap_cases,
+        "template_noise_cases": template_noise_cases,
         "clean_cases": clean_cases,
         "details": contradictions[:10],
     }

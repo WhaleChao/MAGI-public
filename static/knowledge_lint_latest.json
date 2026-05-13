@@ -1,684 +1,79 @@
 {
-  "scan_time": "2026-05-12T21:01:27.548452",
-  "elapsed_sec": 34.5,
+  "scan_time": "2026-05-13T20:25:53.976069",
+  "elapsed_sec": 27.5,
   "mode": "full",
   "checks": [
     {
       "check": "duplicate_vectors",
-      "status": "warn",
-      "duplicate_groups": 50,
-      "total_extra_entries": 64,
-      "top_dupes": [
-        {
-          "hash": "383f5abbf2bbcdb230fbf06a2fd8c491",
-          "count": 4,
-          "ids": "764671,1007535,1007542,1007549",
-          "min_content_len": 6
-        },
-        {
-          "hash": "68ede04814f8f9266f83ddbe68fee2ad",
-          "count": 4,
-          "ids": "764669,1007534,1007541,1007548",
-          "min_content_len": 6
-        },
-        {
-          "hash": "72961c4b31d393902145e361746c0979",
-          "count": 4,
-          "ids": "764675,1007538,1007545,1007552",
-          "min_content_len": 7
-        },
-        {
-          "hash": "a3351e2c545768138ae36ce45c93c846",
-          "count": 4,
-          "ids": "518347,1007537,1007544,1007551",
-          "min_content_len": 15
-        },
-        {
-          "hash": "bf7db5884d49f923646d8a66d0005cc5",
-          "count": 4,
-          "ids": "764677,1007539,1007546,1007553",
-          "min_content_len": 8
-        },
-        {
-          "hash": "c21b5185bdb62d4eba3f168140050e43",
-          "count": 4,
-          "ids": "764679,1007540,1007547,1007554",
-          "min_content_len": 4
-        },
-        {
-          "hash": "f9ca577b230aee3453335fee50dbb58d",
-          "count": 4,
-          "ids": "995976,1007536,1007543,1007550",
-          "min_content_len": 10
-        },
-        {
-          "hash": "0002ea73d9b93f94da43cc83fedc8a8d",
-          "count": 2,
-          "ids": "999299,999300",
-          "min_content_len": 3395
-        },
-        {
-          "hash": "00276979ff4701a365470b7a8c714f45",
-          "count": 2,
-          "ids": "997833,997834",
-          "min_content_len": 2674
-        },
-        {
-          "hash": "0027ded51fca38440c2751cf722f3762",
-          "count": 2,
-          "ids": "1002954,1002955",
-          "min_content_len": 1540
-        }
-      ],
+      "status": "ok",
+      "duplicate_groups": 0,
+      "total_extra_entries": 0,
+      "top_dupes": [],
       "cleanup_plan": {
         "mode": "dry_run",
-        "groups": [
-          {
-            "hash": "383f5abbf2bbcdb230fbf06a2fd8c491",
-            "count": 4,
-            "keep_id": 764671,
-            "remove_ids": [
-              1007535,
-              1007542,
-              1007549
-            ]
-          },
-          {
-            "hash": "68ede04814f8f9266f83ddbe68fee2ad",
-            "count": 4,
-            "keep_id": 764669,
-            "remove_ids": [
-              1007534,
-              1007541,
-              1007548
-            ]
-          },
-          {
-            "hash": "72961c4b31d393902145e361746c0979",
-            "count": 4,
-            "keep_id": 764675,
-            "remove_ids": [
-              1007538,
-              1007545,
-              1007552
-            ]
-          },
-          {
-            "hash": "a3351e2c545768138ae36ce45c93c846",
-            "count": 4,
-            "keep_id": 518347,
-            "remove_ids": [
-              1007537,
-              1007544,
-              1007551
-            ]
-          },
-          {
-            "hash": "bf7db5884d49f923646d8a66d0005cc5",
-            "count": 4,
-            "keep_id": 764677,
-            "remove_ids": [
-              1007539,
-              1007546,
-              1007553
-            ]
-          },
-          {
-            "hash": "c21b5185bdb62d4eba3f168140050e43",
-            "count": 4,
-            "keep_id": 764679,
-            "remove_ids": [
-              1007540,
-              1007547,
-              1007554
-            ]
-          },
-          {
-            "hash": "f9ca577b230aee3453335fee50dbb58d",
-            "count": 4,
-            "keep_id": 995976,
-            "remove_ids": [
-              1007536,
-              1007543,
-              1007550
-            ]
-          },
-          {
-            "hash": "0002ea73d9b93f94da43cc83fedc8a8d",
-            "count": 2,
-            "keep_id": 999299,
-            "remove_ids": [
-              999300
-            ]
-          },
-          {
-            "hash": "00276979ff4701a365470b7a8c714f45",
-            "count": 2,
-            "keep_id": 997833,
-            "remove_ids": [
-              997834
-            ]
-          },
-          {
-            "hash": "0027ded51fca38440c2751cf722f3762",
-            "count": 2,
-            "keep_id": 1002954,
-            "remove_ids": [
-              1002955
-            ]
-          },
-          {
-            "hash": "0035be916cfad534c41a41f6b3b50022",
-            "count": 2,
-            "keep_id": 1003564,
-            "remove_ids": [
-              1003565
-            ]
-          },
-          {
-            "hash": "00618dd79505db204d35aa3ca43978ba",
-            "count": 2,
-            "keep_id": 1007473,
-            "remove_ids": [
-              1007474
-            ]
-          },
-          {
-            "hash": "006a788c05a480083410753271150455",
-            "count": 2,
-            "keep_id": 1003338,
-            "remove_ids": [
-              1003339
-            ]
-          },
-          {
-            "hash": "006b719d11026fe535ec235dab32996e",
-            "count": 2,
-            "keep_id": 1005248,
-            "remove_ids": [
-              1005249
-            ]
-          },
-          {
-            "hash": "0073986fcd699588780d2d7e67f939be",
-            "count": 2,
-            "keep_id": 1003678,
-            "remove_ids": [
-              1003679
-            ]
-          },
-          {
-            "hash": "00759f192093a145c658258c3d98dbce",
-            "count": 2,
-            "keep_id": 1004082,
-            "remove_ids": [
-              1004083
-            ]
-          },
-          {
-            "hash": "00840210395290a34122a11415333d7a",
-            "count": 2,
-            "keep_id": 998083,
-            "remove_ids": [
-              998084
-            ]
-          },
-          {
-            "hash": "0086a8b871ccfcc05bcbc5c8c21e9f65",
-            "count": 2,
-            "keep_id": 1003376,
-            "remove_ids": [
-              1003377
-            ]
-          },
-          {
-            "hash": "008e1294f217289dddeb29440268ef58",
-            "count": 2,
-            "keep_id": 1006302,
-            "remove_ids": [
-              1006303
-            ]
-          },
-          {
-            "hash": "00ca28562649b065d04c65b59dd15818",
-            "count": 2,
-            "keep_id": 1002634,
-            "remove_ids": [
-              1002635
-            ]
-          },
-          {
-            "hash": "00d1bdd422fe064a90c3b60f41bb72c1",
-            "count": 2,
-            "keep_id": 1000564,
-            "remove_ids": [
-              1000565
-            ]
-          },
-          {
-            "hash": "00ed89eb999e5921c401ecc9ff98c5a9",
-            "count": 2,
-            "keep_id": 1006066,
-            "remove_ids": [
-              1006067
-            ]
-          },
-          {
-            "hash": "00f9affc657a44888672037b9257c912",
-            "count": 2,
-            "keep_id": 1008570,
-            "remove_ids": [
-              1008571
-            ]
-          },
-          {
-            "hash": "0101311818418e247f54dc938976cf84",
-            "count": 2,
-            "keep_id": 1004160,
-            "remove_ids": [
-              1004161
-            ]
-          },
-          {
-            "hash": "010e9679a12cff7f64994288f2d06f2a",
-            "count": 2,
-            "keep_id": 1007052,
-            "remove_ids": [
-              1007053
-            ]
-          },
-          {
-            "hash": "01192273fcae9b70acdcc61eafefbc95",
-            "count": 2,
-            "keep_id": 1002046,
-            "remove_ids": [
-              1002047
-            ]
-          },
-          {
-            "hash": "013412a620557fea0c881aab73d7c138",
-            "count": 2,
-            "keep_id": 997617,
-            "remove_ids": [
-              997618
-            ]
-          },
-          {
-            "hash": "014690d22a3e56914ed75ab1a93f09ef",
-            "count": 2,
-            "keep_id": 1006288,
-            "remove_ids": [
-              1006289
-            ]
-          },
-          {
-            "hash": "014bc7ee587b7d3fa8192a0766cd5d98",
-            "count": 2,
-            "keep_id": 1006306,
-            "remove_ids": [
-              1006307
-            ]
-          },
-          {
-            "hash": "01525c665a35dd0c43c8e5483871982f",
-            "count": 2,
-            "keep_id": 1006110,
-            "remove_ids": [
-              1006111
-            ]
-          },
-          {
-            "hash": "015ee629ba4384ce9dba9673e19226df",
-            "count": 2,
-            "keep_id": 1002108,
-            "remove_ids": [
-              1002109
-            ]
-          },
-          {
-            "hash": "016c628ccacb8d19dfdb5edc7dff032d",
-            "count": 2,
-            "keep_id": 1007595,
-            "remove_ids": [
-              1007596
-            ]
-          },
-          {
-            "hash": "01823d38a1fcfc4f13c659bf5d9d0cc0",
-            "count": 2,
-            "keep_id": 1003432,
-            "remove_ids": [
-              1003433
-            ]
-          },
-          {
-            "hash": "01877b109cbdc90a5781d35802d0451e",
-            "count": 2,
-            "keep_id": 1003796,
-            "remove_ids": [
-              1003797
-            ]
-          },
-          {
-            "hash": "01ad518c735899594cc5eb0d61d54f66",
-            "count": 2,
-            "keep_id": 1005523,
-            "remove_ids": [
-              1005524
-            ]
-          },
-          {
-            "hash": "01bb9755c7a35c9cea6f4ec13301bf22",
-            "count": 2,
-            "keep_id": 1000340,
-            "remove_ids": [
-              1000341
-            ]
-          },
-          {
-            "hash": "01d9e975c6609a9aefca155b5e573b98",
-            "count": 2,
-            "keep_id": 1005914,
-            "remove_ids": [
-              1005915
-            ]
-          },
-          {
-            "hash": "01ef8f77b37f47a076ad3be11415ea9a",
-            "count": 2,
-            "keep_id": 1005704,
-            "remove_ids": [
-              1005705
-            ]
-          },
-          {
-            "hash": "020643ed0d1021e26d7053ae1aabc432",
-            "count": 2,
-            "keep_id": 999890,
-            "remove_ids": [
-              999891
-            ]
-          },
-          {
-            "hash": "020de4e92097168608eb78c89f295651",
-            "count": 2,
-            "keep_id": 1006640,
-            "remove_ids": [
-              1006641
-            ]
-          },
-          {
-            "hash": "020ebf3864eaa04a52d18cb913c1df11",
-            "count": 2,
-            "keep_id": 1001276,
-            "remove_ids": [
-              1001277
-            ]
-          },
-          {
-            "hash": "0210b6ad5ced6041e55476078efab7f0",
-            "count": 2,
-            "keep_id": 1004414,
-            "remove_ids": [
-              1004415
-            ]
-          },
-          {
-            "hash": "022601a1802b7223b8d9969b22624d3b",
-            "count": 2,
-            "keep_id": 1007503,
-            "remove_ids": [
-              1007504
-            ]
-          },
-          {
-            "hash": "0228c1bdfe20af9a6932400d83a88305",
-            "count": 2,
-            "keep_id": 1003690,
-            "remove_ids": [
-              1003691
-            ]
-          },
-          {
-            "hash": "0250999fb11e46799edc225db8098634",
-            "count": 2,
-            "keep_id": 1007601,
-            "remove_ids": [
-              1007602
-            ]
-          },
-          {
-            "hash": "0250d3843d647611b9759f9d383cfa26",
-            "count": 2,
-            "keep_id": 1007577,
-            "remove_ids": [
-              1007578
-            ]
-          },
-          {
-            "hash": "025fd2f620c87805eacdefcc7bd12152",
-            "count": 2,
-            "keep_id": 999349,
-            "remove_ids": [
-              999350
-            ]
-          },
-          {
-            "hash": "0266374fe9905b1275a5a52ffd53a6b2",
-            "count": 2,
-            "keep_id": 999552,
-            "remove_ids": [
-              999553
-            ]
-          },
-          {
-            "hash": "0267113f7fce1318a0086d4ba941c9e3",
-            "count": 2,
-            "keep_id": 1002750,
-            "remove_ids": [
-              1002751
-            ]
-          },
-          {
-            "hash": "027a5bc825d7db1415903944ce62a13a",
-            "count": 2,
-            "keep_id": 999626,
-            "remove_ids": [
-              999627
-            ]
-          }
-        ],
-        "groups_planned": 50,
-        "estimated_delete_documents": 64,
-        "estimated_delete_vectors": 64,
-        "sql_preview": [
-          "DELETE FROM vectors WHERE doc_id IN (1007535,1007542,1007549);",
-          "DELETE FROM documents WHERE id IN (1007535,1007542,1007549);",
-          "DELETE FROM vectors WHERE doc_id IN (1007534,1007541,1007548);",
-          "DELETE FROM documents WHERE id IN (1007534,1007541,1007548);",
-          "DELETE FROM vectors WHERE doc_id IN (1007538,1007545,1007552);",
-          "DELETE FROM documents WHERE id IN (1007538,1007545,1007552);",
-          "DELETE FROM vectors WHERE doc_id IN (1007537,1007544,1007551);",
-          "DELETE FROM documents WHERE id IN (1007537,1007544,1007551);",
-          "DELETE FROM vectors WHERE doc_id IN (1007539,1007546,1007553);",
-          "DELETE FROM documents WHERE id IN (1007539,1007546,1007553);",
-          "DELETE FROM vectors WHERE doc_id IN (1007540,1007547,1007554);",
-          "DELETE FROM documents WHERE id IN (1007540,1007547,1007554);",
-          "DELETE FROM vectors WHERE doc_id IN (1007536,1007543,1007550);",
-          "DELETE FROM documents WHERE id IN (1007536,1007543,1007550);",
-          "DELETE FROM vectors WHERE doc_id IN (999300);",
-          "DELETE FROM documents WHERE id IN (999300);",
-          "DELETE FROM vectors WHERE doc_id IN (997834);",
-          "DELETE FROM documents WHERE id IN (997834);",
-          "DELETE FROM vectors WHERE doc_id IN (1002955);",
-          "DELETE FROM documents WHERE id IN (1002955);"
-        ],
+        "groups": [],
+        "groups_planned": 0,
+        "estimated_delete_documents": 0,
+        "estimated_delete_vectors": 0,
+        "sql_preview": [],
         "notes": [
           "先備份再刪除；本計畫預設只輸出，不自動執行。",
           "每組保留最小 id 作為 canonical entry。"
         ]
       },
       "cleanup_gate": {
-        "status": "blocked_by_regeneration",
-        "reason": "duplicate cleanup was verified to zero, but duplicates reappeared; a background source is re-ingesting duplicate contents",
+        "status": "applied_verified",
+        "reason": "",
         "report_path": "/Users/ai/Desktop/MAGI_v2/static/knowledge_duplicate_cleanup_latest.json"
       }
     },
     {
       "check": "insight_quality",
-      "status": "warn",
-      "total_insights": 131,
-      "degraded": 9,
+      "status": "ok",
+      "total_insights": 122,
+      "degraded": 0,
       "too_short": 0,
       "empty": 0,
       "boilerplate": 0,
-      "issue_reasons": {
-        "degraded_marker": 9
-      },
-      "sample_issue_ids": [
-        315,
-        317,
-        335,
-        337,
-        341,
-        343,
-        345,
-        347,
-        349
-      ],
+      "issue_reasons": {},
+      "sample_issue_ids": [],
       "healthy": 122,
-      "health_pct": 93.1
+      "health_pct": 100.0
     },
     {
       "check": "wiki_staleness",
-      "status": "warn",
-      "stale_cases": 8,
-      "up_to_date": 72,
-      "details": [
-        {
-          "case": "2025-0128",
-          "client": "黃珊珊",
-          "synthesized_at": "2026-05-06T03:36:55.228972"
-        },
-        {
-          "case": "2025-0078",
-          "client": "陳瀚",
-          "synthesized_at": "2026-05-12T03:37:23.889321"
-        },
-        {
-          "case": "2025-0081",
-          "client": "謝千億",
-          "synthesized_at": "2026-05-12T03:39:33.011147"
-        },
-        {
-          "case": "2025-0009",
-          "client": "田鄧志良",
-          "synthesized_at": "2026-05-12T03:41:37.795861"
-        },
-        {
-          "case": "2026-0021",
-          "client": "李滿金",
-          "synthesized_at": "2026-05-12T03:43:43.802452"
-        },
-        {
-          "case": "2026-0028",
-          "client": "劉信義",
-          "synthesized_at": "2026-05-12T03:45:50.637031"
-        },
-        {
-          "case": "2025-0002",
-          "client": "游秀鈴",
-          "synthesized_at": "2026-05-12T03:46:21.912408"
-        },
-        {
-          "case": "2026-0039",
-          "client": "周潔林",
-          "synthesized_at": "2026-05-12T03:48:27.795437"
-        }
-      ]
+      "status": "ok",
+      "stale_cases": 0,
+      "up_to_date": 80,
+      "details": []
     },
     {
       "check": "orphan_notes",
-      "status": "warn",
-      "total_on_disk": 1148,
-      "total_in_index": 1124,
-      "unindexed": 24,
+      "status": "ok",
+      "total_on_disk": 1138,
+      "total_in_index": 1138,
+      "unindexed": 0,
       "orphaned_index_entries": 0,
       "zero_chunk_notes": 0,
       "zero_chunk_verified_in_db": 661,
-      "sample_unindexed": [
-        "30_Index/2026-0041.md",
-        "30_Index/2026-0042.md",
-        "30_Index/2026-0043.md",
-        "30_Wiki/2025-0042-陳金龍/overview.md",
-        "30_Wiki/2025-0047-黃彩庭/overview.md"
-      ],
+      "sample_unindexed": [],
       "sample_orphaned": [],
       "sample_zero_chunk": []
     },
     {
       "check": "contradiction_scan",
-      "status": "warn",
-      "cases_with_contradictions": 12,
-      "clean_cases": 68,
-      "details": [
-        {
-          "case": "2025-0002-游秀鈴",
-          "warning_count": 1,
-          "excerpt": "- **資訊缺口**：目前所有文件僅為法院的開庭通知書，缺乏起訴書、偵查筆錄或辯護理由書等實體內容，故無法得知具體案由、犯罪事實及法律爭點。\n- **資訊缺口**：需確認案件的具體罪名與事實經過。\n\n---"
-        },
-        {
-          "case": "2025-0003-蕭仁俊",
-          "warning_count": 2,
-          "excerpt": ""
-        },
-        {
-          "case": "2025-0023-陳志仁",
-          "warning_count": 2,
-          "excerpt": "*   **矛盾點：** [若不同文件描述同一事實但有差異，請標記 ⚠️ 並列出兩種版本] → 來源：[文件名]\n*   **資訊缺口：** [若有\n\n---"
-        },
-        {
-          "case": "2025-0042-陳金龍",
-          "warning_count": 1,
-          "excerpt": "*   **矛盾事實：** [若發現不同文件描述不一致之處] → 來源：待補充\n*   **資訊缺口：** [若案件關鍵資訊缺失] → 來源：待補充\n\n---"
-        },
-        {
-          "case": "2025-0050-呂幸春",
-          "warning_count": 1,
-          "excerpt": "- **資訊缺口**：目前文件僅涉及更生程序的啟動與車輛登記指令，關於債務總額、債權人名單及具體更生計畫內容等核心資訊尚未在現有文件中呈現。\n- **資訊缺口**：需確認該「小客車」之車籍資料與更生計畫中關於財產處分之關聯性。\n\n---"
-        },
-        {
-          "case": "2025-0064-賴麗卿Sera Cang",
-          "warning_count": 1,
-          "excerpt": "- **資訊缺口**：\n    - 由於「20260505 民事消債執行陳報狀(賴麗卿)存底」檔案讀取失敗，無法確認當事人針對法院要求所提交的具體內容。\n    - 需確認法院函件中「說明二、三」之具體要求內容，以對照當事人提交的陳報狀是否已完整回應法院需求。\n- **待確認事項**：\n    - 需確認當事人（賴麗卿）是否已於規定期限內完成陳報。\n\n---"
-        },
-        {
-          "case": "2025-0084-王台銘",
-          "warning_count": 1,
-          "excerpt": "- **資訊缺口**：目前無法得知法院要求補正的具體事項（說明一所示事項內容），需檢視該 PDF 完整內容以確定補正方向。\n- **資訊缺口**：需確認案件實際年份與文號之關聯性（文件標題提及 2026 年，但文號為 115 年度，可能涉及年份轉換或輸入錯誤，需核實）。\n\n---"
-        },
-        {
-          "case": "2026-0016-曾亞玲",
-          "warning_count": 0,
-          "excerpt": ""
-        },
-        {
-          "case": "2026-0030-沈筱筑",
-          "warning_count": 0,
-          "excerpt": ""
-        },
-        {
-          "case": "2026-0034-陳文明",
-          "warning_count": 1,
-          "excerpt": "- [事項]：[說明資訊缺口或文件間的矛盾點]\n\n---\n\n**請提供文件內容，我將隨時待命為您處理。**\n\n---"
-        }
-      ]
+      "status": "ok",
+      "cases_with_contradictions": 0,
+      "info_gap_only_cases": 20,
+      "template_noise_cases": 4,
+      "clean_cases": 80,
+      "details": []
     }
   ],
   "summary": {
     "total_checks": 5,
-    "ok": 0,
-    "warn": 5,
+    "ok": 5,
+    "warn": 0,
     "error": 0,
     "skip": 0
   }

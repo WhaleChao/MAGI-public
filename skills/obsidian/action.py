@@ -16,6 +16,7 @@ Tasks:
 """
 
 import argparse
+import fcntl
 import hashlib
 import json
 import os
@@ -124,9 +125,35 @@ def _load_index() -> Dict:
 
 
 def _save_index(idx: Dict):
-    idx["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
     INDEX_PATH.parent.mkdir(parents=True, exist_ok=True)
-    INDEX_PATH.write_text(json.dumps(idx, ensure_ascii=False, indent=2), encoding="utf-8")
+    lock_path = INDEX_PATH.with_suffix(INDEX_PATH.suffix + ".lock")
+    tmp_path = INDEX_PATH.with_suffix(f"{INDEX_PATH.suffix}.{os.getpid()}.{time.time_ns()}.tmp")
+    with open(lock_path, "a") as lock_fh:
+        fcntl.flock(lock_fh, fcntl.LOCK_EX)
+        try:
+            merged = {"notes": {}, "updated_at": ""}
+            if INDEX_PATH.exists():
+                try:
+                    existing = json.loads(INDEX_PATH.read_text(encoding="utf-8"))
+                    if isinstance(existing, dict):
+                        merged.update(existing)
+                        merged["notes"] = dict(existing.get("notes") or {})
+                except Exception:
+                    logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 132, exc_info=True)
+            merged["notes"].update(idx.get("notes") or {})
+            for key, value in idx.items():
+                if key != "notes":
+                    merged[key] = value
+            merged["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+            tmp_path.write_text(json.dumps(merged, ensure_ascii=False, indent=2), encoding="utf-8")
+            os.replace(tmp_path, INDEX_PATH)
+        finally:
+            fcntl.flock(lock_fh, fcntl.LOCK_UN)
+            try:
+                if tmp_path.exists():
+                    tmp_path.unlink()
+            except OSError:
+                pass
 
 
 def _get_vault_path() -> Optional[Path]:

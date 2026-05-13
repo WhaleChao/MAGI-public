@@ -30,6 +30,8 @@ os.environ.setdefault("MAGI_JUDGMENT_CHAT_MAX_RESULTS", "2")
 os.environ.setdefault("MAGI_JUDGMENT_CHAT_TIMEOUT_SEC", "45")
 os.environ.setdefault("MAGI_TW_REVIEW_ENABLED", "0")
 os.environ.setdefault("MAGI_AVOID_DISTRIBUTED", "1")
+# Smoke prompts are synthetic route checks; do not persist them as chatlog memory.
+os.environ.setdefault("MAGI_CAPTURE_CHATLOG", "0")
 
 @dataclass
 class Case:
