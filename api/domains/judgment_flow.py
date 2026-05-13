@@ -15,6 +15,7 @@ import subprocess
 import sys
 from typing import Any, Dict, List, Optional, Tuple
 
+from api.legal_workflow import append_workflow_footer, detect_legal_workflow
 from api.osc.insight_filters import (
     is_extractive_fast_judgment_digest,
     mark_extractive_fast_digest_summary,
@@ -237,6 +238,11 @@ def _is_legal_research_request(message: str) -> bool:
             "憲判",
         ]
     )
+
+
+def _with_legal_workflow_footer(reply: str, query: str, *, tool_used: bool = True) -> str:
+    workflow = detect_legal_workflow(text=query, mode="legal")
+    return append_workflow_footer(reply, workflow, tool_used=tool_used)
 
 
 def _mcp_lookup_allowed() -> bool:
@@ -553,7 +559,7 @@ def run_practical_insight_command(orch, message: str, notify: bool = False) -> s
         "search " + json.dumps({"query": query, "top_k": 5}, ensure_ascii=False),
         timeout_sec=int(os.environ.get("MAGI_STATUTE_CHAT_TIMEOUT_SEC", "90") or "90"),
     )
-    return format_practical_insight_result(query, judgments, statutes)
+    return _with_legal_workflow_footer(format_practical_insight_result(query, judgments, statutes), query, tool_used=True)
 
 
 def run_judgment_collector_command(orch, message: str, notify: bool = False) -> str:
@@ -561,7 +567,7 @@ def run_judgment_collector_command(orch, message: str, notify: bool = False) -> 
         return run_practical_insight_command(orch, message, notify=notify)
     direct = _run_direct_taiwan_legal_mcp_lookup(message)
     if direct:
-        return direct
+        return _with_legal_workflow_footer(direct, message, tool_used=True)
     payload, err = extract_judgment_collect_payload(message)
     if not payload:
         return err
@@ -603,26 +609,26 @@ def run_judgment_collector_command(orch, message: str, notify: bool = False) -> 
                 fallback,
                 limit=int(os.environ.get("MAGI_JUDGMENT_CHAT_MAX_RESULTS", "12") or "12"),
             )
-            return format_judgment_collect_result({
+            return _with_legal_workflow_footer(format_judgment_collect_result({
                 "success": True,
                 "case_reason": query,
                 "count": len(fallback.get("items") or []),
                 "items": fallback.get("items") or [],
                 "source_label": fallback.get("source_label", "本地實務見解庫"),
-            })
+            }), query, tool_used=True)
         mcp_fallback = _augment_judgments_with_mcp(
             query,
             {"success": False, "error": str(data.get("error") or "collector_failed")},
             limit=int(os.environ.get("MAGI_JUDGMENT_CHAT_MAX_RESULTS", "12") or "12"),
         )
         if mcp_fallback.get("success"):
-            return format_judgment_collect_result({
+            return _with_legal_workflow_footer(format_judgment_collect_result({
                 "success": True,
                 "case_reason": query,
                 "count": len(mcp_fallback.get("items") or []),
                 "items": mcp_fallback.get("items") or [],
                 "source_label": mcp_fallback.get("source_label", "台灣法律資料庫 MCP（司法院公開資料）"),
-            })
+            }), query, tool_used=True)
         return f"\u274c \u5224\u6c7a\u641c\u5c0b\u5931\u6557\uff1a{str(data.get('error') or 'unknown')[:280]}"
     query = str(payload.get("case_reason") or payload.get("case_number") or "").strip()
     data = _augment_judgments_with_mcp(
@@ -630,7 +636,7 @@ def run_judgment_collector_command(orch, message: str, notify: bool = False) -> 
         data,
         limit=int(os.environ.get("MAGI_JUDGMENT_CHAT_MAX_RESULTS", "12") or "12"),
     )
-    return format_judgment_collect_result(data)
+    return _with_legal_workflow_footer(format_judgment_collect_result(data), query, tool_used=True)
 
 
 def run_judgment_trend_command(orch, message: str) -> str:

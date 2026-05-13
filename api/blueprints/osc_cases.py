@@ -3179,6 +3179,7 @@ def osc_drafts_generate_api():
                 "ollama_model": ollama_model,
                 "prompt_preview": prompt,
                 "warnings": ctx.get("warnings") or [],
+                "legal_workflow": ctx.get("legal_workflow") or {},
                 "case": ctx.get("case") or {},
                 "selected_documents": ctx.get("selected_documents") or [],
                 "selected_insights": ctx.get("selected_insights") or [],
@@ -3200,6 +3201,22 @@ def osc_drafts_generate_api():
         else:
             draft_text = _osc_generate_draft_with_casper(prompt)
         cleaned = _osc_clean_draft_output(draft_text)
+        draft_quality = quality_check(
+            {
+                "mode": "draft",
+                "draft_text": cleaned,
+                "case_number": ctx.get("case_number") or "",
+                "reason": ctx.get("reason") or "",
+                "doc_type": ctx.get("doc_type") or "",
+                "selected_documents": ctx.get("selected_documents") or [],
+                "selected_insights": ctx.get("selected_insights") or [],
+                "source_paths": [
+                    str(doc.get("resolved_path") or doc.get("file_path") or "")
+                    for doc in (ctx.get("selected_documents") or [])
+                    if isinstance(doc, dict) and (doc.get("resolved_path") or doc.get("file_path"))
+                ],
+            }
+        )
         _osc_log_activity(
             "draft:generate",
             "drafts",
@@ -3221,6 +3238,8 @@ def osc_drafts_generate_api():
                 "draft_text": cleaned,
                 "prompt_preview": prompt,
                 "warnings": ctx.get("warnings") or [],
+                "legal_workflow": ctx.get("legal_workflow") or {},
+                "quality_check": draft_quality,
                 "case": ctx.get("case") or {},
                 "selected_documents": ctx.get("selected_documents") or [],
                 "selected_insights": ctx.get("selected_insights") or [],

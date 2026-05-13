@@ -18,6 +18,8 @@ def test_quality_check_blocks_prompt_leak_and_internal_case_number():
     codes = {x["code"] for x in result["issues"]}
     assert "prompt_or_reasoning_leak" in codes
     assert "internal_case_number" in codes
+    assert result["legal_workflow"]["enabled"] is True
+    assert result["legal_workflow"]["agent"]["key"] == "pleading_review_agent"
 
 
 def test_client_packet_uses_debt_checklist():

@@ -66,6 +66,7 @@ def test_direct_regulation_query_uses_mcp(monkeypatch):
     assert "台灣法律資料庫 MCP" in text
     assert "民法" in text
     assert "第 184 條" in text
+    assert "法律工作流：實務見解檢索代理" in text
 
 
 def test_practical_insight_falls_back_to_local_archive(monkeypatch):
@@ -102,6 +103,7 @@ def test_practical_insight_falls_back_to_local_archive(monkeypatch):
     text = judgment_flow.run_practical_insight_command(None, "實務見解 侵權行為", notify=False)
     assert "本地判決庫 fallback" in text
     assert "臺灣高等法院 侵權行為損害賠償" in text
+    assert "法律工作流：實務見解檢索代理" in text
 
 
 def test_practical_insight_augments_with_taiwan_legal_mcp(monkeypatch):
@@ -182,6 +184,7 @@ def test_judgment_search_success_also_augments_with_mcp(monkeypatch):
     assert "原搜尋結果" in text
     assert "MCP 補強結果" in text
     assert "台灣法律資料庫 MCP" in text
+    assert "法律工作流：實務見解檢索代理" in text
 
 
 def test_format_practical_insight_prefers_non_degraded_items():

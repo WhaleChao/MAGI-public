@@ -18,6 +18,7 @@ from pathlib import Path
 from api.model_config import TEXT_PRIMARY_MODEL
 from api.runtime_paths import ensure_path_on_sys_path, get_orch_dir
 from api.case_path_mapper import preferred_case_roots
+from api.legal_workflow import detect_legal_workflow, workflow_prompt_block
 from api.osc.insight_filters import (
     displayable_insight_item,
     is_extractive_fast_judgment_digest,
@@ -329,6 +330,15 @@ def _osc_build_draft_context(payload: dict) -> dict:
     custom_template = _osc_get_setting_value("draft_prompt_template", "").strip()
     template = custom_template if custom_template else _get_draft_prompt_template()
     learning_guidance = learning_guidance_for_prompt(doc_type=doc_type, case_number=case_number, reason=reason)
+    legal_workflow = detect_legal_workflow(
+        text=case_facts,
+        reason=reason,
+        doc_type=doc_type,
+        mode="draft",
+    )
+    workflow_guidance = workflow_prompt_block(legal_workflow)
+    if workflow_guidance and not selected_insights and not references:
+        warnings.append("legal_workflow_source_review_required")
     values = {
         "doc_type": doc_type or "(未指定)",
         "case_number": case_number or "(待填)",
@@ -345,6 +355,8 @@ def _osc_build_draft_context(payload: dict) -> dict:
     prompt = _osc_render_draft_template(template, values)
     if "{learning_guidance}" not in template and learning_guidance and "尚無人工修正紀錄" not in learning_guidance:
         prompt = f"{prompt.rstrip()}\n\n## 使用者修正學習紀錄\n{learning_guidance}\n"
+    if workflow_guidance:
+        prompt = f"{prompt.rstrip()}\n\n## 法律工作流與覆核規則\n{workflow_guidance}\n"
     suggested_filename = str(body.get("suggested_filename") or "").strip()
     if not suggested_filename:
         parts = [doc_type or "書狀草稿", case_number or case_row.get("case_number") or "未命名"]
@@ -362,6 +374,7 @@ def _osc_build_draft_context(payload: dict) -> dict:
         "selected_insights": selected_insights,
         "selected_documents": references,
         "warnings": warnings,
+        "legal_workflow": legal_workflow,
         "prompt": prompt,
         "template_source": "custom" if custom_template else "default",
         "suggested_filename": suggested_filename,

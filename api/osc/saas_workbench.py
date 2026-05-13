@@ -16,6 +16,12 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
 
+from api.legal_workflow import (
+    LEGAL_WORKFLOW_AGENTS,
+    PRACTICE_AREA_PROFILES,
+    detect_legal_workflow,
+    workflow_review,
+)
 from api.osc.draft_learning import draft_learning_summary, recent_draft_feedback
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -311,57 +317,6 @@ DEFAULT_WORKFLOW_TEMPLATES = [
         "scope": "案件資料夾",
         "steps": ["確認案件狀態", "比對同名不同案", "預覽搬移", "人工確認執行", "驗證原路徑已清乾淨且結案區可開啟"],
         "entry_actions": [{"act": "tab-jump", "tab": "archive", "label": "結案歸檔"}],
-    },
-]
-
-LEGAL_WORKFLOW_AGENTS = [
-    {
-        "key": "legal_research_agent",
-        "title": "實務見解檢索代理",
-        "scope": "法律問題、書狀引用、裁判檢索",
-        "steps": ["確認案由與爭點", "先查本機實務見解與裁判全文", "必要時查 MCP 法律資料庫", "列出可引用來源", "無來源時明示查不到"],
-        "guardrails": ["不得把摘要當全文", "引用前須保留裁判字號與來源", "查不到不得補故事"],
-        "review_gate": "律師核對全文後才能放入正式書狀。",
-        "entry_actions": [{"act": "tab-jump", "tab": "drafts", "label": "AI 草擬"}],
-    },
-    {
-        "key": "pleading_review_agent",
-        "title": "書狀覆核代理",
-        "scope": "草稿到定稿",
-        "steps": ["比對同案由學習紀錄", "檢查狀頭與案號", "檢查引用來源", "檢查格式與段落", "輸出需人工確認清單"],
-        "guardrails": ["同案由才套用學習", "不得跨程序混用範本", "含待確認欄位不得視為完成"],
-        "review_gate": "人工確認後才匯出 DOCX/PDF。",
-        "entry_actions": [{"act": "tab-jump", "tab": "drafts", "label": "AI 草擬"}, {"act": "tab-jump", "tab": "documents", "label": "書狀索引"}],
-    },
-    {
-        "key": "laf_compliance_agent",
-        "title": "法扶回報代理",
-        "scope": "法扶開辦、活動計數、報結",
-        "steps": ["確認法扶案號", "統計律見、閱卷、聯繫、開庭", "排除同名不同案", "產生可複製回報文字", "需送出時保留人工確認"],
-        "guardrails": ["法扶送出不自動提交", "同名多案需看案件種類與案號", "結案搬移先預覽後執行"],
-        "review_gate": "對外提交前必須人工按確認。",
-        "entry_actions": [{"act": "tab-jump", "tab": "laf", "label": "法扶管理"}],
-    },
-]
-
-PRACTICE_AREA_PROFILES = [
-    {
-        "key": "debt_profile",
-        "title": "消債事件設定檔",
-        "scope": "更生 / 清算 / 調解",
-        "rules": ["所得清單依聲請前兩年度動態推算", "應備事項表沿用 OSC 邏輯", "債權人清冊與財產資料需分項追蹤"],
-    },
-    {
-        "key": "criminal_profile",
-        "title": "刑事案件設定檔",
-        "scope": "閱卷、律見、開庭、筆錄",
-        "rules": ["閱卷次數以資料夾有效內容優先", "純繳費單資料夾不列入閱卷", "筆錄下載只顯示實際有新增者"],
-    },
-    {
-        "key": "civil_profile",
-        "title": "民事案件設定檔",
-        "scope": "一般民事、強制執行、家事",
-        "rules": ["同名不同程序不得混案", "強制執行可用判決書資料夾內執行命令作為結案依據", "書狀引用需回到來源文件"],
     },
 ]
 
@@ -902,6 +857,14 @@ def quality_check(payload: dict) -> dict:
     case_number = _text(payload.get("case_number") or "", 120)
     reason = _text(payload.get("reason") or "", 120)
     source_paths = payload.get("source_paths") or []
+    selected_insights = payload.get("selected_insights") or []
+    selected_documents = payload.get("selected_documents") or []
+    workflow = detect_legal_workflow(
+        text=text,
+        reason=reason,
+        doc_type=str(payload.get("doc_type") or payload.get("document_type") or ""),
+        mode=str(payload.get("mode") or "draft"),
+    )
     issues = []
     if not text:
         issues.append({"severity": "high", "code": "empty", "message": "沒有可檢查的文字。"})
@@ -918,6 +881,14 @@ def quality_check(payload: dict) -> dict:
         issues.append({"severity": "low", "code": "reason_not_visible", "message": "案由未明顯出現在文本中，可確認是否需要補入。"})
     if re.search(r"（待確認）|待確認|TODO|FIXME", text, re.I):
         issues.append({"severity": "medium", "code": "placeholder", "message": "仍有待確認欄位。"})
+    review = workflow_review(
+        text,
+        workflow,
+        source_count=len(source_paths) if isinstance(source_paths, list) else 0,
+        selected_insights=len(selected_insights) if isinstance(selected_insights, list) else 0,
+        selected_documents=len(selected_documents) if isinstance(selected_documents, list) else 0,
+    )
+    issues.extend(review.get("issues") or [])
     severity_order = {"critical": 3, "high": 2, "medium": 1, "low": 0}
     max_sev = max((severity_order.get(x["severity"], 0) for x in issues), default=-1)
     return {
@@ -926,6 +897,8 @@ def quality_check(payload: dict) -> dict:
         "score": max(0, 100 - sum({"critical": 35, "high": 25, "medium": 10, "low": 4}.get(x["severity"], 5) for x in issues)),
         "issues": issues,
         "stats": {"chars": len(text), "citations": len(citations), "sources": len(source_paths) if isinstance(source_paths, list) else 0},
+        "legal_workflow": workflow,
+        "workflow_review": review,
     }
 
 
