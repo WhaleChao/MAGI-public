@@ -5,7 +5,7 @@ import re
 from pathlib import Path
 
 from api.domains.judicial_api_backlog import build_backlog_interpretation, format_backlog_notice
-from scripts.ops.check_judicial_api_pipeline import scheduled_day_process_capacity
+from scripts.ops.check_judicial_api_pipeline import build_report, scheduled_day_process_capacity
 
 
 def test_backlog_interpretation_explains_stale_backlog():
@@ -69,6 +69,51 @@ def test_scheduled_day_process_capacity_reads_cron_payloads(tmp_path):
     assert cap["runs_per_day"] == 2
     assert cap["daily_max_docs"] == 2300
     assert cap["avg_batch"] == 1150
+
+
+def test_missing_pull_state_does_not_mask_active_backlog(monkeypatch, tmp_path):
+    cache_root = tmp_path / "judicial_api"
+    raw_root = cache_root / "raw"
+    normalized_root = cache_root / "normalized"
+    raw_root.mkdir(parents=True)
+    normalized_root.mkdir(parents=True)
+    (raw_root / "case_a.json").write_text('{"payload":{"JID":"A"}}', encoding="utf-8")
+    (raw_root / "case_b.json").write_text('{"payload":{"JID":"B"}}', encoding="utf-8")
+    (normalized_root / "case_a.json").write_text("{}", encoding="utf-8")
+    process_state = cache_root / "process_state.json"
+    process_state.write_text(
+        """
+{
+  "updated_at": "2999-01-01T00:00:00",
+  "processed": {},
+  "last_run": {
+    "handled": 1,
+    "backlog_before": 2,
+    "db_upserts": 1,
+    "archive_upserts": 1,
+    "vector_ingested": 0,
+    "summarized": 1,
+    "errors": 0,
+    "max_docs": 1
+  }
+}
+""",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("JUDICIAL_API_CACHE_ROOT", str(cache_root))
+    monkeypatch.setenv("JUDICIAL_API_RAW_ROOT", str(raw_root))
+    monkeypatch.setenv("JUDICIAL_API_NORMALIZED_ROOT", str(normalized_root))
+    monkeypatch.setenv("JUDICIAL_API_PROCESS_STATE_PATH", str(process_state))
+    monkeypatch.setenv("JUDICIAL_API_PULL_STATE_PATH", str(cache_root / "missing_pull_state.json"))
+    monkeypatch.setenv("MAGI_JUDICIAL_API_USER", "user")
+    monkeypatch.setenv("MAGI_JUDICIAL_API_PASS", "pass")
+
+    report = build_report()
+
+    assert report["status"] == "BACKLOG_CATCHING_UP"
+    assert report["exit_code"] == 10
+    assert any("raw/process/normalized" in item for item in report["reasons"])
 
 
 def test_extractive_judgment_summary_is_marked_and_source_bound():

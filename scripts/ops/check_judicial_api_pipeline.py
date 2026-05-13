@@ -289,11 +289,21 @@ def build_report() -> dict:
         exit_code = RISK_EXIT
         reasons.append("找不到司法院 API 專用帳密（judicial_api_user/judicial_api_pass）。")
 
+    raw_total = int(backlog.get("raw_total") or 0)
+    normalized_count = int(normalized.get("count") or 0)
+    process_has_run = bool(process.get("exists") and process.get("updated_at"))
     if not pull["exists"] or not pull["latest_ts"]:
-        if status == "PIPELINE_HEALTHY":
-            status = "PULL_NEVER_RUN"
-            exit_code = RISK_EXIT
-        reasons.append("尚未找到 night pull 狀態檔或成功紀錄。")
+        if raw_total > 0 and (process_has_run or normalized_count > 0):
+            reasons.append(
+                "尚未找到 night pull 狀態檔，但 raw/process/normalized 可證明資料流正在運作；改以 backlog 狀態判斷。"
+            )
+        elif raw_total > 0:
+            reasons.append("尚未找到 night pull 狀態檔，但已有 raw 檔；將由晨間整理狀態判斷風險。")
+        else:
+            if status == "PIPELINE_HEALTHY":
+                status = "PULL_NEVER_RUN"
+                exit_code = RISK_EXIT
+            reasons.append("尚未找到 night pull 狀態檔或成功紀錄。")
     elif (pull["latest_age_hours"] or 0.0) > pull_stale_hours:
         if status == "PIPELINE_HEALTHY":
             status = "PULL_STALE"
