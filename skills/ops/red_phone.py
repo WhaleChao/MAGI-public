@@ -1131,6 +1131,10 @@ def _mirror_to_discord(
     _resolved_topic = _canonical_topic_key(topic_key) if topic_key else _infer_topic_key(message, source, severity)
     if _resolved_topic and _resolved_topic not in _DC_MIRROR_ALLOWED_TOPICS:
         return False
+    # 法扶夜巡完整報告包含下載、缺檔、案號補填等內部維運資訊；
+    # DC 僅接收另行切出的進度回報提醒，避免業務頻道被一般巡檢洗版。
+    if _src == "laf_nightly_audit" and _resolved_topic == "laf_general":
+        return False
 
     # 🛑 靜默過濾：非「有新資訊」的定期報告不發 DC (TG 照發)
     _s = (message or "").strip()

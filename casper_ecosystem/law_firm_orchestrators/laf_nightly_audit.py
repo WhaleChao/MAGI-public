@@ -3081,6 +3081,52 @@ def format_audit_report(
 
 # ─── 4. 通知發送 ──────────────────────────────────────────────
 
+_PROGRESS_DC_SECTION_PREFIXES = (
+    "🚨 法扶官網要求進度回報",
+    "⚠️ 進行中逾 18 個月，需確認進度回報",
+)
+
+
+def _extract_progress_report_for_dc(report_text: str) -> str:
+    """從完整夜巡報告切出可送 DC 的進度回報段落。"""
+    lines = str(report_text or "").splitlines()
+    if not lines:
+        return ""
+
+    date_line = next((line for line in lines if line.startswith("日期：")), "")
+    sections: List[List[str]] = []
+    current: List[str] = []
+
+    for line in lines:
+        if any(line.startswith(prefix) for prefix in _PROGRESS_DC_SECTION_PREFIXES):
+            if current:
+                sections.append(current)
+                current = []
+            current.append(line)
+            continue
+        if current:
+            if not line.strip():
+                sections.append(current)
+                current = []
+            else:
+                current.append(line)
+
+    if current:
+        sections.append(current)
+    if not sections:
+        return ""
+
+    out = ["📣 法扶進度回報提醒"]
+    if date_line:
+        out.append(date_line)
+    out.append("")
+    for idx, section in enumerate(sections):
+        if idx:
+            out.append("")
+        out.extend(section)
+    return "\n".join(out).strip()
+
+
 def send_report(report_text: str, has_issues: bool = False):
     """透過 red_phone 發送 Telegram 通知。"""
     try:
@@ -3094,6 +3140,19 @@ def send_report(report_text: str, has_issues: bool = False):
             topic_key="laf_general",
         )
         logger.info("Telegram notification sent: %s", result.get("telegram", False))
+
+        progress_report = _extract_progress_report_for_dc(report_text)
+        if progress_report:
+            progress_result = alert_admin(
+                message=progress_report,
+                severity="warning",
+                source="laf_progress_reminder",
+                topic_key="laf_progress",
+            )
+            logger.info(
+                "LAF progress reminder sent: %s",
+                progress_result.get("telegram", False),
+            )
     except Exception as e:
         logger.error("Failed to send notification: %s", e)
 

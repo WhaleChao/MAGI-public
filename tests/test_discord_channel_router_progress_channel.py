@@ -75,7 +75,7 @@ def test_laf_nightly_audit_report_routes_to_laf_general_before_progress_keyword(
 
     assert router.resolve_discord_channel(msg, topic_key="laf", source="laf_nightly_audit") == (
         "laf_general",
-        "333",
+        "__SILENT__",
     )
 
 
@@ -93,7 +93,7 @@ def test_laf_general_discord_fallback_does_not_use_laf_business_channel(monkeypa
 
     assert router.resolve_discord_channel(msg, topic_key="laf_general", source="laf_nightly_audit") == (
         "laf_general",
-        "555",
+        "__SILENT__",
     )
 
 
@@ -101,6 +101,25 @@ def test_laf_progress_confirmation_still_routes_to_progress_channel():
     msg = "未結案件進度回報：請確認送出，confirm_token=ABC123"
 
     assert router._infer_sub_topic(msg, "laf", "laf_progress_helper") == "laf_progress"
+
+
+def test_laf_progress_reminder_routes_to_progress_channel(monkeypatch):
+    msg = "📣 法扶進度回報提醒\n⚠️ 進行中逾 18 個月，需確認進度回報：1 件"
+
+    monkeypatch.setattr(
+        router,
+        "_load_channel_map",
+        lambda: {
+            "laf_progress": "222",
+            "laf_general": "333",
+            "general": "555",
+        },
+    )
+
+    assert router.resolve_discord_channel(msg, topic_key="laf_progress", source="laf_progress_reminder") == (
+        "laf_progress",
+        "222",
+    )
 
 
 def test_laf_routing_matrix_keeps_business_notifications_separated():
@@ -228,7 +247,7 @@ def test_quiet_cron_and_self_repair_use_system_policies(monkeypatch):
     ) == ("alert", "888")
 
 
-def test_laf_general_notification_pref_can_block_general_fallback(monkeypatch):
+def test_laf_nightly_general_report_stays_silent_even_with_explicit_channel(monkeypatch):
     msg = "📋 法扶夜間巡檢報告\n📊 法扶案件總數：125"
 
     monkeypatch.setattr(router, "_load_notification_preferences", lambda: {"laf_general": "system_only"})
@@ -248,7 +267,7 @@ def test_laf_general_notification_pref_can_block_general_fallback(monkeypatch):
         topic_key="laf",
         source="laf_nightly_audit",
         fallback_channel_id="999",
-    ) == ("laf_general", "333")
+    ) == ("laf_general", "__SILENT__")
 
 
 def test_business_notification_preference_can_silence_non_system_topics(monkeypatch):
