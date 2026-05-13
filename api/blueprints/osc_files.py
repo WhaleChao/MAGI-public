@@ -158,7 +158,7 @@ def _resolve_safe_file(path_str: str) -> str:
 def _copy_with_system_cp(local_file: str, tmp_path: str) -> bool:
     cp_bin = shutil.which("cp") or "/bin/cp"
     try:
-        expected_size = os.path.getsize(local_file)
+        expected_size = _safe_source_size_for_stage(local_file)
         result = subprocess.run(
             [cp_bin, "-p", local_file, tmp_path],
             stdout=subprocess.PIPE,
@@ -166,10 +166,46 @@ def _copy_with_system_cp(local_file: str, tmp_path: str) -> bool:
             text=True,
             timeout=int(os.environ.get("PAPERCLIP_FILE_CP_TIMEOUT_SEC", "120") or "120"),
         )
-        return result.returncode == 0 and os.path.isfile(tmp_path) and os.path.getsize(tmp_path) == expected_size
+        if result.returncode != 0 or not os.path.isfile(tmp_path):
+            return False
+        if expected_size is None:
+            return os.path.getsize(tmp_path) >= 0
+        return os.path.getsize(tmp_path) == expected_size
     except Exception:
         _log.debug("silent-catch share system cp fallback failed", exc_info=True)
         return False
+
+
+def _is_transient_smb_error(exc: OSError) -> bool:
+    return int(getattr(exc, "errno", 0) or 0) in (11, 35)
+
+
+def _stat_with_retry(local_file: str, *, max_attempts: int | None = None):
+    """Retry stat/getsize; SMB may raise EDEADLK before reads begin."""
+    if max_attempts is None:
+        max_attempts = max(2, int(os.environ.get("PAPERCLIP_FILE_STAT_MAX_ATTEMPTS", "4") or "4"))
+    last_exc: OSError | None = None
+    for attempt in range(max_attempts):
+        try:
+            return os.stat(local_file)
+        except OSError as e:
+            last_exc = e
+            if _is_transient_smb_error(e) and attempt < max_attempts - 1:
+                time.sleep(0.25 * (2 ** attempt))
+                continue
+            raise
+    if last_exc:
+        raise last_exc
+
+
+def _safe_source_size_for_stage(local_file: str) -> int | None:
+    try:
+        return int(_stat_with_retry(local_file).st_size)
+    except OSError as e:
+        if _is_transient_smb_error(e):
+            _log.warning("share source stat failed with transient SMB error; staging without size precheck: %s", local_file)
+            return None
+        raise
 
 
 def _stage_file_with_retry(local_file: str, *, max_attempts: int | None = None) -> str:
@@ -177,7 +213,7 @@ def _stage_file_with_retry(local_file: str, *, max_attempts: int | None = None) 
     if max_attempts is None:
         max_attempts = max(4, int(os.environ.get("PAPERCLIP_FILE_STAGE_MAX_ATTEMPTS", "8") or "8"))
     last_exc: Exception | None = None
-    expected_size = os.path.getsize(local_file)
+    expected_size = _safe_source_size_for_stage(local_file)
     tmp_dir = os.path.join(tempfile.gettempdir(), "paperclip-shares")
     os.makedirs(tmp_dir, exist_ok=True)
     suffix = os.path.splitext(local_file)[1] or ".bin"
@@ -203,7 +239,7 @@ def _stage_file_with_retry(local_file: str, *, max_attempts: int | None = None) 
                 if e.errno in (11, 35) and _copy_with_system_cp(local_file, tmp_path):
                     return tmp_path
                 raise
-            if os.path.getsize(tmp_path) != expected_size:
+            if expected_size is not None and os.path.getsize(tmp_path) != expected_size:
                 raise OSError(
                     f"staged copy incomplete: expected {expected_size} bytes, got {os.path.getsize(tmp_path)} bytes"
                 )
@@ -342,7 +378,7 @@ def _send_local_file(local: str, *, inline: bool):
     name = os.path.basename(local)
     if request.method == "HEAD":
         try:
-            st = os.stat(local)
+            st = _stat_with_retry(local)
         except OSError as e:
             return jsonify({"ok": False, "error": f"stat_failed: {e}"}), 503
         resp = Response(status=200, mimetype=mime or "application/octet-stream")
@@ -1133,7 +1169,7 @@ def osc_files_share_create_api():
     token_hash = _share_token_hash(token)
     now = int(time.time())
     try:
-        st = os.stat(local)
+        st = _stat_with_retry(local)
     except OSError as e:
         return jsonify({"ok": False, "error": f"stat_failed: {e}"}), 500
     public_url, url_mode = _share_url_for_token(token)

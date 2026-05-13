@@ -335,6 +335,26 @@ def test_share_download_uses_system_cp_when_python_read_keeps_deadlocking(tmp_pa
     assert attempts["n"] >= 1
 
 
+def test_share_download_stages_even_when_source_stat_deadlocks(tmp_path: Path, monkeypatch):
+    from api.blueprints import osc_files as mod
+
+    src = tmp_path / "卷證.pdf"
+    payload = b"%PDF-share-stat-deadlock"
+    src.write_bytes(payload)
+    attempts = {"n": 0}
+
+    def flaky_stat(path, **_kwargs):
+        if str(path) == str(src):
+            attempts["n"] += 1
+            raise OSError(errno.EDEADLK, "Resource deadlock avoided")
+        return mod.os.stat(path)
+
+    monkeypatch.setattr(mod, "_stat_with_retry", flaky_stat)
+
+    assert mod._read_file_with_retry(str(src)) == payload
+    assert attempts["n"] >= 1
+
+
 def test_share_head_does_not_read_dataless_file(tmp_path: Path, monkeypatch):
     client = _client()
     src = tmp_path / "卷證.pdf"
