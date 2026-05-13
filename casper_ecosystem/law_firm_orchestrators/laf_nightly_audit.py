@@ -1078,13 +1078,10 @@ def _is_placeholder_case_reason(reason: str) -> bool:
     return str(reason or "").strip() in _PLACEHOLDER_REASON_TOKENS
 
 
-def _is_folder_open_by_other(folder_path: str) -> Tuple[bool, str]:
-    """檢查資料夾是否被其他應用打開（lsof）— 排除自己 process（python3/lsof）。
-
-    Returns (is_open, who) — who 為 process 名稱列表（用 , 分隔）。
-    """
+def _lsof_folder_processes(folder_path: str) -> List[dict]:
+    """Return non-self processes holding files under *folder_path*."""
     if not folder_path or not os.path.isdir(folder_path):
-        return False, ""
+        return []
     try:
         import subprocess as _subp
         proc = _subp.run(
@@ -1096,7 +1093,7 @@ def _is_folder_open_by_other(folder_path: str) -> Tuple[bool, str]:
         # 第一欄是 process 名稱
         my_pid = str(os.getpid())
         ignored_procs = {"python3", "python", "lsof", "Python"}
-        relevant_procs = []
+        relevant_procs: List[dict] = []
         for ln in lines:
             tokens = ln.split()
             if len(tokens) < 2:
@@ -1106,13 +1103,92 @@ def _is_folder_open_by_other(folder_path: str) -> Tuple[bool, str]:
                 continue
             if pname in ignored_procs:
                 continue
-            relevant_procs.append(pname)
-        if relevant_procs:
-            uniq = sorted(set(relevant_procs))
-            return True, ",".join(uniq[:3])
+            try:
+                pid_int = int(pid)
+            except Exception:
+                continue
+            relevant_procs.append({"name": pname, "pid": pid_int})
+        return relevant_procs
     except Exception as e:
         logger.debug("lsof check failed for %s: %s", folder_path, e)
+    return []
+
+
+def _is_folder_open_by_other(folder_path: str) -> Tuple[bool, str]:
+    """檢查資料夾是否被其他應用打開（lsof）— 排除自己 process（python3/lsof）。
+
+    Returns (is_open, who) — who 為 process 名稱列表（用 , 分隔）。
+    """
+    relevant_procs = _lsof_folder_processes(folder_path)
+    if relevant_procs:
+        uniq = sorted({str(p.get("name") or "") for p in relevant_procs if p.get("name")})
+        return True, ",".join(uniq[:3])
     return False, ""
+
+
+def _close_finder_windows_for_folder(folder_path: str) -> None:
+    if not folder_path or sys.platform != "darwin":
+        return
+    script = (
+        'tell application "Finder"\n'
+        'repeat with w in windows\n'
+        'try\n'
+        'set p to POSIX path of (target of w as alias)\n'
+        f'if p contains "{folder_path.replace(chr(34), chr(92) + chr(34))}" then close w\n'
+        'end try\n'
+        'end repeat\n'
+        'end tell\n'
+    )
+    try:
+        import subprocess as _subp
+        _subp.run(["osascript", "-e", script], capture_output=True, text=True, timeout=5)
+    except Exception as e:
+        logger.debug("Finder close skipped for %s: %s", folder_path, e)
+
+
+def _release_folder_for_rename(folder_path: str) -> Tuple[bool, str]:
+    """Close low-risk folder/file viewers before placeholder folder rename."""
+    if not folder_path:
+        return False, "old_path_empty"
+    _close_finder_windows_for_folder(folder_path)
+    blockers = _lsof_folder_processes(folder_path)
+    if not blockers:
+        return True, "released"
+
+    # These processes are viewers/shell helpers normally safe to terminate for
+    # generated LAF PDFs. Unknown editors are left alone to avoid losing work.
+    closable_names = {
+        "AcroPDF",
+        "Preview",
+        "QuickLookUIService",
+        "qlmanage",
+        "Finder",
+    }
+    unknown = sorted({str(p.get("name") or "") for p in blockers if p.get("name") not in closable_names})
+    if unknown:
+        return False, "folder_open:" + ",".join(unknown[:3])
+
+    for proc in blockers:
+        pid = int(proc.get("pid") or 0)
+        if pid <= 0:
+            continue
+        try:
+            os.kill(pid, 15)
+        except ProcessLookupError:
+            continue
+        except Exception as e:
+            logger.debug("failed to terminate folder blocker pid=%s: %s", pid, e)
+
+    import time as _time
+    deadline = _time.time() + 5
+    while _time.time() < deadline:
+        if not _lsof_folder_processes(folder_path):
+            return True, "released"
+        _time.sleep(0.25)
+    is_open, who = _is_folder_open_by_other(folder_path)
+    if is_open:
+        return False, f"folder_open:{who}"
+    return True, "released"
 
 
 def _safe_rename_case_folder(old_path: str, new_path: str) -> Tuple[bool, str]:
@@ -1130,7 +1206,9 @@ def _safe_rename_case_folder(old_path: str, new_path: str) -> Tuple[bool, str]:
         return False, "target_exists"
     is_open, who = _is_folder_open_by_other(old_path)
     if is_open:
-        return False, f"folder_open:{who}"
+        released, release_reason = _release_folder_for_rename(old_path)
+        if not released:
+            return False, release_reason or f"folder_open:{who}"
     try:
         os.rename(old_path, new_path)
         return True, ""

@@ -429,6 +429,54 @@ class TestLafGoLiveReadiness:
         assert db.writes
 
 
+class TestPlaceholderFolderRenameRelease:
+    """placeholder 修正時，低風險 PDF 檢視器占用應可自動釋放後 rename。"""
+
+    def test_safe_rename_terminates_pdf_viewer_blocker(self, tmp_path, monkeypatch):
+        import casper_ecosystem.law_firm_orchestrators.laf_nightly_audit as mod
+
+        old_dir = tmp_path / "2026-0044-李○毅-偵查-待確認"
+        new_dir = tmp_path / "2026-0044-李子毅-偵查-傷害"
+        old_dir.mkdir()
+        (old_dir / "sample.pdf").write_bytes(b"%PDF-1.4\n")
+        calls = {"lsof": 0, "killed": []}
+
+        def fake_lsof(_path):
+            calls["lsof"] += 1
+            if calls["lsof"] <= 2:
+                return [{"name": "AcroPDF", "pid": 18728}]
+            return []
+
+        monkeypatch.setattr(mod, "_lsof_folder_processes", fake_lsof)
+        monkeypatch.setattr(mod, "_close_finder_windows_for_folder", lambda _path: None)
+        monkeypatch.setattr(mod.os, "kill", lambda pid, sig: calls["killed"].append((pid, sig)))
+
+        ok, reason = mod._safe_rename_case_folder(str(old_dir), str(new_dir))
+
+        assert ok is True
+        assert reason == ""
+        assert calls["killed"] == [(18728, 15)]
+        assert new_dir.is_dir()
+        assert not old_dir.exists()
+
+    def test_safe_rename_keeps_unknown_editor_open(self, tmp_path, monkeypatch):
+        import casper_ecosystem.law_firm_orchestrators.laf_nightly_audit as mod
+
+        old_dir = tmp_path / "2026-0044-李○毅-偵查-待確認"
+        new_dir = tmp_path / "2026-0044-李子毅-偵查-傷害"
+        old_dir.mkdir()
+
+        monkeypatch.setattr(mod, "_lsof_folder_processes", lambda _path: [{"name": "Microsoft", "pid": 20001}])
+        monkeypatch.setattr(mod, "_close_finder_windows_for_folder", lambda _path: None)
+
+        ok, reason = mod._safe_rename_case_folder(str(old_dir), str(new_dir))
+
+        assert ok is False
+        assert reason == "folder_open:Microsoft"
+        assert old_dir.is_dir()
+        assert not new_dir.exists()
+
+
 # ── Portal attachment filename parsing ───────────────────────────────────────
 
 class TestPortalAttachmentFilenameParsing:
