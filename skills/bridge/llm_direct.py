@@ -18,7 +18,7 @@ import os
 import time
 from typing import Any
 
-from api.model_config import TEXT_PRIMARY_MODEL
+from api.model_config import TEXT_PRIMARY_MODEL, resolve_text_model
 
 logger = logging.getLogger("LLMDirect")
 
@@ -45,6 +45,12 @@ PROVIDERS: dict[str, dict[str, Any]] = {
         "api_format": "anthropic",
         "max_context": 200000,
     },
+}
+
+_OMLX_MODELS_CACHE: dict[str, Any] = {
+    "base_url": "",
+    "expires_at": 0.0,
+    "models": [],
 }
 
 # ── Feature → Provider 路由 ────────────────────────────
@@ -111,6 +117,47 @@ def _get_session():
     except ImportError:
         import requests
         return requests.Session()
+
+
+def _list_openai_models(provider_cfg: dict[str, Any], *, ttl_sec: int = 30) -> list[str]:
+    """Return advertised OpenAI-compatible model IDs with a short cache."""
+    base_url = str(provider_cfg.get("base_url") or "").rstrip("/")
+    if not base_url:
+        return []
+    now = time.monotonic()
+    if (
+        _OMLX_MODELS_CACHE.get("base_url") == base_url
+        and float(_OMLX_MODELS_CACHE.get("expires_at") or 0.0) > now
+    ):
+        return list(_OMLX_MODELS_CACHE.get("models") or [])
+    try:
+        resp = _get_session().get(f"{base_url}/models", timeout=3)
+        if resp.status_code != 200:
+            return []
+        data = resp.json() if resp.text else {}
+        models = [
+            str(item.get("id") or "").strip()
+            for item in (data or {}).get("data", [])
+            if str(item.get("id") or "").strip()
+        ]
+        _OMLX_MODELS_CACHE.update(
+            {"base_url": base_url, "expires_at": now + max(1, ttl_sec), "models": models}
+        )
+        return models
+    except Exception:
+        return []
+
+
+def _resolve_provider_model(provider_name: str, provider_cfg: dict[str, Any], requested: str) -> str:
+    """Resolve stale local aliases against the models actually loaded today."""
+    model = str(requested or provider_cfg.get("default_model") or TEXT_PRIMARY_MODEL).strip()
+    if provider_name != "omlx":
+        return model
+    available = _list_openai_models(provider_cfg)
+    resolved = resolve_text_model(model, available=available or None)
+    if resolved and resolved != model:
+        logger.info("Resolved oMLX model %s -> %s", model, resolved)
+    return resolved or model
 
 
 def _call_openai_format(
@@ -255,7 +302,7 @@ def chat(
         if not dispatcher:
             continue
 
-        use_model = model or cfg["default_model"]
+        use_model = _resolve_provider_model(attempt_provider, cfg, model or cfg["default_model"])
         # oMLX max_num_seqs=1 → 並行請求可能 timeout。重試一次。
         max_retries = 2 if attempt_provider == "omlx" else 1
         for retry in range(max_retries):

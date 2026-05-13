@@ -86,6 +86,22 @@ _IRON_DOME_BLOCKED = {
     "format", "mkfs", "dd if=", "shutdown", "reboot",
 }
 
+_IRON_DOME_TEXT_RE = re.compile(
+    r"("
+    r"\brm\s+-r?f\b|"
+    r"\bdrop\s+table\b|"
+    r"\bdelete\s+from\b|"
+    r"\btruncate\s+table\b|"
+    r"\bmkfs\b|"
+    r"\bdd\s+if=|"
+    r"\bshutdown(?:\s+-[a-zA-Z]+)?(?:\s+now)?\b|"
+    r"\breboot(?:\s+now)?\b|"
+    r"格式化(?:磁碟|硬碟|系統)?|"
+    r"清空硬碟"
+    r")",
+    re.IGNORECASE,
+)
+
 
 class ReActEngine:
     """ReAct 推理引擎。"""
@@ -289,6 +305,14 @@ class ReActEngine:
 
         return None
 
+    @staticmethod
+    def _iron_dome_text_check(text: str) -> Optional[str]:
+        """Block deterministic destructive commands before LLM planning."""
+        match = _IRON_DOME_TEXT_RE.search(str(text or ""))
+        if not match:
+            return None
+        return f"Iron Dome blocked: destructive command '{match.group(0)}' detected in user input"
+
     def run(
         self,
         user_query: str,
@@ -338,6 +362,18 @@ class ReActEngine:
         trace: list[dict] = []
         tools_used: list[str] = []
         started = time.monotonic()
+
+        input_block_reason = self._iron_dome_text_check(user_query)
+        if input_block_reason:
+            trace.append({"step": 0, "type": "blocked", "tool": "user_query", "reason": input_block_reason})
+            return {
+                "success": False,
+                "answer": f"⛔ Iron Dome 安全限制：{input_block_reason}。此類系統破壞、關機或資料刪除指令不可由 MAGI 執行。",
+                "trace": trace,
+                "steps": 0,
+                "tools_used": tools_used,
+                "elapsed_sec": round(time.monotonic() - started, 2),
+            }
 
         for step in range(1, self.max_steps + 1):
             # 超時檢查
