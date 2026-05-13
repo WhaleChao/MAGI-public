@@ -85,6 +85,8 @@ MAGI_ALLOW_CLOUD_MODELS=1 python daemon.py
 
 This branch is prepared for public release with private runtime material removed from git tracking. Local-only folders such as `.runtime/`, `.claude/`, `.claire/`, `runtime/supplement_cache/`, and operator deployment notes are ignored and should stay private.
 
+The public edition keeps the sanitized legal workflow engine in `api/legal_workflow.py`. It provides generic guardrails for legal research, pleading review, and legal-aid reporting without shipping private OSC data, client files, NAS paths, credentials, or private opinion libraries. See [`docs/LEGAL_WORKFLOW.md`](docs/LEGAL_WORKFLOW.md).
+
 Public readiness checks:
 
 ```bash

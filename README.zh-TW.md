@@ -84,6 +84,8 @@ MAGI_ALLOW_CLOUD_MODELS=1 python daemon.py
 
 此分支已整理為可公開版本：私有 runtime、代理工作記錄、部署手札、OCR 暫存等資料不再納入 git 追蹤，並由 `.gitignore` 保護。`.runtime/`、`.claude/`、`.claire/`、`runtime/supplement_cache/`、`docs/deploy/` 應維持本機私有。
 
+公開版保留脫敏後的通用法律工作流引擎：`api/legal_workflow.py` 可提供法律研究、書狀覆核、法扶回報的 prompt 規則、來源檢查與人工覆核門檻；私有實務見解庫與案件資料不包含在公開版。詳見 [`docs/LEGAL_WORKFLOW.md`](docs/LEGAL_WORKFLOW.md)。
+
 公開前檢查：
 
 ```bash
