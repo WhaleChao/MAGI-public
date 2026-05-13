@@ -1,0 +1,317 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>MAGI 程序監控</title>
+  <style>
+    :root {
+      --bg: #081021;
+      --panel: #0f1b33;
+      --line: #273a63;
+      --txt: #dfe9ff;
+      --muted: #8fa2c6;
+      --ok: #2ecc71;
+      --warn: #f39c12;
+      --bad: #ff5f57;
+    }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--txt);
+      font-family: -apple-system, BlinkMacSystemFont, "Noto Sans TC", "PingFang TC", sans-serif;
+    }
+
+    .wrap {
+      max-width: 1400px;
+      margin: 0 auto;
+      padding: 18px;
+    }
+
+    .top {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 14px;
+    }
+
+    .top h1 {
+      margin: 0;
+      font-size: 22px;
+    }
+
+    .links a {
+      color: #9dc3ff;
+      text-decoration: none;
+      margin-left: 12px;
+    }
+
+    .cards {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(120px, 1fr));
+      gap: 10px;
+      margin-bottom: 14px;
+    }
+
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 10px;
+    }
+
+    .card .k {
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .card .v {
+      font-size: 22px;
+      font-weight: 700;
+      margin-top: 4px;
+    }
+
+    .v.ok {
+      color: var(--ok);
+    }
+
+    .v.warn {
+      color: var(--warn);
+    }
+
+    .v.bad {
+      color: var(--bad);
+    }
+
+    .meta {
+      font-size: 12px;
+      color: var(--muted);
+      margin-bottom: 12px;
+    }
+
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 12px;
+      margin-bottom: 12px;
+      overflow-x: auto;
+    }
+
+    .panel h2 {
+      margin: 0 0 8px 0;
+      font-size: 16px;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+    }
+
+    th,
+    td {
+      border-top: 1px solid var(--line);
+      padding: 8px 6px;
+      text-align: left;
+      vertical-align: top;
+    }
+
+    th {
+      color: #b8cbef;
+      font-weight: 600;
+    }
+
+    .cmd {
+      font-family: ui-monospace, Menlo, Consolas, monospace;
+      color: #cdd8ee;
+      word-break: break-all;
+    }
+
+    .empty {
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .btn {
+      background: #274b8d;
+      color: #fff;
+      border: 0;
+      border-radius: 8px;
+      padding: 8px 12px;
+      cursor: pointer;
+    }
+    @media (max-width: 720px) {
+      .wrap {
+        padding: 12px;
+      }
+      .top {
+        flex-direction: column;
+        align-items: stretch;
+      }
+      .top h1 {
+        font-size: 18px;
+      }
+      .links {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        align-items: center;
+      }
+      .links a {
+        margin-left: 0;
+      }
+      .cards {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+      table {
+        min-width: 640px;
+      }
+    }
+    @media (max-width: 460px) {
+      .cards {
+        grid-template-columns: 1fr;
+      }
+      .btn {
+        width: 100%;
+      }
+      .links {
+        flex-direction: column;
+        align-items: stretch;
+      }
+    }
+  </style>
+</head>
+
+<body>
+  <div class="wrap">
+    <div class="top">
+      <h1>MAGI 程序監控頁（單一路徑守護）</h1>
+      <div class="links">
+        <button class="btn" onclick="loadData()">立即重新整理</button>
+        <button class="btn" id="guardianBtn" onclick="toggleGuardian()">守護程序：載入中</button>
+        <a href="/dashboard">主控台</a>
+        <a href="/osc">Paperclip</a>
+      </div>
+    </div>
+    <div class="meta" id="meta">載入中…</div>
+
+    <div class="cards">
+      <div class="card">
+        <div class="k">核心程序</div>
+        <div id="coreCount" class="v">-</div>
+      </div>
+      <div class="card">
+        <div class="k">重任務程序</div>
+        <div id="workerCount" class="v">-</div>
+      </div>
+      <div class="card">
+        <div class="k">孤兒程序</div>
+        <div id="orphanCount" class="v">-</div>
+      </div>
+      <div class="card">
+        <div class="k">重複群組</div>
+        <div id="dupCount" class="v">-</div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>核心程序</h2>
+      <div id="coreWrap"></div>
+    </div>
+
+    <div class="panel">
+      <h2>孤兒重任務（應為 0）</h2>
+      <div id="orphanWrap"></div>
+    </div>
+
+    <div class="panel">
+      <h2>最近回收紀錄</h2>
+      <div id="reapWrap"></div>
+    </div>
+  </div>
+
+  <script>
+    function esc(s) { return String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
+    function table(rows, cols) {
+      if (!rows || !rows.length) return '<div class="empty">目前無資料</div>';
+      let h = '<table><thead><tr>' + cols.map(c => `<th>${esc(c.t)}</th>`).join('') + '</tr></thead><tbody>';
+      for (const r of rows) {
+        h += '<tr>' + cols.map(c => `<td class="${c.cls || ''}">${esc(c.f(r))}</td>`).join('') + '</tr>';
+      }
+      h += '</tbody></table>';
+      return h;
+    }
+    async function toggleGuardian() {
+      const btn = document.getElementById('guardianBtn');
+      btn.disabled = true;
+      try {
+        const res = await fetch('/api/ops/process-guardian/toggle', { method: 'POST' });
+        const d = await res.json();
+        if (d.ok) {
+          btn.textContent = '守護程序：' + (d.enabled ? '已開啟' : '已停用');
+          btn.style.background = d.enabled ? '#274b8d' : '#8fa2c6';
+        } else {
+          alert('切換失敗：' + d.error);
+        }
+      } catch (e) {
+        alert(e);
+      }
+      btn.disabled = false;
+      loadData();
+    }
+
+    async function loadData() {
+      const res = await fetch('/api/ops/process-monitor');
+      const d = await res.json();
+      if (!d.ok) {
+        document.getElementById('meta').textContent = '讀取失敗：' + (d.error || 'unknown');
+        return;
+      }
+      const s = d.summary || {};
+      const orphan = Number(s.orphan_count || 0);
+      const dup = Number(s.duplicate_groups || 0);
+      document.getElementById('coreCount').textContent = s.core_count ?? 0;
+      document.getElementById('workerCount').textContent = s.worker_count ?? 0;
+      const orphanEl = document.getElementById('orphanCount');
+      orphanEl.textContent = orphan; orphanEl.className = 'v ' + (orphan ? 'bad' : 'ok');
+      const dupEl = document.getElementById('dupCount');
+      dupEl.textContent = dup; dupEl.className = 'v ' + (dup ? 'warn' : 'ok');
+      document.getElementById('meta').textContent = `更新時間：${d.ts || '-'} ｜ 使用者：{{ user.username }}`;
+
+      const btn = document.getElementById('guardianBtn');
+      if (d.guardian_control_enabled !== undefined) {
+        btn.textContent = '守護程序：' + (d.guardian_control_enabled ? '已開啟' : '已停用');
+        btn.style.background = d.guardian_control_enabled ? '#274b8d' : '#8fa2c6';
+      }
+
+      document.getElementById('coreWrap').innerHTML = table(d.core || [], [
+        { t: '標籤', f: r => r.label || '-' },
+        { t: 'PID', f: r => r.pid },
+        { t: 'PPID', f: r => r.ppid },
+        { t: '執行時間', f: r => r.age || '-' },
+        { t: '命令', f: r => r.cmd || '-', cls: 'cmd' },
+      ]);
+      document.getElementById('orphanWrap').innerHTML = table(d.orphans || [], [
+        { t: 'PID', f: r => r.pid },
+        { t: '執行秒數', f: r => r.age_sec || 0 },
+        { t: '命令', f: r => r.cmd || '-', cls: 'cmd' },
+      ]);
+
+      const reap = (((d.guardian_state || {}).reap || {}).last_reaped || []);
+      document.getElementById('reapWrap').innerHTML = table(reap, [
+        { t: 'PID', f: r => r.pid },
+        { t: 'PPID', f: r => r.ppid },
+        { t: '年齡(秒)', f: r => r.age_sec },
+        { t: '命令', f: r => r.cmd || '-', cls: 'cmd' },
+      ]);
+    }
+    loadData();
+    setInterval(loadData, 10000);
+  </script>
+</body>
+
+</html>

@@ -1,0 +1,79 @@
+{
+  "_schema_version": "1.1.0",
+  "_description": "MAGI model role registry. Maps logical roles to concrete model identifiers. GLM-OCR retired 2026-04-08 — macOS Vision is primary OCR.",
+  "defaults": {
+    "text_primary": "gemma-4-e4b-it-4bit",
+    "vision": "gemma-4-e4b-it-4bit",
+    "embedding": "modernbert-embed-4bit",
+    "ocr": "macos-vision"
+  },
+  "roles": {
+    "text_primary": {
+      "description": "Primary text generation model",
+      "model": "gemma-4-e4b-it-4bit",
+      "env_override": "MAGI_TEXT_PRIMARY_MODEL",
+      "env_aliases": ["MAGI_MAIN_MODEL", "CASPER_LOCAL_MODEL"]
+    },
+    "text_review": {
+      "description": "Traditional Chinese output review",
+      "model": null,
+      "fallback_role": "text_primary",
+      "env_override": "MAGI_TW_REVIEW_MODEL"
+    },
+    "general": {
+      "description": "General purpose LLM tasks",
+      "model": null,
+      "fallback_role": "text_primary",
+      "env_override": "MAGI_OMLX_GENERAL_MODEL"
+    },
+    "summary": {
+      "description": "Text summarization",
+      "model": null,
+      "fallback_role": "text_primary",
+      "env_override": "MAGI_OMLX_SUMMARY_MODEL"
+    },
+    "code": {
+      "description": "Code analysis and generation",
+      "model": null,
+      "fallback_role": "text_primary",
+      "env_override": "MAGI_OMLX_CODE_MODEL"
+    },
+    "vision": {
+      "description": "Vision/multimodal tasks (Gemma 4 on port 8080)",
+      "model": "gemma-4-e4b-it-4bit",
+      "fallback_role": "text_primary",
+      "env_override": "MAGI_OMLX_VISION_MODEL"
+    },
+    "ocr": {
+      "description": "OCR extraction (macOS Vision primary, Gemma 4 fallback)",
+      "model": "macos-vision",
+      "fallback_role": "text_primary",
+      "env_override": "MAGI_OMLX_OCR_MODEL"
+    },
+    "embedding": {
+      "description": "Text embedding",
+      "model": "modernbert-embed-4bit",
+      "env_override": "MAGI_OMLX_EMBED_MODEL"
+    },
+    "e4b_draft": {
+      "description": "Gemma 4 E4B MTP assistant / draft model",
+      "model": "gemma-4-E4B-it-assistant-bf16",
+      "env_override": "MAGI_E4B_DRAFT_MODEL"
+    },
+    "26b_draft": {
+      "description": "Gemma 4 26B A4B MTP assistant / draft model",
+      "model": "gemma-4-26B-A4B-it-assistant-bf16",
+      "env_override": "MAGI_26B_DRAFT_MODEL"
+    }
+  },
+  "aliases": {
+    "_description": "Legacy model name aliases that resolve to text_primary",
+    "names": [
+      "",
+      "gemma-4", "gemma4", "gemma-4-26b", "gemma-4-26b-a4b",
+      "gemma-4-e2b-it-local-bf16", "gemma-4-26b-a4b-it-4bit",
+      "gemma-4-e4b-it-4bit", "gemma4:26b",
+      "gemma4:26b-a4b-it-q4_K_M", "gemma-4-e4b-it-bf16"
+    ]
+  }
+}

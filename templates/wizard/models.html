@@ -1,0 +1,181 @@
+{% extends "base.html" %}
+
+{% block progress %}
+<div class="progress-bar">
+    <div class="progress-step done"><div class="progress-dot"></div> 歡迎</div>
+    <div class="progress-line"></div>
+    <div class="progress-step done"><div class="progress-dot"></div> 硬體</div>
+    <div class="progress-line"></div>
+    <div class="progress-step active"><div class="progress-dot"></div> 模型</div>
+    <div class="progress-line"></div>
+    <div class="progress-step"><div class="progress-dot"></div> 設定</div>
+    <div class="progress-line"></div>
+    <div class="progress-step"><div class="progress-dot"></div> 完成</div>
+</div>
+{% endblock %}
+
+{% block content %}
+<div class="card">
+    <h2>AI 模型選擇</h2>
+    <p>
+        根據您的硬體（{{ hw.ram_gb }} GB RAM，
+        {% if hw.gpu_type == 'apple_silicon' %}Apple Silicon Metal
+        {% elif hw.gpu_type == 'nvidia' %}NVIDIA {{ hw.gpu_name }}
+        {% else %}CPU-only{% endif %}），
+        以下是推薦的模型配置。
+    </p>
+</div>
+
+<!-- Essential Models -->
+{% if recs.essential %}
+<div class="section-title">必要模型</div>
+{% for m in recs.essential %}
+<div class="model-card">
+    <div class="model-info">
+        <div class="model-name">{{ m.display_name }}</div>
+        <div class="model-desc">{{ m.description }}</div>
+        <div class="model-meta">
+            {{ m.size_gb }} GB &middot;
+            最低 {{ m.min_ram_gb }} GB RAM &middot;
+            {{ m.recommended_for }}
+        </div>
+    </div>
+    <div class="model-actions">
+        {% if m.name in installed %}
+            <span class="badge badge-green">已安裝</span>
+        {% else %}
+            <button class="btn btn-sm btn-primary" onclick="installModel('{{ m.omlx_id or m.ollama_id }}', '{{ "omlx" if m.platform == "mlx" else "ollama" }}', this)">
+                安裝
+            </button>
+        {% endif %}
+    </div>
+</div>
+{% endfor %}
+{% endif %}
+
+<!-- Recommended Models -->
+{% if recs.recommended %}
+<div class="section-title">建議安裝</div>
+{% for m in recs.recommended %}
+<div class="model-card">
+    <div class="model-info">
+        <div class="model-name">{{ m.display_name }}</div>
+        <div class="model-desc">{{ m.description }}</div>
+        <div class="model-meta">
+            {{ m.size_gb }} GB &middot;
+            最低 {{ m.min_ram_gb }} GB RAM &middot;
+            {{ m.recommended_for }}
+        </div>
+    </div>
+    <div class="model-actions">
+        {% if m.name in installed %}
+            <span class="badge badge-green">已安裝</span>
+        {% else %}
+            <button class="btn btn-sm btn-secondary" onclick="installModel('{{ m.omlx_id or m.ollama_id }}', '{{ "omlx" if m.platform == "mlx" else "ollama" }}', this)">
+                安裝
+            </button>
+        {% endif %}
+    </div>
+</div>
+{% endfor %}
+{% endif %}
+
+<!-- Optional Models -->
+{% if recs.optional %}
+<details>
+    <summary>進階模型（選用）</summary>
+    {% for m in recs.optional %}
+    <div class="model-card">
+        <div class="model-info">
+            <div class="model-name">{{ m.display_name }}</div>
+            <div class="model-desc">{{ m.description }}</div>
+            <div class="model-meta">
+                {{ m.size_gb }} GB &middot;
+                最低 {{ m.min_ram_gb }} GB RAM &middot;
+                {{ m.recommended_for }}
+            </div>
+        </div>
+        <div class="model-actions">
+            {% if m.name in installed %}
+                <span class="badge badge-green">已安裝</span>
+            {% else %}
+                <button class="btn btn-sm btn-secondary" onclick="installModel('{{ m.omlx_id or m.ollama_id }}', '{{ "omlx" if m.platform == "mlx" else "ollama" }}', this)">
+                    安裝
+                </button>
+            {% endif %}
+        </div>
+    </div>
+    {% endfor %}
+</details>
+{% endif %}
+
+{% if not recs.essential and not recs.recommended %}
+<div class="card">
+    <p style="color: var(--red);">
+        未找到與您硬體相容的模型。請確認 RAM 至少為 8 GB，
+        並已安裝 oMLX（Apple Silicon）或 Ollama（其他平台）。
+    </p>
+</div>
+{% endif %}
+
+<div class="card" style="margin-top: 16px;">
+    <h3>模型安裝說明</h3>
+    {% if hw.metal_support %}
+    <p>oMLX 模型需從 Hugging Face 下載至 <code>~/.omlx/models/</code> 目錄。</p>
+    <div class="code-block">
+# 以 Gemma-4 26B 為例：
+git lfs install
+git clone https://huggingface.co/mlx-community/gemma-4-26b-a4b-it-4bit \
+    ~/.omlx/models/gemma-4-26b-a4b-it-4bit
+
+# 嵌入模型：
+git clone https://huggingface.co/mlx-community/modernbert-embed-4bit \
+    ~/.omlx/models/modernbert-embed-4bit
+
+# 啟動 oMLX 推理引擎：
+omlx serve --port 8080</div>
+    {% else %}
+    <p>Ollama 模型可使用 <code>ollama pull</code> 指令安裝。</p>
+    <div class="code-block">
+# 安裝 Gemma-4 模型：
+ollama pull gemma3:26b
+
+# 安裝嵌入模型：
+ollama pull nomic-embed-text</div>
+    {% endif %}
+</div>
+
+<div class="btn-bar">
+    <a href="/hardware" class="btn btn-secondary">&larr; 上一步</a>
+    <a href="/config" class="btn btn-primary">下一步：服務設定 &rarr;</a>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+async function installModel(modelId, engine, btn) {
+    btn.textContent = '安裝中...';
+    btn.classList.add('btn-disabled');
+    try {
+        const result = await apiPost('/api/install-model', {model_id: modelId, engine: engine});
+        if (result.ok) {
+            if (result.instructions) {
+                // oMLX — show instructions
+                btn.textContent = '見說明';
+                showToast('請在終端機執行: ' + result.instructions, 'success');
+            } else {
+                btn.textContent = '已安裝';
+                btn.classList.remove('btn-disabled');
+                showToast(result.message, 'success');
+            }
+        } else {
+            btn.textContent = '失敗';
+            showToast(result.error, 'error');
+        }
+    } catch (e) {
+        btn.textContent = '錯誤';
+        showToast(e.message, 'error');
+    }
+}
+</script>
+{% endblock %}

@@ -1,0 +1,97 @@
+        <section id="todos" class="view">
+            <div class="card">
+                <div class="section-head">
+                    <div>
+                        <h3>待辦事項</h3>
+                        <div class="section-note">管理案件待辦與提醒。建議明確填寫類型、日期與狀態。</div>
+                    </div>
+                </div>
+                <div class="field-grid cols-4">
+                    <div class="field" style="grid-column: span 2;">
+                        <label for="todosQ">搜尋</label>
+                        <input id="todosQ" placeholder="案號 / 當事人 / 類型 / 描述">
+                    </div>
+                    <div class="field">
+                        <label>操作</label>
+                        <div class="inline-actions">
+                            <button class="btn" id="todosSearchBtn">搜尋</button>
+                            <button class="btn" id="todosRefreshBtn">重新整理</button>
+                        </div>
+                    </div>
+                </div>
+                <div class="field-grid cols-4" style="margin-top:10px;">
+                    <input id="todo_id" type="hidden">
+                    <div class="field">
+                        <label for="todo_case_number">案件編號</label>
+                        <input id="todo_case_number" placeholder="案件編號（必填）">
+                    </div>
+                    <div class="field">
+                        <label for="todo_client_name">當事人</label>
+                        <input id="todo_client_name" placeholder="當事人（選填）">
+                    </div>
+                    <div class="field">
+                        <label for="todo_type">類型</label>
+                        <input id="todo_type" placeholder="類型（必填）">
+                    </div>
+                    <div class="field">
+                        <label for="todo_date">日期</label>
+                        <input id="todo_date" type="date" placeholder="日期">
+                    </div>
+                    <div class="field">
+                        <label for="todo_time">時間</label>
+                        <input id="todo_time" type="time" placeholder="時間（選填）">
+                    </div>
+                    <div class="field">
+                        <label for="todo_status">狀態</label>
+                        <input id="todo_status" placeholder="待處理 / 已完成 / 取消">
+                    </div>
+                    <input id="todo_source_file" type="hidden">
+                </div>
+                <div class="field" style="margin-top:10px;">
+                    <label for="todo_desc">描述</label>
+                    <textarea id="todo_desc" placeholder="詳細說明（選填）"></textarea>
+                </div>
+                <div class="toolbar" style="margin-top:8px;">
+                    <button class="btn primary" id="todoSaveBtn">儲存待辦</button>
+                    <button class="btn warn" id="todoResetBtn">清空表單</button>
+                </div>
+            </div>
+            <div class="card">
+                <div class="toolbar" style="margin-bottom:8px;">
+                    <div class="sort-bar" id="todoSortBar">
+                        <label>排序</label>
+                        <select id="todoSortCol">
+                            <option value="">預設（逾期→今天→未來）</option>
+                            <option value="todo_date">日期</option>
+                            <option value="case_number">案號</option>
+                            <option value="client_name">當事人</option>
+                            <option value="todo_type">類型</option>
+                            <option value="status">狀態</option>
+                        </select>
+                        <button class="sort-dir-btn" id="todoSortDir" title="切換升降冪">▲</button>
+                    </div>
+                </div>
+                <div class="grid-2 todo-source-boards">
+                    <div class="todo-source-board">
+                        <div class="section-head compact">
+                            <div>
+                                <h3>OSC 建立待辦</h3>
+                                <div id="todosOscSummary" class="section-note">來源：OSC 手動或系統建立的案件待辦。</div>
+                            </div>
+                        </div>
+                        <div id="todosOscCardGrid" class="todo-card-grid"></div>
+                        <div id="todosOscEmpty" class="muted" style="text-align:center;padding:24px;display:none;">沒有 OSC 建立待辦</div>
+                    </div>
+                    <div class="todo-source-board">
+                        <div class="section-head compact">
+                            <div>
+                                <h3>行事曆事件</h3>
+                                <div id="todosCalendarSummary" class="section-note">來源：行事曆事件與 Google 日曆匯入。</div>
+                            </div>
+                        </div>
+                        <div id="todosCalendarCardGrid" class="todo-card-grid"></div>
+                        <div id="todosCalendarEmpty" class="muted" style="text-align:center;padding:24px;display:none;">沒有行事曆事件</div>
+                    </div>
+                </div>
+            </div>
+        </section>

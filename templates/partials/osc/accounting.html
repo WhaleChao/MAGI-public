@@ -1,0 +1,304 @@
+        <section id="accounting" class="view">
+            <div class="card">
+                <div class="section-head">
+                    <div>
+                        <h3>帳務管理</h3>
+                        <div class="section-note">先用上方篩選看期間資料，再用下方表單補登或修改單筆帳務。</div>
+                    </div>
+                </div>
+                <div class="soft-block">
+                    <div class="field-grid cols-4">
+                        <div class="field" style="grid-column: span 2;">
+                            <label for="accountingQ">帳務搜尋</label>
+                            <input id="accountingQ" placeholder="案號 / 類型 / 分類 / 說明">
+                        </div>
+                        <div class="field">
+                            <label for="accountingCaseNumber">案件編號</label>
+                            <input id="accountingCaseNumber" placeholder="案件編號（選填）">
+                        </div>
+                        <div class="field">
+                            <label>帳務月快捷</label>
+                            <div class="inline-actions">
+                                <button class="btn" id="accountingSearchBtn">搜尋</button>
+                                <button class="btn" id="accountingRefreshBtn">重新整理</button>
+                                <button class="btn" id="accountingPeriodBtn">套用 26~25</button>
+                            </div>
+                        </div>
+                        <div class="field">
+                            <label for="accountingStartDate">起日</label>
+                            <input id="accountingStartDate" type="date" placeholder="起日">
+                        </div>
+                        <div class="field">
+                            <label for="accountingEndDate">迄日</label>
+                            <input id="accountingEndDate" type="date" placeholder="迄日">
+                        </div>
+                    </div>
+                </div>
+                <div class="soft-block">
+                    <div class="field-grid cols-4">
+                        <div class="field">
+                            <label for="tx_id">交易 ID</label>
+                            <input id="tx_id" placeholder="更新時使用">
+                        </div>
+                        <div class="field">
+                            <label for="tx_case_id">案件編號</label>
+                            <input id="tx_case_id" placeholder="案件編號（必填）">
+                        </div>
+                        <div class="field">
+                            <label for="tx_date">日期</label>
+                            <input id="tx_date" type="date" placeholder="日期">
+                        </div>
+                        <div class="field">
+                            <label for="tx_type">類型</label>
+                            <input id="tx_type" placeholder="收入 / 支出">
+                        </div>
+                        <div class="field">
+                            <label for="tx_sub_type">子類別</label>
+                            <input id="tx_sub_type" placeholder="子類別（選填）">
+                        </div>
+                        <div class="field">
+                            <label for="tx_category">分類</label>
+                            <input id="tx_category" placeholder="分類（選填）">
+                        </div>
+                        <div class="field">
+                            <label for="tx_amount">金額</label>
+                            <input id="tx_amount" type="number" step="0.01" placeholder="可負數">
+                        </div>
+                        <div class="field">
+                            <label for="tx_description">說明</label>
+                            <input id="tx_description" placeholder="說明（選填）">
+                        </div>
+                    </div>
+                </div>
+                <div class="toolbar" style="margin-top:8px;">
+                    <button class="btn primary" id="txSaveBtn">儲存帳務</button>
+                    <button class="btn warn" id="txResetBtn">清空表單</button>
+                </div>
+                <div class="stat-grid" style="margin-top: 12px;">
+                    <div class="stat-card">
+                        <div class="k">筆數</div>
+                        <div id="txCount" class="v">0</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="k">收入合計</div>
+                        <div id="txIncome" class="v">0</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="k">支出合計</div>
+                        <div id="txExpense" class="v">0</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="k">淨額</div>
+                        <div id="txNet" class="v">0</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="k">主要分類</div>
+                        <div id="txTopCategory" class="v" style="font-size:14px;">-</div>
+                    </div>
+                </div>
+            </div>
+            <div class="card">
+                <div class="section-head">
+                    <div>
+                        <h3>帳務匯入與對帳</h3>
+                        <div class="section-note">檢查同事帳務表後再匯入；薪資、租金、勞健保、勞退等固定支出只做對帳，不重複入帳。</div>
+                    </div>
+                </div>
+                <div class="field-grid cols-4">
+                    <div class="field">
+                        <label for="accountingImportMonth">匯入月份</label>
+                        <input id="accountingImportMonth" type="month">
+                    </div>
+                    <div class="field">
+                        <label>操作</label>
+                        <div class="inline-actions">
+                            <button class="btn" id="accountingImportPreviewBtn">預覽匯入</button>
+                            <button class="btn primary" id="accountingImportRunBtn">確認匯入</button>
+                        </div>
+                    </div>
+                </div>
+                <div id="accountingImportResult" class="soft-block" style="margin-top:10px;">
+                    <div class="muted">尚未檢查同事帳務表。</div>
+                </div>
+            </div>
+            <div class="card">
+                <div class="toolbar" style="margin-bottom:8px;">
+                    <div class="sort-bar">
+                        <label>排序</label>
+                        <select id="txSortCol">
+                            <option value="">預設</option>
+                            <option value="date" data-type="date">日期</option>
+                            <option value="case_number">案號</option>
+                            <option value="type">類型</option>
+                            <option value="category">分類</option>
+                            <option value="amount" data-type="number">金額</option>
+                        </select>
+                        <button class="sort-dir-btn" id="txSortDir">▲</button>
+                    </div>
+                </div>
+                <div class="table-wrap">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th data-sort="date" data-type="date">日期</th>
+                                <th data-sort="case_number">案號</th>
+                                <th data-sort="type">類型</th>
+                                <th data-sort="category">分類</th>
+                                <th data-sort="description">說明</th>
+                                <th data-sort="amount" data-type="number">金額</th>
+                                <th>操作</th>
+                            </tr>
+                        </thead>
+                        <tbody id="txBody"></tbody>
+                    </table>
+                </div>
+            </div>
+            <div class="card">
+                <div class="section-head">
+                    <div>
+                        <h3>預設帳務項目</h3>
+                        <div class="section-note">整理常用支出項目，方便後續快速帶入。</div>
+                    </div>
+                </div>
+                <div class="field-grid cols-4">
+                    <div class="field" style="grid-column: span 2;">
+                        <label for="txDefQ">搜尋</label>
+                        <input id="txDefQ" placeholder="分類 / 說明">
+                    </div>
+                    <div class="field">
+                        <label>操作</label>
+                        <div class="inline-actions">
+                            <button class="btn" id="txDefSearchBtn">搜尋</button>
+                            <button class="btn" id="txDefRefreshBtn">重新整理</button>
+                        </div>
+                    </div>
+                </div>
+                <div class="field-grid cols-4" style="margin-top:10px;">
+                    <div class="field">
+                        <label for="txDefId">ID</label>
+                        <input id="txDefId" placeholder="更新時使用">
+                    </div>
+                    <div class="field">
+                        <label for="txDefCategory">分類</label>
+                        <input id="txDefCategory" placeholder="分類（必填）">
+                    </div>
+                    <div class="field">
+                        <label for="txDefAmount">預設金額</label>
+                        <input id="txDefAmount" type="number" step="0.01" placeholder="預設金額">
+                    </div>
+                    <div class="field">
+                        <label for="txDefDescription">預設說明</label>
+                        <input id="txDefDescription" placeholder="預設說明">
+                    </div>
+                </div>
+                <div class="toolbar">
+                    <button class="btn primary" id="txDefSaveBtn">儲存預設項目</button>
+                    <button class="btn warn" id="txDefResetBtn">清空</button>
+                </div>
+                <div class="table-wrap" style="margin-top:10px;">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>ID</th>
+                                <th>分類</th>
+                                <th>說明</th>
+                                <th>金額</th>
+                                <th>操作</th>
+                            </tr>
+                        </thead>
+                        <tbody id="txDefBody"></tbody>
+                    </table>
+                </div>
+            </div>
+            <div class="card">
+                <div class="section-head">
+                    <div>
+                        <h3>固定支出</h3>
+                        <div class="section-note">用來維護每月固定產生的費用。建議明確填寫金額、日與啟用狀態。</div>
+                    </div>
+                </div>
+                <div class="field-grid cols-4">
+                    <div class="field" style="grid-column: span 2;">
+                        <label for="txRecurringQ">搜尋</label>
+                        <input id="txRecurringQ" placeholder="分類 / 子類 / 說明">
+                    </div>
+                    <div class="field">
+                        <label>篩選</label>
+                        <label class="check-inline"><input type="checkbox" id="txRecurringOnlyActive" checked>只看啟用</label>
+                    </div>
+                    <div class="field">
+                        <label>操作</label>
+                        <div class="inline-actions">
+                            <button class="btn" id="txRecurringSearchBtn">搜尋</button>
+                            <button class="btn" id="txRecurringRefreshBtn">重新整理</button>
+                        </div>
+                    </div>
+                </div>
+                <div class="field-grid cols-4" style="margin-top:10px;">
+                    <div class="field">
+                        <label for="txRecurringId">ID</label>
+                        <input id="txRecurringId" placeholder="更新時使用">
+                    </div>
+                    <div class="field">
+                        <label for="txRecurringCategory">分類</label>
+                        <input id="txRecurringCategory" placeholder="分類（必填）">
+                    </div>
+                    <div class="field">
+                        <label for="txRecurringSubType">子類別</label>
+                        <input id="txRecurringSubType" placeholder="子類別（選填）">
+                    </div>
+                    <div class="field">
+                        <label for="txRecurringDescription">說明</label>
+                        <input id="txRecurringDescription" placeholder="說明（選填）">
+                    </div>
+                    <div class="field">
+                        <label for="txRecurringAmount">金額</label>
+                        <input id="txRecurringAmount" type="number" step="0.01" placeholder="金額">
+                    </div>
+                    <div class="field">
+                        <label for="txRecurringDay">每月日</label>
+                        <input id="txRecurringDay" type="number" placeholder="1~31">
+                    </div>
+                    <div class="field">
+                        <label for="txRecurringStartDate">開始日期</label>
+                        <input id="txRecurringStartDate" type="date" placeholder="開始日期">
+                    </div>
+                    <div class="field">
+                        <label for="txRecurringEndDate">結束日期</label>
+                        <input id="txRecurringEndDate" type="date" placeholder="結束日期（選填）">
+                    </div>
+                    <div class="field">
+                        <label for="txRecurringActive">啟用</label>
+                        <input id="txRecurringActive" placeholder="0/1">
+                    </div>
+                    <div class="field">
+                        <label for="txRecurringLastMonth">上次產生月份</label>
+                        <input id="txRecurringLastMonth" placeholder="YYYY-MM">
+                    </div>
+                </div>
+                <div class="toolbar">
+                    <button class="btn primary" id="txRecurringSaveBtn">儲存固定支出</button>
+                    <button class="btn" id="txRecurringSyncBtn">同步今年已產生紀錄</button>
+                    <button class="btn warn" id="txRecurringResetBtn">清空</button>
+                </div>
+                <div class="table-wrap" style="margin-top:10px;">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>ID</th>
+                                <th>分類</th>
+                                <th>子類</th>
+                                <th>說明</th>
+                                <th>金額</th>
+                                <th>每月日</th>
+                                <th>起訖</th>
+                                <th>啟用</th>
+                                <th>上次產生</th>
+                                <th>操作</th>
+                            </tr>
+                        </thead>
+                        <tbody id="txRecurringBody"></tbody>
+                    </table>
+                </div>
+            </div>
+        </section>

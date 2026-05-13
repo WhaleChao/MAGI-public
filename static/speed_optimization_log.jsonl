@@ -1,0 +1,2 @@
+{"phase": "BASELINE", "date": "2026-04-12", "recall_ms": 2089, "chat_50tok_ms": 16881, "embed_ms": 41, "tests_passed": 1062}
+{"phase": "P0-P3_COMPLETE", "date": "2026-04-12", "recall_cold_ms": 2724, "recall_warm_ms": 0, "recall_cache": {"hits": 1, "misses": 1}, "embed_cold_ms": 19, "embed_warm_ms": 0, "embed_cache": {"hits": 1, "misses": 30}, "tests_passed": 1062}

@@ -1,0 +1,88 @@
+{% extends "base.html" %}
+
+{% block progress %}
+<div class="progress-bar">
+    <div class="progress-step active"><div class="progress-dot"></div> 歡迎</div>
+    <div class="progress-line"></div>
+    <div class="progress-step"><div class="progress-dot"></div> 硬體</div>
+    <div class="progress-line"></div>
+    <div class="progress-step"><div class="progress-dot"></div> 模型</div>
+    <div class="progress-line"></div>
+    <div class="progress-step"><div class="progress-dot"></div> 設定</div>
+    <div class="progress-line"></div>
+    <div class="progress-step"><div class="progress-dot"></div> 完成</div>
+</div>
+{% endblock %}
+
+{% block content %}
+<div class="card">
+    <div class="hero">
+        <div class="hero-logo">&#x1F9E0;</div>
+        <h2>歡迎使用 MAGI</h2>
+        <p>
+            MAGI 是一套完全本地部署的多智慧代理治理基礎設施。
+            本設定精靈將協助您完成首次設定，包括硬體偵測、模型安裝，
+            以及必要的服務憑證配置。
+        </p>
+
+        <div class="feature-grid">
+            <div class="feature-item">
+                <div class="feature-icon">&#x2699;</div>
+                <div class="feature-name">硬體偵測</div>
+                <div class="feature-desc">自動偵測 CPU / GPU / RAM</div>
+            </div>
+            <div class="feature-item">
+                <div class="feature-icon">&#x1F4E6;</div>
+                <div class="feature-name">模型推薦</div>
+                <div class="feature-desc">依硬體推薦最佳 AI 模型</div>
+            </div>
+            <div class="feature-item">
+                <div class="feature-icon">&#x1F527;</div>
+                <div class="feature-name">自動設定</div>
+                <div class="feature-desc">產生完整 .env 組態檔</div>
+            </div>
+            <div class="feature-item">
+                <div class="feature-icon">&#x2705;</div>
+                <div class="feature-name">連線測試</div>
+                <div class="feature-desc">驗證資料庫與 LINE 連線</div>
+            </div>
+        </div>
+    </div>
+
+    <div class="btn-bar" style="justify-content: center;">
+        <a href="/hardware" class="btn btn-primary">開始設定 &rarr;</a>
+    </div>
+</div>
+
+<div class="card">
+    <h3>設定前請準備</h3>
+    <p>為了讓 MAGI 完整運作，您需要以下資訊（可稍後補充）：</p>
+    <table style="width:100%; font-size:14px; margin-top:8px;">
+        <tr style="border-bottom: 1px solid var(--border);">
+            <td style="padding:8px 0;"><strong>LINE Messaging API</strong></td>
+            <td style="color: var(--muted);">Channel Access Token + Channel Secret</td>
+            <td><span class="badge badge-orange">必要</span></td>
+        </tr>
+        <tr style="border-bottom: 1px solid var(--border);">
+            <td style="padding:8px 0;"><strong>MariaDB / MySQL</strong></td>
+            <td style="color: var(--muted);">資料庫主機、帳號、密碼</td>
+            <td><span class="badge badge-orange">必要</span></td>
+        </tr>
+        <tr style="border-bottom: 1px solid var(--border);">
+            <td style="padding:8px 0;"><strong>管理員身分</strong></td>
+            <td style="color: var(--muted);">您的 LINE User ID</td>
+            <td><span class="badge badge-orange">必要</span></td>
+        </tr>
+        <tr style="border-bottom: 1px solid var(--border);">
+            <td style="padding:8px 0;"><strong>Discord Bot</strong></td>
+            <td style="color: var(--muted);">Bot Token + 管理員 ID</td>
+            <td><span class="badge badge-purple">選用</span></td>
+        </tr>
+        <tr>
+            <td style="padding:8px 0;"><strong>Telegram Bot</strong></td>
+            <td style="color: var(--muted);">Bot Token</td>
+            <td><span class="badge badge-purple">選用</span></td>
+        </tr>
+    </table>
+</div>
+{% endblock %}

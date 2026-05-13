@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.magi.mlx-mtp</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>-lc</string>
+        <string>cd /Users/ai/Desktop/MAGI_v2 &amp;&amp; exec /Users/ai/Desktop/MAGI_v2/venv/bin/python3 /Users/ai/Desktop/MAGI_v2/scripts/serve_mlx_mtp.py --host 127.0.0.1 --port 8090</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>/Users/ai/Desktop/MAGI_v2</string>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>ThrottleInterval</key>
+    <integer>30</integer>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/Users/ai/Desktop/MAGI_v2/venv/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+        <key>MAGI_ROOT</key>
+        <string>/Users/ai/Desktop/MAGI_v2</string>
+        <key>MAGI_MLX_MTP_MODEL</key>
+        <string>/Users/ai/.omlx/models/gemma-4-e4b-it-4bit</string>
+        <key>MAGI_MLX_MTP_MODEL_ID</key>
+        <string>gemma-4-e4b-it-4bit</string>
+        <key>MAGI_MLX_MTP_DRAFT_MODEL</key>
+        <string>/Users/ai/.omlx/models/gemma-4-E4B-it-assistant-bf16</string>
+        <key>MAGI_MLX_MTP_DRAFT_MODEL_ID</key>
+        <string>gemma-4-E4B-it-assistant-bf16</string>
+        <key>MAGI_MLX_MTP_DRAFT_KIND</key>
+        <string>mtp</string>
+        <key>MAGI_MLX_MTP_DRAFT_BLOCK_SIZE</key>
+        <string>4</string>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>/Users/ai/Desktop/MAGI_v2/logs/mlx_mtp_sidecar.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/ai/Desktop/MAGI_v2/logs/mlx_mtp_sidecar.log</string>
+    <key>ProcessType</key>
+    <string>Background</string>
+</dict>
+</plist>

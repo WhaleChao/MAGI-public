@@ -1,0 +1,92 @@
+{% extends "base.html" %}
+
+{% block progress %}
+<div class="progress-bar">
+    <div class="progress-step done"><div class="progress-dot"></div> 歡迎</div>
+    <div class="progress-line"></div>
+    <div class="progress-step done"><div class="progress-dot"></div> 硬體</div>
+    <div class="progress-line"></div>
+    <div class="progress-step done"><div class="progress-dot"></div> 模型</div>
+    <div class="progress-line"></div>
+    <div class="progress-step active"><div class="progress-dot"></div> 設定</div>
+    <div class="progress-line"></div>
+    <div class="progress-step"><div class="progress-dot"></div> 完成</div>
+</div>
+{% endblock %}
+
+{% block content %}
+<div class="card">
+    <h2>檢視設定</h2>
+    <p>請確認以下設定無誤後，按「套用設定」產生 .env 檔案。</p>
+
+    <div class="section-title">管理員</div>
+    <table style="width:100%; font-size:14px;">
+        <tr style="border-bottom: 1px solid var(--border);">
+            <td style="padding:6px 0; width: 40%; color: var(--muted);">顯示名稱</td>
+            <td><strong>{{ config.get('admin_name', '—') }}</strong></td>
+        </tr>
+        <tr style="border-bottom: 1px solid var(--border);">
+            <td style="padding:6px 0; color: var(--muted);">LINE User ID</td>
+            <td>{{ config.get('admin_line_id', '—')[:8] }}...</td>
+        </tr>
+    </table>
+
+    <div class="section-title">LINE Messaging API</div>
+    <table style="width:100%; font-size:14px;">
+        <tr style="border-bottom: 1px solid var(--border);">
+            <td style="padding:6px 0; width: 40%; color: var(--muted);">Channel Token</td>
+            <td>{{ config.get('line_token', '—')[:12] }}...</td>
+        </tr>
+        <tr style="border-bottom: 1px solid var(--border);">
+            <td style="padding:6px 0; color: var(--muted);">Channel Secret</td>
+            <td>{{ config.get('line_secret', '—')[:8] }}...</td>
+        </tr>
+    </table>
+
+    <div class="section-title">資料庫</div>
+    <table style="width:100%; font-size:14px;">
+        <tr style="border-bottom: 1px solid var(--border);">
+            <td style="padding:6px 0; width: 40%; color: var(--muted);">本地主機</td>
+            <td>{{ config.get('db_host', '127.0.0.1') }}:{{ config.get('db_port', '3306') }}</td>
+        </tr>
+        <tr style="border-bottom: 1px solid var(--border);">
+            <td style="padding:6px 0; color: var(--muted);">使用者</td>
+            <td>{{ config.get('db_user', '—') }}</td>
+        </tr>
+        {% if config.get('remote_db_host') %}
+        <tr style="border-bottom: 1px solid var(--border);">
+            <td style="padding:6px 0; color: var(--muted);">遠端主機</td>
+            <td>{{ config.get('remote_db_host') }}:{{ config.get('remote_db_port', '3306') }}</td>
+        </tr>
+        {% endif %}
+    </table>
+
+    <div class="section-title">AI 模型</div>
+    <table style="width:100%; font-size:14px;">
+        <tr style="border-bottom: 1px solid var(--border);">
+            <td style="padding:6px 0; width: 40%; color: var(--muted);">推理引擎</td>
+            <td><strong>{{ config.get('inference_engine', 'omlx') }}</strong></td>
+        </tr>
+        <tr style="border-bottom: 1px solid var(--border);">
+            <td style="padding:6px 0; color: var(--muted);">主要模型</td>
+            <td>{{ config.get('main_model', '—') }}</td>
+        </tr>
+        <tr style="border-bottom: 1px solid var(--border);">
+            <td style="padding:6px 0; color: var(--muted);">分類器</td>
+            <td>{{ config.get('classifier_model', '—') }}</td>
+        </tr>
+    </table>
+</div>
+
+<div class="card">
+    <h3>產生的 .env 預覽</h3>
+    <div class="code-block">{{ env_preview }}</div>
+</div>
+
+<div class="btn-bar">
+    <a href="/config" class="btn btn-secondary">&larr; 回到修改</a>
+    <form action="/apply" method="POST" style="display:inline;">
+        <button type="submit" class="btn btn-primary btn-green">套用設定 &check;</button>
+    </form>
+</div>
+{% endblock %}

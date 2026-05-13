@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <rect width="512" height="512" rx="112" fill="#0f766e"/>
+  <circle cx="256" cy="256" r="154" fill="#f4f6f2" opacity="0.96"/>
+  <circle cx="256" cy="256" r="78" fill="#0f766e"/>
+  <g fill="none" stroke="#0f766e" stroke-width="26" stroke-linecap="round">
+    <path d="M256 102v64"/>
+    <path d="M123 333l55-32"/>
+    <path d="M389 333l-55-32"/>
+  </g>
+  <text x="256" y="276" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,Helvetica,Arial,sans-serif" font-size="42" font-weight="800" fill="#f4f6f2">MAGI</text>
+</svg>

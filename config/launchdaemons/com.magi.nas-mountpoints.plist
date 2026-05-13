@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.magi.nas-mountpoints</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/sh</string>
+        <string>-c</string>
+        <string>for share in homes lumi; do mp="/Volumes/$share"; if /sbin/mount | /usr/bin/grep -q " on $mp "; then continue; fi; if [ -d "$mp" ]; then /bin/rmdir "$mp" 2>/dev/null || /bin/mv "$mp" "$mp.local-stale-$(/bin/date +%Y%m%d_%H%M%S)" 2>/dev/null || true; fi; done</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <false/>
+    <key>ProcessType</key>
+    <string>Background</string>
+</dict>
+</plist>

@@ -1,0 +1,160 @@
+{
+  "success": true,
+  "ok": true,
+  "has_failures": false,
+  "cases": 4,
+  "avg_term_hit_rate": {
+    "gtx_primary": 1.0,
+    "apple_baseline": 0.729,
+    "apple_ape": 1.0
+  },
+  "ape_degraded_count": 0,
+  "ape_beats_baseline": true,
+  "case_fail_count": 0,
+  "case_degraded_count": 0,
+  "case_results": [
+    {
+      "id": "case_number",
+      "ok": true,
+      "degraded": false,
+      "fail_reasons": [],
+      "warning_reasons": []
+    },
+    {
+      "id": "civil_tort",
+      "ok": true,
+      "degraded": false,
+      "fail_reasons": [],
+      "warning_reasons": []
+    },
+    {
+      "id": "criminal_indictment",
+      "ok": true,
+      "degraded": false,
+      "fail_reasons": [],
+      "warning_reasons": []
+    },
+    {
+      "id": "prayer_for_relief",
+      "ok": true,
+      "degraded": false,
+      "fail_reasons": [],
+      "warning_reasons": []
+    }
+  ],
+  "rows": [
+    {
+      "id": "prayer_for_relief",
+      "stage": "gtx_primary",
+      "provider": "apple_translation_ape",
+      "degraded": false,
+      "elapsed_ms": 24331,
+      "text": "Prayer for Relief: The defendant shall pay the plaintiff the sum of NT$200,000.",
+      "term_hit_rate": 1.0
+    },
+    {
+      "id": "prayer_for_relief",
+      "stage": "apple_baseline",
+      "provider": "apple_translation",
+      "success": true,
+      "elapsed_ms": 3007,
+      "text": "The plaintiff's original statement: The defendant shall pay the plaintiff NT$200,000 in full.",
+      "term_hit_rate": 0.75
+    },
+    {
+      "id": "prayer_for_relief",
+      "stage": "apple_ape",
+      "provider": "apple_translation_ape",
+      "degraded": false,
+      "elapsed_ms": 19244,
+      "text": "Prayer for Relief: The defendant shall pay the plaintiff the sum of NT$200,000.",
+      "validator_reasons": [],
+      "term_hit_rate": 1.0
+    },
+    {
+      "id": "criminal_indictment",
+      "stage": "gtx_primary",
+      "provider": "apple_translation_ape",
+      "degraded": false,
+      "elapsed_ms": 6201,
+      "text": "The defendant was convicted of fraud and sentenced to six months' imprisonment.",
+      "term_hit_rate": 1.0
+    },
+    {
+      "id": "criminal_indictment",
+      "stage": "apple_baseline",
+      "provider": "apple_translation",
+      "success": true,
+      "elapsed_ms": 2141,
+      "text": "The defendant was convicted of fraud and sentenced to six months in prison.",
+      "term_hit_rate": 0.6666666666666666
+    },
+    {
+      "id": "criminal_indictment",
+      "stage": "apple_ape",
+      "provider": "apple_translation_ape",
+      "degraded": false,
+      "elapsed_ms": 3126,
+      "text": "The defendant was convicted of fraud and sentenced to six months' imprisonment.",
+      "validator_reasons": [],
+      "term_hit_rate": 1.0
+    },
+    {
+      "id": "civil_tort",
+      "stage": "gtx_primary",
+      "provider": "apple_translation_ape",
+      "degraded": false,
+      "elapsed_ms": 3088,
+      "text": "The defendant shall be liable for damages for the plaintiff's injuries.",
+      "term_hit_rate": 1.0
+    },
+    {
+      "id": "civil_tort",
+      "stage": "apple_baseline",
+      "provider": "apple_translation",
+      "success": true,
+      "elapsed_ms": 1590,
+      "text": "The defendant shall be liable for damages for infringement of property rights caused by the plaintiff.",
+      "term_hit_rate": 1.0
+    },
+    {
+      "id": "civil_tort",
+      "stage": "apple_ape",
+      "provider": "apple_translation_ape",
+      "degraded": false,
+      "elapsed_ms": 3246,
+      "text": "The defendant shall be liable for damages arising from the plaintiff's injuries.",
+      "validator_reasons": [],
+      "term_hit_rate": 1.0
+    },
+    {
+      "id": "case_number",
+      "stage": "gtx_primary",
+      "provider": "apple_translation_ape",
+      "degraded": false,
+      "elapsed_ms": 3474,
+      "text": "The matter, Case No. 114年度原訴字第000024號, is currently under adjudication before this Court.",
+      "term_hit_rate": 1.0
+    },
+    {
+      "id": "case_number",
+      "stage": "apple_baseline",
+      "provider": "apple_translation",
+      "success": true,
+      "elapsed_ms": 2196,
+      "text": "The original lawsuit No. 000024 of the 114th year of our court is currently being heard.",
+      "term_hit_rate": 0.5
+    },
+    {
+      "id": "case_number",
+      "stage": "apple_ape",
+      "provider": "apple_translation_ape",
+      "degraded": false,
+      "elapsed_ms": 4049,
+      "text": "The matter, Case No. 114年度原訴字第000024號, is currently under the consideration of this Court.",
+      "validator_reasons": [],
+      "term_hit_rate": 1.0
+    }
+  ],
+  "generated_at": "2026-05-13T13:16:54.191162"
+}

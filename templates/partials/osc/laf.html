@@ -1,0 +1,105 @@
+        <section id="laf" class="view">
+            <div class="laf-workbench">
+                <aside class="laf-master-pane card">
+                    <div class="laf-pane-head">
+                        <div>
+                            <h3>法律扶助案件列表</h3>
+                            <div class="muted">左側選案件，右側顯示該案開辦、報結、閱卷與書狀統計。</div>
+                        </div>
+                    </div>
+                    <div class="laf-action-row">
+                        <button class="btn" data-act="laf-scan">掃描派案</button>
+                        <button class="btn" data-act="laf-batch-in-progress">全部改為進行中</button>
+                    </div>
+                    <div class="toolbar laf-search-row">
+                        <input id="lafQ" placeholder="搜尋案號、當事人、案件分類或法扶狀態">
+                        <input id="lafCaseNumber" placeholder="指定本所案號（選填）">
+                        <button class="btn primary" id="lafSearchBtn">搜尋</button>
+                        <button class="btn" id="lafRefreshBtn">重新整理</button>
+                    </div>
+                    <div class="laf-mini-stats">
+                        <div><span id="lafCaseCount">0</span><small>法扶案件</small></div>
+                        <div><span id="lafChecklistCount">0</span><small>補件項目</small></div>
+                        <div><span id="lafLifecycleCount">0</span><small>流程紀錄</small></div>
+                        <div><span id="lafEmailCount">0</span><small>法扶信件</small></div>
+                    </div>
+                    <div class="laf-case-list-wrap">
+                        <table class="laf-case-list">
+                            <thead>
+                                <tr>
+                                    <th data-sort="case_number">本所案號</th>
+                                    <th data-sort="client_name">當事人</th>
+                                    <th data-sort="case_type">案件分類</th>
+                                    <th data-sort="legal_aid_status">法扶狀態</th>
+                                </tr>
+                            </thead>
+                            <tbody id="lafCaseBody"></tbody>
+                        </table>
+                    </div>
+                </aside>
+
+                <div id="lafDetailPanel" class="laf-detail-pane card">
+                    <div class="empty-state">
+                        <h3>請從左側選擇法扶案件</h3>
+                        <p>選取後會在這裡顯示原 OSC 單機版的開辦資料、報結資料彙總、閱卷統計與書狀列表。</p>
+                    </div>
+                </div>
+            </div>
+
+            <details class="card laf-checklist-admin" id="lafChecklistMgmtSection" open>
+                <summary>
+                    <span>法扶應備事項清單</span>
+                    <small>可依本所案號新增、更新、刪除補件與應備資料；消債案件仍可從案件明細開啟條件式確認表。</small>
+                </summary>
+                <div class="section-head">
+                    <div>
+                        <h3>補件 / 應備事項管理</h3>
+                        <div class="section-note">選左側法扶案件後會自動帶入案號，也可手動輸入案號管理其他案件。</div>
+                    </div>
+                    <div class="inline-actions">
+                        <input id="lafChecklistCaseNumber" placeholder="本所案號" style="width:180px">
+                        <button class="btn primary" id="lafChecklistLoadBtn" type="button">載入</button>
+                        <button class="btn" id="lafChecklistSeedBtn" type="button">填入預設清單</button>
+                    </div>
+                </div>
+                <div class="table-wrap">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>項目</th>
+                                <th>狀態</th>
+                                <th>備註</th>
+                                <th>最後更新</th>
+                                <th>操作</th>
+                            </tr>
+                        </thead>
+                        <tbody id="lafChecklistMgmtBody">
+                            <tr><td colspan="5" class="muted">請輸入案號並按「載入」。</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+                <div class="soft-block" style="margin-top:10px">
+                    <div class="field-grid cols-3">
+                        <div class="field">
+                            <label for="lafChecklistNewLabel">新增項目</label>
+                            <input id="lafChecklistNewLabel" placeholder="例：全戶戶籍謄本">
+                        </div>
+                        <div class="field">
+                            <label for="lafChecklistNewStatus">狀態</label>
+                            <select id="lafChecklistNewStatus">
+                                <option>待補</option>
+                                <option>已備齊</option>
+                                <option>不適用</option>
+                            </select>
+                        </div>
+                        <div class="field">
+                            <label for="lafChecklistNewNotes">備註</label>
+                            <input id="lafChecklistNewNotes" placeholder="補充說明">
+                        </div>
+                    </div>
+                    <div class="toolbar">
+                        <button class="btn primary" id="lafChecklistAddBtn" type="button">新增項目</button>
+                    </div>
+                </div>
+            </details>
+        </section>

@@ -1,0 +1,76 @@
+{% extends "base.html" %}
+
+{% block progress %}
+<div class="progress-bar">
+    <div class="progress-step done"><div class="progress-dot"></div> 歡迎</div>
+    <div class="progress-line"></div>
+    <div class="progress-step done"><div class="progress-dot"></div> 硬體</div>
+    <div class="progress-line"></div>
+    <div class="progress-step done"><div class="progress-dot"></div> 模型</div>
+    <div class="progress-line"></div>
+    <div class="progress-step done"><div class="progress-dot"></div> 設定</div>
+    <div class="progress-line"></div>
+    <div class="progress-step active"><div class="progress-dot"></div> 完成</div>
+</div>
+{% endblock %}
+
+{% block content %}
+<div class="card">
+    <div class="hero" style="padding: 30px 20px;">
+        <div class="hero-logo">&#x2705;</div>
+        <h2>設定完成！</h2>
+        <p>MAGI 組態檔已成功產生。</p>
+    </div>
+
+    <div style="background: var(--surface2); border-radius: 8px; padding: 16px; margin-top: 8px;">
+        <div style="font-size: 13px; color: var(--muted);">組態檔路徑</div>
+        <div style="font-family: monospace; font-size: 14px; margin-top: 4px;">{{ env_path }}</div>
+    </div>
+</div>
+
+<div class="card">
+    <h3>接下來</h3>
+    <div style="font-size: 14px; line-height: 2;">
+        <p><strong>1. 確認資料庫</strong> — 確保 MariaDB 正在執行，並已建立 <code>magi_brain</code> 資料庫：</p>
+        <div class="code-block" style="margin: 8px 0 16px;">
+# 建立資料庫（如尚未建立）
+mariadb -u root -e "CREATE DATABASE IF NOT EXISTS magi_brain CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
+mariadb -u root -e "GRANT ALL ON magi_brain.* TO 'magi'@'localhost' IDENTIFIED BY 'your_password';"</div>
+
+        <p><strong>2. 執行客戶安裝精靈</strong></p>
+        <div class="code-block" style="margin: 8px 0 16px;">
+cd {{ env_path | replace('/.env', '') }}
+python3 scripts/customer_install_wizard.py --public --yes</div>
+
+        <p><strong>3. 啟動 MAGI</strong></p>
+        <div class="code-block" style="margin: 8px 0 16px;">
+# 啟動推理引擎（Apple Silicon）
+omlx serve --port 8080 &
+
+# 啟動 MAGI
+python3 daemon.py</div>
+
+        <p><strong>4. 設定 LINE Webhook</strong></p>
+        <p style="font-size: 13px; color: var(--muted);">
+            MAGI 會自動透過 Cloudflare Quick Tunnel 產生公開 URL 並向 LINE 註冊。
+            如您使用 Tailscale，請確認 Webhook URL 已設定在 LINE Developers Console。
+        </p>
+    </div>
+</div>
+
+<div class="card">
+    <h3>重新執行設定精靈</h3>
+    <p style="font-size: 13px; color: var(--muted);">
+        如需重新設定，隨時執行：
+    </p>
+    <div class="code-block">python3 setup_wizard.py</div>
+    <p style="font-size: 13px; color: var(--muted); margin-top: 12px;">
+        如需重新檢查完整安裝狀態，可執行：
+    </p>
+    <div class="code-block">python3 scripts/customer_install_wizard.py --public</div>
+</div>
+
+<div class="btn-bar" style="justify-content: center;">
+    <a href="/welcome" class="btn btn-secondary">重新設定</a>
+</div>
+{% endblock %}

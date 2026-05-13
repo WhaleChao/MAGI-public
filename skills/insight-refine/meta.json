@@ -1,0 +1,10 @@
+{
+  "skill": "insight-refine",
+  "version_id": "20260213172101647247",
+  "timestamp": "2026-02-13T17:21:01.648529",
+  "reason": "mark_stable",
+  "files": [
+    "SKILL.md",
+    "action.py"
+  ]
+}

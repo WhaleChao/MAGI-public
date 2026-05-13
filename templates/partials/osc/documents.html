@@ -1,0 +1,285 @@
+        <section id="documents" class="view">
+            <div class="card">
+                <div class="section-head">
+                    <div>
+                        <h3>書狀索引</h3>
+                        <div class="section-note">集中查找委任狀、收據、法扶資料、法院通知與裁判。上方篩選完後，下方可直接開檔或複製路徑。</div>
+                    </div>
+                </div>
+                <div class="soft-block">
+                    <div class="field-grid cols-4">
+                        <div class="field" style="grid-column: span 2;">
+                            <label for="docsQ">檔案搜尋</label>
+                            <input id="docsQ" placeholder="檔名 / 路徑 / 關鍵字">
+                        </div>
+                        <div class="field">
+                            <label for="docsCaseNumber">案件編號</label>
+                            <input id="docsCaseNumber" placeholder="例如 2026-0017">
+                        </div>
+                        <div class="field">
+                            <label for="docsKind">檔案類型</label>
+                            <select id="docsKind">
+                                <option value="all">全部檔案</option>
+                                <option value="poa">委任狀/委託書</option>
+                                <option value="receipt">收據/繳費</option>
+                                <option value="laf">法扶資料/開辦資料</option>
+                                <option value="court_notice">法院通知</option>
+                                <option value="judgment">判決/裁定</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="toolbar" style="margin-top:10px; margin-bottom:0;">
+                        <button class="btn" id="docsSearchBtn">搜尋</button>
+                        <button class="btn" id="docsRefreshBtn">重新整理</button>
+                    </div>
+                </div>
+                <div class="soft-block">
+                    <div class="field-grid cols-4">
+                        <div class="field">
+                            <label for="docActionCaseId">案件 ID</label>
+                            <input id="docActionCaseId" placeholder="可從案件管理複製">
+                        </div>
+                        <div class="field" style="grid-column: span 3;">
+                            <label>快速動作</label>
+                            <div class="inline-actions">
+                                <button class="btn" id="docGeneratePoaBtn">製作委任狀</button>
+                                <button class="btn" id="docGenerateReceiptBtn">製作收據</button>
+                                <button class="btn warn" id="docClosingOverviewBtn">結案資料彙整</button>
+                                <button class="btn" id="docLafProgressBtn">法扶進度盤點</button>
+                                <button class="btn" id="docLafClosingBtn">結案狀況盤點</button>
+                            </div>
+                            <span class="helper">以上動作會交給 CASPER 處理，不會直接往外部系統送件。</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="card">
+                <div class="table-wrap">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>時間</th>
+                                <th>來源</th>
+                                <th>案號</th>
+                                <th>分類</th>
+                                <th>檔名</th>
+                                <th>路徑</th>
+                                <th>操作</th>
+                            </tr>
+                        </thead>
+                        <tbody id="docsBody"></tbody>
+                    </table>
+                </div>
+            </div>
+            <div class="card">
+                <div class="section-head">
+                    <div>
+                        <h3>書狀模板</h3>
+                        <div class="section-note">維護常用模板內容，供書狀替換與快速產製使用。</div>
+                    </div>
+                </div>
+                <div class="soft-block">
+                    <div class="field-grid cols-4">
+                        <div class="field" style="grid-column: span 2;">
+                            <label for="docTplQ">搜尋</label>
+                            <input id="docTplQ" placeholder="模板類型 / 當事人 / 案件編號">
+                        </div>
+                        <div class="field">
+                            <label for="docTplCaseNumber">案件編號</label>
+                            <input id="docTplCaseNumber" placeholder="案件編號（選填）">
+                        </div>
+                        <div class="field">
+                            <label for="docTplTypeFilter">模板類型</label>
+                            <input id="docTplTypeFilter" placeholder="模板類型（選填）">
+                        </div>
+                    </div>
+                    <div class="toolbar" style="margin-top:10px; margin-bottom:0;">
+                        <button class="btn" id="docTplSearchBtn">搜尋</button>
+                        <button class="btn" id="docTplRefreshBtn">重新整理</button>
+                    </div>
+                </div>
+                <div class="soft-block">
+                    <div class="field-grid cols-4">
+                        <div class="field">
+                            <label for="docTplId">ID</label>
+                            <input id="docTplId" placeholder="更新時使用">
+                        </div>
+                        <div class="field">
+                            <label for="docTplType">模板類型</label>
+                            <input id="docTplType" placeholder="檔案類型">
+                        </div>
+                        <div class="field">
+                            <label for="docTplParty">當事人</label>
+                            <input id="docTplParty" placeholder="當事人姓名（選填）">
+                        </div>
+                        <div class="field">
+                            <label for="docTplCase">案件編號</label>
+                            <input id="docTplCase" placeholder="案件編號（選填）">
+                        </div>
+                        <div class="field">
+                            <label for="docTplDivision">股別</label>
+                            <input id="docTplDivision" placeholder="股別（選填）">
+                        </div>
+                        <div class="field">
+                            <label for="docTplUseCount">使用次數</label>
+                            <input id="docTplUseCount" type="number" placeholder="使用次數">
+                        </div>
+                    </div>
+                    <div class="field" style="margin-top:10px;">
+                        <label for="docTplData">模板內容</label>
+                        <textarea id="docTplData" placeholder="可放 JSON 或純文字內容"></textarea>
+                    </div>
+                    <div class="toolbar">
+                        <button class="btn primary" id="docTplSaveBtn">儲存模板</button>
+                        <button class="btn warn" id="docTplResetBtn">清空</button>
+                    </div>
+                </div>
+                <div class="table-wrap" style="margin-top:10px;">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>ID</th>
+                                <th>類型</th>
+                                <th>當事人</th>
+                                <th>案號</th>
+                                <th>股別</th>
+                                <th>使用次數</th>
+                                <th>更新時間</th>
+                                <th>操作</th>
+                            </tr>
+                        </thead>
+                        <tbody id="docTplBody"></tbody>
+                    </table>
+                </div>
+            </div>
+            <div class="card">
+                <div class="section-head">
+                    <div>
+                        <h3>書狀關鍵字</h3>
+                        <div class="section-note">整理常用關鍵字、快捷字串與案件專用片段。</div>
+                    </div>
+                </div>
+                <div class="soft-block">
+                    <div class="field-grid cols-4">
+                        <div class="field" style="grid-column: span 2;">
+                            <label for="docKwQ">搜尋</label>
+                            <input id="docKwQ" placeholder="關鍵字 / 內容 / 案件編號 / 分類">
+                        </div>
+                        <div class="field">
+                            <label for="docKwCaseNumber">案件編號</label>
+                            <input id="docKwCaseNumber" placeholder="案件編號（選填）">
+                        </div>
+                        <div class="field">
+                            <label for="docKwCategoryFilter">分類</label>
+                            <input id="docKwCategoryFilter" placeholder="分類（選填）">
+                        </div>
+                    </div>
+                    <div class="toolbar" style="margin-top:10px; margin-bottom:0;">
+                        <button class="btn" id="docKwSearchBtn">搜尋</button>
+                        <button class="btn" id="docKwRefreshBtn">重新整理</button>
+                    </div>
+                </div>
+                <div class="soft-block">
+                    <div class="field-grid cols-4">
+                        <div class="field">
+                            <label for="docKwId">ID</label>
+                            <input id="docKwId" placeholder="更新時使用">
+                        </div>
+                        <div class="field">
+                            <label for="docKwCase">案件編號</label>
+                            <input id="docKwCase" placeholder="案件編號（選填）">
+                        </div>
+                        <div class="field">
+                            <label for="docKwName">關鍵字名稱</label>
+                            <input id="docKwName" placeholder="關鍵字名稱（必填）">
+                        </div>
+                        <div class="field">
+                            <label for="docKwCategory">分類</label>
+                            <input id="docKwCategory" placeholder="分類（選填）">
+                        </div>
+                        <div class="field">
+                            <label for="docKwHotkey">快捷鍵</label>
+                            <input id="docKwHotkey" placeholder="快捷字（選填）">
+                        </div>
+                        <div class="field">
+                            <label for="docKwCaseSpecific">案件專用</label>
+                            <input id="docKwCaseSpecific" placeholder="0/1">
+                        </div>
+                        <div class="field">
+                            <label for="docKwUsageCount">使用次數</label>
+                            <input id="docKwUsageCount" type="number" placeholder="使用次數">
+                        </div>
+                    </div>
+                    <div class="field" style="margin-top:10px;">
+                        <label for="docKwContent">關鍵字內容</label>
+                        <textarea id="docKwContent" placeholder="關鍵字展開內容（必填）"></textarea>
+                    </div>
+                    <div class="toolbar">
+                        <button class="btn primary" id="docKwSaveBtn">儲存關鍵字</button>
+                        <button class="btn warn" id="docKwResetBtn">清空</button>
+                    </div>
+                </div>
+                <div class="table-wrap" style="margin-top:10px;">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>ID</th>
+                                <th>案號</th>
+                                <th>關鍵字</th>
+                                <th>分類</th>
+                                <th>快捷鍵</th>
+                                <th>案例專用</th>
+                                <th>使用次數</th>
+                                <th>內容</th>
+                                <th>操作</th>
+                            </tr>
+                        </thead>
+                        <tbody id="docKwBody"></tbody>
+                    </table>
+                </div>
+            </div>
+            <div class="card">
+                <div class="section-head">
+                    <div>
+                        <h3>替換紀錄</h3>
+                        <div class="section-note">檢視模板替換過程中的舊資料、新資料與目標案件。</div>
+                    </div>
+                </div>
+                <div class="soft-block">
+                    <div class="field-grid cols-4">
+                        <div class="field" style="grid-column: span 2;">
+                            <label for="docRpQ">搜尋</label>
+                            <input id="docRpQ" placeholder="模板檔 / 案號 / 舊當事人 / 新當事人">
+                        </div>
+                        <div class="field">
+                            <label for="docRpCaseNumber">案件編號</label>
+                            <input id="docRpCaseNumber" placeholder="案件編號（選填）">
+                        </div>
+                        <div class="field">
+                            <label>操作</label>
+                            <div class="inline-actions">
+                                <button class="btn" id="docRpSearchBtn">搜尋</button>
+                                <button class="btn" id="docRpRefreshBtn">重新整理</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="table-wrap">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>時間</th>
+                                <th>模板檔</th>
+                                <th>新案號</th>
+                                <th>舊當事人</th>
+                                <th>新當事人</th>
+                                <th>舊資料</th>
+                                <th>新資料</th>
+                                <th>操作</th>
+                            </tr>
+                        </thead>
+                        <tbody id="docRpBody"></tbody>
+                    </table>
+                </div>
+            </div>
+        </section>

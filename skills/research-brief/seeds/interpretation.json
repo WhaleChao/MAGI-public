@@ -1,0 +1,88 @@
+{
+  "namespace": "通譯",
+  "topic_key": "research_interpretation",
+  "keywords": [
+    "court interpreter", "legal interpreting", "forensic linguistics",
+    "法庭通譯", "司法通譯", "法律通譯", "通譯倫理", "通譯人員",
+    "language access", "language services", "sworn translator",
+    "conference interpreting", "community interpreting", "medical interpreting",
+    "interpreter training", "translation studies", "language rights",
+    "Gerichtsdolmetscher", "Sprachmittlung", "法廷通訳", "司法通訳",
+    "interpreting ethics", "AIIC", "NAJIT", "ITT journal",
+    "localization", "translation industry"
+  ],
+  "sources": [
+    {
+      "url": "https://www.judicial.gov.tw/tw/lp-1763-1.html",
+      "type": "html",
+      "lang": "zh-Hant",
+      "note": "台灣司法院通譯專區 — 官方通譯政策及名冊公告"
+    },
+    {
+      "url": "https://najit.org/feed/",
+      "type": "rss",
+      "lang": "en",
+      "note": "NAJIT (National Association of Judiciary Interpreters & Translators) — 美國司法通譯專業協會官方 blog，實務與政策文章"
+    },
+    {
+      "url": "https://criticallink.org/feed/",
+      "type": "rss",
+      "lang": "en",
+      "note": "Critical Link International — 社區口譯（醫療、法律、社福）國際研討組織，研究與實務並重"
+    },
+    {
+      "url": "https://translatorswithoutborders.org/feed/",
+      "type": "rss",
+      "lang": "en",
+      "note": "Translators Without Borders — 人道主義語言服務 NGO，語言可及性與危機翻譯報告"
+    },
+    {
+      "url": "https://www.tandfonline.com/feed/rss/rtrn20",
+      "type": "rss",
+      "lang": "en",
+      "note": "The Translator (Routledge) — Taylor & Francis 翻譯研究學術期刊，理論與跨學科研究"
+    },
+    {
+      "url": "https://www.tandfonline.com/feed/rss/ritt20",
+      "type": "rss",
+      "lang": "en",
+      "note": "The Interpreter and Translator Trainer (ITT) — 通譯/翻譯培訓學術期刊，涵蓋法庭通譯教學"
+    },
+    {
+      "url": "https://slator.com/feed/",
+      "type": "rss",
+      "lang": "en",
+      "note": "Slator — 翻譯通譯產業專業媒體，市場趨勢與政策報導"
+    },
+    {
+      "url": "https://translorial.com/feed/",
+      "type": "rss",
+      "lang": "en",
+      "note": "Translorial — 北加州翻譯協會 (NCTA) 電子報，聚焦美國西岸翻譯通譯實務"
+    },
+    {
+      "url": "https://www.dvud.de/feed/",
+      "type": "rss",
+      "lang": "de",
+      "note": "DVUD (Deutscher Verband der Übersetzer und Dolmetscher) — 德國翻譯暨口譯協會，德語圈行業動態"
+    },
+    {
+      "url": "https://locworld.com/feed/",
+      "type": "rss",
+      "lang": "en",
+      "note": "LocWorld — 本地化與語言服務產業全球會議媒體，含通譯行業政策討論"
+    },
+    {
+      "url": "https://www.frontiersin.org/journals/communication/rss",
+      "type": "rss",
+      "lang": "en",
+      "note": "Frontiers in Communication — 語言與溝通學開放存取期刊，含通譯研究最新論文"
+    },
+    {
+      "url": "https://www.ncsc.org/topics/access-and-fairness/language-access/resource-guide",
+      "type": "html",
+      "lang": "en",
+      "note": "NCSC (National Center for State Courts) 語言可及性資源導覽 — 美國州法院通譯政策與工具"
+    }
+  ]
+}

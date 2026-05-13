@@ -1,0 +1,167 @@
+{% extends "base.html" %}
+
+{% block progress %}
+<div class="progress-bar">
+    <div class="progress-step done"><div class="progress-dot"></div> 歡迎</div>
+    <div class="progress-line"></div>
+    <div class="progress-step active"><div class="progress-dot"></div> 硬體</div>
+    <div class="progress-line"></div>
+    <div class="progress-step"><div class="progress-dot"></div> 模型</div>
+    <div class="progress-line"></div>
+    <div class="progress-step"><div class="progress-dot"></div> 設定</div>
+    <div class="progress-line"></div>
+    <div class="progress-step"><div class="progress-dot"></div> 完成</div>
+</div>
+{% endblock %}
+
+{% block content %}
+<div class="card">
+    <h2>硬體偵測結果</h2>
+    <p>以下是自動偵測到的系統硬體資訊，MAGI 會根據這些資訊推薦最適合的 AI 模型。</p>
+
+    <div class="spec-grid">
+        <div class="spec-item">
+            <div class="spec-label">作業系統</div>
+            <div class="spec-value">{{ hw.os_name }} {{ hw.os_version }}</div>
+        </div>
+        <div class="spec-item">
+            <div class="spec-label">處理器架構</div>
+            <div class="spec-value">{{ hw.arch }}</div>
+        </div>
+        <div class="spec-item">
+            <div class="spec-label">CPU</div>
+            <div class="spec-value">{{ hw.cpu_name }}</div>
+        </div>
+        <div class="spec-item">
+            <div class="spec-label">CPU 核心數</div>
+            <div class="spec-value">{{ hw.cpu_cores }}</div>
+        </div>
+        <div class="spec-item">
+            <div class="spec-label">記憶體 (RAM)</div>
+            <div class="spec-value">{{ hw.ram_gb }} GB</div>
+        </div>
+        <div class="spec-item">
+            <div class="spec-label">GPU</div>
+            <div class="spec-value">
+                {% if hw.gpu_type == 'apple_silicon' %}
+                    {{ hw.gpu_name }} (Metal)
+                {% elif hw.gpu_type == 'nvidia' %}
+                    {{ hw.gpu_name }} (CUDA)
+                {% else %}
+                    無獨立 GPU
+                {% endif %}
+            </div>
+        </div>
+        <div class="spec-item">
+            <div class="spec-label">GPU / 統一記憶體</div>
+            <div class="spec-value">{{ hw.gpu_vram_gb }} GB</div>
+        </div>
+        <div class="spec-item">
+            <div class="spec-label">磁碟可用空間</div>
+            <div class="spec-value">{{ hw.disk_free_gb }} GB</div>
+        </div>
+    </div>
+</div>
+
+<div class="card">
+    <h3>推理引擎</h3>
+    <p>MAGI 使用本地 AI 推理引擎執行語言模型。以下是偵測結果：</p>
+    <table style="width:100%; font-size:14px; margin-top:12px;">
+        <tr style="border-bottom: 1px solid var(--border);">
+            <td style="padding:8px 0;"><strong>oMLX</strong> (Apple Silicon MLX)</td>
+            <td>
+                {% if hw.has_omlx %}
+                    <span class="badge badge-green">已安裝</span>
+                {% else %}
+                    <span class="badge badge-red">未安裝</span>
+                {% endif %}
+            </td>
+            <td style="color: var(--muted); font-size: 13px;">
+                {% if hw.metal_support %}推薦 — Apple Silicon 最佳效能{% else %}僅限 Apple Silicon{% endif %}
+            </td>
+        </tr>
+        <tr style="border-bottom: 1px solid var(--border);">
+            <td style="padding:8px 0;"><strong>Ollama</strong> (跨平台 GGUF)</td>
+            <td>
+                {% if hw.has_ollama %}
+                    <span class="badge badge-green">已安裝</span>
+                {% else %}
+                    <span class="badge badge-red">未安裝</span>
+                {% endif %}
+            </td>
+            <td style="color: var(--muted); font-size: 13px;">
+                {% if not hw.metal_support %}推薦 — 跨平台通用方案{% else %}可用作備選{% endif %}
+            </td>
+        </tr>
+        <tr>
+            <td style="padding:8px 0;"><strong>MariaDB</strong></td>
+            <td>
+                {% if hw.has_mariadb %}
+                    <span class="badge badge-green">已安裝</span>
+                {% else %}
+                    <span class="badge badge-red">未安裝</span>
+                {% endif %}
+            </td>
+            <td style="color: var(--muted); font-size: 13px;">MAGI 向量記憶庫必要元件</td>
+        </tr>
+    </table>
+
+    {% if not hw.has_omlx and hw.metal_support %}
+    <div style="margin-top: 16px; padding: 12px; background: #f9731611; border: 1px solid #f9731644; border-radius: 8px;">
+        <strong style="color: var(--accent);">建議安裝 oMLX</strong>
+        <p style="font-size: 13px; margin-top: 4px;">
+            您的 Mac 搭載 Apple Silicon，強烈建議安裝 oMLX 以獲得最佳推理效能：<br>
+            <code style="background: #000; padding: 2px 8px; border-radius: 4px; font-size: 12px;">brew install omlx</code>
+        </p>
+    </div>
+    {% endif %}
+
+    {% if not hw.has_omlx and not hw.metal_support and not hw.has_ollama %}
+    <div style="margin-top: 16px; padding: 12px; background: #f9731611; border: 1px solid #f9731644; border-radius: 8px;">
+        <strong style="color: var(--accent);">建議安裝 Ollama</strong>
+        <p style="font-size: 13px; margin-top: 4px;">
+            請安裝 Ollama 作為推理引擎：<br>
+            <code style="background: #000; padding: 2px 8px; border-radius: 4px; font-size: 12px;">curl -fsSL https://ollama.com/install.sh | sh</code>
+        </p>
+    </div>
+    {% endif %}
+
+    {% if not hw.has_mariadb %}
+    <div style="margin-top: 16px; padding: 12px; background: #ef444411; border: 1px solid #ef444444; border-radius: 8px;">
+        <strong style="color: var(--red);">請先安裝 MariaDB</strong>
+        <p style="font-size: 13px; margin-top: 4px;">
+            MAGI 需要 MariaDB 作為向量記憶庫：<br>
+            {% if hw.os_name == 'macOS' %}
+            <code style="background: #000; padding: 2px 8px; border-radius: 4px; font-size: 12px;">brew install mariadb && brew services start mariadb</code>
+            {% elif hw.os_name == 'Windows' %}
+            <code style="background: #000; padding: 2px 8px; border-radius: 4px; font-size: 12px;">winget install MariaDB.Server</code>
+            {% else %}
+            <code style="background: #000; padding: 2px 8px; border-radius: 4px; font-size: 12px;">sudo apt install mariadb-server</code>
+            {% endif %}
+        </p>
+    </div>
+    {% endif %}
+</div>
+
+<div class="card">
+    <h3>效能評級</h3>
+    {% if hw.ram_gb >= 32 %}
+        <span class="badge badge-green" style="font-size: 16px; padding: 6px 16px;">&#9733; 最佳</span>
+        <p style="margin-top: 8px;">您的硬體可以執行所有 MAGI 模型，包括 14B 參數級模型。</p>
+    {% elif hw.ram_gb >= 16 %}
+        <span class="badge badge-green" style="font-size: 16px; padding: 6px 16px;">&#9733; 優良</span>
+        <p style="margin-top: 8px;">您的硬體可以執行大部分 MAGI 模型，建議使用 12B 以下模型。</p>
+    {% elif hw.ram_gb >= 10 %}
+        <span class="badge badge-orange" style="font-size: 16px; padding: 6px 16px;">&#9733; 足夠</span>
+        <p style="margin-top: 8px;">您的硬體可以執行基礎模型，建議使用 9B 以下模型。</p>
+    {% else %}
+        <span class="badge badge-red" style="font-size: 16px; padding: 6px 16px;">&#9888; 不足</span>
+        <p style="margin-top: 8px;">記憶體不足 10 GB，MAGI 執行可能受限。建議至少 16 GB RAM。</p>
+    {% endif %}
+</div>
+
+<div class="btn-bar">
+    <a href="/welcome" class="btn btn-secondary">&larr; 上一步</a>
+    <a href="/models" class="btn btn-primary">下一步：模型選擇 &rarr;</a>
+</div>
+{% endblock %}

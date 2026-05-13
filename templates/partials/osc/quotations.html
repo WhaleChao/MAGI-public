@@ -1,0 +1,269 @@
+        <section id="quotations" class="view">
+            <div class="card">
+                <div class="section-head">
+                    <div>
+                        <h3>報價單管理</h3>
+                        <div class="section-note">依原 OSC 流程建立報價：填當事人、選服務項目，金額會自動計算；儲存後可直接下載 PDF。</div>
+                    </div>
+                </div>
+                <div class="soft-block">
+                    <div class="field-grid cols-4">
+                        <div class="field" style="grid-column: span 2;">
+                            <label for="qtQ">報價單搜尋</label>
+                            <input id="qtQ" placeholder="報價單編號 / 當事人 / 專案 / 電話 / Email">
+                        </div>
+                        <div class="field">
+                            <label for="qtStatusFilter">狀態篩選</label>
+                            <select id="qtStatusFilter">
+                                <option value="">全部</option>
+                                <option value="待確認">待確認</option>
+                                <option value="已確認">已確認</option>
+                                <option value="已收款">已收款</option>
+                                <option value="未成交">未成交</option>
+                                <option value="draft">draft</option>
+                            </select>
+                        </div>
+                        <div class="field">
+                            <label>操作</label>
+                            <div class="inline-actions">
+                                <button class="btn" id="qtSearchBtn">搜尋</button>
+                                <button class="btn" id="qtRefreshBtn">重新整理</button>
+                                <button class="btn primary" id="qtNewBtn" type="button">新增</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="soft-block">
+                    <h4>一、基本資料</h4>
+                    <div class="field-grid cols-4">
+                        <div class="field muted-field">
+                            <label for="qt_id">報價單 ID</label>
+                            <input id="qt_id" placeholder="留空自動產生" readonly>
+                        </div>
+                        <div class="field">
+                            <label for="qt_client_name">當事人</label>
+                            <input id="qt_client_name" placeholder="當事人（必填）">
+                        </div>
+                        <div class="field">
+                            <label for="qt_project_name">專案名稱</label>
+                            <input id="qt_project_name" placeholder="專案名稱（必填）">
+                        </div>
+                        <div class="field">
+                            <label for="qt_status">狀態</label>
+                            <select id="qt_status">
+                                <option value="待確認">待確認</option>
+                                <option value="已確認">已確認</option>
+                                <option value="已收款">已收款</option>
+                                <option value="未成交">未成交</option>
+                            </select>
+                        </div>
+                        <div class="field">
+                            <label for="qt_contact">聯絡人</label>
+                            <input id="qt_contact" placeholder="公司/團體案件才需要">
+                        </div>
+                        <div class="field">
+                            <label for="qt_phone">電話</label>
+                            <input id="qt_phone" placeholder="當事人電話">
+                        </div>
+                        <div class="field">
+                            <label for="qt_email">Email</label>
+                            <input id="qt_email" placeholder="寄送報價單用">
+                        </div>
+                        <div class="field">
+                            <label for="qt_tax_id">統編 / 身分字號</label>
+                            <input id="qt_tax_id" placeholder="選填">
+                        </div>
+                        <div class="field" style="grid-column: span 2;">
+                            <label for="qt_address">地址</label>
+                            <input id="qt_address" placeholder="選填，PDF 會顯示">
+                        </div>
+                        <div class="field">
+                            <label for="qt_date">日期</label>
+                            <input id="qt_date" type="date" placeholder="date">
+                        </div>
+                        <div class="field">
+                            <label for="qt_expiry">有效期限</label>
+                            <input id="qt_expiry" type="date" placeholder="expiry">
+                        </div>
+                    </div>
+                </div>
+
+                <div class="soft-block">
+                    <div class="section-head">
+                        <div>
+                            <h4>二、服務項目</h4>
+                            <div class="section-note">不用填 JSON。每列填服務內容與金額，系統會轉成原 OSC 報價單格式。</div>
+                        </div>
+                        <div class="inline-actions">
+                            <select id="qtTemplateSelect" title="套用報價模板">
+                                <option value="">選擇模板</option>
+                            </select>
+                            <button class="btn" id="qtApplyTemplateBtn" type="button">套用模板</button>
+                            <button class="btn" id="qtAddItemBtn" type="button">新增項目</button>
+                        </div>
+                    </div>
+                    <div class="toolbar">
+                        <button class="btn" type="button" data-qt-preset="consult">法律諮詢</button>
+                        <button class="btn" type="button" data-qt-preset="draft">書狀代擬</button>
+                        <button class="btn" type="button" data-qt-preset="litigation">訴訟代理</button>
+                        <button class="btn" type="button" data-qt-preset="contract">契約審閱</button>
+                    </div>
+                    <div class="table-wrap">
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>服務項目</th>
+                                    <th>說明</th>
+                                    <th>單位</th>
+                                    <th>數量</th>
+                                    <th>單價</th>
+                                    <th>金額</th>
+                                    <th></th>
+                                </tr>
+                            </thead>
+                            <tbody id="qtItemsBody"></tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <div class="soft-block">
+                    <h4>三、金額與備註</h4>
+                    <div class="field-grid cols-4">
+                        <div class="field muted-field">
+                            <label for="qt_subtotal">小計</label>
+                            <input id="qt_subtotal" type="number" step="1" placeholder="0" readonly>
+                        </div>
+                        <div class="field">
+                            <label for="qt_discount">折扣</label>
+                            <input id="qt_discount" type="number" step="1" placeholder="0">
+                        </div>
+                        <div class="field">
+                            <label for="qt_tax">稅額</label>
+                            <input id="qt_tax" type="number" step="1" placeholder="0">
+                        </div>
+                        <div class="field muted-field">
+                            <label for="qt_total">總計</label>
+                            <input id="qt_total" type="number" step="1" placeholder="0" readonly>
+                        </div>
+                    </div>
+                    <div class="field" style="margin-top:10px;">
+                        <label for="qt_notes">備註</label>
+                        <textarea id="qt_notes" placeholder="例如：本報價未含裁判費、規費、郵資、差旅費；委任範圍以正式委任契約為準。"></textarea>
+                    </div>
+                    <textarea id="qt_items" hidden></textarea>
+                    <textarea id="qt_extended_data" hidden></textarea>
+                </div>
+                <div class="toolbar">
+                    <button class="btn primary" id="qtSaveBtn">儲存報價單</button>
+                    <button class="btn" id="qtPreviewPdfBtn" type="button">下載 PDF</button>
+                    <button class="btn warn" id="qtResetBtn">清空表單</button>
+                </div>
+            </div>
+            <div class="card">
+                <div class="table-wrap">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>ID</th>
+                                <th>當事人</th>
+                                <th>專案</th>
+                                <th>日期</th>
+                                <th>有效期限</th>
+                                <th>狀態</th>
+                                <th>總計</th>
+                                <th>操作</th>
+                            </tr>
+                        </thead>
+                        <tbody id="qtBody"></tbody>
+                    </table>
+                </div>
+            </div>
+            <div class="card">
+                <div class="section-head">
+                    <div>
+                        <h3>報價模板</h3>
+                        <div class="section-note">模板也改成服務項目列；儲存後可在上方直接套用。</div>
+                    </div>
+                </div>
+                <div class="field-grid cols-4">
+                    <div class="field" style="grid-column: span 2;">
+                        <label for="qtTplQ">搜尋</label>
+                        <input id="qtTplQ" placeholder="名稱 / 說明 / 備註">
+                    </div>
+                    <div class="field">
+                        <label>操作</label>
+                        <div class="inline-actions">
+                            <button class="btn" id="qtTplSearchBtn">搜尋</button>
+                            <button class="btn" id="qtTplRefreshBtn">重新整理</button>
+                        </div>
+                    </div>
+                </div>
+                <div class="field-grid cols-4" style="margin-top:10px;">
+                    <div class="field muted-field">
+                        <label for="qtTplId">ID</label>
+                        <input id="qtTplId" placeholder="更新時使用" readonly>
+                    </div>
+                    <div class="field">
+                        <label for="qtTplName">名稱</label>
+                        <input id="qtTplName" placeholder="名稱（必填）">
+                    </div>
+                    <div class="field">
+                        <label for="qtTplDefault">預設</label>
+                        <select id="qtTplDefault">
+                            <option value="0">否</option>
+                            <option value="1">是</option>
+                        </select>
+                    </div>
+                    <div class="field">
+                        <label for="qtTplDescription">說明</label>
+                        <input id="qtTplDescription" placeholder="description">
+                    </div>
+                </div>
+                <div class="toolbar">
+                    <button class="btn" id="qtTplAddItemBtn" type="button">新增模板項目</button>
+                    <button class="btn" type="button" data-qt-tpl-preset="consult">法律諮詢</button>
+                    <button class="btn" type="button" data-qt-tpl-preset="draft">書狀代擬</button>
+                    <button class="btn" type="button" data-qt-tpl-preset="litigation">訴訟代理</button>
+                </div>
+                <div class="table-wrap">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>服務項目</th>
+                                <th>說明</th>
+                                <th>單位</th>
+                                <th>數量</th>
+                                <th>單價</th>
+                                <th>金額</th>
+                                <th></th>
+                            </tr>
+                        </thead>
+                        <tbody id="qtTplItemsBody"></tbody>
+                    </table>
+                </div>
+                <div class="field" style="margin-top:10px;">
+                    <label for="qtTplNotes">備註</label>
+                    <textarea id="qtTplNotes" placeholder="notes"></textarea>
+                </div>
+                <textarea id="qtTplItems" hidden></textarea>
+                <div class="toolbar">
+                    <button class="btn primary" id="qtTplSaveBtn">儲存模板</button>
+                    <button class="btn warn" id="qtTplResetBtn">清空</button>
+                </div>
+                <div class="table-wrap">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>ID</th>
+                                <th>名稱</th>
+                                <th>預設</th>
+                                <th>說明</th>
+                                <th>更新時間</th>
+                                <th>操作</th>
+                            </tr>
+                        </thead>
+                        <tbody id="qtTplBody"></tbody>
+                    </table>
+                </div>
+            </div>
+        </section>
