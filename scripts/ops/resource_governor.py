@@ -236,14 +236,18 @@ def _print_human(decision: ResourceDecision) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="MAGI resource governance and safe cleanup.")
+    parser.add_argument("--json", action="store_true")
     sub = parser.add_subparsers(dest="cmd", required=True)
-    sub.add_parser("status")
-    sub.add_parser("cleanup").add_argument("--enforce", action="store_true")
+    status = sub.add_parser("status")
+    status.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
+    cleanup = sub.add_parser("cleanup")
+    cleanup.add_argument("--enforce", action="store_true")
+    cleanup.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
     prep = sub.add_parser("prepare-switch")
     prep.add_argument("--mode", required=True, choices=["DAY", "NIGHT", "day", "night"])
     prep.add_argument("--required-free-gb", type=float, required=True)
     prep.add_argument("--enforce", action="store_true")
-    parser.add_argument("--json", action="store_true")
+    prep.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
     args = parser.parse_args(argv)
 
     if args.cmd == "status":

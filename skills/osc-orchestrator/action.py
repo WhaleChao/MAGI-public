@@ -1094,7 +1094,12 @@ def task_scan_folder(payload: Dict[str, Any]) -> Dict[str, Any]:
                 )
                 inserted += int(res.get("inserted") or 0)
                 skipped += int(res.get("skipped") or 0)
-                items.append({"path": full, "case_number": case_number, "insert": res, "todos": todos, "status": "inserted"})
+                status = (
+                    "inserted" if int(res.get("inserted") or 0) > 0 else
+                    "updated" if int(res.get("updated") or 0) > 0 else
+                    "skipped"
+                )
+                items.append({"path": full, "case_number": case_number, "insert": res, "todos": todos, "status": status})
 
             if scanned >= max_files:
                 break

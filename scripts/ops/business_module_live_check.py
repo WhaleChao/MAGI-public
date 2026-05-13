@@ -135,6 +135,7 @@ def _notify(text: str) -> None:
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run non-destructive MAGI business module LIVE/health checks.")
+    parser.add_argument("--json", action="store_true", help="Compatibility flag; output is JSON by default.")
     parser.add_argument("--skip-laf-live", action="store_true", help="Skip live LAF portal login/scan.")
     parser.add_argument("--notify", action="store_true", help="Send the summary through the internal check topic.")
     return parser.parse_args(argv)

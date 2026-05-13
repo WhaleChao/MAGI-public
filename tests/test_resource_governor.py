@@ -102,3 +102,34 @@ def test_prepare_switch_records_failure_after_cleanup(monkeypatch, tmp_path):
     payload = rg.prepare_switch("DAY", 4, enforce=True)
     assert payload["ok"] is False
     assert payload["required_free_gb"] == 4
+
+
+def test_json_flag_works_before_and_after_subcommand(monkeypatch, capsys):
+    snap = rg.ResourceSnapshot(80, 460, 1, 5, 5, 10)
+    monkeypatch.setattr(rg, "collect_snapshot", lambda: snap)
+    monkeypatch.setattr(rg, "append_metric", lambda decision: None)
+
+    assert rg.main(["--json", "status"]) == 0
+    before = capsys.readouterr().out
+    assert '"level": "normal"' in before
+
+    assert rg.main(["status", "--json"]) == 0
+    after = capsys.readouterr().out
+    assert '"level": "normal"' in after
+
+
+def test_prepare_switch_accepts_json_after_subcommand(monkeypatch, capsys):
+    monkeypatch.setattr(
+        rg,
+        "prepare_switch",
+        lambda mode, required_free_gb, enforce: {
+            "ok": True,
+            "mode": mode,
+            "required_free_gb": required_free_gb,
+            "cleanup_actions": [],
+        },
+    )
+
+    assert rg.main(["prepare-switch", "--mode", "DAY", "--required-free-gb", "4", "--json"]) == 0
+    out = capsys.readouterr().out
+    assert '"mode": "DAY"' in out

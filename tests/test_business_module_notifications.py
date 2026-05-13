@@ -36,3 +36,12 @@ def test_business_live_check_help_does_not_run_live_checks(monkeypatch):
         business_module_live_check.main(["--help"])
 
     assert exc.value.code == 0
+
+
+def test_business_live_check_accepts_json_compat_flag():
+    from scripts.ops import business_module_live_check
+
+    args = business_module_live_check._parse_args(["--json", "--skip-laf-live"])
+
+    assert args.json is True
+    assert args.skip_laf_live is True

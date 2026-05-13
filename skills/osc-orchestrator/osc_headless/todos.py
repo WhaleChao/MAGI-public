@@ -232,13 +232,9 @@ def extract_todos_from_filename(
                         year_to_use = base_year
                         period_group = 3
 
-                        roc_match = re.search(r"(\d{3})年度?", filename)
-                        if roc_match:
-                            explicit_year = int(roc_match.group(1)) + 1911
-                            if abs(explicit_year - year_to_use) < 2:
-                                year_to_use = explicit_year
-
                     dt = datetime(year_to_use, month, day, 9, 0)
+                    if pattern_type == "absolute_time" and dt.date() < document_date.date() - timedelta(days=30):
+                        dt = dt.replace(year=year_to_use + 1)
 
                     if pattern_type in ("absolute_time", "absolute_time_roc") and len(m.groups()) >= period_group + 1:
                         period = m.group(period_group)

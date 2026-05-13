@@ -660,6 +660,7 @@ def insert_case_todos(
     cur = conn.cursor()
     inserted = 0
     skipped = 0
+    updated = 0
     try:
         for t in todos:
             todo_type = (t.get("type") or "").strip() or "待辦"
@@ -685,6 +686,52 @@ def insert_case_todos(
                     skipped += 1
                     continue
 
+                cur.execute(
+                    """
+                    SELECT `id` FROM `case_todos`
+                    WHERE `case_number`=%s
+                      AND ( (`todo_date`=%s) OR (%s IS NULL AND `todo_date` IS NULL) )
+                      AND ( (`todo_time`=%s) OR (%s IS NULL AND `todo_time` IS NULL) )
+                      AND `source_file`=%s
+                      AND (status IS NULL OR status='' OR status!='deleted')
+                    LIMIT 1
+                    """,
+                    (case_number, todo_date, todo_date, todo_time, todo_time, source_file),
+                )
+                if cur.fetchone():
+                    skipped += 1
+                    continue
+
+                cur.execute(
+                    """
+                    SELECT `id` FROM `case_todos`
+                    WHERE `case_number`=%s
+                      AND `todo_type`=%s
+                      AND `source_file`=%s
+                      AND (status IS NULL OR status='' OR status='pending')
+                    ORDER BY `id` DESC
+                    LIMIT 1
+                    """,
+                    (case_number, todo_type, source_file),
+                )
+                stale = cur.fetchone()
+                if stale:
+                    stale_id = stale[0] if isinstance(stale, tuple) else stale
+                    cur.execute(
+                        """
+                        UPDATE `case_todos`
+                        SET `client_name`=%s,
+                            `todo_date`=%s,
+                            `todo_time`=%s,
+                            `description`=%s,
+                            `status`='pending'
+                        WHERE `id`=%s
+                        """,
+                        (client_name or "", todo_date, todo_time, desc, stale_id),
+                    )
+                    updated += int(getattr(cur, "rowcount", 0) or 0)
+                    continue
+
             cur.execute(
                 """
                 INSERT INTO `case_todos`
@@ -696,7 +743,7 @@ def insert_case_todos(
             inserted += 1
         if commit:
             conn.commit()
-        return {"inserted": inserted, "skipped": skipped}
+        return {"inserted": inserted, "skipped": skipped, "updated": updated}
     finally:
         cur.close()
 
