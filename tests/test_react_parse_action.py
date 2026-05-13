@@ -113,6 +113,23 @@ class TestParseAction(unittest.TestCase):
         from skills.engine.react_engine import ReActEngine
         self.engine = ReActEngine.for_omlx()
 
+    def test_blocks_destructive_user_input_before_llm(self):
+        from skills.engine.react_engine import ReActEngine
+
+        called = {"llm": False}
+
+        def _llm(_messages):
+            called["llm"] = True
+            return "FINAL: should not run"
+
+        engine = ReActEngine(tools={}, llm_fn=_llm)
+        result = engine.run("shutdown -h now")
+
+        self.assertFalse(called["llm"])
+        self.assertFalse(result["success"])
+        self.assertTrue(any(t.get("type") == "blocked" for t in result["trace"]))
+        self.assertIn("不可", result["answer"])
+
     # ─── 基本格式 ───────────────────────────────────────────────────────────
 
     def test_standard_format(self):
