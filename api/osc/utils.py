@@ -40,6 +40,27 @@ except Exception:
     _normalize_output_text = None
 
 logger = logging.getLogger(__name__)
+_OSC_NAS_HOME_USER = (
+    os.environ.get("MAGI_NAS_HOME_USER")
+    or os.environ.get("MAGI_NAS_USER")
+    or "home"
+).strip().strip("/\\") or "home"
+_OSC_NAS_CLOSED_SHARE_NAME = (
+    os.environ.get("MAGI_NAS_CLOSED_SHARE_NAME")
+    or os.environ.get("MAGI_NAS_ARCHIVE_SHARE")
+    or "archive"
+).strip().strip("/\\") or "archive"
+
+
+def _osc_canonical_active_share_windows() -> str:
+    return (
+        os.environ.get("MAGI_CANONICAL_ACTIVE_SHARE_PREFIX")
+        or f"Z:\\{_OSC_NAS_HOME_USER}"
+    ).replace("/", "\\").rstrip("\\")
+
+
+def _osc_canonical_active_share_posix() -> str:
+    return _osc_canonical_active_share_windows().replace("\\", "/")
 
 # ---------------------------------------------------------------------------
 # 1. Database config and connection functions
@@ -400,7 +421,8 @@ def _osc_norm_path(path_str: str) -> str:
     s2 = s.replace("/", "\\")
     up = s2.upper()
     if up.startswith("K:\\SYNOLOGYDRIVE"):
-        return s2.replace("K:\\SynologyDrive", "Z:\\lumi63181107").replace("K:\\SYNOLOGYDRIVE", "Z:\\lumi63181107")
+        target = _osc_canonical_active_share_windows()
+        return s2.replace("K:\\SynologyDrive", target).replace("K:\\SYNOLOGYDRIVE", target)
     if up.startswith("K:\\LUMI"):
         return "Z:" + s2[2:]
     if up.startswith("K:"):
@@ -424,13 +446,13 @@ def _osc_allowed_local_roots() -> list[str]:
     roots = default_synology_share_roots(include_closed=False) + [
         str(magi_root / "exports"),
         str(magi_root / "static" / "exports"),
-        str(Path.home() / "Library/CloudStorage/SynologyDrive-homes/lumi"),
-        str(Path.home() / "SynologyDrive/homes/lumi"),
-        str(Path.home() / "SynologyDrive/lumi"),
-        "/Volumes/homes/lumi63181107",
-        "/Volumes/lumi/lumi",
-        "/Volumes/lumi-1/lumi",
-        "/Volumes/lumi-2/lumi",
+        str(Path.home() / "Library/CloudStorage/SynologyDrive-homes" / _OSC_NAS_CLOSED_SHARE_NAME),
+        str(Path.home() / "SynologyDrive/homes" / _OSC_NAS_CLOSED_SHARE_NAME),
+        str(Path.home() / "SynologyDrive" / _OSC_NAS_CLOSED_SHARE_NAME),
+        f"/Volumes/homes/{_OSC_NAS_HOME_USER}",
+        f"/Volumes/{_OSC_NAS_CLOSED_SHARE_NAME}/{_OSC_NAS_CLOSED_SHARE_NAME}",
+        f"/Volumes/{_OSC_NAS_CLOSED_SHARE_NAME}-1/{_OSC_NAS_CLOSED_SHARE_NAME}",
+        f"/Volumes/{_OSC_NAS_CLOSED_SHARE_NAME}-2/{_OSC_NAS_CLOSED_SHARE_NAME}",
     ] + [p for p in template_roots if str(p or "").strip()]
     out = []
     for root in roots:
@@ -669,15 +691,17 @@ def _osc_smb_candidates(path_str: str) -> list[str]:
         p = translate_local_path_to_canonical(p).replace("\\", "/")
     out: list[str] = []
     rel = ""
-    if p.startswith("Z:/lumi63181107"):
-        rel = p[len("Z:/lumi63181107"):].lstrip("/")
-        for base in [f"smb://{host}/SynologyDrive", f"smb://{host}/home", f"smb://{host}/homes/lumi63181107"]:
+    active_prefix = _osc_canonical_active_share_posix()
+    if p.startswith(active_prefix):
+        rel = p[len(active_prefix):].lstrip("/")
+        for base in [f"smb://{host}/SynologyDrive", f"smb://{host}/home", f"smb://{host}/homes/{_OSC_NAS_HOME_USER}"]:
             out.append(f"{base}/{rel}" if rel else base)
     elif p.startswith("Y:/"):
         rel = p[len("Y:/"):].lstrip("/")
-        if rel.startswith("lumi/"):
-            rel = rel[len("lumi/"):]
-        for base in [f"smb://{host}/lumi/lumi", f"smb://{host}/lumi", f"smb://{host}/home"]:
+        closed_prefix = _OSC_NAS_CLOSED_SHARE_NAME + "/"
+        if rel.lower().startswith(closed_prefix.lower()):
+            rel = rel[len(closed_prefix):]
+        for base in [f"smb://{host}/{_OSC_NAS_CLOSED_SHARE_NAME}/{_OSC_NAS_CLOSED_SHARE_NAME}", f"smb://{host}/{_OSC_NAS_CLOSED_SHARE_NAME}", f"smb://{host}/home"]:
             out.append(f"{base}/{rel}" if rel else base)
     elif p.lower().startswith("smb://"):
         out.append(p)
@@ -710,7 +734,7 @@ def _osc_windows_unc_candidates(path_str: str) -> list[str]:
     """
     Return Windows UNC \\\\nas-host\\share\\... candidates for NAS browsing on Win.
 
-    Maps Y:\\lumi\\... and Z:\\lumi63181107\\... back to NAS shares.
+    Maps configured Y:/archive and Z:/active-share paths back to NAS shares.
     Used by web UI on Windows clients (Explorer / file:// fallback).
     """
     try:
@@ -721,21 +745,23 @@ def _osc_windows_unc_candidates(path_str: str) -> list[str]:
     candidates: list[str] = []
     norm = _osc_norm_path(path_str)
     np = norm.replace("/", "\\")
-    # Y:\lumi\... → \\nas-host\lumi\...
+    # Y:\<archive-share>\... → \\nas-host\<archive-share>\...
     if np.upper().startswith("Y:\\"):
         rel = np[3:]  # 去掉 Y:\
-        if rel.lower().startswith("lumi\\"):
-            sub = rel[5:]
-            candidates.append(f"\\\\{host}\\lumi\\{sub}")
-            candidates.append(f"\\\\{host}\\lumi\\lumi\\{sub}")
+        closed_prefix = _OSC_NAS_CLOSED_SHARE_NAME + "\\"
+        if rel.lower().startswith(closed_prefix.lower()):
+            sub = rel[len(closed_prefix):]
+            candidates.append(f"\\\\{host}\\{_OSC_NAS_CLOSED_SHARE_NAME}\\{sub}")
+            candidates.append(f"\\\\{host}\\{_OSC_NAS_CLOSED_SHARE_NAME}\\{_OSC_NAS_CLOSED_SHARE_NAME}\\{sub}")
         else:
             candidates.append(f"\\\\{host}\\{rel}")
-    # Z:\lumi63181107\... → \\nas-host\homes\lumi63181107\... + \\nas-host\SynologyDrive\...
+    # Z:\<active-share>\... → \\nas-host\homes\<user>\... + \\nas-host\SynologyDrive\...
     elif np.upper().startswith("Z:\\"):
         rel = np[3:]
-        if rel.lower().startswith("lumi63181107\\"):
-            sub = rel[len("lumi63181107\\"):]
-            candidates.append(f"\\\\{host}\\homes\\lumi63181107\\{sub}")
+        home_prefix = _OSC_NAS_HOME_USER + "\\"
+        if rel.lower().startswith(home_prefix.lower()):
+            sub = rel[len(home_prefix):]
+            candidates.append(f"\\\\{host}\\homes\\{_OSC_NAS_HOME_USER}\\{sub}")
             candidates.append(f"\\\\{host}\\SynologyDrive\\{sub}")
             candidates.append(f"\\\\{host}\\home\\{sub}")
         else:

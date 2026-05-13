@@ -21,14 +21,19 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+_SAMPLE_NAS_USER = (os.environ.get("MAGI_NAS_HOME_USER") or os.environ.get("MAGI_NAS_USER") or "home").strip().strip("/\\") or "home"
+_SAMPLE_ACTIVE_CIVIL_ROOT = os.environ.get(
+    "MAGI_OSC_DRAFT_SAMPLE_ROOT",
+    f"/Volumes/homes/{_SAMPLE_NAS_USER}/01_案件/一般案件/民事",
+).rstrip("/")
 
 DEFAULT_FINAL_PDF = (
-    "/Volumes/homes/lumi63181107/01_案件/一般案件/民事/"
+    _SAMPLE_ACTIVE_CIVIL_ROOT + "/"
     "2025-0028-鑫源企業社-一審-給付工程款/02_我方歷次書狀/"
     "20260112 民事聲請調查證據狀/20260114_民事聲請調查證據狀(鑫源企業社)清稿.pdf"
 )
 DEFAULT_FINAL_DOCX = (
-    "/Volumes/homes/lumi63181107/01_案件/一般案件/民事/"
+    _SAMPLE_ACTIVE_CIVIL_ROOT + "/"
     "2025-0028-鑫源企業社-一審-給付工程款/02_我方歷次書狀/"
     "20260112 民事聲請調查證據狀/20260114_民事聲請調查證據狀(鑫源企業社)清稿.docx"
 )
@@ -64,7 +69,7 @@ DEFAULT_SAMPLES = [
         "sample": "黃語玲 民事起訴狀",
         "title": "民事起訴狀",
         "final_pdf": (
-            "/Volumes/homes/lumi63181107/01_案件/一般案件/民事/"
+            _SAMPLE_ACTIVE_CIVIL_ROOT + "/"
             "2026-0019-黃語玲-一審-給付資遣費等/02_我方歷次書狀/"
             "20260312 民事起訴狀/20260317 民事起訴狀(黃語玲)清稿.pdf"
         ),
@@ -77,7 +82,7 @@ DEFAULT_SAMPLES = [
         "sample": "張國賢 民事起訴狀長篇",
         "title": "民事起訴狀",
         "final_pdf": (
-            "/Volumes/homes/lumi63181107/01_案件/一般案件/民事/"
+            _SAMPLE_ACTIVE_CIVIL_ROOT + "/"
             "2025-0122-張國賢-一審-確認決議無效/02_我方歷次書狀/"
             "20251204 民事起訴狀/20251212 民事起訴狀(張國賢)"
             "存底暨自行收納款項收據（聲請費新台幣3000元）.pdf"
@@ -91,7 +96,7 @@ DEFAULT_SAMPLES = [
         "sample": "謝光明 民事起訴暨聲請調解狀長篇",
         "title": "民事起訴暨聲請調解狀",
         "final_pdf": (
-            "/Volumes/homes/lumi63181107/01_案件/一般案件/民事/"
+            _SAMPLE_ACTIVE_CIVIL_ROOT + "/"
             "2025-0109-謝光明-一審-分割遺產/02_我方歷次書狀/"
             "20241225 民事起訴暨聲請調解狀/20241225 民事起訴暨聲請調解狀(謝光明)存底.pdf"
         ),
@@ -104,7 +109,7 @@ DEFAULT_SAMPLES = [
         "sample": "雷順祥 民事答辯暨聲請調解狀長篇",
         "title": "民事答辯暨聲請調解狀",
         "final_pdf": (
-            "/Volumes/homes/lumi63181107/01_案件/一般案件/民事/"
+            _SAMPLE_ACTIVE_CIVIL_ROOT + "/"
             "2025-0107-雷順祥-一審-侵權行為/02_我方歷次書狀/"
             "20240513 民事答辯暨聲請調解狀/"
             "20240513 113年度花簡字第103號民事答辯暨聲請調解狀(雷順祥)存底.pdf"

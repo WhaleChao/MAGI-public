@@ -74,7 +74,7 @@ def test_first_run_write_env_generates_local_secrets(tmp_path, monkeypatch):
 
 
 def test_first_run_public_mode_flags_private_markers(monkeypatch, tmp_path):
-    monkeypatch.setattr(first_run_setup, "_public_isolation_findings", lambda: ["skills/lawsnote/action.py"])
+    monkeypatch.setattr(first_run_setup, "_public_isolation_findings", lambda: ["skills/private-legal-source/action.py"])
 
     result = first_run_setup.build_first_run_checklist(public_mode=True, env_path=tmp_path / ".env")
 

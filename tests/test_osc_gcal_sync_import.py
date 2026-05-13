@@ -32,7 +32,7 @@ class _FakeCalendarListApi:
             {
                 "items": [
                     {"id": "primary", "summary": "主日曆"},
-                    {"id": "whalelawyer@gmail.com", "summary": "WHALELAWYER"},
+                    {"id": "team-calendar@example.com", "summary": "TEAM_CALENDAR"},
                 ]
             }
         )
@@ -45,14 +45,14 @@ class _FakeEventsApi:
     def list(self, **kwargs):
         self.calls.append(kwargs)
         calendar_id = kwargs.get("calendarId")
-        if calendar_id == "whalelawyer@gmail.com":
+        if calendar_id == "team-calendar@example.com":
             return _FakeRequest(
                 {
                     "items": [
                         {
                             "id": "whale-event-1",
                             "summary": "[2026-0001] 法扶開庭",
-                            "description": "WHALELAWYER shared calendar",
+                            "description": "team shared calendar",
                             "start": {"dateTime": "2026-05-20T10:00:00+08:00"},
                         }
                     ]
@@ -112,9 +112,9 @@ def test_import_gcal_events_reads_all_visible_calendars(monkeypatch):
 
     assert stats["imported"] == 1
     assert stats["import_skipped"] == 2
-    assert "whalelawyer@gmail.com" in stats["import_calendars"]
+    assert "team-calendar@example.com" in stats["import_calendars"]
     assert writes[0][2] == "開庭"
-    assert writes[0][6] == "gcal_import:whalelawyer@gmail.com"
+    assert writes[0][6] == "gcal_import:team-calendar@example.com"
     assert writes[0][7] == "whale-event-1"
     assert writes[0][0] == "2026-0001"
     assert writes[0][1] == "測試"

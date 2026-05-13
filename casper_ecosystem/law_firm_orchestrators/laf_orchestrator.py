@@ -1586,7 +1586,8 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
 
             if self.dry_run:
                 logger.info("  [DRY RUN] Would create folder for %s", client_name)
-                db_path = "Z:/lumi63181107/01_案件/法扶案件/" + f"{case_type}/{case_number or client_name}"
+                active_share = (os.environ.get("MAGI_NAS_HOME_USER") or os.environ.get("MAGI_NAS_USER") or "home").strip().strip("/\\") or "home"
+                db_path = f"Z:/{active_share}/01_案件/法扶案件/" + f"{case_type}/{case_number or client_name}"
             else:
                 db_path = self.folder_builder.create_case_folder(folder_info)
 
@@ -7431,8 +7432,8 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         if branch:
             notes += f"分會: {branch}\n"
 
-        # 承辦律師：消費者債務清理案件預設「林稚芳」，其餘預設「喬政翔」（不加「律師」尾綴）
-        default_lawyer = '林稚芳' if case_type == '消費者債務清理' else '喬政翔'
+        # 承辦律師：公開版使用設定或範例值，正式環境請在設定檔覆寫。
+        default_lawyer = os.environ.get('MAGI_PUBLIC_LAWYER_NAME', '範例律師')
 
         try:
             self.db.execute_write(

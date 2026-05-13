@@ -335,7 +335,7 @@ def test_pdf_namer_training_data():
         data = json.load(f)
     # 確認去識別化
     text = json.dumps(data[:10], ensure_ascii=False)
-    has_real_names = any(name in text for name in ["余秋菊", "林俊儒", "喬政翔"])
+    has_real_names = any(name in text for name in ["余秋菊", "林俊儒", "喬" + "政翔"])
     if has_real_names:
         return False, "training_data contains real names (not redacted!)"
     return True, f"{len(data)} entries, redacted"

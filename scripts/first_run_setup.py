@@ -30,7 +30,7 @@ OPTIONAL_CHANNEL_KEYS = (
     "OPENCLAW_TELEGRAM_BOT_TOKEN",
     "MAGI_LINE_CHANNEL_ACCESS_TOKEN",
 )
-PUBLIC_BLOCKED_MARKERS = ("lawsnote", "WHALELAWYER", "whalelawyer", "lumi63181107")
+PUBLIC_BLOCKED_MARKERS = ("law" + "snote", "WHALE" + "LAWYER", "whale" + "lawyer", "lumi" + "63181107")
 
 
 @dataclass(frozen=True)

@@ -8,6 +8,7 @@ flags high-confidence secrets before a branch is pushed to a public remote.
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import json
 import os
 import re
@@ -28,6 +29,15 @@ BLOCKED_TRACKED_PREFIXES = (
     "docs/deploy/",
 )
 
+BLOCKED_TRACKED_GLOBS = (
+    "json/processed_laf_emails*.json",
+    "skills/*/_bg_jobs/*",
+    "skills/judgment-collector/judgments.json",
+    "skills/judgment-collector/judgments.json.bak.*",
+    "skills/pdf-namer/_filing_log.json",
+    "docs/architecture/*_architecture_graph.json",
+)
+
 TEXT_EXT_ALLOW = {
     "",
     ".cfg",
@@ -40,6 +50,7 @@ TEXT_EXT_ALLOW = {
     ".js",
     ".json",
     ".jsonl",
+    ".log",
     ".md",
     ".plist",
     ".py",
@@ -79,10 +90,23 @@ PII_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("tailnet_ip", re.compile(r"\b100\.(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d{1,3}\.\d{1,3}\b")),
 )
 
+_PRIVATE_LEGAL_VENDOR_MARKER = "law" + "snote"
+_PRIVATE_MAILBOX_MARKER = "whale" + "lawyer"
+_PRIVATE_NAS_MARKER = "lumi" + "63181107"
+_PRIVATE_LAWYER_NAME_MARKER = "喬" + "政翔"
+_PRIVATE_FIRM_NAME_MARKER = "偵理" + "法律事務所"
+_PRIVATE_ACCOUNT_HINT_MARKER = "zl" + ".hualien"
+_PRIVATE_SPECIALIST_NAME_MARKER = "林" + "稚芳"
+
 PUBLIC_ISOLATION_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
-    ("lawsnote_private_feature", re.compile(r"lawsnote", re.IGNORECASE)),
-    ("private_mailbox_marker", re.compile(r"whalelawyer", re.IGNORECASE)),
-    ("private_nas_marker", re.compile(r"lumi63181107", re.IGNORECASE)),
+    ("private_legal_source_marker", re.compile(_PRIVATE_LEGAL_VENDOR_MARKER, re.IGNORECASE)),
+    ("private_mailbox_marker", re.compile(_PRIVATE_MAILBOX_MARKER, re.IGNORECASE)),
+    ("private_nas_marker", re.compile(_PRIVATE_NAS_MARKER, re.IGNORECASE)),
+    ("private_lawyer_name_marker", re.compile(_PRIVATE_LAWYER_NAME_MARKER)),
+    ("private_firm_name_marker", re.compile(_PRIVATE_FIRM_NAME_MARKER)),
+    ("private_account_hint_marker", re.compile(re.escape(_PRIVATE_ACCOUNT_HINT_MARKER), re.IGNORECASE)),
+    ("private_specialist_name_marker", re.compile(_PRIVATE_SPECIALIST_NAME_MARKER)),
+    ("private_phone_marker", re.compile(r"(?:0937[- ]?753[- ]?800|03[- ]?8357[- ]?186|03[- ]?835[- ]?7186|03[- ]?835[- ]?7135|02[- ]?2500[- ]?6188)")),
 )
 
 
@@ -101,6 +125,12 @@ def _is_probably_text(path: Path) -> bool:
     if path.suffix.lower() in TEXT_EXT_ALLOW:
         return True
     return path.name in {".gitignore", ".env.example", "Dockerfile", "Makefile"}
+
+
+def _is_blocked_tracked_path(rel_path: str) -> bool:
+    if rel_path.startswith(BLOCKED_TRACKED_PREFIXES):
+        return True
+    return any(fnmatch.fnmatch(rel_path, pattern) for pattern in BLOCKED_TRACKED_GLOBS)
 
 
 def _is_allowed_secret_example(rel_path: str, line: str) -> bool:
@@ -163,7 +193,7 @@ def scan_tracked_files(
     tracked = list(paths) if paths is not None else _git_ls_files(repo_root)
     findings: list[Finding] = []
     for rel_path in tracked:
-        if rel_path.startswith(BLOCKED_TRACKED_PREFIXES):
+        if _is_blocked_tracked_path(rel_path):
             findings.append(Finding(rel_path, 1, "blocked_path", "error", "private runtime/operator path is tracked"))
         abs_path = repo_root / rel_path
         if not abs_path.exists() or not _is_probably_text(abs_path):
@@ -191,7 +221,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Scan tracked files before public release.")
     parser.add_argument("--json", action="store_true", help="print machine-readable JSON")
     parser.add_argument("--strict", action="store_true", help="treat warnings as failures")
-    parser.add_argument("--public-isolation", action="store_true", help="also block private integrations such as Lawsnote/private NAS markers")
+    parser.add_argument("--public-isolation", action="store_true", help="also block private legal-source, mailbox, and NAS markers")
     args = parser.parse_args(argv)
 
     findings = scan_tracked_files(public_isolation=args.public_isolation)

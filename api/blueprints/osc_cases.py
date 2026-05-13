@@ -5690,8 +5690,8 @@ def osc_forms_export_api():
 
         config = {}
         try:
-            config['company_name'] = '偵理法律事務所'
-            config['default_lawyer'] = '喬政翔'
+            config['company_name'] = os.environ.get("MAGI_PUBLIC_FIRM_NAME", "範例法律事務所")
+            config['default_lawyer'] = os.environ.get("MAGI_PUBLIC_LAWYER_NAME", "範例律師")
         except Exception:
             _log.debug("silent-catch config defaults", exc_info=True)
 
@@ -7626,9 +7626,9 @@ def _osc_build_quotation_pdf(row: dict) -> bytes:
     company_name = (
         _osc_get_setting_value("company_name", "")
         or _osc_get_setting_value("firm_name", "")
-        or "偵理法律事務所"
+        or os.environ.get("MAGI_PUBLIC_FIRM_NAME", "範例法律事務所")
     )
-    company_name_en = _osc_get_setting_value("company_name_en", "") or "ZHENLI LAW FIRM"
+    company_name_en = _osc_get_setting_value("company_name_en", "") or os.environ.get("MAGI_PUBLIC_FIRM_NAME_EN", "MAGI PUBLIC TEMPLATE")
     logo_path = _osc_existing_resource_path(
         "logo_path",
         "logo.png",
@@ -7677,9 +7677,9 @@ def _osc_build_quotation_pdf(row: dict) -> bytes:
     phone = str(row.get("phone") or "")
     email = str(row.get("email") or "")
     address = str(row.get("address") or "")
-    lawyer = str(extended.get("lawyer") or _osc_get_setting_value("default_lawyer", "") or "喬政翔律師")
-    specialist = str(extended.get("specialist") or _osc_get_setting_value("default_specialist", "") or "林稚芳法務專員")
-    specialist_phone = str(extended.get("specialist_phone") or _osc_get_setting_value("specialist_phone", "") or "03-8357-186；0937-753-800")
+    lawyer = str(extended.get("lawyer") or _osc_get_setting_value("default_lawyer", "") or os.environ.get("MAGI_PUBLIC_LAWYER_NAME", "範例律師"))
+    specialist = str(extended.get("specialist") or _osc_get_setting_value("default_specialist", "") or "法務專員")
+    specialist_phone = str(extended.get("specialist_phone") or _osc_get_setting_value("specialist_phone", "") or os.environ.get("MAGI_PUBLIC_CONTACT_PHONE", ""))
 
     def _fmt_date(value: object) -> str:
         text = str(value or "").strip()

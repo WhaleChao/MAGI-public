@@ -1337,7 +1337,7 @@
       "description": "由 AI 範本學習 (任務 B) 自動建立"
     },
     {
-      "doc_type": "高等行政訴訟庭通知書_喬政翔律師",
+      "doc_type": "高等行政訴訟庭通知書_範例律師",
       "filename_template": "{date} {doc_title}{case_no}{doc_type}({client_name}；{action_item})",
       "archive_destination_type": "法院通知或程序裁定",
       "description": "由 AI 範本學習 (任務 B) 自動建立"

@@ -160,7 +160,7 @@ def test_auto_archive_laf_final_closed_moves_only_exact_folder(tmp_path, monkeyp
     from api.blueprints import osc_cases as mod
 
     source = tmp_path / "01_案件" / "法扶案件" / "刑事" / "2025-0010-劉信義-一審-殺人"
-    source_mirror = tmp_path / "Volumes" / "homes" / "lumi63181107" / "01_案件" / "法扶案件" / "刑事" / source.name
+    source_mirror = tmp_path / "Volumes" / "homes" / "home" / "01_案件" / "法扶案件" / "刑事" / source.name
     other_same_client = tmp_path / "01_案件" / "法扶案件" / "刑事" / "2026-0028-劉信義-一審-殺人"
     source.mkdir(parents=True)
     source_mirror.mkdir(parents=True)

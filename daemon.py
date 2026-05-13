@@ -1827,7 +1827,8 @@ if __name__ == "__main__":
             _nas_watch_enabled = str(os.environ.get("MAGI_ENABLE_NAS_FSWATCHER", "")).strip().lower() in {
                 "1", "true", "yes", "on",
             }
-            _nas_cases = "/Volumes/homes/lumi63181107/01_案件"
+            _nas_home_user = (os.environ.get("MAGI_NAS_HOME_USER") or os.environ.get("MAGI_NAS_USER") or "home").strip().strip("/\\") or "home"
+            _nas_cases = f"/Volumes/homes/{_nas_home_user}/01_案件"
             if _nas_watch_enabled and os.path.isdir(_nas_cases):
                 _watch_folders.append(_nas_cases)
             elif os.path.isdir(_nas_cases):

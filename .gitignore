@@ -221,9 +221,13 @@ skills/ops/openclaw_updater.py
 scripts/ops/toggle_codex_distributed_mode.py
 scripts/ops/check_codex_distributed_health.py
 
-# Lawsnote（商業授權，不可公開）
-skills/lawsnote*/
-**/lawsnote*
+# 私有實務見解來源（商業授權，不可公開）
+skills/private-legal-source*/
+**/private-legal-source*
+**/private_legal_source*
+json/processed_laf_emails*.json
+skills/pdf-namer/_filing_log.json
+docs/architecture/*_architecture_graph.json
 
 # OpenClawOffice
 OpenClawOffice/

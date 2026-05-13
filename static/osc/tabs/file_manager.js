@@ -788,7 +788,7 @@
 
     async function setRoot(basePath, meta) {
         if (!basePath) {
-            setStatus('請輸入 NAS 案件資料夾路徑（例：Z:\\lumi63181107\\01_案件\\...）', true);
+            setStatus('請輸入 NAS 案件資料夾路徑（例：Z:\\<active-share>\\01_案件\\...）', true);
             return;
         }
         FM.navSeq++;

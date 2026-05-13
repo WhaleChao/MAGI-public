@@ -1133,7 +1133,7 @@ def _to_mac_path(folder: str) -> str:
         return ""
     f = folder.replace("\\", "/")
     if f.startswith("Z:") or f.startswith("z:"):
-        # Z:/lumi63181107/01_案件/法扶案件/SomeFolder → NAS_CASE_ROOT/法扶案件/SomeFolder
+        # Z:/<active-share>/01_案件/法扶案件/SomeFolder → NAS_CASE_ROOT/法扶案件/SomeFolder
         parts = f.split("/")
         for i, p in enumerate(parts):
             if p == "01_案件":

@@ -4,6 +4,8 @@ from datetime import datetime
 import os
 
 _MAGI_ROOT = os.path.abspath(os.path.dirname(os.path.dirname(__file__)))
+_PUBLIC_FIRM_NAME = os.environ.get("MAGI_PUBLIC_FIRM_NAME", "範例法律事務所")
+_PUBLIC_LAWYER_NAME = os.environ.get("MAGI_PUBLIC_LAWYER_NAME", "範例律師")
 
 try:
     from docx import Document
@@ -32,7 +34,7 @@ def generate_receipt(data, fee_type, config):
     for prop in ['top_margin', 'bottom_margin', 'left_margin', 'right_margin']:
         setattr(section, prop, Cm(1.5))
         
-    company_name = config.get('company_name') or '偵理法律事務所'
+    company_name = config.get('company_name') or _PUBLIC_FIRM_NAME
     company_address = config.get('company_address_hl') or ''
     
     p = doc.add_paragraph()
@@ -119,11 +121,11 @@ def generate_poa(data, case_type, role, config):
         
     p_client_cells[2].text = "\n".join(details_text)
     
-    company_name = config.get('company_name') or '偵理法律事務所'
+    company_name = config.get('company_name') or _PUBLIC_FIRM_NAME
     company_address = config.get('company_address_hl') or ''
     company_phone = config.get('company_phone') or ''
     company_fax = config.get('company_fax') or ''
-    default_lawyer = config.get('default_lawyer') or '喬政翔'
+    default_lawyer = config.get('default_lawyer') or _PUBLIC_LAWYER_NAME
     
     p_agent_cells = table.rows[2].cells
     p_agent_cells[0].text = "受任人"
@@ -183,8 +185,8 @@ def generate_engagement_agreement(data, config):
     for prop in ['top_margin', 'bottom_margin', 'left_margin', 'right_margin']:
         setattr(section, prop, Cm(2))
         
-    company_name = config.get('company_name') or '偵理法律事務所'
-    default_lawyer = config.get('default_lawyer') or '喬政翔'
+    company_name = config.get('company_name') or _PUBLIC_FIRM_NAME
+    default_lawyer = config.get('default_lawyer') or _PUBLIC_LAWYER_NAME
     company_phone = config.get('company_phone') or ''
     company_email = config.get('company_email') or ''
     company_address = config.get('company_address_hl') or ''

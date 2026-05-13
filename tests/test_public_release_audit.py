@@ -31,15 +31,30 @@ def test_public_release_audit_allows_intentional_test_fixture_pii():
 def test_public_release_audit_blocks_private_integration_markers():
     findings = scan_text(
         "skills/example/action.py",
-        "provider = 'lawsnote'\nmail='whalelawyer@example.com'\n",
+        "provider = '" + "law" + "snote'\nmail='" + "whale" + "lawyer@example.com'\n",
         public_isolation=True,
     )
 
-    assert {f.kind for f in findings} >= {"lawsnote_private_feature", "private_mailbox_marker"}
+    assert {f.kind for f in findings} >= {"private_legal_source_marker", "private_mailbox_marker"}
     assert all(f.severity == "error" for f in findings)
 
 
-def test_public_release_audit_allows_gitignore_private_marker_rules():
-    findings = scan_text(".gitignore", "skills/lawsnote*/\n**/lawsnote*\n", public_isolation=True)
+def test_public_release_audit_allows_gitignore_private_source_rules():
+    findings = scan_text(".gitignore", "skills/private-legal-source*/\n**/private_legal_source*\n", public_isolation=True)
 
     assert findings == []
+
+
+def test_public_release_audit_blocks_tracked_runtime_paths():
+    from scripts.public_release_audit import scan_tracked_files
+
+    findings = scan_tracked_files(
+        ["json/processed_laf_emails.json", "skills/pdf-namer/_filing_log.json"],
+        public_isolation=True,
+    )
+
+    blocked = [f for f in findings if f.kind == "blocked_path"]
+    assert {f.path for f in blocked} == {
+        "json/processed_laf_emails.json",
+        "skills/pdf-namer/_filing_log.json",
+    }

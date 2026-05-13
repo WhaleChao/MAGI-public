@@ -3910,7 +3910,7 @@ def run_nightly(run_dir: str) -> Dict[str, Any]:
     #       走獨立 thread + _run_cmd，不經此處，絕不延後。
     #       judicial_api_nightly_process（摘要整理）已有手動 _user_active_defer，不需列入。
     _LLM_HEAVY_STEPS = {
-        "judgment_daily_crawl",         # LLM 摘要（Lawsnote 爬取+摘要）
+        "judgment_daily_crawl",         # LLM 摘要（判決來源爬取+摘要）
         "weekend_insight_repair",       # LLM 摘要修復
         "writing_style_learning",       # LLM 風格分析
         "statutes_vdb_update",          # oMLX embedding

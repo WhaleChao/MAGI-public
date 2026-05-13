@@ -3355,7 +3355,7 @@ def _normalize_title_for_match(title: str) -> str:
 
 def _extract_case_markers(text: str) -> set[str]:
     """
-    從標題中抽取案號 marker，用於 Lawsnote <-> 司法院結果對齊。
+    從標題中抽取案號 marker，用於外部來源與司法院結果對齊。
     """
     s = str(text or "")
     if not s:
@@ -3387,7 +3387,7 @@ def _build_judicial_fulltext_index(
     route_key: str,
 ) -> dict:
     """
-    建立司法院全文候選索引，供 Lawsnote 無全文時逐筆回補。
+    建立司法院全文候選索引，供外部來源無全文時逐筆回補。
     """
     query = str(query_hint or "").strip() or str(case_reason or "").strip()
     if not query:
@@ -3647,7 +3647,9 @@ def collect(
                     full_text = f.read()
             except Exception:
                 logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 3075, exc_info=True)
-        if (not full_text) and (search_source == "lawsnote") and judicial_fill_index.get("success"):
+        private_source_key = (_env("MAGI_PRIVATE_LEGAL_SOURCE_KEY", "") or "").strip().lower()
+        uses_private_source = bool(private_source_key and search_source == private_source_key)
+        if (not full_text) and uses_private_source and judicial_fill_index.get("success"):
             matched = _pick_best_judicial_text_for_title(title, judicial_fill_index)
             alt_path = str(matched.get("text_path") or "").strip()
             if alt_path and os.path.exists(alt_path):
@@ -3661,9 +3663,9 @@ def collect(
                     logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 3087, exc_info=True)
         _elapsed = _time.monotonic() - _collect_start
         _remaining = max(0, int(timeout_sec) - _elapsed)
-        if (not full_text) and (search_source == "lawsnote") and not _skip_jirs and not _skip_fill and _remaining > 60:
+        if (not full_text) and uses_private_source and not _skip_jirs and not _skip_fill and _remaining > 60:
             # 若預先索引沒命中，再以單筆標題/案號做一次小範圍補抓。
-            # 避免 Lawsnote 標題與案由廣搜結果偏差導致補全文失敗。
+            # 避免外部來源標題與案由廣搜結果偏差導致補全文失敗。
             # 只在剩餘時間 > 200s 時嘗試，避免 timeout 級聯。
             try:
                 marker_terms = sorted(_extract_case_markers(title), key=lambda x: len(x), reverse=True)

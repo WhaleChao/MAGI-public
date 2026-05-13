@@ -26,4 +26,4 @@ def test_build_full_case_path_uses_civil_folder_for_attached_civil_laf_case():
 def test_cloudstorage_homes_path_also_maps_to_smb_volume_candidate():
     path = "/Users/ai/Library/CloudStorage/SynologyDrive-homes/01_案件/法扶案件/民事/測試案/卷證.pdf"
     candidates = local_synology_path_candidates(path)
-    assert "/Volumes/homes/lumi63181107/01_案件/法扶案件/民事/測試案/卷證.pdf" in candidates
+    assert "/Volumes/homes/home/01_案件/法扶案件/民事/測試案/卷證.pdf" in candidates

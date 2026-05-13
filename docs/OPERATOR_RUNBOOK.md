@@ -257,7 +257,7 @@ git status --short
 - `runtime/supplement_cache/`
 - `docs/deploy/`
 
-若 `public_release_audit.py --strict` 回報 error 或 warning，不得 push。公開推送前請使用 `--public-isolation --strict`；公開版隔離會阻擋 Lawsnote 私有整合、私人信箱與私人 NAS 標記，`.gitignore` 中保留忽略規則不算違規。公開安裝版本若不含私有 DB，可另用 `--skip-db` 做安裝性檢查，但正式環境不得跳過 DB / NAS / channel live gate。
+若 `public_release_audit.py --strict` 回報 error 或 warning，不得 push。公開推送前請使用 `--public-isolation --strict`；公開版隔離會阻擋私有實務見解來源整合、私人信箱與私人 NAS 標記，`.gitignore` 中保留忽略規則不算違規。公開安裝版本若不含私有 DB，可另用 `--skip-db` 做安裝性檢查，但正式環境不得跳過 DB / NAS / channel live gate。
 
 ### 6B. Google Calendar / 法扶計數檢查
 

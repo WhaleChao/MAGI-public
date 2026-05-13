@@ -232,7 +232,7 @@ def main() -> int:
 
     # Key by (calendar_id, dedup_key) so genuine intra-calendar duplicates aren't
     # merged with cross-calendar shared events (which produce the same dedup_key
-    # across whalelawyer / zl.hualien but are not real duplicates to delete).
+    # across multiple shared calendars but are not real duplicates to delete).
     groups: Dict[Tuple[str, str], List[Dict[str, Any]]] = {}
     total_events = 0
     page_size = max(50, min(args.limit_per_calendar, 2500))
@@ -377,4 +377,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

@@ -23,7 +23,7 @@ from typing import Any, Iterable
 
 DEFAULT_SPREADSHEET_ID = os.environ.get("MAGI_ACCOUNTING_SHEET_ID", "").strip()
 DEFAULT_GID = int(os.environ.get("MAGI_ACCOUNTING_SHEET_GID", "1995190935") or "1995190935")
-DEFAULT_ACCOUNT_HINT = "zl.hualien"
+DEFAULT_ACCOUNT_HINT = os.environ.get("MAGI_ACCOUNTING_GOOGLE_ACCOUNT_HINT", "primary").strip() or "primary"
 SKIP_OWNER_MARKERS = ("俊儒",)
 SHEETS_READONLY_SCOPE = "https://www.googleapis.com/auth/spreadsheets.readonly"
 DRIVE_READONLY_SCOPE = "https://www.googleapis.com/auth/drive.readonly"
@@ -511,7 +511,7 @@ def fetch_sheet_values(
                 f"啟用網址：{enable_url}。啟用後重新執行 scripts/import_accounting_sheet.py --auth --month YYYY-MM。"
             ) from exc
         if status in {401, 403}:
-            raise AccountingImportError("Google Sheet 讀取權限不足；請確認用 zl.hualien 授權且該帳號可讀此表。") from exc
+            raise AccountingImportError("Google Sheet 讀取權限不足；請確認已用指定 Google 帳號授權且該帳號可讀此表。") from exc
         if status == 400 and "Office file" in message:
             return fetch_office_spreadsheet_values(
                 spreadsheet_id=spreadsheet_id,
@@ -540,7 +540,7 @@ def fetch_sheet_values(
     except HttpError as exc:
         status = getattr(getattr(exc, "resp", None), "status", None)
         if status in {401, 403}:
-            raise AccountingImportError("Google Sheet 讀取權限不足；請確認用 zl.hualien 授權且該帳號可讀此表。") from exc
+            raise AccountingImportError("Google Sheet 讀取權限不足；請確認已用指定 Google 帳號授權且該帳號可讀此表。") from exc
         raise
     return result.get("values", [])
 

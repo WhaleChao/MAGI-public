@@ -40,7 +40,7 @@ This is the remaining work list before MAGI can be treated as an autonomous, low
 
 5. Public release is not yet a clean artifact.
    - Public repo has a `main`, but the precise LAF/archive mechanism is not yet ported and verified there.
-   - Fix: migrate only generic OSC archive hardening, omit secrets/private data/LAWSNOTE-specific features, then run `scripts/public_release_audit.py`.
+   - Fix: migrate only generic OSC archive hardening, omit secrets/private data/private legal-source features, then run `scripts/public_release_audit.py`.
    - Acceptance: public branch passes public audit and archive tests, then push to the public repo.
 
 ## P1 conflicts
@@ -143,7 +143,7 @@ This is the remaining work list before MAGI can be treated as an autonomous, low
 ### Round 5 - Public release
 
 - Apply only generic fixes to `MAGI-public`.
-- Remove private data, keys, and LAWSNOTE-dependent surfaces.
+- Remove private data, keys, and private legal-source dependent surfaces.
 - Run `scripts/public_release_audit.py`.
 - Run clean install smoke test.
 - Push public branch only after audit is green.
@@ -158,4 +158,3 @@ This is the remaining work list before MAGI can be treated as an autonomous, low
   - no stale model service,
   - NAS paths stay mounted and deduped,
   - core route smoke has no WARN/FAIL.
-

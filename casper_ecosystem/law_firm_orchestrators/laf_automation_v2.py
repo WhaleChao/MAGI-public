@@ -823,8 +823,8 @@ class LAFCaseTypeParser:
             info.needs_download = False  # 不需從系統下載
             return info
 
-        # 4. 審核回報格式：通知喬政翔律師回報(結案|附條件)...
-        # 範例：通知喬政翔律師回報(結案)1140905-K-001-陳瀚-刑事二審辯護-詐欺等之資料，業經分會轉入系統
+        # 4. 審核回報格式：通知範例律師回報(結案|附條件)...
+        # 範例：通知範例律師回報(結案)1140905-K-001-當事人-刑事二審辯護-詐欺等之資料，業經分會轉入系統
         report_result_match = re.search(
             r'回報[（(](結案|附條件)[)）].*?(\d{7}-[A-Z]-\d{3})(.*)$',
             subject,
@@ -9348,7 +9348,8 @@ class OSCCaseCreator:
                 folder_path_for_db = folder_path_for_db.replace('K:/', 'Z:\\').replace('K:\\', 'Z:\\').replace('/', '\\')
             elif sys.platform == 'darwin' and 'SynologyDrive' in folder_path_for_db:
                 parts = folder_path_for_db.split('SynologyDrive', 1)
-                folder_path_for_db = 'Z:\\lumi63181107' + parts[1]
+                active_share = (os.environ.get('MAGI_NAS_HOME_USER') or os.environ.get('MAGI_NAS_USER') or 'home').strip().strip('/\\') or 'home'
+                folder_path_for_db = f'Z:\\{active_share}' + parts[1]
                 folder_path_for_db = folder_path_for_db.replace('/', '\\')
             
             # 10. 【修正】使用 SQL 直接插入 DB 記錄
@@ -10941,9 +10942,10 @@ class LAFAutomationManager:
             if db_folder_path.startswith('K:/') or db_folder_path.startswith('K:\\'):
                 db_folder_path = db_folder_path.replace('K:/', 'Z:\\').replace('K:\\', 'Z:\\').replace('/', '\\')
             elif sys.platform == 'darwin' and 'SynologyDrive' in db_folder_path:
-                # 把 /Users/xxx/SynologyDrive/... 轉回 Z:\lumi63181107\...
+                # 把 /Users/xxx/SynologyDrive/... 轉回 Z:\<active-share>\...
                 parts = db_folder_path.split('SynologyDrive', 1)
-                db_folder_path = 'Z:\\lumi63181107' + parts[1]
+                active_share = (os.environ.get('MAGI_NAS_HOME_USER') or os.environ.get('MAGI_NAS_USER') or 'home').strip().strip('/\\') or 'home'
+                db_folder_path = f'Z:\\{active_share}' + parts[1]
                 db_folder_path = db_folder_path.replace('/', '\\')
 
             self.log(f"     [DEBUG DB_FOLDER] {db_folder_path}")

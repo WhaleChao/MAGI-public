@@ -105,11 +105,11 @@ class LAFFolderBuilder:
         for m in mappings:
             comment = m.get("comment", "")
             if "進行中" in comment or "Active" in comment:
-                self.windows_base = m.get("windows_prefix", "")  # Z:/lumi63181107/01_案件
+                self.windows_base = m.get("windows_prefix", "")  # Z:/<active-share>/01_案件
                 self.mac_smb_base = m.get("mac_smb_prefix", "")  # smb://MAGI_NAS_HOST/homes/...
 
         # Derive local mount path from smb path
-        # smb://MAGI_NAS_HOST/homes/lumi63181107/01_案件 → /Users/ai/SynologyDrive/01_案件
+        # smb://MAGI_NAS_HOST/homes/<user>/01_案件 → /Users/ai/SynologyDrive/01_案件
         # But the actual local path depends on how the user has mounted it.
         # We'll try a few common patterns:
         self._detect_local_mount()
@@ -141,7 +141,8 @@ class LAFFolderBuilder:
                         _nas_ip = resolve_nas_host()
                     except Exception:
                         _nas_ip = os.environ.get("MAGI_NAS_HOST", "")
-                    if (_nas_ip and _nas_ip in line) or "lumi63181107" in line:
+                    active_share = (os.environ.get("MAGI_NAS_HOME_USER") or os.environ.get("MAGI_NAS_USER") or "home").strip().strip("/\\") or "home"
+                    if (_nas_ip and _nas_ip in line) or (active_share and active_share in line):
                         # Extract mount point
                         parts = line.split(" on ")
                         if len(parts) >= 2:
@@ -199,7 +200,7 @@ class LAFFolderBuilder:
     def get_local_path_from_canonical(self, canonical_path: str) -> str:
         """
         Convert Z: canonical path to local macOS path.
-        Z:/lumi63181107/01_案件/法扶案件/... → /Users/ai/SynologyDrive/01_案件/法扶案件/...
+        Z:/<active-share>/01_案件/法扶案件/... → /Users/ai/SynologyDrive/01_案件/法扶案件/...
         """
         return translate_case_path_to_local(canonical_path)
 
@@ -307,7 +308,7 @@ class LAFFolderBuilder:
     def _local_to_canonical(self, local_path: str) -> str:
         """
         Convert local macOS path to canonical Z: path for DB.
-        /Users/ai/SynologyDrive/01_案件/法扶案件/... → Z:/lumi63181107/01_案件/法扶案件/...
+        /Users/ai/SynologyDrive/01_案件/法扶案件/... → Z:/<active-share>/01_案件/法扶案件/...
         """
         # 實驗環境：直接回傳本機路徑（避免寫入 DB 的 Z: 路徑）
         if self.experiment_base_dir:

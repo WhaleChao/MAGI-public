@@ -75,7 +75,7 @@ def test_accounting_import_api_preview(monkeypatch):
     def fake_run_import(**kwargs):
         assert kwargs["month"] == "2026-05"
         assert kwargs["dry_run"] is True
-        assert kwargs["account_hint"] == "zl.hualien"
+        assert kwargs["account_hint"] == "primary"
         return {"ok": True, "month": "2026-05", "importable_count": 1}
 
     monkeypatch.setattr("api.osc.accounting_sheet_import.run_import", fake_run_import)

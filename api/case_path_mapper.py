@@ -12,6 +12,32 @@ from api.runtime_paths import get_config_path
 _logger = logging.getLogger("magi.case_path_mapper")
 
 _HOME = Path.home()
+_NAS_HOME_USER = (
+    os.environ.get("MAGI_NAS_HOME_USER")
+    or os.environ.get("MAGI_NAS_USER")
+    or "home"
+).strip().strip("/\\") or "home"
+_NAS_CLOSED_SHARE_NAME = (
+    os.environ.get("MAGI_NAS_CLOSED_SHARE_NAME")
+    or os.environ.get("MAGI_NAS_ARCHIVE_SHARE")
+    or "archive"
+).strip().strip("/\\") or "archive"
+_CANONICAL_ACTIVE_SHARE_PREFIX = (
+    os.environ.get("MAGI_CANONICAL_ACTIVE_SHARE_PREFIX")
+    or f"Z:/{_NAS_HOME_USER}"
+).replace("\\", "/").rstrip("/")
+_CANONICAL_CLOSED_SHARE_PREFIX = (
+    os.environ.get("MAGI_CANONICAL_CLOSED_SHARE_PREFIX")
+    or "Y:/archive"
+).replace("\\", "/").rstrip("/")
+_CANONICAL_ACTIVE_CASE_PREFIX = (
+    os.environ.get("MAGI_CANONICAL_ACTIVE_CASE_PREFIX")
+    or f"{_CANONICAL_ACTIVE_SHARE_PREFIX}/01_案件"
+).replace("\\", "/").rstrip("/")
+_CANONICAL_CLOSED_CASE_PREFIX = (
+    os.environ.get("MAGI_CANONICAL_CLOSED_CASE_PREFIX")
+    or f"{_CANONICAL_CLOSED_SHARE_PREFIX}/03_工作資料/10_結案"
+).replace("\\", "/").rstrip("/")
 
 
 def _is_dir_accessible(path: str) -> bool:
@@ -52,8 +78,8 @@ def _discover_volume(base: str, subdir: str = "") -> str:
     """動態偵測 SMB 掛載路徑（macOS 可能掛成 -1, -2 等後綴）。
 
     Args:
-        base: 預設掛載名稱，如 "homes" 或 "lumi"
-        subdir: 掛載點下的子目錄，如 "lumi63181107" 或 "lumi"
+        base: 預設掛載名稱，如 "homes" 或 archive share
+        subdir: 掛載點下的子目錄，例如使用者 home 目錄或共享資料夾名
     Returns:
         實際可存取的完整路徑，或 canonical 路徑供上層判斷
     """
@@ -78,7 +104,7 @@ _DEFAULT_ACTIVE_SHARE_ROOTS = [
     str(_HOME / "Library/CloudStorage/SynologyDrive-homes"),
     str(_HOME / "SynologyDrive/homes"),
     str(_HOME / "SynologyDrive"),
-    _discover_volume("homes", "lumi63181107"),
+    _discover_volume("homes", _NAS_HOME_USER),
 ]
 
 
@@ -93,9 +119,9 @@ def _probe_external_closed_roots() -> list[str]:
     動態掃描所有可能的結案歸檔位置，按優先序返回：
       1. MAGI_CLOSED_CASE_ROOT env var（顯式指定）
       2. MAGI_CLOSED_VOLUME env var（只指定 /Volumes/<名稱>）
-      3. 本機/NAS 上任一含 lumi/03_工作資料/10_結案 的掛載點（自動掃 /Volumes/）
+      3. 本機/NAS 上任一含 <archive-share>/03_工作資料/10_結案 的掛載點（自動掃 /Volumes/）
       4. SynologyDrive 雲同步變體
-      5. NAS lumi share 的 canonical/-1/-2 suffix
+      5. NAS archive share 的 canonical/-1/-2 suffix
     每個候選都經 _is_dir_accessible 驗證（2 秒 timeout），避免 stale SMB 誤判。
     """
     candidates: list[str] = []
@@ -108,7 +134,7 @@ def _probe_external_closed_roots() -> list[str]:
     if env_vol:
         candidates.append(os.path.join(
             env_vol if env_vol.startswith("/Volumes/") else f"/Volumes/{env_vol}",
-            "lumi",
+            _NAS_CLOSED_SHARE_NAME,
         ))
 
     # 2. 自動掃 /Volumes/ — 跳過系統 volume 和 homes share（防止誤判）
@@ -116,7 +142,7 @@ def _probe_external_closed_roots() -> list[str]:
         for entry in sorted(os.listdir("/Volumes")):
             if entry in ("Macintosh HD", "homes", "homes-1", "homes-2"):
                 continue
-            root = os.path.join("/Volumes", entry, "lumi")
+            root = os.path.join("/Volumes", entry, _NAS_CLOSED_SHARE_NAME)
             probe = os.path.join(root, "03_工作資料", "10_結案")
             if _is_dir_accessible(probe):
                 candidates.append(root)
@@ -125,17 +151,17 @@ def _probe_external_closed_roots() -> list[str]:
 
     # 3. SynologyDrive 雲同步變體
     synology_variants = [
-        str(_HOME / "Library/CloudStorage/SynologyDrive-homes/lumi"),
-        str(_HOME / "SynologyDrive/homes/lumi"),
-        str(_HOME / "SynologyDrive/lumi"),
+        str(_HOME / "Library/CloudStorage/SynologyDrive-homes" / _NAS_CLOSED_SHARE_NAME),
+        str(_HOME / "SynologyDrive/homes" / _NAS_CLOSED_SHARE_NAME),
+        str(_HOME / "SynologyDrive" / _NAS_CLOSED_SHARE_NAME),
     ]
     for v in synology_variants:
         probe = os.path.join(v, "03_工作資料", "10_結案")
         if _is_dir_accessible(probe):
             candidates.append(v)
 
-    # 4. NAS lumi share fallback（macOS automount 可能加 -1/-2 後綴）
-    nas_discovered = _discover_volume("lumi", "lumi")
+    # 4. NAS archive share fallback（macOS automount 可能加 -1/-2 後綴）
+    nas_discovered = _discover_volume(_NAS_CLOSED_SHARE_NAME, _NAS_CLOSED_SHARE_NAME)
     nas_probe = os.path.join(nas_discovered, "03_工作資料", "10_結案")
     if _is_dir_accessible(nas_probe):
         candidates.append(nas_discovered)
@@ -179,8 +205,8 @@ def _get_default_closed_share_roots() -> list[str]:
     # 若仍空 → 保底回傳 canonical 路徑
     if not roots:
         roots = [
-            str(_HOME / "Library/CloudStorage/SynologyDrive-homes/lumi"),
-            _discover_volume("lumi", "lumi"),
+            str(_HOME / "Library/CloudStorage/SynologyDrive-homes" / _NAS_CLOSED_SHARE_NAME),
+            _discover_volume(_NAS_CLOSED_SHARE_NAME, _NAS_CLOSED_SHARE_NAME),
         ]
         # 全空 → 5 秒後就可以 re-probe（不等 60s）
         _CLOSED_ROOT_CACHE["retry_after"] = now + 5
@@ -200,10 +226,10 @@ def _get_default_closed_roots() -> list[str]:
 # 這些只在 import 時產生一次。不要在 import 階段 probe / 掛載結案 NAS，
 # 否則單純開進行中案件也可能被離線的結案磁碟拖住。
 _DEFAULT_CLOSED_SHARE_ROOTS = [
-    str(_HOME / "Library/CloudStorage/SynologyDrive-homes/lumi"),
-    str(_HOME / "SynologyDrive/homes/lumi"),
-    str(_HOME / "SynologyDrive/lumi"),
-    "/Volumes/lumi/lumi",
+    str(_HOME / "Library/CloudStorage/SynologyDrive-homes" / _NAS_CLOSED_SHARE_NAME),
+    str(_HOME / "SynologyDrive/homes" / _NAS_CLOSED_SHARE_NAME),
+    str(_HOME / "SynologyDrive" / _NAS_CLOSED_SHARE_NAME),
+    f"/Volumes/{_NAS_CLOSED_SHARE_NAME}/{_NAS_CLOSED_SHARE_NAME}",
 ]
 _DEFAULT_ACTIVE_ROOTS = [
     root.rstrip("/") + "/01_案件" for root in _DEFAULT_ACTIVE_SHARE_ROOTS
@@ -212,25 +238,19 @@ _DEFAULT_CLOSED_ROOTS = [
     root.rstrip("/") + "/03_工作資料/10_結案" for root in _DEFAULT_CLOSED_SHARE_ROOTS
 ]
 _ACTIVE_PREFIXES = [
-    "Z:/lumi63181107/01_案件",
+    _CANONICAL_ACTIVE_CASE_PREFIX,
     "K:/SynologyDrive/01_案件",
 ]
 _CLOSED_PREFIXES = [
-    "Y:/lumi/03_工作資料/10_結案",
-    "Y:/lumi63181107/03_工作資料/10_結案",
+    _CANONICAL_CLOSED_CASE_PREFIX,
 ]
 _ACTIVE_SHARE_PREFIXES = [
-    "Z:/lumi63181107",
+    _CANONICAL_ACTIVE_SHARE_PREFIX,
     "K:/SynologyDrive",
 ]
 _CLOSED_SHARE_PREFIXES = [
-    "Y:/lumi",
-    "Y:/lumi63181107",
+    _CANONICAL_CLOSED_SHARE_PREFIX,
 ]
-_CANONICAL_ACTIVE_CASE_PREFIX = "Z:/lumi63181107/01_案件"
-_CANONICAL_CLOSED_CASE_PREFIX = "Y:/lumi/03_工作資料/10_結案"
-_CANONICAL_ACTIVE_SHARE_PREFIX = "Z:/lumi63181107"
-_CANONICAL_CLOSED_SHARE_PREFIX = "Y:/lumi"
 
 
 def load_path_config(config_path: Optional[str] = None) -> dict:
@@ -442,7 +462,7 @@ def local_synology_path_candidates(path: str, cfg: Optional[dict] = None) -> lis
         or s.startswith("Y:\\")
         or "/03_工作資料/10_結案" in s
         or "\\03_工作資料\\10_結案" in s
-        or bool(_re.match(r"^/Volumes/lumi(?:-\d+)?/lumi/", s))
+        or bool(_re.match(r"^/Volumes/" + _re.escape(_NAS_CLOSED_SHARE_NAME) + r"(?:-\d+)?/" + _re.escape(_NAS_CLOSED_SHARE_NAME) + r"/", s))
     )
     closed_roots: list[str] = []
     if needs_closed_roots:
@@ -452,26 +472,30 @@ def local_synology_path_candidates(path: str, cfg: Optional[dict] = None) -> lis
     candidates.extend(_expand_from_prefix(s, _ACTIVE_SHARE_PREFIXES, active_roots))
     candidates.extend(_expand_from_prefix(s, _CLOSED_SHARE_PREFIXES, closed_roots))
 
-    # 支援 /Volumes/homes/lumi63181107/ 和 /Volumes/homes-N/lumi63181107/
-    _homes_match = _re.match(r"^/Volumes/homes(?:-\d+)?/lumi63181107/(.*)$", s)
+    # 支援 /Volumes/homes/<user>/ 和 /Volumes/homes-N/<user>/
+    _homes_pattern = r"^/Volumes/homes(?:-\d+)?/" + _re.escape(_NAS_HOME_USER) + r"/(.*)$"
+    _homes_match = _re.match(_homes_pattern, s)
     if _homes_match:
         rel = _homes_match.group(1).lstrip("/")
         for root in _DEFAULT_ACTIVE_SHARE_ROOTS[1:]:
             candidates.append(_join_root_rel(root, rel))
-    # 支援 /Volumes/lumi/lumi/ 和 /Volumes/lumi-N/lumi/ 結案路徑
-    _lumi_match = _re.match(r"^/Volumes/lumi(?:-\d+)?/lumi/(.*)$", s)
-    if _lumi_match:
-        rel = _lumi_match.group(1).lstrip("/")
+    # 支援 /Volumes/<archive>/<archive>/ 和 /Volumes/<archive>-N/<archive>/ 結案路徑
+    _closed_vol_pattern = r"^/Volumes/" + _re.escape(_NAS_CLOSED_SHARE_NAME) + r"(?:-\d+)?/" + _re.escape(_NAS_CLOSED_SHARE_NAME) + r"/(.*)$"
+    _closed_vol_match = _re.match(_closed_vol_pattern, s)
+    if _closed_vol_match:
+        rel = _closed_vol_match.group(1).lstrip("/")
         # 動態查最新結案根；略過第一個（通常是當下 canonical 的 input 路徑本身）
         for root in _get_default_closed_share_roots()[1:]:
             candidates.append(_join_root_rel(root, rel))
 
     # 動態 fallback: user-level mount (nas_mount_guard 掛到 ~/.magi_mounts/)
     _user_mount_root = str(_HOME / ".magi_mounts")
-    for prefix, subpath_start in [("Y:/lumi/", "lumi/"), ("Y:/lumi63181107/", "lumi63181107/")]:
+    for prefix in [_CANONICAL_CLOSED_SHARE_PREFIX + "/"]:
         if s.startswith(prefix):
             rel = s[len(prefix):]
-            user_candidate = os.path.join(_user_mount_root, "lumi", subpath_start.rstrip("/"), rel)
+            share_rel = prefix.split(":/", 1)[-1].strip("/")
+            share_parts = [part for part in share_rel.split("/") if part]
+            user_candidate = os.path.join(_user_mount_root, *share_parts, rel)
             candidates.append(user_candidate)
 
     return _dedupe_keep_order(candidates or [s])

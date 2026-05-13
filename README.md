@@ -43,7 +43,7 @@ MAGI v2 is a locally-deployed AI operations platform built for a Taiwanese law f
 
 ```bash
 # 1. Clone
-git clone https://github.com/WhaleChao/MAGI-v2.git && cd MAGI-v2
+git clone https://github.com/WhaleChao/MAGI-public.git && cd MAGI-public
 
 # 2. Beginner-safe installer dry run
 python3 scripts/install_magi.py --dry-run --check-live
@@ -53,8 +53,8 @@ python3 scripts/install_magi.py --yes
 source .venv/bin/activate  # or source venv/bin/activate on existing installs
 
 # 4. Create the first-run checklist and local .env without printing secrets
-python3 scripts/first_run_setup.py --write-env
-python3 scripts/first_run_setup.py --json
+python3 scripts/first_run_setup.py --write-env --public
+python3 scripts/first_run_setup.py --public --json
 
 # 5. Edit .env, then run diagnostics
 python3 scripts/magi_doctor.py
@@ -88,13 +88,13 @@ This branch is prepared for public release with private runtime material removed
 Public readiness checks:
 
 ```bash
-python3 scripts/public_release_audit.py --public-isolation
+python3 scripts/public_release_audit.py --public-isolation --strict
 python3 scripts/first_run_setup.py --public --json
 python3 scripts/magi_doctor.py --json
 python3 scripts/install_magi.py --dry-run --check-live
 ```
 
-`first_run_setup.py` is the guided entrypoint for a first-time operator: it can create a local `.env`, list missing required settings, keep next commands in a machine-readable checklist, and never prints token or password values. The public audit blocks high-confidence secrets and private tracked paths; before pushing to the public project, add `--public-isolation` to also block Lawsnote private integrations and private mailbox/NAS markers. For release and commercial use, run it with `--strict`; the release branch is expected to pass with `0 errors / 0 warnings`.
+`first_run_setup.py` is the guided entrypoint for a first-time operator: it can create a local `.env`, list missing required settings, keep next commands in a machine-readable checklist, and never prints token or password values. The public audit blocks high-confidence secrets and private tracked paths; before pushing to the public project, add `--public-isolation` to also block private legal-source integrations and private mailbox/NAS markers. For release and commercial use, run it with `--strict`; the release branch is expected to pass with `0 errors / 0 warnings`.
 
 Before publishing or handing MAGI to another operator, treat these as go/no-go gates:
 
@@ -106,9 +106,20 @@ Before publishing or handing MAGI to another operator, treat these as go/no-go g
 - LAF, court file review, transcript, and calendar workflows are high-risk workflows; production submission, DB restore, and bulk file movement must remain confirmation-gated.
 - This release is single-host by design. Multi-tenant service, electronic signatures, and a public upload portal are outside the enabled scope; operators should use the built-in "對外資料" copy text with their existing communication channel.
 
+Public self-install flow:
+
+```bash
+git clone https://github.com/WhaleChao/MAGI-public.git
+cd MAGI-public
+python3 scripts/first_run_setup.py --write-env --public
+python3 scripts/install_magi.py --dry-run --check-live
+python3 scripts/public_release_audit.py --public-isolation --strict
+```
+
 Commercial readiness documents:
 
 - [Commercial readiness guide](docs/COMMERCIAL_READINESS.md)
+- [Public self-install guide](docs/PUBLIC_SELF_INSTALL.md)
 - [Terms of service template](docs/TERMS_OF_SERVICE.md)
 - [Privacy policy](docs/PRIVACY_POLICY.md)
 - [Data retention policy](docs/DATA_RETENTION_POLICY.md)

@@ -175,19 +175,24 @@ _SYNOLOGY_LOCAL_SHARE_CANDIDATES = [
     str(_HOME / "SynologyDrive"),
 ]
 # NAS root prefixes that map to the user's home share
+_NAS_HOME_USER = (
+    os.environ.get("MAGI_NAS_HOME_USER")
+    or os.environ.get("MAGI_NAS_USER")
+    or "home"
+).strip().strip("/\\") or "home"
 _NAS_HOME_SHARE_PREFIXES = [
-    str(_HOME / ".magi_mounts/homes/lumi63181107"),
+    str(_HOME / ".magi_mounts/homes" / _NAS_HOME_USER),
     str(_HOME / ".magi_mounts/homes"),
 ]
 for _vol_base in ("homes", "homes-1", "homes-2", "homes-3"):
-    _NAS_HOME_SHARE_PREFIXES.append(f"/Volumes/{_vol_base}/lumi63181107")
+    _NAS_HOME_SHARE_PREFIXES.append(f"/Volumes/{_vol_base}/{_NAS_HOME_USER}")
     _NAS_HOME_SHARE_PREFIXES.append(f"/Volumes/{_vol_base}")
 
 
 def _resolve_pdf_with_synology_fallback(pdf_path: str) -> str:
     """If pdf_path is inaccessible, try the equivalent Synology Drive local path.
 
-    Maps SMB/NAS prefixes (e.g. /Volumes/homes-1/lumi63181107/...) to local
+    Maps SMB/NAS prefixes (e.g. /Volumes/homes-1/<user>/...) to local
     Synology Drive paths (~/Library/CloudStorage/SynologyDrive-homes/...).
     Returns the best accessible path, or the original path if none found.
     """

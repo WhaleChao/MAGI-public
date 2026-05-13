@@ -575,8 +575,8 @@ class LAFCaseTypeParser:
             info.needs_download = False  # 不需從系統下載
             return info
 
-        # 4. ★ 審核回報格式：通知喬政翔律師回報(結案|附條件)...
-        # 範例：通知喬政翔律師回報(結案)1140905-K-001-陳瀚-刑事二審辯護-詐欺等之資料，業經分會轉入系統
+        # 4. ★ 審核回報格式：通知範例律師回報(結案|附條件)...
+        # 範例：通知範例律師回報(結案)1140905-K-001-當事人-刑事二審辯護-詐欺等之資料，業經分會轉入系統
         report_result_match = re.search(
             r'回報[（(](結案|附條件)[)）].*?(\d{7}-[A-Z]-\d{3})(.*)$',
             subject,
@@ -3671,7 +3671,8 @@ class OSCCaseCreator:
                                             break
                                 else:
                                     roots = preferred_case_roots(include_closed=False)
-                                    search_root = roots[0] if roots else "Z:/lumi63181107/01_案件"
+                                    _fallback_share = (os.environ.get("MAGI_NAS_HOME_USER") or os.environ.get("MAGI_NAS_USER") or "home").strip().strip("/\\") or "home"
+                                    search_root = roots[0] if roots else f"Z:/{_fallback_share}/01_案件"
                             
                             if search_root and os.path.exists(search_root):
                                 self.log(f"     🔍 搜尋範圍: {search_root}")

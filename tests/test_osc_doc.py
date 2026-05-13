@@ -33,8 +33,8 @@ DATA = {
 }
 
 CONFIG = {
-    "company_name": "偵理法律事務所",
-    "default_lawyer": "喬政翔律師",
+    "company_name": "範例法律事務所",
+    "default_lawyer": "範例律師",
 }
 
 

@@ -30,7 +30,7 @@ def test_submit_success_requires_acceptance_signal():
         case_info,
     )
     assert _file_review_submit_success_from_text(
-        "已將下列資訊提交至法院 聲請人喬政翔 對象法院臺灣花蓮地方法院 案號家事115.婚.000019 當事人[當事人J]",
+        "已將下列資訊提交至法院 聲請人範例律師 對象法院臺灣花蓮地方法院 案號家事115.婚.000019 當事人[當事人J]",
         case_info,
     )
     assert not _file_review_submit_success_from_text(
