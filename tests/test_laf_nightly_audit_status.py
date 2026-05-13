@@ -430,7 +430,7 @@ class TestLafGoLiveReadiness:
 
 
 class TestPlaceholderFolderRenameRelease:
-    """placeholder 修正時，低風險 PDF 檢視器占用應可自動釋放後 rename。"""
+    """placeholder 修正時，應可釋放檢視器與編輯器占用後 rename。"""
 
     def test_safe_rename_terminates_pdf_viewer_blocker(self, tmp_path, monkeypatch):
         import casper_ecosystem.law_firm_orchestrators.laf_nightly_audit as mod
@@ -459,20 +459,83 @@ class TestPlaceholderFolderRenameRelease:
         assert new_dir.is_dir()
         assert not old_dir.exists()
 
-    def test_safe_rename_keeps_unknown_editor_open(self, tmp_path, monkeypatch):
+    def test_safe_rename_saves_and_closes_word_blocker(self, tmp_path, monkeypatch):
+        import casper_ecosystem.law_firm_orchestrators.laf_nightly_audit as mod
+
+        old_dir = tmp_path / "2026-0044-李○毅-偵查-待確認"
+        new_dir = tmp_path / "2026-0044-李子毅-偵查-傷害"
+        old_dir.mkdir()
+        calls = {"lsof": 0, "scripts": [], "killed": []}
+
+        def fake_lsof(_path):
+            calls["lsof"] += 1
+            if calls["lsof"] <= 2:
+                return [{"name": "Microsoft Word", "pid": 20001}]
+            return []
+
+        monkeypatch.setattr(mod.sys, "platform", "darwin")
+        monkeypatch.setattr(mod, "_lsof_folder_processes", fake_lsof)
+        monkeypatch.setattr(mod, "_close_finder_windows_for_folder", lambda _path: None)
+        monkeypatch.setattr(mod, "_run_osascript", lambda script, timeout=8: calls["scripts"].append(script) or True)
+        monkeypatch.setattr(mod.os, "kill", lambda pid, sig: calls["killed"].append((pid, sig)))
+
+        ok, reason = mod._safe_rename_case_folder(str(old_dir), str(new_dir))
+
+        assert ok is True
+        assert reason == ""
+        assert any("Microsoft Word" in script for script in calls["scripts"])
+        assert calls["killed"] == []
+        assert new_dir.is_dir()
+        assert not old_dir.exists()
+
+    def test_safe_rename_force_closes_unknown_editor_after_save_shortcut(self, tmp_path, monkeypatch):
+        import casper_ecosystem.law_firm_orchestrators.laf_nightly_audit as mod
+
+        old_dir = tmp_path / "2026-0044-李○毅-偵查-待確認"
+        new_dir = tmp_path / "2026-0044-李子毅-偵查-傷害"
+        old_dir.mkdir()
+        state = {"released": False, "closed": [], "killed": []}
+
+        def fake_lsof(_path):
+            if state["released"]:
+                return []
+            return [{"name": "SomeEditor", "pid": 20002}]
+
+        def fake_save_close(name):
+            state["closed"].append(name)
+            state["released"] = True
+            return True
+
+        monkeypatch.setattr(mod.sys, "platform", "darwin")
+        monkeypatch.setattr(mod, "_lsof_folder_processes", fake_lsof)
+        monkeypatch.setattr(mod, "_close_finder_windows_for_folder", lambda _path: None)
+        monkeypatch.setattr(mod, "_save_close_process_window", fake_save_close)
+        monkeypatch.setattr(mod.os, "kill", lambda pid, sig: state["killed"].append((pid, sig)))
+
+        ok, reason = mod._safe_rename_case_folder(str(old_dir), str(new_dir))
+
+        assert ok is True
+        assert reason == ""
+        assert state["closed"] == ["SomeEditor"]
+        assert state["killed"] == []
+        assert new_dir.is_dir()
+        assert not old_dir.exists()
+
+    def test_safe_rename_respects_unknown_editor_opt_out(self, tmp_path, monkeypatch):
         import casper_ecosystem.law_firm_orchestrators.laf_nightly_audit as mod
 
         old_dir = tmp_path / "2026-0044-李○毅-偵查-待確認"
         new_dir = tmp_path / "2026-0044-李子毅-偵查-傷害"
         old_dir.mkdir()
 
-        monkeypatch.setattr(mod, "_lsof_folder_processes", lambda _path: [{"name": "Microsoft", "pid": 20001}])
+        monkeypatch.setenv("MAGI_LAF_FORCE_CLOSE_UNKNOWN_EDITORS", "0")
+        monkeypatch.setattr(mod, "_lsof_folder_processes", lambda _path: [{"name": "SomeEditor", "pid": 20002}])
         monkeypatch.setattr(mod, "_close_finder_windows_for_folder", lambda _path: None)
 
         ok, reason = mod._safe_rename_case_folder(str(old_dir), str(new_dir))
 
         assert ok is False
-        assert reason == "folder_open:Microsoft"
+        assert reason == "folder_open:SomeEditor"
         assert old_dir.is_dir()
         assert not new_dir.exists()
 

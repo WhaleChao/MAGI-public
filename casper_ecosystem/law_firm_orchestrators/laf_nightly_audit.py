@@ -22,7 +22,7 @@ import re
 import sys
 from datetime import datetime, date, timedelta
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 # Project root
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -1107,11 +1107,31 @@ def _lsof_folder_processes(folder_path: str) -> List[dict]:
                 pid_int = int(pid)
             except Exception:
                 continue
-            relevant_procs.append({"name": pname, "pid": pid_int})
+            relevant_procs.append({"name": _process_display_name(pid_int, pname), "pid": pid_int})
         return relevant_procs
     except Exception as e:
         logger.debug("lsof check failed for %s: %s", folder_path, e)
     return []
+
+
+def _process_display_name(pid: int, fallback: str = "") -> str:
+    """Return a less-truncated macOS process name when lsof only says 'Microsoft'."""
+    try:
+        import subprocess as _subp
+        proc = _subp.run(
+            ["ps", "-p", str(int(pid)), "-o", "comm="],
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+        raw = (proc.stdout or "").strip()
+        if raw:
+            name = os.path.basename(raw)
+            if name:
+                return name
+    except Exception:
+        pass
+    return fallback or ""
 
 
 def _is_folder_open_by_other(folder_path: str) -> Tuple[bool, str]:
@@ -1126,28 +1146,161 @@ def _is_folder_open_by_other(folder_path: str) -> Tuple[bool, str]:
     return False, ""
 
 
+def _applescript_quote(text: str) -> str:
+    return '"' + str(text or "").replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def _run_osascript(script: str, *, timeout: int = 8) -> bool:
+    if not script or sys.platform != "darwin":
+        return False
+    try:
+        import subprocess as _subp
+        proc = _subp.run(
+            ["osascript", "-e", script],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+        if proc.returncode != 0:
+            logger.debug("osascript failed: %s", (proc.stderr or "").strip())
+        return proc.returncode == 0
+    except Exception as e:
+        logger.debug("osascript skipped: %s", e)
+    return False
+
+
 def _close_finder_windows_for_folder(folder_path: str) -> None:
     if not folder_path or sys.platform != "darwin":
         return
+    normalized_folder = os.path.normpath(folder_path)
+    quoted_folder = _applescript_quote(normalized_folder)
+    quoted_prefix = _applescript_quote(normalized_folder + os.sep)
     script = (
         'tell application "Finder"\n'
         'repeat with w in windows\n'
         'try\n'
         'set p to POSIX path of (target of w as alias)\n'
-        f'if p contains "{folder_path.replace(chr(34), chr(92) + chr(34))}" then close w\n'
+        f'if p is {quoted_folder} or p starts with {quoted_prefix} then close w\n'
         'end try\n'
         'end repeat\n'
         'end tell\n'
     )
-    try:
-        import subprocess as _subp
-        _subp.run(["osascript", "-e", script], capture_output=True, text=True, timeout=5)
-    except Exception as e:
-        logger.debug("Finder close skipped for %s: %s", folder_path, e)
+    _run_osascript(script, timeout=5)
+
+
+def _save_close_scriptable_editors(folder_path: str, process_names: Set[str]) -> bool:
+    """Save and close known editor documents under folder_path before force release."""
+    if not folder_path or sys.platform != "darwin":
+        return False
+    folder_prefix = os.path.normpath(folder_path) + os.sep
+    quoted_folder = _applescript_quote(folder_prefix)
+    names = {str(n or "").strip() for n in process_names if str(n or "").strip()}
+    microsoft_running = any(n == "Microsoft" or n.startswith("Microsoft ") for n in names)
+    scripts: List[str] = []
+    if microsoft_running or "Microsoft Word" in names:
+        scripts.append(
+            'if application "Microsoft Word" is running then\n'
+            'tell application "Microsoft Word"\n'
+            'repeat with d in documents\n'
+            'try\n'
+            'set p to POSIX path of (full name of d as alias)\n'
+            f'if p starts with {quoted_folder} then\n'
+            'save d\n'
+            'close d saving yes\n'
+            'end if\n'
+            'end try\n'
+            'end repeat\n'
+            'end tell\n'
+            'end if\n'
+        )
+    if microsoft_running or "Microsoft Excel" in names:
+        scripts.append(
+            'if application "Microsoft Excel" is running then\n'
+            'tell application "Microsoft Excel"\n'
+            'repeat with wb in workbooks\n'
+            'try\n'
+            'set p to full name of wb as text\n'
+            f'if p starts with {quoted_folder} then\n'
+            'save workbook wb\n'
+            'close wb saving yes\n'
+            'end if\n'
+            'end try\n'
+            'end repeat\n'
+            'end tell\n'
+            'end if\n'
+        )
+    if microsoft_running or "Microsoft PowerPoint" in names:
+        scripts.append(
+            'if application "Microsoft PowerPoint" is running then\n'
+            'tell application "Microsoft PowerPoint"\n'
+            'repeat with ptn in presentations\n'
+            'try\n'
+            'set p to full name of ptn as text\n'
+            f'if p starts with {quoted_folder} then\n'
+            'save ptn\n'
+            'close ptn saving yes\n'
+            'end if\n'
+            'end try\n'
+            'end repeat\n'
+            'end tell\n'
+            'end if\n'
+        )
+    if "TextEdit" in names:
+        scripts.append(
+            'if application "TextEdit" is running then\n'
+            'tell application "TextEdit"\n'
+            'repeat with d in documents\n'
+            'try\n'
+            'set p to path of d\n'
+            f'if p starts with {quoted_folder} then\n'
+            'save d\n'
+            'close d saving yes\n'
+            'end if\n'
+            'end try\n'
+            'end repeat\n'
+            'end tell\n'
+            'end if\n'
+        )
+    attempted = False
+    for script in scripts:
+        attempted = True
+        _run_osascript(script, timeout=8)
+    return attempted
+
+
+def _save_close_process_window(process_name: str) -> bool:
+    """Best-effort save/close for an unknown GUI editor before termination."""
+    name = str(process_name or "").strip()
+    if not name or sys.platform != "darwin":
+        return False
+    quoted_name = _applescript_quote(name)
+    script = (
+        'tell application "System Events"\n'
+        f'if exists process {quoted_name} then\n'
+        f'set frontmost of process {quoted_name} to true\n'
+        'delay 0.2\n'
+        'keystroke "s" using command down\n'
+        'delay 0.5\n'
+        'keystroke "w" using command down\n'
+        'delay 0.3\n'
+        'end if\n'
+        'end tell\n'
+    )
+    return _run_osascript(script, timeout=5)
+
+
+def _wait_for_folder_release(folder_path: str, *, timeout_sec: float = 5.0) -> bool:
+    import time as _time
+    deadline = _time.time() + max(0.1, float(timeout_sec))
+    while _time.time() < deadline:
+        if not _lsof_folder_processes(folder_path):
+            return True
+        _time.sleep(0.25)
+    return not _lsof_folder_processes(folder_path)
 
 
 def _release_folder_for_rename(folder_path: str) -> Tuple[bool, str]:
-    """Close low-risk folder/file viewers before placeholder folder rename."""
+    """Save/close folder blockers before placeholder folder rename."""
     if not folder_path:
         return False, "old_path_empty"
     _close_finder_windows_for_folder(folder_path)
@@ -1155,18 +1308,30 @@ def _release_folder_for_rename(folder_path: str) -> Tuple[bool, str]:
     if not blockers:
         return True, "released"
 
-    # These processes are viewers/shell helpers normally safe to terminate for
-    # generated LAF PDFs. Unknown editors are left alone to avoid losing work.
-    closable_names = {
+    viewer_names = {
         "AcroPDF",
         "Preview",
         "QuickLookUIService",
         "qlmanage",
         "Finder",
     }
-    unknown = sorted({str(p.get("name") or "") for p in blockers if p.get("name") not in closable_names})
-    if unknown:
+    process_names = {str(p.get("name") or "").strip() for p in blockers if p.get("name")}
+    if _save_close_scriptable_editors(folder_path, process_names):
+        if _wait_for_folder_release(folder_path, timeout_sec=3):
+            return True, "released"
+        blockers = _lsof_folder_processes(folder_path)
+        process_names = {str(p.get("name") or "").strip() for p in blockers if p.get("name")}
+
+    force_unknown = os.environ.get("MAGI_LAF_FORCE_CLOSE_UNKNOWN_EDITORS", "1").strip().lower() in {"1", "true", "yes", "on"}
+    unknown = sorted({name for name in process_names if name and name not in viewer_names})
+    if unknown and not force_unknown:
         return False, "folder_open:" + ",".join(unknown[:3])
+    for name in unknown:
+        _save_close_process_window(name)
+    if unknown:
+        if _wait_for_folder_release(folder_path, timeout_sec=3):
+            return True, "released"
+        blockers = _lsof_folder_processes(folder_path)
 
     for proc in blockers:
         pid = int(proc.get("pid") or 0)
@@ -1179,12 +1344,8 @@ def _release_folder_for_rename(folder_path: str) -> Tuple[bool, str]:
         except Exception as e:
             logger.debug("failed to terminate folder blocker pid=%s: %s", pid, e)
 
-    import time as _time
-    deadline = _time.time() + 5
-    while _time.time() < deadline:
-        if not _lsof_folder_processes(folder_path):
-            return True, "released"
-        _time.sleep(0.25)
+    if _wait_for_folder_release(folder_path, timeout_sec=5):
+        return True, "released"
     is_open, who = _is_folder_open_by_other(folder_path)
     if is_open:
         return False, f"folder_open:{who}"
