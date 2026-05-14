@@ -106,6 +106,75 @@ _DEFAULT_ACTIVE_SHARE_ROOTS = [
     str(_HOME / "SynologyDrive"),
     _discover_volume("homes", _NAS_HOME_USER),
 ]
+_ACTIVE_SMB_ROOT_CACHE: dict = {"roots": None, "expires": 0.0}
+_ACTIVE_SMB_ROOT_TTL = float(os.environ.get("MAGI_ACTIVE_SMB_ROOT_TTL_SEC", "60"))
+
+
+def _mount_output_lines() -> list[str]:
+    try:
+        import subprocess
+        result = subprocess.run(["/sbin/mount"], capture_output=True, text=True, timeout=1)
+        return [line for line in (result.stdout or "").splitlines() if line.strip()]
+    except Exception:
+        return []
+
+
+def _discover_active_smb_share_roots() -> list[str]:
+    """Discover the real mounted homes/user root for active cases.
+
+    Synology Drive CloudStorage can report EDEADLK for files that are synced,
+    locked, or hydrated by File Provider.  When the SMB homes share is mounted,
+    prefer the real mount (for this office usually /Volumes/homes/<account>)
+    before CloudStorage fallback roots.
+    """
+    now = time.time()
+    cached = _ACTIVE_SMB_ROOT_CACHE.get("roots")
+    if cached is not None and now < float(_ACTIVE_SMB_ROOT_CACHE.get("expires") or 0):
+        return list(cached)
+
+    import re as _re
+
+    users: list[str] = []
+    mounts: list[str] = []
+
+    def _add_user(value: str) -> None:
+        text = str(value or "").strip().strip("/\\")
+        if text and text not in users:
+            users.append(text)
+
+    def _add_mount(value: str) -> None:
+        text = str(value or "").strip().rstrip("/")
+        if text and text not in mounts:
+            mounts.append(text)
+
+    # Keep explicit env-compatible values, but let mounted SMB users outrank the
+    # historical default when they are actually available.
+    for line in _mount_output_lines():
+        m = _re.match(r"^//([^/@]+)@[^ ]+/homes on (/Volumes/homes(?:-\d+)?) ", line)
+        if m:
+            _add_user(m.group(1))
+            _add_mount(m.group(2))
+
+    _add_user(os.environ.get("MAGI_NAS_HOME_USER") or "")
+    _add_user(os.environ.get("MAGI_NAS_USER") or "")
+    _add_user(_NAS_HOME_USER)
+
+    _add_mount("/Volumes/homes")
+    for candidate in sorted(_glob.glob("/Volumes/homes-*")):
+        _add_mount(candidate)
+
+    roots: list[str] = []
+    for mount in mounts:
+        for user in users:
+            root = f"{mount}/{user}"
+            probe = f"{root}/01_案件"
+            if _is_dir_accessible(probe) or _is_dir_accessible(root):
+                roots.append(root)
+
+    roots = _dedupe_keep_order(roots)
+    _ACTIVE_SMB_ROOT_CACHE["roots"] = tuple(roots)
+    _ACTIVE_SMB_ROOT_CACHE["expires"] = now + _ACTIVE_SMB_ROOT_TTL
+    return roots
 
 
 # 動態偵測結案歸檔根目錄 — 每 N 秒重新掃描一次，不 cache 在 module-level，
@@ -349,6 +418,7 @@ def _candidate_share_roots_from_config(cfg: dict, *, closed: bool) -> list[str]:
 def default_synology_share_roots(*, include_closed: bool = False, cfg: Optional[dict] = None) -> list[str]:
     cfg = cfg or load_path_config()
     roots: list[str] = []
+    roots.extend(_discover_active_smb_share_roots())
     roots.extend(_candidate_share_roots_from_config(cfg, closed=False))
     roots.extend(_DEFAULT_ACTIVE_SHARE_ROOTS)
     if include_closed:

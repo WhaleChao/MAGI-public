@@ -1076,43 +1076,57 @@ def osc_files_preview_api():
             "name": os.path.basename(local),
         })
 
-    if kind == "office":
-        cached = osc_preview.preview_office_to_pdf(local)
-        if not cached:
-            return jsonify({"ok": False, "kind": "office", "error": "office_convert_failed",
-                            "fallback": "download"}), 500
-        return send_file(cached, mimetype="application/pdf", as_attachment=False,
-                         download_name=os.path.splitext(os.path.basename(local))[0] + ".pdf")
+    staged_preview = ""
+    preview_source = local
+    try:
+        staged_preview = _stage_file_with_retry(local)
+        preview_source = staged_preview
+    except OSError as e:
+        _log.warning("preview staging failed: errno=%s file=%s", getattr(e, "errno", None), local)
+        return jsonify({"ok": False, "kind": kind, "error": f"read_failed: {e}",
+                        "fallback": "download"}), 503
 
-    if kind == "heic":
-        cached = osc_preview.preview_heic_to_jpg(local)
-        if not cached:
-            return jsonify({"ok": False, "kind": "heic", "error": "heic_convert_failed",
-                            "fallback": "download"}), 500
-        return send_file(cached, mimetype="image/jpeg", as_attachment=False,
-                         download_name=os.path.splitext(os.path.basename(local))[0] + ".jpg")
+    try:
+        if kind == "office":
+            cached = osc_preview.preview_office_to_pdf(preview_source)
+            if not cached:
+                return jsonify({"ok": False, "kind": "office", "error": "office_convert_failed",
+                                "fallback": "download"}), 500
+            return send_file(cached, mimetype="application/pdf", as_attachment=False,
+                             download_name=os.path.splitext(os.path.basename(local))[0] + ".pdf")
 
-    if kind == "csv":
-        result = osc_preview.preview_csv_to_rows(local)
-        result["kind"] = "csv"
+        if kind == "heic":
+            cached = osc_preview.preview_heic_to_jpg(preview_source)
+            if not cached:
+                return jsonify({"ok": False, "kind": "heic", "error": "heic_convert_failed",
+                                "fallback": "download"}), 500
+            return send_file(cached, mimetype="image/jpeg", as_attachment=False,
+                             download_name=os.path.splitext(os.path.basename(local))[0] + ".jpg")
+
+        if kind == "csv":
+            result = osc_preview.preview_csv_to_rows(preview_source)
+            result["kind"] = "csv"
+            return jsonify(result)
+
+        if kind == "email":
+            result = osc_preview.preview_email(preview_source)
+            result["kind"] = "email"
+            return jsonify(result)
+
+        if kind == "zip":
+            result = osc_preview.preview_zip(preview_source)
+            result["kind"] = "zip"
+            return jsonify(result)
+
+        # other → hex dump
+        result = osc_preview.preview_hex_dump(preview_source)
+        result["kind"] = "other"
+        result["mime"], _ = mimetypes.guess_type(local)
+        result["ext"] = os.path.splitext(local)[1].lower()
         return jsonify(result)
-
-    if kind == "email":
-        result = osc_preview.preview_email(local)
-        result["kind"] = "email"
-        return jsonify(result)
-
-    if kind == "zip":
-        result = osc_preview.preview_zip(local)
-        result["kind"] = "zip"
-        return jsonify(result)
-
-    # other → hex dump
-    result = osc_preview.preview_hex_dump(local)
-    result["kind"] = "other"
-    result["mime"], _ = mimetypes.guess_type(local)
-    result["ext"] = os.path.splitext(local)[1].lower()
-    return jsonify(result)
+    finally:
+        if staged_preview:
+            _cleanup_file_once(staged_preview)
 
 
 @osc_files_bp.route("/api/osc/files/info", methods=["GET"])
@@ -1128,7 +1142,7 @@ def osc_files_info_api():
     if not _osc_is_safe_local_path(local):
         return jsonify({"ok": False, "error": "path_not_allowed"}), 403
     try:
-        st = os.stat(local)
+        st = _stat_with_retry(local)
     except OSError as e:
         return jsonify({"ok": False, "error": str(e)}), 500
     mime, _ = mimetypes.guess_type(local)
@@ -1182,6 +1196,7 @@ def osc_files_share_create_api():
     data = _prune_share_store(_load_share_store())
     data.setdefault("shares", {})[token_hash] = {
         "path": local,
+        "raw_path": raw,
         "name": os.path.basename(local),
         "size": int(st.st_size),
         "created_at": now,
@@ -1212,7 +1227,7 @@ def osc_files_public_share_api(token):
     if not isinstance(row, dict):
         _save_share_store(data)
         return jsonify({"ok": False, "error": "not_found"}), 404
-    local = _resolve_safe_file(str(row.get("path") or ""))
+    local = _resolve_safe_file(str(row.get("raw_path") or "")) or _resolve_safe_file(str(row.get("path") or ""))
     if not local:
         data.get("shares", {}).pop(_share_token_hash(t), None)
         _save_share_store(data)
