@@ -73,3 +73,27 @@ def test_cloudflare_tunnel_blocks_non_whitelisted_routes():
         headers={"Cf-Connecting-Ip": "1.2.3.4", "X-Forwarded-Host": "demo.trycloudflare.com"},
     )
     assert response.status_code == 403
+
+
+def test_cloudflare_tunnel_can_expose_web_ui_when_explicitly_enabled(monkeypatch):
+    monkeypatch.setenv("MAGI_ALLOW_CLOUDFLARE_WEB_UI", "1")
+    app = _make_app()
+    client = app.test_client()
+
+    response = client.get(
+        "/dashboard",
+        headers={"Cf-Connecting-Ip": "1.2.3.4", "X-Forwarded-Host": "demo.trycloudflare.com"},
+    )
+    assert response.status_code == 200
+
+
+def test_cloudflare_web_ui_flag_does_not_expose_openclaw(monkeypatch):
+    monkeypatch.setenv("MAGI_ALLOW_CLOUDFLARE_WEB_UI", "1")
+    app = _make_app()
+    client = app.test_client()
+
+    response = client.get(
+        "/openclaw",
+        headers={"Cf-Connecting-Ip": "1.2.3.4", "X-Forwarded-Host": "demo.trycloudflare.com"},
+    )
+    assert response.status_code == 404
