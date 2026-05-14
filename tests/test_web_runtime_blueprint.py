@@ -265,6 +265,81 @@ def test_osc_chat_upload_extracts_file_and_routes_to_orchestrator(tmp_path, monk
     assert (tmp_path / "static" / "exports" / "magi_outputs").is_dir()
 
 
+def test_web_upload_large_summary_uses_quality_fallback(tmp_path, monkeypatch):
+    from api.blueprints import web_runtime as mod
+    from api.handlers import summary_handler
+
+    source = (
+        "監察院 調查報告\n"
+        "壹、案由：據訴，花蓮縣警察局、臺灣花蓮地方檢察署及法院偵審案件，疑未盡客觀性義務。\n"
+        "貳、調查意見：\n"
+        "一、據本院勘驗警詢電磁紀錄，筆錄記載未盡確實，核有違誤。\n"
+        "二、本案涉及原住民族語言通譯與正當法律程序保障，核有違誤。\n"
+        "參、處理辦法：函請主管機關檢討改進見復。\n"
+    ) * 30
+    monkeypatch.setattr(
+        summary_handler,
+        "summarize_text_resilient",
+        lambda *args, **kwargs: {"success": True, "text": "已知資訊：案號：103年度選訴字第4號\n請問**當事人**的姓名？"},
+    )
+
+    result = mod._run_direct_web_upload_text_task(
+        _Orchestrator(),
+        root=tmp_path,
+        target=tmp_path / "report.txt",
+        original_name="監察院報告.txt",
+        instruction="@heavy 摘要",
+        extracted={"success": True, "text": source, "kind": "txt"},
+        user_id="u1",
+    )
+
+    assert result is not None
+    assert result["task"] == "summary"
+    assert "監察院調查報告摘要" in result["reply"]
+    assert "請問" not in result["reply"]
+    assert "核有違誤" in result["reply"]
+    assert any(item["format"] == "docx" for item in result["artifacts"])
+
+
+def test_output_quality_detects_case_intake_summary_failure():
+    from api.handlers.output_quality_handler import detect_output_quality_issue
+
+    issue = detect_output_quality_issue(
+        "summary",
+        "已知資訊：案號：103年度選訴字第4號、法院：花蓮地方檢察署\n請問**當事人**的姓名？",
+        source_chars=100000,
+    )
+
+    assert issue == "off_topic_or_refusal"
+
+
+def test_web_upload_translation_stops_short_incomplete_output(tmp_path, monkeypatch):
+    from api.blueprints import web_runtime as mod
+    from api.handlers import translation_handler
+
+    source = "This is a long legal document paragraph. " * 120
+    monkeypatch.setattr(
+        translation_handler,
+        "translate_text_complete",
+        lambda *args, **kwargs: {"success": True, "text": "以下是翻譯：完成。", "chunks_failed": 0},
+    )
+
+    result = mod._run_direct_web_upload_text_task(
+        _Orchestrator(),
+        root=tmp_path,
+        target=tmp_path / "legal.txt",
+        original_name="legal.txt",
+        instruction="請完整翻譯",
+        extracted={"success": True, "text": source, "kind": "txt"},
+        user_id="u1",
+    )
+
+    assert result is not None
+    assert result["task"] == "translation"
+    assert "品質檢查未通過" in result["reply"]
+    assert result["artifacts"] == []
+
+
 def test_osc_chat_translation_command_creates_web_delivery_artifacts(tmp_path):
     orchestrator = _Orchestrator(reply="這是一段翻譯完成的內容。")
     app = _make_app(tmp_path, orchestrator=orchestrator, normalize=lambda text, platform=None: text)

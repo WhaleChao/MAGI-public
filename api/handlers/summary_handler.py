@@ -152,6 +152,9 @@ def summarize_text_resilient(text: str, summary_length: str = "medium", *, progr
             "很抱歉",
             "i cannot find",
             "please provide more information",
+            "請問**當事人**",
+            "請問當事人",
+            "已知資訊：案號",
         ]
         if any(marker.lower() in lowered for marker in refusal_markers):
             return False
