@@ -206,6 +206,18 @@ def operational_jobs(repo_root: Path = REPO_ROOT, python_path: Path | None = Non
             "no_catchup": True,
         },
         {
+            "id": "job_tailscale_funnel_healthcheck",
+            "cron": "*/10 * * * *",
+            "command": f"{python_bin} {repo_root / 'scripts' / 'ops' / 'tailscale_funnel_healthcheck.py'} --apply --json-out {repo_root / '.runtime' / 'tailscale_funnel_health_latest.json'}",
+            "desc": "Tailscale Funnel 外網入口巡檢（每 10 分鐘；用公開 DNS 實測並自動重建假啟動 Funnel）",
+            "channel_id": None,
+            "last_run": None,
+            "last_run_minute": None,
+            "enabled": True,
+            "timeout_sec": 90,
+            "no_catchup": True,
+        },
+        {
             "id": "job_distill_train_gemma",
             "cron": "0 11 * * 0",
             "command": f"{python_bin} {repo_root / 'scripts' / 'nightly_distill_gemma.py'}",
