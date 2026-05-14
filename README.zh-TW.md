@@ -113,6 +113,7 @@ python3 scripts/public_release_audit.py --public-isolation --strict
 正式商用文件：
 
 - [商用上線檢核指南](docs/COMMERCIAL_READINESS.md)
+- [公開版操作手冊](docs/PUBLIC_OPERATION_MANUAL.md)
 - [公開版自行安裝指南](docs/PUBLIC_SELF_INSTALL.md)
 - [服務條款範本](docs/TERMS_OF_SERVICE.md)
 - [隱私權政策](docs/PRIVACY_POLICY.md)
