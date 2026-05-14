@@ -68,16 +68,12 @@ def _process_monitor_markers(magi_root: Path) -> tuple[list[str], list[str], dic
             f"{magi_root}/daemon.py",
             "api/server.py",
             "api/discord_bot.py",
-            "skills/ops/openclaw_cron_runner.py",
-            "openclaw-gateway",
             "rpc-server",
         ]
     core_labels = {
         f"{magi_root}/daemon.py": "Daemon",
         "api/server.py": "API/LINE Webhook",
         "api/discord_bot.py": "Discord Bot",
-        "skills/ops/openclaw_cron_runner.py": "OpenClaw Cron Bridge",
-        "openclaw-gateway": "OpenClaw Gateway",
         "rpc-server": "RPC Worker",
     }
     return worker_markers, core_markers, core_labels

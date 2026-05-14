@@ -1207,8 +1207,8 @@ def _ensure_cloudflared():
                 logger.error("LINE webhook registration failed after 3 attempts")
             # Telegram webhook auto-registration
             try:
-                from api.webhooks.telegram import _load_openclaw_telegram_token, _load_telegram_webhook_secret
-                tg_token = _load_openclaw_telegram_token()
+                from api.webhooks.telegram import _load_telegram_bot_token, _load_telegram_webhook_secret
+                tg_token = _load_telegram_bot_token()
                 tg_secret = _load_telegram_webhook_secret()
                 if tg_token:
                     tg_webhook_url = f"{cf_url}/telegram/webhook"

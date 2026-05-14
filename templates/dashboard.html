@@ -923,8 +923,8 @@
             </div>
 
             <!-- LOCAL CASPER (3) -->
-            <a href="javascript:void(0)" onclick="openOpenClaw(); return false;" class="node-card node-casper" id="card-local-casper"
-                style="text-decoration: none; cursor: pointer;" title="僅限本機進入 OpenClaw / NERV 管理頁">
+            <a href="javascript:void(0)" onclick="openMagiAdjust(); return false;" class="node-card node-casper" id="card-local-casper"
+                style="text-decoration: none; cursor: pointer;" title="開啟 MAGI / NERV 管理頁">
                 <span class="sub-label">CASPER-3</span>
                 <h2>主控核心</h2>
                 <div class="status" id="status-local-casper">連線中...</div>
@@ -1505,14 +1505,8 @@
             await submitSkillInterviewReplyRight('取消');
         }
 
-        function openOpenClaw() {
-            const host = (window.location.hostname || '').toLowerCase();
-            const isLocal = host === 'localhost' || host === '127.0.0.1' || host === '::1';
-            if (!isLocal) {
-                alert('OpenClaw 介面僅開放本機存取，外網已封鎖。');
-                return;
-            }
-            window.open('/openclaw', '_blank', 'noopener,noreferrer');
+        function openMagiAdjust() {
+            window.open('/magi-adjust', '_blank', 'noopener,noreferrer');
         }
 
         // Sidebar section toggle

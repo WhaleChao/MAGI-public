@@ -206,6 +206,18 @@ def operational_jobs(repo_root: Path = REPO_ROOT, python_path: Path | None = Non
             "no_catchup": True,
         },
         {
+            "id": "job_benchmark_pdf_bookmarker",
+            "cron": "40 14 * * *",
+            "command": f"{python_bin} {repo_root / 'scripts' / 'ops' / 'benchmark_pdf_bookmarker.py'}",
+            "desc": "PDF 頁籤品質基準測試（每日 14:40，bookmark_recall ≥ 80%；維持健康頁 48h freshness）",
+            "channel_id": None,
+            "last_run": None,
+            "last_run_minute": None,
+            "enabled": True,
+            "timeout_sec": 900,
+            "no_catchup": True,
+        },
+        {
             "id": "job_tailscale_funnel_healthcheck",
             "cron": "*/10 * * * *",
             "command": f"{python_bin} {repo_root / 'scripts' / 'ops' / 'tailscale_funnel_healthcheck.py'} --apply --json-out {repo_root / '.runtime' / 'tailscale_funnel_health_latest.json'}",

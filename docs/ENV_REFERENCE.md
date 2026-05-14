@@ -15,7 +15,7 @@
 | Feature | `MAGI_LINE_CHANNEL_ACCESS_TOKEN` | — | LINE Bot token（需 MAGI_ENABLE_LINE=1） |
 | Feature | `MAGI_LINE_CHANNEL_SECRET` | — | LINE webhook secret（需 MAGI_ENABLE_LINE=1） |
 | Feature | `DISCORD_BOT_TOKEN` | — | Discord Bot token（需 MAGI_ENABLE_DISCORD=1） |
-| Feature | `OPENCLAW_TELEGRAM_BOT_TOKEN` | — | Telegram Bot token（需 MAGI_ENABLE_TELEGRAM=1） |
+| Feature | `MAGI_TELEGRAM_BOT_TOKEN` | — | Telegram Bot token（需 MAGI_ENABLE_TELEGRAM=1） |
 | Optional | `MAGI_CORS_ORIGINS` | localhost | Tools API CORS 白名單 |
 | Optional | `MAGI_API_KEY` | — | API 認證金鑰 |
 
@@ -53,7 +53,7 @@
 | `MAGI_LINE_CHANNEL_ACCESS_TOKEN` | `MAGI_ENABLE_LINE=1` | LINE Messaging API token |
 | `MAGI_LINE_CHANNEL_SECRET` | `MAGI_ENABLE_LINE=1` | LINE Webhook validation secret |
 | `DISCORD_BOT_TOKEN` | `MAGI_ENABLE_DISCORD=1` | Discord Bot token |
-| `OPENCLAW_TELEGRAM_BOT_TOKEN` | `MAGI_ENABLE_TELEGRAM=1` | Telegram Bot token |
+| `MAGI_TELEGRAM_BOT_TOKEN` | `MAGI_ENABLE_TELEGRAM=1` | Telegram Bot token |
 | `MAGI_REMOTE_DB_HOST` | `MAGI_ENABLE_REMOTE_DB=1` | 遠端 DB 主機 |
 | `MAGI_REMOTE_DB_USER` | `MAGI_ENABLE_REMOTE_DB=1` | 遠端 DB 使用者 |
 | `MAGI_REMOTE_DB_PASSWORD` | `MAGI_ENABLE_REMOTE_DB=1` | 遠端 DB 密碼 |
@@ -100,10 +100,11 @@
 | `MAGI_MLX_MTP_HOST` | string | `127.0.0.1` | MLX/VLM MTP sidecar host |
 | `MAGI_MLX_MTP_PORT` | int | `8090` | MLX/VLM MTP sidecar port |
 | `MLX_MTP_BASE_URL` | string | `http://127.0.0.1:8090/v1` | `mlx_mtp` provider OpenAI-compatible base URL |
-<!-- MAGI_OPENCLAW_PRIMARY_MODEL / MAGI_OPENCLAW_FALLBACK_MODEL rows
-     removed 2026-04-20 (cleanup plan Phase 5): OpenClaw Gateway chain
-     has been deleted. Text-model routing is now handled by
-     MAGI_OMLX_* / MAGI_MAIN_MODEL / CASPER_LOCAL_MODEL. -->
+<!-- Deprecated model-routing rows were removed 2026-04-20. Text-model routing
+     is now handled by MAGI_OMLX_* / MAGI_MAIN_MODEL / CASPER_LOCAL_MODEL.
+     Legacy Telegram deployments may still expose
+     OPENCLAW_TELEGRAM_BOT_TOKEN, but new installs should use
+     MAGI_TELEGRAM_BOT_TOKEN. -->
 
 ### Tier 7: Runtime Paths (Override)
 

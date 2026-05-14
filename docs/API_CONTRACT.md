@@ -208,7 +208,7 @@ Process user message with CASPER orchestrator.
 {
   "message": "What is the weather today?",
   "user_id": "user123",
-  "platform": "openclaw",
+  "platform": "web",
   "role": "admin"
 }
 ```
@@ -263,7 +263,7 @@ Get UI configuration for external OSC interface.
 **Response**:
 ```json
 {
-  "title": "OpenClaw Case Manager",
+  "title": "MAGI Case Manager",
   "theme": "light",
   "features": ["search", "filter", "export"]
 }

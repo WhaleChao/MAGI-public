@@ -48,8 +48,7 @@ def test_redirect_routes_point_to_existing_page_targets(tmp_path, monkeypatch):
     assert response.location.endswith("/intel")
 
     response = client.get("/openclaw", follow_redirects=False)
-    assert response.status_code == 302
-    assert response.location.endswith("/magi-adjust")
+    assert response.status_code == 404
 
 
 def test_dashboard_pages_render_with_login_required(tmp_path, monkeypatch):

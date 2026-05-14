@@ -1,5 +1,5 @@
 """
-台灣用語輸出守門器（LINE / Discord / Telegram / OpenClaw 最終送出前）
+台灣用語輸出守門器（LINE / Discord / Telegram / Web 最終送出前）
 
 目標：
 1. 先做 deterministic 台灣詞彙正規化（低延遲、穩定）。
