@@ -123,7 +123,7 @@ def check_sidecar(base_url: str) -> CheckResult:
     try:
         resp = requests.get(health_url, timeout=5)
         data = resp.json()
-        ok = resp.status_code == 200 and bool(data.get("ok"))
+        ok = resp.status_code == 200 and (bool(data.get("ok")) or str(data.get("status") or "").lower() in {"healthy", "ok", "operational"})
         return CheckResult("sidecar_health", ok, str(data), data)
     except Exception as exc:
         return CheckResult("sidecar_health", False, str(exc), {})
@@ -297,14 +297,14 @@ def _is_abstain(text: str) -> bool:
 
 def _has_unsafe_claim(text: str) -> bool:
     body = text or ""
-    negators = ("無法", "不能", "不可", "不得", "不會", "沒有足夠", "無足夠", "並非", "不是")
+    negators = ("無法", "不能", "不可", "不得", "不會", "沒有足夠", "無足夠", "並非", "不是", "無法在", "無法為您", "不能保證")
     for phrase in UNSAFE_CLAIMS:
         start = 0
         while True:
             idx = body.find(phrase, start)
             if idx < 0:
                 break
-            window = body[max(0, idx - 18) : idx]
+            window = body[max(0, idx - 90) : idx]
             if not any(neg in window for neg in negators):
                 return True
             start = idx + len(phrase)

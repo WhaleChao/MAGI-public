@@ -198,6 +198,7 @@ def _normalize_direct_reply(reply: str, *, task: str, source_text: str, source_f
     from api.handlers.output_quality_handler import (
         build_legal_document_summary_fallback,
         detect_output_quality_issue,
+        format_quality_gate_failure,
     )
 
     output = str(reply or "").strip()
@@ -210,6 +211,8 @@ def _normalize_direct_reply(reply: str, *, task: str, source_text: str, source_f
         )
         if fallback:
             return fallback
+    if issue:
+        return format_quality_gate_failure(task, issue)
     return output
 
 
@@ -270,6 +273,8 @@ def _run_direct_web_upload_text_task(
         )
         if not reply:
             return None
+        if str(reply).lstrip().startswith("❌"):
+            return {"task": task, "reply": reply, "artifacts": []}
         artifacts = _create_web_delivery_artifacts(
             root,
             instruction=instruction,
@@ -286,7 +291,7 @@ def _run_direct_web_upload_text_task(
                 prepare_document_text_for_llm,
             )
             from api.handlers.translation_handler import translate_text_complete
-            from api.handlers.output_quality_handler import detect_output_quality_issue
+            from api.handlers.output_quality_handler import run_output_quality_gate
 
             src_text = prepare_document_text_for_llm(source_text)
             src_text, was_capped = cap_translation_source_text(src_text)
@@ -297,11 +302,18 @@ def _run_direct_web_upload_text_task(
                 return {"task": task, "reply": f"❌ 檔案翻譯失敗：{err[:260]}", "artifacts": []}
             translated = str(result.get("translated_text") or result.get("text") or "").strip()
             translated = polish_translated_document_text(translated) or translated
-            issue = detect_output_quality_issue("translation", translated, source_chars=len(src_text or ""))
-            if issue:
+            gate = run_output_quality_gate(
+                "translation",
+                translated,
+                source_chars=len(src_text or ""),
+                source_text=src_text,
+                source_name=original_name,
+                instruction=instruction,
+            )
+            if not gate.get("ok"):
                 return {
                     "task": task,
-                    "reply": f"❌ 檔案翻譯品質檢查未通過：{issue}。MAGI 已停止輸出，避免交付不完整翻譯。",
+                    "reply": str(gate.get("message") or "❌ 檔案翻譯品質檢查未通過。"),
                     "artifacts": [],
                 }
             notes = []
@@ -1016,6 +1028,34 @@ def create_web_runtime_blueprint(
                     reply = normalize_output_text(str(reply or ""), platform="WEB")
             except Exception:
                 logger.debug("silent-catch in osc_chat_upload_api media", exc_info=True)
+            try:
+                from api.handlers.output_quality_handler import run_output_quality_gate
+
+                gate = run_output_quality_gate(
+                    "transcript",
+                    str(reply or ""),
+                    source_chars=0,
+                    source_name=original_name,
+                    instruction=user_instruction,
+                )
+                if not gate.get("ok"):
+                    reply = str(gate.get("message") or "❌ 逐字稿品質檢查未通過。")
+                    artifacts = []
+                    return jsonify(
+                        {
+                            "reply": reply,
+                            "reply_html": format_web_reply_html(str(reply or "")),
+                            "artifacts": artifacts,
+                            "filename": original_name,
+                            "path": str(target),
+                            "kind": "audio",
+                            "chars": 0,
+                            "truncated": False,
+                            "task": upload_task,
+                        }
+                    )
+            except Exception:
+                logger.debug("silent-catch in osc_chat_upload_api transcript gate", exc_info=True)
             artifacts = _create_web_delivery_artifacts(
                 root,
                 instruction=user_instruction,

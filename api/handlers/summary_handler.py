@@ -123,6 +123,8 @@ def summarize_text_resilient(text: str, summary_length: str = "medium", *, progr
 
     def _summary_output_usable(out: str) -> bool:
         from api.handlers import text_processing_handler as _tp
+        from api.handlers.output_quality_handler import detect_output_quality_issue
+
         t = str(out or "").strip()
         if len(t) < 48:
             return False
@@ -157,6 +159,8 @@ def summarize_text_resilient(text: str, summary_length: str = "medium", *, progr
             "已知資訊：案號",
         ]
         if any(marker.lower() in lowered for marker in refusal_markers):
+            return False
+        if detect_output_quality_issue("summary", t, source_chars=0):
             return False
         return not _tp.output_guard_issues(t, mode="summary")
 
@@ -353,6 +357,28 @@ def summarize_text_resilient(text: str, summary_length: str = "medium", *, progr
                 parts.append(f"{i}. {item}")
         return "\n".join(parts).strip()
 
+    def _checked_summary_result(out: str, provider: str, **extra) -> dict:
+        from api.handlers.output_quality_handler import run_output_quality_gate
+
+        gate = run_output_quality_gate(
+            "summary",
+            out,
+            source_chars=len(payload),
+            instruction=f"summary_length={summary_length}",
+        )
+        if gate.get("ok"):
+            return {"success": True, "text": out, "provider": provider, **extra}
+        fallback_text = _extractive_fallback_summary(payload)
+        if fallback_text:
+            return {
+                "success": True,
+                "text": fallback_text,
+                "provider": "extractive_fallback_quality_gate",
+                "quality_gate_issue": gate.get("issue"),
+                **extra,
+            }
+        return {"success": False, "error": "summary_quality_gate:" + str(gate.get("issue") or "failed"), "provider": provider, **extra}
+
     # --- Strategy: direct-first, map-reduce only for very large docs ---
     # Local oMLX model already pinned in memory. Try direct summary first
     # to avoid expensive model-swapping in map-reduce chunks.
@@ -376,7 +402,7 @@ def summarize_text_resilient(text: str, summary_length: str = "medium", *, progr
             if isinstance(rr, dict) and rr.get("success"):
                 out = str(rr.get("text") or rr.get("summary") or "").strip()
                 if _summary_output_usable(out):
-                    return {"success": True, "text": out, "provider": f"{str(rr.get('provider') or 'balthasar')}_direct"}
+                    return _checked_summary_result(out, f"{str(rr.get('provider') or 'balthasar')}_direct")
             logger.warning("_summarize_text_resilient: direct summary failed, trying map-reduce")
         except Exception as e:
             logger.warning("_summarize_text_resilient: direct summary exception: %s", e)
@@ -440,7 +466,7 @@ def summarize_text_resilient(text: str, summary_length: str = "medium", *, progr
                 summary_length=summary_length,
             )
             if ultra_text and _summary_output_usable(ultra_text):
-                return {"success": True, "text": ultra_text, "provider": "hierarchical_ultra"}
+                return _checked_summary_result(ultra_text, "hierarchical_ultra")
             logger.warning("_summarize_text_resilient: ultra-large summary path returned unusable text")
         except Exception as e:
             logger.warning("_summarize_text_resilient: ultra-large summary exception: %s", e)
@@ -661,13 +687,12 @@ def summarize_text_resilient(text: str, summary_length: str = "medium", *, progr
                                 reduce_timeout=max(summary_reduce_timeout, 90),
                             )
                             if out and _summary_output_usable(out):
-                                return {
-                                    "success": True,
-                                    "text": out,
-                                    "provider": "omlx_full_map_reduce",
-                                    "chunks_total": len(chunks),
-                                    "chunks_sampled": len(sampled_chunks),
-                                }
+                                return _checked_summary_result(
+                                    out,
+                                    "omlx_full_map_reduce",
+                                    chunks_total=len(chunks),
+                                    chunks_sampled=len(sampled_chunks),
+                                )
                         except Exception as e:
                             logger.warning("_mr_reduce_summaries failed: %s, falling back", e)
 
@@ -676,13 +701,12 @@ def summarize_text_resilient(text: str, summary_length: str = "medium", *, progr
                     rr = summarize_text(merged_source, timeout_sec=max(summary_reduce_timeout, 90), summary_length=summary_length)
                     out = str((rr or {}).get("text") or (rr or {}).get("summary") or "").strip()
                     if rr.get("success") and _summary_output_usable(out):
-                        return {
-                            "success": True,
-                            "text": out,
-                            "provider": f"{str(rr.get('provider') or 'balthasar')}_parallel_map_reduce",
-                            "chunks_total": len(chunks),
-                            "chunks_sampled": len(sampled_chunks),
-                        }
+                        return _checked_summary_result(
+                            out,
+                            f"{str(rr.get('provider') or 'balthasar')}_parallel_map_reduce",
+                            chunks_total=len(chunks),
+                            chunks_sampled=len(sampled_chunks),
+                        )
                     fallback_text = _extractive_fallback_summary(payload)
                     if fallback_text:
                         return {
@@ -693,9 +717,9 @@ def summarize_text_resilient(text: str, summary_length: str = "medium", *, progr
                             "chunks_sampled": len(sampled_chunks),
                         }
                     return {
-                        "success": True,
-                        "text": "\n\n".join(usable_summaries).strip(),
-                        "provider": "chunk_fallback",
+                        "success": False,
+                        "error": "summary_quality_gate:chunk_fallback_not_reduced",
+                        "provider": "chunk_fallback_blocked",
                         "chunks_total": len(chunks),
                         "chunks_sampled": len(sampled_chunks),
                     }
@@ -709,7 +733,7 @@ def summarize_text_resilient(text: str, summary_length: str = "medium", *, progr
         if isinstance(rr, dict) and rr.get("success"):
             out = str(rr.get("text") or rr.get("summary") or "").strip()
             if _summary_output_usable(out):
-                return {"success": True, "text": out, "provider": str(rr.get("provider") or "balthasar")}
+                return _checked_summary_result(out, str(rr.get("provider") or "balthasar"))
     except Exception:
         logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 724, exc_info=True)
 
@@ -734,7 +758,7 @@ def summarize_text_resilient(text: str, summary_length: str = "medium", *, progr
         )
         out = str((q or {}).get("response") or "").strip()
         if q.get("success") and _summary_output_usable(out):
-            return {"success": True, "text": out, "provider": str(q.get("route") or "local_quick_ollama")}
+            return _checked_summary_result(out, str(q.get("route") or "local_quick_ollama"))
         fallback_text = _extractive_fallback_summary(payload)
         if fallback_text:
             return {"success": True, "text": fallback_text, "provider": "extractive_fallback"}

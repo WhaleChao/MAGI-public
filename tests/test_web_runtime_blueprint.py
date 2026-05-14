@@ -313,11 +313,27 @@ def test_output_quality_detects_case_intake_summary_failure():
     assert issue == "off_topic_or_refusal"
 
 
+def test_output_quality_blocks_react_leak_and_bad_transcript():
+    from api.handlers.output_quality_handler import detect_output_quality_issue, run_output_quality_gate
+
+    assert (
+        detect_output_quality_issue("summary", "Thought: I should call a tool\nAction: search", source_chars=5000)
+        == "prompt_or_react_leak"
+    )
+    gate = run_output_quality_gate("transcript", "語音已接收，但目前無法完成轉錄。", source_chars=2000)
+
+    assert gate["ok"] is False
+    assert gate["issue"] == "off_topic_or_refusal"
+
+
 def test_web_upload_translation_stops_short_incomplete_output(tmp_path, monkeypatch):
     from api.blueprints import web_runtime as mod
     from api.handlers import translation_handler
 
-    source = "This is a long legal document paragraph. " * 120
+    source = "\n".join(
+        f"Section {i}: The agreement records a distinct legal obligation, deadline, remedy, evidence item, jurisdictional fact, and party representation for review."
+        for i in range(140)
+    )
     monkeypatch.setattr(
         translation_handler,
         "translate_text_complete",

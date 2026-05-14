@@ -333,6 +333,24 @@ def handle_multimedia(orch, user_id, prompt, attachment) -> str:
                 except Exception as codex_err:
                     logger.debug("Transcript Codex polish skipped: %s", codex_err)
 
+            from api.handlers.output_quality_handler import (
+                estimate_transcript_source_chars_from_audio,
+                format_quality_gate_failure,
+                run_output_quality_gate,
+            )
+
+            transcript_source_chars = estimate_transcript_source_chars_from_audio(path)
+            transcript_gate = run_output_quality_gate(
+                "transcript",
+                transcript,
+                source_chars=transcript_source_chars,
+                source_name=str(path),
+                instruction=prompt or "",
+            )
+            if not transcript_gate.get("ok"):
+                logger.warning("Audio transcript quality gate failed: %s", transcript_gate.get("issue"))
+                return str(transcript_gate.get("message") or format_quality_gate_failure("transcript", str(transcript_gate.get("issue") or "")))
+
             final_text = transcript
             title = "🎙️ 語音逐字稿"
 
@@ -411,6 +429,32 @@ def handle_multimedia(orch, user_id, prompt, attachment) -> str:
                     except Exception as summarize_err:
                         logger.warning(f"Audio summary fallback due to error: {summarize_err}")
 
+            if wants_translate and title != "🌐 語音翻譯結果":
+                return "❌ 翻譯品質檢查未通過：翻譯未完成，MAGI 已停止交付本次結果。"
+            if wants_translate and final_text and final_text != transcript:
+                translation_gate = run_output_quality_gate(
+                    "translation",
+                    final_text,
+                    source_chars=len(transcript),
+                    source_text=transcript,
+                    source_name=str(path),
+                    instruction=prompt or "",
+                )
+                if not translation_gate.get("ok"):
+                    logger.warning("Audio translation quality gate failed: %s", translation_gate.get("issue"))
+                    return str(translation_gate.get("message") or format_quality_gate_failure("translation", str(translation_gate.get("issue") or "")))
+            if wants_summary and summary_text:
+                summary_gate = run_output_quality_gate(
+                    "summary",
+                    summary_text,
+                    source_chars=len(transcript),
+                    source_name=str(path),
+                    instruction=prompt or "",
+                )
+                if not summary_gate.get("ok"):
+                    logger.warning("Audio summary quality gate failed: %s", summary_gate.get("issue"))
+                    return str(summary_gate.get("message") or format_quality_gate_failure("summary", str(summary_gate.get("issue") or "")))
+
             export_text = final_text
             if wants_timestamps and timestamp_text:
                 export_text = f"【時間戳記】\n{timestamp_text}\n\n【全文】\n{final_text}".strip()
@@ -470,6 +514,19 @@ def handle_multimedia(orch, user_id, prompt, attachment) -> str:
         except Exception:
             summary_txt_default = True
         summary_force_txt = (not disable_txt) and (explicit_txt or explicit_file or summary_txt_default)
+        from api.handlers.output_quality_handler import format_quality_gate_failure, run_output_quality_gate
+
+        def _file_summary_gate_message(summary_out: str, *, source_chars: int = 0) -> str:
+            gate = run_output_quality_gate(
+                "summary",
+                summary_out,
+                source_chars=source_chars,
+                source_name=filename or os.path.basename(path),
+                instruction=prompt or "",
+            )
+            if gate.get("ok"):
+                return ""
+            return str(gate.get("message") or format_quality_gate_failure("summary", str(gate.get("issue") or "")))
 
         if wants_translate:
             extracted = orch._extract_text_from_uploaded_file(path, filename=filename)
@@ -536,6 +593,16 @@ def handle_multimedia(orch, user_id, prompt, attachment) -> str:
             translated_text = orch._polish_translated_document_text(_plain_translated)
             if not translated_text:
                 return "⚠️ 檔案翻譯結果為空。請稍後再試。"
+            translation_gate = run_output_quality_gate(
+                "translation",
+                translated_text,
+                source_chars=len(src_text),
+                source_text=src_text,
+                source_name=filename or os.path.basename(path),
+                instruction=prompt or "",
+            )
+            if not translation_gate.get("ok"):
+                return str(translation_gate.get("message") or format_quality_gate_failure("translation", str(translation_gate.get("issue") or "")))
             _src_chunks = rr.get("source_chunks") or []
             _tgt_chunks = rr.get("translated_chunks") or []
             summary_text = ""
@@ -556,6 +623,17 @@ def handle_multimedia(orch, user_id, prompt, attachment) -> str:
                         summary_text = str(sr.get("text") or "").strip()
                     else:
                         summary_note = f"⚠️ 摘要產生失敗：{str(sr.get('error') or 'summary_failed')[:120]}"
+
+            if wants_summary and summary_text:
+                summary_gate = run_output_quality_gate(
+                    "summary",
+                    summary_text,
+                    source_chars=len(src_text),
+                    source_name=filename or os.path.basename(path),
+                    instruction=prompt or "",
+                )
+                if not summary_gate.get("ok"):
+                    return str(summary_gate.get("message") or format_quality_gate_failure("summary", str(summary_gate.get("issue") or "")))
 
             ingest_note = ""
             if ingest_queued:
@@ -635,6 +713,14 @@ def handle_multimedia(orch, user_id, prompt, attachment) -> str:
                 )
                 or ""
             ).strip()
+            if out:
+                try:
+                    pdf_source_chars = 30000 if os.path.getsize(path) >= 200000 else 0
+                except Exception:
+                    pdf_source_chars = 0
+                gate_message = _file_summary_gate_message(out, source_chars=pdf_source_chars)
+                if gate_message:
+                    return gate_message
             if summary_force_txt and out:
                 exported_reply = orch._export_summary_docx_or_txt(
                     out, prefix="pdf_summary", title=(filename or "PDF 摘要"),
@@ -648,6 +734,10 @@ def handle_multimedia(orch, user_id, prompt, attachment) -> str:
             logger.info(f"📚 Processing EPUB: {path}")
             from skills.documents.epub_bridge import summarize_epub
             out = str(summarize_epub(path) or "").strip()
+            if out:
+                gate_message = _file_summary_gate_message(out, source_chars=30000 if len(out) > 1200 else 0)
+                if gate_message:
+                    return gate_message
             if summary_force_txt and out:
                 exported_reply = orch._export_summary_docx_or_txt(
                     out, prefix="epub_summary", title=(filename or "EPUB 摘要"),
@@ -660,6 +750,14 @@ def handle_multimedia(orch, user_id, prompt, attachment) -> str:
         elif any(filename.lower().endswith(ext) for ext in [".txt", ".md", ".log", ".csv", ".json", ".docx"]):
             from skills.documents.file_bridge import summarize_file
             out = str(summarize_file(path, filename=filename) or "").strip()
+            if out:
+                try:
+                    file_source_chars = 30000 if os.path.getsize(path) >= 200000 else 0
+                except Exception:
+                    file_source_chars = 0
+                gate_message = _file_summary_gate_message(out, source_chars=file_source_chars)
+                if gate_message:
+                    return gate_message
             if summary_force_txt and out:
                 exported_reply = orch._export_summary_docx_or_txt(
                     out, prefix="doc_summary", title=(filename or "檔案摘要"),

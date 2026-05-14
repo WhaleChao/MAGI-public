@@ -1136,7 +1136,18 @@ def translate_text_complete(text: str, source_lang: str = "auto", target_lang: s
     final_translation_text = _dh.polish_translated_document_text(raw_joined) or raw_joined
     final_translation_text = _apply_s2t(final_translation_text)  # 2026-04-24：最終組裝後再過一次，以防段落接合處殘留
     from api.handlers import text_processing_handler as _tp
+    from api.handlers.output_quality_handler import run_output_quality_gate
+
     final_issues = _tp.output_guard_issues(final_translation_text, mode="translation")
+    quality_gate = run_output_quality_gate(
+        "translation",
+        final_translation_text,
+        source_chars=len(str(text or "")),
+        source_text=str(text or ""),
+        instruction=f"{source_lang}->{target_lang}",
+    )
+    if not quality_gate.get("ok"):
+        final_issues = list(final_issues or []) + ["quality_gate:" + str(quality_gate.get("issue") or "failed")]
     if final_issues:
         _persist_checkpoint(
             final_text=final_translation_text,

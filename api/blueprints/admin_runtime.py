@@ -1571,6 +1571,21 @@ def create_admin_runtime_blueprint(
             taigi_hint_raw = str(request.form.get("taigi_hint") or "").strip().lower()
             taigi_hint = taigi_hint_raw in {"1", "true", "yes", "on"}
             result = transcribe(filepath, language=language, taigi_hint=taigi_hint)
+            try:
+                from api.handlers.output_quality_handler import estimate_transcript_source_chars_from_audio, run_output_quality_gate
+
+                text = str((result or {}).get("text") or "").strip() if isinstance(result, dict) else ""
+                gate = run_output_quality_gate(
+                    "transcript",
+                    text,
+                    source_chars=estimate_transcript_source_chars_from_audio(filepath),
+                    source_name=file.filename,
+                    instruction="api/transcribe",
+                )
+                if not gate.get("ok"):
+                    result = {"success": False, "error": "transcript_quality_gate:" + str(gate.get("issue") or "failed"), "quality_gate": gate}
+            except Exception:
+                logger.debug("transcript quality gate skipped", exc_info=True)
             if os.path.exists(filepath):
                 safe_remove_tmp(filepath)
             return jsonify(result)

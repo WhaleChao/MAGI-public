@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import subprocess
 from pathlib import Path
 
 
@@ -41,9 +42,27 @@ def detect_output_quality_issue(kind: str, output: str, *, source_chars: int = 0
         "無法讀取該檔案",
         "pdf 摘要失敗",
         "[pdf 摘要失敗",
+        "語音已接收，但目前無法完成轉錄",
+        "語音處理失敗",
+        "transcription_failed",
+        "無法完成轉錄",
     ]
     if any(marker.lower() in lowered for marker in blocking_markers):
         return "off_topic_or_refusal"
+
+    prompt_leak_markers = [
+        "<|channel|>",
+        "<|analysis|>",
+        "thought:",
+        "action:",
+        "observation:",
+        "system prompt",
+        "developer message",
+        "工具調用計畫",
+        "以下是我的思考",
+    ]
+    if any(marker in lowered for marker in prompt_leak_markers):
+        return "prompt_or_react_leak"
 
     if mode == "summary":
         if source_chars >= 6000 and len(text) < 360:
@@ -64,6 +83,126 @@ def detect_output_quality_issue(kind: str, output: str, *, source_chars: int = 0
             return "transcript_too_short"
 
     return ""
+
+
+def estimate_effective_source_chars(source_text: str) -> int:
+    """
+    Estimate source length for completeness gates.
+
+    Repeated boilerplate/test fixtures should not force the same minimum output
+    length as a genuinely diverse long legal document.
+    """
+    text = str(source_text or "")
+    raw_len = len(text)
+    if raw_len < 2000:
+        return raw_len
+    tokens = re.findall(r"[A-Za-z0-9_]{2,}|[\u4e00-\u9fff]", text.lower())
+    if len(tokens) < 80:
+        return raw_len
+    unique_ratio = len(set(tokens)) / max(1, len(tokens))
+    if unique_ratio < 0.04:
+        return min(raw_len, 800)
+    if unique_ratio < 0.08:
+        return min(raw_len, 1600)
+    return raw_len
+
+
+def estimate_transcript_source_chars_from_audio(path: str | Path) -> int:
+    """Map audio duration to a conservative transcript completeness threshold."""
+    p = str(path or "")
+    duration = 0.0
+    if p:
+        try:
+            cp = subprocess.run(["afinfo", p], capture_output=True, text=True, timeout=5)
+            text = (cp.stdout or "") + "\n" + (cp.stderr or "")
+            m = re.search(r"estimated duration:\s*([0-9.]+)\s*sec", text, flags=re.I)
+            if m:
+                duration = float(m.group(1))
+        except Exception:
+            duration = 0.0
+    if duration >= 180:
+        return 6000
+    if duration >= 60:
+        return 2400
+    if duration >= 25:
+        return 1200
+    if duration >= 10:
+        return 500
+    return 0
+
+
+_KIND_LABELS = {
+    "summary": "摘要",
+    "translation": "翻譯",
+    "transcript": "逐字稿",
+}
+
+
+def format_quality_gate_failure(kind: str, issue: str) -> str:
+    label = _KIND_LABELS.get((kind or "").strip().lower(), "輸出")
+    issue_label = {
+        "empty_output": "輸出為空",
+        "off_topic_or_refusal": "模型偏題或拒絕讀取來源",
+        "prompt_or_react_leak": "輸出含工具/思考洩漏",
+        "summary_too_short": "摘要相對來源過短",
+        "large_summary_too_short": "大型文件摘要相對來源過短",
+        "case_intake_question": "摘要被誤導成案件建檔問答",
+        "translation_too_short": "翻譯相對來源過短",
+        "translation_intro_only": "翻譯只有開場語，未完成正文",
+        "transcript_too_short": "逐字稿相對來源過短",
+    }.get(issue, issue or "品質未通過")
+    return (
+        f"❌ {label}品質檢查未通過：{issue_label}。\n"
+        "MAGI 已停止交付本次結果，避免把不完整或錯誤內容當成正式文件。"
+    )
+
+
+def run_output_quality_gate(
+    kind: str,
+    output: str,
+    *,
+    source_chars: int = 0,
+    source_text: str = "",
+    source_name: str = "",
+    instruction: str = "",
+) -> dict[str, object]:
+    """Central quality gate for model-generated deliverables."""
+    effective_chars = estimate_effective_source_chars(source_text) if source_text else source_chars
+    issue = detect_output_quality_issue(kind, output, source_chars=effective_chars)
+    return {
+        "ok": not bool(issue),
+        "kind": (kind or "").strip().lower(),
+        "issue": issue,
+        "message": format_quality_gate_failure(kind, issue) if issue else "",
+        "reviewer_note": build_output_reviewer_note(
+            kind,
+            source_chars=effective_chars,
+            source_name=source_name,
+            instruction=instruction,
+        ),
+    }
+
+
+def build_output_reviewer_note(
+    kind: str,
+    *,
+    source_chars: int = 0,
+    source_name: str = "",
+    instruction: str = "",
+) -> str:
+    """Short source/coverage note inspired by legal workflow review gates."""
+    label = _KIND_LABELS.get((kind or "").strip().lower(), "輸出")
+    source = Path(source_name or "").name or "使用者提供內容"
+    coverage = "已讀取可抽取全文" if source_chars >= 1200 else "來源較短或未提供可估算字數"
+    lines = [
+        f"覆核註記：{label}",
+        f"- 來源：{source}",
+        f"- 覆蓋：{coverage}",
+        "- 正式引用前：請回到原始檔案核對頁碼、段落與專有名詞。",
+    ]
+    if instruction:
+        lines.append(f"- 指示：{instruction.strip()[:120]}")
+    return "\n".join(lines)
 
 
 def _clean_line(line: str) -> str:

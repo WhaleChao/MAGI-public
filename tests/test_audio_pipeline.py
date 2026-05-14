@@ -85,3 +85,11 @@ def test_audio_translated_summary_uses_translated_text(mock_transcribe, mock_fea
     orc._translate_text_complete.assert_called_once()
     summary_call = orc._summarize_text_resilient.call_args
     assert summary_call.args[0] == "這是完整翻譯稿。"
+
+
+def test_transcript_postprocess_fixes_common_legal_asr_terms():
+    from skills.bridge.balthasar_bridge import _postprocess_transcribe_result
+
+    fixed = _postprocess_transcribe_result({"success": True, "text": "今天確認摘藥、翻譯、逐字稿都有品質扎門。"})
+
+    assert fixed["text"] == "今天確認摘要、翻譯、逐字稿都有品質閘門。"
