@@ -10,7 +10,7 @@
                     ┌─────────────────────────────────────────┐
                     │              External Clients            │
                     │   LINE Bot  │  Discord  │  Telegram     │
-                    │   Web UI    │  OpenClaw │  MCP Client   │
+                    │   Web UI    │ Tools API │  MCP Client   │
                     └──────┬──────┴─────┬─────┴──────┬────────┘
                            │            │            │
                     ┌──────▼────────────▼────────────▼────────┐

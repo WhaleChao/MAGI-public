@@ -158,7 +158,6 @@ MAGI 使用 macOS LaunchAgents 管理程序生命週期。所有 plist 位於 `~
 | `com.magi.omlx-embed` | ModernBERT embedding（port 8081） | 常駐 |
 | `com.magi.db-proxy` | SSH tunnel 至遠端 MariaDB | 常駐 |
 | `com.magi.smb-reconnect` | NAS 網路中斷自動重連 | 常駐 |
-| `com.magi.caddy-openclaw` | Caddy 反向代理 _(⚠️ DEPRECATED 2026-05-03：OpenClaw 已棄用，本段保留為歷史參考)_ | 常駐 |
 | `com.magi.nightly-*` | 夜間排程任務（多個） | 按排程 |
 
 ### 手動管理

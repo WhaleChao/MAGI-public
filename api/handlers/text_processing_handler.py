@@ -21,7 +21,7 @@ except Exception:
 
 
 def sanitize_incoming_message(message: str) -> str:
-    """Remove OpenClaw UI metadata wrappers so routing sees the actual user text."""
+    """Remove legacy UI metadata wrappers so routing sees the actual user text."""
     text = str(message or "").strip()
     if not text:
         return ""

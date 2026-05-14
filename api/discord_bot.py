@@ -1,8 +1,7 @@
 """
 MAGI Discord Bot
 ================
-Allows OpenClaw to receive and respond to messages on Discord.
-Routes messages to the Orchestrator just like LINE.
+Receives Discord messages and routes them to the MAGI orchestrator just like LINE.
 """
 
 import discord
@@ -51,8 +50,8 @@ except Exception:
     logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 41, exc_info=True)
 
 # Scheduler policy:
-# 使用者要求「排程以 OpenClaw 為準」，避免 Discord bot 內建 scheduler 重複觸發。
-# 因此內建 CronScheduler 預設關閉（需要時再用環境變數開啟）。
+# MAGI daemon / cron_jobs.json is the canonical scheduler source.  Keep the
+# Discord bot internal scheduler off unless explicitly enabled.
 INTERNAL_CRON_ENABLED = (
     os.environ.get("MAGI_INTERNAL_CRON_ENABLED", "").strip().lower() in {"1", "true", "yes", "on"}
 )
@@ -304,7 +303,7 @@ async def _line_self_heal_funnel() -> str:
     """
     Best-effort recovery for LINE webhook connectivity via Cloudflare Quick Tunnel.
     Starts cloudflared if not running, extracts URL, registers with LINE API.
-    IMPORTANT: Always point to Caddy (18790), NEVER directly to OpenClaw (18789).
+    IMPORTANT: Always point to the MAGI webhook proxy (18790), never to retired legacy ports.
     """
     import glob as _glob
     notes = []
@@ -899,7 +898,7 @@ async def on_ready():
     if INTERNAL_CRON_ENABLED:
         client.loop.create_task(bg_scheduler_loop())
     else:
-        logger.info("⏸️ Internal CronScheduler disabled (use OpenClaw cron as source of truth). Set MAGI_INTERNAL_CRON_ENABLED=1 to enable.")
+        logger.info("⏸️ Internal CronScheduler disabled (MAGI daemon scheduler is source of truth). Set MAGI_INTERNAL_CRON_ENABLED=1 to enable.")
     
     # Register Async Callback
     def send_async_notification(user_id, message, platform="Discord", *, topic_key="", source=""):

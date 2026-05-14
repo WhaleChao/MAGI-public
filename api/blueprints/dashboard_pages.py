@@ -1,6 +1,6 @@
 """
-Dashboard / Intel / OpenClaw page routes
-========================================
+Dashboard / Intel / MAGI management page routes
+===============================================
 
 First modularization slice for the page layer that was previously embedded in
 `api/server.py`.
@@ -8,7 +8,6 @@ First modularization slice for the page layer that was previously embedded in
 This blueprint keeps the existing behavior for:
   - /static/worldmonitor_reports -> /intel
   - /worldmonitor -> /intel
-  - /openclaw -> /magi-adjust
   - /intel -> worldmonitor report index
   - /dashboard
   - /dashboard/nerv
@@ -448,12 +447,6 @@ def worldmonitor_reports_redirect():
 @dashboard_pages_bp.route("/worldmonitor/")
 def worldmonitor_entry():
     return redirect("/intel")
-
-
-@dashboard_pages_bp.route("/openclaw")
-@dashboard_pages_bp.route("/openclaw-gateway")
-def openclaw_entry():
-    return redirect("/magi-adjust")
 
 
 @dashboard_pages_bp.route("/intel")

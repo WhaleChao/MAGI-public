@@ -31,15 +31,15 @@ def _make_app():
     return app
 
 
-def test_localhost_can_access_openclaw_routes():
+def test_localhost_cannot_access_retired_legacy_entrypoints():
     app = _make_app()
     client = app.test_client()
 
     response = client.get("/openclaw", base_url="http://localhost")
-    assert response.status_code == 200
+    assert response.status_code == 404
 
 
-def test_public_host_cannot_access_openclaw_routes():
+def test_public_host_cannot_access_retired_legacy_entrypoints():
     app = _make_app()
     client = app.test_client()
 
@@ -87,7 +87,7 @@ def test_cloudflare_tunnel_can_expose_web_ui_when_explicitly_enabled(monkeypatch
     assert response.status_code == 200
 
 
-def test_cloudflare_web_ui_flag_does_not_expose_openclaw(monkeypatch):
+def test_cloudflare_web_ui_flag_does_not_expose_retired_legacy_entrypoints(monkeypatch):
     monkeypatch.setenv("MAGI_ALLOW_CLOUDFLARE_WEB_UI", "1")
     app = _make_app()
     client = app.test_client()

@@ -799,10 +799,10 @@ def _last_line_outgoing_preview(user_id: str) -> str:
 
 
 # ===================================================================
-# 7. Config loading (openclaw cfg, telegram channel state)
+# 7. Config loading (legacy channel cfg, telegram channel state)
 # ===================================================================
 
-def _load_openclaw_cfg() -> dict:
+def _load_legacy_channel_cfg() -> dict:
     def _raw_load() -> dict:
         try:
             p = Path.home() / ".openclaw" / "openclaw.json"
@@ -845,7 +845,7 @@ def _load_openclaw_cfg() -> dict:
             if changed_state:
                 _save_telegram_channel_state(state)
             if changed_cfg:
-                _save_openclaw_cfg(cfg)
+                _save_legacy_channel_cfg(cfg)
     except Exception as e:
         logger.warning(f"⚠️ telegram channel-state migration skipped: {e}")
     return cfg
@@ -893,7 +893,7 @@ def _save_telegram_channel_state(state: dict) -> bool:
         return False
 
 
-def _save_openclaw_cfg(cfg: dict) -> bool:
+def _save_legacy_channel_cfg(cfg: dict) -> bool:
     try:
         p = Path.home() / ".openclaw" / "openclaw.json"
         p.parent.mkdir(parents=True, exist_ok=True)
@@ -905,7 +905,7 @@ def _save_openclaw_cfg(cfg: dict) -> bool:
         tmp.replace(p)
         return True
     except Exception as e:
-        logger.warning(f"⚠️ save openclaw config failed: {e}")
+        logger.warning(f"⚠️ save legacy channel config failed: {e}")
         return False
 
 
