@@ -205,6 +205,33 @@ def test_pdf_preview_content_url_is_encoded(tmp_path: Path):
     assert "A&B#1" not in data["content_url"]
 
 
+def test_structured_preview_uses_staged_file_before_reading(tmp_path: Path, monkeypatch):
+    client = _client()
+    src = tmp_path / "資料.csv"
+    src.write_text("name\n原始\n", encoding="utf-8")
+    staged = tmp_path / "staged.csv"
+    staged.write_text("name\n暫存\n", encoding="utf-8")
+
+    from api.blueprints import osc_files as mod
+
+    seen = {}
+
+    def fake_preview_csv(path):
+        seen["path"] = path
+        return {"ok": True, "headers": ["name"], "rows": [["暫存"]], "truncated": False, "row_count": 1}
+
+    monkeypatch.setattr(mod, "_stage_file_with_retry", lambda local: str(staged))
+    monkeypatch.setattr(mod.osc_preview, "preview_csv_to_rows", fake_preview_csv)
+    with patch("api.blueprints.osc_files._osc_resolve_existing_local_path", return_value=str(src)), \
+         patch("api.blueprints.osc_files._osc_is_safe_local_path", return_value=True):
+        r = client.get(f"/api/osc/files/preview?{urlencode({'path': str(src)})}")
+
+    assert r.status_code == 200
+    assert r.get_json()["rows"] == [["暫存"]]
+    assert seen["path"] == str(staged)
+    assert not staged.exists()
+
+
 def test_share_requires_independent_base_even_on_localhost(tmp_path: Path, monkeypatch):
     client = _client()
     src = tmp_path / "卷證.pdf"
