@@ -295,6 +295,7 @@ def test_main_dry_run_writes_summary(sandbox, monkeypatch):
     assert "metrics" in parsed and "omlx_cache" in parsed
     assert "compressed_artifacts" in parsed
     assert "generated_staging" in parsed
+    assert "nas_recycle" in parsed
 
 
 # ---------- compression ------------------------------------------------
@@ -384,6 +385,7 @@ def test_main_apply_arg_overrides_env_dry_run(sandbox, monkeypatch):
     monkeypatch.setattr(dc, "cleanup_db_backups", lambda dry_run: [])
     monkeypatch.setattr(dc, "cleanup_build_artifacts", lambda dry_run: [])
     monkeypatch.setattr(dc, "cleanup_stale_git_tmp_packs", lambda dry_run: [])
+    monkeypatch.setattr(dc, "cleanup_nas_recycle", lambda dry_run: [])
     monkeypatch.setattr(dc, "report_agent_logs", lambda dry_run: [])
     assert dc.main(["--apply"]) == 0
     assert calls == [False]
@@ -472,3 +474,84 @@ def test_git_tmp_pack_cleanup_removes_stale_temp_packs(sandbox, monkeypatch):
     assert fresh.exists()
     assert keep.exists()
     assert actions[0]["deleted_files"] == 1
+
+
+# ---------- NAS recycle cleanup ----------------------------------------
+
+def test_nas_recycle_cleanup_requires_explicit_enable(sandbox, monkeypatch):
+    monkeypatch.setattr(dc, "NAS_RECYCLE_CLEANUP_ENABLE", False, raising=True)
+
+    actions = dc.cleanup_nas_recycle(dry_run=False)
+
+    assert actions == [{"enabled": False, "reason": "MAGI_DISK_NAS_RECYCLE_ENABLE=0"}]
+
+
+def test_nas_recycle_cleanup_removes_only_old_recycle_items(sandbox, monkeypatch):
+    recycle = sandbox["tmp"] / "#recycle"
+    old = recycle / "old.pdf"
+    fresh = recycle / "fresh.pdf"
+    recycle.mkdir(parents=True, exist_ok=True)
+    old.write_bytes(b"old")
+    fresh.write_bytes(b"fresh")
+    now = time.time()
+    os.utime(old, (now - 20 * 86400, now - 20 * 86400))
+    os.utime(fresh, (now - 1 * 86400, now - 1 * 86400))
+    monkeypatch.setattr(dc, "NAS_RECYCLE_CLEANUP_ENABLE", True, raising=True)
+    monkeypatch.setattr(dc, "NAS_RECYCLE_ALLOW_NON_VOLUME", True, raising=True)
+    monkeypatch.setattr(dc, "NAS_RECYCLE_MAX_AGE_DAYS", 14, raising=True)
+    monkeypatch.setattr(dc, "NAS_RECYCLE_MAX_DELETE_ITEMS", 50, raising=True)
+    monkeypatch.setenv("MAGI_DISK_NAS_RECYCLE_ROOTS", str(recycle))
+
+    actions = dc.cleanup_nas_recycle(dry_run=False)
+
+    assert not old.exists()
+    assert fresh.exists()
+    assert actions[0]["candidate_items"] == 1
+    assert actions[0]["deleted_items"] == 1
+
+
+def test_nas_recycle_cleanup_respects_delete_cap(sandbox, monkeypatch):
+    recycle = sandbox["tmp"] / "#recycle"
+    recycle.mkdir(parents=True, exist_ok=True)
+    now = time.time()
+    files = []
+    for idx in range(3):
+        p = recycle / f"old-{idx}.pdf"
+        p.write_bytes(b"x")
+        os.utime(p, (now - 20 * 86400 - idx, now - 20 * 86400 - idx))
+        files.append(p)
+    monkeypatch.setattr(dc, "NAS_RECYCLE_CLEANUP_ENABLE", True, raising=True)
+    monkeypatch.setattr(dc, "NAS_RECYCLE_ALLOW_NON_VOLUME", True, raising=True)
+    monkeypatch.setattr(dc, "NAS_RECYCLE_MAX_AGE_DAYS", 14, raising=True)
+    monkeypatch.setattr(dc, "NAS_RECYCLE_MAX_DELETE_ITEMS", 1, raising=True)
+    monkeypatch.setenv("MAGI_DISK_NAS_RECYCLE_ROOTS", str(recycle))
+
+    actions = dc.cleanup_nas_recycle(dry_run=False)
+
+    assert sum(not p.exists() for p in files) == 1
+    assert actions[0]["candidate_items"] == 3
+    assert actions[0]["deleted_items"] == 1
+    assert actions[0]["stopped_reason"] == "max_delete_items_reached"
+
+
+def test_nas_recycle_cleanup_reports_heavy_backup_without_deleting(sandbox, monkeypatch):
+    recycle = sandbox["tmp"] / "#recycle"
+    backup = recycle / "Backup"
+    old_file = backup / "old.bin"
+    old_file.parent.mkdir(parents=True, exist_ok=True)
+    old_file.write_bytes(b"x")
+    ts = time.time() - 30 * 86400
+    os.utime(backup, (ts, ts))
+    os.utime(old_file, (ts, ts))
+    monkeypatch.setattr(dc, "NAS_RECYCLE_CLEANUP_ENABLE", True, raising=True)
+    monkeypatch.setattr(dc, "NAS_RECYCLE_ALLOW_NON_VOLUME", True, raising=True)
+    monkeypatch.setattr(dc, "NAS_RECYCLE_MAX_AGE_DAYS", 14, raising=True)
+    monkeypatch.setattr(dc, "NAS_RECYCLE_MAX_DELETE_ITEMS", 50, raising=True)
+    monkeypatch.setenv("MAGI_DISK_NAS_RECYCLE_ROOTS", str(recycle))
+
+    actions = dc.cleanup_nas_recycle(dry_run=False)
+
+    assert backup.exists()
+    assert actions[0]["candidate_items"] == 0
+    assert actions[0]["skipped_heavy_items"] == 1
+    assert str(backup) in actions[0]["skipped_heavy_paths"]

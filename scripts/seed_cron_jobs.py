@@ -232,8 +232,8 @@ def operational_jobs(repo_root: Path = REPO_ROOT, python_path: Path | None = Non
         {
             "id": "job_disk_cleanup_healthcheck",
             "cron": "55 3 * * *",
-            "command": f"{python_bin} {run_with_env} MAGI_DISK_CLEANUP_DRY_RUN=0 -- {python_bin} {repo_root / 'scripts' / 'ops' / 'disk_cleanup_healthcheck.py'} --apply",
-            "desc": "磁碟自動清理與壓縮（每日 03:55；快取上限、舊報告 gzip、備份保留）",
+            "command": f"{python_bin} {run_with_env} MAGI_DISK_CLEANUP_DRY_RUN=0 MAGI_DISK_NAS_RECYCLE_ENABLE=1 -- {python_bin} {repo_root / 'scripts' / 'ops' / 'disk_cleanup_healthcheck.py'} --apply",
+            "desc": "磁碟自動清理與壓縮（每日 03:55；快取上限、舊報告 gzip、備份保留、NAS 回收筒保留 14 天）",
             "channel_id": None,
             "last_run": None,
             "last_run_minute": None,

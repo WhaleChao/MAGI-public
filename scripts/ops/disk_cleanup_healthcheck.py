@@ -81,6 +81,23 @@ PAYMENT_DUPLICATE_CLEANUP_ENABLE = os.environ.get(
 PAYMENT_DUPLICATE_ALLOW_SMB = os.environ.get(
     "MAGI_DISK_PAYMENT_DUPLICATE_ALLOW_SMB", "0"
 ).strip().lower() in {"1", "true", "on", "yes"}
+NAS_RECYCLE_CLEANUP_ENABLE = os.environ.get(
+    "MAGI_DISK_NAS_RECYCLE_ENABLE", "0"
+).strip().lower() in {"1", "true", "on", "yes"}
+NAS_RECYCLE_ALLOW_NON_VOLUME = os.environ.get(
+    "MAGI_DISK_NAS_RECYCLE_ALLOW_NON_VOLUME", "0"
+).strip().lower() in {"1", "true", "on", "yes"}
+NAS_RECYCLE_MAX_AGE_DAYS = float(os.environ.get("MAGI_DISK_NAS_RECYCLE_MAX_AGE_DAYS", "14"))
+NAS_RECYCLE_MAX_DELETE_ITEMS = int(os.environ.get("MAGI_DISK_NAS_RECYCLE_MAX_DELETE_ITEMS", "50"))
+NAS_RECYCLE_MAX_RUNTIME_SEC = int(os.environ.get("MAGI_DISK_NAS_RECYCLE_MAX_RUNTIME_SEC", "180"))
+NAS_RECYCLE_HEAVY_DIR_NAMES = frozenset(
+    name.strip()
+    for name in os.environ.get(
+        "MAGI_DISK_NAS_RECYCLE_HEAVY_DIR_NAMES",
+        "Backup,Drive,SteamLibrary,Applications,WindowsApps",
+    ).split(",")
+    if name.strip()
+)
 EXPORT_OUTPUT_MAX_AGE_DAYS = float(os.environ.get("MAGI_DISK_EXPORT_OUTPUT_MAX_AGE_DAYS", "3"))
 MODULE_STAGING_MAX_AGE_DAYS = float(os.environ.get("MAGI_DISK_MODULE_STAGING_MAX_AGE_DAYS", "14"))
 PRESERVED_STANDALONE_SUFFIXES = frozenset({
@@ -1122,6 +1139,183 @@ def cleanup_duplicate_payment_slips(dry_run: bool) -> List[Dict[str, Any]]:
     return [info]
 
 
+# ---- NAS recycle cleanup -----------------------------------------------
+
+_NAS_RECYCLE_NAMES = frozenset({"#recycle", "$RECYCLE.BIN", ".Trash", ".Trashes"})
+
+
+def _default_nas_recycle_roots() -> List[Path]:
+    roots = [
+        Path("/Volumes/homes/#recycle"),
+        Path("/Volumes/homes/lumi63181107/#recycle"),
+        Path("/Volumes/lumi/$RECYCLE.BIN"),
+        Path("/Volumes/lumi/lumi/#recycle"),
+    ]
+    return [p for p in roots if p.exists()]
+
+
+def _nas_recycle_roots() -> List[Path]:
+    raw = os.environ.get("MAGI_DISK_NAS_RECYCLE_ROOTS", "").strip()
+    if raw:
+        roots = [Path(p).expanduser().resolve() for p in raw.split(os.pathsep) if p.strip()]
+    else:
+        roots = _default_nas_recycle_roots()
+    safe: List[Path] = []
+    seen: set[Path] = set()
+    for root in roots:
+        if root in seen:
+            continue
+        seen.add(root)
+        if not root.exists():
+            continue
+        if root.name not in _NAS_RECYCLE_NAMES:
+            continue
+        if not NAS_RECYCLE_ALLOW_NON_VOLUME and not str(root).startswith("/Volumes/"):
+            continue
+        safe.append(root)
+    return safe
+
+
+def _nas_recycle_candidate_parents(root: Path) -> List[Path]:
+    """Return shallow parent folders whose direct children can be aged out.
+
+    Synology homes recycle bins are usually shaped as:
+      /Volumes/homes/#recycle/<user>/<deleted item>
+      /Volumes/homes/<user>/#recycle/<deleted item>
+
+    Windows-style recycle bins are commonly:
+      /Volumes/lumi/$RECYCLE.BIN/<SID>/<deleted item>
+
+    We intentionally stay shallow so daily cleanup does not deep-scan NAS case
+    folders. Directory contents are only traversed if an old candidate is
+    actually removed.
+    """
+    try:
+        children = [p for p in root.iterdir()]
+    except OSError:
+        return []
+
+    if root.name == "$RECYCLE.BIN":
+        return [p for p in children if p.is_dir()]
+
+    if root.name == "#recycle" and root.parent == Path("/Volumes/homes"):
+        return [p for p in children if p.is_dir()]
+
+    return [root]
+
+
+def _iter_nas_recycle_candidates(root: Path) -> List[Path]:
+    candidates: List[Path] = []
+    for parent in _nas_recycle_candidate_parents(root):
+        try:
+            for child in parent.iterdir():
+                if child.name in {".", "..", ".DS_Store"}:
+                    continue
+                if child.name in _NAS_RECYCLE_NAMES and child.is_dir():
+                    try:
+                        candidates.extend(
+                            nested
+                            for nested in child.iterdir()
+                            if nested.name not in {".", "..", ".DS_Store"}
+                        )
+                    except OSError:
+                        pass
+                    continue
+                candidates.append(child)
+        except OSError:
+            continue
+    return candidates
+
+
+def _is_heavy_nas_recycle_candidate(path: Path) -> bool:
+    if not path.is_dir() or path.is_symlink():
+        return False
+    if path.name in NAS_RECYCLE_HEAVY_DIR_NAMES:
+        return True
+    if path.suffix.lower() == ".app":
+        return True
+    return False
+
+
+def _remove_nas_recycle_candidate(path: Path) -> None:
+    if path.is_dir() and not path.is_symlink():
+        shutil.rmtree(path)
+    else:
+        path.unlink()
+
+
+def cleanup_nas_recycle(dry_run: bool) -> List[Dict[str, Any]]:
+    """Clean NAS recycle bins with strict root allowlisting and age retention."""
+    if not NAS_RECYCLE_CLEANUP_ENABLE:
+        return [{"enabled": False, "reason": "MAGI_DISK_NAS_RECYCLE_ENABLE=0"}]
+
+    cutoff = time.time() - max(0.0, NAS_RECYCLE_MAX_AGE_DAYS) * 86400
+    max_items = max(0, NAS_RECYCLE_MAX_DELETE_ITEMS)
+    roots = _nas_recycle_roots()
+    actions: List[Dict[str, Any]] = []
+    deleted_total = 0
+    start_mono = time.monotonic()
+
+    for root in roots:
+        info: Dict[str, Any] = {
+            "root": str(root),
+            "max_age_days": NAS_RECYCLE_MAX_AGE_DAYS,
+            "max_delete_items": max_items,
+            "max_runtime_sec": NAS_RECYCLE_MAX_RUNTIME_SEC,
+            "candidate_items": 0,
+            "deleted_items": 0,
+            "skipped_heavy_items": 0,
+            "skipped_heavy_paths": [],
+            "dry_run": dry_run,
+            "errors": [],
+        }
+        candidates = []
+        for path in _iter_nas_recycle_candidates(root):
+            try:
+                st = path.stat()
+            except OSError as exc:
+                info["errors"].append({"path": str(path), "error": str(exc)})
+                continue
+            if st.st_mtime >= cutoff:
+                continue
+            if _is_heavy_nas_recycle_candidate(path):
+                info["skipped_heavy_items"] += 1
+                if len(info["skipped_heavy_paths"]) < 20:
+                    info["skipped_heavy_paths"].append(str(path))
+                continue
+            candidates.append((st.st_mtime, path))
+
+        candidates.sort(key=lambda item: (item[0], str(item[1])))
+        info["candidate_items"] = len(candidates)
+        for _mtime, path in candidates:
+            if max_items and deleted_total >= max_items:
+                info["stopped_reason"] = "max_delete_items_reached"
+                break
+            if NAS_RECYCLE_MAX_RUNTIME_SEC > 0 and time.monotonic() - start_mono >= NAS_RECYCLE_MAX_RUNTIME_SEC:
+                info["stopped_reason"] = "max_runtime_reached"
+                break
+            if dry_run:
+                continue
+            try:
+                _remove_nas_recycle_candidate(path)
+                info["deleted_items"] += 1
+                deleted_total += 1
+            except Exception as exc:
+                info["errors"].append({"path": str(path), "error": str(exc)})
+
+        _log(
+            f"nas recycle {root}: {'would remove' if dry_run else 'removed'} "
+            f"{info['candidate_items']} old items; deleted={info['deleted_items']}"
+        )
+        actions.append(info)
+        if max_items and deleted_total >= max_items:
+            break
+
+    if not roots:
+        actions.append({"roots": [], "candidate_items": 0, "dry_run": dry_run})
+    return actions
+
+
 # ---- server.log 回報 ----------------------------------------------------
 
 def report_agent_logs(_dry_run: bool) -> List[Dict[str, Any]]:
@@ -1165,6 +1359,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         "compressed_artifacts": compress_runtime_artifacts(dry_run),
         "generated_staging": cleanup_generated_staging(dry_run),
         "duplicate_payment_slips": cleanup_duplicate_payment_slips(dry_run),
+        "nas_recycle": cleanup_nas_recycle(dry_run),
         "agent_logs": report_agent_logs(dry_run),
     }
     # 寫 summary 到 runtime/metrics（自己也透過 runtime_dir 管理）
