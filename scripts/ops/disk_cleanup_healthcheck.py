@@ -98,6 +98,14 @@ NAS_RECYCLE_HEAVY_DIR_NAMES = frozenset(
     ).split(",")
     if name.strip()
 )
+NAS_RECYCLE_HEAVY_CLEANUP_ENABLE = os.environ.get(
+    "MAGI_DISK_NAS_RECYCLE_HEAVY_ENABLE", "0"
+).strip().lower() in {"1", "true", "on", "yes"}
+NAS_RECYCLE_HEAVY_MAX_FILES = int(os.environ.get("MAGI_DISK_NAS_RECYCLE_HEAVY_MAX_FILES", "5000"))
+NAS_RECYCLE_HEAVY_MAX_RUNTIME_SEC = int(os.environ.get("MAGI_DISK_NAS_RECYCLE_HEAVY_MAX_RUNTIME_SEC", "900"))
+NAS_RECYCLE_HEAVY_MAX_DELETE_BYTES = int(
+    float(os.environ.get("MAGI_DISK_NAS_RECYCLE_HEAVY_MAX_DELETE_GB", "50")) * 1024 * 1024 * 1024
+)
 EXPORT_OUTPUT_MAX_AGE_DAYS = float(os.environ.get("MAGI_DISK_EXPORT_OUTPUT_MAX_AGE_DAYS", "3"))
 MODULE_STAGING_MAX_AGE_DAYS = float(os.environ.get("MAGI_DISK_MODULE_STAGING_MAX_AGE_DAYS", "14"))
 PRESERVED_STANDALONE_SUFFIXES = frozenset({
@@ -1316,6 +1324,173 @@ def cleanup_nas_recycle(dry_run: bool) -> List[Dict[str, Any]]:
     return actions
 
 
+def _old_heavy_nas_recycle_candidates() -> List[Tuple[Path, Path]]:
+    """Return (recycle_root, heavy_dir) pairs old enough for off-peak cleanup."""
+    cutoff = time.time() - max(0.0, NAS_RECYCLE_MAX_AGE_DAYS) * 86400
+    candidates: List[Tuple[Path, Path]] = []
+    for root in _nas_recycle_roots():
+        for path in _iter_nas_recycle_candidates(root):
+            if not _is_heavy_nas_recycle_candidate(path):
+                continue
+            try:
+                st = path.stat()
+            except OSError:
+                continue
+            if st.st_mtime >= cutoff:
+                continue
+            candidates.append((root, path))
+    candidates.sort(key=lambda item: str(item[1]))
+    return candidates
+
+
+def _process_heavy_recycle_dir(
+    heavy_dir: Path,
+    *,
+    start_mono: float,
+    dry_run: bool,
+    file_budget: int,
+    byte_budget: int,
+) -> Dict[str, Any]:
+    info: Dict[str, Any] = {
+        "path": str(heavy_dir),
+        "deleted_files": 0,
+        "deleted_bytes": 0,
+        "removed_empty_dirs": 0,
+        "dry_run": dry_run,
+        "errors": [],
+    }
+    if dry_run:
+        info["would_process"] = True
+        return info
+
+    stack = [heavy_dir]
+    visited_dirs: List[Path] = []
+    stopped_reason = ""
+
+    while stack:
+        if NAS_RECYCLE_HEAVY_MAX_RUNTIME_SEC > 0 and time.monotonic() - start_mono >= NAS_RECYCLE_HEAVY_MAX_RUNTIME_SEC:
+            stopped_reason = "max_runtime_reached"
+            break
+        current = stack.pop()
+        visited_dirs.append(current)
+        try:
+            with os.scandir(current) as entries:
+                for entry in entries:
+                    if NAS_RECYCLE_HEAVY_MAX_RUNTIME_SEC > 0 and time.monotonic() - start_mono >= NAS_RECYCLE_HEAVY_MAX_RUNTIME_SEC:
+                        stopped_reason = "max_runtime_reached"
+                        break
+                    path = Path(entry.path)
+                    try:
+                        if entry.is_dir(follow_symlinks=False):
+                            stack.append(path)
+                            continue
+                        size = entry.stat(follow_symlinks=False).st_size
+                    except OSError as exc:
+                        info["errors"].append({"path": str(path), "error": str(exc)})
+                        continue
+                    if file_budget and info["deleted_files"] >= file_budget:
+                        stopped_reason = "max_files_reached"
+                        break
+                    if byte_budget and info["deleted_bytes"] + size > byte_budget:
+                        stopped_reason = "max_bytes_reached"
+                        break
+                    try:
+                        path.unlink()
+                        info["deleted_files"] += 1
+                        info["deleted_bytes"] += size
+                    except OSError as exc:
+                        info["errors"].append({"path": str(path), "error": str(exc)})
+                if stopped_reason:
+                    break
+        except OSError as exc:
+            info["errors"].append({"path": str(current), "error": str(exc)})
+
+    for directory in reversed(visited_dirs):
+        if stopped_reason and directory == heavy_dir:
+            # Keep the top marker while the job is incomplete so the next run can resume.
+            continue
+        try:
+            directory.rmdir()
+            info["removed_empty_dirs"] += 1
+        except OSError:
+            pass
+
+    if stopped_reason:
+        info["stopped_reason"] = stopped_reason
+    elif heavy_dir.exists():
+        try:
+            heavy_dir.rmdir()
+            info["removed_empty_dirs"] += 1
+        except OSError:
+            info["remaining"] = True
+    return info
+
+
+def cleanup_nas_recycle_heavy(dry_run: bool) -> List[Dict[str, Any]]:
+    """Incrementally clean old heavy directories in NAS recycle bins off-peak."""
+    if not NAS_RECYCLE_HEAVY_CLEANUP_ENABLE:
+        return [{"enabled": False, "reason": "MAGI_DISK_NAS_RECYCLE_HEAVY_ENABLE=0"}]
+
+    start_mono = time.monotonic()
+    heavy_candidates = _old_heavy_nas_recycle_candidates()
+    summary: Dict[str, Any] = {
+        "enabled": True,
+        "max_age_days": NAS_RECYCLE_MAX_AGE_DAYS,
+        "max_files": NAS_RECYCLE_HEAVY_MAX_FILES,
+        "max_runtime_sec": NAS_RECYCLE_HEAVY_MAX_RUNTIME_SEC,
+        "max_delete_bytes": NAS_RECYCLE_HEAVY_MAX_DELETE_BYTES,
+        "candidate_items": len(heavy_candidates),
+        "processed_items": 0,
+        "deleted_files": 0,
+        "deleted_bytes": 0,
+        "removed_empty_dirs": 0,
+        "dry_run": dry_run,
+        "items": [],
+    }
+
+    remaining_file_budget = max(0, NAS_RECYCLE_HEAVY_MAX_FILES)
+    remaining_byte_budget = max(0, NAS_RECYCLE_HEAVY_MAX_DELETE_BYTES)
+    for root, heavy_dir in heavy_candidates:
+        if NAS_RECYCLE_HEAVY_MAX_RUNTIME_SEC > 0 and time.monotonic() - start_mono >= NAS_RECYCLE_HEAVY_MAX_RUNTIME_SEC:
+            summary["stopped_reason"] = "max_runtime_reached"
+            break
+        if remaining_file_budget == 0 and NAS_RECYCLE_HEAVY_MAX_FILES > 0:
+            summary["stopped_reason"] = "max_files_reached"
+            break
+        if remaining_byte_budget == 0 and NAS_RECYCLE_HEAVY_MAX_DELETE_BYTES > 0:
+            summary["stopped_reason"] = "max_bytes_reached"
+            break
+
+        item = _process_heavy_recycle_dir(
+            heavy_dir,
+            start_mono=start_mono,
+            dry_run=dry_run,
+            file_budget=remaining_file_budget,
+            byte_budget=remaining_byte_budget,
+        )
+        item["root"] = str(root)
+        summary["items"].append(item)
+        summary["processed_items"] += 1
+        summary["deleted_files"] += int(item.get("deleted_files") or 0)
+        summary["deleted_bytes"] += int(item.get("deleted_bytes") or 0)
+        summary["removed_empty_dirs"] += int(item.get("removed_empty_dirs") or 0)
+        if NAS_RECYCLE_HEAVY_MAX_FILES > 0:
+            remaining_file_budget = max(0, remaining_file_budget - int(item.get("deleted_files") or 0))
+        if NAS_RECYCLE_HEAVY_MAX_DELETE_BYTES > 0:
+            remaining_byte_budget = max(0, remaining_byte_budget - int(item.get("deleted_bytes") or 0))
+        if item.get("stopped_reason"):
+            summary["stopped_reason"] = item["stopped_reason"]
+            break
+
+    _log(
+        f"nas recycle heavy: {'would process' if dry_run else 'processed'} "
+        f"{summary['processed_items']}/{summary['candidate_items']} heavy items, "
+        f"deleted_files={summary['deleted_files']}, "
+        f"deleted_bytes={summary['deleted_bytes'] / 1024 / 1024:.2f} MB"
+    )
+    return [summary]
+
+
 # ---- server.log 回報 ----------------------------------------------------
 
 def report_agent_logs(_dry_run: bool) -> List[Dict[str, Any]]:
@@ -1360,6 +1535,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         "generated_staging": cleanup_generated_staging(dry_run),
         "duplicate_payment_slips": cleanup_duplicate_payment_slips(dry_run),
         "nas_recycle": cleanup_nas_recycle(dry_run),
+        "nas_recycle_heavy": cleanup_nas_recycle_heavy(dry_run),
         "agent_logs": report_agent_logs(dry_run),
     }
     # 寫 summary 到 runtime/metrics（自己也透過 runtime_dir 管理）
@@ -1381,13 +1557,17 @@ def main(argv: Optional[List[str]] = None) -> int:
     total_compress_candidates = len(summary.get("compressed_artifacts") or [])
     total_staging_candidates = sum(a.get("candidate_files", 0) for a in summary.get("generated_staging") or [])
     total_payment_duplicates = sum(a.get("duplicate_files", 0) for a in summary.get("duplicate_payment_slips") or [])
+    total_nas_recycle_items = sum(a.get("deleted_items", 0) for a in summary.get("nas_recycle") or [])
+    total_heavy_files = sum(a.get("deleted_files", 0) for a in summary.get("nas_recycle_heavy") or [])
     _log(
         f"summary: metrics_rotated={total_metrics}, "
         f"omlx_cache_candidates={total_cache_candidates}, "
         f"tmp_candidates={tmp_entry.get('candidate_count', 0)}, "
         f"compress_candidates={total_compress_candidates}, "
         f"staging_candidates={total_staging_candidates}, "
-        f"payment_duplicates={total_payment_duplicates}"
+        f"payment_duplicates={total_payment_duplicates}, "
+        f"nas_recycle_deleted={total_nas_recycle_items}, "
+        f"nas_heavy_files={total_heavy_files}"
     )
     return 0
 

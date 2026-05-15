@@ -242,6 +242,27 @@ def operational_jobs(repo_root: Path = REPO_ROOT, python_path: Path | None = Non
             "no_catchup": True,
         },
         {
+            "id": "job_nas_recycle_heavy_cleanup",
+            "cron": "20 4 * * *",
+            "command": (
+                f"{python_bin} {run_with_env} "
+                "MAGI_DISK_CLEANUP_DRY_RUN=0 "
+                "MAGI_DISK_NAS_RECYCLE_ENABLE=1 "
+                "MAGI_DISK_NAS_RECYCLE_HEAVY_ENABLE=1 "
+                "MAGI_DISK_NAS_RECYCLE_MAX_DELETE_ITEMS=20 "
+                "MAGI_DISK_NAS_RECYCLE_HEAVY_MAX_RUNTIME_SEC=900 "
+                "MAGI_DISK_NAS_RECYCLE_HEAVY_MAX_FILES=5000 "
+                f"-- {python_bin} {repo_root / 'scripts' / 'ops' / 'disk_cleanup_healthcheck.py'} --apply"
+            ),
+            "desc": "NAS 回收筒重型舊備份離峰分批清理（每日 04:20；只處理回收筒內 Backup/Drive/SteamLibrary/.app）",
+            "channel_id": None,
+            "last_run": None,
+            "last_run_minute": None,
+            "enabled": True,
+            "timeout_sec": 1200,
+            "no_catchup": True,
+        },
+        {
             "id": "job_weekly_cache_cleanup",
             "cron": "10 4 * * 0",
             "command": f"{python_bin} {repo_root / 'scripts' / 'ops' / 'weekly_cache_cleanup.py'}",

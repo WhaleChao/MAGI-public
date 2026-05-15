@@ -296,6 +296,7 @@ def test_main_dry_run_writes_summary(sandbox, monkeypatch):
     assert "compressed_artifacts" in parsed
     assert "generated_staging" in parsed
     assert "nas_recycle" in parsed
+    assert "nas_recycle_heavy" in parsed
 
 
 # ---------- compression ------------------------------------------------
@@ -386,6 +387,7 @@ def test_main_apply_arg_overrides_env_dry_run(sandbox, monkeypatch):
     monkeypatch.setattr(dc, "cleanup_build_artifacts", lambda dry_run: [])
     monkeypatch.setattr(dc, "cleanup_stale_git_tmp_packs", lambda dry_run: [])
     monkeypatch.setattr(dc, "cleanup_nas_recycle", lambda dry_run: [])
+    monkeypatch.setattr(dc, "cleanup_nas_recycle_heavy", lambda dry_run: [])
     monkeypatch.setattr(dc, "report_agent_logs", lambda dry_run: [])
     assert dc.main(["--apply"]) == 0
     assert calls == [False]
@@ -555,3 +557,63 @@ def test_nas_recycle_cleanup_reports_heavy_backup_without_deleting(sandbox, monk
     assert actions[0]["candidate_items"] == 0
     assert actions[0]["skipped_heavy_items"] == 1
     assert str(backup) in actions[0]["skipped_heavy_paths"]
+
+
+def test_nas_recycle_heavy_requires_explicit_enable(sandbox, monkeypatch):
+    monkeypatch.setattr(dc, "NAS_RECYCLE_HEAVY_CLEANUP_ENABLE", False, raising=True)
+
+    actions = dc.cleanup_nas_recycle_heavy(dry_run=False)
+
+    assert actions == [{"enabled": False, "reason": "MAGI_DISK_NAS_RECYCLE_HEAVY_ENABLE=0"}]
+
+
+def test_nas_recycle_heavy_deletes_files_incrementally(sandbox, monkeypatch):
+    recycle = sandbox["tmp"] / "#recycle"
+    backup = recycle / "Backup"
+    files = [backup / f"old-{idx}.bin" for idx in range(3)]
+    for path in files:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"x" * 10)
+    ts = time.time() - 30 * 86400
+    for path in [backup, *files]:
+        os.utime(path, (ts, ts))
+    monkeypatch.setattr(dc, "NAS_RECYCLE_HEAVY_CLEANUP_ENABLE", True, raising=True)
+    monkeypatch.setattr(dc, "NAS_RECYCLE_ALLOW_NON_VOLUME", True, raising=True)
+    monkeypatch.setattr(dc, "NAS_RECYCLE_MAX_AGE_DAYS", 14, raising=True)
+    monkeypatch.setattr(dc, "NAS_RECYCLE_HEAVY_MAX_FILES", 2, raising=True)
+    monkeypatch.setattr(dc, "NAS_RECYCLE_HEAVY_MAX_RUNTIME_SEC", 60, raising=True)
+    monkeypatch.setattr(dc, "NAS_RECYCLE_HEAVY_MAX_DELETE_BYTES", 10_000, raising=True)
+    monkeypatch.setenv("MAGI_DISK_NAS_RECYCLE_ROOTS", str(recycle))
+
+    actions = dc.cleanup_nas_recycle_heavy(dry_run=False)
+    info = actions[0]
+
+    assert info["candidate_items"] == 1
+    assert info["processed_items"] == 1
+    assert info["deleted_files"] == 2
+    assert info["deleted_bytes"] == 20
+    assert info["stopped_reason"] == "max_files_reached"
+    assert sum(not path.exists() for path in files) == 2
+    assert backup.exists()
+
+
+def test_nas_recycle_heavy_dry_run_does_not_descend_or_delete(sandbox, monkeypatch):
+    recycle = sandbox["tmp"] / "#recycle"
+    steam = recycle / "SteamLibrary"
+    old = steam / "steamapps" / "big.dat"
+    old.parent.mkdir(parents=True, exist_ok=True)
+    old.write_bytes(b"x")
+    ts = time.time() - 30 * 86400
+    os.utime(steam, (ts, ts))
+    os.utime(old, (ts, ts))
+    monkeypatch.setattr(dc, "NAS_RECYCLE_HEAVY_CLEANUP_ENABLE", True, raising=True)
+    monkeypatch.setattr(dc, "NAS_RECYCLE_ALLOW_NON_VOLUME", True, raising=True)
+    monkeypatch.setattr(dc, "NAS_RECYCLE_MAX_AGE_DAYS", 14, raising=True)
+    monkeypatch.setenv("MAGI_DISK_NAS_RECYCLE_ROOTS", str(recycle))
+
+    actions = dc.cleanup_nas_recycle_heavy(dry_run=True)
+
+    assert old.exists()
+    assert actions[0]["candidate_items"] == 1
+    assert actions[0]["processed_items"] == 1
+    assert actions[0]["items"][0]["would_process"] is True

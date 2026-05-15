@@ -477,7 +477,8 @@ python3 scripts/ops/weekly_cache_cleanup.py --dry-run
 
 - 每小時低水位守門：低於門檻時會先執行 `disk_cleanup_healthcheck --apply`，再寫入告警。
 - 每日清理與壓縮：限制 `~/.omlx/cache-*` 快取上限、輪替 metrics、清舊 DB 備份、gzip 舊 runtime/log/report 文字檔。
-- NAS 回收筒清理：私有版排程會啟用 `MAGI_DISK_NAS_RECYCLE_ENABLE=1`，每日清理 `/Volumes/homes/#recycle`、`/Volumes/lumi/$RECYCLE.BIN` 等回收筒中超過 14 天的舊項目；`Backup`、`Drive`、`SteamLibrary`、`.app` 等重型目錄只列報告，建議改用 DSM 清空回收筒或版本庫，避免 SMB 逐檔刪除造成長時間 I/O。
+- NAS 回收筒清理：私有版排程會啟用 `MAGI_DISK_NAS_RECYCLE_ENABLE=1`，每日清理 `/Volumes/homes/#recycle`、`/Volumes/lumi/$RECYCLE.BIN` 等回收筒中超過 14 天的舊項目。
+- NAS 重型回收筒清理：每日 04:20 另跑 `MAGI_DISK_NAS_RECYCLE_HEAVY_ENABLE=1`，只在離峰分批處理回收筒內 `Backup`、`Drive`、`SteamLibrary`、`.app` 等巨型舊備份；每輪限時限量，沒清完會隔天接續，避免 SMB 一次刪太久。
 - 每週快取清理：清退役 Ollama 與可重建套件快取。
 - 模組暫存清掃：`exports`、`.magi_doc_runs`、`downloads`、`閱卷下載`、`筆錄下載`、`laf_downloads`、`法扶資料` 會依保留期清理舊 DOCX/PDF/TXT/圖片等輸出暫存。
 - 紅線：不碰 NAS 案件資料夾、不碰 MariaDB 正文、不碰 `~/.omlx/models*` 模型本體、不碰 `~/.omlx/training` 訓練成果、不碰 paperclip/單機版 JSON、pickle、sqlite/db。
@@ -493,6 +494,9 @@ MAGI_DISK_MODULE_STAGING_MAX_AGE_DAYS=14
 MAGI_DISK_NAS_RECYCLE_MAX_AGE_DAYS=14
 MAGI_DISK_NAS_RECYCLE_MAX_DELETE_ITEMS=50
 MAGI_DISK_NAS_RECYCLE_MAX_RUNTIME_SEC=180
+MAGI_DISK_NAS_RECYCLE_HEAVY_MAX_FILES=5000
+MAGI_DISK_NAS_RECYCLE_HEAVY_MAX_RUNTIME_SEC=900
+MAGI_DISK_NAS_RECYCLE_HEAVY_MAX_DELETE_GB=50
 ```
 
 ### 日夜模型切換前重開

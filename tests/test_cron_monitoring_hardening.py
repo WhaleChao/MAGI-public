@@ -352,6 +352,9 @@ def test_seed_cron_jobs_installs_disk_maintenance_jobs(tmp_path):
     assert "disk_low_water_alarm.py" in by_id["job_disk_low_water_alarm"]["command"]
     assert by_id["job_disk_cleanup_healthcheck"]["no_catchup"] is True
     assert "MAGI_DISK_CLEANUP_DRY_RUN=0" in by_id["job_disk_cleanup_healthcheck"]["command"]
+    assert by_id["job_nas_recycle_heavy_cleanup"]["cron"] == "20 4 * * *"
+    assert by_id["job_nas_recycle_heavy_cleanup"]["no_catchup"] is True
+    assert "MAGI_DISK_NAS_RECYCLE_HEAVY_ENABLE=1" in by_id["job_nas_recycle_heavy_cleanup"]["command"]
     assert "weekly_cache_cleanup.py" in by_id["job_weekly_cache_cleanup"]["command"]
     assert by_id["job_reboot_before_day_model_switch"]["enabled"] is False
     assert "scheduled_reboot_guard.py" in by_id["job_reboot_before_day_model_switch"]["command"]
