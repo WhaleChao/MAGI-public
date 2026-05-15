@@ -30,8 +30,15 @@ def _load_local_nas_env_if_needed() -> None:
     and tests often import it directly.  Only host/user/share keys are imported
     here; passwords and tokens stay out of process environment handling.
     """
-    needed = ("MAGI_NAS_HOST", "MAGI_NAS_TAILSCALE_HOST", "MAGI_NAS_USER", "MAGI_NAS_SHARES")
-    if any(os.environ.get(k) for k in needed):
+    needed = (
+        "MAGI_NAS_HOST",
+        "MAGI_NAS_TAILSCALE_HOST",
+        "MAGI_NAS_USER",
+        "MAGI_NAS_HOME_USER",
+        "MAGI_NAS_SHARES",
+        "MAGI_NAS_MOUNT_RETRY_COOLDOWN_SEC",
+    )
+    if all(os.environ.get(k) for k in needed):
         return
     env_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".env"))
     try:
@@ -60,7 +67,16 @@ try:
 except Exception:
     _NAS_LAN_HOST = os.getenv("MAGI_NAS_HOST", "")
     _NAS_TS_HOST = os.getenv("MAGI_NAS_TAILSCALE_HOST", "")
-NAS_USER = os.getenv("MAGI_NAS_USER", "home")
+def resolve_nas_user() -> str:
+    """Return the SMB account used for the homes share."""
+    return (
+        os.getenv("MAGI_NAS_USER")
+        or os.getenv("MAGI_NAS_HOME_USER")
+        or "home"
+    ).strip().strip("/\\") or "home"
+
+
+NAS_USER = resolve_nas_user()
 
 # 動態解析結果快取（host, expiry_time）
 _resolved_host: Optional[str] = None
@@ -310,7 +326,8 @@ def _mount_share(share_name: str, volume_path: str) -> bool:
     # Step 0: 清理 stale mount
     _force_unmount_stale(volume_path)
 
-    smb_url = f"smb://{NAS_USER}@{NAS_HOST}/{share_name}"
+    nas_user = resolve_nas_user()
+    smb_url = f"smb://{nas_user}@{NAS_HOST}/{share_name}"
 
     osascript_timeout = max(5, int(os.environ.get("MAGI_NAS_OSASCRIPT_TIMEOUT_SEC", "12") or 12))
 
@@ -347,7 +364,7 @@ def _mount_share(share_name: str, volume_path: str) -> bool:
             os.makedirs(mount_target, exist_ok=True)
         except OSError:
             continue
-        mount_url = f"//{NAS_USER}@{NAS_HOST}/{share_name}"
+        mount_url = f"//{nas_user}@{NAS_HOST}/{share_name}"
         try:
             result = subprocess.run(
                 ["mount_smbfs", "-N", "-o", "soft", mount_url, mount_target],
@@ -422,9 +439,10 @@ def _ensure_volume_mount_point(volume_path: str) -> None:
 
 def _get_nas_password_from_keychain() -> str:
     """從 macOS keychain 取出 NAS SMB 密碼。"""
+    nas_user = resolve_nas_user()
     try:
         result = subprocess.run(
-            ["security", "find-internet-password", "-s", NAS_HOST, "-a", NAS_USER, "-g"],
+            ["security", "find-internet-password", "-s", NAS_HOST, "-a", nas_user, "-g"],
             capture_output=True, text=True, timeout=5,
         )
         for line in result.stderr.splitlines():
@@ -504,7 +522,7 @@ def _ensure_nas_mounts_locked() -> dict[str, bool]:
     host = resolve_nas_host()
     if not _ping_ok(host):
         logger.warning("NAS %s 不可達（ping 失敗），跳過掛載", host)
-        return {vol: False for _, vol in _SHARES}
+        return {name: False for name, _ in _SHARES}
 
     # 清理舊 IP 或重複 mount
     _cleanup_wrong_host_mounts()
@@ -595,10 +613,10 @@ def _guard_loop(interval: int) -> None:
     logger.info("NAS mount guard 啟動（每 %d 秒巡檢）", interval)
     while True:
         try:
-            time.sleep(interval)
             ensure_nas_mounts()
         except Exception as e:
             logger.error("NAS mount guard 異常: %s", e)
+        time.sleep(interval)
 
 
 def start_nas_mount_guard(interval: int = 120) -> None:

@@ -48,6 +48,57 @@ def test_ensure_nas_mounts_does_not_treat_fallback_as_smb_mount(tmp_path, monkey
     assert attempts == [("lumi", "/Volumes/lumi")]
 
 
+def test_ensure_nas_mounts_ping_failure_returns_share_names(monkeypatch):
+    from api import nas_mount_guard as mod
+
+    monkeypatch.setattr(mod, "_SHARES", [("homes", "/Volumes/homes")])
+    monkeypatch.setattr(mod, "resolve_nas_host", lambda: "192.0.2.10")
+    monkeypatch.setattr(mod, "_ping_ok", lambda host, timeout=2: False)
+
+    assert mod.ensure_nas_mounts() == {"homes": False}
+
+
+def test_guard_loop_checks_before_first_sleep(monkeypatch):
+    from api import nas_mount_guard as mod
+
+    calls = []
+
+    def fake_ensure():
+        calls.append("ensure")
+
+    def fake_sleep(interval):
+        calls.append(f"sleep:{interval}")
+        raise SystemExit
+
+    monkeypatch.setattr(mod, "ensure_nas_mounts", fake_ensure)
+    monkeypatch.setattr(mod.time, "sleep", fake_sleep)
+
+    try:
+        mod._guard_loop(120)
+    except SystemExit:
+        pass
+
+    assert calls == ["ensure", "sleep:120"]
+
+
+def test_resolve_nas_user_prefers_explicit_user(monkeypatch):
+    from api import nas_mount_guard as mod
+
+    monkeypatch.setenv("MAGI_NAS_USER", "lumi63181107")
+    monkeypatch.setenv("MAGI_NAS_HOME_USER", "home")
+
+    assert mod.resolve_nas_user() == "lumi63181107"
+
+
+def test_resolve_nas_user_falls_back_to_home_user(monkeypatch):
+    from api import nas_mount_guard as mod
+
+    monkeypatch.delenv("MAGI_NAS_USER", raising=False)
+    monkeypatch.setenv("MAGI_NAS_HOME_USER", "lumi63181107")
+
+    assert mod.resolve_nas_user() == "lumi63181107"
+
+
 def test_mount_smbfs_fallback_never_puts_password_in_argv(tmp_path, monkeypatch):
     from api import nas_mount_guard as mod
 
@@ -60,8 +111,8 @@ def test_mount_smbfs_fallback_never_puts_password_in_argv(tmp_path, monkeypatch)
         return subprocess.CompletedProcess(cmd, 1, "", "auth failed")
 
     monkeypatch.setenv("MAGI_NAS_ALLOW_CLI_MOUNT", "1")
+    monkeypatch.setenv("MAGI_NAS_USER", "user")
     monkeypatch.setattr(mod, "NAS_HOST", "192.0.2.10")
-    monkeypatch.setattr(mod, "NAS_USER", "user")
     monkeypatch.setattr(mod, "_is_mounted", lambda path: False)
     monkeypatch.setattr(mod, "_force_unmount_stale", lambda path: None)
     monkeypatch.setattr(mod, "_ensure_volume_mount_point", lambda path: None)
