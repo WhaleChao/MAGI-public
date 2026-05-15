@@ -16,7 +16,7 @@ def test_template_case_status_and_category_display_as_dash():
 
     assert normalized["case_category"] == "—"
     assert normalized["case_type"] == "—"
-    assert normalized["case_reason"] == "—"
+    assert normalized["case_reason"] == "upsert-smoke"
     assert normalized["status"] == "—"
     assert normalized["is_template_case"] is True
 

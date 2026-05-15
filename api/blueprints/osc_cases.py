@@ -799,7 +799,6 @@ def _osc_normalize_template_case_row(row: dict | None) -> dict | None:
     out = dict(row)
     out["case_category"] = _OSC_TEMPLATE_DISPLAY_VALUE
     out["case_type"] = _OSC_TEMPLATE_DISPLAY_VALUE
-    out["case_reason"] = _OSC_TEMPLATE_DISPLAY_VALUE
     out["status"] = _OSC_TEMPLATE_DISPLAY_VALUE
     out["is_template_case"] = True
     return out
@@ -833,7 +832,7 @@ def _osc_case_api_row(row: dict | None) -> dict | None:
         row["effective_status"] = _OSC_TEMPLATE_DISPLAY_VALUE
         row["status_display"] = _OSC_TEMPLATE_DISPLAY_VALUE
         row["case_type_display"] = _OSC_TEMPLATE_DISPLAY_VALUE
-        row["case_reason_display"] = _OSC_TEMPLATE_DISPLAY_VALUE
+        row["case_reason_display"] = row.get("case_reason") or _OSC_TEMPLATE_DISPLAY_VALUE
         return row
     effective = _osc_effective_case_status(row)
     out = dict(row)
