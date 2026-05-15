@@ -859,11 +859,22 @@ class Orchestrator:
     def _summary_length_prompt(length: str) -> tuple[str, str]:
         return _get_handler("sh").summary_length_prompt(length)
 
-    def _summarize_text_resilient(self, text: str, summary_length: str = "medium", *, progress_callback=None) -> dict:
+    def _summarize_text_resilient(self, text: str, summary_length: str = "medium", *, progress_callback=None, heavy: bool = False) -> dict:
         task_id = f"summary_{id(text)}_{time.time():.0f}"
         self.register_heavy_task(task_id, "摘要")
         try:
-            return _get_handler("sh").summarize_text_resilient(text, summary_length=summary_length, progress_callback=progress_callback)
+            if not heavy:
+                try:
+                    from flask import g as _flask_g
+                    heavy = bool(getattr(_flask_g, "heavy_opt_in", False))
+                except Exception:
+                    heavy = False
+            return _get_handler("sh").summarize_text_resilient(
+                text,
+                summary_length=summary_length,
+                progress_callback=progress_callback,
+                heavy=heavy,
+            )
         finally:
             self.unregister_heavy_task(task_id)
 

@@ -140,6 +140,13 @@ _KIND_LABELS = {
 
 def format_quality_gate_failure(kind: str, issue: str) -> str:
     label = _KIND_LABELS.get((kind or "").strip().lower(), "輸出")
+    if str(issue or "").startswith("translation_missing_source_terms:"):
+        terms = str(issue or "").split(":", 1)[1].strip()
+        issue_label = f"譯文正文未保留原文專有名詞：{terms}"
+        return (
+            f"❌ {label}品質檢查未通過：{issue_label}。\n"
+            "MAGI 已停止交付本次結果，避免把不完整或錯誤內容當成正式文件。"
+        )
     issue_label = {
         "empty_output": "輸出為空",
         "off_topic_or_refusal": "模型偏題或拒絕讀取來源",
@@ -149,6 +156,7 @@ def format_quality_gate_failure(kind: str, issue: str) -> str:
         "case_intake_question": "摘要被誤導成案件建檔問答",
         "translation_too_short": "翻譯相對來源過短",
         "translation_intro_only": "翻譯只有開場語，未完成正文",
+        "translation_idiom_error": "翻譯含高風險慣用語錯譯",
         "transcript_too_short": "逐字稿相對來源過短",
     }.get(issue, issue or "品質未通過")
     return (
@@ -169,9 +177,45 @@ def run_output_quality_gate(
     """Central quality gate for model-generated deliverables."""
     effective_chars = estimate_effective_source_chars(source_text) if source_text else source_chars
     issue = detect_output_quality_issue(kind, output, source_chars=effective_chars)
+    mode = (kind or "").strip().lower()
+    if not issue and mode == "translation" and str(source_text or "").strip():
+        try:
+            from api.handlers.document_handler import (
+                build_translation_term_glossary,
+                missing_translation_source_terms,
+                parse_translation_term_glossary,
+                translation_idiom_issues,
+            )
+
+            idiom_issues = translation_idiom_issues(source_text, output)
+            if idiom_issues:
+                issue = "translation_idiom_error"
+            else:
+                glossary = build_translation_term_glossary(source_text)
+                important_rows = []
+                for row in parse_translation_term_glossary(glossary):
+                    target = str(row.get("target") or "")
+                    if target and not any(marker in target for marker in ("保留原文", "括號標註", "必要時")):
+                        important_rows.append(row)
+                filtered_glossary = ""
+                if important_rows:
+                    lines = ["| 原文 | 建議譯法/保留方式 |", "| --- | --- |"]
+                    for row in important_rows[:8]:
+                        lines.append(f"| {row.get('source', '')} | {row.get('target', '')} |")
+                    filtered_glossary = "\n".join(lines)
+                missing_terms = missing_translation_source_terms(
+                    source_text,
+                    output,
+                    term_glossary=filtered_glossary,
+                    max_terms=8,
+                ) if filtered_glossary else []
+                if missing_terms:
+                    issue = "translation_missing_source_terms:" + ",".join(missing_terms[:4])
+        except Exception:
+            pass
     return {
         "ok": not bool(issue),
-        "kind": (kind or "").strip().lower(),
+        "kind": mode,
         "issue": issue,
         "message": format_quality_gate_failure(kind, issue) if issue else "",
         "reviewer_note": build_output_reviewer_note(

@@ -426,7 +426,7 @@ def _tc_review_pass(text: str, timeout: int = 30) -> str:
     return text
 
 
-def summarize_text(text, timeout_sec=None, summary_length="medium"):
+def summarize_text(text, timeout_sec=None, summary_length="medium", heavy: bool = False):
     """
     Local-first summary using oMLX (primary):
     - Fast path: oMLX local chat model (直接繁中輸出)
@@ -535,9 +535,11 @@ def summarize_text(text, timeout_sec=None, summary_length="medium"):
             _summ_num_predict = 1024
 
         # Primary: oMLX local model — 繁體中文原生輸出，免 TC review 省一輪推理。
+        # @heavy means the user explicitly requested the heavy route, so skip
+        # the local-first shortcut and let InferenceGateway enter the NIM path.
         _omlx_chat = getattr(melchior_client, "_chat_omlx", None)
         _omlx_avail = getattr(melchior_client, "_omlx_available", None)
-        if callable(_omlx_chat) and callable(_omlx_avail) and _omlx_avail():
+        if (not heavy) and callable(_omlx_chat) and callable(_omlx_avail) and _omlx_avail():
             _omlx_model = os.environ.get("MAGI_OMLX_SUMMARY_MODEL", SUMMARY_MODEL)
             q = _omlx_chat(
                 prompt=prompt,
@@ -563,7 +565,13 @@ def summarize_text(text, timeout_sec=None, summary_length="medium"):
         # Fallback: InferenceGateway (handles oMLX→Ollama→remote routing)
         from skills.bridge.inference_gateway import InferenceGateway
         _gw = InferenceGateway()
-        fb = _gw.chat(prompt, task_type="summary", timeout=max(30, timeout), allow_synthetic_fallback=False)
+        fb = _gw.chat(
+            prompt,
+            task_type="summary",
+            timeout=max(30, timeout),
+            allow_synthetic_fallback=False,
+            heavy=heavy,
+        )
         if fb.get("success") and fb.get("response"):
             clean = _summary_postprocess(fb.get("response", ""))
             return {

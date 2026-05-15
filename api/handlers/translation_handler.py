@@ -8,6 +8,7 @@ import time
 import urllib.parse
 import urllib.request
 from pathlib import Path
+from typing import Optional
 
 from api.model_config import TEXT_PRIMARY_MODEL, TEXT_REVIEW_MODEL
 from skills.bridge.inference_gateway import InferenceGateway

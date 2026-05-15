@@ -194,6 +194,13 @@ def _web_summary_length(instruction: str) -> str:
     return "medium"
 
 
+def _web_heavy_opt_in(instruction: str) -> bool:
+    text = str(instruction or "").lower().replace("＠", "@").lstrip()
+    return text.startswith("@heavy ") or text.startswith("@重型 ") or any(
+        token in text for token in (" @heavy ", "\n@heavy ", "使用 heavy", "重型模型", "深度模式")
+    )
+
+
 def _normalize_direct_reply(reply: str, *, task: str, source_text: str, source_filename: str, instruction: str) -> str:
     from api.handlers.output_quality_handler import (
         build_legal_document_summary_fallback,
@@ -242,6 +249,7 @@ def _run_direct_web_upload_text_task(
 
     if task == "summary":
         summary_length = _web_summary_length(instruction)
+        heavy_opt_in = _web_heavy_opt_in(instruction)
         reply = ""
         try:
             extractive_threshold = int(os.environ.get("MAGI_WEB_UPLOAD_EXTRACTIVE_SUMMARY_THRESHOLD", "30000") or "30000")
@@ -259,7 +267,7 @@ def _run_direct_web_upload_text_task(
             try:
                 from api.handlers.summary_handler import summarize_text_resilient
 
-                result = summarize_text_resilient(source_text, summary_length=summary_length)
+                result = summarize_text_resilient(source_text, summary_length=summary_length, heavy=heavy_opt_in)
                 if isinstance(result, dict) and result.get("success"):
                     reply = str(result.get("text") or "").strip()
             except Exception:
@@ -296,7 +304,12 @@ def _run_direct_web_upload_text_task(
             src_text = prepare_document_text_for_llm(source_text)
             src_text, was_capped = cap_translation_source_text(src_text)
             translator = getattr(orchestrator, "_translate_text_complete", None) or translate_text_complete
-            result = translator(src_text, source_lang="auto", target_lang="繁體中文")
+            result = translator(
+                src_text,
+                source_lang="auto",
+                target_lang="繁體中文",
+                heavy=_web_heavy_opt_in(instruction),
+            )
             if not isinstance(result, dict) or not result.get("success"):
                 err = str((result or {}).get("error") if isinstance(result, dict) else "translate_failed")
                 return {"task": task, "reply": f"❌ 檔案翻譯失敗：{err[:260]}", "artifacts": []}

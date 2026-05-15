@@ -1,6 +1,7 @@
 from api.handlers.document_handler import (
     build_translation_term_glossary,
     ensure_translation_terms_visible,
+    export_translation_docx,
     polish_translated_document_text,
     translation_idiom_issues,
 )
@@ -63,3 +64,35 @@ def test_academic_concept_postprocess_keeps_original_terms_every_time():
     assert fixed.count("能動性（agency）") == 2
     assert "責任（responsibility）" in fixed
     assert "拉籌伯大學（La Trobe University）" in fixed
+
+
+def test_export_translation_docx_uses_aligned_source_and_translation_chunks(tmp_path, monkeypatch):
+    import re
+    import zipfile
+
+    monkeypatch.setenv("MAGI_EXPORTS_DIR", str(tmp_path))
+    reply = export_translation_docx(
+        source_text="Agency and responsibility.\n\nAddiction and decision makers.",
+        translated_text="能動性（agency）與責任（responsibility）。\n\n成癮（addiction）與決策者（decision makers）。",
+        source_chunks=["Agency and responsibility.", "Addiction and decision makers."],
+        translated_chunks=[
+            "能動性（agency）與責任（responsibility）。",
+            "成癮（addiction）與決策者（decision makers）。",
+        ],
+        term_glossary="",
+        title="translation-live-smoke",
+        user_id="web_user",
+    )
+
+    assert reply
+    path = reply.strip().splitlines()[-1]
+    assert path.endswith(".docx")
+    with zipfile.ZipFile(path) as zf:
+        xml = zf.read("word/document.xml").decode("utf-8")
+    text = re.sub(r"<[^>]+>", "", xml)
+    assert "原文" in text
+    assert "翻譯" in text
+    assert "Agency and responsibility." in text
+    assert "能動性（agency）與責任（responsibility）。" in text
+    assert "Addiction and decision makers." in text
+    assert "成癮（addiction）與決策者（decision makers）。" in text

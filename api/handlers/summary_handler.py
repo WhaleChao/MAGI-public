@@ -62,7 +62,7 @@ def _summary_chunk_usable(text: str, result: Optional[dict] = None) -> bool:
 # summarize_text_resilient
 # ---------------------------------------------------------------------------
 
-def summarize_text_resilient(text: str, summary_length: str = "medium", *, progress_callback=None) -> dict:
+def summarize_text_resilient(text: str, summary_length: str = "medium", *, progress_callback=None, heavy: bool = False) -> dict:
     s = (text or "").strip()
     if not s:
         return {"success": False, "error": "empty text"}
@@ -364,6 +364,7 @@ def summarize_text_resilient(text: str, summary_length: str = "medium", *, progr
             "summary",
             out,
             source_chars=len(payload),
+            source_text=payload,
             instruction=f"summary_length={summary_length}",
         )
         if gate.get("ok"):
@@ -378,6 +379,14 @@ def summarize_text_resilient(text: str, summary_length: str = "medium", *, progr
                 **extra,
             }
         return {"success": False, "error": "summary_quality_gate:" + str(gate.get("issue") or "failed"), "provider": provider, **extra}
+
+    def _bridge_summarize_text(summarizer, text_value: str, **kwargs) -> dict:
+        try:
+            return summarizer(text_value, **kwargs, heavy=heavy)
+        except TypeError as exc:
+            if "heavy" not in str(exc):
+                raise
+            return summarizer(text_value, **kwargs)
 
     # --- Strategy: direct-first, map-reduce only for very large docs ---
     # Local oMLX model already pinned in memory. Try direct summary first
@@ -398,7 +407,12 @@ def summarize_text_resilient(text: str, summary_length: str = "medium", *, progr
                 direct_timeout = max(30, min(summary_timeout, 75))
             else:
                 direct_timeout = max(45, min(summary_timeout, 120))
-            rr = summarize_text(payload, timeout_sec=direct_timeout, summary_length=summary_length)
+            rr = _bridge_summarize_text(
+                summarize_text,
+                payload,
+                timeout_sec=direct_timeout,
+                summary_length=summary_length,
+            )
             if isinstance(rr, dict) and rr.get("success"):
                 out = str(rr.get("text") or rr.get("summary") or "").strip()
                 if _summary_output_usable(out):
@@ -521,10 +535,10 @@ def summarize_text_resilient(text: str, summary_length: str = "medium", *, progr
                             f"- 這是分段 {label}/{total_chunks}，只摘要該段內容\n\n"
                             f"{chunk_text}"
                         )
-                    # Try oMLX first
+                    # Try oMLX first unless the caller explicitly requested @heavy.
                     _omlx_chat = getattr(melchior_client, "_chat_omlx", None)
                     _omlx_avail = getattr(melchior_client, "_omlx_available", None)
-                    if callable(_omlx_chat) and callable(_omlx_avail) and _omlx_avail():
+                    if (not heavy) and callable(_omlx_chat) and callable(_omlx_avail) and _omlx_avail():
                         q = _omlx_chat(
                             prompt=prompt,
                             model=os.environ.get("MAGI_OMLX_SUMMARY_MODEL", SUMMARY_MODEL),
@@ -545,6 +559,7 @@ def summarize_text_resilient(text: str, summary_length: str = "medium", *, progr
                         num_ctx=_chunk_ctx,
                         num_predict=max_tokens,
                         allow_synthetic_fallback=False,
+                        heavy=heavy,
                     )
                     out = str((q or {}).get("response") or "").strip()
                     if q.get("success") and _summary_chunk_usable(out, q):
@@ -698,7 +713,12 @@ def summarize_text_resilient(text: str, summary_length: str = "medium", *, progr
 
                     from skills.bridge.balthasar_bridge import summarize_text
 
-                    rr = summarize_text(merged_source, timeout_sec=max(summary_reduce_timeout, 90), summary_length=summary_length)
+                    rr = _bridge_summarize_text(
+                        summarize_text,
+                        merged_source,
+                        timeout_sec=max(summary_reduce_timeout, 90),
+                        summary_length=summary_length,
+                    )
                     out = str((rr or {}).get("text") or (rr or {}).get("summary") or "").strip()
                     if rr.get("success") and _summary_output_usable(out):
                         return _checked_summary_result(
@@ -729,7 +749,7 @@ def summarize_text_resilient(text: str, summary_length: str = "medium", *, progr
     try:
         from skills.bridge.balthasar_bridge import summarize_text
 
-        rr = summarize_text(payload, summary_length=summary_length)
+        rr = _bridge_summarize_text(summarize_text, payload, summary_length=summary_length)
         if isinstance(rr, dict) and rr.get("success"):
             out = str(rr.get("text") or rr.get("summary") or "").strip()
             if _summary_output_usable(out):
@@ -755,6 +775,7 @@ def summarize_text_resilient(text: str, summary_length: str = "medium", *, progr
             model=os.environ.get("MAGI_SUMMARIZE_LOCAL_MODEL", TEXT_PRIMARY_MODEL),
             num_ctx=_fb_ctx, num_predict=2048,
             allow_synthetic_fallback=False,
+            heavy=heavy,
         )
         out = str((q or {}).get("response") or "").strip()
         if q.get("success") and _summary_output_usable(out):

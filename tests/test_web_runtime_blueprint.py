@@ -301,6 +301,35 @@ def test_web_upload_large_summary_uses_quality_fallback(tmp_path, monkeypatch):
     assert any(item["format"] == "docx" for item in result["artifacts"])
 
 
+def test_web_upload_summary_passes_heavy_opt_in(tmp_path, monkeypatch):
+    from api.blueprints import web_runtime as mod
+    from api.handlers import summary_handler
+
+    captured = {}
+
+    def _fake_summary(*args, **kwargs):
+        captured.update(kwargs)
+        return {"success": True, "text": "- 完整摘要內容足供品質檢查。"}
+
+    monkeypatch.setattr(summary_handler, "summarize_text_resilient", _fake_summary)
+    source = "第一段法律文件內容，包含日期、案號、當事人與法院理由。\n\n" * 120
+
+    result = mod._run_direct_web_upload_text_task(
+        _Orchestrator(),
+        root=tmp_path,
+        target=tmp_path / "report.txt",
+        original_name="report.txt",
+        instruction="@heavy 請做完整摘要",
+        extracted={"success": True, "text": source, "kind": "txt"},
+        user_id="u1",
+    )
+
+    assert result is not None
+    assert result["task"] == "summary"
+    assert captured["summary_length"] == "long"
+    assert captured["heavy"] is True
+
+
 def test_output_quality_detects_case_intake_summary_failure():
     from api.handlers.output_quality_handler import detect_output_quality_issue
 
@@ -324,6 +353,20 @@ def test_output_quality_blocks_react_leak_and_bad_transcript():
 
     assert gate["ok"] is False
     assert gate["issue"] == "off_topic_or_refusal"
+
+
+def test_output_quality_blocks_high_risk_translation_idiom():
+    from api.handlers.output_quality_handler import run_output_quality_gate
+
+    gate = run_output_quality_gate(
+        "translation",
+        "所以，我前世是檢察官時，DSM-IV 已經出版。",
+        source_text="So, in my previous life as a prosecutor, DSM-IV had come out.",
+    )
+
+    assert gate["ok"] is False
+    assert gate["issue"] == "translation_idiom_error"
+    assert "高風險慣用語錯譯" in gate["message"]
 
 
 def test_web_upload_translation_stops_short_incomplete_output(tmp_path, monkeypatch):
@@ -361,6 +404,7 @@ def test_web_upload_translation_prefers_bilingual_docx_artifact(tmp_path):
 
     class _TranslationOrchestrator(_Orchestrator):
         def _translate_text_complete(self, *args, **kwargs):
+            self.calls.append({"args": args, "kwargs": kwargs})
             return {
                 "success": True,
                 "translated_text": "這是第一段翻譯。\n\n這是第二段翻譯。",
@@ -392,6 +436,42 @@ def test_web_upload_translation_prefers_bilingual_docx_artifact(tmp_path):
     assert result["artifacts"][0]["filename"] == "bilingual_table.docx"
     assert result["artifacts"][0]["label"] == "翻譯雙語對照 Word"
     assert not any(item["label"] == "翻譯稿 Word" for item in result["artifacts"][1:])
+
+
+def test_web_upload_translation_passes_heavy_opt_in(tmp_path):
+    from api.blueprints import web_runtime as mod
+
+    class _TranslationOrchestrator(_Orchestrator):
+        def _translate_text_complete(self, *args, **kwargs):
+            self.calls.append({"args": args, "kwargs": kwargs})
+            return {
+                "success": True,
+                "translated_text": "能動性（agency）與責任（responsibility）。",
+                "source_chunks": ["Agency and responsibility."],
+                "translated_chunks": ["能動性（agency）與責任（responsibility）。"],
+                "term_glossary": "",
+                "chunks_failed": 0,
+            }
+
+        def _export_translation_docx(self, **kwargs):
+            out = tmp_path / "heavy_bilingual.docx"
+            out.write_bytes(b"fake docx")
+            return f"📄 已輸出雙語對照 DOCX 表格檔案。\n{out}"
+
+    orchestrator = _TranslationOrchestrator()
+    result = mod._run_direct_web_upload_text_task(
+        orchestrator,
+        root=tmp_path,
+        target=tmp_path / "article.txt",
+        original_name="article.txt",
+        instruction="＠HEAVY 請完整翻譯",
+        extracted={"success": True, "text": "Agency and responsibility.", "kind": "txt"},
+        user_id="u1",
+    )
+
+    assert result is not None
+    assert result["task"] == "translation"
+    assert orchestrator.calls[0]["kwargs"]["heavy"] is True
 
 
 def test_osc_chat_translation_command_creates_web_delivery_artifacts(tmp_path):
