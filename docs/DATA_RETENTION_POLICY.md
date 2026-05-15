@@ -114,11 +114,12 @@ rebuildable runtime artifacts:
 
 | Artifact | Default Action | Default Retention | Never Touch |
 |---|---|---:|---|
-| `~/.omlx/cache-*` | LRU prune by size cap | cap 8 GB; 5 GB under low water; 3 GB critical | `~/.omlx/models*`, `~/.omlx/training` |
+| `~/.omlx/cache-*` | LRU prune by size cap | cap 8 GB; 5 GB below 50 GB free; 3 GB critical | `~/.omlx/models*`, `~/.omlx/training` |
 | Runtime metrics/log text | gzip old text artifacts | 3 days; 12 hours under low water | pending approvals, DB files |
 | Generated exports | delete old staging outputs | 3 days | standalone JSON/pickle/sqlite/db |
 | Module staging downloads | delete old imported/duplicate staging outputs | 14 days | NAS case folders |
 | Local DB backup bursts | keep latest local/remote restore points | latest 8 per group | live MariaDB data |
+| Heavy cron/backlog jobs | skip through resource guard | while disk/memory is low | business-core jobs and DB contents |
 
 These rules are implemented by `scripts/ops/disk_cleanup_healthcheck.py` and
 are triggered daily plus on low-water alarms. They are intentionally narrower

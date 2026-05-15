@@ -22,9 +22,24 @@ def test_classify_normal_resources():
     assert decision.actions == []
 
 
+def test_classify_throttle_when_disk_below_model_safe_watermark():
+    snap = rg.ResourceSnapshot(
+        disk_free_gb=42,
+        disk_total_gb=460,
+        swap_used_gb=1,
+        free_gb=4,
+        inactive_gb=5,
+        free_plus_inactive_gb=9,
+    )
+    decision = rg.classify(snap)
+    assert decision.ok is True
+    assert decision.level == "throttle"
+    assert "pause_heavy_backlog_jobs" in decision.actions
+
+
 def test_classify_core_only_when_disk_low():
     snap = rg.ResourceSnapshot(
-        disk_free_gb=16,
+        disk_free_gb=24,
         disk_total_gb=460,
         swap_used_gb=1,
         free_gb=3,

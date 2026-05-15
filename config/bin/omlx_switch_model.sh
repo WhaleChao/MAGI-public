@@ -219,7 +219,8 @@ preflight_memory_check() {
 }
 
 start_night_e4b_fallback() {
-    log "⚠️  NIGHT 26B 記憶體不足，降級啟動 E4B 主模型，避免 MAGI 無主模型"
+    local reason="${1:-26B 資源不足}"
+    log "⚠️  NIGHT ${reason}，降級啟動 E4B 主模型，避免 MAGI 無主模型"
     check_model_src "$E4B_SRC"
     rm -f "$MODELS_TEXT_DIR"/*
     ln -sf "$E4B_SRC" "$MODELS_TEXT_DIR/gemma-4-e4b-it-4bit"
@@ -238,7 +239,30 @@ start_night_e4b_fallback() {
         exit 4
     fi
     echo "night-e4b-degraded" > "$PROFILE_FILE"
-    notify_admin "NIGHT 26B 記憶體不足，已降級啟動 E4B；待記憶體恢復後下次夜間切換會再嘗試 26B"
+    notify_admin "NIGHT ${reason}，已降級啟動 E4B；待資源恢復後下次夜間切換會再嘗試 26B"
+}
+
+resource_guard_allows_night_26b() {
+    local governor="/Users/ai/Desktop/MAGI_v2/scripts/ops/resource_governor.py"
+    [ -x "$GATEKEEPER_PY" ] || return 0
+    [ -f "$governor" ] || return 0
+    local payload level disk_free
+    payload=$(MAGI_USE_RUNTIME_DIR=1 "$GATEKEEPER_PY" "$governor" --json status 2>/dev/null || true)
+    [ -n "$payload" ] || return 0
+    level=$(printf '%s' "$payload" | "$GATEKEEPER_PY" -c 'import json,sys; print(json.load(sys.stdin).get("level","unknown"))' 2>/dev/null || echo "unknown")
+    disk_free=$(printf '%s' "$payload" | "$GATEKEEPER_PY" -c 'import json,sys; print((json.load(sys.stdin).get("snapshot") or {}).get("disk_free_gb",-1))' 2>/dev/null || echo "-1")
+    log "resource guard: level=${level}, disk_free=${disk_free}GB"
+    if [ "$level" = "core_only" ] || [ "$level" = "critical" ]; then
+        return 1
+    fi
+    "$GATEKEEPER_PY" - "$disk_free" <<'PY'
+import sys
+try:
+    disk_free = float(sys.argv[1])
+except Exception:
+    disk_free = 999.0
+raise SystemExit(0 if disk_free >= 35.0 else 1)
+PY
 }
 
 # ---- Layer 3: 檢查既有 omlx serve 的 RSS 是否已經失控 ----
@@ -412,6 +436,13 @@ case "$MODE" in
     fi
     check_model_src "$B26_SRC"
 
+    if ! resource_guard_allows_night_26b; then
+        start_night_e4b_fallback "本機資源低水位，暫不啟動 26B"
+        ( heartbeat_check 1 "NIGHT-FALLBACK-E4B" ) &
+        log "Switch to $MODE complete (active_profile=$(get_active_profile))"
+        exit 0
+    fi
+
     # 停止 Phi-4 和 SmolLM3
     launchctl bootout "gui/$UID_NUM/com.magi.omlx-phi4" 2>/dev/null || true
     launchctl bootout "gui/$UID_NUM/com.magi.omlx-smol" 2>/dev/null || true
@@ -432,7 +463,7 @@ case "$MODE" in
     sleep 10
     # 所有舊 process 都 bootout 後才檢查記憶體（門檻 8GB：26B ceiling=16GB，系統本身 6-8GB）
     if ! preflight_memory_check 8 "NIGHT" return; then
-        start_night_e4b_fallback
+        start_night_e4b_fallback "26B 記憶體不足"
         ( heartbeat_check 1 "NIGHT-FALLBACK-E4B" ) &
         log "Switch to $MODE complete (active_profile=$(get_active_profile))"
         exit 0

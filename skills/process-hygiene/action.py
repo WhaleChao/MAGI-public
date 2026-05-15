@@ -63,6 +63,7 @@ DEFAULT_STUCK_SEC = 3600
 MANAGED_LONG_RUNNING_SCRIPTS = [
     "gui/magi_menubar.py",
     "scripts/ops/memory_watchdog.py",
+    "scripts/share_gateway.py",
     "scripts/share_tunnel_supervisor.py",
     "scripts/serve_mlx_mtp.py",
 ]

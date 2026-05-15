@@ -367,7 +367,7 @@ NAS status checks both `/Volumes/` and `~/.magi_mounts/` (Tailscale fallback pat
 | NAS / Files | PDF namer (nightly), weekend bookmark, transcript sync, weekly legal crawl |
 | Market | Market briefing (weekday 08:30), world monitor (every 6h), hedge fund committee |
 | Infrastructure | oMLX day/night switch, OSC case index/scan, gcal sync, smoke chat check |
-| **Disk hygiene (2026-05-12)** | **`disk_low_water_alarm`** (hourly :05 — High <30 GB / Critical <10 GB → `self_repair`), **`weekly_cache_cleanup`** (Sun 04:00 — remove retired Ollama root and rebuildable caches; protect MAGI DB, NAS, model roots, training outputs, standalone JSON/pickle/db state files, and judicial raw backlog) |
+| **Disk hygiene (2026-05-15)** | **`disk_low_water_alarm`** (hourly :05 — High <50 GB / Critical <15 GB → guarded cleanup + `self_repair`), **`resource_guarded_run`** (skips non-core heavy jobs during low-water or core-only mode), **`weekly_cache_cleanup`** (Sun 04:00 — remove retired Ollama root and rebuildable caches; protect MAGI DB, NAS, model roots, training outputs, standalone JSON/pickle/db state files, and judicial raw backlog) |
 
 ### Self-repair loop & autonomy guards (2026-04-21 → 2026-04-25)
 

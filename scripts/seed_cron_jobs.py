@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import os
 import platform
+import shlex
 import sys
 from pathlib import Path
 from typing import Any
@@ -31,13 +32,43 @@ def default_python_path(repo_root: Path = REPO_ROOT) -> Path:
     return venv_dir / "bin" / "python3"
 
 
+def guarded_cron_command(
+    repo_root: Path,
+    python_bin: Path,
+    job_id: str,
+    command: str,
+    *,
+    block_at: str = "core_only",
+    require_disk_free_gb: float | None = None,
+) -> str:
+    """Wrap rebuildable/heavy cron commands with the resource guard.
+
+    The guard never touches DB or user files; it only skips the wrapped command
+    when the machine is already low on disk/memory.
+    """
+    guard = repo_root / "scripts" / "ops" / "resource_guarded_run.py"
+    parts = [
+        shlex.quote(str(python_bin)),
+        shlex.quote(str(guard)),
+        "--job-id",
+        shlex.quote(job_id),
+        "--block-at",
+        shlex.quote(block_at),
+    ]
+    if require_disk_free_gb is not None:
+        parts.extend(["--require-disk-free-gb", f"{require_disk_free_gb:g}"])
+    parts.extend(["--", command])
+    return " ".join(parts)
+
+
 def worldmonitor_job(repo_root: Path = REPO_ROOT, python_path: Path | None = None) -> dict[str, Any]:
     python_bin = python_path or default_python_path(repo_root)
     action_path = repo_root / "skills" / "worldmonitor-intel" / "action.py"
+    command = f"{python_bin} {action_path} --task collect --no-reasoning --plain-output"
     return {
         "id": "job_worldmonitor_intel",
         "cron": "0 8 * * *",
-        "command": f"{python_bin} {action_path} --task collect --no-reasoning --plain-output",
+        "command": guarded_cron_command(repo_root, python_bin, "job_worldmonitor_intel", command),
         "desc": "每日全球新聞網收集摘要（worldmonitor-intel）",
         "channel_id": None,
         "last_run": None,
@@ -289,7 +320,12 @@ def operational_jobs(repo_root: Path = REPO_ROOT, python_path: Path | None = Non
         {
             "id": "job_benchmark_pdf_bookmarker",
             "cron": "40 14 * * *",
-            "command": f"{python_bin} {repo_root / 'scripts' / 'ops' / 'benchmark_pdf_bookmarker.py'}",
+            "command": guarded_cron_command(
+                repo_root,
+                python_bin,
+                "job_benchmark_pdf_bookmarker",
+                f"{python_bin} {repo_root / 'scripts' / 'ops' / 'benchmark_pdf_bookmarker.py'}",
+            ),
             "desc": "PDF 頁籤品質基準測試（每日 14:40，bookmark_recall ≥ 80%；維持健康頁 48h freshness）",
             "channel_id": None,
             "last_run": None,

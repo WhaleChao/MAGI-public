@@ -29,7 +29,7 @@ MAGI（Multi-Agent Governance Infrastructure）是一套多代理治理基礎設
 | Python | 3.12+ |
 | Database | MariaDB 10.6+ / MySQL 8.0+ |
 | RAM | 8 GB（建議 16 GB） |
-| Disk | 30 GB 可用空間建議值；低於 10 GB 視為緊急 |
+| Disk | 50 GB 可用空間建議值；低於 30 GB 進入核心模式；低於 15 GB 視為緊急 |
 
 ---
 
@@ -447,7 +447,7 @@ magi zombie              # 自動偵測並清理
 | DB 連線 | `magi status` Database 段 | 容錯切換時 |
 | NAS 掛載 | `magi status` NAS Mounts 段 | NOT MOUNTED |
 | 遠端節點 | `magi status` Remote Nodes 段 | DOWN |
-| 磁碟空間 | `df -h` / `disk_low_water_alarm` | < 30 GB 警告；< 10 GB 緊急 |
+| 磁碟空間 | `df -h` / `disk_low_water_alarm` | < 50 GB 警告；< 30 GB 核心模式；< 15 GB 緊急 |
 | Log 大小 | `du -sh .agent/` | > 500 MB |
 | 推理延遲 | Log 中的 inference_ms | > 30s 平均 |
 | 排程任務 | 狀態列 Cron Jobs 子選單 | 超過 25 小時未執行 |
@@ -476,6 +476,7 @@ python3 scripts/ops/weekly_cache_cleanup.py --dry-run
 ```
 
 - 每小時低水位守門：低於門檻時會先執行 `disk_cleanup_healthcheck --apply`，再寫入告警。
+- 重型任務守門：司法院 backlog、夜間補抓、PDF/OCR 基準與新聞摘要等非核心任務會先經過 `resource_guarded_run.py`；低水位時跳過而不是硬跑。
 - 每日清理與壓縮：限制 `~/.omlx/cache-*` 快取上限、輪替 metrics、清舊 DB 備份、gzip 舊 runtime/log/report 文字檔。
 - NAS 回收筒清理：私有版排程會啟用 `MAGI_DISK_NAS_RECYCLE_ENABLE=1`，每日清理 `/Volumes/homes/#recycle`、`/Volumes/lumi/$RECYCLE.BIN` 等回收筒中超過 14 天的舊項目。
 - NAS 重型回收筒清理：每日 04:20 另跑 `MAGI_DISK_NAS_RECYCLE_HEAVY_ENABLE=1`，只在離峰分批處理回收筒內 `Backup`、`Drive`、`SteamLibrary`、`.app` 等巨型舊備份；每輪限時限量，沒清完會隔天接續，避免 SMB 一次刪太久。

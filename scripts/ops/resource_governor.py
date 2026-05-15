@@ -28,8 +28,8 @@ if str(MAGI_ROOT) not in sys.path:
 from api.platforms import runtime_dir  # noqa: E402
 
 
-DEFAULT_WARN_DISK_GB = float(os.environ.get("MAGI_RESOURCE_WARN_DISK_GB", "30"))
-DEFAULT_CORE_ONLY_DISK_GB = float(os.environ.get("MAGI_RESOURCE_CORE_ONLY_DISK_GB", "20"))
+DEFAULT_WARN_DISK_GB = float(os.environ.get("MAGI_RESOURCE_WARN_DISK_GB", "50"))
+DEFAULT_CORE_ONLY_DISK_GB = float(os.environ.get("MAGI_RESOURCE_CORE_ONLY_DISK_GB", "30"))
 DEFAULT_CRITICAL_DISK_GB = float(os.environ.get("MAGI_RESOURCE_CRITICAL_DISK_GB", "15"))
 DEFAULT_SWAP_WARN_GB = float(os.environ.get("MAGI_RESOURCE_SWAP_WARN_GB", "16"))
 DEFAULT_SWAP_CORE_ONLY_GB = float(os.environ.get("MAGI_RESOURCE_SWAP_CORE_ONLY_GB", "24"))
