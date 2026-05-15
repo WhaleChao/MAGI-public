@@ -162,6 +162,42 @@ def test_omlx_cache_apply_respects_safety_cap(sandbox, monkeypatch):
     assert info["deleted_files"] == 0
 
 
+def test_omlx_cache_hard_cap_prunes_recent_but_settled_cache(sandbox, monkeypatch):
+    cache = sandbox["home"] / ".omlx" / "cache-26b"
+    files = [cache / f"blob-{i}.safetensors" for i in range(4)]
+    for idx, path in enumerate(files):
+        _touch_with_atime(path, (idx + 1) * 86400)
+    monkeypatch.setattr(dc, "_disk_free_gb", lambda path=dc.MAGI_ROOT: 100.0)
+    monkeypatch.setattr(dc, "OMLX_CACHE_KEEP_DAYS", 99, raising=True)
+    monkeypatch.setattr(dc, "OMLX_CACHE_CAP_GB", 250 / (1024 ** 3), raising=True)
+    monkeypatch.setattr(dc, "OMLX_CACHE_MAX_DELETE_BYTES", 10_000, raising=True)
+
+    actions = dc.cleanup_omlx_cache(dry_run=False)
+
+    remaining = [p for p in files if p.exists()]
+    assert len(remaining) <= 2
+    info = next(a for a in actions if a["cache"].endswith("cache-26b"))
+    assert info["candidate_files"] >= 2
+    assert info["deleted_files"] >= 2
+
+
+def test_omlx_cache_hard_cap_keeps_newly_written_files(sandbox, monkeypatch):
+    cache = sandbox["home"] / ".omlx" / "cache-26b"
+    fresh = cache / "fresh.safetensors"
+    fresh.parent.mkdir(parents=True, exist_ok=True)
+    fresh.write_bytes(b"x" * 1000)
+    monkeypatch.setattr(dc, "_disk_free_gb", lambda path=dc.MAGI_ROOT: 100.0)
+    monkeypatch.setattr(dc, "OMLX_CACHE_KEEP_DAYS", 99, raising=True)
+    monkeypatch.setattr(dc, "OMLX_CACHE_CAP_GB", 1 / (1024 ** 3), raising=True)
+    monkeypatch.setattr(dc, "OMLX_CACHE_RECENT_GRACE_MINUTES", 60, raising=True)
+
+    actions = dc.cleanup_omlx_cache(dry_run=False)
+
+    assert fresh.exists()
+    info = next(a for a in actions if a["cache"].endswith("cache-26b"))
+    assert info["deleted_files"] == 0
+
+
 # ---------- cleanup_tmp ------------------------------------------------
 
 def test_tmp_cleanup_removes_old_magi_files(sandbox, monkeypatch, tmp_path):
@@ -257,6 +293,79 @@ def test_main_dry_run_writes_summary(sandbox, monkeypatch):
     parsed = json.loads(lines[-1])
     assert parsed["dry_run"] is True
     assert "metrics" in parsed and "omlx_cache" in parsed
+    assert "compressed_artifacts" in parsed
+    assert "generated_staging" in parsed
+
+
+# ---------- compression ------------------------------------------------
+
+def test_runtime_compression_gzips_old_logs_and_skips_json(sandbox, monkeypatch):
+    magi = sandbox["magi"]
+    logs = magi / "logs"
+    old_log = logs / "old.log"
+    old_json = logs / "standalone_state.json"
+    logs.mkdir(parents=True, exist_ok=True)
+    old_log.write_bytes(b"x" * 200)
+    old_json.write_bytes(b"{}" * 200)
+    ts = time.time() - 5 * 86400
+    os.utime(old_log, (ts, ts))
+    os.utime(old_json, (ts, ts))
+    monkeypatch.setattr(dc, "MAGI_ROOT", magi, raising=True)
+    monkeypatch.setattr(dc, "_disk_free_gb", lambda path=dc.MAGI_ROOT: 100.0)
+    monkeypatch.setattr(dc, "RUNTIME_COMPRESS_MIN_BYTES", 10, raising=True)
+    monkeypatch.setattr(dc, "RUNTIME_COMPRESS_MAX_AGE_DAYS", 1, raising=True)
+
+    actions = dc.compress_runtime_artifacts(dry_run=False)
+
+    assert actions
+    assert not old_log.exists()
+    assert (logs / "old.log.gz").exists()
+    assert old_json.exists()
+
+
+# ---------- generated staging -----------------------------------------
+
+def test_generated_staging_cleanup_removes_old_exports_but_preserves_json(sandbox, monkeypatch):
+    magi = sandbox["magi"]
+    exports = magi / "exports"
+    old_docx = exports / "summary.docx"
+    fresh_pdf = exports / "fresh.pdf"
+    state_json = exports / "paperclip_state.json"
+    exports.mkdir(parents=True, exist_ok=True)
+    for path in (old_docx, fresh_pdf, state_json):
+        path.write_bytes(b"x" * 20)
+    now = time.time()
+    os.utime(old_docx, (now - 5 * 86400, now - 5 * 86400))
+    os.utime(fresh_pdf, (now - 1 * 3600, now - 1 * 3600))
+    os.utime(state_json, (now - 5 * 86400, now - 5 * 86400))
+    monkeypatch.setattr(dc, "MAGI_ROOT", magi, raising=True)
+    monkeypatch.setattr(dc, "EXPORT_OUTPUT_MAX_AGE_DAYS", 3, raising=True)
+
+    actions = dc.cleanup_generated_staging(dry_run=False)
+
+    assert not old_docx.exists()
+    assert fresh_pdf.exists()
+    assert state_json.exists()
+    exports_info = next(a for a in actions if a["label"] == "exports")
+    assert exports_info["deleted_files"] == 1
+
+
+def test_generated_staging_cleanup_includes_module_download_staging(sandbox, monkeypatch):
+    magi = sandbox["magi"]
+    review = magi / "閱卷下載"
+    old_pdf = review / "duplicate_payment.pdf"
+    old_pdf.parent.mkdir(parents=True, exist_ok=True)
+    old_pdf.write_bytes(b"x" * 20)
+    ts = time.time() - 20 * 86400
+    os.utime(old_pdf, (ts, ts))
+    monkeypatch.setattr(dc, "MAGI_ROOT", magi, raising=True)
+    monkeypatch.setattr(dc, "MODULE_STAGING_MAX_AGE_DAYS", 14, raising=True)
+
+    actions = dc.cleanup_generated_staging(dry_run=False)
+
+    assert not old_pdf.exists()
+    review_info = next(a for a in actions if a["label"] == "file_review_staging")
+    assert review_info["deleted_files"] == 1
 
 
 def test_main_enforce_mode_flag_read(sandbox, monkeypatch):

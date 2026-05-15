@@ -89,6 +89,22 @@ run_judicial_pull() {
     log "judicial_pull: 拉取完成，開始入庫"
     $VENV_PY scripts/ingest_raw_judgments.py >> "$LOG_DIR/cron_judicial_ingest.log" 2>&1
     log "judicial_pull: 入庫完成"
+    log "judicial_pull: 最高法院通譯 TXT/PDF 補抓開始"
+    timeout 5400 $VENV_PY scripts/fetch_supreme_interpreter_texts.py \
+        --output-dir /Users/ai/Desktop/最高法院_通譯_TXT/完整812 \
+        --delay-sec 0.2 --timeout-sec 45 \
+        >> "$LOG_DIR/supreme_interpreter_pdf_backfill.log" 2>&1 || true
+    $VENV_PY scripts/classify_supreme_interpreter_mentions.py \
+        --input-dir /Users/ai/Desktop/最高法院_通譯_TXT/完整812/TXT \
+        --output-prefix /Users/ai/Desktop/最高法院_通譯_TXT/完整812/最高法院_通譯_分類表 \
+        >> "$LOG_DIR/supreme_interpreter_pdf_backfill.log" 2>&1
+    cp -f /Users/ai/Desktop/最高法院_通譯_TXT/完整812/最高法院_通譯_分類表.* \
+        /Users/ai/Desktop/最高法院_通譯_TXT/ 2>/dev/null || true
+    timeout 1800 $VENV_PY scripts/supreme_interpreter_pdf_backfill.py \
+        --text-dir /Users/ai/Desktop/最高法院_通譯_TXT/完整812/TXT \
+        --pdf-dir /Users/ai/Desktop/最高法院_通譯_TXT/完整812/PDF \
+        >> "$LOG_DIR/supreme_interpreter_pdf_backfill.log" 2>&1 || true
+    log "judicial_pull: 最高法院通譯 TXT/PDF 補抓完成"
     mark_done "judicial_pull"
 }
 

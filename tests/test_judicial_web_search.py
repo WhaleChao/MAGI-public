@@ -32,3 +32,56 @@ def test_next_page_href_returns_absolute_url():
     """
     href = judicial_web_search._next_page_href(html, "https://judgment.judicial.gov.tw/FJUD/qryresultlst.aspx?q=token&page=1")
     assert href == "https://judgment.judicial.gov.tw/FJUD/qryresultlst.aspx?q=token&page=2"
+
+
+def test_http_court_values_accepts_label_and_code():
+    soup = judicial_web_search.BeautifulSoup(
+        """
+        <select id="jud_court">
+          <option value="">所有法院</option>
+          <option value="TPS">最高法院</option>
+        </select>
+        """,
+        "html.parser",
+    )
+    assert judicial_web_search._http_court_values(soup, ["最高法院"]) == ["TPS"]
+    assert judicial_web_search._http_court_values(soup, ["TPS"]) == ["TPS"]
+
+
+def test_normalize_judicial_text_removes_page_chrome_and_joins_lines():
+    raw = """
+    去格式引用
+    分享網址
+    裁判字號：
+    最高法院 115 年度台抗字第 540 號刑事裁定
+    裁判日期：
+    民國 115 年 04 月 23 日
+    裁判案由：
+    偽造有價證券聲請再審及停止刑罰執行
+    最高法院刑事
+    裁定
+    115年度台抗字第540號
+    主  文
+    抗告駁回。
+    理  由
+    一、
+    按
+    原判決所憑之
+    證言
+    、
+    鑑定
+    或
+    通譯
+    已證明其為虛偽者，得聲請再審。
+    歷審裁判
+    列印歷審清單
+    相關法條
+    """
+    text = judicial_web_search._normalize_judicial_text(raw)
+    assert "去格式引用" not in text
+    assert "分享網址" not in text
+    assert "歷審裁判" not in text
+    assert "裁判字號：最高法院 115 年度台抗字第 540 號刑事裁定" in text
+    assert "主文" in text
+    assert "理由" in text
+    assert "一、按原判決所憑之證言、鑑定或通譯已證明其為虛偽者，得聲請再審。" in text

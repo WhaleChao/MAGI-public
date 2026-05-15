@@ -91,6 +91,12 @@ def _build_document_glossary(text: str, target_lang: str = "繁體中文") -> st
     return "\n【術語對照表（全文必須統一使用）】\n" + "\n".join(found[:15])
 
 
+def _build_export_term_glossary(text: str, target_lang: str = "繁體中文") -> str:
+    from api.handlers import document_handler as _dh
+
+    return _dh.build_translation_term_glossary(text, target_lang=target_lang)
+
+
 def translate_text_complete(text: str, source_lang: str = "auto", target_lang: str = "繁體中文", heavy: bool = False) -> dict:
     from skills.bridge import melchior_client
 
@@ -110,10 +116,22 @@ def translate_text_complete(text: str, source_lang: str = "auto", target_lang: s
             translate_chunk_chars = min(translate_chunk_chars, 2800)
         elif len(source_text) >= 40000:
             translate_chunk_chars = min(translate_chunk_chars, 3200)
-    translate_chunk_chars = max(1600, min(translate_chunk_chars, 4800))
+    try:
+        min_chunk_chars = int(
+            os.environ.get(
+                "MAGI_FILE_TRANSLATE_MIN_CHUNK_CHARS",
+                "900" if heavy else "1600",
+            )
+            or ("900" if heavy else "1600")
+        )
+    except Exception:
+        min_chunk_chars = 900 if heavy else 1600
+    min_chunk_chars = max(600, min(min_chunk_chars, 1600))
+    translate_chunk_chars = max(min_chunk_chars, min(translate_chunk_chars, 4800))
     chunks = _dh.split_translate_chunks(source_text, chunk_chars=translate_chunk_chars)
     if not chunks:
         return {"success": False, "error": "empty text"}
+    export_term_glossary = _build_export_term_glossary(source_text, target_lang)
     # Codex route disabled: Gemma 4 (256K context) handles all translation locally.
     # Keeping code for reference but skipping execution.
     # To re-enable: set MAGI_CODEX_TRANSLATE_ENABLED=1
@@ -139,6 +157,7 @@ def translate_text_complete(text: str, source_lang: str = "auto", target_lang: s
                         "route": "openclaw_codex",
                         "model": codex_res.get("model", "gpt-5.4"),
                         "agent": codex_res.get("agent_id", "codex-distributed"),
+                        "term_glossary": export_term_glossary,
                     }
                 if codex_res.get("error"):
                     logger.warning("translate_text_complete: codex route failed: %s", codex_res.get("error"))
@@ -147,6 +166,23 @@ def translate_text_complete(text: str, source_lang: str = "auto", target_lang: s
 
     # 建立 document-level glossary（確保全文術語一致）
     doc_glossary = _build_document_glossary(source_text, target_lang)
+    if export_term_glossary:
+        prompt_terms = []
+        for line in export_term_glossary.splitlines():
+            if line.startswith("| ") and " --- " not in line and "原文" not in line:
+                cells = [c.strip() for c in line.strip("|").split("|")]
+                if len(cells) >= 2:
+                    prompt_terms.append(f"- {cells[0]} → {cells[1]}")
+        if prompt_terms:
+            doc_glossary = (doc_glossary + "\n" if doc_glossary else "") + "【專有名詞保留清單】\n" + "\n".join(prompt_terms[:24])
+    body_term_rule = ""
+    if export_term_glossary and target_is_zh:
+        body_term_rule = (
+            "【正文專有名詞保留規則】\n"
+            "下列表格中的英文專有名詞、學術概念、期刊名、人名與機構名，不只要列在術語表，"
+            "也必須出現在翻譯正文內。每一次出現都請用「中文譯名（English original）」；"
+            "人名、機構名、期刊名若沒有固定中文譯名，請直接保留英文原文。\n"
+        )
 
     try:
         timeout_sec = int(os.environ.get("MAGI_FILE_TRANSLATE_TIMEOUT_SEC", "120") or "120")
@@ -234,10 +270,15 @@ def translate_text_complete(text: str, source_lang: str = "auto", target_lang: s
                 (target_is_zh and doc_src_latin > max(200, doc_src_cjk * 2))
                 or (target_is_en and doc_src_cjk > max(200, doc_src_latin * 2))
             )
-    # 2026-04-24：@HEAVY 明確要求 NIM 405B；跳過 GTX primary，讓 heavy=True 真的打到 NIM。
-    # 否則 handler 對英→中長文自動選 GTX primary，InferenceGateway.chat(heavy=True) fast path
-    # 只會當 GTX 失敗時才被當 fallback 呼叫，@HEAVY 形同虛設。
-    if heavy and use_gtx_primary:
+    # 2026-04-24：@HEAVY 預設仍走本機/重模型；但長篇翻譯若重模型壅塞，
+    # 可明示允許 GTX-first，避免品質閘門因模型逾時反覆失敗而無法交付完整譯本。
+    heavy_allow_gtx_primary = os.environ.get("MAGI_HEAVY_TRANSLATE_ALLOW_GTX_PRIMARY", "0").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    if heavy and use_gtx_primary and not heavy_allow_gtx_primary:
         logger.info("translate_text_complete: heavy=True → skipping GTX primary, routing to NIM 405B")
         use_gtx_primary = False
     # 2026-04-24：strict NIM 模式 — 強制序列 (workers=1)，避免並行觸發 NIM 40 req/min 限制。
@@ -571,8 +612,11 @@ def translate_text_complete(text: str, source_lang: str = "auto", target_lang: s
             "1. 逐句完整翻譯，禁止摘要、省略或增添內容\n"
             "2. 保留原文段落結構和清單格式\n"
             "3. 法律專有名詞必須精確翻譯，不確定時保留原文並加括號註記\n"
-            "4. 忽略印刷殘字（ISBN、頁碼、*.indb 等）\n"
-            "5. 只輸出譯文，不要任何說明或解釋\n"
+            "   翻譯成中文時，學術概念與專有名詞每一次出現都必須呈現為「中文（原文）」；人名、機構名、期刊名保留英文原文。\n"
+            "4. 英語慣用語必須按職業/法律脈絡翻譯；例如 in my previous life as a prosecutor 應譯為「我之前擔任檢察官時」，絕不可譯為「我前世是檢察官」。\n"
+            "5. 忽略印刷殘字（ISBN、頁碼、*.indb 等）\n"
+            "6. 只輸出譯文，不要任何說明或解釋\n"
+            f"{body_term_rule}"
             f"{glossary}\n"
             f"{label}\n\n"
             "【待翻譯內容】\n"
@@ -589,6 +633,90 @@ def translate_text_complete(text: str, source_lang: str = "auto", target_lang: s
         if qq.get("success") and out:
             return out, model_used
         return "", model_used
+
+    def _repair_verified_translation(text_part: str, translated_part: str, issue: str, label: str = "") -> tuple[str, str]:
+        """Re-translate a chunk after the reviewer flags fidelity problems."""
+        glossary = doc_glossary
+        pp = (
+            "你是法律翻譯修復員。上一版譯文被品質審查標記為不忠實或語境銜接不佳。\n"
+            "請重新翻譯原文，不要沿用上一版的錯誤措辭。\n\n"
+            "【修復規則】\n"
+            "1. 必須逐句完整翻譯，不得摘要、省略或重組論述順序。\n"
+            "2. 必須保留原文段落、引文、註腳、頁碼與專有名詞脈絡。\n"
+            "3. 學術概念與專有名詞每一次出現時都必須用「中文（原文）」呈現，例如：能動性（agency）。人名、機構名、期刊名沒有固定中文譯名時，直接保留英文原文。\n"
+            "4. 修正英語慣用語錯譯；例如 in my previous life as a prosecutor 是「我之前擔任檢察官時」，不是「我前世是檢察官」。\n"
+            "5. 只輸出修復後譯文，不要任何說明、道歉或前言。\n"
+            f"{body_term_rule}"
+            f"{glossary}\n"
+            f"{label}\n\n"
+            f"【審查問題】\n{issue[:500]}\n\n"
+            f"【上一版譯文（不可直接照抄）】\n{translated_part[:1200]}\n\n"
+            f"【原文】\n{text_part}"
+        )
+        _ctx = min(24576, max(8192, len(text_part) * 4))
+        rr = InferenceGateway().chat(
+            pp,
+            task_type="translate",
+            timeout=max(quick_timeout, 90),
+            model=fallback_model,
+            num_ctx=_ctx,
+            num_predict=min(6144, max(2048, len(text_part) * 2)),
+            allow_synthetic_fallback=False,
+            heavy=heavy,
+        )
+        out = str((rr or {}).get("response") or "").strip()
+        model_used = str((rr or {}).get("model") or "").strip()
+        if rr.get("success") and out:
+            return out, model_used
+        return "", model_used
+
+    def _review_translation_piece(text_part: str, translated_part: str) -> tuple[bool, str]:
+        """Return (ok, reviewer_message). Missing reviewer is non-blocking."""
+        try:
+            idiom_issues = _dh.translation_idiom_issues(text_part, translated_part)
+            if idiom_issues:
+                return False, "有問題：" + "；".join(idiom_issues[:3])
+        except Exception as exc:
+            logging.getLogger("magi.translate").debug("idiom review skipped: %s", exc)
+        try:
+            missing_terms = _dh.missing_translation_source_terms(
+                text_part,
+                translated_part,
+                term_glossary=export_term_glossary,
+            )
+            if missing_terms:
+                return False, "有問題：譯文正文未保留原文專有名詞：" + "、".join(missing_terms[:8])
+        except Exception as exc:
+            logging.getLogger("magi.translate").debug("term visibility review skipped: %s", exc)
+        try:
+            _verify_prompt = (
+                "你是翻譯品質審查員。請判斷以下翻譯是否忠實傳達原文意思。\n"
+                "只有在出現錯譯、漏譯、擅自新增原文沒有的事實、專有名詞錯誤、專有名詞沒有在正文保留原文、英語慣用語直譯錯誤、語言不是繁體中文時，才回答「有問題：（簡述）」。\n"
+                "若只是語序生硬、風格可微調、引文片語因截段而顯得突兀但沒有新增或錯譯，請回答「正確」。\n"
+                "只回答「正確」或「有問題：（簡述）」，不要其他內容。\n\n"
+                f"原文（前500字）：{text_part[:500]}\n\n"
+                f"譯文（前500字）：{translated_part[:500]}"
+            )
+            _vr = InferenceGateway().chat(
+                _verify_prompt, task_type="tc_review", timeout=15, model=TEXT_REVIEW_MODEL,
+                num_ctx=3072, num_predict=120,
+                allow_synthetic_fallback=False,
+            )
+            _vr_out = str((_vr or {}).get("response") or "").strip()
+            if _vr.get("success") and _vr_out.startswith("有問題"):
+                fatal_terms = [
+                    "錯譯", "漏譯", "遺漏", "省略", "新增", "添加", "擅自", "非原文", "不屬於原文",
+                    "幻覺", "臆測", "偏離原文", "偏離", "專有名詞錯誤", "不是繁體中文",
+                    "嚴重", "不忠實", "無法從原文",
+                ]
+                style_only_terms = ["語序", "生硬", "突兀", "不夠流暢", "上下文缺失", "語境缺失", "銜接"]
+                if any(term in _vr_out for term in fatal_terms) or not any(term in _vr_out for term in style_only_terms):
+                    return False, _vr_out
+                return True, _vr_out
+            return True, _vr_out
+        except Exception as exc:
+            logging.getLogger("magi.translate").debug("translation reviewer skipped: %s", exc)
+            return True, ""
 
     def _split_retry_parts(text_part: str) -> list[str]:
         sub_chunk_chars = max(800, min(split_retry_chars, max(800, len(text_part) // 2)))
@@ -667,6 +795,7 @@ def translate_text_complete(text: str, source_lang: str = "auto", target_lang: s
                     "5. 對表外的完整英文段落（例如法條全文）才進行翻譯，且不得摘要或省略。\n"
                     "6. 只輸出最終結果，不要任何前言、說明或對話。\n"
                     f"{_preserve_rule}"
+                    f"{body_term_rule}"
                     f"{glossary}\n"
                     f"{label}\n\n"
                     "【待處理內容】\n"
@@ -681,11 +810,13 @@ def translate_text_complete(text: str, source_lang: str = "auto", target_lang: s
                     "【翻譯規則】\n"
                     "1. 逐句完整翻譯，禁止摘要、省略或增添內容\n"
                     "2. 保留原文段落結構和清單格式\n"
-                    "3. 法律專有名詞必須精確翻譯，不確定時保留原文並加括號註記\n"
-                    "4. 忽略印刷殘字（ISBN、頁碼、*.indb 等）\n"
-                    "5. 只輸出譯文，不要任何說明或解釋\n"
-                    "6. 絕對不要在輸出前或後加入任何對話、確認、提示下一段的文字\n"
+                    "3. 法律專有名詞必須精確翻譯，不確定時保留原文並加括號註記；翻成中文時，每一次出現都必須用「中文（原文）」或直接保留英文原文\n"
+                    "4. 英語慣用語必須按職業/法律脈絡翻譯；例如 in my previous life as a prosecutor 應譯為「我之前擔任檢察官時」，絕不可譯為「我前世是檢察官」。\n"
+                    "5. 忽略印刷殘字（ISBN、頁碼、*.indb 等）\n"
+                    "6. 只輸出譯文，不要任何說明或解釋\n"
+                    "7. 絕對不要在輸出前或後加入任何對話、確認、提示下一段的文字\n"
                     f"{_preserve_rule}"
+                    f"{body_term_rule}"
                     f"{glossary}\n"
                     f"{label}\n\n"
                     "【待翻譯內容】\n"
@@ -713,16 +844,17 @@ def translate_text_complete(text: str, source_lang: str = "auto", target_lang: s
                         try:
                             _pe_prompt = (
                                 "你是法律翻譯審校員。以下是機器翻譯的初稿，請只修正法律術語錯誤，不要重新翻譯。\n"
-                                "規則：保持原文結構，只替換錯誤的專有名詞。若無需修改直接輸出原文。\n"
+                                "規則：保持原文結構與完整長度，只替換錯誤的專有名詞；專有名詞每一次出現都要保留原文，例如：成癮（addiction）。若無需修改直接輸出原文。\n"
+                                f"{body_term_rule}"
                                 f"{glossary}\n\n"
-                                f"【機器翻譯初稿】\n{gtx_piece[:2000]}"
+                                f"【機器翻譯初稿】\n{gtx_piece}"
                             )
                             _pe_r = melchior_client._chat_omlx(
                                 prompt=_pe_prompt, model=TEXT_REVIEW_MODEL,
-                                timeout=45, temperature=0.1, max_tokens=min(1024, len(gtx_piece)),
+                                timeout=45, temperature=0.1, max_tokens=min(4096, max(1024, len(gtx_piece))),
                             )
                             _pe_out = str((_pe_r or {}).get("response") or "").strip()
-                            if _pe_r.get("success") and _pe_out and len(_pe_out) > len(gtx_piece) * 0.5:
+                            if _pe_r.get("success") and _pe_out and len(_pe_out) > len(gtx_piece) * 0.8:
                                 piece = _pe_out
                                 used_model = "google_gtx+omlx_postedit"
                             else:
@@ -783,6 +915,13 @@ def translate_text_complete(text: str, source_lang: str = "auto", target_lang: s
                 _stripped = _strip_trailing_meta(piece, src_len=len(text_part))
                 if _stripped and _stripped != piece:
                     piece = _stripped
+                piece = _dh.ensure_translation_terms_visible(
+                    text_part,
+                    piece,
+                    term_glossary=export_term_glossary,
+                    target_lang=target_lang,
+                )
+                piece = _dh.polish_translated_document_text(piece) or piece
 
             if piece and _translation_needs_rescue(text_part, piece):
                 try:
@@ -794,30 +933,87 @@ def translate_text_complete(text: str, source_lang: str = "auto", target_lang: s
                     used_model = "google_gtx"
 
             if piece and not _translation_needs_rescue(text_part, piece) and _should_verify_chunk(idx):
-                try:
-                    _verify_prompt = (
-                        "你是翻譯品質審查員。請判斷以下翻譯是否忠實傳達原文意思。\n"
-                        "只回答「正確」或「有問題：（簡述）」，不要其他內容。\n\n"
-                        f"原文（前300字）：{text_part[:300]}\n\n"
-                        f"譯文（前300字）：{piece[:300]}"
-                    )
-                    _vr = InferenceGateway().chat(
-                        _verify_prompt, task_type="tc_review", timeout=12, model=TEXT_REVIEW_MODEL,
-                        num_ctx=2048, num_predict=100,
-                        allow_synthetic_fallback=False,
-                    )
-                    _vr_out = str((_vr or {}).get("response") or "").strip()
-                    if _vr.get("success") and "有問題" in _vr_out:
-                        logger.warning("translate_verify: oMLX flagged chunk %d/%d: %s", idx, total, _vr_out[:120])
+                review_ok, review_msg = _review_translation_piece(text_part, piece)
+                if not review_ok:
+                    logger.warning("translate_verify: reviewer flagged chunk %d/%d: %s", idx, total, review_msg[:120])
+                    repaired = ""
+                    repaired_model = ""
+                    try:
+                        gtx_rescue = _translate_via_gtx(text_part)
+                    except Exception:
+                        gtx_rescue = ""
+                    if gtx_rescue and not _translation_needs_rescue(text_part, gtx_rescue):
+                        rescue_ok, rescue_msg = _review_translation_piece(text_part, gtx_rescue)
+                        if rescue_ok:
+                            repaired = gtx_rescue
+                            repaired_model = "google_gtx_verified"
+                        else:
+                            logger.warning(
+                                "translate_verify: GTX rescue still flagged chunk %d/%d: %s",
+                                idx, total, rescue_msg[:120],
+                            )
+                    if not repaired:
                         try:
-                            gtx_rescue = _translate_via_gtx(text_part)
-                        except Exception:
-                            gtx_rescue = ""
-                        if gtx_rescue and not _translation_needs_rescue(text_part, gtx_rescue):
-                            piece = gtx_rescue
-                            used_model = "google_gtx_verified"
-                except Exception as _e:
-                    logging.getLogger("magi.translate").debug("GTX rescue failed: %s", _e)
+                            llm_repair, llm_model = _repair_verified_translation(
+                                text_part,
+                                piece,
+                                review_msg,
+                                label=f"修復段落：{idx}/{total}",
+                            )
+                        except Exception as _e:
+                            logging.getLogger("magi.translate").debug("LLM repair failed: %s", _e)
+                            llm_repair, llm_model = "", ""
+                        if llm_repair and not _translation_needs_rescue(text_part, llm_repair):
+                            repair_ok, repair_msg = _review_translation_piece(text_part, llm_repair)
+                            if repair_ok:
+                                repaired = llm_repair
+                                repaired_model = llm_model or "verified_repair"
+                            else:
+                                logger.warning(
+                                    "translate_verify: LLM repair still flagged chunk %d/%d: %s",
+                                    idx, total, repair_msg[:120],
+                                )
+                    if repaired:
+                        piece = repaired
+                        used_model = repaired_model
+                    elif os.environ.get("MAGI_FILE_TRANSLATE_STRICT_QUALITY", "1").strip().lower() in {"1", "true", "yes", "on"}:
+                        split_repaired = False
+                        if depth > 0 and len(text_part) >= quick_sub_chars:
+                            sub_parts = _split_retry_parts(text_part)
+                            if len(sub_parts) >= 2:
+                                sub_out = []
+                                sub_failed = 0
+                                sub_model = ""
+                                for sidx, sp in enumerate(sub_parts, start=1):
+                                    sub_piece, sm, sub_errs = _translate_piece(
+                                        sp,
+                                        label=f"品質修復子段：{sidx}/{len(sub_parts)}（{label}）",
+                                        depth=depth - 1,
+                                    )
+                                    if sub_piece:
+                                        sub_out.append(sub_piece)
+                                    if sm and not sub_model:
+                                        sub_model = sm
+                                    sub_failed += sub_errs
+                                if sub_out and sub_failed == 0:
+                                    joined = "\n\n".join(sub_out).strip()
+                                    joined_ok, joined_msg = _review_translation_piece(text_part, joined)
+                                    if joined_ok:
+                                        piece = joined
+                                        used_model = sub_model or "verified_split_repair"
+                                        split_repaired = True
+                                    else:
+                                        logger.warning(
+                                            "translate_verify: split repair still flagged chunk %d/%d: %s",
+                                            idx, total, joined_msg[:120],
+                                        )
+                        if not split_repaired:
+                            piece = (
+                                f"（⚠️ 第 {idx}/{total} 段翻譯品質審查未通過，已保留原文待重跑：{review_msg[:120]}）\n"
+                                f"{text_part}"
+                            )
+                            used_model = "translation_quality_review_failed"
+                            return piece, used_model, 1
 
             if (not piece) and len(text_part) > quick_sub_chars:
                 sub_parts = []
@@ -905,7 +1101,7 @@ def translate_text_complete(text: str, source_lang: str = "auto", target_lang: s
 
     from concurrent.futures import FIRST_COMPLETED, wait
     from api.thread_pools import inference_pool
-    checkpoint_version = 3
+    checkpoint_version = 4
     checkpoint_active = checkpoint_enabled and total >= checkpoint_threshold
     checkpoint_path = _translation_checkpoint_state_path(text, source_lang, target_lang) if checkpoint_active else None
     result_buffer = [None] * total
@@ -941,14 +1137,24 @@ def translate_text_complete(text: str, source_lang: str = "auto", target_lang: s
                     cached_translated = _rebuild_translated_text_from_cached_results(cached_results)
                 cache_has_plain_translation = bool(cached_translated)
                 if bool(cached.get("complete")) and cached_final and ((not bilingual_table_active) or cache_has_plain_translation):
+                    cached_translated_chunks: list[str] = []
+                    if isinstance(cached_results, list) and len(cached_results) == total:
+                        for result in cached_results:
+                            if isinstance(result, dict):
+                                cached_translated_chunks.append(str(result.get("text") or "").strip())
+                            else:
+                                cached_translated_chunks.append("")
                     return {
                         "success": True,
                         "text": cached_final,
                         "translated_text": cached_translated or cached_final,
+                        "source_chunks": list(chunks),
+                        "translated_chunks": cached_translated_chunks,
                         "provider": "melchior_chunk_complete",
                         "model": str(cached.get("model") or ""),
                         "chunks_total": int(cached.get("chunks_total") or total or 0),
                         "chunks_failed": int(cached.get("chunks_failed") or 0),
+                        "term_glossary": export_term_glossary,
                     }
                 if isinstance(cached_results, list) and len(cached_results) == total:
                     for idx, result in enumerate(cached_results):
@@ -992,6 +1198,7 @@ def translate_text_complete(text: str, source_lang: str = "auto", target_lang: s
             "source_lang": str(source_lang or "auto"),
             "target_lang": str(target_lang or ""),
             "chunks_total": total,
+            "source_chunks": list(chunks),
             "chunks_failed": int(chunks_failed or 0),
             "model": str(model or ""),
             "complete": bool(complete),
@@ -1002,6 +1209,8 @@ def translate_text_complete(text: str, source_lang: str = "auto", target_lang: s
             payload["final_text"] = str(final_text)
         if translated_text:
             payload["translated_text"] = str(translated_text)
+        if export_term_glossary:
+            payload["term_glossary"] = str(export_term_glossary)
         _atomic_write_json(checkpoint_path, payload)
 
     pending_indices = [i for i, result in enumerate(result_buffer) if not isinstance(result, dict)]
@@ -1138,6 +1347,30 @@ def translate_text_complete(text: str, source_lang: str = "auto", target_lang: s
     from api.handlers import text_processing_handler as _tp
     from api.handlers.output_quality_handler import run_output_quality_gate
 
+    allow_partial = os.environ.get("MAGI_FILE_TRANSLATE_ALLOW_PARTIAL", "0").strip().lower() in {"1", "true", "yes", "on"}
+    quality_failed_chunks = sum(
+        1
+        for item in result_buffer
+        if isinstance(item, dict) and str(item.get("model") or "") == "translation_quality_review_failed"
+    )
+    if quality_failed_chunks > 0 and not allow_partial:
+        _persist_checkpoint(
+            final_text=final_translation_text,
+            translated_text=final_translation_text,
+            complete=False,
+            chunks_failed=failed_chunks,
+            model=last_model,
+        )
+        return {
+            "success": False,
+            "error": f"translation_quality_failed:{quality_failed_chunks}/{total} chunks require verified retry",
+            "provider": "melchior_chunk_complete",
+            "model": last_model,
+            "chunks_total": total,
+            "chunks_failed": failed_chunks,
+            "term_glossary": export_term_glossary,
+        }
+
     final_issues = _tp.output_guard_issues(final_translation_text, mode="translation")
     quality_gate = run_output_quality_gate(
         "translation",
@@ -1188,6 +1421,7 @@ def translate_text_complete(text: str, source_lang: str = "auto", target_lang: s
         "translated_text": final_translation_text,
         "source_chunks": list(chunks),
         "translated_chunks": list(translated_chunks),
+        "term_glossary": export_term_glossary,
         "provider": "melchior_chunk_complete",
         "model": last_model,
         "chunks_total": total,

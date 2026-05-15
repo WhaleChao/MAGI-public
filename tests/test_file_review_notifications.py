@@ -177,6 +177,61 @@ def test_court_pickup_portal_row_does_not_become_pending_payment(tmp_path):
     assert collapsed["items"][0]["status"] == "court_pickup"
 
 
+def test_downloaded_registry_suppresses_archived_downloadable_case(tmp_path):
+    module = _load_action_module()
+    (tmp_path / "downloaded_registry.json").write_text(
+        json.dumps({
+            "卷宗_劉信義.pdf": {
+                "yyidno": "115.原侵重訴.000001",
+                "case_info": {
+                    "artifact_type": "review_download",
+                    "showyyidno": "115年度原侵重訴字第000001號",
+                    "case_number": "115.原侵重訴.000001",
+                },
+            },
+            "繳費單_劉信義.pdf": {
+                "yyidno": "115.原侵重訴.000001",
+                "case_info": {"artifact_type": "payment_slip"},
+            },
+        }, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    item = {
+        "status": "downloadable",
+        "party": "劉信義",
+        "case_number": "115年度原侵重訴字第000001號",
+        "rowid": "DL001",
+    }
+
+    assert module._filter_not_yet_downloaded([item], str(tmp_path)) == []
+
+
+def test_portal_downloadable_uses_review_folder_archive_skip(tmp_path):
+    module = _load_action_module()
+
+    class FakeManager:
+        def _case_review_folder_has_files(self, case_info):
+            return case_info.get("party") == "蘇建和"
+
+    item = {
+        "status": "downloadable",
+        "party": "蘇建和",
+        "case_number": "114年度重上更二字第000095號",
+        "rowid": "DL002",
+    }
+
+    collapsed = module._collapse_portal_items(
+        [item],
+        download_folder=str(tmp_path),
+        file_review_manager=FakeManager(),
+    )
+
+    assert collapsed["downloadable_raw_count"] == 1
+    assert collapsed["downloadable_skipped_count"] == 1
+    assert collapsed["downloadable_count"] == 0
+    assert collapsed["items"] == []
+
+
 def test_file_review_manager_court_pickup_row_is_not_pending_payment():
     from casper_ecosystem.law_firm_orchestrators.file_review_automation import FileReviewManager
 

@@ -33,6 +33,7 @@ from api.case_path_mapper import (
     translate_case_path_to_local,
     translate_local_path_to_canonical,
 )
+from api.laf_case_classifier import is_administrative_laf_reason, normalize_laf_case_type
 
 CONFIG_PATH = str(get_config_path("config.json"))
 
@@ -264,8 +265,15 @@ class LAFFolderBuilder:
         return text[:max_len]
 
     def _resolve_case_category(self, case_info: Dict) -> str:
-        # 優先採用明確 case_type（不走關鍵字推斷）
+        reason = str(case_info.get("case_reason") or "").strip()
+        stage = str(case_info.get("case_stage") or "").strip()
+
+        # 優先採用明確 case_type，但仍允許社會保險等實體行政事件覆寫
+        # LAF portal/信件有時把「勞工保險爭議」標為民事程序。
         explicit_type = str(case_info.get("case_type") or "").strip()
+        normalized_type, _ = normalize_laf_case_type(explicit_type, stage, reason)
+        if normalized_type in ("民事", "刑事", "家事", "消費者債務清理", "少年", "行政"):
+            return normalized_type
         if explicit_type in ("民事", "刑事", "家事", "消費者債務清理", "少年", "行政"):
             return explicit_type
 
@@ -282,7 +290,7 @@ class LAFFolderBuilder:
             return "家事"
         if "少年" in text:
             return "少年"
-        if "行政" in text:
+        if "行政" in text or is_administrative_laf_reason(text):
             return "行政"
         if "非訟" in text:
             return "非訟"

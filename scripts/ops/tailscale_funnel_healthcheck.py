@@ -23,6 +23,18 @@ ROOT = Path(__file__).resolve().parents[2]
 STATE_PATH = ROOT / ".runtime" / "tailscale_funnel_health_latest.json"
 
 
+def _load_dotenv() -> None:
+    env_path = ROOT / ".env"
+    if not env_path.exists():
+        return
+    for raw in env_path.read_text(encoding="utf-8", errors="ignore").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
+
+
 def _run(args: list[str], timeout: int = 20) -> dict[str, Any]:
     try:
         proc = subprocess.run(args, capture_output=True, text=True, timeout=timeout)
@@ -138,6 +150,47 @@ def _probe(host: str, ip: str, path: str) -> dict[str, Any]:
     }
 
 
+def _probe_public_url(url: str) -> dict[str, Any]:
+    res = _run(
+        [
+            "curl",
+            "-k",
+            "-sS",
+            "-L",
+            "--max-time",
+            "12",
+            "-o",
+            "/dev/null",
+            "-w",
+            "%{http_code}",
+            url,
+        ],
+        timeout=15,
+    )
+    code_text = (res["stdout"] or "").strip()[-3:]
+    try:
+        http_code = int(code_text)
+    except Exception:
+        http_code = 0
+    return {
+        "url": url,
+        "ok": bool(res["ok"] and 200 <= http_code < 500),
+        "http_code": http_code,
+        "stderr": res["stderr"][-240:],
+    }
+
+
+def _public_health_url() -> str:
+    base = (
+        os.environ.get("MAGI_TAILSCALE_FUNNEL_HEALTH_URL")
+        or os.environ.get("MAGI_PUBLIC_BASE_URL")
+        or ""
+    ).strip().rstrip("/")
+    if not base:
+        return ""
+    return base if base.endswith("/health") else f"{base}/health"
+
+
 def _reset_and_restore(targets: list[dict[str, str]]) -> list[dict[str, Any]]:
     ts = _tailscale_bin()
     actions: list[dict[str, Any]] = []
@@ -152,6 +205,7 @@ def _reset_and_restore(targets: list[dict[str, str]]) -> list[dict[str, Any]]:
 
 
 def check(apply: bool = False) -> dict[str, Any]:
+    _load_dotenv()
     status = _load_funnel_status()
     payload: dict[str, Any] = {
         "checked_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
@@ -162,12 +216,29 @@ def check(apply: bool = False) -> dict[str, Any]:
         "actions": [],
     }
     if not status["ok"]:
+        health_url = _public_health_url()
+        if health_url:
+            probe = _probe_public_url(health_url)
+            payload["probes"] = [probe]
+            if probe.get("ok"):
+                payload.update({
+                    "status": "ok",
+                    "reason": f"tailscale CLI status unavailable, but public health probe succeeded: {status.get('error', 'status failed')}",
+                })
+                return payload
         payload.update({"status": "error", "reason": status.get("error", "status failed")})
         return payload
 
     targets = _extract_targets(status["data"])
     payload["targets"] = targets
     if not targets:
+        health_url = _public_health_url()
+        if health_url:
+            probe = _probe_public_url(health_url)
+            payload["probes"] = [probe]
+            if probe.get("ok"):
+                payload.update({"status": "ok", "reason": "no Funnel target in CLI output, but public health probe succeeded"})
+                return payload
         payload.update({"status": "skipped", "reason": status.get("skipped_reason") or "no Funnel target configured"})
         return payload
 

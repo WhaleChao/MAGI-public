@@ -8,7 +8,11 @@ import subprocess
 import sys
 import hashlib
 import html
-from urllib.parse import urljoin
+import ssl
+from datetime import datetime
+from urllib.parse import parse_qs, unquote, urljoin, urlsplit
+from urllib import request as _urlrequest
+from urllib import error as _urlerror
 from bs4 import BeautifulSoup
 import requests
 import urllib3
@@ -23,6 +27,7 @@ VENV_PY = os.environ.get("JUDICIAL_VENV_PY", f"{_MAGI_ROOT}/.venv_judicial/bin/p
 CHROME_PATH = os.environ.get("JUDICIAL_CHROME_PATH", "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome").strip()
 BASE = "https://judgment.judicial.gov.tw/FJUD/Default_AD.aspx"
 CACHE_DIR = os.environ.get("JUDICIAL_CACHE_DIR", f"{_MAGI_ROOT}/.cache/judicial_web_search").strip()
+JDG_API_BASE = os.environ.get("JUDICIAL_API_BASE", "https://data.judicial.gov.tw/jdg/api").rstrip("/")
 urllib3.disable_warnings()
 
 
@@ -36,6 +41,22 @@ def _preview_limit() -> int:
     except Exception:
         n = 10
     return max(1, min(50, n))
+
+
+def _search_page_limit(max_results: int) -> int:
+    try:
+        cap = int(os.environ.get("JUDICIAL_SEARCH_MAX_PAGES", "80") or "80")
+    except Exception:
+        cap = 80
+    try:
+        desired = int(max_results or 10)
+    except Exception:
+        desired = 10
+    # Judicial result pages usually hold about 20 items.  Keep the old 10-page
+    # floor for normal searches, but allow larger exports to actually reach the
+    # requested max_results.
+    pages = max(10, (max(1, desired) // 20) + 3)
+    return max(1, min(cap, pages))
 
 
 def _ok(payload: dict) -> int:
@@ -123,6 +144,30 @@ def _extract_hidden_fields(soup: BeautifulSoup) -> dict:
     return payload
 
 
+def _http_court_values(soup: BeautifulSoup, courts) -> list[str]:
+    wanted = [str(c or "").strip() for c in (courts or []) if str(c or "").strip()]
+    if not wanted:
+        return []
+    select = soup.find(id="jud_court") or soup.find(attrs={"name": "jud_court"})
+    if not select:
+        return wanted
+    by_label = {}
+    by_value = {}
+    for opt in select.find_all("option"):
+        label = " ".join(opt.get_text(" ", strip=True).split())
+        value = str(opt.get("value") or "").strip()
+        if label:
+            by_label[label] = value
+        if value:
+            by_value[value] = value
+    values = []
+    for court in wanted:
+        resolved = by_value.get(court) or by_label.get(court) or court
+        if resolved:
+            values.append(resolved)
+    return values
+
+
 def _parse_result_items(results_html: str, base_url: str) -> list:
     soup = BeautifulSoup(results_html or "", "html.parser")
     items = []
@@ -140,6 +185,24 @@ def _parse_result_items(results_html: str, base_url: str) -> list:
     return items
 
 
+def _parse_total_count(results_html: str) -> int | None:
+    text = BeautifulSoup(results_html or "", "html.parser").get_text(" ", strip=True)
+    patterns = [
+        r"共\s*([0-9,]+)\s*筆",
+        r"總\s*筆\s*數\s*[:：]?\s*([0-9,]+)",
+        r"查詢結果\s*[:：]?\s*([0-9,]+)\s*筆",
+    ]
+    for pat in patterns:
+        m = re.search(pat, text)
+        if not m:
+            continue
+        try:
+            return int(m.group(1).replace(",", ""))
+        except Exception:
+            continue
+    return None
+
+
 def _next_page_href(results_html: str, base_url: str) -> str:
     soup = BeautifulSoup(results_html or "", "html.parser")
     link = soup.find("a", string=lambda text: bool(text and "下一頁" in text))
@@ -147,6 +210,166 @@ def _next_page_href(results_html: str, base_url: str) -> str:
         return ""
     href = str(link.get("href") or "").strip()
     return urljoin(base_url, html.unescape(href)) if href else ""
+
+
+_JUDICIAL_UI_NOISE = {
+    "去格式引用",
+    "分享網址",
+    "名詞查詢",
+    "名詞收集",
+    "裁判易讀小幫手",
+    "友善列印",
+    "轉存PDF",
+    "分享",
+    "P",
+    "列印歷審清單",
+}
+
+_JUDICIAL_BOTTOM_STOPS = {
+    "歷審裁判",
+    "相關法條",
+    "相關判解",
+    "相關裁判",
+}
+
+
+def _normalize_judicial_text(text: str) -> str:
+    """Clean Judicial Yuan page chrome and rebuild readable judgment paragraphs."""
+    raw = str(text or "").replace("\r\n", "\n").replace("\r", "\n")
+    raw = raw.replace("\xa0", " ").replace("\u3000", " ")
+    if not raw.strip():
+        return ""
+
+    lines: list[str] = []
+    for item in raw.split("\n"):
+        line = re.sub(r"\s+", " ", str(item or "")).strip()
+        if not line:
+            continue
+        if line in _JUDICIAL_UI_NOISE:
+            continue
+        if line.startswith("若您有連結此資料內容之需求"):
+            continue
+        if line.startswith("請選取上方網址後"):
+            continue
+        if line.startswith("分享網址："):
+            continue
+        lines.append(line)
+
+    trimmed: list[str] = []
+    body_started = False
+    for line in lines:
+        compact = re.sub(r"\s+", "", line)
+        if compact in {"主文", "理由", "事實及理由"}:
+            body_started = True
+        if body_started and line in _JUDICIAL_BOTTOM_STOPS:
+            break
+        trimmed.append(line)
+    lines = trimmed
+
+    # Combine common metadata labels split by the website renderer.
+    combined: list[str] = []
+    i = 0
+    metadata_labels = {"裁判字號：", "裁判日期：", "裁判案由："}
+    while i < len(lines):
+        line = lines[i]
+        if line in metadata_labels and i + 1 < len(lines):
+            combined.append(f"{line}{lines[i + 1]}")
+            i += 2
+            continue
+        combined.append(line)
+        i += 1
+
+    heading_map = {
+        "主文": "主文",
+        "理由": "理由",
+        "事實及理由": "事實及理由",
+    }
+
+    def _is_heading(line: str) -> bool:
+        compact = re.sub(r"\s+", "", line)
+        if compact in heading_map:
+            return True
+        if re.fullmatch(r"[甲乙丙丁戊己庚辛壬癸]、.+", line):
+            return True
+        if re.fullmatch(r"(?:據上論結|中華民國).*", compact):
+            return True
+        return False
+
+    def _starts_new_paragraph(line: str) -> bool:
+        if _is_heading(line):
+            return True
+        if re.match(r"^[一二三四五六七八九十百]+、", line):
+            return True
+        if re.match(r"^[㈠㈡㈢㈣㈤㈥㈦㈧㈨㈩]", line):
+            return True
+        if re.match(r"^[⒈⒉⒊⒋⒌⒍⒎⒏⒐⒑]", line):
+            return True
+        if re.match(r"^\d+[.、]", line):
+            return True
+        if line.startswith(("裁判字號：", "裁判日期：", "裁判案由：")):
+            return True
+        return False
+
+    def _display_line(line: str) -> str:
+        compact = re.sub(r"\s+", "", line)
+        if compact in heading_map:
+            return heading_map[compact]
+        if compact.startswith("中華民國"):
+            return compact
+        return line
+
+    def _join_sep(prev: str, nxt: str) -> str:
+        if not prev or not nxt:
+            return ""
+        if prev.endswith(("-", "—", "–", "/", "（", "(")):
+            return ""
+        if re.search(r"[A-Za-z0-9]$", prev) and re.match(r"^[A-Za-z0-9]", nxt):
+            return " "
+        return ""
+
+    out: list[str] = []
+    buf = ""
+
+    def _flush() -> None:
+        nonlocal buf
+        value = re.sub(r"\s+", " ", buf).strip()
+        if value:
+            out.append(value)
+        buf = ""
+
+    for original in combined:
+        line = _display_line(original)
+        compact = re.sub(r"\s+", "", line)
+        if not line:
+            continue
+        if line.startswith(("裁判字號：", "裁判日期：", "裁判案由：")):
+            _flush()
+            out.append(line)
+            continue
+        if _is_heading(line):
+            _flush()
+            out.append(compact if compact in heading_map else line)
+            continue
+        if _starts_new_paragraph(line):
+            _flush()
+            buf = line
+            continue
+        if not buf:
+            buf = line
+            continue
+        buf = f"{buf}{_join_sep(buf, line)}{line}"
+    _flush()
+
+    # Drop accidental exact duplicates while preserving order.
+    final: list[str] = []
+    prev = ""
+    for para in out:
+        norm = re.sub(r"\s+", " ", para).strip()
+        if not norm or norm == prev:
+            continue
+        final.append(norm)
+        prev = norm
+    return "\n\n".join(final).strip()
 
 
 def _search_http_impl(
@@ -197,7 +420,7 @@ def _search_http_impl(
             }
         )
         if courts:
-            payload["jud_court"] = [str(c or "").strip() for c in courts if str(c or "").strip()]
+            payload["jud_court"] = _http_court_values(soup, courts)
         post_resp = session.post(BASE, data=payload, timeout=timeout, verify=verify_ssl)
         post_resp.raise_for_status()
         iframe_match = re.search(r'<iframe[^>]+src="([^"]+)"[^>]+id="iframe-data"', post_resp.text)
@@ -207,9 +430,14 @@ def _search_http_impl(
         next_url = urljoin(BASE, html.unescape(iframe_match.group(1)))
         items = []
         seen = set()
-        for _ in range(10):
+        pages_scanned = 0
+        total_count = None
+        for _ in range(_search_page_limit(max_n)):
+            pages_scanned += 1
             page_resp = session.get(next_url, timeout=timeout, verify=verify_ssl)
             page_resp.raise_for_status()
+            if total_count is None:
+                total_count = _parse_total_count(page_resp.text)
             page_items = _parse_result_items(page_resp.text, next_url)
             added = 0
             for item in page_items:
@@ -256,6 +484,8 @@ def _search_http_impl(
                         "case_no": str(case_no or ""),
                         "results": items,
                         "engine": "http_form",
+                        "pages_scanned": pages_scanned,
+                        "total_count": total_count,
                     },
                     f,
                     ensure_ascii=False,
@@ -275,6 +505,9 @@ def _search_http_impl(
             "results_truncated": len(preview) != len(items),
             "results_path": path,
             "engine": "http_form",
+            "pages_scanned": pages_scanned,
+            "total_count": total_count,
+            "incomplete": bool(total_count and len(items) < total_count),
         }
     except Exception as e:
         return {"success": False, "error": f"{type(e).__name__}: {str(e)[:240]}", "engine": "http_form"}
@@ -442,6 +675,11 @@ def _search_impl(
 
         items = []
         seen_urls = set()
+        total_count = None
+        try:
+            total_count = _parse_total_count(frame.locator("body").inner_text(timeout=min(timeout_ms, 8000)) or "")
+        except Exception:
+            total_count = None
         for it in _collect_current_page():
             u = (it.get("url") or "").strip()
             if not u or u in seen_urls:
@@ -451,7 +689,9 @@ def _search_impl(
 
         # Pagination: click "下一頁" inside the iframe until max_results reached or no progress.
         # This is needed for queries where the desired case is not on the first page.
-        while len(items) < max_n:
+        pages_scanned = 1
+        page_limit = _search_page_limit(max_n)
+        while len(items) < max_n and pages_scanned < page_limit:
             try:
                 first_href = ""
                 try:
@@ -490,6 +730,7 @@ def _search_impl(
                         logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 287, exc_info=True)
 
                 page_new = _collect_current_page()
+                pages_scanned += 1
                 added = 0
                 for it in page_new:
                     u = (it.get("url") or "").strip()
@@ -532,6 +773,9 @@ def _search_impl(
                         "case_word": str(case_word or ""),
                         "case_no": str(case_no or ""),
                         "results": items,
+                        "engine": "playwright",
+                        "pages_scanned": pages_scanned,
+                        "total_count": total_count,
                     },
                     f,
                     ensure_ascii=False,
@@ -550,6 +794,10 @@ def _search_impl(
             "results": preview,
             "results_truncated": (len(preview) != len(items)),
             "results_path": path,
+            "engine": "playwright",
+            "pages_scanned": pages_scanned,
+            "total_count": total_count,
+            "incomplete": bool(total_count and len(items) < total_count),
         }
     except Exception as e:
         return {"success": False, "error": f"{type(e).__name__}: {str(e)[:240]}"}
@@ -566,16 +814,216 @@ def _search_impl(
             logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 363, exc_info=True)
 
 
+_jdg_ssl_ctx_cache: dict[str, ssl.SSLContext] = {}
+
+
+def _jid_from_judgment_url(url: str) -> str:
+    try:
+        qs = parse_qs(urlsplit(url or "").query)
+        raw = (qs.get("id") or [""])[0]
+        return unquote(str(raw or "")).strip()
+    except Exception:
+        return ""
+
+
+def _load_code_config_for_jdg() -> dict:
+    paths = [
+        os.path.join(_MAGI_ROOT, "code", "json", "config.json"),
+        os.path.join(_MAGI_ROOT, "config.json"),
+    ]
+    for path in paths:
+        try:
+            if os.path.exists(path):
+                with open(path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                return data if isinstance(data, dict) else {}
+        except Exception:
+            continue
+    return {}
+
+
+def _get_jdg_credentials() -> tuple[str, str, str]:
+    user = (
+        os.environ.get("MAGI_JUDICIAL_API_USER")
+        or os.environ.get("JUDICIAL_API_USER")
+        or os.environ.get("JDG_API_USER")
+        or ""
+    ).strip()
+    pwd = (
+        os.environ.get("MAGI_JUDICIAL_API_PASS")
+        or os.environ.get("MAGI_JUDICIAL_API_PASSWORD")
+        or os.environ.get("JUDICIAL_API_PASSWORD")
+        or os.environ.get("JDG_API_PASSWORD")
+        or ""
+    ).strip()
+    if user and pwd:
+        return user, pwd, "env"
+    cfg = _load_code_config_for_jdg()
+    user = str(cfg.get("judicial_api_user") or "").strip()
+    pwd = str(cfg.get("judicial_api_pass") or "").strip()
+    if user and pwd:
+        return user, pwd, "config.judicial_api_*"
+    judicial = cfg.get("judicial")
+    if isinstance(judicial, dict):
+        user = str(judicial.get("api_user") or "").strip()
+        pwd = str(judicial.get("api_password") or "").strip()
+        if user and pwd:
+            return user, pwd, "config.judicial.api_*"
+    return "", "", ""
+
+
+def _build_jdg_ssl_context() -> ssl.SSLContext:
+    cached = _jdg_ssl_ctx_cache.get("ctx")
+    if cached is not None:
+        return cached
+    try:
+        import certifi
+
+        ca_bundle = certifi.where()
+    except Exception:
+        ca_bundle = None
+    ctx = ssl.create_default_context(cafile=ca_bundle)
+    try:
+        ctx.verify_flags &= ~ssl.VERIFY_X509_STRICT
+    except Exception:
+        pass
+    _jdg_ssl_ctx_cache["ctx"] = ctx
+    return ctx
+
+
+def _jdg_post_json(path: str, payload: dict, timeout_sec: int = 25) -> dict:
+    url = JDG_API_BASE + "/" + path.lstrip("/")
+    req = _urlrequest.Request(
+        url,
+        data=json.dumps(payload or {}, ensure_ascii=False).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with _urlrequest.urlopen(req, timeout=max(5, int(timeout_sec)), context=_build_jdg_ssl_context()) as resp:
+            raw = resp.read().decode("utf-8", errors="replace")
+        obj = json.loads(raw or "{}")
+        return obj if isinstance(obj, dict) else {"value": obj}
+    except _urlerror.HTTPError as e:
+        body = ""
+        try:
+            body = e.read().decode("utf-8", errors="replace")
+        except Exception:
+            pass
+        return {"error": f"HTTP {getattr(e, 'code', 'ERR')}", "body": body[:500]}
+    except Exception as e:
+        return {"error": str(e)[:240]}
+
+
+def _extract_jdoc_text(payload: dict) -> tuple[str, str]:
+    if not isinstance(payload, dict):
+        return "", ""
+    jfullx = payload.get("JFULLX") or {}
+    if isinstance(jfullx, list):
+        jfullx = jfullx[0] if jfullx else {}
+    if not isinstance(jfullx, dict):
+        jfullx = {}
+    title = str(payload.get("JTITLE") or payload.get("TITLE") or "").strip()
+    text = str(jfullx.get("JFULLCONTENT") or payload.get("JFULLCONTENT") or "").strip()
+    return title, _normalize_judicial_text(_clean_text(text))
+
+
+def _fetch_text_from_jdg_api(url: str, timeout_sec: int, max_chars: int) -> dict:
+    jid = _jid_from_judgment_url(url)
+    if not jid:
+        return {"success": False, "error": "missing_jid_from_url", "engine": "judicial_api"}
+    user, pwd, cred_source = _get_jdg_credentials()
+    if not user or not pwd:
+        return {"success": False, "error": "missing_judicial_api_credentials", "engine": "judicial_api"}
+    auth = _jdg_post_json("Auth", {"user": user, "password": pwd}, timeout_sec=timeout_sec)
+    token = str((auth or {}).get("token") or "").strip() if isinstance(auth, dict) else ""
+    if not token:
+        err = str((auth or {}).get("error") or (auth or {}).get("message") or "") if isinstance(auth, dict) else ""
+        if "非本 API 服務時間" in err:
+            return {
+                "success": False,
+                "error": "judicial_api_outside_service_window",
+                "recoverable": True,
+                "engine": "judicial_api",
+                "jid": jid,
+                "credential_source": cred_source,
+            }
+        return {"success": False, "error": (err or "judicial_api_auth_failed")[:240], "engine": "judicial_api", "jid": jid}
+    doc = _jdg_post_json("JDoc", {"token": token, "j": jid}, timeout_sec=timeout_sec)
+    title, text = _extract_jdoc_text(doc if isinstance(doc, dict) else {})
+    if not text:
+        return {"success": False, "error": "judicial_api_empty_jdoc", "engine": "judicial_api", "jid": jid}
+    os.makedirs(CACHE_DIR, exist_ok=True)
+    key = hashlib.sha256(("jdg|" + jid).encode("utf-8")).hexdigest()[:16]
+    path = os.path.join(CACHE_DIR, f"{key}.txt")
+    max_n = int(max_chars) if int(max_chars) > 0 else 500000
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(text[:max_n])
+    preview = (text[:220] + "...") if len(text) > 220 else text
+    return {
+        "success": True,
+        "url": url,
+        "jid": jid,
+        "title": title,
+        "text_preview": preview,
+        "text_path": path,
+        "text_chars": min(len(text), max_n),
+        "engine": "judicial_api",
+    }
+
+
+def _write_fetch_cache(url: str, text: str, max_chars: int, engine: str, title: str = "") -> dict:
+    os.makedirs(CACHE_DIR, exist_ok=True)
+    max_n = int(max_chars) if int(max_chars) > 0 else 500000
+    key = hashlib.sha256(url.encode("utf-8")).hexdigest()[:16]
+    path = os.path.join(CACHE_DIR, f"{key}.txt")
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(text[:max_n])
+    preview = (text[:220] + "...") if len(text) > 220 else text
+    return {
+        "success": True,
+        "url": url,
+        "title": title,
+        "text_preview": preview,
+        "text_path": path,
+        "text_chars": min(len(text), max_n),
+        "engine": engine,
+    }
+
+
+def _fetch_text_from_html_http(url: str, timeout_sec: int, max_chars: int) -> dict:
+    session = _requests_session()
+    resp = session.get(url, timeout=max(10, int(timeout_sec or 45)), verify=_verify_ssl())
+    resp.raise_for_status()
+    soup = BeautifulSoup(resp.text or "", "html.parser")
+    title = " ".join((soup.title.get_text(" ", strip=True) if soup.title else "").split())
+    node = soup.select_one("div#jud") or soup.select_one("#jud")
+    raw = node.get_text("\n", strip=False) if node else soup.get_text("\n", strip=False)
+    text = _normalize_judicial_text(_clean_text(raw))
+    if "查無資料" in text or "系統忙碌" in text:
+        return {"success": False, "error": "site returned error page", "hint": text[:200], "engine": "html_http"}
+    if len(text) < 80 or ("裁判字號" not in text and "主文" not in text and "理由" not in text):
+        return {"success": False, "error": "html_http_empty_or_unrecognized", "hint": text[:200], "engine": "html_http"}
+    return _write_fetch_cache(url, text, max_chars=max_chars, engine="html_http", title=title)
+
+
 def _fetch_text_impl(url: str, headless: bool = True, timeout_sec: int = 45, max_chars: int = 500000) -> dict:
     u = (url or "").strip()
     if not u:
         return {"success": False, "error": "missing url"}
+    try:
+        direct_result = _fetch_text_from_html_http(u, timeout_sec=timeout_sec, max_chars=max_chars)
+        if direct_result.get("success"):
+            return direct_result
+    except Exception:
+        logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 239, exc_info=True)
     if _prefer_http_fetch():
         try:
             from skills.research.web_research import fetch_url_content
 
             fetched = fetch_url_content(u, max_length=max_chars, exempt_iron_dome=True)
             text = _clean_text(str(fetched.get("content") or ""))
+            text = _normalize_judicial_text(text)
             if fetched.get("success") and text:
                 os.makedirs(CACHE_DIR, exist_ok=True)
                 key = hashlib.sha256(u.encode("utf-8")).hexdigest()[:16]
@@ -593,6 +1041,13 @@ def _fetch_text_impl(url: str, headless: bool = True, timeout_sec: int = 45, max
                 }
         except Exception:
             logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 239, exc_info=True)
+        api_result = _fetch_text_from_jdg_api(u, timeout_sec=timeout_sec, max_chars=max_chars)
+        if api_result.get("success"):
+            return api_result
+        if api_result.get("recoverable"):
+            # Keep the fallback status when the official site is rate-limiting the
+            # HTML page and the API is simply outside its service window.
+            pass
     timeout_ms = int(timeout_sec) * 1000
     max_n = int(max_chars) if int(max_chars) > 0 else 500000
 
@@ -619,7 +1074,7 @@ def _fetch_text_impl(url: str, headless: bool = True, timeout_sec: int = 45, max
             except Exception:
                 text = ""
 
-        text = _clean_text(text)
+        text = _normalize_judicial_text(_clean_text(text))
         if "查無資料" in text or "系統忙碌" in text:
             return {"success": False, "error": "site returned error page", "hint": text[:200]}
 
@@ -643,7 +1098,17 @@ def _fetch_text_impl(url: str, headless: bool = True, timeout_sec: int = 45, max
             "text_chars": min(len(text), max_n),
         }
     except Exception as e:
-        return {"success": False, "error": f"{type(e).__name__}: {str(e)[:240]}"}
+        api_result = _fetch_text_from_jdg_api(u, timeout_sec=timeout_sec, max_chars=max_chars)
+        if api_result.get("success"):
+            return api_result
+        if api_result.get("recoverable"):
+            return {
+                "success": False,
+                "error": f"{type(e).__name__}: {str(e)[:160]}",
+                "recoverable": True,
+                "fallback": api_result,
+            }
+        return {"success": False, "error": f"{type(e).__name__}: {str(e)[:240]}", "fallback": api_result}
     finally:
         try:
             if browser:

@@ -141,6 +141,14 @@ def _latest_operational_audit_is_green(issue_ts: float) -> bool:
     )
 
 
+def _latest_tailscale_funnel_is_green(issue_ts: float) -> bool:
+    path = ROOT / ".runtime" / "tailscale_funnel_health_latest.json"
+    if not path.exists() or path.stat().st_mtime <= issue_ts:
+        return False
+    data = _load_json(path, {})
+    return str((data or {}).get("status") or "").lower() in {"ok", "recovered", "skipped"}
+
+
 def _classify_issue_row(
     row: dict[str, Any],
     *,
@@ -159,10 +167,12 @@ def _classify_issue_row(
     if not job_id:
         return "stale" if ts < active_cutoff else "active_unresolved"
     err = str(row.get("error") or "")
-    if job_id == "job_omlx_switch_day" and "port 8080" in err:
+    if job_id in {"job_omlx_switch_day", "job_omlx_switch_night", "job_omlx_profile_guard"} and "8080" in err:
         if any("gemma-4-e4b" in model.lower() for model in _current_omlx_models()):
             return "recovered"
     if job_id == "job_operational_hardening_audit" and _latest_operational_audit_is_green(ts):
+        return "recovered"
+    if job_id == "job_tailscale_funnel_healthcheck" and _latest_tailscale_funnel_is_green(ts):
         return "recovered"
     if latest_cron_issue_ts_by_job.get(job_id, ts) > ts:
         return "superseded"

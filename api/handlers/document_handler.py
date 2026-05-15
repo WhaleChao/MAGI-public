@@ -89,6 +89,15 @@ def prepare_document_text_for_llm(text: str) -> str:
                 if cleaned and cleaned[-1]:
                     cleaned.append("")
                 continue
+            # Journal/book PDFs often split sentences across pages with running
+            # headers/footers in between, e.g. "That might sound / Making Addicts
+            # 41 / mercenary...".  Those artifacts badly confuse translation
+            # review, so remove obvious title-author page furniture before
+            # paragraph joining.
+            if re.fullmatch(r"(?:Making Addicts|Psychiatry,\s*Psychology\s*and\s*Law)\s+\d{1,4}", line, re.IGNORECASE):
+                continue
+            if re.fullmatch(r"\d{1,4}\s+K\.\s+Seear", line, re.IGNORECASE):
+                continue
             if re.search(r"\b\w+\.indb\b", line, re.IGNORECASE):
                 continue
             if re.fullmatch(r"[\d\W_]{1,8}", line):
@@ -167,11 +176,33 @@ def prepare_document_text_for_llm(text: str) -> str:
             if current_page:
                 pages.extend(_clean_page(current_page))
                 current_page = []
-            pages.append(line.strip())
+            if os.environ.get("MAGI_KEEP_PAGE_MARKERS_FOR_LLM", "0").strip().lower() in {"1", "true", "yes", "on"}:
+                pages.append(line.strip())
             continue
         current_page.append(line)
     if current_page:
         pages.extend(_clean_page(current_page))
+
+    joined_pages = []
+    for line in pages:
+        t = str(line or "").strip()
+        if not joined_pages or not t or not joined_pages[-1]:
+            joined_pages.append(line)
+            continue
+        prev = str(joined_pages[-1] or "").strip()
+        if (
+            prev
+            and t
+            and not page_marker_re.fullmatch(prev)
+            and not page_marker_re.fullmatch(t)
+            and not re.search(r"[。！？!?;；:：]$", prev)
+            and (prev.endswith(("-", "—", "–", "/", "(")) or t[:1].islower())
+        ):
+            sep = "" if prev.endswith(("-", "—", "–", "/")) else " "
+            joined_pages[-1] = (prev + sep + t).strip()
+        else:
+            joined_pages.append(line)
+    pages = joined_pages
 
     normalized = []
     prev_blank = False
@@ -209,6 +240,17 @@ def polish_translated_document_text(text: str) -> str:
     s = s.replace("登記官", "書記官長")
     s = s.replace("口頭辯論、記錄", "口頭辯論與文件")
     s = s.replace("書記官處", "書記官長辦公室")
+    s = s.replace("癮君子（addicts）", "成癮者（addicts）")
+    s = s.replace("癮君子", "成癮者")
+    s = s.replace("使人上癮：律師和決策者", "製造成癮者：律師和決策者")
+    s = s.replace("使人上癮：律師與決策者", "製造成癮者：律師與決策者")
+    # Legal/academic interview idiom: "in my previous life as a prosecutor"
+    # means a previous professional role, not reincarnation.
+    professional_roles = "檢察官|律師|法官|辯護人|公設辯護人|警察|調查官|社工|醫師|精神科醫師|心理師|研究者|學者"
+    s = re.sub(rf"我前世是(?:一名|一位)?({professional_roles})", r"我之前擔任\1時", s)
+    s = re.sub(rf"我的前世是(?:一名|一位)?({professional_roles})", r"我之前擔任\1時", s)
+    s = re.sub(rf"在我的前世(?:，|,)?\s*(?:我)?(?:是|擔任|作為)(?:一名|一位)?({professional_roles})", r"我之前擔任\1時", s)
+    s = re.sub(rf"我上輩子是(?:一名|一位)?({professional_roles})", r"我之前擔任\1時", s)
     s = re.sub(r"(?m)^應用(?=\s*國際公約)", "適用", s)
     s = s.replace("官方報價：", "官方引用格式：")
     s = re.sub(r"(?m)^目錄 段落 ", "目錄\n", s)
@@ -230,6 +272,391 @@ def polish_translated_document_text(text: str) -> str:
     while lines and lines[-1] == "":
         lines.pop()
     return "\n".join(lines).strip()
+
+
+def translation_idiom_issues(source_text: str, translated_text: str) -> list[str]:
+    """Detect high-risk literal idiom translations in legal/academic material."""
+    src = str(source_text or "")
+    tgt = str(translated_text or "")
+    issues: list[str] = []
+    previous_life_role_re = re.compile(
+        r"\b(?:in\s+)?(?:my|his|her|their)\s+previous\s+life\s+as\s+(?:a|an)?\s*"
+        r"(?:prosecutor|lawyer|judge|defen[cs]e\s+lawyer|practitioner|police\s+officer|researcher|academic)\b",
+        re.IGNORECASE,
+    )
+    if previous_life_role_re.search(src) and re.search(r"(?:前世|上輩子|前一世)", tgt):
+        issues.append("「previous life as + 職業」是以前任職/先前職涯，不可譯為前世或上輩子")
+    return issues
+
+
+def extract_translation_terms_for_review(text: str, *, target_lang: str = "繁體中文", max_terms: int = 28) -> list[dict[str, str]]:
+    """Extract proper nouns and recurring legal/academic terms that must stay visible."""
+    body = str(text or "")
+    if not body.strip():
+        return []
+
+    known_terms = {
+        "addiction": "成癮",
+        "addictions": "成癮",
+        "addicts": "成癮者",
+        "agency": "能動性/自主能動性",
+        "responsibility": "責任",
+        "decision makers": "決策者",
+        "criminal law": "刑事法",
+        "therapeutic jurisprudence": "治療法學",
+        "neuroscience": "神經科學",
+        "psychiatry": "精神醫學",
+        "psychology": "心理學",
+        "drug court": "毒品法院/藥物法院",
+        "substance use": "物質使用",
+        "mental health": "心理健康/精神健康",
+    }
+    stop_heads = {
+        "the", "this", "that", "these", "those", "various", "chapter", "article",
+        "abstract", "introduction", "conclusion", "references", "figure", "table",
+        "vol", "no", "pp", "however", "although", "because", "using", "making",
+        "according", "almost", "as", "in", "into", "drawing", "correspondence",
+        "email", "from", "to", "by", "and", "or", "of",
+    }
+    stop_phrases = {
+        "Creative Commons", "Taylor Francis", "Routledge", "Google", "PDF",
+        "Short English", "Long English", "English Text", "Chinese Text",
+    }
+    bad_single_terms = {
+        "Internet", "Importantly", "Decision", "Legal", "Linda", "Quentin",
+        "There", "American", "Canadian", "Another", "Australian",
+    }
+
+    terms: list[dict[str, str]] = []
+    seen: set[str] = set()
+
+    def _term_key(value: str) -> str:
+        return re.sub(r"[^a-z0-9]+", " ", str(value or "").lower()).strip()
+
+    def _add(term: str, note: str = "保留原文；必要時括號標註譯名") -> None:
+        clean = re.sub(r"\s+", " ", str(term or "").strip(" ,.;:()[]{}<>\"'‘’“”"))
+        clean = re.sub(
+            r"^(According to|According|Almost|Drawing on|As|In the|In)\s+",
+            "",
+            clean,
+        ).strip(" ,.;:()[]{}<>\"'‘’“”")
+        if len(clean) < 3 or len(clean) > 90:
+            return
+        if re.search(r"\b(and|or|of|in|for|on|the)$", clean, flags=re.I):
+            return
+        head = clean.split()[0].lower()
+        if head in stop_heads or clean in stop_phrases:
+            return
+        if clean in bad_single_terms:
+            return
+        lowered = clean.lower()
+        if "email" in lowered and len(clean.split()) <= 4:
+            return
+        if " various" in lowered or lowered.endswith(" various"):
+            return
+        key = clean.lower()
+        if key in seen:
+            return
+        clean_key = _term_key(clean)
+        clean_words = clean_key.split()
+        for item in terms:
+            old = str(item.get("source") or "")
+            old_key = _term_key(old)
+            old_words = old_key.split()
+            if clean_key == old_key:
+                return
+            if len(clean_words) >= 2 and clean_key in old_key:
+                return
+            if len(old_words) >= 2 and old_key in clean_key and len(clean_words) > len(old_words) + 3:
+                return
+        seen.add(key)
+        terms.append({"source": clean, "target": note})
+
+    lower = body.lower()
+    for term, zh in known_terms.items():
+        if term in lower:
+            _add(term, zh)
+
+    priority_patterns = [
+        r"\bKate Seear\b",
+        r"\bLa Trobe University\b",
+        r"\bAustralian Research Centre in Sex,?\s+Health and Society\b",
+        r"\bPsychiatry,?\s+Psychology and Law\b",
+        r"\bLinda Alcoff\b",
+        r"\bEve Sedgwick\b",
+    ]
+    for pattern in priority_patterns:
+        for match in re.finditer(pattern, body[:20000]):
+            _add(match.group(0))
+
+    proper_re = re.compile(
+        r"\b(?:[A-Z][A-Za-z'’.-]+|[A-Z]{2,})(?:\s+(?:of|and|for|in|on|the|[A-Z][A-Za-z'’.-]+|[A-Z]{2,})){0,9}\b"
+    )
+    counts: dict[str, int] = {}
+    for match in proper_re.finditer(body[:60000]):
+        raw = re.sub(r"\s+", " ", match.group(0)).strip()
+        if len(raw.split()) == 1 and (not raw.isupper()) and len(raw) < 5:
+            continue
+        if raw.lower() in stop_heads:
+            continue
+        counts[raw] = counts.get(raw, 0) + 1
+    for term, _count in sorted(counts.items(), key=lambda item: (-item[1], item[0]))[: max_terms * 2]:
+        if len(term.split()) == 1 and not term.isupper() and _count < 2:
+            continue
+        _add(term)
+        if len(terms) >= max_terms:
+            break
+
+    for quote in re.findall(r"[‘“\"']([A-Za-z][A-Za-z -]{3,40})[’”\"']", body[:60000]):
+        _add(quote, "保留原文概念詞；必要時括號暫譯")
+        if len(terms) >= max_terms:
+            break
+
+    return terms[:max_terms]
+
+
+def build_translation_term_glossary(text: str, *, target_lang: str = "繁體中文", max_terms: int = 28) -> str:
+    terms = extract_translation_terms_for_review(text, target_lang=target_lang, max_terms=max_terms)
+    if not terms:
+        return ""
+    lines = ["【專有名詞與術語保留表】", "| 原文 | 建議譯法/保留方式 |", "| --- | --- |"]
+    for item in terms:
+        src = str(item.get("source") or "").replace("|", "\\|")
+        tgt = str(item.get("target") or "").replace("|", "\\|")
+        lines.append(f"| {src} | {tgt} |")
+    return "\n".join(lines)
+
+
+def parse_translation_term_glossary(glossary: str) -> list[dict[str, str]]:
+    """Parse MAGI's markdown glossary into structured source/target pairs."""
+    rows: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for raw in str(glossary or "").splitlines():
+        line = raw.strip()
+        if not line.startswith("|") or "---" in line:
+            continue
+        cells = [c.strip().replace("\\|", "|") for c in line.strip("|").split("|")]
+        if len(cells) < 2:
+            continue
+        src = re.sub(r"\s+", " ", cells[0]).strip()
+        target = re.sub(r"\s+", " ", cells[1]).strip()
+        if src == "原文":
+            continue
+        if not src:
+            continue
+        key = src.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        rows.append({"source": src, "target": target})
+    return rows
+
+
+def _translation_target_candidates(target_note: str) -> list[str]:
+    """Return Chinese renderings that can be safely annotated with the source term."""
+    note = str(target_note or "").strip()
+    if not note:
+        return []
+    if any(marker in note for marker in ["保留原文", "括號標註", "必要時", "期刊名", "人名"]):
+        return []
+    note = note.strip("「」'\" ")
+    parts = re.split(r"[/／、,，;；]|或", note)
+    out: list[str] = []
+    for part in parts:
+        clean = re.sub(r"\s+", "", part).strip("「」()（）[]【】 ")
+        if 1 <= len(clean) <= 18 and re.search(r"[\u4e00-\u9fff]", clean):
+            out.append(clean)
+    return out
+
+
+def _source_term_translation_candidates(source_term: str) -> list[str]:
+    key = re.sub(r"\s+", " ", str(source_term or "").strip().lower())
+    known = {
+        "addiction": ["成癮", "上癮"],
+        "addictions": ["成癮", "上癮"],
+        "addicts": ["成癮者", "癮君子", "上癮者"],
+        "agency": ["能動性", "自主能動性", "自主性", "代理權", "代理", "行動能力", "外部能動力"],
+        "responsibility": ["責任"],
+        "decision makers": ["決策者"],
+        "criminal law": ["刑事法", "刑法"],
+        "therapeutic jurisprudence": ["治療法學"],
+        "neuroscience": ["神經科學"],
+        "psychiatry": ["精神醫學", "精神病學"],
+        "psychology": ["心理學"],
+        "drug court": ["毒品法院", "藥物法院"],
+        "substance use": [
+            "物質使用", "物質濫用", "使用物質", "酒精或其他藥物使用", "使用酒精或其他藥物",
+            "酒精和其他藥物", "酒精與其他藥物", "酒精和其他毒品", "酒精與其他毒品", "吸毒",
+        ],
+        "mental health": ["心理健康", "精神健康"],
+        "la trobe university": ["拉籌伯大學", "拉籌伯大學"],
+        "australian research centre in sex, health and society": ["澳大利亞性、健康與社會研究中心", "澳洲性、健康與社會研究中心"],
+        "psychiatry, psychology and law": ["精神病學、心理學和法律", "精神醫學、心理學與法律"],
+        "eve sedgwick": ["伊芙‧塞奇威克", "伊芙·塞奇威克", "塞奇威克"],
+        "linda alcoff": ["琳達·阿爾科夫", "琳達‧阿爾科夫"],
+        "canada": ["加拿大"],
+        "canadian": ["加拿大"],
+        "sedgwick": ["塞奇威克"],
+        "fraser": ["弗雷澤"],
+        "moore": ["摩爾"],
+        "moore and fraser": ["摩爾和弗雷澤", "摩爾與弗雷澤"],
+        "simone": ["西蒙", "西蒙娜"],
+        "maxwell": ["麥斯威爾", "馬克斯韋爾"],
+        "tonya": ["託尼亞", "托尼亞"],
+        "quentin": ["昆汀"],
+        "quentin's": ["昆汀"],
+    }
+    return known.get(key, [])
+
+
+def _translation_contains_source_term(translated_text: str, source_term: str) -> bool:
+    tgt = str(translated_text or "")
+    term = str(source_term or "").strip()
+    if not term:
+        return True
+    escaped = re.escape(term)
+    if re.fullmatch(r"[A-Za-z][A-Za-z'’ -]*", term):
+        direct_pattern = rf"(?<![A-Za-z]){escaped}(?![A-Za-z])"
+    else:
+        direct_pattern = escaped
+    if re.search(direct_pattern, tgt, flags=re.IGNORECASE):
+        return True
+    if term.lower() in {"addiction", "addictions"} and re.search(r"(?<![A-Za-z])addictions?(?![A-Za-z])", tgt, flags=re.IGNORECASE):
+        return True
+    compact_term = re.sub(r"\s+", " ", term)
+    if re.search(r"\band\b", compact_term, flags=re.IGNORECASE):
+        parts = [
+            re.escape(p.strip())
+            for p in re.split(r"\band\b", compact_term, flags=re.IGNORECASE)
+            if p.strip()
+        ]
+        if len(parts) >= 2:
+            flexible = r"\s*(?:and|&|和|與|及)\s*".join(parts)
+            if re.search(flexible, tgt, flags=re.IGNORECASE):
+                return True
+    norm_term = term.replace("’", "'").replace("`", "'")
+    if norm_term != term and re.search(re.escape(norm_term), tgt, flags=re.IGNORECASE):
+        return True
+    return False
+
+
+def missing_translation_source_terms(
+    source_text: str,
+    translated_text: str,
+    *,
+    term_glossary: str = "",
+    max_terms: int = 12,
+) -> list[str]:
+    """Return source terms that appear in source text but are invisible in target text."""
+    src = str(source_text or "")
+    tgt = str(translated_text or "")
+    if not src.strip() or not tgt.strip():
+        return []
+    pairs = parse_translation_term_glossary(term_glossary) if term_glossary else []
+    if not pairs:
+        pairs = extract_translation_terms_for_review(src, max_terms=max_terms)
+
+    missing: list[str] = []
+    for row in pairs:
+        term = str(row.get("source") or "").strip()
+        if len(term) < 3:
+            continue
+        if not re.search(re.escape(term), src, flags=re.IGNORECASE):
+            continue
+        if _translation_contains_source_term(tgt, term):
+            continue
+        missing.append(term)
+        if len(missing) >= max_terms:
+            break
+    return missing
+
+
+def ensure_translation_terms_visible(
+    source_text: str,
+    translated_text: str,
+    *,
+    term_glossary: str = "",
+    target_lang: str = "繁體中文",
+    max_terms: int = 128,
+) -> str:
+    """Add unobtrusive inline source-term annotations to Chinese translations.
+
+    This is intentionally conservative: only glossary rows with an explicit
+    Chinese rendering are patched automatically. Names and institutions remain
+    quality-gate issues so the translator can place them naturally.
+    """
+    target_lower = str(target_lang or "").lower()
+    if "中文" not in str(target_lang or "") and not target_lower.startswith("zh"):
+        return translated_text or ""
+    src = str(source_text or "")
+    out = str(translated_text or "")
+    if not src.strip() or not out.strip():
+        return out
+
+    if re.search(r"\bagency\b", src, flags=re.IGNORECASE) and re.search(
+        r"\b(?:responsibility|addiction|addicts|lawyers|decision makers)\b",
+        src,
+        flags=re.IGNORECASE,
+    ):
+        out = re.sub(r"機構([與和]責任)", r"能動性\1", out)
+        out = out.replace("外部機構", "外部能動力")
+        out = out.replace("代理權", "能動性")
+        out = re.sub(r"(?<!訴訟)代理(?!人)", "能動性", out)
+
+    pairs = parse_translation_term_glossary(term_glossary) if term_glossary else []
+    if not pairs:
+        pairs = extract_translation_terms_for_review(src, target_lang=target_lang, max_terms=max_terms)
+    pairs = sorted(
+        pairs,
+        key=lambda row: (
+            -max([len(c) for c in _translation_target_candidates(str(row.get("target") or "")) + _source_term_translation_candidates(str(row.get("source") or ""))] or [0]),
+            -len(str(row.get("source") or "")),
+        ),
+    )
+
+    patched = 0
+    for row in pairs:
+        term = str(row.get("source") or "").strip()
+        if len(term) < 3:
+            continue
+        if not re.search(re.escape(term), src, flags=re.IGNORECASE):
+            continue
+        if _translation_contains_source_term(out, term):
+            continue
+        candidates = []
+        for candidate in _translation_target_candidates(str(row.get("target") or "")):
+            if candidate not in candidates:
+                candidates.append(candidate)
+        for candidate in _source_term_translation_candidates(term):
+            if candidate not in candidates:
+                candidates.append(candidate)
+        for candidate in candidates:
+            negative = rf"（[^）]+）"
+            if candidate in {"成癮", "上癮"} and term.lower() in {"addiction", "addictions"}:
+                negative = rf"{negative}|者"
+            pattern = re.compile(rf"(?<!（){re.escape(candidate)}(?!{negative})")
+            if pattern.search(out):
+                out = pattern.sub(f"{candidate}（{term}）", out)
+                patched += 1
+                break
+            existing_paren = re.compile(rf"(?<!（){re.escape(candidate)}（(?![^）]*{re.escape(term)})([^）]+)）")
+            if existing_paren.search(out):
+                out = existing_paren.sub(f"{candidate}（{term}；\\1）", out)
+                patched += 1
+                break
+        if term.lower() == "addicts" and not _translation_contains_source_term(out, term):
+            out = out.replace("成癮（addictions）是否", "成癮者（addicts）是否")
+            out = out.replace("成癮（addiction）是否", "成癮者（addicts）是否")
+            out = out.replace("上癮（addictions）是否", "上癮者（addicts）是否")
+        if patched >= max_terms:
+            break
+    if re.search(r"(?<![A-Za-z])addicts(?![A-Za-z])", src, flags=re.IGNORECASE) and not _translation_contains_source_term(out, "addicts"):
+        out = out.replace("成癮（addictions）是否", "成癮者（addicts）是否")
+        out = out.replace("成癮（addiction）是否", "成癮者（addicts）是否")
+        out = out.replace("上癮（addictions）是否", "上癮者（addicts）是否")
+        out = out.replace("「真正的」成癮（addictions）", "「真正的」成癮者（addicts）")
+        out = out.replace("「真正的」成癮（addiction）", "「真正的」成癮者（addicts）")
+    return out
 
 
 def _split_bilingual_blocks(text: str, max_chars: int = 700) -> list[str]:
@@ -394,6 +821,7 @@ def export_translation_docx(
     translated_text: str,
     source_chunks: Optional[list] = None,
     translated_chunks: Optional[list] = None,
+    term_glossary: str = "",
     title: str = "",
     subtitle: str = "",
     prefix: str = "translate",
@@ -436,6 +864,28 @@ def export_translation_docx(
             {"page": i + 1, "source": s, "target": t}
             for i, (s, t) in enumerate(zip(src_paras, tgt_paras))
         ]
+    include_glossary_row = os.environ.get("MAGI_FILE_TRANSLATE_INCLUDE_GLOSSARY_ROW", "0").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    glossary_text = normalize_txt_body(term_glossary or build_translation_term_glossary(source_text))
+    if glossary_text and include_glossary_row:
+        readable_glossary = []
+        for row in parse_translation_term_glossary(glossary_text):
+            src = str(row.get("source") or "").strip()
+            target = str(row.get("target") or "").strip()
+            if src:
+                readable_glossary.append(f"{src}：{target}")
+        pages.insert(
+            0,
+            {
+                "page": "術語",
+                "source": "專有名詞與術語保留表",
+                "target": "\n".join(readable_glossary) or glossary_text,
+            },
+        )
 
     try:
         ex = export_bilingual_docx(
@@ -444,6 +894,8 @@ def export_translation_docx(
             subtitle=subtitle or "",
             header_text=title or "",
             prefix=(prefix or "translate").strip() or "translate",
+            col_labels={"col2": "原文", "col3": "翻譯"},
+            hide_page_column=True,
         )
     except Exception as e:
         logger.warning("export_bilingual_docx failed: %s", e)

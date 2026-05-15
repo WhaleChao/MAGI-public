@@ -98,27 +98,35 @@ function dataCell(text, width, fontSize, fill, vAlign) {
 function buildBilingual(data) {
   // Landscape A4: content width ≈ 16838 - 2×1134 = 14570 DXA
   const tableWidth = 14400;
-  const col1W = 660;    // 頁碼 (narrow)
-  const col2W = 6870;   // 原文
-  const col3W = 6870;   // 翻譯
+  const hidePageColumn = data.hide_page_column === true;
+  const col1W = hidePageColumn ? 0 : 660;     // 頁碼/段落 (optional)
+  const col2W = hidePageColumn ? 7200 : 6870; // 原文
+  const col3W = hidePageColumn ? 7200 : 6870; // 翻譯
 
   const labels = data.col_labels || {};
+  const headerChildren = hidePageColumn
+    ? [
+        headerCell(labels.col2 || "原文", col2W),
+        headerCell(labels.col3 || "翻譯", col3W),
+      ]
+    : [
+        headerCell(labels.col1 || "頁碼", col1W),
+        headerCell(labels.col2 || "原文", col2W),
+        headerCell(labels.col3 || "翻譯", col3W),
+      ];
   const rows = [
     new TableRow({
       tableHeader: true,
       height: { value: 480, rule: HeightRule.AT_LEAST },
-      children: [
-        headerCell(labels.col1 || "頁碼", col1W),
-        headerCell(labels.col2 || "原文", col2W),
-        headerCell(labels.col3 || "翻譯", col3W),
-      ],
+      children: headerChildren,
     }),
   ];
 
   (data.pages || []).forEach((pg, i) => {
     const fill = i % 2 === 0 ? ROW_EVEN : ROW_ODD;
-    rows.push(new TableRow({
-      children: [
+    const rowChildren = [];
+    if (!hidePageColumn) {
+      rowChildren.push(
         new TableCell({
           borders: BORDERS,
           width: { size: col1W, type: WidthType.DXA },
@@ -136,10 +144,15 @@ function buildBilingual(data) {
               color: "555555",
             })],
           })],
-        }),
-        dataCell(pg.source || "", col2W, 20, fill),
-        dataCell(pg.target || "", col3W, 20, fill),
-      ],
+        })
+      );
+    }
+    rowChildren.push(
+      dataCell(pg.source || "", col2W, 20, fill),
+      dataCell(pg.target || "", col3W, 20, fill),
+    );
+    rows.push(new TableRow({
+      children: rowChildren,
     }));
   });
 
@@ -182,7 +195,7 @@ function buildBilingual(data) {
       ...titleChildren,
       new Table({
         width: { size: tableWidth, type: WidthType.DXA },
-        columnWidths: [col1W, col2W, col3W],
+        columnWidths: hidePageColumn ? [col2W, col3W] : [col1W, col2W, col3W],
         rows,
       }),
     ],

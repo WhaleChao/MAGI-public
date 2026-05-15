@@ -26,6 +26,8 @@ import shutil
 import sys
 import time
 import argparse
+import gzip
+import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -41,6 +43,12 @@ METRICS_ROTATE_BYTES = int(os.environ.get("MAGI_DISK_METRICS_ROTATE_BYTES", str(
 METRICS_KEEP_TAIL = int(os.environ.get("MAGI_DISK_METRICS_KEEP_TAIL", "1000"))
 OMLX_CACHE_KEEP_DAYS = int(os.environ.get("MAGI_DISK_OMLX_KEEP_DAYS", "7"))
 OMLX_CACHE_MAX_DELETE_BYTES = int(float(os.environ.get("MAGI_DISK_OMLX_MAX_DELETE_GB", "20")) * 1024 * 1024 * 1024)
+OMLX_CACHE_CAP_GB = float(os.environ.get("MAGI_DISK_OMLX_CACHE_CAP_GB", "8"))
+OMLX_CACHE_LOW_WATER_CAP_GB = float(os.environ.get("MAGI_DISK_OMLX_CACHE_LOW_WATER_CAP_GB", "5"))
+OMLX_CACHE_CRITICAL_CAP_GB = float(os.environ.get("MAGI_DISK_OMLX_CACHE_CRITICAL_CAP_GB", "3"))
+OMLX_CACHE_LOW_WATER_FREE_GB = float(os.environ.get("MAGI_DISK_OMLX_CACHE_LOW_WATER_FREE_GB", "30"))
+OMLX_CACHE_CRITICAL_FREE_GB = float(os.environ.get("MAGI_DISK_OMLX_CACHE_CRITICAL_FREE_GB", "15"))
+OMLX_CACHE_RECENT_GRACE_MINUTES = int(os.environ.get("MAGI_DISK_OMLX_CACHE_RECENT_GRACE_MINUTES", "60"))
 TMP_MAX_AGE_HOURS = int(os.environ.get("MAGI_DISK_TMP_MAX_AGE_HOURS", "48"))
 DB_BACKUP_KEEP_LATEST = int(os.environ.get("MAGI_DISK_DB_BACKUP_KEEP_LATEST", "8"))
 BUILD_ARTIFACT_MAX_AGE_DAYS = int(os.environ.get("MAGI_DISK_BUILD_ARTIFACT_MAX_AGE_DAYS", "7"))
@@ -52,6 +60,22 @@ GIT_TMP_PACK_MAX_AGE_HOURS = int(os.environ.get("MAGI_DISK_GIT_TMP_PACK_MAX_AGE_
 GIT_TMP_PACK_CLEANUP_ENABLE = os.environ.get(
     "MAGI_DISK_GIT_TMP_PACK_CLEANUP_ENABLE", "1"
 ).strip().lower() in {"1", "true", "on", "yes"}
+RUNTIME_COMPRESS_ENABLE = os.environ.get(
+    "MAGI_DISK_RUNTIME_COMPRESS_ENABLE", "1"
+).strip().lower() in {"1", "true", "on", "yes"}
+RUNTIME_COMPRESS_MAX_AGE_DAYS = float(os.environ.get("MAGI_DISK_RUNTIME_COMPRESS_MAX_AGE_DAYS", "3"))
+RUNTIME_COMPRESS_LOW_WATER_MAX_AGE_HOURS = float(
+    os.environ.get("MAGI_DISK_RUNTIME_COMPRESS_LOW_WATER_MAX_AGE_HOURS", "12")
+)
+RUNTIME_COMPRESS_MIN_BYTES = int(float(os.environ.get("MAGI_DISK_RUNTIME_COMPRESS_MIN_MB", "1")) * 1024 * 1024)
+RUNTIME_COMPRESS_LOW_WATER_MIN_BYTES = int(
+    float(os.environ.get("MAGI_DISK_RUNTIME_COMPRESS_LOW_WATER_MIN_MB", "0.25")) * 1024 * 1024
+)
+STAGING_CLEANUP_ENABLE = os.environ.get(
+    "MAGI_DISK_STAGING_CLEANUP_ENABLE", "1"
+).strip().lower() in {"1", "true", "on", "yes"}
+EXPORT_OUTPUT_MAX_AGE_DAYS = float(os.environ.get("MAGI_DISK_EXPORT_OUTPUT_MAX_AGE_DAYS", "3"))
+MODULE_STAGING_MAX_AGE_DAYS = float(os.environ.get("MAGI_DISK_MODULE_STAGING_MAX_AGE_DAYS", "14"))
 PRESERVED_STANDALONE_SUFFIXES = frozenset({
     ".json",
     ".pickle",
@@ -153,53 +177,129 @@ def _walk_cache_files(cache_root: Path) -> List[Path]:
     return out
 
 
+def _omlx_cache_roots(home: Path) -> List[Path]:
+    roots: List[Path] = []
+    base = home / ".omlx"
+    for root in [base / "cache", *sorted(base.glob("cache-*"))]:
+        if root.is_dir() and root not in roots:
+            roots.append(root)
+    return roots
+
+
+def _cache_last_used(st: os.stat_result) -> float:
+    # Some macOS mounts do not update atime reliably. Use the newer of atime/mtime
+    # so a freshly written cache shard is not removed only because atime is old.
+    return max(float(getattr(st, "st_atime", 0.0)), float(getattr(st, "st_mtime", 0.0)))
+
+
+def _omlx_cache_cap_bytes(free_gb: float) -> int:
+    cap_gb = OMLX_CACHE_CAP_GB
+    if 0 <= free_gb < OMLX_CACHE_CRITICAL_FREE_GB:
+        cap_gb = OMLX_CACHE_CRITICAL_CAP_GB
+    elif 0 <= free_gb < OMLX_CACHE_LOW_WATER_FREE_GB:
+        cap_gb = OMLX_CACHE_LOW_WATER_CAP_GB
+    if cap_gb <= 0:
+        return 0
+    return int(cap_gb * 1024 * 1024 * 1024)
+
+
+def _select_with_delete_budget(items: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], int, int]:
+    """Keep deletion bounded even when a cache exploded."""
+    if OMLX_CACHE_MAX_DELETE_BYTES <= 0:
+        return items, 0, 0
+    selected: List[Dict[str, Any]] = []
+    budget = OMLX_CACHE_MAX_DELETE_BYTES
+    skipped = 0
+    skipped_bytes = 0
+    for item in sorted(items, key=lambda x: (x["last_used"], x["path"].name)):
+        size = int(item["size"])
+        if size > budget:
+            skipped += 1
+            skipped_bytes += size
+            continue
+        selected.append(item)
+        budget -= size
+    return selected, skipped, skipped_bytes
+
+
 def cleanup_omlx_cache(dry_run: bool) -> List[Dict[str, Any]]:
     home = Path(os.environ.get("HOME", "/Users/ai"))
-    cutoff = time.time() - OMLX_CACHE_KEEP_DAYS * 86400
+    now = time.time()
+    cutoff = now - OMLX_CACHE_KEEP_DAYS * 86400
+    recent_grace_cutoff = now - OMLX_CACHE_RECENT_GRACE_MINUTES * 60
+    free_gb = _disk_free_gb(MAGI_ROOT)
+    cache_cap_bytes = _omlx_cache_cap_bytes(free_gb)
     actions: List[Dict[str, Any]] = []
-    for cache_root in home.glob(".omlx/cache-*"):
-        if not cache_root.is_dir():
-            continue
+    for cache_root in _omlx_cache_roots(home):
         total_candidate_bytes = 0
-        candidate_count = 0
         deleted_bytes = 0
         deleted_count = 0
-        candidates: List[Tuple[Path, int]] = []
+        total_bytes = 0
+        all_files: List[Dict[str, Any]] = []
+        selected_by_path: Dict[Path, Dict[str, Any]] = {}
         for f in _walk_cache_files(cache_root):
             try:
                 st = f.stat()
             except OSError:
                 continue
-            # 用 atime（讀取時間）；若 fs 不支援則退回 mtime
-            last_access = getattr(st, "st_atime", st.st_mtime)
-            if last_access >= cutoff:
-                continue
-            total_candidate_bytes += st.st_size
-            candidate_count += 1
-            candidates.append((f, st.st_size))
-        if not dry_run and total_candidate_bytes <= OMLX_CACHE_MAX_DELETE_BYTES:
-            for f, size in candidates:
+            size = int(st.st_size)
+            total_bytes += size
+            info = {
+                "path": f,
+                "size": size,
+                "last_used": _cache_last_used(st),
+                "mtime": float(st.st_mtime),
+                "recent_write": float(st.st_mtime) >= recent_grace_cutoff,
+                "reason": "",
+            }
+            all_files.append(info)
+            if info["last_used"] < cutoff and not info["recent_write"]:
+                info["reason"] = "stale"
+                selected_by_path[f] = info
+
+        projected_bytes = total_bytes - sum(int(i["size"]) for i in selected_by_path.values())
+        if cache_cap_bytes > 0 and projected_bytes > cache_cap_bytes:
+            for info in sorted(all_files, key=lambda x: (x["last_used"], x["path"].name)):
+                path = info["path"]
+                if path in selected_by_path or info["recent_write"]:
+                    continue
+                info = dict(info)
+                info["reason"] = "cap"
+                selected_by_path[path] = info
+                projected_bytes -= int(info["size"])
+                if projected_bytes <= cache_cap_bytes:
+                    break
+
+        candidates = list(selected_by_path.values())
+        total_candidate_bytes = sum(int(i["size"]) for i in candidates)
+        final_candidates, skipped_due_safety_cap, skipped_safety_bytes = _select_with_delete_budget(candidates)
+        if not dry_run:
+            for item in final_candidates:
+                f = item["path"]
+                size = int(item["size"])
                 try:
                     f.unlink()
                     deleted_bytes += size
                     deleted_count += 1
                 except OSError as e:
                     _log(f"cache unlink failed: {f} ({e})")
-        elif not dry_run and total_candidate_bytes > OMLX_CACHE_MAX_DELETE_BYTES:
-            _log(
-                f"SKIP oMLX cache {cache_root.name}: "
-                f"{total_candidate_bytes / 1024 / 1024 / 1024:.2f} GB exceeds "
-                f"safety cap {OMLX_CACHE_MAX_DELETE_BYTES / 1024 / 1024 / 1024:.2f} GB"
-            )
         info = {
             "cache": str(cache_root),
-            "candidate_files": candidate_count,
+            "total_files": len(all_files),
+            "total_bytes": total_bytes,
+            "free_gb": round(free_gb, 2),
+            "cache_cap_bytes": cache_cap_bytes,
+            "keep_days": OMLX_CACHE_KEEP_DAYS,
+            "recent_grace_minutes": OMLX_CACHE_RECENT_GRACE_MINUTES,
+            "candidate_files": len(candidates),
             "candidate_bytes": total_candidate_bytes,
             "deleted_files": deleted_count,
             "deleted_bytes": deleted_bytes,
+            "skipped_due_safety_cap": skipped_due_safety_cap,
+            "skipped_safety_bytes": skipped_safety_bytes,
             "dry_run": dry_run,
         }
-        if not dry_run and total_candidate_bytes > OMLX_CACHE_MAX_DELETE_BYTES:
+        if candidates and not final_candidates and total_candidate_bytes > OMLX_CACHE_MAX_DELETE_BYTES:
             info["skipped"] = True
             info["reason"] = "candidate_bytes_exceeds_safety_cap"
             actions.append(info)
@@ -207,8 +307,9 @@ def cleanup_omlx_cache(dry_run: bool) -> List[Dict[str, Any]]:
         _log(
             f"oMLX cache {cache_root.name}: "
             f"{'would free' if dry_run else 'freed'} "
-            f"{total_candidate_bytes / 1024 / 1024:.2f} MB "
-            f"({candidate_count} files, atime > {OMLX_CACHE_KEEP_DAYS}d)"
+            f"{(total_candidate_bytes if dry_run else deleted_bytes) / 1024 / 1024:.2f} MB "
+            f"({len(candidates)} candidates, total={total_bytes / 1024 / 1024 / 1024:.2f} GB, "
+            f"cap={cache_cap_bytes / 1024 / 1024 / 1024:.2f} GB)"
         )
         actions.append(info)
     return actions
@@ -525,6 +626,247 @@ def cleanup_stale_git_tmp_packs(dry_run: bool) -> List[Dict[str, Any]]:
     return actions
 
 
+# ---- runtime/log compression -------------------------------------------
+
+_COMPRESS_SUFFIXES = frozenset({".log", ".jsonl", ".txt", ".md", ".out", ".err"})
+
+
+def _runtime_compress_roots() -> List[Path]:
+    raw = os.environ.get("MAGI_DISK_RUNTIME_COMPRESS_ROOTS", "").strip()
+    if raw:
+        return [Path(p).expanduser().resolve() for p in raw.split(os.pathsep) if p.strip()]
+    return [
+        MAGI_ROOT / "logs",
+        MAGI_ROOT / "_metrics",
+        MAGI_ROOT / "_autopilot_runs",
+        MAGI_ROOT / "reports",
+        MAGI_ROOT / ".runtime" / "metrics",
+        MAGI_ROOT / "casper.log",
+        MAGI_ROOT / "server.log",
+        MAGI_ROOT / "tools_api.log",
+        MAGI_ROOT / "rpc_server.log",
+    ]
+
+
+def _iter_runtime_compressible_files(root: Path) -> List[Path]:
+    if root.is_file():
+        return [root]
+    if not root.is_dir():
+        return []
+    out: List[Path] = []
+    try:
+        for dirpath, dirnames, filenames in os.walk(root):
+            # Never walk source-control or pending operator-confirmation state.
+            dirnames[:] = [
+                d for d in dirnames
+                if d not in {".git", "venv", ".venv", "node_modules", "pending", "db_backups"}
+            ]
+            for name in filenames:
+                out.append(Path(dirpath) / name)
+    except OSError:
+        return out
+    return out
+
+
+def _gzip_replace(path: Path, dry_run: bool) -> Dict[str, Any]:
+    before = path.stat().st_size
+    gz_path = path.with_name(path.name + ".gz")
+    info: Dict[str, Any] = {
+        "path": str(path),
+        "gz_path": str(gz_path),
+        "size_before": before,
+        "dry_run": dry_run,
+    }
+    if dry_run:
+        return info
+
+    fd, tmp_name = tempfile.mkstemp(prefix=path.name + ".", suffix=".gz.tmp", dir=str(path.parent))
+    os.close(fd)
+    tmp_path = Path(tmp_name)
+    try:
+        st = path.stat()
+        with open(path, "rb") as src, gzip.open(tmp_path, "wb", compresslevel=6) as dst:
+            shutil.copyfileobj(src, dst)
+        os.replace(tmp_path, gz_path)
+        os.utime(gz_path, (st.st_atime, st.st_mtime))
+        path.unlink()
+        info["size_after"] = gz_path.stat().st_size
+        info["freed_bytes"] = max(0, before - int(info["size_after"]))
+        _log(
+            f"COMPRESSED: {path} -> {gz_path.name} "
+            f"({before / 1024 / 1024:.2f} MB -> {int(info['size_after']) / 1024 / 1024:.2f} MB)"
+        )
+    except Exception as e:
+        info["error"] = str(e)
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+        _log(f"runtime compress failed: {path} ({e})")
+    return info
+
+
+def compress_runtime_artifacts(dry_run: bool) -> List[Dict[str, Any]]:
+    """Compress old MAGI-owned text artifacts without touching case/user data."""
+    if not RUNTIME_COMPRESS_ENABLE:
+        return [{"enabled": False, "reason": "MAGI_DISK_RUNTIME_COMPRESS_ENABLE=0"}]
+
+    free_gb = _disk_free_gb(MAGI_ROOT)
+    low_water = 0 <= free_gb < OMLX_CACHE_LOW_WATER_FREE_GB
+    max_age_seconds = (
+        RUNTIME_COMPRESS_LOW_WATER_MAX_AGE_HOURS * 3600
+        if low_water
+        else RUNTIME_COMPRESS_MAX_AGE_DAYS * 86400
+    )
+    min_bytes = RUNTIME_COMPRESS_LOW_WATER_MIN_BYTES if low_water else RUNTIME_COMPRESS_MIN_BYTES
+    cutoff = time.time() - max_age_seconds
+    actions: List[Dict[str, Any]] = []
+    seen: set[Path] = set()
+
+    for root in _runtime_compress_roots():
+        for path in _iter_runtime_compressible_files(root):
+            if path in seen:
+                continue
+            seen.add(path)
+            try:
+                st = path.stat()
+            except OSError:
+                continue
+            suffix = path.suffix.lower()
+            if suffix == ".gz" or path.name.endswith(".gz"):
+                continue
+            if suffix not in _COMPRESS_SUFFIXES:
+                continue
+            if st.st_size < min_bytes:
+                continue
+            if st.st_mtime >= cutoff:
+                continue
+            gz_path = path.with_name(path.name + ".gz")
+            if gz_path.exists():
+                continue
+            actions.append(_gzip_replace(path, dry_run))
+
+    total_before = sum(int(a.get("size_before", 0)) for a in actions)
+    total_freed = sum(int(a.get("freed_bytes", 0)) for a in actions)
+    _log(
+        f"runtime compression: {'would compress' if dry_run else 'compressed'} "
+        f"{len(actions)} files, source={total_before / 1024 / 1024:.2f} MB, "
+        f"freed={total_freed / 1024 / 1024:.2f} MB, low_water={low_water}"
+    )
+    return actions
+
+
+# ---- generated output / module staging cleanup -------------------------
+
+_STAGING_DELETE_SUFFIXES = frozenset({
+    ".docx",
+    ".pdf",
+    ".txt",
+    ".md",
+    ".html",
+    ".csv",
+    ".xlsx",
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".log",
+    ".tmp",
+})
+
+
+def _staging_targets() -> List[Dict[str, Any]]:
+    raw = os.environ.get("MAGI_DISK_STAGING_TARGETS", "").strip()
+    if raw:
+        targets: List[Dict[str, Any]] = []
+        for item in raw.split(os.pathsep):
+            if not item.strip():
+                continue
+            targets.append({
+                "path": Path(item).expanduser().resolve(),
+                "max_age_days": MODULE_STAGING_MAX_AGE_DAYS,
+                "label": Path(item).name,
+            })
+        return targets
+    return [
+        {"path": MAGI_ROOT / "exports", "max_age_days": EXPORT_OUTPUT_MAX_AGE_DAYS, "label": "exports"},
+        {"path": MAGI_ROOT / ".magi_doc_runs", "max_age_days": EXPORT_OUTPUT_MAX_AGE_DAYS, "label": "doc_runs"},
+        {"path": MAGI_ROOT / "downloads", "max_age_days": MODULE_STAGING_MAX_AGE_DAYS, "label": "downloads"},
+        {"path": MAGI_ROOT / "閱卷下載", "max_age_days": MODULE_STAGING_MAX_AGE_DAYS, "label": "file_review_staging"},
+        {"path": MAGI_ROOT / "筆錄下載", "max_age_days": MODULE_STAGING_MAX_AGE_DAYS, "label": "transcript_staging"},
+        {"path": MAGI_ROOT / "laf_downloads", "max_age_days": MODULE_STAGING_MAX_AGE_DAYS, "label": "laf_downloads"},
+        {"path": MAGI_ROOT / "法扶資料", "max_age_days": MODULE_STAGING_MAX_AGE_DAYS, "label": "laf_staging"},
+        {"path": MAGI_ROOT / "screenshot_sorted_output", "max_age_days": EXPORT_OUTPUT_MAX_AGE_DAYS, "label": "screenshot_output"},
+    ]
+
+
+def _safe_staging_file(path: Path) -> bool:
+    if path.suffix.lower() in PRESERVED_STANDALONE_SUFFIXES:
+        return False
+    if path.name.startswith("."):
+        return False
+    return path.suffix.lower() in _STAGING_DELETE_SUFFIXES
+
+
+def cleanup_generated_staging(dry_run: bool) -> List[Dict[str, Any]]:
+    """Clean MAGI-owned output/staging folders after downstream import windows."""
+    if not STAGING_CLEANUP_ENABLE:
+        return [{"enabled": False, "reason": "MAGI_DISK_STAGING_CLEANUP_ENABLE=0"}]
+    actions: List[Dict[str, Any]] = []
+    now = time.time()
+    for target in _staging_targets():
+        root = Path(target["path"])
+        label = str(target["label"])
+        max_age_days = float(target["max_age_days"])
+        cutoff = now - max_age_days * 86400
+        info = {
+            "label": label,
+            "path": str(root),
+            "max_age_days": max_age_days,
+            "exists": root.exists(),
+            "candidate_files": 0,
+            "candidate_bytes": 0,
+            "deleted_files": 0,
+            "deleted_bytes": 0,
+            "dry_run": dry_run,
+        }
+        if not root.is_dir():
+            actions.append(info)
+            continue
+        for dirpath, dirnames, filenames in os.walk(root):
+            # Avoid hidden runtime state and nested virtualenv/package caches.
+            dirnames[:] = [
+                d for d in dirnames
+                if d not in {".git", "venv", ".venv", "node_modules", "__pycache__"}
+            ]
+            for name in filenames:
+                path = Path(dirpath) / name
+                if not _safe_staging_file(path):
+                    continue
+                try:
+                    st = path.stat()
+                except OSError:
+                    continue
+                if st.st_mtime >= cutoff:
+                    continue
+                info["candidate_files"] += 1
+                info["candidate_bytes"] += st.st_size
+                if dry_run:
+                    continue
+                try:
+                    path.unlink()
+                    info["deleted_files"] += 1
+                    info["deleted_bytes"] += st.st_size
+                except OSError as e:
+                    info.setdefault("errors", []).append({"path": str(path), "error": str(e)})
+        _log(
+            f"staging {label}: {'would remove' if dry_run else 'removed'} "
+            f"{info['candidate_files']} files, {info['candidate_bytes'] / 1024 / 1024:.2f} MB "
+            f"(mtime > {max_age_days:g}d)"
+        )
+        actions.append(info)
+    return actions
+
+
 # ---- server.log 回報 ----------------------------------------------------
 
 def report_agent_logs(_dry_run: bool) -> List[Dict[str, Any]]:
@@ -565,6 +907,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         "db_backups": cleanup_db_backups(dry_run),
         "build_artifacts": cleanup_build_artifacts(dry_run),
         "git_tmp_packs": cleanup_stale_git_tmp_packs(dry_run),
+        "compressed_artifacts": compress_runtime_artifacts(dry_run),
+        "generated_staging": cleanup_generated_staging(dry_run),
         "agent_logs": report_agent_logs(dry_run),
     }
     # 寫 summary 到 runtime/metrics（自己也透過 runtime_dir 管理）
@@ -583,10 +927,14 @@ def main(argv: Optional[List[str]] = None) -> int:
     total_metrics = len(summary["metrics"])
     total_cache_candidates = sum(a.get("candidate_files", 0) for a in summary["omlx_cache"])
     tmp_entry = summary["tmp"][0] if summary["tmp"] else {}
+    total_compress_candidates = len(summary.get("compressed_artifacts") or [])
+    total_staging_candidates = sum(a.get("candidate_files", 0) for a in summary.get("generated_staging") or [])
     _log(
         f"summary: metrics_rotated={total_metrics}, "
         f"omlx_cache_candidates={total_cache_candidates}, "
-        f"tmp_candidates={tmp_entry.get('candidate_count', 0)}"
+        f"tmp_candidates={tmp_entry.get('candidate_count', 0)}, "
+        f"compress_candidates={total_compress_candidates}, "
+        f"staging_candidates={total_staging_candidates}"
     )
     return 0
 

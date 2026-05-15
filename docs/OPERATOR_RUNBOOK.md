@@ -464,6 +464,47 @@ magi zombie              # 自動偵測並清理
 - 資料庫容錯詳情
 - oMLX 推理引擎狀態
 
+### 磁碟自動維護
+
+MAGI 會用三層保守機制維持本機空間：
+
+```bash
+python3 scripts/ops/disk_low_water_alarm.py
+python3 scripts/ops/disk_cleanup_healthcheck.py --dry-run
+python3 scripts/ops/disk_cleanup_healthcheck.py --apply
+python3 scripts/ops/weekly_cache_cleanup.py --dry-run
+```
+
+- 每小時低水位守門：低於門檻時會先執行 `disk_cleanup_healthcheck --apply`，再寫入告警。
+- 每日清理與壓縮：限制 `~/.omlx/cache-*` 快取上限、輪替 metrics、清舊 DB 備份、gzip 舊 runtime/log/report 文字檔。
+- 每週快取清理：清退役 Ollama 與可重建套件快取。
+- 模組暫存清掃：`exports`、`.magi_doc_runs`、`downloads`、`閱卷下載`、`筆錄下載`、`laf_downloads`、`法扶資料` 會依保留期清理舊 DOCX/PDF/TXT/圖片等輸出暫存。
+- 紅線：不碰 NAS 案件資料夾、不碰 MariaDB 正文、不碰 `~/.omlx/models*` 模型本體、不碰 `~/.omlx/training` 訓練成果、不碰 paperclip/單機版 JSON、pickle、sqlite/db。
+
+常用調整：
+
+```bash
+MAGI_DISK_OMLX_CACHE_CAP_GB=8
+MAGI_DISK_OMLX_CACHE_LOW_WATER_CAP_GB=5
+MAGI_DISK_OMLX_CACHE_CRITICAL_CAP_GB=3
+MAGI_DISK_EXPORT_OUTPUT_MAX_AGE_DAYS=3
+MAGI_DISK_MODULE_STAGING_MAX_AGE_DAYS=14
+```
+
+### 日夜模型切換前重開
+
+私有單機部署可在日夜 oMLX 切換前讓 macOS 重開，釋放 swap 與 VM 壓力：
+
+```bash
+python3 scripts/ops/scheduled_reboot_guard.py --mode day --json
+python3 scripts/ops/scheduled_reboot_guard.py --mode night --json
+```
+
+- 公開版排程種子預設關閉 `job_reboot_before_day_model_switch`、`job_reboot_before_night_model_switch`，避免客戶安裝後自動重開。
+- 私有版可啟用兩個 job：06:40 重開後由 06:55 day switch 載入 E4B，21:35 重開後由 21:50 night switch 載入 26B。
+- 真正執行重開必須有 `MAGI_ALLOW_SCHEDULED_REBOOT=1`，且只允許在維運窗內執行。
+- 守門會避開正在跑的法扶、閱卷、筆錄、判決收集、PDF 命名、長文件翻譯等任務；若偵測到 Office 有未儲存文件，也會跳過重開。
+
 ---
 
 ## 11. 安全注意事項

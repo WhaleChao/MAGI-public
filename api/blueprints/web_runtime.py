@@ -322,13 +322,32 @@ def _run_direct_web_upload_text_task(
             failed = int(result.get("chunks_failed") or 0)
             if failed:
                 notes.append(f"⚠️ 有 {failed} 個段落翻譯失敗，已保留原文位置供重跑。")
+            term_glossary = str(result.get("term_glossary") or "").strip()
+            if term_glossary:
+                notes.append(term_glossary)
+            bilingual_artifact, bilingual_reply = _create_bilingual_translation_artifact(
+                orchestrator,
+                source_text=src_text,
+                translated_text=translated,
+                result=result,
+                title=original_name or "檔案翻譯",
+                user_id=user_id,
+            )
+            if bilingual_artifact:
+                notes.insert(0, "📄 已產出原文/翻譯雙語對照 Word 表格。")
+            elif bilingual_reply:
+                notes.append("⚠️ 雙語對照表格產生失敗，已改輸出純文字翻譯。")
             reply = "\n".join(notes + [translated]).strip()
-            artifacts = _create_web_delivery_artifacts(
+            artifacts = []
+            if bilingual_artifact:
+                artifacts.append(bilingual_artifact)
+            artifacts.extend(_create_web_delivery_artifacts(
                 root,
                 instruction=instruction,
                 reply=reply,
                 source_filename=original_name,
-            )
+                include_docx=not bool(bilingual_artifact),
+            ))
             return {"task": task, "reply": reply, "artifacts": artifacts}
         except Exception as exc:
             return {"task": task, "reply": f"❌ 檔案翻譯失敗：{str(exc)[:260]}", "artifacts": []}
@@ -368,6 +387,60 @@ def _artifact_dict(path: Path, *, label: str, fmt: str) -> dict[str, Any]:
         "size": size,
         "size_label": _artifact_size_label(size),
     }
+
+
+def _path_from_export_reply(reply: str) -> Path | None:
+    text = str(reply or "").strip()
+    if not text:
+        return None
+    if "|||FILE_PATH|||" in text:
+        candidate = text.split("|||FILE_PATH|||", 1)[1].strip().splitlines()[0].strip()
+        p = Path(candidate)
+        return p if p.exists() else None
+    for line in reversed(text.splitlines()):
+        candidate = line.strip()
+        if not candidate or candidate.startswith("http"):
+            continue
+        p = Path(candidate)
+        if p.exists():
+            return p
+    return None
+
+
+def _create_bilingual_translation_artifact(
+    orchestrator: Any,
+    *,
+    source_text: str,
+    translated_text: str,
+    result: dict[str, Any],
+    title: str,
+    user_id: str,
+) -> tuple[dict[str, Any] | None, str]:
+    export_reply = ""
+    try:
+        exporter = getattr(orchestrator, "_export_translation_docx", None)
+        if not callable(exporter):
+            from api.handlers.document_handler import export_translation_docx as exporter
+        export_reply = str(
+            exporter(
+                source_text=source_text,
+                translated_text=translated_text,
+                source_chunks=result.get("source_chunks") or [],
+                translated_chunks=result.get("translated_chunks") or [],
+                term_glossary=str(result.get("term_glossary") or ""),
+                title=title,
+                subtitle="MAGI 原文/翻譯對照表",
+                prefix="file_translate",
+                user_id=user_id,
+            )
+            or ""
+        ).strip()
+    except Exception:
+        return None, ""
+    path = _path_from_export_reply(export_reply)
+    if not path:
+        return None, export_reply
+    return _artifact_dict(path, label="翻譯雙語對照 Word", fmt="docx"), export_reply
 
 
 def _reply_to_docx(path: Path, *, title: str, reply: str, instruction: str, source_filename: str = "") -> bool:
@@ -422,6 +495,7 @@ def _create_web_delivery_artifacts(
     instruction: str,
     reply: str,
     source_filename: str = "",
+    include_docx: bool = True,
 ) -> list[dict[str, Any]]:
     if not _should_create_web_delivery_artifacts(instruction, reply, source_filename=source_filename):
         return []
@@ -452,9 +526,10 @@ def _create_web_delivery_artifacts(
     txt_path.write_text(body + "\n", encoding="utf-8")
     artifacts.append(_artifact_dict(txt_path, label=f"{title_label} 純文字", fmt="txt"))
 
-    docx_path = output_dir / f"{base_name}.docx"
-    if _reply_to_docx(docx_path, title=title, reply=body, instruction=instruction_text, source_filename=source_filename):
-        artifacts.insert(0, _artifact_dict(docx_path, label=f"{title_label} Word", fmt="docx"))
+    if include_docx:
+        docx_path = output_dir / f"{base_name}.docx"
+        if _reply_to_docx(docx_path, title=title, reply=body, instruction=instruction_text, source_filename=source_filename):
+            artifacts.insert(0, _artifact_dict(docx_path, label=f"{title_label} Word", fmt="docx"))
 
     return artifacts
 

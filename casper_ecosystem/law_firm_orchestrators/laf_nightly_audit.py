@@ -33,6 +33,7 @@ sys.path.insert(0, os.path.join(PROJECT_ROOT, "skills", "osc-orchestrator"))
 
 from api.runtime_paths import get_config_path
 from api.case_path_mapper import default_case_roots, preferred_case_roots
+from api.laf_case_classifier import normalize_laf_case_type
 from api.product_runtime import get_product_profile, resolve_laf_portal_targets
 
 # 載入 .env
@@ -1365,6 +1366,10 @@ def _safe_rename_case_folder(old_path: str, new_path: str) -> Tuple[bool, str]:
         return False, "same_path"
     if os.path.exists(new_path):
         return False, "target_exists"
+    try:
+        os.makedirs(os.path.dirname(new_path), exist_ok=True)
+    except Exception:
+        pass
     is_open, who = _is_folder_open_by_other(old_path)
     if is_open:
         released, release_reason = _release_folder_for_rename(old_path)
@@ -1595,30 +1600,45 @@ def _reconcile_placeholder_from_local_sources(db, case: dict, folder_builder) ->
     if case_type == "消費者債務清理" or "消費者債務清理" in new_case_reason:
         if "清算" not in new_case_reason:
             new_case_reason = "更生"
+    new_case_type, new_case_stage = normalize_laf_case_type(
+        case_type,
+        new_case_stage or case.get("case_stage") or "",
+        new_case_reason,
+    )
+    if new_case_type:
+        case_type = new_case_type
 
     db.execute_write(
         """UPDATE `cases`
            SET `client_name` = COALESCE(NULLIF(%s, ''), `client_name`),
+               `case_type` = COALESCE(NULLIF(%s, ''), `case_type`),
                `case_reason` = COALESCE(NULLIF(%s, ''), `case_reason`),
                `case_stage` = CASE WHEN COALESCE(`case_stage`,'') IN ('','待確認','未確認') THEN %s ELSE `case_stage` END
            WHERE `id` = %s""",
-        (new_client_name, new_case_reason, new_case_stage, case_id),
+        (new_client_name, case_type, new_case_reason, new_case_stage, case_id),
     )
 
     rename_result = {"renamed": False, "old": case.get("folder_path") or "", "new": "", "reason": "", "new_canonical": ""}
     if old_local and os.path.isdir(old_local):
-        new_basename = folder_builder._build_folder_name({
+        new_folder_info = {
             "case_number": case_number,
             "client_name": new_client_name or case.get("client_name") or "",
             "case_type": case_type,
             "case_stage": new_case_stage or case.get("case_stage") or "",
             "case_reason": new_case_reason or case.get("case_reason") or "",
-        })
-        new_local = os.path.join(os.path.dirname(old_local), new_basename)
+        }
+        new_basename = folder_builder._build_folder_name(new_folder_info)
+        try:
+            new_local = folder_builder._get_local_path(new_basename, new_folder_info)
+        except Exception:
+            new_local = os.path.join(os.path.dirname(old_local), new_basename)
         ok, reason = _safe_rename_case_folder(old_local, new_local)
         rename_result.update({"renamed": ok, "old": old_local, "new": new_local, "reason": reason})
         if ok:
-            new_canonical = _replace_folder_basename_canonical(case.get("folder_path") or "", new_basename)
+            try:
+                new_canonical = folder_builder._local_to_canonical(new_local)
+            except Exception:
+                new_canonical = _replace_folder_basename_canonical(case.get("folder_path") or "", new_basename)
             rename_result["new_canonical"] = new_canonical
             db.execute_write("UPDATE `cases` SET `folder_path` = %s WHERE `id` = %s", (new_canonical, case_id))
 
@@ -1847,11 +1867,19 @@ def reconcile_placeholder_cases(db, *, force: bool = False,
         if case_type == "消費者債務清理" or case_category == "消費者債務清理" or "消費者債務清理" in new_case_reason:
             if "清算" not in new_case_reason:
                 new_case_reason = "更生"
+        new_case_type, new_case_stage = normalize_laf_case_type(
+            case_type,
+            new_case_stage or case.get("case_stage") or "",
+            new_case_reason,
+        )
+        if new_case_type:
+            case_type = new_case_type
 
         # 若 portal 給的資料和 DB 完全一樣，跳過（雖然不該發生）
         if (new_client_name == old_client_name
                 and new_case_reason == old_case_reason
-                and new_case_stage == old_case_stage):
+                and new_case_stage == old_case_stage
+                and case_type == (case.get("case_type") or "")):
             continue
 
         # Step 4: UPDATE DB（先用 case_id 直接 UPDATE）
@@ -1859,10 +1887,11 @@ def reconcile_placeholder_cases(db, *, force: bool = False,
             db.execute_write(
                 """UPDATE `cases`
                    SET `client_name` = %s,
+                       `case_type` = %s,
                        `case_reason` = %s,
                        `case_stage` = CASE WHEN COALESCE(`case_stage`,'') IN ('','待確認','未確認') THEN %s ELSE `case_stage` END
                    WHERE `id` = %s""",
-                (new_client_name, new_case_reason, new_case_stage, case_id),
+                (new_client_name, case_type, new_case_reason, new_case_stage, case_id),
             )
             logger.info("📝 DB updated %s: name=%s reason=%s stage=%s",
                         case_number, new_client_name, new_case_reason, new_case_stage)
@@ -1894,7 +1923,10 @@ def reconcile_placeholder_cases(db, *, force: bool = False,
                     break
 
             if old_local:
-                new_local = os.path.join(os.path.dirname(old_local), new_basename)
+                try:
+                    new_local = folder_builder._get_local_path(new_basename, new_folder_info)
+                except Exception:
+                    new_local = os.path.join(os.path.dirname(old_local), new_basename)
                 ok, reason = _safe_rename_case_folder(old_local, new_local)
                 rename_result["old"] = old_local
                 rename_result["new"] = new_local
@@ -1902,7 +1934,10 @@ def reconcile_placeholder_cases(db, *, force: bool = False,
                 rename_result["renamed"] = ok
 
                 if ok:
-                    new_canonical = _replace_folder_basename_canonical(old_folder_path, new_basename)
+                    try:
+                        new_canonical = folder_builder._local_to_canonical(new_local)
+                    except Exception:
+                        new_canonical = _replace_folder_basename_canonical(old_folder_path, new_basename)
                     rename_result["new_canonical"] = new_canonical
                     try:
                         db.execute_write(

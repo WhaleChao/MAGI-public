@@ -778,8 +778,8 @@ class Orchestrator:
     def _export_translation_txt(self, *, translated_text: str, source: str, provider: str, mode: str, prefix: str, user_id: str) -> Optional[str]:
         return _get_handler("dh").export_translation_txt(translated_text=translated_text, source=source, provider=provider, mode=mode, prefix=prefix, user_id=user_id)
 
-    def _export_translation_docx(self, *, source_text: str, translated_text: str, source_chunks: Optional[list] = None, translated_chunks: Optional[list] = None, title: str = "", subtitle: str = "", prefix: str = "translate", user_id: str) -> Optional[str]:
-        return _get_handler("dh").export_translation_docx(source_text=source_text, translated_text=translated_text, source_chunks=source_chunks, translated_chunks=translated_chunks, title=title, subtitle=subtitle, prefix=prefix, user_id=user_id)
+    def _export_translation_docx(self, *, source_text: str, translated_text: str, source_chunks: Optional[list] = None, translated_chunks: Optional[list] = None, term_glossary: str = "", title: str = "", subtitle: str = "", prefix: str = "translate", user_id: str) -> Optional[str]:
+        return _get_handler("dh").export_translation_docx(source_text=source_text, translated_text=translated_text, source_chunks=source_chunks, translated_chunks=translated_chunks, term_glossary=term_glossary, title=title, subtitle=subtitle, prefix=prefix, user_id=user_id)
 
     def _export_plain_txt(self, *, content: str, prefix: str, user_id: str, title: str = "📄 已輸出 TXT 檔案。") -> Optional[str]:
         return _get_handler("dh").export_plain_txt(content=content, prefix=prefix, user_id=user_id, title=title)

@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import sys
 import time
@@ -41,8 +42,8 @@ def _push_self_repair(severity: str, free_gb: float, threshold_gb: float) -> Non
     """寫 issue agenda；critical 時也試 TG 推送。"""
     msg = (
         f"磁碟低水位告警：可用空間 {free_gb} GB（閾值 {threshold_gb} GB）。"
-        f"建議檢查 ~/.omlx-vision/cache/、~/.cache/huggingface/hub/，"
-        f"或執行 scripts/ops/weekly_cache_cleanup.py。"
+        f"MAGI 會先執行保守自動回收；若仍不足，請檢查 macOS swap、~/.omlx/cache-*、"
+        f"以及 /opt/homebrew/var/mysql/magi_brain。"
     )
     try:
         from skills.management.issue_tracker import log_issue
@@ -77,6 +78,48 @@ def _push_self_repair(severity: str, free_gb: float, threshold_gb: float) -> Non
             pass
 
 
+def _auto_reclaim_enabled() -> bool:
+    return os.environ.get("MAGI_DISK_LOW_WATER_AUTO_RECLAIM", "1").strip().lower() in {
+        "1",
+        "true",
+        "on",
+        "yes",
+    }
+
+
+def _run_auto_reclaim(path: str) -> dict:
+    """Run guarded cleanup when low water is already confirmed.
+
+    This intentionally delegates to disk_cleanup_healthcheck so the deletion
+    rules stay centralized: no case folders, no NAS roots, no model/training
+    roots, no standalone JSON state.
+    """
+    info = {
+        "attempted": False,
+        "enabled": _auto_reclaim_enabled(),
+        "free_before_gb": get_disk_free_gb(path),
+        "free_after_gb": None,
+    }
+    if not info["enabled"]:
+        return info
+    try:
+        from scripts.ops import disk_cleanup_healthcheck
+
+        old = os.environ.get("MAGI_DISK_CLEANUP_DRY_RUN")
+        os.environ["MAGI_DISK_CLEANUP_DRY_RUN"] = "0"
+        try:
+            rc = disk_cleanup_healthcheck.main(["--apply"])
+        finally:
+            if old is None:
+                os.environ.pop("MAGI_DISK_CLEANUP_DRY_RUN", None)
+            else:
+                os.environ["MAGI_DISK_CLEANUP_DRY_RUN"] = old
+        info.update({"attempted": True, "rc": rc, "free_after_gb": get_disk_free_gb(path)})
+    except Exception as e:
+        info.update({"attempted": True, "error": str(e), "free_after_gb": get_disk_free_gb(path)})
+    return info
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--path", default="/", help="檢查路徑（預設 /）")
@@ -109,6 +152,8 @@ def main() -> int:
         triggered = True
         _push_self_repair("High", free_gb, args.threshold_warn)
 
+    auto_reclaim = _run_auto_reclaim(args.path) if triggered else {"attempted": False, "enabled": _auto_reclaim_enabled()}
+
     result = {
         "success": True,
         "ts": time.time(),
@@ -119,6 +164,7 @@ def main() -> int:
         "threshold_critical_gb": args.threshold_critical,
         "severity": severity,
         "alarm_triggered": triggered,
+        "auto_reclaim": auto_reclaim,
     }
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0

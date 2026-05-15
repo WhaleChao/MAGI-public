@@ -61,6 +61,45 @@ def test_legacy_laf_parser_matches_closing_transfer_notice():
     assert info.needs_download is True
 
 
+def test_laf_parser_files_labor_insurance_dispute_as_admin():
+    from casper_ecosystem.law_firm_orchestrators.laf_automation_v2 import LAFCaseTypeParser
+    from skills.legal.laf import LAFCaseTypeParser as LegacyLAFCaseTypeParser
+
+    subject = "【法扶花蓮分會派案通知】李秀英-1150421-W-004-民事通常程序第一審-勞工保險爭議"
+
+    for parser in (LAFCaseTypeParser, LegacyLAFCaseTypeParser):
+        info = parser.parse_subject(subject)
+        assert info is not None
+        assert info.laf_case_number == "1150421-W-004"
+        assert info.client_name == "李秀英"
+        assert info.case_reason == "勞工保險爭議"
+        assert info.case_type == "行政"
+        assert info.case_stage == "一審"
+
+
+def test_laf_report_result_keeps_labor_insurance_as_admin():
+    from casper_ecosystem.law_firm_orchestrators.laf_automation_v2 import LAFCaseTypeParser
+    from skills.legal.laf import LAFCaseTypeParser as LegacyLAFCaseTypeParser
+
+    subject = "通知範例律師回報(附條件)1150421-W-004-李秀英-民事通常程序第一審-勞工保險爭議之資料，業經分會轉入系統"
+
+    for parser in (LAFCaseTypeParser, LegacyLAFCaseTypeParser):
+        info = parser.parse_subject(subject)
+        assert info is not None
+        assert info.case_type == "行政"
+        assert info.case_reason == "勞工保險爭議"
+
+
+def test_legacy_staff_short_labor_insurance_hint_is_admin():
+    from skills.legal.laf import LAFCaseTypeParser
+
+    info = LAFCaseTypeParser.parse_subject("1150421-W-004李秀英(勞保)")
+
+    assert info is not None
+    assert info.case_type == "行政"
+    assert info.case_reason == "勞保"
+
+
 def test_casper_notified_laf_email_still_queues_download(tmp_path):
     from casper_ecosystem.law_firm_orchestrators.laf_automation_v2 import LAFAutomationManager
 

@@ -642,11 +642,15 @@ def handle_multimedia(orch, user_id, prompt, attachment) -> str:
             fail_note = ""
             if fail_cnt > 0:
                 fail_note = f"⚠️ 有 {fail_cnt} 個段落翻譯失敗，已先保留原文，稍後可針對該段重跑。"
+            term_glossary = str(rr.get("term_glossary") or "").strip()
             export_body = translated_text
+            if term_glossary:
+                export_body = f"{term_glossary}\n\n【全文翻譯】\n{translated_text}".strip()
             if summary_text:
                 _sl_label = {"short": "精簡", "long": "詳細"}.get(summary_length, "")
                 _sl_tag = f"{_sl_label}摘要" if _sl_label else "摘要"
-                export_body = f"【{_sl_tag}（來源：{summary_source_label}）】\n{summary_text}\n\n【全文翻譯】\n{translated_text}".strip()
+                term_block = f"{term_glossary}\n\n" if term_glossary else ""
+                export_body = f"{term_block}【{_sl_tag}（來源：{summary_source_label}）】\n{summary_text}\n\n【全文翻譯】\n{translated_text}".strip()
 
             if not disable_txt:
                 exported_reply = None
@@ -665,6 +669,7 @@ def handle_multimedia(orch, user_id, prompt, attachment) -> str:
                         translated_text=translated_text,
                         source_chunks=_src_chunks,
                         translated_chunks=_tgt_chunks,
+                        term_glossary=term_glossary,
                         title=(filename or os.path.basename(path)),
                         prefix="file_translate",
                         user_id=str(user_id or ""),

@@ -107,6 +107,24 @@ MAGI uses a 4-tier data classification system:
 | Performance Metrics | INTERNAL | 1 year | Data aggregation |
 | Access Logs | CONFIDENTIAL | 90 days | Security review |
 
+### 3.4.1 Local Disk Hygiene Guardrails
+
+MAGI keeps local disks below low-water risk by removing or compressing only
+rebuildable runtime artifacts:
+
+| Artifact | Default Action | Default Retention | Never Touch |
+|---|---|---:|---|
+| `~/.omlx/cache-*` | LRU prune by size cap | cap 8 GB; 5 GB under low water; 3 GB critical | `~/.omlx/models*`, `~/.omlx/training` |
+| Runtime metrics/log text | gzip old text artifacts | 3 days; 12 hours under low water | pending approvals, DB files |
+| Generated exports | delete old staging outputs | 3 days | standalone JSON/pickle/sqlite/db |
+| Module staging downloads | delete old imported/duplicate staging outputs | 14 days | NAS case folders |
+| Local DB backup bursts | keep latest local/remote restore points | latest 8 per group | live MariaDB data |
+
+These rules are implemented by `scripts/ops/disk_cleanup_healthcheck.py` and
+are triggered daily plus on low-water alarms. They are intentionally narrower
+than legal/case retention: source case files remain in the case folders/NAS and
+are not part of automated disk cleanup.
+
 ### 3.5 Backup & Recovery Data
 
 | Data Type | Classification | Retention | Trigger |

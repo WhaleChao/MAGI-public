@@ -60,6 +60,7 @@ from api.runtime_paths import (
     get_magi_root_dir,
 )
 from api.case_path_mapper import local_case_path_candidates, preferred_case_roots, translate_case_path_to_local
+from api.laf_case_classifier import normalize_laf_case_type
 from skills.engine.legal_web_adapter import format_legal_web_engine_log, resolve_legal_web_engine
 
 
@@ -779,6 +780,13 @@ class LAFCaseTypeParser:
                              info.case_stage = '再審'
                         elif '非常上訴' in info.case_reason and info.case_type == '刑事':
                              info.case_stage = '非常上訴'
+
+                    info.case_type, info.case_stage = normalize_laf_case_type(
+                        info.case_type,
+                        info.case_stage,
+                        info.case_reason,
+                        info.laf_case_type,
+                    )
                 
                 if info.case_type == '消費者債務清理' and not info.case_reason:
                     info.case_reason = '更生'
@@ -857,6 +865,12 @@ class LAFCaseTypeParser:
 
             if report_kind == "附條件" and (not info.case_reason or info.case_reason == "待確認"):
                 info.case_reason = "附條件審查"
+            info.case_type, info.case_stage = normalize_laf_case_type(
+                info.case_type,
+                info.case_stage,
+                info.case_reason,
+                info.laf_case_type,
+            )
 
             info.needs_download = True
             return info
@@ -3374,6 +3388,12 @@ class LAFWebAutomation:
                                     case_stage = '其他'
                                 else:
                                     case_stage = '偵查'
+                            case_type, case_stage = normalize_laf_case_type(
+                                case_type or '民事',
+                                case_stage or '一審',
+                                case_reason,
+                                laf_case_type,
+                            )
                     
                     # 如果上面沒解析到，嘗試簡單解析
                     if not client_name:

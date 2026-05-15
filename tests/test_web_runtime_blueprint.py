@@ -356,6 +356,44 @@ def test_web_upload_translation_stops_short_incomplete_output(tmp_path, monkeypa
     assert result["artifacts"] == []
 
 
+def test_web_upload_translation_prefers_bilingual_docx_artifact(tmp_path):
+    from api.blueprints import web_runtime as mod
+
+    class _TranslationOrchestrator(_Orchestrator):
+        def _translate_text_complete(self, *args, **kwargs):
+            return {
+                "success": True,
+                "translated_text": "這是第一段翻譯。\n\n這是第二段翻譯。",
+                "source_chunks": ["This is the first source paragraph.", "This is the second source paragraph."],
+                "translated_chunks": ["這是第一段翻譯。", "這是第二段翻譯。"],
+                "term_glossary": "【專有名詞與術語保留表】\n| 原文 | 建議譯法/保留方式 |\n| --- | --- |\n| Kate Seear | 保留原文；必要時括號標註譯名 |",
+                "chunks_failed": 0,
+            }
+
+        def _export_translation_docx(self, **kwargs):
+            assert "Kate Seear" in kwargs.get("term_glossary", "")
+            out = tmp_path / "bilingual_table.docx"
+            out.write_bytes(b"fake docx")
+            return f"📄 已輸出雙語對照 DOCX 表格檔案。\n{out}"
+
+    result = mod._run_direct_web_upload_text_task(
+        _TranslationOrchestrator(),
+        root=tmp_path,
+        target=tmp_path / "article.pdf",
+        original_name="article.pdf",
+        instruction="@heavy 請完整翻譯並產出原文翻譯對照表",
+        extracted={"success": True, "text": "This is the first source paragraph.\n\nThis is the second source paragraph.", "kind": "pdf"},
+        user_id="u1",
+    )
+
+    assert result is not None
+    assert "雙語對照" in result["reply"]
+    assert "Kate Seear" in result["reply"]
+    assert result["artifacts"][0]["filename"] == "bilingual_table.docx"
+    assert result["artifacts"][0]["label"] == "翻譯雙語對照 Word"
+    assert not any(item["label"] == "翻譯稿 Word" for item in result["artifacts"][1:])
+
+
 def test_osc_chat_translation_command_creates_web_delivery_artifacts(tmp_path):
     orchestrator = _Orchestrator(reply="這是一段翻譯完成的內容。")
     app = _make_app(tmp_path, orchestrator=orchestrator, normalize=lambda text, platform=None: text)

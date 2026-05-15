@@ -41,6 +41,18 @@ def test_retired_ollama_can_be_kept_by_env(tmp_path, monkeypatch):
     assert ollama.exists()
 
 
+def test_retired_openclaw_can_be_removed(tmp_path):
+    archived = tmp_path / ".openclaw_archived_20260412"
+    _touch_old(archived / "dot_openclaw" / "gateway.log")
+    target = {"path": archived, "label": "retired_openclaw_archive", "env_keep": "MAGI_KEEP_RETIRED_OPENCLAW"}
+
+    summary = wc.cleanup_retired_root(target, dry_run=False)
+
+    assert summary["deleted_entries"] == 1
+    assert summary["freed_bytes"] > 0
+    assert not archived.exists()
+
+
 def test_cache_cleanup_preserves_judicial_collector_backlog(tmp_path, monkeypatch):
     cache_root = tmp_path / ".cache"
     backlog = cache_root / "judgment_collector" / "judicial_api" / "raw" / "case.json"

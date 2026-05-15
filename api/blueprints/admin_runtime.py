@@ -27,6 +27,9 @@ from flask import Blueprint, Response, current_app, jsonify, request
 from flask_login import current_user, login_required
 
 
+ROOT = Path(__file__).resolve().parents[2]
+
+
 def _wants_json_response() -> bool:
     accept = request.headers.get("Accept") or ""
     if not accept:
@@ -200,6 +203,17 @@ def _is_resource_governor_recovered() -> bool:
         return False
 
 
+def _is_tailscale_funnel_recovered(issue_ts: float) -> bool:
+    path = ROOT / ".runtime" / "tailscale_funnel_health_latest.json"
+    if not path.exists() or path.stat().st_mtime <= issue_ts:
+        return False
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return False
+    return str(data.get("status") or "").lower() in {"ok", "recovered", "skipped"}
+
+
 def _classify_cron_issue(
     row: dict[str, Any],
     *,
@@ -221,6 +235,8 @@ def _classify_cron_issue(
         if _is_omlx_switch_recovered():
             return "recovered"
     if job_id == "job_resource_governor" and _is_resource_governor_recovered():
+        return "recovered"
+    if job_id == "job_tailscale_funnel_healthcheck" and _is_tailscale_funnel_recovered(ts):
         return "recovered"
     if latest_issue_ts > ts:
         return "superseded"

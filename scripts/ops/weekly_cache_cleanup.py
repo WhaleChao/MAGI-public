@@ -60,6 +60,16 @@ _RETIRED_ROOT_TARGETS = [
         "label": "retired_ollama",
         "env_keep": "MAGI_KEEP_RETIRED_OLLAMA",
     },
+    {
+        "path": Path.home() / "Desktop" / ".openclaw_archived_20260412",
+        "label": "retired_openclaw_archive",
+        "env_keep": "MAGI_KEEP_RETIRED_OPENCLAW",
+    },
+    {
+        "path": Path.home() / ".openclaw",
+        "label": "retired_openclaw_home",
+        "env_keep": "MAGI_KEEP_RETIRED_OPENCLAW",
+    },
 ]
 
 # 預設清理目標（atime > N 天）。只清目標底下的條目，不移除目標根目錄。

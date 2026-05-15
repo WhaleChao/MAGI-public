@@ -3140,7 +3140,103 @@ def _portal_item_priority(item: dict) -> tuple:
     return (base, applydt, rowid, payid)
 
 
-def _filter_not_yet_downloaded(dl_items: list, download_folder: str) -> list:
+def _review_download_case_tokens(item: dict) -> Set[str]:
+    tokens: Set[str] = set()
+    if not isinstance(item, dict):
+        return tokens
+
+    def _add(value: object) -> None:
+        raw = str(value or "").strip()
+        if not raw:
+            return
+        norm = _normalize_case_token(raw)
+        if norm:
+            tokens.add(norm)
+
+    for field in (
+        "case_number",
+        "court_case_no",
+        "showyyidno",
+        "yyidno",
+        "case_no",
+        "case_id",
+    ):
+        _add(item.get(field))
+    ci = item.get("case_info")
+    if isinstance(ci, dict):
+        for field in (
+            "case_number",
+            "court_case_no",
+            "showyyidno",
+            "yyidno",
+            "case_no",
+            "case_id",
+        ):
+            _add(ci.get(field))
+    return tokens
+
+
+def _load_downloaded_review_tokens(download_folder: str) -> Set[str]:
+    """Return normalized case tokens already known as non-payment review downloads."""
+    registry_path = os.path.join(download_folder, "downloaded_registry.json") if download_folder else ""
+    tokens: Set[str] = set()
+    if not registry_path or not os.path.exists(registry_path):
+        return tokens
+    try:
+        with open(registry_path, "r", encoding="utf-8") as f:
+            registry = json.load(f) or {}
+    except Exception:
+        return tokens
+    if not isinstance(registry, dict):
+        return tokens
+
+    for key, entry in registry.items():
+        if not isinstance(entry, dict):
+            continue
+        if str(key).startswith(("/", "\\")):
+            continue
+        ci = entry.get("case_info") if isinstance(entry.get("case_info"), dict) else {}
+        artifact = str(ci.get("artifact_type") or "").strip().lower()
+        if artifact == "payment_slip":
+            continue
+        if "繳費單" in str(key):
+            continue
+
+        for value in (
+            entry.get("yyidno"),
+            entry.get("yyidno_norm"),
+            entry.get("case_number"),
+            entry.get("court_case_no"),
+            ci.get("yyidno") if isinstance(ci, dict) else "",
+            ci.get("case_number") if isinstance(ci, dict) else "",
+            ci.get("court_case_no") if isinstance(ci, dict) else "",
+            ci.get("showyyidno") if isinstance(ci, dict) else "",
+        ):
+            norm = _normalize_case_token(str(value or ""))
+            if norm:
+                tokens.add(norm)
+    return tokens
+
+
+def _manager_has_archived_review_files(file_review_manager: object, item: dict) -> bool:
+    if not file_review_manager or not isinstance(item, dict):
+        return False
+    checker = getattr(file_review_manager, "_case_review_folder_has_files", None)
+    if not callable(checker):
+        return False
+    try:
+        return bool(checker(item))
+    except Exception:
+        logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 3140, exc_info=True)
+        return False
+
+
+def _filter_not_yet_downloaded(
+    dl_items: list,
+    download_folder: str,
+    *,
+    file_review_manager: Optional[object] = None,
+) -> list:
     """Filter out portal items whose download BUTTON has already been clicked.
 
     改用 button-level (rowid) dedup（symmetric with file_review_automation.py 修補）：
@@ -3165,32 +3261,7 @@ def _filter_not_yet_downloaded(dl_items: list, download_folder: str) -> list:
                 pass
 
     # ── 卷宗檔案 dedup（fallback）：只認非 payment_slip 的 entry ──
-    registry_path = os.path.join(download_folder, "downloaded_registry.json") if download_folder else ""
-    json_downloaded: Set[str] = set()
-    if registry_path and os.path.exists(registry_path):
-        try:
-            with open(registry_path, "r", encoding="utf-8") as f:
-                registry = json.load(f) or {}
-            for k, v in registry.items():
-                if not isinstance(v, dict):
-                    continue
-                # 排除 path-keyed bad entries（key 以 `/` 開頭，artifact 經常是 None）
-                # 這些是歷史 bug 重複登錄，不應該影響 dedup 判斷
-                if str(k).startswith(("/", "\\")):
-                    continue
-                # 只把「真正卷宗」的 yyidno 加入 set，繳費單/檔名含「繳費單」字樣不算
-                ci = v.get("case_info") if isinstance(v.get("case_info"), dict) else {}
-                artifact = (ci.get("artifact_type") or "").strip().lower()
-                if artifact == "payment_slip":
-                    continue
-                # 額外保險：檔名（key）含「繳費單」字樣 → 視為 payment_slip
-                if "繳費單" in str(k):
-                    continue
-                y = (v.get("yyidno") or "").strip()
-                if y:
-                    json_downloaded.add(y)
-        except Exception:
-            pass
+    json_downloaded = _load_downloaded_review_tokens(download_folder)
 
     # ── DB-backed dedup ──
     try:
@@ -3223,7 +3294,12 @@ def _filter_not_yet_downloaded(dl_items: list, download_folder: str) -> list:
                     continue
             except Exception:
                 pass
+        item_tokens = _review_download_case_tokens(it)
+        if item_tokens and item_tokens.intersection(json_downloaded):
+            continue
         if case_num in json_downloaded:
+            continue
+        if _manager_has_archived_review_files(file_review_manager, it):
             continue
         result.append(it)
     return result
@@ -3234,6 +3310,7 @@ def _collapse_portal_items(
     *,
     download_folder: str = "",
     dismissed_payments: Optional[dict] = None,
+    file_review_manager: Optional[object] = None,
 ) -> dict:
     chosen = {}
     raw_items = [it for it in (items or []) if isinstance(it, dict)]
@@ -3247,15 +3324,23 @@ def _collapse_portal_items(
     dismissed_map = _merge_dismissed_payment_maps(download_folder, dismissed_payments)
     proof_case_tokens = _load_payment_proof_case_tokens(download_folder)
     downloadable = []
+    downloadable_raw_count = 0
+    downloadable_skipped_count = 0
     court_pickup = []
     pending = []
     for item in merged:
         status = str(item.get("status") or "").strip()
         if status == "downloadable":
+            downloadable_raw_count += 1
             # 💡 檢查是否已在本地下載過（避開重複通知）
             if download_folder:
-                filtered = _filter_not_yet_downloaded([item], download_folder)
+                filtered = _filter_not_yet_downloaded(
+                    [item],
+                    download_folder,
+                    file_review_manager=file_review_manager,
+                )
                 if not filtered:
+                    downloadable_skipped_count += 1
                     continue  # 已下載過 → 跳過
             downloadable.append(item)
             continue
@@ -3289,6 +3374,8 @@ def _collapse_portal_items(
         "case_count": len(merged),
         "count": len(actionable),
         "downloadable_count": len(downloadable),
+        "downloadable_raw_count": downloadable_raw_count,
+        "downloadable_skipped_count": downloadable_skipped_count,
         "court_pickup_count": len(court_pickup),
         "pending_payment_count": len(pending),
         "items": actionable,
@@ -3941,11 +4028,14 @@ def cmd_check_emails(notify: bool = True, notify_empty: bool = True) -> dict:
                 portal_items_raw,
                 download_folder=creds["download_folder"],
                 dismissed_payments=_dismissed_map,
+                file_review_manager=mgr,
             ) if with_portal and bool(portal_summary.get("success")) else {
                 "raw_count": portal_count,
                 "case_count": 0,
                 "count": 0,
                 "downloadable_count": 0,
+                "downloadable_raw_count": 0,
+                "downloadable_skipped_count": 0,
                 "court_pickup_count": 0,
                 "pending_payment_count": 0,
                 "items": [],
@@ -3954,6 +4044,7 @@ def cmd_check_emails(notify: bool = True, notify_empty: bool = True) -> dict:
             portal_case_count = int(portal_effective.get("case_count") or 0)
             portal_count = int(portal_effective.get("count") or 0)
             portal_downloadable = int(portal_effective.get("downloadable_count") or 0)
+            portal_downloadable_skipped = int(portal_effective.get("downloadable_skipped_count") or 0)
             portal_pickup = int(portal_effective.get("court_pickup_count") or 0)
             portal_pending = int(portal_effective.get("pending_payment_count") or 0)
             recent_activity_all = _load_recent_processed_activity(creds["download_folder"], days=7, limit=8)
@@ -3985,8 +4076,11 @@ def cmd_check_emails(notify: bool = True, notify_empty: bool = True) -> dict:
             if with_portal:
                 if bool(portal_summary.get("success")):
                     payment_lines.append(f"- 入口列表待繳費：{portal_pending} 件")
+                    _downloadable_note = f"{portal_downloadable} 件"
+                    if portal_downloadable_skipped:
+                        _downloadable_note = f"{portal_downloadable} 件（已歸檔/已下載略過 {portal_downloadable_skipped} 件）"
                     review_lines.append(
-                        f"- 入口列表可下載：{portal_downloadable} 件，可到院閱卷：{portal_pickup} 件（同案合併後需回報 {portal_count} 案，原始 {portal_raw_count} 列）"
+                        f"- 入口列表可下載：{_downloadable_note}，可到院閱卷：{portal_pickup} 件（同案合併後需回報 {portal_count} 案，原始 {portal_raw_count} 列）"
                     )
                     # 列出未繳費案件明細（分逾期/即將到期/無期限）
                     portal_items = portal_effective.get("items") or []
@@ -4025,10 +4119,15 @@ def cmd_check_emails(notify: bool = True, notify_empty: bool = True) -> dict:
                         payment_lines.extend(_fmt_payment_items(overdue))
                     # 列出可下載案件明細（排除已下載的）
                     dl_items_all = [it for it in portal_items if str(it.get("status") or "").strip() == "downloadable"]
-                    dl_items = _filter_not_yet_downloaded(dl_items_all, creds.get("download_folder") or "")
+                    dl_items = _filter_not_yet_downloaded(
+                        dl_items_all,
+                        creds.get("download_folder") or "",
+                        file_review_manager=mgr,
+                    )
                     if dl_items:
                         review_lines.append("")
-                        review_lines.append(f"可下載案件（共 {len(dl_items)} 件，已下載 {len(dl_items_all) - len(dl_items)} 件已略過）：")
+                        _skipped_total = max(portal_downloadable_skipped, len(dl_items_all) - len(dl_items))
+                        review_lines.append(f"可下載案件（共 {len(dl_items)} 件，已歸檔/已下載 {_skipped_total} 件已略過）：")
                         for idx, it in enumerate(dl_items[:10], 1):
                             caseno = it.get("court_case_no") or it.get("case_number") or "-"
                             party = it.get("party") or "(未知)"
@@ -4141,12 +4240,14 @@ def cmd_check_emails(notify: bool = True, notify_empty: bool = True) -> dict:
                 or dl_hits > 0          # 有新閱卷通知信件
                 or pickup_hits > 0      # 有新到院閱卷通知信件
                 or ready_cnt > 0        # 有待下載佇列
+                or (portal_downloadable > 0 and _portal_downloadable_changed)  # 入口新增可下載卷宗
                 or (portal_pickup > 0 and _portal_pickup_changed)  # 可到院閱卷
                 or download_signal      # 有新卷宗下載
                 or err_cnt > 0          # 有掃描錯誤
                 or (with_portal and not bool(portal_summary.get("success")))  # 登入失敗要提醒
             )
-            should_notify_now = notify and (notify_empty or has_something_to_notify)
+            # 無新資訊時不推播；手動/cron 呼叫仍會在 out["message"] 回傳摘要。
+            should_notify_now = notify and has_something_to_notify
             if should_notify_now or (warn and notify_empty):
                 if section_messages:
                     for section_msg, section_topic in section_messages:
@@ -4190,6 +4291,7 @@ def cmd_check_emails(notify: bool = True, notify_empty: bool = True) -> dict:
                 "portal_raw_row_count": portal_raw_count,
                 "portal_case_count": portal_case_count,
                 "portal_downloadable_count": portal_downloadable,
+                "portal_downloadable_skipped_count": portal_downloadable_skipped,
                 "portal_court_pickup_count": portal_pickup,
                 "portal_pending_payment_count": portal_pending,
                 "portal_probe_ok": bool(portal_summary.get("success")),
@@ -4216,6 +4318,7 @@ def cmd_check_emails(notify: bool = True, notify_empty: bool = True) -> dict:
                     "portal_raw_row_count": portal_raw_count,
                     "portal_case_count": portal_case_count,
                     "portal_downloadable_count": portal_downloadable,
+                    "portal_downloadable_skipped_count": portal_downloadable_skipped,
                     "portal_court_pickup_count": portal_pickup,
                     "portal_pending_payment_count": portal_pending,
                     "portal_probe_ok": bool(portal_summary.get("success")),

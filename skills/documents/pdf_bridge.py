@@ -364,10 +364,11 @@ def _text_quality_stats(text: str) -> dict:
 def _extract_text_pdftotext(pdf_path: str, max_pages: int) -> tuple[str, int]:
     pdftotext_bin = str(os.environ.get("MAGI_PDFTOTEXT_BIN", "pdftotext")).strip() or "pdftotext"
     timeout_sec = int(os.environ.get("MAGI_PDF_PDFTOTEXT_TIMEOUT_SEC", "120") or "120")
-    proc = subprocess.run(
-        [
+
+    def _run_pdftotext(mode: str) -> str:
+        args = [
             pdftotext_bin,
-            "-layout",
+            mode,
             "-enc",
             "UTF-8",
             "-f",
@@ -376,16 +377,45 @@ def _extract_text_pdftotext(pdf_path: str, max_pages: int) -> tuple[str, int]:
             str(max(1, int(max_pages))),
             pdf_path,
             "-",
-        ],
-        capture_output=True,
-        text=True,
-        timeout=max(10, min(timeout_sec, 300)),
-        check=False,
-    )
-    if proc.returncode != 0:
-        raise RuntimeError(f"pdftotext_failed: {(proc.stderr or '').strip()[:200]}")
+        ]
+        proc = subprocess.run(
+            args,
+            capture_output=True,
+            text=True,
+            timeout=max(10, min(timeout_sec, 300)),
+            check=False,
+        )
+        if proc.returncode != 0:
+            raise RuntimeError(f"pdftotext_failed: {(proc.stderr or '').strip()[:200]}")
+        return str(proc.stdout or "")
 
-    raw = str(proc.stdout or "")
+    def _raw_is_better(layout_raw: str, raw_raw: str) -> bool:
+        layout = _normalize_extracted_text(layout_raw or "")
+        raw = _normalize_extracted_text(raw_raw or "")
+        if len(raw) < 500:
+            return False
+        layout_score = _text_quality_stats(layout)["score"]
+        raw_score = _text_quality_stats(raw)["score"]
+        layout_artifacts = len(re.findall(r"\b[A-Za-z]{2,}-\s+[A-Za-z]{2,}\b", layout))
+        raw_artifacts = len(re.findall(r"\b[A-Za-z]{2,}-\s+[A-Za-z]{2,}\b", raw))
+        layout_short = len(re.findall(r"\b[A-Za-z]{1,2}\b", layout[:12000]))
+        raw_short = len(re.findall(r"\b[A-Za-z]{1,2}\b", raw[:12000]))
+        if raw_score >= layout_score + 0.03:
+            return True
+        if layout_artifacts >= raw_artifacts + 4:
+            return True
+        if layout_short >= raw_short + 35 and raw_score >= layout_score - 0.02:
+            return True
+        return False
+
+    raw = _run_pdftotext("-layout")
+    try:
+        raw_alt = _run_pdftotext("-raw")
+        if _raw_is_better(raw, raw_alt):
+            logger.info("✅ Prefer pdftotext -raw reading order over -layout for this PDF")
+            raw = raw_alt
+    except Exception as exc:
+        logger.debug("pdftotext -raw comparison skipped: %s", exc)
     pages = []
     for page_num, page_text in enumerate(raw.split("\f"), start=1):
         txt = str(page_text or "").strip()

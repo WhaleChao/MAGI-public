@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-05-13T06:33:24.484461+00:00",
+  "generated_at": "2026-05-14T19:15:42.416760+00:00",
   "rules_count": 377,
   "checksum": "6986ad6d83ee17f4efc48bf01759605be6fad60db5727e8a51ec000fe2a65dff",
   "rules": [
@@ -1337,7 +1337,7 @@
       "description": "由 AI 範本學習 (任務 B) 自動建立"
     },
     {
-      "doc_type": "高等行政訴訟庭通知書_範例律師",
+      "doc_type": "高等行政訴訟庭通知書_喬政翔律師",
       "filename_template": "{date} {doc_title}{case_no}{doc_type}({client_name}；{action_item})",
       "archive_destination_type": "法院通知或程序裁定",
       "description": "由 AI 範本學習 (任務 B) 自動建立"

@@ -340,6 +340,25 @@ def test_cron_uses_repo_omlx_switch_and_single_health_report_time():
     assert "MAGI_PDF_NAMER_DOCLING_ENABLED=1" in by_id["pdfnamer_docling_layout"]["command"]
 
 
+def test_seed_cron_jobs_installs_disk_maintenance_jobs(tmp_path):
+    import scripts.seed_cron_jobs as seed
+
+    result = seed.seed_jobs(tmp_path, python_path=tmp_path / "venv" / "bin" / "python3")
+    jobs = json.loads((tmp_path / "cron_jobs.json").read_text(encoding="utf-8"))
+    by_id = {job["id"]: job for job in jobs}
+
+    assert result["ok"] is True
+    assert by_id["job_disk_low_water_alarm"]["enabled"] is True
+    assert "disk_low_water_alarm.py" in by_id["job_disk_low_water_alarm"]["command"]
+    assert by_id["job_disk_cleanup_healthcheck"]["no_catchup"] is True
+    assert "MAGI_DISK_CLEANUP_DRY_RUN=0" in by_id["job_disk_cleanup_healthcheck"]["command"]
+    assert "weekly_cache_cleanup.py" in by_id["job_weekly_cache_cleanup"]["command"]
+    assert by_id["job_reboot_before_day_model_switch"]["enabled"] is False
+    assert "scheduled_reboot_guard.py" in by_id["job_reboot_before_day_model_switch"]["command"]
+    assert by_id["job_reboot_before_night_model_switch"]["enabled"] is False
+    assert "MAGI_ALLOW_SCHEDULED_REBOOT=1" in by_id["job_reboot_before_night_model_switch"]["command"]
+
+
 def test_omlx_auto_switch_checks_real_api_model_and_2150_boundary():
     source = Path("config/bin/omlx_switch_model.sh").read_text(encoding="utf-8")
 
