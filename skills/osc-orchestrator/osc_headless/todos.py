@@ -135,6 +135,15 @@ def get_default_patterns() -> Dict[str, List[Dict]]:
     }
 
 
+def _infer_hearing_procedure_type(text: str) -> str:
+    """Infer the court procedure label when the regex stops before the trailing words."""
+    s = text or ""
+    for label in ("言詞辯論", "準備程序", "調解", "審理", "宣判", "訊問"):
+        if label in s:
+            return label
+    return ""
+
+
 def _extract_todo_from_filename(filename: str) -> Optional[Dict]:
     """Extract todo type and deadline from pdf-namer bracket supplemental info.
 
@@ -241,6 +250,8 @@ def extract_todos_from_filename(
                         hour_str = m.group(period_group + 1)
                         minute_str = m.group(period_group + 2) if len(m.groups()) >= period_group + 2 and m.group(period_group + 2) else "0"
                         proc = m.group(period_group + 3) if len(m.groups()) >= period_group + 3 else ""
+                        if not proc:
+                            proc = _infer_hearing_procedure_type(filename)
                         if proc and proc != "開庭":
                             todo["type"] = proc
                             todo["deadline_type"] = proc

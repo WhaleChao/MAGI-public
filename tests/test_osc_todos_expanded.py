@@ -85,6 +85,14 @@ def test_開庭民國年期日保留程序類型():
     assert todos[0]["time"] == "14:30"
 
 
+def test_開庭民國年期日可從尾段辨識調解程序():
+    todos = _extract("20260513 花蓮地方法院115年度司消債調字第73號民事庭通知書（高弘軒；訂6月1日下午4時行調解程序）.pdf")
+    assert len(todos) == 1
+    assert todos[0]["type"] == "調解"
+    assert todos[0]["date"] == "2026-06-01"
+    assert todos[0]["time"] == "16:00"
+
+
 def test_開庭無年份期日使用收文年份而非案號年度():
     todos = _extract("20250211 花蓮地院113年度原易字第179號刑事庭通知書（余秋菊；訂3月4日下午3時整審理）.pdf")
     assert len(todos) == 1

@@ -57,6 +57,7 @@ def _write_latest(data: dict[str, Any], out_path: Path = LATEST_PATH) -> None:
 
 def run_refresh(args: argparse.Namespace) -> dict[str, Any]:
     os.environ.setdefault("MAGI_GCAL_DEDUP_ENABLED", "1")
+    os.environ.setdefault("MAGI_GCAL_DEDUP_DRY_RUN", "0")
     os.environ.setdefault("MAGI_GCAL_INCREMENTAL_IMPORT", "1")
 
     mod = _load_osc_action_module()
@@ -67,6 +68,7 @@ def run_refresh(args: argparse.Namespace) -> dict[str, Any]:
         "interval_hours": 6,
         "scan": {},
         "calendar_import": {},
+        "calendar_push": {},
         "warnings": [],
     }
 
@@ -103,6 +105,25 @@ def run_refresh(args: argparse.Namespace) -> dict[str, Any]:
             result["ok"] = False
             result["calendar_import"] = {"ok": False, "error": f"{type(exc).__name__}: {str(exc)[:240]}"}
 
+        try:
+            push_payload = {
+                "limit": args.gcal_push_limit,
+                "retry_max_attempts": 3,
+            }
+            pushed = mod.task_gcal_sync(push_payload)
+            result["calendar_push"] = pushed
+            if not pushed.get("ok") and pushed.get("need_interactive_oauth"):
+                result["warnings"].append("google_calendar_oauth_required")
+            elif not pushed.get("ok"):
+                err = str(pushed.get("error") or "")
+                if any(key in err.lower() for key in ("credential", "oauth", "token", "invalid_grant")):
+                    result["warnings"].append("google_calendar_oauth_required")
+                else:
+                    result["ok"] = False
+        except Exception as exc:
+            result["ok"] = False
+            result["calendar_push"] = {"ok": False, "error": f"{type(exc).__name__}: {str(exc)[:240]}"}
+
     result["elapsed_sec"] = round(time.monotonic() - started, 3)
     _write_latest(result, Path(args.json_out) if args.json_out else LATEST_PATH)
     return result
@@ -114,6 +135,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--max-files-per-case", type=int, default=int(os.environ.get("OSC_EVENTS_REFRESH_MAX_FILES_PER_CASE", "120")))
     parser.add_argument("--scan-time-budget-sec", type=int, default=int(os.environ.get("OSC_EVENTS_REFRESH_SCAN_BUDGET_SEC", "1200")))
     parser.add_argument("--calendar-limit", type=int, default=int(os.environ.get("OSC_EVENTS_REFRESH_CALENDAR_LIMIT", "250")))
+    parser.add_argument("--gcal-push-limit", type=int, default=int(os.environ.get("OSC_EVENTS_REFRESH_GCAL_PUSH_LIMIT", "120")))
     parser.add_argument("--lookback-days", type=int, default=int(os.environ.get("OSC_EVENTS_REFRESH_LOOKBACK_DAYS", "30")))
     parser.add_argument("--lookahead-days", type=int, default=int(os.environ.get("OSC_EVENTS_REFRESH_LOOKAHEAD_DAYS", "180")))
     parser.add_argument("--json-out", default="")
