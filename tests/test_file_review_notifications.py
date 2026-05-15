@@ -362,6 +362,36 @@ def test_processed_payment_registry_suppresses_old_pdf_resend(tmp_path):
     assert "web_payment:case:114原交易49:吳志炳" in saved
 
 
+def test_archived_payment_slip_suppresses_repeat_download_and_reseeds_registry(tmp_path):
+    from casper_ecosystem.law_firm_orchestrators.file_review_automation import FileReviewManager
+
+    case_folder = tmp_path / "2025-0133-吳志炳-一審-公共危險"
+    review_folder = case_folder / "02_閱卷資料" / "20260515"
+    review_folder.mkdir(parents=True)
+    pdf = review_folder / "繳費單_吳志炳_114.原交易.000049.pdf"
+    pdf.write_bytes(b"%PDF-1.4\n")
+
+    mgr = FileReviewManager(download_folder=str(tmp_path / "downloads"), headless=True)
+    mgr._resolve_case_folder = lambda info: str(case_folder)
+
+    row = {
+        "rowid": "fresh-rowid",
+        "yyidno": "114.原交易.000049",
+        "showyyidno": "114年度原交易字第000049號",
+        "clnm": "吳志炳",
+        "paylimitdt": _roc_compact(3),
+        "paystatus": "2",
+        "status": "3",
+        "statusnm": "法院回覆同意",
+        "result": "待繳費",
+    }
+
+    assert mgr._is_payment_processed(row) is True
+    entry = mgr.payment_registry["rowid:fresh-rowid"]
+    assert entry["file_paths"] == [str(pdf)]
+    assert entry["party"] == "吳志炳"
+
+
 def test_portal_pending_payment_skips_legacy_notified_case(tmp_path):
     module = _load_action_module()
     (tmp_path / "notified_cases.json").write_text(

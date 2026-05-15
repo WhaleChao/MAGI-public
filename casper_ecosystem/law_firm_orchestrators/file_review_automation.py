@@ -2199,6 +2199,14 @@ class FileReviewManager:
                         if not party or str(_v.get("party") or "").strip() == party:
                             entry = _v; break
         if not entry:
+            archived = self._find_existing_payment_slip_files(row_json)
+            if archived:
+                self._mark_payment_processed(row_json, files=archived)
+                self._seed_payment_notification_dedup(
+                    row_json,
+                    reason="existing_archived_payment_slip",
+                )
+                return True
             return False
 
         # 僅有 key 不足以判定已處理：必須至少有可用檔案紀錄且檔案仍可定位。
@@ -2209,9 +2217,28 @@ class FileReviewManager:
 
         name_hints = [str(x).strip() for x in (entry.get("files") or []) if str(x).strip()]
         if not name_hints:
+            archived = self._find_existing_payment_slip_files(row_json)
+            if archived:
+                self._mark_payment_processed(row_json, files=archived)
+                self._seed_payment_notification_dedup(
+                    row_json,
+                    reason="existing_archived_payment_slip",
+                )
+                return True
             return False
 
-        return bool(self._resolve_payment_registry_files(row_json))
+        resolved = self._resolve_payment_registry_files(row_json)
+        if resolved:
+            return True
+        archived = self._find_existing_payment_slip_files(row_json)
+        if archived:
+            self._mark_payment_processed(row_json, files=archived)
+            self._seed_payment_notification_dedup(
+                row_json,
+                reason="existing_archived_payment_slip",
+            )
+            return True
+        return False
 
     def _payment_case_notify_keys(self, row_json: dict = None, case_info: dict = None) -> List[str]:
         """Return all stable notification keys for a payment row.
@@ -2326,6 +2353,126 @@ class FileReviewManager:
         }
         self._save_payment_registry()
 
+    def _payment_row_identity(self, row_json: dict, case_info: Optional[dict] = None) -> Tuple[str, str, str]:
+        """Return (party, raw_case_number, normalized_case_number) for payment dedup."""
+        row_json = row_json or {}
+        case_info = case_info or {}
+        party = str(case_info.get("party") or row_json.get("clnm") or "").strip()
+        raw_case = str(
+            case_info.get("showyyidno")
+            or case_info.get("case_number")
+            or case_info.get("yyidno")
+            or row_json.get("showyyidno")
+            or row_json.get("yyidno")
+            or row_json.get("c60yyidno")
+            or ""
+        ).strip()
+        norm_case = self._normalize_case_keyword_loose(raw_case) if raw_case else ""
+        return party, raw_case, norm_case
+
+    def _payment_filename_matches_row(
+        self,
+        filename: str,
+        row_json: dict,
+        case_info: Optional[dict] = None,
+    ) -> bool:
+        """True when a payment-slip filename belongs to the same party and court case."""
+        base = os.path.basename(str(filename or ""))
+        if not base.lower().endswith(".pdf"):
+            return False
+        if not base.startswith("繳費單_"):
+            return False
+        party, _raw_case, norm_case = self._payment_row_identity(row_json, case_info)
+        stem = os.path.splitext(base)[0]
+        if party and party not in stem:
+            return False
+        if norm_case:
+            return norm_case in self._normalize_case_keyword_loose(stem)
+        return bool(party and party in stem)
+
+    def _payment_case_review_roots(self, row_json: dict, case_info: Optional[dict] = None) -> List[str]:
+        """Return likely review folders for this payment row without scanning all NAS roots."""
+        party, raw_case, _norm_case = self._payment_row_identity(row_json, case_info)
+        if not (party or raw_case):
+            return []
+
+        info = FileReviewInfo(client_name=party)
+        info.court_case_no = raw_case
+        try:
+            folder = self._resolve_case_folder(info) or ""
+        except Exception:
+            folder = ""
+        if not folder or not os.path.isdir(folder):
+            return []
+
+        roots: List[str] = []
+        try:
+            for subfolder in os.listdir(folder):
+                if "閱卷" in subfolder:
+                    p = os.path.join(folder, subfolder)
+                    if os.path.isdir(p):
+                        roots.append(p)
+        except Exception:
+            logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 1819, exc_info=True)
+        fallback = os.path.join(folder, "02_閱卷資料")
+        if os.path.isdir(fallback):
+            roots.append(fallback)
+
+        out: List[str] = []
+        seen: set[str] = set()
+        for root in roots:
+            rp = os.path.realpath(root)
+            if rp in seen:
+                continue
+            seen.add(rp)
+            out.append(root)
+        return out
+
+    def _find_existing_payment_slip_files(
+        self,
+        row_json: dict,
+        case_info: Optional[dict] = None,
+    ) -> List[str]:
+        """Locate already archived payment slips for the same case.
+
+        This closes the loop after files are moved from the temporary download
+        folder into the case folder: the registry may point at an old temp path,
+        but the archived payment slip must still suppress future downloads.
+        """
+        found: List[str] = []
+        seen: set[str] = set()
+
+        def _add_if_match(path: str) -> None:
+            if not os.path.isfile(path):
+                return
+            if not self._payment_filename_matches_row(os.path.basename(path), row_json, case_info):
+                return
+            rp = os.path.realpath(path)
+            if rp in seen:
+                return
+            seen.add(rp)
+            found.append(path)
+
+        for root in self._payment_case_review_roots(row_json, case_info):
+            try:
+                for walk_root, _dirs, files in os.walk(root):
+                    for fn in files:
+                        _add_if_match(os.path.join(walk_root, fn))
+            except Exception:
+                logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 1864, exc_info=True)
+
+        # Also check the current download folder and date folders; this is cheap
+        # and catches no-delete/copy mode without scanning unrelated NAS trees.
+        try:
+            for walk_root, _dirs, files in os.walk(self.download_folder):
+                for fn in files:
+                    _add_if_match(os.path.join(walk_root, fn))
+        except Exception:
+            logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 1872, exc_info=True)
+
+        found.sort(key=lambda p: (os.path.getmtime(p), p))
+        return found
+
     def _resolve_payment_registry_files(self, row_json: dict) -> List[str]:
         """
         從 payment_registry 還原該待繳費項目的實際檔案路徑（用於補發通知）。
@@ -2415,7 +2562,9 @@ class FileReviewManager:
             except Exception:
                 logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 1879, exc_info=True)
 
-        return found
+        if found:
+            return found
+        return self._find_existing_payment_slip_files(row_json)
 
     @staticmethod
     def _is_within_days(iso_date: str, days: int = 7) -> bool:
@@ -7316,6 +7465,33 @@ class FileReviewManager:
                 return {"ok": False, "dst": "", "action": "no_folder"}
             filename = os.path.basename(file_path)
 
+            def _remember_payment_destination(dst_path: str) -> None:
+                if not (filename.startswith("繳費單_") and filename.lower().endswith(".pdf")):
+                    return
+                meta = meta_by_file.get(file_path) or meta_by_file.get(filename) or folder_meta.get(matched_folder) or {}
+                if not isinstance(meta, dict):
+                    meta = {}
+                row = {
+                    "yyidno": meta.get("case_number") or meta.get("yyidno") or "",
+                    "showyyidno": meta.get("showyyidno") or "",
+                    "clnm": meta.get("party") or "",
+                    "rowid": meta.get("rowid") or "",
+                    "p_payid": meta.get("p_payid") or "",
+                }
+                # If metadata is incomplete, still learn from the filename so
+                # future portal rows can match by case number and party.
+                if not (row.get("yyidno") or row.get("showyyidno") or row.get("clnm")):
+                    parts = os.path.splitext(filename)[0].split("_", 2)
+                    if len(parts) >= 3:
+                        row["clnm"] = parts[1]
+                        row["yyidno"] = parts[2]
+                if row.get("yyidno") or row.get("showyyidno") or row.get("clnm"):
+                    self._mark_payment_processed(row, files=[dst_path], case_info={
+                        "case_number": row.get("yyidno") or "",
+                        "showyyidno": row.get("showyyidno") or "",
+                        "party": row.get("clnm") or "",
+                    })
+
             # 動態尋找包含「閱卷」的子資料夾
             review_folder = None
             try:
@@ -7340,6 +7516,7 @@ class FileReviewManager:
                         if self._strip_chrome_suffix(existing_fn) == norm_filename:
                             self.log(f"  ⏭️ 已存在（規範化後同名），跳過: {filename} (existing: {existing_fn})")
                             existing = os.path.join(root, existing_fn)
+                            _remember_payment_destination(existing)
                             # 來源檔處理：no_delete 模式保留；否則 isolate
                             if not self.no_delete:
                                 try:
@@ -7360,6 +7537,7 @@ class FileReviewManager:
                 if os.path.exists(dst_path):
                     if self.no_delete:
                         self.log(f"  ⏭️ 目標已存在，保留原檔案: {filename}")
+                        _remember_payment_destination(dst_path)
                         return {"ok": True, "dst": dst_path, "action": "target_exists_keep_src"}
                     try:
                         if safe_remove:
@@ -7379,6 +7557,7 @@ class FileReviewManager:
                 else:
                     shutil.move(file_path, dst_path)
                     self.log(f"  📁 歸檔並移動: {filename}")
+                _remember_payment_destination(dst_path)
                 return {"ok": True, "dst": dst_path, "action": "copied" if self.no_delete else "moved"}
             except Exception as e:
                 self.log(f"  ❌ 歸檔失敗 {filename}: {e}")

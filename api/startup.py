@@ -1294,6 +1294,35 @@ def _paperclip_share_public_health_ok() -> bool:
         return False
 
 
+_PAPERCLIP_SHARE_LAUNCHD_LABELS = (
+    "com.magi.paperclip-share-gateway",
+    "com.magi.paperclip-share-tunnel",
+)
+
+
+def _paperclip_share_launchd_managed() -> bool:
+    if sys.platform != "darwin":
+        return False
+    try:
+        for label in _PAPERCLIP_SHARE_LAUNCHD_LABELS:
+            result = subprocess.run(["launchctl", "list", label], capture_output=True, text=True, timeout=5)
+            if result.returncode != 0:
+                return False
+        return True
+    except Exception:
+        logger.debug("silent-catch at %s:%s", __name__, "_paperclip_share_launchd_managed", exc_info=True)
+        return False
+
+
+def _kickstart_paperclip_share_launchd() -> None:
+    domain = f"gui/{os.getuid()}"
+    for label in _PAPERCLIP_SHARE_LAUNCHD_LABELS:
+        try:
+            subprocess.run(["launchctl", "kickstart", "-k", f"{domain}/{label}"], capture_output=True, text=True, timeout=15)
+        except Exception:
+            logger.debug("silent-catch at %s:%s", __name__, f"_kickstart_paperclip_share_launchd:{label}", exc_info=True)
+
+
 def _ensure_paperclip_share_tunnel() -> None:
     if str(os.environ.get("PAPERCLIP_SHARE_TUNNEL_DISABLE") or "").strip().lower() in {"1", "true", "yes", "on"}:
         return
@@ -1303,6 +1332,16 @@ def _ensure_paperclip_share_tunnel() -> None:
         tunnel_ok = bool(_paperclip_share_tunnel_pids_for_port(port))
         public_ok = _paperclip_share_public_health_ok()
         if gateway_ok and tunnel_ok and public_ok:
+            return
+
+        if _paperclip_share_launchd_managed():
+            logger.warning(
+                "Paperclip share tunnel unhealthy but launchd-managed; kickstarting launchd jobs (gateway=%s tunnel=%s public=%s)",
+                gateway_ok,
+                tunnel_ok,
+                public_ok,
+            )
+            _kickstart_paperclip_share_launchd()
             return
 
         root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
