@@ -80,6 +80,43 @@ _DEFAULT_SHARE_TTL_SEC = int(os.environ.get("MAGI_OSC_FILE_SHARE_TTL_SEC", str(7
 _MAX_SHARE_TTL_SEC = int(os.environ.get("MAGI_OSC_FILE_SHARE_MAX_TTL_SEC", str(30 * 24 * 3600)) or str(30 * 24 * 3600))
 
 
+def _share_cache_dir() -> Path:
+    env_value = str(os.environ.get("MAGI_OSC_FILE_SHARE_CACHE_DIR") or "").strip()
+    if env_value:
+        return Path(env_value).expanduser()
+    return _SHARE_STORE_PATH.parent / "osc_file_share_cache"
+
+
+def _share_cache_suffix(filename: str) -> str:
+    suffix = Path(filename or "").suffix
+    if not suffix or not re.fullmatch(r"\.[A-Za-z0-9]{1,12}", suffix):
+        return ".bin"
+    return suffix
+
+
+def _share_cache_path(token_hash: str, filename: str) -> str:
+    safe_hash = re.sub(r"[^a-f0-9]", "", str(token_hash or "").lower())[:64]
+    if not safe_hash:
+        safe_hash = hashlib.sha256(secrets.token_bytes(16)).hexdigest()
+    cache_dir = _share_cache_dir()
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    return str(cache_dir / f"{safe_hash}{_share_cache_suffix(filename)}")
+
+
+def _is_path_under(child: str, parent: Path) -> bool:
+    try:
+        Path(child).resolve().relative_to(parent.resolve())
+        return True
+    except Exception:
+        return False
+
+
+def _delete_share_cache(row: dict) -> None:
+    staged = str(row.get("staged_path") or "").strip()
+    if staged and _is_path_under(staged, _share_cache_dir()):
+        _cleanup_file_once(staged)
+
+
 def _load_share_store() -> dict:
     try:
         if _SHARE_STORE_PATH.exists():
@@ -106,8 +143,12 @@ def _prune_share_store(data: dict) -> dict:
     for token_hash, row in list(shares.items()):
         try:
             if int(row.get("expires_at") or 0) <= now:
+                if isinstance(row, dict):
+                    _delete_share_cache(row)
                 shares.pop(token_hash, None)
         except Exception:
+            if isinstance(row, dict):
+                _delete_share_cache(row)
             shares.pop(token_hash, None)
     return data
 
@@ -157,20 +198,27 @@ def _resolve_safe_file(path_str: str) -> str:
 
 def _copy_with_system_cp(local_file: str, tmp_path: str) -> bool:
     cp_bin = shutil.which("cp") or "/bin/cp"
+    commands: list[list[str]] = [[cp_bin, "-p", local_file, tmp_path]]
+    ditto_bin = shutil.which("ditto")
+    if ditto_bin:
+        commands.append([ditto_bin, "--norsrc", "--noextattr", local_file, tmp_path])
     try:
         expected_size = _safe_source_size_for_stage(local_file)
-        result = subprocess.run(
-            [cp_bin, "-p", local_file, tmp_path],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            timeout=int(os.environ.get("PAPERCLIP_FILE_CP_TIMEOUT_SEC", "120") or "120"),
-        )
-        if result.returncode != 0 or not os.path.isfile(tmp_path):
-            return False
-        if expected_size is None:
-            return os.path.getsize(tmp_path) >= 0
-        return os.path.getsize(tmp_path) == expected_size
+        for command in commands:
+            result = subprocess.run(
+                command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=int(os.environ.get("PAPERCLIP_FILE_CP_TIMEOUT_SEC", "120") or "120"),
+            )
+            if result.returncode != 0 or not os.path.isfile(tmp_path):
+                continue
+            if expected_size is None:
+                return os.path.getsize(tmp_path) >= 0
+            if os.path.getsize(tmp_path) == expected_size:
+                return True
+        return False
     except Exception:
         _log.debug("silent-catch share system cp fallback failed", exc_info=True)
         return False
@@ -208,6 +256,13 @@ def _safe_source_size_for_stage(local_file: str) -> int | None:
         raise
 
 
+def _should_prefer_system_copy(local_file: str) -> bool:
+    if _env_truthy("PAPERCLIP_FILE_STAGE_CP_FIRST"):
+        return True
+    norm = str(local_file or "").replace("\\", "/")
+    return norm.startswith("/Volumes/") or "/Library/CloudStorage/SynologyDrive" in norm
+
+
 def _stage_file_with_retry(local_file: str, *, max_attempts: int | None = None) -> str:
     """Stage a NAS-backed file locally before sending or sharing it."""
     if max_attempts is None:
@@ -217,10 +272,16 @@ def _stage_file_with_retry(local_file: str, *, max_attempts: int | None = None) 
     tmp_dir = os.path.join(tempfile.gettempdir(), "paperclip-shares")
     os.makedirs(tmp_dir, exist_ok=True)
     suffix = os.path.splitext(local_file)[1] or ".bin"
+    prefer_system_copy = _should_prefer_system_copy(local_file)
     for attempt in range(max_attempts):
         tmp_path = ""
         try:
             fd, tmp_path = tempfile.mkstemp(prefix="osc-share-", suffix=suffix, dir=tmp_dir)
+            if prefer_system_copy:
+                os.close(fd)
+                if _copy_with_system_cp(local_file, tmp_path):
+                    return tmp_path
+                raise OSError("system copy staging failed")
             try:
                 with os.fdopen(fd, "wb") as out, open(local_file, "rb") as src:
                     while True:
@@ -290,6 +351,44 @@ def _cleanup_file_once(path: str) -> None:
         pass
 
 
+def _share_cached_file_for_row(row: dict) -> str:
+    staged = str(row.get("staged_path") or "").strip()
+    if not staged:
+        return ""
+    if not _is_path_under(staged, _share_cache_dir()):
+        return ""
+    if not os.path.isfile(staged):
+        return ""
+    try:
+        size = os.path.getsize(staged)
+    except OSError:
+        return ""
+    expected = row.get("staged_size") or row.get("size")
+    try:
+        if expected is not None and int(expected) != int(size):
+            return ""
+    except Exception:
+        return ""
+    return staged
+
+
+def _ensure_share_cached_copy(token_hash: str, row: dict, local_file: str) -> str:
+    cached = _share_cached_file_for_row(row)
+    if cached:
+        return cached
+    staged = _stage_file_with_retry(local_file)
+    final_path = _share_cache_path(token_hash, str(row.get("name") or os.path.basename(local_file)))
+    try:
+        os.replace(staged, final_path)
+    except Exception:
+        _cleanup_file_once(staged)
+        raise
+    row["staged_path"] = final_path
+    row["staged_size"] = os.path.getsize(final_path)
+    row["staged_at"] = int(time.time())
+    return final_path
+
+
 def _content_disposition(filename: str, *, inline: bool) -> str:
     disposition = "inline" if inline else "attachment"
     suffix = Path(filename or "").suffix
@@ -306,11 +405,15 @@ def _content_disposition(filename: str, *, inline: bool) -> str:
     return f'{disposition}; filename="{ascii_name}"; filename*=UTF-8\'\'{quote(filename)}'
 
 
-def _stream_staged_file(staged_file: str, *, download_name: str, mime: str | None, inline: bool):
+def _stream_staged_file(staged_file: str, *, download_name: str, mime: str | None, inline: bool, cleanup: bool = True):
+    def _cleanup_if_needed() -> None:
+        if cleanup:
+            _cleanup_file_once(staged_file)
+
     try:
         size = os.path.getsize(staged_file)
     except OSError as e:
-        _cleanup_file_once(staged_file)
+        _cleanup_if_needed()
         return jsonify({"ok": False, "error": f"staged_stat_failed: {e}"}), 503
 
     start = 0
@@ -334,7 +437,7 @@ def _stream_staged_file(staged_file: str, *, download_name: str, mime: str | Non
                 raise ValueError("invalid byte range")
             status = 206
         except Exception:
-            _cleanup_file_once(staged_file)
+            _cleanup_if_needed()
             resp = Response(status=416)
             resp.headers["Content-Range"] = f"bytes */{size}"
             resp.headers["Accept-Ranges"] = "bytes"
@@ -342,7 +445,7 @@ def _stream_staged_file(staged_file: str, *, download_name: str, mime: str | Non
 
     length = 0 if size == 0 else end - start + 1
     if request.method == "HEAD":
-        _cleanup_file_once(staged_file)
+        _cleanup_if_needed()
         resp = Response(status=status, mimetype=mime or "application/octet-stream")
     else:
         def _iter_file():
@@ -357,10 +460,11 @@ def _stream_staged_file(staged_file: str, *, download_name: str, mime: str | Non
                         remaining -= len(chunk)
                         yield chunk
             finally:
-                _cleanup_file_once(staged_file)
+                _cleanup_if_needed()
 
         resp = Response(_iter_file(), status=status, mimetype=mime or "application/octet-stream")
-        resp.call_on_close(lambda: _cleanup_file_once(staged_file))
+        if cleanup:
+            resp.call_on_close(lambda: _cleanup_file_once(staged_file))
 
     resp.headers["Content-Disposition"] = _content_disposition(download_name, inline=inline)
     resp.headers["Accept-Ranges"] = "bytes"
@@ -1193,8 +1297,7 @@ def osc_files_share_create_api():
             "error": "share_public_base_required",
             "message": "為避免分享連結洩漏 MAGI/Paperclip 主控台外網網址，請先設定獨立分享入口 MAGI_OSC_FILE_SHARE_PUBLIC_BASE_URL。",
         }), 409
-    data = _prune_share_store(_load_share_store())
-    data.setdefault("shares", {})[token_hash] = {
+    row = {
         "path": local,
         "raw_path": raw,
         "name": os.path.basename(local),
@@ -1204,6 +1307,13 @@ def osc_files_share_create_api():
         "created_by": str(getattr(current_user, "id", "") or ""),
         "downloads": 0,
     }
+    try:
+        _ensure_share_cached_copy(token_hash, row, local)
+    except OSError as e:
+        _log.warning("share create stage failed: errno=%s file=%s", getattr(e, "errno", None), local)
+        return jsonify({"ok": False, "error": f"share_stage_failed: {e}"}), 503
+    data = _prune_share_store(_load_share_store())
+    data.setdefault("shares", {})[token_hash] = row
     _save_share_store(data)
     return jsonify({
         "ok": True,
@@ -1227,16 +1337,34 @@ def osc_files_public_share_api(token):
     if not isinstance(row, dict):
         _save_share_store(data)
         return jsonify({"ok": False, "error": "not_found"}), 404
-    local = _resolve_safe_file(str(row.get("raw_path") or "")) or _resolve_safe_file(str(row.get("path") or ""))
-    if not local:
+    token_hash = _share_token_hash(t)
+    local = ""
+    cached = _share_cached_file_for_row(row)
+    if not cached:
+        local = _resolve_safe_file(str(row.get("raw_path") or "")) or _resolve_safe_file(str(row.get("path") or ""))
+    if not cached and not local:
         data.get("shares", {}).pop(_share_token_hash(t), None)
         _save_share_store(data)
         return jsonify({"ok": False, "error": "not_found"}), 404
+    if not cached:
+        try:
+            cached = _ensure_share_cached_copy(token_hash, row, local)
+        except OSError as e:
+            _log.warning("share cache refresh failed: errno=%s file=%s", getattr(e, "errno", None), local)
+            _save_share_store(data)
+            return jsonify({"ok": False, "error": f"read_failed: {e}"}), 503
     row["downloads"] = int(row.get("downloads") or 0) + 1
     row["last_accessed_at"] = int(time.time())
     _save_share_store(data)
     inline = str(request.args.get("inline") or "").strip().lower() in {"1", "true", "yes"}
-    return _send_local_file(local, inline=inline)
+    mime, _ = mimetypes.guess_type(str(row.get("name") or cached))
+    return _stream_staged_file(
+        cached,
+        mime=mime or "application/octet-stream",
+        inline=inline,
+        download_name=str(row.get("name") or os.path.basename(cached)),
+        cleanup=False,
+    )
 
 
 @osc_files_bp.route("/api/osc/folders/browse", methods=["GET"])

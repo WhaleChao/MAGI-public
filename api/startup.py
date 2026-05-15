@@ -18,6 +18,7 @@ import threading
 import time
 import uuid
 from urllib.parse import urlparse
+import urllib.request
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +27,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 _STARTUP_HOOKS_DONE = False
 _STARTUP_HOOKS_LOCK = threading.Lock()
+_SHARE_TUNNEL_LOCK = threading.Lock()
 
 # ---------------------------------------------------------------------------
 # Directory / path constants
@@ -1251,6 +1253,86 @@ def _cloudflared_watchdog():
         _time.sleep(_INTERVAL)
 
 
+def _paperclip_share_gateway_port() -> str:
+    return str(os.environ.get("PAPERCLIP_SHARE_GATEWAY_PORT") or "5014").strip() or "5014"
+
+
+def _paperclip_share_url_file() -> str:
+    return os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".runtime", "osc_share_public_base_url.txt"))
+
+
+def _paperclip_share_tunnel_pids_for_port(port: str) -> list[str]:
+    try:
+        pattern = f"cloudflared tunnel --url http://127.0.0.1:{str(port).strip()}"
+        result = subprocess.run(["pgrep", "-f", pattern], capture_output=True, text=True, timeout=5)
+        if result.returncode == 0:
+            return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+    except Exception:
+        logger.debug("silent-catch at %s:%s", __name__, "_paperclip_share_tunnel_pids_for_port", exc_info=True)
+    return []
+
+
+def _paperclip_share_gateway_health_ok(port: str) -> bool:
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=5) as resp:
+            return 200 <= int(resp.status) < 300
+    except Exception:
+        return False
+
+
+def _paperclip_share_public_health_ok() -> bool:
+    try:
+        url_path = _paperclip_share_url_file()
+        if not os.path.exists(url_path):
+            return False
+        base = open(url_path, encoding="utf-8").read().strip().rstrip("/")
+        if not base:
+            return False
+        with urllib.request.urlopen(base + "/health", timeout=10) as resp:
+            return 200 <= int(resp.status) < 300
+    except Exception:
+        return False
+
+
+def _ensure_paperclip_share_tunnel() -> None:
+    if str(os.environ.get("PAPERCLIP_SHARE_TUNNEL_DISABLE") or "").strip().lower() in {"1", "true", "yes", "on"}:
+        return
+    with _SHARE_TUNNEL_LOCK:
+        port = _paperclip_share_gateway_port()
+        gateway_ok = _paperclip_share_gateway_health_ok(port)
+        tunnel_ok = bool(_paperclip_share_tunnel_pids_for_port(port))
+        public_ok = _paperclip_share_public_health_ok()
+        if gateway_ok and tunnel_ok and public_ok:
+            return
+
+        root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+        script = os.path.join(root, "scripts", "start_paperclip_share_tunnel.sh")
+        if not os.path.exists(script):
+            logger.warning("Paperclip share tunnel script missing: %s", script)
+            return
+        logger.warning(
+            "Paperclip share tunnel unhealthy; restarting (gateway=%s tunnel=%s public=%s)",
+            gateway_ok,
+            tunnel_ok,
+            public_ok,
+        )
+        env = dict(os.environ)
+        env.setdefault("MAGI_ROOT", root)
+        subprocess.run(["bash", script], cwd=root, env=env, timeout=90, check=False)
+
+
+def _paperclip_share_tunnel_watchdog():
+    import time as _time
+    interval = max(60, int(os.environ.get("PAPERCLIP_SHARE_TUNNEL_WATCHDOG_INTERVAL_SEC", "120") or "120"))
+    _time.sleep(15)
+    while True:
+        try:
+            _ensure_paperclip_share_tunnel()
+        except Exception as e:
+            logger.warning("Paperclip share tunnel watchdog error: %s", e)
+        _time.sleep(interval)
+
+
 def _preload_faiss():
     try:
         from skills.memory.mem_bridge import _get_faiss_index
@@ -1387,6 +1469,15 @@ def run_startup_hooks(app, orchestrator):
 
     # Cloudflared watchdog
     threading.Thread(target=_cloudflared_watchdog, daemon=True, name="cloudflared-watchdog").start()
+
+    # Paperclip public share tunnel watchdog. This keeps the share-only tunnel
+    # available and refreshes the base URL file when Cloudflare Quick Tunnel
+    # rotates the temporary hostname.
+    threading.Thread(
+        target=_paperclip_share_tunnel_watchdog,
+        daemon=True,
+        name="paperclip-share-tunnel-watchdog",
+    ).start()
 
     # NAS SMB auto-mount guard
     try:

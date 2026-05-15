@@ -3792,20 +3792,27 @@ def _osc_download_error_response(message: str, status: int = 400):
 def _osc_copy_with_system_cp(local_file: str, tmp_path: str) -> bool:
     """Use macOS /bin/cp as a fallback when Python's SMB read hits EDEADLK."""
     cp_bin = shutil.which("cp") or "/bin/cp"
+    commands: list[list[str]] = [[cp_bin, "-p", local_file, tmp_path]]
+    ditto_bin = shutil.which("ditto")
+    if ditto_bin:
+        commands.append([ditto_bin, "--norsrc", "--noextattr", local_file, tmp_path])
     try:
         expected_size = _osc_safe_source_size_for_stage(local_file)
-        result = subprocess.run(
-            [cp_bin, "-p", local_file, tmp_path],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            timeout=int(os.environ.get("PAPERCLIP_FILE_CP_TIMEOUT_SEC", "120") or "120"),
-        )
-        if result.returncode != 0 or not os.path.isfile(tmp_path):
-            return False
-        if expected_size is None:
-            return os.path.getsize(tmp_path) >= 0
-        return os.path.getsize(tmp_path) == expected_size
+        for command in commands:
+            result = subprocess.run(
+                command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=int(os.environ.get("PAPERCLIP_FILE_CP_TIMEOUT_SEC", "120") or "120"),
+            )
+            if result.returncode != 0 or not os.path.isfile(tmp_path):
+                continue
+            if expected_size is None:
+                return os.path.getsize(tmp_path) >= 0
+            if os.path.getsize(tmp_path) == expected_size:
+                return True
+        return False
     except Exception:
         _log.debug("silent-catch system cp fallback failed", exc_info=True)
         return False
@@ -3850,6 +3857,17 @@ def _osc_is_dataless_file(path: str) -> bool:
         return False
 
 
+def _osc_env_truthy(name: str) -> bool:
+    return str(os.environ.get(name) or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _osc_should_prefer_system_copy(local_file: str) -> bool:
+    if _osc_env_truthy("PAPERCLIP_FILE_STAGE_CP_FIRST"):
+        return True
+    norm = str(local_file or "").replace("\\", "/")
+    return norm.startswith("/Volumes/") or "/Library/CloudStorage/SynologyDrive" in norm
+
+
 def _osc_stage_file_with_retry(local_file: str, *, max_attempts: int | None = None) -> str:
     """Copy a NAS-backed large file to local temp storage before Flask sends it.
 
@@ -3863,10 +3881,16 @@ def _osc_stage_file_with_retry(local_file: str, *, max_attempts: int | None = No
     tmp_dir = os.path.join(tempfile.gettempdir(), "paperclip-downloads")
     os.makedirs(tmp_dir, exist_ok=True)
     suffix = os.path.splitext(local_file)[1] or ".bin"
+    prefer_system_copy = _osc_should_prefer_system_copy(local_file)
     for attempt in range(max_attempts):
         tmp_path = ""
         try:
             fd, tmp_path = tempfile.mkstemp(prefix="osc-download-", suffix=suffix, dir=tmp_dir)
+            if prefer_system_copy:
+                os.close(fd)
+                if _osc_copy_with_system_cp(local_file, tmp_path):
+                    return tmp_path
+                raise OSError("system copy staging failed")
             try:
                 with os.fdopen(fd, "wb") as out, open(local_file, "rb") as src:
                     while True:

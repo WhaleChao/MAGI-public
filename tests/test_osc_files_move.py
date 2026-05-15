@@ -186,6 +186,46 @@ def test_share_download_chinese_pdf_has_mobile_safe_ascii_filename(tmp_path: Pat
     assert "%E6%94%AF%E5%87%BA%E8%A1%A8.pdf" in cd
 
 
+def test_share_download_serves_cached_copy_when_original_is_unavailable(tmp_path: Path, monkeypatch):
+    client = _client()
+    src = tmp_path / "卷證.pdf"
+    src.write_bytes(b"%PDF-cached-share")
+
+    from api.blueprints import osc_files as mod
+
+    monkeypatch.setattr(mod, "_SHARE_STORE_PATH", tmp_path / "shares.json")
+    monkeypatch.setenv("MAGI_OSC_FILE_SHARE_PUBLIC_BASE_URL", "https://paperclip-share.example.test")
+    with patch("api.blueprints.osc_files._resolve_safe_file", return_value=str(src)):
+        r = client.post("/api/osc/files/share", json={"path": str(src), "ttl_sec": 600})
+
+    assert r.status_code == 200
+    token = r.get_json()["url"].rstrip("/").split("/s/", 1)[1]
+    row = mod._load_share_store()["shares"][mod._share_token_hash(token)]
+    assert Path(row["staged_path"]).is_file()
+    assert Path(row["staged_path"]).read_bytes() == b"%PDF-cached-share"
+
+    src.unlink()
+    download = client.get(f"/s/{token}")
+
+    assert download.status_code == 200
+    assert download.data == b"%PDF-cached-share"
+
+
+def test_expired_share_prune_removes_cached_copy(tmp_path: Path, monkeypatch):
+    from api.blueprints import osc_files as mod
+
+    monkeypatch.setattr(mod, "_SHARE_STORE_PATH", tmp_path / "shares.json")
+    cached = tmp_path / "osc_file_share_cache" / ("a" * 64)
+    cached.parent.mkdir()
+    cached.write_bytes(b"cached")
+    data = {"shares": {"token-hash": {"expires_at": 1, "staged_path": str(cached)}}}
+
+    pruned = mod._prune_share_store(data)
+
+    assert pruned["shares"] == {}
+    assert not cached.exists()
+
+
 def test_pdf_preview_content_url_is_encoded(tmp_path: Path):
     client = _client()
     src = tmp_path / "卷證 A&B#1.pdf"
