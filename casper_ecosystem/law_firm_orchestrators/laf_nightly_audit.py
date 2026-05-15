@@ -635,20 +635,34 @@ def _update_case_laf_number(db, case: dict, laf_no: str) -> bool:
         return False
 
 
+def _case_status_for_laf_status(legal_aid_status: str) -> str:
+    """Map the LAF workflow state back to the generic OSC case status."""
+    status = str(legal_aid_status or "").strip()
+    if status in {"已結案", "已報結", "結案"}:
+        return "已結案"
+    if status in {"已結案，待報結", "已結案，待送出", "已報結（待轉入）"}:
+        return "結案中"
+    if "待報結" in status or "待送出" in status or "待轉入" in status:
+        return "結案中"
+    return "進行中"
+
+
 def _update_laf_status(db, case: dict, new_status: str) -> bool:
-    """更新案件的 legal_aid_status。"""
+    """更新案件的 legal_aid_status，並同步 generic cases.status。"""
     case_id = case.get("id")
     if not case_id or not new_status:
         return False
     old_status = case.get("legal_aid_status") or "(空)"
+    next_case_status = _case_status_for_laf_status(new_status)
     try:
         db.execute_write(
-            "UPDATE `cases` SET `legal_aid_status` = %s WHERE `id` = %s",
-            (new_status, case_id),
+            "UPDATE `cases` SET `legal_aid_status` = %s, `status` = %s WHERE `id` = %s",
+            (new_status, next_case_status, case_id),
         )
         logger.info("📝 DB 狀態更新: %s %s「%s」→「%s」",
                      case.get("case_number"), case.get("client_name"), old_status, new_status)
         case["legal_aid_status"] = new_status
+        case["status"] = next_case_status
         return True
     except Exception as e:
         logger.error("DB 狀態更新失敗 %s: %s", case.get("case_number"), e)
@@ -666,14 +680,16 @@ def _update_laf_status_with_approval(db, case: dict, main_status: str, approval_
         return
     cur_main = (case.get("legal_aid_status") or "").strip()
     cur_approval = (case.get("legal_aid_approval_status") or "").strip()
-    if cur_main == main_status and cur_approval == approval_status:
+    next_case_status = _case_status_for_laf_status(main_status)
+    cur_case_status = (case.get("status") or "").strip()
+    if cur_main == main_status and cur_approval == approval_status and cur_case_status == next_case_status:
         logger.debug("DB 冪等跳過 case_id=%s: %s/%s 無變化", case_id, main_status, approval_status)
         return
     try:
         db.execute_write(
             "UPDATE `cases` SET `legal_aid_status` = %s, `legal_aid_approval_status` = %s, "
-            "`legal_aid_approval_checked_at` = NOW() WHERE `id` = %s",
-            (main_status, approval_status, case_id),
+            "`legal_aid_approval_checked_at` = NOW(), `status` = %s WHERE `id` = %s",
+            (main_status, approval_status, next_case_status, case_id),
         )
         logger.info(
             "📝 DB 狀態更新（主+副）: %s %s「%s/%s」→「%s/%s」",
@@ -682,6 +698,7 @@ def _update_laf_status_with_approval(db, case: dict, main_status: str, approval_
         )
         case["legal_aid_status"] = main_status
         case["legal_aid_approval_status"] = approval_status
+        case["status"] = next_case_status
     except Exception as e:
         err_str = str(e)
         if "legal_aid_approval_status" in err_str or "Unknown column" in err_str:
@@ -2817,7 +2834,7 @@ def scan_portal_pending_drafts(db=None) -> dict:
             applyno = item["applyno"]
             try:
                 row = db.fetch_one(
-                    "SELECT `id`, `legal_aid_status`, `legal_aid_approval_status` FROM `cases` "
+                    "SELECT `id`, `status`, `legal_aid_status`, `legal_aid_approval_status` FROM `cases` "
                     "WHERE (`legal_aid_number` = %s OR `case_number` = %s) "
                     "AND `legal_aid_status` IN ('已結案，待送出', '已結案，待報結') LIMIT 1",
                     (applyno, applyno),

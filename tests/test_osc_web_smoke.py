@@ -212,8 +212,10 @@ def test_laf_closed_scope_includes_final_laf_status(client):
 
     assert r.status_code == 200
     sql = calls[-1][0]
-    assert "status LIKE '%已結案%'" in sql
-    assert "legal_aid_status='已結案'" in sql
+    assert "status" in sql
+    assert "LIKE '%已結案%'" in sql
+    assert "legal_aid_status" in sql
+    assert "= '已結案'" in sql
 
 
 # ── 2. 各 tab 列表 endpoint 可達 ──────────────────────────────────────────────
@@ -343,6 +345,117 @@ def test_cases_filters_split_type_and_kind(client):
     assert "case_category = %s" in sql
     assert "刑事" in params
     assert "法律扶助案件" in params
+
+
+def test_cases_endpoint_uses_effective_laf_status_for_display(client):
+    rows = [{
+        "id": "case-closed-laf",
+        "case_number": "2025-0051",
+        "client_name": "莊宸銘",
+        "case_type": "消費者債務清理",
+        "case_category": "法律扶助案件",
+        "case_reason": "更生",
+        "status": "進行中",
+        "legal_aid_status": "已結案",
+    }]
+
+    with patch("api.blueprints.osc_cases._osc_exec", side_effect=_make_fake_exec({"cases": rows})):
+        r = client.get("/api/osc/cases?limit=5")
+
+    assert r.status_code == 200
+    item = r.get_json()["items"][0]
+    assert item["status_display"] == "已結案"
+    assert item["case_type_display"] == "民事"
+    assert item["case_reason_display"] == "消費者債務清理（更生）"
+
+
+def test_cases_csv_export_uses_external_case_type_display(client):
+    rows = [{
+        "case_number": "2025-0051",
+        "client_name": "莊宸銘",
+        "client_name_en": "",
+        "case_type": "消費者債務清理",
+        "case_category": "法律扶助案件",
+        "case_subject": "",
+        "case_reason": "更生",
+        "status": "進行中",
+        "legal_aid_status": "已結案",
+        "start_date": "",
+        "court_date": "",
+        "lawyer": "",
+        "court_case_no": "",
+        "court_division": "",
+        "court_name": "",
+    }]
+
+    with patch("api.blueprints.osc_cases._osc_exec", side_effect=_make_fake_exec({"cases": rows})):
+        r = client.get("/api/osc/cases/export-csv")
+
+    assert r.status_code == 200
+    text = r.data.decode("utf-8-sig")
+    assert "莊宸銘" in text
+    assert "民事,法律扶助案件" in text
+    assert "消費者債務清理（更生）" in text
+    assert "消費者債務清理,法律扶助案件" not in text
+
+
+def test_cases_active_scope_excludes_laf_closing_and_closed(client):
+    calls = []
+
+    def fake_exec(sql, params=(), fetch="none"):
+        if "FROM cases" in sql:
+            calls.append((sql, params))
+        return _make_fake_exec({"cases": []})(sql, params, fetch)
+
+    with patch("api.blueprints.osc_cases._osc_exec", side_effect=fake_exec):
+        r = client.get("/api/osc/cases?limit=5&status_scope=active")
+
+    assert r.status_code == 200
+    sql, _params = calls[-1]
+    assert "legal_aid_status" in sql
+    assert "已結案，待送出" in sql
+    assert "已結案，待報結" in sql
+    assert "NOT" in sql
+
+
+@pytest.mark.parametrize(
+    ("scope", "included", "excluded"),
+    [
+        ("pending_report", "已結案，待報結", "已結案，待送出"),
+        ("pending_submit", "已結案，待送出", "已結案，待報結"),
+    ],
+)
+def test_cases_has_distinct_laf_pending_scopes(client, scope, included, excluded):
+    calls = []
+
+    def fake_exec(sql, params=(), fetch="none"):
+        if "FROM cases" in sql:
+            calls.append((sql, params))
+        return _make_fake_exec({"cases": []})(sql, params, fetch)
+
+    with patch("api.blueprints.osc_cases._osc_exec", side_effect=fake_exec):
+        r = client.get(f"/api/osc/cases?limit=5&status_scope={scope}")
+
+    assert r.status_code == 200
+    sql, _params = calls[-1]
+    assert included in sql
+    assert excluded not in sql
+
+
+def test_cases_ui_uses_unambiguous_status_and_laf_badge_labels():
+    html = (ROOT / "templates" / "partials" / "osc" / "cases.html").read_text(encoding="utf-8")
+    js = (ROOT / "static" / "osc" / "tabs" / "cases.js").read_text(encoding="utf-8")
+
+    assert "進行中 / 結案中" not in html
+    assert "結案中 / 已結案" not in html
+    assert 'data-scope="pending_report">待報結' in html
+    assert 'data-scope="pending_submit">待送出' in html
+    assert 'data-type="消費者債務清理"' not in html
+    assert 'data-kind="消費者債務清理"' not in html
+    assert "法扶 / " in js
+    assert "case_type_display" in js
+    assert "case_reason_display" in js
+    assert "const editorCaseType = caseDisplayType(c)" in js
 
 
 def test_cases_legacy_category_still_maps_to_case_kind(client):

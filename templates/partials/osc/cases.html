@@ -18,7 +18,7 @@
                         <strong id="caseVisibleCount">0</strong>
                     </div>
                     <div class="case-summary-item">
-                        <span>結案中 / 已結案</span>
+                        <span>結案案件</span>
                         <strong id="caseClosingVisibleCount">0</strong>
                     </div>
                 </div>
@@ -42,7 +42,6 @@
                             <button class="chip" data-type="民事">民事</button>
                             <button class="chip" data-type="行政">行政</button>
                             <button class="chip" data-type="非訟">非訟</button>
-                            <button class="chip" data-type="消費者債務清理">消費者債務清理</button>
                         </div>
                     </div>
                     <div class="field">
@@ -51,18 +50,18 @@
                             <button class="chip active" data-kind="全部">全部種類</button>
                             <button class="chip" data-kind="一般案件">一般</button>
                             <button class="chip" data-kind="法律扶助案件">法扶</button>
-                            <button class="chip" data-kind="消費者債務清理">消費者債務清理</button>
                             <button class="chip" data-kind="指定辯護案件">指定辯護</button>
                             <button class="chip" data-kind="無償案件">無償</button>
                         </div>
+                        <div class="section-note">更生、清算、消費者債務清理請用搜尋或案由欄位，不列為案件分類或案件種類。</div>
                     </div>
                     <div class="field">
                         <label>案件狀態</label>
                         <div class="chip-row" id="caseStatusTabs">
                             <button class="chip active" data-scope="all">全部狀態</button>
-                            <button class="chip" data-scope="working">進行中 / 結案中</button>
                             <button class="chip" data-scope="active">進行中</button>
-                            <button class="chip" data-scope="closing">結案中</button>
+                            <button class="chip" data-scope="pending_report">待報結</button>
+                            <button class="chip" data-scope="pending_submit">待送出</button>
                             <button class="chip" data-scope="closed">已結案</button>
                         </div>
                     </div>

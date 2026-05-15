@@ -96,6 +96,25 @@ function lafStatusClass(status) {
     return "";
 }
 
+function lafDisplayStatus(c = {}) {
+    return c.status_display || c.effective_status || c.legal_aid_status || c.status || "未開辦";
+}
+
+function lafDisplayType(c = {}) {
+    if (c.case_type_display) return c.case_type_display;
+    if (String(c.case_type || "").trim() === "消費者債務清理") return "民事";
+    return c.case_type || "";
+}
+
+function lafDisplayReason(c = {}) {
+    if (c.case_reason_display) return c.case_reason_display;
+    if (String(c.case_type || "").trim() === "消費者債務清理") {
+        const reason = String(c.case_reason || "").trim();
+        return reason ? `消費者債務清理（${reason}）` : "消費者債務清理";
+    }
+    return c.case_reason || "";
+}
+
 function renderLafCaseList(cases = []) {
     const body = document.getElementById("lafCaseBody");
     if (!body) return;
@@ -106,12 +125,13 @@ function renderLafCaseList(cases = []) {
     const sort = state.lafSort || { col: "case_number", dir: 1, type: "string" };
     const rows = applySort(cases.map(c => ({
         ...c,
-        legal_aid_status: c.legal_aid_status || c.status || "未開辦",
-        case_type: c.case_type || c.case_reason || c.case_category || "",
+        legal_aid_status: lafDisplayStatus(c),
+        case_type: lafDisplayType(c),
+        case_reason: lafDisplayReason(c),
     })), sort.col, sort.dir, sort.type);
     body.innerHTML = rows.map(c => {
-        const status = c.legal_aid_status || c.status || "未開辦";
-        const type = c.case_type || c.case_reason || c.case_category || "";
+        const status = lafDisplayStatus(c);
+        const type = lafDisplayType(c) || c.case_category || "";
         const pending = Number(c.pending_laf_items || 0);
         const pendingText = pending ? ` · 待補 ${pending}` : "";
         return `
@@ -368,8 +388,10 @@ function renderLafCaseDetail(data = {}) {
     if (!panel) return;
     const c = data.case || {};
     const s = data.stats || {};
-    const status = c.legal_aid_status || c.status || "未開辦";
-    const caseStatus = c.status || "進行中";
+    const status = lafDisplayStatus(c);
+    const displayType = lafDisplayType(c);
+    const displayReason = lafDisplayReason(c);
+    const caseStatus = c.status_display || c.effective_status || c.status || "進行中";
     const pending = (data.legal_aid_checklist || []).filter(isLafPending);
     const checklistCaseInput = document.getElementById("lafChecklistCaseNumber");
     if (checklistCaseInput && c.case_number) checklistCaseInput.value = c.case_number;
@@ -377,7 +399,7 @@ function renderLafCaseDetail(data = {}) {
         <div class="laf-detail-head">
             <div>
                 <h3>${esc(c.case_number || "")} - ${esc(c.client_name || "")}</h3>
-                <div class="muted">案件分類：${esc(c.case_type || c.case_reason || c.case_category || "未標示")}｜法扶案號：${esc(c.laf_case_no || "")}</div>
+                <div class="muted">案件分類：${esc(displayType || "未標示")}｜案由：${esc(displayReason || "未標示")}｜法扶案號：${esc(c.laf_case_no || "")}</div>
             </div>
             <span class="laf-status-pill ${lafStatusClass(status)}">${esc(status)}</span>
         </div>

@@ -36,17 +36,33 @@ class TestUpdateLafStatusWithApproval:
         call_args = db.execute_write.call_args
         assert "已結案" in call_args[0][1]
         assert "已轉入" in call_args[0][1]
+        assert call_args[0][1][2] == "已結案"
         # case dict 應被更新
         assert case["legal_aid_status"] == "已結案"
         assert case["legal_aid_approval_status"] == "已轉入"
+        assert case["status"] == "已結案"
 
     def test_idempotent_no_write_when_same(self):
         from casper_ecosystem.law_firm_orchestrators.laf_nightly_audit import _update_laf_status_with_approval
         db = self._make_mock_db()
         case = {"id": 42, "case_number": "2025-0001", "client_name": "測試甲",
-                "legal_aid_status": "已結案", "legal_aid_approval_status": "已轉入"}
+                "legal_aid_status": "已結案", "legal_aid_approval_status": "已轉入", "status": "已結案"}
         _update_laf_status_with_approval(db, case, "已結案", "已轉入")
         db.execute_write.assert_not_called()  # 冪等不寫
+
+    def test_simple_laf_status_syncs_generic_case_status(self):
+        from casper_ecosystem.law_firm_orchestrators.laf_nightly_audit import _update_laf_status
+        db = self._make_mock_db()
+        case = {"id": 42, "case_number": "2025-0001", "client_name": "測試甲",
+                "legal_aid_status": "進行中", "status": "進行中"}
+
+        assert _update_laf_status(db, case, "已結案，待送出") is True
+
+        sql, params = db.execute_write.call_args[0]
+        assert "`legal_aid_status` = %s, `status` = %s" in sql
+        assert params == ("已結案，待送出", "結案中", 42)
+        assert case["legal_aid_status"] == "已結案，待送出"
+        assert case["status"] == "結案中"
 
     def test_skips_when_no_case_id(self):
         from casper_ecosystem.law_firm_orchestrators.laf_nightly_audit import _update_laf_status_with_approval

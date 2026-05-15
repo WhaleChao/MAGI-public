@@ -39,6 +39,43 @@ function isLegalAidCaseRow(row = {}) {
     return text.includes("法律扶助案件") || text.includes("法律扶助") || text.includes("法扶");
 }
 
+function caseDisplayStatus(row = {}) {
+    return row.status_display || row.effective_status || row.legal_aid_status || row.status || "進行中";
+}
+
+function isClosingOrClosedCase(row = {}) {
+    const text = `${caseDisplayStatus(row)} ${row.status || ""} ${row.legal_aid_status || ""}`.toLowerCase();
+    return text.includes("close") || text.includes("結案") || text.includes("待報結") || text.includes("待送出");
+}
+
+function caseDisplayType(row = {}) {
+    return row.case_type_display || row.case_type || "";
+}
+
+function caseDisplayReason(row = {}) {
+    return row.case_reason_display || row.case_reason || "";
+}
+
+function caseStatusScopeLabel(scope) {
+    const labels = {
+        all: "全部狀態",
+        working: "可操作案件",
+        active: "進行中",
+        closing: "待報結或待送出",
+        pending_report: "待報結",
+        pending_submit: "待送出",
+        closed: "已結案",
+    };
+    return labels[scope || "all"] || labels.all;
+}
+
+function lafBadgeText(row = {}) {
+    const lafStatus = String(row.legal_aid_status || "").trim();
+    const displayStatus = caseDisplayStatus(row);
+    const visible = lafStatus && lafStatus !== "未開辦" ? lafStatus : displayStatus;
+    return `法扶 / ${visible || "進行中"}`;
+}
+
 function wbTodoDoneStatus(status) {
     const text = String(status || '').trim().toLowerCase();
     return ['completed', 'done', '已完成', '完成', 'cancelled', 'canceled', '取消'].includes(text);
@@ -60,7 +97,7 @@ function renderCases() {
     updateCaseSummary();
     if (!state.cases.length) {
         const hint = (state.caseStatusScope || "all") === "working"
-            ? "目前沒有進行中 / 結案中的案件。可切到「全部狀態」檢視完整案件。"
+            ? "目前沒有可操作案件。可切到「全部狀態」檢視完整案件。"
             : "沒有符合條件的案件資料。";
         body.innerHTML = `<tr><td colspan="10" class="muted">${hint}</td></tr>`;
         if (cardGrid) cardGrid.innerHTML = `<div class="muted" style="padding:20px;">${hint}</div>`;
@@ -82,10 +119,11 @@ function renderCases() {
         }) : sorted;
 
         cardGrid.innerHTML = orderedCases.map(r => {
-            const statusLower = (r.status || "").toLowerCase();
+            const displayStatus = caseDisplayStatus(r);
+            const statusLower = displayStatus.toLowerCase();
             const isLaf = isLegalAidCaseRow(r);
             const badgeClass = statusLower.includes('close') || statusLower.includes('結案') ? 'closed' : isLaf ? 'laf' : 'active';
-            const badgeText = isLaf ? '法扶' : (r.status || 'Active');
+            const badgeText = isLaf ? lafBadgeText(r) : displayStatus;
             return `
             <div class="case-card" draggable="true" data-case-id="${esc(r.id)}">
                 <div class="card-header">
@@ -94,10 +132,10 @@ function renderCases() {
                 </div>
                 <div class="card-meta">
                     <div><span class="label">案號</span> <span class="value">${esc(r.case_number || '-')}</span></div>
-                    <div><span class="label">案由</span> <span class="value">${esc(r.case_reason || '-')}</span></div>
+                    <div><span class="label">案由</span> <span class="value">${esc(caseDisplayReason(r) || '-')}</span></div>
                     <div><span class="label">法院</span> <span class="value">${esc(r.court_name || '-')}</span></div>
                     <div><span class="label">法院案號</span> <span class="value">${esc(r.court_case_no || '-')}</span></div>
-                    <div><span class="label">分類</span> <span class="value">${esc(r.case_type || '-')}</span></div>
+                    <div><span class="label">分類</span> <span class="value">${esc(caseDisplayType(r) || '-')}</span></div>
                     <div><span class="label">種類</span> <span class="value">${esc(r.case_category || '-')}</span></div>
                     ${r.laf_case_no ? `<div><span class="label">法扶</span> <span class="value">${esc(r.laf_case_no)}</span></div>` : ''}
                 </div>
@@ -120,13 +158,13 @@ function renderCases() {
     <tr class="row-clickable" data-case-id="${esc(r.id)}">
         <td>${esc(r.case_number)}</td>
         <td>${esc(r.client_name)}</td>
-        <td>${esc(r.case_type || "")}</td>
+        <td>${esc(caseDisplayType(r))}</td>
         <td>${esc(r.case_category || "")}</td>
-        <td>${esc(r.case_reason)}</td>
+        <td>${esc(caseDisplayReason(r))}</td>
         <td>${esc(r.court_name || "")}</td>
         <td>${esc(r.court_case_no)}</td>
         <td>${esc(r.laf_case_no)}</td>
-        <td>${esc(r.status)}</td>
+        <td>${esc(caseDisplayStatus(r))}</td>
         <td class="actions">
             <button class="btn primary" data-act="case-open" data-id="${esc(r.id)}">資料夾</button>
             <button class="btn" data-act="case-workbench" data-id="${esc(r.id)}">案件處理</button>
@@ -147,10 +185,7 @@ function renderCases() {
 
 function updateCaseSummary() {
     const cases = state.cases || [];
-    const closing = cases.filter(r => {
-        const s = String(r.status || "").toLowerCase();
-        return s.includes("close") || s.includes("結案");
-    }).length;
+    const closing = cases.filter(r => isClosingOrClosedCase(r)).length;
     const set = (id, value) => {
         const el = document.getElementById(id);
         if (el) el.textContent = String(value);
@@ -227,15 +262,15 @@ function buildCaseMagiContext() {
     const rows = (state.cases || []).slice(0, 40).map((r, idx) => [
         `${idx + 1}. ${r.case_number || "-"}`,
         `當事人=${r.client_name || "-"}`,
-        `分類=${r.case_type || "-"}`,
+        `分類=${caseDisplayType(r) || "-"}`,
         `種類=${r.case_category || "-"}`,
-        `案由=${r.case_reason || "-"}`,
+        `案由=${caseDisplayReason(r) || "-"}`,
         `法院案號=${r.court_case_no || "-"}`,
         `法扶案號=${r.laf_case_no || "-"}`,
-        `狀態=${r.status || "-"}`,
+        `狀態=${caseDisplayStatus(r) || "-"}`,
     ].join("｜"));
     return [
-        `目前案件篩選：分類=${state.caseType || "全部"}；種類=${state.caseKind || "全部"}；狀態=${state.caseStatusScope || "all"}；排序=${state.sort?.col || "預設"}`,
+        `目前案件篩選：分類=${state.caseType || "全部"}；種類=${state.caseKind || "全部"}；狀態=${caseStatusScopeLabel(state.caseStatusScope)}；排序=${state.sort?.col || "預設"}`,
         `目前顯示 ${state.cases?.length || 0} 筆案件。以下最多列 40 筆：`,
         rows.join("\n") || "目前沒有案件列。",
     ].join("\n");
@@ -595,6 +630,9 @@ async function createCaseFolder(id) {
 }
 
 function renderWorkbenchCaseEditor(c) {
+    const editorCaseType = caseDisplayType(c);
+    const editorCaseReason = caseDisplayReason(c);
+    const editorStatus = caseDisplayStatus(c);
     return `
     <div class="card">
         <h3>案件主資料快速編輯</h3>
@@ -602,14 +640,14 @@ function renderWorkbenchCaseEditor(c) {
             <div class="field"><label>案件編號</label><input id="wb_case_case_number" value="${esc(c.case_number || "")}"></div>
             <div class="field"><label>當事人</label><input id="wb_case_client_name" value="${esc(c.client_name || "")}"></div>
             <div class="field"><label>案件種類</label><input id="wb_case_case_category" value="${esc(c.case_category || "")}"></div>
-            <div class="field"><label>案件分類</label><input id="wb_case_case_type" value="${esc(c.case_type || "")}"></div>
+            <div class="field"><label>案件分類</label><input id="wb_case_case_type" value="${esc(editorCaseType || "")}"></div>
             <div class="field"><label>審級 / 階段</label><input id="wb_case_case_stage" value="${esc(c.case_stage || "")}"></div>
-            <div class="field"><label>案由</label><input id="wb_case_case_reason" value="${esc(c.case_reason || "")}"></div>
+            <div class="field"><label>案由</label><input id="wb_case_case_reason" value="${esc(editorCaseReason || "")}"></div>
             <div class="field"><label>法扶案號</label><input id="wb_case_laf_case_no" value="${esc(c.laf_case_no || "")}"></div>
             <div class="field"><label>申請編號</label><input id="wb_case_application_no" value="${esc(c.application_no || "")}"></div>
             <div class="field"><label>法院 / 地檢署</label><input id="wb_case_court_name" list="caseCourtOptions" value="${esc(c.court_name || "")}" placeholder="可輸入或選擇"></div>
             <div class="field"><label>法院案號</label><input id="wb_case_court_case_no" value="${esc(c.court_case_no || "")}"></div>
-            <div class="field"><label>狀態</label><input id="wb_case_status" value="${esc(c.status || "")}"></div>
+            <div class="field"><label>狀態</label><input id="wb_case_status" value="${esc(editorStatus || "")}"></div>
             <div class="field" style="grid-column: span 2;"><label>案件資料夾</label><input id="wb_case_folder_path" value="${esc(c.folder_path || "")}" placeholder="Y:\\lumi\\01_案件\\..."></div>
             <div class="field" style="grid-column: span 2;"><label>備註</label><input id="wb_case_notes" value="${esc(c.notes || "")}"></div>
         </div>

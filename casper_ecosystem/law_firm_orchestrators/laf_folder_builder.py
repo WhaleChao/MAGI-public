@@ -268,6 +268,15 @@ class LAFFolderBuilder:
         reason = str(case_info.get("case_reason") or "").strip()
         stage = str(case_info.get("case_stage") or "").strip()
 
+        text = " ".join(
+            str(case_info.get(k, "") or "").strip()
+            for k in ("case_type", "case_stage", "case_reason")
+        )
+
+        # 消費者債務清理是案由/程序，但資料夾仍需歸在 OSC 的消債根目錄。
+        if "消費者債務清理" in text or "更生" in text or "清算" in text:
+            return "消費者債務清理"
+
         # 優先採用明確 case_type，但仍允許社會保險等實體行政事件覆寫
         # LAF portal/信件有時把「勞工保險爭議」標為民事程序。
         explicit_type = str(case_info.get("case_type") or "").strip()
@@ -277,14 +286,6 @@ class LAFFolderBuilder:
         if explicit_type in ("民事", "刑事", "家事", "消費者債務清理", "少年", "行政"):
             return explicit_type
 
-        text = " ".join(
-            str(case_info.get(k, "") or "").strip()
-            for k in ("case_type", "case_stage", "case_reason")
-        )
-
-        # 消費者債務清理 / 更生 / 清算（家事類不含「清算」）
-        if "消費者債務清理" in text or "更生" in text or "清算" in text:
-            return "消費者債務清理"
         # 家事 / 少年
         if any(token in text for token in ("離婚", "收養", "監護", "扶養", "遺產")):
             return "家事"

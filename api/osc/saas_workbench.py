@@ -404,6 +404,31 @@ def _status_open_sql(alias: str = "") -> str:
     return f"({p}status IS NULL OR {p}status='' OR {p}status NOT IN ('{closed}'))"
 
 
+def _case_status_closed_sql(alias: str = "") -> str:
+    p = f"{alias}." if alias else ""
+    status = f"COALESCE({p}status, '')"
+    laf = f"COALESCE({p}legal_aid_status, '')"
+    laf_closing = f"({laf} IN ('已結案，待報結', '已結案，待送出', '已報結（待轉入）') OR {laf} LIKE '%待報結%' OR {laf} LIKE '%待送出%')"
+    laf_final = f"({laf} IN ('已結案', '已報結', '結案'))"
+    status_final = f"({status} LIKE '%已結案%' OR LOWER({status}) IN ('closed', 'close', 'done'))"
+    return f"({laf_final} OR ({status_final} AND NOT {laf_closing}))"
+
+
+def _case_status_closing_sql(alias: str = "") -> str:
+    p = f"{alias}." if alias else ""
+    status = f"COALESCE({p}status, '')"
+    laf = f"COALESCE({p}legal_aid_status, '')"
+    return (
+        f"({laf} IN ('已結案，待報結', '已結案，待送出', '已報結（待轉入）') "
+        f"OR {laf} LIKE '%待報結%' OR {laf} LIKE '%待送出%' "
+        f"OR {status} LIKE '%結案中%' OR {status} LIKE '%待報結%' OR {status} LIKE '%待送出%')"
+    )
+
+
+def _case_status_open_sql(alias: str = "") -> str:
+    return f"(NOT {_case_status_closed_sql(alias)} AND NOT {_case_status_closing_sql(alias)})"
+
+
 def _risk_from_todo(row: dict, today: date) -> dict:
     raw_date = str(row.get("todo_date") or "").strip()
     due = None
@@ -507,7 +532,7 @@ def build_risk_dashboard(exec_fn: ExecFn, *, limit: int = 30) -> dict:
         SELECT id, case_number, client_name, case_reason, status, created_date
         FROM cases
         WHERE (case_category='法律扶助案件' OR case_reason LIKE '%法扶%' OR case_reason LIKE '%法律扶助%')
-          AND (status IS NULL OR status='' OR status NOT IN ('已結案','已結案，待報結'))
+          AND {_case_status_open_sql()}
         ORDER BY created_date ASC
         LIMIT %s
         """,
@@ -989,9 +1014,9 @@ def recent_intakes(limit: int = 20) -> list[dict]:
 
 def build_operations_report(exec_fn: ExecFn) -> dict:
     total = _count(exec_fn, "SELECT COUNT(*) AS c FROM cases")
-    active = _count(exec_fn, f"SELECT COUNT(*) AS c FROM cases WHERE {_status_open_sql()}")
-    closing_pending = _count(exec_fn, "SELECT COUNT(*) AS c FROM cases WHERE status IN ('已結案，待報結','已結案待報結','已結案，待送出')")
-    closed = _count(exec_fn, "SELECT COUNT(*) AS c FROM cases WHERE status='已結案'")
+    active = _count(exec_fn, f"SELECT COUNT(*) AS c FROM cases WHERE {_case_status_open_sql()}")
+    closing_pending = _count(exec_fn, f"SELECT COUNT(*) AS c FROM cases WHERE {_case_status_closing_sql()}")
+    closed = _count(exec_fn, f"SELECT COUNT(*) AS c FROM cases WHERE {_case_status_closed_sql()}")
     pending = _count(exec_fn, f"SELECT COUNT(*) AS c FROM case_todos WHERE {_status_open_sql()}")
     overdue = _count(exec_fn, f"SELECT COUNT(*) AS c FROM case_todos WHERE {_status_open_sql()} AND todo_date < CURDATE()")
     docs = _count(exec_fn, "SELECT COUNT(*) AS c FROM document_index")

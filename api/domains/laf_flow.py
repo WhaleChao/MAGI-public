@@ -101,6 +101,14 @@ def update_laf_status_after_action(orch, *, case_number: str = "", client_name: 
                                    case_reason_hint: str = "",
                                    new_status: str, action_label: str = "") -> bool:
     """Update DB legal_aid_status after a successful LAF operation."""
+    def _case_status_for_laf_status(status: str) -> str:
+        text = str(status or "").strip()
+        if text == "已結案":
+            return "已結案"
+        if text in {"已結案，待報結", "已結案，待送出"} or "待報結" in text or "待送出" in text:
+            return "結案中"
+        return "進行中"
+
     try:
         from api.runtime_paths import get_config_path
         from osc import DatabaseManager
@@ -163,9 +171,10 @@ def update_laf_status_after_action(orch, *, case_number: str = "", client_name: 
             return False
         row = rows[0]
         old = row.get("legal_aid_status") or "(\u7a7a)"
+        next_case_status = _case_status_for_laf_status(new_status)
         db.execute_write(
-            "UPDATE cases SET legal_aid_status = %s WHERE id = %s",
-            (new_status, row["id"]),
+            "UPDATE cases SET legal_aid_status = %s, status = %s WHERE id = %s",
+            (new_status, next_case_status, row["id"]),
         )
         if str(new_status or "").strip() == "已結案":
             try:

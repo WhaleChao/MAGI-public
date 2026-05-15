@@ -805,6 +805,81 @@ def _osc_normalize_template_case_row(row: dict | None) -> dict | None:
     return out
 
 
+_OSC_LAF_CLOSING_STATUSES = {"已結案，待報結", "已結案，待送出"}
+_OSC_LAF_CLOSED_STATUSES = {"已結案"}
+
+
+def _osc_effective_case_status(row: dict | None) -> str:
+    if not isinstance(row, dict):
+        return ""
+    laf_status = str(row.get("legal_aid_status") or "").strip()
+    status = str(row.get("status") or "").strip()
+    if laf_status in _OSC_LAF_CLOSED_STATUSES:
+        return "已結案"
+    if laf_status in _OSC_LAF_CLOSING_STATUSES:
+        return laf_status
+    if status:
+        return status
+    if laf_status:
+        return laf_status
+    return "進行中"
+
+
+def _osc_case_api_row(row: dict | None) -> dict | None:
+    row = _osc_normalize_template_case_row(row)
+    if not isinstance(row, dict):
+        return row
+    if row.get("is_template_case"):
+        row["effective_status"] = _OSC_TEMPLATE_DISPLAY_VALUE
+        row["status_display"] = _OSC_TEMPLATE_DISPLAY_VALUE
+        row["case_type_display"] = _OSC_TEMPLATE_DISPLAY_VALUE
+        row["case_reason_display"] = _OSC_TEMPLATE_DISPLAY_VALUE
+        return row
+    effective = _osc_effective_case_status(row)
+    out = dict(row)
+    out["effective_status"] = effective
+    out["status_display"] = effective
+    if str(out.get("case_type") or "").strip() == "消費者債務清理":
+        reason = str(out.get("case_reason") or "").strip()
+        out["case_type_display"] = "民事"
+        out["case_reason_display"] = f"消費者債務清理（{reason}）" if reason else "消費者債務清理"
+    else:
+        out["case_type_display"] = out.get("case_type") or ""
+        out["case_reason_display"] = out.get("case_reason") or ""
+    return out
+
+
+def _osc_status_scope_sql(scope: str) -> str:
+    """Status filtering must respect legal_aid_status, not only cases.status."""
+    status = "COALESCE(status, '')"
+    laf = "COALESCE(legal_aid_status, '')"
+    pending_report = f"({laf} = '已結案，待報結' OR {status} LIKE '%待報結%')"
+    pending_submit = f"({laf} = '已結案，待送出' OR {status} LIKE '%待送出%')"
+    laf_closing = f"{laf} IN ('已結案，待報結', '已結案，待送出')"
+    laf_closed = f"{laf} = '已結案'"
+    case_closing = f"({status} LIKE '%結案中%' OR {status} LIKE '%待報結%' OR {status} LIKE '%待送出%')"
+    case_closed = f"({status} LIKE '%已結案%' OR LOWER({status}) IN ('closed', 'close', 'done'))"
+    final_closed = f"({laf_closed} OR ({case_closed} AND NOT ({laf_closing} OR {case_closing})))"
+    closing = f"({laf_closing} OR {case_closing})"
+    active_base = (
+        f"({status} = '' OR {status} LIKE '%進行%' "
+        f"OR LOWER({status}) IN ('active', 'open', 'ongoing', 'pending'))"
+    )
+    if scope in {"working", "default", "open"}:
+        return f"(NOT {final_closed})"
+    if scope in {"active", "ongoing"}:
+        return f"({active_base} AND NOT {final_closed} AND NOT {closing})"
+    if scope in {"pending_report", "report_pending"}:
+        return pending_report
+    if scope in {"pending_submit", "submit_pending"}:
+        return pending_submit
+    if scope in {"closing", "closing_case"}:
+        return closing
+    if scope in {"closed", "archived"}:
+        return final_closed
+    return ""
+
+
 @osc_bp.route("/api/osc/cases", methods=["GET", "POST"])
 @login_required
 def osc_cases_api():
@@ -816,8 +891,8 @@ def osc_cases_api():
         case_kind = (request.args.get("case_kind") or "").strip()
         status_scope = (request.args.get("status_scope") or "all").strip().lower()
         limit = max(1, min(500, int(request.args.get("limit") or "200")))
-        case_type_values = {"刑事", "民事", "行政", "非訟", "消費者債務清理"}
-        case_kind_values = {"一般", "一般案件", "法扶", "法律扶助案件", "消費者債務清理", "指定辯護", "指定辯護案件", "無償", "無償案件"}
+        case_type_values = {"刑事", "民事", "行政", "非訟"}
+        case_kind_values = {"一般", "一般案件", "法扶", "法律扶助案件", "指定辯護", "指定辯護案件", "無償", "無償案件"}
         if category and category not in {"全部", "all", "ALL"} and not case_type and not case_kind:
             if category in case_type_values:
                 case_type = category
@@ -844,8 +919,11 @@ def osc_cases_api():
             params.extend([like, like, like, like, like, like])
         if case_type and case_type not in {"全部", "all", "ALL"}:
             if case_type == "消費者債務清理":
-                where.append("(case_type = %s OR case_category = %s)")
-                params.extend([case_type, case_type])
+                where.append("(case_reason LIKE %s OR case_type = %s)")
+                params.extend(["%消費者債務清理%", case_type])
+            elif case_type == "民事":
+                where.append("(case_type = %s OR case_type = '消費者債務清理')")
+                params.append(case_type)
             else:
                 where.append("case_type = %s")
                 params.append(case_type)
@@ -858,8 +936,8 @@ def osc_cases_api():
             }
             normalized_kind = kind_map.get(case_kind, case_kind)
             if normalized_kind == "消費者債務清理":
-                where.append("(case_category = %s OR case_type = %s)")
-                params.extend([normalized_kind, normalized_kind])
+                where.append("(case_reason LIKE %s OR case_type = %s)")
+                params.extend(["%消費者債務清理%", normalized_kind])
             elif normalized_kind == "法律扶助案件":
                 where.append(
                     """
@@ -874,46 +952,13 @@ def osc_cases_api():
             else:
                 where.append("case_category = %s")
                 params.append(normalized_kind)
-        if status_scope in {"working", "default", "open"}:
-            where.append(
-                """
-                (
-                    status IS NULL OR status = ''
-                    OR status LIKE %s
-                    OR status LIKE %s
-                    OR status LIKE %s
-                    OR LOWER(status) IN ('active', 'open', 'ongoing', 'pending')
-                )
-                """
-            )
-            params.extend(["%進行%", "%結案中%", "%待報結%"])
-        elif status_scope in {"active", "ongoing"}:
-            where.append(
-                """
-                (
-                    status IS NULL OR status = ''
-                    OR status LIKE %s
-                    OR LOWER(status) IN ('active', 'open', 'ongoing', 'pending')
-                )
-                """
-            )
-            params.append("%進行%")
-        elif status_scope in {"closing", "closing_case"}:
-            where.append("(status LIKE %s OR status LIKE %s)")
-            params.extend(["%結案中%", "%待報結%"])
-        elif status_scope in {"closed", "archived"}:
-            where.append(
-                """
-                (
-                    status LIKE %s
-                    OR LOWER(status) IN ('closed', 'close', 'done')
-                )
-                """
-            )
-            params.append("%已結案%")
+        status_clause = _osc_status_scope_sql(status_scope)
+        if status_clause:
+            where.append(status_clause)
         sql = """
             SELECT id, case_number, client_name, case_category, case_type, case_stage, case_reason,
-                   laf_case_no, application_no, court_name, court_case_no, status, notes, folder_path, updated_at, created_date
+                   laf_case_no, application_no, court_name, court_case_no, legal_aid_status,
+                   status, notes, folder_path, updated_at, created_date
             FROM cases
         """
         if where:
@@ -921,7 +966,7 @@ def osc_cases_api():
         sql += " ORDER BY updated_at DESC, created_date DESC LIMIT %s"
         params.append(limit)
         rows, _ = _osc_exec(sql, tuple(params), fetch="all")
-        rows = [_osc_normalize_template_case_row(r) for r in (rows or [])]
+        rows = [_osc_case_api_row(r) for r in (rows or [])]
         return jsonify({"ok": True, "items": rows})
 
     payload = request.get_json() or {}
@@ -1155,10 +1200,12 @@ def _osc_normalize_laf_status(status: str) -> str:
 
 
 def _osc_case_status_for_laf_status(legal_aid_status: str) -> str:
-    """Keep folder archiving tied to final LAF closure only."""
+    """Keep case.status aligned with LAF workflow without calling pending closure active."""
     normalized = _osc_normalize_laf_status(legal_aid_status)
-    if normalized in {"已結案", "已結案，待送出"}:
+    if normalized == "已結案":
         return "已結案"
+    if normalized in {"已結案，待報結", "已結案，待送出"}:
+        return "結案中"
     return "進行中"
 
 
@@ -2496,7 +2543,7 @@ def osc_case_workbench_api(row_id):
     return jsonify(
         {
             "ok": True,
-            "case": case,
+            "case": _osc_case_api_row(case),
             "stats": stats,
             "todos": todos,
             "meetings": meetings,
@@ -4550,25 +4597,9 @@ def osc_laf_cases_api():
             """
         )
         params.extend([like, like, like, like, like, like, like])
-    if status_scope in {"working", "active", "open"}:
-        where.append(
-            """
-            (
-                (
-                    status IS NULL OR status = ''
-                    OR status LIKE '%進行%'
-                    OR status LIKE '%結案中%'
-                    OR status LIKE '%待報結%'
-                    OR legal_aid_status IS NULL OR legal_aid_status = ''
-                    OR legal_aid_status IN ('未開辦', '進行中', '已結案，待報結')
-                )
-                AND COALESCE(legal_aid_status, '') <> '已結案'
-                AND COALESCE(status, '') NOT LIKE '%已結案%'
-            )
-            """
-        )
-    elif status_scope in {"closed", "archived"}:
-        where.append("(status LIKE '%已結案%' OR legal_aid_status='已結案')")
+    status_clause = _osc_status_scope_sql(status_scope)
+    if status_clause:
+        where.append(status_clause)
 
     sql = f"""
         SELECT
@@ -4587,6 +4618,7 @@ def osc_laf_cases_api():
                 WHEN '未開辦' THEN 0
                 WHEN '進行中' THEN 1
                 WHEN '已結案，待報結' THEN 2
+                WHEN '已結案，待送出' THEN 2
                 WHEN '已結案' THEN 4
                 ELSE 3
             END,
@@ -4596,7 +4628,8 @@ def osc_laf_cases_api():
     """
     params.append(limit)
     rows, _ = _osc_exec(sql, tuple(params), fetch="all")
-    return jsonify({"ok": True, "items": rows or []})
+    rows = [_osc_case_api_row(r) for r in (rows or [])]
+    return jsonify({"ok": True, "items": rows})
 
 
 @osc_bp.route("/api/osc/laf/batch-status", methods=["POST"])
@@ -6446,7 +6479,7 @@ def osc_cases_export_csv_api():
     rows, _ = _osc_exec(
         """
         SELECT case_number, client_name, client_name_en, case_type, case_category,
-               case_subject, case_reason, status, start_date, court_date,
+               case_subject, case_reason, status, legal_aid_status, start_date, court_date,
                lawyer, court_case_no, court_division, court_name
         FROM cases
         ORDER BY updated_at DESC, created_date DESC
@@ -6471,15 +6504,16 @@ def osc_cases_export_csv_api():
     writer = csv.writer(buf)
     writer.writerow(_CASES_CSV_HEADERS)
     for r in rows:
+        display_row = _osc_case_api_row(r) or r
         writer.writerow([
             r.get("case_number") or "",
             r.get("client_name") or "",
             r.get("client_name_en") or "",
-            r.get("case_type") or "",
+            display_row.get("case_type_display") or r.get("case_type") or "",
             r.get("case_category") or "",
             r.get("case_subject") or "",
-            r.get("case_reason") or "",
-            r.get("status") or "",
+            display_row.get("case_reason_display") or r.get("case_reason") or "",
+            display_row.get("status_display") or r.get("status") or "",
             _date_str(r.get("start_date")),
             _date_str(r.get("court_date")),
             r.get("lawyer") or "",

@@ -137,7 +137,7 @@
             c.case_number,
             c.laf_case_no ? '法扶 ' + c.laf_case_no : '',
             c.court_case_no,
-            c.case_reason,
+            c.case_reason_display || c.case_reason,
         ].filter(Boolean).join(' / ');
     }
 
@@ -148,14 +148,14 @@
         if (!items || !items.length) {
             const msg = (query || '').trim()
                 ? '找不到符合「' + escapeHTML(query) + '」的案件。'
-                : '目前沒有進行中 / 結案中的案件。';
+                : '目前沒有可操作案件。';
             box.innerHTML = '<div class="fm-case-empty">' + msg + '</div>';
             return;
         }
         box.innerHTML = items.map(c => {
             const title = c.client_name || c.case_number || c.id || '未命名案件';
             const sub = caseResultMeta(c);
-            const status = c.status || '進行中';
+            const status = c.status_display || c.effective_status || c.legal_aid_status || c.status || '進行中';
             const folderKnown = (c.folder_path || '').trim() ? '有資料夾' : '待建立資料夾';
             return '<button type="button" class="fm-case-item" data-fm-case-id="' + escapeHTML(c.id) + '">'
                 + '<div class="fm-case-main">'

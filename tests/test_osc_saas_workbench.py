@@ -197,11 +197,11 @@ def test_operations_report_separates_total_active_and_closing_pending(monkeypatc
     def fake_exec(sql, params=(), fetch="one"):
         if "COUNT(*) AS c FROM cases" in sql and "WHERE" not in sql:
             return ({"c": 182}, None)
-        if "COUNT(*) AS c FROM cases" in sql and "NOT IN" in sql:
+        if "COUNT(*) AS c FROM cases" in sql and "NOT (" in sql and "LIKE '%結案中%'" in sql:
             return ({"c": 143}, None)
-        if "COUNT(*) AS c FROM cases" in sql and "已結案，待送出" in sql:
+        if "COUNT(*) AS c FROM cases" in sql and "LIKE '%結案中%'" in sql:
             return ({"c": 1}, None)
-        if "COUNT(*) AS c FROM cases" in sql and "status='已結案'" in sql:
+        if "COUNT(*) AS c FROM cases" in sql and "LOWER(COALESCE(status, ''))" in sql:
             return ({"c": 38}, None)
         if "COUNT(*) AS c" in sql:
             return ({"c": 0}, None)
