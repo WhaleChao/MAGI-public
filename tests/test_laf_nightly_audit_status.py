@@ -267,10 +267,23 @@ class TestLafBackfillNoiseControl:
         assert "自動補填法扶案號" not in report
         assert "仍待確認法扶案號" not in report
 
-    def test_display_client_name_keeps_canonical_you_xiu_ling(self):
+    def test_display_client_name_uses_case_folder_for_likely_typos(self):
         from casper_ecosystem.law_firm_orchestrators.laf_nightly_audit import _display_client_name
 
-        assert _display_client_name({"client_name": "遊秀鈴"}) == "游秀鈴"
+        assert _display_client_name({
+            "case_number": "2025-0002",
+            "client_name": "遊秀鈴",
+            "folder_path": "/案件/法扶案件/刑事/2025-0002-游秀鈴-一審-傷害致死",
+        }) == "游秀鈴"
+
+    def test_display_client_name_does_not_need_single_name_override(self):
+        from casper_ecosystem.law_firm_orchestrators.laf_nightly_audit import _display_client_name
+
+        assert _display_client_name({
+            "case_number": "2026-0045",
+            "client_name": "李秀瑛",
+            "folder_path": "/案件/法扶案件/行政/2026-0045-李秀英-一審-勞工保險爭議",
+        }) == "李秀英"
 
 
 # ── LAF progress report reminders ────────────────────────────────────────────

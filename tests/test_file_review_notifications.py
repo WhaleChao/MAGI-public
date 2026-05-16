@@ -155,6 +155,53 @@ def test_portal_probe_error_is_business_readable():
     assert "frame_diagnostics" not in text
 
 
+def test_portal_item_display_party_uses_db_case_folder_for_typos():
+    module = _load_action_module()
+
+    class FakeDb:
+        def execute(self, query, params=None, fetch=None):
+            if params and params[0] == "115年度原訴字第000036號":
+                return {
+                    "case_number": "2026-0034",
+                    "court_case_number": "115年度原訴字第000036號",
+                    "client_name": "陳文眀",
+                    "folder_path": "/案件/法扶案件/刑事/2026-0034-陳文明-一審-傷害",
+                }
+            return None
+
+    party = module._display_party_for_case_item(
+        {
+            "party": "陳文眀",
+            "court_case_no": "115年度原訴字第000036號",
+        },
+        db=FakeDb(),
+        cache={},
+    )
+
+    assert party == "陳文明"
+
+
+def test_recent_activity_block_uses_folder_name_for_display_typos():
+    module = _load_action_module()
+
+    lines = module._format_recent_activity_block(
+        "最近卷宗下載",
+        [
+            {
+                "processed_at": datetime.now(),
+                "party": "李秀瑛",
+                "case_number": "115年度勞簡字第1號",
+                "folder_path": "/案件/法扶案件/行政/2026-0045-李秀英-一審-勞工保險爭議/09_閱卷/卷宗.pdf",
+                "detail": "已下載卷宗（1 份）",
+            }
+        ],
+    )
+
+    rendered = "\n".join(lines)
+    assert "李秀英｜115年度勞簡字第1號" in rendered
+    assert "李秀瑛" not in rendered
+
+
 def test_ola_error_page_is_labeled_and_treated_as_transient():
     module = _load_action_module()
 

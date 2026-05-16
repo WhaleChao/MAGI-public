@@ -55,6 +55,7 @@ from api.runtime_paths import (
     get_orch_dir,
     get_skill_python,
 )
+from api.case_display import display_case_label, display_client_name
 try:
     from api.openclaw_compat import get_legacy_telegram_settings, load_openclaw_config  # legacy fallback; module removed 2026-05-03
 except ImportError:
@@ -521,13 +522,7 @@ def _enqueue_manual_review(action: str, payload: dict, error_msg: str) -> str:
 
 
 def _case_label(row: dict) -> str:
-    party = str((row or {}).get("client_name") or "").strip()
-    court_case_no = str((row or {}).get("court_case_number") or "").strip()
-    case_no = str((row or {}).get("case_number") or "").strip()
-    parts = [x for x in [party, court_case_no or case_no] if x]
-    if parts:
-        return "｜".join(parts)
-    return court_case_no or case_no or "未判斷案件"
+    return display_case_label(row, case_keys=("court_case_number", "court_case_no", "case_number"))
 
 
 def _summarize_download_results(results: dict, *, max_cases: int = 0) -> Tuple[str, dict]:
@@ -558,7 +553,8 @@ def _summarize_download_results(results: dict, *, max_cases: int = 0) -> Tuple[s
             {
                 "case_number": str(row.get("case_number") or "").strip(),
                 "court_case_number": str(row.get("court_case_number") or "").strip(),
-                "client_name": str(row.get("client_name") or "").strip(),
+                "client_name": display_client_name(row),
+                "folder_path": str(row.get("folder_path") or "").strip(),
                 "file_count": file_count,
                 "files": [str(fp) for fp in file_list],
             }
@@ -1059,23 +1055,20 @@ def cmd_download(case_number: str, out_folder: str = "", headless: bool = True,
             downloader.move_to_case_folder(case, downloaded_files)
             _safe_flow_step_status(flow_id, "archive", status="succeeded", detail=f"archived {downloaded_count} files", ok=True)
 
-            msg = "📥 筆錄下載完成 — " + case_number
-            label_parts = []
-            if str(getattr(case, "client_name", "") or "").strip():
-                label_parts.append(str(getattr(case, "client_name", "")).strip())
-            if str(getattr(case, "court_case_number", "") or "").strip():
-                label_parts.append(str(getattr(case, "court_case_number", "")).strip())
-            elif str(getattr(case, "case_number", "") or "").strip():
-                label_parts.append(str(getattr(case, "case_number", "")).strip())
-            if label_parts:
-                msg = f"📥 筆錄下載完成 — {'｜'.join(label_parts)}（{downloaded_count} 份）"
+            case_record = {
+                "case_number": str(getattr(case, "case_number", "") or "").strip(),
+                "court_case_number": str(getattr(case, "court_case_number", "") or "").strip(),
+                "client_name": str(getattr(case, "client_name", "") or "").strip(),
+                "folder_path": str(getattr(case, "folder_path", "") or "").strip(),
+            }
+            msg = f"📥 筆錄下載完成 — {display_case_label(case_record)}（{downloaded_count} 份）"
             _notify(msg, notify)
             _mark_notify_step(flow_id, notify=notify, detail=msg)
             out = {
                 "success": True,
                 "case_number": case_number,
                 "court_case_number": str(getattr(case, "court_case_number", "") or "").strip(),
-                "client_name": str(getattr(case, "client_name", "") or "").strip(),
+                "client_name": display_client_name(case_record),
                 "downloaded_count": downloaded_count,
                 "files": [str(f) for f in downloaded_files[:10]],
                 "message": msg,

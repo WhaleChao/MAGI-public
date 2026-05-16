@@ -15,6 +15,7 @@ import sys
 import threading
 
 from api.command_registry import CommandContext
+from api.case_display import display_case_label
 from api.help_text import HELP_ALIASES, build_help_text
 from api.runtime_paths import (
     get_laf_script,
@@ -2114,11 +2115,7 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
                     for row in cases:
                         if not isinstance(row, dict):
                             continue
-                        case_no = str(row.get("case_number") or "").strip()
-                        court_case_no = str(row.get("court_case_number") or "").strip()
-                        party = str(row.get("client_name") or "").strip()
-                        label_parts = [x for x in [party, court_case_no or case_no] if x]
-                        label = "｜".join(label_parts) if label_parts else (court_case_no or case_no or "未判斷案件")
+                        label = display_case_label(row)
                         files = row.get("files")
                         file_list = files if isinstance(files, list) else []
                         lines.append(f"{shown + 1}. {label}（{len(file_list)} 份）")

@@ -31,6 +31,12 @@ sys.path.insert(0, os.path.join(PROJECT_ROOT, "casper_ecosystem", "law_firm_orch
 sys.path.insert(0, os.path.join(PROJECT_ROOT, "skills", "legal"))
 sys.path.insert(0, os.path.join(PROJECT_ROOT, "skills", "osc-orchestrator"))
 
+from api.case_display import (
+    display_client_name as _canonical_display_client_name,
+    folder_client_name as _canonical_folder_client_name,
+    is_unusable_client_label as _canonical_is_unusable_client_label,
+    should_trust_folder_client_name as _canonical_should_trust_folder_client_name,
+)
 from api.runtime_paths import get_config_path
 from api.case_path_mapper import default_case_roots, preferred_case_roots
 from api.product_runtime import get_product_profile, resolve_laf_portal_targets
@@ -106,10 +112,6 @@ _STATUS_TEXT_ALIASES = {
     "已結案": "已結案",
 }
 _NAME_FIXES = str.maketrans({"餘": "余"})
-_DISPLAY_NAME_OVERRIDES = {
-    # 既有案件資料夾與 DB 使用「游」，接案清冊/手動文字偶爾會誤成「遊」。
-    "遊秀鈴": "游秀鈴",
-}
 _BACKFILL_NOTICE_RE = re.compile(r"^\s*•\s+(?P<case>20\d{2}-\d{4})\s+.+?→\s+(?P<laf>\d{6,8}-[A-Za-z]-\d{3})", re.MULTILINE)
 
 
@@ -176,9 +178,24 @@ def _normalize_person_name(value: str) -> str:
     return text.translate(_NAME_FIXES)
 
 
+def _is_unusable_client_label(value: str) -> bool:
+    return _canonical_is_unusable_client_label(value)
+
+
+def _folder_client_name(case: dict) -> str:
+    return _canonical_folder_client_name(case)
+
+
+def _should_trust_folder_client_name(db_name: str, folder_name: str) -> bool:
+    return _canonical_should_trust_folder_client_name(db_name, folder_name)
+
+
 def _display_client_name(case: dict) -> str:
-    raw = str((case or {}).get("client_name") or "").strip()
-    return _DISPLAY_NAME_OVERRIDES.get(raw, raw)
+    return _canonical_display_client_name(case)
+
+
+def _client_label(case: dict) -> str:
+    return _display_client_name(case) or "?"
 
 
 def _backfill_notice_key(item: dict) -> str:
@@ -1875,7 +1892,7 @@ def _resolve_go_live_cases_from_portal(status: dict, db) -> list[dict]:
         resolved.append({
             "laf_case_number": laf_no,
             "osc_case_number": case.get("case_number", ""),
-            "client_name": case.get("client_name", ""),
+            "client_name": _display_client_name(case),
             "portal_status": "already_opened",
             "ok": True,
         })
@@ -1921,12 +1938,12 @@ def format_audit_report(
             inspected = _inspect_laf_number_candidates(c)
             candidate_numbers = sorted(inspected["candidate_numbers"])
             if len(candidate_numbers) == 1:
-                lines.append(f"  • {c['case_number']} {c.get('client_name', '?')} — 已找到 {candidate_numbers[0]}，待回填")
+                lines.append(f"  • {c['case_number']} {_client_label(c)} — 已找到 {candidate_numbers[0]}，待回填")
             elif len(candidate_numbers) > 1:
                 joined = "、".join(candidate_numbers)
-                lines.append(f"  • {c['case_number']} {c.get('client_name', '?')} — 找到多個候選案號：{joined}")
+                lines.append(f"  • {c['case_number']} {_client_label(c)} — 找到多個候選案號：{joined}")
             else:
-                lines.append(f"  • {c['case_number']} {c.get('client_name', '?')} — 未找到案號")
+                lines.append(f"  • {c['case_number']} {_client_label(c)} — 未找到案號")
         lines.append("")
 
     # 逾期未開辦
@@ -1934,7 +1951,7 @@ def format_audit_report(
     if not_started:
         lines.append(f"🚨 逾期未開辦：{len(not_started)} 件")
         for c in sorted(not_started, key=lambda x: x.get("days_overdue", 0), reverse=True):
-            lines.append(f"  • {_case_label(c)} {c.get('client_name', '?')} — 逾期 {c.get('days_overdue', '?')} 天")
+            lines.append(f"  • {_case_label(c)} {_client_label(c)} — 逾期 {c.get('days_overdue', '?')} 天")
         lines.append("")
 
     # 可開辦但未回報
@@ -1953,7 +1970,7 @@ def format_audit_report(
     if can_go_live_remaining:
         lines.append(f"📤 可回報開辦（資料齊全）：{len(can_go_live_remaining)} 件")
         for c in can_go_live_remaining:
-            lines.append(f"  • {_case_label(c)} {c.get('client_name', '?')}")
+            lines.append(f"  • {_case_label(c)} {_client_label(c)}")
         lines.append("")
 
     if go_live_auto_fixed:
@@ -1972,7 +1989,7 @@ def format_audit_report(
         lines.append(f"✅ 法扶已通過報結（已轉入）：{len(portal_approved)} 件")
         for entry in portal_approved:
             c = entry["case"]
-            lines.append(f"  • {_case_label(c)} {c.get('client_name', '?')} — {entry.get('portal_info', '')}")
+            lines.append(f"  • {_case_label(c)} {_client_label(c)} — {entry.get('portal_info', '')}")
         lines.append("")
 
     if portal_pending_transfer:
@@ -1980,14 +1997,14 @@ def format_audit_report(
         lines.append(f"⏳ 已送件，法扶審核中（待轉入）：{len(portal_pending_transfer)} 件（不需處理）")
         for entry in portal_pending_transfer:
             c = entry["case"]
-            lines.append(f"  • {_case_label(c)} {c.get('client_name', '?')}")
+            lines.append(f"  • {_case_label(c)} {_client_label(c)}")
         lines.append("")
 
     if portal_drafted:
         lines.append(f"📝 法扶網站已暫存，請上 lawyer.laf.org.tw 確認送出：{len(portal_drafted)} 件")
         for entry in portal_drafted:
             c = entry["case"]
-            lines.append(f"  • {_case_label(c)} {c.get('client_name', '?')} — {entry.get('portal_info', '')}")
+            lines.append(f"  • {_case_label(c)} {_client_label(c)} — {entry.get('portal_info', '')}")
         lines.append("  👉 送出後回覆 MAGI「<案號> 已報結」更新狀態")
         lines.append("")
 
@@ -1995,7 +2012,7 @@ def format_audit_report(
         lines.append(f"🚨 確認未報結（需處理）：{len(portal_unreported)} 件")
         for entry in portal_unreported:
             c = entry["case"]
-            lines.append(f"  • {_case_label(c)} {c.get('client_name', '?')}")
+            lines.append(f"  • {_case_label(c)} {_client_label(c)}")
         lines.append("")
 
     # fallback：若沒做 portal 驗證（dry_run 或無 pending），仍顯示 pending_close
@@ -2004,7 +2021,7 @@ def format_audit_report(
     if pending_close and not any_portal_result:
         lines.append(f"📝 已結案，需確認法扶報結狀態：{len(pending_close)} 件")
         for c in pending_close:
-            lines.append(f"  • {_case_label(c)} {c.get('client_name', '?')}")
+            lines.append(f"  • {_case_label(c)} {_client_label(c)}")
         lines.append("")
 
     # 有判決書可報結
@@ -2012,7 +2029,7 @@ def format_audit_report(
     if can_close:
         lines.append(f"📄 有判決書可報結：{len(can_close)} 件")
         for c in can_close:
-            lines.append(f"  • {_case_label(c)} {c.get('client_name', '?')}")
+            lines.append(f"  • {_case_label(c)} {_client_label(c)}")
         lines.append("")
 
     # 法扶官網新文件（含自動下載結果）
@@ -2098,7 +2115,7 @@ def format_audit_report(
         for c in sorted(progress_overdue, key=lambda x: x.get("days_since_assignment", 0), reverse=True):
             assigned = c.get("assignment_date") or "日期不明"
             days_since = c.get("days_since_assignment", "?")
-            lines.append(f"  • {_case_label(c)} {c.get('client_name', '?')} — 派案/建案 {assigned}，已 {days_since} 天")
+            lines.append(f"  • {_case_label(c)} {_client_label(c)} — 派案/建案 {assigned}，已 {days_since} 天")
         lines.append("  👉 若已回報，可回覆「<案號/姓名> 已回報」；MAGI 會冷卻 60 天後再提醒，並登上行事曆。")
         lines.append("")
 
@@ -2108,7 +2125,7 @@ def format_audit_report(
         for c in sorted(progress_suppressed, key=lambda x: x.get("days_since_assignment", 0), reverse=True):
             cooldown = c.get("cooldown") if isinstance(c.get("cooldown"), dict) else {}
             until = cooldown.get("cooldown_until") or "日期不明"
-            lines.append(f"  • {_case_label(c)} {c.get('client_name', '?')} — 下次提醒 {until}")
+            lines.append(f"  • {_case_label(c)} {_client_label(c)} — 下次提醒 {until}")
         lines.append("")
 
     # 全部正常
@@ -2522,7 +2539,7 @@ def run_backfill_only(notify: bool = True) -> dict:
     if final_missing:
         lines.append(f"⚠️ 仍缺案號：{len(final_missing)} 件")
         for c in final_missing[:10]:
-            lines.append(f"  • {c['case_number']} {c.get('client_name', '?')}")
+            lines.append(f"  • {c['case_number']} {_client_label(c)}")
     if not backfilled and not final_missing:
         lines.append("✅ 無需補填。")
 

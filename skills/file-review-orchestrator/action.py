@@ -67,6 +67,7 @@ try:
 except ImportError:
     pass
 from api.case_path_mapper import translate_case_path_to_local
+from api.case_display import display_client_name as _canonical_display_client_name
 from api.product_runtime import apply_product_runtime_env, product_profile_report
 try:
     from skills.ops import flow_ledger as _flow_ledger
@@ -2431,14 +2432,24 @@ def cmd_download(case_number: str = "", notify: bool = True, flow_id: str = "") 
                         return "\n".join(lines).strip(), {}
                     return "", {}
 
-                # Group by (party, court_case_no, folder)
+                # Group by canonical display party, court case no, and case folder.
+                display_cache = {}
                 groups = {}
                 for it in review_items:
                     if not isinstance(it, dict):
                         continue
-                    party = _norm(it.get("party") or "")
-                    court_case_no = _norm(it.get("court_case_no") or "")
-                    folder = _norm(it.get("folder") or "")
+                    display_record = _case_display_record(it, db=db, cache=display_cache)
+                    party = _norm(
+                        _canonical_display_client_name(display_record, name_keys=("client_name", "party", "name"))
+                        or "(未知)"
+                    )
+                    court_case_no = _norm(
+                        display_record.get("court_case_no")
+                        or display_record.get("court_case_number")
+                        or it.get("court_case_no")
+                        or ""
+                    )
+                    folder = _norm(display_record.get("folder_path") or it.get("folder") or "")
                     key = (party, court_case_no, folder)
                     groups.setdefault(key, []).append(it)
 
@@ -2848,6 +2859,96 @@ def _normalize_case_token(val: str) -> str:
         if cleaned:
             out.append(cleaned.lower())
     return "".join(out)
+
+
+def _case_display_cache_key(item: dict) -> str:
+    if not isinstance(item, dict):
+        return ""
+    parts = []
+    for field in ("case_number", "court_case_no", "court_case_number", "party", "folder", "folder_path"):
+        val = str(item.get(field) or "").strip()
+        if val:
+            parts.append(f"{field}:{val}")
+    return "|".join(parts)
+
+
+def _db_fetch_case_display_row(db, query: str, params: tuple) -> Optional[dict]:
+    if not db:
+        return None
+    try:
+        row = db.execute(query, params, fetch="one")
+    except Exception:
+        return None
+    return row if isinstance(row, dict) else None
+
+
+def _find_case_display_row(db, item: dict) -> Optional[dict]:
+    if not db or not isinstance(item, dict):
+        return None
+    raw_values = [
+        str(item.get("case_number") or "").strip(),
+        str(item.get("court_case_no") or "").strip(),
+        str(item.get("court_case_number") or "").strip(),
+    ]
+    for raw in raw_values:
+        if not raw:
+            continue
+        if re.fullmatch(r"\d{4}-\d{4}", raw):
+            row = _db_fetch_case_display_row(db, "SELECT * FROM cases WHERE case_number=%s LIMIT 1", (raw,))
+            if row:
+                return row
+        for column in ("court_case_number", "court_case_no", "case_number", "laf_case_number", "legal_aid_number"):
+            row = _db_fetch_case_display_row(db, f"SELECT * FROM cases WHERE `{column}`=%s LIMIT 1", (raw,))
+            if row:
+                return row
+    party = str(item.get("party") or item.get("client_name") or "").strip()
+    if party and not re.search(r"[○\[\]]|當事人", party):
+        try:
+            rows = db.execute(
+                "SELECT * FROM cases WHERE client_name=%s ORDER BY id DESC LIMIT 2",
+                (party,),
+                fetch="all",
+            )
+        except Exception:
+            rows = []
+        if isinstance(rows, list) and len(rows) == 1 and isinstance(rows[0], dict):
+            return rows[0]
+    return None
+
+
+def _case_display_record(item: dict, db=None, cache: Optional[dict] = None) -> dict:
+    record = dict(item or {})
+    if record.get("folder") and not record.get("folder_path"):
+        record["folder_path"] = record.get("folder")
+    if record.get("party") and not record.get("client_name"):
+        record["client_name"] = record.get("party")
+    key = _case_display_cache_key(record)
+    if cache is not None and key in cache:
+        row = cache[key]
+    else:
+        row = _find_case_display_row(db, record) if db else None
+        if cache is not None and key:
+            cache[key] = row or {}
+    if isinstance(row, dict) and row:
+        enriched = dict(record)
+        for field in (
+            "case_number",
+            "court_case_no",
+            "court_case_number",
+            "client_name",
+            "folder_path",
+            "laf_case_number",
+            "legal_aid_number",
+        ):
+            if row.get(field):
+                enriched[field] = row.get(field)
+        return enriched
+    return record
+
+
+def _display_party_for_case_item(item: dict, db=None, cache: Optional[dict] = None) -> str:
+    record = _case_display_record(item, db=db, cache=cache)
+    return _canonical_display_client_name(record, name_keys=("client_name", "party", "name")) or "(未知)"
 
 
 def _portal_item_case_key(item: dict) -> str:
@@ -3786,7 +3887,7 @@ def _format_recent_activity_block(title: str, records: List[dict], limit: int = 
         dt = it.get("processed_at")
         dt_text = dt.strftime("%m/%d %H:%M") if isinstance(dt, datetime) else "最近"
         caseno = str(it.get("case_number") or "-").strip() or "-"
-        party = str(it.get("party") or "(未知)").strip() or "(未知)"
+        party = _canonical_display_client_name(it, name_keys=("party", "client_name", "name")) or "(未知)"
         detail = str(it.get("detail") or "已處理").strip()
         lines.append(f"  {idx}. {dt_text} {party}｜{caseno} {detail}")
     if len(records) > limit:
@@ -3828,6 +3929,7 @@ def _load_recent_download_activity(days: int = 7) -> List[dict]:
                 continue
             party = str(item.get("party") or "").strip()
             case_number = str(item.get("court_case_no") or item.get("case_number") or "").strip()
+            folder = str(item.get("folder") or item.get("folder_path") or item.get("dst") or "").strip()
             artifact_type = _activity_artifact_kind(item)
             if action in {"copied", "moved"}:
                 detail = "已下載繳費單" if artifact_type == "payment_slip" else "已下載卷宗"
@@ -3842,6 +3944,7 @@ def _load_recent_download_activity(days: int = 7) -> List[dict]:
                 {
                     "party": party,
                     "case_number": case_number,
+                    "folder_path": folder,
                     "count": 0,
                     "artifact_type": artifact_type,
                     "detail": detail,
@@ -3854,6 +3957,7 @@ def _load_recent_download_activity(days: int = 7) -> List[dict]:
                 "processed_at": dt,
                 "party": payload["party"],
                 "case_number": payload["case_number"],
+                "folder_path": payload.get("folder_path") or "",
                 "detail": f"{payload.get('detail') or ('已下載繳費單' if artifact_type == 'payment_slip' else '已下載卷宗')}（{payload['count']} 份）",
                 "count": payload["count"],
                 "artifact_type": artifact_type,
@@ -4184,6 +4288,7 @@ def cmd_check_emails(notify: bool = True, notify_empty: bool = True) -> dict:
                     )
                     # 列出未繳費案件明細（分逾期/即將到期/無期限）
                     portal_items = portal_effective.get("items") or []
+                    _portal_display_cache = {}
                     _payment_notified_keys = _load_payment_notified_keys(creds["download_folder"])
                     _processed_payment_tokens = _load_processed_payment_tokens(creds["download_folder"])
                     groups = _filter_urgent_pending_payments(portal_items, days=14,
@@ -4200,7 +4305,7 @@ def cmd_check_emails(notify: bool = True, notify_empty: bool = True) -> dict:
                         lines = []
                         for idx, it in enumerate(items[:limit], 1):
                             caseno = it.get("court_case_no") or it.get("case_number") or "-"
-                            party = it.get("party") or "(未知)"
+                            party = _display_party_for_case_item(it, db=db, cache=_portal_display_cache)
                             dl = _format_roc_deadline(it.get("pay_deadline") or it.get("deadline") or "")
                             fee = it.get("fee") or ""
                             fee_str = f" ${fee}" if fee and fee != "0" else ""
@@ -4230,7 +4335,7 @@ def cmd_check_emails(notify: bool = True, notify_empty: bool = True) -> dict:
                         review_lines.append(f"可下載案件（共 {len(dl_items)} 件，已歸檔/已下載 {_skipped_total} 件已略過）：")
                         for idx, it in enumerate(dl_items[:10], 1):
                             caseno = it.get("court_case_no") or it.get("case_number") or "-"
-                            party = it.get("party") or "(未知)"
+                            party = _display_party_for_case_item(it, db=db, cache=_portal_display_cache)
                             review_lines.append(f"  {idx}. {party}｜{caseno}")
                         if len(dl_items) > 10:
                             review_lines.append(f"  ...（另有 {len(dl_items) - 10} 件）")
@@ -4243,7 +4348,7 @@ def cmd_check_emails(notify: bool = True, notify_empty: bool = True) -> dict:
                         review_lines.append(f"可到院閱卷案件（共 {len(pickup_items)} 件，不下載繳費單）：")
                         for idx, it in enumerate(pickup_items[:10], 1):
                             caseno = it.get("court_case_no") or it.get("case_number") or "-"
-                            party = it.get("party") or "(未知)"
+                            party = _display_party_for_case_item(it, db=db, cache=_portal_display_cache)
                             review_lines.append(f"  {idx}. {party}｜{caseno}")
                         if len(pickup_items) > 10:
                             review_lines.append(f"  ...（另有 {len(pickup_items) - 10} 件）")

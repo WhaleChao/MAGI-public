@@ -78,3 +78,25 @@ def test_transcript_summary_keeps_all_downloaded_files_by_default():
     assert "file_14.pdf" in msg
     assert "其餘" not in msg
     assert summary["cases"][0]["files"] == files
+
+
+def test_transcript_summary_uses_case_folder_for_display_name_typos():
+    mod = _load_transcript_action()
+    msg, summary = mod._summarize_download_results(
+        {
+            "cases": [
+                {
+                    "success": True,
+                    "case_number": "2026-0045",
+                    "client_name": "李秀瑛",
+                    "court_case_number": "115年度勞簡字第1號",
+                    "folder_path": "/案件/法扶案件/行政/2026-0045-李秀英-一審-勞工保險爭議",
+                    "files": ["/tmp/transcript.pdf"],
+                }
+            ]
+        }
+    )
+
+    assert "李秀英｜115年度勞簡字第1號（1 份）" in msg
+    assert "李秀瑛" not in msg
+    assert summary["cases"][0]["client_name"] == "李秀英"
