@@ -14,6 +14,7 @@ MAGI v2 is a locally-deployed AI operations platform built for a Taiwanese law f
 
 - [Quick Start](#quick-start)
 - [Current Public Status](#current-public-status)
+- [General User Manual](docs/USER_GUIDE.md)
 - [Architecture](#architecture)
   - [Three-Model Inference — Day / Night](#three-model-inference--day--night)
   - [Three-Philosopher Ensemble Review](#three-philosopher-ensemble-review)
@@ -112,6 +113,8 @@ curl http://127.0.0.1:8090/health
 ```
 
 Live acceptance is covered by `scripts/live_magi_mtp_eval.py`. The latest local verification exercised JSON routing, ReAct real tool calls, all ReAct tool-selection paths, tool-confusion guards, and hallucination abstention checks.
+
+For day-to-day operation, see the [MAGI general user manual](docs/USER_GUIDE.md).
 
 ---
 
