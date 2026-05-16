@@ -275,7 +275,7 @@ _ALLOWED_SKILLS: dict[str, str] = {
     "market-briefing":     "股市晨報/追蹤清單（task=list|brief，params: symbols）",
     "trial-prep":          "開庭準備摘要（task=prepare，params: case_no）",
     "osc-orchestrator":    "案件/當事人/帳務查詢（task=query，params: type, keyword）",
-    "interpreter-empirical-classifier": "最高法院通譯裁判實證分類（task=classify|status|self_test）",
+    "interpreter-empirical-classifier": "最高法院通譯裁判實證研究（task=fetch|fetch_and_classify|classify|status|self_test）",
 }
 
 
@@ -289,6 +289,7 @@ def _run_skill(skill_name: str = "", task: str = "run", params: str = "", **_) -
       contract-review      → 合約審閱 (task=review)
       worldmonitor-intel   → 法律新聞 (task=run)
       judgment-collector   → 依案由收集判決 (task=collect)
+      interpreter-empirical-classifier → 通譯判決抓取與實證分類 (task=fetch_and_classify)
     """
     if not skill_name:
         skill_list = "\n".join(f"  {k}: {v}" for k, v in _ALLOWED_SKILLS.items())
@@ -309,8 +310,12 @@ def _run_skill(skill_name: str = "", task: str = "run", params: str = "", **_) -
     try:
         from skills.bridge.http_pool import get_session
         session = get_session()
-        payload = {"skill": skill_name, "task": task, "timeout_sec": 60, **params_dict}
-        resp = session.post(f"{_tools_api_url()}/skills/run", json=payload, timeout=70)
+        timeout_sec = int(params_dict.pop("timeout_sec", 60) or 60) if isinstance(params_dict, dict) else 60
+        task_arg = task
+        if isinstance(params_dict, dict) and params_dict and "{" not in task_arg:
+            task_arg = f"{task_arg} {json.dumps(params_dict, ensure_ascii=False)}"
+        payload = {"skill": skill_name, "task": task_arg, "timeout_sec": timeout_sec}
+        resp = session.post(f"{_tools_api_url()}/skills/run", json=payload, timeout=max(70, timeout_sec + 10))
         if resp.status_code == 200:
             data = resp.json()
             if data.get("success"):
@@ -416,9 +421,9 @@ TOOLS: dict[str, dict[str, Any]] = {
             "可用 skill_name: judicial-web-search（判決搜尋）, statutes-vdb（法規）, "
             "labor-law-calculator（勞動計算）, contract-review（合約審閱）, "
             "worldmonitor-intel（法律新聞）, judgment-collector（案由判決）, "
-            "interpreter-empirical-classifier（通譯判決實證分類）"
+            "interpreter-empirical-classifier（通譯判決抓取與實證分類）"
         ),
-        "params": "skill_name: str, task: str（如 search/run/review）, params: str（JSON）",
+        "params": "skill_name: str, task: str（如 search/run/review/fetch_and_classify）, params: str（JSON）",
     },
 }
 

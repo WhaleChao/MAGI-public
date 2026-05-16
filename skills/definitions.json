@@ -1061,7 +1061,7 @@
         },
         {
             "name": "run_interpreter_empirical_classifier",
-            "description": "最高法院通譯裁判實證研究分類：將通譯判決 TXT 批次輸出 CSV/XLSX/Markdown，保留原文摘錄、法院結果、通譯爭點類型與判讀標記。用於通譯判決分類、判決實證研究分類、最高法院通譯表格。",
+            "description": "最高法院通譯裁判實證研究：可依指定關鍵字上網抓取司法院裁判，再將通譯判決 TXT 批次輸出 CSV/XLSX/Markdown，保留原文摘錄、法院結果、通譯爭點類型與判讀標記。用於通譯判決抓取、通譯判決分類、判決實證研究分類、最高法院通譯表格。",
             "endpoint": "/skills/run",
             "method": "POST",
             "sage": "casper",
@@ -1079,7 +1079,7 @@
                     },
                     "task": {
                         "type": "string",
-                        "description": "status|self_test|classify；可加 input_dir=/path/to/TXT output_prefix=/path/to/out"
+                        "description": "status|self_test|fetch|classify|fetch_and_classify；fetch/fetch_and_classify 可加 keyword=\"最高法院 通譯\" max_results=50 output_dir=/path；classify 可加 input_dir=/path/to/TXT output_prefix=/path/to/out"
                     }
                 },
                 "required": [

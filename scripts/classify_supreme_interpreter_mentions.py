@@ -10,9 +10,11 @@ from __future__ import annotations
 import argparse
 import csv
 import re
+import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
+from xml.sax.saxutils import escape
 
 
 DEFAULT_INPUT_DIR = Path("/Users/ai/Desktop/最高法院_通譯_TXT")
@@ -350,17 +352,112 @@ def write_markdown(rows: list[ClassifiedCase], path: Path) -> None:
             row.primary_category,
             row.outcome,
             row.issue_result,
-            row.snippets[:220].replace("\n", "<br>"),
+            row.snippets.replace("\n", "<br>"),
         ]
         escaped = [compact(v).replace("|", "｜") for v in values]
         lines.append("| " + " | ".join(escaped) + " |")
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+def _column_name(index: int) -> str:
+    name = ""
+    while index:
+        index, rem = divmod(index - 1, 26)
+        name = chr(65 + rem) + name
+    return name
+
+
+def write_xlsx_minimal(rows: list[ClassifiedCase], path: Path) -> None:
+    """Write a valid XLSX with stdlib only when openpyxl is unavailable."""
+    fields = list(ClassifiedCase.__dataclass_fields__.keys())
+    labels = {
+        "txt_index": "目前TXT編號",
+        "authoritative_index": "原812清單序號",
+        "court_no": "最高法院裁判字號",
+        "date": "裁判日期",
+        "cause": "案由",
+        "outcome": "法院判決/裁定結果",
+        "primary_category": "主分類",
+        "categories": "全部分類",
+        "issue_role": "通譯角色",
+        "issue_result": "通譯爭點處理",
+        "interpreter_marker": "通譯判讀標記",
+        "confidence": "分類信心",
+        "prior_case_no": "前審/相關案號",
+        "snippets": "通譯相關原文摘錄",
+        "source_file": "來源檔案",
+        "pdf_file": "PDF檔案",
+    }
+    table = [[labels[f] for f in fields]]
+    table.extend([[getattr(row, f) for f in fields] for row in rows])
+
+    sheet_rows = []
+    for r_idx, row in enumerate(table, start=1):
+        cells = []
+        for c_idx, value in enumerate(row, start=1):
+            ref = f"{_column_name(c_idx)}{r_idx}"
+            text = escape(str(value or ""))
+            cells.append(f'<c r="{ref}" t="inlineStr"><is><t xml:space="preserve">{text}</t></is></c>')
+        sheet_rows.append(f'<row r="{r_idx}">{"".join(cells)}</row>')
+    sheet_xml = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+        '<sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews>'
+        '<sheetData>'
+        + "".join(sheet_rows)
+        + '</sheetData><autoFilter ref="A1:P{}"/></worksheet>'.format(max(1, len(table)))
+    )
+    with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("[Content_Types].xml", (
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+            '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+            '<Default Extension="xml" ContentType="application/xml"/>'
+            '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'
+            '<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>'
+            '<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>'
+            '</Types>'
+        ))
+        zf.writestr("_rels/.rels", (
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+            '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>'
+            '</Relationships>'
+        ))
+        zf.writestr("xl/workbook.xml", (
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+            'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+            '<sheets><sheet name="通譯分類" sheetId="1" r:id="rId1"/></sheets></workbook>'
+        ))
+        zf.writestr("xl/_rels/workbook.xml.rels", (
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+            '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>'
+            '<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>'
+            '</Relationships>'
+        ))
+        zf.writestr("xl/styles.xml", (
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+            '<fonts count="1"><font><sz val="11"/><name val="Calibri"/></font></fonts>'
+            '<fills count="1"><fill><patternFill patternType="none"/></fill></fills>'
+            '<borders count="1"><border/></borders>'
+            '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>'
+            '<cellXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/></cellXfs>'
+            '</styleSheet>'
+        ))
+        zf.writestr("xl/worksheets/sheet1.xml", sheet_xml)
+
+
 def write_xlsx(rows: list[ClassifiedCase], path: Path) -> None:
-    from openpyxl import Workbook
-    from openpyxl.chart import BarChart, Reference
-    from openpyxl.styles import Alignment, Font, PatternFill
+    try:
+        from openpyxl import Workbook
+        from openpyxl.chart import BarChart, Reference
+        from openpyxl.styles import Alignment, Font, PatternFill
+    except ModuleNotFoundError:
+        write_xlsx_minimal(rows, path)
+        return
 
     fields = list(ClassifiedCase.__dataclass_fields__.keys())
     labels = {
