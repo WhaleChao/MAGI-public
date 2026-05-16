@@ -41,6 +41,7 @@ def folder_client_name(
     """Extract the client name from a MAGI/OSC case folder path when available."""
     record = record or {}
     case_number = str(record.get("case_number") or "").strip()
+    require_case_prefix = bool(re.fullmatch(r"\d{4}-\d{4}", case_number))
     for key in folder_keys:
         raw_path = str(record.get(key) or "").strip()
         if not raw_path:
@@ -49,7 +50,7 @@ def folder_client_name(
             match = _CASE_FOLDER_RE.match(part)
             if not match:
                 continue
-            if case_number and not part.startswith(f"{case_number}-"):
+            if require_case_prefix and not part.startswith(f"{case_number}-"):
                 continue
             rest = match.group("rest")
             pieces = rest.split("-")

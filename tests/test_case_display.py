@@ -22,6 +22,15 @@ def test_folder_client_name_works_from_subfolder_or_file_path():
     assert folder_client_name(record) == "李秀英"
 
 
+def test_folder_client_name_works_when_case_number_is_court_number():
+    record = {
+        "case_number": "115年度勞簡字第1號",
+        "folder_path": "/案件/法扶案件/行政/2026-0045-李秀英-一審-勞工保險爭議/09_閱卷/卷宗.pdf",
+    }
+
+    assert folder_client_name(record) == "李秀英"
+
+
 def test_display_case_label_uses_folder_name_before_raw_placeholder():
     record = {
         "case_number": "2026-0044",
