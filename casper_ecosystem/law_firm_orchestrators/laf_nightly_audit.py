@@ -80,6 +80,7 @@ Y_DRIVE_LAF = os.path.join(Y_DRIVE_ROOT, "法扶案件")
 REPORT_DIR = os.path.join(PROJECT_ROOT, "reports")
 _DRAFT_STATE_FILE = os.path.join(REPORT_DIR, "_portal_draft_state.json")
 _PROGRESS_COOLDOWN_FILE = os.path.join(REPORT_DIR, "_laf_progress_report_cooldown.json")
+_BACKFILL_NOTICE_STATE_FILE = os.path.join(REPORT_DIR, "_laf_backfill_notice_state.json")
 
 # LAF case number regex
 LAF_NO_RE = re.compile(r"\d{6,8}-[A-Za-z]-\d{3}")
@@ -106,6 +107,11 @@ _STATUS_TEXT_ALIASES = {
     "已結案": "已結案",
 }
 _NAME_FIXES = str.maketrans({"餘": "余"})
+_DISPLAY_NAME_OVERRIDES = {
+    # 既有案件資料夾與 DB 使用「游」，接案清冊/手動文字偶爾會誤成「遊」。
+    "遊秀鈴": "游秀鈴",
+}
+_BACKFILL_NOTICE_RE = re.compile(r"^\s*•\s+(?P<case>20\d{2}-\d{4})\s+.+?→\s+(?P<laf>\d{6,8}-[A-Za-z]-\d{3})", re.MULTILINE)
 
 
 # ─── DB Helper ─────────────────────────────────────────────────
@@ -169,6 +175,88 @@ def _normalize_status_text(value: str) -> str:
 def _normalize_person_name(value: str) -> str:
     text = re.sub(r"\s+", "", str(value or "").strip())
     return text.translate(_NAME_FIXES)
+
+
+def _display_client_name(case: dict) -> str:
+    raw = str((case or {}).get("client_name") or "").strip()
+    return _DISPLAY_NAME_OVERRIDES.get(raw, raw)
+
+
+def _backfill_notice_key(item: dict) -> str:
+    case_no = str((item or {}).get("case_number") or "").strip()
+    laf_no = str((item or {}).get("laf_no") or "").strip().upper()
+    if not case_no or not laf_no:
+        return ""
+    return f"{case_no}|{laf_no}"
+
+
+def _load_backfill_notice_state() -> dict:
+    try:
+        if not os.path.exists(_BACKFILL_NOTICE_STATE_FILE):
+            return {}
+        with open(_BACKFILL_NOTICE_STATE_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except Exception as e:
+        logger.warning("讀取法扶補填通知去重狀態失敗: %s", e)
+        return {}
+
+
+def _save_backfill_notice_state(state: dict) -> None:
+    try:
+        os.makedirs(os.path.dirname(_BACKFILL_NOTICE_STATE_FILE), exist_ok=True)
+        tmp = _BACKFILL_NOTICE_STATE_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(state or {}, f, ensure_ascii=False, indent=2, sort_keys=True)
+        os.replace(tmp, _BACKFILL_NOTICE_STATE_FILE)
+    except Exception as e:
+        logger.warning("儲存法扶補填通知去重狀態失敗: %s", e)
+
+
+def _load_prior_backfill_notice_keys() -> set[str]:
+    """Read old audit reports so already-announced backfills stay quiet after upgrades."""
+    keys: set[str] = set()
+    try:
+        for path in Path(REPORT_DIR).glob("laf_audit_*.md"):
+            try:
+                text = path.read_text(encoding="utf-8")
+            except Exception:
+                continue
+            for match in _BACKFILL_NOTICE_RE.finditer(text):
+                keys.add(f"{match.group('case')}|{match.group('laf').upper()}")
+    except Exception as e:
+        logger.debug("載入既有法扶巡檢報告去重資料失敗: %s", e)
+    return keys
+
+
+def _filter_new_backfill_notices(backfilled: List[dict], *, persist: bool = True) -> Tuple[List[dict], int]:
+    """Return only backfilled items that have not been announced before."""
+    if not backfilled:
+        return [], 0
+    state = _load_backfill_notice_state()
+    reported = set(state.get("reported_keys") or [])
+    reported |= _load_prior_backfill_notice_keys()
+    visible: List[dict] = []
+    suppressed = 0
+    changed = False
+    for item in backfilled:
+        key = _backfill_notice_key(item)
+        if not key:
+            visible.append(item)
+            continue
+        if key in reported:
+            suppressed += 1
+        else:
+            visible.append(item)
+            reported.add(key)
+            changed = True
+    if persist and (changed or suppressed):
+        _save_backfill_notice_state({
+            "version": 1,
+            "updated_at": datetime.now().isoformat(timespec="seconds"),
+            "reported_keys": sorted(reported),
+        })
+    return visible, suppressed
 
 
 def _normalize_file_label(value: str) -> str:
@@ -979,25 +1067,20 @@ def backfill_from_case_list(db, missing_cases: List[dict]) -> List[dict]:
         return []
     logger.info("接案清冊共 %d 筆", len(portal_entries))
 
-    # 建立 name → [entries] 索引
+    # 建立 normalized name → [entries] 索引，顯示名稱仍以本機 DB/資料夾為準。
     from collections import defaultdict
     name_index: dict = defaultdict(list)
     for entry in portal_entries:
-        name_index[entry["name"]].append(entry)
+        name_index[_normalize_person_name(entry["name"])].append(entry)
 
     backfilled = []
     for case in missing_cases:
-        client = (case.get("client_name") or "").strip().translate(_NAME_FIXES)
-        if not client:
+        client_display = _display_client_name(case)
+        client_key = _normalize_person_name(client_display)
+        if not client_key:
             continue
 
-        candidates = name_index.get(client, [])
-        if not candidates:
-            # 嘗試移除空白或異體字
-            for pname, plist in name_index.items():
-                if pname.replace(" ", "") == client.replace(" ", ""):
-                    candidates = plist
-                    break
+        candidates = name_index.get(client_key, [])
         if not candidates:
             continue
 
@@ -1021,7 +1104,7 @@ def backfill_from_case_list(db, missing_cases: List[dict]) -> List[dict]:
                 else:
                     logger.warning(
                         "⚠️ %s %s 在接案清冊有 %d 筆，案由比對失敗，需人工確認: %s",
-                        case["case_number"], client, len(candidates),
+                        case["case_number"], client_display, len(candidates),
                         [c["applyno"] for c in candidates],
                     )
                     continue
@@ -1033,11 +1116,11 @@ def backfill_from_case_list(db, missing_cases: List[dict]) -> List[dict]:
                 continue
             logger.info(
                 "✅ 接案清冊補填: %s %s → %s",
-                case["case_number"], client, chosen_no,
+                case["case_number"], client_display, chosen_no,
             )
             backfilled.append({
                 "case_number": case["case_number"],
-                "client_name": client,
+                "client_name": client_display,
                 "laf_no": chosen_no,
                 "source": "接案清冊",
             })
@@ -2910,6 +2993,8 @@ def format_audit_report(
     missing_laf: List[dict],
     backfilled: List[dict],
     status: dict,
+    visible_backfilled: Optional[List[dict]] = None,
+    suppressed_backfilled_count: int = 0,
 ) -> str:
     """格式化巡檢報告（Telegram friendly）。"""
     lines = ["📋 法扶夜間巡檢報告", f"日期：{date.today().isoformat()}", ""]
@@ -2919,11 +3004,15 @@ def format_audit_report(
     lines.append("")
 
     # 補填結果
-    if backfilled:
-        lines.append(f"✅ 自動補填法扶案號：{len(backfilled)} 件")
-        for b in backfilled:
+    report_backfilled = backfilled if visible_backfilled is None else visible_backfilled
+    if report_backfilled:
+        lines.append(f"✅ 自動補填法扶案號：{len(report_backfilled)} 件")
+        for b in report_backfilled:
             src_label = f"（{b['source']}）" if b.get("source") else ""
             lines.append(f"  • {b['case_number']} {b['client_name']} → {b['laf_no']}{src_label}")
+        lines.append("")
+    elif suppressed_backfilled_count and os.getenv("MAGI_LAF_AUDIT_SHOW_SUPPRESSED_BACKFILLS") == "1":
+        lines.append(f"ℹ️ 已略過既有法扶案號補填紀錄：{suppressed_backfilled_count} 件")
         lines.append("")
 
     # 仍缺案號
@@ -3251,7 +3340,7 @@ def run_audit(notify: bool = True, dry_run: bool = False) -> dict:
             if laf_no:
                 backfilled.append({
                     "case_number": case["case_number"],
-                    "client_name": case.get("client_name", ""),
+                    "client_name": _display_client_name(case),
                     "laf_no": laf_no,
                     "source": "資料夾",
                 })
@@ -3432,7 +3521,19 @@ def run_audit(notify: bool = True, dry_run: bool = False) -> dict:
     # 4. 格式化報告
     backfilled_case_numbers = {b["case_number"] for b in backfilled}
     final_missing_laf = [c for c in missing_laf if c["case_number"] not in backfilled_case_numbers]
-    report = format_audit_report(missing_laf, backfilled, status)
+    visible_backfilled, suppressed_backfilled_count = _filter_new_backfill_notices(
+        backfilled,
+        persist=not dry_run,
+    )
+    if suppressed_backfilled_count:
+        logger.info("已略過既有法扶案號補填通知: %d", suppressed_backfilled_count)
+    report = format_audit_report(
+        missing_laf,
+        backfilled,
+        status,
+        visible_backfilled=visible_backfilled,
+        suppressed_backfilled_count=suppressed_backfilled_count,
+    )
 
     # 5. 儲存報告
     save_report(report)
@@ -3462,6 +3563,8 @@ def run_audit(notify: bool = True, dry_run: bool = False) -> dict:
         "missing_laf_count": len(final_missing_laf),
         "initial_missing_laf_count": len(missing_laf),
         "backfilled_count": len(backfilled),
+        "reported_backfilled_count": len(visible_backfilled),
+        "suppressed_backfilled_notice_count": suppressed_backfilled_count,
         "not_started_count": len(status["not_started"]),
         "can_go_live_count": len(status["can_go_live"]),
         "pending_close_count": len(status["pending_close"]),
@@ -3510,7 +3613,7 @@ def run_backfill_only(notify: bool = True) -> dict:
         if laf_no:
             backfilled.append({
                 "case_number": case["case_number"],
-                "client_name": case.get("client_name", ""),
+                "client_name": _display_client_name(case),
                 "laf_no": laf_no,
                 "source": "資料夾",
             })
@@ -3529,12 +3632,15 @@ def run_backfill_only(notify: bool = True) -> dict:
         c for c in missing_laf
         if c["case_number"] not in {b["case_number"] for b in backfilled}
     ]
+    visible_backfilled, suppressed_backfilled_count = _filter_new_backfill_notices(backfilled)
     lines = [f"🔍 法扶案號補填結果（共 {len(missing_laf)} 件缺案號）"]
-    if backfilled:
-        lines.append(f"✅ 自動補填成功：{len(backfilled)} 件")
-        for b in backfilled[:15]:
+    if visible_backfilled:
+        lines.append(f"✅ 自動補填成功：{len(visible_backfilled)} 件")
+        for b in visible_backfilled[:15]:
             src_label = f"（{b['source']}）" if b.get("source") else ""
             lines.append(f"  • {b['case_number']} {b['client_name']} → {b['laf_no']}{src_label}")
+    elif suppressed_backfilled_count:
+        lines.append(f"✅ 已完成補填，既有紀錄 {suppressed_backfilled_count} 件不重複通知。")
     if final_missing:
         lines.append(f"⚠️ 仍缺案號：{len(final_missing)} 件")
         for c in final_missing[:10]:
@@ -3551,6 +3657,8 @@ def run_backfill_only(notify: bool = True) -> dict:
         "ok": True,
         "missing": len(missing_laf),
         "backfilled": len(backfilled),
+        "reported_backfilled": len(visible_backfilled),
+        "suppressed_backfilled_notice": suppressed_backfilled_count,
         "still_missing": len(final_missing),
         "items": backfilled,
         "message": msg,

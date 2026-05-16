@@ -220,6 +220,59 @@ class TestPortalPendingDraftFiltering:
         assert "1150206-A-042" in report
 
 
+class TestLafBackfillNoiseControl:
+    """確認法扶案號補填通知不會每天重複刷同一批案件。"""
+
+    def test_backfill_notice_suppressed_by_prior_audit_report(self, tmp_path, monkeypatch):
+        import casper_ecosystem.law_firm_orchestrators.laf_nightly_audit as audit
+
+        monkeypatch.setattr(audit, "REPORT_DIR", str(tmp_path))
+        monkeypatch.setattr(audit, "_BACKFILL_NOTICE_STATE_FILE", str(tmp_path / "_laf_backfill_notice_state.json"))
+        (tmp_path / "laf_audit_2026-05-16.md").write_text(
+            "✅ 自動補填法扶案號：1 件\n"
+            "  • 2025-0002 游秀鈴 → 1140715-A-024（資料夾）\n",
+            encoding="utf-8",
+        )
+
+        visible, suppressed = audit._filter_new_backfill_notices(
+            [{"case_number": "2025-0002", "client_name": "游秀鈴", "laf_no": "1140715-A-024", "source": "資料夾"}],
+            persist=False,
+        )
+
+        assert visible == []
+        assert suppressed == 1
+
+    def test_format_report_uses_all_backfilled_for_missing_but_hides_suppressed_notice(self):
+        from casper_ecosystem.law_firm_orchestrators.laf_nightly_audit import format_audit_report
+
+        status = {
+            "all_cases": [{}],
+            "not_started": [],
+            "can_go_live": [],
+            "pending_close": [],
+            "can_close": [],
+            "portal_drafts": {},
+        }
+        missing = [{"case_number": "2025-0002", "client_name": "游秀鈴"}]
+        backfilled = [{"case_number": "2025-0002", "client_name": "游秀鈴", "laf_no": "1140715-A-024", "source": "資料夾"}]
+
+        report = format_audit_report(
+            missing,
+            backfilled,
+            status,
+            visible_backfilled=[],
+            suppressed_backfilled_count=1,
+        )
+
+        assert "自動補填法扶案號" not in report
+        assert "仍待確認法扶案號" not in report
+
+    def test_display_client_name_keeps_canonical_you_xiu_ling(self):
+        from casper_ecosystem.law_firm_orchestrators.laf_nightly_audit import _display_client_name
+
+        assert _display_client_name({"client_name": "遊秀鈴"}) == "游秀鈴"
+
+
 # ── LAF progress report reminders ────────────────────────────────────────────
 
 class TestLafProgressReminders:
