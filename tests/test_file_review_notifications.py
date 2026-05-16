@@ -253,6 +253,7 @@ def test_court_pickup_portal_row_does_not_become_pending_payment(tmp_path):
         "party": "鑫源企業社",
         "court_case_no": "115年度聲字第123號",
         "rowid": "CP001",
+        "applydt": _roc_compact(-1),
     }
 
     assert module._portal_item_is_court_pickup_ready(item) is True
@@ -261,8 +262,46 @@ def test_court_pickup_portal_row_does_not_become_pending_payment(tmp_path):
     collapsed = module._collapse_portal_items([item], download_folder=str(tmp_path))
 
     assert collapsed["court_pickup_count"] == 1
+    assert collapsed["court_pickup_history_count"] == 0
     assert collapsed["pending_payment_count"] == 0
     assert collapsed["items"][0]["status"] == "court_pickup"
+
+
+def test_old_portal_court_pickup_rows_are_history_not_notifications(tmp_path):
+    module = _load_action_module()
+    item = {
+        "status": "court_pickup",
+        "status_name": "法院回覆同意",
+        "result_text": "請至本院閱覽紙本卷宗，不另製發繳費單。",
+        "party": "王有烈等",
+        "court_case_no": "108年度基簡字第000686號",
+        "rowid": "CP-OLD",
+        "applydt": _roc_compact(-90),
+    }
+
+    collapsed = module._collapse_portal_items([item], download_folder=str(tmp_path))
+
+    assert collapsed["court_pickup_count"] == 0
+    assert collapsed["court_pickup_history_count"] == 1
+    assert collapsed["count"] == 0
+    assert collapsed["items"] == []
+
+
+def test_completed_court_pickup_text_is_not_actionable(tmp_path):
+    module = _load_action_module()
+    item = {
+        "status": "pending_payment",
+        "paystatus": "2",
+        "status_name": "法院回覆同意",
+        "result_text": "已到院閱卷",
+        "party": "李家榛",
+        "court_case_no": "108年度基簡字第000883號",
+        "rowid": "CP-DONE",
+        "applydt": _roc_compact(-1),
+    }
+
+    assert module._portal_item_is_court_pickup_ready(item) is False
+    assert module._portal_item_is_actionable_pending(item) is False
 
 
 def test_downloaded_registry_suppresses_archived_downloadable_case(tmp_path):
@@ -349,9 +388,15 @@ def test_file_review_manager_waiting_or_denied_rows_are_not_court_pickup():
         "statusnm": "法院回覆不同意",
         "result": "不同意聲請，原因【已到院閱卷】",
     }
+    completed = {
+        "status": "3",
+        "statusnm": "法院回覆同意",
+        "result": "已到院閱卷",
+    }
 
     assert FileReviewManager._is_court_pickup_row(waiting, "聲請閱卷") is False
     assert FileReviewManager._is_court_pickup_row(denied, "") is False
+    assert FileReviewManager._is_court_pickup_row(completed, "") is False
 
 
 def test_payment_check_notice_stays_quiet_when_portal_has_no_pending_payment():

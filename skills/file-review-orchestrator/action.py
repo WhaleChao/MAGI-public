@@ -2986,10 +2986,32 @@ def _portal_item_is_paid(item: dict) -> bool:
     return any(kw in f"{status_name} {combined_text}" for kw in ("已繳", "繳費完成", "收據", "繳訖", "繳費憑證"))
 
 
-def _portal_item_is_court_pickup_ready(item: dict) -> bool:
+_PORTAL_COURT_PICKUP_DONE_MARKERS = (
+    "已到院閱卷",
+    "已來院閱卷",
+    "已至本院閱卷",
+    "已至法院閱卷",
+    "已完成閱卷",
+    "完成閱卷",
+    "閱卷完成",
+    "閱卷完畢",
+    "已閱卷",
+    "已閱畢",
+    "已取卷",
+    "已下載",
+    "下載完成",
+    "已逾期",
+    "逾期",
+    "期限已過",
+    "超過下載期限",
+    "逾下載期限",
+)
+
+
+def _portal_item_combined_text(item: dict) -> str:
     if not isinstance(item, dict):
-        return False
-    combined_text = "".join(
+        return ""
+    return "".join(
         str(item.get(field) or "").strip()
         for field in (
             "status_name",
@@ -3001,8 +3023,78 @@ def _portal_item_is_court_pickup_ready(item: dict) -> bool:
             "case_number",
         )
     )
+
+
+def _portal_item_has_done_or_expired_marker(item: dict) -> bool:
+    normalized = re.sub(r"\s+", "", _portal_item_combined_text(item))
+    if not normalized:
+        return False
+    # OLA list rows are a history surface.  Phrases like "已到院閱卷" mean the
+    # application was already consumed, not that the user has a new pickup task.
+    return any(marker in normalized for marker in _PORTAL_COURT_PICKUP_DONE_MARKERS)
+
+
+def _parse_portal_date(value: object):
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    digits = re.sub(r"\D", "", raw)
+    candidates = []
+    if len(digits) >= 8:
+        candidates.append(digits[:8])
+    if len(digits) >= 7:
+        candidates.append(digits[:7])
+    for token in candidates:
+        try:
+            if len(token) == 8:
+                year = int(token[:4])
+                month = int(token[4:6])
+                day = int(token[6:8])
+            elif len(token) == 7:
+                year = int(token[:3]) + 1911
+                month = int(token[3:5])
+                day = int(token[5:7])
+            else:
+                continue
+            if 2000 <= year <= 2100:
+                return datetime(year, month, day).date()
+        except Exception:
+            continue
+    return None
+
+
+def _portal_item_is_recent_court_pickup(item: dict, *, days: Optional[int] = None) -> bool:
+    if not isinstance(item, dict):
+        return False
+    if _portal_item_has_done_or_expired_marker(item):
+        return False
+    if days is None:
+        try:
+            days = int(os.environ.get("MAGI_FILE_REVIEW_PORTAL_PICKUP_ACTION_DAYS", "30") or "30")
+        except Exception:
+            days = 30
+    days = max(1, min(int(days or 30), 180))
+    today = datetime.now().date()
+    # applydt is the best signal for "newly approved paper/on-site review".
+    # deadline/downlimit can be a future availability window.  downdt means it
+    # has already been downloaded/read and is therefore intentionally excluded.
+    for field in ("applydt", "deadline", "downlimit", "dlmdate"):
+        dt = _parse_portal_date(item.get(field))
+        if not dt:
+            continue
+        if -days <= (dt - today).days <= days:
+            return True
+    return False
+
+
+def _portal_item_is_court_pickup_ready(item: dict) -> bool:
+    if not isinstance(item, dict):
+        return False
+    combined_text = _portal_item_combined_text(item)
     normalized = re.sub(r"\s+", "", combined_text)
     if not normalized:
+        return False
+    if _portal_item_has_done_or_expired_marker(item):
         return False
     status_name = str(item.get("status_name") or item.get("statusnm") or "").strip()
     status_code = str(item.get("status_code") or "").strip()
@@ -3428,6 +3520,7 @@ def _collapse_portal_items(
     downloadable_raw_count = 0
     downloadable_skipped_count = 0
     court_pickup = []
+    court_pickup_history_count = 0
     pending = []
     for item in merged:
         status = str(item.get("status") or "").strip()
@@ -3449,6 +3542,9 @@ def _collapse_portal_items(
             if status != "court_pickup":
                 item = dict(item)
                 item["status"] = "court_pickup"
+            if not _portal_item_is_recent_court_pickup(item):
+                court_pickup_history_count += 1
+                continue
             court_pickup.append(item)
             continue
         if not _portal_item_is_actionable_pending(item):
@@ -3478,6 +3574,7 @@ def _collapse_portal_items(
         "downloadable_raw_count": downloadable_raw_count,
         "downloadable_skipped_count": downloadable_skipped_count,
         "court_pickup_count": len(court_pickup),
+        "court_pickup_history_count": court_pickup_history_count,
         "pending_payment_count": len(pending),
         "items": actionable,
         "all_items": merged,
@@ -4241,6 +4338,7 @@ def cmd_check_emails(notify: bool = True, notify_empty: bool = True) -> dict:
                 "downloadable_raw_count": 0,
                 "downloadable_skipped_count": 0,
                 "court_pickup_count": 0,
+                "court_pickup_history_count": 0,
                 "pending_payment_count": 0,
                 "items": [],
             }
@@ -4250,6 +4348,7 @@ def cmd_check_emails(notify: bool = True, notify_empty: bool = True) -> dict:
             portal_downloadable = int(portal_effective.get("downloadable_count") or 0)
             portal_downloadable_skipped = int(portal_effective.get("downloadable_skipped_count") or 0)
             portal_pickup = int(portal_effective.get("court_pickup_count") or 0)
+            portal_pickup_history = int(portal_effective.get("court_pickup_history_count") or 0)
             portal_pending = int(portal_effective.get("pending_payment_count") or 0)
             recent_activity_all = _load_recent_processed_activity(creds["download_folder"], days=7, limit=8)
             recent_payment_activity_all = [
@@ -4283,8 +4382,11 @@ def cmd_check_emails(notify: bool = True, notify_empty: bool = True) -> dict:
                     _downloadable_note = f"{portal_downloadable} 件"
                     if portal_downloadable_skipped:
                         _downloadable_note = f"{portal_downloadable} 件（已歸檔/已下載略過 {portal_downloadable_skipped} 件）"
+                    _pickup_note = f"近期需到院閱卷：{portal_pickup} 件"
+                    if portal_pickup_history:
+                        _pickup_note += f"（歷史/已完成列已略過 {portal_pickup_history} 件）"
                     review_lines.append(
-                        f"- 入口列表可下載：{_downloadable_note}，可到院閱卷：{portal_pickup} 件（同案合併後需回報 {portal_count} 案，原始 {portal_raw_count} 列）"
+                        f"- 入口列表可下載：{_downloadable_note}，{_pickup_note}（同案合併後需回報 {portal_count} 案，原始 {portal_raw_count} 列）"
                     )
                     # 列出未繳費案件明細（分逾期/即將到期/無期限）
                     portal_items = portal_effective.get("items") or []
@@ -4345,7 +4447,7 @@ def cmd_check_emails(notify: bool = True, notify_empty: bool = True) -> dict:
                     ]
                     if pickup_items:
                         review_lines.append("")
-                        review_lines.append(f"可到院閱卷案件（共 {len(pickup_items)} 件，不下載繳費單）：")
+                        review_lines.append(f"近期需到院閱卷案件（共 {len(pickup_items)} 件，不下載繳費單）：")
                         for idx, it in enumerate(pickup_items[:10], 1):
                             caseno = it.get("court_case_no") or it.get("case_number") or "-"
                             party = _display_party_for_case_item(it, db=db, cache=_portal_display_cache)
@@ -4504,6 +4606,7 @@ def cmd_check_emails(notify: bool = True, notify_empty: bool = True) -> dict:
                 "portal_downloadable_count": portal_downloadable,
                 "portal_downloadable_skipped_count": portal_downloadable_skipped,
                 "portal_court_pickup_count": portal_pickup,
+                "portal_court_pickup_history_count": portal_pickup_history,
                 "portal_pending_payment_count": portal_pending,
                 "portal_probe_ok": bool(portal_summary.get("success")),
                 "portal_probe_error": "" if bool(portal_summary.get("success")) else str(portal_summary.get("error") or ""),
@@ -4536,6 +4639,7 @@ def cmd_check_emails(notify: bool = True, notify_empty: bool = True) -> dict:
                     "portal_downloadable_count": portal_downloadable,
                     "portal_downloadable_skipped_count": portal_downloadable_skipped,
                     "portal_court_pickup_count": portal_pickup,
+                    "portal_court_pickup_history_count": portal_pickup_history,
                     "portal_pending_payment_count": portal_pending,
                     "portal_probe_ok": bool(portal_summary.get("success")),
                     "portal_probe_error": "" if bool(portal_summary.get("success")) else str(portal_summary.get("error") or ""),
@@ -4752,10 +4856,14 @@ def cmd_downloadable_probe(days: int = 30, notify: bool = False,
         count = int(portal_effective.get("count") or 0)
         downloadable_count = int(portal_effective.get("downloadable_count") or 0)
         court_pickup_count = int(portal_effective.get("court_pickup_count") or 0)
+        court_pickup_history_count = int(portal_effective.get("court_pickup_history_count") or 0)
         pending_payment_count = int(portal_effective.get("pending_payment_count") or 0)
+        pickup_phrase = f"近期需到院閱卷 {court_pickup_count} 件"
+        if court_pickup_history_count:
+            pickup_phrase += f"（歷史/已完成列已略過 {court_pickup_history_count} 件）"
         msg = (
             f"法院端狀態掃描完成（入口列表）：法院端可下載 {downloadable_count} 件（含已歸檔），"
-            f"可到院閱卷 {court_pickup_count} 件，待繳費 {pending_payment_count} 件，"
+            f"{pickup_phrase}，待繳費 {pending_payment_count} 件，"
             f"同案合併後共 {count} 案（原始 {raw_count} 列）"
         )
         if bool(gmail_r.get("success")):
@@ -4768,6 +4876,7 @@ def cmd_downloadable_probe(days: int = 30, notify: bool = False,
             "count": count,
             "downloadable_count": downloadable_count,
             "court_pickup_count": court_pickup_count,
+            "court_pickup_history_count": court_pickup_history_count,
             "pending_payment_count": pending_payment_count,
             "items": items,
             "items_total": len(effective_items),
@@ -4779,6 +4888,7 @@ def cmd_downloadable_probe(days: int = 30, notify: bool = False,
                 "case_count": case_count,
                 "downloadable_count": downloadable_count,
                 "court_pickup_count": court_pickup_count,
+                "court_pickup_history_count": court_pickup_history_count,
                 "pending_payment_count": pending_payment_count,
                 "items_total": len(effective_items),
                 "error": portal_r.get("error") if not bool(portal_r.get("success")) else "",

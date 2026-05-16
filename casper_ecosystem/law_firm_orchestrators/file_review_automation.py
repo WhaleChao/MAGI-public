@@ -4703,6 +4703,7 @@ class FileReviewManager:
                         "status_code": status_code,
                         "status_name": status_name,
                         "result_text": result_text,
+                        "row_text": row_text[:1000],
                         "payment_flag": payment_flag,
                         "payid": payid,
                         "rowid": rowid,
@@ -4795,6 +4796,28 @@ class FileReviewManager:
         normalized = re.sub(r"\s+", "", str(text or ""))
         if not normalized:
             return False
+        done_or_expired_markers = (
+            "已到院閱卷",
+            "已來院閱卷",
+            "已至本院閱卷",
+            "已至法院閱卷",
+            "已完成閱卷",
+            "完成閱卷",
+            "閱卷完成",
+            "閱卷完畢",
+            "已閱卷",
+            "已閱畢",
+            "已取卷",
+            "已下載",
+            "下載完成",
+            "已逾期",
+            "逾期",
+            "期限已過",
+            "超過下載期限",
+            "逾下載期限",
+        )
+        if any(kw in normalized for kw in done_or_expired_markers):
+            return False
         pickup_keywords = (
             "到院閱卷",
             "來院閱卷",
@@ -4840,7 +4863,7 @@ class FileReviewManager:
         status = str(row_json.get("status") or "").strip()
         statusnm = str(row_json.get("statusnm") or "").strip()
         result = str(row_json.get("result") or "")
-        combined = f"{statusnm}\n{result}\n{row_json.get('clnm') or ''}"
+        combined = f"{statusnm}\n{result}\n{row_text or ''}\n{row_json.get('clnm') or ''}"
         normalized = re.sub(r"\s+", "", combined)
         if any(kw in normalized for kw in ("不同意", "取消閱卷", "尚未回覆", "待法院回覆")):
             return False
