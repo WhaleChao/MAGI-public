@@ -116,6 +116,7 @@ python3 scripts/public_release_audit.py --public-isolation --strict
 Commercial readiness documents:
 
 - [Commercial readiness guide](docs/COMMERCIAL_READINESS.md)
+- [General user manual](docs/USER_GUIDE.md)
 - [Public operation manual](docs/PUBLIC_OPERATION_MANUAL.md)
 - [Private operation manual](docs/PRIVATE_OPERATION_MANUAL.md)
 - [Public self-install guide](docs/PUBLIC_SELF_INSTALL.md)
