@@ -230,6 +230,7 @@ def check_all_react_tools() -> CheckResult:
         ("calculate", "請用計算工具算 100*3+50。", {}),
         ("current_time", "請用工具確認現在日期時間。", {}),
         ("run_skill", "請用 MAGI 技能 contract-review 審閱這段合約：甲方應於十日內付款。", {}),
+        ("run_skill", "請產出最高法院通譯判決的實證研究分類表。", {"not_tools": ["search_judgments", "web_search"]}),
     ]
     rows: list[dict[str, Any]] = []
     tools = _instrumented_tools()

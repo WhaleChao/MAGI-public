@@ -1060,6 +1060,35 @@
             }
         },
         {
+            "name": "run_interpreter_empirical_classifier",
+            "description": "最高法院通譯裁判實證研究分類：將通譯判決 TXT 批次輸出 CSV/XLSX/Markdown，保留原文摘錄、法院結果、通譯爭點類型與判讀標記。用於通譯判決分類、判決實證研究分類、最高法院通譯表格。",
+            "endpoint": "/skills/run",
+            "method": "POST",
+            "sage": "casper",
+            "iron_dome": true,
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "skill": {
+                        "type": "string",
+                        "description": "Skill folder name (default: interpreter-empirical-classifier)",
+                        "default": "interpreter-empirical-classifier",
+                        "enum": [
+                            "interpreter-empirical-classifier"
+                        ]
+                    },
+                    "task": {
+                        "type": "string",
+                        "description": "status|self_test|classify；可加 input_dir=/path/to/TXT output_prefix=/path/to/out"
+                    }
+                },
+                "required": [
+                    "task",
+                    "skill"
+                ]
+            }
+        },
+        {
             "name": "run_laf_portal_automation",
             "description": "法扶入口流程技能：登入、查案、只暫存（不送出）回報流程。",
             "endpoint": "/skills/run",

@@ -16,6 +16,12 @@ from typing import Iterable
 
 
 DEFAULT_INPUT_DIR = Path("/Users/ai/Desktop/最高法院_通譯_TXT")
+DEFAULT_INPUT_CANDIDATES = (
+    DEFAULT_INPUT_DIR / "完整812" / "TXT",
+    DEFAULT_INPUT_DIR / "TXT",
+    DEFAULT_INPUT_DIR,
+    Path("/Users/ai/Desktop/AGENT TEST DATA/最高法院_通譯_TXT/完整812/TXT"),
+)
 
 
 QUALITY_PATTERNS = [
@@ -79,6 +85,7 @@ class ClassifiedCase:
     categories: str
     issue_role: str
     issue_result: str
+    interpreter_marker: str
     confidence: str
     prior_case_no: str
     snippets: str
@@ -176,7 +183,9 @@ def find_contexts(text: str, keyword: str = "通譯", window: int = 180, max_ite
     return contexts
 
 
-def classify_contexts(contexts: list[str], outcome: str) -> tuple[str, str, str, str, str]:
+def classify_contexts(contexts: list[str], outcome: str) -> tuple[str, str, str, str, str, str]:
+    if not contexts:
+        return "缺全文", "缺全文", "非通譯爭點", "非通譯爭點", "缺全文", "低"
     joined = "\n".join(contexts)
     material_contexts = [c for c in contexts if not is_pure_legal_template_context(c)]
     material_joined = "\n".join(material_contexts)
@@ -207,12 +216,18 @@ def classify_contexts(contexts: list[str], outcome: str) -> tuple[str, str, str,
         "通譯參與之法庭程序/辯護權爭議",
     ])
     role = "通譯為上訴/抗告/再審爭點" if is_interpreter_issue else "非通譯爭點"
+    if is_interpreter_issue:
+        interpreter_marker = "實質通譯爭點"
+    elif has_legal:
+        interpreter_marker = "僅條文引用"
+    else:
+        interpreter_marker = "含通譯文字"
 
     rejected = compile_any(REJECTED_PATTERNS, material_joined)
     accepted = compile_any(ACCEPTED_PATTERNS, material_joined) or "撤銷發回" in outcome
     if not is_interpreter_issue:
         issue_result = "非通譯爭點"
-        confidence = "高"
+        confidence = "中" if has_legal else "中低"
     elif accepted and "撤銷發回" in outcome and not rejected:
         issue_result = "疑似採納或與撤銷發回相關"
         confidence = "中"
@@ -224,7 +239,7 @@ def classify_contexts(contexts: list[str], outcome: str) -> tuple[str, str, str,
         confidence = "中"
 
     primary = issue_categories[0] if issue_categories else material[0]
-    return primary, "；".join(material), role, issue_result, confidence
+    return primary, "；".join(material), role, issue_result, interpreter_marker, confidence
 
 
 def classify_file(path: Path) -> ClassifiedCase:
@@ -233,7 +248,7 @@ def classify_file(path: Path) -> ClassifiedCase:
     main_text = extract_main_text(text)
     outcome = classify_outcome(main_text)
     contexts = find_contexts(text)
-    primary, categories, role, issue_result, confidence = classify_contexts(contexts, outcome)
+    primary, categories, role, issue_result, interpreter_marker, confidence = classify_contexts(contexts, outcome)
     txt_index, authoritative_index = source_indexes(path)
     return ClassifiedCase(
         txt_index=txt_index,
@@ -246,12 +261,25 @@ def classify_file(path: Path) -> ClassifiedCase:
         categories=categories,
         issue_role=role,
         issue_result=issue_result,
+        interpreter_marker=interpreter_marker,
         confidence=confidence,
         prior_case_no=extract_prior_case_no(text),
         snippets=format_snippets(representative_contexts(contexts)),
         source_file=str(path),
-        pdf_file=str((path.parent / "PDF" / path.with_suffix(".pdf").name)) if (path.parent / "PDF" / path.with_suffix(".pdf").name).exists() else "",
+        pdf_file=str(resolve_pdf_path(path)),
     )
+
+
+def resolve_pdf_path(path: Path) -> Path | str:
+    pdf_name = path.with_suffix(".pdf").name
+    for candidate in (
+        path.parent / "PDF" / pdf_name,
+        path.parent.parent / "PDF" / pdf_name,
+        path.with_suffix(".pdf"),
+    ):
+        if candidate.exists():
+            return candidate
+    return ""
 
 
 def source_indexes(path: Path) -> tuple[str, str]:
@@ -282,6 +310,7 @@ def format_snippets(contexts: list[str]) -> str:
         return ""
     parts = []
     for idx, context in enumerate(contexts, start=1):
+        context = context.replace("通譯", "【通譯】")
         parts.append(f"【原文摘錄 {idx}】{context}")
     return "\n\n".join(parts)
 
@@ -345,6 +374,7 @@ def write_xlsx(rows: list[ClassifiedCase], path: Path) -> None:
         "categories": "全部分類",
         "issue_role": "通譯角色",
         "issue_result": "通譯爭點處理",
+        "interpreter_marker": "通譯判讀標記",
         "confidence": "分類信心",
         "prior_case_no": "前審/相關案號",
         "snippets": "通譯相關原文摘錄",
@@ -373,7 +403,7 @@ def write_xlsx(rows: list[ClassifiedCase], path: Path) -> None:
     widths = {
         "A": 14, "B": 16, "C": 34, "D": 18, "E": 24, "F": 22,
         "G": 28, "H": 46, "I": 24, "J": 24, "K": 12, "L": 44,
-        "M": 100, "N": 60, "O": 60,
+        "M": 24, "N": 100, "O": 60, "P": 60,
     }
     for col, width in widths.items():
         ws.column_dimensions[col].width = width
@@ -435,13 +465,22 @@ def write_xlsx(rows: list[ClassifiedCase], path: Path) -> None:
     wb.save(path)
 
 
+def resolve_input_dir(raw: str = "") -> Path:
+    if raw:
+        return Path(raw).expanduser()
+    for candidate in DEFAULT_INPUT_CANDIDATES:
+        if candidate.exists() and any(candidate.glob("*.txt")):
+            return candidate
+    return DEFAULT_INPUT_DIR
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="分類最高法院裁判中提到通譯的段落")
-    parser.add_argument("--input-dir", default=str(DEFAULT_INPUT_DIR))
+    parser.add_argument("--input-dir", default="")
     parser.add_argument("--output-prefix", default="")
     args = parser.parse_args()
 
-    input_dir = Path(args.input_dir)
+    input_dir = resolve_input_dir(args.input_dir)
     prefix = Path(args.output_prefix) if args.output_prefix else input_dir / "最高法院_通譯_分類表"
     rows = [classify_file(path) for path in sorted(input_dir.glob("*.txt"))]
     rows = dedupe_cases(rows)

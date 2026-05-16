@@ -275,6 +275,7 @@ _ALLOWED_SKILLS: dict[str, str] = {
     "market-briefing":     "股市晨報/追蹤清單（task=list|brief，params: symbols）",
     "trial-prep":          "開庭準備摘要（task=prepare，params: case_no）",
     "osc-orchestrator":    "案件/當事人/帳務查詢（task=query，params: type, keyword）",
+    "interpreter-empirical-classifier": "最高法院通譯裁判實證分類（task=classify|status|self_test）",
 }
 
 
@@ -414,7 +415,8 @@ TOOLS: dict[str, dict[str, Any]] = {
             "執行 MAGI 技能（白名單保護）。"
             "可用 skill_name: judicial-web-search（判決搜尋）, statutes-vdb（法規）, "
             "labor-law-calculator（勞動計算）, contract-review（合約審閱）, "
-            "worldmonitor-intel（法律新聞）, judgment-collector（案由判決）"
+            "worldmonitor-intel（法律新聞）, judgment-collector（案由判決）, "
+            "interpreter-empirical-classifier（通譯判決實證分類）"
         ),
         "params": "skill_name: str, task: str（如 search/run/review）, params: str（JSON）",
     },
