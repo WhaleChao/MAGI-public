@@ -155,6 +155,47 @@ def test_portal_probe_error_is_business_readable():
     assert "frame_diagnostics" not in text
 
 
+def test_ola_error_page_is_labeled_and_treated_as_transient():
+    module = _load_action_module()
+
+    result = {
+        "error": "navigate_failed",
+        "error_code": "ola_error_page",
+        "error_detail": "https://ola.judicial.gov.tw/judrf/lssologinchk.htm",
+    }
+
+    text = module._format_portal_probe_error(result)
+
+    assert "法院入口回傳錯誤頁" in text
+    assert module._is_transient_portal_probe_failure(result) is True
+
+
+def test_portal_probe_failure_alerts_only_after_streak(tmp_path, monkeypatch):
+    module = _load_action_module()
+
+    monkeypatch.setenv("MAGI_FILE_REVIEW_PORTAL_FAILURE_NOTIFY_STREAK", "3")
+    result = {
+        "success": False,
+        "error": "navigate_failed",
+        "error_code": "ola_error_page",
+    }
+
+    first = module._record_portal_probe_state(str(tmp_path), result)
+    second = module._record_portal_probe_state(str(tmp_path), result)
+    third = module._record_portal_probe_state(str(tmp_path), result)
+
+    assert first["failure_streak"] == 1
+    assert first["should_alert"] is False
+    assert second["failure_streak"] == 2
+    assert second["should_alert"] is False
+    assert third["failure_streak"] == 3
+    assert third["should_alert"] is True
+
+    cleared = module._record_portal_probe_state(str(tmp_path), {"success": True})
+    assert cleared["failure_streak"] == 0
+    assert not (tmp_path / ".portal_probe_failure_state.json").exists()
+
+
 def test_court_pickup_portal_row_does_not_become_pending_payment(tmp_path):
     module = _load_action_module()
     item = {

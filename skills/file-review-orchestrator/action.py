@@ -3390,12 +3390,17 @@ def _format_portal_probe_error(result: dict) -> str:
     label_map = {
         "sso_login_failed": "法院單一登入失敗，請重新登入或確認驗證碼",
         "navigate_failed": "無法進入閱卷系統入口",
+        "ola_error_page": "法院入口回傳錯誤頁，MAGI 已改用重試與連續失敗門檻處理",
+        "popup_timeout": "法院入口新視窗逾時",
+        "new_window_timeout": "法院入口新視窗逾時",
         "list_view_unavailable": "找不到入口列表頁",
         "list_page_auth_required": "法院入口要求重新登入或權限確認",
         "list_page_verification_failed": "入口列表沒有正確載入，可能法院端空白或頁面改版",
         "portal_probe_not_run": "入口列表尚未執行探測",
     }
-    base = label_map.get(error) or label_map.get(code) or error or code or "未知原因"
+    # Prefer the more specific navigation code (for example ola_error_page)
+    # over the generic wrapper error navigate_failed.
+    base = label_map.get(code) or label_map.get(error) or error or code or "未知原因"
     if "missing credentials" in base:
         base = "尚未設定法院入口帳號密碼"
     elif code and code not in {error, base} and code not in label_map:
@@ -3419,6 +3424,83 @@ def _format_portal_probe_error(result: dict) -> str:
         preview = re.sub(r"\s+", " ", preview)[:90]
         return f"{base}；頁面顯示：{preview}"
     return base
+
+
+_PORTAL_PROBE_TRANSIENT_ERRORS = {
+    "ola_error_page",
+    "popup_timeout",
+    "new_window_timeout",
+    "navigate_failed",
+    "navigation_exception",
+}
+
+
+def _portal_probe_error_key(result: dict) -> str:
+    code = str((result or {}).get("error_code") or "").strip()
+    error = str((result or {}).get("error") or "").strip()
+    return code or error or "unknown"
+
+
+def _is_transient_portal_probe_failure(result: dict) -> bool:
+    key = _portal_probe_error_key(result)
+    return key in _PORTAL_PROBE_TRANSIENT_ERRORS
+
+
+def _portal_probe_failure_state_path(download_folder: str) -> str:
+    base = str(download_folder or DEFAULT_DOWNLOAD_FOLDER).strip() or DEFAULT_DOWNLOAD_FOLDER
+    return os.path.join(base, ".portal_probe_failure_state.json")
+
+
+def _record_portal_probe_state(download_folder: str, result: dict) -> dict:
+    """Return alert metadata for portal probe failures and suppress one-off noise."""
+    path = _portal_probe_failure_state_path(download_folder)
+    if bool((result or {}).get("success")):
+        try:
+            if os.path.exists(path):
+                os.remove(path)
+        except Exception:
+            logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, "_record_portal_probe_state/success", exc_info=True)
+        return {"failure_streak": 0, "should_alert": False, "error_key": ""}
+
+    key = _portal_probe_error_key(result)
+    prev: dict = {}
+    try:
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as f:
+                prev = json.load(f) or {}
+    except Exception:
+        prev = {}
+    prev_key = str(prev.get("error_key") or "")
+    streak = int(prev.get("failure_streak") or 0)
+    streak = streak + 1 if prev_key == key else 1
+    try:
+        threshold = int(os.environ.get("MAGI_FILE_REVIEW_PORTAL_FAILURE_NOTIFY_STREAK", "3") or "3")
+    except Exception:
+        threshold = 3
+    threshold = max(1, threshold)
+    payload = {
+        "error_key": key,
+        "failure_streak": streak,
+        "threshold": threshold,
+        "last_failure_at": datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
+        "error": str((result or {}).get("error") or "")[:200],
+        "error_code": str((result or {}).get("error_code") or "")[:200],
+    }
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+    except Exception:
+        logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, "_record_portal_probe_state/write", exc_info=True)
+    payload["should_alert"] = bool(streak >= threshold)
+    return payload
+
+
+def _portal_probe_attempt_count(result: dict) -> int:
+    try:
+        return int((result or {}).get("attempts") or 1)
+    except Exception:
+        return 1
 
 
 def _parse_iso_datetime(val: str) -> Optional[datetime]:
@@ -3986,19 +4068,37 @@ def cmd_check_emails(notify: bool = True, notify_empty: bool = True) -> dict:
                 try:
                     logger.info("Checking live portal list for pending-payment/downloadable rows...")
                     probe_mod = _ensure_portal_probe_imports()
-                    probe_mgr = probe_mod.FileReviewManager(
-                        username=creds["username"],
-                        password=creds["password"],
-                        download_folder=creds["download_folder"],
-                        db_manager=db,
-                        headless=True,
-                        log_callback=lambda msg: logger.info(msg),
-                    )
                     try:
-                        portal_summary = probe_mgr.probe_downloadable_from_portal() or portal_summary
-                        portal_summary["probe_module"] = getattr(probe_mod, "__file__", "")
-                    finally:
-                        probe_mgr.close()
+                        max_attempts = int(os.environ.get("MAGI_FILE_REVIEW_PORTAL_PROBE_RETRIES", "2") or "2")
+                    except Exception:
+                        max_attempts = 2
+                    max_attempts = max(1, min(max_attempts, 3))
+                    last_summary = portal_summary
+                    for attempt in range(1, max_attempts + 1):
+                        probe_mgr = probe_mod.FileReviewManager(
+                            username=creds["username"],
+                            password=creds["password"],
+                            download_folder=creds["download_folder"],
+                            db_manager=db,
+                            headless=True,
+                            log_callback=lambda msg: logger.info(msg),
+                        )
+                        try:
+                            last_summary = probe_mgr.probe_downloadable_from_portal() or portal_summary
+                            last_summary["probe_module"] = getattr(probe_mod, "__file__", "")
+                            last_summary["attempts"] = attempt
+                        finally:
+                            probe_mgr.close()
+                        if bool(last_summary.get("success")) or not _is_transient_portal_probe_failure(last_summary):
+                            break
+                        if attempt < max_attempts:
+                            logger.warning(
+                                "Portal probe transient failure (%s); retrying with a fresh session (%d/%d)",
+                                _portal_probe_error_key(last_summary),
+                                attempt + 1,
+                                max_attempts,
+                            )
+                    portal_summary = last_summary
                 except Exception as portal_e:
                     logger.warning("Portal probe in check_emails failed: %s", portal_e)
                     portal_summary = {
@@ -4177,6 +4277,12 @@ def cmd_check_emails(notify: bool = True, notify_empty: bool = True) -> dict:
             _portal_pickup_changed = (portal_pickup != _prev_pickup)
             _portal_pending_changed = (portal_pending != _prev_pending)
             _portal_probe_ok = bool(portal_summary.get("success")) if with_portal else False
+            _portal_failure_meta = (
+                _record_portal_probe_state(creds["download_folder"], portal_summary)
+                if with_portal
+                else {"failure_streak": 0, "should_alert": False, "error_key": ""}
+            )
+            _portal_failure_alert = bool(_portal_failure_meta.get("should_alert"))
             try:
                 portal_payment_due_count
             except NameError:
@@ -4196,7 +4302,7 @@ def cmd_check_emails(notify: bool = True, notify_empty: bool = True) -> dict:
                 or (portal_downloadable > 0 and _portal_downloadable_changed)
                 or (portal_pickup > 0 and _portal_pickup_changed)
                 or err_cnt > 0
-                or (with_portal and not bool(portal_summary.get("success")))
+                or _portal_failure_alert
             )
             download_signal = bool(recent_review_download_activity)
             section_messages: List[Tuple[str, str]] = []  # (msg, topic_key)
@@ -4244,7 +4350,7 @@ def cmd_check_emails(notify: bool = True, notify_empty: bool = True) -> dict:
                 or (portal_pickup > 0 and _portal_pickup_changed)  # 可到院閱卷
                 or download_signal      # 有新卷宗下載
                 or err_cnt > 0          # 有掃描錯誤
-                or (with_portal and not bool(portal_summary.get("success")))  # 登入失敗要提醒
+                or _portal_failure_alert  # 連續入口失敗才提醒，避免法院短暫抖動洗版
             )
             # 無新資訊時不推播；手動/cron 呼叫仍會在 out["message"] 回傳摘要。
             should_notify_now = notify and has_something_to_notify
@@ -4295,7 +4401,12 @@ def cmd_check_emails(notify: bool = True, notify_empty: bool = True) -> dict:
                 "portal_court_pickup_count": portal_pickup,
                 "portal_pending_payment_count": portal_pending,
                 "portal_probe_ok": bool(portal_summary.get("success")),
+                "portal_probe_error": "" if bool(portal_summary.get("success")) else str(portal_summary.get("error") or ""),
+                "portal_probe_error_code": "" if bool(portal_summary.get("success")) else str(portal_summary.get("error_code") or ""),
                 "portal_probe_module": str(portal_summary.get("probe_module") or ""),
+                "portal_probe_attempts": _portal_probe_attempt_count(portal_summary),
+                "portal_failure_streak": int(_portal_failure_meta.get("failure_streak") or 0),
+                "portal_failure_alert": bool(_portal_failure_alert),
                 "recent_processed_count": len(recent_activity_all),
                 "recent_unnotified_count": len(recent_payment_activity) + len(recent_review_download_activity),
                 "recent_payment_processed_count": len(recent_payment_activity),
@@ -4322,7 +4433,12 @@ def cmd_check_emails(notify: bool = True, notify_empty: bool = True) -> dict:
                     "portal_court_pickup_count": portal_pickup,
                     "portal_pending_payment_count": portal_pending,
                     "portal_probe_ok": bool(portal_summary.get("success")),
+                    "portal_probe_error": "" if bool(portal_summary.get("success")) else str(portal_summary.get("error") or ""),
+                    "portal_probe_error_code": "" if bool(portal_summary.get("success")) else str(portal_summary.get("error_code") or ""),
                     "portal_probe_module": str(portal_summary.get("probe_module") or ""),
+                    "portal_probe_attempts": _portal_probe_attempt_count(portal_summary),
+                    "portal_failure_streak": int(_portal_failure_meta.get("failure_streak") or 0),
+                    "portal_failure_alert": bool(_portal_failure_alert),
                     "recent_processed_count": len(recent_activity_all),
                 },
             )
@@ -4433,49 +4549,66 @@ def cmd_downloadable_probe(days: int = 30, notify: bool = False,
         else:
             mod = _ensure_portal_probe_imports()
             db = _get_db_manager(cfg)
-            mgr = mod.FileReviewManager(
-                username=creds["username"],
-                password=creds["password"],
-                download_folder=creds["download_folder"],
-                db_manager=db,
-                headless=True,
-                log_callback=lambda msg: logger.info(msg),
-            )
             try:
-                logger.info("Running portal downloadable probe...")
-                portal_dismissed_map = _merge_dismissed_payment_maps(
-                    creds["download_folder"],
-                    getattr(mgr, "dismissed_payments", None) or {},
+                max_attempts = int(os.environ.get("MAGI_FILE_REVIEW_PORTAL_PROBE_RETRIES", "2") or "2")
+            except Exception:
+                max_attempts = 2
+            max_attempts = max(1, min(max_attempts, 3))
+            for attempt in range(1, max_attempts + 1):
+                mgr = mod.FileReviewManager(
+                    username=creds["username"],
+                    password=creds["password"],
+                    download_folder=creds["download_folder"],
+                    db_manager=db,
+                    headless=True,
+                    log_callback=lambda msg: logger.info(msg),
                 )
-                portal_r = mgr.probe_downloadable_from_portal(target_case_number=target_case_number or None)
-                portal_r["probe_module"] = getattr(mod, "__file__", "")
-                if dump_raw:
-                    # debug mode: 印出每筆 raw row 的關鍵狀態欄位
-                    raw_items = portal_r.get("items") or []
-                    portal_r["dump_raw_items"] = [
-                        {
-                            "case_number": it.get("case_number"),
-                            "court_case_no": it.get("court_case_no"),
-                            "party": it.get("party"),
-                            "status": it.get("status"),
-                            "rowid": it.get("rowid"),
-                            "paystatus": it.get("paystatus"),
-                            "p_status": it.get("p_status"),
-                            "payment_flag": it.get("payment_flag"),
-                            "status_name": it.get("status_name"),
-                            "result_text": (it.get("result_text") or "")[:120],
-                        }
-                        for it in raw_items
-                    ]
-                logger.info(
-                    "Portal probe done: success=%s count=%s downloadable=%s module=%s",
-                    bool(portal_r.get("success")),
-                    portal_r.get("count"),
-                    portal_r.get("downloadable_count"),
-                    getattr(mod, "__file__", ""),
-                )
-            finally:
-                mgr.close()
+                try:
+                    logger.info("Running portal downloadable probe... attempt=%s/%s", attempt, max_attempts)
+                    portal_dismissed_map = _merge_dismissed_payment_maps(
+                        creds["download_folder"],
+                        getattr(mgr, "dismissed_payments", None) or {},
+                    )
+                    portal_r = mgr.probe_downloadable_from_portal(target_case_number=target_case_number or None)
+                    portal_r["probe_module"] = getattr(mod, "__file__", "")
+                    portal_r["attempts"] = attempt
+                    if dump_raw:
+                        # debug mode: 印出每筆 raw row 的關鍵狀態欄位
+                        raw_items = portal_r.get("items") or []
+                        portal_r["dump_raw_items"] = [
+                            {
+                                "case_number": it.get("case_number"),
+                                "court_case_no": it.get("court_case_no"),
+                                "party": it.get("party"),
+                                "status": it.get("status"),
+                                "rowid": it.get("rowid"),
+                                "paystatus": it.get("paystatus"),
+                                "p_status": it.get("p_status"),
+                                "payment_flag": it.get("payment_flag"),
+                                "status_name": it.get("status_name"),
+                                "result_text": (it.get("result_text") or "")[:120],
+                            }
+                            for it in raw_items
+                        ]
+                    logger.info(
+                        "Portal probe done: success=%s count=%s downloadable=%s module=%s attempt=%s",
+                        bool(portal_r.get("success")),
+                        portal_r.get("count"),
+                        portal_r.get("downloadable_count"),
+                        getattr(mod, "__file__", ""),
+                        attempt,
+                    )
+                finally:
+                    mgr.close()
+                if bool(portal_r.get("success")) or not _is_transient_portal_probe_failure(portal_r):
+                    break
+                if attempt < max_attempts:
+                    logger.warning(
+                        "Portal downloadable probe transient failure (%s); retrying with a fresh session (%d/%d)",
+                        _portal_probe_error_key(portal_r),
+                        attempt + 1,
+                        max_attempts,
+                    )
     except Exception as e:
         portal_r = {"success": False, "error": str(e)[:240]}
 
