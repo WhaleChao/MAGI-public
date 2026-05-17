@@ -365,8 +365,8 @@ def test_cases_endpoint_uses_effective_laf_status_for_display(client):
     assert r.status_code == 200
     item = r.get_json()["items"][0]
     assert item["status_display"] == "已結案"
-    assert item["case_type_display"] == "民事"
-    assert item["case_reason_display"] == "消費者債務清理（更生）"
+    assert item["case_type_display"] == "消費者債務清理"
+    assert item["case_reason_display"] == "更生"
 
 
 def test_cases_csv_export_uses_external_case_type_display(client):
@@ -394,9 +394,8 @@ def test_cases_csv_export_uses_external_case_type_display(client):
     assert r.status_code == 200
     text = r.data.decode("utf-8-sig")
     assert "莊宸銘" in text
-    assert "民事,法律扶助案件" in text
-    assert "消費者債務清理（更生）" in text
-    assert "消費者債務清理,法律扶助案件" not in text
+    assert "消費者債務清理,法律扶助案件" in text
+    assert "更生" in text
 
 
 def test_cases_active_scope_excludes_laf_closing_and_closed(client):
@@ -450,7 +449,7 @@ def test_cases_ui_uses_unambiguous_status_and_laf_badge_labels():
     assert "結案中 / 已結案" not in html
     assert 'data-scope="pending_report">待報結' in html
     assert 'data-scope="pending_submit">待送出' in html
-    assert 'data-type="消費者債務清理"' not in html
+    assert 'data-type="消費者債務清理"' in html
     assert 'data-kind="消費者債務清理"' not in html
     assert "法扶 / " in js
     assert "case_type_display" in js
@@ -530,6 +529,25 @@ def test_cases_legacy_category_still_maps_to_case_kind(client):
     assert "case_category = %s" in sql
     assert "NOT (" not in sql
     assert "一般案件" in params
+
+
+def test_cases_legacy_category_maps_consumer_debt_to_case_type(client):
+    """category=消費者債務清理 應視為案件分類，不應落入案件種類。"""
+    calls = []
+
+    def fake_exec(sql, params=(), fetch="none"):
+        if "FROM cases" in sql:
+            calls.append((sql, params))
+        return _make_fake_exec({"cases": []})(sql, params, fetch)
+
+    with patch("api.blueprints.osc_cases._osc_exec", side_effect=fake_exec):
+        r = client.get("/api/osc/cases?limit=5&category=消費者債務清理")
+
+    assert r.status_code == 200
+    sql, params = calls[-1]
+    assert "case_reason LIKE %s OR case_type = %s" in sql
+    assert "case_category = %s" not in sql
+    assert "消費者債務清理" in params
 
 
 def test_quick_action_laf_closing_status_is_native_osc_inventory(client, monkeypatch):

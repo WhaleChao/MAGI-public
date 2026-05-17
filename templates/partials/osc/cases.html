@@ -40,6 +40,7 @@
                             <button class="chip active" data-type="全部">全部分類</button>
                             <button class="chip" data-type="刑事">刑事</button>
                             <button class="chip" data-type="民事">民事</button>
+                            <button class="chip" data-type="消費者債務清理">消費者債務清理</button>
                             <button class="chip" data-type="行政">行政</button>
                             <button class="chip" data-type="非訟">非訟</button>
                         </div>
@@ -53,7 +54,7 @@
                             <button class="chip" data-kind="指定辯護案件">指定辯護</button>
                             <button class="chip" data-kind="無償案件">無償</button>
                         </div>
-                        <div class="section-note">更生、清算、消費者債務清理請用搜尋或案由欄位，不列為案件分類或案件種類。</div>
+                        <div class="section-note">更生、清算請填在案由或階段；消費者債務清理已列入上方案件分類，不列入案件種類。</div>
                     </div>
                     <div class="field">
                         <label>案件狀態</label>
@@ -120,11 +121,24 @@
                         </div>
                         <div class="field">
                             <label for="case_category">案件種類</label>
-                            <input id="case_category" placeholder="例：一般案件、法律扶助案件">
+                            <input id="case_category" list="caseCategoryOptions" placeholder="例：一般案件、法律扶助案件">
+                            <datalist id="caseCategoryOptions">
+                                <option value="一般案件"></option>
+                                <option value="法律扶助案件"></option>
+                                <option value="指定辯護案件"></option>
+                                <option value="無償案件"></option>
+                            </datalist>
                         </div>
                         <div class="field">
                             <label for="case_type">案件分類</label>
-                            <input id="case_type" placeholder="例：刑事、民事、行政、非訟">
+                            <input id="case_type" list="caseTypeOptions" placeholder="例：刑事、民事、消費者債務清理">
+                            <datalist id="caseTypeOptions">
+                                <option value="刑事"></option>
+                                <option value="民事"></option>
+                                <option value="消費者債務清理"></option>
+                                <option value="行政"></option>
+                                <option value="非訟"></option>
+                            </datalist>
                         </div>
                         <div class="field">
                             <label for="case_stage">審級 / 階段</label>

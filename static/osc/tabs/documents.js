@@ -102,7 +102,7 @@ function lafDisplayStatus(c = {}) {
 
 function lafDisplayType(c = {}) {
     if (c.case_type_display) return c.case_type_display;
-    if (String(c.case_type || "").trim() === "消費者債務清理") return "民事";
+    if (String(c.case_type || "").trim() === "消費者債務清理") return "消費者債務清理";
     return c.case_type || "";
 }
 
@@ -110,7 +110,7 @@ function lafDisplayReason(c = {}) {
     if (c.case_reason_display) return c.case_reason_display;
     if (String(c.case_type || "").trim() === "消費者債務清理") {
         const reason = String(c.case_reason || "").trim();
-        return reason ? `消費者債務清理（${reason}）` : "消費者債務清理";
+        return reason || "";
     }
     return c.case_reason || "";
 }

@@ -871,8 +871,8 @@ def _osc_case_api_row(row: dict | None) -> dict | None:
     out["status_display"] = effective
     if str(out.get("case_type") or "").strip() == "消費者債務清理":
         reason = str(out.get("case_reason") or "").strip()
-        out["case_type_display"] = "民事"
-        out["case_reason_display"] = f"消費者債務清理（{reason}）" if reason else "消費者債務清理"
+        out["case_type_display"] = "消費者債務清理"
+        out["case_reason_display"] = reason or ""
     else:
         out["case_type_display"] = out.get("case_type") or ""
         out["case_reason_display"] = out.get("case_reason") or ""
@@ -922,7 +922,7 @@ def osc_cases_api():
         case_kind = (request.args.get("case_kind") or "").strip()
         status_scope = (request.args.get("status_scope") or "all").strip().lower()
         limit = max(1, min(500, int(request.args.get("limit") or "200")))
-        case_type_values = {"刑事", "民事", "行政", "非訟"}
+        case_type_values = {"刑事", "民事", "消費者債務清理", "行政", "非訟"}
         case_kind_values = {"一般", "一般案件", "法扶", "法律扶助案件", "指定辯護", "指定辯護案件", "無償", "無償案件"}
         if category and category not in {"全部", "all", "ALL"} and not case_type and not case_kind:
             if category in case_type_values:
@@ -952,9 +952,6 @@ def osc_cases_api():
             if case_type == "消費者債務清理":
                 where.append("(case_reason LIKE %s OR case_type = %s)")
                 params.extend(["%消費者債務清理%", case_type])
-            elif case_type == "民事":
-                where.append("(case_type = %s OR case_type = '消費者債務清理')")
-                params.append(case_type)
             else:
                 where.append("case_type = %s")
                 params.append(case_type)
