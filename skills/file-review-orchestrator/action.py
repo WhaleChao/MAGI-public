@@ -3412,16 +3412,34 @@ def _load_downloaded_review_tokens(download_folder: str) -> Set[str]:
 
 
 def _manager_has_archived_review_files(file_review_manager: object, item: dict) -> bool:
+    if isinstance(item, dict) and bool(item.get("archived_review_files") or item.get("has_archived_review_files")):
+        return True
     if not file_review_manager or not isinstance(item, dict):
         return False
     checker = getattr(file_review_manager, "_case_review_folder_has_files", None)
     if not callable(checker):
         return False
+    probe_item = dict(item)
+    if probe_item.get("court_case_no") and not probe_item.get("showyyidno"):
+        probe_item["showyyidno"] = probe_item.get("court_case_no")
+    if probe_item.get("party") and not probe_item.get("clnm"):
+        probe_item["clnm"] = probe_item.get("party")
+    if probe_item.get("case_number") and not probe_item.get("yyidno"):
+        probe_item["yyidno"] = probe_item.get("case_number")
     try:
-        return bool(checker(item))
+        return bool(checker(probe_item))
     except Exception:
-        logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 3140, exc_info=True)
+        logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 3429, exc_info=True)
         return False
+
+
+def _portal_item_has_downloaded_review(item: dict, downloaded_tokens: Set[str]) -> bool:
+    if not isinstance(item, dict):
+        return False
+    if bool(item.get("archived_review_files") or item.get("has_archived_review_files")):
+        return True
+    tokens = _review_download_case_tokens(item)
+    return bool(tokens and downloaded_tokens and tokens.intersection(downloaded_tokens))
 
 
 def _filter_not_yet_downloaded(
@@ -3516,6 +3534,7 @@ def _collapse_portal_items(
     merged = list(chosen.values())
     dismissed_map = _merge_dismissed_payment_maps(download_folder, dismissed_payments)
     proof_case_tokens = _load_payment_proof_case_tokens(download_folder)
+    downloaded_review_tokens = _load_downloaded_review_tokens(download_folder)
     downloadable = []
     downloadable_raw_count = 0
     downloadable_skipped_count = 0
@@ -3552,6 +3571,10 @@ def _collapse_portal_items(
         if dismissed_map and _is_portal_item_dismissed(item, dismissed_map):
             continue
         if proof_case_tokens and _portal_item_has_uploaded_proof(item, proof_case_tokens):
+            continue
+        if _portal_item_has_downloaded_review(item, downloaded_review_tokens):
+            continue
+        if _manager_has_archived_review_files(file_review_manager, item):
             continue
         pending.append(item)
     actionable = downloadable + court_pickup + pending
@@ -4378,7 +4401,6 @@ def cmd_check_emails(notify: bool = True, notify_empty: bool = True) -> dict:
             ]
             if with_portal:
                 if bool(portal_summary.get("success")):
-                    payment_lines.append(f"- 入口列表待繳費：{portal_pending} 件")
                     _downloadable_note = f"{portal_downloadable} 件"
                     if portal_downloadable_skipped:
                         _downloadable_note = f"{portal_downloadable} 件（已歸檔/已下載略過 {portal_downloadable_skipped} 件）"
@@ -4402,6 +4424,7 @@ def cmd_check_emails(notify: bool = True, notify_empty: bool = True) -> dict:
                     urgent = groups.get("urgent", [])
                     unknown = groups.get("unknown", [])
                     portal_payment_due_count = len(overdue) + len(urgent) + len(unknown)
+                    payment_lines.append(f"- 入口列表待繳費：{portal_payment_due_count} 件")
 
                     def _fmt_payment_items(items, limit=15):
                         lines = []
@@ -4424,6 +4447,10 @@ def cmd_check_emails(notify: bool = True, notify_empty: bool = True) -> dict:
                         payment_lines.append("")
                         payment_lines.append(f"⚠️ 已逾期未繳（{len(overdue)} 件）：")
                         payment_lines.extend(_fmt_payment_items(overdue))
+                    if unknown:
+                        payment_lines.append("")
+                        payment_lines.append(f"期限不明但仍顯示待繳（{len(unknown)} 件）：")
+                        payment_lines.extend(_fmt_payment_items(unknown))
                     # 列出可下載案件明細（排除已下載的）
                     dl_items_all = [it for it in portal_items if str(it.get("status") or "").strip() == "downloadable"]
                     dl_items = _filter_not_yet_downloaded(
@@ -4736,7 +4763,7 @@ def cmd_downloadable_probe(days: int = 30, notify: bool = False,
     """
     法院端狀態掃描（唯讀，不下載、不改資料）：
     回傳法院入口列表中「目前有線上下載按鈕」或「待繳費」的案件。
-    注意：這些是法院端尚未過期的項目，不代表本機是否已下載歸檔。
+    已歸檔閱卷資料、已下載登錄與已上傳繳費證明的案件會先去重。
     1) 優先掃法院入口「列表式查看」（最接近實際可下載狀態）
     2) 補充 Gmail 通知預覽（避免漏看通知信）
     """
@@ -4781,6 +4808,13 @@ def cmd_downloadable_probe(days: int = 30, notify: bool = False,
                     portal_r = mgr.probe_downloadable_from_portal(target_case_number=target_case_number or None)
                     portal_r["probe_module"] = getattr(mod, "__file__", "")
                     portal_r["attempts"] = attempt
+                    if bool(portal_r.get("success")):
+                        portal_r["_effective"] = _collapse_portal_items(
+                            portal_r.get("items") if isinstance(portal_r.get("items"), list) else [],
+                            download_folder=creds.get("download_folder") or DEFAULT_DOWNLOAD_FOLDER,
+                            dismissed_payments=portal_dismissed_map,
+                            file_review_manager=mgr,
+                        )
                     if dump_raw:
                         # debug mode: 印出每筆 raw row 的關鍵狀態欄位
                         raw_items = portal_r.get("items") or []
@@ -4844,25 +4878,31 @@ def cmd_downloadable_probe(days: int = 30, notify: bool = False,
 
     if source == "portal":
         raw_items = portal_r.get("items") if isinstance(portal_r.get("items"), list) else []
-        portal_effective = _collapse_portal_items(
-            raw_items,
-            download_folder=creds.get("download_folder") or DEFAULT_DOWNLOAD_FOLDER,
-            dismissed_payments=portal_dismissed_map,
-        )
+        portal_effective = portal_r.get("_effective") if isinstance(portal_r.get("_effective"), dict) else None
+        if portal_effective is None:
+            portal_effective = _collapse_portal_items(
+                raw_items,
+                download_folder=creds.get("download_folder") or DEFAULT_DOWNLOAD_FOLDER,
+                dismissed_payments=portal_dismissed_map,
+            )
         effective_items = portal_effective.get("items") or []
         items = effective_items[:report_limit]
         raw_count = int(portal_r.get("count") or len(raw_items) or 0)
         case_count = int(portal_effective.get("case_count") or 0)
         count = int(portal_effective.get("count") or 0)
         downloadable_count = int(portal_effective.get("downloadable_count") or 0)
+        downloadable_skipped_count = int(portal_effective.get("downloadable_skipped_count") or 0)
         court_pickup_count = int(portal_effective.get("court_pickup_count") or 0)
         court_pickup_history_count = int(portal_effective.get("court_pickup_history_count") or 0)
         pending_payment_count = int(portal_effective.get("pending_payment_count") or 0)
+        downloadable_phrase = f"法院端可下載 {downloadable_count} 件"
+        if downloadable_skipped_count:
+            downloadable_phrase += f"（已歸檔/已下載略過 {downloadable_skipped_count} 件）"
         pickup_phrase = f"近期需到院閱卷 {court_pickup_count} 件"
         if court_pickup_history_count:
             pickup_phrase += f"（歷史/已完成列已略過 {court_pickup_history_count} 件）"
         msg = (
-            f"法院端狀態掃描完成（入口列表）：法院端可下載 {downloadable_count} 件（含已歸檔），"
+            f"法院端狀態掃描完成（入口列表）：{downloadable_phrase}，"
             f"{pickup_phrase}，待繳費 {pending_payment_count} 件，"
             f"同案合併後共 {count} 案（原始 {raw_count} 列）"
         )
@@ -4875,6 +4915,7 @@ def cmd_downloadable_probe(days: int = 30, notify: bool = False,
             "source": source,
             "count": count,
             "downloadable_count": downloadable_count,
+            "downloadable_skipped_count": downloadable_skipped_count,
             "court_pickup_count": court_pickup_count,
             "court_pickup_history_count": court_pickup_history_count,
             "pending_payment_count": pending_payment_count,
@@ -4887,6 +4928,7 @@ def cmd_downloadable_probe(days: int = 30, notify: bool = False,
                 "raw_count": raw_count,
                 "case_count": case_count,
                 "downloadable_count": downloadable_count,
+                "downloadable_skipped_count": downloadable_skipped_count,
                 "court_pickup_count": court_pickup_count,
                 "court_pickup_history_count": court_pickup_history_count,
                 "pending_payment_count": pending_payment_count,

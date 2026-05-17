@@ -359,6 +359,65 @@ def test_portal_downloadable_uses_review_folder_archive_skip(tmp_path):
     assert collapsed["items"] == []
 
 
+def test_portal_pending_payment_skips_when_review_files_already_archived(tmp_path):
+    module = _load_action_module()
+    item = {
+        "status": "pending_payment",
+        "paystatus": "0",
+        "status_name": "法院回覆同意",
+        "result_text": "請於【115/05/11 上午】以後至法院領取",
+        "row_text": "待繳費，請於法院回覆結果下載繳費單繳費",
+        "party": "鑫源企業社",
+        "court_case_no": "114年度建字第000016號",
+        "case_number": "114.建.000016",
+        "rowid": "1059435",
+        "payid": "31001961342172",
+        "archived_review_files": True,
+    }
+
+    collapsed = module._collapse_portal_items([item], download_folder=str(tmp_path))
+
+    assert collapsed["pending_payment_count"] == 0
+    assert collapsed["count"] == 0
+    assert collapsed["items"] == []
+
+
+def test_portal_pending_payment_uses_manager_archive_lookup_fields(tmp_path):
+    module = _load_action_module()
+    seen = {}
+
+    class FakeManager:
+        def _case_review_folder_has_files(self, case_info):
+            seen.update(case_info)
+            return (
+                case_info.get("showyyidno") == "114年度建字第000016號"
+                and case_info.get("clnm") == "鑫源企業社"
+            )
+
+    item = {
+        "status": "pending_payment",
+        "paystatus": "0",
+        "status_name": "法院回覆同意",
+        "row_text": "待繳費，請於法院回覆結果下載繳費單繳費",
+        "party": "鑫源企業社",
+        "court_case_no": "114年度建字第000016號",
+        "case_number": "114.建.000016",
+        "rowid": "1059435",
+    }
+
+    collapsed = module._collapse_portal_items(
+        [item],
+        download_folder=str(tmp_path),
+        file_review_manager=FakeManager(),
+    )
+
+    assert seen["showyyidno"] == "114年度建字第000016號"
+    assert seen["clnm"] == "鑫源企業社"
+    assert seen["yyidno"] == "114.建.000016"
+    assert collapsed["pending_payment_count"] == 0
+    assert collapsed["items"] == []
+
+
 def test_file_review_manager_court_pickup_row_is_not_pending_payment():
     from casper_ecosystem.law_firm_orchestrators.file_review_automation import FileReviewManager
 
