@@ -1313,18 +1313,74 @@ _PAPERCLIP_SHARE_LAUNCHD_LABELS = (
 )
 
 
-def _paperclip_share_launchd_managed() -> bool:
+def _paperclip_share_launchd_plists() -> dict[str, str]:
+    launch_agents = os.path.expanduser("~/Library/LaunchAgents")
+    return {
+        label: os.path.join(launch_agents, f"{label}.plist")
+        for label in _PAPERCLIP_SHARE_LAUNCHD_LABELS
+    }
+
+
+def _launchctl_label_loaded(label: str) -> bool:
     if sys.platform != "darwin":
         return False
     try:
-        for label in _PAPERCLIP_SHARE_LAUNCHD_LABELS:
-            result = subprocess.run(["launchctl", "list", label], capture_output=True, text=True, timeout=5)
-            if result.returncode != 0:
-                return False
-        return True
+        result = subprocess.run(["launchctl", "list", label], capture_output=True, text=True, timeout=5)
+        return result.returncode == 0
     except Exception:
-        logger.debug("silent-catch at %s:%s", __name__, "_paperclip_share_launchd_managed", exc_info=True)
+        logger.debug("silent-catch at %s:%s", __name__, "_launchctl_label_loaded", exc_info=True)
         return False
+
+
+def _stop_unmanaged_paperclip_share_processes(port: str) -> None:
+    """Stop fallback share-tunnel processes before launchd takes ownership."""
+    patterns = [
+        f"scripts/share_gateway.py --port {str(port).strip()}",
+        f"cloudflared tunnel --url http://127.0.0.1:{str(port).strip()}",
+    ]
+    for pattern in patterns:
+        try:
+            subprocess.run(["pkill", "-f", pattern], capture_output=True, text=True, timeout=10)
+        except Exception:
+            logger.debug("silent-catch at %s:%s", __name__, "_stop_unmanaged_paperclip_share_processes", exc_info=True)
+
+
+def _bootstrap_paperclip_share_launchd(port: str) -> bool:
+    if sys.platform != "darwin":
+        return False
+    plists = _paperclip_share_launchd_plists()
+    if not all(os.path.exists(path) for path in plists.values()):
+        return False
+
+    domain = f"gui/{os.getuid()}"
+    loaded_before = [_launchctl_label_loaded(label) for label in _PAPERCLIP_SHARE_LAUNCHD_LABELS]
+    if not all(loaded_before):
+        _stop_unmanaged_paperclip_share_processes(port)
+
+    for label, plist in plists.items():
+        if _launchctl_label_loaded(label):
+            continue
+        try:
+            subprocess.run(["launchctl", "bootstrap", domain, plist], capture_output=True, text=True, timeout=15)
+        except Exception:
+            logger.debug("silent-catch at %s:%s", __name__, f"_bootstrap_paperclip_share_launchd:{label}", exc_info=True)
+        if not _launchctl_label_loaded(label):
+            try:
+                subprocess.run(["launchctl", "load", plist], capture_output=True, text=True, timeout=15)
+            except Exception:
+                logger.debug("silent-catch at %s:%s", __name__, f"_load_paperclip_share_launchd:{label}", exc_info=True)
+
+    return all(_launchctl_label_loaded(label) for label in _PAPERCLIP_SHARE_LAUNCHD_LABELS)
+
+
+def _paperclip_share_launchd_managed(port: str | None = None) -> bool:
+    if sys.platform != "darwin":
+        return False
+    if all(_launchctl_label_loaded(label) for label in _PAPERCLIP_SHARE_LAUNCHD_LABELS):
+        return True
+    if port:
+        return _bootstrap_paperclip_share_launchd(port)
+    return False
 
 
 def _kickstart_paperclip_share_launchd() -> None:
@@ -1349,7 +1405,7 @@ def _ensure_paperclip_share_tunnel() -> None:
         if gateway_ok and tunnel_ok and public_ok:
             return
 
-        if _paperclip_share_launchd_managed():
+        if _paperclip_share_launchd_managed(port):
             logger.warning(
                 "Paperclip share tunnel unhealthy but launchd-managed; kickstarting launchd jobs (gateway=%s tunnel=%s public=%s)",
                 gateway_ok,
