@@ -21,6 +21,15 @@ AUTOPILOT_RUNS_DIR = os.environ.get(
     "MAGI_AUTOPILOT_RUNS_DIR",
     os.path.join(_MAGI_ROOT, "_autopilot_runs"),
 )
+RUNTIME_DIR = os.environ.get("MAGI_RUNTIME_DIR", os.path.join(_MAGI_ROOT, ".runtime"))
+RESOURCE_GUARD_LOG = os.environ.get(
+    "MAGI_RESOURCE_GUARD_LOG",
+    os.path.join(RUNTIME_DIR, "resource_guarded_run.jsonl"),
+)
+CRON_STATE_PATH = os.environ.get(
+    "MAGI_CRON_STATE_PATH",
+    os.path.join(RUNTIME_DIR, "cron_state.json"),
+)
 
 # 夜間關鍵步驟清單
 NIGHTLY_KEY_STEPS = [
@@ -61,6 +70,118 @@ def _find_latest_nightly_run() -> str | None:
             ):
                 return d
     return candidates[0] if candidates else None
+
+
+def _recent_date_prefixes() -> tuple[str, str]:
+    return (
+        datetime.now().strftime("%Y-%m-%d"),
+        (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d"),
+    )
+
+
+def _read_json_file(path: str) -> dict:
+    try:
+        if not os.path.exists(path):
+            return {}
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f) or {}
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _load_recent_resource_guard_event(job_id: str = "job_nightly_autopilot") -> dict:
+    """Return the latest resource guard event for today/yesterday."""
+    if not os.path.exists(RESOURCE_GUARD_LOG):
+        return {}
+    date_prefixes = _recent_date_prefixes()
+    latest: dict = {}
+    try:
+        with open(RESOURCE_GUARD_LOG, "r", encoding="utf-8") as f:
+            for line in f:
+                raw = line.strip()
+                if not raw:
+                    continue
+                try:
+                    entry = json.loads(raw)
+                except Exception:
+                    continue
+                if entry.get("job_id") != job_id:
+                    continue
+                try:
+                    event_dt = datetime.fromtimestamp(float(entry.get("ts") or 0))
+                except Exception:
+                    continue
+                if not any(event_dt.strftime("%Y-%m-%d").startswith(p) for p in date_prefixes):
+                    continue
+                if not latest or float(entry.get("ts") or 0) > float(latest.get("ts") or 0):
+                    latest = entry
+    except Exception:
+        return {}
+    return latest
+
+
+def _format_guard_snapshot(snapshot: dict) -> str:
+    disk = snapshot.get("disk_free_gb")
+    total = snapshot.get("disk_total_gb")
+    swap = snapshot.get("swap_used_gb")
+    free_inactive = snapshot.get("free_plus_inactive_gb")
+    parts = []
+    if isinstance(disk, (int, float)):
+        if isinstance(total, (int, float)):
+            parts.append(f"磁碟可用 {disk:.2f}/{total:.2f}GB")
+        else:
+            parts.append(f"磁碟可用 {disk:.2f}GB")
+    if isinstance(swap, (int, float)):
+        parts.append(f"swap {swap:.2f}GB")
+    if isinstance(free_inactive, (int, float)):
+        parts.append(f"記憶體 free+inactive {free_inactive:.2f}GB")
+    return "、".join(parts)
+
+
+def _diagnose_missing_nightly_run() -> list[str]:
+    """Explain why no nightly run directory exists, using scheduler telemetry."""
+    lines: list[str] = []
+    event = _load_recent_resource_guard_event("job_nightly_autopilot")
+    if event:
+        try:
+            event_time = datetime.fromtimestamp(float(event.get("ts") or 0)).strftime("%Y-%m-%d %H:%M")
+        except Exception:
+            event_time = "未知時間"
+        decision = event.get("decision") if isinstance(event.get("decision"), dict) else {}
+        snapshot = decision.get("snapshot") if isinstance(decision.get("snapshot"), dict) else {}
+        level = decision.get("level") or "unknown"
+        reasons = event.get("block_reasons") or decision.get("reasons") or []
+        if isinstance(reasons, list):
+            reasons_text = "、".join(str(r) for r in reasons if r)
+        else:
+            reasons_text = str(reasons)
+        snapshot_text = _format_guard_snapshot(snapshot)
+        if event.get("blocked"):
+            lines.append(f"🛡️ 資源守門：{event_time} 已觸發 nightly，但被跳過（level={level}）。")
+            if reasons_text:
+                lines.append(f"  原因：{reasons_text}")
+            if snapshot_text:
+                lines.append(f"  當時資源：{snapshot_text}")
+            lines.append("  處理方向：釋放磁碟/降低負載後，下一輪會自動恢復；若只是 throttle，應改跑降載版 nightly。")
+            return lines
+        returncode = event.get("returncode")
+        lines.append(f"🛡️ 資源守門：{event_time} 已放行 nightly（level={level}, returncode={returncode}），但未找到 run 目錄。")
+        if snapshot_text:
+            lines.append(f"  當時資源：{snapshot_text}")
+
+    state = _read_json_file(CRON_STATE_PATH)
+    nightly_state = state.get("job_nightly_autopilot") if isinstance(state.get("job_nightly_autopilot"), dict) else {}
+    last_run = str(nightly_state.get("last_run") or "").strip()
+    if last_run:
+        lines.append(f"⏱️ cron_state 顯示 job_nightly_autopilot 最近觸發：{last_run}")
+        lines.append("  但 _autopilot_runs 沒有對應目錄，需檢查 command 是否在建立 run_dir 前被中止。")
+    else:
+        lines.append("⏱️ cron_state 沒有 job_nightly_autopilot 今日/昨日觸發紀錄。")
+
+    if not lines:
+        lines.append("可能原因：nightly 任務未啟動或 _autopilot_runs 路徑不正確")
+    return lines
 
 
 def _parse_step_results(run_dir: str) -> dict:
@@ -263,6 +384,7 @@ def generate_report() -> str:
     lines = [f"🌅 MAGI 夜間健康報告 — {now.strftime('%Y-%m-%d %H:%M')}"]
     lines.append(f"檢查區間：{now.strftime('%Y-%m-%d')} 00:00 ~ 06:00")
     lines.append("")
+    missing_diagnosis: list[str] = []
 
     # 1. 尋找最近的 nightly run
     run_dir = _find_latest_nightly_run()
@@ -301,7 +423,8 @@ def generate_report() -> str:
             lines.append("⚠️ 無法解析步驟結果")
     else:
         lines.append("⚠️ 未找到今日/昨日的 nightly run 目錄")
-        lines.append("可能原因：nightly 任務未啟動或 _autopilot_runs 路徑不正確")
+        missing_diagnosis = _diagnose_missing_nightly_run()
+        lines.extend(missing_diagnosis)
 
     # 2. 通知投遞統計
     delivery = _count_delivery_log_window(0, 6)
@@ -333,7 +456,10 @@ def generate_report() -> str:
             lines.append("✅ 夜間任務全部正常完成")
     else:
         has_failures = True
-        lines.append("❌ 夜間任務可能未執行")
+        if any("資源守門" in line and "被跳過" in line for line in missing_diagnosis):
+            lines.append("⚠️ 夜間主流程已由資源守門略過；非 run 目錄路徑錯誤。")
+        else:
+            lines.append("❌ 夜間任務可能未執行")
 
     if delivery["failed"] > 0:
         lines.append(f"⚠️ 有 {delivery['failed']} 則通知投遞失敗")

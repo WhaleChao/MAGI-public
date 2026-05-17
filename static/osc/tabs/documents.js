@@ -1190,6 +1190,7 @@ async function runPdfCalendarScan(write = false, syncGoogle = false) {
         write,
         write_todos: true,
         write_calendar: true,
+        include_share_link: Boolean(syncGoogle),
         recursive: true,
         max_pages: 8,
     });

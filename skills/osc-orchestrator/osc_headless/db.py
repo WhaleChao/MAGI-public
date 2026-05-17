@@ -688,7 +688,7 @@ def insert_case_todos(
 
                 cur.execute(
                     """
-                    SELECT `id` FROM `case_todos`
+                    SELECT `id`, `description`, `client_name` FROM `case_todos`
                     WHERE `case_number`=%s
                       AND ( (`todo_date`=%s) OR (%s IS NULL AND `todo_date` IS NULL) )
                       AND ( (`todo_time`=%s) OR (%s IS NULL AND `todo_time` IS NULL) )
@@ -698,8 +698,28 @@ def insert_case_todos(
                     """,
                     (case_number, todo_date, todo_date, todo_time, todo_time, source_file),
                 )
-                if cur.fetchone():
-                    skipped += 1
+                same_datetime = cur.fetchone()
+                if same_datetime:
+                    same_id = same_datetime[0] if isinstance(same_datetime, tuple) else same_datetime
+                    old_desc = same_datetime[1] if isinstance(same_datetime, tuple) and len(same_datetime) > 1 else ""
+                    old_client = same_datetime[2] if isinstance(same_datetime, tuple) and len(same_datetime) > 2 else ""
+                    has_existing_details = isinstance(same_datetime, tuple) and len(same_datetime) > 2
+                    should_refresh_share = "MAGI分享連結" in desc and "MAGI分享連結" not in str(old_desc or "")
+                    should_refresh_client = bool(client_name) and has_existing_details and not str(old_client or "").strip()
+                    if same_id and (should_refresh_share or should_refresh_client):
+                        cur.execute(
+                            """
+                            UPDATE `case_todos`
+                            SET `client_name`=%s,
+                                `description`=%s,
+                                `status`='pending'
+                            WHERE `id`=%s
+                            """,
+                            (client_name or old_client or "", desc, same_id),
+                        )
+                        updated += int(getattr(cur, "rowcount", 0) or 0)
+                    else:
+                        skipped += 1
                     continue
 
                 cur.execute(

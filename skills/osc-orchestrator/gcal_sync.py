@@ -128,23 +128,60 @@ def _get_setting_value(key: str, default: str = "") -> str:
 
 def _make_todo_event(todo: dict) -> dict:
     case_number = todo.get("case_number") or ""
-    desc = (todo.get("description") or "")[:40]
+    client_name = (todo.get("client_name") or "").strip()
+    todo_type = (todo.get("todo_type") or "").strip() or "待辦"
+    source_file = (todo.get("source_file") or "").strip()
     full_desc = todo.get("description") or ""
     due_str = str(todo.get("todo_date") or todo.get("due_date") or date.today().isoformat())
+    todo_time = str(todo.get("todo_time") or "").strip()
     # Normalise date object → iso string
     if hasattr(due_str, "isoformat"):
         due_str = due_str.isoformat()
 
-    return {
-        "summary": f"[{case_number}] {desc}",
-        "start": {"date": due_str},
-        "end": {"date": due_str},
-        "description": f"案號：{case_number}\n{full_desc}",
+    summary_parts = []
+    if case_number:
+        summary_parts.append(f"[{case_number}]")
+    if client_name:
+        summary_parts.append(client_name)
+    summary_parts.append(todo_type)
+    if not client_name and full_desc:
+        summary_parts.append(str(full_desc).replace("\n", " ")[:28])
+    summary = " ".join(p for p in summary_parts if p).strip() or "OSC 待辦"
+
+    description_lines = []
+    if case_number:
+        description_lines.append(f"系統案號：{case_number}")
+    if client_name:
+        description_lines.append(f"當事人：{client_name}")
+    if todo_type:
+        description_lines.append(f"類型：{todo_type}")
+    if source_file:
+        description_lines.append(f"來源檔案：{source_file}")
+    if full_desc:
+        description_lines.append("")
+        description_lines.append(str(full_desc))
+
+    event: dict[str, Any] = {
+        "summary": summary,
+        "description": "\n".join(description_lines).strip(),
         "reminders": {
             "useDefault": False,
             "overrides": [{"method": "popup", "minutes": 1440}],
         },
     }
+    if todo_time:
+        start = f"{due_str}T{todo_time}:00+08:00" if len(todo_time) == 5 else f"{due_str}T{todo_time}+08:00"
+        try:
+            end_dt = datetime.fromisoformat(start) + timedelta(hours=1)
+            end = end_dt.isoformat()
+        except Exception:
+            end = start
+        event["start"] = {"dateTime": start, "timeZone": "Asia/Taipei"}
+        event["end"] = {"dateTime": end, "timeZone": "Asia/Taipei"}
+    else:
+        event["start"] = {"date": due_str}
+        event["end"] = {"date": due_str}
+    return event
 
 
 def _make_cal_event(ev: dict) -> dict:
@@ -563,17 +600,27 @@ def push_todo_to_gcal(service, calendar_id: str, todo: dict) -> dict:
     existing_gid = (todo.get("google_calendar_id") or "").strip()
 
     if existing_gid:
-        result = (
-            service.events()
-            .patch(calendarId=calendar_id, eventId=existing_gid, body=event_body)
-            .execute()
-        )
-    else:
-        result = (
-            service.events()
-            .insert(calendarId=calendar_id, body=event_body)
-            .execute()
-        )
+        try:
+            result = (
+                service.events()
+                .patch(calendarId=calendar_id, eventId=existing_gid, body=event_body)
+                .execute()
+            )
+            return result
+        except Exception as exc:
+            if not _is_stale_gcal_event_error(exc):
+                raise
+            logger.info(
+                "case_todos id=%s has stale google_calendar_id=%s; creating replacement event",
+                todo.get("id"),
+                existing_gid,
+            )
+
+    result = (
+        service.events()
+        .insert(calendarId=calendar_id, body=event_body)
+        .execute()
+    )
     return result
 
 
@@ -583,18 +630,44 @@ def push_calendar_event_to_gcal(service, calendar_id: str, ev: dict) -> dict:
     existing_gid = (ev.get("google_event_id") or "").strip()
 
     if existing_gid:
-        result = (
-            service.events()
-            .patch(calendarId=calendar_id, eventId=existing_gid, body=event_body)
-            .execute()
-        )
-    else:
-        result = (
-            service.events()
-            .insert(calendarId=calendar_id, body=event_body)
-            .execute()
-        )
+        try:
+            result = (
+                service.events()
+                .patch(calendarId=calendar_id, eventId=existing_gid, body=event_body)
+                .execute()
+            )
+            return result
+        except Exception as exc:
+            if not _is_stale_gcal_event_error(exc):
+                raise
+            logger.info(
+                "calendar_events id=%s has stale google_event_id=%s; creating replacement event",
+                ev.get("id"),
+                existing_gid,
+            )
+
+    result = (
+        service.events()
+        .insert(calendarId=calendar_id, body=event_body)
+        .execute()
+    )
     return result
+
+
+def _is_stale_gcal_event_error(exc: Exception) -> bool:
+    """Google Calendar ids can become stale after deletion/move/ACL changes."""
+    try:
+        from googleapiclient.errors import HttpError
+    except Exception:
+        HttpError = ()  # type: ignore[assignment]
+    if HttpError and not isinstance(exc, HttpError):
+        return False
+    status = getattr(getattr(exc, "resp", None), "status", None)
+    try:
+        status_int = int(status)
+    except Exception:
+        return False
+    return status_int in {403, 404, 410}
 
 
 # ── main sync ─────────────────────────────────────────────────────────────────
@@ -630,12 +703,13 @@ def run_sync(dry_run: bool = False, conn=None) -> dict:  # noqa: ARG001
     try:
         rows, cols = _osc_exec_sql(
             """
-            SELECT id, case_number, client_name, description, todo_date,
-                   google_calendar_id
+            SELECT id, case_number, client_name, todo_type, todo_date, todo_time,
+                   description, source_file, google_calendar_id
             FROM case_todos
             WHERE todo_date >= %s
               AND todo_date <= %s
               AND (status IS NULL OR status != 'deleted')
+              AND (source_file IS NULL OR source_file NOT LIKE 'gcal_import%%')
             ORDER BY todo_date
             LIMIT 200
             """,
@@ -659,9 +733,12 @@ def run_sync(dry_run: bool = False, conn=None) -> dict:  # noqa: ARG001
                 "id": row[0],
                 "case_number": row[1],
                 "client_name": row[2],
-                "description": row[3],
-                "todo_date": row[4],
-                "google_calendar_id": row[5] if len(row) > 5 else None,
+                "todo_type": row[3] if len(row) > 3 else None,
+                "todo_date": row[4] if len(row) > 4 else None,
+                "todo_time": row[5] if len(row) > 5 else None,
+                "description": row[6] if len(row) > 6 else None,
+                "source_file": row[7] if len(row) > 7 else None,
+                "google_calendar_id": row[8] if len(row) > 8 else None,
             }
 
         if not todo.get("todo_date"):
@@ -673,13 +750,12 @@ def run_sync(dry_run: bool = False, conn=None) -> dict:  # noqa: ARG001
             continue
 
         try:
-            from googleapiclient.errors import HttpError
-
             result = push_todo_to_gcal(service, calendar_id, todo)
             event_id = result.get("id", "")
 
-            # Write back event_id if newly created
-            if event_id and not (todo.get("google_calendar_id") or "").strip():
+            # Write back event_id when newly created or when replacing a stale id.
+            existing_gid = (todo.get("google_calendar_id") or "").strip()
+            if event_id and event_id != existing_gid:
                 _osc_exec_sql(
                     "UPDATE case_todos SET google_calendar_id=%s WHERE id=%s",
                     (event_id, todo["id"]),

@@ -258,6 +258,53 @@ def test_nightly_health_report_reclassifies_local_backup_mode_db_steps(tmp_path,
     assert "有 1 個步驟失敗" not in text
 
 
+def test_nightly_health_report_explains_resource_guard_skip(tmp_path, monkeypatch):
+    import scripts.nightly_health_report as report
+    import time
+
+    guard_log = tmp_path / "resource_guarded_run.jsonl"
+    guard_log.write_text(
+        json.dumps(
+            {
+                "ts": time.time(),
+                "job_id": "job_nightly_autopilot",
+                "blocked": True,
+                "block_reasons": ["resource_level>=throttle:throttle"],
+                "decision": {
+                    "level": "throttle",
+                    "snapshot": {
+                        "disk_free_gb": 39.37,
+                        "disk_total_gb": 460.43,
+                        "swap_used_gb": 15.57,
+                        "free_plus_inactive_gb": 7.73,
+                    },
+                },
+            },
+            ensure_ascii=False,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    cron_state = tmp_path / "cron_state.json"
+    cron_state.write_text(
+        json.dumps({"job_nightly_autopilot": {"last_run": "2026-05-16T22:00:53"}}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(report, "AUTOPILOT_RUNS_DIR", str(tmp_path / "runs"))
+    monkeypatch.setattr(report, "DELIVERY_LOG", str(tmp_path / "missing.jsonl"))
+    monkeypatch.setattr(report, "RESOURCE_GUARD_LOG", str(guard_log))
+    monkeypatch.setattr(report, "CRON_STATE_PATH", str(cron_state))
+
+    text = report.generate_report()
+
+    assert "資源守門" in text
+    assert "level=throttle" in text
+    assert "resource_level>=throttle:throttle" in text
+    assert "磁碟可用 39.37/460.43GB" in text
+    assert "夜間主流程已由資源守門略過" in text
+    assert "夜間任務可能未執行" not in text
+
+
 def test_autopilot_user_active_defer_defined_before_first_call():
     source = Path("skills/magi-autopilot/action.py").read_text(encoding="utf-8")
     run_start = source.index("def run_nightly")
@@ -433,6 +480,8 @@ def test_local_nightly_autopilot_timeout_covers_midnight_pull():
     by_id = {job["id"]: job for job in jobs}
 
     assert by_id["job_nightly_autopilot"]["timeout_sec"] >= 28800
+    assert by_id["job_nightly_autopilot"]["resource_block_at"] == "core_only"
+    assert "--block-at core_only" in by_id["job_nightly_autopilot"]["command"]
 
 
 def test_cron_scheduler_has_hardcoded_timeouts_for_runtime_only_jobs():
