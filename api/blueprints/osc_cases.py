@@ -6482,7 +6482,7 @@ def osc_cases_import_csv_api():
 
         case_number = (row.get("案件編號") or "").strip()
         if not case_number:
-            case_number = f"web-csv-{uuid.uuid4().hex[:12]}"
+            case_number = _osc_generate_case_number()
 
         # Check duplicate case_number
         try:

@@ -209,6 +209,40 @@ def test_cases_post_generates_case_number_and_syncs_laf_live(client):
             _osc_exec("DELETE FROM cases WHERE id=%s", (row_id,), fetch="none")
 
 
+def test_cases_import_csv_blank_case_number_generates_real_osc_number_live(client):
+    """CSV 匯入若留空案件編號，也要用正式 OSC 編號，不可再產生 web-csv 暫編。"""
+    from io import BytesIO
+
+    from api.osc.utils import _osc_exec
+
+    marker = uuid.uuid4().hex[:8]
+    client_name = f"MAGI-CSV-LIVE-DELETE-{marker}"
+    csv_text = "\ufeff案件編號,當事人,狀態\n," + client_name + ",進行中\n"
+    row_id = None
+    r = client.post(
+        "/api/osc/cases/import-csv",
+        data={"file": (BytesIO(csv_text.encode("utf-8")), "cases_blank_number.csv")},
+        content_type="multipart/form-data",
+    )
+    assert r.status_code == 200, r.get_data(as_text=True)
+    body = r.get_json()
+    try:
+        assert body["ok"] is True
+        assert body["imported"] == 1
+        row, _ = _osc_exec(
+            "SELECT id, case_number, client_name FROM cases WHERE client_name=%s ORDER BY created_date DESC LIMIT 1",
+            (client_name,),
+            fetch="one",
+        )
+        assert row
+        row_id = row["id"]
+        assert row["case_number"].startswith(f"{datetime.now().year}-")
+        assert not row["case_number"].startswith("web-csv-")
+    finally:
+        if row_id:
+            _osc_exec("DELETE FROM cases WHERE id=%s", (row_id,), fetch="none")
+
+
 def test_clients_list_returns_data(client):
     r = client.get("/api/osc/clients?limit=5")
     assert r.status_code == 200
