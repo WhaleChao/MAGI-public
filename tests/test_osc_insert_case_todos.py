@@ -25,6 +25,12 @@ class _FakeCursor:
                 self._fetchone = (42,)
             elif self.mode == "same_datetime_needs_share_refresh":
                 self._fetchone = (42, "⚖️ 3月4日 下午3時00分 開庭", "余秋菊")
+            elif self.mode == "same_datetime_share_host_changed":
+                self._fetchone = (
+                    42,
+                    "⚖️ 3月4日 下午3時00分 開庭\nMAGI分享連結：https://old-share.example/s/old\n連結有效至：2026-06-01T00:00:00",
+                    "余秋菊",
+                )
             else:
                 self._fetchone = None
         elif "AND `todo_type`=%s AND `source_file`=%s" in normalized:
@@ -92,6 +98,23 @@ def test_insert_case_todos_refreshes_same_source_datetime_when_share_link_added(
 
     assert result == {"inserted": 0, "skipped": 0, "updated": 1}
     assert any("UPDATE `case_todos`" in sql for sql, _ in conn.cursor_obj.executed)
+
+
+def test_insert_case_todos_refreshes_stale_share_host():
+    conn = _FakeConn("same_datetime_share_host_changed")
+    todo = _todo()
+    todo["description"] += "\nMAGI分享連結：https://new-share.example/s/new\n連結有效至：2026-06-16T00:00:00"
+    result = insert_case_todos(
+        conn,
+        case_number="2025-0088",
+        client_name="余秋菊",
+        todos=[todo],
+        source_file="notice.pdf",
+    )
+
+    assert result == {"inserted": 0, "skipped": 0, "updated": 1}
+    update_params = [params for sql, params in conn.cursor_obj.executed if "UPDATE `case_todos`" in sql][0]
+    assert "https://new-share.example/s/new" in update_params[1]
 
 
 def test_insert_case_todos_updates_stale_pending_same_source_type():

@@ -1294,6 +1294,19 @@ def _paperclip_share_public_health_ok() -> bool:
         return False
 
 
+def _paperclip_share_public_base_is_managed_tunnel() -> bool:
+    try:
+        url_path = _paperclip_share_url_file()
+        if not os.path.exists(url_path):
+            return True
+        base = open(url_path, encoding="utf-8").read().strip().rstrip("/")
+        if not base:
+            return True
+        return ".trycloudflare.com" in base
+    except Exception:
+        return True
+
+
 _PAPERCLIP_SHARE_LAUNCHD_LABELS = (
     "com.magi.paperclip-share-gateway",
     "com.magi.paperclip-share-tunnel",
@@ -1331,6 +1344,8 @@ def _ensure_paperclip_share_tunnel() -> None:
         gateway_ok = _paperclip_share_gateway_health_ok(port)
         tunnel_ok = bool(_paperclip_share_tunnel_pids_for_port(port))
         public_ok = _paperclip_share_public_health_ok()
+        if public_ok and not _paperclip_share_public_base_is_managed_tunnel():
+            return
         if gateway_ok and tunnel_ok and public_ok:
             return
 

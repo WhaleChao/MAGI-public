@@ -16,8 +16,11 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import json
 import os
+import re
 import sys
 from pathlib import Path
+from datetime import datetime, timedelta
+from urllib.parse import urlsplit
 
 import mysql.connector
 
@@ -26,6 +29,45 @@ if str(_MAGI_ROOT) not in sys.path:
     sys.path.insert(0, str(_MAGI_ROOT))
 
 from api.runtime_paths import config_candidates
+
+_SHARE_URL_RE = re.compile(r"MAGI分享連結：(?P<url>\S+)")
+_SHARE_EXPIRES_RE = re.compile(r"連結有效至：(?P<expires>[^\n]+)")
+
+
+def _extract_share_url(desc: str) -> str:
+    match = _SHARE_URL_RE.search(str(desc or ""))
+    return match.group("url").strip() if match else ""
+
+
+def _share_host(url: str) -> str:
+    try:
+        return urlsplit(url).netloc.lower()
+    except Exception:
+        return ""
+
+
+def _share_expires_soon(desc: str, *, within_days: int = 1) -> bool:
+    match = _SHARE_EXPIRES_RE.search(str(desc or ""))
+    if not match:
+        return False
+    raw = match.group("expires").strip()
+    try:
+        expires = datetime.fromisoformat(raw)
+    except Exception:
+        return False
+    return expires <= datetime.now() + timedelta(days=within_days)
+
+
+def _should_refresh_share_description(old_desc: str, new_desc: str) -> bool:
+    new_url = _extract_share_url(new_desc)
+    if not new_url:
+        return False
+    old_url = _extract_share_url(old_desc)
+    if not old_url:
+        return True
+    if old_url == new_url:
+        return False
+    return _share_host(old_url) != _share_host(new_url) or _share_expires_soon(old_desc)
 
 # --- Load .env for subprocess/cron credential access ---
 try:
@@ -704,7 +746,7 @@ def insert_case_todos(
                     old_desc = same_datetime[1] if isinstance(same_datetime, tuple) and len(same_datetime) > 1 else ""
                     old_client = same_datetime[2] if isinstance(same_datetime, tuple) and len(same_datetime) > 2 else ""
                     has_existing_details = isinstance(same_datetime, tuple) and len(same_datetime) > 2
-                    should_refresh_share = "MAGI分享連結" in desc and "MAGI分享連結" not in str(old_desc or "")
+                    should_refresh_share = _should_refresh_share_description(str(old_desc or ""), desc)
                     should_refresh_client = bool(client_name) and has_existing_details and not str(old_client or "").strip()
                     if same_id and (should_refresh_share or should_refresh_client):
                         cur.execute(

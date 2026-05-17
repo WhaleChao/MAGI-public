@@ -12,6 +12,7 @@ from datetime import datetime
 from datetime import timedelta
 from pathlib import Path
 from typing import Any
+import urllib.request
 
 import fitz
 from flask import Blueprint, jsonify, request
@@ -329,6 +330,13 @@ def _create_calendar_share_link(path: Path) -> dict[str, Any]:
         public_probe, probe_mode = osc_files._share_url_for_token("probe")
         if not public_probe:
             return {"ok": False, "error": probe_mode}
+        public_base = public_probe.rsplit("/s/", 1)[0].rstrip("/")
+        try:
+            with urllib.request.urlopen(public_base + "/health", timeout=10) as resp:
+                if not (200 <= int(resp.status) < 300):
+                    return {"ok": False, "error": f"share_public_base_unhealthy:{resp.status}"}
+        except Exception as exc:
+            return {"ok": False, "error": f"share_public_base_unreachable:{type(exc).__name__}"}
         token = secrets.token_urlsafe(32)
         token_hash = osc_files._share_token_hash(token)
         now = int(time.time())

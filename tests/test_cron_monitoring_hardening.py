@@ -443,6 +443,15 @@ def test_omlx_restore_installer_uses_canonical_repo_switch():
     assert "run_with_env.py" in source
 
 
+def test_share_tunnel_watchdog_respects_stable_non_cloudflare_base():
+    source = Path("api/startup.py").read_text(encoding="utf-8")
+    share_block = source[source.index("def _ensure_paperclip_share_tunnel") : source.index("def _paperclip_share_tunnel_watchdog")]
+
+    assert "def _paperclip_share_public_base_is_managed_tunnel" in source
+    assert "if public_ok and not _paperclip_share_public_base_is_managed_tunnel():" in share_block
+    assert ".trycloudflare.com" in source
+
+
 def test_judicial_daytime_cron_batches_are_bounded():
     jobs = _cron_jobs_or_skip()
     by_id = {job["id"]: job for job in jobs}
