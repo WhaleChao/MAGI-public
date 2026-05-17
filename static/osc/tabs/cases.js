@@ -48,6 +48,16 @@ function isClosingOrClosedCase(row = {}) {
     return text.includes("close") || text.includes("結案") || text.includes("待報結") || text.includes("待送出");
 }
 
+function isTemplateCaseRow(row = {}) {
+    const text = `${row.case_number || ""} ${row.client_name || ""} ${row.folder_path || ""} ${row.status || ""}`;
+    return text.includes("0000-0000-範本") || caseDisplayStatus(row) === "—";
+}
+
+function caseCloseButton(row = {}, extraClass = "") {
+    if (!row.id || isClosingOrClosedCase(row) || isTemplateCaseRow(row)) return "";
+    return `<button class="btn warn ${extraClass}" data-act="case-close" data-id="${esc(row.id)}">結案</button>`;
+}
+
 function caseDisplayType(row = {}) {
     return row.case_type_display || row.case_type || "";
 }
@@ -145,6 +155,7 @@ function renderCases() {
                     <button class="btn" data-act="case-workbench" data-id="${esc(r.id)}">案件處理</button>
                     <button class="btn" data-act="case-doc-finalize" data-id="${esc(r.id)}">書狀定稿</button>
                     <button class="btn" data-act="case-edit" data-id="${esc(r.id)}">編輯</button>
+                    ${caseCloseButton(r)}
                     <button class="btn" data-act="case-address-label" data-id="${esc(r.id)}">地址標籤</button>
                     <button class="btn danger" data-act="case-del" data-id="${esc(r.id)}">刪除</button>
                 </div>
@@ -172,6 +183,7 @@ function renderCases() {
             <button class="btn" data-act="case-workbench" data-id="${esc(r.id)}">案件處理</button>
             <button class="btn" data-act="case-doc-finalize" data-id="${esc(r.id)}">書狀定稿</button>
             <button class="btn" data-act="case-edit" data-id="${esc(r.id)}">編輯</button>
+            ${caseCloseButton(r)}
             <button class="btn" data-act="case-address-label" data-id="${esc(r.id)}">📮 地址標籤</button>
             <button class="btn danger" data-act="case-del" data-id="${esc(r.id)}">刪除</button>
         </td>
@@ -359,6 +371,19 @@ async function delCase(id) {
     await api(`/api/osc/cases/${encodeURIComponent(id)}`, "DELETE");
     await loadCases();
     await loadMeta();
+}
+
+async function closeCase(id) {
+    if (!id) return;
+    if (!confirm("確定將此案件標記為已結案並搬移到結案資料夾？\\n\\nMAGI 會把這次人工判斷鎖定，後續掃描不得自動改回進行中。")) return;
+    const resp = await api(`/api/osc/cases/${encodeURIComponent(id)}/close`, "POST", {});
+    showArchiveResult(resp?.archive);
+    showToast("案件已標記為已結案，人工狀態已鎖定。", "ok", 4000);
+    await loadCases();
+    await loadMeta();
+    if (state.wb?.id === id && state.wb.mode === "case") {
+        await openCaseWorkbench(id, "案件已結案並重新整理處理頁。");
+    }
 }
 
 async function saveCase() {
@@ -663,6 +688,7 @@ function renderWorkbenchCaseEditor(c) {
         <div class="toolbar" style="margin-top:10px; margin-bottom:0;">
             <button class="btn primary" data-act="wb-case-save" data-id="${esc(c.id || "")}">儲存案件資料</button>
             <button class="btn" data-act="wb-case-create-folder" data-id="${esc(c.id || "")}"${c.folder_path ? ' title="已有資料夾路徑，點此可重新建立子資料夾結構"' : ""}>建立資料夾</button>
+            ${caseCloseButton(c)}
         </div>
     </div>
     `;

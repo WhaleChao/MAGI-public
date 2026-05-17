@@ -684,6 +684,13 @@ def _osc_get_closed_archive_base() -> str:
     env_base = (os.environ.get("MAGI_CLOSED_CASE_ARCHIVE_PATH") or "").strip()
     if env_base:
         return env_base
+    for candidate in (
+        "/Volumes/lumi/lumi/03_工作資料/10_結案",
+        "/Volumes/lumi-1/lumi/03_工作資料/10_結案",
+        "/Volumes/lumi-2/lumi/03_工作資料/10_結案",
+    ):
+        if os.path.isdir(candidate):
+            return candidate
     try:
         ensure_path_on_sys_path(get_orch_dir())
         from osc_core.paths import get_closed_case_archive_path  # type: ignore

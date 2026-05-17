@@ -178,8 +178,8 @@ _SYNOLOGY_LOCAL_SHARE_CANDIDATES = [
 _NAS_HOME_USER = (
     os.environ.get("MAGI_NAS_HOME_USER")
     or os.environ.get("MAGI_NAS_USER")
-    or "home"
-).strip().strip("/\\") or "home"
+    or "lumi63181107"
+).strip().strip("/\\") or "lumi63181107"
 _NAS_HOME_SHARE_PREFIXES = [
     str(_HOME / ".magi_mounts/homes" / _NAS_HOME_USER),
     str(_HOME / ".magi_mounts/homes"),

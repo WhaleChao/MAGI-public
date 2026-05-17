@@ -562,11 +562,21 @@ def dispatch_case_management(message, user_id="", platform=""):
                 return "找不到符合「%s」的案件，無法更新狀態。" % keyword
             case_id = row.get("id")
             cn = row.get("case_number") or row.get("client_name") or ""
-            _osc_exec(
-                "UPDATE cases SET status=%s, updated_at=%s WHERE id=%s",
-                (new_status, _dt.now().strftime("%Y-%m-%d %H:%M:%S"), case_id),
-                fetch="none",
-            )
+            try:
+                _osc_exec("ALTER TABLE cases ADD COLUMN IF NOT EXISTS manual_status_lock TINYINT(1) NOT NULL DEFAULT 0", fetch="none")
+                _osc_exec("ALTER TABLE cases ADD COLUMN IF NOT EXISTS manual_status_source VARCHAR(64) NULL", fetch="none")
+                _osc_exec("ALTER TABLE cases ADD COLUMN IF NOT EXISTS manual_status_at DATETIME NULL", fetch="none")
+                _osc_exec(
+                    "UPDATE cases SET status=%s, manual_status_lock=1, manual_status_source=%s, manual_status_at=NOW(), updated_at=%s WHERE id=%s",
+                    (new_status, "magi_command", _dt.now().strftime("%Y-%m-%d %H:%M:%S"), case_id),
+                    fetch="none",
+                )
+            except Exception:
+                _osc_exec(
+                    "UPDATE cases SET status=%s, updated_at=%s WHERE id=%s",
+                    (new_status, _dt.now().strftime("%Y-%m-%d %H:%M:%S"), case_id),
+                    fetch="none",
+                )
             return "✅ 案件「%s」狀態已更新為「%s」。" % (cn, new_status)
         except Exception as e:
             logger.warning("dispatch_case_management update error: %s", e)

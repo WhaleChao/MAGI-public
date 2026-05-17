@@ -4581,8 +4581,43 @@ def run_nightly(run_dir: str) -> Dict[str, Any]:
         except Exception:
             logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 5008, exc_info=True)
 
+    def _step_synology_empty_shell_cleanup():
+        try:
+            enabled = os.environ.get("MAGI_ENABLE_EMPTY_CASE_SHELL_CLEANUP", "1").strip().lower() in {"1", "true", "yes", "on"}
+            script = os.path.join(MAGI_ROOT_DIR, "scripts", "ops", "cleanup_synology_empty_case_shells.py")
+            if enabled and os.path.exists(script):
+                cleanup_budget = _tb(
+                    "MAGI_NIGHTLY_EMPTY_SHELL_CLEANUP_BUDGET_SEC",
+                    "MAGI_NIGHTLY_EMPTY_SHELL_CLEANUP_TIMEOUT_SEC",
+                    180,
+                )
+                cleanup_limit = str(int(_t("MAGI_EMPTY_SHELL_CLEANUP_LIMIT", 120)))
+                cleanup_max_seconds = str(max(10, int(cleanup_budget) - 5))
+                cleanup_cmd = [
+                    VENV_PY,
+                    script,
+                    "--apply",
+                    "--limit",
+                    cleanup_limit,
+                    "--max-seconds",
+                    cleanup_max_seconds,
+                ]
+                _run_budgeted_step_ts(
+                    "synology_empty_case_shell_cleanup",
+                    cleanup_cmd,
+                    cleanup_budget,
+                    min_start_sec=10,
+                )
+            elif not enabled:
+                with _budget_lock:
+                    _record_skip("synology_empty_case_shell_cleanup", "略過：MAGI_ENABLE_EMPTY_CASE_SHELL_CLEANUP=0",
+                        {"requested_sec": 0, "allocated_sec": 0, "min_start_sec": 10,
+                         "remaining_before_sec": _remaining_budget_sec(), "guard_sec": max(0, int(nightly_guard_sec))})
+        except Exception:
+            logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 5028, exc_info=True)
+
     parallel_tasks = [_step_style_learning, _step_iron_dome, _step_image_smoke,
-                      _step_statutes_vdb, _step_faiss_evict]
+                      _step_statutes_vdb, _step_faiss_evict, _step_synology_empty_shell_cleanup]
 
     if nightly_parallel_enabled:
         _run_parallel_steps(parallel_tasks)

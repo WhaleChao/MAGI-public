@@ -914,6 +914,7 @@ def _osc_status_scope_sql(scope: str) -> str:
 @login_required
 def osc_cases_api():
     translate_local_path_to_canonical = _get_translate_local_path_to_canonical()
+    _osc_ensure_case_manual_status_columns()
     if request.method == "GET":
         q = (request.args.get("q") or "").strip()
         category = (request.args.get("category") or "").strip()
@@ -988,7 +989,8 @@ def osc_cases_api():
         sql = """
             SELECT id, case_number, client_name, case_category, case_type, case_stage, case_reason,
                    laf_case_no, application_no, court_name, court_case_no, court_division, legal_aid_status,
-                   status, notes, folder_path, updated_at, created_date
+                   status, manual_status_lock, manual_status_source, manual_status_at,
+                   notes, folder_path, updated_at, created_date
             FROM cases
         """
         if where:
@@ -1126,6 +1128,7 @@ def osc_cases_api():
 @login_required
 def osc_case_detail_api(row_id):
     translate_local_path_to_canonical = _get_translate_local_path_to_canonical()
+    _osc_ensure_case_manual_status_columns()
     row_id = (row_id or "").strip()
     if not row_id:
         return jsonify({"ok": False, "error": "invalid id"}), 400
@@ -1190,6 +1193,37 @@ def osc_case_detail_api(row_id):
     return jsonify(resp)
 
 
+@osc_bp.route("/api/osc/cases/<row_id>/close", methods=["POST"])
+@login_required
+def osc_case_close_api(row_id):
+    row_id = (row_id or "").strip()
+    if not row_id:
+        return jsonify({"ok": False, "error": "invalid id"}), 400
+    row, _ = _osc_exec(
+        "SELECT id, case_number, client_name, status, legal_aid_status, folder_path FROM cases WHERE id=%s",
+        (row_id,),
+        fetch="one",
+    )
+    if not row:
+        return jsonify({"ok": False, "error": "not found"}), 404
+    if _osc_is_template_case(row):
+        return jsonify({"ok": False, "error": "template_case_cannot_close"}), 400
+    status_result = _osc_set_case_status_manual(row_id, "已結案", source="osc_web_close_button")
+    archive = _osc_auto_archive_closed_case(row_id)
+    updated, _ = _osc_exec(
+        "SELECT id, case_number, client_name, status, manual_status_lock, manual_status_source, manual_status_at, folder_path FROM cases WHERE id=%s",
+        (row_id,),
+        fetch="one",
+    )
+    _osc_log_activity(
+        "case:manual_close",
+        "cases",
+        row_id,
+        {"case_number": row.get("case_number"), "client_name": row.get("client_name"), "archive": archive},
+    )
+    return jsonify({"ok": True, "status": status_result, "archive": archive, "case": updated or {}})
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # Case open-folder / create-folder / folder-browser
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1225,6 +1259,22 @@ def _osc_is_laf_final_closed_status(status: str) -> bool:
 
 _LAF_STATUS_OPTIONS = ("未開辦", "進行中", "已結案，待報結", "已結案，待送出", "已結案")
 
+_CASE_MANUAL_STATUS_SCHEMA_READY = False
+
+
+def _osc_ensure_case_manual_status_columns() -> None:
+    """Add lightweight audit columns used to keep human status decisions first."""
+    global _CASE_MANUAL_STATUS_SCHEMA_READY
+    if _CASE_MANUAL_STATUS_SCHEMA_READY:
+        return
+    try:
+        _osc_exec("ALTER TABLE cases ADD COLUMN IF NOT EXISTS manual_status_lock TINYINT(1) NOT NULL DEFAULT 0", fetch="none")
+        _osc_exec("ALTER TABLE cases ADD COLUMN IF NOT EXISTS manual_status_source VARCHAR(64) NULL", fetch="none")
+        _osc_exec("ALTER TABLE cases ADD COLUMN IF NOT EXISTS manual_status_at DATETIME NULL", fetch="none")
+        _CASE_MANUAL_STATUS_SCHEMA_READY = True
+    except Exception:
+        _log.debug("silent-catch ensure manual status columns", exc_info=True)
+
 
 def _osc_normalize_laf_status(status: str) -> str:
     text = str(status or "").strip()
@@ -1256,6 +1306,30 @@ def _osc_case_status_for_laf_status(legal_aid_status: str) -> str:
 def _osc_should_archive_case_row(row: dict) -> bool:
     row = row or {}
     return _osc_is_closed_case_status(row.get("status") or "") or _osc_is_laf_final_closed_status(row.get("legal_aid_status") or "")
+
+
+def _osc_set_case_status_manual(row_id: str, status: str, *, source: str = "osc_web") -> dict:
+    """Persist a human status change and protect it from automated sync jobs."""
+    row_id = str(row_id or "").strip()
+    target = str(status or "").strip()
+    if not row_id or not target:
+        return {"ok": False, "reason": "invalid_status"}
+    _osc_ensure_case_manual_status_columns()
+    result, _ = _osc_exec(
+        """
+        UPDATE cases
+        SET status=%s,
+            manual_status_lock=1,
+            manual_status_source=%s,
+            manual_status_at=NOW(),
+            end_date=CASE WHEN %s LIKE %s THEN COALESCE(end_date, CURDATE()) ELSE end_date END,
+            updated_at=NOW()
+        WHERE id=%s
+        """,
+        (target, source, target, "%結案%", row_id),
+        fetch="none",
+    )
+    return {"ok": True, "result": result, "status": target, "manual_status_lock": True}
 
 
 def _osc_archive_local_base() -> tuple[str, str]:
@@ -1440,6 +1514,21 @@ def _osc_effective_case_folder_for_row(row: dict, *, update_db: bool = False) ->
 
     if local:
         return {"folder_path": norm, "local_folder": local, "source": "db_or_guess", "updated": False}
+
+    guessed = _osc_guess_case_folder(row.get("case_number") or "")
+    guessed_norm = _osc_norm_path(guessed) if guessed else ""
+    guessed_local = _osc_resolve_existing_local_path(guessed_norm, prefer_dir=True) if guessed_norm else ""
+    if guessed_local:
+        translate_local_path_to_canonical = _get_translate_local_path_to_canonical()
+        canonical = translate_local_path_to_canonical(guessed_local) or guessed_norm or guessed_local
+        updated = False
+        if update_db and row.get("id"):
+            try:
+                _osc_exec("UPDATE cases SET folder_path=%s, updated_at=NOW() WHERE id=%s", (canonical, row.get("id")), fetch="none")
+                updated = True
+            except Exception:
+                _log.debug("silent-catch active case folder path db update", exc_info=True)
+        return {"folder_path": _osc_norm_path(canonical), "local_folder": guessed_local, "source": "active_scan", "updated": updated}
 
     return {"folder_path": norm, "local_folder": "", "source": "missing", "updated": False}
 
@@ -1773,17 +1862,19 @@ def _osc_cleanup_residual_archive_sources(source_candidates, primary_src: str, d
 
 def _osc_update_archived_case_folder(cid: str, folder_path: str, item: dict) -> None:
     """Persist closed folder path and keep case status aligned with archive state."""
+    translate_local_path_to_canonical = _get_translate_local_path_to_canonical()
+    canonical_folder_path = translate_local_path_to_canonical(folder_path) or folder_path
     status = str((item or {}).get("status") or "").strip()
     laf_status = str((item or {}).get("legal_aid_status") or "").strip()
     should_mark_closed = _osc_is_closed_case_status(status) or _osc_is_laf_final_closed_status(laf_status)
     if should_mark_closed:
         _osc_exec(
             "UPDATE cases SET folder_path=%s, status=%s, updated_at=NOW() WHERE id=%s",
-            (folder_path, "已結案", cid),
+            (canonical_folder_path, "已結案", cid),
             fetch="none",
         )
     else:
-        _osc_exec("UPDATE cases SET folder_path=%s, updated_at=NOW() WHERE id=%s", (folder_path, cid), fetch="none")
+        _osc_exec("UPDATE cases SET folder_path=%s, updated_at=NOW() WHERE id=%s", (canonical_folder_path, cid), fetch="none")
 
 
 def _osc_move_archive_item(it: dict, *, force: bool = False) -> dict:

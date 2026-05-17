@@ -15,20 +15,20 @@ _HOME = Path.home()
 _NAS_HOME_USER = (
     os.environ.get("MAGI_NAS_HOME_USER")
     or os.environ.get("MAGI_NAS_USER")
-    or "home"
-).strip().strip("/\\") or "home"
+    or "lumi63181107"
+).strip().strip("/\\") or "lumi63181107"
 _NAS_CLOSED_SHARE_NAME = (
     os.environ.get("MAGI_NAS_CLOSED_SHARE_NAME")
     or os.environ.get("MAGI_NAS_ARCHIVE_SHARE")
-    or "archive"
-).strip().strip("/\\") or "archive"
+    or "lumi"
+).strip().strip("/\\") or "lumi"
 _CANONICAL_ACTIVE_SHARE_PREFIX = (
     os.environ.get("MAGI_CANONICAL_ACTIVE_SHARE_PREFIX")
     or f"Z:/{_NAS_HOME_USER}"
 ).replace("\\", "/").rstrip("/")
 _CANONICAL_CLOSED_SHARE_PREFIX = (
     os.environ.get("MAGI_CANONICAL_CLOSED_SHARE_PREFIX")
-    or "Y:/archive"
+    or "Y:/lumi"
 ).replace("\\", "/").rstrip("/")
 _CANONICAL_ACTIVE_CASE_PREFIX = (
     os.environ.get("MAGI_CANONICAL_ACTIVE_CASE_PREFIX")
@@ -105,6 +105,7 @@ _DEFAULT_ACTIVE_SHARE_ROOTS = [
     str(_HOME / "SynologyDrive/homes"),
     str(_HOME / "SynologyDrive"),
     _discover_volume("homes", _NAS_HOME_USER),
+    "/Volumes/homes/home",  # legacy read-only alias; DB canonical remains Z:/lumi63181107
 ]
 _ACTIVE_SMB_ROOT_CACHE: dict = {"roots": None, "expires": 0.0}
 _ACTIVE_SMB_ROOT_TTL = float(os.environ.get("MAGI_ACTIVE_SMB_ROOT_TTL_SEC", "60"))
@@ -211,29 +212,32 @@ def _probe_external_closed_roots() -> list[str]:
         for entry in sorted(os.listdir("/Volumes")):
             if entry in ("Macintosh HD", "homes", "homes-1", "homes-2"):
                 continue
-            root = os.path.join("/Volumes", entry, _NAS_CLOSED_SHARE_NAME)
-            probe = os.path.join(root, "03_工作資料", "10_結案")
-            if _is_dir_accessible(probe):
-                candidates.append(root)
+            for share_name in _closed_share_aliases():
+                root = os.path.join("/Volumes", entry, share_name)
+                probe = os.path.join(root, "03_工作資料", "10_結案")
+                if _is_dir_accessible(probe):
+                    candidates.append(root)
     except OSError:
         pass
 
     # 3. SynologyDrive 雲同步變體
-    synology_variants = [
-        str(_HOME / "Library/CloudStorage/SynologyDrive-homes" / _NAS_CLOSED_SHARE_NAME),
-        str(_HOME / "SynologyDrive/homes" / _NAS_CLOSED_SHARE_NAME),
-        str(_HOME / "SynologyDrive" / _NAS_CLOSED_SHARE_NAME),
-    ]
-    for v in synology_variants:
-        probe = os.path.join(v, "03_工作資料", "10_結案")
-        if _is_dir_accessible(probe):
-            candidates.append(v)
+    for share_name in _closed_share_aliases():
+        synology_variants = [
+            str(_HOME / "Library/CloudStorage/SynologyDrive-homes" / share_name),
+            str(_HOME / "SynologyDrive/homes" / share_name),
+            str(_HOME / "SynologyDrive" / share_name),
+        ]
+        for v in synology_variants:
+            probe = os.path.join(v, "03_工作資料", "10_結案")
+            if _is_dir_accessible(probe):
+                candidates.append(v)
 
     # 4. NAS archive share fallback（macOS automount 可能加 -1/-2 後綴）
-    nas_discovered = _discover_volume(_NAS_CLOSED_SHARE_NAME, _NAS_CLOSED_SHARE_NAME)
-    nas_probe = os.path.join(nas_discovered, "03_工作資料", "10_結案")
-    if _is_dir_accessible(nas_probe):
-        candidates.append(nas_discovered)
+    for share_name in _closed_share_aliases():
+        nas_discovered = _discover_volume(share_name, share_name)
+        nas_probe = os.path.join(nas_discovered, "03_工作資料", "10_結案")
+        if _is_dir_accessible(nas_probe):
+            candidates.append(nas_discovered)
 
     # 去重保序（inline 不依賴 _dedupe_keep_order 避免 import 時 forward ref）
     seen: set = set()
@@ -299,6 +303,7 @@ _DEFAULT_CLOSED_SHARE_ROOTS = [
     str(_HOME / "SynologyDrive/homes" / _NAS_CLOSED_SHARE_NAME),
     str(_HOME / "SynologyDrive" / _NAS_CLOSED_SHARE_NAME),
     f"/Volumes/{_NAS_CLOSED_SHARE_NAME}/{_NAS_CLOSED_SHARE_NAME}",
+    "/Volumes/lumi/lumi",
 ]
 _DEFAULT_ACTIVE_ROOTS = [
     root.rstrip("/") + "/01_案件" for root in _DEFAULT_ACTIVE_SHARE_ROOTS
@@ -308,17 +313,23 @@ _DEFAULT_CLOSED_ROOTS = [
 ]
 _ACTIVE_PREFIXES = [
     _CANONICAL_ACTIVE_CASE_PREFIX,
+    "Z:/home/01_案件",
     "K:/SynologyDrive/01_案件",
 ]
 _CLOSED_PREFIXES = [
     _CANONICAL_CLOSED_CASE_PREFIX,
+    "Y:/lumi/03_工作資料/10_結案",
+    "Y:/archive/03_工作資料/10_結案",
 ]
 _ACTIVE_SHARE_PREFIXES = [
     _CANONICAL_ACTIVE_SHARE_PREFIX,
+    "Z:/home",
     "K:/SynologyDrive",
 ]
 _CLOSED_SHARE_PREFIXES = [
     _CANONICAL_CLOSED_SHARE_PREFIX,
+    "Y:/lumi",
+    "Y:/archive",
 ]
 
 
@@ -349,6 +360,13 @@ def _dedupe_keep_order(items: list[str]) -> list[str]:
         seen.add(key)
         out.append(p)
     return out
+
+
+def _closed_share_aliases() -> list[str]:
+    # The private office archive share is named "lumi"; older builds used
+    # "archive".  Treat both as aliases for path resolution, without changing
+    # the canonical Windows path stored in the DB.
+    return _dedupe_keep_order([_NAS_CLOSED_SHARE_NAME, "lumi", "archive"])
 
 
 def _join_root_rel(root: str, rel: str) -> str:
@@ -542,6 +560,18 @@ def local_synology_path_candidates(path: str, cfg: Optional[dict] = None) -> lis
     candidates.extend(_expand_from_prefix(s, _ACTIVE_SHARE_PREFIXES, active_roots))
     candidates.extend(_expand_from_prefix(s, _CLOSED_SHARE_PREFIXES, closed_roots))
 
+    # Office Windows paths use the mapped drive itself as the share account,
+    # e.g. Z:/lumi63181107/01_案件/..., not only the older Z:/home/... alias.
+    # Keep the Windows canonical path unchanged in DB, but make the web server
+    # able to browse it from /Volumes/homes/<account> or Synology Drive.
+    m_active_drive = _re.match(r"^Z:/([^/]+)/(.+)$", s, flags=_re.IGNORECASE)
+    if m_active_drive:
+        account_or_alias = (m_active_drive.group(1) or "").strip()
+        rel = (m_active_drive.group(2) or "").lstrip("/")
+        if account_or_alias and account_or_alias.lower() not in {"archive", _NAS_CLOSED_SHARE_NAME.lower()}:
+            for root in active_roots:
+                candidates.append(_join_root_rel(root, rel))
+
     # 支援 /Volumes/homes/<user>/ 和 /Volumes/homes-N/<user>/
     _homes_pattern = r"^/Volumes/homes(?:-\d+)?/" + _re.escape(_NAS_HOME_USER) + r"/(.*)$"
     _homes_match = _re.match(_homes_pattern, s)
@@ -662,7 +692,10 @@ def translate_local_path_to_canonical(path: str, cfg: Optional[dict] = None) -> 
             canon = _CANONICAL_CLOSED_SHARE_PREFIX
             return (canon if not rel else f"{canon}/{rel}").replace("/", "\\")
 
-    return s.replace("/", "\\")
+    # Unknown local paths are not NAS canonical paths.  Preserve them as-is so
+    # tests, temporary exports, and local-only tooling do not get rewritten into
+    # Windows-style paths.  Known NAS/Synology roots are converted above.
+    return s
 
 
 def default_scan_roots(cfg: Optional[dict] = None) -> list[str]:

@@ -724,14 +724,28 @@ def _update_laf_status(db, case: dict, new_status: str) -> bool:
     old_status = case.get("legal_aid_status") or "(空)"
     next_case_status = _case_status_for_laf_status(new_status)
     try:
-        db.execute_write(
-            "UPDATE `cases` SET `legal_aid_status` = %s, `status` = %s WHERE `id` = %s",
-            (new_status, next_case_status, case_id),
-        )
+        try:
+            db.execute_write(
+                """
+                UPDATE `cases`
+                SET `legal_aid_status` = %s,
+                    `status` = CASE WHEN COALESCE(`manual_status_lock`, 0) = 1 THEN `status` ELSE %s END
+                WHERE `id` = %s
+                """,
+                (new_status, next_case_status, case_id),
+            )
+        except Exception as inner:
+            if "manual_status_lock" not in str(inner) and "Unknown column" not in str(inner):
+                raise
+            db.execute_write(
+                "UPDATE `cases` SET `legal_aid_status` = %s, `status` = %s WHERE `id` = %s",
+                (new_status, next_case_status, case_id),
+            )
         logger.info("📝 DB 狀態更新: %s %s「%s」→「%s」",
                      case.get("case_number"), case.get("client_name"), old_status, new_status)
         case["legal_aid_status"] = new_status
-        case["status"] = next_case_status
+        if not case.get("manual_status_lock"):
+            case["status"] = next_case_status
         return True
     except Exception as e:
         logger.error("DB 狀態更新失敗 %s: %s", case.get("case_number"), e)

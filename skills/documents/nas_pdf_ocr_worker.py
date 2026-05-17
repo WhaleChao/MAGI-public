@@ -28,8 +28,8 @@ DB_PATH = os.path.expanduser("~/.magi_nas_ocr_queue.db")
 _NAS_HOME_USER = (
     os.environ.get("MAGI_NAS_HOME_USER")
     or os.environ.get("MAGI_NAS_USER")
-    or "home"
-).strip().strip("/\\") or "home"
+    or "lumi63181107"
+).strip().strip("/\\") or "lumi63181107"
 NAS_ROOT = os.environ.get("MAGI_NAS_CASE_ROOT", f"/Volumes/homes/{_NAS_HOME_USER}/01_案件")
 ARCHIVE_SUBDIR = "_Archive_No_OCR"
 

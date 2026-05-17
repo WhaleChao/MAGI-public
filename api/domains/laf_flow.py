@@ -172,10 +172,23 @@ def update_laf_status_after_action(orch, *, case_number: str = "", client_name: 
         row = rows[0]
         old = row.get("legal_aid_status") or "(\u7a7a)"
         next_case_status = _case_status_for_laf_status(new_status)
-        db.execute_write(
-            "UPDATE cases SET legal_aid_status = %s, status = %s WHERE id = %s",
-            (new_status, next_case_status, row["id"]),
-        )
+        try:
+            db.execute_write(
+                """
+                UPDATE cases
+                SET legal_aid_status = %s,
+                    status = CASE WHEN COALESCE(manual_status_lock, 0) = 1 THEN status ELSE %s END
+                WHERE id = %s
+                """,
+                (new_status, next_case_status, row["id"]),
+            )
+        except Exception as inner:
+            if "manual_status_lock" not in str(inner) and "Unknown column" not in str(inner):
+                raise
+            db.execute_write(
+                "UPDATE cases SET legal_aid_status = %s, status = %s WHERE id = %s",
+                (new_status, next_case_status, row["id"]),
+            )
         if str(new_status or "").strip() == "已結案":
             try:
                 from api.blueprints.osc_cases import _osc_auto_archive_closed_case

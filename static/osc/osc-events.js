@@ -132,6 +132,7 @@ async function dispatchDelegatedAction(act, t) {
     if (act === "case-open") return await openCaseFolder(id);
     if (act === "case-open-fm") return await openCaseFolder(id);
     if (act === "case-workbench") return await openCaseWorkbench(id);
+    if (act === "case-close") return await closeCase(id);
     if (act === "case-doc-finalize") return await openCaseDocumentFinalizer(id);
     if (act === "case-doc-finalize-search") return await refreshCaseDocumentFinalizer(id);
     if (act === "case-doc-index") return await openCaseDocumentIndex(t.dataset.case || "");
@@ -273,6 +274,7 @@ async function dispatchDelegatedAction(act, t) {
     if (act === "wb-case-workbench") return await openCaseWorkbench(id);
     if (act === "wb-case-save") return await saveWorkbenchCase();
     if (act === "wb-case-create-folder") return await createCaseFolder(id);
+    if (act === "wb-case-close") return await closeCase(id);
     if (act === "wb-case-action") return await wbQuickAction(t.dataset.action || "");
     if (act === "wb-folder-open") return await openCaseFolder(id, t.dataset.path || "");
     if (act === "wb-folder-upload") return promptFolderUpload(id, t.dataset.folderPath || "", t.dataset.path || "");

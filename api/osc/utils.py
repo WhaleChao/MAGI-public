@@ -43,13 +43,23 @@ logger = logging.getLogger(__name__)
 _OSC_NAS_HOME_USER = (
     os.environ.get("MAGI_NAS_HOME_USER")
     or os.environ.get("MAGI_NAS_USER")
-    or "home"
-).strip().strip("/\\") or "home"
+    or "lumi63181107"
+).strip().strip("/\\") or "lumi63181107"
 _OSC_NAS_CLOSED_SHARE_NAME = (
     os.environ.get("MAGI_NAS_CLOSED_SHARE_NAME")
     or os.environ.get("MAGI_NAS_ARCHIVE_SHARE")
-    or "archive"
-).strip().strip("/\\") or "archive"
+    or "lumi"
+).strip().strip("/\\") or "lumi"
+
+
+def _osc_closed_share_aliases() -> list[str]:
+    aliases = [_OSC_NAS_CLOSED_SHARE_NAME, "lumi", "archive"]
+    out: list[str] = []
+    for item in aliases:
+        text = str(item or "").strip().strip("/\\")
+        if text and text not in out:
+            out.append(text)
+    return out
 
 
 def _osc_canonical_active_share_windows() -> str:
@@ -443,17 +453,21 @@ def _osc_allowed_local_roots() -> list[str]:
         os.environ.get("MAGI_OSC_TEMPLATE_FOLDER", ""),
         str(Path.home() / "Desktop" / "0000-0000-範本-消費者債務清理"),
     ]
+    closed_alias_roots: list[str] = []
+    for share_name in _osc_closed_share_aliases():
+        closed_alias_roots.extend([
+            str(Path.home() / "Library/CloudStorage/SynologyDrive-homes" / share_name),
+            str(Path.home() / "SynologyDrive/homes" / share_name),
+            str(Path.home() / "SynologyDrive" / share_name),
+            f"/Volumes/{share_name}/{share_name}",
+            f"/Volumes/{share_name}-1/{share_name}",
+            f"/Volumes/{share_name}-2/{share_name}",
+        ])
     roots = default_synology_share_roots(include_closed=False) + [
         str(magi_root / "exports"),
         str(magi_root / "static" / "exports"),
-        str(Path.home() / "Library/CloudStorage/SynologyDrive-homes" / _OSC_NAS_CLOSED_SHARE_NAME),
-        str(Path.home() / "SynologyDrive/homes" / _OSC_NAS_CLOSED_SHARE_NAME),
-        str(Path.home() / "SynologyDrive" / _OSC_NAS_CLOSED_SHARE_NAME),
         f"/Volumes/homes/{_OSC_NAS_HOME_USER}",
-        f"/Volumes/{_OSC_NAS_CLOSED_SHARE_NAME}/{_OSC_NAS_CLOSED_SHARE_NAME}",
-        f"/Volumes/{_OSC_NAS_CLOSED_SHARE_NAME}-1/{_OSC_NAS_CLOSED_SHARE_NAME}",
-        f"/Volumes/{_OSC_NAS_CLOSED_SHARE_NAME}-2/{_OSC_NAS_CLOSED_SHARE_NAME}",
-    ] + [p for p in template_roots if str(p or "").strip()]
+    ] + closed_alias_roots + [p for p in template_roots if str(p or "").strip()]
     out = []
     for root in roots:
         rp = os.path.realpath(root)
@@ -910,16 +924,23 @@ def _osc_scan_nas_for_case_folder(case_number: str, *, client_name: str = "") ->
         return ""
     import time as _time
     tokens = [t for t in [cn, cln] if t]
-    # 找 NAS 01_案件 base：枚舉允許的 root
+    # 找 NAS 01_案件 base：枚舉允許的 root。allowed roots 有兩種常見型態：
+    #   /Volumes/homes/<account>                    -> 直接含 01_案件
+    #   /Users/.../SynologyDrive-homes/<share/user> -> 需往下一層找 01_案件
     for root in _osc_allowed_local_roots():
-        # NAS 標準層：<root>/<lumi*>/01_案件/...
         try:
+            bases: list[str] = []
+            direct = os.path.join(root, "01_案件")
+            if os.path.isdir(direct):
+                bases.append(direct)
             for top in os.listdir(root):
                 if "lumi" not in top.lower():
                     continue
                 base = os.path.join(root, top, "01_案件")
                 if not os.path.isdir(base):
                     continue
+                bases.append(base)
+            for base in _osc_unique_strings(bases):
                 count = 0
                 for dirpath, dirnames, _ in os.walk(base):
                     rel_depth = dirpath[len(base):].count(os.sep)
@@ -930,7 +951,7 @@ def _osc_scan_nas_for_case_folder(case_number: str, *, client_name: str = "") ->
                         if any(t in d for t in tokens):
                             full = os.path.join(dirpath, d)
                             try:
-                                from skills.bridge.case_path_mapper import translate_local_path_to_canonical
+                                from api.case_path_mapper import translate_local_path_to_canonical
                                 return translate_local_path_to_canonical(full)
                             except Exception:
                                 return full
