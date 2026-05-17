@@ -226,34 +226,26 @@ def _env(name: str, default: str = "") -> str:
     return (os.environ.get(name) or default).strip()
 
 
-# ── WFGY 增強推理（判決摘要用） ──────────────────────────────────
-# 預設啟用；設定 MAGI_JUDGMENT_WFGY=0 可關閉。
+# ── Retired WFGY compatibility guard ──────────────────────────────────
+# WFGY must remain disabled in production: it asks models to output reasoning
+# scaffolding and previously polluted judgment summaries/distillation data.
 _WFGY_ENABLED: Optional[bool] = None  # lazy-init
 
 
 def _wfgy_enabled() -> bool:
     global _WFGY_ENABLED
     if _WFGY_ENABLED is None:
-        _WFGY_ENABLED = _env("MAGI_JUDGMENT_WFGY", "1") in ("1", "true", "yes", "on")
+        _WFGY_ENABLED = _env("MAGI_JUDGMENT_WFGY", "0") in ("1", "true", "yes", "on")
         if _WFGY_ENABLED:
-            try:
-                from skills.reasoning.wfgy import apply_wfgy_logic  # noqa: F401
-                logger.info("⚡ WFGY reasoning enabled for judgment summarization")
-            except ImportError:
-                logger.warning("⚠️ WFGY module not available — judgment summaries will use standard prompt")
-                _WFGY_ENABLED = False
+            logger.warning("MAGI_JUDGMENT_WFGY is set, but WFGY is retired; using standard prompt")
+            _WFGY_ENABLED = False
     return _WFGY_ENABLED
 
 
 def _apply_wfgy(prompt: str) -> str:
-    """Wrap prompt with WFGY 7-step reasoning chain if enabled."""
-    if not _wfgy_enabled():
-        return prompt
-    try:
-        from skills.reasoning.wfgy import apply_wfgy_logic
-        return apply_wfgy_logic(prompt)
-    except Exception:
-        return prompt
+    """Compatibility no-op: WFGY wrapping is retired."""
+    _wfgy_enabled()
+    return prompt
 
 
 def _get_db_config() -> dict:

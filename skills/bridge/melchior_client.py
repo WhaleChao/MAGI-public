@@ -1621,20 +1621,17 @@ def smart_chat(prompt: str, model_hint: str = "", timeout: int = TIMEOUT, qualit
     return chat(prompt=prompt, model=requested, timeout=max(8, _remaining(deadline, floor=8)))
 
 
-def reason(prompt, use_wfgy=True, timeout=300):
+def reason(prompt, use_wfgy=False, timeout=300):
     """
-    Executes a reasoning request, optionally using the WFGY protocol.
+    Executes a reasoning request.
+
+    WFGY is retired: even if legacy callers pass use_wfgy=True, do not wrap the
+    prompt with thought-process scaffolding.
     """
-    final_prompt = prompt
     if use_wfgy:
-        try:
-            from skills.reasoning.wfgy import apply_wfgy_logic
+        logger.warning("WFGY prompt wrapping is retired; using standard prompt")
 
-            final_prompt = apply_wfgy_logic(prompt)
-        except ImportError:
-            logger.warning("⚠️ WFGY reasoning module not available — using standard prompt")
-
-    return chat(final_prompt, timeout=timeout)
+    return chat(prompt, timeout=timeout)
 
 
 def update_agent(api_script_path: str) -> dict:
