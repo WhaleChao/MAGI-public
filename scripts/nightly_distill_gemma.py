@@ -29,6 +29,7 @@ import shutil
 import subprocess
 import sys
 import time
+from contextlib import contextmanager
 from datetime import datetime, time as _t
 from pathlib import Path
 
@@ -95,6 +96,64 @@ def _validation_gate_passed(validate_result: dict) -> bool:
     if "validation_pass" in validate_result:
         return bool(validate_result.get("validation_pass"))
     return bool(validate_result.get("success"))
+
+
+@contextmanager
+def _gemma_distill_collector_paths(raw_path: Path):
+    """Temporarily point distill_collector at the Gemma distill workspace."""
+    import skills.bridge.distill_collector as _dc
+
+    original = (_dc.RAW_PATH, _dc.TRAIN_PATH, _dc.EVAL_PATH)
+    _dc.RAW_PATH = raw_path
+    _dc.TRAIN_PATH = DISTILL_DIR / "train.jsonl"
+    _dc.EVAL_PATH = DISTILL_DIR / "eval.jsonl"
+    try:
+        yield _dc
+    finally:
+        _dc.RAW_PATH, _dc.TRAIN_PATH, _dc.EVAL_PATH = original
+
+
+def _last_accepted_pair_count(metrics_path: Path) -> int:
+    """Read newest usable-pair count from metrics, tolerating older schemas."""
+    if not metrics_path.exists():
+        return 0
+    try:
+        rows = [json.loads(line) for line in metrics_path.read_text("utf-8").splitlines() if line.strip()]
+    except Exception:
+        return 0
+    for row in reversed(rows):
+        accepted = row.get("accepted_pairs")
+        if isinstance(accepted, int):
+            return accepted
+        train = row.get("train_pairs")
+        eval_pairs = row.get("eval_pairs")
+        if isinstance(train, int) and isinstance(eval_pairs, int):
+            return train + eval_pairs
+        if isinstance(train, int):
+            return train
+    return 0
+
+
+def _write_rejected_deploy_record(
+    *,
+    version: str,
+    merged_path: str,
+    train_result: dict,
+    validate_result: dict,
+    reason: str,
+) -> None:
+    """Keep an explicit deploy-block record so rejected distills cannot be promoted accidentally."""
+    record = {
+        "version": version,
+        "status": "rejected",
+        "deploy_allowed": False,
+        "rejected_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        "rejection_reason": reason,
+        "merged_path": merged_path,
+        "train_result": train_result,
+        "validate_result": validate_result,
+    }
+    PENDING_DEPLOY_PATH.write_text(json.dumps(record, ensure_ascii=False, indent=2), "utf-8")
 
 
 # ── E4B 日間視窗檢查 ──────────────────────────────────────────────────
@@ -405,54 +464,38 @@ def main() -> int:
         _notify("Gemma 蒸餾：尚無訓練資料，跳過")
         return 0
 
-    total_lines = sum(1 for l in open(raw_path) if l.strip())
-    logger.info("Total raw pairs: %d (need >= %d)", total_lines, MIN_TOTAL_PAIRS)
+    with _gemma_distill_collector_paths(raw_path) as _dc:
+        usable_stats = _dc.count_usable_pairs()
+        total_lines = int(usable_stats.get("usable", 0))
+        raw_lines = int(usable_stats.get("raw", 0))
+        skipped_lines = int(usable_stats.get("skipped", 0))
+        logger.info(
+            "Usable raw pairs: %d / raw=%d / skipped=%d (need >= %d)",
+            total_lines,
+            raw_lines,
+            skipped_lines,
+            MIN_TOTAL_PAIRS,
+        )
 
-    if total_lines < MIN_TOTAL_PAIRS:
-        logger.info("Insufficient data (%d < %d), skipping", total_lines, MIN_TOTAL_PAIRS)
-        _notify(f"Gemma 蒸餾：資料不足 ({total_lines}/{MIN_TOTAL_PAIRS})，跳過")
-        return 0
+        if total_lines < MIN_TOTAL_PAIRS:
+            logger.info("Insufficient usable data (%d < %d), skipping", total_lines, MIN_TOTAL_PAIRS)
+            _notify(f"Gemma 蒸餾：可用資料不足 ({total_lines}/{MIN_TOTAL_PAIRS})，跳過")
+            return 0
 
-    # 檢查新資料
-    last_train_count = 0
-    if ACTIVE_MODEL_PATH.exists():
-        try:
-            metrics_path = DISTILL_DIR / "metrics.jsonl"
-            if metrics_path.exists():
-                lines = [json.loads(l) for l in open(metrics_path) if l.strip()]
-                if lines:
-                    last_train_count = lines[-1].get("train_pairs", 0)
-        except Exception:
-            pass
+        # 檢查新資料：以可用樣本數為準，避免早期污染 raw 樣本讓排程每週反覆重訓。
+        last_train_count = _last_accepted_pair_count(DISTILL_DIR / "metrics.jsonl")
 
-    new_pairs = total_lines - last_train_count
-    logger.info("New pairs since last train: %d (need >= %d)", new_pairs, MIN_NEW_PAIRS)
-    if new_pairs < MIN_NEW_PAIRS:
-        logger.info("Insufficient new data (%d < %d), skipping", new_pairs, MIN_NEW_PAIRS)
-        _notify(f"Gemma 蒸餾：新資料不足 ({new_pairs}/{MIN_NEW_PAIRS})，跳過")
-        return 0
+        new_pairs = total_lines - last_train_count
+        logger.info("New usable pairs since last train: %d (need >= %d)", new_pairs, MIN_NEW_PAIRS)
+        if new_pairs < MIN_NEW_PAIRS:
+            logger.info("Insufficient new usable data (%d < %d), skipping", new_pairs, MIN_NEW_PAIRS)
+            _notify(f"Gemma 蒸餾：新可用資料不足 ({new_pairs}/{MIN_NEW_PAIRS})，跳過")
+            return 0
 
-    # 3. 建立訓練集
-    _check_timeout("build_training_set")
-    logger.info("Building training set...")
-    # 使用 GEMMA_DISTILL_DIR 路徑的 collector
-    from skills.bridge.distill_collector import build_training_set
-    # build_training_set 使用 module-level RAW_PATH（可能指向 taide），
-    # 這裡直接呼叫 gemma 路徑版本
-    import importlib
-    import skills.bridge.distill_collector as _dc
-    _orig_raw = _dc.RAW_PATH
-    _orig_train = _dc.TRAIN_PATH
-    _orig_eval = _dc.EVAL_PATH
-    _dc.RAW_PATH = raw_path
-    _dc.TRAIN_PATH = DISTILL_DIR / "train.jsonl"
-    _dc.EVAL_PATH = DISTILL_DIR / "eval.jsonl"
-    try:
-        split = build_training_set()
-    finally:
-        _dc.RAW_PATH = _orig_raw
-        _dc.TRAIN_PATH = _orig_train
-        _dc.EVAL_PATH = _orig_eval
+        # 3. 建立訓練集
+        _check_timeout("build_training_set")
+        logger.info("Building training set...")
+        split = _dc.build_training_set()
 
     logger.info("Training set: %d train, %d eval", split["train"], split["eval"])
 
@@ -515,7 +558,14 @@ def main() -> int:
         merged_path = merge_result.get("merged_path", "")
         if not validation_ok:
             logger.warning("Validation gate failed for %s: %s", version, validate_result)
-            _notify(f"Gemma 蒸餾：{version} 驗證失敗，未產生 pending deploy。")
+            _write_rejected_deploy_record(
+                version=version,
+                merged_path=merged_path,
+                train_result=train_result,
+                validate_result=validate_result,
+                reason="Validation gate failed; blocked from deploy.",
+            )
+            _notify(f"Gemma 蒸餾：{version} 驗證失敗，已封鎖部署並重建乾淨訓練集。")
             return 1
 
         if merged_path and Path(merged_path).exists():

@@ -1,5 +1,6 @@
 from scripts import nightly_distill_gemma as nightly
 from scripts import train_gemma_e4b_lora as gemma_train
+from skills.bridge import distill_collector
 
 
 def test_validate_output_gate_rejects_channel_markers():
@@ -74,6 +75,22 @@ def test_nightly_validation_gate_fallback_to_success():
     assert nightly._validation_gate_passed("bad") is False
 
 
+def test_nightly_last_accepted_pair_count_prefers_accepted_pairs(tmp_path):
+    metrics = tmp_path / "metrics.jsonl"
+    metrics.write_text(
+        "\n".join(
+            [
+                '{"train_pairs": 100, "eval_pairs": 10}',
+                '{"train_pairs": 80, "eval_pairs": 8, "accepted_pairs": 120}',
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    assert nightly._last_accepted_pair_count(metrics) == 120
+
+
 def test_deploy_model_refuses_rejected_pending(monkeypatch, tmp_path):
     pending = tmp_path / "pending_deploy.json"
     pending.write_text(
@@ -84,3 +101,125 @@ def test_deploy_model_refuses_rejected_pending(monkeypatch, tmp_path):
     monkeypatch.setattr(nightly, "DISTILL_DIR", tmp_path)
 
     assert nightly.deploy_model("gemma-distill-v001") == 1
+
+
+def test_write_rejected_deploy_record_blocks_deploy(monkeypatch, tmp_path):
+    pending = tmp_path / "pending_deploy.json"
+    merged = tmp_path / "merged" / "Gemma-gemma-distill-v003"
+    merged.mkdir(parents=True)
+    (merged / "config.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(nightly, "PENDING_DEPLOY_PATH", pending)
+    monkeypatch.setattr(nightly, "DISTILL_DIR", tmp_path)
+
+    nightly._write_rejected_deploy_record(
+        version="gemma-distill-v003",
+        merged_path=str(merged),
+        train_result={"success": True},
+        validate_result={"validation_pass": False},
+        reason="validation failed",
+    )
+
+    assert nightly.deploy_model("gemma-distill-v003") == 1
+
+
+def test_distill_collector_rejects_reasoning_trace_prompt():
+    response = (
+        "## 裁判要旨\n"
+        "法院認為契約解除後仍應依民法規定回復原狀。\n"
+        "## 法院見解\n"
+        "本件應依判決原文所載事實與法條整理，不得外加推論。"
+    )
+    reasons = distill_collector._reject_reasons(
+        response,
+        prompt="### EXECUTE WFGY PROTOCOL\nOutput your thought process before final answer.",
+        source="nim_resummary",
+    )
+    assert "prompt_requests_reasoning_trace" in reasons
+
+
+def test_distill_collector_rejects_retired_openclaw_source():
+    response = (
+        "## 裁判要旨\n"
+        "法院認為聲請人主張有據，應依相關法律規定處理。\n"
+        "## 法院見解\n"
+        "法院依卷證資料確認事實，並就各項爭點逐一說明。"
+    )
+    reasons = distill_collector._reject_reasons(
+        response,
+        prompt="請摘要判決。",
+        source="openclaw_codex",
+    )
+    assert "retired_source_openclaw" in reasons
+
+
+def test_distill_training_set_filters_trace_prompt(monkeypatch, tmp_path):
+    raw = tmp_path / "raw_pairs.jsonl"
+    train = tmp_path / "train.jsonl"
+    eval_path = tmp_path / "eval.jsonl"
+    good_response = (
+        "## 裁判要旨\n"
+        "法院認為債務不履行損害賠償應以可歸責事由、損害及因果關係為核心。\n"
+        "## 法院見解\n"
+        "法院依契約約定與民法規定審酌雙方主張，確認請求是否有理由。"
+        "判決並說明請求人仍須就損害範圍、相當因果關係及可歸責事由負舉證責任。"
+    )
+    bad_prompt = "### EXECUTE WFGY PROTOCOL\nOutput your thought process before final answer."
+    rows = [
+        {
+            "messages": [
+                {"role": "system", "content": "sys"},
+                {"role": "user", "content": "請摘要判決。"},
+                {"role": "assistant", "content": good_response},
+            ],
+            "metadata": {"source": "nim_resummary", "content_hash": "sha256:good"},
+        },
+        {
+            "messages": [
+                {"role": "system", "content": "sys"},
+                {"role": "user", "content": bad_prompt},
+                {"role": "assistant", "content": good_response},
+            ],
+            "metadata": {"source": "nim_resummary", "content_hash": "sha256:bad"},
+        },
+    ]
+    raw.write_text("\n".join(__import__("json").dumps(r, ensure_ascii=False) for r in rows) + "\n", encoding="utf-8")
+    monkeypatch.setattr(distill_collector, "RAW_PATH", raw)
+    monkeypatch.setattr(distill_collector, "TRAIN_PATH", train)
+    monkeypatch.setattr(distill_collector, "EVAL_PATH", eval_path)
+
+    split = distill_collector.build_training_set(eval_ratio=0.5, seed=1)
+
+    assert split == {"train": 1, "eval": 0, "skipped": 1}
+    assert "sha256:good" in train.read_text(encoding="utf-8")
+    assert not eval_path.exists() or "sha256:bad" not in eval_path.read_text(encoding="utf-8")
+
+
+def test_distill_count_usable_pairs_ignores_trace_prompt(monkeypatch, tmp_path):
+    raw = tmp_path / "raw_pairs.jsonl"
+    good_response = (
+        "## 裁判要旨\n"
+        "法院認為請求人必須提出足以證明其法律主張之證據，始得請求損害賠償。\n"
+        "## 法院見解\n"
+        "法院依卷內證據判斷事實，並就法條適用與舉證責任分配詳加說明。"
+        "若請求人未能證明損害發生、數額及相當因果關係，法院即不得逕行推認其請求有理由。"
+    )
+    rows = [
+        {
+            "messages": [
+                {"role": "user", "content": "請摘要判決。"},
+                {"role": "assistant", "content": good_response},
+            ],
+            "metadata": {"source": "nim_resummary", "content_hash": "sha256:good"},
+        },
+        {
+            "messages": [
+                {"role": "user", "content": "THE 7-STEP REASONING CHAIN"},
+                {"role": "assistant", "content": good_response},
+            ],
+            "metadata": {"source": "nim_resummary", "content_hash": "sha256:bad"},
+        },
+    ]
+    raw.write_text("\n".join(__import__("json").dumps(r, ensure_ascii=False) for r in rows) + "\n", encoding="utf-8")
+    monkeypatch.setattr(distill_collector, "RAW_PATH", raw)
+
+    assert distill_collector.count_usable_pairs() == {"raw": 2, "usable": 1, "skipped": 1}

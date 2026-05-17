@@ -197,6 +197,16 @@ def _validate_output_gate(output: str) -> tuple[bool, list[str], dict]:
     return len(reasons) == 0, reasons, stats
 
 
+def _count_jsonl(path: Path) -> int:
+    if not path.exists():
+        return 0
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return sum(1 for line in f if line.strip())
+    except OSError:
+        return 0
+
+
 def train(version: str) -> dict:
     """執行 LoRA 訓練。"""
     adapter_dir = _adapter_dir(version)
@@ -379,6 +389,8 @@ print(out[:400])
             })
 
     validation_pass = passed >= 2
+    train_pairs = _count_jsonl(TRAIN_PATH)
+    eval_pairs = _count_jsonl(EVAL_PATH)
     result_dict = {
         "version": version,
         "success": validation_pass,
@@ -386,6 +398,9 @@ print(out[:400])
         "passed": passed,
         "total": len(test_prompts),
         "pass_rate": round(passed / len(test_prompts), 3),
+        "train_pairs": train_pairs,
+        "eval_pairs": eval_pairs,
+        "accepted_pairs": train_pairs + eval_pairs,
         "merged_path": str(merged_path),
         "details": details,
     }

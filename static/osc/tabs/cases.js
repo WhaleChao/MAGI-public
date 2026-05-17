@@ -99,7 +99,7 @@ function renderCases() {
         const hint = (state.caseStatusScope || "all") === "working"
             ? "目前沒有可操作案件。可切到「全部狀態」檢視完整案件。"
             : "沒有符合條件的案件資料。";
-        body.innerHTML = `<tr><td colspan="10" class="muted">${hint}</td></tr>`;
+        body.innerHTML = `<tr><td colspan="11" class="muted">${hint}</td></tr>`;
         if (cardGrid) cardGrid.innerHTML = `<div class="muted" style="padding:20px;">${hint}</div>`;
         return;
     }
@@ -135,6 +135,7 @@ function renderCases() {
                     <div><span class="label">案由</span> <span class="value">${esc(caseDisplayReason(r) || '-')}</span></div>
                     <div><span class="label">法院</span> <span class="value">${esc(r.court_name || '-')}</span></div>
                     <div><span class="label">法院案號</span> <span class="value">${esc(r.court_case_no || '-')}</span></div>
+                    <div><span class="label">股別</span> <span class="value">${esc(r.court_division || '-')}</span></div>
                     <div><span class="label">分類</span> <span class="value">${esc(caseDisplayType(r) || '-')}</span></div>
                     <div><span class="label">種類</span> <span class="value">${esc(r.case_category || '-')}</span></div>
                     ${r.laf_case_no ? `<div><span class="label">法扶</span> <span class="value">${esc(r.laf_case_no)}</span></div>` : ''}
@@ -163,6 +164,7 @@ function renderCases() {
         <td>${esc(caseDisplayReason(r))}</td>
         <td>${esc(r.court_name || "")}</td>
         <td>${esc(r.court_case_no)}</td>
+        <td>${esc(r.court_division || "")}</td>
         <td>${esc(r.laf_case_no)}</td>
         <td>${esc(caseDisplayStatus(r))}</td>
         <td class="actions">
@@ -334,18 +336,20 @@ async function editCase(id) {
     const panel = document.getElementById("caseEditorPanel");
     if (panel) panel.open = true;
     await loadCaseCourtOptions();
-    writeFields("case_", x, ["id", "case_number", "client_name", "client_phone", "client_email", "client_id_number", "laf_case_no", "application_no", "court_name", "court_case_no", "status", "folder_path", "notes"]);
+    writeFields("case_", x, ["id", "case_number", "client_name", "client_phone", "client_email", "client_id_number", "laf_case_no", "application_no", "court_name", "court_case_no", "court_division", "status", "folder_path", "notes"]);
     document.getElementById("case_category").value = x.case_category || "";
     document.getElementById("case_type").value = x.case_type || "";
     document.getElementById("case_stage").value = x.case_stage || "";
     document.getElementById("case_reason").value = x.case_reason || "";
+    const appNo = document.getElementById("case_application_no");
+    if (appNo && !appNo.value) appNo.value = x.laf_case_no || "";
 }
 
 function prepareNewCase() {
     const panel = document.getElementById("caseEditorPanel");
     if (panel) panel.open = true;
     loadCaseCourtOptions().catch(() => {});
-    clearFields(["case_id", "case_case_number", "case_client_name", "case_client_phone", "case_client_email", "case_client_id_number", "case_category", "case_type", "case_stage", "case_reason", "case_laf_case_no", "case_application_no", "case_court_name", "case_court_case_no", "case_status", "case_folder_path", "case_notes"]);
+    clearFields(["case_id", "case_case_number", "case_client_name", "case_client_phone", "case_client_email", "case_client_id_number", "case_category", "case_type", "case_stage", "case_reason", "case_laf_case_no", "case_application_no", "case_court_name", "case_court_case_no", "case_court_division", "case_status", "case_folder_path", "case_notes"]);
     const name = document.getElementById("case_client_name");
     if (name) name.focus();
 }
@@ -358,13 +362,15 @@ async function delCase(id) {
 }
 
 async function saveCase() {
-    const p = readFields(["case_id", "case_case_number", "case_client_name", "case_client_phone", "case_client_email", "case_client_id_number", "case_category", "case_type", "case_stage", "case_reason", "case_laf_case_no", "case_application_no", "case_court_name", "case_court_case_no", "case_status", "case_folder_path", "case_notes"]);
+    const p = readFields(["case_id", "case_case_number", "case_client_name", "case_client_phone", "case_client_email", "case_client_id_number", "case_category", "case_type", "case_stage", "case_reason", "case_laf_case_no", "case_application_no", "case_court_name", "case_court_case_no", "case_court_division", "case_status", "case_folder_path", "case_notes"]);
+    const lafNumber = (p.case_laf_case_no || p.case_application_no || "").trim();
     const body = {
-        id: p.case_id, case_number: p.case_case_number, client_name: p.case_client_name,
+        id: p.case_id, case_number: p.case_id ? p.case_case_number : "", client_name: p.case_client_name,
         client_phone: p.case_client_phone, client_email: p.case_client_email, client_id_number: p.case_client_id_number,
         case_category: p.case_category, case_type: p.case_type, case_stage: p.case_stage,
-        case_reason: p.case_reason, laf_case_no: p.case_laf_case_no, application_no: p.case_application_no,
-        court_name: p.case_court_name, court_case_no: p.case_court_case_no, status: p.case_status, folder_path: p.case_folder_path, notes: p.case_notes
+        case_reason: p.case_reason, laf_case_no: lafNumber, application_no: lafNumber,
+        court_name: p.case_court_name, court_case_no: p.case_court_case_no, court_division: p.case_court_division,
+        status: p.case_status, folder_path: p.case_folder_path, notes: p.case_notes
     };
     const isNew = !(body.id || "").trim();
     const autoFolder = isNew && document.getElementById("case_auto_create_folder")?.checked;
@@ -376,9 +382,11 @@ async function saveCase() {
         showToast(`資料夾已建立：${resp.folder.path}`, "ok", 4000);
     } else if (autoFolder && resp?.folder && !resp.folder.ok) {
         showToast(`資料夾建立失敗：${resp.folder.error || "未知錯誤"}`, "warn", 4000);
+    } else if (isNew && resp?.case_number) {
+        showToast(`案件已建立：${resp.case_number}`, "ok", 3000);
     }
     showArchiveResult(resp?.archive);
-    clearFields(["case_id", "case_case_number", "case_client_name", "case_client_phone", "case_client_email", "case_client_id_number", "case_category", "case_type", "case_stage", "case_reason", "case_laf_case_no", "case_application_no", "case_court_name", "case_court_case_no", "case_status", "case_folder_path", "case_notes"]);
+    clearFields(["case_id", "case_case_number", "case_client_name", "case_client_phone", "case_client_email", "case_client_id_number", "case_category", "case_type", "case_stage", "case_reason", "case_laf_case_no", "case_application_no", "case_court_name", "case_court_case_no", "case_court_division", "case_status", "case_folder_path", "case_notes"]);
     await loadCases();
     await loadMeta();
 }
@@ -634,20 +642,21 @@ function renderWorkbenchCaseEditor(c) {
     const editorCaseReason = caseDisplayReason(c);
     const editorStatus = caseDisplayStatus(c);
     return `
-    <div class="card">
-        <h3>案件主資料快速編輯</h3>
-        <div class="field-grid cols-4">
-            <div class="field"><label>案件編號</label><input id="wb_case_case_number" value="${esc(c.case_number || "")}"></div>
-            <div class="field"><label>當事人</label><input id="wb_case_client_name" value="${esc(c.client_name || "")}"></div>
-            <div class="field"><label>案件種類</label><input id="wb_case_case_category" value="${esc(c.case_category || "")}"></div>
-            <div class="field"><label>案件分類</label><input id="wb_case_case_type" value="${esc(editorCaseType || "")}"></div>
-            <div class="field"><label>審級 / 階段</label><input id="wb_case_case_stage" value="${esc(c.case_stage || "")}"></div>
-            <div class="field"><label>案由</label><input id="wb_case_case_reason" value="${esc(editorCaseReason || "")}"></div>
-            <div class="field"><label>法扶案號</label><input id="wb_case_laf_case_no" value="${esc(c.laf_case_no || "")}"></div>
-            <div class="field"><label>申請編號</label><input id="wb_case_application_no" value="${esc(c.application_no || "")}"></div>
-            <div class="field"><label>法院 / 地檢署</label><input id="wb_case_court_name" list="caseCourtOptions" value="${esc(c.court_name || "")}" placeholder="可輸入或選擇"></div>
-            <div class="field"><label>法院案號</label><input id="wb_case_court_case_no" value="${esc(c.court_case_no || "")}"></div>
-            <div class="field"><label>狀態</label><input id="wb_case_status" value="${esc(editorStatus || "")}"></div>
+	    <div class="card">
+	        <h3>案件主資料快速編輯</h3>
+	        <div class="field-grid cols-4">
+	            <div class="field"><label>案件編號</label><input id="wb_case_case_number" value="${esc(c.case_number || "")}" readonly></div>
+	            <div class="field"><label>當事人</label><input id="wb_case_client_name" value="${esc(c.client_name || "")}"></div>
+	            <div class="field"><label>案件種類</label><input id="wb_case_case_category" value="${esc(c.case_category || "")}"></div>
+	            <div class="field"><label>案件分類</label><input id="wb_case_case_type" value="${esc(editorCaseType || "")}"></div>
+	            <div class="field"><label>審級 / 階段</label><input id="wb_case_case_stage" value="${esc(c.case_stage || "")}"></div>
+	            <div class="field"><label>案由</label><input id="wb_case_case_reason" value="${esc(editorCaseReason || "")}"></div>
+	            <div class="field"><label>法扶案號（同申請編號）</label><input id="wb_case_laf_case_no" value="${esc(c.laf_case_no || c.application_no || "")}"></div>
+	            <input id="wb_case_application_no" type="hidden" value="${esc(c.application_no || c.laf_case_no || "")}">
+	            <div class="field"><label>法院 / 地檢署</label><input id="wb_case_court_name" list="caseCourtOptions" value="${esc(c.court_name || "")}" placeholder="可輸入或選擇"></div>
+	            <div class="field"><label>法院案號</label><input id="wb_case_court_case_no" value="${esc(c.court_case_no || "")}"></div>
+	            <div class="field"><label>股別</label><input id="wb_case_court_division" value="${esc(c.court_division || "")}" placeholder="例：義股、簡股"></div>
+	            <div class="field"><label>狀態</label><input id="wb_case_status" value="${esc(editorStatus || "")}"></div>
             <div class="field" style="grid-column: span 2;"><label>案件資料夾</label><input id="wb_case_folder_path" value="${esc(c.folder_path || "")}" placeholder="Y:\\lumi\\01_案件\\..."></div>
             <div class="field" style="grid-column: span 2;"><label>備註</label><input id="wb_case_notes" value="${esc(c.notes || "")}"></div>
         </div>
@@ -910,6 +919,11 @@ async function wbQuickAction(action) {
 async function saveWorkbenchCase() {
     const id = state.wb.id;
     if (!id) return;
+    const lafNumber = (
+        document.getElementById("wb_case_laf_case_no")?.value
+        || document.getElementById("wb_case_application_no")?.value
+        || ""
+    ).trim();
     const body = {
         case_number: (document.getElementById("wb_case_case_number")?.value || "").trim(),
         client_name: (document.getElementById("wb_case_client_name")?.value || "").trim(),
@@ -917,10 +931,11 @@ async function saveWorkbenchCase() {
         case_type: (document.getElementById("wb_case_case_type")?.value || "").trim(),
         case_stage: (document.getElementById("wb_case_case_stage")?.value || "").trim(),
         case_reason: (document.getElementById("wb_case_case_reason")?.value || "").trim(),
-        laf_case_no: (document.getElementById("wb_case_laf_case_no")?.value || "").trim(),
-        application_no: (document.getElementById("wb_case_application_no")?.value || "").trim(),
+        laf_case_no: lafNumber,
+        application_no: lafNumber,
         court_name: (document.getElementById("wb_case_court_name")?.value || "").trim(),
         court_case_no: (document.getElementById("wb_case_court_case_no")?.value || "").trim(),
+        court_division: (document.getElementById("wb_case_court_division")?.value || "").trim(),
         status: (document.getElementById("wb_case_status")?.value || "").trim(),
         folder_path: (document.getElementById("wb_case_folder_path")?.value || "").trim(),
         notes: (document.getElementById("wb_case_notes")?.value || "").trim(),

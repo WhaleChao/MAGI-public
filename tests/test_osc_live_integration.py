@@ -29,6 +29,7 @@ import json
 import os
 import sys
 import uuid
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -157,6 +158,55 @@ def test_cases_list_returns_data(client):
     body = r.get_json()
     assert body["ok"] is True
     assert "items" in body
+
+
+def test_cases_post_generates_case_number_and_syncs_laf_live(client):
+    """新增一般案件走真 DB：案件編號由 MAGI 產生，法扶案號/申請編號同步，股別可保存。"""
+    from api.osc.utils import _osc_exec
+
+    marker = uuid.uuid4().hex[:8]
+    row_id = None
+    r = client.post(
+        "/api/osc/cases",
+        json={
+            "case_number": "",
+            "client_name": f"MAGI-LIVE-DELETE-{marker}",
+            "case_category": "民事",
+            "case_type": "一般案件",
+            "case_reason": "新增案件 live 測試",
+            "laf_case_no": "1150101-E-999",
+            "application_no": "SHOULD-BE-SYNCED",
+            "court_name": "臺灣花蓮地方法院",
+            "court_case_no": "115年度測字第1號",
+            "court_division": "測股",
+            "status": "",
+            "auto_create_folder": False,
+        },
+    )
+    assert r.status_code == 200, r.get_data(as_text=True)
+    body = r.get_json()
+    row_id = body.get("id")
+    try:
+        assert body["ok"] is True
+        assert body["case_number"].startswith(f"{datetime.now().year}-")
+        row, _ = _osc_exec(
+            """
+            SELECT case_number, client_name, laf_case_no, application_no, court_division, status
+            FROM cases WHERE id=%s
+            """,
+            (row_id,),
+            fetch="one",
+        )
+        assert row
+        assert row["case_number"] == body["case_number"]
+        assert row["client_name"] == f"MAGI-LIVE-DELETE-{marker}"
+        assert row["laf_case_no"] == "1150101-E-999"
+        assert row["application_no"] == "1150101-E-999"
+        assert row["court_division"] == "測股"
+        assert row["status"] == "進行中"
+    finally:
+        if row_id:
+            _osc_exec("DELETE FROM cases WHERE id=%s", (row_id,), fetch="none")
 
 
 def test_clients_list_returns_data(client):

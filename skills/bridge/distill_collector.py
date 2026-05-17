@@ -15,6 +15,7 @@ import json
 import logging
 import os
 import random
+import re
 import shutil
 import time
 from pathlib import Path
@@ -65,6 +66,36 @@ REJECT_KEYWORDS = [
 
 SYSTEM_PROMPT = "你是資深法律研究助理，專精司法見解分析。"
 
+# 蒸餾資料只允許「最終答案」；任何要求模型輸出思考鏈、channel marker
+# 或 OpenClaw 早期實驗協定的樣本，都會污染小模型行為。
+REJECT_SOURCES = {
+    "openclaw_codex",
+}
+REJECT_PROMPT_KEYWORDS = [
+    "EXECUTE WFGY PROTOCOL",
+    "THE 7-STEP REASONING CHAIN",
+    "Output your thought process",
+    "```wfgy",
+    "[1] BBMC",
+    "[7] CONVERGENCE",
+]
+REJECT_TRACE_KEYWORDS = [
+    "<|channel>",
+    "<|channel>thought",
+    "chain of thought",
+    "thought process",
+    "internal monologue",
+    "let's think",
+    "lets think",
+    "step by step",
+    "analysis:",
+    "reasoning:",
+]
+_ASCII_ALPHA_RE = re.compile(r"[A-Za-z]")
+_CJK_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff]")
+MIN_CJK_RATIO = 0.35
+MAX_ASCII_ALPHA_RATIO = 0.45
+
 
 # ── State 管理 ─────────────────────────────────────────────────────────
 def _load_state() -> dict:
@@ -88,25 +119,74 @@ def _content_hash(prompt: str, response: str) -> str:
 
 
 # ── 品質檢查 ──────────────────────────────────────────────────────────
-def _passes_quality(response: str) -> bool:
-    """檢查 Codex 回覆是否達到訓練品質門檻。"""
+def _contains_any(text: str, needles: list[str]) -> bool:
+    haystack = (text or "").lower()
+    return any(needle.lower() in haystack for needle in needles)
+
+
+def _language_stats(text: str) -> tuple[float, float]:
+    if not text:
+        return 0.0, 0.0
+    total = max(len(text), 1)
+    return (
+        len(_CJK_RE.findall(text)) / total,
+        len(_ASCII_ALPHA_RE.findall(text)) / total,
+    )
+
+
+def _reject_reasons(response: str, *, prompt: str = "", source: str = "") -> list[str]:
+    """回傳蒸餾樣本拒絕原因；空 list 代表可收。"""
+    reasons: list[str] = []
     if not response:
-        return False
+        return ["empty_response"]
+
+    if source.lower() in REJECT_SOURCES:
+        reasons.append("retired_source_openclaw")
+
+    if _contains_any(prompt, REJECT_PROMPT_KEYWORDS):
+        reasons.append("prompt_requests_reasoning_trace")
+
+    if _contains_any(prompt, REJECT_TRACE_KEYWORDS):
+        reasons.append("prompt_contains_trace_marker")
+
+    if _contains_any(response, REJECT_TRACE_KEYWORDS):
+        reasons.append("response_contains_trace_marker")
+
     length = len(response)
     if length < MIN_OUTPUT_LEN or length > MAX_OUTPUT_LEN:
-        return False
+        reasons.append("response_length_out_of_range")
 
     # 拒絕含降級關鍵字的回覆
     for kw in REJECT_KEYWORDS:
         if kw in response:
-            return False
+            reasons.append("degraded_response_keyword")
+            break
 
     # 檢查結構標題數量
     header_count = sum(1 for h in STRUCTURE_HEADERS if h in response)
     if header_count < MIN_STRUCTURE_HEADERS:
-        return False
+        reasons.append("missing_structure_header")
 
-    return True
+    cjk_ratio, ascii_ratio = _language_stats(response)
+    if cjk_ratio < MIN_CJK_RATIO:
+        reasons.append("insufficient_cjk_ratio")
+    if ascii_ratio > MAX_ASCII_ALPHA_RATIO:
+        reasons.append("too_much_ascii_ratio")
+
+    return reasons
+
+
+def _passes_quality(response: str, *, prompt: str = "", source: str = "") -> bool:
+    """檢查回覆與 prompt 是否達到訓練品質門檻。"""
+    return not _reject_reasons(response, prompt=prompt, source=source)
+
+
+def _record_reject_reasons(rec: dict) -> list[str]:
+    messages = rec.get("messages", [])
+    assistant_msg = next((m["content"] for m in messages if m.get("role") == "assistant"), "")
+    user_msg = next((m["content"] for m in messages if m.get("role") == "user"), "")
+    source = str(rec.get("metadata", {}).get("source", ""))
+    return _reject_reasons(assistant_msg, prompt=user_msg, source=source)
 
 
 # ── 檔案 Rotation ────────────────────────────────────────────────────
@@ -183,8 +263,9 @@ def collect_summary_pair(
 
     Returns True if collected, False if rejected (quality / dedup).
     """
-    if not _passes_quality(response):
-        logger.debug("Distill: rejected (quality gate)")
+    reasons = _reject_reasons(response, prompt=prompt, source=source)
+    if reasons:
+        logger.debug("Distill: rejected (quality gate: %s)", ",".join(reasons))
         return False
 
     h = _content_hash(prompt, response)
@@ -258,11 +339,7 @@ def build_training_set(eval_ratio: float = 0.1, seed: int = 42) -> dict:
                 continue
 
             # 再次驗證品質（raw 可能含早期低品質資料）
-            messages = rec.get("messages", [])
-            assistant_msg = next(
-                (m["content"] for m in messages if m.get("role") == "assistant"), ""
-            )
-            if not _passes_quality(assistant_msg):
+            if _record_reject_reasons(rec):
                 skipped += 1
                 continue
 
@@ -291,6 +368,38 @@ def build_training_set(eval_ratio: float = 0.1, seed: int = 42) -> dict:
         len(train_records), len(eval_records), skipped,
     )
     return {"train": len(train_records), "eval": len(eval_records), "skipped": skipped}
+
+
+def count_usable_pairs() -> dict:
+    """快速計算 raw 中可用於訓練的唯一樣本數，不改寫 train/eval。"""
+    if not RAW_PATH.exists():
+        return {"raw": 0, "usable": 0, "skipped": 0}
+
+    raw_count = 0
+    usable = 0
+    skipped = 0
+    seen_hashes: set[str] = set()
+    with open(RAW_PATH, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            raw_count += 1
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError:
+                skipped += 1
+                continue
+            if _record_reject_reasons(rec):
+                skipped += 1
+                continue
+            h = rec.get("metadata", {}).get("content_hash", "")
+            if h in seen_hashes:
+                skipped += 1
+                continue
+            seen_hashes.add(h)
+            usable += 1
+    return {"raw": raw_count, "usable": usable, "skipped": skipped}
 
 
 def get_stats() -> dict:

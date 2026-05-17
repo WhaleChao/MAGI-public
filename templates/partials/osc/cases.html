@@ -74,10 +74,11 @@
                                 <option value="client_name">當事人</option>
                                 <option value="court_name">法院 / 地檢署</option>
                                 <option value="case_type">案件分類</option>
-                                <option value="case_category">案件種類</option>
-                                <option value="case_reason">案由</option>
-                                <option value="court_case_no">法院案號</option>
-                                <option value="status">狀態</option>
+	                                <option value="case_category">案件種類</option>
+	                                <option value="case_reason">案由</option>
+	                                <option value="court_case_no">法院案號</option>
+	                                <option value="court_division">股別</option>
+	                                <option value="status">狀態</option>
                             </select>
                             <button class="sort-dir-btn" id="caseSortDir" title="切換升降冪">▲</button>
                         </div>
@@ -90,20 +91,17 @@
                     </div>
                 </div>
 
-                <details class="case-editor-panel" id="caseEditorPanel">
-                    <summary>
-                        <span>新增 / 編輯案件資料</span>
-                        <small>建案時先填案件編號、當事人、案件分類、案件種類與資料夾；其餘可日後補齊。</small>
-                    </summary>
-                    <div class="field-grid cols-4">
-                        <div class="field">
-                            <label for="case_id">ID</label>
-                            <input id="case_id" placeholder="留空自動產生">
-                        </div>
-                        <div class="field">
-                            <label for="case_case_number">案件編號</label>
-                            <input id="case_case_number" placeholder="例：1141201-A-001">
-                        </div>
+	                <details class="case-editor-panel" id="caseEditorPanel">
+	                    <summary>
+	                        <span>新增 / 編輯案件資料</span>
+	                        <small>建案時由 MAGI 自動產生 OSC 案件編號；先填當事人、案件分類、案件種類與資料夾，其餘可日後補齊。</small>
+	                    </summary>
+	                    <div class="field-grid cols-4">
+	                        <input id="case_id" type="hidden">
+	                        <div class="field">
+	                            <label for="case_case_number">案件編號</label>
+	                            <input id="case_case_number" placeholder="儲存時由 MAGI 自動產生" readonly>
+	                        </div>
                         <div class="field">
                             <label for="case_client_name">當事人</label>
                             <input id="case_client_name" placeholder="當事人（必填）">
@@ -136,27 +134,28 @@
                             <label for="case_reason">案由</label>
                             <input id="case_reason" placeholder="例：竊盜、損害賠償、更生">
                         </div>
-                        <div class="field">
-                            <label for="case_laf_case_no">法扶案號</label>
-                            <input id="case_laf_case_no" placeholder="例：1140901-A-001">
-                        </div>
-                        <div class="field">
-                            <label for="case_application_no">申請編號</label>
-                            <input id="case_application_no" placeholder="法扶申請流水號">
-                        </div>
-                        <div class="field">
-                            <label for="case_court_name">法院 / 地檢署</label>
-                            <input id="case_court_name" list="caseCourtOptions" placeholder="可輸入或選擇法院、地檢署名稱">
-                            <datalist id="caseCourtOptions"></datalist>
-                        </div>
-                        <div class="field">
-                            <label for="case_court_case_no">法院案號</label>
-                            <input id="case_court_case_no" placeholder="例：115年度訴字第1號">
-                        </div>
-                        <div class="field">
-                            <label for="case_status">狀態</label>
-                            <input id="case_status" placeholder="預設 Active">
-                        </div>
+	                        <div class="field">
+	                            <label for="case_laf_case_no">法扶案號</label>
+	                            <input id="case_laf_case_no" placeholder="例：1140901-A-001（同申請編號）">
+	                        </div>
+	                        <input id="case_application_no" type="hidden">
+	                        <div class="field">
+	                            <label for="case_court_name">法院 / 地檢署</label>
+	                            <input id="case_court_name" list="caseCourtOptions" placeholder="可輸入或選擇法院、地檢署名稱">
+	                            <datalist id="caseCourtOptions"></datalist>
+	                        </div>
+	                        <div class="field">
+	                            <label for="case_court_case_no">法院案號</label>
+	                            <input id="case_court_case_no" placeholder="例：115年度訴字第1號">
+	                        </div>
+	                        <div class="field">
+	                            <label for="case_court_division">股別</label>
+	                            <input id="case_court_division" placeholder="例：義股、簡股">
+	                        </div>
+	                        <div class="field">
+	                            <label for="case_status">狀態</label>
+	                            <input id="case_status" placeholder="留空則預設進行中">
+	                        </div>
                         <div class="field" style="grid-column: span 2;">
                             <label for="case_folder_path">案件資料夾</label>
                             <div style="display:flex; gap:6px; align-items:center;">
@@ -194,9 +193,10 @@
                                 <th data-sort="case_type">案件分類</th>
                                 <th data-sort="case_category">案件種類</th>
                                 <th data-sort="case_reason">案由</th>
-                                <th data-sort="court_name">法院 / 地檢署</th>
-                                <th data-sort="court_case_no">法院案號</th>
-                                <th data-sort="laf_case_no">法扶案號</th>
+	                                <th data-sort="court_name">法院 / 地檢署</th>
+	                                <th data-sort="court_case_no">法院案號</th>
+	                                <th data-sort="court_division">股別</th>
+	                                <th data-sort="laf_case_no">法扶案號</th>
                                 <th data-sort="status">狀態</th>
                                 <th>操作</th>
                             </tr>

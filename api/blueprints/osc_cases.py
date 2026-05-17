@@ -806,6 +806,37 @@ def _osc_normalize_template_case_row(row: dict | None) -> dict | None:
 
 _OSC_LAF_CLOSING_STATUSES = {"已結案，待報結", "已結案，待送出"}
 _OSC_LAF_CLOSED_STATUSES = {"已結案"}
+_OSC_CASE_NUMBER_RE = re.compile(r"^(?P<year>\d{4})-(?P<seq>\d{4})$")
+
+
+def _osc_generate_case_number(year: int | None = None) -> str:
+    """Generate the next OSC case number in YYYY-NNNN format."""
+    target_year = int(year or datetime.now().year)
+    rows, _ = _osc_exec(
+        "SELECT case_number FROM cases WHERE case_number LIKE %s",
+        (f"{target_year}-%",),
+        fetch="all",
+    )
+    max_seq = 0
+    for row in rows or []:
+        raw = str((row or {}).get("case_number") or "").strip()
+        match = _OSC_CASE_NUMBER_RE.match(raw)
+        if not match or int(match.group("year")) != target_year:
+            continue
+        max_seq = max(max_seq, int(match.group("seq")))
+    return f"{target_year}-{max_seq + 1:04d}"
+
+
+def _osc_synced_laf_number(payload: dict | None) -> str:
+    """法扶案號與申請編號在 OSC 中代表同一個編號；以有值者同步保存。"""
+    if not isinstance(payload, dict):
+        return ""
+    return str(
+        payload.get("laf_case_no")
+        or payload.get("legal_aid_number")
+        or payload.get("application_no")
+        or ""
+    ).strip()
 
 
 def _osc_effective_case_status(row: dict | None) -> str:
@@ -956,7 +987,7 @@ def osc_cases_api():
             where.append(status_clause)
         sql = """
             SELECT id, case_number, client_name, case_category, case_type, case_stage, case_reason,
-                   laf_case_no, application_no, court_name, court_case_no, legal_aid_status,
+                   laf_case_no, application_no, court_name, court_case_no, court_division, legal_aid_status,
                    status, notes, folder_path, updated_at, created_date
             FROM cases
         """
@@ -991,13 +1022,17 @@ def osc_cases_api():
             "folder_path": payload.get("folder_path") or "",
         }
     )
+    if not case_number and not is_template_payload:
+        case_number = _osc_generate_case_number()
+    laf_number = _osc_synced_laf_number(payload)
     case_category = _osc_norm_case_category(payload.get("case_category") or payload.get("category") or "")
     if is_template_payload:
         case_category = _OSC_TEMPLATE_DISPLAY_VALUE
     cols = [
         "id", "case_number", "client_name", "client_phone", "client_email", "client_id_number",
         "case_category", "case_type", "case_stage", "case_reason",
-        "laf_case_no", "application_no", "court_name", "court_case_no", "status", "notes", "folder_path"
+        "laf_case_no", "application_no", "court_name", "court_case_no", "court_division",
+        "status", "notes", "folder_path"
     ]
     status_value = (payload.get("status") or "進行中").strip() or "進行中"
     if is_template_payload:
@@ -1019,10 +1054,11 @@ def osc_cases_api():
         case_type_value,
         (payload.get("case_stage") or "").strip() or None,
         case_reason_value,
-        (payload.get("laf_case_no") or payload.get("legal_aid_number") or "").strip() or None,
-        (payload.get("application_no") or "").strip() or None,
+        laf_number or None,
+        laf_number or None,
         (payload.get("court_name") or payload.get("court") or "").strip() or None,
         (payload.get("court_case_no") or payload.get("court_case_number") or "").strip() or None,
+        (payload.get("court_division") or payload.get("division") or "").strip() or None,
         status_value,
         (payload.get("notes") or "").strip() or None,
         translate_local_path_to_canonical((payload.get("folder_path") or "").strip()) or None,
@@ -1031,9 +1067,12 @@ def osc_cases_api():
     sql_insert = f"INSERT INTO cases ({','.join(cols)}) VALUES ({','.join(['%s'] * len(cols))})"
     try:
         result, _ = _osc_exec(sql_insert, tuple(vals), fetch="none")
-        resp = {"ok": True, "result": result, "id": row_id, "mode": "insert"}
+        resp = {"ok": True, "result": result, "id": row_id, "case_number": case_number, "mode": "insert"}
         if auto_create_folder:
-            folder_resp = _osc_auto_create_folder_for_case(row_id, payload, case_category)
+            folder_payload = dict(payload)
+            folder_payload["case_number"] = case_number
+            folder_payload["client_name"] = client_name
+            folder_resp = _osc_auto_create_folder_for_case(row_id, folder_payload, case_category)
             resp["folder"] = folder_resp
         if _osc_is_closed_case_status(status_value) or _osc_is_laf_final_closed_status(payload.get("legal_aid_status") or ""):
             resp["archive"] = _osc_auto_archive_closed_case(row_id)
@@ -1058,10 +1097,11 @@ def osc_cases_api():
             "case_type": case_type_value,
             "case_stage": (payload.get("case_stage") or "").strip() or None,
             "case_reason": case_reason_value,
-            "laf_case_no": (payload.get("laf_case_no") or payload.get("legal_aid_number") or "").strip() or None,
-            "application_no": (payload.get("application_no") or "").strip() or None,
+            "laf_case_no": laf_number or None,
+            "application_no": laf_number or None,
             "court_name": (payload.get("court_name") or payload.get("court") or "").strip() or None,
             "court_case_no": (payload.get("court_case_no") or payload.get("court_case_number") or "").strip() or None,
+            "court_division": (payload.get("court_division") or payload.get("division") or "").strip() or None,
             "status": status_value,
             "notes": (payload.get("notes") or "").strip() or None,
             "folder_path": translate_local_path_to_canonical((payload.get("folder_path") or "").strip()) or None,
@@ -1076,7 +1116,7 @@ def osc_cases_api():
         sets.append("updated_at=NOW()")
         vals2.append(target.get("id"))
         result, _ = _osc_exec(f"UPDATE cases SET {','.join(sets)} WHERE id=%s", tuple(vals2), fetch="none")
-        resp = {"ok": True, "result": result, "id": target.get("id"), "mode": "upsert"}
+        resp = {"ok": True, "result": result, "id": target.get("id"), "case_number": case_number, "mode": "upsert"}
         if _osc_is_closed_case_status(update_payload.get("status") or "") or _osc_is_laf_final_closed_status(update_payload.get("legal_aid_status") or ""):
             resp["archive"] = _osc_auto_archive_closed_case(str(target.get("id") or ""))
         return jsonify(resp)
@@ -1099,6 +1139,11 @@ def osc_case_detail_api(row_id):
         result, _ = _osc_exec("DELETE FROM cases WHERE id=%s", (row_id,), fetch="none")
         return jsonify({"ok": True, "result": result})
     payload = request.get_json() or {}
+    if any(k in payload for k in ("laf_case_no", "legal_aid_number", "application_no")):
+        payload = dict(payload)
+        synced_laf = _osc_synced_laf_number(payload)
+        payload["laf_case_no"] = synced_laf
+        payload["application_no"] = synced_laf
     current_row, _ = _osc_exec("SELECT id, case_number, client_name, folder_path FROM cases WHERE id=%s", (row_id,), fetch="one")
     template_update = _osc_is_template_case(
         {
@@ -1112,7 +1157,7 @@ def osc_case_detail_api(row_id):
         "case_number", "client_name", "client_name_en", "client_phone", "client_email", "client_id_number",
         "case_category", "case_type", "case_stage", "case_reason",
         "laf_case_no", "application_no", "court_case_no", "status", "notes", "folder_path",
-        "legal_aid_status", "court_case_number", "court_name",
+        "legal_aid_status", "court_case_number", "court_name", "court_division",
     ]
     sets = []
     vals = []

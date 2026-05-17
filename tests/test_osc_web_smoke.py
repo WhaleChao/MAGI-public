@@ -456,6 +456,61 @@ def test_cases_ui_uses_unambiguous_status_and_laf_badge_labels():
     assert "case_type_display" in js
     assert "case_reason_display" in js
     assert "const editorCaseType = caseDisplayType(c)" in js
+    assert 'id="case_case_number" placeholder="儲存時由 MAGI 自動產生" readonly' in html
+    assert 'id="case_application_no" type="hidden"' in html
+    assert 'for="case_court_division">股別' in html
+    assert 'id="wb_case_case_number" value="${esc(c.case_number || "")}" readonly' in js
+    assert "wb_case_court_division" in js
+
+
+def test_cases_post_generates_osc_number_syncs_laf_and_keeps_division(client, monkeypatch):
+    import api.blueprints.osc_cases as mod
+
+    calls = []
+    folders = []
+
+    def fake_exec(sql, params=(), fetch="none"):
+        calls.append((sql, params, fetch))
+        if fetch == "all":
+            return [], {"host": "127.0.0.1"}
+        if fetch == "one":
+            return None, {"host": "127.0.0.1"}
+        return {"rowcount": 1, "lastrowid": None}, {"host": "127.0.0.1"}
+
+    def fake_folder(row_id, payload, case_category):
+        folders.append((row_id, dict(payload), case_category))
+        return {"ok": True, "path": f"/tmp/{payload['case_number']}-測試", "canonical": f"/tmp/{payload['case_number']}-測試"}
+
+    monkeypatch.setattr(mod, "_osc_exec", fake_exec)
+    monkeypatch.setattr(mod, "_osc_generate_case_number", lambda: "2026-0099")
+    monkeypatch.setattr(mod, "_osc_auto_create_folder_for_case", fake_folder)
+
+    r = client.post("/api/osc/cases", json={
+        "client_name": "測試當事人",
+        "case_category": "一般案件",
+        "case_type": "民事",
+        "case_reason": "給付工程款",
+        "laf_case_no": "1150101-E-001",
+        "application_no": "不應保留",
+        "court_name": "臺灣花蓮地方法院",
+        "court_case_no": "115年度建字第1號",
+        "court_division": "義股",
+        "auto_create_folder": True,
+    })
+
+    assert r.status_code == 200
+    body = r.get_json()
+    assert body["ok"] is True
+    assert body["case_number"] == "2026-0099"
+    assert folders[0][1]["case_number"] == "2026-0099"
+
+    insert_sql, insert_params, _ = next(c for c in calls if c[0].startswith("INSERT INTO cases"))
+    cols = re.search(r"INSERT INTO cases \((.*?)\) VALUES", insert_sql).group(1).split(",")
+    inserted = dict(zip(cols, insert_params))
+    assert inserted["case_number"] == "2026-0099"
+    assert inserted["laf_case_no"] == "1150101-E-001"
+    assert inserted["application_no"] == "1150101-E-001"
+    assert inserted["court_division"] == "義股"
 
 
 def test_cases_legacy_category_still_maps_to_case_kind(client):
