@@ -214,6 +214,37 @@ def _is_tailscale_funnel_recovered(issue_ts: float) -> bool:
     return str(data.get("status") or "").lower() in {"ok", "recovered", "skipped"}
 
 
+def _is_pdf_smoke_progress_callback_recovered(row: dict[str, Any], root: Path) -> bool:
+    err = str(row.get("error") or "")
+    if "progress_callback" not in err or "_summary_pdf_stub" not in err:
+        return False
+    issue_ts = float(row.get("_ts") or _safe_epoch(row.get("ts") or row.get("iso")))
+    runtime_dir = root / ".runtime"
+    try:
+        candidates = sorted(
+            runtime_dir.glob("allpdf_smoke*.json"),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+    except Exception:
+        return False
+
+    for path in candidates[:20]:
+        try:
+            if path.stat().st_mtime <= issue_ts:
+                continue
+            data = json.loads(path.read_text(encoding="utf-8"))
+            summary = data.get("summary") if isinstance(data.get("summary"), dict) else {}
+            by_kind = data.get("by_kind") if isinstance(data.get("by_kind"), dict) else {}
+            summary_kind = by_kind.get("summary") if isinstance(by_kind.get("summary"), dict) else {}
+            if int(summary.get("fail") or 0) == 0 and int(summary.get("pass") or 0) > 0:
+                if int(summary_kind.get("pass") or 0) > 0:
+                    return True
+        except Exception:
+            continue
+    return False
+
+
 def _classify_cron_issue(
     row: dict[str, Any],
     *,
@@ -310,6 +341,9 @@ def _issue_context_threshold_gb(row: dict[str, Any]) -> float:
 
 
 def _is_recovered_non_cron_issue(row: dict[str, Any], root: Path) -> bool:
+    if _is_pdf_smoke_progress_callback_recovered(row, root):
+        return True
+
     command = str(row.get("command") or "")
     source = str(row.get("source") or "")
     if command != "alarm:disk_low_water" and source != "disk_low_water_alarm":
