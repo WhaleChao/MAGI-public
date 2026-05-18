@@ -1153,11 +1153,21 @@ _NAS_RECYCLE_NAMES = frozenset({"#recycle", "$RECYCLE.BIN", ".Trash", ".Trashes"
 
 
 def _default_nas_recycle_roots() -> List[Path]:
+    nas_user = (
+        os.environ.get("MAGI_NAS_HOME_USER")
+        or os.environ.get("MAGI_NAS_USER")
+        or "home"
+    ).strip().strip("/\\") or "home"
+    archive_share = (
+        os.environ.get("MAGI_NAS_CLOSED_SHARE_NAME")
+        or os.environ.get("MAGI_NAS_ARCHIVE_SHARE")
+        or "lumi"
+    ).strip().strip("/\\") or "lumi"
     roots = [
         Path("/Volumes/homes/#recycle"),
-        Path("/Volumes/homes/lumi63181107/#recycle"),
-        Path("/Volumes/lumi/$RECYCLE.BIN"),
-        Path("/Volumes/lumi/lumi/#recycle"),
+        Path("/Volumes/homes") / nas_user / "#recycle",
+        Path("/Volumes") / archive_share / "$RECYCLE.BIN",
+        Path("/Volumes") / archive_share / archive_share / "#recycle",
     ]
     return [p for p in roots if p.exists()]
 

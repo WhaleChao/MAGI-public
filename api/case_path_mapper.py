@@ -7,16 +7,28 @@ import os
 import time
 from pathlib import Path
 
-from api.runtime_paths import get_config_path
+from api.runtime_paths import get_config_path, get_magi_root_dir
 
 _logger = logging.getLogger("magi.case_path_mapper")
 
 _HOME = Path.home()
+
+
+def _load_local_dotenv() -> None:
+    try:
+        from dotenv import load_dotenv as _load_dotenv
+        _load_dotenv(get_magi_root_dir() / ".env", override=False)
+    except Exception:
+        _logger.debug("silent-catch dotenv load", exc_info=True)
+
+
+_load_local_dotenv()
+
 _NAS_HOME_USER = (
     os.environ.get("MAGI_NAS_HOME_USER")
     or os.environ.get("MAGI_NAS_USER")
-    or "lumi63181107"
-).strip().strip("/\\") or "lumi63181107"
+    or "home"
+).strip().strip("/\\") or "home"
 _NAS_CLOSED_SHARE_NAME = (
     os.environ.get("MAGI_NAS_CLOSED_SHARE_NAME")
     or os.environ.get("MAGI_NAS_ARCHIVE_SHARE")
@@ -105,7 +117,7 @@ _DEFAULT_ACTIVE_SHARE_ROOTS = [
     str(_HOME / "SynologyDrive/homes"),
     str(_HOME / "SynologyDrive"),
     _discover_volume("homes", _NAS_HOME_USER),
-    "/Volumes/homes/home",  # legacy read-only alias; DB canonical remains Z:/lumi63181107
+    "/Volumes/homes/home",  # legacy read-only alias; DB canonical remains configurable.
 ]
 _ACTIVE_SMB_ROOT_CACHE: dict = {"roots": None, "expires": 0.0}
 _ACTIVE_SMB_ROOT_TTL = float(os.environ.get("MAGI_ACTIVE_SMB_ROOT_TTL_SEC", "60"))
@@ -560,8 +572,8 @@ def local_synology_path_candidates(path: str, cfg: Optional[dict] = None) -> lis
     candidates.extend(_expand_from_prefix(s, _ACTIVE_SHARE_PREFIXES, active_roots))
     candidates.extend(_expand_from_prefix(s, _CLOSED_SHARE_PREFIXES, closed_roots))
 
-    # Office Windows paths use the mapped drive itself as the share account,
-    # e.g. Z:/lumi63181107/01_案件/..., not only the older Z:/home/... alias.
+    # Office Windows paths may use the mapped drive itself as the share account,
+    # e.g. Z:/<account>/01_案件/..., not only the older Z:/home/... alias.
     # Keep the Windows canonical path unchanged in DB, but make the web server
     # able to browse it from /Volumes/homes/<account> or Synology Drive.
     m_active_drive = _re.match(r"^Z:/([^/]+)/(.+)$", s, flags=_re.IGNORECASE)

@@ -40,11 +40,24 @@ except Exception:
     _normalize_output_text = None
 
 logger = logging.getLogger(__name__)
+
+
+def _load_local_dotenv() -> None:
+    try:
+        from dotenv import load_dotenv as _load_dotenv
+        from api.runtime_paths import get_magi_root_dir
+        _load_dotenv(get_magi_root_dir() / ".env", override=False)
+    except Exception:
+        logger.debug("silent-catch dotenv load", exc_info=True)
+
+
+_load_local_dotenv()
+
 _OSC_NAS_HOME_USER = (
     os.environ.get("MAGI_NAS_HOME_USER")
     or os.environ.get("MAGI_NAS_USER")
-    or "lumi63181107"
-).strip().strip("/\\") or "lumi63181107"
+    or "home"
+).strip().strip("/\\") or "home"
 _OSC_NAS_CLOSED_SHARE_NAME = (
     os.environ.get("MAGI_NAS_CLOSED_SHARE_NAME")
     or os.environ.get("MAGI_NAS_ARCHIVE_SHARE")

@@ -1,6 +1,6 @@
 {
-  "scan_time": "2026-05-14T21:00:44.758746",
-  "elapsed_sec": 30.2,
+  "scan_time": "2026-05-18T20:03:21.045061",
+  "elapsed_sec": 25.3,
   "mode": "full",
   "checks": [
     {
@@ -42,70 +42,21 @@
     },
     {
       "check": "wiki_staleness",
-      "status": "warn",
-      "stale_cases": 9,
-      "up_to_date": 71,
-      "details": [
-        {
-          "case": "2025-0117",
-          "client": "曾慧甄",
-          "synthesized_at": "2026-05-13T20:18:17.334721"
-        },
-        {
-          "case": "2025-0128",
-          "client": "黃珊珊",
-          "synthesized_at": "2026-05-13T20:06:40.714308"
-        },
-        {
-          "case": "2026-0005",
-          "client": "陳偉傑",
-          "synthesized_at": "2026-05-13T20:18:42.723115"
-        },
-        {
-          "case": "2025-0081",
-          "client": "謝千億",
-          "synthesized_at": "2026-05-13T20:07:32.756399"
-        },
-        {
-          "case": "2026-0025",
-          "client": "余春香",
-          "synthesized_at": "2026-05-13T20:19:06.904127"
-        },
-        {
-          "case": "2025-0002",
-          "client": "游秀鈴",
-          "synthesized_at": "2026-05-13T20:09:18.449456"
-        },
-        {
-          "case": "2025-0068",
-          "client": "劉亞箖",
-          "synthesized_at": "2026-04-29T03:41:46.737875"
-        },
-        {
-          "case": "2025-0129",
-          "client": "陳貴蘭",
-          "synthesized_at": "2026-05-06T03:40:44.926106"
-        },
-        {
-          "case": "2025-0084",
-          "client": "王台銘",
-          "synthesized_at": "2026-05-10T03:54:47.032193"
-        }
-      ]
+      "status": "ok",
+      "stale_cases": 0,
+      "up_to_date": 84,
+      "details": []
     },
     {
       "check": "orphan_notes",
-      "status": "warn",
-      "total_on_disk": 1143,
-      "total_in_index": 1141,
-      "unindexed": 2,
+      "status": "ok",
+      "total_on_disk": 1174,
+      "total_in_index": 1174,
+      "unindexed": 0,
       "orphaned_index_entries": 0,
       "zero_chunk_notes": 0,
       "zero_chunk_verified_in_db": 661,
-      "sample_unindexed": [
-        "30_Index/2026-0044.md",
-        "30_Index/2026-0045.md"
-      ],
+      "sample_unindexed": [],
       "sample_orphaned": [],
       "sample_zero_chunk": []
     },
@@ -113,16 +64,16 @@
       "check": "contradiction_scan",
       "status": "ok",
       "cases_with_contradictions": 0,
-      "info_gap_only_cases": 20,
-      "template_noise_cases": 4,
-      "clean_cases": 80,
+      "info_gap_only_cases": 16,
+      "template_noise_cases": 3,
+      "clean_cases": 84,
       "details": []
     }
   ],
   "summary": {
     "total_checks": 5,
-    "ok": 3,
-    "warn": 2,
+    "ok": 5,
+    "warn": 0,
     "error": 0,
     "skip": 0
   }

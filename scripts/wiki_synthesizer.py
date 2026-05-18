@@ -169,13 +169,15 @@ def _gather_case_notes(vault: Path) -> Dict[str, List[Dict]]:
 
 def _case_needs_update(case_number: str, notes: List[Dict], state: Dict) -> bool:
     """Check if any note in this case has changed since last synthesis,
-    or if the previous synthesis used structural fallback (llm_synthesized=False).
+    or if the previous synthesis used a retryable structural fallback.
     """
     prev = state.get("cases", {}).get(case_number, {})
     prev_hashes = prev.get("source_hashes", {})
 
-    # Re-synthesize if previous run used structural fallback (oMLX was down)
-    if prev and not prev.get("llm_synthesized", True):
+    # Re-synthesize retryable fallbacks, such as multi-document cases where
+    # an LLM merge is materially better.  Single-note cases can safely keep
+    # the structural overview without becoming nightly churn.
+    if prev and not prev.get("llm_synthesized", True) and prev.get("fallback_retryable", True):
         return True
 
     for note in notes:
@@ -637,7 +639,10 @@ def synthesize(
             overview = _structural_overview(case_number, client_name, notes)
             used_fallback = True
             if not quiet:
-                print(f"  ⚠️  LLM 失敗，使用結構式 fallback（夜間 cron 補齊）")
+                if len(notes) <= 1:
+                    print("  📋 單一來源，使用結構式總覽")
+                else:
+                    print("  ⚠️  LLM 失敗，使用結構式 fallback（夜間 cron 補齊）")
 
         # Write wiki page (with wikilinks injected)
         wiki_path = _write_wiki_page(vault, case_number, client_name, overview, "overview", notes=notes)
@@ -663,6 +668,7 @@ def synthesize(
             "synthesized_at": datetime.now().isoformat(),
             "vector_chunks": chunks,
             "llm_synthesized": not used_fallback,
+            "fallback_retryable": bool(used_fallback and len(notes) > 1),
         }
         _save_state(state)
         synthesized += 1

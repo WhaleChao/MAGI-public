@@ -74,8 +74,8 @@ def _active_roots() -> list[str]:
     nas_user = (
         os.environ.get("MAGI_NAS_HOME_USER")
         or os.environ.get("MAGI_NAS_USER")
-        or "lumi63181107"
-    ).strip().strip("/\\") or "lumi63181107"
+        or "home"
+    ).strip().strip("/\\") or "home"
     roots.extend(
         [
             str(home / "Library/CloudStorage/SynologyDrive-homes/01_案件"),

@@ -72,8 +72,8 @@ def resolve_nas_user() -> str:
     return (
         os.getenv("MAGI_NAS_USER")
         or os.getenv("MAGI_NAS_HOME_USER")
-        or "lumi63181107"
-    ).strip().strip("/\\") or "lumi63181107"
+        or "home"
+    ).strip().strip("/\\") or "home"
 
 
 NAS_USER = resolve_nas_user()
