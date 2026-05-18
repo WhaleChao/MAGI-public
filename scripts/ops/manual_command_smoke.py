@@ -112,7 +112,7 @@ def docx_pdf_checks() -> list[Check]:
 
         doc = fitz.open(pdf)
         page_details: list[str] = []
-        ok = doc.page_count >= 5
+        ok = doc.page_count >= 8
         image_pages = 0
         for idx, page in enumerate(doc, 1):
             text_len = len(page.get_text())
@@ -132,7 +132,7 @@ def docx_pdf_checks() -> list[Check]:
                 "pdf_visual_integrity",
                 ok,
                 "; ".join(page_details),
-                expected="pages>=5 image_pages>=5 text-or-image/page nonblank",
+                expected="pages>=8 image_pages>=5 text-or-image/page nonblank",
                 actual=f"pages={doc.page_count} image_pages={image_pages}",
             )
         )

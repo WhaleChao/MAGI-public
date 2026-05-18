@@ -132,26 +132,35 @@ def make_cover(path: Path) -> Path:
 
 
 def make_module_map(path: Path) -> Path:
-    img = Image.new("RGB", (1500, 860), "#FFFFFF")
+    img = Image.new("RGB", (1500, 760), "#FFFFFF")
     draw = ImageDraw.Draw(img)
-    draw.text((70, 55), "MAGI 功能地圖", font=font(52), fill="#" + INK)
-    draw.text((70, 120), "每個入口都回到同一套案件、檔案、待辦與知識資料，不重複建資料。", font=font(28), fill="#" + MUTED)
-    draw_round_rect(draw, (585, 320, 915, 510), fill="E0F2FE", outline="7DD3FC", radius=34)
-    draw.text((655, 365), "MAGI", font=font(58), fill="#" + BLUE)
-    draw.text((626, 440), "案件與知識總控", font=font(28), fill="#" + INK)
+    draw_round_rect(draw, (380, 55, 1120, 205), fill="E0F2FE", outline="7DD3FC", radius=34)
+    draw.text((632, 88), "MAGI", font=font(60), fill="#" + BLUE)
+    draw.text((522, 158), "案件資料核心：不重複建資料、不混同案件", font=font(30), fill="#" + INK)
+
     modules = [
-        ("案件管理", "案件卡片、狀態、資料夾", 130, 245, BLUE),
-        ("檔案與 OCR", "預覽、下載、命名、分享", 1040, 245, GREEN),
-        ("摘要翻譯逐字稿", "品質閘門與 DOCX 交付", 120, 575, PURPLE),
-        ("法扶閱卷筆錄", "開辦、回報、結案、去重", 1030, 575, AMBER),
-        ("法律資料", "判決、法條、實務見解", 575, 95, "2563EB"),
-        ("健康維運", "模型、DB、NAS、外網", 575, 650, RED),
+        ("案件管理", "人工狀態優先", 95, 265, BLUE),
+        ("檔案與 OCR", "預覽 / 分享 / 命名", 515, 265, GREEN),
+        ("AI 交付", "摘要 / 翻譯 / 逐字稿", 935, 265, PURPLE),
+        ("法扶、閱卷、筆錄", "開辦 / 回報 / 去重", 95, 465, AMBER),
+        ("法律資料", "法條 / 判決 / 實務見解", 515, 465, "2563EB"),
+        ("健康維運", "模型 / DB / NAS / 外網", 935, 465, RED),
     ]
+    for x1, y1, x2, y2 in [(285, 220, 285, 250), (705, 220, 705, 250), (1125, 220, 1125, 250)]:
+        draw.line((x1, y1, x2, y2), fill="#" + BORDER, width=5)
     for title, desc, x, y, color in modules:
-        draw.line((750, 415, x + 155, y + 72), fill="#" + BORDER, width=5)
-        draw_round_rect(draw, (x, y, x + 320, y + 145), fill="F8FAFC", outline=color, radius=26)
-        draw.text((x + 28, y + 24), title, font=font(34), fill="#" + color)
-        draw_text_box(draw, desc, (x + 28, y + 76), max_chars=14, size=24, fill=MUTED, line_gap=4)
+        draw_round_rect(draw, (x, y, x + 370, y + 150), fill="F8FAFC", outline=color, radius=26)
+        title_font = font(35 if len(title) <= 6 else 31)
+        bbox = draw.textbbox((0, 0), title, font=title_font)
+        title_w = bbox[2] - bbox[0]
+        draw.text((x + (370 - title_w) / 2, y + 32), title, font=title_font, fill="#" + color)
+        desc_font = font(25)
+        bbox = draw.textbbox((0, 0), desc, font=desc_font)
+        desc_w = bbox[2] - bbox[0]
+        draw.text((x + (370 - desc_w) / 2, y + 92), desc, font=desc_font, fill="#" + MUTED)
+
+    draw_round_rect(draw, (95, 670, 1405, 720), fill="F8FAFC", outline=BORDER, radius=18)
+    draw.text((122, 682), "原則：問行程查行事曆；問案件查案件資料；問判決查法律資料；查不到就回報查不到，不用模型猜。", font=font(25), fill="#" + INK)
     return save_image(path, img)
 
 
@@ -184,62 +193,58 @@ def make_workflow(path: Path) -> Path:
 
 
 def make_dashboard_mock(path: Path) -> Path:
-    img = Image.new("RGB", (1500, 900), "#EFF4FA")
+    img = Image.new("RGB", (1500, 860), "#FFFFFF")
     draw = ImageDraw.Draw(img)
-    draw_round_rect(draw, (60, 50, 1440, 850), fill="FFFFFF", outline=BORDER, radius=32)
-    draw_round_rect(draw, (60, 50, 300, 850), fill="172033", outline="172033", radius=32)
-    draw.text((95, 95), "Paperclip", font=font(38), fill="#" + BLUE)
-    menu = ["業務概覽", "案件列表", "行事曆", "待辦事項", "書狀", "法扶", "實務見解", "系統設定"]
-    y = 170
-    for item in menu:
-        fill = "0EA5E9" if item == "業務概覽" else "22304A"
-        draw_round_rect(draw, (88, y, 270, y + 46), fill=fill, outline=fill, radius=10)
-        draw.text((108, y + 9), item, font=font(22), fill="#FFFFFF")
-        y += 62
-    draw.text((340, 92), "業務概覽", font=font(46), fill="#" + INK)
-    draw_round_rect(draw, (340, 152, 1020, 210), fill="F8FAFC", outline=BORDER, radius=14)
-    draw.text((365, 167), "搜尋案件、當事人、法院案號...", font=font(24), fill="#" + MUTED)
-    cards = [
-        ("今日行程", "3 件", BLUE),
-        ("OSC 待辦", "8 件", AMBER),
-        ("檔案待處理", "5 份", PURPLE),
-        ("系統健康", "正常", GREEN),
-    ]
-    x = 340
-    for title, value, color in cards:
-        draw_round_rect(draw, (x, 245, x + 235, 360), fill="FFFFFF", outline=BORDER, radius=18)
-        draw.text((x + 24, 270), title, font=font(24), fill="#" + MUTED)
-        draw.text((x + 24, 310), value, font=font(34), fill="#" + color)
-        x += 260
-    draw_round_rect(draw, (340, 410, 880, 765), fill="FFFFFF", outline=BORDER, radius=18)
-    draw.text((370, 438), "OSC 建立待辦", font=font(28), fill="#" + INK)
-    draw.text((370, 475), "由案件文件或系統規則建立", font=font(20), fill="#" + MUTED)
-    draw_round_rect(draw, (915, 410, 1378, 765), fill="FFFFFF", outline=BORDER, radius=18)
-    draw.text((945, 438), "行事曆事件", font=font(28), fill="#" + INK)
-    draw.text((945, 475), "來自 Google Calendar 或匯入行程", font=font(20), fill="#" + MUTED)
+    draw.text((70, 55), "業務概覽：兩種待辦要分開看", font=font(50), fill="#" + INK)
+    draw.text((70, 118), "左邊是文件或案件規則產生的工作；右邊是有時間的行程。分開後才不會把期限、開庭和電話混成一串。", font=font(25), fill="#" + MUTED)
+
+    draw_round_rect(draw, (90, 190, 705, 765), fill="F8FAFC", outline=BORDER, radius=28)
+    draw_round_rect(draw, (795, 190, 1410, 765), fill="F8FAFC", outline=BORDER, radius=28)
+    draw.text((125, 222), "OSC 建立待辦", font=font(36), fill="#" + AMBER)
+    draw.text((125, 270), "來源：PDF、案件文件、系統規則", font=font(24), fill="#" + MUTED)
+    draw.text((830, 222), "行事曆事件", font=font(36), fill="#" + GREEN)
+    draw.text((830, 270), "來源：Google 日曆、OSC 自動寫入、匯入行程", font=font(24), fill="#" + MUTED)
+
+    header_y = 330
+    for x0, widths in [(125, [120, 155, 115, 295]), (830, [150, 130, 345])]:
+        labels = ["日期", "案件", "類型", "描述"] if x0 == 125 else ["時間", "案件", "描述"]
+        x = x0
+        for label, w in zip(labels, widths):
+            draw_round_rect(draw, (x, header_y, x + w - 12, header_y + 44), fill="E0F2FE", outline="BAE6FD", radius=10)
+            draw.text((x + 18, header_y + 9), label, font=font(20), fill="#" + INK)
+            x += w
+
     todo_rows = [
-        ("2026-05-20", "補正", "2026-0001"),
-        ("2026-05-21", "陳報", "2026-0002"),
-        ("2026-05-22", "繳費確認", "2026-0003"),
+        ("05/20", "2026-0001", "補正", "法院通知補正期限"),
+        ("05/21", "2026-0002", "陳報", "整理附件後送狀"),
+        ("05/22", "2026-0003", "繳費", "確認繳費單狀態"),
     ]
-    y = 525
-    for date, kind, case_id in todo_rows:
-        draw_round_rect(draw, (370, y, 850, y + 50), fill="F8FAFC", outline=BORDER, radius=10)
-        draw.text((390, y + 12), date, font=font(20), fill="#" + MUTED)
-        draw.text((540, y + 12), case_id, font=font(20), fill="#" + INK)
-        draw.text((685, y + 12), kind, font=font(20), fill="#" + AMBER)
-        y += 70
+    y = 392
+    for date, case_id, kind, desc in todo_rows:
+        draw_round_rect(draw, (125, y, 670, y + 70), fill="FFFFFF", outline=BORDER, radius=12)
+        draw.text((145, y + 20), date, font=font(21), fill="#" + MUTED)
+        draw.text((270, y + 20), case_id, font=font(21), fill="#" + INK)
+        draw.text((430, y + 20), kind, font=font(21), fill="#" + AMBER)
+        draw.text((545, y + 20), desc, font=font(21), fill="#" + INK)
+        y += 90
+
     cal_rows = [
-        ("05/20 10:00", "開庭"),
-        ("05/21 14:30", "與當事人會議"),
-        ("05/22 09:00", "電話確認"),
+        ("05/20 10:00", "2026-0001", "臺北地院開庭"),
+        ("05/21 14:30", "2026-0002", "與當事人會議"),
+        ("05/22 09:00", "—", "電話確認文件"),
     ]
-    y = 525
-    for date, kind in cal_rows:
-        draw_round_rect(draw, (945, y, 1348, y + 50), fill="F8FAFC", outline=BORDER, radius=10)
-        draw.text((965, y + 12), date, font=font(20), fill="#" + MUTED)
-        draw.text((1135, y + 12), kind, font=font(20), fill="#" + GREEN)
-        y += 70
+    y = 392
+    for when, case_id, desc in cal_rows:
+        draw_round_rect(draw, (830, y, 1375, y + 70), fill="FFFFFF", outline=BORDER, radius=12)
+        draw.text((850, y + 20), when, font=font(21), fill="#" + MUTED)
+        draw.text((1010, y + 20), case_id, font=font(21), fill="#" + INK)
+        draw.text((1160, y + 20), desc, font=font(21), fill="#" + GREEN)
+        y += 90
+
+    draw_round_rect(draw, (125, 700, 670, 735), fill="FFF7ED", outline="FDBA74", radius=14)
+    draw.text((150, 707), "重點：沒有明確時間的期限工作，不要塞到行事曆事件框。", font=font(19), fill="#" + AMBER)
+    draw_round_rect(draw, (830, 700, 1375, 735), fill="F0FDF4", outline="BBF7D0", radius=14)
+    draw.text((855, 707), "重點：有開始時間的會議、開庭、電話，要顯示完整時間。", font=font(19), fill="#" + GREEN)
     return save_image(path, img)
 
 
@@ -485,7 +490,7 @@ def build_manual() -> None:
 
         doc = Document()
         configure_doc(doc)
-        image(doc, assets["cover"], "封面示意：MAGI 是案件、檔案、待辦、知識與健康狀態的共同入口。")
+        image(doc, assets["cover"], "封面示意：MAGI 把案件、檔案、待辦、知識資料與健康狀態整合在同一個入口。")
         title = doc.add_paragraph()
         title.alignment = WD_ALIGN_PARAGRAPH.CENTER
         run = title.add_run("MAGI 一般使用者圖文操作手冊")
@@ -508,8 +513,8 @@ def build_manual() -> None:
             ["章節", "你會學到什麼", "適合誰先看"],
             [
                 ["1. 快速上手", "入口、登入、健康燈號、第一句話怎麼問", "所有人"],
-                ["2. 功能地圖", "案件、檔案、AI、法扶、法律資料如何串起來", "所有人"],
-                ["3. 業務概覽", "OSC 待辦與行事曆事件分開閱讀", "每日使用者"],
+                ["2. 功能地圖", "案件、檔案、AI、法扶、法律資料如何彼此銜接", "所有人"],
+                ["3. 業務概覽", "如何分開閱讀 OSC 建立待辦與行事曆事件", "每日使用者"],
                 ["4. 對話與工具", "怎麼問 MAGI，什麼時候用 @heavy", "每日使用者"],
                 ["5. 案件與檔案", "案件卡片、資料夾、預覽、下載、分享", "案件承辦者"],
                 ["6. PDF 與 OCR", "命名、信封頁排除、從 PDF 建立待辦", "案件承辦者"],
@@ -543,7 +548,7 @@ def build_manual() -> None:
         )
 
         heading(doc, "2. MAGI 功能地圖", 1)
-        image(doc, assets["map"], "圖 2：MAGI 的主要功能模組。")
+        image(doc, assets["map"], "圖 2：MAGI 的主要功能模組與資料核心。")
         bullets(
             doc,
             [
@@ -555,13 +560,13 @@ def build_manual() -> None:
         )
 
         heading(doc, "3. 業務概覽與畫面閱讀", 1)
-        image(doc, assets["dashboard"], "圖 3：安全示意畫面。實際畫面會依版本與權限不同。")
+        image(doc, assets["dashboard"], "圖 3：業務概覽應把 OSC 建立待辦與行事曆事件分成兩個清楚區塊。")
         table(
             doc,
             ["區塊", "用途", "閱讀方式"],
             [
-                ["OSC 建立待辦", "由 PDF、案件文件或系統規則建立的期限工作", "看日期、案件編號、類型與描述。"],
-                ["行事曆事件", "由 Google Calendar 或匯入行程來的開庭、會議、電話", "看完整時間，不與 OSC 待辦混在同一框。"],
+                ["OSC 建立待辦", "由 PDF、案件文件或系統規則建立的期限工作", "看日期、案件編號、類型與描述；有期限但沒有明確開始時間者放這裡。"],
+                ["行事曆事件", "由 Google Calendar 或匯入行程產生的開庭、會議、電話", "看完整日期與時間；不要和 OSC 建立待辦混在同一個框。"],
                 ["案件卡片", "看案件狀態、案由、法院案號與資料夾", "法扶案件應標示法扶/進行中或法扶/已結案。"],
                 ["健康狀態", "顯示模型、DB、OCR、NAS、外網與排程", "黃燈先排查，紅燈停止正式批次作業。"],
             ],
@@ -850,8 +855,16 @@ def pdf_table(headers: list[str], rows: list[list[str]], styles: dict[str, Parag
     return table_obj
 
 
-def pdf_image(path: Path, width_cm: float = 17.2) -> PdfImage:
-    img = PdfImage(str(path), width=width_cm * cm, height=width_cm * cm * 0.56)
+def pdf_image(path: Path, width_cm: float = 16.8, max_height_cm: float = 18.5) -> PdfImage:
+    with Image.open(path) as source:
+        ratio = source.height / source.width
+    width = width_cm * cm
+    height = width * ratio
+    max_height = max_height_cm * cm
+    if height > max_height:
+        height = max_height
+        width = height / ratio
+    img = PdfImage(str(path), width=width, height=height)
     img.hAlign = "CENTER"
     return img
 
@@ -887,19 +900,22 @@ def build_pdf(assets: dict[str, Path]) -> None:
         author="MAGI",
     )
     story = [
-        pdf_image(assets["cover"], 17.2),
+        pdf_image(assets["cover"], 16.8),
         para("MAGI 一般使用者圖文操作手冊", styles["title"]),
         para("版本：2026-05-19｜適用：MAGI 公開版與私有版", styles["body"]),
-        para("這份 PDF 與 DOCX 使用同一個產生器輸出，所有圖片均為安全示意圖，不含真實案件或金鑰。", styles["body"]),
+        para("這份 PDF 與 DOCX 使用同一個產生器輸出。所有圖片都是安全示意圖，不含真實案件、金鑰或私有路徑。", styles["body"]),
         PageBreak(),
-        para("1. 功能地圖與每日流程", styles["h1"]),
-        pdf_image(assets["map"], 17.2),
-        Spacer(1, 6),
-        pdf_image(assets["workflow"], 17.2),
+        para("1. 功能地圖", styles["h1"]),
+        para("MAGI 以案件資料為核心，將檔案、待辦、行事曆、AI 交付、法扶、閱卷、筆錄與法律資料串接起來。使用者不需要重複建立資料，也不應把同名不同案混在一起。", styles["body"]),
+        pdf_image(assets["map"], 16.8),
         PageBreak(),
-        para("2. 業務概覽怎麼看", styles["h1"]),
-        pdf_image(assets["dashboard"], 17.2),
-        para("OSC 建立待辦與行事曆事件應分成兩個區塊。前者來自案件文件與系統規則，後者來自 Google Calendar 或匯入行程。", styles["body"]),
+        para("2. 每日使用流程", styles["h1"]),
+        para("建議每天先看健康狀態，再查今日工作。正式送出文件、批次搬檔或報結前，務必確認模型、DB、OCR、NAS 與外網通道都正常。", styles["body"]),
+        pdf_image(assets["workflow"], 16.8),
+        PageBreak(),
+        para("3. 業務概覽怎麼看", styles["h1"]),
+        pdf_image(assets["dashboard"], 16.8),
+        para("業務概覽要把 OSC 建立待辦與行事曆事件分開顯示。前者是文件或系統規則產生的期限工作；後者是有時間的開庭、會議、電話或匯入行程。", styles["body"]),
         pdf_table(
             ["區塊", "用途", "注意"],
             [
@@ -910,8 +926,8 @@ def build_pdf(assets: dict[str, Path]) -> None:
             styles,
         ),
         PageBreak(),
-        para("3. 摘要、翻譯、逐字稿品質閘門", styles["h1"]),
-        pdf_image(assets["quality"], 17.2),
+        para("4. 摘要、翻譯、逐字稿品質閘門", styles["h1"]),
+        pdf_image(assets["quality"], 16.8),
         pdf_table(
             ["輸出", "合格標準", "失敗時"],
             [
@@ -921,7 +937,8 @@ def build_pdf(assets: dict[str, Path]) -> None:
             ],
             styles,
         ),
-        para("4. 常用命令範例", styles["h1"]),
+        PageBreak(),
+        para("5. 常用命令範例", styles["h1"]),
         pdf_table(
             ["場景", "建議說法", "成功時應看到"],
             [
@@ -935,7 +952,7 @@ def build_pdf(assets: dict[str, Path]) -> None:
             styles,
         ),
         PageBreak(),
-        para("5. 法扶、閱卷、筆錄與法律資料", styles["h1"]),
+        para("6. 法扶、閱卷、筆錄與法律資料", styles["h1"]),
         pdf_table(
             ["模組", "主要功能", "重要原則"],
             [
@@ -956,8 +973,9 @@ def build_pdf(assets: dict[str, Path]) -> None:
             ],
             styles,
         ),
-        para("6. 系統健康與商用檢查", styles["h1"]),
-        pdf_image(assets["health"], 17.2),
+        PageBreak(),
+        para("7. 系統健康與商用檢查", styles["h1"]),
+        pdf_image(assets["health"], 16.8),
         code_pdf(
             [
                 "python3 scripts/customer_install_wizard.py --public --yes",
