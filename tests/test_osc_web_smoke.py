@@ -480,9 +480,10 @@ def test_cases_ui_uses_unambiguous_status_and_laf_badge_labels():
     assert 'text.includes("未結案")' in js
     assert "caseNotesBlock(r)" in js
     assert "card-notes" in js
-    assert "一鍵結案" in js
+    assert ">結案</button>" in js
+    assert "一鍵結案" not in js
     assert "case-close-btn" in js
-    assert "20260518-case-close-v3" in page
+    assert "20260518-case-close-v4" in page
     assert "case_type_display" in js
     assert "case_reason_display" in js
     assert "const editorCaseType = caseDisplayType(c)" in js

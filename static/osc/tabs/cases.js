@@ -80,7 +80,7 @@ function isTemplateCaseRow(row = {}) {
 
 function caseCloseButton(row = {}, extraClass = "") {
     if (!row.id || isFinalClosedCase(row) || isTemplateCaseRow(row)) return "";
-    return `<button class="btn warn case-close-btn ${extraClass}" data-act="case-close" data-id="${esc(row.id)}" title="一鍵標記已結案並啟動結案搬移">一鍵結案</button>`;
+    return `<button class="btn warn case-close-btn ${extraClass}" data-act="case-close" data-id="${esc(row.id)}" title="標記已結案並啟動結案搬移">結案</button>`;
 }
 
 function caseDisplayType(row = {}) {
