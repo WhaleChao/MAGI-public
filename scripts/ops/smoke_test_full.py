@@ -739,6 +739,174 @@ def test_no_desktop_git_add_noise():
 
 
 # ══════════════════════════════════════════════════════════════
+# 15. COMMERCIAL RELEASE GUARDS
+# ══════════════════════════════════════════════════════════════
+
+def _run_json_script(cmd: list[str], timeout: int = 60) -> tuple[bool, dict, str]:
+    proc = _run_cmd(cmd, timeout=timeout)
+    raw = (proc.stdout or "").strip()
+    data = {}
+    if raw:
+        try:
+            data = json.loads(raw)
+        except Exception:
+            idx = raw.rfind("\n{")
+            if idx >= 0:
+                try:
+                    data = json.loads(raw[idx + 1:])
+                except Exception:
+                    data = {}
+    return proc.returncode == 0 and bool(data), data, (proc.stderr or raw)[-500:]
+
+
+def test_public_release_audit_strict():
+    ok, data, tail = _run_json_script(
+        [
+            sys.executable,
+            "scripts/public_release_audit.py",
+            "--public-isolation",
+            "--strict",
+            "--json",
+        ],
+        timeout=90,
+    )
+    if not ok:
+        return False, tail
+    passed = bool(data.get("ok")) and int(data.get("errors") or 0) == 0 and int(data.get("warnings") or 0) == 0
+    return passed, f"errors={data.get('errors')} warnings={data.get('warnings')}"
+
+
+def test_customer_install_wizard_public_dry_run():
+    out = MAGI_ROOT / ".runtime" / "smoke_customer_install_wizard_latest.json"
+    ok, data, tail = _run_json_script(
+        [
+            sys.executable,
+            "scripts/customer_install_wizard.py",
+            "--public",
+            "--no-live",
+            "--skip-readiness",
+            "--no-optional",
+            "--json",
+            "--output",
+            str(out),
+        ],
+        timeout=120,
+    )
+    if not ok:
+        return False, tail
+    summary = data.get("summary") if isinstance(data.get("summary"), dict) else {}
+    passed = bool(data.get("ok")) and str(data.get("status")) == "pass" and int(summary.get("fail") or 0) == 0
+    return passed, f"status={data.get('status')} pass={summary.get('pass')} skipped={summary.get('skipped')}"
+
+
+def test_operation_manuals_exist():
+    required = [
+        MAGI_ROOT / "README.md",
+        MAGI_ROOT / "README.zh-TW.md",
+        MAGI_ROOT / "docs" / "PUBLIC_SELF_INSTALL.md",
+        MAGI_ROOT / "docs" / "PUBLIC_OPERATION_MANUAL.md",
+        MAGI_ROOT / "docs" / "PRIVATE_OPERATION_MANUAL.md",
+        MAGI_ROOT / "docs" / "COMMERCIAL_READINESS.md",
+    ]
+    missing = [str(p.relative_to(MAGI_ROOT)) for p in required if not p.exists()]
+    return not missing, "manuals OK" if not missing else "missing: " + ", ".join(missing)
+
+
+def test_health_active_issues_clear():
+    code, body = _http_get("http://127.0.0.1:5002/health", timeout=8)
+    data = json.loads(body)
+    op = data.get("operational_health") if isinstance(data.get("operational_health"), dict) else {}
+    active = op.get("active_unresolved_24h") if isinstance(op.get("active_unresolved_24h"), dict) else {}
+    passed = (
+        code == 200
+        and data.get("status") == "operational"
+        and bool(op.get("ok"))
+        and int(active.get("cron_failures") or 0) == 0
+        and int(active.get("issue_agenda_high_severity") or 0) == 0
+    )
+    return passed, f"status={data.get('status')} active={active}"
+
+
+def test_process_hygiene_clean():
+    ok, data, tail = _run_json_script(
+        [sys.executable, "skills/process-hygiene/action.py", "--task", "scan"],
+        timeout=45,
+    )
+    if not ok:
+        return False, tail
+    passed = bool(data.get("healthy")) and int(data.get("total_issues") or 0) == 0
+    return passed, str(data.get("message") or "")[:160]
+
+
+def test_model_live_gate_profile():
+    ok, data, tail = _run_json_script(
+        [
+            sys.executable,
+            "scripts/ops/model_live_gate.py",
+            "--expect",
+            "auto",
+            "--json",
+            "--json-out",
+            ".runtime/model_live_gate_latest.json",
+        ],
+        timeout=60,
+    )
+    if not ok:
+        return False, tail
+    endpoints = data.get("endpoints") if isinstance(data.get("endpoints"), list) else []
+    models = [str(e.get("model_id") or "down") for e in endpoints if isinstance(e, dict)]
+    return bool(data.get("ok")), f"expected={data.get('expected_profile')} active={data.get('active_profile')} models={models}"
+
+
+def test_knowledge_lint_clean():
+    path = MAGI_ROOT / "static" / "knowledge_lint_latest.json"
+    if not path.exists():
+        return False, "knowledge_lint_latest.json missing"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    checks = data.get("checks") if isinstance(data.get("checks"), list) else []
+    bad = [
+        str(item.get("check") or "?")
+        for item in checks
+        if isinstance(item, dict) and str(item.get("status") or "").lower() in {"warn", "error", "fail"}
+    ]
+    return not bad, "knowledge lint clean" if not bad else "bad checks: " + ", ".join(bad[:5])
+
+
+def test_translation_quality_latest_clean():
+    path = MAGI_ROOT / "static" / "translator_ape_latest.json"
+    if not path.exists():
+        return False, "translator_ape_latest.json missing"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    passed = bool(data.get("ok")) and not bool(data.get("has_failures")) and int(data.get("case_fail_count") or 0) == 0
+    return passed, f"cases={data.get('cases')} ape_beats_baseline={data.get('ape_beats_baseline')}"
+
+
+def test_tool_hallucination_latest_clean():
+    path = MAGI_ROOT / ".runtime" / "live_magi_tool_hallucination_latest.json"
+    if not path.exists():
+        return False, "live_magi_tool_hallucination_latest.json missing"
+    age_hours = (time.time() - path.stat().st_mtime) / 3600
+    data = json.loads(path.read_text(encoding="utf-8"))
+    checks = data.get("checks") if isinstance(data.get("checks"), list) else []
+    failed = [str(c.get("name") or "?") for c in checks if isinstance(c, dict) and not c.get("ok")]
+    passed = bool(data.get("ok")) and not failed and age_hours <= 168
+    return passed, f"age={age_hours:.1f}h failed={failed[:3]}"
+
+
+def test_share_gateway_health():
+    code, body = _http_get("http://127.0.0.1:5014/health", timeout=5)
+    data = json.loads(body)
+    return code == 200 and bool(data.get("ok")), f"HTTP {code} {data.get('service')}"
+
+
+def test_admin_server_health():
+    code, body = _http_get("http://127.0.0.1:8088/health", timeout=5)
+    body_l = body.lower()
+    ok = code == 200 and "<html" in body_l and "traceback" not in body_l and "not found" not in body_l
+    return ok, f"HTTP {code}"
+
+
+# ══════════════════════════════════════════════════════════════
 # MAIN
 # ══════════════════════════════════════════════════════════════
 
@@ -885,6 +1053,22 @@ def main():
     run_test("NAS LUMI mount guard", "ops", test_nas_lumi_mount_guard)
     run_test("No Desktop git-add noise", "ops", test_no_desktop_git_add_noise)
     print()
+
+    # ── 15. Commercial Release Guards ──
+    if "commercial" not in skip:
+        print("── 15. Commercial Release Guards ──")
+        run_test("Public release audit strict", "commercial", test_public_release_audit_strict)
+        run_test("Customer install wizard public dry-run", "commercial", test_customer_install_wizard_public_dry_run)
+        run_test("Operation manuals exist", "commercial", test_operation_manuals_exist)
+        run_test("Health active issues clear", "commercial", test_health_active_issues_clear)
+        run_test("Process hygiene clean", "commercial", test_process_hygiene_clean)
+        run_test("Model live gate profile", "commercial", test_model_live_gate_profile)
+        run_test("Knowledge lint clean", "commercial", test_knowledge_lint_clean)
+        run_test("Translation quality latest clean", "commercial", test_translation_quality_latest_clean)
+        run_test("Tool hallucination latest clean", "commercial", test_tool_hallucination_latest_clean)
+        run_test("Share gateway health", "commercial", test_share_gateway_health)
+        run_test("Admin server health", "commercial", test_admin_server_health)
+        print()
 
     # ── Cleanup ──
     cleanup()
