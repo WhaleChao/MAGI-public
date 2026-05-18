@@ -26,7 +26,7 @@ def build_launch_agent_plist(project_root: Path, runtime_root: Path) -> dict:
     log_path = Path("/opt/homebrew/var/log/omlx.log")
     return {
         "Label": LABEL,
-        "ProgramArguments": ["/bin/bash", "/opt/homebrew/bin/omlx-magi-start-text"],
+        "ProgramArguments": ["/bin/bash", os.environ.get("OMLX_TEXT_START_SCRIPT", "/opt/homebrew/bin/omlx-magi-start-text")],
         "RunAtLoad": True,
         "KeepAlive": True,
         "ThrottleInterval": 15,

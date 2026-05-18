@@ -111,14 +111,44 @@ PUBLIC_ISOLATION_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
 
 
 def _git_ls_files(repo_root: Path = REPO_ROOT) -> list[str]:
-    proc = subprocess.run(
-        ["git", "ls-files"],
-        cwd=repo_root,
-        check=True,
-        text=True,
-        stdout=subprocess.PIPE,
-    )
+    try:
+        proc = subprocess.run(
+            ["git", "ls-files"],
+            cwd=repo_root,
+            check=True,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return _walk_release_files(repo_root)
     return [line for line in proc.stdout.splitlines() if line]
+
+
+def _walk_release_files(repo_root: Path) -> list[str]:
+    """Fallback for customer release zips that no longer contain .git."""
+
+    ignored_parts = {
+        ".git",
+        ".mypy_cache",
+        ".pytest_cache",
+        ".ruff_cache",
+        ".venv",
+        "venv",
+        "__pycache__",
+        "dist",
+        "build",
+        "node_modules",
+    }
+    rels: list[str] = []
+    for path in sorted(repo_root.rglob("*")):
+        if not path.is_file():
+            continue
+        rel = path.relative_to(repo_root)
+        if any(part in ignored_parts for part in rel.parts):
+            continue
+        rels.append(rel.as_posix())
+    return rels
 
 
 def _is_probably_text(path: Path) -> bool:

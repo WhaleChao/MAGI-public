@@ -27,7 +27,12 @@ jobs:
             skills/bridge/inference_gateway.py \
             scripts/ops/audit_operational_hardening.py \
             scripts/ops/smoke_test_full.py \
-            scripts/ops/run_test_suite.py
+            scripts/ops/run_test_suite.py \
+            scripts/customer_install_wizard.py \
+            scripts/packaging/magi_install_launcher.py \
+            scripts/packaging/runtime_bootstrap.py \
+            scripts/packaging/build_installers.py \
+            bin/release_bundle.py
       - name: Fast unit tests
         run: |
           python -m pip install -U pip pytest requests python-dotenv

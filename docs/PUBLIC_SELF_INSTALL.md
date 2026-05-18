@@ -8,6 +8,52 @@ This guide is for external operators installing the public MAGI package on their
 - Windows and Linux can run the Flask daemon with an Ollama-compatible backend, but the production live gates are strongest on macOS.
 - One installation equals one MAGI host. Multi-tenant hosting, public client portals, and electronic signature workflows are not enabled in this public package.
 
+## One-Click Customer Installer
+
+For external customers, use the packaged installer instead of asking them to
+clone the repository manually:
+
+- **macOS**: distribute `MAGI-macOS-Installer.dmg`. The customer opens the DMG
+  and launches `MAGI Installer.app`. The app opens Terminal, extracts the
+  sanitized MAGI release bundle, detects Apple Silicon, installs or checks the
+  oMLX/MLX runtime, downloads the recommended local model set, then runs the
+  normal customer install wizard.
+- **Windows**: distribute `MAGI-Setup.exe` from the Windows installer workflow.
+  The executable extracts MAGI, detects Windows hardware, installs or checks
+  Ollama, pulls the selected Ollama model, then runs the same customer install
+  wizard. If you do not have a Windows-built EXE yet, the generated
+  `MAGI-Windows-Installer-Payload.zip` contains `Start MAGI Installer.cmd` and
+  `build_windows_exe.ps1`.
+
+Build the customer artifacts:
+
+```bash
+python3 scripts/packaging/build_installers.py --force
+```
+
+Build the Windows EXE on a Windows machine or by running the
+`Build Customer Installers` GitHub Actions workflow. The macOS builder creates
+an ad-hoc signed app and DMG. Without an Apple Developer ID certificate, it
+cannot be notarized, so macOS Gatekeeper may require the customer to
+Control-click > Open or remove quarantine after verifying the source. Windows
+unsigned EXE files may show Microsoft Defender SmartScreen "unrecognized app"
+warnings until you use a trusted signing service and build reputation.
+
+The runtime bootstrap is also available as a standalone dry-run:
+
+```bash
+python3 scripts/packaging/runtime_bootstrap.py --dry-run --download-models --json
+```
+
+The installer chooses runtime/model conservatively:
+
+- Apple Silicon + 16GB or more RAM: oMLX / MLX with `gemma-4-e4b-it-4bit` and
+  `modernbert-embed-4bit`.
+- Apple Silicon with abundant RAM or `--include-heavy`: also prepare the 26B
+  heavy model.
+- Windows/Linux or non-Apple-Silicon: Ollama, with model size scaled by RAM
+  (`gemma3:4b`, `gemma3:12b`, or `gemma3:27b`).
+
 ## Install
 
 ```bash

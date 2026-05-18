@@ -39,6 +39,30 @@ MAGI v2 is a locally-deployed AI operations platform built for a Taiwanese law f
 
 ## Quick Start
 
+### Customer installer (recommended for external users)
+
+Build customer-facing installers from a clean checkout:
+
+```bash
+python3 scripts/packaging/build_installers.py --force
+```
+
+Artifacts:
+
+- `dist/installers/MAGI-macOS-Installer.dmg` — opens a Terminal-based installer,
+  detects Apple Silicon, prepares oMLX/MLX, downloads the recommended local
+  models, then runs MAGI's customer install wizard.
+- `dist/installers/windows/dist/MAGI-Setup.exe` — built by the Windows workflow
+  or by running `dist/installers/windows/build_windows_exe.ps1` on Windows;
+  detects Windows hardware, prepares Ollama, pulls the selected model, then
+  runs the same wizard.
+
+The runtime-only plan can be previewed without changing the machine:
+
+```bash
+python3 scripts/packaging/runtime_bootstrap.py --dry-run --download-models --json
+```
+
 ### macOS (Apple Silicon)
 
 ```bash
