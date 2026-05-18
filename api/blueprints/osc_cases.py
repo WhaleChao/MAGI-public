@@ -880,6 +880,17 @@ def _osc_case_api_row(row: dict | None) -> dict | None:
     return out
 
 
+def _osc_final_closed_sql() -> str:
+    """SQL predicate for cases that are truly final closed."""
+    status = "COALESCE(status, '')"
+    laf = "COALESCE(legal_aid_status, '')"
+    laf_closed = f"{laf} = '已結案'"
+    case_closed = f"({status} LIKE '%已結案%' OR LOWER({status}) IN ('closed', 'close', 'done'))"
+    laf_not_closing = f"{laf} NOT IN ('已結案，待報結', '已結案，待送出')"
+    status_not_closing = f"{status} NOT LIKE '%結案中%' AND {status} NOT LIKE '%待報結%' AND {status} NOT LIKE '%待送出%'"
+    return f"({laf_closed} OR ({case_closed} AND {laf_not_closing} AND {status_not_closing}))"
+
+
 def _osc_status_scope_sql(scope: str) -> str:
     """Status filtering must respect legal_aid_status, not only cases.status."""
     status = "COALESCE(status, '')"
@@ -887,10 +898,8 @@ def _osc_status_scope_sql(scope: str) -> str:
     pending_report = f"({laf} = '已結案，待報結' OR {status} LIKE '%待報結%')"
     pending_submit = f"({laf} = '已結案，待送出' OR {status} LIKE '%待送出%')"
     laf_closing = f"{laf} IN ('已結案，待報結', '已結案，待送出')"
-    laf_closed = f"{laf} = '已結案'"
     case_closing = f"({status} LIKE '%結案中%' OR {status} LIKE '%待報結%' OR {status} LIKE '%待送出%')"
-    case_closed = f"({status} LIKE '%已結案%' OR LOWER({status}) IN ('closed', 'close', 'done'))"
-    final_closed = f"({laf_closed} OR ({case_closed} AND NOT ({laf_closing} OR {case_closing})))"
+    final_closed = _osc_final_closed_sql()
     closing = f"({laf_closing} OR {case_closing})"
     active_base = (
         f"({status} = '' OR {status} LIKE '%進行%' "
@@ -995,7 +1004,11 @@ def osc_cases_api():
         """
         if where:
             sql += " WHERE " + " AND ".join(where)
-        sql += " ORDER BY updated_at DESC, created_date DESC LIMIT %s"
+        if status_scope in {"", "all", "ALL"}:
+            final_closed_sql = _osc_final_closed_sql()
+            sql += f" ORDER BY CASE WHEN {final_closed_sql} THEN 1 ELSE 0 END ASC, updated_at DESC, created_date DESC LIMIT %s"
+        else:
+            sql += " ORDER BY updated_at DESC, created_date DESC LIMIT %s"
         params.append(limit)
         rows, _ = _osc_exec(sql, tuple(params), fetch="all")
         rows = [_osc_case_api_row(r) for r in (rows or [])]

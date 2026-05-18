@@ -282,6 +282,43 @@ def test_cases_default_status_scope_is_all(client):
     assert "%待報結%" not in params
 
 
+def test_cases_default_order_pushes_final_closed_cases_last(client):
+    """非已結案篩選時，已結案案件即使最新異動也排在後面。"""
+    calls = []
+
+    def fake_exec(sql, params=(), fetch="none"):
+        if "FROM cases" in sql:
+            calls.append((sql, params))
+        return _make_fake_exec({"cases": []})(sql, params, fetch)
+
+    with patch("api.blueprints.osc_cases._osc_exec", side_effect=fake_exec):
+        r = client.get("/api/osc/cases?limit=5&case_type=行政")
+
+    assert r.status_code == 200
+    sql, _params = calls[-1]
+    assert "ORDER BY CASE WHEN" in sql
+    assert "legal_aid_status" in sql
+    assert "已結案" in sql
+    assert "updated_at DESC" in sql
+
+
+def test_cases_closed_scope_keeps_closed_latest_order(client):
+    calls = []
+
+    def fake_exec(sql, params=(), fetch="none"):
+        if "FROM cases" in sql:
+            calls.append((sql, params))
+        return _make_fake_exec({"cases": []})(sql, params, fetch)
+
+    with patch("api.blueprints.osc_cases._osc_exec", side_effect=fake_exec):
+        r = client.get("/api/osc/cases?limit=5&status_scope=closed")
+
+    assert r.status_code == 200
+    sql, _params = calls[-1]
+    assert "ORDER BY CASE WHEN" not in sql
+    assert "ORDER BY updated_at DESC" in sql
+
+
 def test_template_folder_endpoint_lists_template_case_folder(client, tmp_path):
     folder = tmp_path / "0000-0000-範本-消費者債務清理"
     (folder / "02_各種書狀").mkdir(parents=True)
@@ -480,10 +517,11 @@ def test_cases_ui_uses_unambiguous_status_and_laf_badge_labels():
     assert 'text.includes("未結案")' in js
     assert "caseNotesBlock(r)" in js
     assert "card-notes" in js
+    assert "pushFinalClosedCasesLast" in js
     assert ">結案</button>" in js
     assert "一鍵結案" not in js
     assert "case-close-btn" in js
-    assert "20260518-case-close-v4" in page
+    assert "20260518-case-sort-v1" in page
     assert "case_type_display" in js
     assert "case_reason_display" in js
     assert "const editorCaseType = caseDisplayType(c)" in js

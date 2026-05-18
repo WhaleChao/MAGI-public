@@ -43,6 +43,23 @@ def test_flag_on_clears_last_run_in_cron_jobs(tmp_runtime, tmp_path, monkeypatch
     s._save_jobs()
     payload = json.loads((tmp_path / "cron_jobs.json").read_text())
     assert payload[0]["last_run"] is None
+    assert s.jobs[0]["last_run"] == "2026-04-19T00:00:00"
+
+
+def test_mark_job_run_writes_runtime_state_without_dirtying_cron_jobs(tmp_runtime, tmp_path, monkeypatch):
+    s = _make_scheduler(tmp_path, monkeypatch, [
+        {"id": "j1", "cron": "35 7 * * *", "command": "echo a", "desc": "", "enabled": True}
+    ])
+
+    assert s.mark_job_run("j1") is True
+
+    from api.platforms import runtime_dir as rd
+    state = json.loads(rd.cron_state().read_text())
+    payload = json.loads((tmp_path / "cron_jobs.json").read_text())
+    assert state["j1"]["last_run_minute"]
+    assert payload[0]["last_run"] is None
+    assert payload[0]["last_run_minute"] is None
+    assert s.jobs[0]["last_run_minute"] == state["j1"]["last_run_minute"]
 
 
 def test_cron_state_load_when_legacy_has_last_run(tmp_runtime, tmp_path, monkeypatch):

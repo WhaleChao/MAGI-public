@@ -449,6 +449,10 @@ async def bg_scheduler_loop():
     logger.info("⏰ Cron Scheduler Started")
     loop_counter = 0
     _startup_catchup_done = False  # Fires once on 2nd iteration (~60s after start)
+    _catchup_hours = int(os.environ.get("MAGI_CRON_CATCHUP_HOURS", "8"))
+    _catchup_min_hour = int(os.environ.get("MAGI_CRON_CATCHUP_MIN_HOUR", "6"))
+    _late_catchup_enabled = os.environ.get("MAGI_CRON_LATE_CATCHUP_ENABLED", "1").strip().lower() in {"1", "true", "on", "yes"}
+    _late_catchup_every = max(1, int(os.environ.get("MAGI_CRON_LATE_CATCHUP_EVERY_LOOPS", "1") or "1"))
 
     while not client.is_closed():
         try:
@@ -462,12 +466,10 @@ async def bg_scheduler_loop():
             # to this iteration's due_jobs so they execute immediately.
             if not _startup_catchup_done and loop_counter == 1:
                 _startup_catchup_done = True
-                _cu_hours = int(os.environ.get("MAGI_CRON_CATCHUP_HOURS", "8"))
-                _cu_min_hour = int(os.environ.get("MAGI_CRON_CATCHUP_MIN_HOUR", "6"))
                 try:
                     _catchup_jobs = await loop.run_in_executor(
                         _CRON_EXECUTOR,
-                        lambda: scheduler.get_missed_jobs(_cu_hours, _cu_min_hour),
+                        lambda: scheduler.get_missed_jobs(_catchup_hours, _catchup_min_hour),
                     )
                     if _catchup_jobs:
                         logger.info(
@@ -475,14 +477,37 @@ async def bg_scheduler_loop():
                             len(_catchup_jobs),
                             ", ".join(j.get("id", "?") for j in _catchup_jobs),
                         )
-                        due_jobs = list(_catchup_jobs) + list(due_jobs)
+                        existing_ids = {str(j.get("id") or "") for j in due_jobs}
+                        for _job in _catchup_jobs:
+                            await loop.run_in_executor(_CRON_EXECUTOR, lambda j=_job: scheduler.mark_job_run(j.get("id")))
+                        due_jobs = [j for j in _catchup_jobs if str(j.get("id") or "") not in existing_ids] + list(due_jobs)
                     else:
                         logger.info(
                             "✅ [Startup Catch-up] No missed jobs (window=%dh, min_hour=%d)",
-                            _cu_hours, _cu_min_hour,
+                            _catchup_hours, _catchup_min_hour,
                         )
                 except Exception as _cu_err:
                     logger.warning("⚠️ [Startup Catch-up] Error during scan: %s", _cu_err)
+            elif _startup_catchup_done and _late_catchup_enabled and loop_counter % _late_catchup_every == 0:
+                try:
+                    _catchup_jobs = await loop.run_in_executor(
+                        _CRON_EXECUTOR,
+                        lambda: scheduler.get_missed_jobs(_catchup_hours, _catchup_min_hour),
+                    )
+                    if _catchup_jobs:
+                        existing_ids = {str(j.get("id") or "") for j in due_jobs}
+                        _late_jobs = [j for j in _catchup_jobs if str(j.get("id") or "") not in existing_ids]
+                        if _late_jobs:
+                            logger.info(
+                                "🔄 [Late Catch-up] %d missed job(s) will run now: %s",
+                                len(_late_jobs),
+                                ", ".join(j.get("id", "?") for j in _late_jobs),
+                            )
+                            for _job in _late_jobs:
+                                await loop.run_in_executor(_CRON_EXECUTOR, lambda j=_job: scheduler.mark_job_run(j.get("id")))
+                            due_jobs = list(_late_jobs) + list(due_jobs)
+                except Exception as _cu_err:
+                    logger.warning("⚠️ [Late Catch-up] Error during scan: %s", _cu_err)
             # ─────────────────────────────────────────────────────────────────────────
 
             for job in due_jobs:

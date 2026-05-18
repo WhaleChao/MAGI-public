@@ -73,6 +73,20 @@ function isFinalClosedCase(row = {}) {
     return [caseDisplayStatus(row), row.status, row.legal_aid_status].some(isFinalClosedStatusText);
 }
 
+function shouldPushFinalClosedCasesLast() {
+    return !["closed", "archived"].includes(String(state.caseStatusScope || "all").toLowerCase());
+}
+
+function pushFinalClosedCasesLast(rows = []) {
+    if (!shouldPushFinalClosedCasesLast() || rows.length < 2) return rows;
+    return rows.map((row, index) => ({ row, index })).sort((a, b) => {
+        const ac = isFinalClosedCase(a.row) ? 1 : 0;
+        const bc = isFinalClosedCase(b.row) ? 1 : 0;
+        if (ac !== bc) return ac - bc;
+        return a.index - b.index;
+    }).map(item => item.row);
+}
+
 function isTemplateCaseRow(row = {}) {
     const text = `${row.case_number || ""} ${row.client_name || ""} ${row.folder_path || ""} ${row.status || ""}`;
     return text.includes("0000-0000-範本") || caseDisplayStatus(row) === "—";
@@ -151,20 +165,20 @@ function renderCases() {
         if (cardGrid) cardGrid.innerHTML = `<div class="muted" style="padding:20px;">${hint}</div>`;
         return;
     }
-    const sorted = applySort([...state.cases], state.sort.col, state.sort.dir, state.sort.type);
+    const sorted = pushFinalClosedCasesLast(applySort([...state.cases], state.sort.col, state.sort.dir, state.sort.type));
 
     // Card view
     if (cardGrid) {
         const order = JSON.parse(localStorage.getItem('caseCardOrder') || '[]');
         const useManualOrder = !state.sort?.col && order.length;
-        const orderedCases = useManualOrder ? [...sorted].sort((a, b) => {
+        const orderedCases = pushFinalClosedCasesLast(useManualOrder ? [...sorted].sort((a, b) => {
             const ia = order.indexOf(String(a.id));
             const ib = order.indexOf(String(b.id));
             if (ia === -1 && ib === -1) return 0;
             if (ia === -1) return 1;
             if (ib === -1) return -1;
             return ia - ib;
-        }) : sorted;
+        }) : sorted);
 
         cardGrid.innerHTML = orderedCases.map(r => {
             const displayStatus = caseDisplayStatus(r);

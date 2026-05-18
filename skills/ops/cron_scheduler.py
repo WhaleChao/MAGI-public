@@ -177,16 +177,53 @@ class CronScheduler:
 
             self.jobs = merged
 
-            # --- R3：flag 開時把 last_run/last_run_minute 從寫出 payload 清乾淨 ---
+            # --- R3：flag 開時只把「寫到 cron_jobs.json 的 payload」清乾淨。
+            # Do not clear self.jobs here: the in-memory scheduler still needs
+            # last_run_minute to avoid re-detecting the same missed job before a
+            # hot reload occurs.
+            payload_jobs = [dict(j) for j in self.jobs]
             if _use_runtime_dir():
-                for j in self.jobs:
+                for j in payload_jobs:
                     j["last_run"] = None
                     j["last_run_minute"] = None
 
             with open(JOB_FILE, 'w', encoding='utf-8') as f:
-                json.dump(self.jobs, f, indent=2, ensure_ascii=False)
+                json.dump(payload_jobs, f, indent=2, ensure_ascii=False)
         except Exception as e:
             logger.error(f"Failed to save jobs: {e}")
+
+    def mark_job_run(self, job_id: str, *, when: datetime | None = None) -> bool:
+        """Record a run for jobs started outside ``check_due_jobs``.
+
+        Startup/late catch-up jobs are not discovered by ``check_due_jobs`` and
+        used to execute without updating ``cron_state.json``. That made the same
+        morning jobs look missed again after every daemon restart. Marking them
+        at dispatch time keeps catch-up idempotent and matches the existing
+        due-job behavior, which records a run before command execution.
+        """
+        jid = str(job_id or "").strip()
+        if not jid:
+            return False
+        self._hot_reload_if_changed()
+        now = when or datetime.now()
+        payload = {
+            "last_run": now.isoformat(),
+            "last_run_minute": now.strftime("%Y-%m-%d %H:%M"),
+        }
+        changed = False
+        for job in self.jobs:
+            if str(job.get("id") or "") == jid:
+                job.update(payload)
+                changed = True
+                break
+        if not changed:
+            return False
+        if _use_runtime_dir():
+            state = _load_cron_state()
+            state[jid] = payload
+            _save_cron_state(state)
+        self._save_jobs()
+        return True
 
     def _normalize_cron_expr(self, cron_expr: str):
         raw = (cron_expr or "").strip().lower()
