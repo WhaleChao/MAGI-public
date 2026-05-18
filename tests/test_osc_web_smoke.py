@@ -476,12 +476,13 @@ def test_cases_ui_uses_unambiguous_status_and_laf_badge_labels():
     assert 'data-kind="消費者債務清理"' not in html
     assert "法扶 / " in js
     assert "function isFinalClosingStatusText" in js
+    assert "function isFinalClosedStatusText" in js
     assert 'text.includes("未結案")' in js
     assert "caseNotesBlock(r)" in js
     assert "card-notes" in js
     assert "一鍵結案" in js
     assert "case-close-btn" in js
-    assert "20260518-case-notes-close-v2" in page
+    assert "20260518-case-close-v3" in page
     assert "case_type_display" in js
     assert "case_reason_display" in js
     assert "const editorCaseType = caseDisplayType(c)" in js

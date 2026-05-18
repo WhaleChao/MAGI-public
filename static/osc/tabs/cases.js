@@ -62,13 +62,24 @@ function isClosingOrClosedCase(row = {}) {
     return [caseDisplayStatus(row), row.status, row.legal_aid_status].some(isFinalClosingStatusText);
 }
 
+function isFinalClosedStatusText(value = "") {
+    const text = String(value || "").trim().toLowerCase();
+    if (!text || text.includes("未結案")) return false;
+    if (text.includes("待報結") || text.includes("待送出") || text.includes("結案中")) return false;
+    return text === "已結案" || ["closed", "close", "done", "completed", "結案"].includes(text);
+}
+
+function isFinalClosedCase(row = {}) {
+    return [caseDisplayStatus(row), row.status, row.legal_aid_status].some(isFinalClosedStatusText);
+}
+
 function isTemplateCaseRow(row = {}) {
     const text = `${row.case_number || ""} ${row.client_name || ""} ${row.folder_path || ""} ${row.status || ""}`;
     return text.includes("0000-0000-範本") || caseDisplayStatus(row) === "—";
 }
 
 function caseCloseButton(row = {}, extraClass = "") {
-    if (!row.id || isClosingOrClosedCase(row) || isTemplateCaseRow(row)) return "";
+    if (!row.id || isFinalClosedCase(row) || isTemplateCaseRow(row)) return "";
     return `<button class="btn warn case-close-btn ${extraClass}" data-act="case-close" data-id="${esc(row.id)}" title="一鍵標記已結案並啟動結案搬移">一鍵結案</button>`;
 }
 
@@ -179,10 +190,10 @@ function renderCases() {
                 ${caseNotesBlock(r)}
                 <div class="card-actions">
                     <button class="btn primary" data-act="case-open" data-id="${esc(r.id)}">資料夾</button>
+                    ${caseCloseButton(r)}
                     <button class="btn" data-act="case-workbench" data-id="${esc(r.id)}">案件處理</button>
                     <button class="btn" data-act="case-doc-finalize" data-id="${esc(r.id)}">書狀定稿</button>
                     <button class="btn" data-act="case-edit" data-id="${esc(r.id)}">編輯</button>
-                    ${caseCloseButton(r)}
                     <button class="btn" data-act="case-address-label" data-id="${esc(r.id)}">地址標籤</button>
                     <button class="btn danger" data-act="case-del" data-id="${esc(r.id)}">刪除</button>
                 </div>
@@ -207,10 +218,10 @@ function renderCases() {
         <td>${esc(caseDisplayStatus(r))}</td>
         <td class="actions">
             <button class="btn primary" data-act="case-open" data-id="${esc(r.id)}">資料夾</button>
+            ${caseCloseButton(r)}
             <button class="btn" data-act="case-workbench" data-id="${esc(r.id)}">案件處理</button>
             <button class="btn" data-act="case-doc-finalize" data-id="${esc(r.id)}">書狀定稿</button>
             <button class="btn" data-act="case-edit" data-id="${esc(r.id)}">編輯</button>
-            ${caseCloseButton(r)}
             <button class="btn" data-act="case-address-label" data-id="${esc(r.id)}">📮 地址標籤</button>
             <button class="btn danger" data-act="case-del" data-id="${esc(r.id)}">刪除</button>
         </td>
