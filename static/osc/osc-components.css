@@ -426,6 +426,12 @@ body.theme-dark .case-module-card.active span:last-child {
     text-overflow: ellipsis;
 }
 .case-card .card-actions .btn.primary { min-width: 0; }
+.case-card .card-actions .btn.case-close-btn {
+    border-color: #f59e0b;
+    background: #fffbeb;
+    color: #92400e;
+    font-weight: 700;
+}
 .case-card .card-actions .btn.danger { margin-left: 0; }
 
 /* ── Google-style Calendar ── */

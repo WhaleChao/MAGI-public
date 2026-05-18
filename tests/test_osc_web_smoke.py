@@ -465,6 +465,7 @@ def test_cases_has_distinct_laf_pending_scopes(client, scope, included, excluded
 
 def test_cases_ui_uses_unambiguous_status_and_laf_badge_labels():
     html = (ROOT / "templates" / "partials" / "osc" / "cases.html").read_text(encoding="utf-8")
+    page = (ROOT / "templates" / "osc.html").read_text(encoding="utf-8")
     js = (ROOT / "static" / "osc" / "tabs" / "cases.js").read_text(encoding="utf-8")
 
     assert "進行中 / 結案中" not in html
@@ -478,6 +479,9 @@ def test_cases_ui_uses_unambiguous_status_and_laf_badge_labels():
     assert 'text.includes("未結案")' in js
     assert "caseNotesBlock(r)" in js
     assert "card-notes" in js
+    assert "一鍵結案" in js
+    assert "case-close-btn" in js
+    assert "20260518-case-notes-close-v2" in page
     assert "case_type_display" in js
     assert "case_reason_display" in js
     assert "const editorCaseType = caseDisplayType(c)" in js
