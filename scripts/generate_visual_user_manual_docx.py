@@ -3,6 +3,7 @@ from __future__ import annotations
 import tempfile
 from pathlib import Path
 from textwrap import wrap
+from xml.sax.saxutils import escape
 
 from docx import Document
 from docx.enum.section import WD_SECTION_START
@@ -12,10 +13,19 @@ from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Cm, Inches, Pt, RGBColor
 from PIL import Image, ImageDraw, ImageFont
+from reportlab.lib import colors
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+from reportlab.lib.units import cm
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
+from reportlab.platypus import Image as PdfImage
+from reportlab.platypus import PageBreak, Paragraph, SimpleDocTemplate, Spacer, Table as PdfTable, TableStyle
 
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "docs/guides/MAGI_一般使用者圖文操作手冊_2026-05-19.docx"
+PDF_OUT = ROOT / "docs/guides/MAGI_一般使用者圖文操作手冊_2026-05-19.pdf"
 FONT_PATH = Path("/System/Library/Fonts/STHeiti Medium.ttc")
 FONT_LATIN = "Arial"
 FONT_EAST_ASIA = "Microsoft JhengHei"
@@ -794,8 +804,186 @@ def build_manual() -> None:
         )
 
         doc.save(OUT)
+        build_pdf(assets)
+
+
+def pdf_styles() -> dict[str, ParagraphStyle]:
+    try:
+        if FONT_PATH.exists() and "STHeitiMAGI" not in pdfmetrics.getRegisteredFontNames():
+            pdfmetrics.registerFont(TTFont("STHeitiMAGI", str(FONT_PATH)))
+        base = "STHeitiMAGI"
+    except Exception:
+        base = "Helvetica"
+    styles = getSampleStyleSheet()
+    return {
+        "title": ParagraphStyle("MagiTitle", parent=styles["Title"], fontName=base, fontSize=22, leading=28, textColor=colors.HexColor("#" + INK)),
+        "h1": ParagraphStyle("MagiH1", parent=styles["Heading1"], fontName=base, fontSize=17, leading=22, spaceBefore=10, spaceAfter=7, textColor=colors.HexColor("#" + INK)),
+        "h2": ParagraphStyle("MagiH2", parent=styles["Heading2"], fontName=base, fontSize=13, leading=17, spaceBefore=8, spaceAfter=5, textColor=colors.HexColor("#" + INK)),
+        "body": ParagraphStyle("MagiBody", parent=styles["BodyText"], fontName=base, fontSize=9.5, leading=14, spaceAfter=5, textColor=colors.HexColor("#" + INK)),
+        "small": ParagraphStyle("MagiSmall", parent=styles["BodyText"], fontName=base, fontSize=8.3, leading=11, spaceAfter=2, textColor=colors.HexColor("#" + MUTED)),
+        "code": ParagraphStyle("MagiCode", parent=styles["Code"], fontName=base, fontSize=8, leading=10, textColor=colors.HexColor("#E2E8F0")),
+    }
+
+
+def para(text: str, style: ParagraphStyle) -> Paragraph:
+    return Paragraph(escape(text).replace("\n", "<br/>"), style)
+
+
+def pdf_table(headers: list[str], rows: list[list[str]], styles: dict[str, ParagraphStyle]) -> PdfTable:
+    data = [[para(h, styles["small"]) for h in headers]]
+    data.extend([[para(cell, styles["small"]) for cell in row] for row in rows])
+    table_obj = PdfTable(data, repeatRows=1, hAlign="LEFT")
+    table_obj.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#E0F2FE")),
+                ("BACKGROUND", (0, 1), (-1, -1), colors.white),
+                ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#" + BORDER)),
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 5),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 5),
+                ("TOPPADDING", (0, 0), (-1, -1), 4),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+            ]
+        )
+    )
+    return table_obj
+
+
+def pdf_image(path: Path, width_cm: float = 17.2) -> PdfImage:
+    img = PdfImage(str(path), width=width_cm * cm, height=width_cm * cm * 0.56)
+    img.hAlign = "CENTER"
+    return img
+
+
+def code_pdf(commands: list[str], styles: dict[str, ParagraphStyle]) -> PdfTable:
+    block = para("\n".join(commands), styles["code"])
+    table_obj = PdfTable([[block]], hAlign="LEFT")
+    table_obj.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#111827")),
+                ("BOX", (0, 0), (-1, -1), 0.5, colors.HexColor("#111827")),
+                ("LEFTPADDING", (0, 0), (-1, -1), 8),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+                ("TOPPADDING", (0, 0), (-1, -1), 7),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 7),
+            ]
+        )
+    )
+    return table_obj
+
+
+def build_pdf(assets: dict[str, Path]) -> None:
+    styles = pdf_styles()
+    doc = SimpleDocTemplate(
+        str(PDF_OUT),
+        pagesize=A4,
+        rightMargin=1.45 * cm,
+        leftMargin=1.45 * cm,
+        topMargin=1.3 * cm,
+        bottomMargin=1.3 * cm,
+        title="MAGI 一般使用者圖文操作手冊",
+        author="MAGI",
+    )
+    story = [
+        pdf_image(assets["cover"], 17.2),
+        para("MAGI 一般使用者圖文操作手冊", styles["title"]),
+        para("版本：2026-05-19｜適用：MAGI 公開版與私有版", styles["body"]),
+        para("這份 PDF 與 DOCX 使用同一個產生器輸出，所有圖片均為安全示意圖，不含真實案件或金鑰。", styles["body"]),
+        PageBreak(),
+        para("1. 功能地圖與每日流程", styles["h1"]),
+        pdf_image(assets["map"], 17.2),
+        Spacer(1, 6),
+        pdf_image(assets["workflow"], 17.2),
+        PageBreak(),
+        para("2. 業務概覽怎麼看", styles["h1"]),
+        pdf_image(assets["dashboard"], 17.2),
+        para("OSC 建立待辦與行事曆事件應分成兩個區塊。前者來自案件文件與系統規則，後者來自 Google Calendar 或匯入行程。", styles["body"]),
+        pdf_table(
+            ["區塊", "用途", "注意"],
+            [
+                ["OSC 建立待辦", "補正、陳報、繳費、文件期限。", "要顯示案件、類型、日期與時間。"],
+                ["行事曆事件", "開庭、會議、電話、調解。", "不要和 OSC 待辦混在同一框。"],
+                ["案件卡片", "狀態、案由、法院案號、資料夾。", "法扶案件應標示法扶/進行中或法扶/已結案。"],
+            ],
+            styles,
+        ),
+        PageBreak(),
+        para("3. 摘要、翻譯、逐字稿品質閘門", styles["h1"]),
+        pdf_image(assets["quality"], 17.2),
+        pdf_table(
+            ["輸出", "合格標準", "失敗時"],
+            [
+                ["摘要", "有文件類型、事實、爭點、理由、結論、期限與頁碼。", "重跑或改抽取式摘要。"],
+                ["翻譯", "不漏段，專有名詞後保留原文，符合臺灣法律用語。", "用 @heavy 重跑並附中英對照。"],
+                ["逐字稿", "可讀段落、時間資訊、不確定詞標示。", "音質差時要求人工複核。"],
+            ],
+            styles,
+        ),
+        para("4. 常用命令範例", styles["h1"]),
+        pdf_table(
+            ["場景", "建議說法", "成功時應看到"],
+            [
+                ["查行程", "今天有什麼行程？", "依時間排列的行事曆事件。"],
+                ["查案件", "查 2026-0001 的案件狀態。", "案件卡片、狀態、資料夾入口。"],
+                ["PDF 待辦", "從這份法院通知建立待辦。", "OSC 待辦與必要行事曆事件。"],
+                ["翻譯", "@heavy 翻譯這份 PDF，專有名詞後保留原文。", "中英對照、術語表、完整譯文。"],
+                ["通譯研究", "用最高法院與通譯抓判決並分類。", "TXT、PDF、表格、分類與原文摘錄。"],
+                ["健康", "MAGI 系統狀態。", "主狀態、DB、模型、OCR、NAS、外網。"],
+            ],
+            styles,
+        ),
+        PageBreak(),
+        para("5. 法扶、閱卷、筆錄與法律資料", styles["h1"]),
+        pdf_table(
+            ["模組", "主要功能", "重要原則"],
+            [
+                ["法扶", "新派案、開辦、應備事項、進度回報、結案。", "同名不同案不可混搬。"],
+                ["消債應備事項", "依 OSC 邏輯列出待補資料。", "所得清單每年 5 月後推進。"],
+                ["閱卷", "檢查可下載、下載與歸檔。", "已歸檔不重複通知。"],
+                ["筆錄", "下載、命名、歸檔。", "通知只列有新檔案件。"],
+                ["法律資料", "法條、判決、實務見解、通譯研究。", "查不到就明說查不到。"],
+            ],
+            styles,
+        ),
+        code_pdf(
+            [
+                "查 1150421-W-004 的法扶狀態",
+                "產生這件消債案件的待補資料文字",
+                "檢查這件是否有新閱卷資料",
+                "用「最高法院 通譯」抓取裁判並分類",
+            ],
+            styles,
+        ),
+        para("6. 系統健康與商用檢查", styles["h1"]),
+        pdf_image(assets["health"], 17.2),
+        code_pdf(
+            [
+                "python3 scripts/customer_install_wizard.py --public --yes",
+                "python3 scripts/magi_doctor.py --json",
+                "python3 scripts/public_release_audit.py --public-isolation --strict --json",
+                "./venv/bin/python scripts/ops/run_test_suite.py --suite smoke62",
+                "./venv/bin/python scripts/ops/commercial_readiness_live.py --strict-public",
+            ],
+            styles,
+        ),
+        pdf_table(
+            ["交付前檢查", "合格標準"],
+            [
+                ["公版隔離", "0 errors / 0 warnings。"],
+                ["安裝精靈", "乾淨 clone 可 dry-run。"],
+                ["完整 smoke", "smoke62 全部通過。"],
+                ["AI 品質", "摘要、翻譯、逐字稿不漏段、不亂譯、有來源。"],
+                ["檔案服務", "預覽、下載、分享連結可用。"],
+            ],
+            styles,
+        ),
+    ]
+    doc.build(story)
 
 
 if __name__ == "__main__":
     build_manual()
     print(f"created: {OUT}")
+    print(f"created: {PDF_OUT}")
