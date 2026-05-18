@@ -114,6 +114,7 @@ python3 scripts/public_release_audit.py --public-isolation --strict
 
 - [商用上線檢核指南](docs/COMMERCIAL_READINESS.md)
 - [一般使用者手冊](docs/USER_GUIDE.md)
+- [一般使用者完整操作手冊 DOCX](docs/guides/MAGI_一般使用者完整操作手冊_2026-05-18.docx)
 - [公開版操作手冊](docs/PUBLIC_OPERATION_MANUAL.md)
 - [私有版操作手冊](docs/PRIVATE_OPERATION_MANUAL.md)
 - [公開版自行安裝指南](docs/PUBLIC_SELF_INSTALL.md)

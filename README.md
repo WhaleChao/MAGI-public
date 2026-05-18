@@ -117,6 +117,7 @@ Commercial readiness documents:
 
 - [Commercial readiness guide](docs/COMMERCIAL_READINESS.md)
 - [General user manual](docs/USER_GUIDE.md)
+- [General user manual DOCX](docs/guides/MAGI_一般使用者完整操作手冊_2026-05-18.docx)
 - [Public operation manual](docs/PUBLIC_OPERATION_MANUAL.md)
 - [Private operation manual](docs/PRIVATE_OPERATION_MANUAL.md)
 - [Public self-install guide](docs/PUBLIC_SELF_INSTALL.md)

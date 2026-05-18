@@ -205,6 +205,8 @@ CIRCULAR_IMPORTS_DETAILS.txt
 # Generated manuals & reports (docx/xlsx in repo root)
 *.xlsx
 *.docx
+# User-facing release manual is intentionally versioned for public/private delivery.
+!docs/guides/MAGI_一般使用者完整操作手冊_2026-05-18.docx
 # 消債 5 種書類 docx 範本必須入庫（無此檔則 /api/osc/debt/generate 全失敗）
 !templates/debt_templates/*.docx
 
