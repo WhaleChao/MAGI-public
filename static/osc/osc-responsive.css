@@ -508,6 +508,17 @@
         column-gap: 8px;
     }
 
+    .case-card .card-notes {
+        grid-template-columns: 3.6em minmax(0, 1fr);
+        column-gap: 8px;
+        font-size: 12px;
+        line-height: 1.45;
+    }
+
+    .case-card .card-notes .value {
+        -webkit-line-clamp: 2;
+    }
+
     .case-card .card-actions {
         grid-template-columns: repeat(2, minmax(0, 1fr));
         gap: 7px;

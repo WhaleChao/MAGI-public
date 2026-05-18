@@ -806,6 +806,7 @@ def _osc_normalize_template_case_row(row: dict | None) -> dict | None:
 
 _OSC_LAF_CLOSING_STATUSES = {"已結案，待報結", "已結案，待送出"}
 _OSC_LAF_CLOSED_STATUSES = {"已結案"}
+_OSC_OPEN_STATUS_ALIASES = {"未結案", "未結案/進行中"}
 _OSC_CASE_NUMBER_RE = re.compile(r"^(?P<year>\d{4})-(?P<seq>\d{4})$")
 
 
@@ -849,9 +850,9 @@ def _osc_effective_case_status(row: dict | None) -> str:
     if laf_status in _OSC_LAF_CLOSING_STATUSES:
         return laf_status
     if status:
-        return status
+        return "進行中" if status in _OSC_OPEN_STATUS_ALIASES else status
     if laf_status:
-        return laf_status
+        return "進行中" if laf_status in _OSC_OPEN_STATUS_ALIASES else laf_status
     return "進行中"
 
 
@@ -893,6 +894,8 @@ def _osc_status_scope_sql(scope: str) -> str:
     closing = f"({laf_closing} OR {case_closing})"
     active_base = (
         f"({status} = '' OR {status} LIKE '%進行%' "
+        f"OR {status} IN ('未結案', '未結案/進行中') "
+        f"OR {laf} IN ('未結案', '未結案/進行中') "
         f"OR LOWER({status}) IN ('active', 'open', 'ongoing', 'pending'))"
     )
     if scope in {"working", "default", "open"}:

@@ -380,6 +380,33 @@ body.theme-dark .case-module-card.active span:last-child {
     min-width: 0;
     font-variant-numeric: tabular-nums;
 }
+.case-card .card-notes {
+    display: grid;
+    grid-template-columns: 4em minmax(0, 1fr);
+    column-gap: 10px;
+    margin-top: 9px;
+    padding-top: 8px;
+    border-top: 1px dashed var(--line);
+    font-size: 12.5px;
+    line-height: 1.5;
+    min-width: 0;
+}
+.case-card .card-notes .label {
+    color: var(--muted);
+    font-size: 11.5px;
+    font-weight: 500;
+    letter-spacing: 0.05em;
+    white-space: nowrap;
+}
+.case-card .card-notes .value {
+    color: var(--text);
+    min-width: 0;
+    overflow: hidden;
+    overflow-wrap: anywhere;
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 3;
+}
 .case-card .card-actions {
     display: grid;
     grid-template-columns: repeat(5, minmax(0, 1fr));

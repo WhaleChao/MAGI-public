@@ -40,12 +40,26 @@ function isLegalAidCaseRow(row = {}) {
 }
 
 function caseDisplayStatus(row = {}) {
-    return row.status_display || row.effective_status || row.legal_aid_status || row.status || "進行中";
+    const values = [row.status_display, row.effective_status, row.status, row.legal_aid_status];
+    for (const value of values) {
+        const text = String(value || "").trim();
+        if (!text) continue;
+        if (text === "未結案" || text === "未結案/進行中") return "進行中";
+        return text;
+    }
+    return "進行中";
+}
+
+function isFinalClosingStatusText(value = "") {
+    const text = String(value || "").trim().toLowerCase();
+    if (!text || text.includes("未結案")) return false;
+    if (text.includes("待報結") || text.includes("待送出") || text.includes("結案中")) return true;
+    if (text.includes("已結案") || ["closed", "close", "done", "completed"].includes(text)) return true;
+    return text === "結案";
 }
 
 function isClosingOrClosedCase(row = {}) {
-    const text = `${caseDisplayStatus(row)} ${row.status || ""} ${row.legal_aid_status || ""}`.toLowerCase();
-    return text.includes("close") || text.includes("結案") || text.includes("待報結") || text.includes("待送出");
+    return [caseDisplayStatus(row), row.status, row.legal_aid_status].some(isFinalClosingStatusText);
 }
 
 function isTemplateCaseRow(row = {}) {
@@ -82,8 +96,21 @@ function caseStatusScopeLabel(scope) {
 function lafBadgeText(row = {}) {
     const lafStatus = String(row.legal_aid_status || "").trim();
     const displayStatus = caseDisplayStatus(row);
-    const visible = lafStatus && lafStatus !== "未開辦" ? lafStatus : displayStatus;
+    const visible = lafStatus && lafStatus !== "未結案" && lafStatus !== "未結案/進行中" ? lafStatus : displayStatus;
     return `法扶 / ${visible || "進行中"}`;
+}
+
+function caseNotesText(row = {}) {
+    return String(row.notes || row.case_notes || "").trim();
+}
+
+function caseNotesBlock(row = {}) {
+    const notes = caseNotesText(row);
+    if (!notes) return "";
+    return `<div class="card-notes" title="${esc(notes)}">
+        <span class="label">備註</span>
+        <span class="value">${esc(notes)}</span>
+    </div>`;
 }
 
 function wbTodoDoneStatus(status) {
@@ -130,9 +157,8 @@ function renderCases() {
 
         cardGrid.innerHTML = orderedCases.map(r => {
             const displayStatus = caseDisplayStatus(r);
-            const statusLower = displayStatus.toLowerCase();
             const isLaf = isLegalAidCaseRow(r);
-            const badgeClass = statusLower.includes('close') || statusLower.includes('結案') ? 'closed' : isLaf ? 'laf' : 'active';
+            const badgeClass = isClosingOrClosedCase(r) ? 'closed' : isLaf ? 'laf' : 'active';
             const badgeText = isLaf ? lafBadgeText(r) : displayStatus;
             return `
             <div class="case-card" draggable="true" data-case-id="${esc(r.id)}">
@@ -150,6 +176,7 @@ function renderCases() {
                     <div><span class="label">種類</span> <span class="value">${esc(r.case_category || '-')}</span></div>
                     ${r.laf_case_no ? `<div><span class="label">法扶</span> <span class="value">${esc(r.laf_case_no)}</span></div>` : ''}
                 </div>
+                ${caseNotesBlock(r)}
                 <div class="card-actions">
                     <button class="btn primary" data-act="case-open" data-id="${esc(r.id)}">資料夾</button>
                     <button class="btn" data-act="case-workbench" data-id="${esc(r.id)}">案件處理</button>

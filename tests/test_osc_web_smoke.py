@@ -369,6 +369,27 @@ def test_cases_endpoint_uses_effective_laf_status_for_display(client):
     assert item["case_reason_display"] == "更生"
 
 
+def test_cases_endpoint_treats_unclosed_laf_status_as_active(client):
+    rows = [{
+        "id": "case-open-laf",
+        "case_number": "2026-0001",
+        "client_name": "測試當事人",
+        "case_type": "民事",
+        "case_category": "法律扶助案件",
+        "case_reason": "損害賠償",
+        "status": "",
+        "legal_aid_status": "未結案",
+    }]
+
+    with patch("api.blueprints.osc_cases._osc_exec", side_effect=_make_fake_exec({"cases": rows})):
+        r = client.get("/api/osc/cases?limit=5")
+
+    assert r.status_code == 200
+    item = r.get_json()["items"][0]
+    assert item["status_display"] == "進行中"
+    assert item["effective_status"] == "進行中"
+
+
 def test_cases_csv_export_uses_external_case_type_display(client):
     rows = [{
         "case_number": "2025-0051",
@@ -414,6 +435,7 @@ def test_cases_active_scope_excludes_laf_closing_and_closed(client):
     assert "legal_aid_status" in sql
     assert "已結案，待送出" in sql
     assert "已結案，待報結" in sql
+    assert "未結案" in sql
     assert "NOT" in sql
 
 
@@ -452,6 +474,10 @@ def test_cases_ui_uses_unambiguous_status_and_laf_badge_labels():
     assert 'data-type="消費者債務清理"' in html
     assert 'data-kind="消費者債務清理"' not in html
     assert "法扶 / " in js
+    assert "function isFinalClosingStatusText" in js
+    assert 'text.includes("未結案")' in js
+    assert "caseNotesBlock(r)" in js
+    assert "card-notes" in js
     assert "case_type_display" in js
     assert "case_reason_display" in js
     assert "const editorCaseType = caseDisplayType(c)" in js
