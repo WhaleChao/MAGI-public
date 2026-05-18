@@ -151,6 +151,12 @@ class TestBoundary:
         skill_md = SKILL_DIR / "SKILL.md"
         assert skill_md.exists(), "SKILL.md must exist for pdf-namer"
 
+    def test_skill_md_does_not_instruct_retired_glm_ocr(self):
+        skill_md = (SKILL_DIR / "SKILL.md").read_text(encoding="utf-8")
+        assert "Vision 模型在 port 8082" not in skill_md
+        assert "GLM-OCR-bf16" not in skill_md
+        assert "macOS Vision" in skill_md
+
     def test_naming_rules_module_exists(self):
         naming_rules = SKILL_DIR / "naming_rules.py"
         assert naming_rules.exists(), "naming_rules.py should exist"

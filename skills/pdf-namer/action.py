@@ -929,7 +929,7 @@ def _find_receipt_date_from_text(text: str) -> Optional[str]:
 def _llava_extract_receipt_date(png_bytes: bytes, *, timeout_sec: int = 14) -> Optional[str]:
     """
     使用本機視覺模型做「收文章日期」判讀（優先於 OCR）。
-    路徑：macOS Vision → oMLX Gemma → Ollama vision chain。
+    路徑：macOS Vision → oMLX Gemma 視覺相容路由。
     回覆格式要求：YYYYMMDD 或 NONE
     """
     if (not HAS_REQUESTS) or (not png_bytes):
@@ -974,7 +974,7 @@ def _llava_extract_receipt_date(png_bytes: bytes, *, timeout_sec: int = 14) -> O
         except Exception:
             logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 837, exc_info=True)
 
-        # ── Fallback: Ollama vision chain ──
+        # ── Fallback: oMLX-compatible vision chain ──
         chain = (os.environ.get("MAGI_PDF_NAMER_VISION_MODELS") or "").strip()
         if not chain:
             chain = (

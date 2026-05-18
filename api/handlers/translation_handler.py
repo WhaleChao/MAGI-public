@@ -708,10 +708,9 @@ def translate_text_complete(text: str, source_lang: str = "auto", target_lang: s
                 fatal_terms = [
                     "錯譯", "漏譯", "遺漏", "省略", "新增", "添加", "擅自", "非原文", "不屬於原文",
                     "幻覺", "臆測", "偏離原文", "偏離", "專有名詞錯誤", "不是繁體中文",
-                    "嚴重", "不忠實", "無法從原文",
+                    "嚴重", "不忠實", "無法從原文", "不完整",
                 ]
-                style_only_terms = ["語序", "生硬", "突兀", "不夠流暢", "上下文缺失", "語境缺失", "銜接"]
-                if any(term in _vr_out for term in fatal_terms) or not any(term in _vr_out for term in style_only_terms):
+                if any(term in _vr_out for term in fatal_terms):
                     return False, _vr_out
                 return True, _vr_out
             return True, _vr_out
@@ -944,6 +943,13 @@ def translate_text_complete(text: str, source_lang: str = "auto", target_lang: s
                     except Exception:
                         gtx_rescue = ""
                     if gtx_rescue and not _translation_needs_rescue(text_part, gtx_rescue):
+                        gtx_rescue = _dh.ensure_translation_terms_visible(
+                            text_part,
+                            gtx_rescue,
+                            term_glossary=export_term_glossary,
+                            target_lang=target_lang,
+                        )
+                        gtx_rescue = _dh.polish_translated_document_text(gtx_rescue) or gtx_rescue
                         rescue_ok, rescue_msg = _review_translation_piece(text_part, gtx_rescue)
                         if rescue_ok:
                             repaired = gtx_rescue
@@ -965,6 +971,13 @@ def translate_text_complete(text: str, source_lang: str = "auto", target_lang: s
                             logging.getLogger("magi.translate").debug("LLM repair failed: %s", _e)
                             llm_repair, llm_model = "", ""
                         if llm_repair and not _translation_needs_rescue(text_part, llm_repair):
+                            llm_repair = _dh.ensure_translation_terms_visible(
+                                text_part,
+                                llm_repair,
+                                term_glossary=export_term_glossary,
+                                target_lang=target_lang,
+                            )
+                            llm_repair = _dh.polish_translated_document_text(llm_repair) or llm_repair
                             repair_ok, repair_msg = _review_translation_piece(text_part, llm_repair)
                             if repair_ok:
                                 repaired = llm_repair

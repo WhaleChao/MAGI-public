@@ -1333,6 +1333,17 @@ def test_magi_web_markdown_replies_use_html_renderers():
     assert "alert(result.reply" not in osc_docs
 
 
+def test_nerv_dashboard_no_retired_user_facing_engine_labels():
+    """NERV 不應再顯示已退役的 OCR / Ollama 入口文字。"""
+    nerv = (ROOT / "templates" / "dashboard_nerv.html").read_text(encoding="utf-8")
+
+    assert "GLM-OCR-bf16" not in nerv
+    assert "oMLX:8082" not in nerv
+    assert "原 Ollama 位置" not in nerv
+    assert "macOS Vision" in nerv
+    assert "MAGI 內建入口" in nerv
+
+
 def test_paperclip_bound_buttons_and_data_actions_are_wired():
     """Paperclip 各頁籤按鈕要有 DOM 目標，data-act 要有 dispatch handler。"""
     html_sources = [

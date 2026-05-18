@@ -649,8 +649,11 @@ def handle_multimedia(orch, user_id, prompt, attachment) -> str:
             if summary_text:
                 _sl_label = {"short": "精簡", "long": "詳細"}.get(summary_length, "")
                 _sl_tag = f"{_sl_label}摘要" if _sl_label else "摘要"
-                term_block = f"{term_glossary}\n\n" if term_glossary else ""
-                export_body = f"{term_block}【{_sl_tag}（來源：{summary_source_label}）】\n{summary_text}\n\n【全文翻譯】\n{translated_text}".strip()
+                term_block = f"\n\n{term_glossary}" if term_glossary else ""
+                export_body = (
+                    f"【{_sl_tag}（來源：{summary_source_label}）】\n{summary_text}"
+                    f"{term_block}\n\n【全文翻譯】\n{translated_text}"
+                ).strip()
 
             if not disable_txt:
                 exported_reply = None

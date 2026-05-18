@@ -321,6 +321,7 @@ body::after {
 .route-row .engine { padding: 2px 6px; border-radius: 2px; font-size: 0.9em; white-space: nowrap; }
 .engine.omlx { color: #00ff41; border: 1px solid #00ff4133; }
 .engine.ollama { color: #ffcc00; border: 1px solid #ffcc0033; }
+.engine.native { color: #9be7ff; border: 1px solid #9be7ff33; }
 .engine.remote { color: #00aaff; border: 1px solid #00aaff33; }
 .engine.fallback { color: #ffcc88; border: 1px solid rgba(255, 204, 136, 0.28); }
 .route-row .model { color: #666; text-align: right; white-space: nowrap; }
@@ -1235,8 +1236,8 @@ body::after {
         <div class="routing-section">
           <div id="routing-table">
             <div class="route-row"><span class="task">摘要產生</span><span class="path"><span class="engine omlx">oMLX</span></span><span class="model">Gemma-4 26B</span></div>
-            <div class="route-row"><span class="task">影像辨識</span><span class="path"><span class="engine omlx">oMLX:8082</span></span><span class="model">GLM-OCR-bf16</span></div>
-            <div class="route-row"><span class="task">文字辨識 OCR</span><span class="path"><span class="engine omlx">oMLX:8082</span></span><span class="model">GLM-OCR-bf16</span></div>
+            <div class="route-row"><span class="task">影像辨識</span><span class="path"><span class="engine omlx">oMLX</span></span><span class="model">Gemma-4 視覺路由</span></div>
+            <div class="route-row"><span class="task">文字辨識 OCR</span><span class="path"><span class="engine native">macOS Vision</span></span><span class="model">系統 OCR</span></div>
             <div class="route-row"><span class="task">程式產生</span><span class="path"><span class="engine omlx">oMLX</span></span><span class="model">Gemma-4 26B</span></div>
             <div class="route-row"><span class="task">向量嵌入</span><span class="path"><span class="engine omlx">oMLX</span></span><span class="model">ModernBERT</span></div>
             <div class="route-row"><span class="task">意圖/通用</span><span class="path"><span class="engine omlx">oMLX</span></span><span class="model">Gemma-4 26B</span></div>
@@ -1746,7 +1747,7 @@ function renderEngineNodes(data) {
         <div class="engine-stack">
           <div class="engine-row-head">
             <span class="label">新增 SKILL</span>
-            <span class="meta">原 Ollama 位置</span>
+            <span class="meta">MAGI 內建入口</span>
           </div>
           <div class="engine-inline-status">一鍵開啟新技能草稿，並自動帶入撰寫範本。</div>
           <div class="skill-launcher-actions">
