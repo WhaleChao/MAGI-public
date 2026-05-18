@@ -126,13 +126,13 @@ python3 skills/magi-doctor/action.py --task diagnose  # 完整診斷
 
 ```bash
 ./venv/bin/python scripts/ops/run_test_suite.py --suite ci
-./venv/bin/python scripts/ops/run_test_suite.py --suite smoke50
+./venv/bin/python scripts/ops/run_test_suite.py --suite smoke62
 ./venv/bin/python scripts/ops/run_test_suite.py --suite production-live --json-out .runtime/production_live_latest.json
 ./venv/bin/python scripts/ops/run_test_suite.py --suite commercial-release --json-out .runtime/commercial_release_latest.json
 ./venv/bin/python scripts/public_release_audit.py --strict
 ```
 
-`smoke50` 是基本冒煙測試；`production-live` 與 `commercial-release` 才是交付他人使用前的 live 門檻。
+`smoke62` 是含商用守門的完整冒煙測試；`production-live` 與 `commercial-release` 才是交付他人使用前的 live 門檻。
 
 ### 查看 Logs
 

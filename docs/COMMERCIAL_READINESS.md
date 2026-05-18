@@ -25,7 +25,7 @@ Preferred single entrypoint:
 
 ```bash
 ./venv/bin/python scripts/ops/run_test_suite.py --suite ci
-./venv/bin/python scripts/ops/run_test_suite.py --suite smoke50
+./venv/bin/python scripts/ops/run_test_suite.py --suite smoke62
 ./venv/bin/python scripts/ops/run_test_suite.py --suite production-live --json-out .runtime/production_live_latest.json
 ./venv/bin/python scripts/ops/run_test_suite.py --suite commercial-release --json-out .runtime/commercial_release_latest.json
 ```
@@ -43,6 +43,12 @@ python3 scripts/first_run_setup.py --public --json
 python3 scripts/public_release_audit.py --public-isolation --strict
 python3 scripts/ops/commercial_readiness_live.py --strict-public --skip-db
 ```
+
+`commercial_readiness_live.py` also performs a cleanroom public installability
+check: it clones the committed checkout to a temporary directory, runs strict
+public isolation there, and runs the public customer install wizard in dry-run
+mode. This catches release-only problems that a configured developer machine
+could otherwise hide.
 
 For external customer onboarding, `scripts/customer_install_wizard.py` is the
 preferred entrypoint. It handles the repeatable chores automatically: local

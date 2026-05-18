@@ -22,8 +22,10 @@ import gzip
 import hashlib
 import json
 import os
+import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from dataclasses import dataclass, asdict
 from pathlib import Path
@@ -55,11 +57,17 @@ def _python() -> str:
     return sys.executable or "python3"
 
 
-def _run_json(cmd: list[str], *, timeout: int = 120, allow_nonzero: bool = False) -> tuple[bool, dict[str, Any], str, float]:
+def _run_json(
+    cmd: list[str],
+    *,
+    timeout: int = 120,
+    allow_nonzero: bool = False,
+    cwd: Path | None = None,
+) -> tuple[bool, dict[str, Any], str, float]:
     started = time.time()
     proc = subprocess.run(
         cmd,
-        cwd=MAGI_ROOT,
+        cwd=cwd or MAGI_ROOT,
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
@@ -125,6 +133,95 @@ def check_public_release_audit(py: str, *, strict: bool) -> Check:
     passed = bool(payload.get("ok"))
     detail = f"errors={payload.get('errors')} warnings={payload.get('warnings')}"
     return Check("public_release_audit", passed, "pass" if passed else "fail", detail, elapsed)
+
+
+def check_public_cleanroom_install(py: str) -> Check:
+    started = time.time()
+    head_proc = subprocess.run(
+        ["git", "rev-parse", "--short", "HEAD"],
+        cwd=MAGI_ROOT,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    head = (head_proc.stdout or "").strip() or "unknown"
+
+    tmp_root = Path(tempfile.mkdtemp(prefix="magi_public_cleanroom_"))
+    worktree = tmp_root / "MAGI-public-cleanroom"
+    try:
+        clone = subprocess.run(
+            ["git", "clone", "--local", "--no-hardlinks", "--quiet", str(MAGI_ROOT), str(worktree)],
+            cwd=MAGI_ROOT,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            timeout=180,
+            check=False,
+        )
+        if clone.returncode != 0:
+            return Check(
+                "public_cleanroom_install",
+                False,
+                "fail",
+                f"clone failed: {(clone.stdout or '')[-500:]}",
+                round(time.time() - started, 3),
+            )
+
+        ok, audit, raw, _elapsed = _run_json(
+            [
+                py,
+                "scripts/public_release_audit.py",
+                "--public-isolation",
+                "--strict",
+                "--json",
+            ],
+            timeout=180,
+            cwd=worktree,
+        )
+        if not ok or not audit.get("ok"):
+            detail = raw or json.dumps(audit, ensure_ascii=False)
+            return Check(
+                "public_cleanroom_install",
+                False,
+                "fail",
+                "cleanroom public audit failed: " + detail[-700:],
+                round(time.time() - started, 3),
+            )
+
+        output = worktree / ".runtime" / "customer_install_cleanroom_latest.json"
+        ok, wizard, raw, _elapsed = _run_json(
+            [
+                py,
+                "scripts/customer_install_wizard.py",
+                "--public",
+                "--no-live",
+                "--skip-readiness",
+                "--no-optional",
+                "--json",
+                "--output",
+                str(output),
+            ],
+            timeout=240,
+            cwd=worktree,
+        )
+        summary = wizard.get("summary") if isinstance(wizard.get("summary"), dict) else {}
+        passed = ok and bool(wizard.get("ok")) and int(summary.get("fail") or 0) == 0
+        detail = (
+            f"head={head} audit=errors:{audit.get('errors')} warnings:{audit.get('warnings')} "
+            f"wizard_status={wizard.get('status')} pass={summary.get('pass')} skipped={summary.get('skipped')}"
+        )
+        if not passed:
+            detail += " " + (raw or json.dumps(wizard, ensure_ascii=False))[-700:]
+        return Check(
+            "public_cleanroom_install",
+            passed,
+            "pass" if passed else "fail",
+            detail,
+            round(time.time() - started, 3),
+        )
+    finally:
+        shutil.rmtree(tmp_root, ignore_errors=True)
 
 
 def check_process_hygiene(py: str) -> Check:
@@ -260,6 +357,7 @@ def run_gate(*, json_out: Path, strict_public: bool, skip_backup: bool, skip_db:
         check_doctor(py),
         check_installer_dry_run(py),
         check_public_release_audit(py, strict=strict_public),
+        check_public_cleanroom_install(py),
         check_process_hygiene(py),
         check_resource_governor(py),
         check_model_live_gate(py),

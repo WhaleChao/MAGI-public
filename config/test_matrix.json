@@ -52,11 +52,11 @@
       ]
     },
     "smoke50": {
-      "description": "The 50-check MAGI full smoke gate. Requires the local MAGI services for full value.",
+      "description": "Backward-compatible alias for the MAGI full smoke gate; currently 62 checks with commercial release guards.",
       "checks": [
         {
-          "id": "smoke_test_full_50",
-          "name": "MAGI 50-check smoke",
+          "id": "smoke_test_full_current",
+          "name": "MAGI full smoke with commercial guards",
           "command": [
             "{python}",
             "scripts/ops/smoke_test_full.py",
@@ -64,6 +64,22 @@
             ".runtime/smoke_test_full_latest.json"
           ],
           "timeout_sec": 180
+        }
+      ]
+    },
+    "smoke62": {
+      "description": "MAGI full smoke gate with 62 checks, including commercial release and cleanroom install guards.",
+      "checks": [
+        {
+          "id": "smoke_test_full_62",
+          "name": "MAGI 62-check smoke",
+          "command": [
+            "{python}",
+            "scripts/ops/smoke_test_full.py",
+            "--json-out",
+            ".runtime/smoke_test_full_latest.json"
+          ],
+          "timeout_sec": 240
         }
       ]
     },
@@ -134,8 +150,8 @@
           "timeout_sec": 60
         },
         {
-          "id": "smoke50",
-          "name": "MAGI 50-check smoke",
+          "id": "smoke62",
+          "name": "MAGI 62-check smoke",
           "command": [
             "{python}",
             "scripts/ops/smoke_test_full.py",
@@ -251,8 +267,8 @@
           "timeout_sec": 600
         },
         {
-          "id": "smoke50",
-          "name": "MAGI 50-check smoke",
+          "id": "smoke62",
+          "name": "MAGI 62-check smoke",
           "command": [
             "{python}",
             "scripts/ops/smoke_test_full.py",

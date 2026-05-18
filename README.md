@@ -156,7 +156,7 @@ Recent hardening work is reflected in the public docs and live gates:
 - **Legal research**: the Taiwan legal MCP adapter is available as a practical-opinion source; misses are reported as misses rather than filled by the model.
 - **Legal AI delivery gates**: legal answers carry source/coverage review notes; summary, translation, and transcript outputs are blocked when they are too short, off-topic, failed, or leak tool reasoning.
 - **Office overview**: the web UI links cases, todos, LAF, pleading index, public-facing data, and business overview without duplicating the source modules.
-- **Operations**: smoke50, commercial live gates, public secret audit, disk low-water alarms, cache cleanup, NAS mount guards, and notification-routing checks are part of the release discipline.
+- **Operations**: the full smoke gate now includes commercial-release guards, clean public install checks, public secret audit, disk low-water alarms, cache cleanup, NAS mount guards, and notification-routing checks.
 
 Live acceptance is covered by `scripts/live_magi_mtp_eval.py`. The latest local verification exercised JSON routing, ReAct real tool calls, all ReAct tool-selection paths, tool-confusion guards, and hallucination abstention checks.
 

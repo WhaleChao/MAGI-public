@@ -12,17 +12,20 @@ Run suites through:
 ```bash
 ./venv/bin/python scripts/ops/run_test_suite.py --list
 ./venv/bin/python scripts/ops/run_test_suite.py --suite ci
-./venv/bin/python scripts/ops/run_test_suite.py --suite smoke50
+./venv/bin/python scripts/ops/run_test_suite.py --suite smoke62
 ./venv/bin/python scripts/ops/run_test_suite.py --suite production-live --json-out .runtime/production_live_latest.json
 ./venv/bin/python scripts/ops/run_test_suite.py --suite commercial-release --json-out .runtime/commercial_release_latest.json
 ```
 
-## What 50-Check Smoke Means
+## What Full Smoke Means
 
-`smoke50` proves that the production checkout has the main runtime organs
+`smoke62` proves that the production checkout has the main runtime organs
 online: Python, venv, config, DB, local services, inference, skills, channels,
 notifications, LAF/file-review modules, cron, security, release hygiene, model
-sidecars, NAS mount, and the judicial API pipeline.
+sidecars, NAS mount, judicial API pipeline, public-release isolation,
+cleanroom customer install dry-run, health-page unresolved issue state,
+knowledge quality, translation quality, tool hallucination gates, share
+gateway, admin server, and commercial readiness.
 
 It is not a complete proof that every workflow path has been exercised. It is a
 fast live gate that should run often.
@@ -33,12 +36,15 @@ fast live gate that should run often.
 : Public-safe fast checks for every push. This must not require private
 credentials, NAS mounts, or live portals.
 
+`smoke62`
+: Local full smoke with commercial-release guards. Run after code changes and after restarts.
+
 `smoke50`
-: Local full smoke. Run after code changes and after restarts.
+: Backward-compatible alias for the same full smoke gate.
 
 `production-live`
 : Real production-machine live validation. It runs doctor, judicial pipeline,
-self-repair dry-run, smoke50, business modules, and commercial readiness.
+self-repair dry-run, smoke62, business modules, and commercial readiness.
 
 `commercial-release`
 : Release gate before sharing a build or selling service. It adds strict public
@@ -49,7 +55,7 @@ audit, channel smoke, heavy route checks, and skill real-world smoke.
 A MAGI build can be called "live verified" only when:
 
 - `ci` passes on GitHub.
-- `smoke50` passes on the target machine.
+- `smoke62` passes on the target machine.
 - `production-live` passes on the target machine.
 - For public/commercial releases, `commercial-release` also passes.
 - The JSON output is saved in `.runtime/` or attached to the release note.
@@ -70,7 +76,7 @@ Each check should answer one concrete question, for example:
 
 ## Current Known Boundary
 
-Some workflows are intentionally not run by `smoke50` because they are slow,
+Some workflows are intentionally not run by `smoke62` because they are slow,
 destructive, or need human approval: real portal submissions, DB restore,
 bulk NAS moves, calendar writes, and customer-facing message sends. Those
 belong in `production-live` or a dedicated supervised suite with explicit

@@ -906,6 +906,25 @@ def test_admin_server_health():
     return ok, f"HTTP {code}"
 
 
+def test_commercial_readiness_release_gate():
+    ok, data, tail = _run_json_script(
+        [
+            sys.executable,
+            "scripts/ops/commercial_readiness_live.py",
+            "--strict-public",
+            "--skip-backup",
+            "--json-out",
+            ".runtime/smoke_commercial_readiness_latest.json",
+        ],
+        timeout=420,
+    )
+    if not ok:
+        return False, tail
+    summary = data.get("summary") if isinstance(data.get("summary"), dict) else {}
+    passed = bool(data.get("ok")) and int(summary.get("fail") or 0) == 0
+    return passed, f"summary={summary}"
+
+
 # ══════════════════════════════════════════════════════════════
 # MAIN
 # ══════════════════════════════════════════════════════════════
@@ -1068,6 +1087,7 @@ def main():
         run_test("Tool hallucination latest clean", "commercial", test_tool_hallucination_latest_clean)
         run_test("Share gateway health", "commercial", test_share_gateway_health)
         run_test("Admin server health", "commercial", test_admin_server_health)
+        run_test("Commercial readiness release gate", "commercial", test_commercial_readiness_release_gate)
         print()
 
     # ── Cleanup ──
