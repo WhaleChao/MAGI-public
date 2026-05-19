@@ -15,6 +15,8 @@ from dataclasses import asdict, dataclass, field
 import json
 import os
 import platform
+import re
+import secrets
 import shutil
 import subprocess
 import sys
@@ -25,6 +27,7 @@ from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_REPORT = REPO_ROOT / ".runtime" / "runtime_bootstrap_latest.json"
+ENV_AUTOGEN_HEADER = "# ── MAGI 安裝精靈自動偵測設定（可手動調整）────────────────"
 
 OMLX_MODEL_SOURCES = {
     "gemma-4-e4b-it-4bit": "mlx-community/gemma-4-e4b-it-4bit",
@@ -35,6 +38,36 @@ OMLX_MODEL_SOURCES = {
 }
 
 OLLAMA_EMBED_MODEL = "nomic-embed-text"
+
+ENV_OVERWRITE_KEYS = {
+    "INFERENCE_LOCAL_CHAT_MODELS",
+    "INFERENCE_LOCAL_OLLAMA_BASE",
+    "MAGI_DEFAULT_MODEL",
+    "MAGI_INFERENCE_PROVIDER",
+    "MAGI_INSTALLER_PROFILE_MACHINE",
+    "MAGI_INSTALLER_PROFILE_OS",
+    "MAGI_INSTALLER_UPDATED_AT",
+    "MAGI_MAIN_MODEL",
+    "MAGI_MARIADB_BIN",
+    "MAGI_OMLX_EMBED_MODEL",
+    "MAGI_OMLX_ENABLED",
+    "MAGI_OMLX_HOST",
+    "MAGI_OMLX_PORT",
+    "MAGI_SKILL_PYTHON",
+    "MAGI_TAILSCALE_BIN",
+    "MAGI_TAILSCALE_ENABLED",
+    "MAGI_TEXT_HEAVY_MODEL",
+    "MAGI_TEXT_PRIMARY_MODEL",
+    "OLLAMA_BASE_URL",
+    "OLLAMA_MODEL",
+    "OLLAMA_PORT",
+    "OMLX_API_KEY",
+    "OMLX_BASE_URL",
+    "OMLX_MODEL",
+    "OMLX_TEXT_MODEL_DIR",
+    "OMLX_TEXT_PORT",
+    "OMLX_TEXT_START_SCRIPT",
+}
 
 
 @dataclass(frozen=True)
@@ -646,20 +679,270 @@ def _write_report(path: Path, payload: dict[str, Any]) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
+def _env_is_placeholder(value: str) -> bool:
+    text = str(value or "").strip().strip('"').strip("'")
+    if not text:
+        return True
+    lowered = text.lower()
+    return (
+        text.startswith("<")
+        or text.endswith(">")
+        or "replace_with" in lowered
+        or "your-" in lowered
+        or "remote-db-ip" in lowered
+        or text in {"changeme", "replace-me", "random-hex-string"}
+    )
+
+
+def _env_quote(value: str) -> str:
+    text = str(value)
+    if not text:
+        return ""
+    if re.search(r"\s|#|'|\"", text):
+        return json.dumps(text, ensure_ascii=False)
+    return text
+
+
+def _env_line_value(line: str) -> tuple[str, str] | None:
+    stripped = line.strip()
+    if not stripped or stripped.startswith("#") or "=" not in stripped:
+        return None
+    key, value = stripped.split("=", 1)
+    key = key.strip()
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key):
+        return None
+    return key, value.strip()
+
+
+def _seed_env_from_example(repo_dir: Path, env_path: Path) -> bool:
+    example = repo_dir / ".env.example"
+    if not example.is_file():
+        return False
+    text = example.read_text(encoding="utf-8")
+    replacements = {
+        "FLASK_SECRET_KEY=<random-hex-string>": f"FLASK_SECRET_KEY={secrets.token_hex(32)}",
+        "MAGI_API_KEY=<random-hex-string>": f"MAGI_API_KEY={secrets.token_hex(32)}",
+        "MAGI_ROOT_DIR=/path/to/MAGI_v2": f"MAGI_ROOT_DIR={repo_dir}",
+        "MAGI_SKILL_PYTHON=/path/to/MAGI_v2/.venv/bin/python": f"MAGI_SKILL_PYTHON={venv_python(repo_dir)}",
+    }
+    for old, new in replacements.items():
+        text = text.replace(old, new)
+    env_path.write_text(text, encoding="utf-8")
+    return True
+
+
+def _default_binary_candidate(name: str) -> str:
+    system = platform.system()
+    if system == "Darwin":
+        for prefix in ("/opt/homebrew/bin", "/usr/local/bin"):
+            candidate = Path(prefix) / name
+            if candidate.exists():
+                return str(candidate)
+    if system == "Windows":
+        candidates = {
+            "mariadb": [
+                r"C:\Program Files\MariaDB\bin\mariadb.exe",
+                r"C:\Program Files\MariaDB\bin\mysql.exe",
+            ],
+            "mysql": [
+                r"C:\Program Files\MariaDB\bin\mysql.exe",
+                r"C:\Program Files\MySQL\MySQL Server 8.0\bin\mysql.exe",
+            ],
+            "tailscale": [r"C:\Program Files\Tailscale\tailscale.exe"],
+            "ollama": [r"C:\Users\Public\AppData\Local\Programs\Ollama\ollama.exe"],
+        }
+        for candidate in candidates.get(name, []):
+            if Path(candidate).exists():
+                return candidate
+    return ""
+
+
+def build_env_updates(plan: RuntimePlan, *, profile: HardwareProfile, repo_dir: Path) -> dict[str, str]:
+    python = venv_python(repo_dir)
+    local_chat_models = [plan.primary_model]
+    if plan.heavy_model:
+        local_chat_models.append(plan.heavy_model)
+    updates: dict[str, str] = {
+        "MAGI_ROOT_DIR": str(repo_dir),
+        "MAGI_SKILL_PYTHON": python,
+        "MAGI_INSTALLER_PROFILE_OS": profile.os_name,
+        "MAGI_INSTALLER_PROFILE_MACHINE": profile.machine,
+        "MAGI_INSTALLER_UPDATED_AT": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "DB_HOST": "127.0.0.1",
+        "MAGI_LOCAL_DB_HOST": "127.0.0.1",
+        "MAGI_LOCAL_DB_PORT": "3306",
+        "OSC_DB_HOST": "127.0.0.1",
+        "OSC_DB_PORT": "3306",
+        "OSC_DB_NAME": "law_firm_data",
+        "INFERENCE_LOCAL_CHAT_MODELS": ",".join(local_chat_models),
+        "MAGI_DEFAULT_MODEL": plan.primary_model,
+        "MAGI_TEXT_PRIMARY_MODEL": plan.primary_model,
+        **plan.env,
+    }
+    if plan.heavy_model:
+        updates["MAGI_TEXT_HEAVY_MODEL"] = plan.heavy_model
+
+    mariadb_bin = _which_any(("mariadb", "mysql")) or _default_binary_candidate("mariadb") or _default_binary_candidate("mysql")
+    if mariadb_bin:
+        updates["MAGI_MARIADB_BIN"] = mariadb_bin
+
+    tailscale_bin = _which_any(("tailscale",)) or _default_binary_candidate("tailscale")
+    if tailscale_bin:
+        updates["MAGI_TAILSCALE_BIN"] = tailscale_bin
+        updates["MAGI_TAILSCALE_ENABLED"] = "1"
+    else:
+        updates["MAGI_TAILSCALE_ENABLED"] = "0"
+
+    if plan.provider == "omlx":
+        start_script = Path.home() / "Library" / "Application Support" / "MAGI" / "bin" / "omlx-magi-start-text"
+        updates.update(
+            {
+                "MAGI_OMLX_ENABLED": "1",
+                "MAGI_OMLX_HOST": "127.0.0.1",
+                "MAGI_OMLX_PORT": "8080",
+                "OMLX_BASE_URL": "http://127.0.0.1:8080/v1",
+                "OMLX_API_KEY": "omlx-local",
+                "OMLX_MODEL": plan.primary_model,
+                "OMLX_TEXT_MODEL_DIR": str(Path.home() / ".omlx" / "models-text"),
+                "OMLX_TEXT_PORT": "8080",
+                "OMLX_TEXT_START_SCRIPT": str(start_script),
+                "INFERENCE_LOCAL_OLLAMA_BASE": "http://127.0.0.1:8080",
+            }
+        )
+    else:
+        updates.update(
+            {
+                "OLLAMA_BASE_URL": "http://127.0.0.1:11434",
+                "OLLAMA_MODEL": plan.primary_model,
+                "OLLAMA_PORT": "11434",
+                "MAGI_MAIN_MODEL": plan.primary_model,
+                "INFERENCE_LOCAL_OLLAMA_BASE": "http://127.0.0.1:11434",
+            }
+        )
+    return {key: value for key, value in updates.items() if value is not None}
+
+
+def write_env_updates(
+    repo_dir: Path,
+    updates: dict[str, str],
+    *,
+    execute: bool,
+    no_write_env: bool = False,
+) -> dict[str, Any]:
+    env_path = repo_dir / ".env"
+    result: dict[str, Any] = {
+        "path": str(env_path),
+        "planned_keys": sorted(updates),
+        "updated_keys": [],
+        "preserved_keys": [],
+        "created": False,
+        "written": False,
+        "skipped": False,
+    }
+    if no_write_env:
+        result["skipped"] = True
+        result["reason"] = "disabled_by_option"
+        return result
+    if not execute:
+        result["skipped"] = True
+        result["reason"] = "dry_run"
+        return result
+
+    repo_dir.mkdir(parents=True, exist_ok=True)
+    if not env_path.exists():
+        result["created"] = _seed_env_from_example(repo_dir, env_path)
+        if not result["created"]:
+            env_path.write_text("", encoding="utf-8")
+            result["created"] = True
+
+    lines = env_path.read_text(encoding="utf-8").splitlines()
+    seen: set[str] = set()
+    next_lines: list[str] = []
+    updated_keys: list[str] = []
+    preserved_keys: list[str] = []
+
+    for line in lines:
+        parsed = _env_line_value(line)
+        if parsed is None:
+            next_lines.append(line)
+            continue
+        key, existing = parsed
+        if key not in updates:
+            next_lines.append(line)
+            continue
+        seen.add(key)
+        if key in ENV_OVERWRITE_KEYS or _env_is_placeholder(existing):
+            next_lines.append(f"{key}={_env_quote(updates[key])}")
+            updated_keys.append(key)
+        else:
+            next_lines.append(line)
+            preserved_keys.append(key)
+
+    missing = [key for key in updates if key not in seen]
+    if missing:
+        if next_lines and next_lines[-1].strip():
+            next_lines.append("")
+        next_lines.append(ENV_AUTOGEN_HEADER)
+        for key in sorted(missing):
+            next_lines.append(f"{key}={_env_quote(updates[key])}")
+            updated_keys.append(key)
+
+    env_path.write_text("\n".join(next_lines).rstrip() + "\n", encoding="utf-8")
+    result["updated_keys"] = sorted(set(updated_keys))
+    result["preserved_keys"] = sorted(set(preserved_keys))
+    result["written"] = True
+    return result
+
+
+def _env_step_from_result(result: dict[str, Any]) -> BootstrapStep:
+    if result.get("skipped"):
+        reason = str(result.get("reason") or "skipped")
+        return _step_skipped(
+            "env_import",
+            "匯入外部套件設定到 .env",
+            reason,
+            next_action="正式安裝請不要使用 --dry-run，或移除 --no-write-env。",
+        )
+    updated = result.get("updated_keys") or []
+    preserved = result.get("preserved_keys") or []
+    detail = f"updated {len(updated)} keys"
+    if result.get("created"):
+        detail += "; created .env"
+    if preserved:
+        detail += f"; preserved {len(preserved)} existing values"
+    return BootstrapStep(
+        "env_import",
+        "匯入外部套件設定到 .env",
+        "pass",
+        detail,
+        required=True,
+        next_action="只需補齊資料庫密碼、OAuth/token、NAS 帳密等敏感設定；安裝精靈不會自動猜測或輸出這些值。",
+    )
+
+
 def build_payload(args: argparse.Namespace) -> dict[str, Any]:
     repo_dir = args.repo_dir.resolve()
     profile = detect_hardware()
     plan = select_runtime_plan(profile, force_provider=args.provider, include_heavy=args.include_heavy)
+    execute = bool(args.yes and not args.dry_run)
     steps = build_steps(
         plan,
         profile=profile,
         repo_dir=repo_dir,
-        execute=bool(args.yes and not args.dry_run),
+        execute=execute,
         allow_system_install=bool(args.allow_system_install),
         download_models=bool(args.download_models),
         install_services=bool(args.install_services),
         install_utilities=not bool(getattr(args, "skip_utilities", False)),
     )
+    env_updates = build_env_updates(plan, profile=profile, repo_dir=repo_dir)
+    env_result = write_env_updates(
+        repo_dir,
+        env_updates,
+        execute=execute,
+        no_write_env=bool(getattr(args, "no_write_env", False)),
+    )
+    steps.append(_env_step_from_result(env_result))
     summary = _summary(steps)
     ok = summary["fail"] == 0
     status = "pass" if ok and summary["warn"] == 0 else ("warn" if ok else "fail")
@@ -671,11 +954,12 @@ def build_payload(args: argparse.Namespace) -> dict[str, Any]:
         "repo_dir": str(repo_dir),
         "profile": asdict(profile),
         "plan": asdict(plan),
+        "env_import": env_result,
         "summary": summary,
         "steps": [asdict(step) for step in steps],
         "next_steps": [
             "Run with --yes --allow-system-install --download-models to let MAGI install MariaDB/Tailscale, model runtime dependencies, and models.",
-            "After .env is complete, run scripts/magi_doctor.py --json and scripts/ops/commercial_readiness_live.py --strict-public.",
+            "After sensitive .env values are complete, run scripts/magi_doctor.py --json and scripts/ops/commercial_readiness_live.py --strict-public.",
         ],
     }
 
@@ -691,6 +975,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--skip-utilities", action="store_true", help="skip MariaDB/Tailscale helper installation checks")
     parser.add_argument("--include-heavy", action="store_true", help="also download heavy model even if RAM is below the automatic threshold")
     parser.add_argument("--install-services", action="store_true", help="install local runtime services after model download")
+    parser.add_argument("--no-write-env", action="store_true", help="do not merge detected runtime and utility settings into .env")
     parser.add_argument("--json", action="store_true", help="print JSON")
     parser.add_argument("--output", "--json-out", type=Path, default=DEFAULT_REPORT, help="write JSON report here")
     return parser.parse_args(argv)

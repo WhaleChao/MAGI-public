@@ -100,6 +100,80 @@ def test_runtime_bootstrap_plans_mariadb_and_tailscale_when_missing(tmp_path, mo
     assert steps["utility:tailscale"]["command"] == ["/opt/homebrew/bin/brew", "install", "--cask", "tailscale"]
 
 
+def test_runtime_bootstrap_installs_detected_utility_settings_into_env(tmp_path, monkeypatch):
+    profile = bootstrap.HardwareProfile(
+        os_name="Darwin",
+        machine="arm64",
+        cpu_brand="Apple M4",
+        memory_gb=24,
+        free_disk_gb=100,
+        is_apple_silicon=True,
+    )
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(bootstrap, "detect_hardware", lambda: profile)
+
+    def fake_which(name: str) -> str:
+        found = {
+            "mariadb": "/opt/homebrew/bin/mariadb",
+            "tailscale": "/Applications/Tailscale.app/Contents/MacOS/Tailscale",
+            "omlx": "/opt/homebrew/bin/omlx",
+        }
+        return found.get(name, "")
+
+    monkeypatch.setattr(bootstrap, "_which", fake_which)
+    (tmp_path / ".env").write_text(
+        "\n".join(
+            [
+                "DB_PASSWORD=customer-secret",
+                "OSC_DB_HOST=<remote-db-ip>",
+                "MAGI_DEFAULT_MODEL=taide-12b",
+                "MAGI_TEXT_PRIMARY_MODEL=old-model",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    out = tmp_path / "runtime.json"
+
+    rc = bootstrap.main(["--repo-dir", str(tmp_path), "--yes", "--json", "--output", str(out)])
+
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    env_text = (tmp_path / ".env").read_text(encoding="utf-8")
+    assert rc == 0
+    assert payload["env_import"]["written"] is True
+    assert "DB_PASSWORD=customer-secret" in env_text
+    assert "OSC_DB_HOST=127.0.0.1" in env_text
+    assert "MAGI_INFERENCE_PROVIDER=omlx" in env_text
+    assert "MAGI_MARIADB_BIN=/opt/homebrew/bin/mariadb" in env_text
+    assert "MAGI_TAILSCALE_BIN=/Applications/Tailscale.app/Contents/MacOS/Tailscale" in env_text
+    assert "MAGI_DEFAULT_MODEL=gemma-4-e4b-it-4bit" in env_text
+    assert "MAGI_TEXT_PRIMARY_MODEL=gemma-4-e4b-it-4bit" in env_text
+
+
+def test_runtime_bootstrap_dry_run_does_not_write_env(tmp_path, monkeypatch):
+    profile = bootstrap.HardwareProfile(
+        os_name="Windows",
+        machine="AMD64",
+        cpu_brand="x64",
+        memory_gb=32,
+        free_disk_gb=100,
+        is_apple_silicon=False,
+    )
+    monkeypatch.setattr(bootstrap, "detect_hardware", lambda: profile)
+    monkeypatch.setattr(bootstrap, "_which", lambda name: "")
+    env_path = tmp_path / ".env"
+    env_path.write_text("MAGI_DEFAULT_MODEL=keep-me\n", encoding="utf-8")
+    out = tmp_path / "runtime.json"
+
+    rc = bootstrap.main(["--repo-dir", str(tmp_path), "--dry-run", "--json", "--output", str(out)])
+
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    assert rc == 0
+    assert payload["env_import"]["skipped"] is True
+    assert payload["env_import"]["reason"] == "dry_run"
+    assert env_path.read_text(encoding="utf-8") == "MAGI_DEFAULT_MODEL=keep-me\n"
+
+
 def test_launcher_extract_release_archive_strips_top_level_and_blocks_traversal(tmp_path):
     archive = tmp_path / "MAGI-release.zip"
     with zipfile.ZipFile(archive, "w") as zf:

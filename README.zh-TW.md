@@ -110,7 +110,7 @@ python3 scripts/magi_doctor.py --json
 python3 scripts/install_magi.py --dry-run --check-live
 ```
 
-`customer_install_wizard.py` 是外部客戶的一鍵安裝入口：會建立本機 `.env`、產生本機 secret、在加上 `--yes` 時安裝 Python 依賴、建立本機排程設定、執行偵測與商用檢查，並寫出 `.runtime/customer_install_wizard_latest.json`，且不會列印 token 或密碼。DMG/EXE 啟動器接著會執行 `runtime_bootstrap.py`，在客戶允許系統套件安裝時協助安裝 MariaDB、Tailscale、oMLX/Ollama 與本地模型。`first_run_setup.py` 則保留為較細的 checklist 工具。`public_release_audit.py` 會阻擋高可信度 secret 與被追蹤的私有路徑；公開推送前請加上 `--public-isolation`，一併阻擋私有實務見解來源整合、私人信箱/NAS 標記與私有 runtime JSON。正式發布與商用部署請使用 `--strict`；發布分支預期應通過 `0 errors / 0 warnings`。
+`customer_install_wizard.py` 是外部客戶的一鍵安裝入口：會建立本機 `.env`、產生本機 secret、在加上 `--yes` 時安裝 Python 依賴、建立本機排程設定、執行偵測與商用檢查，並寫出 `.runtime/customer_install_wizard_latest.json`，且不會列印 token 或密碼。DMG/EXE 啟動器接著會執行 `runtime_bootstrap.py`，在客戶允許系統套件安裝時協助安裝 MariaDB、Tailscale、oMLX/Ollama 與本地模型；偵測完成後，會把非敏感的外部套件與模型設定安全合併回 `.env`（資料庫主機/連接埠、執行檔路徑、模型後端、模型名稱、本機推論網址），並保留既有密碼、token 與使用者自行填寫的值。`first_run_setup.py` 則保留為較細的 checklist 工具。`public_release_audit.py` 會阻擋高可信度 secret 與被追蹤的私有路徑；公開推送前請加上 `--public-isolation`，一併阻擋私有實務見解來源整合、私人信箱/NAS 標記與私有 runtime JSON。正式發布與商用部署請使用 `--strict`；發布分支預期應通過 `0 errors / 0 warnings`。
 
 公開或交付他人使用前，請把以下檢查視為 go/no-go 門檻：
 
