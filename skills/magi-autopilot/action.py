@@ -581,7 +581,7 @@ def _append_jsonl(path: str, obj: Dict[str, Any]) -> None:
 
 def _queue_gcal_oauth_defer(run_dir: str, *, limit: int, parsed: Optional[dict]) -> str:
     """
-    OAuth 未就緒時，將 gcal_sync 延後記錄到佇列，避免 nightly 報錯中斷判讀。
+    OAuth 未就緒時，將 gcal_sync 延後記錄到序列，避免 nightly 報錯中斷判讀。
     """
     item = {
         "ts": datetime.now().isoformat(),
@@ -696,7 +696,7 @@ def _blocker_sig(blockers: list) -> str:
     產生「穩定」的 blockers 簽章，避免因為 stderr/細節字串變動導致每 2 小時都被視為不同事件而洗版。
     規則：
     - 盡量只保留「步驟: 類型」(例如 file_review_preview: reauth_required)
-    - 對 OSC 佇列類訊息，去除數字差異（只保留 pending 狀態）
+    - 對 OSC 序列類訊息，去除數字差異（只保留 pending 狀態）
     - 對 OAuth/權限/驗證碼類，抽出固定 kind
     """
     items = []
@@ -706,8 +706,8 @@ def _blocker_sig(blockers: list) -> str:
             continue
         sl = s.lower()
 
-        # OSC queue: remove variable counts
-        if "osc" in sl and ("佇列" in s or "pending" in sl):
+        # OSC pending sequence: remove variable counts
+        if "osc" in sl and ("序列" in s or "pending" in sl):
             items.append("osc_queue: pending")
             continue
 
@@ -1009,6 +1009,25 @@ def _cmd_timed_out(res: Optional[CmdResult]) -> bool:
 
 def _skill_action(skill: str) -> str:
     return os.path.join(SKILLS_DIR, skill, "action.py")
+
+
+def _cron_job_enabled(job_id: str) -> bool:
+    """Return True when cron_jobs.json has an enabled job with this id."""
+    try:
+        cron_path = os.path.join(MAGI_ROOT_DIR, "cron_jobs.json")
+        with open(cron_path, "r", encoding="utf-8") as fh:
+            jobs = json.load(fh)
+        if not isinstance(jobs, list):
+            return False
+        for job in jobs:
+            if not isinstance(job, dict):
+                continue
+            if str(job.get("id") or "").strip() != job_id:
+                continue
+            return bool(job.get("enabled", True))
+    except Exception:
+        logging.getLogger(__name__).debug("cron job lookup failed: %s", job_id, exc_info=True)
+    return False
 
 
 def _stash_cmd_output(run_dir: str, step: str, cmd: list, res: CmdResult) -> None:
@@ -1622,7 +1641,7 @@ def _format_judicial_api_pipeline_lines(pipeline: Any) -> list[str]:
     reasons = list(pipeline.get("reasons") or [])[:3]
     error = str(pipeline.get("error") or "").strip()
 
-    lines = ["司法院 API 狀態：", f"- 狀態：{status}"]
+    lines = ["司法院裁判資料狀態：", f"- 狀態：{status}"]
 
     cred_sources = [str(x).strip() for x in (credentials.get("sources") or []) if str(x).strip()]
     if credentials:
@@ -1634,28 +1653,28 @@ def _format_judicial_api_pipeline_lines(pipeline: Any) -> list[str]:
     pull_ts = str(pull.get("latest_ts") or "").strip()
     pull_age = pull.get("latest_age_hours")
     if pull_ts or latest_pull:
-        pull_line = f"- 夜拉：{pull_ts or '無成功紀錄'}"
+        pull_line = f"- 夜間拉取：{pull_ts or '無成功紀錄'}"
         if pull_age is not None:
             pull_line += f"（{pull_age}h 前）"
         if latest_pull:
             pull_line += (
-                f" / fetched={latest_pull.get('fetched', '-')}"
-                f" / failed={latest_pull.get('failed', '-')}"
-                f" / skipped={latest_pull.get('skipped', '-')}"
+                f" / 新抓={latest_pull.get('fetched', '-')}"
+                f" / 失敗={latest_pull.get('failed', '-')}"
+                f" / 略過={latest_pull.get('skipped', '-')}"
             )
         cred_source = str(pull.get("credentials_source") or "").strip()
         if cred_source:
-            pull_line += f" / creds={cred_source}"
+            pull_line += f" / 帳密來源={cred_source}"
         lines.append(pull_line)
 
     proc_ts = str(process.get("updated_at") or "").strip()
     proc_age = process.get("updated_age_hours")
     if proc_ts or process:
-        proc_line = f"- 晨整：{proc_ts or '無狀態檔'}"
+        proc_line = f"- 晨間整理：{proc_ts or '無狀態檔'}"
         if proc_age is not None:
             proc_line += f"（{proc_age}h 前）"
         if process.get("processed_entries") is not None:
-            proc_line += f" / processed={process.get('processed_entries', '-')}"
+            proc_line += f" / 已整理={process.get('processed_entries', '-')}"
         lines.append(proc_line)
 
     raw_total = backlog.get("raw_total")
@@ -1663,7 +1682,7 @@ def _format_judicial_api_pipeline_lines(pipeline: Any) -> list[str]:
     oldest_pending = backlog.get("oldest_backlog_age_hours")
     if raw_total is not None or pending is not None:
         headline = str(backlog_interpretation.get("headline") or "").strip()
-        backlog_line = f"- Backlog：pending={pending if pending is not None else '-'} / raw_total={raw_total if raw_total is not None else '-'}"
+        backlog_line = f"- 待整理量：待整理={pending if pending is not None else '-'} / 資料檔總數={raw_total if raw_total is not None else '-'}"
         if oldest_pending is not None:
             backlog_line += f" / 最老約 {oldest_pending}h"
         if headline:
@@ -1676,17 +1695,21 @@ def _format_judicial_api_pipeline_lines(pipeline: Any) -> list[str]:
     normalized_count = normalized.get("count")
     normalized_ts = str(normalized.get("latest_at") or "").strip()
     if normalized_count is not None:
-        norm_line = f"- Normalized：{normalized_count} 份"
+        norm_line = f"- 已轉換文字檔：{normalized_count} 份"
         if normalized_ts:
-            norm_line += f" / latest={normalized_ts}"
+            norm_line += f" / 最新={normalized_ts}"
         lines.append(norm_line)
 
     for item in reasons:
         lines.append(f"- 摘要：{item}")
 
-    pending_examples = [str(x).strip() for x in (backlog.get("pending_examples") or []) if str(x).strip()]
+    pending_examples = [
+        str(x).strip().replace("raw/", "資料檔/")
+        for x in (backlog.get("pending_examples") or [])
+        if str(x).strip()
+    ]
     if pending_examples:
-        lines.append(f"- 待處理示例：{'; '.join(pending_examples[:3])}")
+        lines.append(f"- 待整理資料檔示例：{'; '.join(pending_examples[:3])}")
     if error:
         lines.append(f"- 附註：{error}")
     return lines
@@ -3235,7 +3258,7 @@ def run_tick(run_dir: str, *, emit_step_events: bool = True) -> Dict[str, Any]:
                 results["blocked"] = True
                 results["blockers"].append("Big Brain 健康探測失敗（分散式與備援皆不穩）")
 
-    # 0.8) 司法院 API 夜間拉取 — 已移至 run_nightly() 中以獨立執行緒在 00:00 準時啟動，不佔 tick 流程
+    # 0.8) 司法院裁判資料夜間拉取 — 已移至 run_nightly() 中以獨立執行緒在 00:00 準時啟動，不佔 tick 流程
 
     # 1) LAF one-shot (email + download + archive)
     # Changed to async background to avoid Head-of-Line Blocking
@@ -3630,7 +3653,7 @@ def run_tick(run_dir: str, *, emit_step_events: bool = True) -> Dict[str, Any]:
         if remaining_blocking > 0:
             results["blocked"] = True
             results["blockers"].append(
-                f"OSC 待辦佇列尚有 {remaining_blocking} 筆需人工判斷（共 {remaining_total} 筆未入庫；可能是案號歧義）"
+                f"OSC 待辦序列尚有 {remaining_blocking} 筆需人工判斷（共 {remaining_total} 筆未入庫；可能是案號歧義）"
             )
 
     # "ok" means: no human intervention needed (blockers empty).
@@ -3662,7 +3685,9 @@ def run_nightly(run_dir: str) -> Dict[str, Any]:
     os.environ.setdefault("MAGI_TRANSCRIPT_CAPTCHA_COOLDOWN_ENABLE", "1")
     os.environ.setdefault("MAGI_TRANSCRIPT_CAPTCHA_COOLDOWN_MINUTES", "180")
     os.environ.setdefault("MAGI_ENABLE_JUDGMENT_CRAWL", "1")
-    os.environ.setdefault("MAGI_ENABLE_JUDICIAL_API_NIGHT_PULL", "1")
+    judicial_api_cron_handles_night_pull = _cron_job_enabled("job_judicial_api_night_pull")
+    if "MAGI_ENABLE_JUDICIAL_API_NIGHT_PULL" not in os.environ:
+        os.environ["MAGI_ENABLE_JUDICIAL_API_NIGHT_PULL"] = "0" if judicial_api_cron_handles_night_pull else "1"
     os.environ.setdefault("MAGI_ENABLE_SCAN_FOLDER", "1")
     os.environ.setdefault("MAGI_ENABLE_DB_BIDIR_SYNC", "0")
     os.environ.setdefault("MAGI_ENABLE_DB_DAILY_BACKUP", "1")
@@ -3727,9 +3752,13 @@ def run_nightly(run_dir: str) -> Dict[str, Any]:
         }
         logger.info("nightly: PDF 視覺訓練完成 ok=%s", _pdf_train_res.ok)
 
-    # ── Phase 1: 司法院 API 夜間拉取 — 獨立執行緒，等到 00:00 準時啟動 ──
-    # 司法院 API 是純 HTTP（data.judicial.gov.tw），完全不用 oMLX，可與其他任務並行。
-    _jdg_thread_result: Dict[str, Any] = {"ok": False, "skipped": True}
+    # ── Phase 1: 司法院裁判資料夜間拉取 — 獨立執行緒，等到 00:00 準時啟動 ──
+    # 司法院裁判資料介接是純 HTTP（data.judicial.gov.tw），完全不用 oMLX，可與其他任務並行。
+    _jdg_thread_result: Dict[str, Any] = {
+        "ok": True if judicial_api_cron_handles_night_pull else False,
+        "skipped": True,
+        "reason": "handled_by_cron_job_judicial_api_night_pull" if judicial_api_cron_handles_night_pull else "",
+    }
     _jdg_thread_done = _thr.Event()
     jc_path = _skill_action("judgment-collector")
     jdg_night_enabled = os.environ.get("MAGI_ENABLE_JUDICIAL_API_NIGHT_PULL", "1").strip().lower() in {"1", "true", "yes", "on"}
@@ -3785,9 +3814,17 @@ def run_nightly(run_dir: str) -> Dict[str, Any]:
     if os.path.exists(jc_path) and jdg_night_enabled:
         _jdg_thread = _thr.Thread(target=_judicial_api_night_thread, name="judicial_api_night", daemon=True)
         _jdg_thread.start()
-        logger.info("nightly: 司法院 API 執行緒已啟動，將在 00:00 準時開始拉取")
+        logger.info("nightly: 司法院裁判資料夜間拉取已啟動，將在 00:00 準時開始")
     else:
-        _jdg_thread_result = {"ok": True, "skipped": True, "reason": "disabled or script not found"}
+        _jdg_thread_result = {
+            "ok": True,
+            "skipped": True,
+            "reason": (
+                "handled_by_cron_job_judicial_api_night_pull"
+                if judicial_api_cron_handles_night_pull
+                else "disabled or script not found"
+            ),
+        }
         _jdg_thread_done.set()
 
     # ── Phase 2: 主流程（run_tick 中的各項任務照常執行）──
@@ -3806,10 +3843,18 @@ def run_nightly(run_dir: str) -> Dict[str, Any]:
     # 寫入 PDF 視覺訓練結果
     results["steps"]["pdf_nightly_train"] = _pdf_train_result
 
-    # 等待司法院 API 執行緒完成（最多再等 30 分鐘）
+    # 等待司法院裁判資料夜間拉取完成（最多再等 30 分鐘）
     if _jdg_thread is not None and _jdg_thread.is_alive():
-        logger.info("nightly: 等待司法院 API 執行緒完成...")
+        logger.info("nightly: 等待司法院裁判資料夜間拉取完成...")
         _jdg_thread_done.wait(timeout=1800)
+        if _jdg_thread.is_alive() and not _jdg_thread_done.is_set():
+            _jdg_thread_result = {
+                "ok": False,
+                "skipped": False,
+                "reason": "night_pull_thread_timeout",
+                "message": "司法院裁判資料夜間拉取未在 30 分鐘等待期內完成；請改由單一路徑或提高等待時間。",
+                "thread": True,
+            }
     results["steps"]["judicial_api_night_pull"] = _jdg_thread_result
 
     # ── Phase 2.5: 拉取完成後立即整理摘要（夜間有充足 budget）──
@@ -4398,7 +4443,7 @@ def run_nightly(run_dir: str) -> Dict[str, Any]:
             },
         )
 
-    # 7) 司法院 API 夜拉 — 已移至 run_nightly() 獨立執行緒，00:00 準時啟動，不排隊
+    # 7) 司法院裁判資料夜間拉取 — 已移至 run_nightly() 獨立執行緒，00:00 準時啟動，不排隊
 
     # 7.2) Judgment crawl（既有案由模式，與官方 API 並行）
     jc_path = _skill_action("judgment-collector")
@@ -4682,7 +4727,7 @@ def run_nightly(run_dir: str) -> Dict[str, Any]:
                     parsed["deferred"] = True
                     parsed["defer_reason"] = "need_interactive_oauth"
                     parsed["defer_queue_path"] = qpath
-                    parsed["message"] = "Google Calendar OAuth 未就緒，已寫入降級佇列，待授權後補同步。"
+                    parsed["message"] = "Google Calendar OAuth 未就緒，已寫入降級序列，待授權後補同步。"
                     step["ok"] = True
                     step["returncode"] = 0
             except Exception:

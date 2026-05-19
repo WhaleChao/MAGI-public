@@ -29,7 +29,7 @@ def test_backlog_interpretation_explains_stale_backlog():
     assert report["status"] == "STALE"
     assert "見解庫的新鮮度已落後" in report["headline"]
     assert report["runs_left_at_current_rate"] == 345
-    text = format_backlog_notice("⚠️ 司法院 API 晨間整理", report)
+    text = format_backlog_notice("⚠️ 司法院裁判資料晨間整理", report)
     assert "69,199" in text
     assert "68,999" in text
     assert "品質閘門" in text
@@ -113,7 +113,7 @@ def test_missing_pull_state_does_not_mask_active_backlog(monkeypatch, tmp_path):
 
     assert report["status"] == "BACKLOG_CATCHING_UP"
     assert report["exit_code"] == 10
-    assert any("raw/process/normalized" in item for item in report["reasons"])
+    assert any("裁判資料檔、整理狀態與轉換結果" in item for item in report["reasons"])
 
 
 def test_extractive_judgment_summary_is_marked_and_source_bound():

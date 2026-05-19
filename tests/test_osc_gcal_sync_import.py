@@ -147,6 +147,58 @@ def test_import_gcal_events_dry_run_counts_only_osc_owned_events(monkeypatch):
     assert stats["import_skipped"] == 2
 
 
+def test_import_gcal_events_skips_magi_pushed_events_to_prevent_feedback_loop(monkeypatch):
+    module = _load_gcal_sync_module()
+    writes = []
+
+    class MagiPushedEvents(_FakeEventsApi):
+        def list(self, **kwargs):
+            return _FakeRequest(
+                {
+                    "items": [
+                        {
+                            "id": "magi-pushed-1",
+                            "summary": "[2026-0001] 王小明 補正",
+                            "description": "系統案號：2026-0001\n當事人：王小明\n類型：補正\n來源檔案：法院通知.pdf",
+                            "start": {"date": "2026-05-21"},
+                        },
+                        {
+                            "id": "manual-osc-1",
+                            "summary": "[2026-0001] 王小明補正討論",
+                            "description": "同事手動登錄",
+                            "start": {"date": "2026-05-22"},
+                        },
+                    ]
+                }
+            )
+
+    class MagiPushedService(_FakeService):
+        def __init__(self):
+            super().__init__()
+            self.events_api = MagiPushedEvents()
+
+    def fake_osc_exec(sql, params=(), fetch="all"):
+        if "SELECT value FROM settings" in sql:
+            return {"value": "primary"}, []
+        if "SELECT google_calendar_id" in sql:
+            return [], []
+        if "SELECT case_number, client_name FROM cases WHERE case_number=%s" in sql:
+            return {"case_number": params[0], "client_name": "王小明"}, []
+        if "INSERT INTO case_todos" in sql:
+            writes.append(params)
+            return {"lastrowid": len(writes)}, []
+        raise AssertionError(sql)
+
+    monkeypatch.setattr(module, "_osc_exec_sql", fake_osc_exec)
+
+    stats = module.import_gcal_events_to_todos(MagiPushedService(), dry_run=False)
+
+    assert stats["imported"] == 1
+    assert stats["import_skipped"] == 1
+    assert writes[0][7] == "manual-osc-1"
+    assert writes[0][2] == "補正"
+
+
 def test_import_gcal_events_keeps_laf_reportable_manual_events(monkeypatch):
     module = _load_gcal_sync_module()
     writes = []

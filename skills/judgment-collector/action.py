@@ -2074,7 +2074,7 @@ def _update_summary_by_text_path(
     is_degraded: Optional[bool] = None,
 ) -> int:
     """
-    重試摘要成功後回寫 DB，避免佇列改善結果只留在記憶事件、不更新資料庫內容。
+    重試摘要成功後回寫 DB，避免序列改善結果只留在記憶事件、不更新資料庫內容。
     """
     if (not conn) or (not full_text_path) or (not summary_text):
         return 0
@@ -3849,7 +3849,7 @@ def collect(
             if r.get("success"):
                 notify_text += "  - " + r["title"][:50] + "\n"
     if retry_queued_count > 0:
-        notify_text += f"摘要重試佇列: +{retry_queued_count}\n"
+        notify_text += f"摘要重試序列: +{retry_queued_count}\n"
     _notify(notify_text, notify)
 
     if conn:
@@ -3875,7 +3875,7 @@ def collect(
 
 
 # ---------------------------------------------------------------------------
-# Official Judicial API (night pull + day process)
+# Official Judicial data interface (夜間拉取與白天整理)
 # ---------------------------------------------------------------------------
 def _iter_jdg_raw_files() -> list[str]:
     out: list[str] = []
@@ -3900,7 +3900,7 @@ def official_api_night_pull(
     notify: bool = False,
 ) -> dict:
     """
-    司法院裁判書 API 夜間批量拉取。
+    司法院裁判書資料夜間批量拉取。
 
     Parameters:
         max_jdocs: 本次拉取上限筆數（預設 25000）
@@ -3913,7 +3913,7 @@ def official_api_night_pull(
         return {
             "success": True,
             "skipped": True,
-            "message": "不在司法院 API 服務時段（預設 00:00-06:00）",
+            "message": "不在司法院裁判資料介接服務時段（預設 00:00-06:00）",
             "now_hour": now.hour,
             "auth_success": None,
         }
@@ -3923,7 +3923,7 @@ def official_api_night_pull(
         return {
             "success": True,
             "skipped": True,
-            "message": "略過：未設定司法院裁判 API 專用帳密（judicial_api_user/judicial_api_pass）",
+            "message": "略過：未設定司法院裁判資料專用帳密（judicial_api_user/judicial_api_pass）",
             "reason": "missing_dedicated_judicial_api_credentials",
             "auth_success": None,
         }
@@ -3942,7 +3942,7 @@ def official_api_night_pull(
             "success": True,
             "skipped": True,
             "reason": "judicial_api_night_pull_already_running",
-            "message": "略過：司法院 API 夜間拉取已在執行，避免重複下載與 API/NAS 負載。",
+            "message": "略過：司法院裁判資料夜間拉取已在執行，避免重複下載與系統/NAS 負載。",
             "auth_success": None,
         }
     except Exception as lock_exc:
@@ -4011,7 +4011,7 @@ def official_api_night_pull(
             break
         # 時段保護：若超出服務時段自動停止
         if not _is_jdg_service_window():
-            logger.warning("night_pull: 已超出服務時段，提前結束（fetched=%d）", fetched)
+            logger.warning("night_pull: 已超出服務時段，提前結束（新抓=%d）", fetched)
             break
         if not isinstance(ent, dict):
             continue
@@ -4091,7 +4091,7 @@ def official_api_night_pull(
         # 日期層級日誌
         if len(jids) > 0:
             logger.info(
-                "  date=%s: jids=%d, failed=%d, total_fetched=%d",
+                "  日期=%s：清單筆數=%d，失敗=%d，累計新抓=%d",
                 d, len(jids), date_failed, fetched,
             )
 
@@ -4130,7 +4130,7 @@ def official_api_night_pull(
     _save_json_file(JDG_API_PULL_STATE_PATH, pull_state)
 
     msg = (
-        f"司法院 API 夜間拉取完成：新抓 {fetched}、更新 {updated_existing}、略過 {skipped}、失敗 {failed}、移除標記 {removed}。"
+        f"司法院裁判資料夜間拉取完成：新抓 {fetched}、更新 {updated_existing}、略過 {skipped}、失敗 {failed}、移除標記 {removed}。"
     )
     
     if consecutive_failures >= 3:
@@ -4205,7 +4205,7 @@ def official_api_day_process(
         return {
             "success": True,
             "skipped": True,
-            "message": "目前在夜間 API 時段，白天整理任務自動略過",
+            "message": "目前在司法院裁判資料服務時段，白天整理任務自動略過",
             "now_hour": now.hour,
         }
 
@@ -4214,7 +4214,7 @@ def official_api_day_process(
         return {
             "success": True,
             "skipped": True,
-            "message": "無待整理 API 原始檔",
+            "message": "無待整理的司法院裁判資料檔",
             "backlog_before": 0,
             "backlog_remaining": 0,
         }
@@ -4540,7 +4540,7 @@ def official_api_day_process(
         oldest_age = float(backlog_after_info.get("oldest_backlog_age_hours") or 0.0)
         if backlog_remaining >= max(1, backlog_alert_threshold) or oldest_age >= max(0.5, backlog_age_threshold):
             _notify(
-                format_backlog_notice("⚠️ 司法院 API 晨間整理：backlog 需要判讀", interpretation),
+                format_backlog_notice("⚠️ 司法院裁判資料晨間整理：待整理量需要判讀", interpretation),
                 True,
             )
     if notify:
@@ -4912,6 +4912,10 @@ def daily_crawl(
     # Process each reason
     report_lines = ["🌙 每日判決爬取 — " + datetime.now().strftime("%Y-%m-%d %H:%M")]
     all_results = []
+    success_reasons = 0
+    failed_reasons = 0
+    total_collected = 0
+    failure_samples: list[dict[str, str]] = []
     for item in reasons:
         elapsed = (time.time() - t0)
         if time_budget_sec > 0 and elapsed > float(time_budget_sec):
@@ -4937,22 +4941,43 @@ def daily_crawl(
                 "notify": False,
             }
             result = _collect_with_hard_timeout(collect_payload, hard_timeout_sec=int(effective_timeout) + 60)
-            ok = result.get("count", 0)
-            report_lines.append(
-                "  - " + reason + "（" + _get_court_display(case_type, reason) + "）: "
-                + str(ok) + " 筆判決已收集"
-            )
+            if not bool(result.get("success", True)):
+                failed_reasons += 1
+                err = str(result.get("error") or "collect_failed").strip()
+                failure_samples.append({"reason": reason, "error": err[:180]})
+                report_lines.append("  - " + reason + ": ❌ " + err[:80])
+            else:
+                ok = int(result.get("count") or 0)
+                success_reasons += 1
+                total_collected += ok
+                report_lines.append(
+                    "  - " + reason + "（" + _get_court_display(case_type, reason) + "）: "
+                    + str(ok) + " 筆判決已收集"
+                )
             all_results.append({"reason": reason, "result": result})
         except Exception as e:
+            failed_reasons += 1
+            failure_samples.append({"reason": reason, "error": str(e)[:180]})
             report_lines.append("  - " + reason + ": ❌ " + str(e)[:80])
             all_results.append({"reason": reason, "error": str(e)[:200]})
+
+    all_failed = failed_reasons > 0 and success_reasons == 0
+    partial_failed = failed_reasons > 0 and success_reasons > 0
+    if all_failed:
+        report_lines.append("  - ⚠️ 所有案由查詢皆失敗，未新增實務見解。")
+    elif partial_failed:
+        report_lines.append(f"  - ⚠️ 部分案由失敗：{failed_reasons} 件；成功案由 {success_reasons} 件。")
 
     summary_text = "\n".join(report_lines)
     _eventlog(
         "judgment:daily_crawl:done",
-        ok=True,
+        ok=not all_failed,
         payload={
             "reasons_processed": len(reasons),
+            "success_reasons": success_reasons,
+            "failed_reasons": failed_reasons,
+            "total_collected": total_collected,
+            "failure_samples": failure_samples[:5],
             "reasons": [r.get("reason") for r in reasons][:10],
             "preview": summary_text[:600],
         },
@@ -4965,8 +4990,13 @@ def daily_crawl(
         retry_result = retry_summary_queue_auto(notify=False)
 
     return {
-        "success": True,
+        "success": not all_failed,
+        "error": "all_judgment_reason_searches_failed" if all_failed else "",
         "reasons_processed": len(reasons),
+        "success_reasons": success_reasons,
+        "failed_reasons": failed_reasons,
+        "total_collected": total_collected,
+        "failure_samples": failure_samples[:10],
         "results": all_results,
         "summary_retry": retry_result,
     }
@@ -5148,8 +5178,8 @@ def main() -> int:
         r = daily_crawl()
         return _ok(r)
 
-    if task.startswith("official_api_night_pull") or task.startswith("夜間拉取裁判API"):
-        payload = _load_jsonish(task.replace("official_api_night_pull", "", 1).replace("夜間拉取裁判API", "", 1).strip())
+    if task.startswith("official_api_night_pull") or task.startswith("夜間拉取裁判資料"):
+        payload = _load_jsonish(task.replace("official_api_night_pull", "", 1).replace("夜間拉取裁判資料", "", 1).strip())
         try:
             max_jdocs = int(payload.get("max_jdocs", JDG_API_NIGHT_MAX_JDOCS))
         except Exception:
@@ -5163,8 +5193,8 @@ def main() -> int:
         r = official_api_night_pull(max_jdocs=max_jdocs, max_days=max_days, force=force, notify=notify)
         return _ok(r)
 
-    if task.startswith("official_api_day_process") or task.startswith("白天整理裁判API"):
-        payload = _load_jsonish(task.replace("official_api_day_process", "", 1).replace("白天整理裁判API", "", 1).strip())
+    if task.startswith("official_api_day_process") or task.startswith("白天整理裁判資料"):
+        payload = _load_jsonish(task.replace("official_api_day_process", "", 1).replace("白天整理裁判資料", "", 1).strip())
         try:
             max_docs = int(payload.get("max_docs", JDG_API_DAY_MAX_PROCESS))
         except Exception:
@@ -5193,8 +5223,8 @@ def main() -> int:
         )
         return _ok(r)
 
-    if task.startswith("official_api_auto") or task.startswith("裁判API自動模式"):
-        payload = _load_jsonish(task.replace("official_api_auto", "", 1).replace("裁判API自動模式", "", 1).strip())
+    if task.startswith("official_api_auto") or task.startswith("裁判資料自動模式"):
+        payload = _load_jsonish(task.replace("official_api_auto", "", 1).replace("裁判資料自動模式", "", 1).strip())
         force = bool(payload.get("force", False))
         notify = bool(payload.get("notify", False))
         r = official_api_auto(force=force, notify=notify)
@@ -5230,14 +5260,22 @@ def main() -> int:
             logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 4525, exc_info=True)
         return _ok(r)
 
-    if task.startswith("retry_summary_queue_auto") or task.startswith("重試摘要佇列自動"):
-        payload = _load_jsonish(task.replace("retry_summary_queue_auto", "", 1).replace("重試摘要佇列自動", "", 1).strip())
+    if task.startswith("retry_summary_queue_auto") or task.startswith("重試摘要序列自動"):
+        payload = _load_jsonish(
+            task.replace("retry_summary_queue_auto", "", 1)
+            .replace("重試摘要序列自動", "", 1)
+            .strip()
+        )
         notify = bool(payload.get("notify", False))
         r = retry_summary_queue_auto(notify=notify)
         return _ok(r)
 
-    if task.startswith("retry_summary_queue") or task.startswith("重試摘要佇列"):
-        payload = _load_jsonish(task.replace("retry_summary_queue", "", 1).replace("重試摘要佇列", "", 1).strip())
+    if task.startswith("retry_summary_queue") or task.startswith("重試摘要序列"):
+        payload = _load_jsonish(
+            task.replace("retry_summary_queue", "", 1)
+            .replace("重試摘要序列", "", 1)
+            .strip()
+        )
         try:
             max_items = int(payload.get("max_items", 3))
         except Exception:

@@ -257,6 +257,20 @@ def _classify_todo_type(summary: str) -> str:
     return "行事曆事件"
 
 
+def _looks_like_magi_pushed_event(summary: str, description: str) -> bool:
+    """Return True for events previously created by MAGI from case_todos.
+
+    These events must not be imported back as `gcal_import` todos; otherwise a
+    missing/stale google_calendar_id can make MAGI show duplicate "行事曆事件"
+    rows and eventually recreate confusing calendar entries.
+    """
+    text = f"{summary or ''}\n{description or ''}"
+    if not _extract_leading_osc_case_number(summary, description):
+        return False
+    signatures = ("系統案號：", "來源檔案：", "類型：")
+    return sum(1 for marker in signatures if marker in text) >= 2
+
+
 def _extract_case_number(summary: str, description: str) -> str:
     case_number_re = re.compile(
         r"(\d{4}-\d{4}|\d{2,3}年度?[^\s，,。；;：:]{0,8}字第?\d+號?|\d{2,3}[^\s，,。；;：:]{1,8}\d+號?)"
@@ -547,6 +561,9 @@ def import_gcal_events_to_todos(service, *, dry_run: bool = False, lookback_days
                         stats["import_skipped"] += 1
                         continue
                     description = str(event.get("description") or "").strip()
+                    if _looks_like_magi_pushed_event(summary, description):
+                        stats["import_skipped"] += 1
+                        continue
                     start_date, start_time = _event_start_date_time(event)
                     if not start_date:
                         stats["import_skipped"] += 1

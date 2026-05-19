@@ -32,6 +32,19 @@ def _load_osc_action_module():
         raise RuntimeError(f"cannot load {path}")
     mod = importlib.util.module_from_spec(spec)
     sys.path.insert(0, str(path.parent))
+    sys.modules[spec.name] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _load_transcript_todo_module():
+    path = ROOT / "skills" / "transcript-todo-extractor" / "action.py"
+    spec = importlib.util.spec_from_file_location("_magi_transcript_todo_extractor", path)
+    if not spec or not spec.loader:
+        raise RuntimeError(f"cannot load {path}")
+    mod = importlib.util.module_from_spec(spec)
+    sys.path.insert(0, str(path.parent))
+    sys.modules[spec.name] = mod
     spec.loader.exec_module(mod)
     return mod
 
@@ -66,7 +79,9 @@ def run_refresh(args: argparse.Namespace) -> dict[str, Any]:
         "ok": True,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "interval_hours": 6,
+        "dry_run": bool(getattr(args, "dry_run", False)),
         "scan": {},
+        "transcript_todos": {},
         "calendar_import": {},
         "calendar_push": {},
         "warnings": [],
@@ -79,7 +94,7 @@ def run_refresh(args: argparse.Namespace) -> dict[str, Any]:
                     "max_cases": args.max_cases,
                     "max_files_per_case": args.max_files_per_case,
                     "time_budget_sec": args.scan_time_budget_sec,
-                    "dry_run": False,
+                    "dry_run": bool(getattr(args, "dry_run", False)),
                     "force_rebuild": bool(args.force_rebuild),
                 }
             )
@@ -87,42 +102,76 @@ def run_refresh(args: argparse.Namespace) -> dict[str, Any]:
             result["ok"] = False
             result["scan"] = {"ok": False, "error": f"{type(exc).__name__}: {str(exc)[:240]}"}
 
-    if not args.scan_only:
-        try:
-            calendar_payload = {
-                "lookback_days": args.lookback_days,
-                "lookahead_days": args.lookahead_days,
-                "limit": args.calendar_limit,
-                "incremental": True,
-            }
-            cal = mod.task_gcal_import(calendar_payload)
-            result["calendar_import"] = cal
-            if not cal.get("ok") and cal.get("need_interactive_oauth"):
-                result["warnings"].append("google_calendar_oauth_required")
-            elif not cal.get("ok"):
-                result["ok"] = False
-        except Exception as exc:
-            result["ok"] = False
-            result["calendar_import"] = {"ok": False, "error": f"{type(exc).__name__}: {str(exc)[:240]}"}
-
-        try:
-            push_payload = {
-                "limit": args.gcal_push_limit,
-                "retry_max_attempts": 3,
-            }
-            pushed = mod.task_gcal_sync(push_payload)
-            result["calendar_push"] = pushed
-            if not pushed.get("ok") and pushed.get("need_interactive_oauth"):
-                result["warnings"].append("google_calendar_oauth_required")
-            elif not pushed.get("ok"):
-                err = str(pushed.get("error") or "")
-                if any(key in err.lower() for key in ("credential", "oauth", "token", "invalid_grant")):
-                    result["warnings"].append("google_calendar_oauth_required")
+        if not getattr(args, "skip_transcript_todos", False):
+            try:
+                transcript_mod = _load_transcript_todo_module()
+                transcript_limit = max(1, int(getattr(args, "transcript_limit", 120)))
+                transcript_tail_pages = max(1, int(getattr(args, "transcript_tail_pages", 3)))
+                paths = transcript_mod._iter_pdf_targets("", limit=transcript_limit)
+                scan = transcript_mod.scan_targets(paths, tail_pages=transcript_tail_pages)
+                if bool(getattr(args, "dry_run", False)):
+                    write = {"dry_run": True, "inserted": 0, "updated": 0, "skipped": 0, "past_skipped": 0}
                 else:
+                    write = transcript_mod.apply_high_confidence(scan.get("items") or [])
+                result["transcript_todos"] = {
+                    "ok": True,
+                    "scanned": scan.get("scanned", 0),
+                    "high_count": scan.get("high_count", 0),
+                    "review_count": scan.get("review_count", 0),
+                    "errors_count": scan.get("errors_count", 0),
+                    "write_result": {
+                        "inserted": write.get("inserted", 0),
+                        "updated": write.get("updated", 0),
+                        "skipped": write.get("skipped", 0),
+                        "past_skipped": write.get("past_skipped", 0),
+                    },
+                    "sample_items": (scan.get("items") or [])[:10],
+                    "errors": scan.get("errors", [])[:10],
+                }
+            except Exception as exc:
+                result["ok"] = False
+                result["transcript_todos"] = {"ok": False, "error": f"{type(exc).__name__}: {str(exc)[:240]}"}
+
+    if not args.scan_only:
+        if bool(getattr(args, "dry_run", False)):
+            result["calendar_import"] = {"ok": True, "dry_run": True, "skipped": True}
+            result["calendar_push"] = {"ok": True, "dry_run": True, "skipped": True}
+        else:
+            try:
+                calendar_payload = {
+                    "lookback_days": args.lookback_days,
+                    "lookahead_days": args.lookahead_days,
+                    "limit": args.calendar_limit,
+                    "incremental": True,
+                }
+                cal = mod.task_gcal_import(calendar_payload)
+                result["calendar_import"] = cal
+                if not cal.get("ok") and cal.get("need_interactive_oauth"):
+                    result["warnings"].append("google_calendar_oauth_required")
+                elif not cal.get("ok"):
                     result["ok"] = False
-        except Exception as exc:
-            result["ok"] = False
-            result["calendar_push"] = {"ok": False, "error": f"{type(exc).__name__}: {str(exc)[:240]}"}
+            except Exception as exc:
+                result["ok"] = False
+                result["calendar_import"] = {"ok": False, "error": f"{type(exc).__name__}: {str(exc)[:240]}"}
+
+            try:
+                push_payload = {
+                    "limit": args.gcal_push_limit,
+                    "retry_max_attempts": 3,
+                }
+                pushed = mod.task_gcal_sync(push_payload)
+                result["calendar_push"] = pushed
+                if not pushed.get("ok") and pushed.get("need_interactive_oauth"):
+                    result["warnings"].append("google_calendar_oauth_required")
+                elif not pushed.get("ok"):
+                    err = str(pushed.get("error") or "")
+                    if any(key in err.lower() for key in ("credential", "oauth", "token", "invalid_grant")):
+                        result["warnings"].append("google_calendar_oauth_required")
+                    else:
+                        result["ok"] = False
+            except Exception as exc:
+                result["ok"] = False
+                result["calendar_push"] = {"ok": False, "error": f"{type(exc).__name__}: {str(exc)[:240]}"}
 
     result["elapsed_sec"] = round(time.monotonic() - started, 3)
     _write_latest(result, Path(args.json_out) if args.json_out else LATEST_PATH)
@@ -138,7 +187,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--gcal-push-limit", type=int, default=int(os.environ.get("OSC_EVENTS_REFRESH_GCAL_PUSH_LIMIT", "120")))
     parser.add_argument("--lookback-days", type=int, default=int(os.environ.get("OSC_EVENTS_REFRESH_LOOKBACK_DAYS", "30")))
     parser.add_argument("--lookahead-days", type=int, default=int(os.environ.get("OSC_EVENTS_REFRESH_LOOKAHEAD_DAYS", "180")))
+    parser.add_argument("--transcript-limit", type=int, default=int(os.environ.get("OSC_EVENTS_REFRESH_TRANSCRIPT_LIMIT", "120")))
+    parser.add_argument("--transcript-tail-pages", type=int, default=int(os.environ.get("OSC_EVENTS_REFRESH_TRANSCRIPT_TAIL_PAGES", "3")))
+    parser.add_argument("--skip-transcript-todos", action="store_true")
     parser.add_argument("--json-out", default="")
+    parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--scan-only", action="store_true")
     parser.add_argument("--calendar-only", action="store_true")
     parser.add_argument("--force-rebuild", action="store_true")
