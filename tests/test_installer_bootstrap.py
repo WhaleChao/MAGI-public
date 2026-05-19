@@ -68,6 +68,38 @@ def test_runtime_bootstrap_dry_run_writes_actionable_steps(tmp_path, monkeypatch
     assert any(step["key"].startswith("hf_download:") for step in payload["steps"])
 
 
+def test_runtime_bootstrap_plans_mariadb_and_tailscale_when_missing(tmp_path, monkeypatch):
+    profile = bootstrap.HardwareProfile(
+        os_name="Darwin",
+        machine="arm64",
+        cpu_brand="Apple M4",
+        memory_gb=24,
+        free_disk_gb=100,
+        is_apple_silicon=True,
+    )
+    monkeypatch.setattr(bootstrap, "detect_hardware", lambda: profile)
+
+    def fake_which(name: str) -> str:
+        if name in {"mariadb", "mysql", "tailscale", "omlx"}:
+            return ""
+        if name == "brew":
+            return "/opt/homebrew/bin/brew"
+        return f"/usr/bin/{name}"
+
+    monkeypatch.setattr(bootstrap, "_which", fake_which)
+    out = tmp_path / "runtime.json"
+
+    rc = bootstrap.main(["--repo-dir", str(tmp_path), "--dry-run", "--json", "--output", str(out)])
+
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    steps = {step["key"]: step for step in payload["steps"]}
+    assert rc == 0
+    assert steps["utility:mariadb"]["status"] == "warn"
+    assert steps["utility:mariadb"]["command"] == ["/opt/homebrew/bin/brew", "install", "mariadb"]
+    assert steps["utility:tailscale"]["status"] == "warn"
+    assert steps["utility:tailscale"]["command"] == ["/opt/homebrew/bin/brew", "install", "--cask", "tailscale"]
+
+
 def test_launcher_extract_release_archive_strips_top_level_and_blocks_traversal(tmp_path):
     archive = tmp_path / "MAGI-release.zip"
     with zipfile.ZipFile(archive, "w") as zf:

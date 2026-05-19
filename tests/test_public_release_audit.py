@@ -49,7 +49,12 @@ def test_public_release_audit_blocks_tracked_runtime_paths():
     from scripts.public_release_audit import scan_tracked_files
 
     findings = scan_tracked_files(
-        ["json/processed_laf_emails.json", "skills/pdf-namer/_filing_log.json"],
+        [
+            "json/processed_laf_emails.json",
+            "skills/pdf-namer/_filing_log.json",
+            "skills/pdf-namer/db_rules_cache.json",
+            "static/knowledge_lint_latest.json",
+        ],
         public_isolation=True,
     )
 
@@ -57,4 +62,6 @@ def test_public_release_audit_blocks_tracked_runtime_paths():
     assert {f.path for f in blocked} == {
         "json/processed_laf_emails.json",
         "skills/pdf-namer/_filing_log.json",
+        "skills/pdf-namer/db_rules_cache.json",
+        "static/knowledge_lint_latest.json",
     }

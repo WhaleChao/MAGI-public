@@ -35,6 +35,8 @@ BLOCKED_TRACKED_GLOBS = (
     "skills/judgment-collector/judgments.json",
     "skills/judgment-collector/judgments.json.bak.*",
     "skills/pdf-namer/_filing_log.json",
+    "skills/pdf-namer/db_rules_cache.json",
+    "static/knowledge_lint_latest.json",
     "docs/architecture/*_architecture_graph.json",
 )
 
