@@ -361,7 +361,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"[MAGI] Launcher report: {report_path}")
     print(f"[MAGI] MAGI folder: {repo_dir}")
     if payload["ok"]:
-        print("[MAGI] 安裝精靈完成。請依畫面提示補齊 .env，再啟動 MAGI。")
+        print("[MAGI] 安裝精靈完成。外部套件與模型設定已匯入 .env；請只補齊帳密、OAuth/token、NAS 帳號等敏感設定後啟動 MAGI。")
     else:
         print("[MAGI] 安裝精靈未完成，請查看上方錯誤與 JSON 報告。")
     if not args.non_interactive:
