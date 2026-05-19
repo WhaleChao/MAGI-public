@@ -911,7 +911,7 @@ def cleanup_generated_staging(dry_run: bool) -> List[Dict[str, Any]]:
 # ---- Synology Drive empty case-shell cleanup ----------------------------
 
 _CASE_FOLDER_NAME_RE = re.compile(r"^\d{4}-\d{4}(?:-|$)")
-_SHELL_IGNORED_FILE_NAMES = frozenset({".DS_Store", "Thumbs.db", ".gitkeep"})
+_SHELL_IGNORED_FILE_NAMES = frozenset({".DS_Store", "Thumbs.db", ".gitkeep", "desktop.ini"})
 
 
 def _synology_drive_active_roots() -> List[Path]:
@@ -919,10 +919,27 @@ def _synology_drive_active_roots() -> List[Path]:
     if raw:
         return [Path(p).expanduser().resolve() for p in raw.split(os.pathsep) if p.strip()]
     home = Path(os.environ.get("HOME", str(Path.home()))).expanduser()
-    return [
+    nas_user = (
+        os.environ.get("MAGI_NAS_HOME_USER")
+        or os.environ.get("MAGI_NAS_USER")
+        or "home"
+    ).strip().strip("/\\") or "home"
+    roots = [
         home / "Library" / "CloudStorage" / "SynologyDrive-homes" / "01_案件",
+        home / "SynologyDrive" / "homes" / "01_案件",
         home / "SynologyDrive" / "01_案件",
+        Path("/Volumes") / "homes" / nas_user / "01_案件",
+        home / ".magi_mounts" / "homes" / nas_user / "01_案件",
     ]
+    out: List[Path] = []
+    seen: set[str] = set()
+    for root in roots:
+        key = str(root)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(root)
+    return out
 
 
 def _is_ignored_shell_file(path: Path) -> bool:

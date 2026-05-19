@@ -238,6 +238,19 @@ def test_cleanup_empty_synology_case_shells_dry_run_preserves(sandbox, monkeypat
     assert actions[0]["candidate_dirs"] == 1
 
 
+def test_synology_empty_case_roots_cover_homes_alias_and_smb(monkeypatch, tmp_path):
+    monkeypatch.delenv("MAGI_DISK_SYNOLOGY_EMPTY_CASE_ROOTS", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("MAGI_NAS_HOME_USER", "lumi63181107")
+
+    roots = [str(p) for p in dc._synology_drive_active_roots()]
+
+    assert str(tmp_path / "Library/CloudStorage/SynologyDrive-homes/01_案件") in roots
+    assert str(tmp_path / "SynologyDrive/homes/01_案件") in roots
+    assert str(tmp_path / "SynologyDrive/01_案件") in roots
+    assert "/Volumes/homes/lumi63181107/01_案件" in roots
+
+
 # ---------- cleanup_tmp ------------------------------------------------
 
 def test_tmp_cleanup_removes_old_magi_files(sandbox, monkeypatch, tmp_path):
