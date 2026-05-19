@@ -141,6 +141,8 @@ Commercial readiness documents:
 
 - [Commercial readiness guide](docs/COMMERCIAL_READINESS.md)
 - [General user manual](docs/USER_GUIDE.md)
+- [Very detailed general user manual DOCX](docs/guides/MAGI_一般使用者超詳細操作手冊_2026-05-19.docx)
+- [Very detailed general user manual PDF](docs/guides/MAGI_一般使用者超詳細操作手冊_2026-05-19.pdf)
 - [Illustrated general user manual DOCX](docs/guides/MAGI_一般使用者圖文操作手冊_2026-05-19.docx)
 - [Illustrated general user manual PDF](docs/guides/MAGI_一般使用者圖文操作手冊_2026-05-19.pdf)
 - [General user manual DOCX](docs/guides/MAGI_一般使用者完整操作手冊_2026-05-18.docx)
