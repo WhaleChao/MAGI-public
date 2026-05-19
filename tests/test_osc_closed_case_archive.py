@@ -53,6 +53,37 @@ def test_auto_archive_closed_case_moves_folder(tmp_path, monkeypatch):
     assert updates and updates[-1][1][0] == str(target)
 
 
+def test_case_folder_creation_refuses_synology_drive_fallback(tmp_path, monkeypatch):
+    from api.blueprints import osc_cases as mod
+    import api.nas_mount_guard as nas_mount_guard
+
+    cloud_root = tmp_path / "Library" / "CloudStorage" / "SynologyDrive-homes" / "01_案件"
+    cloud_root.mkdir(parents=True)
+    monkeypatch.setattr(mod, "_osc_case_creation_roots", lambda: [str(cloud_root)])
+    monkeypatch.setattr(nas_mount_guard, "ensure_nas_mounts", lambda: {"ok": False})
+    monkeypatch.setenv("MAGI_ALLOW_SYNOLOGY_DRIVE_FOLDER_CREATE", "0")
+
+    result = mod._osc_select_case_creation_root()
+
+    assert result["ok"] is False
+    assert result["error"] == "nas_case_root_not_mounted"
+
+
+def test_case_folder_creation_prefers_real_nas_over_synology_drive(tmp_path, monkeypatch):
+    from api.blueprints import osc_cases as mod
+
+    cloud_root = tmp_path / "Library" / "CloudStorage" / "SynologyDrive-homes" / "01_案件"
+    nas_root = tmp_path / "Volumes" / "homes" / "lumi63181107" / "01_案件"
+    cloud_root.mkdir(parents=True)
+    nas_root.mkdir(parents=True)
+    monkeypatch.setattr(mod, "_osc_case_creation_roots", lambda: [str(cloud_root), str(nas_root)])
+
+    result = mod._osc_select_case_creation_root()
+
+    assert result["ok"] is True
+    assert result["root"] == str(nas_root)
+
+
 def test_auto_archive_closed_case_merges_existing_target(tmp_path, monkeypatch):
     from api.blueprints import osc_cases as mod
 

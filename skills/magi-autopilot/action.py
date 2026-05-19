@@ -1778,7 +1778,7 @@ def _big_brain_health_probe() -> Dict[str, Any]:
         if not s:
             return ""
         s = s.split(":", 1)[0]
-        # e.g. qwen3-30b-instruct.Q4_K_M.gguf -> qwen3
+        # e.g. gemma-4-e4b-it-4bit -> gemma
         m = re.match(r"^([a-z]+[0-9]*(?:\.[0-9]+)?)", s)
         if m:
             return m.group(1)
@@ -1853,14 +1853,21 @@ def _big_brain_health_probe() -> Dict[str, Any]:
             for it in (models_data.get("data") or []):
                 if isinstance(it, dict) and it.get("id"):
                     model_ids.append(str(it.get("id")).strip())
-            # Prefer qwen model on /v1 if available.
+            # Prefer approved non-China models on /v1 if available.
             v1_model = ""
             for m in model_ids:
-                if m.lower().startswith("qwen3"):
+                low_m = m.lower()
+                if any(bad in low_m for bad in ("qwen", "deepseek", "kimi", "minimax", "baichuan", "moonshot", "internlm", "chatglm", "sensetime")) or "glm" in low_m:
+                    continue
+                if any(good in low_m for good in ("gemma", "mistral", "phi", "llama", "smol")):
                     v1_model = m
                     break
-            if not v1_model and model_ids:
-                v1_model = model_ids[0]
+            if not v1_model:
+                for m in model_ids:
+                    low_m = m.lower()
+                    if not (any(bad in low_m for bad in ("qwen", "deepseek", "kimi", "minimax", "baichuan", "moonshot", "internlm", "chatglm", "sensetime")) or "glm" in low_m):
+                        v1_model = m
+                        break
             if v1_model:
                 tried_models.append(v1_model)
                 payload = {
@@ -1885,7 +1892,7 @@ def _big_brain_health_probe() -> Dict[str, Any]:
                     msg = choices[0].get("message")
                     if isinstance(msg, dict):
                         text = str(msg.get("content") or "").strip()
-                        # qwen3 may occasionally output only reasoning tokens first.
+                        # Some reasoning models may output reasoning tokens before content.
                         if not text:
                             text = str(msg.get("reasoning_content") or "").strip()
                 if text:

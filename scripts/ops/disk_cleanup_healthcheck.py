@@ -81,6 +81,15 @@ PAYMENT_DUPLICATE_CLEANUP_ENABLE = os.environ.get(
 PAYMENT_DUPLICATE_ALLOW_SMB = os.environ.get(
     "MAGI_DISK_PAYMENT_DUPLICATE_ALLOW_SMB", "0"
 ).strip().lower() in {"1", "true", "on", "yes"}
+SYNOLOGY_EMPTY_CASE_SHELL_CLEANUP_ENABLE = os.environ.get(
+    "MAGI_DISK_SYNOLOGY_EMPTY_CASE_SHELL_ENABLE", "1"
+).strip().lower() in {"1", "true", "on", "yes"}
+SYNOLOGY_EMPTY_CASE_SHELL_MIN_AGE_HOURS = float(
+    os.environ.get("MAGI_DISK_SYNOLOGY_EMPTY_CASE_SHELL_MIN_AGE_HOURS", "6")
+)
+SYNOLOGY_EMPTY_CASE_SHELL_MAX_DELETE = int(
+    os.environ.get("MAGI_DISK_SYNOLOGY_EMPTY_CASE_SHELL_MAX_DELETE", "200")
+)
 NAS_RECYCLE_CLEANUP_ENABLE = os.environ.get(
     "MAGI_DISK_NAS_RECYCLE_ENABLE", "0"
 ).strip().lower() in {"1", "true", "on", "yes"}
@@ -899,6 +908,131 @@ def cleanup_generated_staging(dry_run: bool) -> List[Dict[str, Any]]:
     return actions
 
 
+# ---- Synology Drive empty case-shell cleanup ----------------------------
+
+_CASE_FOLDER_NAME_RE = re.compile(r"^\d{4}-\d{4}(?:-|$)")
+_SHELL_IGNORED_FILE_NAMES = frozenset({".DS_Store", "Thumbs.db", ".gitkeep"})
+
+
+def _synology_drive_active_roots() -> List[Path]:
+    raw = os.environ.get("MAGI_DISK_SYNOLOGY_EMPTY_CASE_ROOTS", "").strip()
+    if raw:
+        return [Path(p).expanduser().resolve() for p in raw.split(os.pathsep) if p.strip()]
+    home = Path(os.environ.get("HOME", str(Path.home()))).expanduser()
+    return [
+        home / "Library" / "CloudStorage" / "SynologyDrive-homes" / "01_案件",
+        home / "SynologyDrive" / "01_案件",
+    ]
+
+
+def _is_ignored_shell_file(path: Path) -> bool:
+    name = path.name
+    if name in _SHELL_IGNORED_FILE_NAMES:
+        return True
+    if name.startswith("._") or name.startswith(".synology"):
+        return True
+    if name.endswith(".tmp") or name.endswith(".icloud"):
+        return True
+    return False
+
+
+def _case_shell_has_real_file(case_dir: Path) -> bool:
+    try:
+        for dirpath, dirnames, filenames in os.walk(case_dir):
+            dirnames[:] = [d for d in dirnames if not d.startswith(".")]
+            for filename in filenames:
+                if not _is_ignored_shell_file(Path(filename)):
+                    return True
+    except OSError:
+        return True
+    return False
+
+
+def _iter_empty_synology_case_shells() -> List[Path]:
+    now = time.time()
+    cutoff = now - max(0.0, SYNOLOGY_EMPTY_CASE_SHELL_MIN_AGE_HOURS) * 3600
+    out: List[Path] = []
+    for root in _synology_drive_active_roots():
+        if not root.is_dir():
+            continue
+        try:
+            categories = list(root.iterdir())
+        except OSError:
+            continue
+        for category in categories:
+            if not category.is_dir() or category.name.startswith("."):
+                continue
+            try:
+                type_dirs = list(category.iterdir())
+            except OSError:
+                continue
+            for type_dir in type_dirs:
+                if not type_dir.is_dir() or type_dir.name.startswith("."):
+                    continue
+                try:
+                    case_dirs = list(type_dir.iterdir())
+                except OSError:
+                    continue
+                for case_dir in case_dirs:
+                    if not case_dir.is_dir() or case_dir.name.startswith("."):
+                        continue
+                    if not _CASE_FOLDER_NAME_RE.match(case_dir.name):
+                        continue
+                    try:
+                        if case_dir.stat().st_mtime >= cutoff:
+                            continue
+                    except OSError:
+                        continue
+                    if _case_shell_has_real_file(case_dir):
+                        continue
+                    out.append(case_dir)
+                    if len(out) >= max(1, SYNOLOGY_EMPTY_CASE_SHELL_MAX_DELETE):
+                        return out
+    return out
+
+
+def cleanup_empty_synology_case_shells(dry_run: bool) -> List[Dict[str, Any]]:
+    """Remove stale empty case shells created by Synology Drive fallback writes.
+
+    MAGI must create case folders on real NAS/SMB roots.  Synology Drive is a
+    read fallback only; empty case shells under it are safe to remove when they
+    contain no real files.
+    """
+    if not SYNOLOGY_EMPTY_CASE_SHELL_CLEANUP_ENABLE:
+        return [{"enabled": False, "reason": "MAGI_DISK_SYNOLOGY_EMPTY_CASE_SHELL_ENABLE=0"}]
+
+    candidates = _iter_empty_synology_case_shells()
+    deleted = 0
+    errors: List[Dict[str, str]] = []
+    items: List[str] = []
+    for case_dir in candidates:
+        items.append(str(case_dir))
+        if dry_run:
+            continue
+        try:
+            shutil.rmtree(case_dir)
+            deleted += 1
+        except OSError as e:
+            errors.append({"path": str(case_dir), "error": str(e)})
+
+    info = {
+        "enabled": True,
+        "candidate_dirs": len(candidates),
+        "deleted_dirs": deleted,
+        "min_age_hours": SYNOLOGY_EMPTY_CASE_SHELL_MIN_AGE_HOURS,
+        "max_delete": SYNOLOGY_EMPTY_CASE_SHELL_MAX_DELETE,
+        "items": items[:50],
+        "errors": errors[:20],
+        "dry_run": dry_run,
+    }
+    _log(
+        f"Synology empty case shells: {'would remove' if dry_run else 'removed'} "
+        f"{len(candidates) if dry_run else deleted} dirs "
+        f"(min_age={SYNOLOGY_EMPTY_CASE_SHELL_MIN_AGE_HOURS:g}h)"
+    )
+    return [info]
+
+
 # ---- duplicate payment-slip cleanup ------------------------------------
 
 def _payment_duplicate_roots() -> List[Path]:
@@ -1543,6 +1677,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         "git_tmp_packs": cleanup_stale_git_tmp_packs(dry_run),
         "compressed_artifacts": compress_runtime_artifacts(dry_run),
         "generated_staging": cleanup_generated_staging(dry_run),
+        "empty_synology_case_shells": cleanup_empty_synology_case_shells(dry_run),
         "duplicate_payment_slips": cleanup_duplicate_payment_slips(dry_run),
         "nas_recycle": cleanup_nas_recycle(dry_run),
         "nas_recycle_heavy": cleanup_nas_recycle_heavy(dry_run),
@@ -1566,6 +1701,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     tmp_entry = summary["tmp"][0] if summary["tmp"] else {}
     total_compress_candidates = len(summary.get("compressed_artifacts") or [])
     total_staging_candidates = sum(a.get("candidate_files", 0) for a in summary.get("generated_staging") or [])
+    total_empty_synology_shells = sum(a.get("candidate_dirs", 0) for a in summary.get("empty_synology_case_shells") or [])
     total_payment_duplicates = sum(a.get("duplicate_files", 0) for a in summary.get("duplicate_payment_slips") or [])
     total_nas_recycle_items = sum(a.get("deleted_items", 0) for a in summary.get("nas_recycle") or [])
     total_heavy_files = sum(a.get("deleted_files", 0) for a in summary.get("nas_recycle_heavy") or [])
@@ -1575,6 +1711,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         f"tmp_candidates={tmp_entry.get('candidate_count', 0)}, "
         f"compress_candidates={total_compress_candidates}, "
         f"staging_candidates={total_staging_candidates}, "
+        f"empty_synology_shells={total_empty_synology_shells}, "
         f"payment_duplicates={total_payment_duplicates}, "
         f"nas_recycle_deleted={total_nas_recycle_items}, "
         f"nas_heavy_files={total_heavy_files}"

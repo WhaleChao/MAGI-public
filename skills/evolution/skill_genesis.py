@@ -1956,10 +1956,8 @@ SAFE_MODELS = [
     "mistral-nemo:12b",
     os.environ.get("MAGI_MAIN_MODEL", ""),
     "gemma2:9b",
-    "qwen2.5-coder:7b",
     "phi3.5:3.8b",
     "gemma-3-12b-it-4bit",
-    "deepseek-r1:14b",
     os.environ.get("MAGI_MAIN_MODEL", "")
 ]
 
@@ -2079,7 +2077,7 @@ def request_distributed_skill_generation(prompt: str) -> dict:
         # Distributed model is hosted on Casper (oMLX) which connects to Melchior via RPC
         CASPER_URL = OMLX_HOST + "/v1/chat/completions"
         
-        # We use chat completions for the big model as it might be an instruction-tuned model (e.g., GLM-4, Llama-3-70B-Instruct)
+        # We use chat completions for the big model as it might be an instruction-tuned model.
         response = requests.post(
             CASPER_URL,
             json={

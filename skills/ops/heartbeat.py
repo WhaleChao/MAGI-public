@@ -104,7 +104,7 @@ def get_node_model(ip, port=8080):
             data = response.json()
             models = data.get("data") or []
             if models:
-                # 優先回傳主對話模型（Gemma），Qwen 只負責 code
+                # 優先回傳主對話模型（Gemma）；中國模型不列入候選。
                 main_model = os.environ.get("MAGI_MAIN_MODEL", "gemma")
                 for m in models:
                     mid = m.get("id", "")
@@ -153,7 +153,7 @@ def update_status():
                     if r.status_code == 200:
                         omlx_models = [m.get("id", "") for m in r.json().get("data", [])]
                         if omlx_models:
-                            # 顯示主對話模型（Gemma），Qwen 只負責 code
+                            # 顯示主對話模型（Gemma）；中國模型不列入候選。
                             main_kw = os.environ.get("MAGI_MAIN_MODEL", "gemma").lower().split("-")[0]
                             primary = next((m for m in omlx_models if main_kw in m.lower()), omlx_models[0])
                             model = f"oMLX: {primary}"

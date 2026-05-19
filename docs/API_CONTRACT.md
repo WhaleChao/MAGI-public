@@ -161,7 +161,7 @@ Get status of all three sages.
     "online": true,
     "role": "Scientist (Vision/Code)",
     "gpu": "RTX 3060",
-    "models": ["llava", "qwen-vl"]
+    "models": ["llava", "pixtral"]
   },
   "balthasar": {
     "online": true,

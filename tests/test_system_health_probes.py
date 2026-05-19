@@ -67,16 +67,16 @@ def _mock_models_response(status_code=200, models=None):
     "payload, expected",
     [
         (
-            {"object": "list", "data": [{"id": "gemma-4-e4b-it-4bit"}, {"id": "Qwen2.5-Coder-14B"}]},
-            ["gemma-4-e4b-it-4bit", "Qwen2.5-Coder-14B"],
+            {"object": "list", "data": [{"id": "gemma-4-e4b-it-4bit"}, {"id": "mistral-nemo:12b"}]},
+            ["gemma-4-e4b-it-4bit", "mistral-nemo:12b"],
         ),
         (
-            {"object": "list", "models": [{"name": "gemma-4-e4b-it-4bit"}, {"model": "Qwen2.5-Coder-14B"}]},
-            ["gemma-4-e4b-it-4bit", "Qwen2.5-Coder-14B"],
+            {"object": "list", "models": [{"name": "gemma-4-e4b-it-4bit"}, {"model": "mistral-nemo:12b"}]},
+            ["gemma-4-e4b-it-4bit", "mistral-nemo:12b"],
         ),
         (
-            [{"id": "gemma-4-e4b-it-4bit"}, "Qwen2.5-Coder-14B"],
-            ["gemma-4-e4b-it-4bit", "Qwen2.5-Coder-14B"],
+            [{"id": "gemma-4-e4b-it-4bit"}, "mistral-nemo:12b"],
+            ["gemma-4-e4b-it-4bit", "mistral-nemo:12b"],
         ),
     ],
 )
@@ -117,7 +117,7 @@ def test_shared_health_probe_local_chat_retries_after_timeout(monkeypatch):
 def test_system_test_omlx_uses_models_endpoint(monkeypatch):
     from skills.ops import system_test
 
-    mock_resp = _mock_models_response(200, [{"id": "gemma-4-e4b-it-4bit"}, {"id": "Qwen2.5-Coder-14B"}])
+    mock_resp = _mock_models_response(200, [{"id": "gemma-4-e4b-it-4bit"}, {"id": "mistral-nemo:12b"}])
     fake_requests = types.ModuleType("requests")
     fake_requests.get = MagicMock(return_value=mock_resp)
     monkeypatch.setitem(sys.modules, "requests", fake_requests)
@@ -147,16 +147,16 @@ def test_system_test_omlx_unreachable(monkeypatch):
     "payload, expected",
     [
         (
-            {"object": "list", "data": [{"id": "gemma-4-e4b-it-4bit"}, {"id": "Qwen2.5-Coder-14B"}]},
-            ["gemma-4-e4b-it-4bit", "Qwen2.5-Coder-14B"],
+            {"object": "list", "data": [{"id": "gemma-4-e4b-it-4bit"}, {"id": "mistral-nemo:12b"}]},
+            ["gemma-4-e4b-it-4bit", "mistral-nemo:12b"],
         ),
         (
-            {"object": "list", "models": [{"name": "gemma-4-e4b-it-4bit"}, {"model": "Qwen2.5-Coder-14B"}]},
-            ["gemma-4-e4b-it-4bit", "Qwen2.5-Coder-14B"],
+            {"object": "list", "models": [{"name": "gemma-4-e4b-it-4bit"}, {"model": "mistral-nemo:12b"}]},
+            ["gemma-4-e4b-it-4bit", "mistral-nemo:12b"],
         ),
         (
-            [{"id": "gemma-4-e4b-it-4bit"}, "Qwen2.5-Coder-14B"],
-            ["gemma-4-e4b-it-4bit", "Qwen2.5-Coder-14B"],
+            [{"id": "gemma-4-e4b-it-4bit"}, "mistral-nemo:12b"],
+            ["gemma-4-e4b-it-4bit", "mistral-nemo:12b"],
         ),
     ],
 )
@@ -197,7 +197,7 @@ def test_system_test_run_all_tests_writes_report_under_static(tmp_path, monkeypa
 def test_magi_doctor_probe_imports_requests_lazily_and_uses_models_schema(monkeypatch):
     module = _load_magi_doctor_module()
 
-    mock_resp = _mock_models_response(200, [{"id": "gemma-4-e4b-it-4bit"}, {"id": "Qwen2.5-Coder-14B"}])
+    mock_resp = _mock_models_response(200, [{"id": "gemma-4-e4b-it-4bit"}, {"id": "mistral-nemo:12b"}])
     fake_requests = types.ModuleType("requests")
     fake_requests.get = MagicMock(return_value=mock_resp)
     monkeypatch.setitem(sys.modules, "requests", fake_requests)
@@ -207,7 +207,7 @@ def test_magi_doctor_probe_imports_requests_lazily_and_uses_models_schema(monkey
     assert result["pass"] is True
     assert "2 models" in result["detail"]
     assert "gemma-4-e4b-it-4bit" in result["detail"]
-    assert "Qwen2.5-Coder-14B" in result["detail"]
+    assert "mistral-nemo:12b" in result["detail"]
 
 
 def test_magi_doctor_repair_ollama_uses_models_probe(monkeypatch):

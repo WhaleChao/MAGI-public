@@ -24,6 +24,7 @@ from api.model_config import (
     TEXT_PRIMARY_MODEL,
     TEXT_REVIEW_MODEL,
     VISION_MODEL as DEFAULT_VISION_MODEL,
+    is_disallowed_model,
     resolve_text_model,
 )
 
@@ -49,10 +50,10 @@ OMLX_VISION_BASE = (os.environ.get("MAGI_OMLX_VISION_URL") or f"http://{OMLX_VIS
 OMLX_HOST = OMLX_CHAT_HOST
 OMLX_PORT = OMLX_CHAT_PORT
 OMLX_BASE = OMLX_CHAT_BASE
-OMLX_SUMMARY_MODEL = os.environ.get("MAGI_OMLX_SUMMARY_MODEL", DEFAULT_SUMMARY_MODEL)
-OMLX_VISION_MODEL = os.environ.get("MAGI_OMLX_VISION_MODEL", DEFAULT_VISION_MODEL)
+OMLX_SUMMARY_MODEL = DEFAULT_SUMMARY_MODEL
+OMLX_VISION_MODEL = DEFAULT_VISION_MODEL
 OMLX_OCR_MODEL = os.environ.get("MAGI_OMLX_OCR_MODEL", DEFAULT_OCR_MODEL)
-OMLX_CODE_MODEL = os.environ.get("MAGI_OMLX_CODE_MODEL", DEFAULT_CODE_MODEL)
+OMLX_CODE_MODEL = DEFAULT_CODE_MODEL
 OMLX_EMBED_MODEL = os.environ.get("MAGI_OMLX_EMBED_MODEL", DEFAULT_EMBED_MODEL)
 OMLX_GENERAL_MODEL = os.environ.get("MAGI_OMLX_GENERAL_MODEL", DEFAULT_GENERAL_MODEL)
 OMLX_LOCAL_CHAT_MODEL = os.environ.get("MAGI_OMLX_LOCAL_CHAT_MODEL", TEXT_REVIEW_MODEL)
@@ -74,6 +75,7 @@ _MODEL_CACHE_LOCK = threading.Lock()  # guards _MODEL_CACHE, _OMLX_MODELS_CACHE,
 # Model alias: Ollama names → oMLX names (for seamless migration)
 _OMLX_MODEL_ALIAS = {
     "nomic-embed-text": OMLX_EMBED_MODEL,
+    # Retired China-model aliases are mapped to the approved primary model.
     "Qwen2.5-Coder-14B-Instruct-4bit": TEXT_PRIMARY_MODEL,
     "Qwen3.5-9B-4bit": TEXT_PRIMARY_MODEL,
     "qwen3.5-9b-4bit": TEXT_PRIMARY_MODEL,
@@ -406,7 +408,11 @@ def _resolve_omlx_chat_model(raw_model: str, *, available_models: Optional[List[
     if not requested:
         requested = OMLX_GENERAL_MODEL
 
-    models = list(available_models or list_omlx_models())
+    models = [
+        str(model).strip()
+        for model in (available_models or list_omlx_models())
+        if str(model).strip() and not is_disallowed_model(str(model).strip())
+    ]
     if not models:
         return requested
     if requested in models:
@@ -427,7 +433,7 @@ def _resolve_omlx_chat_model(raw_model: str, *, available_models: Optional[List[
                 return model_name
         for model_name in models:
             lower = model_name.lower()
-            if any(token in lower for token in ("qwen", "gemma", "coder")):
+            if any(token in lower for token in ("gemma", "mistral", "phi", "llama", "smol")):
                 return model_name
 
     return models[0]
@@ -555,10 +561,6 @@ def _chat_omlx(
     # repetition_penalty: oMLX supports it, Ollama /v1/ does not
     if OMLX_CHAT_PORT != 11434:
         payload["repetition_penalty"] = 1.1
-    # Qwen3.5 needs thinking mode disabled
-    if "qwen" in use_model.lower() and "3.5" in use_model:
-        payload["chat_template_kwargs"] = {"enable_thinking": False}
-
     try:
         data = _post_json(f"{_base}/v1/chat/completions", payload, timeout=max(10, int(timeout)))
         if data.get("_failed") and "404" in str(data.get("error") or ""):
@@ -1247,7 +1249,7 @@ def generate_code(prompt: str, language: str = "python") -> dict:
             ENDPOINTS["code"],
             {
                 "prompt": f"[{language}] {prompt}",
-                "model": "GLM-4.7:latest",
+                "model": TEXT_PRIMARY_MODEL,
             },
             TIMEOUT,
         )
@@ -1257,7 +1259,7 @@ def generate_code(prompt: str, language: str = "python") -> dict:
         return {"success": True, "code": code, "error": ""}
     except Exception:
         # Fallback: remote ollama, then local ollama
-        remote_model = _resolve_remote_model("GLM-4.7:latest")
+        remote_model = _resolve_remote_model(TEXT_PRIMARY_MODEL)
         remote = _chat_ollama(
             f"Write code in {language}: {prompt}",
             remote_model,

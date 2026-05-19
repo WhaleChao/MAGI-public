@@ -669,7 +669,7 @@
         },
         {
             "name": "tri_sage_translate",
-            "description": "Translate text via distributed tri-sage pipeline, preferring Melchior Qwen models.",
+            "description": "Translate text via distributed tri-sage pipeline, using only approved non-China models.",
             "endpoint": "/collab/translate",
             "method": "POST",
             "sage": "casper",

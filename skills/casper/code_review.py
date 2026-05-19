@@ -84,7 +84,7 @@ class CodeReviewSkill:
              return "⚠️ Skipped (Blacklisted due to known hangs)"
 
         prompt = f"""
-You are Qwen3 (30B), a Senior AI Software Engineer at MAGI.
+You are MAGI's approved non-China code review model, a Senior AI Software Engineer at MAGI.
 Your task is to REVIEW and IMPROVE the following Python code from `{file_name}`.
 
 CODE CONTEXT:
@@ -164,7 +164,7 @@ Output Format:
 
         # Task ID
         task_id = "code_review"
-        tracker.update_task(task_id, "Qwen3 Code Review", 0, "Starting...", type="scan")
+        tracker.update_task(task_id, "MAGI Code Review", 0, "Starting...", type="scan")
 
         print(f"📂 Found {len(files)} Python files.")
 
@@ -184,15 +184,15 @@ Output Format:
                 current_hash = self._compute_hash(file_path)
                 if current_hash and current_hash == cache.get(file_path):
                     print(f"⏩ Skipping unchanged file: {file_name}", flush=True)
-                    tracker.update_task(task_id, "Qwen3 Code Review", progress, f"Skipped (Unchanged): {file_name}", type="scan")
+                    tracker.update_task(task_id, "MAGI Code Review", progress, f"Skipped (Unchanged): {file_name}", type="scan")
                     continue
                 
                 if os.path.getsize(file_path) < 10:
                     print(f"⏭️ Skipping empty/small file: {file_name}", flush=True)
-                    tracker.update_task(task_id, "Qwen3 Code Review", progress, f"Skipped (Empty): {file_name}", type="scan")
+                    tracker.update_task(task_id, "MAGI Code Review", progress, f"Skipped (Empty): {file_name}", type="scan")
                     continue
 
-                tracker.update_task(task_id, "Qwen3 Code Review", progress, f"Analyzing {file_name}...", type="scan")
+                tracker.update_task(task_id, "MAGI Code Review", progress, f"Analyzing {file_name}...", type="scan")
                 print(f"[{i+1}/{len(files)}] Reviewing {file_name}...", flush=True)
                 
                 # Write Header BEFORE analysis (for debugging stalls)

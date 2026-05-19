@@ -531,6 +531,90 @@ def _get_preferred_case_roots(*, include_closed: bool = False):
     return preferred_case_roots(include_closed=include_closed)
 
 
+def _osc_is_synology_drive_fallback_path(path: str) -> bool:
+    """True when path is a Synology Drive File Provider/sync fallback."""
+    norm = str(path or "").replace("\\", "/")
+    return (
+        "/Library/CloudStorage/SynologyDrive-" in norm
+        or norm.endswith("/SynologyDrive")
+        or "/SynologyDrive/" in norm
+    )
+
+
+def _osc_case_creation_roots() -> list[str]:
+    """Candidate active case roots for creating folders, with SMB/NAS first."""
+    roots: list[str] = []
+    try:
+        from api.case_path_mapper import default_case_roots
+        roots.extend(default_case_roots(include_closed=False))
+    except Exception:
+        _log.debug("silent-catch default_case_roots", exc_info=True)
+    try:
+        roots.extend(_get_preferred_case_roots(include_closed=False))
+    except Exception:
+        _log.debug("silent-catch preferred_case_roots", exc_info=True)
+    seen: set[str] = set()
+    out: list[str] = []
+    for raw in roots:
+        root = str(raw or "").rstrip("/")
+        key = root.lower()
+        if root and key not in seen:
+            seen.add(key)
+            out.append(root)
+    return out
+
+
+def _osc_select_case_creation_root() -> dict:
+    """Select a real NAS/SMB root for creating case folders.
+
+    Synology Drive is intentionally read-only fallback for MAGI.  Creating
+    skeleton folders there causes empty File Provider folders to sync back and
+    confuse OSC case status/folder moves.
+    """
+    roots = _osc_case_creation_roots()
+
+    def _find_existing_non_cloud() -> str:
+        for root in roots:
+            if _osc_is_synology_drive_fallback_path(root):
+                continue
+            try:
+                if os.path.isdir(root):
+                    return root
+            except OSError:
+                continue
+        return ""
+
+    selected = _find_existing_non_cloud()
+    if selected:
+        return {"ok": True, "root": selected, "roots": roots}
+
+    try:
+        from api.nas_mount_guard import ensure_nas_mounts
+        ensure_nas_mounts()
+    except Exception:
+        _log.debug("silent-catch ensure_nas_mounts for case creation", exc_info=True)
+
+    selected = _find_existing_non_cloud()
+    if selected:
+        return {"ok": True, "root": selected, "roots": roots}
+
+    allow_cloud = os.environ.get("MAGI_ALLOW_SYNOLOGY_DRIVE_FOLDER_CREATE", "0").strip().lower() in {"1", "true", "yes", "on"}
+    if allow_cloud:
+        for root in roots:
+            try:
+                if os.path.isdir(root):
+                    return {"ok": True, "root": root, "roots": roots, "warning": "synology_drive_folder_create_allowed"}
+            except OSError:
+                continue
+
+    return {
+        "ok": False,
+        "error": "nas_case_root_not_mounted",
+        "message": "未掛載真正 NAS/SMB 案件根目錄；為避免 Synology Drive 產生空案件資料夾，已拒絕建立。",
+        "roots": roots,
+    }
+
+
 def _get_translate_local_path_to_canonical():
     from api.case_path_mapper import translate_local_path_to_canonical
     return translate_local_path_to_canonical
@@ -641,9 +725,9 @@ def _osc_auto_create_folder_for_case(row_id: str, payload: dict, case_category: 
     )
 
     translate_local_path_to_canonical = _get_translate_local_path_to_canonical()
-    case_roots = _get_preferred_case_roots()
-    if not case_roots or not os.path.isdir(case_roots[0]):
-        return {"ok": False, "error": "no_case_root"}
+    root_selection = _osc_select_case_creation_root()
+    if not root_selection.get("ok"):
+        return root_selection
 
     case_number = (payload.get("case_number") or payload.get("case_no") or payload.get("caseNumber") or "").strip()
     client_name = (payload.get("client_name") or payload.get("name") or payload.get("client") or "").strip()
@@ -655,7 +739,7 @@ def _osc_auto_create_folder_for_case(row_id: str, payload: dict, case_category: 
         return {"ok": False, "error": "missing_case_number_or_client_name"}
 
     full_path = build_full_case_path(
-        case_roots[0], case_number, client_name,
+        str(root_selection.get("root") or ""), case_number, client_name,
         case_type=case_type, case_category=case_category or "一般案件",
         case_stage=case_stage, case_reason=case_reason,
     )
@@ -2100,12 +2184,10 @@ def osc_case_create_folder_api(row_id):
     if not row:
         return jsonify({"ok": False, "error": "case_not_found"}), 404
 
-    case_roots = _get_preferred_case_roots()
-    if not case_roots:
-        return jsonify({"ok": False, "error": "no_case_root_configured"}), 500
-    base_path = case_roots[0]
-    if not os.path.isdir(base_path):
-        return jsonify({"ok": False, "error": f"base_path_not_found: {base_path}"}), 500
+    root_selection = _osc_select_case_creation_root()
+    if not root_selection.get("ok"):
+        return jsonify(root_selection), 500
+    base_path = str(root_selection.get("root") or "")
 
     case_number = row.get("case_number") or ""
     client_name = row.get("client_name") or ""

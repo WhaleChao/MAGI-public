@@ -374,9 +374,13 @@ def _llm_generate_patch(rel_path: str, current_source: str, proposal: str, issue
     except ImportError:
         return {"success": False, "error": "requests not available"}
 
-    # Always try Qwen Coder first (oMLX auto-loads on request).
-    # Code generation requires a code-tuned model (Qwen Coder), not the general chat model.
-    models_to_try = ["Qwen2.5-Coder-14B-Instruct-4bit"]
+    from api.model_config import CODE_MODEL, TEXT_PRIMARY_MODEL, is_disallowed_model
+
+    models_to_try = []
+    for candidate in (CODE_MODEL, TEXT_PRIMARY_MODEL):
+        model_name = str(candidate or "").strip()
+        if model_name and (not is_disallowed_model(model_name)) and model_name not in models_to_try:
+            models_to_try.append(model_name)
 
     for model_name in models_to_try:
         try:
