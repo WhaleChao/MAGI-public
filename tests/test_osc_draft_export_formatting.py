@@ -35,6 +35,7 @@ def test_export_form_docx_uses_pleading_layout(tmp_path, monkeypatch):
     from api import startup
 
     monkeypatch.setattr(startup, "EXPORTS_DIR", str(tmp_path))
+    monkeypatch.setenv("MAGI_PLEADING_STYLE_SCAN_NAS", "0")
     text = """```text
 # 民事準備書狀
 案號：113年度訴字第100號　股別：義股
@@ -56,8 +57,9 @@ def test_export_form_docx_uses_pleading_layout(tmp_path, monkeypatch):
     paragraphs = [p for p in doc.paragraphs if p.text.strip()]
     assert paragraphs[0].text == "民事準備書狀"
     assert paragraphs[0].alignment == 1  # CENTER
-    assert round(doc.sections[0].left_margin.cm, 1) == 1.8
-    assert round(doc.sections[0].right_margin.cm, 1) == 1.8
+    assert round(doc.sections[0].top_margin.cm, 1) == 2.5
+    assert round(doc.sections[0].left_margin.cm, 1) == 3.2
+    assert round(doc.sections[0].right_margin.cm, 1) == 3.2
     assert doc.tables
     table_text = "\n".join(cell.text for row in doc.tables[0].rows for cell in row.cells)
     assert "案號" in table_text
