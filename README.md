@@ -50,12 +50,12 @@ python3 scripts/packaging/build_installers.py --force
 Artifacts:
 
 - `dist/installers/MAGI-macOS-Installer.dmg` — opens a Terminal-based installer,
-  detects Apple Silicon, prepares oMLX/MLX, downloads the recommended local
-  models, then runs MAGI's customer install wizard.
+  detects Apple Silicon, helps install MariaDB/Tailscale, prepares oMLX/MLX,
+  downloads the recommended local models, then runs MAGI's customer install wizard.
 - `dist/installers/windows/dist/MAGI-Setup.exe` — built by the Windows workflow
   or by running `dist/installers/windows/build_windows_exe.ps1` on Windows;
-  detects Windows hardware, prepares Ollama, pulls the selected model, then
-  runs the same wizard.
+  detects Windows hardware, helps install MariaDB/Tailscale, prepares Ollama,
+  pulls the selected model, then runs the same wizard.
 
 The runtime-only plan can be previewed without changing the machine:
 
@@ -116,7 +116,7 @@ python3 scripts/magi_doctor.py --json
 python3 scripts/install_magi.py --dry-run --check-live
 ```
 
-`customer_install_wizard.py` is the one-command customer entrypoint: it creates a local `.env`, generates local secrets, installs dependencies when `--yes` is present, seeds local scheduled jobs, runs diagnostics, writes `.runtime/customer_install_wizard_latest.json`, and never prints token or password values. `first_run_setup.py` remains the lower-level checklist tool. The public audit blocks high-confidence secrets and private tracked paths; before pushing to the public project, add `--public-isolation` to also block private legal-source integrations and private mailbox/NAS markers. For release and commercial use, run it with `--strict`; the release branch is expected to pass with `0 errors / 0 warnings`.
+`customer_install_wizard.py` is the one-command customer entrypoint: it creates a local `.env`, generates local secrets, installs Python dependencies when `--yes` is present, seeds local scheduled jobs, runs diagnostics, writes `.runtime/customer_install_wizard_latest.json`, and never prints token or password values. The DMG/EXE launcher then runs `runtime_bootstrap.py`, which detects and can help install MariaDB, Tailscale, oMLX/Ollama, and local models when the customer allows system package installation. `first_run_setup.py` remains the lower-level checklist tool. The public audit blocks high-confidence secrets and private tracked paths; before pushing to the public project, add `--public-isolation` to also block private legal-source integrations, private mailbox/NAS markers, and private runtime JSON. For release and commercial use, run it with `--strict`; the release branch is expected to pass with `0 errors / 0 warnings`.
 
 Before publishing or handing MAGI to another operator, treat these as go/no-go gates:
 

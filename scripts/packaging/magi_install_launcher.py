@@ -288,9 +288,9 @@ def main(argv: list[str] | None = None) -> int:
     if not args.non_interactive and not args.yes and not args.dry_run:
         print("MAGI 安裝精靈")
         print(f"安裝位置：{install_base}")
-        args.yes = prompt_yes_no("要現在開始安裝 MAGI、模型 runtime 與建議模型嗎？", default=True)
+        args.yes = prompt_yes_no("要現在開始安裝 MAGI、MariaDB/Tailscale、模型 runtime 與建議模型嗎？", default=True)
         if args.yes:
-            args.allow_system_install = prompt_yes_no("允許 MAGI 使用 Homebrew/winget 安裝 oMLX 或 Ollama 嗎？", default=True)
+            args.allow_system_install = prompt_yes_no("允許 MAGI 使用 Homebrew/winget/系統套件管理器安裝 MariaDB、Tailscale、oMLX 或 Ollama 嗎？", default=True)
             if not args.skip_model_download:
                 args.download_models = prompt_yes_no("允許 MAGI 下載最適合此電腦的本地模型嗎？", default=True)
 

@@ -81,6 +81,33 @@ class BootstrapStep:
     next_action: str = ""
 
 
+@dataclass(frozen=True)
+class AuxiliaryDependency:
+    key: str
+    title: str
+    executables: tuple[str, ...]
+    required: bool
+    install_hint: str
+
+
+UTILITY_DEPENDENCIES = (
+    AuxiliaryDependency(
+        key="mariadb",
+        title="MariaDB 資料庫",
+        executables=("mariadb", "mysql"),
+        required=True,
+        install_hint="MAGI 需要 MariaDB/MySQL 儲存案件、待辦與知識索引。",
+    ),
+    AuxiliaryDependency(
+        key="tailscale",
+        title="Tailscale 遠端連線",
+        executables=("tailscale",),
+        required=False,
+        install_hint="Tailscale 用於外網安全連線、NAS fallback 與遠端支援；單機離線可稍後設定。",
+    ),
+)
+
+
 def _run(command: list[str], *, cwd: Path | None = None, timeout: int = 900, required: bool = True, env: dict[str, str] | None = None) -> BootstrapStep:
     started = time.monotonic()
     try:
@@ -129,6 +156,32 @@ def _run(command: list[str], *, cwd: Path | None = None, timeout: int = 900, req
 
 def _which(name: str) -> str:
     return shutil.which(name) or ""
+
+
+def _which_any(names: tuple[str, ...]) -> str:
+    for name in names:
+        found = _which(name)
+        if found:
+            return found
+    if platform.system() == "Windows":
+        candidates = {
+            "mariadb": [
+                r"C:\Program Files\MariaDB\bin\mariadb.exe",
+                r"C:\Program Files\MariaDB\bin\mysql.exe",
+            ],
+            "mysql": [
+                r"C:\Program Files\MariaDB\bin\mysql.exe",
+                r"C:\Program Files\MySQL\MySQL Server 8.0\bin\mysql.exe",
+            ],
+            "tailscale": [
+                r"C:\Program Files\Tailscale\tailscale.exe",
+            ],
+        }
+        for name in names:
+            for candidate in candidates.get(name, []):
+                if Path(candidate).is_file():
+                    return candidate
+    return ""
 
 
 def _probe(command: list[str], *, timeout: int = 15) -> bool:
@@ -361,6 +414,100 @@ def _run_or_plan(
     steps.append(result)
 
 
+def _utility_install_command(dep: AuxiliaryDependency) -> list[str]:
+    system = platform.system()
+    if dep.key == "mariadb":
+        if system == "Windows":
+            return ["winget", "install", "--id", "MariaDB.Server", "-e", "--accept-package-agreements", "--accept-source-agreements"]
+        if system == "Darwin":
+            brew = _which("brew")
+            return [brew, "install", "mariadb"] if brew else ["echo", "請先安裝 Homebrew，再安裝 MariaDB"]
+        if _which("apt-get"):
+            return ["sudo", "apt-get", "install", "-y", "mariadb-server"]
+        if _which("dnf"):
+            return ["sudo", "dnf", "install", "-y", "mariadb-server"]
+        if _which("yum"):
+            return ["sudo", "yum", "install", "-y", "mariadb-server"]
+        return ["echo", "請安裝 MariaDB Server 或 MySQL Server"]
+    if dep.key == "tailscale":
+        if system == "Windows":
+            return ["winget", "install", "--id", "Tailscale.Tailscale", "-e", "--accept-package-agreements", "--accept-source-agreements"]
+        if system == "Darwin":
+            brew = _which("brew")
+            return [brew, "install", "--cask", "tailscale"] if brew else ["echo", "請先安裝 Homebrew，再安裝 Tailscale"]
+        if _which("curl") and _which("sh"):
+            return ["sh", "-c", "curl -fsSL https://tailscale.com/install.sh | sh"]
+        return ["echo", "請安裝 Tailscale：https://tailscale.com/download"]
+    return ["echo", f"請安裝 {dep.title}"]
+
+
+def _utility_start_command(dep: AuxiliaryDependency) -> list[str]:
+    system = platform.system()
+    if dep.key == "mariadb":
+        if system == "Darwin" and _which("brew"):
+            return [_which("brew"), "services", "start", "mariadb"]
+        if system == "Linux" and _which("systemctl"):
+            return ["sudo", "systemctl", "enable", "--now", "mariadb"]
+        if system == "Windows":
+            return ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", "Start-Service MariaDB -ErrorAction SilentlyContinue"]
+    return []
+
+
+def _build_utility_steps(*, execute: bool, allow_system_install: bool) -> list[BootstrapStep]:
+    steps: list[BootstrapStep] = []
+    for dep in UTILITY_DEPENDENCIES:
+        found = _which_any(dep.executables)
+        if found:
+            steps.append(BootstrapStep(f"utility:{dep.key}", dep.title, "pass", f"found {found}", required=dep.required))
+        else:
+            install_cmd = _utility_install_command(dep)
+            can_execute = allow_system_install and execute and install_cmd and install_cmd[0] != "echo"
+            if can_execute:
+                result = _run(install_cmd, timeout=2400, required=dep.required)
+                result.key = f"utility:{dep.key}"
+                result.title = dep.title
+                if result.status != "pass":
+                    result.next_action = dep.install_hint
+                steps.append(result)
+            else:
+                steps.append(
+                    _step_warn(
+                        f"utility:{dep.key}",
+                        dep.title,
+                        f"{dep.title} 尚未安裝。",
+                        command=install_cmd,
+                        next_action="使用 --yes --allow-system-install 讓安裝精靈協助安裝；或先手動安裝後重跑。",
+                    )
+                )
+
+        if dep.key == "mariadb" and (found or (steps and steps[-1].status == "pass")):
+            start_cmd = _utility_start_command(dep)
+            if start_cmd:
+                _run_or_plan(
+                    steps,
+                    start_cmd,
+                    key="utility:mariadb_start",
+                    title="啟動 MariaDB 服務",
+                    execute=execute,
+                    timeout=300,
+                    required=False,
+                    next_action="若未啟動，請手動啟動 MariaDB 服務後再執行資料庫初始化。",
+                )
+        if dep.key == "tailscale" and (found or (steps and steps[-1].status == "pass")):
+            steps.append(
+                BootstrapStep(
+                    "utility:tailscale_login",
+                    "登入 Tailscale",
+                    "warn",
+                    "Tailscale 安裝後仍需使用者登入授權。",
+                    required=False,
+                    command=["tailscale", "up"],
+                    next_action="啟動 Tailscale 並登入 tailnet；Linux 可執行 sudo tailscale up。",
+                )
+            )
+    return steps
+
+
 def build_steps(
     plan: RuntimePlan,
     *,
@@ -370,12 +517,17 @@ def build_steps(
     allow_system_install: bool,
     download_models: bool,
     install_services: bool,
+    install_utilities: bool = True,
 ) -> list[BootstrapStep]:
     steps: list[BootstrapStep] = [
         BootstrapStep("hardware", "Detect hardware", "pass", json.dumps(asdict(profile), ensure_ascii=False), required=True),
         BootstrapStep("runtime_plan", "Select runtime and model", "pass", json.dumps(asdict(plan), ensure_ascii=False), required=True),
     ]
     python = venv_python(repo_dir)
+    if install_utilities:
+        steps.extend(_build_utility_steps(execute=execute, allow_system_install=allow_system_install))
+    else:
+        steps.append(_step_skipped("utility", "安裝外部輔助套件", "skipped by --skip-utilities", next_action="MariaDB 與 Tailscale 需另行安裝。"))
 
     if plan.provider == "ollama":
         ollama = _which("ollama")
@@ -506,6 +658,7 @@ def build_payload(args: argparse.Namespace) -> dict[str, Any]:
         allow_system_install=bool(args.allow_system_install),
         download_models=bool(args.download_models),
         install_services=bool(args.install_services),
+        install_utilities=not bool(getattr(args, "skip_utilities", False)),
     )
     summary = _summary(steps)
     ok = summary["fail"] == 0
@@ -521,7 +674,7 @@ def build_payload(args: argparse.Namespace) -> dict[str, Any]:
         "summary": summary,
         "steps": [asdict(step) for step in steps],
         "next_steps": [
-            "Run with --yes --allow-system-install --download-models to let MAGI install runtime dependencies and models.",
+            "Run with --yes --allow-system-install --download-models to let MAGI install MariaDB/Tailscale, model runtime dependencies, and models.",
             "After .env is complete, run scripts/magi_doctor.py --json and scripts/ops/commercial_readiness_live.py --strict-public.",
         ],
     }
@@ -535,6 +688,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--dry-run", action="store_true", help="plan only")
     parser.add_argument("--allow-system-install", action="store_true", help="allow Homebrew/winget runtime installation")
     parser.add_argument("--download-models", action="store_true", help="download selected local models")
+    parser.add_argument("--skip-utilities", action="store_true", help="skip MariaDB/Tailscale helper installation checks")
     parser.add_argument("--include-heavy", action="store_true", help="also download heavy model even if RAM is below the automatic threshold")
     parser.add_argument("--install-services", action="store_true", help="install local runtime services after model download")
     parser.add_argument("--json", action="store_true", help="print JSON")

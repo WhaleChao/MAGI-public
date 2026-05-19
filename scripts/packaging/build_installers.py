@@ -98,7 +98,7 @@ def _write_macos_readme(path: Path) -> None:
         """# MAGI macOS Installer
 
 1. Open `MAGI Installer.app` from this DMG.
-2. The installer opens Terminal and asks whether MAGI may install oMLX/Ollama and download the recommended model.
+2. The installer opens Terminal and asks whether MAGI may install MariaDB, Tailscale, oMLX/Ollama, and the recommended model.
 3. If macOS says the developer cannot be verified, Control-click the app and choose Open, or remove quarantine after verifying the source:
 
    xattr -dr com.apple.quarantine "/Applications/MAGI Installer.app"
@@ -210,6 +210,7 @@ def build_windows_payload(archive: Path, output_root: Path, *, force: bool, buil
         """MAGI Windows Installer
 
 Preferred customer artifact: MAGI-Setup.exe built on Windows with build_windows_exe.ps1.
+The setup program detects and can help install MariaDB, Tailscale, Ollama, and the recommended model when the customer allows system package installation.
 Unsigned EXE files may show Microsoft Defender SmartScreen warnings until a publisher/hash reputation exists.
 If no EXE is available, run "Start MAGI Installer.cmd" from this folder.
 """,
