@@ -14,7 +14,6 @@ MAGI v2 is a locally-deployed AI operations platform built for a Taiwanese law f
 
 - [Quick Start](#quick-start)
 - [Current Public Status](#current-public-status)
-- [General User Manual](docs/USER_GUIDE.md)
 - [Architecture](#architecture)
   - [Three-Model Inference — Day / Night](#three-model-inference--day--night)
   - [Three-Philosopher Ensemble Review](#three-philosopher-ensemble-review)
@@ -40,26 +39,48 @@ MAGI v2 is a locally-deployed AI operations platform built for a Taiwanese law f
 
 ## Quick Start
 
+### Customer installer (recommended for external users)
+
+Build customer-facing installers from a clean checkout:
+
+```bash
+python3 scripts/packaging/build_installers.py --force
+```
+
+Artifacts:
+
+- `dist/installers/MAGI-macOS-Installer.dmg` — opens a Terminal-based installer,
+  detects Apple Silicon, helps install MariaDB/Tailscale, prepares oMLX/MLX,
+  downloads the recommended local models, then runs MAGI's customer install wizard.
+- `dist/installers/windows/dist/MAGI-Setup.exe` — built by the Windows workflow
+  or by running `dist/installers/windows/build_windows_exe.ps1` on Windows;
+  detects Windows hardware, helps install MariaDB/Tailscale, prepares Ollama,
+  pulls the selected model, then runs the same wizard.
+
+The runtime-only plan can be previewed without changing the machine:
+
+```bash
+python3 scripts/packaging/runtime_bootstrap.py --dry-run --download-models --json
+```
+
 ### macOS (Apple Silicon)
 
 ```bash
 # 1. Clone
-git clone https://github.com/WhaleChao/MAGI-v2.git && cd MAGI-v2
+git clone https://github.com/WhaleChao/MAGI-public.git && cd MAGI-public
 
-# 2. Beginner-safe installer dry run
-python3 scripts/install_magi.py --dry-run --check-live
+# 2. Run the customer install wizard
+#    Omit --yes first if you want to preview the plan without changing anything.
+python3 scripts/customer_install_wizard.py --public --yes
 
-# 3. Install when the plan looks correct
-python3 scripts/install_magi.py --yes
+# 3. Activate the local environment
 source .venv/bin/activate  # or source venv/bin/activate on existing installs
 
-# 4. Copy and fill environment
-cp .env.example .env   # fill in tokens / DB creds
-
-# 5. Run diagnostics
+# 4. Fill customer-specific .env values, then recheck
+python3 scripts/first_run_setup.py --public --json
 python3 scripts/magi_doctor.py
 
-# 6. Start
+# 5. Start
 launchctl load ~/Library/LaunchAgents/com.magi.daemon.plist
 magi status
 ```
@@ -88,22 +109,59 @@ This branch is prepared for public release with private runtime material removed
 Public readiness checks:
 
 ```bash
-python3 scripts/public_release_audit.py
+python3 scripts/public_release_audit.py --public-isolation --strict
+python3 scripts/customer_install_wizard.py --public --no-live
+python3 scripts/first_run_setup.py --public --json
 python3 scripts/magi_doctor.py --json
 python3 scripts/install_magi.py --dry-run --check-live
 ```
 
-The public audit blocks high-confidence secrets and private tracked paths. It may still emit warnings for synthetic test phone numbers or RFC/private-network examples; warnings are informational unless `--strict` is used.
+`customer_install_wizard.py` is the one-command customer entrypoint: it creates a local `.env`, generates local secrets, installs Python dependencies when `--yes` is present, seeds local scheduled jobs, runs diagnostics, writes `.runtime/customer_install_wizard_latest.json`, and never prints token or password values. The DMG/EXE launcher then runs `runtime_bootstrap.py`, which detects and can help install MariaDB, Tailscale, oMLX/Ollama, and local models when the customer allows system package installation. After detection, the bootstrapper safely merges non-secret utility and runtime settings back into `.env` (database host/port, binary paths, model provider, model names, local inference URLs), while preserving existing passwords, tokens, and user-owned values. `first_run_setup.py` remains the lower-level checklist tool. The public audit blocks high-confidence secrets and private tracked paths; before pushing to the public project, add `--public-isolation` to also block private legal-source integrations, private mailbox/NAS markers, and private runtime JSON. For release and commercial use, run it with `--strict`; the release branch is expected to pass with `0 errors / 0 warnings`.
 
-Before handing MAGI to another operator, confirm the daemon, OSC pages, messaging
-channels, database, file storage, and Google Calendar checks on the target host.
-NERV (`/dashboard/nerv` or `/nerv`) is the host status page for model, OCR, DB,
-NAS/file storage, and background-service health.
+Before publishing or handing MAGI to another operator, treat these as go/no-go gates:
 
-This public release is single-host by design. Multi-tenant service, electronic
-signatures, and a public upload portal are outside the enabled scope; operators
-should use the built-in "對外資料" copy text with their existing communication
-channel.
+- README files, the operator guide, terms, privacy policy, data-retention policy, and third-party bill of materials are current.
+- The daemon starts, and `/health`, the main OSC tabs, messaging channels, DB, NAS/file storage, and Google Calendar OAuth all pass live checks.
+- NERV (`/dashboard/nerv` or `/nerv`) is the production status page for the target host; use it to confirm model, OCR, DB, NAS, and background-service health before handoff.
+- `scripts/public_release_audit.py --strict` has no errors or warnings. Install-only packages without a private DB may use the dedicated `--skip-db` installability check.
+- `.env`, OAuth tokens, DB dumps, case/client material, portal screenshots, NAS paths, and runtime reports are not tracked by git.
+- LAF, court file review, transcript, and calendar workflows are high-risk workflows; production submission, DB restore, and bulk file movement must remain confirmation-gated.
+- This release is single-host by design. Multi-tenant service, electronic signatures, and a public upload portal are outside the enabled scope; operators should use the built-in "對外資料" copy text with their existing communication channel.
+
+Public self-install flow:
+
+```bash
+git clone https://github.com/WhaleChao/MAGI-public.git
+cd MAGI-public
+python3 scripts/customer_install_wizard.py --public --yes
+python3 scripts/public_release_audit.py --public-isolation --strict
+```
+
+Commercial readiness documents:
+
+- [Commercial readiness guide](docs/COMMERCIAL_READINESS.md)
+- [General user manual](docs/USER_GUIDE.md)
+- [Illustrated general user manual DOCX](docs/guides/MAGI_一般使用者圖文操作手冊_2026-05-19.docx)
+- [Illustrated general user manual PDF](docs/guides/MAGI_一般使用者圖文操作手冊_2026-05-19.pdf)
+- [General user manual DOCX](docs/guides/MAGI_一般使用者完整操作手冊_2026-05-18.docx)
+- [Public operation manual](docs/PUBLIC_OPERATION_MANUAL.md)
+- [Private operation manual](docs/PRIVATE_OPERATION_MANUAL.md)
+- [Public self-install guide](docs/PUBLIC_SELF_INSTALL.md)
+- [Legal AI guardrails](docs/LEGAL_AGENT_GUARDRAILS.md)
+- [Terms of service template](docs/TERMS_OF_SERVICE.md)
+- [Privacy policy](docs/PRIVACY_POLICY.md)
+- [Data retention policy](docs/DATA_RETENTION_POLICY.md)
+- [Third-party bill of materials](docs/THIRD_PARTY_BOM.md)
+- [Security policy](SECURITY.md)
+- [Support policy](SUPPORT.md)
+
+Commercial production gate:
+
+```bash
+./venv/bin/python scripts/ops/commercial_readiness_live.py --strict-public
+```
+
+Use `--skip-db` only for public installability checks that intentionally do not include a private production database.
 
 Gemma 4 E4B / MTP support is available through the MLX sidecar:
 
@@ -112,9 +170,22 @@ python3 scripts/serve_mlx_mtp.py --host 127.0.0.1 --port 8090
 curl http://127.0.0.1:8090/health
 ```
 
-Live acceptance is covered by `scripts/live_magi_mtp_eval.py`. The latest local verification exercised JSON routing, ReAct real tool calls, all ReAct tool-selection paths, tool-confusion guards, and hallucination abstention checks.
+### 2026-05 Stabilization Highlights
 
-For day-to-day operation, see the [MAGI general user manual](docs/USER_GUIDE.md).
+Recent hardening work is reflected in the public docs and live gates:
+
+- **LAF**: consumer-debt checklists restore OSC conditional logic; income-list years are derived from the filing year. LAF status can be adjusted in the web UI, and closed cases can be archived while folders/files remain openable.
+- **LAF closing**: enforcement cases can close with enforcement orders found under the judgment folder; same-name/different-procedure cases are no longer closed by name alone. Long-running progress reminders support 90-day cooldowns.
+- **Activity counts**: hearings, meetings, detention visits, file review, and phone contact counts combine OSC todos, Google Calendar, meeting records, and review-folder evidence; review folders containing only payment slips are excluded.
+- **PDF / OCR**: PDF naming supports envelope-page skipping, multi-engine OCR consensus, legal-text correction, and training feedback for court notices, procedural rulings, judgments, opposing-party pleadings, and judgment folders.
+- **Pleadings**: OSC pleading generation includes Word/PDF layout safeguards and case-reason-scoped correction learning.
+- **Accounting**: Google Sheets imports can exclude coworker-tagged rows, deduplicate recurring fixed expenses, and run on Monday/Friday schedules.
+- **Legal research**: the Taiwan legal MCP adapter is available as a practical-opinion source; misses are reported as misses rather than filled by the model.
+- **Legal AI delivery gates**: legal answers carry source/coverage review notes; summary, translation, and transcript outputs are blocked when they are too short, off-topic, failed, or leak tool reasoning.
+- **Office overview**: the web UI links cases, todos, LAF, pleading index, public-facing data, and business overview without duplicating the source modules.
+- **Operations**: the full smoke gate now includes commercial-release guards, clean public install checks, public secret audit, disk low-water alarms, cache cleanup, NAS mount guards, and notification-routing checks.
+
+Live acceptance is covered by `scripts/live_magi_mtp_eval.py`. The latest local verification exercised JSON routing, ReAct real tool calls, all ReAct tool-selection paths, tool-confusion guards, and hallucination abstention checks.
 
 ---
 
@@ -246,12 +317,27 @@ Automates the full lifecycle of Legal Aid Foundation cases:
 | **Incoming mail** | Gmail monitor detects LAF notification emails |
 | **Portal go-live** | Auto-fills case opening forms, uploads commission letter + LAF notice |
 | **Pending drafts** | Scans portal for unsigned drafts, surfaces to lawyer |
-| **Closing** | Drafts case-closing submissions with correct remark format; supports `引用OOO的會議` (inherit another case's meeting count) and `OOO就是結案文件` (specify any file as closing basis by keyword) |
+| **Closing** | Drafts case-closing submissions with correct remark format; supports `引用OOO的會議` (inherit another case's meeting count) and `OOO就是結案檔案` (specify any file as closing basis by keyword) |
+| **Document finalisation** | OSC document index can produce stamped 正本 / 副本 / 繕本 files, including manual stamp placement and final PDF merge |
 | **Consumer-debt checklist** | OSC LAF tab restores the conditional consumer-debt required-document checklist, copyable client text, and LAF number detection/sync |
+| **Checklist CRUD** | OSC LAF tab provides editable legal-aid required-item checklists; case cards retain a separate case supplement checklist |
+| **CSV exchange** | Cases and clients can be imported/exported as UTF-8 CSV from the Paperclip UI |
+| **Office outputs** | Case cards can generate address-label PNG files; quotations can be exported as PDF |
+| **Theme toggle** | Paperclip includes a persisted light/dark theme switch for long drafting sessions |
 | **Batch ops** | Bulk query / batch closing / batch audit via natural-language commands |
-| **Smart lookup** | Disambiguates multiple cases by status priority + keyword filtering |
+| **Smart lookup** | Disambiguates multiple cases using DB case type, LAF number, legal-aid status, status priority, and keyword filtering |
+| **LAF activity counts** | Court hearings, meetings, detention visits, file review, and phone-contact counts are matched to LAF cases through DB-backed identity rules; same-name regular cases are not mixed into LAF reports |
 
 NAS folder structure is respected for each case category (法扶 / 一般 / 無償 / 指定辯護).
+
+### Google Calendar / OSC Sync Rules
+
+MAGI can read multiple Google calendars, but OSC todo import is intentionally narrow so coworker-entered events, holidays, and private reminders do not pollute case records:
+
+- General OSC events must begin with the OSC system case number, for example `[2026-0035] Hearing` or `2026-0035: Hearing`.
+- LAF activity-count events may still be imported when the DB identifies the target as a Legal Aid Foundation case and the event text is a reportable activity: hearing, meeting, detention visit, file review, or phone contact.
+- Same-name cases are resolved through DB fields such as `laf_case_no`, `application_no`, `case_category=法律扶助案件`, `legal_aid_status`, and case-reason hints. MAGI skips only when multiple LAF cases for the same client remain indistinguishable.
+- Imported Google Calendar event ids are deduplicated to avoid repeated todos.
 
 ### Court File Review
 
@@ -309,15 +395,18 @@ NAS status checks both `/Volumes/` and `~/.magi_mounts/` (Tailscale fallback pat
 | NAS / Files | PDF namer (nightly), weekend bookmark, transcript sync, weekly legal crawl |
 | Market | Market briefing (weekday 08:30), world monitor (every 6h), hedge fund committee |
 | Infrastructure | oMLX day/night switch, OSC case index/scan, gcal sync, smoke chat check |
-| **Disk hygiene (2026-04-25)** | **`disk_low_water_alarm`** (hourly :05 — High <30 GB / Critical <10 GB → `self_repair`), **`weekly_cache_cleanup`** (Sun 04:00 — Vision/HF cache atime >14 d) |
+| **Disk hygiene (2026-05-15)** | **`disk_low_water_alarm`** (hourly :05 — High <50 GB / Critical <15 GB → guarded cleanup + `self_repair`), **`resource_guarded_run`** (skips non-core heavy jobs during low-water or core-only mode), **`weekly_cache_cleanup`** (Sun 04:00 — remove retired Ollama root and rebuildable caches; protect MAGI DB, NAS, model roots, training outputs, standalone JSON/pickle/db state files, and judicial raw backlog) |
 
 ### Self-repair loop & autonomy guards (2026-04-21 → 2026-04-25)
 
 - **Phase 1 issue tracker** — every cron failure / orchestrator catch-all / Tools API errorhandler logs to `.runtime/issue_agenda.jsonl` (PII-scrubbed, 5-min dedup, 5000-row rotation). Truncation limits: stderr `[:4000]`, error_msg `[:5000]`, context `[:2000]`. Set `MAGI_ISSUE_TRACKER_ENABLE=1`.
 - **Layer 1 — `omlx_heartbeat_reaper.py`** — kills duplicate `omlx serve` processes by `--model-dir` fingerprint. Default `OMLX_HEARTBEAT_KILL_MODE=shadow`.
-- **Layer 2 — `memory_watchdog.py`** (LaunchAgent `com.magi.memory-watchdog`) — kills the highest-RSS recoverable MAGI subprocess when swap >8 GB or free+inactive <2 GB for 90 s. Default `MAGI_WATCHDOG_KILL_MODE=shadow`. Decisions logged to `~/.local/share/magi/runtime/metrics/memory_watchdog_decisions.jsonl`.
+- **Layer 2 — `memory_watchdog.py`** (LaunchAgent `com.magi.memory-watchdog`) — kills the highest-RSS recoverable MAGI subprocess when swap >8 GB or free+inactive <2 GB for 90 s. Default `MAGI_WATCHDOG_KILL_MODE=shadow`; it also reaps MAGI-owned Playwright driver/headless browser processes older than 45 minutes so portal automation teardown hangs do not linger. Decisions logged to `~/.local/share/magi/runtime/metrics/memory_watchdog_decisions.jsonl`.
+- **NAS load guard (2026-05-08)** — `com.magi.nas-mountpoints` only removes unmounted empty/stale `/Volumes/homes` and `/Volumes/lumi` directories and never pre-creates them, preventing macOS from mounting as `homes-1`/`lumi-1`; daemon NAS recursive watching is opt-in via `MAGI_ENABLE_NAS_FSWATCHER=1`.
+- **Portal retry guard (2026-05-08)** — the LAF Gmail monitor no longer retries pending portal downloads at every MAGI boot, preventing surprise NAS/portal batches after restart; set `MAGI_LAF_PORTAL_RETRY_ON_START=1` to enable. `file_review_auto_worker` is the single background owner for file-review checks/downloads and now runs on startup plus every hour by default; set `MAGI_FILE_REVIEW_AUTO_DOWNLOAD=0` or `MAGI_FILE_REVIEW_AUTO_RUN_ON_START=0` only for maintenance windows.
+- **Cron catch-up guard (2026-05-08)** — startup catch-up skips NAS/case-index/portal-heavy jobs such as OSC scan, Obsidian ingest, PDF benchmark, and LAF nightly audit so reboot recovery does not flood the NAS.
 - **Layer 3 — `omlx_switch_gatekeeper.py`** — preflight RSS check + TTL pause (≤24 h) before oMLX day/night switch. **Enforce by default.**
-- **Layer 4 — `disk_cleanup_healthcheck.py`** (cron 03:45) — JSONL rotation + LRU cache prune. Default `MAGI_DISK_CLEANUP_DRY_RUN=1`.
+- **Layer 4 — `disk_cleanup_healthcheck.py`** (cron 03:45) — JSONL rotation + LRU cache prune. Default `MAGI_DISK_CLEANUP_DRY_RUN=1`. Build outputs that still contain standalone state files (JSON / pickle / db / sqlite) are skipped so Paperclip / MAGI portable data is not removed by mistake.
 
 ---
 
@@ -332,6 +421,9 @@ NAS status checks both `/Volumes/` and `~/.magi_mounts/` (Tailscale fallback pat
 | `file-review-orchestrator` | Two-phase electronic court file review |
 | `transcript-downloader` | Court transcript download + dedup |
 | `statutes-vdb` | Statute vector DB + article mapping |
+| `judgment-collector` | Judicial Yuan judgment scraping |
+| `judicial-web-search` | Live judicial website search (HTTP form + Scrapling) |
+| `judicial-flow-search-archive` | Local judgment archive fallback |
 | `contract-review` | AI-assisted contract review with MarkItDown |
 | `trial-prep` | Trial preparation checklists |
 | `evidence-admissibility` | Hearsay rule classification for criminal case indices |
@@ -469,6 +561,7 @@ Key environment variables (set in `.env`):
 |----------|---------|---------|
 | `MAGI_ENSEMBLE_TOOLS` | `0` | Enable ReAct agentic tool calls in ensemble |
 | `MAGI_ALLOW_CLOUD_MODELS` | `0` | Allow Claude / GPT fallback |
+| `MAGI_USE_SCRAPLING` | `0` | Use Scrapling for web fetch (faster, no browser) |
 | `MAGI_USE_MARKITDOWN` | `0` | Use MarkItDown for document extraction |
 | `MAGI_PDF_OCR_CONSENSUS` | `1` | Multi-engine OCR consensus for PDF naming (pdf-namer only) |
 | `MAGI_OCR_CACHE_ENABLE` | `1` | SHA-256 image-hash LRU cache for new unified OCR runtime |
@@ -476,8 +569,8 @@ Key environment variables (set in `.env`):
 | `MAGI_SHORTCUT_OCR_CONSENSUS_ENABLE` | `1` | `/shortcut/ocr` consensus (mimetype stays `text/plain`) |
 | `MAGI_PDF_OCR_CONSENSUS_SHADOW` | `1` | pdf_bridge shadow mode — run new consensus for metrics, return legacy text |
 | `MAGI_PDF_OCR_CONSENSUS_ENABLE` | `0` | pdf_bridge full switch (leave `0` until shadow metrics confirm parity) |
-| `MAGI_LAF_OCR_CONSENSUS_SHADOW` | `1` | LAFVision shadow mode (3-module protection; 1-week observation required) |
-| `MAGI_LAF_OCR_CONSENSUS_ENABLE` | `0` | LAFVision full switch (do NOT enable without shadow review) |
+| `MAGI_LAF_OCR_CONSENSUS_SHADOW` | `0` | LAFVision shadow mode (observe only; production default is off) |
+| `MAGI_LAF_OCR_CONSENSUS_ENABLE` | `1` | LAFVision guarded-write OCR consensus (auto-adopt high-confidence output; conflicts/low-confidence stay non-writable) |
 | `MAGI_OBSIDIAN_OCR_CONSENSUS_ENABLE` | `0` | Obsidian PDF OCR fallback consensus |
 | `MAGI_NAS_HOST` | `MAGI_NAS_HOST` | NAS LAN IP |
 | `MAGI_NAS_TAILSCALE_HOST` | `MAGI_NAS_TAILSCALE_HOST` | NAS Tailscale IP (auto-fallback) |
@@ -600,6 +693,7 @@ pytest tests/test_memory_policy.py              # memory write policy (20 tests)
 magi status
 curl http://127.0.0.1:5002/health
 curl http://127.0.0.1:5003/health
+MAGI_USE_SCRAPLING=1 skills/judicial-web-search/action.py --task self_test
 skills/laf-orchestrator/action.py --task self_test
 skills/file-review-orchestrator/action.py --task self_test
 skills/transcript-downloader/action.py --task self_test

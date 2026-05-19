@@ -364,10 +364,11 @@ def _text_quality_stats(text: str) -> dict:
 def _extract_text_pdftotext(pdf_path: str, max_pages: int) -> tuple[str, int]:
     pdftotext_bin = str(os.environ.get("MAGI_PDFTOTEXT_BIN", "pdftotext")).strip() or "pdftotext"
     timeout_sec = int(os.environ.get("MAGI_PDF_PDFTOTEXT_TIMEOUT_SEC", "120") or "120")
-    proc = subprocess.run(
-        [
+
+    def _run_pdftotext(mode: str) -> str:
+        args = [
             pdftotext_bin,
-            "-layout",
+            mode,
             "-enc",
             "UTF-8",
             "-f",
@@ -376,16 +377,45 @@ def _extract_text_pdftotext(pdf_path: str, max_pages: int) -> tuple[str, int]:
             str(max(1, int(max_pages))),
             pdf_path,
             "-",
-        ],
-        capture_output=True,
-        text=True,
-        timeout=max(10, min(timeout_sec, 300)),
-        check=False,
-    )
-    if proc.returncode != 0:
-        raise RuntimeError(f"pdftotext_failed: {(proc.stderr or '').strip()[:200]}")
+        ]
+        proc = subprocess.run(
+            args,
+            capture_output=True,
+            text=True,
+            timeout=max(10, min(timeout_sec, 300)),
+            check=False,
+        )
+        if proc.returncode != 0:
+            raise RuntimeError(f"pdftotext_failed: {(proc.stderr or '').strip()[:200]}")
+        return str(proc.stdout or "")
 
-    raw = str(proc.stdout or "")
+    def _raw_is_better(layout_raw: str, raw_raw: str) -> bool:
+        layout = _normalize_extracted_text(layout_raw or "")
+        raw = _normalize_extracted_text(raw_raw or "")
+        if len(raw) < 500:
+            return False
+        layout_score = _text_quality_stats(layout)["score"]
+        raw_score = _text_quality_stats(raw)["score"]
+        layout_artifacts = len(re.findall(r"\b[A-Za-z]{2,}-\s+[A-Za-z]{2,}\b", layout))
+        raw_artifacts = len(re.findall(r"\b[A-Za-z]{2,}-\s+[A-Za-z]{2,}\b", raw))
+        layout_short = len(re.findall(r"\b[A-Za-z]{1,2}\b", layout[:12000]))
+        raw_short = len(re.findall(r"\b[A-Za-z]{1,2}\b", raw[:12000]))
+        if raw_score >= layout_score + 0.03:
+            return True
+        if layout_artifacts >= raw_artifacts + 4:
+            return True
+        if layout_short >= raw_short + 35 and raw_score >= layout_score - 0.02:
+            return True
+        return False
+
+    raw = _run_pdftotext("-layout")
+    try:
+        raw_alt = _run_pdftotext("-raw")
+        if _raw_is_better(raw, raw_alt):
+            logger.info("✅ Prefer pdftotext -raw reading order over -layout for this PDF")
+            raw = raw_alt
+    except Exception as exc:
+        logger.debug("pdftotext -raw comparison skipped: %s", exc)
     pages = []
     for page_num, page_text in enumerate(raw.split("\f"), start=1):
         txt = str(page_text or "").strip()
@@ -615,22 +645,73 @@ def _extract_text_ocr(pdf_path: str, max_pages: int, ocr_page_limit: Optional[in
 
         def _ocr_single_page_legacy(page_num, img_path):
             """既有 OCR 路徑（Tesseract + Vision upgrade）。"""
-            ocr = subprocess.run(
-                [
-                    tesseract_bin,
-                    str(img_path),
-                    "stdout",
-                    "-l",
-                    langs,
-                    "--psm",
-                    psm,
-                ],
-                capture_output=True,
-                text=True,
-                timeout=tess_timeout,
-                check=False,
-            )
-            txt = _normalize_extracted_text(ocr.stdout or "")
+            def _tess(path: Path) -> str:
+                try:
+                    from skills.engine.ocr import tesseract_provider
+
+                    provider_result = tesseract_provider.run(
+                        str(path),
+                        langs=langs,
+                        psm=int(psm or 6),
+                        task_type="legal",
+                        timeout_sec=tess_timeout,
+                    )
+                    if provider_result and provider_result.success:
+                        return _normalize_extracted_text(
+                            provider_result.corrected_text or provider_result.raw_text or ""
+                        )
+                except Exception as exc:
+                    logger.debug("PDF OCR shared tesseract_provider unavailable: %s", exc)
+
+                ocr = subprocess.run(
+                    [
+                        tesseract_bin,
+                        str(path),
+                        "stdout",
+                        "-l",
+                        langs,
+                        "--psm",
+                        psm,
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=tess_timeout,
+                    check=False,
+                )
+                return _normalize_extracted_text(ocr.stdout or "")
+
+            txt = _tess(img_path)
+            if str(os.environ.get("MAGI_PDF_OCR_PREPROCESS_ENABLE", "1")).strip().lower() in {"1", "true", "yes", "on"}:
+                try:
+                    base_stats = _text_quality_stats(txt)
+                    quality_skip = float(os.environ.get("MAGI_PDF_OCR_PREPROCESS_SKIP_QUALITY", "0.36") or "0.36")
+                    gain_needed = float(os.environ.get("MAGI_PDF_OCR_PREPROCESS_GAIN", "0.025") or "0.025")
+                    if base_stats["score"] < quality_skip:
+                        from skills.engine.ocr.preprocess import preprocess_image
+
+                        pre = preprocess_image(str(img_path), output_dir=td)
+                        if pre.ok and pre.changed and pre.output_path:
+                            pre_txt = _tess(Path(pre.output_path))
+                            pre_stats = _text_quality_stats(pre_txt)
+                            if (
+                                (not txt and pre_txt)
+                                or pre_stats["score"] >= base_stats["score"] + gain_needed
+                                or (
+                                    pre_stats["score"] >= base_stats["score"]
+                                    and len(pre_txt) >= len(txt) * 1.2
+                                )
+                            ):
+                                logger.info(
+                                    "✅ OCR preprocessing upgraded page %s: raw=%.3f pre=%.3f angle=%.2f scale=%.2f",
+                                    page_num,
+                                    base_stats["score"],
+                                    pre_stats["score"],
+                                    pre.angle_deg,
+                                    pre.scale,
+                                )
+                                txt = pre_txt
+                except Exception as e:
+                    logger.debug("PDF OCR preprocessing skipped on page %s: %s", page_num, e)
             txt = _maybe_upgrade_with_vision(page_num, img_path, txt)
             return txt
 
@@ -753,6 +834,38 @@ def _maybe_use_ocr(text: str, pdf_path: str, max_pages: int) -> tuple[str, int] 
         logger.warning("⚠️ Full OCR extraction failed after successful probe: %s", e)
     return None
 
+
+def _maybe_use_opendataloader(text: str, pdf_path: str) -> str:
+    """Prefer OpenDataLoader PDF text when current extraction quality is weak."""
+    if str(os.environ.get("MAGI_OPENDATALOADER_PDF_ENABLE", "auto")).strip().lower() in {"0", "false", "no", "off", "disabled"}:
+        return text
+    current = str(text or "")
+    current_stats = _text_quality_stats(current)
+    if current_stats["score"] >= 0.60 and len(_strip_page_markers(current)) >= 500:
+        return text
+    try:
+        from skills.engine.ocr import opendataloader_provider
+
+        result = opendataloader_provider.run_pdf(pdf_path, task_type="legal")
+    except Exception as exc:
+        logger.debug("OpenDataLoader PDF provider failed: %s", exc)
+        return text
+    candidate = (getattr(result, "corrected_text", "") or getattr(result, "raw_text", "") or "").strip()
+    if not getattr(result, "success", False) or not candidate:
+        if getattr(result, "error", None) and "disabled" not in str(result.error):
+            logger.debug("OpenDataLoader PDF unavailable: %s", result.error)
+        return text
+    candidate_stats = _text_quality_stats(candidate)
+    if candidate_stats["score"] >= current_stats["score"] + 0.03 or len(candidate) > max(len(current) * 1.35, 500):
+        logger.info(
+            "✅ Prefer OpenDataLoader PDF text: src_score=%.3f odl_score=%.3f chars=%d",
+            current_stats["score"],
+            candidate_stats["score"],
+            len(candidate),
+        )
+        return candidate
+    return text
+
 def extract_text(pdf_path: str, max_pages: int = 0) -> str:
     """
     Extract text content from a PDF file.
@@ -771,6 +884,9 @@ def extract_text(pdf_path: str, max_pages: int = 0) -> str:
         try:
             pdftotext_text, pdftotext_pages = _extract_text_pdftotext(pdf_path, max_pages=max_pages)
             if _is_meaningful_text(pdftotext_text):
+                odl_text = _maybe_use_opendataloader(pdftotext_text, pdf_path)
+                if odl_text != pdftotext_text:
+                    return odl_text
                 ocr_preferred = _maybe_use_ocr(pdftotext_text, pdf_path, max_pages=max_pages)
                 if ocr_preferred:
                     ocr_text, ocr_pages = ocr_preferred
@@ -783,14 +899,25 @@ def extract_text(pdf_path: str, max_pages: int = 0) -> str:
 
         fitz_text, fitz_pages = _extract_text_fitz(pdf_path, max_pages=max_pages)
         if _is_meaningful_text(fitz_text):
+            odl_text = _maybe_use_opendataloader(fitz_text, pdf_path)
+            if odl_text != fitz_text:
+                return odl_text
             logger.info(f"✅ Extracted via fitz: {fitz_pages} pages, {len(fitz_text)} chars")
             return fitz_text
 
         logger.warning("⚠️ fitz extracted little/no text, fallback to pdfplumber")
         plumber_text, plumber_pages = _extract_text_pdfplumber(pdf_path, max_pages=max_pages)
         if _is_meaningful_text(plumber_text):
+            odl_text = _maybe_use_opendataloader(plumber_text, pdf_path)
+            if odl_text != plumber_text:
+                return odl_text
             logger.info(f"✅ Extracted via pdfplumber: {plumber_pages} pages, {len(plumber_text)} chars")
             return plumber_text
+
+        odl_text = _maybe_use_opendataloader("", pdf_path)
+        if _is_meaningful_text(odl_text):
+            logger.info("✅ Extracted via OpenDataLoader PDF: %d chars", len(odl_text))
+            return odl_text
 
         logger.warning("⚠️ pdfplumber extracted little/no text, fallback to OCR")
         ocr_text, ocr_pages = _extract_text_ocr(pdf_path, max_pages=max_pages)

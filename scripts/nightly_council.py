@@ -96,9 +96,9 @@ def conduct_nightly_council():
     
     # [CRITICAL] Enforce Independence (Engineer Mode)
     # The user has explicitly requested that Melchior operates independently during Nightly Council.
-    # We switch to "Local Mode" to ensure Casper releases the GPU and Melchior runs his own Ollama.
+    # We switch to local mode so Casper releases shared inference resources and Melchior warms its local oMLX route.
     logger.info("🛡️ Nightly Independence Protocol: Releasing Melchior...")
-    logger.info("👉 Switching Brain to LOCAL (Casper=20B, Melchior=Ollama)...")
+    logger.info("👉 Switching Brain to LOCAL (Melchior=oMLX local route)...")
     
     try:
         if 'switch_brain_mode' in globals():
@@ -107,7 +107,7 @@ def conduct_nightly_council():
         else:
              logger.warning("⚠️ Brain Manager not imported! Melchior might still be bound to Casper.")
         
-        # Give Melchior 10s to spin up Ollama and warm up
+        # Give Melchior 10s to warm the local model route.
         time.sleep(10)
     except Exception as e:
         logger.error(f"❌ Failed to release Melchior: {e}")

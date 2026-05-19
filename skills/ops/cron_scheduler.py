@@ -49,6 +49,25 @@ def _save_cron_state(state: Dict[str, Dict[str, str]]) -> None:
 
 logger = logging.getLogger("CronScheduler")
 
+_DEFAULT_CATCHUP_SKIP_IDS = {
+    # These jobs can scan NAS/case folders or open portal automation. Running
+    # them immediately after reboot stacks IO on top of SMB remount recovery.
+    "job_laf_nightly_audit",
+    "job_pdf_namer_nightly",
+    "job_weekend_bookmark",
+    "job_nightly_bookmark_regex",
+    "job_benchmark_pdf_namer",
+    "job_obsidian_ingest",
+    "job_osc_scan_cases",
+    "job_insight_sync",
+}
+
+
+def _catchup_skip_ids() -> set[str]:
+    raw = os.environ.get("MAGI_CRON_CATCHUP_SKIP_IDS", "").strip()
+    extra = {x.strip() for x in raw.split(",") if x.strip()}
+    return _DEFAULT_CATCHUP_SKIP_IDS | extra
+
 JOB_FILE = f"{_MAGI_ROOT}/cron_jobs.json"
 
 class CronScheduler:
@@ -158,16 +177,53 @@ class CronScheduler:
 
             self.jobs = merged
 
-            # --- R3：flag 開時把 last_run/last_run_minute 從寫出 payload 清乾淨 ---
+            # --- R3：flag 開時只把「寫到 cron_jobs.json 的 payload」清乾淨。
+            # Do not clear self.jobs here: the in-memory scheduler still needs
+            # last_run_minute to avoid re-detecting the same missed job before a
+            # hot reload occurs.
+            payload_jobs = [dict(j) for j in self.jobs]
             if _use_runtime_dir():
-                for j in self.jobs:
+                for j in payload_jobs:
                     j["last_run"] = None
                     j["last_run_minute"] = None
 
             with open(JOB_FILE, 'w', encoding='utf-8') as f:
-                json.dump(self.jobs, f, indent=2, ensure_ascii=False)
+                json.dump(payload_jobs, f, indent=2, ensure_ascii=False)
         except Exception as e:
             logger.error(f"Failed to save jobs: {e}")
+
+    def mark_job_run(self, job_id: str, *, when: datetime | None = None) -> bool:
+        """Record a run for jobs started outside ``check_due_jobs``.
+
+        Startup/late catch-up jobs are not discovered by ``check_due_jobs`` and
+        used to execute without updating ``cron_state.json``. That made the same
+        morning jobs look missed again after every daemon restart. Marking them
+        at dispatch time keeps catch-up idempotent and matches the existing
+        due-job behavior, which records a run before command execution.
+        """
+        jid = str(job_id or "").strip()
+        if not jid:
+            return False
+        self._hot_reload_if_changed()
+        now = when or datetime.now()
+        payload = {
+            "last_run": now.isoformat(),
+            "last_run_minute": now.strftime("%Y-%m-%d %H:%M"),
+        }
+        changed = False
+        for job in self.jobs:
+            if str(job.get("id") or "") == jid:
+                job.update(payload)
+                changed = True
+                break
+        if not changed:
+            return False
+        if _use_runtime_dir():
+            state = _load_cron_state()
+            state[jid] = payload
+            _save_cron_state(state)
+        self._save_jobs()
+        return True
 
     def _normalize_cron_expr(self, cron_expr: str):
         raw = (cron_expr or "").strip().lower()
@@ -419,6 +475,8 @@ class CronScheduler:
             if not job.get("enabled", True):
                 continue
             if job.get("no_catchup", False):
+                continue
+            if str(job.get("id") or "") in _catchup_skip_ids():
                 continue
             try:
                 parts = job["cron"].split()

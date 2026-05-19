@@ -3,9 +3,9 @@
 磁碟低水位 alarm（A2，2026-04-25）
 
 每小時 cron 觸發，讀根分割區可用空間：
-- ≥ 30 GB：靜默
-- 10-30 GB：log_issue(High) 推 self_repair
-- < 10 GB：log_issue(Critical) 推 self_repair + 同步試用 red_phone TG 推送
+- ≥ 50 GB：靜默
+- 15-50 GB：log_issue(High) 推 self_repair
+- < 15 GB：log_issue(Critical) 推 self_repair + 同步試用 red_phone TG 推送
 
 Dedup 由 issue_tracker 的 5 分鐘 TTL 內建處理；連續低水位每 5 分鐘最多一筆。
 
@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import sys
 import time
@@ -26,6 +27,10 @@ from pathlib import Path
 
 MAGI_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(MAGI_ROOT))
+
+HIGH_ALERT_COOLDOWN_SEC = int(os.environ.get("MAGI_DISK_LOW_WATER_HIGH_COOLDOWN_SEC", "21600"))
+CRITICAL_ALERT_COOLDOWN_SEC = int(os.environ.get("MAGI_DISK_LOW_WATER_CRITICAL_COOLDOWN_SEC", "3600"))
+ALERT_STATE_PATH = MAGI_ROOT / ".runtime" / "disk_low_water_alarm_state.json"
 
 
 def get_disk_free_gb(path: str = "/") -> float:
@@ -41,8 +46,8 @@ def _push_self_repair(severity: str, free_gb: float, threshold_gb: float) -> Non
     """寫 issue agenda；critical 時也試 TG 推送。"""
     msg = (
         f"磁碟低水位告警：可用空間 {free_gb} GB（閾值 {threshold_gb} GB）。"
-        f"建議檢查 ~/.omlx-vision/cache/、~/.cache/huggingface/hub/，"
-        f"或執行 scripts/ops/weekly_cache_cleanup.py。"
+        f"MAGI 會先執行保守自動回收；若仍不足，請檢查 macOS swap、~/.omlx/cache-*、"
+        f"以及 /opt/homebrew/var/mysql/magi_brain。"
     )
     try:
         from skills.management.issue_tracker import log_issue
@@ -77,20 +82,104 @@ def _push_self_repair(severity: str, free_gb: float, threshold_gb: float) -> Non
             pass
 
 
+def _read_alert_state() -> dict:
+    try:
+        return json.loads(ALERT_STATE_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _write_alert_state(severity: str, free_gb: float, threshold_gb: float, *, emitted: bool) -> None:
+    try:
+        ALERT_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "ts": time.time(),
+            "iso": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+            "severity": severity,
+            "free_gb": free_gb,
+            "threshold_gb": threshold_gb,
+            "emitted": emitted,
+        }
+        tmp = ALERT_STATE_PATH.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.replace(ALERT_STATE_PATH)
+    except Exception:
+        pass
+
+
+def _should_emit_alert(severity: str, free_gb: float) -> bool:
+    if severity not in {"High", "Critical"}:
+        return False
+    state = _read_alert_state()
+    last_severity = str(state.get("severity") or "")
+    if last_severity != severity:
+        return True
+    try:
+        age = time.time() - float(state.get("ts") or 0)
+        last_free = float(state.get("free_gb"))
+    except Exception:
+        return True
+    if severity == "Critical":
+        return age >= CRITICAL_ALERT_COOLDOWN_SEC or free_gb <= last_free - 1.0
+    return age >= HIGH_ALERT_COOLDOWN_SEC or free_gb <= last_free - 2.0
+
+
+def _auto_reclaim_enabled() -> bool:
+    return os.environ.get("MAGI_DISK_LOW_WATER_AUTO_RECLAIM", "1").strip().lower() in {
+        "1",
+        "true",
+        "on",
+        "yes",
+    }
+
+
+def _run_auto_reclaim(path: str) -> dict:
+    """Run guarded cleanup when low water is already confirmed.
+
+    This intentionally delegates to disk_cleanup_healthcheck so the deletion
+    rules stay centralized: no case folders, no NAS roots, no model/training
+    roots, no standalone JSON state.
+    """
+    info = {
+        "attempted": False,
+        "enabled": _auto_reclaim_enabled(),
+        "free_before_gb": get_disk_free_gb(path),
+        "free_after_gb": None,
+    }
+    if not info["enabled"]:
+        return info
+    try:
+        from scripts.ops import disk_cleanup_healthcheck
+
+        old = os.environ.get("MAGI_DISK_CLEANUP_DRY_RUN")
+        os.environ["MAGI_DISK_CLEANUP_DRY_RUN"] = "0"
+        try:
+            rc = disk_cleanup_healthcheck.main(["--apply"])
+        finally:
+            if old is None:
+                os.environ.pop("MAGI_DISK_CLEANUP_DRY_RUN", None)
+            else:
+                os.environ["MAGI_DISK_CLEANUP_DRY_RUN"] = old
+        info.update({"attempted": True, "rc": rc, "free_after_gb": get_disk_free_gb(path)})
+    except Exception as e:
+        info.update({"attempted": True, "error": str(e), "free_after_gb": get_disk_free_gb(path)})
+    return info
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--path", default="/", help="檢查路徑（預設 /）")
     parser.add_argument(
         "--threshold-warn",
         type=float,
-        default=30.0,
-        help="High 警告閾值 GB（預設 30）",
+        default=50.0,
+        help="High 警告閾值 GB（預設 50）",
     )
     parser.add_argument(
         "--threshold-critical",
         type=float,
-        default=10.0,
-        help="Critical 告警閾值 GB（預設 10）",
+        default=15.0,
+        help="Critical 告警閾值 GB（預設 15）",
     )
     args = parser.parse_args()
 
@@ -103,11 +192,23 @@ def main() -> int:
     elif free_gb < args.threshold_critical:
         severity = "Critical"
         triggered = True
-        _push_self_repair("Critical", free_gb, args.threshold_critical)
     elif free_gb < args.threshold_warn:
         severity = "High"
         triggered = True
-        _push_self_repair("High", free_gb, args.threshold_warn)
+
+    alert_emitted = False
+    if triggered and _should_emit_alert(severity, free_gb):
+        _push_self_repair(severity, free_gb, args.threshold_critical if severity == "Critical" else args.threshold_warn)
+        alert_emitted = True
+    if triggered:
+        _write_alert_state(
+            severity,
+            free_gb,
+            args.threshold_critical if severity == "Critical" else args.threshold_warn,
+            emitted=alert_emitted,
+        )
+
+    auto_reclaim = _run_auto_reclaim(args.path) if triggered else {"attempted": False, "enabled": _auto_reclaim_enabled()}
 
     result = {
         "success": True,
@@ -119,6 +220,8 @@ def main() -> int:
         "threshold_critical_gb": args.threshold_critical,
         "severity": severity,
         "alarm_triggered": triggered,
+        "alert_emitted": alert_emitted,
+        "auto_reclaim": auto_reclaim,
     }
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0

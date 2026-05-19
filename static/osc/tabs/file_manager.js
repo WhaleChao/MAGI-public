@@ -137,7 +137,7 @@
             c.case_number,
             c.laf_case_no ? '法扶 ' + c.laf_case_no : '',
             c.court_case_no,
-            c.case_reason,
+            c.case_reason_display || c.case_reason,
         ].filter(Boolean).join(' / ');
     }
 
@@ -148,14 +148,14 @@
         if (!items || !items.length) {
             const msg = (query || '').trim()
                 ? '找不到符合「' + escapeHTML(query) + '」的案件。'
-                : '目前沒有進行中 / 結案中的案件。';
+                : '目前沒有可操作案件。';
             box.innerHTML = '<div class="fm-case-empty">' + msg + '</div>';
             return;
         }
         box.innerHTML = items.map(c => {
             const title = c.client_name || c.case_number || c.id || '未命名案件';
             const sub = caseResultMeta(c);
-            const status = c.status || '進行中';
+            const status = c.status_display || c.effective_status || c.legal_aid_status || c.status || '進行中';
             const folderKnown = (c.folder_path || '').trim() ? '有資料夾' : '待建立資料夾';
             return '<button type="button" class="fm-case-item" data-fm-case-id="' + escapeHTML(c.id) + '">'
                 + '<div class="fm-case-main">'
@@ -788,7 +788,7 @@
 
     async function setRoot(basePath, meta) {
         if (!basePath) {
-            setStatus('請輸入 NAS 案件資料夾路徑（例：Z:\\lumi63181107\\01_案件\\...）', true);
+            setStatus('請輸入 NAS 案件資料夾路徑（例：Z:\\<active-share>\\01_案件\\...）', true);
             return;
         }
         FM.navSeq++;
@@ -1192,7 +1192,7 @@
             items.push({ sep: true });
         }
         items.push({ label: '移動到其他資料夾', act: 'move' });
-        items.push({ label: '✏ 重命名 (F2)', act: 'rename' });
+        items.push({ label: '✏ 重新命名 (F2)', act: 'rename' });
         items.push({ label: '📋 複製路徑', act: 'copy-path' });
         items.push({ sep: true });
         items.push({ label: '🗑 移到回收桶 (Del)', act: 'trash', danger: true });
@@ -1279,8 +1279,8 @@
         const trimmed = newName.trim();
         if (!trimmed || trimmed === oldName) return;
         const r = await apiRename(FM.basePath, rel, trimmed);
-        if (r && r.ok) { setStatus('已重命名為：' + trimmed); refresh(); setTimeout(() => setStatus(''), 2500); }
-        else setStatus('重命名失敗：' + ((r && r.error) || '未知'), true);
+        if (r && r.ok) { setStatus('已重新命名為：' + trimmed); refresh(); setTimeout(() => setStatus(''), 2500); }
+        else setStatus('重新命名失敗：' + ((r && r.error) || '未知'), true);
     }
 
     async function trashSelected(rel, name) {

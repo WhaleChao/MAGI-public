@@ -11,10 +11,12 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import re
 import shutil
 import socket
 import subprocess
 import time
+import urllib.request
 from html import escape
 from api.thread_pools import io_pool
 from datetime import datetime
@@ -23,6 +25,9 @@ from typing import Any, Optional
 
 from flask import Blueprint, Response, current_app, jsonify, request
 from flask_login import current_user, login_required
+
+
+ROOT = Path(__file__).resolve().parents[2]
 
 
 def _wants_json_response() -> bool:
@@ -164,6 +169,82 @@ def _is_false_positive_cron_issue(row: dict[str, Any]) -> bool:
     return ("\"success\": true" in err_lower) or ("✅" in err)
 
 
+def _current_omlx_model_ids() -> list[str]:
+    try:
+        with urllib.request.urlopen("http://127.0.0.1:8080/v1/models", timeout=2) as resp:
+            data = json.loads(resp.read().decode("utf-8", errors="replace"))
+        return [
+            str(item.get("id") or "").strip()
+            for item in (data.get("data") or [])
+            if isinstance(item, dict) and str(item.get("id") or "").strip()
+        ]
+    except Exception:
+        return []
+
+
+def _expected_omlx_keyword_now() -> str:
+    now = datetime.now()
+    minutes = now.hour * 60 + now.minute
+    return "e4b" if 415 <= minutes < 1310 else "26b"
+
+
+def _is_omlx_switch_recovered() -> bool:
+    expected = _expected_omlx_keyword_now()
+    return any(expected in model.lower() for model in _current_omlx_model_ids())
+
+
+def _is_resource_governor_recovered() -> bool:
+    try:
+        from scripts.ops import resource_governor
+
+        decision = resource_governor.classify(resource_governor.collect_snapshot())
+        return bool(getattr(decision, "ok", False))
+    except Exception:
+        return False
+
+
+def _is_tailscale_funnel_recovered(issue_ts: float) -> bool:
+    path = ROOT / ".runtime" / "tailscale_funnel_health_latest.json"
+    if not path.exists() or path.stat().st_mtime <= issue_ts:
+        return False
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return False
+    return str(data.get("status") or "").lower() in {"ok", "recovered", "skipped"}
+
+
+def _is_pdf_smoke_progress_callback_recovered(row: dict[str, Any], root: Path) -> bool:
+    err = str(row.get("error") or "")
+    if "progress_callback" not in err or "_summary_pdf_stub" not in err:
+        return False
+    issue_ts = float(row.get("_ts") or _safe_epoch(row.get("ts") or row.get("iso")))
+    runtime_dir = root / ".runtime"
+    try:
+        candidates = sorted(
+            runtime_dir.glob("allpdf_smoke*.json"),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+    except Exception:
+        return False
+
+    for path in candidates[:20]:
+        try:
+            if path.stat().st_mtime <= issue_ts:
+                continue
+            data = json.loads(path.read_text(encoding="utf-8"))
+            summary = data.get("summary") if isinstance(data.get("summary"), dict) else {}
+            by_kind = data.get("by_kind") if isinstance(data.get("by_kind"), dict) else {}
+            summary_kind = by_kind.get("summary") if isinstance(by_kind.get("summary"), dict) else {}
+            if int(summary.get("fail") or 0) == 0 and int(summary.get("pass") or 0) > 0:
+                if int(summary_kind.get("pass") or 0) > 0:
+                    return True
+        except Exception:
+            continue
+    return False
+
+
 def _classify_cron_issue(
     row: dict[str, Any],
     *,
@@ -181,6 +262,13 @@ def _classify_cron_issue(
 
     latest_issue_ts = latest_cron_issue_ts_by_job.get(job_id, ts)
     last_run_ts = cron_last_run_ts.get(job_id, 0.0)
+    if job_id in {"job_omlx_switch_day", "job_omlx_switch_night", "job_omlx_profile_guard"}:
+        if _is_omlx_switch_recovered():
+            return "recovered"
+    if job_id == "job_resource_governor" and _is_resource_governor_recovered():
+        return "recovered"
+    if job_id == "job_tailscale_funnel_healthcheck" and _is_tailscale_funnel_recovered(ts):
+        return "recovered"
     if latest_issue_ts > ts:
         return "superseded"
     if last_run_ts > ts:
@@ -228,6 +316,48 @@ def _load_cron_last_run_ts(root: Path) -> dict[str, float]:
     return out
 
 
+def _issue_context_threshold_gb(row: dict[str, Any]) -> float:
+    raw = row.get("context")
+    if isinstance(raw, dict):
+        for key in ("threshold_gb", "threshold_warn_gb", "threshold_critical_gb"):
+            try:
+                value = float(raw.get(key) or 0)
+            except Exception:
+                value = 0.0
+            if value > 0:
+                return value
+    text = f"{raw or ''} {row.get('error') or row.get('error_msg') or ''}"
+    for pattern in (
+        r"threshold_gb['\"]?\s*:\s*([0-9]+(?:\.[0-9]+)?)",
+        r"閾值\s*([0-9]+(?:\.[0-9]+)?)\s*GB",
+    ):
+        m = re.search(pattern, text)
+        if m:
+            try:
+                return float(m.group(1))
+            except Exception:
+                return 0.0
+    return 0.0
+
+
+def _is_recovered_non_cron_issue(row: dict[str, Any], root: Path) -> bool:
+    if _is_pdf_smoke_progress_callback_recovered(row, root):
+        return True
+
+    command = str(row.get("command") or "")
+    source = str(row.get("source") or "")
+    if command != "alarm:disk_low_water" and source != "disk_low_water_alarm":
+        return False
+    threshold_gb = _issue_context_threshold_gb(row)
+    if threshold_gb <= 0:
+        return False
+    try:
+        current_free_gb = shutil.disk_usage(str(root)).free / 1024 / 1024 / 1024
+    except Exception:
+        return False
+    return current_free_gb >= threshold_gb
+
+
 def _compute_operational_issue_health(root: Path, now_ts: float) -> dict[str, Any]:
     cutoff_24h = now_ts - 86400
     active_window_sec = int(os.environ.get("MAGI_OPERATIONAL_ACTIVE_ISSUE_WINDOW_SEC", "21600") or "21600")
@@ -258,6 +388,7 @@ def _compute_operational_issue_health(root: Path, now_ts: float) -> dict[str, An
     recovered_cron_failures = 0
     superseded_cron_failures = 0
     stale_cron_failures = 0
+    recovered_non_cron_high_severity = 0
 
     for row in rows:
         ts = float(row.get("_ts") or 0.0)
@@ -268,6 +399,9 @@ def _compute_operational_issue_health(root: Path, now_ts: float) -> dict[str, An
             raw_high_severity += 1
 
         if not is_cron:
+            if is_high and _is_recovered_non_cron_issue(row, root):
+                recovered_non_cron_high_severity += 1
+                continue
             if is_high and ts >= active_cutoff:
                 active_high_severity += 1
             continue
@@ -310,6 +444,7 @@ def _compute_operational_issue_health(root: Path, now_ts: float) -> dict[str, An
         "recovered_cron_failures_24h": recovered_cron_failures,
         "superseded_cron_failures_24h": superseded_cron_failures,
         "stale_cron_failures_24h": stale_cron_failures,
+        "recovered_non_cron_high_severity_24h": recovered_non_cron_high_severity,
         "inactive_or_noise_cron_failures_24h": (
             inactive_cron_failures + false_positive_cron_failures
         ),
@@ -1408,6 +1543,9 @@ def create_admin_runtime_blueprint(
                     "superseded_cron_failures": int(issue_health.get("superseded_cron_failures_24h", 0)),
                     "stale_cron_failures": int(issue_health.get("stale_cron_failures_24h", 0)),
                     "false_positive_cron_failures": int(issue_health.get("false_positive_cron_failures_24h", 0)),
+                    "recovered_non_cron_high_severity": int(
+                        issue_health.get("recovered_non_cron_high_severity_24h", 0)
+                    ),
                     "inactive_or_noise_cron_failures": int(
                         issue_health.get("inactive_or_noise_cron_failures_24h", 0)
                     ),
@@ -1431,12 +1569,11 @@ def create_admin_runtime_blueprint(
             checks["operational_health"] = {"ok": False, "detail": str(exc)[:120]}
 
         try:
-            from api.nas_mount_guard import _SHARES, get_share_available_path
+            from api.nas_mount_guard import _SHARES, get_share_status
 
-            def _nas_check(share_name, vol):
-                return bool(get_share_available_path(share_name, vol))
-
-            checks["nas"] = {vol.split("/")[-1]: _nas_check(name, vol) for name, vol in _SHARES}
+            nas_detail = {vol.split("/")[-1]: get_share_status(name, vol) for name, vol in _SHARES}
+            checks["nas"] = {name: bool(detail.get("mounted")) for name, detail in nas_detail.items()}
+            checks["nas_detail"] = nas_detail
         except Exception:
             logger.debug("silent-catch in health nas", exc_info=True)
 
@@ -1450,6 +1587,8 @@ def create_admin_runtime_blueprint(
             degraded = True
         # 2026-04-25 P2-7: operational_health degradation also marks degraded
         if checks.get("operational_health", {}).get("ok") is False:
+            degraded = True
+        if any(ok is False for ok in checks.get("nas", {}).values()):
             degraded = True
         checks["status"] = "degraded" if degraded else "operational"
         if not _wants_json_response():
@@ -1482,6 +1621,21 @@ def create_admin_runtime_blueprint(
             taigi_hint_raw = str(request.form.get("taigi_hint") or "").strip().lower()
             taigi_hint = taigi_hint_raw in {"1", "true", "yes", "on"}
             result = transcribe(filepath, language=language, taigi_hint=taigi_hint)
+            try:
+                from api.handlers.output_quality_handler import estimate_transcript_source_chars_from_audio, run_output_quality_gate
+
+                text = str((result or {}).get("text") or "").strip() if isinstance(result, dict) else ""
+                gate = run_output_quality_gate(
+                    "transcript",
+                    text,
+                    source_chars=estimate_transcript_source_chars_from_audio(filepath),
+                    source_name=file.filename,
+                    instruction="api/transcribe",
+                )
+                if not gate.get("ok"):
+                    result = {"success": False, "error": "transcript_quality_gate:" + str(gate.get("issue") or "failed"), "quality_gate": gate}
+            except Exception:
+                logger.debug("transcript quality gate skipped", exc_info=True)
             if os.path.exists(filepath):
                 safe_remove_tmp(filepath)
             return jsonify(result)

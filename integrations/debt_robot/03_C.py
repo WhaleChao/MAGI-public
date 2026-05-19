@@ -128,21 +128,21 @@ class CreditorEditor(QMainWindow):
 
         doc = Document(file_path)
 
-        # 更新总计金额到第一个表格的A0单元格
+        # 更新總計金額到第一個表格的 A0 儲存格
         first_table = doc.tables[0]
         cell = first_table.cell(0, 1)
-        cell.text = self.total_amount_label.text()  # 填写总计金额
+        cell.text = self.total_amount_label.text()  # 填寫總計金額
 
-        # 设置总计金额字体为标楷体，字号为16
+        # 設定總計金額字型為標楷體，字級為 16
         run = cell.paragraphs[0].runs[0]
         run.font.name = 'DFKai-SB'
-        run._element.rPr.rFonts.set(qn('w:eastAsia'), '標楷體')  # 设置中文字体
+        run._element.rPr.rFonts.set(qn('w:eastAsia'), '標楷體')  # 設定中文字型
         run.font.size = Pt(16)
 
         # 取得第二個表格
         second_table = doc.tables[1]
 
-        # 删除未使用的代号行
+        # 刪除未使用的代號列
         markers = ['B0', 'B1', 'B2', 'B3', 'C0', 'C1', 'C2', 'C3', 
                    'D0', 'D1', 'D2', 'D3', 'E0', 'E1', 'E2', 'E3', 
                    'F0', 'F1', 'F2', 'F3', 'G0', 'G1', 'G2', 'G3', 
@@ -155,7 +155,7 @@ class CreditorEditor(QMainWindow):
         for row in rows_to_remove:
             second_table._element.remove(row._element)
 
-        # 填入有效數據到第二个表格
+        # 填入有效資料到第二個表格
         for row_inputs in self.row_inputs:
             name, address_label, address_input, amount_edit, debt_type = row_inputs
             new_row = second_table.add_row().cells
@@ -194,7 +194,7 @@ class CreditorEditor(QMainWindow):
             file_to_update = company_file
             existing_data = self.company_data
 
-        # 检查是否已经存在
+        # 檢查是否已經存在
         if any(existing_name == name for existing_name, _ in existing_data):
             print(f"{name} 已經存在於 {file_to_update} 中，未新增。")
             return
@@ -205,7 +205,7 @@ class CreditorEditor(QMainWindow):
             writer.writerow([name, address])
             print(f"已更新CSV檔案: {file_to_update} with {name}, {address}")
 
-        # 更新内存中的数据以避免重复
+        # 更新記憶體中的資料以避免重複
         if "銀行" in name:
             self.bank_data.append((name, address))
         else:

@@ -18,7 +18,13 @@ from pathlib import Path
 from api.model_config import TEXT_PRIMARY_MODEL
 from api.runtime_paths import ensure_path_on_sys_path, get_orch_dir
 from api.case_path_mapper import preferred_case_roots
-from api.osc.insight_filters import displayable_insight_item, is_non_extractable_legal_insight
+from api.legal_workflow import detect_legal_workflow, workflow_prompt_block
+from api.osc.insight_filters import (
+    displayable_insight_item,
+    is_extractive_fast_judgment_digest,
+    is_non_extractable_legal_insight,
+)
+from api.osc.draft_learning import learning_guidance_for_prompt
 
 # ---------------------------------------------------------------------------
 # Lazy back-references into server helpers.
@@ -123,7 +129,12 @@ def _get_runtime_config() -> dict:
 
 
 def _get_draft_prompt_template() -> str:
-    return _srv()._OSC_DRAFT_PROMPT_TEMPLATE
+    server_template = getattr(_srv(), "_OSC_DRAFT_PROMPT_TEMPLATE", "")
+    if server_template:
+        return server_template
+    # Blueprint-owned constant is the canonical source after server.py split.
+    from api.blueprints.osc_cases import _OSC_DRAFT_PROMPT_TEMPLATE
+    return _OSC_DRAFT_PROMPT_TEMPLATE
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -133,14 +144,18 @@ def _get_draft_prompt_template() -> str:
 def _osc_clean_draft_output(text: str) -> str:
     cleaned = ihtml.unescape(str(text or ""))
     cleaned = cleaned.replace("<br>", "\n").replace("<br/>", "\n").replace("<br />", "\n")
+    # Keep the text inside fenced Markdown blocks. Some local models wrap the
+    # whole pleading in ```text fences; deleting the block would erase the draft.
+    cleaned = re.sub(r"^\s*```[a-zA-Z0-9_-]*\s*$", "", cleaned, flags=re.MULTILINE)
     cleaned = re.sub(r"^#+\s*", "", cleaned, flags=re.MULTILINE)
     cleaned = re.sub(r"\*\*(.+?)\*\*", r"\1", cleaned)
     cleaned = re.sub(r"\*(.+?)\*", r"\1", cleaned)
     cleaned = re.sub(r"__(.+?)__", r"\1", cleaned)
     cleaned = re.sub(r"_(.+?)_", r"\1", cleaned)
     cleaned = re.sub(r"^[-*_]{3,}\s*$", "", cleaned, flags=re.MULTILINE)
-    cleaned = re.sub(r"```(?:[\s\S]*?)```", "", cleaned)
     cleaned = re.sub(r"`(.+?)`", r"\1", cleaned)
+    cleaned = re.sub(r"^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$", "", cleaned, flags=re.MULTILINE)
+    cleaned = re.sub(r"^\s*>\s?", "", cleaned, flags=re.MULTILINE)
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
     return cleaned.strip()
 
@@ -187,7 +202,47 @@ def _osc_draft_defendant(case_row: dict, payload: dict) -> str:
 
 
 def _osc_resolve_draft_insights(payload: dict) -> list[dict]:
-    return []
+    selected = payload.get("selected_insights") or payload.get("insights") or []
+    if not selected:
+        selected = [{"id": x} for x in (payload.get("selected_insight_ids") or [])]
+    lookup = {str(it.get("id")): it for it in _osc_collect_insights() if displayable_insight_item(it)}
+    out = []
+    for raw in (selected or [])[:10]:
+        if isinstance(raw, str):
+            raw = {"id": raw}
+        if not isinstance(raw, dict):
+            continue
+        sid = str(raw.get("id") or "").strip()
+        base = lookup.get(sid, {})
+        title = str(raw.get("title") or raw.get("reference") or base.get("title") or "").strip()
+        summary = str(raw.get("summary") or raw.get("insight_text") or base.get("summary") or base.get("insight_text") or "").strip()
+        full_text = str(raw.get("full_text") or raw.get("text") or base.get("full_text") or "").strip()
+        case_number = str(raw.get("case_number") or base.get("case_number") or "").strip()
+        case_reason = str(raw.get("case_reason") or raw.get("reason") or base.get("case_reason") or "").strip()
+        court = str(raw.get("court") or base.get("court") or "").strip()
+        if not full_text and summary:
+            full_text = summary
+        if not title:
+            title = "實務見解"
+        if not (summary or full_text):
+            continue
+        if is_non_extractable_legal_insight(title, summary, full_text, case_reason, court):
+            continue
+        if is_extractive_fast_judgment_digest(summary):
+            # 快篩摘要只能協助定位原文，不能直接作為書狀可引用見解。
+            continue
+        out.append(
+            {
+                "id": sid or f"manual-{len(out) + 1}",
+                "title": title,
+                "summary": summary or full_text[:350],
+                "full_text": full_text,
+                "case_number": case_number,
+                "case_reason": case_reason,
+                "court": court,
+            }
+        )
+    return out
 
 
 def _osc_collect_draft_reference_style(payload: dict) -> tuple[str, list[dict], list[str]]:
@@ -260,9 +315,30 @@ def _osc_build_draft_context(payload: dict) -> dict:
     defendant = _osc_draft_defendant(case_row, body)
     case_facts = str(body.get("case_facts") or body.get("facts") or case_row.get("description") or case_row.get("notes") or "").strip()
 
+    selected_insights = _osc_resolve_draft_insights(body)
+    legal_insights = ""
+    for i, insight in enumerate(selected_insights[:5], 1):
+        ref = str(insight.get("title") or "實務見解").strip()
+        court = str(insight.get("court") or "").strip()
+        summary = str(insight.get("summary") or insight.get("insight_text") or insight.get("full_text") or "").strip()[:2000]
+        label = f"{ref}"
+        if court:
+            label = f"{court}｜{label}"
+        legal_insights += f"\n{i}. 【{label}】\n{summary}\n"
+
     reference_style, references, warnings = _osc_collect_draft_reference_style(body)
     custom_template = _osc_get_setting_value("draft_prompt_template", "").strip()
     template = custom_template if custom_template else _get_draft_prompt_template()
+    learning_guidance = learning_guidance_for_prompt(doc_type=doc_type, case_number=case_number, reason=reason)
+    legal_workflow = detect_legal_workflow(
+        text=case_facts,
+        reason=reason,
+        doc_type=doc_type,
+        mode="draft",
+    )
+    workflow_guidance = workflow_prompt_block(legal_workflow)
+    if workflow_guidance and not selected_insights and not references:
+        warnings.append("legal_workflow_source_review_required")
     values = {
         "doc_type": doc_type or "(未指定)",
         "case_number": case_number or "(待填)",
@@ -272,10 +348,15 @@ def _osc_build_draft_context(payload: dict) -> dict:
         "plaintiff": plaintiff or "(待填)",
         "defendant": defendant or "(待填)",
         "case_facts": case_facts or "(未提供)",
-        "public_reference_note": "(public release: external legal-research sources are not included)",
+        "legal_insights": legal_insights or "(無)",
         "reference_style": reference_style or "(無參考範本)",
+        "learning_guidance": learning_guidance,
     }
     prompt = _osc_render_draft_template(template, values)
+    if "{learning_guidance}" not in template and learning_guidance and "尚無人工修正紀錄" not in learning_guidance:
+        prompt = f"{prompt.rstrip()}\n\n## 使用者修正學習紀錄\n{learning_guidance}\n"
+    if workflow_guidance:
+        prompt = f"{prompt.rstrip()}\n\n## 法律工作流與覆核規則\n{workflow_guidance}\n"
     suggested_filename = str(body.get("suggested_filename") or "").strip()
     if not suggested_filename:
         parts = [doc_type or "書狀草稿", case_number or case_row.get("case_number") or "未命名"]
@@ -293,6 +374,7 @@ def _osc_build_draft_context(payload: dict) -> dict:
         "selected_insights": selected_insights,
         "selected_documents": references,
         "warnings": warnings,
+        "legal_workflow": legal_workflow,
         "prompt": prompt,
         "template_source": "custom" if custom_template else "default",
         "suggested_filename": suggested_filename,
@@ -430,18 +512,31 @@ def _osc_get_case_identity_by_payload(payload: dict) -> dict:
             fetch="one",
         )
     if (not row) and client_name:
-        row, _ = _osc_exec(
+        rows, _ = _osc_exec(
             """
             SELECT id, case_number, client_name, case_category, case_stage, case_reason, status, folder_path,
                    laf_case_no, application_no, court_case_no
             FROM cases
             WHERE client_name=%s
             ORDER BY updated_at DESC, created_date DESC
-            LIMIT 1
+            LIMIT 5
             """,
             (client_name,),
-            fetch="one",
+            fetch="all",
         )
+        rows = list(rows or [])
+        if len(rows) == 1:
+            row = rows[0]
+        elif len(rows) > 1:
+            labels = []
+            for r in rows:
+                bits = [
+                    str(r.get("case_number") or "").strip(),
+                    str(r.get("case_stage") or "").strip(),
+                    str(r.get("case_reason") or "").strip(),
+                ]
+                labels.append("-".join([x for x in bits if x]) or str(r.get("id") or ""))
+            raise ValueError(f"ambiguous_client_name: {client_name} ({'、'.join(labels)})")
     return row or {}
 
 
@@ -589,6 +684,13 @@ def _osc_get_closed_archive_base() -> str:
     env_base = (os.environ.get("MAGI_CLOSED_CASE_ARCHIVE_PATH") or "").strip()
     if env_base:
         return env_base
+    for candidate in (
+        "/Volumes/lumi/lumi/03_工作資料/10_結案",
+        "/Volumes/lumi-1/lumi/03_工作資料/10_結案",
+        "/Volumes/lumi-2/lumi/03_工作資料/10_結案",
+    ):
+        if os.path.isdir(candidate):
+            return candidate
     try:
         ensure_path_on_sys_path(get_orch_dir())
         from osc_core.paths import get_closed_case_archive_path  # type: ignore
@@ -605,16 +707,30 @@ def _osc_get_closed_archive_base() -> str:
     return str(Path.home() / "Library" / "CloudStorage" / "SynologyDrive-homes" / "99_結案案件")
 
 
+def _osc_archive_relative_parent(source_path: str) -> str:
+    """Preserve OSC's category/type path when moving from 01_案件 to 10_結案."""
+    norm = _osc_norm_path(source_path).replace("\\", "/").strip("/")
+    if not norm:
+        return ""
+    parts = [p for p in norm.split("/") if p]
+    try:
+        idx = len(parts) - 1 - list(reversed(parts)).index("01_案件")
+    except ValueError:
+        return ""
+    rel_parts = parts[idx + 1 : -1]
+    return os.path.join(*rel_parts) if rel_parts else ""
+
+
 def _osc_build_archive_preview(limit: int = 300) -> dict:
     rows, _ = _osc_exec(
         """
-        SELECT id, case_number, client_name, status, folder_path, updated_at
+        SELECT id, case_number, client_name, status, legal_aid_status, folder_path, updated_at
         FROM cases
-        WHERE (status LIKE %s OR status LIKE %s OR LOWER(status)='closed')
+        WHERE (status LIKE %s OR status LIKE %s OR LOWER(status)='closed' OR legal_aid_status=%s)
         ORDER BY updated_at DESC, created_date DESC
         LIMIT %s
         """,
-        ("%結案%", "%Closed%", int(limit)),
+        ("%結案%", "%Closed%", "已結案", int(limit)),
         fetch="all",
     )
     archive_base = _osc_get_closed_archive_base()
@@ -657,7 +773,16 @@ def _osc_build_archive_preview(limit: int = 300) -> dict:
             except Exception:
                 logging.getLogger(__name__).debug("silent-catch archive source mount retry", exc_info=True)
         folder_name = os.path.basename(source_local.rstrip("/")) if source_local else os.path.basename(source_norm.rstrip("/"))
-        target_local = os.path.join(archive_local, folder_name) if archive_local and folder_name else ""
+        rel_parent = _osc_archive_relative_parent(source_local or source_norm)
+        target_local = os.path.join(archive_local, rel_parent, folder_name) if archive_local and folder_name else ""
+        already_under_archive = False
+        if archive_local and source_local:
+            try:
+                already_under_archive = os.path.commonpath([os.path.abspath(archive_local), os.path.abspath(source_local)]) == os.path.abspath(archive_local)
+            except ValueError:
+                already_under_archive = False
+        if already_under_archive:
+            target_local = source_local
         target_exists = bool(target_local and os.path.exists(target_local))
         source_exists = bool(source_local and os.path.exists(source_local))
         item = {
@@ -665,15 +790,19 @@ def _osc_build_archive_preview(limit: int = 300) -> dict:
             "case_number": r.get("case_number") or "",
             "client_name": r.get("client_name") or "",
             "status": r.get("status") or "",
+            "legal_aid_status": r.get("legal_aid_status") or "",
             "source_path": source_norm,
             "source_local": source_local,
             "source_exists": source_exists,
             "target_local": target_local,
             "target_exists": target_exists,
-            "ready": bool(source_exists and target_local and (not target_exists)),
+            "already_under_archive": already_under_archive,
+            "ready": bool(source_exists and target_local and (not target_exists) and (not already_under_archive)),
             "updated_at": r.get("updated_at"),
         }
-        if not source_exists:
+        if already_under_archive:
+            item["reason"] = "已在結案區"
+        elif not source_exists:
             item["reason"] = "來源資料夾不存在或未同步到本機"
         elif target_exists:
             item["reason"] = "封存目標已存在"

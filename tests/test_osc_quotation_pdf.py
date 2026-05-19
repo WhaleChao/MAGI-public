@@ -61,9 +61,9 @@ FAKE_QUOTATION = {
     "notes": "請於期限前確認",
     "extended_data": json.dumps({
         "contact": "王經理",
-        "lawyer": "喬政翔律師",
-        "specialist": "林稚芳法務專員",
-        "specialist_phone": "03-8357-186；0937-753-800",
+        "lawyer": "範例律師",
+        "specialist": "法務專員",
+        "specialist_phone": "02-0000-0000；0900-000-000",
     }),
 }
 
@@ -163,10 +163,10 @@ def test_pdf_uses_standalone_osc_layout_text(client):
 
     def fake_setting(key, default=""):
         values = {
-            "company_name": "偵理法律事務所",
+            "company_name": "範例法律事務所",
             "company_name_en": "ZHENLI LAW FIRM",
             "bank_name": "第一銀行",
-            "bank_account_name": "偵理法律事務所",
+            "bank_account_name": "範例法律事務所",
             "bank_account_number": "801-10-072526",
             "logo_path": "",
             "business_card_path": "",

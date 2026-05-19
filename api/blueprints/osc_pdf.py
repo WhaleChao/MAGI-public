@@ -2,13 +2,17 @@ from __future__ import annotations
 
 import os
 import math
+import json
 import re
+import secrets
 import sys
+import time
 import uuid
 from datetime import datetime
 from datetime import timedelta
 from pathlib import Path
 from typing import Any
+import urllib.request
 
 import fitz
 from flask import Blueprint, jsonify, request
@@ -106,6 +110,8 @@ def _infer_case_from_path(path: Path) -> dict[str, str]:
 
 
 def _load_todo_patterns() -> dict[str, list[dict[str, Any]]]:
+    _extract, get_default_patterns = _load_headless_todo_helpers()
+    defaults = get_default_patterns()
     try:
         rows, _ = _osc_exec(
             """
@@ -130,11 +136,16 @@ def _load_todo_patterns() -> dict[str, list[dict[str, Any]]]:
                 }
             )
         if patterns:
+            for todo_type, items in defaults.items():
+                patterns.setdefault(todo_type, [])
+                seen = {str(item.get("pattern") or "") for item in patterns[todo_type]}
+                for item in items:
+                    if str(item.get("pattern") or "") not in seen:
+                        patterns[todo_type].append(item)
             return patterns
     except Exception:
         pass
-    _extract, get_default_patterns = _load_headless_todo_helpers()
-    return get_default_patterns()
+    return defaults
 
 
 def _parse_roc_or_ad_date(year: str, month: str, day: str) -> datetime | None:
@@ -308,6 +319,69 @@ def _todo_to_calendar_event(todo: dict[str, Any], *, case_number: str, client_na
     }
 
 
+def _create_calendar_share_link(path: Path) -> dict[str, Any]:
+    """Create a MAGI/Paperclip share URL for calendar descriptions."""
+    try:
+        from api.blueprints import osc_files
+
+        local = osc_files._resolve_safe_file(str(path))
+        if not local:
+            return {"ok": False, "error": "file_not_found_or_not_allowed"}
+        public_probe, probe_mode = osc_files._share_url_for_token("probe")
+        if not public_probe:
+            return {"ok": False, "error": probe_mode}
+        public_base = public_probe.rsplit("/s/", 1)[0].rstrip("/")
+        try:
+            with urllib.request.urlopen(public_base + "/health", timeout=10) as resp:
+                if not (200 <= int(resp.status) < 300):
+                    return {"ok": False, "error": f"share_public_base_unhealthy:{resp.status}"}
+        except Exception as exc:
+            return {"ok": False, "error": f"share_public_base_unreachable:{type(exc).__name__}"}
+        token = secrets.token_urlsafe(32)
+        token_hash = osc_files._share_token_hash(token)
+        now = int(time.time())
+        ttl = int(os.environ.get("MAGI_OSC_PDF_CALENDAR_SHARE_TTL_SEC") or osc_files._MAX_SHARE_TTL_SEC)
+        ttl = max(300, min(ttl, osc_files._MAX_SHARE_TTL_SEC))
+        st = osc_files._stat_with_retry(local)
+        public_url, url_mode = osc_files._share_url_for_token(token)
+        if not public_url:
+            return {"ok": False, "error": url_mode}
+        row = {
+            "path": local,
+            "raw_path": str(path),
+            "name": os.path.basename(local),
+            "size": int(st.st_size),
+            "created_at": now,
+            "expires_at": now + ttl,
+            "created_by": "osc_pdf_calendar_scan",
+            "downloads": 0,
+        }
+        osc_files._ensure_share_cached_copy(token_hash, row, local)
+        data = osc_files._prune_share_store(osc_files._load_share_store())
+        data.setdefault("shares", {})[token_hash] = row
+        osc_files._save_share_store(data)
+        return {
+            "ok": True,
+            "url": public_url,
+            "url_mode": url_mode,
+            "expires_at": datetime.fromtimestamp(now + ttl).isoformat(timespec="seconds"),
+            "name": os.path.basename(local),
+        }
+    except Exception as exc:
+        return {"ok": False, "error": f"{type(exc).__name__}: {str(exc)[:180]}"}
+
+
+def _append_calendar_share_link(description: str, share: dict[str, Any]) -> str:
+    desc = str(description or "").strip()
+    if not share.get("ok") or not share.get("url"):
+        return desc
+    lines = [desc] if desc else []
+    lines.append(f"MAGI分享連結：{share['url']}")
+    if share.get("expires_at"):
+        lines.append(f"連結有效至：{share['expires_at']}")
+    return "\n".join(lines).strip()
+
+
 def _insert_todo(item: dict[str, Any], *, case_number: str, client_name: str, source_file: str, allow_duplicates: bool) -> str:
     todo_type = str(item.get("type") or "待辦").strip()
     todo_date = str(item.get("date") or "").strip() or None
@@ -316,19 +390,28 @@ def _insert_todo(item: dict[str, Any], *, case_number: str, client_name: str, so
     if not allow_duplicates:
         existing, _ = _osc_exec(
             """
-            SELECT id FROM case_todos
+            SELECT id, description, client_name FROM case_todos
             WHERE case_number=%s
               AND todo_type=%s
               AND ((todo_date=%s) OR (%s IS NULL AND todo_date IS NULL))
               AND ((todo_time=%s) OR (%s IS NULL AND todo_time IS NULL))
               AND source_file=%s
-              AND description=%s
             LIMIT 1
             """,
-            (case_number, todo_type, todo_date, todo_date, todo_time, todo_time, source_file, desc),
+            (case_number, todo_type, todo_date, todo_date, todo_time, todo_time, source_file),
             fetch="one",
         )
         if existing:
+            existing_desc = str((existing or {}).get("description") or "").strip()
+            existing_client = str((existing or {}).get("client_name") or "").strip()
+            row_id = int((existing or {}).get("id") or 0)
+            if row_id and (desc and desc != existing_desc or client_name and client_name != existing_client):
+                _osc_exec(
+                    "UPDATE case_todos SET client_name=%s, description=%s WHERE id=%s",
+                    (client_name, desc, row_id),
+                    fetch="none",
+                )
+                return "updated"
             return "skipped"
     _osc_exec(
         """
@@ -340,6 +423,40 @@ def _insert_todo(item: dict[str, Any], *, case_number: str, client_name: str, so
         fetch="none",
     )
     return "inserted"
+
+
+def _insert_todos_single_machine(
+    todos: list[dict[str, Any]],
+    *,
+    case_number: str,
+    client_name: str,
+    source_file: str,
+    allow_duplicates: bool,
+) -> dict[str, int]:
+    """Use the original OSC headless single-machine todo writer."""
+    skill_dir = _repo_root() / "skills" / "osc-orchestrator"
+    if str(skill_dir) not in sys.path:
+        sys.path.insert(0, str(skill_dir))
+    from osc_headless.db import connect_mysql, db_config_from_env, ensure_osc_min_schema, insert_case_todos  # type: ignore
+
+    conn = None
+    try:
+        conn = connect_mysql(db_config_from_env())
+        ensure_osc_min_schema(conn)
+        return insert_case_todos(
+            conn,
+            case_number=case_number,
+            client_name=client_name,
+            todos=todos,
+            source_file=source_file,
+            allow_duplicates=allow_duplicates,
+        )
+    finally:
+        try:
+            if conn:
+                conn.close()
+        except Exception:
+            pass
 
 
 def _insert_calendar_event(event: dict[str, Any], *, allow_duplicates: bool) -> str:
@@ -373,7 +490,7 @@ def _insert_calendar_event(event: dict[str, Any], *, allow_duplicates: bool) -> 
             event.get("location") or None,
             int(event.get("is_all_day") or 0),
             int(event.get("reminder_minutes") or 0),
-            __import__("json").dumps(_json_safe(event.get("raw_data") or {}), ensure_ascii=False),
+            json.dumps(_json_safe(event.get("raw_data") or {}), ensure_ascii=False),
             event.get("case_number") or None,
         ),
         fetch="none",
@@ -381,7 +498,14 @@ def _insert_calendar_event(event: dict[str, Any], *, allow_duplicates: bool) -> 
     return "inserted"
 
 
-def _scan_pdf_for_calendar(path: Path, *, case_number: str = "", client_name: str = "", max_pages: int = 5) -> dict[str, Any]:
+def _scan_pdf_for_calendar(
+    path: Path,
+    *,
+    case_number: str = "",
+    client_name: str = "",
+    max_pages: int = 5,
+    include_share_link: bool = False,
+) -> dict[str, Any]:
     inferred = _infer_case_from_path(path)
     case_number = (case_number or inferred.get("case_number") or "").strip()
     client_name = (client_name or inferred.get("client_name") or "").strip()
@@ -392,12 +516,16 @@ def _scan_pdf_for_calendar(path: Path, *, case_number: str = "", client_name: st
     text_todos = _extract_todos_from_pdf_text(path, text)
     todos = _dedupe_todos([*filename_todos, *text_todos])
     todos = [_json_safe(t) for t in todos]
+    share_link = _create_calendar_share_link(path) if include_share_link else {}
+    if share_link.get("ok"):
+        for todo in todos:
+            todo["description"] = _append_calendar_share_link(str(todo.get("description") or ""), share_link)
     events = [
         _todo_to_calendar_event(t, case_number=case_number, client_name=client_name, source_file=str(path))
         for t in todos
         if str(t.get("date") or "").strip()
     ]
-    return {
+    out = {
         "path": str(path),
         "file_name": path.name,
         "case_number": case_number,
@@ -406,6 +534,12 @@ def _scan_pdf_for_calendar(path: Path, *, case_number: str = "", client_name: st
         "todos": todos,
         "events": events,
     }
+    if include_share_link:
+        if share_link.get("ok"):
+            out["share_link"] = share_link
+        else:
+            out["share_warning"] = share_link.get("error") or "share_link_unavailable"
+    return out
 
 
 def _iter_scan_targets(raw_path: str, recursive: bool, limit: int) -> list[Path]:
@@ -744,7 +878,10 @@ def osc_pdf_calendar_scan_api():
         max_pages = max(1, min(int(data.get("max_pages") or 5), 20))
         write = _safe_bool(data.get("write"), False)
         write_todos = _safe_bool(data.get("write_todos"), True)
-        write_calendar = _safe_bool(data.get("write_calendar"), True)
+        # OSC 單機版正規流程：PDF 建立的是 case_todos；Google 日曆由
+        # gcal_sync 讀 case_todos 推送。calendar_events 只保留給明確指定的舊相容模式。
+        write_osc_calendar_events = _safe_bool(data.get("write_osc_calendar_events"), False)
+        include_share_link = _safe_bool(data.get("include_share_link"), False)
         allow_duplicates = _safe_bool(data.get("allow_duplicates"), False)
         case_number = str(data.get("case_number") or "").strip()
         client_name = str(data.get("client_name") or "").strip()
@@ -754,34 +891,34 @@ def osc_pdf_calendar_scan_api():
         else:
             target_specs = [(p, case_number, client_name) for p in _iter_scan_targets(raw_path, recursive=recursive, limit=limit)]
         scanned: list[dict[str, Any]] = []
-        todo_inserted = todo_skipped = event_inserted = event_skipped = 0
+        todo_inserted = todo_updated = todo_skipped = event_inserted = event_skipped = 0
         for path, target_case_number, target_client_name in target_specs:
             item = _scan_pdf_for_calendar(
                 path,
                 case_number=target_case_number,
                 client_name=target_client_name,
                 max_pages=max_pages,
+                include_share_link=bool(write and write_todos and include_share_link),
             )
             scanned.append(item)
             if not write:
                 continue
             if not item.get("case_number") and write_todos:
                 item["write_warning"] = "未判斷案件編號，已略過待辦寫入；請補案件編號後再寫入。"
-            for todo in item.get("todos") or []:
-                if write_todos and item.get("case_number"):
-                    status = _insert_todo(
-                        todo,
-                        case_number=item.get("case_number") or "",
-                        client_name=item.get("client_name") or "",
-                        source_file=item.get("path") or "",
-                        allow_duplicates=allow_duplicates,
-                    )
-                    if status == "inserted":
-                        todo_inserted += 1
-                    else:
-                        todo_skipped += 1
+            if write_todos and item.get("case_number"):
+                insert_result = _insert_todos_single_machine(
+                    item.get("todos") or [],
+                    case_number=item.get("case_number") or "",
+                    client_name=item.get("client_name") or "",
+                    source_file=Path(item.get("path") or "").name,
+                    allow_duplicates=allow_duplicates,
+                )
+                item["todo_write"] = insert_result
+                todo_inserted += int(insert_result.get("inserted") or 0)
+                todo_updated += int(insert_result.get("updated") or 0)
+                todo_skipped += int(insert_result.get("skipped") or 0)
             for event in item.get("events") or []:
-                if write_calendar:
+                if write_osc_calendar_events:
                     status = _insert_calendar_event(event, allow_duplicates=allow_duplicates)
                     if status == "inserted":
                         event_inserted += 1
@@ -793,8 +930,12 @@ def osc_pdf_calendar_scan_api():
         message = (
             f"已掃描 {len(scanned)} 份 PDF，找到 {total_todos} 筆待辦、{total_events} 筆行事曆事件。"
             if not write else
-            f"已掃描 {len(scanned)} 份 PDF；待辦新增 {todo_inserted} 筆、略過 {todo_skipped} 筆；"
-            f"行事曆新增 {event_inserted} 筆、略過 {event_skipped} 筆。"
+            f"已掃描 {len(scanned)} 份 PDF；待辦新增 {todo_inserted} 筆、更新 {todo_updated} 筆、略過 {todo_skipped} 筆；"
+            + (
+                f"本機行事曆事件新增 {event_inserted} 筆、略過 {event_skipped} 筆。"
+                if write_osc_calendar_events
+                else "Google 日曆請由原 OSC case_todos 同步流程推送。"
+            )
         )
         return jsonify(
             {
@@ -805,6 +946,7 @@ def osc_pdf_calendar_scan_api():
                 "todo_count": total_todos,
                 "event_count": total_events,
                 "todo_inserted": todo_inserted,
+                "todo_updated": todo_updated,
                 "todo_skipped": todo_skipped,
                 "event_inserted": event_inserted,
                 "event_skipped": event_skipped,

@@ -6,8 +6,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Paperclip | MAGI</title>
     <link rel="stylesheet" href="/static/osc/osc-theme.css">
-    <link rel="stylesheet" href="/static/osc/osc-components.css?v=20260507-laf-activity-stats-v1">
-    <link rel="stylesheet" href="/static/osc/osc-responsive.css?v=20260505-paperclip-mobile-v1">
+    <link rel="stylesheet" href="/static/osc/osc-components.css?v=20260518-case-sort-v1">
+    <link rel="stylesheet" href="/static/osc/osc-responsive.css?v=20260518-case-sort-v1">
     <link rel="stylesheet" href="/static/osc/file-manager.css?v=20260505-file-share-v1">
 </head>
 
@@ -23,7 +23,7 @@
             <div class="muted" style="margin-top: 4px; font-size: 11px; color: rgba(148,163,184,0.6);">MAGI 事務所系統</div>
         </div>
         <div class="sidebar-home-row" style="padding: 8px 16px 0;">
-            <a class="sidebar-home-link" href="/dashboard">← 返回 MAGI</a>
+            <a class="sidebar-home-link" href="/dashboard">← 回到 MAGI</a>
         </div>
         <nav id="paperclipNav" class="sidebar-nav tabs">
             <!-- 業務概覽（單一 view）-->
@@ -61,6 +61,7 @@
                 <div class="group-children" data-group-children="document" hidden>
                     <button class="tab-btn sub-tab" data-tab="drafts"><span class="sub-icon">🤖</span> AI 草擬</button>
                     <button class="tab-btn sub-tab" data-tab="documents"><span class="sub-icon">📄</span> 書狀索引</button>
+                    <button class="tab-btn sub-tab" data-tab="templateFolder"><span class="sub-icon">🗂</span> 範本資料夾</button>
                     <button class="tab-btn sub-tab" data-tab="pdfTools"><span class="sub-icon">📕</span> PDF 工具</button>
                     <button class="tab-btn sub-tab" data-tab="forms"><span class="sub-icon">🖨</span> 委任 / 收據</button>
                     <a href="/osc/debt" class="tab-btn sub-tab" style="text-decoration:none;"><span class="sub-icon">🤖</span> 消債羅伯特</a>
@@ -98,6 +99,11 @@
                 </div>
             </div>
 
+            <!-- 實務見解（單一）-->
+            <button class="tab-btn group-single" data-tab="insights">
+                <span class="group-icon">🧠</span><span>實務見解</span>
+            </button>
+
             <!-- 系統設定（單一）-->
             <button class="tab-btn group-single" data-tab="admin">
                 <span class="group-icon">⚙️</span><span>系統設定</span>
@@ -125,6 +131,7 @@
         {% include "partials/osc/cases.html" %}
         {% include "partials/osc/laf.html" %}
         {% include "partials/osc/documents.html" %}
+        {% include "partials/osc/templateFolder.html" %}
         {% include "partials/osc/pdfTools.html" %}
         {% include "partials/osc/drafts.html" %}
         {% include "partials/osc/forms.html" %}
@@ -136,13 +143,14 @@
         {% include "partials/osc/meetings.html" %}
         {% include "partials/osc/calendar.html" %}
         {% include "partials/osc/todos.html" %}
+        {% include "partials/osc/insights.html" %}
         {% include "partials/osc/admin.html" %}
         {% include "partials/osc/fileManager.html" %}
 
         <div id="wbMask" class="modal-mask">
             <div class="modal">
                 <div class="modal-head">
-                    <div id="wbTitle" class="modal-title">工作台</div>
+                    <div id="wbTitle" class="modal-title">處理頁</div>
                     <button class="btn" id="wbCloseBtn">關閉</button>
                 </div>
                 <div id="wbStatus" class="status-banner" hidden></div>
@@ -161,20 +169,22 @@
 
     <script src="/static/osc/osc-state.js?v=20260505-case-court-v1"></script>
     <script src="/static/osc/osc-utils.js?v=20260506-web-reply-v1"></script>
-    <script src="/static/osc/osc-ui.js?v=20260506-web-reply-v1"></script>
+    <script src="/static/osc/osc-ui.js?v=20260512-overview-merge-v1"></script>
     <script src="/static/osc/osc-grouping.js?v=20260505-paperclip-mobile-v1"></script>
     <script src="/static/osc/osc-mobile.js?v=20260505-paperclip-mobile-v1"></script>
-    <script src="/static/osc/tabs/dashboard.js?v=20260506-todo-actions-v1"></script>
-    <script src="/static/osc/tabs/cases.js?v=20260506-todo-actions-v1"></script>
+    <script src="/static/osc/tabs/dashboard.js?v=20260513-todo-source-split-v1"></script>
+    <script src="/static/osc/tabs/saas.js?v=20260512-management-links-v1"></script>
+    <script src="/static/osc/tabs/cases.js?v=20260518-case-sort-v1"></script>
     <script src="/static/osc/tabs/calendar.js?v=20260504-calendar-todo-contrast-v3"></script>
-    <script src="/static/osc/tabs/todos.js?v=20260506-todo-actions-v1"></script>
+    <script src="/static/osc/tabs/todos.js?v=20260513-todo-source-split-v1"></script>
     <script src="/static/osc/tabs/admin.js"></script>
     <script src="/static/osc/tabs/drafts.js?v=20260504-insight-filter-v1"></script>
-    <script src="/static/osc/tabs/documents.js?v=20260507-laf-activity-stats-v1"></script>
-    <script src="/static/osc/tabs/accounting.js"></script>
+    <script src="/static/osc/tabs/documents.js?v=20260513-laf-activity-stats-v1-template-folder-v3"></script>
+    <script src="/static/osc/tabs/accounting.js?v=20260508-quotation-form-v1"></script>
+    <script src="/static/osc/tabs/insights.js?v=20260506-web-reply-v1"></script>
     <script src="/static/osc/tabs/checklists.js"></script>
     <script src="/static/osc/tabs/file_manager.js?v=20260505-file-share-v2"></script>
-    <script src="/static/osc/osc-events.js?v=20260507-laf-activity-stats-v1"></script>
+    <script src="/static/osc/osc-events.js?v=20260513-template-folder-v3"></script>
 </body>
 
 </html>

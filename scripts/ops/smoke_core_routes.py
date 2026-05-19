@@ -17,7 +17,7 @@ import sys
 import time
 from pathlib import Path
 from dataclasses import dataclass
-from typing import Sequence
+from typing import Any, Sequence
 
 
 MAGI_ROOT = os.environ.get("MAGI_ROOT_DIR", str(Path(__file__).resolve().parents[2]))
@@ -30,9 +30,8 @@ os.environ.setdefault("MAGI_JUDGMENT_CHAT_MAX_RESULTS", "2")
 os.environ.setdefault("MAGI_JUDGMENT_CHAT_TIMEOUT_SEC", "45")
 os.environ.setdefault("MAGI_TW_REVIEW_ENABLED", "0")
 os.environ.setdefault("MAGI_AVOID_DISTRIBUTED", "1")
-
-from api.orchestrator import Orchestrator  # noqa: E402
-
+# Smoke prompts are synthetic route checks; do not persist them as chatlog memory.
+os.environ.setdefault("MAGI_CAPTURE_CHATLOG", "0")
 
 @dataclass
 class Case:
@@ -66,7 +65,7 @@ def _cases() -> list[Case]:
     ]
 
 
-def _run_case(orch: Orchestrator, case: Case) -> str:
+def _run_case(orch: Any, case: Case) -> str:
     return orch.process_message(
         user_id=f"smoke_core_routes_{case.name}",
         message=case.message,
@@ -108,6 +107,8 @@ def main() -> int:
     ap.add_argument("--with-heavy", action="store_true", help="include slower execute-route checks")
     ap.add_argument("--json-out", default="", help="optional path to save JSON report")
     args = ap.parse_args()
+
+    from api.orchestrator import Orchestrator  # noqa: E402
 
     orch = Orchestrator()
     failed = 0

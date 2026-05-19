@@ -13,7 +13,7 @@
             <h1>研究</h1>
         </div>
         <nav class="topnav" aria-label="研究頁面導覽">
-            <a href="/dashboard">返回 MAGI</a>
+            <a href="/dashboard">回到 MAGI</a>
             <a href="/intel">全球新聞網</a>
             <a href="/osc">Paperclip</a>
         </nav>
@@ -50,7 +50,7 @@
                         {% endfor %}
                     </div>
                     <details class="source-details">
-                        <summary>查看研究連結</summary>
+                        <summary>檢視研究連結</summary>
                         <div class="source-list">
                             {% for source in ns.sources %}
                             <a href="{{ source.open_url }}" {% if not source.is_feed %}target="_blank" rel="noopener noreferrer"{% endif %}>

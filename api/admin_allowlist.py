@@ -4,7 +4,7 @@ admin_allowlist.py
 Centralized admin allowlist loader.
 
 Why:
-- Environment variables are easy to misconfigure across restarts (OpenClaw, launchd, shells).
+- Environment variables are easy to misconfigure across restarts (launchd, shells, service wrappers).
 - We want a single source of truth so only the real admin can issue system-change commands.
 
 Security:

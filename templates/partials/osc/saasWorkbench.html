@@ -1,0 +1,308 @@
+        <div id="saasWorkbench" class="dashboard-tools">
+            <div class="card">
+                <div class="section-head">
+                    <div>
+                        <h3>管理工具</h3>
+                        <div class="section-note">這裡補強業務概覽；要新增或修改資料，可從各區塊按鈕前往對應頁籤處理。</div>
+                    </div>
+                    <div class="inline-actions">
+                        <input id="saasCaseNumber" placeholder="案件編號 / 法院案號">
+                        <button class="btn" id="saasRefreshBtn">重新整理</button>
+                    </div>
+                </div>
+                <div id="saasStatus" class="status-banner">管理工具待命中。</div>
+                <div class="summary-grid" id="saasReadinessGrid"></div>
+                <div class="summary-grid" id="saasCapabilityGrid"></div>
+            </div>
+
+            <div class="card">
+                <div class="section-head">
+                    <div>
+                        <h3>資料來源與處理入口</h3>
+                        <div class="section-note">每張卡片會顯示資料從哪裡來；要修改內容，按下按鈕前往對應頁籤。</div>
+                    </div>
+                </div>
+                <div id="saasIntegrationNote" class="status-banner">下方入口可直接前往常用功能；載入後會顯示每個區塊的資料來源。</div>
+                <div class="summary-grid" id="saasIntegrationGrid">
+                    <div class="stat-card">
+                        <div class="stat-label">案件資料</div>
+                        <div class="stat-value" style="font-size:15px;">新增、查詢、開資料夾</div>
+                        <div class="muted" style="margin-top:6px;">來源：案件列表、當事人</div>
+                        <div class="inline-actions" style="margin-top:8px;">
+                            <button class="btn slim" data-act="tab-jump" data-tab="cases">案件列表</button>
+                            <button class="btn slim" data-act="tab-jump" data-tab="clients">當事人</button>
+                        </div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-label">期限與待辦</div>
+                        <div class="stat-value" style="font-size:15px;">待辦、日曆、風險提醒</div>
+                        <div class="muted" style="margin-top:6px;">來源：待辦事項、行事曆</div>
+                        <div class="inline-actions" style="margin-top:8px;">
+                            <button class="btn slim" data-act="tab-jump" data-tab="todos">待辦事項</button>
+                            <button class="btn slim" data-act="tab-jump" data-tab="calendar">行事曆</button>
+                        </div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-label">法扶流程</div>
+                        <div class="stat-value" style="font-size:15px;">派案、開辦、二階段、結案</div>
+                        <div class="muted" style="margin-top:6px;">來源：法扶管理</div>
+                        <button class="btn slim" style="margin-top:8px;" data-act="tab-jump" data-tab="laf">法扶管理</button>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-label">文件與書狀</div>
+                        <div class="stat-value" style="font-size:15px;">索引、草擬、人工修正學習</div>
+                        <div class="muted" style="margin-top:6px;">來源：書狀索引、AI 草擬</div>
+                        <div class="inline-actions" style="margin-top:8px;">
+                            <button class="btn slim" data-act="tab-jump" data-tab="documents">書狀索引</button>
+                            <button class="btn slim" data-act="tab-jump" data-tab="drafts">AI 草擬</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="grid-2">
+                <div class="card" id="saasOnboardingSection">
+                    <div class="section-head">
+                        <div>
+                            <h3>導入檢查</h3>
+                            <div class="section-note">交付前逐項確認；勾選結果只存在本機 runtime，不進 git。</div>
+                        </div>
+                        <div class="inline-actions">
+                            <button class="btn" id="saasOnboardingRefreshBtn">重新載入</button>
+                            <button class="btn warn" id="saasDiagnosticBtn">下載診斷</button>
+                        </div>
+                    </div>
+                    <div id="saasOnboardingSummary" class="status-banner">導入檢查載入中。</div>
+                    <div id="saasOnboardingList" class="selection-list"></div>
+                </div>
+                <div class="card" id="saasNotificationSection">
+                    <div class="section-head">
+                        <div>
+                            <h3>通知偏好</h3>
+                            <div class="section-note">用來約束通知分流；系統健康與 live 檢查不應送進業務 Discord 頻道。</div>
+                        </div>
+                        <button class="btn primary" id="saasNotificationSaveBtn">儲存通知偏好</button>
+                    </div>
+                    <div id="saasNotificationPolicy" class="status-banner">通知偏好載入中。</div>
+                    <div id="saasNotificationList" class="field-grid cols-2"></div>
+                </div>
+            </div>
+
+            <div class="grid-2">
+                <div class="card" id="saasWorkflowSection">
+                    <div class="section-head">
+                        <div>
+                            <h3>流程樣板</h3>
+                            <div class="section-note">常用流程的檢核步驟；真正新增或修改資料仍回各功能頁籤。</div>
+                        </div>
+                    </div>
+                    <div id="saasWorkflowList" class="selection-list"></div>
+                </div>
+                <div class="card" id="saasGovernanceSection">
+                    <div class="section-head">
+                        <div>
+                            <h3>AI 來源治理</h3>
+                            <div class="section-note">回答與書狀草擬都必須保留來源核對規則，避免把摘要當全文。</div>
+                        </div>
+                        <button class="btn" id="saasOpsReportCopyBtn">複製統計文字</button>
+                    </div>
+                    <div id="saasGovernanceList" class="selection-list"></div>
+                    <textarea id="saasOpsReportText" readonly style="min-height:160px; margin-top:12px;"></textarea>
+                </div>
+            </div>
+
+            <div class="card" id="saasTaskBoardSection">
+                <div class="section-head">
+                    <div>
+                        <h3>事件待辦</h3>
+                        <div class="section-note">行事曆事件與 OSC 建立待辦分開顯示；避免 Google 日曆匯入被誤認成 OSC 自建待辦。</div>
+                    </div>
+                    <div class="inline-actions">
+                        <button class="btn" data-act="tab-jump" data-tab="calendar">行事曆</button>
+                        <button class="btn" data-act="tab-jump" data-tab="todos">待辦事項</button>
+                    </div>
+                </div>
+                <div id="saasTaskRefreshPolicy" class="status-banner">每 6 小時更新 OSC 建立待辦與行事曆事件。</div>
+                <div class="grid-2">
+                    <div>
+                        <div class="section-head">
+                            <div>
+                                <h3>OSC 建立待辦</h3>
+                                <div id="saasOscTodoSummary" class="section-note">來源：case_todos（排除日曆匯入）。</div>
+                            </div>
+                        </div>
+                        <div class="table-wrap">
+                            <table>
+                                <thead><tr><th>時間</th><th>案件</th><th>當事人</th><th>事項</th><th>內容</th><th>操作</th></tr></thead>
+                                <tbody id="saasOscTodoBody"></tbody>
+                            </table>
+                        </div>
+                    </div>
+                    <div>
+                        <div class="section-head">
+                            <div>
+                                <h3>行事曆事件</h3>
+                                <div id="saasCalendarEventSummary" class="section-note">來源：calendar_events 與 Google 日曆匯入。</div>
+                            </div>
+                        </div>
+                        <div class="table-wrap">
+                            <table>
+                                <thead><tr><th>時間</th><th>案件</th><th>來源</th><th>事項</th><th>內容</th><th>操作</th></tr></thead>
+                                <tbody id="saasCalendarEventBody"></tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="grid-2">
+                <div class="card" id="saasRiskSection">
+                    <div class="section-head">
+                        <div>
+                            <h3>期限與風險</h3>
+                            <div class="section-note">來源：待辦事項、行事曆、法扶管理。這裡只排序提醒，明細仍回對應頁籤處理。</div>
+                        </div>
+                        <div class="inline-actions">
+                            <button class="btn" data-act="tab-jump" data-tab="todos">待辦事項</button>
+                            <button class="btn" data-act="tab-jump" data-tab="calendar">行事曆</button>
+                            <button class="btn" data-act="tab-jump" data-tab="laf">法扶管理</button>
+                        </div>
+                    </div>
+                    <div class="table-wrap">
+                        <table>
+                            <thead><tr><th>來源</th><th>風險</th><th>日期</th><th>案件</th><th>事項</th><th>原因</th><th>修改</th></tr></thead>
+                            <tbody id="saasRiskBody"></tbody>
+                        </table>
+                    </div>
+                </div>
+                <div class="card" id="saasOpsSection">
+                    <div class="section-head">
+                        <div>
+                            <h3>事務統計</h3>
+                            <div class="section-note">來源：業務概覽與既有 OSC 資料表。不含計時。</div>
+                        </div>
+                        <button class="btn" data-act="tab-jump" data-tab="dashboard">業務概覽</button>
+                    </div>
+                    <div class="summary-grid" id="saasOpsGrid"></div>
+                    <div class="selection-list" id="saasAuditList" style="margin-top:12px;"></div>
+                </div>
+            </div>
+
+            <div class="grid-2">
+                <div class="card" id="saasConflictSection">
+                    <div class="section-head">
+                        <div>
+                            <h3>利益衝突檢查</h3>
+                            <div class="section-note">來源：當事人、對造、案件列表。只查既有名冊，不另建衝突名冊。</div>
+                        </div>
+                        <div class="inline-actions">
+                            <button class="btn" data-act="tab-jump" data-tab="clients">當事人</button>
+                            <button class="btn" data-act="tab-jump" data-tab="cases">案件列表</button>
+                            <button class="btn primary" id="saasConflictBtn">檢查</button>
+                        </div>
+                    </div>
+                    <div class="field-grid cols-2">
+                        <div class="field"><label for="saasConflictClient">當事人</label><input id="saasConflictClient"></div>
+                        <div class="field"><label for="saasConflictOpponent">對造 / 相對人</label><input id="saasConflictOpponent"></div>
+                        <div class="field"><label for="saasConflictRelated">關係人 / 公司</label><input id="saasConflictRelated"></div>
+                        <div class="field"><label for="saasConflictContact">電話 / Email</label><input id="saasConflictContact"></div>
+                    </div>
+                    <div id="saasConflictResult" class="selection-list" style="margin-top:12px;"></div>
+                </div>
+                <div class="card" id="saasIntakeSection">
+                    <div class="section-head">
+                        <div>
+                            <h3>諮詢／接案追蹤</h3>
+                            <div class="section-note">記錄潛在案件摘要，同步做衝突風險提示。</div>
+                        </div>
+                        <button class="btn primary" id="saasIntakeBtn">建立諮詢紀錄</button>
+                    </div>
+                    <div class="field-grid cols-2">
+                        <div class="field"><label for="saasIntakeClient">當事人</label><input id="saasIntakeClient"></div>
+                        <div class="field"><label for="saasIntakeOpponent">對造</label><input id="saasIntakeOpponent"></div>
+                        <div class="field"><label for="saasIntakeReason">案由</label><input id="saasIntakeReason"></div>
+                        <div class="field"><label for="saasIntakeContact">聯絡方式</label><input id="saasIntakeContact"></div>
+                    </div>
+                    <div class="field" style="margin-top:12px;">
+                        <label for="saasIntakeSummary">諮詢摘要 / 下一步</label>
+                        <textarea id="saasIntakeSummary" style="min-height:120px;"></textarea>
+                    </div>
+                    <div id="saasIntakeResult" class="selection-list" style="margin-top:12px;"></div>
+                </div>
+            </div>
+
+            <div class="grid-2">
+                <div class="card" id="saasQualitySection">
+                    <div class="section-head">
+                        <div>
+                            <h3>品質 / 幻覺審核</h3>
+                            <div class="section-note">來源：AI 草擬。這裡是輸出前審核；正式書狀生成仍在 AI 草擬頁處理。</div>
+                        </div>
+                        <div class="inline-actions">
+                            <button class="btn" data-act="tab-jump" data-tab="drafts">AI 草擬</button>
+                            <button class="btn primary" id="saasQualityBtn">檢查文字</button>
+                        </div>
+                    </div>
+                    <div class="field-grid cols-2">
+                        <div class="field"><label for="saasQualityCase">案號</label><input id="saasQualityCase"></div>
+                        <div class="field"><label for="saasQualityReason">案由</label><input id="saasQualityReason"></div>
+                    </div>
+                    <div class="field" style="margin-top:12px;">
+                        <label for="saasQualityText">要檢查的文字</label>
+                        <textarea id="saasQualityText" style="min-height:180px;"></textarea>
+                    </div>
+                    <div id="saasQualityResult" class="selection-list" style="margin-top:12px;"></div>
+                </div>
+                <div class="card" id="saasPacketSection">
+                    <div class="section-head">
+                        <div>
+                            <h3>對外資料</h3>
+                            <div class="section-note">來源：案件資料與應備事項表。只產生可複製文字，方便貼到私人 LINE 或其他既有聯絡方式。</div>
+                        </div>
+                        <div class="inline-actions">
+                            <button class="btn" data-act="tab-jump" data-tab="cases">案件列表</button>
+                            <button class="btn" data-act="tab-jump" data-tab="laf">法扶管理</button>
+                            <button class="btn primary" id="saasPacketBtn">產生對外資料</button>
+                        </div>
+                    </div>
+                    <div class="field-grid cols-2">
+                        <div class="field"><label for="saasPacketCase">案件編號</label><input id="saasPacketCase"></div>
+                        <div class="field"><label for="saasPacketClient">當事人</label><input id="saasPacketClient"></div>
+                        <div class="field" style="grid-column:span 2;"><label for="saasPacketReason">案由</label><input id="saasPacketReason"></div>
+                    </div>
+                    <div class="field" style="margin-top:12px;">
+                        <label for="saasPacketText">可複製文字</label>
+                        <textarea id="saasPacketText" readonly style="min-height:180px;"></textarea>
+                    </div>
+                    <button class="btn" id="saasPacketCopyBtn">複製對外資料</button>
+                </div>
+            </div>
+
+            <div class="grid-2">
+                <div class="card" id="saasTimelineSection">
+                    <div class="section-head">
+                        <div>
+                            <h3>文件證據時間線</h3>
+                            <div class="section-note">來源：書狀索引。這裡只做時間線視圖，不重掃、不重建文件資料。</div>
+                        </div>
+                        <button class="btn" data-act="tab-jump" data-tab="documents">書狀索引</button>
+                    </div>
+                    <div class="table-wrap">
+                        <table>
+                            <thead><tr><th>日期</th><th>案件</th><th>類型</th><th>文件</th><th>用途</th><th>操作</th></tr></thead>
+                            <tbody id="saasTimelineBody"></tbody>
+                        </table>
+                    </div>
+                </div>
+                <div class="card" id="saasLearningSection">
+                    <div class="section-head">
+                        <div>
+                            <h3>修正學習中心</h3>
+                            <div class="section-note">來源：AI 草擬的人工改正紀錄；跨案使用須同案由，避免混亂記憶。</div>
+                        </div>
+                        <button class="btn" data-act="tab-jump" data-tab="drafts">AI 草擬</button>
+                    </div>
+                    <div id="saasLearningList" class="selection-list"></div>
+                </div>
+            </div>
+        </div>

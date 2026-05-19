@@ -2,15 +2,15 @@
   "_schema_version": "1.1.0",
   "_description": "MAGI model role registry. Maps logical roles to concrete model identifiers. GLM-OCR retired 2026-04-08 — macOS Vision is primary OCR.",
   "defaults": {
-    "text_primary": "gemma-4-26b-a4b-it-4bit",
-    "vision": "gemma-4-26b-a4b-it-4bit",
+    "text_primary": "gemma-4-e4b-it-4bit",
+    "vision": "gemma-4-e4b-it-4bit",
     "embedding": "modernbert-embed-4bit",
     "ocr": "macos-vision"
   },
   "roles": {
     "text_primary": {
       "description": "Primary text generation model",
-      "model": "gemma-4-26b-a4b-it-4bit",
+      "model": "gemma-4-e4b-it-4bit",
       "env_override": "MAGI_TEXT_PRIMARY_MODEL",
       "env_aliases": ["MAGI_MAIN_MODEL", "CASPER_LOCAL_MODEL"]
     },
@@ -40,7 +40,7 @@
     },
     "vision": {
       "description": "Vision/multimodal tasks (Gemma 4 on port 8080)",
-      "model": "gemma-4-26b-a4b-it-4bit",
+      "model": "gemma-4-e4b-it-4bit",
       "fallback_role": "text_primary",
       "env_override": "MAGI_OMLX_VISION_MODEL"
     },

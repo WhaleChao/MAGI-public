@@ -125,7 +125,7 @@ _INTENT_RULES: List[Tuple[str, List[str], Optional[re.Pattern]]] = [
                    re.compile(r"(?i)(逐字稿|transcript|transcrib|語音.*文字|錄音)")),
     ("tc_review",  ["校正", "正體", "繁中", "台灣用語", "簡轉繁", "用語檢查"],
                    re.compile(r"(?i)(校正|正體|繁中|台灣用語|簡轉繁|用語.*檢查)")),
-    ("legal_analysis", ["法律分析", "法條", "判例", "法律問題", "構成要件"],
+    ("legal_analysis", ["法律分析", "法條", "判例", "實務見解", "法律問題", "構成要件"],
                    re.compile(r"(?i)(法律分析|法條適用|判例.*分析|構成要件|條文.*解釋)")),
 ]
 
@@ -775,7 +775,7 @@ class InferenceGateway:
                        temperature=temp, max_tokens=2048,
                        system_prompt=_DEFAULT_SYSTEM_PROMPT_ZH)
         if r.get("success"):
-            return self._result(success=True, route="omlx", degraded=False, response=r.get("response", ""), model=use_model)
+            return self._result(success=True, route="omlx", degraded=False, response=r.get("response", ""), model=r.get("model") or use_model)
         return self._result(success=False, route="omlx", degraded=False, error=r.get("error", "omlx_failed"))
 
     def _omlx_vision(self, image_path: str, prompt: str, timeout: int, task_type: str = "vision") -> dict:
@@ -863,6 +863,22 @@ class InferenceGateway:
             filtered = [m for m in candidates if m in models]
             if filtered:
                 candidates = filtered
+            else:
+                resolved = []
+                for m in candidates:
+                    try:
+                        r = melchior_client._resolve_omlx_chat_model(m, available_models=models)
+                    except Exception:
+                        r = ""
+                    if r and r in models and r not in resolved:
+                        resolved.append(r)
+                if resolved:
+                    candidates = resolved
+                else:
+                    gemma_models = [m for m in models if "gemma-4" in m.lower()]
+                    candidates = gemma_models[:1] or models[:1]
+        if not candidates and models:
+            candidates = models[:1]
 
         batch = max(1, min(4, len(candidates[:4]) or 1))
         per_try_timeout = max(12, min(45, int(max(12, int(timeout) // batch))))

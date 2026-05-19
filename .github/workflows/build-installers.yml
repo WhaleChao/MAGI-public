@@ -1,0 +1,48 @@
+name: Build Customer Installers
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "installer-*"
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  macos-dmg:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Build macOS DMG
+        run: |
+          python scripts/packaging/build_installers.py --force --json
+      - uses: actions/upload-artifact@v5
+        with:
+          name: MAGI-macOS-installer
+          path: |
+            dist/installers/MAGI-macOS-Installer.dmg
+            dist/installers/installer_manifest.json
+            dist/installers/macos/README-macOS.txt
+
+  windows-exe:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Build Windows EXE
+        shell: pwsh
+        run: |
+          python scripts/packaging/build_installers.py --force --no-dmg --windows-exe --json
+      - uses: actions/upload-artifact@v5
+        with:
+          name: MAGI-Windows-installer
+          path: |
+            dist/installers/windows/dist/MAGI-Setup.exe
+            dist/installers/MAGI-Windows-Installer-Payload.zip
+            dist/installers/installer_manifest.json

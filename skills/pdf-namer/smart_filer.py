@@ -705,8 +705,8 @@ def process_scan_folder(dry_run: bool = True, notify: bool = True, max_workers: 
     Main entry: process all PDFs in 01_掃描檔放置區.
 
     Uses batch architecture to minimize model switching:
-      Phase 1: GLM-OCR batch — OCR all pages (model loaded once)
-      Phase 2: Gemma 4 batch — analyze all OCR texts (model loaded once)
+      Phase 1: macOS Vision/oMLX OCR batch — OCR all pages
+      Phase 2: Gemma 4 batch — analyze all OCR texts
       Phase 3: Filing — match to cases and file
 
     Returns a filing report with results for each file.
@@ -765,9 +765,9 @@ def process_scan_folder(dry_run: bool = True, notify: bool = True, max_workers: 
     # Build case index
     case_index = build_case_index()
 
-    logger.info(f"🧵 pdf-namer batch mode (GLM-OCR → Gemma 4)")
+    logger.info("🧵 pdf-namer batch mode (macOS Vision/oMLX OCR → Gemma 4)")
 
-    # ── Batch Phase 1: OCR all pages with GLM-OCR (model loaded once) ──
+    # ── Batch Phase 1: OCR all pages with macOS Vision/oMLX fallback ──
     from action import batch_ocr_pages, batch_analyze_texts
     pdf_paths = [os.path.join(SCAN_INBOX, f) for f in pdfs]
     ocr_results = batch_ocr_pages(pdf_paths)

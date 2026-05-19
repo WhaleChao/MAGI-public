@@ -45,7 +45,7 @@ python smart_filer.py scan --execute --workers=4
 
 - `smart_filer.py` 會並行處理多份 PDF（預設 3 workers，建議 3-5）。
 - OCR / 檔案比對屬 CPU 工作，可多執行緒加速。
-- Vision LLM（Ollama / LLaVA / minicpm-v）預設單工保護，避免 VRAM/OOM。
+- Vision/OCR 路徑（macOS Vision / oMLX fallback）預設單工保護，避免記憶體尖峰。
 
 ## Environment Flags
 
@@ -66,9 +66,10 @@ python smart_filer.py scan --execute --workers=4
 - 更名事件寫入 `_corrections.json` 和 `training_data.json`
 - 夜間訓練時加權 3 倍學習
 
-## Vision Port 修正（2026-04-02）
-- Vision 模型在 port 8082（GLM-OCR-bf16）
-- `vision_parser.py` 和 `action.py` 已改為優先讀 `MAGI_OMLX_VISION_URL`
+## OCR / Vision 路由（2026-05-18）
+- 文字 OCR 以 macOS Vision 為主；需要影像判讀時走 oMLX 視覺相容路由。
+- GLM-OCR 已退役；`vision_parser.py` 和 `action.py` 仍保留相容函式名稱，但不應再提示使用者啟動 GLM-OCR。
+- `MAGI_OMLX_VISION_URL` 可覆寫視覺模型端點；未設定時使用目前 oMLX 服務設定。
 
 ## 呼叫格式
 觸發詞：命名、PDF命名、歸檔

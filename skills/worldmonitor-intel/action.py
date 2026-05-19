@@ -314,9 +314,9 @@ def _reason_with_melchior(prompt: str, max_tokens: int = 2048) -> str:
         if not model:
             try:
                 from api.model_config import TEXT_PRIMARY_MODEL as _tpm
-                model = _tpm or "gemma-4-e4b-it-4bit"
+                model = _tpm or "gemma-4-26b-a4b-it-4bit"
             except Exception:
-                model = "gemma-4-e4b-it-4bit"
+                model = "gemma-4-26b-a4b-it-4bit"
 
         payload = json.dumps({
             "model": model,

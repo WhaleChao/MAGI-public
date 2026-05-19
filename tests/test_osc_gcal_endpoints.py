@@ -120,13 +120,13 @@ class TestGcalStatus:
         with (
             patch("api.blueprints.osc_gcal.TOKEN_PATH", tmp_token),
             patch("api.blueprints.osc_gcal._load_creds", return_value=creds),
-            patch("api.blueprints.osc_gcal._get_setting", side_effect=lambda key: {"gcal_calendar_id": "primary", "gcal_import_calendar_ids": "primary, whalelawyer@gmail.com"}.get(key)),
+            patch("api.blueprints.osc_gcal._get_setting", side_effect=lambda key: {"gcal_calendar_id": "primary", "gcal_import_calendar_ids": "primary, team-calendar@example.com"}.get(key)),
         ):
             rv = client.get("/api/osc/gcal/status")
         assert rv.status_code == 200
         data = rv.get_json()
         assert data["connected"] is True
-        assert data["import_calendar_ids"] == "primary, whalelawyer@gmail.com"
+        assert data["import_calendar_ids"] == "primary, team-calendar@example.com"
 
 
 class TestGcalAuthStart:

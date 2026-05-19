@@ -98,6 +98,30 @@
                 </div>
             </div>
             <div class="card">
+                <div class="section-head">
+                    <div>
+                        <h3>帳務匯入與對帳</h3>
+                        <div class="section-note">檢查同事帳務表後再匯入；薪資、租金、勞健保、勞退等固定支出只做對帳，不重複入帳。</div>
+                    </div>
+                </div>
+                <div class="field-grid cols-4">
+                    <div class="field">
+                        <label for="accountingImportMonth">匯入月份</label>
+                        <input id="accountingImportMonth" type="month">
+                    </div>
+                    <div class="field">
+                        <label>操作</label>
+                        <div class="inline-actions">
+                            <button class="btn" id="accountingImportPreviewBtn">預覽匯入</button>
+                            <button class="btn primary" id="accountingImportRunBtn">確認匯入</button>
+                        </div>
+                    </div>
+                </div>
+                <div id="accountingImportResult" class="soft-block" style="margin-top:10px;">
+                    <div class="muted">尚未檢查同事帳務表。</div>
+                </div>
+            </div>
+            <div class="card">
                 <div class="toolbar" style="margin-bottom:8px;">
                     <div class="sort-bar">
                         <label>排序</label>
@@ -254,6 +278,7 @@
                 </div>
                 <div class="toolbar">
                     <button class="btn primary" id="txRecurringSaveBtn">儲存固定支出</button>
+                    <button class="btn" id="txRecurringSyncBtn">同步今年已產生紀錄</button>
                     <button class="btn warn" id="txRecurringResetBtn">清空</button>
                 </div>
                 <div class="table-wrap" style="margin-top:10px;">
@@ -277,4 +302,3 @@
                 </div>
             </div>
         </section>
-

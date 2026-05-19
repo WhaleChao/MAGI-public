@@ -69,3 +69,9 @@ def test_flag_on_legacy_cb_not_touched_on_gate_path(monkeypatch):
     assert ok is False
     # legacy NIM CB consecutive_429 must remain 0
     assert _nim._cb_state["consecutive_429"] == 0
+
+
+def test_eol_nim_model_falls_back_to_current_default(monkeypatch):
+    monkeypatch.setenv("NVIDIA_NIM_MODEL", "meta/llama-3.1-405b-instruct")
+    monkeypatch.setenv("NVIDIA_NIM_MODEL_FAST", "meta/llama-3.3-70b-instruct")
+    assert _nim._pick_model("judgment_summary", heavy=True) == "meta/llama-3.3-70b-instruct"

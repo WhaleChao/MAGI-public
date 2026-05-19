@@ -1,62 +1,453 @@
 {
-  "ts": "2026-04-26T19:30:22.099990",
+  "ts": "2026-05-13T20:05:09.003770",
   "mode": "apply",
   "status": "ok",
   "before": {
-    "duplicate_groups": 3,
-    "total_extra_entries": 3
+    "duplicate_groups": 4258,
+    "total_extra_entries": 4258
   },
   "after": {
     "duplicate_groups": 0,
     "total_extra_entries": 0
   },
-  "planned_groups": 3,
-  "removed_count": 3,
-  "backup_path": "/Users/ai/Desktop/MAGI_v2/archive/knowledge_duplicate_cleanup/20260426_193022/duplicate_cleanup_backup.json",
+  "planned_groups": 4258,
+  "removed_count": 4258,
+  "backup_path": "/Users/ai/Desktop/MAGI_v2/archive/knowledge_duplicate_cleanup/20260513_200509/duplicate_cleanup_backup.json",
   "verified": true,
   "cleanup_plan": {
     "mode": "dry_run",
-    "groups": [
-      {
-        "hash": "82bee291919dcb81700b902ffe11f572",
-        "count": 2,
-        "keep_id": 996756,
-        "remove_ids": [
-          996757
-        ]
-      },
-      {
-        "hash": "c92e4e6d153297109c9b7db68e2464e7",
-        "count": 2,
-        "keep_id": 996752,
-        "remove_ids": [
-          996753
-        ]
-      },
-      {
-        "hash": "f52b550d3ee53950c84b4a93f977f205",
-        "count": 2,
-        "keep_id": 996754,
-        "remove_ids": [
-          996755
-        ]
-      }
-    ],
-    "groups_planned": 3,
-    "estimated_delete_documents": 3,
-    "estimated_delete_vectors": 3,
+    "groups_planned": 4258,
+    "estimated_delete_documents": 4258,
+    "estimated_delete_vectors": 4258,
     "sql_preview": [
-      "DELETE FROM vectors WHERE doc_id IN (996757);",
-      "DELETE FROM documents WHERE id IN (996757);",
-      "DELETE FROM vectors WHERE doc_id IN (996753);",
-      "DELETE FROM documents WHERE id IN (996753);",
-      "DELETE FROM vectors WHERE doc_id IN (996755);",
-      "DELETE FROM documents WHERE id IN (996755);"
+      "DELETE FROM vectors WHERE doc_id IN (1004123);",
+      "DELETE FROM documents WHERE id IN (1004123);",
+      "DELETE FROM vectors WHERE doc_id IN (1004347);",
+      "DELETE FROM documents WHERE id IN (1004347);",
+      "DELETE FROM vectors WHERE doc_id IN (1002441);",
+      "DELETE FROM documents WHERE id IN (1002441);",
+      "DELETE FROM vectors WHERE doc_id IN (1003545);",
+      "DELETE FROM documents WHERE id IN (1003545);",
+      "DELETE FROM vectors WHERE doc_id IN (1000717);",
+      "DELETE FROM documents WHERE id IN (1000717);",
+      "DELETE FROM vectors WHERE doc_id IN (1006601);",
+      "DELETE FROM documents WHERE id IN (1006601);",
+      "DELETE FROM vectors WHERE doc_id IN (1000859);",
+      "DELETE FROM documents WHERE id IN (1000859);",
+      "DELETE FROM vectors WHERE doc_id IN (1007686);",
+      "DELETE FROM documents WHERE id IN (1007686);",
+      "DELETE FROM vectors WHERE doc_id IN (1008561);",
+      "DELETE FROM documents WHERE id IN (1008561);",
+      "DELETE FROM vectors WHERE doc_id IN (1000769);",
+      "DELETE FROM documents WHERE id IN (1000769);"
     ],
     "notes": [
       "先備份再刪除；本計畫預設只輸出，不自動執行。",
       "每組保留最小 id 作為 canonical entry。"
-    ]
+    ],
+    "groups_sample": [
+      {
+        "hash": "1d7830c4ce94a966ac38781ff0361255",
+        "count": 2,
+        "keep_id": 1004122,
+        "remove_ids": [
+          1004123
+        ]
+      },
+      {
+        "hash": "1d80dd560ae7633c26509e6cc940b3a9",
+        "count": 2,
+        "keep_id": 1004346,
+        "remove_ids": [
+          1004347
+        ]
+      },
+      {
+        "hash": "1d904c70d8f0659a8ed65f80219e3789",
+        "count": 2,
+        "keep_id": 1002440,
+        "remove_ids": [
+          1002441
+        ]
+      },
+      {
+        "hash": "1d9eca265d7c836f33c513155ce99e03",
+        "count": 2,
+        "keep_id": 1003544,
+        "remove_ids": [
+          1003545
+        ]
+      },
+      {
+        "hash": "1dd191d73616269b3c6f5fb631abd2a8",
+        "count": 2,
+        "keep_id": 1000716,
+        "remove_ids": [
+          1000717
+        ]
+      },
+      {
+        "hash": "1ddc4e839fe1aa348b0392a0fa9159f0",
+        "count": 2,
+        "keep_id": 1006600,
+        "remove_ids": [
+          1006601
+        ]
+      },
+      {
+        "hash": "1dee452d9347968fefeae170f0940296",
+        "count": 2,
+        "keep_id": 1000858,
+        "remove_ids": [
+          1000859
+        ]
+      },
+      {
+        "hash": "1deef30accd960f3730bce09418639a2",
+        "count": 2,
+        "keep_id": 1007685,
+        "remove_ids": [
+          1007686
+        ]
+      },
+      {
+        "hash": "1df776dec699494ea3c33ef81c52de2d",
+        "count": 2,
+        "keep_id": 1008560,
+        "remove_ids": [
+          1008561
+        ]
+      },
+      {
+        "hash": "1e0943ebf43e21c64dce02ece2335768",
+        "count": 2,
+        "keep_id": 1000768,
+        "remove_ids": [
+          1000769
+        ]
+      },
+      {
+        "hash": "1e0aaa798503b70c991f7272f3f9ddf6",
+        "count": 2,
+        "keep_id": 1005984,
+        "remove_ids": [
+          1005985
+        ]
+      },
+      {
+        "hash": "1e0b27a1e2d501c6d5b3591070199480",
+        "count": 2,
+        "keep_id": 1003822,
+        "remove_ids": [
+          1003823
+        ]
+      },
+      {
+        "hash": "1e1f5065082f760a2827a788c07e72ba",
+        "count": 2,
+        "keep_id": 1004760,
+        "remove_ids": [
+          1004761
+        ]
+      },
+      {
+        "hash": "1e3caae0fd3ce06043a031111cbf745a",
+        "count": 2,
+        "keep_id": 998202,
+        "remove_ids": [
+          998203
+        ]
+      },
+      {
+        "hash": "1e5667855b58eb56e6f711b7218eaeeb",
+        "count": 2,
+        "keep_id": 997446,
+        "remove_ids": [
+          997447
+        ]
+      },
+      {
+        "hash": "1e5695d431b22e5a1c3d3082efa4a132",
+        "count": 2,
+        "keep_id": 1003358,
+        "remove_ids": [
+          1003359
+        ]
+      },
+      {
+        "hash": "1e61e63a775bb29a11eedeb2149e218b",
+        "count": 2,
+        "keep_id": 998382,
+        "remove_ids": [
+          998383
+        ]
+      },
+      {
+        "hash": "1e67a6c485ba908140948ebdd0bc4857",
+        "count": 2,
+        "keep_id": 999928,
+        "remove_ids": [
+          999929
+        ]
+      },
+      {
+        "hash": "1e8774061b1aa861c12508905bf9f9a7",
+        "count": 2,
+        "keep_id": 1002240,
+        "remove_ids": [
+          1002241
+        ]
+      },
+      {
+        "hash": "1e913129a6e85d824bce669087d6d569",
+        "count": 2,
+        "keep_id": 1005066,
+        "remove_ids": [
+          1005067
+        ]
+      },
+      {
+        "hash": "1ea535d319ebfce0469aacd5170ace35",
+        "count": 2,
+        "keep_id": 1005992,
+        "remove_ids": [
+          1005993
+        ]
+      },
+      {
+        "hash": "1eade8339fb74754db12ecc5e8c9131f",
+        "count": 2,
+        "keep_id": 1006176,
+        "remove_ids": [
+          1006177
+        ]
+      },
+      {
+        "hash": "1ee6421ae4c785d948123c03aa252090",
+        "count": 2,
+        "keep_id": 999926,
+        "remove_ids": [
+          999927
+        ]
+      },
+      {
+        "hash": "1eec01d98baf008b3ac2f05dd3c72d68",
+        "count": 2,
+        "keep_id": 1003150,
+        "remove_ids": [
+          1003151
+        ]
+      },
+      {
+        "hash": "1f16b1c25a507c5622b65e397dd25c8e",
+        "count": 2,
+        "keep_id": 1003826,
+        "remove_ids": [
+          1003827
+        ]
+      },
+      {
+        "hash": "1f2da544584fb5b856129c545bb4ee7a",
+        "count": 2,
+        "keep_id": 999221,
+        "remove_ids": [
+          999222
+        ]
+      },
+      {
+        "hash": "1f60c8b6980190c825300858b7933ab9",
+        "count": 2,
+        "keep_id": 1000962,
+        "remove_ids": [
+          1000963
+        ]
+      },
+      {
+        "hash": "1f6854c305903643a591066e2ffc9c9b",
+        "count": 2,
+        "keep_id": 1002518,
+        "remove_ids": [
+          1002519
+        ]
+      },
+      {
+        "hash": "1f6b37c40cafe3b81c919a67f89b4ee5",
+        "count": 2,
+        "keep_id": 1003214,
+        "remove_ids": [
+          1003215
+        ]
+      },
+      {
+        "hash": "1f74e4efacbd38d7fd48791866b9a91c",
+        "count": 2,
+        "keep_id": 998304,
+        "remove_ids": [
+          998305
+        ]
+      },
+      {
+        "hash": "1f97a8d70943a86c08d41662c0ef2f95",
+        "count": 2,
+        "keep_id": 1007769,
+        "remove_ids": [
+          1007770
+        ]
+      },
+      {
+        "hash": "1f9b105f163e56b1994f16b299d9182b",
+        "count": 2,
+        "keep_id": 1003856,
+        "remove_ids": [
+          1003857
+        ]
+      },
+      {
+        "hash": "1f9e9f5644ed70efd9343380f63a0183",
+        "count": 2,
+        "keep_id": 1004868,
+        "remove_ids": [
+          1004869
+        ]
+      },
+      {
+        "hash": "1f9fbe399804069f3ba6b4cae397e10b",
+        "count": 2,
+        "keep_id": 997581,
+        "remove_ids": [
+          997582
+        ]
+      },
+      {
+        "hash": "1faa94007711052f2a91e092369892e5",
+        "count": 2,
+        "keep_id": 1002986,
+        "remove_ids": [
+          1002987
+        ]
+      },
+      {
+        "hash": "1fadf832045346866cba5c91bd55ac19",
+        "count": 2,
+        "keep_id": 1007116,
+        "remove_ids": [
+          1007117
+        ]
+      },
+      {
+        "hash": "1fbd38e949bc15af7ea1f1009b0429c6",
+        "count": 2,
+        "keep_id": 1005132,
+        "remove_ids": [
+          1005133
+        ]
+      },
+      {
+        "hash": "1fc2348b8c08311098ecf0218594d85c",
+        "count": 2,
+        "keep_id": 1002852,
+        "remove_ids": [
+          1002853
+        ]
+      },
+      {
+        "hash": "1fd27223620d1e4bdc16e5ac494b15dc",
+        "count": 2,
+        "keep_id": 1006164,
+        "remove_ids": [
+          1006165
+        ]
+      },
+      {
+        "hash": "1fd2e9faee15e7e28ffee63620545386",
+        "count": 2,
+        "keep_id": 1007158,
+        "remove_ids": [
+          1007159
+        ]
+      },
+      {
+        "hash": "2007d4868174c87fd172d0a33b10f9e0",
+        "count": 2,
+        "keep_id": 1004094,
+        "remove_ids": [
+          1004095
+        ]
+      },
+      {
+        "hash": "200b98788bfffa6fdcac3715668829f0",
+        "count": 2,
+        "keep_id": 997973,
+        "remove_ids": [
+          997974
+        ]
+      },
+      {
+        "hash": "200f7f8d30894b7955980b33dac0fa40",
+        "count": 2,
+        "keep_id": 997761,
+        "remove_ids": [
+          997762
+        ]
+      },
+      {
+        "hash": "20126018a9aae154cf673b117a6a05ec",
+        "count": 2,
+        "keep_id": 1002392,
+        "remove_ids": [
+          1002393
+        ]
+      },
+      {
+        "hash": "2013892363a7f3efe7b88ab71de5d7c8",
+        "count": 2,
+        "keep_id": 1008923,
+        "remove_ids": [
+          1008924
+        ]
+      },
+      {
+        "hash": "2048215d27b40adaa6bea01c9e33c63b",
+        "count": 2,
+        "keep_id": 1005280,
+        "remove_ids": [
+          1005281
+        ]
+      },
+      {
+        "hash": "206a3fd8444e73d486f4135cfeb50a0c",
+        "count": 2,
+        "keep_id": 999896,
+        "remove_ids": [
+          999897
+        ]
+      },
+      {
+        "hash": "2083bd30311bc1416f206fbe09af9e9b",
+        "count": 2,
+        "keep_id": 1005364,
+        "remove_ids": [
+          1005365
+        ]
+      },
+      {
+        "hash": "208d5ec87d4cc5dc3845278aeae21ded",
+        "count": 2,
+        "keep_id": 999441,
+        "remove_ids": [
+          999442
+        ]
+      },
+      {
+        "hash": "20a05f99347aee6d573687a2f13627ca",
+        "count": 2,
+        "keep_id": 1004366,
+        "remove_ids": [
+          1004367
+        ]
+      }
+    ],
+    "groups_omitted": 4208
   },
   "verification": {
     "ok": true,
@@ -71,7 +462,7 @@
     "backup": {
       "ok": true,
       "status": "ok",
-      "path": "/Users/ai/Desktop/MAGI_v2/archive/knowledge_duplicate_cleanup/20260426_193022/faiss",
+      "path": "/Users/ai/Desktop/MAGI_v2/archive/knowledge_duplicate_cleanup/20260513_200509/faiss",
       "files": [
         "mem_index.faiss",
         "mem_idmap.npy",
@@ -81,7 +472,7 @@
     },
     "rebuild": {
       "ok": true,
-      "vectors_indexed": 68186,
+      "vectors_indexed": 75005,
       "index_type": "flat"
     }
   },
@@ -89,6 +480,11 @@
     "attempted": false,
     "restored": false
   },
-  "rollback_hint": "使用備份檔 /Users/ai/Desktop/MAGI_v2/archive/knowledge_duplicate_cleanup/20260426_193022/duplicate_cleanup_backup.json 重新插回 documents/vectors，並將 backup/faiss 目錄覆蓋回 live FAISS index。",
-  "elapsed_sec": 24.53
+  "rollback_hint": "使用備份檔 /Users/ai/Desktop/MAGI_v2/archive/knowledge_duplicate_cleanup/20260513_200509/duplicate_cleanup_backup.json 重新插回 documents/vectors，並將 backup/faiss 目錄覆蓋回 live FAISS index。",
+  "elapsed_sec": 15.38,
+  "backup_prune": {
+    "pruned": 0,
+    "kept": 3,
+    "errors": []
+  }
 }

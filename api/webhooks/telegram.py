@@ -63,16 +63,20 @@ def _get_orchestrator():
 
 
 # ---------------------------------------------------------------------------
-# Token / ID loaders (pure env-var, no openclaw.json dependency)
+# Token / ID loaders (pure env-var, no legacy config-file dependency)
 # ---------------------------------------------------------------------------
 
-def _load_openclaw_telegram_token() -> str:
-    """讀取 TG bot token — 純環境變數，不再依賴 openclaw.json。"""
-    return (os.environ.get("OPENCLAW_TELEGRAM_BOT_TOKEN") or "").strip()
+def _load_telegram_bot_token() -> str:
+    """讀取 TG bot token；MAGI_* 為主，舊環境變數僅作相容 fallback。"""
+    return (
+        os.environ.get("MAGI_TELEGRAM_BOT_TOKEN")
+        or os.environ.get("OPENCLAW_TELEGRAM_BOT_TOKEN")
+        or ""
+    ).strip()
 
 
 def _load_admin_telegram_ids() -> list[str]:
-    """讀取 TG admin IDs — 純環境變數，不再依賴 openclaw.json。"""
+    """讀取 TG admin IDs — 純環境變數。"""
     return [
         x.strip()
         for x in (os.environ.get("MAGI_ADMIN_TELEGRAM_IDS") or "").split(",")
@@ -107,7 +111,7 @@ def _load_notify_telegram_ids() -> list[str]:
 # ---------------------------------------------------------------------------
 
 def _load_telegram_webhook_secret() -> str:
-    """讀取 TG webhook secret — 純環境變數，不再依賴 openclaw.json。"""
+    """讀取 TG webhook secret — 純環境變數。"""
     return (
         os.environ.get("TELEGRAM_WEBHOOK_SECRET")
         or os.environ.get("OPENCLAW_TELEGRAM_WEBHOOK_SECRET")
@@ -221,7 +225,7 @@ def _chunk_text_for_line(text: str, limit: int = 4200) -> list[str]:
 # ---------------------------------------------------------------------------
 
 def _telegram_send_text_to(chat_id: str, text: str, reply_to_message_id: Optional[int] = None) -> bool:
-    token = _load_openclaw_telegram_token()
+    token = _load_telegram_bot_token()
     if not token or not str(chat_id or "").strip():
         return False
     ok_all = True
@@ -260,7 +264,7 @@ def _telegram_send_text_to(chat_id: str, text: str, reply_to_message_id: Optiona
 
 
 def _telegram_send_document(chat_id: str, file_path: str, caption: str = "", reply_to_message_id: Optional[int] = None) -> bool:
-    token = _load_openclaw_telegram_token()
+    token = _load_telegram_bot_token()
     p = (file_path or "").strip()
     if not token or not str(chat_id or "").strip() or (not p) or (not os.path.exists(p)):
         return False
@@ -315,7 +319,7 @@ def _telegram_send_document(chat_id: str, file_path: str, caption: str = "", rep
 
 
 def _telegram_send_photo(chat_id: str, image_path: str, caption: str = "", reply_to_message_id: Optional[int] = None) -> bool:
-    token = _load_openclaw_telegram_token()
+    token = _load_telegram_bot_token()
     p = (image_path or "").strip()
     if not token or not str(chat_id or "").strip() or (not p) or (not os.path.exists(p)):
         return False
@@ -374,7 +378,7 @@ def _telegram_send_photo(chat_id: str, image_path: str, caption: str = "", reply
 # ---------------------------------------------------------------------------
 
 def _telegram_download_file(file_id: str, suggested_name: str = "") -> str:
-    token = _load_openclaw_telegram_token()
+    token = _load_telegram_bot_token()
     fid = (file_id or "").strip()
     if not token or not fid:
         return ""
@@ -986,7 +990,7 @@ def _telegram_poll_loop() -> None:
     offset = _load_telegram_poll_offset()
     backoff = 5
     while True:
-        token = _load_openclaw_telegram_token()
+        token = _load_telegram_bot_token()
         if not token:
             time.sleep(30)
             continue
@@ -1169,7 +1173,7 @@ def _telegram_bind_topic(chat_id: str, sender_id: str, topic_raw: str, thread_id
 
 
 def _telegram_setup_topics(chat_id: str, sender_id: str) -> tuple[bool, str]:
-    token = _load_openclaw_telegram_token()
+    token = _load_telegram_bot_token()
     if not token:
         return False, "❌ 找不到 Telegram bot token。"
     c = str(chat_id or "").strip()
@@ -1432,7 +1436,7 @@ def _send_telegram_text(text: str) -> bool:
     except Exception:
         logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 9430, exc_info=True)
 
-    token = _load_openclaw_telegram_token()
+    token = _load_telegram_bot_token()
     notify_ids = _load_notify_telegram_ids()
     if not token or not notify_ids:
         return False
@@ -1456,7 +1460,7 @@ def _send_telegram_text(text: str) -> bool:
 
 
 def _notify_admin_telegram_once(text: str, dedupe_sec: int = 1800) -> None:
-    token = _load_openclaw_telegram_token()
+    token = _load_telegram_bot_token()
     notify_ids = _load_notify_telegram_ids()
     if not token or not notify_ids:
         return

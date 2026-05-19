@@ -30,6 +30,10 @@ def _p(pid: int, rss_mb: int, cmd: str) -> mw.Proc:
     return mw.Proc(pid=pid, rss_bytes=rss_mb * 1024 * 1024, cmdline=cmd)
 
 
+def _row(pid: int, ppid: int, elapsed_sec: int, cmd: str) -> mw.ProcessRow:
+    return mw.ProcessRow(pid=pid, ppid=ppid, elapsed_sec=elapsed_sec, cmdline=cmd)
+
+
 # ---------- is_memory_pressure ------------------------------------------
 
 def test_no_pressure_when_swap_and_mem_healthy():
@@ -121,6 +125,52 @@ def test_list_magi_procs_ignores_non_magi_python(monkeypatch):
     monkeypatch.setattr(mw.subprocess, "run", lambda *a, **kw: FakeRes())
     procs = mw.list_magi_procs()
     assert [p.pid for p in procs] == [200]
+
+
+def test_parse_etime_variants():
+    assert mw._parse_etime("01:02") == 62
+    assert mw._parse_etime("03:01:02") == 10862
+    assert mw._parse_etime("2-03:01:02") == 183662
+
+
+def test_stale_playwright_reaper_only_targets_magi_owned_old_driver(monkeypatch):
+    monkeypatch.setattr(mw, "STALE_PLAYWRIGHT_ENABLED", True, raising=True)
+    monkeypatch.setattr(mw, "STALE_PLAYWRIGHT_MODE", "enforce", raising=True)
+    monkeypatch.setattr(mw, "STALE_PLAYWRIGHT_MAX_AGE_SEC", 60, raising=True)
+    rows = [
+        _row(10, 1, 500, f"/venv/bin/python3 {mw.MAGI_ROOT}/api/server.py"),
+        _row(11, 10, 500, f"{mw.MAGI_ROOT}/venv/lib/python/site-packages/playwright/driver/node cli.js run-driver"),
+        _row(12, 1, 500, "/tmp/other/playwright/driver/node cli.js run-driver"),
+    ]
+    killed: list[tuple[int, int]] = []
+    monkeypatch.setattr(mw, "list_process_rows", lambda: rows)
+    monkeypatch.setattr(mw, "_pid_alive", lambda _pid: False)
+    monkeypatch.setattr(mw.os, "kill", lambda pid, sig: killed.append((pid, sig)))
+    state = mw.WatchdogState()
+    rec = mw.reap_stale_playwright(state)
+    assert rec is not None
+    assert rec["action"] == "stale_playwright_reaped"
+    assert rec["target_pid"] == 11
+    assert killed == [(11, 15)]
+
+
+def test_stale_playwright_reaper_escalates_when_term_does_not_exit(monkeypatch):
+    monkeypatch.setattr(mw, "STALE_PLAYWRIGHT_ENABLED", True, raising=True)
+    monkeypatch.setattr(mw, "STALE_PLAYWRIGHT_MODE", "enforce", raising=True)
+    monkeypatch.setattr(mw, "STALE_PLAYWRIGHT_MAX_AGE_SEC", 60, raising=True)
+    rows = [
+        _row(10, 1, 500, f"/venv/bin/python3 {mw.MAGI_ROOT}/api/server.py"),
+        _row(11, 10, 500, f"{mw.MAGI_ROOT}/venv/lib/python/site-packages/playwright/driver/node cli.js run-driver"),
+    ]
+    killed: list[tuple[int, int]] = []
+    monkeypatch.setattr(mw, "list_process_rows", lambda: rows)
+    monkeypatch.setattr(mw, "_pid_alive", lambda _pid: True)
+    monkeypatch.setattr(mw.os, "kill", lambda pid, sig: killed.append((pid, sig)))
+    state = mw.WatchdogState()
+    rec = mw.reap_stale_playwright(state)
+    assert rec is not None
+    assert rec["sigkill_sent"] is True
+    assert killed == [(11, 15), (11, 9)]
 
 
 # ---------- _do_action shadow / enforce --------------------------------

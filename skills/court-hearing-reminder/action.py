@@ -280,7 +280,36 @@ def _is_safe_summary(summary: str, case_reason: str) -> bool:
 
 
 def _fetch_related_judgments(case_reason: str, court_name: str) -> List[str]:
-    return []
+    """從 judgments.json 找出與案由相關的可信見解摘要。只取通過品質檢查的 LLM 摘要。"""
+    if not case_reason:
+        return []
+    jdg_path = _MAGI_ROOT / "skills" / "judgment-collector" / "judgments.json"
+    if not jdg_path.exists():
+        return []
+    try:
+        with open(jdg_path, "r", encoding="utf-8") as f:
+            judgments = json.load(f)
+        if not isinstance(judgments, list):
+            return []
+
+        related = []
+        reason_lower = case_reason.lower()
+        for j in judgments:
+            # 只取 LLM 摘要，排除 preview 類型
+            if j.get("summary_type") not in (None, "llm"):
+                continue
+            j_reason = str(j.get("case_reason") or j.get("案由") or "").lower()
+            if reason_lower in j_reason or j_reason in reason_lower:
+                summary = j.get("summary") or j.get("裁判要旨") or ""
+                if not _is_safe_summary(summary, case_reason):
+                    continue
+                # 取「裁判要旨」區塊（最精煉的一行）
+                short = _extract_key_holding(summary, max_chars=120)
+                title = j.get("title") or j.get("案號") or ""
+                related.append(f"[{title}] {short}" if title else short)
+        return related[:5]
+    except Exception:
+        return []
 
 
 def _extract_key_holding(summary: str, max_chars: int = 120) -> str:

@@ -80,7 +80,7 @@ async function loadMeta() {
         dbBadge.classList.add("ok");
         dbBadge.textContent = `DB: ${db.host}:${db.port}/${db.database} (${db.user})${foTag}`;
         const c = data.counts || {};
-        countBadge.textContent = `案件 ${c.cases ?? "-"} | 當事人 ${c.clients ?? "-"} | 會議 ${c.meetings ?? "-"} | 行事曆 ${c.calendar_events ?? "-"} | 待辦 ${c.case_todos ?? "-"} | 法扶清單 ${c.legal_aid_checklists ?? "-"} | 法扶流程 ${c.laf_lifecycle_log ?? "-"} | 法扶信件 ${c.laf_email_records ?? "-"} | 帳務 ${c.case_transactions ?? "-"} | 文件 ${c.document_index ?? "-"} | 書狀模板 ${c.document_templates ?? "-"} | 關鍵字 ${c.document_keywords ?? "-"} | 固定支出 ${c.recurring_expenses ?? "-"} | 報價 ${c.quotations ?? "-"} | 報價模板 ${c.quotation_templates ?? "-"}`;
+        countBadge.textContent = `案件 ${c.cases ?? "-"} | 當事人 ${c.clients ?? "-"} | 會議 ${c.meetings ?? "-"} | 行事曆 ${c.calendar_events ?? "-"} | 待辦 ${c.case_todos ?? "-"} | 法扶清單 ${c.legal_aid_checklists ?? "-"} | 法扶流程 ${c.laf_lifecycle_log ?? "-"} | 法扶信件 ${c.laf_email_records ?? "-"} | 見解 ${c.legal_insights ?? "-"} | 裁判 ${c.court_judgments ?? "-"} | 帳務 ${c.case_transactions ?? "-"} | 檔案 ${c.document_index ?? "-"} | 書狀模板 ${c.document_templates ?? "-"} | 關鍵字 ${c.document_keywords ?? "-"} | 固定支出 ${c.recurring_expenses ?? "-"} | 報價 ${c.quotations ?? "-"} | 報價模板 ${c.quotation_templates ?? "-"}`;
     } catch (e) {
         dbBadge.classList.remove("ok");
         dbBadge.textContent = `DB: 連線失敗 (${e.message})`;
@@ -133,14 +133,19 @@ function inferBusyLabel(btn) {
     if (text.includes("送出")) return "送出中...";
     if (text.includes("執行")) return "執行中...";
     if (text.includes("抓")) return "抓取中...";
-    if (text.includes("生成") || text.includes("製作")) return "生成中...";
+    if (text.includes("產生") || text.includes("製作")) return "產生中...";
     if (text.includes("套用")) return "套用中...";
     return "處理中...";
 }
 
 function reportUiError(actionLabel, error) {
     console.error(error);
-    alert(`${actionLabel || "操作"}失敗：${error.message}`);
+    const body = `${actionLabel || "操作"}失敗：${error.message}`;
+    if (typeof showAlert === "function") {
+        showAlert("MAGI", body);
+    } else {
+        alert(`MAGI\n\n${body}`);
+    }
 }
 
 async function runBusyAction(buttonId, fn, opts = {}) {
@@ -296,6 +301,17 @@ function getDelegatedActionFeedback(act, button) {
         meta.busyLabel = "儲存中...";
         meta.successLabel = "已儲存";
         meta.showToast = true;
+    } else if (act === "tab-jump") {
+        meta.busyLabel = "";
+        meta.successLabel = "已開啟";
+        meta.flash = false;
+        meta.showToast = false;
+        meta.applyWorkbenchStatus = false;
+    } else if (act.startsWith("saas-")) {
+        meta.busyLabel = "載入原功能...";
+        meta.successLabel = "已帶入";
+        meta.showToast = true;
+        meta.applyWorkbenchStatus = false;
     } else if (act === "wb-case-action") {
         meta.busyLabel = "處理中...";
         meta.successLabel = "已送出";
@@ -325,7 +341,7 @@ function setDraftModeIndicator(mode) {
         el.textContent = "Prompt 預覽";
     } else {
         el.className = "draft-mode-indicator generated";
-        el.textContent = "AI 生成結果";
+        el.textContent = "AI 產生結果";
     }
 }
 

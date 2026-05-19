@@ -16,18 +16,25 @@ from __future__ import annotations
 import concurrent.futures
 import json
 import os
+import subprocess
 import sys
 import threading
 import time
 import traceback
 from pathlib import Path
 
+MAGI_ROOT = Path(__file__).resolve().parents[1]
+if str(MAGI_ROOT) not in sys.path:
+    sys.path.insert(0, str(MAGI_ROOT))
+
 # Load .env
-for line in Path("/Users/ai/Desktop/MAGI_v2/.env").read_text().splitlines():
-    line = line.strip()
-    if line and not line.startswith("#") and "=" in line:
-        k, _, v = line.partition("=")
-        os.environ.setdefault(k.strip(), v.strip())
+env_path = MAGI_ROOT / ".env"
+if env_path.exists():
+    for line in env_path.read_text().splitlines():
+        line = line.strip()
+        if line and not line.startswith("#") and "=" in line:
+            k, _, v = line.partition("=")
+            os.environ.setdefault(k.strip(), v.strip())
 
 PASS = 0
 FAIL = 0
@@ -53,25 +60,67 @@ def section(title: str):
     print(f"{'='*60}")
 
 
+def stress_concurrency(default: int = 2) -> int:
+    raw = os.environ.get("MAGI_STRESS_LLM_CONCURRENCY", str(default))
+    try:
+        return max(1, min(5, int(raw)))
+    except Exception:
+        return default
+
+
+def resource_guard(stage: str):
+    checker = MAGI_ROOT / "scripts" / "ops" / "resource_governor.py"
+    if not checker.exists():
+        return
+    proc = subprocess.run(
+        [sys.executable, str(checker), "--json", "status"],
+        cwd=str(MAGI_ROOT),
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        timeout=30,
+        check=False,
+    )
+    try:
+        payload = json.loads(proc.stdout or "{}")
+    except Exception:
+        return
+    level = str(payload.get("level") or "unknown")
+    snap = payload.get("snapshot") if isinstance(payload.get("snapshot"), dict) else {}
+    print(
+        f"[resource] {stage}: level={level} disk={snap.get('disk_free_gb')}GB "
+        f"free+inactive={snap.get('free_plus_inactive_gb')}GB swap={snap.get('swap_used_gb')}GB"
+    )
+    if level == "critical":
+        raise SystemExit("resource governor critical; aborting stress test before OOM")
+
+
 # ══════════════════════════════════════════════════════════════
 # 1. LLM DIRECT 壓力測試
 # ══════════════════════════════════════════════════════════════
 def test_llm_direct():
+    resource_guard("LLM Direct")
     section("1. LLM Direct 壓力測試")
     from skills.bridge.llm_direct import chat, classify_intent_with_codex
 
-    # 1a. 並行呼叫（5 個同時）
-    print("\n--- 1a. 並行呼叫 (5 concurrent) ---")
+    # 1a. 並行呼叫（單機預設 2；可用 MAGI_STRESS_LLM_CONCURRENCY 調高至 5）
+    concurrency = stress_concurrency()
+    print(f"\n--- 1a. 並行呼叫 ({concurrency} concurrent) ---")
     results = []
     def _call(i):
         r = chat(prompt=f"回覆數字 {i}", feature="general", timeout=30, max_tokens=16)
         return r
-    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as pool:
-        futures = [pool.submit(_call, i) for i in range(5)]
+    with concurrent.futures.ThreadPoolExecutor(max_workers=concurrency) as pool:
+        futures = [pool.submit(_call, i) for i in range(concurrency)]
         for f in concurrent.futures.as_completed(futures):
             results.append(f.result())
     success_count = sum(1 for r in results if r.get("success"))
-    check(f"並行 5 呼叫成功率", success_count >= 3, f"{success_count}/5 succeeded")
+    required_success = max(1, int(concurrency * 0.6 + 0.999))
+    check(
+        f"並行 {concurrency} 呼叫成功率",
+        success_count >= required_success,
+        f"{success_count}/{concurrency} succeeded",
+    )
 
     # 1b. 超長輸入
     print("\n--- 1b. 超長輸入 ---")
@@ -113,6 +162,7 @@ def test_llm_direct():
 # 2. REACT ENGINE 極限測試
 # ══════════════════════════════════════════════════════════════
 def test_react_engine():
+    resource_guard("ReAct Engine")
     section("2. ReAct Engine 極限測試")
     from skills.engine.react_engine import ReActEngine
     from skills.engine.tool_registry import get_tools
@@ -192,6 +242,7 @@ def test_react_engine():
 # 3. INTENT 分類對抗測試
 # ══════════════════════════════════════════════════════════════
 def test_intent_classification():
+    resource_guard("Intent Classification")
     section("3. Intent 分類對抗測試")
     from skills.bridge.llm_direct import classify_intent_with_codex
 
@@ -241,6 +292,7 @@ def test_intent_classification():
 # 4. FEEDBACK LOOP 高頻測試
 # ══════════════════════════════════════════════════════════════
 def test_feedback_loop():
+    resource_guard("Feedback Loop")
     section("4. Feedback Loop 高頻測試")
     from skills.engine.feedback_loop import (
         record_feedback, detect_implicit_feedback,
@@ -295,6 +347,7 @@ def test_feedback_loop():
 # 5. KNOWLEDGE EXTRACTOR 壓力測試
 # ══════════════════════════════════════════════════════════════
 def test_knowledge_extractor():
+    resource_guard("Knowledge Extractor")
     section("5. Knowledge Extractor 壓力測試")
     from skills.engine.knowledge_extractor import should_extract, MemoryManager
 
@@ -332,6 +385,7 @@ def test_knowledge_extractor():
 # 6. EMBEDDING ROUTER 邊界測試
 # ══════════════════════════════════════════════════════════════
 def test_embedding_router():
+    resource_guard("Embedding Router")
     section("6. Embedding Router 邊界測試")
     from skills.bridge.embedding_router import EmbeddingRouter
 
@@ -380,13 +434,14 @@ def test_embedding_router():
 # 7. SCREENSHOT SORTER 異常情境
 # ══════════════════════════════════════════════════════════════
 def test_screenshot_sorter():
+    resource_guard("Screenshot Sorter")
     section("7. Screenshot Sorter 異常情境")
     from skills.engine.tool_registry import get_tools  # noqa
 
     # Import action.py directly
     import importlib.util
     spec = importlib.util.spec_from_file_location(
-        "ss", "/Users/ai/Desktop/MAGI_v2/skills/screenshot-sorter-tw/action.py"
+        "ss", MAGI_ROOT / "skills" / "screenshot-sorter-tw" / "action.py"
     )
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)

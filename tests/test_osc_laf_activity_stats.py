@@ -46,3 +46,64 @@ def test_laf_activity_stats_uses_osc_exclusions_and_time_dedup(monkeypatch):
     assert stats["電話聯繫"]["count"] == 1
     assert stats["閱卷"]["count"] == 2
     assert stats["閱卷"]["rows"][0]["source"] == "閱卷資料夾"
+
+
+def test_laf_income_tax_year_pair_switches_in_may():
+    assert mod._laf_income_tax_year_pair(mod.date(2026, 4, 30)) == (112, 113)
+    assert mod._laf_income_tax_year_pair(mod.date(2026, 5, 1)) == (113, 114)
+    assert mod._laf_income_tax_year_pair(mod.date(2027, 5, 1)) == (114, 115)
+
+
+def test_case_workbench_excludes_pre_start_name_only_gcal_rows():
+    src = Path("api/blueprints/osc_cases.py").read_text(encoding="utf-8")
+
+    assert "source_file LIKE 'gcal_import%%'" in src
+    assert "AND todo_date < %s" in src
+    assert "AND description NOT LIKE %s" in src
+    assert "assigned_todo_clause" in src
+
+
+def test_laf_activity_stats_counts_calendar_meeting_and_excludes_laf_admin(monkeypatch):
+    monkeypatch.setattr(mod, "_osc_exec", lambda *args, **kwargs: ({"cnt": 1}, {}))
+    case = {"client_name": "陳鏈棠", "case_reason": "更生"}
+    todos = [
+        {
+            "todo_type": "行事曆事件",
+            "todo_date": "2026-04-29",
+            "todo_time": "17:30:00",
+            "description": "陳鏈棠面談＠全家宜蘭縣府店",
+            "source_file": "gcal_import",
+        },
+    ]
+    calendar_events = [
+        {
+            "title": "【法扶開辦末日】2026-0035 陳鏈棠",
+            "start_date": "2026-06-09 00:00:00",
+        },
+        {
+            "title": "陳鏈棠面談＠全家宜蘭縣府店",
+            "start_date": "2026-04-29 17:30:00",
+        },
+    ]
+
+    stats = mod._laf_build_activity_stats(case, todos, [], {"dates": []}, calendar_events)
+
+    assert stats["會議"]["count"] == 1
+    assert stats["會議"]["rows"][0]["source"] == "Google Calendar"
+
+
+def test_laf_activity_stats_excludes_judgment_announcement_and_future_events(monkeypatch):
+    monkeypatch.setattr(mod, "_osc_exec", lambda *args, **kwargs: ({"cnt": 1}, {}))
+    case = {"client_name": "測試人", "case_reason": "民事"}
+    todos = [
+        {"todo_type": "宣判", "todo_date": "2026-05-01", "todo_time": "10:00", "description": "測試人 宣示判決"},
+        {"todo_type": "調查", "todo_date": "2026-05-02", "todo_time": "10:00", "description": "測試人 調查程序"},
+        {"todo_type": "電話聯絡", "todo_date": "2026-05-03", "todo_time": "11:00", "description": "測試人 電話聯絡"},
+        {"todo_type": "開庭", "todo_date": "2099-01-01", "todo_time": "09:30", "description": "測試人 開庭"},
+    ]
+
+    stats = mod._laf_build_activity_stats(case, todos, [], {"dates": []}, [])
+
+    assert stats["開庭"]["count"] == 1
+    assert stats["開庭"]["rows"][0]["summary"] == "調查 測試人 調查程序"
+    assert stats["電話聯繫"]["count"] == 1

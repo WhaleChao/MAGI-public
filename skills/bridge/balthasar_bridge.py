@@ -290,6 +290,49 @@ def _summary_postprocess(text: str) -> str:
     return out
 
 
+def _transcript_postprocess(text: str) -> str:
+    s = str(text or "").strip()
+    if not s:
+        return ""
+    replacements = {
+        "摘藥": "摘要",
+        "總結": "總結",
+        "品質扎門": "品質閘門",
+        "品質閘門": "品質閘門",
+        "法符": "法扶",
+        "閲卷": "閱卷",
+    }
+    for src, dst in replacements.items():
+        s = s.replace(src, dst)
+    s = re.sub(r"[ \t]+", " ", s)
+    s = re.sub(r"\n{3,}", "\n\n", s)
+    return s.strip()
+
+
+def _postprocess_transcribe_result(result: dict) -> dict:
+    if not isinstance(result, dict):
+        return result
+    out = dict(result)
+    if out.get("text"):
+        out["text"] = _transcript_postprocess(str(out.get("text") or ""))
+    if out.get("timestamp_text"):
+        out["timestamp_text"] = _transcript_postprocess(str(out.get("timestamp_text") or ""))
+    if out.get("speaker_text"):
+        out["speaker_text"] = _transcript_postprocess(str(out.get("speaker_text") or ""))
+    segments = out.get("segments")
+    if isinstance(segments, list):
+        fixed = []
+        for seg in segments:
+            if isinstance(seg, dict):
+                row = dict(seg)
+                row["text"] = _transcript_postprocess(str(row.get("text") or ""))
+                fixed.append(row)
+            else:
+                fixed.append(seg)
+        out["segments"] = fixed
+    return out
+
+
 def _candidate_urls() -> List[str]:
     hosts = [BALTHASAR_HOST] + BALTHASAR_FALLBACK_HOSTS
     urls = []
@@ -383,7 +426,7 @@ def _tc_review_pass(text: str, timeout: int = 30) -> str:
     return text
 
 
-def summarize_text(text, timeout_sec=None, summary_length="medium"):
+def summarize_text(text, timeout_sec=None, summary_length="medium", heavy: bool = False):
     """
     Local-first summary using oMLX (primary):
     - Fast path: oMLX local chat model (直接繁中輸出)
@@ -492,9 +535,11 @@ def summarize_text(text, timeout_sec=None, summary_length="medium"):
             _summ_num_predict = 1024
 
         # Primary: oMLX local model — 繁體中文原生輸出，免 TC review 省一輪推理。
+        # @heavy means the user explicitly requested the heavy route, so skip
+        # the local-first shortcut and let InferenceGateway enter the NIM path.
         _omlx_chat = getattr(melchior_client, "_chat_omlx", None)
         _omlx_avail = getattr(melchior_client, "_omlx_available", None)
-        if callable(_omlx_chat) and callable(_omlx_avail) and _omlx_avail():
+        if (not heavy) and callable(_omlx_chat) and callable(_omlx_avail) and _omlx_avail():
             _omlx_model = os.environ.get("MAGI_OMLX_SUMMARY_MODEL", SUMMARY_MODEL)
             q = _omlx_chat(
                 prompt=prompt,
@@ -520,7 +565,13 @@ def summarize_text(text, timeout_sec=None, summary_length="medium"):
         # Fallback: InferenceGateway (handles oMLX→Ollama→remote routing)
         from skills.bridge.inference_gateway import InferenceGateway
         _gw = InferenceGateway()
-        fb = _gw.chat(prompt, task_type="summary", timeout=max(30, timeout), allow_synthetic_fallback=False)
+        fb = _gw.chat(
+            prompt,
+            task_type="summary",
+            timeout=max(30, timeout),
+            allow_synthetic_fallback=False,
+            heavy=heavy,
+        )
         if fb.get("success") and fb.get("response"):
             clean = _summary_postprocess(fb.get("response", ""))
             return {
@@ -727,7 +778,7 @@ def transcribe(audio_path, language: Optional[str] = None, initial_prompt: Optio
                 local_res["speaker_text"] = _segments_to_speaker_text(segs)
             if segs and ("speaker_count_estimate" not in local_res):
                 local_res["speaker_count_estimate"] = len({str(x.get("speaker") or "").strip() for x in segs if str(x.get("speaker") or "").strip()})
-            return local_res
+            return _postprocess_transcribe_result(local_res)
         local_error = (local_res or {}).get("error", "local_mlx_failed")
     except Exception as e:
         local_error = str(e)
@@ -737,7 +788,7 @@ def transcribe(audio_path, language: Optional[str] = None, initial_prompt: Optio
     try:
         cli_res = _transcribe_with_whisper_cli(audio_path, language=language, initial_prompt=initial_prompt)
         if cli_res.get("success"):
-            return cli_res
+            return _postprocess_transcribe_result(cli_res)
         cli_error = cli_res.get("error", "whisper_cli_failed")
     except Exception as e:
         cli_error = str(e)
@@ -747,7 +798,7 @@ def transcribe(audio_path, language: Optional[str] = None, initial_prompt: Optio
         remote = call_apple_ai("transcribe", {"audio_path": audio_path})
         if isinstance(remote, dict) and remote.get("success"):
             remote.setdefault("provider", "balthasar_remote")
-            return remote
+            return _postprocess_transcribe_result(remote)
 
     merged = " | ".join([x for x in [local_error, cli_error] if x])[:1000]
     return {"success": False, "error": merged or "transcription_failed"}

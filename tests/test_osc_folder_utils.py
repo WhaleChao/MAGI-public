@@ -26,4 +26,29 @@ def test_build_full_case_path_uses_civil_folder_for_attached_civil_laf_case():
 def test_cloudstorage_homes_path_also_maps_to_smb_volume_candidate():
     path = "/Users/ai/Library/CloudStorage/SynologyDrive-homes/01_案件/法扶案件/民事/測試案/卷證.pdf"
     candidates = local_synology_path_candidates(path)
-    assert "/Volumes/homes/lumi63181107/01_案件/法扶案件/民事/測試案/卷證.pdf" in candidates
+    assert "/Volumes/homes/home/01_案件/法扶案件/民事/測試案/卷證.pdf" in candidates
+
+
+def test_windows_home_path_prefers_mounted_homes_account(monkeypatch):
+    import api.case_path_mapper as mapper
+
+    mapper._ACTIVE_SMB_ROOT_CACHE["roots"] = None
+    mapper._ACTIVE_SMB_ROOT_CACHE["expires"] = 0
+    monkeypatch.setattr(
+        mapper,
+        "_mount_output_lines",
+        lambda: ["//lumi63181107@192.168.1.3/homes on /Volumes/homes (smbfs, mounted by ai)"],
+    )
+    monkeypatch.setattr(
+        mapper,
+        "_is_dir_accessible",
+        lambda path: str(path).rstrip("/") in {
+            "/Volumes/homes/lumi63181107",
+            "/Volumes/homes/lumi63181107/01_案件",
+        },
+    )
+
+    path = "Z:/home/01_案件/法扶案件/刑事/測試案/卷證.pdf"
+    candidates = mapper.local_synology_path_candidates(path)
+
+    assert candidates[0] == "/Volumes/homes/lumi63181107/01_案件/法扶案件/刑事/測試案/卷證.pdf"

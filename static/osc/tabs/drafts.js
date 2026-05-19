@@ -19,21 +19,23 @@ function renderDraftDocSelections() {
 }
 
 function renderDraftInsightSelections() {
-    state.draft.selectedInsights = [];
-}
-
-function renderDraftCases() {
-    const select = document.getElementById("draftCaseSelect");
-    const items = state.draft.cases || [];
+    const items = state.draft.selectedInsights || [];
+    document.getElementById("draftSelectedInsightsCount").textContent = `已選 ${items.length} 筆實務見解`;
+    const box = document.getElementById("draftSelectedInsights");
     if (!items.length) {
-        select.innerHTML = `<option value="">查無案件</option>`;
+        box.innerHTML = `<div class="muted">尚未選取實務見解</div>`;
         return;
     }
-    select.innerHTML = [`<option value="">請選擇案件</option>`, ...items.map(r => {
-        const label = [r.client_name, r.case_number, r.case_reason].filter(Boolean).join("｜");
-        const selected = String(state.draft.selectedCaseId || "") === String(r.id) ? " selected" : "";
-        return `<option value="${esc(r.id)}"${selected}>${esc(label)}</option>`;
-    })].join("");
+    box.innerHTML = items.map(r => `
+        <div class="selection-item">
+            <div class="meta-text">
+                <div>${esc(r.title || "")}</div>
+
+                <div class="muted">${esc(r.source || "")} ${esc(r.case_number || "")}</div>
+            </div>
+            <button class="btn ghost" data-act="draft-insight-toggle" data-id="${esc(r.id)}">移除</button>
+        </div>
+    `).join("");
 }
 
 function renderDraftCases() {
@@ -65,6 +67,7 @@ async function loadDraftMeta() {
         const docTypes = data.doc_types || [];
         select.innerHTML = [`<option value="">請選擇書狀類型</option>`, ...docTypes.map(v => `<option value="${esc(v)}">${esc(v)}</option>`)].join("");
         if (current && docTypes.includes(current)) select.value = current;
+        await loadDraftFeedback();
         setDraftStatus("已同步草擬設定。");
     });
 }
@@ -119,7 +122,7 @@ function renderDraftDocuments() {
     const selectedIds = new Set((state.draft.selectedDocuments || []).map(x => String(x.id)));
     const items = state.draft.documents || [];
     if (!items.length) {
-        body.innerHTML = `<tr><td colspan="5" class="muted">沒有文件資料</td></tr>`;
+        body.innerHTML = `<tr><td colspan="5" class="muted">沒有檔案資料</td></tr>`;
         renderDraftDocSelections();
         return;
     }
@@ -175,7 +178,15 @@ async function loadDraftDocuments() {
 }
 
 async function loadDraftInsights() {
-    state.draft.insights = [];
+    await withBusy("draftInsightsSearchBtn", "搜尋中...", async () => {
+        const q = encodeURIComponent((document.getElementById("draftInsightsQ").value || "").trim());
+        const caseNumber = encodeURIComponent((document.getElementById("draftInsightsCaseFilter").value || "").trim());
+        const caseReason = encodeURIComponent((document.getElementById("draftInsightsReasonFilter").value || "").trim());
+        const data = await api(`/api/osc/insights?limit=120&q=${q}&case_number=${caseNumber}&case_reason=${caseReason}`);
+        state.draft.insights = filterDisplayableInsights(data.items || []);
+        renderDraftInsights();
+        setDraftStatus(`實務見解搜尋完成，共 ${state.draft.insights.length} 筆。`);
+    });
 }
 
 function toggleDraftDocument(id) {
@@ -229,28 +240,35 @@ async function previewDraftPrompt() {
         const text = data.prompt_preview || "";
         document.getElementById("draftResult").value = text;
         state.draft.result = text;
+        state.draft.originalResult = "";
+        state.draft.resultMode = "preview";
         updateDraftCharCount();
         setDraftModeIndicator("preview");
         const warningCount = (data.warnings || []).length;
-        setDraftStatus(`Prompt 預覽完成。文件警告：${warningCount} 筆。`, warningCount ? "warn" : "info");
+        setDraftStatus(`Prompt 預覽完成。檔案警告：${warningCount} 筆。`, warningCount ? "warn" : "info");
     });
 }
 
 async function generateDraft() {
-    await withBusy("draftGenerateBtn", "生成中...", async () => {
+    await withBusy("draftGenerateBtn", "產生中...", async () => {
         const payload = collectDraftPayload();
-        setDraftStatus("正在呼叫 AI 生成書狀，請稍候...");
+        setDraftStatus("正在呼叫 AI 產生書狀，請稍候...");
         const data = await api("/api/osc/drafts/generate", "POST", payload);
         const text = data.draft_text || "";
         document.getElementById("draftResult").value = text;
         state.draft.result = text;
+        state.draft.originalResult = text;
+        state.draft.resultMode = "generated";
+        state.draft.lastProvider = data.provider || "";
+        state.draft.lastModel = data.model || "";
+        updateDraftFeedbackPanel();
         updateDraftCharCount();
         setDraftModeIndicator("generated");
         if (data.suggested_filename && !(document.getElementById("draftSuggestedName").value || "").trim()) {
             document.getElementById("draftSuggestedName").value = data.suggested_filename;
         }
         const degraded = text.includes("系統降級回覆") || text.includes("忙碌或逾時");
-        setDraftStatus(`生成完成。Provider: ${data.provider || "-"}${data.model ? ` / ${data.model}` : ""}`, degraded ? "warn" : "info");
+        setDraftStatus(`產生完成。Provider: ${data.provider || "-"}${data.model ? ` / ${data.model}` : ""}`, degraded ? "warn" : "info");
     });
 }
 
@@ -259,7 +277,7 @@ async function copyDraftResult() {
     if (!text) return alert("沒有可複製內容");
     try {
         await navigator.clipboard.writeText(text);
-        setDraftStatus("已複製生成結果到剪貼簿。");
+        setDraftStatus("已複製產生結果到剪貼簿。");
     } catch {
         alert("複製失敗，請手動複製");
     }
@@ -285,12 +303,100 @@ async function exportDraftResult() {
     });
 }
 
+async function loadDraftFeedback() {
+    const panel = document.getElementById("draftFeedbackList");
+    if (panel) panel.innerHTML = `<div class="muted">讀取修正紀錄...</div>`;
+    try {
+        const data = await api("/api/osc/drafts/feedback?limit=8");
+        state.draft.feedback = data.items || [];
+        state.draft.feedbackSummary = data.summary || {};
+        updateDraftFeedbackPanel();
+    } catch (e) {
+        if (panel) panel.innerHTML = `<div class="muted">修正紀錄讀取失敗：${esc(e.message || e)}</div>`;
+    }
+}
+
+function currentDraftCorrectionDelta() {
+    const original = state.draft.originalResult || "";
+    const corrected = document.getElementById("draftResult")?.value || "";
+    return {
+        original,
+        corrected,
+        changed: !!original && original.trim() !== corrected.trim(),
+        charDelta: corrected.length - original.length,
+    };
+}
+
+function renderDraftLessons(items) {
+    if (!items || !items.length) return `<div class="muted">尚無修正紀錄；記錄後會自動回到下一次 Prompt。</div>`;
+    return items.map(x => {
+        const stats = x.stats || {};
+        const lessons = (x.lessons || []).slice(0, 2).map(l => {
+            const before = l.before ? `原：${esc(l.before)}` : "";
+            const after = l.after ? `改：${esc(l.after)}` : "";
+            return `<div class="muted">${before}${before && after ? " / " : ""}${after}</div>`;
+        }).join("");
+        return `
+            <div class="selection-item">
+                <div class="meta-text">
+                    <div>${esc(x.doc_type || "書狀")} ${esc(x.case_number || "")}</div>
+                    <div class="muted">${esc(x.note || "人工修正")}｜字數 ${Number(stats.original_chars || 0)} → ${Number(stats.corrected_chars || 0)}</div>
+                    ${lessons}
+                </div>
+            </div>
+        `;
+    }).join("");
+}
+
+function updateDraftFeedbackPanel() {
+    const delta = currentDraftCorrectionDelta();
+    const deltaEl = document.getElementById("draftCorrectionDelta");
+    if (deltaEl) {
+        if (!state.draft.originalResult) {
+            deltaEl.textContent = "尚未產生 AI 原稿。";
+        } else if (!delta.changed) {
+            deltaEl.textContent = "尚未偵測到修正。";
+        } else {
+            deltaEl.textContent = `已偵測到修正：字數差 ${delta.charDelta >= 0 ? "+" : ""}${delta.charDelta}`;
+        }
+    }
+    const list = document.getElementById("draftFeedbackList");
+    if (list) list.innerHTML = renderDraftLessons(state.draft.feedback || []);
+    const summary = document.getElementById("draftFeedbackSummary");
+    if (summary) {
+        const s = state.draft.feedbackSummary || {};
+        summary.textContent = `已累積 ${Number(s.count || 0)} 筆修正${s.latest_at ? `，最新 ${String(s.latest_at).slice(0, 10)}` : ""}`;
+    }
+}
+
+async function submitDraftFeedback() {
+    await withBusy("draftFeedbackSaveBtn", "記錄中...", async () => {
+        const delta = currentDraftCorrectionDelta();
+        if (!delta.original) return alert("請先產生一次 AI 書狀，再修改結果。");
+        if (!delta.changed) return alert("尚未偵測到修正內容。");
+        const payload = collectDraftPayload();
+        payload.original_text = delta.original;
+        payload.corrected_text = delta.corrected;
+        payload.note = (document.getElementById("draftFeedbackNote").value || "").trim();
+        payload.provider = state.draft.lastProvider || "";
+        payload.model = state.draft.lastModel || "";
+        const data = await api("/api/osc/drafts/feedback", "POST", payload);
+        state.draft.originalResult = delta.corrected;
+        document.getElementById("draftFeedbackNote").value = "";
+        setDraftStatus(`已記錄修正：${(data.event?.lessons || []).length} 條差異會進入後續學習。`);
+        await loadDraftFeedback();
+    });
+}
+
 function clearDraftResult() {
     document.getElementById("draftResult").value = "";
     state.draft.result = "";
-    setDraftStatus("已清除生成結果。");
+    state.draft.originalResult = "";
+    state.draft.resultMode = "";
+    setDraftStatus("已清除產生結果。");
     updateDraftCharCount();
     setDraftModeIndicator(null);
+    updateDraftFeedbackPanel();
 }
 
 function updateDraftCharCount() {
@@ -298,6 +404,8 @@ function updateDraftCharCount() {
     if (!el) return;
     const text = (document.getElementById("draftResult").value || "");
     el.textContent = `${text.length} 字`;
+    state.draft.result = text;
+    updateDraftFeedbackPanel();
 }
 
 function setDraftModeIndicator(mode) {
@@ -314,7 +422,7 @@ function setDraftModeIndicator(mode) {
         el.textContent = "Prompt 預覽";
     } else {
         el.className = "draft-mode-indicator generated";
-        el.textContent = "AI 生成結果";
+        el.textContent = "AI 產生結果";
     }
 }
 
@@ -342,6 +450,7 @@ async function loadDraftComposer() {
         renderDraftInsights();
         renderDraftDocSelections();
         renderDraftInsightSelections();
+        updateDraftFeedbackPanel();
     } catch (e) {
         setDraftStatus(`草擬頁初始化失敗：${e.message}`, "warn");
     }

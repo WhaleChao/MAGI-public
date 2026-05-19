@@ -55,6 +55,7 @@ from api.runtime_paths import (
     get_orch_dir,
     get_skill_python,
 )
+from api.case_display import display_case_label, display_client_name
 try:
     from api.openclaw_compat import get_legacy_telegram_settings, load_openclaw_config  # legacy fallback; module removed 2026-05-03
 except ImportError:
@@ -521,27 +522,24 @@ def _enqueue_manual_review(action: str, payload: dict, error_msg: str) -> str:
 
 
 def _case_label(row: dict) -> str:
-    party = str((row or {}).get("client_name") or "").strip()
-    court_case_no = str((row or {}).get("court_case_number") or "").strip()
-    case_no = str((row or {}).get("case_number") or "").strip()
-    parts = [x for x in [party, court_case_no or case_no] if x]
-    if parts:
-        return "｜".join(parts)
-    return court_case_no or case_no or "未判斷案件"
+    return display_case_label(row, case_keys=("court_case_number", "court_case_no", "case_number"))
 
 
-def _summarize_download_results(results: dict, *, max_cases: int = 20) -> Tuple[str, dict]:
+def _summarize_download_results(results: dict, *, max_cases: int = 0) -> Tuple[str, dict]:
     try:
-        max_cases = int(os.environ.get("MAGI_TRANSCRIPT_NOTIFY_MAX_CASES", str(max_cases)) or str(max_cases))
+        env_max = int(os.environ.get("MAGI_TRANSCRIPT_NOTIFY_MAX_CASES", str(max_cases)) or str(max_cases))
     except Exception:
-        max_cases = int(max_cases)
-    max_cases = max(5, min(max_cases, 50))
+        env_max = int(max_cases)
+    # 0 means no case cap.  The notification layer now chunks long messages, so
+    # the transcript report can stay complete instead of silently hiding files.
+    max_cases = max(0, min(env_max, 200))
     rows = results.get("cases") if isinstance(results, dict) else []
     if not isinstance(rows, list):
         rows = []
     normalized_rows = [r for r in rows if isinstance(r, dict)]
     ok_rows = [r for r in normalized_rows if bool(r.get("success"))]
     failed_rows = [r for r in normalized_rows if not bool(r.get("success"))]
+    downloaded_rows = []
     total_files = 0
     case_summaries = []
     for row in ok_rows:
@@ -549,26 +547,29 @@ def _summarize_download_results(results: dict, *, max_cases: int = 20) -> Tuple[
         file_list = files if isinstance(files, list) else []
         file_count = len(file_list)
         total_files += file_count
+        if file_count > 0:
+            downloaded_rows.append(row)
         case_summaries.append(
             {
                 "case_number": str(row.get("case_number") or "").strip(),
                 "court_case_number": str(row.get("court_case_number") or "").strip(),
-                "client_name": str(row.get("client_name") or "").strip(),
+                "client_name": display_client_name(row),
+                "folder_path": str(row.get("folder_path") or "").strip(),
                 "file_count": file_count,
-                "files": [str(fp) for fp in file_list[:10]],
+                "files": [str(fp) for fp in file_list],
             }
         )
 
-    lines = [f"📥 筆錄批次下載完成（{total_files} 份，{len(ok_rows)} 案）"]
-    for idx, row in enumerate(ok_rows[:max_cases], start=1):
+    lines = [f"📥 筆錄批次下載完成（{total_files} 份，{len(downloaded_rows)} 案有新檔 / 掃描 {len(ok_rows)} 案）"]
+    shown_rows = downloaded_rows if max_cases == 0 else downloaded_rows[:max_cases]
+    for idx, row in enumerate(shown_rows, start=1):
         files = row.get("files")
         file_list = files if isinstance(files, list) else []
         lines.append(f"{idx}. {_case_label(row)}（{len(file_list)} 份）")
-        for fp in file_list[:2]:
+        for fp in file_list:
             lines.append(f"- {os.path.basename(str(fp))}")
-    remaining = len(ok_rows) - min(len(ok_rows), max_cases)
-    if remaining > 0:
-        lines.append(f"...其餘 {remaining} 案略")
+    if max_cases > 0 and len(downloaded_rows) > max_cases:
+        lines.append(f"⚠️ 尚有 {len(downloaded_rows) - max_cases} 個有新檔案件未列出；請提高 MAGI_TRANSCRIPT_NOTIFY_MAX_CASES。")
     # 區分「查無筆錄」(正常) 和「下載失敗」(需確認)
     no_data_rows = [r for r in failed_rows if not r.get("error")]
     error_rows   = [r for r in failed_rows if r.get("error")]
@@ -581,10 +582,11 @@ def _summarize_download_results(results: dict, *, max_cases: int = 20) -> Tuple[
 
     summary = {
         "downloaded_count": total_files,
-        "downloaded_cases_count": len(ok_rows),
+        "downloaded_cases_count": len(downloaded_rows),
+        "scanned_cases_count": len(ok_rows),
         "no_data_cases_count": len(no_data_rows),
         "failed_cases_count": len(error_rows),
-        "cases": case_summaries[:50],
+        "cases": [r for r in case_summaries if int(r.get("file_count") or 0) > 0],
     }
     return "\n".join(lines), summary
 
@@ -1053,23 +1055,20 @@ def cmd_download(case_number: str, out_folder: str = "", headless: bool = True,
             downloader.move_to_case_folder(case, downloaded_files)
             _safe_flow_step_status(flow_id, "archive", status="succeeded", detail=f"archived {downloaded_count} files", ok=True)
 
-            msg = "📥 筆錄下載完成 — " + case_number
-            label_parts = []
-            if str(getattr(case, "client_name", "") or "").strip():
-                label_parts.append(str(getattr(case, "client_name", "")).strip())
-            if str(getattr(case, "court_case_number", "") or "").strip():
-                label_parts.append(str(getattr(case, "court_case_number", "")).strip())
-            elif str(getattr(case, "case_number", "") or "").strip():
-                label_parts.append(str(getattr(case, "case_number", "")).strip())
-            if label_parts:
-                msg = f"📥 筆錄下載完成 — {'｜'.join(label_parts)}（{downloaded_count} 份）"
+            case_record = {
+                "case_number": str(getattr(case, "case_number", "") or "").strip(),
+                "court_case_number": str(getattr(case, "court_case_number", "") or "").strip(),
+                "client_name": str(getattr(case, "client_name", "") or "").strip(),
+                "folder_path": str(getattr(case, "folder_path", "") or "").strip(),
+            }
+            msg = f"📥 筆錄下載完成 — {display_case_label(case_record)}（{downloaded_count} 份）"
             _notify(msg, notify)
             _mark_notify_step(flow_id, notify=notify, detail=msg)
             out = {
                 "success": True,
                 "case_number": case_number,
                 "court_case_number": str(getattr(case, "court_case_number", "") or "").strip(),
-                "client_name": str(getattr(case, "client_name", "") or "").strip(),
+                "client_name": display_client_name(case_record),
                 "downloaded_count": downloaded_count,
                 "files": [str(f) for f in downloaded_files[:10]],
                 "message": msg,
@@ -1591,6 +1590,7 @@ def main() -> int:
     if task == "self_test":
         # Verify imports, config, DB, and ezlawyer site reachability (no login)
         import urllib.request as _urllib_req
+        import ssl as _ssl
         errors = []
         warnings = []
         checks = {}
@@ -1627,8 +1627,27 @@ def main() -> int:
                 method="HEAD",
             )
             _req.add_header("User-Agent", "MAGI-self-test/1.0")
-            with _urllib_req.urlopen(_req, timeout=10) as _resp:
-                checks["site_reachable"] = _resp.status < 500
+            _ctx = None
+            try:
+                import certifi as _certifi
+                _ctx = _ssl.create_default_context(cafile=_certifi.where())
+            except Exception:
+                _ctx = _ssl.create_default_context()
+            try:
+                with _urllib_req.urlopen(_req, timeout=10, context=_ctx) as _resp:
+                    checks["site_reachable"] = _resp.status < 500
+                    checks["site_tls_verified"] = True
+            except Exception as _tls_e:
+                _reason = getattr(_tls_e, "reason", _tls_e)
+                if not isinstance(_reason, _ssl.SSLCertVerificationError):
+                    raise
+                # This is a no-login reachability probe. Some local Python installs
+                # miss the ezlawyer CA chain, so confirm network reachability without
+                # turning the business health check red.
+                _fallback_ctx = _ssl._create_unverified_context()
+                with _urllib_req.urlopen(_req, timeout=10, context=_fallback_ctx) as _resp:
+                    checks["site_reachable"] = _resp.status < 500
+                    checks["site_tls_verified"] = False
         except Exception as e:
             warnings.append("ezlawyer site unreachable: " + str(e)[:80])
             checks["site_reachable"] = False

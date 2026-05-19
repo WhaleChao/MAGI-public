@@ -275,7 +275,7 @@ def _desktop_notify(title: str, message: str, **kwargs):
         pass  # notification is best-effort
 
 if __name__ == "__main__":
-    print("💗 MAGI Heartbeat Monitor Started (v5 - Dual Engine: Ollama + oMLX)")
+    print("💗 MAGI Heartbeat Monitor Started (v6 - oMLX Managed)")
     # Initial guards on startup
     guard_tailscale_serve()
     guard_local_chat_resident()

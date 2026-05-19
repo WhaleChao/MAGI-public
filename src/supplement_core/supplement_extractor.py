@@ -128,7 +128,7 @@ def _validate_date_against_case_year(date_iso: str, case_no: str,
     return date_iso
 
 
-_GENERIC_CATEGORY = {'補正資料', '補件', '資料', '文件', '補件項目', '補正項目'}
+_GENERIC_CATEGORY = {'補正資料', '補件', '資料', '檔案', '補件項目', '補正項目'}
 
 _SUPPLEMENT_KEYWORDS = ['補正', '補件', '應提出', '請提出', '附件所示']
 
@@ -211,7 +211,7 @@ _EXTRACT_PROMPT_TMPL = """\
    抽不到就回空字串「」。
 3. category 必須是具體的證據類別，不能寫籠統的「補正資料」「補件」「資料」。
    範例好的 category：「綜所稅清單」「勞保異動明細」「戶籍謄本」「居住事實證明」「銀行存摺」
-   範例不好的 category：「補正資料」「補件項目」「資料」「文件」
+   範例不好的 category：「補正資料」「補件項目」「資料」「檔案」
    若原文要求多個證據合併達成同一目的，category 命名應反映該目的
    （如要求戶籍+租賃契約+水電帳單共證居住事實 → category="居住事實證明"）。
 

@@ -234,6 +234,42 @@ def test_external_chat_simple_timeout_opt_in(monkeypatch, tools_api_runtime):
     assert captured["wait_sec"] == 45
 
 
+def test_external_chat_current_main_model_shortcut(monkeypatch, tools_api_runtime):
+    tools_api, client, _events_path = tools_api_runtime
+    monkeypatch.setenv("MAGI_EXTERNAL_API_KEY", "test-key")
+    monkeypatch.setenv("MAGI_MAIN_MODEL", "gemma-4-e4b-it-4bit")
+    monkeypatch.setenv("CASPER_LOCAL_MODEL", "gemma-4-e4b-it-4bit")
+    tools_api._EXTERNAL_KEY_CACHE["ts"] = 0.0
+    tools_api._EXTERNAL_KEY_CACHE["value"] = ""
+
+    class _FakeOrch:
+        def _is_verified_admin_sender(self, user_id, platform):
+            return False
+
+        def process_message(self, *args, **kwargs):
+            raise AssertionError("model status shortcut should not hit general chat")
+
+    monkeypatch.setattr(tools_api, "_get_osc_orchestrator", lambda: _FakeOrch())
+
+    response = client.post(
+        "/osc/external/chat",
+        json={
+            "user_id": "external_api_user",
+            "platform": "WEB",
+            "message": "目前主模型是哪一個？",
+            "timeout_sec": 20,
+            "async": False,
+        },
+        headers={"X-API-Key": "test-key"},
+    )
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["success"] is True
+    assert "目標主模型" in payload["reply"]
+    assert "gemma-4-e4b-it-4bit" in payload["reply"]
+
+
 def test_summarize_circuit_open_uses_resilient_probe(monkeypatch, tools_api_runtime):
     tools_api, client, _events_path = tools_api_runtime
     monkeypatch.setattr(tools_api, "_summarize_cb_allow_upstream", lambda: False)

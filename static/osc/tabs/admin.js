@@ -324,7 +324,7 @@ async function loadAdminPdfLogs() {
         "adminPdfLogsBody",
         state.adminPdfLogs.map(r => `<tr><td>${esc(r.log_timestamp)}</td><td>${esc(r.case_number)}</td><td>${esc(r.file_name || "")}</td><td>${esc(r.status || "")}</td><td>${esc(shortText(r.error_message, 80))}</td><td class="actions"><button class="btn danger" data-act="admin-pdf-log-del" data-id="${Number(r.id)}">刪除</button></td></tr>`),
         6,
-        "沒有 PDF 生成紀錄"
+        "沒有 PDF 產生紀錄"
     );
 }
 

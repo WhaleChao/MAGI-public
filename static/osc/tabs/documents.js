@@ -96,6 +96,25 @@ function lafStatusClass(status) {
     return "";
 }
 
+function lafDisplayStatus(c = {}) {
+    return c.status_display || c.effective_status || c.legal_aid_status || c.status || "未開辦";
+}
+
+function lafDisplayType(c = {}) {
+    if (c.case_type_display) return c.case_type_display;
+    if (String(c.case_type || "").trim() === "消費者債務清理") return "消費者債務清理";
+    return c.case_type || "";
+}
+
+function lafDisplayReason(c = {}) {
+    if (c.case_reason_display) return c.case_reason_display;
+    if (String(c.case_type || "").trim() === "消費者債務清理") {
+        const reason = String(c.case_reason || "").trim();
+        return reason || "";
+    }
+    return c.case_reason || "";
+}
+
 function renderLafCaseList(cases = []) {
     const body = document.getElementById("lafCaseBody");
     if (!body) return;
@@ -106,12 +125,13 @@ function renderLafCaseList(cases = []) {
     const sort = state.lafSort || { col: "case_number", dir: 1, type: "string" };
     const rows = applySort(cases.map(c => ({
         ...c,
-        legal_aid_status: c.legal_aid_status || c.status || "未開辦",
-        case_type: c.case_type || c.case_reason || c.case_category || "",
+        legal_aid_status: lafDisplayStatus(c),
+        case_type: lafDisplayType(c),
+        case_reason: lafDisplayReason(c),
     })), sort.col, sort.dir, sort.type);
     body.innerHTML = rows.map(c => {
-        const status = c.legal_aid_status || c.status || "未開辦";
-        const type = c.case_type || c.case_reason || c.case_category || "";
+        const status = lafDisplayStatus(c);
+        const type = lafDisplayType(c) || c.case_category || "";
         const pending = Number(c.pending_laf_items || 0);
         const pendingText = pending ? ` · 待補 ${pending}` : "";
         return `
@@ -154,7 +174,7 @@ function lafFilterDocs(docs = [], keywords = []) {
     });
 }
 
-function renderLafDocList(docs = [], keywords = [], empty = "尚未索引到相關文件") {
+function renderLafDocList(docs = [], keywords = [], empty = "尚未索引到相關檔案") {
     const hits = lafFilterDocs(docs, keywords).slice(0, 12);
     if (!hits.length) return `<div class="muted">${esc(empty)}</div>`;
     return `<div class="laf-compact-list">${hits.map(d => `
@@ -251,7 +271,7 @@ function renderLafEventStats(data = {}) {
         const rows = lafCollectEvents(data, label);
         const latest = rows[0]?.date || "未記錄";
         return `
-            <div class="laf-event-card" data-act="laf-event-detail" data-label="${esc(label)}" role="button" tabindex="0" title="查看${esc(label)}完整明細">
+            <div class="laf-event-card" data-act="laf-event-detail" data-label="${esc(label)}" role="button" tabindex="0" title="檢視${esc(label)}完整明細">
                 <span>${esc(label)}</span>
                 <strong>${rows.length}</strong>
                 <small class="muted">最近：${esc(shortText(latest, 24))}</small>
@@ -268,6 +288,7 @@ function renderLafReviewStats(data = {}) {
     const dates = reviewStats.dates || reviewRows.map(r => r.date).filter(Boolean);
     const skipped = reviewStats.skipped_payment_only || [];
     const items = reviewStats.items || [];
+    const docs = lafFilterDocs(data.documents || [], ["閱卷", "OCR", "卷證", "電子卷"]);
     const fileRows = items.length
         ? `<div class="laf-compact-list">${items.slice(0, 8).map(item => `
             <div class="laf-compact-item">
@@ -340,7 +361,7 @@ function renderLafDebtTools(c) {
             <h4>消債羅伯特</h4>
             <div class="laf-status-row">
                 <strong>法扶字號：${esc(lafNo || "尚未帶入")}</strong>
-                <button class="btn slim" data-act="laf-sync-number" data-id="${esc(c.id || "")}">自動帶入/生成字號</button>
+                <button class="btn slim" data-act="laf-sync-number" data-id="${esc(c.id || "")}">自動帶入/產生字號</button>
             </div>
             <div class="laf-button-grid">
                 <button class="btn" data-act="laf-open-checklist" data-case="${esc(c.case_number || "")}">開啟/編輯應備事項表</button>
@@ -367,13 +388,18 @@ function renderLafCaseDetail(data = {}) {
     if (!panel) return;
     const c = data.case || {};
     const s = data.stats || {};
-    const status = c.legal_aid_status || c.status || "未開辦";
+    const status = lafDisplayStatus(c);
+    const displayType = lafDisplayType(c);
+    const displayReason = lafDisplayReason(c);
+    const caseStatus = c.status_display || c.effective_status || c.status || "進行中";
     const pending = (data.legal_aid_checklist || []).filter(isLafPending);
+    const checklistCaseInput = document.getElementById("lafChecklistCaseNumber");
+    if (checklistCaseInput && c.case_number) checklistCaseInput.value = c.case_number;
     panel.innerHTML = `
         <div class="laf-detail-head">
             <div>
                 <h3>${esc(c.case_number || "")} - ${esc(c.client_name || "")}</h3>
-                <div class="muted">案件分類：${esc(c.case_type || c.case_reason || c.case_category || "未標示")}｜法扶案號：${esc(c.laf_case_no || "")}</div>
+                <div class="muted">案件分類：${esc(displayType || "未標示")}｜案由：${esc(displayReason || "未標示")}｜法扶案號：${esc(c.laf_case_no || "")}</div>
             </div>
             <span class="laf-status-pill ${lafStatusClass(status)}">${esc(status)}</span>
         </div>
@@ -384,10 +410,12 @@ function renderLafCaseDetail(data = {}) {
                 <select id="lafStatusSelect">
                     ${["未開辦", "進行中", "已結案，待報結", "已結案"].map(x => `<option value="${esc(x)}" ${x === status ? "selected" : ""}>${esc(x)}</option>`).join("")}
                 </select>
+                <label class="inline-check"><input type="checkbox" id="lafStatusSyncCase" checked> 同步案件狀態</label>
                 <button class="btn primary" data-act="laf-status-update" data-id="${esc(c.id)}">更新狀態</button>
                 <button class="btn" data-act="case-open" data-id="${esc(c.id)}">開啟案件資料夾</button>
-                <button class="btn" data-act="case-workbench" data-id="${esc(c.id)}">完整案件工作台</button>
+	                <button class="btn" data-act="case-workbench" data-id="${esc(c.id)}">完整案件處理</button>
             </div>
+            <div class="muted">法扶狀態：${esc(status)}｜案件狀態：${esc(caseStatus)}</div>
         </div>
 
         <div class="laf-detail-section">
@@ -407,7 +435,7 @@ function renderLafCaseDetail(data = {}) {
             <div class="stat-grid" style="margin-top:10px;">
                 <div class="stat-card"><div class="k">待補項目</div><div class="v">${pending.length}</div></div>
                 <div class="stat-card"><div class="k">流程紀錄</div><div class="v">${(data.laf_progress || []).length}</div></div>
-                <div class="stat-card"><div class="k">索引文件</div><div class="v">${esc(s.docs_indexed || 0)}</div></div>
+                <div class="stat-card"><div class="k">索引檔案</div><div class="v">${esc(s.docs_indexed || 0)}</div></div>
                 <div class="stat-card"><div class="k">待辦事項</div><div class="v">${esc(s.todo_pending || 0)}</div></div>
             </div>
         </div>
@@ -449,14 +477,17 @@ function renderLafCaseDetail(data = {}) {
 async function updateLafCaseStatus(caseId) {
     const id = String(caseId || "").trim();
     const status = (document.getElementById("lafStatusSelect")?.value || "").trim();
+    const syncCaseStatus = !!document.getElementById("lafStatusSyncCase")?.checked;
     if (!id || !status) return;
-    const caseStatus = status === "未開辦" || status === "進行中" ? "進行中" : "已結案";
-    await api(`/api/osc/cases/${encodeURIComponent(id)}`, "PUT", {
+    const result = await api(`/api/osc/cases/${encodeURIComponent(id)}/laf-status`, "POST", {
         legal_aid_status: status,
-        status: caseStatus,
+        sync_case_status: syncCaseStatus,
     });
-    showToast(`法扶狀態已更新為「${status}」。`, "ok", 2600);
+    const changed = result?.changed !== false;
+    const folderSource = result?.folder?.source ? `；資料夾：${result.folder.source}` : "";
+    showToast(changed ? `法扶狀態已更新為「${status}」${folderSource}。` : `法扶狀態已是「${status}」。`, "ok", 3200);
     await loadLaf();
+    await openLafCaseDetail(id, { silent: true });
 }
 
 async function runLafScan() {
@@ -491,7 +522,7 @@ async function openLafKeywordDoc(caseId, keyword) {
 function showLafFileSearchResults(caseId, keyword, data = {}) {
     const items = data.items || [];
     const caseLabel = [data.case?.case_number, data.case?.client_name].filter(Boolean).join(" - ");
-    const title = `文件查找｜${keyword}`;
+    const title = `檔案查找｜${keyword}`;
     const rows = items.map(file => {
         const path = file.file_path || "";
         const isPdf = file.is_pdf || String(path).toLowerCase().endsWith(".pdf");
@@ -523,7 +554,7 @@ function showLafFileSearchResults(caseId, keyword, data = {}) {
             <div class="case-list-head">
                 <div>
                     <h3>${esc(caseLabel || "案件資料夾")}</h3>
-                    <div class="section-note">索引未命中時，MAGI 會直接搜尋本機同步的案件資料夾。找到 PDF/文件後可預覽、下載或帶入 PDF 工具。</div>
+                    <div class="section-note">索引未命中時，MAGI 會直接搜尋本機同步的案件資料夾。找到 PDF/檔案後可預覽、下載或帶入 PDF 工具。</div>
                 </div>
                 <div class="inline-actions">
                     <button class="btn" data-act="case-open" data-id="${esc(caseId)}">開啟案件資料夾</button>
@@ -644,7 +675,7 @@ async function openLafChecklistCase(caseNumber) {
         showToast("這筆資料沒有案號，無法直接帶入補件管理。", "warn");
         return;
     }
-    wbShow(`消債應備事項表｜${value}`, `<div class="card"><h3>消債案件應備文件確認表</h3><div class="muted">載入中...</div></div>`);
+    wbShow(`消債應備事項表｜${value}`, `<div class="card"><h3>消債案件應備資料確認表</h3><div class="muted">載入中...</div></div>`);
     try {
         await loadLafDebtRequiredChecklist(value);
     } catch (e) {
@@ -653,7 +684,7 @@ async function openLafChecklistCase(caseNumber) {
         if (body) {
             body.innerHTML = `
                 <div class="card">
-                    <h3>消債案件應備文件確認表</h3>
+                    <h3>消債案件應備資料確認表</h3>
                     <div class="status-banner error">無法載入表格：${esc(msg)}</div>
                     <div class="muted">請重新整理頁面；若仍失敗，請重啟 MAGI 後端讓新版 API 生效。</div>
                     <div class="toolbar"><button class="btn primary" data-act="laf-checklist-reload">重新載入</button></div>
@@ -719,7 +750,7 @@ function renderLafDebtRequiredChecklist(data) {
         <div class="card">
             <div class="laf-detail-head">
                 <div>
-                    <h3>消債案件應備文件確認表</h3>
+                    <h3>消債案件應備資料確認表</h3>
                     <div class="muted">本所案號：${esc(c.case_number || "")}｜法院案號：${esc(c.court_case_no || c.court_case_number || "")}｜法扶字號：${esc(c.laf_case_no || c.legal_aid_number || c.application_no || "")}</div>
                 </div>
                 <button class="btn" data-act="laf-checklist-reload">重新載入</button>
@@ -733,7 +764,7 @@ function renderLafDebtRequiredChecklist(data) {
                     <div class="field"><label>來源</label><input value="${esc((data.laf_number_candidates || {}).source || "未找到")}" readonly></div>
                 </div>
                 <div class="toolbar">
-                    <button class="btn primary" data-act="laf-sync-number" data-id="${esc(selectedCaseId || "")}">自動帶入/生成字號</button>
+                    <button class="btn primary" data-act="laf-sync-number" data-id="${esc(selectedCaseId || "")}">自動帶入/產生字號</button>
                 </div>
             </div>
             <div class="soft-block">
@@ -768,7 +799,7 @@ function renderDebtReqSection(section, byKey, toggles, statusOptions) {
         <div class="laf-detail-section debt-req-section" data-section="${esc(section.key || "")}">
             <h4>${esc(section.title || "")}</h4>
             <div class="table-wrap"><table class="compact-table">
-                <thead><tr><th>文件項目</th><th>狀態</th><th>備註</th></tr></thead>
+                <thead><tr><th>資料項目</th><th>狀態</th><th>備註</th></tr></thead>
                 <tbody>${visibleItems.map(item => {
                     const saved = byKey.get(String(item.item_key || "")) || {};
                     const status = saved.status || "待補";
@@ -787,7 +818,7 @@ function renderDebtReqCustomRow(idx, row = {}) {
     const status = row.status || "待補";
     return `
         <div class="field-grid cols-3 debt-req-custom-row" data-key="${esc(row.item_key || `custom_item_${idx}`)}">
-            <div class="field"><label>項目</label><input class="debt-req-custom-label" value="${esc(row.item_label || "")}" placeholder="自訂文件"></div>
+            <div class="field"><label>項目</label><input class="debt-req-custom-label" value="${esc(row.item_label || "")}" placeholder="自訂資料"></div>
             <div class="field"><label>狀態</label><select class="debt-req-custom-status">${["待補", "已繳", "免附"].map(s => `<option value="${esc(s)}" ${s === status ? "selected" : ""}>${esc(s)}</option>`).join("")}</select></div>
             <div class="field"><label>備註</label><input class="debt-req-custom-notes" value="${esc(row.notes || "")}" placeholder="備註"></div>
         </div>
@@ -890,9 +921,9 @@ function generateDebtReqCopyText() {
     const items = collectDebtReqItems();
     const pending = items.filter(item => !isLafDebtDoneStatus(item.status));
     const received = items.filter(item => isLafDebtDoneStatus(item.status));
-    let text = "您好，關於您的債務清理案件，目前文件準備進度如下：\n\n";
+    let text = "您好，關於您的債務清理案件，目前資料準備進度如下：\n\n";
     if (pending.length) {
-        text += "【尚需補正的文件】\n";
+        text += "【尚需補正的資料】\n";
         text += pending.map((item, idx) => {
             const note = item.notes ? ` [${item.notes}]` : "";
             const link = item.link ? `\n${item.link}` : "";
@@ -900,12 +931,12 @@ function generateDebtReqCopyText() {
         }).join("\n\n") + "\n\n";
     }
     if (received.length) {
-        text += "【已收到或免附的文件】\n";
+        text += "【已收到或免附的資料】\n";
         text += received.map(item => `✓ ${item.item_label}`).join("\n") + "\n\n";
     }
     text += pending.length
-        ? "再請您盡快準備以上尚需補正的文件，並影印給我們；如有問題，請再聯繫，感謝您。"
-        : "目前您應備的文件皆已備齊，感謝您的配合！";
+        ? "再請您盡快準備以上尚需補正的資料，並影印給我們；如有問題，請再聯繫，感謝您。"
+        : "目前您應備的資料皆已備齊，感謝您的配合！";
     const box = document.getElementById("debtReqTextBox");
     if (box) {
         box.innerHTML = `<div class="soft-block"><h4>可複製文字</h4><textarea style="width:100%;min-height:240px;">${esc(text)}</textarea></div>`;
@@ -923,7 +954,7 @@ async function loadDocuments() {
     state.documents = data.items || [];
     const body = document.getElementById("docsBody");
     if (!state.documents.length) {
-        body.innerHTML = `<tr><td colspan="7" class="muted">沒有文件資料</td></tr>`;
+        body.innerHTML = `<tr><td colspan="7" class="muted">沒有檔案資料</td></tr>`;
         return;
     }
     body.innerHTML = state.documents.map(r => {
@@ -955,6 +986,89 @@ async function loadDocuments() {
             ${pdfBtn}
         </td>
     </tr>`;
+    }).join("");
+}
+
+function templateFolderFullPath(basePath, relativePath) {
+    const base = String(basePath || "").replace(/[\\/]+$/, "");
+    const rel = String(relativePath || "").replace(/^[/\\]+/, "");
+    if (!rel) return base;
+    const sep = base.includes("\\") ? "\\" : "/";
+    return base + sep + rel.replace(/\//g, sep);
+}
+
+async function loadTemplateFolder(relativePath = "") {
+    const status = document.getElementById("templateFolderStatus");
+    const pathInput = document.getElementById("templateFolderPath");
+    const existsInput = document.getElementById("templateFolderExists");
+    const actions = document.getElementById("templateFolderActions");
+    const body = document.getElementById("templateFolderBody");
+    if (status) {
+        status.hidden = false;
+        status.className = "status-banner";
+        status.textContent = "範本資料夾載入中。";
+    }
+    const rel = String(relativePath || "").replace(/^\/+|\/+$/g, "");
+    const data = await api(`/api/osc/template-folder?relative_path=${encodeURIComponent(rel)}`);
+    state.templateFolder = data;
+    const basePath = data.base_path || data.local_folder || data.folder_path || (data.candidates || [])[0] || "";
+    const currentRel = data.current_relative_path || rel || "";
+    const currentPath = data.current_path || templateFolderFullPath(basePath, currentRel);
+    if (pathInput) pathInput.value = currentPath || data.folder_path || "";
+    if (existsInput) existsInput.value = data.exists ? "可瀏覽" : "尚未找到資料夾";
+    if (status) {
+        status.className = data.exists ? "status-banner ok" : "status-banner warn";
+        status.textContent = data.exists
+            ? `目前位置：${currentRel || "根目錄"}｜共 ${Number((data.entries || []).length)} 個項目。`
+            : "尚未找到可瀏覽的範本資料夾；請確認 NAS 掛載或本機範本資料夾是否存在。";
+    }
+    if (actions) {
+        const parentRel = data.parent_relative_path || "";
+        actions.innerHTML = basePath ? `
+            <button class="btn" data-act="template-folder-open" data-path="">根目錄</button>
+            <button class="btn" data-act="template-folder-open" data-path="${esc(parentRel)}"${currentRel ? "" : " disabled"}>上一層</button>
+            <button class="btn" data-act="doc-copy" data-path="${esc(currentPath)}">複製目前路徑</button>
+        ` : `<span class="muted">沒有可用路徑。</span>`;
+    }
+    if (!body) return;
+    const entries = data.entries || [];
+    if (!entries.length) {
+        const note = data.exists ? "目前資料夾沒有可列出的範本。" : "尚未找到範本資料夾。";
+        body.innerHTML = `<tr><td colspan="5" class="muted">${esc(note)}</td></tr>`;
+        return;
+    }
+    body.innerHTML = entries.map(item => {
+        const isDir = item.type === "dir" || item.is_dir;
+        const path = templateFolderFullPath(basePath, item.relative_path || "");
+        const type = isDir ? "資料夾" : "檔案";
+        const icon = isDir ? "📁" : "📄";
+        const openBtn = isDir
+            ? `<button class="btn slim" data-act="template-folder-open" data-path="${esc(item.relative_path || "")}">進入</button>`
+            : `<a class="btn slim" href="${fileContentUrl(path, true)}" target="_blank" rel="noopener noreferrer">開啟</a>`;
+        const previewBtn = isDir
+            ? ""
+            : `<a class="btn slim" href="${fileContentUrl(path, true)}" target="_blank" rel="noopener noreferrer">預覽</a>`;
+        const downloadBtn = isDir
+            ? ""
+            : `<a class="btn slim" href="${fileContentUrl(path)}" target="_blank" rel="noopener noreferrer">下載</a>`;
+        const shareBtn = isDir
+            ? ""
+            : `<button class="btn slim" data-act="wb-file-share" data-path="${esc(path)}" data-name="${esc(item.name || "")}">分享連結</button>`;
+        return `
+            <tr>
+                <td title="${esc(path)}">${icon} ${esc(item.name || "")}</td>
+                <td>${type}</td>
+                <td>${esc(item.size_label || "")}</td>
+                <td>${esc(item.modified_at || item.modified || "")}</td>
+                <td class="actions">
+                    ${openBtn}
+                    <button class="btn" data-act="doc-copy" data-path="${esc(path)}">複製路徑</button>
+                    ${previewBtn}
+                    ${downloadBtn}
+                    ${shareBtn}
+                </td>
+            </tr>
+        `;
     }).join("");
 }
 
@@ -1076,6 +1190,7 @@ async function runPdfCalendarScan(write = false, syncGoogle = false) {
         write,
         write_todos: true,
         write_calendar: true,
+        include_share_link: Boolean(syncGoogle),
         recursive: true,
         max_pages: 8,
     });
@@ -1498,6 +1613,24 @@ async function openDocumentPath(path) {
     alert(`無法直接開啟，請手動使用路徑：\n${path}`);
 }
 
+async function openFolderPath(path) {
+    const rawPath = String(path || "").trim();
+    if (!rawPath) return;
+    try {
+        const data = await api("/api/osc/documents/open", "POST", { path: rawPath });
+        const result = data.open_result || {};
+        if (result.ok) return;
+        const smb = (data.smb_candidates || [])[0] || "";
+        if (smb) {
+            window.open(smb, "_blank");
+            return;
+        }
+        alert(`無法直接開啟資料夾，請手動使用路徑：\n${rawPath}`);
+    } catch (err) {
+        alert(`資料夾開啟失敗：${err.message || err}\n${rawPath}`);
+    }
+}
+
 async function copyDocumentPath(path) {
     const text = String(path || "").trim();
     if (!text) return;
@@ -1516,7 +1649,7 @@ async function runDocCaseAction(action) {
         return;
     }
     const data = await api(`/api/osc/cases/${encodeURIComponent(caseId)}/quick-action`, "POST", { action });
-    showWebReplyDialog("MAGI 文件整理", data.reply || "已完成", data.reply_html || "");
+    showWebReplyDialog("MAGI 檔案整理", data.reply || "已完成", data.reply_html || "");
 }
 
 function collectFormPayload() {
@@ -1668,12 +1801,27 @@ async function executeArchiveMove() {
         return;
     }
     if (!confirm(`確定搬移 ${picks.length} 筆已結案案件？`)) return;
-    const data = await api("/api/osc/archive-wizard/execute", "POST", { confirm: true, case_ids: picks, force });
-    const s = data.summary || {};
-    const skipped = (data.skipped || []).slice(0, 3).map(x => `${x.case_number || x.id || "-"}：${x.reason || x.error || "略過"}`);
-    const errors = (data.errors || []).slice(0, 3).map(x => `${x.case_number || x.id || "-"}：${x.error || "錯誤"}`);
-    const detail = skipped.concat(errors).join("\n");
-    alert(`搬移完成：已搬移 ${s.moved || 0}，略過 ${s.skipped || 0}，錯誤 ${s.errors || 0}${detail ? "\n\n" + detail : ""}`);
+    const summaryEl = document.getElementById("archiveSummary");
+    const total = { moved: 0, skipped: 0, errors: 0 };
+    const details = [];
+    for (let i = 0; i < picks.length; i += 1) {
+        const id = picks[i];
+        if (summaryEl) summaryEl.textContent = `結案搬移中：${i + 1} / ${picks.length}（案件 ID ${id}）`;
+        try {
+            const data = await api("/api/osc/archive-wizard/execute", "POST", { confirm: true, case_ids: [id], force, max_items: 1 });
+            const s = data.summary || {};
+            total.moved += Number(s.moved || 0);
+            total.skipped += Number(s.skipped || 0);
+            total.errors += Number(s.errors || 0);
+            (data.skipped || []).forEach(x => details.push(`${x.case_number || x.id || id}：${x.reason || x.error || "略過"}`));
+            (data.errors || []).forEach(x => details.push(`${x.case_number || x.id || id}：${x.error || "錯誤"}`));
+        } catch (err) {
+            total.errors += 1;
+            details.push(`${id}：${err.message || err}`);
+        }
+    }
+    const detail = details.slice(0, 8).join("\n");
+    alert(`搬移完成：已搬移 ${total.moved}，略過 ${total.skipped}，錯誤 ${total.errors}${detail ? "\n\n" + detail : ""}`);
     await loadArchivePreview();
     await loadCases();
     await loadMeta();

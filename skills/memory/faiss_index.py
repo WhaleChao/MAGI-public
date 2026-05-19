@@ -16,6 +16,7 @@ Usage:
 import json
 import logging
 import os
+import fcntl
 import threading
 import time
 import warnings
@@ -354,35 +355,44 @@ class FAISSMemoryIndex:
 
     def save_to_disk(self) -> bool:
         """Save index + id map to disk (atomic: write tmp then rename)."""
+        idx_tmp = map_tmp_file = meta_tmp = None
         try:
             os.makedirs(INDEX_DIR, exist_ok=True)
             idx_path = os.path.join(INDEX_DIR, INDEX_FILE)
             map_path = os.path.join(INDEX_DIR, IDMAP_FILE)
             meta_path = os.path.join(INDEX_DIR, "meta.json")
+            lock_path = os.path.join(INDEX_DIR, ".faiss_index.write.lock")
 
-            # Atomic write: tmp file → rename to prevent corruption on SIGKILL
-            idx_tmp = idx_path + ".tmp"
+            # Atomic write: unique tmp file → rename to prevent corruption on SIGKILL.
+            # The file lock protects the shared FAISS cache when multiple ingest jobs run.
+            suffix = f".{os.getpid()}.{threading.get_ident()}.tmp"
+            idx_tmp = idx_path + suffix
             # np.save auto-appends .npy, so use .tmp without .npy extension
-            map_tmp_base = os.path.join(INDEX_DIR, "mem_idmap_tmp")
+            map_tmp_base = os.path.join(INDEX_DIR, f"mem_idmap{suffix}")
             map_tmp_file = map_tmp_base + ".npy"  # np.save will create this
-            meta_tmp = meta_path + ".tmp"
+            meta_tmp = meta_path + suffix
 
             with self._rw_lock:
-                faiss.write_index(self._index, idx_tmp)
-                np.save(map_tmp_base, np.array(self._id_map, dtype=np.int64))
-                meta = {
-                    "index_type": self._index_type,
-                    "total": self._index.ntotal,
-                    "dim": self.dim,
-                    "updated": time.strftime("%Y-%m-%dT%H:%M:%S"),
-                }
-                with open(meta_tmp, "w") as f:
-                    json.dump(meta, f)
+                with open(lock_path, "a") as lock_fh:
+                    fcntl.flock(lock_fh, fcntl.LOCK_EX)
+                    try:
+                        faiss.write_index(self._index, idx_tmp)
+                        np.save(map_tmp_base, np.array(self._id_map, dtype=np.int64))
+                        meta = {
+                            "index_type": self._index_type,
+                            "total": self._index.ntotal,
+                            "dim": self.dim,
+                            "updated": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                        }
+                        with open(meta_tmp, "w") as f:
+                            json.dump(meta, f)
 
-                # Atomic rename (all-or-nothing on POSIX)
-                os.replace(idx_tmp, idx_path)
-                os.replace(map_tmp_file, map_path)
-                os.replace(meta_tmp, meta_path)
+                        # Atomic rename (all-or-nothing on POSIX)
+                        os.replace(idx_tmp, idx_path)
+                        os.replace(map_tmp_file, map_path)
+                        os.replace(meta_tmp, meta_path)
+                    finally:
+                        fcntl.flock(lock_fh, fcntl.LOCK_UN)
 
                 self._dirty = False
 
@@ -394,7 +404,8 @@ class FAISSMemoryIndex:
             # Clean up tmp files
             for tmp in [idx_tmp, map_tmp_file, meta_tmp]:
                 try:
-                    os.unlink(tmp)
+                    if tmp:
+                        os.unlink(tmp)
                 except OSError:
                     pass
             return False

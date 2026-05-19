@@ -9,6 +9,7 @@ Unit tests for:
 """
 import sys
 import os
+from datetime import date, timedelta
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -35,17 +36,33 @@ class TestUpdateLafStatusWithApproval:
         call_args = db.execute_write.call_args
         assert "已結案" in call_args[0][1]
         assert "已轉入" in call_args[0][1]
+        assert call_args[0][1][2] == "已結案"
         # case dict 應被更新
         assert case["legal_aid_status"] == "已結案"
         assert case["legal_aid_approval_status"] == "已轉入"
+        assert case["status"] == "已結案"
 
     def test_idempotent_no_write_when_same(self):
         from casper_ecosystem.law_firm_orchestrators.laf_nightly_audit import _update_laf_status_with_approval
         db = self._make_mock_db()
         case = {"id": 42, "case_number": "2025-0001", "client_name": "測試甲",
-                "legal_aid_status": "已結案", "legal_aid_approval_status": "已轉入"}
+                "legal_aid_status": "已結案", "legal_aid_approval_status": "已轉入", "status": "已結案"}
         _update_laf_status_with_approval(db, case, "已結案", "已轉入")
         db.execute_write.assert_not_called()  # 冪等不寫
+
+    def test_simple_laf_status_syncs_generic_case_status(self):
+        from casper_ecosystem.law_firm_orchestrators.laf_nightly_audit import _update_laf_status
+        db = self._make_mock_db()
+        case = {"id": 42, "case_number": "2025-0001", "client_name": "測試甲",
+                "legal_aid_status": "進行中", "status": "進行中"}
+
+        assert _update_laf_status(db, case, "已結案，待送出") is True
+
+        sql, params = db.execute_write.call_args[0]
+        assert "`legal_aid_status` = %s, `status` = %s" in sql
+        assert params == ("已結案，待送出", "結案中", 42)
+        assert case["legal_aid_status"] == "已結案，待送出"
+        assert case["status"] == "結案中"
 
     def test_skips_when_no_case_id(self):
         from casper_ecosystem.law_firm_orchestrators.laf_nightly_audit import _update_laf_status_with_approval
@@ -149,6 +166,550 @@ class TestSkipPendingCompatibility:
         assert '"已結案"' in src or "'已結案'" in src
         assert '"已報結"' in src or "'已報結'" in src
         assert '"已報結（待轉入）"' in src or "'已報結（待轉入）'" in src
+
+
+# ── Portal pending draft row filtering ───────────────────────────────────────
+
+class TestPortalPendingDraftFiltering:
+    """確認 Portal 表單/說明文字不會被誤報成待送出案件。"""
+
+    def test_format_report_drops_go_live_form_rows_without_applyno(self):
+        from casper_ecosystem.law_firm_orchestrators.laf_nightly_audit import format_audit_report
+
+        status = {
+            "all_cases": [{}],
+            "not_started": [],
+            "can_go_live": [],
+            "pending_close": [],
+            "can_close": [],
+            "portal_drafts": {
+                "go_live_pending": [
+                    {"applyno": "", "row_text": "分會別 | 申請編號"},
+                    {"applyno": "", "row_text": "受扶助人姓名 | 承辦人電話與分機"},
+                    {"applyno": "", "row_text": "檢付檔案 | 上傳檔案"},
+                    {"applyno": "", "row_text": "說明 | 上傳的檔案型別限於pdf、word、excel"},
+                ]
+            },
+        }
+
+        report = format_audit_report([], [], status)
+
+        assert "開辦待送出" not in report
+        assert "分會別" not in report
+        assert "所有法扶案件狀態正常" in report
+
+    def test_format_report_keeps_real_go_live_applyno(self):
+        from casper_ecosystem.law_firm_orchestrators.laf_nightly_audit import format_audit_report
+
+        status = {
+            "all_cases": [{}],
+            "not_started": [],
+            "can_go_live": [],
+            "pending_close": [],
+            "can_close": [],
+            "portal_drafts": {
+                "go_live_pending": [
+                    {"applyno": "1150206-A-042", "row_text": "1150206-A-042 | 蕭仁俊 | 暫存"}
+                ]
+            },
+        }
+
+        report = format_audit_report([], [], status)
+
+        assert "開辦待送出（Portal 仍有未開辦案件）：1 件" in report
+        assert "1150206-A-042" in report
+
+
+class TestLafBackfillNoiseControl:
+    """確認法扶案號補填通知不會每天重複刷同一批案件。"""
+
+    def test_backfill_notice_suppressed_by_prior_audit_report(self, tmp_path, monkeypatch):
+        import casper_ecosystem.law_firm_orchestrators.laf_nightly_audit as audit
+
+        monkeypatch.setattr(audit, "REPORT_DIR", str(tmp_path))
+        monkeypatch.setattr(audit, "_BACKFILL_NOTICE_STATE_FILE", str(tmp_path / "_laf_backfill_notice_state.json"))
+        (tmp_path / "laf_audit_2026-05-16.md").write_text(
+            "✅ 自動補填法扶案號：1 件\n"
+            "  • 2025-0002 游秀鈴 → 1140715-A-024（資料夾）\n",
+            encoding="utf-8",
+        )
+
+        visible, suppressed = audit._filter_new_backfill_notices(
+            [{"case_number": "2025-0002", "client_name": "游秀鈴", "laf_no": "1140715-A-024", "source": "資料夾"}],
+            persist=False,
+        )
+
+        assert visible == []
+        assert suppressed == 1
+
+    def test_format_report_uses_all_backfilled_for_missing_but_hides_suppressed_notice(self):
+        from casper_ecosystem.law_firm_orchestrators.laf_nightly_audit import format_audit_report
+
+        status = {
+            "all_cases": [{}],
+            "not_started": [],
+            "can_go_live": [],
+            "pending_close": [],
+            "can_close": [],
+            "portal_drafts": {},
+        }
+        missing = [{"case_number": "2025-0002", "client_name": "游秀鈴"}]
+        backfilled = [{"case_number": "2025-0002", "client_name": "游秀鈴", "laf_no": "1140715-A-024", "source": "資料夾"}]
+
+        report = format_audit_report(
+            missing,
+            backfilled,
+            status,
+            visible_backfilled=[],
+            suppressed_backfilled_count=1,
+        )
+
+        assert "自動補填法扶案號" not in report
+        assert "仍待確認法扶案號" not in report
+
+    def test_display_client_name_uses_case_folder_for_likely_typos(self):
+        from casper_ecosystem.law_firm_orchestrators.laf_nightly_audit import _display_client_name
+
+        assert _display_client_name({
+            "case_number": "2025-0002",
+            "client_name": "遊秀鈴",
+            "folder_path": "/案件/法扶案件/刑事/2025-0002-游秀鈴-一審-傷害致死",
+        }) == "游秀鈴"
+
+    def test_display_client_name_does_not_need_single_name_override(self):
+        from casper_ecosystem.law_firm_orchestrators.laf_nightly_audit import _display_client_name
+
+        assert _display_client_name({
+            "case_number": "2026-0045",
+            "client_name": "李秀瑛",
+            "folder_path": "/案件/法扶案件/行政/2026-0045-李秀英-一審-勞工保險爭議",
+        }) == "李秀英"
+
+
+# ── LAF progress report reminders ────────────────────────────────────────────
+
+class TestLafProgressReminders:
+    """確認進度回報會納入夜巡提醒。"""
+
+    def test_scan_flags_in_progress_case_over_18_months(self, monkeypatch):
+        from casper_ecosystem.law_firm_orchestrators.laf_nightly_audit import scan_laf_reporting_status
+
+        class FakeDB:
+            def fetch_all(self, *_args, **_kwargs):
+                return [
+                    {
+                        "id": 1,
+                        "case_number": "1140806-J-002",
+                        "client_name": "測試甲",
+                        "case_type": "民事",
+                        "case_reason": "法扶測試",
+                        "status": "進行中",
+                        "folder_path": "",
+                        "legal_aid_number": "1140806-J-002",
+                        "laf_case_no": "",
+                        "application_no": "",
+                        "legal_aid_status": "進行中",
+                        "legal_aid_startup_deadline": None,
+                        "start_date": "2024-01-01",
+                        "end_date": None,
+                    },
+                    {
+                        "id": 2,
+                        "case_number": "1150101-J-001",
+                        "client_name": "測試乙",
+                        "case_type": "民事",
+                        "case_reason": "法扶測試",
+                        "status": "進行中",
+                        "folder_path": "",
+                        "legal_aid_number": "1150101-J-001",
+                        "laf_case_no": "",
+                        "application_no": "",
+                        "legal_aid_status": "進行中",
+                        "legal_aid_startup_deadline": None,
+                        "start_date": "2026-01-01",
+                        "end_date": None,
+                    },
+                ]
+
+        monkeypatch.setenv("MAGI_LAF_PROGRESS_DUE_DAYS", "548")
+        status = scan_laf_reporting_status(FakeDB())
+
+        assert len(status["progress_overdue"]) == 1
+        assert status["progress_overdue"][0]["case_number"] == "1140806-J-002"
+        assert status["progress_overdue"][0]["days_since_assignment"] >= 548
+
+    def test_format_report_shows_portal_and_db_progress_reminders(self):
+        from casper_ecosystem.law_firm_orchestrators.laf_nightly_audit import format_audit_report
+
+        status = {
+            "all_cases": [{}],
+            "not_started": [],
+            "can_go_live": [],
+            "pending_close": [],
+            "can_close": [],
+            "progress_overdue": [
+                {
+                    "case_number": "1130101-J-001",
+                    "client_name": "測試甲",
+                    "legal_aid_number": "1130101-J-001",
+                    "assignment_date": "2024-01-01",
+                    "days_since_assignment": 858,
+                }
+            ],
+            "portal_drafts": {
+                "progress_pending": [
+                    {"applyno": "1140806-J-002", "row_text": "1140806-J-002 | 測試乙 | 需進度回報"}
+                ]
+            },
+        }
+
+        report = format_audit_report([], [], status)
+
+        assert "法扶官網要求進度回報：1 件" in report
+        assert "進行中逾 18 個月，需確認進度回報：1 件" in report
+        assert "1140806-J-002" in report
+        assert "1130101-J-001" in report
+        assert "已回報" in report
+
+    def test_format_report_lists_all_progress_reminders(self):
+        from casper_ecosystem.law_firm_orchestrators.laf_nightly_audit import format_audit_report
+
+        status = {
+            "all_cases": [{}],
+            "not_started": [],
+            "can_go_live": [],
+            "pending_close": [],
+            "can_close": [],
+            "progress_overdue": [
+                {
+                    "case_number": f"11301{i:02d}-J-001",
+                    "client_name": f"測試{i}",
+                    "legal_aid_number": f"11301{i:02d}-J-001",
+                    "assignment_date": "2024-01-01",
+                    "days_since_assignment": 700 + i,
+                }
+                for i in range(13)
+            ],
+            "portal_drafts": {},
+        }
+
+        report = format_audit_report([], [], status)
+
+        assert "進行中逾 18 個月，需確認進度回報：13 件" in report
+        assert "1130100-J-001" in report
+        assert "1130112-J-001" in report
+        assert "...及其他" not in report
+
+    def test_progress_reported_cooldown_suppresses_reminder(self, tmp_path, monkeypatch):
+        import casper_ecosystem.law_firm_orchestrators.laf_nightly_audit as audit
+
+        cooldown_file = tmp_path / "progress_cooldown.json"
+        monkeypatch.setattr(audit, "_PROGRESS_COOLDOWN_FILE", str(cooldown_file))
+        monkeypatch.setenv("MAGI_LAF_PROGRESS_DUE_DAYS", "1")
+
+        class FakeDB:
+            def fetch_all(self, *_args, **_kwargs):
+                return [
+                    {
+                        "id": 1,
+                        "case_number": "1130101-J-001",
+                        "client_name": "測試甲",
+                        "case_type": "民事",
+                        "case_reason": "法扶測試",
+                        "status": "進行中",
+                        "folder_path": "",
+                        "legal_aid_number": "1130101-J-001",
+                        "laf_case_no": "",
+                        "application_no": "",
+                        "legal_aid_status": "進行中",
+                        "legal_aid_startup_deadline": None,
+                        "start_date": "2024-01-01",
+                        "end_date": None,
+                    }
+                ]
+
+        marked = audit.mark_progress_reported("1130101-J-001", db=FakeDB(), actor="test")
+        assert marked["ok"] is True
+        assert marked["cooldown_until"] == (date.today() + timedelta(days=60)).isoformat()
+        assert marked["calendar"]["skipped"] == "db_write_unavailable"
+
+        status = audit.scan_laf_reporting_status(FakeDB())
+        assert status["progress_overdue"] == []
+        assert len(status["progress_suppressed"]) == 1
+
+        report = audit.format_audit_report([], [], status)
+        assert "已確認進度回報，冷卻中：1 件" in report
+        assert "60 天" in report or "下次提醒" in report
+
+
+class TestLafGoLiveReadiness:
+    """確認開辦資料放在 01_法扶資料 時也能被認列。"""
+
+    def test_notice_and_poa_in_laf_folder_are_go_live_ready_not_overdue(self, tmp_path):
+        from casper_ecosystem.law_firm_orchestrators.laf_nightly_audit import scan_laf_reporting_status
+
+        laf_dir = tmp_path / "case" / "01_法扶資料"
+        laf_dir.mkdir(parents=True)
+        (laf_dir / "准予扶助證明書_1141223-E-021_1141226.pdf").write_bytes(b"%PDF-1.4\n")
+        (laf_dir / "委任狀_1141223-E-021_1141226.pdf").write_bytes(b"%PDF-1.4\n")
+
+        class FakeDB:
+            def fetch_all(self, *_args, **_kwargs):
+                return [
+                    {
+                        "id": 1,
+                        "case_number": "2025-0133",
+                        "client_name": "吳志炳",
+                        "case_type": "刑事",
+                        "case_reason": "公共危險",
+                        "status": "進行中",
+                        "folder_path": str(tmp_path / "case"),
+                        "legal_aid_number": "1141223-E-021",
+                        "laf_case_no": "1141223-E-021",
+                        "application_no": "1141223-E-021",
+                        "legal_aid_status": "未開辦",
+                        "legal_aid_startup_deadline": "2026-02-23",
+                        "start_date": "2025-12-26",
+                        "end_date": None,
+                    }
+                ]
+
+        status = scan_laf_reporting_status(FakeDB())
+
+        assert [c["case_number"] for c in status["can_go_live"]] == ["2025-0133"]
+        assert status["not_started"] == []
+
+    def test_portal_empty_go_live_list_marks_db_in_progress(self):
+        from casper_ecosystem.law_firm_orchestrators.laf_nightly_audit import (
+            _resolve_go_live_cases_from_portal,
+        )
+
+        class FakeDB:
+            def __init__(self):
+                self.writes = []
+
+            def execute_write(self, sql, params):
+                self.writes.append((sql, params))
+                return True
+
+        case = {
+            "id": 1,
+            "case_number": "2026-0040",
+            "client_name": "張宥涵",
+            "legal_aid_number": "1150421-E-016",
+            "laf_case_no": "",
+            "application_no": "",
+            "legal_aid_status": "未開辦",
+        }
+        status = {"can_go_live": [case], "portal_drafts": {"error": None, "go_live_pending": []}}
+        db = FakeDB()
+
+        resolved = _resolve_go_live_cases_from_portal(status, db)
+
+        assert resolved[0]["portal_status"] == "already_opened"
+        assert status["can_go_live"] == []
+        assert db.writes
+
+
+class TestPlaceholderFolderRenameRelease:
+    """placeholder 修正時，應可釋放檢視器與編輯器占用後 rename。"""
+
+    def test_safe_rename_terminates_pdf_viewer_blocker(self, tmp_path, monkeypatch):
+        import casper_ecosystem.law_firm_orchestrators.laf_nightly_audit as mod
+
+        old_dir = tmp_path / "2026-0044-李○毅-偵查-待確認"
+        new_dir = tmp_path / "2026-0044-李子毅-偵查-傷害"
+        old_dir.mkdir()
+        (old_dir / "sample.pdf").write_bytes(b"%PDF-1.4\n")
+        calls = {"lsof": 0, "killed": []}
+
+        def fake_lsof(_path):
+            calls["lsof"] += 1
+            if calls["lsof"] <= 2:
+                return [{"name": "AcroPDF", "pid": 18728}]
+            return []
+
+        monkeypatch.setattr(mod, "_lsof_folder_processes", fake_lsof)
+        monkeypatch.setattr(mod, "_close_finder_windows_for_folder", lambda _path: None)
+        monkeypatch.setattr(mod.os, "kill", lambda pid, sig: calls["killed"].append((pid, sig)))
+
+        ok, reason = mod._safe_rename_case_folder(str(old_dir), str(new_dir))
+
+        assert ok is True
+        assert reason == ""
+        assert calls["killed"] == [(18728, 15)]
+        assert new_dir.is_dir()
+        assert not old_dir.exists()
+
+    def test_safe_rename_saves_and_closes_word_blocker(self, tmp_path, monkeypatch):
+        import casper_ecosystem.law_firm_orchestrators.laf_nightly_audit as mod
+
+        old_dir = tmp_path / "2026-0044-李○毅-偵查-待確認"
+        new_dir = tmp_path / "2026-0044-李子毅-偵查-傷害"
+        old_dir.mkdir()
+        calls = {"lsof": 0, "scripts": [], "killed": []}
+
+        def fake_lsof(_path):
+            calls["lsof"] += 1
+            if calls["lsof"] <= 2:
+                return [{"name": "Microsoft Word", "pid": 20001}]
+            return []
+
+        monkeypatch.setattr(mod.sys, "platform", "darwin")
+        monkeypatch.setattr(mod, "_lsof_folder_processes", fake_lsof)
+        monkeypatch.setattr(mod, "_close_finder_windows_for_folder", lambda _path: None)
+        monkeypatch.setattr(mod, "_run_osascript", lambda script, timeout=8: calls["scripts"].append(script) or True)
+        monkeypatch.setattr(mod.os, "kill", lambda pid, sig: calls["killed"].append((pid, sig)))
+
+        ok, reason = mod._safe_rename_case_folder(str(old_dir), str(new_dir))
+
+        assert ok is True
+        assert reason == ""
+        assert any("Microsoft Word" in script for script in calls["scripts"])
+        assert calls["killed"] == []
+        assert new_dir.is_dir()
+        assert not old_dir.exists()
+
+    def test_safe_rename_force_closes_unknown_editor_after_save_shortcut(self, tmp_path, monkeypatch):
+        import casper_ecosystem.law_firm_orchestrators.laf_nightly_audit as mod
+
+        old_dir = tmp_path / "2026-0044-李○毅-偵查-待確認"
+        new_dir = tmp_path / "2026-0044-李子毅-偵查-傷害"
+        old_dir.mkdir()
+        state = {"released": False, "closed": [], "killed": []}
+
+        def fake_lsof(_path):
+            if state["released"]:
+                return []
+            return [{"name": "SomeEditor", "pid": 20002}]
+
+        def fake_save_close(name):
+            state["closed"].append(name)
+            state["released"] = True
+            return True
+
+        monkeypatch.setattr(mod.sys, "platform", "darwin")
+        monkeypatch.setattr(mod, "_lsof_folder_processes", fake_lsof)
+        monkeypatch.setattr(mod, "_close_finder_windows_for_folder", lambda _path: None)
+        monkeypatch.setattr(mod, "_save_close_process_window", fake_save_close)
+        monkeypatch.setattr(mod.os, "kill", lambda pid, sig: state["killed"].append((pid, sig)))
+
+        ok, reason = mod._safe_rename_case_folder(str(old_dir), str(new_dir))
+
+        assert ok is True
+        assert reason == ""
+        assert state["closed"] == ["SomeEditor"]
+        assert state["killed"] == []
+        assert new_dir.is_dir()
+        assert not old_dir.exists()
+
+    def test_safe_rename_respects_unknown_editor_opt_out(self, tmp_path, monkeypatch):
+        import casper_ecosystem.law_firm_orchestrators.laf_nightly_audit as mod
+
+        old_dir = tmp_path / "2026-0044-李○毅-偵查-待確認"
+        new_dir = tmp_path / "2026-0044-李子毅-偵查-傷害"
+        old_dir.mkdir()
+
+        monkeypatch.setenv("MAGI_LAF_FORCE_CLOSE_UNKNOWN_EDITORS", "0")
+        monkeypatch.setattr(mod, "_lsof_folder_processes", lambda _path: [{"name": "SomeEditor", "pid": 20002}])
+        monkeypatch.setattr(mod, "_close_finder_windows_for_folder", lambda _path: None)
+
+        ok, reason = mod._safe_rename_case_folder(str(old_dir), str(new_dir))
+
+        assert ok is False
+        assert reason == "folder_open:SomeEditor"
+        assert old_dir.is_dir()
+        assert not new_dir.exists()
+
+
+# ── Portal attachment filename parsing ───────────────────────────────────────
+
+class TestPortalAttachmentFilenameParsing:
+    """確認法扶官網附件清單被黏在一起時，缺檔判斷仍正確。"""
+
+    def test_splits_glued_pdf_list_before_missing_check(self):
+        from casper_ecosystem.law_firm_orchestrators.laf_nightly_audit import _find_missing_portal_files
+
+        expected = [
+            "結案審查通知書_1131224-T-022_1150508.pdf2. 結案酬金領款單_1131224-T-022_1150508.pdf"
+        ]
+        existing = ["結案審查通知書_1131224-T-022_1150508.pdf"]
+
+        missing = _find_missing_portal_files(expected, existing)
+
+        assert missing == ["結案酬金領款單_1131224-T-022_1150508.pdf"]
+
+    def test_no_false_missing_when_all_split_files_exist(self):
+        from casper_ecosystem.law_firm_orchestrators.laf_nightly_audit import _find_missing_portal_files
+
+        expected = [
+            "1. 結案審查通知書_1131224-T-022_1150508.pdf2. 結案酬金領款單_1131224-T-022_1150508.pdf"
+        ]
+        existing = [
+            "結案審查通知書_1131224-T-022_1150508.pdf",
+            "結案酬金領款單_1131224-T-022_1150508.pdf",
+        ]
+
+        assert _find_missing_portal_files(expected, existing) == []
+
+    def test_downloaded_zip_is_extracted_for_missing_check(self, tmp_path):
+        import zipfile
+        from casper_ecosystem.law_firm_orchestrators.laf_nightly_audit import (
+            _find_missing_portal_files,
+            _move_downloaded_to_case_folder,
+        )
+
+        case_root = tmp_path / "case"
+        download_dir = tmp_path / "downloads"
+        download_dir.mkdir()
+        zip_path = download_dir / "1131224-T-022.zip"
+        expected = [
+            "結案審查通知書_1131224-T-022_1150508.pdf",
+            "結案酬金領款單_1131224-T-022_1150508.pdf",
+        ]
+        with zipfile.ZipFile(zip_path, "w") as zf:
+            for name in expected:
+                zf.writestr(name, b"%PDF-1.4\n")
+
+        moved, failed = _move_downloaded_to_case_folder([str(zip_path)], str(case_root))
+        existing = [p.name for p in case_root.glob("*/*") if p.is_file()]
+
+        assert failed == []
+        assert set(expected).issubset(set(moved))
+        assert _find_missing_portal_files(expected, existing) == []
+
+
+class TestLafNumberBackfillResilience:
+    """主 DB 回填成功時，不應被輔助索引建檔失敗拖成待回填。"""
+
+    def test_index_failure_does_not_cancel_primary_backfill(self, monkeypatch):
+        import casper_ecosystem.law_firm_orchestrators.laf_nightly_audit as mod
+
+        case = {
+            "id": 1,
+            "case_number": "2025-0051",
+            "client_name": "莊宸銘",
+            "case_type": "民事",
+            "case_reason": "消費者債務清理",
+            "legal_aid_number": "",
+            "laf_case_no": "",
+            "application_no": "",
+        }
+
+        db = MagicMock()
+        db.check_laf_case_exists.side_effect = RuntimeError("index table unavailable")
+
+        monkeypatch.setattr(
+            mod,
+            "_inspect_laf_number_candidates",
+            lambda _case: {
+                "candidate_numbers": {"1131224-T-022"},
+                "source_label": "案件資料夾",
+            },
+        )
+        monkeypatch.setattr(mod, "_update_case_laf_number", lambda _db, _case, _laf_no: True)
+
+        assert mod.try_backfill_laf_number(db, case) == "1131224-T-022"
 
 
 # ── laf_handler._STATUS_MAP ───────────────────────────────────────────────────

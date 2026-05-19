@@ -59,20 +59,61 @@ def run_labor_law_command(orch, message: str) -> str:
 
 
 def run_inline_translation_command(orch, user_id, message: str) -> str:
+    if re.search(r"(?:你會|會不會|可以|能不能|可否).{0,8}(?:翻譯|translate)", str(message or ""), re.IGNORECASE):
+        return (
+            "✅ **我可以幫您翻譯！**\n\n"
+            "• 文字翻譯：`翻譯 Hello world`\n"
+            "• 指定語言：`翻譯成英文：你好。`\n"
+            "• 檔案翻譯：上傳檔案後輸入 `翻譯這份檔案`"
+        )
     text = orch._strip_intent_prefixes(
         message,
-        [r"^(?:幫我|請|麻煩|協助我|可以幫我)?\s*", r"^(?:翻譯|translate)\s*"],
+        [r"^(?:請幫我|麻煩幫我|可以幫我|幫我|請|麻煩|協助我)?\s*", r"^(?:翻譯|translate)\s*"],
     )
+    text = re.sub(
+        r"^(?:請幫我|麻煩幫我|可以幫我|幫我|請|麻煩|協助我)?\s*(?:翻譯|translate)\s*",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    ).strip()
+    target_lang = "繁體中文"
+    target_match = re.match(
+        r"^(?:成|為|到|成為|to\s+)?\s*"
+        r"(繁體中文|正體中文|中文|英文|英語|日文|日語|韓文|韓語|traditional\s+chinese|chinese|english|japanese|korean)"
+        r"\s*[:：,，]?\s*",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if target_match:
+        raw_target = target_match.group(1).strip().lower()
+        target_map = {
+            "繁體中文": "繁體中文",
+            "正體中文": "繁體中文",
+            "中文": "繁體中文",
+            "traditional chinese": "繁體中文",
+            "chinese": "繁體中文",
+            "英文": "英文",
+            "英語": "英文",
+            "english": "英文",
+            "日文": "日文",
+            "日語": "日文",
+            "japanese": "日文",
+            "韓文": "韓文",
+            "韓語": "韓文",
+            "korean": "韓文",
+        }
+        target_lang = target_map.get(raw_target, target_lang)
+        text = text[target_match.end():].strip()
     if not text:
         return "❓ 請提供要翻譯的文字。"
     if len(text) <= 800 and len(text.splitlines()) <= 4:
         try:
             from skills.bridge.tri_sage_collab import translate_text as _translate_text
-            result = _translate_text(text, target_lang="繁體中文", source_lang="auto", mode="full")
+            result = _translate_text(text, target_lang=target_lang, source_lang="auto", mode="full")
         except Exception:
-            result = orch._translate_text_complete(text, source_lang="auto", target_lang="繁體中文")
+            result = orch._translate_text_complete(text, source_lang="auto", target_lang=target_lang)
     else:
-        result = orch._translate_text_complete(text, source_lang="auto", target_lang="繁體中文")
+        result = orch._translate_text_complete(text, source_lang="auto", target_lang=target_lang)
     if not result.get("success"):
         err = str(result.get("error") or "unknown").strip()
         if err.startswith("translation_off_topic:"):
@@ -215,15 +256,67 @@ def run_translate_file_command(orch, user_id, message: str) -> str:
 
 
 def run_inline_summary_command(orch, message: str) -> str:
+    if re.search(r"(?:你會|會不會|可以|能不能|可否).{0,8}(?:摘要|summarize|summary)", str(message or ""), re.IGNORECASE):
+        return (
+            "✅ **我可以幫您做摘要！**\n\n"
+            "• 文字摘要：`摘要 這是一段文字...`\n"
+            "• 網頁摘要：`摘要 https://...`\n"
+            "• 可指定：`精簡摘要`、`詳細摘要`"
+        )
+
+    def _summary_requests_more_content(out: str) -> bool:
+        t = str(out or "").strip()
+        if not t:
+            return False
+        markers = (
+            "請提供您需要我分析",
+            "請提供您需要我摘要",
+            "請提供需要我",
+            "請提供需要摘要",
+            "請提供檔案內容",
+            "請提供文件內容",
+            "請提供要摘要",
+            "請提供更多資訊",
+            "目前沒有足夠資訊",
+        )
+        return any(m in t for m in markers)
+
+    def _inline_extractive_summary(src: str) -> str:
+        body = re.sub(r"\s+", " ", str(src or "")).strip()
+        if not body:
+            return ""
+        parts = [
+            p.strip(" 　-")
+            for p in re.split(r"(?<=[。！？!?])\s*|[；;]\s*|\n+", body)
+            if p and p.strip()
+        ]
+        cleaned = []
+        for p in parts:
+            q = re.sub(r"^(?:第?[一二三四五六七八九十]+|[0-9]+)[、，.．)]\s*", "", p).strip()
+            q = q.rstrip("。；;")
+            if q and q not in cleaned:
+                cleaned.append(q)
+        if not cleaned:
+            cleaned = [body[:220].rstrip("。；;")]
+        return "\n".join(f"- {item}" for item in cleaned[:8])
+
     summary_length = orch._detect_summary_length(message)
     text = orch._strip_intent_prefixes(
         message,
         [
-            r"^(?:幫我|請|麻煩|協助我|可以幫我)?\s*",
+            r"^(?:請幫我|麻煩幫我|可以幫我|幫我|請|麻煩|協助我)?\s*",
             r"^(?:短摘要?|詳細摘要?|簡短摘要?|完整摘要?|長摘要?|精簡摘要?)\s*",
             r"^(?:摘要|總結|重點整理|summarize|summarise|summary)\s*",
         ],
     )
+    text = re.sub(
+        r"^(?:請幫我|麻煩幫我|可以幫我|幫我|請|麻煩|協助我)?\s*"
+        r"(?:短摘要?|詳細摘要?|簡短摘要?|完整摘要?|長摘要?|精簡摘要?|摘要|總結|重點整理|summarize|summarise|summary)\s*",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    ).strip()
+    text = re.sub(r"^[:：,，；;]\s*", "", text).strip()
     if not text:
         return (
             "❓ 請提供要摘要的內容。\n\n"
@@ -232,14 +325,25 @@ def run_inline_summary_command(orch, message: str) -> str:
             "• `摘要 ...` → 5-8 點，每點 1-2 句（預設）\n"
             "• `詳細摘要 ...` 或 `長摘要 ...` → 12-15 點，每點 2-3 句（含背景與數據）"
         )
+    if len(text) <= 800:
+        fallback = _inline_extractive_summary(text)
+        if fallback:
+            length_label = {"short": "精簡", "medium": "標準", "long": "詳細"}.get(summary_length, "")
+            return f"📝 {length_label}摘要結果（extractive_inline）:\n{fallback}"
     result = orch._summarize_text_resilient(text, summary_length=summary_length)
     if not result.get("success"):
         return f"❌ 摘要失敗：{str(result.get('error') or 'unknown')}"
     summary_text = str(result.get("text") or result.get("summary") or "").strip()
     if not summary_text:
         return "❌ 摘要失敗：沒有可用結果"
+    provider = str(result.get("provider", "summary") or "summary")
+    if _summary_requests_more_content(summary_text):
+        fallback = _inline_extractive_summary(text)
+        if fallback:
+            summary_text = fallback
+            provider = "extractive_inline_fallback"
     length_label = {"short": "精簡", "medium": "標準", "long": "詳細"}.get(summary_length, "")
-    return f"📝 {length_label}摘要結果（{result.get('provider', 'summary')}）:\n{summary_text}"
+    return f"📝 {length_label}摘要結果（{provider}）:\n{summary_text}"
 
 
 def run_court_hearing_command(orch, message: str) -> str:

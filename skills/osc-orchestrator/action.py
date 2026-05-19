@@ -1094,7 +1094,12 @@ def task_scan_folder(payload: Dict[str, Any]) -> Dict[str, Any]:
                 )
                 inserted += int(res.get("inserted") or 0)
                 skipped += int(res.get("skipped") or 0)
-                items.append({"path": full, "case_number": case_number, "insert": res, "todos": todos, "status": "inserted"})
+                status = (
+                    "inserted" if int(res.get("inserted") or 0) > 0 else
+                    "updated" if int(res.get("updated") or 0) > 0 else
+                    "skipped"
+                )
+                items.append({"path": full, "case_number": case_number, "insert": res, "todos": todos, "status": status})
 
             if scanned >= max_files:
                 break
@@ -2332,7 +2337,7 @@ def task_laf_pending_scan(payload: Dict[str, Any]) -> Dict[str, Any]:
     try:
         sys.path.insert(0, os.path.join(SKILL_DIR, "..", ".."))
         from skills.ops.red_phone import alert_admin
-        alert_admin(msg, severity="info", topic_key="laf")
+        alert_admin(msg, severity="info", topic_key="laf_general")
         result["notified"] = True
     except Exception as e:
         result["notified"] = False

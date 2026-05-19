@@ -124,6 +124,8 @@ REAPER_NEVER_KILL = (
 
 # ── 每個 worker 的 grace period（秒）──
 REAPER_GRACE_PERIODS = {
+    # Judicial / crawl
+    "skills/judgment-collector/action.py": int(os.environ.get("MAGI_ORPHAN_GRACE_JC_SEC", "420") or "420"),
     # File review
     "skills/file-review-orchestrator/action.py": int(os.environ.get("MAGI_ORPHAN_GRACE_FR_SEC", "1800") or "1800"),
     "skills/file-review-orchestrator/action.py --task download": int(os.environ.get("MAGI_ORPHAN_GRACE_FR_DOWNLOAD_SEC", "2400") or "2400"),
@@ -236,6 +238,92 @@ def _is_night_window() -> bool:
     return 2 <= datetime.datetime.now().hour < 7
 
 
+def _expected_omlx_profile_now() -> tuple[str, str]:
+    """Return the expected oMLX profile and model keyword for the local time."""
+    import datetime
+
+    now = datetime.datetime.now()
+    minutes = now.hour * 60 + now.minute
+    if 415 <= minutes < 1310:  # 06:55 <= now < 21:50
+        return "day", "e4b"
+    return "night", "26b"
+
+
+def _is_omlx_night_window() -> bool:
+    return _expected_omlx_profile_now()[0] == "night"
+
+
+def _read_omlx_main_model_id() -> str:
+    try:
+        with urllib.request.urlopen("http://127.0.0.1:8080/v1/models", timeout=3) as resp:
+            payload = json.loads(resp.read().decode("utf-8", errors="replace"))
+        models = payload.get("data") or []
+        if models and isinstance(models, list):
+            return str(models[0].get("id") or "").lower()
+    except Exception:
+        return ""
+    return ""
+
+
+def _read_omlx_model_dir_hint() -> str:
+    try:
+        model_dir = Path.home() / ".omlx" / "models-text"
+        names = sorted(p.name.lower() for p in model_dir.iterdir())
+        return " ".join(names)
+    except Exception:
+        return ""
+
+
+def _write_omlx_active_profile(profile: str) -> None:
+    try:
+        profile_file = Path.home() / ".omlx" / "active_profile"
+        profile_file.parent.mkdir(parents=True, exist_ok=True)
+        profile_file.write_text(profile + "\n", encoding="utf-8")
+    except Exception as exc:
+        logger.warning("⚠️ active_profile update failed: %s", exc)
+
+
+def _ensure_omlx_time_profile_async() -> None:
+    """Self-heal when 8080 is still on the wrong day/night model after boot."""
+    if os.environ.get("MAGI_DISABLE_OMLX_PROFILE_GUARD", "").strip().lower() in {"1", "true", "yes", "on"}:
+        return
+
+    expected_profile, expected_keyword = _expected_omlx_profile_now()
+    api_model = _read_omlx_main_model_id()
+    dir_hint = _read_omlx_model_dir_hint()
+    if expected_keyword in api_model and expected_keyword in dir_hint:
+        _write_omlx_active_profile(expected_profile)
+        logger.info("✅ oMLX profile matches time window (%s: %s)", expected_profile, api_model)
+        return
+
+    script = Path(_MAGI_ROOT) / "config" / "bin" / "omlx_switch_model.sh"
+    runner = Path(_MAGI_ROOT) / "scripts" / "ops" / "run_with_env.py"
+    py = Path(get_venv_python())
+    if not script.exists() or not runner.exists() or not py.exists():
+        logger.warning(
+            "⚠️ oMLX profile guard cannot run (script=%s runner=%s py=%s)",
+            script.exists(), runner.exists(), py.exists(),
+        )
+        return
+
+    logger.warning(
+        "⚠️ oMLX profile mismatch; expected=%s/%s api=%s dir=%s. Running auto switch.",
+        expected_profile, expected_keyword, api_model or "down", dir_hint or "unknown",
+    )
+    try:
+        log_path = Path("/opt/homebrew/var/log/omlx_switch.log")
+        with log_path.open("ab") as log_fh:
+            subprocess.Popen(
+                [str(py), str(runner), "--", "/bin/bash", str(script), "auto"],
+                cwd=_MAGI_ROOT,
+                stdout=log_fh,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+            )
+    except Exception as exc:
+        logger.warning("⚠️ oMLX profile guard failed to start auto switch: %s", exc)
+
+
 # ---------------------------------------------------------------------------
 # Auto-reap zombie children via SIGCHLD
 # ---------------------------------------------------------------------------
@@ -295,6 +383,18 @@ def _kill_existing_daemons() -> int:
     This is the nuclear option — ensures no zombie daemons survive.
     """
     my_pid = os.getpid()
+    ancestor_pids = set()
+    parent_pid = os.getppid()
+    while parent_pid and parent_pid > 1:
+        ancestor_pids.add(parent_pid)
+        try:
+            parent_info = subprocess.run(
+                ["ps", "-p", str(parent_pid), "-o", "ppid="],
+                capture_output=True, text=True, timeout=1,
+            )
+            parent_pid = int((parent_info.stdout or "0").strip() or "0")
+        except Exception:
+            break
     killed = 0
     try:
         result = subprocess.run(
@@ -308,6 +408,8 @@ def _kill_existing_daemons() -> int:
             pid = int(pid_str)
             if pid == my_pid:
                 continue
+            if pid in ancestor_pids:
+                continue
             # Verify it's actually a daemon.py process (not some other script matching the pattern)
             try:
                 cmd_result = subprocess.run(
@@ -319,6 +421,8 @@ def _kill_existing_daemons() -> int:
                     continue
                 # Don't kill Claude Code or other tools that might have "daemon.py" in args
                 if "claude" in cmdline.lower() or "grep" in cmdline.lower() or "pgrep" in cmdline.lower():
+                    continue
+                if "magi_cli.sh" in cmdline or "launchctl" in cmdline:
                     continue
             except Exception:
                 continue  # Skip if we can't verify
@@ -587,6 +691,73 @@ _BACKOFF_MAX  = 300         # cap at 5 minutes
 _HEALTHY_THRESHOLD = 60     # if process ran > 60s, reset failure count
 _MAX_CONSECUTIVE_FAILURES = 10  # stop restarting after this many rapid failures
 
+_HTTP_LIVENESS_ENDPOINTS = {
+    "Server": "http://127.0.0.1:5002/health",
+    "ToolsAPI": "http://127.0.0.1:5003/health",
+}
+_HTTP_LIVENESS_INTERVAL_SEC = float(os.environ.get("MAGI_DAEMON_HTTP_LIVENESS_INTERVAL_SEC", "30"))
+_HTTP_LIVENESS_TIMEOUT_SEC = float(os.environ.get("MAGI_DAEMON_HTTP_LIVENESS_TIMEOUT_SEC", "4"))
+_HTTP_LIVENESS_MIN_UPTIME_SEC = float(os.environ.get("MAGI_DAEMON_HTTP_LIVENESS_MIN_UPTIME_SEC", "75"))
+_HTTP_LIVENESS_FAILURE_THRESHOLD = int(os.environ.get("MAGI_DAEMON_HTTP_LIVENESS_FAILURE_THRESHOLD", "3"))
+_http_liveness_failures: Dict[str, int] = {}
+_http_liveness_last_probe: Dict[str, float] = {}
+
+
+def _probe_http_liveness(name: str, url: str) -> tuple[bool, str]:
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "MAGI-daemon-liveness/1.0"})
+        with urllib.request.urlopen(req, timeout=_HTTP_LIVENESS_TIMEOUT_SEC) as resp:
+            status = getattr(resp, "status", 0) or 0
+            resp.read(512)
+        if 200 <= int(status) < 500:
+            return True, f"http_{status}"
+        return False, f"http_{status}"
+    except Exception as e:
+        return False, f"{type(e).__name__}: {e}"
+
+
+def _maybe_probe_http_liveness(name: str, rec: Dict[str, Any], now: float) -> bool:
+    """Restart alive-but-wedged HTTP services after repeated health timeouts."""
+    url = _HTTP_LIVENESS_ENDPOINTS.get(name)
+    if not url:
+        return False
+    started = rec.get("started", 0) or 0
+    if now - started < _HTTP_LIVENESS_MIN_UPTIME_SEC:
+        return False
+    last = _http_liveness_last_probe.get(name, 0)
+    if now - last < _HTTP_LIVENESS_INTERVAL_SEC:
+        return False
+    _http_liveness_last_probe[name] = now
+
+    ok, detail = _probe_http_liveness(name, url)
+    if ok:
+        if _http_liveness_failures.get(name):
+            logger.info("✅ %s HTTP liveness recovered (%s)", name, detail)
+        _http_liveness_failures[name] = 0
+        return False
+
+    failures = _http_liveness_failures.get(name, 0) + 1
+    _http_liveness_failures[name] = failures
+    logger.warning(
+        "⚠️ %s HTTP liveness failed %d/%d: %s",
+        name,
+        failures,
+        _HTTP_LIVENESS_FAILURE_THRESHOLD,
+        detail,
+    )
+    if failures < _HTTP_LIVENESS_FAILURE_THRESHOLD:
+        return False
+
+    _http_liveness_failures[name] = 0
+    logger.error("🧯 %s appears wedged while process is alive — restarting service group", name)
+    if name in _ORCHESTRATOR_GROUP:
+        _coordinated_restart(name)
+    else:
+        command = rec.get("command")
+        if command:
+            start_process(name, command)
+    return True
+
 # ── CronScheduler Fallback ──
 # When Discord Bot is unavailable, daemon runs CronScheduler independently.
 _cron_fallback_running = False
@@ -781,6 +952,10 @@ def monitor_processes():
         proc = rec.get("proc")
         command = rec.get("command")
         if not proc:
+            continue
+        if proc.poll() is None:
+            if _maybe_probe_http_liveness(name, rec, now):
+                continue
             continue
         if proc.poll() is not None:
             if not command:
@@ -1541,9 +1716,13 @@ if __name__ == "__main__":
     # 2.5 Start Tools API (external routes / connections checks)
     start_process("ToolsAPI", f"{_PYTHON} api/tools_api.py")
 
+    # 2.53 oMLX profile self-heal: reboot after the day switch should not leave
+    # 8080 serving the previous night's 26B model.
+    _ensure_omlx_time_profile_async()
+
     # 2.55 oMLX 三哲人審查員（Phi-4 + SmolLM3）日間自動啟動
     # 夜間模式由 omlx_switch_model.sh night 負責 bootout
-    if not _is_night_window():
+    if not _is_omlx_night_window():
         try:
             _uid = os.getuid()
             _phi4_plist = os.path.expanduser("~/Library/LaunchAgents/com.magi.omlx-phi4.plist")
@@ -1580,13 +1759,6 @@ if __name__ == "__main__":
                     logger.warning("oMLX reviewer %s launchctl failed: %s", _label, _lctl_err)
                     continue
                 logger.info("✅ oMLX reviewer %s kicked on port %d", _label, _port)
-            try:
-                _profile_file = os.path.expanduser("~/.omlx/active_profile")
-                os.makedirs(os.path.dirname(_profile_file), exist_ok=True)
-                with open(_profile_file, "w", encoding="utf-8") as _f:
-                    _f.write("day\n")
-            except Exception as _profile_err:
-                logger.warning("⚠️ active_profile update failed after day reviewer startup: %s", _profile_err)
             logger.info("✅ 三哲人審查員啟動完成（日間模式）")
         except Exception as e:
             logger.warning("⚠️ oMLX reviewers kickstart failed: %s", e)
@@ -1618,7 +1790,7 @@ if __name__ == "__main__":
         if _wa_busy:
             logger.info(f"ℹ️ WebsiteAdmin port {_wa_port} already in use — skipping (likely surviving child)")
         else:
-            start_process("WebsiteAdmin", f"{_PYTHON} {_website_admin} --port {_wa_port} --password whalelawyer")
+            start_process("WebsiteAdmin", f"{_PYTHON} {_website_admin} --port {_wa_port}")
             logger.info(f"✅ Website Admin Server started on port {_wa_port}")
 
     # 3. Start Keeper Sync Daemon (as background thread)
@@ -1649,10 +1821,18 @@ if __name__ == "__main__":
                         pass
 
             _watch_folders = []
-            # NAS case folders
-            _nas_cases = "/Volumes/homes/lumi63181107/01_案件"
-            if os.path.isdir(_nas_cases):
+            # Do not recursively watch the NAS case root by default.  SMB event
+            # watching can degrade into a broad directory crawl on reconnect,
+            # which is exactly the kind of NAS load spike OSC must avoid.
+            _nas_watch_enabled = str(os.environ.get("MAGI_ENABLE_NAS_FSWATCHER", "")).strip().lower() in {
+                "1", "true", "yes", "on",
+            }
+            _nas_home_user = (os.environ.get("MAGI_NAS_HOME_USER") or os.environ.get("MAGI_NAS_USER") or "home").strip().strip("/\\") or "home"
+            _nas_cases = f"/Volumes/homes/{_nas_home_user}/01_案件"
+            if _nas_watch_enabled and os.path.isdir(_nas_cases):
                 _watch_folders.append(_nas_cases)
+            elif os.path.isdir(_nas_cases):
+                logger.info("ℹ️ FSEvents watcher: NAS root available but disabled (set MAGI_ENABLE_NAS_FSWATCHER=1 to enable)")
             # Local scan staging area
             _local_scan = os.path.join(_MAGI_ROOT, "閱卷下載")
             if os.path.isdir(_local_scan):

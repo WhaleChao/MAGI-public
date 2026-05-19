@@ -82,10 +82,8 @@ _OMLX_MODEL_ALIAS = {
     "gemma4": TEXT_PRIMARY_MODEL,
     "gemma-4-26b": TEXT_PRIMARY_MODEL,
     "gemma-4-26b-a4b": TEXT_PRIMARY_MODEL,
-    "gemma-4-26b-a4b-it-4bit": TEXT_PRIMARY_MODEL,
     "gemma-4-e2b-it-local-bf16": TEXT_PRIMARY_MODEL,
     "gemma-4-e4b-it-bf16": TEXT_PRIMARY_MODEL,
-    "gemma-4-26b-a4b-it-4bit": TEXT_PRIMARY_MODEL,
     "gemma4:26b": TEXT_PRIMARY_MODEL,
     "gemma-3-12b": "gemma-3-12b-it-4bit",
     "gemma3-12b": "gemma-3-12b-it-4bit",
@@ -526,7 +524,8 @@ def _chat_omlx(
                 f"omlx_model_unavailable:{use_model}; available={','.join(available_on_base)}",
             )
     else:
-        use_model = _resolve_omlx_chat_model(raw_model)
+        available_on_base = list_omlx_models_for_base(_base, force_refresh=True)
+        use_model = _resolve_omlx_chat_model(raw_model, available_models=available_on_base)
     messages = []
     if system_prompt:
         messages.append({"role": "system", "content": system_prompt})
@@ -562,6 +561,13 @@ def _chat_omlx(
 
     try:
         data = _post_json(f"{_base}/v1/chat/completions", payload, timeout=max(10, int(timeout)))
+        if data.get("_failed") and "404" in str(data.get("error") or ""):
+            refreshed = list_omlx_models_for_base(_base, force_refresh=True)
+            retry_model = _resolve_omlx_chat_model(raw_model, available_models=refreshed)
+            if retry_model and retry_model != use_model:
+                payload["model"] = retry_model
+                use_model = retry_model
+                data = _post_json(f"{_base}/v1/chat/completions", payload, timeout=max(10, int(timeout)))
         choices = data.get("choices") or []
         text = ""
         if choices and isinstance(choices, list):
@@ -751,12 +757,15 @@ def _remote_online_quick() -> bool:
       4. Ollama /api/tags (is the LLM engine responsive?)
     Returns False if any check fails → caller will use local Ollama.
     """
-    if _avoid_distributed():
+    remote_gate_enabled = os.environ.get("MAGI_USE_REMOTE_HEALTH_GATE", "0").strip().lower() in {"1", "true", "on", "yes"}
+    avoid_raw = os.environ.get("MAGI_AVOID_DISTRIBUTED")
+    remote_gate_forced = remote_gate_enabled and str(avoid_raw).strip().lower() in {"0", "false", "off", "no"}
+    if _avoid_distributed() and not remote_gate_forced:
         return False
 
     # --- Retired remote Melchior path ---
     # Kept only for explicit legacy opt-in during migration tests.
-    if os.environ.get("MAGI_USE_REMOTE_HEALTH_GATE", "0").strip().lower() in {"1", "true", "on", "yes"}:
+    if remote_gate_enabled:
         try:
             from api.platforms.remote_health_gate import get_gate, PeerConfig
             gate = get_gate()
@@ -1612,20 +1621,17 @@ def smart_chat(prompt: str, model_hint: str = "", timeout: int = TIMEOUT, qualit
     return chat(prompt=prompt, model=requested, timeout=max(8, _remaining(deadline, floor=8)))
 
 
-def reason(prompt, use_wfgy=True, timeout=300):
+def reason(prompt, use_wfgy=False, timeout=300):
     """
-    Executes a reasoning request, optionally using the WFGY protocol.
+    Executes a reasoning request.
+
+    WFGY is retired: even if legacy callers pass use_wfgy=True, do not wrap the
+    prompt with thought-process scaffolding.
     """
-    final_prompt = prompt
     if use_wfgy:
-        try:
-            from skills.reasoning.wfgy import apply_wfgy_logic
+        logger.warning("WFGY prompt wrapping is retired; using standard prompt")
 
-            final_prompt = apply_wfgy_logic(prompt)
-        except ImportError:
-            logger.warning("⚠️ WFGY reasoning module not available — using standard prompt")
-
-    return chat(final_prompt, timeout=timeout)
+    return chat(prompt, timeout=timeout)
 
 
 def update_agent(api_script_path: str) -> dict:

@@ -10,29 +10,40 @@
                 <div class="muted" id="dashboardWindow">帳務區間載入中...</div>
                 <div class="stat-grid" style="margin-top:12px;">
                     <div class="stat-card"><div class="k">進行中案件</div><div class="v" id="dashActiveCases">-</div></div>
-                    <div class="stat-card"><div class="k">未結法扶</div><div class="v" id="dashLegalAidCases">-</div></div>
+                    <div class="stat-card"><div class="k">未結法扶案件</div><div class="v" id="dashLegalAidCases">-</div></div>
                     <div class="stat-card"><div class="k">本期收入</div><div class="v" id="dashRevenue">-</div></div>
                     <div class="stat-card"><div class="k">本期支出</div><div class="v" id="dashExpense">-</div></div>
                     <div class="stat-card"><div class="k">已結一般案件</div><div class="v" id="dashClosedRegular">-</div></div>
                     <div class="stat-card"><div class="k">已結法扶案件</div><div class="v" id="dashClosedLaf">-</div></div>
                 </div>
             </div>
-            <div class="grid-2">
+            <div class="card">
+                <h3>最近更新案件</h3>
+                <div class="table-wrap">
+                    <table>
+                        <thead><tr><th>案號</th><th>當事人</th><th>案由</th><th>狀態</th></tr></thead>
+                        <tbody id="dashboardCasesBody"></tbody>
+                    </table>
+                </div>
+            </div>
+            <div class="grid-2 dashboard-todo-panels">
                 <div class="card">
-                    <h3>最近更新案件</h3>
+                    <h3>OSC 建立待辦</h3>
+                    <div class="section-note" id="dashboardOscTodosSummary">來源：OSC 手動或系統建立的案件待辦。</div>
                     <div class="table-wrap">
                         <table>
-                            <thead><tr><th>案號</th><th>當事人</th><th>案由</th><th>狀態</th></tr></thead>
-                            <tbody id="dashboardCasesBody"></tbody>
+                            <thead><tr><th>日期</th><th>案號</th><th>類型</th><th>描述</th><th>操作</th></tr></thead>
+                            <tbody id="dashboardOscTodosBody"></tbody>
                         </table>
                     </div>
                 </div>
                 <div class="card">
-                    <h3>待處理待辦</h3>
+                    <h3>行事曆事件</h3>
+                    <div class="section-note" id="dashboardCalendarTodosSummary">來源：Google 日曆匯入的案件事件。</div>
                     <div class="table-wrap">
                         <table>
                             <thead><tr><th>日期</th><th>案號</th><th>類型</th><th>描述</th><th>操作</th></tr></thead>
-                            <tbody id="dashboardTodosBody"></tbody>
+                            <tbody id="dashboardCalendarTodosBody"></tbody>
                         </table>
                     </div>
                 </div>
@@ -58,7 +69,7 @@
                 </div>
             </div>
             <div class="card">
-                <h3>PDF 生成紀錄</h3>
+                <h3>PDF 產生紀錄</h3>
                 <div class="table-wrap">
                     <table>
                         <thead><tr><th>時間</th><th>案號</th><th>檔名</th><th>狀態</th><th>錯誤</th></tr></thead>
@@ -66,4 +77,5 @@
                     </table>
                 </div>
             </div>
+            {% include "partials/osc/saasWorkbench.html" %}
         </section>

@@ -1,8 +1,7 @@
 """
 MAGI Discord Bot
 ================
-Allows OpenClaw to receive and respond to messages on Discord.
-Routes messages to the Orchestrator just like LINE.
+Receives Discord messages and routes them to the MAGI orchestrator just like LINE.
 """
 
 import discord
@@ -51,8 +50,8 @@ except Exception:
     logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 41, exc_info=True)
 
 # Scheduler policy:
-# 使用者要求「排程以 OpenClaw 為準」，避免 Discord bot 內建 scheduler 重複觸發。
-# 因此內建 CronScheduler 預設關閉（需要時再用環境變數開啟）。
+# MAGI daemon / cron_jobs.json is the canonical scheduler source.  Keep the
+# Discord bot internal scheduler off unless explicitly enabled.
 INTERNAL_CRON_ENABLED = (
     os.environ.get("MAGI_INTERNAL_CRON_ENABLED", "").strip().lower() in {"1", "true", "yes", "on"}
 )
@@ -304,7 +303,7 @@ async def _line_self_heal_funnel() -> str:
     """
     Best-effort recovery for LINE webhook connectivity via Cloudflare Quick Tunnel.
     Starts cloudflared if not running, extracts URL, registers with LINE API.
-    IMPORTANT: Always point to Caddy (18790), NEVER directly to OpenClaw (18789).
+    IMPORTANT: Always point to the MAGI webhook proxy (18790), never to retired legacy ports.
     """
     import glob as _glob
     notes = []
@@ -450,6 +449,10 @@ async def bg_scheduler_loop():
     logger.info("⏰ Cron Scheduler Started")
     loop_counter = 0
     _startup_catchup_done = False  # Fires once on 2nd iteration (~60s after start)
+    _catchup_hours = int(os.environ.get("MAGI_CRON_CATCHUP_HOURS", "8"))
+    _catchup_min_hour = int(os.environ.get("MAGI_CRON_CATCHUP_MIN_HOUR", "6"))
+    _late_catchup_enabled = os.environ.get("MAGI_CRON_LATE_CATCHUP_ENABLED", "1").strip().lower() in {"1", "true", "on", "yes"}
+    _late_catchup_every = max(1, int(os.environ.get("MAGI_CRON_LATE_CATCHUP_EVERY_LOOPS", "1") or "1"))
 
     while not client.is_closed():
         try:
@@ -463,12 +466,10 @@ async def bg_scheduler_loop():
             # to this iteration's due_jobs so they execute immediately.
             if not _startup_catchup_done and loop_counter == 1:
                 _startup_catchup_done = True
-                _cu_hours = int(os.environ.get("MAGI_CRON_CATCHUP_HOURS", "8"))
-                _cu_min_hour = int(os.environ.get("MAGI_CRON_CATCHUP_MIN_HOUR", "6"))
                 try:
                     _catchup_jobs = await loop.run_in_executor(
                         _CRON_EXECUTOR,
-                        lambda: scheduler.get_missed_jobs(_cu_hours, _cu_min_hour),
+                        lambda: scheduler.get_missed_jobs(_catchup_hours, _catchup_min_hour),
                     )
                     if _catchup_jobs:
                         logger.info(
@@ -476,14 +477,37 @@ async def bg_scheduler_loop():
                             len(_catchup_jobs),
                             ", ".join(j.get("id", "?") for j in _catchup_jobs),
                         )
-                        due_jobs = list(_catchup_jobs) + list(due_jobs)
+                        existing_ids = {str(j.get("id") or "") for j in due_jobs}
+                        for _job in _catchup_jobs:
+                            await loop.run_in_executor(_CRON_EXECUTOR, lambda j=_job: scheduler.mark_job_run(j.get("id")))
+                        due_jobs = [j for j in _catchup_jobs if str(j.get("id") or "") not in existing_ids] + list(due_jobs)
                     else:
                         logger.info(
                             "✅ [Startup Catch-up] No missed jobs (window=%dh, min_hour=%d)",
-                            _cu_hours, _cu_min_hour,
+                            _catchup_hours, _catchup_min_hour,
                         )
                 except Exception as _cu_err:
                     logger.warning("⚠️ [Startup Catch-up] Error during scan: %s", _cu_err)
+            elif _startup_catchup_done and _late_catchup_enabled and loop_counter % _late_catchup_every == 0:
+                try:
+                    _catchup_jobs = await loop.run_in_executor(
+                        _CRON_EXECUTOR,
+                        lambda: scheduler.get_missed_jobs(_catchup_hours, _catchup_min_hour),
+                    )
+                    if _catchup_jobs:
+                        existing_ids = {str(j.get("id") or "") for j in due_jobs}
+                        _late_jobs = [j for j in _catchup_jobs if str(j.get("id") or "") not in existing_ids]
+                        if _late_jobs:
+                            logger.info(
+                                "🔄 [Late Catch-up] %d missed job(s) will run now: %s",
+                                len(_late_jobs),
+                                ", ".join(j.get("id", "?") for j in _late_jobs),
+                            )
+                            for _job in _late_jobs:
+                                await loop.run_in_executor(_CRON_EXECUTOR, lambda j=_job: scheduler.mark_job_run(j.get("id")))
+                            due_jobs = list(_late_jobs) + list(due_jobs)
+                except Exception as _cu_err:
+                    logger.warning("⚠️ [Late Catch-up] Error during scan: %s", _cu_err)
             # ─────────────────────────────────────────────────────────────────────────
 
             for job in due_jobs:
@@ -609,10 +633,16 @@ async def bg_scheduler_loop():
                                       "job_self_repair_reporter"}  # JSONL 讀取 + TG 發送，保守給 7200s
                         # 2026-04-25: 支援 cron_jobs.json 自定義 timeout_sec / long_job，
                         # 免於每加新長任務都要動 _LONG_JOBS hardcoded set。
-                        # 優先順序：timeout_sec > long_job=true > _LONG_JOBS (legacy)
+                        # 優先順序：timeout_sec > hardcoded override > long_job=true > _LONG_JOBS (legacy)
+                        _LONG_JOB_TIMEOUTS = {
+                            "job_nightly_autopilot": 28800,  # 22:00 啟動，需跨過 00:00 司法院夜拉
+                            "job_weekend_bookmark": 21600,   # 週末卷宗 PDF/NAS 掃描可能超過 2h
+                        }
                         _custom_timeout = job.get("timeout_sec")
                         if isinstance(_custom_timeout, (int, float)) and _custom_timeout > 0:
                             _timeout = int(_custom_timeout)
+                        elif job.get("id") in _LONG_JOB_TIMEOUTS:
+                            _timeout = _LONG_JOB_TIMEOUTS[job.get("id")]
                         elif job.get("long_job") is True:
                             _timeout = 7200
                         else:
@@ -700,9 +730,25 @@ async def check_line_health(client):
         _LINE_HEALTH_LAST_ALERT_TS = now
         logger.error(f"🚨 LINE Monitoring Alert: {msg}")
         try:
-            channel = client.get_channel(int(DISCORD_CHANNEL_ID)) if DISCORD_CHANNEL_ID else None
+            routed_channel_id = DISCORD_CHANNEL_ID
+            try:
+                from api.discord_channel_router import resolve_discord_channel
+
+                _, routed_channel_id = resolve_discord_channel(
+                    msg,
+                    topic_key="alert",
+                    source="line_health",
+                    fallback_channel_id=DISCORD_CHANNEL_ID,
+                )
+            except Exception:
+                logging.getLogger(__name__).debug(
+                    "silent-catch at %s:%s", __name__, "line_health_route", exc_info=True
+                )
+            if routed_channel_id == "__SILENT__":
+                return
+            channel = client.get_channel(int(routed_channel_id)) if routed_channel_id else None
             if channel:
-                await channel.send(f"🚨 **LINE Connection Alert**: {msg}")
+                await channel.send(f"🚨 **MAGI LINE Connection Alert**: {msg}")
         except Exception:
             logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 576, exc_info=True)
 
@@ -739,10 +785,7 @@ async def check_line_health(client):
             await _alert_once("LINE channel access token missing in env")
             return
 
-        endpoint = os.environ.get(
-            "MAGI_LINE_WEBHOOK_ENDPOINT",
-            "https://aimac-mini.tail6738b7.ts.net/callback",
-        ).strip()
+        endpoint = os.environ.get("MAGI_LINE_WEBHOOK_ENDPOINT", "").strip()
         headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
         async with aiohttp.ClientSession() as session:
             # Prefer current configured endpoint from LINE console.
@@ -755,6 +798,9 @@ async def check_line_health(client):
                     if r_get.status == 200:
                         payload = await r_get.json()
                         endpoint = (payload.get("endpoint") or endpoint).strip() or endpoint
+                        if not endpoint:
+                            await _alert_once("LINE webhook endpoint is not configured")
+                            return
                     else:
                         txt = (await r_get.text())[:240]
                         await _alert_once(f"LINE endpoint query failed: HTTP {r_get.status} {txt}")
@@ -877,7 +923,7 @@ async def on_ready():
     if INTERNAL_CRON_ENABLED:
         client.loop.create_task(bg_scheduler_loop())
     else:
-        logger.info("⏸️ Internal CronScheduler disabled (use OpenClaw cron as source of truth). Set MAGI_INTERNAL_CRON_ENABLED=1 to enable.")
+        logger.info("⏸️ Internal CronScheduler disabled (MAGI daemon scheduler is source of truth). Set MAGI_INTERNAL_CRON_ENABLED=1 to enable.")
     
     # Register Async Callback
     def send_async_notification(user_id, message, platform="Discord", *, topic_key="", source=""):

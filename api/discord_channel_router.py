@@ -37,6 +37,18 @@ logger = logging.getLogger("discord_channel_router")
 _MAGI_ROOT = os.path.abspath(os.path.dirname(os.path.dirname(__file__)))
 _AGENT_DIR = os.path.join(_MAGI_ROOT, ".agent")
 _CHANNEL_MAP_FILE = os.path.join(_AGENT_DIR, "discord_channel_map.json")
+_NOTIFICATION_PREFS_FILE = os.path.join(_MAGI_ROOT, ".runtime", "osc_saas_notification_prefs.json")
+_SYSTEM_SILENT_SOURCES = {"business_module_live_check", "nightly_regression", "mock_test"}
+_DEFAULT_NOTIFICATION_PREFS = {
+    "business": "enabled",
+    "laf_general": "enabled",
+    "laf_dispatch": "enabled",
+    "system_health": "system_only",
+    "nightly_report": "system_only",
+    "live_check": "system_only",
+    "discord_business_channels": "business_only",
+}
+_NIGHTLY_SYSTEM_TOPICS = {"judicial_api", "judgment_resummary"}
 
 # ───────── topic_key → sub_topic 映射 ─────────
 # red_phone.py 已定義 canonical topic_key (filereview, transcript, laf, ...),
@@ -79,6 +91,16 @@ def _infer_sub_topic(message: str, topic_key: str, source: str = "") -> str:
     s = str(message or "").lower()
     src = str(source or "").lower()
 
+    if src in _SYSTEM_SILENT_SOURCES:
+        return "check"
+
+    if canonical in _NIGHTLY_SYSTEM_TOPICS:
+        return "nightly"
+    if canonical == "quiet_cron":
+        return "check"
+    if canonical == "self_repair":
+        return "alert"
+
     if canonical in ("filereview", "filereview_payment", "filereview_download", "filereview_apply"):
         # 已經有明確 sub_topic 的直接返回
         if canonical in ("filereview_payment", "filereview_download", "filereview_apply"):
@@ -98,10 +120,23 @@ def _infer_sub_topic(message: str, topic_key: str, source: str = "") -> str:
 
     if canonical == "laf":
         # 法扶類：依動作細分
+        if src == "laf_nightly_audit" or any(
+            k in s
+            for k in [
+                "法扶夜間巡檢報告",
+                "巡檢報告",
+                "案件總數",
+                "自動補填法扶案號",
+                "仍待確認法扶案號",
+            ]
+        ):
+            return "laf_general"
         if any(k in s for k in ["派案", "dispatch", "新案"]):
             return "laf_dispatch"
         if any(k in s for k in ["審查結果", "review_result", "准予扶助"]):
             return "laf_dispatch"
+        if any(k in s for k in ["進度回報", "laf_progress", "未結案件進度", "confirm_token", "確認碼"]):
+            return "laf_progress"
         if any(k in s for k in ["結案", "closing", "報結"]):
             return "laf_closing"
         if any(k in s for k in ["酬金", "領款", "費用", "fee"]):
@@ -110,8 +145,6 @@ def _infer_sub_topic(message: str, topic_key: str, source: str = "") -> str:
             return "laf_inquiry"
         if any(k in s for k in ["二階段", "附條件", "condition"]):
             return "laf_condition"
-        if any(k in s for k in ["進度回報", "laf_progress", "未結案件進度", "confirm_token", "確認碼"]):
-            return "laf_progress"
         if any(k in s for k in ["開辦", "go_live", "go-live", "進行中"]):
             # 如果包含「巡檢」或「報告」等報告字眼，改轉 laf_general
             if any(k in s for k in ["巡檢", "報告", "報告", "待開辦", "逾期"]):
@@ -167,7 +200,7 @@ _FALLBACK_CHAIN: dict[str, list[str]] = {
     "laf_condition": ["laf", "general"],
     "laf_progress": ["laf", "general"],
     "laf_closing": ["laf", "general"],
-    "laf_general": ["laf", "general"],
+    "laf_general": ["general"],
     "laf": ["general"],
     "transcript": ["general"],
     "verbatim": ["general"],
@@ -312,6 +345,47 @@ def save_channel_map(channel_map: dict[str, str]) -> str:
     return _CHANNEL_MAP_FILE
 
 
+def _load_notification_preferences() -> dict[str, str]:
+    prefs = dict(_DEFAULT_NOTIFICATION_PREFS)
+    try:
+        if os.path.exists(_NOTIFICATION_PREFS_FILE):
+            with open(_NOTIFICATION_PREFS_FILE, "r", encoding="utf-8") as f:
+                raw = json.load(f) or {}
+            if isinstance(raw, dict):
+                for key, value in raw.items():
+                    if key in prefs and str(value or ""):
+                        prefs[key] = str(value)
+    except Exception:
+        logging.getLogger(__name__).debug(
+            "silent-catch at %s:%s", __name__, "_load_notification_preferences", exc_info=True
+        )
+    return prefs
+
+
+def _notification_policy_for(sub_topic: str, source: str = "") -> str:
+    prefs = _load_notification_preferences()
+    src = str(source or "").strip().lower()
+    topic = str(sub_topic or "").strip()
+    if src == "business_module_live_check":
+        return prefs.get("live_check", prefs.get("system_health", "system_only"))
+    if src == "laf_nightly_audit" and topic == "laf_general":
+        return "silent"
+    if topic == "laf_dispatch":
+        return prefs.get("laf_dispatch", "enabled")
+    if topic == "laf_general":
+        return prefs.get("laf_general", "enabled")
+    if topic == "nightly" or "nightly" in src:
+        return prefs.get("nightly_report", "system_only")
+    if topic in {"check", "alert"} or src in _SYSTEM_SILENT_SOURCES:
+        return prefs.get("system_health", "system_only")
+    return prefs.get("business", "enabled")
+
+
+def _explicit_channel_id(cmap: dict[str, str], key: str) -> str:
+    val = cmap.get(key, "")
+    return str(val or "").strip()
+
+
 # ───────── 主路由函數 ─────────
 
 def resolve_discord_channel(
@@ -329,6 +403,14 @@ def resolve_discord_channel(
     """
     sub_topic = _infer_sub_topic(message, topic_key, source)
     cmap = _load_channel_map()
+    policy = _notification_policy_for(sub_topic, source)
+    if policy == "silent":
+        return sub_topic, "__SILENT__"
+    if policy == "system_only":
+        explicit = _explicit_channel_id(cmap, sub_topic)
+        if explicit:
+            return sub_topic, explicit
+        return sub_topic, "__SILENT__"
 
     if not cmap:
         return sub_topic, fallback_channel_id

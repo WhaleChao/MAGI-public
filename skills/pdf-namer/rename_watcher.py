@@ -42,9 +42,10 @@ def _init_case_roots() -> list:
             return roots
     except Exception:
         pass
+    active_user = (os.environ.get("MAGI_NAS_HOME_USER") or os.environ.get("MAGI_NAS_USER") or "home").strip().strip("/\\") or "home"
     return [
-        "/Users/ai/Library/CloudStorage/SynologyDrive-homes/01_案件",
-        "/Volumes/homes/lumi63181107/01_案件",
+        str(Path.home() / "Library/CloudStorage/SynologyDrive-homes/01_案件"),
+        f"/Volumes/homes/{active_user}/01_案件",
     ]
 
 CASE_ROOTS = _init_case_roots()

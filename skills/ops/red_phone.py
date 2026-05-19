@@ -113,6 +113,43 @@ def _preview_text(text: str, limit: int = 180) -> str:
     return s[:limit] + "..."
 
 
+def _split_text_by_lines(text: str, limit: int) -> list[str]:
+    """Split long notification text without dropping content."""
+    safe_limit = max(200, int(limit))
+    source = str(text or "")
+    if len(source) <= safe_limit:
+        return [source]
+
+    chunks: list[str] = []
+    current = ""
+    for raw_line in source.splitlines(keepends=True):
+        line = raw_line
+        while len(line) > safe_limit:
+            if current:
+                chunks.append(current.rstrip("\n"))
+                current = ""
+            chunks.append(line[:safe_limit])
+            line = line[safe_limit:]
+        candidate = current + line
+        if len(candidate) > safe_limit:
+            if current:
+                chunks.append(current.rstrip("\n"))
+            current = line
+        else:
+            current = candidate
+    if current:
+        chunks.append(current.rstrip("\n"))
+    return chunks or [source[:safe_limit]]
+
+
+def _numbered_chunks(text: str, limit: int, *, reserve: int = 18) -> list[str]:
+    chunks = _split_text_by_lines(text, max(200, int(limit) - reserve))
+    if len(chunks) <= 1:
+        return chunks
+    total = len(chunks)
+    return [f"({idx}/{total})\n{chunk}" for idx, chunk in enumerate(chunks, start=1)]
+
+
 def _load_runtime_config() -> dict:
     # Keep this lightweight and optional; do not import server.py here.
     candidates = [
@@ -195,22 +232,29 @@ def _send_line_push_real(message: str, user_id: str) -> bool:
     if not token or not user_id:
         return False
     safe_message = _guard_text(message, platform="LINE")
-    payload = {
-        "to": user_id,
-        "messages": [{"type": "text", "text": safe_message[:5000]}],
-    }
+    chunks = _numbered_chunks(safe_message, 4900)
+    batches = [chunks[i:i + 5] for i in range(0, len(chunks), 5)]
+    if not batches:
+        batches = [[""]]
+    ok_any = False
     try:
-        req = urlrequest.Request(
-            "https://api.line.me/v2/bot/message/push",
-            data=json.dumps(payload).encode("utf-8"),
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {token}",
-            },
-            method="POST",
-        )
-        with urlrequest.urlopen(req, timeout=10) as resp:
-            return getattr(resp, "status", 0) == 200
+        for batch in batches:
+            payload = {
+                "to": user_id,
+                "messages": [{"type": "text", "text": chunk} for chunk in batch],
+            }
+            req = urlrequest.Request(
+                "https://api.line.me/v2/bot/message/push",
+                data=json.dumps(payload).encode("utf-8"),
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {token}",
+                },
+                method="POST",
+            )
+            with urlrequest.urlopen(req, timeout=10) as resp:
+                ok_any = getattr(resp, "status", 0) == 200 or ok_any
+        return ok_any
     except Exception as e:
         logger.error(f"[RED PHONE] LINE push error: {e}")
         return False
@@ -564,6 +608,23 @@ def _canonical_topic_key(key: str) -> str:
         "legal_aid": "laf",
         "legal-aid": "laf",
         "法扶": "laf",
+        "laf_general": "laf_general",
+        "laf-general": "laf_general",
+        "法扶一般": "laf_general",
+        "laf_dispatch": "laf_dispatch",
+        "laf-dispatch": "laf_dispatch",
+        "laf_go_live": "laf_go_live",
+        "laf-go-live": "laf_go_live",
+        "laf_closing": "laf_closing",
+        "laf-closing": "laf_closing",
+        "laf_fee": "laf_fee",
+        "laf-fee": "laf_fee",
+        "laf_inquiry": "laf_inquiry",
+        "laf-inquiry": "laf_inquiry",
+        "laf_condition": "laf_condition",
+        "laf-condition": "laf_condition",
+        "laf_progress": "laf_progress",
+        "laf-progress": "laf_progress",
         # 判決
         "judgment": "judgment",
         "judgments": "judgment",
@@ -619,6 +680,11 @@ def _canonical_topic_key(key: str) -> str:
         "鐵穹": "alert",
         "警報": "alert",
         "警告": "alert",
+        "self_repair": "alert",
+        "self-repair": "alert",
+        "repair": "alert",
+        "quiet_cron": "check",
+        "quiet-cron": "check",
     }
     return aliases.get(k, k)
 
@@ -704,6 +770,25 @@ def _load_topic_map() -> dict[str, int]:
 
 def _infer_topic_key(message: str, source: str, severity: str) -> str:
     s = (str(source or "") + " " + str(message or "")).lower()
+    src = str(source or "").strip().lower()
+    if src in {
+        "business_module_live_check",
+        "nightly_regression",
+        "mock_test",
+    }:
+        return "check"
+    if src in {
+        "nightly_distill_gemma",
+        "weekend_resummary",
+        "nightly_health_report",
+    }:
+        return "nightly"
+    if src in {
+        "disk_low_water_alarm",
+        "backup_market_watchlist",
+        "outbox",
+    }:
+        return "alert"
     if any(
         k in s
         for k in [
@@ -727,6 +812,28 @@ def _infer_topic_key(message: str, source: str, severity: str) -> str:
                              "派案", "開辦", "扶助", "laf_", "待報結",
                              "費用", "疑義", "二階段", "附條件",
                              "closing_report", "laf_closing", "laf_dispatch"]):
+        if src == "laf_nightly_audit" or any(k in s for k in [
+            "法扶夜間巡檢報告",
+            "巡檢報告",
+            "案件總數",
+            "自動補填法扶案號",
+            "仍待確認法扶案號",
+        ]):
+            return "laf_general"
+        if any(k in s for k in ["進度回報", "laf_progress", "未結案件進度", "confirm_token"]):
+            return "laf_progress"
+        if any(k in s for k in ["新法扶派案", "派案已建立", "派案", "dispatch", "新案", "審查結果", "准予扶助"]):
+            return "laf_dispatch"
+        if any(k in s for k in ["go_live", "go-live", "開辦", "開辦回報", "開辦暫存"]):
+            return "laf_go_live"
+        if any(k in s for k in ["二階段", "附條件", "condition"]):
+            return "laf_condition"
+        if any(k in s for k in ["費用", "酬金", "領款", "fee"]):
+            return "laf_fee"
+        if any(k in s for k in ["疑義", "inquiry", "不合標準"]):
+            return "laf_inquiry"
+        if any(k in s for k in ["報結", "結案", "closing", "待報結", "closing_report", "laf_closing"]):
+            return "laf_closing"
         return "laf"
     if any(k in s for k in ["判決", "judgment", "司法院", "裁判"]):
         return "judgment"
@@ -774,6 +881,7 @@ def _resolve_thread_id(message: str, source: str, severity: str, topic_key: str 
         "filereview_download": "filereview",
         "filereview_apply": "filereview",
         "laf_dispatch": "laf",
+        "laf_general": "general",
         "laf_closing": "laf",
         "judicial_api": "judgment",
     }
@@ -819,7 +927,13 @@ def _save_outbox(items: list[dict]) -> None:
         logger.warning("[RED PHONE] failed to save outbox: %s", e)
 
 
-def _enqueue_outbox(message: str, severity: str, source: str, last_error: str = "") -> str:
+def _enqueue_outbox(
+    message: str,
+    severity: str,
+    source: str,
+    last_error: str = "",
+    topic_key: str = "",
+) -> str:
     entry_id = f"rp_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
     now_ts = time.time()
     entry = {
@@ -828,6 +942,7 @@ def _enqueue_outbox(message: str, severity: str, source: str, last_error: str = 
         "updated_at": datetime.now().isoformat(),
         "severity": str(severity or "warning"),
         "source": str(source or "direct"),
+        "topic_key": str(topic_key or ""),
         "message": str(message or ""),
         "attempts": 0,
         "next_retry_at": now_ts,
@@ -848,53 +963,63 @@ def _send_telegram_once(
 ) -> dict:
     acked = []
     errors = []
+    chunks = _numbered_chunks(message, 3900)
     for chat_id in admin_ids:
-        payload_obj = {"chat_id": str(chat_id), "text": message}
-        if thread_id and int(thread_id) > 0:
-            payload_obj["message_thread_id"] = int(thread_id)
-        payload = json.dumps(payload_obj, ensure_ascii=False).encode("utf-8")
-        try:
-            req = urlrequest.Request(
-                f"https://api.telegram.org/bot{token}/sendMessage",
-                data=payload,
-                headers={"Content-Type": "application/json"},
-                method="POST",
-            )
-            with urlrequest.urlopen(req, timeout=max(4, int(timeout_sec))):
-                pass
-            acked.append(str(chat_id))
-        except HTTPError as e:
-            body = ""
+        sent_all = True
+        for chunk in chunks:
+            payload_obj = {"chat_id": str(chat_id), "text": chunk}
+            if thread_id and int(thread_id) > 0:
+                payload_obj["message_thread_id"] = int(thread_id)
+            payload = json.dumps(payload_obj, ensure_ascii=False).encode("utf-8")
             try:
-                body = (e.read() or b"").decode("utf-8", "ignore")
-            except Exception:
+                req = urlrequest.Request(
+                    f"https://api.telegram.org/bot{token}/sendMessage",
+                    data=payload,
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                with urlrequest.urlopen(req, timeout=max(4, int(timeout_sec))):
+                    pass
+            except HTTPError as e:
                 body = ""
-            can_retry_without_thread = (
-                bool(thread_id)
-                and int(getattr(e, "code", 0) or 0) in {400, 403}
-                and ("message thread not found" in body.lower() or "message_thread_id" in body.lower())
-            )
-            if can_retry_without_thread:
                 try:
-                    retry_payload = json.dumps({"chat_id": str(chat_id), "text": message}, ensure_ascii=False).encode("utf-8")
-                    req2 = urlrequest.Request(
-                        f"https://api.telegram.org/bot{token}/sendMessage",
-                        data=retry_payload,
-                        headers={"Content-Type": "application/json"},
-                        method="POST",
-                    )
-                    with urlrequest.urlopen(req2, timeout=max(4, int(timeout_sec))):
-                        pass
-                    acked.append(str(chat_id))
-                    continue
-                except Exception as retry_e:
-                    errors.append(f"{chat_id}:thread_fallback_failed:{type(retry_e).__name__}")
-                    continue
-            errors.append(f"{chat_id}:HTTP{getattr(e, 'code', 'ERR')}")
-        except URLError as e:
-            errors.append(f"{chat_id}:URLError:{e.reason}")
-        except Exception as e:
-            errors.append(f"{chat_id}:{type(e).__name__}")
+                    body = (e.read() or b"").decode("utf-8", "ignore")
+                except Exception:
+                    body = ""
+                can_retry_without_thread = (
+                    bool(thread_id)
+                    and int(getattr(e, "code", 0) or 0) in {400, 403}
+                    and ("message thread not found" in body.lower() or "message_thread_id" in body.lower())
+                )
+                if can_retry_without_thread:
+                    try:
+                        retry_payload = json.dumps({"chat_id": str(chat_id), "text": chunk}, ensure_ascii=False).encode("utf-8")
+                        req2 = urlrequest.Request(
+                            f"https://api.telegram.org/bot{token}/sendMessage",
+                            data=retry_payload,
+                            headers={"Content-Type": "application/json"},
+                            method="POST",
+                        )
+                        with urlrequest.urlopen(req2, timeout=max(4, int(timeout_sec))):
+                            pass
+                        continue
+                    except Exception as retry_e:
+                        errors.append(f"{chat_id}:thread_fallback_failed:{type(retry_e).__name__}")
+                        sent_all = False
+                        break
+                errors.append(f"{chat_id}:HTTP{getattr(e, 'code', 'ERR')}")
+                sent_all = False
+                break
+            except URLError as e:
+                errors.append(f"{chat_id}:URLError:{e.reason}")
+                sent_all = False
+                break
+            except Exception as e:
+                errors.append(f"{chat_id}:{type(e).__name__}")
+                sent_all = False
+                break
+        if sent_all:
+            acked.append(str(chat_id))
     return {
         "ok_any": bool(acked),
         "acked": acked,
@@ -927,6 +1052,7 @@ def _flush_outbox(max_items: int = 8) -> dict:
             str(entry.get("message") or ""),
             severity=str(entry.get("severity") or "warning"),
             source="outbox",
+            topic_key=str(entry.get("topic_key") or ""),
             queue_on_fail=False,
         )
         if result.get("telegram"):
@@ -990,16 +1116,24 @@ def _mirror_to_discord(
     """
     if not (os.environ.get("MAGI_DC_MIRROR_ENABLED", "1").strip().lower() in {"1", "true", "yes", "on"}):
         return False
+    _src = str(source or "").strip().lower()
+    # 系統/健康檢查只留在內部通知，不鏡像到業務 DC 頻道。
+    if _src in {"business_module_live_check", "nightly_regression", "mock_test"}:
+        return False
     # DC 對外開放，僅鏡像業務相關通知；系統內部（alert/check/nightly）不發 DC
     _DC_MIRROR_ALLOWED_TOPICS = {
         "filereview", "filereview_payment", "filereview_download", "filereview_apply",
-        "laf", "laf_dispatch", "laf_go_live", "laf_closing", "laf_fee", "laf_inquiry", "laf_condition",
+        "laf", "laf_general", "laf_dispatch", "laf_go_live", "laf_closing", "laf_fee", "laf_inquiry", "laf_condition", "laf_progress",
         "transcript", "judgment",
         # "market" 已從 DC 鏡像中移除 (2026-04-20)：股票資訊不發 Discord
         "verbatim", "summary", "translation", "filing",
     }
-    _resolved_topic = _canonical_topic_key(topic_key)
+    _resolved_topic = _canonical_topic_key(topic_key) if topic_key else _infer_topic_key(message, source, severity)
     if _resolved_topic and _resolved_topic not in _DC_MIRROR_ALLOWED_TOPICS:
+        return False
+    # 法扶夜巡完整報告包含下載、缺檔、案號補填等內部維運資訊；
+    # DC 僅接收另行切出的進度回報提醒，避免業務頻道被一般巡檢洗版。
+    if _src == "laf_nightly_audit" and _resolved_topic == "laf_general":
         return False
 
     # 🛑 靜默過濾：非「有新資訊」的定期報告不發 DC (TG 照發)
@@ -1050,7 +1184,13 @@ def send_telegram_push_with_status(
         err = "telegram token/admin ids missing"
         queued_id = ""
         if queue_on_fail:
-            queued_id = _enqueue_outbox(message, severity=severity, source=source, last_error=err)
+            queued_id = _enqueue_outbox(
+                message,
+                severity=severity,
+                source=source,
+                last_error=err,
+                topic_key=topic_key or resolved_topic,
+            )
         return {
             "telegram": False,
             "acked": 0,
@@ -1106,7 +1246,13 @@ def send_telegram_push_with_status(
 
     queued_id = ""
     if queue_on_fail:
-        queued_id = _enqueue_outbox(safe_message, severity=severity, source=source, last_error=last_error)
+        queued_id = _enqueue_outbox(
+            safe_message,
+            severity=severity,
+            source=source,
+            last_error=last_error,
+            topic_key=topic_key or resolved_topic,
+        )
     _append_delivery_log(
         {
             "event": "failed",

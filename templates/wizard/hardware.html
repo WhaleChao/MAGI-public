@@ -65,7 +65,7 @@
 
 <div class="card">
     <h3>推理引擎</h3>
-    <p>MAGI 使用本地 AI 推理引擎運行語言模型。以下是偵測結果：</p>
+    <p>MAGI 使用本地 AI 推理引擎執行語言模型。以下是偵測結果：</p>
     <table style="width:100%; font-size:14px; margin-top:12px;">
         <tr style="border-bottom: 1px solid var(--border);">
             <td style="padding:8px 0;"><strong>oMLX</strong> (Apple Silicon MLX)</td>
@@ -147,16 +147,16 @@
     <h3>效能評級</h3>
     {% if hw.ram_gb >= 32 %}
         <span class="badge badge-green" style="font-size: 16px; padding: 6px 16px;">&#9733; 最佳</span>
-        <p style="margin-top: 8px;">您的硬體可以運行所有 MAGI 模型，包括 14B 參數級模型。</p>
+        <p style="margin-top: 8px;">您的硬體可以執行所有 MAGI 模型，包括 14B 參數級模型。</p>
     {% elif hw.ram_gb >= 16 %}
         <span class="badge badge-green" style="font-size: 16px; padding: 6px 16px;">&#9733; 優良</span>
-        <p style="margin-top: 8px;">您的硬體可以運行大部分 MAGI 模型，建議使用 12B 以下模型。</p>
+        <p style="margin-top: 8px;">您的硬體可以執行大部分 MAGI 模型，建議使用 12B 以下模型。</p>
     {% elif hw.ram_gb >= 10 %}
         <span class="badge badge-orange" style="font-size: 16px; padding: 6px 16px;">&#9733; 足夠</span>
-        <p style="margin-top: 8px;">您的硬體可以運行基礎模型，建議使用 9B 以下模型。</p>
+        <p style="margin-top: 8px;">您的硬體可以執行基礎模型，建議使用 9B 以下模型。</p>
     {% else %}
         <span class="badge badge-red" style="font-size: 16px; padding: 6px 16px;">&#9888; 不足</span>
-        <p style="margin-top: 8px;">記憶體不足 10 GB，MAGI 運行可能受限。建議至少 16 GB RAM。</p>
+        <p style="margin-top: 8px;">記憶體不足 10 GB，MAGI 執行可能受限。建議至少 16 GB RAM。</p>
     {% endif %}
 </div>
 

@@ -22,6 +22,42 @@ from typing import Dict, List, Optional, Tuple
 
 logger = logging.getLogger("magi.nas_mount_guard")
 
+
+def _load_local_nas_env_if_needed() -> None:
+    """Load non-secret NAS connection hints from .env for standalone diagnostics.
+
+    The daemon loads .env before importing this module, but manual repair scripts
+    and tests often import it directly.  Only host/user/share keys are imported
+    here; passwords and tokens stay out of process environment handling.
+    """
+    needed = (
+        "MAGI_NAS_HOST",
+        "MAGI_NAS_TAILSCALE_HOST",
+        "MAGI_NAS_USER",
+        "MAGI_NAS_HOME_USER",
+        "MAGI_NAS_SHARES",
+        "MAGI_NAS_MOUNT_RETRY_COOLDOWN_SEC",
+    )
+    if all(os.environ.get(k) for k in needed):
+        return
+    env_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".env"))
+    try:
+        with open(env_path, "r", encoding="utf-8") as f:
+            for raw in f:
+                line = raw.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, value = line.split("=", 1)
+                key = key.strip()
+                if key not in needed or key in os.environ:
+                    continue
+                os.environ[key] = value.strip().strip('"').strip("'")
+    except OSError:
+        return
+
+
+_load_local_nas_env_if_needed()
+
 # ── NAS 連線設定 ─────────────────────────────────────────────
 try:
     from api.routing.node_registry import get_node as _get_nas_node
@@ -31,7 +67,16 @@ try:
 except Exception:
     _NAS_LAN_HOST = os.getenv("MAGI_NAS_HOST", "")
     _NAS_TS_HOST = os.getenv("MAGI_NAS_TAILSCALE_HOST", "")
-NAS_USER = os.getenv("MAGI_NAS_USER", "lumi63181107")
+def resolve_nas_user() -> str:
+    """Return the SMB account used for the homes share."""
+    return (
+        os.getenv("MAGI_NAS_USER")
+        or os.getenv("MAGI_NAS_HOME_USER")
+        or "home"
+    ).strip().strip("/\\") or "home"
+
+
+NAS_USER = resolve_nas_user()
 
 # 動態解析結果快取（host, expiry_time）
 _resolved_host: Optional[str] = None
@@ -43,12 +88,13 @@ _RESOLVE_TTL = 120  # 快取 120 秒
 # 初始值 None 代表「尚未判定」，第一次結果不發「重連成功」誤報。
 _LAST_MOUNT_STATUS: Dict[str, Optional[bool]] = {}
 _LAST_MOUNT_STATUS_LOCK = threading.Lock()
+_LAST_MOUNT_ATTEMPT: Dict[str, float] = {}
 
 # SynologyDrive 雲同步 fallback 路徑（Synology Drive Client 安裝後自動產生）
 _SYNOLOGY_DRIVE_CANDIDATES = (
+    os.path.expanduser("~/SynologyDrive"),
     os.path.expanduser("~/Library/CloudStorage/SynologyDrive-homes"),
     os.path.expanduser("~/Library/CloudStorage/SynologyDrive-home"),
-    os.path.expanduser("~/SynologyDrive"),
 )
 
 
@@ -71,8 +117,42 @@ def get_synology_drive_fallback_path() -> str:
     return ""
 
 
+def get_lumi_fallback_path() -> str:
+    """Return a local Synology Drive root that can stand in for the lumi share.
+
+    The historical SMB shape is /Volumes/lumi/lumi/01_案件.  On newer installs
+    the active case tree can be synced directly as ~/SynologyDrive/01_案件 or
+    ~/Library/CloudStorage/SynologyDrive-homes/01_案件.  Treat that as a usable
+    degraded path when SMB is offline; closed-case archives still require a
+    real lumi/03_工作資料 tree.
+    """
+    for p in _SYNOLOGY_DRIVE_CANDIDATES:
+        try:
+            if os.path.isdir(os.path.join(p, "01_案件")):
+                return p
+        except OSError:
+            continue
+    return ""
+
+
 def get_share_available_path(share_name: str, volume_path: str) -> str:
     """回傳 share 目前可用路徑，包含 SMB 掛載與 Synology Drive fallback。"""
+    mounted = get_share_mount_path(share_name, volume_path)
+    if mounted:
+        return mounted
+    if share_name == "homes":
+        fallback = get_synology_drive_fallback_path()
+        if fallback:
+            return fallback
+    if share_name == "lumi":
+        fallback = get_lumi_fallback_path()
+        if fallback:
+            return fallback
+    return ""
+
+
+def get_share_mount_path(share_name: str, volume_path: str) -> str:
+    """回傳真正 SMB mount path；不包含 Synology Drive fallback。"""
     user_mount = os.path.join(_USER_MOUNT_ROOT, share_name)
     for candidate in (volume_path, f"{volume_path}-1", f"{volume_path}-2", user_mount):
         if _is_mounted(candidate):
@@ -82,11 +162,26 @@ def get_share_available_path(share_name: str, volume_path: str) -> str:
             except Exception:
                 if candidate == user_mount:
                     return candidate
-    if share_name == "homes":
-        fallback = get_synology_drive_fallback_path()
-        if fallback:
-            return fallback
     return ""
+
+
+def get_share_status(share_name: str, volume_path: str) -> dict[str, object]:
+    """回傳 NAS share 的嚴格掛載狀態與 fallback 狀態。"""
+    mounted_path = get_share_mount_path(share_name, volume_path)
+    fallback_path = ""
+    if share_name == "homes":
+        fallback_path = get_synology_drive_fallback_path()
+    elif share_name == "lumi":
+        fallback_path = get_lumi_fallback_path()
+    mode = "smb" if mounted_path else ("synology_drive" if fallback_path else "offline")
+    return {
+        "mounted": bool(mounted_path),
+        "mounted_path": mounted_path,
+        "fallback": bool(fallback_path),
+        "fallback_path": fallback_path,
+        "available": bool(mounted_path or fallback_path),
+        "mode": mode,
+    }
 
 
 def _ping_ok(host: str, timeout: int = 2) -> bool:
@@ -231,26 +326,35 @@ def _mount_share(share_name: str, volume_path: str) -> bool:
     # Step 0: 清理 stale mount
     _force_unmount_stale(volume_path)
 
-    smb_url = f"smb://{NAS_USER}@{NAS_HOST}/{share_name}"
+    nas_user = resolve_nas_user()
+    smb_url = f"smb://{nas_user}@{NAS_HOST}/{share_name}"
+
+    osascript_timeout = max(5, int(os.environ.get("MAGI_NAS_OSASCRIPT_TIMEOUT_SEC", "12") or 12))
 
     # Step 1: osascript mount volume（Finder Keychain）
     try:
         subprocess.run(
             ["osascript", "-e", f'mount volume "{smb_url}"'],
-            capture_output=True, text=True, timeout=30,
+            capture_output=True, text=True, timeout=osascript_timeout,
         )
         for _ in range(10):
             time.sleep(1)
             if _is_mounted(volume_path):
                 return True
     except subprocess.TimeoutExpired:
-        logger.warning("osascript mount timeout (30s): %s", smb_url)
+        logger.warning("osascript mount timeout (%ss): %s", osascript_timeout, smb_url)
     except Exception as e:
         logger.warning("osascript mount failed: %s → %s", smb_url, e)
 
-    # Step 2: mount_smbfs fallback（不走 Finder，直接 CLI 掛載）
-    # osascript 失敗時用 mount_smbfs 帶 keychain 密碼
-    _password = _get_nas_password_from_keychain()
+    # Step 2: optional mount_smbfs fallback（不走 Finder，直接 CLI 掛載）。
+    #
+    # Keep this opt-in.  macOS can leave mount_smbfs in an uninterruptible kernel
+    # wait when SMB is flaky, and credentials must never be placed in argv where
+    # `ps` can expose them.  Finder/osascript remains the default because it uses
+    # Keychain without showing the password in the process table.
+    if os.getenv("MAGI_NAS_ALLOW_CLI_MOUNT", "").strip().lower() not in {"1", "true", "yes", "on"}:
+        logger.warning("mount_smbfs fallback disabled; set MAGI_NAS_ALLOW_CLI_MOUNT=1 to enable no-password CLI mount")
+        return False
 
     # 確保 /Volumes/<share> mount point 存在且 user 有權限
     _ensure_volume_mount_point(volume_path)
@@ -260,12 +364,10 @@ def _mount_share(share_name: str, volume_path: str) -> bool:
             os.makedirs(mount_target, exist_ok=True)
         except OSError:
             continue
-        mount_url = f"//{NAS_USER}@{NAS_HOST}/{share_name}"
-        if _password:
-            mount_url = f"//{NAS_USER}:{_password}@{NAS_HOST}/{share_name}"
+        mount_url = f"//{nas_user}@{NAS_HOST}/{share_name}"
         try:
             result = subprocess.run(
-                ["mount_smbfs", "-o", "soft", mount_url, mount_target],
+                ["mount_smbfs", "-N", "-o", "soft", mount_url, mount_target],
                 capture_output=True, text=True, timeout=15,
             )
             if result.returncode == 0:
@@ -291,7 +393,7 @@ def _ensure_volume_mount_point(volume_path: str) -> None:
     策略（依序嘗試）：
     1. 目錄已存在且 owner 正確 → 直接返回
     2. owner 不符 → 只有在互動環境（有 GUI/TTY）才觸發 osascript 彈窗；
-       daemon 環境靜默跳過（由開機時 com.magi.nas-mountpoints LaunchDaemon 預先 chown）
+       daemon 環境靜默跳過，避免在 /Volumes 預先建立普通資料夾造成 homes-1/lumi-1
     3. 目錄不存在 → 先嘗試 mkdir（若 /Volumes 可寫），再 osascript（互動環境），
        最後靜默放棄（mount_smbfs 會 fallback 到 ~/.magi_mounts）
     """
@@ -309,7 +411,8 @@ def _ensure_volume_mount_point(volume_path: str) -> None:
                         capture_output=True, text=True, timeout=10,
                     )
                 else:
-                    # daemon 環境：靜默略過，開機 LaunchDaemon (com.magi.nas-mountpoints) 已預先 chown
+                    # daemon 環境：靜默略過；不要自動建立 /Volumes/<share> 普通資料夾，
+                    # 否則 Finder/osascript 會改掛成 <share>-1，OSC 會吃錯路徑。
                     logger.debug("_ensure_volume_mount_point: %s owned by root, skipping GUI chown in daemon context", volume_path)
         except Exception:
             pass
@@ -336,9 +439,10 @@ def _ensure_volume_mount_point(volume_path: str) -> None:
 
 def _get_nas_password_from_keychain() -> str:
     """從 macOS keychain 取出 NAS SMB 密碼。"""
+    nas_user = resolve_nas_user()
     try:
         result = subprocess.run(
-            ["security", "find-internet-password", "-s", NAS_HOST, "-a", NAS_USER, "-g"],
+            ["security", "find-internet-password", "-s", NAS_HOST, "-a", nas_user, "-g"],
             capture_output=True, text=True, timeout=5,
         )
         for line in result.stderr.splitlines():
@@ -418,7 +522,7 @@ def _ensure_nas_mounts_locked() -> dict[str, bool]:
     host = resolve_nas_host()
     if not _ping_ok(host):
         logger.warning("NAS %s 不可達（ping 失敗），跳過掛載", host)
-        return {vol: False for _, vol in _SHARES}
+        return {name: False for name, _ in _SHARES}
 
     # 清理舊 IP 或重複 mount
     _cleanup_wrong_host_mounts()
@@ -427,13 +531,21 @@ def _ensure_nas_mounts_locked() -> dict[str, bool]:
         short_name = volume_path.split("/")[-1]
 
         # 已掛載且指向已知 NAS IP → 不動（無論 LAN 或 Tailscale）
-        effective_path = get_share_available_path(share_name, volume_path)
-        if effective_path:
+        mounted_path = get_share_mount_path(share_name, volume_path)
+        if mounted_path:
             results[short_name] = True
+            continue
+
+        cooldown = float(os.environ.get("MAGI_NAS_MOUNT_RETRY_COOLDOWN_SEC", "600") or 600)
+        last_attempt = _LAST_MOUNT_ATTEMPT.get(share_name, 0.0)
+        if cooldown > 0 and time.time() - last_attempt < cooldown:
+            logger.info("NAS share %s 未掛載；仍在重試冷卻期，暫不再觸發 mount", share_name)
+            results[short_name] = False
             continue
 
         # 沒有可用掛載 → 需要掛載
         logger.info("掛載 NAS share: %s → %s", share_name, volume_path)
+        _LAST_MOUNT_ATTEMPT[share_name] = time.time()
         ok = _mount_share(share_name, volume_path)
         results[short_name] = ok
 
@@ -501,10 +613,10 @@ def _guard_loop(interval: int) -> None:
     logger.info("NAS mount guard 啟動（每 %d 秒巡檢）", interval)
     while True:
         try:
-            time.sleep(interval)
             ensure_nas_mounts()
         except Exception as e:
             logger.error("NAS mount guard 異常: %s", e)
+        time.sleep(interval)
 
 
 def start_nas_mount_guard(interval: int = 120) -> None:

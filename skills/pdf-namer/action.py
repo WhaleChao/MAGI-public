@@ -57,6 +57,11 @@ try:
 except Exception:
     HAS_TESSERACT = False
 
+try:
+    from skills.engine.ocr import opendataloader_provider as _opendataloader_provider
+except Exception:
+    _opendataloader_provider = None
+
 # Setup logging
 logging.basicConfig(
     level=logging.INFO,
@@ -102,6 +107,7 @@ DOC_TYPES = [
     # 法院裁判 / 命令 — must precede 對造/相對人 to avoid false match
     "支付命令", "判決", "判决", "裁定",
     "起訴書", "起诉书", "不起訴處分書", "不起诉处分书", "聲請簡易判決處刑書", "声请简易判决处刑书",
+    "民事準備書狀", "刑事準備書狀", "行政準備書狀", "準備書狀",
     "声请书", "聲請書", "陈报状", "陳報狀", "答辯狀", "答辩状", "抗告狀", "上訴狀",
     # 對造書狀 (Opponent) — after specific doc types to avoid false match on 相對人
     "對造書狀", "對造", "相對人", "原告書狀", "被告訴狀",
@@ -133,6 +139,8 @@ DOC_TYPE_MAP = {
     "判決": "判決", "判决": "判決",
     "支付命令": "支付命令",
     "裁定": "裁定",
+    "民事準備書狀": "民事準備書狀", "刑事準備書狀": "刑事準備書狀",
+    "行政準備書狀": "行政準備書狀", "準備書狀": "準備書狀",
     "聲請書": "聲請書", "声请书": "聲請書",
     "陳報狀": "陳報狀", "陈报状": "陳報狀",
     "答辯狀": "答辯狀", "答辩状": "答辯狀",
@@ -167,19 +175,24 @@ _SYNOLOGY_LOCAL_SHARE_CANDIDATES = [
     str(_HOME / "SynologyDrive"),
 ]
 # NAS root prefixes that map to the user's home share
+_NAS_HOME_USER = (
+    os.environ.get("MAGI_NAS_HOME_USER")
+    or os.environ.get("MAGI_NAS_USER")
+    or "home"
+).strip().strip("/\\") or "home"
 _NAS_HOME_SHARE_PREFIXES = [
-    str(_HOME / ".magi_mounts/homes/lumi63181107"),
+    str(_HOME / ".magi_mounts/homes" / _NAS_HOME_USER),
     str(_HOME / ".magi_mounts/homes"),
 ]
 for _vol_base in ("homes", "homes-1", "homes-2", "homes-3"):
-    _NAS_HOME_SHARE_PREFIXES.append(f"/Volumes/{_vol_base}/lumi63181107")
+    _NAS_HOME_SHARE_PREFIXES.append(f"/Volumes/{_vol_base}/{_NAS_HOME_USER}")
     _NAS_HOME_SHARE_PREFIXES.append(f"/Volumes/{_vol_base}")
 
 
 def _resolve_pdf_with_synology_fallback(pdf_path: str) -> str:
     """If pdf_path is inaccessible, try the equivalent Synology Drive local path.
 
-    Maps SMB/NAS prefixes (e.g. /Volumes/homes-1/lumi63181107/...) to local
+    Maps SMB/NAS prefixes (e.g. /Volumes/homes-1/<user>/...) to local
     Synology Drive paths (~/Library/CloudStorage/SynologyDrive-homes/...).
     Returns the best accessible path, or the original path if none found.
     """
@@ -398,6 +411,7 @@ def build_filename_learning_rules(
     token_counts: dict[str, Counter] = defaultdict(Counter)
     exact_counts: dict[str, Counter] = defaultdict(Counter)
     label_counts: Counter = Counter()
+    page_profile_counts: dict[str, Counter] = defaultdict(Counter)
     sample_count = 0
 
     if os.path.isdir(case_root):
@@ -414,6 +428,7 @@ def build_filename_learning_rules(
                 if not label:
                     continue
                 label_counts[label] += 1
+                page_profile_counts[label][re.sub(r"^\d+_", "", subfolder.strip())] += 1
                 sample_count += 1
                 key = _normalize_filename_key(fn)
                 if key:
@@ -432,6 +447,7 @@ def build_filename_learning_rules(
                 if not (fn and label):
                     continue
                 label_counts[label] += 1
+                page_profile_counts[label][re.sub(r"^\d+_", "", sf.strip())] += 1
                 sample_count += 1
                 key = _normalize_filename_key(fn)
                 if key:
@@ -477,6 +493,18 @@ def build_filename_learning_rules(
             "purity": round(purity, 4),
         }
 
+    page_selection_profiles = {}
+    for label, cnt in page_profile_counts.items():
+        total = int(sum(cnt.values()))
+        envelope_prone = label in _ENVELOPE_PRONE_LABELS
+        page_selection_profiles[label] = {
+            "sample_count": total,
+            "folders": dict(cnt.most_common(8)),
+            "envelope_prone": envelope_prone,
+            "scan_first_pages_for_envelope": 2 if envelope_prone else 1,
+            "content_search_window": 5,
+        }
+
     payload = {
         "generated_at": datetime.now().isoformat(),
         "case_root": case_root,
@@ -484,6 +512,7 @@ def build_filename_learning_rules(
         "label_counts": dict(label_counts),
         "rules": rules,
         "exact_rules": exact_rules,
+        "page_selection_profiles": page_selection_profiles,
     }
     try:
         Path(LEARNED_RULES_PATH).write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -710,6 +739,20 @@ def _ocr_image_bytes_tesseract(img_bytes: bytes, timeout_sec: int = 6, psm: int 
         with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
             tmp_path = f.name
             f.write(img_bytes)
+        try:
+            from skills.engine.ocr import tesseract_provider
+
+            result = tesseract_provider.run(
+                tmp_path,
+                langs="chi_tra+eng",
+                psm=int(psm or 6),
+                task_type="legal",
+                timeout_sec=max(2, int(timeout_sec)),
+            )
+            if result and result.success:
+                return (result.corrected_text or result.raw_text or "").strip()
+        except Exception:
+            pass
         cmd = [
             "tesseract",
             tmp_path,
@@ -886,7 +929,7 @@ def _find_receipt_date_from_text(text: str) -> Optional[str]:
 def _llava_extract_receipt_date(png_bytes: bytes, *, timeout_sec: int = 14) -> Optional[str]:
     """
     使用本機視覺模型做「收文章日期」判讀（優先於 OCR）。
-    路徑：macOS Vision → oMLX Gemma → Ollama vision chain。
+    路徑：macOS Vision → oMLX Gemma 視覺相容路由。
     回覆格式要求：YYYYMMDD 或 NONE
     """
     if (not HAS_REQUESTS) or (not png_bytes):
@@ -931,7 +974,7 @@ def _llava_extract_receipt_date(png_bytes: bytes, *, timeout_sec: int = 14) -> O
         except Exception:
             logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 837, exc_info=True)
 
-        # ── Fallback: Ollama vision chain ──
+        # ── Fallback: oMLX-compatible vision chain ──
         chain = (os.environ.get("MAGI_PDF_NAMER_VISION_MODELS") or "").strip()
         if not chain:
             chain = (
@@ -1478,6 +1521,166 @@ def _apply_naming_guards(result: dict, source_hint: str = "") -> dict:
     return result
 
 
+_ARCHIVED_NAME_FOLDERS = (
+    "法院通知或程序裁定",
+    "判決書",
+    "對方歷次書狀",
+    "對造歷次書狀",
+)
+
+_ENVELOPE_PRONE_FOLDERS = _ARCHIVED_NAME_FOLDERS
+_ENVELOPE_PRONE_LABELS = {"法院通知", "裁定", "判決", "書狀_對造"}
+_COURT_CONTENT_MARKERS = (
+    "通知書",
+    "裁定",
+    "判決",
+    "函稿代碼",
+    "主文",
+    "理由",
+    "案號",
+    "案由",
+    "期日",
+    "開庭",
+    "準備程序",
+    "審理",
+    "言詞辯論",
+)
+
+
+def _has_court_content_markers(text: str) -> bool:
+    t = (text or "")[:3000]
+    if not t.strip():
+        return False
+    marker_hits = sum(1 for marker in _COURT_CONTENT_MARKERS if marker in t)
+    has_case_number = bool(RE_CASE_NUMBER.search(t))
+    has_document_title = any(marker in t for marker in ("通知書", "裁定", "判決", "民事庭", "刑事庭", "行政訴訟庭"))
+    return marker_hits >= 3 or (has_case_number and has_document_title)
+
+
+def _extract_agency_from_filename(name: str) -> str:
+    text = name or ""
+    m = re.search(r"([\u4e00-\u9fff]{2,12}(?:地方檢察署|高等檢察署|最高檢察署|地檢署))", text)
+    if not m:
+        return ""
+    agency = m.group(1)
+    agency = agency.replace("地檢署", "地方檢察署")
+    return agency
+
+
+def _path_subfolder_category(pdf_path: str) -> str:
+    try:
+        parent_name = Path(pdf_path).parent.name
+    except Exception:
+        parent_name = ""
+    return _category_from_subfolder(parent_name, os.path.basename(pdf_path or ""))
+
+
+def _learned_page_profile_for_path(pdf_path: str) -> dict:
+    label = _path_subfolder_category(pdf_path)
+    if not label:
+        return {}
+    try:
+        learned = _load_filename_learning_rules()
+    except Exception:
+        return {}
+    profiles = learned.get("page_selection_profiles") or {}
+    profile = profiles.get(label)
+    return profile if isinstance(profile, dict) else {}
+
+
+def _is_envelope_prone_path(pdf_path: str) -> bool:
+    path_text = str(pdf_path or "")
+    if any(folder in path_text for folder in _ENVELOPE_PRONE_FOLDERS):
+        return True
+    profile = _learned_page_profile_for_path(pdf_path)
+    if profile:
+        return bool(profile.get("envelope_prone"))
+    return _path_subfolder_category(pdf_path) in _ENVELOPE_PRONE_LABELS
+
+
+def _is_envelope_back_page(text: str) -> bool:
+    t = (text or "")[:2000]
+    if not t.strip():
+        return False
+    back_markers = (
+        "訴訟當事人注意事項",
+        "法院程序與訴訟權益",
+        "訴訟權益",
+        "內附文件的法律名詞",
+        "法律名詞",
+        "法院網址",
+        "司法信箱",
+        "政風檢舉",
+        "週邊地區停車",
+        "大眾交通工具",
+        "QRCODE",
+        "QR CODE",
+        "信任法院",
+        "行賄",
+        "不得對法官",
+        "送達方式",
+    )
+    if any(m in t for m in back_markers):
+        return True
+    content_markers = ("主文", "理由", "主旨", "裁定如下", "判決如下", "通知事項", "開庭", "準備程序")
+    envelope_markers = ("送達", "受送達", "公文封", "郵務", "寄存")
+    if _has_court_content_markers(t):
+        return False
+    return sum(1 for m in envelope_markers if m in t) >= 2 and not any(m in t for m in content_markers)
+
+
+def _is_envelope_or_back_page(text: str) -> bool:
+    return _is_envelope_page(text) or _is_envelope_back_page(text)
+
+
+def _maybe_preserve_archived_filename(pdf_path: str) -> Optional[dict]:
+    """Keep already-filed PDFs stable when their filename is already meaningful.
+
+    Archived case folders are treated as a golden naming surface: re-running
+    pdf-namer on them should not propose churn just because a newer OCR engine
+    phrases a summary differently.
+    """
+    if str(os.environ.get("MAGI_PDF_NAMER_PRESERVE_ARCHIVED_NAMES", "1")).strip().lower() in {"0", "false", "no", "off"}:
+        return None
+    path_text = str(pdf_path or "")
+    if not any(folder in path_text for folder in _ARCHIVED_NAME_FOLDERS):
+        return None
+    basename = os.path.basename(path_text)
+    if not basename.lower().endswith(".pdf"):
+        return None
+    stem = basename[:-4]
+    has_date = bool(
+        re.search(r"(^|[^0-9])(\d{7,8}|\d{2,3}[./-]\d{1,2}[./-]\d{1,2})(?=$|[^0-9])", stem)
+    )
+    has_case_no = bool(RE_CASE_NUMBER.search(stem))
+    generic_names = {"閱卷通知", "民事裁定", "刑事判決", "通知書", "函文"}
+    if stem in generic_names or not (has_date or has_case_no):
+        return None
+    try:
+        from naming_validator import validate_filename as _validate_filename
+    except Exception:
+        _validate_filename = None
+    format_ok = True
+    warnings = []
+    if _validate_filename is not None:
+        format_ok, warnings = _validate_filename(basename)
+    result = {
+        "filename": basename,
+        "date": _extract_any_date(stem) or _extract_roc_date(stem),
+        "date_method": "archived_filename",
+        "court": _extract_court_name(stem),
+        "case_number": _extract_case_number(stem),
+        "doc_type": _extract_doc_type(stem) or "",
+        "party": _extract_name(stem, default_name="") or "",
+        "format_ok": bool(format_ok),
+        "quality_ok": True,
+        "preserved_archived_name": True,
+    }
+    if warnings:
+        result["warnings"] = warnings
+    return result
+
+
 def generate_name_proposal(pdf_path: str, case_name: str = None, return_structured: bool = False):
     """Propose a filename following the standard convention:
     {YYYYMMDD} {法院全名}{案號}{文件類型}（{當事人}）.pdf
@@ -1612,6 +1815,10 @@ def generate_name_proposal(pdf_path: str, case_name: str = None, return_structur
     if not os.path.exists(pdf_path):
         return empty_result if return_structured else None
 
+    preserved = _maybe_preserve_archived_filename(pdf_path)
+    if preserved:
+        return preserved if return_structured else preserved["filename"]
+
     doc = fitz.open(pdf_path)
     if doc.needs_pass:
         try:
@@ -1635,47 +1842,58 @@ def generate_name_proposal(pdf_path: str, case_name: str = None, return_structur
         native = page.get_text() or ""
         text = native
         if len(text.strip()) < 50:
+            text = _prefer_opendataloader_if_better(text, pdf_path, context=f"page_{page_idx + 1}_pre_ocr", page_idx=page_idx)
+        if len(text.strip()) < 50:
             if _PDF_OCR_CONSENSUS:
                 # Phase 2B: multi-engine consensus
                 text = _ocr_consensus(page, pdf_path=pdf_path, page_idx=page_idx)
             elif HAS_OCR:
                 text = _ocr_page_rapid(page)
+        text = _prefer_opendataloader_if_better(text, pdf_path, context=f"page_{page_idx + 1}", page_idx=page_idx)
+        if _is_envelope_prone_path(pdf_path) and (len(text.strip()) < 120 or _is_garbled_text(text)):
+            try:
+                vision_text = _macos_vision_ocr_page(pdf_path, page_idx) or ""
+            except Exception:
+                vision_text = ""
+            if vision_text and (not _is_garbled_text(vision_text) or _has_court_content_markers(vision_text)):
+                text = vision_text
         return page, native, text
 
-    # Check if page 0 is an envelope (公文封)
-    # Only positively detect envelope from text markers; garbled/empty text alone
-    # is NOT sufficient (image-only docs may have no envelope at all).
-    if doc.page_count > 2:
-        p0 = doc[0]
-        p0_text = p0.get_text() or ""
-        if len(p0_text.strip()) < 50 and HAS_OCR:
-            p0_text = _ocr_page_rapid(p0)
-        if _is_envelope_page(p0_text):
-            envelope_page = p0
-            logger.info("Page 1: detected as envelope (text markers)")
-        elif _is_garbled_text(p0_text) and doc.page_count <= 8:
-            # Garbled text: check if it has envelope-like keywords even in garbled form
-            _env_kw = ("公文封", "公丈封", "公支封", "受送達", "受送:ミ", "受送逹",
-                        "郵務送達", "寄存送達", "送達人住居所", "送達人居住所")
-            if any(k in p0_text for k in _env_kw):
-                envelope_page = p0
-                logger.info("Page 1: detected as envelope (garbled text with envelope keywords)")
-            # Else: garbled text but no envelope markers → NOT an envelope
-        # Else: large doc or clean text on page 0 → no envelope, content starts at p0
+    def _probe_envelope_page(page_idx: int) -> Tuple[object, str, str, bool]:
+        page, native, text = _get_page_text(page_idx)
+        if _is_envelope_or_back_page(text):
+            return page, native, text, True
+        if _is_envelope_prone_path(pdf_path) and page_idx < 2:
+            # Some scanned envelopes produce short/partial text layers through
+            # PDF converters.  A targeted image OCR pass is cheaper than letting
+            # page 1 poison the whole naming decision.
+            try:
+                vision_text = _macos_vision_ocr_page(pdf_path, page_idx) or ""
+            except Exception:
+                vision_text = ""
+            if vision_text:
+                combined = "\n".join([text, vision_text])
+                if _is_envelope_or_back_page(combined):
+                    return page, native, combined, True
+                return page, native, combined, False
+        return page, native, text, False
 
-    # Find content page — skip envelope pages
-    # Convention: page 0 = envelope front (公文封), page 1 = may be envelope back
-    # (訴訟當事人注意事項 / instructions), page 2+ = actual content
-    _ENVELOPE_BACK_MARKERS = ("注意事項", "訴訟當事人", "訴訟權益", "行賄", "信任法院", "送達方式")
+    # Find content page — skip envelope pages.
+    # Court mail scans often put the envelope/front and litigation-rights back
+    # sheet at pages 1-2.  In envelope-prone folders we always inspect both
+    # pages with page-scoped OCR before choosing the content page.
     start_idx = 0
-    if envelope_page:
-        start_idx = 1
-        # Check if page 1 is also envelope (back side / instructions)
-        if doc.page_count > 2:
-            p1_text = doc[1].get_text() or ""
-            if any(m in p1_text for m in _ENVELOPE_BACK_MARKERS) or _is_garbled_text(p1_text):
-                start_idx = 2
-                logger.info("Page 2: also envelope back (instructions), content starts at page 3")
+    probe_pages = min(doc.page_count, 2 if _is_envelope_prone_path(pdf_path) else 1)
+    if doc.page_count > 1:
+        for probe_idx in range(probe_pages):
+            page, _native, probe_text, is_envelope_probe = _probe_envelope_page(probe_idx)
+            if is_envelope_probe:
+                if envelope_page is None and (probe_idx == 0 or _is_envelope_page(probe_text)):
+                    envelope_page = page
+                start_idx = probe_idx + 1
+                logger.info("Page %d: detected as envelope/instruction page; content starts at page %d", probe_idx + 1, start_idx + 1)
+                continue
+            break
     # For no-envelope docs, page 0 is always the primary content page for vision,
     # even if its embedded text is garbled (vision reads the image, not the text).
     _vision_primary_page = doc[0] if (not envelope_page and doc.page_count > 0) else None
@@ -1686,6 +1904,9 @@ def generate_name_proposal(pdf_path: str, case_name: str = None, return_structur
             continue
         if _is_garbled_text(text):
             logger.info(f"Page {i+1}: garbled embedded text, will use vision only")
+            if _is_envelope_prone_path(pdf_path) and i < doc.page_count - 1:
+                logger.info("Page %d: skipped as garbled candidate in envelope-prone folder", i + 1)
+                continue
             if content_page is None:
                 content_page = page
                 content_text = ""
@@ -1721,7 +1942,9 @@ def generate_name_proposal(pdf_path: str, case_name: str = None, return_structur
 
     # ── Step 1b: Fast text path (only for clean text) ──
     fast_text = "\n".join(part for part in [content_text_native, content_text] if part)
-    if fast_text.strip() and not _is_garbled_text(fast_text):
+    if fast_text.strip() and not _is_garbled_text(fast_text) and not (
+        envelope_page is not None and _is_envelope_prone_path(pdf_path)
+    ):
         fast_result = _maybe_fast_text_name_result(fast_text, case_name=case_name, pdf_path=pdf_path)
         if fast_result:
             logger.info("Fast text path hit for %s", pdf_path)
@@ -1890,15 +2113,40 @@ def generate_name_proposal(pdf_path: str, case_name: str = None, return_structur
     # OCR summary (0.60) used as fallback; vision summary (0.90) wins if non-empty.
     _ocr_summary = ""
     if found_type:
-        all_pages_text = ""
+        all_pages_text = "\n".join(part for part in [content_text, content_text_native] if part)
         for pi in range(min(doc.page_count, 6)):
             all_pages_text += (doc[pi].get_text() or "") + "\n"
         if all_pages_text.strip():
             _ocr_summary = _extract_summary_from_ocr(all_pages_text, found_type) or ""
-    found_summary, _, _sum_src = _pick_best_source("summary", [
-        (_vision_summary, 0.90, "vision"),
-        (_ocr_summary, 0.60, "ocr"),
-    ])
+        if (
+            not _ocr_summary
+            and ("庭通知" in found_type or "傳票" in found_type)
+            and _is_envelope_prone_path(pdf_path)
+        ):
+            try:
+                page_num = getattr(content_page, "number", None)
+                if isinstance(page_num, int) and page_num >= 0:
+                    _ocr_summary = _extract_summary_from_ocr(
+                        _macos_vision_ocr_page(pdf_path, page_num) or "",
+                        found_type,
+                    ) or ""
+            except Exception:
+                _ocr_summary = ""
+    if _ocr_summary and (
+        "庭通知" in found_type
+        or "傳票" in found_type
+        or "判決" in found_type
+        or "裁定" in found_type
+    ):
+        found_summary, _, _sum_src = _pick_best_source("summary", [
+            (_ocr_summary, 0.95, "ocr_structured"),
+            (_vision_summary, 0.80, "vision"),
+        ])
+    else:
+        found_summary, _, _sum_src = _pick_best_source("summary", [
+            (_vision_summary, 0.90, "vision"),
+            (_ocr_summary, 0.60, "ocr"),
+        ])
     if found_summary:
         logger.info("Summary source=%s: %s", _sum_src, found_summary[:60])
 
@@ -2012,6 +2260,15 @@ def generate_name_proposal(pdf_path: str, case_name: str = None, return_structur
         found_party = case_name
     elif not found_party:
         found_party = _infer_party_from_case_folder_path(pdf_path) or ""
+
+    if _path_subfolder_category(pdf_path) == "書狀_對造" or "檢察官" in (found_type or found_doc_subtype or ""):
+        basename_for_fields = os.path.basename(pdf_path or "")
+        filename_case_no = _extract_case_number(basename_for_fields)
+        filename_agency = _extract_agency_from_filename(basename_for_fields)
+        if filename_case_no:
+            found_case_no = filename_case_no
+        if filename_agency:
+            found_court = filename_agency
 
     # ── Step 4b: Date fallback — scan last page for 具狀人 date, then filing date ──
     if not found_date and doc.page_count > 0:
@@ -2175,6 +2432,19 @@ def _extract_summary_from_ocr(ocr_text: str, doc_type: str = "") -> str:
 
     # ── 庭通知書: extract hearing date/time ──
     if "庭通知" in dt or "傳票" in dt:
+        hearing_text = re.sub(r"\s+", "", text)
+        m0 = re.search(
+            r"(?:中華民國)?(?:\d{2,3}年)?(\d{1,2})月(\d{1,2})日"
+            r"([上下]午)(\d{1,2})時(\d{0,2})分?"
+            r".{0,120}?(審理|準備程序|準備|調解|調查|言詞辯論|宣判|開庭)",
+            hearing_text,
+        )
+        if m0:
+            mo, d = m0.group(1), m0.group(2)
+            ampm, hr, mi = m0.group(3), m0.group(4), m0.group(5) or "0"
+            proc = m0.group(6)
+            minute = f"{int(mi)}分" if mi and mi.isdigit() and int(mi) != 0 else "整"
+            return f"訂{mo}月{d}日{ampm}{hr}時{minute}{proc}"
         m = re.search(
             r"(?:定|訂)\s*(?:於\s*)?(?:民國\s*)?"
             r"(\d{2,3})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日\s*"
@@ -2229,6 +2499,7 @@ def _extract_summary_from_ocr(ocr_text: str, doc_type: str = "") -> str:
         m = re.search(r"主\s*文[：:\s]*\n?(.*?)(?:\n\s*(?:理\s*由|事\s*實|犯罪事實)|$)", text, re.DOTALL)
         if m:
             raw = re.sub(r"\s+", "", m.group(1).strip())[:60]
+            raw = re.sub(r"^(?:書記官|法官|審判長法官)+", "", raw)
             if raw and len(raw) > 4:
                 return raw
 
@@ -2359,6 +2630,14 @@ try:
     _CHANDRA_OCR_MIN_SCORE = float(os.environ.get("MAGI_CHANDRA_OCR_MIN_SCORE", "0.45") or "0.45")
 except (TypeError, ValueError):
     _CHANDRA_OCR_MIN_SCORE = 0.45
+try:
+    _OPENDATALOADER_MIN_SCORE = float(os.environ.get("MAGI_PDF_NAMER_OPENDATALOADER_MIN_SCORE", "0.55") or "0.55")
+except (TypeError, ValueError):
+    _OPENDATALOADER_MIN_SCORE = 0.55
+try:
+    _OPENDATALOADER_MIN_GAIN = float(os.environ.get("MAGI_PDF_NAMER_OPENDATALOADER_MIN_GAIN", "0.08") or "0.08")
+except (TypeError, ValueError):
+    _OPENDATALOADER_MIN_GAIN = 0.08
 
 
 def _score_ocr_text(text: str) -> float:
@@ -2423,6 +2702,49 @@ def _prefer_chandra_if_better(current_text: str, pdf_path: str, page_idx: int = 
             current_score,
         )
         return chandra_text
+    return current_text
+
+
+def _prefer_opendataloader_if_better(
+    current_text: str,
+    pdf_path: str = "",
+    *,
+    context: str = "",
+    page_idx: Optional[int] = None,
+) -> str:
+    """Use OpenDataLoader when native/OCR text is weak or too short."""
+    if not pdf_path or _opendataloader_provider is None:
+        return current_text
+    current = current_text or ""
+    current_score = _score_ocr_text(current)
+    if current_score >= _OPENDATALOADER_MIN_SCORE and len(current.strip()) >= 250:
+        return current_text
+    try:
+        kwargs = {"task_type": "legal"}
+        if page_idx is not None:
+            kwargs["page_indexes"] = [page_idx]
+        result = _opendataloader_provider.run_pdf(pdf_path, **kwargs)
+    except Exception as exc:
+        logger.debug("[opendataloader] provider failed: %s", exc)
+        return current_text
+    if not result.success or not (result.corrected_text or result.raw_text or "").strip():
+        if result.error and "disabled" not in str(result.error):
+            logger.debug("[opendataloader] unavailable for %s: %s", context or "pdf", result.error)
+        return current_text
+    candidate = (result.corrected_text or result.raw_text or "").strip()
+    candidate_score = _score_ocr_text(candidate)
+    enough_gain = candidate_score >= current_score + _OPENDATALOADER_MIN_GAIN
+    enough_length = len(candidate) > max(len(current.strip()) * 1.35, 300)
+    if enough_gain or enough_length:
+        logger.info(
+            "[opendataloader] selected for %s score %.3f > %.3f len=%d duration=%.2fs",
+            context or os.path.basename(pdf_path),
+            candidate_score,
+            current_score,
+            len(candidate),
+            result.duration_sec,
+        )
+        return candidate
     return current_text
 
 
@@ -3062,6 +3384,7 @@ def extract_text(pdf_path: str) -> Tuple[str, bool]:
             if (i < ocr_pages) and len(t.strip()) < 50 and HAS_OCR:
                 t = _ocr_page_rapid(page)
             text += t + "\n"
+        text = _prefer_opendataloader_if_better(text, pdf_path, context="extract_text")
         return text, True
     except Exception as e:
         logger.error(f"Text extraction failed: {e}")
@@ -3089,13 +3412,25 @@ def extract_text_quick(pdf_path: str, max_pages: int = 1) -> Tuple[str, bool]:
     except Exception:
         return "", False
 
-def _select_pages_scored(doc) -> dict:
+def _select_pages_scored(doc, pdf_path: str = "") -> dict:
     """Content-based page selection using scoring.
     Returns {"envelope": page_or_None, "content": page, "envelope_idx": int, "content_idx": int}"""
     if doc.page_count == 0:
         return {"envelope": None, "content": None, "envelope_idx": -1, "content_idx": -1}
 
     scores = []
+    envelope_prone = _is_envelope_prone_path(pdf_path)
+    forced_start = 0
+    if envelope_prone:
+        for i in range(min(2, doc.page_count)):
+            text = doc[i].get_text() or ""
+            if len(text.strip()) < 50 and pdf_path:
+                text = _prefer_opendataloader_if_better("", pdf_path, context=f"page_score_{i + 1}", page_idx=i)
+            if _is_envelope_or_back_page(text):
+                forced_start = i + 1
+                continue
+            break
+
     _ENV_MARKERS = ["受送達人", "公文封", "公丈封", "公支封", "郵務送達", "寄存送達",
                      "送達人住居所", "送達人居住所", "訴訟當事人注意事項", "訴訟權益"]
     _CONTENT_MARKERS = ["案號", "被告", "原告", "主文", "主旨", "聲請人", "犯罪事實",
@@ -3123,9 +3458,11 @@ def _select_pages_scored(doc) -> dict:
         # Phase 2C: garbled text penalty
         if _is_garbled_text(text):
             score -= 5
-        # Page 0 bonus: first page is most likely the title/header
-        # (court docs: title page; our docs: 聲請狀/陳報狀 first page)
-        if i == 0:
+        if envelope_prone and i < forced_start:
+            score -= 20
+        # Page 0 bonus only when the file is not in an envelope-prone archive
+        # folder.  Court mail scans often use page 1/2 for envelope sheets.
+        if i == 0 and not envelope_prone:
             score += 2
         # Text density bonus
         score += min(len(text.strip()) / 200, 3)
@@ -3133,8 +3470,12 @@ def _select_pages_scored(doc) -> dict:
 
     scores.sort(key=lambda x: x[0])
     # Lowest score = most likely envelope, highest = most likely content
-    envelope_idx = scores[0][1] if scores[0][0] < -5 else -1
+    envelope_idx = 0 if forced_start > 0 else (scores[0][1] if scores[0][0] < -5 else -1)
     content_idx = scores[-1][1]
+    if envelope_prone and forced_start > 0:
+        content_candidates = [(score, idx) for score, idx in scores if idx >= forced_start]
+        if content_candidates:
+            content_idx = sorted(content_candidates, key=lambda x: x[0])[-1][1]
 
     # If envelope == content, pick next best for content
     if envelope_idx == content_idx and len(scores) > 1:
@@ -3178,21 +3519,27 @@ def batch_ocr_pages(pdf_paths: list) -> dict:
                 except Exception:
                     pass
 
-            pages = _select_pages_scored(doc)
+            pages = _select_pages_scored(doc, pdf_path=pdf_path)
             envelope_ocr = ""
             content_ocr = ""
 
             # Primary OCR: macOS Vision framework (fast, high quality, no GPU)
             # Fallback: oMLX Gemma vision (slower but handles edge cases)
             def _ocr_page(page_idx: int) -> str:
+                native = (doc[page_idx].get_text() or "") if page_idx < doc.page_count else ""
+                preferred = _prefer_opendataloader_if_better(native, pdf_path, context=f"batch_page_{page_idx + 1}_pre_ocr", page_idx=page_idx)
+                if preferred and preferred != native and len(preferred.strip()) >= 120:
+                    return preferred
                 # Phase 2B: multi-engine consensus when MAGI_PDF_OCR_CONSENSUS=1
                 if _PDF_OCR_CONSENSUS and page_idx < doc.page_count:
-                    return _ocr_consensus(doc[page_idx], pdf_path=pdf_path, page_idx=page_idx)
+                    text = _ocr_consensus(doc[page_idx], pdf_path=pdf_path, page_idx=page_idx)
+                    return _prefer_opendataloader_if_better(text, pdf_path, context=f"batch_page_{page_idx + 1}", page_idx=page_idx)
                 # Default: macOS Vision primary → oMLX Gemma vision fallback
                 text = _macos_vision_ocr_page(pdf_path, page_idx)
                 if not text and page_idx < doc.page_count:
                     text = _glm_ocr_page(doc[page_idx], dpi=200)
                 text = _prefer_chandra_if_better(text, pdf_path, page_idx)
+                text = _prefer_opendataloader_if_better(text, pdf_path, context=f"batch_page_{page_idx + 1}", page_idx=page_idx)
                 return text
 
             if pages["envelope"]:
@@ -3568,6 +3915,8 @@ def _build_name_result(
         sub = dt
     else:
         sub = doc_subtype or dt or ""
+    if "檢察官" in dt and "檢察官" not in sub:
+        sub = dt
     if sub:
         sub = re.sub(r"(留底|留存)$", "存底", sub)
     sfx = suffix or ""
@@ -3604,6 +3953,8 @@ def _build_name_result(
 
     if category == "判決":
         body = f"{court}{case_no}{case_type}判決"
+        if smry and not smry.startswith(("主文", "理由")):
+            smry = f"主文：{smry}"
         if party:
             body += f"（{party}；{smry}）" if smry else f"（{party}）"
         elif smry:
@@ -3612,6 +3963,8 @@ def _build_name_result(
             body += "（待補摘要）"
     elif category == "裁定":
         body = f"{court}{case_no}{case_type}裁定"
+        if smry and not smry.startswith(("主文", "理由")):
+            smry = f"主文：{smry}"
         if party:
             body += f"（{party}；{smry}）" if smry else f"（{party}）"
         elif smry:

@@ -1,0 +1,48 @@
+        <section id="templateFolder" class="view">
+            <div class="card">
+                <div class="section-head">
+                    <div>
+                        <h3>範本資料夾</h3>
+                        <div class="section-note">集中開啟書狀與消債常用範本；這裡只做查找與開啟，不改動案件資料夾規則。</div>
+                    </div>
+                    <button class="btn" id="templateFolderRefreshBtn">重新整理</button>
+                </div>
+                <div id="templateFolderStatus" class="status-banner">範本資料夾待命中。</div>
+                <div class="soft-block">
+                    <div class="field-grid cols-4">
+                        <div class="field" style="grid-column: span 3;">
+                            <label>資料夾路徑</label>
+                            <input id="templateFolderPath" readonly placeholder="尚未載入">
+                        </div>
+                        <div class="field">
+                            <label>狀態</label>
+                            <input id="templateFolderExists" readonly placeholder="尚未載入">
+                        </div>
+                    </div>
+                    <div class="toolbar" id="templateFolderActions" style="margin-top:10px; margin-bottom:0;"></div>
+                    <div class="helper" id="templateFolderHint">若 NAS 尚未掛載，MAGI 會優先使用本機可找到的範本資料夾。</div>
+                </div>
+            </div>
+            <div class="card">
+                <div class="section-head">
+                    <div>
+                        <h3>資料夾內容</h3>
+                        <div class="section-note">子資料夾與檔案可直接開啟；需要編修內容時仍使用原本的 Finder / Word / PDF 工具。</div>
+                    </div>
+                </div>
+                <div class="table-wrap">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>名稱</th>
+                                <th>類型</th>
+                                <th>大小</th>
+                                <th>修改時間</th>
+                                <th>操作</th>
+                            </tr>
+                        </thead>
+                        <tbody id="templateFolderBody"></tbody>
+                    </table>
+                </div>
+            </div>
+        </section>

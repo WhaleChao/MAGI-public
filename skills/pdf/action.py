@@ -239,61 +239,35 @@ def task_ocr(args: List[str]) -> Dict[str, Any]:
     if not os.path.isfile(opts.file):
         return {"ok": False, "error": f"找不到檔案：{opts.file}"}
 
-    # 策略 1: 嘗試 RapidOCR（MAGI 內建）
     try:
-        from rapidocr_onnxruntime import RapidOCR
-        from pdf2image import convert_from_path
+        old_lang = os.environ.get("MAGI_PDF_OCR_LANGS")
+        try:
+            os.environ["MAGI_PDF_OCR_LANGS"] = opts.lang
+            from skills.documents.pdf_bridge import extract_text as _extract_pdf_text
 
-        ocr_engine = RapidOCR()
-        images = convert_from_path(opts.file, dpi=300)
-        text_parts = []
-        for i, img in enumerate(images, 1):
-            result, _ = ocr_engine(img)
-            page_text = "\n".join([r[1] for r in result]) if result else ""
-            text_parts.append(f"--- 第 {i} 頁 ---\n{page_text}")
+            full_text = _extract_pdf_text(opts.file)
+        finally:
+            if old_lang is None:
+                os.environ.pop("MAGI_PDF_OCR_LANGS", None)
+            else:
+                os.environ["MAGI_PDF_OCR_LANGS"] = old_lang
 
-        full_text = "\n\n".join(text_parts)
+        if not full_text or full_text.startswith("[PDF 提取失敗"):
+            return {"ok": False, "error": full_text or "OCR 無文字輸出"}
         if opts.output:
             with open(opts.output, "w", encoding="utf-8") as f:
                 f.write(full_text)
 
         return {
             "ok": True,
-            "engine": "RapidOCR",
-            "pages": len(images),
+            "engine": "MAGI PDF OCR pipeline",
+            "pages": len(re.findall(r"--- 第\\s*\\d+\\s*頁", full_text)) or None,
             "chars": len(full_text),
             "text_preview": full_text[:2000],
             **({"output": opts.output} if opts.output else {}),
         }
-    except ImportError:
-        pass
-
-    # 策略 2: Tesseract
-    try:
-        import pytesseract
-        from pdf2image import convert_from_path
-
-        images = convert_from_path(opts.file, dpi=300)
-        text_parts = []
-        for i, img in enumerate(images, 1):
-            txt = pytesseract.image_to_string(img, lang=opts.lang)
-            text_parts.append(f"--- 第 {i} 頁 ---\n{txt}")
-
-        full_text = "\n\n".join(text_parts)
-        if opts.output:
-            with open(opts.output, "w", encoding="utf-8") as f:
-                f.write(full_text)
-
-        return {
-            "ok": True,
-            "engine": "Tesseract",
-            "pages": len(images),
-            "chars": len(full_text),
-            "text_preview": full_text[:2000],
-            **({"output": opts.output} if opts.output else {}),
-        }
-    except ImportError:
-        return {"ok": False, "error": "OCR 引擎未安裝（需要 rapidocr-onnxruntime 或 pytesseract + pdf2image）"}
+    except Exception as e:
+        return {"ok": False, "error": f"MAGI OCR pipeline failed: {e}"}
 
 
 def task_encrypt(args: List[str]) -> Dict[str, Any]:

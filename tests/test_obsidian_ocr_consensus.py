@@ -55,7 +55,7 @@ def _make_consensus_result(success, corrected_text="", confidence=0.85):
 def _no_fitz_subprocess(monkeypatch):
     """
     Mock fitz.open so we control pages / PNG rendering.
-    Mock subprocess.run so legacy tesseract is controllable.
+    Legacy OCR is patched through the shared tesseract_provider.
     The consensus module is patched individually per test.
     """
     # fake fitz pixmap
@@ -87,29 +87,23 @@ class TestFlagOff:
         """When MAGI_OBSIDIAN_OCR_CONSENSUS_ENABLE=0, run_consensus must not be invoked."""
         monkeypatch.setenv("MAGI_OBSIDIAN_OCR_CONSENSUS_ENABLE", "0")
 
-        # legacy subprocess returns some text
-        fake_proc = MagicMock()
-        fake_proc.returncode = 0
-        fake_proc.stdout = b"legacy ocr text"
-        fake_proc.stderr = b""
-
         consensus_called = []
-
-        def fake_run(cmd, **kwargs):
-            return fake_proc
-
-        monkeypatch.setattr("subprocess.run", fake_run)
-
-        # Ensure shutil.which("tesseract") returns a path
-        monkeypatch.setattr("shutil.which", lambda x: "/usr/bin/tesseract" if x == "tesseract" else None)
 
         # Patch consensus module so we detect if it's imported
         fake_consensus_mod = MagicMock()
         fake_consensus_mod.run_consensus.side_effect = lambda *a, **k: consensus_called.append(1)
         monkeypatch.setitem(sys.modules, "skills.engine.ocr.consensus", fake_consensus_mod)
-        # Also patch the parent package
-        fake_ocr_pkg = types.ModuleType("skills.engine.ocr")
-        monkeypatch.setitem(sys.modules, "skills.engine.ocr", fake_ocr_pkg)
+
+        from skills.engine.ocr.ocr_schema import OCRProviderResult
+        monkeypatch.setattr(
+            "skills.engine.ocr.tesseract_provider.run",
+            lambda *a, **k: OCRProviderResult(
+                success=True,
+                provider="tesseract",
+                raw_text="legacy ocr text",
+                corrected_text="legacy ocr text",
+            ),
+        )
 
         from skills.obsidian.extractors import _extract_pdf_ocr
         import importlib
@@ -130,13 +124,16 @@ class TestFlagOff:
         """When flag off, method field should mention tesseract (not consensus)."""
         monkeypatch.setenv("MAGI_OBSIDIAN_OCR_CONSENSUS_ENABLE", "0")
 
-        fake_proc = MagicMock()
-        fake_proc.returncode = 0
-        fake_proc.stdout = b"some OCR text here"
-        fake_proc.stderr = b""
-
-        monkeypatch.setattr("subprocess.run", lambda *a, **k: fake_proc)
-        monkeypatch.setattr("shutil.which", lambda x: "/usr/bin/tesseract" if x == "tesseract" else None)
+        from skills.engine.ocr.ocr_schema import OCRProviderResult
+        monkeypatch.setattr(
+            "skills.engine.ocr.tesseract_provider.run",
+            lambda *a, **k: OCRProviderResult(
+                success=True,
+                provider="tesseract",
+                raw_text="some OCR text here",
+                corrected_text="some OCR text here",
+            ),
+        )
 
         import importlib
         import skills.obsidian.extractors as ext_mod
@@ -159,13 +156,16 @@ class TestFlagOnConsensusSuccess:
     def test_consensus_text_returned_when_flag_on(self, monkeypatch, tmp_path):
         """When flag on and consensus succeeds, the consensus text is returned."""
         monkeypatch.setenv("MAGI_OBSIDIAN_OCR_CONSENSUS_ENABLE", "1")
-        monkeypatch.setattr("shutil.which", lambda x: "/usr/bin/tesseract" if x == "tesseract" else None)
-
-        legacy_proc = MagicMock()
-        legacy_proc.returncode = 0
-        legacy_proc.stdout = b"legacy ocr text"
-        legacy_proc.stderr = b""
-        monkeypatch.setattr("subprocess.run", lambda *a, **k: legacy_proc)
+        from skills.engine.ocr.ocr_schema import OCRProviderResult
+        monkeypatch.setattr(
+            "skills.engine.ocr.tesseract_provider.run",
+            lambda *a, **k: OCRProviderResult(
+                success=True,
+                provider="tesseract",
+                raw_text="legacy ocr text",
+                corrected_text="legacy ocr text",
+            ),
+        )
 
         consensus_text = "高品質共識文字 114年度某字第123號"
         fake_result = _make_consensus_result(success=True, corrected_text=consensus_text)
@@ -175,8 +175,6 @@ class TestFlagOnConsensusSuccess:
 
         # Patch the nested import path used inside _run_consensus_page
         monkeypatch.setitem(sys.modules, "skills.engine.ocr.consensus", fake_consensus_mod)
-        fake_ocr_pkg = types.ModuleType("skills.engine.ocr")
-        monkeypatch.setitem(sys.modules, "skills.engine.ocr", fake_ocr_pkg)
 
         # Also mock runtime_dir to avoid FS side effects
         fake_rt = MagicMock()
@@ -202,19 +200,21 @@ class TestFlagOnConsensusSuccess:
     def test_legacy_text_not_in_result_when_consensus_succeeds(self, monkeypatch, tmp_path):
         """If consensus provides text, legacy text must not appear in output."""
         monkeypatch.setenv("MAGI_OBSIDIAN_OCR_CONSENSUS_ENABLE", "1")
-        monkeypatch.setattr("shutil.which", lambda x: "/usr/bin/tesseract" if x == "tesseract" else None)
-
-        legacy_proc = MagicMock()
-        legacy_proc.returncode = 0
-        legacy_proc.stdout = b"LEGACY_MARKER_TEXT"
-        legacy_proc.stderr = b""
-        monkeypatch.setattr("subprocess.run", lambda *a, **k: legacy_proc)
+        from skills.engine.ocr.ocr_schema import OCRProviderResult
+        monkeypatch.setattr(
+            "skills.engine.ocr.tesseract_provider.run",
+            lambda *a, **k: OCRProviderResult(
+                success=True,
+                provider="tesseract",
+                raw_text="LEGACY_MARKER_TEXT",
+                corrected_text="LEGACY_MARKER_TEXT",
+            ),
+        )
 
         fake_result = _make_consensus_result(success=True, corrected_text="共識文字勝出")
         fake_consensus_mod = MagicMock()
         fake_consensus_mod.run_consensus.return_value = fake_result
         monkeypatch.setitem(sys.modules, "skills.engine.ocr.consensus", fake_consensus_mod)
-        monkeypatch.setitem(sys.modules, "skills.engine.ocr", types.ModuleType("skills.engine.ocr"))
 
         fake_rt = MagicMock()
         fake_rt.metrics.return_value = tmp_path
@@ -241,19 +241,21 @@ class TestFlagOnConsensusFail:
     def test_fallback_to_legacy_when_consensus_fails(self, monkeypatch, tmp_path):
         """When consensus raises exception, legacy tesseract result is returned."""
         monkeypatch.setenv("MAGI_OBSIDIAN_OCR_CONSENSUS_ENABLE", "1")
-        monkeypatch.setattr("shutil.which", lambda x: "/usr/bin/tesseract" if x == "tesseract" else None)
-
-        legacy_proc = MagicMock()
-        legacy_proc.returncode = 0
-        legacy_proc.stdout = b"FALLBACK_LEGACY_TEXT"
-        legacy_proc.stderr = b""
-        monkeypatch.setattr("subprocess.run", lambda *a, **k: legacy_proc)
+        from skills.engine.ocr.ocr_schema import OCRProviderResult
+        monkeypatch.setattr(
+            "skills.engine.ocr.tesseract_provider.run",
+            lambda *a, **k: OCRProviderResult(
+                success=True,
+                provider="tesseract",
+                raw_text="FALLBACK_LEGACY_TEXT",
+                corrected_text="FALLBACK_LEGACY_TEXT",
+            ),
+        )
 
         # consensus module raises
         fake_consensus_mod = MagicMock()
         fake_consensus_mod.run_consensus.side_effect = RuntimeError("OCR engine not available")
         monkeypatch.setitem(sys.modules, "skills.engine.ocr.consensus", fake_consensus_mod)
-        monkeypatch.setitem(sys.modules, "skills.engine.ocr", types.ModuleType("skills.engine.ocr"))
 
         fake_rt = MagicMock()
         fake_rt.metrics.return_value = tmp_path
@@ -276,19 +278,21 @@ class TestFlagOnConsensusFail:
     def test_fallback_when_consensus_returns_none(self, monkeypatch, tmp_path):
         """When consensus returns None (success=False), legacy text is used."""
         monkeypatch.setenv("MAGI_OBSIDIAN_OCR_CONSENSUS_ENABLE", "1")
-        monkeypatch.setattr("shutil.which", lambda x: "/usr/bin/tesseract" if x == "tesseract" else None)
-
-        legacy_proc = MagicMock()
-        legacy_proc.returncode = 0
-        legacy_proc.stdout = b"LEGACY_FALLBACK_RESULT"
-        legacy_proc.stderr = b""
-        monkeypatch.setattr("subprocess.run", lambda *a, **k: legacy_proc)
+        from skills.engine.ocr.ocr_schema import OCRProviderResult
+        monkeypatch.setattr(
+            "skills.engine.ocr.tesseract_provider.run",
+            lambda *a, **k: OCRProviderResult(
+                success=True,
+                provider="tesseract",
+                raw_text="LEGACY_FALLBACK_RESULT",
+                corrected_text="LEGACY_FALLBACK_RESULT",
+            ),
+        )
 
         failure_result = _make_consensus_result(success=False)
         fake_consensus_mod = MagicMock()
         fake_consensus_mod.run_consensus.return_value = failure_result
         monkeypatch.setitem(sys.modules, "skills.engine.ocr.consensus", fake_consensus_mod)
-        monkeypatch.setitem(sys.modules, "skills.engine.ocr", types.ModuleType("skills.engine.ocr"))
 
         fake_rt = MagicMock()
         fake_rt.metrics.return_value = tmp_path
@@ -315,19 +319,21 @@ class TestMetricsWrite:
     def test_metrics_written_when_consensus_enabled(self, monkeypatch, tmp_path):
         """When flag on, atomic_append_jsonl should be called at least once per page."""
         monkeypatch.setenv("MAGI_OBSIDIAN_OCR_CONSENSUS_ENABLE", "1")
-        monkeypatch.setattr("shutil.which", lambda x: "/usr/bin/tesseract" if x == "tesseract" else None)
-
-        legacy_proc = MagicMock()
-        legacy_proc.returncode = 0
-        legacy_proc.stdout = b"some text"
-        legacy_proc.stderr = b""
-        monkeypatch.setattr("subprocess.run", lambda *a, **k: legacy_proc)
+        from skills.engine.ocr.ocr_schema import OCRProviderResult
+        monkeypatch.setattr(
+            "skills.engine.ocr.tesseract_provider.run",
+            lambda *a, **k: OCRProviderResult(
+                success=True,
+                provider="tesseract",
+                raw_text="some text",
+                corrected_text="some text",
+            ),
+        )
 
         fake_result = _make_consensus_result(success=True, corrected_text="文字")
         fake_consensus_mod = MagicMock()
         fake_consensus_mod.run_consensus.return_value = fake_result
         monkeypatch.setitem(sys.modules, "skills.engine.ocr.consensus", fake_consensus_mod)
-        monkeypatch.setitem(sys.modules, "skills.engine.ocr", types.ModuleType("skills.engine.ocr"))
 
         append_calls = []
         metrics_dir = tmp_path / "metrics" / "ocr"
@@ -353,19 +359,21 @@ class TestMetricsWrite:
     def test_metrics_record_has_no_raw_text(self, monkeypatch, tmp_path):
         """Metrics record must only contain counts/hashes, not raw OCR text."""
         monkeypatch.setenv("MAGI_OBSIDIAN_OCR_CONSENSUS_ENABLE", "1")
-        monkeypatch.setattr("shutil.which", lambda x: "/usr/bin/tesseract" if x == "tesseract" else None)
-
-        legacy_proc = MagicMock()
-        legacy_proc.returncode = 0
-        legacy_proc.stdout = b"SECRET_TEXT_SHOULD_NOT_BE_IN_METRICS"
-        legacy_proc.stderr = b""
-        monkeypatch.setattr("subprocess.run", lambda *a, **k: legacy_proc)
+        from skills.engine.ocr.ocr_schema import OCRProviderResult
+        monkeypatch.setattr(
+            "skills.engine.ocr.tesseract_provider.run",
+            lambda *a, **k: OCRProviderResult(
+                success=True,
+                provider="tesseract",
+                raw_text="SECRET_TEXT_SHOULD_NOT_BE_IN_METRICS",
+                corrected_text="SECRET_TEXT_SHOULD_NOT_BE_IN_METRICS",
+            ),
+        )
 
         fake_result = _make_consensus_result(success=True, corrected_text="共識文字")
         fake_consensus_mod = MagicMock()
         fake_consensus_mod.run_consensus.return_value = fake_result
         monkeypatch.setitem(sys.modules, "skills.engine.ocr.consensus", fake_consensus_mod)
-        monkeypatch.setitem(sys.modules, "skills.engine.ocr", types.ModuleType("skills.engine.ocr"))
 
         captured_records = []
         fake_rt = MagicMock()

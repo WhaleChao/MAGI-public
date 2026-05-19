@@ -41,6 +41,50 @@ except Exception:
 
 logger = logging.getLogger(__name__)
 
+
+def _load_local_dotenv() -> None:
+    try:
+        from dotenv import load_dotenv as _load_dotenv
+        from api.runtime_paths import get_magi_root_dir
+        _load_dotenv(get_magi_root_dir() / ".env", override=False)
+    except Exception:
+        logger.debug("silent-catch dotenv load", exc_info=True)
+
+
+_load_local_dotenv()
+
+_OSC_NAS_HOME_USER = (
+    os.environ.get("MAGI_NAS_HOME_USER")
+    or os.environ.get("MAGI_NAS_USER")
+    or "home"
+).strip().strip("/\\") or "home"
+_OSC_NAS_CLOSED_SHARE_NAME = (
+    os.environ.get("MAGI_NAS_CLOSED_SHARE_NAME")
+    or os.environ.get("MAGI_NAS_ARCHIVE_SHARE")
+    or "lumi"
+).strip().strip("/\\") or "lumi"
+
+
+def _osc_closed_share_aliases() -> list[str]:
+    aliases = [_OSC_NAS_CLOSED_SHARE_NAME, "lumi", "archive"]
+    out: list[str] = []
+    for item in aliases:
+        text = str(item or "").strip().strip("/\\")
+        if text and text not in out:
+            out.append(text)
+    return out
+
+
+def _osc_canonical_active_share_windows() -> str:
+    return (
+        os.environ.get("MAGI_CANONICAL_ACTIVE_SHARE_PREFIX")
+        or f"Z:\\{_OSC_NAS_HOME_USER}"
+    ).replace("/", "\\").rstrip("\\")
+
+
+def _osc_canonical_active_share_posix() -> str:
+    return _osc_canonical_active_share_windows().replace("\\", "/")
+
 # ---------------------------------------------------------------------------
 # 1. Database config and connection functions
 # ---------------------------------------------------------------------------
@@ -400,7 +444,8 @@ def _osc_norm_path(path_str: str) -> str:
     s2 = s.replace("/", "\\")
     up = s2.upper()
     if up.startswith("K:\\SYNOLOGYDRIVE"):
-        return s2.replace("K:\\SynologyDrive", "Z:\\lumi63181107").replace("K:\\SYNOLOGYDRIVE", "Z:\\lumi63181107")
+        target = _osc_canonical_active_share_windows()
+        return s2.replace("K:\\SynologyDrive", target).replace("K:\\SYNOLOGYDRIVE", target)
     if up.startswith("K:\\LUMI"):
         return "Z:" + s2[2:]
     if up.startswith("K:"):
@@ -417,17 +462,25 @@ def _osc_local_path_candidates(path_str: str) -> list[str]:
 
 def _osc_allowed_local_roots() -> list[str]:
     magi_root = Path(__file__).resolve().parents[2]
+    template_roots = [
+        os.environ.get("MAGI_OSC_TEMPLATE_FOLDER", ""),
+        str(Path.home() / "Desktop" / "0000-0000-範本-消費者債務清理"),
+    ]
+    closed_alias_roots: list[str] = []
+    for share_name in _osc_closed_share_aliases():
+        closed_alias_roots.extend([
+            str(Path.home() / "Library/CloudStorage/SynologyDrive-homes" / share_name),
+            str(Path.home() / "SynologyDrive/homes" / share_name),
+            str(Path.home() / "SynologyDrive" / share_name),
+            f"/Volumes/{share_name}/{share_name}",
+            f"/Volumes/{share_name}-1/{share_name}",
+            f"/Volumes/{share_name}-2/{share_name}",
+        ])
     roots = default_synology_share_roots(include_closed=False) + [
         str(magi_root / "exports"),
         str(magi_root / "static" / "exports"),
-        str(Path.home() / "Library/CloudStorage/SynologyDrive-homes/lumi"),
-        str(Path.home() / "SynologyDrive/homes/lumi"),
-        str(Path.home() / "SynologyDrive/lumi"),
-        "/Volumes/homes/lumi63181107",
-        "/Volumes/lumi/lumi",
-        "/Volumes/lumi-1/lumi",
-        "/Volumes/lumi-2/lumi",
-    ]
+        f"/Volumes/homes/{_OSC_NAS_HOME_USER}",
+    ] + closed_alias_roots + [p for p in template_roots if str(p or "").strip()]
     out = []
     for root in roots:
         rp = os.path.realpath(root)
@@ -665,15 +718,17 @@ def _osc_smb_candidates(path_str: str) -> list[str]:
         p = translate_local_path_to_canonical(p).replace("\\", "/")
     out: list[str] = []
     rel = ""
-    if p.startswith("Z:/lumi63181107"):
-        rel = p[len("Z:/lumi63181107"):].lstrip("/")
-        for base in [f"smb://{host}/SynologyDrive", f"smb://{host}/home", f"smb://{host}/homes/lumi63181107"]:
+    active_prefix = _osc_canonical_active_share_posix()
+    if p.startswith(active_prefix):
+        rel = p[len(active_prefix):].lstrip("/")
+        for base in [f"smb://{host}/SynologyDrive", f"smb://{host}/home", f"smb://{host}/homes/{_OSC_NAS_HOME_USER}"]:
             out.append(f"{base}/{rel}" if rel else base)
     elif p.startswith("Y:/"):
         rel = p[len("Y:/"):].lstrip("/")
-        if rel.startswith("lumi/"):
-            rel = rel[len("lumi/"):]
-        for base in [f"smb://{host}/lumi/lumi", f"smb://{host}/lumi", f"smb://{host}/home"]:
+        closed_prefix = _OSC_NAS_CLOSED_SHARE_NAME + "/"
+        if rel.lower().startswith(closed_prefix.lower()):
+            rel = rel[len(closed_prefix):]
+        for base in [f"smb://{host}/{_OSC_NAS_CLOSED_SHARE_NAME}/{_OSC_NAS_CLOSED_SHARE_NAME}", f"smb://{host}/{_OSC_NAS_CLOSED_SHARE_NAME}", f"smb://{host}/home"]:
             out.append(f"{base}/{rel}" if rel else base)
     elif p.lower().startswith("smb://"):
         out.append(p)
@@ -706,7 +761,7 @@ def _osc_windows_unc_candidates(path_str: str) -> list[str]:
     """
     Return Windows UNC \\\\nas-host\\share\\... candidates for NAS browsing on Win.
 
-    Maps Y:\\lumi\\... and Z:\\lumi63181107\\... back to NAS shares.
+    Maps configured Y:/archive and Z:/active-share paths back to NAS shares.
     Used by web UI on Windows clients (Explorer / file:// fallback).
     """
     try:
@@ -717,21 +772,23 @@ def _osc_windows_unc_candidates(path_str: str) -> list[str]:
     candidates: list[str] = []
     norm = _osc_norm_path(path_str)
     np = norm.replace("/", "\\")
-    # Y:\lumi\... → \\nas-host\lumi\...
+    # Y:\<archive-share>\... → \\nas-host\<archive-share>\...
     if np.upper().startswith("Y:\\"):
         rel = np[3:]  # 去掉 Y:\
-        if rel.lower().startswith("lumi\\"):
-            sub = rel[5:]
-            candidates.append(f"\\\\{host}\\lumi\\{sub}")
-            candidates.append(f"\\\\{host}\\lumi\\lumi\\{sub}")
+        closed_prefix = _OSC_NAS_CLOSED_SHARE_NAME + "\\"
+        if rel.lower().startswith(closed_prefix.lower()):
+            sub = rel[len(closed_prefix):]
+            candidates.append(f"\\\\{host}\\{_OSC_NAS_CLOSED_SHARE_NAME}\\{sub}")
+            candidates.append(f"\\\\{host}\\{_OSC_NAS_CLOSED_SHARE_NAME}\\{_OSC_NAS_CLOSED_SHARE_NAME}\\{sub}")
         else:
             candidates.append(f"\\\\{host}\\{rel}")
-    # Z:\lumi63181107\... → \\nas-host\homes\lumi63181107\... + \\nas-host\SynologyDrive\...
+    # Z:\<active-share>\... → \\nas-host\homes\<user>\... + \\nas-host\SynologyDrive\...
     elif np.upper().startswith("Z:\\"):
         rel = np[3:]
-        if rel.lower().startswith("lumi63181107\\"):
-            sub = rel[len("lumi63181107\\"):]
-            candidates.append(f"\\\\{host}\\homes\\lumi63181107\\{sub}")
+        home_prefix = _OSC_NAS_HOME_USER + "\\"
+        if rel.lower().startswith(home_prefix.lower()):
+            sub = rel[len(home_prefix):]
+            candidates.append(f"\\\\{host}\\homes\\{_OSC_NAS_HOME_USER}\\{sub}")
             candidates.append(f"\\\\{host}\\SynologyDrive\\{sub}")
             candidates.append(f"\\\\{host}\\home\\{sub}")
         else:
@@ -880,16 +937,23 @@ def _osc_scan_nas_for_case_folder(case_number: str, *, client_name: str = "") ->
         return ""
     import time as _time
     tokens = [t for t in [cn, cln] if t]
-    # 找 NAS 01_案件 base：枚舉允許的 root
+    # 找 NAS 01_案件 base：枚舉允許的 root。allowed roots 有兩種常見型態：
+    #   /Volumes/homes/<account>                    -> 直接含 01_案件
+    #   /Users/.../SynologyDrive-homes/<share/user> -> 需往下一層找 01_案件
     for root in _osc_allowed_local_roots():
-        # NAS 標準層：<root>/<lumi*>/01_案件/...
         try:
+            bases: list[str] = []
+            direct = os.path.join(root, "01_案件")
+            if os.path.isdir(direct):
+                bases.append(direct)
             for top in os.listdir(root):
                 if "lumi" not in top.lower():
                     continue
                 base = os.path.join(root, top, "01_案件")
                 if not os.path.isdir(base):
                     continue
+                bases.append(base)
+            for base in _osc_unique_strings(bases):
                 count = 0
                 for dirpath, dirnames, _ in os.walk(base):
                     rel_depth = dirpath[len(base):].count(os.sep)
@@ -900,7 +964,7 @@ def _osc_scan_nas_for_case_folder(case_number: str, *, client_name: str = "") ->
                         if any(t in d for t in tokens):
                             full = os.path.join(dirpath, d)
                             try:
-                                from skills.bridge.case_path_mapper import translate_local_path_to_canonical
+                                from api.case_path_mapper import translate_local_path_to_canonical
                                 return translate_local_path_to_canonical(full)
                             except Exception:
                                 return full
@@ -980,7 +1044,104 @@ def _osc_fetch_url_text(url: str, timeout: int = 20) -> dict:
 
 
 def _osc_lookup_fulltext_fallback(title: str = "", case_number: str = "", url: str = "") -> dict:
-    return {"ok": False, "error": "public_release_feature_removed"}
+    """
+    Fallback source for sites that block direct scraping (e.g. login-gated pages).
+    Try retrieving full text from local DB mirrors first.
+    """
+    t = (title or "").strip()
+    cn = (case_number or "").strip()
+    u = (url or "").strip()
+    try:
+        from api.osc.insight_filters import is_extractive_fast_judgment_digest
+    except Exception:
+        is_extractive_fast_judgment_digest = lambda *values: False
+    try:
+        params = []
+        clauses = []
+        if cn:
+            clauses.append("case_number LIKE %s")
+            params.append(f"%{cn}%")
+        if t:
+            clauses.append("(document_name LIKE %s OR case_reason LIKE %s)")
+            params.extend([f"%{t[:80]}%", f"%{t[:80]}%"])
+        if u:
+            clauses.append("source_file LIKE %s")
+            params.append(f"%{u}%")
+        if clauses:
+            row, _ = _osc_exec(
+                f"""
+                SELECT id, document_name, case_number, case_reason, source_file, insight_text, raw_text
+                FROM legal_insights
+                WHERE {' OR '.join(clauses)}
+                ORDER BY CHAR_LENGTH(COALESCE(insight_text, raw_text, '')) DESC, extracted_date DESC, id DESC
+                LIMIT 1
+                """,
+                tuple(params),
+                fetch="one",
+            )
+            if row:
+                txt = (row.get("insight_text") or row.get("raw_text") or "").strip()
+                if len(txt) >= 300 and not is_non_extractable_legal_insight(
+                    row.get("document_name"),
+                    row.get("case_reason"),
+                    row.get("source_file"),
+                    txt,
+                ):
+                    return {
+                        "ok": True,
+                        "text": txt,
+                        "source": "fallback_legal_insights",
+                        "matched": {
+                            "id": row.get("id"),
+                            "title": row.get("document_name") or "",
+                            "case_number": row.get("case_number") or "",
+                        },
+                    }
+    except Exception:
+        logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, "_osc_lookup_fulltext_fallback:legal_insights", exc_info=True)
+    try:
+        params = []
+        clauses = []
+        if cn:
+            clauses.append("case_number LIKE %s")
+            params.append(f"%{cn}%")
+        if t:
+            clauses.append("(case_number LIKE %s OR summary LIKE %s)")
+            params.extend([f"%{t[:40]}%", f"%{t[:120]}%"])
+        if u:
+            clauses.append("source_url LIKE %s")
+            params.append(f"%{u}%")
+        if clauses:
+            row, _ = _osc_exec(
+                f"""
+                SELECT id, court_name, case_number, summary, full_text, source_url
+                FROM court_judgments
+                WHERE {' OR '.join(clauses)}
+                ORDER BY CHAR_LENGTH(COALESCE(full_text, summary, '')) DESC, crawled_at DESC, id DESC
+                LIMIT 1
+                """,
+                tuple(params),
+                fetch="one",
+            )
+            if row:
+                summary_text = (row.get("summary") or "").strip()
+                if is_extractive_fast_judgment_digest(summary_text) and not (row.get("full_text") or "").strip():
+                    return {"ok": False, "error": "fast_digest_without_full_text"}
+                txt = (row.get("full_text") or summary_text).strip()
+                if len(txt) >= 300:
+                    return {
+                        "ok": True,
+                        "text": txt,
+                        "source": "fallback_court_judgments",
+                        "matched": {
+                            "id": row.get("id"),
+                            "title": f"{row.get('court_name') or ''} {row.get('case_number') or ''}".strip(),
+                            "case_number": row.get("case_number") or "",
+                        },
+                    }
+    except Exception:
+        logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, "_osc_lookup_fulltext_fallback:court_judgments", exc_info=True)
+    return {"ok": False, "error": "fallback_not_found"}
 
 
 # ---------------------------------------------------------------------------
@@ -1302,7 +1463,83 @@ def _osc_pick_exact_judicial_search_result(items: list[dict], *, title: str = ""
 
 
 def _osc_fetch_fulltext_from_exact_case_search(*, title: str = "", case_number: str = "", timeout_sec: int = 180) -> dict:
-    return {"ok": False, "error": "public_release_feature_removed"}
+    target = _osc_parse_structured_case_spec(title=title, case_number=case_number)
+    if not (target.get("case_year") and target.get("case_word") and target.get("case_no")):
+        return {"ok": False, "error": "structured_case_unavailable"}
+
+    search_payload = {
+        "keywords": "",
+        "max_results": 20,
+        "headless": True,
+        "timeout_sec": max(60, min(240, int(timeout_sec))),
+        "case_year": target.get("case_year") or "",
+        "case_word": target.get("case_word") or "",
+        "case_no": target.get("case_no") or "",
+    }
+    search_courts = [
+        _OSC_JUDICIAL_COURT_SEARCH_LABELS.get(court_name, court_name)
+        for court_name in (target.get("courts") or [])
+        if str(court_name or "").strip()
+    ]
+    search_courts = _osc_unique_keep_order(search_courts)
+    if search_courts:
+        search_payload["courts"] = search_courts
+
+    rr = _osc_run_skill(
+        "judicial-web-search",
+        _osc_skill_json_task("search", search_payload),
+        timeout_sec=max(120, int(timeout_sec) + 60),
+        route_key="osc:insights:fetch_full:exact_case_search",
+    )
+    rp = _osc_parse_skill_output(rr)
+    if not rp.get("success"):
+        return {"ok": False, "error": rp.get("error") or "judicial_exact_search_failed"}
+
+    items = _osc_load_judicial_search_results(rp)
+    best = _osc_pick_exact_judicial_search_result(items, title=title, case_number=case_number)
+    if not best:
+        return {"ok": False, "error": "judicial_exact_case_not_found"}
+
+    fetch_payload = {
+        "url": str(best.get("url") or "").strip(),
+        "headless": True,
+        "timeout_sec": max(45, min(180, int(timeout_sec))),
+        "max_chars": 180000,
+    }
+    rr2 = _osc_run_skill(
+        "judicial-web-search",
+        _osc_skill_json_task("fetch_text", fetch_payload),
+        timeout_sec=max(120, int(timeout_sec) + 60),
+        route_key="osc:insights:fetch_full:exact_case_fetch",
+    )
+    rp2 = _osc_parse_skill_output(rr2)
+    text = ""
+    text_path = str(rp2.get("text_path") or "").strip() if isinstance(rp2, dict) else ""
+    if text_path and os.path.exists(text_path):
+        try:
+            with open(text_path, "r", encoding="utf-8", errors="replace") as f:
+                text = (f.read() or "").strip()
+        except Exception:
+            text = ""
+    if (not text) and isinstance(rp2, dict):
+        text = str(rp2.get("text") or "").strip()
+    if (not text) and fetch_payload["url"]:
+        direct = _osc_fetch_url_text(fetch_payload["url"], timeout=max(20, min(60, int(timeout_sec))))
+        if direct.get("ok"):
+            text = str(direct.get("text") or "").strip()
+    if len(text) < 120:
+        return {"ok": False, "error": "judicial_exact_case_text_not_found"}
+
+    return {
+        "ok": True,
+        "source": "fallback_judicial_exact_case",
+        "text": text,
+        "matched": {
+            "title": str(best.get("title") or ""),
+            "url": str(best.get("url") or ""),
+            "case_number_query": str(target.get("case_number_query") or ""),
+        },
+    }
 
 
 def _osc_pick_best_manifest_item(items: list[dict], *, title: str = "", case_number: str = "") -> dict:
@@ -1344,11 +1581,212 @@ def _osc_pick_best_manifest_item(items: list[dict], *, title: str = "", case_num
 
 
 def _osc_summarize_legal_insight(full_text: str) -> str:
-    return ""
+    text = str(full_text or "").strip()
+    if not text:
+        return ""
+    prompt = (
+        "你是臺灣法律實務見解萃取器。\n"
+        "以下是一份裁判全文，請從中萃取「法院對法律問題的解釋與見解」，\n"
+        "重點不是判決結果（誰勝誰敗、刑度多少），而是法院在判決理由中\n"
+        "對法律爭點的論述、法條的解釋適用、以及可供其他案件援引的法律見解。\n\n"
+        "輸出語言：繁體中文（臺灣用語）。\n"
+        "輸出格式固定為：\n"
+        "1) 法律爭點：本案涉及哪些法律問題\n"
+        "2) 法院見解：法院對各爭點的法律解釋與論理（逐點摘錄，保留原文關鍵用語）\n"
+        "3) 可援引要旨（條列）：可直接引用於書狀中的法院見解要旨，每條標註出處段落\n\n"
+        "注意：\n"
+        "- 不要摘要案件事實經過或判決主文\n"
+        "- 聚焦於法院的法律論理、法條解釋、證據法則適用等「見解」部分\n"
+        "- 若判決中引用其他判例或決議，請一併摘錄\n"
+        "- 不要回覆語言偏好確認，不要加入前言，請勿杜撰。\n\n"
+        f"【全文開始】\n{text[:180000]}\n【全文結束】"
+    )
+    bad_markers = ("近期行程", "婦女節", "確認鄭羢允案", "法扶開辦末日")
+
+    def _clean_output(raw: str) -> str:
+        cleaned = str(raw or "").strip()
+        if not cleaned:
+            return ""
+        if _normalize_output_text:
+            try:
+                cleaned = _normalize_output_text(cleaned, platform="WEB")
+            except Exception:
+                logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, "_osc_summarize:_clean_output", exc_info=True)
+        return cleaned.strip()
+
+    def _usable(raw: str) -> bool:
+        cleaned = _clean_output(raw)
+        if not cleaned:
+            return False
+        try:
+            from api.osc.insight_filters import is_non_extractable_legal_insight
+            if is_non_extractable_legal_insight(cleaned):
+                return False
+        except Exception:
+            logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, "_osc_summarize:_usable_filter", exc_info=True)
+        if any(marker in cleaned for marker in bad_markers):
+            return False
+        if "爭點" in cleaned and ("法院見解" in cleaned or "可援引" in cleaned or "可直接引用" in cleaned):
+            return True
+        return len(cleaned) >= 80
+
+    try:
+        from skills.bridge.inference_gateway import InferenceGateway
+        _gw = InferenceGateway()
+
+        rr = _gw.chat(
+            prompt,
+            task_type="legal_analysis",
+            timeout=int(os.environ.get("OSC_INSIGHT_SUMMARY_TIMEOUT_SEC", "120") or "120"),
+        )
+        out = _clean_output(rr.get("response") or "")
+        if rr.get("success") and _usable(out):
+            return out
+    except Exception:
+        logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, "_osc_summarize:primary", exc_info=True)
+
+    # Fallback: try shorter prompt
+    fallback_prompt = (
+        "請從以下裁判全文中萃取法院的法律見解（非判決結果）。\n"
+        "格式：1) 法律爭點 2) 法院見解 3) 可援引要旨（條列）\n"
+        "輸出繁體中文，不要摘要事實經過。\n\n"
+        f"【全文開始】\n{text[:60000]}\n【全文結束】"
+    )
+    try:
+        from skills.bridge.inference_gateway import InferenceGateway
+        _gw2 = InferenceGateway()
+
+        rr = _gw2.chat(
+            fallback_prompt,
+            task_type="legal_analysis",
+            timeout=int(os.environ.get("OSC_INSIGHT_SUMMARY_FALLBACK_TIMEOUT_SEC", "120") or "120"),
+        )
+        out = _clean_output(rr.get("response") or "")
+        if rr.get("success") and _usable(out):
+            return out
+    except Exception:
+        logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, "_osc_summarize:fallback", exc_info=True)
+
+    return "摘要失敗：本地摘要模型未產出可用內容。"
 
 
 def _osc_fetch_fulltext_from_judicial(*, title: str = "", case_number: str = "", case_reason: str = "", timeout_sec: int = 180) -> dict:
-    return {"ok": False, "error": "public_release_feature_removed"}
+    """
+    來源被登入保護/反爬阻擋時，
+    先走司法院案號精準查詢，再退回司法院全文搜尋歸檔，
+    最後才退回 judgment-collector。
+    """
+    reason = (title or "").strip() or (case_number or "").strip() or (case_reason or "").strip()
+    if not reason:
+        return {"ok": False, "error": "missing_query"}
+    archive_payload = {
+        "query": reason,
+        "max_results": 5,
+        "max_chars": 180000,
+        "headless": True,
+        "timeout_sec": max(90, min(240, int(timeout_sec))),
+    }
+    collect_payload = {
+        "case_reason": reason,
+        "case_number": (case_number or "").strip(),
+        "max_results": 5,
+        "max_chars": 180000,
+        "headless": True,
+        "timeout_sec": max(90, min(420, int(timeout_sec))),
+        "save_to_db": True,
+        "notify": False,
+    }
+
+    def _try_skill(skill: str, task: str, *, route_key: str, ok_source: str, summary_source: str, inline_source: str) -> dict:
+        rr = _osc_run_skill(
+            skill,
+            task,
+            timeout_sec=max(120, int(timeout_sec) + 60),
+            route_key=route_key,
+        )
+        rp = _osc_parse_skill_output(rr)
+        if not rp.get("success"):
+            return {"ok": False, "error": rp.get("error") or f"{skill}_failed"}
+        items = []
+        manifest_path = str(rp.get("manifest_path") or "").strip()
+        if manifest_path and os.path.exists(manifest_path):
+            try:
+                with open(manifest_path, "r", encoding="utf-8") as f:
+                    mf = json.load(f) or {}
+                items = mf.get("items") or []
+            except Exception:
+                items = []
+        if not items:
+            items = rp.get("items_preview") or rp.get("items") or []
+        best = _osc_pick_best_manifest_item(items, title=title, case_number=case_number)
+        path = str(best.get("archived_text_path") or best.get("text_path") or "").strip()
+        if path and os.path.exists(path):
+            try:
+                with open(path, "r", encoding="utf-8", errors="replace") as f:
+                    text = (f.read() or "").strip()
+                if len(text) >= 120:
+                    return {
+                        "ok": True,
+                        "source": ok_source,
+                        "text": text,
+                        "matched": {
+                            "title": str(best.get("title") or ""),
+                            "url": str(best.get("url") or ""),
+                            "path": path,
+                        },
+                    }
+            except Exception:
+                logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, "_osc_fetch_fulltext_from_judicial:_try_skill:read", exc_info=True)
+        summary_path = str(rp.get("summary_path") or "").strip()
+        if summary_path and os.path.exists(summary_path):
+            try:
+                with open(summary_path, "r", encoding="utf-8", errors="replace") as f:
+                    text = (f.read() or "").strip()
+                if len(text) >= 120:
+                    return {"ok": True, "source": summary_source, "text": text}
+            except Exception:
+                logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, "_osc_fetch_fulltext_from_judicial:_try_skill:summary", exc_info=True)
+        for it in (items or []):
+            txt = str(it.get("full_text") or it.get("text") or it.get("summary") or "").strip()
+            if len(txt) >= 300:
+                return {"ok": True, "source": inline_source, "text": txt}
+        return {"ok": False, "error": f"{skill}_fulltext_not_found"}
+
+    last_error = "judicial_fulltext_not_found"
+
+    exact = _osc_fetch_fulltext_from_exact_case_search(
+        title=title,
+        case_number=case_number,
+        timeout_sec=max(90, min(240, int(timeout_sec))),
+    )
+    if exact.get("ok"):
+        return exact
+    last_error = str(exact.get("error") or last_error)
+
+    archive = _try_skill(
+        "judicial-flow-search-archive",
+        _osc_skill_json_task("search_archive", archive_payload),
+        route_key="osc:insights:fetch_full:search_archive",
+        ok_source="fallback_judicial_archive",
+        summary_source="fallback_judicial_archive_summary",
+        inline_source="fallback_judicial_archive_inline",
+    )
+    if archive.get("ok"):
+        return archive
+    last_error = str(archive.get("error") or last_error)
+
+    collector = _try_skill(
+        "judgment-collector",
+        _osc_skill_json_task("collect", collect_payload),
+        route_key="osc:insights:fetch_full:judgment_collector",
+        ok_source="fallback_judgment_collector",
+        summary_source="fallback_judgment_collector_summary",
+        inline_source="fallback_judgment_collector_inline",
+    )
+    if collector.get("ok"):
+        return collector
+    last_error = str(collector.get("error") or last_error)
+    return {"ok": False, "error": last_error}
 
 
 # ---------------------------------------------------------------------------

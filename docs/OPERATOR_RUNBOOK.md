@@ -1,6 +1,6 @@
 # MAGI Operator Runbook v2
 
-版本：v2.1 | 日期：2026-05-07
+版本：v2.2 | 日期：2026-05-12
 
 ---
 
@@ -12,7 +12,7 @@ MAGI（Multi-Agent Governance Infrastructure）是一套多代理治理基礎設
 - **Tools API** — 外部工具 HTTP API（Flask，port 5003）
 - **Orchestrator** — 自然語言路由與任務編排引擎（委派至 pipelines/ + domains/）
 - **Routing Layer** — 統一路由層（api/routing/，含 Registry 系統）
-- **Skills** — 67+ 可插拔技能模組
+- **Skills** — 70+ 可插拔技能模組
 - **Channels** — LINE Bot、Discord Bot、Telegram Bot
 - **Status Bar** — macOS 選單列即時監控（gui/magi_menubar.py）
 - **CLI** — `magi` 命令列管理工具（scripts/magi_cli.sh）
@@ -29,7 +29,7 @@ MAGI（Multi-Agent Governance Infrastructure）是一套多代理治理基礎設
 | Python | 3.12+ |
 | Database | MariaDB 10.6+ / MySQL 8.0+ |
 | RAM | 8 GB（建議 16 GB） |
-| Disk | 10 GB（不含模型檔案） |
+| Disk | 50 GB 可用空間建議值；低於 30 GB 進入核心模式；低於 15 GB 視為緊急 |
 
 ---
 
@@ -47,14 +47,15 @@ python3 scripts/install_magi.py --dry-run --check-live
 # 3. 正式安裝 core + optional dependencies
 python3 scripts/install_magi.py --yes
 
-# 4. 偵測本機硬體、Python 套件、MLX/MTP sidecar、模型目錄
-python3 scripts/magi_doctor.py
+# 4. 產生第一次使用 checklist 與本機 .env
+python3 scripts/first_run_setup.py --write-env
+python3 scripts/first_run_setup.py --json
 
-# 5. 建立本機設定檔
-cp .env.example .env
+# 5. 編輯 .env 後，偵測本機硬體、Python 套件、MLX/MTP sidecar、模型目錄
+python3 scripts/magi_doctor.py
 ```
 
-`scripts/install_magi.py` 預設採 dry-run，只有傳入 `--yes` 才會建立 `.venv`、安裝 requirements 並執行 doctor。`scripts/magi_doctor.py --json` 可輸出機器可讀報告，適合附在 issue 或遠端協助紀錄。
+`scripts/install_magi.py` 預設採 dry-run，只有傳入 `--yes` 才會建立 `.venv`、安裝 requirements 並執行 doctor。`scripts/first_run_setup.py` 會建立不進 git 的 `.env`、補上本機隨機 secret、列出缺少的必要設定，且不輸出 token 或密碼。`scripts/magi_doctor.py --json` 可輸出機器可讀報告，適合附在 issue 或遠端協助紀錄。
 
 ### 維運者手動安裝
 
@@ -111,7 +112,7 @@ kill $(cat rpc_server.pid 2>/dev/null)
 ### 健康檢查
 
 ```bash
-magi status                             # 完整系統儀表板
+magi status                             # 完整系統狀態
 curl http://127.0.0.1:5002/health       # Server health
 curl http://127.0.0.1:5003/health       # Tools API health
 curl http://127.0.0.1:8090/health       # Gemma 4 E4B / MTP sidecar health
@@ -120,6 +121,18 @@ python3 scripts/public_release_audit.py # 公開前敏感資訊稽核
 python3 skills/ops/system_test.py       # 12 項系統測試
 python3 skills/magi-doctor/action.py --task diagnose  # 完整診斷
 ```
+
+### 對外 / 商用 live gate
+
+```bash
+./venv/bin/python scripts/ops/run_test_suite.py --suite ci
+./venv/bin/python scripts/ops/run_test_suite.py --suite smoke62
+./venv/bin/python scripts/ops/run_test_suite.py --suite production-live --json-out .runtime/production_live_latest.json
+./venv/bin/python scripts/ops/run_test_suite.py --suite commercial-release --json-out .runtime/commercial_release_latest.json
+./venv/bin/python scripts/public_release_audit.py --strict
+```
+
+`smoke62` 是含商用守門的完整冒煙測試；`production-live` 與 `commercial-release` 才是交付他人使用前的 live 門檻。
 
 ### 查看 Logs
 
@@ -145,7 +158,6 @@ MAGI 使用 macOS LaunchAgents 管理程序生命週期。所有 plist 位於 `~
 | `com.magi.omlx-embed` | ModernBERT embedding（port 8081） | 常駐 |
 | `com.magi.db-proxy` | SSH tunnel 至遠端 MariaDB | 常駐 |
 | `com.magi.smb-reconnect` | NAS 網路中斷自動重連 | 常駐 |
-| `com.magi.caddy-openclaw` | Caddy 反向代理 _(⚠️ DEPRECATED 2026-05-03：OpenClaw 已棄用，本段保留為歷史參考)_ | 常駐 |
 | `com.magi.nightly-*` | 夜間排程任務（多個） | 按排程 |
 
 ### 手動管理
@@ -230,7 +242,8 @@ MAGI_FORCE_HTTPS=1                             # 啟用 Secure cookie
 公開前必跑：
 
 ```bash
-python3 scripts/public_release_audit.py
+python3 scripts/public_release_audit.py --public-isolation
+python3 scripts/first_run_setup.py --public --json
 python3 scripts/install_magi.py --dry-run --check-live
 git status --short
 ```
@@ -243,7 +256,20 @@ git status --short
 - `runtime/supplement_cache/`
 - `docs/deploy/`
 
-若 `public_release_audit.py` 回報 error，不得 push。warning 多為測試假資料或私網範例，仍應人工快速複核。
+若 `public_release_audit.py --strict` 回報 error 或 warning，不得 push。公開推送前請使用 `--public-isolation --strict`；公開版隔離會阻擋私有實務見解來源整合、私人信箱與私人 NAS 標記，`.gitignore` 中保留忽略規則不算違規。公開安裝版本若不含私有 DB，可另用 `--skip-db` 做安裝性檢查，但正式環境不得跳過 DB / NAS / channel live gate。
+
+### 6B. Google Calendar / 法扶計數檢查
+
+- 一般 OSC 事件匯入要求標題或描述開頭有 OSC 案件系統編號。
+- 法扶活動計數可接受同事手動行程，但必須由 DB 判斷為法扶案件，且內容屬於開庭、會議、律見、閱卷、電話聯繫。
+- 同名多案要靠 `laf_case_no`、`application_no`、`case_category=法律扶助案件`、`legal_aid_status`、案由或 OSC 編號消歧。仍無法消歧時跳過，不猜測。
+- live 檢查可用 GCal dry-run；不得為了補數字手動把不明事件寫入 `case_todos`。
+
+### 6C. NAS / 磁碟安全
+
+- `/Volumes/lumi`、`/Volumes/homes` 不得預先建立空目錄，避免 macOS 掛成 `lumi-1` / `homes-1`。
+- 可重建快取可清；Paperclip / 單機版 JSON、pickle、db、sqlite 狀態檔不可清。
+- 退役 Ollama root 可清，但正式模型、訓練成果、司法 raw backlog、DB backup、NAS 資料不可清。
 
 ---
 
@@ -337,6 +363,8 @@ magi start
 | `ModuleNotFoundError` | 依賴未安裝 | `venv/bin/pip install -r requirements.txt` |
 | `Connection refused (DB)` | 資料庫未啟動或連線資訊錯誤 | 檢查 DB 服務狀態與 .env 設定 |
 | `Address already in use` | Port 5002/5003 被佔用 | `lsof -i :5002` 找出佔用程序 |
+| 網頁 `not_found` | daemon 尚未載入新版 route | 重啟 MAGI daemon 後重試 |
+| 結案搬移 HTTP 502 | 搬檔耗時或 NAS 掛載異常 | 查搬移任務狀態、確認 `/Volumes/lumi` 正確掛載 |
 
 ### LINE Bot 不回應
 
@@ -419,7 +447,7 @@ magi zombie              # 自動偵測並清理
 | DB 連線 | `magi status` Database 段 | 容錯切換時 |
 | NAS 掛載 | `magi status` NAS Mounts 段 | NOT MOUNTED |
 | 遠端節點 | `magi status` Remote Nodes 段 | DOWN |
-| 磁碟空間 | `df -h` | < 10% 可用 |
+| 磁碟空間 | `df -h` / `disk_low_water_alarm` | < 50 GB 警告；< 30 GB 核心模式；< 15 GB 緊急 |
 | Log 大小 | `du -sh .agent/` | > 500 MB |
 | 推理延遲 | Log 中的 inference_ms | > 30s 平均 |
 | 排程任務 | 狀態列 Cron Jobs 子選單 | 超過 25 小時未執行 |
@@ -435,6 +463,56 @@ magi zombie              # 自動偵測並清理
 - NAS 掛載狀態 + 磁碟用量
 - 資料庫容錯詳情
 - oMLX 推理引擎狀態
+
+### 磁碟自動維護
+
+MAGI 會用三層保守機制維持本機空間：
+
+```bash
+python3 scripts/ops/disk_low_water_alarm.py
+python3 scripts/ops/disk_cleanup_healthcheck.py --dry-run
+python3 scripts/ops/disk_cleanup_healthcheck.py --apply
+python3 scripts/ops/weekly_cache_cleanup.py --dry-run
+```
+
+- 每小時低水位守門：低於門檻時會先執行 `disk_cleanup_healthcheck --apply`，再寫入告警。
+- 重型任務守門：司法院 backlog、夜間補抓、PDF/OCR 基準與新聞摘要等非核心任務會先經過 `resource_guarded_run.py`；低水位時跳過而不是硬跑。
+- 每日清理與壓縮：限制 `~/.omlx/cache-*` 快取上限、輪替 metrics、清舊 DB 備份、gzip 舊 runtime/log/report 文字檔。
+- NAS 回收筒清理：私有版排程會啟用 `MAGI_DISK_NAS_RECYCLE_ENABLE=1`，每日清理 `/Volumes/homes/#recycle`、`/Volumes/lumi/$RECYCLE.BIN` 等回收筒中超過 14 天的舊項目。
+- NAS 重型回收筒清理：每日 04:20 另跑 `MAGI_DISK_NAS_RECYCLE_HEAVY_ENABLE=1`，只在離峰分批處理回收筒內 `Backup`、`Drive`、`SteamLibrary`、`.app` 等巨型舊備份；每輪限時限量，沒清完會隔天接續，避免 SMB 一次刪太久。
+- 每週快取清理：清退役 Ollama 與可重建套件快取。
+- 模組暫存清掃：`exports`、`.magi_doc_runs`、`downloads`、`閱卷下載`、`筆錄下載`、`laf_downloads`、`法扶資料` 會依保留期清理舊 DOCX/PDF/TXT/圖片等輸出暫存。
+- 紅線：不碰 NAS 案件資料夾、不碰 MariaDB 正文、不碰 `~/.omlx/models*` 模型本體、不碰 `~/.omlx/training` 訓練成果、不碰 paperclip/單機版 JSON、pickle、sqlite/db。
+
+常用調整：
+
+```bash
+MAGI_DISK_OMLX_CACHE_CAP_GB=8
+MAGI_DISK_OMLX_CACHE_LOW_WATER_CAP_GB=5
+MAGI_DISK_OMLX_CACHE_CRITICAL_CAP_GB=3
+MAGI_DISK_EXPORT_OUTPUT_MAX_AGE_DAYS=3
+MAGI_DISK_MODULE_STAGING_MAX_AGE_DAYS=14
+MAGI_DISK_NAS_RECYCLE_MAX_AGE_DAYS=14
+MAGI_DISK_NAS_RECYCLE_MAX_DELETE_ITEMS=50
+MAGI_DISK_NAS_RECYCLE_MAX_RUNTIME_SEC=180
+MAGI_DISK_NAS_RECYCLE_HEAVY_MAX_FILES=5000
+MAGI_DISK_NAS_RECYCLE_HEAVY_MAX_RUNTIME_SEC=900
+MAGI_DISK_NAS_RECYCLE_HEAVY_MAX_DELETE_GB=50
+```
+
+### 日夜模型切換前重開
+
+私有單機部署可在日夜 oMLX 切換前讓 macOS 重開，釋放 swap 與 VM 壓力：
+
+```bash
+python3 scripts/ops/scheduled_reboot_guard.py --mode day --json
+python3 scripts/ops/scheduled_reboot_guard.py --mode night --json
+```
+
+- 公開版排程種子預設關閉 `job_reboot_before_day_model_switch`、`job_reboot_before_night_model_switch`，避免客戶安裝後自動重開。
+- 私有版可啟用兩個 job：06:40 重開後由 06:55 day switch 載入 E4B，21:35 重開後由 21:50 night switch 載入 26B。
+- 真正執行重開必須有 `MAGI_ALLOW_SCHEDULED_REBOOT=1`，且只允許在維運窗內執行。
+- 守門會避開正在跑的法扶、閱卷、筆錄、判決收集、PDF 命名、長文件翻譯等任務；若偵測到 Office 有未儲存文件，也會跳過重開。
 
 ---
 

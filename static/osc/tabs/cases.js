@@ -39,6 +39,105 @@ function isLegalAidCaseRow(row = {}) {
     return text.includes("法律扶助案件") || text.includes("法律扶助") || text.includes("法扶");
 }
 
+function caseDisplayStatus(row = {}) {
+    const values = [row.status_display, row.effective_status, row.status, row.legal_aid_status];
+    for (const value of values) {
+        const text = String(value || "").trim();
+        if (!text) continue;
+        if (text === "未結案" || text === "未結案/進行中") return "進行中";
+        return text;
+    }
+    return "進行中";
+}
+
+function isFinalClosingStatusText(value = "") {
+    const text = String(value || "").trim().toLowerCase();
+    if (!text || text.includes("未結案")) return false;
+    if (text.includes("待報結") || text.includes("待送出") || text.includes("結案中")) return true;
+    if (text.includes("已結案") || ["closed", "close", "done", "completed"].includes(text)) return true;
+    return text === "結案";
+}
+
+function isClosingOrClosedCase(row = {}) {
+    return [caseDisplayStatus(row), row.status, row.legal_aid_status].some(isFinalClosingStatusText);
+}
+
+function isFinalClosedStatusText(value = "") {
+    const text = String(value || "").trim().toLowerCase();
+    if (!text || text.includes("未結案")) return false;
+    if (text.includes("待報結") || text.includes("待送出") || text.includes("結案中")) return false;
+    return text === "已結案" || ["closed", "close", "done", "completed", "結案"].includes(text);
+}
+
+function isFinalClosedCase(row = {}) {
+    return [caseDisplayStatus(row), row.status, row.legal_aid_status].some(isFinalClosedStatusText);
+}
+
+function shouldPushFinalClosedCasesLast() {
+    return !["closed", "archived"].includes(String(state.caseStatusScope || "all").toLowerCase());
+}
+
+function pushFinalClosedCasesLast(rows = []) {
+    if (!shouldPushFinalClosedCasesLast() || rows.length < 2) return rows;
+    return rows.map((row, index) => ({ row, index })).sort((a, b) => {
+        const ac = isFinalClosedCase(a.row) ? 1 : 0;
+        const bc = isFinalClosedCase(b.row) ? 1 : 0;
+        if (ac !== bc) return ac - bc;
+        return a.index - b.index;
+    }).map(item => item.row);
+}
+
+function isTemplateCaseRow(row = {}) {
+    const text = `${row.case_number || ""} ${row.client_name || ""} ${row.folder_path || ""} ${row.status || ""}`;
+    return text.includes("0000-0000-範本") || caseDisplayStatus(row) === "—";
+}
+
+function caseCloseButton(row = {}, extraClass = "") {
+    if (!row.id || isFinalClosedCase(row) || isTemplateCaseRow(row)) return "";
+    return `<button class="btn warn case-close-btn ${extraClass}" data-act="case-close" data-id="${esc(row.id)}" title="標記已結案並啟動結案搬移">結案</button>`;
+}
+
+function caseDisplayType(row = {}) {
+    return row.case_type_display || row.case_type || "";
+}
+
+function caseDisplayReason(row = {}) {
+    return row.case_reason_display || row.case_reason || "";
+}
+
+function caseStatusScopeLabel(scope) {
+    const labels = {
+        all: "全部狀態",
+        working: "可操作案件",
+        active: "進行中",
+        closing: "待報結或待送出",
+        pending_report: "待報結",
+        pending_submit: "待送出",
+        closed: "已結案",
+    };
+    return labels[scope || "all"] || labels.all;
+}
+
+function lafBadgeText(row = {}) {
+    const lafStatus = String(row.legal_aid_status || "").trim();
+    const displayStatus = caseDisplayStatus(row);
+    const visible = lafStatus && lafStatus !== "未結案" && lafStatus !== "未結案/進行中" ? lafStatus : displayStatus;
+    return `法扶 / ${visible || "進行中"}`;
+}
+
+function caseNotesText(row = {}) {
+    return String(row.notes || row.case_notes || "").trim();
+}
+
+function caseNotesBlock(row = {}) {
+    const notes = caseNotesText(row);
+    if (!notes) return "";
+    return `<div class="card-notes" title="${esc(notes)}">
+        <span class="label">備註</span>
+        <span class="value">${esc(notes)}</span>
+    </div>`;
+}
+
 function wbTodoDoneStatus(status) {
     const text = String(status || '').trim().toLowerCase();
     return ['completed', 'done', '已完成', '完成', 'cancelled', 'canceled', '取消'].includes(text);
@@ -60,32 +159,32 @@ function renderCases() {
     updateCaseSummary();
     if (!state.cases.length) {
         const hint = (state.caseStatusScope || "all") === "working"
-            ? "目前沒有進行中 / 結案中的案件。可切到「全部狀態」檢視完整案件。"
+            ? "目前沒有可操作案件。可切到「全部狀態」檢視完整案件。"
             : "沒有符合條件的案件資料。";
-        body.innerHTML = `<tr><td colspan="10" class="muted">${hint}</td></tr>`;
+        body.innerHTML = `<tr><td colspan="11" class="muted">${hint}</td></tr>`;
         if (cardGrid) cardGrid.innerHTML = `<div class="muted" style="padding:20px;">${hint}</div>`;
         return;
     }
-    const sorted = applySort([...state.cases], state.sort.col, state.sort.dir, state.sort.type);
+    const sorted = pushFinalClosedCasesLast(applySort([...state.cases], state.sort.col, state.sort.dir, state.sort.type));
 
     // Card view
     if (cardGrid) {
         const order = JSON.parse(localStorage.getItem('caseCardOrder') || '[]');
         const useManualOrder = !state.sort?.col && order.length;
-        const orderedCases = useManualOrder ? [...sorted].sort((a, b) => {
+        const orderedCases = pushFinalClosedCasesLast(useManualOrder ? [...sorted].sort((a, b) => {
             const ia = order.indexOf(String(a.id));
             const ib = order.indexOf(String(b.id));
             if (ia === -1 && ib === -1) return 0;
             if (ia === -1) return 1;
             if (ib === -1) return -1;
             return ia - ib;
-        }) : sorted;
+        }) : sorted);
 
         cardGrid.innerHTML = orderedCases.map(r => {
-            const statusLower = (r.status || "").toLowerCase();
+            const displayStatus = caseDisplayStatus(r);
             const isLaf = isLegalAidCaseRow(r);
-            const badgeClass = statusLower.includes('close') || statusLower.includes('結案') ? 'closed' : isLaf ? 'laf' : 'active';
-            const badgeText = isLaf ? '法扶' : (r.status || 'Active');
+            const badgeClass = isClosingOrClosedCase(r) ? 'closed' : isLaf ? 'laf' : 'active';
+            const badgeText = isLaf ? lafBadgeText(r) : displayStatus;
             return `
             <div class="case-card" draggable="true" data-case-id="${esc(r.id)}">
                 <div class="card-header">
@@ -94,16 +193,20 @@ function renderCases() {
                 </div>
                 <div class="card-meta">
                     <div><span class="label">案號</span> <span class="value">${esc(r.case_number || '-')}</span></div>
-                    <div><span class="label">案由</span> <span class="value">${esc(r.case_reason || '-')}</span></div>
+                    <div><span class="label">案由</span> <span class="value">${esc(caseDisplayReason(r) || '-')}</span></div>
                     <div><span class="label">法院</span> <span class="value">${esc(r.court_name || '-')}</span></div>
                     <div><span class="label">法院案號</span> <span class="value">${esc(r.court_case_no || '-')}</span></div>
-                    <div><span class="label">分類</span> <span class="value">${esc(r.case_type || '-')}</span></div>
+                    <div><span class="label">股別</span> <span class="value">${esc(r.court_division || '-')}</span></div>
+                    <div><span class="label">分類</span> <span class="value">${esc(caseDisplayType(r) || '-')}</span></div>
                     <div><span class="label">種類</span> <span class="value">${esc(r.case_category || '-')}</span></div>
                     ${r.laf_case_no ? `<div><span class="label">法扶</span> <span class="value">${esc(r.laf_case_no)}</span></div>` : ''}
                 </div>
+                ${caseNotesBlock(r)}
                 <div class="card-actions">
                     <button class="btn primary" data-act="case-open" data-id="${esc(r.id)}">資料夾</button>
-                    <button class="btn" data-act="case-workbench" data-id="${esc(r.id)}">工作台</button>
+                    ${caseCloseButton(r)}
+                    <button class="btn" data-act="case-workbench" data-id="${esc(r.id)}">案件處理</button>
+                    <button class="btn" data-act="case-doc-finalize" data-id="${esc(r.id)}">書狀定稿</button>
                     <button class="btn" data-act="case-edit" data-id="${esc(r.id)}">編輯</button>
                     <button class="btn" data-act="case-address-label" data-id="${esc(r.id)}">地址標籤</button>
                     <button class="btn danger" data-act="case-del" data-id="${esc(r.id)}">刪除</button>
@@ -119,16 +222,19 @@ function renderCases() {
     <tr class="row-clickable" data-case-id="${esc(r.id)}">
         <td>${esc(r.case_number)}</td>
         <td>${esc(r.client_name)}</td>
-        <td>${esc(r.case_type || "")}</td>
+        <td>${esc(caseDisplayType(r))}</td>
         <td>${esc(r.case_category || "")}</td>
-        <td>${esc(r.case_reason)}</td>
+        <td>${esc(caseDisplayReason(r))}</td>
         <td>${esc(r.court_name || "")}</td>
         <td>${esc(r.court_case_no)}</td>
+        <td>${esc(r.court_division || "")}</td>
         <td>${esc(r.laf_case_no)}</td>
-        <td>${esc(r.status)}</td>
+        <td>${esc(caseDisplayStatus(r))}</td>
         <td class="actions">
             <button class="btn primary" data-act="case-open" data-id="${esc(r.id)}">資料夾</button>
-            <button class="btn" data-act="case-workbench" data-id="${esc(r.id)}">工作台</button>
+            ${caseCloseButton(r)}
+            <button class="btn" data-act="case-workbench" data-id="${esc(r.id)}">案件處理</button>
+            <button class="btn" data-act="case-doc-finalize" data-id="${esc(r.id)}">書狀定稿</button>
             <button class="btn" data-act="case-edit" data-id="${esc(r.id)}">編輯</button>
             <button class="btn" data-act="case-address-label" data-id="${esc(r.id)}">📮 地址標籤</button>
             <button class="btn danger" data-act="case-del" data-id="${esc(r.id)}">刪除</button>
@@ -145,10 +251,7 @@ function renderCases() {
 
 function updateCaseSummary() {
     const cases = state.cases || [];
-    const closing = cases.filter(r => {
-        const s = String(r.status || "").toLowerCase();
-        return s.includes("close") || s.includes("結案");
-    }).length;
+    const closing = cases.filter(r => isClosingOrClosedCase(r)).length;
     const set = (id, value) => {
         const el = document.getElementById(id);
         if (el) el.textContent = String(value);
@@ -225,15 +328,15 @@ function buildCaseMagiContext() {
     const rows = (state.cases || []).slice(0, 40).map((r, idx) => [
         `${idx + 1}. ${r.case_number || "-"}`,
         `當事人=${r.client_name || "-"}`,
-        `分類=${r.case_type || "-"}`,
+        `分類=${caseDisplayType(r) || "-"}`,
         `種類=${r.case_category || "-"}`,
-        `案由=${r.case_reason || "-"}`,
+        `案由=${caseDisplayReason(r) || "-"}`,
         `法院案號=${r.court_case_no || "-"}`,
         `法扶案號=${r.laf_case_no || "-"}`,
-        `狀態=${r.status || "-"}`,
+        `狀態=${caseDisplayStatus(r) || "-"}`,
     ].join("｜"));
     return [
-        `目前案件篩選：分類=${state.caseType || "全部"}；種類=${state.caseKind || "全部"}；狀態=${state.caseStatusScope || "all"}；排序=${state.sort?.col || "預設"}`,
+        `目前案件篩選：分類=${state.caseType || "全部"}；種類=${state.caseKind || "全部"}；狀態=${caseStatusScopeLabel(state.caseStatusScope)}；排序=${state.sort?.col || "預設"}`,
         `目前顯示 ${state.cases?.length || 0} 筆案件。以下最多列 40 筆：`,
         rows.join("\n") || "目前沒有案件列。",
     ].join("\n");
@@ -297,18 +400,20 @@ async function editCase(id) {
     const panel = document.getElementById("caseEditorPanel");
     if (panel) panel.open = true;
     await loadCaseCourtOptions();
-    writeFields("case_", x, ["id", "case_number", "client_name", "client_phone", "client_email", "client_id_number", "laf_case_no", "application_no", "court_name", "court_case_no", "status", "folder_path", "notes"]);
+    writeFields("case_", x, ["id", "case_number", "client_name", "client_phone", "client_email", "client_id_number", "laf_case_no", "application_no", "court_name", "court_case_no", "court_division", "status", "folder_path", "notes"]);
     document.getElementById("case_category").value = x.case_category || "";
     document.getElementById("case_type").value = x.case_type || "";
     document.getElementById("case_stage").value = x.case_stage || "";
     document.getElementById("case_reason").value = x.case_reason || "";
+    const appNo = document.getElementById("case_application_no");
+    if (appNo && !appNo.value) appNo.value = x.laf_case_no || "";
 }
 
 function prepareNewCase() {
     const panel = document.getElementById("caseEditorPanel");
     if (panel) panel.open = true;
     loadCaseCourtOptions().catch(() => {});
-    clearFields(["case_id", "case_case_number", "case_client_name", "case_client_phone", "case_client_email", "case_client_id_number", "case_category", "case_type", "case_stage", "case_reason", "case_laf_case_no", "case_application_no", "case_court_name", "case_court_case_no", "case_status", "case_folder_path", "case_notes"]);
+    clearFields(["case_id", "case_case_number", "case_client_name", "case_client_phone", "case_client_email", "case_client_id_number", "case_category", "case_type", "case_stage", "case_reason", "case_laf_case_no", "case_application_no", "case_court_name", "case_court_case_no", "case_court_division", "case_status", "case_folder_path", "case_notes"]);
     const name = document.getElementById("case_client_name");
     if (name) name.focus();
 }
@@ -320,14 +425,29 @@ async function delCase(id) {
     await loadMeta();
 }
 
+async function closeCase(id) {
+    if (!id) return;
+    if (!confirm("確定將此案件標記為已結案並搬移到結案資料夾？\\n\\nMAGI 會把這次人工判斷鎖定，後續掃描不得自動改回進行中。")) return;
+    const resp = await api(`/api/osc/cases/${encodeURIComponent(id)}/close`, "POST", {});
+    showArchiveResult(resp?.archive);
+    showToast("案件已標記為已結案，人工狀態已鎖定。", "ok", 4000);
+    await loadCases();
+    await loadMeta();
+    if (state.wb?.id === id && state.wb.mode === "case") {
+        await openCaseWorkbench(id, "案件已結案並重新整理處理頁。");
+    }
+}
+
 async function saveCase() {
-    const p = readFields(["case_id", "case_case_number", "case_client_name", "case_client_phone", "case_client_email", "case_client_id_number", "case_category", "case_type", "case_stage", "case_reason", "case_laf_case_no", "case_application_no", "case_court_name", "case_court_case_no", "case_status", "case_folder_path", "case_notes"]);
+    const p = readFields(["case_id", "case_case_number", "case_client_name", "case_client_phone", "case_client_email", "case_client_id_number", "case_category", "case_type", "case_stage", "case_reason", "case_laf_case_no", "case_application_no", "case_court_name", "case_court_case_no", "case_court_division", "case_status", "case_folder_path", "case_notes"]);
+    const lafNumber = (p.case_laf_case_no || p.case_application_no || "").trim();
     const body = {
-        id: p.case_id, case_number: p.case_case_number, client_name: p.case_client_name,
+        id: p.case_id, case_number: p.case_id ? p.case_case_number : "", client_name: p.case_client_name,
         client_phone: p.case_client_phone, client_email: p.case_client_email, client_id_number: p.case_client_id_number,
         case_category: p.case_category, case_type: p.case_type, case_stage: p.case_stage,
-        case_reason: p.case_reason, laf_case_no: p.case_laf_case_no, application_no: p.case_application_no,
-        court_name: p.case_court_name, court_case_no: p.case_court_case_no, status: p.case_status, folder_path: p.case_folder_path, notes: p.case_notes
+        case_reason: p.case_reason, laf_case_no: lafNumber, application_no: lafNumber,
+        court_name: p.case_court_name, court_case_no: p.case_court_case_no, court_division: p.case_court_division,
+        status: p.case_status, folder_path: p.case_folder_path, notes: p.case_notes
     };
     const isNew = !(body.id || "").trim();
     const autoFolder = isNew && document.getElementById("case_auto_create_folder")?.checked;
@@ -339,9 +459,11 @@ async function saveCase() {
         showToast(`資料夾已建立：${resp.folder.path}`, "ok", 4000);
     } else if (autoFolder && resp?.folder && !resp.folder.ok) {
         showToast(`資料夾建立失敗：${resp.folder.error || "未知錯誤"}`, "warn", 4000);
+    } else if (isNew && resp?.case_number) {
+        showToast(`案件已建立：${resp.case_number}`, "ok", 3000);
     }
     showArchiveResult(resp?.archive);
-    clearFields(["case_id", "case_case_number", "case_client_name", "case_client_phone", "case_client_email", "case_client_id_number", "case_category", "case_type", "case_stage", "case_reason", "case_laf_case_no", "case_application_no", "case_court_name", "case_court_case_no", "case_status", "case_folder_path", "case_notes"]);
+    clearFields(["case_id", "case_case_number", "case_client_name", "case_client_phone", "case_client_email", "case_client_id_number", "case_category", "case_type", "case_stage", "case_reason", "case_laf_case_no", "case_application_no", "case_court_name", "case_court_case_no", "case_court_division", "case_status", "case_folder_path", "case_notes"]);
     await loadCases();
     await loadMeta();
 }
@@ -593,27 +715,32 @@ async function createCaseFolder(id) {
 }
 
 function renderWorkbenchCaseEditor(c) {
+    const editorCaseType = caseDisplayType(c);
+    const editorCaseReason = caseDisplayReason(c);
+    const editorStatus = caseDisplayStatus(c);
     return `
-    <div class="card">
-        <h3>案件主資料快速編輯</h3>
-        <div class="field-grid cols-4">
-            <div class="field"><label>案件編號</label><input id="wb_case_case_number" value="${esc(c.case_number || "")}"></div>
-            <div class="field"><label>當事人</label><input id="wb_case_client_name" value="${esc(c.client_name || "")}"></div>
-            <div class="field"><label>案件種類</label><input id="wb_case_case_category" value="${esc(c.case_category || "")}"></div>
-            <div class="field"><label>案件分類</label><input id="wb_case_case_type" value="${esc(c.case_type || "")}"></div>
-            <div class="field"><label>審級 / 階段</label><input id="wb_case_case_stage" value="${esc(c.case_stage || "")}"></div>
-            <div class="field"><label>案由</label><input id="wb_case_case_reason" value="${esc(c.case_reason || "")}"></div>
-            <div class="field"><label>法扶案號</label><input id="wb_case_laf_case_no" value="${esc(c.laf_case_no || "")}"></div>
-            <div class="field"><label>申請編號</label><input id="wb_case_application_no" value="${esc(c.application_no || "")}"></div>
-            <div class="field"><label>法院 / 地檢署</label><input id="wb_case_court_name" list="caseCourtOptions" value="${esc(c.court_name || "")}" placeholder="可輸入或選擇"></div>
-            <div class="field"><label>法院案號</label><input id="wb_case_court_case_no" value="${esc(c.court_case_no || "")}"></div>
-            <div class="field"><label>狀態</label><input id="wb_case_status" value="${esc(c.status || "")}"></div>
+	    <div class="card">
+	        <h3>案件主資料快速編輯</h3>
+	        <div class="field-grid cols-4">
+	            <div class="field"><label>案件編號</label><input id="wb_case_case_number" value="${esc(c.case_number || "")}" readonly></div>
+	            <div class="field"><label>當事人</label><input id="wb_case_client_name" value="${esc(c.client_name || "")}"></div>
+	            <div class="field"><label>案件種類</label><input id="wb_case_case_category" value="${esc(c.case_category || "")}"></div>
+	            <div class="field"><label>案件分類</label><input id="wb_case_case_type" value="${esc(editorCaseType || "")}"></div>
+	            <div class="field"><label>審級 / 階段</label><input id="wb_case_case_stage" value="${esc(c.case_stage || "")}"></div>
+	            <div class="field"><label>案由</label><input id="wb_case_case_reason" value="${esc(editorCaseReason || "")}"></div>
+	            <div class="field"><label>法扶案號（同申請編號）</label><input id="wb_case_laf_case_no" value="${esc(c.laf_case_no || c.application_no || "")}"></div>
+	            <input id="wb_case_application_no" type="hidden" value="${esc(c.application_no || c.laf_case_no || "")}">
+	            <div class="field"><label>法院 / 地檢署</label><input id="wb_case_court_name" list="caseCourtOptions" value="${esc(c.court_name || "")}" placeholder="可輸入或選擇"></div>
+	            <div class="field"><label>法院案號</label><input id="wb_case_court_case_no" value="${esc(c.court_case_no || "")}"></div>
+	            <div class="field"><label>股別</label><input id="wb_case_court_division" value="${esc(c.court_division || "")}" placeholder="例：義股、簡股"></div>
+	            <div class="field"><label>狀態</label><input id="wb_case_status" value="${esc(editorStatus || "")}"></div>
             <div class="field" style="grid-column: span 2;"><label>案件資料夾</label><input id="wb_case_folder_path" value="${esc(c.folder_path || "")}" placeholder="Y:\\lumi\\01_案件\\..."></div>
             <div class="field" style="grid-column: span 2;"><label>備註</label><input id="wb_case_notes" value="${esc(c.notes || "")}"></div>
         </div>
         <div class="toolbar" style="margin-top:10px; margin-bottom:0;">
             <button class="btn primary" data-act="wb-case-save" data-id="${esc(c.id || "")}">儲存案件資料</button>
             <button class="btn" data-act="wb-case-create-folder" data-id="${esc(c.id || "")}"${c.folder_path ? ' title="已有資料夾路徑，點此可重新建立子資料夾結構"' : ""}>建立資料夾</button>
+            ${caseCloseButton(c)}
         </div>
     </div>
     `;
@@ -718,7 +845,7 @@ function renderTextFileEditor(caseId, rawPath, content, returnPath = "") {
         <h3>文字檔編輯器</h3>
         <div class="wb-breadcrumb">${esc(rawPath)}</div>
         <div class="toolbar" style="margin-top:10px;">
-            <button class="btn slim" data-act="wb-file-editor-back" data-id="${esc(caseId)}" data-path="${esc(returnPath)}">返回資料夾</button>
+            <button class="btn slim" data-act="wb-file-editor-back" data-id="${esc(caseId)}" data-path="${esc(returnPath)}">回到資料夾</button>
             <a class="btn slim" href="${fileContentUrl(rawPath)}" target="_blank" rel="noopener noreferrer">下載原檔</a>
             <button class="btn primary" data-act="wb-file-save" data-id="${esc(caseId)}" data-path="${esc(rawPath)}" data-return-path="${esc(returnPath)}">儲存回本機</button>
         </div>
@@ -853,8 +980,8 @@ async function wbSaveTodoAndRefresh() {
     }
     if (id) await api(`/api/osc/todos/${Number(id)}`, "PUT", body);
     else await api(`/api/osc/todos`, "POST", body);
-    if (state.wb.mode === "client") await openClientWorkbench(state.wb.id, "已儲存待辦並重新整理工作台。");
-    if (state.wb.mode === "case") await openCaseWorkbench(state.wb.id, "已儲存待辦並重新整理工作台。");
+    if (state.wb.mode === "client") await openClientWorkbench(state.wb.id, "已儲存待辦並重新整理處理頁。");
+    if (state.wb.mode === "case") await openCaseWorkbench(state.wb.id, "已儲存待辦並重新整理處理頁。");
     await loadMeta();
 }
 
@@ -870,6 +997,11 @@ async function wbQuickAction(action) {
 async function saveWorkbenchCase() {
     const id = state.wb.id;
     if (!id) return;
+    const lafNumber = (
+        document.getElementById("wb_case_laf_case_no")?.value
+        || document.getElementById("wb_case_application_no")?.value
+        || ""
+    ).trim();
     const body = {
         case_number: (document.getElementById("wb_case_case_number")?.value || "").trim(),
         client_name: (document.getElementById("wb_case_client_name")?.value || "").trim(),
@@ -877,10 +1009,11 @@ async function saveWorkbenchCase() {
         case_type: (document.getElementById("wb_case_case_type")?.value || "").trim(),
         case_stage: (document.getElementById("wb_case_case_stage")?.value || "").trim(),
         case_reason: (document.getElementById("wb_case_case_reason")?.value || "").trim(),
-        laf_case_no: (document.getElementById("wb_case_laf_case_no")?.value || "").trim(),
-        application_no: (document.getElementById("wb_case_application_no")?.value || "").trim(),
+        laf_case_no: lafNumber,
+        application_no: lafNumber,
         court_name: (document.getElementById("wb_case_court_name")?.value || "").trim(),
         court_case_no: (document.getElementById("wb_case_court_case_no")?.value || "").trim(),
+        court_division: (document.getElementById("wb_case_court_division")?.value || "").trim(),
         status: (document.getElementById("wb_case_status")?.value || "").trim(),
         folder_path: (document.getElementById("wb_case_folder_path")?.value || "").trim(),
         notes: (document.getElementById("wb_case_notes")?.value || "").trim(),
@@ -903,7 +1036,7 @@ async function saveWorkbenchCase() {
     await loadCases();
     await loadMeta();
     if (state.wb.mode === "case") {
-        await openCaseWorkbench(id, "案件資料已儲存並重新整理工作台。");
+        await openCaseWorkbench(id, "案件資料已儲存並重新整理處理頁。");
     }
 }
 
@@ -948,7 +1081,7 @@ function renderDocsByKeyword(docs, keywords) {
         const s = `${d.file_name || ""} ${d.subfolder_name || ""} ${d.reason || ""}`;
         return keywords.some(k => s.includes(k));
     });
-    if (!hits.length) return `<div class="muted">尚未索引到相關文件</div>`;
+    if (!hits.length) return `<div class="muted">尚未索引到相關檔案</div>`;
     return `
     <div class="table-wrap"><table>
         <thead><tr><th>檔名</th><th>子資料夾</th><th>操作</th></tr></thead>
@@ -968,6 +1101,112 @@ function renderDocsByKeyword(docs, keywords) {
 `;
 }
 
+function caseDocIsStampable(doc = {}) {
+    const path = String(doc.file_path || doc.path || "");
+    const ext = (path.split(".").pop() || "").toLowerCase();
+    return ["pdf", "docx", "doc"].includes(ext);
+}
+
+function renderCaseStampableDocuments(c = {}, docs = [], options = {}) {
+    const rows = (docs || []).filter(caseDocIsStampable).slice(0, 120);
+    const caseId = c.id || options.caseId || "";
+    const caseNumber = c.case_number || options.caseNumber || "";
+    const searchBox = options.searchBox ? `
+        <div class="toolbar" style="margin:8px 0;">
+            <input id="caseDocFinalizeQ" value="${esc(options.q || "")}" placeholder="在本案書狀內搜尋檔名 / 類型" style="max-width:360px;">
+            <button class="btn primary" data-act="case-doc-finalize-search" data-id="${esc(caseId)}">搜尋</button>
+            <button class="btn" data-act="case-doc-index" data-case="${esc(caseNumber)}">開全域書狀索引</button>
+        </div>
+    ` : "";
+    if (!rows.length) {
+        return `
+            ${searchBox}
+            <div class="muted">本案目前沒有可蓋章的 PDF / DOCX / DOC。可先按「資料夾」確認檔案是否已放入案件資料夾，或重新掃描書狀索引。</div>
+        `;
+    }
+    return `
+        ${searchBox}
+        <div class="table-wrap"><table>
+            <thead><tr><th>時間</th><th>類型</th><th>檔名</th><th>位置</th><th>操作</th></tr></thead>
+            <tbody>
+                ${rows.map(d => {
+                    const path = d.file_path || d.path || "";
+                    const ext = (path.split(".").pop() || "").toLowerCase();
+                    const pdfTool = ext === "pdf"
+                        ? `<button class="btn slim" data-act="doc-pdf-tool" data-path="${esc(path)}">PDF 工具</button>`
+                        : "";
+                    return `<tr>
+                        <td>${esc(d.timestamp || d.modified_at || "")}</td>
+                        <td>${esc(d.kind_label || d.kind || d.source || "")}</td>
+                        <td title="${esc(d.file_name || "")}">${esc(d.file_name || path.split(/[\\/]/).pop() || "")}</td>
+                        <td title="${esc(path)}">${esc(d.subfolder_name || path)}</td>
+                        <td class="actions">
+                            <button class="btn slim" data-act="doc-open" data-path="${esc(path)}">開啟</button>
+                            <button class="btn slim" data-act="doc-copy" data-path="${esc(path)}">複製路徑</button>
+                            <button class="btn slim primary" data-act="doc-stamp" data-path="${esc(path)}">蓋章</button>
+                            <button class="btn slim warn" data-act="doc-finalize" data-path="${esc(path)}">定稿合併</button>
+                            ${pdfTool}
+                        </td>
+                    </tr>`;
+                }).join("")}
+            </tbody>
+        </table></div>
+    `;
+}
+
+async function loadCaseForDocumentFinalizer(id) {
+    const fromState = (state.cases || []).find(r => String(r.id) === String(id));
+    if (fromState && fromState.case_number) return fromState;
+    const data = await api(`/api/osc/cases/${encodeURIComponent(id)}`);
+    return data.item || data.case || {};
+}
+
+async function openCaseDocumentFinalizer(id, q = "") {
+    const c = await loadCaseForDocumentFinalizer(id);
+    const caseNumber = String(c.case_number || "").trim();
+    if (!caseNumber) {
+        showToast("此案件沒有本所案號，無法篩選書狀。", "warn");
+        return;
+    }
+    state.wb = { mode: "case-doc-finalizer", id, data: { case: c, q } };
+    wbShow(`書狀定稿｜${caseNumber} ${c.client_name || ""}`.trim(), `
+        <div class="card">
+            <h3>本案可蓋章書狀</h3>
+            <div class="muted">只列出 ${esc(caseNumber)} 的 PDF / DOCX / DOC，可直接做正本、副本、繕本或定稿合併。</div>
+            <div class="muted" style="margin-top:8px;">載入中...</div>
+        </div>
+    `);
+    wbSetStatus("正在讀取本案書狀索引。", "info");
+    const data = await api(`/api/osc/documents?limit=300&case_number=${encodeURIComponent(caseNumber)}&q=${encodeURIComponent(q || "")}`);
+    const docs = data.items || [];
+    state.wb.data = { case: c, documents: docs, q };
+    const body = document.getElementById("wbBody");
+    if (body) {
+        body.innerHTML = `
+            <div class="card">
+                <h3>本案可蓋章書狀</h3>
+                <div class="muted">案件：${esc(caseNumber)}｜當事人：${esc(c.client_name || "")}｜共 ${docs.filter(caseDocIsStampable).length} 份可處理檔案</div>
+                ${renderCaseStampableDocuments(c, docs, { searchBox: true, q, caseId: id, caseNumber })}
+            </div>
+        `;
+    }
+    wbSetStatus(`已載入 ${docs.filter(caseDocIsStampable).length} 份可蓋章書狀。`, "ok");
+}
+
+async function refreshCaseDocumentFinalizer(id) {
+    const q = (document.getElementById("caseDocFinalizeQ")?.value || "").trim();
+    await openCaseDocumentFinalizer(id || state.wb?.id || "", q);
+}
+
+async function openCaseDocumentIndex(caseNumber) {
+    const value = String(caseNumber || "").trim();
+    const tab = document.querySelector('.tab-btn[data-tab="documents"]');
+    if (tab) tab.click();
+    const input = document.getElementById("docsCaseNumber");
+    if (input) input.value = value;
+    if (typeof loadDocuments === "function") await loadDocuments();
+}
+
 async function openClientWorkbench(id, statusText = "") {
     const data = await api(`/api/osc/clients/${encodeURIComponent(id)}/workbench`);
     const c = data.client || {};
@@ -983,11 +1222,11 @@ async function openClientWorkbench(id, statusText = "") {
         </div>
     </div>
     <div class="card">
-        <h3>當事人案件（可開工作台或直接瀏覽案件資料夾）</h3>
+        <h3>當事人案件（可開案件處理或直接瀏覽案件資料夾）</h3>
         <div class="table-wrap"><table>
             <thead><tr><th>案號</th><th>案件種類</th><th>案由</th><th>法院案號</th><th>法扶案號</th><th>狀態</th><th>操作</th></tr></thead>
             <tbody id="wbClientCasesBody">
-                ${caseRows.map(r => `<tr class="row-clickable" data-case-id="${esc(r.id)}"><td>${esc(r.case_number)}</td><td>${esc(r.case_category)}</td><td>${esc(r.case_reason)}</td><td>${esc(r.court_case_no)}</td><td>${esc(r.laf_case_no)}</td><td>${esc(r.status)}</td><td class="actions"><button class="btn" data-act="wb-case-workbench" data-id="${esc(r.id)}">案件工作台</button><button class="btn" data-act="wb-case-open" data-id="${esc(r.id)}">開資料夾</button></td></tr>`).join("") || `<tr><td colspan="7" class="muted">查無案件</td></tr>`}
+	                ${caseRows.map(r => `<tr class="row-clickable" data-case-id="${esc(r.id)}"><td>${esc(r.case_number)}</td><td>${esc(r.case_category)}</td><td>${esc(r.case_reason)}</td><td>${esc(r.court_case_no)}</td><td>${esc(r.laf_case_no)}</td><td>${esc(r.status)}</td><td class="actions"><button class="btn" data-act="wb-case-workbench" data-id="${esc(r.id)}">案件處理</button><button class="btn" data-act="wb-case-open" data-id="${esc(r.id)}">開資料夾</button></td></tr>`).join("") || `<tr><td colspan="7" class="muted">查無案件</td></tr>`}
             </tbody>
         </table></div>
     </div>
@@ -1006,8 +1245,8 @@ async function openClientWorkbench(id, statusText = "") {
         <div class="card"><h3>法扶補件/案件補正清單</h3>${renderChecklist(data.legal_aid_checklist || [])}${renderChecklist(data.case_checklist || [])}</div>
     </div>
 `;
-    wbShow(`當事人工作台｜${c.name || id}`, modalHtml);
-    wbSetStatus(statusText || `已載入當事人工作台，共 ${caseRows.length} 筆案件、${todoRows.length} 筆待辦。`, statusText ? "ok" : "info");
+    wbShow(`當事人處理頁｜${c.name || id}`, modalHtml);
+    wbSetStatus(statusText || `已載入當事人處理頁，共 ${caseRows.length} 筆案件、${todoRows.length} 筆待辦。`, statusText ? "ok" : "info");
 }
 
 async function openCaseWorkbench(id, statusText = "") {
@@ -1037,7 +1276,7 @@ async function openCaseWorkbench(id, statusText = "") {
         <div class="stat-card"><div class="k">待處理</div><div class="v">${esc(s.todo_pending || 0)}</div></div>
         <div class="stat-card"><div class="k">已完成</div><div class="v">${esc(s.todo_completed || 0)}</div></div>
         <div class="stat-card"><div class="k">會議</div><div class="v">${esc(s.meeting_total || 0)}</div></div>
-        <div class="stat-card"><div class="k">索引文件</div><div class="v">${esc(s.docs_indexed || 0)}</div></div>
+        <div class="stat-card"><div class="k">索引檔案</div><div class="v">${esc(s.docs_indexed || 0)}</div></div>
     </div>
     <div class="card">
         <h3>快捷功能（委任狀/收據/結案整理）</h3>
@@ -1065,15 +1304,20 @@ async function openCaseWorkbench(id, statusText = "") {
     </div>
     <div class="grid-2">
         <div class="card">
+            <h3>書狀定稿 / 蓋章</h3>
+            <div class="muted">只列本案 PDF / DOCX / DOC；可直接做正本、副本、繕本或定稿合併。</div>
+            ${renderCaseStampableDocuments(c, data.documents || [], { caseId: id, caseNumber: c.case_number || "" })}
+        </div>
+        <div class="card">
             <h3>委任狀/開辦資料</h3>
             ${renderDocsByKeyword(data.documents || [], ["委任", "委託", "開辦通知", "開辦資料", "接案通知", "法扶資料"])}
         </div>
-        <div class="card">
-            <h3>判決/結案相關文件</h3>
-            ${renderDocsByKeyword(data.documents || [], ["判決", "裁定", "調解不成立", "結案", "收據", "繳費", "法院通知"])}
-        </div>
     </div>
     <div class="grid-2">
+        <div class="card">
+            <h3>判決/結案相關檔案</h3>
+            ${renderDocsByKeyword(data.documents || [], ["判決", "裁定", "調解不成立", "結案", "收據", "繳費", "法院通知"])}
+        </div>
         <div class="card">
             <h3>對造資料</h3>
             <div class="table-wrap"><table>
@@ -1084,11 +1328,11 @@ async function openCaseWorkbench(id, statusText = "") {
             </table></div>
         </div>
         <div class="card">
-            <h3>PDF 生成紀錄</h3>
+            <h3>PDF 產生紀錄</h3>
             <div class="table-wrap"><table>
                 <thead><tr><th>時間</th><th>檔名</th><th>狀態</th><th>錯誤</th></tr></thead>
                 <tbody>
-                    ${(data.pdf_generation_log || []).map(x => `<tr><td>${esc(x.log_timestamp || "")}</td><td>${esc(x.file_name || "")}</td><td>${esc(x.status || "")}</td><td>${esc(shortText(x.error_message, 60))}</td></tr>`).join("") || `<tr><td colspan="4" class="muted">尚無 PDF 生成紀錄</td></tr>`}
+                    ${(data.pdf_generation_log || []).map(x => `<tr><td>${esc(x.log_timestamp || "")}</td><td>${esc(x.file_name || "")}</td><td>${esc(x.status || "")}</td><td>${esc(shortText(x.error_message, 60))}</td></tr>`).join("") || `<tr><td colspan="4" class="muted">尚無 PDF 產生紀錄</td></tr>`}
                 </tbody>
             </table></div>
         </div>
@@ -1103,8 +1347,8 @@ async function openCaseWorkbench(id, statusText = "") {
         </table></div>
     </div>
 `;
-    wbShow(`案件工作台｜${c.case_number || id}`, modalHtml);
-    wbSetStatus(statusText || `已載入案件工作台，待辦 ${s.todo_total || 0} 筆、索引文件 ${s.docs_indexed || 0} 份。`, statusText ? "ok" : "info");
+    wbShow(`案件處理頁｜${c.case_number || id}`, modalHtml);
+    wbSetStatus(statusText || `已載入案件處理頁，待辦 ${s.todo_total || 0} 筆、索引檔案 ${s.docs_indexed || 0} 份。`, statusText ? "ok" : "info");
 }
 
 // ── Card drag-and-drop ──
@@ -1222,7 +1466,7 @@ function renderClients() {
         <td>${esc(r.address)}</td>
         <td>${esc(r.status)}</td>
         <td class="actions">
-            <button class="btn" data-act="client-workbench" data-id="${esc(r.id)}">工作台</button>
+	            <button class="btn" data-act="client-workbench" data-id="${esc(r.id)}">處理頁</button>
             <button class="btn" data-act="client-edit" data-id="${esc(r.id)}">編輯</button>
             <button class="btn danger" data-act="client-del" data-id="${esc(r.id)}">刪除</button>
         </td>

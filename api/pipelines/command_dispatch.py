@@ -15,6 +15,7 @@ import sys
 import threading
 
 from api.command_registry import CommandContext
+from api.case_display import display_case_label
 from api.help_text import HELP_ALIASES, build_help_text
 from api.runtime_paths import (
     get_laf_script,
@@ -352,10 +353,47 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
             return f"❌ 自動巡檢執行失敗: {e}"
 
     if "重試摘要佇列自動" in message or "retry_summary_queue_auto" in msg_lower:
-        return "Public release: legal-research summary retry is not included."
+        try:
+            import json as _json
+            import subprocess as _subprocess
+            py = os.environ.get("MAGI_SKILL_PYTHON", f"{_MAGI_ROOT}/venv/bin/python3").strip()
+            if not py or not os.path.exists(py):
+                py = sys.executable or "python3"
+            jc = f"{_MAGI_ROOT}/skills/judgment-collector/action.py"
+            cp = _subprocess.run(
+                [py, jc, "--task", "retry_summary_queue_auto {\"notify\": false}"],
+                capture_output=True,
+                text=True,
+                timeout=420,
+            )
+            out = (cp.stdout or "").strip()
+            if cp.returncode != 0:
+                return f"❌ 摘要補跑失敗（exit={cp.returncode}）: {(cp.stderr or out)[:220]}"
+            data = {}
+            try:
+                data = _json.loads(out or "{}")
+            except Exception:
+                data = {}
+            return (
+                "📚 摘要補跑完成\n"
+                f"- 處理: {data.get('processed', 0)}\n"
+                f"- 改善: {data.get('improved', 0)}\n"
+                f"- 剩餘: {data.get('remaining', 0)}\n"
+                f"- 模式: {data.get('mode', 'tiered')}"
+            )
+        except Exception as e:
+            return f"❌ 摘要補跑流程失敗: {e}"
 
-    if any(k in message for k in ["查判決", "找判決", "判決搜尋", "搜尋判決", "收集判決", "判決搜集", "搜尋最高法院判決"]):
-        return "Public release: legal-research collection and opinion-library integrations are not included."
+    if any(k in message for k in ["查判決", "找判決", "判決搜尋", "搜尋判決", "收集判決", "判決搜集", "搜尋最高法院判決", "查裁判", "找裁判", "裁判搜尋", "搜尋裁判", "查法規", "查法條", "法規查詢", "法條查詢", "釋字", "憲判", "實務見解", "法律見解", "法院見解"]):
+        if orch._looks_like_capability_question(message) or re.search(r"(你會|可以|能不能|可否).{0,8}(查判決|找判決|判決搜尋|查裁判|查法規|查法條)", message):
+            return (
+                "✅ **我可以幫您查判決！**\n\n"
+                "• 直接輸入：`查判決 傷害`\n"
+                "• 也可提供案號：`查判決 113年度上訴字第12號`\n"
+                "• 實務見解整理：`實務見解 預售屋遲延交屋`\n"
+                "• 法規/釋憲：`查法條 民法第184條`、`查釋字 748`"
+            )
+        return orch._run_judgment_collector_command(message, notify=False)
 
     if (message.startswith("翻譯檔案") or message.startswith("翻譯文件")
             or msg_lower.startswith("translate file")
@@ -1141,6 +1179,48 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
     if any(k in msg_lower for k in ["法扶回報指令", "法扶指令", "回報指令"]):
         return orch._laf_report_command_help()
 
+    # 法扶 18 個月進度提醒冷卻：「陳○○已回報」「1150101-A-001 已完成進度回報」
+    _progress_reported_hit = any(k in message for k in ("已回報", "已經回報", "已完成回報", "進度已回報", "進度回報已完成"))
+    if _progress_reported_hit and role == "admin":
+        _target = ""
+        _m = re.search(
+            r"(?P<target>\d{6,8}-[A-Za-z]-\d{3}|\d{4}-\d{4}|[一-龥A-Za-z][一-龥A-Za-z0-9_.\\- ]{1,40}?)"
+            r"\s*(?:的)?(?:法扶)?(?:進度)?(?:已經|已)?(?:完成)?回報",
+            message,
+        )
+        if not _m:
+            _m = re.search(
+                r"(?:進度)?(?:已經|已)(?:完成)?回報\s*"
+                r"(?P<target>\d{6,8}-[A-Za-z]-\d{3}|\d{4}-\d{4}|[一-龥A-Za-z][一-龥A-Za-z0-9_.\\- ]{1,40})",
+                message,
+            )
+        if _m:
+            _target = str(_m.group("target") or "").strip(" ，,。；;：:")
+        if _target:
+            try:
+                _orch_dir = os.path.join(_MAGI_ROOT, "casper_ecosystem", "law_firm_orchestrators")
+                if _orch_dir not in sys.path:
+                    sys.path.insert(0, _orch_dir)
+                from laf_nightly_audit import mark_progress_reported
+                _res = mark_progress_reported(_target, actor=str(user_id or "admin"), note=message)
+                if _res.get("ok"):
+                    _case = _res.get("case") if isinstance(_res.get("case"), dict) else {}
+                    _name = _case.get("client_name") or _target
+                    _laf = _case.get("laf_case_number") or _case.get("case_number") or ""
+                    _cal = _res.get("calendar") if isinstance(_res.get("calendar"), dict) else {}
+                    _cal_note = "，並已登上行事曆" if _cal.get("google_calendar_id") or _cal.get("todo_id") else ""
+                    return f"✅ 已將 {_name}{'（' + _laf + '）' if _laf else ''} 的進度回報提醒冷卻至 {_res.get('cooldown_until')}（60 日）{_cal_note}。"
+                if _res.get("error") == "ambiguous_target":
+                    cands = _res.get("candidates") if isinstance(_res.get("candidates"), list) else []
+                    lines = [f"⚠️ 找到多筆「{_target}」相關法扶案件，請改用法扶案號或案件編號："]
+                    for c in cands[:8]:
+                        lines.append(f"  • {c.get('case_number') or '-'} {c.get('client_name') or '-'} {c.get('laf_case_number') or ''}".rstrip())
+                    return "\n".join(lines)
+                return f"❌ 找不到 {_target} 的法扶案件，無法設定進度回報冷卻。"
+            except Exception as _pre:
+                logger.warning("LAF progress reported cooldown failed: %s", _pre)
+                return f"❌ 進度回報冷卻設定失敗：{_pre}"
+
     # ── 法扶批次操作：二階段批次 / 自動報結掃描 ───────────────────
     _is_batch_condition = any(k in message for k in ("二階段批次", "批次二階段", "二階段掃描"))
     _is_batch_closing = any(k in message for k in ("自動報結掃描", "報結掃描", "批次報結", "結案掃描", "批次結案"))
@@ -1186,7 +1266,7 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
             except Exception as e:
                 reply = f"❌ 法扶{label}批次失敗：{type(e).__name__}: {e}"
                 try:
-                    orch._notify(reply, topic_key="laf")
+                    orch._notify(reply, topic_key=f"laf_{action_type}" if action_type == "condition" else "laf_closing")
                 except Exception:
                     pass
 
@@ -1495,6 +1575,13 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
                                     "⚠️ 結案回報暫停：以下統計 <= 0，需要你提供原因後才能存檔。\n"
                                     f"欄位：{low_txt}\n"
                                     "請回覆：`<當事人/案號> 結案回報 原因 <理由>`"
+                                )
+                            elif err == "portal_prefill_failed":
+                                detail = str(data.get("detail") or data.get("message") or "").strip()
+                                result_text = (
+                                    f"❌ 法扶{payload_obj.get('action_label','回報')}預填失敗。\n"
+                                    "開辦沒有暫存流程；MAGI 只會先填寫並截圖，確認後才送出。\n"
+                                    f"{'原因：' + detail if detail else '請稍後重試，或手動在法扶系統確認。'}"
                                 )
                             elif err == "portal_draft_failed":
                                 detail = str(data.get("detail") or data.get("message") or "").strip()
@@ -2028,27 +2115,18 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
                     for row in cases:
                         if not isinstance(row, dict):
                             continue
-                        if shown >= 6:
-                            break
-                        case_no = str(row.get("case_number") or "").strip()
-                        court_case_no = str(row.get("court_case_number") or "").strip()
-                        party = str(row.get("client_name") or "").strip()
-                        label_parts = [x for x in [party, court_case_no or case_no] if x]
-                        label = "｜".join(label_parts) if label_parts else (court_case_no or case_no or "未判斷案件")
+                        label = display_case_label(row)
                         files = row.get("files")
                         file_list = files if isinstance(files, list) else []
                         lines.append(f"{shown + 1}. {label}（{len(file_list)} 份）")
-                        for fp in file_list[:2]:
+                        for fp in file_list:
                             bn = _basename(fp) or str(fp).strip()
                             if bn:
                                 lines.append(f"- {bn}")
                         shown += 1
-                    remaining = len([r for r in cases if isinstance(r, dict)]) - shown
-                    if remaining > 0:
-                        lines.append(f"...其餘 {remaining} 案略")
                 elif isinstance(payload.get("files"), list) and payload.get("files"):
                     lines.append("檔案：")
-                    for fp in payload.get("files", [])[:5]:
+                    for fp in payload.get("files", []):
                         bn = _basename(fp) or str(fp).strip()
                         if bn:
                             lines.append(f"- {bn}")
@@ -2198,14 +2276,12 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
                         lines.append("案件明細：")
                         idx = 0
                         for (party, court_case_no, folder), grouped_items in groups.items():
-                            if idx >= 6:
-                                break
                             label_parts = [x for x in [party, court_case_no] if x]
                             if not label_parts and folder:
                                 label_parts.append(os.path.basename(folder))
                             label = "｜".join(label_parts) if label_parts else "未判斷案件"
                             lines.append(f"{idx + 1}. {label}（{len(grouped_items)} 份）")
-                            for it in grouped_items[:2]:
+                            for it in grouped_items:
                                 fn = str(it.get("file") or "").strip()
                                 dst = str(it.get("dst") or "").strip()
                                 if fn:
@@ -2213,12 +2289,9 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
                                 elif dst:
                                     lines.append(f"- {_basename(dst) or dst}")
                             idx += 1
-                        remaining = len(groups) - idx
-                        if remaining > 0:
-                            lines.append(f"...其餘 {remaining} 案略")
                 elif isinstance(payload.get("files"), list) and payload.get("files"):
                     lines.append("檔案：")
-                    for fp in payload.get("files", [])[:5]:
+                    for fp in payload.get("files", []):
                         bn = _basename(fp) or str(fp).strip()
                         if bn:
                             lines.append(f"- {bn}")

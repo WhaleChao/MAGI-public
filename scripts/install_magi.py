@@ -39,7 +39,7 @@ def venv_python(venv_dir: Path = VENV_DIR) -> Path:
 
 
 def build_install_plan(*, include_optional: bool = True, venv_dir: Path = VENV_DIR) -> list[InstallStep]:
-    python = sys.executable or "python3"
+    python = os.environ.get("MAGI_INSTALL_BOOTSTRAP_PYTHON") or sys.executable or "python3"
     pip_python = str(venv_python(venv_dir))
     steps = [
         InstallStep("create_venv", [python, "-m", "venv", str(venv_dir)], description="Create an isolated Python environment."),

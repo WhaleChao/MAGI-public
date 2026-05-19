@@ -45,6 +45,7 @@ def _parse_etime_to_sec(raw: str) -> int:
 
 def _process_monitor_markers(magi_root: Path) -> tuple[list[str], list[str], dict[str, str]]:
     worker_markers = [
+        "skills/judgment-collector/action.py",
         "skills/file-review-orchestrator/action.py",
         "skills/transcript-downloader/action.py",
         "skills/laf-portal-automation/action.py",
@@ -67,16 +68,12 @@ def _process_monitor_markers(magi_root: Path) -> tuple[list[str], list[str], dic
             f"{magi_root}/daemon.py",
             "api/server.py",
             "api/discord_bot.py",
-            "skills/ops/openclaw_cron_runner.py",
-            "openclaw-gateway",
             "rpc-server",
         ]
     core_labels = {
         f"{magi_root}/daemon.py": "Daemon",
         "api/server.py": "API/LINE Webhook",
         "api/discord_bot.py": "Discord Bot",
-        "skills/ops/openclaw_cron_runner.py": "OpenClaw Cron Bridge",
-        "openclaw-gateway": "OpenClaw Gateway",
         "rpc-server": "RPC Worker",
     }
     return worker_markers, core_markers, core_labels
@@ -103,6 +100,28 @@ def _extract_chat_upload_text(path: Path, filename: str) -> dict[str, Any]:
         return {"success": False, "text": "", "kind": "", "title": filename, "error": str(exc)}
 
 
+def _extract_chat_upload_text_for_task(path: Path, filename: str, task: str = "") -> dict[str, Any]:
+    suffix = Path(filename or "").suffix.lower()
+    if task == "summary" and suffix == ".pdf":
+        try:
+            from skills.documents.pdf_bridge import _extract_text_pdftotext, _is_meaningful_text
+
+            text, pages = _extract_text_pdftotext(str(path), max_pages=1000000)
+            if _is_meaningful_text(text):
+                return {
+                    "success": True,
+                    "text": str(text),
+                    "kind": "pdf",
+                    "title": filename,
+                    "error": "",
+                    "extractor": "pdftotext_fast",
+                    "pages": pages,
+                }
+        except Exception:
+            pass
+    return _extract_chat_upload_text(path, filename)
+
+
 def _safe_web_url(raw_url: str) -> str:
     text = str(raw_url or "").strip()
     try:
@@ -121,6 +140,8 @@ def _artifact_download_url(path: Path, *, inline: bool = False) -> str:
 
 def _web_delivery_kind(instruction: str) -> tuple[str, str]:
     text = str(instruction or "").lower()
+    if any(token in text for token in ("逐字稿", "轉錄", "transcript", "transcribe", "聽打")):
+        return "transcript", "逐字稿"
     if any(token in text for token in ("翻譯", "translate", "translation", "譯成")):
         return "translation", "翻譯稿"
     if any(token in text for token in ("摘要", "summary", "summarize", "整理重點", "重點整理")):
@@ -137,11 +158,214 @@ def _should_create_web_delivery_artifacts(
     text = f"{instruction}\n{source_filename}".lower()
     if not str(reply or "").strip():
         return False
+    if any(token in text for token in ("逐字稿", "轉錄", "transcript", "transcribe", "聽打")):
+        return True
     if any(token in text for token in ("翻譯", "translate", "translation", "譯成")):
         return True
     if any(token in text for token in ("摘要", "summary", "summarize", "整理重點", "重點整理")):
         return True
     return bool(source_filename and len(str(reply or "")) >= 900)
+
+
+_CHAT_UPLOAD_AUDIO_EXTS = {".aac", ".aiff", ".flac", ".m4a", ".mp3", ".ogg", ".opus", ".wav", ".webm"}
+_CHAT_UPLOAD_VIDEO_EXTS = {".m4v", ".mov", ".mp4", ".mpeg", ".mpg", ".webm"}
+
+
+def _web_upload_requested_task(instruction: str, filename: str = "") -> str:
+    text = f"{instruction}\n{filename}".lower().replace("＠", "@")
+    suffix = Path(filename or "").suffix.lower()
+    if suffix in _CHAT_UPLOAD_AUDIO_EXTS | _CHAT_UPLOAD_VIDEO_EXTS:
+        return "transcript"
+    if any(token in text for token in ("逐字稿", "轉錄", "transcript", "transcribe", "聽打")):
+        return "transcript"
+    if any(token in text for token in ("翻譯", "translate", "translation", "譯成")):
+        return "translation"
+    if any(token in text for token in ("摘要", "summary", "summarize", "整理重點", "重點整理")):
+        return "summary"
+    return ""
+
+
+def _web_summary_length(instruction: str) -> str:
+    text = str(instruction or "").lower().replace("＠", "@")
+    if any(token in text for token in ("@heavy", "heavy", "詳細", "完整", "深度", "long", "detailed")):
+        return "long"
+    if any(token in text for token in ("簡短", "精簡", "簡要", "short", "brief")):
+        return "short"
+    return "medium"
+
+
+def _web_heavy_opt_in(instruction: str) -> bool:
+    text = str(instruction or "").lower().replace("＠", "@").lstrip()
+    return text.startswith("@heavy ") or text.startswith("@重型 ") or any(
+        token in text for token in (" @heavy ", "\n@heavy ", "使用 heavy", "重型模型", "深度模式")
+    )
+
+
+def _normalize_direct_reply(reply: str, *, task: str, source_text: str, source_filename: str, instruction: str) -> str:
+    from api.handlers.output_quality_handler import (
+        build_legal_document_summary_fallback,
+        detect_output_quality_issue,
+        format_quality_gate_failure,
+    )
+
+    output = str(reply or "").strip()
+    issue = detect_output_quality_issue(task, output, source_chars=len(source_text or ""))
+    if task == "summary" and issue:
+        fallback = build_legal_document_summary_fallback(
+            source_text,
+            source_name=source_filename,
+            instruction=instruction,
+        )
+        if fallback:
+            return fallback
+    if issue:
+        return format_quality_gate_failure(task, issue)
+    return output
+
+
+def _run_direct_web_upload_text_task(
+    orchestrator: Any,
+    *,
+    root: Path,
+    target: Path,
+    original_name: str,
+    instruction: str,
+    extracted: dict[str, Any],
+    user_id: str,
+) -> dict[str, Any] | None:
+    task = _web_upload_requested_task(instruction, original_name)
+    if task not in {"summary", "translation"}:
+        return None
+
+    source_text = str(extracted.get("text") or "").strip()
+    if not source_text:
+        return None
+
+    suffix = Path(original_name or "").suffix.lower()
+    # Tiny notes can stay on the conversational route; long files and PDFs need
+    # a deterministic document route so they cannot be mistaken for case intake.
+    if task == "summary" and suffix != ".pdf" and len(source_text) < 2000:
+        return None
+
+    if task == "summary":
+        summary_length = _web_summary_length(instruction)
+        heavy_opt_in = _web_heavy_opt_in(instruction)
+        reply = ""
+        try:
+            extractive_threshold = int(os.environ.get("MAGI_WEB_UPLOAD_EXTRACTIVE_SUMMARY_THRESHOLD", "30000") or "30000")
+        except Exception:
+            extractive_threshold = 30000
+        model_allowed = len(source_text) < max(12000, extractive_threshold)
+        if suffix == ".pdf" and model_allowed:
+            try:
+                from skills.documents.pdf_bridge import summarize_pdf
+
+                reply = summarize_pdf(str(target), summary_length=summary_length)
+            except Exception:
+                reply = ""
+        if model_allowed and not str(reply or "").strip():
+            try:
+                from api.handlers.summary_handler import summarize_text_resilient
+
+                result = summarize_text_resilient(source_text, summary_length=summary_length, heavy=heavy_opt_in)
+                if isinstance(result, dict) and result.get("success"):
+                    reply = str(result.get("text") or "").strip()
+            except Exception:
+                reply = ""
+        reply = _normalize_direct_reply(
+            reply,
+            task=task,
+            source_text=source_text,
+            source_filename=original_name,
+            instruction=instruction,
+        )
+        if not reply:
+            return None
+        if str(reply).lstrip().startswith("❌"):
+            return {"task": task, "reply": reply, "artifacts": []}
+        artifacts = _create_web_delivery_artifacts(
+            root,
+            instruction=instruction,
+            reply=reply,
+            source_filename=original_name,
+        )
+        return {"task": task, "reply": reply, "artifacts": artifacts}
+
+    if task == "translation":
+        try:
+            from api.handlers.document_handler import (
+                cap_translation_source_text,
+                polish_translated_document_text,
+                prepare_document_text_for_llm,
+            )
+            from api.handlers.translation_handler import translate_text_complete
+            from api.handlers.output_quality_handler import run_output_quality_gate
+
+            src_text = prepare_document_text_for_llm(source_text)
+            src_text, was_capped = cap_translation_source_text(src_text)
+            translator = getattr(orchestrator, "_translate_text_complete", None) or translate_text_complete
+            result = translator(
+                src_text,
+                source_lang="auto",
+                target_lang="繁體中文",
+                heavy=_web_heavy_opt_in(instruction),
+            )
+            if not isinstance(result, dict) or not result.get("success"):
+                err = str((result or {}).get("error") if isinstance(result, dict) else "translate_failed")
+                return {"task": task, "reply": f"❌ 檔案翻譯失敗：{err[:260]}", "artifacts": []}
+            translated = str(result.get("translated_text") or result.get("text") or "").strip()
+            translated = polish_translated_document_text(translated) or translated
+            gate = run_output_quality_gate(
+                "translation",
+                translated,
+                source_chars=len(src_text or ""),
+                source_text=src_text,
+                source_name=original_name,
+                instruction=instruction,
+            )
+            if not gate.get("ok"):
+                return {
+                    "task": task,
+                    "reply": str(gate.get("message") or "❌ 檔案翻譯品質檢查未通過。"),
+                    "artifacts": [],
+                }
+            notes = []
+            if was_capped:
+                notes.append("⚠️ 原文超過翻譯上限，本次僅處理上限內文字；請改用分段翻譯以取得全文。")
+            failed = int(result.get("chunks_failed") or 0)
+            if failed:
+                notes.append(f"⚠️ 有 {failed} 個段落翻譯失敗，已保留原文位置供重跑。")
+            term_glossary = str(result.get("term_glossary") or "").strip()
+            if term_glossary:
+                notes.append(term_glossary)
+            bilingual_artifact, bilingual_reply = _create_bilingual_translation_artifact(
+                orchestrator,
+                source_text=src_text,
+                translated_text=translated,
+                result=result,
+                title=original_name or "檔案翻譯",
+                user_id=user_id,
+            )
+            if bilingual_artifact:
+                notes.insert(0, "📄 已產出原文/翻譯雙語對照 Word 表格。")
+            elif bilingual_reply:
+                notes.append("⚠️ 雙語對照表格產生失敗，已改輸出純文字翻譯。")
+            reply = "\n".join(notes + [translated]).strip()
+            artifacts = []
+            if bilingual_artifact:
+                artifacts.append(bilingual_artifact)
+            artifacts.extend(_create_web_delivery_artifacts(
+                root,
+                instruction=instruction,
+                reply=reply,
+                source_filename=original_name,
+                include_docx=not bool(bilingual_artifact),
+            ))
+            return {"task": task, "reply": reply, "artifacts": artifacts}
+        except Exception as exc:
+            return {"task": task, "reply": f"❌ 檔案翻譯失敗：{str(exc)[:260]}", "artifacts": []}
+
+    return None
 
 
 def _clean_artifact_filename(value: str, fallback: str = "magi") -> str:
@@ -176,6 +400,60 @@ def _artifact_dict(path: Path, *, label: str, fmt: str) -> dict[str, Any]:
         "size": size,
         "size_label": _artifact_size_label(size),
     }
+
+
+def _path_from_export_reply(reply: str) -> Path | None:
+    text = str(reply or "").strip()
+    if not text:
+        return None
+    if "|||FILE_PATH|||" in text:
+        candidate = text.split("|||FILE_PATH|||", 1)[1].strip().splitlines()[0].strip()
+        p = Path(candidate)
+        return p if p.exists() else None
+    for line in reversed(text.splitlines()):
+        candidate = line.strip()
+        if not candidate or candidate.startswith("http"):
+            continue
+        p = Path(candidate)
+        if p.exists():
+            return p
+    return None
+
+
+def _create_bilingual_translation_artifact(
+    orchestrator: Any,
+    *,
+    source_text: str,
+    translated_text: str,
+    result: dict[str, Any],
+    title: str,
+    user_id: str,
+) -> tuple[dict[str, Any] | None, str]:
+    export_reply = ""
+    try:
+        exporter = getattr(orchestrator, "_export_translation_docx", None)
+        if not callable(exporter):
+            from api.handlers.document_handler import export_translation_docx as exporter
+        export_reply = str(
+            exporter(
+                source_text=source_text,
+                translated_text=translated_text,
+                source_chunks=result.get("source_chunks") or [],
+                translated_chunks=result.get("translated_chunks") or [],
+                term_glossary=str(result.get("term_glossary") or ""),
+                title=title,
+                subtitle="MAGI 原文/翻譯對照表",
+                prefix="file_translate",
+                user_id=user_id,
+            )
+            or ""
+        ).strip()
+    except Exception:
+        return None, ""
+    path = _path_from_export_reply(export_reply)
+    if not path:
+        return None, export_reply
+    return _artifact_dict(path, label="翻譯雙語對照 Word", fmt="docx"), export_reply
 
 
 def _reply_to_docx(path: Path, *, title: str, reply: str, instruction: str, source_filename: str = "") -> bool:
@@ -230,6 +508,7 @@ def _create_web_delivery_artifacts(
     instruction: str,
     reply: str,
     source_filename: str = "",
+    include_docx: bool = True,
 ) -> list[dict[str, Any]]:
     if not _should_create_web_delivery_artifacts(instruction, reply, source_filename=source_filename):
         return []
@@ -260,9 +539,10 @@ def _create_web_delivery_artifacts(
     txt_path.write_text(body + "\n", encoding="utf-8")
     artifacts.append(_artifact_dict(txt_path, label=f"{title_label} 純文字", fmt="txt"))
 
-    docx_path = output_dir / f"{base_name}.docx"
-    if _reply_to_docx(docx_path, title=title, reply=body, instruction=instruction_text, source_filename=source_filename):
-        artifacts.insert(0, _artifact_dict(docx_path, label=f"{title_label} Word", fmt="docx"))
+    if include_docx:
+        docx_path = output_dir / f"{base_name}.docx"
+        if _reply_to_docx(docx_path, title=title, reply=body, instruction=instruction_text, source_filename=source_filename):
+            artifacts.insert(0, _artifact_dict(docx_path, label=f"{title_label} Word", fmt="docx"))
 
     return artifacts
 
@@ -820,7 +1100,71 @@ def create_web_runtime_blueprint(
         except Exception as exc:
             return jsonify({"error": f"檔案儲存失敗：{exc}"}), 500
 
-        extracted = _extract_chat_upload_text(target, original_name)
+        upload_task = _web_upload_requested_task(msg, original_name)
+        suffix = Path(original_name or "").suffix.lower()
+        if upload_task == "transcript" and suffix in (_CHAT_UPLOAD_AUDIO_EXTS | _CHAT_UPLOAD_VIDEO_EXTS):
+            user_instruction = msg or "請轉成逐字稿，保留時間戳記，並輸出可下載文字檔。"
+            reply = orchestrator.process_message(
+                user_id=str(current_user.id),
+                message=user_instruction,
+                platform="WEB",
+                role=current_user.role,
+                attachment={"type": "audio", "path": str(target), "filename": original_name},
+            )
+            try:
+                if normalize_output_text:
+                    reply = normalize_output_text(str(reply or ""), platform="WEB")
+            except Exception:
+                logger.debug("silent-catch in osc_chat_upload_api media", exc_info=True)
+            try:
+                from api.handlers.output_quality_handler import run_output_quality_gate
+
+                gate = run_output_quality_gate(
+                    "transcript",
+                    str(reply or ""),
+                    source_chars=0,
+                    source_name=original_name,
+                    instruction=user_instruction,
+                )
+                if not gate.get("ok"):
+                    reply = str(gate.get("message") or "❌ 逐字稿品質檢查未通過。")
+                    artifacts = []
+                    return jsonify(
+                        {
+                            "reply": reply,
+                            "reply_html": format_web_reply_html(str(reply or "")),
+                            "artifacts": artifacts,
+                            "filename": original_name,
+                            "path": str(target),
+                            "kind": "audio",
+                            "chars": 0,
+                            "truncated": False,
+                            "task": upload_task,
+                        }
+                    )
+            except Exception:
+                logger.debug("silent-catch in osc_chat_upload_api transcript gate", exc_info=True)
+            artifacts = _create_web_delivery_artifacts(
+                root,
+                instruction=user_instruction,
+                reply=str(reply or ""),
+                source_filename=original_name,
+            )
+            return jsonify(
+                {
+                    "reply": reply,
+                    "reply_html": format_web_reply_html(str(reply or "")),
+                    "artifacts": artifacts,
+                    "filename": original_name,
+                    "path": str(target),
+                    "kind": "audio",
+                    "chars": 0,
+                    "truncated": False,
+                    "task": upload_task,
+                }
+            )
+
+        extracted = _extract_chat_upload_text_for_task(target, original_name, upload_task)
         if not extracted.get("success"):
             return jsonify(
                 {
@@ -831,13 +1175,43 @@ def create_web_runtime_blueprint(
             ), 422
 
         text = str(extracted.get("text") or "").strip()
+        user_instruction = msg or "請摘要這份檔案，必要時整理成可翻譯或分析的重點。"
+        direct = _run_direct_web_upload_text_task(
+            orchestrator,
+            root=root,
+            target=target,
+            original_name=original_name,
+            instruction=user_instruction,
+            extracted=extracted,
+            user_id=str(current_user.id),
+        )
+        if direct is not None:
+            reply = str(direct.get("reply") or "")
+            try:
+                if normalize_output_text:
+                    reply = normalize_output_text(reply, platform="WEB")
+            except Exception:
+                logger.debug("silent-catch in osc_chat_upload_api direct", exc_info=True)
+            return jsonify(
+                {
+                    "reply": reply,
+                    "reply_html": format_web_reply_html(reply),
+                    "artifacts": direct.get("artifacts") or [],
+                    "filename": original_name,
+                    "path": str(target),
+                    "kind": extracted.get("kind") or "",
+                    "chars": len(text),
+                    "truncated": False,
+                    "task": direct.get("task") or upload_task,
+                }
+            )
+
         max_chars = int(os.environ.get("MAGI_WEB_CHAT_UPLOAD_TEXT_MAX_CHARS", "120000") or "120000")
         truncated = False
         if max_chars > 0 and len(text) > max_chars:
             text = text[:max_chars]
             truncated = True
 
-        user_instruction = msg or "請摘要這份檔案，必要時整理成可翻譯或分析的重點。"
         prompt = (
             f"{user_instruction}\n\n"
             f"[上傳檔案]\n"
@@ -890,6 +1264,13 @@ def create_web_runtime_blueprint(
     @bp.route("/api/osc/judgments_legacy", methods=["GET"])
     @login_required
     def osc_judgments_api():
-        return jsonify([])
+        try:
+            json_path = root / "skills" / "judgment-collector" / "judgments.json"
+            if json_path.exists():
+                return jsonify(json.loads(json_path.read_text(encoding="utf-8")))
+            return jsonify([])
+        except Exception as exc:
+            logger.error("Error serving judgments: %s", exc)
+            return jsonify([])
 
     return bp

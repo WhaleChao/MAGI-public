@@ -126,6 +126,61 @@ function shortText(v, n = 80) {
     return s.length > n ? `${s.slice(0, n)}...` : s;
 }
 
+function isNonExtractableInsight(item) {
+    const markers = [
+        "本件無可擷取之實務見解",
+        "本判決無可擷取之實務見解",
+        "本裁定無可擷取之實務見解",
+        "無可擷取之實務見解",
+        "無可擷取實務見解",
+        "無實務見解",
+        "沒有實務見解",
+        "未擷取實務見解",
+        "不能擷取之實務見解",
+        "不可擷取之實務見解",
+        "原始資料未提供全文文字",
+        "已存原始JSON",
+        "請提供您需要我摘要的判決書全文",
+        "請您提供需要我處理的判決書全文",
+        "請您提供需要分析的判決書全文",
+        "請您提供判決書全文",
+        "請您現在貼上判決書",
+        "請將判決書貼於此",
+        "判決書貼於下方"
+    ];
+    const noInsightMarkers = ["無實務見解", "無可擷取", "不能擷取", "不可擷取", "未擷取"];
+    const promptEchoMarkers = [
+        "請您現在貼上",
+        "請將判決書貼",
+        "判決書貼於下方",
+        "我已理解",
+        "我將會",
+        "我將立即",
+        "我將為您",
+        "AI助理",
+        "作為MAGI",
+        "MAGI系統"
+    ];
+    const promptEchoContextMarkers = ["判決書", "實務見解", "引用裁判", "適用法條", "逐字擷取", "嚴格依照", "輸出格式"];
+    const text = [
+        item?.title,
+        item?.summary,
+        item?.insight_text,
+        item?.full_text,
+        item?.case_reason,
+        item?.court,
+        item?.source
+    ].map(v => String(v || "")).join("").replace(/\s+/g, "");
+    if (!text) return true;
+    return markers.some(m => text.includes(m)) ||
+        (text.includes("程序性文書") && noInsightMarkers.some(m => text.includes(m))) ||
+        (promptEchoMarkers.some(m => text.includes(m)) && promptEchoContextMarkers.some(m => text.includes(m)));
+}
+
+function filterDisplayableInsights(items) {
+    return (items || []).filter(item => !isNonExtractableInsight(item));
+}
+
 function isLocalConsole() {
     const host = (window.location.hostname || "").toLowerCase();
     return host === "localhost" || host === "127.0.0.1" || host === "::1";

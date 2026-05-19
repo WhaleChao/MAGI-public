@@ -447,22 +447,22 @@ def test_worldmonitor_structured_fallback_translates_source_digest(monkeypatch):
     assert "Asia supply chains face pressure" not in report
 
 
-def test_dashboard_openclaw_button_targets_local_route():
+def test_dashboard_casper_button_targets_magi_adjust():
     dashboard_path = MAGI_ROOT / "templates" / "dashboard.html"
     text = dashboard_path.read_text(encoding="utf-8")
 
     assert "localhost:18789" not in text
-    assert "window.open('/openclaw'" in text
+    assert "openOpenClaw" not in text
+    assert "window.open('/magi-adjust'" in text
 
 
-def test_openclaw_alias_redirects_to_magi_adjust():
+def test_legacy_openclaw_alias_is_retired():
     from api.server import app
 
     client = app.test_client()
     response = client.get("/openclaw", base_url="http://localhost", follow_redirects=False)
 
-    assert response.status_code in {301, 302, 303, 307, 308}
-    assert response.headers["Location"].endswith("/magi-adjust")
+    assert response.status_code == 404
 
 
 def test_worldmonitor_alias_redirects_to_intel_panel():

@@ -91,6 +91,7 @@ This document lists all direct and indirect dependencies of the MAGI project, th
 | Package | Version | License | Notes |
 |---------|---------|---------|-------|
 | rapidocr-onnxruntime | ≥1.3 | MIT/Apache-2.0 | Optical Character Recognition using ONNX Runtime |
+| opendataloader-pdf | ≥2.4.3 | Apache-2.0 | Optional layout-aware PDF conversion/OCR provider; requires Java 11+ |
 
 ---
 

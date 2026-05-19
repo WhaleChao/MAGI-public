@@ -211,7 +211,26 @@ def _read_file(path: str = "", max_chars: int = 3000, **_) -> str:
 
 
 def _search_judgments(keywords: str = "", court: str = "", max_results: int = 3, **_) -> str:
-    return "Public release: legal-research collection is not included."
+    """搜尋司法院判決全文系統。"""
+    if not keywords:
+        return "錯誤: 請提供搜尋關鍵字（例如：侵權行為、背信、強制執行）。"
+    try:
+        from skills.bridge.http_pool import get_session
+        session = get_session()
+        payload = {"skill": "judicial-web-search", "task": "search", "timeout_sec": 60,
+                   "keywords": keywords, "max_results": min(max_results, 5)}
+        if court:
+            payload["court"] = court
+        resp = session.post(f"{_tools_api_url()}/skills/run", json=payload, timeout=70)
+        if resp.status_code == 200:
+            data = resp.json()
+            if data.get("success"):
+                out = data.get("result") or data.get("output", "")
+                return str(out)[:2000]
+            return f"搜尋失敗: {data.get('error', '未知錯誤')}"
+        return f"判決搜尋 API 回傳 {resp.status_code}"
+    except Exception as e:
+        return f"判決搜尋失敗: {e}"
 
 
 def _search_statutes(query: str = "", **_) -> str:
@@ -243,10 +262,12 @@ def _search_statutes(query: str = "", **_) -> str:
 # 只能透過管理員指令或 pipeline 直接 dispatch，不能讓 LLM 自主 run_skill 呼叫。
 _ALLOWED_SKILLS: dict[str, str] = {
     # skill 目錄名: 說明
+    "judicial-web-search": "搜尋司法院判決（用 task=search，params: keywords, max_results）",
     "statutes-vdb":        "搜尋法規條文（用 task=search，params: query）",
     "labor-law-calculator":"計算勞動法金額（資遣費、加班費等，task=run）",
     "contract-review":     "合約審閱分析（task=review，params: text 或 path）",
     "worldmonitor-intel":  "查詢全球/法律新聞（task=run）",
+    "judgment-collector":  "依案由收集判決摘要（task=collect，params: case_reason）",
     # 2026-04-21 新增（6 個真實運作 skill，全部唯讀/分析類）
     "pdf-namer":           "PDF 檔名提案（task=propose，params: path）",
     "pdf-bookmarker":      "PDF 頁籤生成（task=run，params: path）",
@@ -254,6 +275,7 @@ _ALLOWED_SKILLS: dict[str, str] = {
     "market-briefing":     "股市晨報/追蹤清單（task=list|brief，params: symbols）",
     "trial-prep":          "開庭準備摘要（task=prepare，params: case_no）",
     "osc-orchestrator":    "案件/當事人/帳務查詢（task=query，params: type, keyword）",
+    "interpreter-empirical-classifier": "最高法院通譯裁判實證研究（task=fetch|fetch_and_classify|classify|status|self_test）",
 }
 
 
@@ -261,10 +283,13 @@ def _run_skill(skill_name: str = "", task: str = "run", params: str = "", **_) -
     """執行 MAGI 技能（限白名單，唯讀/分析類）。
 
     可用技能（skill_name）：
+      judicial-web-search  → 搜尋司法院判決 (task=search)
       statutes-vdb         → 搜尋法規條文 (task=search)
       labor-law-calculator → 計算勞動法金額 (task=run)
       contract-review      → 合約審閱 (task=review)
       worldmonitor-intel   → 法律新聞 (task=run)
+      judgment-collector   → 依案由收集判決 (task=collect)
+      interpreter-empirical-classifier → 通譯判決抓取與實證分類 (task=fetch_and_classify)
     """
     if not skill_name:
         skill_list = "\n".join(f"  {k}: {v}" for k, v in _ALLOWED_SKILLS.items())
@@ -285,8 +310,12 @@ def _run_skill(skill_name: str = "", task: str = "run", params: str = "", **_) -
     try:
         from skills.bridge.http_pool import get_session
         session = get_session()
-        payload = {"skill": skill_name, "task": task, "timeout_sec": 60, **params_dict}
-        resp = session.post(f"{_tools_api_url()}/skills/run", json=payload, timeout=70)
+        timeout_sec = int(params_dict.pop("timeout_sec", 60) or 60) if isinstance(params_dict, dict) else 60
+        task_arg = task
+        if isinstance(params_dict, dict) and params_dict and "{" not in task_arg:
+            task_arg = f"{task_arg} {json.dumps(params_dict, ensure_ascii=False)}"
+        payload = {"skill": skill_name, "task": task_arg, "timeout_sec": timeout_sec}
+        resp = session.post(f"{_tools_api_url()}/skills/run", json=payload, timeout=max(70, timeout_sec + 10))
         if resp.status_code == 200:
             data = resp.json()
             if data.get("success"):
@@ -389,11 +418,12 @@ TOOLS: dict[str, dict[str, Any]] = {
         "fn": _run_skill,
         "desc": (
             "執行 MAGI 技能（白名單保護）。"
-            "可用 skill_name: statutes-vdb（法規）, "
+            "可用 skill_name: judicial-web-search（判決搜尋）, statutes-vdb（法規）, "
             "labor-law-calculator（勞動計算）, contract-review（合約審閱）, "
-            "worldmonitor-intel（法律新聞）"
+            "worldmonitor-intel（法律新聞）, judgment-collector（案由判決）, "
+            "interpreter-empirical-classifier（通譯判決抓取與實證分類）"
         ),
-        "params": "skill_name: str, task: str（如 search/run/review）, params: str（JSON）",
+        "params": "skill_name: str, task: str（如 search/run/review/fetch_and_classify）, params: str（JSON）",
     },
 }
 

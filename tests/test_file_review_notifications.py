@@ -18,7 +18,7 @@ def _load_action_module():
     name = f"file_review_action_test_{uuid.uuid4().hex}"
     spec = importlib.util.spec_from_file_location(name, MODULE_PATH)
     module = importlib.util.module_from_spec(spec)
-    with patch("builtins.print"), patch(
+    with patch("builtins.print"), patch.object(sys, "argv", [str(MODULE_PATH)]), patch(
         "api.runtime_paths.get_skill_python", return_value=Path(sys.executable)
     ), patch("api.product_runtime.apply_product_runtime_env", return_value={}):
         assert spec.loader is not None
@@ -153,3 +153,491 @@ def test_portal_probe_error_is_business_readable():
     assert "會員登入 驗證碼 密碼" in text
     assert "{" not in text
     assert "frame_diagnostics" not in text
+
+
+def test_portal_item_display_party_uses_db_case_folder_for_typos():
+    module = _load_action_module()
+
+    class FakeDb:
+        def execute(self, query, params=None, fetch=None):
+            if params and params[0] == "115年度原訴字第000036號":
+                return {
+                    "case_number": "2026-0034",
+                    "court_case_number": "115年度原訴字第000036號",
+                    "client_name": "陳文眀",
+                    "folder_path": "/案件/法扶案件/刑事/2026-0034-陳文明-一審-傷害",
+                }
+            return None
+
+    party = module._display_party_for_case_item(
+        {
+            "party": "陳文眀",
+            "court_case_no": "115年度原訴字第000036號",
+        },
+        db=FakeDb(),
+        cache={},
+    )
+
+    assert party == "陳文明"
+
+
+def test_recent_activity_block_uses_folder_name_for_display_typos():
+    module = _load_action_module()
+
+    lines = module._format_recent_activity_block(
+        "最近卷宗下載",
+        [
+            {
+                "processed_at": datetime.now(),
+                "party": "李秀瑛",
+                "case_number": "115年度勞簡字第1號",
+                "folder_path": "/案件/法扶案件/行政/2026-0045-李秀英-一審-勞工保險爭議/09_閱卷/卷宗.pdf",
+                "detail": "已下載卷宗（1 份）",
+            }
+        ],
+    )
+
+    rendered = "\n".join(lines)
+    assert "李秀英｜115年度勞簡字第1號" in rendered
+    assert "李秀瑛" not in rendered
+
+
+def test_ola_error_page_is_labeled_and_treated_as_transient():
+    module = _load_action_module()
+
+    result = {
+        "error": "navigate_failed",
+        "error_code": "ola_error_page",
+        "error_detail": "https://ola.judicial.gov.tw/judrf/lssologinchk.htm",
+    }
+
+    text = module._format_portal_probe_error(result)
+
+    assert "法院入口回傳錯誤頁" in text
+    assert module._is_transient_portal_probe_failure(result) is True
+
+
+def test_portal_probe_failure_alerts_only_after_streak(tmp_path, monkeypatch):
+    module = _load_action_module()
+
+    monkeypatch.setenv("MAGI_FILE_REVIEW_PORTAL_FAILURE_NOTIFY_STREAK", "3")
+    result = {
+        "success": False,
+        "error": "navigate_failed",
+        "error_code": "ola_error_page",
+    }
+
+    first = module._record_portal_probe_state(str(tmp_path), result)
+    second = module._record_portal_probe_state(str(tmp_path), result)
+    third = module._record_portal_probe_state(str(tmp_path), result)
+
+    assert first["failure_streak"] == 1
+    assert first["should_alert"] is False
+    assert second["failure_streak"] == 2
+    assert second["should_alert"] is False
+    assert third["failure_streak"] == 3
+    assert third["should_alert"] is True
+
+    cleared = module._record_portal_probe_state(str(tmp_path), {"success": True})
+    assert cleared["failure_streak"] == 0
+    assert not (tmp_path / ".portal_probe_failure_state.json").exists()
+
+
+def test_court_pickup_portal_row_does_not_become_pending_payment(tmp_path):
+    module = _load_action_module()
+    item = {
+        "status": "pending_payment",
+        "paystatus": "2",
+        "status_name": "法院回覆同意",
+        "result_text": "鑫源企業社請至本院閱覽紙本卷宗，不另製發繳費單。",
+        "party": "鑫源企業社",
+        "court_case_no": "115年度聲字第123號",
+        "rowid": "CP001",
+        "applydt": _roc_compact(-1),
+    }
+
+    assert module._portal_item_is_court_pickup_ready(item) is True
+    assert module._portal_item_is_actionable_pending(item) is False
+
+    collapsed = module._collapse_portal_items([item], download_folder=str(tmp_path))
+
+    assert collapsed["court_pickup_count"] == 1
+    assert collapsed["court_pickup_history_count"] == 0
+    assert collapsed["pending_payment_count"] == 0
+    assert collapsed["items"][0]["status"] == "court_pickup"
+
+
+def test_old_portal_court_pickup_rows_are_history_not_notifications(tmp_path):
+    module = _load_action_module()
+    item = {
+        "status": "court_pickup",
+        "status_name": "法院回覆同意",
+        "result_text": "請至本院閱覽紙本卷宗，不另製發繳費單。",
+        "party": "王有烈等",
+        "court_case_no": "108年度基簡字第000686號",
+        "rowid": "CP-OLD",
+        "applydt": _roc_compact(-90),
+    }
+
+    collapsed = module._collapse_portal_items([item], download_folder=str(tmp_path))
+
+    assert collapsed["court_pickup_count"] == 0
+    assert collapsed["court_pickup_history_count"] == 1
+    assert collapsed["count"] == 0
+    assert collapsed["items"] == []
+
+
+def test_completed_court_pickup_text_is_not_actionable(tmp_path):
+    module = _load_action_module()
+    item = {
+        "status": "pending_payment",
+        "paystatus": "2",
+        "status_name": "法院回覆同意",
+        "result_text": "已到院閱卷",
+        "party": "李家榛",
+        "court_case_no": "108年度基簡字第000883號",
+        "rowid": "CP-DONE",
+        "applydt": _roc_compact(-1),
+    }
+
+    assert module._portal_item_is_court_pickup_ready(item) is False
+    assert module._portal_item_is_actionable_pending(item) is False
+
+
+def test_downloaded_registry_suppresses_archived_downloadable_case(tmp_path):
+    module = _load_action_module()
+    (tmp_path / "downloaded_registry.json").write_text(
+        json.dumps({
+            "卷宗_劉信義.pdf": {
+                "yyidno": "115.原侵重訴.000001",
+                "case_info": {
+                    "artifact_type": "review_download",
+                    "showyyidno": "115年度原侵重訴字第000001號",
+                    "case_number": "115.原侵重訴.000001",
+                },
+            },
+            "繳費單_劉信義.pdf": {
+                "yyidno": "115.原侵重訴.000001",
+                "case_info": {"artifact_type": "payment_slip"},
+            },
+        }, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    item = {
+        "status": "downloadable",
+        "party": "劉信義",
+        "case_number": "115年度原侵重訴字第000001號",
+        "rowid": "DL001",
+    }
+
+    assert module._filter_not_yet_downloaded([item], str(tmp_path)) == []
+
+
+def test_portal_downloadable_uses_review_folder_archive_skip(tmp_path):
+    module = _load_action_module()
+
+    class FakeManager:
+        def _case_review_folder_has_files(self, case_info):
+            return case_info.get("party") == "蘇建和"
+
+    item = {
+        "status": "downloadable",
+        "party": "蘇建和",
+        "case_number": "114年度重上更二字第000095號",
+        "rowid": "DL002",
+    }
+
+    collapsed = module._collapse_portal_items(
+        [item],
+        download_folder=str(tmp_path),
+        file_review_manager=FakeManager(),
+    )
+
+    assert collapsed["downloadable_raw_count"] == 1
+    assert collapsed["downloadable_skipped_count"] == 1
+    assert collapsed["downloadable_count"] == 0
+    assert collapsed["items"] == []
+
+
+def test_portal_pending_payment_skips_when_review_files_already_archived(tmp_path):
+    module = _load_action_module()
+    item = {
+        "status": "pending_payment",
+        "paystatus": "0",
+        "status_name": "法院回覆同意",
+        "result_text": "請於【115/05/11 上午】以後至法院領取",
+        "row_text": "待繳費，請於法院回覆結果下載繳費單繳費",
+        "party": "鑫源企業社",
+        "court_case_no": "114年度建字第000016號",
+        "case_number": "114.建.000016",
+        "rowid": "1059435",
+        "payid": "31001961342172",
+        "archived_review_files": True,
+    }
+
+    collapsed = module._collapse_portal_items([item], download_folder=str(tmp_path))
+
+    assert collapsed["pending_payment_count"] == 0
+    assert collapsed["count"] == 0
+    assert collapsed["items"] == []
+
+
+def test_portal_pending_payment_uses_manager_archive_lookup_fields(tmp_path):
+    module = _load_action_module()
+    seen = {}
+
+    class FakeManager:
+        def _case_review_folder_has_files(self, case_info):
+            seen.update(case_info)
+            return (
+                case_info.get("showyyidno") == "114年度建字第000016號"
+                and case_info.get("clnm") == "鑫源企業社"
+            )
+
+    item = {
+        "status": "pending_payment",
+        "paystatus": "0",
+        "status_name": "法院回覆同意",
+        "row_text": "待繳費，請於法院回覆結果下載繳費單繳費",
+        "party": "鑫源企業社",
+        "court_case_no": "114年度建字第000016號",
+        "case_number": "114.建.000016",
+        "rowid": "1059435",
+    }
+
+    collapsed = module._collapse_portal_items(
+        [item],
+        download_folder=str(tmp_path),
+        file_review_manager=FakeManager(),
+    )
+
+    assert seen["showyyidno"] == "114年度建字第000016號"
+    assert seen["clnm"] == "鑫源企業社"
+    assert seen["yyidno"] == "114.建.000016"
+    assert collapsed["pending_payment_count"] == 0
+    assert collapsed["items"] == []
+
+
+def test_file_review_manager_court_pickup_row_is_not_pending_payment():
+    from casper_ecosystem.law_firm_orchestrators.file_review_automation import FileReviewManager
+
+    row_json = {
+        "paystatus": "2",
+        "status": "3",
+        "statusnm": "法院回覆同意",
+        "result": "鑫源企業社請至本院閱覽紙本卷宗，不另製發繳費單。",
+        "clnm": "鑫源企業社",
+        "yyidno": "115聲123",
+    }
+
+    assert FileReviewManager._is_court_pickup_row(row_json, "") is True
+    assert FileReviewManager._is_pending_payment_row(row_json, "") is False
+
+
+def test_file_review_manager_waiting_or_denied_rows_are_not_court_pickup():
+    from casper_ecosystem.law_firm_orchestrators.file_review_automation import FileReviewManager
+
+    waiting = {
+        "status": "2",
+        "statusnm": "待法院回覆",
+        "result": "尚未回覆",
+    }
+    denied = {
+        "status": "4",
+        "statusnm": "法院回覆不同意",
+        "result": "不同意聲請，原因【已到院閱卷】",
+    }
+    completed = {
+        "status": "3",
+        "statusnm": "法院回覆同意",
+        "result": "已到院閱卷",
+    }
+
+    assert FileReviewManager._is_court_pickup_row(waiting, "聲請閱卷") is False
+    assert FileReviewManager._is_court_pickup_row(denied, "") is False
+    assert FileReviewManager._is_court_pickup_row(completed, "") is False
+
+
+def test_payment_check_notice_stays_quiet_when_portal_has_no_pending_payment():
+    module = _load_action_module()
+
+    assert module._should_emit_payment_check_notice(
+        pay_hits=7,
+        pay_notified=0,
+        portal_pending=0,
+        portal_pending_changed=True,
+        portal_probe_ok=True,
+    ) is False
+
+
+def test_payment_check_notice_emits_for_real_or_unverified_payment_work():
+    module = _load_action_module()
+
+    assert module._should_emit_payment_check_notice(
+        pay_hits=0,
+        pay_notified=0,
+        portal_pending=2,
+        portal_pending_changed=True,
+        portal_probe_ok=True,
+    ) is True
+    assert module._should_emit_payment_check_notice(
+        pay_hits=1,
+        pay_notified=0,
+        portal_pending=0,
+        portal_pending_changed=False,
+        portal_probe_ok=False,
+    ) is True
+    assert module._should_emit_payment_check_notice(
+        pay_hits=0,
+        pay_notified=1,
+        portal_pending=0,
+        portal_pending_changed=False,
+        portal_probe_ok=True,
+    ) is True
+
+
+def test_portal_notify_state_can_record_zero_pending_without_notification(tmp_path):
+    module = _load_action_module()
+    state_path = tmp_path / ".portal_notify_state.json"
+
+    module._save_portal_notify_state(
+        str(state_path),
+        portal_downloadable=6,
+        portal_pickup=29,
+        portal_pending=0,
+    )
+
+    data = json.loads(state_path.read_text(encoding="utf-8"))
+    assert data["portal_downloadable"] == 6
+    assert data["portal_court_pickup"] == 29
+    assert data["portal_pending"] == 0
+
+
+def _roc_compact(days_from_now: int = 3) -> str:
+    dt = datetime.now() + timedelta(days=days_from_now)
+    return f"{dt.year - 1911:03d}{dt.month:02d}{dt.day:02d}"
+
+
+def test_processed_payment_registry_suppresses_old_pdf_resend(tmp_path):
+    from casper_ecosystem.law_firm_orchestrators.file_review_automation import FileReviewManager
+
+    pdf = tmp_path / "繳費單_吳志炳_114.原交易.000049.pdf"
+    pdf.write_bytes(b"%PDF-1.4\n")
+    mgr = FileReviewManager(download_folder=str(tmp_path), headless=True)
+    row = {
+        "rowid": "995588",
+        "yyidno": "114.原交易.000049",
+        "showyyidno": "114年度原交易字第000049號",
+        "clnm": "吳志炳",
+        "paylimitdt": _roc_compact(3),
+        "paystatus": "2",
+        "status": "3",
+        "statusnm": "法院回覆同意",
+        "result": "待繳費",
+    }
+    mgr.payment_registry = {
+        "rowid:995588": {
+            "processed_at": "2026-04-10T14:04:02",
+            "yyidno": "114.原交易.000049",
+            "case_number": "114.原交易.000049",
+            "rowid": "995588",
+            "party": "吳志炳",
+            "files": [pdf.name],
+            "file_paths": [str(pdf)],
+        }
+    }
+
+    with patch.object(mgr, "notify_payment_needed", side_effect=AssertionError("must not resend old PDF")):
+        assert mgr._notify_payment_if_needed(row, case_info={"party": "吳志炳"}, file_paths=None) is True
+
+    saved = json.loads((tmp_path / "notified_cases.json").read_text(encoding="utf-8"))
+    assert "web_payment:case:114原交易49:吳志炳" in saved
+
+
+def test_archived_payment_slip_suppresses_repeat_download_and_reseeds_registry(tmp_path):
+    from casper_ecosystem.law_firm_orchestrators.file_review_automation import FileReviewManager
+
+    case_folder = tmp_path / "2025-0133-吳志炳-一審-公共危險"
+    review_folder = case_folder / "02_閱卷資料" / "20260515"
+    review_folder.mkdir(parents=True)
+    pdf = review_folder / "繳費單_吳志炳_114.原交易.000049.pdf"
+    pdf.write_bytes(b"%PDF-1.4\n")
+
+    mgr = FileReviewManager(download_folder=str(tmp_path / "downloads"), headless=True)
+    mgr._resolve_case_folder = lambda info: str(case_folder)
+
+    row = {
+        "rowid": "fresh-rowid",
+        "yyidno": "114.原交易.000049",
+        "showyyidno": "114年度原交易字第000049號",
+        "clnm": "吳志炳",
+        "paylimitdt": _roc_compact(3),
+        "paystatus": "2",
+        "status": "3",
+        "statusnm": "法院回覆同意",
+        "result": "待繳費",
+    }
+
+    assert mgr._is_payment_processed(row) is True
+    entry = mgr.payment_registry["rowid:fresh-rowid"]
+    assert entry["file_paths"] == [str(pdf)]
+    assert entry["party"] == "吳志炳"
+
+
+def test_portal_pending_payment_skips_legacy_notified_case(tmp_path):
+    module = _load_action_module()
+    (tmp_path / "notified_cases.json").write_text(
+        json.dumps({"web_payment:114年度原交易字第000049號": "2026-04-10T14:04:02"}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    item = {
+        "status": "pending_payment",
+        "paystatus": "2",
+        "status_name": "法院回覆同意",
+        "result_text": "待繳費",
+        "party": "吳志炳",
+        "court_case_no": "114年度原交易字第000049號",
+        "pay_deadline": _roc_compact(3),
+    }
+
+    groups = module._filter_urgent_pending_payments(
+        [item],
+        days=14,
+        download_folder=str(tmp_path),
+    )
+
+    assert groups == {"overdue": [], "urgent": [], "unknown": []}
+
+
+def test_portal_pending_payment_skips_payment_registry_case(tmp_path):
+    module = _load_action_module()
+    pdf = tmp_path / "繳費單_吳志炳_114.原交易.000049.pdf"
+    pdf.write_bytes(b"%PDF-1.4\n")
+    (tmp_path / "payment_registry.json").write_text(
+        json.dumps({
+            "rowid:995588": {
+                "case_number": "114.原交易.000049",
+                "party": "吳志炳",
+                "files": [pdf.name],
+                "file_paths": [str(pdf)],
+            }
+        }, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    item = {
+        "status": "pending_payment",
+        "paystatus": "2",
+        "status_name": "法院回覆同意",
+        "result_text": "待繳費",
+        "party": "吳志炳",
+        "court_case_no": "114年度原交易字第000049號",
+        "pay_deadline": _roc_compact(3),
+    }
+
+    groups = module._filter_urgent_pending_payments(
+        [item],
+        days=14,
+        download_folder=str(tmp_path),
+    )
+
+    assert groups == {"overdue": [], "urgent": [], "unknown": []}

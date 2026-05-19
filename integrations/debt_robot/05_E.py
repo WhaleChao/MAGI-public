@@ -408,8 +408,8 @@ class DocumentGenerator(QMainWindow):
         # 附件說明詞庫
 
         proof_description_map = {
-            "C1": "聲請人聲請前兩年之證明文件乙份。",
-            "C2": "聲請人現工作之證明文件乙份。",
+            "C1": "聲請人聲請前兩年之證明資料乙份。",
+            "C2": "聲請人現工作之證明資料乙份。",
             "D1": "聲請人之現居地資料乙份。",
             "D2": "聲請人之全戶戶籍謄本乙份。",
             "D4": "聲請人之全戶戶籍謄本乙份。",
@@ -547,9 +547,9 @@ class DocumentGenerator(QMainWindow):
             # 💾 使用者選擇儲存位置
             save_result = QFileDialog.getSaveFileName(
                 self,
-                "另存 Word 文件",
+                "另存 Word 檔案",
                 filename,
-                "Word 文件 (*.docx)"
+                "Word 檔案 (*.docx)"
             )
 
             if not save_result or not save_result[0]:  # 使用者按取消
@@ -558,9 +558,9 @@ class DocumentGenerator(QMainWindow):
 
             save_path = save_result[0]
 
-            # 📥 儲存 Word 文件
+            # 📥 儲存 Word 檔案
             doc.save(save_path)
-            QMessageBox.information(self, "完成", f"文件已儲存至：\n{save_path}")
+            QMessageBox.information(self, "完成", f"檔案已儲存至：\n{save_path}")
 
         except PermissionError:
             QMessageBox.warning(self, "儲存失敗", "檔案正在使用中，請關閉檔案後再試。")
@@ -569,7 +569,7 @@ class DocumentGenerator(QMainWindow):
             import traceback
             print("❗ 發生錯誤：", e)
             print(traceback.format_exc())
-            QMessageBox.critical(self, "儲存錯誤", f"無法儲存文件：\n{str(e)}")
+            QMessageBox.critical(self, "儲存錯誤", f"無法儲存檔案：\n{str(e)}")
 
 #GUI介面
 if __name__ == "__main__":

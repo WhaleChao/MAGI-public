@@ -8,6 +8,7 @@ flags high-confidence secrets before a branch is pushed to a public remote.
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import json
 import os
 import re
@@ -28,6 +29,17 @@ BLOCKED_TRACKED_PREFIXES = (
     "docs/deploy/",
 )
 
+BLOCKED_TRACKED_GLOBS = (
+    "json/processed_laf_emails*.json",
+    "skills/*/_bg_jobs/*",
+    "skills/judgment-collector/judgments.json",
+    "skills/judgment-collector/judgments.json.bak.*",
+    "skills/pdf-namer/_filing_log.json",
+    "skills/pdf-namer/db_rules_cache.json",
+    "static/knowledge_lint_latest.json",
+    "docs/architecture/*_architecture_graph.json",
+)
+
 TEXT_EXT_ALLOW = {
     "",
     ".cfg",
@@ -40,6 +52,7 @@ TEXT_EXT_ALLOW = {
     ".js",
     ".json",
     ".jsonl",
+    ".log",
     ".md",
     ".plist",
     ".py",
@@ -79,22 +92,77 @@ PII_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("tailnet_ip", re.compile(r"\b100\.(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d{1,3}\.\d{1,3}\b")),
 )
 
+_PRIVATE_LEGAL_VENDOR_MARKER = "law" + "snote"
+_PRIVATE_MAILBOX_MARKER = "whale" + "lawyer"
+_PRIVATE_NAS_MARKER = "lumi" + "63181107"
+_PRIVATE_LAWYER_NAME_MARKER = "喬" + "政翔"
+_PRIVATE_FIRM_NAME_MARKER = "偵理" + "法律事務所"
+_PRIVATE_ACCOUNT_HINT_MARKER = "zl" + ".hualien"
+_PRIVATE_SPECIALIST_NAME_MARKER = "林" + "稚芳"
+
+PUBLIC_ISOLATION_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("private_legal_source_marker", re.compile(_PRIVATE_LEGAL_VENDOR_MARKER, re.IGNORECASE)),
+    ("private_mailbox_marker", re.compile(_PRIVATE_MAILBOX_MARKER, re.IGNORECASE)),
+    ("private_nas_marker", re.compile(_PRIVATE_NAS_MARKER, re.IGNORECASE)),
+    ("private_lawyer_name_marker", re.compile(_PRIVATE_LAWYER_NAME_MARKER)),
+    ("private_firm_name_marker", re.compile(_PRIVATE_FIRM_NAME_MARKER)),
+    ("private_account_hint_marker", re.compile(re.escape(_PRIVATE_ACCOUNT_HINT_MARKER), re.IGNORECASE)),
+    ("private_specialist_name_marker", re.compile(_PRIVATE_SPECIALIST_NAME_MARKER)),
+    ("private_phone_marker", re.compile(r"(?:0937[- ]?753[- ]?800|03[- ]?8357[- ]?186|03[- ]?835[- ]?7186|03[- ]?835[- ]?7135|02[- ]?2500[- ]?6188)")),
+)
+
 
 def _git_ls_files(repo_root: Path = REPO_ROOT) -> list[str]:
-    proc = subprocess.run(
-        ["git", "ls-files"],
-        cwd=repo_root,
-        check=True,
-        text=True,
-        stdout=subprocess.PIPE,
-    )
+    try:
+        proc = subprocess.run(
+            ["git", "ls-files"],
+            cwd=repo_root,
+            check=True,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return _walk_release_files(repo_root)
     return [line for line in proc.stdout.splitlines() if line]
+
+
+def _walk_release_files(repo_root: Path) -> list[str]:
+    """Fallback for customer release zips that no longer contain .git."""
+
+    ignored_parts = {
+        ".git",
+        ".mypy_cache",
+        ".pytest_cache",
+        ".ruff_cache",
+        ".venv",
+        "venv",
+        "__pycache__",
+        "dist",
+        "build",
+        "node_modules",
+    }
+    rels: list[str] = []
+    for path in sorted(repo_root.rglob("*")):
+        if not path.is_file():
+            continue
+        rel = path.relative_to(repo_root)
+        if any(part in ignored_parts for part in rel.parts):
+            continue
+        rels.append(rel.as_posix())
+    return rels
 
 
 def _is_probably_text(path: Path) -> bool:
     if path.suffix.lower() in TEXT_EXT_ALLOW:
         return True
     return path.name in {".gitignore", ".env.example", "Dockerfile", "Makefile"}
+
+
+def _is_blocked_tracked_path(rel_path: str) -> bool:
+    if rel_path.startswith(BLOCKED_TRACKED_PREFIXES):
+        return True
+    return any(fnmatch.fnmatch(rel_path, pattern) for pattern in BLOCKED_TRACKED_GLOBS)
 
 
 def _is_allowed_secret_example(rel_path: str, line: str) -> bool:
@@ -108,14 +176,39 @@ def _is_allowed_secret_example(rel_path: str, line: str) -> bool:
     return False
 
 
-def scan_text(rel_path: str, text: str) -> list[Finding]:
+def _is_allowed_pii_example(rel_path: str, line: str, kind: str) -> bool:
+    """Allow intentional fixture data without muting production files."""
+
+    if not rel_path.startswith("tests/"):
+        return False
+    lower = line.lower()
+    if any(marker in lower for marker in ("fixture", "sample", "dummy", "fake", "mock", "placeholder")):
+        return True
+    mobile_examples = ("091234" + "5678", "0912-345" + "-678", "098866" + "6555")
+    if kind == "taiwan_mobile" and any(value in line for value in mobile_examples):
+        return True
+    tailnet_example = "100.64" + ".1.2"
+    if kind == "tailnet_ip" and tailnet_example in line:
+        return True
+    return False
+
+
+def scan_text(rel_path: str, text: str, *, public_isolation: bool = False) -> list[Finding]:
     findings: list[Finding] = []
     for idx, line in enumerate(text.splitlines(), start=1):
+        if public_isolation:
+            for kind, pattern in PUBLIC_ISOLATION_PATTERNS:
+                if rel_path in {".gitignore", "scripts/public_release_audit.py", "scripts/first_run_setup.py"}:
+                    continue
+                if rel_path.startswith("tests/"):
+                    continue
+                if pattern.search(line):
+                    findings.append(Finding(rel_path, idx, kind, "error", "private integration marker must not be published"))
         for kind, pattern in SECRET_PATTERNS:
             if pattern.search(line) and not _is_allowed_secret_example(rel_path, line):
                 findings.append(Finding(rel_path, idx, kind, "error", "high-confidence secret-like value"))
         for kind, pattern in PII_PATTERNS:
-            if pattern.search(line):
+            if pattern.search(line) and not _is_allowed_pii_example(rel_path, line, kind):
                 severity = "warning"
                 if rel_path.startswith(BLOCKED_TRACKED_PREFIXES):
                     severity = "error"
@@ -123,11 +216,16 @@ def scan_text(rel_path: str, text: str) -> list[Finding]:
     return findings
 
 
-def scan_tracked_files(paths: Iterable[str] | None = None, repo_root: Path = REPO_ROOT) -> list[Finding]:
+def scan_tracked_files(
+    paths: Iterable[str] | None = None,
+    repo_root: Path = REPO_ROOT,
+    *,
+    public_isolation: bool = False,
+) -> list[Finding]:
     tracked = list(paths) if paths is not None else _git_ls_files(repo_root)
     findings: list[Finding] = []
     for rel_path in tracked:
-        if rel_path.startswith(BLOCKED_TRACKED_PREFIXES):
+        if _is_blocked_tracked_path(rel_path):
             findings.append(Finding(rel_path, 1, "blocked_path", "error", "private runtime/operator path is tracked"))
         abs_path = repo_root / rel_path
         if not abs_path.exists() or not _is_probably_text(abs_path):
@@ -136,7 +234,7 @@ def scan_tracked_files(paths: Iterable[str] | None = None, repo_root: Path = REP
             text = abs_path.read_text(encoding="utf-8")
         except UnicodeDecodeError:
             continue
-        findings.extend(scan_text(rel_path, text))
+        findings.extend(scan_text(rel_path, text, public_isolation=public_isolation))
     return findings
 
 
@@ -155,9 +253,10 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Scan tracked files before public release.")
     parser.add_argument("--json", action="store_true", help="print machine-readable JSON")
     parser.add_argument("--strict", action="store_true", help="treat warnings as failures")
+    parser.add_argument("--public-isolation", action="store_true", help="also block private legal-source, mailbox, and NAS markers")
     args = parser.parse_args(argv)
 
-    findings = scan_tracked_files()
+    findings = scan_tracked_files(public_isolation=args.public_isolation)
     if args.strict:
         findings = [
             Finding(f.path, f.line, f.kind, "error" if f.severity == "warning" else f.severity, f.detail)

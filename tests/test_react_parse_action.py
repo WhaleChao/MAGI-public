@@ -113,6 +113,53 @@ class TestParseAction(unittest.TestCase):
         from skills.engine.react_engine import ReActEngine
         self.engine = ReActEngine.for_omlx()
 
+    def test_blocks_destructive_user_input_before_llm(self):
+        from skills.engine.react_engine import ReActEngine
+
+        called = {"llm": False}
+
+        def _llm(_messages):
+            called["llm"] = True
+            return "FINAL: should not run"
+
+        engine = ReActEngine(tools={}, llm_fn=_llm)
+        result = engine.run("shutdown -h now")
+
+        self.assertFalse(called["llm"])
+        self.assertFalse(result["success"])
+        self.assertTrue(any(t.get("type") == "blocked" for t in result["trace"]))
+        self.assertIn("不可", result["answer"])
+
+    def test_abstains_when_tool_returns_marker_only(self):
+        from skills.engine.react_engine import ReActEngine
+
+        calls = {"n": 0}
+
+        def _llm(_messages):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return 'ACTION: get_schedule\nPARAMS: {"date": "2026-05-16"}'
+            return "FINAL: 明天一定有開庭。"
+
+        engine = ReActEngine(
+            tools={
+                "get_schedule": {
+                    "fn": lambda **kwargs: "TOOL_CALLED:get_schedule:{}",
+                    "desc": "查詢行事曆",
+                    "params": "date",
+                }
+            },
+            llm_fn=_llm,
+            max_steps=3,
+        )
+        result = engine.run("請查明天有沒有開庭。")
+
+        self.assertTrue(result["success"])
+        self.assertTrue(result.get("tool_result_missing"))
+        self.assertEqual(result["tools_used"], ["get_schedule"])
+        self.assertIn("不會憑空補答案", result["answer"])
+        self.assertEqual(calls["n"], 1)
+
     # ─── 基本格式 ───────────────────────────────────────────────────────────
 
     def test_standard_format(self):

@@ -71,7 +71,27 @@
                         <button class="sort-dir-btn" id="todoSortDir" title="切換升降冪">▲</button>
                     </div>
                 </div>
-                <div id="todosCardGrid" class="todo-card-grid"></div>
-                <div id="todosEmpty" class="muted" style="text-align:center;padding:24px;display:none;">沒有資料</div>
+                <div class="grid-2 todo-source-boards">
+                    <div class="todo-source-board">
+                        <div class="section-head compact">
+                            <div>
+                                <h3>OSC 建立待辦</h3>
+                                <div id="todosOscSummary" class="section-note">來源：OSC 手動或系統建立的案件待辦。</div>
+                            </div>
+                        </div>
+                        <div id="todosOscCardGrid" class="todo-card-grid"></div>
+                        <div id="todosOscEmpty" class="muted" style="text-align:center;padding:24px;display:none;">沒有 OSC 建立待辦</div>
+                    </div>
+                    <div class="todo-source-board">
+                        <div class="section-head compact">
+                            <div>
+                                <h3>行事曆事件</h3>
+                                <div id="todosCalendarSummary" class="section-note">來源：行事曆事件與 Google 日曆匯入。</div>
+                            </div>
+                        </div>
+                        <div id="todosCalendarCardGrid" class="todo-card-grid"></div>
+                        <div id="todosCalendarEmpty" class="muted" style="text-align:center;padding:24px;display:none;">沒有行事曆事件</div>
+                    </div>
+                </div>
             </div>
         </section>

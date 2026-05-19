@@ -1,8 +1,16 @@
 /* tabs/todos.js – Todo management */
 async function loadTodos() {
     const q = encodeURIComponent((document.getElementById("todosQ").value || "").trim());
-    const data = await api(`/api/osc/todos?limit=300&q=${q}`);
-    state.todos = data.items || [];
+    const [oscData, importedCalendarData, calendarData] = await Promise.all([
+        api(`/api/osc/todos?limit=300&q=${q}&source=osc`),
+        api(`/api/osc/todos?limit=300&q=${q}&source=gcal`),
+        api(`/api/osc/calendar/events?limit=300&q=${q}`),
+    ]);
+    state.todos = oscData.items || [];
+    state.todoCalendarItems = [
+        ...(calendarData.items || []).map(calendarEventToTodoItem),
+        ...(importedCalendarData.items || []).map(importedCalendarTodoToItem),
+    ];
     renderTodos();
 }
 
@@ -12,11 +20,49 @@ function isTodoDone(status) {
 }
 
 function renderTodos() {
-    const grid = document.getElementById("todosCardGrid");
-    const emptyEl = document.getElementById("todosEmpty");
+    const oscGrid = document.getElementById("todosOscCardGrid");
+    if (!oscGrid) {
+        renderTodoBoard({
+            items: state.todos || [],
+            gridId: "todosCardGrid",
+            emptyId: "todosEmpty",
+            mode: "todo",
+        });
+        return;
+    }
+    renderTodoBoard({
+        items: state.todos || [],
+        gridId: "todosOscCardGrid",
+        emptyId: "todosOscEmpty",
+        summaryId: "todosOscSummary",
+        summaryPrefix: "OSC 建立待辦",
+        mode: "todo",
+    });
+    renderTodoBoard({
+        items: state.todoCalendarItems || [],
+        gridId: "todosCalendarCardGrid",
+        emptyId: "todosCalendarEmpty",
+        summaryId: "todosCalendarSummary",
+        summaryPrefix: "行事曆事件",
+        mode: "calendar",
+    });
+}
+
+function renderTodoBoard({ items, gridId, emptyId, summaryId, summaryPrefix, mode }) {
+    const grid = document.getElementById(gridId);
+    const emptyEl = document.getElementById(emptyId);
+    const summaryEl = summaryId ? document.getElementById(summaryId) : null;
     if (!grid) return;
 
-    if (!state.todos.length) {
+    if (summaryEl) {
+        const sourceCounts = countTodoSources(items);
+        const detail = mode === "calendar"
+            ? `calendar_events ${sourceCounts.calendar_events || 0}，行事曆事件待辦 ${sourceCounts.calendar_todo || 0}，Google 日曆匯入 ${sourceCounts.gcal_import || 0}`
+            : "來源：case_todos（排除 Google 日曆匯入）";
+        summaryEl.textContent = `${summaryPrefix || "待辦"} ${items.length} 筆｜${detail}`;
+    }
+
+    if (!items.length) {
         grid.innerHTML = '';
         if (emptyEl) emptyEl.style.display = '';
         return;
@@ -25,7 +71,7 @@ function renderTodos() {
 
     const todayStr = fmtDate(new Date());
     // Classify: overdue, today, future, completed
-    const classified = state.todos.map(r => {
+    const classified = items.map(r => {
         const dateStr = r.todo_date || '';
         const isDone = isTodoDone(r.status);
         let group = 3; // future
@@ -68,18 +114,66 @@ function renderTodos() {
                 <div><span class="label">案號</span> <span class="value">${esc(r.case_number || '-')}</span></div>
                 <div><span class="label">當事人</span> <span class="value">${esc(r.client_name || '-')}</span></div>
                 <div><span class="label">狀態</span> <span class="value">${esc(r.status || '-')}</span></div>
+                ${r._sourceLabel ? `<div><span class="label">來源</span> <span class="value">${esc(r._sourceLabel)}</span></div>` : ''}
             </div>
             ${r.description ? `<div class="todo-desc">${esc(r.description)}</div>` : ''}
             <div class="todo-actions">
-                ${r._group === 4
-                    ? `<button class="btn" data-act="todo-reopen" data-id="${Number(r.id)}">重新待辦</button>`
-                    : `<button class="btn primary" data-act="todo-complete" data-id="${Number(r.id)}">已完成</button>`}
-                <button class="btn" data-act="todo-edit" data-id="${Number(r.id)}">編輯</button>
-                <button class="btn danger" data-act="todo-del" data-id="${Number(r.id)}">刪除</button>
+                ${todoActionButtons(r, mode)}
             </div>
         </div>`;
     }
     grid.innerHTML = html;
+}
+
+function calendarEventToTodoItem(r) {
+    const start = String(r.start_date || "");
+    const datePart = start.slice(0, 10);
+    const timePart = start.length >= 16 ? start.slice(11, 16) : "";
+    const detail = [r.location, r.description].filter(Boolean).join("｜");
+    return {
+        id: r.id,
+        case_number: r.case_number || "",
+        client_name: "行事曆",
+        todo_type: r.title || r.summary || "行事曆事件",
+        todo_date: datePart,
+        todo_time: timePart,
+        description: detail,
+        status: "",
+        source_file: "calendar_events",
+        _source: "calendar_events",
+        _sourceLabel: "行事曆事件",
+    };
+}
+
+function importedCalendarTodoToItem(r) {
+    const source = String(r.source_file || "").trim();
+    const isGoogleImport = source.startsWith("gcal_import");
+    return {
+        ...r,
+        _source: isGoogleImport ? "gcal_import" : "calendar_todo",
+        _sourceLabel: isGoogleImport ? "Google 日曆匯入" : "行事曆事件待辦",
+    };
+}
+
+function countTodoSources(items) {
+    return (items || []).reduce((acc, item) => {
+        const key = item._source || "case_todos";
+        acc[key] = (acc[key] || 0) + 1;
+        return acc;
+    }, {});
+}
+
+function todoActionButtons(r, mode) {
+    const id = Number(r.id);
+    if (mode === "calendar" && r._source === "calendar_events") {
+        return `<button class="btn" data-act="cal-edit" data-id="${id}">編輯行程</button>`;
+    }
+    const complete = r._group === 4
+        ? `<button class="btn" data-act="todo-reopen" data-id="${id}">重新待辦</button>`
+        : `<button class="btn primary" data-act="todo-complete" data-id="${id}">已完成</button>`;
+    return `${complete}
+        <button class="btn" data-act="todo-edit" data-id="${id}">編輯</button>
+        <button class="btn danger" data-act="todo-del" data-id="${id}">刪除</button>`;
 }
 
 async function editTodo(id, targetPrefix = "todo_") {

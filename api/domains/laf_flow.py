@@ -101,6 +101,14 @@ def update_laf_status_after_action(orch, *, case_number: str = "", client_name: 
                                    case_reason_hint: str = "",
                                    new_status: str, action_label: str = "") -> bool:
     """Update DB legal_aid_status after a successful LAF operation."""
+    def _case_status_for_laf_status(status: str) -> str:
+        text = str(status or "").strip()
+        if text == "已結案":
+            return "已結案"
+        if text in {"已結案，待報結", "已結案，待送出"} or "待報結" in text or "待送出" in text:
+            return "結案中"
+        return "進行中"
+
     try:
         from api.runtime_paths import get_config_path
         from osc import DatabaseManager
@@ -149,7 +157,7 @@ def update_laf_status_after_action(orch, *, case_number: str = "", client_name: 
                     rows = filtered
                 elif filtered:
                     rows = filtered
-        if len(rows) > 1 and action_label.startswith("\u624b\u52d5"):
+        if len(rows) > 1:
             lines = [f"\u26a0\ufe0f \u627e\u5230 {len(rows)} \u4ef6\u300c{client_name}\u300d\u7684\u6cd5\u6276\u6848\u4ef6\uff0c\u8acb\u6307\u5b9a\u6848\u865f\u6216\u52a0\u4e0a\u6848\u7531\uff1a"]
             for r in rows:
                 laf = r.get("legal_aid_number") or ""
@@ -163,10 +171,31 @@ def update_laf_status_after_action(orch, *, case_number: str = "", client_name: 
             return False
         row = rows[0]
         old = row.get("legal_aid_status") or "(\u7a7a)"
-        db.execute_write(
-            "UPDATE cases SET legal_aid_status = %s WHERE id = %s",
-            (new_status, row["id"]),
-        )
+        next_case_status = _case_status_for_laf_status(new_status)
+        try:
+            db.execute_write(
+                """
+                UPDATE cases
+                SET legal_aid_status = %s,
+                    status = CASE WHEN COALESCE(manual_status_lock, 0) = 1 THEN status ELSE %s END
+                WHERE id = %s
+                """,
+                (new_status, next_case_status, row["id"]),
+            )
+        except Exception as inner:
+            if "manual_status_lock" not in str(inner) and "Unknown column" not in str(inner):
+                raise
+            db.execute_write(
+                "UPDATE cases SET legal_aid_status = %s, status = %s WHERE id = %s",
+                (new_status, next_case_status, row["id"]),
+            )
+        if str(new_status or "").strip() == "已結案":
+            try:
+                from api.blueprints.osc_cases import _osc_auto_archive_closed_case
+                archive_result = _osc_auto_archive_closed_case(str(row["id"]))
+                logger.info("📦 LAF 已結案封存結果（%s）：%s", row.get("case_number"), archive_result)
+            except Exception as archive_error:
+                logger.warning("LAF 已結案自動封存失敗（%s）：%s", row.get("case_number"), archive_error)
         logger.info("\U0001f4dd %s \u2192 DB legal_aid_status\u300c%s\u300d\u2192\u300c%s\u300d\uff08%s %s\uff09",
                     action_label, old, new_status, row.get("case_number"), row.get("client_name"))
         return True

@@ -39,9 +39,12 @@ def test_build_release_bundle_excludes_sensitive_and_runtime_files(tmp_path):
     (source / "bin").mkdir()
     (source / "json").mkdir()
     (source / "skills" / "pdf-namer").mkdir(parents=True)
+    (source / "skills" / "file-review-orchestrator" / "_bg_jobs").mkdir(parents=True)
     (source / "static" / "star-office").mkdir(parents=True)
     (source / "static" / "exports").mkdir(parents=True)
     (source / "casper_ecosystem" / "law_firm_orchestrators").mkdir(parents=True)
+    (source / "docs" / "deploy").mkdir(parents=True)
+    (source / "docs" / "architecture").mkdir(parents=True)
 
     (source / "README.md").write_text("MAGI\n", encoding="utf-8")
     (source / "LICENSE").write_text("license\n", encoding="utf-8")
@@ -64,13 +67,24 @@ def test_build_release_bundle_excludes_sensitive_and_runtime_files(tmp_path):
     )
     (source / "json" / "token.pickle").write_bytes(b"secret")
     (source / "skills" / "pdf-namer" / "training_data.json").write_text("[]\n", encoding="utf-8")
+    (source / "skills" / "pdf-namer" / "_filing_log.json").write_text('{"path": "/private"}\n', encoding="utf-8")
+    (source / "skills" / "file-review-orchestrator" / "_bg_jobs" / "download.json").write_text('{"private": true}\n', encoding="utf-8")
     (source / "static" / "star-office" / "index.html").write_text("<html></html>\n", encoding="utf-8")
     (source / "static" / "exports" / "report.txt").write_text("secret\n", encoding="utf-8")
     (source / "casper_ecosystem" / "law_firm_orchestrators" / "laf_orchestrator.py").write_text(
         "print('laf')\n",
         encoding="utf-8",
     )
+    (source / "casper_ecosystem" / "law_firm_orchestrators" / "legalbridge_core.py").write_text(
+        "PRIVATE_FIRM = '偵理法律事務所'\n",
+        encoding="utf-8",
+    )
     (source / "casper_ecosystem" / "law_firm_orchestrators" / "debug_click_before_1.png").write_bytes(b"x")
+    (source / "docs" / "deploy" / "DEPLOY_CASPER.md").write_text("private deploy\n", encoding="utf-8")
+    (source / "docs" / "architecture" / "MAGI_v2_architecture_graph.json").write_text("{}\n", encoding="utf-8")
+    (source / "docs" / "CLAUDE_FIX_LOG_ARCHIVE.md").write_text("archive\n", encoding="utf-8")
+    (source / "docs" / "guides").mkdir(parents=True)
+    (source / "docs" / "guides" / "MAGI_操作手冊.md").write_text("old private manual\n", encoding="utf-8")
 
     result = build_release_bundle(source, output, bundle_name="MAGI-test", force=True)
 
@@ -81,11 +95,18 @@ def test_build_release_bundle_excludes_sensitive_and_runtime_files(tmp_path):
     assert (bundle / "json" / "config.example.json").exists()
     assert not (bundle / "json" / "token.pickle").exists()
     assert not (bundle / "skills" / "pdf-namer" / "training_data.json").exists()
+    assert not (bundle / "skills" / "pdf-namer" / "_filing_log.json").exists()
+    assert not (bundle / "skills" / "file-review-orchestrator" / "_bg_jobs").exists()
     assert not (bundle / "static" / "star-office").exists()
     assert (bundle / "static" / "exports").is_dir()
     assert not any((bundle / "static" / "exports").iterdir())
     assert (bundle / "casper_ecosystem" / "law_firm_orchestrators" / "laf_orchestrator.py").exists()
+    assert not (bundle / "casper_ecosystem" / "law_firm_orchestrators" / "legalbridge_core.py").exists()
     assert not (bundle / "casper_ecosystem" / "law_firm_orchestrators" / "debug_click_before_1.png").exists()
+    assert not (bundle / "docs" / "deploy").exists()
+    assert not (bundle / "docs" / "architecture" / "MAGI_v2_architecture_graph.json").exists()
+    assert not (bundle / "docs" / "CLAUDE_FIX_LOG_ARCHIVE.md").exists()
+    assert not (bundle / "docs" / "guides" / "MAGI_操作手冊.md").exists()
     assert (bundle / "RELEASE_MANIFEST.json").exists()
     assert result.archive_path.exists()
 

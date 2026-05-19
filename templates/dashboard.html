@@ -923,8 +923,8 @@
             </div>
 
             <!-- LOCAL CASPER (3) -->
-            <a href="javascript:void(0)" onclick="openOpenClaw(); return false;" class="node-card node-casper" id="card-local-casper"
-                style="text-decoration: none; cursor: pointer;" title="僅限本機進入 OpenClaw / NERV 管理頁">
+            <a href="javascript:void(0)" onclick="openMagiAdjust(); return false;" class="node-card node-casper" id="card-local-casper"
+                style="text-decoration: none; cursor: pointer;" title="開啟 MAGI / NERV 管理頁">
                 <span class="sub-label">CASPER-3</span>
                 <h2>主控核心</h2>
                 <div class="status" id="status-local-casper">連線中...</div>
@@ -971,9 +971,9 @@
                 <button class="sb-btn" onclick="submitSkillInterviewReplyRight()">[ 送出回答 ]</button>
             </div>
             <div id="skill-interview-status-right" class="wizard-status">尚未啟動問答精靈。</div>
-            <div id="skill-interview-output-right" class="wizard-output">點「啟動」後，這裡會顯示目前題目與生成結果。</div>
+            <div id="skill-interview-output-right" class="wizard-output">點「啟動」後，這裡會顯示目前題目與產生結果。</div>
             <div class="wizard-history">
-                <div style="color: var(--magi-blue); margin-bottom: 6px;">最近生成紀錄</div>
+                <div style="color: var(--magi-blue); margin-bottom: 6px;">最近產生紀錄</div>
                 <div id="skill-interview-history-right">讀取中...</div>
             </div>
         </div>
@@ -1306,7 +1306,7 @@
             const contentType = (response.headers.get('content-type') || '').toLowerCase();
             if (!contentType.includes('application/json')) {
                 if (response.status === 401) {
-                    throw new Error('請重新登入 dashboard');
+                    throw new Error('請重新登入 MAGI');
                 }
                 throw new Error(unavailableMessage);
             }
@@ -1318,7 +1318,7 @@
             }
             if (!response.ok || payload.ok === false) {
                 if (payload.error === 'auth_required') {
-                    throw new Error('請重新登入 dashboard');
+                    throw new Error('請重新登入 MAGI');
                 }
                 if (payload.error === 'admin_required') {
                     throw new Error('只有管理員可以操作');
@@ -1347,7 +1347,7 @@
         function setSkillInterviewOutputRight(message) {
             const el = document.getElementById('skill-interview-output-right');
             if (!el) return;
-            el.textContent = message || '點「啟動」後，這裡會顯示目前題目與生成結果。';
+            el.textContent = message || '點「啟動」後，這裡會顯示目前題目與產生結果。';
         }
 
         function renderSkillInterviewHistoryRight(items) {
@@ -1355,7 +1355,7 @@
             if (!el) return;
             const rows = Array.isArray(items) ? items : [];
             if (!rows.length) {
-                el.innerHTML = '<div style="color: rgba(29,29,31,0.55);">目前還沒有生成紀錄。</div>';
+                el.innerHTML = '<div style="color: rgba(29,29,31,0.55);">目前還沒有產生紀錄。</div>';
                 return;
             }
             const labels = {
@@ -1406,7 +1406,7 @@
                 setSkillInterviewOutputRight(message);
             } else if (!options.quiet) {
                 setSkillInterviewStatusRight('尚未啟動問答精靈。', 'warn');
-                setSkillInterviewOutputRight('點「啟動」後，這裡會顯示目前題目與生成結果。');
+                setSkillInterviewOutputRight('點「啟動」後，這裡會顯示目前題目與產生結果。');
             }
 
             if (replyEl && !interview.active) {
@@ -1426,7 +1426,7 @@
             } catch (e) {
                 if (!options.quiet) {
                     setSkillInterviewStatusRight(
-                        e.message === '請重新登入 dashboard' ? '請重新登入後再使用問答精靈。' : '問答精靈目前暫時沒有連上。',
+                        e.message === '請重新登入 MAGI' ? '請重新登入後再使用問答精靈。' : '問答精靈目前暫時沒有連上。',
                         'warn'
                     );
                     setSkillInterviewOutputRight('目前無法讀取問答精靈狀態。若要先工作，可以直接到 NERV 編輯 SKILL。');
@@ -1437,13 +1437,13 @@
         async function fetchSkillInterviewHistoryRight() {
             try {
                 const response = await fetch('/api/skills/interview-history?limit=8');
-                const payload = await parseJsonApiResponse(response, '生成紀錄暫不可得');
+                const payload = await parseJsonApiResponse(response, '產生紀錄暫不可得');
                 renderSkillInterviewHistoryRight(payload.history || []);
             } catch (e) {
                 const el = document.getElementById('skill-interview-history-right');
                 if (!el) return;
                 el.innerHTML = `<div style="color: rgba(29,29,31,0.5);">${escapeHtml(
-                    e.message === '請重新登入 dashboard' ? '請重新登入後檢視生成紀錄。' : '目前無法讀取生成紀錄。'
+                    e.message === '請重新登入 MAGI' ? '請重新登入後檢視產生紀錄。' : '目前無法讀取產生紀錄。'
                 )}</div>`;
             }
         }
@@ -1466,7 +1466,7 @@
                 await renderSkillInterviewStateRight(payload);
             } catch (e) {
                 setSkillInterviewStatusRight(
-                    e.message === '請重新登入 dashboard'
+                    e.message === '請重新登入 MAGI'
                         ? '請重新登入後再使用問答精靈。'
                         : '問答精靈目前沒有連上，你可以先到 NERV 直接編輯 SKILL。',
                     'warn'
@@ -1493,7 +1493,7 @@
                 await renderSkillInterviewStateRight(payload);
             } catch (e) {
                 setSkillInterviewStatusRight(
-                    e.message === '請重新登入 dashboard'
+                    e.message === '請重新登入 MAGI'
                         ? '請重新登入後再送出回答。'
                         : '問答精靈暫時沒有收下這題，你也可以先到 NERV 直接編輯 SKILL。',
                     'warn'
@@ -1505,14 +1505,8 @@
             await submitSkillInterviewReplyRight('取消');
         }
 
-        function openOpenClaw() {
-            const host = (window.location.hostname || '').toLowerCase();
-            const isLocal = host === 'localhost' || host === '127.0.0.1' || host === '::1';
-            if (!isLocal) {
-                alert('OpenClaw 介面僅開放本機存取，外網已封鎖。');
-                return;
-            }
-            window.open('/openclaw', '_blank', 'noopener,noreferrer');
+        function openMagiAdjust() {
+            window.open('/magi-adjust', '_blank', 'noopener,noreferrer');
         }
 
         // Sidebar section toggle
@@ -1818,7 +1812,7 @@
             }
         });
 
-        /* bfcache 修復：從 OSC 按返回/前進回來時先重算版面，persisted 時再強制重載 */
+        /* bfcache 修復：從 OSC 按回到/前進回來時先重算版面，persisted 時再強制重載 */
         window.addEventListener('pageshow', function(e) {
             window.requestAnimationFrame(() => {
                 repairDashboardLayout();
@@ -2207,7 +2201,7 @@
             <!-- Stats Bar -->
             <div id="mem-stats" style="display:flex; gap:15px; margin-bottom:20px; flex-wrap:wrap;">
                 <div style="border:1px solid #007AFF; padding:10px 15px; min-width:140px; text-align:center;">
-                    <div style="font-size:0.7rem; color:var(--magi-blue);">文件總數</div>
+                    <div style="font-size:0.7rem; color:var(--magi-blue);">檔案總數</div>
                     <div id="mem-stat-vectors" style="font-size:1.5rem; color:#007AFF; font-weight:bold;">--</div>
                     <div id="mem-stat-docs-sub" style="font-size:0.65rem; color:var(--magi-blue); margin-top:2px;">--</div>
                 </div>

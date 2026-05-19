@@ -21,6 +21,8 @@ Mode:
   - 只殺可自動重啟的 MAGI subprocess（api/server.py, api/discord_bot.py,
     api/tools_api.py, rpc_worker.py 等由 daemon 監看的）
   - 連續 N 次才觸發（避免瞬時波動誤判）
+  - 額外回收 MAGI 啟動後逾時未關的 Playwright driver / headless browser；
+    這類進程常是 portal 自動化 teardown hang，不受記憶體壓力門檻限制。
 """
 from __future__ import annotations
 
@@ -47,6 +49,20 @@ TRIGGER_CONSECUTIVE = int(os.environ.get("MAGI_WATCHDOG_TRIGGER_CONSECUTIVE", "3
 SWAP_THRESHOLD_GB = float(os.environ.get("MAGI_WATCHDOG_SWAP_GB", "8"))
 FREE_INACTIVE_MIN_GB = float(os.environ.get("MAGI_WATCHDOG_FREE_MIN_GB", "2"))
 ACTION_COOLDOWN_SEC = int(os.environ.get("MAGI_WATCHDOG_COOLDOWN_SEC", "600"))  # 10 min between kills
+STALE_PLAYWRIGHT_ENABLED = os.environ.get(
+    "MAGI_WATCHDOG_REAP_STALE_PLAYWRIGHT", "1"
+).strip().lower() not in {"0", "false", "no", "off"}
+STALE_PLAYWRIGHT_MAX_AGE_SEC = int(os.environ.get(
+    "MAGI_WATCHDOG_STALE_PLAYWRIGHT_SEC", str(45 * 60),
+))
+STALE_PLAYWRIGHT_COOLDOWN_SEC = int(os.environ.get(
+    "MAGI_WATCHDOG_STALE_PLAYWRIGHT_COOLDOWN_SEC", "300",
+))
+STALE_PLAYWRIGHT_MODE = os.environ.get(
+    "MAGI_WATCHDOG_STALE_PLAYWRIGHT_MODE", "enforce",
+).strip().lower()
+if STALE_PLAYWRIGHT_MODE not in {"shadow", "enforce"}:
+    STALE_PLAYWRIGHT_MODE = "shadow"
 
 # 絕不殺清單（basename 或 substring 比對）
 _NEVER_KILL = frozenset({
@@ -163,6 +179,14 @@ class Proc:
     cmdline: str
 
 
+@dataclass
+class ProcessRow:
+    pid: int
+    ppid: int
+    elapsed_sec: int
+    cmdline: str
+
+
 def list_magi_procs() -> List[Proc]:
     """ps -eo pid,rss,command；過濾非 MAGI 可回收目標。"""
     res = subprocess.run(
@@ -195,6 +219,126 @@ def list_magi_procs() -> List[Proc]:
     return out
 
 
+def _parse_etime(raw: str) -> int:
+    """Parse ps etime ([[DD-]HH:]MM:SS) into seconds."""
+    text = (raw or "").strip()
+    if not text:
+        return 0
+    days = 0
+    if "-" in text:
+        day_s, text = text.split("-", 1)
+        try:
+            days = int(day_s)
+        except ValueError:
+            days = 0
+    parts = text.split(":")
+    try:
+        nums = [int(p) for p in parts]
+    except ValueError:
+        return 0
+    if len(nums) == 3:
+        hours, minutes, seconds = nums
+    elif len(nums) == 2:
+        hours = 0
+        minutes, seconds = nums
+    else:
+        return 0
+    return days * 86400 + hours * 3600 + minutes * 60 + seconds
+
+
+def list_process_rows() -> List[ProcessRow]:
+    res = subprocess.run(
+        ["ps", "-axo", "pid=,ppid=,etime=,command="],
+        capture_output=True, text=True, timeout=10, check=False,
+    )
+    rows: List[ProcessRow] = []
+    for line in res.stdout.splitlines():
+        parts = line.strip().split(None, 3)
+        if len(parts) < 4:
+            continue
+        try:
+            rows.append(ProcessRow(
+                pid=int(parts[0]),
+                ppid=int(parts[1]),
+                elapsed_sec=_parse_etime(parts[2]),
+                cmdline=parts[3],
+            ))
+        except ValueError:
+            continue
+    return rows
+
+
+def _is_stale_magi_playwright(row: ProcessRow, by_pid: Dict[int, ProcessRow]) -> bool:
+    if "playwright/driver/node" not in row.cmdline or "run-driver" not in row.cmdline:
+        return False
+    if row.elapsed_sec < STALE_PLAYWRIGHT_MAX_AGE_SEC:
+        return False
+    parent = by_pid.get(row.ppid)
+    parent_cmd = parent.cmdline if parent else ""
+    if str(MAGI_ROOT) not in row.cmdline and str(MAGI_ROOT) not in parent_cmd:
+        return False
+    return any(marker in parent_cmd for marker in ("api/server.py", "daemon.py", "laf_orchestrator.py"))
+
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+
+
+def reap_stale_playwright(state: "WatchdogState") -> Optional[Dict]:
+    """Reap MAGI-owned Playwright drivers that outlive the automation request."""
+    if not STALE_PLAYWRIGHT_ENABLED:
+        return None
+    if time.time() - state.last_stale_playwright_at < STALE_PLAYWRIGHT_COOLDOWN_SEC:
+        return None
+    rows = list_process_rows()
+    by_pid = {p.pid: p for p in rows}
+    stale = [p for p in rows if _is_stale_magi_playwright(p, by_pid)]
+    if not stale:
+        return None
+    stale.sort(key=lambda p: p.elapsed_sec, reverse=True)
+    target = stale[0]
+    parent = by_pid.get(target.ppid)
+    record: Dict = {
+        "mode": STALE_PLAYWRIGHT_MODE,
+        "action": "stale_playwright_would_reap" if STALE_PLAYWRIGHT_MODE == "shadow" else "stale_playwright_reaped",
+        "target_pid": target.pid,
+        "target_ppid": target.ppid,
+        "target_elapsed_sec": target.elapsed_sec,
+        "target_cmd": target.cmdline,
+        "parent_cmd": parent.cmdline if parent else "",
+    }
+    if STALE_PLAYWRIGHT_MODE == "enforce":
+        try:
+            os.kill(target.pid, signal.SIGTERM)
+            time.sleep(2)
+            if _pid_alive(target.pid):
+                os.kill(target.pid, signal.SIGKILL)
+                record["sigkill_sent"] = True
+            else:
+                record["sigterm_sent"] = True
+        except ProcessLookupError:
+            record["action"] = "stale_playwright_target_gone"
+        except PermissionError as e:
+            record["action"] = "stale_playwright_permission_denied"
+            record["error"] = str(e)
+        except Exception as e:
+            record["action"] = "stale_playwright_error"
+            record["error"] = str(e)
+    _write_decision(record)
+    state.last_stale_playwright_at = time.time()
+    print(
+        f"[memory-watchdog] {record['action']}: pid={target.pid} "
+        f"age={target.elapsed_sec}s cmd={target.cmdline[:80]}"
+    )
+    return record
+
+
 # ---- 決策與執行 ---------------------------------------------------------
 
 def _now_iso() -> str:
@@ -218,6 +362,7 @@ class WatchdogState:
     def __init__(self) -> None:
         self.consecutive_pressure = 0
         self.last_action_at: float = 0.0
+        self.last_stale_playwright_at: float = 0.0
 
     def record_reading(self, r: MemoryReading) -> Optional[Proc]:
         """回傳 None = 無動作；回傳 Proc = 應採取 action（shadow or enforce）。"""
@@ -279,6 +424,9 @@ def _do_action(proc: Proc, r: MemoryReading, mode: str) -> Dict:
 
 def run_once(state: WatchdogState) -> Dict:
     """單次檢查；測試用。"""
+    stale_rec = reap_stale_playwright(state)
+    if stale_rec is not None:
+        return stale_rec
     r = read_memory()
     target = state.record_reading(r)
     if target is None:
@@ -294,7 +442,8 @@ def run_once(state: WatchdogState) -> Dict:
 def main_loop() -> int:
     print(f"[memory-watchdog] start: interval={CHECK_INTERVAL_SEC}s "
           f"trigger={TRIGGER_CONSECUTIVE}x swap>{SWAP_THRESHOLD_GB}GB "
-          f"or free+inactive<{FREE_INACTIVE_MIN_GB}GB, mode={_kill_mode()}")
+          f"or free+inactive<{FREE_INACTIVE_MIN_GB}GB, mode={_kill_mode()}, "
+          f"stale_playwright={STALE_PLAYWRIGHT_MODE if STALE_PLAYWRIGHT_ENABLED else 'off'}")
     state = WatchdogState()
     while True:
         try:

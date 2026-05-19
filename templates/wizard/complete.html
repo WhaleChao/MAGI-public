@@ -31,17 +31,16 @@
 <div class="card">
     <h3>接下來</h3>
     <div style="font-size: 14px; line-height: 2;">
-        <p><strong>1. 確認資料庫</strong> — 確保 MariaDB 正在運行，並已建立 <code>magi_brain</code> 資料庫：</p>
+        <p><strong>1. 確認資料庫</strong> — 確保 MariaDB 正在執行，並已建立 <code>magi_brain</code> 資料庫：</p>
         <div class="code-block" style="margin: 8px 0 16px;">
 # 建立資料庫（如尚未建立）
 mariadb -u root -e "CREATE DATABASE IF NOT EXISTS magi_brain CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
 mariadb -u root -e "GRANT ALL ON magi_brain.* TO 'magi'@'localhost' IDENTIFIED BY 'your_password';"</div>
 
-        <p><strong>2. 安裝 Python 依賴</strong></p>
+        <p><strong>2. 執行客戶安裝精靈</strong></p>
         <div class="code-block" style="margin: 8px 0 16px;">
 cd {{ env_path | replace('/.env', '') }}
-pip install -r requirements.txt
-pip install -r requirements-optional.txt  # 選用功能</div>
+python3 scripts/customer_install_wizard.py --public --yes</div>
 
         <p><strong>3. 啟動 MAGI</strong></p>
         <div class="code-block" style="margin: 8px 0 16px;">
@@ -65,6 +64,10 @@ python3 daemon.py</div>
         如需重新設定，隨時執行：
     </p>
     <div class="code-block">python3 setup_wizard.py</div>
+    <p style="font-size: 13px; color: var(--muted); margin-top: 12px;">
+        如需重新檢查完整安裝狀態，可執行：
+    </p>
+    <div class="code-block">python3 scripts/customer_install_wizard.py --public</div>
 </div>
 
 <div class="btn-bar" style="justify-content: center;">

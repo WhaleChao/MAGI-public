@@ -4,6 +4,8 @@ from datetime import datetime
 import os
 
 _MAGI_ROOT = os.path.abspath(os.path.dirname(os.path.dirname(__file__)))
+_PUBLIC_FIRM_NAME = os.environ.get("MAGI_PUBLIC_FIRM_NAME", "範例法律事務所")
+_PUBLIC_LAWYER_NAME = os.environ.get("MAGI_PUBLIC_LAWYER_NAME", "範例律師")
 
 try:
     from docx import Document
@@ -32,7 +34,7 @@ def generate_receipt(data, fee_type, config):
     for prop in ['top_margin', 'bottom_margin', 'left_margin', 'right_margin']:
         setattr(section, prop, Cm(1.5))
         
-    company_name = config.get('company_name') or '偵理法律事務所'
+    company_name = config.get('company_name') or _PUBLIC_FIRM_NAME
     company_address = config.get('company_address_hl') or ''
     
     p = doc.add_paragraph()
@@ -56,7 +58,7 @@ def generate_receipt(data, fee_type, config):
     
     now = datetime.now()
     roc_year = now.year - 1911
-    date_str = data.get('取代日期') or f"中华民國　{roc_year}　年　{now.month}　月　{now.day}　日"
+    date_str = data.get('取代日期') or f"中華民國　{roc_year}　年　{now.month}　月　{now.day}　日"
     if not data.get('取代日期'):
         date_str = f"中華民國　{roc_year}　年　{now.month}　月　{now.day}　日"
         
@@ -119,11 +121,11 @@ def generate_poa(data, case_type, role, config):
         
     p_client_cells[2].text = "\n".join(details_text)
     
-    company_name = config.get('company_name') or '偵理法律事務所'
+    company_name = config.get('company_name') or _PUBLIC_FIRM_NAME
     company_address = config.get('company_address_hl') or ''
     company_phone = config.get('company_phone') or ''
     company_fax = config.get('company_fax') or ''
-    default_lawyer = config.get('default_lawyer') or '喬政翔'
+    default_lawyer = config.get('default_lawyer') or _PUBLIC_LAWYER_NAME
     
     p_agent_cells = table.rows[2].cells
     p_agent_cells[0].text = "受任人"
@@ -183,8 +185,8 @@ def generate_engagement_agreement(data, config):
     for prop in ['top_margin', 'bottom_margin', 'left_margin', 'right_margin']:
         setattr(section, prop, Cm(2))
         
-    company_name = config.get('company_name') or '偵理法律事務所'
-    default_lawyer = config.get('default_lawyer') or '喬政翔'
+    company_name = config.get('company_name') or _PUBLIC_FIRM_NAME
+    default_lawyer = config.get('default_lawyer') or _PUBLIC_LAWYER_NAME
     company_phone = config.get('company_phone') or ''
     company_email = config.get('company_email') or ''
     company_address = config.get('company_address_hl') or ''
@@ -236,8 +238,8 @@ def generate_engagement_agreement(data, config):
         "委任人理解律師依法不得保證訴訟或非訟程序之結果，訴訟或非訟程序必然有其風險，且法官、檢察官、公務員可能有法律見解之不同及裁量空間，故同樣或類似之事件不必然會做成相類似之判斷；委任人亦理解程序、訴訟期間長短，開會或開庭頻率，視個別辦案狀況不同，是否提出資料、資料內容、開庭方式應由受任人本其專業判斷決定。"
     ])
     add_article("第四條 【受任人義務】", [
-        "對委任人交付之證物及相關文件資料，應妥為保管及保密。保管期間為委任關係結束後兩年，但另有約定者依其約定。惟委任人交付之證物及相關資料於案件終結後，如已逾法定保管期間仍未取回，受任人不負保管義務。",
-        "受任人應及時將委任事務進行之狀況報告委任人，但若涉及偵查不公開之內容或第三人之隱私，受任人得不向委任人說明。如委任人要求提供受任人所設置之檔案，受任人應提供檔案影本，不得無故拖延或拒絕；其所需費用，由委任人負擔。但依法律規定不得提供予委任人之文件、資料，不在此限。",
+        "對委任人交付之證物及相關文書資料，應妥為保管及保密。保管期間為委任關係結束後兩年，但另有約定者依其約定。惟委任人交付之證物及相關資料於案件終結後，如已逾法定保管期間仍未取回，受任人不負保管義務。",
+        "受任人應及時將委任事務進行之狀況報告委任人，但若涉及偵查不公開之內容或第三人之隱私，受任人得不向委任人說明。如委任人要求提供受任人所設置之檔案，受任人應提供檔案影本，不得無故拖延或拒絕；其所需費用，由委任人負擔。但依法律規定不得提供予委任人之文書、資料，不在此限。",
         "受任人就受任事件，應負職務上之保密義務，於委任關係終止後亦同，但委任人同意者不在此限。"
     ])
     add_article("第五條 【契約之終止】", [
@@ -261,7 +263,7 @@ def generate_engagement_agreement(data, config):
     add_article("第七條【契約權利變動】", ["本契約或依本契約所載明之權利或義務均不能讓渡或移轉。"])
     add_article("第八條【代刻印章】", ["委任人同意受任人於辦理案件範圍內代刻印章，交由受任人保管，並於委任關係結束後銷毀。", "（同意簽章：               ）"])
     add_article("第九條【法律和管轄】", ["本契約之適用與解釋應依照中華民國法律辦理，並受中華民國法律主管機關之管轄，本契約未約定者，適用民法債編及其他法律相關規定。若雙方因本契約發生爭執、違約或其他相關問題時，任一方得請求受任人所加入之律師公會調處；如進入訴訟，雙方合意以臺灣花蓮地方法院為第一審訴訟管轄法院。"])
-    add_article("第十條【本契約之修訂】", ["本契約除非由雙方合法授權之代表於修訂文件上簽字，不得變更修訂，修訂程序和制定本契約相同。"])
+    add_article("第十條【本契約之修訂】", ["本契約除非由雙方合法授權之代表於修訂書面上簽字，不得變更修訂，修訂程序和制定本契約相同。"])
     add_article("第十一條【本契約之確認】", ["茲證明雙方簽署本契約，係經由雙方合法授權之代表於首揭日期簽署，本契約乙式貳份，由雙方各執正本乙份為憑。"])
     
     p = doc.add_paragraph()

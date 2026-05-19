@@ -1,0 +1,87 @@
+        <section id="insights" class="view">
+            <div class="card">
+                <div class="section-head">
+                    <div>
+                        <h3>實務見解庫</h3>
+                        <div class="section-note">可搜尋既有見解庫；需要連外補抓時，請用來源網址、標題或案號查找判決全文與摘要。</div>
+                    </div>
+                </div>
+                <div class="soft-block">
+                    <div class="field-grid cols-4">
+                        <div class="field" style="grid-column: span 3;">
+                            <label for="insightsQ">搜尋</label>
+                            <input id="insightsQ" placeholder="標題 / 內容 / 案號 / 案由 / 法院">
+                        </div>
+                        <div class="field">
+                            <label>操作</label>
+                            <div class="inline-actions">
+                                <button class="btn" id="insightsSearchBtn">搜尋</button>
+                                <button class="btn" id="insightsRefreshBtn">重新整理</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="soft-block">
+                    <div class="field-grid cols-4">
+                        <div class="field" style="grid-column: span 2;">
+                            <label for="insight_fetch_url">來源網址</label>
+                            <input id="insight_fetch_url" placeholder="貼上判決來源 URL（司法院等）">
+                        </div>
+                        <div class="field">
+                            <label for="insight_title">標題</label>
+                            <input id="insight_title" placeholder="標題（選填）">
+                        </div>
+                        <div class="field">
+                            <label for="insight_case_number">案件編號</label>
+                            <input id="insight_case_number" placeholder="案件編號（選填）">
+                        </div>
+                        <div class="field">
+                            <label for="insight_case_reason">案由</label>
+                            <input id="insight_case_reason" placeholder="案由（選填）">
+                        </div>
+                    </div>
+                    <div class="toolbar" style="margin-top:10px; margin-bottom:0;">
+                        <button class="btn primary" id="insightFetchBtn">從來源網站補抓全文與摘要</button>
+                    </div>
+                </div>
+                <div class="soft-block">
+                    <div class="field">
+                        <label for="insight_text">手動新增見解全文</label>
+                        <textarea id="insight_text" placeholder="會寫入 legal_insights"></textarea>
+                    </div>
+                    <div class="toolbar" style="margin-bottom:0;">
+                        <button class="btn" id="insightSaveBtn">新增見解到資料庫</button>
+                    </div>
+                </div>
+            </div>
+            <div class="card">
+                <div class="toolbar" style="margin-bottom:8px;">
+                    <div class="sort-bar">
+                        <label>排序</label>
+                        <select id="insightSortCol">
+                            <option value="">預設</option>
+                            <option value="timestamp" data-type="date">時間</option>
+                            <option value="source">來源</option>
+                            <option value="title">標題</option>
+                            <option value="case_number">案號</option>
+                        </select>
+                        <button class="sort-dir-btn" id="insightSortDir">▲</button>
+                    </div>
+                </div>
+                <div class="table-wrap">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th data-sort="timestamp" data-type="date">時間</th>
+                                <th data-sort="source">來源</th>
+                                <th data-sort="title">標題</th>
+                                <th data-sort="case_number">案號</th>
+                                <th data-sort="summary">摘要</th>
+                                <th>操作</th>
+                            </tr>
+                        </thead>
+                        <tbody id="insightsBody"></tbody>
+                    </table>
+                </div>
+            </div>
+        </section>

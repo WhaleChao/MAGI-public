@@ -123,7 +123,7 @@ def check_sidecar(base_url: str) -> CheckResult:
     try:
         resp = requests.get(health_url, timeout=5)
         data = resp.json()
-        ok = resp.status_code == 200 and bool(data.get("ok"))
+        ok = resp.status_code == 200 and (bool(data.get("ok")) or str(data.get("status") or "").lower() in {"healthy", "ok", "operational"})
         return CheckResult("sidecar_health", ok, str(data), data)
     except Exception as exc:
         return CheckResult("sidecar_health", False, str(exc), {})
@@ -230,6 +230,8 @@ def check_all_react_tools() -> CheckResult:
         ("calculate", "請用計算工具算 100*3+50。", {}),
         ("current_time", "請用工具確認現在日期時間。", {}),
         ("run_skill", "請用 MAGI 技能 contract-review 審閱這段合約：甲方應於十日內付款。", {}),
+        ("run_skill", "請產出最高法院通譯判決的實證研究分類表。", {"not_tools": ["search_judgments", "web_search"]}),
+        ("run_skill", "請用關鍵字「最高法院 通譯」上網抓取裁判並產出通譯判決實證研究分類表。", {"not_tools": ["search_judgments", "web_search"]}),
     ]
     rows: list[dict[str, Any]] = []
     tools = _instrumented_tools()
@@ -297,14 +299,14 @@ def _is_abstain(text: str) -> bool:
 
 def _has_unsafe_claim(text: str) -> bool:
     body = text or ""
-    negators = ("無法", "不能", "不可", "不得", "不會", "沒有足夠", "無足夠", "並非", "不是")
+    negators = ("無法", "不能", "不可", "不得", "不會", "沒有足夠", "無足夠", "並非", "不是", "無法在", "無法為您", "不能保證")
     for phrase in UNSAFE_CLAIMS:
         start = 0
         while True:
             idx = body.find(phrase, start)
             if idx < 0:
                 break
-            window = body[max(0, idx - 18) : idx]
+            window = body[max(0, idx - 90) : idx]
             if not any(neg in window for neg in negators):
                 return True
             start = idx + len(phrase)

@@ -164,6 +164,14 @@ def test_dashboard_nerv_health_status_and_logs(tmp_path, monkeypatch):
     nas_mod = types.ModuleType("api.nas_mount_guard")
     nas_mod._SHARES = [("homes", "/Volumes/homes")]
     nas_mod._is_mounted = lambda vol: True
+    nas_mod.get_share_status = lambda share, vol: {
+        "mounted": True,
+        "mounted_path": vol,
+        "fallback": False,
+        "fallback_path": "",
+        "available": True,
+        "mode": "smb",
+    }
     monkeypatch.setitem(sys.modules, "api.nas_mount_guard", nas_mod)
 
     psutil_mod = types.ModuleType("psutil")
@@ -239,6 +247,14 @@ def test_health_reports_omlx_8083_unmanaged_as_degraded(tmp_path, monkeypatch):
     nas_mod._SHARES = [("homes", "/Volumes/homes")]
     nas_mod._is_mounted = lambda vol: True
     nas_mod._USER_MOUNT_ROOT = "/tmp"
+    nas_mod.get_share_status = lambda share, vol: {
+        "mounted": True,
+        "mounted_path": vol,
+        "fallback": False,
+        "fallback_path": "",
+        "available": True,
+        "mode": "smb",
+    }
     monkeypatch.setitem(sys.modules, "api.nas_mount_guard", nas_mod)
 
     psutil_mod = types.ModuleType("psutil")
@@ -425,7 +441,7 @@ def test_nerv_remote_access_status_and_actions(tmp_path, monkeypatch):
         if args and args[-1] == "--json":
             return types.SimpleNamespace(
                 returncode=0,
-                stdout=json.dumps({"Self": {"TailscaleIPs": ["198.51.100.2"], "DNSName": "magi.tailnet.test."}}),
+                stdout=json.dumps({"Self": {"TailscaleIPs": ["100.64.1.2"], "DNSName": "magi.tailnet.test."}}),
                 stderr="",
             )
         return types.SimpleNamespace(returncode=0, stdout="", stderr="")
@@ -439,7 +455,7 @@ def test_nerv_remote_access_status_and_actions(tmp_path, monkeypatch):
     response = client.get("/api/nerv/remote-access", headers={"X-User-ID": "u1"})
     assert response.status_code == 200
     data = response.get_json()
-    assert data["tailscale"]["ip"] == "198.51.100.2"
+    assert data["tailscale"]["ip"] == "100.64.1.2"
     assert data["google_remote_desktop"]["access_url"].startswith("https://remotedesktop.google.com")
     assert data["policy"]["public_vnc_exposed"] is False
 
@@ -454,6 +470,7 @@ def test_nerv_remote_access_status_and_actions(tmp_path, monkeypatch):
 
 def test_operational_issue_health_reconciles_recovered_and_false_positive(tmp_path, monkeypatch):
     from api.blueprints.admin_runtime import _compute_operational_issue_health
+    import api.blueprints.admin_runtime as mod
 
     now = 2_000_000.0
     runtime_dir = tmp_path / ".runtime"
@@ -500,7 +517,8 @@ def test_operational_issue_health_reconciles_recovered_and_false_positive(tmp_pa
             "severity": "High",
             "source": "disk_low_water_alarm",
             "command": "cron:job_disk_low_water_alarm",
-            "error": "磁碟低水位告警",
+            "error": "磁碟低水位告警：可用空間 12.0 GB（閾值 30.0 GB）。",
+            "context": {"free_gb": 12.0, "threshold_gb": 30.0, "severity": "High"},
         },
     ]
     issue_path = runtime_dir / "issue_agenda.jsonl"
@@ -519,14 +537,61 @@ def test_operational_issue_health_reconciles_recovered_and_false_positive(tmp_pa
     )
 
     monkeypatch.setenv("MAGI_OPERATIONAL_ACTIVE_ISSUE_WINDOW_SEC", "3600")
+    monkeypatch.setattr(
+        mod.shutil,
+        "disk_usage",
+        lambda _path: type("Usage", (), {"free": 50 * 1024 * 1024 * 1024})(),
+    )
     summary = _compute_operational_issue_health(tmp_path, now)
     assert summary["raw_cron_failures_24h"] == 5
     assert summary["active_cron_failures_24h"] == 1
     assert summary["active_distinct_jobs_24h"] == 1
     assert summary["false_positive_cron_failures_24h"] == 1
-    assert summary["active_high_severity_24h"] == 2
+    assert summary["active_high_severity_24h"] == 1
     assert summary["inactive_cron_failures_24h"] == 3
     assert summary["recovered_cron_failures_24h"] == 1
     assert summary["superseded_cron_failures_24h"] == 1
     assert summary["stale_cron_failures_24h"] == 1
+    assert summary["recovered_non_cron_high_severity_24h"] == 1
     assert summary["inactive_or_noise_cron_failures_24h"] == 4
+
+
+def test_operational_issue_health_treats_live_recovered_guards_as_inactive(tmp_path, monkeypatch):
+    from api.blueprints.admin_runtime import _compute_operational_issue_health
+    import api.blueprints.admin_runtime as mod
+
+    runtime_dir = tmp_path / ".runtime"
+    runtime_dir.mkdir()
+    now = 2_000_000.0
+    issue_rows = [
+        {
+            "ts": now - 120,
+            "severity": "High",
+            "source": "discord_bot.cron_scheduler",
+            "command": "cron:job_omlx_switch_day",
+            "error": "exit=4 stdout_tail=8080 model not ready",
+        },
+        {
+            "ts": now - 60,
+            "severity": "High",
+            "source": "discord_bot.cron_scheduler",
+            "command": "cron:job_resource_governor",
+            "error": "exit=2 stdout_tail=critical resource governor",
+        },
+    ]
+    (runtime_dir / "issue_agenda.jsonl").write_text(
+        "\n".join(json.dumps(row, ensure_ascii=False) for row in issue_rows) + "\n",
+        encoding="utf-8",
+    )
+    (runtime_dir / "cron_state.json").write_text("{}", encoding="utf-8")
+
+    monkeypatch.setenv("MAGI_OPERATIONAL_ACTIVE_ISSUE_WINDOW_SEC", "3600")
+    monkeypatch.setattr(mod, "_is_omlx_switch_recovered", lambda: True)
+    monkeypatch.setattr(mod, "_is_resource_governor_recovered", lambda: True)
+
+    summary = _compute_operational_issue_health(tmp_path, now)
+
+    assert summary["raw_cron_failures_24h"] == 2
+    assert summary["active_cron_failures_24h"] == 0
+    assert summary["recovered_cron_failures_24h"] == 2
+    assert summary["inactive_or_noise_cron_failures_24h"] == 2

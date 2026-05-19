@@ -1,0 +1,2826 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MAGI 調整頁面</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  background: #0a0a0c;
+  color: #ff6600;
+  font-family: 'Share Tech Mono', monospace;
+  min-height: 100vh;
+  height: 100vh;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ── Scanline overlay ── */
+body::after {
+  content: '';
+  position: fixed;
+  top: 0; left: 0; width: 100%; height: 100%;
+  background: repeating-linear-gradient(
+    0deg,
+    transparent,
+    transparent 2px,
+    rgba(0,0,0,0.15) 2px,
+    rgba(0,0,0,0.15) 4px
+  );
+  pointer-events: none;
+  z-index: 9999;
+}
+
+/* ── Header ── */
+.nerv-header {
+  text-align: center;
+  padding: 12px 0 6px;
+  border-bottom: 2px solid #ff6600;
+  position: relative;
+}
+.nerv-header h1 {
+  font-family: 'Orbitron', sans-serif;
+  font-size: 2.2em;
+  letter-spacing: 12px;
+  color: #ff6600;
+  text-shadow: 0 0 20px rgba(255,102,0,0.5);
+}
+.nerv-header .subtitle {
+  font-size: 0.75em;
+  color: #888;
+  letter-spacing: 6px;
+  margin-top: 4px;
+}
+.nerv-header .timestamp {
+  position: absolute;
+  right: 20px;
+  top: 20px;
+  color: #666;
+  font-size: 0.8em;
+}
+.nerv-header .back-link {
+  position: absolute;
+  left: 20px;
+  top: 20px;
+  color: #ff6600;
+  text-decoration: none;
+  font-size: 0.85em;
+  opacity: 0.7;
+}
+.nerv-header .back-link:hover { opacity: 1; }
+
+/* ── Warning banner ── */
+.warning-bar {
+  background: repeating-linear-gradient(
+    -45deg,
+    #1a1a00,
+    #1a1a00 10px,
+    #0a0a00 10px,
+    #0a0a00 20px
+  );
+  border-top: 1px solid #ff6600;
+  border-bottom: 1px solid #ff6600;
+  padding: 4px 0;
+  text-align: center;
+  font-size: 0.7em;
+  letter-spacing: 8px;
+  color: #ff8800;
+  animation: warningPulse 3s ease-in-out infinite;
+  flex-shrink: 0;
+}
+@keyframes warningPulse {
+  0%, 100% { opacity: 0.6; }
+  50% { opacity: 1; }
+}
+
+/* ── Main grid ── */
+.main-grid {
+  display: grid;
+  grid-template-columns: 270px minmax(0, 1fr) 270px;
+  gap: 0;
+  flex: 1;
+  min-height: 0;
+}
+
+/* ── Side panels ── */
+.side-panel {
+  border-right: 1px solid #331a00;
+  padding: 12px;
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  background:
+    linear-gradient(180deg, rgba(18, 11, 7, 0.92), rgba(10, 10, 12, 0.98)),
+    radial-gradient(circle at top, rgba(255, 102, 0, 0.06), transparent 45%);
+}
+.side-panel.right {
+  border-right: none;
+  border-left: 1px solid #331a00;
+}
+.panel-title {
+  font-family: 'Orbitron', sans-serif;
+  font-size: 0.7em;
+  letter-spacing: 4px;
+  color: #ff8800;
+  border-bottom: 1px solid #331a00;
+  padding-bottom: 6px;
+  margin-bottom: 10px;
+}
+
+/* ── Node items ── */
+.node-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 8px;
+  margin-bottom: 4px;
+  border: 1px solid transparent;
+  border-radius: 2px;
+  font-size: 0.78em;
+  transition: all 0.2s;
+  cursor: default;
+}
+.node-item:hover {
+  border-color: #ff660044;
+  background: #ff660008;
+}
+.node-item .indicator {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  box-shadow: 0 0 6px currentColor;
+}
+.node-item .indicator.green  { color: #00ff41; background: #00ff41; }
+.node-item .indicator.yellow { color: #ffcc00; background: #ffcc00; animation: blink 1.5s infinite; }
+.node-item .indicator.red    { color: #ff0040; background: #ff0040; animation: blink 0.8s infinite; }
+.node-item .indicator.gray   { color: #444; background: #444; }
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+.node-item .label { color: #ccc; flex: 1; }
+.node-item .meta { color: #666; font-size: 0.85em; }
+
+/* ── Center: MAGI core ── */
+.center-panel {
+  padding: 10px 16px 12px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  gap: 10px;
+  background:
+    linear-gradient(180deg, rgba(10, 10, 12, 0.98), rgba(14, 10, 8, 0.98)),
+    radial-gradient(circle at top, rgba(255, 102, 0, 0.08), transparent 52%);
+}
+.command-strip {
+  width: 100%;
+  max-width: 920px;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  flex-shrink: 0;
+}
+.command-chip {
+  border: 1px solid #4a2408;
+  background:
+    linear-gradient(180deg, rgba(255, 102, 0, 0.05), rgba(10, 10, 12, 0.96)),
+    radial-gradient(circle at top left, rgba(255, 176, 102, 0.08), transparent 55%);
+  padding: 10px 12px;
+  min-height: 68px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+}
+.command-chip-label {
+  font-size: 0.6em;
+  color: #8e715f;
+  letter-spacing: 1.6px;
+}
+.command-chip-value {
+  font-family: 'Orbitron', sans-serif;
+  font-size: 0.8em;
+  color: #ffd7b0;
+  letter-spacing: 1px;
+}
+.command-chip-meta {
+  font-size: 0.62em;
+  color: #7b6658;
+}
+
+/* ── MAGI triangle ── */
+.magi-triangle {
+  position: relative;
+  width: 320px;
+  height: 220px;
+  margin: 4px auto 2px;
+  flex-shrink: 0;
+  padding: 8px 0;
+}
+.magi-node {
+  position: absolute;
+  width: 140px;
+  text-align: center;
+  cursor: default;
+}
+.magi-node.casper  { top: 0; left: 50%; transform: translateX(-50%); }
+.magi-node.melchior { bottom: 0; left: 0; }
+.magi-node.balthasar { bottom: 0; right: 0; }
+
+.magi-node .hex {
+  width: 82px;
+  height: 82px;
+  margin: 0 auto 6px;
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.magi-node .hex-bg {
+  position: absolute;
+  width: 100%;
+  height: 100%;
+  border: 2px solid #ff6600;
+  border-radius: 8px;
+  transform: rotate(45deg);
+  transition: all 0.3s;
+}
+.magi-node.online .hex-bg  { border-color: #00ff41; box-shadow: 0 0 15px rgba(0,255,65,0.3); }
+.magi-node.offline .hex-bg { border-color: #ff0040; box-shadow: 0 0 15px rgba(255,0,64,0.2); }
+.magi-node.busy .hex-bg    { border-color: #ffcc00; box-shadow: 0 0 15px rgba(255,204,0,0.3); }
+
+.magi-node .hex-label {
+  position: relative;
+  z-index: 1;
+  font-family: 'Orbitron', sans-serif;
+  font-size: 0.65em;
+  letter-spacing: 2px;
+  color: #fff;
+}
+.magi-node .node-name {
+  font-family: 'Orbitron', sans-serif;
+  font-size: 0.76em;
+  color: #ff8800;
+  letter-spacing: 2px;
+}
+.magi-node .node-detail {
+  font-size: 0.64em;
+  color: #666;
+  margin-top: 2px;
+}
+
+/* Triangle connecting lines (SVG) */
+.tri-lines {
+  position: absolute;
+  width: 100%;
+  height: 100%;
+  top: 0;
+  left: 0;
+  pointer-events: none;
+}
+.tri-lines line {
+  stroke: #ff660033;
+  stroke-width: 1;
+  stroke-dasharray: 6 4;
+}
+
+/* ── Inference routing ── */
+.routing-section {
+  width: 100%;
+  max-width: 100%;
+}
+.routing-title {
+  font-family: 'Orbitron', sans-serif;
+  font-size: 0.7em;
+  letter-spacing: 4px;
+  color: #ff8800;
+  text-align: center;
+  margin-bottom: 12px;
+}
+.route-row {
+  display: grid;
+  grid-template-columns: 104px 1fr auto;
+  gap: 8px;
+  align-items: center;
+  padding: 4px 8px;
+  border-bottom: 1px solid #1a1a1a;
+  font-size: 0.7em;
+}
+.route-row .task { color: #aaa; white-space: nowrap; }
+.route-row .path {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.route-row .arrow { color: #ff660066; }
+.route-row .engine { padding: 2px 6px; border-radius: 2px; font-size: 0.9em; white-space: nowrap; }
+.engine.omlx { color: #00ff41; border: 1px solid #00ff4133; }
+.engine.ollama { color: #ffcc00; border: 1px solid #ffcc0033; }
+.engine.native { color: #9be7ff; border: 1px solid #9be7ff33; }
+.engine.remote { color: #00aaff; border: 1px solid #00aaff33; }
+.engine.fallback { color: #ffcc88; border: 1px solid rgba(255, 204, 136, 0.28); }
+.route-row .model { color: #666; text-align: right; white-space: nowrap; }
+
+/* ── Skill tree ── */
+.skill-tree {
+  width: 100%;
+  max-width: 100%;
+}
+.skill-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+.skill-category {
+  border: 1px solid #4a2408;
+  background:
+    linear-gradient(180deg, rgba(20, 12, 7, 0.78), rgba(10, 10, 12, 0.96)),
+    radial-gradient(circle at top left, rgba(255, 102, 0, 0.05), transparent 45%);
+  min-height: 168px;
+  display: flex;
+  flex-direction: column;
+}
+.skill-cat-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px 8px;
+  border-bottom: 1px solid rgba(255, 102, 0, 0.1);
+}
+.skill-cat-title {
+  font-size: 0.72em;
+  color: #ffb066;
+  letter-spacing: 1.6px;
+  font-family: 'Orbitron', sans-serif;
+}
+.skill-cat-count {
+  font-size: 0.58em;
+  color: #ffcc88;
+  border: 1px solid #5a3212;
+  padding: 2px 6px;
+}
+.skill-list {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+.skill-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid #2f2218;
+  border-radius: 4px;
+  transition: all 0.2s;
+  width: 100%;
+  background: rgba(255, 102, 0, 0.03);
+  text-align: left;
+  cursor: pointer;
+  font-family: inherit;
+}
+.skill-item:hover {
+  border-color: #ff6600;
+  background: rgba(255, 102, 0, 0.08);
+}
+.skill-item.active {
+  border-color: #00aaff;
+  background: rgba(0, 170, 255, 0.12);
+}
+.skill-item-main {
+  flex: 1;
+  min-width: 0;
+}
+.skill-item .skill-name {
+  font-size: 0.7em;
+  color: #ccc;
+  display: block;
+  white-space: normal;
+}
+.skill-item .skill-desc {
+  margin-top: 4px;
+  font-size: 0.6em;
+  color: #555;
+  line-height: 1.45;
+}
+.skill-item .skill-badge {
+  font-size: 0.58em;
+  color: #ffcc88;
+  border: 1px solid #5a3212;
+  padding: 2px 5px;
+  border-radius: 2px;
+  align-self: flex-start;
+}
+.skill-item .skill-indicator {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: #00ff41;
+  box-shadow: 0 0 4px #00ff41;
+}
+.node-item-stack {
+  align-items: flex-start;
+}
+.engine-stack {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.engine-row-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.engine-inline-status {
+  color: #888;
+  font-size: 0.68em;
+  line-height: 1.45;
+}
+.engine-inline-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.engine-inline-actions.tight {
+  gap: 5px;
+}
+.engine-feature-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+.engine-feature-btn {
+  width: 100%;
+  border: 1px solid #1f6b44;
+  background: rgba(0, 255, 65, 0.08);
+  color: #9cffc0;
+  padding: 6px 8px;
+  font-size: 0.66em;
+  font-family: 'Share Tech Mono', monospace;
+  text-align: left;
+  cursor: pointer;
+}
+.engine-feature-btn.off {
+  border-color: #5a3212;
+  background: #120b07;
+  color: #ffcc88;
+}
+.engine-feature-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.engine-inline-note {
+  color: #6f8d7a;
+  font-size: 0.63em;
+  line-height: 1.45;
+}
+.skill-editor-status {
+  margin-top: 10px;
+  min-height: 18px;
+  font-size: 0.72em;
+  color: #888;
+}
+.skill-editor-status.ok {
+  color: #00ff41;
+}
+.skill-editor-status.warn {
+  color: #ffcc00;
+}
+.skill-editor-status.error {
+  color: #ff6a6a;
+}
+.skill-editor-hint {
+  margin-top: 4px;
+  font-size: 0.64em;
+  color: #666;
+}
+.nerv-fold {
+  width: 100%;
+  max-width: 920px;
+  border: 1px solid #4a2408;
+  background:
+    linear-gradient(180deg, rgba(20, 12, 7, 0.9), rgba(10, 10, 12, 0.96)),
+    radial-gradient(circle at top, rgba(255, 102, 0, 0.05), transparent 40%);
+  box-shadow: inset 0 0 0 1px rgba(255, 102, 0, 0.06);
+}
+.nerv-fold summary {
+  list-style: none;
+  cursor: pointer;
+  padding: 10px 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.nerv-fold summary::-webkit-details-marker {
+  display: none;
+}
+.nerv-fold-title {
+  font-family: 'Orbitron', sans-serif;
+  font-size: 0.72em;
+  letter-spacing: 3px;
+  color: #ffb066;
+}
+.nerv-fold-meta {
+  font-size: 0.64em;
+  color: #8e715f;
+}
+.nerv-fold[open] summary {
+  border-bottom: 1px solid rgba(255, 102, 0, 0.1);
+}
+.nerv-fold summary::after {
+  content: 'EXPAND';
+  font-size: 0.58em;
+  letter-spacing: 2px;
+  color: #7c614f;
+}
+.nerv-fold[open] summary::after {
+  content: 'COLLAPSE';
+  color: #ffb066;
+}
+.nerv-fold-body {
+  padding: 10px 12px 12px;
+}
+.compact-scroll {
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+.fold-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.fold-btn {
+  border: 1px solid #5a3212;
+  background: #120b07;
+  color: #ffcc88;
+  padding: 6px 9px;
+  font-size: 0.68em;
+  font-family: 'Share Tech Mono', monospace;
+  cursor: pointer;
+}
+.fold-btn:hover {
+  border-color: #ff6600;
+}
+.remote-access-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+.remote-access-card {
+  border: 1px solid #2f2218;
+  background: rgba(255, 102, 0, 0.035);
+  padding: 10px;
+  min-width: 0;
+}
+.remote-access-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.remote-access-title {
+  color: #ffcc88;
+  font-size: 0.74em;
+  letter-spacing: 1px;
+}
+.remote-access-meta {
+  color: #8e715f;
+  font-size: 0.64em;
+  line-height: 1.5;
+  word-break: break-word;
+}
+.remote-access-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+.remote-access-link {
+  border: 1px solid #5a3212;
+  background: #120b07;
+  color: #ffcc88;
+  padding: 6px 9px;
+  font-size: 0.68em;
+  font-family: 'Share Tech Mono', monospace;
+  text-decoration: none;
+  cursor: pointer;
+}
+.remote-access-link.primary {
+  border-color: #00aaff66;
+  color: #9edcff;
+  background: rgba(0, 170, 255, 0.08);
+}
+.remote-access-link:hover {
+  border-color: #ff6600;
+}
+.remote-access-status {
+  min-height: 16px;
+  margin-top: 8px;
+  font-size: 0.66em;
+  color: #888;
+}
+.remote-access-status.ok { color: #00ff41; }
+.remote-access-status.warn { color: #ffcc00; }
+.remote-access-status.error { color: #ff6a6a; }
+.skill-launcher-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 6px;
+}
+.skill-modal {
+  position: fixed;
+  inset: 0;
+  background: rgba(5, 5, 8, 0.82);
+  display: none;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  z-index: 10000;
+}
+.skill-modal.open {
+  display: flex;
+}
+.skill-modal-shell {
+  width: min(1120px, 100%);
+  max-height: calc(100vh - 48px);
+  overflow: hidden;
+  border: 1px solid #6a3812;
+  background: linear-gradient(180deg, rgba(18, 11, 7, 0.98), rgba(10, 10, 12, 0.98));
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.45);
+  display: flex;
+  flex-direction: column;
+}
+.skill-modal-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 18px 18px 12px;
+  border-bottom: 1px solid rgba(255, 102, 0, 0.12);
+  background: linear-gradient(180deg, rgba(22, 12, 8, 0.98), rgba(16, 11, 10, 0.96));
+  position: sticky;
+  top: 0;
+  z-index: 2;
+}
+.skill-modal-title {
+  font-family: 'Orbitron', sans-serif;
+  font-size: 0.95em;
+  letter-spacing: 3px;
+  color: #ffb066;
+}
+.skill-modal-subtitle {
+  margin-top: 4px;
+  font-size: 0.68em;
+  color: #8e715f;
+}
+.skill-modal-close {
+  border: 1px solid #6a3812;
+  background: #140c08;
+  color: #ffcc88;
+  padding: 8px 10px;
+  font-family: 'Share Tech Mono', monospace;
+  font-size: 0.72em;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.skill-modal-body {
+  padding: 16px 18px 12px;
+  overflow: auto;
+  min-height: 0;
+}
+.skill-modal-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.8fr) minmax(280px, 0.9fr);
+  gap: 16px;
+}
+.skill-modal-card {
+  border: 1px solid #4a2408;
+  background: rgba(255, 102, 0, 0.04);
+  padding: 14px;
+}
+.skill-modal-toolbar {
+  display: grid;
+  grid-template-columns: minmax(180px, 220px) repeat(4, auto);
+  gap: 8px;
+  align-items: center;
+}
+.skill-modal-toolbar input,
+.skill-modal-editor textarea {
+  width: 100%;
+  background: #0c0c10;
+  border: 1px solid #402100;
+  color: #ffe0c2;
+  font-family: 'Share Tech Mono', monospace;
+}
+.skill-modal-toolbar input {
+  padding: 8px 10px;
+  font-size: 0.78em;
+}
+.skill-modal-toolbar button,
+.skill-template-card button {
+  border: 1px solid #5a3212;
+  background: #120b07;
+  color: #ffcc88;
+  padding: 8px 10px;
+  font-size: 0.72em;
+  font-family: 'Share Tech Mono', monospace;
+  cursor: pointer;
+}
+.skill-modal-toolbar button:hover,
+.skill-modal-close:hover,
+.skill-template-card button:hover {
+  border-color: #ff6600;
+  color: #fff0d2;
+}
+.skill-modal-editor textarea {
+  min-height: 420px;
+  resize: vertical;
+  padding: 10px 12px;
+  margin-top: 10px;
+  line-height: 1.55;
+  font-size: 0.76em;
+}
+.skill-template-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.skill-side-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.skill-side-tab {
+  border: 1px solid #5a3212;
+  background: #120b07;
+  color: #c9a788;
+  padding: 7px 10px;
+  font-size: 0.7em;
+  font-family: 'Share Tech Mono', monospace;
+  cursor: pointer;
+}
+.skill-side-tab.active {
+  border-color: #ff6600;
+  color: #fff0d2;
+  box-shadow: 0 0 0 1px rgba(255, 102, 0, 0.2) inset;
+}
+.skill-side-section {
+  display: none;
+  flex-direction: column;
+  gap: 10px;
+}
+.skill-side-section.active {
+  display: flex;
+}
+.skill-template-title {
+  font-family: 'Orbitron', sans-serif;
+  font-size: 0.76em;
+  letter-spacing: 2px;
+  color: #ffb066;
+}
+.skill-template-copy {
+  font-size: 0.68em;
+  color: #b0907a;
+  line-height: 1.6;
+}
+.skill-template-list {
+  font-size: 0.68em;
+  color: #c9a788;
+  line-height: 1.65;
+  padding-left: 16px;
+}
+.skill-template-preview {
+  margin: 0;
+  padding: 10px;
+  background: #0b0b0d;
+  border: 1px solid #402100;
+  color: #ffd9b5;
+  font-size: 0.66em;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.skill-wizard-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.skill-wizard-input,
+.skill-wizard-reply {
+  width: 100%;
+  background: #0b0b0d;
+  border: 1px solid #402100;
+  color: #ffd9b5;
+  font-family: 'Share Tech Mono', monospace;
+  padding: 10px;
+  font-size: 0.7em;
+  box-sizing: border-box;
+}
+.skill-wizard-reply {
+  min-height: 88px;
+  resize: vertical;
+}
+.skill-wizard-prompt {
+  min-height: 120px;
+}
+.skill-version-list {
+  display: grid;
+  gap: 8px;
+}
+.skill-version-item {
+  border: 1px solid #4a2408;
+  background: rgba(9, 9, 11, 0.76);
+  padding: 10px;
+}
+.skill-version-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 4px;
+}
+.skill-version-id {
+  color: #ffb066;
+  font-size: 0.72em;
+  word-break: break-all;
+}
+.skill-version-meta {
+  color: #8e715f;
+  font-size: 0.68em;
+  line-height: 1.5;
+}
+.skill-version-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 8px;
+}
+.skill-modal-foot {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 18px 14px;
+  border-top: 1px solid rgba(255, 102, 0, 0.12);
+  background: linear-gradient(180deg, rgba(14, 10, 10, 0.94), rgba(10, 10, 12, 0.98));
+}
+.skill-modal-foot-hint {
+  font-size: 0.66em;
+  color: #8e715f;
+  line-height: 1.5;
+}
+
+/* ── Footer ── */
+.nerv-footer {
+  text-align: center;
+  padding: 8px;
+  border-top: 1px solid #331a00;
+  font-size: 0.65em;
+  color: #444;
+  letter-spacing: 3px;
+  flex-shrink: 0;
+  background: linear-gradient(180deg, rgba(12, 10, 10, 0.96), rgba(8, 8, 10, 0.98));
+  position: relative;
+  z-index: 2;
+}
+
+.product-switchboard {
+  width: 100%;
+  max-width: 100%;
+  overflow-x: hidden;
+}
+.runtime-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  align-items: stretch;
+  width: 100%;
+  min-width: 0;
+}
+.runtime-card {
+  border: 1px solid #4a2408;
+  background:
+    linear-gradient(180deg, rgba(255, 102, 0, 0.05), rgba(12, 10, 10, 0.96)),
+    radial-gradient(circle at top left, rgba(255, 160, 96, 0.08), transparent 50%);
+  padding: 12px;
+  min-height: 232px;
+  min-width: 0;
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  gap: 10px;
+  box-shadow: inset 0 0 0 1px rgba(255, 102, 0, 0.05);
+}
+.runtime-card-head {
+  display: flex;
+  align-items: stretch;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 58px;
+}
+.runtime-card-head > div:first-child,
+.runtime-band > div:first-child,
+.runtime-controls,
+.runtime-row {
+  min-width: 0;
+}
+.runtime-card-title {
+  font-family: 'Orbitron', sans-serif;
+  font-size: 0.82em;
+  letter-spacing: 2px;
+  color: #ffb066;
+}
+.runtime-card-subtitle {
+  margin-top: 4px;
+  font-size: 0.68em;
+  color: #8e715f;
+  line-height: 1.45;
+  min-height: 36px;
+}
+.runtime-badge {
+  border: 1px solid #5a3212;
+  padding: 2px 6px;
+  font-size: 0.64em;
+  color: #ffcc88;
+  white-space: nowrap;
+  align-self: flex-start;
+}
+.runtime-band {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px;
+  align-items: center;
+  border: 1px solid rgba(255, 102, 0, 0.14);
+  background: rgba(9, 9, 11, 0.7);
+  padding: 6px 8px;
+  min-height: 52px;
+}
+.runtime-band-label {
+  font-size: 0.62em;
+  color: #7f6553;
+  letter-spacing: 1px;
+}
+.runtime-band-value {
+  margin-top: 2px;
+  font-size: 0.68em;
+  color: #ffd6ac;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+.runtime-band-code {
+  font-family: 'Orbitron', sans-serif;
+  font-size: 0.64em;
+  color: #ffb066;
+  letter-spacing: 1px;
+}
+.runtime-controls {
+  display: grid;
+  gap: 8px;
+  align-content: start;
+}
+.runtime-row {
+  min-height: 58px;
+}
+.runtime-row label {
+  display: block;
+  margin-bottom: 4px;
+  font-size: 0.7em;
+  color: #a5826a;
+  min-height: 18px;
+  line-height: 1.35;
+  word-break: break-word;
+}
+.runtime-select,
+.runtime-input {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+  border: 1px solid #603315;
+  background: #0f0a08;
+  color: #ffe1bf;
+  padding: 8px 9px;
+  font-family: 'Share Tech Mono', monospace;
+  font-size: 0.76em;
+}
+.runtime-row.placeholder {
+  visibility: hidden;
+}
+.runtime-select:disabled,
+.runtime-input:disabled {
+  opacity: 0.6;
+}
+.runtime-meta {
+  border-top: 1px solid rgba(255, 102, 0, 0.12);
+  font-size: 0.68em;
+  color: #8e715f;
+  line-height: 1.6;
+  padding-top: 10px;
+}
+.runtime-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  align-items: center;
+}
+.runtime-btn {
+  border: 1px solid #6a3812;
+  background: #140c08;
+  color: #ffcc88;
+  padding: 7px 10px;
+  font-family: 'Share Tech Mono', monospace;
+  font-size: 0.7em;
+  cursor: pointer;
+}
+.runtime-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.runtime-status-line {
+  margin: 0 0 10px;
+  font-size: 0.72em;
+  color: #8e715f;
+}
+
+/* ── Responsive ── */
+@media (max-width: 900px) {
+  body {
+    height: auto;
+    overflow: auto;
+  }
+  .main-grid {
+    display: flex;
+    flex-direction: column;
+    flex: none;
+  }
+  .center-panel { order: 1; overflow: visible; }
+  .side-panel { order: 2; border: none; border-bottom: 1px solid #331a00; overflow: visible; }
+  .side-panel.right { order: 3; }
+  .command-strip { grid-template-columns: 1fr 1fr; }
+  .magi-triangle { width: 280px; height: 260px; }
+  .skill-grid { grid-template-columns: 1fr; }
+  .runtime-grid { grid-template-columns: 1fr; }
+  .remote-access-grid { grid-template-columns: 1fr; }
+  .skill-modal {
+    padding: 12px;
+  }
+  .skill-modal-body {
+    padding: 12px;
+  }
+  .skill-modal-grid {
+    grid-template-columns: 1fr;
+  }
+  .skill-modal-toolbar {
+    grid-template-columns: 1fr 1fr;
+  }
+  .skill-modal-foot {
+    flex-direction: column;
+    align-items: stretch;
+  }
+}
+@media (max-width: 640px) {
+  body::after {
+    display: none;
+  }
+  .nerv-header {
+    padding: 14px 12px 10px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+  }
+  .nerv-header h1 {
+    font-size: 1.35em;
+    letter-spacing: 5px;
+  }
+  .nerv-header .subtitle {
+    font-size: 0.62em;
+    letter-spacing: 2px;
+    text-align: center;
+  }
+  .nerv-header .timestamp,
+  .nerv-header .back-link {
+    position: static;
+  }
+  .warning-bar {
+    font-size: 0.58em;
+    letter-spacing: 3px;
+    padding: 6px 8px;
+  }
+  .command-strip {
+    grid-template-columns: 1fr;
+  }
+  .magi-triangle {
+    width: min(100%, 320px);
+    height: 240px;
+  }
+  .panel-title {
+    font-size: 0.66em;
+    letter-spacing: 2px;
+  }
+  .node-item {
+    font-size: 0.72em;
+  }
+  .runtime-card {
+    min-height: auto;
+  }
+  .runtime-card-head {
+    flex-direction: column;
+    min-height: auto;
+  }
+  .runtime-actions {
+    justify-content: stretch;
+    flex-wrap: wrap;
+  }
+  .runtime-btn {
+    flex: 1 1 140px;
+  }
+  .skill-modal {
+    padding: 8px;
+  }
+  .skill-modal-head {
+    padding: 14px 14px 10px;
+  }
+  .skill-modal-title {
+    font-size: 0.82em;
+    letter-spacing: 2px;
+  }
+  .skill-modal-subtitle {
+    font-size: 0.64em;
+    line-height: 1.5;
+  }
+  .skill-modal-body {
+    padding: 10px;
+  }
+  .skill-modal-toolbar {
+    grid-template-columns: 1fr;
+  }
+  .skill-modal-editor textarea {
+    min-height: 280px;
+  }
+}
+</style>
+</head>
+<body>
+<div class="nerv-header">
+  <a href="/dashboard" class="back-link">&lt; 回到 MAGI</a>
+  <h1>MAGI SYSTEM</h1>
+  <div class="subtitle">SUPER COMPUTER SYSTEM STATUS</div>
+  <div class="timestamp" id="ts">--:--:--</div>
+</div>
+<div class="warning-bar">MAGI 調整頁面 --- 系統設定與進階功能 --- AUTHORIZED PERSONNEL ONLY</div>
+
+<div class="main-grid">
+  <!-- Left: Infrastructure -->
+  <div class="side-panel">
+    <div class="panel-title">基礎設施 INFRASTRUCTURE</div>
+    <div id="infra-nodes">
+      <div class="node-item"><div class="indicator gray"></div><span class="label">Loading...</span></div>
+    </div>
+
+    <div class="panel-title" style="margin-top:18px;">推論引擎 ENGINES</div>
+    <div id="engine-nodes">
+      <div class="node-item"><div class="indicator gray"></div><span class="label">Loading...</span></div>
+    </div>
+  </div>
+
+  <!-- Center: MAGI Core -->
+  <div class="center-panel">
+    <div id="command-strip" class="command-strip">
+      <div class="command-chip"><div class="command-chip-label">SYSTEM</div><div class="command-chip-value">LOADING</div><div class="command-chip-meta">awaiting telemetry</div></div>
+      <div class="command-chip"><div class="command-chip-label">INFERENCE</div><div class="command-chip-value">LOADING</div><div class="command-chip-meta">route sync</div></div>
+      <div class="command-chip"><div class="command-chip-label">PRODUCTS</div><div class="command-chip-value">LOADING</div><div class="command-chip-meta">runtime sync</div></div>
+      <div class="command-chip"><div class="command-chip-label">OPERATIONS</div><div class="command-chip-value">LOADING</div><div class="command-chip-meta">stand by</div></div>
+    </div>
+    <div class="magi-triangle">
+      <svg class="tri-lines" viewBox="0 0 360 320">
+        <line x1="180" y1="50" x2="60" y2="270"/>
+        <line x1="180" y1="50" x2="300" y2="270"/>
+        <line x1="60" y1="270" x2="300" y2="270"/>
+      </svg>
+      <div class="magi-node casper" id="node-casper">
+        <div class="hex"><div class="hex-bg"></div><div class="hex-label">CASPER</div></div>
+        <div class="node-name">CASPER</div>
+        <div class="node-detail" id="casper-detail">主控核心</div>
+      </div>
+      <div class="magi-node melchior" id="node-melchior">
+        <div class="hex"><div class="hex-bg"></div><div class="hex-label">MELCHIOR</div></div>
+        <div class="node-name">MELCHIOR</div>
+        <div class="node-detail" id="melchior-detail">推論節點</div>
+      </div>
+      <div class="magi-node balthasar" id="node-balthasar">
+        <div class="hex"><div class="hex-bg"></div><div class="hex-label">BALTHASAR</div></div>
+        <div class="node-name">BALTHASAR</div>
+        <div class="node-detail" id="balthasar-detail">分析節點</div>
+      </div>
+    </div>
+
+    <details class="nerv-fold" open>
+      <summary>
+        <span class="nerv-fold-title">推論分派 INFERENCE ROUTING</span>
+        <span class="nerv-fold-meta">核心路由常駐顯示</span>
+      </summary>
+      <div class="nerv-fold-body">
+        <div class="routing-section">
+          <div id="routing-table">
+            <div class="route-row"><span class="task">摘要產生</span><span class="path"><span class="engine omlx">oMLX</span></span><span class="model">Gemma-4 26B</span></div>
+            <div class="route-row"><span class="task">影像辨識</span><span class="path"><span class="engine omlx">oMLX</span></span><span class="model">Gemma-4 視覺路由</span></div>
+            <div class="route-row"><span class="task">文字辨識 OCR</span><span class="path"><span class="engine native">macOS Vision</span></span><span class="model">系統 OCR</span></div>
+            <div class="route-row"><span class="task">程式產生</span><span class="path"><span class="engine omlx">oMLX</span></span><span class="model">Gemma-4 26B</span></div>
+            <div class="route-row"><span class="task">向量嵌入</span><span class="path"><span class="engine omlx">oMLX</span></span><span class="model">ModernBERT</span></div>
+            <div class="route-row"><span class="task">意圖/通用</span><span class="path"><span class="engine omlx">oMLX</span></span><span class="model">Gemma-4 26B</span></div>
+            <div class="route-row"><span class="task">法律分析</span><span class="path"><span class="engine omlx">oMLX</span></span><span class="model">Gemma-4 26B</span></div>
+          </div>
+        </div>
+      </div>
+    </details>
+
+    <details class="nerv-fold">
+      <summary>
+        <span class="nerv-fold-title">技能模組 SKILL MODULES</span>
+        <span class="nerv-fold-meta">預設折疊，展開後可檢視清單與開啟編輯器</span>
+      </summary>
+      <div class="nerv-fold-body">
+        <div class="fold-actions">
+          <button type="button" class="fold-btn" onclick="startNewSkill()">新增 SKILL</button>
+          <button type="button" class="fold-btn" onclick="reloadSkillCatalog()">重新整理</button>
+          <button type="button" class="fold-btn" onclick="openSkillModal()">打開編輯器</button>
+        </div>
+        <div class="skill-tree compact-scroll" style="max-height: 184px;">
+          <div id="skill-tree-content">
+            <div class="skill-category">
+              <div class="skill-cat-header">Loading...</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </details>
+
+    <details class="nerv-fold" open>
+      <summary>
+        <span class="nerv-fold-title">HEAVY API SWITCHBOARD</span>
+        <span class="nerv-fold-meta">NVIDIA API 與大型任務開關</span>
+      </summary>
+      <div class="nerv-fold-body">
+        <div class="product-switchboard compact-scroll" style="max-height: 248px;">
+          <div id="runtime-status-line" class="runtime-status-line">正在讀取產品切換設定...</div>
+          <div id="runtime-grid" class="runtime-grid">
+            <div class="runtime-card">
+              <div class="runtime-card-title">Loading...</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </details>
+
+    <details class="nerv-fold" open>
+      <summary>
+        <span class="nerv-fold-title">遠端操作 REMOTE ACCESS</span>
+        <span class="nerv-fold-meta">Google 遠端桌面與本機螢幕共享入口</span>
+      </summary>
+      <div class="nerv-fold-body">
+        <div id="remote-access-panel" class="remote-access-grid">
+          <div class="remote-access-card">
+            <div class="remote-access-head"><div class="indicator gray"></div><div class="remote-access-title">Loading...</div></div>
+            <div class="remote-access-meta">正在讀取遠端連線狀態</div>
+          </div>
+        </div>
+        <div id="remote-access-status" class="remote-access-status"></div>
+      </div>
+    </details>
+  </div>
+
+  <!-- Right: Communication & Services -->
+  <div class="side-panel right">
+    <div class="panel-title">通訊連線 COMMS</div>
+    <div id="comm-nodes">
+      <div class="node-item"><div class="indicator gray"></div><span class="label">Loading...</span></div>
+    </div>
+
+    <div class="panel-title" style="margin-top:18px;">資料儲存 DATA</div>
+    <div id="data-nodes">
+      <div class="node-item"><div class="indicator gray"></div><span class="label">Loading...</span></div>
+    </div>
+
+    <div class="panel-title" style="margin-top:18px;">Office Access</div>
+    <div id="office-nodes">
+      <div class="node-item"><div class="indicator gray"></div><span class="label">Loading...</span></div>
+    </div>
+
+    <div class="panel-title" style="margin-top:18px;">oMLX 模型</div>
+    <div id="omlx-models">
+      <div class="node-item"><div class="indicator gray"></div><span class="label">Loading...</span></div>
+    </div>
+
+    <div class="panel-title" style="margin-top:18px;">MAGI 對話</div>
+    <div id="nerv-chat-messages" style="min-height:100px; max-height:200px; overflow-y:auto; background:rgba(0,0,0,0.35); border:1px solid #331a00; border-radius:2px; padding:8px; margin-bottom:8px; font-size:0.75em; line-height:1.5;">
+      <div style="color:#ff8800;">系統已就緒，可直接用自然語句指示 MAGI。大型翻譯、長文摘要、複雜法律分析可在開頭加上 @heavy 或 @重型，啟用 NVIDIA API 路徑。</div>
+    </div>
+    <textarea id="nerv-chat-input" placeholder="輸入指示（大型任務可用 @heavy 或 @重型；Enter 送出）" style="width:100%; min-height:40px; background:rgba(0,0,0,0.4); color:#ccc; border:1px solid #331a00; border-radius:2px; padding:6px 8px; font-family:'Share Tech Mono',monospace; font-size:0.75em; resize:vertical; box-sizing:border-box;"></textarea>
+    <div style="color:#9a7a55; font-size:0.68em; line-height:1.45; margin-top:5px;">HEAVY 命令：<code>@heavy 摘要這份大型卷證</code>、<code>@重型 翻譯這份長文</code>。只有在 NERV 的 NVIDIA API 開關啟用且已設定金鑰時會優先使用 API。</div>
+    <div style="display:flex; gap:6px; margin-top:6px;">
+      <button id="nerv-chat-send" style="background:transparent; color:#ff8800; border:1px solid #ff880044; padding:4px 10px; cursor:pointer; font-family:'Share Tech Mono',monospace; font-size:0.72em;">送出</button>
+      <button id="nerv-chat-clear" style="background:transparent; color:#666; border:1px solid #333; padding:4px 10px; cursor:pointer; font-family:'Share Tech Mono',monospace; font-size:0.72em;">清空</button>
+    </div>
+  </div>
+</div>
+
+<div class="nerv-footer">
+  GOD'S IN HIS HEAVEN. ALL'S RIGHT WITH THE WORLD. &mdash; REFRESH: <span id="refresh-interval">5</span>s
+</div>
+
+<div id="skill-modal" class="skill-modal" onclick="handleSkillModalBackdrop(event)">
+  <div class="skill-modal-shell">
+    <div class="skill-modal-head">
+      <div>
+        <div id="skill-modal-title" class="skill-modal-title">SKILL EDITOR</div>
+        <div class="skill-modal-subtitle">左側直接改 SKILL.md；右側用分頁切換範本、問答精靈和版本快照。可按右上角、Esc 或外側空白關閉。</div>
+      </div>
+      <button type="button" class="skill-modal-close" onclick="closeSkillModal()">關閉編輯器</button>
+    </div>
+    <div class="skill-modal-body">
+    <div class="skill-modal-grid">
+      <div class="skill-modal-card skill-modal-editor">
+        <div class="skill-modal-toolbar">
+          <input id="skill-editor-name" type="text" placeholder="new-skill-name" spellcheck="false" />
+          <button type="button" onclick="openSkillInterviewWizard()">問答精靈</button>
+          <button type="button" onclick="applySkillTemplate()">套用範本</button>
+          <button type="button" onclick="reloadSkillCatalog()">重新整理</button>
+          <button type="button" onclick="saveSkillDoc()">儲存至 MAGI</button>
+          <button type="button" onclick="closeSkillModal()">完成</button>
+        </div>
+        <div id="skill-editor-status" class="skill-editor-status">點選技能後即可檢視或修改內容。</div>
+        <div class="skill-editor-hint">儲存位置：`MAGI/skills/&lt;skill-name&gt;/SKILL.md`。存檔後 MAGI 會直接從這份檔案讀取。</div>
+        <textarea id="skill-editor-content" spellcheck="false" placeholder="# SKILL.md"></textarea>
+      </div>
+      <div class="skill-modal-card skill-template-card">
+        <div class="skill-side-tabs">
+          <button type="button" id="skill-side-tab-template" class="skill-side-tab active" onclick="switchSkillSidePanel('template')">範本</button>
+          <button type="button" id="skill-side-tab-wizard" class="skill-side-tab" onclick="switchSkillSidePanel('wizard')">問答精靈</button>
+          <button type="button" id="skill-side-tab-versions" class="skill-side-tab" onclick="switchSkillSidePanel('versions')">版本快照</button>
+        </div>
+        <div id="skill-side-section-template" class="skill-side-section active">
+          <div class="skill-template-title">撰寫範本 TEMPLATE</div>
+          <div class="skill-template-copy">建議至少先補齊這四段，MAGI 之後比較容易理解你希望它何時用、怎麼用、哪些事情不能做。</div>
+          <ol class="skill-template-list">
+            <li>`Purpose`：這個技能解決什麼問題。</li>
+            <li>`Triggers`：什麼情境或關鍵字會觸發。</li>
+            <li>`Workflow`：資料來源、步驟、輸出格式。</li>
+            <li>`Guardrails`：邊界、限制、不能做的事。</li>
+          </ol>
+          <button type="button" onclick="applySkillTemplate()">把範本放進編輯器</button>
+          <pre id="skill-template-preview" class="skill-template-preview"></pre>
+        </div>
+        <div id="skill-side-section-wizard" class="skill-side-section">
+          <div class="skill-template-title">問答精靈 INTERVIEW</div>
+          <div class="skill-template-copy">輸入需求後，NERV 會逐題問你。若精靈暫時沒連上，也可以直接改左側 SKILL.md。</div>
+          <input id="skill-wizard-request" class="skill-wizard-input" type="text" placeholder="例如：幫我做一個會整理判決晨報補跑的工具" spellcheck="false" />
+          <div class="skill-wizard-actions">
+            <button type="button" onclick="startSkillInterviewWizard()">開始精靈</button>
+            <button type="button" onclick="viewSkillInterviewProgress()">目前進度</button>
+            <button type="button" onclick="cancelSkillInterviewWizard()">取消訪談</button>
+          </div>
+          <textarea id="skill-wizard-reply" class="skill-wizard-reply" spellcheck="false" placeholder="在這裡回答目前這一題，然後按「送出回答」"></textarea>
+          <div class="skill-wizard-actions">
+            <button type="button" onclick="submitSkillInterviewReply()">送出回答</button>
+          </div>
+          <div id="skill-wizard-status" class="skill-editor-status warn">尚未啟動問答精靈。</div>
+          <pre id="skill-wizard-prompt" class="skill-template-preview skill-wizard-prompt">點「開始精靈」後，這裡會顯示目前題目與建立結果。</pre>
+        </div>
+        <div id="skill-side-section-versions" class="skill-side-section">
+          <div class="skill-template-title">版本快照 VERSIONS</div>
+          <div class="skill-template-copy">每次問答產生或手動儲存後，都可以在這裡看最近版本。管理員可直接回滾到指定快照。</div>
+          <div class="skill-wizard-actions">
+            <button type="button" onclick="refreshSkillVersions()">重新整理版本</button>
+          </div>
+          <div id="skill-version-status" class="skill-editor-status warn">請先選擇一個技能，這裡會顯示最近版本。</div>
+          <div id="skill-version-list" class="skill-version-list">
+            <div class="skill-template-copy">尚未載入版本快照。</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    </div>
+    <div class="skill-modal-foot">
+      <div class="skill-modal-foot-hint">關閉方式：右上角「關閉編輯器」、按 `Esc`，或點外側空白。</div>
+      <button type="button" class="skill-modal-close" onclick="closeSkillModal()">關閉編輯器</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const REFRESH_MS = 5000;
+let lastData = null;
+let heavyRuntimeState = null;
+let productRuntimeState = null;
+let skillCatalog = [];
+let activeSkillName = '';
+let isNewSkillDraft = false;
+let activeSkillVersions = [];
+let activeSkillSidePanel = 'template';
+const PRODUCT_RUNTIME_LABELS = {
+  file_review: { title: '閱卷 FILE REVIEW', subtitle: '閱卷通知、繳費單辨識與 portal 流程' },
+  transcript: { title: '筆錄 TRANSCRIPT', subtitle: '法院筆錄下載、OCR 與案件同步' },
+  laf: { title: '法扶 LAF', subtitle: '法扶 workflow 與 portal test/prod 切換' },
+};
+const ROUTING_ROWS = [
+  { task: '摘要產生', heavy: true, localModel: 'Gemma-4 26B', heavyModel: 'NVIDIA NIM API' },
+  { task: '大型翻譯', heavy: true, localModel: 'Gemma-4 26B', heavyModel: 'NVIDIA NIM API' },
+  { task: '影像辨識', localModel: 'macOS Vision / 26B 補強' },
+  { task: '文字辨識 OCR', localModel: 'macOS Vision OCR' },
+  { task: '筆錄整理', heavy: true, localModel: 'Whisper + Gemma-4 26B', heavyModel: 'NVIDIA NIM API' },
+  { task: '程式產生', localModel: 'Gemma-4 26B' },
+  { task: '向量嵌入', localModel: 'ModernBERT' },
+  { task: '意圖/通用', localModel: 'Gemma-4 26B' },
+  { task: '複雜法律分析', heavy: true, localModel: 'Gemma-4 26B', heavyModel: 'NVIDIA NIM API' },
+];
+
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function openIntelPanel() {
+  window.open('/intel', '_blank', 'noopener,noreferrer');
+}
+
+async function parseJsonApiResponse(response, unavailableMessage) {
+  const raw = await response.text();
+  const contentType = (response.headers.get('content-type') || '').toLowerCase();
+  if (!contentType.includes('application/json')) {
+    if (response.status === 401) throw new Error('請重新登入 MAGI');
+    throw new Error(unavailableMessage);
+  }
+  let payload = {};
+  try {
+    payload = raw ? JSON.parse(raw) : {};
+  } catch (e) {
+    throw new Error(unavailableMessage);
+  }
+  if (!response.ok || payload.ok === false) {
+    if (payload.error === 'auth_required') throw new Error('請重新登入 MAGI');
+    if (payload.error === 'admin_required') throw new Error('只有管理員可以切換');
+    throw new Error(unavailableMessage);
+  }
+  return payload;
+}
+
+async function parseHeavyApiResponse(response) {
+  return parseJsonApiResponse(response, 'NVIDIA HEAVY 狀態暫不可得');
+}
+
+async function parseSkillApiResponse(response) {
+  return parseJsonApiResponse(response, 'SKILL 工具頁暫不可得');
+}
+
+function statusColor(s) {
+  if (s === 'online' || s === 'local') return 'green';
+  if (s === 'offline') return 'yellow';
+  if (s === 'retired') return 'gray';
+  return 'red';
+}
+
+function nodeHTML(label, status, meta) {
+  const c = statusColor(status);
+  return `<div class="node-item"><div class="indicator ${c}"></div><span class="label">${escapeHtml(label)}</span><span class="meta">${escapeHtml(meta || '')}</span></div>`;
+}
+
+function remoteButtonHTML(label, onclick, primary = false) {
+  return `<button type="button" class="remote-access-link ${primary ? 'primary' : ''}" onclick="${onclick}">${escapeHtml(label)}</button>`;
+}
+
+function jsArg(value) {
+  return JSON.stringify(String(value || '')).replace(/</g, '\\u003c').replace(/>/g, '\\u003e');
+}
+
+function remoteAnchorHTML(label, href, primary = false) {
+  if (!href) return '';
+  return `<a class="remote-access-link ${primary ? 'primary' : ''}" href="${escapeHtml(href)}" target="_blank" rel="noopener noreferrer">${escapeHtml(label)}</a>`;
+}
+
+function setRemoteAccessStatus(text, cls = '') {
+  const el = document.getElementById('remote-access-status');
+  if (!el) return;
+  el.className = `remote-access-status ${cls}`;
+  el.textContent = text || '';
+}
+
+function remoteCardHTML(title, status, meta, actionsHTML = '') {
+  return `
+    <div class="remote-access-card">
+      <div class="remote-access-head">
+        <div class="indicator ${statusColor(status)}"></div>
+        <div class="remote-access-title">${escapeHtml(title)}</div>
+      </div>
+      <div class="remote-access-meta">${escapeHtml(meta || '')}</div>
+      ${actionsHTML ? `<div class="remote-access-actions">${actionsHTML}</div>` : ''}
+    </div>
+  `;
+}
+
+function renderRemoteAccess(data) {
+  const panel = document.getElementById('remote-access-panel');
+  if (!panel) return;
+  const remote = data || {};
+  const google = remote.google_remote_desktop || {};
+  const tailscale = remote.tailscale || {};
+  const screen = remote.screen_sharing || {};
+  const cloudflare = remote.cloudflare || {};
+  const googleMeta = [
+    google.installed ? '主機已安裝' : '主機尚未安裝',
+    google.configured ? '已設定' : '尚未完成設定',
+    google.running ? '服務執行中' : '服務未執行',
+  ].join(' · ');
+  const tailscaleMeta = [
+    tailscale.running ? 'Tailscale 已連線' : 'Tailscale 未連線',
+    tailscale.ip ? `IP ${tailscale.ip}` : '',
+    tailscale.dns_name || '',
+  ].filter(Boolean).join(' · ');
+  const screenMeta = [
+    screen.running ? 'macOS 螢幕共享可能已啟用' : '需到系統設定確認螢幕共享',
+    screen.vnc_url || '',
+  ].filter(Boolean).join(' · ');
+  const cloudflareMeta = [
+    cloudflare.status === 'online' ? 'MAGI tunnel online' : 'MAGI tunnel offline',
+    cloudflare.url || '',
+  ].filter(Boolean).join(' · ');
+  panel.innerHTML = [
+    remoteCardHTML(
+      'Google 遠端桌面',
+      google.status === 'online' ? 'online' : (google.installed ? 'local' : 'offline'),
+      googleMeta,
+      [
+        remoteAnchorHTML('開啟遠端桌面', google.access_url || 'https://remotedesktop.google.com/access', true),
+        remoteButtonHTML('在本機開啟', "runRemoteAccessAction('open_google_remote_desktop')"),
+        remoteButtonHTML('主機設定', "runRemoteAccessAction('open_google_remote_setup')"),
+      ].join('')
+    ),
+    remoteCardHTML(
+      'Tailscale 私有連線',
+      tailscale.status || 'offline',
+      tailscaleMeta || '尚未取得 Tailscale 狀態',
+      [
+        tailscale.ip ? remoteButtonHTML('複製 IP', `copyRemoteAccessText(${jsArg(tailscale.ip)}, '已複製 Tailscale IP')`) : '',
+        tailscale.dns_name ? remoteButtonHTML('複製名稱', `copyRemoteAccessText(${jsArg(tailscale.dns_name)}, '已複製 Tailscale 名稱')`) : '',
+        remoteButtonHTML('開啟 Tailscale', "runRemoteAccessAction('open_tailscale')"),
+      ].join('')
+    ),
+    remoteCardHTML(
+      'macOS 螢幕共享',
+      screen.status || 'manual',
+      screenMeta || '可作為備援遠端方式',
+      [
+        remoteAnchorHTML('開啟 VNC', screen.vnc_url || '', true),
+        screen.vnc_url ? remoteButtonHTML('複製 VNC', `copyRemoteAccessText(${jsArg(screen.vnc_url)}, '已複製 VNC 連線位址')`) : '',
+        remoteButtonHTML('系統設定', "runRemoteAccessAction('open_screen_sharing_settings')"),
+      ].join('')
+    ),
+    remoteCardHTML(
+      'MAGI 外部入口',
+      cloudflare.status || 'offline',
+      cloudflareMeta || '目前沒有外部網址',
+      cloudflare.url ? remoteButtonHTML('複製網址', `copyRemoteAccessText(${jsArg(cloudflare.url)}, '已複製 MAGI 外部網址')`) : ''
+    ),
+  ].join('');
+}
+
+async function fetchRemoteAccess() {
+  try {
+    const response = await fetch('/api/nerv/remote-access');
+    const data = await parseJsonApiResponse(response, '遠端連線狀態暫不可得');
+    renderRemoteAccess(data);
+  } catch (e) {
+    setRemoteAccessStatus(e.message || '遠端連線狀態讀取失敗', 'error');
+  }
+}
+
+async function runRemoteAccessAction(action) {
+  setRemoteAccessStatus('正在開啟遠端工具...', 'warn');
+  try {
+    const response = await fetch('/api/nerv/remote-access/action', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({action}),
+    });
+    const data = await parseJsonApiResponse(response, '遠端工具開啟失敗');
+    renderRemoteAccess(data.remote_access || data);
+    setRemoteAccessStatus('已送出開啟指令。', 'ok');
+  } catch (e) {
+    setRemoteAccessStatus(e.message || '遠端工具開啟失敗', 'error');
+  }
+}
+
+async function copyRemoteAccessText(text, doneText) {
+  try {
+    await navigator.clipboard.writeText(text || '');
+    setRemoteAccessStatus(doneText || '已複製。', 'ok');
+  } catch (e) {
+    setRemoteAccessStatus('瀏覽器不允許自動複製，請手動選取。', 'warn');
+  }
+}
+
+function nervMiniButtonHTML(label, onclick, tone = 'default', disabled = false) {
+  const border = tone === 'danger' ? '#7a1d00' : '#5a3212';
+  const color = tone === 'danger' ? '#ff8a66' : '#ffcc88';
+  const disabledStyle = disabled ? 'opacity:0.45;cursor:not-allowed;' : 'cursor:pointer;';
+  return `<button ${disabled ? 'disabled' : ''} onclick="${onclick}" style="border:1px solid ${border};background:#120b07;color:${color};padding:5px 8px;font-size:0.68em;font-family:'Share Tech Mono',monospace;${disabledStyle}">${label}</button>`;
+}
+
+function heavyEngineMeta(report) {
+  if (!report) {
+    return { status: 'offline', meta: 'status unavailable' };
+  }
+  if (!report.enabled) {
+    return { status: report.configured ? 'local' : 'offline', meta: report.configured ? 'API 已設定，HEAVY 關閉' : '尚未設定 API 金鑰' };
+  }
+  return { status: report.configured ? 'online' : 'error', meta: report.configured ? 'HEAVY 任務可使用 API' : '開關已開但缺少金鑰' };
+}
+
+function heavyEngineRowHTML(report) {
+  const meta = heavyEngineMeta(report);
+  const canToggle = !!(report && report.can_edit);
+  const hintText = report
+    ? `${report.description || ''} · 金鑰 ${report.configured ? report.masked || '已設定' : '未設定'}`
+    : 'status unavailable';
+  return `
+    <div class="node-item node-item-stack">
+      <div class="indicator ${statusColor(meta.status)}"></div>
+      <div class="engine-stack">
+        <div class="engine-row-head">
+          <span class="label">NVIDIA HEAVY API</span>
+          <span class="meta">${escapeHtml(meta.meta)}</span>
+        </div>
+        <div class="engine-inline-status">${escapeHtml(hintText)}</div>
+        <div class="engine-inline-actions">
+          ${nervMiniButtonHTML('啟用 HEAVY', 'setHeavyRuntimeEnabled(true)', 'default', !canToggle)}
+          ${nervMiniButtonHTML('關閉 HEAVY', 'setHeavyRuntimeEnabled(false)', 'danger', !canToggle)}
+          ${nervMiniButtonHTML('重新整理', 'fetchHeavyRuntime()')}
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function heavyCommandPanelHTML(report) {
+  const on = !!(report && report.enabled);
+  const statusText = on
+    ? 'HEAVY 命令會優先使用 NVIDIA API'
+    : 'HEAVY 命令目前回到本機 26B';
+  return `
+    <div class="node-item node-item-stack">
+      <div class="indicator ${on ? 'green' : 'yellow'}"></div>
+      <div class="engine-stack">
+        <div class="engine-row-head">
+          <span class="label">HEAVY 命令說明</span>
+          <span class="meta">@heavy / @重型</span>
+        </div>
+        <div class="engine-inline-status">${escapeHtml(statusText)}</div>
+        <div class="engine-feature-grid">
+          <button type="button" class="engine-feature-btn ${on ? '' : 'off'}" disabled>長文摘要</button>
+          <button type="button" class="engine-feature-btn ${on ? '' : 'off'}" disabled>大型翻譯</button>
+          <button type="button" class="engine-feature-btn ${on ? '' : 'off'}" disabled>複雜法律分析</button>
+        </div>
+        <div class="engine-inline-note">範例：@heavy 請摘要這份大型卷證。未啟用 API 時仍可使用本機模型處理。</div>
+      </div>
+    </div>
+  `;
+}
+
+function routingRowHTML(row, report) {
+  const heavyOn = !!(report && report.enabled && report.configured);
+  if (row.heavy && heavyOn) {
+    return `
+      <div class="route-row">
+        <span class="task">${escapeHtml(row.task)}</span>
+        <span class="path"><span class="engine remote">NVIDIA</span></span>
+        <span class="model">${escapeHtml(row.heavyModel || 'NVIDIA NIM API')}</span>
+      </div>
+    `;
+  }
+  if (row.heavy && report && report.enabled && !report.configured) {
+    return `
+      <div class="route-row">
+        <span class="task">${escapeHtml(row.task)}</span>
+        <span class="path"><span class="engine remote">NVIDIA</span><span class="arrow">→</span><span class="engine fallback">LOCAL</span></span>
+        <span class="model">缺少 API 金鑰，回到 26B</span>
+      </div>
+    `;
+  }
+  return `
+    <div class="route-row">
+      <span class="task">${escapeHtml(row.task)}</span>
+      <span class="path"><span class="engine omlx">oMLX</span></span>
+      <span class="model">${escapeHtml(row.localModel || 'local')}</span>
+    </div>
+  `;
+}
+
+function renderRoutingTable() {
+  const table = document.getElementById('routing-table');
+  if (!table) return;
+  table.innerHTML = ROUTING_ROWS.map((row) => routingRowHTML(row, heavyRuntimeState)).join('');
+}
+
+function renderEngineNodes(data) {
+  const omlxS = data.omlx?.status || 'error';
+  document.getElementById('engine-nodes').innerHTML = [
+    nodeHTML('oMLX :8080', omlxS, `${data.omlx?.count || 0} models`),
+    `
+      <div class="node-item node-item-stack">
+        <div class="indicator green"></div>
+        <div class="engine-stack">
+          <div class="engine-row-head">
+            <span class="label">新增 SKILL</span>
+            <span class="meta">MAGI 內建入口</span>
+          </div>
+          <div class="engine-inline-status">一鍵開啟新技能草稿，並自動帶入撰寫範本。</div>
+          <div class="skill-launcher-actions">
+            ${nervMiniButtonHTML('新增', 'startNewSkill()')}
+            ${nervMiniButtonHTML('問答精靈', 'openSkillInterviewWizard()')}
+          </div>
+        </div>
+      </div>
+    `,
+    heavyCommandPanelHTML(heavyRuntimeState),
+    heavyEngineRowHTML(heavyRuntimeState),
+  ].join('');
+}
+
+function renderOfficeNodes(data) {
+  const panel = document.getElementById('office-nodes');
+  if (!panel) return;
+  const app = data.office_app || {};
+  const proxy = data.caddy_proxy || {};
+  panel.innerHTML = [
+    nodeHTML('Office App :4200 (本機)', app.status === 'skipped' ? 'online' : (app.status || 'error'), app.status === 'skipped' ? 'disabled' : (app.detail || '')),
+    nodeHTML('Cloudflared → :5002', proxy.status === 'skipped' ? 'online' : (proxy.status || 'error'), proxy.detail || 'direct tunnel'),
+    '',
+  ].join('');
+}
+
+async function fetchHeavyRuntime() {
+  try {
+    const response = await fetch('/api/nerv/heavy-runtime');
+    const report = await parseHeavyApiResponse(response);
+    heavyRuntimeState = report;
+  } catch (e) {
+    heavyRuntimeState = null;
+    console.warn('HEAVY runtime unavailable:', e.message);
+  }
+  if (lastData) {
+    renderEngineNodes(lastData);
+  }
+  renderRoutingTable();
+  renderProductRuntime();
+  renderCommandStrip();
+}
+
+async function setHeavyRuntimeEnabled(enabled) {
+  const canToggle = !!(heavyRuntimeState && heavyRuntimeState.can_edit);
+  if (!canToggle) {
+    alert('只有管理員可以切換 HEAVY API。');
+    return;
+  }
+  try {
+    const response = await fetch('/api/nerv/heavy-runtime', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled }),
+    });
+    const report = await parseHeavyApiResponse(response);
+    heavyRuntimeState = report;
+    if (lastData) renderEngineNodes(lastData);
+    renderRoutingTable();
+    renderCommandStrip();
+  } catch (e) {
+    alert(`HEAVY API 切換失敗: ${e.message}`);
+    await fetchHeavyRuntime();
+  }
+}
+
+function runtimeFieldId(product, field) {
+  return `runtime-${product}-${field}`;
+}
+
+function runtimeFieldValue(product, field) {
+  const el = document.getElementById(runtimeFieldId(product, field));
+  return el ? String(el.value || '').trim() : '';
+}
+
+function productRuntimeCardHTML(product, report, canEdit) {
+  const meta = PRODUCT_RUNTIME_LABELS[product] || { title: product, subtitle: '' };
+  const profile = (report && report.profile) || {};
+  const portal = report && report.portal;
+  const portalEnv = profile.portal_env || 'production';
+  const executeBaseUrl = portal && portal.execute_base_url ? portal.execute_base_url : 'n/a';
+  const compareText = portal && portal.compare_enabled ? (portal.compare_base_url || 'enabled') : 'off';
+  const executeEnv = portal && portal.execute_env ? portal.execute_env : 'local';
+  const disableAttr = canEdit ? '' : 'disabled';
+  const heavyLabel = heavyRuntimeState && heavyRuntimeState.enabled && heavyRuntimeState.configured ? 'HEAVY ON' : 'LOCAL';
+  const portalRow = product === 'laf'
+    ? `
+      <div class="runtime-row">
+        <label for="${runtimeFieldId(product, 'portal_env')}">LAF portal 環境</label>
+        <select id="${runtimeFieldId(product, 'portal_env')}" class="runtime-select" ${disableAttr}>
+          <option value="production" ${portalEnv === 'production' ? 'selected' : ''}>production</option>
+          <option value="test" ${portalEnv === 'test' ? 'selected' : ''}>test</option>
+          <option value="compare" ${portalEnv === 'compare' ? 'selected' : ''}>compare</option>
+        </select>
+      </div>
+    `
+    : `
+      <div class="runtime-row placeholder" aria-hidden="true">
+        <label>Portal 環境</label>
+        <select class="runtime-select" disabled><option>-</option></select>
+      </div>
+    `;
+
+  return `
+    <div class="runtime-card">
+      <div class="runtime-card-head">
+        <div>
+          <div class="runtime-card-title">${escapeHtml(meta.title)}</div>
+          <div class="runtime-card-subtitle">${escapeHtml(meta.subtitle)}</div>
+        </div>
+        <div class="runtime-badge">${escapeHtml(heavyLabel)}</div>
+      </div>
+      <div class="runtime-band">
+        <div>
+          <div class="runtime-band-label">ACTIVE EXECUTION PATH</div>
+          <div class="runtime-band-value" title="${escapeHtml(executeBaseUrl)}">${escapeHtml(executeBaseUrl)}</div>
+        </div>
+        <div class="runtime-band-code">${escapeHtml(executeEnv.toUpperCase())}</div>
+      </div>
+      <div class="runtime-controls">
+        <div class="runtime-row">
+          <label>NVIDIA HEAVY</label>
+          <select class="runtime-select" disabled>
+            <option>${heavyLabel}</option>
+          </select>
+        </div>
+        ${portalRow}
+      </div>
+      <div class="runtime-meta">
+        <div>大型任務: ${escapeHtml(heavyLabel)}（全域開關於本區上方控制）</div>
+        ${product === 'laf' ? `<div>compare target: ${escapeHtml(compareText)}</div>` : ''}
+      </div>
+      <div class="runtime-actions">
+        <button class="runtime-btn" ${disableAttr} onclick="saveProductRuntime('${product}')">套用設定</button>
+      </div>
+    </div>
+  `;
+}
+
+function renderCommandStrip() {
+  const strip = document.getElementById('command-strip');
+  if (!strip) return;
+  const data = lastData || {};
+  const products = (productRuntimeState && productRuntimeState.products) || {};
+  const productModes = ['file_review', 'transcript', 'laf']
+    .map((name) => (products[name] && products[name].portal && products[name].portal.execute_env) || 'local')
+    .join(' / ');
+  const lafPortal = (products.laf && products.laf.portal && products.laf.portal.execute_env) || 'n/a';
+  const systemValue = data.magi_server?.status === 'online' ? 'GREEN' : 'ALERT';
+  const inferenceValue = data.omlx?.status === 'online' ? `${data.omlx?.count || 0} MODELS` : 'DEGRADED';
+  const heavyValue = heavyRuntimeState && heavyRuntimeState.enabled && heavyRuntimeState.configured ? 'HEAVY API ON' : 'LOCAL 26B';
+  const opsValue = data.line_webhook?.status === 'online' && data.cloudflared?.status === 'online' ? 'READY' : 'CHECK';
+  strip.innerHTML = [
+    `<div class="command-chip"><div class="command-chip-label">SYSTEM</div><div class="command-chip-value">${escapeHtml(systemValue)}</div><div class="command-chip-meta">server ${escapeHtml(data.magi_server?.status || 'unknown')} · db ${escapeHtml(data.mysql?.status || 'unknown')}</div></div>`,
+    `<div class="command-chip"><div class="command-chip-label">INFERENCE</div><div class="command-chip-value">${escapeHtml(inferenceValue)}</div><div class="command-chip-meta">${escapeHtml(heavyValue)} · oMLX ${escapeHtml(data.omlx?.status || 'unknown')}</div></div>`,
+    `<div class="command-chip"><div class="command-chip-label">PRODUCTS</div><div class="command-chip-value">${escapeHtml(lafPortal.toUpperCase())}</div><div class="command-chip-meta">modes ${escapeHtml(productModes)}</div></div>`,
+    `<div class="command-chip"><div class="command-chip-label">OPERATIONS</div><div class="command-chip-value">${escapeHtml(opsValue)}</div><div class="command-chip-meta">line ${escapeHtml(data.line_webhook?.status || 'unknown')} · cf webhook-only ${escapeHtml(data.cloudflared?.status || 'unknown')}</div></div>`,
+  ].join('');
+}
+
+function renderProductRuntime() {
+  const lineEl = document.getElementById('runtime-status-line');
+  const gridEl = document.getElementById('runtime-grid');
+  if (!lineEl || !gridEl) return;
+  if (!productRuntimeState || !productRuntimeState.products) {
+    lineEl.textContent = '產品切換設定暫不可得。';
+    gridEl.innerHTML = '<div class="runtime-card"><div class="runtime-card-title">Runtime unavailable</div></div>';
+    return;
+  }
+  const canEdit = !!productRuntimeState.can_edit;
+  lineEl.textContent = canEdit
+    ? `設定檔：${productRuntimeState.runtime_path || ''}`
+    : `設定檔：${productRuntimeState.runtime_path || ''} · 目前為唯讀檢視`;
+  gridEl.innerHTML = [
+    heavyRuntimeCardHTML(canEdit),
+    ...['file_review', 'transcript', 'laf']
+    .map((name) => productRuntimeCardHTML(name, productRuntimeState.products[name], canEdit))
+  ].join('');
+  renderCommandStrip();
+}
+
+function heavyRuntimeCardHTML(canEdit) {
+  const state = heavyRuntimeState || {};
+  const enabled = !!state.enabled;
+  const configured = !!state.configured;
+  const disableAttr = canEdit ? '' : 'disabled';
+  const badge = enabled && configured ? 'API ON' : enabled ? '缺少金鑰' : 'API OFF';
+  return `
+    <div class="runtime-card">
+      <div class="runtime-card-head">
+        <div>
+          <div class="runtime-card-title">NVIDIA HEAVY API</div>
+          <div class="runtime-card-subtitle">大型摘要、長文翻譯、複雜法律分析的 API 路徑</div>
+        </div>
+        <div class="runtime-badge">${escapeHtml(badge)}</div>
+      </div>
+      <div class="runtime-band">
+        <div>
+          <div class="runtime-band-label">COMMAND</div>
+          <div class="runtime-band-value">@heavy / @重型</div>
+        </div>
+        <div class="runtime-band-code">${enabled ? 'ON' : 'OFF'}</div>
+      </div>
+      <div class="runtime-controls">
+        <div class="runtime-row">
+          <label for="heavy-runtime-enabled">HEAVY 任務</label>
+          <select id="heavy-runtime-enabled" class="runtime-select" ${disableAttr}>
+            <option value="1" ${enabled ? 'selected' : ''}>啟用 NVIDIA API</option>
+            <option value="0" ${!enabled ? 'selected' : ''}>關閉，使用本機 26B</option>
+          </select>
+        </div>
+        <div class="runtime-row">
+          <label for="heavy-runtime-api-key">NVIDIA API 金鑰</label>
+          <input id="heavy-runtime-api-key" class="runtime-select" type="password" placeholder="${configured ? state.masked || '已設定' : 'nvapi-...'}" ${disableAttr}>
+        </div>
+      </div>
+      <div class="runtime-meta">
+        <div>${escapeHtml(state.description || 'HEAVY 任務會優先嘗試 NVIDIA API。')}</div>
+        <div>狀態：${configured ? `已設定 ${escapeHtml(state.masked || '')}` : '尚未設定金鑰'}</div>
+      </div>
+      <div class="runtime-actions">
+        <button class="runtime-btn" ${disableAttr} onclick="saveHeavyRuntime()">套用 HEAVY 設定</button>
+      </div>
+    </div>
+  `;
+}
+
+async function saveHeavyRuntime() {
+  const canEdit = !!(heavyRuntimeState && heavyRuntimeState.can_edit);
+  if (!canEdit) {
+    alert('只有管理員可以修改 HEAVY API。');
+    return;
+  }
+  const enabledEl = document.getElementById('heavy-runtime-enabled');
+  const keyEl = document.getElementById('heavy-runtime-api-key');
+  const payload = { enabled: enabledEl ? enabledEl.value === '1' : false };
+  const apiKey = keyEl && keyEl.value ? keyEl.value.trim() : '';
+  if (apiKey) payload.api_key = apiKey;
+  const lineEl = document.getElementById('runtime-status-line');
+  if (lineEl) lineEl.textContent = '正在套用 HEAVY API 設定...';
+  try {
+    const response = await fetch('/api/nerv/heavy-runtime', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    heavyRuntimeState = await parseHeavyApiResponse(response);
+    if (keyEl) keyEl.value = '';
+    renderProductRuntime();
+    if (lastData) renderEngineNodes(lastData);
+    renderRoutingTable();
+    if (lineEl) lineEl.textContent = 'HEAVY API 設定已套用。';
+  } catch (e) {
+    if (lineEl) lineEl.textContent = 'HEAVY API 設定儲存失敗。';
+    alert(`HEAVY API 設定儲存失敗: ${e.message}`);
+    await fetchHeavyRuntime();
+  }
+}
+
+async function fetchProductRuntime(showMessage = false) {
+  try {
+    const response = await fetch('/api/nerv/product-runtime');
+    const payload = await parseJsonApiResponse(response, '產品切換設定暫不可得');
+    productRuntimeState = payload;
+    renderProductRuntime();
+    if (showMessage) {
+      const lineEl = document.getElementById('runtime-status-line');
+      if (lineEl) lineEl.textContent = `設定已重新整理 · ${payload.runtime_path || ''}`;
+    }
+  } catch (e) {
+    productRuntimeState = null;
+    renderProductRuntime();
+    const lineEl = document.getElementById('runtime-status-line');
+    if (lineEl) {
+      lineEl.textContent = e.message === '請重新登入 MAGI'
+        ? '請重新登入後再檢視產品切換設定。'
+        : '產品切換設定暫不可得。';
+    }
+  }
+}
+
+async function saveProductRuntime(product) {
+  const canEdit = !!(productRuntimeState && productRuntimeState.can_edit);
+  if (!canEdit) {
+    alert('只有管理員可以修改產品切換。');
+    return;
+  }
+  if (product !== 'laf') {
+    alert('閱卷與筆錄目前使用全域 HEAVY API 開關，不需要個別套用。');
+    return;
+  }
+  const payload = {
+    product,
+  };
+  if (product === 'laf') {
+    payload.portal_env = runtimeFieldValue(product, 'portal_env');
+  }
+  const lineEl = document.getElementById('runtime-status-line');
+  if (lineEl) lineEl.textContent = `正在套用 ${product} 設定...`;
+  try {
+    const response = await fetch('/api/nerv/product-runtime', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const nextState = await parseJsonApiResponse(response, '產品切換設定儲存失敗');
+    productRuntimeState = nextState;
+    renderProductRuntime();
+    if (lineEl) lineEl.textContent = `${product} 設定已套用。`;
+    await poll();
+  } catch (e) {
+    if (lineEl) {
+      lineEl.textContent = e.message === '請重新登入 MAGI'
+        ? '請重新登入後再修改產品切換。'
+        : `${product} 設定儲存失敗。`;
+    }
+    alert(`產品切換儲存失敗: ${e.message}`);
+    await fetchProductRuntime();
+  }
+}
+
+function setSkillEditorStatus(message, tone = '') {
+  const statusEl = document.getElementById('skill-editor-status');
+  if (!statusEl) return;
+  statusEl.textContent = message || '';
+  statusEl.className = `skill-editor-status${tone ? ` ${tone}` : ''}`;
+}
+
+function updateSkillModalTitle(label) {
+  const modalTitle = document.getElementById('skill-modal-title');
+  if (!modalTitle) return;
+  modalTitle.textContent = label || 'SKILL EDITOR';
+}
+
+function switchSkillSidePanel(panel) {
+  const nextPanel = ['template', 'wizard', 'versions'].includes(panel) ? panel : 'template';
+  activeSkillSidePanel = nextPanel;
+  ['template', 'wizard', 'versions'].forEach((name) => {
+    const tab = document.getElementById(`skill-side-tab-${name}`);
+    const section = document.getElementById(`skill-side-section-${name}`);
+    if (tab) tab.classList.toggle('active', name === nextPanel);
+    if (section) section.classList.toggle('active', name === nextPanel);
+  });
+}
+
+function isSkillModalOpen() {
+  const modal = document.getElementById('skill-modal');
+  return !!(modal && modal.classList.contains('open'));
+}
+
+function openSkillModal(title = 'SKILL EDITOR') {
+  const modal = document.getElementById('skill-modal');
+  if (!modal) return;
+  updateSkillModalTitle(title);
+  modal.classList.add('open');
+  document.body.style.overflow = 'hidden';
+  switchSkillSidePanel(activeSkillSidePanel || 'template');
+  fetchSkillInterviewState({ quiet: true });
+}
+
+function closeSkillModal() {
+  const modal = document.getElementById('skill-modal');
+  if (!modal) return;
+  modal.classList.remove('open');
+  document.body.style.overflow = '';
+  if (isNewSkillDraft) {
+    activeSkillName = '';
+    renderSkillTree();
+  }
+}
+
+function handleSkillModalBackdrop(event) {
+  if (event.target && event.target.id === 'skill-modal') {
+    closeSkillModal();
+  }
+}
+
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape' && isSkillModalOpen()) {
+    closeSkillModal();
+  }
+});
+
+function normalizeSkillName(value) {
+  return String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '')
+    .slice(0, 64);
+}
+
+function defaultSkillTemplate(skillName = 'new-skill') {
+  return `---\nname: ${skillName}\ndescription: TODO\n---\n\n# ${skillName}\n\n## Purpose\n- 說明這個技能要解決的任務。\n\n## Triggers\n- 補上會觸發這個技能的情境或關鍵字。\n\n## Workflow\n1. 定義主要步驟。\n2. 列出資料來源。\n3. 說明輸出格式。\n\n## Guardrails\n- 遵守 Iron Dome 邊界與既有安全規則。\n`;
+}
+
+function renderSkillTemplatePreview() {
+  const preview = document.getElementById('skill-template-preview');
+  if (!preview) return;
+  preview.textContent = defaultSkillTemplate('example-skill');
+}
+
+function applySkillTemplate() {
+  const nameInput = document.getElementById('skill-editor-name');
+  const contentInput = document.getElementById('skill-editor-content');
+  if (!nameInput || !contentInput) return;
+  const skillName = normalizeSkillName(nameInput.value) || 'new-skill';
+  nameInput.value = skillName;
+  contentInput.value = defaultSkillTemplate(skillName);
+  setSkillEditorStatus(`已套用 ${skillName} 的撰寫範本。`, 'ok');
+  switchSkillSidePanel('template');
+}
+
+function setSkillWizardStatus(message, tone = 'warn') {
+  const el = document.getElementById('skill-wizard-status');
+  if (!el) return;
+  el.textContent = message || '';
+  el.className = `skill-editor-status${tone ? ` ${tone}` : ''}`;
+}
+
+function setSkillWizardPrompt(message) {
+  const el = document.getElementById('skill-wizard-prompt');
+  if (!el) return;
+  el.textContent = message || '';
+}
+
+function setSkillVersionStatus(message, tone = '') {
+  const el = document.getElementById('skill-version-status');
+  if (!el) return;
+  el.className = `skill-editor-status${tone ? ` ${tone}` : ''}`;
+  el.textContent = message || '請先選擇一個技能，這裡會顯示最近版本。';
+}
+
+function resetSkillVersionsPanel(message = '請先選擇一個技能，這裡會顯示最近版本。') {
+  activeSkillVersions = [];
+  setSkillVersionStatus(message, 'warn');
+  const el = document.getElementById('skill-version-list');
+  if (!el) return;
+  el.innerHTML = `<div class="skill-template-copy">${escapeHtml(message)}</div>`;
+}
+
+function renderSkillVersions(skillName, versions) {
+  activeSkillVersions = Array.isArray(versions) ? versions : [];
+  const el = document.getElementById('skill-version-list');
+  if (!el) return;
+  if (!skillName) {
+    resetSkillVersionsPanel();
+    return;
+  }
+  if (!activeSkillVersions.length) {
+    setSkillVersionStatus(`${skillName} 目前還沒有可用版本。`, 'warn');
+    el.innerHTML = '<div class="skill-template-copy">尚未建立版本快照。</div>';
+    return;
+  }
+  setSkillVersionStatus(`${skillName} 已載入 ${activeSkillVersions.length} 個版本。`, 'ok');
+  el.innerHTML = activeSkillVersions.slice(0, 8).map((version) => {
+    const versionId = String(version.version_id || '').trim() || 'unknown';
+    const reason = String(version.reason || version.note || 'snapshot').trim();
+    const createdAt = version.created_at
+      ? String(version.created_at).replace('T', ' ').slice(0, 19)
+      : version.timestamp
+        ? String(version.timestamp).replace('T', ' ').slice(0, 19)
+        : '--';
+    const fileCount = Array.isArray(version.files) ? version.files.length : 0;
+    return `
+      <div class="skill-version-item">
+        <div class="skill-version-head">
+          <div class="skill-version-id">${escapeHtml(versionId)}</div>
+          <div style="color:#8e715f; font-size:0.66em;">${escapeHtml(createdAt)}</div>
+        </div>
+        <div class="skill-version-meta">原因：${escapeHtml(reason)}</div>
+        <div class="skill-version-meta">檔案數：${escapeHtml(String(fileCount || 0))}</div>
+        <div class="skill-version-actions">
+          <button type="button" onclick="rollbackSkillVersion('${encodeURIComponent(versionId)}')">回滾到這版</button>
+        </div>
+      </div>
+    `;
+  }).join('');
+}
+
+function extractInterviewSkillName(message) {
+  const text = String(message || '');
+  const match = text.match(/資料夾：`([^`]+)`/);
+  return match && match[1] ? match[1] : '';
+}
+
+async function renderSkillInterviewResponse(payload = {}, options = {}) {
+  const interview = payload.interview || {};
+  const message = String(payload.message || '');
+  const requestInput = document.getElementById('skill-wizard-request');
+  const replyInput = document.getElementById('skill-wizard-reply');
+
+  if (interview.active) {
+    const label = interview.step && interview.total_steps
+      ? `訪談進行中 ${interview.step}/${interview.total_steps}`
+      : '訪談進行中';
+    setSkillWizardStatus(label, 'warn');
+    setSkillWizardPrompt(interview.prompt || message || '等待下一題...');
+    if (requestInput && interview.initial_request) {
+      requestInput.value = interview.initial_request;
+    }
+  } else if (message) {
+    const tone = message.includes('新 SKILL 已建立並啟用') ? 'ok' : 'warn';
+    const statusText = message.includes('新 SKILL 已建立並啟用') ? 'SKILL 已建立完成。' : '目前沒有進行中的訪談。';
+    setSkillWizardStatus(statusText, tone);
+    setSkillWizardPrompt(message);
+  } else if (!options.quiet) {
+    setSkillWizardStatus('尚未啟動問答精靈。', 'warn');
+    setSkillWizardPrompt('點「開始精靈」後，這裡會顯示目前題目與建立結果。');
+  }
+
+  if (replyInput && !interview.active) {
+    replyInput.value = '';
+  }
+
+  const skillName = payload.skill_name || extractInterviewSkillName(message);
+  if (payload.finalized && skillName) {
+    await fetchNervSkills();
+    await loadSkillDoc(skillName);
+    await poll();
+  }
+}
+
+async function fetchSkillInterviewState(options = {}) {
+  try {
+    const response = await fetch('/api/nerv/skill-interview');
+    const payload = await parseSkillApiResponse(response);
+    await renderSkillInterviewResponse(payload, options);
+  } catch (e) {
+    if (!options.quiet) {
+      setSkillWizardStatus(
+        e.message === '請重新登入 MAGI' ? '請重新登入後再使用問答精靈。' : '問答精靈目前暫時沒有連上。',
+        'warn'
+      );
+      setSkillWizardPrompt('目前無法讀取問答精靈狀態。若要先工作，可以直接編輯左側 SKILL.md。');
+    }
+  }
+}
+
+function openSkillInterviewWizard() {
+  openSkillModal('SKILL INTERVIEW');
+  switchSkillSidePanel('wizard');
+  const input = document.getElementById('skill-wizard-request');
+  if (input) input.focus();
+  fetchSkillInterviewState({ quiet: false });
+}
+
+function ensureFrontmatterName(skillName, content) {
+  const normalized = String(content || '').replace(/\r\n/g, '\n');
+  if (!normalized.startsWith('---')) {
+    return `---\nname: ${skillName}\ndescription: TODO\n---\n\n${normalized.trim()}\n`;
+  }
+  const end = normalized.indexOf('\n---', 3);
+  if (end === -1) return normalized;
+  const frontmatterLines = normalized.slice(4, end).split('\n');
+  let hasName = false;
+  const nextLines = frontmatterLines.map((line) => {
+    if (/^name\s*:/i.test(line.trim())) {
+      hasName = true;
+      return `name: ${skillName}`;
+    }
+    return line;
+  });
+  if (!hasName) nextLines.unshift(`name: ${skillName}`);
+  return `---\n${nextLines.join('\n')}${normalized.slice(end)}`;
+}
+
+function currentSkillItems() {
+  if (skillCatalog.length) return skillCatalog;
+  return (((lastData || {}).skills || {}).skills || []).map((name) => ({
+    name,
+    summary: '',
+    has_skill_doc: false,
+    has_action: true,
+  }));
+}
+
+// ── Skill 中文名稱與說明 ──
+const SKILL_META = {
+  // 法律業務
+  'judgment-collector':       { zh: '裁判書收集', desc: '擷取法院裁判書', cat: '法律業務' },
+  'file-review-orchestrator': { zh: '閱卷自動化', desc: '閱卷時程與追蹤', cat: '法律業務' },
+  'pdf-namer':                { zh: 'PDF 命名', desc: 'OCR + 自動重命名', cat: '法律業務' },
+  'pdf-annotator':            { zh: 'PDF 標註', desc: '文書自動標註', cat: '法律業務' },
+  'law_review':               { zh: '法律校正', desc: '法律術語檢查', cat: '法律業務' },
+  'judicial-web-search':      { zh: '裁判檢索', desc: '司法院裁判查詢', cat: '法律業務' },
+  'judicial-flow-search-archive': { zh: '流程查詢', desc: '司法流程查詢', cat: '法律業務' },
+  'statutes-vdb':             { zh: '法條向量庫', desc: '法規語意搜尋', cat: '法律業務' },
+  'labor-law-calculator':     { zh: '勞動計算', desc: '資遣費/加班費', cat: '法律業務' },
+  'legal_attest':             { zh: '認證文書', desc: '法律文書認證', cat: '法律業務' },
+  'laf-orchestrator':         { zh: '法扶流程', desc: '法扶案件管理', cat: '法扶系統' },
+  'laf-portal-automation':    { zh: '法扶入口', desc: '法扶平台自動化', cat: '法扶系統' },
+  'laf-refine-case':          { zh: '法扶校潤', desc: '案件資料校潤', cat: '法扶系統' },
+  'laf-withdrawal-report':    { zh: '法扶撤案', desc: '撤案報告產出', cat: '法扶系統' },
+  // 情報分析
+  'worldmonitor-intel':       { zh: '全球新聞網', desc: 'RSS+市場即時追蹤', cat: '情報分析' },
+  'translator':               { zh: '多語翻譯', desc: '中英日韓翻譯', cat: '情報分析' },
+  'market-briefing':          { zh: '市場簡報', desc: '每日市場摘要', cat: '情報分析' },
+  'crawler-targets':          { zh: '網頁擷取', desc: '網路資料擷取', cat: '情報分析' },
+  'auto-user-clarification-aapl':  { zh: 'AAPL 追蹤', desc: 'Apple 股票', cat: '投資追蹤' },
+  'auto-user-clarification-qqq':   { zh: 'QQQ 追蹤', desc: 'Nasdaq ETF', cat: '投資追蹤' },
+  'auto-user-clarification-tlsa':  { zh: 'TSLA 追蹤', desc: 'Tesla 股票', cat: '投資追蹤' },
+  'auto-user-clarification-vt':    { zh: 'VT 追蹤', desc: '全球 ETF', cat: '投資追蹤' },
+  // 系統維運
+  'magi-doctor':              { zh: '系統診斷', desc: '錯誤偵測與修復', cat: '系統維運' },
+  'magi-autopilot':           { zh: '自動駕駛', desc: '無人值守執行', cat: '系統維運' },
+  'iron-dome':                { zh: '鐵穹防禦', desc: '安全防護系統', cat: '系統維運' },
+  'iron_dome':                { zh: '鐵穹核心', desc: '防護引擎', cat: '系統維運' },
+  'db-dual-sync':             { zh: 'DB 同步', desc: '雙向資料同步', cat: '系統維運' },
+  'osc-orchestrator':         { zh: '案件時程', desc: '案件時程管理', cat: '系統維運' },
+  'osc-scan-folder':          { zh: '資料夾掃描', desc: '案件檔案偵測', cat: '系統維運' },
+  'obsidian':                 { zh: 'Obsidian', desc: '知識庫同步', cat: '系統維運' },
+  'mock-test':                { zh: '模擬測試', desc: '系統功能驗證', cat: '系統維運' },
+  // 檔案處理
+  'transcript-downloader':    { zh: '筆錄下載', desc: '法院筆錄擷取', cat: '檔案處理' },
+  'transcript-indexer':       { zh: '筆錄索引', desc: '筆錄全文索引', cat: '檔案處理' },
+  'gmail-drafts':             { zh: 'Gmail 草稿', desc: '郵件自動草擬', cat: '檔案處理' },
+};
+
+const CAT_ORDER = ['法律業務', '法扶系統', '檔案處理', '情報分析', '投資追蹤', '系統維運', '其他模組'];
+
+function categorizeSkills(skills) {
+  const cats = {};
+  for (const cn of CAT_ORDER) cats[cn] = [];
+
+  for (const item of skills) {
+    const name = item.name || item.id || item;
+    // Exact match first
+    const meta = SKILL_META[name];
+    if (meta) {
+      cats[meta.cat] = cats[meta.cat] || [];
+      cats[meta.cat].push({
+        id: name,
+        zh: meta.zh,
+        desc: meta.desc || item.summary || '',
+        cat: meta.cat,
+        hasSkillDoc: !!item.has_skill_doc,
+        hasAction: !!item.has_action,
+      });
+    } else {
+      cats['其他模組'].push({
+        id: name,
+        zh: name,
+        desc: item.summary || '',
+        cat: '其他模組',
+        hasSkillDoc: !!item.has_skill_doc,
+        hasAction: !!item.has_action,
+      });
+    }
+  }
+  return cats;
+}
+
+function renderSkillTree() {
+  const skills = currentSkillItems();
+  const cats = categorizeSkills(skills);
+  const catEntries = Object.entries(cats).filter(([, items]) => items.length > 0);
+  let skillHTML = '<div class="skill-grid">';
+  for (const [cat, items] of catEntries) {
+    skillHTML += `<div class="skill-category"><div class="skill-cat-header"><span class="skill-cat-title">${escapeHtml(cat)}</span><span class="skill-cat-count">${items.length}</span></div><div class="skill-list">`;
+    for (const s of items) {
+      const active = s.id === activeSkillName ? ' active' : '';
+      const badge = s.hasSkillDoc ? 'DOC' : (s.hasAction ? 'ACTION' : '');
+      skillHTML += `
+        <button type="button" class="skill-item${active}" onclick="loadSkillDoc('${encodeURIComponent(s.id)}', true)">
+          <div class="skill-indicator"></div>
+          <div class="skill-item-main">
+            <span class="skill-name">${escapeHtml(s.zh)}</span>
+            <span class="skill-desc">${escapeHtml(s.desc || '')}</span>
+          </div>
+          ${badge ? `<span class="skill-badge">${escapeHtml(badge)}</span>` : ''}
+        </button>
+      `;
+    }
+    skillHTML += '</div></div>';
+  }
+  skillHTML += '</div>';
+  document.getElementById('skill-tree-content').innerHTML = catEntries.length ? skillHTML : '<div class="skill-cat-header">未偵測到模組</div>';
+}
+
+async function fetchNervSkills(options = {}) {
+  try {
+    const response = await fetch('/api/nerv/skills');
+    const payload = await parseSkillApiResponse(response);
+    skillCatalog = payload.skills || [];
+    renderSkillTree();
+    const hasActive = activeSkillName && skillCatalog.some((item) => item.name === activeSkillName);
+    if (activeSkillName && !hasActive && !isNewSkillDraft) {
+      activeSkillName = '';
+      renderSkillTree();
+      if (isSkillModalOpen()) {
+        setSkillEditorStatus('目前選取的 SKILL 已不存在，請重新選一個。', 'warn');
+      }
+    } else if (options.showRefreshStatus && isSkillModalOpen()) {
+      setSkillEditorStatus(`已重新整理 ${skillCatalog.length} 個 SKILL。`, 'ok');
+    }
+  } catch (e) {
+    skillCatalog = [];
+    renderSkillTree();
+    if (isSkillModalOpen()) {
+      setSkillEditorStatus(
+        e.message === '請重新登入 MAGI' ? '請重新登入後再使用 SKILL 工具頁。' : 'SKILL 工具頁暫不可得，先保留目前內容。',
+        'warn'
+      );
+    }
+  }
+}
+
+function startNewSkill() {
+  const suggested = `new-skill-${new Date().toISOString().slice(5, 10).replace('-', '')}`;
+  const name = normalizeSkillName(suggested);
+  activeSkillName = '';
+  isNewSkillDraft = true;
+  activeSkillSidePanel = 'template';
+  openSkillModal(`NEW SKILL · ${name}`);
+  document.getElementById('skill-editor-name').value = name;
+  document.getElementById('skill-editor-content').value = defaultSkillTemplate(name);
+  setSkillEditorStatus('新增 SKILL 草稿中，修改後按「儲存至 MAGI」。', 'warn');
+  resetSkillVersionsPanel('新草稿尚未建立版本快照。');
+  renderSkillTree();
+}
+
+async function startSkillInterviewWizard() {
+  switchSkillSidePanel('wizard');
+  const requestEl = document.getElementById('skill-wizard-request');
+  const requestText = String((requestEl && requestEl.value) || '').trim();
+  if (!requestText) {
+    setSkillWizardStatus('先寫一句你想讓 MAGI 學會的任務就可以。', 'warn');
+    return;
+  }
+  setSkillWizardStatus('正在啟動問答精靈...', 'warn');
+  try {
+    const response = await fetch('/api/nerv/skill-interview/start', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ request: requestText }),
+    });
+    const payload = await parseSkillApiResponse(response);
+    await renderSkillInterviewResponse(payload);
+  } catch (e) {
+    setSkillWizardStatus(
+      e.message === '請重新登入 MAGI'
+        ? '請重新登入後再使用問答精靈。'
+        : '問答精靈目前沒有連上，你可以先直接編輯左側 SKILL.md，稍後再試一次。',
+      'warn'
+    );
+    setSkillWizardPrompt('目前沒有拿到題目。若你趕時間，可以直接用左側編輯器建立 SKILL。');
+  }
+}
+
+async function submitSkillInterviewReply(messageOverride = '') {
+  switchSkillSidePanel('wizard');
+  const replyEl = document.getElementById('skill-wizard-reply');
+  const message = String(messageOverride || (replyEl && replyEl.value) || '').trim();
+  if (!message) {
+    setSkillWizardStatus('先輸入這一題的回答，再按送出。', 'warn');
+    return;
+  }
+  setSkillWizardStatus('正在送出回答...', 'warn');
+  try {
+    const response = await fetch('/api/nerv/skill-interview/reply', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message }),
+    });
+    const payload = await parseSkillApiResponse(response);
+    await renderSkillInterviewResponse(payload);
+  } catch (e) {
+    setSkillWizardStatus(
+      e.message === '請重新登入 MAGI'
+        ? '請重新登入後再送出回答。'
+        : '問答精靈暫時沒有收下這題，先保留你的文字；你也可以直接改左側 SKILL.md。',
+      'warn'
+    );
+  }
+}
+
+async function viewSkillInterviewProgress() {
+  await fetchSkillInterviewState({ quiet: false });
+}
+
+async function cancelSkillInterviewWizard() {
+  try {
+    await submitSkillInterviewReply('取消');
+  } catch (e) {
+    await fetchSkillInterviewState({ quiet: false });
+  }
+}
+
+async function loadSkillDoc(skillName, encoded = false) {
+  const resolvedName = encoded ? decodeURIComponent(skillName) : skillName;
+  if (!resolvedName) return;
+  activeSkillName = resolvedName;
+  isNewSkillDraft = false;
+  openSkillModal(`SKILL EDITOR · ${resolvedName}`);
+  renderSkillTree();
+  setSkillEditorStatus(`正在讀取 ${resolvedName}...`, 'warn');
+  try {
+    const response = await fetch(`/api/nerv/skills/${encodeURIComponent(resolvedName)}`);
+    const payload = await parseSkillApiResponse(response);
+    const skill = payload.skill || {};
+    document.getElementById('skill-editor-name').value = skill.name || resolvedName;
+    document.getElementById('skill-editor-content').value = skill.content || defaultSkillTemplate(resolvedName);
+    const summary = skill.updated_at ? `最近更新 ${skill.updated_at.replace('T', ' ').slice(0, 19)}` : '已載入';
+    setSkillEditorStatus(`${resolvedName} 已載入。${summary}`, 'ok');
+    await fetchSkillVersions(resolvedName, { quiet: true });
+  } catch (e) {
+    resetSkillVersionsPanel(`${resolvedName} 的版本快照目前無法讀取。`);
+    setSkillEditorStatus(
+      e.message === '請重新登入 MAGI' ? '請重新登入後再檢視 SKILL。' : `${resolvedName} 讀取失敗，請稍後再試。`,
+      'error'
+    );
+  }
+  renderSkillTree();
+}
+
+async function saveSkillDoc() {
+  const nameInput = document.getElementById('skill-editor-name');
+  const contentInput = document.getElementById('skill-editor-content');
+  const skillName = normalizeSkillName(nameInput.value);
+  if (!skillName) {
+    setSkillEditorStatus('請先輸入有效的 skill 名稱，只能使用英文、數字、.-_。', 'error');
+    return;
+  }
+  let content = String(contentInput.value || '');
+  if (!content.trim()) {
+    setSkillEditorStatus('SKILL 內容不能是空的。', 'error');
+    return;
+  }
+  nameInput.value = skillName;
+  content = ensureFrontmatterName(skillName, content);
+  setSkillEditorStatus(`正在儲存 ${skillName}...`, 'warn');
+  try {
+    const response = await fetch(`/api/nerv/skills/${encodeURIComponent(skillName)}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content }),
+    });
+    const payload = await parseSkillApiResponse(response);
+    const skill = payload.skill || {};
+    activeSkillName = skillName;
+    isNewSkillDraft = false;
+    updateSkillModalTitle(`SKILL EDITOR · ${skillName}`);
+    contentInput.value = skill.content || content;
+    setSkillEditorStatus(`${skillName} 已儲存到 MAGI。`, 'ok');
+    await fetchNervSkills();
+    await fetchSkillVersions(skillName, { quiet: true });
+    await poll();
+  } catch (e) {
+    setSkillEditorStatus(
+      e.message === '請重新登入 MAGI' ? '請重新登入後再儲存 SKILL。' : `儲存 ${skillName} 失敗，請稍後再試。`,
+      'error'
+    );
+  }
+}
+
+function reloadSkillCatalog() {
+  fetchNervSkills({ showRefreshStatus: true });
+}
+
+async function fetchSkillVersions(skillName = activeSkillName, options = {}) {
+  const resolvedName = String(skillName || '').trim();
+  if (!resolvedName || isNewSkillDraft) {
+    if (!options.quiet) {
+      resetSkillVersionsPanel('新草稿尚未建立版本快照。');
+    }
+    return;
+  }
+  try {
+    const response = await fetch(`/api/skills/${encodeURIComponent(resolvedName)}/versions`);
+    const payload = await parseSkillApiResponse(response);
+    renderSkillVersions(resolvedName, payload.versions || []);
+  } catch (e) {
+    if (!options.quiet) {
+      setSkillVersionStatus(
+        e.message === '請重新登入 MAGI' ? '請重新登入後再檢視版本快照。' : `${resolvedName} 的版本快照暫不可得。`,
+        'warn'
+      );
+    }
+  }
+}
+
+async function refreshSkillVersions() {
+  switchSkillSidePanel('versions');
+  const currentName = normalizeSkillName((document.getElementById('skill-editor-name') || {}).value || activeSkillName || '');
+  if (!currentName) {
+    resetSkillVersionsPanel('請先選擇或建立一個技能。');
+    return;
+  }
+  await fetchSkillVersions(currentName, { quiet: false });
+}
+
+async function rollbackSkillVersion(encodedVersionId) {
+  const skillName = String(activeSkillName || normalizeSkillName((document.getElementById('skill-editor-name') || {}).value || '')).trim();
+  const versionId = decodeURIComponent(String(encodedVersionId || '').trim());
+  if (!skillName || !versionId) {
+    setSkillVersionStatus('找不到要回滾的技能或版本。', 'error');
+    return;
+  }
+  if (!confirm(`要把 ${skillName} 回滾到版本 ${versionId} 嗎？\n這會覆蓋目前的 SKILL.md 與 action.py。`)) {
+    return;
+  }
+  setSkillVersionStatus(`正在回滾 ${skillName}...`, 'warn');
+  try {
+    const response = await fetch(`/api/skills/${encodeURIComponent(skillName)}/rollback`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ version_id: versionId }),
+    });
+    const payload = await parseSkillApiResponse(response);
+    const result = payload.result || {};
+    setSkillVersionStatus(`${skillName} 已回滾到 ${result.restored_version || versionId}。`, 'ok');
+    await loadSkillDoc(skillName);
+    await fetchNervSkills();
+    await poll();
+  } catch (e) {
+    setSkillVersionStatus(
+      e.message === '只有管理員可以操作' ? '只有管理員可以回滾技能版本。'
+        : e.message === '請重新登入 MAGI' ? '請重新登入後再回滾技能版本。'
+        : `回滾失敗：${e.message}`,
+      'error'
+    );
+  }
+}
+
+function render(data) {
+  lastData = data;
+  document.getElementById('ts').textContent = new Date().toLocaleTimeString('zh-TW', {hour12: false});
+
+  // MAGI triangle
+  const casperEl = document.getElementById('node-casper');
+  const melEl = document.getElementById('node-melchior');
+  const balEl = document.getElementById('node-balthasar');
+
+  casperEl.className = `magi-node casper ${data.magi_server?.status === 'online' ? 'online' : 'offline'}`;
+  document.getElementById('casper-detail').textContent = `PID ${data.magi_server?.pid || '?'}`;
+
+  const melStatus = data.melchior?.status || 'error';
+  melEl.className = `magi-node melchior ${(melStatus === 'online' || melStatus === 'local') ? 'online' : 'offline'}`;
+  document.getElementById('melchior-detail').textContent = data.melchior?.detail || melStatus;
+
+  const balStatus = data.balthasar?.status || 'error';
+  balEl.className = `magi-node balthasar ${(balStatus === 'online' || balStatus === 'local') ? 'online' : 'offline'}`;
+  document.getElementById('balthasar-detail').textContent = data.balthasar?.detail || balStatus;
+
+  // Infrastructure
+  document.getElementById('infra-nodes').innerHTML = [
+    nodeHTML('MAGI Server', data.magi_server?.status, `PID ${data.magi_server?.pid || '?'}`),
+    nodeHTML('Cloudflared (LINE only)', data.cloudflared?.status, ''),
+    nodeHTML('全球新聞網', data.worldmonitor?.status, ''),
+  ].join('');
+
+  // Engines
+  renderEngineNodes(data);
+  renderRoutingTable();
+
+  // Communications
+  document.getElementById('comm-nodes').innerHTML = [
+    nodeHTML('LINE Webhook', data.line_webhook?.status, ''),
+    nodeHTML('Cloudflare Tunnel (Webhook only)', data.cloudflared?.status, ''),
+    nodeHTML('Tailscale VPN', 'online', ''),
+  ].join('') +
+  '<div style="margin-top:12px;border-top:1px solid #1a1a00;padding-top:8px;">' +
+  '<div class="panel-title">快速連結</div>' +
+  '<div class="node-item"><a href="/dashboard" style="color:#ff8800;font-size:0.78em;text-decoration:none;">&#9654; MAGI</a></div>' +
+  '<div class="node-item"><a href="/osc" style="color:#ff8800;font-size:0.78em;text-decoration:none;">&#9654; 案件管理</a></div>' +
+  '</div>';
+
+  // Data stores
+  document.getElementById('data-nodes').innerHTML = [
+    nodeHTML('MySQL (Keeper)', data.mysql?.status, ''),
+    nodeHTML('LanceDB (Memory)', 'online', 'local'),
+    nodeHTML('FAISS (Embed)', 'online', data.faiss?.vectors ? Number(data.faiss.vectors).toLocaleString() + ' vectors' : 'local'),
+  ].join('');
+
+  // oMLX models
+  const omlxModels = data.omlx?.models || [];
+  document.getElementById('omlx-models').innerHTML = omlxModels.length
+    ? omlxModels.map(m => nodeHTML(m, 'online', '')).join('')
+    : nodeHTML('No models', 'red', '');
+
+  renderOfficeNodes(data);
+  renderRemoteAccess(data.remote_access);
+  renderCommandStrip();
+  renderSkillTree();
+}
+
+async function poll() {
+  try {
+    const r = await fetch('/dashboard/nerv/api/health');
+    if (r.ok) render(await r.json());
+  } catch (e) {
+    console.warn('Health poll failed:', e);
+  }
+}
+
+// 時鐘每秒更新
+function updateClock() {
+  document.getElementById('ts').textContent = new Date().toLocaleTimeString('zh-TW', {hour12: false});
+}
+updateClock();
+setInterval(updateClock, 1000);
+
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape' && isSkillModalOpen()) {
+    closeSkillModal();
+  }
+});
+
+poll();
+setInterval(poll, REFRESH_MS);
+fetchHeavyRuntime();
+setInterval(fetchHeavyRuntime, 15000);
+fetchProductRuntime();
+setInterval(() => fetchProductRuntime(), 30000);
+fetchNervSkills();
+setInterval(() => fetchNervSkills(), 30000);
+fetchRemoteAccess();
+setInterval(() => fetchRemoteAccess(), 30000);
+renderSkillTemplatePreview();
+
+// ===== MAGI 聊天 =====
+(function initNervChat() {
+  const box = document.getElementById('nerv-chat-messages');
+  const input = document.getElementById('nerv-chat-input');
+  const sendBtn = document.getElementById('nerv-chat-send');
+  const clearBtn = document.getElementById('nerv-chat-clear');
+  if (!box || !input) return;
+  function appendMsg(role, text, html) {
+    const d = document.createElement('div');
+    d.style.margin = '4px 0';
+    d.style.whiteSpace = 'pre-wrap';
+    if (role === 'user') { d.style.color = '#00aaff'; d.style.borderLeft = '2px solid #00aaff'; d.style.paddingLeft = '6px'; }
+    else if (role === 'magi') { d.style.color = '#ff8800'; d.style.borderLeft = '2px solid #ff8800'; d.style.paddingLeft = '6px'; }
+    else { d.style.color = '#ff6600'; }
+    if (html && role !== 'user') {
+      d.style.whiteSpace = 'normal';
+      d.innerHTML = html;
+    } else {
+      d.textContent = text;
+    }
+    box.appendChild(d);
+    box.scrollTop = box.scrollHeight;
+  }
+  async function send() {
+    const text = (input.value || '').trim();
+    if (!text) return;
+    input.value = '';
+    appendMsg('user', text);
+    try {
+      const r = await fetch('/api/osc/chat', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({message: text}) });
+      const data = await r.json();
+      appendMsg('magi', data.reply || '(無回覆)', data.reply_html || '');
+    } catch(e) { appendMsg('sys', '送出失敗：' + e.message); }
+  }
+  sendBtn.addEventListener('click', send);
+  input.addEventListener('keydown', function(e) {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
+  });
+  clearBtn.addEventListener('click', function() {
+    box.innerHTML = '<div style="color:#ff8800;">對話畫面已清空。</div>';
+  });
+  async function chatPoll() {
+    try {
+      const r = await fetch('/api/osc/poll');
+      const data = await r.json();
+      (data.messages || []).forEach(function(m) { appendMsg('magi', m); });
+    } catch(_) {}
+    setTimeout(chatPoll, 3000);
+  }
+  chatPoll();
+})();
+</script>
+</body>
+</html>

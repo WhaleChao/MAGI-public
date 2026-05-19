@@ -128,6 +128,69 @@ def quick_fixed_reply(orch, message: str, role: str = "user") -> Optional[str]:
     if t in _HELP_EXACT:
         return build_help_text(role)
 
+    _AUTOCHECK_EXACT = {
+        "自動巡檢", "magi 自動巡檢", "系統巡檢", "巡檢",
+        "auto check", "autocheck", "self check",
+    }
+    if t in _AUTOCHECK_EXACT:
+        if role != "admin":
+            return "⛔ 抱歉，只有管理員可以執行自動巡檢（系統改動指令）。"
+        try:
+            import json as _json
+            import subprocess as _subprocess
+            from pathlib import Path as _Path
+
+            root = _Path(_MAGI_ROOT)
+            py = os.environ.get("MAGI_SKILL_PYTHON") or sys.executable or "python3"
+            out_path = root / ".runtime" / "autocheck_latest.json"
+            proc = _subprocess.run(
+                [
+                    py,
+                    str(root / "scripts" / "ops" / "audit_operational_hardening.py"),
+                    "--json-out",
+                    str(out_path),
+                ],
+                cwd=str(root),
+                capture_output=True,
+                text=True,
+                timeout=60,
+                check=False,
+            )
+            report = {}
+            if out_path.exists():
+                report = _json.loads(out_path.read_text(encoding="utf-8"))
+            cron = report.get("cron") or {}
+            git = report.get("git") or {}
+            issue = report.get("issue_agenda") or {}
+            active = int((issue.get("recent_state_counts") or {}).get("active_unresolved") or 0)
+
+            models = []
+            try:
+                import requests as _req
+                r = _req.get("http://127.0.0.1:8080/v1/models", timeout=3)
+                if r.status_code == 200:
+                    models = [str(x.get("id") or "") for x in (r.json().get("data") or []) if x.get("id")]
+            except Exception:
+                pass
+            model_line = ", ".join(models[:3]) if models else "oMLX 8080 未回應"
+
+            status = "正常" if (
+                proc.returncode == 0
+                and int(cron.get("collision_count") or 0) == 0
+                and active == 0
+            ) else "需處理"
+            return (
+                f"🔧 MAGI 自動巡檢報告：{status}\n"
+                f"- oMLX 8080：{model_line}\n"
+                f"- cron 撞車：{int(cron.get('collision_count') or 0)}\n"
+                f"- cron 指令解析失敗：{int(cron.get('parse_failure_count') or 0)}\n"
+                f"- active unresolved issue：{active}\n"
+                f"- 未提交工作區項目：{int(git.get('dirty_count') or 0)}\n"
+                f"- Gmail 監控模式：{(report.get('gmail_monitor') or {}).get('mode', 'unknown')}"
+            )
+        except Exception as e:
+            return f"❌ 自動巡檢執行失敗: {e}"
+
     _MODEL_EXACT = {
         "目前模型", "現在模型", "使用什麼模型", "模型是什麼", "模型為何",
         "what model", "你現在使用什麼模型", "現在使用什麼模型",
@@ -925,6 +988,15 @@ def try_conversational_intent(orch, message: str, msg_lower: str, user_id, role:
          "**資遣費**：`月薪 45000，到職 2018-01-01，現在資遣費多少`\n"
          "**試算表代算**：貼上 Google Sheets 公開連結\n\n"
          "假別：平日 / 休息日 / 例假日 / 國定假日", True),
+
+        (r"(?:查判決|找判決|判決搜尋|搜尋判決|收集判決|判決搜集|"
+         r"搜尋最高法院判決|查裁判|找裁判|裁判搜尋|搜尋裁判|最近.{0,4}(?:判決|裁判)|"
+         r"法院判決|查法規|查法條|法規查詢|法條查詢|查釋字|釋字|憲判|實務見解|法律見解|法院見解|court\s*judgment)", "judgment_search",
+         "✅ **我可以幫您查判決！**\n\n"
+         "• 直接輸入：`查判決 傷害`\n"
+         "• 也可提供案號：`查判決 113年度上訴字第12號`\n"
+         "• 實務見解整理：`實務見解 預售屋遲延交屋`\n"
+         "• 法規/釋憲：`查法條 民法第184條`、`查釋字 748`", True),
 
         (r"(?:開庭排程|庭期|最近.{0,4}(?:什麼庭|有庭|開庭)|"
          r"明天.{0,2}開庭|今天.{0,4}庭|下.{0,2}開庭|"

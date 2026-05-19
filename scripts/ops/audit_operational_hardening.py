@@ -14,6 +14,7 @@ import os
 import subprocess
 import sys
 import time
+import urllib.request
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
@@ -77,6 +78,77 @@ def _load_cron_last_run_ts() -> dict[str, float]:
     return out
 
 
+def _current_omlx_models() -> list[str]:
+    try:
+        with urllib.request.urlopen("http://127.0.0.1:8080/v1/models", timeout=3) as resp:
+            data = json.loads(resp.read().decode("utf-8", errors="replace"))
+        return [
+            str(item.get("id") or "").strip()
+            for item in (data.get("data") or [])
+            if isinstance(item, dict) and str(item.get("id") or "").strip()
+        ]
+    except Exception:
+        return []
+
+
+def audit_omlx_profile() -> dict[str, Any]:
+    """Verify that the live oMLX model matches the current day/night policy."""
+    now = datetime.now()
+    minutes = now.hour * 60 + now.minute
+    expected_profile = "day" if 415 <= minutes < 1310 else "night"
+    expected_keyword = "e4b" if expected_profile == "day" else "26b"
+    models = _current_omlx_models()
+    active_profile = ""
+    try:
+        active_profile = (Path.home() / ".omlx" / "active_profile").read_text(encoding="utf-8").strip()
+    except Exception:
+        active_profile = ""
+    model_dir_hint = ""
+    try:
+        model_dir = Path.home() / ".omlx" / "models-text"
+        model_dir_hint = " ".join(sorted(p.name.lower() for p in model_dir.iterdir()))
+    except Exception:
+        model_dir_hint = ""
+    live_text = " ".join(models).lower()
+    ok = (
+        expected_keyword in live_text
+        and expected_keyword in model_dir_hint.lower()
+        and active_profile == expected_profile
+    )
+    return {
+        "ok": ok,
+        "expected_profile": expected_profile,
+        "expected_keyword": expected_keyword,
+        "active_profile": active_profile,
+        "models": models,
+        "model_dir_hint": model_dir_hint,
+        "time": now.strftime("%Y-%m-%d %H:%M"),
+        "remediation": "Run config/bin/omlx_switch_model.sh auto; cron job_omlx_profile_guard should keep this idempotently repaired.",
+    }
+
+
+def _latest_operational_audit_is_green(issue_ts: float) -> bool:
+    path = ROOT / ".runtime" / "operational_hardening_audit_latest.json"
+    if not path.exists() or path.stat().st_mtime <= issue_ts:
+        return False
+    data = _load_json(path, {})
+    cron = data.get("cron") if isinstance(data, dict) else {}
+    gmail = data.get("gmail_monitor") if isinstance(data, dict) else {}
+    return (
+        int((cron or {}).get("parse_failure_count") or 0) == 0
+        and int((cron or {}).get("collision_count") or 0) == 0
+        and bool((gmail or {}).get("ok", True))
+    )
+
+
+def _latest_tailscale_funnel_is_green(issue_ts: float) -> bool:
+    path = ROOT / ".runtime" / "tailscale_funnel_health_latest.json"
+    if not path.exists() or path.stat().st_mtime <= issue_ts:
+        return False
+    data = _load_json(path, {})
+    return str((data or {}).get("status") or "").lower() in {"ok", "recovered", "skipped"}
+
+
 def _classify_issue_row(
     row: dict[str, Any],
     *,
@@ -94,6 +166,14 @@ def _classify_issue_row(
     job_id = _cron_job_from_issue_command(row.get("command"))
     if not job_id:
         return "stale" if ts < active_cutoff else "active_unresolved"
+    err = str(row.get("error") or "")
+    if job_id in {"job_omlx_switch_day", "job_omlx_switch_night", "job_omlx_profile_guard"} and "8080" in err:
+        if any("gemma-4-e4b" in model.lower() for model in _current_omlx_models()):
+            return "recovered"
+    if job_id == "job_operational_hardening_audit" and _latest_operational_audit_is_green(ts):
+        return "recovered"
+    if job_id == "job_tailscale_funnel_healthcheck" and _latest_tailscale_funnel_is_green(ts):
+        return "recovered"
     if latest_cron_issue_ts_by_job.get(job_id, ts) > ts:
         return "superseded"
     if cron_last_run_ts.get(job_id, 0.0) > ts:
@@ -141,7 +221,7 @@ def audit_cron() -> dict[str, Any]:
             j for j in grouped
             if not (j.get("command") or "").strip().startswith("@MAGI")
         ]
-        if len(grouped) > 1 and heavy:
+        if len(heavy) > 1:
             collisions.append({
                 "cron": cron,
                 "jobs": [
@@ -172,13 +252,27 @@ def audit_git() -> dict[str, Any]:
     generated_prefixes = (
         "?? static/worldmonitor_reports/",
         " D static/worldmonitor_reports/",
+        " M static/translator_ape_latest.json",
+        "?? static/translator_ape_latest.json",
+        " M static/knowledge_lint_latest.json",
+        "?? static/knowledge_lint_latest.json",
+        " M json/processed_laf_emails.json",
+        "?? json/processed_laf_emails.json",
+        " M skills/pdf-namer/db_rules_cache.json",
+        "?? skills/pdf-namer/db_rules_cache.json",
         "?? cron_jobs.json.bak.",
         "?? .claude/worktrees/",
     )
-    generated = [line for line in lines if line.startswith(generated_prefixes)]
+    generated = [
+        line for line in lines
+        if line.startswith(generated_prefixes)
+        or "__pycache__/" in line
+        or line.endswith(".pyc")
+    ]
     source = [line for line in lines if line not in generated]
     return {
-        "dirty_count": len(lines),
+        "dirty_count": len(source),
+        "raw_dirty_count": len(lines),
         "source_or_review_count": len(source),
         "generated_or_runtime_count": len(generated),
         "source_or_review": source,
@@ -285,6 +379,7 @@ def main() -> int:
         "git": audit_git(),
         "issue_agenda": audit_issue_agenda(),
         "gmail_monitor": audit_gmail_monitor_mode(),
+        "omlx_profile": audit_omlx_profile(),
     }
     out = Path(args.json_out)
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -294,8 +389,11 @@ def main() -> int:
         "cron_parse_failures": report["cron"]["parse_failure_count"],
         "cron_collisions": report["cron"]["collision_count"],
         "dirty_count": report["git"]["dirty_count"],
-        "recent_issues": report["issue_agenda"]["recent_count"],
+        "recent_issues": int(report["issue_agenda"].get("recent_count") or 0),
         "gmail_monitor_mode": report["gmail_monitor"]["mode"],
+        "omlx_profile_ok": report["omlx_profile"]["ok"],
+        "omlx_expected": report["omlx_profile"]["expected_profile"],
+        "omlx_models": report["omlx_profile"]["models"],
         "json_out": str(out),
     }, ensure_ascii=False))
 
@@ -303,6 +401,7 @@ def main() -> int:
         report["cron"]["parse_failure_count"] > 0
         or report["cron"]["collision_count"] > 0
         or not report["gmail_monitor"]["ok"]
+        or not report["omlx_profile"]["ok"]
     ):
         return 1
     return 0

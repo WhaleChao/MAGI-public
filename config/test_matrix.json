@@ -1,0 +1,288 @@
+{
+  "version": 1,
+  "description": "MAGI test matrix. CI suites avoid private credentials; live suites validate the production machine.",
+  "suites": {
+    "ci": {
+      "description": "Fast public-safe gate for GitHub Actions and clean checkouts.",
+      "checks": [
+        {
+          "id": "py_compile_core",
+          "name": "Syntax check core runtime",
+          "command": [
+            "{python}",
+            "-m",
+            "py_compile",
+            "api/model_config.py",
+            "api/pipelines/message_pipeline.py",
+            "api/pipelines/message_router.py",
+            "api/domains/judgment_flow.py",
+            "skills/bridge/melchior_client.py",
+            "skills/bridge/inference_gateway.py",
+            "scripts/ops/audit_operational_hardening.py",
+            "scripts/ops/smoke_test_full.py",
+            "scripts/ops/run_test_suite.py",
+            "scripts/customer_install_wizard.py",
+            "scripts/packaging/magi_install_launcher.py",
+            "scripts/packaging/runtime_bootstrap.py",
+            "scripts/packaging/build_installers.py",
+            "bin/release_bundle.py",
+            "scripts/ops/resource_governor.py",
+            "scripts/ops/model_live_gate.py",
+            "casper_ecosystem/law_firm_orchestrators/laf_vision.py"
+          ],
+          "timeout_sec": 30
+        },
+        {
+          "id": "pytest_fast_gate",
+          "name": "Fast pytest gate",
+          "command": [
+            "{python}",
+            "-m",
+            "pytest",
+            "-q",
+            "tests/test_arithmetic_fast_path.py",
+            "tests/test_model_config.py",
+            "tests/test_smoke_core_routes.py",
+            "tests/test_cron_monitoring_hardening.py",
+            "tests/test_intent_no_weather_for_reminder.py",
+            "tests/test_run_test_suite.py",
+            "tests/test_customer_install_wizard.py",
+            "tests/test_installer_bootstrap.py",
+            "tests/test_resource_governor.py",
+            "tests/test_model_live_gate.py",
+            "tests/test_laf_vision_ocr_consensus.py"
+          ],
+          "timeout_sec": 120
+        }
+      ]
+    },
+    "smoke50": {
+      "description": "Backward-compatible alias for the MAGI full smoke gate; currently 62 checks with commercial release guards.",
+      "checks": [
+        {
+          "id": "smoke_test_full_current",
+          "name": "MAGI full smoke with commercial guards",
+          "command": [
+            "{python}",
+            "scripts/ops/smoke_test_full.py",
+            "--json-out",
+            ".runtime/smoke_test_full_latest.json"
+          ],
+          "timeout_sec": 180
+        }
+      ]
+    },
+    "smoke62": {
+      "description": "MAGI full smoke gate with 62 checks, including commercial release and cleanroom install guards.",
+      "checks": [
+        {
+          "id": "smoke_test_full_62",
+          "name": "MAGI 62-check smoke",
+          "command": [
+            "{python}",
+            "scripts/ops/smoke_test_full.py",
+            "--json-out",
+            ".runtime/smoke_test_full_latest.json"
+          ],
+          "timeout_sec": 240
+        }
+      ]
+    },
+    "production-live": {
+      "description": "Production-machine live validation with real local services and configured private integrations.",
+      "checks": [
+        {
+          "id": "doctor",
+          "name": "MAGI doctor",
+          "command": [
+            "{python}",
+            "scripts/magi_doctor.py",
+            "--json"
+          ],
+          "timeout_sec": 60
+        },
+        {
+          "id": "judicial_api_pipeline",
+          "name": "Judicial API pipeline health",
+          "command": [
+            "{python}",
+            "scripts/ops/check_judicial_api_pipeline.py",
+            "--json"
+          ],
+          "timeout_sec": 120,
+          "ok_returncodes": [0, 10]
+        },
+        {
+          "id": "self_repair_dry_run",
+          "name": "Self repair issue agenda dry-run",
+          "command": [
+            "{python}",
+            "skills/ops/self_repair_reporter.py",
+            "--dry-run",
+            "--force",
+            "--lookback-days",
+            "7"
+          ],
+          "timeout_sec": 120,
+          "env": {
+            "MAGI_ISSUE_TRACKER_ENABLE": "1"
+          }
+        },
+        {
+          "id": "resource_governor",
+          "name": "Resource governor status",
+          "command": [
+            "{python}",
+            "scripts/ops/resource_governor.py",
+            "--json",
+            "status"
+          ],
+          "timeout_sec": 60,
+          "ok_returncodes": [0, 2]
+        },
+        {
+          "id": "model_live_gate",
+          "name": "Day/night model live gate",
+          "command": [
+            "{python}",
+            "scripts/ops/model_live_gate.py",
+            "--expect",
+            "auto",
+            "--json",
+            "--json-out",
+            ".runtime/model_live_gate_latest.json"
+          ],
+          "timeout_sec": 60
+        },
+        {
+          "id": "smoke62",
+          "name": "MAGI 62-check smoke",
+          "command": [
+            "{python}",
+            "scripts/ops/smoke_test_full.py",
+            "--json-out",
+            ".runtime/smoke_test_full_live_latest.json"
+          ],
+          "timeout_sec": 240
+        },
+        {
+          "id": "business_modules_live",
+          "name": "LAF/file-review/transcript live check",
+          "command": [
+            "{python}",
+            "scripts/ops/business_module_live_check.py"
+          ],
+          "timeout_sec": 900,
+          "env": {
+            "MAGI_BUSINESS_LIVE_CHECK_NOTIFY": "0"
+          }
+        },
+        {
+          "id": "commercial_readiness",
+          "name": "Commercial readiness live gate",
+          "command": [
+            "{python}",
+            "scripts/ops/commercial_readiness_live.py",
+            "--json-out",
+            ".runtime/commercial_readiness_live_latest.json"
+          ],
+          "timeout_sec": 300
+        }
+      ]
+    },
+    "commercial-release": {
+      "description": "Release gate before sharing or selling a build.",
+      "checks": [
+        {
+          "id": "public_release_audit",
+          "name": "Public release audit strict",
+          "command": [
+            "{python}",
+            "scripts/public_release_audit.py",
+            "--strict"
+          ],
+          "timeout_sec": 180
+        },
+        {
+          "id": "commercial_readiness_strict_public",
+          "name": "Commercial readiness strict public",
+          "command": [
+            "{python}",
+            "scripts/ops/commercial_readiness_live.py",
+            "--strict-public",
+            "--json-out",
+            ".runtime/commercial_readiness_release_latest.json"
+          ],
+          "timeout_sec": 300
+        },
+        {
+          "id": "resource_governor",
+          "name": "Resource governor release status",
+          "command": [
+            "{python}",
+            "scripts/ops/resource_governor.py",
+            "--json",
+            "status"
+          ],
+          "timeout_sec": 60,
+          "ok_returncodes": [0, 2]
+        },
+        {
+          "id": "model_live_gate",
+          "name": "Model topology release gate",
+          "command": [
+            "{python}",
+            "scripts/ops/model_live_gate.py",
+            "--expect",
+            "auto",
+            "--json",
+            "--json-out",
+            ".runtime/model_live_gate_release_latest.json"
+          ],
+          "timeout_sec": 60
+        },
+        {
+          "id": "channels_strict",
+          "name": "Messaging channel smoke strict",
+          "command": [
+            "{python}",
+            "scripts/ops/smoke_three_channels.py",
+            "--strict-warn"
+          ],
+          "timeout_sec": 300
+        },
+        {
+          "id": "core_routes_heavy",
+          "name": "Core route smoke with network and heavy checks",
+          "command": [
+            "{python}",
+            "scripts/ops/smoke_core_routes.py",
+            "--with-network",
+            "--with-heavy"
+          ],
+          "timeout_sec": 600
+        },
+        {
+          "id": "skill_realworld_smoke",
+          "name": "Skill real-world smoke",
+          "command": [
+            "{python}",
+            "scripts/ops/skill_realworld_smoke.py"
+          ],
+          "timeout_sec": 600
+        },
+        {
+          "id": "smoke62",
+          "name": "MAGI 62-check smoke",
+          "command": [
+            "{python}",
+            "scripts/ops/smoke_test_full.py",
+            "--json-out",
+            ".runtime/smoke_test_full_release_latest.json"
+          ],
+          "timeout_sec": 240
+        }
+      ]
+    }
+  }
+}

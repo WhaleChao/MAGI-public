@@ -68,7 +68,7 @@ python action.py --task batch --path "/path/to/06_閱卷資料/"
 |-------|------|------|
 | Round 3-A | `skills/engine/doc_type_detector.py` — 28+ regex patterns，`DocTypeResult` class，Vision fallback hook | ✅ 已完成，19 tests |
 | Round 3-B | `action.py` OLA 自適應閾值（`_compute_ola_threshold()`，P10 分佈），Vision fallback（`MAGI_BOOKMARKER_VISION_FALLBACK=1`），`bookmark_validator.py` 非阻斷守門 | ✅ 已完成，9 tests |
-| Round 3-C | `benchmark_pdf_bookmarker.py`（掃最多 20 個 NAS PDF，bookmark_recall ≥ 0.80），`cron_jobs.json` 加 `job_benchmark_pdf_bookmarker`（03:30 daily） | ✅ 已完成 |
+| Round 3-C | `benchmark_pdf_bookmarker.py`（掃最多 20 個 NAS PDF，bookmark_recall ≥ 0.80），`cron_jobs.json` 加 `job_benchmark_pdf_bookmarker`（每日 14:40；避開夜間重任務並維持健康頁 48h freshness） | ✅ 已完成 |
 
 ### 待完成
 

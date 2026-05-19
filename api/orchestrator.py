@@ -178,7 +178,7 @@ except Exception:
 #   api.pipelines.command_pipeline     - command dispatch helpers
 #   api.pipelines.attachment_pipeline  - multimedia / attachment tracking
 #   api.domains.market_flow            - stock watchlist & briefing
-#   api.domains.judgment_flow          - public placeholder for removed legal research
+#   api.domains.judgment_flow          - judgment collection & trend
 #   api.domains.skill_interview_flow   - SKILL interview wizard
 #   api.domains.laf_flow               - LAF submission workflow
 # ---------------------------------------------------------------------------
@@ -645,7 +645,7 @@ class Orchestrator:
         "開辦", "疑義", "撤回", "訴訟中費用", "二階段", "調解不成立", "結案", "報結", "法扶",
         "加班費", "勞基法", "勞動基準法", "特休假", "資遣費", "一例一休",
         "新增爬蟲", "移除爬蟲", "爬蟲清單", "每日爬蟲",
-        "法規搜尋", "法規向量更新",
+        "找判決", "判決搜尋", "法規搜尋", "法規向量更新",
         "大腦模式", "big brain", "分散式推理", "開啟大腦", "關閉大腦", "修理大腦", "修理melchior", "校準ngl", "ngl",
         "你現在使用模型", "目前模型", "模型為何", "模型是什麼",
         "除錯", "排查", "診斷", "健康檢查", "自動修復", "穩定度", "成功率", "降級策略", "slo",
@@ -778,8 +778,8 @@ class Orchestrator:
     def _export_translation_txt(self, *, translated_text: str, source: str, provider: str, mode: str, prefix: str, user_id: str) -> Optional[str]:
         return _get_handler("dh").export_translation_txt(translated_text=translated_text, source=source, provider=provider, mode=mode, prefix=prefix, user_id=user_id)
 
-    def _export_translation_docx(self, *, source_text: str, translated_text: str, source_chunks: Optional[list] = None, translated_chunks: Optional[list] = None, title: str = "", subtitle: str = "", prefix: str = "translate", user_id: str) -> Optional[str]:
-        return _get_handler("dh").export_translation_docx(source_text=source_text, translated_text=translated_text, source_chunks=source_chunks, translated_chunks=translated_chunks, title=title, subtitle=subtitle, prefix=prefix, user_id=user_id)
+    def _export_translation_docx(self, *, source_text: str, translated_text: str, source_chunks: Optional[list] = None, translated_chunks: Optional[list] = None, term_glossary: str = "", title: str = "", subtitle: str = "", prefix: str = "translate", user_id: str) -> Optional[str]:
+        return _get_handler("dh").export_translation_docx(source_text=source_text, translated_text=translated_text, source_chunks=source_chunks, translated_chunks=translated_chunks, term_glossary=term_glossary, title=title, subtitle=subtitle, prefix=prefix, user_id=user_id)
 
     def _export_plain_txt(self, *, content: str, prefix: str, user_id: str, title: str = "📄 已輸出 TXT 檔案。") -> Optional[str]:
         return _get_handler("dh").export_plain_txt(content=content, prefix=prefix, user_id=user_id, title=title)
@@ -859,11 +859,22 @@ class Orchestrator:
     def _summary_length_prompt(length: str) -> tuple[str, str]:
         return _get_handler("sh").summary_length_prompt(length)
 
-    def _summarize_text_resilient(self, text: str, summary_length: str = "medium", *, progress_callback=None) -> dict:
+    def _summarize_text_resilient(self, text: str, summary_length: str = "medium", *, progress_callback=None, heavy: bool = False) -> dict:
         task_id = f"summary_{id(text)}_{time.time():.0f}"
         self.register_heavy_task(task_id, "摘要")
         try:
-            return _get_handler("sh").summarize_text_resilient(text, summary_length=summary_length, progress_callback=progress_callback)
+            if not heavy:
+                try:
+                    from flask import g as _flask_g
+                    heavy = bool(getattr(_flask_g, "heavy_opt_in", False))
+                except Exception:
+                    heavy = False
+            return _get_handler("sh").summarize_text_resilient(
+                text,
+                summary_length=summary_length,
+                progress_callback=progress_callback,
+                heavy=heavy,
+            )
         finally:
             self.unregister_heavy_task(task_id)
 

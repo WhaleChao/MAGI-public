@@ -156,7 +156,7 @@ def _apply_proof_table(doc, items: list[dict], matched: list[dict], label_to_pro
         filename = Path(selected).name if selected else ""
         category = item.get("category", f"補正資料{idx + 1}")
         proof_values[f"F{proof_idx}"] = label
-        proof_values[f"H{proof_idx}"] = filename or f"{category}文件乙份。"
+        proof_values[f"H{proof_idx}"] = filename or f"{category}資料乙份。"
         proof_idx += 1
 
     for n in range(proof_idx, 16):
@@ -176,7 +176,7 @@ def _apply_proof_table(doc, items: list[dict], matched: list[dict], label_to_pro
 # ── 補件 lead-in 段落插入 ─────────────────────────────────────────────────────
 
 def _insert_lead_in(doc, extracted: dict, matched: list[dict], label_to_proof: dict) -> str:
-    """在「謹就消費者債務清理事件」段落前或文件開頭插入補件說明段落。
+    """在「謹就消費者債務清理事件」段落前或文書開頭插入補件說明段落。
 
     Returns: lead-in 文字（debug 用）
     """
@@ -187,7 +187,7 @@ def _insert_lead_in(doc, extracted: dict, matched: list[dict], label_to_proof: d
 
     # 建立 lead-in 文字
     lines = []
-    intro = f"緣鈞院 {ruling_date} {case_no} 民事裁定（下稱系爭裁定）所列補正事項，聲請人已備齊下列文件，謹依命提送，並逐項說明如下：".strip()
+    intro = f"緣鈞院 {ruling_date} {case_no} 民事裁定（下稱系爭裁定）所列補正事項，聲請人已備齊下列資料，謹依命提送，並逐項說明如下：".strip()
     lines.append(intro)
     lines.append("")
 
@@ -227,7 +227,7 @@ def _insert_lead_in(doc, extracted: dict, matched: list[dict], label_to_proof: d
         new_para = anchor_para.insert_paragraph_before(lead_in_text)
         new_para.style = anchor_para.style
     else:
-        # 文件沒有段落，直接加
+        # 文書沒有段落，直接加
         doc.add_paragraph(lead_in_text)
 
     return lead_in_text
@@ -336,7 +336,7 @@ def build_supplement_docx(
         if isinstance(filled[key], str) and "【聲證O】" in filled[key]:
             filled[key] = filled[key].replace("【聲證O】", label_to_proof.get(key, "【聲證O】"))
 
-    # ── 3. 套用欄位到文件 ────────────────────────────────────────────────────
+    # ── 3. 套用欄位到文書 ────────────────────────────────────────────────────
     deleted_fields = [k for k, v in filled.items() if v is None]
     _apply_fields_to_doc(doc, filled, deleted_fields)
 

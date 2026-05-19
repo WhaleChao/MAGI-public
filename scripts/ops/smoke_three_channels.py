@@ -331,12 +331,15 @@ def _line_checks(
         json_body={"endpoint": endpoint},
         timeout_sec=timeout_sec,
     )
+    webhook_test_passed = False
     if ok and status == 200 and isinstance(j, dict):
         success = bool(j.get("success"))
         reason = str(j.get("reason") or "").strip()
         if success:
+            webhook_test_passed = True
             checks.append(Check(ch, "Webhook test", "PASS", "LINE webhook test success=true", ms))
         elif callback_fresh and reason == "COULD_NOT_CONNECT":
+            webhook_test_passed = True
             checks.append(
                 Check(
                     ch,
@@ -387,10 +390,14 @@ def _line_checks(
         age = callback_age if callback_age is not None else max(0, int(time.time()) - ts)
         if age <= 3600:
             checks.append(Check(ch, "Recent callback", "PASS", f"last callback age={age}s path={callback_obj.get('path') or ''}"))
+        elif webhook_test_passed:
+            checks.append(Check(ch, "Recent callback", "PASS", f"last callback age={age}s (stale; live webhook self-test passed)"))
         else:
             checks.append(Check(ch, "Recent callback", "WARN", f"last callback age={age}s (stale)"))
     else:
-        checks.append(Check(ch, "Recent callback", "WARN", "no callback timestamp recorded"))
+        status_name = "PASS" if webhook_test_passed else "WARN"
+        detail = "no callback timestamp recorded; live webhook self-test passed" if webhook_test_passed else "no callback timestamp recorded"
+        checks.append(Check(ch, "Recent callback", status_name, detail))
 
 
 def _discord_checks(

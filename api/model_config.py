@@ -6,7 +6,7 @@ from typing import Iterable
 
 DEFAULT_TEXT_MODEL = "gemma-4-e4b-it-4bit"
 DEFAULT_VISION_MODEL = "gemma-4-e4b-it-4bit"
-DEFAULT_OCR_MODEL = "gemma-4-e4b-it-4bit"
+DEFAULT_OCR_MODEL = "macos-vision"
 DEFAULT_EMBED_MODEL = "modernbert-embed-4bit"
 
 

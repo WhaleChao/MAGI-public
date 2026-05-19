@@ -135,6 +135,31 @@ _OCR_MAX_PAGES = 20          # cap OCR rendering to avoid stalling on huge PDFs
 _OCR_DPI = 200               # resolution for page rendering
 
 
+def _maybe_opendataloader_pdf(path: Path, current_text: str = "") -> Optional[Dict]:
+    """Use OpenDataLoader PDF when the current extractor is weak."""
+    if str(os.environ.get("MAGI_OPENDATALOADER_PDF_ENABLE", "auto")).strip().lower() in {"0", "false", "no", "off", "disabled"}:
+        return None
+    current = str(current_text or "").strip()
+    if len(current) >= 500:
+        return None
+    try:
+        from skills.engine.ocr import opendataloader_provider
+
+        result = opendataloader_provider.run_pdf(str(path), task_type="legal")
+    except Exception as exc:
+        logger.debug("opendataloader provider failed for %s: %s", path, exc)
+        return None
+    text = (getattr(result, "corrected_text", "") or getattr(result, "raw_text", "") or "").strip()
+    if not getattr(result, "success", False) or len(text) < max(_OCR_MIN_CHARS, len(current) + 100):
+        return None
+    return {
+        "success": True,
+        "text": text[:MAX_TEXT_CHARS],
+        "pages": None,
+        "method": getattr(result, "provider", "opendataloader_pdf"),
+    }
+
+
 def _extract_pdf(path: Path) -> Dict:
     page_count: Optional[int] = None
 
@@ -150,6 +175,9 @@ def _extract_pdf(path: Path) -> Dict:
                     texts.append(t)
         combined = "\n\n".join(texts)
         if len(combined.strip()) >= _OCR_MIN_CHARS:
+            odl = _maybe_opendataloader_pdf(path, combined)
+            if odl:
+                return odl
             return {"success": True, "text": combined[:MAX_TEXT_CHARS], "pages": page_count, "method": "pdfplumber"}
     except Exception as e:
         logger.debug("pdfplumber failed for %s: %s", path, e)
@@ -167,6 +195,9 @@ def _extract_pdf(path: Path) -> Dict:
         doc.close()
         combined = "\n\n".join(texts)
         if len(combined.strip()) >= _OCR_MIN_CHARS:
+            odl = _maybe_opendataloader_pdf(path, combined)
+            if odl:
+                return odl
             return {"success": True, "text": combined[:MAX_TEXT_CHARS], "pages": page_count, "method": "pymupdf"}
     except Exception as e:
         logger.debug("pymupdf failed for %s: %s", path, e)
@@ -184,11 +215,18 @@ def _extract_pdf(path: Path) -> Dict:
                     texts.append(t)
             combined = "\n\n".join(texts)
             if len(combined.strip()) >= _OCR_MIN_CHARS:
+                odl = _maybe_opendataloader_pdf(path, combined)
+                if odl:
+                    return odl
                 return {"success": True, "text": combined[:MAX_TEXT_CHARS], "pages": page_count, "method": "pypdf2"}
     except Exception as e:
         logger.debug("pypdf2 failed for %s: %s", path, e)
 
     # ── OCR fallback: render pages with PyMuPDF + tesseract ──────────
+    odl = _maybe_opendataloader_pdf(path, "")
+    if odl:
+        return odl
+
     result = _extract_pdf_ocr(path, page_count)
     if result is not None:
         return result
@@ -210,11 +248,6 @@ def _extract_pdf_ocr(path: Path, page_count_hint: Optional[int] = None) -> Optio
         str(os.environ.get("MAGI_OBSIDIAN_OCR_CONSENSUS_ENABLE", "0")).strip().lower()
         in {"1", "true", "yes", "on"}
     )
-
-    # Check tesseract availability (needed for both legacy and consensus paths)
-    if not shutil.which("tesseract"):
-        logger.debug("tesseract not found on PATH; skipping OCR fallback for %s", path)
-        return None
 
     try:
         import fitz
@@ -261,7 +294,8 @@ def _extract_pdf_ocr(path: Path, page_count_hint: Optional[int] = None) -> Optio
         import tempfile
         tmp_path = None
         try:
-            from skills.engine.ocr import consensus as _ocr_mod
+            import importlib
+            _ocr_mod = importlib.import_module("skills.engine.ocr.consensus")
             fd, tmp_path = tempfile.mkstemp(suffix=".png")
             try:
                 os.write(fd, img_data_bytes)
@@ -283,22 +317,35 @@ def _extract_pdf_ocr(path: Path, page_count_hint: Optional[int] = None) -> Optio
                 except OSError:
                     pass
 
-    # --- single-page legacy OCR (original logic) ------------------------------
+    # --- single-page legacy OCR (now through shared MAGI provider) ------------
     def _legacy_ocr_page(png_data):
+        import tempfile
+        tmp_path = None
         try:
-            proc = subprocess.run(
-                ["tesseract", "-", "-", "-l", "chi_tra+eng"],
-                input=png_data,
-                capture_output=True,
-                timeout=60,
+            from skills.engine.ocr import tesseract_provider
+
+            fd, tmp_path = tempfile.mkstemp(suffix=".png")
+            try:
+                os.write(fd, png_data)
+            finally:
+                os.close(fd)
+            result = tesseract_provider.run(
+                tmp_path,
+                langs="chi_tra+eng",
+                task_type="legal",
+                timeout_sec=60,
             )
-            if proc.returncode == 0:
-                return proc.stdout.decode("utf-8", errors="replace").strip()
-            return None
-        except subprocess.TimeoutExpired:
-            return None
+            if result and result.success:
+                return (result.corrected_text or result.raw_text or "").strip()
+            return ""
         except Exception:
-            return None
+            return ""
+        finally:
+            if tmp_path:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
 
     try:
         import hashlib as _hashlib
@@ -316,27 +363,9 @@ def _extract_pdf_ocr(path: Path, page_count_hint: Optional[int] = None) -> Optio
 
             if not _consensus_enable:
                 # --- flag off: pure legacy path (zero change) ---
-                try:
-                    proc = subprocess.run(
-                        ["tesseract", "-", "-", "-l", "chi_tra+eng"],
-                        input=png_data,
-                        capture_output=True,
-                        timeout=60,
-                    )
-                    if proc.returncode == 0:
-                        text = proc.stdout.decode("utf-8", errors="replace").strip()
-                        if text:
-                            ocr_texts.append(text)
-                    else:
-                        logger.debug(
-                            "tesseract returned %d for page %d of %s: %s",
-                            proc.returncode, i + 1, path,
-                            proc.stderr.decode("utf-8", errors="replace")[:200],
-                        )
-                except subprocess.TimeoutExpired:
-                    logger.warning("tesseract timed out on page %d of %s", i + 1, path)
-                except Exception as e:
-                    logger.debug("tesseract error on page %d of %s: %s", i + 1, path, e)
+                text = _legacy_ocr_page(png_data)
+                if text:
+                    ocr_texts.append(text)
             else:
                 # --- flag on: consensus path, fallback to legacy ---
                 img_hash = _hashlib.sha256(png_data).hexdigest()[:16]

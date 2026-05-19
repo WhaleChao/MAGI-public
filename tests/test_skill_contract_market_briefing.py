@@ -201,6 +201,12 @@ class TestBoundary:
         assert "Do not invent prices, news" in source
         assert "lower confidence" in source
 
+    def test_deep_report_does_not_truncate_committee_reasoning(self):
+        source = _source()
+        assert "final.reasoning[:" not in source
+        assert "委員會論點：{final.reasoning" not in source
+        assert "委員會論點：{reasoning}" in source
+
 
 # ===================================================================
 # 4. Should reject

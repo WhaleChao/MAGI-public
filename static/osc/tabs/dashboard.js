@@ -19,18 +19,13 @@ async function loadDashboard() {
         4,
         "沒有案件資料"
     );
-    renderSimpleRows(
-        "dashboardTodosBody",
-        (data.pending_todos || []).map(r => `<tr>
-            <td style="white-space:nowrap">${esc(r.todo_date || "")} ${esc(r.todo_time || "")}</td>
-            <td style="white-space:nowrap">${esc(r.case_number)}</td>
-            <td style="white-space:nowrap">${esc(r.todo_type)}</td>
-            <td>${esc(shortText(r.description, 60))}</td>
-            <td><button class="btn" data-act="todo-complete" data-id="${Number(r.id)}">已完成</button></td>
-        </tr>`),
-        5,
-        "目前沒有待辦"
-    );
+    const splitFallback = splitDashboardTodosBySource(data.pending_todos || []);
+    const oscTodos = Array.isArray(data.pending_osc_todos) ? data.pending_osc_todos : splitFallback.osc;
+    const calendarTodos = Array.isArray(data.pending_calendar_todos) ? data.pending_calendar_todos : splitFallback.calendar;
+    updateDashboardTodoSummary("dashboardOscTodosSummary", "OSC 建立待辦", oscTodos.length, "來源：case_todos（排除 Google 日曆匯入）");
+    updateDashboardTodoSummary("dashboardCalendarTodosSummary", "行事曆事件", calendarTodos.length, "來源：類型為行事曆事件或 Google 日曆匯入");
+    renderDashboardTodos("dashboardOscTodosBody", oscTodos, "目前沒有 OSC 建立待辦");
+    renderDashboardTodos("dashboardCalendarTodosBody", calendarTodos, "目前沒有行事曆事件");
     renderSimpleRows(
         "dashboardCalendarBody",
         (data.upcoming_calendar || []).map(r => `<tr><td>${esc(r.start_date)}</td><td>${esc(r.title)}</td><td>${esc(r.case_number || "")}</td><td>${esc(r.location || "")}</td></tr>`),
@@ -47,6 +42,39 @@ async function loadDashboard() {
         "dashboardPdfLogBody",
         (data.recent_pdf_logs || []).map(r => `<tr><td>${esc(r.log_timestamp)}</td><td>${esc(r.case_number)}</td><td>${esc(r.file_name || "")}</td><td>${esc(r.status || "")}</td><td>${esc(shortText(r.error_message, 80))}</td></tr>`),
         5,
-        "目前沒有 PDF 生成紀錄"
+        "目前沒有 PDF 產生紀錄"
     );
+    if (typeof loadSaasWorkbench === "function") {
+        await loadSaasWorkbench({ embedded: true });
+    }
+}
+
+function updateDashboardTodoSummary(id, label, count, detail) {
+    const el = document.getElementById(id);
+    if (el) el.textContent = `${label} ${Number(count || 0)} 筆｜${detail}`;
+}
+
+function renderDashboardTodos(bodyId, rows, emptyText) {
+    renderSimpleRows(
+        bodyId,
+        (rows || []).map(r => `<tr>
+            <td style="white-space:nowrap">${esc(r.todo_date || "")} ${esc(r.todo_time || "")}</td>
+            <td style="white-space:nowrap">${esc(r.case_number)}</td>
+            <td style="white-space:nowrap">${esc(r.todo_type)}</td>
+            <td>${esc(shortText(r.description, 60))}</td>
+            <td><button class="btn" data-act="todo-complete" data-id="${Number(r.id)}">已完成</button></td>
+        </tr>`),
+        5,
+        emptyText
+    );
+}
+
+function splitDashboardTodosBySource(rows) {
+    const split = { osc: [], calendar: [] };
+    (rows || []).forEach(row => {
+        const source = String(row.source_file || "").trim();
+        if (source.startsWith("gcal_import") || String(row.todo_type || "").trim() === "行事曆事件") split.calendar.push(row);
+        else split.osc.push(row);
+    });
+    return split;
 }

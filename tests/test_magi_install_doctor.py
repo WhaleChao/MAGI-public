@@ -1,8 +1,9 @@
 from pathlib import Path
 
+from scripts import first_run_setup
 from scripts.install_magi import build_install_plan, venv_python
 from scripts.magi_doctor import collect_report
-from scripts.seed_cron_jobs import seed_jobs
+from scripts.seed_cron_jobs import default_python_path, seed_jobs
 
 
 def test_doctor_collect_report_without_live_probe_has_expected_shape():
@@ -20,10 +21,110 @@ def test_install_plan_uses_requested_venv_dir():
     assert str(venv_python(venv_dir)) in plan[1].command
 
 
-def test_seed_cron_jobs_creates_worldmonitor_daily_job(tmp_path):
+def test_first_run_checklist_reports_missing_env_without_leaking_values(tmp_path, monkeypatch):
+    env_path = tmp_path / ".env"
+    env_path.write_text(
+        "\n".join(
+            [
+                "FLASK_SECRET_KEY=abc123",
+                "MAGI_API_KEY=def456",
+                "DB_HOST=127.0.0.1",
+                "DB_USER=casper",
+                "DB_PASSWORD=<your-db-password>",
+                "DISCORD_BOT_TOKEN=secret-token-value",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(first_run_setup, "_public_isolation_findings", lambda: [])
+
+    result = first_run_setup.build_first_run_checklist(public_mode=True, env_path=env_path)
+    joined = str(result)
+
+    assert result["ok"] is True
+    assert result["summary"]["warn"] >= 1
+    assert "DB_PASSWORD" in joined
+    assert "secret-token-value" not in joined
+    assert "abc123" not in joined
+
+
+def test_first_run_write_env_generates_local_secrets(tmp_path, monkeypatch):
+    example = tmp_path / ".env.example"
+    env = tmp_path / ".env"
+    example.write_text(
+        "\n".join(
+            [
+                "FLASK_SECRET_KEY=<random-hex-string>",
+                "MAGI_API_KEY=<random-hex-string>",
+                "MAGI_ROOT_DIR=/path/to/MAGI_v2",
+                "MAGI_SKILL_PYTHON=/path/to/MAGI_v2/.venv/bin/python",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(first_run_setup, "ENV_EXAMPLE", example)
+    monkeypatch.setattr(first_run_setup, "REPO_ROOT", tmp_path)
+
+    result = first_run_setup._write_env_from_example(env)
+    text = env.read_text(encoding="utf-8")
+
+    assert result["created"] is True
+    assert "<random-hex-string>" not in text
+    assert f"MAGI_ROOT_DIR={tmp_path}" in text
+    assert f"MAGI_SKILL_PYTHON={tmp_path}/.venv/bin/python" in text
+
+
+def test_first_run_public_mode_flags_private_markers(monkeypatch, tmp_path):
+    monkeypatch.setattr(first_run_setup, "_public_isolation_findings", lambda: ["skills/private-legal-source/action.py"])
+
+    result = first_run_setup.build_first_run_checklist(public_mode=True, env_path=tmp_path / ".env")
+
+    assert result["ok"] is False
+    assert result["summary"]["fail"] == 1
+
+
+def test_seed_cron_jobs_creates_worldmonitor_and_business_jobs(tmp_path):
     result = seed_jobs(tmp_path, python_path=tmp_path / ".venv" / "bin" / "python")
     cron_text = (tmp_path / "cron_jobs.json").read_text(encoding="utf-8")
 
     assert result["ok"] is True
     assert "job_worldmonitor_intel" in cron_text
     assert "worldmonitor-intel/action.py --task collect --no-reasoning --plain-output" in cron_text
+    assert "job_laf_nightly_audit" in cron_text
+    assert "job_laf_condition_draft" in cron_text
+    assert "job_file_review_check" in cron_text
+    assert "job_transcript_sync" in cron_text
+    assert "job_business_module_live_check" in cron_text
+    assert "job_omlx_profile_guard" in cron_text
+    assert "omlx_switch_model.sh auto" in cron_text
+    assert "job_distill_train_gemma" in cron_text
+    assert "pdfnamer_docling_layout" in cron_text
+    assert "MAGI_PDF_NAMER_DOCLING_ENABLED=1" in cron_text
+
+
+def test_seed_cron_jobs_default_python_matches_safe_process(tmp_path, monkeypatch):
+    monkeypatch.delenv("MAGI_CRON_PYTHON", raising=False)
+    monkeypatch.delenv("MAGI_VENV_DIR", raising=False)
+
+    result = seed_jobs(tmp_path)
+    cron_text = (tmp_path / "cron_jobs.json").read_text(encoding="utf-8")
+
+    assert result["ok"] is True
+    assert str(default_python_path(tmp_path)) == str(tmp_path / "venv" / "bin" / "python3")
+    assert f"{tmp_path}/.venv/bin/python" not in cron_text
+    assert f"{tmp_path}/venv/bin/python3" in cron_text
+    assert '"id": "job_resource_governor"' in cron_text
+    assert '"cron": "20 * * * *"' in cron_text
+
+
+def test_seed_cron_jobs_prefers_dotvenv_when_created_by_installer(tmp_path, monkeypatch):
+    monkeypatch.delenv("MAGI_CRON_PYTHON", raising=False)
+    monkeypatch.delenv("MAGI_VENV_DIR", raising=False)
+    (tmp_path / ".venv").mkdir()
+
+    result = seed_jobs(tmp_path)
+    cron_text = (tmp_path / "cron_jobs.json").read_text(encoding="utf-8")
+
+    assert result["ok"] is True
+    assert str(default_python_path(tmp_path)) == str(tmp_path / ".venv" / "bin" / "python")
+    assert f"{tmp_path}/.venv/bin/python" in cron_text

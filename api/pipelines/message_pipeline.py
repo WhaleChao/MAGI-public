@@ -893,6 +893,19 @@ def process_message_inner(orch, user_id, message, platform="LINE", role="user", 
         collab_status = orch._get_collaboration_status()
         return f"{node_status}\n\n{brain_status}\n\n{collab_status}"
 
+    # 2.6.5. Authoritative realtime data (weather/stock/fx) before generic
+    # semantic routing. This prevents weather questions from drifting into
+    # calendar/court reminders or LLM-generated estimates.
+    try:
+        from skills.engine.realtime_data_gateway import handle_realtime_query
+        realtime = handle_realtime_query(message)
+        if isinstance(realtime, dict):
+            reply = realtime.get("reply") or realtime.get("refusal")
+            if reply:
+                return str(reply)
+    except Exception as e:
+        logger.warning(f"Realtime data gateway skipped: {e}")
+
     # 2.7. Schedule/Meeting Query (High Priority) - Check before LLM
     # Use exact set for shortest phrases; longer ones use startswith/contains but with length guard
     _SCHEDULE_EXACT = {"今天行程", "明天行程", "本週行程", "這週行程", "今天會議", "明天會議",
@@ -1031,12 +1044,10 @@ def process_message_inner(orch, user_id, message, platform="LINE", role="user", 
                 if not targets:
                     return "📭 目前沒有自訂爬蟲目標。"
                 lines = ["🕸️ 自訂爬蟲目標："]
-                for idx, t in enumerate(targets[:20], 1):
+                for idx, t in enumerate(targets, 1):
                     u = str((t or {}).get("url") or "").strip()
                     n = str((t or {}).get("note") or "").strip()
                     lines.append(f"{idx}. {u}" + (f"（{n}）" if n else ""))
-                if len(targets) > 20:
-                    lines.append(f"...其餘 {len(targets) - 20} 筆")
                 return "\n".join(lines)
 
             if task_value.startswith("add "):
@@ -1175,8 +1186,17 @@ def process_message_inner(orch, user_id, message, platform="LINE", role="user", 
             )
         return orch._run_labor_law_command(message)
 
-    if any(k in msg_lower for k in ["查判決", "找判決", "判決搜尋", "搜尋判決"]):
-        return "Public release: legal-research collection and opinion-library integrations are not included."
+    # 2.7.75 Judgment Collector / Search
+    if any(k in msg_lower for k in ["查判決", "找判決", "判決搜尋", "搜尋判決", "查裁判", "找裁判", "裁判搜尋", "搜尋裁判", "查法規", "查法條", "法規查詢", "法條查詢", "釋字", "憲判", "實務見解", "法律見解", "法院見解"]):
+        if orch._looks_like_capability_question(message) or re.search(r"(你會|可以|能不能|可否).{0,8}(查判決|找判決|判決搜尋|查裁判|查法規|查法條)", message):
+            return (
+                "✅ **我可以幫您查判決！**\n\n"
+                "• 直接輸入：`查判決 傷害`\n"
+                "• 也可提供案號：`查判決 113年度上訴字第12號`\n"
+                "• 實務見解整理：`實務見解 預售屋遲延交屋`\n"
+                "• 法規/釋憲：`查法條 民法第184條`、`查釋字 748`"
+            )
+        return orch._run_judgment_collector_command(message, notify=False)
 
     # 2.7.79 Payment dismiss early intercept (bypass intent classification)
     # Messages like "張偉銘已繳費" get misclassified as CHAT; force into CMD path.
@@ -2202,8 +2222,40 @@ def process_message_inner(orch, user_id, message, platform="LINE", role="user", 
             log_issue(message, str(e), "GitHub Monitor Skill")
             return f"❌ GitHub 操作失敗，已加入夜議檢討: {e}"
 
+    # 2.16. Judgment Summary Retry Queue (實務見解摘要補跑)
     if "重試摘要佇列自動" in message or "retry_summary_queue_auto" in msg_lower:
-        return "Public release: legal-research summary retry is not included."
+        if role != "admin":
+            return "⛔ 抱歉，只有管理員可以執行摘要補跑（系統改動指令）。"
+        try:
+            import json as _json
+            import subprocess as _subprocess
+            py = os.environ.get("MAGI_SKILL_PYTHON", f"{_MAGI_ROOT}/venv/bin/python3").strip()
+            if not py or not os.path.exists(py):
+                py = sys.executable or "python3"
+            jc = f"{_MAGI_ROOT}/skills/judgment-collector/action.py"
+            cp = _subprocess.run(
+                [py, jc, "--task", "retry_summary_queue_auto {\"notify\": false}"],
+                capture_output=True,
+                text=True,
+                timeout=420,
+            )
+            out = (cp.stdout or "").strip()
+            if cp.returncode != 0:
+                return f"❌ 摘要補跑失敗（exit={cp.returncode}）: {(cp.stderr or out)[:220]}"
+            data = {}
+            try:
+                data = _json.loads(out or "{}")
+            except Exception:
+                data = {}
+            return (
+                "📚 摘要補跑完成\n"
+                f"- 處理: {data.get('processed', 0)}\n"
+                f"- 改善: {data.get('improved', 0)}\n"
+                f"- 剩餘: {data.get('remaining', 0)}\n"
+                f"- 模式: {data.get('mode', 'tiered')}"
+            )
+        except Exception as e:
+            return f"❌ 摘要補跑流程失敗: {e}"
 
     # 2.17. Smart Summary (智能摘要) — require explicit intent phrases, not bare "重點"
     _summary_has_url = bool(re.search(r'https?://[^\s]+', message))

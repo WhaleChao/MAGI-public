@@ -15,8 +15,53 @@ def test_public_release_audit_allows_placeholder_examples():
 
 
 def test_public_release_audit_warns_on_tailnet_ip():
-    tailnet_ip = ".".join(["100", "64", "1", "2"])
-    findings = scan_text("README.md", f"Use MAGI_REMOTE_DB_HOST={tailnet_ip} only in private deployments.\n")
+    findings = scan_text("README.md", "Use MAGI_REMOTE_DB_HOST=100.64.1.2 only in private deployments.\n")
 
     assert summarize(findings)["ok"] is True
     assert findings[0].severity == "warning"
+
+
+def test_public_release_audit_allows_intentional_test_fixture_pii():
+    findings = scan_text("tests/test_fixture.py", "assert row['phone'] == '0912345678'\n")
+
+    assert summarize(findings)["ok"] is True
+    assert findings == []
+
+
+def test_public_release_audit_blocks_private_integration_markers():
+    findings = scan_text(
+        "skills/example/action.py",
+        "provider = '" + "law" + "snote'\nmail='" + "whale" + "lawyer@example.com'\n",
+        public_isolation=True,
+    )
+
+    assert {f.kind for f in findings} >= {"private_legal_source_marker", "private_mailbox_marker"}
+    assert all(f.severity == "error" for f in findings)
+
+
+def test_public_release_audit_allows_gitignore_private_source_rules():
+    findings = scan_text(".gitignore", "skills/private-legal-source*/\n**/private_legal_source*\n", public_isolation=True)
+
+    assert findings == []
+
+
+def test_public_release_audit_blocks_tracked_runtime_paths():
+    from scripts.public_release_audit import scan_tracked_files
+
+    findings = scan_tracked_files(
+        [
+            "json/processed_laf_emails.json",
+            "skills/pdf-namer/_filing_log.json",
+            "skills/pdf-namer/db_rules_cache.json",
+            "static/knowledge_lint_latest.json",
+        ],
+        public_isolation=True,
+    )
+
+    blocked = [f for f in findings if f.kind == "blocked_path"]
+    assert {f.path for f in blocked} == {
+        "json/processed_laf_emails.json",
+        "skills/pdf-namer/_filing_log.json",
+        "skills/pdf-namer/db_rules_cache.json",
+        "static/knowledge_lint_latest.json",
+    }

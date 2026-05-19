@@ -9,7 +9,10 @@ __pycache__/
 .env
 .env.*
 .agent/
+.codex_tmp_*/
+.openclaw_archived_*/
 .runtime_site_packages/
+Paperclip_rebuild/
 cache/
 downloads/
 logs/
@@ -202,6 +205,9 @@ CIRCULAR_IMPORTS_DETAILS.txt
 # Generated manuals & reports (docx/xlsx in repo root)
 *.xlsx
 *.docx
+# User-facing release manual is intentionally versioned for public/private delivery.
+!docs/guides/MAGI_一般使用者完整操作手冊_2026-05-18.docx
+!docs/guides/MAGI_一般使用者圖文操作手冊_2026-05-19.docx
 # 消債 5 種書類 docx 範本必須入庫（無此檔則 /api/osc/debt/generate 全失敗）
 !templates/debt_templates/*.docx
 
@@ -211,15 +217,20 @@ CIRCULAR_IMPORTS_DETAILS.txt
 
 # OpenClaw 殘留（已退役）
 .openclaw/
+.openclaw_archived_*/
 openclaw.json
 skills/ops/openclaw_cron_runner.py
 skills/ops/openclaw_updater.py
 scripts/ops/toggle_codex_distributed_mode.py
 scripts/ops/check_codex_distributed_health.py
 
-# Lawsnote（商業授權，不可公開）
-skills/lawsnote*/
-**/lawsnote*
+# 私有實務見解來源（商業授權，不可公開）
+skills/private-legal-source*/
+**/private-legal-source*
+**/private_legal_source*
+json/processed_laf_emails*.json
+skills/pdf-namer/_filing_log.json
+docs/architecture/*_architecture_graph.json
 
 # OpenClawOffice
 OpenClawOffice/
@@ -266,6 +277,7 @@ MAGI_功能介紹手冊.pdf
 
 # MAGI Launcher app (binary)
 MAGI Launcher.app/
+Paperclip_rebuild/
 
 # StarOffice static assets (large spritesheets/fonts)
 static/star-office/*.webp

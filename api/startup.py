@@ -11,11 +11,14 @@ import json
 import logging
 import os
 import re
+import shutil
+import subprocess
 import sys
 import threading
 import time
 import uuid
 from urllib.parse import urlparse
+import urllib.request
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +27,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 _STARTUP_HOOKS_DONE = False
 _STARTUP_HOOKS_LOCK = threading.Lock()
+_SHARE_TUNNEL_LOCK = threading.Lock()
 
 # ---------------------------------------------------------------------------
 # Directory / path constants
@@ -71,6 +75,25 @@ LINE_LAST_BASE_URL_FILE = os.environ.get(
     "MAGI_LINE_LAST_BASE_URL_FILE",
     os.path.join(AGENT_DIR, "line_last_base_url.json"),
 )
+
+
+def _load_dotenv_value(key: str, default: str = "") -> str:
+    env_value = os.environ.get(key)
+    if env_value is not None:
+        return env_value
+    env_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".env"))
+    try:
+        with open(env_path, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, v = line.split("=", 1)
+                if k.strip() == key:
+                    return v.strip().strip('"').strip("'")
+    except Exception:
+        pass
+    return default
 
 # Export directory
 EXPORTS_DIR = os.environ.get(
@@ -373,12 +396,238 @@ def _find_chrome_binary() -> str:
     return ""
 
 
-def _export_form_docx(preview_text: str, stem: str) -> dict:
-    txt = str(preview_text or "").strip()
+def _clean_document_export_text(text: str) -> str:
+    txt = ihtml.unescape(str(text or ""))
+    txt = txt.replace("<br>", "\n").replace("<br/>", "\n").replace("<br />", "\n")
+    txt = re.sub(r"^\s*```[a-zA-Z0-9_-]*\s*$", "", txt, flags=re.MULTILINE)
+    txt = re.sub(r"^#{1,6}\s*", "", txt, flags=re.MULTILINE)
+    txt = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r"\1", txt)
+    txt = re.sub(r"\*\*(.+?)\*\*", r"\1", txt)
+    txt = re.sub(r"__(.+?)__", r"\1", txt)
+    txt = re.sub(r"(?<!\*)\*(?!\s)(.+?)(?<!\s)\*(?!\*)", r"\1", txt)
+    txt = re.sub(r"(?<!_)_(?!\s)(.+?)(?<!\s)_(?!_)", r"\1", txt)
+    txt = re.sub(r"`([^`]+)`", r"\1", txt)
+    txt = re.sub(r"^\s*>\s?", "", txt, flags=re.MULTILINE)
+
+    lines: list[str] = []
+    for raw in txt.splitlines():
+        line = raw.strip()
+        if re.match(r"^\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$", line):
+            continue
+        if "|" in line and line.count("|") >= 2:
+            cells = [c.strip() for c in line.strip("|").split("|")]
+            line = "　".join(c for c in cells if c)
+        line = re.sub(r"^\s*[-*+]\s+", "", line)
+        lines.append(line)
+
+    txt = "\n".join(lines)
+    txt = re.sub(r"[ \t]+\n", "\n", txt)
+    txt = re.sub(r"\n{3,}", "\n\n", txt)
+    return txt.strip()
+
+
+def _set_docx_font(run, *, size_pt: int = 14, bold: bool = False, font_name: str = "標楷體") -> None:
+    from docx.shared import Pt  # type: ignore
+    from docx.oxml.ns import qn  # type: ignore
+
+    run.font.name = font_name
+    run.font.size = Pt(size_pt)
+    run.font.bold = bold
+    try:
+        run._element.rPr.rFonts.set(qn("w:eastAsia"), font_name)
+    except Exception:
+        logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, "_set_docx_font", exc_info=True)
+
+
+def _looks_like_pleading_title(line: str) -> bool:
+    text = str(line or "").strip()
+    return bool(text and len(text) <= 24 and text.endswith("狀"))
+
+
+def _is_meta_or_salutation_line(line: str) -> bool:
+    text = str(line or "").strip()
+    if not text:
+        return False
+    return bool(
+        re.match(r"^(案號|股別|案由|法院|當事人|原告|被告|聲請人|相對人|上訴人|被上訴人|具狀人|撰狀人|受任人|此致|謹呈|中華民國)", text)
+    )
+
+
+def _is_signature_line(line: str) -> bool:
+    text = str(line or "").strip()
+    return bool(re.match(r"^(具狀人|撰狀人|受任人|代理人|中華民國)", text))
+
+
+_PLEADING_META_LABELS = {
+    "案號",
+    "股別",
+    "案由",
+    "法院",
+    "原告",
+    "被告",
+    "聲請人",
+    "相對人",
+    "債權人",
+    "債務人",
+    "上訴人",
+    "被上訴人",
+    "抗告人",
+    "受任人",
+    "當事人",
+    "法定代理人",
+    "訴訟代理人",
+    "代理人",
+    "代表人",
+    "住",
+    "設",
+    "住所",
+    "居所",
+    "電話",
+    "傳真",
+    "手機",
+}
+
+
+def _split_pleading_meta_line(line: str) -> tuple[str, str] | None:
+    text = str(line or "").strip()
+    if not text:
+        return None
+    m = re.match(r"^(.{1,18}?)\s*[：:]\s*(.*)$", text)
+    if not m:
+        return None
+    label = re.sub(r"[\s　]+", "", m.group(1) or "")
+    if label not in _PLEADING_META_LABELS:
+        return None
+    return label, (m.group(2) or "").strip()
+
+
+def _collect_pleading_meta_rows(lines: list[str], start: int = 0) -> tuple[list[tuple[str, str]], int]:
+    rows: list[tuple[str, str]] = []
+    i = start
+    blank_seen = False
+    while i < len(lines):
+        line = str(lines[i] or "").strip()
+        if not line:
+            blank_seen = True
+            i += 1
+            continue
+        split = _split_pleading_meta_line(line)
+        if not split:
+            break
+        if blank_seen and rows and split[0] not in {
+            "原告",
+            "被告",
+            "聲請人",
+            "相對人",
+            "債權人",
+            "債務人",
+            "上訴人",
+            "被上訴人",
+            "抗告人",
+        }:
+            break
+        rows.append(split)
+        blank_seen = False
+        i += 1
+    return rows, i
+
+
+def _set_paragraph_distribute_alignment(paragraph) -> None:
+    try:
+        from docx.oxml import OxmlElement  # type: ignore
+        from docx.oxml.ns import qn  # type: ignore
+
+        ppr = paragraph._p.get_or_add_pPr()
+        jc = ppr.find(qn("w:jc"))
+        if jc is None:
+            jc = OxmlElement("w:jc")
+            ppr.append(jc)
+        jc.set(qn("w:val"), "distribute")
+    except Exception:
+        logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, "_set_paragraph_distribute_alignment", exc_info=True)
+
+
+def _set_table_borders_none(table) -> None:
+    try:
+        from docx.oxml import OxmlElement  # type: ignore
+        from docx.oxml.ns import qn  # type: ignore
+
+        tbl_pr = table._tbl.tblPr
+        borders = tbl_pr.first_child_found_in("w:tblBorders")
+        if borders is None:
+            borders = OxmlElement("w:tblBorders")
+            tbl_pr.append(borders)
+        for edge in ("top", "left", "bottom", "right", "insideH", "insideV"):
+            tag = "w:" + edge
+            element = borders.find(qn(tag))
+            if element is None:
+                element = OxmlElement(tag)
+                borders.append(element)
+            element.set(qn("w:val"), "nil")
+    except Exception:
+        logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, "_set_table_borders_none", exc_info=True)
+
+
+def _add_pleading_meta_table(doc, rows: list[tuple[str, str]]) -> None:
+    from docx.enum.table import WD_TABLE_ALIGNMENT, WD_CELL_VERTICAL_ALIGNMENT  # type: ignore
+    from docx.shared import Cm, Pt  # type: ignore
+
+    if not rows:
+        return
+    table = doc.add_table(rows=0, cols=3)
+    table.alignment = WD_TABLE_ALIGNMENT.LEFT
+    table.autofit = False
+    _set_table_borders_none(table)
+    widths = (Cm(3.25), Cm(0.35), Cm(13.1))
+    for label, value in rows:
+        cells = table.add_row().cells
+        for idx, width in enumerate(widths):
+            cells[idx].width = width
+            cells[idx].vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.TOP
+        values = (label, "：", value)
+        for idx, cell in enumerate(cells):
+            p = cell.paragraphs[0]
+            pf = p.paragraph_format
+            pf.line_spacing = Pt(26)
+            pf.space_before = Pt(0)
+            pf.space_after = Pt(0)
+            if idx == 0 and len(label) <= 6:
+                _set_paragraph_distribute_alignment(p)
+            run = p.add_run(values[idx])
+            _set_docx_font(run, size_pt=16)
+    spacer = doc.add_paragraph()
+    spacer.paragraph_format.space_after = Pt(2)
+
+
+def _add_pleading_paragraph(doc, text: str, *, align: str = "body", bold: bool = False, size_pt: int = 14) -> None:
+    from docx.enum.text import WD_ALIGN_PARAGRAPH  # type: ignore
+    from docx.shared import Pt  # type: ignore
+
+    p = doc.add_paragraph()
+    pf = p.paragraph_format
+    pf.line_spacing = Pt(26)
+    pf.space_before = Pt(0)
+    pf.space_after = Pt(2)
+    if align == "center":
+        p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    elif align == "right":
+        p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+    else:
+        p.alignment = WD_ALIGN_PARAGRAPH.LEFT
+        if align == "body":
+            pf.first_line_indent = Pt(28)
+    run = p.add_run(text)
+    _set_docx_font(run, size_pt=size_pt, bold=bold)
+
+
+def _export_form_docx(preview_text: str, stem: str, title: str = "") -> dict:
+    txt = _clean_document_export_text(preview_text)
     if not txt:
         return {"success": False, "error": "empty_text"}
     try:
         from docx import Document  # type: ignore
+        from docx.shared import Cm, Pt  # type: ignore
+        from docx.oxml.ns import qn  # type: ignore
     except Exception as e:
         return {"success": False, "error": f"python_docx_unavailable: {e}"}
     try:
@@ -386,8 +635,67 @@ def _export_form_docx(preview_text: str, stem: str) -> dict:
         filename = f"{stem}.docx"
         path = os.path.join(EXPORTS_DIR, filename)
         doc = Document()
-        for line in txt.splitlines():
-            doc.add_paragraph(line)
+        section = doc.sections[0]
+        section.page_width = Cm(21)
+        section.page_height = Cm(29.7)
+        section.top_margin = Cm(1.8)
+        section.bottom_margin = Cm(1.8)
+        section.left_margin = Cm(1.8)
+        section.right_margin = Cm(1.8)
+
+        normal = doc.styles["Normal"]
+        normal.font.name = "標楷體"
+        normal.font.size = Pt(14)
+        try:
+            normal._element.rPr.rFonts.set(qn("w:eastAsia"), "標楷體")
+        except Exception:
+            logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, "_export_form_docx", exc_info=True)
+
+        lines = [ln.strip() for ln in txt.splitlines()]
+        nonempty = [ln for ln in lines if ln]
+        doc_title = str(title or "").strip() or "OSC 文件"
+        skip_first_title = False
+        if nonempty and _looks_like_pleading_title(nonempty[0]):
+            doc_title = nonempty[0]
+            skip_first_title = True
+        _add_pleading_paragraph(doc, doc_title, align="center", bold=True, size_pt=26)
+
+        start_idx = 0
+        if skip_first_title:
+            for idx, line in enumerate(lines):
+                if line == doc_title:
+                    start_idx = idx + 1
+                    break
+        meta_rows, meta_end = _collect_pleading_meta_rows(lines, start=start_idx)
+        if meta_rows:
+            _add_pleading_meta_table(doc, meta_rows)
+
+        blank_pending = False
+        first_seen = False
+        for idx, line in enumerate(lines):
+            if idx < meta_end:
+                if skip_first_title and not first_seen and line == doc_title:
+                    first_seen = True
+                continue
+            if skip_first_title and not first_seen and line == doc_title:
+                first_seen = True
+                continue
+            if not line:
+                blank_pending = True
+                continue
+            first_seen = True
+            if blank_pending:
+                spacer = doc.add_paragraph()
+                spacer.paragraph_format.space_after = Pt(2)
+                blank_pending = False
+            if _is_signature_line(line):
+                _add_pleading_paragraph(doc, line, align="right", size_pt=14)
+            elif _is_meta_or_salutation_line(line):
+                _add_pleading_paragraph(doc, line, align="left", size_pt=14)
+            elif _looks_like_pleading_title(line):
+                _add_pleading_paragraph(doc, line, align="center", bold=True, size_pt=18)
+            else:
+                _add_pleading_paragraph(doc, line, align="body", size_pt=14)
         doc.save(path)
         return _export_file_meta(path)
     except Exception as e:
@@ -396,28 +704,224 @@ def _export_form_docx(preview_text: str, stem: str) -> dict:
 
 def _render_form_text_to_html(title: str, text: str) -> str:
     safe_title = ihtml.escape(str(title or "OSC \u6587\u4ef6"))
-    safe_text = ihtml.escape(str(text or ""))
+    lines = _clean_document_export_text(text).splitlines()
+    body_parts = []
+    first_title_skipped = False
+    start_idx = 0
+    for idx, raw in enumerate(lines):
+        if _looks_like_pleading_title(raw) and raw.strip() == str(title or "").strip():
+            start_idx = idx + 1
+            first_title_skipped = True
+            break
+    meta_rows, meta_end = _collect_pleading_meta_rows(lines, start=start_idx)
+    if meta_rows:
+        body_parts.append("<table class='meta-table'><tbody>")
+        for label, value in meta_rows:
+            body_parts.append(
+                "<tr>"
+                f"<td class='meta-label'>{ihtml.escape(label)}</td>"
+                "<td class='meta-colon'>：</td>"
+                f"<td>{ihtml.escape(value)}</td>"
+                "</tr>"
+            )
+        body_parts.append("</tbody></table>")
+    for idx, raw in enumerate(lines):
+        if idx < meta_end:
+            continue
+        line = raw.strip()
+        if not line:
+            body_parts.append("<div class='spacer'></div>")
+            continue
+        if (not first_title_skipped) and _looks_like_pleading_title(line) and line == str(title or "").strip():
+            first_title_skipped = True
+            continue
+        first_title_skipped = True
+        cls = "body"
+        if _is_signature_line(line):
+            cls = "signature"
+        elif _is_meta_or_salutation_line(line):
+            cls = "meta"
+        elif _looks_like_pleading_title(line):
+            cls = "subheading"
+        body_parts.append(f"<p class='{cls}'>{ihtml.escape(line)}</p>")
     return (
         "<!doctype html><html><head><meta charset='utf-8'>"
         f"<title>{safe_title}</title>"
         "<style>"
-        "body{font-family:'Noto Sans TC','PingFang TC','Microsoft JhengHei',sans-serif;"
-        "margin:36px;color:#111;line-height:1.6;}"
-        "h1{margin:0 0 16px;font-size:24px;}"
-        "pre{white-space:pre-wrap;word-wrap:break-word;font-family:inherit;font-size:15px;margin:0;}"
+        "@page{size:A4;margin:22mm 25mm 20mm 25mm;}"
+        "body{font-family:'BiauKai','DFKai-SB','標楷體','Noto Serif CJK TC',serif;"
+        "color:#111;line-height:1.85;font-size:16pt;}"
+        "h1{margin:0 0 18px;text-align:center;font-size:22pt;font-weight:700;}"
+        "p{margin:0 0 6px;}"
+        "table.meta-table{width:100%;border-collapse:collapse;margin:0 0 10px;}"
+        ".meta-table td{border:0;padding:0 3px 0 0;vertical-align:top;line-height:1.7;}"
+        ".meta-label{width:3.2cm;text-align:justify;text-align-last:justify;}"
+        ".meta-colon{width:.35cm;}"
+        ".body{text-indent:2em;}"
+        ".meta{text-indent:0;}"
+        ".signature{text-align:right;text-indent:0;}"
+        ".subheading{text-align:center;font-size:18pt;font-weight:700;text-indent:0;margin-top:8px;}"
+        ".spacer{height:10px;}"
         "</style></head><body>"
-        f"<h1>{safe_title}</h1><pre>{safe_text}</pre></body></html>"
+        f"<h1>{safe_title}</h1>{''.join(body_parts)}</body></html>"
     )
+
+
+def _wrap_pdf_line(text: str, max_width: float, font_name: str, size_pt: int) -> list[str]:
+    from reportlab.pdfbase.pdfmetrics import stringWidth  # type: ignore
+
+    source = str(text or "")
+    lines: list[str] = []
+    current = ""
+    for char in source:
+        candidate = current + char
+        if current and stringWidth(candidate, font_name, size_pt) > max_width:
+            lines.append(current)
+            current = char
+        else:
+            current = candidate
+    if current:
+        lines.append(current)
+    return lines or [""]
+
+
+def _export_form_pdf_reportlab(title: str, preview_text: str, pdf_path: str) -> dict:
+    from reportlab.lib.pagesizes import A4  # type: ignore
+    from reportlab.pdfbase import pdfmetrics  # type: ignore
+    from reportlab.pdfbase.cidfonts import UnicodeCIDFont  # type: ignore
+    from reportlab.pdfgen import canvas  # type: ignore
+
+    font_name = "MSung-Light"
+    try:
+        pdfmetrics.registerFont(UnicodeCIDFont(font_name))
+    except Exception:
+        font_name = "STSong-Light"
+        pdfmetrics.registerFont(UnicodeCIDFont(font_name))
+
+    width, height = A4
+    left = 72
+    right = 72
+    top = 62
+    bottom = 56
+    content_width = width - left - right
+    y = height - top
+    c = canvas.Canvas(pdf_path, pagesize=A4)
+
+    def ensure_space(amount: float) -> None:
+        nonlocal y
+        if y - amount < bottom:
+            c.showPage()
+            c.setFont(font_name, 14)
+            y = height - top
+
+    c.setFont(font_name, 20)
+    c.drawCentredString(width / 2, y, str(title or "OSC 文件"))
+    y -= 34
+    c.setFont(font_name, 14)
+
+    for raw in _clean_document_export_text(preview_text).splitlines():
+        line = raw.strip()
+        if not line:
+            y -= 10
+            continue
+        if _looks_like_pleading_title(line) and line == str(title or "").strip():
+            continue
+        if _is_signature_line(line):
+            ensure_space(20)
+            c.drawRightString(width - right, y, line)
+            y -= 23
+            continue
+        prefix = "" if _is_meta_or_salutation_line(line) else "　　"
+        wrapped = _wrap_pdf_line(prefix + line, content_width, font_name, 14)
+        for part in wrapped:
+            ensure_space(20)
+            c.drawString(left, y, part)
+            y -= 23
+
+    c.save()
+    if (not os.path.exists(pdf_path)) or os.path.getsize(pdf_path) < 64:
+        return {"success": False, "error": "pdf_not_generated"}
+    meta = _export_file_meta(pdf_path)
+    meta["renderer"] = "reportlab"
+    return meta
+
+
+def _find_soffice_binary() -> str:
+    candidates = [
+        (os.environ.get("MAGI_SOFFICE_BIN") or "").strip(),
+        shutil.which("soffice"),
+        shutil.which("libreoffice"),
+        "/Applications/LibreOffice.app/Contents/MacOS/soffice",
+        "/Applications/LibreOffice.app/Contents/MacOS/libreoffice",
+    ]
+    for candidate in candidates:
+        if candidate and os.path.exists(candidate):
+            return candidate
+    return ""
+
+
+def _export_docx_pdf(docx_path: str, stem: str) -> dict:
+    source = os.path.abspath(str(docx_path or ""))
+    if not source or not os.path.exists(source):
+        return {"success": False, "error": "docx_missing"}
+    soffice = _find_soffice_binary()
+    if not soffice:
+        return {"success": False, "error": "soffice_unavailable"}
+    try:
+        os.makedirs(EXPORTS_DIR, exist_ok=True)
+        target = os.path.join(EXPORTS_DIR, f"{stem}.pdf")
+        default_pdf = os.path.join(EXPORTS_DIR, os.path.splitext(os.path.basename(source))[0] + ".pdf")
+        for old in {target, default_pdf}:
+            try:
+                if old and os.path.exists(old):
+                    os.remove(old)
+            except OSError:
+                pass
+        env = dict(os.environ)
+        env.setdefault("HOME", os.path.expanduser("~"))
+        result = subprocess.run(
+            [
+                soffice,
+                "--headless",
+                "--nologo",
+                "--nofirststartwizard",
+                "--convert-to",
+                "pdf",
+                "--outdir",
+                EXPORTS_DIR,
+                source,
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=int(os.environ.get("MAGI_DOCX_PDF_TIMEOUT", "90") or "90"),
+            env=env,
+        )
+        if result.returncode != 0:
+            err = (result.stderr or result.stdout or "").strip()
+            return {"success": False, "error": f"soffice_failed: {err}"}
+        produced = default_pdf if os.path.exists(default_pdf) else target
+        if produced != target and os.path.exists(produced):
+            os.replace(produced, target)
+        if (not os.path.exists(target)) or os.path.getsize(target) < 64:
+            err = (result.stderr or result.stdout or "").strip()
+            return {"success": False, "error": f"soffice_pdf_not_generated: {err}"}
+        meta = _export_file_meta(target)
+        meta["renderer"] = "libreoffice"
+        meta["source_docx"] = source
+        return meta
+    except Exception as e:
+        return {"success": False, "error": f"docx_pdf_convert_failed: {e}"}
 
 
 def _export_form_pdf(title: str, preview_text: str, stem: str) -> dict:
     txt = str(preview_text or "").strip()
     if not txt:
         return {"success": False, "error": "empty_text"}
+    pdf_name = f"{stem}.pdf"
+    pdf_path = os.path.join(EXPORTS_DIR, pdf_name)
     try:
         os.makedirs(EXPORTS_DIR, exist_ok=True)
-        pdf_name = f"{stem}.pdf"
-        pdf_path = os.path.join(EXPORTS_DIR, pdf_name)
 
         # Render HTML
         html_content = _render_form_text_to_html(title, txt)
@@ -433,6 +937,13 @@ def _export_form_pdf(title: str, preview_text: str, stem: str) -> dict:
     except Exception as e:
         import traceback
         err_msg = traceback.format_exc()
+        try:
+            fallback = _export_form_pdf_reportlab(title, txt, pdf_path)
+            if fallback.get("success"):
+                fallback["warning"] = f"weasyprint_failed_fallback_reportlab: {e}"
+                return fallback
+        except Exception as fallback_e:
+            return {"success": False, "error": f"weasyprint_failed: {e}\n{err_msg}\nreportlab_failed: {fallback_e}"}
         return {"success": False, "error": f"weasyprint_failed: {e}\n{err_msg}"}
 
 
@@ -444,8 +955,17 @@ def _export_osc_form_files(title: str, preview_text: str, suggested_filename: st
     token = uuid.uuid4().hex[:8]
     stem = _safe_export_stem(suggested_filename, fallback="osc_form")
     full_stem = f"{stem}_{stamp}_{token}"
-    docx_meta = _export_form_docx(txt, full_stem)
-    pdf_meta = _export_form_pdf(title, txt, full_stem)
+    txt = _clean_document_export_text(txt)
+    docx_meta = _export_form_docx(txt, full_stem, title=title)
+    if docx_meta.get("success"):
+        pdf_meta = _export_docx_pdf(str(docx_meta.get("path") or ""), full_stem)
+    else:
+        pdf_meta = {"success": False, "error": "docx_unavailable_for_pdf"}
+    if not pdf_meta.get("success"):
+        fallback_pdf_meta = _export_form_pdf(title, txt, full_stem)
+        if fallback_pdf_meta.get("success"):
+            fallback_pdf_meta["warning"] = str(pdf_meta.get("error") or "docx_pdf_convert_failed")
+            pdf_meta = fallback_pdf_meta
     errors = []
     if not docx_meta.get("success"):
         errors.append({"type": "docx", "error": str(docx_meta.get("error") or "docx_failed")})
@@ -499,15 +1019,32 @@ def _public_url_for_local_file(local_path: str) -> str:
 # 5. Cloudflared tunnel management
 # ============================================================================
 
-def _is_cloudflared_alive() -> bool:
-    """Check if cloudflared tunnel process is actually running (not pgrep self-match)."""
+def _cloudflared_pids_for_port(port: str) -> list[str]:
+    """Return cloudflared PIDs for the MAGI webhook tunnel port only."""
     import subprocess
     try:
+        pattern = f"cloudflared tunnel --url http://127.0.0.1:{str(port).strip()}"
         result = subprocess.run(
-            ["pgrep", "-f", "/opt/homebrew/bin/cloudflared tunnel"],
-            capture_output=True, timeout=3,
+            ["pgrep", "-f", pattern],
+            capture_output=True, text=True, timeout=3,
         )
-        return result.returncode == 0
+        return [p.strip() for p in (result.stdout or "").splitlines() if p.strip()]
+    except Exception:
+        return []
+
+
+def _magi_webhook_port() -> str:
+    return (
+        os.environ.get("MAGI_SERVER_PORT")
+        or _load_dotenv_value("MAGI_SERVER_PORT")
+        or "5002"
+    ).strip()
+
+
+def _is_cloudflared_alive() -> bool:
+    """Check if the MAGI webhook cloudflared tunnel is actually running."""
+    try:
+        return bool(_cloudflared_pids_for_port(_magi_webhook_port()))
     except Exception:
         return False
 
@@ -521,22 +1058,17 @@ def _ensure_cloudflared():
         log_path = os.path.join(os.path.dirname(__file__), "..", "logs", "cloudflared.log")
         os.makedirs(os.path.dirname(log_path), exist_ok=True)
         already_running = False
+        _cf_local_port = _magi_webhook_port()
 
-        # Count running cloudflared instances; kill all if >1 (prevent accumulation)
-        try:
-            result = subprocess.run(
-                ["pgrep", "-f", "/opt/homebrew/bin/cloudflared tunnel"],
-                capture_output=True, text=True, timeout=3,
-            )
-            cf_pids = [p.strip() for p in (result.stdout or "").strip().splitlines() if p.strip()]
-        except Exception:
-            cf_pids = []
+        # Count only the MAGI webhook tunnel. Other tunnels, such as Paperclip
+        # sharing, may legitimately run on different ports.
+        cf_pids = _cloudflared_pids_for_port(_cf_local_port)
 
         if len(cf_pids) > 1:
-            logger.warning("cloudflared: Found %d instances, killing all to restart cleanly", len(cf_pids))
+            logger.warning("cloudflared: Found %d MAGI webhook instances, restarting port %s cleanly", len(cf_pids), _cf_local_port)
             try:
-                subprocess.run(["pkill", "-f", "/opt/homebrew/bin/cloudflared tunnel"],
-                               capture_output=True, timeout=3)
+                for pid in cf_pids:
+                    subprocess.run(["kill", pid], capture_output=True, timeout=3)
                 _time.sleep(1)
             except Exception:
                 pass
@@ -560,17 +1092,12 @@ def _ensure_cloudflared():
 
         if not already_running:
             try:
-                subprocess.run(["pkill", "-f", "/opt/homebrew/bin/cloudflared tunnel"],
+                subprocess.run(["pkill", "-f", f"cloudflared tunnel --url http://127.0.0.1:{_cf_local_port}"],
                                capture_output=True, timeout=3)
             except Exception:
                 logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, "_ensure_cloudflared/pkill", exc_info=True)
             logger.info("Starting cloudflared tunnel...")
             _cf_log_fh = open(log_path, "w")  # kept open for cloudflared's lifetime
-            _cf_local_port = (
-                os.environ.get("MAGI_SERVER_PORT")
-                or _load_dotenv_value("MAGI_SERVER_PORT")
-                or "5002"
-            ).strip()
             logger.info("cloudflared → local port %s", _cf_local_port)
             _cf_proc = subprocess.Popen(
                 ["/opt/homebrew/bin/cloudflared", "tunnel", "--url", f"http://127.0.0.1:{_cf_local_port}", "--no-autoupdate"],
@@ -682,8 +1209,8 @@ def _ensure_cloudflared():
                 logger.error("LINE webhook registration failed after 3 attempts")
             # Telegram webhook auto-registration
             try:
-                from api.webhooks.telegram import _load_openclaw_telegram_token, _load_telegram_webhook_secret
-                tg_token = _load_openclaw_telegram_token()
+                from api.webhooks.telegram import _load_telegram_bot_token, _load_telegram_webhook_secret
+                tg_token = _load_telegram_bot_token()
                 tg_secret = _load_telegram_webhook_secret()
                 if tg_token:
                     tg_webhook_url = f"{cf_url}/telegram/webhook"
@@ -724,6 +1251,196 @@ def _cloudflared_watchdog():
         except Exception as e:
             logger.warning("cloudflared watchdog error: %s", e)
         _time.sleep(_INTERVAL)
+
+
+def _paperclip_share_gateway_port() -> str:
+    return str(os.environ.get("PAPERCLIP_SHARE_GATEWAY_PORT") or "5014").strip() or "5014"
+
+
+def _paperclip_share_url_file() -> str:
+    return os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".runtime", "osc_share_public_base_url.txt"))
+
+
+def _paperclip_share_tunnel_pids_for_port(port: str) -> list[str]:
+    try:
+        pattern = f"cloudflared tunnel --url http://127.0.0.1:{str(port).strip()}"
+        result = subprocess.run(["pgrep", "-f", pattern], capture_output=True, text=True, timeout=5)
+        if result.returncode == 0:
+            return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+    except Exception:
+        logger.debug("silent-catch at %s:%s", __name__, "_paperclip_share_tunnel_pids_for_port", exc_info=True)
+    return []
+
+
+def _paperclip_share_gateway_health_ok(port: str) -> bool:
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=5) as resp:
+            return 200 <= int(resp.status) < 300
+    except Exception:
+        return False
+
+
+def _paperclip_share_public_health_ok() -> bool:
+    try:
+        url_path = _paperclip_share_url_file()
+        if not os.path.exists(url_path):
+            return False
+        base = open(url_path, encoding="utf-8").read().strip().rstrip("/")
+        if not base:
+            return False
+        with urllib.request.urlopen(base + "/health", timeout=10) as resp:
+            return 200 <= int(resp.status) < 300
+    except Exception:
+        return False
+
+
+def _paperclip_share_public_base_is_managed_tunnel() -> bool:
+    try:
+        url_path = _paperclip_share_url_file()
+        if not os.path.exists(url_path):
+            return True
+        base = open(url_path, encoding="utf-8").read().strip().rstrip("/")
+        if not base:
+            return True
+        return ".trycloudflare.com" in base
+    except Exception:
+        return True
+
+
+_PAPERCLIP_SHARE_LAUNCHD_LABELS = (
+    "com.magi.paperclip-share-gateway",
+    "com.magi.paperclip-share-tunnel",
+)
+
+
+def _paperclip_share_launchd_plists() -> dict[str, str]:
+    launch_agents = os.path.expanduser("~/Library/LaunchAgents")
+    return {
+        label: os.path.join(launch_agents, f"{label}.plist")
+        for label in _PAPERCLIP_SHARE_LAUNCHD_LABELS
+    }
+
+
+def _launchctl_label_loaded(label: str) -> bool:
+    if sys.platform != "darwin":
+        return False
+    try:
+        result = subprocess.run(["launchctl", "list", label], capture_output=True, text=True, timeout=5)
+        return result.returncode == 0
+    except Exception:
+        logger.debug("silent-catch at %s:%s", __name__, "_launchctl_label_loaded", exc_info=True)
+        return False
+
+
+def _stop_unmanaged_paperclip_share_processes(port: str) -> None:
+    """Stop fallback share-tunnel processes before launchd takes ownership."""
+    patterns = [
+        f"scripts/share_gateway.py --port {str(port).strip()}",
+        f"cloudflared tunnel --url http://127.0.0.1:{str(port).strip()}",
+    ]
+    for pattern in patterns:
+        try:
+            subprocess.run(["pkill", "-f", pattern], capture_output=True, text=True, timeout=10)
+        except Exception:
+            logger.debug("silent-catch at %s:%s", __name__, "_stop_unmanaged_paperclip_share_processes", exc_info=True)
+
+
+def _bootstrap_paperclip_share_launchd(port: str) -> bool:
+    if sys.platform != "darwin":
+        return False
+    plists = _paperclip_share_launchd_plists()
+    if not all(os.path.exists(path) for path in plists.values()):
+        return False
+
+    domain = f"gui/{os.getuid()}"
+    loaded_before = [_launchctl_label_loaded(label) for label in _PAPERCLIP_SHARE_LAUNCHD_LABELS]
+    if not all(loaded_before):
+        _stop_unmanaged_paperclip_share_processes(port)
+
+    for label, plist in plists.items():
+        if _launchctl_label_loaded(label):
+            continue
+        try:
+            subprocess.run(["launchctl", "bootstrap", domain, plist], capture_output=True, text=True, timeout=15)
+        except Exception:
+            logger.debug("silent-catch at %s:%s", __name__, f"_bootstrap_paperclip_share_launchd:{label}", exc_info=True)
+        if not _launchctl_label_loaded(label):
+            try:
+                subprocess.run(["launchctl", "load", plist], capture_output=True, text=True, timeout=15)
+            except Exception:
+                logger.debug("silent-catch at %s:%s", __name__, f"_load_paperclip_share_launchd:{label}", exc_info=True)
+
+    return all(_launchctl_label_loaded(label) for label in _PAPERCLIP_SHARE_LAUNCHD_LABELS)
+
+
+def _paperclip_share_launchd_managed(port: str | None = None) -> bool:
+    if sys.platform != "darwin":
+        return False
+    if all(_launchctl_label_loaded(label) for label in _PAPERCLIP_SHARE_LAUNCHD_LABELS):
+        return True
+    if port:
+        return _bootstrap_paperclip_share_launchd(port)
+    return False
+
+
+def _kickstart_paperclip_share_launchd() -> None:
+    domain = f"gui/{os.getuid()}"
+    for label in _PAPERCLIP_SHARE_LAUNCHD_LABELS:
+        try:
+            subprocess.run(["launchctl", "kickstart", "-k", f"{domain}/{label}"], capture_output=True, text=True, timeout=15)
+        except Exception:
+            logger.debug("silent-catch at %s:%s", __name__, f"_kickstart_paperclip_share_launchd:{label}", exc_info=True)
+
+
+def _ensure_paperclip_share_tunnel() -> None:
+    if str(os.environ.get("PAPERCLIP_SHARE_TUNNEL_DISABLE") or "").strip().lower() in {"1", "true", "yes", "on"}:
+        return
+    with _SHARE_TUNNEL_LOCK:
+        port = _paperclip_share_gateway_port()
+        gateway_ok = _paperclip_share_gateway_health_ok(port)
+        tunnel_ok = bool(_paperclip_share_tunnel_pids_for_port(port))
+        public_ok = _paperclip_share_public_health_ok()
+        if public_ok and not _paperclip_share_public_base_is_managed_tunnel():
+            return
+        if gateway_ok and tunnel_ok and public_ok:
+            return
+
+        if _paperclip_share_launchd_managed(port):
+            logger.warning(
+                "Paperclip share tunnel unhealthy but launchd-managed; kickstarting launchd jobs (gateway=%s tunnel=%s public=%s)",
+                gateway_ok,
+                tunnel_ok,
+                public_ok,
+            )
+            _kickstart_paperclip_share_launchd()
+            return
+
+        root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+        script = os.path.join(root, "scripts", "start_paperclip_share_tunnel.sh")
+        if not os.path.exists(script):
+            logger.warning("Paperclip share tunnel script missing: %s", script)
+            return
+        logger.warning(
+            "Paperclip share tunnel unhealthy; restarting (gateway=%s tunnel=%s public=%s)",
+            gateway_ok,
+            tunnel_ok,
+            public_ok,
+        )
+        env = dict(os.environ)
+        env.setdefault("MAGI_ROOT", root)
+        subprocess.run(["bash", script], cwd=root, env=env, timeout=90, check=False)
+
+
+def _paperclip_share_tunnel_watchdog():
+    import time as _time
+    interval = max(60, int(os.environ.get("PAPERCLIP_SHARE_TUNNEL_WATCHDOG_INTERVAL_SEC", "120") or "120"))
+    _time.sleep(15)
+    while True:
+        try:
+            _ensure_paperclip_share_tunnel()
+        except Exception as e:
+            logger.warning("Paperclip share tunnel watchdog error: %s", e)
+        _time.sleep(interval)
 
 
 def _preload_faiss():
@@ -862,6 +1579,15 @@ def run_startup_hooks(app, orchestrator):
 
     # Cloudflared watchdog
     threading.Thread(target=_cloudflared_watchdog, daemon=True, name="cloudflared-watchdog").start()
+
+    # Paperclip public share tunnel watchdog. This keeps the share-only tunnel
+    # available and refreshes the base URL file when Cloudflare Quick Tunnel
+    # rotates the temporary hostname.
+    threading.Thread(
+        target=_paperclip_share_tunnel_watchdog,
+        daemon=True,
+        name="paperclip-share-tunnel-watchdog",
+    ).start()
 
     # NAS SMB auto-mount guard
     try:

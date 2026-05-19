@@ -562,11 +562,21 @@ def dispatch_case_management(message, user_id="", platform=""):
                 return "找不到符合「%s」的案件，無法更新狀態。" % keyword
             case_id = row.get("id")
             cn = row.get("case_number") or row.get("client_name") or ""
-            _osc_exec(
-                "UPDATE cases SET status=%s, updated_at=%s WHERE id=%s",
-                (new_status, _dt.now().strftime("%Y-%m-%d %H:%M:%S"), case_id),
-                fetch="none",
-            )
+            try:
+                _osc_exec("ALTER TABLE cases ADD COLUMN IF NOT EXISTS manual_status_lock TINYINT(1) NOT NULL DEFAULT 0", fetch="none")
+                _osc_exec("ALTER TABLE cases ADD COLUMN IF NOT EXISTS manual_status_source VARCHAR(64) NULL", fetch="none")
+                _osc_exec("ALTER TABLE cases ADD COLUMN IF NOT EXISTS manual_status_at DATETIME NULL", fetch="none")
+                _osc_exec(
+                    "UPDATE cases SET status=%s, manual_status_lock=1, manual_status_source=%s, manual_status_at=NOW(), updated_at=%s WHERE id=%s",
+                    (new_status, "magi_command", _dt.now().strftime("%Y-%m-%d %H:%M:%S"), case_id),
+                    fetch="none",
+                )
+            except Exception:
+                _osc_exec(
+                    "UPDATE cases SET status=%s, updated_at=%s WHERE id=%s",
+                    (new_status, _dt.now().strftime("%Y-%m-%d %H:%M:%S"), case_id),
+                    fetch="none",
+                )
             return "✅ 案件「%s」狀態已更新為「%s」。" % (cn, new_status)
         except Exception as e:
             logger.warning("dispatch_case_management update error: %s", e)
@@ -685,7 +695,7 @@ def dispatch_client_management(message, user_id="", platform=""):
     if text.startswith("新增當事人") or text.startswith("建立當事人"):
         rest = _re.sub(r"^(?:新增當事人|建立當事人)\s*", "", text).strip()
         if not rest:
-            return "請提供當事人資訊，例如：新增當事人 張三 0212345678 台北市"
+            return "請提供當事人資訊，例如：新增當事人 張三 09XX123456 台北市"
         parts = rest.split()
         name = parts[0] if parts else ""
         phone = parts[1] if len(parts) > 1 and _re.match(r"^0\d{8,9}$", parts[1]) else ""

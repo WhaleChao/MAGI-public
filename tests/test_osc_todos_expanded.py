@@ -69,6 +69,44 @@ def test_閱卷期限_pattern2():
     assert any(t["type"] == "閱卷期限" for t in todos)
 
 
+def test_開庭民國年期日():
+    todos = _extract("20260422 花蓮地方法院114年度花補字第502號花蓮簡易庭通知書（謝廷延；訂115年7月1日下午2時30分）.pdf")
+    assert len(todos) == 1
+    assert todos[0]["type"] == "開庭"
+    assert todos[0]["date"] == "2026-07-01"
+    assert todos[0]["time"] == "14:30"
+
+
+def test_開庭民國年期日保留程序類型():
+    todos = _extract("20260316 臺北地方法院114年度訴字第972號刑事庭通知書（游秀鈴；訂115年4月1日下午2時30分審理）.pdf")
+    assert len(todos) == 1
+    assert todos[0]["type"] == "審理"
+    assert todos[0]["date"] == "2026-04-01"
+    assert todos[0]["time"] == "14:30"
+
+
+def test_開庭民國年期日可從尾段辨識調解程序():
+    todos = _extract("20260513 花蓮地方法院115年度司消債調字第73號民事庭通知書（高弘軒；訂6月1日下午4時行調解程序）.pdf")
+    assert len(todos) == 1
+    assert todos[0]["type"] == "調解"
+    assert todos[0]["date"] == "2026-06-01"
+    assert todos[0]["time"] == "16:00"
+
+
+def test_開庭無年份期日使用收文年份而非案號年度():
+    todos = _extract("20250211 花蓮地院113年度原易字第179號刑事庭通知書（余秋菊；訂3月4日下午3時整審理）.pdf")
+    assert len(todos) == 1
+    assert todos[0]["date"] == "2025-03-04"
+    assert todos[0]["time"] == "15:00"
+
+
+def test_開庭無年份期日可跨隔年():
+    todos = _extract("20251220 花蓮地院114年度原易字第179號刑事庭通知書（余秋菊；訂1月8日上午10時審理）.pdf")
+    assert len(todos) == 1
+    assert todos[0]["date"] == "2026-01-08"
+    assert todos[0]["time"] == "10:00"
+
+
 # ── deadline_type field ──
 def test_deadline_type_in_result():
     todos = _extract("20240305 裁定（應於10日內補正）.pdf")

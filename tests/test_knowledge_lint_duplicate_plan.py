@@ -324,3 +324,41 @@ def test_cleanup_duplicate_vectors_verify_fail_does_not_silent_success(monkeypat
     assert summary["rollback"]["restored"] is True
     assert sorted(conn.documents.keys()) == [1, 2, 3, 4]
     assert sorted(conn.vectors.keys()) == [1, 2, 3, 4]
+
+
+def test_contradiction_scan_ignores_info_gap_only_sections(monkeypatch, tmp_path):
+    mod = _load_module()
+    vault = tmp_path / "vault"
+    case_dir = vault / "30_Wiki" / "2026-0001-測試"
+    case_dir.mkdir(parents=True)
+    (case_dir / "overview.md").write_text(
+        "## ⚠️ 矛盾與待確認\n"
+        "- **資訊缺口**：目前只有開庭通知，缺少起訴書。\n"
+        "- **待確認事項**：需確認法院函文內容。\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(mod, "_get_vault_path", lambda: vault)
+
+    result = mod.check_contradiction_scan(use_llm=True)
+
+    assert result["status"] == "ok"
+    assert result["cases_with_contradictions"] == 0
+    assert result["info_gap_only_cases"] == 1
+
+
+def test_contradiction_scan_keeps_actual_conflict(monkeypatch, tmp_path):
+    mod = _load_module()
+    vault = tmp_path / "vault"
+    case_dir = vault / "30_Wiki" / "2026-0002-測試"
+    case_dir.mkdir(parents=True)
+    (case_dir / "overview.md").write_text(
+        "## ⚠️ 矛盾與待確認\n"
+        "- ⚠️ 矛盾：同一筆付款日期，版本一記載 2026-01-01，版本二記載 2026-02-01。\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(mod, "_get_vault_path", lambda: vault)
+
+    result = mod.check_contradiction_scan(use_llm=True)
+
+    assert result["status"] == "warn"
+    assert result["cases_with_contradictions"] == 1

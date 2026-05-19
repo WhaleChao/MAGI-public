@@ -2,7 +2,7 @@
 """
 MAGI TOOLS API (三哲人系統)
 ===========================
-HTTP API that exposes MAGI tools for external callers (OpenClaw, etc.)
+HTTP API that exposes MAGI tools for external callers and MCP-compatible clients.
 Run on port 5003 to avoid conflicts with main server (5002).
 
 三哲人 (Three Sages):
@@ -513,7 +513,7 @@ def _record_external_chat_metric(
         pass
 
 
-def _guard_text(s: str, platform: str = "OPENCLAW") -> str:
+def _guard_text(s: str, platform: str = "WEB") -> str:
     text = str(s or "")
     if not text:
         return text
@@ -534,7 +534,7 @@ def _guard_payload_fields(payload):
         out = {}
         for k, v in payload.items():
             if isinstance(v, str) and str(k).lower() in text_keys:
-                out[k] = _guard_text(v, platform="OPENCLAW")
+                out[k] = _guard_text(v, platform="WEB")
             elif isinstance(v, dict):
                 out[k] = _guard_payload_fields(v)
             elif isinstance(v, list):
@@ -555,7 +555,7 @@ def _infer_external_platform(raw: str, user_id: str = "") -> str:
     if uid.isdigit() and len(uid) >= 6:
         # Telegram user IDs are numeric; fallback to TELEGRAM so output guard rules apply.
         return "TELEGRAM"
-    return "OPENCLAW"
+    return "WEB"
 
 
 def _looks_long_task(message: str) -> bool:
@@ -573,7 +573,7 @@ def _looks_long_task(message: str) -> bool:
     return any(k in text or k in low for k in heavy_keywords)
 
 
-def _openclaw_cfg() -> dict:
+def _legacy_channel_cfg() -> dict:
     try:
         p = os.path.expanduser("~/.openclaw/openclaw.json")
         if not os.path.exists(p):
@@ -593,8 +593,11 @@ def _send_telegram_direct(chat_id: str, text: str) -> bool:
         from skills.bridge.http_pool import get_session as _get_session
     except Exception:
         return False
-    cfg = _openclaw_cfg()
-    token = str(((cfg.get("channels") or {}).get("telegram") or {}).get("botToken") or "").strip()
+    cfg = _legacy_channel_cfg()
+    token = (
+        os.environ.get("MAGI_TELEGRAM_BOT_TOKEN")
+        or str(((cfg.get("channels") or {}).get("telegram") or {}).get("botToken") or "").strip()
+    )
     if not token or not str(chat_id or "").strip():
         return False
     try:
@@ -792,7 +795,7 @@ def _summarize_cb_note_upstream_timeout(error: str) -> None:
             _SUMMARIZE_CB["open_until"] = now + float(cooldown_sec)
 
 
-def _read_openclaw_gateway_password() -> str:
+def _read_legacy_gateway_password() -> str:
     try:
         p = os.path.expanduser("~/.openclaw/openclaw.json")
         if not os.path.exists(p):
@@ -811,7 +814,7 @@ def _resolve_external_api_key() -> str:
     key = (
         os.environ.get("MAGI_EXTERNAL_API_KEY")
         or os.environ.get("OPENCLAW_GATEWAY_TOKEN")
-        or _read_openclaw_gateway_password()
+        or _read_legacy_gateway_password()
         or ""
     ).strip()
     _EXTERNAL_KEY_CACHE["ts"] = now
@@ -1114,6 +1117,7 @@ def _external_osc_chat_inner():
         k in msg_low
         for k in [
             "你現在使用模型", "現在使用模型", "目前模型", "模型為何", "模型是什麼", "what model",
+            "目前主模型", "現在主模型", "主模型是什麼", "主模型是哪",
             "目前模式", "現在模式", "推理模式", "大腦模式", "分散式推理",
         ]
     )
@@ -2718,7 +2722,7 @@ def api_skill_teach():
     lesson = data.get('lesson') or data.get('tip') or ''
     keywords = data.get('keywords') or []
     context = data.get('context', 'api-teach')
-    source = data.get('source', 'openclaw')
+    source = data.get('source', 'magi')
     if not lesson:
         return jsonify({"error": "Missing 'lesson' (or 'tip') parameter"}), 400
     autoskill = AutoSkill()
@@ -2736,7 +2740,7 @@ def api_skill_teach_file():
     data = request.get_json() or {}
     file_path = data.get('file_path', '')
     context = data.get('context', 'api-file-teach')
-    source = data.get('source', 'openclaw')
+    source = data.get('source', 'magi')
     max_lines = int(data.get('max_lines', 200))
     if not file_path:
         return jsonify({"error": "Missing 'file_path' parameter"}), 400
@@ -3053,7 +3057,7 @@ def api_remember():
     from skills.memory.mem_bridge import remember
     data = request.get_json() or {}
     content = data.get('content', '')
-    source = data.get('source', 'openclaw')
+    source = data.get('source', 'magi')
     
     if not content:
         return jsonify({"error": "Missing 'content' parameter"}), 400
@@ -3170,10 +3174,10 @@ def api_alert():
     result = alert_admin(message, severity, topic_key=topic_key)
     return jsonify(result)
 
-# ============== Skill Definitions (OpenClaw Integration) ==============
+# ============== Skill Definitions (Tools API) ==============
 @app.route('/definitions', methods=['GET'])
 def api_definitions():
-    """Return skill definitions for OpenClaw tool selection."""
+    """Return skill definitions for tool selection."""
     definitions_path = os.path.join(os.path.dirname(__file__), '..', 'skills', 'definitions.json')
     try:
         with open(definitions_path, 'r', encoding='utf-8') as f:

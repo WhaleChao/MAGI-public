@@ -28,13 +28,13 @@ function bindTabs() {
                     if (ret && typeof ret.then === "function") {
                         ret.finally(() => hideLoading());
                     } else {
-                        // 同步或不返回 Promise：給最少 200ms spinner，提示有反應
+                        // 同步或沒有回傳 Promise：給最少 200ms spinner，提示有反應
                         setTimeout(hideLoading, 200);
                     }
                 } catch (e) { console.warn(`${label} failed:`, e); hideLoading(); }
             };
 
-            if (tabId === "dashboard") _withLoading("載入儀表板...", loadDashboard);
+            if (tabId === "dashboard") _withLoading("載入業務概覽...", loadDashboard);
             if (tabId === "magiModules") renderCaseMagiActions(activeCaseMagiModuleKey());
             if (tabId === "cases") _withLoading("載入案件...", loadCases);
             if (tabId === "laf") _withLoading("載入法扶清單...", loadLaf);
@@ -48,6 +48,7 @@ function bindTabs() {
                 loadDocumentKeywords();
                 loadDocumentReplacements();
             }
+            if (tabId === "templateFolder") _withLoading("載入範本資料夾...", loadTemplateFolder);
             if (tabId === "pdfTools") {
                 const pdfPath = document.getElementById("pdfToolPath");
                 if (pdfPath && !pdfPath.value) {
@@ -81,9 +82,12 @@ function bindTabs() {
                 loadRecurringExpenses();
             }
             if (tabId === "quotations") {
+                if (!document.querySelector("#qtItemsBody tr")) resetQuotationForm();
+                if (!document.querySelector("#qtTplItemsBody tr")) resetQuotationTemplateForm();
                 _withLoading("載入報價單...", loadQuotations);
                 loadQuotationTemplates();
             }
+            if (tabId === "insights") _withLoading("載入實務見解...", loadInsights);
             if (tabId === "admin") {
                 _withLoading("載入系統設定...", loadAdminData);
                 loadDiscordWebhook();
@@ -115,6 +119,12 @@ function jumpToPaperclipTab(tabId) {
     state.activeTab = tabId;
 }
 
+async function jumpToPaperclipTabAndRun(tabId, fn) {
+    jumpToPaperclipTab(tabId);
+    await new Promise(resolve => setTimeout(resolve, 40));
+    return await fn();
+}
+
 async function dispatchDelegatedAction(act, t) {
     const id = t.dataset.id;
     if (act === "case-edit") return await editCase(id);
@@ -122,7 +132,34 @@ async function dispatchDelegatedAction(act, t) {
     if (act === "case-open") return await openCaseFolder(id);
     if (act === "case-open-fm") return await openCaseFolder(id);
     if (act === "case-workbench") return await openCaseWorkbench(id);
+    if (act === "case-close") return await closeCase(id);
+    if (act === "case-doc-finalize") return await openCaseDocumentFinalizer(id);
+    if (act === "case-doc-finalize-search") return await refreshCaseDocumentFinalizer(id);
+    if (act === "case-doc-index") return await openCaseDocumentIndex(t.dataset.case || "");
     if (act === "case-address-label") return addressLabelDialog(id);
+    if (act === "tab-jump") return jumpToPaperclipTab(t.dataset.tab || t.dataset.tabJump || "");
+    if (act === "open-url") {
+        const url = t.dataset.url || "";
+        if (url) window.open(url, "_blank", "noopener");
+        return;
+    }
+    if (act === "download-url") {
+        const url = t.dataset.url || "";
+        if (url) window.open(url, "_blank", "noopener");
+        return;
+    }
+    if (act === "saas-section-jump") {
+        await jumpToPaperclipTabAndRun("dashboard", async () => {
+            const sectionId = t.dataset.section || t.dataset.tab || "";
+            const target = sectionId ? document.getElementById(sectionId) : null;
+            if (target) {
+                target.scrollIntoView({behavior: "smooth", block: "start"});
+                target.classList.add("focus-flash");
+                setTimeout(() => target.classList.remove("focus-flash"), 1200);
+            }
+        });
+        return;
+    }
     if (act === "case-magi-tab") return jumpToPaperclipTab(t.dataset.tab || "");
     if (act === "case-magi-command") return await runCaseMagiPreset(t.dataset.command || "", t.dataset.label || t.textContent.trim(), t.dataset.context === "1", t);
 
@@ -140,8 +177,33 @@ async function dispatchDelegatedAction(act, t) {
     if (act === "todo-complete") return await setTodoDone(Number(id), true);
     if (act === "todo-reopen") return await setTodoDone(Number(id), false);
 
+    if (act === "saas-todo-edit") return await jumpToPaperclipTabAndRun("todos", () => editTodo(Number(id)));
+    if (act === "saas-todo-complete") {
+        await setTodoDone(Number(id), true);
+        if (typeof loadSaasWorkbench === "function") await loadSaasWorkbench();
+        return;
+    }
+    if (act === "saas-cal-edit") return await jumpToPaperclipTabAndRun("calendar", () => editCalendarEvent(Number(id)));
+    if (act === "saas-laf-detail") {
+        return await jumpToPaperclipTabAndRun("laf", async () => {
+            if (typeof loadLaf === "function") await loadLaf();
+            return await openLafCaseDetail(id);
+        });
+    }
+    if (act === "saas-laf-status") {
+        return await jumpToPaperclipTabAndRun("laf", async () => {
+            if (typeof loadLaf === "function") await loadLaf();
+            return await openLafCaseDetail(id);
+        });
+    }
+    if (act === "saas-case-edit") return await jumpToPaperclipTabAndRun("cases", () => editCase(id));
+    if (act === "saas-client-edit") return await jumpToPaperclipTabAndRun("clients", () => editClient(id));
+    if (act === "saas-opponent-edit") return await jumpToPaperclipTabAndRun("admin", () => editAdminOpponent(Number(id)));
+
     if (act === "doc-open") return await openDocumentPath(t.dataset.path || "");
+    if (act === "doc-open-folder") return await openFolderPath(t.dataset.path || "");
     if (act === "doc-copy") return await copyDocumentPath(t.dataset.path || "");
+    if (act === "template-folder-open") return await loadTemplateFolder(t.dataset.path || "");
     if (act === "doc-stamp") return await stampDocument(t.dataset.path || "");
     if (act === "doc-finalize") return await finalizeDocument(t.dataset.path || "");
     if (act === "doc-pdf-tool") return setPdfToolPath(t.dataset.path || "");
@@ -153,9 +215,9 @@ async function dispatchDelegatedAction(act, t) {
     if (act === "laf-open-doc-keyword") return await openLafKeywordDoc(id, t.dataset.keyword || "");
     if (act === "laf-debt-tool") return openLafDebtTool(id, t.dataset.module || "");
     if (act === "laf-sync-number") return await syncLafNumberForCase(id);
-    if (act === "laf-event-detail") return openLafEventDetailDialog(t.dataset.label || "");
     if (act === "laf-case-action") return await runLafCaseAction(id, t.dataset.action || "");
     if (act === "laf-export-activity") return downloadLafActivityCsv();
+    if (act === "laf-event-detail") return openLafEventDetailDialog(t.dataset.label || "");
     if (act === "laf-checklist-reload") return await reloadLafChecklistFromModal();
     if (act === "debt-req-save") return await saveDebtReqChecklist();
     if (act === "debt-req-text") return generateDebtReqCopyText();
@@ -176,6 +238,8 @@ async function dispatchDelegatedAction(act, t) {
     if (act === "tx-rec-del") return await delRecurringExpense(Number(id));
     if (act === "qt-edit") return await editQuotation(id);
     if (act === "qt-del") return await delQuotation(id);
+    if (act === "qt-item-del") return;
+    if (act === "qtTpl-item-del") return;
     if (act === "qt-tpl-edit") return await editQuotationTemplate(Number(id));
     if (act === "qt-tpl-del") return await delQuotationTemplate(Number(id));
 
@@ -210,6 +274,7 @@ async function dispatchDelegatedAction(act, t) {
     if (act === "wb-case-workbench") return await openCaseWorkbench(id);
     if (act === "wb-case-save") return await saveWorkbenchCase();
     if (act === "wb-case-create-folder") return await createCaseFolder(id);
+    if (act === "wb-case-close") return await closeCase(id);
     if (act === "wb-case-action") return await wbQuickAction(t.dataset.action || "");
     if (act === "wb-folder-open") return await openCaseFolder(id, t.dataset.path || "");
     if (act === "wb-folder-upload") return promptFolderUpload(id, t.dataset.folderPath || "", t.dataset.path || "");
@@ -224,7 +289,7 @@ async function dispatchDelegatedAction(act, t) {
         ["wb_todo_id", "wb_todo_case_number", "wb_todo_client_name", "wb_todo_type", "wb_todo_date", "wb_todo_time", "wb_todo_status", "wb_todo_source_file", "wb_todo_desc"].forEach(x => {
             const el = document.getElementById(x); if (el) el.value = "";
         });
-        wbSetStatus("已清空工作台待辦表單。", "ok");
+        wbSetStatus("已清空處理頁待辦表單。", "ok");
     }
 }
 
@@ -297,6 +362,7 @@ function bindGlobalDelegates() {
             else if (viewId === "insights") renderInsights();
         }
     });
+
     document.addEventListener("keydown", async (e) => {
         if (e.key !== "Enter" && e.key !== " ") return;
         const t = e.target.closest("[data-act='laf-event-detail']");
@@ -308,7 +374,17 @@ function bindGlobalDelegates() {
 
 function bindEvents() {
     [
-        ["dashboardRefreshBtn", loadDashboard, "儀表板重新整理"],
+        ["dashboardRefreshBtn", loadDashboard, "MAGI 重新整理"],
+        ["saasRefreshBtn", loadSaasWorkbench, "管理工具重新整理"],
+        ["saasConflictBtn", runSaasConflictCheck, "利益衝突檢查"],
+        ["saasIntakeBtn", runSaasIntake, "建立諮詢紀錄"],
+        ["saasQualityBtn", runSaasQualityCheck, "品質檢查"],
+        ["saasPacketBtn", runSaasClientPacket, "產生對外資料"],
+        ["saasPacketCopyBtn", copySaasPacket, "複製對外資料"],
+        ["saasOnboardingRefreshBtn", reloadSaasOnboarding, "導入檢查重新載入"],
+        ["saasNotificationSaveBtn", saveSaasNotificationPrefs, "通知偏好儲存"],
+        ["saasDiagnosticBtn", downloadSaasDiagnosticPack, "診斷下載"],
+        ["saasOpsReportCopyBtn", copySaasOpsReport, "事務統計複製"],
         ["casesSearchBtn", loadCases, "案件搜尋"],
         ["casesRefreshBtn", loadCases, "案件重新整理"],
         ["caseSaveBtn", saveCase, "案件儲存"],
@@ -326,8 +402,9 @@ function bindEvents() {
         ["todosSearchBtn", loadTodos, "待辦搜尋"],
         ["todosRefreshBtn", loadTodos, "待辦重新整理"],
         ["todoSaveBtn", saveTodo, "待辦儲存"],
-        ["docsSearchBtn", loadDocuments, "文件搜尋"],
-        ["docsRefreshBtn", loadDocuments, "文件重新整理"],
+        ["docsSearchBtn", loadDocuments, "檔案搜尋"],
+        ["docsRefreshBtn", loadDocuments, "檔案重新整理"],
+        ["templateFolderRefreshBtn", loadTemplateFolder, "範本資料夾重新整理"],
         ["docGeneratePoaBtn", () => runDocCaseAction("generate_power_of_attorney"), "製作委任狀"],
         ["docGenerateReceiptBtn", () => runDocCaseAction("generate_receipt"), "製作收據"],
         ["docClosingOverviewBtn", () => runDocCaseAction("closing_overview"), "結案資料彙整"],
@@ -363,6 +440,8 @@ function bindEvents() {
         ["accountingSearchBtn", loadTransactions, "帳務搜尋"],
         ["accountingRefreshBtn", loadTransactions, "帳務重新整理"],
         ["accountingPeriodBtn", applyAccountingPeriod, "帳務區間套用"],
+        ["accountingImportPreviewBtn", previewAccountingImport, "帳務匯入預覽"],
+        ["accountingImportRunBtn", runAccountingImport, "帳務匯入"],
         ["txSaveBtn", saveTransaction, "帳務儲存"],
         ["txDefSearchBtn", loadExpenseDefaults, "預設帳務搜尋"],
         ["txDefRefreshBtn", loadExpenseDefaults, "預設帳務重新整理"],
@@ -370,12 +449,22 @@ function bindEvents() {
         ["txRecurringSearchBtn", loadRecurringExpenses, "固定支出搜尋"],
         ["txRecurringRefreshBtn", loadRecurringExpenses, "固定支出重新整理"],
         ["txRecurringSaveBtn", saveRecurringExpense, "固定支出儲存"],
+        ["txRecurringSyncBtn", syncRecurringGenerated, "固定支出同步"],
         ["qtSearchBtn", loadQuotations, "報價搜尋"],
         ["qtRefreshBtn", loadQuotations, "報價重新整理"],
         ["qtSaveBtn", saveQuotation, "報價儲存"],
+        ["qtNewBtn", () => { resetQuotationForm(); }, "新增報價"],
+        ["qtApplyTemplateBtn", () => { applySelectedQuotationTemplate(); }, "套用報價模板"],
+        ["qtAddItemBtn", () => { addQuotationItem("qt", {}); }, "新增報價項目"],
+        ["qtPreviewPdfBtn", () => { downloadCurrentQuotationPdf(); }, "下載報價 PDF"],
         ["qtTplSearchBtn", loadQuotationTemplates, "報價模板搜尋"],
         ["qtTplRefreshBtn", loadQuotationTemplates, "報價模板重新整理"],
         ["qtTplSaveBtn", saveQuotationTemplate, "報價模板儲存"],
+        ["qtTplAddItemBtn", () => { addQuotationItem("qtTpl", {}); }, "新增報價模板項目"],
+        ["insightsSearchBtn", loadInsights, "實務見解搜尋"],
+        ["insightsRefreshBtn", loadInsights, "實務見解重新整理"],
+        ["insightSaveBtn", saveInsight, "新增見解"],
+        ["insightFetchBtn", fetchInsightFullManual, "抓取見解來源"],
         ["adminSettingsSearchBtn", loadAdminSettings, "系統設定搜尋"],
         ["adminSettingsRefreshBtn", loadAdminSettings, "系統設定重新整理"],
         ["adminSettingSaveBtn", saveAdminSetting, "系統設定儲存"],
@@ -472,7 +561,7 @@ function bindEvents() {
     document.getElementById("meetingResetBtn").addEventListener("click", () => clearFields(["meeting_id", "meeting_case_number", "meeting_client_name", "meeting_type", "meeting_datetime", "meeting_duration", "meeting_location", "meeting_notes", "meeting_status"]));
     document.getElementById("calResetBtn").addEventListener("click", () => clearFields(["cal_id", "cal_event_id", "cal_title", "cal_case_number", "cal_start_date", "cal_end_date", "cal_location", "cal_color", "cal_is_all_day", "cal_reminder_minutes", "cal_summary", "cal_description", "cal_raw_data"]));
     document.getElementById("todoResetBtn").addEventListener("click", () => clearFields(["todo_id", "todo_case_number", "todo_client_name", "todo_type", "todo_date", "todo_time", "todo_desc", "todo_status", "todo_source_file"]));
-    document.getElementById("docsKind").addEventListener("change", () => runBusyAction("docsSearchBtn", loadDocuments, { actionLabel: "文件搜尋" }));
+    document.getElementById("docsKind").addEventListener("change", () => runBusyAction("docsSearchBtn", loadDocuments, { actionLabel: "檔案搜尋" }));
 
     document.getElementById("draftMetaRefreshBtn").addEventListener("click", () => loadDraftMeta().catch(reportDraftError));
     document.getElementById("draftCaseSearchBtn").addEventListener("click", () => searchDraftCases().catch(reportDraftError));
@@ -483,10 +572,20 @@ function bindEvents() {
         renderDraftDocuments();
         setDraftStatus("已清除參考書狀選取。");
     });
+    document.getElementById("draftInsightsSearchBtn").addEventListener("click", () => loadDraftInsights().catch(reportDraftError));
+    document.getElementById("draftInsightsAutoBtn").addEventListener("click", () => autoDraftInsights().catch(reportDraftError));
+    document.getElementById("draftInsightsClearBtn").addEventListener("click", () => {
+        state.draft.selectedInsights = [];
+        renderDraftInsights();
+        setDraftStatus("已清除實務見解選取。");
+    });
     document.getElementById("draftPreviewBtn").addEventListener("click", () => previewDraftPrompt().catch(reportDraftError));
     document.getElementById("draftGenerateBtn").addEventListener("click", () => generateDraft().catch(reportDraftError));
     document.getElementById("draftCopyBtn").addEventListener("click", () => copyDraftResult().catch(reportDraftError));
     document.getElementById("draftExportBtn").addEventListener("click", () => exportDraftResult().catch(reportDraftError));
+    document.getElementById("draftFeedbackRefreshBtn").addEventListener("click", () => loadDraftFeedback().catch(reportDraftError));
+    document.getElementById("draftFeedbackSaveBtn").addEventListener("click", () => submitDraftFeedback().catch(reportDraftError));
+    document.getElementById("draftResult").addEventListener("input", updateDraftCharCount);
     document.getElementById("draftClearBtn").addEventListener("click", clearDraftResult);
     document.getElementById("draftDocType").addEventListener("change", () => {
         if (!(document.getElementById("draftSuggestedName").value || "").trim()) {
@@ -525,12 +624,60 @@ function bindEvents() {
         });
     });
     document.getElementById("txRecurringOnlyActive").addEventListener("change", () => runBusyAction("txRecurringSearchBtn", loadRecurringExpenses, { actionLabel: "固定支出搜尋" }));
+    document.addEventListener("change", e => {
+        const el = e.target && e.target.closest("[data-saas-onboarding]");
+        if (!el) return;
+        toggleSaasOnboarding(el.dataset.saasOnboarding || "", el.checked).catch(err => {
+            showToast(`導入檢查更新失敗：${err.message}`, "warn");
+            el.checked = !el.checked;
+        });
+    });
     document.getElementById("qtResetBtn").addEventListener("click", () => {
-        clearFields(["qt_id", "qt_client_name", "qt_project_name", "qt_contact", "qt_phone", "qt_email", "qt_address", "qt_tax_id", "qt_date", "qt_expiry", "qt_subtotal", "qt_discount", "qt_tax", "qt_total", "qt_status", "qt_notes", "qt_items", "qt_extended_data"]);
+        resetQuotationForm();
     });
     document.getElementById("qtTplResetBtn").addEventListener("click", () => {
-        clearFields(["qtTplId", "qtTplName", "qtTplDefault", "qtTplDescription", "qtTplItems", "qtTplNotes"]);
+        resetQuotationTemplateForm();
     });
+    document.getElementById("qt_discount").addEventListener("input", recalcQuotationTotals);
+    document.getElementById("qt_tax").addEventListener("input", recalcQuotationTotals);
+    document.querySelectorAll("[data-qt-preset]").forEach(btn => {
+        btn.addEventListener("click", () => applyQuotationPreset(btn.dataset.qtPreset, "qt"));
+    });
+    document.querySelectorAll("[data-qt-tpl-preset]").forEach(btn => {
+        btn.addEventListener("click", () => applyQuotationPreset(btn.dataset.qtTplPreset, "qtTpl"));
+    });
+    const qtItemsBody = document.getElementById("qtItemsBody");
+    if (qtItemsBody) {
+        qtItemsBody.addEventListener("input", e => {
+            if (e.target && e.target.matches(".qt-item-field")) {
+                updateQuotationRowAmount(e.target);
+                recalcQuotationTotals();
+            }
+        });
+        qtItemsBody.addEventListener("click", e => {
+            const btn = e.target && e.target.closest('[data-act="qt-item-del"]');
+            if (!btn) return;
+            btn.closest("tr")?.remove();
+            if (!qtItemsBody.querySelector("tr")) addQuotationItem("qt", {});
+            recalcQuotationTotals();
+        });
+    }
+    const qtTplItemsBody = document.getElementById("qtTplItemsBody");
+    if (qtTplItemsBody) {
+        qtTplItemsBody.addEventListener("input", e => {
+            if (e.target && e.target.matches(".qtTpl-item-field")) {
+                updateQuotationRowAmount(e.target);
+                syncTemplateItemsField();
+            }
+        });
+        qtTplItemsBody.addEventListener("click", e => {
+            const btn = e.target && e.target.closest('[data-act="qtTpl-item-del"]');
+            if (!btn) return;
+            btn.closest("tr")?.remove();
+            if (!qtTplItemsBody.querySelector("tr")) addQuotationItem("qtTpl", {});
+            syncTemplateItemsField();
+        });
+    }
     document.getElementById("adminSettingResetBtn").addEventListener("click", () => clearFields(["adminSettingKey", "adminSettingValue", "adminSettingDescription"]));
     document.getElementById("adminReasonResetBtn").addEventListener("click", () => clearFields(["adminReasonId", "adminReasonType", "adminReasonText", "adminReasonCommon"]));
     document.getElementById("adminCourtResetBtn").addEventListener("click", () => clearFields(["adminCourtId", "adminCourtName", "adminCourtType", "adminCourtAddress"]));
@@ -560,7 +707,7 @@ function bindEvents() {
         { inputs: ["meetingsQ"], buttonId: "meetingsSearchBtn", fn: loadMeetings, actionLabel: "會議搜尋" },
         { inputs: ["calQ"], buttonId: "calSearchBtn", fn: loadCalendarEvents, actionLabel: "行事曆搜尋" },
         { inputs: ["todosQ"], buttonId: "todosSearchBtn", fn: loadTodos, actionLabel: "待辦搜尋" },
-        { inputs: ["docsQ", "docsCaseNumber"], buttonId: "docsSearchBtn", fn: loadDocuments, actionLabel: "文件搜尋" },
+        { inputs: ["docsQ", "docsCaseNumber"], buttonId: "docsSearchBtn", fn: loadDocuments, actionLabel: "檔案搜尋" },
         { inputs: ["docTplQ", "docTplCaseNumber", "docTplTypeFilter"], buttonId: "docTplSearchBtn", fn: loadDocumentTemplates, actionLabel: "書狀模板搜尋" },
         { inputs: ["docKwQ", "docKwCaseNumber", "docKwCategoryFilter"], buttonId: "docKwSearchBtn", fn: loadDocumentKeywords, actionLabel: "書狀關鍵字搜尋" },
         { inputs: ["docRpQ", "docRpCaseNumber"], buttonId: "docRpSearchBtn", fn: loadDocumentReplacements, actionLabel: "替換紀錄搜尋" },
@@ -569,6 +716,8 @@ function bindEvents() {
         { inputs: ["txRecurringQ"], buttonId: "txRecurringSearchBtn", fn: loadRecurringExpenses, actionLabel: "固定支出搜尋" },
         { inputs: ["qtQ", "qtStatusFilter"], buttonId: "qtSearchBtn", fn: loadQuotations, actionLabel: "報價搜尋" },
         { inputs: ["qtTplQ"], buttonId: "qtTplSearchBtn", fn: loadQuotationTemplates, actionLabel: "報價模板搜尋" },
+        { inputs: ["insightsQ"], buttonId: "insightsSearchBtn", fn: loadInsights, actionLabel: "實務見解搜尋" },
+        { inputs: ["insight_fetch_url"], buttonId: "insightFetchBtn", fn: fetchInsightFullManual, actionLabel: "抓取見解來源" },
         { inputs: ["adminSettingsQ"], buttonId: "adminSettingsSearchBtn", fn: loadAdminSettings, actionLabel: "系統設定搜尋" },
         { inputs: ["adminReasonQ", "adminReasonTypeFilter"], buttonId: "adminReasonSearchBtn", fn: loadAdminCaseReasons, actionLabel: "案由模板搜尋" },
         { inputs: ["adminCourtsQ"], buttonId: "adminCourtsSearchBtn", fn: loadAdminCourts, actionLabel: "法院搜尋" },
@@ -675,7 +824,7 @@ function initThemeToggle() {
 async function boot() {
     // bug fix 2026-05-02：原本 await loadMeta() 在 init chain 之後，任一 init 拋例外
     // 整個 boot() 不繼續，dbBadge 卡「連線中」永不更新（律師外網看到的問題）
-    // 改：loadMeta fire-and-forget + 每個 init 包 try/catch（一個壞不影響其他）
+    // 改：loadMeta fire-and-forget + 每個 init 各自 try/catch（一個壞不影響其他）
     const _safeLoadMeta = () => {
         try {
             loadMeta().catch((e) => {

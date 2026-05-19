@@ -171,7 +171,7 @@ class DocumentEditor(QMainWindow):
 
         # 預設檔名為 01_消費者債務清理聲請狀（表格內A0的文字）.docx
         default_filename = f"01_消費者債務清理聲請狀（{self.name_input.text()}）.docx"
-        save_path, _ = QFileDialog.getSaveFileName(self, "存檔", default_filename, "Word 文件 (*.docx);;所有檔案 (*)")
+        save_path, _ = QFileDialog.getSaveFileName(self, "存檔", default_filename, "Word 檔案 (*.docx);;所有檔案 (*)")
 
         if save_path:
             doc.save(save_path)

@@ -33,7 +33,7 @@ class TrajectoryCompressor:
 
     def __init__(self, milestone_keywords: Optional[List[str]] = None) -> None:
         self.milestone_keywords = milestone_keywords or [
-            "法扶", "閱卷", "筆錄", "判決", "法規", "錯誤", "修正", "完成",
+            "法扶", "閱卷", "筆錄", "判決", "法規", "實務見解", "錯誤", "修正", "完成",
         ]
 
     @staticmethod

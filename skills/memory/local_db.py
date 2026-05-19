@@ -9,6 +9,7 @@ import mysql.connector
 import logging
 import json
 import os
+import hashlib
 
 logger = logging.getLogger("LocalDB")
 
@@ -38,16 +39,32 @@ def save_local(content: str, source: str = "unknown", is_synced: bool = False) -
         Inserted document ID
     """
     conn = None
+    cursor = None
     try:
         conn = _get_connection()
         cursor = conn.cursor()
         
         # Truncate source to fit within DB VARCHAR limits (typically 255)
         safe_source = str(source)[:250] if source else "unknown"
+        content_text = str(content or "")
+        content_hash = hashlib.md5(content_text.encode("utf-8", errors="replace")).hexdigest()
+
+        cursor.execute(
+            "SELECT id FROM documents WHERE MD5(content) = %s LIMIT 1",
+            (content_hash,),
+        )
+        row = cursor.fetchone()
+        if row:
+            doc_id = int(row[0])
+            if is_synced:
+                cursor.execute("UPDATE documents SET synced = 1 WHERE id = %s", (doc_id,))
+                conn.commit()
+            logger.info("💾 Local DB duplicate skipped (ID: %s)", doc_id)
+            return doc_id
 
         # Insert Document
         sql = "INSERT INTO documents (content, source, synced) VALUES (%s, %s, %s)"
-        cursor.execute(sql, (content, safe_source, is_synced))
+        cursor.execute(sql, (content_text, safe_source, is_synced))
         doc_id = cursor.lastrowid
         
         # Note: We don't necessarily generate embeddings here if just backing up.
@@ -64,7 +81,8 @@ def save_local(content: str, source: str = "unknown", is_synced: bool = False) -
         return -1
     finally:
         if conn and conn.is_connected():
-            cursor.close()
+            if cursor:
+                cursor.close()
             conn.close()
 
 def get_pending_sync(limit: int = 50) -> list:
@@ -127,9 +145,15 @@ def save_vector_local(doc_id: int, embedding: list) -> bool:
     Useful for local search/RAG capability (offline).
     """
     conn = None
+    cursor = None
     try:
         conn = _get_connection()
         cursor = conn.cursor()
+
+        cursor.execute("SELECT 1 FROM vectors WHERE doc_id = %s LIMIT 1", (doc_id,))
+        if cursor.fetchone():
+            logger.info("💾 Local DB vector duplicate skipped (doc_id: %s)", doc_id)
+            return True
         
         sql = "INSERT INTO vectors (doc_id, embedding) VALUES (%s, %s)"
         cursor.execute(sql, (doc_id, json.dumps(embedding)))
@@ -141,7 +165,8 @@ def save_vector_local(doc_id: int, embedding: list) -> bool:
         return False
     finally:
         if conn and conn.is_connected():
-            cursor.close()
+            if cursor:
+                cursor.close()
             conn.close()
 
 def search_local(query: str, limit: int = 5, source_contains: str = "") -> list:

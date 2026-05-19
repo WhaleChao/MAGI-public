@@ -29,6 +29,19 @@ logger = logging.getLogger(__name__)
 
 SCOPES = ["https://www.googleapis.com/auth/calendar"]
 TOKEN_PATH = Path.home() / ".magi" / "google" / "token.json"
+_CASE_IDENTITY_CACHE: list[dict[str, str]] | None = None
+_LAF_IDENTITY_CACHE: list[dict[str, str]] | None = None
+OSC_CASE_PREFIX_RE = re.compile(
+    r"^\s*(?:\[(20\d{2}-\d{4})\]|(20\d{2}-\d{4})(?=$|[\s：:｜|／/\\\-–—_、，,。；;\]\)]))"
+)
+LAF_NO_RE = re.compile(r"\d{6,8}-[A-Za-z]-\d{3}")
+LAF_EVENT_EXCLUSION_KEYWORDS = (
+    "聲請改期", "聲請改期中", "不出席", "取消", "改期", "不到庭",
+    "法扶開辦末日", "法扶上訴", "法扶再議",
+    "宣判", "宣示判決", "停班", "停課", "放假", "颱風", "天然災害",
+)
+LAF_MEETING_EXCLUSION_KEYWORDS = ("U會議", "Ｕ會議", "u會議", "ｕ會議")
+LAF_COURT_KEYWORDS = ("開庭", "準備程序", "言詞辯論", "審理", "審理程序", "調解", "訊問", "協商程序", "調查", "調查程序", "庭期")
 
 # ── credentials helpers ───────────────────────────────────────────────────────
 
@@ -115,23 +128,60 @@ def _get_setting_value(key: str, default: str = "") -> str:
 
 def _make_todo_event(todo: dict) -> dict:
     case_number = todo.get("case_number") or ""
-    desc = (todo.get("description") or "")[:40]
+    client_name = (todo.get("client_name") or "").strip()
+    todo_type = (todo.get("todo_type") or "").strip() or "待辦"
+    source_file = (todo.get("source_file") or "").strip()
     full_desc = todo.get("description") or ""
     due_str = str(todo.get("todo_date") or todo.get("due_date") or date.today().isoformat())
+    todo_time = str(todo.get("todo_time") or "").strip()
     # Normalise date object → iso string
     if hasattr(due_str, "isoformat"):
         due_str = due_str.isoformat()
 
-    return {
-        "summary": f"[{case_number}] {desc}",
-        "start": {"date": due_str},
-        "end": {"date": due_str},
-        "description": f"案號：{case_number}\n{full_desc}",
+    summary_parts = []
+    if case_number:
+        summary_parts.append(f"[{case_number}]")
+    if client_name:
+        summary_parts.append(client_name)
+    summary_parts.append(todo_type)
+    if not client_name and full_desc:
+        summary_parts.append(str(full_desc).replace("\n", " ")[:28])
+    summary = " ".join(p for p in summary_parts if p).strip() or "OSC 待辦"
+
+    description_lines = []
+    if case_number:
+        description_lines.append(f"系統案號：{case_number}")
+    if client_name:
+        description_lines.append(f"當事人：{client_name}")
+    if todo_type:
+        description_lines.append(f"類型：{todo_type}")
+    if source_file:
+        description_lines.append(f"來源檔案：{source_file}")
+    if full_desc:
+        description_lines.append("")
+        description_lines.append(str(full_desc))
+
+    event: dict[str, Any] = {
+        "summary": summary,
+        "description": "\n".join(description_lines).strip(),
         "reminders": {
             "useDefault": False,
             "overrides": [{"method": "popup", "minutes": 1440}],
         },
     }
+    if todo_time:
+        start = f"{due_str}T{todo_time}:00+08:00" if len(todo_time) == 5 else f"{due_str}T{todo_time}+08:00"
+        try:
+            end_dt = datetime.fromisoformat(start) + timedelta(hours=1)
+            end = end_dt.isoformat()
+        except Exception:
+            end = start
+        event["start"] = {"dateTime": start, "timeZone": "Asia/Taipei"}
+        event["end"] = {"dateTime": end, "timeZone": "Asia/Taipei"}
+    else:
+        event["start"] = {"date": due_str}
+        event["end"] = {"date": due_str}
+    return event
 
 
 def _make_cal_event(ev: dict) -> dict:
@@ -218,7 +268,227 @@ def _extract_case_number(summary: str, description: str) -> str:
     return ""
 
 
-def import_gcal_events_to_todos(service, *, dry_run: bool = False, lookback_days: int = 30, lookahead_days: int = 180) -> dict:
+def _extract_leading_osc_case_number(summary: str, description: str = "") -> str:
+    """Return the OSC system case number only when it is the event prefix."""
+    for text in (summary or "", description or ""):
+        match = OSC_CASE_PREFIX_RE.search(text)
+        if match:
+            return str(match.group(1) or match.group(2) or "").strip()
+    return ""
+
+
+def _load_case_identity_cache() -> list[dict[str, str]]:
+    global _CASE_IDENTITY_CACHE
+    if _CASE_IDENTITY_CACHE is not None:
+        return _CASE_IDENTITY_CACHE
+    try:
+        rows, _ = _osc_exec_sql(
+            """
+            SELECT case_number, client_name, start_date, approval_date
+            FROM cases
+            WHERE COALESCE(client_name, '') != ''
+              AND COALESCE(status, '') NOT IN ('已結案', '結案', 'closed', 'Closed')
+            ORDER BY CHAR_LENGTH(client_name) DESC, case_number DESC
+            LIMIT 1000
+            """,
+            fetch="all",
+        )
+    except Exception as exc:
+        logger.debug("case identity cache failed: %s", exc)
+        rows = []
+    cache: list[dict[str, str]] = []
+    for row in rows or []:
+        case_number = str((row.get("case_number") if isinstance(row, dict) else row[0]) or "").strip()
+        client_name = str((row.get("client_name") if isinstance(row, dict) else row[1]) or "").strip()
+        start_date = str((row.get("start_date") if isinstance(row, dict) else row[2]) or "").strip()[:10]
+        approval_date = str((row.get("approval_date") if isinstance(row, dict) else row[3]) or "").strip()[:10]
+        if case_number and client_name:
+            cache.append({
+                "case_number": case_number,
+                "client_name": client_name,
+                "start_date": start_date or approval_date,
+            })
+    _CASE_IDENTITY_CACHE = cache
+    return cache
+
+
+def _load_laf_identity_cache() -> list[dict[str, str]]:
+    global _LAF_IDENTITY_CACHE
+    if _LAF_IDENTITY_CACHE is not None:
+        return _LAF_IDENTITY_CACHE
+    try:
+        rows, _ = _osc_exec_sql(
+            """
+            SELECT case_number, client_name, laf_case_no, application_no,
+                   start_date, approval_date, case_reason, case_type,
+                   case_category, legal_aid_status
+            FROM cases
+            WHERE COALESCE(client_name, '') != ''
+              AND COALESCE(status, '') NOT IN ('已結案', '結案', 'closed', 'Closed')
+              AND (
+                    COALESCE(laf_case_no, '') != ''
+                 OR COALESCE(application_no, '') REGEXP '^[0-9]{6,8}-[A-Za-z]-[0-9]{3}$'
+                 OR case_category='法律扶助案件'
+                 OR case_reason LIKE '%法扶%'
+                 OR case_reason LIKE '%法律扶助%'
+                 OR COALESCE(legal_aid_status, '') != ''
+              )
+            ORDER BY CHAR_LENGTH(client_name) DESC, case_number DESC
+            LIMIT 1000
+            """,
+            fetch="all",
+        )
+    except Exception as exc:
+        logger.debug("LAF identity cache failed: %s", exc)
+        rows = []
+    cache: list[dict[str, str]] = []
+    for row in rows or []:
+        if isinstance(row, dict):
+            case_number = str(row.get("case_number") or "").strip()
+            client_name = str(row.get("client_name") or "").strip()
+            laf_case_no = str(row.get("laf_case_no") or row.get("application_no") or "").strip()
+            start_date = str(row.get("start_date") or row.get("approval_date") or "").strip()[:10]
+            case_reason = str(row.get("case_reason") or row.get("case_type") or "").strip()
+            case_category = str(row.get("case_category") or "").strip()
+            legal_aid_status = str(row.get("legal_aid_status") or "").strip()
+        else:
+            case_number = str(row[0] or "").strip()
+            client_name = str(row[1] or "").strip()
+            laf_case_no = str(row[2] or row[3] or "").strip()
+            start_date = str(row[4] or row[5] or "").strip()[:10]
+            case_reason = str(row[6] or row[7] or "").strip()
+            case_category = str(row[8] or "").strip() if len(row) > 8 else ""
+            legal_aid_status = str(row[9] or "").strip() if len(row) > 9 else ""
+        if case_number and client_name:
+            cache.append({
+                "case_number": case_number,
+                "client_name": client_name,
+                "laf_case_no": laf_case_no,
+                "start_date": start_date,
+                "case_reason": case_reason,
+                "case_category": case_category,
+                "legal_aid_status": legal_aid_status,
+            })
+    _LAF_IDENTITY_CACHE = cache
+    return cache
+
+
+def _infer_case_identity(summary: str, description: str, event_date: str = "") -> tuple[str, str]:
+    text = f"{summary or ''}\n{description or ''}"
+    case_number = _extract_case_number(summary, description)
+    if case_number:
+        try:
+            row, _ = _osc_exec_sql(
+                "SELECT case_number, client_name FROM cases WHERE case_number=%s LIMIT 1",
+                (case_number,),
+                fetch="one",
+            )
+            if row:
+                if isinstance(row, dict):
+                    return str(row.get("case_number") or case_number), str(row.get("client_name") or "")
+                return str(row[0] or case_number), str(row[1] or "")
+        except Exception:
+            logger.debug("case lookup by number failed", exc_info=True)
+        return case_number, ""
+    for case in _load_case_identity_cache():
+        name = case["client_name"]
+        start_date = str(case.get("start_date") or "").strip()[:10]
+        if event_date and start_date and event_date[:10] < start_date:
+            continue
+        if name and name in text:
+            return case["case_number"], name
+    return "", ""
+
+
+def _classify_laf_reportable_activity(summary: str) -> str:
+    text = str(summary or "")
+    if not text or any(k in text for k in LAF_EVENT_EXCLUSION_KEYWORDS):
+        return ""
+    if any(k in text for k in LAF_MEETING_EXCLUSION_KEYWORDS):
+        return ""
+    if any(k in text for k in LAF_COURT_KEYWORDS):
+        return "開庭"
+    if any(k in text for k in ("會議", "會面", "來所", "來所提供資料", "視訊會議", "碰面", "面談", "線上面談", "來所面談", "開會", "交資料", "來所交資料", "臨時來所")):
+        return "會議"
+    if "律見" in text:
+        return "律見"
+    if any(k in text for k in ("閱卷", "影卷", "調卷")):
+        return "閱卷"
+    if any(k in text for k in ("電話", "電話聯繫", "通話", "電聯", "聯繫", "聯絡")):
+        return "電話聯繫"
+    return ""
+
+
+def _is_laf_identity_case(case: dict[str, str]) -> bool:
+    laf_case_no = str(case.get("laf_case_no") or "").strip()
+    category = str(case.get("case_category") or "").strip()
+    status = str(case.get("legal_aid_status") or "").strip()
+    reason = str(case.get("case_reason") or "").strip()
+    return bool(
+        LAF_NO_RE.fullmatch(laf_case_no)
+        or category == "法律扶助案件"
+        or "法扶" in reason
+        or "法律扶助" in reason
+        or status
+    )
+
+
+def _infer_laf_reportable_event_identity(summary: str, description: str, event_date: str = "") -> tuple[str, str]:
+    text = f"{summary or ''}\n{description or ''}"
+    if not _classify_laf_reportable_activity(text):
+        return "", ""
+    explicit_case = _extract_case_number(summary, description)
+    explicit_laf = LAF_NO_RE.search(text)
+    matches = []
+    for case in _load_laf_identity_cache():
+        if not _is_laf_identity_case(case):
+            continue
+        if event_date and case.get("start_date") and event_date[:10] < str(case.get("start_date")):
+            continue
+        if explicit_case and explicit_case == case.get("case_number"):
+            return case["case_number"], case["client_name"]
+        if explicit_laf and explicit_laf.group(0) == case.get("laf_case_no"):
+            return case["case_number"], case["client_name"]
+        client_name = case.get("client_name") or ""
+        if client_name and client_name in text:
+            matches.append(case)
+    if len(matches) == 1:
+        return matches[0]["case_number"], matches[0]["client_name"]
+    if len(matches) > 1:
+        for case in matches:
+            reason_hint = str(case.get("case_reason") or "").strip()[:2]
+            if reason_hint and reason_hint in text:
+                return case["case_number"], case["client_name"]
+    return "", ""
+
+
+def _infer_osc_owned_event_identity(summary: str, description: str) -> tuple[str, str]:
+    case_number = _extract_leading_osc_case_number(summary, description)
+    if not case_number:
+        return "", ""
+    try:
+        row, _ = _osc_exec_sql(
+            "SELECT case_number, client_name FROM cases WHERE case_number=%s LIMIT 1",
+            (case_number,),
+            fetch="one",
+        )
+        if row:
+            if isinstance(row, dict):
+                return str(row.get("case_number") or case_number), str(row.get("client_name") or "")
+            return str(row[0] or case_number), str(row[1] or "")
+    except Exception:
+        logger.debug("OSC-owned event case lookup failed", exc_info=True)
+    return case_number, ""
+
+
+def _infer_importable_event_identity(summary: str, description: str, event_date: str = "") -> tuple[str, str]:
+    case_number, client_name = _infer_osc_owned_event_identity(summary, description)
+    if case_number:
+        return case_number, client_name
+    return _infer_laf_reportable_event_identity(summary, description, event_date)
+
+
+def import_gcal_events_to_todos(service, *, dry_run: bool = False, lookback_days: int = 730, lookahead_days: int = 180) -> dict:
     stats: dict[str, Any] = {
         "imported": 0,
         "import_skipped": 0,
@@ -281,6 +551,10 @@ def import_gcal_events_to_todos(service, *, dry_run: bool = False, lookback_days
                     if not start_date:
                         stats["import_skipped"] += 1
                         continue
+                    case_number, client_name = _infer_importable_event_identity(summary, description, start_date)
+                    if not case_number:
+                        stats["import_skipped"] += 1
+                        continue
                     if dry_run:
                         stats["imported"] += 1
                         continue
@@ -292,8 +566,8 @@ def import_gcal_events_to_todos(service, *, dry_run: bool = False, lookback_days
                         VALUES (%s,%s,%s,%s,%s,%s,%s,'pending',%s)
                         """,
                         (
-                            _extract_case_number(summary, description),
-                            "",
+                            case_number,
+                            client_name,
                             _classify_todo_type(summary),
                             start_date,
                             start_time or None,
@@ -326,17 +600,27 @@ def push_todo_to_gcal(service, calendar_id: str, todo: dict) -> dict:
     existing_gid = (todo.get("google_calendar_id") or "").strip()
 
     if existing_gid:
-        result = (
-            service.events()
-            .patch(calendarId=calendar_id, eventId=existing_gid, body=event_body)
-            .execute()
-        )
-    else:
-        result = (
-            service.events()
-            .insert(calendarId=calendar_id, body=event_body)
-            .execute()
-        )
+        try:
+            result = (
+                service.events()
+                .patch(calendarId=calendar_id, eventId=existing_gid, body=event_body)
+                .execute()
+            )
+            return result
+        except Exception as exc:
+            if not _is_stale_gcal_event_error(exc):
+                raise
+            logger.info(
+                "case_todos id=%s has stale google_calendar_id=%s; creating replacement event",
+                todo.get("id"),
+                existing_gid,
+            )
+
+    result = (
+        service.events()
+        .insert(calendarId=calendar_id, body=event_body)
+        .execute()
+    )
     return result
 
 
@@ -346,18 +630,44 @@ def push_calendar_event_to_gcal(service, calendar_id: str, ev: dict) -> dict:
     existing_gid = (ev.get("google_event_id") or "").strip()
 
     if existing_gid:
-        result = (
-            service.events()
-            .patch(calendarId=calendar_id, eventId=existing_gid, body=event_body)
-            .execute()
-        )
-    else:
-        result = (
-            service.events()
-            .insert(calendarId=calendar_id, body=event_body)
-            .execute()
-        )
+        try:
+            result = (
+                service.events()
+                .patch(calendarId=calendar_id, eventId=existing_gid, body=event_body)
+                .execute()
+            )
+            return result
+        except Exception as exc:
+            if not _is_stale_gcal_event_error(exc):
+                raise
+            logger.info(
+                "calendar_events id=%s has stale google_event_id=%s; creating replacement event",
+                ev.get("id"),
+                existing_gid,
+            )
+
+    result = (
+        service.events()
+        .insert(calendarId=calendar_id, body=event_body)
+        .execute()
+    )
     return result
+
+
+def _is_stale_gcal_event_error(exc: Exception) -> bool:
+    """Google Calendar ids can become stale after deletion/move/ACL changes."""
+    try:
+        from googleapiclient.errors import HttpError
+    except Exception:
+        HttpError = ()  # type: ignore[assignment]
+    if HttpError and not isinstance(exc, HttpError):
+        return False
+    status = getattr(getattr(exc, "resp", None), "status", None)
+    try:
+        status_int = int(status)
+    except Exception:
+        return False
+    return status_int in {403, 404, 410}
 
 
 # ── main sync ─────────────────────────────────────────────────────────────────
@@ -393,12 +703,13 @@ def run_sync(dry_run: bool = False, conn=None) -> dict:  # noqa: ARG001
     try:
         rows, cols = _osc_exec_sql(
             """
-            SELECT id, case_number, client_name, description, todo_date,
-                   google_calendar_id
+            SELECT id, case_number, client_name, todo_type, todo_date, todo_time,
+                   description, source_file, google_calendar_id
             FROM case_todos
             WHERE todo_date >= %s
               AND todo_date <= %s
               AND (status IS NULL OR status != 'deleted')
+              AND (source_file IS NULL OR source_file NOT LIKE 'gcal_import%%')
             ORDER BY todo_date
             LIMIT 200
             """,
@@ -422,9 +733,12 @@ def run_sync(dry_run: bool = False, conn=None) -> dict:  # noqa: ARG001
                 "id": row[0],
                 "case_number": row[1],
                 "client_name": row[2],
-                "description": row[3],
-                "todo_date": row[4],
-                "google_calendar_id": row[5] if len(row) > 5 else None,
+                "todo_type": row[3] if len(row) > 3 else None,
+                "todo_date": row[4] if len(row) > 4 else None,
+                "todo_time": row[5] if len(row) > 5 else None,
+                "description": row[6] if len(row) > 6 else None,
+                "source_file": row[7] if len(row) > 7 else None,
+                "google_calendar_id": row[8] if len(row) > 8 else None,
             }
 
         if not todo.get("todo_date"):
@@ -436,13 +750,12 @@ def run_sync(dry_run: bool = False, conn=None) -> dict:  # noqa: ARG001
             continue
 
         try:
-            from googleapiclient.errors import HttpError
-
             result = push_todo_to_gcal(service, calendar_id, todo)
             event_id = result.get("id", "")
 
-            # Write back event_id if newly created
-            if event_id and not (todo.get("google_calendar_id") or "").strip():
+            # Write back event_id when newly created or when replacing a stale id.
+            existing_gid = (todo.get("google_calendar_id") or "").strip()
+            if event_id and event_id != existing_gid:
                 _osc_exec_sql(
                     "UPDATE case_todos SET google_calendar_id=%s WHERE id=%s",
                     (event_id, todo["id"]),

@@ -17,6 +17,8 @@ Author: Claude (Anthropic)
 Date: 2025-12
 """
 
+from __future__ import annotations
+
 import os
 import queue
 import sys
@@ -48,6 +50,7 @@ from api.case_path_mapper import (
     translate_case_path_to_local,
     translate_local_path_to_canonical,
 )
+from api.laf_case_classifier import normalize_laf_case_type
 
 from api.runtime_paths import config_candidates, ensure_orch_on_sys_path, get_config_path
 from skills.engine.legal_web_adapter import format_legal_web_engine_log, resolve_legal_web_engine
@@ -76,6 +79,16 @@ _PROGRESS_PRIORITY_TYPES = frozenset({
     "fee", "withdrawal", "condition",
     "派案通知", "審核結果通知", "審查結果通知", "審查通知", "派案",
 })
+
+
+def _laf_target_subfolder_for_attachment(filename: str) -> str:
+    """Return the OSC subfolder for a downloaded LAF attachment."""
+    fname = os.path.basename(filename or "")
+    if "結案酬金領款單" in fname or "結案審查通知書" in fname:
+        return "03_結案資料"
+    if "附條件第二階段預付酬金領款單" in fname or "二階段" in fname:
+        return "02_開辦資料"
+    return "01_法扶資料"
 
 
 def _classify_progress_email(subject: str, snippet: str) -> bool:
@@ -519,6 +532,13 @@ class LAFCaseTypeParser:
                              info.case_stage = '再審'
                         elif '非常上訴' in info.case_reason and info.case_type == '刑事':
                              info.case_stage = '非常上訴'
+
+                    info.case_type, info.case_stage = normalize_laf_case_type(
+                        info.case_type,
+                        info.case_stage,
+                        info.case_reason,
+                        info.laf_case_type,
+                    )
                 
                 if info.case_type == '消費者債務清理' and not info.case_reason:
                     info.case_reason = '更生'
@@ -563,15 +583,15 @@ class LAFCaseTypeParser:
             info.needs_download = False  # 不需從系統下載
             return info
 
-        # 4. ★ 審核回報格式：通知喬政翔律師回報(結案|附條件)...
-        # 範例：通知喬政翔律師回報(結案)1140905-K-001-陳瀚-刑事二審辯護-詐欺等之資料，業經分會轉入系統
+        # 4. ★ 審核回報格式：通知範例律師回報(結案|附條件)...
+        # 範例：通知範例律師回報(結案)1140905-K-001-當事人-刑事二審辯護-詐欺等之資料，業經分會轉入系統
         report_result_match = re.search(
             r'回報[（(](結案|附條件)[)）].*?(\d{7}-[A-Z]-\d{3})(.*)$',
             subject,
         )
         if report_result_match:
             report_kind = (report_result_match.group(1) or "").strip()
-            info.notification_type = "審核結果通知"
+            info.notification_type = "結案回報通知" if report_kind == "結案" else "附條件回報通知"
             info.branch = "待確認"
             info.laf_case_number = (report_result_match.group(2) or "").strip()
             tail = (report_result_match.group(3) or "").strip(" -")
@@ -597,8 +617,31 @@ class LAFCaseTypeParser:
 
             if report_kind == "附條件" and (not info.case_reason or info.case_reason == "待確認"):
                 info.case_reason = "附條件審查"
+            info.case_type, info.case_stage = normalize_laf_case_type(
+                info.case_type,
+                info.case_stage,
+                info.case_reason,
+                info.laf_case_type,
+            )
 
             info.needs_download = True
+            return info
+
+        # 4.1. ★ 進度回報提醒格式：提醒！請扶助律師回報案件辦理進度
+        progress_match = re.search(
+            r'回報案件辦理進度.*?[（(]([^()（）]+)[)）].*?[（(](\d{7}-[A-Z]-\d{3})[)）]',
+            subject,
+        )
+        if progress_match:
+            info.notification_type = "進度回報"
+            info.branch = "待確認"
+            info.client_name = (progress_match.group(1) or "").strip()
+            info.laf_case_number = (progress_match.group(2) or "").strip()
+            info.case_type = "民事"
+            info.case_stage = "一審"
+            info.case_reason = "案件辦理進度"
+            info.laf_case_type = "一般案件"
+            info.needs_download = False
             return info
 
         # 4.5. ★ 分會指派辦理格式：法扶XX分會指派辦理刑事偵查中辯護案件（案號，當事人）
@@ -665,6 +708,12 @@ class LAFCaseTypeParser:
                 info.case_type = "民事"
                 info.case_stage = "一審"
                 info.case_reason = short_reason or "待確認"
+                info.case_type, info.case_stage = normalize_laf_case_type(
+                    info.case_type,
+                    info.case_stage,
+                    info.case_reason,
+                    info.laf_case_type,
+                )
             info.laf_case_type = "一般案件"
 
             info.has_attachment = True  # 專員來信通常有附件
@@ -1973,6 +2022,12 @@ class LAFWebAutomation:
                                     case_stage = '其他'
                                 else:
                                     case_stage = '偵查'
+                            case_type, case_stage = normalize_laf_case_type(
+                                case_type or '民事',
+                                case_stage or '一審',
+                                case_reason,
+                                laf_case_type,
+                            )
                     
                     # 如果上面沒解析到，嘗試簡單解析
                     if not client_name:
@@ -2866,6 +2921,12 @@ class LAFGmailMonitor:
         """在法扶 Gmail monitor 的 poll cycle 內順便掃閱卷信件。
         使用動態 import 避免 circular，失敗不影響法扶 monitor。"""
         _log = _logging.getLogger(__name__)
+        enabled = str(os.environ.get("MAGI_ENABLE_BACKGROUND_FILE_REVIEW_CHECK", "0")).strip().lower() in {
+            "1", "true", "yes", "on",
+        }
+        if not enabled:
+            _log.info("[閱卷] background file review email scan disabled (set MAGI_ENABLE_BACKGROUND_FILE_REVIEW_CHECK=1 to enable)")
+            return
         _log.info("[閱卷] file review email scan integrated in LAF monitor cycle — starting")
         try:
             import sys as _sys
@@ -3380,16 +3441,7 @@ class OSCCaseCreator:
         if not files:
             return
         
-        # 定義檔案分類規則
-        def get_target_subfolder(fname):
-            # 結案酬金領款單 → 03_結案資料
-            if '結案酬金領款單' in fname:
-                return '03_結案資料'
-            # 附條件第二階段預付酬金領款單 → 02_開辦資料
-            if '附條件第二階段預付酬金領款單' in fname:
-                return '02_開辦資料'
-            # 其他全部 → 01_法扶資料 (包含預付酬金領款單、結案回報書、准予扶助證明書等)
-            return '01_法扶資料'
+        get_target_subfolder = _laf_target_subfolder_for_attachment
         
         for file_path in files:
             if not os.path.exists(file_path):
@@ -3645,7 +3697,8 @@ class OSCCaseCreator:
                                             break
                                 else:
                                     roots = preferred_case_roots(include_closed=False)
-                                    search_root = roots[0] if roots else "Z:/lumi63181107/01_案件"
+                                    _fallback_share = (os.environ.get("MAGI_NAS_HOME_USER") or os.environ.get("MAGI_NAS_USER") or "home").strip().strip("/\\") or "home"
+                                    search_root = roots[0] if roots else f"Z:/{_fallback_share}/01_案件"
                             
                             if search_root and os.path.exists(search_root):
                                 self.log(f"     🔍 搜尋範圍: {search_root}")
@@ -3871,16 +3924,7 @@ class OSCCaseCreator:
             
             # 8. 處理檔案 (ZIP 解壓縮/分類)
             if files:
-                # 定義檔案分類規則
-                # ★ 結案酬金領款單 → 03_結案資料（代表案件真正結束）
-                # ★ 附條件第二階段預付酬金領款單 → 02_開辦資料
-                # ★ 其餘全部 → 01_法扶資料
-                def get_target_subfolder(fname):
-                    if '結案酬金領款單' in fname:
-                        return '03_結案資料'
-                    if '附條件第二階段預付酬金領款單' in fname or '二階段' in fname:
-                        return '02_開辦資料'
-                    return '01_法扶資料'
+                get_target_subfolder = _laf_target_subfolder_for_attachment
 
                 for file_path in files:
                     if not os.path.exists(file_path):
@@ -4392,8 +4436,7 @@ class LAFAutomationManager:
             if not _already_notified:
                 _already_notified = notification_key in self._notified_cases
             if _already_notified:
-                self.log(f"  ⏭️ 案件已通知過，跳過 Discord: {case_info.client_name} ({notification_key[-8:]}...)")
-                return
+                self.log(f"  ⏭️ 案件已通知過，僅跳過通知，仍檢查下載/歸檔: {case_info.client_name} ({notification_key[-8:]}...)")
             
             # 0. 記錄到資料庫 (避免重複處理)
             if self.db_manager:
@@ -4408,17 +4451,48 @@ class LAFAutomationManager:
                 }
                 self.db_manager.add_laf_email_record(record_data)
 
-            # 發送 Discord 通知
-            if self.discord:
-                self.discord.send_message(
-                    f"📧 法扶{case_info.notification_type}",
-                    f"**分會:** {case_info.branch}\n"
-                    f"**當事人:** {case_info.client_name}\n"
-                    f"**法扶案號:** {case_info.laf_case_number}\n"
-                    f"**案件類型:** {case_info.case_type} ({case_info.case_stage})\n"
-                    f"**案由:** {case_info.case_reason}",
-                    color=0x00ff00
-                )
+            notify_title = f"📧 法扶{case_info.notification_type}"
+            notify_body = (
+                f"分會: {case_info.branch}\n"
+                f"當事人: {case_info.client_name}\n"
+                f"法扶案號: {case_info.laf_case_number}\n"
+                f"案件類型: {case_info.case_type} ({case_info.case_stage})\n"
+                f"案由: {case_info.case_reason}"
+            )
+            notification_type = str(case_info.notification_type or "")
+            if "結案" in notification_type:
+                topic_key = "laf_closing"
+            elif "進度" in notification_type:
+                topic_key = "laf_progress"
+            else:
+                topic_key = "laf"
+
+            notify_ok = False
+            if not _already_notified:
+                # 發送通知；one-shot 背景流程通常沒有 Discord notifier，需使用 LAFNotifier fallback。
+                if self.discord:
+                    discord_body = (
+                        f"**分會:** {case_info.branch}\n"
+                        f"**當事人:** {case_info.client_name}\n"
+                        f"**法扶案號:** {case_info.laf_case_number}\n"
+                        f"**案件類型:** {case_info.case_type} ({case_info.case_stage})\n"
+                        f"**案由:** {case_info.case_reason}"
+                    )
+                    self.discord.send_message(
+                        notify_title,
+                        discord_body,
+                        color=0x00ff00
+                    )
+                    notify_ok = True
+                else:
+                    try:
+                        ensure_orch_on_sys_path()
+                        from line_notifier import LAFNotifier  # type: ignore
+                        notify_ok = bool(LAFNotifier().notify_admin(f"{notify_title}\n{notify_body}", topic_key=topic_key))
+                    except Exception as notify_error:
+                        self.log(f"  ⚠️ 法扶通知 fallback 失敗: {notify_error}")
+
+            if notify_ok:
                 # ★ 標記為已通知
                 self._notified_cases.add(notification_key)
                 self._save_notified_cases()

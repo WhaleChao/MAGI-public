@@ -186,6 +186,46 @@ def test_share_download_chinese_pdf_has_mobile_safe_ascii_filename(tmp_path: Pat
     assert "%E6%94%AF%E5%87%BA%E8%A1%A8.pdf" in cd
 
 
+def test_share_download_serves_cached_copy_when_original_is_unavailable(tmp_path: Path, monkeypatch):
+    client = _client()
+    src = tmp_path / "卷證.pdf"
+    src.write_bytes(b"%PDF-cached-share")
+
+    from api.blueprints import osc_files as mod
+
+    monkeypatch.setattr(mod, "_SHARE_STORE_PATH", tmp_path / "shares.json")
+    monkeypatch.setenv("MAGI_OSC_FILE_SHARE_PUBLIC_BASE_URL", "https://paperclip-share.example.test")
+    with patch("api.blueprints.osc_files._resolve_safe_file", return_value=str(src)):
+        r = client.post("/api/osc/files/share", json={"path": str(src), "ttl_sec": 600})
+
+    assert r.status_code == 200
+    token = r.get_json()["url"].rstrip("/").split("/s/", 1)[1]
+    row = mod._load_share_store()["shares"][mod._share_token_hash(token)]
+    assert Path(row["staged_path"]).is_file()
+    assert Path(row["staged_path"]).read_bytes() == b"%PDF-cached-share"
+
+    src.unlink()
+    download = client.get(f"/s/{token}")
+
+    assert download.status_code == 200
+    assert download.data == b"%PDF-cached-share"
+
+
+def test_expired_share_prune_removes_cached_copy(tmp_path: Path, monkeypatch):
+    from api.blueprints import osc_files as mod
+
+    monkeypatch.setattr(mod, "_SHARE_STORE_PATH", tmp_path / "shares.json")
+    cached = tmp_path / "osc_file_share_cache" / ("a" * 64)
+    cached.parent.mkdir()
+    cached.write_bytes(b"cached")
+    data = {"shares": {"token-hash": {"expires_at": 1, "staged_path": str(cached)}}}
+
+    pruned = mod._prune_share_store(data)
+
+    assert pruned["shares"] == {}
+    assert not cached.exists()
+
+
 def test_pdf_preview_content_url_is_encoded(tmp_path: Path):
     client = _client()
     src = tmp_path / "卷證 A&B#1.pdf"
@@ -203,6 +243,33 @@ def test_pdf_preview_content_url_is_encoded(tmp_path: Path):
     assert "%26" in data["content_url"]
     assert "%23" in data["content_url"]
     assert "A&B#1" not in data["content_url"]
+
+
+def test_structured_preview_uses_staged_file_before_reading(tmp_path: Path, monkeypatch):
+    client = _client()
+    src = tmp_path / "資料.csv"
+    src.write_text("name\n原始\n", encoding="utf-8")
+    staged = tmp_path / "staged.csv"
+    staged.write_text("name\n暫存\n", encoding="utf-8")
+
+    from api.blueprints import osc_files as mod
+
+    seen = {}
+
+    def fake_preview_csv(path):
+        seen["path"] = path
+        return {"ok": True, "headers": ["name"], "rows": [["暫存"]], "truncated": False, "row_count": 1}
+
+    monkeypatch.setattr(mod, "_stage_file_with_retry", lambda local: str(staged))
+    monkeypatch.setattr(mod.osc_preview, "preview_csv_to_rows", fake_preview_csv)
+    with patch("api.blueprints.osc_files._osc_resolve_existing_local_path", return_value=str(src)), \
+         patch("api.blueprints.osc_files._osc_is_safe_local_path", return_value=True):
+        r = client.get(f"/api/osc/files/preview?{urlencode({'path': str(src)})}")
+
+    assert r.status_code == 200
+    assert r.get_json()["rows"] == [["暫存"]]
+    assert seen["path"] == str(staged)
+    assert not staged.exists()
 
 
 def test_share_requires_independent_base_even_on_localhost(tmp_path: Path, monkeypatch):
@@ -332,6 +399,26 @@ def test_share_download_uses_system_cp_when_python_read_keeps_deadlocking(tmp_pa
     monkeypatch.setattr(mod.subprocess, "run", fake_run)
 
     assert mod._read_file_with_retry(str(src)) == b"%PDF-share-cp"
+    assert attempts["n"] >= 1
+
+
+def test_share_download_stages_even_when_source_stat_deadlocks(tmp_path: Path, monkeypatch):
+    from api.blueprints import osc_files as mod
+
+    src = tmp_path / "卷證.pdf"
+    payload = b"%PDF-share-stat-deadlock"
+    src.write_bytes(payload)
+    attempts = {"n": 0}
+
+    def flaky_stat(path, **_kwargs):
+        if str(path) == str(src):
+            attempts["n"] += 1
+            raise OSError(errno.EDEADLK, "Resource deadlock avoided")
+        return mod.os.stat(path)
+
+    monkeypatch.setattr(mod, "_stat_with_retry", flaky_stat)
+
+    assert mod._read_file_with_retry(str(src)) == payload
     assert attempts["n"] >= 1
 
 

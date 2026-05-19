@@ -165,6 +165,37 @@ def osc_accounting_summary_api():
     return jsonify({"ok": True, "totals": totals or {}, "by_category": by_category or []})
 
 
+@osc_accounting_bp.route("/api/osc/accounting/import/google-sheet", methods=["GET", "POST"])
+@login_required
+def osc_accounting_google_sheet_import_api():
+    from api.osc.accounting_sheet_import import (
+        DEFAULT_ACCOUNT_HINT,
+        DEFAULT_GID,
+        DEFAULT_SPREADSHEET_ID,
+        SheetsAuthorizationRequired,
+        run_import,
+    )
+
+    payload = request.get_json(silent=True) or {}
+    month = (payload.get("month") or request.args.get("month") or "").strip() or None
+    commit = bool(payload.get("commit")) if request.method == "POST" else False
+    auth = bool(payload.get("auth")) if request.method == "POST" else False
+    try:
+        result = run_import(
+            month=month,
+            dry_run=not commit,
+            spreadsheet_id=(payload.get("spreadsheet_id") or request.args.get("spreadsheet_id") or DEFAULT_SPREADSHEET_ID),
+            gid=int(payload.get("gid") or request.args.get("gid") or DEFAULT_GID),
+            interactive=auth,
+            account_hint=(payload.get("account_hint") or request.args.get("account_hint") or DEFAULT_ACCOUNT_HINT),
+        )
+    except SheetsAuthorizationRequired as exc:
+        return jsonify({"ok": False, "error": "auth_required", "message": str(exc)}), 428
+    except Exception as exc:
+        return jsonify({"ok": False, "error": type(exc).__name__, "message": str(exc)}), 500
+    return jsonify(result)
+
+
 # ── Expense Defaults ─────────────────────────────────────────────────
 
 @osc_accounting_bp.route("/api/osc/accounting/defaults", methods=["GET", "POST"])
@@ -322,3 +353,66 @@ def osc_accounting_recurring_detail_api(row_id):
     vals.append(row_id)
     result, _ = _osc_exec(f"UPDATE recurring_expenses SET {','.join(sets)} WHERE id=%s", tuple(vals), fetch="none")
     return jsonify({"ok": True, "result": result})
+
+
+@osc_accounting_bp.route("/api/osc/accounting/recurring/<int:row_id>/sync-generated", methods=["POST"])
+@login_required
+def osc_accounting_recurring_sync_generated_api(row_id):
+    _osc_exec, _osc_text, _osc_log_activity, _osc_resolve_case_id, _osc_safe_int = _get_osc_helpers()
+    row, _ = _osc_exec("SELECT * FROM recurring_expenses WHERE id=%s", (row_id,), fetch="one")
+    if not row:
+        return jsonify({"ok": False, "error": "not found"}), 404
+    payload = request.get_json(silent=True) or {}
+    today = date.today()
+    start_date = (payload.get("start_date") or f"{today.year}-01-01").strip()
+    end_date = (payload.get("end_date") or str(today)).strip()
+    try:
+        amount = float(payload.get("amount") if "amount" in payload else row.get("amount") or 0)
+    except Exception:
+        return jsonify({"ok": False, "error": "amount invalid"}), 400
+    category = (payload.get("category") or row.get("category") or "").strip()
+    sub_type = (payload.get("sub_type") or row.get("sub_type") or "").strip()
+    label = (payload.get("description") or row.get("description") or row.get("sub_type") or row.get("category") or "").strip()
+    fixed_description = f"[固定] {label}".strip()
+    if not category or not fixed_description:
+        return jsonify({"ok": False, "error": "recurring expense is incomplete"}), 400
+    result, _ = _osc_exec(
+        """
+        UPDATE case_transactions
+           SET amount=%s, category=%s, sub_type=%s
+         WHERE type='支出'
+           AND date >= %s
+           AND date <= %s
+           AND COALESCE(category,'')=%s
+           AND COALESCE(sub_type,'')=%s
+           AND COALESCE(description,'')=%s
+        """,
+        (amount, category, sub_type or None, start_date, end_date, row.get("category") or "", row.get("sub_type") or "", fixed_description),
+        fetch="none",
+    )
+    updated, _ = _osc_exec(
+        """
+        SELECT id, case_id, date, type, sub_type, category, description, amount
+          FROM case_transactions
+         WHERE type='支出'
+           AND date >= %s
+           AND date <= %s
+           AND COALESCE(category,'')=%s
+           AND COALESCE(sub_type,'')=%s
+           AND COALESCE(description,'')=%s
+         ORDER BY date DESC, id DESC
+         LIMIT 80
+        """,
+        (start_date, end_date, category, sub_type, fixed_description),
+        fetch="all",
+    )
+    return jsonify(
+        {
+            "ok": True,
+            "row_id": row_id,
+            "start_date": start_date,
+            "end_date": end_date,
+            "updated_count": (result or {}).get("rowcount", 0),
+            "items": updated or [],
+        }
+    )

@@ -307,7 +307,7 @@ for text, desc in [
           m is not None,
           f"match={m.group() if m else None}, groups={m.groups() if m else None}")
 
-for text in ["phone " + "0912" + "345678", "2024年1月", "hello world 123"]:
+for text in ["phone 0912345678", "2024年1月", "hello world 123"]:
     m = _RE_CASE_NUMBER.search(text)
     check(f"_RE_CASE_NUMBER negative: {text!r}", m is None, f"match={m}")
 

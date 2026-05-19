@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.magi.memory-watchdog</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>-c</string>
+        <string>exec /Users/ai/Desktop/MAGI_v2/venv/bin/python3 /Users/ai/Desktop/MAGI_v2/scripts/ops/memory_watchdog.py</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>/Users/ai/Desktop/MAGI_v2</string>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>ThrottleInterval</key>
+    <integer>30</integer>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/Users/ai/Desktop/MAGI_v2/venv/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+        <key>MAGI_ROOT</key>
+        <string>/Users/ai/Desktop/MAGI_v2</string>
+        <key>HOME</key>
+        <string>/Users/ai</string>
+        <key>MAGI_USE_RUNTIME_DIR</key>
+        <string>1</string>
+        <key>MAGI_WATCHDOG_KILL_MODE</key>
+        <string>shadow</string>
+        <key>MAGI_WATCHDOG_REAP_STALE_PLAYWRIGHT</key>
+        <string>1</string>
+        <key>MAGI_WATCHDOG_STALE_PLAYWRIGHT_MODE</key>
+        <string>enforce</string>
+        <key>MAGI_WATCHDOG_STALE_PLAYWRIGHT_SEC</key>
+        <string>2700</string>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>/tmp/magi-memory-watchdog.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/magi-memory-watchdog.log</string>
+    <key>ProcessType</key>
+    <string>Background</string>
+</dict>
+</plist>

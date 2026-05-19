@@ -169,13 +169,15 @@ def _gather_case_notes(vault: Path) -> Dict[str, List[Dict]]:
 
 def _case_needs_update(case_number: str, notes: List[Dict], state: Dict) -> bool:
     """Check if any note in this case has changed since last synthesis,
-    or if the previous synthesis used structural fallback (llm_synthesized=False).
+    or if the previous synthesis used a retryable structural fallback.
     """
     prev = state.get("cases", {}).get(case_number, {})
     prev_hashes = prev.get("source_hashes", {})
 
-    # Re-synthesize if previous run used structural fallback (oMLX was down)
-    if prev and not prev.get("llm_synthesized", True):
+    # Re-synthesize retryable fallbacks, such as multi-document cases where
+    # an LLM merge is materially better.  Single-note cases can safely keep
+    # the structural overview without becoming nightly churn.
+    if prev and not prev.get("llm_synthesized", True) and prev.get("fallback_retryable", True):
         return True
 
     for note in notes:
@@ -295,7 +297,7 @@ def _synthesize_overview(
 
 要求：
 1. 用繁體中文
-2. 包含以下章節（若資料不足可標註「待補充」）：
+2. 包含以下章節（若資料不足可標註「未見資料」）：
    ## 案件概要
    - 當事人、案由、法院、進度
 
@@ -311,12 +313,13 @@ def _synthesize_overview(
    ## 證據清單
    - 列出已掌握的證據（含來源文件）
 
-   ## ⚠️ 矛盾與待確認
-   - 若不同文件中有矛盾的事實描述，在此標記
-   - 若有資訊缺口，在此提出
+   ## 矛盾與待補事項
+   - 只有在不同文件描述同一事實且內容互相衝突時，才使用「⚠️ 矛盾：」並列出兩個版本
+   - 單純缺少資料時，請列在「待補事項」，不要使用 ⚠️
+   - 若沒有矛盾也沒有待補事項，寫「未發現」
 
 3. 每項資訊後面用 `→ 來源：文件名` 標註出處
-4. 若兩份文件描述同一事件但有差異，用 ⚠️ 標記並列出兩個版本
+4. 不要輸出提示詞、方括號樣板、或「請提供文件內容」等對話語句
 
 以下是文件內容：
 
@@ -636,7 +639,10 @@ def synthesize(
             overview = _structural_overview(case_number, client_name, notes)
             used_fallback = True
             if not quiet:
-                print(f"  ⚠️  LLM 失敗，使用結構式 fallback（夜間 cron 補齊）")
+                if len(notes) <= 1:
+                    print("  📋 單一來源，使用結構式總覽")
+                else:
+                    print("  ⚠️  LLM 失敗，使用結構式 fallback（夜間 cron 補齊）")
 
         # Write wiki page (with wikilinks injected)
         wiki_path = _write_wiki_page(vault, case_number, client_name, overview, "overview", notes=notes)
@@ -662,6 +668,7 @@ def synthesize(
             "synthesized_at": datetime.now().isoformat(),
             "vector_chunks": chunks,
             "llm_synthesized": not used_fallback,
+            "fallback_retryable": bool(used_fallback and len(notes) > 1),
         }
         _save_state(state)
         synthesized += 1

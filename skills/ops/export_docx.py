@@ -73,6 +73,7 @@ def export_bilingual_docx(
     prefix: str = "translate",
     filename: str = "",
     col_labels: Optional[Dict[str, str]] = None,
+    hide_page_column: bool = False,
 ) -> dict:
     """
     產生雙語對照 docx 表格。
@@ -107,6 +108,7 @@ def export_bilingual_docx(
         "header_text": header_text or "",
         "pages": pages,
         "out_path": out_path,
+        "hide_page_column": bool(hide_page_column),
     }
     if col_labels:
         data["col_labels"] = col_labels
