@@ -62,6 +62,8 @@ def test_case_folder_creation_refuses_synology_drive_fallback(tmp_path, monkeypa
     monkeypatch.setattr(mod, "_osc_case_creation_roots", lambda: [str(cloud_root)])
     monkeypatch.setattr(nas_mount_guard, "ensure_nas_mounts", lambda: {"ok": False})
     monkeypatch.setenv("MAGI_ALLOW_SYNOLOGY_DRIVE_FOLDER_CREATE", "0")
+    monkeypatch.setenv("MAGI_SYNOLOGY_DRIVE_CASE_CREATE_AFTER_MINUTES", "30")
+    monkeypatch.setenv("MAGI_RUNTIME_DIR", str(tmp_path / ".runtime"))
 
     result = mod._osc_select_case_creation_root()
 
@@ -82,6 +84,47 @@ def test_case_folder_creation_prefers_real_nas_over_synology_drive(tmp_path, mon
 
     assert result["ok"] is True
     assert result["root"] == str(nas_root)
+
+
+def test_case_folder_creation_allows_synology_drive_after_long_outage(tmp_path, monkeypatch):
+    from api.blueprints import osc_cases as mod
+    import api.nas_mount_guard as nas_mount_guard
+
+    cloud_root = tmp_path / "Library" / "CloudStorage" / "SynologyDrive-homes" / "01_案件"
+    cloud_root.mkdir(parents=True)
+    monkeypatch.setattr(mod, "_osc_case_creation_roots", lambda: [str(cloud_root)])
+    monkeypatch.setattr(nas_mount_guard, "ensure_nas_mounts", lambda: {"ok": False})
+    monkeypatch.setenv("MAGI_RUNTIME_DIR", str(tmp_path / ".runtime"))
+    monkeypatch.setenv("MAGI_SYNOLOGY_DRIVE_CASE_CREATE_AFTER_MINUTES", "0")
+
+    result = mod._osc_select_case_creation_root()
+
+    assert result["ok"] is True
+    assert result["root"] == str(cloud_root)
+    assert result["temporary_synology_drive"] is True
+
+
+def test_auto_create_folder_skips_closed_case_before_root_selection(monkeypatch):
+    from api.blueprints import osc_cases as mod
+
+    def fail_root_selection():
+        raise AssertionError("closed cases must not select an active creation root")
+
+    monkeypatch.setattr(mod, "_osc_select_case_creation_root", fail_root_selection)
+
+    result = mod._osc_auto_create_folder_for_case(
+        "case-1",
+        {
+            "case_number": "2025-0001",
+            "client_name": "王小明",
+            "status": "已結案",
+        },
+        "一般案件",
+    )
+
+    assert result["ok"] is True
+    assert result["skipped"] is True
+    assert result["reason"] == "closed_case_no_active_folder_creation"
 
 
 def test_auto_archive_closed_case_merges_existing_target(tmp_path, monkeypatch):

@@ -564,6 +564,53 @@ def _osc_case_creation_roots() -> list[str]:
     return out
 
 
+def _osc_case_root_outage_path() -> Path:
+    from api.platforms import runtime_dir
+    return runtime_dir.root() / "osc_case_root_outage.json"
+
+
+def _osc_case_root_outage_threshold_sec() -> float:
+    raw = os.environ.get("MAGI_SYNOLOGY_DRIVE_CASE_CREATE_AFTER_MINUTES", "30").strip()
+    try:
+        minutes = float(raw)
+    except ValueError:
+        minutes = 30.0
+    return max(0.0, minutes) * 60.0
+
+
+def _osc_record_case_root_outage(roots: list[str]) -> dict:
+    from api.platforms import runtime_dir
+
+    path = _osc_case_root_outage_path()
+    now = time.time()
+    payload = {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    except Exception:
+        payload = {}
+    first_seen = float(payload.get("first_seen") or now)
+    payload = {
+        "first_seen": first_seen,
+        "last_seen": now,
+        "roots": roots,
+        "reason": "active_nas_case_root_unavailable",
+    }
+    try:
+        runtime_dir.atomic_write_json(path, payload)
+    except Exception:
+        _log.debug("silent-catch write case root outage", exc_info=True)
+    return payload
+
+
+def _osc_clear_case_root_outage() -> None:
+    try:
+        _osc_case_root_outage_path().unlink()
+    except FileNotFoundError:
+        pass
+    except Exception:
+        _log.debug("silent-catch clear case root outage", exc_info=True)
+
+
 def _osc_select_case_creation_root() -> dict:
     """Select a real NAS/SMB root for creating case folders.
 
@@ -586,6 +633,7 @@ def _osc_select_case_creation_root() -> dict:
 
     selected = _find_existing_non_cloud()
     if selected:
+        _osc_clear_case_root_outage()
         return {"ok": True, "root": selected, "roots": roots}
 
     try:
@@ -596,22 +644,38 @@ def _osc_select_case_creation_root() -> dict:
 
     selected = _find_existing_non_cloud()
     if selected:
+        _osc_clear_case_root_outage()
         return {"ok": True, "root": selected, "roots": roots}
 
+    outage = _osc_record_case_root_outage(roots)
+    elapsed_sec = max(0.0, time.time() - float(outage.get("first_seen") or time.time()))
+    threshold_sec = _osc_case_root_outage_threshold_sec()
     allow_cloud = os.environ.get("MAGI_ALLOW_SYNOLOGY_DRIVE_FOLDER_CREATE", "0").strip().lower() in {"1", "true", "yes", "on"}
+    allow_cloud = allow_cloud or elapsed_sec >= threshold_sec
     if allow_cloud:
         for root in roots:
             try:
-                if os.path.isdir(root):
-                    return {"ok": True, "root": root, "roots": roots, "warning": "synology_drive_folder_create_allowed"}
+                if _osc_is_synology_drive_fallback_path(root) and os.path.isdir(root):
+                    return {
+                        "ok": True,
+                        "root": root,
+                        "roots": roots,
+                        "warning": "synology_drive_temporary_case_root",
+                        "temporary_synology_drive": True,
+                        "outage_elapsed_sec": elapsed_sec,
+                        "outage_threshold_sec": threshold_sec,
+                    }
             except OSError:
                 continue
 
     return {
         "ok": False,
         "error": "nas_case_root_not_mounted",
-        "message": "未掛載真正 NAS/SMB 案件根目錄；為避免 Synology Drive 產生空案件資料夾，已拒絕建立。",
+        "message": "未掛載真正 NAS/SMB 案件根目錄；為避免短暫斷線時 Synology Drive 產生空案件資料夾，暫時拒絕建立。",
         "roots": roots,
+        "outage_elapsed_sec": elapsed_sec,
+        "outage_threshold_sec": threshold_sec,
+        "retry_after_sec": max(0.0, threshold_sec - elapsed_sec),
     }
 
 
@@ -724,6 +788,14 @@ def _osc_auto_create_folder_for_case(row_id: str, payload: dict, case_category: 
         create_folder_structure,
     )
 
+    if _osc_is_closed_case_status(payload.get("status") or "") or _osc_is_laf_final_closed_status(payload.get("legal_aid_status") or ""):
+        return {
+            "ok": True,
+            "skipped": True,
+            "reason": "closed_case_no_active_folder_creation",
+            "message": "案件已屬結案/報結狀態，不建立進行中案件資料夾。",
+        }
+
     translate_local_path_to_canonical = _get_translate_local_path_to_canonical()
     root_selection = _osc_select_case_creation_root()
     if not root_selection.get("ok"):
@@ -752,7 +824,14 @@ def _osc_auto_create_folder_for_case(row_id: str, payload: dict, case_category: 
         _osc_exec("UPDATE cases SET folder_path=%s, updated_at=NOW() WHERE id=%s", (canonical, row_id), fetch="none")
     except Exception as e:
         return {"ok": True, "path": full_path, "canonical": canonical, "db_update_error": str(e)}
-    return {"ok": True, "path": full_path, "canonical": canonical, "subfolders": result.get("subfolders", [])}
+    return {
+        "ok": True,
+        "path": full_path,
+        "canonical": canonical,
+        "subfolders": result.get("subfolders", []),
+        "temporary_synology_drive": bool(root_selection.get("temporary_synology_drive")),
+        "warning": root_selection.get("warning") or "",
+    }
 
 
 def _osc_legal_insight_normalized_expr() -> str:
@@ -2177,12 +2256,21 @@ def osc_case_create_folder_api(row_id):
     translate_local_path_to_canonical = _get_translate_local_path_to_canonical()
     row_id = (row_id or "").strip()
     row, _ = _osc_exec(
-        "SELECT id, case_number, client_name, case_category, case_type, case_stage, case_reason, folder_path FROM cases WHERE id=%s",
+        "SELECT id, case_number, client_name, case_category, case_type, case_stage, case_reason, status, legal_aid_status, folder_path FROM cases WHERE id=%s",
         (row_id,),
         fetch="one",
     )
     if not row:
         return jsonify({"ok": False, "error": "case_not_found"}), 404
+    if _osc_should_archive_case_row(row):
+        archive = _osc_auto_archive_closed_case(row_id)
+        return jsonify({
+            "ok": True,
+            "skipped": True,
+            "reason": "closed_case_no_active_folder_creation",
+            "message": "案件已屬結案/報結狀態，不建立進行中案件資料夾。",
+            "archive": archive,
+        })
 
     root_selection = _osc_select_case_creation_root()
     if not root_selection.get("ok"):
@@ -2217,6 +2305,8 @@ def osc_case_create_folder_api(row_id):
         "folder_path": full_path,
         "canonical_path": canonical,
         "subfolders": result.get("subfolders", []),
+        "temporary_synology_drive": bool(root_selection.get("temporary_synology_drive")),
+        "warning": root_selection.get("warning") or "",
     })
 
 
