@@ -265,7 +265,7 @@ def operational_jobs(repo_root: Path = REPO_ROOT, python_path: Path | None = Non
             "cron": "8,23,38,53 * * * *",
             "command": (
                 f"{python_bin} {run_with_env} "
-                "MAGI_CLEAN_EMPTY_CASE_SHELL_INCLUDE_LOCAL=0 "
+                "MAGI_CLEAN_EMPTY_CASE_SHELL_INCLUDE_LOCAL=1 "
                 f"-- {python_bin} {repo_root / 'scripts' / 'ops' / 'cleanup_synology_empty_case_shells.py'} "
                 "--apply --limit 0 --max-seconds 240 "
                 f"--json-out {repo_root / '.runtime' / 'empty_case_shell_cleanup_latest.json'}"

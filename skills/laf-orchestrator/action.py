@@ -126,6 +126,45 @@ def _run_orchestrator(args_list, timeout=300, extra_env=None):
         return {"success": False, "error": str(e)[:500]}
 
 
+def _notify_retrying_after_failure(action: str, target: str, result: dict) -> None:
+    """Tell business channels MAGI is retrying after a failed LAF draft run."""
+    if str(os.environ.get("MAGI_LAF_NOTIFY_RETRY_ON_FAILURE", "1")).strip().lower() not in {
+        "1", "true", "yes", "on"
+    }:
+        return
+    act = (action or "").strip().lower()
+    if act != "closing":
+        return
+    err = (
+        str(result.get("error") or "")
+        or str(result.get("stderr_tail") or "")
+        or str((result.get("result") or {}).get("error") or "")
+        or "portal draft failed"
+    )
+    msg = (
+        "⏳ 法扶結案流程重試中\n"
+        f"目標：{target or '-'}\n"
+        f"上一輪未完成：{err[:180]}\n"
+        "MAGI 會繼續排查案件資料、附件與 Portal 暫存流程；不是靜默故障。"
+    )
+    try:
+        from skills.ops.red_phone import send_telegram_push_with_status, _send_discord_bot_message
+        send_telegram_push_with_status(
+            msg,
+            severity="info",
+            source="laf_closing_retry",
+            topic_key="laf_closing",
+            queue_on_fail=True,
+        )
+        _send_discord_bot_message(msg, "info", topic_key="laf_closing", source="laf_closing_retry")
+    except Exception:
+        try:
+            from api.discord_channel_router import send as _dc_send
+            _dc_send("laf_general", msg, level="info")
+        except Exception:
+            pass
+
+
 # ── task handlers ────────────────────────────────────────────────────────
 
 def task_self_test():
@@ -226,6 +265,12 @@ def task_portal_action(action, laf_case_no="", case_number="", client_name="",
 
     result = _run_orchestrator(args_list, timeout=portal_timeout)
     result["product_profile"] = product_profile_report("laf")
+    if not result.get("success"):
+        _notify_retrying_after_failure(
+            action,
+            laf_case_no or case_number or client_name,
+            result,
+        )
     return result
 
 

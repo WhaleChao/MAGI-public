@@ -364,6 +364,8 @@ def run(*, apply: bool, limit: int, max_seconds: float = 0.0) -> dict:
     return {
         "ok": True,
         "apply": apply,
+        "include_local_synology_roots": _include_local_synology_roots(),
+        "active_roots": _active_roots(),
         "timed_out": timed_out,
         "elapsed_sec": round(time.monotonic() - started, 3),
         "checked": checked,

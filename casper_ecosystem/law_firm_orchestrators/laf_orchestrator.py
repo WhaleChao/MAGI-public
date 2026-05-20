@@ -849,10 +849,13 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
             # 讓 _resolve_case_folder_with_fallback() 找到真實目錄。
             if folder_path and '消費者債務清理程序' in folder_path:
                 folder_path = folder_path.replace('消費者債務清理程序', case_reason)
-            local_folder = self._to_local_case_folder(folder_path)
-            docs = self._scan_case_folder_docs(local_folder)
             status_norm = status_value.strip().lower()
             is_closed = status_norm in {"已結案", "closed", "completed", "archived"}
+            local_folder = self._to_local_case_folder(folder_path)
+            docs = self._scan_case_folder_docs(
+                local_folder,
+                action="closing" if is_closed else "go_live",
+            )
             if is_closed and self._is_legacy_closed_archive_path(folder_path) and (not local_folder or not os.path.isdir(local_folder)):
                 _eventlog(
                     "laf:portal:retry:seed_skipped",
@@ -1118,7 +1121,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                                 notify_lines.append(f"  ⏭️ {os.path.basename(fn)}")
                             # 只在有新增檔案時才附上開辦通知/委任狀統計
                             if new_count:
-                                docs = self._scan_case_folder_docs(str(result.get("case_folder") or ""))
+                                docs = self._scan_case_folder_docs(str(result.get("case_folder") or ""), action="go_live")
                                 notify_lines.append(f"開辦通知: {len(docs.get('opening_notice_files') or [])} 份")
                                 notify_lines.append(f"委任狀: {len(docs.get('poa_files') or [])} 份")
                             self.notifier.notify_admin("\n".join(notify_lines), topic_key="laf_dispatch")
@@ -1651,10 +1654,10 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         go_live_docs = self._empty_docs_map()
         if not self.dry_run and db_path:
             try:
-                docs = self._scan_case_folder_docs(db_path)
+                docs = self._scan_case_folder_docs(db_path, action="go_live")
                 local_root = self._to_local_case_folder(db_path) or db_path
                 go_live_dir = os.path.join(local_root, "02_開辦資料")
-                go_live_docs = self._scan_case_folder_docs(go_live_dir) if os.path.isdir(go_live_dir) else self._empty_docs_map()
+                go_live_docs = self._scan_case_folder_docs(go_live_dir, action="go_live") if os.path.isdir(go_live_dir) else self._empty_docs_map()
                 open_doc = (go_live_docs.get("opening_notice_files") or [None])[0]
                 poa_doc = (go_live_docs.get("poa_files") or [None])[0]
                 if open_doc:
@@ -2533,7 +2536,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         # 資料夾名稱含「-偵查-」才是偵查階段（如 2026-0002-[當事人S]-偵查-過失致死）
         _is_investigation = "-偵查-" in _folder_str
 
-        docs = self._scan_case_folder_docs(folder_path) if folder_path else self._empty_docs_map()
+        docs = self._scan_case_folder_docs(folder_path, action="closing") if folder_path else self._empty_docs_map()
         if folder_path and not docs.get("closing_basis_files"):
             if _is_investigation:
                 # 偵查案件：結案依據可能是不起訴處分書、偵結報告等，不強制要求
@@ -2721,9 +2724,10 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                     # LAF 案號與內部案號不同，嘗試用 DB 查出內部案號
                     try:
                         db_row = self._query_db(
-                            "SELECT case_number, client_name FROM cases "
-                            "WHERE laf_case_number = %s LIMIT 1",
-                            (case_number,),
+                            "SELECT `case_number`, `client_name` FROM `cases` "
+                            "WHERE `legal_aid_number` = %s OR `laf_case_no` = %s OR `application_no` = %s "
+                            "OR `notes` LIKE %s LIMIT 1",
+                            (case_number, case_number, case_number, f"%{case_number}%"),
                         )
                         if db_row:
                             internal_no = str(db_row[0].get("case_number") or "").strip()
@@ -3200,7 +3204,8 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         def _query_candidates(where_sql: str, params: tuple) -> List[dict]:
             try:
                 q = (
-                    "SELECT `id`, `case_number`, `client_name`, `legal_aid_number`, `folder_path`, `legal_aid_status` "
+                    "SELECT `id`, `case_number`, `client_name`, `legal_aid_number`, "
+                    "`laf_case_no`, `application_no`, `notes`, `folder_path`, `legal_aid_status` "
                     "FROM `cases` "
                     f"WHERE {where_sql} "
                     "ORDER BY `id` DESC LIMIT 200"
@@ -3216,7 +3221,13 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         def _merge_row(row: dict, signal: str) -> None:
             cno = str(row.get("case_number") or "").strip()
             cname = str(row.get("client_name") or "").strip()
-            laf_no = str(row.get("legal_aid_number") or "").strip()
+            laf_no = (
+                str(row.get("legal_aid_number") or "").strip()
+                or str(row.get("laf_case_no") or "").strip()
+                or str(row.get("application_no") or "").strip()
+            )
+            if not laf_no:
+                laf_no = self._extract_laf_case_number_from_text(str(row.get("notes") or "").strip())
             fpath = str(row.get("folder_path") or "").strip()
             laf_status = str(row.get("legal_aid_status") or "").strip()
             cfolder = self._to_local_case_folder(fpath)
@@ -3239,7 +3250,13 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
             c["_signals"].add(signal)
 
         if req_laf:
-            for r in _query_candidates("TRIM(`legal_aid_number`) = %s", (out["laf_case_number"],)):
+            for r in _query_candidates(
+                "TRIM(COALESCE(`legal_aid_number`, '')) = %s "
+                "OR TRIM(COALESCE(`laf_case_no`, '')) = %s "
+                "OR TRIM(COALESCE(`application_no`, '')) = %s "
+                "OR COALESCE(`notes`, '') LIKE %s",
+                (out["laf_case_number"], out["laf_case_number"], out["laf_case_number"], f"%{out['laf_case_number']}%"),
+            ):
                 _merge_row(r, "laf_case_number")
         if req_case:
             for r in _query_candidates("TRIM(`case_number`) = %s", (out["case_number"],)):
@@ -3479,6 +3496,9 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         else:
             out["confidence"] = "low"
 
+        if out["laf_case_number"] and str(top.get("id") or "").strip():
+            self._update_legal_aid_number(str(top.get("id") or "").strip(), out["laf_case_number"])
+
         if (not out["case_folder"]) and (out["client_name"] or out["laf_case_number"]):
             fallback = self._fallback_find_case_folders(
                 client_name=out["client_name"],
@@ -3640,7 +3660,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         first_docs = None
         first_folder = ""
         for p in candidates:
-            docs = self._scan_case_folder_docs(p)
+            docs = self._scan_case_folder_docs(p, action=action)
             if first_docs is None:
                 first_docs = docs
                 first_folder = p
@@ -3659,10 +3679,13 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         if not root or not os.path.isdir(root):
             return ""
         pat = re.compile(r"(\d{6,8}-[A-Za-z]-\d{3})")
-        # Search filenames first.
+        # Search shallow filenames first.  Avoid os.walk here: large LAF cases
+        # may have tens of thousands of review/evidence files.
         try:
-            for b, _d, fs in os.walk(root):
-                for fn in fs:
+            for check_dir in [root, os.path.join(root, "01_法扶資料")]:
+                if not os.path.isdir(check_dir):
+                    continue
+                for fn in sorted(os.listdir(check_dir))[:300]:
                     m = pat.search(fn)
                     if m:
                         return m.group(1)
@@ -4063,11 +4086,11 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
 
     # ── END 開辦自動化 ───────────────────────────────────────────
 
-    def _scan_case_folder_docs(self, case_folder: str) -> dict:
+    def _scan_case_folder_docs(self, case_folder: str, action: str = "") -> dict:
         # 使用 mixin 的完整版文件分類：
         # 含 closing_fee_files / change_review_notice_files 等鍵值，
         # 供 portal retry seed 與結案流程正確判斷是否已抓到酬金領款單。
-        return super()._scan_case_folder_docs(case_folder)
+        return super()._scan_case_folder_docs(case_folder, action=action)
 
     def _scan_go_live_docs(self, case_folder: str) -> tuple[dict, str]:
         """Scan go-live source folders.
@@ -4084,7 +4107,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
             if not os.path.isdir(scan_dir):
                 continue
             scanned_dirs.append(scan_dir)
-            part = self._scan_case_folder_docs(scan_dir)
+            part = self._scan_case_folder_docs(scan_dir, action="go_live")
             for key, value in (part or {}).items():
                 if isinstance(value, list):
                     docs.setdefault(key, [])
@@ -4223,7 +4246,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
 
         # 審核結果/回報類：不能用開辦文件抵掉，需看到結案酬金或審查結果類文件。
         if any(k in t for k in ("review_result", "result_download", "審核", "審查", "回報")):
-            docs = self._scan_case_folder_docs(folder)
+            docs = self._scan_case_folder_docs(folder, action="closing")
             if len(docs.get("closing_fee_files") or []) > 0:
                 return True, "nas_has_closing_fee"
             if len(docs.get("change_review_notice_files") or []) > 0:
@@ -4235,7 +4258,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
 
         # 開辦類：有開辦通知書 OR 委任狀之一即滿足
         if any(k in t for k in ("go_live", "opening", "backfill")):
-            docs = self._scan_case_folder_docs(folder)
+            docs = self._scan_case_folder_docs(folder, action="go_live")
             if len(docs.get("opening_notice_files") or []) > 0:
                 return True, "nas_has_opening_notice"
             if len(docs.get("poa_files") or []) > 0:
@@ -4306,6 +4329,8 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         dst_pdf = out_root / f"{stem}.pdf"
 
         if ext == ".pdf":
+            if str(os.environ.get("MAGI_LAF_COPY_PDF_UPLOADS", "0")).strip().lower() not in {"1", "true", "yes", "on"}:
+                return src
             try:
                 if os.path.abspath(src) != str(dst_pdf):
                     try:
@@ -4409,6 +4434,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
             "converted": [],
             "failed": [],
             "staging_dir": "",
+            "large_case_guard": {},
         }
         if not root or (not os.path.isdir(root)):
             result["error"] = "missing_case_folder"
@@ -4431,13 +4457,90 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
             "勞保", "國保", "稅務", "所得", "信用報告", "對話",
         ]
 
+        max_walk_dirs = max(1, int(os.environ.get("MAGI_LAF_UPLOAD_SCAN_MAX_DIRS", "240") or "240"))
+        max_files_per_dir = max(1, int(os.environ.get("MAGI_LAF_UPLOAD_SCAN_MAX_FILES_PER_DIR", "250") or "250"))
+        max_judgment_files = max(1, int(os.environ.get("MAGI_LAF_UPLOAD_MAX_JUDGMENT_FILES", "120") or "120"))
+        max_upload_mb = max(1.0, float(os.environ.get("MAGI_LAF_PORTAL_MAX_UPLOAD_MB", "8") or "8"))
+        max_upload_bytes = int(max_upload_mb * 1024 * 1024)
+        _skip_walk_dir_keywords = (
+            "@eaDir", "__MACOSX", ".sync", ".SynologyWorkingDirectory",
+            "06_閱卷", "閱卷資料", "05_證據", "證據資料",
+        )
+
+        def _iter_upload_dirs(base_dir: str):
+            """Yield base + one-level child dirs only for large-case NAS safety."""
+            if not os.path.isdir(base_dir):
+                return
+            yielded = 0
+            yield base_dir
+            yielded += 1
+            try:
+                names = sorted(os.listdir(base_dir))
+            except OSError:
+                return
+            for name in names:
+                if yielded >= max_walk_dirs:
+                    result["large_case_guard"]["dir_limit"] = max_walk_dirs
+                    break
+                if name.startswith(".") or any(k in name for k in _skip_walk_dir_keywords):
+                    continue
+                child = os.path.join(base_dir, name)
+                try:
+                    if os.path.isdir(child):
+                        yield child
+                        yielded += 1
+                except OSError:
+                    continue
+
+        def _fits_portal_upload_limit(src: str) -> bool:
+            try:
+                return os.path.getsize(src) <= max_upload_bytes
+            except OSError:
+                return True
+
+        max_files = int(os.environ.get("MAGI_LAF_MAX_UPLOAD_SOURCE_FILES", "400") or "400")
+        include_closing_pleadings = str(
+            os.environ.get("MAGI_LAF_CLOSING_INCLUDE_PLEADINGS", "0")
+        ).strip().lower() in {"1", "true", "yes", "on"}
+        if (action or "").strip().lower() == "closing" and not include_closing_pleadings:
+            docs = self._scan_case_folder_docs(root, action="closing")
+            raw_basis_pdfs = [
+                p for p in self._sort_closing_basis_files(list(docs.get("closing_basis_files") or []))
+                if str(p or "").lower().endswith(".pdf")
+            ]
+            basis_pdfs = []
+            for p in raw_basis_pdfs:
+                if _fits_portal_upload_limit(p):
+                    basis_pdfs.append(p)
+                else:
+                    result["failed"].append({
+                        "source": p,
+                        "error": f"oversize_skipped>{max_upload_mb:g}MB",
+                    })
+            result["judgment_pdf_files"] = basis_pdfs
+            result["pleading_source_files"] = []
+            result["procedural_ruling_pdf_files"] = []
+            result["pdf_files"] = basis_pdfs[: max(1, max_files)]
+            result["ok"] = bool(result["pdf_files"])
+            result["large_case_guard"]["closing_basis_only"] = True
+            if result["failed"]:
+                result["large_case_guard"]["skipped_oversize_files"] = len(result["failed"])
+                result["large_case_guard"]["portal_max_upload_mb"] = max_upload_mb
+            if not result["ok"]:
+                result["error"] = "no_pdf_generated"
+            return result
+
         pleading_files: List[str] = []
         if os.path.isdir(plead_root):
             # 每個子資料夾獨立篩選：
             # 1. 有「存底」或「留底」PDF → 只上傳那份
             # 2. 沒有 → 轉換最新的 WORD 檔（依 v2>v1、清稿>草稿、修改時間判斷）
-            for base, _dirs, files in os.walk(plead_root):
-                sorted_files = sorted(files)
+            for base in _iter_upload_dirs(plead_root):
+                try:
+                    files = os.listdir(base)
+                except OSError:
+                    continue
+                sorted_files = sorted(files)[:max_files_per_dir]
 
                 # 先篩出非隱藏、非附件/證據的檔案
                 candidates = []
@@ -4485,11 +4588,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                         vm = _re.search(r'v(\d+)', fn)
                         if vm:
                             priority = max(priority, int(vm.group(1)))
-                        try:
-                            mtime = os.path.getmtime(full)
-                        except OSError:
-                            mtime = 0
-                        return (priority, mtime)
+                        return (priority, fn)
 
                     best_word = max(word_files, key=_word_version_key)
                     pleading_files.append(best_word[1])
@@ -4503,20 +4602,29 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                 ]
                 if plain_pdfs:
                     # 取最新的一份
-                    best_pdf = max(plain_pdfs, key=lambda x: os.path.getmtime(x[1]) if os.path.exists(x[1]) else 0)
+                    best_pdf = max(plain_pdfs, key=lambda x: x[0])
                     pleading_files.append(best_pdf[1])
                     logger.debug("  選取最新書狀 PDF: %s", best_pdf[0])
         result["pleading_source_files"] = pleading_files
 
         judgment_pdfs: List[str] = []
         if os.path.isdir(judgment_root):
-            for base, _dirs, files in os.walk(judgment_root):
-                for fn in sorted(files):
+            for base in _iter_upload_dirs(judgment_root):
+                try:
+                    files = os.listdir(base)
+                except OSError:
+                    continue
+                for fn in sorted(files)[:max_files_per_dir]:
                     if fn.startswith("."):
                         continue
                     full = os.path.join(base, fn)
                     if os.path.isfile(full) and fn.lower().endswith(".pdf"):
                         judgment_pdfs.append(full)
+                        if len(judgment_pdfs) >= max_judgment_files:
+                            result["large_case_guard"]["judgment_file_limit"] = max_judgment_files
+                            break
+                if len(judgment_pdfs) >= max_judgment_files:
+                    break
         result["judgment_pdf_files"] = judgment_pdfs
 
         procedural_ruling_pdfs: List[str] = []
@@ -4525,8 +4633,12 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
             and ("消費者債務清理" in root or "消債" in root)
         )
         if is_consumer_debt_closing and os.path.isdir(court_notice_root):
-            for base, _dirs, files in os.walk(court_notice_root):
-                for fn in sorted(files):
+            for base in _iter_upload_dirs(court_notice_root):
+                try:
+                    files = os.listdir(base)
+                except OSError:
+                    continue
+                for fn in sorted(files)[:max_files_per_dir]:
                     if fn.startswith(".") or fn.startswith("~"):
                         continue
                     if not fn.lower().endswith(".pdf"):
@@ -4542,7 +4654,6 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         converted: List[dict] = []
         failed: List[dict] = []
         dedup = set()
-        max_files = int(os.environ.get("MAGI_LAF_MAX_UPLOAD_SOURCE_FILES", "400") or "400")
 
         for src in pleading_files[: max(1, max_files)]:
             pdf = self._to_pdf_for_portal(src, staging_dir)
@@ -4670,7 +4781,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         osc_no = (identity.get("case_number") or "").strip()
         cname = (identity.get("client_name") or "").strip()
         case_folder = (identity.get("case_folder") or "").strip()
-        docs = self._scan_case_folder_docs(case_folder) if case_folder else self._empty_docs_map()
+        docs = self._scan_case_folder_docs(case_folder, action=act) if case_folder else self._empty_docs_map()
 
         if act not in {"go_live", "inquiry", "fee", "condition", "withdrawal", "closing", "progress"}:
             return {"ok": False, "error": f"unknown_action:{act}"}
@@ -5542,7 +5653,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         laf_no = (identity.get("laf_case_number") or "").strip()
         cname = (identity.get("client_name") or "").strip()
         case_folder = (identity.get("case_folder") or "").strip()
-        docs = self._scan_case_folder_docs(case_folder) if case_folder else self._empty_docs_map()
+        docs = self._scan_case_folder_docs(case_folder, action=act) if case_folder else self._empty_docs_map()
         if not laf_no and not cname:
             return {"ok": False, "error": "missing_target", "action": act, "identity": identity}
         if not case_folder:
@@ -5801,7 +5912,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         if not root or not os.path.isdir(root):
             return []
         try:
-            docs = self._scan_case_folder_docs(root)
+            docs = self._scan_case_folder_docs(root, action="condition")
             out: List[str] = []
             for p in (docs.get("mediation_failure_files") or []):
                 norm = str(p).replace("\\", "/")
@@ -6205,7 +6316,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                     missing_folder += 1
                     continue
 
-                docs = self._scan_case_folder_docs(folder)
+                docs = self._scan_case_folder_docs(folder, action="condition")
                 med_files = list(docs.get("mediation_failure_files") or [])
                 if not med_files:
                     continue
@@ -6586,16 +6697,23 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         counts["court_dates"] = []
         counts["review_dates"] = []
         _assign_day = ""
+        _is_criminal_laf_case = False
         if self.db and case_number:
             try:
                 _case_row = self.db.fetch_one(
-                    "SELECT start_date, approval_date FROM cases WHERE case_number = %s OR legal_aid_number = %s LIMIT 1",
+                    "SELECT start_date, approval_date, case_type, case_category, legal_aid_number, folder_path "
+                    "FROM cases WHERE case_number = %s OR legal_aid_number = %s LIMIT 1",
                     (case_number, case_number),
                     as_dict=True,
                 )
                 _assign_raw = (_case_row or {}).get("start_date") or (_case_row or {}).get("approval_date")
                 if _assign_raw:
                     _assign_day = str(_assign_raw)[:10]
+                _case_text = " ".join(
+                    str((_case_row or {}).get(k) or "")
+                    for k in ("case_type", "case_category", "legal_aid_number", "folder_path")
+                )
+                _is_criminal_laf_case = ("刑事" in _case_text) and ("法扶" in _case_text or bool((_case_row or {}).get("legal_aid_number")))
             except Exception:
                 _assign_day = ""
         _todo_start_sql = " AND (`todo_date` IS NULL OR `todo_date` >= %s)" if _assign_day else ""
@@ -6640,6 +6758,10 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                    )
                    AND COALESCE(`description`, '') NOT LIKE '%%U會議%%'
                    AND COALESCE(`description`, '') NOT LIKE '%%Ｕ會議%%'
+                   AND COALESCE(`todo_type`, '') NOT LIKE '%%律見%%'
+                   AND COALESCE(`todo_type`, '') NOT LIKE '%%律師接見%%'
+                   AND COALESCE(`description`, '') NOT LIKE '%%律見%%'
+                   AND COALESCE(`description`, '') NOT LIKE '%%律師接見%%'
                    AND COALESCE(`status`, '') NOT IN ('cancelled', 'canceled', '取消')""",
                 tuple(_todo_meeting_params),
             )
@@ -6676,7 +6798,15 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                    WHERE `case_number` = %s
                    {_todo_start_sql}
                    AND (`todo_type` LIKE '%%律見%%' OR `todo_type` LIKE '%%律師接見%%'
-                        OR `todo_type` LIKE '%%接見%%')
+                        OR `todo_type` LIKE '%%接見%%'
+                        OR `description` LIKE '%%律見%%' OR `description` LIKE '%%律師接見%%'
+                        OR (
+                            `description` LIKE '%%接見%%'
+                            AND COALESCE(`description`, '') NOT LIKE '%%禁止接見%%'
+                            AND COALESCE(`description`, '') NOT LIKE '%%限制接見%%'
+                            AND COALESCE(`description`, '') NOT LIKE '%%接見、通信%%'
+                            AND COALESCE(`description`, '') NOT LIKE '%%接見通信%%'
+                        ))
                    AND (`status` = 'completed' OR `source_file` LIKE 'gcal_import%%')
                    AND (`todo_date` IS NULL OR `todo_date` <= CURDATE())
                    AND COALESCE(`status`, '') NOT IN ('cancelled', 'canceled', '取消')""",
@@ -6764,7 +6894,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
 
         # 當計數為 0 時，從 calendar_events 表補數字（和 OSC 的 GCal 統計邏輯一致）
         # 只查派案日期之後的事件
-        _zero_keys = [k for k in ("meeting_count", "contact_count", "court_count", "review_count")
+        _zero_keys = [k for k in ("meeting_count", "contact_count", "inq_count", "court_count", "review_count")
                       if int(counts.get(k, 0) or 0) == 0]
         if _zero_keys and self.db and client_name:
             try:
@@ -6806,14 +6936,15 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                 if _events:
                     # 用 OSC 相同的關鍵字分類
                     _court_kw = ["開庭", "言詞辯論", "準備程序", "調解", "調解庭", "訊問", "詢問庭", "審理", "審理程序", "審查庭", "免責庭", "協商程序", "調查", "調查程序"]
-                    _meet_kw = ["會議", "來所", "碰面", "視訊", "面談", "開會", "交資料", "律見", "接見", "律師接見"]
+                    _meet_kw = ["會議", "來所", "碰面", "視訊", "面談", "開會", "交資料"]
                     _tel_kw = ["電話", "電話聯繫", "通話", "電聯", "聯繫", "聯絡"]
                     _review_kw = ["閱卷", "影卷", "調卷"]
                     _mediation_kw = ["調解", "調解庭", "和解", "調和解"]
                     _excl_kw = ["聲請改期", "改期", "取消", "不出席", "不到庭", "宣判", "宣示判決", "法扶開辦末日", "法扶上訴", "法扶再議", "停班", "停課", "放假", "颱風", "天然災害", "U會議", "Ｕ會議"]
 
-                    _c_court = 0; _c_meet = 0; _c_tel = 0; _c_review = 0; _c_mediation = 0
+                    _c_court = 0; _c_meet = 0; _c_tel = 0; _c_inq = 0; _c_review = 0; _c_mediation = 0
                     _court_dates_cal = []; _review_dates_cal = []
+                    _seen_inq_slots: set = set()
                     _seen_mediation_slots: set = set()
                     for row in _events:
                         if isinstance(row, dict):
@@ -6842,6 +6973,11 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                             _c_review += 1
                             if start_date:
                                 _review_dates_cal.append(start_date)
+                        elif self._is_laf_inquiry_text(s, criminal_laf=_is_criminal_laf_case):
+                            _slot = str(start_date or "")[:16] if start_date else s[:80]
+                            if _slot and _slot not in _seen_inq_slots:
+                                _c_inq += 1
+                                _seen_inq_slots.add(_slot)
                         elif any(k in s for k in _meet_kw):
                             _c_meet += 1
                         elif any(k in s for k in _tel_kw):
@@ -6856,6 +6992,9 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                     if _c_tel > int(counts.get("contact_count", 0) or 0):
                         counts["contact_count"] = _c_tel
                         logger.info("  📅 Calendar 補 contact_count: %d", _c_tel)
+                    if _c_inq > int(counts.get("inq_count", 0) or 0):
+                        counts["inq_count"] = _c_inq
+                        logger.info("  📅 Calendar 補 inq_count: %d", _c_inq)
                     if _c_court > int(counts.get("court_count", 0) or 0):
                         counts["court_count"] = _c_court
                         if not counts["court_dates"]:
@@ -6876,8 +7015,14 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         # 傳全部 keys 讓 _gcal_fallback_counts 自己判斷是否 > 目前值
         if client_name:
             try:
-                _all_keys = ["meeting_count", "contact_count", "court_count", "review_count", "mediation_contact_count"]
-                self._gcal_fallback_counts(counts, _all_keys, case_number, client_name)
+                _all_keys = ["meeting_count", "contact_count", "inq_count", "court_count", "review_count", "mediation_contact_count"]
+                self._gcal_fallback_counts(
+                    counts,
+                    _all_keys,
+                    case_number,
+                    client_name,
+                    criminal_laf_case=_is_criminal_laf_case,
+                )
             except Exception as e:
                 logger.warning("GCal API fallback for zero counts failed: %s", e)
 
@@ -6934,7 +7079,32 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
 
         return counts
 
-    def _gcal_fallback_counts(self, counts: dict, zero_keys: list, case_number: str, client_name: str) -> None:
+    @staticmethod
+    def _is_laf_inquiry_text(text: str, criminal_laf: bool = False) -> bool:
+        """Return True when text describes an actual lawyer detention visit."""
+        s = str(text or "")
+        if not s:
+            return False
+        if "律見" in s or "律師接見" in s:
+            return True
+        if criminal_laf and ("視訊會議" in s or "視訊面談" in s or "視訊接見" in s):
+            internal = ("法扶", "分會", "律團", "同事", "內部", "工作會議")
+            if not any(k in s for k in internal):
+                return True
+        if "接見" not in s:
+            return False
+        # Court rulings often say "禁止接見、通信"; those are not visits.
+        blocked = ("禁止接見", "限制接見", "接見、通信", "接見通信")
+        return not any(k in s for k in blocked)
+
+    def _gcal_fallback_counts(
+        self,
+        counts: dict,
+        zero_keys: list,
+        case_number: str,
+        client_name: str,
+        criminal_laf_case: bool = False,
+    ) -> None:
         """Query Google Calendar API directly when DB has no matching events."""
         import re as _re
         from datetime import datetime, timedelta, timezone
@@ -7046,13 +7216,13 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                     len(events), _cn_only, len(cal_ids), _raw_total, _raw_total - len(events))
 
         _court_kw = ["開庭", "言詞辯論", "準備程序", "調解", "調解庭", "訊問", "詢問庭", "審理", "審理程序", "審查庭", "免責庭", "協商程序", "調查", "調查程序"]
-        _meet_kw = ["會議", "來所", "碰面", "視訊", "面談", "開會", "交資料", "律見", "接見", "律師接見"]
+        _meet_kw = ["會議", "來所", "碰面", "視訊", "面談", "開會", "交資料"]
         _tel_kw = ["電話", "電話聯繫", "通話", "電聯", "聯繫", "聯絡"]
         _review_kw = ["閱卷", "影卷", "調卷"]
         _mediation_kw = ["調解", "調解庭", "和解", "調和解"]
         _excl_kw = ["聲請改期", "改期", "取消", "不出席", "不到庭", "宣判", "宣示判決", "法扶開辦末日", "法扶上訴", "法扶再議", "停班", "停課", "放假", "颱風", "天然災害", "U會議", "Ｕ會議"]
 
-        _c_court = 0; _c_meet = 0; _c_tel = 0; _c_review = 0; _c_mediation = 0
+        _c_court = 0; _c_meet = 0; _c_tel = 0; _c_inq = 0; _c_review = 0; _c_mediation = 0
         _court_dates_gcal = []; _review_dates_gcal = []
         # 同日同類事件只算一次（不同日曆用不同 summary 的情形常見，例如
         # 「王淑婷審理」vs「[2025-0024] 王淑婷 - 審理程序」同是 2026-03-12 一場庭）
@@ -7060,6 +7230,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         _seen_review_dates: set = set()
         _seen_meet_slots: set = set()
         _seen_tel_slots: set = set()
+        _seen_inq_slots: set = set()
         _seen_mediation_slots: set = set()
         for ev in events:
             summary = ev.get("summary", "")
@@ -7090,6 +7261,13 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                 if _dk:
                     _seen_review_dates.add(_dk)
                     _review_dates_gcal.append(_dk)
+            elif self._is_laf_inquiry_text(summary, criminal_laf=criminal_laf_case):
+                _slot = (start or "")[:16] if start else _dk
+                if _slot and _slot in _seen_inq_slots:
+                    continue
+                _c_inq += 1
+                if _slot:
+                    _seen_inq_slots.add(_slot)
             elif any(k in summary for k in _meet_kw):
                 _slot = (start or "")[:16] if start else _dk
                 if _slot and _slot in _seen_meet_slots:
@@ -7113,6 +7291,9 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         if "contact_count" in zero_keys and _c_tel > int(counts.get("contact_count", 0) or 0):
             counts["contact_count"] = _c_tel
             logger.info("  📅 GCal API 補 contact_count: %d", _c_tel)
+        if "inq_count" in zero_keys and _c_inq > int(counts.get("inq_count", 0) or 0):
+            counts["inq_count"] = _c_inq
+            logger.info("  📅 GCal API 補 inq_count: %d", _c_inq)
         if "court_count" in zero_keys and _c_court > int(counts.get("court_count", 0) or 0):
             counts["court_count"] = _c_court
             # 以 GCal 的實際日期覆蓋（更完整）
@@ -7232,13 +7413,17 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         return None
 
     def _update_legal_aid_number(self, case_id, laf_number):
-        """Update legal_aid_number for an existing case."""
+        """Backfill structured LAF identifiers for an existing case."""
         if self.dry_run or not self.db:
             return
         try:
             self.db.execute_write(
-                "UPDATE `cases` SET `legal_aid_number` = %s WHERE `id` = %s",
-                (laf_number, case_id)
+                "UPDATE `cases` SET "
+                "`legal_aid_number` = CASE WHEN `legal_aid_number` IS NULL OR `legal_aid_number` = '' THEN %s ELSE `legal_aid_number` END, "
+                "`laf_case_no` = CASE WHEN `laf_case_no` IS NULL OR `laf_case_no` = '' THEN %s ELSE `laf_case_no` END, "
+                "`application_no` = CASE WHEN `application_no` IS NULL OR `application_no` = '' THEN %s ELSE `application_no` END "
+                "WHERE `id` = %s",
+                (laf_number, laf_number, laf_number, case_id)
             )
         except Exception as e:
             logger.error("Update LAF number failed: %s", e)

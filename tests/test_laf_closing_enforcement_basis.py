@@ -38,3 +38,21 @@ def test_random_execution_notice_is_not_closing_basis(tmp_path):
     docs = scanner._scan_case_folder_docs(str(case_dir))
 
     assert str(notice) not in docs["closing_basis_files"]
+
+
+def test_closing_scan_skips_review_folder_for_large_cases(tmp_path):
+    case_dir = tmp_path / "2025-0002-游秀鈴-一審-傷害致死"
+    review_dir = case_dir / "06_閱卷資料" / "20260520"
+    judgment_dir = case_dir / "10_判決書"
+    review_dir.mkdir(parents=True)
+    judgment_dir.mkdir(parents=True)
+    noisy_review_file = review_dir / "114年度國審強處字第000001號裁定.pdf"
+    closing_basis = judgment_dir / "20260520 臺灣臺北地方法院114年度國審強處字第000001號裁定.pdf"
+    noisy_review_file.write_bytes(b"%PDF-1.4\n")
+    closing_basis.write_bytes(b"%PDF-1.4\n")
+
+    scanner = docmixins.LAFOrchestratorDocumentMixin()
+    docs = scanner._scan_case_folder_docs(str(case_dir), action="closing")
+
+    assert str(closing_basis) in docs["closing_basis_files"]
+    assert str(noisy_review_file) not in docs["closing_basis_files"]

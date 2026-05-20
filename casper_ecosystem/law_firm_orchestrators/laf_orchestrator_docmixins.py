@@ -319,22 +319,38 @@ class LAFOrchestratorDocumentMixin:
     # Enhanced Folder Scanning
     # ==================================================================
 
-    def _scan_case_folder_docs(self, case_folder: str) -> dict:
-        """
-        Enhanced document scanner for LAF case folders.
-        Scans known sub-directories (shallow) to avoid NAS I/O hang,
-        and classifies documents into multiple categories including
-        closing basis, withdrawal, office receipts, etc.
-        """
-        root = (case_folder or "").strip()
-        out = self._empty_docs_map()
-        if not root or not os.path.isdir(root):
-            return out
+    @staticmethod
+    def _scan_subdirs_for_action(action: str = "") -> List[str]:
+        """Return shallow scan targets for the workflow.
 
-        # Only scan known sub-directories (shallow), NOT os.walk the entire tree.
-        # This avoids NAS I/O hang on folders with many files (e.g. 專員來信).
-        _SCAN_SUBDIRS = [
-            "",                  # root level
+        Closing/progress workflows must stay away from massive folders such as
+        閱卷資料 and 證據資料.  Those folders are useful to the lawyer, but not
+        needed for LAF portal basis-document detection and can block NAS I/O on
+        very large cases.
+        """
+        act = (action or "").strip().lower()
+        if act in {"closing", "progress", "inquiry"}:
+            return [
+                "",
+                "01_法扶資料",
+                "04_我方歷次書狀",
+                "08_法院通知或程序裁定",
+                "09_法院通知或程序裁定",
+                "09_酬金及費用",
+                "10_判決書",
+                "11_回執",
+                "12_結案資料",
+            ]
+        if act in {"go_live"}:
+            return ["", "01_法扶資料", "02_開辦資料", "11_回執"]
+        if act in {"fee"}:
+            return ["", "01_法扶資料", "09_酬金及費用", "11_回執"]
+        if act in {"condition"}:
+            return ["", "01_法扶資料", "08_法院通知或程序裁定", "09_法院通知或程序裁定", "10_判決書"]
+        if act in {"withdrawal"}:
+            return ["", "04_我方歷次書狀", "08_法院通知或程序裁定", "09_法院通知或程序裁定", "10_判決書", "12_結案資料"]
+        return [
+            "",
             "01_法扶資料",
             "02_開辦資料",
             "03_對造資料",
@@ -349,15 +365,32 @@ class LAFOrchestratorDocumentMixin:
             "11_回執",
             "12_結案資料",
         ]
+
+    def _scan_case_folder_docs(self, case_folder: str, action: str = "") -> dict:
+        """
+        Enhanced document scanner for LAF case folders.
+        Scans known sub-directories (shallow) to avoid NAS I/O hang,
+        and classifies documents into multiple categories including
+        closing basis, withdrawal, office receipts, etc.
+        """
+        root = (case_folder or "").strip()
+        out = self._empty_docs_map()
+        if not root or not os.path.isdir(root):
+            return out
+
+        # Only scan known sub-directories (shallow), NOT os.walk the entire tree.
+        # This avoids NAS I/O hang on folders with many files (e.g. 閱卷資料).
+        _SCAN_SUBDIRS = self._scan_subdirs_for_action(action)
         allowed = {".pdf", ".jpg", ".jpeg", ".png", ".tif", ".tiff", ".webp",
                     ".doc", ".docx"}
+        max_entries = max(1, int(os.environ.get("MAGI_LAF_DOC_SCAN_MAX_ENTRIES", "800") or "800"))
 
         for subdir in _SCAN_SUBDIRS:
             scan_path = os.path.join(root, subdir) if subdir else root
             if not os.path.isdir(scan_path):
                 continue
             try:
-                entries = os.listdir(scan_path)
+                entries = sorted(os.listdir(scan_path))[:max_entries]
             except OSError:
                 continue
             for fn in entries:
