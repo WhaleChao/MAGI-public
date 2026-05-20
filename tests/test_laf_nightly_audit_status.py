@@ -59,10 +59,36 @@ class TestUpdateLafStatusWithApproval:
         assert _update_laf_status(db, case, "已結案，待送出") is True
 
         sql, params = db.execute_write.call_args[0]
-        assert "`legal_aid_status` = %s, `status` = %s" in sql
+        assert "`legal_aid_status` = %s" in sql
+        assert "manual_status_lock" in sql
+        assert "ELSE %s END" in sql
         assert params == ("已結案，待送出", "結案中", 42)
         assert case["legal_aid_status"] == "已結案，待送出"
         assert case["status"] == "結案中"
+
+    def test_manual_status_lock_is_not_overwritten(self):
+        from casper_ecosystem.law_firm_orchestrators.laf_nightly_audit import _update_laf_status
+        db = self._make_mock_db()
+        case = {"id": 42, "case_number": "2025-0001", "client_name": "測試甲",
+                "legal_aid_status": "進行中", "status": "已結案", "manual_status_lock": 1}
+
+        assert _update_laf_status(db, case, "進行中") is True
+
+        sql, params = db.execute_write.call_args[0]
+        assert "manual_status_lock" in sql
+        assert params == ("進行中", "進行中", 42)
+        assert case["legal_aid_status"] == "進行中"
+        assert case["status"] == "已結案"
+
+    def test_scheduled_script_portal_resolve_respects_manual_lock(self):
+        import inspect
+        import scripts.laf_nightly_audit as scheduled_mod
+
+        src = inspect.getsource(scheduled_mod.scan_portal_pending_drafts)
+        assert "manual_status_lock" in src
+        assert "CASE WHEN COALESCE" in src
+        assert "legal_aid_approval_status" in src
+        assert "待轉入" in src
 
     def test_skips_when_no_case_id(self):
         from casper_ecosystem.law_firm_orchestrators.laf_nightly_audit import _update_laf_status_with_approval

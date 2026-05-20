@@ -473,7 +473,107 @@ def test_cases_active_scope_excludes_laf_closing_and_closed(client):
     assert "已結案，待送出" in sql
     assert "已結案，待報結" in sql
     assert "未結案" in sql
+    assert "folder_path" in sql
+    assert "10_結案" in sql
     assert "NOT" in sql
+
+
+def test_cases_duplicate_upsert_does_not_reopen_closed_laf_case(client, monkeypatch):
+    import api.blueprints.osc_cases as mod
+
+    updates = []
+
+    def fake_exec(sql, params=(), fetch="none"):
+        sql_text = sql or ""
+        if sql_text.startswith("INSERT INTO cases"):
+            raise Exception("1062 Duplicate entry")
+        if "SELECT id, status, legal_aid_status, manual_status_lock, folder_path FROM cases" in sql_text:
+            return {
+                "id": "case-closed",
+                "status": "進行中",
+                "legal_aid_status": "已結案",
+                "manual_status_lock": 1,
+                "folder_path": r"Z:\lumi63181107\01_案件\法扶案件\刑事\2025-0078-陳瀚-刑事二審-洗錢防制法",
+            }, {"host": "127.0.0.1"}
+        if sql_text.startswith("UPDATE cases SET"):
+            updates.append((sql_text, params))
+            return {"rowcount": 1}, {"host": "127.0.0.1"}
+        return {"rowcount": 0}, {"host": "127.0.0.1"}
+
+    monkeypatch.setattr(mod, "_osc_exec", fake_exec)
+    monkeypatch.setattr(mod, "_osc_auto_archive_closed_case", lambda _id: {"ok": True, "skipped": True})
+
+    r = client.post("/api/osc/cases", json={
+        "case_number": "2025-0078",
+        "client_name": "陳瀚",
+        "case_category": "法律扶助案件",
+        "case_type": "刑事",
+        "case_stage": "刑事二審",
+        "case_reason": "洗錢防制法",
+        "folder_path": r"Z:\lumi63181107\01_案件\法扶案件\刑事\2025-0078-陳瀚-刑事二審-洗錢防制法",
+    })
+
+    assert r.status_code == 200
+    assert updates
+    sql, params = updates[0]
+    assert "status=%s" in sql
+    assert "folder_path" not in sql
+    assert "已結案" in params
+
+
+def test_cases_duplicate_upsert_does_not_reopen_archived_general_case(client, monkeypatch):
+    import api.blueprints.osc_cases as mod
+
+    updates = []
+
+    def fake_exec(sql, params=(), fetch="none"):
+        sql_text = sql or ""
+        if sql_text.startswith("INSERT INTO cases"):
+            raise Exception("1062 Duplicate entry")
+        if "SELECT id, status, legal_aid_status, manual_status_lock, folder_path FROM cases" in sql_text:
+            return {
+                "id": "case-archived",
+                "status": "進行中",
+                "legal_aid_status": "未開辦",
+                "manual_status_lock": 0,
+                "folder_path": r"Y:\lumi\03_工作資料\10_結案\一般案件\民事\2026-0019-黃語玲-一審-給付資遣費等",
+            }, {"host": "127.0.0.1"}
+        if sql_text.startswith("UPDATE cases SET"):
+            updates.append((sql_text, params))
+            return {"rowcount": 1}, {"host": "127.0.0.1"}
+        return {"rowcount": 0}, {"host": "127.0.0.1"}
+
+    monkeypatch.setattr(mod, "_osc_exec", fake_exec)
+    monkeypatch.setattr(mod, "_osc_auto_archive_closed_case", lambda _id: {"ok": True, "skipped": True})
+
+    r = client.post("/api/osc/cases", json={
+        "case_number": "2026-0019",
+        "client_name": "黃語玲",
+        "case_category": "一般案件",
+        "case_type": "民事",
+        "case_stage": "一審",
+        "case_reason": "給付資遣費等",
+        "folder_path": r"Z:\lumi63181107\01_案件\一般案件\民事\2026-0019-黃語玲-一審-給付資遣費等",
+    })
+
+    assert r.status_code == 200
+    assert updates
+    sql, params = updates[0]
+    assert "status=%s" in sql
+    assert "folder_path" not in sql
+    assert "已結案" in params
+
+
+def test_case_effective_status_treats_archive_path_as_closed():
+    from api.blueprints.osc_cases import _osc_effective_case_status, _osc_should_archive_case_row
+
+    row = {
+        "status": "進行中",
+        "legal_aid_status": "未開辦",
+        "folder_path": r"Y:\lumi\03_工作資料\10_結案\一般案件\民事\2026-0019-黃語玲-一審-給付資遣費等",
+    }
+    assert _osc_effective_case_status(row) == "已結案"
+    assert _osc_should_archive_case_row(row) is True
 
 
 @pytest.mark.parametrize(

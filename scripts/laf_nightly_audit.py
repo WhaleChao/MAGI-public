@@ -1843,18 +1843,34 @@ def scan_portal_pending_drafts(db=None) -> dict:
             applyno = item["applyno"]
             try:
                 row = db.fetch_one(
-                    "SELECT `id`, `legal_aid_status` FROM `cases` "
+                    "SELECT `id`, `status`, `legal_aid_status`, `legal_aid_approval_status` FROM `cases` "
                     "WHERE (`legal_aid_number` = %s OR `case_number` = %s) "
                     "AND `legal_aid_status` IN ('已結案，待送出', '已結案，待報結') LIMIT 1",
                     (applyno, applyno),
                     as_dict=True,
                 )
                 if row and isinstance(row, dict) and row.get("id"):
-                    db.execute(
-                        "UPDATE `cases` SET `legal_aid_status` = '已結案', `status` = '已結案', "
-                        "`updated_at` = NOW() WHERE `id` = %s",
-                        (row["id"],),
-                    )
+                    try:
+                        db.execute_write(
+                            """
+                            UPDATE `cases`
+                            SET `legal_aid_status` = %s,
+                                `legal_aid_approval_status` = %s,
+                                `legal_aid_approval_checked_at` = NOW(),
+                                `status` = CASE WHEN COALESCE(`manual_status_lock`, 0) = 1 THEN `status` ELSE %s END,
+                                `updated_at` = NOW()
+                            WHERE `id` = %s
+                            """,
+                            ("已結案", "待轉入", "已結案", row["id"]),
+                        )
+                    except Exception as inner:
+                        if "manual_status_lock" not in str(inner) and "Unknown column" not in str(inner):
+                            raise
+                        db.execute_write(
+                            "UPDATE `cases` SET `legal_aid_status` = %s, `status` = %s, "
+                            "`updated_at` = NOW() WHERE `id` = %s",
+                            ("已結案", "已結案", row["id"]),
+                        )
                     logger.info("  DB 更新: %s → 已結案/待轉入", applyno)
             except Exception as e:
                 logger.warning("  DB 更新失敗 (%s): %s", applyno, e)

@@ -1012,6 +1012,8 @@ def _osc_effective_case_status(row: dict | None) -> str:
         return "已結案"
     if laf_status in _OSC_LAF_CLOSING_STATUSES:
         return laf_status
+    if _osc_is_closed_archive_path(row.get("folder_path") or ""):
+        return "已結案"
     if status:
         return "進行中" if status in _OSC_OPEN_STATUS_ALIASES else status
     if laf_status:
@@ -1047,11 +1049,13 @@ def _osc_final_closed_sql() -> str:
     """SQL predicate for cases that are truly final closed."""
     status = "COALESCE(status, '')"
     laf = "COALESCE(legal_aid_status, '')"
+    folder = "REPLACE(COALESCE(folder_path, ''), '\\\\', '/')"
     laf_closed = f"{laf} = '已結案'"
     case_closed = f"({status} LIKE '%已結案%' OR LOWER({status}) IN ('closed', 'close', 'done'))"
+    folder_closed = f"({folder} LIKE 'Y:/%' OR {folder} LIKE '%/03_工作資料/10_結案/%' OR {folder} LIKE '%/10_結案/%')"
     laf_not_closing = f"{laf} NOT IN ('已結案，待報結', '已結案，待送出')"
     status_not_closing = f"{status} NOT LIKE '%結案中%' AND {status} NOT LIKE '%待報結%' AND {status} NOT LIKE '%待送出%'"
-    return f"({laf_closed} OR ({case_closed} AND {laf_not_closing} AND {status_not_closing}))"
+    return f"({laf_closed} OR {folder_closed} OR ({case_closed} AND {laf_not_closing} AND {status_not_closing}))"
 
 
 def _osc_status_scope_sql(scope: str) -> str:
@@ -1263,12 +1267,30 @@ def osc_cases_api():
 
         target = None
         if case_number:
-            target, _ = _osc_exec("SELECT id FROM cases WHERE case_number=%s LIMIT 1", (case_number,), fetch="one")
+            target, _ = _osc_exec(
+                "SELECT id, status, legal_aid_status, manual_status_lock, folder_path FROM cases WHERE case_number=%s LIMIT 1",
+                (case_number,),
+                fetch="one",
+            )
         if not target and row_id:
-            target, _ = _osc_exec("SELECT id FROM cases WHERE id=%s LIMIT 1", (row_id,), fetch="one")
+            target, _ = _osc_exec(
+                "SELECT id, status, legal_aid_status, manual_status_lock, folder_path FROM cases WHERE id=%s LIMIT 1",
+                (row_id,),
+                fetch="one",
+            )
         if not target:
             return jsonify({"ok": False, "error": msg}), 500
 
+        target_status = str(target.get("status") or "").strip()
+        target_laf_status = str(target.get("legal_aid_status") or "").strip()
+        target_manual_locked = bool(int(target.get("manual_status_lock") or 0))
+        target_final_closed = (
+            _osc_is_closed_case_status(target_status)
+            or _osc_is_laf_final_closed_status(target_laf_status)
+            or _osc_is_closed_archive_path(target.get("folder_path") or "")
+        )
+        target_laf_closing = _osc_normalize_laf_status(target_laf_status) in {"已結案，待報結", "已結案，待送出"}
+        incoming_folder = translate_local_path_to_canonical((payload.get("folder_path") or "").strip()) or None
         update_payload = {
             "client_name": client_name,
             "case_category": case_category or None,
@@ -1280,10 +1302,16 @@ def osc_cases_api():
             "court_name": (payload.get("court_name") or payload.get("court") or "").strip() or None,
             "court_case_no": (payload.get("court_case_no") or payload.get("court_case_number") or "").strip() or None,
             "court_division": (payload.get("court_division") or payload.get("division") or "").strip() or None,
-            "status": status_value,
             "notes": (payload.get("notes") or "").strip() or None,
-            "folder_path": translate_local_path_to_canonical((payload.get("folder_path") or "").strip()) or None,
         }
+        if target_final_closed:
+            update_payload["status"] = "已結案"
+        elif target_laf_closing and _osc_case_status_is_openish(status_value):
+            update_payload["status"] = "結案中"
+        elif "status" in payload and not target_manual_locked:
+            update_payload["status"] = status_value
+        if incoming_folder and not ((target_final_closed or target_laf_closing) and not _osc_is_closed_archive_path(incoming_folder)):
+            update_payload["folder_path"] = incoming_folder
         if case_number:
             update_payload["case_number"] = case_number
         sets = []
@@ -1323,7 +1351,11 @@ def osc_case_detail_api(row_id):
         synced_laf = _osc_synced_laf_number(payload)
         payload["laf_case_no"] = synced_laf
         payload["application_no"] = synced_laf
-    current_row, _ = _osc_exec("SELECT id, case_number, client_name, folder_path FROM cases WHERE id=%s", (row_id,), fetch="one")
+    current_row, _ = _osc_exec(
+        "SELECT id, case_number, client_name, folder_path, manual_status_lock FROM cases WHERE id=%s",
+        (row_id,),
+        fetch="one",
+    )
     template_update = _osc_is_template_case(
         {
             **(current_row or {}),
@@ -1357,6 +1389,11 @@ def osc_case_detail_api(row_id):
             vals.append(v)
     if not sets:
         return jsonify({"ok": False, "error": "no fields"}), 400
+    if "status" in payload and not template_update:
+        sets.append("manual_status_lock=1")
+        sets.append("manual_status_source=%s")
+        vals.append("osc_web_edit")
+        sets.append("manual_status_at=NOW()")
     sets.append("updated_at=NOW()")
     vals.append(row_id)
     result, _ = _osc_exec(f"UPDATE cases SET {','.join(sets)} WHERE id=%s", tuple(vals), fetch="none")
@@ -1479,9 +1516,28 @@ def _osc_case_status_for_laf_status(legal_aid_status: str) -> str:
     return "進行中"
 
 
+def _osc_is_closed_archive_path(path: str) -> bool:
+    norm = _osc_norm_path(path).replace("\\", "/")
+    return (
+        norm.startswith("Y:/")
+        or "/03_工作資料/10_結案/" in norm
+        or norm.endswith("/03_工作資料/10_結案")
+        or "/10_結案/" in norm
+    )
+
+
+def _osc_case_status_is_openish(status: str) -> bool:
+    text = str(status or "").strip()
+    return not text or text in _OSC_OPEN_STATUS_ALIASES or text.lower() in {"active", "open", "ongoing", "pending"}
+
+
 def _osc_should_archive_case_row(row: dict) -> bool:
     row = row or {}
-    return _osc_is_closed_case_status(row.get("status") or "") or _osc_is_laf_final_closed_status(row.get("legal_aid_status") or "")
+    return (
+        _osc_is_closed_case_status(row.get("status") or "")
+        or _osc_is_laf_final_closed_status(row.get("legal_aid_status") or "")
+        or _osc_is_closed_archive_path(row.get("folder_path") or "")
+    )
 
 
 def _osc_set_case_status_manual(row_id: str, status: str, *, source: str = "osc_web") -> dict:
@@ -2045,8 +2101,17 @@ def _osc_update_archived_case_folder(cid: str, folder_path: str, item: dict) -> 
     should_mark_closed = _osc_is_closed_case_status(status) or _osc_is_laf_final_closed_status(laf_status)
     if should_mark_closed:
         _osc_exec(
-            "UPDATE cases SET folder_path=%s, status=%s, updated_at=NOW() WHERE id=%s",
-            (canonical_folder_path, "已結案", cid),
+            """
+            UPDATE cases
+            SET folder_path=%s,
+                status=%s,
+                manual_status_lock=1,
+                manual_status_source=COALESCE(manual_status_source, %s),
+                manual_status_at=COALESCE(manual_status_at, NOW()),
+                updated_at=NOW()
+            WHERE id=%s
+            """,
+            (canonical_folder_path, "已結案", "auto_archive_closed_case", cid),
             fetch="none",
         )
     else:
@@ -4987,7 +5052,9 @@ def osc_laf_batch_status_api():
     result, _ = _osc_exec(
         """
         UPDATE cases
-        SET legal_aid_status=%s, status=%s, updated_at=NOW()
+        SET legal_aid_status=%s,
+            status=CASE WHEN COALESCE(manual_status_lock,0)=1 THEN status ELSE %s END,
+            updated_at=NOW()
         WHERE (
             case_category = '法律扶助案件'
             OR case_reason LIKE '%法扶%'
@@ -5020,7 +5087,7 @@ def osc_laf_case_status_api(row_id):
         sync_case_status = True if sync_case_status is None else bool(sync_case_status)
     note = str(payload.get("note") or "").strip()
     row, _ = _osc_exec(
-        "SELECT id, case_number, client_name, status, legal_aid_status, folder_path FROM cases WHERE id=%s",
+        "SELECT id, case_number, client_name, status, legal_aid_status, manual_status_lock, folder_path FROM cases WHERE id=%s",
         (row_id,),
         fetch="one",
     )
@@ -5029,7 +5096,8 @@ def osc_laf_case_status_api(row_id):
 
     old_laf_status = str(row.get("legal_aid_status") or "").strip()
     old_case_status = str(row.get("status") or "").strip()
-    next_case_status = _osc_case_status_for_laf_status(target) if sync_case_status else old_case_status
+    manual_locked = bool(int(row.get("manual_status_lock") or 0))
+    next_case_status = _osc_case_status_for_laf_status(target) if (sync_case_status and not manual_locked) else old_case_status
     changed = old_laf_status != target or (sync_case_status and old_case_status != next_case_status)
 
     if not changed:

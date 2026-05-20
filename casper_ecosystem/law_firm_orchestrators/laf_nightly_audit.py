@@ -760,14 +760,28 @@ def _update_laf_status(db, case: dict, new_status: str) -> bool:
     old_status = case.get("legal_aid_status") or "(空)"
     next_case_status = _case_status_for_laf_status(new_status)
     try:
-        db.execute_write(
-            "UPDATE `cases` SET `legal_aid_status` = %s, `status` = %s WHERE `id` = %s",
-            (new_status, next_case_status, case_id),
-        )
+        try:
+            db.execute_write(
+                """
+                UPDATE `cases`
+                SET `legal_aid_status` = %s,
+                    `status` = CASE WHEN COALESCE(`manual_status_lock`, 0) = 1 THEN `status` ELSE %s END
+                WHERE `id` = %s
+                """,
+                (new_status, next_case_status, case_id),
+            )
+        except Exception as inner:
+            if "manual_status_lock" not in str(inner) and "Unknown column" not in str(inner):
+                raise
+            db.execute_write(
+                "UPDATE `cases` SET `legal_aid_status` = %s, `status` = %s WHERE `id` = %s",
+                (new_status, next_case_status, case_id),
+            )
         logger.info("📝 DB 狀態更新: %s %s「%s」→「%s」",
                      case.get("case_number"), case.get("client_name"), old_status, new_status)
         case["legal_aid_status"] = new_status
-        case["status"] = next_case_status
+        if not case.get("manual_status_lock"):
+            case["status"] = next_case_status
         return True
     except Exception as e:
         logger.error("DB 狀態更新失敗 %s: %s", case.get("case_number"), e)
@@ -787,15 +801,27 @@ def _update_laf_status_with_approval(db, case: dict, main_status: str, approval_
     cur_approval = (case.get("legal_aid_approval_status") or "").strip()
     next_case_status = _case_status_for_laf_status(main_status)
     cur_case_status = (case.get("status") or "").strip()
-    if cur_main == main_status and cur_approval == approval_status and cur_case_status == next_case_status:
+    manual_locked = bool(int(case.get("manual_status_lock") or 0))
+    if cur_main == main_status and cur_approval == approval_status and (manual_locked or cur_case_status == next_case_status):
         logger.debug("DB 冪等跳過 case_id=%s: %s/%s 無變化", case_id, main_status, approval_status)
         return
     try:
-        db.execute_write(
-            "UPDATE `cases` SET `legal_aid_status` = %s, `legal_aid_approval_status` = %s, "
-            "`legal_aid_approval_checked_at` = NOW(), `status` = %s WHERE `id` = %s",
-            (main_status, approval_status, next_case_status, case_id),
-        )
+        try:
+            db.execute_write(
+                "UPDATE `cases` SET `legal_aid_status` = %s, `legal_aid_approval_status` = %s, "
+                "`legal_aid_approval_checked_at` = NOW(), "
+                "`status` = CASE WHEN COALESCE(`manual_status_lock`, 0) = 1 THEN `status` ELSE %s END "
+                "WHERE `id` = %s",
+                (main_status, approval_status, next_case_status, case_id),
+            )
+        except Exception as inner:
+            if "manual_status_lock" not in str(inner) and "Unknown column" not in str(inner):
+                raise
+            db.execute_write(
+                "UPDATE `cases` SET `legal_aid_status` = %s, `legal_aid_approval_status` = %s, "
+                "`legal_aid_approval_checked_at` = NOW(), `status` = %s WHERE `id` = %s",
+                (main_status, approval_status, next_case_status, case_id),
+            )
         logger.info(
             "📝 DB 狀態更新（主+副）: %s %s「%s/%s」→「%s/%s」",
             case.get("case_number"), case.get("client_name"),
@@ -803,7 +829,8 @@ def _update_laf_status_with_approval(db, case: dict, main_status: str, approval_
         )
         case["legal_aid_status"] = main_status
         case["legal_aid_approval_status"] = approval_status
-        case["status"] = next_case_status
+        if not manual_locked:
+            case["status"] = next_case_status
     except Exception as e:
         err_str = str(e)
         if "legal_aid_approval_status" in err_str or "Unknown column" in err_str:

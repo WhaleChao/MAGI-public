@@ -5444,10 +5444,23 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
             try:
                 _upd_case = identity.get("case_number") or ""
                 if _upd_case and self.db:
-                    self.db.execute_write(
-                        "UPDATE cases SET legal_aid_status = %s, status = %s WHERE case_number = %s",
-                        ("已結案，待送出", "已結案，待送出", _upd_case)
-                    )
+                    try:
+                        self.db.execute_write(
+                            """
+                            UPDATE cases
+                            SET legal_aid_status = %s,
+                                status = CASE WHEN COALESCE(manual_status_lock, 0) = 1 THEN status ELSE %s END
+                            WHERE case_number = %s
+                            """,
+                            ("已結案，待送出", "結案中", _upd_case)
+                        )
+                    except Exception as inner:
+                        if "manual_status_lock" not in str(inner) and "Unknown column" not in str(inner):
+                            raise
+                        self.db.execute_write(
+                            "UPDATE cases SET legal_aid_status = %s, status = %s WHERE case_number = %s",
+                            ("已結案，待送出", "結案中", _upd_case)
+                        )
                     logger.info("  📝 DB status 更新: %s → 已結案，待送出", _upd_case)
             except Exception as _db_err:
                 logger.warning("  ⚠️ DB status 更新失敗: %s", _db_err)
