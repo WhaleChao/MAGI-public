@@ -16,18 +16,21 @@ class NvidiaNimProvider(OpenAICompatibleProvider):
     base_url_env = "NVIDIA_NIM_BASE_URL"
     api_key_env = "NVIDIA_NIM_API_KEY"
     model_env = "NVIDIA_NIM_MODEL"
-    # 2026-05: 3.1 405B 已 EOL；預設改用目前可用的 3.3 70B。
-    default_model = "meta/llama-3.3-70b-instruct"
+    # 405B remains the user-facing heavy target; nim_heavy resolves it through
+    # the current NVIDIA model chain when the account/API returns 404.
+    default_model = "meta/llama-3.1-405b-instruct"
     health_path = "/models"
     requires_api_key = True
 
     # 白名單 — 任何 PR 必須保證新增的 entry 不是中國模型
     ALLOWED_MODELS = frozenset({
         # Meta Llama 系（多語、128K context）
+        "meta/llama-3.1-405b-instruct",      # 使用者指定的重型目標；實際可用性由 nim_heavy 檢查
         "meta/llama-3.3-70b-instruct",       # 一般兜底
         "meta/llama-3.1-70b-instruct",
         "meta/llama-3.1-8b-instruct",
         # NVIDIA 基於 Llama 的 fine-tune（多語）
+        "nvidia/nemotron-3-super-120b-a12b",  # 2026-05 live tested heavy fallback
         "nvidia/llama-3.1-nemotron-70b-instruct",
         "nvidia/llama-3.1-nemotron-51b-instruct",
         # Mistral（多語）

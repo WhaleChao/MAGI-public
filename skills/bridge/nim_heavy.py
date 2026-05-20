@@ -31,6 +31,9 @@ STATE_PATH = MAGI_ROOT / ".runtime" / "nvidia_nim_state.json"
 NIM_EOL_MODELS = {
     "meta/llama-3.1-405b-instruct",
 }
+NIM_405B_TARGET_MODEL = "meta/llama-3.1-405b-instruct"
+NIM_LARGE_FALLBACK_MODEL = "nvidia/nemotron-3-super-120b-a12b"
+NIM_FINAL_FALLBACK_MODEL = "meta/llama-3.3-70b-instruct"
 
 # ── 執行期狀態（單進程內）────────────────────────────────────
 _state_lock = threading.Lock()
@@ -156,18 +159,49 @@ def _log_usage(payload: Dict[str, Any]) -> None:
 
 
 def _pick_model(task_type: str, heavy: bool = False) -> str:
-    heavy_model = os.environ.get("NVIDIA_NIM_MODEL", "meta/llama-3.3-70b-instruct").strip()
-    fast_model = os.environ.get("NVIDIA_NIM_MODEL_FAST", "meta/llama-3.3-70b-instruct").strip()
+    heavy_model = os.environ.get("NVIDIA_NIM_MODEL", NIM_405B_TARGET_MODEL).strip()
+    large_fallback = os.environ.get("NVIDIA_NIM_MODEL_LARGE_FALLBACK", NIM_LARGE_FALLBACK_MODEL).strip()
+    fast_model = os.environ.get("NVIDIA_NIM_MODEL_FAST", NIM_FINAL_FALLBACK_MODEL).strip()
     # heavy flag 或長 prompt（另由 caller 判斷）→ heavy model；否則 fast model。
-    # 2026-05: NVIDIA 已讓 3.1 405B EOL，舊 .env 仍指向它時要自動避開。
+    # 2026-05: public NVIDIA API may return 404 for the literal 405B id on
+    # some accounts, so heavy requests start at the configured large fallback.
     chosen = heavy_model if heavy else fast_model
     if chosen in NIM_EOL_MODELS:
-        logger.warning("NIM model %s is EOL; falling back to %s", chosen, fast_model)
-        chosen = fast_model
+        logger.warning("NIM model %s is unavailable on this account; using large fallback %s", chosen, large_fallback)
+        chosen = large_fallback
     if not NvidiaNimProvider.is_model_allowed(chosen):
-        logger.error("NIM model %s not in allow list, falling back to 70b", chosen)
-        chosen = "meta/llama-3.3-70b-instruct"
+        logger.error("NIM model %s not in allow list, falling back to %s", chosen, fast_model)
+        chosen = fast_model
     return chosen
+
+
+def _model_chain(preferred: str, *, heavy: bool) -> list[str]:
+    """Return a de-duplicated NVIDIA model chain for one request."""
+    heavy_model = os.environ.get("NVIDIA_NIM_MODEL", NIM_405B_TARGET_MODEL).strip()
+    large_fallback = os.environ.get("NVIDIA_NIM_MODEL_LARGE_FALLBACK", NIM_LARGE_FALLBACK_MODEL).strip()
+    fast_model = os.environ.get("NVIDIA_NIM_MODEL_FAST", NIM_FINAL_FALLBACK_MODEL).strip()
+    raw = [preferred]
+    if heavy:
+        raw.extend([heavy_model, large_fallback, fast_model])
+    else:
+        raw.extend([fast_model, large_fallback])
+    out: list[str] = []
+    for model in raw:
+        model = (model or "").strip()
+        if not model:
+            continue
+        if model in NIM_EOL_MODELS:
+            mapped = large_fallback if heavy else fast_model
+            logger.warning("NIM model %s is unavailable on this account; trying %s", model, mapped)
+            model = mapped
+        if not NvidiaNimProvider.is_model_allowed(model):
+            logger.error("NIM model %s not in allow list; skipped", model)
+            continue
+        if model not in out:
+            out.append(model)
+    if not out:
+        out.append(NIM_FINAL_FALLBACK_MODEL)
+    return out
 
 
 def _cb_can_call():
@@ -262,10 +296,8 @@ def run_nim_chat(
         len(prompt or "") >= int(os.environ.get("NVIDIA_NIM_HEAVY_THRESHOLD_CHARS", "20000") or "20000")
     )
     chosen_model = model or _pick_model(task_type, heavy=auto_heavy)
-    if chosen_model in NIM_EOL_MODELS:
-        logger.warning("NIM model %s is EOL; falling back to meta/llama-3.3-70b-instruct", chosen_model)
-        chosen_model = "meta/llama-3.3-70b-instruct"
-    if not NvidiaNimProvider.is_model_allowed(chosen_model):
+    candidate_models = _model_chain(chosen_model, heavy=bool(auto_heavy))
+    if not candidate_models:
         return _fail(f"nim_model_not_allowed:{chosen_model}")
 
     # 6) PII scrub
@@ -286,31 +318,44 @@ def run_nim_chat(
         messages.append({"role": "system", "content": system_prompt})
     messages.append({"role": "user", "content": scrubbed_text})
 
-    payload = {
-        "model": chosen_model,
-        "messages": messages,
-        "temperature": 0.2,
-        "top_p": 0.9,
-        "max_tokens": 4096,
-        "stream": False,
-    }
-
     acquired = _nim_semaphore.acquire(blocking=True, timeout=max(5, int(timeout_sec)))
     if not acquired:
         return _fail("nim_semaphore_timeout")
 
+    response = None
+    final_error = ""
     try:
         _incr_daily_count()
-        r = requests.post(
-            f"{base_url}/chat/completions",
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-                "Accept": "application/json",
-            },
-            json=payload,
-            timeout=(5.0, float(timeout_sec)),
-        )
+        for idx, candidate_model in enumerate(candidate_models):
+            payload = {
+                "model": candidate_model,
+                "messages": messages,
+                "temperature": 0.2,
+                "top_p": 0.9,
+                "max_tokens": 4096,
+                "stream": False,
+            }
+            r = requests.post(
+                f"{base_url}/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                    "Accept": "application/json",
+                },
+                json=payload,
+                timeout=(5.0, float(timeout_sec)),
+            )
+            err_body = (r.text or "")[:300].replace("\n", " ").strip()
+            if r.status_code == 404 and idx + 1 < len(candidate_models):
+                final_error = f"nim_http_404:{candidate_model}:{err_body[:160]}"
+                record_nim_outcome(False, int((time.monotonic() - t0) * 1000), "http_404_retry")
+                _log_usage({"ts": started_iso, "model": candidate_model, "ok": False,
+                            "error": "http_404_retry", "error_body": err_body,
+                            "prompt_chars": len(prompt or ""), "task": task_type})
+                logger.warning("NIM model %s returned 404; trying next candidate", candidate_model)
+                continue
+            response = (candidate_model, r)
+            break
     except requests.Timeout:
         _cb_record_429("timeout")
         record_nim_outcome(False, int((time.monotonic() - t0) * 1000), "timeout")
@@ -322,6 +367,10 @@ def run_nim_chat(
         return _fail(f"nim_http_exception:{e}")
     finally:
         _nim_semaphore.release()
+
+    if response is None:
+        return _fail(final_error or "nim_no_model_response")
+    chosen_model, r = response
 
     # 錯誤回應：把 response body 一併寫入 usage log（之前只記 status code，
     # 害 http_400 等錯誤完全無從診斷）。body 截斷到 300 chars 防止 log 爆。

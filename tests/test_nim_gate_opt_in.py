@@ -73,5 +73,6 @@ def test_flag_on_legacy_cb_not_touched_on_gate_path(monkeypatch):
 
 def test_eol_nim_model_falls_back_to_current_default(monkeypatch):
     monkeypatch.setenv("NVIDIA_NIM_MODEL", "meta/llama-3.1-405b-instruct")
+    monkeypatch.setenv("NVIDIA_NIM_MODEL_LARGE_FALLBACK", "nvidia/nemotron-3-super-120b-a12b")
     monkeypatch.setenv("NVIDIA_NIM_MODEL_FAST", "meta/llama-3.3-70b-instruct")
-    assert _nim._pick_model("judgment_summary", heavy=True) == "meta/llama-3.3-70b-instruct"
+    assert _nim._pick_model("judgment_summary", heavy=True) == "nvidia/nemotron-3-super-120b-a12b"
