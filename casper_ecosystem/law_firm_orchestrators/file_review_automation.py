@@ -20,7 +20,7 @@ import shutil
 import threading
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Optional, Dict, List, Any, Tuple
+from typing import Optional, Dict, List, Any, Tuple, Callable
 from dataclasses import dataclass, field
 import pickle
 import base64
@@ -2209,10 +2209,23 @@ class FileReviewManager:
                 return True
             return False
 
+        if str(entry.get("status") or "").strip() == "invalid_download_cooldown":
+            try:
+                cooldown_hours = float(os.environ.get("MAGI_EEFILE_PAYMENT_ERROR_COOLDOWN_HOURS", "6") or "6")
+            except Exception:
+                cooldown_hours = 6.0
+            processed_at = str(entry.get("processed_at") or "").strip()
+            try:
+                dt = datetime.fromisoformat(processed_at)
+                if cooldown_hours > 0 and (datetime.now() - dt).total_seconds() < cooldown_hours * 3600:
+                    return True
+            except Exception:
+                pass
+
         # 僅有 key 不足以判定已處理：必須至少有可用檔案紀錄且檔案仍可定位。
         path_hints = [str(x).strip() for x in (entry.get("file_paths") or []) if str(x).strip()]
         for p in path_hints:
-            if os.path.isfile(p):
+            if os.path.isfile(p) and self._is_valid_payment_download_artifact(p):
                 return True
 
         name_hints = [str(x).strip() for x in (entry.get("files") or []) if str(x).strip()]
@@ -2350,6 +2363,33 @@ class FileReviewManager:
             "case_number": case_number,
             "files": file_names,
             "file_paths": file_paths,
+        }
+        self._save_payment_registry()
+
+    def _mark_payment_download_error(self, row_json: dict, reason: str, files: Optional[List[str]] = None, case_info: Optional[dict] = None):
+        key = self._payment_registry_key(row_json)
+        if not key:
+            return
+        file_paths = []
+        file_names = []
+        for x in (files or []):
+            xp = str(x or "").strip()
+            if not xp:
+                continue
+            ap = os.path.realpath(xp)
+            file_paths.append(ap)
+            file_names.append(os.path.basename(ap))
+        self.payment_registry[key] = {
+            "processed_at": datetime.now().isoformat(),
+            "status": "invalid_download_cooldown",
+            "reason": reason,
+            "yyidno": str((row_json or {}).get("yyidno") or (row_json or {}).get("showyyidno") or (case_info or {}).get("case_number") or ""),
+            "p_payid": str((row_json or {}).get("p_payid") or ""),
+            "rowid": str((row_json or {}).get("rowid") or ""),
+            "party": str((row_json or {}).get("clnm") or (case_info or {}).get("party") or ""),
+            "case_number": str((row_json or {}).get("yyidno") or (case_info or {}).get("case_number") or ""),
+            "files": list(dict.fromkeys(file_names)),
+            "file_paths": list(dict.fromkeys(file_paths)),
         }
         self._save_payment_registry()
 
@@ -4949,7 +4989,77 @@ class FileReviewManager:
         except Exception:
             return str(value or "")
 
-    def _collect_new_files_from_folder(self, folder: str, existing_file_mtimes: dict, timeout_sec: int = 10) -> List[str]:
+    def _download_payload_looks_like_json_error(self, path: str) -> bool:
+        try:
+            with open(path, "rb") as fh:
+                chunk = fh.read(2048)
+            text = chunk.decode("utf-8", errors="ignore").lstrip()
+        except Exception:
+            return False
+        if not text.startswith(("{", "[")):
+            return False
+        lowered = text.lower()
+        return (
+            "messagetext" in lowered
+            or "\"status\"" in lowered
+            or "\"controller\"" in lowered
+            or "銷帳編號取號失敗" in text
+        )
+
+    def _is_valid_download_pdf(self, path: str) -> bool:
+        """Only completed PDF artifacts may enter archive/dedupe registries."""
+        filename = os.path.basename(str(path or ""))
+        if not filename.lower().endswith(".pdf"):
+            return False
+        if self._download_payload_looks_like_json_error(path):
+            return False
+        try:
+            return os.path.getsize(path) > 0
+        except Exception:
+            return False
+
+    def _is_valid_payment_download_artifact(self, path: str) -> bool:
+        return self._is_valid_download_pdf(path)
+
+    def _is_valid_review_download_artifact(self, path: str) -> bool:
+        if self._is_payment_slip_filename(path):
+            return False
+        return self._is_valid_download_pdf(path)
+
+    def _quarantine_invalid_download(self, path: str, reason: str = "invalid_artifact") -> str:
+        try:
+            if not path or not os.path.isfile(path):
+                return ""
+            base = os.path.basename(path)
+            qdir = os.path.join(self.download_folder, "_ignored_downloads", datetime.now().strftime("%Y%m%d"))
+            os.makedirs(qdir, exist_ok=True)
+            stem, ext = os.path.splitext(base)
+            if not ext:
+                ext = ".bin"
+            safe_reason = re.sub(r"[^0-9A-Za-z_-]+", "_", reason or "invalid_artifact").strip("_")
+            dst = os.path.join(qdir, f"{stem}.{safe_reason}{ext}")
+            if os.path.exists(dst):
+                stamp = datetime.now().strftime("%H%M%S")
+                dst = os.path.join(qdir, f"{stem}.{safe_reason}.{stamp}{ext}")
+            shutil.move(path, dst)
+            try:
+                if hasattr(self, "_last_invalid_download_artifacts"):
+                    self._last_invalid_download_artifacts.append(dst)
+            except Exception:
+                logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 3636, exc_info=True)
+            self.log(f"  ⏭️ 已隔離非 PDF/錯誤下載檔: {base} → {os.path.relpath(dst, self.download_folder)}")
+            return dst
+        except Exception as e:
+            self.log(f"  ⚠️ 隔離非 PDF/錯誤下載檔失敗: {os.path.basename(str(path))}: {e}")
+            return ""
+
+    def _collect_new_files_from_folder(
+        self,
+        folder: str,
+        existing_file_mtimes: dict,
+        timeout_sec: int = 10,
+        accept: Optional[Callable[[str], bool]] = None,
+    ) -> List[str]:
         """等待並收集新下載檔名（僅檔名，不含路徑）。"""
         found = []
         if not os.path.exists(folder):
@@ -4966,6 +5076,10 @@ class FileReviewManager:
                     current_mtime = os.path.getmtime(fpath)
                     old_mtime = existing_file_mtimes.get(filename, 0)
                     if filename not in existing_file_mtimes or current_mtime > old_mtime:
+                        if accept is not None and not accept(fpath):
+                            self._quarantine_invalid_download(fpath)
+                            existing_file_mtimes[filename] = current_mtime
+                            continue
                         found.append(filename)
                         existing_file_mtimes[filename] = current_mtime
             except Exception:
@@ -5362,7 +5476,19 @@ class FileReviewManager:
 
         self._switch_to_review_list_v1()
         self.log("  [待繳費] 已回到列表 frame，開始掃描新下載檔案")
-        new_files = self._collect_new_files_from_folder(today_folder, existing_file_mtimes, timeout_sec=15)
+        self._last_invalid_download_artifacts = []
+        new_files = self._collect_new_files_from_folder(
+            today_folder,
+            existing_file_mtimes,
+            timeout_sec=15,
+            accept=self._is_valid_payment_download_artifact,
+        )
+        if not new_files and getattr(self, "_last_invalid_download_artifacts", None):
+            self._mark_payment_download_error(
+                row_json or {},
+                reason="payment_download_returned_non_pdf",
+                files=getattr(self, "_last_invalid_download_artifacts", []),
+            )
         self.log(f"  [待繳費] 本輪偵測到新檔案: {len(new_files)}")
         return new_files
 
@@ -5471,7 +5597,19 @@ class FileReviewManager:
 
         # 4. 收集新檔案
         self._switch_to_review_list_v1()
-        new_files = self._collect_new_files_from_folder(today_folder, existing_file_mtimes, timeout_sec=15)
+        self._last_invalid_download_artifacts = []
+        new_files = self._collect_new_files_from_folder(
+            today_folder,
+            existing_file_mtimes,
+            timeout_sec=15,
+            accept=self._is_valid_payment_download_artifact,
+        )
+        if not new_files and getattr(self, "_last_invalid_download_artifacts", None):
+            self._mark_payment_download_error(
+                row_json or {},
+                reason="payment_download_returned_non_pdf",
+                files=getattr(self, "_last_invalid_download_artifacts", []),
+            )
         self.log(f"  [繳費單] 偵測到新檔案: {len(new_files)}")
         return new_files
 
@@ -6718,7 +6856,7 @@ class FileReviewManager:
                                         current_mtime = os.path.getmtime(fpath)
                                         old_mtime = existing_file_mtimes.get(fpath, 0)
                                         if fpath not in existing_file_mtimes or current_mtime > old_mtime:
-                                            found.append(fpath)
+                                            candidate_path = fpath
                                             # update baseline so subsequent cases won't "claim" the same file
                                             existing_file_mtimes[fpath] = current_mtime
                                             # 若在 root，搬到 today_folder
@@ -6729,10 +6867,14 @@ class FileReviewManager:
                                                         import shutil as _shutil
                                                         _shutil.move(fpath, dst)
                                                         self.log(f"    ✓ 檔案從 root 移到日期資料夾: {filename}")
-                                                        found[-1] = dst
+                                                        candidate_path = dst
                                                         existing_file_mtimes[dst] = current_mtime
                                                 except Exception as _mv_e:
                                                     self.log(f"    ⚠️ 移檔失敗: {_mv_e}")
+                                            if not self._is_valid_review_download_artifact(candidate_path):
+                                                self._quarantine_invalid_download(candidate_path)
+                                                continue
+                                            found.append(candidate_path)
                             except Exception:
                                 logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 5243, exc_info=True)
                             time.sleep(0.8)
@@ -6758,10 +6900,10 @@ class FileReviewManager:
                             logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 5264, exc_info=True)
                         yyidno_reg = (case_meta.get("case_number") or case_meta.get("showyyidno") or "").strip()
                         for nf in new_for_case:
-                            srcp = os.path.join(today_folder, nf)
+                            srcp = nf if os.path.isabs(str(nf)) else os.path.join(today_folder, str(nf))
                             download_meta_by_file[srcp] = dict(case_meta)
                             # ★ 將檔案登錄到 registry
-                            self._register_downloaded(nf, yyidno=yyidno_reg, case_info=case_meta)
+                            self._register_downloaded(os.path.basename(srcp), yyidno=yyidno_reg, case_info=case_meta)
 
                         # Button-level dedup must mean "this review-download button produced
                         # a review artifact", not merely "a popup opened".  OLA can show the
@@ -6770,7 +6912,7 @@ class FileReviewManager:
                         # by payment_registry and must not consume the review rowid either.
                         review_files = [
                             p for p in new_for_case
-                            if "繳費單" not in os.path.basename(str(p))
+                            if self._is_valid_review_download_artifact(str(p))
                         ]
                         if review_files and row_id_for_dedup:
                             try:
@@ -7370,6 +7512,31 @@ class FileReviewManager:
 
         if not downloaded_files:
             self.log("  ℹ️ 無下載檔案，略過歸檔")
+            return
+
+        filtered_downloaded_files = []
+        for fp in downloaded_files:
+            fn = os.path.basename(str(fp or ""))
+            meta = meta_by_file.get(fp) or meta_by_file.get(fn) or {}
+            artifact_type = (meta.get("artifact_type") if isinstance(meta, dict) else "") or ""
+            valid = (
+                self._is_valid_payment_download_artifact(str(fp))
+                if str(artifact_type).strip().lower() == "payment_slip"
+                else self._is_valid_review_download_artifact(str(fp))
+            )
+            if valid:
+                filtered_downloaded_files.append(fp)
+                continue
+            qdst = self._quarantine_invalid_download(str(fp), reason="archive_reject")
+            try:
+                self._last_archive_report["items"].append(
+                    {"party": "", "court_case_no": "", "folder": "", "file": fn, "dst": qdst, "action": "ignored_invalid_artifact"}
+                )
+            except Exception:
+                logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 5904, exc_info=True)
+        downloaded_files = filtered_downloaded_files
+        if not downloaded_files:
+            self.log("  ℹ️ 下載檔案均非有效 PDF，已隔離並略過歸檔")
             return
 
         if not case_info_list:

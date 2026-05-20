@@ -39,7 +39,7 @@ _MAGI_ROOT = Path(__file__).resolve().parents[2]
 if str(_MAGI_ROOT) not in sys.path:
     sys.path.insert(0, str(_MAGI_ROOT))
 
-from api.case_path_mapper import translate_case_path_to_local
+from api.case_path_mapper import local_case_path_candidates, translate_case_path_to_local
 from skills.engine.legal_web_adapter import format_legal_web_engine_log, resolve_legal_web_engine
 
 
@@ -3343,6 +3343,59 @@ class CourtRecordDownloader:
             self.log(f"  ⚠️ 尋找筆錄資料夾失敗: {e}")
             return None
 
+    def _case_local_path_candidates(self, folder_path: str) -> List[str]:
+        paths: List[str] = []
+
+        def _add(path_value: str):
+            p = str(path_value or "").strip()
+            if not p or p in paths:
+                return
+            paths.append(p)
+
+        try:
+            for candidate in local_case_path_candidates(folder_path):
+                _add(candidate)
+        except Exception:
+            logging.getLogger(__name__).debug("transcript path candidate expansion failed", exc_info=True)
+        try:
+            _add(translate_case_path_to_local(folder_path))
+        except Exception:
+            logging.getLogger(__name__).debug("transcript primary path translation failed", exc_info=True)
+        try:
+            if self.db and hasattr(self.db, "translate_path_to_local"):
+                _add(self.db.translate_path_to_local(folder_path))
+        except Exception:
+            logging.getLogger(__name__).debug("transcript db path translation failed", exc_info=True)
+        _add(folder_path)
+        return paths
+
+    def _find_existing_transcript_folder(self, case_folder_path: str) -> Optional[str]:
+        if not case_folder_path or not os.path.exists(case_folder_path):
+            return None
+        try:
+            for item in os.listdir(case_folder_path):
+                item_path = os.path.join(case_folder_path, item)
+                if os.path.isdir(item_path) and "筆錄" in item:
+                    return item_path
+        except Exception:
+            logging.getLogger(__name__).debug("transcript folder probe failed", exc_info=True)
+        return None
+
+    def _all_existing_transcript_folders(self, case: CourtCase, preferred_folder: str = "") -> List[str]:
+        folders: List[str] = []
+
+        def _add(folder_value: str):
+            f = str(folder_value or "").strip()
+            if f and os.path.isdir(f) and f not in folders:
+                folders.append(f)
+
+        _add(preferred_folder)
+        if not getattr(case, "folder_path", ""):
+            return folders
+        for candidate in self._case_local_path_candidates(case.folder_path):
+            _add(self._find_existing_transcript_folder(candidate) or "")
+        return folders
+
     def _generate_record_filename(self, parse_result: Dict[str, Optional[str]], original_filename: str) -> str:
         """
         生成筆錄標準檔名
@@ -3406,19 +3459,27 @@ class CourtRecordDownloader:
                 self.log(f"  (請確認該路徑於此電腦是否可存取)")
             return
 
-        # ★★★ 核心改進：掃描案件資料夾內現有檔案的 MD5 ★★★
+        transcript_folders = self._all_existing_transcript_folders(case, preferred_folder=transcript_folder)
+        if not transcript_folders and transcript_folder:
+            transcript_folders = [transcript_folder]
+        if len(transcript_folders) > 1:
+            self.log(f"  🔁 同步檢查 {len(transcript_folders)} 個本機/NAS 映射筆錄資料夾，避免重複下載")
+
+        # ★★★ 核心改進：掃描所有可用映射路徑內現有檔案的 MD5 ★★★
         existing_folder_md5s = {}
         existing_folder_files = {}  # MD5 -> filename mapping
-        if os.path.exists(transcript_folder):
-            for fname in os.listdir(transcript_folder):
+        for scan_folder in transcript_folders:
+            if not os.path.exists(scan_folder):
+                continue
+            for fname in os.listdir(scan_folder):
                 if not fname.lower().endswith('.pdf'):
                     continue
-                fpath = os.path.join(transcript_folder, fname)
+                fpath = os.path.join(scan_folder, fname)
                 try:
                     file_md5 = self._calculate_file_md5(fpath)
                     if file_md5:
                         existing_folder_md5s[file_md5] = fpath
-                        existing_folder_files[file_md5] = fname
+                        existing_folder_files[file_md5] = fpath
                 except Exception:
                     logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 2624, exc_info=True)
         
@@ -3435,8 +3496,9 @@ class CourtRecordDownloader:
                 
                 # 1. 強制覆蓋重複檢查：即使 MD5 相同也繼續處理 -> 改為：若內容相同則跳過不存
                 if md5 and md5 in existing_folder_md5s:
-                    existing_file = existing_folder_files.get(md5, "")
-                    self.log(f"  ℹ️ 資料夾內已存在相同檔案 ({existing_file})，跳過移入")
+                    existing_path = existing_folder_files.get(md5, "") or existing_folder_md5s.get(md5, "")
+                    existing_file = os.path.basename(existing_path) if existing_path else ""
+                    self.log(f"  ℹ️ 已在案件筆錄資料夾/其他映射路徑找到相同檔案 ({existing_file})，跳過移入")
                     
                     # 刪除暫存下載檔
                     try:
@@ -3452,7 +3514,7 @@ class CourtRecordDownloader:
                             'case_number': case.case_number,
                             'court_case_number': case.court_case_number,
                             'downloaded_at': datetime.now().isoformat(),
-                            'size': self._get_file_size_safe(os.path.join(transcript_folder, existing_file))
+                            'size': self._get_file_size_safe(existing_path)
                         }
                     continue
 
@@ -3742,97 +3804,105 @@ class CourtRecordDownloader:
                 if not case.folder_path:
                     continue
                 
-                local_path = translate_case_path_to_local(case.folder_path)
-                transcript_folder = self.find_transcript_folder(local_path)
-                
-                if not transcript_folder or not os.path.exists(transcript_folder):
+                primary_path = translate_case_path_to_local(case.folder_path)
+                preferred_transcript_folder = self.find_transcript_folder(primary_path)
+                transcript_folders = self._all_existing_transcript_folders(
+                    case,
+                    preferred_folder=preferred_transcript_folder or "",
+                )
+
+                if not transcript_folders:
                     continue
-                
-                pdf_files = [f for f in os.listdir(transcript_folder) if f.lower().endswith('.pdf')]
-                if pdf_files:
-                    self.log(f"  🔍 [{case_idx}/{total_cases}] {case.court_name} {case.court_case_number} - {len(pdf_files)} 份筆錄")
-                
-                for fname in pdf_files:
-                    if max_runtime_sec > 0 and (time.monotonic() - started) > max_runtime_sec:
-                        self.log(f"⏱️ [MD5] 已超過最大執行時間 {max_runtime_sec}s，停止處理此案件之後的檔案。")
-                        break
-                    full_path = os.path.join(transcript_folder, fname)
-                    
-                    # --- Batch Rename Logic ---
-                    if rename_files:
+
+                if len(transcript_folders) > 1:
+                    self.log(f"  🔁 [{case_idx}/{total_cases}] {case.court_case_number} 檢查 {len(transcript_folders)} 個映射筆錄資料夾")
+
+                for transcript_folder in transcript_folders:
+                    pdf_files = [f for f in os.listdir(transcript_folder) if f.lower().endswith('.pdf')]
+                    if pdf_files:
+                        self.log(f"  🔍 [{case_idx}/{total_cases}] {case.court_name} {case.court_case_number} - {len(pdf_files)} 份筆錄")
+
+                    for fname in pdf_files:
+                        if max_runtime_sec > 0 and (time.monotonic() - started) > max_runtime_sec:
+                            self.log(f"⏱️ [MD5] 已超過最大執行時間 {max_runtime_sec}s，停止處理此案件之後的檔案。")
+                            break
+                        full_path = os.path.join(transcript_folder, fname)
+
+                        # --- Batch Rename Logic ---
+                        if rename_files:
+                            try:
+                                # 1. Parse content
+                                # ★ OPTIMIZATION: 若檔名已符合格式 (YYYYMMDD Type(Period).pdf)，跳過解析
+                                # Regex: 8 digits, space, chars, (, chars, ), .pdf
+                                if (
+                                    re.match(r'^\d{8}\s.+?\(.+\)\.pdf$', fname)
+                                    and not fname.startswith("00000000 ")
+                                ):
+                                    # self.log(f"    ⏭️ 檔名已標準化，略過解析: {fname}")
+                                    continue
+
+                                parse_result = self._parse_record_pdf(full_path)
+                                if parse_result.get('date') and parse_result.get('type'):
+                                    # 2. Generate canonical name
+                                    new_name = self._generate_record_filename(parse_result, fname)
+
+                                    if new_name != fname:
+                                        new_full_path = os.path.join(transcript_folder, new_name)
+
+                                        # Handle collision
+                                        if os.path.exists(new_full_path):
+                                            name_part, ext_part = os.path.splitext(new_name)
+                                            counter = 2
+                                            while os.path.exists(new_full_path):
+                                                new_name_idx = f"{name_part}_{counter}{ext_part}"
+                                                new_full_path = os.path.join(transcript_folder, new_name_idx)
+                                                counter += 1
+
+                                        # Rename
+                                        os.rename(full_path, new_full_path)
+                                        self.log(f"    ✏️ 更名: {fname} -> {os.path.basename(new_full_path)}")
+
+                                        # Update pointers
+                                        full_path = new_full_path
+                                        fname = os.path.basename(new_full_path)
+                            except Exception as e:
+                                self.log(f"    ⚠️ 更名失敗 ({fname}): {e}")
+                        # --------------------------
+
                         try:
-                            # 1. Parse content
-                            # ★ OPTIMIZATION: 若檔名已符合格式 (YYYYMMDD Type(Period).pdf)，跳過解析
-                            # Regex: 8 digits, space, chars, (, chars, ), .pdf
-                            if (
-                                re.match(r'^\d{8}\s.+?\(.+\)\.pdf$', fname)
-                                and not fname.startswith("00000000 ")
-                            ):
-                                # self.log(f"    ⏭️ 檔名已標準化，略過解析: {fname}")
-                                continue
+                            stat = os.stat(full_path)
+                            mtime = stat.st_mtime
+                            size = stat.st_size
 
-                            parse_result = self._parse_record_pdf(full_path)
-                            if parse_result.get('date') and parse_result.get('type'):
-                                # 2. Generate canonical name
-                                new_name = self._generate_record_filename(parse_result, fname)
-                                
-                                if new_name != fname:
-                                    new_full_path = os.path.join(transcript_folder, new_name)
-                                    
-                                    # Handle collision
-                                    if os.path.exists(new_full_path):
-                                        name_part, ext_part = os.path.splitext(new_name)
-                                        counter = 2
-                                        while os.path.exists(new_full_path):
-                                            new_name_idx = f"{name_part}_{counter}{ext_part}"
-                                            new_full_path = os.path.join(transcript_folder, new_name_idx)
-                                            counter += 1
-                                    
-                                    # Rename
-                                    os.rename(full_path, new_full_path)
-                                    self.log(f"    ✏️ 更名: {fname} -> {os.path.basename(new_full_path)}")
-                                    
-                                    # Update pointers
-                                    full_path = new_full_path
-                                    fname = os.path.basename(new_full_path)
-                        except Exception as e:
-                            self.log(f"    ⚠️ 更名失敗 ({fname}): {e}")
-                    # --------------------------
+                            # Check cache
+                            cached = file_cache.get(full_path)
+                            md5 = None
 
-                    try:
-                        stat = os.stat(full_path)
-                        mtime = stat.st_mtime
-                        size = stat.st_size
-                        
-                        # Check cache
-                        cached = file_cache.get(full_path)
-                        md5 = None
-                        
-                        if cached and cached.get('mtime') == mtime and cached.get('size') == size:
-                            md5 = cached.get('md5')
-                        else:
-                            md5 = self._calculate_file_md5(full_path)
-                            updated_any = True
-                        
-                        if md5:
-                            # 更新 Cache
-                            new_file_cache[full_path] = {
-                                'mtime': mtime, 'size': size, 'md5': md5
-                            }
-                            
-                            # 更新主 MD5 記錄 (如果不存在)
-                            if md5 not in current_records:
-                                current_records[md5] = {
-                                    'filename': fname,
-                                    'case_number': case.case_number,
-                                    'court_case_number': case.court_case_number,
-                                    'downloaded_at': datetime.now().isoformat(),
-                                    'size': size,
-                                    'source': 'scan'
-                                }
+                            if cached and cached.get('mtime') == mtime and cached.get('size') == size:
+                                md5 = cached.get('md5')
+                            else:
+                                md5 = self._calculate_file_md5(full_path)
                                 updated_any = True
-                    except Exception:
-                        logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 2993, exc_info=True)
+
+                            if md5:
+                                # 更新 Cache
+                                new_file_cache[full_path] = {
+                                    'mtime': mtime, 'size': size, 'md5': md5
+                                }
+
+                                # 更新主 MD5 記錄 (如果不存在)
+                                if md5 not in current_records:
+                                    current_records[md5] = {
+                                        'filename': fname,
+                                        'case_number': case.case_number,
+                                        'court_case_number': case.court_case_number,
+                                        'downloaded_at': datetime.now().isoformat(),
+                                        'size': size,
+                                        'source': 'scan'
+                                    }
+                                    updated_any = True
+                        except Exception:
+                            logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 2993, exc_info=True)
             
             # Save records — 加上 version marker 避免 migration 清空
             current_records["__md5_version__"] = "normalized_v1"
