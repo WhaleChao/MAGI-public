@@ -18,6 +18,7 @@ raziel_bp = Blueprint("raziel", __name__)
 
 DEFAULT_RAZIEL_ROOT = Path(os.environ.get("MAGI_RAZIEL_ROOT", "/Users/ai/Desktop/最高法院_通譯_TXT")).expanduser()
 RAZIEL_LOCK = threading.Lock()
+DELIVERY_ROOT_NAME = "判決捕捉與分類_交付資料"
 
 
 def _raziel_root() -> Path:
@@ -132,24 +133,36 @@ def _delivery_split_bytes(value: Any = None) -> int:
     return max(1, int(mb * 1024 * 1024))
 
 
-def _delivery_sources(config: dict[str, Any]) -> list[Path]:
+def _delivery_source_specs(config: dict[str, Any]) -> list[tuple[Path, Path]]:
     complete = _complete_dir()
-    names = {
-        "TXT",
-        "PDF",
-        str(config.get("keyword_text_dir_name") or "依關鍵字原文").strip() or "依關鍵字原文",
-        str(config.get("keyword_pdf_dir_name") or "依關鍵字PDF").strip() or "依關鍵字PDF",
+    result_names = {
+        "xlsx": "分類表.xlsx",
+        "csv": "分類表.csv",
+        "md": "分類表.md",
+        "preview": "前後文預覽.json",
+        "report": "補抓分析報告.json",
     }
-    sources: list[Path] = []
-    for value in _result_paths().values():
+    specs: list[tuple[Path, Path]] = []
+    for key, value in _result_paths().items():
         path = Path(value)
         if path.exists():
-            sources.append(path)
-    for name in names:
+            specs.append((path, Path(result_names.get(key, path.name))))
+
+    dir_specs = [
+        ("TXT", "判決原文_TXT"),
+        ("PDF", "判決PDF"),
+        (str(config.get("keyword_text_dir_name") or "依關鍵字原文").strip() or "依關鍵字原文", "依關鍵字原文"),
+        (str(config.get("keyword_pdf_dir_name") or "依關鍵字PDF").strip() or "依關鍵字PDF", "依關鍵字PDF"),
+    ]
+    for name, archive_name in dir_specs:
         path = complete / name
         if path.exists():
-            sources.append(path)
-    return sources
+            specs.append((path, Path(archive_name)))
+    return specs
+
+
+def _delivery_sources(config: dict[str, Any]) -> list[Path]:
+    return [source for source, _archive_name in _delivery_source_specs(config)]
 
 
 def _safe_delivery_name(name: str) -> str:
@@ -167,23 +180,48 @@ def _write_delivery_zip(config: dict[str, Any], split_bytes: int) -> dict[str, A
             old.unlink()
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     zip_path = delivery / f"判決捕捉與分類_交付_{stamp}.zip"
-    root = _raziel_root()
-    sources = _delivery_sources(config)
+    source_specs = _delivery_source_specs(config)
     seen: set[Path] = set()
+    keyword_aliases: dict[tuple[str, str], str] = {}
+    keyword_alias_rows: list[dict[str, str]] = []
     file_count = 0
     with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-        for source in sources:
+        for source, archive_name in source_specs:
             if source.is_file():
-                files = [source]
+                files = [(source, archive_name)]
             else:
-                files = [path for path in source.rglob("*") if path.is_file()]
-            for path in files:
+                files = []
+                for path in source.rglob("*"):
+                    if not path.is_file():
+                        continue
+                    rel = path.relative_to(source)
+                    archive_rel = archive_name / rel
+                    if str(archive_name) in {"依關鍵字原文", "依關鍵字PDF"} and len(rel.parts) > 1:
+                        original_keyword = rel.parts[0]
+                        alias_key = (str(archive_name), original_keyword)
+                        if alias_key not in keyword_aliases:
+                            keyword_aliases[alias_key] = f"關鍵字{len(keyword_aliases) + 1:02d}"
+                            keyword_alias_rows.append(
+                                {
+                                    "資料夾": str(archive_name / keyword_aliases[alias_key]),
+                                    "原關鍵字": original_keyword,
+                                }
+                            )
+                        archive_rel = archive_name / keyword_aliases[alias_key] / Path(*rel.parts[1:])
+                    files.append((path, archive_rel))
+            for path, relative_archive_name in files:
                 resolved = path.resolve()
                 if resolved in seen:
                     continue
                 seen.add(resolved)
-                zf.write(path, path.relative_to(root))
+                zf.write(path, Path(DELIVERY_ROOT_NAME) / relative_archive_name)
                 file_count += 1
+        if keyword_alias_rows:
+            zf.writestr(
+                str(Path(DELIVERY_ROOT_NAME) / "關鍵字資料夾對照表.json"),
+                json.dumps(keyword_alias_rows, ensure_ascii=False, indent=2),
+            )
+            file_count += 1
     size = zip_path.stat().st_size
     parts: list[dict[str, Any]] = []
     if size > split_bytes:
@@ -224,7 +262,8 @@ def _write_delivery_zip(config: dict[str, Any], split_bytes: int) -> dict[str, A
         "split": split,
         "split_bytes": split_bytes,
         "parts": parts,
-        "sources": [str(path) for path in sources],
+        "folder_name": DELIVERY_ROOT_NAME,
+        "sources": [str(path) for path, _archive_name in source_specs],
     }
     manifest_path = delivery / "交付清單.json"
     manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")

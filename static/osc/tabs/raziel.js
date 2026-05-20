@@ -142,6 +142,7 @@ function renderRazielDelivery(manifest = {}) {
     if (out) {
         out.textContent = [
             "交付壓縮檔：完成",
+            `壓縮檔內資料夾：${manifest.folder_name || "判決捕捉與分類_交付資料"}`,
             `是否分割：${manifest.split ? "是" : "否"}`,
             `檔案數：${manifest.file_count || 0}`,
             `資料夾：${manifest.delivery_dir || ""}`,
