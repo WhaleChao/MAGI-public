@@ -40,6 +40,10 @@
                     <label for="razielPdfDir">PDF 資料夾</label>
                     <input id="razielPdfDir" placeholder="依關鍵字PDF">
                 </div>
+                <div class="field">
+                    <label for="razielSplitMb">交付分割大小 MB</label>
+                    <input id="razielSplitMb" type="number" min="1" max="5000" value="1900">
+                </div>
             </div>
         </div>
         <div class="soft-block">
@@ -77,6 +81,7 @@
             <button class="btn" id="razielSearchBtn">抓取判決</button>
             <button class="btn primary" id="razielPreviewBtn">產生前後文預覽</button>
             <button class="btn warn" id="razielTableBtn">產生 Excel 分類表</button>
+            <button class="btn primary" id="razielDeliveryBtn">產生交付壓縮檔</button>
         </div>
     </div>
     <div class="card">
@@ -92,6 +97,7 @@
             <a class="btn" id="razielDownloadPreview" href="/api/osc/raziel/file/preview">下載前後文預覽</a>
             <a class="btn" id="razielDownloadReport" href="/api/osc/raziel/file/report">下載補抓報告</a>
         </div>
+        <div id="razielDeliveryLinks" class="soft-block" hidden></div>
         <pre id="razielOutput" style="white-space:pre-wrap;min-height:220px;">尚未執行。</pre>
     </div>
 </section>

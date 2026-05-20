@@ -65,6 +65,7 @@ def test_register_core_blueprints_exposes_dashboard_routes(monkeypatch):
     assert "/golem" in routes
     assert "/api/golem/status" in routes
     assert "/api/osc/raziel/status" in routes
+    assert "/api/osc/raziel/delivery" in routes
     assert "/intel" in routes
     assert "/openclaw" not in routes
 

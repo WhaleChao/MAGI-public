@@ -3,9 +3,11 @@ from __future__ import annotations
 import json
 import os
 import re
+import zipfile
 import subprocess
 import sys
 import threading
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -109,6 +111,125 @@ def _result_paths() -> dict[str, str]:
         "preview": str(root / "完整812" / "規則前後文預覽.json"),
         "report": str(root / "完整812" / "通譯812補抓分析報告.json"),
     }
+
+
+def _complete_dir() -> Path:
+    return _raziel_root() / "完整812"
+
+
+def _delivery_dir() -> Path:
+    return _complete_dir() / "交付壓縮檔"
+
+
+def _delivery_split_bytes(value: Any = None) -> int:
+    raw = value
+    if raw is None or str(raw).strip() == "":
+        raw = os.environ.get("MAGI_RAZIEL_DELIVERY_SPLIT_MB", "1900")
+    try:
+        mb = float(raw)
+    except (TypeError, ValueError):
+        mb = 1900.0
+    return max(1, int(mb * 1024 * 1024))
+
+
+def _delivery_sources(config: dict[str, Any]) -> list[Path]:
+    complete = _complete_dir()
+    names = {
+        "TXT",
+        "PDF",
+        str(config.get("keyword_text_dir_name") or "依關鍵字原文").strip() or "依關鍵字原文",
+        str(config.get("keyword_pdf_dir_name") or "依關鍵字PDF").strip() or "依關鍵字PDF",
+    }
+    sources: list[Path] = []
+    for value in _result_paths().values():
+        path = Path(value)
+        if path.exists():
+            sources.append(path)
+    for name in names:
+        path = complete / name
+        if path.exists():
+            sources.append(path)
+    return sources
+
+
+def _safe_delivery_name(name: str) -> str:
+    clean = Path(str(name or "")).name
+    if not clean or clean in {".", ".."}:
+        return ""
+    return clean
+
+
+def _write_delivery_zip(config: dict[str, Any], split_bytes: int) -> dict[str, Any]:
+    delivery = _delivery_dir()
+    delivery.mkdir(parents=True, exist_ok=True)
+    for old in delivery.glob("判決捕捉與分類_交付_*.zip*"):
+        if old.is_file():
+            old.unlink()
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    zip_path = delivery / f"判決捕捉與分類_交付_{stamp}.zip"
+    root = _raziel_root()
+    sources = _delivery_sources(config)
+    seen: set[Path] = set()
+    file_count = 0
+    with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for source in sources:
+            if source.is_file():
+                files = [source]
+            else:
+                files = [path for path in source.rglob("*") if path.is_file()]
+            for path in files:
+                resolved = path.resolve()
+                if resolved in seen:
+                    continue
+                seen.add(resolved)
+                zf.write(path, path.relative_to(root))
+                file_count += 1
+    size = zip_path.stat().st_size
+    parts: list[dict[str, Any]] = []
+    if size > split_bytes:
+        with zip_path.open("rb") as fh:
+            idx = 1
+            while True:
+                chunk = fh.read(split_bytes)
+                if not chunk:
+                    break
+                part_path = delivery / f"{zip_path.name}.part{idx:03d}"
+                part_path.write_bytes(chunk)
+                parts.append(
+                    {
+                        "name": part_path.name,
+                        "path": str(part_path),
+                        "size": part_path.stat().st_size,
+                        "url": f"/api/osc/raziel/delivery/{part_path.name}",
+                    }
+                )
+                idx += 1
+        zip_path.unlink(missing_ok=True)
+        split = True
+    else:
+        parts.append(
+            {
+                "name": zip_path.name,
+                "path": str(zip_path),
+                "size": size,
+                "url": f"/api/osc/raziel/delivery/{zip_path.name}",
+            }
+        )
+        split = False
+    manifest = {
+        "ok": True,
+        "created_at": datetime.now().isoformat(timespec="seconds"),
+        "delivery_dir": str(delivery),
+        "file_count": file_count,
+        "split": split,
+        "split_bytes": split_bytes,
+        "parts": parts,
+        "sources": [str(path) for path in sources],
+    }
+    manifest_path = delivery / "交付清單.json"
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+    manifest["manifest_path"] = str(manifest_path)
+    return manifest
 
 
 def _apply_payload_to_config(payload: dict[str, Any]) -> dict[str, Any]:
@@ -217,6 +338,28 @@ def raziel_run_api():
         result = _run_raziel(mode, config, max_api=int(config.get("max_api") or 0) if mode in {"search", "nightly"} else None)
     status = 200 if result.get("ok") else 500
     return jsonify(result), status
+
+
+@raziel_bp.route("/api/osc/raziel/delivery", methods=["POST"])
+@login_required
+def raziel_delivery_api():
+    payload = request.get_json() or {}
+    with RAZIEL_LOCK:
+        config = _apply_payload_to_config(payload)
+        manifest = _write_delivery_zip(config, _delivery_split_bytes(payload.get("split_mb")))
+    return jsonify(manifest)
+
+
+@raziel_bp.route("/api/osc/raziel/delivery/<path:name>", methods=["GET"])
+@login_required
+def raziel_delivery_file_api(name: str):
+    clean = _safe_delivery_name(name)
+    if not clean:
+        return jsonify({"ok": False, "error": "檔案不存在"}), 404
+    path = (_delivery_dir() / clean).resolve()
+    if not path.exists() or path.parent != _delivery_dir().resolve():
+        return jsonify({"ok": False, "error": "檔案不存在"}), 404
+    return send_file(str(path), as_attachment=True)
 
 
 @raziel_bp.route("/api/osc/raziel/file/<kind>", methods=["GET"])

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 
@@ -39,3 +40,24 @@ def test_judgment_classifier_visible_text_uses_function_name():
 
     assert "判決捕捉與分類" in combined
     assert "拉結爾" not in combined
+
+
+def test_raziel_delivery_zip_splits_when_limit_is_small(tmp_path, monkeypatch):
+    from api.blueprints import raziel as mod
+
+    root = tmp_path / "judgments"
+    complete = root / "完整812"
+    (complete / "TXT").mkdir(parents=True)
+    (complete / "PDF").mkdir(parents=True)
+    (complete / "TXT" / "a.txt").write_text("判決原文" * 80, encoding="utf-8")
+    (complete / "PDF" / "a.pdf").write_bytes(b"%PDF-1.4\n" + os.urandom(4096))
+    (complete / "最高法院_通譯_分類表.csv").write_text("title,result\nA,ok\n", encoding="utf-8")
+    monkeypatch.setenv("MAGI_RAZIEL_ROOT", str(root))
+
+    manifest = mod._write_delivery_zip({"keyword_text_dir_name": "TXT", "keyword_pdf_dir_name": "PDF"}, split_bytes=512)
+
+    assert manifest["ok"] is True
+    assert manifest["split"] is True
+    assert manifest["file_count"] >= 3
+    assert len(manifest["parts"]) >= 2
+    assert all(Path(part["path"]).exists() for part in manifest["parts"])

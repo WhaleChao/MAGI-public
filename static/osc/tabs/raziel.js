@@ -30,6 +30,7 @@ function razielPayload(mode = "preview") {
         rule_query: razielEl("razielRuleQuery")?.value || "",
         court_scopes: razielEl("razielCourts")?.value || "",
         max_results: Number(razielEl("razielMaxResults")?.value || 812),
+        split_mb: Number(razielEl("razielSplitMb")?.value || 1900),
         keyword_text_dir_name: razielEl("razielTextDir")?.value || "",
         keyword_pdf_dir_name: razielEl("razielPdfDir")?.value || "",
         ai_provider: razielEl("razielAiProvider")?.value || "nvidia",
@@ -45,6 +46,7 @@ function fillRazielConfig(config = {}) {
     razielSetValue("razielRuleQuery", config.rule_query || config.keyword_query || "通譯");
     razielSetValue("razielCourts", Array.isArray(config.court_scopes) ? config.court_scopes.join(", ") : (config.court_scopes || "最高法院"));
     razielSetValue("razielMaxResults", config.max_results || 812);
+    razielSetValue("razielSplitMb", 1900);
     razielSetValue("razielTextDir", config.keyword_text_dir_name || "依關鍵字原文");
     razielSetValue("razielPdfDir", config.keyword_pdf_dir_name || "依關鍵字PDF");
     razielSetValue("razielAiProvider", config.ai_provider || "nvidia");
@@ -124,6 +126,32 @@ function renderRazielResult(data = {}) {
     if (out) out.textContent = output.join("\n");
 }
 
+function renderRazielDelivery(manifest = {}) {
+    const host = razielEl("razielDeliveryLinks");
+    const parts = Array.isArray(manifest.parts) ? manifest.parts : [];
+    if (host) {
+        host.hidden = false;
+        host.innerHTML = [
+            `<div class="section-note">交付壓縮檔已產生。${manifest.split ? "檔案較大，已自動分割，請全部下載後再合併或解壓。" : "可直接下載 ZIP。"}</div>`,
+            `<div class="toolbar" style="margin-top:8px;margin-bottom:0;">`,
+            ...parts.map(part => `<a class="btn" href="${esc(part.url || "")}">${esc(part.name || "下載")}</a>`),
+            `</div>`,
+        ].join("");
+    }
+    const out = razielEl("razielOutput");
+    if (out) {
+        out.textContent = [
+            "交付壓縮檔：完成",
+            `是否分割：${manifest.split ? "是" : "否"}`,
+            `檔案數：${manifest.file_count || 0}`,
+            `資料夾：${manifest.delivery_dir || ""}`,
+            "",
+            "下載檔案：",
+            ...parts.map(part => `${part.name}（${part.size || 0} bytes）`),
+        ].join("\n");
+    }
+}
+
 async function loadRazielStatus() {
     const data = await api("/api/osc/raziel/status");
     state.raziel.status = data;
@@ -148,6 +176,20 @@ async function runRaziel(mode) {
         return data;
     } catch (error) {
         setRazielStatus(`判決分類器沒有完成：${error.message || error}`, "warn");
+        throw error;
+    }
+}
+
+async function createRazielDelivery() {
+    try {
+        setRazielStatus("正在產生交付壓縮檔。");
+        const data = await api("/api/osc/raziel/delivery", "POST", razielPayload("delivery"));
+        renderRazielDelivery(data);
+        setRazielStatus(data.split ? "交付壓縮檔已完成，因檔案較大已自動分割。" : "交付 ZIP 已完成。", "ok");
+        showToast("交付壓縮檔已產生。", "ok");
+        return data;
+    } catch (error) {
+        setRazielStatus(`交付壓縮檔沒有完成：${error.message || error}`, "warn");
         throw error;
     }
 }
