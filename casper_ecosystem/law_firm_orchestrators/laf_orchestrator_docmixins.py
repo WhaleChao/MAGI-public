@@ -614,14 +614,30 @@ class LAFOrchestratorDocumentMixin:
 
         meta["closing_result_doc"] = str(best)
 
-        # Try to extract court info from filename
-        # Pattern: 臺灣花蓮地方法院114年度原訴字第000024號判決
-        court_pattern = re.compile(
-            r"(臺灣.*?(?:地方|高等|最高)(?:法院|行政法院))"
+        # Try to extract court/prosecutor info from filename.
+        # Examples:
+        # - 臺灣花蓮地方法院114年度原訴字第000024號判決
+        # - 臺北地方法院114年度訴字第972號刑事判決
+        # - 臺灣高等法院花蓮分院114年度...
+        # Keep the value close to the original filename; the portal selector
+        # performs 台/臺 and fuzzy matching.
+        court_patterns = (
+            r"((?:臺灣|台灣)?[\u4e00-\u9fff]{1,10}地方法院)",
+            r"((?:臺灣|台灣)?高等法院(?:[\u4e00-\u9fff]{1,8}分院)?)",
+            r"((?:臺北|台北|臺中|台中|高雄|臺南|台南)[\u4e00-\u9fff]{0,4}高等行政法院)",
+            r"(最高行政法院)",
+            r"(最高法院)",
+            r"(智慧財產及商業法院)",
+            r"(憲法法庭)",
+            r"((?:臺灣|台灣)?[\u4e00-\u9fff]{1,10}地方檢察署)",
+            r"((?:臺灣|台灣)?高等檢察署(?:[\u4e00-\u9fff]{1,8}檢察分署)?)",
+            r"(最高檢察署)",
         )
-        m = court_pattern.search(fn)
-        if m:
-            meta["court_name"] = m.group(1)
+        for pattern in court_patterns:
+            m = re.search(pattern, fn)
+            if m:
+                meta["court_name"] = m.group(1).replace("台", "臺")
+                break
 
         # Case number pattern: 114年度原訴字第000024號
         case_pattern = re.compile(
@@ -633,16 +649,12 @@ class LAFOrchestratorDocumentMixin:
             meta["court_case_code"] = m.group(2)
             meta["court_case_no"] = m.group(3)
 
-        # Infer court kind from folder path
-        fp = str(folder_path or "").replace("\\", "/")
-        if "/刑事/" in fp:
-            meta["court_kind"] = "刑事"
-        elif "/民事/" in fp:
-            meta["court_kind"] = "民事"
-        elif "/家事/" in fp:
-            meta["court_kind"] = "家事"
-        elif "/行政/" in fp:
-            meta["court_kind"] = "行政"
+        # The LAF portal's rel_court1 is institution kind, not case type.
+        court_name = str(meta.get("court_name") or "")
+        if "檢察" in court_name or meta.get("closing_doc_type") in {"不起訴處分書", "起訴書", "追加起訴書", "併辦意旨書"}:
+            meta["court_kind"] = "檢察署"
+        elif court_name or meta.get("closing_doc_type") in {"判決", "裁定", "執行命令", "和解筆錄", "調解筆錄"}:
+            meta["court_kind"] = "法院"
 
         # Infer closing result from doc type
         if meta.get("closing_doc_type") == "判決":

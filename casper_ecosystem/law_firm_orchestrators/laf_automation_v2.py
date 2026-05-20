@@ -3941,21 +3941,22 @@ return (() => {
             result["error"] = "driver_not_ready"
             return result
 
-        pdfs: List[str] = []
+        upload_paths: List[str] = []
+        allowed_exts = {".pdf", ".doc", ".docx", ".odt"}
         for p in (files or []):
             s = (str(p or "")).strip()
             if not s:
                 continue
-            if (not os.path.isfile(s)) or (not s.lower().endswith(".pdf")):
-                result["failed"].append({"path": s, "error": "not_pdf_or_missing"})
+            if (not os.path.isfile(s)) or (Path(s).suffix.lower() not in allowed_exts):
+                result["failed"].append({"path": s, "error": "not_supported_or_missing"})
                 continue
-            pdfs.append(s)
+            upload_paths.append(s)
 
         max_files = int(os.environ.get("MAGI_LAF_MAX_UPLOAD_FILES", "250") or "250")
-        if len(pdfs) > max_files:
-            pdfs = pdfs[:max_files]
-        result["requested"] = len(pdfs)
-        if not pdfs:
+        if len(upload_paths) > max_files:
+            upload_paths = upload_paths[:max_files]
+        result["requested"] = len(upload_paths)
+        if not upload_paths:
             self.last_upload_result = dict(result)
             return result
 
@@ -4421,7 +4422,7 @@ return (() => {
         except Exception:
             logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 2930, exc_info=True)
 
-        for p in pdfs:
+        for p in upload_paths:
             try:
                 basename = os.path.basename(p)
                 # --- Dedup: skip if already uploaded ---
@@ -5259,18 +5260,29 @@ return null;
                         els = [byId];
                     }}
                     var set = 0;
+                    function norm(s) {{
+                        return String(s || '').replace(/台/g, '臺').replace(/\\s+/g, '').trim();
+                    }}
+                    var targetNorm = norm(val);
                     for (var j = 0; j < els.length; j++) {{
                         var el = els[j];
                         if (el.tagName === 'SELECT') {{
+                            var matched = false;
                             for (var i = 0; i < el.options.length; i++) {{
-                                if (el.options[i].value === val || el.options[i].text === val) {{
+                                var optText = el.options[i].text || '';
+                                var optVal = el.options[i].value || '';
+                                var optNorm = norm(optText);
+                                if (optVal === val || optText === val || optNorm === targetNorm ||
+                                    (targetNorm && optNorm.indexOf(targetNorm) >= 0) ||
+                                    (optNorm && targetNorm.indexOf(optNorm) >= 0)) {{
                                     el.selectedIndex = i;
                                     _fire(el);
                                     set++;
+                                    matched = true;
                                     break;
                                 }}
                             }}
-                            if (set === 0) {{ el.value = val; _fire(el); set++; }}
+                            if (!matched) {{ el.value = val; _fire(el); set++; }}
                         }} else {{
                             el.value = val;
                             _fire(el);
@@ -5292,7 +5304,7 @@ return null;
                 }}
                 results.judg_eff = setSelect('judg_eff', '{_judg_eff}');
                 results.rel_court1 = setSelect('rel_court1', '{_rel_court1}');
-                results.rel_court2 = setVal('rel_court2', '{_court_name}', true);
+                results.rel_court2 = setSelect('rel_court2', '{_court_name}') || setVal('rel_court2', '{_court_name}', true);
                 results.judg_dt = setVal('judg_dt', '{_tw_dt}', true);
                 results.appellee = setVal('appellee', '{_appellee}', true);
 
@@ -5566,6 +5578,24 @@ return null;
                     "calculateAp_times", "開庭"
                 )
                 self.log(f"  📅 開庭日期：新增 {_added_court} 筆")
+                v = f"{int(counts.get('court_count') or _added_court or 0):02d}"
+                self.driver.execute_script(f"""
+                    function _set(id, val) {{
+                        var el = document.getElementById(id) || document.getElementsByName(id)[0];
+                        if (el) {{
+                            el.disabled = false; el.readOnly = false;
+                            el.removeAttribute('disabled'); el.removeAttribute('readonly');
+                            el.value = val;
+                            el.dispatchEvent(new Event('change', {{bubbles:true}}));
+                            el.dispatchEvent(new Event('input', {{bubbles:true}}));
+                        }}
+                    }}
+                    _set('lawyerap_times', '{v}');
+                    _set('ap_times', '{v}');
+                    var s = document.getElementById('ap_timesShow');
+                    if (s) {{ var n = s.querySelector('strong.num') || s; n.textContent = '{v}'; }}
+                """)
+                self.log(f"  🔧 開庭/到庭次數強制回填: {v}")
             except Exception as e:
                 self.log(f"  ❌ 新增開庭日期失敗：{e}")
         elif int(counts.get("court_count", 0) or 0) > 0:

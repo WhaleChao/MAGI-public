@@ -11,7 +11,12 @@ def test_laf_inquiry_text_rejects_court_ruling_no_visit_phrases():
     assert not LAFOrchestrator._is_laf_inquiry_text("延長羈押並限制接見")
 
 
-def test_criminal_laf_video_meeting_counts_as_inquiry_only_when_context_matches():
-    assert LAFOrchestrator._is_laf_inquiry_text("視訊會議 - 游秀鈴", criminal_laf=True)
+def test_video_meeting_is_not_inquiry_without_explicit_visit_wording():
+    assert not LAFOrchestrator._is_laf_inquiry_text("視訊會議 - 游秀鈴", criminal_laf=True)
     assert not LAFOrchestrator._is_laf_inquiry_text("視訊會議 - 游秀鈴", criminal_laf=False)
-    assert not LAFOrchestrator._is_laf_inquiry_text("法扶分會律團視訊會議", criminal_laf=True)
+    assert LAFOrchestrator._is_laf_inquiry_text("視訊律見 - 游秀鈴", criminal_laf=True)
+
+
+def test_plain_video_meeting_keyword_is_not_a_laf_visit_signal():
+    assert not LAFOrchestrator._is_laf_inquiry_text("視訊會議 - 游秀鈴")
+    assert not LAFOrchestrator._is_laf_inquiry_text("三位律師視訊會議")

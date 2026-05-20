@@ -56,3 +56,20 @@ def test_closing_scan_skips_review_folder_for_large_cases(tmp_path):
 
     assert str(closing_basis) in docs["closing_basis_files"]
     assert str(noisy_review_file) not in docs["closing_basis_files"]
+
+
+def test_closing_metadata_extracts_short_district_court_name(tmp_path):
+    case_dir = tmp_path / "2025-0002-游秀鈴-一審-傷害致死"
+    judgment_dir = case_dir / "10_判決書"
+    judgment_dir.mkdir(parents=True)
+    basis = judgment_dir / "20260518 臺北地方法院114年度訴字第972號刑事判決(游秀鈴).pdf"
+    basis.write_bytes(b"%PDF-1.4\n")
+
+    scanner = docmixins.LAFOrchestratorDocumentMixin()
+    meta = scanner._infer_closing_metadata_from_docs([str(basis)], client_name="游秀鈴", folder_path=str(case_dir))
+
+    assert meta["court_kind"] == "法院"
+    assert meta["court_name"] == "臺北地方法院"
+    assert meta["court_case_year"] == "114"
+    assert meta["court_case_code"] == "訴"
+    assert meta["court_case_no"] == "972"

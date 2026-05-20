@@ -4450,12 +4450,32 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         os.makedirs(staging_dir, exist_ok=True)
         result["staging_dir"] = staging_dir
 
-        # 非書狀的附件/證據關鍵字（這些檔案不應上傳到報結頁）
-        _attachment_keywords = [
+        # 非書狀的附件/證據關鍵字。注意「調查證據聲請狀」本身是書狀，
+        # 不能因為檔名含「證據」就被排除。
+        _hard_attachment_keywords = [
+            "筆錄", "譯文", "節文", "詰問", "卷證索引",
+        ]
+        _soft_attachment_keywords = [
             "聲證", "證據", "附件", "債權人清冊", "財產及收入", "財產收入",
             "財產狀況", "收入狀況", "戶籍謄本", "診斷書", "薪資",
             "勞保", "國保", "稅務", "所得", "信用報告", "對話",
         ]
+
+        def _looks_like_pleading_filename(fn: str) -> bool:
+            name = str(fn or "")
+            if not name:
+                return False
+            if "狀" in name:
+                return True
+            return any(k in name for k in ("答辯", "抗告", "上訴", "陳報", "準備", "辯護意旨", "補正"))
+
+        def _is_non_pleading_attachment(fn: str) -> bool:
+            name = str(fn or "")
+            if any(k in name for k in _hard_attachment_keywords):
+                return True
+            if any(k in name for k in _soft_attachment_keywords) and not _looks_like_pleading_filename(name):
+                return True
+            return False
 
         max_walk_dirs = max(1, int(os.environ.get("MAGI_LAF_UPLOAD_SCAN_MAX_DIRS", "240") or "240"))
         max_files_per_dir = max(1, int(os.environ.get("MAGI_LAF_UPLOAD_SCAN_MAX_FILES_PER_DIR", "250") or "250"))
@@ -4498,9 +4518,46 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
             except OSError:
                 return True
 
+        def _find_final_word_near(src: str) -> str:
+            """Find a nearby final/clean Word file to upload when PDF cannot be used."""
+            base_dir = os.path.dirname(str(src or ""))
+            if not base_dir or not os.path.isdir(base_dir):
+                return ""
+            try:
+                items = os.listdir(base_dir)
+            except OSError:
+                return ""
+            candidates = []
+            for fn in items[:max_files_per_dir]:
+                if fn.startswith(".") or fn.startswith("~"):
+                    continue
+                ext = Path(fn).suffix.lower()
+                if ext not in (".docx", ".doc", ".odt"):
+                    continue
+                if not any(k in fn for k in ("定稿", "清稿", "final", "Final", "FINAL")):
+                    continue
+                full = os.path.join(base_dir, fn)
+                if os.path.isfile(full):
+                    priority = 0
+                    if "清稿" in fn:
+                        priority += 30
+                    if "定稿" in fn:
+                        priority += 20
+                    if "final" in fn.lower():
+                        priority += 10
+                    try:
+                        mtime = os.path.getmtime(full)
+                    except OSError:
+                        mtime = 0
+                    candidates.append((priority, mtime, fn, full))
+            if not candidates:
+                return ""
+            candidates.sort(reverse=True)
+            return candidates[0][3]
+
         max_files = int(os.environ.get("MAGI_LAF_MAX_UPLOAD_SOURCE_FILES", "400") or "400")
         include_closing_pleadings = str(
-            os.environ.get("MAGI_LAF_CLOSING_INCLUDE_PLEADINGS", "0")
+            os.environ.get("MAGI_LAF_CLOSING_INCLUDE_PLEADINGS", "1")
         ).strip().lower() in {"1", "true", "yes", "on"}
         if (action or "").strip().lower() == "closing" and not include_closing_pleadings:
             docs = self._scan_case_folder_docs(root, action="closing")
@@ -4550,7 +4607,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                     full = os.path.join(base, fn)
                     if not os.path.isfile(full):
                         continue
-                    if any(kw in fn for kw in _attachment_keywords):
+                    if _is_non_pleading_attachment(fn):
                         logger.debug("  跳過非書狀（附件/證據）: %s", fn)
                         continue
                     candidates.append((fn, full))
@@ -4656,28 +4713,68 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         dedup = set()
 
         for src in pleading_files[: max(1, max_files)]:
+            src_ext = Path(src).suffix.lower()
+            if src_ext == ".pdf" and not _fits_portal_upload_limit(src):
+                fallback_word = _find_final_word_near(src)
+                if fallback_word:
+                    if fallback_word not in dedup:
+                        out_pdf.append(fallback_word)
+                        dedup.add(fallback_word)
+                        converted.append({
+                            "source": src,
+                            "pdf": fallback_word,
+                            "fallback": "oversize_pdf_to_final_word",
+                        })
+                    continue
+                failed.append({"source": src, "error": f"oversize_skipped>{max_upload_mb:g}MB"})
+                continue
             pdf = self._to_pdf_for_portal(src, staging_dir)
             if pdf and (pdf not in dedup):
                 out_pdf.append(pdf)
                 dedup.add(pdf)
                 converted.append({"source": src, "pdf": pdf})
             elif not pdf:
-                failed.append({"source": src, "error": "convert_failed"})
+                if src_ext in (".docx", ".doc", ".odt") and (
+                    "定稿" in os.path.basename(src)
+                    or "清稿" in os.path.basename(src)
+                    or "final" in os.path.basename(src).lower()
+                ):
+                    out_pdf.append(src)
+                    dedup.add(src)
+                    converted.append({"source": src, "pdf": src, "fallback": "word_upload"})
+                else:
+                    fallback_word = _find_final_word_near(src)
+                    if fallback_word and fallback_word not in dedup:
+                        out_pdf.append(fallback_word)
+                        dedup.add(fallback_word)
+                        converted.append({
+                            "source": src,
+                            "pdf": fallback_word,
+                            "fallback": "convert_failed_to_final_word",
+                        })
+                    else:
+                        failed.append({"source": src, "error": "convert_failed"})
 
         for src_pdf in (judgment_pdfs + procedural_ruling_pdfs)[: max(1, max_files)]:
             try:
-                dst = os.path.join(staging_dir, os.path.basename(src_pdf))
-                if os.path.abspath(src_pdf) != os.path.abspath(dst):
-                    try:
-                        shutil.copy2(src_pdf, dst)
-                    except OSError:
-                        # Fallback: buffered copy for NAS files with stale FD
-                        with open(src_pdf, "rb") as fin, open(dst, "wb") as fout:
-                            while True:
-                                chunk = fin.read(1024 * 1024)
-                                if not chunk:
-                                    break
-                                fout.write(chunk)
+                if not _fits_portal_upload_limit(src_pdf):
+                    failed.append({"source": src_pdf, "error": f"oversize_skipped>{max_upload_mb:g}MB"})
+                    continue
+                if str(os.environ.get("MAGI_LAF_COPY_PDF_UPLOADS", "0")).strip().lower() in {"1", "true", "yes", "on"}:
+                    dst = os.path.join(staging_dir, os.path.basename(src_pdf))
+                    if os.path.abspath(src_pdf) != os.path.abspath(dst):
+                        try:
+                            shutil.copy2(src_pdf, dst)
+                        except OSError:
+                            # Fallback: buffered copy for NAS files with stale FD
+                            with open(src_pdf, "rb") as fin, open(dst, "wb") as fout:
+                                while True:
+                                    chunk = fin.read(1024 * 1024)
+                                    if not chunk:
+                                        break
+                                    fout.write(chunk)
+                    else:
+                        dst = src_pdf
                 else:
                     dst = src_pdf
                 if dst not in dedup:
@@ -6749,15 +6846,15 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                         OR `todo_type` LIKE '%%會面%%'
                         OR `todo_type` LIKE '%%面談%%'
                         OR `todo_type` LIKE '%%開會%%'
-                        OR `todo_type` LIKE '%%視訊%%'
                         OR `description` LIKE '%%會議%%'
                         OR `description` LIKE '%%會面%%'
                         OR `description` LIKE '%%面談%%'
                         OR `description` LIKE '%%開會%%'
-                        OR `description` LIKE '%%視訊%%'
                    )
                    AND COALESCE(`description`, '') NOT LIKE '%%U會議%%'
                    AND COALESCE(`description`, '') NOT LIKE '%%Ｕ會議%%'
+                   AND COALESCE(`todo_type`, '') NOT LIKE '%%視訊會議%%'
+                   AND COALESCE(`description`, '') NOT LIKE '%%視訊會議%%'
                    AND COALESCE(`todo_type`, '') NOT LIKE '%%律見%%'
                    AND COALESCE(`todo_type`, '') NOT LIKE '%%律師接見%%'
                    AND COALESCE(`description`, '') NOT LIKE '%%律見%%'
@@ -6936,7 +7033,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                 if _events:
                     # 用 OSC 相同的關鍵字分類
                     _court_kw = ["開庭", "言詞辯論", "準備程序", "調解", "調解庭", "訊問", "詢問庭", "審理", "審理程序", "審查庭", "免責庭", "協商程序", "調查", "調查程序"]
-                    _meet_kw = ["會議", "來所", "碰面", "視訊", "面談", "開會", "交資料"]
+                    _meet_kw = ["會議", "來所", "碰面", "面談", "開會", "交資料"]
                     _tel_kw = ["電話", "電話聯繫", "通話", "電聯", "聯繫", "聯絡"]
                     _review_kw = ["閱卷", "影卷", "調卷"]
                     _mediation_kw = ["調解", "調解庭", "和解", "調和解"]
@@ -6978,6 +7075,8 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                             if _slot and _slot not in _seen_inq_slots:
                                 _c_inq += 1
                                 _seen_inq_slots.add(_slot)
+                        elif "視訊會議" in s:
+                            continue
                         elif any(k in s for k in _meet_kw):
                             _c_meet += 1
                         elif any(k in s for k in _tel_kw):
@@ -7087,10 +7186,6 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
             return False
         if "律見" in s or "律師接見" in s:
             return True
-        if criminal_laf and ("視訊會議" in s or "視訊面談" in s or "視訊接見" in s):
-            internal = ("法扶", "分會", "律團", "同事", "內部", "工作會議")
-            if not any(k in s for k in internal):
-                return True
         if "接見" not in s:
             return False
         # Court rulings often say "禁止接見、通信"; those are not visits.
@@ -7216,7 +7311,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                     len(events), _cn_only, len(cal_ids), _raw_total, _raw_total - len(events))
 
         _court_kw = ["開庭", "言詞辯論", "準備程序", "調解", "調解庭", "訊問", "詢問庭", "審理", "審理程序", "審查庭", "免責庭", "協商程序", "調查", "調查程序"]
-        _meet_kw = ["會議", "來所", "碰面", "視訊", "面談", "開會", "交資料"]
+        _meet_kw = ["會議", "來所", "碰面", "面談", "開會", "交資料"]
         _tel_kw = ["電話", "電話聯繫", "通話", "電聯", "聯繫", "聯絡"]
         _review_kw = ["閱卷", "影卷", "調卷"]
         _mediation_kw = ["調解", "調解庭", "和解", "調和解"]
@@ -7268,6 +7363,8 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                 _c_inq += 1
                 if _slot:
                     _seen_inq_slots.add(_slot)
+            elif "視訊會議" in summary:
+                continue
             elif any(k in summary for k in _meet_kw):
                 _slot = (start or "")[:16] if start else _dk
                 if _slot and _slot in _seen_meet_slots:
