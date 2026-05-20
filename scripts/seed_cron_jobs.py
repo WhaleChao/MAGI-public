@@ -261,6 +261,24 @@ def operational_jobs(repo_root: Path = REPO_ROOT, python_path: Path | None = Non
             "no_catchup": True,
         },
         {
+            "id": "job_empty_case_shell_cleanup",
+            "cron": "8,23,38,53 * * * *",
+            "command": (
+                f"{python_bin} {run_with_env} "
+                "MAGI_CLEAN_EMPTY_CASE_SHELL_INCLUDE_LOCAL=0 "
+                f"-- {python_bin} {repo_root / 'scripts' / 'ops' / 'cleanup_synology_empty_case_shells.py'} "
+                "--apply --limit 0 --max-seconds 240 "
+                f"--json-out {repo_root / '.runtime' / 'empty_case_shell_cleanup_latest.json'}"
+            ),
+            "desc": "已結案案件空資料夾清理（每 15 分鐘；只刪 DB 已結案/已封存且無真實檔案的進行中空殼）",
+            "channel_id": None,
+            "last_run": None,
+            "last_run_minute": None,
+            "enabled": True,
+            "timeout_sec": 300,
+            "no_catchup": True,
+        },
+        {
             "id": "job_disk_cleanup_healthcheck",
             "cron": "55 3 * * *",
             "command": f"{python_bin} {run_with_env} MAGI_DISK_CLEANUP_DRY_RUN=0 MAGI_DISK_NAS_RECYCLE_ENABLE=1 -- {python_bin} {repo_root / 'scripts' / 'ops' / 'disk_cleanup_healthcheck.py'} --apply",

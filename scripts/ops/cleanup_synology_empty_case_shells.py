@@ -381,8 +381,14 @@ def main() -> int:
     parser.add_argument("--apply", action="store_true", help="actually remove empty shells")
     parser.add_argument("--limit", type=int, default=0, help="closed-case scan limit; 0 means all")
     parser.add_argument("--max-seconds", type=float, default=0.0, help="stop after this many seconds; 0 means no budget")
+    parser.add_argument("--json-out", default="", help="write the JSON report to this path")
     args = parser.parse_args()
-    print(json.dumps(run(apply=args.apply, limit=args.limit, max_seconds=args.max_seconds), ensure_ascii=False, indent=2))
+    report = run(apply=args.apply, limit=args.limit, max_seconds=args.max_seconds)
+    if args.json_out:
+        out_path = Path(args.json_out).expanduser()
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    print(json.dumps(report, ensure_ascii=False, indent=2))
     return 0
 
 

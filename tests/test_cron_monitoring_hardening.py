@@ -397,6 +397,11 @@ def test_seed_cron_jobs_installs_disk_maintenance_jobs(tmp_path):
     assert result["ok"] is True
     assert by_id["job_disk_low_water_alarm"]["enabled"] is True
     assert "disk_low_water_alarm.py" in by_id["job_disk_low_water_alarm"]["command"]
+    assert by_id["job_empty_case_shell_cleanup"]["enabled"] is True
+    assert by_id["job_empty_case_shell_cleanup"]["cron"] == "8,23,38,53 * * * *"
+    assert by_id["job_empty_case_shell_cleanup"]["no_catchup"] is True
+    assert "--max-seconds 240" in by_id["job_empty_case_shell_cleanup"]["command"]
+    assert "cleanup_synology_empty_case_shells.py" in by_id["job_empty_case_shell_cleanup"]["command"]
     assert by_id["job_disk_cleanup_healthcheck"]["no_catchup"] is True
     assert "MAGI_DISK_CLEANUP_DRY_RUN=0" in by_id["job_disk_cleanup_healthcheck"]["command"]
     assert by_id["job_nas_recycle_heavy_cleanup"]["cron"] == "20 4 * * *"
