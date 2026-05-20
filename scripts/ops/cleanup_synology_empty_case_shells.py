@@ -12,7 +12,9 @@ import argparse
 import glob
 import json
 import os
+import re
 import shutil
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -34,6 +36,16 @@ except Exception:  # pragma: no cover
     local_synology_path_candidates = None
 
 IGNORED_FILENAMES = {".DS_Store", ".gitkeep", "Thumbs.db", "desktop.ini"}
+CASE_FOLDER_RE = re.compile(r"^(\d{4}-\d{4})(?:-|$)")
+
+
+def _include_local_synology_roots() -> bool:
+    return os.environ.get("MAGI_CLEAN_EMPTY_CASE_SHELL_INCLUDE_LOCAL", "0").strip().lower() in {"1", "true", "on", "yes"}
+
+
+def _is_local_synology_root(path: str) -> bool:
+    text = str(path or "")
+    return "SynologyDrive" in text or "/Library/CloudStorage/" in text
 
 
 def _load_env() -> None:
@@ -65,6 +77,7 @@ def _db_config() -> dict:
 
 def _active_roots() -> list[str]:
     roots: list[str] = []
+    include_local = _include_local_synology_roots()
     if default_case_roots:
         try:
             roots.extend(default_case_roots(include_closed=False))
@@ -76,18 +89,24 @@ def _active_roots() -> list[str]:
         or os.environ.get("MAGI_NAS_USER")
         or "home"
     ).strip().strip("/\\") or "home"
-    roots.extend(
-        [
-            str(home / "Library/CloudStorage/SynologyDrive-homes/01_案件"),
-            str(home / "SynologyDrive/homes/01_案件"),
-            str(home / "SynologyDrive/01_案件"),
-            f"/Volumes/homes/{nas_user}/01_案件",
-        ]
-    )
+    roots.extend([f"/Volumes/homes/{nas_user}/01_案件"])
+    if include_local:
+        # Local Synology Drive File Provider views can block on dataless folders
+        # and may rehydrate stale empty shells.  Keep them opt-in; cleanup should
+        # normally operate on the real NAS/SMB active case root.
+        roots.extend(
+            [
+                str(home / "Library/CloudStorage/SynologyDrive-homes/01_案件"),
+                str(home / "SynologyDrive/homes/01_案件"),
+                str(home / "SynologyDrive/01_案件"),
+            ]
+        )
     out: list[str] = []
     seen: set[str] = set()
     for root in roots:
         text = str(root or "").rstrip("/")
+        if not include_local and _is_local_synology_root(text):
+            continue
         if text and text not in seen:
             seen.add(text)
             out.append(text)
@@ -106,6 +125,73 @@ def _real_file_count(folder: str) -> tuple[int, int]:
             if real_files > 0:
                 return real_files, dirs
     return real_files, dirs
+
+
+def _case_number_from_folder_name(name: str) -> str:
+    match = CASE_FOLDER_RE.match(name or "")
+    return match.group(1) if match else ""
+
+
+def _same_active_shell_paths(folder: str) -> list[str]:
+    """Return exact SMB/File Provider views for the same active case shell.
+
+    Synology Drive can re-upload an empty shell from its local File Provider
+    view after the SMB copy is removed.  We do not scan local views by default
+    because that can hang; instead derive only the exact sibling paths for a
+    known empty shell and remove all empty views together.
+    """
+    text = str(folder or "").rstrip("/")
+    home = Path.home()
+    nas_user = (
+        os.environ.get("MAGI_NAS_HOME_USER")
+        or os.environ.get("MAGI_NAS_USER")
+        or "home"
+    ).strip().strip("/\\") or "home"
+    prefixes = [
+        f"/Volumes/homes/{nas_user}",
+        str(home / "Library/CloudStorage/SynologyDrive-homes"),
+        str(home / "SynologyDrive/homes"),
+        str(home / "SynologyDrive"),
+    ]
+    rel = ""
+    for prefix in prefixes:
+        prefix = prefix.rstrip("/")
+        if text == prefix or text.startswith(prefix + "/"):
+            rel = text[len(prefix):].lstrip("/")
+            break
+    if not rel:
+        return [text]
+    candidates = [os.path.join(prefix, rel) for prefix in prefixes]
+    candidates.sort(key=lambda p: 1 if p.startswith("/Volumes/") else 0)
+    out: list[str] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        if candidate and candidate not in seen:
+            seen.add(candidate)
+            out.append(candidate)
+    if text and text not in seen:
+        out.append(text)
+    return out
+
+
+def _path_exists(path: str) -> bool:
+    try:
+        return os.path.lexists(path)
+    except OSError:
+        return False
+
+
+def _remove_tree(path: str) -> None:
+    if os.path.islink(path) or os.path.isfile(path):
+        os.unlink(path)
+        return
+    # Use rm with a short timeout for Synology File Provider placeholders;
+    # shutil.rmtree can block for a long time on dataless directory shells.
+    result = subprocess.run(["/bin/rm", "-rf", path], capture_output=True, text=True, timeout=15)
+    if result.returncode != 0:
+        raise OSError((result.stderr or result.stdout or f"rm exited {result.returncode}").strip())
+    if _path_exists(path):
+        raise OSError("remove finished but path still exists")
 
 
 def _closed_cases(limit: int) -> list[dict]:
@@ -132,6 +218,45 @@ def _closed_cases(limit: int) -> list[dict]:
         return rows
     finally:
         conn.close()
+
+
+def _iter_active_case_shells() -> list[tuple[str, str]]:
+    """Scan active roots once and return (case_number, folder_path)."""
+    out: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for root in _active_roots():
+        if not os.path.isdir(root):
+            continue
+        try:
+            first_level = [entry for entry in os.scandir(root) if entry.is_dir(follow_symlinks=False)]
+        except OSError:
+            continue
+        for first in first_level:
+            try:
+                second_level = [entry for entry in os.scandir(first.path) if entry.is_dir(follow_symlinks=False)]
+            except OSError:
+                continue
+            for second in second_level:
+                case_number = _case_number_from_folder_name(second.name)
+                if case_number:
+                    key = os.path.abspath(second.path)
+                    if key not in seen:
+                        seen.add(key)
+                        out.append((case_number, second.path))
+                    continue
+                try:
+                    third_level = [entry for entry in os.scandir(second.path) if entry.is_dir(follow_symlinks=False)]
+                except OSError:
+                    continue
+                for third in third_level:
+                    case_number = _case_number_from_folder_name(third.name)
+                    if not case_number:
+                        continue
+                    key = os.path.abspath(third.path)
+                    if key not in seen:
+                        seen.add(key)
+                        out.append((case_number, third.path))
+    return out
 
 
 def _candidate_shells(case_number: str, archived_folder_path: str) -> list[str]:
@@ -176,43 +301,66 @@ def run(*, apply: bool, limit: int, max_seconds: float = 0.0) -> dict:
     started = time.monotonic()
     removed: list[dict] = []
     conflicts: list[dict] = []
+    errors: list[dict] = []
     checked = 0
     timed_out = False
+    rows_by_case: dict[str, dict] = {}
     for row in _closed_cases(limit):
+        case_number = str(row.get("case_number") or "").strip()
+        if case_number:
+            rows_by_case.setdefault(case_number, row)
+    for case_number, folder in _iter_active_case_shells():
         if max_seconds > 0 and time.monotonic() - started >= max_seconds:
             timed_out = True
             break
-        case_number = str(row.get("case_number") or "").strip()
-        if not case_number:
+        row = rows_by_case.get(case_number)
+        if not row:
             continue
-        for folder in _candidate_shells(case_number, str(row.get("folder_path") or "")):
-            if max_seconds > 0 and time.monotonic() - started >= max_seconds:
-                timed_out = True
-                break
-            checked += 1
-            real_files, dirs = _real_file_count(folder)
-            item = {
-                "case_number": case_number,
-                "client_name": row.get("client_name") or "",
-                "folder": folder,
-                "real_files": real_files,
-                "dirs": dirs,
-            }
-            if real_files == 0:
-                if apply:
+        checked += 1
+        real_files, dirs = _real_file_count(folder)
+        item = {
+            "case_number": case_number,
+            "client_name": row.get("client_name") or "",
+            "folder": folder,
+            "real_files": real_files,
+            "dirs": dirs,
+        }
+        if real_files == 0:
+            peer_paths = [p for p in _same_active_shell_paths(folder) if _path_exists(p)]
+            blocked = False
+            for peer in peer_paths:
+                peer_real_files, peer_dirs = _real_file_count(peer)
+                if peer_real_files > 0:
+                    conflicts.append(
+                        {
+                            **item,
+                            "folder": peer,
+                            "real_files": peer_real_files,
+                            "dirs": peer_dirs,
+                            "reason": "same_shell_view_has_real_files",
+                        }
+                    )
+                    blocked = True
+            if blocked:
+                continue
+            item["paths"] = peer_paths or [folder]
+            if apply:
+                removed_paths: list[str] = []
+                for peer in peer_paths or [folder]:
                     try:
-                        shutil.rmtree(folder)
-                        item["removed"] = True
+                        _remove_tree(peer)
+                        removed_paths.append(peer)
                     except FileNotFoundError:
-                        item["removed"] = True
-                        item["already_missing"] = True
-                else:
-                    item["removed"] = False
-                removed.append(item)
+                        removed_paths.append(peer)
+                    except Exception as exc:
+                        errors.append({"path": peer, "error": str(exc)})
+                item["removed"] = bool(removed_paths) and not any(e.get("path") in (peer_paths or [folder]) for e in errors)
+                item["removed_paths"] = removed_paths
             else:
-                conflicts.append(item)
-        if timed_out:
-            break
+                item["removed"] = False
+            removed.append(item)
+        else:
+            conflicts.append(item)
     return {
         "ok": True,
         "apply": apply,
@@ -221,8 +369,10 @@ def run(*, apply: bool, limit: int, max_seconds: float = 0.0) -> dict:
         "checked": checked,
         "removed": len(removed),
         "conflicts": len(conflicts),
+        "errors": len(errors),
         "removed_items": removed[:50],
         "conflict_items": conflicts[:50],
+        "error_items": errors[:50],
     }
 
 

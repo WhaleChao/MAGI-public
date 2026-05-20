@@ -10488,30 +10488,35 @@ class LAFAutomationManager:
                             }
                         else:
                              # ★ [Smart Discovery] 智慧資料夾搜尋 (即使 DB 路徑失效也能找到) ★
-                            self.log(f"     ⚠️ DB 路徑失效，嘗試 Smart Discovery...")
+                            db_case_closed = self._is_db_case_closed_or_archived(db_case)
+                            if db_case_closed:
+                                self.log(f"     ⚠️ 已結案案件路徑失效，改查結案歸檔資料夾...")
+                            else:
+                                self.log(f"     ⚠️ DB 路徑失效，嘗試 Smart Discovery...")
                             osc_case_number = db_case.get('case_number')
                             discovered_path = None
-                            
-                            # 搜尋潛在根目錄
-                            potential_roots = [target_root]
-                            # 加入子目錄
-                            for sub in ['刑事', '民事', '行政', '消費者債務清理']:
-                                sub_path = os.path.join(target_root, sub)
-                                if os.path.exists(sub_path):
-                                    potential_roots.append(sub_path)
-                            
-                            for root in potential_roots:
-                                if not os.path.exists(root): continue
-                                try:
-                                    for item in os.listdir(root):
-                                         if item.startswith(osc_case_number): # 只要開頭對了 (案號對了)
-                                             full_path = os.path.join(root, item)
-                                             if os.path.isdir(full_path):
-                                                 discovered_path = full_path
-                                                 break
-                                except:
-                                    logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 8269, exc_info=True)
-                                if discovered_path: break
+
+                            if db_case_closed:
+                                case_roots = preferred_case_roots(include_closed=True)
+                                closed_roots = case_roots[1:] if len(case_roots) > 1 else []
+                                discovered_path = self._discover_case_folder_by_number(
+                                    osc_case_number,
+                                    closed_roots,
+                                    max_depth=3,
+                                )
+                            else:
+                                # 搜尋潛在根目錄
+                                potential_roots = [target_root]
+                                # 加入子目錄
+                                for sub in ['刑事', '民事', '行政', '消費者債務清理']:
+                                    sub_path = os.path.join(target_root, sub)
+                                    if os.path.exists(sub_path):
+                                        potential_roots.append(sub_path)
+                                discovered_path = self._discover_case_folder_by_number(
+                                    osc_case_number,
+                                    potential_roots,
+                                    max_depth=1,
+                                )
                                 
                             if discovered_path:
                                 self.log(f"     🔍 [SmartDiscovery] 找到更名後的資料夾: {discovered_path}")
@@ -10519,6 +10524,8 @@ class LAFAutomationManager:
                                     'folder_name': os.path.basename(discovered_path),
                                     'folder_path': discovered_path
                                 }
+                            elif db_case_closed:
+                                self.log(f"     ⏭️ {osc_case_number} 已結案但找不到結案歸檔資料夾，停止重建進行中空殼")
                             else:
                                 # 真的找不到才重建
                                 self.log(f"     ⚠️ 路徑皆不存在且找不到替代，嘗試重建...")
@@ -10574,7 +10581,7 @@ class LAFAutomationManager:
                 # 5. 定義檔案分類規則
                 file_category_rules = {
                     '01_法扶資料': ['接案通知書', '委任狀', '法律扶助申請書', '案件概述單', '資力詢問表', '審查表', '准予扶助證明書', '預付酬金領款單', '結案回報書'],
-                    '03_結案資料': ['結案酬金領款單'],
+                    '03_結案資料': ['結案酬金領款單', '結案審查通知書', '變動審查通知書'],
                     '02_開辦資料': ['附條件第二階段預付酬金領款單'],
                 }
                 
@@ -10748,6 +10755,7 @@ class LAFAutomationManager:
             # (V2.1) 增加查詢 legal_aid_number
             query = """
                 SELECT case_number, client_name, folder_path, case_type, case_stage, case_reason,
+                       status, legal_aid_status,
                        legal_aid_number, laf_case_no, application_no, notes
                 FROM cases
                 WHERE LOWER(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(TRIM(client_name), ' ', ''), '　', ''), '·', ''), '・', ''), '‧', ''), '．', '')) = %s
@@ -11007,6 +11015,48 @@ class LAFAutomationManager:
             traceback.print_exc()
             return None
 
+    @staticmethod
+    def _is_db_case_closed_or_archived(db_case: Dict) -> bool:
+        """Return True when an existing case must stay in the closed archive."""
+        status_text = str((db_case or {}).get('status') or '').strip().lower()
+        laf_status_text = str((db_case or {}).get('legal_aid_status') or '').strip().lower()
+        folder_path = str((db_case or {}).get('folder_path') or '').strip().replace('\\', '/')
+        closed_status_markers = ('已結案', 'closed', 'completed', 'archived')
+        return (
+            any(marker in status_text for marker in closed_status_markers)
+            or laf_status_text.startswith('已結案')
+            or '/10_結案/' in folder_path
+            or folder_path.upper().startswith('Y:/')
+        )
+
+    def _discover_case_folder_by_number(self, case_number: str, roots: list, max_depth: int = 2) -> Optional[str]:
+        """Find an existing case folder by OSC number without creating folders."""
+        case_no = str(case_number or '').strip()
+        if not case_no:
+            return None
+        queue = [(str(root), 0) for root in roots if str(root or '').strip()]
+        seen = set()
+        while queue:
+            root, depth = queue.pop(0)
+            norm_root = os.path.abspath(root)
+            if norm_root in seen:
+                continue
+            seen.add(norm_root)
+            if not os.path.isdir(root):
+                continue
+            try:
+                entries = os.listdir(root)
+            except Exception:
+                logging.getLogger(__name__).debug("case folder discovery scan failed: %s", root, exc_info=True)
+                continue
+            for item in entries:
+                full_path = os.path.join(root, item)
+                if item.startswith(case_no) and os.path.isdir(full_path):
+                    return full_path
+                if depth < max_depth and os.path.isdir(full_path) and not item.startswith('.'):
+                    queue.append((full_path, depth + 1))
+        return None
+
     def _recreate_folder_for_existing_case(self, db_case: Dict, case_type: str, 
                                             case_stage: str, case_reason: str,
                                             target_root: str) -> Optional[str]:
@@ -11038,6 +11088,10 @@ class LAFAutomationManager:
             
             if not osc_case_number or not client_name:
                 self.log("     ❌ DB 記錄缺少必要欄位")
+                return None
+
+            if self._is_db_case_closed_or_archived(db_case):
+                self.log(f"     ⏭️ {osc_case_number} 已結案或已歸檔，跳過進行中資料夾重建")
                 return None
             
             self.log(f"     📋 使用原有 OSC 案號: {osc_case_number}")

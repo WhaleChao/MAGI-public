@@ -90,6 +90,9 @@ SYNOLOGY_EMPTY_CASE_SHELL_MIN_AGE_HOURS = float(
 SYNOLOGY_EMPTY_CASE_SHELL_MAX_DELETE = int(
     os.environ.get("MAGI_DISK_SYNOLOGY_EMPTY_CASE_SHELL_MAX_DELETE", "200")
 )
+SYNOLOGY_EMPTY_CASE_SHELL_INCLUDE_LOCAL = os.environ.get(
+    "MAGI_DISK_SYNOLOGY_EMPTY_CASE_INCLUDE_LOCAL", "0"
+).strip().lower() in {"1", "true", "on", "yes"}
 NAS_RECYCLE_CLEANUP_ENABLE = os.environ.get(
     "MAGI_DISK_NAS_RECYCLE_ENABLE", "0"
 ).strip().lower() in {"1", "true", "on", "yes"}
@@ -917,7 +920,7 @@ _SHELL_IGNORED_FILE_NAMES = frozenset({".DS_Store", "Thumbs.db", ".gitkeep", "de
 def _synology_drive_active_roots() -> List[Path]:
     raw = os.environ.get("MAGI_DISK_SYNOLOGY_EMPTY_CASE_ROOTS", "").strip()
     if raw:
-        return [Path(p).expanduser().resolve() for p in raw.split(os.pathsep) if p.strip()]
+        return [Path(p).expanduser() for p in raw.split(os.pathsep) if p.strip()]
     home = Path(os.environ.get("HOME", str(Path.home()))).expanduser()
     nas_user = (
         os.environ.get("MAGI_NAS_HOME_USER")
@@ -925,12 +928,20 @@ def _synology_drive_active_roots() -> List[Path]:
         or "home"
     ).strip().strip("/\\") or "home"
     roots = [
-        home / "Library" / "CloudStorage" / "SynologyDrive-homes" / "01_案件",
-        home / "SynologyDrive" / "homes" / "01_案件",
-        home / "SynologyDrive" / "01_案件",
         Path("/Volumes") / "homes" / nas_user / "01_案件",
         home / ".magi_mounts" / "homes" / nas_user / "01_案件",
     ]
+    if SYNOLOGY_EMPTY_CASE_SHELL_INCLUDE_LOCAL:
+        # macOS File Provider / Synology Drive local views can block on dataless
+        # placeholders and rehydrate deleted empty directories.  Keep them opt-in;
+        # the normal cleanup path works against the real NAS/SMB mount.
+        roots.extend(
+            [
+                home / "Library" / "CloudStorage" / "SynologyDrive-homes" / "01_案件",
+                home / "SynologyDrive" / "homes" / "01_案件",
+                home / "SynologyDrive" / "01_案件",
+            ]
+        )
     out: List[Path] = []
     seen: set[str] = set()
     for root in roots:
@@ -965,9 +976,109 @@ def _case_shell_has_real_file(case_dir: Path) -> bool:
     return False
 
 
+def _case_number_from_shell_name(name: str) -> str:
+    match = re.match(r"^(\d{4}-\d{4})(?:-|$)", name or "")
+    return match.group(1) if match else ""
+
+
+def _closed_archive_roots_for_shell_cleanup() -> List[Path]:
+    raw = os.environ.get("MAGI_DISK_CLOSED_CASE_ARCHIVE_ROOTS", "").strip()
+    if raw:
+        return [Path(p).expanduser() for p in raw.split(os.pathsep) if p.strip()]
+    home = Path(os.environ.get("HOME", str(Path.home()))).expanduser()
+    return [
+        Path("/Volumes/lumi/lumi/03_工作資料/10_結案"),
+        home / ".magi_mounts" / "lumi" / "lumi" / "03_工作資料" / "10_結案",
+    ]
+
+
+def _closed_case_numbers_from_archive_roots() -> set[str]:
+    out: set[str] = set()
+    for root in _closed_archive_roots_for_shell_cleanup():
+        if not root.is_dir():
+            continue
+        try:
+            categories = list(root.iterdir())
+        except OSError:
+            continue
+        for category in categories:
+            if not category.is_dir() or category.name.startswith("."):
+                continue
+            try:
+                type_dirs = list(category.iterdir())
+            except OSError:
+                continue
+            for type_dir in type_dirs:
+                if not type_dir.is_dir() or type_dir.name.startswith("."):
+                    continue
+                try:
+                    case_dirs = list(type_dir.iterdir())
+                except OSError:
+                    continue
+                for case_dir in case_dirs:
+                    if case_dir.is_dir():
+                        case_number = _case_number_from_shell_name(case_dir.name)
+                        if case_number:
+                            out.add(case_number)
+    return out
+
+
+def _closed_case_numbers_from_db() -> set[str]:
+    try:
+        import mysql.connector  # type: ignore
+    except Exception:
+        return set()
+    config = {
+        "host": os.environ.get("OSC_DB_HOST") or os.environ.get("DB_HOST", "127.0.0.1"),
+        "port": int(os.environ.get("OSC_DB_PORT") or os.environ.get("DB_PORT", "3306")),
+        "user": os.environ.get("OSC_DB_USER") or os.environ.get("DB_USER", "casper_service"),
+        "password": (
+            os.environ.get("OSC_DB_PASSWORD")
+            or os.environ.get("DB_PASSWORD")
+            or os.environ.get("MAGI_REMOTE_DB_PASSWORD", "")
+        ),
+        "database": os.environ.get("OSC_DB_NAME") or os.environ.get("DB_NAME", "law_firm_data"),
+        "use_pure": True,
+        "connection_timeout": 3,
+        "charset": "utf8mb4",
+        "collation": "utf8mb4_unicode_ci",
+    }
+    sql = """
+        SELECT case_number
+        FROM cases
+        WHERE case_number LIKE '20__-____'
+          AND (
+            COALESCE(status, '') LIKE '%結案%'
+            OR COALESCE(legal_aid_status, '') LIKE '已結案%'
+            OR COALESCE(folder_path, '') LIKE 'Y:%'
+            OR COALESCE(folder_path, '') LIKE '%/10_結案/%'
+            OR COALESCE(folder_path, '') LIKE '%\\\\10_結案\\\\%'
+          )
+    """
+    try:
+        conn = mysql.connector.connect(**config)
+        try:
+            cur = conn.cursor()
+            try:
+                cur.execute(sql)
+                return {str(row[0] or "").strip() for row in cur.fetchall() if row and row[0]}
+            finally:
+                cur.close()
+        finally:
+            conn.close()
+    except Exception as exc:
+        _log(f"Synology empty case shells: DB closed-case lookup skipped ({exc})")
+        return set()
+
+
+def _closed_case_numbers_for_shell_cleanup() -> set[str]:
+    return _closed_case_numbers_from_archive_roots() | _closed_case_numbers_from_db()
+
+
 def _iter_empty_synology_case_shells() -> List[Path]:
     now = time.time()
     cutoff = now - max(0.0, SYNOLOGY_EMPTY_CASE_SHELL_MIN_AGE_HOURS) * 3600
+    closed_case_numbers = _closed_case_numbers_for_shell_cleanup()
     out: List[Path] = []
     for root in _synology_drive_active_roots():
         if not root.is_dir():
@@ -995,8 +1106,10 @@ def _iter_empty_synology_case_shells() -> List[Path]:
                         continue
                     if not _CASE_FOLDER_NAME_RE.match(case_dir.name):
                         continue
+                    case_number = _case_number_from_shell_name(case_dir.name)
+                    known_closed = bool(case_number and case_number in closed_case_numbers)
                     try:
-                        if case_dir.stat().st_mtime >= cutoff:
+                        if not known_closed and case_dir.stat().st_mtime >= cutoff:
                             continue
                     except OSError:
                         continue
@@ -1027,7 +1140,10 @@ def cleanup_empty_synology_case_shells(dry_run: bool) -> List[Dict[str, Any]]:
         if dry_run:
             continue
         try:
-            shutil.rmtree(case_dir)
+            if case_dir.is_symlink():
+                case_dir.unlink()
+            else:
+                shutil.rmtree(case_dir)
             deleted += 1
         except OSError as e:
             errors.append({"path": str(case_dir), "error": str(e)})

@@ -238,8 +238,40 @@ def test_cleanup_empty_synology_case_shells_dry_run_preserves(sandbox, monkeypat
     assert actions[0]["candidate_dirs"] == 1
 
 
-def test_synology_empty_case_roots_cover_homes_alias_and_smb(monkeypatch, tmp_path):
+def test_cleanup_empty_synology_case_shells_removes_closed_shells_without_age_delay(sandbox, monkeypatch):
+    root = sandbox["tmp"] / "SynologyDrive-homes" / "01_案件"
+    closed_case = root / "一般案件" / "民事" / "2026-0099-測試-一審-給付"
+    recent_open_case = root / "一般案件" / "民事" / "2026-0100-保留-一審-給付"
+    closed_case.mkdir(parents=True)
+    recent_open_case.mkdir(parents=True)
+
+    monkeypatch.setenv("MAGI_DISK_SYNOLOGY_EMPTY_CASE_ROOTS", str(root))
+    monkeypatch.setattr(dc, "SYNOLOGY_EMPTY_CASE_SHELL_MIN_AGE_HOURS", 24, raising=True)
+    monkeypatch.setattr(dc, "_closed_case_numbers_for_shell_cleanup", lambda: {"2026-0099"})
+
+    actions = dc.cleanup_empty_synology_case_shells(dry_run=False)
+
+    assert not closed_case.exists()
+    assert recent_open_case.exists()
+    assert actions[0]["deleted_dirs"] == 1
+
+
+def test_synology_empty_case_roots_default_to_smb_and_skip_file_provider(monkeypatch, tmp_path):
     monkeypatch.delenv("MAGI_DISK_SYNOLOGY_EMPTY_CASE_ROOTS", raising=False)
+    monkeypatch.setattr(dc, "SYNOLOGY_EMPTY_CASE_SHELL_INCLUDE_LOCAL", False, raising=True)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("MAGI_NAS_HOME_USER", "lumi63181107")
+
+    roots = [str(p) for p in dc._synology_drive_active_roots()]
+
+    assert "/Volumes/homes/lumi63181107/01_案件" in roots
+    assert str(tmp_path / ".magi_mounts/homes/lumi63181107/01_案件") in roots
+    assert str(tmp_path / "Library/CloudStorage/SynologyDrive-homes/01_案件") not in roots
+
+
+def test_synology_empty_case_roots_can_include_local_views(monkeypatch, tmp_path):
+    monkeypatch.delenv("MAGI_DISK_SYNOLOGY_EMPTY_CASE_ROOTS", raising=False)
+    monkeypatch.setattr(dc, "SYNOLOGY_EMPTY_CASE_SHELL_INCLUDE_LOCAL", True, raising=True)
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("MAGI_NAS_HOME_USER", "lumi63181107")
 

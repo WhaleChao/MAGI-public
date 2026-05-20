@@ -6,6 +6,14 @@ def test_laf_closing_attachments_go_to_closing_folder():
 
     assert _laf_target_subfolder_for_attachment("結案酬金領款單_1131224-T-022_1150508.pdf") == "03_結案資料"
     assert _laf_target_subfolder_for_attachment("結案審查通知書_1131224-T-022_1150508.pdf") == "03_結案資料"
+    assert _laf_target_subfolder_for_attachment("變動審查通知書_1131224-T-022_1150508.pdf") == "03_結案資料"
+
+
+def test_laf_nightly_portal_closing_attachments_go_to_closing_folder():
+    from scripts.laf_nightly_audit import _classify_portal_file
+
+    assert _classify_portal_file("結案審查通知書_1131224-T-022_1150508.pdf") == "03_結案資料"
+    assert _classify_portal_file("變動審查通知書_1131224-T-022_1150508.pdf") == "03_結案資料"
 
 
 def test_laf_second_stage_attachment_goes_to_opening_folder():
