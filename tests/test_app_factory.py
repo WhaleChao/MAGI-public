@@ -63,6 +63,7 @@ def test_register_core_blueprints_exposes_dashboard_routes(monkeypatch):
     assert "/magi-adjust" in routes
     assert "/golem" in routes
     assert "/api/golem/status" in routes
+    assert "/api/osc/raziel/status" in routes
     assert "/intel" in routes
     assert "/openclaw" not in routes
 
@@ -80,6 +81,7 @@ def test_server_registers_runtime_blueprint_routes():
     assert "/api/osc/chat" in routes
     assert "/api/osc/poll" in routes
     assert "/api/osc/judgments_legacy" in routes
+    assert "/api/osc/raziel/status" in routes
     assert "/dashboard/nerv/api/health" in routes
     assert "/api/system-test" in routes
     assert "/api/self-repair" in routes

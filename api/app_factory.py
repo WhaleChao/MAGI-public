@@ -12,6 +12,7 @@ from api.blueprints.golem_console import golem_console_bp
 from api.blueprints.osc_accounting import osc_accounting_bp
 from api.blueprints.osc_debt import osc_debt_bp
 from api.blueprints.osc_pdf import osc_pdf_bp
+from api.blueprints.raziel import raziel_bp
 from api.blueprints.osc_settings import osc_settings_bp
 
 
@@ -113,6 +114,7 @@ def register_core_blueprints(app: Flask) -> Flask:
     app.register_blueprint(osc_accounting_bp)
     app.register_blueprint(osc_debt_bp)
     app.register_blueprint(osc_pdf_bp)
+    app.register_blueprint(raziel_bp)
     app.register_blueprint(golem_console_bp)
     app.register_blueprint(dashboard_pages_bp)
     return app

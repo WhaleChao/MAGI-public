@@ -18,6 +18,7 @@ const state = {
     quotations: [],
     quotationTemplates: [],
     insights: [],
+    raziel: { status: null, lastResult: null },
     draft: {
         meta: null,
         cases: [],

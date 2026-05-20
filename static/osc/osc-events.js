@@ -88,6 +88,7 @@ function bindTabs() {
                 loadQuotationTemplates();
             }
             if (tabId === "insights") _withLoading("載入實務見解...", loadInsights);
+            if (tabId === "raziel") _withLoading("檢查拉結爾...", loadRazielStatus);
             if (tabId === "admin") {
                 _withLoading("載入系統設定...", loadAdminData);
                 loadDiscordWebhook();
@@ -465,6 +466,10 @@ function bindEvents() {
         ["insightsRefreshBtn", loadInsights, "實務見解重新整理"],
         ["insightSaveBtn", saveInsight, "新增見解"],
         ["insightFetchBtn", fetchInsightFullManual, "抓取見解來源"],
+        ["razielStatusBtn", loadRazielStatus, "拉結爾狀態檢查"],
+        ["razielSearchBtn", () => runRaziel("search"), "拉結爾判決抓取"],
+        ["razielPreviewBtn", () => runRaziel("preview"), "拉結爾前後文預覽"],
+        ["razielTableBtn", () => runRaziel("table"), "拉結爾分類表產生"],
         ["adminSettingsSearchBtn", loadAdminSettings, "系統設定搜尋"],
         ["adminSettingsRefreshBtn", loadAdminSettings, "系統設定重新整理"],
         ["adminSettingSaveBtn", saveAdminSetting, "系統設定儲存"],
