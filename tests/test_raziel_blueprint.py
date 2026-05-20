@@ -35,12 +35,15 @@ def test_judgment_classifier_visible_text_uses_function_name():
         root / "templates" / "research.html",
         root / "templates" / "research_judgment_classifier.html",
         root / "templates" / "partials" / "osc" / "raziel.html",
+        root / "static" / "osc" / "tabs" / "raziel.js",
     ]
 
     combined = "\n".join(path.read_text(encoding="utf-8") for path in visible_templates)
 
     assert "判決捕捉與分類" in combined
     assert "拉結爾" not in combined
+    assert "專案資料夾" not in combined
+    assert "最高法院_通譯_TXT" not in combined
 
 
 def test_raziel_delivery_zip_splits_when_limit_is_small(tmp_path, monkeypatch):

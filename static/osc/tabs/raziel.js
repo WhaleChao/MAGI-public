@@ -74,14 +74,14 @@ function renderRazielStatus(data = {}) {
     setRazielStatus(
         ready
             ? `判決分類核心已連線。${keyText}。`
-            : "找不到判決分類核心腳本，請確認桌面專案資料夾仍存在。",
+            : "找不到判決分類核心，請確認本機判決資料庫仍存在。",
         ready ? "ok" : "warn"
     );
     const out = razielEl("razielOutput");
     if (out) {
         out.textContent = [
             `狀態：${ready ? "可使用" : "需檢查"}`,
-            `專案資料夾：${data.root || ""}`,
+            "資料來源：本機判決資料庫",
             `搜尋式：${config.keyword_query || ""}`,
             `分類規則：${config.rule_query || ""}`,
             `法院範圍：${Array.isArray(config.court_scopes) ? config.court_scopes.join(", ") : ""}`,
@@ -114,10 +114,10 @@ function renderRazielResult(data = {}) {
         `提醒：${result.user_notice || result.notice || "無"}`,
         "",
         "輸出檔案：",
-        `Excel：${data.paths?.xlsx || ""}`,
-        `CSV：${data.paths?.csv || ""}`,
-        `前後文預覽：${data.paths?.preview || ""}`,
-        `補抓報告：${data.paths?.report || ""}`,
+        "Excel 分類表：可用上方按鈕下載",
+        "CSV 分類表：可用上方按鈕下載",
+        "前後文預覽：可用上方按鈕下載",
+        "補抓報告：可用上方按鈕下載",
         "",
         "原始回傳摘要：",
         JSON.stringify(result, null, 2),
@@ -145,7 +145,7 @@ function renderRazielDelivery(manifest = {}) {
             `壓縮檔內資料夾：${manifest.folder_name || "判決捕捉與分類_交付資料"}`,
             `是否分割：${manifest.split ? "是" : "否"}`,
             `檔案數：${manifest.file_count || 0}`,
-            `資料夾：${manifest.delivery_dir || ""}`,
+            "保存位置：本機交付壓縮檔資料夾",
             "",
             "下載檔案：",
             ...parts.map(part => `${part.name}（${part.size || 0} bytes）`),
