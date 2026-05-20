@@ -125,3 +125,11 @@
 | `MAGI_OPENDATALOADER_PDF_MAX_CHARS` | int | `24000` | 每份 PDF 從 OpenDataLoader 讀入 MAGI 的最大字元數 |
 | `MAGI_PDF_NAMER_OPENDATALOADER_MIN_SCORE` | float | `0.55` | PDF 命名採用 OpenDataLoader 結果的最低品質分數 |
 | `MAGI_PDF_NAMER_OPENDATALOADER_MIN_GAIN` | float | `0.08` | PDF 命名改用 OpenDataLoader 結果所需的最低品質增益 |
+| `MAGI_CHANDRA_OCR_ENABLE` | bool | `0` | 私用版專用 Chandra OCR fallback；僅在既有 OCR 低品質時嘗試 |
+| `MAGI_CHANDRA_PRIVATE_DEPLOYMENT` | bool | `0` | Chandra 私用版確認；未設定時即使 enable 也不會推論 |
+| `MAGI_CHANDRA_ACCEPT_MODEL_LICENSE` | bool | `0` | Chandra model license 確認；未設定時不會推論 |
+| `MAGI_CHANDRA_ACCEPT_QWEN_BACKEND` | bool | `0` | Chandra OCR 2 upstream 標示 `qwen3_5`/Qwen 3.5，私用版啟用前必須明確確認 |
+| `MAGI_CHANDRA_CLI` | path | auto | Chandra CLI 路徑；建議使用隔離 venv，不污染 MAGI 主環境 |
+| `MAGI_CHANDRA_OCR_METHOD` | `vllm`/`hf` | `vllm` | Chandra 後端；HF 另需 `MAGI_CHANDRA_ALLOW_HF=1`，避免誤下載大型模型 |
+| `MAGI_CHANDRA_VLLM_API_BASE` | URL | `http://127.0.0.1:8000/v1` | Chandra vLLM OpenAI-compatible endpoint |
+| `MAGI_CHANDRA_OCR_MIN_SCORE` | float | `0.45` | pdf-namer 既有 OCR 分數低於此值才呼叫 Chandra |

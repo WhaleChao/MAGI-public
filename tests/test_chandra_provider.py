@@ -28,6 +28,7 @@ def test_probe_requires_model_license_acceptance(monkeypatch, tmp_path):
     fake_cli.chmod(0o755)
 
     monkeypatch.setenv("MAGI_CHANDRA_OCR_ENABLE", "1")
+    monkeypatch.setenv("MAGI_CHANDRA_PRIVATE_DEPLOYMENT", "1")
     monkeypatch.setenv("MAGI_CHANDRA_CLI", str(fake_cli))
     monkeypatch.delenv("MAGI_CHANDRA_ACCEPT_MODEL_LICENSE", raising=False)
 
@@ -35,6 +36,44 @@ def test_probe_requires_model_license_acceptance(monkeypatch, tmp_path):
 
     assert result.available is False
     assert "MAGI_CHANDRA_ACCEPT_MODEL_LICENSE" in result.reason
+
+
+def test_probe_private_only_gate(monkeypatch, tmp_path):
+    from skills.engine.ocr import chandra_provider
+
+    fake_cli = tmp_path / "chandra"
+    fake_cli.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    fake_cli.chmod(0o755)
+
+    monkeypatch.setenv("MAGI_CHANDRA_OCR_ENABLE", "1")
+    monkeypatch.setenv("MAGI_CHANDRA_CLI", str(fake_cli))
+    monkeypatch.delenv("MAGI_CHANDRA_PRIVATE_DEPLOYMENT", raising=False)
+    monkeypatch.delenv("MAGI_DEPLOYMENT_MODE", raising=False)
+
+    result = chandra_provider.probe(check_server=False)
+
+    assert result.available is False
+    assert "private-only" in result.reason
+    assert result.uses_qwen_backend is True
+
+
+def test_probe_requires_qwen_backend_acknowledgement(monkeypatch, tmp_path):
+    from skills.engine.ocr import chandra_provider
+
+    fake_cli = tmp_path / "chandra"
+    fake_cli.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    fake_cli.chmod(0o755)
+
+    monkeypatch.setenv("MAGI_CHANDRA_OCR_ENABLE", "1")
+    monkeypatch.setenv("MAGI_CHANDRA_PRIVATE_DEPLOYMENT", "1")
+    monkeypatch.setenv("MAGI_CHANDRA_ACCEPT_MODEL_LICENSE", "1")
+    monkeypatch.setenv("MAGI_CHANDRA_CLI", str(fake_cli))
+    monkeypatch.delenv("MAGI_CHANDRA_ACCEPT_QWEN_BACKEND", raising=False)
+
+    result = chandra_provider.probe(check_server=False)
+
+    assert result.available is False
+    assert "MAGI_CHANDRA_ACCEPT_QWEN_BACKEND" in result.reason
 
 
 def test_probe_vllm_server_checked(monkeypatch, tmp_path):
@@ -45,7 +84,9 @@ def test_probe_vllm_server_checked(monkeypatch, tmp_path):
     fake_cli.chmod(0o755)
 
     monkeypatch.setenv("MAGI_CHANDRA_OCR_ENABLE", "1")
+    monkeypatch.setenv("MAGI_CHANDRA_PRIVATE_DEPLOYMENT", "1")
     monkeypatch.setenv("MAGI_CHANDRA_ACCEPT_MODEL_LICENSE", "1")
+    monkeypatch.setenv("MAGI_CHANDRA_ACCEPT_QWEN_BACKEND", "1")
     monkeypatch.setenv("MAGI_CHANDRA_CLI", str(fake_cli))
 
     def fake_reachable(base_url, timeout_sec=2.0):
@@ -73,7 +114,9 @@ def test_run_pdf_page_reads_markdown(monkeypatch, tmp_path):
     fake_cli.chmod(0o755)
 
     monkeypatch.setenv("MAGI_CHANDRA_OCR_ENABLE", "1")
+    monkeypatch.setenv("MAGI_CHANDRA_PRIVATE_DEPLOYMENT", "1")
     monkeypatch.setenv("MAGI_CHANDRA_ACCEPT_MODEL_LICENSE", "1")
+    monkeypatch.setenv("MAGI_CHANDRA_ACCEPT_QWEN_BACKEND", "1")
     monkeypatch.setenv("MAGI_CHANDRA_CLI", str(fake_cli))
     monkeypatch.setattr(chandra_provider, "_vllm_server_reachable", lambda base_url, timeout_sec=2.0: (True, ""))
 
@@ -82,6 +125,8 @@ def test_run_pdf_page_reads_markdown(monkeypatch, tmp_path):
     assert result.success is True
     assert "臺灣花蓮地方法院" in result.text
     assert "--page-range" in (result.command or [])
+    assert "--no-headers-footers" in (result.command or [])
+    assert "--no-html" in (result.command or [])
     assert "1" in (result.command or [])
 
 

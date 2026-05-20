@@ -291,6 +291,32 @@ PDF 命名目標：
 - 將繳費單視為閱卷成果。
 - 因為第一頁信封而錯命名整份文件。
 
+### 9.1 私用版 Chandra OCR fallback
+
+Chandra OCR 只供私用版選用，不屬於公開版預設功能。2026-05-20 複查 upstream 後，Chandra OCR 2 的 model card 標籤與 credits 顯示 `qwen3_5` / Qwen 3.5；若事務所政策禁止中國系模型，保持關閉即可。MAGI 不會自動下載模型，也不會在公開版啟用。
+
+啟用前必須同時設定：
+
+```bash
+MAGI_CHANDRA_OCR_ENABLE=1
+MAGI_CHANDRA_PRIVATE_DEPLOYMENT=1
+MAGI_CHANDRA_ACCEPT_MODEL_LICENSE=1
+MAGI_CHANDRA_ACCEPT_QWEN_BACKEND=1
+MAGI_CHANDRA_CLI=/tmp/magi_chandra_venv/bin/chandra
+MAGI_CHANDRA_OCR_METHOD=vllm
+MAGI_CHANDRA_VLLM_API_BASE=http://127.0.0.1:8000/v1
+```
+
+建議先跑 readiness：
+
+```bash
+python3 scripts/ops/chandra_ocr_healthcheck.py
+MAGI_CHANDRA_OCR_ENABLE=1 MAGI_CHANDRA_PRIVATE_DEPLOYMENT=1 MAGI_CHANDRA_ACCEPT_MODEL_LICENSE=1 MAGI_CHANDRA_ACCEPT_QWEN_BACKEND=1 \
+python3 scripts/ops/chandra_ocr_healthcheck.py
+```
+
+若回報 `vLLM unavailable`，代表 MAGI 接線正常，但 Chandra 後端尚未啟動；此時 pdf-namer 仍會使用 macOS Vision / RapidOCR / Tesseract，不會因 Chandra 缺席而故障。`chandra_ocr_healthcheck.py` 不會把 OCR 原文寫入 runtime，只記錄是否可用、字元數與法律實體數量。
+
 ## 10. 書狀產生、範本與學習回饋
 
 書狀流程：
