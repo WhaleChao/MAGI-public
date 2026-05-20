@@ -208,13 +208,57 @@ _COURT_HINT_MAP = {
 }
 
 
+def _extract_doc_date_from_filename(fn: str) -> str:
+    s = (fn or "").strip()
+    # Western date at filename head: 20260414
+    m = re.search(r"(20\d{2})(\d{2})(\d{2})", s)
+    if m:
+        return f"{m.group(1)}-{m.group(2)}-{m.group(3)}"
+    # ROC date at filename head: 1150414
+    m = re.search(r"(?<!\d)(1\d{2})(\d{2})(\d{2})(?!\d)", s)
+    if m:
+        try:
+            y = int(m.group(1)) + 1911
+            return f"{y:04d}-{m.group(2)}-{m.group(3)}"
+        except Exception:
+            return ""
+    return ""
+
+
+def _extract_court_division_from_filename(fn: str) -> str:
+    s = (fn or "").strip()
+    if not s:
+        return ""
+    m = re.search(r"(?:股別|承辦股|分案股)\s*[:：]?\s*([A-Za-z0-9一-龥]{1,8}股)", s)
+    if not m:
+        m = re.search(r"([A-Za-z0-9一-龥]{1,6}股)(?!份)", s)
+    if not m:
+        return ""
+    div = (m.group(1) or "").strip()
+    return "" if "股份" in div else div
+
+
+def _is_detention_ruling_case_number_source(fn: str) -> bool:
+    """
+    Criminal detention rulings often carry procedural numbers and should not
+    replace the main court case number/division.
+    """
+    s = (fn or "").strip()
+    if not s:
+        return False
+    detention_terms = ("羈押", "延長羈押", "停止羈押", "禁止接見", "禁止通信", "限制住居", "具保", "交保")
+    if "裁定" in s and any(k in s for k in detention_terms):
+        return True
+    return False
+
+
 def _extract_court_hint_and_case_no_from_filename(fn: str) -> Dict[str, str]:
     """
     Best-effort parse court + court case number from a PDF filename.
     """
     s = (fn or "").strip()
     if not s:
-        return {"court_name": "", "court_case_number": ""}
+        return {"court_name": "", "court_case_number": "", "court_division": "", "doc_date": "", "excluded": False}
 
     court_name = ""
     for k, v in _COURT_HINT_MAP.items():
@@ -241,7 +285,13 @@ def _extract_court_hint_and_case_no_from_filename(fn: str) -> Dict[str, str]:
     if not m:
         if court_name:
             court_name = court_name.replace("台", "臺")
-        return {"court_name": court_name, "court_case_number": ""}
+        return {
+            "court_name": court_name,
+            "court_case_number": "",
+            "court_division": _extract_court_division_from_filename(s),
+            "doc_date": _extract_doc_date_from_filename(s),
+            "excluded": _is_detention_ruling_case_number_source(s),
+        }
     year, word, num = m.group(1), m.group(2), m.group(3)
     # Pad to 6 digits for downstream systems (commonly used).
     try:
@@ -251,7 +301,40 @@ def _extract_court_hint_and_case_no_from_filename(fn: str) -> Dict[str, str]:
     court_case_number = f"{year}年度{word}字第{num_padded}號"
     if court_name:
         court_name = court_name.replace("台", "臺")
-    return {"court_name": court_name, "court_case_number": court_case_number}
+    return {
+        "court_name": court_name,
+        "court_case_number": court_case_number,
+        "court_division": _extract_court_division_from_filename(s),
+        "doc_date": _extract_doc_date_from_filename(s),
+        "excluded": _is_detention_ruling_case_number_source(s),
+    }
+
+
+def _candidate_court_info_dirs(case_path: str, *, max_dirs: int = 32) -> List[str]:
+    p = (case_path or "").strip()
+    if not p or not _is_dir_fast(p):
+        return []
+    preferred_keywords = (
+        "法院通知", "程序裁定", "判決書", "對方歷次書狀", "我方歷次書狀",
+        "回執", "筆錄",
+    )
+    out: List[str] = [p]
+    for name in _listdir_timeout(p, timeout_sec=6):
+        child = os.path.join(p, name)
+        if not _is_dir_fast(child):
+            continue
+        if any(k in name for k in preferred_keywords):
+            out.append(child)
+            if len(out) >= max_dirs:
+                return out
+            # One extra level catches folders like "20251103 民事起訴狀繕本".
+            for sub in _listdir_timeout(child, timeout_sec=4)[: max(1, max_dirs)]:
+                grand = os.path.join(child, sub)
+                if _is_dir_fast(grand):
+                    out.append(grand)
+                    if len(out) >= max_dirs:
+                        return out
+    return out
 
 
 def _discover_case_court_info(case_path: str, *, max_files: int = 120) -> Dict[str, str]:
@@ -261,35 +344,42 @@ def _discover_case_court_info(case_path: str, *, max_files: int = 120) -> Dict[s
     """
     p = (case_path or "").strip()
     if not p or not _is_dir_fast(p):
-        return {"court_name": "", "court_case_number": ""}
+        return {"court_name": "", "court_case_number": "", "court_division": ""}
 
-    candidates = [
-        "06_法院通知或程序裁定",
-        "07_法院通知或程序裁定",
-        "09_法院通知或程序裁定",
-    ]
-    picked = {"court_name": "", "court_case_number": ""}
-    best_score = 0
+    picked = {"court_name": "", "court_case_number": "", "court_division": ""}
+    ranked: List[Tuple[Tuple[Any, ...], Dict[str, str]]] = []
+    dirs = _candidate_court_info_dirs(p)
 
-    for sub in candidates:
-        sp = os.path.join(p, sub)
-        if not _is_dir_fast(sp):
-            continue
+    for sp in dirs:
         names = _listdir_timeout(sp, timeout_sec=6)[: max(1, int(max_files))]
         for fn in names:
-            if not fn.lower().endswith(".pdf"):
+            if not fn.lower().endswith((".pdf", ".doc", ".docx", ".odt", ".txt")):
                 continue
             info = _extract_court_hint_and_case_no_from_filename(fn)
+            if info.get("excluded"):
+                continue
             score = 0
             if info.get("court_name"):
                 score += 1
             if info.get("court_case_number"):
                 score += 2
-            if score > best_score:
-                best_score = score
-                picked = info
-            if best_score >= 3:
-                return picked
+            if info.get("court_division"):
+                score += 1
+            if score <= 0:
+                continue
+            doc_date = info.get("doc_date") or ""
+            try:
+                mtime = _stat_mtime(os.path.join(sp, fn))
+            except Exception:
+                mtime = 0.0
+            # Latest real document wins; this prevents old mediation numbers
+            # from keeping the DB stale after a case is assigned a new number.
+            ranked.append(((score, doc_date, mtime, fn), info))
+    if ranked:
+        ranked.sort(key=lambda item: item[0], reverse=True)
+        picked = ranked[0][1]
+    picked.pop("excluded", None)
+    picked.pop("doc_date", None)
     return picked
 
 
@@ -375,6 +465,7 @@ def task_index_cases(payload: Dict[str, Any]) -> Dict[str, Any]:
                 folder_path=_to_db_canonical_path(c.get("path") or ""),
                 court_name=court_info.get("court_name") or "",
                 court_case_number=court_info.get("court_case_number") or "",
+                court_division=court_info.get("court_division") or "",
                 status="進行中",
             )
             inserted += int(res.get("inserted") or 0)

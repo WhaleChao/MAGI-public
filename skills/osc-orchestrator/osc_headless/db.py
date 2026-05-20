@@ -525,6 +525,7 @@ def upsert_case(
     court_name: str = "",
     court_case_number: str = "",
     court_case_no: str = "",
+    court_division: str = "",
     laf_case_no: str = "",
     application_no: str = "",
     legal_aid_number: str = "",
@@ -540,6 +541,7 @@ def upsert_case(
 
     court_case_number_v = (court_case_number or court_case_no or "").strip()
     court_case_no_v = (court_case_no or court_case_number or "").strip()
+    court_division_v = (court_division or "").strip()
     application_no_v = (application_no or legal_aid_number or laf_case_no or "").strip()
     laf_case_no_v = (laf_case_no or application_no_v or "").strip()
     # Keep legacy legal_aid_number in sync for older modules.
@@ -558,13 +560,18 @@ def upsert_case(
                     `case_category`=%s,
                     `case_reason`=%s,
                     `folder_path`=%s,
-                    `court_name`=%s,
-                    `court_case_number`=%s,
-                    `court_case_no`=%s,
-                    `laf_case_no`=%s,
-                    `application_no`=%s,
-                    `legal_aid_number`=%s,
-                    `status`=%s
+                    `court_name`=CASE WHEN %s <> '' THEN %s ELSE `court_name` END,
+                    `court_case_number`=CASE WHEN %s <> '' THEN %s ELSE `court_case_number` END,
+                    `court_case_no`=CASE WHEN %s <> '' THEN %s ELSE `court_case_no` END,
+                    `court_division`=CASE WHEN %s <> '' THEN %s ELSE `court_division` END,
+                    `laf_case_no`=CASE WHEN %s <> '' THEN %s ELSE `laf_case_no` END,
+                    `application_no`=CASE WHEN %s <> '' THEN %s ELSE `application_no` END,
+                    `legal_aid_number`=CASE WHEN %s <> '' THEN %s ELSE `legal_aid_number` END,
+                    `status`=CASE
+                        WHEN COALESCE(`status`, '') = '' THEN %s
+                        WHEN COALESCE(`status`, '') IN ('Active', 'active') THEN %s
+                        ELSE `status`
+                    END
                 WHERE `id`=%s
                 """,
                 (
@@ -574,11 +581,20 @@ def upsert_case(
                     (case_reason or "").strip(),
                     (folder_path or "").strip(),
                     (court_name or "").strip(),
+                    (court_name or "").strip(),
+                    court_case_number_v,
                     court_case_number_v,
                     court_case_no_v,
+                    court_case_no_v,
+                    court_division_v,
+                    court_division_v,
+                    laf_case_no_v,
                     laf_case_no_v,
                     application_no_v,
+                    application_no_v,
                     legal_aid_number_v,
+                    legal_aid_number_v,
+                    (status or "").strip(),
                     (status or "").strip(),
                     row["id"],
                 ),
@@ -591,8 +607,8 @@ def upsert_case(
             """
             INSERT INTO `cases`
               (`case_number`,`client_name`,`case_type`,`case_category`,`case_reason`,`folder_path`,
-               `court_name`,`court_case_number`,`court_case_no`,`laf_case_no`,`application_no`,`legal_aid_number`,`status`)
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+               `court_name`,`court_case_number`,`court_case_no`,`court_division`,`laf_case_no`,`application_no`,`legal_aid_number`,`status`)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
             """,
             (
                 cn,
@@ -604,6 +620,7 @@ def upsert_case(
                 (court_name or "").strip(),
                 court_case_number_v,
                 court_case_no_v,
+                court_division_v,
                 laf_case_no_v,
                 application_no_v,
                 legal_aid_number_v,
