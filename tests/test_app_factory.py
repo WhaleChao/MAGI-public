@@ -61,6 +61,7 @@ def test_register_core_blueprints_exposes_dashboard_routes(monkeypatch):
     assert "/dashboard" in routes
     assert "/dashboard/nerv" in routes
     assert "/magi-adjust" in routes
+    assert "/research/judgment-classifier" in routes
     assert "/golem" in routes
     assert "/api/golem/status" in routes
     assert "/api/osc/raziel/status" in routes

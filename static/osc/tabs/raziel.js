@@ -1,4 +1,4 @@
-/* 拉結爾判決分類 */
+/* 判決捕捉與分類 */
 function razielEl(id) {
     return document.getElementById(id);
 }
@@ -71,8 +71,8 @@ function renderRazielStatus(data = {}) {
     setRazielBadge(ready ? "可使用" : "需檢查", ready ? "ok" : "warn");
     setRazielStatus(
         ready
-            ? `拉結爾核心已連線。${keyText}。`
-            : "找不到拉結爾核心腳本，請確認桌面拉結爾專案資料夾仍存在。",
+            ? `判決分類核心已連線。${keyText}。`
+            : "找不到判決分類核心腳本，請確認桌面專案資料夾仍存在。",
         ready ? "ok" : "warn"
     );
     const out = razielEl("razielOutput");
@@ -133,21 +133,21 @@ async function loadRazielStatus() {
 
 async function runRaziel(mode) {
     const labels = {
-        search: "正在抓取判決；若有網站限制，拉結爾會在結果中提示改用夜間補抓。",
+        search: "正在抓取判決；若有網站限制，系統會在結果中提示改用夜間補抓。",
         preview: "正在產生關鍵字前後文預覽。",
         table: "正在產生 Excel 分類表。",
     };
     try {
-        setRazielStatus(labels[mode] || "正在執行拉結爾。");
+        setRazielStatus(labels[mode] || "正在執行判決分類器。");
         const data = await api("/api/osc/raziel/run", "POST", razielPayload(mode));
         state.raziel.lastResult = data;
         renderRazielResult(data);
-        setRazielStatus("拉結爾執行完成。", "ok");
+        setRazielStatus("判決分類器執行完成。", "ok");
         if (razielEl("razielNvidiaApiKey")) razielEl("razielNvidiaApiKey").value = "";
-        showToast("拉結爾執行完成。", "ok");
+        showToast("判決分類器執行完成。", "ok");
         return data;
     } catch (error) {
-        setRazielStatus(`拉結爾沒有完成：${error.message || error}`, "warn");
+        setRazielStatus(`判決分類器沒有完成：${error.message || error}`, "warn");
         throw error;
     }
 }

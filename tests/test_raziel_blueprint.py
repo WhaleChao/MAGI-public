@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 
 def test_raziel_terms_from_boolean_query_keeps_positive_terms():
     from api.blueprints.raziel import _terms_from_query
@@ -22,3 +24,18 @@ def test_raziel_public_config_never_returns_api_key():
 
     assert public["has_nvidia_api_key"] is True
     assert "nvidia_api_key" not in public
+
+
+def test_judgment_classifier_visible_text_uses_function_name():
+    root = Path(__file__).resolve().parents[1]
+    visible_templates = [
+        root / "templates" / "golem_console.html",
+        root / "templates" / "research.html",
+        root / "templates" / "research_judgment_classifier.html",
+        root / "templates" / "partials" / "osc" / "raziel.html",
+    ]
+
+    combined = "\n".join(path.read_text(encoding="utf-8") for path in visible_templates)
+
+    assert "判決捕捉與分類" in combined
+    assert "拉結爾" not in combined

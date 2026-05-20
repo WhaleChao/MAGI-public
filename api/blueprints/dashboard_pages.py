@@ -577,6 +577,12 @@ def research_panel():
     return render_template("research.html", research=_load_research_dashboard(), user=current_user)
 
 
+@dashboard_pages_bp.route("/research/judgment-classifier")
+@login_required
+def research_judgment_classifier():
+    return render_template("research_judgment_classifier.html", user=current_user)
+
+
 @dashboard_pages_bp.route("/research/rss-preview")
 @login_required
 def research_rss_preview():

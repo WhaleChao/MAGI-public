@@ -155,7 +155,7 @@ def _run_raziel(mode: str, config: dict[str, Any], max_api: int | None = None) -
     root = _raziel_root()
     script = _script_path()
     if not script.exists():
-        return {"ok": False, "error": f"找不到拉結爾核心腳本：{script}"}
+        return {"ok": False, "error": f"找不到判決分類核心腳本：{script}"}
     cmd = [sys.executable, str(script), "--mode", mode, "--no-zip"]
     if max_api:
         cmd.extend(["--max-api", str(max_api)])
@@ -168,7 +168,7 @@ def _run_raziel(mode: str, config: dict[str, Any], max_api: int | None = None) -
             timeout=900 if mode in {"search", "nightly", "table"} else 240,
         )
     except subprocess.TimeoutExpired:
-        return {"ok": False, "error": "拉結爾執行逾時，建議改用夜間補抓或降低筆數。"}
+        return {"ok": False, "error": "判決分類器執行逾時，建議改用夜間補抓或降低筆數。"}
     output = (proc.stdout or "").strip()
     parsed: dict[str, Any] = {}
     if output:
@@ -179,7 +179,7 @@ def _run_raziel(mode: str, config: dict[str, Any], max_api: int | None = None) -
     if proc.returncode != 0:
         return {
             "ok": False,
-            "error": "拉結爾執行失敗",
+            "error": "判決分類器執行失敗",
             "stderr": (proc.stderr or "")[-4000:],
             "result": parsed,
         }

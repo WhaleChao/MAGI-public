@@ -2,8 +2,8 @@
     <div class="card">
         <div class="section-head">
             <div>
-                <h3>拉結爾判決分類</h3>
-                <div class="section-note">在 MAGI 網頁內調用拉結爾：用布林搜尋抓判決、依規則擷取原文前後文，並產生 Excel 分類表。AI 僅能依原文判讀，不足判斷時會標示無法判斷。</div>
+                <h3>判決捕捉與分類</h3>
+                <div class="section-note">在 MAGI 網頁內用布林搜尋抓判決、依規則擷取原文前後文，並產生 Excel 分類表。AI 僅能依原文判讀，不足判斷時會標示無法判斷。</div>
             </div>
             <span id="razielReadyBadge" class="badge">檢查中...</span>
         </div>
@@ -13,7 +13,7 @@
                 <div class="field">
                     <label for="razielKeywordQuery">判決搜尋式</label>
                     <input id="razielKeywordQuery" placeholder='例如：通譯 或 "會員代表大會" AND 類推適用 AND 民法第56條'>
-                    <span class="helper">可用 AND、OR、NOT、括號、引號；數字大小寫變體由拉結爾處理。</span>
+                    <span class="helper">可用 AND、OR、NOT、括號、引號；數字大小寫變體由判決分類核心處理。</span>
                 </div>
                 <div class="field">
                     <label for="razielRuleQuery">分類規則關鍵字</label>
@@ -83,7 +83,7 @@
         <div class="section-head">
             <div>
                 <h3>執行結果</h3>
-                <div class="section-note">結果檔案由拉結爾保存在原專案資料夾；可直接下載 Excel、CSV 或預覽 JSON。</div>
+                <div class="section-note">結果檔案會保存在原專案資料夾；可直接下載 Excel、CSV 或預覽 JSON。</div>
             </div>
         </div>
         <div class="toolbar" style="margin-bottom:8px;">
