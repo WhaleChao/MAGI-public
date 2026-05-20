@@ -29,7 +29,7 @@ function razielPayload(mode = "preview") {
         keyword_query: razielEl("razielKeywordQuery")?.value || "",
         rule_query: razielEl("razielRuleQuery")?.value || "",
         court_scopes: razielEl("razielCourts")?.value || "",
-        max_results: Number(razielEl("razielMaxResults")?.value || 812),
+        max_results: Number(razielEl("razielMaxResults")?.value || 2000),
         split_mb: Number(razielEl("razielSplitMb")?.value || 1900),
         keyword_text_dir_name: razielEl("razielTextDir")?.value || "",
         keyword_pdf_dir_name: razielEl("razielPdfDir")?.value || "",
@@ -45,7 +45,7 @@ function fillRazielConfig(config = {}) {
     razielSetValue("razielKeywordQuery", config.keyword_query || "通譯");
     razielSetValue("razielRuleQuery", config.rule_query || config.keyword_query || "通譯");
     razielSetValue("razielCourts", Array.isArray(config.court_scopes) ? config.court_scopes.join(", ") : (config.court_scopes || "最高法院"));
-    razielSetValue("razielMaxResults", config.max_results || 812);
+    razielSetValue("razielMaxResults", config.max_results || 2000);
     razielSetValue("razielSplitMb", 1900);
     razielSetValue("razielTextDir", config.keyword_text_dir_name || "依關鍵字原文");
     razielSetValue("razielPdfDir", config.keyword_pdf_dir_name || "依關鍵字PDF");
@@ -108,7 +108,9 @@ function renderRazielResult(data = {}) {
         `AI 模式：${config.ai_provider || ""}`,
         `模型：${result.ai_model || result.model || config.nvidia_model || ""}`,
         "",
-        `抓取筆數：${result.total || result.count || result.search_count || "未回報"}`,
+        `司法院總筆數：${result.official_total_count || result.total_count || "未回報"}`,
+        `本次清單筆數：${result.count || result.search_count || "未回報"}`,
+        `本次關鍵字抓取上限：${result.requested_limit || config.max_results || "未回報"}`,
         `前後文筆數：${result.preview_count || result.context_count || "未回報"}`,
         `分類成功：${result.classification_success || result.ai_success || "未回報"}`,
         `提醒：${result.user_notice || result.notice || "無"}`,

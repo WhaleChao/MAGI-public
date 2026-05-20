@@ -3,7 +3,7 @@
         <div class="section-head">
             <div>
                 <h3>判決捕捉與分類</h3>
-                <div class="section-note">在 MAGI 網頁內用布林搜尋抓判決、依規則擷取原文前後文，並產生 Excel 分類表。AI 僅能依原文判讀，不足判斷時會標示無法判斷。</div>
+                <div class="section-note">在 MAGI 網頁內用布林搜尋抓判決、依規則擷取原文前後文，並產生 Excel 分類表。前後文預設各 300 字，遇到段落邊界會切在段落內；AI 僅能依原文判讀，不足判斷時會標示無法判斷。</div>
             </div>
             <span id="razielReadyBadge" class="badge">檢查中...</span>
         </div>
@@ -29,8 +29,8 @@
                     <input id="razielCourts" placeholder="最高法院, 高等法院, 地方法院">
                 </div>
                 <div class="field">
-                    <label for="razielMaxResults">抓取筆數</label>
-                    <input id="razielMaxResults" type="number" min="1" max="5000" value="812">
+                    <label for="razielMaxResults">本次關鍵字抓取上限</label>
+                    <input id="razielMaxResults" type="number" min="1" max="100000" value="2000">
                 </div>
                 <div class="field">
                     <label for="razielTextDir">原文資料夾</label>

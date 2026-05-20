@@ -92,7 +92,7 @@ def _public_config(config: dict[str, Any]) -> dict[str, Any]:
         "keyword_query": config.get("keyword_query") or config.get("keywords") or "通譯",
         "rule_query": config.get("rule_query") or config.get("keyword_query") or "通譯",
         "court_scopes": config.get("court_scopes") or config.get("courts") or ["最高法院"],
-        "max_results": config.get("max_results") or config.get("max_api") or 812,
+        "max_results": config.get("max_results") or config.get("max_api") or 2000,
         "keyword_text_dir_name": config.get("keyword_text_dir_name") or "依關鍵字原文",
         "keyword_pdf_dir_name": config.get("keyword_pdf_dir_name") or "依關鍵字PDF",
         "ai_provider": config.get("ai_provider") or "nvidia",
@@ -277,9 +277,9 @@ def _apply_payload_to_config(payload: dict[str, Any]) -> dict[str, Any]:
     rule_query = str(payload.get("rule_query") or config.get("rule_query") or keyword_query or "通譯").strip()
     courts = _split_lines_or_commas(payload.get("court_scopes")) or list(config.get("court_scopes") or ["最高法院"])
     try:
-        max_results = int(payload.get("max_results") or config.get("max_results") or config.get("max_api") or 812)
+        max_results = int(payload.get("max_results") or config.get("max_results") or config.get("max_api") or 2000)
     except (TypeError, ValueError):
-        max_results = 812
+        max_results = 2000
     config.update(
         {
             "keyword_query": keyword_query,
