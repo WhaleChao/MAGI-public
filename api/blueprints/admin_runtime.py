@@ -1395,14 +1395,31 @@ def create_admin_runtime_blueprint(
             service_map = {svc["id"]: svc for svc in services}
             primary = service_map.get("text") or {}
             unmanaged_alive = [svc["id"] for svc in services if svc.get("reachable") and svc.get("management_state") == "unmanaged"]
+            active_profile = ""
+            try:
+                active_profile = (Path.home() / ".omlx" / "active_profile").read_text(encoding="utf-8").strip()
+            except Exception:
+                active_profile = ""
+            day_sidecars_required = active_profile == "day"
+            sidecar_failures = []
+            if day_sidecars_required:
+                for sid in ("phi4", "smol"):
+                    svc = service_map.get(sid) or {}
+                    if not svc.get("ok"):
+                        sidecar_failures.append(sid)
+            primary_ok = bool(primary.get("reachable")) and primary.get("management_state") != "unmanaged"
             checks["omlx"] = {
-                "ok": bool(primary.get("reachable")) and not unmanaged_alive,
+                "ok": primary_ok and not unmanaged_alive and not sidecar_failures,
                 "models": primary.get("models", []),
                 "services": service_map,
                 "unmanaged_alive": unmanaged_alive,
+                "active_profile": active_profile,
+                "day_sidecars_required": day_sidecars_required,
             }
-            if unmanaged_alive:
-                checks["omlx"]["degraded_reasons"] = [f"unmanaged_service:{sid}" for sid in unmanaged_alive]
+            degraded_reasons = [f"unmanaged_service:{sid}" for sid in unmanaged_alive]
+            degraded_reasons.extend(f"day_sidecar_down:{sid}" for sid in sidecar_failures)
+            if degraded_reasons:
+                checks["omlx"]["degraded_reasons"] = degraded_reasons
         except Exception:
             checks["omlx"] = {"ok": False}
 

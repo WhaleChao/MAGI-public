@@ -6,6 +6,12 @@ set -euo pipefail
 
 MODE="${1:-day}"
 
+probe_model_id_at_port() {
+    local port="$1"
+    curl -sf --max-time 3 "http://127.0.0.1:${port}/v1/models" 2>/dev/null | \
+        python3 -c 'import json,sys; data=json.load(sys.stdin); print(((data.get("data") or [{}])[0].get("id") or "").lower())' 2>/dev/null || true
+}
+
 # ---- auto 模式：依當前時間自動選 day / night（在 lock 之前解析）----
 # day 窗口：06:55-21:49（對齊 job_omlx_switch_day=06:55 / job_omlx_switch_night=21:50）
 # 重要：auto 模式有冪等檢查 — 需「實際 API 模型」與 models-text 都對應正確才跳過切換
@@ -24,17 +30,33 @@ if [ "$MODE" = "auto" ]; then
     # 冪等檢查：若 API 實際模型與 models-text 都正確且 oMLX 已在線，跳過切換
     current_model_in_dir=$(ls "/Users/ai/.omlx/models-text/" 2>/dev/null | tr '[:upper:]' '[:lower:]' | head -1)
     current_model_api=$(
-        curl -sf --max-time 3 http://127.0.0.1:8080/v1/models 2>/dev/null | \
-        python3 -c 'import json,sys; data=json.load(sys.stdin); print(((data.get("data") or [{}])[0].get("id") or "").lower())' 2>/dev/null || true
+        probe_model_id_at_port 8080
     )
+    current_phi4_api=$(probe_model_id_at_port 8082)
+    current_smol_api=$(probe_model_id_at_port 8083)
     omlx_online=$(curl -sf --max-time 3 http://127.0.0.1:8080/v1/models >/dev/null 2>&1 && echo "yes" || echo "no")
+    sidecars_ok="yes"
+    if [ "$MODE" = "day" ]; then
+        if [ -d "/Users/ai/.omlx/models/Phi-4-mini-instruct-4bit" ] && ! echo "$current_phi4_api" | grep -qi "phi"; then
+            sidecars_ok="no"
+        fi
+        if ls /Users/ai/.omlx/models/ 2>/dev/null | grep -q "SmolLM3" && ! echo "$current_smol_api" | grep -qi "smol"; then
+            sidecars_ok="no"
+        fi
+    else
+        # 離峰夜間只保留主模型；若日間 sidecar 還活著，仍需執行切換將其關閉。
+        if [ -n "$current_phi4_api" ] || [ -n "$current_smol_api" ]; then
+            sidecars_ok="no"
+        fi
+    fi
     if echo "$current_model_in_dir" | grep -qi "$EXPECTED_MODEL_KEYWORD" && \
        echo "$current_model_api" | grep -qi "$EXPECTED_MODEL_KEYWORD" && \
-       [ "$omlx_online" = "yes" ]; then
-        printf '%s [switch] auto: 已是 %s 模式（api=%s, dir=%s），跳過切換\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$MODE" "$current_model_api" "$current_model_in_dir" | tee -a "/opt/homebrew/var/log/omlx_switch.log"
+       [ "$omlx_online" = "yes" ] && \
+       [ "$sidecars_ok" = "yes" ]; then
+        printf '%s [switch] auto: 已是 %s 模式（api=%s, dir=%s, phi4=%s, smol=%s），跳過切換\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$MODE" "$current_model_api" "$current_model_in_dir" "${current_phi4_api:-off}" "${current_smol_api:-off}" | tee -a "/opt/homebrew/var/log/omlx_switch.log"
         exit 0
     fi
-    printf '%s [switch] auto: 需切換（api=%s, dir=%s, online=%s）\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$current_model_api" "$current_model_in_dir" "$omlx_online" | tee -a "/opt/homebrew/var/log/omlx_switch.log"
+    printf '%s [switch] auto: 需切換（api=%s, dir=%s, online=%s, phi4=%s, smol=%s, sidecars_ok=%s）\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$current_model_api" "$current_model_in_dir" "$omlx_online" "${current_phi4_api:-off}" "${current_smol_api:-off}" "$sidecars_ok" | tee -a "/opt/homebrew/var/log/omlx_switch.log"
 fi
 
 PROFILE_FILE="/Users/ai/.omlx/active_profile"
@@ -233,7 +255,10 @@ start_night_e4b_fallback() {
     plist_set_env OMLX_TEXT_MAX_TOKENS 8192
     plist_set_env OMLX_TEXT_MAX_CONTEXT_WINDOW 8192
     plist_set_env OMLX_PAGED_CACHE_DIR /Users/ai/.omlx/cache-e4b
-    bootstrap_omlx_main "NIGHT-FALLBACK-E4B"
+    if ! bootstrap_omlx_main "NIGHT-FALLBACK-E4B"; then
+        notify_admin "NIGHT fallback E4B launchd 啟動失敗，請檢查 /opt/homebrew/var/log/omlx.log"
+        exit 4
+    fi
     if ! wait_model_ready 8080 "e4b" 90; then
         notify_admin "NIGHT fallback E4B 也未載入，請檢查 launchd/oMLX log"
         exit 4
@@ -319,13 +344,72 @@ check_model_src() {
     fi
 }
 
+run_launchctl_logged() {
+    local tag="$1"
+    shift
+    local out rc
+    set +e
+    out=$("$@" 2>&1)
+    rc=$?
+    set -e
+    if [ -n "$out" ]; then
+        while IFS= read -r line; do
+            [ -n "$line" ] && log "$tag: $line"
+        done <<< "$out"
+    fi
+    return "$rc"
+}
+
+launchctl_service_loaded() {
+    local label="$1"
+    launchctl print "gui/$UID_NUM/$label" >/dev/null 2>&1
+}
+
+wait_launchctl_unloaded() {
+    local label="$1"
+    local timeout="${2:-10}"
+    local waited=0
+    while [ "$waited" -lt "$timeout" ]; do
+        if ! launchctl_service_loaded "$label"; then
+            return 0
+        fi
+        sleep 1
+        waited=$((waited + 1))
+    done
+    log "⚠️  launchd service $label 經過 ${timeout}s 仍未卸載，稍後嘗試重新載入"
+    return 1
+}
+
+start_launch_agent() {
+    local label="$1"
+    local plist="$2"
+    local tag="$3"
+    run_launchctl_logged "$tag enable" launchctl enable "gui/$UID_NUM/$label" || true
+    if ! launchctl_service_loaded "$label"; then
+        if ! run_launchctl_logged "$tag bootstrap" launchctl bootstrap "gui/$UID_NUM" "$plist"; then
+            sleep 2
+            if ! launchctl_service_loaded "$label"; then
+                run_launchctl_logged "$tag bootstrap retry" launchctl bootstrap "gui/$UID_NUM" "$plist" || return 1
+            fi
+        fi
+    fi
+    sleep 2
+    run_launchctl_logged "$tag kickstart" launchctl kickstart -kp "gui/$UID_NUM/$label" || return 1
+}
+
+restart_launch_agent() {
+    local label="$1"
+    local plist="$2"
+    local tag="$3"
+    run_launchctl_logged "$tag bootout" launchctl bootout "gui/$UID_NUM/$label" || true
+    wait_launchctl_unloaded "$label" 12 || true
+    start_launch_agent "$label" "$plist" "$tag"
+}
+
 bootstrap_omlx_main() {
     local label="$1"
     local plist="$HOME/Library/LaunchAgents/com.magi.omlx.plist"
-    launchctl enable "gui/$UID_NUM/com.magi.omlx" 2>&1 | grep -v "^$" | while read line; do log "$label enable: $line"; done || true
-    launchctl bootstrap "gui/$UID_NUM" "$plist" 2>&1 | grep -v "^$" | while read line; do log "$label bootstrap: $line"; done || true
-    sleep 2
-    launchctl kickstart -kp "gui/$UID_NUM/com.magi.omlx" 2>&1 | grep -v "^$" | while read line; do log "$label kickstart: $line"; done || true
+    start_launch_agent "com.magi.omlx" "$plist" "$label"
 }
 
 wait_model_ready() {
@@ -371,6 +455,7 @@ case "$MODE" in
 
     # 重啟 oMLX E4B（降低記憶體）
     launchctl bootout "gui/$UID_NUM/com.magi.omlx" 2>/dev/null || true
+    wait_launchctl_unloaded "com.magi.omlx" 12 || true
     clear_stale_8080_owner
     wait_port_closed 8080 15 || true
     # bootout 後才檢查記憶體（避免舊 process 佔用干擾判斷）
@@ -384,18 +469,22 @@ case "$MODE" in
     plist_set_env OMLX_TEXT_MAX_TOKENS 8192
     plist_set_env OMLX_TEXT_MAX_CONTEXT_WINDOW 8192
     plist_set_env OMLX_PAGED_CACHE_DIR /Users/ai/.omlx/cache-e4b
-    bootstrap_omlx_main "DAY"
+    if ! bootstrap_omlx_main "DAY"; then
+        notify_admin "DAY 切換時 E4B launchd 啟動失敗，請檢查 /opt/homebrew/var/log/omlx.log"
+        exit 4
+    fi
 
     # 啟動 Phi-4 和 SmolLM3（若模型已下載）
     if [ -d "/Users/ai/.omlx/models/Phi-4-mini-instruct-4bit" ]; then
+        mkdir -p /Users/ai/.omlx/cache-phi4
         rm -f /Users/ai/.omlx/models-text-phi4/*
         ln -sf "/Users/ai/.omlx/models/Phi-4-mini-instruct-4bit" \
                "/Users/ai/.omlx/models-text-phi4/Phi-4-mini-instruct-4bit"
-        launchctl bootout "gui/$UID_NUM/com.magi.omlx-phi4" 2>/dev/null || true
         wait_port_closed 8082 10 || true
-        launchctl bootstrap "gui/$UID_NUM" ~/Library/LaunchAgents/com.magi.omlx-phi4.plist 2>/dev/null || true
-        sleep 2
-        launchctl kickstart -kp "gui/$UID_NUM/com.magi.omlx-phi4" 2>/dev/null || true
+        if ! restart_launch_agent "com.magi.omlx-phi4" "$HOME/Library/LaunchAgents/com.magi.omlx-phi4.plist" "Phi-4"; then
+            notify_admin "DAY 切換時 Phi-4 launchd 啟動失敗，請檢查 /opt/homebrew/var/log/omlx-phi4.log"
+            exit 4
+        fi
         log "Phi-4 啟動中..."
     else
         log "⚠️  Phi-4 模型尚未下載，跳過"
@@ -403,14 +492,15 @@ case "$MODE" in
 
     if ls /Users/ai/.omlx/models/ | grep -q "SmolLM3"; then
         SMOL_MODEL=$(ls /Users/ai/.omlx/models/ | grep SmolLM3 | head -1)
+        mkdir -p /Users/ai/.omlx/cache-smol
         rm -f /Users/ai/.omlx/models-text-smol/*
         ln -sf "/Users/ai/.omlx/models/$SMOL_MODEL" \
                "/Users/ai/.omlx/models-text-smol/$SMOL_MODEL"
-        launchctl bootout "gui/$UID_NUM/com.magi.omlx-smol" 2>/dev/null || true
         wait_port_closed 8083 10 || true
-        launchctl bootstrap "gui/$UID_NUM" ~/Library/LaunchAgents/com.magi.omlx-smol.plist 2>/dev/null || true
-        sleep 2
-        launchctl kickstart -kp "gui/$UID_NUM/com.magi.omlx-smol" 2>/dev/null || true
+        if ! restart_launch_agent "com.magi.omlx-smol" "$HOME/Library/LaunchAgents/com.magi.omlx-smol.plist" "SmolLM3"; then
+            notify_admin "DAY 切換時 SmolLM3 launchd 啟動失敗，請檢查 /opt/homebrew/var/log/omlx-smol.log"
+            exit 4
+        fi
         log "SmolLM3 ($SMOL_MODEL) 啟動中..."
     else
         log "⚠️  SmolLM3 模型尚未下載，跳過"
@@ -421,9 +511,15 @@ case "$MODE" in
         notify_admin "DAY 切換後 8080 未載入 E4B，請檢查 launchd/oMLX log"
         exit 4
     fi
+    if [ -d "/Users/ai/.omlx/models/Phi-4-mini-instruct-4bit" ] && ! wait_model_ready 8082 "phi" 90; then
+        notify_admin "DAY 切換後 8082 未載入 Phi-4，交叉驗證不可用"
+        exit 4
+    fi
+    if ls /Users/ai/.omlx/models/ 2>/dev/null | grep -q "SmolLM3" && ! wait_model_ready 8083 "smol" 90; then
+        notify_admin "DAY 切換後 8083 未載入 SmolLM3，交叉驗證不可用"
+        exit 4
+    fi
     echo "day" > "$PROFILE_FILE"
-    curl -sf http://127.0.0.1:8082/v1/models >/dev/null 2>&1 && log "8082 (Phi-4) OK" || log "8082 未就緒（模型可能仍在載入）"
-    curl -sf http://127.0.0.1:8083/v1/models >/dev/null 2>&1 && log "8083 (SmolLM3) OK" || log "8083 未就緒（模型可能仍在載入）"
 
     # heartbeat 背景執行，不阻塞腳本完成
     ( heartbeat_check 3 "DAY" ) &
@@ -446,6 +542,8 @@ case "$MODE" in
     # 停止 Phi-4 和 SmolLM3
     launchctl bootout "gui/$UID_NUM/com.magi.omlx-phi4" 2>/dev/null || true
     launchctl bootout "gui/$UID_NUM/com.magi.omlx-smol" 2>/dev/null || true
+    wait_launchctl_unloaded "com.magi.omlx-phi4" 12 || true
+    wait_launchctl_unloaded "com.magi.omlx-smol" 12 || true
     wait_port_closed 8082 15 || true
     wait_port_closed 8083 15 || true
 
@@ -457,6 +555,7 @@ case "$MODE" in
 
     # 重啟 oMLX 26B（模型實際約 14.63GB；MODEL 需高於模型大小，否則 completion 回 507）
     launchctl bootout "gui/$UID_NUM/com.magi.omlx" 2>/dev/null || true
+    wait_launchctl_unloaded "com.magi.omlx" 12 || true
     clear_stale_8080_owner
     wait_port_closed 8080 30 || true
     log "等待記憶體回收（10s）..."
@@ -475,7 +574,10 @@ case "$MODE" in
     plist_set_env OMLX_TEXT_MAX_TOKENS 8192
     plist_set_env OMLX_TEXT_MAX_CONTEXT_WINDOW 8192
     plist_set_env OMLX_PAGED_CACHE_DIR /Users/ai/.omlx/cache-26b
-    bootstrap_omlx_main "NIGHT"
+    if ! bootstrap_omlx_main "NIGHT"; then
+        notify_admin "NIGHT 切換時 26B launchd 啟動失敗，請檢查 /opt/homebrew/var/log/omlx.log"
+        exit 4
+    fi
 
     if ! wait_model_ready 8080 "26b" 180; then
         notify_admin "NIGHT 切換後 8080 未載入 26B，請檢查 launchd/oMLX log"

@@ -78,9 +78,9 @@ def _load_cron_last_run_ts() -> dict[str, float]:
     return out
 
 
-def _current_omlx_models() -> list[str]:
+def _current_omlx_models(port: int = 8080) -> list[str]:
     try:
-        with urllib.request.urlopen("http://127.0.0.1:8080/v1/models", timeout=3) as resp:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/v1/models", timeout=3) as resp:
             data = json.loads(resp.read().decode("utf-8", errors="replace"))
         return [
             str(item.get("id") or "").strip()
@@ -97,7 +97,9 @@ def audit_omlx_profile() -> dict[str, Any]:
     minutes = now.hour * 60 + now.minute
     expected_profile = "day" if 415 <= minutes < 1310 else "night"
     expected_keyword = "e4b" if expected_profile == "day" else "26b"
-    models = _current_omlx_models()
+    models = _current_omlx_models(8080)
+    phi4_models = _current_omlx_models(8082)
+    smol_models = _current_omlx_models(8083)
     active_profile = ""
     try:
         active_profile = (Path.home() / ".omlx" / "active_profile").read_text(encoding="utf-8").strip()
@@ -110,17 +112,29 @@ def audit_omlx_profile() -> dict[str, Any]:
     except Exception:
         model_dir_hint = ""
     live_text = " ".join(models).lower()
+    phi4_text = " ".join(phi4_models).lower()
+    smol_text = " ".join(smol_models).lower()
     ok = (
         expected_keyword in live_text
         and expected_keyword in model_dir_hint.lower()
         and active_profile == expected_profile
     )
+    sidecars_ok = True
+    if expected_profile == "day":
+        sidecars_ok = ("phi" in phi4_text and "smol" in smol_text)
+        ok = ok and sidecars_ok
+    else:
+        sidecars_ok = (not phi4_models and not smol_models)
+        ok = ok and sidecars_ok
     return {
         "ok": ok,
         "expected_profile": expected_profile,
         "expected_keyword": expected_keyword,
         "active_profile": active_profile,
         "models": models,
+        "phi4_models": phi4_models,
+        "smol_models": smol_models,
+        "sidecars_ok": sidecars_ok,
         "model_dir_hint": model_dir_hint,
         "time": now.strftime("%Y-%m-%d %H:%M"),
         "remediation": "Run config/bin/omlx_switch_model.sh auto; cron job_omlx_profile_guard should keep this idempotently repaired.",
