@@ -316,7 +316,7 @@ async function api(path, method = "GET", body = null) {
         throw new Error("登入已逾時，正在跳轉登入頁...");
     }
     if (!res.ok) {
-        const detail = shortText(data.detail || data.body || "", 240);
+        const detail = shortText(data.message || data.detail || data.body || "", 240);
         let message = data.error || res.statusText || `HTTP ${res.status}`;
         if (detail && !message.includes(detail)) message = `${message}：${detail}`;
         throw new Error(message);

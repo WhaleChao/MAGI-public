@@ -90,6 +90,12 @@ class SheetsAuthorizationRequired(AccountingImportError):
     pass
 
 
+def is_revoked_google_token_error(exc: BaseException) -> bool:
+    """Return True when Google says the saved OAuth token can no longer refresh."""
+    text = str(exc).lower()
+    return "invalid_grant" in text or "expired or revoked" in text or "token has been revoked" in text
+
+
 FIXED_EXPENSE_SKIP_CATEGORIES = {"薪資", "保險", "房租", "租金支出", "人事費"}
 FIXED_EXPENSE_SKIP_KEYWORDS = (
     "主持律師薪資",
@@ -420,7 +426,14 @@ def parse_sheet_values(
     }
 
 
-def _load_google_credentials(token_path: Path, credentials_path: Path, *, account_hint: str, interactive: bool):
+def _load_google_credentials(
+    token_path: Path,
+    credentials_path: Path,
+    *,
+    account_hint: str,
+    interactive: bool,
+    force_auth: bool = False,
+):
     try:
         from google.auth.transport.requests import Request
         from google.oauth2.credentials import Credentials
@@ -430,6 +443,13 @@ def _load_google_credentials(token_path: Path, credentials_path: Path, *, accoun
 
     creds = None
     token_has_requested_scopes = False
+    if force_auth and interactive:
+        try:
+            token_path.unlink()
+        except FileNotFoundError:
+            pass
+        except Exception:
+            pass
     if token_path.exists():
         try:
             token_data = json.loads(token_path.read_text(encoding="utf-8"))
@@ -439,7 +459,24 @@ def _load_google_credentials(token_path: Path, credentials_path: Path, *, accoun
             token_has_requested_scopes = False
         creds = Credentials.from_authorized_user_file(str(token_path), GOOGLE_READ_SCOPES)
     if creds and creds.expired and creds.refresh_token:
-        creds.refresh(Request())
+        try:
+            creds.refresh(Request())
+        except Exception as exc:
+            if not is_revoked_google_token_error(exc):
+                raise
+            if not interactive:
+                raise SheetsAuthorizationRequired(
+                    f"Google Sheets/Drive 授權已過期或被撤銷。請執行 scripts/import_accounting_sheet.py --auth，"
+                    f"並用 {account_hint} 重新登入。"
+                ) from exc
+            try:
+                token_path.unlink()
+            except FileNotFoundError:
+                pass
+            except Exception:
+                pass
+            creds = None
+            token_has_requested_scopes = False
     has_scopes = bool(creds and creds.valid and token_has_requested_scopes and creds.has_scopes(GOOGLE_READ_SCOPES))
     if not creds or not creds.valid or not has_scopes:
         if not interactive:
@@ -474,6 +511,7 @@ def fetch_sheet_values(
     credentials_path: Path | None = None,
     account_hint: str = DEFAULT_ACCOUNT_HINT,
     interactive: bool = False,
+    force_auth: bool = False,
     month: str | None = None,
 ) -> list[list[Any]]:
     try:
@@ -489,6 +527,7 @@ def fetch_sheet_values(
         credentials_path or _default_credentials_path(),
         account_hint=account_hint,
         interactive=interactive,
+        force_auth=force_auth,
     )
     service = build("sheets", "v4", credentials=creds, cache_discovery=False)
     try:
@@ -512,6 +551,10 @@ def fetch_sheet_values(
             ) from exc
         if status in {401, 403}:
             raise AccountingImportError("Google Sheet 讀取權限不足；請確認已用指定 Google 帳號授權且該帳號可讀此表。") from exc
+        if status == 404:
+            raise AccountingImportError(
+                f"Google 找不到帳務表；請確認 spreadsheet_id 正確，且 {account_hint} 可讀取這份檔案。"
+            ) from exc
         if status == 400 and "Office file" in message:
             return fetch_office_spreadsheet_values(
                 spreadsheet_id=spreadsheet_id,
@@ -541,6 +584,10 @@ def fetch_sheet_values(
         status = getattr(getattr(exc, "resp", None), "status", None)
         if status in {401, 403}:
             raise AccountingImportError("Google Sheet 讀取權限不足；請確認已用指定 Google 帳號授權且該帳號可讀此表。") from exc
+        if status == 404:
+            raise AccountingImportError(
+                f"Google 找不到帳務表分頁；請確認 gid 正確，且 {account_hint} 可讀取這份檔案。"
+            ) from exc
         raise
     return result.get("values", [])
 
@@ -582,6 +629,10 @@ def fetch_office_spreadsheet_values(
             ) from exc
         if status in {401, 403}:
             raise AccountingImportError(f"Google Drive 讀取權限不足；請確認用 {account_hint} 授權且該帳號可讀此表。") from exc
+        if status == 404:
+            raise AccountingImportError(
+                f"Google Drive 找不到帳務 Excel 檔；請確認檔案 ID 正確，且已分享給 {account_hint}。"
+            ) from exc
         raise
 
     workbook = openpyxl.load_workbook(BytesIO(content), data_only=True, read_only=True)
@@ -876,6 +927,7 @@ def run_import(
     spreadsheet_id: str = DEFAULT_SPREADSHEET_ID,
     gid: int = DEFAULT_GID,
     interactive: bool = False,
+    force_auth: bool = False,
     account_hint: str = DEFAULT_ACCOUNT_HINT,
 ) -> dict[str, Any]:
     _, _, month_key = month_window(month)
@@ -885,6 +937,7 @@ def run_import(
         spreadsheet_id=spreadsheet_id,
         gid=gid,
         interactive=interactive,
+        force_auth=force_auth,
         account_hint=account_hint,
         month=month_key,
     )
@@ -908,6 +961,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--include-previous", action="store_true", help="同時檢查上一個月，補抓月底後登資料")
     parser.add_argument("--commit", action="store_true", help="實際寫入資料庫；預設只預覽")
     parser.add_argument("--auth", action="store_true", help="需要時開啟瀏覽器授權 Google Sheets")
+    parser.add_argument("--reauth", action="store_true", help="強制重新授權；用於 Google token 過期、撤銷或需要切換帳號")
     parser.add_argument("--spreadsheet-id", default=DEFAULT_SPREADSHEET_ID)
     parser.add_argument("--gid", type=int, default=DEFAULT_GID)
     parser.add_argument("--account-hint", default=DEFAULT_ACCOUNT_HINT)
@@ -922,7 +976,8 @@ def main(argv: list[str] | None = None) -> int:
                 dry_run=not args.commit,
                 spreadsheet_id=args.spreadsheet_id,
                 gid=args.gid,
-                interactive=args.auth,
+                interactive=args.auth or args.reauth,
+                force_auth=args.reauth,
                 account_hint=args.account_hint,
             )
             for target_month in months

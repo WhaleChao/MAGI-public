@@ -1,6 +1,8 @@
 from api.osc.accounting_sheet_import import (
     AccountingSheetRow,
+    DEFAULT_ACCOUNT_HINT,
     fixed_expense_overlap_details,
+    is_revoked_google_token_error,
     month_window,
     parse_date,
     parse_sheet_values,
@@ -14,6 +16,11 @@ def test_month_window_current_and_previous():
     assert key == "2026-05"
     assert start.isoformat() == "2026-05-01"
     assert end.isoformat() == "2026-05-31"
+
+
+def test_revoked_google_token_error_detection():
+    assert is_revoked_google_token_error(Exception("invalid_grant: Token has been expired or revoked."))
+    assert not is_revoked_google_token_error(Exception("quota exceeded"))
 
 
 def test_parse_date_accepts_roc_year():
@@ -75,7 +82,7 @@ def test_accounting_import_api_preview(monkeypatch):
     def fake_run_import(**kwargs):
         assert kwargs["month"] == "2026-05"
         assert kwargs["dry_run"] is True
-        assert kwargs["account_hint"] == "primary"
+        assert kwargs["account_hint"] == DEFAULT_ACCOUNT_HINT
         return {"ok": True, "month": "2026-05", "importable_count": 1}
 
     monkeypatch.setattr("api.osc.accounting_sheet_import.run_import", fake_run_import)
