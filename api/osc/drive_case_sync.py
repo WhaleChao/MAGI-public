@@ -40,6 +40,82 @@ OSC_CASE_RE = re.compile(r"(20\d{2}-\d{4})")
 LAF_CASE_RE = re.compile(r"(\d{6,7}-[A-Z]-\d{3})")
 COURT_CASE_RE = re.compile(r"(\d{2,3}年度[^\\/\s()（）-]{1,12}字第?\d{1,8}號)")
 ROC_COURT_NO_RE = re.compile(r"(\d{2,3})年度(.+?)字第?0*(\d+)號")
+CJK_RUN_RE = re.compile(r"[\u4e00-\u9fff]{2,24}")
+GENERIC_CONTEXT_TERMS = {
+    "一般案件",
+    "法扶案件",
+    "無償案件",
+    "指定辯護案件",
+    "行政",
+    "刑事",
+    "民事",
+    "非訟",
+    "一審",
+    "二審",
+    "偵查",
+    "更審",
+    "案件",
+    "訴訟",
+    "行政訴訟",
+    "行政訴訟案",
+    "訴願",
+    "訴願案",
+    "事件",
+    "資料",
+    "法院",
+    "裁判",
+    "書狀",
+    "歷次書狀",
+    "函文",
+    "附件",
+    "委任狀",
+    "收據",
+    "存底",
+    "決行版本",
+    "掛號郵件",
+    "收件回執",
+    "財團法人",
+    "被害者",
+    "權利回復",
+    "權利回",
+    "一般",
+    "被害者權利回復",
+}
+CONTEXT_SUFFIXES = (
+    "行政訴訟案",
+    "行政訴訟",
+    "訴願案",
+    "訴訟案",
+    "等人案",
+    "事件",
+    "案",
+    "等人",
+    "等",
+)
+NON_DECISIVE_CONTEXT_SUBSTRINGS = (
+    "訴願",
+    "訴訟",
+    "裁定",
+    "判決",
+    "答辯",
+    "書狀",
+    "答辯狀",
+    "委任狀",
+    "收據",
+    "函",
+    "憑單",
+    "回執",
+    "法院",
+    "費用",
+    "主文",
+    "原告",
+    "被告",
+    "決定",
+    "用印",
+    "管轄",
+    "案卷",
+    "卷",
+)
 
 
 class DriveCaseSyncError(RuntimeError):
@@ -87,6 +163,15 @@ class CaseFolder:
     suggested_canonical_path: str = ""
     suggested_path_confidence: str = ""
     suggested_path_note: str = ""
+
+
+@dataclass
+class ContextScore:
+    candidate: CaseFolder
+    score: int
+    matched_terms: list[str] = field(default_factory=list)
+    candidate_terms: list[str] = field(default_factory=list)
+    context_sample: list[str] = field(default_factory=list)
 
 
 def repo_root() -> Path:
@@ -204,6 +289,83 @@ def normalize_court_case_no(value: str) -> str:
     if not match:
         return text
     return f"{int(match.group(1))}年度{match.group(2)}字第{int(match.group(3))}號"
+
+
+def normalize_context_text(value: Any) -> str:
+    text = unicodedata.normalize("NFKC", str(value or ""))
+    text = text.replace("臺", "台")
+    return text
+
+
+def _trim_context_suffix(term: str) -> str:
+    out = str(term or "").strip()
+    changed = True
+    while changed:
+        changed = False
+        for suffix in CONTEXT_SUFFIXES:
+            if out.endswith(suffix) and len(out) > len(suffix) + 1:
+                out = out[: -len(suffix)]
+                changed = True
+                break
+    return out.strip()
+
+
+def meaningful_terms(values: Iterable[Any]) -> list[str]:
+    """Extract conservative human/case hint tokens from folder/file/DB text."""
+    seen: set[str] = set()
+    terms: list[str] = []
+    for value in values:
+        text = normalize_context_text(value)
+        for court_no in COURT_CASE_RE.findall(text):
+            key = normalize_court_case_no(court_no)
+            if key and key not in seen:
+                seen.add(key)
+                terms.append(key)
+        for osc_no in OSC_CASE_RE.findall(text):
+            key = normalize_text(osc_no)
+            if key and key not in seen:
+                seen.add(key)
+                terms.append(key)
+        for laf_no in LAF_CASE_RE.findall(text):
+            key = normalize_text(laf_no)
+            if key and key not in seen:
+                seen.add(key)
+                terms.append(key)
+        for run in CJK_RUN_RE.findall(text):
+            candidates = [run, _trim_context_suffix(run)]
+            if len(run) >= 4:
+                candidates.append(run[:3])
+            for candidate in candidates:
+                token = _trim_context_suffix(candidate)
+                if len(token) < 2 or token in GENERIC_CONTEXT_TERMS:
+                    continue
+                if any(generic in token and len(token) > 8 for generic in GENERIC_CONTEXT_TERMS):
+                    continue
+                key = normalize_text(token)
+                if key in seen:
+                    continue
+                seen.add(key)
+                terms.append(token)
+    return terms
+
+
+def _contains_term(haystack: str, term: str) -> bool:
+    key = normalize_text(term)
+    return bool(key and key in haystack)
+
+
+def is_decisive_context_term(term: str) -> bool:
+    text = str(term or "").strip()
+    if not text or text in GENERIC_CONTEXT_TERMS:
+        return False
+    normalized = normalize_text(text)
+    if OSC_CASE_RE.fullmatch(text) or LAF_CASE_RE.fullmatch(text) or ROC_COURT_NO_RE.search(text):
+        return True
+    if any(normalize_text(fragment) in normalized for fragment in NON_DECISIVE_CONTEXT_SUBSTRINGS):
+        return False
+    if len(text) > 6:
+        return False
+    return bool(CJK_RUN_RE.fullmatch(text))
 
 
 def _clean_folder_token(value: str) -> str:
@@ -474,6 +636,91 @@ def _drive_list_children(service: Any, folder_id: str) -> list[dict[str, Any]]:
             return sorted(out, key=lambda x: str(x.get("name") or ""))
 
 
+def drive_descendant_context(
+    service: Any,
+    folder_id: str,
+    *,
+    max_depth: int = 3,
+    max_items: int = 300,
+) -> list[FileEntry]:
+    """Read a bounded set of names under one Drive case folder for disambiguation."""
+    entries: list[FileEntry] = []
+    stack: list[tuple[str, str, int]] = [(folder_id, "", 0)]
+    while stack and len(entries) < max_items:
+        parent_id, parent_rel, depth = stack.pop()
+        if depth >= max_depth:
+            continue
+        for item in _drive_list_children(service, parent_id):
+            name = str(item.get("name") or "")
+            if _ignore_name(name):
+                continue
+            rel = f"{parent_rel}/{name}".strip("/")
+            is_folder = item.get("mimeType") == GOOGLE_FOLDER_MIME
+            entries.append(FileEntry(
+                source="drive",
+                path=rel,
+                relative_path=rel,
+                name=name,
+                is_folder=is_folder,
+                modified_time=str(item.get("modifiedTime") or ""),
+                size=int(item["size"]) if str(item.get("size") or "").isdigit() else None,
+                md5=str(item.get("md5Checksum") or ""),
+                drive_id=str(item.get("id") or ""),
+                web_url=str(item.get("webViewLink") or ""),
+                mime_type=str(item.get("mimeType") or ""),
+            ))
+            if is_folder and depth + 1 < max_depth:
+                stack.append((str(item["id"]), rel, depth + 1))
+            if len(entries) >= max_items:
+                break
+    return entries
+
+
+def local_descendant_context(
+    root: str,
+    *,
+    max_depth: int = 3,
+    max_items: int = 300,
+) -> list[FileEntry]:
+    entries: list[FileEntry] = []
+    base = Path(root)
+    if not base.exists():
+        return entries
+    stack: list[Path] = [base]
+    while stack and len(entries) < max_items:
+        cur = stack.pop()
+        try:
+            children = sorted(list(os.scandir(cur)), key=lambda e: e.name)
+        except OSError:
+            continue
+        for child in children:
+            if _ignore_name(child.name):
+                continue
+            try:
+                rel = Path(child.path).relative_to(base).as_posix()
+                depth = len(Path(rel).parts)
+                st = child.stat()
+                is_dir = child.is_dir(follow_symlinks=False)
+            except OSError:
+                continue
+            if depth > max_depth:
+                continue
+            entries.append(FileEntry(
+                source="nas",
+                path=child.path,
+                relative_path=rel,
+                name=child.name,
+                is_folder=is_dir,
+                modified_time=datetime.fromtimestamp(st.st_mtime, tz=timezone.utc).isoformat(),
+                size=None if is_dir else int(st.st_size),
+            ))
+            if is_dir and depth < max_depth:
+                stack.append(Path(child.path))
+            if len(entries) >= max_items:
+                break
+    return entries
+
+
 def find_drive_root(service: Any, *, root_id: str = "", root_name: str = DEFAULT_DRIVE_ROOT_NAME) -> dict[str, Any]:
     if root_id:
         return service.files().get(
@@ -572,11 +819,262 @@ def _case_identity(case: CaseFolder) -> str:
     return keys[0] if keys else f"path:{normalize_text(case.relative_path)}"
 
 
+def is_aaron_drive_bucket(case: CaseFolder) -> bool:
+    return case.source == "drive" and normalize_text(case.owner_bucket) == "aaron"
+
+
+def lookup_db_case_contexts(case_numbers: Iterable[str]) -> dict[str, dict[str, Any]]:
+    numbers = [str(n or "").strip() for n in case_numbers if str(n or "").strip()]
+    if not numbers:
+        return {}
+    try:
+        from api.osc.utils import _osc_exec
+    except Exception:
+        return {}
+    try:
+        ph = ",".join(["%s"] * len(numbers))
+        rows, _ = _osc_exec(
+            f"""
+            SELECT id, case_number, client_name, case_reason, court_name, court_case_no,
+                   notes, folder_path, status
+            FROM cases
+            WHERE case_number IN ({ph})
+            """,
+            tuple(numbers),
+            fetch="all",
+        )
+        opponents, _ = _osc_exec(
+            f"""
+            SELECT case_number, name, address, is_active
+            FROM opponents
+            WHERE case_number IN ({ph})
+            ORDER BY updated_date DESC, id DESC
+            """,
+            tuple(numbers),
+            fetch="all",
+        )
+    except Exception:
+        return {}
+    out: dict[str, dict[str, Any]] = {}
+    for row in rows or []:
+        cn = str(row.get("case_number") or "").strip()
+        if cn:
+            row = dict(row)
+            row["opponents"] = []
+            out[cn] = row
+    for opp in opponents or []:
+        cn = str(opp.get("case_number") or "").strip()
+        if cn in out:
+            out[cn].setdefault("opponents", []).append(dict(opp))
+    return out
+
+
+def _context_values_from_case(
+    case: CaseFolder,
+    *,
+    db_context: dict[str, Any] | None = None,
+    file_entries: list[FileEntry] | None = None,
+) -> list[str]:
+    values = [
+        case.name,
+        case.relative_path,
+        case.meta.case_number,
+        case.meta.laf_case_no,
+        case.meta.court_case_no,
+        case.meta.client_hint,
+        case.meta.reason_hint,
+    ]
+    if db_context:
+        for key in ("case_number", "client_name", "case_reason", "court_name", "court_case_no", "notes", "folder_path", "status"):
+            values.append(str(db_context.get(key) or ""))
+        for opp in db_context.get("opponents") or []:
+            values.append(str(opp.get("name") or ""))
+            values.append(str(opp.get("address") or ""))
+    for entry in file_entries or []:
+        values.append(entry.relative_path)
+        values.append(entry.name)
+    return values
+
+
+def score_context_candidates(
+    drive_case: CaseFolder,
+    candidate_cases: list[CaseFolder],
+    *,
+    drive_entries: list[FileEntry] | None = None,
+    local_entries_by_case: dict[str, list[FileEntry]] | None = None,
+    db_context_by_case: dict[str, dict[str, Any]] | None = None,
+) -> list[ContextScore]:
+    drive_values = _context_values_from_case(drive_case, file_entries=drive_entries)
+    drive_text = normalize_text(" ".join(drive_values))
+    drive_terms = set(meaningful_terms(drive_values))
+
+    all_candidate_terms: dict[str, set[str]] = {}
+    for candidate in candidate_cases:
+        cn = candidate.meta.case_number
+        values = _context_values_from_case(
+            candidate,
+            db_context=(db_context_by_case or {}).get(cn, {}),
+            file_entries=(local_entries_by_case or {}).get(candidate.relative_path, []),
+        )
+        all_candidate_terms[candidate.relative_path] = set(meaningful_terms(values))
+
+    scores: list[ContextScore] = []
+    for candidate in candidate_cases:
+        own_terms = all_candidate_terms.get(candidate.relative_path, set())
+        other_terms = set().union(*(v for k, v in all_candidate_terms.items() if k != candidate.relative_path))
+        distinctive_terms = sorted(own_terms - other_terms, key=lambda x: (-len(x), x))
+        matched_terms: list[str] = []
+        score = 0
+        for term in distinctive_terms:
+            if not is_decisive_context_term(term):
+                continue
+            if _contains_term(drive_text, term):
+                matched_terms.append(term)
+                if term in drive_terms:
+                    score += 4
+                elif len(term) >= 3:
+                    score += 3
+                else:
+                    score += 1
+        if candidate.meta.case_number and _contains_term(drive_text, candidate.meta.case_number):
+            matched_terms.append(candidate.meta.case_number)
+            score += 8
+        if candidate.meta.laf_case_no and _contains_term(drive_text, candidate.meta.laf_case_no):
+            matched_terms.append(candidate.meta.laf_case_no)
+            score += 8
+        if candidate.meta.court_case_no and _contains_term(drive_text, candidate.meta.court_case_no):
+            matched_terms.append(candidate.meta.court_case_no)
+            score += 8
+        context_values = _context_values_from_case(
+            candidate,
+            db_context=(db_context_by_case or {}).get(candidate.meta.case_number, {}),
+            file_entries=(local_entries_by_case or {}).get(candidate.relative_path, []),
+        )
+        scores.append(ContextScore(
+            candidate=candidate,
+            score=score,
+            matched_terms=sorted(set(matched_terms), key=lambda x: (-len(x), x)),
+            candidate_terms=distinctive_terms[:20],
+            context_sample=[v for v in context_values if v][:12],
+        ))
+    return sorted(scores, key=lambda s: s.score, reverse=True)
+
+
+def resolve_ambiguous_cases_with_context(
+    comparison: dict[str, Any],
+    *,
+    drive_service: Any | None = None,
+    max_drive_context_depth: int = 3,
+    max_context_items: int = 300,
+) -> dict[str, Any]:
+    if not comparison.get("ambiguous"):
+        comparison.setdefault("out_of_scope", [])
+        return comparison
+
+    resolved: list[dict[str, Any]] = []
+    still_ambiguous: list[dict[str, Any]] = []
+    out_of_scope = list(comparison.get("out_of_scope") or [])
+    case_numbers = [
+        c.meta.case_number
+        for item in comparison.get("ambiguous") or []
+        for c in item.get("candidates", [])
+        if c.meta.case_number
+    ]
+    db_contexts = lookup_db_case_contexts(case_numbers)
+
+    for item in comparison.get("ambiguous") or []:
+        drive_case: CaseFolder = item["drive"]
+        candidates: list[CaseFolder] = item.get("candidates") or []
+        if is_aaron_drive_bucket(drive_case):
+            out_of_scope.append({
+                "drive": drive_case,
+                "reason": "Aaron 雲端資料夾沒有 NAS 唯一對應；依規則不建立 NAS 資料夾、不進同步佇列",
+                "candidates": candidates,
+            })
+            continue
+
+        drive_entries: list[FileEntry] = []
+        if drive_service is not None and drive_case.drive_id:
+            try:
+                drive_entries = drive_descendant_context(
+                    drive_service,
+                    drive_case.drive_id,
+                    max_depth=max_drive_context_depth,
+                    max_items=max_context_items,
+                )
+            except Exception as exc:
+                item["context_resolution"] = {
+                    "status": "context_probe_failed",
+                    "reason": f"雲端檔名讀取失敗：{type(exc).__name__}",
+                }
+
+        local_entries_by_case: dict[str, list[FileEntry]] = {}
+        for candidate in candidates:
+            if candidate.local_path:
+                local_entries_by_case[candidate.relative_path] = local_descendant_context(
+                    candidate.local_path,
+                    max_depth=3,
+                    max_items=max_context_items,
+                )
+        scores = score_context_candidates(
+            drive_case,
+            candidates,
+            drive_entries=drive_entries,
+            local_entries_by_case=local_entries_by_case,
+            db_context_by_case=db_contexts,
+        )
+        drive_terms = meaningful_terms(_context_values_from_case(drive_case, file_entries=drive_entries))
+        item["context_resolution"] = {
+            "status": "unresolved",
+            "drive_terms": drive_terms[:40],
+            "drive_context_sample": [e.relative_path for e in drive_entries[:30]],
+            "candidate_scores": [
+                {
+                    "case_number": score.candidate.meta.case_number,
+                    "relative_path": score.candidate.relative_path,
+                    "score": score.score,
+                    "matched_terms": score.matched_terms,
+                    "candidate_terms": score.candidate_terms,
+                }
+                for score in scores
+            ],
+        }
+
+        if scores and scores[0].score >= 4 and (len(scores) == 1 or scores[0].score > scores[1].score):
+            best = scores[0]
+            resolved.append({
+                "drive": drive_case,
+                "local": best.candidate,
+                "match_keys": item.get("match_keys") or [],
+                "context_resolution": {
+                    "status": "resolved_by_context",
+                    "score": best.score,
+                    "matched_terms": best.matched_terms,
+                    "drive_terms": drive_terms[:40],
+                },
+            })
+            comparison["local_only"] = [
+                c for c in comparison.get("local_only", [])
+                if c.relative_path != best.candidate.relative_path
+            ]
+        else:
+            if (not scores) or scores[0].score < 4:
+                item["context_resolution"]["status"] = "context_mismatch"
+                item["context_resolution"]["reason"] = "雲端線索未命中候選案件的明確人名或案號"
+            still_ambiguous.append(item)
+
+    comparison["matched"].extend(resolved)
+    comparison["ambiguous"] = still_ambiguous
+    comparison["out_of_scope"] = out_of_scope
+    return comparison
+
+
 def compare_case_folders(drive_cases: list[CaseFolder], local_cases: list[CaseFolder]) -> dict[str, Any]:
     strong_local = _index_cases(local_cases)
     weak_local = _index_cases(local_cases, include_name_only=True)
     matched: list[dict[str, Any]] = []
     drive_only: list[CaseFolder] = []
+    out_of_scope: list[dict[str, Any]] = []
     ambiguous: list[dict[str, Any]] = []
     matched_local_ids: set[str] = set()
 
@@ -599,7 +1097,13 @@ def compare_case_folders(drive_cases: list[CaseFolder], local_cases: list[CaseFo
         elif len(candidates) > 1:
             ambiguous.append({"drive": d, "candidates": list(candidates.values()), "match_keys": keys})
         else:
-            drive_only.append(d)
+            if is_aaron_drive_bucket(d):
+                out_of_scope.append({
+                    "drive": d,
+                    "reason": "Aaron 雲端資料夾沒有 NAS 唯一對應；依規則不建立 NAS 資料夾、不進同步佇列",
+                })
+            else:
+                drive_only.append(d)
 
     drive_strong = _index_cases(drive_cases)
     local_only: list[CaseFolder] = []
@@ -616,6 +1120,7 @@ def compare_case_folders(drive_cases: list[CaseFolder], local_cases: list[CaseFo
         "drive_only": drive_only,
         "local_only": local_only,
         "ambiguous": ambiguous,
+        "out_of_scope": out_of_scope,
     }
 
 
@@ -623,6 +1128,73 @@ def _case_to_dict(case: CaseFolder) -> dict[str, Any]:
     data = asdict(case)
     data["match_keys"] = match_keys(case.meta)
     return data
+
+
+def build_sync_plan(comparison: dict[str, Any]) -> dict[str, Any]:
+    """Build a non-executing plan. No file operation is performed here."""
+    actions: list[dict[str, Any]] = []
+    for item in comparison.get("matched", []):
+        drive = item.get("drive")
+        local = item.get("local")
+        if not drive or not local:
+            continue
+        actions.append({
+            "action": "deep_compare_after_approval",
+            "safety": "no_overwrite_no_delete",
+            "drive_path": drive.relative_path,
+            "drive_id": drive.drive_id,
+            "local_path": local.local_path or local.path,
+            "case_number": local.meta.case_number,
+            "status": "ready_for_file_diff",
+            "context_resolution": item.get("context_resolution", {}),
+        })
+    for item in comparison.get("drive_only", []):
+        actions.append({
+            "action": "manual_map_or_create_case",
+            "safety": "requires_user_approval",
+            "drive_path": item.relative_path,
+            "drive_id": item.drive_id,
+            "suggested_canonical_path": item.suggested_canonical_path,
+            "reason": item.suggested_path_note or "雲端案件尚未找到唯一 NAS 對應",
+            "status": "needs_review",
+        })
+    for item in comparison.get("ambiguous", []):
+        drive = item.get("drive")
+        if not drive:
+            continue
+        resolution = item.get("context_resolution") or {}
+        actions.append({
+            "action": "manual_disambiguation",
+            "safety": "blocked_until_unique_match",
+            "drive_path": drive.relative_path,
+            "drive_id": drive.drive_id,
+            "candidate_count": len(item.get("candidates") or []),
+            "reason": resolution.get("reason") or "找到多個候選案件",
+            "status": resolution.get("status") or "ambiguous",
+        })
+    for item in comparison.get("out_of_scope", []):
+        drive = item.get("drive")
+        if not drive:
+            continue
+        actions.append({
+            "action": "skip",
+            "safety": "out_of_scope",
+            "drive_path": drive.relative_path,
+            "drive_id": drive.drive_id,
+            "reason": item.get("reason", ""),
+            "status": "skipped",
+        })
+    return {
+        "mode": "dry_run_plan",
+        "write_actions_enabled": False,
+        "actions": actions,
+        "summary": {
+            "ready_for_file_diff": sum(1 for a in actions if a["status"] == "ready_for_file_diff"),
+            "needs_review": sum(1 for a in actions if a["status"] == "needs_review"),
+            "manual_disambiguation": sum(1 for a in actions if a["action"] == "manual_disambiguation"),
+            "skipped": sum(1 for a in actions if a["status"] == "skipped"),
+        },
+    }
 
 
 def build_report(
@@ -633,8 +1205,9 @@ def build_report(
     local_entries: list[FileEntry],
     local_cases: list[CaseFolder],
     local_roots: list[Path],
+    comparison: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    comparison = compare_case_folders(drive_cases, local_cases)
+    comparison = comparison or compare_case_folders(drive_cases, local_cases)
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "mode": "read_only_inventory",
@@ -654,25 +1227,37 @@ def build_report(
             "drive_only_case_folders": len(comparison["drive_only"]),
             "local_only_case_folders": len(comparison["local_only"]),
             "ambiguous_case_folders": len(comparison["ambiguous"]),
+            "out_of_scope_case_folders": len(comparison["out_of_scope"]),
         },
         "matched": [
             {
                 "drive": _case_to_dict(item["drive"]),
                 "local": _case_to_dict(item["local"]),
                 "match_keys": item["match_keys"],
+                "context_resolution": item.get("context_resolution", {}),
             }
             for item in comparison["matched"]
         ],
         "drive_only": [_case_to_dict(c) for c in comparison["drive_only"]],
         "local_only": [_case_to_dict(c) for c in comparison["local_only"]],
+        "out_of_scope": [
+            {
+                "drive": _case_to_dict(item["drive"]),
+                "reason": item["reason"],
+                "candidates": [_case_to_dict(c) for c in item.get("candidates", [])],
+            }
+            for item in comparison["out_of_scope"]
+        ],
         "ambiguous": [
             {
                 "drive": _case_to_dict(item["drive"]),
                 "candidates": [_case_to_dict(c) for c in item["candidates"]],
                 "match_keys": item["match_keys"],
+                "context_resolution": item.get("context_resolution", {}),
             }
             for item in comparison["ambiguous"]
         ],
+        "sync_plan": build_sync_plan(comparison),
     }
 
 
@@ -701,6 +1286,22 @@ def write_report_files(report: dict[str, Any], output_dir: Path) -> dict[str, st
                 "suggested_path_confidence": case.get("suggested_path_confidence", ""),
                 "note": case.get("suggested_path_note", ""),
             })
+    for item in report.get("out_of_scope", []):
+        case = item.get("drive") or {}
+        rows.append({
+            "status": "out_of_scope",
+            "source": case.get("source"),
+            "category": case.get("category"),
+            "case_kind": case.get("case_kind"),
+            "case_name": case.get("name"),
+            "relative_path": case.get("relative_path"),
+            "case_number": (case.get("meta") or {}).get("case_number"),
+            "laf_case_no": (case.get("meta") or {}).get("laf_case_no"),
+            "client_hint": (case.get("meta") or {}).get("client_hint"),
+            "suggested_canonical_path": "",
+            "suggested_path_confidence": "out_of_scope",
+            "note": item.get("reason", ""),
+        })
     with csv_path.open("w", newline="", encoding="utf-8-sig") as fh:
         writer = csv.DictWriter(fh, fieldnames=[
             "status", "source", "category", "case_kind", "case_name", "relative_path",
@@ -728,6 +1329,7 @@ def write_report_files(report: dict[str, Any], output_dir: Path) -> dict[str, st
         f"- 雲端有、NAS 未明確找到：{s['drive_only_case_folders']}",
         f"- NAS 有、雲端未明確找到：{s['local_only_case_folders']}",
         f"- 需人工確認：{s['ambiguous_case_folders']}",
+        f"- 不在同步範圍：{s.get('out_of_scope_case_folders', 0)}",
         "",
         "## 雲端有、NAS 未明確找到（前 80 筆）",
         "",
@@ -748,7 +1350,35 @@ def write_report_files(report: dict[str, Any], output_dir: Path) -> dict[str, st
         lines.extend(["", "## 需人工確認（前 40 筆）", ""])
         for item in report.get("ambiguous", [])[:40]:
             drive = item.get("drive") or {}
-            lines.append(f"- `{drive.get('relative_path')}` 候選 {len(item.get('candidates') or [])} 筆")
+            resolution = item.get("context_resolution") or {}
+            reason = resolution.get("reason") or "找到多個候選案件"
+            drive_terms = "、".join((resolution.get("drive_terms") or [])[:8])
+            lines.append(
+                f"- `{drive.get('relative_path')}` 候選 {len(item.get('candidates') or [])} 筆；"
+                f"狀態：{resolution.get('status') or 'ambiguous'}；原因：{reason}"
+            )
+            if drive_terms:
+                lines.append(f"  - 雲端線索：{drive_terms}")
+            for score in (resolution.get("candidate_scores") or [])[:5]:
+                matched_terms = "、".join(score.get("matched_terms") or []) or "-"
+                lines.append(
+                    f"  - 候選 `{score.get('relative_path')}`：分數 {score.get('score')}，命中 {matched_terms}"
+                )
+    if report.get("out_of_scope"):
+        lines.extend(["", "## 不在同步範圍（前 80 筆）", ""])
+        for item in report.get("out_of_scope", [])[:80]:
+            drive = item.get("drive") or {}
+            lines.append(f"- `{drive.get('relative_path')}`：{item.get('reason')}")
+    plan_summary = (report.get("sync_plan") or {}).get("summary") or {}
+    lines.extend([
+        "",
+        "## 同步計畫（不會自動執行）",
+        "",
+        f"- 可進入檔案差異比對：{plan_summary.get('ready_for_file_diff', 0)}",
+        f"- 需人工建立或指定：{plan_summary.get('needs_review', 0)}",
+        f"- 同名多案需人工消歧義：{plan_summary.get('manual_disambiguation', 0)}",
+        f"- 已排除同步範圍：{plan_summary.get('skipped', 0)}",
+    ])
     md_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return {"json": str(json_path), "markdown": str(md_path), "csv": str(csv_path)}
 
@@ -763,6 +1393,7 @@ def run_inventory(
     max_items: int = 20000,
     output_dir: Path | None = None,
     interactive: bool = False,
+    resolve_context: bool = True,
 ) -> dict[str, Any]:
     load_local_env()
     service = build_drive_service(interactive=interactive)
@@ -783,6 +1414,13 @@ def run_inventory(
         local_entries.extend(entries)
         local_cases.extend(cases)
 
+    comparison = compare_case_folders(drive_cases, local_cases)
+    if resolve_context:
+        comparison = resolve_ambiguous_cases_with_context(
+            comparison,
+            drive_service=service,
+        )
+
     report = build_report(
         drive_root=drive_root,
         drive_entries=drive_entries,
@@ -790,6 +1428,7 @@ def run_inventory(
         local_entries=local_entries,
         local_cases=local_cases,
         local_roots=local_roots,
+        comparison=comparison,
     )
     paths = write_report_files(report, output_dir or runtime_dir())
     report["output_paths"] = paths
@@ -806,6 +1445,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--max-items", type=int, default=20000)
     parser.add_argument("--output-dir", default="")
     parser.add_argument("--auth", action="store_true", help="必要時啟動 OAuth 授權")
+    parser.add_argument("--no-context-resolve", action="store_true", help="不讀同名多案資料夾內容做深度消歧義")
     args = parser.parse_args(argv)
 
     active = [Path(p).expanduser() for p in args.active_root] if args.active_root else None
@@ -819,11 +1459,13 @@ def main(argv: list[str] | None = None) -> int:
         max_items=args.max_items,
         output_dir=Path(args.output_dir).expanduser() if args.output_dir else None,
         interactive=args.auth,
+        resolve_context=not args.no_context_resolve,
     )
     print(json.dumps({
         "ok": True,
         "mode": "read_only_inventory",
         "summary": report["summary"],
+        "sync_plan_summary": (report.get("sync_plan") or {}).get("summary", {}),
         "output_paths": report["output_paths"],
     }, ensure_ascii=False, indent=2))
     return 0

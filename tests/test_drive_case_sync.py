@@ -9,8 +9,12 @@ from api.osc.drive_case_sync import (
     default_active_case_roots,
     extract_case_meta,
     infer_case_kind,
+    is_decisive_context_term,
     match_keys,
+    meaningful_terms,
     normalize_court_case_no,
+    resolve_ambiguous_cases_with_context,
+    score_context_candidates,
     suggest_canonical_path,
 )
 
@@ -115,6 +119,102 @@ def test_match_by_laf_case_number():
     assert len(result["matched"]) == 1
     assert not result["drive_only"]
     assert not result["local_only"]
+
+
+def test_context_terms_trim_case_suffixes():
+    terms = meaningful_terms(["測試乙行政訴訟案", "測試丙等人案", "115年度訴字第000001號"])
+    assert "測試乙" in terms
+    assert "測試丙" in terms
+    assert "115年度訴字第1號" in terms
+
+
+def test_document_type_terms_are_not_decisive():
+    assert is_decisive_context_term("測試丁")
+    assert not is_decisive_context_term("訴願駁回決定書")
+    assert not is_decisive_context_term("已用印")
+
+
+def test_context_scoring_does_not_force_mismatch():
+    drive = CaseFolder(
+        source="drive",
+        path="一般案件/Lumi/測試基金會",
+        relative_path="一般案件/Lumi/測試基金會",
+        name="測試基金會",
+        category="一般案件",
+        status="active",
+        owner_bucket="Lumi",
+        drive_id="drive-id",
+        meta=extract_case_meta("測試基金會"),
+    )
+    c1 = CaseFolder(
+        source="nas",
+        path="/cases/一般案件/行政/2026-0003-測試基金會-一審-行政爭議",
+        local_path="/cases/一般案件/行政/2026-0003-測試基金會-一審-行政爭議",
+        relative_path="一般案件/行政/2026-0003-測試基金會-一審-行政爭議",
+        name="2026-0003-測試基金會-一審-行政爭議",
+        category="一般案件",
+        status="active",
+        case_kind="行政",
+        meta=CaseMeta(case_number="2026-0003", client_hint="測試基金會", reason_hint="行政爭議"),
+    )
+    c2 = CaseFolder(
+        source="nas",
+        path="/cases/一般案件/行政/2026-0004-測試基金會-一審-行政爭議",
+        local_path="/cases/一般案件/行政/2026-0004-測試基金會-一審-行政爭議",
+        relative_path="一般案件/行政/2026-0004-測試基金會-一審-行政爭議",
+        name="2026-0004-測試基金會-一審-行政爭議",
+        category="一般案件",
+        status="active",
+        case_kind="行政",
+        meta=CaseMeta(case_number="2026-0004", client_hint="測試基金會", reason_hint="行政爭議"),
+    )
+    scores = score_context_candidates(
+        drive,
+        [c1, c2],
+        drive_entries=[],
+        db_context_by_case={
+            "2026-0003": {"notes": "測試甲行政訴訟案", "opponents": []},
+            "2026-0004": {"notes": "測試乙行政訴訟案", "opponents": []},
+        },
+    )
+    assert [s.score for s in scores] == [0, 0]
+
+
+def test_aaron_ambiguous_moves_out_of_scope():
+    drive = CaseFolder(
+        source="drive",
+        path="一般案件/Aaron/測試甲(行政爭議)",
+        relative_path="一般案件/Aaron/測試甲(行政爭議)",
+        name="測試甲(行政爭議)",
+        category="一般案件",
+        status="active",
+        owner_bucket="Aaron",
+        meta=extract_case_meta("測試甲(行政爭議)"),
+    )
+    c1 = CaseFolder(
+        source="nas",
+        path="/cases/一般案件/行政/2026-0003-測試甲-一審-行政爭議",
+        relative_path="一般案件/行政/2026-0003-測試甲-一審-行政爭議",
+        name="2026-0003-測試甲-一審-行政爭議",
+        category="一般案件",
+        status="active",
+        case_kind="行政",
+        meta=CaseMeta(case_number="2026-0003", client_hint="測試甲", reason_hint="行政爭議"),
+    )
+    c2 = CaseFolder(
+        source="nas",
+        path="/cases/一般案件/行政/2026-0004-測試甲-一審-行政爭議",
+        relative_path="一般案件/行政/2026-0004-測試甲-一審-行政爭議",
+        name="2026-0004-測試甲-一審-行政爭議",
+        category="一般案件",
+        status="active",
+        case_kind="行政",
+        meta=CaseMeta(case_number="2026-0004", client_hint="測試甲", reason_hint="行政爭議"),
+    )
+    comparison = compare_case_folders([drive], [c1, c2])
+    resolved = resolve_ambiguous_cases_with_context(comparison, drive_service=None)
+    assert not resolved["ambiguous"]
+    assert resolved["out_of_scope"][0]["drive"].relative_path == drive.relative_path
 
 
 def test_court_case_number_normalization_and_keys():
