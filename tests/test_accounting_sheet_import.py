@@ -1,6 +1,8 @@
 from api.osc.accounting_sheet_import import (
     AccountingSheetRow,
     DEFAULT_ACCOUNT_HINT,
+    _default_credentials_path,
+    _default_token_path,
     fixed_expense_overlap_details,
     is_revoked_google_token_error,
     month_window,
@@ -21,6 +23,20 @@ def test_month_window_current_and_previous():
 def test_revoked_google_token_error_detection():
     assert is_revoked_google_token_error(Exception("invalid_grant: Token has been expired or revoked."))
     assert not is_revoked_google_token_error(Exception("quota exceeded"))
+
+
+def test_accounting_google_env_paths_are_isolated(monkeypatch):
+    monkeypatch.delenv("MAGI_ACCOUNTING_GOOGLE_CREDENTIALS_PATH", raising=False)
+    monkeypatch.delenv("MAGI_ACCOUNTING_GOOGLE_SHEETS_TOKEN", raising=False)
+    monkeypatch.setenv("MAGI_GOOGLE_CREDENTIALS_PATH", "/shared/google_credentials.json")
+    monkeypatch.setenv("MAGI_GOOGLE_SHEETS_TOKEN", "/shared/sheets_token.json")
+    assert str(_default_credentials_path()) == "/shared/google_credentials.json"
+    assert str(_default_token_path()) == "/shared/sheets_token.json"
+
+    monkeypatch.setenv("MAGI_ACCOUNTING_GOOGLE_CREDENTIALS_PATH", "/accounting/credentials.json")
+    monkeypatch.setenv("MAGI_ACCOUNTING_GOOGLE_SHEETS_TOKEN", "/accounting/token.json")
+    assert str(_default_credentials_path()) == "/accounting/credentials.json"
+    assert str(_default_token_path()) == "/accounting/token.json"
 
 
 def test_parse_date_accepts_roc_year():

@@ -121,11 +121,15 @@ def _repo_root() -> Path:
 
 
 def _default_token_path() -> Path:
-    return Path(os.environ.get("MAGI_GOOGLE_SHEETS_TOKEN") or "~/.magi/google/sheets_token.json").expanduser()
+    return Path(
+        os.environ.get("MAGI_ACCOUNTING_GOOGLE_SHEETS_TOKEN")
+        or os.environ.get("MAGI_GOOGLE_SHEETS_TOKEN")
+        or "~/.magi/google/sheets_token.json"
+    ).expanduser()
 
 
 def _default_credentials_path() -> Path:
-    env = os.environ.get("MAGI_GOOGLE_CREDENTIALS_PATH")
+    env = os.environ.get("MAGI_ACCOUNTING_GOOGLE_CREDENTIALS_PATH") or os.environ.get("MAGI_GOOGLE_CREDENTIALS_PATH")
     if env:
         return Path(env).expanduser()
     return _repo_root() / "json" / "credentials.json"
