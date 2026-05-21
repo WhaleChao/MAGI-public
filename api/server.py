@@ -644,7 +644,7 @@ _TOOLS_API_FALLBACK_PATHS = {
     "melchior", "skills", "collab", "council", "remember", "recall",
     "clients", "meetings", "legal", "alert", "definitions", "laf",
     "iron-dome", "code", "connections", "sages", "shortcut", "jobs",
-    "osc/external", "static/exports", "api/audit_log",
+    "osc/external", "api/audit_log",
 }
 
 

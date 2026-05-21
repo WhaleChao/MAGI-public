@@ -18,7 +18,7 @@ import threading
 import time
 import uuid
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 import urllib.request
 
 logger = logging.getLogger(__name__)
@@ -377,7 +377,7 @@ def _export_file_meta(path: str) -> dict:
     p = os.path.abspath(path)
     filename = os.path.basename(p)
     base = _load_public_base_url().rstrip("/")
-    url = f"{base}/static/exports/{filename}" if base else ""
+    url = f"{base}/api/osc/files/content?path={quote(p, safe='')}" if base else ""
     return {"success": True, "path": p, "filename": filename, "url": url}
 
 

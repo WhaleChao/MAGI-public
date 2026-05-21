@@ -5828,7 +5828,12 @@ class LAFAutomationManager:
                         check_client_query = "SELECT id FROM clients WHERE name = %s"
                         existing_client = self.db_manager.execute(check_client_query, (client_name,), fetch='one')
                         if not existing_client:
-                            new_client_id = str(uuid.uuid4())
+                            if hasattr(self.db_manager, "generate_client_id"):
+                                new_client_id = self.db_manager.generate_client_id()
+                            else:
+                                from api.osc.client_ids import next_client_id_from_existing
+                                existing_ids = self.db_manager.execute("SELECT id FROM clients WHERE id LIKE 'C%'", fetch='all') or []
+                                new_client_id = next_client_id_from_existing(existing_ids)
                             create_client_query = """
                                 INSERT INTO clients (id, name, phone, email, address, created_date, status)
                                 VALUES (%s, %s, %s, %s, %s, NOW(), '進行中')

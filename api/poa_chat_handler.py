@@ -79,6 +79,28 @@ def _load_config() -> dict:
                     config[k] = cfg[k]
     except Exception:
         logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 80, exc_info=True)
+    try:
+        from api.osc.utils import _osc_get_setting_value
+
+        aliases = {
+            "company_name": ["company_name", "firm_name"],
+            "default_lawyer": ["default_lawyer", "lawyer_name"],
+            "company_address_hl": ["company_address_hl", "firm_address"],
+            "company_phone": ["company_phone", "firm_phone", "specialist_phone"],
+            "company_fax": ["company_fax", "firm_fax"],
+            "company_email": ["company_email", "firm_email"],
+            "bank_name": ["bank_name", "firm_bank_name"],
+            "bank_account_name": ["bank_account_name", "firm_bank_account_name"],
+            "bank_account_number": ["bank_account_number", "firm_bank_account_number"],
+        }
+        for key, names in aliases.items():
+            for name in names:
+                value = (_osc_get_setting_value(name) or "").strip()
+                if value:
+                    config[key] = value
+                    break
+    except Exception:
+        logging.getLogger(__name__).debug("silent-catch osc settings config", exc_info=True)
     return config
 
 

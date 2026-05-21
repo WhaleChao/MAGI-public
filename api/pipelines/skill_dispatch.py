@@ -703,7 +703,9 @@ def dispatch_client_management(message, user_id="", platform=""):
         if not name:
             return "請提供當事人姓名。"
 
-        row_id = "cli-%s" % _uuid.uuid4().hex[:10]
+        from api.osc.client_ids import generate_next_client_id
+
+        row_id = generate_next_client_id()
         try:
             _osc_exec(
                 "INSERT INTO clients (id, name, phone, address, status) VALUES (%s,%s,%s,%s,%s)",

@@ -19,6 +19,7 @@ for candidate in (MAGI_ROOT, OSC_HEADLESS_DIR):
         sys.path.insert(0, s)
 
 from api.case_path_mapper import translate_case_path_to_local, translate_local_path_to_canonical
+from api.osc.client_ids import next_client_id_from_existing
 from osc_headless.db import DBConfig, connect_mysql, ensure_cases_schema
 
 logger = logging.getLogger("magi.osc.compat")
@@ -344,7 +345,7 @@ class DatabaseManager:
             return client_id
 
         cols = self._fetch_table_columns("clients")
-        client_id = f"C{uuid.uuid4().hex[:8].upper()}"
+        client_id = self.generate_client_id()
         insert_cols = []
         insert_vals = []
 
@@ -380,6 +381,13 @@ class DatabaseManager:
             if isinstance(row, dict) and row.get("id") is not None:
                 return str(row["id"])
         return client_id
+
+    def generate_client_id(self) -> str:
+        rows = self.fetch_all(
+            "SELECT `id` FROM `clients` WHERE `id` LIKE 'C%'",
+            as_dict=True,
+        )
+        return next_client_id_from_existing(rows or [])
 
     def check_laf_case_exists(
         self,

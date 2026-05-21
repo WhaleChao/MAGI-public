@@ -248,6 +248,39 @@ def test_clients_import_skips_duplicates(client):
     assert body["skipped"] == 1
 
 
+def test_clients_import_uses_original_osc_client_id_sequence(client):
+    csv_bytes = _make_csv(
+        [{"姓名": "王五", "電話": "0911222333"}],
+        fieldnames=["姓名", "電話"],
+    )
+    inserted = {}
+
+    def fake_exec(sql, params=(), fetch="all", **kw):
+        sql_upper = sql.strip().upper()
+        if "SELECT ID FROM CLIENTS WHERE NAME" in sql_upper:
+            return (None, None)
+        if "SELECT ID FROM CLIENTS WHERE ID LIKE" in sql_upper:
+            return ([{"id": "C0160"}, {"id": "C775F05FA"}, {"id": "C7023687"}], None)
+        if "INSERT INTO CLIENTS" in sql_upper:
+            inserted["params"] = params
+            return ({"affectedRows": 1}, None)
+        return (None, None)
+
+    with patch("api.blueprints.osc_cases._osc_exec", side_effect=fake_exec), patch(
+        "api.blueprints.osc_cases.generate_next_client_id",
+        return_value="C0161",
+    ):
+        data = {"file": (io.BytesIO(csv_bytes), "clients.csv", "text/csv")}
+        r = client.post(
+            "/api/osc/clients/import-csv",
+            data=data,
+            content_type="multipart/form-data",
+        )
+
+    assert r.status_code == 200
+    assert inserted["params"][0] == "C0161"
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Smoke test: full import path with 3-row CSV (Flask test_client)
 # ──────────────────────────────────────────────────────────────────────────────

@@ -43,6 +43,7 @@ from api.osc.utils import (
     _osc_read_plain_text, _osc_read_docx_text, _osc_read_pdf_text,
     _osc_allowed_local_roots,
 )
+from api.osc.client_ids import generate_next_client_id, is_canonical_client_id
 from api.osc.drafts import (
     _osc_template_data_json_or_wrap, _osc_json_or_wrap,
 )
@@ -5504,7 +5505,8 @@ def osc_clients_api():
             )
         return jsonify({"ok": True, "items": rows})
     payload = request.get_json() or {}
-    row_id = (payload.get("id") or f"webc-{uuid.uuid4().hex[:12]}").strip()
+    raw_id = (payload.get("id") or "").strip()
+    row_id = raw_id if is_canonical_client_id(raw_id) else generate_next_client_id()
     name = (payload.get("name") or "").strip()
     if not name:
         return jsonify({"ok": False, "error": "name required"}), 400
@@ -6083,6 +6085,34 @@ def osc_forms_preview_api():
     return jsonify({"ok": True, "case": case_row, **out})
 
 
+def _osc_document_generator_config() -> dict:
+    def pick(keys: list[str], env_key: str = "", default: str = "") -> str:
+        for key in keys:
+            try:
+                value = (_osc_get_setting_value(key) or "").strip()
+            except Exception:
+                value = ""
+            if value:
+                return value
+        if env_key:
+            value = (os.environ.get(env_key) or "").strip()
+            if value:
+                return value
+        return default
+
+    return {
+        "company_name": pick(["company_name", "firm_name"], "MAGI_PUBLIC_FIRM_NAME", "範例法律事務所"),
+        "default_lawyer": pick(["default_lawyer", "lawyer_name"], "MAGI_PUBLIC_LAWYER_NAME", "範例律師"),
+        "company_address_hl": pick(["company_address_hl", "firm_address"], "MAGI_PUBLIC_CONTACT_ADDRESS"),
+        "company_phone": pick(["company_phone", "firm_phone", "specialist_phone"], "MAGI_PUBLIC_CONTACT_PHONE"),
+        "company_fax": pick(["company_fax", "firm_fax"], "MAGI_PUBLIC_CONTACT_FAX"),
+        "company_email": pick(["company_email", "firm_email"], "MAGI_PUBLIC_CONTACT_EMAIL"),
+        "bank_name": pick(["bank_name", "firm_bank_name"], "MAGI_PUBLIC_BANK_NAME"),
+        "bank_account_name": pick(["bank_account_name", "firm_bank_account_name"], "MAGI_PUBLIC_BANK_ACCOUNT_NAME"),
+        "bank_account_number": pick(["bank_account_number", "firm_bank_account_number"], "MAGI_PUBLIC_BANK_ACCOUNT_NUMBER"),
+    }
+
+
 @osc_bp.route("/api/osc/forms/export", methods=["POST"])
 @login_required
 def osc_forms_export_api():
@@ -6124,7 +6154,7 @@ def osc_forms_export_api():
         except Exception as e:
             return jsonify({"ok": False, "error": f"產生存證信函失敗: {e}"}), 500
 
-        public_url = f"{_get_public_base_url()}/exports/{filename_base}.pdf"
+        pdf_meta = _export_file_meta(pdf_path)
         doc = (
             f"存證信函已產出！\n\n"
             f"寄件人：{fields.get('sender_name')}\n"
@@ -6138,8 +6168,8 @@ def osc_forms_export_api():
                 "form_type": "legal_attest",
                 "title": "存證信函預覽",
                 "preview_text": doc,
-                "export": {"success": True},
-                "export_pdf": {"success": True, "url": public_url},
+                "export": pdf_meta,
+                "export_pdf": pdf_meta,
                 "export_docx": {"success": False},
                 "export_errors": [],
             }
@@ -6165,26 +6195,21 @@ def osc_forms_export_api():
         for k, v in (fields if isinstance(fields, dict) else {}).items():
             if v: data[k] = v
 
-        data['案號'] = data.get('court_case_no', '')
-        data['股別'] = data.get('court_branch', '')
+        config = _osc_document_generator_config()
+
+        data['案號'] = data.get('court_case_no') or data.get('court_case_number') or ''
+        data['股別'] = data.get('court_branch') or data.get('court_division') or ''
         data['委任人/當事人'] = data.get('client_name', '')
-        data['案由/事件'] = data.get('case_reason', '')
-        data['受任律師'] = data.get('lawyer_name', '')
-        data['通訊地址'] = data.get('address', '')
-        data['聯絡電話'] = data.get('phone', '')
-        data['身分證字號'] = data.get('tax_id', '')
+        data['案由/事件'] = data.get('case_reason') or data.get('case_subject') or ''
+        data['受任律師'] = data.get('lawyer_name') or config.get("default_lawyer") or ''
+        data['通訊地址'] = data.get('address') or data.get('client_address') or ''
+        data['聯絡電話'] = data.get('phone') or data.get('client_phone') or ''
+        data['身分證字號'] = data.get('tax_id') or data.get('client_id_number') or ''
         data['委任範圍'] = data.get('item', '')
         data['金額'] = data.get('amount', '')
         data['委任費用(數字)'] = data.get('amount', '')
         data['法院/檢察署'] = data.get('court_name', '')
         data['取代日期'] = data.get('date', '')
-
-        config = {}
-        try:
-            config['company_name'] = os.environ.get("MAGI_PUBLIC_FIRM_NAME", "範例法律事務所")
-            config['default_lawyer'] = os.environ.get("MAGI_PUBLIC_LAWYER_NAME", "範例律師")
-        except Exception:
-            _log.debug("silent-catch config defaults", exc_info=True)
 
         try:
             if actual_form_type == "receipt":
@@ -6204,12 +6229,14 @@ def osc_forms_export_api():
 
             doc.save(docx_path)
             docx_meta = _export_file_meta(docx_path)
+            from api.startup import _export_docx_pdf as _docx_to_pdf
+            pdf_meta = _docx_to_pdf(docx_path, filename_base)
             exported = {
                 "success": docx_meta.get("success"),
                 "export": docx_meta,
                 "export_docx": docx_meta,
-                "export_pdf": {"success": False, "error": "pdf_conversion_skip"},
-                "errors": [] if docx_meta.get("success") else [{"type": "docx", "error": docx_meta.get("error")}]
+                "export_pdf": pdf_meta,
+                "errors": [] if docx_meta.get("success") else [{"type": "docx", "error": docx_meta.get("error")}],
             }
         except Exception as e:
             exported = {"success": False, "errors": [{"type": "generator", "error": str(e)}], "export_docx": {}, "export_pdf": {}}
@@ -7007,7 +7034,7 @@ def osc_clients_import_csv_api():
             skipped += 1
             continue
 
-        row_id = f"webc-{uuid.uuid4().hex[:12]}"
+        row_id = generate_next_client_id()
         contact_person = (row.get("聯絡人") or row.get("contact_person") or "").strip() or None
         email = (row.get("email") or "").strip() or None
         address = (row.get("地址") or row.get("address") or "").strip() or None
