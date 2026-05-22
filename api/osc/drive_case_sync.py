@@ -13,10 +13,11 @@ import csv
 import json
 import os
 import re
+import tempfile
 import unicodedata
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Iterable
 
 
@@ -24,9 +25,25 @@ DRIVE_READONLY_SCOPE = "https://www.googleapis.com/auth/drive.readonly"
 SHEETS_READONLY_SCOPE = "https://www.googleapis.com/auth/spreadsheets.readonly"
 READONLY_SCOPES = [DRIVE_READONLY_SCOPE, SHEETS_READONLY_SCOPE]
 GOOGLE_FOLDER_MIME = "application/vnd.google-apps.folder"
+GOOGLE_EXPORT_MIME_MAP = {
+    "application/vnd.google-apps.document": (
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        ".docx",
+    ),
+    "application/vnd.google-apps.spreadsheet": (
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        ".xlsx",
+    ),
+    "application/vnd.google-apps.presentation": (
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        ".pptx",
+    ),
+    "application/vnd.google-apps.drawing": ("application/pdf", ".pdf"),
+}
 
 DEFAULT_DRIVE_ROOT_NAME = "案件辦理"
 DEFAULT_OWNER_BUCKETS = {"Aaron", "Lumi", "Aaron&Lumi", "Lumi-2"}
+OSC_NUMBER_REQUIRED_CATEGORIES = {"諮詢案件", "縣府調解案件"}
 SYNC_IGNORE_NAMES = {
     ".DS_Store",
     "@eaDir",
@@ -471,6 +488,8 @@ def classify_drive_case_folder(relative_path: str) -> dict[str, str] | None:
         if len(parts) >= 4 and parts[2] in DEFAULT_OWNER_BUCKETS:
             owner = parts[2]
             case_idx = 3
+        elif parts[2] in DEFAULT_OWNER_BUCKETS:
+            return None
         else:
             case_idx = 2
     elif top in {"指定辯護案件", "代庭案件"} and len(parts) >= 2:
@@ -823,6 +842,14 @@ def is_aaron_drive_bucket(case: CaseFolder) -> bool:
     return case.source == "drive" and normalize_text(case.owner_bucket) == "aaron"
 
 
+def sync_scope_exclusion_reason(case: CaseFolder) -> str:
+    if case.source != "drive":
+        return ""
+    if case.category in OSC_NUMBER_REQUIRED_CATEGORIES and not case.meta.case_number:
+        return "諮詢/縣府調解資料夾沒有 OSC 案號；依規則不納入案件同步，也不建立 NAS 資料夾"
+    return ""
+
+
 def lookup_db_case_contexts(case_numbers: Iterable[str]) -> dict[str, dict[str, Any]]:
     numbers = [str(n or "").strip() for n in case_numbers if str(n or "").strip()]
     if not numbers:
@@ -985,6 +1012,14 @@ def resolve_ambiguous_cases_with_context(
     for item in comparison.get("ambiguous") or []:
         drive_case: CaseFolder = item["drive"]
         candidates: list[CaseFolder] = item.get("candidates") or []
+        reason = sync_scope_exclusion_reason(drive_case)
+        if reason:
+            out_of_scope.append({
+                "drive": drive_case,
+                "reason": reason,
+                "candidates": candidates,
+            })
+            continue
         if is_aaron_drive_bucket(drive_case):
             out_of_scope.append({
                 "drive": drive_case,
@@ -1079,6 +1114,10 @@ def compare_case_folders(drive_cases: list[CaseFolder], local_cases: list[CaseFo
     matched_local_ids: set[str] = set()
 
     for d in drive_cases:
+        scope_reason = sync_scope_exclusion_reason(d)
+        if scope_reason:
+            out_of_scope.append({"drive": d, "reason": scope_reason})
+            continue
         keys = match_keys(d.meta)
         candidates: dict[str, CaseFolder] = {}
         for key in keys:
@@ -1197,6 +1236,272 @@ def build_sync_plan(comparison: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def export_relative_path(entry: FileEntry) -> str:
+    rel = str(entry.relative_path or "").strip("/")
+    if not rel:
+        return rel
+    export = GOOGLE_EXPORT_MIME_MAP.get(entry.mime_type)
+    if not export:
+        return rel
+    suffix = export[1]
+    path = PurePosixPath(rel)
+    if path.name.lower().endswith(suffix):
+        return rel
+    return path.with_name(path.name + suffix).as_posix()
+
+
+def normalized_relative_file_key(value: str) -> str:
+    text = unicodedata.normalize("NFKC", str(value or "")).replace("\\", "/").strip("/")
+    parts = [p for p in text.split("/") if p and p not in {".", ".."}]
+    return "/".join(parts).lower()
+
+
+def safe_child_path(base: Path, relative_path: str) -> Path:
+    rel = str(relative_path or "").replace("\\", "/").strip("/")
+    parts = PurePosixPath(rel).parts
+    if not parts or any(part in {"", ".", ".."} for part in parts):
+        raise DriveCaseSyncError(f"不安全的相對路徑：{relative_path}")
+    if PurePosixPath(rel).is_absolute():
+        raise DriveCaseSyncError(f"不允許絕對路徑：{relative_path}")
+    base_resolved = base.resolve(strict=False)
+    target = base_resolved.joinpath(*parts).resolve(strict=False)
+    if os.path.commonpath([str(base_resolved), str(target)]) != str(base_resolved):
+        raise DriveCaseSyncError(f"路徑超出案件資料夾：{relative_path}")
+    return target
+
+
+def _entry_public_dict(entry: FileEntry) -> dict[str, Any]:
+    return {
+        "relative_path": entry.relative_path,
+        "name": entry.name,
+        "is_folder": entry.is_folder,
+        "modified_time": entry.modified_time,
+        "size": entry.size,
+        "md5": entry.md5,
+        "drive_id": entry.drive_id,
+        "web_url": entry.web_url,
+        "mime_type": entry.mime_type,
+    }
+
+
+def build_file_sync_plan(
+    comparison: dict[str, Any],
+    drive_service: Any,
+    *,
+    max_case_depth: int = 20,
+    max_case_items: int = 10000,
+    matched_case_limit: int = 0,
+) -> dict[str, Any]:
+    """Build a conservative per-file plan for uniquely matched cases.
+
+    The executable side of this plan is Drive -> NAS only, for files missing
+    from NAS.  Existing files are never overwritten and NAS-only files are only
+    reported because the current OAuth token is intentionally read-only.
+    """
+    cases: list[dict[str, Any]] = []
+    summary = {
+        "matched_cases_scanned": 0,
+        "drive_missing_in_nas_files": 0,
+        "drive_missing_in_nas_bytes": 0,
+        "nas_missing_in_drive_files": 0,
+        "conflict_files": 0,
+        "skipped_existing_files": 0,
+        "case_errors": 0,
+    }
+    for item in comparison.get("matched", []):
+        if matched_case_limit and summary["matched_cases_scanned"] >= matched_case_limit:
+            break
+        drive: CaseFolder = item.get("drive")
+        local: CaseFolder = item.get("local")
+        if not drive or not local or not drive.drive_id or not (local.local_path or local.path):
+            continue
+        case_plan = {
+            "case_number": local.meta.case_number,
+            "drive_path": drive.relative_path,
+            "drive_id": drive.drive_id,
+            "local_path": local.local_path or local.path,
+            "download_missing": [],
+            "nas_only": [],
+            "conflicts": [],
+            "skipped_existing": 0,
+            "error": "",
+        }
+        try:
+            drive_entries = drive_descendant_context(
+                drive_service,
+                drive.drive_id,
+                max_depth=max_case_depth,
+                max_items=max_case_items,
+            )
+            local_entries = local_descendant_context(
+                local.local_path or local.path,
+                max_depth=max_case_depth,
+                max_items=max_case_items,
+            )
+        except Exception as exc:
+            case_plan["error"] = f"{type(exc).__name__}: {exc}"
+            summary["case_errors"] += 1
+            cases.append(case_plan)
+            continue
+
+        local_files = {
+            normalized_relative_file_key(e.relative_path): e
+            for e in local_entries
+            if not e.is_folder
+        }
+        drive_files = {
+            normalized_relative_file_key(export_relative_path(e)): e
+            for e in drive_entries
+            if not e.is_folder
+        }
+        for key, drive_entry in sorted(drive_files.items()):
+            target_rel = export_relative_path(drive_entry)
+            local_entry = local_files.get(key)
+            if not local_entry:
+                action = _entry_public_dict(drive_entry)
+                action["target_relative_path"] = target_rel
+                action["target_path"] = str(safe_child_path(Path(local.local_path or local.path), target_rel))
+                action["export_mime_type"] = (GOOGLE_EXPORT_MIME_MAP.get(drive_entry.mime_type) or [""])[0]
+                case_plan["download_missing"].append(action)
+                summary["drive_missing_in_nas_files"] += 1
+                summary["drive_missing_in_nas_bytes"] += int(drive_entry.size or 0)
+                continue
+            if drive_entry.size is not None and local_entry.size is not None and int(drive_entry.size) != int(local_entry.size):
+                case_plan["conflicts"].append({
+                    "relative_path": target_rel,
+                    "drive": _entry_public_dict(drive_entry),
+                    "local": _entry_public_dict(local_entry),
+                    "reason": "same_relative_path_size_differs",
+                })
+                summary["conflict_files"] += 1
+            else:
+                case_plan["skipped_existing"] += 1
+                summary["skipped_existing_files"] += 1
+        for key, local_entry in sorted(local_files.items()):
+            if key not in drive_files:
+                case_plan["nas_only"].append(_entry_public_dict(local_entry))
+                summary["nas_missing_in_drive_files"] += 1
+        summary["matched_cases_scanned"] += 1
+        cases.append(case_plan)
+    return {
+        "mode": "file_diff_dry_run",
+        "write_actions_enabled": False,
+        "direction": "drive_to_nas_missing_only",
+        "safety": "no_overwrite_no_delete_no_empty_folder_create",
+        "summary": summary,
+        "cases": cases,
+    }
+
+
+def _download_drive_entry(service: Any, entry: FileEntry, target_path: Path) -> dict[str, Any]:
+    from googleapiclient.http import MediaIoBaseDownload
+
+    if target_path.exists():
+        return {"status": "skipped_existing", "target_path": str(target_path), "bytes": 0}
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    request = None
+    export = GOOGLE_EXPORT_MIME_MAP.get(entry.mime_type)
+    if export:
+        request = service.files().export_media(fileId=entry.drive_id, mimeType=export[0])
+    else:
+        request = service.files().get_media(fileId=entry.drive_id, supportsAllDrives=True)
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=f".magi-drive-sync-{target_path.name}-",
+        suffix=".tmp",
+        dir=str(target_path.parent),
+    )
+    bytes_written = 0
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            downloader = MediaIoBaseDownload(fh, request, chunksize=1024 * 1024)
+            done = False
+            while not done:
+                _status, done = downloader.next_chunk()
+            bytes_written = int(fh.tell())
+        os.replace(tmp_name, target_path)
+    except Exception:
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+        raise
+    return {"status": "downloaded", "target_path": str(target_path), "bytes": bytes_written}
+
+
+def execute_drive_to_nas_downloads(
+    drive_service: Any,
+    file_sync_plan: dict[str, Any],
+    *,
+    download_limit: int = 0,
+    max_download_bytes: int = 0,
+) -> dict[str, Any]:
+    manifest: list[dict[str, Any]] = []
+    summary = {
+        "attempted": 0,
+        "downloaded": 0,
+        "skipped_existing": 0,
+        "failed": 0,
+        "bytes": 0,
+        "stopped_by_limit": False,
+        "stopped_by_bytes": False,
+    }
+    for case in file_sync_plan.get("cases") or []:
+        for action in case.get("download_missing") or []:
+            if download_limit and summary["attempted"] >= download_limit:
+                summary["stopped_by_limit"] = True
+                break
+            size_hint = int(action.get("size") or 0)
+            if max_download_bytes and size_hint and summary["bytes"] + size_hint > max_download_bytes:
+                summary["stopped_by_bytes"] = True
+                break
+            entry = FileEntry(
+                source="drive",
+                path=str(action.get("relative_path") or ""),
+                relative_path=str(action.get("relative_path") or ""),
+                name=str(action.get("name") or ""),
+                is_folder=False,
+                modified_time=str(action.get("modified_time") or ""),
+                size=int(action["size"]) if str(action.get("size") or "").isdigit() else None,
+                md5=str(action.get("md5") or ""),
+                drive_id=str(action.get("drive_id") or ""),
+                web_url=str(action.get("web_url") or ""),
+                mime_type=str(action.get("mime_type") or ""),
+            )
+            target_path = Path(str(action.get("target_path") or ""))
+            summary["attempted"] += 1
+            record = {
+                "case_number": case.get("case_number"),
+                "drive_path": case.get("drive_path"),
+                "drive_relative_path": action.get("relative_path"),
+                "target_path": str(target_path),
+                "status": "",
+                "bytes": 0,
+                "error": "",
+            }
+            try:
+                result = _download_drive_entry(drive_service, entry, target_path)
+                record.update(result)
+                if result["status"] == "downloaded":
+                    summary["downloaded"] += 1
+                    summary["bytes"] += int(result.get("bytes") or 0)
+                elif result["status"] == "skipped_existing":
+                    summary["skipped_existing"] += 1
+            except Exception as exc:
+                record["status"] = "failed"
+                record["error"] = f"{type(exc).__name__}: {exc}"
+                summary["failed"] += 1
+            manifest.append(record)
+        if summary["stopped_by_limit"] or summary["stopped_by_bytes"]:
+            break
+    return {
+        "mode": "execute_drive_to_nas_missing_only",
+        "write_actions_enabled": True,
+        "safety": "no_overwrite_no_delete",
+        "summary": summary,
+        "manifest": manifest,
+    }
+
+
 def build_report(
     *,
     drive_root: dict[str, Any],
@@ -1206,6 +1511,8 @@ def build_report(
     local_cases: list[CaseFolder],
     local_roots: list[Path],
     comparison: dict[str, Any] | None = None,
+    file_sync_plan: dict[str, Any] | None = None,
+    execution_result: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     comparison = comparison or compare_case_folders(drive_cases, local_cases)
     return {
@@ -1258,6 +1565,8 @@ def build_report(
             for item in comparison["ambiguous"]
         ],
         "sync_plan": build_sync_plan(comparison),
+        "file_sync_plan": file_sync_plan or {},
+        "execution_result": execution_result or {},
     }
 
 
@@ -1379,6 +1688,34 @@ def write_report_files(report: dict[str, Any], output_dir: Path) -> dict[str, st
         f"- 同名多案需人工消歧義：{plan_summary.get('manual_disambiguation', 0)}",
         f"- 已排除同步範圍：{plan_summary.get('skipped', 0)}",
     ])
+    file_summary = (report.get("file_sync_plan") or {}).get("summary") or {}
+    if file_summary:
+        lines.extend([
+            "",
+            "## 逐檔差異（唯一匹配案件）",
+            "",
+            f"- 已掃描唯一匹配案件：{file_summary.get('matched_cases_scanned', 0)}",
+            f"- 雲端有、NAS 缺少的檔案：{file_summary.get('drive_missing_in_nas_files', 0)}",
+            f"- 預估下載位元組：{file_summary.get('drive_missing_in_nas_bytes', 0)}",
+            f"- NAS 有、雲端缺少的檔案（目前僅列報，需寫入授權才可上傳）：{file_summary.get('nas_missing_in_drive_files', 0)}",
+            f"- 同路徑大小不一致，需人工確認：{file_summary.get('conflict_files', 0)}",
+            f"- 已存在略過：{file_summary.get('skipped_existing_files', 0)}",
+            f"- 案件掃描錯誤：{file_summary.get('case_errors', 0)}",
+        ])
+    exec_summary = (report.get("execution_result") or {}).get("summary") or {}
+    if exec_summary:
+        lines.extend([
+            "",
+            "## 本輪下載執行結果",
+            "",
+            f"- 嘗試：{exec_summary.get('attempted', 0)}",
+            f"- 已下載：{exec_summary.get('downloaded', 0)}",
+            f"- 已存在略過：{exec_summary.get('skipped_existing', 0)}",
+            f"- 失敗：{exec_summary.get('failed', 0)}",
+            f"- 寫入位元組：{exec_summary.get('bytes', 0)}",
+            f"- 因數量上限停止：{exec_summary.get('stopped_by_limit', False)}",
+            f"- 因容量上限停止：{exec_summary.get('stopped_by_bytes', False)}",
+        ])
     md_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return {"json": str(json_path), "markdown": str(md_path), "csv": str(csv_path)}
 
@@ -1394,6 +1731,13 @@ def run_inventory(
     output_dir: Path | None = None,
     interactive: bool = False,
     resolve_context: bool = True,
+    file_diff: bool = False,
+    execute_downloads: bool = False,
+    download_limit: int = 0,
+    max_download_bytes: int = 0,
+    max_case_depth: int = 20,
+    max_case_items: int = 10000,
+    matched_case_limit: int = 0,
 ) -> dict[str, Any]:
     load_local_env()
     service = build_drive_service(interactive=interactive)
@@ -1421,6 +1765,24 @@ def run_inventory(
             drive_service=service,
         )
 
+    file_sync_plan: dict[str, Any] | None = None
+    execution_result: dict[str, Any] | None = None
+    if file_diff or execute_downloads:
+        file_sync_plan = build_file_sync_plan(
+            comparison,
+            service,
+            max_case_depth=max_case_depth,
+            max_case_items=max_case_items,
+            matched_case_limit=matched_case_limit,
+        )
+    if execute_downloads:
+        execution_result = execute_drive_to_nas_downloads(
+            service,
+            file_sync_plan or {},
+            download_limit=download_limit,
+            max_download_bytes=max_download_bytes,
+        )
+
     report = build_report(
         drive_root=drive_root,
         drive_entries=drive_entries,
@@ -1429,6 +1791,8 @@ def run_inventory(
         local_cases=local_cases,
         local_roots=local_roots,
         comparison=comparison,
+        file_sync_plan=file_sync_plan,
+        execution_result=execution_result,
     )
     paths = write_report_files(report, output_dir or runtime_dir())
     report["output_paths"] = paths
@@ -1446,6 +1810,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--output-dir", default="")
     parser.add_argument("--auth", action="store_true", help="必要時啟動 OAuth 授權")
     parser.add_argument("--no-context-resolve", action="store_true", help="不讀同名多案資料夾內容做深度消歧義")
+    parser.add_argument("--file-diff", action="store_true", help="對唯一匹配案件做逐檔差異盤點")
+    parser.add_argument("--execute-downloads", action="store_true", help="只把雲端有、NAS 缺少的檔案下載到 NAS；不覆蓋、不刪除")
+    parser.add_argument("--download-limit", type=int, default=0, help="本輪最多下載幾個檔案，0 表示不限制")
+    parser.add_argument("--max-download-bytes", type=int, default=0, help="本輪最多下載位元組，0 表示不限制")
+    parser.add_argument("--max-case-depth", type=int, default=20, help="逐檔差異掃描單一案件的最大深度")
+    parser.add_argument("--max-case-items", type=int, default=10000, help="逐檔差異掃描單一案件最多項目")
+    parser.add_argument("--matched-case-limit", type=int, default=0, help="逐檔差異最多掃描幾個唯一匹配案件，0 表示不限制")
     args = parser.parse_args(argv)
 
     active = [Path(p).expanduser() for p in args.active_root] if args.active_root else None
@@ -1460,12 +1831,21 @@ def main(argv: list[str] | None = None) -> int:
         output_dir=Path(args.output_dir).expanduser() if args.output_dir else None,
         interactive=args.auth,
         resolve_context=not args.no_context_resolve,
+        file_diff=args.file_diff,
+        execute_downloads=args.execute_downloads,
+        download_limit=args.download_limit,
+        max_download_bytes=args.max_download_bytes,
+        max_case_depth=args.max_case_depth,
+        max_case_items=args.max_case_items,
+        matched_case_limit=args.matched_case_limit,
     )
     print(json.dumps({
         "ok": True,
         "mode": "read_only_inventory",
         "summary": report["summary"],
         "sync_plan_summary": (report.get("sync_plan") or {}).get("summary", {}),
+        "file_sync_summary": (report.get("file_sync_plan") or {}).get("summary", {}),
+        "execution_summary": (report.get("execution_result") or {}).get("summary", {}),
         "output_paths": report["output_paths"],
     }, ensure_ascii=False, indent=2))
     return 0

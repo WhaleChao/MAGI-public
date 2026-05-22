@@ -3,10 +3,12 @@ from __future__ import annotations
 from api.osc.drive_case_sync import (
     CaseFolder,
     CaseMeta,
+    FileEntry,
     classify_drive_case_folder,
     classify_local_case_folder,
     compare_case_folders,
     default_active_case_roots,
+    export_relative_path,
     extract_case_meta,
     infer_case_kind,
     is_decisive_context_term,
@@ -14,8 +16,10 @@ from api.osc.drive_case_sync import (
     meaningful_terms,
     normalize_court_case_no,
     resolve_ambiguous_cases_with_context,
+    safe_child_path,
     score_context_candidates,
     suggest_canonical_path,
+    sync_scope_exclusion_reason,
 )
 
 
@@ -52,6 +56,7 @@ def test_classify_drive_and_local_case_folders():
         "owner_bucket": "Lumi",
         "case_kind": "",
     }
+    assert classify_drive_case_folder("結案案件/法扶案件/Lumi") is None
     assert classify_local_case_folder("法扶案件/刑事/2026-0002-測試乙-一審-詐欺", status="active") == {
         "category": "法扶案件",
         "status": "active",
@@ -230,3 +235,68 @@ def test_default_active_root_uses_explicit_env(tmp_path, monkeypatch):
     root.mkdir()
     monkeypatch.setenv("MAGI_DRIVE_SYNC_ACTIVE_CASE_ROOT", str(root))
     assert default_active_case_roots() == [root]
+
+
+def test_consultation_without_osc_number_is_out_of_scope():
+    drive = CaseFolder(
+        source="drive",
+        path="諮詢案件/線上諮詢案件/測試諮詢",
+        relative_path="諮詢案件/線上諮詢案件/測試諮詢",
+        name="測試諮詢",
+        category="諮詢案件",
+        status="active",
+        case_kind="線上諮詢案件",
+        meta=extract_case_meta("測試諮詢"),
+    )
+    result = compare_case_folders([drive], [])
+    assert not result["drive_only"]
+    assert result["out_of_scope"][0]["drive"].relative_path == drive.relative_path
+    assert "沒有 OSC 案號" in sync_scope_exclusion_reason(drive)
+
+
+def test_county_mediation_with_osc_number_can_match():
+    drive = CaseFolder(
+        source="drive",
+        path="縣府調解案件/花蓮縣政府/2026-0099-測試甲-調解-損害賠償",
+        relative_path="縣府調解案件/花蓮縣政府/2026-0099-測試甲-調解-損害賠償",
+        name="2026-0099-測試甲-調解-損害賠償",
+        category="縣府調解案件",
+        status="active",
+        case_kind="花蓮縣政府",
+        meta=extract_case_meta("2026-0099-測試甲-調解-損害賠償"),
+    )
+    local = CaseFolder(
+        source="nas",
+        path="/cases/一般案件/民事/2026-0099-測試甲-調解-損害賠償",
+        relative_path="一般案件/民事/2026-0099-測試甲-調解-損害賠償",
+        name="2026-0099-測試甲-調解-損害賠償",
+        category="一般案件",
+        status="active",
+        case_kind="民事",
+        meta=extract_case_meta("2026-0099-測試甲-調解-損害賠償"),
+    )
+    result = compare_case_folders([drive], [local])
+    assert len(result["matched"]) == 1
+    assert not result["out_of_scope"]
+
+
+def test_export_relative_path_adds_google_doc_extension():
+    entry = FileEntry(
+        source="drive",
+        path="文件",
+        relative_path="書狀/文件",
+        name="文件",
+        is_folder=False,
+        mime_type="application/vnd.google-apps.document",
+    )
+    assert export_relative_path(entry) == "書狀/文件.docx"
+
+
+def test_safe_child_path_rejects_parent_escape(tmp_path):
+    assert safe_child_path(tmp_path, "安全/檔案.pdf").is_relative_to(tmp_path)
+    try:
+        safe_child_path(tmp_path, "../逃逸.pdf")
+    except Exception as exc:
+        assert "不安全" in str(exc)
+    else:
+        raise AssertionError("parent escape should be rejected")
