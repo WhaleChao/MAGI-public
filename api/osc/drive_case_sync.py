@@ -1,9 +1,8 @@
-"""Read-only Google Drive/NAS case inventory for MAGI.
+"""Google Drive/NAS case inventory and conservative sync for MAGI.
 
-This module deliberately stops at inventory and diff planning.  It does not
-create, move, delete, upload, or overwrite files.  The goal is to build a
-stable bridge between the legacy Google Drive layout and OSC's NAS-first case
-layout before any synchronisation action is allowed.
+This module keeps OSC's NAS-first folder layout and the legacy Google Drive
+layout separate.  Sync actions use a boundary mapping layer so each side keeps
+its own naming rules; no action overwrites existing files or deletes content.
 """
 
 from __future__ import annotations
@@ -1511,6 +1510,134 @@ def normalized_relative_file_key(value: str) -> str:
     return "/".join(parts).lower()
 
 
+NAS_TO_DRIVE_FIRST_SEGMENT = {
+    "01_法扶資料": "法扶資料",
+    "02_開辦資料": "開辦資料",
+    "04_我方歷次書狀": "我方書狀",
+    "05_對方歷次書狀": "對造書狀",
+    "06_閱卷資料": "閱卷資料",
+    "07_證據資料": "證據資料",
+    "08_筆錄": "筆錄",
+    "09_法院通知或程序裁定": "法院通知",
+    "10_判決書": "法院判決",
+    "11_回執": "回執",
+    "12_信件往返": "信件往返",
+}
+NAS_TO_DRIVE_PREFIXES = {
+    ("08_筆錄",): ("閱卷資料", "筆錄"),
+}
+DRIVE_TO_NAS_FIRST_SEGMENT = {
+    "法扶資料": "01_法扶資料",
+    "開辦資料": "02_開辦資料",
+    "結案資料": "03_結案資料",
+    "結案酬金領款單": "03_結案資料",
+    "我方書狀": "04_我方歷次書狀",
+    "我方歷次書狀": "04_我方歷次書狀",
+    "對造書狀": "05_對方歷次書狀",
+    "對方歷次書狀": "05_對方歷次書狀",
+    "閱卷資料": "06_閱卷資料",
+    "證據資料": "07_證據資料",
+    "筆錄": "08_筆錄",
+    "法院通知": "09_法院通知或程序裁定",
+    "法院通知與程序裁定": "09_法院通知或程序裁定",
+    "程序裁定": "09_法院通知或程序裁定",
+    "法院判決": "10_判決書",
+    "判決書": "10_判決書",
+    "回執": "11_回執",
+    "信件往返": "12_信件往返",
+}
+DRIVE_TO_NAS_PREFIXES = {
+    ("閱卷資料", "筆錄"): ("08_筆錄",),
+}
+SEMANTIC_FIRST_SEGMENT = {
+    "01_法扶資料": "法扶資料",
+    "法扶資料": "法扶資料",
+    "02_開辦資料": "開辦資料",
+    "開辦資料": "開辦資料",
+    "03_結案資料": "結案資料",
+    "結案資料": "結案資料",
+    "結案酬金領款單": "結案酬金領款單",
+    "04_我方歷次書狀": "我方書狀",
+    "我方書狀": "我方書狀",
+    "我方歷次書狀": "我方書狀",
+    "05_對方歷次書狀": "對造書狀",
+    "對造書狀": "對造書狀",
+    "對方歷次書狀": "對造書狀",
+    "06_閱卷資料": "閱卷資料",
+    "閱卷資料": "閱卷資料",
+    "07_證據資料": "證據資料",
+    "證據資料": "證據資料",
+    "08_筆錄": "筆錄",
+    "筆錄": "筆錄",
+    "09_法院通知或程序裁定": "法院通知",
+    "法院通知": "法院通知",
+    "法院通知與程序裁定": "法院通知",
+    "程序裁定": "法院通知",
+    "10_判決書": "法院判決",
+    "法院判決": "法院判決",
+    "判決書": "法院判決",
+    "11_回執": "回執",
+    "回執": "回執",
+    "12_信件往返": "信件往返",
+    "信件往返": "信件往返",
+}
+SEMANTIC_PREFIXES = {
+    ("08_筆錄",): ("筆錄",),
+    ("閱卷資料", "筆錄"): ("筆錄",),
+}
+
+
+def split_relative_parts(value: str) -> list[str]:
+    text = str(value or "").replace("\\", "/").strip("/")
+    return [p for p in PurePosixPath(text).parts if p and p not in {"."}]
+
+
+def closing_drive_folder_for_nas_path(parts: list[str]) -> str:
+    filename = parts[-1] if parts else ""
+    if any(term in filename for term in ("結案酬金", "結案審查", "變動審查")):
+        return "結案酬金領款單"
+    return "結案資料"
+
+
+def drive_to_nas_relative_path(relative_path: str) -> str:
+    parts = split_relative_parts(relative_path)
+    if not parts:
+        return ""
+    for source, target in sorted(DRIVE_TO_NAS_PREFIXES.items(), key=lambda item: len(item[0]), reverse=True):
+        if tuple(parts[: len(source)]) == source:
+            return PurePosixPath(*(list(target) + parts[len(source) :])).as_posix()
+    parts[0] = DRIVE_TO_NAS_FIRST_SEGMENT.get(parts[0], parts[0])
+    return PurePosixPath(*parts).as_posix()
+
+
+def nas_to_drive_relative_path(relative_path: str) -> str:
+    parts = split_relative_parts(relative_path)
+    if not parts:
+        return ""
+    for source, target in sorted(NAS_TO_DRIVE_PREFIXES.items(), key=lambda item: len(item[0]), reverse=True):
+        if tuple(parts[: len(source)]) == source:
+            return PurePosixPath(*(list(target) + parts[len(source) :])).as_posix()
+    if parts[0] == "03_結案資料":
+        parts[0] = closing_drive_folder_for_nas_path(parts)
+    else:
+        parts[0] = NAS_TO_DRIVE_FIRST_SEGMENT.get(parts[0], parts[0])
+    return PurePosixPath(*parts).as_posix()
+
+
+def semantic_relative_path(relative_path: str) -> str:
+    parts = split_relative_parts(relative_path)
+    if not parts:
+        return ""
+    for source, target in sorted(SEMANTIC_PREFIXES.items(), key=lambda item: len(item[0]), reverse=True):
+        if tuple(parts[: len(source)]) == source:
+            return PurePosixPath(*(list(target) + parts[len(source) :])).as_posix()
+    if parts[0] == "03_結案資料" and closing_drive_folder_for_nas_path(parts) == "結案酬金領款單":
+        parts[0] = "結案酬金領款單"
+    else:
+        parts[0] = SEMANTIC_FIRST_SEGMENT.get(parts[0], parts[0])
+    return PurePosixPath(*parts).as_posix()
+
+
 def safe_child_path(base: Path, relative_path: str) -> Path:
     rel = str(relative_path or "").replace("\\", "/").strip("/")
     parts = PurePosixPath(rel).parts
@@ -1641,9 +1768,9 @@ def build_file_sync_plan(
 ) -> dict[str, Any]:
     """Build a conservative per-file plan for uniquely matched cases.
 
-    The executable side of this plan is Drive -> NAS only, for files missing
-    from NAS.  Existing files are never overwritten and NAS-only files are only
-    reported because the current OAuth token is intentionally read-only.
+    Drive and NAS can use different folder names for the same case document
+    category.  The comparison uses semantic paths, while executable actions
+    preserve the target side's native folder layout.
     """
     cases: list[dict[str, Any]] = []
     summary = {
@@ -1694,20 +1821,22 @@ def build_file_sync_plan(
             continue
 
         local_files = {
-            normalized_relative_file_key(e.relative_path): e
+            normalized_relative_file_key(semantic_relative_path(e.relative_path)): e
             for e in local_entries
             if not e.is_folder
         }
         drive_files = {
-            normalized_relative_file_key(export_relative_path(e)): e
+            normalized_relative_file_key(semantic_relative_path(export_relative_path(e))): e
             for e in drive_entries
             if not e.is_folder
         }
         for key, drive_entry in sorted(drive_files.items()):
-            target_rel = export_relative_path(drive_entry)
+            source_rel = export_relative_path(drive_entry)
+            target_rel = drive_to_nas_relative_path(source_rel)
             local_entry = local_files.get(key)
             if not local_entry:
                 action = _entry_public_dict(drive_entry)
+                action["source_relative_path"] = source_rel
                 action["target_relative_path"] = target_rel
                 action["target_path"] = str(safe_child_path(Path(local.local_path or local.path), target_rel))
                 action["export_mime_type"] = (GOOGLE_EXPORT_MIME_MAP.get(drive_entry.mime_type) or [""])[0]
@@ -1718,6 +1847,7 @@ def build_file_sync_plan(
             if drive_entry.size is not None and local_entry.size is not None and int(drive_entry.size) != int(local_entry.size):
                 case_plan["conflicts"].append({
                     "relative_path": target_rel,
+                    "source_relative_path": source_rel,
                     "drive": _entry_public_dict(drive_entry),
                     "local": _entry_public_dict(local_entry),
                     "reason": "same_relative_path_size_differs",
@@ -1729,6 +1859,7 @@ def build_file_sync_plan(
                 except Exception as exc:
                     case_plan["conflicts"].append({
                         "relative_path": target_rel,
+                        "source_relative_path": source_rel,
                         "drive": _entry_public_dict(drive_entry),
                         "local": _entry_public_dict(local_entry),
                         "reason": f"local_hash_failed:{type(exc).__name__}",
@@ -1740,6 +1871,7 @@ def build_file_sync_plan(
                     local_data["md5"] = local_md5
                     case_plan["conflicts"].append({
                         "relative_path": target_rel,
+                        "source_relative_path": source_rel,
                         "drive": _entry_public_dict(drive_entry),
                         "local": local_data,
                         "reason": "same_relative_path_md5_differs",
@@ -1758,7 +1890,9 @@ def build_file_sync_plan(
                 summary["skipped_existing_files"] += 1
         for key, local_entry in sorted(local_files.items()):
             if key not in drive_files:
-                case_plan["nas_only"].append(_entry_public_dict(local_entry))
+                action = _entry_public_dict(local_entry)
+                action["target_relative_path"] = nas_to_drive_relative_path(local_entry.relative_path)
+                case_plan["nas_only"].append(action)
                 summary["nas_missing_in_drive_files"] += 1
         summary["matched_cases_scanned"] += 1
         cases.append(case_plan)
@@ -1912,7 +2046,7 @@ def execute_nas_to_drive_uploads(
                 summary["stopped_by_bytes"] = True
                 break
             local_path = Path(str(action.get("path") or ""))
-            relative_path = str(action.get("relative_path") or "")
+            relative_path = str(action.get("target_relative_path") or action.get("relative_path") or "")
             summary["attempted"] += 1
             record = {
                 "case_number": case.get("case_number"),
@@ -2130,7 +2264,7 @@ def write_report_files(report: dict[str, Any], output_dir: Path) -> dict[str, st
             file_diff_rows.append({
                 **base,
                 "diff_type": "nas_has_drive_missing",
-                "relative_path": item.get("relative_path", ""),
+                "relative_path": item.get("target_relative_path") or item.get("relative_path", ""),
                 "drive_id": "",
                 "drive_size": "",
                 "local_size": item.get("size", ""),

@@ -10,6 +10,7 @@ from api.osc.drive_case_sync import (
     compare_case_folders,
     execute_nas_to_drive_uploads,
     default_active_case_roots,
+    drive_to_nas_relative_path,
     export_relative_path,
     extract_case_meta,
     infer_case_kind,
@@ -19,8 +20,10 @@ from api.osc.drive_case_sync import (
     normalize_court_case_no,
     resolve_ambiguous_cases_with_context,
     resolve_drive_only_cases_with_context,
+    nas_to_drive_relative_path,
     safe_child_path,
     score_context_candidates,
+    semantic_relative_path,
     suggest_canonical_path,
     sync_scope_exclusion_reason,
     load_case_aliases,
@@ -305,6 +308,21 @@ def test_export_relative_path_adds_google_doc_extension():
     assert export_relative_path(entry) == "書狀/文件.docx"
 
 
+def test_drive_nas_relative_path_mapping_preserves_each_side_layout():
+    assert drive_to_nas_relative_path("法院判決/a.pdf") == "10_判決書/a.pdf"
+    assert drive_to_nas_relative_path("法院通知/a.pdf") == "09_法院通知或程序裁定/a.pdf"
+    assert drive_to_nas_relative_path("結案酬金領款單/a.pdf") == "03_結案資料/a.pdf"
+    assert drive_to_nas_relative_path("閱卷資料/筆錄/a.pdf") == "08_筆錄/a.pdf"
+    assert nas_to_drive_relative_path("10_判決書/a.pdf") == "法院判決/a.pdf"
+    assert nas_to_drive_relative_path("09_法院通知或程序裁定/a.pdf") == "法院通知/a.pdf"
+    assert nas_to_drive_relative_path("08_筆錄/a.pdf") == "閱卷資料/筆錄/a.pdf"
+    assert (
+        nas_to_drive_relative_path("03_結案資料/結案酬金領款單_foo.pdf")
+        == "結案酬金領款單/結案酬金領款單_foo.pdf"
+    )
+    assert semantic_relative_path("法院判決/a.pdf") == semantic_relative_path("10_判決書/a.pdf")
+
+
 def test_safe_child_path_rejects_parent_escape(tmp_path):
     assert safe_child_path(tmp_path, "安全/檔案.pdf").is_relative_to(tmp_path)
     try:
@@ -478,6 +496,80 @@ def test_file_sync_plan_reports_both_sides_missing_and_content_conflict(monkeypa
     assert case["conflicts"][0]["reason"] == "same_relative_path_md5_differs"
 
 
+def test_build_file_sync_plan_compares_drive_and_nas_semantic_paths(monkeypatch):
+    drive = CaseFolder(
+        source="drive",
+        path="一般案件/Lumi/2026-0333-測試甲-一審-損害賠償",
+        relative_path="一般案件/Lumi/2026-0333-測試甲-一審-損害賠償",
+        name="2026-0333-測試甲-一審-損害賠償",
+        meta=CaseMeta(case_number="2026-0333"),
+        drive_id="drive-case",
+    )
+    local = CaseFolder(
+        source="nas",
+        path="/cases/一般案件/民事/2026-0333-測試甲-一審-損害賠償",
+        local_path="/cases/一般案件/民事/2026-0333-測試甲-一審-損害賠償",
+        relative_path="一般案件/民事/2026-0333-測試甲-一審-損害賠償",
+        name="2026-0333-測試甲-一審-損害賠償",
+        meta=CaseMeta(case_number="2026-0333"),
+    )
+    drive_entries = [
+        FileEntry(
+            source="drive",
+            path="法院判決/a.pdf",
+            relative_path="法院判決/a.pdf",
+            name="a.pdf",
+            is_folder=False,
+            size=5,
+            md5="same-md5",
+            drive_id="drive-a",
+        ),
+        FileEntry(
+            source="drive",
+            path="結案酬金領款單/結案酬金領款單_foo.pdf",
+            relative_path="結案酬金領款單/結案酬金領款單_foo.pdf",
+            name="結案酬金領款單_foo.pdf",
+            is_folder=False,
+            size=5,
+            md5="same-md5",
+            drive_id="drive-fee",
+        ),
+    ]
+    local_entries = [
+        FileEntry(
+            source="nas",
+            path="/cases/一般案件/民事/2026-0333-測試甲-一審-損害賠償/10_判決書/a.pdf",
+            relative_path="10_判決書/a.pdf",
+            name="a.pdf",
+            is_folder=False,
+            size=5,
+        ),
+        FileEntry(
+            source="nas",
+            path="/cases/一般案件/民事/2026-0333-測試甲-一審-損害賠償/03_結案資料/結案酬金領款單_foo.pdf",
+            relative_path="03_結案資料/結案酬金領款單_foo.pdf",
+            name="結案酬金領款單_foo.pdf",
+            is_folder=False,
+            size=5,
+        ),
+    ]
+    monkeypatch.setattr(
+        "api.osc.drive_case_sync.drive_descendant_context",
+        lambda *args, **kwargs: drive_entries,
+    )
+    monkeypatch.setattr(
+        "api.osc.drive_case_sync.local_descendant_context",
+        lambda *args, **kwargs: local_entries,
+    )
+    monkeypatch.setattr("api.osc.drive_case_sync.local_file_md5", lambda path: "same-md5")
+    plan = build_file_sync_plan({"matched": [{"drive": drive, "local": local}]}, drive_service=object())
+    case = plan["cases"][0]
+    assert case["download_missing"] == []
+    assert case["nas_only"] == []
+    assert case["conflicts"] == []
+    assert case["skipped_existing"] == 2
+
+
 def test_execute_uploads_uses_nas_only_files_without_overwrite(monkeypatch, tmp_path):
     src = tmp_path / "NAS缺雲端.pdf"
     src.write_bytes(b"hello")
@@ -517,6 +609,38 @@ def test_execute_uploads_uses_nas_only_files_without_overwrite(monkeypatch, tmp_
     assert result["summary"]["folders_created"] == 1
     assert calls[0][1] == "drive-case"
     assert calls[0][2] == "01_書狀/NAS缺雲端.pdf"
+
+
+def test_execute_uploads_uses_drive_target_relative_path(monkeypatch, tmp_path):
+    src = tmp_path / "a.pdf"
+    src.write_bytes(b"hello")
+    plan = {
+        "cases": [
+            {
+                "case_number": "2026-0333",
+                "drive_path": "一般案件/Lumi/2026-0333-測試甲-一審-損害賠償",
+                "drive_id": "drive-case",
+                "nas_only": [
+                    {
+                        "path": str(src),
+                        "relative_path": "10_判決書/a.pdf",
+                        "target_relative_path": "法院判決/a.pdf",
+                        "size": src.stat().st_size,
+                    }
+                ],
+            }
+        ]
+    }
+    calls = []
+
+    def fake_upload(service, *, local_path, drive_case_folder_id, relative_path):
+        calls.append(relative_path)
+        return {"status": "uploaded", "bytes": local_path.stat().st_size, "created_folders": []}
+
+    monkeypatch.setattr("api.osc.drive_case_sync.upload_local_file_to_drive", fake_upload)
+    result = execute_nas_to_drive_uploads(object(), plan, upload_limit=10, max_upload_bytes=1000)
+    assert result["summary"]["uploaded"] == 1
+    assert calls == ["法院判決/a.pdf"]
 
 
 def test_execute_uploads_respects_byte_limit(tmp_path):
