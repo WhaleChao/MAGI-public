@@ -16,7 +16,7 @@ import re
 import tempfile
 import unicodedata
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterable
@@ -50,6 +50,10 @@ OSC_NUMBER_REQUIRED_CATEGORIES = {"諮詢案件", "縣府調解案件"}
 DRIVE_CASE_KIND_BUCKETS = {
     "陪偵": "陪偵",
     "消債": "消費者債務清理",
+}
+DRIVE_CASE_KIND_BUCKET_BY_CASE_KIND = {
+    "陪偵": "陪偵",
+    "消費者債務清理": "01.消債",
 }
 SYNC_IGNORE_NAMES = {
     ".DS_Store",
@@ -183,6 +187,7 @@ class CaseFolder:
     status: str = ""
     case_kind: str = ""
     owner_bucket: str = ""
+    modified_time: str = ""
     meta: CaseMeta = field(default_factory=CaseMeta)
     drive_id: str = ""
     web_url: str = ""
@@ -726,6 +731,79 @@ def suggest_canonical_path(case: CaseFolder) -> tuple[str, str, str]:
     return f"{base}/{case.category}/{case_kind}/{case.name}", confidence, ""
 
 
+def drive_owner_bucket() -> str:
+    """Default Google Drive owner bucket for NAS-created OSC folders."""
+    return (
+        os.environ.get("MAGI_DRIVE_SYNC_OWNER_BUCKET")
+        or os.environ.get("MAGI_DRIVE_OWNER_BUCKET")
+        or "Lumi"
+    ).strip() or "Lumi"
+
+
+def drive_case_kind_bucket_for_local_case(case_kind: str) -> str:
+    return DRIVE_CASE_KIND_BUCKET_BY_CASE_KIND.get(str(case_kind or "").strip(), "")
+
+
+def drive_relative_path_for_local_case(case: CaseFolder, *, owner_bucket: str | None = None) -> str:
+    """Return the native Google Drive case folder path for a NAS case.
+
+    NAS/OSC stores cases as `<category>/<case_kind>/<case-folder>`, while the
+    shared Drive stores normal cases under an owner bucket and only uses special
+    buckets for a small number of case kinds, such as 消債 and 陪偵.
+    """
+    category = (case.category or "").strip()
+    case_kind = (case.case_kind or "").strip()
+    status = (case.status or "active").strip() or "active"
+    name = (case.name or "").strip()
+    if not category or not name:
+        return ""
+    if not (case.meta.case_number or extract_case_meta(name).case_number):
+        return ""
+    if category == "指定辯護案件":
+        if status == "closed":
+            return PurePosixPath("結案案件", category, name).as_posix()
+        return PurePosixPath(category, name).as_posix()
+    if category not in {"一般案件", "法扶案件", "無償案件"}:
+        return ""
+    owner = (owner_bucket if owner_bucket is not None else drive_owner_bucket()).strip()
+    if not owner:
+        return ""
+    parts: list[str] = []
+    if status == "closed":
+        parts.extend(["結案案件", category, owner])
+    else:
+        parts.extend([category, owner])
+    special_bucket = drive_case_kind_bucket_for_local_case(case_kind)
+    if special_bucket:
+        parts.append(special_bucket)
+    parts.append(name)
+    return PurePosixPath(*parts).as_posix()
+
+
+def _parse_modified_time(value: str) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        if text.endswith("Z"):
+            text = f"{text[:-1]}+00:00"
+        dt = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def case_modified_within_hours(case: CaseFolder, max_age_hours: int) -> bool:
+    if max_age_hours <= 0:
+        return True
+    modified = _parse_modified_time(case.modified_time)
+    if not modified:
+        return False
+    return datetime.now(timezone.utc) - modified <= timedelta(hours=max_age_hours)
+
+
 def local_file_entries(root: Path, *, status: str, max_depth: int, max_items: int) -> tuple[list[FileEntry], list[CaseFolder]]:
     entries: list[FileEntry] = []
     cases: list[CaseFolder] = []
@@ -772,6 +850,7 @@ def local_file_entries(root: Path, *, status: str, max_depth: int, max_items: in
                         status=cls["status"],
                         case_kind=cls["case_kind"],
                         owner_bucket=cls["owner_bucket"],
+                        modified_time=entry.modified_time,
                         meta=extract_case_meta(child.name),
                     ))
                 # Phase 1 is a case-folder inventory.  Do not descend into case
@@ -957,6 +1036,7 @@ def drive_file_entries(service: Any, root_id: str, *, max_depth: int, max_items:
                         status=cls["status"],
                         case_kind=cls["case_kind"],
                         owner_bucket=cls["owner_bucket"],
+                        modified_time=str(item.get("modifiedTime") or ""),
                         meta=extract_case_meta(name),
                         drive_id=str(item.get("id") or ""),
                         web_url=str(item.get("webViewLink") or ""),
@@ -1691,6 +1771,94 @@ def create_drive_folder(service: Any, parent_id: str, name: str) -> str:
     return str(created.get("id") or "")
 
 
+def ensure_drive_folder_path(service: Any, root_folder_id: str, relative_folder_path: str) -> dict[str, Any]:
+    rel = str(relative_folder_path or "").replace("\\", "/").strip("/")
+    parts = PurePosixPath(rel).parts
+    if not parts or any(part in {"", ".", ".."} for part in parts):
+        raise DriveCaseSyncError(f"不安全的雲端資料夾路徑：{relative_folder_path}")
+    current = root_folder_id
+    created: list[str] = []
+    walked: list[str] = []
+    for part in parts:
+        walked.append(part)
+        found = find_drive_child_folder(service, current, part)
+        if found:
+            current = found
+            continue
+        current = create_drive_folder(service, current, part)
+        created.append(PurePosixPath(*walked).as_posix())
+    return {
+        "ok": True,
+        "drive_id": current,
+        "relative_path": PurePosixPath(*parts).as_posix(),
+        "created_folders": created,
+        "created_count": len(created),
+    }
+
+
+def ensure_drive_case_folder_for_local_case(
+    service: Any,
+    drive_root_id: str,
+    case: CaseFolder,
+    *,
+    owner_bucket: str | None = None,
+) -> dict[str, Any]:
+    relative_path = drive_relative_path_for_local_case(case, owner_bucket=owner_bucket)
+    if not relative_path:
+        return {
+            "ok": False,
+            "skipped": True,
+            "reason": "cannot_build_drive_case_path",
+            "case": _case_to_dict(case),
+        }
+    result = ensure_drive_folder_path(service, drive_root_id, relative_path)
+    result["case_number"] = case.meta.case_number
+    result["case_name"] = case.name
+    result["status"] = "created_or_existing"
+    return result
+
+
+def ensure_drive_case_folder_for_new_case(
+    service: Any,
+    drive_root_id: str,
+    *,
+    full_path: str,
+    case_number: str,
+    client_name: str,
+    case_category: str,
+    case_type: str,
+    case_stage: str = "",
+    case_reason: str = "",
+    status: str = "active",
+    owner_bucket: str | None = None,
+) -> dict[str, Any]:
+    case_name = Path(str(full_path or "")).name
+    if not case_name:
+        chunks = [case_number, client_name, case_stage, case_reason]
+        case_name = "-".join(str(c or "").strip() for c in chunks if str(c or "").strip())
+    case = CaseFolder(
+        source="nas",
+        path=str(full_path or ""),
+        local_path=str(full_path or ""),
+        relative_path="",
+        name=case_name,
+        category=case_category or "一般案件",
+        status=status or "active",
+        case_kind=case_type or "",
+        meta=CaseMeta(
+            case_number=case_number or extract_case_meta(case_name).case_number,
+            client_hint=client_name or extract_case_meta(case_name).client_hint,
+            reason_hint=case_reason or extract_case_meta(case_name).reason_hint,
+        ),
+    )
+    return ensure_drive_case_folder_for_local_case(
+        service,
+        drive_root_id,
+        case,
+        owner_bucket=owner_bucket,
+    )
+
+
 def ensure_drive_parent_folder(service: Any, root_folder_id: str, relative_file_path: str) -> tuple[str, list[str]]:
     parent = PurePosixPath(str(relative_file_path or "").replace("\\", "/")).parent
     if str(parent) in {"", "."}:
@@ -1765,6 +1933,7 @@ def build_file_sync_plan(
     max_case_depth: int = 20,
     max_case_items: int = 10000,
     matched_case_limit: int = 0,
+    matched_case_offset: int = 0,
 ) -> dict[str, Any]:
     """Build a conservative per-file plan for uniquely matched cases.
 
@@ -1783,8 +1952,9 @@ def build_file_sync_plan(
         "skipped_existing_files": 0,
         "unverified_existing_files": 0,
         "case_errors": 0,
+        "matched_case_offset": max(0, int(matched_case_offset or 0)),
     }
-    for item in comparison.get("matched", []):
+    for item in (comparison.get("matched", []) or [])[max(0, int(matched_case_offset or 0)) :]:
         if matched_case_limit and summary["matched_cases_scanned"] >= matched_case_limit:
             break
         drive: CaseFolder = item.get("drive")
@@ -2123,6 +2293,81 @@ def combine_execution_results(
     }
 
 
+def create_missing_drive_case_folders(
+    service: Any,
+    drive_root_id: str,
+    comparison: dict[str, Any],
+    *,
+    create_limit: int = 0,
+    max_age_hours: int = 0,
+    owner_bucket: str | None = None,
+) -> dict[str, Any]:
+    """Create Google Drive case folders for NAS-only OSC folders.
+
+    This only creates the case folder path. It does not upload files, overwrite
+    content, delete content, or mutate NAS paths.
+    """
+    summary = {
+        "attempted": 0,
+        "created_or_existing": 0,
+        "created_folders": 0,
+        "skipped": 0,
+        "failed": 0,
+        "stopped_by_limit": False,
+    }
+    records: list[dict[str, Any]] = []
+    for case in comparison.get("local_only") or []:
+        if create_limit and summary["attempted"] >= create_limit:
+            summary["stopped_by_limit"] = True
+            break
+        if not case_modified_within_hours(case, max_age_hours):
+            summary["skipped"] += 1
+            records.append({
+                "status": "skipped",
+                "reason": "outside_new_case_window",
+                "case": _case_to_dict(case),
+            })
+            continue
+        relative_path = drive_relative_path_for_local_case(case, owner_bucket=owner_bucket)
+        if not relative_path:
+            summary["skipped"] += 1
+            records.append({
+                "status": "skipped",
+                "reason": "cannot_build_drive_case_path",
+                "case": _case_to_dict(case),
+            })
+            continue
+        summary["attempted"] += 1
+        record = {
+            "case_number": case.meta.case_number,
+            "case_name": case.name,
+            "local_path": case.local_path or case.path,
+            "drive_relative_path": relative_path,
+            "status": "",
+            "created_folders": [],
+            "error": "",
+        }
+        try:
+            result = ensure_drive_folder_path(service, drive_root_id, relative_path)
+            record["status"] = "created_or_existing"
+            record["drive_id"] = result.get("drive_id", "")
+            record["created_folders"] = result.get("created_folders", [])
+            summary["created_or_existing"] += 1
+            summary["created_folders"] += int(result.get("created_count") or 0)
+        except Exception as exc:
+            record["status"] = "failed"
+            record["error"] = f"{type(exc).__name__}: {exc}"
+            summary["failed"] += 1
+        records.append(record)
+    return {
+        "mode": "ensure_google_drive_case_folders",
+        "write_actions_enabled": True,
+        "safety": "create_folders_only_no_file_write_no_delete",
+        "summary": summary,
+        "records": records,
+    }
+
+
 def build_report(
     *,
     drive_root: dict[str, Any],
@@ -2134,6 +2379,7 @@ def build_report(
     comparison: dict[str, Any] | None = None,
     file_sync_plan: dict[str, Any] | None = None,
     execution_result: dict[str, Any] | None = None,
+    drive_folder_result: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     comparison = comparison or compare_case_folders(drive_cases, local_cases)
     return {
@@ -2188,6 +2434,7 @@ def build_report(
         "sync_plan": build_sync_plan(comparison),
         "file_sync_plan": file_sync_plan or {},
         "execution_result": execution_result or {},
+        "drive_folder_result": drive_folder_result or {},
     }
 
 
@@ -2380,6 +2627,18 @@ def write_report_files(report: dict[str, Any], output_dir: Path) -> dict[str, st
         ])
         if file_diff_rows:
             lines.append(f"- 逐檔差異 CSV：`{file_diff_csv_path}`")
+    folder_summary = (report.get("drive_folder_result") or {}).get("summary") or {}
+    if folder_summary:
+        lines.extend([
+            "",
+            "## 雲端案件資料夾建立",
+            "",
+            f"- 嘗試確認/建立：{folder_summary.get('attempted', 0)}",
+            f"- 已存在或已建立：{folder_summary.get('created_or_existing', 0)}",
+            f"- 本輪新增資料夾層級：{folder_summary.get('created_folders', 0)}",
+            f"- 略過：{folder_summary.get('skipped', 0)}",
+            f"- 失敗：{folder_summary.get('failed', 0)}",
+        ])
     exec_summary = (report.get("execution_result") or {}).get("summary") or {}
     if exec_summary:
         upload_result = (report.get("execution_result") or {}).get("upload_result") or {}
@@ -2453,9 +2712,14 @@ def run_inventory(
     max_case_depth: int = 20,
     max_case_items: int = 10000,
     matched_case_limit: int = 0,
+    matched_case_offset: int = 0,
+    ensure_drive_case_folders: bool = False,
+    create_drive_folder_limit: int = 0,
+    create_drive_folder_max_age_hours: int = 0,
+    drive_owner_bucket_name: str = "",
 ) -> dict[str, Any]:
     load_local_env()
-    service = build_drive_service(interactive=interactive, write=execute_uploads)
+    service = build_drive_service(interactive=interactive, write=execute_uploads or ensure_drive_case_folders)
     drive_root = find_drive_root(service, root_id=root_id or os.environ.get("MAGI_DRIVE_SYNC_ROOT_FOLDER_ID", ""), root_name=root_name)
     drive_entries, drive_cases = drive_file_entries(service, drive_root["id"], max_depth=max_depth, max_items=max_items)
 
@@ -2493,6 +2757,17 @@ def run_inventory(
             max_case_depth=max_case_depth,
             max_case_items=max_case_items,
             matched_case_limit=matched_case_limit,
+            matched_case_offset=matched_case_offset,
+        )
+    drive_folder_result: dict[str, Any] | None = None
+    if ensure_drive_case_folders:
+        drive_folder_result = create_missing_drive_case_folders(
+            service,
+            drive_root["id"],
+            comparison,
+            create_limit=create_drive_folder_limit,
+            max_age_hours=create_drive_folder_max_age_hours,
+            owner_bucket=drive_owner_bucket_name or drive_owner_bucket(),
         )
     download_result: dict[str, Any] | None = None
     upload_result: dict[str, Any] | None = None
@@ -2526,6 +2801,7 @@ def run_inventory(
         comparison=comparison,
         file_sync_plan=file_sync_plan,
         execution_result=execution_result,
+        drive_folder_result=drive_folder_result,
     )
     paths = write_report_files(report, output_dir or runtime_dir())
     report["output_paths"] = paths
@@ -2553,6 +2829,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--max-case-depth", type=int, default=20, help="逐檔差異掃描單一案件的最大深度")
     parser.add_argument("--max-case-items", type=int, default=10000, help="逐檔差異掃描單一案件最多項目")
     parser.add_argument("--matched-case-limit", type=int, default=0, help="逐檔差異最多掃描幾個唯一匹配案件，0 表示不限制")
+    parser.add_argument("--matched-case-offset", type=int, default=0, help="逐檔差異從第幾個唯一匹配案件開始，供背景批次輪轉使用")
+    parser.add_argument("--ensure-drive-case-folders", action="store_true", help="為 NAS 已建立但雲端缺少的新案建立 Google Drive 對應資料夾")
+    parser.add_argument("--create-drive-folder-limit", type=int, default=0, help="本輪最多確認/建立幾個雲端案件資料夾，0 表示不限制")
+    parser.add_argument("--create-drive-folder-max-age-hours", type=int, default=0, help="只為最近幾小時異動的 NAS-only 案件建立雲端資料夾，0 表示不限")
+    parser.add_argument("--drive-owner-bucket", default="", help="Google Drive 端 owner bucket，預設讀 MAGI_DRIVE_SYNC_OWNER_BUCKET 或 Lumi")
     args = parser.parse_args(argv)
 
     active = [Path(p).expanduser() for p in args.active_root] if args.active_root else None
@@ -2577,14 +2858,20 @@ def main(argv: list[str] | None = None) -> int:
         max_case_depth=args.max_case_depth,
         max_case_items=args.max_case_items,
         matched_case_limit=args.matched_case_limit,
+        matched_case_offset=args.matched_case_offset,
+        ensure_drive_case_folders=args.ensure_drive_case_folders,
+        create_drive_folder_limit=args.create_drive_folder_limit,
+        create_drive_folder_max_age_hours=args.create_drive_folder_max_age_hours,
+        drive_owner_bucket_name=args.drive_owner_bucket,
     )
     print(json.dumps({
         "ok": True,
-        "mode": "read_only_inventory",
+        "mode": "conservative_drive_nas_sync",
         "summary": report["summary"],
         "sync_plan_summary": (report.get("sync_plan") or {}).get("summary", {}),
         "file_sync_summary": (report.get("file_sync_plan") or {}).get("summary", {}),
         "execution_summary": (report.get("execution_result") or {}).get("summary", {}),
+        "drive_folder_summary": (report.get("drive_folder_result") or {}).get("summary", {}),
         "output_paths": report["output_paths"],
     }, ensure_ascii=False, indent=2))
     return 0

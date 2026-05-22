@@ -60,6 +60,7 @@ _DEFAULT_CATCHUP_SKIP_IDS = {
     "job_obsidian_ingest",
     "job_osc_scan_cases",
     "job_insight_sync",
+    "job_drive_case_sync_bidirectional",
 }
 
 

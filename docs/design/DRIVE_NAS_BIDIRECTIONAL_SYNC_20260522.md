@@ -172,6 +172,13 @@ Drive 端若出現沒有 OSC 案號的新資料夾：
 - 不自動建立 NAS 資料夾。
 - 進入「待歸戶」清單，由使用者選擇既有案件或建立新案。
 
+目前私用版已先落地的行為：
+
+- OSC 新案或手動「建立案件資料夾」成功後，會以 best-effort 方式建立 Google Drive 對應案件資料夾。
+- NAS/OSC 仍使用 `一般案件/行政/2026-xxxx-...` 這種正式路徑；Drive 端則使用 `一般案件/Lumi/2026-xxxx-...`。
+- 消債、陪偵等特殊案件種類在 Drive 端仍進入既有特殊 bucket，例如 `法扶案件/Lumi/01.消債/...`。
+- Drive 建立失敗不會阻斷 OSC 建案，背景同步 worker 會在後續排程補建。
+
 ## 建議資料結構
 
 ### `case_cloud_links`
@@ -216,6 +223,13 @@ Drive 端若出現沒有 OSC 案號的新資料夾：
 - 每週離峰：NAS → Drive 補檔 dry run；確認穩定後再開寫入模式。
 - 每週：空殼資料夾清理，但不得刪除含實際案件檔案的資料夾。
 
+目前私用版已啟用的本機排程：
+
+- `job_drive_case_sync_bidirectional` 每 6 小時執行 `scripts/drive_case_sync_worker.py`。
+- 每輪只掃描有限案件與有限檔案數，使用 state offset 輪轉唯一匹配案件，避免固定只處理前幾件。
+- 每輪同步動作皆為 missing-only：缺檔才補，不覆蓋、不刪除。
+- 每輪可為最近新建的 NAS-only 案件補建 Drive 端案件資料夾。
+
 ## Live 驗收標準
 
 1. `海上賽鴿` 在 OSC 顯示為進行中，路徑為 `Z:\...`。
@@ -229,9 +243,13 @@ Drive 端若出現沒有 OSC 案號的新資料夾：
 ## 待實作項目
 
 1. 建立 `case_cloud_links` 與 `case_file_sync_manifest` migration。
-2. 在 OSC 新案建立流程加入 Drive link 建立或待歸戶佇列。
-3. 將 Drive → NAS 現有下載流程改為讀寫 manifest。
-4. 新增 NAS → Drive dry run 與 upload execution。
-5. 在網頁版加入「雲端同步狀態」「待歸戶」「衝突清單」三個介面。
-6. 將排除清單、別名清單加入私用版操作手冊，不放入公開版範例資料。
-7. 建立壓力測試：大量小檔、大型 PDF、Google Docs 匯出、NAS 斷線重試、同名多案。
+2. 將 Drive → NAS 現有下載流程改為讀寫 manifest。
+3. 在網頁版加入「雲端同步狀態」「待歸戶」「衝突清單」三個介面。
+4. 建立壓力測試：大量小檔、大型 PDF、Google Docs 匯出、NAS 斷線重試、同名多案。
+
+## 已落地項目
+
+1. 在 OSC 新案建立與手動建立資料夾流程加入 Google Drive 對應資料夾建立。
+2. 新增 `scripts/drive_case_sync_worker.py`，用 bounded batch 做 Drive ↔ NAS 缺檔同步。
+3. 新增 NAS → Drive upload execution，缺檔才補上傳，不覆蓋既有雲端檔案。
+4. 新增 NAS-only 新案資料夾補建 Google Drive folder 的安全流程。

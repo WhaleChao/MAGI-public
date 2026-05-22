@@ -782,6 +782,55 @@ _OSC_DRAFT_PROMPT_TEMPLATE = """你是一位專業的台灣律師助理，請根
 # ── Helper (auto-create folder for new case) ──────────────────────────────
 
 
+def _osc_try_create_drive_case_folder(
+    *,
+    full_path: str,
+    payload: dict,
+    case_category: str,
+    status: str = "active",
+) -> dict:
+    """Best-effort Drive mirror for NAS-created case folders.
+
+    OSC remains NAS-first.  A Drive failure must not block local case creation;
+    the background bidirectional sync will retry later.
+    """
+    enabled = os.environ.get("MAGI_DRIVE_SYNC_CREATE_ON_CASE_FOLDER", "1").strip().lower()
+    if enabled in {"0", "false", "no", "off"}:
+        return {"ok": True, "skipped": True, "reason": "disabled"}
+    try:
+        from api.osc.drive_case_sync import (
+            DEFAULT_DRIVE_ROOT_NAME,
+            build_drive_service,
+            drive_owner_bucket,
+            ensure_drive_case_folder_for_new_case,
+            find_drive_root,
+        )
+
+        service = build_drive_service(write=True)
+        drive_root = find_drive_root(
+            service,
+            root_id=os.environ.get("MAGI_DRIVE_SYNC_ROOT_FOLDER_ID", ""),
+            root_name=os.environ.get("MAGI_DRIVE_SYNC_ROOT_FOLDER_NAME", DEFAULT_DRIVE_ROOT_NAME),
+        )
+        result = ensure_drive_case_folder_for_new_case(
+            service,
+            drive_root["id"],
+            full_path=full_path,
+            case_number=(payload.get("case_number") or payload.get("case_no") or payload.get("caseNumber") or "").strip(),
+            client_name=(payload.get("client_name") or payload.get("name") or payload.get("client") or "").strip(),
+            case_category=case_category or "一般案件",
+            case_type=(payload.get("case_type") or payload.get("type") or "").strip(),
+            case_stage=(payload.get("case_stage") or "").strip(),
+            case_reason=(payload.get("case_reason") or "").strip(),
+            status=status or "active",
+            owner_bucket=drive_owner_bucket(),
+        )
+        result["drive_root_id"] = drive_root.get("id", "")
+        return result
+    except Exception as exc:
+        return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+
 def _osc_auto_create_folder_for_case(row_id: str, payload: dict, case_category: str) -> dict:
     """建立案件資料夾並更新 DB，回傳結果 dict。供 POST /api/osc/cases 使用。"""
     from casper_ecosystem.law_firm_orchestrators.osc.folder_utils import (
@@ -825,6 +874,12 @@ def _osc_auto_create_folder_for_case(row_id: str, payload: dict, case_category: 
         _osc_exec("UPDATE cases SET folder_path=%s, updated_at=NOW() WHERE id=%s", (canonical, row_id), fetch="none")
     except Exception as e:
         return {"ok": True, "path": full_path, "canonical": canonical, "db_update_error": str(e)}
+    drive_sync = _osc_try_create_drive_case_folder(
+        full_path=full_path,
+        payload={**payload, "case_number": case_number, "client_name": client_name, "case_type": case_type},
+        case_category=case_category or "一般案件",
+        status="active",
+    )
     return {
         "ok": True,
         "path": full_path,
@@ -832,6 +887,7 @@ def _osc_auto_create_folder_for_case(row_id: str, payload: dict, case_category: 
         "subfolders": result.get("subfolders", []),
         "temporary_synology_drive": bool(root_selection.get("temporary_synology_drive")),
         "warning": root_selection.get("warning") or "",
+        "drive_sync": drive_sync,
     }
 
 
@@ -2365,6 +2421,18 @@ def osc_case_create_folder_api(row_id):
 
     canonical = translate_local_path_to_canonical(full_path)
     _osc_exec("UPDATE cases SET folder_path=%s, updated_at=NOW() WHERE id=%s", (canonical, row_id), fetch="none")
+    drive_sync = _osc_try_create_drive_case_folder(
+        full_path=full_path,
+        payload={
+            "case_number": case_number,
+            "client_name": client_name,
+            "case_type": case_type,
+            "case_stage": case_stage,
+            "case_reason": case_reason,
+        },
+        case_category=case_category,
+        status="active",
+    )
 
     return jsonify({
         "ok": True,
@@ -2373,6 +2441,7 @@ def osc_case_create_folder_api(row_id):
         "subfolders": result.get("subfolders", []),
         "temporary_synology_drive": bool(root_selection.get("temporary_synology_drive")),
         "warning": root_selection.get("warning") or "",
+        "drive_sync": drive_sync,
     })
 
 

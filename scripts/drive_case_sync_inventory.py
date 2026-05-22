@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run MAGI Google Drive/NAS case inventory in read-only mode."""
+"""Run MAGI Google Drive/NAS case inventory and conservative sync commands."""
 
 from __future__ import annotations
 

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+
 from api.osc.drive_case_sync import (
     CaseFolder,
     CaseMeta,
@@ -8,6 +10,9 @@ from api.osc.drive_case_sync import (
     classify_drive_case_folder,
     classify_local_case_folder,
     compare_case_folders,
+    create_missing_drive_case_folders,
+    drive_relative_path_for_local_case,
+    ensure_drive_folder_path,
     execute_nas_to_drive_uploads,
     default_active_case_roots,
     drive_to_nas_relative_path,
@@ -662,3 +667,152 @@ def test_execute_uploads_respects_byte_limit(tmp_path):
     assert result["summary"]["attempted"] == 0
     assert result["summary"]["uploaded"] == 0
     assert result["summary"]["stopped_by_bytes"] is True
+
+
+def test_drive_relative_path_for_local_case_preserves_drive_layout(monkeypatch):
+    monkeypatch.setenv("MAGI_DRIVE_SYNC_OWNER_BUCKET", "Lumi")
+    normal = CaseFolder(
+        source="nas",
+        path="/cases/一般案件/行政/2026-0001-測試甲-一審-訴願",
+        relative_path="一般案件/行政/2026-0001-測試甲-一審-訴願",
+        name="2026-0001-測試甲-一審-訴願",
+        category="一般案件",
+        status="active",
+        case_kind="行政",
+        meta=CaseMeta(case_number="2026-0001"),
+    )
+    assert drive_relative_path_for_local_case(normal) == "一般案件/Lumi/2026-0001-測試甲-一審-訴願"
+
+    debt = CaseFolder(
+        source="nas",
+        path="/cases/法扶案件/消費者債務清理/2026-0002-測試乙-更生-清算",
+        relative_path="法扶案件/消費者債務清理/2026-0002-測試乙-更生-清算",
+        name="2026-0002-測試乙-更生-清算",
+        category="法扶案件",
+        status="active",
+        case_kind="消費者債務清理",
+        meta=CaseMeta(case_number="2026-0002"),
+    )
+    assert drive_relative_path_for_local_case(debt) == "法扶案件/Lumi/01.消債/2026-0002-測試乙-更生-清算"
+
+    closed = CaseFolder(
+        source="nas",
+        path="/closed/法扶案件/刑事/2026-0003-測試丙-一審-詐欺",
+        relative_path="法扶案件/刑事/2026-0003-測試丙-一審-詐欺",
+        name="2026-0003-測試丙-一審-詐欺",
+        category="法扶案件",
+        status="closed",
+        case_kind="刑事",
+        meta=CaseMeta(case_number="2026-0003"),
+    )
+    assert drive_relative_path_for_local_case(closed) == "結案案件/法扶案件/Lumi/2026-0003-測試丙-一審-詐欺"
+
+    appointed = CaseFolder(
+        source="nas",
+        path="/cases/指定辯護案件/刑事/2026-0004-測試丁-一審-殺人",
+        relative_path="指定辯護案件/刑事/2026-0004-測試丁-一審-殺人",
+        name="2026-0004-測試丁-一審-殺人",
+        category="指定辯護案件",
+        status="active",
+        case_kind="刑事",
+        meta=CaseMeta(case_number="2026-0004"),
+    )
+    assert drive_relative_path_for_local_case(appointed) == "指定辯護案件/2026-0004-測試丁-一審-殺人"
+
+
+def test_ensure_drive_folder_path_creates_only_missing_segments(monkeypatch):
+    existing = {("root", "一般案件"): "folder-general"}
+    created = []
+
+    def fake_find(_service, parent_id, name):
+        return existing.get((parent_id, name), "")
+
+    def fake_create(_service, parent_id, name):
+        new_id = f"{parent_id}/{name}"
+        existing[(parent_id, name)] = new_id
+        created.append((parent_id, name))
+        return new_id
+
+    monkeypatch.setattr("api.osc.drive_case_sync.find_drive_child_folder", fake_find)
+    monkeypatch.setattr("api.osc.drive_case_sync.create_drive_folder", fake_create)
+    result = ensure_drive_folder_path(object(), "root", "一般案件/Lumi/2026-0001-測試甲-一審-訴願")
+    assert result["drive_id"] == "folder-general/Lumi/2026-0001-測試甲-一審-訴願"
+    assert result["created_folders"] == [
+        "一般案件/Lumi",
+        "一般案件/Lumi/2026-0001-測試甲-一審-訴願",
+    ]
+
+
+def test_create_missing_drive_case_folders_only_for_recent_nas_cases(monkeypatch):
+    recent = datetime.now(timezone.utc).isoformat()
+    old = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+    local_recent = CaseFolder(
+        source="nas",
+        path="/cases/一般案件/行政/2026-0101-測試甲-一審-訴願",
+        relative_path="一般案件/行政/2026-0101-測試甲-一審-訴願",
+        name="2026-0101-測試甲-一審-訴願",
+        category="一般案件",
+        status="active",
+        case_kind="行政",
+        modified_time=recent,
+        meta=CaseMeta(case_number="2026-0101"),
+    )
+    local_old = CaseFolder(
+        source="nas",
+        path="/cases/一般案件/行政/2025-0001-舊案-一審-訴願",
+        relative_path="一般案件/行政/2025-0001-舊案-一審-訴願",
+        name="2025-0001-舊案-一審-訴願",
+        category="一般案件",
+        status="active",
+        case_kind="行政",
+        modified_time=old,
+        meta=CaseMeta(case_number="2025-0001"),
+    )
+    created = []
+
+    def fake_ensure(_service, _root, relative_path):
+        created.append(relative_path)
+        return {"drive_id": "new", "created_folders": [relative_path], "created_count": 1}
+
+    monkeypatch.setattr("api.osc.drive_case_sync.ensure_drive_folder_path", fake_ensure)
+    result = create_missing_drive_case_folders(
+        object(),
+        "root",
+        {"local_only": [local_recent, local_old]},
+        create_limit=10,
+        max_age_hours=24,
+        owner_bucket="Lumi",
+    )
+    assert result["summary"]["attempted"] == 1
+    assert result["summary"]["created_or_existing"] == 1
+    assert result["summary"]["skipped"] == 1
+    assert created == ["一般案件/Lumi/2026-0101-測試甲-一審-訴願"]
+
+
+def test_build_file_sync_plan_supports_matched_case_offset(monkeypatch):
+    cases = []
+    for idx in range(3):
+        cases.append({
+            "drive": CaseFolder(
+                source="drive",
+                path=f"一般案件/Lumi/2026-020{idx}-測試-一審-事件",
+                relative_path=f"一般案件/Lumi/2026-020{idx}-測試-一審-事件",
+                name=f"2026-020{idx}-測試-一審-事件",
+                meta=CaseMeta(case_number=f"2026-020{idx}"),
+                drive_id=f"drive-{idx}",
+            ),
+            "local": CaseFolder(
+                source="nas",
+                path=f"/cases/一般案件/民事/2026-020{idx}-測試-一審-事件",
+                local_path=f"/cases/一般案件/民事/2026-020{idx}-測試-一審-事件",
+                relative_path=f"一般案件/民事/2026-020{idx}-測試-一審-事件",
+                name=f"2026-020{idx}-測試-一審-事件",
+                meta=CaseMeta(case_number=f"2026-020{idx}"),
+            ),
+        })
+    monkeypatch.setattr("api.osc.drive_case_sync.drive_descendant_context", lambda *args, **kwargs: [])
+    monkeypatch.setattr("api.osc.drive_case_sync.local_descendant_context", lambda *args, **kwargs: [])
+    plan = build_file_sync_plan({"matched": cases}, object(), matched_case_limit=1, matched_case_offset=1)
+    assert plan["summary"]["matched_cases_scanned"] == 1
+    assert plan["summary"]["matched_case_offset"] == 1
+    assert plan["cases"][0]["case_number"] == "2026-0201"
