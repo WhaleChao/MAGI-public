@@ -335,6 +335,8 @@ scratch/
 # Runtime metrics & auto-generated reports (2026-04-20)
 static/external_chat_metrics.jsonl
 static/nightly_regression_latest.json
+static/knowledge_lint_latest.json
 skills/pdf-namer/_learned_filename_rules.json
 skills/pdf-namer/_nightly_report.json
+skills/pdf-namer/db_rules_cache.json
 .backup/

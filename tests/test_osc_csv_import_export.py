@@ -250,7 +250,7 @@ def test_clients_import_skips_duplicates(client):
 
 def test_clients_import_uses_original_osc_client_id_sequence(client):
     csv_bytes = _make_csv(
-        [{"姓名": "王五", "電話": "0911222333"}],
+        [{"姓名": "王五", "電話": "0912345678"}],
         fieldnames=["姓名", "電話"],
     )
     inserted = {}

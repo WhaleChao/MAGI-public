@@ -687,12 +687,27 @@ def _ignore_name(name: str) -> bool:
     return name in SYNC_IGNORE_NAMES or any(name.startswith(p) for p in SYNC_IGNORE_PREFIXES)
 
 
+def _first_existing_homes_case_root() -> Path:
+    homes_root = Path("/Volumes/homes")
+    if not homes_root.exists():
+        return Path()
+    try:
+        candidates = sorted(homes_root.iterdir(), key=lambda p: p.name)
+    except OSError:
+        return Path()
+    for child in candidates:
+        case_root = child / "01_案件"
+        if case_root.exists():
+            return case_root
+    return Path()
+
+
 def default_active_case_roots() -> list[Path]:
     env = os.environ.get("MAGI_DRIVE_SYNC_ACTIVE_CASE_ROOT") or os.environ.get("MAGI_ACTIVE_CASE_ROOT")
     if env:
         p = Path(env).expanduser()
         return [p] if p.exists() else []
-    real_nas = Path("/Volumes/homes/lumi63181107/01_案件")
+    real_nas = _first_existing_homes_case_root()
     if real_nas.exists():
         return [real_nas]
     cloud = Path.home() / "Library/CloudStorage/SynologyDrive-homes/01_案件"
@@ -711,10 +726,18 @@ def default_closed_case_roots() -> list[Path]:
     return [cloud] if cloud.exists() else []
 
 
+def _default_active_canonical_prefix() -> str:
+    real_nas = _first_existing_homes_case_root()
+    parts = real_nas.parts
+    if len(parts) >= 5 and parts[1:3] == ("Volumes", "homes") and parts[-1] == "01_案件":
+        return f"Z:/{parts[3]}/01_案件"
+    return "Z:/<NAS_ACCOUNT>/01_案件"
+
+
 def canonical_base_for_status(status: str) -> str:
     if status == "closed":
         return (os.environ.get("MAGI_CANONICAL_CLOSED_CASE_PREFIX") or "Y:/lumi/03_工作資料/10_結案").replace("\\", "/").rstrip("/")
-    return (os.environ.get("MAGI_CANONICAL_ACTIVE_CASE_PREFIX") or "Z:/lumi63181107/01_案件").replace("\\", "/").rstrip("/")
+    return (os.environ.get("MAGI_CANONICAL_ACTIVE_CASE_PREFIX") or _default_active_canonical_prefix()).replace("\\", "/").rstrip("/")
 
 
 def suggest_canonical_path(case: CaseFolder) -> tuple[str, str, str]:

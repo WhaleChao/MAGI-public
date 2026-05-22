@@ -3148,6 +3148,8 @@ def _portal_item_is_court_pickup_ready(item: dict) -> bool:
 def _portal_item_is_actionable_pending(item: dict) -> bool:
     if not isinstance(item, dict) or item.get("status") != "pending_payment":
         return False
+    if _portal_item_has_done_or_expired_marker(item):
+        return False
     if _portal_item_is_court_pickup_ready(item):
         return False
     if _portal_item_is_paid(item):
