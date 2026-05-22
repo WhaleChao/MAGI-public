@@ -8,6 +8,7 @@ from api.osc.drive_case_sync import (
     classify_drive_case_folder,
     classify_local_case_folder,
     compare_case_folders,
+    execute_nas_to_drive_uploads,
     default_active_case_roots,
     export_relative_path,
     extract_case_meta,
@@ -475,3 +476,65 @@ def test_file_sync_plan_reports_both_sides_missing_and_content_conflict(monkeypa
     assert case["download_missing"][0]["target_relative_path"] == "雲端缺NAS.pdf"
     assert case["nas_only"][0]["relative_path"] == "NAS缺雲端.pdf"
     assert case["conflicts"][0]["reason"] == "same_relative_path_md5_differs"
+
+
+def test_execute_uploads_uses_nas_only_files_without_overwrite(monkeypatch, tmp_path):
+    src = tmp_path / "NAS缺雲端.pdf"
+    src.write_bytes(b"hello")
+    plan = {
+        "cases": [
+            {
+                "case_number": "2026-0333",
+                "drive_path": "一般案件/Lumi/2026-0333-測試甲-一審-損害賠償",
+                "drive_id": "drive-case",
+                "nas_only": [
+                    {
+                        "path": str(src),
+                        "relative_path": "01_書狀/NAS缺雲端.pdf",
+                        "size": src.stat().st_size,
+                    }
+                ],
+            }
+        ]
+    }
+    calls = []
+
+    def fake_upload(service, *, local_path, drive_case_folder_id, relative_path):
+        calls.append((local_path, drive_case_folder_id, relative_path))
+        return {
+            "status": "uploaded",
+            "drive_id": "new-file",
+            "web_url": "https://drive.example/file",
+            "bytes": local_path.stat().st_size,
+            "created_folders": ["01_書狀"],
+        }
+
+    monkeypatch.setattr("api.osc.drive_case_sync.upload_local_file_to_drive", fake_upload)
+    result = execute_nas_to_drive_uploads(object(), plan, upload_limit=10, max_upload_bytes=1000)
+    assert result["summary"]["attempted"] == 1
+    assert result["summary"]["uploaded"] == 1
+    assert result["summary"]["bytes"] == 5
+    assert result["summary"]["folders_created"] == 1
+    assert calls[0][1] == "drive-case"
+    assert calls[0][2] == "01_書狀/NAS缺雲端.pdf"
+
+
+def test_execute_uploads_respects_byte_limit(tmp_path):
+    src = tmp_path / "big.pdf"
+    src.write_bytes(b"12345")
+    plan = {
+        "cases": [
+            {
+                "case_number": "2026-0333",
+                "drive_path": "一般案件/Lumi/2026-0333-測試甲-一審-損害賠償",
+                "drive_id": "drive-case",
+                "nas_only": [
+                    {"path": str(src), "relative_path": "big.pdf", "size": src.stat().st_size}
+                ],
+            }
+        ]
+    }
+    result = execute_nas_to_drive_uploads(object(), plan, max_upload_bytes=4)
+    assert result["summary"]["attempted"] == 0
+    assert result["summary"]["uploaded"] == 0
+    assert result["summary"]["stopped_by_bytes"] is True

@@ -105,6 +105,8 @@
 
 現階段若尚未開啟 Google Drive 寫入授權，MAGI 仍必須列報 `nas_has_drive_missing`，讓使用者知道同事的 Google Drive 版本缺少哪些 NAS 正式檔案。
 
+已開啟寫入授權後，MAGI 可執行 `--execute-uploads`，將 `nas_has_drive_missing` 的檔案補上傳至該案件的 Google Drive 對應資料夾。上傳只處理缺檔，不覆蓋既有雲端檔案；若缺少中間資料夾，只建立該檔案必要的父層資料夾。
+
 ### 第四階段：衝突處理
 
 衝突類型：

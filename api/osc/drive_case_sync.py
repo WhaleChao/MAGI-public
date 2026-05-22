@@ -24,8 +24,10 @@ from typing import Any, Iterable
 
 
 DRIVE_READONLY_SCOPE = "https://www.googleapis.com/auth/drive.readonly"
+DRIVE_WRITE_SCOPE = "https://www.googleapis.com/auth/drive"
 SHEETS_READONLY_SCOPE = "https://www.googleapis.com/auth/spreadsheets.readonly"
 READONLY_SCOPES = [DRIVE_READONLY_SCOPE, SHEETS_READONLY_SCOPE]
+WRITE_SCOPES = [DRIVE_WRITE_SCOPE]
 GOOGLE_FOLDER_MIME = "application/vnd.google-apps.folder"
 GOOGLE_EXPORT_MIME_MAP = {
     "application/vnd.google-apps.document": (
@@ -238,7 +240,12 @@ def load_local_env() -> None:
         os.environ.setdefault(key, value)
 
 
-def drive_sync_token_path() -> Path:
+def drive_sync_token_path(*, write: bool = False) -> Path:
+    if write:
+        return Path(
+            os.environ.get("MAGI_DRIVE_SYNC_WRITE_TOKEN")
+            or "~/.magi/google/drive_sync_write_token.json"
+        ).expanduser()
     return Path(
         os.environ.get("MAGI_DRIVE_SYNC_TOKEN")
         or os.environ.get("MAGI_ACCOUNTING_GOOGLE_SHEETS_TOKEN")
@@ -264,7 +271,7 @@ def drive_sync_account_hint() -> str:
     ).strip() or "primary"
 
 
-def _load_google_credentials(*, interactive: bool = False, force_auth: bool = False):
+def _load_google_credentials(*, interactive: bool = False, force_auth: bool = False, write: bool = False):
     try:
         from google.auth.transport.requests import Request
         from google.oauth2.credentials import Credentials
@@ -272,31 +279,33 @@ def _load_google_credentials(*, interactive: bool = False, force_auth: bool = Fa
     except Exception as exc:  # pragma: no cover - import depends on runtime extras
         raise DriveCaseSyncError(f"Google API 套件未安裝：{exc}") from exc
 
-    token_path = drive_sync_token_path()
+    scopes = WRITE_SCOPES if write else READONLY_SCOPES
+    token_path = drive_sync_token_path(write=write)
     credentials_path = drive_sync_credentials_path()
     account_hint = drive_sync_account_hint()
     creds = None
     if force_auth and interactive:
         token_path.unlink(missing_ok=True)
     if token_path.exists():
-        creds = Credentials.from_authorized_user_file(str(token_path), READONLY_SCOPES)
+        creds = Credentials.from_authorized_user_file(str(token_path), scopes)
     if creds and creds.expired and creds.refresh_token:
         creds.refresh(Request())
-    if not creds or not creds.valid or not creds.has_scopes(READONLY_SCOPES):
+    if not creds or not creds.valid or not creds.has_scopes(scopes):
         if not interactive:
+            scope_text = "Google Drive 寫入" if write else "Google Drive 唯讀"
             raise DriveCaseSyncError(
-                "尚未授權 Google Drive 唯讀盤點。請先以已授權帳號建立 "
-                "MAGI_DRIVE_SYNC_TOKEN，或暫用帳務 token。"
+                f"尚未授權 {scope_text}。請先以 --auth 建立 "
+                f"{'MAGI_DRIVE_SYNC_WRITE_TOKEN' if write else 'MAGI_DRIVE_SYNC_TOKEN'}。"
             )
         if not credentials_path.exists():
             raise DriveCaseSyncError(f"找不到 Google OAuth credentials：{credentials_path}")
-        flow = InstalledAppFlow.from_client_secrets_file(str(credentials_path), READONLY_SCOPES)
+        flow = InstalledAppFlow.from_client_secrets_file(str(credentials_path), scopes)
         creds = flow.run_local_server(
             port=0,
             prompt="consent",
             login_hint=account_hint,
             authorization_prompt_message=(
-                f"請用 {account_hint} 授權 MAGI 唯讀盤點雲端案件資料夾：{{url}}"
+                f"請用 {account_hint} 授權 MAGI {'上傳缺檔到' if write else '唯讀盤點'}雲端案件資料夾：{{url}}"
             ),
         )
         token_path.parent.mkdir(parents=True, exist_ok=True)
@@ -308,7 +317,7 @@ def _load_google_credentials(*, interactive: bool = False, force_auth: bool = Fa
     return creds
 
 
-def build_drive_service(*, interactive: bool = False, force_auth: bool = False):
+def build_drive_service(*, interactive: bool = False, force_auth: bool = False, write: bool = False):
     try:
         from googleapiclient.discovery import build
         import google_auth_httplib2
@@ -316,7 +325,7 @@ def build_drive_service(*, interactive: bool = False, force_auth: bool = False):
     except Exception as exc:  # pragma: no cover - import depends on runtime extras
         raise DriveCaseSyncError(f"Google Drive API 套件未安裝：{exc}") from exc
     timeout = int(os.environ.get("MAGI_DRIVE_SYNC_HTTP_TIMEOUT") or "30")
-    creds = _load_google_credentials(interactive=interactive, force_auth=force_auth)
+    creds = _load_google_credentials(interactive=interactive, force_auth=force_auth, write=write)
     http = google_auth_httplib2.AuthorizedHttp(creds, http=httplib2.Http(timeout=timeout))
     return build("drive", "v3", http=http, cache_discovery=False)
 
@@ -1518,6 +1527,7 @@ def safe_child_path(base: Path, relative_path: str) -> Path:
 
 def _entry_public_dict(entry: FileEntry) -> dict[str, Any]:
     return {
+        "path": entry.path,
         "relative_path": entry.relative_path,
         "name": entry.name,
         "is_folder": entry.is_folder,
@@ -1527,6 +1537,86 @@ def _entry_public_dict(entry: FileEntry) -> dict[str, Any]:
         "drive_id": entry.drive_id,
         "web_url": entry.web_url,
         "mime_type": entry.mime_type,
+    }
+
+
+def find_drive_child_folder(service: Any, parent_id: str, name: str) -> str:
+    for item in _drive_list_children(service, parent_id):
+        if item.get("mimeType") == GOOGLE_FOLDER_MIME and str(item.get("name") or "") == name:
+            return str(item.get("id") or "")
+    return ""
+
+
+def find_drive_child_file(service: Any, parent_id: str, name: str) -> str:
+    for item in _drive_list_children(service, parent_id):
+        if item.get("mimeType") != GOOGLE_FOLDER_MIME and str(item.get("name") or "") == name:
+            return str(item.get("id") or "")
+    return ""
+
+
+def create_drive_folder(service: Any, parent_id: str, name: str) -> str:
+    body = {"name": name, "mimeType": GOOGLE_FOLDER_MIME, "parents": [parent_id]}
+    created = service.files().create(
+        body=body,
+        supportsAllDrives=True,
+        fields="id,name,webViewLink",
+    ).execute()
+    return str(created.get("id") or "")
+
+
+def ensure_drive_parent_folder(service: Any, root_folder_id: str, relative_file_path: str) -> tuple[str, list[str]]:
+    parent = PurePosixPath(str(relative_file_path or "").replace("\\", "/")).parent
+    if str(parent) in {"", "."}:
+        return root_folder_id, []
+    current = root_folder_id
+    created: list[str] = []
+    for part in parent.parts:
+        if part in {"", ".", ".."}:
+            raise DriveCaseSyncError(f"不安全的雲端相對資料夾：{relative_file_path}")
+        found = find_drive_child_folder(service, current, part)
+        if found:
+            current = found
+            continue
+        current = create_drive_folder(service, current, part)
+        created.append(part)
+    return current, created
+
+
+def upload_local_file_to_drive(
+    service: Any,
+    *,
+    local_path: Path,
+    drive_case_folder_id: str,
+    relative_path: str,
+) -> dict[str, Any]:
+    from googleapiclient.http import MediaFileUpload
+
+    if not local_path.exists() or not local_path.is_file():
+        raise DriveCaseSyncError(f"找不到可上傳檔案：{local_path}")
+    parent_id, created_folders = ensure_drive_parent_folder(service, drive_case_folder_id, relative_path)
+    name = PurePosixPath(str(relative_path).replace("\\", "/")).name
+    if find_drive_child_file(service, parent_id, name):
+        return {
+            "status": "skipped_existing",
+            "drive_id": "",
+            "web_url": "",
+            "bytes": 0,
+            "created_folders": created_folders,
+        }
+    media = MediaFileUpload(str(local_path), resumable=True)
+    created = service.files().create(
+        body={"name": name, "parents": [parent_id]},
+        media_body=media,
+        supportsAllDrives=True,
+        fields="id,name,size,md5Checksum,webViewLink",
+    ).execute()
+    return {
+        "status": "uploaded",
+        "drive_id": str(created.get("id") or ""),
+        "web_url": str(created.get("webViewLink") or ""),
+        "bytes": int(created["size"]) if str(created.get("size") or "").isdigit() else int(local_path.stat().st_size),
+        "created_folders": created_folders,
+        "md5": str(created.get("md5Checksum") or ""),
     }
 
 
@@ -1675,7 +1765,7 @@ def build_file_sync_plan(
     return {
         "mode": "file_diff_dry_run",
         "write_actions_enabled": False,
-        "direction": "drive_to_nas_missing_only",
+        "direction": "bidirectional_missing_and_conflict_diff",
         "safety": "no_overwrite_no_delete_no_empty_folder_create",
         "summary": summary,
         "cases": cases,
@@ -1788,6 +1878,114 @@ def execute_drive_to_nas_downloads(
         "safety": "no_overwrite_no_delete",
         "summary": summary,
         "manifest": manifest,
+    }
+
+
+def execute_nas_to_drive_uploads(
+    drive_service: Any,
+    file_sync_plan: dict[str, Any],
+    *,
+    upload_limit: int = 0,
+    max_upload_bytes: int = 0,
+) -> dict[str, Any]:
+    manifest: list[dict[str, Any]] = []
+    summary = {
+        "attempted": 0,
+        "uploaded": 0,
+        "skipped_existing": 0,
+        "failed": 0,
+        "bytes": 0,
+        "folders_created": 0,
+        "stopped_by_limit": False,
+        "stopped_by_bytes": False,
+    }
+    for case in file_sync_plan.get("cases") or []:
+        drive_case_folder_id = str(case.get("drive_id") or "")
+        if not drive_case_folder_id:
+            continue
+        for action in case.get("nas_only") or []:
+            if upload_limit and summary["attempted"] >= upload_limit:
+                summary["stopped_by_limit"] = True
+                break
+            size_hint = int(action.get("size") or 0)
+            if max_upload_bytes and size_hint and summary["bytes"] + size_hint > max_upload_bytes:
+                summary["stopped_by_bytes"] = True
+                break
+            local_path = Path(str(action.get("path") or ""))
+            relative_path = str(action.get("relative_path") or "")
+            summary["attempted"] += 1
+            record = {
+                "case_number": case.get("case_number"),
+                "drive_path": case.get("drive_path"),
+                "local_path": str(local_path),
+                "drive_relative_path": relative_path,
+                "status": "",
+                "bytes": 0,
+                "drive_id": "",
+                "web_url": "",
+                "error": "",
+                "created_folders": [],
+            }
+            try:
+                result = upload_local_file_to_drive(
+                    drive_service,
+                    local_path=local_path,
+                    drive_case_folder_id=drive_case_folder_id,
+                    relative_path=relative_path,
+                )
+                record.update(result)
+                if result["status"] == "uploaded":
+                    summary["uploaded"] += 1
+                    summary["bytes"] += int(result.get("bytes") or 0)
+                elif result["status"] == "skipped_existing":
+                    summary["skipped_existing"] += 1
+                summary["folders_created"] += len(result.get("created_folders") or [])
+            except Exception as exc:
+                record["status"] = "failed"
+                record["error"] = f"{type(exc).__name__}: {exc}"
+                summary["failed"] += 1
+            manifest.append(record)
+        if summary["stopped_by_limit"] or summary["stopped_by_bytes"]:
+            break
+    return {
+        "mode": "execute_nas_to_drive_missing_only",
+        "write_actions_enabled": True,
+        "safety": "no_overwrite_no_delete",
+        "summary": summary,
+        "manifest": manifest,
+    }
+
+
+def combine_execution_results(
+    *,
+    download_result: dict[str, Any] | None = None,
+    upload_result: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    if download_result and not upload_result:
+        return download_result
+    if upload_result and not download_result:
+        return upload_result
+    download_summary = (download_result or {}).get("summary") or {}
+    upload_summary = (upload_result or {}).get("summary") or {}
+    return {
+        "mode": "execute_bidirectional_missing_only",
+        "write_actions_enabled": True,
+        "safety": "no_overwrite_no_delete_conflicts_blocked",
+        "summary": {
+            "download_attempted": download_summary.get("attempted", 0),
+            "downloaded": download_summary.get("downloaded", 0),
+            "download_skipped_existing": download_summary.get("skipped_existing", 0),
+            "download_failed": download_summary.get("failed", 0),
+            "download_bytes": download_summary.get("bytes", 0),
+            "upload_attempted": upload_summary.get("attempted", 0),
+            "uploaded": upload_summary.get("uploaded", 0),
+            "upload_skipped_existing": upload_summary.get("skipped_existing", 0),
+            "upload_failed": upload_summary.get("failed", 0),
+            "upload_bytes": upload_summary.get("bytes", 0),
+            "upload_folders_created": upload_summary.get("folders_created", 0),
+        },
+        "download_result": download_result or {},
+        "upload_result": upload_result or {},
     }
 
 
@@ -2050,18 +2248,49 @@ def write_report_files(report: dict[str, Any], output_dir: Path) -> dict[str, st
             lines.append(f"- 逐檔差異 CSV：`{file_diff_csv_path}`")
     exec_summary = (report.get("execution_result") or {}).get("summary") or {}
     if exec_summary:
+        upload_result = (report.get("execution_result") or {}).get("upload_result") or {}
+        download_result = (report.get("execution_result") or {}).get("download_result") or {}
         lines.extend([
             "",
-            "## 本輪下載執行結果",
+            "## 本輪同步執行結果",
             "",
-            f"- 嘗試：{exec_summary.get('attempted', 0)}",
-            f"- 已下載：{exec_summary.get('downloaded', 0)}",
-            f"- 已存在略過：{exec_summary.get('skipped_existing', 0)}",
-            f"- 失敗：{exec_summary.get('failed', 0)}",
-            f"- 寫入位元組：{exec_summary.get('bytes', 0)}",
-            f"- 因數量上限停止：{exec_summary.get('stopped_by_limit', False)}",
-            f"- 因容量上限停止：{exec_summary.get('stopped_by_bytes', False)}",
         ])
+        if download_result:
+            ds = download_result.get("summary") or {}
+            lines.extend([
+                f"- 下載嘗試：{ds.get('attempted', 0)}",
+                f"- 已下載到 NAS：{ds.get('downloaded', 0)}",
+                f"- 下載已存在略過：{ds.get('skipped_existing', 0)}",
+                f"- 下載失敗：{ds.get('failed', 0)}",
+                f"- 下載位元組：{ds.get('bytes', 0)}",
+            ])
+        elif "downloaded" in exec_summary:
+            lines.extend([
+                f"- 下載嘗試：{exec_summary.get('attempted', 0)}",
+                f"- 已下載到 NAS：{exec_summary.get('downloaded', 0)}",
+                f"- 下載已存在略過：{exec_summary.get('skipped_existing', 0)}",
+                f"- 下載失敗：{exec_summary.get('failed', 0)}",
+                f"- 下載位元組：{exec_summary.get('bytes', 0)}",
+            ])
+        if upload_result:
+            us = upload_result.get("summary") or {}
+            lines.extend([
+                f"- 上傳嘗試：{us.get('attempted', 0)}",
+                f"- 已上傳到 Google Drive：{us.get('uploaded', 0)}",
+                f"- 上傳已存在略過：{us.get('skipped_existing', 0)}",
+                f"- 上傳失敗：{us.get('failed', 0)}",
+                f"- 上傳位元組：{us.get('bytes', 0)}",
+                f"- 新增雲端資料夾：{us.get('folders_created', 0)}",
+            ])
+        elif "uploaded" in exec_summary:
+            lines.extend([
+                f"- 上傳嘗試：{exec_summary.get('attempted', 0)}",
+                f"- 已上傳到 Google Drive：{exec_summary.get('uploaded', 0)}",
+                f"- 上傳已存在略過：{exec_summary.get('skipped_existing', 0)}",
+                f"- 上傳失敗：{exec_summary.get('failed', 0)}",
+                f"- 上傳位元組：{exec_summary.get('bytes', 0)}",
+                f"- 新增雲端資料夾：{exec_summary.get('folders_created', 0)}",
+            ])
     md_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     paths = {"json": str(json_path), "markdown": str(md_path), "csv": str(csv_path)}
     if file_diff_rows:
@@ -2082,14 +2311,17 @@ def run_inventory(
     resolve_context: bool = True,
     file_diff: bool = False,
     execute_downloads: bool = False,
+    execute_uploads: bool = False,
     download_limit: int = 0,
     max_download_bytes: int = 0,
+    upload_limit: int = 0,
+    max_upload_bytes: int = 0,
     max_case_depth: int = 20,
     max_case_items: int = 10000,
     matched_case_limit: int = 0,
 ) -> dict[str, Any]:
     load_local_env()
-    service = build_drive_service(interactive=interactive)
+    service = build_drive_service(interactive=interactive, write=execute_uploads)
     drive_root = find_drive_root(service, root_id=root_id or os.environ.get("MAGI_DRIVE_SYNC_ROOT_FOLDER_ID", ""), root_name=root_name)
     drive_entries, drive_cases = drive_file_entries(service, drive_root["id"], max_depth=max_depth, max_items=max_items)
 
@@ -2120,7 +2352,7 @@ def run_inventory(
 
     file_sync_plan: dict[str, Any] | None = None
     execution_result: dict[str, Any] | None = None
-    if file_diff or execute_downloads:
+    if file_diff or execute_downloads or execute_uploads:
         file_sync_plan = build_file_sync_plan(
             comparison,
             service,
@@ -2128,12 +2360,26 @@ def run_inventory(
             max_case_items=max_case_items,
             matched_case_limit=matched_case_limit,
         )
+    download_result: dict[str, Any] | None = None
+    upload_result: dict[str, Any] | None = None
     if execute_downloads:
-        execution_result = execute_drive_to_nas_downloads(
+        download_result = execute_drive_to_nas_downloads(
             service,
             file_sync_plan or {},
             download_limit=download_limit,
             max_download_bytes=max_download_bytes,
+        )
+    if execute_uploads:
+        upload_result = execute_nas_to_drive_uploads(
+            service,
+            file_sync_plan or {},
+            upload_limit=upload_limit,
+            max_upload_bytes=max_upload_bytes,
+        )
+    if download_result or upload_result:
+        execution_result = combine_execution_results(
+            download_result=download_result,
+            upload_result=upload_result,
         )
 
     report = build_report(
@@ -2153,7 +2399,7 @@ def run_inventory(
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="MAGI Google Drive/NAS case inventory (read-only)")
+    parser = argparse.ArgumentParser(description="MAGI Google Drive/NAS case inventory and conservative sync")
     parser.add_argument("--root-id", default="", help="Google Drive 案件辦理資料夾 ID；未指定則用名稱查找")
     parser.add_argument("--root-name", default=os.environ.get("MAGI_DRIVE_SYNC_ROOT_FOLDER_NAME", DEFAULT_DRIVE_ROOT_NAME))
     parser.add_argument("--active-root", action="append", default=[], help="NAS 進行中案件根目錄，可重複")
@@ -2165,8 +2411,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--no-context-resolve", action="store_true", help="不讀同名多案資料夾內容做深度消歧義")
     parser.add_argument("--file-diff", action="store_true", help="對唯一匹配案件做逐檔差異盤點")
     parser.add_argument("--execute-downloads", action="store_true", help="只把雲端有、NAS 缺少的檔案下載到 NAS；不覆蓋、不刪除")
+    parser.add_argument("--execute-uploads", action="store_true", help="只把 NAS 有、雲端缺少的檔案上傳到 Google Drive；不覆蓋、不刪除")
     parser.add_argument("--download-limit", type=int, default=0, help="本輪最多下載幾個檔案，0 表示不限制")
     parser.add_argument("--max-download-bytes", type=int, default=0, help="本輪最多下載位元組，0 表示不限制")
+    parser.add_argument("--upload-limit", type=int, default=0, help="本輪最多上傳幾個檔案，0 表示不限制")
+    parser.add_argument("--max-upload-bytes", type=int, default=0, help="本輪最多上傳位元組，0 表示不限制")
     parser.add_argument("--max-case-depth", type=int, default=20, help="逐檔差異掃描單一案件的最大深度")
     parser.add_argument("--max-case-items", type=int, default=10000, help="逐檔差異掃描單一案件最多項目")
     parser.add_argument("--matched-case-limit", type=int, default=0, help="逐檔差異最多掃描幾個唯一匹配案件，0 表示不限制")
@@ -2186,8 +2435,11 @@ def main(argv: list[str] | None = None) -> int:
         resolve_context=not args.no_context_resolve,
         file_diff=args.file_diff,
         execute_downloads=args.execute_downloads,
+        execute_uploads=args.execute_uploads,
         download_limit=args.download_limit,
         max_download_bytes=args.max_download_bytes,
+        upload_limit=args.upload_limit,
+        max_upload_bytes=args.max_upload_bytes,
         max_case_depth=args.max_case_depth,
         max_case_items=args.max_case_items,
         matched_case_limit=args.matched_case_limit,
