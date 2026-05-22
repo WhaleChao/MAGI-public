@@ -16,10 +16,13 @@ from api.osc.drive_case_sync import (
     meaningful_terms,
     normalize_court_case_no,
     resolve_ambiguous_cases_with_context,
+    resolve_drive_only_cases_with_context,
     safe_child_path,
     score_context_candidates,
     suggest_canonical_path,
     sync_scope_exclusion_reason,
+    load_case_aliases,
+    load_case_exclusions,
 )
 
 
@@ -57,6 +60,13 @@ def test_classify_drive_and_local_case_folders():
         "case_kind": "",
     }
     assert classify_drive_case_folder("結案案件/法扶案件/Lumi") is None
+    assert classify_drive_case_folder("法扶案件/Lumi/01.消債") is None
+    assert classify_drive_case_folder("法扶案件/Lumi/01.消債/測試丁-1140101-T-001-更生") == {
+        "category": "法扶案件",
+        "status": "active",
+        "owner_bucket": "Lumi",
+        "case_kind": "消費者債務清理",
+    }
     assert classify_local_case_folder("法扶案件/刑事/2026-0002-測試乙-一審-詐欺", status="active") == {
         "category": "法扶案件",
         "status": "active",
@@ -228,6 +238,7 @@ def test_court_case_number_normalization_and_keys():
     keys = match_keys(meta)
     assert "court:115年度訴字第1號" in keys
     assert "name:測試甲" in keys
+    assert "name:測試乙" in match_keys(CaseMeta(client_hint="測試乙案"))
 
 
 def test_default_active_root_uses_explicit_env(tmp_path, monkeypatch):
@@ -300,3 +311,84 @@ def test_safe_child_path_rejects_parent_escape(tmp_path):
         assert "不安全" in str(exc)
     else:
         raise AssertionError("parent escape should be rejected")
+
+
+def test_drive_only_can_resolve_by_db_notes(monkeypatch):
+    drive = CaseFolder(
+        source="drive",
+        path="一般案件/Lumi/測試外號",
+        relative_path="一般案件/Lumi/測試外號",
+        name="測試外號",
+        category="一般案件",
+        status="active",
+        meta=extract_case_meta("測試外號"),
+    )
+    local = CaseFolder(
+        source="nas",
+        path="/cases/一般案件/行政/2026-0111-測試法人-一審-行政爭議",
+        relative_path="一般案件/行政/2026-0111-測試法人-一審-行政爭議",
+        name="2026-0111-測試法人-一審-行政爭議",
+        category="一般案件",
+        status="active",
+        case_kind="行政",
+        meta=CaseMeta(case_number="2026-0111", client_hint="測試法人", reason_hint="行政爭議"),
+    )
+    monkeypatch.setattr(
+        "api.osc.drive_case_sync.lookup_db_case_contexts",
+        lambda nums: {"2026-0111": {"notes": "測試外號案", "opponents": []}},
+    )
+    comparison = {"matched": [], "drive_only": [drive], "local_only": [local], "ambiguous": [], "out_of_scope": []}
+    resolved = resolve_drive_only_cases_with_context(comparison)
+    assert len(resolved["matched"]) == 1
+    assert resolved["matched"][0]["local"].meta.case_number == "2026-0111"
+    assert not resolved["drive_only"]
+
+
+def test_runtime_aliases_expand_drive_context(monkeypatch):
+    monkeypatch.setenv("MAGI_DRIVE_SYNC_CASE_ALIASES_JSON", '{"測試代稱": ["測試本名"]}')
+    load_case_aliases.cache_clear()
+    drive = CaseFolder(
+        source="drive",
+        path="一般案件/Lumi/測試代稱",
+        relative_path="一般案件/Lumi/測試代稱",
+        name="測試代稱",
+        category="一般案件",
+        status="active",
+        meta=extract_case_meta("測試代稱"),
+    )
+    local = CaseFolder(
+        source="nas",
+        path="/cases/一般案件/刑事/2026-0222-測試本名-偵查-傷害",
+        relative_path="一般案件/刑事/2026-0222-測試本名-偵查-傷害",
+        name="2026-0222-測試本名-偵查-傷害",
+        category="一般案件",
+        status="active",
+        case_kind="刑事",
+        meta=CaseMeta(case_number="2026-0222", client_hint="測試本名", reason_hint="傷害"),
+    )
+    comparison = {"matched": [], "drive_only": [drive], "local_only": [local], "ambiguous": [], "out_of_scope": []}
+    resolved = resolve_drive_only_cases_with_context(comparison)
+    assert len(resolved["matched"]) == 1
+    load_case_aliases.cache_clear()
+
+
+def test_runtime_exclusions_remove_drive_case_from_sync_scope(monkeypatch):
+    monkeypatch.setenv(
+        "MAGI_DRIVE_SYNC_CASE_EXCLUSIONS_JSON",
+        '{"relative_paths": ["一般案件/Lumi/測試排除案"]}',
+    )
+    load_case_exclusions.cache_clear()
+    drive = CaseFolder(
+        source="drive",
+        path="一般案件/Lumi/測試排除案",
+        relative_path="一般案件/Lumi/測試排除案",
+        name="測試排除案",
+        category="一般案件",
+        status="active",
+        meta=extract_case_meta("測試排除案"),
+    )
+    result = compare_case_folders([drive], [])
+    assert not result["drive_only"]
+    assert result["out_of_scope"][0]["drive"].relative_path == drive.relative_path
+    assert "不納入 Drive/NAS 案件同步" in sync_scope_exclusion_reason(drive)
+    load_case_exclusions.cache_clear()

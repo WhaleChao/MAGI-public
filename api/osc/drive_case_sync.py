@@ -17,6 +17,7 @@ import tempfile
 import unicodedata
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
+from functools import lru_cache
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterable
 
@@ -44,6 +45,10 @@ GOOGLE_EXPORT_MIME_MAP = {
 DEFAULT_DRIVE_ROOT_NAME = "案件辦理"
 DEFAULT_OWNER_BUCKETS = {"Aaron", "Lumi", "Aaron&Lumi", "Lumi-2"}
 OSC_NUMBER_REQUIRED_CATEGORIES = {"諮詢案件", "縣府調解案件"}
+DRIVE_CASE_KIND_BUCKETS = {
+    "陪偵": "陪偵",
+    "消債": "消費者債務清理",
+}
 SYNC_IGNORE_NAMES = {
     ".DS_Store",
     "@eaDir",
@@ -133,6 +138,9 @@ NON_DECISIVE_CONTEXT_SUBSTRINGS = (
     "案卷",
     "卷",
 )
+CONTEXT_DECISIVE_ALLOWLIST = {
+    "律師函",
+}
 
 
 class DriveCaseSyncError(RuntimeError):
@@ -198,6 +206,20 @@ def repo_root() -> Path:
 def runtime_dir() -> Path:
     root = Path(os.environ.get("MAGI_RUNTIME_DIR") or repo_root() / ".runtime")
     return root / "drive_sync"
+
+
+def case_alias_file_path() -> Path:
+    return Path(
+        os.environ.get("MAGI_DRIVE_SYNC_CASE_ALIAS_FILE")
+        or runtime_dir() / "case_aliases.json"
+    ).expanduser()
+
+
+def case_exclusion_file_path() -> Path:
+    return Path(
+        os.environ.get("MAGI_DRIVE_SYNC_CASE_EXCLUSION_FILE")
+        or runtime_dir() / "case_exclusions.json"
+    ).expanduser()
 
 
 def load_local_env() -> None:
@@ -288,9 +310,14 @@ def _load_google_credentials(*, interactive: bool = False, force_auth: bool = Fa
 def build_drive_service(*, interactive: bool = False, force_auth: bool = False):
     try:
         from googleapiclient.discovery import build
+        import google_auth_httplib2
+        import httplib2
     except Exception as exc:  # pragma: no cover - import depends on runtime extras
         raise DriveCaseSyncError(f"Google Drive API 套件未安裝：{exc}") from exc
-    return build("drive", "v3", credentials=_load_google_credentials(interactive=interactive, force_auth=force_auth), cache_discovery=False)
+    timeout = int(os.environ.get("MAGI_DRIVE_SYNC_HTTP_TIMEOUT") or "30")
+    creds = _load_google_credentials(interactive=interactive, force_auth=force_auth)
+    http = google_auth_httplib2.AuthorizedHttp(creds, http=httplib2.Http(timeout=timeout))
+    return build("drive", "v3", http=http, cache_discovery=False)
 
 
 def normalize_text(value: Any) -> str:
@@ -312,6 +339,97 @@ def normalize_context_text(value: Any) -> str:
     text = unicodedata.normalize("NFKC", str(value or ""))
     text = text.replace("臺", "台")
     return text
+
+
+@lru_cache(maxsize=1)
+def load_case_aliases() -> dict[str, list[str]]:
+    """Load local-only legacy Drive aliases.
+
+    The alias file intentionally lives under runtime by default so private
+    client/case nicknames do not have to be committed to git.
+    """
+    aliases: dict[str, list[str]] = {}
+    raw_sources: list[Any] = []
+    env_raw = os.environ.get("MAGI_DRIVE_SYNC_CASE_ALIASES_JSON", "").strip()
+    if env_raw:
+        try:
+            raw_sources.append(json.loads(env_raw))
+        except Exception:
+            pass
+    alias_path = case_alias_file_path()
+    if alias_path.exists():
+        try:
+            raw_sources.append(json.loads(alias_path.read_text(encoding="utf-8")))
+        except Exception:
+            pass
+    for raw in raw_sources:
+        if not isinstance(raw, dict):
+            continue
+        for key, values in raw.items():
+            if isinstance(values, str):
+                values = [values]
+            if not isinstance(values, list):
+                continue
+            normalized_key = normalize_text(key)
+            cleaned = [str(v).strip() for v in values if str(v or "").strip()]
+            if normalized_key and cleaned:
+                aliases.setdefault(normalized_key, [])
+                for value in cleaned:
+                    if value not in aliases[normalized_key]:
+                        aliases[normalized_key].append(value)
+    return aliases
+
+
+def expand_alias_values(values: Iterable[Any]) -> list[str]:
+    aliases = load_case_aliases()
+    expanded: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        text = normalize_text(value)
+        for key, targets in aliases.items():
+            if key and key in text:
+                for target in targets:
+                    if target not in seen:
+                        seen.add(target)
+                        expanded.append(target)
+    return expanded
+
+
+@lru_cache(maxsize=1)
+def load_case_exclusions() -> set[str]:
+    """Load local-only Drive case paths excluded from sync scope."""
+    exclusions: set[str] = set()
+    raw_sources: list[Any] = []
+    env_raw = os.environ.get("MAGI_DRIVE_SYNC_CASE_EXCLUSIONS_JSON", "").strip()
+    if env_raw:
+        try:
+            raw_sources.append(json.loads(env_raw))
+        except Exception:
+            pass
+    exclusion_path = case_exclusion_file_path()
+    if exclusion_path.exists():
+        try:
+            raw_sources.append(json.loads(exclusion_path.read_text(encoding="utf-8")))
+        except Exception:
+            pass
+    for raw in raw_sources:
+        if isinstance(raw, list):
+            values = raw
+        elif isinstance(raw, dict):
+            values = raw.get("relative_paths") or raw.get("paths") or raw.get("drive_paths") or []
+        else:
+            continue
+        for value in values:
+            normalized = normalize_text(value)
+            if normalized:
+                exclusions.add(normalized)
+    return exclusions
+
+
+def is_drive_case_excluded(case: CaseFolder) -> bool:
+    if case.source != "drive":
+        return False
+    return normalize_text(case.relative_path) in load_case_exclusions()
 
 
 def _trim_context_suffix(term: str) -> str:
@@ -375,6 +493,8 @@ def is_decisive_context_term(term: str) -> bool:
     text = str(term or "").strip()
     if not text or text in GENERIC_CONTEXT_TERMS:
         return False
+    if text in CONTEXT_DECISIVE_ALLOWLIST:
+        return True
     normalized = normalize_text(text)
     if OSC_CASE_RE.fullmatch(text) or LAF_CASE_RE.fullmatch(text) or ROC_COURT_NO_RE.search(text):
         return True
@@ -389,6 +509,11 @@ def _clean_folder_token(value: str) -> str:
     text = str(value or "").strip()
     text = re.sub(r"^\d+[.．、_ ]+", "", text)
     return text.strip(" -_－—")
+
+
+def drive_case_kind_bucket_name(value: str) -> str:
+    token = _clean_folder_token(value)
+    return DRIVE_CASE_KIND_BUCKETS.get(token, "")
 
 
 def infer_case_kind(category: str, name: str, relative_path: str = "") -> tuple[str, str]:
@@ -459,12 +584,17 @@ def match_keys(meta: CaseMeta) -> list[str]:
         keys.append(f"laf:{normalize_text(meta.laf_case_no)}")
     if meta.court_case_no:
         keys.append(f"court:{normalize_court_case_no(meta.court_case_no)}")
-    name = normalize_text(meta.client_hint)
+    name_variants: list[str] = []
+    for candidate in (meta.client_hint, _trim_context_suffix(meta.client_hint)):
+        normalized = normalize_text(candidate)
+        if normalized and normalized not in name_variants:
+            name_variants.append(normalized)
     reason = normalize_text(meta.reason_hint)
-    if name and reason:
-        keys.append(f"name_reason:{name}|{reason}")
-    if name:
-        keys.append(f"name:{name}")
+    for name in name_variants:
+        if name and reason:
+            keys.append(f"name_reason:{name}|{reason}")
+        if name:
+            keys.append(f"name:{name}")
     return keys
 
 
@@ -481,13 +611,27 @@ def classify_drive_case_folder(relative_path: str) -> dict[str, str] | None:
 
     if top in {"一般案件", "法扶案件", "無償案件"} and len(parts) >= 3 and parts[1] in DEFAULT_OWNER_BUCKETS:
         owner = parts[1]
-        case_idx = 2
+        bucket_kind = drive_case_kind_bucket_name(parts[2])
+        if bucket_kind:
+            if len(parts) == 3:
+                return None
+            case_kind = bucket_kind
+            case_idx = 3
+        else:
+            case_idx = 2
     elif top == "結案案件" and len(parts) >= 3:
         status = "closed"
         category = parts[1]
         if len(parts) >= 4 and parts[2] in DEFAULT_OWNER_BUCKETS:
             owner = parts[2]
-            case_idx = 3
+            bucket_kind = drive_case_kind_bucket_name(parts[3])
+            if bucket_kind:
+                if len(parts) == 4:
+                    return None
+                case_kind = bucket_kind
+                case_idx = 4
+            else:
+                case_idx = 3
         elif parts[2] in DEFAULT_OWNER_BUCKETS:
             return None
         else:
@@ -845,6 +989,8 @@ def is_aaron_drive_bucket(case: CaseFolder) -> bool:
 def sync_scope_exclusion_reason(case: CaseFolder) -> str:
     if case.source != "drive":
         return ""
+    if is_drive_case_excluded(case):
+        return "使用者確認此雲端資料夾不納入 Drive/NAS 案件同步；不建立 NAS 資料夾、不下載"
     if case.category in OSC_NUMBER_REQUIRED_CATEGORIES and not case.meta.case_number:
         return "諮詢/縣府調解資料夾沒有 OSC 案號；依規則不納入案件同步，也不建立 NAS 資料夾"
     return ""
@@ -920,6 +1066,7 @@ def _context_values_from_case(
     for entry in file_entries or []:
         values.append(entry.relative_path)
         values.append(entry.name)
+    values.extend(expand_alias_values(values))
     return values
 
 
@@ -1029,28 +1176,7 @@ def resolve_ambiguous_cases_with_context(
             continue
 
         drive_entries: list[FileEntry] = []
-        if drive_service is not None and drive_case.drive_id:
-            try:
-                drive_entries = drive_descendant_context(
-                    drive_service,
-                    drive_case.drive_id,
-                    max_depth=max_drive_context_depth,
-                    max_items=max_context_items,
-                )
-            except Exception as exc:
-                item["context_resolution"] = {
-                    "status": "context_probe_failed",
-                    "reason": f"雲端檔名讀取失敗：{type(exc).__name__}",
-                }
-
         local_entries_by_case: dict[str, list[FileEntry]] = {}
-        for candidate in candidates:
-            if candidate.local_path:
-                local_entries_by_case[candidate.relative_path] = local_descendant_context(
-                    candidate.local_path,
-                    max_depth=3,
-                    max_items=max_context_items,
-                )
         scores = score_context_candidates(
             drive_case,
             candidates,
@@ -1058,6 +1184,35 @@ def resolve_ambiguous_cases_with_context(
             local_entries_by_case=local_entries_by_case,
             db_context_by_case=db_contexts,
         )
+        if not (scores and scores[0].score >= 4 and (len(scores) == 1 or scores[0].score > scores[1].score)):
+            if drive_service is not None and drive_case.drive_id:
+                try:
+                    drive_entries = drive_descendant_context(
+                        drive_service,
+                        drive_case.drive_id,
+                        max_depth=max_drive_context_depth,
+                        max_items=max_context_items,
+                    )
+                except Exception as exc:
+                    item["context_resolution"] = {
+                        "status": "context_probe_failed",
+                        "reason": f"雲端檔名讀取失敗：{type(exc).__name__}",
+                    }
+
+            for candidate in candidates:
+                if candidate.local_path:
+                    local_entries_by_case[candidate.relative_path] = local_descendant_context(
+                        candidate.local_path,
+                        max_depth=3,
+                        max_items=max_context_items,
+                    )
+            scores = score_context_candidates(
+                drive_case,
+                candidates,
+                drive_entries=drive_entries,
+                local_entries_by_case=local_entries_by_case,
+                db_context_by_case=db_contexts,
+            )
         drive_terms = meaningful_terms(_context_values_from_case(drive_case, file_entries=drive_entries))
         item["context_resolution"] = {
             "status": "unresolved",
@@ -1101,6 +1256,96 @@ def resolve_ambiguous_cases_with_context(
     comparison["matched"].extend(resolved)
     comparison["ambiguous"] = still_ambiguous
     comparison["out_of_scope"] = out_of_scope
+    return comparison
+
+
+def resolve_drive_only_cases_with_context(
+    comparison: dict[str, Any],
+    *,
+    drive_service: Any | None = None,
+    max_drive_context_depth: int = 3,
+    max_context_items: int = 300,
+) -> dict[str, Any]:
+    """Try to match legacy Drive-only folders against local-only OSC cases.
+
+    This is intentionally conservative: it only promotes a Drive-only folder to
+    matched when DB notes, folder names, or local context produce one clear
+    candidate.  It never creates folders.
+    """
+    drive_only: list[CaseFolder] = list(comparison.get("drive_only") or [])
+    local_only: list[CaseFolder] = list(comparison.get("local_only") or [])
+    if not drive_only or not local_only:
+        return comparison
+
+    db_contexts = lookup_db_case_contexts(
+        c.meta.case_number for c in local_only if c.meta.case_number
+    )
+    resolved: list[dict[str, Any]] = []
+    unresolved: list[CaseFolder] = []
+    used_local_paths: set[str] = set()
+    for drive_case in drive_only:
+        candidates = [
+            c for c in local_only
+            if c.relative_path not in used_local_paths
+            and (
+                not drive_case.category
+                or not c.category
+                or drive_case.category == c.category
+                or drive_case.category == "代庭案件"
+            )
+        ]
+        if not candidates:
+            unresolved.append(drive_case)
+            continue
+
+        scores = score_context_candidates(
+            drive_case,
+            candidates,
+            drive_entries=[],
+            db_context_by_case=db_contexts,
+        )
+        if not (scores and scores[0].score >= 4 and (len(scores) == 1 or scores[0].score > scores[1].score)):
+            drive_entries: list[FileEntry] = []
+            if drive_service is not None and drive_case.drive_id:
+                try:
+                    drive_entries = drive_descendant_context(
+                        drive_service,
+                        drive_case.drive_id,
+                        max_depth=max_drive_context_depth,
+                        max_items=max_context_items,
+                    )
+                except Exception:
+                    drive_entries = []
+            if drive_entries:
+                scores = score_context_candidates(
+                    drive_case,
+                    candidates,
+                    drive_entries=drive_entries,
+                    db_context_by_case=db_contexts,
+                )
+        if scores and scores[0].score >= 4 and (len(scores) == 1 or scores[0].score > scores[1].score):
+            best = scores[0]
+            used_local_paths.add(best.candidate.relative_path)
+            resolved.append({
+                "drive": drive_case,
+                "local": best.candidate,
+                "match_keys": match_keys(drive_case.meta),
+                "context_resolution": {
+                    "status": "resolved_drive_only_by_context",
+                    "score": best.score,
+                    "matched_terms": best.matched_terms,
+                },
+            })
+        else:
+            unresolved.append(drive_case)
+
+    if resolved:
+        comparison["matched"].extend(resolved)
+        comparison["drive_only"] = unresolved
+        comparison["local_only"] = [
+            c for c in local_only
+            if c.relative_path not in used_local_paths
+        ]
     return comparison
 
 
@@ -1761,6 +2006,10 @@ def run_inventory(
     comparison = compare_case_folders(drive_cases, local_cases)
     if resolve_context:
         comparison = resolve_ambiguous_cases_with_context(
+            comparison,
+            drive_service=service,
+        )
+        comparison = resolve_drive_only_cases_with_context(
             comparison,
             drive_service=service,
         )
