@@ -733,7 +733,7 @@ def test_drive_relative_path_for_laf_keeps_laf_number_without_osc_number(monkeyp
         case_kind="刑事",
         meta=CaseMeta(case_number="2026-0052", laf_case_no="1150521-E-011", client_hint="胡裕生"),
     )
-    assert drive_relative_path_for_local_case(criminal) == "法扶案件/Lumi/胡裕生-1150521-E-011-刑事偵查-竊盜"
+    assert drive_relative_path_for_local_case(criminal) == "法扶案件/Lumi/胡裕生-1150521-E-011-刑事偵查中辯護-竊盜"
 
     debt = CaseFolder(
         source="nas",
@@ -745,7 +745,7 @@ def test_drive_relative_path_for_laf_keeps_laf_number_without_osc_number(monkeyp
         case_kind="消費者債務清理",
         meta=CaseMeta(case_number="2026-0051", laf_case_no="1150519-E-014", client_hint="金李連芯"),
     )
-    assert drive_relative_path_for_local_case(debt) == "法扶案件/Lumi/01.消債/金李連芯-1150519-E-014"
+    assert drive_relative_path_for_local_case(debt) == "法扶案件/Lumi/01.消債/金李連芯-1150519-E-014-消費者債務清理事件-消費者債務清理事件"
 
 
 def test_ensure_drive_folder_path_creates_only_missing_segments(monkeypatch):
@@ -803,11 +803,11 @@ def test_ensure_drive_case_folder_renames_legacy_osc_number_folder(monkeypatch):
     )
     result = ensure_drive_case_folder_for_local_case(object(), "root", case, owner_bucket="Lumi")
     assert result["status"] == "renamed_legacy_osc_number_folder"
-    assert result["relative_path"] == "法扶案件/Lumi/胡裕生-1150521-E-011-刑事偵查-竊盜"
+    assert result["relative_path"] == "法扶案件/Lumi/胡裕生-1150521-E-011-刑事偵查中辯護-竊盜"
     assert updates == [
         (
             "legacy",
-            "胡裕生-1150521-E-011-刑事偵查-竊盜",
+            "胡裕生-1150521-E-011-刑事偵查中辯護-竊盜",
             {"magi_osc_case_number": "2026-0052", "magi_source": "osc", "magi_laf_case_no": "1150521-E-011"},
         )
     ]

@@ -768,7 +768,20 @@ def drive_case_display_name_for_local_case(case: CaseFolder) -> str:
             descriptor = re.sub(rf"^{re.escape(client)}[\s_\-－—]*", "", descriptor).strip()
         case_kind = (case.case_kind or "").strip()
         if case_kind == "消費者債務清理":
-            return "-".join(p for p in [client or name, laf_case_no] if p)
+            return "-".join(p for p in [client or name, laf_case_no, "消費者債務清理事件", "消費者債務清理事件"] if p)
+        if case_kind == "刑事":
+            chunks = [p for p in re.split(r"[\-_－—]+", descriptor) if p]
+            stage = chunks[0] if chunks else ""
+            reason = "-".join(chunks[1:]) if len(chunks) > 1 else ""
+            stage_label = {
+                "偵查": "刑事偵查中辯護",
+                "一審": "刑事一審辯護",
+                "二審": "刑事二審辯護",
+                "三審": "刑事三審辯護",
+                "更審": "刑事更審辯護",
+            }.get(stage, "")
+            if stage_label:
+                return "-".join(p for p in [client or name, laf_case_no, stage_label, reason] if p)
         if descriptor and case_kind and not descriptor.startswith(case_kind):
             descriptor = f"{case_kind}{descriptor}"
         parts = [client or name, laf_case_no]
