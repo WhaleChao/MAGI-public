@@ -744,6 +744,40 @@ def drive_case_kind_bucket_for_local_case(case_kind: str) -> str:
     return DRIVE_CASE_KIND_BUCKET_BY_CASE_KIND.get(str(case_kind or "").strip(), "")
 
 
+def normalize_drive_case_category(category: str) -> str:
+    text = str(category or "").strip()
+    if text in {"法律扶助案件", "法扶", "法扶案"}:
+        return "法扶案件"
+    return text
+
+
+def drive_case_display_name_for_local_case(case: CaseFolder) -> str:
+    """Drive-facing case folder name without OSC's internal case number."""
+    name = (case.name or "").strip()
+    case_number = (case.meta.case_number or extract_case_meta(name).case_number or "").strip()
+    if case_number and name.startswith(case_number):
+        stripped = re.sub(rf"^{re.escape(case_number)}[\s_\-－—]*", "", name).strip()
+        if stripped:
+            name = stripped
+    category = normalize_drive_case_category(case.category)
+    laf_case_no = (case.meta.laf_case_no or extract_case_meta(name).laf_case_no or "").strip()
+    if category == "法扶案件" and laf_case_no and laf_case_no not in name:
+        client = (case.meta.client_hint or extract_case_meta(name).client_hint or "").strip()
+        descriptor = name
+        if client and descriptor.startswith(client):
+            descriptor = re.sub(rf"^{re.escape(client)}[\s_\-－—]*", "", descriptor).strip()
+        case_kind = (case.case_kind or "").strip()
+        if case_kind == "消費者債務清理":
+            return "-".join(p for p in [client or name, laf_case_no] if p)
+        if descriptor and case_kind and not descriptor.startswith(case_kind):
+            descriptor = f"{case_kind}{descriptor}"
+        parts = [client or name, laf_case_no]
+        if descriptor:
+            parts.append(descriptor)
+        return "-".join(p for p in parts if p)
+    return name
+
+
 def drive_relative_path_for_local_case(case: CaseFolder, *, owner_bucket: str | None = None) -> str:
     """Return the native Google Drive case folder path for a NAS case.
 
@@ -751,10 +785,10 @@ def drive_relative_path_for_local_case(case: CaseFolder, *, owner_bucket: str | 
     shared Drive stores normal cases under an owner bucket and only uses special
     buckets for a small number of case kinds, such as 消債 and 陪偵.
     """
-    category = (case.category or "").strip()
+    category = normalize_drive_case_category(case.category)
     case_kind = (case.case_kind or "").strip()
     status = (case.status or "active").strip() or "active"
-    name = (case.name or "").strip()
+    name = drive_case_display_name_for_local_case(case)
     if not category or not name:
         return ""
     if not (case.meta.case_number or extract_case_meta(name).case_number):
@@ -868,7 +902,7 @@ def _drive_list_children(service: Any, folder_id: str) -> list[dict[str, Any]]:
     token = None
     fields = (
         "nextPageToken, files(id,name,mimeType,parents,modifiedTime,size,md5Checksum,"
-        "webViewLink,driveId,shortcutDetails)"
+        "webViewLink,driveId,shortcutDetails,appProperties)"
     )
     while True:
         resp = service.files().list(
@@ -1027,6 +1061,15 @@ def drive_file_entries(service: Any, root_id: str, *, max_depth: int, max_items:
             if is_folder:
                 cls = classify_drive_case_folder(rel)
                 if cls:
+                    meta = extract_case_meta(name)
+                    app_props = item.get("appProperties") or {}
+                    if isinstance(app_props, dict):
+                        hidden_case_no = str(app_props.get("magi_osc_case_number") or "").strip()
+                        if OSC_CASE_RE.fullmatch(hidden_case_no):
+                            meta.case_number = hidden_case_no
+                        hidden_laf_no = str(app_props.get("magi_laf_case_no") or "").strip()
+                        if LAF_CASE_RE.fullmatch(hidden_laf_no):
+                            meta.laf_case_no = hidden_laf_no
                     case = CaseFolder(
                         source="drive",
                         path=rel,
@@ -1037,7 +1080,7 @@ def drive_file_entries(service: Any, root_id: str, *, max_depth: int, max_items:
                         case_kind=cls["case_kind"],
                         owner_bucket=cls["owner_bucket"],
                         modified_time=str(item.get("modifiedTime") or ""),
-                        meta=extract_case_meta(name),
+                        meta=meta,
                         drive_id=str(item.get("id") or ""),
                         web_url=str(item.get("webViewLink") or ""),
                     )
@@ -1761,14 +1804,89 @@ def find_drive_child_file(service: Any, parent_id: str, name: str) -> str:
     return ""
 
 
-def create_drive_folder(service: Any, parent_id: str, name: str) -> str:
+def _drive_query_literal(value: str) -> str:
+    return "'" + str(value or "").replace("\\", "\\\\").replace("'", "\\'") + "'"
+
+
+def create_drive_folder(
+    service: Any,
+    parent_id: str,
+    name: str,
+    *,
+    app_properties: dict[str, str] | None = None,
+) -> str:
     body = {"name": name, "mimeType": GOOGLE_FOLDER_MIME, "parents": [parent_id]}
+    clean_props = {
+        str(k): str(v)
+        for k, v in (app_properties or {}).items()
+        if str(k or "").strip() and str(v or "").strip()
+    }
+    if clean_props:
+        body["appProperties"] = clean_props
     created = service.files().create(
         body=body,
         supportsAllDrives=True,
         fields="id,name,webViewLink",
     ).execute()
     return str(created.get("id") or "")
+
+
+def find_drive_child_folder_by_osc_case_number(service: Any, parent_id: str, case_number: str) -> str:
+    case_no = str(case_number or "").strip()
+    if not case_no:
+        return ""
+    resp = service.files().list(
+        q=(
+            f"'{parent_id}' in parents and trashed = false "
+            f"and mimeType = '{GOOGLE_FOLDER_MIME}' "
+            f"and appProperties has {{ key='magi_osc_case_number' and value={_drive_query_literal(case_no)} }}"
+        ),
+        spaces="drive",
+        corpora="allDrives",
+        includeItemsFromAllDrives=True,
+        supportsAllDrives=True,
+        pageSize=10,
+        fields="files(id,name,appProperties)",
+    ).execute()
+    files = resp.get("files", []) if isinstance(resp, dict) else []
+    if len(files) == 1:
+        return str(files[0].get("id") or "")
+    return ""
+
+
+def update_drive_folder_app_properties(
+    service: Any,
+    folder_id: str,
+    app_properties: dict[str, str],
+) -> None:
+    update_drive_folder_metadata(service, folder_id, app_properties=app_properties)
+
+
+def update_drive_folder_metadata(
+    service: Any,
+    folder_id: str,
+    *,
+    name: str = "",
+    app_properties: dict[str, str] | None = None,
+) -> None:
+    body: dict[str, Any] = {}
+    if str(name or "").strip():
+        body["name"] = str(name).strip()
+    clean_props = {
+        str(k): str(v)
+        for k, v in (app_properties or {}).items()
+        if str(k or "").strip() and str(v or "").strip()
+    }
+    if clean_props:
+        body["appProperties"] = clean_props
+    if not body:
+        return
+    service.files().update(
+        fileId=folder_id,
+        body=body,
+        supportsAllDrives=True,
+        fields="id,name,appProperties",
+    ).execute()
 
 
 def ensure_drive_folder_path(service: Any, root_folder_id: str, relative_folder_path: str) -> dict[str, Any]:
@@ -1811,10 +1929,64 @@ def ensure_drive_case_folder_for_local_case(
             "reason": "cannot_build_drive_case_path",
             "case": _case_to_dict(case),
         }
-    result = ensure_drive_folder_path(service, drive_root_id, relative_path)
-    result["case_number"] = case.meta.case_number
+    parts = split_relative_parts(relative_path)
+    if not parts:
+        return {
+            "ok": False,
+            "skipped": True,
+            "reason": "empty_drive_case_path",
+            "case": _case_to_dict(case),
+        }
+    parent_parts = parts[:-1]
+    case_folder_name = parts[-1]
+    created_folders: list[str] = []
+    if parent_parts:
+        parent_result = ensure_drive_folder_path(service, drive_root_id, PurePosixPath(*parent_parts).as_posix())
+        parent_id = str(parent_result.get("drive_id") or "")
+        created_folders.extend(parent_result.get("created_folders") or [])
+    else:
+        parent_id = drive_root_id
+    case_number = (case.meta.case_number or extract_case_meta(case.name).case_number or "").strip()
+    app_props = {
+        "magi_osc_case_number": case_number,
+        "magi_source": "osc",
+    }
+    laf_case_no = (case.meta.laf_case_no or extract_case_meta(case.name).laf_case_no or "").strip()
+    if laf_case_no:
+        app_props["magi_laf_case_no"] = laf_case_no
+    folder_id = find_drive_child_folder_by_osc_case_number(service, parent_id, case_number)
+    if folder_id:
+        status = "existing_by_osc_metadata"
+        update_drive_folder_metadata(service, folder_id, name=case_folder_name, app_properties=app_props)
+    else:
+        folder_id = find_drive_child_folder(service, parent_id, case_folder_name)
+        if folder_id:
+            status = "existing_by_name"
+            update_drive_folder_app_properties(service, folder_id, app_props)
+        else:
+            legacy_name = (case.name or "").strip()
+            legacy_id = ""
+            if legacy_name and legacy_name != case_folder_name:
+                legacy_id = find_drive_child_folder(service, parent_id, legacy_name)
+            if legacy_id:
+                folder_id = legacy_id
+                update_drive_folder_metadata(service, folder_id, name=case_folder_name, app_properties=app_props)
+                status = "renamed_legacy_osc_number_folder"
+            else:
+                folder_id = create_drive_folder(service, parent_id, case_folder_name, app_properties=app_props)
+                created_folders.append(PurePosixPath(*parts).as_posix())
+                status = "created"
+    result = {
+        "ok": True,
+        "drive_id": folder_id,
+        "relative_path": PurePosixPath(*parts).as_posix(),
+        "created_folders": created_folders,
+        "created_count": len(created_folders),
+        "status": status,
+    }
+    result["case_number"] = case_number
     result["case_name"] = case.name
-    result["status"] = "created_or_existing"
+    result["drive_visible_name"] = case_folder_name
     return result
 
 
@@ -1827,12 +1999,13 @@ def ensure_drive_case_folder_for_new_case(
     client_name: str,
     case_category: str,
     case_type: str,
+    laf_case_no: str = "",
     case_stage: str = "",
     case_reason: str = "",
     status: str = "active",
     owner_bucket: str | None = None,
 ) -> dict[str, Any]:
-    case_name = Path(str(full_path or "")).name
+    case_name = PurePosixPath(str(full_path or "").replace("\\", "/").rstrip("/")).name
     if not case_name:
         chunks = [case_number, client_name, case_stage, case_reason]
         case_name = "-".join(str(c or "").strip() for c in chunks if str(c or "").strip())
@@ -1847,6 +2020,7 @@ def ensure_drive_case_folder_for_new_case(
         case_kind=case_type or "",
         meta=CaseMeta(
             case_number=case_number or extract_case_meta(case_name).case_number,
+            laf_case_no=laf_case_no or extract_case_meta(case_name).laf_case_no,
             client_hint=client_name or extract_case_meta(case_name).client_hint,
             reason_hint=case_reason or extract_case_meta(case_name).reason_hint,
         ),

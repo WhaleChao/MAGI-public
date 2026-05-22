@@ -820,6 +820,7 @@ def _osc_try_create_drive_case_folder(
             client_name=(payload.get("client_name") or payload.get("name") or payload.get("client") or "").strip(),
             case_category=case_category or "一般案件",
             case_type=(payload.get("case_type") or payload.get("type") or "").strip(),
+            laf_case_no=_osc_synced_laf_number(payload),
             case_stage=(payload.get("case_stage") or "").strip(),
             case_reason=(payload.get("case_reason") or "").strip(),
             status=status or "active",
