@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
 import os
 import re
@@ -1529,6 +1530,17 @@ def _entry_public_dict(entry: FileEntry) -> dict[str, Any]:
     }
 
 
+def local_file_md5(path: str, *, chunk_size: int = 1024 * 1024) -> str:
+    digest = hashlib.md5()
+    with open(path, "rb") as fh:
+        while True:
+            chunk = fh.read(chunk_size)
+            if not chunk:
+                break
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def build_file_sync_plan(
     comparison: dict[str, Any],
     drive_service: Any,
@@ -1550,7 +1562,9 @@ def build_file_sync_plan(
         "drive_missing_in_nas_bytes": 0,
         "nas_missing_in_drive_files": 0,
         "conflict_files": 0,
+        "content_mismatch_files": 0,
         "skipped_existing_files": 0,
+        "unverified_existing_files": 0,
         "case_errors": 0,
     }
     for item in comparison.get("matched", []):
@@ -1619,6 +1633,36 @@ def build_file_sync_plan(
                     "reason": "same_relative_path_size_differs",
                 })
                 summary["conflict_files"] += 1
+            elif drive_entry.md5 and local_entry.path:
+                try:
+                    local_md5 = local_file_md5(local_entry.path)
+                except Exception as exc:
+                    case_plan["conflicts"].append({
+                        "relative_path": target_rel,
+                        "drive": _entry_public_dict(drive_entry),
+                        "local": _entry_public_dict(local_entry),
+                        "reason": f"local_hash_failed:{type(exc).__name__}",
+                    })
+                    summary["conflict_files"] += 1
+                    continue
+                if normalize_text(local_md5) != normalize_text(drive_entry.md5):
+                    local_data = _entry_public_dict(local_entry)
+                    local_data["md5"] = local_md5
+                    case_plan["conflicts"].append({
+                        "relative_path": target_rel,
+                        "drive": _entry_public_dict(drive_entry),
+                        "local": local_data,
+                        "reason": "same_relative_path_md5_differs",
+                    })
+                    summary["conflict_files"] += 1
+                    summary["content_mismatch_files"] += 1
+                else:
+                    case_plan["skipped_existing"] += 1
+                    summary["skipped_existing_files"] += 1
+            elif GOOGLE_EXPORT_MIME_MAP.get(drive_entry.mime_type):
+                case_plan["skipped_existing"] += 1
+                summary["skipped_existing_files"] += 1
+                summary["unverified_existing_files"] += 1
             else:
                 case_plan["skipped_existing"] += 1
                 summary["skipped_existing_files"] += 1
@@ -1821,6 +1865,7 @@ def write_report_files(report: dict[str, Any], output_dir: Path) -> dict[str, st
     json_path = output_dir / f"drive_case_sync_report_{stamp}.json"
     md_path = output_dir / f"drive_case_sync_report_{stamp}.md"
     csv_path = output_dir / f"drive_case_sync_cases_{stamp}.csv"
+    file_diff_csv_path = output_dir / f"drive_case_sync_file_diffs_{stamp}.csv"
     json_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
 
     rows: list[dict[str, Any]] = []
@@ -1864,6 +1909,58 @@ def write_report_files(report: dict[str, Any], output_dir: Path) -> dict[str, st
         ])
         writer.writeheader()
         writer.writerows(rows)
+
+    file_diff_rows: list[dict[str, Any]] = []
+    for case_plan in (report.get("file_sync_plan") or {}).get("cases") or []:
+        base = {
+            "case_number": case_plan.get("case_number", ""),
+            "drive_path": case_plan.get("drive_path", ""),
+            "local_path": case_plan.get("local_path", ""),
+        }
+        for item in case_plan.get("download_missing") or []:
+            file_diff_rows.append({
+                **base,
+                "diff_type": "drive_has_nas_missing",
+                "relative_path": item.get("target_relative_path") or item.get("relative_path", ""),
+                "drive_id": item.get("drive_id", ""),
+                "drive_size": item.get("size", ""),
+                "local_size": "",
+                "reason": "Google Drive 有，NAS 缺少",
+                "web_url": item.get("web_url", ""),
+            })
+        for item in case_plan.get("nas_only") or []:
+            file_diff_rows.append({
+                **base,
+                "diff_type": "nas_has_drive_missing",
+                "relative_path": item.get("relative_path", ""),
+                "drive_id": "",
+                "drive_size": "",
+                "local_size": item.get("size", ""),
+                "reason": "NAS 有，Google Drive 缺少",
+                "web_url": "",
+            })
+        for item in case_plan.get("conflicts") or []:
+            drive = item.get("drive") or {}
+            local = item.get("local") or {}
+            file_diff_rows.append({
+                **base,
+                "diff_type": "same_path_conflict",
+                "relative_path": item.get("relative_path", ""),
+                "drive_id": drive.get("drive_id", ""),
+                "drive_size": drive.get("size", ""),
+                "local_size": local.get("size", ""),
+                "reason": item.get("reason", ""),
+                "web_url": drive.get("web_url", ""),
+            })
+    if file_diff_rows:
+        with file_diff_csv_path.open("w", newline="", encoding="utf-8-sig") as fh:
+            writer = csv.DictWriter(fh, fieldnames=[
+                "case_number", "diff_type", "relative_path", "drive_path",
+                "local_path", "drive_id", "drive_size", "local_size",
+                "reason", "web_url",
+            ])
+            writer.writeheader()
+            writer.writerows(file_diff_rows)
 
     s = report["summary"]
     lines = [
@@ -1943,10 +2040,14 @@ def write_report_files(report: dict[str, Any], output_dir: Path) -> dict[str, st
             f"- 雲端有、NAS 缺少的檔案：{file_summary.get('drive_missing_in_nas_files', 0)}",
             f"- 預估下載位元組：{file_summary.get('drive_missing_in_nas_bytes', 0)}",
             f"- NAS 有、雲端缺少的檔案（目前僅列報，需寫入授權才可上傳）：{file_summary.get('nas_missing_in_drive_files', 0)}",
-            f"- 同路徑大小不一致，需人工確認：{file_summary.get('conflict_files', 0)}",
+            f"- 同路徑內容不同或無法驗證，需人工確認：{file_summary.get('conflict_files', 0)}",
+            f"- 其中雜湊不同：{file_summary.get('content_mismatch_files', 0)}",
+            f"- 兩邊都有但 Google 文件匯出內容尚未逐字節驗證：{file_summary.get('unverified_existing_files', 0)}",
             f"- 已存在略過：{file_summary.get('skipped_existing_files', 0)}",
             f"- 案件掃描錯誤：{file_summary.get('case_errors', 0)}",
         ])
+        if file_diff_rows:
+            lines.append(f"- 逐檔差異 CSV：`{file_diff_csv_path}`")
     exec_summary = (report.get("execution_result") or {}).get("summary") or {}
     if exec_summary:
         lines.extend([
@@ -1962,7 +2063,10 @@ def write_report_files(report: dict[str, Any], output_dir: Path) -> dict[str, st
             f"- 因容量上限停止：{exec_summary.get('stopped_by_bytes', False)}",
         ])
     md_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    return {"json": str(json_path), "markdown": str(md_path), "csv": str(csv_path)}
+    paths = {"json": str(json_path), "markdown": str(md_path), "csv": str(csv_path)}
+    if file_diff_rows:
+        paths["file_diff_csv"] = str(file_diff_csv_path)
+    return paths
 
 
 def run_inventory(

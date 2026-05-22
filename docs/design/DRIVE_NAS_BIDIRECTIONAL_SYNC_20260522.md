@@ -55,6 +55,21 @@
 - 排除同步範圍
 - 檔案差異與衝突清單
 
+逐檔差異報告必須同時輸出 Markdown 與 CSV。CSV 欄位至少包含：
+
+- `case_number`
+- `diff_type`：`drive_has_nas_missing`、`nas_has_drive_missing`、`same_path_conflict`
+- `relative_path`
+- `drive_path`
+- `local_path`
+- `drive_id`
+- `drive_size`
+- `local_size`
+- `reason`
+- `web_url`
+
+這份 CSV 是給日常協作使用的主要報表：同事習慣放在 Google Drive 時，MAGI 要能列出 Google 有但 NAS 缺的檔案；律師端或 MAGI 自動歸檔放在 NAS 時，也要能列出 NAS 有但 Google 缺的檔案。
+
 ### 第二階段：Drive → NAS 補檔
 
 條件：
@@ -88,12 +103,16 @@
 - 若 Drive 端已有同名但大小不同，列入衝突，不覆蓋。
 - 上傳後更新 manifest。
 
+現階段若尚未開啟 Google Drive 寫入授權，MAGI 仍必須列報 `nas_has_drive_missing`，讓使用者知道同事的 Google Drive 版本缺少哪些 NAS 正式檔案。
+
 ### 第四階段：衝突處理
 
 衝突類型：
 
 - 同一路徑大小不同。
 - 同一路徑雜湊不同。
+- 非 Google 原生檔案同名同大小但 MD5 不同。
+- Google Docs、Sheets、Slides 兩邊都有但尚未匯出逐字節驗證。
 - Drive 與 NAS 都有同名但修改時間差距大。
 - 案件資料夾同名但對應不同 OSC 案件。
 
@@ -199,4 +218,3 @@ Drive 端若出現沒有 OSC 案號的新資料夾：
 5. 在網頁版加入「雲端同步狀態」「待歸戶」「衝突清單」三個介面。
 6. 將排除清單、別名清單加入私用版操作手冊，不放入公開版範例資料。
 7. 建立壓力測試：大量小檔、大型 PDF、Google Docs 匯出、NAS 斷線重試、同名多案。
-

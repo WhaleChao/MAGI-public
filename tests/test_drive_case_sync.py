@@ -4,6 +4,7 @@ from api.osc.drive_case_sync import (
     CaseFolder,
     CaseMeta,
     FileEntry,
+    build_file_sync_plan,
     classify_drive_case_folder,
     classify_local_case_folder,
     compare_case_folders,
@@ -392,3 +393,85 @@ def test_runtime_exclusions_remove_drive_case_from_sync_scope(monkeypatch):
     assert result["out_of_scope"][0]["drive"].relative_path == drive.relative_path
     assert "不納入 Drive/NAS 案件同步" in sync_scope_exclusion_reason(drive)
     load_case_exclusions.cache_clear()
+
+
+def test_file_sync_plan_reports_both_sides_missing_and_content_conflict(monkeypatch):
+    drive = CaseFolder(
+        source="drive",
+        path="一般案件/Lumi/2026-0333-測試甲-一審-損害賠償",
+        relative_path="一般案件/Lumi/2026-0333-測試甲-一審-損害賠償",
+        name="2026-0333-測試甲-一審-損害賠償",
+        category="一般案件",
+        status="active",
+        drive_id="drive-case",
+        meta=extract_case_meta("2026-0333-測試甲-一審-損害賠償"),
+    )
+    local = CaseFolder(
+        source="nas",
+        path="/cases/一般案件/民事/2026-0333-測試甲-一審-損害賠償",
+        local_path="/cases/一般案件/民事/2026-0333-測試甲-一審-損害賠償",
+        relative_path="一般案件/民事/2026-0333-測試甲-一審-損害賠償",
+        name="2026-0333-測試甲-一審-損害賠償",
+        category="一般案件",
+        status="active",
+        case_kind="民事",
+        meta=extract_case_meta("2026-0333-測試甲-一審-損害賠償"),
+    )
+    drive_entries = [
+        FileEntry(
+            source="drive",
+            path="雲端缺NAS.pdf",
+            relative_path="雲端缺NAS.pdf",
+            name="雲端缺NAS.pdf",
+            is_folder=False,
+            size=10,
+            drive_id="drive-missing",
+        ),
+        FileEntry(
+            source="drive",
+            path="同路徑不同.pdf",
+            relative_path="同路徑不同.pdf",
+            name="同路徑不同.pdf",
+            is_folder=False,
+            size=12,
+            md5="drive-md5",
+            drive_id="drive-conflict",
+        ),
+    ]
+    local_entries = [
+        FileEntry(
+            source="nas",
+            path="/cases/一般案件/民事/2026-0333-測試甲-一審-損害賠償/同路徑不同.pdf",
+            relative_path="同路徑不同.pdf",
+            name="同路徑不同.pdf",
+            is_folder=False,
+            size=12,
+        ),
+        FileEntry(
+            source="nas",
+            path="/cases/一般案件/民事/2026-0333-測試甲-一審-損害賠償/NAS缺雲端.pdf",
+            relative_path="NAS缺雲端.pdf",
+            name="NAS缺雲端.pdf",
+            is_folder=False,
+            size=13,
+        ),
+    ]
+    monkeypatch.setattr(
+        "api.osc.drive_case_sync.drive_descendant_context",
+        lambda *args, **kwargs: drive_entries,
+    )
+    monkeypatch.setattr(
+        "api.osc.drive_case_sync.local_descendant_context",
+        lambda *args, **kwargs: local_entries,
+    )
+    monkeypatch.setattr("api.osc.drive_case_sync.local_file_md5", lambda path: "local-md5")
+    plan = build_file_sync_plan({"matched": [{"drive": drive, "local": local}]}, drive_service=object())
+    summary = plan["summary"]
+    assert summary["drive_missing_in_nas_files"] == 1
+    assert summary["nas_missing_in_drive_files"] == 1
+    assert summary["conflict_files"] == 1
+    assert summary["content_mismatch_files"] == 1
+    case = plan["cases"][0]
+    assert case["download_missing"][0]["target_relative_path"] == "雲端缺NAS.pdf"
+    assert case["nas_only"][0]["relative_path"] == "NAS缺雲端.pdf"
+    assert case["conflicts"][0]["reason"] == "same_relative_path_md5_differs"
