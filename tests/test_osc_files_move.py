@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from io import BytesIO
 from urllib.parse import urlencode
 from unittest.mock import patch
 import builtins
@@ -114,6 +115,38 @@ def test_move_file_to_case_root_is_allowed(tmp_path: Path):
     assert data["new_relative_path"] == "要移回根目錄.txt"
     assert not src.exists()
     assert (tmp_path / "要移回根目錄.txt").read_text(encoding="utf-8") == "root-target"
+
+
+def test_upload_multi_accepts_batch_files_and_reports_conflicts(tmp_path: Path):
+    client = _client()
+    case_dir = tmp_path / "案件A"
+    case_dir.mkdir()
+    (case_dir / "既有.pdf").write_bytes(b"old")
+
+    with patch("api.blueprints.osc_files._resolve_target_dir", return_value=str(case_dir)), \
+         patch("api.blueprints.osc_files._osc_is_safe_local_path", return_value=True):
+        r = client.post(
+            "/api/osc/files/upload-multi",
+            data={
+                "base_path": str(case_dir),
+                "files": [
+                    (BytesIO(b"%PDF-a"), "新證據A.pdf"),
+                    (BytesIO(b"%PDF-b"), "新證據B.pdf"),
+                    (BytesIO(b"%PDF-old"), "既有.pdf"),
+                ],
+            },
+            content_type="multipart/form-data",
+        )
+
+    assert r.status_code == 200
+    data = r.get_json()
+    assert data["ok"] is True
+    assert data["succeeded"] == 2
+    assert data["failed"] == 1
+    assert (case_dir / "新證據A.pdf").read_bytes() == b"%PDF-a"
+    assert (case_dir / "新證據B.pdf").read_bytes() == b"%PDF-b"
+    conflict = [item for item in data["results"] if item.get("name") == "既有.pdf"][0]
+    assert conflict["error"] == "file_exists"
 
 
 def test_share_file_creates_opaque_download_link(tmp_path: Path, monkeypatch):

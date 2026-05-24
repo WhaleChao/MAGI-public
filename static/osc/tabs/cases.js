@@ -744,6 +744,7 @@ function renderWorkbenchCaseEditor(c) {
         <div class="toolbar" style="margin-top:10px; margin-bottom:0;">
             <button class="btn primary" data-act="wb-case-save" data-id="${esc(c.id || "")}">儲存案件資料</button>
             <button class="btn" data-act="wb-case-create-folder" data-id="${esc(c.id || "")}"${c.folder_path ? ' title="已有資料夾路徑，點此可重新建立子資料夾結構"' : ""}>建立資料夾</button>
+            <button class="btn" data-act="wb-case-rename-folder" data-id="${esc(c.id || "")}"${c.folder_path ? "" : " disabled"}>資料夾改名</button>
             ${caseCloseButton(c)}
         </div>
     </div>
@@ -773,6 +774,9 @@ function renderCaseFolderBrowser(data) {
         const openBtn = isDir
             ? `<button class="btn slim" data-act="wb-folder-open" data-id="${esc(c.id || "")}" data-path="${esc(item.relative_path || "")}">進入</button>`
             : `<a class="btn slim" href="${fileContentUrl(targetPath, true)}" target="_blank" rel="noopener noreferrer">預覽</a>`;
+        const renameBtn = isDir
+            ? `<button class="btn slim" data-act="wb-folder-rename" data-id="${esc(c.id || "")}" data-path="${esc(item.relative_path || "")}" data-current-path="${esc(rel)}" data-folder-path="${esc(folderPath)}" data-name="${esc(item.name || "")}">改名</button>`
+            : "";
         const downloadBtn = isDir
             ? ""
             : `<a class="btn slim" href="${fileContentUrl(targetPath)}" target="_blank" rel="noopener noreferrer">下載</a>`;
@@ -788,7 +792,7 @@ function renderCaseFolderBrowser(data) {
             <td>${esc(item.name || "")}</td>
             <td>${esc(item.modified_at || "")}</td>
             <td>${esc(item.size_label || formatBytes(item.size) || "")}</td>
-            <td><div class="wb-folder-actions">${openBtn}${editBtn}${shareBtn}${downloadBtn}</div></td>
+            <td><div class="wb-folder-actions">${openBtn}${renameBtn}${editBtn}${shareBtn}${downloadBtn}</div></td>
         </tr>
         `;
     }).join("") : `<tr><td colspan="5" class="muted">目前資料夾沒有可列出的內容</td></tr>`;
@@ -813,6 +817,10 @@ function renderCaseFolderBrowser(data) {
         </div>
         <div class="wb-breadcrumb">${esc(rel ? `${folderPath} / ${rel}` : folderPath)}</div>
         ${folderExists ? `
+        <div class="wb-drop-zone" aria-label="拖拉檔案上傳">
+            <strong>可將多個檔案拖拉到這裡上傳</strong>
+            <span>目前位置：${esc(rel || "案件根目錄")}。同名檔案會先詢問是否覆蓋。</span>
+        </div>
         <div class="case-drive-shell">
             <aside class="case-drive-tree" aria-label="案件資料夾結構">
                 ${treeNodes || `<div class="muted">沒有子資料夾</div>`}
@@ -835,6 +843,7 @@ async function openCaseFolder(id, relativePath = "") {
     const c = data.case || {};
     state.wb = { mode: "case-folder", id, data };
     wbShow(`案件資料夾｜${c.case_number || id}`, renderCaseFolderBrowser(data));
+    bindWorkbenchFolderDropZone();
     wbSetStatus(
         data.folder_exists
             ? `已載入案件資料夾，路徑 ${data.current_relative_path || "/" }。`
@@ -874,6 +883,71 @@ async function createWorkbenchFolder(caseId, folderPath, relativePath = "") {
         wbSetStatus(`新增資料夾失敗：${friendly}`, "warn");
         showToast(`新增資料夾失敗：${friendly}`, "warn", 3500);
     }
+}
+
+async function renameWorkbenchCaseFolder(caseId) {
+    if (!caseId) {
+        wbSetStatus("缺少系統案件編號，無法改名。", "warn");
+        return;
+    }
+    const data = state.wb?.data || {};
+    const currentPath = data.folder_path || document.getElementById("wb_case_folder_path")?.value || "";
+    const currentName = String(currentPath || "").replace(/\\/g, "/").split("/").filter(Boolean).pop() || "";
+    const name = window.prompt("請輸入新的案件資料夾名稱。會同步更新 MAGI 內的路徑。", currentName);
+    const trimmed = String(name || "").trim();
+    if (!trimmed || trimmed === currentName) return;
+    try {
+        const result = await api(`/api/osc/cases/${encodeURIComponent(caseId)}/rename-folder`, "POST", {
+            new_name: trimmed,
+        });
+        const newPath = result.folder_path || "";
+        showToast(`案件資料夾已改名：${trimmed}`, "ok", 3500);
+        wbSetStatus(`案件資料夾已改名，MAGI 路徑已更新。`, "ok");
+        const folderInput = document.getElementById("wb_case_folder_path");
+        if (folderInput && newPath) folderInput.value = newPath;
+        await openCaseWorkbench(caseId);
+    } catch (e) {
+        const msg = friendlyFolderRenameError(e.message || e);
+        wbSetStatus(`案件資料夾改名失敗：${msg}`, "warn");
+        showToast(`案件資料夾改名失敗：${msg}`, "warn", 4000);
+    }
+}
+
+async function renameWorkbenchFolder(caseId, folderPath, relativePath = "", currentPath = "", currentName = "") {
+    const basePath = String(folderPath || "").trim();
+    const srcRel = String(relativePath || "").trim();
+    if (!caseId || !basePath || !srcRel) {
+        wbSetStatus("缺少資料夾路徑，無法改名。", "warn");
+        return;
+    }
+    const name = window.prompt("請輸入新的資料夾名稱。會同步更新 MAGI 內的檔案路徑。", currentName || srcRel.split("/").pop() || "");
+    const trimmed = String(name || "").trim();
+    if (!trimmed || trimmed === currentName) return;
+    try {
+        const data = await api("/api/osc/folders/rename", "POST", {
+            base_path: basePath,
+            relative_path: srcRel,
+            new_name: trimmed,
+        });
+        if (!data.ok) throw new Error(data.error || "rename_failed");
+        showToast(`資料夾已改名：${trimmed}`, "ok", 3000);
+        wbSetStatus(`資料夾已改名：${trimmed}`, "ok");
+        await openCaseFolder(caseId, currentPath || "");
+    } catch (e) {
+        const msg = friendlyFolderRenameError(e.message || e);
+        wbSetStatus(`資料夾改名失敗：${msg}`, "warn");
+        showToast(`資料夾改名失敗：${msg}`, "warn", 3500);
+    }
+}
+
+function friendlyFolderRenameError(raw) {
+    const msg = String(raw || "");
+    if (msg.includes("target_exists") || msg.includes("already_exists")) return "同名資料夾已存在。";
+    if (msg.includes("name_has_invalid_chars")) return "資料夾名稱不能包含 \\ / : * ? \" < > | 等字元。";
+    if (msg.includes("name_empty")) return "資料夾名稱不能空白。";
+    if (msg.includes("source_not_found") || msg.includes("folder_not_synced")) return "原資料夾目前找不到或尚未同步到這台電腦。";
+    if (msg.includes("folder_not_allowed")) return "這個路徑不在 MAGI 允許管理的資料夾內。";
+    return msg || "未知錯誤";
 }
 
 function renderTextFileEditor(caseId, rawPath, content, returnPath = "") {
@@ -920,32 +994,86 @@ function promptFolderUpload(caseId, folderPath, relativePath = "") {
 }
 
 async function handleFolderUpload(file, opts = {}) {
+    return handleFolderUploadFiles(file ? [file] : [], opts);
+}
+
+async function handleFolderUploadFiles(fileList, opts = {}) {
     const ctx = state.folderUpload || {};
     const folderPath = String(ctx.folderPath || "").trim();
-    if (!file || !folderPath) return;
+    const files = Array.from(fileList || []).filter(file => file && file.name);
+    if (!files.length || !folderPath) return;
     const form = new FormData();
-    form.append("folder_path", folderPath);
+    form.append("base_path", folderPath);
     form.append("relative_path", String(ctx.relativePath || ""));
     if (opts.overwrite) form.append("overwrite", "1");
-    form.append("file", file, file.name);
+    files.forEach(file => form.append("files", file, file.name));
     try {
-        const data = await apiForm("/api/osc/files/upload", form);
-        const saved = (data.saved || [])[0] || {};
-        showToast(`已上傳 ${saved.file_name || file.name}。`, "ok");
-        await openCaseFolder(ctx.caseId, ctx.relativePath || "");
-        wbSetStatus(`檔案 ${saved.file_name || file.name} 已上傳到本機同步資料夾。`, "ok");
-    } catch (e) {
-        if (e.status === 409 && e.payload && e.payload.error === "file_exists") {
-            const confirmOverwrite = confirm(`檔案「${e.payload.file_name || file.name}」已存在，是否覆蓋？`);
-            if (confirmOverwrite) {
-                return await handleFolderUpload(file, { overwrite: true });
+        const data = await apiForm("/api/osc/files/upload-multi", form);
+        const results = data.results || [];
+        const okItems = results.filter(item => item.ok);
+        const conflictItems = results.filter(item => item.error === "file_exists");
+        const errorItems = results.filter(item => !item.ok && item.error !== "file_exists");
+
+        if (conflictItems.length && !opts.overwrite) {
+            const overwrite = confirm(`有 ${conflictItems.length} 個同名檔案已存在，是否覆蓋這些檔案？`);
+            if (overwrite) {
+                const names = new Set(conflictItems.map(item => item.name));
+                const conflictFiles = files.filter(file => names.has(file.name));
+                if (conflictFiles.length) {
+                    return await handleFolderUploadFiles(conflictFiles, { overwrite: true });
+                }
             }
-            wbSetStatus("已取消覆蓋既有檔案。", "warn");
-            return;
         }
+
+        if (okItems.length) {
+            showToast(`已上傳 ${okItems.length} 個檔案。`, "ok");
+            await openCaseFolder(ctx.caseId, ctx.relativePath || "");
+        }
+        const parts = [];
+        if (okItems.length) parts.push(`完成 ${okItems.length} 個`);
+        if (conflictItems.length && !opts.overwrite) parts.push(`同名未覆蓋 ${conflictItems.length} 個`);
+        if (errorItems.length) parts.push(`失敗 ${errorItems.length} 個：${errorItems.slice(0, 3).map(item => `${item.name || "檔案"} ${item.error || ""}`).join("、")}`);
+        wbSetStatus(parts.length ? `批次上傳結果：${parts.join("，")}。` : "沒有檔案完成上傳。", errorItems.length ? "warn" : "ok");
+    } catch (e) {
         wbSetStatus(`上傳失敗：${e.message}`, "warn");
         alert(`上傳失敗：${e.message}`);
     }
+}
+
+function bindWorkbenchFolderDropZone() {
+    const card = document.querySelector(".case-drive-card");
+    if (!card || card._wbDropBound) return;
+    card._wbDropBound = true;
+    const hasFiles = (e) => e.dataTransfer && Array.from(e.dataTransfer.types || []).includes("Files");
+    const enter = (e) => {
+        if (!hasFiles(e)) return;
+        e.preventDefault();
+        card.classList.add("drag-over");
+    };
+    const leave = (e) => {
+        if (card.contains(e.relatedTarget)) return;
+        card.classList.remove("drag-over");
+    };
+    card.addEventListener("dragenter", enter);
+    card.addEventListener("dragover", enter);
+    card.addEventListener("dragleave", leave);
+    card.addEventListener("drop", async (e) => {
+        if (!hasFiles(e)) return;
+        e.preventDefault();
+        card.classList.remove("drag-over");
+        const files = e.dataTransfer ? Array.from(e.dataTransfer.files || []) : [];
+        if (!files.length) {
+            wbSetStatus("目前只支援拖拉檔案；資料夾請先進入目標資料夾後分批上傳。", "warn");
+            return;
+        }
+        const data = state.wb?.data || {};
+        state.folderUpload = {
+            caseId: data.case?.id || state.wb?.id || "",
+            folderPath: data.folder_path || "",
+            relativePath: data.current_relative_path || "",
+        };
+        await handleFolderUploadFiles(files);
+    });
 }
 
 function setCaseType(type) {

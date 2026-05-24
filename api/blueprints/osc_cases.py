@@ -41,7 +41,7 @@ from api.osc.utils import (
     _osc_windows_unc_candidates, _osc_windows_synology_candidates,
     _osc_path_to_smb, _osc_parse_dt, _osc_read_reference_document,
     _osc_read_plain_text, _osc_read_docx_text, _osc_read_pdf_text,
-    _osc_allowed_local_roots,
+    _osc_allowed_local_roots, _osc_replace_path_prefix_references,
 )
 from api.osc.client_ids import generate_next_client_id, is_canonical_client_id
 from api.osc.drafts import (
@@ -683,6 +683,22 @@ def _osc_select_case_creation_root() -> dict:
 def _get_translate_local_path_to_canonical():
     from api.case_path_mapper import translate_local_path_to_canonical
     return translate_local_path_to_canonical
+
+
+_OSC_INVALID_FOLDER_NAME_RE = re.compile(r'[\\/:*?"<>|]')
+
+
+def _osc_validate_folder_name(name: str) -> tuple[bool, str]:
+    value = str(name or "").strip()
+    if not value:
+        return False, "name_empty"
+    if value in {".", ".."}:
+        return False, "name_invalid"
+    if _OSC_INVALID_FOLDER_NAME_RE.search(value):
+        return False, "name_has_invalid_chars"
+    if len(value) > 200:
+        return False, "name_too_long"
+    return True, ""
 
 
 def _osc_fetch_url_text(url: str, timeout: int = 20) -> dict:
@@ -2443,6 +2459,84 @@ def osc_case_create_folder_api(row_id):
         "temporary_synology_drive": bool(root_selection.get("temporary_synology_drive")),
         "warning": root_selection.get("warning") or "",
         "drive_sync": drive_sync,
+    })
+
+
+@osc_bp.route("/api/osc/cases/<row_id>/rename-folder", methods=["POST"])
+@login_required
+def osc_case_rename_folder_api(row_id):
+    """Rename a case root folder and update DB paths that point into it."""
+    translate_local_path_to_canonical = _get_translate_local_path_to_canonical()
+    row_id = (row_id or "").strip()
+    payload = request.get_json(silent=True) or {}
+    new_name = str(payload.get("new_name") or "").strip()
+    ok, err = _osc_validate_folder_name(new_name)
+    if not ok:
+        return jsonify({"ok": False, "error": err}), 400
+
+    row, _ = _osc_exec(
+        "SELECT id, case_number, client_name, status, legal_aid_status, folder_path FROM cases WHERE id=%s",
+        (row_id,),
+        fetch="one",
+    )
+    if not row:
+        return jsonify({"ok": False, "error": "case_not_found"}), 404
+
+    resolved = _osc_effective_case_folder_for_row(row, update_db=True)
+    folder_path = resolved.get("folder_path") or ""
+    local_folder = resolved.get("local_folder") or _osc_resolve_existing_local_path(folder_path, prefer_dir=True)
+    if not folder_path:
+        return jsonify({"ok": False, "error": "folder_path_empty"}), 400
+    if not local_folder:
+        return jsonify({"ok": False, "error": "folder_not_synced", "folder_path": _osc_norm_path(folder_path)}), 404
+    if not _osc_is_safe_local_path(local_folder) or not os.path.isdir(local_folder):
+        return jsonify({"ok": False, "error": "folder_not_allowed"}), 403
+
+    current_name = os.path.basename(local_folder.rstrip("/\\"))
+    if new_name == current_name:
+        canonical_same = translate_local_path_to_canonical(local_folder) or _osc_norm_path(folder_path)
+        return jsonify({
+            "ok": True,
+            "unchanged": True,
+            "old_name": current_name,
+            "new_name": new_name,
+            "folder_path": _osc_norm_path(canonical_same),
+            "local_folder": local_folder,
+            "path_references": {"updated": 0, "attempted": 0, "errors": []},
+        })
+
+    target = os.path.join(os.path.dirname(local_folder), new_name)
+    if os.path.exists(target):
+        return jsonify({"ok": False, "error": "target_exists"}), 409
+    if not _osc_is_safe_local_path(os.path.dirname(target)) or not _osc_is_safe_local_path(local_folder):
+        return jsonify({"ok": False, "error": "folder_not_allowed"}), 403
+
+    old_canonical = _osc_norm_path(folder_path)
+    try:
+        os.rename(local_folder, target)
+    except OSError as exc:
+        return jsonify({"ok": False, "error": f"rename_failed: {exc}"}), 500
+
+    new_canonical = translate_local_path_to_canonical(target) or target
+    new_canonical = _osc_norm_path(new_canonical)
+    result, _ = _osc_exec("UPDATE cases SET folder_path=%s, updated_at=NOW() WHERE id=%s", (new_canonical, row_id), fetch="none")
+    path_updates = _osc_replace_path_prefix_references(old_canonical, new_canonical, exec_fn=_osc_exec)
+    local_updates = _osc_replace_path_prefix_references(local_folder, target, exec_fn=_osc_exec)
+
+    return jsonify({
+        "ok": True,
+        "old_name": current_name,
+        "new_name": new_name,
+        "old_folder_path": old_canonical,
+        "folder_path": new_canonical,
+        "old_local_folder": local_folder,
+        "local_folder": target,
+        "result": result,
+        "path_references": {
+            "updated": int(path_updates.get("updated") or 0) + int(local_updates.get("updated") or 0),
+            "attempted": int(path_updates.get("attempted") or 0) + int(local_updates.get("attempted") or 0),
+            "errors": (path_updates.get("errors") or []) + (local_updates.get("errors") or []),
+        },
     })
 
 

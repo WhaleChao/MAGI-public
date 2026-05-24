@@ -581,6 +581,79 @@ def _osc_relpath_under(base_path: str, target_path: str) -> str:
     return rel.replace("\\", "/")
 
 
+_OSC_PATH_REFERENCE_COLUMNS = (
+    ("cases", "folder_path"),
+    ("document_index", "file_path"),
+    ("case_documents", "file_path"),
+    ("case_todos", "source_file"),
+    ("legal_insights", "source_file"),
+    ("court_judgments", "source_file"),
+)
+
+
+def _osc_replace_path_prefix_references(old_path: str, new_path: str, *, exec_fn=None) -> dict:
+    """Replace known OSC path prefixes after a filesystem rename.
+
+    Paths may be stored either as canonical Windows/NAS paths or as local macOS
+    Synology paths. The caller should pass the concrete old/new pair it knows;
+    this helper also tries the canonical mapping so document indexes and todo
+    source paths do not keep pointing at the renamed folder.
+    """
+    old_raw = str(old_path or "").strip()
+    new_raw = str(new_path or "").strip()
+    if not old_raw or not new_raw or old_raw == new_raw:
+        return {"updated": 0, "attempted": 0, "errors": []}
+
+    pairs: list[tuple[str, str]] = []
+
+    def _add_pair(old_value: str, new_value: str) -> None:
+        old_value = str(old_value or "").strip().rstrip("/\\")
+        new_value = str(new_value or "").strip().rstrip("/\\")
+        if old_value and new_value and old_value != new_value and (old_value, new_value) not in pairs:
+            pairs.append((old_value, new_value))
+
+    _add_pair(old_raw, new_raw)
+    try:
+        _add_pair(translate_local_path_to_canonical(old_raw), translate_local_path_to_canonical(new_raw))
+    except Exception:
+        logger.debug("silent-catch canonical path pair for rename", exc_info=True)
+    try:
+        _add_pair(_osc_norm_path(old_raw), _osc_norm_path(new_raw))
+    except Exception:
+        logger.debug("silent-catch normalized path pair for rename", exc_info=True)
+
+    exec_fn = exec_fn or _osc_exec
+    updated = 0
+    attempted = 0
+    errors: list[str] = []
+    for old_value, new_value in pairs:
+        old_len = len(old_value)
+        for table, column in _OSC_PATH_REFERENCE_COLUMNS:
+            attempted += 1
+            sql = f"""
+                UPDATE `{table}`
+                   SET `{column}` = CONCAT(%s, SUBSTRING(`{column}`, %s))
+                 WHERE `{column}` = %s
+                    OR (
+                        LEFT(`{column}`, %s) = %s
+                        AND (
+                            SUBSTRING(`{column}`, %s, 1) = '/'
+                            OR SUBSTRING(`{column}`, %s, 1) = CHAR(92)
+                        )
+                    )
+            """
+            params = (new_value, old_len + 1, old_value, old_len, old_value, old_len + 1, old_len + 1)
+            try:
+                result, _ = exec_fn(sql, params, fetch="none")
+                if isinstance(result, dict):
+                    updated += int(result.get("rowcount") or 0)
+            except Exception as exc:
+                # Some installs may not have every optional table/column yet.
+                errors.append(f"{table}.{column}: {exc}")
+                logger.debug("silent-catch replace path reference %s.%s", table, column, exc_info=True)
+    return {"updated": updated, "attempted": attempted, "errors": errors[:8]}
+
+
 def _osc_human_size(size: int) -> str:
     units = ["B", "KB", "MB", "GB", "TB"]
     n = float(max(0, int(size or 0)))

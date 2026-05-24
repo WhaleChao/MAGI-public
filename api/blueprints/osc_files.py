@@ -36,12 +36,14 @@ from flask import Blueprint, request, jsonify, send_file, Response
 from flask_login import current_user, login_required
 
 from api.osc.utils import (
+    _osc_exec,
     _osc_is_safe_local_path,
     _osc_resolve_existing_local_path,
     _osc_local_path_candidates,
     _osc_norm_path,
     _osc_relpath_under,
     _osc_human_size,
+    _osc_replace_path_prefix_references,
 )
 from api.osc import preview as osc_preview
 
@@ -1011,10 +1013,12 @@ def osc_folders_rename_api():
         os.rename(src, dst)
     except OSError as e:
         return jsonify({"ok": False, "error": f"rename_failed: {e}"}), 500
+    db_updates = _osc_replace_path_prefix_references(src, dst, exec_fn=_osc_exec)
     return jsonify({
         "ok": True,
         "new_path": dst,
         "new_relative_path": _osc_relpath_under(base_real, dst),
+        "path_references": db_updates,
     })
 
 

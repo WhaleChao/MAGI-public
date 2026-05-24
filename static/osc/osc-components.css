@@ -2115,6 +2115,31 @@ body.theme-dark .btn.selected-toggle {
     gap: 12px;
 }
 
+.case-drive-card.drag-over {
+    outline: 2px dashed var(--accent);
+    outline-offset: 4px;
+}
+
+.wb-drop-zone {
+    display: grid;
+    gap: 4px;
+    border: 1px dashed rgba(14, 165, 233, 0.48);
+    border-radius: 10px;
+    background: rgba(14, 165, 233, 0.06);
+    padding: 12px 14px;
+    color: var(--text);
+}
+
+.wb-drop-zone strong {
+    font-size: 14px;
+}
+
+.wb-drop-zone span {
+    color: var(--muted);
+    font-size: 12px;
+    line-height: 1.5;
+}
+
 .case-drive-head {
     display: flex;
     align-items: flex-start;

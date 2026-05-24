@@ -604,6 +604,7 @@ def test_cases_ui_uses_unambiguous_status_and_laf_badge_labels():
     html = (ROOT / "templates" / "partials" / "osc" / "cases.html").read_text(encoding="utf-8")
     page = (ROOT / "templates" / "osc.html").read_text(encoding="utf-8")
     js = (ROOT / "static" / "osc" / "tabs" / "cases.js").read_text(encoding="utf-8")
+    events_js = (ROOT / "static" / "osc" / "osc-events.js").read_text(encoding="utf-8")
 
     assert "進行中 / 結案中" not in html
     assert "結案中 / 已結案" not in html
@@ -621,13 +622,19 @@ def test_cases_ui_uses_unambiguous_status_and_laf_badge_labels():
     assert ">結案</button>" in js
     assert "一鍵結案" not in js
     assert "case-close-btn" in js
-    assert "20260518-case-sort-v1" in page
+    assert "20260524-folder-upload-v1" in page
     assert "case_type_display" in js
     assert "case_reason_display" in js
     assert "const editorCaseType = caseDisplayType(c)" in js
     assert 'id="case_case_number" placeholder="儲存時由 MAGI 自動產生" readonly' in html
     assert 'id="case_application_no" type="hidden"' in html
     assert 'for="case_court_division">股別' in html
+    assert 'id="wbFolderUploadInput" type="file" multiple hidden' in page
+    assert "/api/osc/files/upload-multi" in js
+    assert "handleFolderUploadFiles(files)" in events_js
+    assert "可將多個檔案拖拉到這裡上傳" in js
+    assert 'addEventListener("drop"' in js
+    assert 'data-act="wb-folder-rename"' in js
     assert 'id="wb_case_case_number" value="${esc(c.case_number || "")}" readonly' in js
     assert "wb_case_court_division" in js
 
