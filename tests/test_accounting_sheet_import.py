@@ -126,6 +126,29 @@ def test_parse_colleague_month_sheet_multiple_sections():
     assert rows[1].description == "掛號｜郵局"
 
 
+def test_parse_colleague_month_sheet_loose_fixed_layout():
+    values = [
+        ["每月收支清單"],
+        ["2026年", "五月", "", "", ""],
+        ["類別", "", "", "", ""],
+        ["一般案件", "", "", "", ""],
+        ["總額", "", "", "", ""],
+        ["法扶案件", "2026-05-20 00:00:00", "1141216-E-014 林里", "預付酬金", 6000],
+        ["", "2026-05-20 00:00:00", "1150303-I-004 林亮宏", "預付酬金", 4000],
+        ["雜支", "2026-05-05 00:00:00", "法扶分會、地檢署、地方法院等木章", "", 1200],
+    ]
+    rows, stats = parse_sheet_values(values, month="2026-05")
+    assert stats["header_rows"] == [3]
+    assert len(rows) == 3
+    assert rows[0].type == "收入"
+    assert rows[0].category == "法扶案件"
+    assert rows[0].case_ref == "1141216-E-014"
+    assert rows[1].type == "收入"
+    assert rows[1].category == "法扶案件"
+    assert rows[2].type == "支出"
+    assert rows[2].category == "雜支"
+
+
 def test_fixed_expense_overlap_skips_payroll(monkeypatch):
     from api.osc.accounting_sheet_import import AccountingSheetRow, is_fixed_expense_overlap
 
@@ -147,6 +170,19 @@ def test_fixed_expense_overlap_skips_payroll(monkeypatch):
         description="主持律師薪資",
     )
     assert is_fixed_expense_overlap(row) is True
+
+
+def test_resolve_accounting_case_ref_returns_none_for_unknown_laf_no(monkeypatch):
+    from api.osc.accounting_sheet_import import resolve_accounting_case_ref
+
+    def fake_helpers():
+        def fake_exec(sql, params=(), fetch="none"):
+            return None, {}
+
+        return fake_exec, lambda ref: ref
+
+    monkeypatch.setattr("api.osc.accounting_sheet_import._get_osc_helpers", fake_helpers)
+    assert resolve_accounting_case_ref("1150519-E-014") is None
 
 
 def test_fixed_expense_overlap_reports_amount_conflict(monkeypatch):

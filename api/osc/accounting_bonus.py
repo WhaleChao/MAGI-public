@@ -101,6 +101,18 @@ def _calendar_months_between(start: date, end: date) -> list[str]:
     return out
 
 
+def _parse_iso_date(value: Any) -> date | None:
+    if isinstance(value, date):
+        return value
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        return datetime.strptime(text[:10], "%Y-%m-%d").date()
+    except Exception:
+        return None
+
+
 def ensure_bonus_schema() -> None:
     _osc_exec = _get_osc_helpers()
     _osc_exec(
@@ -146,6 +158,14 @@ def _extract_laf_no(text: str) -> str:
     return match.group(0) if match else ""
 
 
+def _extract_client_name_from_fee_description(text: str) -> str:
+    raw = str(text or "").strip()
+    raw = re.sub(r"^\s*\d{7}-[A-Z]-\d{3}\s*", "", raw)
+    raw = raw.split("｜", 1)[0].strip()
+    raw = raw.split("-", 1)[0].strip()
+    return raw
+
+
 def _is_debt_case(row: dict[str, Any]) -> bool:
     text = " ".join(
         str(row.get(k) or "")
@@ -187,7 +207,40 @@ def _lookup_case_by_laf_no(laf_no: str) -> dict[str, Any] | None:
     return row
 
 
-def query_laf_debt_fee_rows(start: date, end: date) -> list[dict[str, Any]]:
+def _lookup_single_laf_case_by_client_name(client_name: str) -> dict[str, Any] | None:
+    name = str(client_name or "").strip()
+    if not name:
+        return None
+    _osc_exec = _get_osc_helpers()
+    rows, _ = _osc_exec(
+        """
+        SELECT id, case_number, client_name, case_type, case_category, case_subject,
+               case_reason, folder_path, folder_name, legal_aid_number, laf_case_no
+          FROM cases
+         WHERE client_name=%s
+           AND (
+                COALESCE(case_category,'') LIKE '%%法扶%%'
+             OR COALESCE(case_category,'') LIKE '%%法律扶助%%'
+             OR COALESCE(legal_aid_number,'') <> ''
+             OR COALESCE(laf_case_no,'') <> ''
+           )
+        """,
+        (name,),
+        fetch="all",
+    )
+    debt_rows = [dict(r) for r in rows or [] if _is_debt_case(dict(r))]
+    if len(debt_rows) == 1:
+        return debt_rows[0]
+    return None
+
+
+def query_laf_debt_fee_rows(
+    start: date,
+    end: date,
+    *,
+    exclude_transaction_ids: set[int] | None = None,
+) -> list[dict[str, Any]]:
+    exclude_transaction_ids = exclude_transaction_ids or set()
     _osc_exec = _get_osc_helpers()
     rows, _ = _osc_exec(
         """
@@ -223,6 +276,10 @@ def query_laf_debt_fee_rows(start: date, end: date) -> list[dict[str, Any]]:
         if not _is_debt_case(row):
             laf_no = _extract_laf_no(" ".join(str(row.get(k) or "") for k in ("description", "legal_aid_number", "laf_case_no")))
             case = _lookup_case_by_laf_no(laf_no)
+            if not case:
+                case = _lookup_single_laf_case_by_client_name(
+                    _extract_client_name_from_fee_description(str(row.get("description") or ""))
+                )
             if case:
                 for key, value in case.items():
                     row.setdefault(key, value)
@@ -231,12 +288,52 @@ def query_laf_debt_fee_rows(start: date, end: date) -> list[dict[str, Any]]:
         if not _is_debt_case(row):
             continue
         row_id = int(row.get("id") or 0)
+        if row_id in exclude_transaction_ids:
+            continue
         if row_id in seen_ids:
             continue
         seen_ids.add(row_id)
         row["amount"] = _round_money(_as_float(row.get("amount")))
         out.append(row)
     return out
+
+
+def _settled_fee_transaction_ids(before_month_key: str) -> set[int]:
+    _osc_exec = _get_osc_helpers()
+    rows, _ = _osc_exec(
+        """
+        SELECT month_key, run_status, source_fee_rows_json
+          FROM accounting_monthly_bonus_runs
+         WHERE month_key < %s
+           AND run_status IN ('ready','posted','no_surplus_after_laf_bonus')
+           AND legal_aid_bonus_amount > 0
+        """,
+        (before_month_key,),
+        fetch="all",
+    )
+    out: set[int] = set()
+    for row in rows or []:
+        try:
+            items = json.loads(row.get("source_fee_rows_json") or "[]")
+        except Exception:
+            items = []
+        for item in items if isinstance(items, list) else []:
+            tx_id = int((item or {}).get("transaction_id") or 0)
+            if tx_id:
+                out.add(tx_id)
+    return out
+
+
+def _laf_fee_basis_start(month_key: str, period_start: date, period_end: date) -> date:
+    strict_period = str(os.environ.get("MAGI_ACCOUNTING_BONUS_STRICT_PERIOD", "")).lower() in {"1", "true", "yes", "on"}
+    if strict_period:
+        return period_start
+    env_start = (os.environ.get("MAGI_ACCOUNTING_BONUS_LAF_FEE_LOOKBACK_START") or "").strip()
+    if env_start:
+        parsed = _parse_iso_date(env_start)
+        if parsed:
+            return parsed
+    return date(period_end.year, 1, 1)
 
 
 def _query_totals_before_bonus(start: date, end: date) -> dict[str, float]:
@@ -432,12 +529,22 @@ def calculate_monthly_bonus(
     start, end, month_key = period_for_settlement_month(month_key)
     import_results = refresh_accounting_import_for_period(start, end, commit=commit, account_hint=account_hint) if refresh_import else []
 
-    fee_rows = query_laf_debt_fee_rows(start, end)
+    settled_fee_ids = _settled_fee_transaction_ids(month_key)
+    fee_basis_start = _laf_fee_basis_start(month_key, start, end)
+    fee_rows = query_laf_debt_fee_rows(fee_basis_start, end, exclude_transaction_ids=settled_fee_ids)
     fee_total = _round_money(sum(_as_float(r.get("amount")) for r in fee_rows))
     legal_aid_bonus = _round_money(fee_total * float(os.environ.get("MAGI_ACCOUNTING_LAF_BONUS_RATE", "0.5") or "0.5"))
     totals = _query_totals_before_bonus(start, end)
-    income_before = totals["income_total"]
+    period_income_before = totals["income_total"]
     expense_before = totals["expense_total"]
+    prior_period_fee_income = _round_money(
+        sum(
+            _as_float(r.get("amount"))
+            for r in fee_rows
+            if (tx_date := _parse_iso_date(r.get("date"))) and tx_date < start
+        )
+    )
+    income_before = _round_money(period_income_before + prior_period_fee_income)
     require_laf_fee = str(os.environ.get("MAGI_ACCOUNTING_BONUS_REQUIRE_LAF_FEE", "1")).lower() in {"1", "true", "yes", "on"}
 
     balance_after_laf = _round_money(income_before - expense_before - legal_aid_bonus)
@@ -452,7 +559,7 @@ def calculate_monthly_bonus(
     notes = ""
     if require_laf_fee and fee_total <= 0:
         status = "waiting_laf_fee"
-        notes = "本期尚未在帳務收入中找到法扶消債酬金；MAGI 會在 24 日後重新匯入同事帳務並重算。"
+        notes = "本次結算尚未在帳務收入中找到尚未計獎的法扶消債酬金；MAGI 會在 24 日後重新匯入同事帳務並重算。"
         legal_aid_bonus = 0.0
         case_bonus_pool = 0.0
         case_bonus_employee = 0.0
@@ -478,12 +585,16 @@ def calculate_monthly_bonus(
         "month": month_key,
         "period_start": start.isoformat(),
         "period_end": end.isoformat(),
+        "fee_basis_start": fee_basis_start.isoformat(),
+        "fee_basis_end": end.isoformat(),
         "settlement_date": _settlement_date(month_key),
         "status": status,
         "notes": notes,
         "legal_aid_debt_fee_total": fee_total,
         "legal_aid_bonus_amount": legal_aid_bonus,
         "legal_aid_bonus_rate": float(os.environ.get("MAGI_ACCOUNTING_LAF_BONUS_RATE", "0.5") or "0.5"),
+        "period_income_total_before_bonus": period_income_before,
+        "unsettled_laf_fee_income_before_period": prior_period_fee_income,
         "income_total_before_bonus": income_before,
         "expense_total_before_bonus": expense_before,
         "balance_after_laf_bonus": balance_after_laf,
@@ -536,9 +647,12 @@ def export_monthly_bonus_xlsx(result: dict[str, Any], output_path: str | Path | 
     rows = [
         ("結算月份", result.get("month")),
         ("期間", f"{result.get('period_start')} ~ {result.get('period_end')}"),
+        ("法扶消債酬金計算範圍", f"{result.get('fee_basis_start') or result.get('period_start')} ~ {result.get('fee_basis_end') or result.get('period_end')}（排除先前已計獎交易）"),
         ("狀態", _status_label(result.get("status"))),
         ("法扶消債酬金收入", result.get("legal_aid_debt_fee_total")),
         ("法扶酬金獎金（收入的一半）", result.get("legal_aid_bonus_amount")),
+        ("本期帳務收入", result.get("period_income_total_before_bonus", result.get("income_total_before_bonus"))),
+        ("本期前尚未計獎法扶消債酬金", result.get("unsettled_laf_fee_income_before_period", 0)),
         ("獎金前收入合計", result.get("income_total_before_bonus")),
         ("獎金前支出合計", result.get("expense_total_before_bonus")),
         ("法扶獎金後餘額", result.get("balance_after_laf_bonus")),

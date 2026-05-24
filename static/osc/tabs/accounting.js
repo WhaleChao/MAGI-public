@@ -132,9 +132,12 @@ function renderAccountingBonusResult(data) {
     };
     const rows = [
         ["結算期間", `${data.period_start || "-"} ~ ${data.period_end || "-"}`],
+        ["法扶消債酬金計算範圍", `${data.fee_basis_start || data.period_start || "-"} ~ ${data.fee_basis_end || data.period_end || "-"}，排除先前已計獎交易`],
         ["狀態", statusLabels[data.status] || data.status || "-"],
         ["法扶消債酬金收入", fmtAmount(data.legal_aid_debt_fee_total || 0)],
         ["法扶酬金獎金", fmtAmount(data.legal_aid_bonus_amount || 0)],
+        ["本期帳務收入", fmtAmount(data.period_income_total_before_bonus ?? data.income_total_before_bonus ?? 0)],
+        ["本期前尚未計獎法扶消債酬金", fmtAmount(data.unsettled_laf_fee_income_before_period || 0)],
         ["獎金前收入", fmtAmount(data.income_total_before_bonus || 0)],
         ["獎金前支出", fmtAmount(data.expense_total_before_bonus || 0)],
         ["法扶獎金後餘額", fmtAmount(data.balance_after_laf_bonus || 0)],

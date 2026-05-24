@@ -57,6 +57,57 @@ def test_query_laf_debt_fee_rows_filters_to_debt_laf_income(monkeypatch):
     assert rows[0]["client_name"] == "邱衣萱"
 
 
+def test_query_laf_debt_fee_rows_matches_single_debt_case_by_client_name(monkeypatch):
+    from api.osc import accounting_bonus as mod
+
+    candidate_rows = [
+        {
+            "id": 8,
+            "date": "2026-05-20",
+            "type": "收入",
+            "category": "法扶案件",
+            "description": "1150304-E-003 黃鎮洲｜預付酬金",
+            "amount": 4000,
+            "case_type": None,
+            "case_category": None,
+            "case_reason": None,
+            "case_number": None,
+            "client_name": None,
+            "legal_aid_number": None,
+            "laf_case_no": None,
+        }
+    ]
+    matching_case = {
+        "id": "2026-0031",
+        "case_number": "2026-0031",
+        "client_name": "黃鎮洲",
+        "case_type": "消費者債務清理",
+        "case_category": "法律扶助案件",
+        "case_reason": "更生",
+        "folder_path": "",
+        "folder_name": "",
+        "legal_aid_number": "",
+        "laf_case_no": "",
+    }
+
+    def fake_exec(sql, params=(), fetch="none"):
+        if "FROM case_transactions t" in sql:
+            return candidate_rows, {}
+        if "WHERE legal_aid_number=%s" in sql:
+            return None, {}
+        if "WHERE client_name=%s" in sql:
+            assert params == ("黃鎮洲",)
+            return [matching_case], {}
+        raise AssertionError(sql)
+
+    monkeypatch.setattr(mod, "_get_osc_helpers", lambda: fake_exec)
+    rows = mod.query_laf_debt_fee_rows(date(2026, 5, 1), date(2026, 5, 31))
+    assert len(rows) == 1
+    assert rows[0]["case_number"] == "2026-0031"
+    assert rows[0]["client_name"] == "黃鎮洲"
+    assert rows[0]["amount"] == 4000
+
+
 def test_calculate_monthly_bonus_waits_when_no_laf_fee(monkeypatch):
     from api.osc import accounting_bonus as mod
 

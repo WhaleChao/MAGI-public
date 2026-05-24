@@ -114,6 +114,27 @@ FIXED_EXPENSE_SKIP_KEYWORDS = (
     "臺北事務所",
     "花蓮事務所",
 )
+COLLEAGUE_INCOME_CATEGORIES = {"一般案件", "法扶案件", "法律扶助案件", "指定辯護案件"}
+COLLEAGUE_EXPENSE_CATEGORIES = {
+    "郵資",
+    "影印",
+    "閱卷",
+    "文具用品",
+    "電信費",
+    "雜支",
+    "印章",
+    "稅務",
+    "水果",
+    "餅乾",
+    "飲品",
+    "祭祀",
+    "便當",
+    "保險",
+    "薪資",
+    "房租",
+    "租金支出",
+    "人事費",
+}
 
 
 def _repo_root() -> Path:
@@ -209,6 +230,22 @@ def _is_header_row(row: list[Any]) -> bool:
     return "date" in mapping and ("amount" in mapping or "income" in mapping or "expense" in mapping)
 
 
+def _is_loose_colleague_month_header(row: list[Any]) -> bool:
+    """Return True for newer colleague sheets whose header only says 類別.
+
+    Some monthly tabs keep the old fixed layout (A=類別, B=時間, C=姓名/說明,
+    D=備註, E=金額) but omit the B-E header labels. Treat that as a header
+    instead of silently skipping the income section.
+    """
+    first = normalize_header(row[0] if row else "")
+    rest = [str(c or "").strip() for c in (row[1:5] if len(row) > 1 else [])]
+    return first == normalize_header("類別") and not any(rest)
+
+
+def _loose_colleague_mapping() -> dict[str, int]:
+    return {"category": 0, "date": 1, "name": 2, "memo": 3, "amount": 4}
+
+
 def _clean_category(value: str, fallback: str | None = None) -> str | None:
     text = str(value or "").strip()
     if not text:
@@ -296,6 +333,21 @@ def _infer_type(type_text: str, amount: float) -> str:
     return "支出" if amount < 0 else "收入"
 
 
+def _infer_type_for_category(category: str | None, description: str, memo: str, amount: float) -> str:
+    category_text = str(category or "").strip()
+    if category_text in COLLEAGUE_INCOME_CATEGORIES:
+        return "收入"
+    if category_text in COLLEAGUE_EXPENSE_CATEGORIES:
+        return "支出"
+    text = " ".join([category_text, str(description or ""), str(memo or "")])
+    if "法扶" in text or re.search(r"\b\d{6,7}-[A-Z]-\d{3}\b", text):
+        if any(word in text for word in ("酬金", "委任費", "諮詢費", "法律顧問", "義辯報酬", "律師函")):
+            return "收入"
+    if any(word in text for word in ("郵資", "影印", "閱卷", "保險", "薪資", "房租", "木章", "查詢費")):
+        return "支出"
+    return "支出" if amount < 0 else "收入"
+
+
 def _fingerprint(row: AccountingSheetRow, spreadsheet_id: str, gid: int) -> str:
     payload = {
         "spreadsheet_id": spreadsheet_id,
@@ -336,7 +388,7 @@ def parse_sheet_values(
         }
 
     header_rows: list[int] = []
-    if not any(_is_header_row(row) for row in values):
+    if not any(_is_header_row(row) or _is_loose_colleague_month_header(row) for row in values):
         if allow_no_header:
             return [], {
                 "month": month_key,
@@ -357,6 +409,7 @@ def parse_sheet_values(
     mapping: dict[str, int] = {}
     current_category: str | None = None
     current_type_hint: str | None = None
+    loose_fixed_layout = False
     for source_row, raw in enumerate(values, start=1):
         if not any(str(c or "").strip() for c in raw):
             continue
@@ -365,11 +418,19 @@ def parse_sheet_values(
             mapping = candidate
             header_rows.append(source_row)
             current_type_hint = None
+            loose_fixed_layout = False
             if "expense" in mapping and "income" not in mapping and "amount" not in mapping:
                 current_type_hint = "支出"
             elif "income" in mapping and "expense" not in mapping and "amount" not in mapping:
                 current_type_hint = "收入"
             current_category = None
+            continue
+        if _is_loose_colleague_month_header(raw):
+            mapping = _loose_colleague_mapping()
+            header_rows.append(source_row)
+            current_type_hint = None
+            current_category = None
+            loose_fixed_layout = True
             continue
         if not mapping:
             continue
@@ -401,9 +462,14 @@ def parse_sheet_values(
         if amount is None or amount == 0:
             skipped_invalid += 1
             continue
-        tx_type = current_type_hint or _infer_type(_cell(raw, mapping, "type"), amount)
         name = _cell(raw, mapping, "name") or _cell(raw, mapping, "description")
         memo = _cell(raw, mapping, "memo")
+        if current_type_hint:
+            tx_type = current_type_hint
+        elif loose_fixed_layout:
+            tx_type = _infer_type_for_category(category, name, memo, amount)
+        else:
+            tx_type = _infer_type(_cell(raw, mapping, "type"), amount)
         case_ref = _cell(raw, mapping, "case_ref") or _case_ref_from_name(name)
         item = AccountingSheetRow(
             source_row=source_row,
@@ -664,6 +730,8 @@ def fetch_office_spreadsheet_values(
                 score += 2
             if "owner" in mapping:
                 score += 1
+            if _is_loose_colleague_month_header(list(raw or [])):
+                score += 3
             if score >= 4:
                 break
         if score > best_score:
@@ -724,7 +792,7 @@ def resolve_accounting_case_ref(ref: str | None) -> str | None:
     )
     if row and row.get("id"):
         return str(row.get("id"))
-    return text
+    return None
 
 
 def _fixed_expense_family(haystack: str) -> str | None:
