@@ -114,3 +114,124 @@ def test_generic_folder_rename_updates_indexed_paths(tmp_path, monkeypatch):
     assert data["new_relative_path"] == "06_證據資料"
     assert data["path_references"]["updated"] >= 1
     assert any("case_todos" in sql and "source_file" in sql for sql, _params, _fetch in calls)
+
+
+def test_case_folder_reconcile_updates_stale_db_path_from_metadata(monkeypatch):
+    from api.blueprints import osc_cases as mod
+
+    calls = []
+
+    def fake_exec(sql, params=(), fetch="none"):
+        calls.append((sql, params, fetch))
+        return {"rowcount": 1}, None
+
+    row = {
+        "id": "case-53",
+        "case_number": "2026-0053",
+        "client_name": "劉玲均",
+        "case_category": "一般案件",
+        "case_type": "民事",
+        "case_stage": "一審",
+        "case_reason": "確認本票債權不存在",
+        "status": "進行中",
+        "legal_aid_status": "",
+        "folder_path": r"Z:\lumi63181107\01_案件\一般案件\民事\2026-0053-劉玲昀-一審-確認本票債權不存在",
+    }
+
+    monkeypatch.setattr(mod, "_osc_exec", fake_exec)
+    monkeypatch.setattr(mod, "_osc_resolve_existing_local_path", lambda *_args, **_kwargs: "")
+    monkeypatch.setattr(mod, "_osc_find_sibling_case_folder", lambda *_args, **_kwargs: "")
+
+    resolved = mod._osc_effective_case_folder_for_row(row, update_db=True)
+
+    assert resolved["updated"] is True
+    assert resolved["source"] == "metadata_expected"
+    assert "劉玲均" in resolved["folder_path"]
+    assert "劉玲昀" not in resolved["folder_path"]
+    assert any("UPDATE cases SET folder_path=%s" in sql and "劉玲均" in params[0] for sql, params, _fetch in calls)
+    assert any("document_index" in sql and "file_path" in sql for sql, _params, _fetch in calls)
+
+
+def test_expected_case_folder_name_hydrates_missing_metadata(monkeypatch):
+    from api.blueprints import osc_cases as mod
+
+    def fake_exec(sql, params=(), fetch="none"):
+        if fetch == "one" and "FROM cases" in sql:
+            return {
+                "case_number": "2026-0053",
+                "client_name": "劉玲均",
+                "case_category": "一般案件",
+                "case_type": "民事",
+                "case_stage": "一審",
+                "case_reason": "確認本票債權不存在",
+            }, None
+        return {"rowcount": 0}, None
+
+    monkeypatch.setattr(mod, "_osc_exec", fake_exec)
+
+    name = mod._osc_expected_case_folder_name({
+        "id": "case-53",
+        "case_number": "2026-0053",
+        "client_name": "劉玲均",
+    })
+
+    assert name == "2026-0053-劉玲均-一審-確認本票債權不存在"
+
+
+def test_case_folder_reconcile_renames_existing_local_folder(tmp_path, monkeypatch):
+    from api.blueprints import osc_cases as mod
+
+    old_folder = tmp_path / "2026-0053-劉玲昀-一審-確認本票債權不存在"
+    old_folder.mkdir()
+    (old_folder / "note.txt").write_text("keep", encoding="utf-8")
+    calls = []
+
+    def fake_exec(sql, params=(), fetch="none"):
+        calls.append((sql, params, fetch))
+        return {"rowcount": 1}, None
+
+    row = {
+        "id": "case-53",
+        "case_number": "2026-0053",
+        "client_name": "劉玲均",
+        "case_category": "一般案件",
+        "case_type": "民事",
+        "case_stage": "一審",
+        "case_reason": "確認本票債權不存在",
+        "status": "進行中",
+        "legal_aid_status": "",
+        "folder_path": str(old_folder),
+    }
+
+    monkeypatch.setattr(mod, "_osc_exec", fake_exec)
+    monkeypatch.setattr(mod, "_osc_is_safe_local_path", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(mod, "_get_translate_local_path_to_canonical", lambda: (lambda p: str(p)))
+
+    resolved = mod._osc_reconcile_case_folder_name(row, str(old_folder), str(old_folder), update_db=True)
+
+    new_folder = tmp_path / "2026-0053-劉玲均-一審-確認本票債權不存在"
+    assert resolved["updated"] is True
+    assert resolved["source"] == "renamed_existing_folder"
+    assert not old_folder.exists()
+    assert (new_folder / "note.txt").read_text(encoding="utf-8") == "keep"
+    assert any("UPDATE cases SET folder_path=%s" in sql and "劉玲均" in params[0] for sql, params, _fetch in calls)
+
+
+def test_path_reference_replace_ignores_missing_optional_schema(monkeypatch):
+    from api.osc import utils as mod
+
+    def fake_exec(sql, params=(), fetch="none"):
+        if "court_judgments" in sql:
+            raise RuntimeError("1054 (42S22): Unknown column 'source_file' in 'SET'")
+        return {"rowcount": 0}, None
+
+    monkeypatch.setattr(mod, "translate_local_path_to_canonical", lambda p: p)
+
+    result = mod._osc_replace_path_prefix_references(
+        r"Z:\lumi63181107\01_案件\一般案件\民事\2026-0053-舊名",
+        r"Z:\lumi63181107\01_案件\一般案件\民事\2026-0053-新名",
+        exec_fn=fake_exec,
+    )
+
+    assert result["attempted"] >= 1
+    assert result["errors"] == []

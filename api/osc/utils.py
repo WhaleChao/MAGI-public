@@ -649,6 +649,16 @@ def _osc_replace_path_prefix_references(old_path: str, new_path: str, *, exec_fn
                     updated += int(result.get("rowcount") or 0)
             except Exception as exc:
                 # Some installs may not have every optional table/column yet.
+                msg = str(exc)
+                if (
+                    "Unknown column" in msg
+                    or "doesn't exist" in msg
+                    or "does not exist" in msg
+                    or "no such table" in msg.lower()
+                    or "no such column" in msg.lower()
+                ):
+                    logger.debug("silent-catch missing optional path reference %s.%s", table, column, exc_info=True)
+                    continue
                 errors.append(f"{table}.{column}: {exc}")
                 logger.debug("silent-catch replace path reference %s.%s", table, column, exc_info=True)
     return {"updated": updated, "attempted": attempted, "errors": errors[:8]}

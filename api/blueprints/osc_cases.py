@@ -1472,6 +1472,14 @@ def osc_case_detail_api(row_id):
     vals.append(row_id)
     result, _ = _osc_exec(f"UPDATE cases SET {','.join(sets)} WHERE id=%s", tuple(vals), fetch="none")
     resp = {"ok": True, "result": result}
+    try:
+        refreshed, _ = _osc_exec("SELECT * FROM cases WHERE id=%s", (row_id,), fetch="one")
+        if refreshed and refreshed.get("folder_path"):
+            folder_sync = _osc_effective_case_folder_for_row(refreshed, update_db=True)
+            if folder_sync.get("updated") or folder_sync.get("source") in {"metadata_expected", "renamed_existing_folder", "sibling_existing"}:
+                resp["folder_sync"] = folder_sync
+    except Exception:
+        _log.debug("silent-catch case folder sync after update", exc_info=True)
     if (
         ("status" in payload and _osc_is_closed_case_status(payload.get("status") or ""))
         or ("legal_aid_status" in payload and _osc_is_laf_final_closed_status(payload.get("legal_aid_status") or ""))
@@ -1794,6 +1802,166 @@ def _osc_find_closed_case_folder(case_number: str, *, folder_name: str = "") -> 
     return unique[0] if len(unique) == 1 else ""
 
 
+def _osc_expected_case_folder_name(row: dict) -> str:
+    try:
+        from casper_ecosystem.law_firm_orchestrators.osc.folder_utils import build_case_folder_name
+
+        row = dict(row or {})
+        missing_naming_fields = any(
+            key not in row for key in ("case_category", "case_type", "case_stage", "case_reason")
+        )
+        if missing_naming_fields and (row.get("id") or row.get("case_number")):
+            try:
+                if row.get("id"):
+                    full_row, _ = _osc_exec(
+                        """
+                        SELECT case_number, client_name, case_category, case_type, case_stage, case_reason
+                          FROM cases
+                         WHERE id=%s
+                         LIMIT 1
+                        """,
+                        (row.get("id"),),
+                        fetch="one",
+                    )
+                else:
+                    full_row, _ = _osc_exec(
+                        """
+                        SELECT case_number, client_name, case_category, case_type, case_stage, case_reason
+                          FROM cases
+                         WHERE case_number=%s
+                         LIMIT 1
+                        """,
+                        (row.get("case_number"),),
+                        fetch="one",
+                    )
+                if full_row:
+                    row.update({k: v for k, v in dict(full_row).items() if v not in (None, "")})
+            except Exception:
+                _log.debug("silent-catch expected case folder metadata hydrate", exc_info=True)
+
+        return build_case_folder_name(
+            str(row.get("case_number") or "").strip(),
+            str(row.get("client_name") or "").strip(),
+            case_type=str(row.get("case_type") or "").strip(),
+            case_category=str(row.get("case_category") or "").strip(),
+            case_stage=str(row.get("case_stage") or "").strip(),
+            case_reason=str(row.get("case_reason") or "").strip(),
+        ).strip()
+    except Exception:
+        _log.debug("silent-catch expected case folder name", exc_info=True)
+        return ""
+
+
+def _osc_replace_folder_basename(path: str, new_name: str) -> str:
+    norm = _osc_norm_path(path)
+    if not norm or not new_name:
+        return norm
+    slash = norm.replace("\\", "/").rstrip("/")
+    if "/" not in slash:
+        return norm
+    parent = slash.rsplit("/", 1)[0]
+    return _osc_norm_path(f"{parent}/{new_name}")
+
+
+def _osc_find_sibling_case_folder(row: dict, folder_path: str, expected_name: str = "") -> str:
+    case_number = str(row.get("case_number") or "").strip()
+    if not case_number and not expected_name:
+        return ""
+    for candidate in _osc_local_path_candidates(folder_path):
+        if not candidate or candidate.startswith("/Volumes/"):
+            continue
+        parent = os.path.dirname(candidate.rstrip("/"))
+        if not parent or not os.path.isdir(parent) or not _osc_is_safe_local_path(parent):
+            continue
+        exact = os.path.join(parent, expected_name) if expected_name else ""
+        if exact and os.path.isdir(exact):
+            return exact
+        matches: list[str] = []
+        try:
+            for name in os.listdir(parent):
+                if name.startswith("."):
+                    continue
+                if case_number and (name == case_number or name.startswith(f"{case_number}-")):
+                    full = os.path.join(parent, name)
+                    if os.path.isdir(full):
+                        matches.append(full)
+        except OSError:
+            continue
+        unique = _osc_unique_strings(matches)
+        if len(unique) == 1:
+            return unique[0]
+    return ""
+
+
+def _osc_reconcile_case_folder_name(row: dict, folder_path: str, local_folder: str = "", *, update_db: bool = False) -> dict:
+    """Keep cases.folder_path aligned with current case metadata and manual renames."""
+    row = row or {}
+    raw_path = str(folder_path or "").strip()
+    expected_name = _osc_expected_case_folder_name(row)
+    if not raw_path or not expected_name or _osc_is_template_case(row):
+        return {"changed": False}
+
+    norm = _osc_norm_path(raw_path)
+    current_name = os.path.basename(norm.replace("\\", "/").rstrip("/"))
+    if current_name == expected_name:
+        return {"changed": False}
+
+    translate_local_path_to_canonical = _get_translate_local_path_to_canonical()
+    old_canonical = norm
+    expected_canonical = _osc_replace_folder_basename(norm, expected_name)
+    source = "metadata_expected"
+    target_local = ""
+
+    if local_folder and os.path.isdir(local_folder):
+        candidate_local = os.path.join(os.path.dirname(local_folder.rstrip("/")), expected_name)
+        if os.path.isdir(candidate_local):
+            target_local = candidate_local
+            source = "sibling_existing"
+        elif _osc_is_safe_local_path(local_folder) and _osc_is_safe_local_path(os.path.dirname(candidate_local)):
+            try:
+                os.rename(local_folder, candidate_local)
+                target_local = candidate_local
+                source = "renamed_existing_folder"
+            except OSError:
+                _log.debug("silent-catch case folder auto rename", exc_info=True)
+
+    if not target_local:
+        sibling = _osc_find_sibling_case_folder(row, norm, expected_name)
+        if sibling:
+            target_local = sibling
+            source = "sibling_existing"
+
+    new_canonical = translate_local_path_to_canonical(target_local) if target_local else expected_canonical
+    new_canonical = _osc_norm_path(new_canonical or expected_canonical)
+    updated = False
+    path_updates = {"updated": 0, "attempted": 0, "errors": []}
+    if update_db and row.get("id") and new_canonical and new_canonical != old_canonical:
+        try:
+            _osc_exec("UPDATE cases SET folder_path=%s, updated_at=NOW() WHERE id=%s", (new_canonical, row.get("id")), fetch="none")
+            path_updates = _osc_replace_path_prefix_references(old_canonical, new_canonical, exec_fn=_osc_exec)
+            if local_folder and target_local:
+                local_updates = _osc_replace_path_prefix_references(local_folder, target_local, exec_fn=_osc_exec)
+                path_updates = {
+                    "updated": int(path_updates.get("updated") or 0) + int(local_updates.get("updated") or 0),
+                    "attempted": int(path_updates.get("attempted") or 0) + int(local_updates.get("attempted") or 0),
+                    "errors": (path_updates.get("errors") or []) + (local_updates.get("errors") or []),
+                }
+            updated = True
+        except Exception:
+            _log.debug("silent-catch case folder metadata path db update", exc_info=True)
+
+    return {
+        "changed": True,
+        "folder_path": new_canonical,
+        "local_folder": target_local,
+        "source": source,
+        "updated": updated,
+        "expected_name": expected_name,
+        "old_folder_path": old_canonical,
+        "path_references": path_updates,
+    }
+
+
 def _osc_effective_case_folder_for_row(row: dict, *, update_db: bool = False) -> dict:
     row = row or {}
     raw = (row.get("folder_path") or "").strip() or _osc_guess_case_folder(row.get("case_number") or "")
@@ -1801,6 +1969,15 @@ def _osc_effective_case_folder_for_row(row: dict, *, update_db: bool = False) ->
     local = _osc_resolve_existing_local_path(norm, prefer_dir=True) if norm else ""
     is_closed = _osc_should_archive_case_row(row)
     if local and (not is_closed or "10_結案" in norm.replace("\\", "/")):
+        reconciled = _osc_reconcile_case_folder_name(row, norm, local, update_db=update_db)
+        if reconciled.get("changed"):
+            return {
+                "folder_path": reconciled.get("folder_path") or norm,
+                "local_folder": reconciled.get("local_folder") or local,
+                "source": reconciled.get("source") or "metadata_reconciled",
+                "updated": bool(reconciled.get("updated")),
+                "path_references": reconciled.get("path_references") or {},
+            }
         return {"folder_path": norm, "local_folder": local, "source": "db_or_guess", "updated": False}
 
     if is_closed:
@@ -1819,7 +1996,26 @@ def _osc_effective_case_folder_for_row(row: dict, *, update_db: bool = False) ->
             return {"folder_path": _osc_norm_path(canonical), "local_folder": closed_local, "source": "closed_archive", "updated": updated}
 
     if local:
+        reconciled = _osc_reconcile_case_folder_name(row, norm, local, update_db=update_db)
+        if reconciled.get("changed"):
+            return {
+                "folder_path": reconciled.get("folder_path") or norm,
+                "local_folder": reconciled.get("local_folder") or local,
+                "source": reconciled.get("source") or "metadata_reconciled",
+                "updated": bool(reconciled.get("updated")),
+                "path_references": reconciled.get("path_references") or {},
+            }
         return {"folder_path": norm, "local_folder": local, "source": "db_or_guess", "updated": False}
+
+    reconciled = _osc_reconcile_case_folder_name(row, norm, "", update_db=update_db)
+    if reconciled.get("changed"):
+        return {
+            "folder_path": reconciled.get("folder_path") or norm,
+            "local_folder": reconciled.get("local_folder") or "",
+            "source": reconciled.get("source") or "metadata_expected",
+            "updated": bool(reconciled.get("updated")),
+            "path_references": reconciled.get("path_references") or {},
+        }
 
     guessed = _osc_guess_case_folder(row.get("case_number") or "")
     guessed_norm = _osc_norm_path(guessed) if guessed else ""
