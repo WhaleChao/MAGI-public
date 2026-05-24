@@ -15,15 +15,18 @@ async function loadDashboard() {
 
     renderSimpleRows(
         "dashboardCasesBody",
-        (data.recent_cases || []).map(r => `<tr><td>${esc(r.case_number)}</td><td>${esc(r.client_name)}</td><td>${esc(r.case_reason)}</td><td>${esc(r.status)}</td></tr>`),
+        (data.recent_cases || []).map(r => {
+            const status = typeof caseDisplayStatus === "function" ? caseDisplayStatus(r) : (r.status || "");
+            return `<tr><td>${esc(r.case_number)}</td><td>${esc(r.client_name)}</td><td>${esc(r.case_reason)}</td><td>${esc(status)}</td></tr>`;
+        }),
         4,
         "沒有案件資料"
     );
     const splitFallback = splitDashboardTodosBySource(data.pending_todos || []);
     const oscTodos = Array.isArray(data.pending_osc_todos) ? data.pending_osc_todos : splitFallback.osc;
     const calendarTodos = Array.isArray(data.pending_calendar_todos) ? data.pending_calendar_todos : splitFallback.calendar;
-    updateDashboardTodoSummary("dashboardOscTodosSummary", "OSC 建立待辦", oscTodos.length, "來源：case_todos（排除 Google 日曆匯入）");
-    updateDashboardTodoSummary("dashboardCalendarTodosSummary", "行事曆事件", calendarTodos.length, "來源：類型為行事曆事件或 Google 日曆匯入");
+    updateDashboardTodoSummary("dashboardOscTodosSummary", "OSC 建立待辦", oscTodos.length, "來源：OSC 手動或 PDF 建立待辦（排除 Google 日曆匯入）");
+    updateDashboardTodoSummary("dashboardCalendarTodosSummary", "行事曆事件", calendarTodos.length, "來源：MAGI 行事曆與 Google 日曆匯入");
     renderDashboardTodos("dashboardOscTodosBody", oscTodos, "目前沒有 OSC 建立待辦");
     renderDashboardTodos("dashboardCalendarTodosBody", calendarTodos, "目前沒有行事曆事件");
     renderSimpleRows(

@@ -619,6 +619,130 @@ body.theme-dark .todo-card .todo-badge.done {
     display: grid;
 }
 
+/* ── Accounting ── */
+.accounting-hero {
+    display: flex;
+    justify-content: space-between;
+    align-items: start;
+    gap: 16px;
+}
+
+.accounting-hero h3 {
+    margin: 0 0 4px;
+}
+
+.accounting-guide {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(110px, 1fr));
+    gap: 8px;
+    min-width: min(100%, 520px);
+}
+
+.accounting-step {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: var(--panel-2);
+    padding: 8px 10px;
+    min-width: 0;
+}
+
+.accounting-step strong {
+    display: inline-grid;
+    place-items: center;
+    width: 22px;
+    height: 22px;
+    border-radius: 999px;
+    background: var(--accent);
+    color: #fff;
+    font-size: 12px;
+    flex: 0 0 auto;
+}
+
+.accounting-step span {
+    color: var(--text);
+    font-size: 12.5px;
+    line-height: 1.35;
+}
+
+.accounting-layout {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 16px;
+    align-items: start;
+}
+
+.accounting-form-card {
+    min-width: 0;
+}
+
+.accounting-action-grid {
+    display: grid;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    gap: 8px;
+}
+
+.accounting-action-grid .btn {
+    width: 100%;
+    min-width: 0;
+}
+
+.accounting-result {
+    max-height: 360px;
+    overflow: auto;
+}
+
+.amount-income {
+    color: #047857;
+    font-weight: 700;
+}
+
+.amount-expense {
+    color: #b91c1c;
+    font-weight: 700;
+}
+
+body.theme-dark .accounting-step {
+    background: #172033;
+}
+
+body.theme-dark .amount-income {
+    color: #6ee7b7;
+}
+
+body.theme-dark .amount-expense {
+    color: #fca5a5;
+}
+
+@media (max-width: 1180px) {
+    .accounting-hero,
+    .accounting-layout {
+        grid-template-columns: 1fr;
+    }
+
+    .accounting-hero {
+        display: grid;
+    }
+
+    .accounting-guide {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        min-width: 0;
+    }
+
+    .accounting-action-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+}
+
+@media (max-width: 720px) {
+    .accounting-guide,
+    .accounting-action-grid {
+        grid-template-columns: 1fr;
+    }
+}
+
 .card {
     background: var(--panel);
     border: 1px solid var(--line);

@@ -10,7 +10,10 @@ def test_period_for_settlement_month_uses_26_to_25_window():
     assert end.isoformat() == "2026-05-25"
     assert default_settlement_month(date(2026, 5, 24), catch_up=True) == "2026-05"
     assert default_settlement_month(date(2026, 6, 3), catch_up=True) == "2026-05"
-    assert default_settlement_month(date(2026, 5, 12), catch_up=True) is None
+    assert default_settlement_month(date(2026, 6, 23), catch_up=True) == "2026-05"
+    assert default_settlement_month(date(2026, 6, 24), catch_up=True) == "2026-06"
+    assert default_settlement_month(date(2026, 5, 12), catch_up=True) == "2026-04"
+    assert default_settlement_month(date(2026, 5, 12), catch_up=False) is None
 
 
 def test_laf_fee_basis_defaults_to_current_settlement_period(monkeypatch):
@@ -256,3 +259,48 @@ def test_monthly_bonus_route_preview(monkeypatch):
     resp = app.test_client().get("/api/osc/accounting/monthly-bonus?month=2026-05")
     assert resp.status_code == 200
     assert resp.get_json()["status"] == "waiting_laf_fee"
+
+
+def test_accounting_transaction_allows_shared_expense_without_case(monkeypatch):
+    from flask import Flask
+    from flask_login import LoginManager, UserMixin
+
+    from api.blueprints.osc_accounting import osc_accounting_bp
+
+    app = Flask(__name__)
+    app.config["TESTING"] = True
+    app.config["LOGIN_DISABLED"] = True
+    app.secret_key = "test"
+    login = LoginManager(app)
+
+    class User(UserMixin):
+        id = "test"
+
+    @login.user_loader
+    def _load(_user_id):
+        return User()
+
+    app.register_blueprint(osc_accounting_bp)
+    calls = []
+
+    def fake_helpers():
+        def fake_exec(sql, params=(), fetch="none"):
+            calls.append((sql, params, fetch))
+            return {"lastrowid": 123, "rowcount": 1}, {}
+
+        return fake_exec, lambda x: x, lambda *a, **k: None, lambda x: None, lambda v, d=0: int(v or d)
+
+    monkeypatch.setattr("api.blueprints.osc_accounting._get_osc_helpers", fake_helpers)
+    resp = app.test_client().post(
+        "/api/osc/accounting/transactions",
+        json={
+            "date": "2026-05-24",
+            "type": "支出",
+            "category": "薪資",
+            "amount": 17000,
+            "description": "法扶消債酬金獎金",
+        },
+    )
+    assert resp.status_code == 200
+    assert calls
+    assert calls[0][1][0] is None

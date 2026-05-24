@@ -40,11 +40,15 @@ function isLegalAidCaseRow(row = {}) {
 }
 
 function caseDisplayStatus(row = {}) {
+    const lafStatus = String(row.legal_aid_status || "").trim();
+    if (lafStatus.includes("待送出") || lafStatus.includes("暫存")) return "待送出";
+    if (lafStatus.includes("待報結")) return "待報結";
     const values = [row.status_display, row.effective_status, row.status, row.legal_aid_status];
     for (const value of values) {
         const text = String(value || "").trim();
         if (!text) continue;
         if (text === "未結案" || text === "未結案/進行中") return "進行中";
+        if (text === "結案中") return "待結案處理";
         return text;
     }
     return "進行中";
@@ -700,7 +704,7 @@ function showFolderPathDialog(folderPath, candidates) {
 }
 
 async function createCaseFolder(id) {
-    if (!id) { showToast("缺少案件 ID", "warn"); return; }
+    if (!id) { showToast("缺少系統案件編號", "warn"); return; }
     try {
         const data = await api(`/api/osc/cases/${encodeURIComponent(id)}/create-folder`, "POST", {});
         if (data.ok) {
@@ -797,6 +801,7 @@ function renderCaseFolderBrowser(data) {
             </div>
             <div class="toolbar case-drive-actions">
                 <button class="btn slim" data-act="wb-folder-open" data-id="${esc(c.id || "")}" data-path="${esc(rel)}">重新整理</button>
+                <button class="btn slim" data-act="wb-folder-mkdir" data-id="${esc(c.id || "")}" data-path="${esc(rel)}" data-folder-path="${esc(folderPath)}">新增資料夾</button>
                 <button class="btn slim" data-act="wb-folder-upload" data-id="${esc(c.id || "")}" data-path="${esc(rel)}" data-folder-path="${esc(folderPath)}">上傳檔案</button>
                 <button class="btn slim" data-act="wb-folder-copy-path" data-path="${esc(folderPath)}">複製案件路徑</button>
                 <button class="btn slim" data-act="wb-case-open-host" data-id="${esc(c.id || "")}">在本機開啟</button>
@@ -836,6 +841,39 @@ async function openCaseFolder(id, relativePath = "") {
             : "案件資料夾尚未同步到伺服器本機，已提供 NAS 路徑與本機開啟選項。",
         data.folder_exists ? "ok" : "warn"
     );
+}
+
+async function createWorkbenchFolder(caseId, folderPath, relativePath = "") {
+    const basePath = String(folderPath || "").trim();
+    if (!caseId || !basePath) {
+        wbSetStatus("目前沒有案件資料夾路徑，無法新增資料夾。", "warn");
+        return;
+    }
+    const name = window.prompt("請輸入新資料夾名稱，例如：書狀、證據資料、與當事人往來");
+    const trimmed = String(name || "").trim();
+    if (!trimmed) return;
+    try {
+        const data = await api("/api/osc/folders/mkdir", "POST", {
+            base_path: basePath,
+            relative_path: String(relativePath || ""),
+            name: trimmed,
+        });
+        if (!data.ok) throw new Error(data.error || "新增資料夾失敗");
+        showToast(`已新增資料夾：${trimmed}`, "ok", 3000);
+        wbSetStatus(`已新增資料夾：${trimmed}`, "ok");
+        await openCaseFolder(caseId, relativePath || "");
+    } catch (e) {
+        const msg = String(e.message || e);
+        const friendly = msg.includes("already_exists")
+            ? "同名資料夾已存在。"
+            : msg.includes("name_has_invalid_chars")
+                ? "資料夾名稱不能包含 \\ / : * ? \" < > | 等字元。"
+                : msg.includes("parent_not_found")
+                    ? "目前資料夾尚未同步或不存在，無法在此新增資料夾。"
+                    : msg;
+        wbSetStatus(`新增資料夾失敗：${friendly}`, "warn");
+        showToast(`新增資料夾失敗：${friendly}`, "warn", 3500);
+    }
 }
 
 function renderTextFileEditor(caseId, rawPath, content, returnPath = "") {

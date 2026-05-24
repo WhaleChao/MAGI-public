@@ -57,8 +57,8 @@ function renderTodoBoard({ items, gridId, emptyId, summaryId, summaryPrefix, mod
     if (summaryEl) {
         const sourceCounts = countTodoSources(items);
         const detail = mode === "calendar"
-            ? `calendar_events ${sourceCounts.calendar_events || 0}，行事曆事件待辦 ${sourceCounts.calendar_todo || 0}，Google 日曆匯入 ${sourceCounts.gcal_import || 0}`
-            : "來源：case_todos（排除 Google 日曆匯入）";
+            ? `MAGI 行事曆 ${sourceCounts.calendar_events || 0}，行事曆事件待辦 ${sourceCounts.calendar_todo || 0}，Google 日曆匯入 ${sourceCounts.gcal_import || 0}`
+            : "來源：OSC 手動或 PDF 建立待辦（排除 Google 日曆匯入）";
         summaryEl.textContent = `${summaryPrefix || "待辦"} ${items.length} 筆｜${detail}`;
     }
 

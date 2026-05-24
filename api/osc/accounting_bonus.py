@@ -69,7 +69,7 @@ def default_settlement_month(today: date | None = None, *, catch_up: bool = Fals
     today = today or date.today()
     if today.day >= 24:
         return f"{today.year:04d}-{today.month:02d}"
-    if catch_up and today.day <= 7:
+    if catch_up and today.day <= 23:
         year, mon = today.year, today.month - 1
         if mon == 0:
             year -= 1

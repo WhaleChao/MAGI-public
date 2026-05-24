@@ -901,7 +901,7 @@ function addDebtReqCustomRow() {
 
 async function syncLafNumberForCase(caseId) {
     const id = String(caseId || document.getElementById("debtReqCaseId")?.value || state.laf?.selectedWorkbench?.case?.id || "").trim();
-    if (!id) return showToast("找不到案件 ID，無法自動帶入字號。", "warn");
+    if (!id) return showToast("找不到系統案件，無法自動帶入字號。", "warn");
     const manual = (document.getElementById("debtReqLafNo")?.value || "").trim();
     const result = await api(`/api/osc/cases/${encodeURIComponent(id)}/laf-number/sync`, "POST", manual ? { laf_case_no: manual } : {});
     if (!result || result.ok === false) {
@@ -1645,7 +1645,7 @@ async function copyDocumentPath(path) {
 async function runDocCaseAction(action) {
     const caseId = (document.getElementById("docActionCaseId").value || "").trim();
     if (!caseId) {
-        alert("請先輸入案件 ID");
+        alert("請先選擇系統案件");
         return;
     }
     const data = await api(`/api/osc/cases/${encodeURIComponent(caseId)}/quick-action`, "POST", { action });
@@ -1806,7 +1806,7 @@ async function executeArchiveMove() {
     const details = [];
     for (let i = 0; i < picks.length; i += 1) {
         const id = picks[i];
-        if (summaryEl) summaryEl.textContent = `結案搬移中：${i + 1} / ${picks.length}（案件 ID ${id}）`;
+        if (summaryEl) summaryEl.textContent = `結案搬移中：${i + 1} / ${picks.length}（系統案件 ${id}）`;
         try {
             const data = await api("/api/osc/archive-wizard/execute", "POST", { confirm: true, case_ids: [id], force, max_items: 1 });
             const s = data.summary || {};

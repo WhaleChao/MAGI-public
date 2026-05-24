@@ -556,6 +556,8 @@ def _iter_scan_targets(raw_path: str, recursive: bool, limit: int) -> list[Path]
 
 
 def _iter_all_case_pdf_targets(limit: int) -> list[tuple[Path, str, str]]:
+    from api.case_path_mapper import local_case_path_candidates
+
     rows, _ = _osc_exec(
         """
         SELECT case_number, client_name, folder_path
@@ -571,8 +573,14 @@ def _iter_all_case_pdf_targets(limit: int) -> list[tuple[Path, str, str]]:
     wanted = ("法院通知", "程序裁定", "判決書", "法院_通知", "法院_傳票")
     max_items = max(1, min(limit, 5000))
     for row in rows or []:
-        folder = Path(str(row.get("folder_path") or "").strip()).expanduser()
-        if not folder.exists() or not folder.is_dir():
+        raw_folder = str(row.get("folder_path") or "").strip()
+        folder: Path | None = None
+        for candidate in local_case_path_candidates(raw_folder):
+            cand = Path(candidate).expanduser()
+            if cand.exists() and cand.is_dir():
+                folder = cand
+                break
+        if folder is None:
             continue
         for pdf in folder.rglob("*.pdf"):
             if len(out) >= max_items:

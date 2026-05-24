@@ -858,6 +858,7 @@ def list_unsynced_todos_with_case_info(
                = ct.case_number COLLATE utf8mb4_unicode_ci
             WHERE (ct.google_calendar_id IS NULL OR ct.google_calendar_id = '')
               AND ct.todo_date IS NOT NULL
+              AND ct.todo_date >= CURDATE()
               AND (ct.status IS NULL OR ct.status = '' OR ct.status = 'pending')
             ORDER BY ct.todo_date ASC, ct.id ASC
             LIMIT %s

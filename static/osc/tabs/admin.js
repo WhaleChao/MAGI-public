@@ -443,7 +443,7 @@ async function loadOscBackups() {
         <td>${esc(_fmtBytes(item.size_bytes))}</td>
         <td class="muted small">${esc(_fmtTableCounts(item.table_counts))}</td>
         <td class="actions">
-            <button class="btn" data-act="osc-backup-dry-run" data-filename="${esc(item.filename)}">Dry-run</button>
+            <button class="btn" data-act="osc-backup-dry-run" data-filename="${esc(item.filename)}">預覽還原</button>
             <button class="btn primary" data-act="osc-backup-restore" data-filename="${esc(item.filename)}">確認還原</button>
             <button class="btn danger" data-act="osc-backup-del" data-filename="${esc(item.filename)}">刪除</button>
         </td>
@@ -462,7 +462,7 @@ async function restoreOscBackup(filename, dryRun) {
     }
     const payload = dryRun ? { dry_run: true } : { confirm: true };
     const res = await api(`/api/osc/backups/${encodeURIComponent(filename)}/restore`, "POST", payload);
-    const mode = dryRun ? "Dry-run 預覽" : "還原完成";
+    const mode = dryRun ? "預覽還原" : "還原完成";
     showToast(`${mode}：插入 ${res.inserted_count ?? 0} 筆，略過 ${res.skipped_count ?? 0} 筆${res.errors && res.errors.length ? `（${res.errors.length} 錯誤）` : ""}`);
     if (res.errors && res.errors.length) {
         console.warn("[backup restore errors]", res.errors);
@@ -505,7 +505,7 @@ async function saveGcalCreds() {
     const statusEl = document.getElementById("gcalStatus");
 
     if (!clientId || !clientSecret) {
-        if (statusEl) statusEl.textContent = "❌ Client ID 與 Client Secret 均為必填";
+        if (statusEl) statusEl.textContent = "❌ Google 用戶端 ID 與用戶端密鑰均為必填";
         return;
     }
     try {
@@ -542,7 +542,7 @@ async function syncGcal(dryRun) {
     try {
         const res = await api("/api/osc/gcal/sync", "POST", { dry_run: dryRun });
         if (res && res.ok) {
-            const mode = dryRun ? "Dry-run" : "同步";
+        const mode = dryRun ? "預覽同步" : "同步";
             const msg = `${mode} 完成 — 匯入 ${res.imported ?? 0} 筆，推送 ${res.pushed ?? 0} 筆，略過 ${res.skipped ?? 0} 筆${(res.errors && res.errors.length) || (res.import_errors && res.import_errors.length) ? `（${(res.errors || []).length + (res.import_errors || []).length} 錯誤）` : ""}`;
             if (statusEl) statusEl.textContent = (dryRun ? "🔍 " : "✅ ") + msg;
             showToast(msg, "ok");

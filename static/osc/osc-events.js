@@ -277,6 +277,7 @@ async function dispatchDelegatedAction(act, t) {
     if (act === "wb-case-close") return await closeCase(id);
     if (act === "wb-case-action") return await wbQuickAction(t.dataset.action || "");
     if (act === "wb-folder-open") return await openCaseFolder(id, t.dataset.path || "");
+    if (act === "wb-folder-mkdir") return await createWorkbenchFolder(id, t.dataset.folderPath || "", t.dataset.path || "");
     if (act === "wb-folder-upload") return promptFolderUpload(id, t.dataset.folderPath || "", t.dataset.path || "");
     if (act === "wb-folder-copy-path") return await copyText(t.dataset.path || "", "路徑已複製。");
     if (act === "wb-file-share") return await shareFileLink(t.dataset.path || "", t.dataset.name || "檔案");
@@ -472,10 +473,10 @@ function bindEvents() {
         ["adminSettingsRefreshBtn", loadAdminSettings, "系統設定重新整理"],
         ["adminSettingSaveBtn", saveAdminSetting, "系統設定儲存"],
         ["discordWebhookSaveBtn", saveDiscordWebhook, "Discord 設定儲存"],
-        ["discordWebhookTestBtn", testDiscordWebhook, "Discord Test 推播"],
+        ["discordWebhookTestBtn", testDiscordWebhook, "通知測試推播"],
         ["gcalSaveCredsBtn", saveGcalCreds, "GCal 憑證儲存"],
         ["gcalConnectBtn", connectGcal, "GCal 連線授權"],
-        ["gcalSyncDryRunBtn", () => syncGcal(true), "GCal Dry-run 同步"],
+        ["gcalSyncDryRunBtn", () => syncGcal(true), "Google 日曆同步預覽"],
         ["gcalSyncBtn", () => syncGcal(false), "GCal 立即同步"],
         ["gcalDisconnectBtn", disconnectGcal, "GCal 解除授權"],
         ["oscBackupCreateBtn", createOscBackup, "立即備份"],
@@ -561,8 +562,16 @@ function bindEvents() {
     if (caseClAddBtn)  caseClAddBtn.addEventListener("click", addCaseChecklistItem);
 
     document.getElementById("clientResetBtn").addEventListener("click", () => clearFields(["client_id", "client_name", "client_contact_person", "client_phone", "client_email", "client_address", "client_tax_id", "client_notes", "client_status"]));
-    document.getElementById("meetingResetBtn").addEventListener("click", () => clearFields(["meeting_id", "meeting_case_number", "meeting_client_name", "meeting_type", "meeting_datetime", "meeting_duration", "meeting_location", "meeting_notes", "meeting_status"]));
-    document.getElementById("calResetBtn").addEventListener("click", () => clearFields(["cal_id", "cal_event_id", "cal_title", "cal_case_number", "cal_start_date", "cal_end_date", "cal_location", "cal_color", "cal_is_all_day", "cal_reminder_minutes", "cal_summary", "cal_description", "cal_raw_data"]));
+    document.getElementById("meetingResetBtn").addEventListener("click", () => {
+        clearFields(["meeting_id", "meeting_case_number", "meeting_client_name", "meeting_type", "meeting_datetime", "meeting_duration", "meeting_location", "meeting_notes", "meeting_status"]);
+        const status = document.getElementById("meeting_status");
+        if (status) status.value = "scheduled";
+    });
+    document.getElementById("calResetBtn").addEventListener("click", () => {
+        clearFields(["cal_id", "cal_event_id", "cal_title", "cal_case_number", "cal_start_date", "cal_end_date", "cal_location", "cal_color", "cal_is_all_day", "cal_reminder_minutes", "cal_summary", "cal_description", "cal_raw_data"]);
+        const allDay = document.getElementById("cal_is_all_day");
+        if (allDay) allDay.value = "0";
+    });
     document.getElementById("todoResetBtn").addEventListener("click", () => clearFields(["todo_id", "todo_case_number", "todo_client_name", "todo_type", "todo_date", "todo_time", "todo_desc", "todo_status", "todo_source_file"]));
     document.getElementById("docsKind").addEventListener("change", () => runBusyAction("docsSearchBtn", loadDocuments, { actionLabel: "檔案搜尋" }));
 
@@ -614,8 +623,15 @@ function bindEvents() {
         ["docKwId", "docKwCase", "docKwName", "docKwCategory", "docKwHotkey", "docKwCaseSpecific", "docKwUsageCount", "docKwContent"].forEach(x => {
             const el = document.getElementById(x); if (el) el.value = "";
         });
+        const spec = document.getElementById("docKwCaseSpecific");
+        if (spec) spec.value = "0";
     });
     document.getElementById("txResetBtn").addEventListener("click", () => clearFields(["tx_id", "tx_case_id", "tx_date", "tx_type", "tx_sub_type", "tx_category", "tx_amount", "tx_description"]));
+    document.querySelectorAll("[data-tx-preset]").forEach(btn => {
+        if (btn._txPresetBound) return;
+        btn._txPresetBound = true;
+        btn.addEventListener("click", () => setTransactionPreset(btn.dataset.txPreset || ""));
+    });
     document.getElementById("txDefResetBtn").addEventListener("click", () => {
         ["txDefId", "txDefCategory", "txDefAmount", "txDefDescription"].forEach(x => {
             const el = document.getElementById(x); if (el) el.value = "";
@@ -625,6 +641,8 @@ function bindEvents() {
         ["txRecurringId", "txRecurringCategory", "txRecurringSubType", "txRecurringDescription", "txRecurringAmount", "txRecurringDay", "txRecurringStartDate", "txRecurringEndDate", "txRecurringActive", "txRecurringLastMonth"].forEach(x => {
             const el = document.getElementById(x); if (el) el.value = "";
         });
+        const active = document.getElementById("txRecurringActive");
+        if (active) active.value = "1";
     });
     document.getElementById("txRecurringOnlyActive").addEventListener("change", () => runBusyAction("txRecurringSearchBtn", loadRecurringExpenses, { actionLabel: "固定支出搜尋" }));
     document.addEventListener("change", e => {
@@ -682,12 +700,20 @@ function bindEvents() {
         });
     }
     document.getElementById("adminSettingResetBtn").addEventListener("click", () => clearFields(["adminSettingKey", "adminSettingValue", "adminSettingDescription"]));
-    document.getElementById("adminReasonResetBtn").addEventListener("click", () => clearFields(["adminReasonId", "adminReasonType", "adminReasonText", "adminReasonCommon"]));
+    document.getElementById("adminReasonResetBtn").addEventListener("click", () => {
+        clearFields(["adminReasonId", "adminReasonType", "adminReasonText", "adminReasonCommon"]);
+        const common = document.getElementById("adminReasonCommon");
+        if (common) common.value = "1";
+    });
     document.getElementById("adminCourtResetBtn").addEventListener("click", () => clearFields(["adminCourtId", "adminCourtName", "adminCourtType", "adminCourtAddress"]));
     document.getElementById("adminBranchResetBtn").addEventListener("click", () => clearFields(["adminBranchId", "adminBranchName", "adminBranchAddress"]));
     document.getElementById("adminUserSettingResetBtn").addEventListener("click", () => clearFields(["adminUserSettingId", "adminUserSettingHost", "adminUserSettingKey", "adminUserSettingValue"]));
     document.getElementById("adminMemoryKeywordResetBtn").addEventListener("click", () => clearFields(["adminMemoryCaseNumber", "adminMemoryHotkey", "adminMemoryName", "adminMemoryValue"]));
-    document.getElementById("adminOpponentResetBtn").addEventListener("click", () => clearFields(["adminOpponentId", "adminOpponentCaseNumber", "adminOpponentName", "adminOpponentAddress", "adminOpponentActive"]));
+    document.getElementById("adminOpponentResetBtn").addEventListener("click", () => {
+        clearFields(["adminOpponentId", "adminOpponentCaseNumber", "adminOpponentName", "adminOpponentAddress", "adminOpponentActive"]);
+        const active = document.getElementById("adminOpponentActive");
+        if (active) active.value = "1";
+    });
 
     document.getElementById("wbCloseBtn").addEventListener("click", wbClose);
     const wbFolderUploadInput = document.getElementById("wbFolderUploadInput");
@@ -833,12 +859,12 @@ async function boot() {
             loadMeta().catch((e) => {
                 console.error("loadMeta failed:", e);
                 const dbBadge = document.getElementById("dbBadge");
-                if (dbBadge) dbBadge.textContent = `DB: 連線失敗 (${e.message || e})`;
+                if (dbBadge) dbBadge.textContent = `資料庫：連線失敗 (${e.message || e})`;
             });
         } catch (e) {
             console.error("loadMeta sync error:", e);
             const dbBadge = document.getElementById("dbBadge");
-            if (dbBadge) dbBadge.textContent = `DB: 連線失敗 (${e.message || e})`;
+            if (dbBadge) dbBadge.textContent = `資料庫：連線失敗 (${e.message || e})`;
         }
     };
     _safeLoadMeta();

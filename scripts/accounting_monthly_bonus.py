@@ -30,7 +30,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--commit", action="store_true", help="正式登載獎金支出並記錄月結結果")
     parser.add_argument("--refresh-import", action="store_true", help="先補抓同事 Google 帳務表")
     parser.add_argument("--no-refresh-import", action="store_true", help="不補抓帳務表")
-    parser.add_argument("--catch-up", action="store_true", help="月初 1~7 日仍可補算前一個結算月")
+    parser.add_argument("--catch-up", action="store_true", help="每月 1~23 日仍可補算前一個結算月")
     parser.add_argument("--export-xlsx", action="store_true", help="輸出 XLSX 報表")
     parser.add_argument("--account-hint", default=DEFAULT_ACCOUNT_HINT)
     args = parser.parse_args(argv)

@@ -25,19 +25,19 @@
                         </div>
                         <div class="field">
                             <label for="calStartDate">起始時間（含）</label>
-                            <input id="calStartDate" type="datetime-local" placeholder="start">
+                            <input id="calStartDate" type="datetime-local" placeholder="起始時間">
                         </div>
                         <div class="field">
                             <label for="calEndDate">結束時間（含）</label>
-                            <input id="calEndDate" type="datetime-local" placeholder="end">
+                            <input id="calEndDate" type="datetime-local" placeholder="結束時間">
                         </div>
                     </div>
                 </div>
                 <div class="soft-block">
                     <div class="field-grid cols-4">
                         <div class="field">
-                            <label for="cal_id">ID</label>
-                            <input id="cal_id" placeholder="更新時使用">
+                            <label for="cal_id">編輯編號</label>
+                            <input id="cal_id" placeholder="新增時留空" readonly>
                         </div>
                         <input id="cal_event_id" type="hidden">
                         <div class="field">
@@ -62,24 +62,27 @@
                         </div>
                         <div class="field">
                             <label for="cal_color">色碼</label>
-                            <input id="cal_color" placeholder="#3498db">
+                            <input id="cal_color" placeholder="選填，例如 #3498db">
                         </div>
                         <div class="field">
-                            <label for="cal_is_all_day">全日</label>
-                            <input id="cal_is_all_day" placeholder="0/1">
+                            <label for="cal_is_all_day">是否全日</label>
+                            <select id="cal_is_all_day">
+                                <option value="0">否</option>
+                                <option value="1">是</option>
+                            </select>
                         </div>
                         <div class="field">
                             <label for="cal_reminder_minutes">提醒分鐘</label>
-                            <input id="cal_reminder_minutes" type="number" placeholder="minutes">
+                            <input id="cal_reminder_minutes" type="number" placeholder="提醒前幾分鐘">
                         </div>
                         <div class="field" style="grid-column: span 2;">
                             <label for="cal_summary">摘要</label>
-                            <input id="cal_summary" placeholder="summary">
+                            <input id="cal_summary" placeholder="簡短摘要（選填）">
                         </div>
                     </div>
                     <div class="field" style="margin-top:10px;">
                         <label for="cal_description">描述</label>
-                        <textarea id="cal_description" placeholder="description"></textarea>
+                        <textarea id="cal_description" placeholder="詳細內容（選填）"></textarea>
                     </div>
                     <textarea id="cal_raw_data" hidden></textarea>
                 </div>

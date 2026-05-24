@@ -81,6 +81,14 @@ def test_refresh_pushes_osc_created_todos_to_gcal(monkeypatch, tmp_path):
 
     monkeypatch.setattr(osc_events_refresh, "_load_osc_action_module", lambda: FakeOscAction)
     monkeypatch.setattr(osc_events_refresh, "_load_transcript_todo_module", lambda: FakeTranscriptTodo)
+    monkeypatch.setattr(
+        osc_events_refresh,
+        "_run_pdf_calendar_scan",
+        lambda args: (
+            calls.append(("pdf_scan", {"limit": args.pdf_limit, "max_pages": args.pdf_max_pages}))
+            or {"ok": True, "scanned": 1, "write_result": {"inserted": 1, "updated": 0, "skipped": 0}}
+        ),
+    )
     monkeypatch.delenv("MAGI_GCAL_DEDUP_DRY_RUN", raising=False)
 
     args = SimpleNamespace(
@@ -94,6 +102,9 @@ def test_refresh_pushes_osc_created_todos_to_gcal(monkeypatch, tmp_path):
         lookahead_days=180,
         calendar_limit=25,
         gcal_push_limit=7,
+        pdf_limit=11,
+        pdf_max_pages=8,
+        skip_pdf_todos=False,
         transcript_limit=9,
         transcript_tail_pages=3,
         skip_transcript_todos=False,
@@ -103,7 +114,8 @@ def test_refresh_pushes_osc_created_todos_to_gcal(monkeypatch, tmp_path):
     result = osc_events_refresh.run_refresh(args)
 
     assert result["ok"] is True
-    assert [name for name, _ in calls] == ["scan", "transcript_targets", "transcript_scan", "transcript_apply", "import", "push"]
+    assert [name for name, _ in calls] == ["scan", "pdf_scan", "transcript_targets", "transcript_scan", "transcript_apply", "import", "push"]
+    assert result["pdf_calendar_scan"]["write_result"]["inserted"] == 1
     assert calls[-1][1]["limit"] == 7
     assert result["transcript_todos"]["write_result"]["inserted"] == 1
     assert result["calendar_push"]["inserted"] == 1

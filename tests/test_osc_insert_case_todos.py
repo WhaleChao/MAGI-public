@@ -4,7 +4,7 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "skills", "osc-orchestrator"))
 
-from osc_headless.db import insert_case_todos
+from osc_headless.db import insert_case_todos, list_unsynced_todos_with_case_info
 
 
 class _FakeCursor:
@@ -129,3 +129,31 @@ def test_insert_case_todos_updates_stale_pending_same_source_type():
 
     assert result == {"inserted": 0, "skipped": 0, "updated": 1}
     assert any("UPDATE `case_todos`" in sql for sql, _ in conn.cursor_obj.executed)
+
+
+def test_list_unsynced_todos_only_returns_today_or_future_items():
+    class Cursor:
+        def __init__(self):
+            self.executed = []
+
+        def execute(self, sql, params=None):
+            self.executed.append((sql, params))
+
+        def fetchall(self):
+            return []
+
+        def close(self):
+            pass
+
+    class Conn:
+        def __init__(self):
+            self.cur = Cursor()
+
+        def cursor(self, dictionary=False):
+            assert dictionary is True
+            return self.cur
+
+    conn = Conn()
+    assert list_unsynced_todos_with_case_info(conn, limit=10) == []
+    sql = " ".join(conn.cur.executed[0][0].split())
+    assert "ct.todo_date >= CURDATE()" in sql

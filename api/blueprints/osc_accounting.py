@@ -59,10 +59,11 @@ def osc_accounting_transactions_api():
         return jsonify({"ok": True, "items": rows})
 
     payload = request.get_json() or {}
-    case_id = _osc_resolve_case_id(payload.get("case_id") or payload.get("case_number") or "")
+    raw_case_id = str(payload.get("case_id") or payload.get("case_number") or "").strip()
+    case_id = _osc_resolve_case_id(raw_case_id) if raw_case_id else None
     tx_date = str(payload.get("date") or "").strip() or str(date.today())
-    if not case_id:
-        return jsonify({"ok": False, "error": "case_id required"}), 400
+    if raw_case_id and not case_id:
+        return jsonify({"ok": False, "error": "case not found", "message": "找不到這個案件編號，若是共同收入或支出請留空。"}), 400
     try:
         amount = float(payload.get("amount") or 0)
     except Exception:
@@ -113,7 +114,10 @@ def osc_accounting_transaction_detail_api(row_id):
         else:
             v = (payload.get(k) or "").strip() or None
             if k == "case_id" and v:
-                v = _osc_resolve_case_id(v)
+                resolved = _osc_resolve_case_id(v)
+                if not resolved:
+                    return jsonify({"ok": False, "error": "case not found", "message": "找不到這個案件編號，若是共同收入或支出請留空。"}), 400
+                v = resolved
             vals.append(v)
     if not sets:
         return jsonify({"ok": False, "error": "no fields"}), 400

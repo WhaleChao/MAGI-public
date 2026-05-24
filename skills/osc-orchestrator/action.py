@@ -1240,7 +1240,16 @@ def task_scan_cases(payload: Dict[str, Any]) -> Dict[str, Any]:
     time_budget_sec = int(payload.get("time_budget_sec") or 0)  # 0=無限制
     t0 = time.monotonic()
 
-    subfolder_keywords = payload.get("subfolder_keywords") or ["法院通知或程序裁定", "閱卷資料"]
+    subfolder_keywords = payload.get("subfolder_keywords") or [
+        "法院通知與程序裁定",
+        "法院通知或程序裁定",
+        "法院通知",
+        "程序裁定",
+        "判決書",
+        "法院_通知",
+        "法院_傳票",
+        "閱卷資料",
+    ]
     if isinstance(subfolder_keywords, str):
         subfolder_keywords = [subfolder_keywords]
 
@@ -1341,8 +1350,8 @@ def _build_google_calendar_service(
     """
     credentials_path = (credentials_path or "").strip()
     token_path = (token_path or "").strip()
-    if not credentials_path or not os.path.exists(credentials_path):
-        return {"ok": False, "error": f"credentials_not_found:{credentials_path}"}
+    if not token_path:
+        return {"ok": False, "error": "token_path_missing"}
 
     try:
         from google.oauth2.credentials import Credentials  # type: ignore
@@ -1403,10 +1412,16 @@ def _build_google_calendar_service(
     if creds and creds.expired and creds.refresh_token:
         try:
             creds.refresh(Request())
+            if token_path:
+                os.makedirs(os.path.dirname(token_path), exist_ok=True)
+                with open(token_path, "w", encoding="utf-8") as f:
+                    f.write(creds.to_json())
         except Exception:
             creds = None
 
     if (not creds or not creds.valid) and interactive:
+        if not credentials_path or not os.path.exists(credentials_path):
+            return {"ok": False, "error": f"credentials_not_found:{credentials_path}"}
         # Interactive OAuth (admin/daytime only): open local server flow, then persist token.
         try:
             flow = InstalledAppFlow.from_client_secrets_file(credentials_path, SCOPES)
@@ -1442,6 +1457,25 @@ def _env_bool(name: str, default: bool = False) -> bool:
     if raw is None:
         return bool(default)
     return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _default_gcal_token_path() -> str:
+    paperclip_token = Path.home() / ".magi" / "google" / "token.json"
+    if paperclip_token.exists():
+        return str(paperclip_token)
+    return str(get_config_path("google_calendar_token.json"))
+
+
+def _default_gcal_credentials_path() -> str:
+    env_path = os.environ.get("MAGI_GOOGLE_CREDENTIALS_PATH", "").strip()
+    if env_path:
+        return env_path
+    repo_credentials = get_config_path("credentials.json")
+    if repo_credentials.exists():
+        return str(repo_credentials)
+    # Paperclip OAuth stores client_id/client_secret inside token.json, so
+    # headless refresh can still work without forcing a second credentials file.
+    return ""
 
 
 def _event_list_time_window_from_body(body: Dict[str, Any], tz: str) -> Tuple[str, str]:
@@ -1687,9 +1721,9 @@ def task_gcal_sync(payload: Dict[str, Any]) -> Dict[str, Any]:
     credentials_path = ((payload or {}).get("credentials_path") or os.environ.get("MAGI_GOOGLE_CREDENTIALS_PATH") or "").strip()
     token_path = ((payload or {}).get("token_path") or os.environ.get("MAGI_GOOGLE_CALENDAR_TOKEN_PATH") or "").strip()
     if not credentials_path:
-        credentials_path = str(get_config_path("credentials.json"))
+        credentials_path = _default_gcal_credentials_path()
     if not token_path:
-        token_path = str(get_config_path("google_calendar_token.json"))
+        token_path = _default_gcal_token_path()
 
     svc = _build_google_calendar_service(credentials_path, token_path, interactive=False)
     if not svc.get("ok"):
@@ -1957,9 +1991,9 @@ def task_gcal_import(payload: Dict[str, Any]) -> Dict[str, Any]:
     credentials_path = (p.get("credentials_path") or os.environ.get("MAGI_GOOGLE_CREDENTIALS_PATH") or "").strip()
     token_path = (p.get("token_path") or os.environ.get("MAGI_GOOGLE_CALENDAR_TOKEN_PATH") or "").strip()
     if not credentials_path:
-        credentials_path = str(get_config_path("credentials.json"))
+        credentials_path = _default_gcal_credentials_path()
     if not token_path:
-        token_path = str(get_config_path("google_calendar_token.json"))
+        token_path = _default_gcal_token_path()
 
     svc = _build_google_calendar_service(credentials_path, token_path, interactive=False)
     if not svc.get("ok"):
@@ -2445,9 +2479,9 @@ def task_gcal_authorize(payload: Dict[str, Any]) -> Dict[str, Any]:
     credentials_path = ((payload or {}).get("credentials_path") or os.environ.get("MAGI_GOOGLE_CREDENTIALS_PATH") or "").strip()
     token_path = ((payload or {}).get("token_path") or os.environ.get("MAGI_GOOGLE_CALENDAR_TOKEN_PATH") or "").strip()
     if not credentials_path:
-        credentials_path = str(get_config_path("credentials.json"))
+        credentials_path = _default_gcal_credentials_path()
     if not token_path:
-        token_path = str(get_config_path("google_calendar_token.json"))
+        token_path = _default_gcal_token_path()
     svc = _build_google_calendar_service(credentials_path, token_path, interactive=True)
     if svc.get("ok"):
         _eventlog("osc:gcal_authorize", ok=True, payload={"token_path": token_path})

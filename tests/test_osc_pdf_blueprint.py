@@ -301,6 +301,38 @@ def test_pdf_calendar_scan_write_can_embed_magi_share_link(client, tmp_path, mon
     assert "MAGI分享連結：https://share.example/s/token" in writer_calls[0]["todos"][0]["description"]
 
 
+def test_all_case_pdf_targets_translate_windows_case_path(tmp_path, monkeypatch):
+    from api.blueprints import osc_pdf
+
+    case_dir = tmp_path / "01_案件" / "法扶案件" / "消費者債務清理" / "2025-0121-高弘軒-消費者債務清理-更生"
+    notice_dir = case_dir / "02_法院通知與程序裁定"
+    notice_dir.mkdir(parents=True)
+    pdf = notice_dir / "20260513 花蓮地方法院115年度司消債調字第73號民事庭通知書（高弘軒；訂6月1日下午4時行調解程序）.pdf"
+    pdf.write_bytes(b"%PDF-1.4\n% fake target listing only\n")
+
+    monkeypatch.setattr(
+        "api.blueprints.osc_pdf._osc_exec",
+        lambda *a, **k: (
+            [
+                {
+                    "case_number": "2025-0121",
+                    "client_name": "高弘軒",
+                    "folder_path": r"Z:\lumi63181107\01_案件\法扶案件\消費者債務清理\2025-0121-高弘軒-消費者債務清理-更生",
+                }
+            ],
+            {},
+        ),
+    )
+    monkeypatch.setattr(
+        "api.case_path_mapper.local_case_path_candidates",
+        lambda p: [str(case_dir)],
+    )
+
+    targets = osc_pdf._iter_all_case_pdf_targets(limit=10)
+
+    assert targets == [(pdf.resolve(), "2025-0121", "高弘軒")]
+
+
 def test_gcal_sync_todo_event_title_includes_client_and_type():
     skill_dir = ROOT / "skills" / "osc-orchestrator"
     sys.path.insert(0, str(skill_dir))

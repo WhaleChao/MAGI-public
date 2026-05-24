@@ -49,6 +49,93 @@ def _load_transcript_todo_module():
     return mod
 
 
+def _run_pdf_calendar_scan(args: argparse.Namespace) -> dict[str, Any]:
+    """Scan court PDFs with the same extractor used by the OSC web PDF tool."""
+    from api.blueprints import osc_pdf
+
+    limit = max(1, int(getattr(args, "pdf_limit", 240)))
+    max_pages = max(1, min(int(getattr(args, "pdf_max_pages", 8)), 20))
+    dry_run = bool(getattr(args, "dry_run", False))
+    started = time.monotonic()
+    scanned = inserted = updated = skipped = todo_count = event_count = warning_count = 0
+    sample_items: list[dict[str, Any]] = []
+    errors: list[str] = []
+
+    try:
+        targets = osc_pdf._iter_all_case_pdf_targets(limit=limit)
+    except Exception as exc:
+        return {
+            "ok": False,
+            "error": f"{type(exc).__name__}: {str(exc)[:240]}",
+            "limit": limit,
+            "max_pages": max_pages,
+        }
+
+    for path, case_number, client_name in targets:
+        try:
+            item = osc_pdf._scan_pdf_for_calendar(
+                path,
+                case_number=case_number,
+                client_name=client_name,
+                max_pages=max_pages,
+                include_share_link=False,
+            )
+            scanned += 1
+            todos = item.get("todos") or []
+            events = item.get("events") or []
+            todo_count += len(todos)
+            event_count += len(events)
+            if todos and not item.get("case_number"):
+                warning_count += 1
+            write_result = {"inserted": 0, "updated": 0, "skipped": 0}
+            if todos and item.get("case_number") and not dry_run:
+                write_result = osc_pdf._insert_todos_single_machine(
+                    todos,
+                    case_number=str(item.get("case_number") or ""),
+                    client_name=str(item.get("client_name") or ""),
+                    source_file=path.name,
+                    allow_duplicates=False,
+                )
+                inserted += int(write_result.get("inserted") or 0)
+                updated += int(write_result.get("updated") or 0)
+                skipped += int(write_result.get("skipped") or 0)
+            if todos and len(sample_items) < 12:
+                sample_items.append(
+                    {
+                        "case_number": item.get("case_number") or case_number,
+                        "client_name": item.get("client_name") or client_name,
+                        "file_name": path.name,
+                        "todo_count": len(todos),
+                        "event_count": len(events),
+                        "write_result": write_result,
+                        "todos": todos[:3],
+                    }
+                )
+        except Exception as exc:
+            if len(errors) < 20:
+                errors.append(f"{path.name}: {type(exc).__name__}: {str(exc)[:200]}")
+
+    return {
+        "ok": not errors,
+        "dry_run": dry_run,
+        "limit": limit,
+        "max_pages": max_pages,
+        "targets": len(targets),
+        "scanned": scanned,
+        "todo_count": todo_count,
+        "event_count": event_count,
+        "write_result": {
+            "inserted": inserted,
+            "updated": updated,
+            "skipped": skipped,
+            "warnings": warning_count,
+        },
+        "sample_items": sample_items,
+        "errors": errors,
+        "elapsed_sec": round(time.monotonic() - started, 3),
+    }
+
+
 def _json_safe(value: Any) -> Any:
     if isinstance(value, datetime):
         return value.isoformat()
@@ -81,6 +168,7 @@ def run_refresh(args: argparse.Namespace) -> dict[str, Any]:
         "interval_hours": 6,
         "dry_run": bool(getattr(args, "dry_run", False)),
         "scan": {},
+        "pdf_calendar_scan": {},
         "transcript_todos": {},
         "calendar_import": {},
         "calendar_push": {},
@@ -101,6 +189,15 @@ def run_refresh(args: argparse.Namespace) -> dict[str, Any]:
         except Exception as exc:
             result["ok"] = False
             result["scan"] = {"ok": False, "error": f"{type(exc).__name__}: {str(exc)[:240]}"}
+
+        if not getattr(args, "skip_pdf_todos", False):
+            try:
+                result["pdf_calendar_scan"] = _run_pdf_calendar_scan(args)
+                if not result["pdf_calendar_scan"].get("ok"):
+                    result["ok"] = False
+            except Exception as exc:
+                result["ok"] = False
+                result["pdf_calendar_scan"] = {"ok": False, "error": f"{type(exc).__name__}: {str(exc)[:240]}"}
 
         if not getattr(args, "skip_transcript_todos", False):
             try:
@@ -189,6 +286,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--lookahead-days", type=int, default=int(os.environ.get("OSC_EVENTS_REFRESH_LOOKAHEAD_DAYS", "180")))
     parser.add_argument("--transcript-limit", type=int, default=int(os.environ.get("OSC_EVENTS_REFRESH_TRANSCRIPT_LIMIT", "120")))
     parser.add_argument("--transcript-tail-pages", type=int, default=int(os.environ.get("OSC_EVENTS_REFRESH_TRANSCRIPT_TAIL_PAGES", "3")))
+    parser.add_argument("--pdf-limit", type=int, default=int(os.environ.get("OSC_EVENTS_REFRESH_PDF_LIMIT", "240")))
+    parser.add_argument("--pdf-max-pages", type=int, default=int(os.environ.get("OSC_EVENTS_REFRESH_PDF_MAX_PAGES", "8")))
+    parser.add_argument("--skip-pdf-todos", action="store_true")
     parser.add_argument("--skip-transcript-todos", action="store_true")
     parser.add_argument("--json-out", default="")
     parser.add_argument("--dry-run", action="store_true")

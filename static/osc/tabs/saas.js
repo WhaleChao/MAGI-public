@@ -328,10 +328,10 @@ function renderSaasTaskBoards(boards) {
     const calSummary = document.getElementById("saasCalendarEventSummary");
     const osc = boards.osc_todos || {};
     const cal = boards.calendar_events || {};
-    if (oscSummary) oscSummary.textContent = `${Number(osc.count || 0)} 筆｜來源：${osc.source || "case_todos"}`;
+    if (oscSummary) oscSummary.textContent = `${Number(osc.count || 0)} 筆｜來源：${osc.source || "OSC 手動或 PDF 建立待辦"}`;
     if (calSummary) {
         const counts = cal.source_counts || {};
-        calSummary.textContent = `${Number(cal.count || 0)} 筆｜calendar_events ${Number(counts.calendar_events || 0)}，日曆匯入 ${Number(counts.gcal_import || 0)}`;
+        calSummary.textContent = `${Number(cal.count || 0)} 筆｜MAGI 行事曆 ${Number(counts.calendar_events || 0)}，日曆匯入 ${Number(counts.gcal_import || 0)}`;
     }
     renderBoard("saasOscTodoBody", osc, "目前沒有 OSC 建立待辦");
     renderBoard("saasCalendarEventBody", cal, "目前沒有行事曆事件");

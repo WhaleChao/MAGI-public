@@ -1,4 +1,35 @@
 /* tabs/accounting.js – Transactions + expense defaults + recurring + quotations */
+function accountingToday() {
+    return new Date().toISOString().slice(0, 10);
+}
+
+function accountingAmountClass(type, amount) {
+    const t = String(type || "");
+    const n = Number(amount || 0);
+    if (t.includes("支出") || n < 0) return "amount-expense";
+    if (t.includes("收入") || n > 0) return "amount-income";
+    return "";
+}
+
+const TX_PRESETS = {
+    "laf-income": { type: "收入", category: "法扶酬金", sub_type: "酬金", description: "法扶案件酬金" },
+    "case-income": { type: "收入", category: "一般案件", sub_type: "委任費", description: "案件收入" },
+    "office-expense": { type: "支出", category: "文具耗材", sub_type: "辦公支出", description: "辦公支出" },
+    "payroll-expense": { type: "支出", category: "薪資", sub_type: "人事費", description: "薪資" },
+    "fee-expense": { type: "支出", category: "郵資", sub_type: "郵資 / 規費", description: "郵資或規費" },
+};
+
+function setTransactionPreset(key) {
+    const preset = TX_PRESETS[key] || {};
+    const dateEl = document.getElementById("tx_date");
+    if (dateEl && !dateEl.value) dateEl.value = accountingToday();
+    ["type", "category", "sub_type", "description"].forEach(field => {
+        const el = document.getElementById(`tx_${field}`);
+        if (el && preset[field]) el.value = preset[field];
+    });
+    document.getElementById("tx_amount")?.focus();
+}
+
 async function loadTransactions() {
     const q = encodeURIComponent((document.getElementById("accountingQ").value || "").trim());
     const caseNumber = encodeURIComponent((document.getElementById("accountingCaseNumber").value || "").trim());
@@ -22,7 +53,7 @@ function renderTransactions() {
             <td>${esc(r.type)} / ${esc(r.sub_type || "")}</td>
             <td>${esc(r.category)}</td>
             <td>${esc(r.description)}</td>
-            <td>${fmtAmount(r.amount)}</td>
+            <td class="${accountingAmountClass(r.type, r.amount)}">${fmtAmount(r.amount)}</td>
             <td class="actions">
                 <button class="btn" data-act="tx-edit" data-id="${Number(r.id)}">編輯</button>
                 <button class="btn danger" data-act="tx-del" data-id="${Number(r.id)}">刪除</button>
@@ -68,7 +99,7 @@ function renderAccountingImportResult(data) {
     const rows = [
         ["可匯入", data.importable_count || 0],
         ["已匯入過", data.duplicate_count || 0],
-        ["DB 已有相同紀錄", data.existing_count || 0],
+        ["MAGI 已有相同紀錄", data.existing_count || 0],
         ["固定支出已跳過", data.fixed_expense_skip_count || 0],
         ["固定支出金額不一致", data.fixed_expense_conflict_count || 0],
     ];
@@ -163,7 +194,7 @@ function renderAccountingBonusResult(data) {
         </div>
         <div class="soft-block" style="margin-top:10px;">
             <strong>帳務匯入紀錄</strong>
-            <div class="muted">${importRows.length ? importRows.map(x => `${esc(x.month || "")}：${x.ok ? "成功" : "失敗"}（可匯入 ${x.importable_count || 0}、已匯入 ${x.duplicate_count || 0}、DB已有 ${x.existing_count || 0}）`).join("；") : "本次未重新匯入 Google 帳務。"}</div>
+            <div class="muted">${importRows.length ? importRows.map(x => `${esc(x.month || "")}：${x.ok ? "成功" : "失敗"}（可匯入 ${x.importable_count || 0}、已匯入 ${x.duplicate_count || 0}、MAGI 已有 ${x.existing_count || 0}）`).join("；") : "本次未重新匯入 Google 帳務。"}</div>
         </div>
     `;
 }
@@ -229,10 +260,14 @@ async function saveTransaction() {
         amount: p.tx_amount,
         description: p.tx_description,
     };
-    if (!body.case_id) return alert("請輸入案件編號");
+    if (!body.date) return alert("請選擇日期");
+    if (!body.type) return alert("請選擇收入或支出");
+    if (!body.category) return alert("請輸入分類");
+    if (body.amount === "" || Number.isNaN(Number(body.amount)) || Number(body.amount) < 0) return alert("金額請填 0 以上的數字");
     if ((p.tx_id || "").trim()) await api(`/api/osc/accounting/transactions/${Number(p.tx_id)}`, "PUT", body);
     else await api(`/api/osc/accounting/transactions`, "POST", body);
     clearFields(["tx_id", "tx_case_id", "tx_date", "tx_type", "tx_sub_type", "tx_category", "tx_amount", "tx_description"]);
+    showToast("帳務已儲存。", "ok");
     await loadTransactions();
     await loadMeta();
 }
@@ -309,10 +344,10 @@ async function loadRecurringExpenses() {
         <td>${esc(r.category)}</td>
         <td>${esc(r.sub_type || "")}</td>
         <td>${esc(r.description || "")}</td>
-        <td>${fmtAmount(r.amount)}</td>
+        <td class="${accountingAmountClass("支出", r.amount)}">${fmtAmount(r.amount)}</td>
         <td>${esc(r.day_of_month || "")}</td>
         <td>${esc(r.start_date || "")} ~ ${esc(r.end_date || "")}</td>
-        <td>${esc(r.is_active)}</td>
+        <td>${Number(r.is_active) ? "啟用" : "停用"}</td>
         <td>${esc(r.last_generated_month || "")}</td>
         <td class="actions">
             <button class="btn" data-act="tx-rec-edit" data-id="${Number(r.id)}">編輯</button>
@@ -351,11 +386,15 @@ async function saveRecurringExpense() {
     };
     const id = (document.getElementById("txRecurringId").value || "").trim();
     if (!body.category) return alert("請輸入分類");
+    if (!body.amount || Number(body.amount) < 0) return alert("請輸入固定支出金額");
+    if (!body.day_of_month || Number(body.day_of_month) < 1 || Number(body.day_of_month) > 31) return alert("每月日請填 1 到 31");
     if (id) await api(`/api/osc/accounting/recurring/${Number(id)}`, "PUT", body);
     else await api(`/api/osc/accounting/recurring`, "POST", body);
     ["txRecurringId", "txRecurringCategory", "txRecurringSubType", "txRecurringDescription", "txRecurringAmount", "txRecurringDay", "txRecurringStartDate", "txRecurringEndDate", "txRecurringActive", "txRecurringLastMonth"].forEach(x => {
         const el = document.getElementById(x); if (el) el.value = "";
     });
+    const active = document.getElementById("txRecurringActive");
+    if (active) active.value = "1";
     await loadRecurringExpenses();
     await loadMeta();
 }

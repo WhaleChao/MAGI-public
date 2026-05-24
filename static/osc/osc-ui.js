@@ -53,7 +53,7 @@ async function loadMeta() {
         // 偵測 session expired：fetch 拿到 0/opaqueredirect/3xx → 強制跳 login
         if (res.type === "opaqueredirect" || res.status === 0 || (res.status >= 300 && res.status < 400)) {
             dbBadge.classList.remove("ok");
-            dbBadge.innerHTML = `DB: <a href="/login?next=${encodeURIComponent(location.pathname)}" style="color:var(--apple-blue,#007aff);text-decoration:underline;">⚠️ 請重新登入</a>`;
+            dbBadge.innerHTML = `資料庫：<a href="/login?next=${encodeURIComponent(location.pathname)}" style="color:var(--apple-blue,#007aff);text-decoration:underline;">請重新登入</a>`;
             if (countBadge) countBadge.textContent = "登入逾時，請點上方連結重新登入";
             return;
         }
@@ -61,7 +61,7 @@ async function loadMeta() {
         // 偵測 HTML response（被 redirect 跟隨拿到 login 頁）
         if (txt.trim().startsWith("<")) {
             dbBadge.classList.remove("ok");
-            dbBadge.innerHTML = `DB: <a href="/login?next=${encodeURIComponent(location.pathname)}" style="color:var(--apple-blue,#007aff);text-decoration:underline;">⚠️ 請重新登入</a>`;
+            dbBadge.innerHTML = `資料庫：<a href="/login?next=${encodeURIComponent(location.pathname)}" style="color:var(--apple-blue,#007aff);text-decoration:underline;">請重新登入</a>`;
             if (countBadge) countBadge.textContent = "登入逾時，請點上方連結重新登入";
             return;
         }
@@ -73,17 +73,17 @@ async function loadMeta() {
             dbBadge.classList.remove("ok");
             let hint = "";
             if (fo.remote_ok === false) hint = " [遠端不可達]";
-            dbBadge.textContent = `DB: 連線失敗 (${data.error || res.statusText})${foTag}${hint}`;
+            dbBadge.textContent = `資料庫：連線失敗 (${data.error || res.statusText})${foTag}${hint}`;
             return;
         }
         const db = data.db || {};
         dbBadge.classList.add("ok");
-        dbBadge.textContent = `DB: ${db.host}:${db.port}/${db.database} (${db.user})${foTag}`;
+        dbBadge.textContent = `資料庫：已連線${foTag}`;
         const c = data.counts || {};
         countBadge.textContent = `案件 ${c.cases ?? "-"} | 當事人 ${c.clients ?? "-"} | 會議 ${c.meetings ?? "-"} | 行事曆 ${c.calendar_events ?? "-"} | 待辦 ${c.case_todos ?? "-"} | 法扶清單 ${c.legal_aid_checklists ?? "-"} | 法扶流程 ${c.laf_lifecycle_log ?? "-"} | 法扶信件 ${c.laf_email_records ?? "-"} | 見解 ${c.legal_insights ?? "-"} | 裁判 ${c.court_judgments ?? "-"} | 帳務 ${c.case_transactions ?? "-"} | 檔案 ${c.document_index ?? "-"} | 書狀模板 ${c.document_templates ?? "-"} | 關鍵字 ${c.document_keywords ?? "-"} | 固定支出 ${c.recurring_expenses ?? "-"} | 報價 ${c.quotations ?? "-"} | 報價模板 ${c.quotation_templates ?? "-"}`;
     } catch (e) {
         dbBadge.classList.remove("ok");
-        dbBadge.textContent = `DB: 連線失敗 (${e.message})`;
+        dbBadge.textContent = `資料庫：連線失敗 (${e.message})`;
     }
 }
 
