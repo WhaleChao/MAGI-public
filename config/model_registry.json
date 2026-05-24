@@ -1,0 +1,126 @@
+{
+  "version": 1,
+  "policy": {
+    "name": "MAGI non-China smart model policy",
+    "notes": [
+      "Do not route to China-origin or China-hosted model families.",
+      "Dense 31B local models are experimental only on this 24GB unified-memory host.",
+      "26B-A4B may be used only when it is already live and resource gates are safe."
+    ],
+    "disallowed_markers": [
+      "qwen",
+      "deepseek",
+      "kimi",
+      "minimax",
+      "baichuan",
+      "moonshot",
+      "internlm",
+      "chatglm",
+      "glm",
+      "yi"
+    ]
+  },
+  "models": [
+    {
+      "id": "gemma-4-e4b-it-4bit",
+      "provider": "omlx",
+      "origin": "google",
+      "tier": "stable_local",
+      "total_parameters_b": 4,
+      "active_parameters_b": 4,
+      "quantization": "4bit",
+      "local_dir": "~/.omlx/models/gemma-4-e4b-it-4bit",
+      "safe_context_tokens": 8192,
+      "max_concurrency": 1,
+      "public_allowed": true,
+      "private_allowed": true,
+      "tasks": ["general", "summary", "translate", "transcribe", "legal_analysis", "tc_review", "vision"]
+    },
+    {
+      "id": "gemma-4-26b-a4b-it-4bit",
+      "provider": "omlx",
+      "origin": "google",
+      "tier": "heavy_local_moe",
+      "total_parameters_b": 25.2,
+      "active_parameters_b": 3.8,
+      "quantization": "4bit",
+      "local_dir": "~/.omlx/models/gemma-4-26b-a4b-it-4bit",
+      "safe_context_tokens": 8192,
+      "max_concurrency": 1,
+      "public_allowed": false,
+      "private_allowed": true,
+      "tasks": ["summary", "translate", "transcribe", "legal_analysis", "repair_insight_summary", "reflection"],
+      "gates": {
+        "min_disk_free_gb": 70,
+        "min_free_plus_inactive_gb": 8,
+        "max_swap_used_gb": 20,
+        "allowed_resource_levels": ["normal"],
+        "require_model_live": true
+      }
+    },
+    {
+      "id": "gemma-4-31b-experimental",
+      "provider": "omlx",
+      "origin": "google",
+      "tier": "experimental_dense_local",
+      "total_parameters_b": 31,
+      "active_parameters_b": 31,
+      "quantization": "experimental-low-bit",
+      "local_dir": "",
+      "safe_context_tokens": 4096,
+      "max_concurrency": 1,
+      "public_allowed": false,
+      "private_allowed": false,
+      "tasks": ["benchmark_only"],
+      "notes": "Do not enable as MAGI default until a no-OOM legal workload benchmark passes."
+    },
+    {
+      "id": "modernbert-embed-4bit",
+      "provider": "omlx",
+      "origin": "answerdotai",
+      "tier": "embedding_local",
+      "quantization": "4bit",
+      "local_dir": "~/.omlx/models/modernbert-embed-4bit",
+      "safe_context_tokens": 8192,
+      "max_concurrency": 1,
+      "public_allowed": true,
+      "private_allowed": true,
+      "tasks": ["embedding"]
+    },
+    {
+      "id": "Phi-4-mini-instruct-4bit",
+      "provider": "omlx",
+      "origin": "microsoft",
+      "tier": "verify_sidecar",
+      "quantization": "4bit",
+      "local_dir": "~/.omlx/models/Phi-4-mini-instruct-4bit",
+      "safe_context_tokens": 4096,
+      "max_concurrency": 1,
+      "public_allowed": true,
+      "private_allowed": true,
+      "tasks": ["verify", "fallback"]
+    },
+    {
+      "id": "SmolLM3-3B-4bit",
+      "provider": "omlx",
+      "origin": "huggingface",
+      "tier": "crosscheck_sidecar",
+      "quantization": "4bit",
+      "local_dir": "~/.omlx/models/SmolLM3-3B-4bit",
+      "safe_context_tokens": 4096,
+      "max_concurrency": 1,
+      "public_allowed": true,
+      "private_allowed": true,
+      "tasks": ["verify", "fallback"]
+    },
+    {
+      "id": "nvidia-nim-heavy-non-china",
+      "provider": "nvidia_nim",
+      "origin": "nvidia/meta/google/mistral/microsoft allowlist",
+      "tier": "cloud_heavy",
+      "public_allowed": false,
+      "private_allowed": true,
+      "tasks": ["heavy", "legal_analysis", "translate", "summary"]
+    }
+  ]
+}

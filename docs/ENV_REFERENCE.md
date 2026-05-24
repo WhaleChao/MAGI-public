@@ -87,9 +87,17 @@
 
 | Variable | Type | Default | Description |
 |----------|------|---------|-------------|
-| `MAGI_MAIN_MODEL` | string | `llama3.1:8b` | 主要推理模型 |
-| `CASPER_LOCAL_MODEL` | string | `llama3.1:8b` | 本地推理模型 |
+| `MAGI_MAIN_MODEL` | string | `gemma-4-e4b-it-4bit` | 主要推理模型；若填入中國模型家族會自動退回安全預設 |
+| `CASPER_LOCAL_MODEL` | string | `gemma-4-e4b-it-4bit` | 本地推理模型 |
+| `MAGI_TEXT_PRIMARY_MODEL` | string | `gemma-4-e4b-it-4bit` | 白天穩定主模型 |
+| `MAGI_TEXT_HEAVY_MODEL` | string | `gemma-4-26b-a4b-it-4bit` | 高品質本地候選；必須通過智慧路由資源閘門才會使用 |
 | `CASPER_CLASSIFIER_MODEL` | string | `gemma-4-e4b-it-4bit` | 意圖分類模型 |
+| `MAGI_SMART_MODEL_ROUTER` | bool | `1` | 啟用智慧模型路由：依任務、目前上線模型與資源狀態選 E4B / 26B / @heavy |
+| `MAGI_ROUTER_26B_MIN_DISK_GB` | int | `70` | 26B-A4B 最低可用磁碟；低於門檻即退回 E4B |
+| `MAGI_ROUTER_26B_MIN_FREE_GB` | int | `8` | 26B-A4B 最低 free + inactive memory |
+| `MAGI_ROUTER_26B_MAX_SWAP_GB` | int | `20` | 26B-A4B 最高 swap 使用量 |
+| `MAGI_ROUTER_QUALITY_PROMPT_CHARS` | int | `6000` | 超過此長度的摘要 / 翻譯 / 法律分析視為高品質任務 |
+| `MAGI_ROUTER_26B_MAX_PROMPT_CHARS` | int | `60000` | 超過此長度不啟用 26B，避免 KV cache 造成 OOM |
 | `MAGI_ENABLE_MTP_DRAFT` | bool | `0` | 啟用 Gemma 4 MTP / speculative decoding draft 欄位（需 runtime 支援） |
 | `MAGI_E4B_DRAFT_MODEL` | string | `gemma-4-E4B-it-assistant-bf16` | E4B target 對應 assistant / draft model |
 | `MAGI_26B_DRAFT_MODEL` | string | `gemma-4-26B-A4B-it-assistant-bf16` | 26B A4B target 對應 assistant / draft model |

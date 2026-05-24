@@ -11,12 +11,14 @@ Layer 4 — 磁碟自動清理健檢
   - ~/.omlx/cache-*/：保留 atime ≥ 7 天以內的檔，其餘視為可釋放
   - /tmp/magi_*、/tmp/omlx_* 與 *.png / *.log / *.txt / *.tmp：mtime > 48h 刪除
   - .agent/server.log*：僅回報總大小，既有 rotate 機制已處理
+  - ~/.omlx/training/gemma-distill/merged/：清除未部署且驗證失敗的巨大 merged model
 
 紅線：
   - 不碰六模組資料（LAF / 閱卷 / 筆錄 / 摘要 / 翻譯 / 逐字稿）
   - 不碰 runtime pending/*（正在等律師確認碼的檔案）
   - 不碰 cron_state.json
   - 不碰單機版 JSON / pickle / db / sqlite 狀態檔
+  - 不碰已部署模型 symlink 指向的 distill merged model
 """
 from __future__ import annotations
 
@@ -50,6 +52,12 @@ OMLX_CACHE_CRITICAL_CAP_GB = float(os.environ.get("MAGI_DISK_OMLX_CACHE_CRITICAL
 OMLX_CACHE_LOW_WATER_FREE_GB = float(os.environ.get("MAGI_DISK_OMLX_CACHE_LOW_WATER_FREE_GB", "50"))
 OMLX_CACHE_CRITICAL_FREE_GB = float(os.environ.get("MAGI_DISK_OMLX_CACHE_CRITICAL_FREE_GB", "15"))
 OMLX_CACHE_RECENT_GRACE_MINUTES = int(os.environ.get("MAGI_DISK_OMLX_CACHE_RECENT_GRACE_MINUTES", "60"))
+DISTILL_REJECTED_CLEANUP_ENABLE = os.environ.get(
+    "MAGI_DISK_DISTILL_REJECTED_CLEANUP_ENABLE", "1"
+).strip().lower() in {"1", "true", "on", "yes"}
+DISTILL_REJECTED_MIN_AGE_HOURS = float(os.environ.get("MAGI_DISK_DISTILL_REJECTED_MIN_AGE_HOURS", "6"))
+DISTILL_REJECTED_LOW_WATER_GB = float(os.environ.get("MAGI_DISK_DISTILL_REJECTED_LOW_WATER_GB", "50"))
+DISTILL_REJECTED_MAX_DELETE_GB = float(os.environ.get("MAGI_DISK_DISTILL_REJECTED_MAX_DELETE_GB", "35"))
 TMP_MAX_AGE_HOURS = int(os.environ.get("MAGI_DISK_TMP_MAX_AGE_HOURS", "48"))
 DB_BACKUP_KEEP_LATEST = int(os.environ.get("MAGI_DISK_DB_BACKUP_KEEP_LATEST", "8"))
 BUILD_ARTIFACT_MAX_AGE_DAYS = int(os.environ.get("MAGI_DISK_BUILD_ARTIFACT_MAX_AGE_DAYS", "7"))
@@ -357,6 +365,149 @@ def cleanup_omlx_cache(dry_run: bool) -> List[Dict[str, Any]]:
         )
         actions.append(info)
     return actions
+
+
+# ---- rejected Gemma distill merged models ------------------------------
+
+def _dir_size_bytes(path: Path) -> int:
+    total = 0
+    if path.is_file():
+        try:
+            return int(path.stat().st_size)
+        except OSError:
+            return 0
+    for dirpath, _dirnames, filenames in os.walk(path):
+        for name in filenames:
+            try:
+                total += int((Path(dirpath) / name).stat().st_size)
+            except OSError:
+                continue
+    return total
+
+
+def _symlink_targets_under(root: Path) -> set[Path]:
+    targets: set[Path] = set()
+    if not root.exists():
+        return targets
+    for path in root.glob("*"):
+        try:
+            if path.is_symlink():
+                targets.add(path.resolve())
+        except OSError:
+            continue
+    return targets
+
+
+def cleanup_rejected_distill_models(dry_run: bool) -> List[Dict[str, Any]]:
+    if not DISTILL_REJECTED_CLEANUP_ENABLE:
+        return [{"label": "rejected_distill_models", "skipped": True, "reason": "disabled", "dry_run": dry_run}]
+    free_gb = _disk_free_gb(MAGI_ROOT)
+    if free_gb >= DISTILL_REJECTED_LOW_WATER_GB:
+        return [{
+            "label": "rejected_distill_models",
+            "skipped": True,
+            "reason": "disk_not_low",
+            "free_gb": round(free_gb, 2),
+            "dry_run": dry_run,
+        }]
+
+    home = Path(os.environ.get("HOME", "/Users/ai"))
+    distill_dir = home / ".omlx" / "training" / "gemma-distill"
+    merged_root = distill_dir / "merged"
+    pending_path = distill_dir / "pending_deploy.json"
+    if not merged_root.is_dir():
+        return [{"label": "rejected_distill_models", "exists": False, "dry_run": dry_run}]
+
+    pending: Dict[str, Any] = {}
+    try:
+        pending = json.loads(pending_path.read_text(encoding="utf-8"))
+    except Exception:
+        pending = {}
+    current_version = str(pending.get("version") or "").strip()
+    deploy_allowed = bool(pending.get("deploy_allowed", False))
+    rejected_current = str(pending.get("status") or "").strip().lower() == "rejected" or not deploy_allowed
+
+    protected_targets: set[Path] = set()
+    for link_root in [
+        home / ".omlx" / "models-text",
+        home / ".omlx" / "models-text-e4b",
+        home / ".omlx" / "models-text-26b",
+        home / ".omlx" / "models",
+    ]:
+        protected_targets.update(_symlink_targets_under(link_root))
+
+    now = time.time()
+    min_age_sec = max(0.0, DISTILL_REJECTED_MIN_AGE_HOURS * 3600)
+    max_delete_bytes = int(max(0.0, DISTILL_REJECTED_MAX_DELETE_GB) * 1024 * 1024 * 1024)
+    deleted_bytes = 0
+    deleted_dirs = 0
+    candidates: List[Dict[str, Any]] = []
+    errors: List[str] = []
+
+    for child in sorted(merged_root.glob("Gemma-gemma-distill-v*")):
+        if child.is_symlink() or not child.is_dir():
+            continue
+        try:
+            resolved = child.resolve()
+            st = child.stat()
+        except OSError:
+            continue
+        if resolved in protected_targets:
+            continue
+        version = child.name.replace("Gemma-", "", 1)
+        is_current = version == current_version
+        if is_current and deploy_allowed and not rejected_current:
+            continue
+        age_sec = now - float(st.st_mtime)
+        if age_sec < min_age_sec:
+            continue
+        size = _dir_size_bytes(child)
+        if size <= 0:
+            continue
+        candidates.append({
+            "path": str(child),
+            "version": version,
+            "size_bytes": size,
+            "age_hours": round(age_sec / 3600, 2),
+            "reason": "current_rejected" if is_current else "old_unlinked_distill_merged",
+        })
+
+    for item in candidates:
+        size = int(item["size_bytes"])
+        if max_delete_bytes and deleted_bytes + size > max_delete_bytes:
+            item["skipped"] = "max_delete_cap"
+            continue
+        if not dry_run:
+            try:
+                shutil.rmtree(item["path"])
+                deleted_bytes += size
+                deleted_dirs += 1
+            except Exception as exc:
+                errors.append(f"{item['path']}: {exc}")
+        else:
+            deleted_bytes += size
+            deleted_dirs += 1
+
+    _log(
+        f"rejected distill merged models: "
+        f"{'would remove' if dry_run else 'removed'} {deleted_dirs} dirs, "
+        f"{deleted_bytes / 1024 / 1024 / 1024:.2f} GB"
+    )
+    return [{
+        "label": "rejected_distill_models",
+        "dry_run": dry_run,
+        "free_gb": round(free_gb, 2),
+        "candidate_dirs": len(candidates),
+        "deleted_dirs": 0 if dry_run else deleted_dirs,
+        "would_delete_dirs": deleted_dirs if dry_run else 0,
+        "candidate_bytes": sum(int(item["size_bytes"]) for item in candidates),
+        "deleted_bytes": 0 if dry_run else deleted_bytes,
+        "would_delete_bytes": deleted_bytes if dry_run else 0,
+        "pending_status": str(pending.get("status") or ""),
+        "current_version": current_version,
+        "errors": errors,
+        "items": candidates[:20],
+    }]
 
 
 # ---- /tmp cleanup -------------------------------------------------------
@@ -1804,6 +1955,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         "dry_run": dry_run,
         "metrics": cleanup_metrics(dry_run),
         "omlx_cache": cleanup_omlx_cache(dry_run),
+        "rejected_distill_models": cleanup_rejected_distill_models(dry_run),
         "tmp": cleanup_tmp(dry_run),
         "db_backups": cleanup_db_backups(dry_run),
         "build_artifacts": cleanup_build_artifacts(dry_run),
@@ -1831,6 +1983,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     # stdout 也直接印一份簡要摘要
     total_metrics = len(summary["metrics"])
     total_cache_candidates = sum(a.get("candidate_files", 0) for a in summary["omlx_cache"])
+    total_distill_candidates = sum(a.get("candidate_dirs", 0) for a in summary.get("rejected_distill_models") or [])
     tmp_entry = summary["tmp"][0] if summary["tmp"] else {}
     total_compress_candidates = len(summary.get("compressed_artifacts") or [])
     total_staging_candidates = sum(a.get("candidate_files", 0) for a in summary.get("generated_staging") or [])
@@ -1841,6 +1994,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     _log(
         f"summary: metrics_rotated={total_metrics}, "
         f"omlx_cache_candidates={total_cache_candidates}, "
+        f"rejected_distill_candidates={total_distill_candidates}, "
         f"tmp_candidates={tmp_entry.get('candidate_count', 0)}, "
         f"compress_candidates={total_compress_candidates}, "
         f"staging_candidates={total_staging_candidates}, "

@@ -198,6 +198,54 @@ def test_omlx_cache_hard_cap_keeps_newly_written_files(sandbox, monkeypatch):
     assert info["deleted_files"] == 0
 
 
+def test_rejected_distill_cleanup_removes_unlinked_failed_merged_model(sandbox, monkeypatch):
+    distill = sandbox["home"] / ".omlx" / "training" / "gemma-distill"
+    merged = distill / "merged" / "Gemma-gemma-distill-v004"
+    merged.mkdir(parents=True)
+    (merged / "config.json").write_text("{}", encoding="utf-8")
+    (merged / "model.safetensors").write_bytes(b"x" * 1024)
+    (distill / "pending_deploy.json").write_text(
+        json.dumps({
+            "version": "gemma-distill-v004",
+            "status": "rejected",
+            "deploy_allowed": False,
+            "merged_path": str(merged),
+        }),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(dc, "DISTILL_REJECTED_MIN_AGE_HOURS", 0, raising=True)
+    monkeypatch.setattr(dc, "DISTILL_REJECTED_LOW_WATER_GB", 70, raising=True)
+    monkeypatch.setattr(dc, "_disk_free_gb", lambda path=dc.MAGI_ROOT: 20.0)
+
+    actions = dc.cleanup_rejected_distill_models(dry_run=False)
+
+    assert not merged.exists()
+    assert actions[0]["deleted_dirs"] == 1
+
+
+def test_rejected_distill_cleanup_preserves_deployed_symlink_target(sandbox, monkeypatch):
+    distill = sandbox["home"] / ".omlx" / "training" / "gemma-distill"
+    merged = distill / "merged" / "Gemma-gemma-distill-v004"
+    merged.mkdir(parents=True)
+    (merged / "config.json").write_text("{}", encoding="utf-8")
+    (merged / "model.safetensors").write_bytes(b"x" * 1024)
+    link_root = sandbox["home"] / ".omlx" / "models-text"
+    link_root.mkdir(parents=True)
+    (link_root / "gemma-distill-v004").symlink_to(merged)
+    (distill / "pending_deploy.json").write_text(
+        json.dumps({"version": "gemma-distill-v004", "status": "rejected", "deploy_allowed": False}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(dc, "DISTILL_REJECTED_MIN_AGE_HOURS", 0, raising=True)
+    monkeypatch.setattr(dc, "DISTILL_REJECTED_LOW_WATER_GB", 70, raising=True)
+    monkeypatch.setattr(dc, "_disk_free_gb", lambda path=dc.MAGI_ROOT: 20.0)
+
+    actions = dc.cleanup_rejected_distill_models(dry_run=False)
+
+    assert merged.exists()
+    assert actions[0]["deleted_dirs"] == 0
+
+
 # ---------- Synology Drive empty case shells ----------------------------
 
 def test_cleanup_empty_synology_case_shells_removes_only_empty_case_roots(sandbox, monkeypatch):
@@ -467,6 +515,7 @@ def test_main_apply_arg_overrides_env_dry_run(sandbox, monkeypatch):
     calls = []
     monkeypatch.setattr(dc, "cleanup_metrics", lambda dry_run: calls.append(dry_run) or [])
     monkeypatch.setattr(dc, "cleanup_omlx_cache", lambda dry_run: [])
+    monkeypatch.setattr(dc, "cleanup_rejected_distill_models", lambda dry_run: [])
     monkeypatch.setattr(dc, "cleanup_tmp", lambda dry_run: [{"candidate_count": 0}])
     monkeypatch.setattr(dc, "cleanup_db_backups", lambda dry_run: [])
     monkeypatch.setattr(dc, "cleanup_build_artifacts", lambda dry_run: [])

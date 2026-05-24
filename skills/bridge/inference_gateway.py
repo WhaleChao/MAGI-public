@@ -36,6 +36,11 @@ from api.model_config import (
     default_local_vision_models,
     resolve_text_model,
 )
+try:
+    from api.model_router import choose_model_for_request, decision_summary
+except Exception:
+    choose_model_for_request = None
+    decision_summary = None
 
 try:
     from providers import build_provider_registry as _build_provider_registry
@@ -267,6 +272,21 @@ class InferenceGateway:
 
     def select_model_for_task(self, task_type: str, force_quality: bool = False) -> str:
         return select_model_for_task(task_type=task_type, force_quality=force_quality)
+
+    def smart_model_decision(self, *, task_type: str = "general", prompt: str = "", model: str = "", heavy: bool = False, force_quality: bool = False):
+        if not callable(choose_model_for_request):
+            return None
+        try:
+            return choose_model_for_request(
+                task_type=task_type,
+                prompt=prompt,
+                requested_model=model,
+                heavy_opt_in=heavy,
+                force_quality=force_quality,
+            )
+        except Exception as exc:
+            logger.debug("smart_model_decision failed: %s", exc, exc_info=True)
+            return None
 
     @staticmethod
     def _split_models(raw: Optional[str]) -> List[str]:
@@ -1062,6 +1082,22 @@ class InferenceGateway:
             prompt = _p.split(" ", 1)[1] if " " in _p else ""
             logger.info("inference_chat: @heavy prefix detected in prompt (final-line defense)")
 
+        smart_decision = None
+        if _env_bool("MAGI_SMART_MODEL_ROUTER", True):
+            smart_decision = self.smart_model_decision(
+                task_type=task_type,
+                prompt=prompt,
+                model=model,
+                heavy=heavy_opt_in,
+                force_quality=bool(kwargs.get("force_quality", False)),
+            )
+            if smart_decision is not None:
+                try:
+                    _summary = decision_summary(smart_decision) if callable(decision_summary) else smart_decision.selected_model
+                    logger.info("inference_chat smart_model_router: %s", _summary)
+                except Exception:
+                    pass
+
         # ── @heavy fast path：跳過 oMLX，直接走 NIM 405B（Plan A, 2026-04-19 P1-2 修） ──
         # 使用者明確 @heavy 表示要雲端重型模型；oMLX 常在高負載時吐「忙碌中」假 success，
         # 讓 NIM 永遠接不到手（P1-2 bug）。修法：heavy_opt_in=True 時跳過 oMLX，直接試 NIM。
@@ -1152,11 +1188,17 @@ class InferenceGateway:
 
         # Try oMLX first for tasks that have an oMLX model configured
         # OCR/date extraction stay on OCR model; review/classify still use the configured local text model.
-        omlx_model = _MODEL_ROSTER.get(task_type, {}).get("omlx", "")
+        omlx_model = (
+            getattr(smart_decision, "selected_model", "")
+            if smart_decision is not None and getattr(smart_decision, "provider", "omlx") == "omlx"
+            else ""
+        ) or _MODEL_ROSTER.get(task_type, {}).get("omlx", "")
         if omlx_model and task_type not in ("tc_review", "captcha", "date_extract"):
             r = self._omlx_chat(prompt, timeout=max(10, int(timeout)), model=omlx_model, task_type=task_type)
             if r.get("success"):
                 r["task_type"] = task_type
+                if smart_decision is not None:
+                    r["model_route_decision"] = smart_decision.to_dict()
                 return r
             errors.append(f"omlx:{r.get('error','')}")
 
@@ -1172,6 +1214,8 @@ class InferenceGateway:
             )
             if review.get("success"):
                 review["task_type"] = task_type
+                if smart_decision is not None:
+                    review["model_route_decision"] = smart_decision.to_dict()
                 return review
             errors.append(f"omlx:{review.get('error','')}")
             merged_error = " | ".join([e for e in errors if e])[:1200] or "all_routes_failed"
@@ -1303,12 +1347,16 @@ class InferenceGateway:
                 errors.append(f"remote_balthasar:skipped:{bal_reason}")
 
         local = self._local_chat(
-            prompt, timeout=max(8, int(timeout)), model_hint=model,
+            prompt,
+            timeout=max(8, int(timeout)),
+            model_hint=(getattr(smart_decision, "selected_model", "") if smart_decision is not None else "") or model,
             num_ctx=int(kwargs.get("num_ctx") or 0),
             num_predict=int(kwargs.get("num_predict") or 0),
         )
         if local.get("success"):
             local["task_type"] = task_type
+            if smart_decision is not None:
+                local["model_route_decision"] = smart_decision.to_dict()
             return local
         errors.append(f"local_ollama:{local.get('error','')}")
 

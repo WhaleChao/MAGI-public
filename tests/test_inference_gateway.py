@@ -83,3 +83,35 @@ def test_tc_review_uses_local_without_remote_probes():
     assert result["success"] is True
     assert result["route"] == "omlx"
     assert result["response"] == "正確"
+
+
+def test_smart_model_router_decision_is_passed_to_omlx(monkeypatch):
+    """Quality tasks should pass the smart-router selected model into oMLX."""
+    from types import SimpleNamespace
+    import skills.bridge.inference_gateway as gateway_mod
+    from skills.bridge.inference_gateway import InferenceGateway
+
+    decision = SimpleNamespace(
+        selected_model="gemma-4-26b-a4b-it-4bit",
+        provider="omlx",
+        to_dict=lambda: {
+            "selected_model": "gemma-4-26b-a4b-it-4bit",
+            "tier": "heavy_local_moe",
+        },
+    )
+    monkeypatch.setattr(gateway_mod, "choose_model_for_request", lambda **kw: decision)
+    monkeypatch.setattr(gateway_mod, "decision_summary", lambda d: d.selected_model)
+
+    gw = InferenceGateway()
+    seen = {}
+
+    def fake_omlx(prompt, timeout, model="", task_type="general"):
+        seen["model"] = model
+        return {"success": True, "response": "完成", "route": "omlx", "model": model}
+
+    with patch.object(gw, "_omlx_chat", side_effect=fake_omlx):
+        result = gw.chat("請分析這份判決", task_type="legal_analysis", timeout=20)
+
+    assert result["success"] is True
+    assert seen["model"] == "gemma-4-26b-a4b-it-4bit"
+    assert result["model_route_decision"]["tier"] == "heavy_local_moe"
