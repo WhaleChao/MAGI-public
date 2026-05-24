@@ -33,6 +33,11 @@ class _FakeCursor:
                 )
             else:
                 self._fetchone = None
+        elif "AND `todo_type`=%s" in normalized and "AND `source_file`=%s" not in normalized:
+            if self.mode == "cross_source_hearing":
+                self._fetchone = (88, "陳建華案開庭@台東地檢", "陳建華", "gcal_import:whalelawyer@gmail.com")
+            else:
+                self._fetchone = None
         elif "AND `todo_type`=%s AND `source_file`=%s" in normalized:
             self._fetchone = (77,) if self.mode == "stale_pending" else None
         elif normalized.startswith("UPDATE `case_todos`"):
@@ -129,6 +134,27 @@ def test_insert_case_todos_updates_stale_pending_same_source_type():
 
     assert result == {"inserted": 0, "skipped": 0, "updated": 1}
     assert any("UPDATE `case_todos`" in sql for sql, _ in conn.cursor_obj.executed)
+
+
+def test_insert_case_todos_skips_same_hearing_from_other_source():
+    conn = _FakeConn("cross_source_hearing")
+    result = insert_case_todos(
+        conn,
+        case_number="2026-0038",
+        client_name="陳建華",
+        todos=[
+            {
+                "type": "開庭",
+                "date": "2026-05-27",
+                "time": "10:40",
+                "description": "⚖️ 5月27日 早上10時40分 開庭",
+            }
+        ],
+        source_file="20260514 臺東地方檢察署115年度偵字第9號開庭通知.pdf",
+    )
+
+    assert result == {"inserted": 0, "skipped": 1, "updated": 0}
+    assert not any("INSERT INTO `case_todos`" in sql for sql, _ in conn.cursor_obj.executed)
 
 
 def test_list_unsynced_todos_only_returns_today_or_future_items():

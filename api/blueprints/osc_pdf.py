@@ -158,14 +158,64 @@ def _parse_roc_or_ad_date(year: str, month: str, day: str) -> datetime | None:
         return None
 
 
+def _parse_chinese_number_token(value: str) -> int | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    if text.isdigit():
+        return int(text)
+    mapping = {
+        "零": 0, "一": 1, "二": 2, "三": 3, "四": 4,
+        "五": 5, "六": 6, "七": 7, "八": 8, "九": 9, "十": 10,
+    }
+    if text in mapping:
+        return mapping[text]
+    if "十" in text:
+        left, right = text.split("十", 1)
+        tens = 10 if not left else mapping.get(left, 0) * 10
+        ones = 0 if not right else mapping.get(right, 0)
+        return tens + ones
+    return None
+
+
 def _parse_ampm_time(period: str, hour: str, minute: str = "") -> tuple[int, int]:
-    h = int(hour)
-    m = int(minute or "0")
-    if "下" in period and h != 12:
+    label = str(period or "").strip()
+    h = _parse_chinese_number_token(hour)
+    m = _parse_chinese_number_token(minute) if str(minute or "").strip() else 0
+    if h is None or m is None:
+        raise ValueError("invalid time token")
+    if label == "上":
+        label = "上午"
+    if label == "下":
+        label = "下午"
+    if label in {"下午", "晚上", "晚間", "傍晚", "夜間"} and h != 12:
         h += 12
-    if "上" in period and h == 12:
+    if label == "中午" and h < 11:
+        h += 12
+    if label in {"上午", "早上"} and h == 12:
         h = 0
     return h, m
+
+
+def _next_tw_workday(dt: datetime) -> datetime:
+    try:
+        import holidays  # type: ignore
+
+        tw = holidays.Taiwan(years=range(dt.year - 1, dt.year + 2))
+        d = dt.date()
+        while True:
+            name = tw.get(d)
+            if name and "補行上班日" not in str(name):
+                d = d + timedelta(days=1)
+                continue
+            if d.weekday() >= 5:
+                d = d + timedelta(days=1)
+                continue
+            return datetime.combine(d, dt.time())
+    except Exception:
+        while dt.weekday() >= 5:
+            dt += timedelta(days=1)
+        return dt
 
 
 def _extract_todos_from_pdf_text(path: Path, text: str) -> list[dict[str, Any]]:
@@ -175,8 +225,8 @@ def _extract_todos_from_pdf_text(path: Path, text: str) -> list[dict[str, Any]]:
         return items
 
     hearing_patterns = [
-        r"(?:定|訂)於?(?:民國)?(\d{2,4})年(\d{1,2})月(\d{1,2})日([上下]午)(\d{1,2})時(\d{0,2})分?.{0,40}?(開庭|準備程序|言詞辯論|調解|審理|宣判)?",
-        r"(?:定|訂)於?(\d{1,2})月(\d{1,2})日([上下]午)(\d{1,2})時(\d{0,2})分?.{0,40}?(開庭|準備程序|言詞辯論|調解|審理|宣判)?",
+        r"(?:定|訂)於?(?:民國)?(\d{2,4})年(\d{1,2})月(\d{1,2})日(上午|下午|早上|中午|晚上|晚間|傍晚|夜間|上|下)(\d{1,2}|[零一二三四五六七八九十]{1,3})時([零一二三四五六七八九十\d]{0,3})(?:分|整)?.{0,40}?(開庭|準備程序|言詞辯論|調解|審理程序|審判程序|審理|宣判|訊問|調查)?",
+        r"(?:定|訂)於?(\d{1,2})月(\d{1,2})日(上午|下午|早上|中午|晚上|晚間|傍晚|夜間|上|下)(\d{1,2}|[零一二三四五六七八九十]{1,3})時([零一二三四五六七八九十\d]{0,3})(?:分|整)?.{0,40}?(開庭|準備程序|言詞辯論|調解|審理程序|審判程序|審理|宣判|訊問|調查)?",
     ]
     for pattern in hearing_patterns:
         for m in re.finditer(pattern, body):
@@ -194,7 +244,7 @@ def _extract_todos_from_pdf_text(path: Path, text: str) -> list[dict[str, Any]]:
                 continue
             h, mi = _parse_ampm_time(period, hour, minute)
             dt = dt.replace(hour=h, minute=mi)
-            kind = proc or "開庭"
+            kind = "審理" if proc in {"審理程序", "審判程序"} else (proc or "開庭")
             items.append(
                 {
                     "type": kind,
@@ -214,19 +264,26 @@ def _extract_todos_from_pdf_text(path: Path, text: str) -> list[dict[str, Any]]:
     if doc_date is None:
         doc_date = datetime.fromtimestamp(path.stat().st_mtime)
 
+    day_token = r"([零一二三四五六七八九十\d]{1,4})(日|週|周)"
     relative_map = [
-        ("補正", r"(\d{1,2})日內.{0,25}補正"),
-        ("陳述意見", r"(\d{1,2})日內.{0,25}陳述意見"),
-        ("繳費", r"(\d{1,2})日內.{0,25}(?:繳納|繳費)"),
-        ("上訴", r"(\d{1,2})日內.{0,25}上訴"),
-        ("抗告", r"(\d{1,2})日內.{0,25}抗告"),
+        ("補正", rf"{day_token}內.{{0,25}}補正"),
+        ("陳述意見", rf"{day_token}內.{{0,25}}陳述意見"),
+        ("陳報", rf"{day_token}內.{{0,35}}(?:陳報|回覆|表示意見|確答|陳明)"),
+        ("提出資料", rf"{day_token}內.{{0,35}}(?:提出|檢送|補提).{{0,20}}(?:資料|文件|清冊|報告書|截圖|證據)"),
+        ("繳費", rf"{day_token}內.{{0,25}}(?:繳納|繳費)"),
+        ("上訴", rf"{day_token}內.{{0,25}}上訴"),
+        ("抗告", rf"{day_token}內.{{0,25}}抗告"),
     ]
     for todo_type, pattern in relative_map:
         m = re.search(pattern, body)
         if not m:
             continue
-        days = int(m.group(1))
-        deadline = doc_date + timedelta(days=days)
+        days = _parse_chinese_number_token(m.group(1))
+        if days is None:
+            continue
+        if (m.group(2) or "") in {"週", "周"}:
+            days *= 7
+        deadline = _next_tw_workday(doc_date + timedelta(days=days))
         items.append(
             {
                 "type": todo_type,
@@ -270,7 +327,7 @@ def _json_safe(value: Any) -> Any:
 
 
 def _event_color(todo_type: str) -> str:
-    if todo_type in {"開庭", "宣判", "調解", "言詞辯論", "準備程序", "審理"}:
+    if todo_type in {"開庭", "宣判", "調解", "言詞辯論", "準備程序", "審理", "訊問", "調查"}:
         return "#3f51b5"
     if todo_type in {"補正", "繳費", "上訴", "抗告", "再抗告", "陳述意見", "陳報"}:
         return "#f5511d"

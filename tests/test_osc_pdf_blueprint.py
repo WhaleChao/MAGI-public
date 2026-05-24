@@ -194,6 +194,56 @@ def test_pdf_calendar_scan_preview_detects_hearing(client, tmp_path, monkeypatch
     assert body["items"][0]["events"][0]["case_number"] == "2026-0001"
 
 
+def test_pdf_calendar_scan_preview_detects_filename_when_pdf_has_no_text(client, tmp_path, monkeypatch):
+    path = tmp_path / "20260514 臺東地方檢察署115年度偵字第9號開庭通知（陳建華；訂115年5月27日早上10時40分開庭）.pdf"
+    doc = fitz.open()
+    doc.new_page()
+    doc.save(path)
+    doc.close()
+
+    monkeypatch.setattr("api.blueprints.osc_pdf._osc_exec", lambda *a, **k: (None if k.get("fetch") == "one" else [], {}))
+    r = client.post(
+        "/api/osc/pdf/calendar-scan",
+        json={"file_path": str(path), "case_number": "2026-0038", "client_name": "陳建華", "write": False},
+    )
+
+    assert r.status_code == 200
+    body = r.get_json()
+    assert body["ok"] is True
+    assert body["todo_count"] == 1
+    todo = body["items"][0]["todos"][0]
+    assert todo["type"] == "開庭"
+    assert todo["date"] == "2026-05-27"
+    assert todo["time"] == "10:40"
+    assert body["items"][0]["events"][0]["case_number"] == "2026-0038"
+
+
+def test_pdf_calendar_scan_preview_detects_all_day_filename_deadline(client, tmp_path, monkeypatch):
+    path = tmp_path / "20260326 花蓮地方法院函（宣愛華；請於文到十日內提出資料）.pdf"
+    doc = fitz.open()
+    doc.new_page()
+    doc.save(path)
+    doc.close()
+
+    monkeypatch.setattr("api.blueprints.osc_pdf._osc_exec", lambda *a, **k: (None if k.get("fetch") == "one" else [], {}))
+    r = client.post(
+        "/api/osc/pdf/calendar-scan",
+        json={"file_path": str(path), "case_number": "2025-0067", "client_name": "宣愛華", "write": False},
+    )
+
+    assert r.status_code == 200
+    body = r.get_json()
+    assert body["ok"] is True
+    assert body["todo_count"] == 1
+    todo = body["items"][0]["todos"][0]
+    assert todo["type"] == "提出資料"
+    assert todo["date"] == "2026-04-07"
+    assert todo["time"] == ""
+    event = body["items"][0]["events"][0]
+    assert event["is_all_day"] == 1
+    assert event["start_date"] == "2026-04-07"
+
+
 def test_pdf_calendar_scan_write_uses_single_machine_todo_writer(client, tmp_path, monkeypatch):
     path = tmp_path / "20260501 裁定（應於10日內補正）.pdf"
     doc = fitz.open()

@@ -665,16 +665,19 @@ def seed_default_todo_keywords(conn: mysql.connector.MySQLConnection) -> int:
     Seed a small default set, using INSERT IGNORE to avoid duplicates.
     Returns number of inserted rows (best-effort).
     """
+    duration = r"([\d零一二三四五六七八九十]+)(日|週|周)"
     defaults = [
-        ("補正", r"應於本裁定送達後(\d+)日內補正", "relative", None),
-        ("補正", r"請於文到(\d+)日內補正", "relative", None),
-        ("補正", r"文到(\d+)日內.*?補正", "relative", None),
-        ("補正", r"(\d+)日內補正", "relative", None),
-        ("陳述意見", r"文到(\d+)日內陳述意見", "relative", None),
-        ("陳述意見", r"(\d+)日內陳述意見", "relative", None),
-        ("開庭", r"(\d{1,2})月(\d{1,2})日([上下])午(\d{1,2})時(\d*)分?.*?(開庭|準備程序)", "absolute_time", None),
-        ("繳費", r"文到(\d+)日內繳納", "relative", None),
-        ("閱卷", r"文到(\d+)日內.*?閱卷", "relative", None),
+        ("補正", rf"應於本裁定送達後{duration}內補正", "relative", None),
+        ("補正", rf"請於文到{duration}內補正", "relative", None),
+        ("補正", rf"文到{duration}內.*?補正", "relative", None),
+        ("補正", rf"{duration}內補正", "relative", None),
+        ("陳述意見", rf"文到{duration}內陳述意見", "relative", None),
+        ("陳述意見", rf"{duration}內陳述意見", "relative", None),
+        ("陳報", rf"(?:文到|送達翌日起|送達後){duration}內.*?(?:陳報|回覆|表示意見|確答|陳明)", "relative", None),
+        ("提出資料", rf"(?:文到|送達翌日起|送達後){duration}內.*?(?:提出|檢送|補提).{{0,20}}?(?:資料|文件|清冊|報告書|截圖|證據)", "relative", None),
+        ("開庭", rf"(\d{{1,2}})月(\d{{1,2}})日(上午|下午|早上|中午|晚上|晚間|傍晚|夜間|上|下)(\d{{1,2}}|[零一二三四五六七八九十]{{1,3}})時([零一二三四五六七八九十\d]{{0,3}})(?:分|整)?.*?(開庭|準備程序|言詞辯論|調解|審理|宣判)", "absolute_time", None),
+        ("繳費", rf"文到{duration}內繳納", "relative", None),
+        ("閱卷", rf"文到{duration}內.*?閱卷", "relative", None),
     ]
 
     cur = conn.cursor()
@@ -716,6 +719,7 @@ def insert_case_todos(
     """
     Insert todos into case_todos with a conservative de-dupe check (no deletes).
     """
+    hearing_types = {"開庭", "準備程序", "言詞辯論", "調解", "審理", "審理程序", "審判程序", "宣判", "訊問", "調查"}
     cur = conn.cursor()
     inserted = 0
     skipped = 0
@@ -780,6 +784,43 @@ def insert_case_todos(
                     else:
                         skipped += 1
                     continue
+
+                if todo_type in hearing_types and todo_date and todo_time:
+                    cur.execute(
+                        """
+                        SELECT `id`, `description`, `client_name`, `source_file` FROM `case_todos`
+                        WHERE `case_number`=%s
+                          AND `todo_type`=%s
+                          AND ( (`todo_date`=%s) OR (%s IS NULL AND `todo_date` IS NULL) )
+                          AND ( (`todo_time`=%s) OR (%s IS NULL AND `todo_time` IS NULL) )
+                          AND (status IS NULL OR status='' OR status!='deleted')
+                        LIMIT 1
+                        """,
+                        (case_number, todo_type, todo_date, todo_date, todo_time, todo_time),
+                    )
+                    same_hearing = cur.fetchone()
+                    if same_hearing:
+                        same_id = same_hearing[0] if isinstance(same_hearing, tuple) else same_hearing
+                        old_desc = same_hearing[1] if isinstance(same_hearing, tuple) and len(same_hearing) > 1 else ""
+                        old_client = same_hearing[2] if isinstance(same_hearing, tuple) and len(same_hearing) > 2 else ""
+                        has_existing_details = isinstance(same_hearing, tuple) and len(same_hearing) > 2
+                        should_refresh_share = _should_refresh_share_description(str(old_desc or ""), desc)
+                        should_refresh_client = bool(client_name) and has_existing_details and not str(old_client or "").strip()
+                        if same_id and (should_refresh_share or should_refresh_client):
+                            cur.execute(
+                                """
+                                UPDATE `case_todos`
+                                SET `client_name`=%s,
+                                    `description`=%s,
+                                    `status`='pending'
+                                WHERE `id`=%s
+                                """,
+                                (client_name or old_client or "", desc or old_desc or "", same_id),
+                            )
+                            updated += int(getattr(cur, "rowcount", 0) or 0)
+                        else:
+                            skipped += 1
+                        continue
 
                 cur.execute(
                     """

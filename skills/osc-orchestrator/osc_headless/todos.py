@@ -72,6 +72,64 @@ def chinese_to_number(chinese_str: str) -> Optional[int]:
     return None
 
 
+_TIME_PERIOD_RE = r"(上午|下午|早上|中午|晚上|晚間|傍晚|夜間|上|下)"
+_TIME_NUMBER_RE = r"(\d{1,2}|[零一二三四五六七八九十]{1,3})"
+_DAY_NUMBER_RE = r"([\d零一二三四五六七八九十]+)"
+_DURATION_RE = rf"{_DAY_NUMBER_RE}(日|週|周)"
+
+
+def _parse_number_token(token: str) -> Optional[int]:
+    text = (token or "").strip()
+    if not text:
+        return None
+    if text.isdigit():
+        return int(text)
+    return chinese_to_number(text)
+
+
+def _parse_roc_or_ad_year(year_token: str) -> int:
+    year = int(year_token)
+    return year + 1911 if year < 1911 else year
+
+
+def _normalize_time_period(period: str) -> str:
+    text = (period or "").strip()
+    if text == "上":
+        return "上午"
+    if text == "下":
+        return "下午"
+    return text
+
+
+def _time_from_period(period: str, hour_token: str, minute_token: str = "") -> Optional[tuple[int, int, str]]:
+    label = _normalize_time_period(period)
+    hour = _parse_number_token(hour_token)
+    minute = _parse_number_token(minute_token) if (minute_token or "").strip() else 0
+    if hour is None or minute is None:
+        return None
+    if label in {"下午", "晚上", "晚間", "傍晚", "夜間"} and hour != 12:
+        hour += 12
+    elif label == "中午" and hour < 11:
+        hour += 12
+    elif label in {"上午", "早上"} and hour == 12:
+        hour = 0
+    return hour, minute, label
+
+
+def _duration_days(match: re.Match) -> Optional[int]:
+    days = _parse_number_token(match.group(1))
+    if days is None:
+        return None
+    unit = ""
+    try:
+        unit = str(match.group(2) or "")
+    except IndexError:
+        unit = ""
+    if unit in {"週", "周"}:
+        days *= 7
+    return int(days)
+
+
 def is_tw_holiday(d: date, tw: holidays.Taiwan) -> bool:
     name = tw.get(d)
     if name:
@@ -91,43 +149,51 @@ def next_workday(dt: datetime, tw: holidays.Taiwan) -> datetime:
 def get_default_patterns() -> Dict[str, List[Dict]]:
     return {
         "補正": [
-            {"pattern": r"應於本裁定送達後(\d+)日內補正", "pattern_type": "relative", "days": None},
-            {"pattern": r"請於文到(\d+)日內補正", "pattern_type": "relative", "days": None},
-            {"pattern": r"文到(\d+)日內.*?補正", "pattern_type": "relative", "days": None},
-            {"pattern": r"命.+?於(\d+)日內補正", "pattern_type": "relative", "days": None},
-            {"pattern": r"應於(\d+)日內補正", "pattern_type": "relative", "days": None},
-            {"pattern": r"(\d+)日內補正", "pattern_type": "relative", "days": None},
+            {"pattern": rf"應於本裁定送達後{_DURATION_RE}內補正", "pattern_type": "relative", "days": None},
+            {"pattern": rf"請於文到{_DURATION_RE}內補正", "pattern_type": "relative", "days": None},
+            {"pattern": rf"文到{_DURATION_RE}內.*?補正", "pattern_type": "relative", "days": None},
+            {"pattern": rf"命.+?於{_DURATION_RE}內補正", "pattern_type": "relative", "days": None},
+            {"pattern": rf"應於{_DURATION_RE}內補正", "pattern_type": "relative", "days": None},
+            {"pattern": rf"{_DURATION_RE}內補正", "pattern_type": "relative", "days": None},
         ],
         "上訴": [
-            {"pattern": r"上訴期間.*?送達.*?(\d+)日內", "pattern_type": "relative", "days": None},
-            {"pattern": r"如不服本判決.*?(\d+)日內.*?上訴", "pattern_type": "relative", "days": None},
-            {"pattern": r"應於判決送達後(\d+)日內提起上訴", "pattern_type": "relative", "days": None},
-            {"pattern": r"(\d+)日內提起上訴", "pattern_type": "relative", "days": None},
+            {"pattern": rf"上訴期間.*?送達.*?{_DURATION_RE}內", "pattern_type": "relative", "days": None},
+            {"pattern": rf"如不服本判決.*?{_DURATION_RE}內.*?上訴", "pattern_type": "relative", "days": None},
+            {"pattern": rf"應於判決送達後{_DURATION_RE}內提起上訴", "pattern_type": "relative", "days": None},
+            {"pattern": rf"{_DURATION_RE}內提起上訴", "pattern_type": "relative", "days": None},
         ],
         "陳述意見": [
-            {"pattern": r"應於文到(\d+)日內陳述意見", "pattern_type": "relative", "days": None},
-            {"pattern": r"限於(\d+)日內.+?陳述意見", "pattern_type": "relative", "days": None},
-            {"pattern": r"文到(\d+)日內陳述意見", "pattern_type": "relative", "days": None},
-            {"pattern": r"(\d+)日內陳述意見", "pattern_type": "relative", "days": None},
+            {"pattern": rf"應於文到{_DURATION_RE}內陳述意見", "pattern_type": "relative", "days": None},
+            {"pattern": rf"限於{_DURATION_RE}內.+?陳述意見", "pattern_type": "relative", "days": None},
+            {"pattern": rf"文到{_DURATION_RE}內陳述意見", "pattern_type": "relative", "days": None},
+            {"pattern": rf"{_DURATION_RE}內陳述意見", "pattern_type": "relative", "days": None},
+        ],
+        "陳報": [
+            {"pattern": rf"(?:請)?(?:於)?(?:文到|送達翌日起|送達後){_DURATION_RE}內.*?(?:陳報|回覆|表示意見|確答|陳明)", "pattern_type": "relative", "days": None},
+            {"pattern": rf"{_DURATION_RE}內.*?(?:陳報|回覆|表示意見|確答|陳明)", "pattern_type": "relative", "days": None},
+        ],
+        "提出資料": [
+            {"pattern": rf"(?:請)?(?:於)?(?:文到|送達翌日起|送達後){_DURATION_RE}內.*?(?:提出|檢送|補提).{{0,20}}?(?:資料|文件|清冊|報告書|截圖|證據)", "pattern_type": "relative", "days": None},
+            {"pattern": rf"{_DURATION_RE}內.*?(?:提出|檢送|補提).{{0,20}}?(?:資料|文件|清冊|報告書|截圖|證據)", "pattern_type": "relative", "days": None},
         ],
         "繳費": [
-            {"pattern": r"應於文到(\d+)日內繳納.*?(?:規費|裁判費)", "pattern_type": "relative", "days": None},
-            {"pattern": r"限(\d+)日內.*?繳納.*?(?:裁判費|規費)", "pattern_type": "relative", "days": None},
-            {"pattern": r"(\d+)日內繳納.*?(?:裁判費|規費)", "pattern_type": "relative", "days": None},
+            {"pattern": rf"應於文到{_DURATION_RE}內繳納.*?(?:規費|裁判費)", "pattern_type": "relative", "days": None},
+            {"pattern": rf"限{_DURATION_RE}內.*?繳納.*?(?:裁判費|規費)", "pattern_type": "relative", "days": None},
+            {"pattern": rf"{_DURATION_RE}內繳納.*?(?:裁判費|規費)", "pattern_type": "relative", "days": None},
         ],
         "閱卷期限": [
-            {"pattern": r"應於(\d+)日內.*?閱卷", "pattern_type": "relative", "days": None},
-            {"pattern": r"閱卷期限.*?(\d+)日", "pattern_type": "relative", "days": None},
-            {"pattern": r"(\d+)日.*?閱卷", "pattern_type": "relative", "days": None},
+            {"pattern": rf"應於{_DURATION_RE}內.*?閱卷", "pattern_type": "relative", "days": None},
+            {"pattern": rf"閱卷期限.*?{_DURATION_RE}", "pattern_type": "relative", "days": None},
+            {"pattern": rf"{_DURATION_RE}.*?閱卷", "pattern_type": "relative", "days": None},
         ],
         "開庭": [
             {
-                "pattern": r"(?:定|訂)於?(?:民國)?(\d{2,3})年(\d{1,2})月(\d{1,2})日([上下])午(\d{1,2})時(\d*)分?.*?(開庭|準備程序|言詞辯論|調解|審理|宣判)?",
+                "pattern": rf"(?:定|訂)於?(?:民國)?(\d{{2,4}})年(\d{{1,2}})月(\d{{1,2}})日{_TIME_PERIOD_RE}{_TIME_NUMBER_RE}時([零一二三四五六七八九十\d]{{0,3}})(?:分|整)?.*?(開庭|準備程序|言詞辯論|調解|審理|宣判)?",
                 "pattern_type": "absolute_time_roc",
                 "days": None,
             },
             {
-                "pattern": r"(?:定|訂)?於?(\d{1,2})月(\d{1,2})日([上下])午(\d{1,2})時(\d*)分?.*?(開庭|準備程序|言詞辯論|調解|審理|宣判)?",
+                "pattern": rf"(?:定|訂)?於?(\d{{1,2}})月(\d{{1,2}})日{_TIME_PERIOD_RE}{_TIME_NUMBER_RE}時([零一二三四五六七八九十\d]{{0,3}})(?:分|整)?.*?(開庭|準備程序|言詞辯論|調解|審理|宣判)?",
                 "pattern_type": "absolute_time",
                 "days": None,
             },
@@ -138,10 +204,181 @@ def get_default_patterns() -> Dict[str, List[Dict]]:
 def _infer_hearing_procedure_type(text: str) -> str:
     """Infer the court procedure label when the regex stops before the trailing words."""
     s = text or ""
-    for label in ("言詞辯論", "準備程序", "調解", "審理", "宣判", "訊問"):
+    for label in ("言詞辯論", "準備程序", "調解", "審判程序", "審理程序", "審理", "宣判", "訊問", "調查", "開庭"):
         if label in s:
+            if label in {"審判程序", "審理程序"}:
+                return "審理"
             return label
     return ""
+
+
+def _append_unique_todo(todos: List[Dict], todo: Dict) -> None:
+    key = (str(todo.get("type") or ""), str(todo.get("date") or ""), str(todo.get("time") or ""))
+    for existing in todos:
+        existing_key = (
+            str(existing.get("type") or ""),
+            str(existing.get("date") or ""),
+            str(existing.get("time") or ""),
+        )
+        if existing_key == key:
+            return
+    todos.append(todo)
+
+
+def _todo_sort_key(todo: Dict) -> tuple[str, str, str]:
+    return (
+        str(todo.get("date") or "9999-12-31"),
+        str(todo.get("time") or "00:00"),
+        str(todo.get("type") or ""),
+    )
+
+
+def _hearing_datetime(
+    *,
+    year_token: str,
+    month_token: str,
+    day_token: str,
+    period_token: str,
+    hour_token: str,
+    minute_token: str,
+    document_date: datetime,
+    explicit_year: bool,
+) -> Optional[tuple[datetime, str, int, int]]:
+    try:
+        year = _parse_roc_or_ad_year(year_token) if explicit_year else int(year_token)
+        month = int(month_token)
+        day = int(day_token)
+        parsed_time = _time_from_period(period_token, hour_token, minute_token)
+        if parsed_time is None:
+            return None
+        hour, minute, period_label = parsed_time
+        dt = datetime(year, month, day, hour, minute)
+        if not explicit_year and dt.date() < document_date.date() - timedelta(days=30):
+            dt = dt.replace(year=year + 1)
+        original_hour = _parse_number_token(hour_token) or hour
+        return dt, period_label, original_hour, minute
+    except Exception:
+        return None
+
+
+def _make_hearing_todo(
+    *,
+    filename: str,
+    kind: str,
+    dt: datetime,
+    period_label: str,
+    original_hour: int,
+    minute: int,
+) -> Dict:
+    todo_type = kind or "開庭"
+    return {
+        "type": todo_type,
+        "deadline_type": todo_type,
+        "file": filename,
+        "source_file": filename,
+        "description": f"⚖️ {dt.month}月{dt.day}日 {period_label}{original_hour}時{minute:02d}分 {todo_type}",
+        "date": dt.strftime("%Y-%m-%d"),
+        "time": dt.strftime("%H:%M"),
+        "datetime": dt,
+    }
+
+
+def _extract_hearing_sequence_todos(filename: str, document_date: datetime) -> List[Dict]:
+    """Extract every hearing datetime in filenames with multiple sessions."""
+    kind = _infer_hearing_procedure_type(filename) or "開庭"
+    todos: List[Dict] = []
+
+    explicit_pat = re.compile(
+        rf"(?:民國)?(\d{{2,4}})年(\d{{1,2}})月(\d{{1,2}})日{_TIME_PERIOD_RE}{_TIME_NUMBER_RE}時([零一二三四五六七八九十\d]{{0,3}})(?:分|整)?"
+    )
+    for m in explicit_pat.finditer(filename):
+        parsed = _hearing_datetime(
+            year_token=m.group(1),
+            month_token=m.group(2),
+            day_token=m.group(3),
+            period_token=m.group(4),
+            hour_token=m.group(5),
+            minute_token=m.group(6),
+            document_date=document_date,
+            explicit_year=True,
+        )
+        if parsed:
+            dt, period_label, original_hour, minute = parsed
+            _append_unique_todo(
+                todos,
+                _make_hearing_todo(
+                    filename=filename,
+                    kind=kind,
+                    dt=dt,
+                    period_label=period_label,
+                    original_hour=original_hour,
+                    minute=minute,
+                ),
+            )
+
+    yearless_pat = re.compile(
+        rf"(?<!年)(\d{{1,2}})月(\d{{1,2}})日{_TIME_PERIOD_RE}{_TIME_NUMBER_RE}時([零一二三四五六七八九十\d]{{0,3}})(?:分|整)?"
+    )
+    for m in yearless_pat.finditer(filename):
+        parsed = _hearing_datetime(
+            year_token=str(document_date.year),
+            month_token=m.group(1),
+            day_token=m.group(2),
+            period_token=m.group(3),
+            hour_token=m.group(4),
+            minute_token=m.group(5),
+            document_date=document_date,
+            explicit_year=False,
+        )
+        if parsed:
+            dt, period_label, original_hour, minute = parsed
+            _append_unique_todo(
+                todos,
+                _make_hearing_todo(
+                    filename=filename,
+                    kind=kind,
+                    dt=dt,
+                    period_label=period_label,
+                    original_hour=original_hour,
+                    minute=minute,
+                ),
+            )
+
+    shared_time_pat = re.compile(
+        rf"(?P<dates>(?:(?:\d{{2,4}}年)?\d{{1,2}}月\d{{1,2}}日[、，,及和\s]*){{2,}}){_TIME_PERIOD_RE}{_TIME_NUMBER_RE}時([零一二三四五六七八九十\d]{{0,3}})(?:分|整)?"
+    )
+    date_pat = re.compile(r"(?:(\d{2,4})年)?(\d{1,2})月(\d{1,2})日")
+    for m in shared_time_pat.finditer(filename):
+        period_token = m.group(2)
+        hour_token = m.group(3)
+        minute_token = m.group(4)
+        for dm in date_pat.finditer(m.group("dates")):
+            explicit_year = bool(dm.group(1))
+            parsed = _hearing_datetime(
+                year_token=dm.group(1) or str(document_date.year),
+                month_token=dm.group(2),
+                day_token=dm.group(3),
+                period_token=period_token,
+                hour_token=hour_token,
+                minute_token=minute_token,
+                document_date=document_date,
+                explicit_year=explicit_year,
+            )
+            if parsed:
+                dt, period_label, original_hour, minute = parsed
+                _append_unique_todo(
+                    todos,
+                    _make_hearing_todo(
+                        filename=filename,
+                        kind=kind,
+                        dt=dt,
+                        period_label=period_label,
+                        original_hour=original_hour,
+                        minute=minute,
+                    ),
+                )
+
+    return sorted(todos, key=_todo_sort_key)
 
 
 def _extract_todo_from_filename(filename: str) -> Optional[Dict]:
@@ -157,16 +394,20 @@ def _extract_todo_from_filename(filename: str) -> Optional[Dict]:
     bracket_text = m.group(1)
 
     _BRACKET_PATTERNS = [
-        (r"(\d+)日內補正", "補正"),
-        (r"(\d+)日內上訴", "上訴"),
-        (r"(\d+)日內陳述意見", "陳述意見"),
-        (r"(\d+)日內繳納", "繳費"),
-        (r"(\d+)日內閱卷", "閱卷期限"),
+        (rf"{_DURATION_RE}內補正", "補正"),
+        (rf"{_DURATION_RE}內上訴", "上訴"),
+        (rf"{_DURATION_RE}內陳述意見", "陳述意見"),
+        (rf"{_DURATION_RE}內.*?(?:陳報|回覆|表示意見|確答|陳明)", "陳報"),
+        (rf"{_DURATION_RE}內.*?(?:提出|檢送|補提).{{0,20}}?(?:資料|文件|清冊|報告書|截圖|證據)", "提出資料"),
+        (rf"{_DURATION_RE}內繳納", "繳費"),
+        (rf"{_DURATION_RE}內閱卷", "閱卷期限"),
     ]
     for pat, dtype in _BRACKET_PATTERNS:
         pm = re.search(pat, bracket_text)
         if pm:
-            return {"deadline_type": dtype, "days": int(pm.group(1)), "source": "filename_bracket"}
+            days = _duration_days(pm)
+            if days is not None:
+                return {"deadline_type": dtype, "days": int(days), "source": "filename_bracket"}
     return None
 
 
@@ -196,10 +437,8 @@ def extract_todos_from_filename(
         "異議", "抗告", "上訴", "再抗告",
     ]
 
-    matched = False
+    matched_types: set[str] = set()
     for todo_type in type_priority:
-        if matched:
-            break
         if todo_type not in all_patterns:
             continue
 
@@ -209,7 +448,8 @@ def extract_todos_from_filename(
                 m = re.search(pattern, filename, re.IGNORECASE)
                 if not m:
                     continue
-                matched = True
+                if todo_type in matched_types:
+                    break
 
                 todo: Dict = {"type": todo_type, "deadline_type": todo_type, "file": filename, "source_file": filename}
                 pattern_type = pattern_data.get("pattern_type", "")
@@ -219,21 +459,22 @@ def extract_todos_from_filename(
                     if preset_days is not None:
                         days = int(preset_days)
                     else:
-                        if pattern_type == "relative_chinese":
-                            days = int(chinese_to_number(m.group(1)) or 0)
-                        else:
-                            days = int(m.group(1))
+                        parsed_days = _duration_days(m)
+                        if parsed_days is None:
+                            continue
+                        days = int(parsed_days)
                     deadline = document_date + timedelta(days=days)
                     adjusted = next_workday(deadline, tw)
                     todo["date"] = adjusted.strftime("%Y-%m-%d")
                     todo["datetime"] = adjusted
                     todo["time"] = ""
                     todo["description"] = f"📝 {days}日內{todo_type} ({document_date.strftime('%m/%d')}文到)"
-                    todos.append(todo)
+                    _append_unique_todo(todos, todo)
+                    matched_types.add(todo_type)
 
                 elif pattern_type in ("absolute", "absolute_time", "absolute_time_roc"):
                     if pattern_type == "absolute_time_roc":
-                        year_to_use = int(m.group(1)) + 1911
+                        year_to_use = _parse_roc_or_ad_year(m.group(1))
                         month, day = int(m.group(2)), int(m.group(3))
                         period_group = 4
                     else:
@@ -255,33 +496,33 @@ def extract_todos_from_filename(
                         if proc and proc != "開庭":
                             todo["type"] = proc
                             todo["deadline_type"] = proc
-                        hour, minute = int(hour_str), int(minute_str)
-                        original_hour = hour
-                        if period == "下" and hour != 12:
-                            hour += 12
-                        elif period == "上" and hour == 12:
-                            hour = 0
+                        parsed_time = _time_from_period(period, hour_str, minute_str)
+                        if parsed_time is None:
+                            continue
+                        hour, minute, period_label = parsed_time
+                        original_hour = _parse_number_token(hour_str) or hour
                         dt = dt.replace(hour=hour, minute=minute)
-                        todo["description"] = f"⚖️ {month}月{day}日 {period}午{original_hour}時{minute:02d}分 {todo['type']}"
+                        todo["description"] = f"⚖️ {month}月{day}日 {period_label}{original_hour}時{minute:02d}分 {todo['type']}"
                     else:
                         todo["description"] = f"⚖️ {month}月{day}日 {todo_type}"
 
                     todo["date"] = dt.strftime("%Y-%m-%d")
                     todo["time"] = dt.strftime("%H:%M")
                     todo["datetime"] = dt
-                    todos.append(todo)
+                    _append_unique_todo(todos, todo)
+                    matched_types.add(todo_type)
 
                 break
             except (re.error, ValueError, IndexError):
                 continue
 
-    if not matched:
+    if not matched_types:
         bracket_todo = _extract_todo_from_filename(filename)
         if bracket_todo:
             days = int(bracket_todo["days"])
             deadline = document_date + timedelta(days=days)
             adjusted = next_workday(deadline, tw)
-            todos.append({
+            _append_unique_todo(todos, {
                 "type": bracket_todo["deadline_type"],
                 "deadline_type": bracket_todo["deadline_type"],
                 "file": filename,
@@ -293,4 +534,7 @@ def extract_todos_from_filename(
                 "description": f"📝 {days}日內{bracket_todo['deadline_type']} ({document_date.strftime('%m/%d')}文到)",
             })
 
-    return todos
+    for todo in _extract_hearing_sequence_todos(filename, document_date):
+        _append_unique_todo(todos, todo)
+
+    return sorted(todos, key=_todo_sort_key)
