@@ -414,6 +414,25 @@ def test_seed_cron_jobs_installs_disk_maintenance_jobs(tmp_path):
     assert "MAGI_ALLOW_SCHEDULED_REBOOT=1" in by_id["job_reboot_before_night_model_switch"]["command"]
 
 
+def test_seed_cron_jobs_installs_monthly_accounting_bonus_job(tmp_path):
+    import scripts.seed_cron_jobs as seed
+
+    result = seed.seed_jobs(tmp_path, python_path=tmp_path / "venv" / "bin" / "python3")
+    jobs = json.loads((tmp_path / "cron_jobs.json").read_text(encoding="utf-8"))
+    by_id = {job["id"]: job for job in jobs}
+
+    job = by_id["job_accounting_monthly_bonus"]
+    assert result["ok"] is True
+    assert job["enabled"] is True
+    assert job["cron"] == "0 12 * * *"
+    assert job["no_catchup"] is True
+    assert "accounting_monthly_bonus.py" in job["command"]
+    assert "--commit" in job["command"]
+    assert "--refresh-import" in job["command"]
+    assert "--catch-up" in job["command"]
+    assert "--export-xlsx" in job["command"]
+
+
 def test_omlx_auto_switch_checks_real_api_model_and_2150_boundary():
     source = Path("config/bin/omlx_switch_model.sh").read_text(encoding="utf-8")
 

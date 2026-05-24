@@ -325,15 +325,15 @@ def _settled_fee_transaction_ids(before_month_key: str) -> set[int]:
 
 
 def _laf_fee_basis_start(month_key: str, period_start: date, period_end: date) -> date:
-    strict_period = str(os.environ.get("MAGI_ACCOUNTING_BONUS_STRICT_PERIOD", "")).lower() in {"1", "true", "yes", "on"}
-    if strict_period:
+    allow_lookback = str(os.environ.get("MAGI_ACCOUNTING_BONUS_ALLOW_LOOKBACK", "")).lower() in {"1", "true", "yes", "on"}
+    if not allow_lookback:
         return period_start
     env_start = (os.environ.get("MAGI_ACCOUNTING_BONUS_LAF_FEE_LOOKBACK_START") or "").strip()
     if env_start:
         parsed = _parse_iso_date(env_start)
         if parsed:
             return parsed
-    return date(period_end.year, 1, 1)
+    return period_start
 
 
 def _query_totals_before_bonus(start: date, end: date) -> dict[str, float]:

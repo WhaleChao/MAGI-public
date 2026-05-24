@@ -95,6 +95,9 @@ def test_seed_cron_jobs_creates_worldmonitor_and_business_jobs(tmp_path):
     assert "job_file_review_check" in cron_text
     assert "job_transcript_sync" in cron_text
     assert "job_business_module_live_check" in cron_text
+    assert "job_accounting_monthly_bonus" in cron_text
+    assert "accounting_monthly_bonus.py" in cron_text
+    assert "--commit --refresh-import --catch-up --export-xlsx" in cron_text
     assert "job_omlx_profile_guard" in cron_text
     assert "job_empty_case_shell_cleanup" in cron_text
     assert "cleanup_synology_empty_case_shells.py" in cron_text

@@ -13,6 +13,22 @@ def test_period_for_settlement_month_uses_26_to_25_window():
     assert default_settlement_month(date(2026, 5, 12), catch_up=True) is None
 
 
+def test_laf_fee_basis_defaults_to_current_settlement_period(monkeypatch):
+    from api.osc.accounting_bonus import _laf_fee_basis_start
+
+    monkeypatch.delenv("MAGI_ACCOUNTING_BONUS_ALLOW_LOOKBACK", raising=False)
+    monkeypatch.delenv("MAGI_ACCOUNTING_BONUS_LAF_FEE_LOOKBACK_START", raising=False)
+    assert _laf_fee_basis_start("2026-05", date(2026, 4, 26), date(2026, 5, 25)) == date(2026, 4, 26)
+
+
+def test_laf_fee_basis_lookback_is_explicit_opt_in(monkeypatch):
+    from api.osc.accounting_bonus import _laf_fee_basis_start
+
+    monkeypatch.setenv("MAGI_ACCOUNTING_BONUS_ALLOW_LOOKBACK", "1")
+    monkeypatch.setenv("MAGI_ACCOUNTING_BONUS_LAF_FEE_LOOKBACK_START", "2026-01-01")
+    assert _laf_fee_basis_start("2026-05", date(2026, 4, 26), date(2026, 5, 25)) == date(2026, 1, 1)
+
+
 def test_query_laf_debt_fee_rows_filters_to_debt_laf_income(monkeypatch):
     from api.osc import accounting_bonus as mod
 
