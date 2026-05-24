@@ -7,7 +7,7 @@ Migrated from server.py to reduce monolith size.
 
 from datetime import date
 
-from flask import Blueprint, request, jsonify
+from flask import Blueprint, request, jsonify, send_file
 from flask_login import login_required
 
 osc_accounting_bp = Blueprint("osc_accounting", __name__)
@@ -194,6 +194,62 @@ def osc_accounting_google_sheet_import_api():
     except Exception as exc:
         return jsonify({"ok": False, "error": type(exc).__name__, "message": str(exc)}), 500
     return jsonify(result)
+
+
+@osc_accounting_bp.route("/api/osc/accounting/monthly-bonus", methods=["GET", "POST"])
+@login_required
+def osc_accounting_monthly_bonus_api():
+    from api.osc.accounting_bonus import (
+        calculate_monthly_bonus,
+        export_monthly_bonus_xlsx,
+        record_monthly_bonus_xlsx_path,
+    )
+    from api.osc.accounting_sheet_import import DEFAULT_ACCOUNT_HINT
+
+    payload = request.get_json(silent=True) or {}
+    month = (payload.get("month") or request.args.get("month") or "").strip() or None
+    commit = bool(payload.get("commit")) if request.method == "POST" else False
+    refresh_raw = payload.get("refresh_import") if "refresh_import" in payload else request.args.get("refresh_import", "1")
+    refresh_import = str(refresh_raw).strip().lower() not in {"0", "false", "no", "off"}
+    account_hint = (payload.get("account_hint") or request.args.get("account_hint") or DEFAULT_ACCOUNT_HINT).strip()
+    try:
+        result = calculate_monthly_bonus(
+            month=month,
+            commit=commit,
+            refresh_import=refresh_import,
+            catch_up=True,
+            account_hint=account_hint,
+        )
+        if commit and result.get("ok") and not result.get("skipped"):
+            result["xlsx_path"] = export_monthly_bonus_xlsx(result)
+            record_monthly_bonus_xlsx_path(str(result.get("month") or ""), result["xlsx_path"])
+    except Exception as exc:
+        return jsonify({"ok": False, "error": type(exc).__name__, "message": str(exc)}), 500
+    return jsonify(result)
+
+
+@osc_accounting_bp.route("/api/osc/accounting/monthly-bonus/xlsx", methods=["GET"])
+@login_required
+def osc_accounting_monthly_bonus_xlsx_api():
+    from api.osc.accounting_bonus import calculate_monthly_bonus, write_temp_xlsx
+    from api.osc.accounting_sheet_import import DEFAULT_ACCOUNT_HINT
+
+    month = (request.args.get("month") or "").strip() or None
+    refresh_import = str(request.args.get("refresh_import") or "0").strip().lower() in {"1", "true", "yes", "on"}
+    account_hint = (request.args.get("account_hint") or DEFAULT_ACCOUNT_HINT).strip()
+    try:
+        result = calculate_monthly_bonus(
+            month=month,
+            commit=False,
+            refresh_import=refresh_import,
+            catch_up=True,
+            account_hint=account_hint,
+        )
+        path = write_temp_xlsx(result)
+    except Exception as exc:
+        return jsonify({"ok": False, "error": type(exc).__name__, "message": str(exc)}), 500
+    filename = f"MAGI帳務月結獎金_{result.get('month') or '未指定'}.xlsx"
+    return send_file(path, as_attachment=True, download_name=filename)
 
 
 # ── Expense Defaults ─────────────────────────────────────────────────

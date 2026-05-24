@@ -113,6 +113,78 @@ async function runAccountingImport() {
     await loadMeta();
 }
 
+function accountingBonusMonthValue() {
+    const el = document.getElementById("accountingBonusMonth");
+    if (!el) return "";
+    if (!el.value) el.value = new Date().toISOString().slice(0, 7);
+    return el.value;
+}
+
+function renderAccountingBonusResult(data) {
+    const box = document.getElementById("accountingBonusResult");
+    if (!box) return;
+    const statusLabels = {
+        waiting_laf_fee: "等待本期法扶消債酬金入帳",
+        ready: "可登載",
+        posted: "已登載",
+        no_surplus_after_laf_bonus: "法扶獎金後無餘額",
+        not_settlement_window: "非結算期間",
+    };
+    const rows = [
+        ["結算期間", `${data.period_start || "-"} ~ ${data.period_end || "-"}`],
+        ["狀態", statusLabels[data.status] || data.status || "-"],
+        ["法扶消債酬金收入", fmtAmount(data.legal_aid_debt_fee_total || 0)],
+        ["法扶酬金獎金", fmtAmount(data.legal_aid_bonus_amount || 0)],
+        ["獎金前收入", fmtAmount(data.income_total_before_bonus || 0)],
+        ["獎金前支出", fmtAmount(data.expense_total_before_bonus || 0)],
+        ["法扶獎金後餘額", fmtAmount(data.balance_after_laf_bonus || 0)],
+        ["案件獎金池", fmtAmount(data.case_bonus_pool || 0)],
+        ["員工案件獎金", fmtAmount(data.case_bonus_employee_amount || 0)],
+        ["本月支出總額", fmtAmount(data.final_expense_total || 0)],
+        ["本月結餘", fmtAmount(data.final_balance || 0)],
+    ];
+    const feeRows = data.source_fee_rows || [];
+    const importRows = data.import_results || [];
+    const note = data.notes ? `<div class="notice warn" style="margin-top:10px;">${esc(data.notes)}</div>` : "";
+    const xlsx = data.xlsx_path ? `<div class="muted" style="margin-top:8px;">XLSX 報表：${esc(data.xlsx_path)}</div>` : "";
+    box.innerHTML = `
+        <div class="stat-grid">
+            ${rows.map(([k, v]) => `<div class="stat-card"><div class="k">${esc(k)}</div><div class="v" style="font-size:15px;">${esc(v)}</div></div>`).join("")}
+        </div>
+        <div class="muted" style="margin-top:10px;">月份：${esc(data.month || accountingBonusMonthValue())}；${data.dry_run ? "目前是預覽，尚未寫入。" : "已正式登載或更新月結紀錄。"}</div>
+        ${xlsx}
+        ${note}
+        <div class="soft-block" style="margin-top:10px;">
+            <strong>法扶消債酬金明細（${feeRows.length} 筆）</strong>
+            <div class="muted">${feeRows.length ? feeRows.map(x => `${esc(x.date)}｜${esc(x.case_number || "")}｜${esc(x.client_name || "")}｜${fmtAmount(x.amount || 0)}`).join("；") : "本期尚未找到法扶消債酬金收入。"}</div>
+        </div>
+        <div class="soft-block" style="margin-top:10px;">
+            <strong>帳務匯入紀錄</strong>
+            <div class="muted">${importRows.length ? importRows.map(x => `${esc(x.month || "")}：${x.ok ? "成功" : "失敗"}（可匯入 ${x.importable_count || 0}、已匯入 ${x.duplicate_count || 0}、DB已有 ${x.existing_count || 0}）`).join("；") : "本次未重新匯入 Google 帳務。"}</div>
+        </div>
+    `;
+}
+
+async function previewAccountingBonus() {
+    const month = encodeURIComponent(accountingBonusMonthValue());
+    const data = await api(`/api/osc/accounting/monthly-bonus?month=${month}&refresh_import=1`);
+    renderAccountingBonusResult(data);
+}
+
+async function runAccountingBonus() {
+    const month = accountingBonusMonthValue();
+    if (!confirm(`確定正式登載或更新 ${month} 的月結獎金？MAGI 會先重新匯入帳務並避免重複入帳。`)) return;
+    const data = await api(`/api/osc/accounting/monthly-bonus`, "POST", { month, commit: true, refresh_import: true });
+    renderAccountingBonusResult(data);
+    await loadTransactions();
+    await loadMeta();
+}
+
+function downloadAccountingBonusXlsx() {
+    const month = encodeURIComponent(accountingBonusMonthValue());
+    window.open(`/api/osc/accounting/monthly-bonus/xlsx?month=${month}`, "_blank", "noopener");
+}
+
 async function applyAccountingPeriod() {
     const now = new Date();
     const y = now.getFullYear();

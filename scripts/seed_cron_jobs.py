@@ -180,6 +180,18 @@ def business_jobs(repo_root: Path = REPO_ROOT, python_path: Path | None = None) 
             "timeout_sec": 300,
         },
         {
+            "id": "job_accounting_monthly_bonus",
+            "cron": "0 12 * * *",
+            "command": f"{python_bin} {run_with_env} -- {python_bin} {repo_root / 'scripts' / 'accounting_monthly_bonus.py'} --commit --refresh-import --catch-up --export-xlsx --account-hint {accounting_account_hint}",
+            "desc": "每月帳務獎金結算（24 日中午起自動重新匯入帳務、計算法扶消債酬金獎金與案件獎金，月初可重算前月）",
+            "channel_id": None,
+            "last_run": None,
+            "last_run_minute": None,
+            "enabled": True,
+            "no_catchup": True,
+            "timeout_sec": 300,
+        },
+        {
             "id": "job_osc_events_refresh",
             "cron": "5 */6 * * *",
             "command": f"{python_bin} {run_with_env} MAGI_GCAL_DEDUP_ENABLED=1 MAGI_GCAL_DEDUP_DRY_RUN=0 MAGI_GCAL_INCREMENTAL_IMPORT=1 -- {python_bin} {repo_root / 'scripts' / 'ops' / 'osc_events_refresh.py'}",
