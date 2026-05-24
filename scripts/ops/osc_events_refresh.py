@@ -56,6 +56,7 @@ def _run_pdf_calendar_scan(args: argparse.Namespace) -> dict[str, Any]:
     limit = max(1, int(getattr(args, "pdf_limit", 240)))
     max_pages = max(1, min(int(getattr(args, "pdf_max_pages", 8)), 20))
     dry_run = bool(getattr(args, "dry_run", False))
+    scan_text = os.environ.get("OSC_PDF_CALENDAR_BULK_TEXT_ENABLE", "0").strip().lower() in {"1", "true", "yes", "on"}
     started = time.monotonic()
     scanned = inserted = updated = skipped = todo_count = event_count = warning_count = 0
     sample_items: list[dict[str, Any]] = []
@@ -79,6 +80,7 @@ def _run_pdf_calendar_scan(args: argparse.Namespace) -> dict[str, Any]:
                 client_name=client_name,
                 max_pages=max_pages,
                 include_share_link=False,
+                scan_text=scan_text,
             )
             scanned += 1
             todos = item.get("todos") or []
@@ -120,6 +122,7 @@ def _run_pdf_calendar_scan(args: argparse.Namespace) -> dict[str, Any]:
         "dry_run": dry_run,
         "limit": limit,
         "max_pages": max_pages,
+        "scan_text": scan_text,
         "targets": len(targets),
         "scanned": scanned,
         "todo_count": todo_count,
@@ -159,6 +162,7 @@ def run_refresh(args: argparse.Namespace) -> dict[str, Any]:
     os.environ.setdefault("MAGI_GCAL_DEDUP_ENABLED", "1")
     os.environ.setdefault("MAGI_GCAL_DEDUP_DRY_RUN", "0")
     os.environ.setdefault("MAGI_GCAL_INCREMENTAL_IMPORT", "1")
+    os.environ.setdefault("MAGI_GCAL_REPAIR_EXISTING", "1")
 
     mod = _load_osc_action_module()
     started = time.monotonic()
@@ -254,6 +258,8 @@ def run_refresh(args: argparse.Namespace) -> dict[str, Any]:
             try:
                 push_payload = {
                     "limit": args.gcal_push_limit,
+                    "repair_existing": True,
+                    "repair_limit": args.gcal_push_limit,
                     "retry_max_attempts": 3,
                 }
                 pushed = mod.task_gcal_sync(push_payload)

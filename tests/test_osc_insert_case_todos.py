@@ -35,7 +35,12 @@ class _FakeCursor:
                 self._fetchone = None
         elif "AND `todo_type`=%s" in normalized and "AND `source_file`=%s" not in normalized:
             if self.mode == "cross_source_hearing":
-                self._fetchone = (88, "陳建華案開庭@台東地檢", "陳建華", "gcal_import:whalelawyer@gmail.com")
+                if "source_file NOT LIKE 'gcal_import%%'" in normalized:
+                    self._fetchone = None
+                else:
+                    self._fetchone = (88, "陳建華案開庭@台東地檢", "陳建華", "gcal_import:whalelawyer@gmail.com")
+            elif self.mode == "cross_source_non_gcal_hearing":
+                self._fetchone = (89, "⚖️ 5月27日 早上10時40分 開庭", "陳建華", "other_notice.pdf")
             else:
                 self._fetchone = None
         elif "AND `todo_type`=%s AND `source_file`=%s" in normalized:
@@ -136,8 +141,29 @@ def test_insert_case_todos_updates_stale_pending_same_source_type():
     assert any("UPDATE `case_todos`" in sql for sql, _ in conn.cursor_obj.executed)
 
 
-def test_insert_case_todos_skips_same_hearing_from_other_source():
+def test_insert_case_todos_does_not_let_imported_calendar_block_pdf_todo():
     conn = _FakeConn("cross_source_hearing")
+    result = insert_case_todos(
+        conn,
+        case_number="2026-0038",
+        client_name="陳建華",
+        todos=[
+            {
+                "type": "開庭",
+                "date": "2026-05-27",
+                "time": "10:40",
+                "description": "⚖️ 5月27日 早上10時40分 開庭",
+            }
+        ],
+        source_file="20260514 臺東地方檢察署115年度偵字第9號開庭通知.pdf",
+    )
+
+    assert result == {"inserted": 1, "skipped": 0, "updated": 0}
+    assert any("INSERT INTO `case_todos`" in sql for sql, _ in conn.cursor_obj.executed)
+
+
+def test_insert_case_todos_still_skips_same_hearing_from_non_gcal_source():
+    conn = _FakeConn("cross_source_non_gcal_hearing")
     result = insert_case_todos(
         conn,
         case_number="2026-0038",
@@ -183,3 +209,5 @@ def test_list_unsynced_todos_only_returns_today_or_future_items():
     assert list_unsynced_todos_with_case_info(conn, limit=10) == []
     sql = " ".join(conn.cur.executed[0][0].split())
     assert "ct.todo_date >= CURDATE()" in sql
+    assert "ct.todo_date <= DATE_ADD(CURDATE(), INTERVAL 2 YEAR)" in sql
+    assert "ct.source_file NOT LIKE 'gcal_import%%'" in sql

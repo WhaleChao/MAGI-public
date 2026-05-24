@@ -70,6 +70,27 @@ def test_scheduled_hearing_is_high_confidence(tmp_path):
     assert items[0].confidence == "high"
 
 
+def test_ocr_bogus_roc_year_is_not_scheduled_todo(tmp_path):
+    mod = _load_module()
+    pdf = _pdf_path(tmp_path, "20201207 準備程序筆錄.pdf")
+    pages = [
+        (
+            1,
+            "406年11月8日民事調查證據聲請續狀第8頁有王文孝供述內容。",
+        )
+    ]
+
+    items = mod.extract_candidates_from_pages(
+        pages,
+        pdf_path=pdf,
+        transcript_date="2020-12-07",
+        case_number="2025-0001",
+        client_name="測試當事人",
+    )
+
+    assert items == []
+
+
 def test_relative_deadline_uses_transcript_date(tmp_path):
     mod = _load_module()
     pdf = _pdf_path(tmp_path)

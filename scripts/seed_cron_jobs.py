@@ -194,7 +194,7 @@ def business_jobs(repo_root: Path = REPO_ROOT, python_path: Path | None = None) 
         {
             "id": "job_osc_events_refresh",
             "cron": "5 */6 * * *",
-            "command": f"{python_bin} {run_with_env} MAGI_GCAL_DEDUP_ENABLED=1 MAGI_GCAL_DEDUP_DRY_RUN=0 MAGI_GCAL_INCREMENTAL_IMPORT=1 -- {python_bin} {repo_root / 'scripts' / 'ops' / 'osc_events_refresh.py'}",
+            "command": f"{python_bin} {run_with_env} MAGI_GCAL_DEDUP_ENABLED=1 MAGI_GCAL_DEDUP_DRY_RUN=0 MAGI_GCAL_INCREMENTAL_IMPORT=1 MAGI_GCAL_REPAIR_EXISTING=1 -- {python_bin} {repo_root / 'scripts' / 'ops' / 'osc_events_refresh.py'}",
             "desc": "OSC/PDF/筆錄待辦與行事曆事件更新（每 6 小時；bounded NAS scan + transcript todo + incremental GCal import + OSC→GCal push）",
             "channel_id": None,
             "last_run": None,

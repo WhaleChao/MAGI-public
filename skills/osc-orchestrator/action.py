@@ -1713,10 +1713,11 @@ def task_gcal_sync(payload: Dict[str, Any]) -> Dict[str, Any]:
         return {"ok": False, "error": f"missing_db_helpers:{type(e).__name__}"}
 
     limit = int((payload or {}).get("limit") or 60)
-    calendar_id = (payload or {}).get("calendar_id") or "primary"
+    calendar_id = str((payload or {}).get("calendar_id") or "").strip()
     tz = (payload or {}).get("time_zone") or os.environ.get("MAGI_TIME_ZONE") or "Asia/Taipei"
     dedup_enabled = _env_bool("MAGI_GCAL_DEDUP_ENABLED", False)
     dedup_dry_run = _env_bool("MAGI_GCAL_DEDUP_DRY_RUN", True)
+    repair_existing = bool((payload or {}).get("repair_existing")) or _env_bool("MAGI_GCAL_REPAIR_EXISTING", False)
 
     credentials_path = ((payload or {}).get("credentials_path") or os.environ.get("MAGI_GOOGLE_CREDENTIALS_PATH") or "").strip()
     token_path = ((payload or {}).get("token_path") or os.environ.get("MAGI_GOOGLE_CALENDAR_TOKEN_PATH") or "").strip()
@@ -1747,6 +1748,62 @@ def task_gcal_sync(payload: Dict[str, Any]) -> Dict[str, Any]:
         ensure_osc_min_schema(conn)
         ensure_cases_schema(conn)
         todos = list_unsynced_todos_with_case_info(conn, limit=limit)
+        if repair_existing:
+            repair_limit = max(1, min(int((payload or {}).get("repair_limit") or limit), 400))
+            cur = conn.cursor(dictionary=True)
+            try:
+                cur.execute(
+                    """
+                    SELECT
+                        ct.id,
+                        ct.case_number,
+                        ct.client_name,
+                        ct.todo_type,
+                        ct.todo_date,
+                        ct.todo_time,
+                        ct.description,
+                        ct.source_file,
+                        ct.google_calendar_id,
+                        COALESCE(c.court_name, '') AS court_name,
+                        COALESCE(NULLIF(c.court_case_no, ''), c.court_case_number, '') AS court_case_number
+                    FROM case_todos ct
+                    LEFT JOIN cases c
+                      ON c.case_number COLLATE utf8mb4_unicode_ci
+                       = ct.case_number COLLATE utf8mb4_unicode_ci
+                    WHERE ct.google_calendar_id IS NOT NULL
+                      AND ct.google_calendar_id <> ''
+                      AND ct.todo_date IS NOT NULL
+                      AND ct.todo_date >= CURDATE()
+                      AND ct.todo_date <= DATE_ADD(CURDATE(), INTERVAL 2 YEAR)
+                      AND (ct.status IS NULL OR ct.status = '' OR ct.status = 'pending')
+                      AND (ct.source_file IS NULL OR ct.source_file = '' OR ct.source_file NOT LIKE 'gcal_import%%')
+                    ORDER BY ct.todo_date ASC, ct.todo_time ASC, ct.id ASC
+                    LIMIT %s
+                    """,
+                    (repair_limit,),
+                )
+                seen_ids = {int(row.get("id") or 0) for row in todos if isinstance(row, dict)}
+                for row in cur.fetchall() or []:
+                    rid = int((row or {}).get("id") or 0)
+                    if rid and rid not in seen_ids:
+                        todos.append(dict(row))
+                        seen_ids.add(rid)
+            finally:
+                cur.close()
+        if not calendar_id:
+            try:
+                cur = conn.cursor(dictionary=True)
+                try:
+                    cur.execute("SELECT value FROM settings WHERE `key`=%s LIMIT 1", ("gcal_calendar_id",))
+                    row = cur.fetchone()
+                    if isinstance(row, dict):
+                        calendar_id = str(row.get("value") or "").strip()
+                    elif row:
+                        calendar_id = str(row[0] or "").strip()
+                finally:
+                    cur.close()
+            except Exception:
+                calendar_id = ""
     except Exception as e:
         return {"ok": False, "error": f"db_failed:{type(e).__name__}: {str(e)[:220]}"}
     finally:
@@ -1755,6 +1812,9 @@ def task_gcal_sync(payload: Dict[str, Any]) -> Dict[str, Any]:
                 conn.close()
         except Exception:
             logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 1483, exc_info=True)
+
+    if not calendar_id:
+        calendar_id = "primary"
 
     retry_max_attempts = int((payload or {}).get("retry_max_attempts") or os.environ.get("OSC_GCAL_RETRY_MAX_ATTEMPTS") or 2)
     retry_sleep_sec = float((payload or {}).get("retry_sleep_sec") or os.environ.get("OSC_GCAL_RETRY_SLEEP_SEC") or 0.8)
@@ -1778,16 +1838,58 @@ def task_gcal_sync(payload: Dict[str, Any]) -> Dict[str, Any]:
         )
 
     inserted = 0
+    patched = 0
     failed = 0
     dedup_matched = 0
     dedup_would_match = 0
     would_insert = 0
+    replaced_stale = 0
+    skipped_implausible = 0
     items: List[Dict[str, Any]] = []
     failed_items: List[Dict[str, Any]] = []
     oauth_blocked = False
     oauth_error = ""
     connw = None
+    def _is_stale_gcal_err(exc: Exception) -> bool:
+        try:
+            from googleapiclient.errors import HttpError  # type: ignore
+        except Exception:
+            HttpError = ()  # type: ignore[assignment]
+        if HttpError and not isinstance(exc, HttpError):
+            return False
+        status = getattr(getattr(exc, "resp", None), "status", None)
+        try:
+            return int(status) in {403, 404, 410}
+        except Exception:
+            return False
+
+    def _write_google_calendar_id(todo_id: int, event_id: str, *, overwrite: bool = False) -> None:
+        nonlocal connw
+        if not event_id:
+            return
+        if connw is None:
+            connw = connect_mysql(cfg)
+            ensure_osc_min_schema(connw)
+        if overwrite:
+            curw = connw.cursor()
+            try:
+                curw.execute("UPDATE case_todos SET google_calendar_id=%s WHERE id=%s", (event_id, int(todo_id)))
+                connw.commit()
+            finally:
+                curw.close()
+        else:
+            set_todo_google_calendar_id(connw, todo_id=int(todo_id), google_calendar_id=event_id)
+
     for td in (todos or []):
+        try:
+            parsed_todo_date = datetime.strptime(str(td.get("todo_date") or ""), "%Y-%m-%d").date()
+            today = datetime.now().date()
+            if parsed_todo_date < today or parsed_todo_date > today + timedelta(days=730):
+                skipped_implausible += 1
+                continue
+        except Exception:
+            skipped_implausible += 1
+            continue
         attempts = 0
         last_err = ""
         synced = False
@@ -1797,6 +1899,46 @@ def task_gcal_sync(payload: Dict[str, Any]) -> Dict[str, Any]:
                 body = _todo_to_gcal_event(td, tz=str(tz))
                 private = ((body.get("extendedProperties") or {}).get("private") or {})
                 dedup_key = str(private.get("magi_dedup_key") or "").strip()
+                existing_gid = str(td.get("google_calendar_id") or "").strip()
+                stale_existing_gid = False
+
+                if existing_gid:
+                    try:
+                        res = service.events().patch(calendarId=calendar_id, eventId=existing_gid, body=body).execute()
+                        if str((res or {}).get("status") or "").lower() == "cancelled":
+                            stale_existing_gid = True
+                        else:
+                            event_id = str((res or {}).get("id") or existing_gid)
+                            if event_id and event_id != existing_gid:
+                                _write_google_calendar_id(int(td.get("id") or 0), event_id, overwrite=True)
+                            patched += 1
+                            synced = True
+                            if len(items) < 25:
+                                items.append(
+                                    {
+                                        "todo_id": td.get("id"),
+                                        "case_number": td.get("case_number"),
+                                        "client_name": td.get("client_name"),
+                                        "court_case_number": td.get("court_case_number"),
+                                        "todo_type": td.get("todo_type"),
+                                        "todo_date": str(td.get("todo_date") or ""),
+                                        "todo_time": str(td.get("todo_time") or ""),
+                                        "google_calendar_id": event_id,
+                                        "attempts": attempts,
+                                        "dedup_key": dedup_key,
+                                        "patched_existing": True,
+                                    }
+                                )
+                            break
+                    except Exception as e:
+                        last_err = f"{type(e).__name__}: {str(e)[:220]}"
+                        if _is_oauth_err(last_err):
+                            oauth_blocked = True
+                            oauth_error = last_err
+                            break
+                        if not _is_stale_gcal_err(e):
+                            raise
+                        stale_existing_gid = True
 
                 if dedup_enabled:
                     existing = _find_existing_gcal_event(
@@ -1811,11 +1953,14 @@ def task_gcal_sync(payload: Dict[str, Any]) -> Dict[str, Any]:
                         if dedup_dry_run:
                             dedup_would_match += 1
                         else:
-                            if connw is None:
-                                connw = connect_mysql(cfg)
-                                ensure_osc_min_schema(connw)
-                            set_todo_google_calendar_id(connw, todo_id=int(td.get("id") or 0), google_calendar_id=event_id)
+                            _write_google_calendar_id(
+                                int(td.get("id") or 0),
+                                event_id,
+                                overwrite=bool(existing_gid),
+                            )
                             dedup_matched += 1
+                            if stale_existing_gid:
+                                replaced_stale += 1
                         synced = True
                         if len(items) < 25:
                             items.append(
@@ -1832,6 +1977,7 @@ def task_gcal_sync(payload: Dict[str, Any]) -> Dict[str, Any]:
                                     "dedup_key": dedup_key,
                                     "matched_existing": True,
                                     "dry_run": bool(dedup_dry_run),
+                                    "replaced_stale": bool(stale_existing_gid),
                                 }
                             )
                         break
@@ -1862,11 +2008,14 @@ def task_gcal_sync(payload: Dict[str, Any]) -> Dict[str, Any]:
                 if not event_id:
                     raise RuntimeError("gcal_insert_no_event_id")
                 # Update DB: record google_calendar_id
-                if connw is None:
-                    connw = connect_mysql(cfg)
-                    ensure_osc_min_schema(connw)
-                set_todo_google_calendar_id(connw, todo_id=int(td.get("id") or 0), google_calendar_id=event_id)
+                _write_google_calendar_id(
+                    int(td.get("id") or 0),
+                    event_id,
+                    overwrite=bool(existing_gid),
+                )
                 inserted += 1
+                if stale_existing_gid:
+                    replaced_stale += 1
                 synced = True
                 if len(items) < 25:
                     items.append(
@@ -1881,6 +2030,7 @@ def task_gcal_sync(payload: Dict[str, Any]) -> Dict[str, Any]:
                             "google_calendar_id": event_id,
                             "attempts": attempts,
                             "dedup_key": dedup_key,
+                            "replaced_stale": bool(stale_existing_gid),
                         }
                     )
                 break
@@ -1926,12 +2076,16 @@ def task_gcal_sync(payload: Dict[str, Any]) -> Dict[str, Any]:
             "limit": limit,
             "fetched": len(todos or []),
             "inserted": inserted,
+            "patched": patched,
             "failed": failed,
+            "repair_existing": bool(repair_existing),
             "dedup_enabled": bool(dedup_enabled),
             "dedup_dry_run": bool(dedup_dry_run),
             "dedup_matched": dedup_matched,
             "dedup_would_match": dedup_would_match,
             "would_insert": would_insert,
+            "replaced_stale": replaced_stale,
+            "skipped_implausible": skipped_implausible,
             "items": items,
             "failed_items": failed_items,
             "retry_max_attempts": retry_max_attempts,
@@ -1949,12 +2103,16 @@ def task_gcal_sync(payload: Dict[str, Any]) -> Dict[str, Any]:
         "limit": limit,
         "fetched": len(todos or []),
         "inserted": inserted,
+        "patched": patched,
         "failed": failed,
+        "repair_existing": bool(repair_existing),
         "dedup_enabled": bool(dedup_enabled),
         "dedup_dry_run": bool(dedup_dry_run),
         "dedup_matched": dedup_matched,
         "dedup_would_match": dedup_would_match,
         "would_insert": would_insert,
+        "replaced_stale": replaced_stale,
+        "skipped_implausible": skipped_implausible,
         "items": items,
         "failed_items": failed_items,
         "retry_max_attempts": retry_max_attempts,

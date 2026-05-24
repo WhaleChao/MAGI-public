@@ -304,3 +304,82 @@ def test_accounting_transaction_allows_shared_expense_without_case(monkeypatch):
     assert resp.status_code == 200
     assert calls
     assert calls[0][1][0] is None
+
+
+def test_accounting_transactions_xlsx_download(monkeypatch):
+    from io import BytesIO
+
+    from flask import Flask
+    from flask_login import LoginManager, UserMixin
+    from openpyxl import load_workbook
+
+    from api.blueprints.osc_accounting import osc_accounting_bp
+
+    app = Flask(__name__)
+    app.config["TESTING"] = True
+    app.config["LOGIN_DISABLED"] = True
+    app.secret_key = "test"
+    login = LoginManager(app)
+
+    class User(UserMixin):
+        id = "test"
+
+    @login.user_loader
+    def _load(_user_id):
+        return User()
+
+    app.register_blueprint(osc_accounting_bp)
+    queries = []
+
+    def fake_helpers():
+        def fake_exec(sql, params=(), fetch="none"):
+            queries.append((sql, params, fetch))
+            if "FROM case_transactions t" in sql:
+                assert "t.date >= %s" in sql
+                assert "t.date <= %s" in sql
+                return [
+                    {
+                        "id": 1,
+                        "case_id": 10,
+                        "case_number": "2026-0042",
+                        "date": "2026-05-24",
+                        "type": "收入",
+                        "sub_type": "酬金",
+                        "category": "法扶酬金",
+                        "description": "林里法扶消債酬金",
+                        "amount": 34000,
+                    },
+                    {
+                        "id": 2,
+                        "case_id": None,
+                        "case_number": None,
+                        "date": "2026-05-24",
+                        "type": "支出",
+                        "sub_type": "人事費",
+                        "category": "薪資",
+                        "description": "法扶消債酬金獎金",
+                        "amount": 17000,
+                    },
+                ], {}
+            return [], {}
+
+        return fake_exec, lambda x: x, lambda *a, **k: None, lambda x: None, lambda v, d=0: int(v or d)
+
+    monkeypatch.setattr("api.blueprints.osc_accounting._get_osc_helpers", fake_helpers)
+    resp = app.test_client().get(
+        "/api/osc/accounting/transactions/xlsx?start_date=2026-05-01&end_date=2026-05-31"
+    )
+    assert resp.status_code == 200
+    assert resp.headers["Content-Disposition"].find("MAGI") >= 0
+    assert resp.data.startswith(b"PK")
+
+    wb = load_workbook(BytesIO(resp.data), data_only=True)
+    assert wb.sheetnames == ["帳務明細", "摘要"]
+    ws = wb["帳務明細"]
+    assert ws["B2"].value == "2026-05-24"
+    assert ws["C2"].value == "2026-0042"
+    assert ws["H2"].value == "林里法扶消債酬金"
+    summary = wb["摘要"]
+    assert summary["B7"].value == 2
+    assert summary["B8"].value == 34000
+    assert summary["B9"].value == 17000

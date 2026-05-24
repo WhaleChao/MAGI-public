@@ -244,6 +244,29 @@ def test_pdf_calendar_scan_preview_detects_all_day_filename_deadline(client, tmp
     assert event["start_date"] == "2026-04-07"
 
 
+def test_pdf_calendar_scan_falls_back_to_filename_when_pdf_placeholder_unreadable(client, tmp_path, monkeypatch):
+    path = tmp_path / "20260514 臺東地方檢察署115年度偵字第9號開庭通知（陳建華；訂115年5月27日早上10時40分開庭）.pdf"
+    path.write_bytes(b"not a real local pdf yet")
+
+    monkeypatch.setattr("api.blueprints.osc_pdf._osc_exec", lambda *a, **k: (None if k.get("fetch") == "one" else [], {}))
+    r = client.post(
+        "/api/osc/pdf/calendar-scan",
+        json={"file_path": str(path), "case_number": "2026-0038", "client_name": "陳建華", "write": False},
+    )
+
+    assert r.status_code == 200
+    body = r.get_json()
+    assert body["ok"] is True
+    item = body["items"][0]
+    assert item["text_available"] is False
+    assert item["text_error"]
+    assert body["todo_count"] == 1
+    todo = item["todos"][0]
+    assert todo["type"] == "開庭"
+    assert todo["date"] == "2026-05-27"
+    assert todo["time"] == "10:40"
+
+
 def test_pdf_calendar_scan_write_uses_single_machine_todo_writer(client, tmp_path, monkeypatch):
     path = tmp_path / "20260501 裁定（應於10日內補正）.pdf"
     doc = fitz.open()
@@ -381,6 +404,24 @@ def test_all_case_pdf_targets_translate_windows_case_path(tmp_path, monkeypatch)
     targets = osc_pdf._iter_all_case_pdf_targets(limit=10)
 
     assert targets == [(pdf.resolve(), "2025-0121", "高弘軒")]
+
+
+def test_pdf_calendar_scan_skips_text_for_large_pdf_when_filename_has_todo(tmp_path, monkeypatch):
+    from api.blueprints import osc_pdf
+
+    path = tmp_path / "20260514 臺東地方檢察署115年度偵字第9號開庭通知（陳建華；訂115年5月27日早上10時40分開庭）.pdf"
+    with path.open("wb") as fh:
+        fh.truncate(9 * 1024 * 1024)
+
+    def fail_text(*_args, **_kwargs):
+        raise AssertionError("_pdf_text should not be called for large filename-sufficient PDFs")
+
+    monkeypatch.setattr(osc_pdf, "_pdf_text", fail_text)
+    item = osc_pdf._scan_pdf_for_calendar(path, case_number="2026-0038", client_name="陳建華")
+
+    assert item["todos"]
+    assert item["todos"][0]["date"] == "2026-05-27"
+    assert item["text_error"] == "skipped_text_filename_todos"
 
 
 def test_gcal_sync_todo_event_title_includes_client_and_type():

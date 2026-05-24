@@ -167,11 +167,18 @@ def _date_from_filename(path: Path) -> str:
 
 def _coerce_roc_date(year: int, month: int, day: int) -> Optional[date]:
     if year < 1911:
+        current_roc_year = date.today().year - 1911
+        if year < 80 or year > current_roc_year + 3:
+            return None
         year += 1911
     try:
         return date(year, month, day)
     except ValueError:
         return None
+
+
+def _is_plausible_todo_date(value: date) -> bool:
+    return value <= date.today() + timedelta(days=730)
 
 
 def _parse_date_time(text: str, *, fallback_year: Optional[int] = None) -> Tuple[str, str]:
@@ -182,6 +189,8 @@ def _parse_date_time(text: str, *, fallback_year: Optional[int] = None) -> Tuple
             y = fallback_year
         parsed_date = _coerce_roc_date(y, int(dm.group("month")), int(dm.group("day")))
         if not parsed_date:
+            continue
+        if not _is_plausible_todo_date(parsed_date):
             continue
         tail = packed[dm.end() : dm.end() + 28]
         parsed_time = ""
@@ -620,6 +629,7 @@ def apply_high_confidence(items: list[dict[str, Any]], *, include_past: bool = F
     inserted = skipped = updated = 0
     written: list[dict[str, Any]] = []
     past_skipped = 0
+    future_skipped = 0
     today = date.today()
     try:
         ensure_osc_min_schema(conn)
@@ -632,6 +642,9 @@ def apply_high_confidence(items: list[dict[str, Any]], *, include_past: bool = F
             todo_date = _parse_iso_date(str(item.get("date") or ""))
             if todo_date and todo_date < today and not include_past:
                 past_skipped += 1
+                continue
+            if todo_date and not _is_plausible_todo_date(todo_date):
+                future_skipped += 1
                 continue
             todo = {
                 "type": str(item.get("type") or "待辦"),
@@ -660,6 +673,7 @@ def apply_high_confidence(items: list[dict[str, Any]], *, include_past: bool = F
         "skipped": skipped,
         "updated": updated,
         "past_skipped": past_skipped,
+        "future_skipped": future_skipped,
         "written": written,
     }
 

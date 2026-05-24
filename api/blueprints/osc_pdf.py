@@ -152,8 +152,14 @@ def _parse_roc_or_ad_date(year: str, month: str, day: str) -> datetime | None:
     try:
         y = int(year)
         if y < 1911:
+            current_roc_year = datetime.now().year - 1911
+            if y < 80 or y > current_roc_year + 3:
+                return None
             y += 1911
-        return datetime(y, int(month), int(day))
+        dt = datetime(y, int(month), int(day))
+        if dt.date() > (datetime.now() + timedelta(days=730)).date():
+            return None
+        return dt
     except Exception:
         return None
 
@@ -562,6 +568,7 @@ def _scan_pdf_for_calendar(
     client_name: str = "",
     max_pages: int = 5,
     include_share_link: bool = False,
+    scan_text: bool = True,
 ) -> dict[str, Any]:
     inferred = _infer_case_from_path(path)
     case_number = (case_number or inferred.get("case_number") or "").strip()
@@ -569,8 +576,29 @@ def _scan_pdf_for_calendar(
     extract_todos_from_filename, _get_default_patterns = _load_headless_todo_helpers()
     patterns = _load_todo_patterns()
     filename_todos = extract_todos_from_filename(path.name, str(path), patterns=patterns)
-    text = _pdf_text(path, max_pages=max_pages)
-    text_todos = _extract_todos_from_pdf_text(path, text)
+    text = ""
+    text_error = ""
+    text_max_mb = float(os.environ.get("OSC_PDF_CALENDAR_TEXT_MAX_MB", "8") or "8")
+    text_when_filename = str(os.environ.get("OSC_PDF_CALENDAR_TEXT_WHEN_FILENAME", "0")).strip().lower() in {"1", "true", "yes", "on"}
+    try:
+        file_size_mb = path.stat().st_size / (1024 * 1024)
+    except OSError:
+        file_size_mb = 0.0
+    if not scan_text:
+        text_error = "skipped_text_bulk_scan"
+    elif filename_todos and not text_when_filename:
+        text_error = "skipped_text_filename_todos"
+    elif filename_todos and text_max_mb > 0 and file_size_mb > text_max_mb:
+        text_error = f"skipped_large_pdf:{file_size_mb:.1f}MB"
+    else:
+        try:
+            text = _pdf_text(path, max_pages=max_pages)
+        except Exception as exc:
+            # Synology Drive can leave a cloud placeholder with a .pdf suffix before
+            # the real bytes are local.  Filename rules still carry court dates, so
+            # do not let a transient unreadable PDF drop calendar todos.
+            text_error = f"{type(exc).__name__}: {str(exc)[:180]}"
+    text_todos = _extract_todos_from_pdf_text(path, text) if text else []
     todos = _dedupe_todos([*filename_todos, *text_todos])
     todos = [_json_safe(t) for t in todos]
     share_link = _create_calendar_share_link(path) if include_share_link else {}
@@ -588,6 +616,7 @@ def _scan_pdf_for_calendar(
         "case_number": case_number,
         "client_name": client_name,
         "text_available": bool(text),
+        "text_error": text_error,
         "todos": todos,
         "events": events,
     }
@@ -629,6 +658,23 @@ def _iter_all_case_pdf_targets(limit: int) -> list[tuple[Path, str, str]]:
     out: list[tuple[Path, str, str]] = []
     wanted = ("法院通知", "程序裁定", "判決書", "法院_通知", "法院_傳票")
     max_items = max(1, min(limit, 5000))
+
+    def _relevant_roots(folder: Path) -> list[Path]:
+        roots: list[Path] = []
+        if any(k in str(folder) for k in wanted):
+            roots.append(folder)
+        try:
+            for child in folder.iterdir():
+                if not child.is_dir():
+                    continue
+                if any(k in child.name for k in wanted):
+                    roots.append(child)
+        except OSError:
+            return roots
+        if not roots:
+            roots.append(folder)
+        return roots
+
     for row in rows or []:
         raw_folder = str(row.get("folder_path") or "").strip()
         folder: Path | None = None
@@ -639,15 +685,17 @@ def _iter_all_case_pdf_targets(limit: int) -> list[tuple[Path, str, str]]:
                 break
         if folder is None:
             continue
-        for pdf in folder.rglob("*.pdf"):
-            if len(out) >= max_items:
-                return out
-            if pdf.name.startswith(".") or pdf.name.startswith("~$"):
-                continue
-            text = str(pdf)
-            if wanted and not any(k in text for k in wanted):
-                continue
-            out.append((pdf.resolve(), str(row.get("case_number") or ""), str(row.get("client_name") or "")))
+        for root in _relevant_roots(folder):
+            iterator = root.rglob("*.pdf") if root != folder or any(k in str(root) for k in wanted) else root.glob("*.pdf")
+            for pdf in iterator:
+                if len(out) >= max_items:
+                    return out
+                if pdf.name.startswith(".") or pdf.name.startswith("~$"):
+                    continue
+                text = str(pdf)
+                if wanted and not any(k in text for k in wanted):
+                    continue
+                out.append((pdf.resolve(), str(row.get("case_number") or ""), str(row.get("client_name") or "")))
     return out
 
 

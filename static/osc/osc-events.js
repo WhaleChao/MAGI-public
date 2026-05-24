@@ -443,6 +443,7 @@ function bindEvents() {
         ["accountingSearchBtn", loadTransactions, "帳務搜尋"],
         ["accountingRefreshBtn", loadTransactions, "帳務重新整理"],
         ["accountingPeriodBtn", applyAccountingPeriod, "帳務區間套用"],
+        ["accountingDownloadXlsxBtn", downloadAccountingTransactionsXlsx, "帳務 Excel 下載"],
         ["accountingImportPreviewBtn", previewAccountingImport, "帳務匯入預覽"],
         ["accountingImportRunBtn", runAccountingImport, "帳務匯入"],
         ["accountingBonusPreviewBtn", previewAccountingBonus, "月結獎金預覽"],

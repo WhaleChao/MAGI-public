@@ -29,6 +29,21 @@ def test_cloudstorage_homes_path_also_maps_to_smb_volume_candidate():
     assert "/Volumes/homes/home/01_案件/法扶案件/民事/測試案/卷證.pdf" in candidates
 
 
+def test_cloudstorage_homes_path_prefers_smb_before_cloud_placeholder(monkeypatch):
+    import api.case_path_mapper as mapper
+
+    mapper._ACTIVE_SMB_ROOT_CACHE["roots"] = None
+    mapper._ACTIVE_SMB_ROOT_CACHE["expires"] = 0
+    monkeypatch.setattr(mapper, "_discover_active_smb_share_roots", lambda: ["/Volumes/homes/lumi63181107"])
+
+    path = "/Users/ai/Library/CloudStorage/SynologyDrive-homes/01_案件/法扶案件/民事/測試案/卷證.pdf"
+    candidates = mapper.local_synology_path_candidates(path)
+
+    assert candidates[0] == "/Volumes/homes/lumi63181107/01_案件/法扶案件/民事/測試案/卷證.pdf"
+    assert path in candidates
+    assert candidates.index(path) > candidates.index("/Volumes/homes/lumi63181107/01_案件/法扶案件/民事/測試案/卷證.pdf")
+
+
 def test_windows_home_path_prefers_mounted_homes_account(monkeypatch):
     import api.case_path_mapper as mapper
 

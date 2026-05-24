@@ -40,6 +40,14 @@ async function loadTransactions() {
     renderTransactions();
 }
 
+function downloadAccountingTransactionsXlsx() {
+    const q = encodeURIComponent((document.getElementById("accountingQ").value || "").trim());
+    const caseNumber = encodeURIComponent((document.getElementById("accountingCaseNumber").value || "").trim());
+    const startDate = encodeURIComponent((document.getElementById("accountingStartDate").value || "").trim());
+    const endDate = encodeURIComponent((document.getElementById("accountingEndDate").value || "").trim());
+    window.open(`/api/osc/accounting/transactions/xlsx?limit=5000&q=${q}&case_number=${caseNumber}&start_date=${startDate}&end_date=${endDate}`, "_blank", "noopener");
+}
+
 function renderTransactions() {
     const body = document.getElementById("txBody");
     if (!state.transactions.length) {

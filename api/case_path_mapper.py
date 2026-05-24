@@ -544,9 +544,11 @@ def local_synology_path_candidates(path: str, cfg: Optional[dict] = None) -> lis
 
     cfg = cfg or load_path_config()
     candidates: list[str] = []
+    is_synology_cloudstorage = "/Library/CloudStorage/SynologyDrive-homes/" in s or "/SynologyDrive/homes/" in s
 
     if s.startswith("/Volumes/") or s.startswith("/Users/"):
-        candidates.append(s)
+        if not is_synology_cloudstorage:
+            candidates.append(s)
     if s.lower().startswith("smb://"):
         volume = _derive_volume_prefix_from_smb(s)
         if volume:
@@ -571,6 +573,8 @@ def local_synology_path_candidates(path: str, cfg: Optional[dict] = None) -> lis
 
     candidates.extend(_expand_from_prefix(s, _ACTIVE_SHARE_PREFIXES, active_roots))
     candidates.extend(_expand_from_prefix(s, _CLOSED_SHARE_PREFIXES, closed_roots))
+    if is_synology_cloudstorage:
+        candidates.append(s)
 
     # Office Windows paths may use the mapped drive itself as the share account,
     # e.g. Z:/<account>/01_案件/..., not only the older Z:/home/... alias.

@@ -794,6 +794,7 @@ def insert_case_todos(
                           AND ( (`todo_date`=%s) OR (%s IS NULL AND `todo_date` IS NULL) )
                           AND ( (`todo_time`=%s) OR (%s IS NULL AND `todo_time` IS NULL) )
                           AND (status IS NULL OR status='' OR status!='deleted')
+                          AND (source_file IS NULL OR source_file NOT LIKE 'gcal_import%%')
                         LIMIT 1
                         """,
                         (case_number, todo_type, todo_date, todo_date, todo_time, todo_time),
@@ -900,7 +901,9 @@ def list_unsynced_todos_with_case_info(
             WHERE (ct.google_calendar_id IS NULL OR ct.google_calendar_id = '')
               AND ct.todo_date IS NOT NULL
               AND ct.todo_date >= CURDATE()
+              AND ct.todo_date <= DATE_ADD(CURDATE(), INTERVAL 2 YEAR)
               AND (ct.status IS NULL OR ct.status = '' OR ct.status = 'pending')
+              AND (ct.source_file IS NULL OR ct.source_file = '' OR ct.source_file NOT LIKE 'gcal_import%%')
             ORDER BY ct.todo_date ASC, ct.id ASC
             LIMIT %s
             """,

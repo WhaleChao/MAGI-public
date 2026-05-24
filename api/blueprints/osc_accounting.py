@@ -5,9 +5,12 @@ Handles /api/osc/accounting/* routes: transactions, summary, defaults, recurring
 Migrated from server.py to reduce monolith size.
 """
 
-from datetime import date
+from datetime import date, datetime
+import os
+import tempfile
+from pathlib import Path
 
-from flask import Blueprint, request, jsonify, send_file
+from flask import Blueprint, request, jsonify, send_file, after_this_request
 from flask_login import login_required
 
 osc_accounting_bp = Blueprint("osc_accounting", __name__)
@@ -21,39 +24,63 @@ def _get_osc_helpers():
 
 # ── Transactions ─────────────────────────────────────────────────────
 
+def _accounting_transaction_filters(args, *, default_limit: int = 300, max_limit: int = 1000):
+    q = (args.get("q") or "").strip()
+    case_id = (args.get("case_number") or args.get("case_id") or "").strip()
+    limit = max(1, min(max_limit, int(args.get("limit") or str(default_limit))))
+    start_date = (args.get("start_date") or "").strip()
+    end_date = (args.get("end_date") or "").strip()
+    where = []
+    params = []
+    if case_id:
+        where.append("(t.case_id=%s OR t.case_id IN (SELECT id FROM cases WHERE case_number=%s))")
+        params.extend([case_id, case_id])
+    if start_date:
+        where.append("t.date >= %s")
+        params.append(start_date)
+    if end_date:
+        where.append("t.date <= %s")
+        params.append(end_date)
+    if q:
+        like = f"%{q}%"
+        where.append("(t.case_id LIKE %s OR t.type LIKE %s OR t.sub_type LIKE %s OR t.category LIKE %s OR t.description LIKE %s)")
+        params.extend([like, like, like, like, like])
+    return where, params, limit, {"q": q, "case_id": case_id, "start_date": start_date, "end_date": end_date}
+
+
+def _accounting_transactions_sql(where, *, order: str = "DESC") -> str:
+    sql = """
+        SELECT t.id, t.case_id, c.case_number, t.date, t.type, t.sub_type, t.category, t.description, t.amount
+        FROM case_transactions t
+        LEFT JOIN cases c ON c.id = t.case_id
+    """
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    direction = "ASC" if str(order).upper() == "ASC" else "DESC"
+    sql += f" ORDER BY t.date {direction}, t.id {direction} LIMIT %s"
+    return sql
+
+
+def _as_amount(value):
+    try:
+        return float(value or 0)
+    except Exception:
+        return 0.0
+
+
+def _iso_date_text(value):
+    if hasattr(value, "isoformat"):
+        return value.isoformat()
+    return str(value or "")
+
+
 @osc_accounting_bp.route("/api/osc/accounting/transactions", methods=["GET", "POST"])
 @login_required
 def osc_accounting_transactions_api():
     _osc_exec, _osc_text, _osc_log_activity, _osc_resolve_case_id, _osc_safe_int = _get_osc_helpers()
     if request.method == "GET":
-        q = (request.args.get("q") or "").strip()
-        case_id = (request.args.get("case_number") or request.args.get("case_id") or "").strip()
-        limit = max(1, min(1000, int(request.args.get("limit") or "300")))
-        start_date = (request.args.get("start_date") or "").strip()
-        end_date = (request.args.get("end_date") or "").strip()
-        where = []
-        params = []
-        if case_id:
-            where.append("(t.case_id=%s OR t.case_id IN (SELECT id FROM cases WHERE case_number=%s))")
-            params.extend([case_id, case_id])
-        if start_date:
-            where.append("t.date >= %s")
-            params.append(start_date)
-        if end_date:
-            where.append("t.date <= %s")
-            params.append(end_date)
-        if q:
-            like = f"%{q}%"
-            where.append("(t.case_id LIKE %s OR t.type LIKE %s OR t.sub_type LIKE %s OR t.category LIKE %s OR t.description LIKE %s)")
-            params.extend([like, like, like, like, like])
-        sql = """
-            SELECT t.id, t.case_id, c.case_number, t.date, t.type, t.sub_type, t.category, t.description, t.amount
-            FROM case_transactions t
-            LEFT JOIN cases c ON c.id = t.case_id
-        """
-        if where:
-            sql += " WHERE " + " AND ".join(where)
-        sql += " ORDER BY date DESC, id DESC LIMIT %s"
+        where, params, limit, _filters = _accounting_transaction_filters(request.args, default_limit=300, max_limit=1000)
+        sql = _accounting_transactions_sql(where, order="DESC")
         params.append(limit)
         rows, _ = _osc_exec(sql, tuple(params), fetch="all")
         return jsonify({"ok": True, "items": rows})
@@ -84,6 +111,110 @@ def osc_accounting_transactions_api():
         fetch="none",
     )
     return jsonify({"ok": True, "result": result})
+
+
+@osc_accounting_bp.route("/api/osc/accounting/transactions/xlsx", methods=["GET"])
+@login_required
+def osc_accounting_transactions_xlsx_api():
+    _osc_exec, _osc_text, _osc_log_activity, _osc_resolve_case_id, _osc_safe_int = _get_osc_helpers()
+    try:
+        from openpyxl import Workbook
+        from openpyxl.styles import Alignment, Font, PatternFill
+        from openpyxl.utils import get_column_letter
+    except Exception as exc:
+        return jsonify({"ok": False, "error": "openpyxl_unavailable", "message": str(exc)}), 500
+
+    try:
+        where, params, limit, filters = _accounting_transaction_filters(request.args, default_limit=5000, max_limit=20000)
+    except Exception as exc:
+        return jsonify({"ok": False, "error": "invalid_filter", "message": str(exc)}), 400
+    rows, _ = _osc_exec(_accounting_transactions_sql(where, order="ASC"), tuple([*params, limit]), fetch="all")
+    rows = rows or []
+
+    income_total = 0.0
+    expense_total = 0.0
+    for row in rows:
+        amount = abs(_as_amount(row.get("amount")))
+        tx_type = str(row.get("type") or "")
+        if "支出" in tx_type:
+            expense_total += amount
+        elif "收入" in tx_type:
+            income_total += amount
+        elif _as_amount(row.get("amount")) < 0:
+            expense_total += amount
+        else:
+            income_total += amount
+    net_total = income_total - expense_total
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "帳務明細"
+    headers = ["ID", "日期", "本所案號", "DB案件ID", "收入/支出", "細項", "分類", "說明", "金額"]
+    ws.append(headers)
+    for row in rows:
+        ws.append([
+            row.get("id"),
+            _iso_date_text(row.get("date")),
+            row.get("case_number") or "",
+            row.get("case_id") or "",
+            row.get("type") or "",
+            row.get("sub_type") or "",
+            row.get("category") or "",
+            row.get("description") or "",
+            _as_amount(row.get("amount")),
+        ])
+
+    summary = wb.create_sheet("摘要")
+    summary.append(["項目", "內容"])
+    summary_rows = [
+        ("匯出時間", datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+        ("起日", filters.get("start_date") or "未指定"),
+        ("迄日", filters.get("end_date") or "未指定"),
+        ("案件編號", filters.get("case_id") or "全部"),
+        ("關鍵字", filters.get("q") or "無"),
+        ("筆數", len(rows)),
+        ("收入合計", income_total),
+        ("支出合計", expense_total),
+        ("淨額", net_total),
+        ("匯出上限", limit),
+    ]
+    for item in summary_rows:
+        summary.append(list(item))
+
+    for sheet in wb.worksheets:
+        for cell in sheet[1]:
+            cell.font = Font(bold=True, color="FFFFFF")
+            cell.fill = PatternFill("solid", fgColor="1F4E78")
+            cell.alignment = Alignment(horizontal="center")
+        sheet.freeze_panes = "A2"
+        for col in range(1, sheet.max_column + 1):
+            letter = get_column_letter(col)
+            width = 12
+            for cell in sheet[letter]:
+                width = max(width, min(48, len(str(cell.value or "")) + 2))
+                if isinstance(cell.value, (int, float)) and sheet.title != "摘要":
+                    cell.number_format = '#,##0;(#,##0);-'
+                elif isinstance(cell.value, (int, float)) and sheet.title == "摘要":
+                    cell.number_format = '#,##0.##;(#,##0.##);-'
+            sheet.column_dimensions[letter].width = width
+
+    tmp = tempfile.NamedTemporaryFile(prefix="magi_accounting_transactions_", suffix=".xlsx", delete=False)
+    tmp.close()
+    path = Path(tmp.name)
+    wb.save(path)
+
+    @after_this_request
+    def _cleanup(response):
+        try:
+            os.unlink(path)
+        except Exception:
+            pass
+        return response
+
+    start = filters.get("start_date") or "all"
+    end = filters.get("end_date") or "all"
+    filename = f"MAGI帳務明細_{start}_{end}.xlsx"
+    return send_file(path, as_attachment=True, download_name=filename)
 
 
 @osc_accounting_bp.route("/api/osc/accounting/transactions/<int:row_id>", methods=["GET", "PUT", "DELETE"])

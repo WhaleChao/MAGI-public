@@ -180,7 +180,11 @@ def _make_todo_event(todo: dict) -> dict:
         event["end"] = {"dateTime": end, "timeZone": "Asia/Taipei"}
     else:
         event["start"] = {"date": due_str}
-        event["end"] = {"date": due_str}
+        try:
+            end_str = (datetime.fromisoformat(str(due_str)) + timedelta(days=1)).date().isoformat()
+        except Exception:
+            end_str = due_str
+        event["end"] = {"date": end_str}
     return event
 
 
