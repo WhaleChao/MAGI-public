@@ -409,6 +409,9 @@ restart_launch_agent() {
 bootstrap_omlx_main() {
     local label="$1"
     local plist="$HOME/Library/LaunchAgents/com.magi.omlx.plist"
+    # 主模型必須明確解除 Disabled 狀態；這台電腦排程重開後，
+    # launchd 可能保留 disabled bit，單純 bootstrap/kickstart 會失敗。
+    run_launchctl_logged "$label enable-main" launchctl enable "gui/$UID_NUM/com.magi.omlx" || true
     start_launch_agent "com.magi.omlx" "$plist" "$label"
 }
 
