@@ -607,7 +607,7 @@ def _osc_clear_case_root_outage() -> None:
     try:
         _osc_case_root_outage_path().unlink()
     except FileNotFoundError:
-        pass
+        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 609, exc_info=True)
     except Exception:
         _log.debug("silent-catch clear case root outage", exc_info=True)
 
@@ -948,7 +948,7 @@ def osc_meta_api():
             "active_port": fs.get("active_port", 0),
         }
     except Exception:
-        pass
+        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 950, exc_info=True)
 
     try:
         conn, cfg = _osc_web_connect()
@@ -2059,7 +2059,7 @@ def _osc_tree_signature(path: str) -> dict:
             try:
                 size += int(os.path.getsize(os.path.join(root, filename)))
             except OSError:
-                pass
+                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 2061, exc_info=True)
     return {"exists": True, "files": files, "dirs": dirs, "size": size}
 
 
@@ -2083,7 +2083,7 @@ def _osc_copytree_for_nas(src: str, dst: str) -> None:
                 st = os.stat(src_file)
                 os.utime(dst_file, (st.st_atime, st.st_mtime))
             except OSError:
-                pass
+                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 2085, exc_info=True)
 
 
 def _osc_should_avoid_ditto_for_archive(src: str, dst: str) -> bool:
@@ -2141,7 +2141,7 @@ def _osc_copy_to_temp_and_swap(src: str, dst: str, *, force: bool) -> dict:
                 st = os.stat(src)
                 os.utime(tmp_file, (st.st_atime, st.st_mtime))
             except OSError:
-                pass
+                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 2143, exc_info=True)
             tmp_dst = tmp_file
     except subprocess.TimeoutExpired as e:
         shutil.rmtree(tmp_dst, ignore_errors=True)
@@ -2184,7 +2184,7 @@ def _osc_copy_to_temp_and_swap(src: str, dst: str, *, force: bool) -> dict:
                 shutil.move(replaced_backup, dst)
                 replaced_backup = ""
             except Exception:
-                pass
+                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 2186, exc_info=True)
         shutil.rmtree(tmp_dst, ignore_errors=True)
         return {"ok": False, "reason": "swap_failed", "error": str(e), "replaced_backup": replaced_backup}
 
@@ -2231,7 +2231,7 @@ def _osc_copy_file_for_nas(src_file: str, dst_file: str, *, strict_hash: bool = 
         st = os.stat(src_file)
         os.utime(dst_file, (st.st_atime, st.st_mtime))
     except OSError:
-        pass
+        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 2233, exc_info=True)
     same_size = os.path.getsize(src_file) == os.path.getsize(dst_file)
     same_hash = (not strict_hash) or _osc_sha256_file(src_file) == _osc_sha256_file(dst_file)
     if not same_size or not same_hash:
@@ -2349,7 +2349,7 @@ def _osc_cleanup_residual_archive_sources(source_candidates, primary_src: str, d
                 cleaned.append({"path": candidate, "ok": True, "reason": "already_under_archive"})
                 continue
         except ValueError:
-            pass
+            logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 2351, exc_info=True)
         if os.path.isdir(candidate):
             merged = _osc_merge_existing_archive_source(candidate, dst)
             cleaned.append({"path": candidate, "ok": bool(merged.get("ok")), "reason": merged.get("reason") or "", "detail": merged})
@@ -4339,7 +4339,7 @@ def _osc_template_folder_candidates(raw_path: str) -> list[str]:
         try:
             candidates.extend(_osc_local_path_candidates(seed))
         except Exception:
-            pass
+            logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 4341, exc_info=True)
         norm = _osc_norm_path(seed)
         if norm:
             candidates.append(norm)
@@ -4651,7 +4651,7 @@ def _osc_stage_file_with_retry(local_file: str, *, max_attempts: int | None = No
                 try:
                     os.close(fd)
                 except OSError:
-                    pass
+                    logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 4653, exc_info=True)
                 if e.errno in (11, 35) and _osc_copy_with_system_cp(local_file, tmp_path):
                     return tmp_path
                 raise
@@ -4666,7 +4666,7 @@ def _osc_stage_file_with_retry(local_file: str, *, max_attempts: int | None = No
                 try:
                     os.remove(tmp_path)
                 except OSError:
-                    pass
+                    logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 4668, exc_info=True)
             if e.errno in (11, 35) and attempt < max_attempts - 1:
                 time.sleep(0.25 * (2 ** attempt))
                 continue
@@ -4677,7 +4677,7 @@ def _osc_stage_file_with_retry(local_file: str, *, max_attempts: int | None = No
                 try:
                     os.remove(tmp_path)
                 except OSError:
-                    pass
+                    logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 4679, exc_info=True)
             raise
     if last_exc:
         raise last_exc
@@ -4688,9 +4688,9 @@ def _osc_cleanup_file_once(path: str) -> None:
     try:
         os.remove(path)
     except FileNotFoundError:
-        pass
+        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 4690, exc_info=True)
     except OSError:
-        pass
+        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 4692, exc_info=True)
 
 
 def _osc_content_disposition(filename: str, *, inline: bool) -> str:
@@ -4890,7 +4890,7 @@ def osc_file_content_api():
             st = os.stat(chosen)
             resp.headers["ETag"] = f'"{int(st.st_mtime)}-{st.st_size}"'
         except OSError:
-            pass
+            logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 4892, exc_info=True)
         return resp
     except Exception as e:
         if staged_file:
@@ -7294,7 +7294,7 @@ def osc_cases_export_csv_api():
             if hasattr(v, "isoformat"):
                 return v.isoformat()
         except Exception:
-            pass
+            logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 7296, exc_info=True)
         return str(v)
 
     buf = io.StringIO()
@@ -8635,7 +8635,7 @@ def _osc_build_quotation_pdf(row: dict) -> bytes:
             if not subtotal:
                 subtotal = float(qty or 0) * float(unit_price or 0)
         except Exception:
-            pass
+            logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 8637, exc_info=True)
         try:
             qty_text = f"{int(float(qty))} {unit}"
         except Exception:
@@ -8766,7 +8766,7 @@ def _osc_build_address_label(
             try:
                 return ImageFont.truetype(font_path, size, index=0)
             except Exception:
-                pass
+                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 8768, exc_info=True)
         return ImageFont.load_default()
 
     font_large = _load_font(28)

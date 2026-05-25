@@ -47,7 +47,7 @@ def _safe_print(*args, **kwargs) -> None:
     try:
         print(*args, **kwargs)
     except BrokenPipeError:
-        pass
+        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 49, exc_info=True)
 
 
 def _safe_log_callback(callback, message: str) -> None:
@@ -56,7 +56,7 @@ def _safe_log_callback(callback, message: str) -> None:
     try:
         callback(message)
     except BrokenPipeError:
-        pass
+        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 58, exc_info=True)
 
 
 # Shared browser helper (P2-5: consolidate duplicate _dismiss_password_expiry_alert)
@@ -334,7 +334,7 @@ class CaptchaSolver:
                 try:
                     import ddddocr
                 except ImportError:
-                    pass
+                    logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 336, exc_info=True)
 
             if ddddocr:
                 try:
@@ -376,7 +376,7 @@ class CaptchaSolver:
                 try:
                     from rapidocr_onnxruntime import RapidOCR
                 except ImportError:
-                    pass
+                    logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 378, exc_info=True)
 
             if RapidOCR:
                 try:
@@ -962,7 +962,7 @@ class CourtRecordDownloader:
             try:
                 driver.quit()
             except Exception:
-                pass
+                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 964, exc_info=True)
             self.driver = None
 
     def __del__(self):
@@ -1018,7 +1018,7 @@ class CourtRecordDownloader:
                     try:
                         self.driver.add_cookie(c)
                     except Exception:
-                        pass
+                        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 1020, exc_info=True)
             self.log(f"  ℹ️ Session cookies 已注入（{len(cookies)} 筆），驗證中...")
             # 導航到已登入頁面確認（15s timeout 避免 stale cookies 造成無限 hang）
             _nav_ok = False
@@ -1037,7 +1037,7 @@ class CourtRecordDownloader:
                     if _ctx is not None and hasattr(_ctx, "clear_cookies"):
                         _ctx.clear_cookies()
                 except Exception:
-                    pass
+                    logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 1039, exc_info=True)
                 return False
             time.sleep(2)
             if self._has_logout_link():
@@ -1052,9 +1052,9 @@ class CourtRecordDownloader:
                     try:
                         self.driver.delete_all_cookies()
                     except Exception:
-                        pass
+                        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 1054, exc_info=True)
             except Exception:
-                pass
+                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 1056, exc_info=True)
             return False
         except Exception as _e:
             self.log(f"  ⚠️ 還原 session cookies 失敗（非致命）: {_e}")
@@ -1284,7 +1284,7 @@ class CourtRecordDownloader:
                             _snippet = _html[:2000].replace("\n", " ")
                             self.log(f"  HTML snippet: {_snippet}")
                         except Exception:
-                            pass
+                            logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 1286, exc_info=True)
                         try:
                             import time as _time
                             _dbg_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), ".runtime", "debug_screenshots")
@@ -1530,7 +1530,7 @@ class CourtRecordDownloader:
                         if "驗證碼" in page_text or "captcha" in page_text.lower():
                             _page_requires_captcha = True
                     except Exception:
-                        pass
+                        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 1532, exc_info=True)
                     if _page_requires_captcha and not need_captcha:
                         need_captcha = True
                         self.log("  ℹ️ 頁面要求驗證碼，下一輪啟用 OCR")
@@ -1707,7 +1707,7 @@ class CourtRecordDownloader:
                                 _f.write(captcha_img.screenshot_as_png)
                             self.log(f"  📸 驗證碼圖片已存: {_debug_path}")
                         except Exception:
-                            pass
+                            logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 1709, exc_info=True)
 
                     # Melchior 交叉驗證（與 file_review 一致）
                     melchior_text = ""
@@ -1720,7 +1720,7 @@ class CourtRecordDownloader:
                             if melchior_text:
                                 self.log(f"  Melchior 第 {n + 1} 次，melchior_len={len(melchior_text)}")
                         except Exception:
-                            pass
+                            logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 1722, exc_info=True)
 
                     if len(local_text) >= expected_len and len(melchior_text) >= expected_len:
                         if local_text == melchior_text:
@@ -1777,7 +1777,7 @@ class CourtRecordDownloader:
                     _ci_type = captcha_input.get_attribute("type") or ""
                     self.log(f"  [diag] captcha_input: id={_ci_id!r} name={_ci_name!r} type={_ci_type!r}")
                 except Exception:
-                    pass
+                    logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 1779, exc_info=True)
                 # ★ 優先用 Playwright native fill()（最可靠，直接設 value + 觸發事件）
                 try:
                     _pw_el = getattr(captcha_input, "_el", None)
@@ -1798,7 +1798,7 @@ class CourtRecordDownloader:
                         captcha_input.click()
                         self._random_delay(0.1, 0.3)
                     except Exception:
-                        pass
+                        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 1800, exc_info=True)
                     captcha_input.clear()
                     self._random_delay(0.1, 0.3)
                     for ch in _target:
@@ -1810,7 +1810,7 @@ class CourtRecordDownloader:
                             "arguments[0].dispatchEvent(new Event('change',{bubbles:true}));",
                             captcha_input)
                     except Exception:
-                        pass
+                        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 1812, exc_info=True)
                 # ★ 儲存驗證碼文字，供 pre-submit 保護機制補填用
                 self._last_captcha_text = _target
                 return True
@@ -1876,7 +1876,7 @@ class CourtRecordDownloader:
                 try:
                     os.unlink(tmp_path)
                 except Exception:
-                    pass
+                    logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 1878, exc_info=True)
 
     def get_cases_from_db(self) -> List[CourtCase]:
         """從資料庫取得案件"""
@@ -2180,7 +2180,7 @@ class CourtRecordDownloader:
                     "error": err_msg,
                 })
             except Exception:
-                pass
+                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 2182, exc_info=True)
             return downloaded_files
 
     def _handle_alert(self) -> str:
@@ -2223,7 +2223,7 @@ class CourtRecordDownloader:
             if match:
                 return int(match.group(1))
         except Exception:
-            pass
+            logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 2225, exc_info=True)
         return fallback_index
 
     def _download_pdf_via_query_form_post(self, datamap_index: int) -> Optional[str]:
@@ -4369,7 +4369,7 @@ class TranscriptAutoDownloader:
             except Exception as e:
                 # 這裡若失敗則繼續執行移入，不阻擋流程
                 # self.log(f"  ⚠️ 檢查重複失敗 (跳過): {e}")
-                pass
+                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 4369, exc_info=True)
 
             # 4. 先移動檔案到筆錄資料夾 (保持原始檔名)
             import shutil

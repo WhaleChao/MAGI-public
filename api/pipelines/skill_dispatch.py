@@ -793,7 +793,7 @@ def dispatch_accounting(message, user_id="", platform=""):
         try:
             case_id = _osc_resolve_case_id(client_or_case)
         except Exception:
-            pass
+            logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 795, exc_info=True)
 
     # Use first case if still not found
     if not case_id and client_or_case:
@@ -806,7 +806,7 @@ def dispatch_accounting(message, user_id="", platform=""):
             if row:
                 case_id = row.get("id")
         except Exception:
-            pass
+            logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 808, exc_info=True)
 
     if not case_id:
         return "找不到案件「%s」，請先建案或直接使用案號。" % (client_or_case or "")
@@ -888,7 +888,7 @@ def dispatch_quotation(message, user_id="", platform=""):
             if row:
                 case_id = row.get("id")
         except Exception:
-            pass
+            logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 890, exc_info=True)
 
         row_id = "quot-%s" % _uuid.uuid4().hex[:8]
         today = _date.today().strftime("%Y-%m-%d")
@@ -1096,7 +1096,7 @@ def dispatch_ai_draft(message, user_id="", platform=""):
                 (like, like), fetch="one",
             )
         except Exception:
-            pass
+            logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 1098, exc_info=True)
 
     _case_no = case_number or (case_row.get("case_number") if case_row else "")
     _client = (case_row.get("client_name") if case_row else "") or ""
@@ -1141,7 +1141,7 @@ def dispatch_ai_draft(message, user_id="", platform=""):
         _hd = json.loads(_h.read().decode())
         _omlx_ready = int(_hd.get("engine_pool", {}).get("loaded_count", 0)) > 0
     except Exception:
-        pass
+        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 1143, exc_info=True)
     if _omlx_ready:
         try:
             draft_text = _call_llm(_omlx_url, _omlx_model, _omlx_timeout)

@@ -90,7 +90,7 @@ def gcal_status():
         info["email"] = token_data.get("client_id", "")
         info["expires_at"] = token_data.get("expiry", "")
     except Exception:
-        pass
+        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 92, exc_info=True)
     info["calendar_id"] = _get_setting("gcal_calendar_id") or "primary"
     info["import_calendar_ids"] = _get_setting("gcal_import_calendar_ids") or "全部可讀日曆"
     return jsonify(info)

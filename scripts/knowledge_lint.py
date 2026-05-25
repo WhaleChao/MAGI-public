@@ -1029,7 +1029,15 @@ def check_orphan_notes() -> Dict:
         # Generated diagnostics are useful audit artifacts but poor retrieval
         # corpus material; requiring vector rows for every daily report creates
         # recurring false orphan warnings and pollutes legal retrieval.
-        return str(rel).startswith("MAGI/品質報告/")
+        rel = str(rel)
+        if rel.startswith("MAGI/品質報告/"):
+            return True
+        # 30_Index is the vault navigation layer, not source knowledge.  Treating
+        # it as corpus text makes every case index page look like a missing
+        # vector and pushes irrelevant navigation snippets into legal retrieval.
+        if rel.startswith("30_Index/"):
+            return True
+        return False
 
     notes_in_index = {
         rel for rel in set(idx.get("notes", {}).keys())

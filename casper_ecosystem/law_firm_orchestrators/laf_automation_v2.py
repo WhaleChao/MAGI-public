@@ -68,7 +68,7 @@ def _safe_print(*args, **kwargs) -> None:
     try:
         print(*args, **kwargs)
     except BrokenPipeError:
-        pass
+        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 70, exc_info=True)
 
 
 def _safe_log_callback(callback, message: str) -> None:
@@ -77,7 +77,7 @@ def _safe_log_callback(callback, message: str) -> None:
     try:
         callback(message)
     except BrokenPipeError:
-        pass
+        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 79, exc_info=True)
 
 
 def _safe_logger(callback=None):
@@ -1066,7 +1066,7 @@ class CaptchaSolver:
                 try:
                     from rapidocr_onnxruntime import RapidOCR
                 except ImportError:
-                    pass
+                    logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 1068, exc_info=True)
 
             if RapidOCR:
                 try:
@@ -1396,7 +1396,7 @@ class LAFWebAutomation:
             try:
                 driver.quit()
             except Exception:
-                pass
+                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 1398, exc_info=True)
             self.driver = None
 
     def __del__(self):
@@ -1727,7 +1727,7 @@ class LAFWebAutomation:
             try:
                 pw._page.wait_for_selector('img#kaptchaImage, img[src*="captcha"]', timeout=8000, state='attached')
             except Exception:
-                pass
+                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 1729, exc_info=True)
             candidates = []
             for frame in pw._page.frames:
                 try:
@@ -1856,7 +1856,7 @@ class LAFWebAutomation:
                     if src:
                         candidates.append(str(src))
                 except Exception:
-                    pass
+                    logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 1858, exc_info=True)
                 candidates.extend([
                     _urljoin(self.LOGIN_URL, "/lafcsp/captcha-image"),
                     _urljoin(f"{self.base_url.rstrip('/')}/", "lafcsp/captcha-image"),
@@ -2452,7 +2452,7 @@ class LAFWebAutomation:
                         self.log("  ✅ 密碼提醒頁已略過。")
                         return True
                 except Exception:
-                    pass
+                    logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 2454, exc_info=True)
             return False
         except Exception as e:
             self.log(f"  ⚠️ 密碼提醒頁處理失敗: {e}")
@@ -2613,14 +2613,14 @@ class LAFWebAutomation:
                         try:
                             _pw_page.evaluate("() => { if(typeof checkForm==='function') checkForm(); }")
                         except Exception:
-                            pass
+                            logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 2615, exc_info=True)
                         time.sleep(0.5)
                         # 如果還在登入頁，改 click loginLink
                         if 'toMainPage' not in (_pw_page.url or '') and 'processLogin' not in (_pw_page.url or ''):
                             try:
                                 _pw_page.click('#loginLink, a#loginLink', timeout=3000)
                             except Exception:
-                                pass
+                                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 2622, exc_info=True)
                         # 等待登入結果（最多 25 秒）
                         _login_ok_pw = False
                         for _wi in range(25):
@@ -2646,7 +2646,7 @@ class LAFWebAutomation:
                                     _login_ok_pw = True
                                     break
                             except Exception:
-                                pass
+                                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 2648, exc_info=True)
                         # 若 loop 結束後仍在 processLogin，再做一次內容確認（portal 重定向有時超過 25s）
                         if not _login_ok_pw:
                             try:
@@ -2658,7 +2658,7 @@ class LAFWebAutomation:
                                     elif ("contentFrame" in _src and "footerFrame" in _src) or ("toPublishmentList" in _src):
                                         _login_ok_pw = True
                             except Exception:
-                                pass
+                                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 2660, exc_info=True)
                         if not _login_ok_pw and self._handle_password_reminder_page():
                             _login_ok_pw = True
                         self.log(f"  🔗 當前 URL: {_pw_page.url}")
@@ -2710,12 +2710,12 @@ class LAFWebAutomation:
                             try:
                                 el._el.clear()
                             except Exception:
-                                pass
+                                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 2712, exc_info=True)
                             try:
                                 el._el.type(v)
                                 return
                             except Exception:
-                                pass
+                                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 2717, exc_info=True)
                     # Selenium 路徑
                     try:
                         self.driver.execute_script(
@@ -2808,7 +2808,7 @@ class LAFWebAutomation:
                     try:
                         self.driver._last_dialog = None
                     except Exception:
-                        pass
+                        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 2810, exc_info=True)
                     self.driver.execute_script("checkForm();")
                 except Exception:
                     try:
@@ -2816,7 +2816,7 @@ class LAFWebAutomation:
                         try:
                             self.driver._last_dialog = None
                         except Exception:
-                            pass
+                            logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 2818, exc_info=True)
                         login_btn.click()
                     except Exception:
                         try:
@@ -2825,19 +2825,19 @@ class LAFWebAutomation:
                                 try:
                                     self.driver._last_dialog = None
                                 except Exception:
-                                    pass
+                                    logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 2827, exc_info=True)
                                 self.driver._page.click('#loginLink, a#loginLink')
                             else:
                                 try:
                                     self.driver._last_dialog = None
                                 except Exception:
-                                    pass
+                                    logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 2833, exc_info=True)
                                 password_input.send_keys('\n')
                         except Exception:
                             try:
                                 self.driver._last_dialog = None
                             except Exception:
-                                pass
+                                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 2839, exc_info=True)
                             password_input.send_keys('\n')
 
                 # 等待 URL 離開 processLogin（最多 12 秒）
@@ -3176,12 +3176,12 @@ class LAFWebAutomation:
                                         try:
                                             _pg.close()
                                         except Exception:
-                                            pass
+                                            logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 3178, exc_info=True)
                                         break
                             if popup_url:
                                 break
                     except Exception:
-                        pass
+                        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 3183, exc_info=True)
                     _t2.sleep(0.5)
 
             # ── Strategy 3: HTTP download via Playwright session (no re-auth needed) ──
@@ -3693,7 +3693,7 @@ return (() => {
             if hit:
                 return True
         except Exception:
-            pass
+            logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 3695, exc_info=True)
 
         for sel in (selectors or []):
             if not sel:
@@ -3704,7 +3704,7 @@ return (() => {
                     if self.driver.fill_by_selector(sel, v):
                         return True
             except Exception:
-                pass
+                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 3706, exc_info=True)
             # Strategy 2: ElementHandle-based (accept any non-empty value)
             try:
                 els = self.driver.find_elements(By.CSS_SELECTOR, sel)
@@ -3888,7 +3888,7 @@ return (() => {
                         while _f.read(1 << 20):
                             pass
                 except Exception:
-                    pass
+                    logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 3890, exc_info=True)
             _t = _th.Thread(target=_read_drain, daemon=True)
             _t.start()
         except Exception:
@@ -3918,16 +3918,16 @@ return (() => {
                         import subprocess as _sp
                         _sp.run(["brctl", "download", path], capture_output=True, timeout=5)
                     except Exception:
-                        pass
+                        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 3920, exc_info=True)
             except OSError:
-                pass
+                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 3922, exc_info=True)
         # Timeout — log final state
         try:
             st3 = os.stat(path)
             final_on_disk = int(getattr(st3, "st_blocks", 0) or 0) * 512
             self.log(f"  ☁️ ⚠️ hydrate 逾時: {basename} (disk={final_on_disk}/{size} bytes，將仍嘗試上傳)")
         except Exception:
-            pass
+            logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 3929, exc_info=True)
         return False
 
     def _upload_supporting_files(self, files: List[str], workflow: str = "") -> Dict[str, Any]:
@@ -3980,7 +3980,7 @@ return (() => {
                 if bool(result):
                     return True
             except Exception:
-                pass
+                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 3982, exc_info=True)
             try:
                 pw_page = getattr(self.driver, "_page", None)
                 if pw_page is not None:
@@ -4003,7 +4003,7 @@ return (() => {
                         except Exception:
                             continue
             except Exception:
-                pass
+                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 4005, exc_info=True)
             return False
 
         def _open_upload_panel() -> bool:
@@ -4094,7 +4094,7 @@ return (() => {
                                 except Exception:
                                     continue
                 except Exception:
-                    pass
+                    logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 4096, exc_info=True)
                 time.sleep(0.2)
             return None
 
@@ -4557,7 +4557,7 @@ return (() => {
                     self._restore_workflow_form_modal(workflow, close_upload_dialog=True)
                     time.sleep(0.5)
                 except Exception:
-                    pass
+                    logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 4559, exc_info=True)
 
             except Exception as e:
                 result["failed"].append({"path": p, "error": str(e)})
@@ -4692,7 +4692,7 @@ return null;
                             if inp:
                                 break
                 except Exception:
-                    pass
+                    logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 4694, exc_info=True)
                 if inp:
                     break
                 time.sleep(0.3)
@@ -5434,7 +5434,7 @@ return null;
                     try:
                         self.driver._last_dialog = None
                     except Exception:
-                        pass
+                        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 5436, exc_info=True)
                     self.driver.execute_script("toPrevious();")
                 except Exception as e:
                     self.log(f"  ⚠️ toPrevious() exception: {e}")
@@ -5449,7 +5449,7 @@ return null;
                     alert.accept()
                     time.sleep(2.0)
                 except NoAlertPresentException:
-                    pass
+                    logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 5451, exc_info=True)
                 except Exception:
                     logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 3909, exc_info=True)
 
@@ -5813,7 +5813,7 @@ return null;
             try:
                 self.driver._last_dialog = None
             except Exception:
-                pass
+                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 5815, exc_info=True)
             self.driver.execute_script("doFinish();")
         except Exception as e:
             self.log(f"  ❌ doFinish() 呼叫失敗：{e}")
@@ -5885,7 +5885,7 @@ return null;
                 try:
                     self.driver._last_dialog = None
                 except Exception:
-                    pass
+                    logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 5887, exc_info=True)
                 self.driver.execute_script("doTempSave();")
                 save_attempted = True
                 self.log("  💾 doTempSave() called")
@@ -5893,7 +5893,7 @@ return null;
                 try:
                     self.driver._last_dialog = None
                 except Exception:
-                    pass
+                    logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 5895, exc_info=True)
                 save_attempted = self._click_button_by_text(["存檔", "暫存", "保存", "儲存"])
         except Exception as e:
             self.log(f"  ⚠️ doTempSave 失敗：{e}")
@@ -6013,7 +6013,7 @@ return null;
                 try:
                     self.driver._last_dialog = None
                 except Exception:
-                    pass
+                    logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 6015, exc_info=True)
                 self.driver.execute_script("doTempSave();")
                 save_attempted = True
                 self.log("  💾 doTempSave() called (with tempSaveFlag fix)")
@@ -6025,7 +6025,7 @@ return null;
                         try:
                             self.driver._last_dialog = None
                         except Exception:
-                            pass
+                            logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 6027, exc_info=True)
                         btn.click()
                         save_attempted = True
                         self.log("  💾 save_btn clicked")
@@ -6035,7 +6035,7 @@ return null;
                     try:
                         self.driver._last_dialog = None
                     except Exception:
-                        pass
+                        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 6037, exc_info=True)
                     save_attempted = self._click_button_by_text(["存檔", "暫存", "保存", "儲存"])
         except Exception as e:
             self.log(f"  ⚠️ doTempSave exception: {e}")
@@ -6331,7 +6331,7 @@ return null;
             self.driver.save_screenshot(_sspath)
             self.log(f"📸 診斷截圖: {_sspath}")
         except Exception:
-            pass
+            logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 6333, exc_info=True)
 
         searched = False
         # 優先點 queryBtn（showList 會走 form submit）
@@ -6482,20 +6482,20 @@ return null;
                 self.driver.execute_script(_onclick_js)
                 _clicked = True
             except Exception:
-                pass
+                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 6484, exc_info=True)
         # Strategy B: invoke element.click() via JS (triggers native click with onclick)
         if not _clicked:
             try:
                 self.driver.execute_script("arguments[0].click();", btn)
                 _clicked = True
             except Exception:
-                pass
+                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 6491, exc_info=True)
         # Strategy C: Playwright ElementHandle.click() (unreliable for legacy onclick)
         if not _clicked:
             try:
                 btn.click()
             except Exception:
-                pass
+                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 6497, exc_info=True)
 
         token = (meta.get("expected_token") or "").strip()
         if token:
@@ -6532,7 +6532,7 @@ return null;
                     if _entered:
                         break
                 except Exception:
-                    pass
+                    logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 6534, exc_info=True)
                 time.sleep(0.3)
             if not _entered:
                 self.log(f"⚠️ 未偵測到 {token} 入口（可能是 modal），改以欄位偵測繼續")
@@ -10737,7 +10737,7 @@ class LAFAutomationManager:
                 if _runtime_deleted > 0:
                     self.log(f"  ✅ 已清理 .runtime/debug_screenshots/ 中 {_runtime_deleted} 個舊 debug 檔")
             except Exception:
-                pass
+                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 10739, exc_info=True)
 
             download_folder = self.web_automation.download_folder
             if not download_folder or not os.path.exists(download_folder):

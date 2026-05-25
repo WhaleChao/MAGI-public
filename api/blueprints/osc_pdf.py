@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 import math
 import json
@@ -105,7 +106,7 @@ def _infer_case_from_path(path: Path) -> dict[str, str]:
             case_number = str(row.get("case_number") or case_number or "").strip()
             client_name = str(row.get("client_name") or client_name or "").strip()
     except Exception:
-        pass
+        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 107, exc_info=True)
     return {"case_number": case_number, "client_name": client_name}
 
 
@@ -144,7 +145,7 @@ def _load_todo_patterns() -> dict[str, list[dict[str, Any]]]:
                         patterns[todo_type].append(item)
             return patterns
     except Exception:
-        pass
+        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 146, exc_info=True)
     return defaults
 
 
@@ -565,7 +566,7 @@ def _insert_todos_single_machine(
             if conn:
                 conn.close()
         except Exception:
-            pass
+            logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 567, exc_info=True)
 
 
 def _insert_calendar_event(event: dict[str, Any], *, allow_duplicates: bool) -> str:

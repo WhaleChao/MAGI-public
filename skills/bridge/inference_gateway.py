@@ -469,7 +469,7 @@ class InferenceGateway:
                 return gate.is_reachable("balthasar")
             except Exception as exc:
                 # gate 自己爆 → 降級走 legacy，不讓使用者受影響
-                pass
+                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 470, exc_info=True)
         # --- end NEW ---
         # 以下為原有 legacy 程式碼（不動）
 
@@ -1069,10 +1069,11 @@ class InferenceGateway:
         heavy_opt_in = bool(kwargs.get("heavy", False))
         if not heavy_opt_in:
             try:
-                from flask import g as _flask_g
-                heavy_opt_in = bool(getattr(_flask_g, "heavy_opt_in", False))
+                from flask import g as _flask_g, has_app_context as _has_app_context
+                if _has_app_context():
+                    heavy_opt_in = bool(getattr(_flask_g, "heavy_opt_in", False))
             except Exception:
-                pass
+                logging.getLogger(__name__).debug("flask heavy flag unavailable", exc_info=True)
         # 2026-04-24：case-insensitive（@HEAVY / @Heavy 都接受）；全形 ＠ 已在上游 sanitize 轉半形
         _prompt_lower_head = prompt.lstrip().lower() if isinstance(prompt, str) else ""
         if not heavy_opt_in and (_prompt_lower_head.startswith("@heavy ") or _prompt_lower_head.startswith("@重型 ")):
@@ -1096,7 +1097,7 @@ class InferenceGateway:
                     _summary = decision_summary(smart_decision) if callable(decision_summary) else smart_decision.selected_model
                     logger.info("inference_chat smart_model_router: %s", _summary)
                 except Exception:
-                    pass
+                    logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 1098, exc_info=True)
 
         # ── @heavy fast path：跳過 oMLX，直接走 NIM 405B（Plan A, 2026-04-19 P1-2 修） ──
         # 使用者明確 @heavy 表示要雲端重型模型；oMLX 常在高負載時吐「忙碌中」假 success，
@@ -1259,7 +1260,7 @@ class InferenceGateway:
                     if codex_r.get("success") and codex_text:
                         return self._result(
                             success=True,
-                            route="openclaw_codex",
+                            route="codex_direct",
                             degraded=True,
                             response=codex_text,
                             model=str(codex_r.get("model") or "codex"),
@@ -1279,10 +1280,11 @@ class InferenceGateway:
         # 也支援從 Flask request context 取 heavy flag（由 tools_api.py 設）
         if not heavy_opt_in:
             try:
-                from flask import g as _flask_g
-                heavy_opt_in = bool(getattr(_flask_g, "heavy_opt_in", False))
+                from flask import g as _flask_g, has_app_context as _has_app_context
+                if _has_app_context():
+                    heavy_opt_in = bool(getattr(_flask_g, "heavy_opt_in", False))
             except Exception:
-                pass
+                logging.getLogger(__name__).debug("flask heavy flag unavailable", exc_info=True)
 
         nim_allowed = (
             nim_enabled
@@ -1462,7 +1464,7 @@ class InferenceGateway:
                 if codex_res.get("success") and codex_text:
                     return self._result(
                         success=True,
-                        route="openclaw_codex",
+                        route="codex_direct",
                         degraded=False,
                         analysis=codex_text,
                         model=str(codex_res.get("model") or "gpt-5.4"),
@@ -1470,9 +1472,9 @@ class InferenceGateway:
                         task_type=task_type,
                     )
                 if codex_res.get("error"):
-                    errors.append(f"openclaw_codex:{codex_res.get('error')}")
+                    errors.append(f"codex_direct:{codex_res.get('error')}")
         except Exception as codex_err:
-            errors.append(f"openclaw_codex:exception:{codex_err}")
+            errors.append(f"codex_direct:exception:{codex_err}")
 
         # Try oMLX vision (Gemma-3 multimodal) with OCR context
         omlx_model = _MODEL_ROSTER.get(task_type, {}).get("omlx", "")

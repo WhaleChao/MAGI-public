@@ -298,7 +298,7 @@ def _stage_file_with_retry(local_file: str, *, max_attempts: int | None = None) 
                 try:
                     os.close(fd)
                 except OSError:
-                    pass
+                    logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 300, exc_info=True)
                 if e.errno in (11, 35) and _copy_with_system_cp(local_file, tmp_path):
                     return tmp_path
                 raise
@@ -313,7 +313,7 @@ def _stage_file_with_retry(local_file: str, *, max_attempts: int | None = None) 
                 try:
                     os.remove(tmp_path)
                 except OSError:
-                    pass
+                    logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 315, exc_info=True)
             if e.errno in (11, 35) and attempt < max_attempts - 1:
                 time.sleep(0.25 * (2 ** attempt))
                 continue
@@ -324,7 +324,7 @@ def _stage_file_with_retry(local_file: str, *, max_attempts: int | None = None) 
                 try:
                     os.remove(tmp_path)
                 except OSError:
-                    pass
+                    logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 326, exc_info=True)
             raise
     if last_exc:
         raise last_exc
@@ -341,16 +341,16 @@ def _read_file_with_retry(local_file: str, *, max_attempts: int = 7) -> bytes:
         try:
             os.remove(staged)
         except OSError:
-            pass
+            logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 343, exc_info=True)
 
 
 def _cleanup_file_once(path: str) -> None:
     try:
         os.remove(path)
     except FileNotFoundError:
-        pass
+        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 350, exc_info=True)
     except OSError:
-        pass
+        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 352, exc_info=True)
 
 
 def _share_cached_file_for_row(row: dict) -> str:
@@ -578,7 +578,7 @@ def _summarize_dir(dir_path: str, *, max_scan: int = 200) -> dict:
             except OSError:
                 continue
     except OSError:
-        pass
+        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 580, exc_info=True)
     return {"file_count": files, "folder_count": folders, "total_size": total}
 
 
@@ -634,7 +634,7 @@ def _root_child_dirs(path_str: str, *, limit: int = 240) -> list[dict]:
                         has_subdirs = True
                         break
             except OSError:
-                pass
+                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 636, exc_info=True)
             children.append({
                 "name": name,
                 "relative_path": _osc_relpath_under(base_real, full),
@@ -791,7 +791,7 @@ def osc_files_upload_multi_api():
             try:
                 os.remove(dest)
             except OSError:
-                pass
+                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 793, exc_info=True)
             results.append({"ok": False, "name": name, "error": "blocked_content_signature",
                             "detail": sniff})
             continue
@@ -917,7 +917,7 @@ def osc_files_upload_chunked_api():
             try:
                 os.remove(dest)
             except OSError:
-                pass
+                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 919, exc_info=True)
             return jsonify({"ok": False, "error": "blocked_content_signature", "detail": sniff}), 415
     except OSError as e:
         return jsonify({"ok": False, "error": f"finalize_failed: {e}"}), 500
@@ -1134,7 +1134,7 @@ def osc_folders_tree_api():
                         has_subdirs = True
                         break
             except OSError:
-                pass
+                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 1136, exc_info=True)
             children.append({
                 "name": name,
                 "relative_path": _osc_relpath_under(base_real, full),

@@ -109,17 +109,17 @@ def _parse_subprocess_json(stdout_text: str):
             try:
                 return json.loads(block)
             except Exception:
-                pass
+                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 111, exc_info=True)
     try:
         return json.loads(stdout_text)
     except Exception:
-        pass
+        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 115, exc_info=True)
     m = _RE_JSON_TAIL.search(stdout_text)
     if m:
         try:
             return json.loads(m.group(1))
         except Exception:
-            pass
+            logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 121, exc_info=True)
     return None
 _RE_PAYMENT_DISMISS = re.compile(r"^(.+?)\s*(?:已經繳費了|已經繳費|繳費完畢了|已繳費|繳費完畢|繳費了)\s*$")
 _RE_CASE_NUMBER = re.compile(r"(\d{2,3})\s*(?:年度?)?\s*([^\d\s年月日]+)\s*(?:字)?\s*(?:第)?\s*(\d+)\s*(?:號)?")
@@ -234,7 +234,7 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
             if VISION_AVAILABLE:
                 model_line += "\nOCR 引擎：`macOS Vision`（零 GPU）"
         except Exception:
-            pass
+            logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 236, exc_info=True)
         gpu_line = ""
         if rt.get("gpu_used_mb") is not None and rt.get("gpu_total_mb") is not None:
             gpu_line = f"\nMelchior GPU：{float(rt['gpu_used_mb'])/1024.0:.2f}/{float(rt['gpu_total_mb'])/1024.0:.2f} GB"
@@ -1254,13 +1254,13 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
                 try:
                     orch._notify(reply, topic_key=f"laf_{action_type}" if action_type == "condition" else "laf_closing")
                 except Exception:
-                    pass
+                    logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 1256, exc_info=True)
             except Exception as e:
                 reply = f"❌ 法扶{label}批次失敗：{type(e).__name__}: {e}"
                 try:
                     orch._notify(reply, topic_key=f"laf_{action_type}" if action_type == "condition" else "laf_closing")
                 except Exception:
-                    pass
+                    logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 1262, exc_info=True)
 
         import threading as _th
         _th.Thread(

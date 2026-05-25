@@ -459,7 +459,8 @@ class LAFNotifier:
             finally:
                 for fh in opened:
                     try: fh.close()
-                    except Exception: pass
+                    except Exception:
+                        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 462, exc_info=True)
             if resp.status_code in (200, 201):
                 logger.info("✅ Discord bot %d 個檔案已上傳到 channel %s", len(valid_files), channel_id)
                 return True
@@ -489,7 +490,8 @@ class LAFNotifier:
             finally:
                 for fh in opened:
                     try: fh.close()
-                    except Exception: pass
+                    except Exception:
+                        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 492, exc_info=True)
             if resp.status_code in (200, 204):
                 logger.info("✅ Discord webhook %d 個檔案已上傳", len(valid_files))
                 return True

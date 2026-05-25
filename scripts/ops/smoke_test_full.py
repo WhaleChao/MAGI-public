@@ -665,7 +665,7 @@ def test_judicial_api_pipeline_health():
         return False, (proc.stderr or proc.stdout)[:120]
     status = data.get("status")
     backlog = data.get("backlog") if isinstance(data.get("backlog"), dict) else {}
-    ok_statuses = {"PIPELINE_HEALTHY", "BACKLOG_WARNING", "BACKLOG_CATCHING_UP"}
+    ok_statuses = {"PIPELINE_HEALTHY", "BACKLOG_WARNING", "BACKLOG_CATCHING_UP", "PULL_STALE_CLEAR"}
     ok = proc.returncode in {0, 10} and status in ok_statuses
     interpretation = data.get("backlog_interpretation") if isinstance(data.get("backlog_interpretation"), dict) else {}
     if interpretation:

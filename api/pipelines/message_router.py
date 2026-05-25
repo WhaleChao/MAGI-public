@@ -148,7 +148,7 @@ def handle_gibberish_report(orch, user_id, message: str, platform: str = "") -> 
             from api.events.sinks import rotate_jsonl
             rotate_jsonl(_GIBBERISH_LOG_PATH)
         except Exception:
-            pass
+            logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 150, exc_info=True)
     except Exception as e:
         logger.warning(f"亂碼回報寫入失敗: {e}")
         return "⚠️ 記錄失敗，請稍後重試。"
@@ -233,7 +233,7 @@ def quick_fixed_reply(orch, message: str, role: str = "user") -> Optional[str]:
                 if r.status_code == 200:
                     models = [str(x.get("id") or "") for x in (r.json().get("data") or []) if x.get("id")]
             except Exception:
-                pass
+                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 235, exc_info=True)
             model_line = ", ".join(models[:3]) if models else "oMLX 8080 未回應"
 
             status = "正常" if (
@@ -272,7 +272,7 @@ def quick_fixed_reply(orch, message: str, role: str = "user") -> Optional[str]:
             if _r.status_code == 200:
                 omlx_models = [m.get("id", "") for m in _r.json().get("data", [])]
         except Exception:
-            pass
+            logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 274, exc_info=True)
         active = ", ".join(omlx_models[:4]) if omlx_models else "oMLX 離線"
         return (
             f"推理引擎：oMLX (port 8080)\n"
@@ -411,7 +411,7 @@ def run_nl_route(orch, user_id: str, message: str, platform: str, role: str) -> 
                 severity="warning",
             )
         except Exception:
-            pass
+            logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 413, exc_info=True)
     elif role != "admin" and intent not in user_safe_intents:
         return True, orch._postprocess_router_reply("⛔ 這個自然語句命令涉及系統流程，僅管理員可執行。", platform)
 

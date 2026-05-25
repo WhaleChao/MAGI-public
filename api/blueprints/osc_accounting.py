@@ -5,6 +5,7 @@ Handles /api/osc/accounting/* routes: transactions, summary, defaults, recurring
 Migrated from server.py to reduce monolith size.
 """
 
+import logging
 from datetime import date, datetime
 import os
 import tempfile
@@ -208,7 +209,7 @@ def osc_accounting_transactions_xlsx_api():
         try:
             os.unlink(path)
         except Exception:
-            pass
+            logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 210, exc_info=True)
         return response
 
     start = filters.get("start_date") or "all"

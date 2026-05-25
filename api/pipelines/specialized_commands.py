@@ -182,7 +182,7 @@ def run_translate_file_command(orch, user_id, message: str) -> str:
                     path = t
                     break
         except Exception:
-            pass
+            logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 184, exc_info=True)
 
     if not path or not os.path.exists(path):
         return f"❌ 找不到檔案：`{path or raw}`"

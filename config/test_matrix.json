@@ -165,10 +165,22 @@
           ],
           "timeout_sec": 240
         },
-        {
-          "id": "business_modules_live",
-          "name": "LAF/file-review/transcript live check",
-          "command": [
+      {
+        "id": "operational_hardening",
+        "name": "Operational hardening audit",
+        "command": [
+          "{python}",
+          "scripts/ops/audit_operational_hardening.py",
+          "--fail-on-red",
+          "--json-out",
+          ".runtime/operational_hardening_audit_latest.json"
+        ],
+        "timeout_sec": 180
+      },
+      {
+        "id": "business_modules_live",
+        "name": "LAF/file-review/transcript live check",
+        "command": [
             "{python}",
             "scripts/ops/business_module_live_check.py"
           ],
@@ -241,10 +253,22 @@
           ],
           "timeout_sec": 60
         },
-        {
-          "id": "channels_strict",
-          "name": "Messaging channel smoke strict",
-          "command": [
+      {
+        "id": "operational_hardening",
+        "name": "Operational hardening release gate",
+        "command": [
+          "{python}",
+          "scripts/ops/audit_operational_hardening.py",
+          "--fail-on-red",
+          "--json-out",
+          ".runtime/operational_hardening_release_latest.json"
+        ],
+        "timeout_sec": 180
+      },
+      {
+        "id": "channels_strict",
+        "name": "Messaging channel smoke strict",
+        "command": [
             "{python}",
             "scripts/ops/smoke_three_channels.py",
             "--strict-warn"

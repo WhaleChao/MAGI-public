@@ -38,6 +38,12 @@ MAGI_ROOT = Path(os.environ.get("MAGI_ROOT", "/Users/ai/Desktop/MAGI_v2")).resol
 if str(MAGI_ROOT) not in sys.path:
     sys.path.insert(0, str(MAGI_ROOT))
 
+try:
+    from dotenv import load_dotenv
+    load_dotenv(MAGI_ROOT / ".env")
+except Exception:
+    pass
+
 from api.platforms import runtime_dir  # noqa: E402
 
 # ---- 設定 --------------------------------------------------------------
@@ -48,10 +54,18 @@ OMLX_CACHE_KEEP_DAYS = int(os.environ.get("MAGI_DISK_OMLX_KEEP_DAYS", "7"))
 OMLX_CACHE_MAX_DELETE_BYTES = int(float(os.environ.get("MAGI_DISK_OMLX_MAX_DELETE_GB", "20")) * 1024 * 1024 * 1024)
 OMLX_CACHE_CAP_GB = float(os.environ.get("MAGI_DISK_OMLX_CACHE_CAP_GB", "8"))
 OMLX_CACHE_LOW_WATER_CAP_GB = float(os.environ.get("MAGI_DISK_OMLX_CACHE_LOW_WATER_CAP_GB", "5"))
+OMLX_CACHE_CORE_ONLY_CAP_GB = float(os.environ.get("MAGI_DISK_OMLX_CACHE_CORE_ONLY_CAP_GB", "3"))
 OMLX_CACHE_CRITICAL_CAP_GB = float(os.environ.get("MAGI_DISK_OMLX_CACHE_CRITICAL_CAP_GB", "3"))
 OMLX_CACHE_LOW_WATER_FREE_GB = float(os.environ.get("MAGI_DISK_OMLX_CACHE_LOW_WATER_FREE_GB", "50"))
+OMLX_CACHE_CORE_ONLY_FREE_GB = float(os.environ.get("MAGI_DISK_OMLX_CACHE_CORE_ONLY_FREE_GB", "30"))
 OMLX_CACHE_CRITICAL_FREE_GB = float(os.environ.get("MAGI_DISK_OMLX_CACHE_CRITICAL_FREE_GB", "15"))
 OMLX_CACHE_RECENT_GRACE_MINUTES = int(os.environ.get("MAGI_DISK_OMLX_CACHE_RECENT_GRACE_MINUTES", "60"))
+APP_CACHE_CLEANUP_ENABLE = os.environ.get(
+    "MAGI_DISK_APP_CACHE_ENABLE", "1"
+).strip().lower() in {"1", "true", "on", "yes"}
+APP_CACHE_LOW_WATER_FREE_GB = float(os.environ.get("MAGI_DISK_APP_CACHE_LOW_WATER_FREE_GB", "30"))
+APP_CACHE_MAX_DELETE_GB = float(os.environ.get("MAGI_DISK_APP_CACHE_MAX_DELETE_GB", "8"))
+APP_CACHE_RECENT_GRACE_MINUTES = int(os.environ.get("MAGI_DISK_APP_CACHE_RECENT_GRACE_MINUTES", "10"))
 DISTILL_REJECTED_CLEANUP_ENABLE = os.environ.get(
     "MAGI_DISK_DISTILL_REJECTED_CLEANUP_ENABLE", "1"
 ).strip().lower() in {"1", "true", "on", "yes"}
@@ -248,6 +262,8 @@ def _omlx_cache_cap_bytes(free_gb: float) -> int:
     cap_gb = OMLX_CACHE_CAP_GB
     if 0 <= free_gb < OMLX_CACHE_CRITICAL_FREE_GB:
         cap_gb = OMLX_CACHE_CRITICAL_CAP_GB
+    elif 0 <= free_gb < OMLX_CACHE_CORE_ONLY_FREE_GB:
+        cap_gb = OMLX_CACHE_CORE_ONLY_CAP_GB
     elif 0 <= free_gb < OMLX_CACHE_LOW_WATER_FREE_GB:
         cap_gb = OMLX_CACHE_LOW_WATER_CAP_GB
     if cap_gb <= 0:
@@ -280,9 +296,17 @@ def cleanup_omlx_cache(dry_run: bool) -> List[Dict[str, Any]]:
     cutoff = now - OMLX_CACHE_KEEP_DAYS * 86400
     recent_grace_cutoff = now - OMLX_CACHE_RECENT_GRACE_MINUTES * 60
     free_gb = _disk_free_gb(MAGI_ROOT)
-    cache_cap_bytes = _omlx_cache_cap_bytes(free_gb)
+    low_water_aggressive = 0 <= free_gb < 30
+    roots = _omlx_cache_roots(home)
+    total_cache_cap_bytes = _omlx_cache_cap_bytes(free_gb)
+    cache_cap_bytes = total_cache_cap_bytes
+    if low_water_aggressive and roots:
+        # Under core-only disk pressure, the model cache budget is global, not
+        # per model.  Splitting the cap prevents "each cache is under 5 GB" from
+        # leaving 10+ GB of combined caches that keep MAGI throttled.
+        cache_cap_bytes = max(int(512 * 1024 * 1024), total_cache_cap_bytes // max(1, len(roots)))
     actions: List[Dict[str, Any]] = []
-    for cache_root in _omlx_cache_roots(home):
+    for cache_root in roots:
         total_candidate_bytes = 0
         deleted_bytes = 0
         deleted_count = 0
@@ -313,10 +337,12 @@ def cleanup_omlx_cache(dry_run: bool) -> List[Dict[str, Any]]:
         if cache_cap_bytes > 0 and projected_bytes > cache_cap_bytes:
             for info in sorted(all_files, key=lambda x: (x["last_used"], x["path"].name)):
                 path = info["path"]
-                if path in selected_by_path or info["recent_write"]:
+                if path in selected_by_path:
+                    continue
+                if info["recent_write"] and not low_water_aggressive:
                     continue
                 info = dict(info)
-                info["reason"] = "cap"
+                info["reason"] = "cap_low_water" if info["recent_write"] else "cap"
                 selected_by_path[path] = info
                 projected_bytes -= int(info["size"])
                 if projected_bytes <= cache_cap_bytes:
@@ -341,8 +367,10 @@ def cleanup_omlx_cache(dry_run: bool) -> List[Dict[str, Any]]:
             "total_bytes": total_bytes,
             "free_gb": round(free_gb, 2),
             "cache_cap_bytes": cache_cap_bytes,
+            "total_cache_cap_bytes": total_cache_cap_bytes,
             "keep_days": OMLX_CACHE_KEEP_DAYS,
             "recent_grace_minutes": OMLX_CACHE_RECENT_GRACE_MINUTES,
+            "low_water_aggressive": low_water_aggressive,
             "candidate_files": len(candidates),
             "candidate_bytes": total_candidate_bytes,
             "deleted_files": deleted_count,
@@ -365,6 +393,115 @@ def cleanup_omlx_cache(dry_run: bool) -> List[Dict[str, Any]]:
         )
         actions.append(info)
     return actions
+
+
+# ---- App cache low-water cleanup ---------------------------------------
+
+def cleanup_app_caches(dry_run: bool) -> List[Dict[str, Any]]:
+    """Remove rebuildable GUI/app caches only when disk is below low-water."""
+    home = Path(os.environ.get("HOME", "/Users/ai"))
+    free_gb = _disk_free_gb(MAGI_ROOT)
+    if (not APP_CACHE_CLEANUP_ENABLE) or free_gb >= APP_CACHE_LOW_WATER_FREE_GB:
+        return [{
+            "enabled": APP_CACHE_CLEANUP_ENABLE,
+            "skipped": True,
+            "reason": "disk_above_low_water" if APP_CACHE_CLEANUP_ENABLE else "disabled",
+            "free_gb": round(free_gb, 2),
+        }]
+
+    roots = [
+        home / ".codex" / ".tmp",
+        home / "Library" / "Caches",
+        home / "Library" / "Application Support" / "discord" / "Cache",
+        home / "Library" / "Application Support" / "discord" / "Code Cache",
+        home / "Library" / "Application Support" / "Google" / "Chrome" / "Default" / "Cache",
+        home / "Library" / "Application Support" / "Google" / "Chrome" / "Default" / "Code Cache",
+        home / "Library" / "Application Support" / "Google" / "Chrome" / "Default" / "Service Worker" / "CacheStorage",
+        home / "Library" / "Application Support" / "Google" / "Chrome" / "extensions_crx_cache",
+        home / "Library" / "Application Support" / "Google" / "Chrome" / "component_crx_cache",
+        home / "Library" / "Application Support" / "Google" / "GoogleUpdater" / "crx_cache",
+        home / "Library" / "Application Support" / "Google" / "Chrome" / "Crashpad" / "completed",
+        home / "Library" / "Application Support" / "Microsoft Edge" / "Default" / "Cache",
+        home / "Library" / "Application Support" / "Microsoft Edge" / "Default" / "Code Cache",
+        home / "Library" / "Application Support" / "Microsoft Edge" / "Default" / "Service Worker" / "CacheStorage",
+        home / "Library" / "Application Support" / "Microsoft Edge" / "extensions_crx_cache",
+        home / "Library" / "Application Support" / "Microsoft Edge" / "component_crx_cache",
+        home / "Library" / "Application Support" / "Claude" / "Cache",
+        home / "Library" / "Application Support" / "Claude" / "Code Cache",
+    ]
+    now = time.time()
+    recent_cutoff = now - APP_CACHE_RECENT_GRACE_MINUTES * 60
+    budget = int(max(0.0, APP_CACHE_MAX_DELETE_GB) * 1024 * 1024 * 1024)
+    deleted_bytes = 0
+    deleted_files = 0
+    removed_dirs = 0
+    candidates = 0
+
+    def _safe_unlink(path: Path, size: int) -> bool:
+        nonlocal deleted_bytes, deleted_files
+        if budget > 0 and deleted_bytes + size > budget:
+            return False
+        if dry_run:
+            deleted_bytes += size
+            deleted_files += 1
+            return True
+        try:
+            path.unlink()
+            deleted_bytes += size
+            deleted_files += 1
+            return True
+        except OSError:
+            return False
+
+    for root in roots:
+        if not root.exists():
+            continue
+        if root.is_file():
+            try:
+                st = root.stat()
+            except OSError:
+                continue
+            if st.st_mtime < recent_cutoff:
+                candidates += 1
+                _safe_unlink(root, int(st.st_size))
+            continue
+        if not root.is_dir():
+            continue
+        for dirpath, dirnames, filenames in os.walk(root, topdown=False):
+            if ".git" in Path(dirpath).parts:
+                continue
+            for name in filenames:
+                f = Path(dirpath) / name
+                try:
+                    st = f.stat()
+                except OSError:
+                    continue
+                if st.st_mtime >= recent_cutoff:
+                    continue
+                candidates += 1
+                _safe_unlink(f, int(st.st_size))
+            if not dry_run:
+                for dirname in list(dirnames):
+                    d = Path(dirpath) / dirname
+                    try:
+                        d.rmdir()
+                        removed_dirs += 1
+                    except OSError:
+                        pass
+
+    _log(
+        f"app caches: {'would free' if dry_run else 'freed'} "
+        f"{deleted_bytes / 1024 / 1024:.2f} MB ({candidates} candidates)"
+    )
+    return [{
+        "enabled": True,
+        "free_gb": round(free_gb, 2),
+        "candidate_files": candidates,
+        "deleted_files": deleted_files,
+        "deleted_bytes": deleted_bytes,
+        "removed_dirs": removed_dirs,
+        "dry_run": dry_run,
+    }]
 
 
 # ---- rejected Gemma distill merged models ------------------------------
@@ -1955,6 +2092,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         "dry_run": dry_run,
         "metrics": cleanup_metrics(dry_run),
         "omlx_cache": cleanup_omlx_cache(dry_run),
+        "app_caches": cleanup_app_caches(dry_run),
         "rejected_distill_models": cleanup_rejected_distill_models(dry_run),
         "tmp": cleanup_tmp(dry_run),
         "db_backups": cleanup_db_backups(dry_run),
@@ -1983,6 +2121,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     # stdout 也直接印一份簡要摘要
     total_metrics = len(summary["metrics"])
     total_cache_candidates = sum(a.get("candidate_files", 0) for a in summary["omlx_cache"])
+    total_app_cache_candidates = sum(a.get("candidate_files", 0) for a in summary.get("app_caches") or [])
     total_distill_candidates = sum(a.get("candidate_dirs", 0) for a in summary.get("rejected_distill_models") or [])
     tmp_entry = summary["tmp"][0] if summary["tmp"] else {}
     total_compress_candidates = len(summary.get("compressed_artifacts") or [])
@@ -1994,6 +2133,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     _log(
         f"summary: metrics_rotated={total_metrics}, "
         f"omlx_cache_candidates={total_cache_candidates}, "
+        f"app_cache_candidates={total_app_cache_candidates}, "
         f"rejected_distill_candidates={total_distill_candidates}, "
         f"tmp_candidates={tmp_entry.get('candidate_count', 0)}, "
         f"compress_candidates={total_compress_candidates}, "

@@ -219,6 +219,29 @@ _estimate_magi_memory_gb() {
     '
 }
 
+_process_hygiene_python() {
+    local root py
+    root=$(_magi_root)
+    py="$root/venv/bin/python3"
+    if [ ! -x "$py" ]; then
+        py="$root/venv/bin/python"
+    fi
+    if [ ! -x "$py" ]; then
+        py="$root/.venv/bin/python"
+    fi
+    if [ ! -x "$py" ]; then
+        py="python3"
+    fi
+    echo "$py"
+}
+
+_magi_zombie_count() {
+    local root py
+    root=$(_magi_root)
+    py=$(_process_hygiene_python)
+    "$py" "$root/skills/process-hygiene/action.py" --task scan 2>/dev/null | "$py" -c 'import json,sys; print(json.load(sys.stdin).get("zombies",{}).get("count",0))' 2>/dev/null || echo "?"
+}
+
 cmd_status() {
     echo "═══ MAGI System Status ═══"
     echo ""
@@ -305,8 +328,10 @@ cmd_status() {
 
     # Zombie check
     local zombies
-    zombies=$(ps aux | awk '$8=="Z"' | wc -l | tr -d ' ')
-    if [ "$zombies" -gt 0 ]; then
+    zombies=$(_magi_zombie_count)
+    if [ "$zombies" = "?" ]; then
+        printf "Zombies: ${YELLOW}?${NC} (process-hygiene unavailable)\n"
+    elif [ "$zombies" -gt 0 ]; then
         printf "Zombies: ${RED}%s zombie process(es)${NC}\n" "$zombies"
     else
         printf "Zombies: ${GREEN}0${NC}\n"
@@ -433,57 +458,10 @@ cmd_menubar() {
 }
 
 cmd_zombie() {
-    local zombie_info
-    zombie_info=$(ps -eo pid=,ppid=,stat=,command= | awk '$3=="Z" || $3=="Z+"')
-    if [ -z "$zombie_info" ]; then
-        printf "${GREEN}No zombie processes.${NC}\n"
-        return
-    fi
-
-    echo "Zombie processes found:"
-    echo "$zombie_info"
-    echo ""
-
-    local parent_pids
-    parent_pids=$(echo "$zombie_info" | awk '{print $2}' | sort -u)
-
-    echo "Sending SIGCHLD to parent processes..."
-    for ppid in $parent_pids; do
-        if [ "$ppid" = "1" ]; then
-            continue
-        fi
-        kill -SIGCHLD "$ppid" 2>/dev/null || true
-    done
-
-    sleep 1
-
-    local remaining
-    remaining=$(ps -eo stat= | grep -c '^Z' 2>/dev/null || echo "0")
-    if [ "$remaining" -eq 0 ]; then
-        printf "${GREEN}All zombies reaped successfully.${NC}\n"
-        return
-    fi
-
-    printf "${YELLOW}%s zombie(s) remain — killing unresponsive parents...${NC}\n" "$remaining"
-    zombie_info=$(ps -eo pid=,ppid=,stat=,command= | awk '$3=="Z" || $3=="Z+"')
-    parent_pids=$(echo "$zombie_info" | awk '{print $2}' | sort -u)
-    for ppid in $parent_pids; do
-        if [ "$ppid" = "1" ]; then
-            continue
-        fi
-        local pname
-        pname=$(ps -p "$ppid" -o command= 2>/dev/null || echo "unknown")
-        printf "  Killing parent PID %s (%s)\n" "$ppid" "$pname"
-        kill -TERM "$ppid" 2>/dev/null || true
-    done
-    sleep 2
-
-    remaining=$(ps -eo stat= | grep -c '^Z' 2>/dev/null || echo "0")
-    if [ "$remaining" -eq 0 ]; then
-        printf "${GREEN}All zombies cleaned (parents terminated).${NC}\n"
-    else
-        printf "${RED}%s zombie(s) still remain (parent may be launchd/system).${NC}\n" "$remaining"
-    fi
+    local root py
+    root=$(_magi_root)
+    py=$(_process_hygiene_python)
+    "$py" "$root/skills/process-hygiene/action.py" --task zombies
 }
 
 case "${1:-status}" in

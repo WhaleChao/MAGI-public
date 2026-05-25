@@ -596,22 +596,6 @@ def _load_code_config() -> dict:
         except Exception:
             continue
 
-    # OpenClaw workspace may hold dedicated official Judicial API credentials
-    # even when MAGI's main config only contains ezlawyer record credentials.
-    ai_cfg_path = (
-        os.environ.get("OPENCLAW_AI_CONFIG_PATH")
-        or os.path.expanduser("~/.openclaw/workspace/ai_config.json")
-    )
-    try:
-        if os.path.exists(ai_cfg_path):
-            with open(ai_cfg_path, "r", encoding="utf-8") as f:
-                ai_cfg = json.load(f) or {}
-            if isinstance(ai_cfg, dict):
-                for key in ("judicial_api_user", "judicial_api_pass"):
-                    if (not str(cfg.get(key) or "").strip()) and str(ai_cfg.get(key) or "").strip():
-                        cfg[key] = str(ai_cfg.get(key) or "").strip()
-    except Exception as _e:
-        logger.debug("ai_cfg fallback skipped: %s", _e)
     return cfg
 
 

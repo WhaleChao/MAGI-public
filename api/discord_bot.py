@@ -686,7 +686,7 @@ async def bg_scheduler_loop():
                                             source="discord_bot.cron_scheduler",
                                         )
                                     except Exception:
-                                        pass
+                                        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 688, exc_info=True)
                                     logger.warning("⚠️ Shell job %s exited %d: %s", _job_id, _sr.returncode, _err_text)
                                 else:
                                     logger.info(

@@ -470,7 +470,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                 try:
                     self._portal_retry_lock_path.unlink()
                 except Exception:
-                    pass
+                    logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 472, exc_info=True)
                 # Retry once
                 try:
                     fd = os.open(str(self._portal_retry_lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
@@ -478,7 +478,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                         handle.write(f"{os.getpid()}\n{datetime.now().isoformat()}\n")
                     return True
                 except Exception:
-                    pass
+                    logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 480, exc_info=True)
             return False
         except Exception as e:
             logger.warning("Failed to acquire portal retry lock: %s", e)
@@ -772,7 +772,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                             from api.discord_channel_router import send as _dc_send
                             _dc_send("admin", f"🚨 LAF portal retry loop 連續 {_consecutive_fails} 次失敗，請檢查: {str(e)[:200]}")
                         except Exception:
-                            pass
+                            logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 774, exc_info=True)
                 # Exponential backoff on failures, capped at 1 hour
                 _sleep = min(every_sec * (2 ** min(_consecutive_fails, 4)), 3600) if _consecutive_fails else every_sec
                 time.sleep(_sleep)
@@ -895,7 +895,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                         if _age_hours > 90 * 24:
                             continue
                     except (ValueError, TypeError):
-                        pass
+                        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 897, exc_info=True)
                 needs_queue = (not docs.get("opening_notice_files")) and (not docs.get("poa_files"))
                 queue_reason = "startup_backfill_missing_opening_docs"
             if not needs_queue:
@@ -1554,7 +1554,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                             if _refreshed:
                                 db_path = self._to_local_case_folder(str(_refreshed.get("folder_path") or "")) or db_path
                         except Exception:
-                            pass
+                            logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 1556, exc_info=True)
             except Exception as _rec_e:
                 logger.warning("Placeholder reconcile failed: %s", _rec_e)
         else:
@@ -2079,7 +2079,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                                 # 修正既有 bug（2026-04-18 commit 0eb584fd 寫錯）：notify→notify_admin, topic→topic_key
                                 self.notifier.notify_admin(_reminder, topic_key='laf_progress')
                             except Exception:
-                                pass
+                                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 2081, exc_info=True)
                         return
                 except Exception as _g2e:
                     logger.debug("progress Gate 2 check failed: %s", _g2e)
@@ -2099,7 +2099,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                 try:
                     self.notifier.notify_admin(msg)
                 except Exception:
-                    pass
+                    logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 2101, exc_info=True)
             return
 
         # 2. NAS folder
@@ -2121,7 +2121,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                 try:
                     self.notifier.notify_admin(msg)
                 except Exception:
-                    pass
+                    logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 2123, exc_info=True)
             return
 
         # 3. 揀選 PDF
@@ -2142,7 +2142,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                 try:
                     self.notifier.notify_admin(msg)
                 except Exception:
-                    pass
+                    logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 2144, exc_info=True)
             return
 
         # 4. Phase 1 draft — spawn laf_orchestrator.py --mode portal-draft directly.
@@ -2216,7 +2216,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                 try:
                     self.notifier.notify_admin(_fail_msg)
                 except Exception:
-                    pass
+                    logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 2218, exc_info=True)
             return
 
         # 5. Register confirm_token and notify laf_progress channel
@@ -2532,7 +2532,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                 if _r:
                     _folder_str = str(_r.get("folder_path") or "").replace("\\", "/")
             except Exception:
-                pass
+                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 2534, exc_info=True)
         _is_criminal_case = "/刑事/" in _folder_str
         # 資料夾名稱含「-偵查-」才是偵查階段（如 2026-0002-[當事人S]-偵查-過失致死）
         _is_investigation = "-偵查-" in _folder_str
@@ -4132,7 +4132,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         try:
             os.makedirs(runtime_dir, exist_ok=True)
         except Exception:
-            pass
+            logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 4134, exc_info=True)
         diag_path = os.path.join(runtime_dir, "laf_go_live_missing_diagnostics.jsonl")
         # 取實際 listdir 結果（含每個檔案的 size + mtime）
         listdir_entries = []
@@ -4170,14 +4170,14 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
             with open(diag_path, "a", encoding="utf-8") as f:
                 f.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
         except OSError:
-            pass
+            logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 4172, exc_info=True)
         try:
             logger.warning(
                 "[LAF go_live missing_required_docs] mode=%s missing=%s gl_dir=%s entries=%d",
                 mode, missing, gl_dir, len(listdir_entries),
             )
         except Exception:
-            pass
+            logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 4179, exc_info=True)
 
     @staticmethod
     def _classify_doc_file(fn: str, full_path: str, out: dict) -> None:
@@ -4305,7 +4305,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                     )
                     return cand
         except Exception:
-            pass
+            logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 4307, exc_info=True)
         return ""
 
     def _to_pdf_for_portal(self, src_path: str, out_dir: str) -> str:
@@ -5226,7 +5226,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                     result["noop"] = True
                     result["message"] = "portal_already_has_draft_in_progress"
             except Exception:
-                pass
+                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 5228, exc_info=True)
             if not ok:
                 result["error"] = "portal_draft_failed"
                 result["detail"] = str(getattr(self, "_last_portal_error", "") or "")
@@ -5251,7 +5251,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                 automation = self._get_automation()
                 detected_zero_fields = list(getattr(automation, 'last_zero_fields', []) or [])
             except Exception:
-                pass
+                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 5253, exc_info=True)
             result = {
                 "ok": bool(ok),
                 "action": act,
@@ -5563,11 +5563,11 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                                     _has_real_files = True
                                     break
                             except OSError:
-                                pass
+                                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 5565, exc_info=True)
                             if _has_real_files:
                                 _review_count_from_folder += 1
                     except OSError:
-                        pass
+                        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 5569, exc_info=True)
                     if _review_count_from_folder > 0:
                         _review_dir_used = _review_dir_name
                         break
@@ -5840,7 +5840,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
             from api.case_display import normalize_person_name
             s = normalize_person_name(s)
         except Exception:
-            pass
+            logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 5842, exc_info=True)
         for orig, repl in LAFOrchestrator._VARIANT_MAP.items():
             s = s.replace(orig, repl)
         return s
@@ -7159,12 +7159,12 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                                         _has_real_files = True
                                         break
                                 except OSError:
-                                    pass
+                                    logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 7161, exc_info=True)
                                 if _has_real_files:
                                     _review_count_from_folder += 1
                                     _review_dates_from_folder.append(str(_sub)[:10])
                         except OSError:
-                            pass
+                            logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 7166, exc_info=True)
                         if _review_count_from_folder > 0:
                             _review_dir_used = _review_dir_name
                             break
@@ -7626,7 +7626,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                                     f"請關閉相關應用後手動 rename。"
                                 )
                             except Exception:
-                                pass
+                                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 7628, exc_info=True)
                         else:
                             try:
                                 os.rename(old_local, new_local)
@@ -7660,7 +7660,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                     f"📁 資料夾: {new_basename}"
                 )
             except Exception:
-                pass
+                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 7662, exc_info=True)
         return True
 
     def _generate_case_number(self) -> str:
@@ -7925,7 +7925,7 @@ def _acquire_portal_lock(wait_sec: int = 900):
     try:
         os.makedirs(_lock_dir, exist_ok=True)
     except Exception:
-        pass
+        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 7927, exc_info=True)
     _lock_path = os.path.join(_lock_dir, "laf_portal.lock")
     try:
         fd = open(_lock_path, 'w')
@@ -7944,7 +7944,7 @@ def _acquire_portal_lock(wait_sec: int = 900):
                 fd.write(f"{os.getpid()} {datetime.now().isoformat()}\n")
                 fd.flush()
             except Exception:
-                pass
+                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 7946, exc_info=True)
             _PORTAL_LOCK_FD = fd
             return fd, True
         except BlockingIOError:
@@ -7956,7 +7956,7 @@ def _acquire_portal_lock(wait_sec: int = 900):
     try:
         fd.close()
     except Exception:
-        pass
+        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 7958, exc_info=True)
     return None, False
 
 
@@ -7970,11 +7970,11 @@ def _release_portal_lock():
         import fcntl as _fcntl
         _fcntl.flock(fd.fileno(), _fcntl.LOCK_UN)
     except Exception:
-        pass
+        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 7972, exc_info=True)
     try:
         fd.close()
     except Exception:
-        pass
+        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 7976, exc_info=True)
 
 
 def main():
@@ -8116,7 +8116,7 @@ def main():
         try:
             orchestrator.close()
         except Exception:
-            pass
+            logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 8118, exc_info=True)
         import sys as _sys; _sys.stdout.flush(); os._exit(0)
 
     elif args.mode == "portal-submit":
@@ -8189,7 +8189,7 @@ def main():
                         try:
                             orchestrator._go_live_dedup.discard(laf_no)
                         except Exception:
-                            pass
+                            logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 8191, exc_info=True)
                         logger.info("🔁 Redo go-live 開始: %s (%s) %s",
                                     row.get("case_number"), laf_no, row.get("client_name"))
                         orchestrator.handle_go_live(case_info)

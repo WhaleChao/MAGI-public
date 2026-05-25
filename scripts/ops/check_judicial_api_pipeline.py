@@ -36,7 +36,6 @@ DEFAULT_PROCESS_STATE = DEFAULT_CACHE_ROOT / "process_state.json"
 DEFAULT_RAW_ROOT = DEFAULT_CACHE_ROOT / "raw"
 DEFAULT_NORMALIZED_ROOT = DEFAULT_CACHE_ROOT / "normalized"
 DEFAULT_CONFIG_PATH = MAGI_ROOT / "json" / "config.json"
-DEFAULT_WORKSPACE_AI_CONFIG_PATH = Path.home() / ".openclaw" / "workspace" / "ai_config.json"
 
 
 def env_path(name: str, default: Path) -> Path:
@@ -95,19 +94,12 @@ def rounded(value: Optional[float]) -> Optional[float]:
 def detect_credentials() -> dict:
     sources = []
     config_path = env_path("MAGI_CONFIG_PATH", DEFAULT_CONFIG_PATH)
-    workspace_ai_config_path = env_path("OPENCLAW_AI_CONFIG_PATH", DEFAULT_WORKSPACE_AI_CONFIG_PATH)
 
     config = load_json(config_path)
     user = str(config.get("judicial_api_user") or "").strip()
     password = str(config.get("judicial_api_pass") or "").strip()
     if user and password:
         sources.append("config.judicial_api_*")
-
-    workspace_cfg = load_json(workspace_ai_config_path)
-    workspace_user = str(workspace_cfg.get("judicial_api_user") or "").strip()
-    workspace_pass = str(workspace_cfg.get("judicial_api_pass") or "").strip()
-    if workspace_user and workspace_pass:
-        sources.append("workspace.ai_config")
 
     env_user = str(os.environ.get("MAGI_JUDICIAL_API_USER") or os.environ.get("JUDICIAL_API_USER") or "").strip()
     env_pass = str(os.environ.get("MAGI_JUDICIAL_API_PASS") or os.environ.get("JUDICIAL_API_PASS") or "").strip()
@@ -118,7 +110,6 @@ def detect_credentials() -> dict:
         "present": bool(sources),
         "sources": sources,
         "config_path": str(config_path),
-        "workspace_ai_config_path": str(workspace_ai_config_path),
     }
 
 
@@ -305,12 +296,25 @@ def build_report() -> dict:
                 exit_code = RISK_EXIT
             reasons.append("尚未找到夜間拉取狀態檔或成功紀錄。")
     elif (pull["latest_age_hours"] or 0.0) > pull_stale_hours:
-        if status == "PIPELINE_HEALTHY":
-            status = "PULL_STALE"
-            exit_code = WARNING_EXIT
-        reasons.append(
-            f"最近一次夜間拉取已超過 {pull_stale_hours:.1f} 小時。"
-        )
+        pull_age = float(pull["latest_age_hours"] or 0.0)
+        if raw_total > 0 and normalized_count > 0 and raw_total == int(backlog.get("processed_entries") or 0):
+            if status == "PIPELINE_HEALTHY":
+                status = "PULL_STALE_CLEAR"
+                exit_code = WARNING_EXIT
+            reasons.append(
+                f"最近一次夜間拉取已超過 {pull_stale_hours:.1f} 小時，但已下載裁判資料整理序列目前清空；"
+                "若超過 72 小時仍未更新，才需要檢查夜拉排程。"
+            )
+            if pull_age >= 72.0:
+                status = "PULL_STALE"
+                reasons.append("夜間拉取已超過 72 小時未更新，請檢查排程或司法院 API 服務狀態。")
+        else:
+            if status == "PIPELINE_HEALTHY":
+                status = "PULL_STALE"
+                exit_code = WARNING_EXIT
+            reasons.append(
+                f"最近一次夜間拉取已超過 {pull_stale_hours:.1f} 小時。"
+            )
 
     if int(pull.get("consecutive_failures") or 0) >= 2:
         status = "PULL_FAILING"

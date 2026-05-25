@@ -154,8 +154,8 @@ def translate_text_complete(text: str, source_lang: str = "auto", target_lang: s
                     return {
                         "success": True,
                         "text": codex_text,
-                        "provider": "openclaw_codex",
-                        "route": "openclaw_codex",
+                        "provider": "codex_direct",
+                        "route": "codex_direct",
                         "model": codex_res.get("model", "gpt-5.4"),
                         "agent": codex_res.get("agent_id", "codex-distributed"),
                         "term_glossary": export_term_glossary,
@@ -405,7 +405,7 @@ def translate_text_complete(text: str, source_lang: str = "auto", target_lang: s
                 if en_out and (abs(len(en_out) - len(part)) >= 40 or en_out[:200] != part[:200]):
                     return en_out
             except Exception:
-                pass
+                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 407, exc_info=True)
 
         return auto_out
 
@@ -1274,7 +1274,7 @@ def translate_text_complete(text: str, source_lang: str = "auto", target_lang: s
                     try:
                         _gtx_fallback = _translate_via_gtx(chunks[i])
                     except Exception:
-                        pass
+                        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 1276, exc_info=True)
                 if _gtx_fallback and len(_gtx_fallback.strip()) > 10:
                     result_buffer[i] = {
                         "text": _gtx_fallback,

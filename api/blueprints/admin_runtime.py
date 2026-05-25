@@ -8,6 +8,7 @@ main server bootstrap.
 
 from __future__ import annotations
 
+import logging
 import importlib.util
 import json
 import os
@@ -139,7 +140,7 @@ def _safe_epoch(value: Any) -> float:
     try:
         return float(value)
     except Exception:
-        pass
+        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 141, exc_info=True)
     txt = str(value or "").strip()
     if not txt:
         return 0.0
@@ -355,7 +356,13 @@ def _is_recovered_non_cron_issue(row: dict[str, Any], root: Path) -> bool:
         current_free_gb = shutil.disk_usage(str(root)).free / 1024 / 1024 / 1024
     except Exception:
         return False
-    return current_free_gb >= threshold_gb
+    # The hourly disk alarm uses a 50 GB early-warning threshold so MAGI can
+    # clean before the machine is under real pressure.  For active incident
+    # health, only keep it unresolved while the host is still in core-only risk
+    # (<30 GB) or below the original critical threshold.  Otherwise the same
+    # warning would keep /health yellow for a full day after cleanup succeeded.
+    effective_threshold = min(threshold_gb, 30.0) if threshold_gb > 30 else threshold_gb
+    return current_free_gb >= effective_threshold
 
 
 def _compute_operational_issue_health(root: Path, now_ts: float) -> dict[str, Any]:
@@ -702,7 +709,7 @@ def create_admin_runtime_blueprint(
                 if VISION_AVAILABLE:
                     return {"status": "online", "engine": "macOS Vision", "models": ["VNRecognizeTextRequest"], "count": 1}
             except Exception:
-                pass
+                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 704, exc_info=True)
             return {"status": "offline", "detail": "macOS Vision OCR unavailable (GLM-OCR retired)"}
 
         def _ollama():

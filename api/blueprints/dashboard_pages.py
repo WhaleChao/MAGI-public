@@ -18,6 +18,7 @@ The module is intentionally dependency-light and does not import server.py.
 
 from __future__ import annotations
 
+import logging
 import json
 import html
 import os
@@ -57,7 +58,7 @@ def _load_tailscale_status() -> dict:
             data = json.loads(result.stdout)
             return data if isinstance(data, dict) else {}
     except Exception:
-        pass
+        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 59, exc_info=True)
     return {}
 
 
@@ -80,7 +81,7 @@ def _load_tailscale_serve_url() -> str:
                 host = _strip_trailing_dot(str(host).split(":")[0])
                 return f"https://{host}" if host else ""
     except Exception:
-        pass
+        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 82, exc_info=True)
     return ""
 
 
@@ -275,7 +276,7 @@ def _load_worldmonitor_sidecar(entry: Path) -> dict:
             data = json.loads(sidecar.read_text(encoding="utf-8"))
             return data if isinstance(data, dict) else {}
     except Exception:
-        pass
+        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 277, exc_info=True)
     return {}
 
 
@@ -498,7 +499,7 @@ def _read_json_file(path: Path, default):
             with open(path, "r", encoding="utf-8") as fh:
                 return json.load(fh)
     except Exception:
-        pass
+        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 500, exc_info=True)
     return default
 
 

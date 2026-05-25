@@ -242,7 +242,7 @@ class LAFOrchestratorDocumentMixin:
                 try:
                     os.remove(temp_img)
                 except Exception:
-                    pass
+                    logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 244, exc_info=True)
 
     def _extract_best_date_from_doc(self, path_value: str, is_poa: bool = True) -> str:
         """Extract best date from document: filename → Office text → Vision OCR."""
@@ -410,7 +410,7 @@ class LAFOrchestratorDocumentMixin:
                                         fn2, os.path.join(sub_sub, fn2), out, subdir
                                     )
                         except OSError:
-                            pass
+                            logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 412, exc_info=True)
                     continue
                 full = os.path.join(scan_path, fn)
                 self._classify_doc_file_enhanced(fn, full, out, subdir)

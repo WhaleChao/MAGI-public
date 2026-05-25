@@ -11,6 +11,7 @@ runtime objects injected from the main server bootstrap:
 
 from __future__ import annotations
 
+import logging
 import json
 import html
 import os
@@ -118,7 +119,7 @@ def _extract_chat_upload_text_for_task(path: Path, filename: str, task: str = ""
                     "pages": pages,
                 }
         except Exception:
-            pass
+            logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 120, exc_info=True)
     return _extract_chat_upload_text(path, filename)
 
 
@@ -854,7 +855,7 @@ def create_web_runtime_blueprint(
                     stats["last_ingest"] = str(_last)
                 _conn.close()
             except Exception:
-                pass
+                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 856, exc_info=True)
         if stats["doc_count"] == 0 and stats["last_ingest"] is None:
             # Fallback: read from doc_vector_index.json (attachment tracker only)
             try:
@@ -900,7 +901,7 @@ def create_web_runtime_blueprint(
                 stats["faiss_vector_count"] = idx.total
                 stats["faiss_index_type"] = idx.index_type
             except Exception:
-                pass
+                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 902, exc_info=True)
         return jsonify(stats)
 
     @bp.route("/api/memory/recall", methods=["POST"])

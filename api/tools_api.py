@@ -97,7 +97,7 @@ def _ensure_python_package(import_name: str, pip_name: str) -> bool:
         __import__(import_name)
         return True
     except ModuleNotFoundError:
-        pass
+        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 99, exc_info=True)
     except Exception:
         return False
 
@@ -173,7 +173,7 @@ def _global_exception_hook(e):
             source="tools_api.errorhandler",
         )
     except Exception:
-        pass
+        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 175, exc_info=True)
     raise
 
 
@@ -422,7 +422,7 @@ def _append_jsonl(path: str, row: dict) -> None:
             from api.events.sinks import rotate_jsonl
             rotate_jsonl(p)
         except Exception:
-            pass
+            logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 424, exc_info=True)
     except Exception:
         return
 
@@ -510,7 +510,7 @@ def _record_external_chat_metric(
             if len(lines) > 500:
                 p.write_text("\n".join(lines[-500:]) + "\n", encoding="utf-8")
     except Exception:
-        pass
+        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 512, exc_info=True)
 
 
 def _guard_text(s: str, platform: str = "WEB") -> str:
@@ -1095,7 +1095,7 @@ def _external_osc_chat_inner():
         from flask import g as _flask_g
         _flask_g.heavy_opt_in = heavy_opt_in
     except Exception:
-        pass
+        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 1097, exc_info=True)
 
     user_id = str(data.get("user_id") or "external_api_user")
     platform = _infer_external_platform(str(data.get("platform") or ""), user_id=user_id)
@@ -1687,7 +1687,7 @@ def api_vision():
                         },
                     )
                 except Exception:
-                    pass
+                    logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 1689, exc_info=True)
                 _text = _consensus_result.corrected_text or _consensus_result.selected_text or ""
                 _finish_tool_event(
                     "vision",
@@ -2164,7 +2164,7 @@ def _shortcut_write_temp(data: bytes, suffix: str) -> str:
         try:
             os.close(fd)
         except Exception:
-            pass
+            logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 2166, exc_info=True)
         raise
     return path
 
@@ -2245,7 +2245,7 @@ def api_shortcut_ocr():
                             },
                         )
                     except Exception:
-                        pass
+                        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 2247, exc_info=True)
                     _txt = _cs.corrected_text or _cs.selected_text or ""
                     return _shortcut_text_response(_txt)
             except Exception as _ce:
@@ -2278,7 +2278,7 @@ def api_shortcut_ocr():
         try:
             os.unlink(tmp_path)
         except Exception:
-            pass
+            logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 2280, exc_info=True)
 
 
 @app.route('/shortcut/pdf_text', methods=['POST'])
@@ -2307,7 +2307,7 @@ def api_shortcut_pdf_text():
         try:
             os.unlink(tmp_path)
         except Exception:
-            pass
+            logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 2309, exc_info=True)
 
 
 @app.route('/shortcut/summarize', methods=['POST'])
@@ -2384,7 +2384,7 @@ def api_shortcut_transcribe():
         try:
             os.unlink(tmp_path)
         except Exception:
-            pass
+            logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 2386, exc_info=True)
 
 
 # ============== Skills ==============

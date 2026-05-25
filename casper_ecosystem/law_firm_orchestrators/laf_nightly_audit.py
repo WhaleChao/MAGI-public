@@ -47,7 +47,7 @@ try:
     from dotenv import load_dotenv
     load_dotenv(os.path.join(PROJECT_ROOT, ".env"))
 except ImportError:
-    pass
+    logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 49, exc_info=True)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -150,7 +150,7 @@ def _get_db():
                 "user": c.user, "password": c.password, "database": c.database,
             })
         except Exception:
-            pass
+            logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 152, exc_info=True)
     except Exception as e:
         logger.error("DB connection failed: %s", e)
     return None
@@ -370,7 +370,7 @@ def _inspect_laf_number_candidates(case: dict) -> dict:
                 for fn in files:
                     info["fallback_numbers"].update(LAF_NO_RE.findall(fn))
         except Exception:
-            pass
+            logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 372, exc_info=True)
 
     info["candidate_numbers"] = info["priority_numbers"] or info["fallback_numbers"]
     if info["priority_numbers"]:
@@ -1118,7 +1118,7 @@ def backfill_from_case_list(db, missing_cases: List[dict]) -> List[dict]:
             try:
                 laf.close()
             except Exception:
-                pass
+                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 1120, exc_info=True)
 
     if not xlsx_path:
         return []
@@ -1194,7 +1194,7 @@ def backfill_from_case_list(db, missing_cases: List[dict]) -> List[dict]:
         if xlsx_path and os.path.exists(xlsx_path):
             os.remove(xlsx_path)
     except Exception:
-        pass
+        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 1196, exc_info=True)
 
     return backfilled
 
@@ -1293,7 +1293,7 @@ def _process_display_name(pid: int, fallback: str = "") -> str:
             if name:
                 return name
     except Exception:
-        pass
+        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 1295, exc_info=True)
     return fallback or ""
 
 
@@ -1531,7 +1531,7 @@ def _safe_rename_case_folder(old_path: str, new_path: str) -> Tuple[bool, str]:
     try:
         os.makedirs(os.path.dirname(new_path), exist_ok=True)
     except Exception:
-        pass
+        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 1533, exc_info=True)
     is_open, who = _is_folder_open_by_other(old_path)
     if is_open:
         released, release_reason = _release_folder_for_rename(old_path)
@@ -1684,7 +1684,7 @@ def _move_tree_contents(src_root: str, dst_root: str) -> tuple[int, list[str]]:
     try:
         shutil.rmtree(src_root)
     except Exception:
-        pass
+        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 1686, exc_info=True)
     return moved, skipped
 
 
@@ -1841,7 +1841,7 @@ def _check_reconcile_throttle() -> Tuple[bool, int]:
             if elapsed < _RECONCILE_THROTTLE_SEC:
                 return True, int(_RECONCILE_THROTTLE_SEC - elapsed)
     except Exception:
-        pass
+        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 1843, exc_info=True)
     return False, 0
 
 
@@ -1976,7 +1976,7 @@ def reconcile_placeholder_cases(db, *, force: bool = False,
             try:
                 laf.close()
             except Exception:
-                pass
+                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 1978, exc_info=True)
 
     if not xlsx_path:
         return {"error": "excel_path_empty", "placeholder_count": len(placeholders)}
@@ -2180,7 +2180,7 @@ def reconcile_placeholder_cases(db, *, force: bool = False,
         if xlsx_path and os.path.exists(xlsx_path):
             os.remove(xlsx_path)
     except Exception:
-        pass
+        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 2182, exc_info=True)
 
     if not only_laf_no:
         _write_reconcile_state()
@@ -2272,7 +2272,7 @@ def scan_laf_reporting_status(db) -> dict:
                             "days_overdue": (today - dl).days,
                         })
                 except Exception:
-                    pass
+                    logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 2274, exc_info=True)
 
         # B. 有開辦資料但尚未回報開辦
         if (
@@ -2385,7 +2385,7 @@ def _folder_has_file(mac_folder: str, subfolder: str, keywords: tuple) -> bool:
             if any(k in fn for k in keywords):
                 return True
     except Exception:
-        pass
+        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 2387, exc_info=True)
     return False
 
 
@@ -2399,7 +2399,7 @@ def _folder_has_any_file(mac_folder: str, subfolder: str) -> bool:
             if not fn.startswith("."):
                 return True
     except Exception:
-        pass
+        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 2401, exc_info=True)
     return False
 
 
@@ -2601,7 +2601,7 @@ def verify_portal_closing_status(pending_cases: List[dict], db=None) -> dict:
             try:
                 laf.close()
             except Exception:
-                pass
+                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 2603, exc_info=True)
 
     return result
 
@@ -2658,7 +2658,7 @@ def _move_downloaded_to_case_folder(
             try:
                 os.remove(src_path)
             except Exception:
-                pass
+                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 2660, exc_info=True)
             return True
         shutil.move(src_path, dest)
         logger.info("  ✅ 已移至 %s/%s", subfolder, display_name)
@@ -2806,7 +2806,7 @@ def scan_portal_new_files(all_cases: List[dict]) -> List[dict]:
             try:
                 laf.close()
             except Exception:
-                pass
+                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 2808, exc_info=True)
 
     return new_files_found
 
@@ -2820,7 +2820,7 @@ def _load_draft_state() -> dict:
             with open(_DRAFT_STATE_FILE, "r", encoding="utf-8") as f:
                 return json.load(f)
     except Exception:
-        pass
+        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 2822, exc_info=True)
     return {}
 
 
@@ -2838,7 +2838,7 @@ def _save_draft_state(state: dict):
         try:
             os.remove(_tmp_path)
         except OSError:
-            pass
+            logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 2840, exc_info=True)
 
 
 def _sanitize_portal_pending_items(items: List[dict], label: str = "") -> List[dict]:
@@ -2938,7 +2938,7 @@ def scan_portal_pending_drafts(db=None) -> dict:
             try:
                 laf.close()
             except Exception:
-                pass
+                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 2940, exc_info=True)
 
     # 與上次比對，找出已自動消失（已送出）的案件
     cur_closing = {it["applyno"] for it in result["closing_drafts"] if it.get("applyno")}
@@ -3771,7 +3771,7 @@ if __name__ == "__main__":
             from api.server import cleanup_old_exports
             cleanup_old_exports(days=30)
         except Exception:
-            pass
+            logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 3773, exc_info=True)
         result = run_audit(notify=not args.no_notify, dry_run=args.dry_run)
 
     print(json.dumps(result, ensure_ascii=False, indent=2, default=str))

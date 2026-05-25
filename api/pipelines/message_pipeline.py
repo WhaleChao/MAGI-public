@@ -347,7 +347,7 @@ def process_message_inner(orch, user_id, message, platform="LINE", role="user", 
         from flask import g as _flask_g
         _flask_g.heavy_opt_in = _heavy_opt_in
     except Exception:
-        pass
+        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 349, exc_info=True)
 
     quick_reply = orch._quick_fixed_reply(message, role)
     if quick_reply:

@@ -255,7 +255,7 @@ class CaptchaSolver:
                 try:
                     import ddddocr
                 except ImportError:
-                    pass
+                    logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 257, exc_info=True)
 
             if ddddocr:
                 try:
@@ -271,7 +271,7 @@ class CaptchaSolver:
                 try:
                     from rapidocr_onnxruntime import RapidOCR
                 except ImportError:
-                    pass
+                    logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 273, exc_info=True)
 
             if RapidOCR:
                 try:
@@ -410,12 +410,12 @@ class LawyerPortalSSO:
         try:
             print(full_msg, file=sys.stderr)
         except BrokenPipeError:
-            pass
+            logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 412, exc_info=True)
         if self.log_callback:
             try:
                 self.log_callback(full_msg)
             except BrokenPipeError:
-                pass
+                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 417, exc_info=True)
 
     @staticmethod
     def _looks_like_driver_bootstrap_error(exc: Exception) -> bool:
@@ -810,14 +810,14 @@ class LawyerPortalSSO:
                     try:
                         self.driver._last_dialog = None
                     except Exception:
-                        pass
+                        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 812, exc_info=True)
                     login_btn.click()
                 else:
                     self.log("  ⚠️ 找不到登入按鈕，嘗試 Enter 提交")
                     try:
                         self.driver._last_dialog = None
                     except Exception:
-                        pass
+                        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 819, exc_info=True)
                     captcha_field.send_keys(Keys.RETURN)
 
                 # 等待登入結果
@@ -996,7 +996,7 @@ class LawyerPortalSSO:
                         try:
                             os.unlink(tmp_path)
                         except Exception:
-                            pass
+                            logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 998, exc_info=True)
             except Exception:
                 logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 679, exc_info=True)
     
@@ -1353,7 +1353,7 @@ class FileReviewManager:
             try:
                 sso.close()
             except Exception:
-                pass
+                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 1355, exc_info=True)
             self.sso = None
             self.driver = None
             return
@@ -1362,7 +1362,7 @@ class FileReviewManager:
             try:
                 driver.quit()
             except Exception:
-                pass
+                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 1364, exc_info=True)
             self.driver = None
 
     def __del__(self):
@@ -1845,7 +1845,7 @@ class FileReviewManager:
             for key in removed:
                 remove("payment_dismissed", key)
         except Exception:
-            pass
+            logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 1847, exc_info=True)
         return {"success": True, "keyword": case_keyword, "removed_keys": removed}
 
     def list_dismissed_payments(self) -> dict:
@@ -1872,7 +1872,7 @@ class FileReviewManager:
                 if key and is_done("payment_dismissed", key):
                     return True
         except Exception:
-            pass
+            logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 1874, exc_info=True)
         return False
 
     def _is_proof_uploaded_for_case(self, row_json: dict) -> bool:
@@ -2220,7 +2220,7 @@ class FileReviewManager:
                 if cooldown_hours > 0 and (datetime.now() - dt).total_seconds() < cooldown_hours * 3600:
                     return True
             except Exception:
-                pass
+                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 2222, exc_info=True)
 
         # 僅有 key 不足以判定已處理：必須至少有可用檔案紀錄且檔案仍可定位。
         path_hints = [str(x).strip() for x in (entry.get("file_paths") or []) if str(x).strip()]
@@ -2313,7 +2313,7 @@ class FileReviewManager:
                     "party": str((row_json or {}).get("clnm") or (case_info or {}).get("party") or ""),
                 })
             except Exception:
-                pass
+                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 2315, exc_info=True)
         if changed:
             self._save_notified_cases()
 
@@ -2719,7 +2719,7 @@ class FileReviewManager:
                 self._seed_payment_notification_dedup(row_json, case_info, reason="dedup_db_seen")
                 return True
         except Exception:
-            pass
+            logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 2721, exc_info=True)
 
         if file_paths is None:
             file_paths = self._resolve_payment_registry_files(row_json)
@@ -3036,12 +3036,12 @@ class FileReviewManager:
         try:
             print(full_msg, file=sys.stderr)
         except BrokenPipeError:
-            pass
+            logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 3038, exc_info=True)
         if self.log_callback:
             try:
                 self.log_callback(full_msg)
             except BrokenPipeError:
-                pass
+                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 3043, exc_info=True)
     
     # ---------- Gmail 監控 ----------
     
@@ -3792,7 +3792,7 @@ class FileReviewManager:
                                                     self.driver._popup_pages.append(_p)
                                                 break
                                 except Exception:
-                                    pass
+                                    logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 3794, exc_info=True)
                                 new_window = _fallback_win
                                 clicked = True
                             else:
@@ -3876,7 +3876,7 @@ class FileReviewManager:
                     try:
                         self.driver.switch_to.window(new_window)
                     except Exception:
-                        pass
+                        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 3878, exc_info=True)
 
             # Playwright 路徑：等待新頁面完全載入（含 JS 重新導向）
             if _use_playwright_popup and hasattr(self.driver, '_page'):
@@ -4087,7 +4087,7 @@ class FileReviewManager:
                             except Exception:
                                 continue
                     except Exception:
-                        pass
+                        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 4089, exc_info=True)
 
             if not found_menu:
                 self.log("  ⚠️ 所有方法均無法找到「線上閱卷作業」選單")
@@ -4149,7 +4149,7 @@ class FileReviewManager:
                             except Exception:
                                 continue
                     except Exception:
-                        pass
+                        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 4151, exc_info=True)
 
             if not submenu_found:
                 self.log("  ⚠️ 子選單展開失敗，無法進入列表頁")
@@ -4242,7 +4242,7 @@ class FileReviewManager:
                 try:
                     self.driver._active_frame = hit["frame"]
                 except Exception:
-                    pass
+                    logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 4244, exc_info=True)
                 return True
         try:
             self.driver.switch_to.default_content()
@@ -4450,7 +4450,7 @@ class FileReviewManager:
             try:
                 frames = list(pw_page.frames)
             except Exception:
-                pass
+                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 4452, exc_info=True)
 
         last_diagnostics: List[Dict[str, Any]] = []
         deadline = time.time() + 6.0
@@ -4499,7 +4499,7 @@ class FileReviewManager:
                 try:
                     self.driver._active_frame = best.get("frame")
                 except Exception:
-                    pass
+                    logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 4501, exc_info=True)
                 return best
             if time.time() >= deadline:
                 return {"diagnostics": last_diagnostics, "check": check}
@@ -4507,7 +4507,7 @@ class FileReviewManager:
             try:
                 frames = list(pw_page.frames)
             except Exception:
-                pass
+                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 4509, exc_info=True)
 
     def _open_review_list_v1(self) -> bool:
         """
@@ -5129,7 +5129,7 @@ class FileReviewManager:
                     if (_date.today() - _dl).days > 14:
                         s -= 4  # 逾期超過 14 天：大幅降分，讓較新未逾期申請優先
                 except Exception:
-                    pass
+                    logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 5131, exc_info=True)
             applydt = re.sub(r"\D", "", str((row_json_inner or {}).get("applydt") or ""))
             rowid = re.sub(r"\D", "", str((row_json_inner or {}).get("rowid") or ""))
             return (s, applydt, rowid)
@@ -6113,9 +6113,9 @@ class FileReviewManager:
                                 _row = _btn.find_element(By.XPATH, "./ancestor::tr")
                                 self.log(f"    [debug] row[{_i}] text={repr(_row.text[:120])}")
                             except Exception:
-                                pass
+                                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 6115, exc_info=True)
                     except Exception:
-                        pass
+                        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 6117, exc_info=True)
                     return downloaded_files
 
             if not download_btns:
@@ -6593,7 +6593,7 @@ class FileReviewManager:
                                     isdown_flag = str(row_json.get("isdown") or "").strip().upper()
                                     downdt_flag = str(row_json.get("downdt") or "").strip()
                             except Exception:
-                                pass
+                                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 6595, exc_info=True)
                             if not isdown_flag and not downdt_flag:
                                 if (
                                     yyidno_for_dedup
@@ -6978,7 +6978,7 @@ class FileReviewManager:
                                     fp = dst
                                     self.log(f"  ✓ 後補移檔: {fn} → today_folder")
                                 except Exception:
-                                    pass
+                                    logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 6980, exc_info=True)
                         if fp in download_meta_by_file:
                             continue
                         try:
@@ -7353,7 +7353,7 @@ class FileReviewManager:
                                             if _found_dl:
                                                 break
                                     except Exception:
-                                        pass
+                                        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 7355, exc_info=True)
                                     time.sleep(1)
                                 # 手動關閉新視窗（若仍開著）
                                 try:
@@ -7361,7 +7361,7 @@ class FileReviewManager:
                                         self.driver.close()
                                         self.log("  ✓ 下載視窗已關閉")
                                 except Exception:
-                                    pass
+                                    logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 7363, exc_info=True)
                             except Exception as sw_e:
                                 self.log(f"  ⚠️ 切換下載視窗失敗: {sw_e}")
 
@@ -7713,7 +7713,7 @@ class FileReviewManager:
                                     if safe_remove:
                                         safe_remove(file_path, reason="archive_dup_normalized", allow_delete=True, log=self.log)
                                 except Exception:
-                                    pass
+                                    logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 7715, exc_info=True)
                             return {"ok": True, "dst": existing, "action": "exists_skip"}
             except Exception:
                 logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 5989, exc_info=True)
@@ -9527,7 +9527,7 @@ class FileReviewManager:
                 try:
                     _add(el.text)
                 except Exception:
-                    pass
+                    logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 9529, exc_info=True)
 
         if row is not None:
             try:
@@ -9539,7 +9539,7 @@ class FileReviewManager:
                 try:
                     _add(cell.text)
                 except Exception:
-                    pass
+                    logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 9541, exc_info=True)
                 _attrs(cell)
 
         combined = "\n".join(candidates)
@@ -11040,7 +11040,7 @@ class FileReviewManager:
                                 el2.send_keys(str(field_value))
                                 self.log(f"      ↺ {field_label}: JS注入後重填 (was: {actual!r})")
                         except Exception:
-                            pass
+                            logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 11042, exc_info=True)
                         filled_count += 1
                         self.log(f"      ✓ {field_label}: {field_value}")
                     except Exception as e:
@@ -11077,7 +11077,7 @@ class FileReviewManager:
                     try:
                         self.driver._last_dialog = None
                     except Exception:
-                        pass
+                        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 11079, exc_info=True)
                     self.driver.execute_script("arguments[0].click();", btn)
                     return True
                 except Exception:
@@ -11534,9 +11534,9 @@ class FileReviewManager:
                             try:
                                 self.driver.switch_to.frame("v1")
                             except Exception:
-                                pass
+                                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 11536, exc_info=True)
                         except Exception:
-                            pass
+                            logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 11538, exc_info=True)
 
                         _selected_count = 0
                         for _slot in _slots:
@@ -11753,7 +11753,7 @@ class FileReviewManager:
                             try:
                                 self.driver._last_dialog = None
                             except Exception:
-                                pass
+                                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 11755, exc_info=True)
                             if click_mode == "native":
                                 btn.click()
                             else:
@@ -11818,7 +11818,7 @@ class FileReviewManager:
                         try:
                             self.driver._last_dialog = None
                         except Exception:
-                            pass
+                            logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 11820, exc_info=True)
                         direct_ok = self.driver.execute_script(
                             """
                             return (function() {
@@ -11847,7 +11847,7 @@ class FileReviewManager:
                                     submit_rejected = True
                                     break
                             except Exception:
-                                pass
+                                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 11849, exc_info=True)
                             if _file_review_submit_success_from_text(_visible_page_text(), case_info):
                                 self.log("  ✅ doSubmitCheck 後偵測到法院端受理訊息")
                                 break
@@ -12100,7 +12100,7 @@ class FileReviewManager:
                 try:
                     evidence_json = "|" + json.dumps(ready_evidence, ensure_ascii=False)
                 except Exception:
-                    pass
+                    logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 12102, exc_info=True)
                 return "Ready" + evidence_json
             
         except Exception as e:
@@ -12272,7 +12272,7 @@ class FileReviewManager:
                             self.log(f"  ℹ️ 繳費憑證已上傳（dedup DB），跳過通知: {_proof_key}")
                             return None  # intentional skip
                     except Exception:
-                        pass
+                        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 12274, exc_info=True)
                     # 也查 proof registry JSON
                     try:
                         _proof_path = os.path.join(self.download_folder, "payment_proof_registry.json")
@@ -12283,7 +12283,7 @@ class FileReviewManager:
                                 self.log(f"  ℹ️ 繳費憑證已上傳（JSON），跳過通知: {_proof_key}")
                                 return None  # intentional skip
                     except Exception:
-                        pass
+                        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 12285, exc_info=True)
 
             # 3. dismissed 模糊比對：人名出現在 dismissed keyword 中（不管 notify_key 格式）
             if _party:
@@ -12311,7 +12311,7 @@ class FileReviewManager:
                             _party = str(_db_row.get("client_name") or "").strip()
                             info.client_name = _party
                 except Exception:
-                    pass
+                    logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 12313, exc_info=True)
 
             # ── Auto-writeback: 用案號精確比對 DB，補齊空的法院/股別/案號 ──
             # 安全規則：
@@ -13091,7 +13091,7 @@ class FileReviewManager:
                 if _runtime_deleted > 0:
                     self.log(f"✅ 已清理 .runtime/debug_screenshots/ 中 {_runtime_deleted} 個舊 debug 檔")
             except Exception:
-                pass
+                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 13093, exc_info=True)
 
             # Debug 檔案模式（舊路徑相容清理）
             debug_patterns = [

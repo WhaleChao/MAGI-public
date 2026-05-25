@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import re
 import subprocess
 from pathlib import Path
@@ -212,7 +213,7 @@ def run_output_quality_gate(
                 if missing_terms:
                     issue = "translation_missing_source_terms:" + ",".join(missing_terms[:4])
         except Exception:
-            pass
+            logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 214, exc_info=True)
     return {
         "ok": not bool(issue),
         "kind": mode,
