@@ -55,6 +55,11 @@ def test_refresh_pushes_osc_created_todos_to_gcal(monkeypatch, tmp_path):
             calls.append(("push", payload))
             return {"ok": True, "inserted": 1, "failed": 0}
 
+        @staticmethod
+        def task_gcal_integrity_audit(payload):
+            calls.append(("audit", payload))
+            return {"ok": True, "summary": {"missing_google_id": 0}}
+
     class FakeTranscriptTodo:
         @staticmethod
         def _iter_pdf_targets(raw_path, *, limit):
@@ -108,15 +113,17 @@ def test_refresh_pushes_osc_created_todos_to_gcal(monkeypatch, tmp_path):
         transcript_limit=9,
         transcript_tail_pages=3,
         skip_transcript_todos=False,
+        skip_calendar_audit=False,
         json_out=str(out),
     )
 
     result = osc_events_refresh.run_refresh(args)
 
     assert result["ok"] is True
-    assert [name for name, _ in calls] == ["scan", "pdf_scan", "transcript_targets", "transcript_scan", "transcript_apply", "import", "push"]
+    assert [name for name, _ in calls] == ["scan", "pdf_scan", "transcript_targets", "transcript_scan", "transcript_apply", "import", "push", "audit"]
     assert result["pdf_calendar_scan"]["write_result"]["inserted"] == 1
     assert calls[-1][1]["limit"] == 7
     assert result["transcript_todos"]["write_result"]["inserted"] == 1
     assert result["calendar_push"]["inserted"] == 1
+    assert result["calendar_audit"]["ok"] is True
     assert os.environ["MAGI_GCAL_DEDUP_DRY_RUN"] == "0"

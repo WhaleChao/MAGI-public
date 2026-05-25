@@ -176,6 +176,7 @@ def run_refresh(args: argparse.Namespace) -> dict[str, Any]:
         "transcript_todos": {},
         "calendar_import": {},
         "calendar_push": {},
+        "calendar_audit": {},
         "warnings": [],
     }
 
@@ -276,6 +277,20 @@ def run_refresh(args: argparse.Namespace) -> dict[str, Any]:
                 result["ok"] = False
                 result["calendar_push"] = {"ok": False, "error": f"{type(exc).__name__}: {str(exc)[:240]}"}
 
+            if not getattr(args, "skip_calendar_audit", False):
+                try:
+                    audit = mod.task_gcal_integrity_audit({"limit": args.gcal_push_limit})
+                    result["calendar_audit"] = audit
+                    if not audit.get("ok"):
+                        if audit.get("need_interactive_oauth"):
+                            result["warnings"].append("google_calendar_oauth_required")
+                        else:
+                            result["ok"] = False
+                            result["warnings"].append("google_calendar_integrity_needs_attention")
+                except Exception as exc:
+                    result["ok"] = False
+                    result["calendar_audit"] = {"ok": False, "error": f"{type(exc).__name__}: {str(exc)[:240]}"}
+
     result["elapsed_sec"] = round(time.monotonic() - started, 3)
     _write_latest(result, Path(args.json_out) if args.json_out else LATEST_PATH)
     return result
@@ -296,6 +311,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--pdf-max-pages", type=int, default=int(os.environ.get("OSC_EVENTS_REFRESH_PDF_MAX_PAGES", "8")))
     parser.add_argument("--skip-pdf-todos", action="store_true")
     parser.add_argument("--skip-transcript-todos", action="store_true")
+    parser.add_argument("--skip-calendar-audit", action="store_true")
     parser.add_argument("--json-out", default="")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--scan-only", action="store_true")

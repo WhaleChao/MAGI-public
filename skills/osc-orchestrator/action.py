@@ -2358,6 +2358,304 @@ def task_gcal_sync(payload: Dict[str, Any]) -> Dict[str, Any]:
     return out
 
 
+def task_gcal_integrity_audit(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Audit OSC/Google Calendar consistency after import + push.
+
+    This catches the failure modes that cause missed calendar entries:
+    - OSC/PDF-created todos that have no primary-calendar event id;
+    - stale primary-calendar ids;
+    - imported non-primary calendar events that were not mirrored to primary;
+    - imported rows whose source calendar is still unknown;
+    - mirrors that accidentally point back to the target calendar.
+    """
+
+    try:
+        from osc_headless.db import connect_mysql, db_config_from_env, ensure_osc_min_schema, ensure_cases_schema  # type: ignore
+    except Exception as e:
+        return {"ok": False, "error": f"missing_db_helpers:{type(e).__name__}"}
+
+    p = payload or {}
+    limit = max(1, min(int(p.get("limit") or 500), 1000))
+    tz = p.get("time_zone") or os.environ.get("MAGI_TIME_ZONE") or "Asia/Taipei"
+    calendar_id = str(p.get("calendar_id") or "").strip()
+    check_google = bool(p.get("check_google", True))
+
+    credentials_path = (p.get("credentials_path") or os.environ.get("MAGI_GOOGLE_CREDENTIALS_PATH") or "").strip()
+    token_path = (p.get("token_path") or os.environ.get("MAGI_GOOGLE_CALENDAR_TOKEN_PATH") or "").strip()
+    if not credentials_path:
+        credentials_path = _default_gcal_credentials_path()
+    if not token_path:
+        token_path = _default_gcal_token_path()
+
+    service = None
+    target_calendar_ids: set[str] = {calendar_id.lower()} if calendar_id else set()
+    if check_google:
+        svc = _build_google_calendar_service(credentials_path, token_path, interactive=False)
+        if not svc.get("ok"):
+            out = {"ok": False, "error": svc.get("error", "gcal_service_failed")}
+            if svc.get("need_interactive_oauth"):
+                out["need_interactive_oauth"] = True
+                out["token_path"] = svc.get("token_path", token_path)
+            return out
+        service = svc.get("service")
+
+    conn = None
+    cur = None
+    try:
+        conn = connect_mysql(db_config_from_env(prefix="OSC_DB_"))
+        ensure_osc_min_schema(conn)
+        ensure_cases_schema(conn)
+        cur = conn.cursor(dictionary=True)
+
+        if not calendar_id:
+            cur.execute("SELECT value FROM settings WHERE `key`=%s LIMIT 1", ("gcal_calendar_id",))
+            row = cur.fetchone()
+            if isinstance(row, dict):
+                calendar_id = str(row.get("value") or "").strip()
+            elif row:
+                calendar_id = str(row[0] or "").strip()
+        if not calendar_id:
+            calendar_id = "primary"
+        if service:
+            target_calendar_ids = _target_calendar_aliases(service, calendar_id)
+        if not target_calendar_ids:
+            target_calendar_ids = {calendar_id.lower(), "primary"}
+
+        def _brief(row: Dict[str, Any]) -> Dict[str, Any]:
+            return {
+                "id": row.get("id"),
+                "case_number": str(row.get("case_number") or ""),
+                "client_name": str(row.get("client_name") or ""),
+                "todo_type": str(row.get("todo_type") or ""),
+                "todo_date": str(row.get("todo_date") or ""),
+                "todo_time": str(row.get("todo_time") or ""),
+                "source_file": str(row.get("source_file") or ""),
+                "google_calendar_id": str(row.get("google_calendar_id") or ""),
+                "description": str(row.get("description") or "")[:140],
+            }
+
+        # OSC-owned future todos must have a target-calendar id.
+        cur.execute(
+            """
+            SELECT id, case_number, client_name, todo_type, todo_date, todo_time,
+                   description, source_file, google_calendar_id
+            FROM case_todos
+            WHERE todo_date IS NOT NULL
+              AND todo_date >= CURDATE()
+              AND todo_date <= DATE_ADD(CURDATE(), INTERVAL 2 YEAR)
+              AND (status IS NULL OR status = '' OR status = 'pending')
+              AND (source_file IS NULL OR source_file = '' OR source_file NOT LIKE 'gcal_import%%')
+              AND (google_calendar_id IS NULL OR google_calendar_id = '')
+            ORDER BY todo_date ASC, todo_time ASC, id ASC
+            LIMIT %s
+            """,
+            (limit,),
+        )
+        missing_google_id = [_brief(r) for r in (cur.fetchall() or [])]
+
+        # Imported rows with no source calendar cannot be safely mirrored.
+        cur.execute(
+            """
+            SELECT id, case_number, client_name, todo_type, todo_date, todo_time,
+                   description, source_file, google_calendar_id
+            FROM case_todos
+            WHERE source_file = 'gcal_import'
+              AND todo_date IS NOT NULL
+              AND todo_date >= CURDATE()
+              AND todo_date <= DATE_ADD(CURDATE(), INTERVAL 2 YEAR)
+              AND (status IS NULL OR status = '' OR status = 'pending')
+              AND COALESCE(case_number, '') <> ''
+            ORDER BY todo_date ASC, todo_time ASC, id ASC
+            LIMIT %s
+            """,
+            (limit,),
+        )
+        unknown_import_source = [_brief(r) for r in (cur.fetchall() or [])]
+
+        # Non-primary imported events should either have an OSC-owned equivalent
+        # or a gcal_mirror row that is pushed to primary.
+        cur.execute(
+            """
+            SELECT ct.id, ct.case_number, COALESCE(NULLIF(ct.client_name, ''), c.client_name, '') AS client_name,
+                   ct.todo_type, ct.todo_date, ct.todo_time, ct.description,
+                   ct.source_file, ct.google_calendar_id
+            FROM case_todos ct
+            LEFT JOIN cases c
+              ON c.case_number COLLATE utf8mb4_unicode_ci
+               = ct.case_number COLLATE utf8mb4_unicode_ci
+            WHERE ct.source_file LIKE 'gcal_import:%%'
+              AND ct.todo_date IS NOT NULL
+              AND ct.todo_date >= CURDATE()
+              AND ct.todo_date <= DATE_ADD(CURDATE(), INTERVAL 2 YEAR)
+              AND (ct.status IS NULL OR ct.status = '' OR ct.status = 'pending')
+              AND COALESCE(ct.case_number, '') <> ''
+              AND NOT EXISTS (
+                  SELECT 1 FROM case_todos m
+                  WHERE m.case_number COLLATE utf8mb4_unicode_ci
+                        = ct.case_number COLLATE utf8mb4_unicode_ci
+                    AND COALESCE(m.todo_type, '') = COALESCE(ct.todo_type, '')
+                    AND m.todo_date = ct.todo_date
+                    AND COALESCE(m.todo_time, '') = COALESCE(ct.todo_time, '')
+                    AND COALESCE(m.status, '') <> 'deleted'
+                    AND m.source_file LIKE 'gcal_mirror:%%'
+                  LIMIT 1
+              )
+              AND NOT EXISTS (
+                  SELECT 1 FROM case_todos o
+                  WHERE o.case_number COLLATE utf8mb4_unicode_ci
+                        = ct.case_number COLLATE utf8mb4_unicode_ci
+                    AND COALESCE(o.todo_type, '') = COALESCE(ct.todo_type, '')
+                    AND o.todo_date = ct.todo_date
+                    AND COALESCE(o.todo_time, '') = COALESCE(ct.todo_time, '')
+                    AND COALESCE(o.status, '') <> 'deleted'
+                    AND (o.source_file IS NULL OR o.source_file = ''
+                         OR (o.source_file NOT LIKE 'gcal_import%%'
+                             AND o.source_file NOT LIKE 'gcal_mirror:%%'))
+                  LIMIT 1
+              )
+            ORDER BY ct.todo_date ASC, ct.todo_time ASC, ct.id ASC
+            LIMIT %s
+            """,
+            (limit,),
+        )
+        external_import_without_primary: list[Dict[str, Any]] = []
+        for row in cur.fetchall() or []:
+            source = str(row.get("source_file") or "")
+            source_calendar = source.split(":", 1)[1].strip().lower() if ":" in source else ""
+            if source_calendar and source_calendar not in target_calendar_ids and source_calendar != "primary":
+                external_import_without_primary.append(_brief(row))
+
+        cur.execute(
+            """
+            SELECT m.id, m.case_number, m.client_name, m.todo_type, m.todo_date, m.todo_time,
+                   m.description, m.source_file, m.google_calendar_id
+            FROM case_todos m
+            WHERE m.source_file LIKE 'gcal_mirror:%%'
+              AND COALESCE(m.status, '') <> 'deleted'
+              AND m.todo_date IS NOT NULL
+              AND m.todo_date >= CURDATE()
+              AND m.todo_date <= DATE_ADD(CURDATE(), INTERVAL 2 YEAR)
+            ORDER BY m.todo_date ASC, m.todo_time ASC, m.id ASC
+            LIMIT %s
+            """,
+            (limit,),
+        )
+        target_calendar_mirrors: list[Dict[str, Any]] = []
+        unknown_mirrors: list[Dict[str, Any]] = []
+        for row in cur.fetchall() or []:
+            source = str(row.get("source_file") or "")
+            source_calendar = source.split(":", 1)[1].strip().lower() if ":" in source else ""
+            if not source_calendar or source_calendar == "unknown":
+                unknown_mirrors.append(_brief(row))
+            elif source_calendar in target_calendar_ids or source_calendar == "primary":
+                target_calendar_mirrors.append(_brief(row))
+
+        cur.execute(
+            """
+            SELECT case_number, todo_type, todo_date, COALESCE(todo_time, '') AS todo_time,
+                   source_file, COUNT(*) AS cnt
+            FROM case_todos
+            WHERE source_file LIKE 'gcal_mirror:%%'
+              AND COALESCE(status, '') <> 'deleted'
+              AND todo_date IS NOT NULL
+              AND todo_date >= CURDATE()
+              AND todo_date <= DATE_ADD(CURDATE(), INTERVAL 2 YEAR)
+            GROUP BY case_number, todo_type, todo_date, COALESCE(todo_time, ''), source_file
+            HAVING COUNT(*) > 1
+            LIMIT %s
+            """,
+            (limit,),
+        )
+        duplicate_mirrors = [dict(r) for r in (cur.fetchall() or [])]
+
+        cur.execute(
+            """
+            SELECT id, case_number, client_name, todo_type, todo_date, todo_time,
+                   description, source_file, google_calendar_id
+            FROM case_todos
+            WHERE todo_date IS NOT NULL
+              AND todo_date >= CURDATE()
+              AND todo_date <= DATE_ADD(CURDATE(), INTERVAL 2 YEAR)
+              AND (status IS NULL OR status = '' OR status = 'pending')
+              AND (source_file IS NULL OR source_file = '' OR source_file NOT LIKE 'gcal_import%%')
+              AND google_calendar_id IS NOT NULL
+              AND google_calendar_id <> ''
+            ORDER BY todo_date ASC, todo_time ASC, id ASC
+            LIMIT %s
+            """,
+            (limit,),
+        )
+        rows_to_check = cur.fetchall() or []
+    except Exception as e:
+        return {"ok": False, "error": f"audit_db_failed:{type(e).__name__}: {str(e)[:220]}"}
+    finally:
+        try:
+            if cur:
+                cur.close()
+            if conn:
+                conn.close()
+        except Exception:
+            logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 2273, exc_info=True)
+
+    stale_google_events: list[Dict[str, Any]] = []
+    primary_ok = 0
+    if check_google and service:
+        for row in rows_to_check:
+            gid = str(row.get("google_calendar_id") or "").strip()
+            if not gid:
+                continue
+            brief = {
+                "id": row.get("id"),
+                "case_number": str(row.get("case_number") or ""),
+                "client_name": str(row.get("client_name") or ""),
+                "todo_type": str(row.get("todo_type") or ""),
+                "todo_date": str(row.get("todo_date") or ""),
+                "todo_time": str(row.get("todo_time") or ""),
+                "source_file": str(row.get("source_file") or ""),
+                "google_calendar_id": gid,
+            }
+            try:
+                ev = service.events().get(calendarId=calendar_id, eventId=gid).execute()
+                if str((ev or {}).get("status") or "").lower() == "cancelled":
+                    stale_google_events.append({**brief, "status": "cancelled"})
+                else:
+                    primary_ok += 1
+            except Exception as e:
+                stale_google_events.append({**brief, "error": f"{type(e).__name__}: {str(e)[:160]}"})
+
+    findings = {
+        "missing_google_id": missing_google_id,
+        "unknown_import_source": unknown_import_source,
+        "external_import_without_primary": external_import_without_primary,
+        "target_calendar_mirrors": target_calendar_mirrors,
+        "unknown_mirrors": unknown_mirrors,
+        "duplicate_mirrors": duplicate_mirrors,
+        "stale_google_events": stale_google_events,
+    }
+    summary = {
+        "missing_google_id": len(missing_google_id),
+        "unknown_import_source": len(unknown_import_source),
+        "external_import_without_primary": len(external_import_without_primary),
+        "target_calendar_mirrors": len(target_calendar_mirrors),
+        "unknown_mirrors": len(unknown_mirrors),
+        "duplicate_mirrors": len(duplicate_mirrors),
+        "stale_google_events": len(stale_google_events),
+        "checked_primary_events": len(rows_to_check),
+        "primary_ok": primary_ok,
+    }
+    ok = all(v == 0 for k, v in summary.items() if k not in {"checked_primary_events", "primary_ok"})
+    out = {
+        "ok": bool(ok),
+        "calendar_id": calendar_id,
+        "time_zone": str(tz),
+        "target_calendar_ids": sorted(target_calendar_ids),
+        "summary": summary,
+        "findings": findings,
+    }
+    _eventlog("osc:gcal_integrity_audit", ok=bool(ok), payload={"summary": summary, "calendar_id": calendar_id})
+    return out
+
+
 def task_gcal_import(payload: Dict[str, Any]) -> Dict[str, Any]:
     """
     Google Calendar → DB 雙向同步：拉取 Google Calendar 手動建立的事件，
@@ -2902,7 +3200,7 @@ def main() -> None:
 
     task = (args.task or "").strip()
     if task in ("help", "--help", "-h"):
-        print(json.dumps({"ok": True, "tasks": ["help", "self_test", "db_smoke", "index_cases", "todo_preview", "todo_sync", "todo_list", "scan_folder", "scan_cases", "keyword_sanity", "keyword_fix", "queue_status", "queue_flush", "gcal_authorize", "gcal_sync", "gcal_import"]}, ensure_ascii=False))
+        print(json.dumps({"ok": True, "tasks": ["help", "self_test", "db_smoke", "index_cases", "todo_preview", "todo_sync", "todo_list", "scan_folder", "scan_cases", "keyword_sanity", "keyword_fix", "queue_status", "queue_flush", "gcal_authorize", "gcal_sync", "gcal_import", "gcal_integrity_audit"]}, ensure_ascii=False))
         return
 
     # Support Taiwanese natural phrases
@@ -2974,6 +3272,8 @@ def main() -> None:
             out = task_gcal_sync(payload if isinstance(payload, dict) else {})
         elif cmd == "gcal_import":
             out = task_gcal_import(payload if isinstance(payload, dict) else {})
+        elif cmd == "gcal_integrity_audit":
+            out = task_gcal_integrity_audit(payload if isinstance(payload, dict) else {})
         elif cmd == "laf_pending_scan":
             out = task_laf_pending_scan(payload if isinstance(payload, dict) else {})
         else:
