@@ -5,7 +5,7 @@ MAGI 選單列狀態監控
 
 v3 — 增強版：
   - 遠端節點狀態（Melchior / Balthasar / Keeper）
-  - DB failover 細節（雙活/備份/同步中）
+  - 本機 DB 狀態（舊遠端 DB 已退役）
   - NAS 分卷掛載狀態 + 容量
   - 排程任務逐條顯示 + 最後執行時間
   - 移除已廢棄的推理分層 tier
@@ -488,7 +488,7 @@ class MAGIMenuBar(rumps.App):
             item = rumps.MenuItem(f"    ◻ {share_name}")
             item.set_callback(None)
             self.nas_share_items[share_name] = item
-        self.db_status_item = rumps.MenuItem("  ◻ 資料庫群")
+        self.db_status_item = rumps.MenuItem("  ◻ 本機資料庫")
         self.db_status_item.set_callback(None)
         self.db_detail_item = rumps.MenuItem("    ◻ 詳細")
         self.db_detail_item.set_callback(None)
@@ -679,9 +679,15 @@ class MAGIMenuBar(rumps.App):
 
             # Portal retry：屬於 server 內 daemon loop；server 活著即可視為已啟動，若有 retry log 再附最後時間。
             _retry_epoch, _ = _find_latest_log_match(_log_tail, ("[LAF-RETRY]",))
-            _retry_detail = "隨 Server"
+            _retry_detail = ""
             if _retry_epoch:
                 _retry_detail = f"最近 {datetime.fromtimestamp(_retry_epoch).strftime('%H:%M:%S')}"
+            elif _gmail_detail:
+                # 法扶附件重試與法扶 Gmail monitor 同屬背景巡檢；沒有重試事件時沿用監控 heartbeat，
+                # 避免 MENUBAR 顯示「隨 Server」讓使用者無法判斷是否還在跑。
+                _retry_detail = _gmail_detail
+            elif _server_up:
+                _retry_detail = "已啟動"
             monitors["法扶附件重試"] = {
                 "alive": _server_up,
                 "state": "alive" if _server_up else "down",
@@ -764,28 +770,12 @@ class MAGIMenuBar(rumps.App):
             "shares": shares,
         }
 
-        # ── DB (with failover detail) ──
-        try:
-            from api.db_failover import get_failover_status
-            fo = get_failover_status()
-            cache["db"] = {
-                "remote": fo.get("remote_ok") if fo.get("remote_ok") is not None else _tcp(
-                    os.environ.get("MAGI_REMOTE_DB_HOST", ""), 3306, 2),
-                "local": _tcp("127.0.0.1", 3306, 2),
-                "failover_active": fo.get("failover_active", False),
-                "syncing": fo.get("syncing", False),
-                "active_host": fo.get("active_host", ""),
-            }
-        except Exception:
-            # Fallback: raw TCP check
-            remote_host = os.environ.get("MAGI_REMOTE_DB_HOST", "")
-            cache["db"] = {
-                "remote": _tcp(remote_host, 3306, 2),
-                "local": _tcp("127.0.0.1", 3306, 2),
-                "failover_active": False,
-                "syncing": False,
-                "active_host": remote_host,
-            }
+        # ── DB ──
+        # 舊遠端 DB 已退役；MENUBAR 只呈現本機 MariaDB，避免再顯示雙活/回寫等舊架構狀態。
+        cache["db"] = {
+            "local": _tcp("127.0.0.1", 3306, 2),
+            "backup_configured": False,
+        }
 
         # ── 系統記憶體 ──
         cache["mem"] = _get_system_memory()
@@ -944,26 +934,12 @@ class MAGIMenuBar(rumps.App):
 
         # ── DB ──
         db = c.get("db", {})
-        syncing = db.get("syncing", False)
-        failover = db.get("failover_active", False)
-        if syncing:
-            _set_colored_title(self.db_status_item, "  🔵 資料庫群  同步中", None)
-            _set_colored_title(self.db_detail_item, "    本機→遠端資料回寫中...", None, small=True)
-        elif db.get("remote") and db.get("local") and not failover:
-            _set_colored_title(self.db_status_item, "  🟢 資料庫群  雙活同步", None)
-            _set_colored_title(self.db_detail_item, f"    主={db.get('active_host', '?')}  備=127.0.0.1", None, small=True)
-        elif failover and db.get("local"):
-            _set_colored_title(self.db_status_item, "  🟡 資料庫群  使用備份", None)
-            _set_colored_title(self.db_detail_item, "    遠端不可達・已切換至本機", None, small=True)
-        elif db.get("remote"):
-            _set_colored_title(self.db_status_item, "  🟢 資料庫群  遠端直連", None)
-            _set_colored_title(self.db_detail_item, f"    主={db.get('active_host', '?')}", None, small=True)
-        elif db.get("local"):
-            _set_colored_title(self.db_status_item, "  🟡 資料庫群  僅本機", None)
-            _set_colored_title(self.db_detail_item, "    遠端離線・本機獨立運行", None, small=True)
+        if db.get("local"):
+            _set_colored_title(self.db_status_item, "  🟢 本機資料庫  正常", None)
+            _set_colored_title(self.db_detail_item, "    MariaDB 127.0.0.1・備份區待設定", None, small=True)
         else:
-            _set_colored_title(self.db_status_item, "  🔴 資料庫群  全部離線", None)
-            _set_colored_title(self.db_detail_item, "    遠端+本機皆不可達", None, small=True)
+            _set_colored_title(self.db_status_item, "  🔴 本機資料庫  離線", None)
+            _set_colored_title(self.db_detail_item, "    MariaDB 無法連線，請先恢復本機資料庫", None, small=True)
 
         # ── 記憶體 ──
         _, avail_gb, pct = c.get("mem", (0, 0, 0))
