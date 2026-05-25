@@ -127,6 +127,37 @@ class _DummyConn:
         return None
 
 
+class _MirrorCursor:
+    def __init__(self, rows, inserts):
+        self.rows = rows
+        self.inserts = inserts
+        self.executed = []
+
+    def execute(self, sql, params=None):
+        self.executed.append((sql, params))
+        if "INSERT INTO case_todos" in sql:
+            self.inserts.append(params)
+
+    def fetchall(self):
+        return list(self.rows)
+
+    def close(self):
+        return None
+
+
+class _MirrorConn:
+    def __init__(self, rows):
+        self.rows = rows
+        self.inserts = []
+        self.commits = 0
+
+    def cursor(self, dictionary=False):
+        return _MirrorCursor(self.rows, self.inserts)
+
+    def commit(self):
+        self.commits += 1
+
+
 def _patch_db_helpers(monkeypatch, todo_rows, set_calls, repair_rows=None):
     import osc_headless.db as dbmod  # type: ignore
 
@@ -162,6 +193,32 @@ def test_todo_to_gcal_event_embeds_dedup_metadata():
     assert private.get("magi_todo_id") == "1001"
     assert private.get("magi_todo_type") == "開庭"
     assert private.get("magi_dedup_key")
+
+
+def test_materialize_imported_calendar_mirror_rows():
+    mod = _load_action_module()
+    conn = _MirrorConn(
+        [
+            {
+                "source_todo_id": 1023,
+                "case_number": "2025-0084",
+                "client_name": "王台銘",
+                "todo_type": "行事曆事件",
+                "todo_date": "2026-05-29",
+                "todo_time": "10:25:00",
+                "description": "王台銘案調查@北院民事庭",
+                "source_file": "gcal_import:whalelawyer@gmail.com",
+            }
+        ]
+    )
+
+    out = mod._materialize_imported_calendar_mirrors(conn, limit=10)
+
+    assert out["inserted"] == 1
+    assert conn.commits == 1
+    assert conn.inserts[0][0] == "2025-0084"
+    assert conn.inserts[0][1] == "王台銘"
+    assert conn.inserts[0][6] == "gcal_mirror:whalelawyer@gmail.com"
 
 
 def test_gcal_sync_dedup_dry_run_avoids_insert(monkeypatch):
