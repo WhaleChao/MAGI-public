@@ -41,6 +41,7 @@ class _FakeEventsApi:
         self.insert_calls = []
         self.list_calls = []
         self.patch_calls = []
+        self.delete_calls = []
 
     def list(self, **kwargs):
         self.list_calls.append(kwargs)
@@ -57,6 +58,10 @@ class _FakeEventsApi:
         if self.patch_exc:
             raise self.patch_exc
         return _FakeReq({"id": kwargs.get("eventId") or "patched-event-id", "status": self.patch_status})
+
+    def delete(self, **kwargs):
+        self.delete_calls.append(kwargs)
+        return _FakeReq({})
 
 
 class _FakeService:
@@ -158,6 +163,41 @@ class _MirrorConn:
         self.commits += 1
 
 
+class _DuplicateCleanupCursor:
+    def __init__(self, rows, updates):
+        self.rows = rows
+        self.updates = updates
+        self._selecting = False
+
+    def execute(self, sql, params=None):
+        if "SELECT id, case_number" in sql and "FROM case_todos" in sql:
+            self._selecting = True
+        if "UPDATE case_todos" in sql and "calendar_deduped" in sql:
+            self.updates.append(params)
+            self.rowcount = 1
+        else:
+            self.rowcount = 0
+
+    def fetchall(self):
+        return list(self.rows) if self._selecting else []
+
+    def close(self):
+        return None
+
+
+class _DuplicateCleanupConn:
+    def __init__(self, rows):
+        self.rows = rows
+        self.updates = []
+        self.commits = 0
+
+    def cursor(self, dictionary=False):
+        return _DuplicateCleanupCursor(self.rows, self.updates)
+
+    def commit(self):
+        self.commits += 1
+
+
 def _patch_db_helpers(monkeypatch, todo_rows, set_calls, repair_rows=None):
     import osc_headless.db as dbmod  # type: ignore
 
@@ -219,6 +259,54 @@ def test_materialize_imported_calendar_mirror_rows():
     assert conn.inserts[0][0] == "2025-0084"
     assert conn.inserts[0][1] == "王台銘"
     assert conn.inserts[0][6] == "gcal_mirror:whalelawyer@gmail.com"
+
+
+def test_cleanup_duplicate_calendar_todos_treats_import_as_dedup_candidate():
+    mod = _load_action_module()
+    rows = [
+        {
+            "id": 3834,
+            "case_number": "2025-0127",
+            "client_name": "曾昌義",
+            "todo_type": "調解",
+            "todo_date": "2026-06-01",
+            "todo_time": "15:50:00",
+            "description": "曾昌義案調解@花蓮地院",
+            "source_file": "gcal_import:whalelawyer@gmail.com",
+            "google_calendar_id": "import-event-id",
+            "status": "pending",
+        },
+        {
+            "id": 3775,
+            "case_number": "2025-0127",
+            "client_name": "曾昌義",
+            "todo_type": "調解",
+            "todo_date": "2026-06-01",
+            "todo_time": "15:50:00",
+            "description": "⚖️ 6月1日 下午3時50分 調解",
+            "source_file": "20260512 花蓮地方法院通知書.pdf",
+            "google_calendar_id": "primary-duplicate-id",
+            "status": "pending",
+        },
+    ]
+    conn = _DuplicateCleanupConn(rows)
+    service = _FakeService()
+
+    out = mod._cleanup_duplicate_calendar_todos(
+        conn,
+        service,
+        calendar_id="primary",
+        target_calendar_ids={"primary", "zl.hualien@gmail.com"},
+        limit=10,
+    )
+
+    assert out["groups"] == 1
+    assert out["marked"] == 1
+    assert out["deleted_events"] == 1
+    assert conn.updates == [(3834,)]
+    assert conn.commits == 1
+    assert service.events_api.delete_calls == [{"calendarId": "whalelawyer@gmail.com", "eventId": "import-event-id"}]
+    assert out["items"][0]["kept_id"] == 3775
 
 
 def test_gcal_sync_dedup_dry_run_avoids_insert(monkeypatch):
