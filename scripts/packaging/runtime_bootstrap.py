@@ -447,8 +447,8 @@ def _run_or_plan(
     steps.append(result)
 
 
-def _utility_install_command(dep: AuxiliaryDependency) -> list[str]:
-    system = platform.system()
+def _utility_install_command(dep: AuxiliaryDependency, *, profile: HardwareProfile) -> list[str]:
+    system = profile.os_name or platform.system()
     if dep.key == "mariadb":
         if system == "Windows":
             return ["winget", "install", "--id", "MariaDB.Server", "-e", "--accept-package-agreements", "--accept-source-agreements"]
@@ -474,8 +474,8 @@ def _utility_install_command(dep: AuxiliaryDependency) -> list[str]:
     return ["echo", f"請安裝 {dep.title}"]
 
 
-def _utility_start_command(dep: AuxiliaryDependency) -> list[str]:
-    system = platform.system()
+def _utility_start_command(dep: AuxiliaryDependency, *, profile: HardwareProfile) -> list[str]:
+    system = profile.os_name or platform.system()
     if dep.key == "mariadb":
         if system == "Darwin" and _which("brew"):
             return [_which("brew"), "services", "start", "mariadb"]
@@ -486,14 +486,14 @@ def _utility_start_command(dep: AuxiliaryDependency) -> list[str]:
     return []
 
 
-def _build_utility_steps(*, execute: bool, allow_system_install: bool) -> list[BootstrapStep]:
+def _build_utility_steps(*, profile: HardwareProfile, execute: bool, allow_system_install: bool) -> list[BootstrapStep]:
     steps: list[BootstrapStep] = []
     for dep in UTILITY_DEPENDENCIES:
         found = _which_any(dep.executables)
         if found:
             steps.append(BootstrapStep(f"utility:{dep.key}", dep.title, "pass", f"found {found}", required=dep.required))
         else:
-            install_cmd = _utility_install_command(dep)
+            install_cmd = _utility_install_command(dep, profile=profile)
             can_execute = allow_system_install and execute and install_cmd and install_cmd[0] != "echo"
             if can_execute:
                 result = _run(install_cmd, timeout=2400, required=dep.required)
@@ -514,7 +514,7 @@ def _build_utility_steps(*, execute: bool, allow_system_install: bool) -> list[B
                 )
 
         if dep.key == "mariadb" and (found or (steps and steps[-1].status == "pass")):
-            start_cmd = _utility_start_command(dep)
+            start_cmd = _utility_start_command(dep, profile=profile)
             if start_cmd:
                 _run_or_plan(
                     steps,
@@ -558,16 +558,16 @@ def build_steps(
     ]
     python = venv_python(repo_dir)
     if install_utilities:
-        steps.extend(_build_utility_steps(execute=execute, allow_system_install=allow_system_install))
+        steps.extend(_build_utility_steps(profile=profile, execute=execute, allow_system_install=allow_system_install))
     else:
         steps.append(_step_skipped("utility", "安裝外部輔助套件", "skipped by --skip-utilities", next_action="MariaDB 與 Tailscale 需另行安裝。"))
 
     if plan.provider == "ollama":
         ollama = _which("ollama")
         if not ollama:
-            if platform.system() == "Windows":
+            if profile.os_name == "Windows":
                 install_cmd = ["winget", "install", "--id", "Ollama.Ollama", "-e", "--accept-package-agreements", "--accept-source-agreements"]
-            elif platform.system() == "Darwin" and _which("brew"):
+            elif profile.os_name == "Darwin" and _which("brew"):
                 install_cmd = [_which("brew"), "install", "ollama"]
             else:
                 install_cmd = ["echo", "Install Ollama from https://ollama.com/download"]
